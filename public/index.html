@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CAFF Local Agent Studio</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script defer src="/app.js"></script>
+  </head>
+  <body>
+    <div class="ambient ambient-a"></div>
+    <div class="ambient ambient-b"></div>
+    <div class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">CAFF Local Studio</p>
+          <h1>多人格 Agent 对话台</h1>
+          <p class="subtitle">一个本地运行的前端服务，用于管理会话、Agent 人格与多 Agent 协作回复。</p>
+        </div>
+        <div class="topbar-actions">
+          <span id="runtime-pill" class="runtime-pill">启动中...</span>
+          <button id="refresh-button" class="ghost-button" type="button">刷新</button>
+        </div>
+      </header>
+
+      <main class="layout">
+        <aside class="panel panel-conversations">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Conversations</p>
+              <h2>会话管理</h2>
+            </div>
+          </div>
+
+          <form id="new-conversation-form" class="inline-form">
+            <input id="new-conversation-title" name="title" type="text" maxlength="80" placeholder="新对话标题" />
+            <button type="submit">新建</button>
+          </form>
+
+          <div id="conversation-list" class="conversation-list"></div>
+        </aside>
+
+        <section class="panel panel-chat">
+          <header class="chat-header">
+            <div>
+              <p class="eyebrow">Shared Room</p>
+              <h2 id="conversation-title-display">正在加载...</h2>
+              <p id="conversation-meta" class="muted">请稍候</p>
+            </div>
+            <button id="delete-conversation-button" class="ghost-button danger" type="button">删除对话</button>
+          </header>
+
+          <div class="participant-section">
+            <div class="section-row">
+              <span class="section-label">当前参与 Agent</span>
+              <span class="section-hint">同一轮会按参与顺序依次回复</span>
+            </div>
+            <div id="participant-list" class="participant-list"></div>
+          </div>
+
+          <div id="message-list" class="message-list"></div>
+
+          <form id="composer-form" class="composer">
+            <label class="composer-label" for="composer-input">发给当前房间</label>
+            <textarea
+              id="composer-input"
+              name="content"
+              rows="4"
+              maxlength="6000"
+              placeholder="输入一条消息，当前会话里的多个 Agent 会依次给出不同人格的回复。"
+            ></textarea>
+            <div class="composer-footer">
+              <span id="composer-status" class="muted">就绪</span>
+              <button id="send-button" type="submit">发送给多 Agent</button>
+            </div>
+          </form>
+        </section>
+
+        <aside class="panel panel-studio">
+          <section class="stack-card">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Room Setup</p>
+                <h2>当前会话配置</h2>
+              </div>
+            </div>
+
+            <form id="conversation-settings-form" class="settings-form">
+              <label>
+                <span>对话标题</span>
+                <input id="conversation-title-input" name="title" type="text" maxlength="80" />
+              </label>
+              <div>
+                <div class="section-row">
+                  <span class="section-label">选择参与 Agent</span>
+                  <span class="section-hint">至少勾选一个</span>
+                </div>
+                <div id="conversation-agent-options" class="option-list"></div>
+              </div>
+              <button id="save-conversation-button" type="submit">保存会话设置</button>
+            </form>
+          </section>
+
+          <section class="stack-card">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Agent Studio</p>
+                <h2>人格编辑器</h2>
+              </div>
+              <button id="new-agent-button" class="ghost-button" type="button">新 Agent</button>
+            </div>
+
+            <div id="agent-list" class="agent-list"></div>
+
+            <form id="agent-form" class="settings-form">
+              <input id="agent-id" name="id" type="hidden" />
+              <label>
+                <span>名称</span>
+                <input id="agent-name" name="name" type="text" maxlength="40" placeholder="例如：架构师" />
+              </label>
+              <label>
+                <span>角色说明</span>
+                <input
+                  id="agent-description"
+                  name="description"
+                  type="text"
+                  maxlength="120"
+                  placeholder="一句话描述这个 Agent 的思考风格"
+                />
+              </label>
+              <label>
+                <span>人格 Prompt</span>
+                <textarea
+                  id="agent-persona-prompt"
+                  name="personaPrompt"
+                  rows="6"
+                  maxlength="4000"
+                  placeholder="定义它的语气、偏好、边界和工作方式"
+                ></textarea>
+              </label>
+              <div class="field-grid">
+                <label>
+                  <span>Provider</span>
+                  <input id="agent-provider" name="provider" type="text" maxlength="80" placeholder="留空走默认值" />
+                </label>
+                <label>
+                  <span>Model</span>
+                  <input id="agent-model" name="model" type="text" maxlength="80" placeholder="留空走默认值" />
+                </label>
+              </div>
+              <div class="field-grid">
+                <label>
+                  <span>Thinking</span>
+                  <input id="agent-thinking" name="thinking" type="text" maxlength="80" placeholder="可选" />
+                </label>
+                <label>
+                  <span>主色</span>
+                  <input id="agent-accent-color" name="accentColor" type="color" value="#3d405b" />
+                </label>
+              </div>
+              <div class="button-row">
+                <button id="save-agent-button" type="submit">保存 Agent</button>
+                <button id="delete-agent-button" class="ghost-button danger" type="button">删除 Agent</button>
+              </div>
+            </form>
+          </section>
+        </aside>
+      </main>
+    </div>
+
+    <div id="toast" class="toast hidden"></div>
+  </body>
+</html>

@@ -1,0 +1,21 @@
+{
+  "name": "caff",
+  "version": "1.0.0",
+  "description": "",
+  "main": "invoke-test.js",
+  "scripts": {
+    "autonomous": "node autonomous-delegation.js",
+    "check": "node --check minimal-pi.js && node --check pi-runtime.js && node --check sqlite-store.js && node --check chat-app-store.js && node --check app-server.js && node --check public/app.js && node --check supervisor.js && node --check autonomous-delegation.js && node --check invoke-test.js",
+    "start": "node app-server.js",
+    "supervisor": "node supervisor.js",
+    "test": "npm run check",
+    "web": "node app-server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "better-sqlite3": "^12.8.0"
+  }
+}
