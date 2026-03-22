@@ -41,7 +41,7 @@ http://127.0.0.1:3100
 
 - The web app uses the same SQLite database path as the existing runtime.
 - Each conversation agent gets its own stable session name, so one agent can keep continuity across turns.
-- In one user turn, the selected agents reply sequentially. Later agents can see earlier replies from the same turn.
+- In one user turn, the room now uses mention-driven routing: the first speaker is chosen from user `@mentions` or the first room agent, and later speakers are chosen by visible agent `@mentions`.
 - If `pi` is unavailable or the provider/model is not configured correctly, the server will still start, but that agent reply will be stored as a failed assistant message.
 
 ## Main files

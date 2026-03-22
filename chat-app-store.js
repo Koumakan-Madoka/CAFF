@@ -4,6 +4,8 @@ const { randomUUID } = require('node:crypto');
 const Database = require('better-sqlite3');
 const { resolveSqlitePath } = require('./sqlite-store');
 
+const MAX_AVATAR_DATA_URL_LENGTH = 2 * 1024 * 1024;
+
 const DEFAULT_AGENT_SEEDS = [
   {
     id: 'agent-strategist',
@@ -76,20 +78,93 @@ function parseJson(value) {
   }
 }
 
+function normalizeAvatarDataUrl(value) {
+  const avatarDataUrl = String(value || '').trim();
+
+  if (!avatarDataUrl) {
+    return '';
+  }
+
+  if (avatarDataUrl.length > MAX_AVATAR_DATA_URL_LENGTH) {
+    throw new Error('Agent avatar is too large');
+  }
+
+  if (!/^data:image\/(?:png|jpeg|webp|gif);base64,[a-z0-9+/=]+$/i.test(avatarDataUrl)) {
+    throw new Error('Agent avatar must be a PNG, JPEG, WEBP, or GIF image');
+  }
+
+  return avatarDataUrl;
+}
+
+function normalizeModelProfile(profile, index = 0) {
+  if (!profile || typeof profile !== 'object') {
+    return null;
+  }
+
+  const model = String(profile.model || '').trim();
+  const provider = String(profile.provider || '').trim();
+  const thinking = String(profile.thinking || '').trim();
+  const personaPrompt = String(profile.personaPrompt || '').trim();
+  const description = String(profile.description || '').trim();
+  const name = String(profile.name || '').trim();
+  const id = String(profile.id || `profile-${index + 1}`).trim() || `profile-${index + 1}`;
+
+  if (!name && !model && !provider && !thinking && !personaPrompt && !description) {
+    return null;
+  }
+
+  return {
+    id,
+    name: name || model || `Profile ${index + 1}`,
+    description,
+    provider,
+    model,
+    thinking,
+    personaPrompt,
+  };
+}
+
+function parseModelProfiles(value) {
+  const parsed = parseJson(value);
+
+  if (!Array.isArray(parsed)) {
+    return [];
+  }
+
+  return parsed
+    .map((profile, index) => normalizeModelProfile(profile, index))
+    .filter(Boolean);
+}
+
+function findModelProfile(modelProfiles, profileId) {
+  if (!profileId) {
+    return null;
+  }
+
+  return (Array.isArray(modelProfiles) ? modelProfiles : []).find((profile) => profile.id === profileId) || null;
+}
+
 function normalizeAgentRow(row) {
   if (!row) {
     return null;
   }
 
+  const modelProfiles = parseModelProfiles(row.model_profiles_json);
+  const selectedModelProfileId = row.selected_model_profile_id ? String(row.selected_model_profile_id).trim() : null;
+  const selectedModelProfile = findModelProfile(modelProfiles, selectedModelProfileId);
   const normalized = {
     id: row.id,
     name: row.name,
     description: row.description || '',
+    avatarDataUrl: row.avatar_data_url || '',
     personaPrompt: row.persona_prompt || '',
     provider: row.provider || '',
     model: row.model || '',
     thinking: row.thinking || '',
     accentColor: row.accent_color || '#3d405b',
+    modelProfiles,
+    selectedModelProfileId: selectedModelProfile ? selectedModelProfile.id : null,
+    selectedModelProfile,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -154,12 +229,15 @@ function normalizeConversation(row, agents, messages) {
   };
 }
 
-function pickDefaultAgentIds(agents, requestedIds) {
-  if (Array.isArray(requestedIds) && requestedIds.length > 0) {
-    return requestedIds;
+function pickDefaultParticipants(agents, requestedParticipants) {
+  if (Array.isArray(requestedParticipants) && requestedParticipants.length > 0) {
+    return requestedParticipants;
   }
 
-  return agents.slice(0, 3).map((agent) => agent.id);
+  return agents.slice(0, 3).map((agent) => ({
+    agentId: agent.id,
+    modelProfileId: null,
+  }));
 }
 
 class ChatAppStore {
@@ -178,11 +256,13 @@ CREATE TABLE IF NOT EXISTS chat_agents (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   description TEXT,
+  avatar_data_url TEXT,
   persona_prompt TEXT NOT NULL,
   provider TEXT,
   model TEXT,
   thinking TEXT,
   accent_color TEXT,
+  model_profiles_json TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -198,6 +278,7 @@ CREATE TABLE IF NOT EXISTS chat_conversations (
 CREATE TABLE IF NOT EXISTS chat_conversation_agents (
   conversation_id TEXT NOT NULL,
   agent_id TEXT NOT NULL,
+  model_profile_id TEXT,
   sort_order INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   PRIMARY KEY (conversation_id, agent_id),
@@ -230,6 +311,25 @@ CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation_id ON chat_messages (c
 CREATE INDEX IF NOT EXISTS idx_chat_messages_turn_id ON chat_messages (turn_id, created_at ASC, id ASC);
     `);
 
+    const chatAgentColumns = new Set(
+      this.db.prepare('PRAGMA table_info(chat_agents)').all().map((column) => column.name)
+    );
+    const conversationAgentColumns = new Set(
+      this.db.prepare('PRAGMA table_info(chat_conversation_agents)').all().map((column) => column.name)
+    );
+
+    if (!chatAgentColumns.has('model_profiles_json')) {
+      this.db.exec('ALTER TABLE chat_agents ADD COLUMN model_profiles_json TEXT');
+    }
+
+    if (!chatAgentColumns.has('avatar_data_url')) {
+      this.db.exec('ALTER TABLE chat_agents ADD COLUMN avatar_data_url TEXT');
+    }
+
+    if (!conversationAgentColumns.has('model_profile_id')) {
+      this.db.exec('ALTER TABLE chat_conversation_agents ADD COLUMN model_profile_id TEXT');
+    }
+
     this.countAgentsStatement = this.db.prepare('SELECT COUNT(*) AS count FROM chat_agents');
     this.listAgentsStatement = this.db.prepare(`
       SELECT *
@@ -247,25 +347,29 @@ CREATE INDEX IF NOT EXISTS idx_chat_messages_turn_id ON chat_messages (turn_id, 
         id,
         name,
         description,
+        avatar_data_url,
         persona_prompt,
         provider,
         model,
         thinking,
         accent_color,
+        model_profiles_json,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     this.updateAgentStatement = this.db.prepare(`
       UPDATE chat_agents
       SET
         name = ?,
         description = ?,
+        avatar_data_url = ?,
         persona_prompt = ?,
         provider = ?,
         model = ?,
         thinking = ?,
         accent_color = ?,
+        model_profiles_json = ?,
         updated_at = ?
       WHERE id = ?
     `);
@@ -351,12 +455,13 @@ CREATE INDEX IF NOT EXISTS idx_chat_messages_turn_id ON chat_messages (turn_id, 
       INSERT INTO chat_conversation_agents (
         conversation_id,
         agent_id,
+        model_profile_id,
         sort_order,
         created_at
-      ) VALUES (?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?)
     `);
     this.listConversationAgentsStatement = this.db.prepare(`
-      SELECT a.*, ca.sort_order
+      SELECT a.*, ca.sort_order, ca.model_profile_id AS selected_model_profile_id
       FROM chat_conversation_agents ca
       JOIN chat_agents a ON a.id = ca.agent_id
       WHERE ca.conversation_id = ?
@@ -411,11 +516,13 @@ CREATE INDEX IF NOT EXISTS idx_chat_messages_turn_id ON chat_messages (turn_id, 
         this.updateAgentStatement.run(
           payload.name,
           payload.description,
+          payload.avatarDataUrl,
           payload.personaPrompt,
           payload.provider,
           payload.model,
           payload.thinking,
           payload.accentColor,
+          serializeJson(payload.modelProfiles),
           timestamp,
           payload.id
         );
@@ -424,11 +531,13 @@ CREATE INDEX IF NOT EXISTS idx_chat_messages_turn_id ON chat_messages (turn_id, 
           payload.id,
           payload.name,
           payload.description,
+          payload.avatarDataUrl,
           payload.personaPrompt,
           payload.provider,
           payload.model,
           payload.thinking,
           payload.accentColor,
+          serializeJson(payload.modelProfiles),
           timestamp,
           timestamp
         );
@@ -437,11 +546,17 @@ CREATE INDEX IF NOT EXISTS idx_chat_messages_turn_id ON chat_messages (turn_id, 
       return this.getAgent(payload.id);
     });
 
-    this.replaceConversationAgentsTransaction = this.db.transaction((conversationId, agentIds) => {
+    this.replaceConversationAgentsTransaction = this.db.transaction((conversationId, participants) => {
       this.deleteConversationAgentsStatement.run(conversationId);
 
-      agentIds.forEach((agentId, index) => {
-        this.insertConversationAgentStatement.run(conversationId, agentId, index, nowIso());
+      participants.forEach((participant, index) => {
+        this.insertConversationAgentStatement.run(
+          conversationId,
+          participant.agentId,
+          participant.modelProfileId || null,
+          index,
+          nowIso()
+        );
       });
     });
 
@@ -449,7 +564,7 @@ CREATE INDEX IF NOT EXISTS idx_chat_messages_turn_id ON chat_messages (turn_id, 
       const timestamp = nowIso();
 
       this.insertConversationStatement.run(payload.id, payload.title, timestamp, timestamp, null);
-      this.replaceConversationAgentsTransaction(payload.id, payload.agentIds);
+      this.replaceConversationAgentsTransaction(payload.id, payload.participants);
 
       return this.getConversation(payload.id);
     });
@@ -461,8 +576,8 @@ CREATE INDEX IF NOT EXISTS idx_chat_messages_turn_id ON chat_messages (turn_id, 
         this.touchConversationStatement.run(nowIso(), null, conversationId);
       }
 
-      if (Array.isArray(updates.agentIds)) {
-        this.replaceConversationAgentsTransaction(conversationId, updates.agentIds);
+      if (Array.isArray(updates.participants)) {
+        this.replaceConversationAgentsTransaction(conversationId, updates.participants);
       }
 
       return this.getConversation(conversationId);
@@ -531,11 +646,13 @@ CREATE INDEX IF NOT EXISTS idx_chat_messages_turn_id ON chat_messages (turn_id, 
       id,
       name,
       description: String(input.description || '').trim(),
+      avatarDataUrl: normalizeAvatarDataUrl(input.avatarDataUrl),
       personaPrompt,
       provider: String(input.provider || '').trim(),
       model: String(input.model || '').trim(),
       thinking: String(input.thinking || '').trim(),
       accentColor: String(input.accentColor || '#3d405b').trim() || '#3d405b',
+      modelProfiles: this.normalizeModelProfiles(input.modelProfiles),
     });
   }
 
@@ -564,12 +681,12 @@ CREATE INDEX IF NOT EXISTS idx_chat_messages_turn_id ON chat_messages (turn_id, 
   createConversation(input = {}) {
     const id = String(input.id || randomUUID()).trim();
     const title = String(input.title || '').trim() || 'New Conversation';
-    const agentIds = this.normalizeAgentIds(input.agentIds);
+    const participants = this.normalizeConversationParticipantsInput(input);
 
     return this.createConversationTransaction({
       id,
       title,
-      agentIds: pickDefaultAgentIds(this.listAgents(), agentIds),
+      participants: pickDefaultParticipants(this.listAgents(), participants),
     });
   }
 
@@ -581,11 +698,13 @@ CREATE INDEX IF NOT EXISTS idx_chat_messages_turn_id ON chat_messages (turn_id, 
     }
 
     const title = updates.title === undefined ? existing.title : String(updates.title || '').trim() || existing.title;
-    const agentIds = Array.isArray(updates.agentIds) ? this.normalizeAgentIds(updates.agentIds) : undefined;
+    const participants = this.hasConversationParticipantsInput(updates)
+      ? this.normalizeConversationParticipantsInput(updates)
+      : undefined;
 
     return this.updateConversationTransaction(conversationId, {
       title,
-      agentIds,
+      participants,
     });
   }
 
@@ -693,22 +812,81 @@ CREATE INDEX IF NOT EXISTS idx_chat_messages_turn_id ON chat_messages (turn_id, 
     const agents = this.listAgents();
     return this.createConversation({
       title: '新协作会话',
-      agentIds: agents.slice(0, 3).map((agent) => agent.id),
+      participants: agents.slice(0, 3).map((agent) => ({
+        agentId: agent.id,
+        modelProfileId: null,
+      })),
     });
   }
 
-  normalizeAgentIds(agentIds) {
-    const knownAgents = new Set(this.listAgents().map((agent) => agent.id));
-    const deduped = [];
+  normalizeModelProfiles(modelProfiles) {
+    const seenIds = new Set();
+    const normalized = [];
 
-    for (const agentId of Array.isArray(agentIds) ? agentIds : []) {
-      const value = String(agentId || '').trim();
+    for (const [index, profile] of Array.isArray(modelProfiles) ? modelProfiles.entries() : []) {
+      const nextProfile = normalizeModelProfile(profile, index);
 
-      if (!value || deduped.includes(value) || !knownAgents.has(value)) {
+      if (!nextProfile || seenIds.has(nextProfile.id)) {
         continue;
       }
 
-      deduped.push(value);
+      seenIds.add(nextProfile.id);
+      normalized.push(nextProfile);
+    }
+
+    return normalized;
+  }
+
+  hasConversationParticipantsInput(input = {}) {
+    return Array.isArray(input.participants) || Array.isArray(input.agentIds);
+  }
+
+  normalizeConversationParticipantsInput(input = {}) {
+    if (Array.isArray(input.participants)) {
+      return this.normalizeConversationParticipants(input.participants);
+    }
+
+    const agentProfileIds =
+      input.agentProfileIds && typeof input.agentProfileIds === 'object' ? input.agentProfileIds : {};
+    const legacyParticipants = Array.isArray(input.agentIds)
+      ? input.agentIds.map((agentId) => ({
+          agentId,
+          modelProfileId: agentProfileIds[agentId] || null,
+        }))
+      : [];
+
+    return this.normalizeConversationParticipants(legacyParticipants);
+  }
+
+  normalizeConversationParticipants(participants) {
+    const knownAgents = new Map(this.listAgents().map((agent) => [agent.id, agent]));
+    const deduped = [];
+    const seenAgentIds = new Set();
+
+    for (const participant of Array.isArray(participants) ? participants : []) {
+      const agentId =
+        typeof participant === 'string'
+          ? String(participant || '').trim()
+          : String((participant && (participant.agentId || participant.id)) || '').trim();
+
+      if (!agentId || seenAgentIds.has(agentId) || !knownAgents.has(agentId)) {
+        continue;
+      }
+
+      const agent = knownAgents.get(agentId);
+      const requestedProfileId =
+        typeof participant === 'string'
+          ? ''
+          : String(
+              (participant && (participant.modelProfileId || participant.selectedModelProfileId || '')) || ''
+            ).trim();
+      const modelProfileId = findModelProfile(agent.modelProfiles, requestedProfileId) ? requestedProfileId : null;
+
+      seenAgentIds.add(agentId);
+      deduped.push({
+        agentId,
+        modelProfileId,
+      });
     }
 
     return deduped;

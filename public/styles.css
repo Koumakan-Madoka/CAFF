@@ -44,7 +44,8 @@ body {
 
 button,
 input,
-textarea {
+textarea,
+select {
   font: inherit;
 }
 
@@ -83,7 +84,8 @@ button:disabled {
 }
 
 input,
-textarea {
+textarea,
+select {
   width: 100%;
   border-radius: var(--radius-sm);
   border: 1px solid rgba(34, 49, 63, 0.1);
@@ -97,7 +99,8 @@ textarea {
 }
 
 input:focus,
-textarea:focus {
+textarea:focus,
+select:focus {
   outline: none;
   border-color: rgba(239, 125, 87, 0.46);
   box-shadow: 0 0 0 4px rgba(239, 125, 87, 0.12);
@@ -148,12 +151,7 @@ textarea {
 
 .topbar,
 .panel,
-.stack-card,
-.message-card,
-.conversation-item,
-.agent-chip,
-.agent-list-item,
-.option-card {
+.stack-card {
   animation: riseIn 420ms ease both;
 }
 
@@ -195,6 +193,42 @@ textarea {
   gap: 0.7rem;
 }
 
+.topbar-nav,
+.panel-actions,
+.tag-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.topbar-nav {
+  justify-content: flex-end;
+}
+
+.topbar-link,
+.link-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.65rem 0.95rem;
+  border-radius: 999px;
+  text-decoration: none;
+}
+
+.topbar-link {
+  border: 1px solid rgba(34, 49, 63, 0.08);
+  background: rgba(255, 252, 246, 0.58);
+  color: var(--ink);
+}
+
+.topbar-link.active {
+  border-color: transparent;
+  background: linear-gradient(135deg, var(--accent), var(--accent-deep));
+  color: #fff9f5;
+  box-shadow: 0 14px 28px rgba(196, 93, 59, 0.2);
+}
+
 .runtime-pill {
   display: inline-flex;
   align-items: center;
@@ -217,7 +251,7 @@ textarea {
 
 .layout {
   display: grid;
-  grid-template-columns: 320px minmax(0, 1fr) 360px;
+  grid-template-columns: 320px minmax(0, 1fr) 320px;
   gap: 1.2rem;
   min-height: 0;
   flex: 1;
@@ -269,10 +303,39 @@ textarea {
   gap: 0.8rem;
 }
 
+.composer {
+  position: relative;
+}
+
 .field-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.8rem;
+}
+
+.profile-select-row,
+.profile-editor-list,
+.profile-editor {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.profile-editor {
+  padding: 1rem;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(34, 49, 63, 0.08);
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.profile-editor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+}
+
+.persona-layout {
+  grid-template-columns: 320px minmax(0, 1fr);
 }
 
 .settings-form label,
@@ -280,6 +343,10 @@ textarea {
   display: grid;
   gap: 0.38rem;
   font-weight: 600;
+}
+
+.inline-note {
+  margin: 0 0 0.9rem;
 }
 
 .conversation-list,
@@ -364,6 +431,78 @@ textarea {
   gap: 0.65rem;
 }
 
+.agent-avatar {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 2.4rem;
+  height: 2.4rem;
+  border-radius: 999px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--agent-color, var(--accent)) 18%, white);
+  box-shadow:
+    0 0 0 2px rgba(255, 255, 255, 0.72),
+    inset 0 0 0 1px color-mix(in srgb, var(--agent-color, var(--accent)) 30%, white);
+  color: color-mix(in srgb, var(--agent-color, var(--accent)) 82%, black);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.agent-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.agent-avatar.small {
+  width: 2rem;
+  height: 2rem;
+}
+
+.agent-avatar.tiny {
+  width: 1.65rem;
+  height: 1.65rem;
+}
+
+.agent-avatar.large {
+  width: 4.5rem;
+  height: 4.5rem;
+  font-size: 1.25rem;
+}
+
+.avatar-preview {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.82), rgba(239, 125, 87, 0.12));
+}
+
+.avatar-upload-row,
+.avatar-upload-actions,
+.message-sender {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+}
+
+.avatar-upload-row {
+  flex-wrap: wrap;
+}
+
+.avatar-upload-actions {
+  flex-wrap: wrap;
+}
+
+.avatar-field {
+  display: grid;
+  gap: 0.5rem;
+  font-weight: 600;
+}
+
+.avatar-field input[type="file"] {
+  max-width: 100%;
+}
+
 .agent-chip {
   display: inline-flex;
   align-items: center;
@@ -420,6 +559,15 @@ textarea {
   background: linear-gradient(135deg, rgba(176, 68, 68, 0.08), rgba(255, 252, 246, 0.92));
 }
 
+.message-card.live-preview {
+  border-color: rgba(42, 157, 143, 0.22);
+  box-shadow: inset 0 0 0 1px rgba(42, 157, 143, 0.12);
+}
+
+.message-card.live-preview .message-body {
+  color: color-mix(in srgb, var(--ink) 78%, var(--teal) 22%);
+}
+
 .message-meta {
   display: flex;
   align-items: center;
@@ -429,7 +577,31 @@ textarea {
 }
 
 .message-sender {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
   font-weight: 700;
+}
+
+.message-sender-label {
+  display: inline-flex;
+  align-items: center;
+}
+
+.message-export-button {
+  padding: 0.28rem 0.7rem;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  line-height: 1;
+  background: rgba(255, 252, 246, 0.75);
+  color: var(--ink);
+  box-shadow: none;
+}
+
+.message-export-button:hover:not(:disabled) {
+  transform: none;
+  background: rgba(255, 247, 238, 0.96);
 }
 
 .message-time {
@@ -442,6 +614,84 @@ textarea {
   line-height: 1.68;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.message-live-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: fit-content;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  background: rgba(42, 157, 143, 0.12);
+  color: #1d756a;
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.message-live-hint::before {
+  content: "";
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.message-live-hint.hidden {
+  display: none;
+}
+
+.message-card.streaming .message-live-hint::before {
+  animation: livePulse 900ms ease-in-out infinite;
+}
+
+.mention-highlight {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.08rem 0.42rem;
+  margin: 0 0.06rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--mention-color, var(--accent)) 18%, white);
+  color: color-mix(in srgb, var(--mention-color, var(--accent)) 78%, black);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--mention-color, var(--accent)) 28%, white);
+  font-weight: 700;
+}
+
+.mention-menu {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.5rem;
+  margin-top: -0.25rem;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(34, 49, 63, 0.1);
+  background: rgba(255, 252, 246, 0.96);
+  box-shadow: 0 20px 40px rgba(34, 49, 63, 0.16);
+}
+
+.mention-menu.hidden {
+  display: none;
+}
+
+.mention-option {
+  display: grid;
+  gap: 0.16rem;
+  width: 100%;
+  padding: 0.72rem 0.82rem;
+  border-radius: 14px;
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--ink);
+  box-shadow: none;
+  text-align: left;
+}
+
+.mention-option:hover,
+.mention-option.active {
+  border-color: rgba(42, 157, 143, 0.28);
+  background: linear-gradient(135deg, rgba(42, 157, 143, 0.12), rgba(255, 255, 255, 0.86));
+  transform: none;
 }
 
 .empty-state {
@@ -458,6 +708,10 @@ textarea {
   border: 1px solid rgba(34, 49, 63, 0.08);
   background: rgba(255, 255, 255, 0.58);
   cursor: pointer;
+}
+
+.agent-list-item.compact {
+  padding: 0.72rem 0.84rem;
 }
 
 .agent-list-item.active {
@@ -486,6 +740,70 @@ textarea {
   width: 1rem;
   height: 1rem;
   margin-top: 0.18rem;
+}
+
+.compact-settings-form {
+  gap: 0.7rem;
+}
+
+.compact-option-card {
+  gap: 0.25rem;
+  padding: 0.72rem 0.8rem;
+}
+
+.compact-option-card.is-selected {
+  border-color: rgba(42, 157, 143, 0.24);
+  background: linear-gradient(135deg, rgba(42, 157, 143, 0.08), rgba(255, 255, 255, 0.82));
+}
+
+.persona-option-content {
+  display: grid;
+  gap: 0.45rem;
+  min-width: 0;
+  width: 100%;
+}
+
+.persona-option-head {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  min-width: 0;
+}
+
+.persona-option-copy {
+  display: grid;
+  gap: 0.14rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.persona-option-name {
+  line-height: 1.2;
+}
+
+.persona-option-description {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 0.84rem;
+}
+
+.persona-option-config {
+  grid-template-columns: 2.4rem minmax(0, 1fr);
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.persona-option-config.hidden {
+  display: none;
+}
+
+.persona-option-config-label {
+  font-size: 0.8rem;
+}
+
+.persona-option-config .profile-select {
+  padding: 0.6rem 0.75rem;
 }
 
 .button-row {
@@ -524,6 +842,19 @@ textarea {
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@keyframes livePulse {
+  0%,
+  100% {
+    opacity: 0.42;
+    transform: scale(0.9);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1);
   }
 }
 
