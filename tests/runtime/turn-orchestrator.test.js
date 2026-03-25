@@ -68,3 +68,52 @@ test('buildAgentTurnPrompt avoids raw @mention tokens from room context', () => 
   assert.doesNotMatch(prompt, /@Builder/u);
   assert.doesNotMatch(prompt, /@agent-mecha-engineer/u);
 });
+
+test('buildAgentTurnPrompt gives bash-only multiline chat bridge guidance', () => {
+  const agent = {
+    id: 'agent-builder',
+    name: 'Builder',
+    description: 'Explains implementation details clearly.',
+    personaPrompt: 'Stay calm and practical.',
+  };
+  const conversation = {
+    id: 'conversation-2',
+    title: 'New Conversation',
+    type: 'standard',
+    agents: [agent],
+  };
+  const prompt = buildAgentTurnPrompt({
+    conversation,
+    agent,
+    agentConfig: {
+      profileName: 'Default',
+      personaPrompt: agent.personaPrompt,
+    },
+    resolvedPersonaSkills: [],
+    resolvedConversationSkills: [],
+    sandbox: {
+      sandboxDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-builder',
+      privateDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-builder/private',
+    },
+    agents: [agent],
+    messages: [],
+    privateMessages: [],
+    trigger: {
+      triggerType: 'user',
+      enqueueReason: 'default_first_agent',
+    },
+    remainingSlots: 7,
+    routingMode: 'mention_queue',
+    allowHandoffs: true,
+    agentToolRelativePath: './agent-chat-tools.js',
+  });
+
+  assert.match(prompt, /This run executes shell commands with bash/u);
+  assert.match(prompt, /cat <<'CAFF_PUBLIC_EOF' \| node "\$CAFF_CHAT_TOOLS_PATH" send-public --content-stdin/u);
+  assert.match(
+    prompt,
+    /cat <<'CAFF_PRIVATE_EOF' \| node "\$CAFF_CHAT_TOOLS_PATH" send-private --to "AgentName" --content-stdin/u
+  );
+  assert.match(prompt, /Never put raw message text on a new shell line by itself/u);
+  assert.doesNotMatch(prompt, /PowerShell example/u);
+});

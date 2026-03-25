@@ -135,7 +135,9 @@ async function sendPublic(config, flags, options = {}) {
   const content = await resolveMessageContent(flags, options);
 
   if (!content) {
-    throw new Error('send-public requires --content or --content-stdin');
+    throw new Error(
+      'send-public requires --content or --content-stdin (bash multiline example: cat <<\'EOF\' | node "$CAFF_CHAT_TOOLS_PATH" send-public --content-stdin)'
+    );
   }
 
   return requestJson(`${config.apiUrl}/api/agent-tools/post-message`, {
@@ -154,7 +156,9 @@ async function sendPrivate(config, flags, options = {}) {
   const content = await resolveMessageContent(flags, options);
 
   if (!content) {
-    throw new Error('send-private requires --content or --content-stdin');
+    throw new Error(
+      'send-private requires --content or --content-stdin (bash multiline example: cat <<\'EOF\' | node "$CAFF_CHAT_TOOLS_PATH" send-private --to "AgentName" --content-stdin)'
+    );
   }
 
   const body = {
