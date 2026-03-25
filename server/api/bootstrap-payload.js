@@ -6,7 +6,7 @@ const {
   DEFAULT_PROVIDER,
   DEFAULT_THINKING,
   resolveSetting,
-} = require('../../minimal-pi');
+} = require('../../pi-runtime');
 const { ROOT_DIR } = require('../app/config');
 
 function createBootstrapPayloadBuilder({ store, skillRegistry, turnOrchestrator }) {
