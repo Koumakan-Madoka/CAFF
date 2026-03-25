@@ -3,8 +3,19 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>CAFF Local Agent Studio</title>
+    <title>CAFF 本地 Agent 工作台</title>
     <link rel="stylesheet" href="/styles.css" />
+    <script defer src="/shared/api-client.js"></script>
+    <script defer src="/shared/model-options.js"></script>
+    <script defer src="/shared/avatar.js"></script>
+    <script defer src="/shared/toast.js"></script>
+    <script defer src="/chat/conversation-list.js"></script>
+    <script defer src="/chat/participant-pane.js"></script>
+    <script defer src="/chat/message-timeline.js"></script>
+    <script defer src="/chat/conversation-settings.js"></script>
+    <script defer src="/chat/undercover-panel.js"></script>
+    <script defer src="/chat/mention-menu.js"></script>
+    <script defer src="/chat/conversation-pane.js"></script>
     <script defer src="/app.js"></script>
   </head>
   <body>
@@ -13,16 +24,17 @@
     <div class="shell">
       <header class="topbar">
         <div>
-          <p class="eyebrow">CAFF Local Studio</p>
-          <h1>多人格 Agent 对话台</h1>
-          <p class="subtitle">一个本地运行的前端服务，用于管理对话与多人格协作回复。</p>
+          <p class="eyebrow">CAFF 本地工作台</p>
+          <h1>多人 Agent 对话台</h1>
+          <p class="subtitle">本地运行的多人格协作聊天台，支持普通对话与后端主持的“谁是卧底”玩法。</p>
         </div>
         <div class="topbar-actions">
-          <nav class="topbar-nav" aria-label="Primary">
+          <nav class="topbar-nav" aria-label="主导航">
             <a class="topbar-link active" href="/">聊天工作台</a>
             <a class="topbar-link" href="/personas.html">人格管理</a>
+            <a class="topbar-link" href="/skills.html">Skill 管理</a>
           </nav>
-          <span id="runtime-pill" class="runtime-pill">启动中...</span>
+          <span id="runtime-pill" class="runtime-pill">正在连接本地服务...</span>
           <button id="refresh-button" class="ghost-button" type="button">刷新</button>
         </div>
       </header>
@@ -31,13 +43,17 @@
         <aside class="panel panel-conversations">
           <div class="panel-header">
             <div>
-              <p class="eyebrow">Conversations</p>
+              <p class="eyebrow">会话</p>
               <h2>会话管理</h2>
             </div>
           </div>
 
           <form id="new-conversation-form" class="inline-form">
-            <input id="new-conversation-title" name="title" type="text" maxlength="80" placeholder="新对话标题" />
+            <input id="new-conversation-title" name="title" type="text" maxlength="80" placeholder="新房间标题" />
+            <select id="new-conversation-type" name="type">
+              <option value="standard">普通对话</option>
+              <option value="who_is_undercover">谁是卧底</option>
+            </select>
             <button type="submit">新建</button>
           </form>
 
@@ -47,8 +63,9 @@
         <section class="panel panel-chat">
           <header class="chat-header">
             <div>
-              <p class="eyebrow">Shared Room</p>
+              <p class="eyebrow">共享房间</p>
               <h2 id="conversation-title-display">正在加载...</h2>
+              <p id="conversation-mode-badge" class="mode-pill hidden"></p>
               <p id="conversation-meta" class="muted">请稍候</p>
             </div>
             <button id="delete-conversation-button" class="ghost-button danger" type="button">删除对话</button>
@@ -57,7 +74,7 @@
           <div class="participant-section">
             <div class="section-row">
               <span class="section-label">当前参与人格</span>
-              <span class="section-hint">同一轮会按参与顺序依次回复</span>
+              <span class="section-hint">普通房间按提及路由，谁是卧底房间由后端主持统一调度。</span>
             </div>
             <div id="participant-list" class="participant-list"></div>
           </div>
@@ -71,34 +88,110 @@
               name="content"
               rows="4"
               maxlength="6000"
-              placeholder="输入一条消息，当前会话里的多个 Agent 会依次给出不同人格的回复。"
+              placeholder="输入一条消息，当前会话里的多个 Agent 会给出不同人格的回复。"
             ></textarea>
             <div id="composer-mention-menu" class="mention-menu hidden"></div>
             <div class="composer-footer">
               <span id="composer-status" class="muted">就绪</span>
-              <button id="send-button" type="submit">发送给多 Agent</button>
+              <div class="composer-actions">
+                <button id="stop-button" class="ghost-button danger" type="button">停止</button>
+                <button id="send-button" type="submit">发送给房间</button>
+              </div>
             </div>
           </form>
         </section>
 
         <aside class="panel panel-studio">
+          <section id="undercover-game-card" class="stack-card hidden">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">卧底主持台</p>
+                <h2>谁是卧底主持台</h2>
+              </div>
+            </div>
+
+            <div class="undercover-status-card">
+              <div id="undercover-game-status" class="muted">选择谁是卧底房间后，这里会显示全自动对局状态。</div>
+              <div id="undercover-last-result" class="muted"></div>
+            </div>
+
+            <section class="conversation-agent-section">
+              <div class="section-row">
+                <span class="section-label">当前玩家状态</span>
+                <span class="section-hint">后端主持只会调度仍存活的玩家</span>
+              </div>
+              <div id="undercover-player-status" class="undercover-player-grid"></div>
+            </section>
+
+            <form id="undercover-setup-form" class="settings-form compact-settings-form">
+              <div class="two-column-grid">
+                <label>
+                  <span>平民词</span>
+                  <input id="undercover-civilian-word" type="text" maxlength="40" placeholder="例如：苹果" />
+                </label>
+                <label>
+                  <span>卧底词</span>
+                  <input id="undercover-undercover-word" type="text" maxlength="40" placeholder="例如：梨子" />
+                </label>
+              </div>
+
+              <div class="three-column-grid">
+                <label>
+                  <span>卧底人数</span>
+                  <input id="undercover-undercover-count" type="number" min="1" max="6" value="1" />
+                </label>
+                <label>
+                  <span>白板人数</span>
+                  <input id="undercover-blank-count" type="number" min="0" max="3" value="0" />
+                </label>
+                <label>
+                  <span>白板词</span>
+                  <input id="undercover-blank-word" type="text" maxlength="40" placeholder="可留空" />
+                </label>
+              </div>
+
+              <div class="button-row compact-button-row">
+                <button id="undercover-start-button" type="submit">开始全自动新一局</button>
+                <button id="undercover-reset-button" class="ghost-button danger" type="button">重置对局</button>
+              </div>
+            </form>
+
+            <p class="muted">点击开始后，后端会自动完成发言、投票、结算与身份揭晓。</p>
+          </section>
+
           <section class="stack-card">
             <div class="panel-header">
               <div>
-                <p class="eyebrow">Persona Setup</p>
+                <p class="eyebrow">人格配置</p>
                 <h2>本次人格</h2>
               </div>
               <a class="ghost-button link-button" href="/personas.html">管理页</a>
             </div>
 
             <form id="conversation-settings-form" class="settings-form compact-settings-form">
-              <div>
+              <section class="bulk-skill-card">
+                <div class="section-row">
+                  <span class="section-label">批量 Skill</span>
+                  <span class="section-hint">把同一个 skill 批量分配给当前勾选的人格</span>
+                </div>
+                <label>
+                  <span>选择 Skill</span>
+                  <select id="bulk-skill-select"></select>
+                </label>
+                <div class="button-row compact-button-row">
+                  <button id="apply-bulk-skill-button" class="ghost-button" type="button">批量分配给已选人格</button>
+                  <button id="clear-bulk-skill-button" class="ghost-button" type="button">清空选择</button>
+                </div>
+              </section>
+
+              <div class="conversation-agent-section">
                 <div class="section-row">
                   <span class="section-label">参与人格</span>
                   <span class="section-hint">至少 1 个</span>
                 </div>
                 <div id="conversation-agent-options" class="option-list"></div>
               </div>
+
               <button id="save-conversation-button" type="submit">保存选择</button>
             </form>
           </section>

@@ -4,8 +4,14 @@ package-lock.json
 
 # Runtime data
 .pi-sandbox/
+.tmp-clowder-ai/
 *.sqlite
+*.sqlite-shm
+*.sqlite-wal
 *.db
+*.db-shm
+*.db-wal
+ORCH
 
 # OS files
 .DS_Store

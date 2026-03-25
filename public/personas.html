@@ -5,6 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>CAFF Persona Manager</title>
     <link rel="stylesheet" href="/styles.css" />
+    <script defer src="/shared/api-client.js"></script>
+    <script defer src="/shared/model-options.js"></script>
+    <script defer src="/shared/avatar.js"></script>
+    <script defer src="/shared/toast.js"></script>
     <script defer src="/personas.js"></script>
   </head>
   <body>
@@ -21,6 +25,7 @@
           <nav class="topbar-nav" aria-label="Primary">
             <a class="topbar-link" href="/">聊天工作台</a>
             <a class="topbar-link active" href="/personas.html">人格管理</a>
+            <a class="topbar-link" href="/skills.html">Skill 管理</a>
           </nav>
           <button id="refresh-button" class="ghost-button" type="button">刷新</button>
         </div>
@@ -64,6 +69,19 @@
                 placeholder="一句话描述这个 Agent 的思考风格"
               />
             </label>
+
+            <label>
+              <span>工作目录名</span>
+              <input
+                id="agent-sandbox-name"
+                name="sandboxName"
+                type="text"
+                maxlength="80"
+                placeholder="例如：builder"
+              />
+            </label>
+            <p id="agent-sandbox-hint" class="muted inline-note">留空时默认使用 Agent ID 生成目录名。</p>
+
             <div class="avatar-field">
               <span>头像</span>
               <div class="avatar-upload-row">
@@ -108,6 +126,17 @@
                 <input id="agent-accent-color" name="accentColor" type="color" value="#3d405b" />
               </label>
             </div>
+
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Persona Skills</p>
+                <h2>人格专属 Skill</h2>
+              </div>
+              <a class="ghost-button link-button" href="/skills.html">管理 Skill</a>
+            </div>
+            <p class="muted inline-note">这里选择的是该人格长期绑定的 skill 文件夹，运行时会读取对应目录下的 `SKILL.md`。</p>
+
+            <div id="agent-skill-options" class="option-list"></div>
 
             <div class="panel-header">
               <div>

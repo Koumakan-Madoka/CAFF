@@ -1,11 +1,14 @@
 const state = {
   agents: [],
+  skills: [],
   modelOptions: [],
   selectedAgentId: null,
-  toastTimer: null,
 };
 
-const MAX_AVATAR_FILE_SIZE = 1024 * 1024;
+const shared = window.CaffShared || {};
+const fetchJson = shared.fetchJson;
+const avatarUtils = shared.avatar || {};
+const modelOptionUtils = shared.modelOptions || {};
 
 const dom = {
   refreshButton: document.getElementById('refresh-button'),
@@ -16,6 +19,8 @@ const dom = {
   agentId: document.getElementById('agent-id'),
   agentName: document.getElementById('agent-name'),
   agentDescription: document.getElementById('agent-description'),
+  agentSandboxName: document.getElementById('agent-sandbox-name'),
+  agentSandboxHint: document.getElementById('agent-sandbox-hint'),
   agentAvatarPreview: document.getElementById('agent-avatar-preview'),
   agentAvatarFile: document.getElementById('agent-avatar-file'),
   agentAvatarData: document.getElementById('agent-avatar-data'),
@@ -24,6 +29,7 @@ const dom = {
   agentModel: document.getElementById('agent-model'),
   agentThinking: document.getElementById('agent-thinking'),
   agentAccentColor: document.getElementById('agent-accent-color'),
+  agentSkillOptions: document.getElementById('agent-skill-options'),
   addProfileButton: document.getElementById('add-profile-button'),
   profileList: document.getElementById('profile-list'),
   clearAgentAvatarButton: document.getElementById('clear-agent-avatar-button'),
@@ -31,32 +37,10 @@ const dom = {
   toast: document.getElementById('toast'),
 };
 
-async function fetchJson(url, options = {}) {
-  const response = await fetch(url, {
-    method: options.method || 'GET',
-    headers: {
-      Accept: 'application/json',
-      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-    },
-    body: options.body ? JSON.stringify(options.body) : undefined,
-  });
-  const text = await response.text();
-  const data = text ? JSON.parse(text) : {};
-
-  if (!response.ok) {
-    throw new Error(data.error || `Request failed with status ${response.status}`);
-  }
-
-  return data;
-}
+const toast = typeof shared.createToastController === 'function' ? shared.createToastController(dom.toast) : { show() {} };
 
 function showToast(message) {
-  window.clearTimeout(state.toastTimer);
-  dom.toast.textContent = message;
-  dom.toast.classList.remove('hidden');
-  state.toastTimer = window.setTimeout(() => {
-    dom.toast.classList.add('hidden');
-  }, 2600);
+  toast.show(message);
 }
 
 function agentById(agentId) {
@@ -71,163 +55,93 @@ function ensureSelectedAgent() {
   state.selectedAgentId = state.agents[0] ? state.agents[0].id : null;
 }
 
+function selectedSkillIdsFromDom() {
+  return Array.from(dom.agentSkillOptions.querySelectorAll('input[name="agent-skill"]:checked')).map((input) => input.value);
+}
+
+function syncAgentSandboxHint(agentId = '') {
+  if (!dom.agentSandboxHint) {
+    return;
+  }
+
+  const normalizedAgentId = String(agentId || '').trim();
+
+  dom.agentSandboxHint.textContent = normalizedAgentId
+    ? `留空时默认使用当前 Agent ID 生成目录名：${normalizedAgentId}。保存时会自动规范成小写，只保留字母、数字、.、_、-。`
+    : '留空时默认使用新 Agent 的内部 ID 生成目录名；如果想要更易读的目录名，可以在这里单独设置。保存时会自动规范成小写，只保留字母、数字、.、_、-。';
+}
+
+function renderAgentSkillOptions(selectedSkillIds = []) {
+  dom.agentSkillOptions.innerHTML = '';
+
+  if (!Array.isArray(state.skills) || state.skills.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    empty.textContent = '还没有 skill 文件夹，请先去 Skill 管理页创建。';
+    dom.agentSkillOptions.appendChild(empty);
+    return;
+  }
+
+  const selected = new Set(Array.isArray(selectedSkillIds) ? selectedSkillIds : []);
+
+  state.skills.forEach((skill) => {
+    const option = document.createElement('label');
+    option.className = 'option-card skill-option-card';
+
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.name = 'agent-skill';
+    checkbox.value = skill.id;
+    checkbox.checked = selected.has(skill.id);
+
+    const content = document.createElement('div');
+    const title = document.createElement('strong');
+    title.textContent = skill.name;
+
+    const description = document.createElement('div');
+    description.className = 'muted';
+    description.textContent = `${skill.description || 'No description'} | ${skill.id}`;
+
+    const pathLine = document.createElement('div');
+    pathLine.className = 'muted';
+    pathLine.textContent = skill.path || '';
+
+    content.append(title, description, pathLine);
+    option.append(checkbox, content);
+    dom.agentSkillOptions.appendChild(option);
+  });
+}
+
 function modelOptionKey(provider, model) {
-  return `${String(provider || '').trim()}\u001f${String(model || '').trim()}`;
+  return modelOptionUtils.modelOptionKey(provider, model);
 }
 
 function buildModelOptionLabel(option) {
-  if (!option) {
-    return '系统默认模型';
-  }
-
-  const detail = option.sourceLabel ? ` · ${option.sourceLabel}` : '';
-  return `${option.label}${detail}`;
+  return modelOptionUtils.buildModelOptionLabel(option);
 }
 
 function fillModelSelect(select, currentProvider = '', currentModel = '') {
-  if (!select) {
-    return;
-  }
-
-  const selectedKey = currentModel ? modelOptionKey(currentProvider, currentModel) : '';
-  select.innerHTML = '';
-
-  const defaultOption = document.createElement('option');
-  defaultOption.value = '';
-  defaultOption.textContent = '系统默认模型';
-  select.appendChild(defaultOption);
-
-  state.modelOptions.forEach((option) => {
-    const element = document.createElement('option');
-    element.value = option.key;
-    element.textContent = buildModelOptionLabel(option);
-    select.appendChild(element);
-  });
-
-  if (selectedKey && !state.modelOptions.some((option) => option.key === selectedKey)) {
-    const currentOption = document.createElement('option');
-    currentOption.value = selectedKey;
-    currentOption.textContent = currentProvider ? `${currentProvider} / ${currentModel}` : currentModel;
-    select.appendChild(currentOption);
-  }
-
-  select.value = selectedKey;
+  modelOptionUtils.fillModelSelect(select, state.modelOptions, currentProvider, currentModel);
 }
 
 function selectedModelOption(select) {
-  if (!select || !select.value) {
-    return null;
-  }
-
-  const existingOption = state.modelOptions.find((option) => option.key === select.value);
-
-  if (existingOption) {
-    return existingOption;
-  }
-
-  const [provider, model] = String(select.value).split('\u001f');
-
-  if (!model) {
-    return null;
-  }
-
-  return {
-    key: select.value,
-    provider: provider || '',
-    model: model || '',
-    label: provider ? `${provider} / ${model}` : model,
-    sourceLabel: '',
-  };
+  return modelOptionUtils.selectedModelOption(select, state.modelOptions);
 }
 
 function syncProviderFromModelSelect(select, providerInput) {
-  if (!providerInput) {
-    return;
-  }
-
-  const option = selectedModelOption(select);
-  providerInput.value = option ? option.provider || '' : '';
-}
-
-function avatarInitial(name) {
-  const value = String(name || '').trim();
-  return value ? value.slice(0, 1).toUpperCase() : 'A';
+  modelOptionUtils.syncProviderFromModelSelect(select, providerInput, state.modelOptions);
 }
 
 function buildAgentAvatarElement(agent, className = '') {
-  const element = document.createElement('span');
-  const classes = ['agent-avatar'];
-
-  if (className) {
-    classes.push(...String(className).split(/\s+/).filter(Boolean));
-  }
-
-  element.className = classes.join(' ');
-
-  if (agent && agent.accentColor) {
-    element.style.setProperty('--agent-color', agent.accentColor);
-  }
-
-  if (agent && agent.avatarDataUrl) {
-    const image = document.createElement('img');
-    image.src = agent.avatarDataUrl;
-    image.alt = agent.name ? `${agent.name} avatar` : 'Agent avatar';
-    element.appendChild(image);
-    return element;
-  }
-
-  element.classList.add('avatar-fallback');
-  element.textContent = avatarInitial(agent && agent.name ? agent.name : '');
-  return element;
+  return avatarUtils.buildAgentAvatarElement(agent, className);
 }
 
 function renderAvatarPreview(container, dataUrl, name, accentColor = '#3d405b') {
-  if (!container) {
-    return;
-  }
-
-  container.className = 'agent-avatar large avatar-preview';
-  container.style.setProperty('--agent-color', accentColor || '#3d405b');
-  container.textContent = '';
-
-  if (dataUrl) {
-    const image = document.createElement('img');
-    image.src = dataUrl;
-    image.alt = name ? `${name} avatar preview` : 'Avatar preview';
-    container.appendChild(image);
-    return;
-  }
-
-  container.classList.add('avatar-fallback');
-  container.textContent = avatarInitial(name);
+  avatarUtils.renderAvatarPreview(container, dataUrl, name, accentColor);
 }
 
 function readAvatarFileAsDataUrl(file) {
-  return new Promise((resolve, reject) => {
-    if (!file) {
-      resolve('');
-      return;
-    }
-
-    if (!/^image\/(?:png|jpeg|webp|gif)$/i.test(file.type)) {
-      reject(new Error('头像仅支持 PNG、JPEG、WEBP 或 GIF'));
-      return;
-    }
-
-    if (file.size > MAX_AVATAR_FILE_SIZE) {
-      reject(new Error('头像文件不能超过 1MB'));
-      return;
-    }
-
-    const reader = new FileReader();
-    reader.onload = () => {
-      resolve(typeof reader.result === 'string' ? reader.result : '');
-    };
-    reader.onerror = () => {
-      reject(new Error('头像读取失败，请重试'));
-    };
-    reader.readAsDataURL(file);
-  });
+  return avatarUtils.readAvatarFileAsDataUrl(file);
 }
 
 function createProfileDraft(profile = {}) {
@@ -334,6 +248,7 @@ function resetAgentForm() {
   dom.agentId.value = '';
   dom.agentName.value = '';
   dom.agentDescription.value = '';
+  dom.agentSandboxName.value = '';
   dom.agentAvatarData.value = '';
   dom.agentAvatarFile.value = '';
   dom.agentPersonaPrompt.value = '';
@@ -342,6 +257,8 @@ function resetAgentForm() {
   dom.agentThinking.value = '';
   dom.agentAccentColor.value = '#3d405b';
   renderAvatarPreview(dom.agentAvatarPreview, '', '', '#3d405b');
+  syncAgentSandboxHint();
+  renderAgentSkillOptions([]);
   renderProfileList([]);
 }
 
@@ -350,6 +267,7 @@ function fillAgentForm(agent) {
   dom.agentId.value = agent.id;
   dom.agentName.value = agent.name;
   dom.agentDescription.value = agent.description || '';
+  dom.agentSandboxName.value = agent.sandboxName || '';
   dom.agentAvatarData.value = agent.avatarDataUrl || '';
   dom.agentAvatarFile.value = '';
   dom.agentPersonaPrompt.value = agent.personaPrompt || '';
@@ -358,6 +276,8 @@ function fillAgentForm(agent) {
   dom.agentThinking.value = agent.thinking || '';
   dom.agentAccentColor.value = agent.accentColor || '#3d405b';
   renderAvatarPreview(dom.agentAvatarPreview, agent.avatarDataUrl || '', agent.name, agent.accentColor || '#3d405b');
+  syncAgentSandboxHint(agent.id);
+  renderAgentSkillOptions(Array.isArray(agent.skillIds || agent.skills) ? agent.skillIds || agent.skills : []);
   renderProfileList(Array.isArray(agent.modelProfiles) ? agent.modelProfiles : []);
 }
 
@@ -392,12 +312,14 @@ function serializeAgentForm() {
     id: dom.agentId.value.trim(),
     name: dom.agentName.value.trim(),
     description: dom.agentDescription.value.trim(),
+    sandboxName: dom.agentSandboxName.value.trim(),
     avatarDataUrl: dom.agentAvatarData.value.trim(),
     personaPrompt: dom.agentPersonaPrompt.value.trim(),
     provider: baseModelOption ? baseModelOption.provider || '' : dom.agentProvider.value.trim(),
     model: baseModelOption ? baseModelOption.model || '' : '',
     thinking: dom.agentThinking.value.trim(),
     accentColor: dom.agentAccentColor.value,
+    skillIds: selectedSkillIdsFromDom(),
     modelProfiles: collectProfilesFromDom(),
   };
 }
@@ -428,7 +350,9 @@ function renderAgentList() {
     name.textContent = agent.name;
     const description = document.createElement('div');
     description.className = 'muted';
-    description.textContent = `${agent.description || '未填写角色说明'} · ${Array.isArray(agent.modelProfiles) ? agent.modelProfiles.length : 0} 套模型人格`;
+    description.textContent = `${agent.description || '未填写角色说明'} · ${
+      Array.isArray(agent.skills) ? agent.skills.length : 0
+    } 个 Skill · ${Array.isArray(agent.modelProfiles) ? agent.modelProfiles.length : 0} 套模型人格`;
     nameWrap.append(name, description);
 
     const avatar = buildAgentAvatarElement(agent, 'small');
@@ -455,6 +379,7 @@ function renderAll() {
 async function refreshAgents(preferredAgentId) {
   const data = await fetchJson('/api/agents');
   state.agents = data.agents;
+  state.skills = Array.isArray(data.skills) ? data.skills : [];
   state.modelOptions = Array.isArray(data.modelOptions) ? data.modelOptions : [];
   state.selectedAgentId =
     preferredAgentId && state.agents.some((agent) => agent.id === preferredAgentId)
@@ -602,6 +527,7 @@ function bindEvents() {
         body: payload,
       });
       state.agents = result.agents;
+      state.skills = Array.isArray(result.skills) ? result.skills : state.skills;
       state.modelOptions = Array.isArray(result.modelOptions) ? result.modelOptions : state.modelOptions;
       state.selectedAgentId = result.agent.id;
       renderAll();

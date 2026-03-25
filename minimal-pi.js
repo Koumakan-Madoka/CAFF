@@ -5,6 +5,8 @@ const { spawn, spawnSync } = require('node:child_process');
 const readline = require('node:readline');
 const { createSqliteRunStore } = require('./sqlite-store');
 const runtime = require('./pi-runtime');
+const { tryCreateDirectPiNodeSpawnSpec } = require('./pi-cli-spawn');
+const { getPiPromptStdio, writePiPromptToStdin } = require('./pi-prompt-transport');
 
 const DEFAULT_PROVIDER = 'kimi-coding';
 const DEFAULT_MODEL = 'k2p5';
@@ -253,6 +255,12 @@ function findPiScriptPath() {
 const piScriptPath = findPiScriptPath();
 
 function createPiSpawnSpec(piArgs) {
+  const directNodeSpawnSpec = tryCreateDirectPiNodeSpawnSpec(piScriptPath, piArgs);
+
+  if (directNodeSpawnSpec) {
+    return directNodeSpawnSpec;
+  }
+
   if (process.platform === 'win32' && piScriptPath.toLowerCase().endsWith('.ps1')) {
     return {
       command: process.env.POWERSHELL_PATH || 'powershell.exe',
@@ -294,6 +302,42 @@ function extractAssistantText(message) {
     .filter((item) => item && item.type === 'text' && typeof item.text === 'string')
     .map((item) => item.text)
     .join('');
+}
+
+function normalizeStopReason(stopReason) {
+  return String(stopReason || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_');
+}
+
+function assistantMessageHasPendingToolUse(message) {
+  if (!message || message.role !== 'assistant' || !Array.isArray(message.content)) {
+    return false;
+  }
+
+  return message.content.some((item) => {
+    const type = String(item && item.type ? item.type : '')
+      .trim()
+      .toLowerCase()
+      .replace(/[\s-]+/g, '_');
+
+    return type === 'tool_use' || type === 'tooluse' || type === 'tool_call' || type === 'toolcall';
+  });
+}
+
+function isTerminalAssistantMessage(message) {
+  if (!message || message.role !== 'assistant') {
+    return false;
+  }
+
+  const stopReason = normalizeStopReason(message.stopReason);
+
+  if (stopReason === 'error' || stopReason === 'tool_use' || stopReason === 'tooluse' || stopReason === 'pause_turn') {
+    return false;
+  }
+
+  return !assistantMessageHasPendingToolUse(message);
 }
 
 function appendAssistantFallback(state, message) {
@@ -509,8 +553,6 @@ function invoke(provider, model, prompt, options = {}) {
       piArgs.push('--continue');
     }
 
-    piArgs.push(prompt);
-
     const piSpawnSpec = createPiSpawnSpec(piArgs);
     const child = spawn(piSpawnSpec.command, piSpawnSpec.args, {
       env: {
@@ -519,9 +561,11 @@ function invoke(provider, model, prompt, options = {}) {
         PI_HEARTBEAT_INTERVAL_MS: String(heartbeatIntervalMs),
         PI_HEARTBEAT_PREFIX: HEARTBEAT_PREFIX,
       },
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: getPiPromptStdio(),
       windowsHide: true,
     });
+
+    writePiPromptToStdin(child, prompt);
 
     const rl = readline.createInterface({
       input: child.stdout,
@@ -550,6 +594,7 @@ function invoke(provider, model, prompt, options = {}) {
     let forceKillTimeout = null;
     let terminationReason = null;
     let stderrBuffer = '';
+    let ignoreFurtherAssistantOutput = false;
 
     function cleanup() {
       if (heartbeatTimeout) {
@@ -616,6 +661,20 @@ function invoke(provider, model, prompt, options = {}) {
       } else {
         terminateProcessTree(child, true);
       }
+    }
+
+    function requestExpectedCompletion(message) {
+      if (!isTerminalAssistantMessage(message) || terminating || settled) {
+        return;
+      }
+
+      ignoreFurtherAssistantOutput = true;
+      beginTermination({
+        type: 'expected_completion',
+        message: '',
+        assistantStopReason: normalizeStopReason(message.stopReason) || null,
+        assistantMessageKey: getAssistantMessageKey(message) || null,
+      });
     }
 
     function refreshHeartbeatTimeout() {
@@ -786,6 +845,10 @@ function invoke(provider, model, prompt, options = {}) {
         return;
       }
 
+      if (ignoreFurtherAssistantOutput && (event.type === 'message_update' || event.type === 'message_end' || event.type === 'agent_end')) {
+        return;
+      }
+
       if (
         event.type === 'message_update' &&
         event.message &&
@@ -808,6 +871,7 @@ function invoke(provider, model, prompt, options = {}) {
       if (event.type === 'message_end' && event.message && event.message.role === 'assistant') {
         appendAssistantFallback(state, event.message);
         emitAssistantError(state, event.message);
+        requestExpectedCompletion(event.message);
         return;
       }
 
@@ -816,6 +880,11 @@ function invoke(provider, model, prompt, options = {}) {
           if (message && message.role === 'assistant') {
             appendAssistantFallback(state, message);
             emitAssistantError(state, message);
+            requestExpectedCompletion(message);
+
+            if (ignoreFurtherAssistantOutput) {
+              break;
+            }
           }
         }
       }
@@ -899,6 +968,17 @@ function invoke(provider, model, prompt, options = {}) {
         parseErrors: state.parseErrors,
         stdoutLines: [...state.stdoutLines],
       };
+
+      if (terminationReason && terminationReason.type === 'expected_completion') {
+        finishWithResult({
+          ...result,
+          code: 0,
+          signal: null,
+          completionStopReason: terminationReason.assistantStopReason || null,
+          completionMessageKey: terminationReason.assistantMessageKey || null,
+        });
+        return;
+      }
 
       if (terminationReason) {
         finishWithError(

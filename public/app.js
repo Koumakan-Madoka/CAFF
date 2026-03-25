@@ -1,28 +1,36 @@
 const state = {
   runtime: null,
   modelOptions: [],
+  skills: [],
   agents: [],
   conversations: [],
   selectedConversationId: null,
   currentConversation: null,
   selectedAgentId: null,
   sending: false,
-  toastTimer: null,
+  stopRequestConversationIds: new Set(),
   eventSource: null,
   mentionSuggestions: [],
   mentionSelectionIndex: 0,
   activeMentionContext: null,
 };
 
-const MAX_AVATAR_FILE_SIZE = 1024 * 1024;
+const UNDERCOVER_TYPE = 'who_is_undercover';
+const shared = window.CaffShared || {};
+const chatModules = window.CaffChat || {};
+const fetchJson = shared.fetchJson;
+const avatarUtils = shared.avatar || {};
+const modelOptionUtils = shared.modelOptions || {};
 
 const dom = {
   runtimePill: document.getElementById('runtime-pill'),
   refreshButton: document.getElementById('refresh-button'),
   newConversationForm: document.getElementById('new-conversation-form'),
   newConversationTitle: document.getElementById('new-conversation-title'),
+  newConversationType: document.getElementById('new-conversation-type'),
   conversationList: document.getElementById('conversation-list'),
   conversationTitleDisplay: document.getElementById('conversation-title-display'),
+  conversationModeBadge: document.getElementById('conversation-mode-badge'),
   conversationMeta: document.getElementById('conversation-meta'),
   deleteConversationButton: document.getElementById('delete-conversation-button'),
   participantList: document.getElementById('participant-list'),
@@ -31,11 +39,30 @@ const dom = {
   composerInput: document.getElementById('composer-input'),
   composerMentionMenu: document.getElementById('composer-mention-menu'),
   composerStatus: document.getElementById('composer-status'),
+  stopButton: document.getElementById('stop-button'),
   sendButton: document.getElementById('send-button'),
   conversationSettingsForm: document.getElementById('conversation-settings-form'),
   conversationTitleInput: document.getElementById('conversation-title-input'),
   conversationAgentOptions: document.getElementById('conversation-agent-options'),
   saveConversationButton: document.getElementById('save-conversation-button'),
+  bulkSkillSelect: document.getElementById('bulk-skill-select'),
+  applyBulkSkillButton: document.getElementById('apply-bulk-skill-button'),
+  clearBulkSkillButton: document.getElementById('clear-bulk-skill-button'),
+  undercoverGameCard: document.getElementById('undercover-game-card'),
+  undercoverGameStatus: document.getElementById('undercover-game-status'),
+  undercoverLastResult: document.getElementById('undercover-last-result'),
+  undercoverPlayerStatus: document.getElementById('undercover-player-status'),
+  undercoverSetupForm: document.getElementById('undercover-setup-form'),
+  undercoverCivilianWord: document.getElementById('undercover-civilian-word'),
+  undercoverUndercoverWord: document.getElementById('undercover-undercover-word'),
+  undercoverUndercoverCount: document.getElementById('undercover-undercover-count'),
+  undercoverBlankCount: document.getElementById('undercover-blank-count'),
+  undercoverBlankWord: document.getElementById('undercover-blank-word'),
+  undercoverStartButton: document.getElementById('undercover-start-button'),
+  undercoverResetButton: document.getElementById('undercover-reset-button'),
+  undercoverClueButton: document.getElementById('undercover-clue-button'),
+  undercoverVoteButton: document.getElementById('undercover-vote-button'),
+  undercoverRevealButton: document.getElementById('undercover-reveal-button'),
   newAgentButton: document.getElementById('new-agent-button'),
   agentList: document.getElementById('agent-list'),
   agentForm: document.getElementById('agent-form'),
@@ -55,30 +82,42 @@ const dom = {
   toast: document.getElementById('toast'),
 };
 
+const toast = typeof shared.createToastController === 'function' ? shared.createToastController(dom.toast) : { show() {} };
+
 let pendingConversationRefreshId = null;
 let pendingConversationRefreshTimer = null;
 let conversationPaneRenderPending = false;
 let liveDraftFinalizingTimer = null;
 const LIVE_DRAFT_IDLE_MS = 1600;
 
-async function fetchJson(url, options = {}) {
-  const fetchOptions = {
-    method: options.method || 'GET',
-    headers: {
-      Accept: 'application/json',
-      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-    },
-    body: options.body ? JSON.stringify(options.body) : undefined,
-  };
-  const response = await fetch(url, fetchOptions);
-  const text = await response.text();
-  const data = text ? JSON.parse(text) : {};
-
-  if (!response.ok) {
-    throw new Error(data.error || `Request failed with status ${response.status}`);
+function applyConversationResponse(result) {
+  if (!result) {
+    return;
   }
 
-  return data;
+  if (Array.isArray(result.conversations)) {
+    state.conversations = result.conversations;
+  }
+
+  if (result.conversation) {
+    state.currentConversation = result.conversation;
+    state.selectedConversationId = result.conversation.id;
+  }
+}
+
+async function triggerUndercoverAction(action, body = {}) {
+  if (!state.currentConversation) {
+    return null;
+  }
+
+  const result = await fetchJson(`/api/conversations/${state.currentConversation.id}/undercover/${action}`, {
+    method: 'POST',
+    body,
+  });
+  applyConversationResponse(result);
+  renderAll();
+  scrollMessageListToBottom();
+  return result;
 }
 
 function formatDateTime(value) {
@@ -108,52 +147,52 @@ function agentById(agentId) {
   return state.agents.find((item) => item.id === agentId) || null;
 }
 
-function defaultModelProfile(agent) {
-  return {
-    id: '',
-    name: '默认配置',
-    provider: agent && agent.provider ? agent.provider : '',
-    model: agent && agent.model ? agent.model : '',
-    thinking: agent && agent.thinking ? agent.thinking : '',
-    personaPrompt: agent && agent.personaPrompt ? agent.personaPrompt : '',
-  };
+function normalizedSkillIds(value) {
+  return Array.isArray(value) ? value.filter(Boolean) : [];
 }
 
-function modelProfilesForAgent(agent) {
-  return [defaultModelProfile(agent), ...((agent && Array.isArray(agent.modelProfiles) ? agent.modelProfiles : []))];
+function isUndercoverConversation(conversation) {
+  return Boolean(conversation && conversation.type === UNDERCOVER_TYPE);
 }
 
-function findModelProfileForAgent(agent, profileId) {
-  return modelProfilesForAgent(agent).find((profile) => profile.id === String(profileId || '').trim()) || null;
+function undercoverGameState(conversation) {
+  const metadata = conversation && conversation.metadata && typeof conversation.metadata === 'object' ? conversation.metadata : null;
+  return metadata && metadata.undercoverGame && typeof metadata.undercoverGame === 'object' ? metadata.undercoverGame : null;
 }
 
-function selectedModelProfileName(agent) {
-  const profile = findModelProfileForAgent(agent, agent && agent.selectedModelProfileId ? agent.selectedModelProfileId : '');
-  return profile ? profile.name : '默认配置';
-}
-
-function describeModelProfile(agent, profileId) {
-  const profile = findModelProfileForAgent(agent, profileId);
-
-  if (!profile) {
-    return '默认配置';
+function canChatInUndercoverConversation(conversation) {
+  if (!isUndercoverConversation(conversation)) {
+    return true;
   }
 
-  const parts = [profile.name];
+  const game = undercoverGameState(conversation);
 
-  if (profile.model) {
-    parts.push(profile.model);
+  if (!game) {
+    return false;
   }
 
-  if (profile.provider) {
-    parts.push(profile.provider);
+  return game.phase === 'finished' || game.status === 'completed' || game.status === 'revealed';
+}
+
+function undercoverPlayerEntries(conversation) {
+  const game = undercoverGameState(conversation);
+  return Array.isArray(game && game.players) ? game.players : [];
+}
+
+function undercoverPlayerLabel(player) {
+  if (!player) {
+    return '';
   }
 
-  return parts.join(' · ');
+  return player.isAlive ? '存活' : `出局${player.eliminatedRound ? ` · 第 ${player.eliminatedRound} 轮` : ''}`;
+}
+
+function conversationTypeLabel(conversation) {
+  return isUndercoverConversation(conversation) ? '谁是卧底' : '普通对话';
 }
 
 function modelOptionKey(provider, model) {
-  return `${String(provider || '').trim()}\u001f${String(model || '').trim()}`;
+  return modelOptionUtils.modelOptionKey(provider, model);
 }
 
 function findModelOption(provider, model) {
@@ -162,158 +201,215 @@ function findModelOption(provider, model) {
 }
 
 function buildModelOptionLabel(option) {
-  if (!option) {
-    return '系统默认模型';
-  }
-
-  const detail = option.sourceLabel ? ` · ${option.sourceLabel}` : '';
-  return `${option.label}${detail}`;
+  return modelOptionUtils.buildModelOptionLabel(option);
 }
 
 function fillModelSelect(select, currentProvider = '', currentModel = '') {
-  if (!select) {
-    return;
-  }
-
-  const selectedKey = currentModel ? modelOptionKey(currentProvider, currentModel) : '';
-  select.innerHTML = '';
-
-  const defaultOption = document.createElement('option');
-  defaultOption.value = '';
-  defaultOption.textContent = '系统默认模型';
-  select.appendChild(defaultOption);
-
-  state.modelOptions.forEach((option) => {
-    const element = document.createElement('option');
-    element.value = option.key;
-    element.textContent = buildModelOptionLabel(option);
-    select.appendChild(element);
-  });
-
-  if (selectedKey && !state.modelOptions.some((option) => option.key === selectedKey)) {
-    const currentOption = document.createElement('option');
-    currentOption.value = selectedKey;
-    currentOption.textContent = currentProvider ? `${currentProvider} / ${currentModel}` : currentModel;
-    select.appendChild(currentOption);
-  }
-
-  select.value = selectedKey;
+  modelOptionUtils.fillModelSelect(select, state.modelOptions, currentProvider, currentModel);
 }
 
 function selectedModelOption(select) {
-  if (!select || !select.value) {
-    return null;
-  }
-
-  const existingOption = state.modelOptions.find((option) => option.key === select.value);
-
-  if (existingOption) {
-    return existingOption;
-  }
-
-  const [provider, model] = String(select.value).split('\u001f');
-
-  if (!model) {
-    return null;
-  }
-
-  return {
-    key: select.value,
-    provider: provider || '',
-    model: model || '',
-    label: provider ? `${provider} / ${model}` : model,
-    sourceLabel: '',
-  };
+  return modelOptionUtils.selectedModelOption(select, state.modelOptions);
 }
 
 function syncProviderFromModelSelect(select, providerInput) {
-  if (!providerInput) {
-    return;
-  }
-
-  const option = selectedModelOption(select);
-  providerInput.value = option ? option.provider || '' : '';
-}
-
-function avatarInitial(name) {
-  const value = String(name || '').trim();
-  return value ? value.slice(0, 1).toUpperCase() : 'A';
+  modelOptionUtils.syncProviderFromModelSelect(select, providerInput, state.modelOptions);
 }
 
 function buildAgentAvatarElement(agent, className = '') {
-  const element = document.createElement('span');
-  const classes = ['agent-avatar'];
-
-  if (className) {
-    classes.push(...String(className).split(/\s+/).filter(Boolean));
-  }
-
-  element.className = classes.join(' ');
-
-  if (agent && agent.accentColor) {
-    element.style.setProperty('--agent-color', agent.accentColor);
-  }
-
-  if (agent && agent.avatarDataUrl) {
-    const image = document.createElement('img');
-    image.src = agent.avatarDataUrl;
-    image.alt = agent.name ? `${agent.name} avatar` : 'Agent avatar';
-    element.appendChild(image);
-    return element;
-  }
-
-  element.classList.add('avatar-fallback');
-  element.textContent = avatarInitial(agent && agent.name ? agent.name : '');
-  return element;
+  return avatarUtils.buildAgentAvatarElement(agent, className);
 }
 
 function renderAvatarPreview(container, dataUrl, name, accentColor = '#3d405b') {
-  if (!container) {
-    return;
-  }
-
-  container.className = 'agent-avatar large avatar-preview';
-  container.style.setProperty('--agent-color', accentColor || '#3d405b');
-  container.textContent = '';
-
-  if (dataUrl) {
-    const image = document.createElement('img');
-    image.src = dataUrl;
-    image.alt = name ? `${name} avatar preview` : 'Avatar preview';
-    container.appendChild(image);
-    return;
-  }
-
-  container.classList.add('avatar-fallback');
-  container.textContent = avatarInitial(name);
+  avatarUtils.renderAvatarPreview(container, dataUrl, name, accentColor);
 }
 
 function readAvatarFileAsDataUrl(file) {
-  return new Promise((resolve, reject) => {
-    if (!file) {
-      resolve('');
-      return;
-    }
+  return avatarUtils.readAvatarFileAsDataUrl(file);
+}
 
-    if (!/^image\/(?:png|jpeg|webp|gif)$/i.test(file.type)) {
-      reject(new Error('头像仅支持 PNG、JPEG、WEBP 或 GIF'));
-      return;
-    }
+const noopRenderer = {
+  render() {},
+};
 
-    if (file.size > MAX_AVATAR_FILE_SIZE) {
-      reject(new Error('头像文件不能超过 1MB'));
-      return;
-    }
+const noopMentionMenuController = {
+  appendHighlightedMessageBody(container, text) {
+    container.textContent = String(text || '');
+  },
+  bindEvents() {},
+  closeMenu() {},
+  syncMenu() {},
+};
 
-    const reader = new FileReader();
-    reader.onload = () => {
-      resolve(typeof reader.result === 'string' ? reader.result : '');
-    };
-    reader.onerror = () => {
-      reject(new Error('头像读取失败，请重试'));
-    };
-    reader.readAsDataURL(file);
-  });
+const noopConversationSettingsController = {
+  bindEvents() {},
+  closeAllProfileMenus() {},
+  render() {},
+  selectedModelProfileName() {
+    return '默认配置';
+  },
+  selectedParticipants() {
+    return [];
+  },
+  setProfileSelectorDisabled() {},
+  setProfileSelectorValue() {},
+  toggleProfileSelector() {},
+};
+
+let mentionMenuController = noopMentionMenuController;
+let conversationListRenderer = noopRenderer;
+let participantPaneRenderer = noopRenderer;
+let messageTimelineRenderer = noopRenderer;
+let conversationSettingsController = noopConversationSettingsController;
+let undercoverPanelRenderer = noopRenderer;
+let conversationPaneRenderer = noopRenderer;
+
+function setupChatModules() {
+  mentionMenuController =
+    typeof chatModules.createMentionMenuController === 'function'
+      ? chatModules.createMentionMenuController({ state, dom })
+      : noopMentionMenuController;
+
+  conversationSettingsController =
+    typeof chatModules.createConversationSettingsController === 'function'
+      ? chatModules.createConversationSettingsController({
+          state,
+          dom,
+          helpers: {
+            buildAgentAvatarElement,
+            normalizedSkillIds,
+          },
+          showToast,
+        })
+      : noopConversationSettingsController;
+
+  conversationListRenderer =
+    typeof chatModules.createConversationListRenderer === 'function'
+      ? chatModules.createConversationListRenderer({
+          state,
+          dom,
+          helpers: {
+            conversationPreviewText,
+            conversationTypeLabel,
+            formatDateTime,
+            isConversationBusy,
+            isUndercoverConversation,
+          },
+        })
+      : noopRenderer;
+
+  participantPaneRenderer =
+    typeof chatModules.createParticipantPaneRenderer === 'function'
+      ? chatModules.createParticipantPaneRenderer({
+          dom,
+          helpers: {
+            buildAgentAvatarElement,
+            normalizedSkillIds,
+            selectedModelProfileName,
+          },
+        })
+      : noopRenderer;
+
+  messageTimelineRenderer =
+    typeof chatModules.createMessageTimelineRenderer === 'function'
+      ? chatModules.createMessageTimelineRenderer({
+          dom,
+          helpers: {
+            agentById,
+            appendHighlightedMessageBody,
+            buildAgentAvatarElement,
+            displayedMessageBody,
+            formatDateTime,
+            isPrivateTimelineMessage,
+            liveStageForMessage,
+            liveStageLabel,
+            messageSessionInfo,
+            privateRecipientNames,
+            timelineMessagesForConversation,
+          },
+        })
+      : noopRenderer;
+
+  undercoverPanelRenderer =
+    typeof chatModules.createUndercoverPanelRenderer === 'function'
+      ? chatModules.createUndercoverPanelRenderer({
+          state,
+          dom,
+          helpers: {
+            activeTurnForConversation,
+            isUndercoverConversation,
+            undercoverGameState,
+            undercoverPlayerEntries,
+            undercoverPlayerLabel,
+          },
+        })
+      : noopRenderer;
+
+  conversationPaneRenderer =
+    typeof chatModules.createConversationPaneRenderer === 'function'
+      ? chatModules.createConversationPaneRenderer({
+          state,
+          dom,
+          helpers: {
+            activeTurnForConversation,
+            agentById,
+            canChatInUndercoverConversation,
+            clearLiveDraftFinalizingTimer,
+            closeMentionMenu,
+            conversationTypeLabel,
+            isConversationBusy,
+            isUndercoverConversation,
+            liveDraftIdleMs: LIVE_DRAFT_IDLE_MS,
+            liveStageLabel,
+            renderMessages,
+            renderParticipantList,
+            renderUndercoverGameCard,
+            scheduleConversationPaneRender,
+            timelineMessagesForConversation,
+            undercoverGameState,
+          },
+        })
+      : noopRenderer;
+}
+
+function selectedModelProfileName(agent) {
+  return conversationSettingsController.selectedModelProfileName(agent);
+}
+
+function closeMentionMenu() {
+  mentionMenuController.closeMenu();
+}
+
+function appendHighlightedMessageBody(container, text, agents) {
+  mentionMenuController.appendHighlightedMessageBody(container, text, agents);
+}
+
+function renderConversationList() {
+  conversationListRenderer.render();
+}
+
+function renderParticipantList(conversation) {
+  participantPaneRenderer.render(conversation);
+}
+
+function renderMessages(conversation, activeTurn) {
+  messageTimelineRenderer.render(conversation, activeTurn);
+}
+
+function renderCompactConversationPersonaSettings() {
+  conversationSettingsController.render();
+}
+
+function renderUndercoverGameCard() {
+  undercoverPanelRenderer.render();
+}
+
+function renderConversationPane() {
+  conversationPaneRenderer.render();
+}
+
+function selectedConversationParticipants() {
+  return conversationSettingsController.selectedParticipants();
 }
 
 function activeTurnForConversation(conversationId) {
@@ -322,6 +418,24 @@ function activeTurnForConversation(conversationId) {
   }
 
   return state.runtime.activeTurns.find((turn) => turn.conversationId === conversationId) || null;
+}
+
+function upsertRuntimeTurn(turn) {
+  if (!turn || !turn.conversationId) {
+    return;
+  }
+
+  state.runtime = state.runtime || {};
+  const activeTurns = Array.isArray(state.runtime.activeTurns) ? state.runtime.activeTurns.slice() : [];
+  const index = activeTurns.findIndex((item) => item.conversationId === turn.conversationId);
+
+  if (index === -1) {
+    activeTurns.push(turn);
+  } else {
+    activeTurns[index] = turn;
+  }
+
+  state.runtime.activeTurns = activeTurns;
 }
 
 function turnProgressSignature(turn) {
@@ -338,6 +452,8 @@ function turnProgressSignature(turn) {
     hopCount: turn.hopCount || 0,
     pendingAgentIds: Array.isArray(turn.pendingAgentIds) ? turn.pendingAgentIds : [],
     entryAgentIds: Array.isArray(turn.entryAgentIds) ? turn.entryAgentIds : [],
+    stopRequested: Boolean(turn.stopRequested),
+    stopReason: turn.stopReason || '',
     terminationReason: turn.terminationReason || '',
     agents: Array.isArray(turn.agents)
       ? turn.agents.map((agent) => ({
@@ -354,225 +470,6 @@ function turnProgressSignature(turn) {
   });
 }
 
-function normalizeMentionValue(value) {
-  return String(value || '')
-    .trim()
-    .replace(/^@+/, '')
-    .replace(/^[^\p{L}\p{N}_-]+/gu, '')
-    .replace(/[^\p{L}\p{N}._-]+$/gu, '')
-    .replace(/\s+/g, '')
-    .toLowerCase();
-}
-
-function agentMentionHandle(agent) {
-  const name = String(agent && agent.name ? agent.name : '').trim();
-  return `@${(name || String(agent && agent.id ? agent.id : '')).replace(/\s+/g, '')}`;
-}
-
-function agentMentionSearchKeys(agent) {
-  const keys = new Set();
-  const id = String(agent && agent.id ? agent.id : '').trim();
-  const name = String(agent && agent.name ? agent.name : '').trim();
-
-  if (id) {
-    keys.add(id);
-
-    if (id.startsWith('agent-') && id.length > 6) {
-      keys.add(id.slice(6));
-    }
-  }
-
-  if (name) {
-    keys.add(name);
-    keys.add(name.replace(/\s+/g, ''));
-    keys.add(name.replace(/\s+/g, '-'));
-    keys.add(name.replace(/\s+/g, '_'));
-  }
-
-  return Array.from(keys).map(normalizeMentionValue).filter(Boolean);
-}
-
-function findAgentByMentionToken(token, agents) {
-  const normalizedToken = normalizeMentionValue(token);
-
-  if (!normalizedToken) {
-    return null;
-  }
-
-  return (
-    (Array.isArray(agents) ? agents : []).find((agent) => agentMentionSearchKeys(agent).includes(normalizedToken)) || null
-  );
-}
-
-function findComposerMentionContext(value, cursorIndex) {
-  const safeCursor = typeof cursorIndex === 'number' ? cursorIndex : String(value || '').length;
-  const prefix = String(value || '').slice(0, safeCursor);
-  const atIndex = prefix.lastIndexOf('@');
-
-  if (atIndex === -1) {
-    return null;
-  }
-
-  const before = atIndex === 0 ? '' : prefix[atIndex - 1];
-
-  if (before && /[\p{L}\p{N}_]/u.test(before)) {
-    return null;
-  }
-
-  const query = prefix.slice(atIndex + 1);
-
-  if (/\s/.test(query)) {
-    return null;
-  }
-
-  return {
-    start: atIndex,
-    end: safeCursor,
-    query,
-  };
-}
-
-function mentionableAgents() {
-  return state.currentConversation && Array.isArray(state.currentConversation.agents)
-    ? state.currentConversation.agents
-    : [];
-}
-
-function closeMentionMenu() {
-  state.mentionSuggestions = [];
-  state.mentionSelectionIndex = 0;
-  state.activeMentionContext = null;
-
-  if (dom.composerMentionMenu) {
-    dom.composerMentionMenu.innerHTML = '';
-    dom.composerMentionMenu.classList.add('hidden');
-  }
-}
-
-function buildMentionSuggestions(query) {
-  const normalizedQuery = normalizeMentionValue(query);
-
-  return mentionableAgents().filter((agent) => {
-    const keys = agentMentionSearchKeys(agent);
-
-    if (!normalizedQuery) {
-      return true;
-    }
-
-    return keys.some((key) => key.includes(normalizedQuery));
-  });
-}
-
-function renderMentionMenu() {
-  if (!dom.composerMentionMenu || state.mentionSuggestions.length === 0) {
-    closeMentionMenu();
-    return;
-  }
-
-  dom.composerMentionMenu.innerHTML = '';
-  dom.composerMentionMenu.classList.remove('hidden');
-
-  state.mentionSuggestions.forEach((agent, index) => {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = `mention-option${index === state.mentionSelectionIndex ? ' active' : ''}`;
-    button.dataset.index = String(index);
-
-    const title = document.createElement('strong');
-    title.textContent = agentMentionHandle(agent);
-
-    const detail = document.createElement('span');
-    detail.className = 'muted';
-    detail.textContent = agent.description || agent.id;
-
-    button.append(title, detail);
-    dom.composerMentionMenu.appendChild(button);
-  });
-}
-
-function syncComposerMentionMenu() {
-  if (!dom.composerInput || dom.composerInput.disabled) {
-    closeMentionMenu();
-    return;
-  }
-
-  const context = findComposerMentionContext(dom.composerInput.value, dom.composerInput.selectionStart);
-
-  if (!context) {
-    closeMentionMenu();
-    return;
-  }
-
-  const suggestions = buildMentionSuggestions(context.query);
-
-  if (suggestions.length === 0) {
-    closeMentionMenu();
-    return;
-  }
-
-  state.activeMentionContext = context;
-  state.mentionSuggestions = suggestions;
-  state.mentionSelectionIndex = Math.min(state.mentionSelectionIndex, suggestions.length - 1);
-  renderMentionMenu();
-}
-
-function applyMentionSuggestion(agent) {
-  const context = state.activeMentionContext;
-
-  if (!agent || !context) {
-    closeMentionMenu();
-    return;
-  }
-
-  const mentionText = `**${agentMentionHandle(agent)}** `;
-  const currentValue = dom.composerInput.value;
-  const nextValue = `${currentValue.slice(0, context.start)}${mentionText}${currentValue.slice(context.end)}`;
-  const nextCursor = context.start + mentionText.length;
-
-  dom.composerInput.value = nextValue;
-  dom.composerInput.focus();
-  dom.composerInput.setSelectionRange(nextCursor, nextCursor);
-  closeMentionMenu();
-}
-
-function appendHighlightedMessageBody(container, text, agents) {
-  const source = String(text || '');
-  const mentionRegex = /\*\*@([^\s@()[\]{}<>*]+)\*\*/gu;
-  let lastIndex = 0;
-  let match;
-
-  while ((match = mentionRegex.exec(source)) !== null) {
-    const mentionText = `@${match[1]}`;
-
-    if (match.index > lastIndex) {
-      container.appendChild(document.createTextNode(source.slice(lastIndex, match.index)));
-    }
-
-    const agent = findAgentByMentionToken(mentionText.slice(1), agents);
-
-    if (agent) {
-      const chip = document.createElement('span');
-      chip.className = 'mention-highlight';
-
-      if (agent.accentColor) {
-        chip.style.setProperty('--mention-color', agent.accentColor);
-      }
-
-      chip.textContent = mentionText;
-      chip.title = agent.name || agent.id;
-      container.appendChild(chip);
-    } else {
-      container.appendChild(document.createTextNode(mentionText));
-    }
-
-    lastIndex = match.index + match[0].length;
-  }
-
-  if (lastIndex < source.length) {
-    container.appendChild(document.createTextNode(source.slice(lastIndex)));
-  }
-}
-
 function ensureSelectedAgent() {
   if (state.selectedAgentId && agentById(state.selectedAgentId)) {
     return;
@@ -586,12 +483,7 @@ function getSelectedAgent() {
 }
 
 function showToast(message) {
-  window.clearTimeout(state.toastTimer);
-  dom.toast.textContent = message;
-  dom.toast.classList.remove('hidden');
-  state.toastTimer = window.setTimeout(() => {
-    dom.toast.classList.add('hidden');
-  }, 2600);
+  toast.show(message);
 }
 
 function scrollMessageListToBottom() {
@@ -603,7 +495,16 @@ function isMessageListNearBottom() {
   return distanceFromBottom < 72;
 }
 
-function scheduleConversationPaneRender() {
+function scheduleConversationPaneRender(delayMs = 0) {
+  if (typeof delayMs === 'number' && delayMs > 0) {
+    clearLiveDraftFinalizingTimer();
+    liveDraftFinalizingTimer = window.setTimeout(() => {
+      liveDraftFinalizingTimer = null;
+      scheduleConversationPaneRender();
+    }, delayMs);
+    return;
+  }
+
   if (conversationPaneRenderPending) {
     return;
   }
@@ -642,146 +543,58 @@ function renderRuntime() {
   dom.runtimePill.textContent = `${state.runtime.host}:${state.runtime.port} · ${state.agents.length} Agent · ${busyCount} 个房间处理中`;
 }
 
-function renderConversationList() {
-  const signature =
-    state.conversations.length === 0
-      ? 'empty'
-      : state.conversations
-          .map((conversation) =>
-            [
-              conversation.id,
-              conversation.title,
-              conversation.agentCount || 0,
-              conversation.messageCount || 0,
-              conversation.lastMessagePreview || '',
-              conversation.lastMessageAt || '',
-              conversation.id === state.selectedConversationId ? 'selected' : '',
-              isConversationBusy(conversation.id) ? 'busy' : '',
-            ].join('\u001f')
-          )
-          .join('\u001e');
-
-  if (dom.conversationList.dataset.renderSignature === signature) {
-    return;
-  }
-
-  dom.conversationList.dataset.renderSignature = signature;
-  const previousScrollTop = dom.conversationList.scrollTop;
-  dom.conversationList.innerHTML = '';
-
-  if (state.conversations.length === 0) {
-    const empty = document.createElement('div');
-    empty.className = 'empty-state';
-    empty.textContent = '还没有会话，先创建一个。';
-    dom.conversationList.appendChild(empty);
-    return;
-  }
-
-  state.conversations.forEach((conversation) => {
-    const item = document.createElement('div');
-    item.className = 'conversation-item';
-    item.dataset.id = conversation.id;
-
-    if (conversation.id === state.selectedConversationId) {
-      item.classList.add('active');
-    }
-
-    if (isConversationBusy(conversation.id)) {
-      item.classList.add('busy');
-    }
-
-    const titleLine = document.createElement('div');
-    titleLine.className = 'conversation-title-line';
-
-    const title = document.createElement('strong');
-    title.textContent = conversation.title;
-
-    const badge = document.createElement('span');
-    badge.className = `mini-badge${isConversationBusy(conversation.id) ? ' busy' : ''}`;
-    badge.textContent = isConversationBusy(conversation.id)
-      ? '处理中'
-      : `${conversation.agentCount || 0}A / ${conversation.messageCount || 0}M`;
-
-    titleLine.append(title, badge);
-
-    const preview = document.createElement('p');
-    preview.className = 'conversation-preview';
-    preview.textContent = conversation.lastMessagePreview || '新的协作房间，等待第一条消息。';
-
-    const footer = document.createElement('div');
-    footer.className = 'section-row';
-
-    const updated = document.createElement('span');
-    updated.className = 'muted';
-    updated.textContent = conversation.lastMessageAt ? formatDateTime(conversation.lastMessageAt) : '尚未开始';
-
-    const participants = document.createElement('span');
-    participants.className = 'muted';
-    participants.textContent = `${conversation.agentCount || 0} 个 Agent`;
-
-    footer.append(updated, participants);
-    item.append(titleLine, preview, footer);
-    dom.conversationList.appendChild(item);
-  });
-
-  dom.conversationList.scrollTop = previousScrollTop;
-}
-
-function renderParticipantList(conversation) {
-  const signature = !conversation
-    ? 'none'
-    : Array.isArray(conversation.agents) && conversation.agents.length > 0
-      ? `${conversation.id}:${conversation.agents
-          .map((agent) =>
-            [
-              agent.id,
-              agent.name,
-              agent.description || '',
-              agent.accentColor || '',
-              agent.avatarDataUrl || '',
-              agent.selectedModelProfileId || '',
-            ].join('\u001f')
-          )
-          .join('\u001e')}`
-      : `${conversation.id}:empty`;
-
-  if (dom.participantList.dataset.renderSignature === signature) {
-    return;
-  }
-
-  dom.participantList.dataset.renderSignature = signature;
-  dom.participantList.innerHTML = '';
-
-  if (!conversation || !Array.isArray(conversation.agents) || conversation.agents.length === 0) {
-    const empty = document.createElement('div');
-    empty.className = 'empty-state';
-    empty.textContent = '这个会话还没有挂载 Agent。';
-    dom.participantList.appendChild(empty);
-    return;
-  }
-
-  conversation.agents.forEach((agent) => {
-    const chip = document.createElement('div');
-    chip.className = 'agent-chip';
-    const avatar = buildAgentAvatarElement(agent, 'small');
-
-    const text = document.createElement('div');
-
-    const name = document.createElement('strong');
-    name.textContent = agent.name;
-
-    const description = document.createElement('div');
-    description.className = 'muted';
-    description.textContent = [agent.description || '未填写角色说明', selectedModelProfileName(agent)].join(' · ');
-
-    text.append(name, description);
-    chip.append(avatar, text);
-    dom.participantList.appendChild(chip);
-  });
-}
-
 function messageDisplayText(message) {
-  return message.content || (message.errorMessage ? `[error] ${message.errorMessage}` : '...');
+  const metadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
+
+  if (!message.content) {
+    if (metadata && metadata.privateOnly) {
+      return '[仅私密备注]';
+    }
+
+    if (metadata && metadata.publiclySilent) {
+      return '[无公开回复]';
+    }
+  }
+
+  return normalizeEscapedMessageText(message.content || (message.errorMessage ? `[错误] ${message.errorMessage}` : '...'));
+}
+
+function normalizeEscapedMessageText(text) {
+  return String(text || '').replace(/\\r\\n|\\n|\\r/g, '\n');
+}
+
+function conversationPreviewText(text) {
+  return normalizeEscapedMessageText(text).replace(/\s+/g, ' ').trim();
+}
+
+function isPrivateTimelineMessage(message) {
+  return Boolean(message && message.role === 'private');
+}
+
+function privateRecipientNames(message) {
+  const metadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
+  return Array.isArray(metadata && metadata.recipientNames) ? metadata.recipientNames.filter(Boolean) : [];
+}
+
+function timelineMessagesForConversation(conversation) {
+  const publicMessages = conversation && Array.isArray(conversation.messages) ? conversation.messages : [];
+  const privateMessages = conversation && Array.isArray(conversation.privateMessages) ? conversation.privateMessages : [];
+  const timeline = [...publicMessages, ...privateMessages];
+
+  timeline.sort((left, right) => {
+    const leftTime = left && left.createdAt ? new Date(left.createdAt).getTime() : 0;
+    const rightTime = right && right.createdAt ? new Date(right.createdAt).getTime() : 0;
+
+    if (leftTime !== rightTime) {
+      return leftTime - rightTime;
+    }
+
+    const leftId = left && left.id ? String(left.id) : '';
+    const rightId = right && right.id ? String(right.id) : '';
+    return leftId.localeCompare(rightId);
+  });
+
+  return timeline;
 }
 
 function messageSessionInfo(message) {
@@ -841,7 +654,7 @@ async function exportMessageSession(conversationId, message) {
 
   if (!response.ok) {
     const text = await response.text();
-    let errorMessage = `Export failed with status ${response.status}`;
+    let errorMessage = `导出失败，状态码 ${response.status}`;
 
     if (text) {
       try {
@@ -884,27 +697,27 @@ function liveStageLabel(stage) {
   }
 
   if (stage.status === 'queued') {
-    return 'Thinking';
+    return '思考中';
   }
 
   if (stage.status === 'running') {
     if (!stage.preview) {
-      return 'Thinking';
+      return '思考中';
     }
 
     if (stage.lastTextDeltaAt) {
       const lastTextDeltaMs = new Date(stage.lastTextDeltaAt).getTime();
 
       if (!Number.isNaN(lastTextDeltaMs) && Date.now() - lastTextDeltaMs >= LIVE_DRAFT_IDLE_MS) {
-        return 'Finalizing';
+        return '收尾中';
       }
     }
 
-    return 'Live draft';
+    return '实时生成中';
   }
 
   if (stage.status === 'terminating') {
-    return 'Finalizing';
+    return '收尾中';
   }
 
   return '';
@@ -920,497 +733,10 @@ function displayedMessageBody(message, stage) {
   }
 
   if (stage.status === 'terminating') {
-    return 'Finalizing response...';
+    return '正在整理回复...';
   }
 
   return messageDisplayText(message);
-}
-
-function createMessageCard(message, agents, activeTurn) {
-  const card = document.createElement('article');
-  const meta = document.createElement('div');
-  const sender = document.createElement('span');
-  const time = document.createElement('span');
-  const body = document.createElement('p');
-  const liveHint = document.createElement('div');
-
-  meta.className = 'message-meta';
-  sender.className = 'message-sender';
-  time.className = 'message-time';
-  body.className = 'message-body';
-  liveHint.className = 'message-live-hint hidden';
-
-  meta.append(sender, time);
-  card.append(meta, body, liveHint);
-  syncMessageCard(card, message, agents, activeTurn);
-
-  return card;
-}
-
-function syncMessageCard(card, message, agents, activeTurn) {
-  const agent = message.agentId
-    ? (Array.isArray(agents) ? agents.find((item) => item.id === message.agentId) : null) || agentById(message.agentId)
-    : null;
-  const liveStage = liveStageForMessage(activeTurn, message.id);
-  const liveLabel = liveStageLabel(liveStage);
-  const bodyText = displayedMessageBody(message, liveStage);
-  const sessionInfo = messageSessionInfo(message);
-  const signature = [
-    message.id,
-    message.role,
-    message.senderName || '',
-    message.createdAt || '',
-    message.status || '',
-    bodyText,
-    message.errorMessage || '',
-    agent && agent.accentColor ? agent.accentColor : '',
-    agent && agent.avatarDataUrl ? agent.avatarDataUrl : '',
-    liveLabel,
-    liveStage && liveStage.status ? liveStage.status : '',
-    sessionInfo.sessionPath,
-    sessionInfo.sessionName,
-    sessionInfo.canExport ? 'exportable' : 'locked',
-  ].join('\u001f');
-
-  if (card.dataset.renderSignature === signature) {
-    return;
-  }
-
-  card.dataset.messageId = message.id;
-  card.dataset.renderSignature = signature;
-  card.className = `message-card ${message.role}`;
-  card.classList.toggle('failed', message.status === 'failed');
-
-  if (agent && agent.accentColor) {
-    card.style.setProperty('--agent-color', agent.accentColor);
-  } else {
-    card.style.removeProperty('--agent-color');
-  }
-
-  const sender = card.querySelector('.message-sender');
-  const time = card.querySelector('.message-time');
-  const body = card.querySelector('.message-body');
-  const liveHint = card.querySelector('.message-live-hint');
-
-  sender.textContent = '';
-
-  if (message.role !== 'user' && agent) {
-    sender.appendChild(buildAgentAvatarElement(agent, 'tiny'));
-
-    if (message.role === 'assistant') {
-      const exportButton = document.createElement('button');
-      exportButton.type = 'button';
-      exportButton.className = 'message-export-button ghost-button';
-      exportButton.dataset.messageId = message.id;
-      exportButton.disabled = !sessionInfo.canExport;
-      exportButton.textContent = '导出';
-      exportButton.title = sessionInfo.canExport ? '导出这条 AI 消息的 session' : '这条消息的 session 还不可导出';
-      sender.appendChild(exportButton);
-    }
-  }
-
-  const senderLabel = document.createElement('span');
-  senderLabel.className = 'message-sender-label';
-  senderLabel.textContent = message.role === 'user' ? 'You' : message.senderName;
-  sender.appendChild(senderLabel);
-  time.textContent = formatDateTime(message.createdAt);
-  body.textContent = '';
-  appendHighlightedMessageBody(body, bodyText, agents);
-
-  if (liveHint) {
-    const shouldShowLiveHint = Boolean(liveLabel);
-    liveHint.textContent = shouldShowLiveHint ? liveLabel : '';
-    liveHint.classList.toggle('hidden', !shouldShowLiveHint);
-  }
-
-  card.classList.toggle('live-preview', Boolean(liveLabel));
-  card.classList.toggle('streaming', liveStage ? liveStage.status === 'running' : message.status === 'streaming');
-  card.classList.toggle('queued', liveStage ? liveStage.status === 'queued' : message.status === 'queued');
-  card.classList.toggle('terminating', liveStage ? liveStage.status === 'terminating' : false);
-}
-
-function renderConversationSettings() {
-  const conversation = state.currentConversation;
-  const disabled = !conversation || state.sending;
-
-  dom.conversationTitleInput.disabled = disabled;
-  dom.saveConversationButton.disabled = disabled;
-  dom.conversationTitleInput.value = conversation ? conversation.title : '';
-  dom.conversationAgentOptions.innerHTML = '';
-
-  if (!conversation) {
-    const empty = document.createElement('div');
-    empty.className = 'empty-state';
-    empty.textContent = '选中一个会话后，这里可以调整参与 Agent。';
-    dom.conversationAgentOptions.appendChild(empty);
-    return;
-  }
-
-  state.agents.forEach((agent) => {
-    const selectedConversationAgent = conversation.agents.find((item) => item.id === agent.id) || null;
-    const selectedProfileId = selectedConversationAgent ? selectedConversationAgent.selectedModelProfileId || '' : '';
-    const wrapper = document.createElement('div');
-    wrapper.className = 'option-card';
-    wrapper.dataset.agentId = agent.id;
-
-    const label = document.createElement('label');
-    const checkbox = document.createElement('input');
-    checkbox.type = 'checkbox';
-    checkbox.name = 'conversation-agent';
-    checkbox.value = agent.id;
-    checkbox.disabled = disabled;
-    checkbox.checked = Boolean(selectedConversationAgent);
-
-    const content = document.createElement('div');
-
-    const titleLine = document.createElement('div');
-    titleLine.className = 'agent-list-item';
-
-    const nameWrap = document.createElement('div');
-    const name = document.createElement('strong');
-    name.textContent = agent.name;
-    const description = document.createElement('div');
-    description.className = 'muted';
-    description.textContent = agent.description || '未填写角色说明';
-    nameWrap.append(name, description);
-
-    const avatar = buildAgentAvatarElement(agent, 'small');
-
-    titleLine.append(nameWrap, avatar);
-
-    const prompt = document.createElement('div');
-    prompt.className = 'muted';
-    prompt.textContent = agent.personaPrompt;
-
-    const profileRow = document.createElement('div');
-    profileRow.className = 'profile-select-row';
-
-    const profileLabel = document.createElement('div');
-    profileLabel.className = 'muted';
-    profileLabel.textContent = '本会话使用的人格配置';
-
-    const profileSelect = document.createElement('select');
-    profileSelect.className = 'profile-select';
-    profileSelect.dataset.agentId = agent.id;
-    profileSelect.disabled = disabled || !selectedConversationAgent;
-
-    modelProfilesForAgent(agent).forEach((profile) => {
-      const option = document.createElement('option');
-      option.value = profile.id;
-      option.textContent = describeModelProfile(agent, profile.id);
-      profileSelect.appendChild(option);
-    });
-
-    profileSelect.value = selectedProfileId;
-
-    profileRow.append(profileLabel, profileSelect);
-    content.append(titleLine, prompt, profileRow);
-    label.append(checkbox, content);
-    wrapper.appendChild(label);
-    dom.conversationAgentOptions.appendChild(wrapper);
-  });
-}
-
-function renderConversationPersonaSettings() {
-  const conversation = state.currentConversation;
-  const disabled = !conversation || state.sending;
-
-  dom.saveConversationButton.disabled = disabled;
-  dom.conversationAgentOptions.innerHTML = '';
-
-  if (!conversation) {
-    const empty = document.createElement('div');
-    empty.className = 'empty-state';
-    empty.textContent = '选中一个对话后，就可以在这里设置本次对话需要的人格。';
-    dom.conversationAgentOptions.appendChild(empty);
-    return;
-  }
-
-  if (state.agents.length === 0) {
-    const empty = document.createElement('div');
-    empty.className = 'empty-state';
-    empty.textContent = '还没有可用人格，请先前往人格管理页创建。';
-    dom.conversationAgentOptions.appendChild(empty);
-    return;
-  }
-
-  state.agents.forEach((agent) => {
-    const selectedConversationAgent = conversation.agents.find((item) => item.id === agent.id) || null;
-    const selectedProfileId = selectedConversationAgent ? selectedConversationAgent.selectedModelProfileId || '' : '';
-    const wrapper = document.createElement('div');
-    wrapper.className = 'option-card';
-    wrapper.dataset.agentId = agent.id;
-
-    const label = document.createElement('label');
-    const checkbox = document.createElement('input');
-    checkbox.type = 'checkbox';
-    checkbox.name = 'conversation-agent';
-    checkbox.value = agent.id;
-    checkbox.disabled = disabled;
-    checkbox.checked = Boolean(selectedConversationAgent);
-
-    const content = document.createElement('div');
-
-    const titleLine = document.createElement('div');
-    titleLine.className = 'agent-list-item';
-
-    const nameWrap = document.createElement('div');
-    const name = document.createElement('strong');
-    name.textContent = agent.name;
-    const description = document.createElement('div');
-    description.className = 'muted';
-    description.textContent = agent.description || '未填写角色说明';
-    nameWrap.append(name, description);
-
-    const avatar = buildAgentAvatarElement(agent, 'small');
-
-    titleLine.append(nameWrap, avatar);
-
-    const prompt = document.createElement('div');
-    prompt.className = 'muted';
-    prompt.textContent = agent.personaPrompt;
-
-    const profileRow = document.createElement('div');
-    profileRow.className = 'profile-select-row';
-
-    const profileLabel = document.createElement('div');
-    profileLabel.className = 'muted';
-    profileLabel.textContent = '本会话使用的人格配置';
-
-    const profileSelect = document.createElement('select');
-    profileSelect.className = 'profile-select';
-    profileSelect.dataset.agentId = agent.id;
-    profileSelect.disabled = disabled || !selectedConversationAgent;
-
-    modelProfilesForAgent(agent).forEach((profile) => {
-      const option = document.createElement('option');
-      option.value = profile.id;
-      option.textContent = describeModelProfile(agent, profile.id);
-      profileSelect.appendChild(option);
-    });
-
-    profileSelect.value = selectedProfileId;
-
-    profileRow.append(profileLabel, profileSelect);
-    content.append(titleLine, prompt, profileRow);
-    label.append(checkbox, content);
-    wrapper.appendChild(label);
-    dom.conversationAgentOptions.appendChild(wrapper);
-  });
-}
-
-function renderCompactConversationPersonaSettings() {
-  const conversation = state.currentConversation;
-  const disabled = !conversation || state.sending;
-
-  dom.saveConversationButton.disabled = disabled;
-  dom.conversationAgentOptions.innerHTML = '';
-
-  if (!conversation) {
-    const empty = document.createElement('div');
-    empty.className = 'empty-state';
-    empty.textContent = '选中一个对话后，就可以在这里选择本次对话的人格。';
-    dom.conversationAgentOptions.appendChild(empty);
-    return;
-  }
-
-  if (state.agents.length === 0) {
-    const empty = document.createElement('div');
-    empty.className = 'empty-state';
-    empty.textContent = '还没有可用人格，请先前往人格管理页创建。';
-    dom.conversationAgentOptions.appendChild(empty);
-    return;
-  }
-
-  state.agents.forEach((agent) => {
-    const selectedConversationAgent = conversation.agents.find((item) => item.id === agent.id) || null;
-    const selectedProfileId = selectedConversationAgent ? selectedConversationAgent.selectedModelProfileId || '' : '';
-    const wrapper = document.createElement('div');
-    wrapper.className = 'option-card compact-option-card';
-    wrapper.dataset.agentId = agent.id;
-    wrapper.classList.toggle('is-selected', Boolean(selectedConversationAgent));
-
-    const label = document.createElement('label');
-    const checkbox = document.createElement('input');
-    checkbox.type = 'checkbox';
-    checkbox.name = 'conversation-agent';
-    checkbox.value = agent.id;
-    checkbox.disabled = disabled;
-    checkbox.checked = Boolean(selectedConversationAgent);
-
-    const content = document.createElement('div');
-    content.className = 'persona-option-content';
-
-    const titleLine = document.createElement('div');
-    titleLine.className = 'persona-option-head';
-
-    const avatar = buildAgentAvatarElement(agent, 'small');
-
-    const nameWrap = document.createElement('div');
-    nameWrap.className = 'persona-option-copy';
-
-    const name = document.createElement('strong');
-    name.className = 'persona-option-name';
-    name.textContent = agent.name;
-
-    const description = document.createElement('div');
-    description.className = 'muted persona-option-description';
-    description.textContent = agent.description || '未填写角色说明';
-
-    nameWrap.append(name, description);
-    titleLine.append(avatar, nameWrap);
-
-    const profileRow = document.createElement('div');
-    profileRow.className = 'profile-select-row persona-option-config';
-    profileRow.classList.toggle('hidden', !selectedConversationAgent);
-
-    const profileLabel = document.createElement('div');
-    profileLabel.className = 'muted persona-option-config-label';
-    profileLabel.textContent = '配置';
-
-    const profileSelect = document.createElement('select');
-    profileSelect.className = 'profile-select';
-    profileSelect.dataset.agentId = agent.id;
-    profileSelect.disabled = disabled || !selectedConversationAgent;
-    profileSelect.title = '本会话使用的人格配置';
-
-    modelProfilesForAgent(agent).forEach((profile) => {
-      const option = document.createElement('option');
-      option.value = profile.id;
-      option.textContent = describeModelProfile(agent, profile.id);
-      profileSelect.appendChild(option);
-    });
-
-    profileSelect.value = selectedProfileId;
-
-    profileRow.append(profileLabel, profileSelect);
-    content.append(titleLine, profileRow);
-    label.append(checkbox, content);
-    wrapper.appendChild(label);
-    dom.conversationAgentOptions.appendChild(wrapper);
-  });
-}
-
-function renderMessages(conversation, activeTurn) {
-  const messages = conversation && Array.isArray(conversation.messages) ? conversation.messages : [];
-  const hasMessages = messages.length > 0;
-
-  if (!hasMessages) {
-    if (dom.messageList.childElementCount === 1 && dom.messageList.firstElementChild.classList.contains('empty-state')) {
-      return;
-    }
-
-    const empty = document.createElement('div');
-    empty.className = 'empty-state';
-    empty.textContent = 'Send a message to start a multi-agent discussion.';
-    dom.messageList.replaceChildren(empty);
-    return;
-  }
-
-  const existingCards = Array.from(dom.messageList.querySelectorAll('.message-card'));
-  const hasOnlyMessageCards = existingCards.length === dom.messageList.childElementCount;
-  const matchesExistingPrefix =
-    hasOnlyMessageCards &&
-    existingCards.every((card, index) => card.dataset.messageId === (messages[index] ? messages[index].id : undefined));
-
-  if (matchesExistingPrefix && existingCards.length === messages.length) {
-    existingCards.forEach((card, index) => {
-      syncMessageCard(card, messages[index], conversation.agents, activeTurn);
-    });
-    return;
-  }
-
-  if (matchesExistingPrefix && existingCards.length < messages.length) {
-    existingCards.forEach((card, index) => {
-      syncMessageCard(card, messages[index], conversation.agents, activeTurn);
-    });
-
-    messages.slice(existingCards.length).forEach((message) => {
-      dom.messageList.appendChild(createMessageCard(message, conversation.agents, activeTurn));
-    });
-    return;
-  }
-
-  const fragment = document.createDocumentFragment();
-  messages.forEach((message) => {
-    fragment.appendChild(createMessageCard(message, conversation.agents, activeTurn));
-  });
-  dom.messageList.replaceChildren(fragment);
-}
-
-function renderConversationPane() {
-  const conversation = state.currentConversation;
-  const activeTurn = conversation ? activeTurnForConversation(conversation.id) : null;
-  clearLiveDraftFinalizingTimer();
-
-  if (!conversation) {
-    dom.conversationTitleDisplay.textContent = 'Select a conversation';
-    dom.conversationMeta.textContent = 'Choose a room to inspect its agents and messages.';
-    dom.deleteConversationButton.disabled = true;
-    renderParticipantList(null);
-    renderMessages(null, null);
-    dom.composerInput.disabled = true;
-    dom.sendButton.disabled = true;
-    dom.composerStatus.textContent = 'Pick a room to begin.';
-    closeMentionMenu();
-    return;
-  }
-
-  dom.conversationTitleDisplay.textContent = conversation.title;
-  dom.conversationMeta.textContent = `${conversation.agents.length} agents / ${conversation.messages.length} messages`;
-  dom.deleteConversationButton.disabled = state.sending;
-
-  renderParticipantList(conversation);
-  renderMessages(conversation, activeTurn);
-
-  const hasAgents = conversation.agents.length > 0;
-  dom.composerInput.disabled = state.sending || !hasAgents;
-  dom.sendButton.disabled = state.sending || !hasAgents;
-  dom.composerInput.placeholder = 'Type **@Agent** to hand off inside this room.';
-
-  if (activeTurn && activeTurn.currentAgentId) {
-    const activeAgent = agentById(activeTurn.currentAgentId);
-    const activeStage =
-      Array.isArray(activeTurn.agents) && activeTurn.currentAgentId
-        ? activeTurn.agents.find((agent) => agent.agentId === activeTurn.currentAgentId) || null
-        : null;
-    const activeStageLabel = liveStageLabel(activeStage);
-    dom.composerStatus.textContent = activeAgent
-      ? activeStage && activeStage.preview
-        ? activeStageLabel === 'Finalizing'
-          ? `${activeAgent.name} is wrapping up the reply below.`
-          : `${activeAgent.name} is drafting a reply live below.`
-        : `${activeAgent.name} is replying. Use **@Agent** to hand off.`
-      : 'This room is routing the current turn via explicit handoffs.';
-
-    if (
-      activeStage &&
-      activeStage.status === 'running' &&
-      activeStage.preview &&
-      activeStage.lastTextDeltaAt &&
-      activeStageLabel === 'Live draft'
-    ) {
-      const lastTextDeltaMs = new Date(activeStage.lastTextDeltaAt).getTime();
-
-      if (!Number.isNaN(lastTextDeltaMs)) {
-        const msUntilFinalizing = Math.max(0, LIVE_DRAFT_IDLE_MS - (Date.now() - lastTextDeltaMs));
-        liveDraftFinalizingTimer = window.setTimeout(() => {
-          liveDraftFinalizingTimer = null;
-          scheduleConversationPaneRender();
-        }, msUntilFinalizing + 16);
-      }
-    }
-  } else if (state.sending) {
-    dom.composerStatus.textContent = 'This room is routing the current turn...';
-  } else if (!hasAgents) {
-    dom.composerStatus.textContent = '先在右侧为本次对话选择至少一个人格。';
-  } else {
-    dom.composerStatus.textContent = 'Agents hand off only through **@Agent** mentions.';
-  }
-
-  if (!hasAgents || state.sending) {
-    closeMentionMenu();
-  }
 }
 
 function resetAgentForm() {
@@ -1490,6 +816,7 @@ function renderAll() {
   renderRuntime();
   renderConversationList();
   renderConversationPane();
+  renderUndercoverGameCard();
   renderCompactConversationPersonaSettings();
 }
 
@@ -1501,7 +828,7 @@ async function loadConversation(conversationId) {
     return;
   }
 
-  const data = await fetchJson(`/api/conversations/${conversationId}`);
+  const data = await fetchJson(`/api/conversations/${conversationId}?includePrivateMessages=1`);
   state.selectedConversationId = conversationId;
   state.currentConversation = data.conversation;
   closeMentionMenu();
@@ -1513,6 +840,7 @@ async function refreshAll(preferredConversationId) {
   const data = await fetchJson('/api/bootstrap');
   state.runtime = data.runtime;
   state.modelOptions = Array.isArray(data.modelOptions) ? data.modelOptions : [];
+  state.skills = Array.isArray(data.skills) ? data.skills : [];
   state.agents = data.agents;
   state.conversations = data.conversations;
 
@@ -1561,7 +889,7 @@ async function refreshConversationFromEvent(conversationId) {
   const shouldStickToBottom = isMessageListNearBottom();
 
   try {
-    const data = await fetchJson(`/api/conversations/${conversationId}`);
+    const data = await fetchJson(`/api/conversations/${conversationId}?includePrivateMessages=1`);
 
     if (state.selectedConversationId !== conversationId) {
       return;
@@ -1569,6 +897,7 @@ async function refreshConversationFromEvent(conversationId) {
 
     state.currentConversation = data.conversation;
     renderConversationPane();
+    renderUndercoverGameCard();
 
     if (shouldStickToBottom) {
       scrollMessageListToBottom();
@@ -1596,7 +925,23 @@ function scheduleConversationRefresh(conversationId) {
 }
 
 function connectEventStream() {
-  if (state.eventSource || typeof EventSource === 'undefined') {
+  if (typeof EventSource === 'undefined') {
+    return;
+  }
+
+  if (state.eventSource) {
+    if (state.eventSource.readyState === EventSource.CLOSED) {
+      try {
+        state.eventSource.close();
+      } catch {}
+
+      state.eventSource = null;
+    } else {
+      return;
+    }
+  }
+
+  if (state.eventSource) {
     return;
   }
 
@@ -1606,6 +951,20 @@ function connectEventStream() {
   source.addEventListener('runtime_state', (event) => {
     const payload = JSON.parse(event.data);
     state.runtime = payload;
+
+    if (state.stopRequestConversationIds.size > 0) {
+      for (const conversationId of Array.from(state.stopRequestConversationIds)) {
+        const turn =
+          Array.isArray(payload.activeTurns) && conversationId
+            ? payload.activeTurns.find((item) => item.conversationId === conversationId) || null
+            : null;
+
+        if (!turn || turn.stopRequested) {
+          state.stopRequestConversationIds.delete(conversationId);
+        }
+      }
+    }
+
     renderRuntime();
     renderConversationList();
     renderConversationPane();
@@ -1627,6 +986,11 @@ function connectEventStream() {
     scheduleConversationRefresh(payload.conversationId);
   });
 
+  source.addEventListener('conversation_private_message_created', (event) => {
+    const payload = JSON.parse(event.data);
+    scheduleConversationRefresh(payload.conversationId);
+  });
+
   source.addEventListener('turn_progress', (event) => {
     const payload = JSON.parse(event.data);
 
@@ -1639,6 +1003,10 @@ function connectEventStream() {
 
     const existingTurn = index === -1 ? null : activeTurns[index];
     const hasChanged = turnProgressSignature(existingTurn) !== turnProgressSignature(payload.turn);
+
+    if (payload.turn && payload.turn.stopRequested) {
+      state.stopRequestConversationIds.delete(payload.conversationId);
+    }
 
     if (hasChanged) {
       if (index === -1) {
@@ -1662,6 +1030,7 @@ function connectEventStream() {
 
   source.addEventListener('turn_finished', (event) => {
     const payload = JSON.parse(event.data);
+    state.stopRequestConversationIds.delete(payload.conversationId);
 
     if (state.runtime && Array.isArray(state.runtime.activeTurns)) {
       state.runtime.activeTurns = state.runtime.activeTurns.filter((turn) => turn.conversationId !== payload.conversationId);
@@ -1674,30 +1043,24 @@ function connectEventStream() {
   });
 
   source.addEventListener('error', () => {
-    if (state.eventSource === source && source.readyState === EventSource.CLOSED) {
-      state.eventSource = null;
-      window.setTimeout(() => {
+    if (state.eventSource !== source) {
+      return;
+    }
+
+    if (source.readyState === EventSource.OPEN) {
+      return;
+    }
+
+    try {
+      source.close();
+    } catch {}
+
+    state.eventSource = null;
+    window.setTimeout(() => {
+      if (!state.eventSource) {
         connectEventStream();
-      }, 1500);
-    }
-  });
-}
-
-function selectedConversationParticipants() {
-  return Array.from(dom.conversationAgentOptions.querySelectorAll('.option-card')).flatMap((card) => {
-    const checkbox = card.querySelector('input[name="conversation-agent"]');
-    const select = card.querySelector('select.profile-select');
-
-    if (!checkbox || !checkbox.checked) {
-      return [];
-    }
-
-    return [
-      {
-        agentId: checkbox.value,
-        modelProfileId: select && select.value ? select.value : null,
-      },
-    ];
+      }
+    }, 1500);
   });
 }
 
@@ -1720,6 +1083,38 @@ function serializeAgentForm() {
 }
 
 function bindEvents() {
+  async function handleUndercoverAction(action, body, successMessage) {
+    if (!state.currentConversation || !isUndercoverConversation(state.currentConversation) || state.sending) {
+      return;
+    }
+
+    state.sending = true;
+    state.runtime = state.runtime || {};
+    state.runtime.activeConversationIds = Array.from(
+      new Set([...(state.runtime.activeConversationIds || []), state.currentConversation.id])
+    );
+    renderAll();
+
+    try {
+      await triggerUndercoverAction(action, body);
+      if (successMessage) {
+        showToast(successMessage);
+      }
+    } catch (error) {
+      showToast(error.message);
+    } finally {
+      state.sending = false;
+
+      if (state.runtime && state.currentConversation) {
+        state.runtime.activeConversationIds = (state.runtime.activeConversationIds || []).filter(
+          (id) => id !== state.currentConversation.id
+        );
+      }
+
+      renderAll();
+    }
+  }
+
   dom.refreshButton.addEventListener('click', async () => {
     try {
       await refreshAll(state.selectedConversationId);
@@ -1737,9 +1132,13 @@ function bindEvents() {
         method: 'POST',
         body: {
           title: dom.newConversationTitle.value.trim(),
+          type: dom.newConversationType ? dom.newConversationType.value : 'standard',
         },
       });
       dom.newConversationTitle.value = '';
+      if (dom.newConversationType) {
+        dom.newConversationType.value = 'standard';
+      }
       state.conversations = result.conversations;
       state.selectedConversationId = result.conversation.id;
       state.currentConversation = result.conversation;
@@ -1749,6 +1148,37 @@ function bindEvents() {
       showToast(error.message);
     }
   });
+
+  if (
+    dom.undercoverSetupForm &&
+    dom.undercoverCivilianWord &&
+    dom.undercoverUndercoverWord &&
+    dom.undercoverUndercoverCount &&
+    dom.undercoverBlankCount &&
+    dom.undercoverBlankWord
+  ) {
+    dom.undercoverSetupForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+
+      await handleUndercoverAction(
+        'start',
+        {
+          civilianWord: dom.undercoverCivilianWord.value.trim(),
+          undercoverWord: dom.undercoverUndercoverWord.value.trim(),
+          undercoverCount: dom.undercoverUndercoverCount.value,
+          blankCount: dom.undercoverBlankCount.value,
+          blankWord: dom.undercoverBlankWord.value.trim(),
+        },
+        '谁是卧底全自动新一局已开始'
+      );
+    });
+  }
+
+  if (dom.undercoverResetButton) {
+    dom.undercoverResetButton.addEventListener('click', async () => {
+      await handleUndercoverAction('reset', {}, '对局已重置');
+    });
+  }
 
   dom.conversationList.addEventListener('click', async (event) => {
     const item = event.target.closest('.conversation-item');
@@ -1785,7 +1215,7 @@ function bindEvents() {
     const sessionInfo = messageSessionInfo(message);
 
     if (!sessionInfo.canExport) {
-      showToast('这条消息的 session 还没准备好');
+      showToast('这条消息的会话轨迹还没准备好');
       return;
     }
 
@@ -1795,7 +1225,7 @@ function bindEvents() {
 
     try {
       await exportMessageSession(state.currentConversation.id, message);
-      showToast('Session 已导出');
+      showToast('会话轨迹已导出');
     } catch (error) {
       showToast(error.message);
     } finally {
@@ -1803,74 +1233,6 @@ function bindEvents() {
       button.textContent = previousText;
     }
   });
-
-  dom.composerInput.addEventListener('input', () => {
-    syncComposerMentionMenu();
-  });
-
-  dom.composerInput.addEventListener('click', () => {
-    syncComposerMentionMenu();
-  });
-
-  dom.composerInput.addEventListener('blur', () => {
-    window.setTimeout(() => {
-      closeMentionMenu();
-    }, 120);
-  });
-
-  dom.composerInput.addEventListener('keydown', (event) => {
-    if (state.mentionSuggestions.length === 0) {
-      return;
-    }
-
-    if (event.key === 'ArrowDown') {
-      event.preventDefault();
-      state.mentionSelectionIndex = (state.mentionSelectionIndex + 1) % state.mentionSuggestions.length;
-      renderMentionMenu();
-      return;
-    }
-
-    if (event.key === 'ArrowUp') {
-      event.preventDefault();
-      state.mentionSelectionIndex =
-        (state.mentionSelectionIndex - 1 + state.mentionSuggestions.length) % state.mentionSuggestions.length;
-      renderMentionMenu();
-      return;
-    }
-
-    if (event.key === 'Enter' || event.key === 'Tab') {
-      event.preventDefault();
-      applyMentionSuggestion(state.mentionSuggestions[state.mentionSelectionIndex]);
-      return;
-    }
-
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      closeMentionMenu();
-    }
-  });
-
-  if (dom.composerMentionMenu) {
-    dom.composerMentionMenu.addEventListener('mousedown', (event) => {
-      event.preventDefault();
-    });
-
-    dom.composerMentionMenu.addEventListener('click', (event) => {
-      const option = event.target.closest('.mention-option');
-
-      if (!option) {
-        return;
-      }
-
-      const index = Number.parseInt(option.dataset.index || '', 10);
-
-      if (!Number.isInteger(index) || !state.mentionSuggestions[index]) {
-        return;
-      }
-
-      applyMentionSuggestion(state.mentionSuggestions[index]);
-    });
-  }
 
   dom.composerForm.addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -1926,27 +1288,44 @@ function bindEvents() {
     }
   });
 
-  dom.conversationAgentOptions.addEventListener('change', (event) => {
-    const checkbox = event.target.closest('input[name="conversation-agent"]');
-
-    if (!checkbox) {
+  dom.stopButton.addEventListener('click', async () => {
+    if (!state.currentConversation) {
       return;
     }
 
-    const card = checkbox.closest('.option-card');
-    const select = card ? card.querySelector('select.profile-select') : null;
-    const profileRow = card ? card.querySelector('.profile-select-row') : null;
+    const conversationId = state.currentConversation.id;
 
-    if (select) {
-      select.disabled = !checkbox.checked || state.sending;
+    if (state.stopRequestConversationIds.has(conversationId)) {
+      return;
     }
 
-    if (profileRow) {
-      profileRow.classList.toggle('hidden', !checkbox.checked);
-    }
+    state.stopRequestConversationIds.add(conversationId);
+    renderConversationPane();
 
-    if (card) {
-      card.classList.toggle('is-selected', checkbox.checked);
+    try {
+      const result = await fetchJson(`/api/conversations/${conversationId}/stop`, {
+        method: 'POST',
+      });
+
+      if (result.runtime) {
+        state.runtime = {
+          ...(state.runtime || {}),
+          ...result.runtime,
+        };
+      }
+
+      if (result.turn) {
+        upsertRuntimeTurn(result.turn);
+      }
+
+      showToast('正在停止当前回合...');
+    } catch (error) {
+      showToast(error.message);
+    } finally {
+      state.stopRequestConversationIds.delete(conversationId);
+      renderRuntime();
+      renderConversationList();
+      renderConversationPane();
     }
   });
 
@@ -2087,7 +1466,7 @@ function bindEvents() {
     const payload = serializeAgentForm();
 
     if (!payload.name) {
-      showToast('Agent 名称不能为空');
+      showToast('人格名称不能为空');
       return;
     }
 
@@ -2105,7 +1484,7 @@ function bindEvents() {
       await refreshAll(state.selectedConversationId);
       state.selectedAgentId = result.agent.id;
       renderAll();
-      showToast(payload.id ? 'Agent 已更新' : '新 Agent 已创建');
+      showToast(payload.id ? '人格已更新' : '新人格已创建');
     } catch (error) {
       showToast(error.message);
     }
@@ -2138,6 +1517,9 @@ function bindEvents() {
 }
 
 async function init() {
+  setupChatModules();
+  mentionMenuController.bindEvents();
+  conversationSettingsController.bindEvents();
   bindEvents();
   connectEventStream();
 
