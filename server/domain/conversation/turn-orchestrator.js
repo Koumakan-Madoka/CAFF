@@ -10,7 +10,7 @@ const {
   resolveSetting,
   sanitizeSessionName,
   startRun,
-} = require('../../../pi-runtime');
+} = require('../../../minimal-pi');
 const { createSqliteRunStore } = require('../../../sqlite-store');
 const { createHttpError } = require('../../http/http-errors');
 const {

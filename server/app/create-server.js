@@ -1,7 +1,7 @@
 const http = require('node:http');
 const path = require('node:path');
 const { URL } = require('node:url');
-const { DEFAULT_AGENT_DIR, resolveSetting } = require('../../pi-runtime');
+const { DEFAULT_AGENT_DIR, resolveSetting } = require('../../minimal-pi');
 const { createChatAppStore } = require('../../chat-app-store');
 const { createSkillRegistry } = require('../../skill-registry');
 const { createWhoIsUndercoverHost } = require('../../who-is-undercover-game');

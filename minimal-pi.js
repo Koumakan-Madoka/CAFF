@@ -196,11 +196,25 @@ async function main(argv = process.argv.slice(2)) {
 }
 
 module.exports = {
-  ...runtime,
+  DEFAULT_AGENT_DIR: runtime.DEFAULT_AGENT_DIR,
+  DEFAULT_HEARTBEAT_INTERVAL_MS: runtime.DEFAULT_HEARTBEAT_INTERVAL_MS,
+  DEFAULT_HEARTBEAT_TIMEOUT_MS: runtime.DEFAULT_HEARTBEAT_TIMEOUT_MS,
+  DEFAULT_MODEL: runtime.DEFAULT_MODEL,
+  DEFAULT_PROVIDER: runtime.DEFAULT_PROVIDER,
+  DEFAULT_TERMINATE_GRACE_MS: runtime.DEFAULT_TERMINATE_GRACE_MS,
+  DEFAULT_THINKING: runtime.DEFAULT_THINKING,
+  invoke: runtime.invoke,
   main,
   parseCliArgs,
   printInvokeError,
   printUsage,
+  resolveDefaultAgentDir: runtime.resolveDefaultAgentDir,
+  resolveIntegerSetting: runtime.resolveIntegerSetting,
+  resolveIntegerSettingCandidates: runtime.resolveIntegerSettingCandidates,
+  resolveSessionPath: runtime.resolveSessionPath,
+  resolveSetting: runtime.resolveSetting,
+  sanitizeSessionName: runtime.sanitizeSessionName,
+  startRun: runtime.startRun,
 };
 
 if (require.main === module) {
