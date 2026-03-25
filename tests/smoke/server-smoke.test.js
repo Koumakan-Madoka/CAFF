@@ -8,6 +8,22 @@ const test = require('node:test');
 
 const ROOT_DIR = path.resolve(__dirname, '..', '..');
 
+function canSpawnProcess() {
+  try {
+    const child = spawn(process.execPath, ['-e', ''], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+
+    try {
+      child.kill();
+    } catch {}
+
+    return true;
+  } catch (error) {
+    return !(error && error.code === 'EPERM');
+  }
+}
+
+const SPAWN_AVAILABLE = canSpawnProcess();
+
 function findFreePort() {
   return new Promise((resolve, reject) => {
     const server = net.createServer();
@@ -98,6 +114,11 @@ async function fetchJson(baseUrl, pathname, options = {}) {
 }
 
 test('server smoke: bootstrap, static files, skill, agent, and conversation flows work', async (t) => {
+  if (!SPAWN_AVAILABLE) {
+    t.skip('child_process.spawn is not permitted in this environment');
+    return;
+  }
+
   const port = await findFreePort();
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-m0-'));
   const sqlitePath = path.join(tempDir, 'smoke.sqlite');

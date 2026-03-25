@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -7,6 +8,22 @@ const test = require('node:test');
 const ROOT_DIR = path.resolve(__dirname, '..', '..');
 const FAKE_PI_PATH = path.join(ROOT_DIR, 'tests', 'fixtures', 'fake-pi-complete-then-hang.ps1');
 const FAKE_PI_ECHO_STDIN_PATH = path.join(ROOT_DIR, 'tests', 'fixtures', 'fake-pi-echo-stdin.ps1');
+
+function canSpawnProcess() {
+  try {
+    const child = spawn(process.execPath, ['-e', ''], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+
+    try {
+      child.kill();
+    } catch {}
+
+    return true;
+  } catch (error) {
+    return !(error && error.code === 'EPERM');
+  }
+}
+
+const SPAWN_AVAILABLE = canSpawnProcess();
 
 function withTempDir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -74,6 +91,11 @@ test('pi runtime treats a terminal assistant message as successful completion ev
     return;
   }
 
+  if (!SPAWN_AVAILABLE) {
+    t.skip('child_process.spawn is not permitted in this environment');
+    return;
+  }
+
   const tempDir = withTempDir('caff-pi-runtime-');
   const sqlitePath = path.join(tempDir, 'pi-runtime.sqlite');
   const { runtime, restore } = loadRuntimeWithCommandPath(FAKE_PI_PATH);
@@ -123,6 +145,11 @@ test('pi runtime pipes the full prompt through stdin so quoted history is preser
     return;
   }
 
+  if (!SPAWN_AVAILABLE) {
+    t.skip('child_process.spawn is not permitted in this environment');
+    return;
+  }
+
   const tempDir = withTempDir('caff-pi-runtime-stdin-');
   const sqlitePath = path.join(tempDir, 'pi-runtime-stdin.sqlite');
   const { runtime, restore } = loadRuntimeWithCommandPath(FAKE_PI_ECHO_STDIN_PATH);
@@ -164,6 +191,11 @@ test('pi runtime pipes the full prompt through stdin so quoted history is preser
 test('pi runtime bypasses PowerShell shims so unicode stdin prompts stay intact on Windows', async (t) => {
   if (process.platform !== 'win32') {
     t.skip('PI_COMMAND_PATH override fixture is currently exercised on Windows only');
+    return;
+  }
+
+  if (!SPAWN_AVAILABLE) {
+    t.skip('child_process.spawn is not permitted in this environment');
     return;
   }
 
