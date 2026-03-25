@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const { createChatAppStore } = require('../../chat-app-store');
+const { createChatAppStore } = require('../../lib/chat-app-store');
 const { createAgentToolBridge } = require('../../server/domain/runtime/agent-tool-bridge');
 
 function withTempDir(prefix) {

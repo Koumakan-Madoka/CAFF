@@ -2,7 +2,7 @@ const { readRequestJson } = require('../http/request-body');
 const { sendFileDownload, sendJson } = require('../http/response');
 const { createHttpError } = require('../http/http-errors');
 const { pickConversationSummary, withConversationPrivateMessages } = require('../domain/conversation/conversation-view');
-const { UNDERCOVER_CONVERSATION_TYPE } = require('../../who-is-undercover-game');
+const { UNDERCOVER_CONVERSATION_TYPE } = require('../../lib/who-is-undercover-game');
 
 function createConversationsController(options = {}) {
   const store = options.store;

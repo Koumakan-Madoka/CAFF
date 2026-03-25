@@ -49,7 +49,7 @@ http://127.0.0.1:3100
 - Later agent-to-agent routing still happens through visible `@Agent` mentions in chat replies when the turn is in serial handoff mode.
 - If one agent mentions multiple visible participants in the same reply, those handoffs run as parallel fan-out batches; up to 5 run at once and any extra targets queue behind them.
 - Replies produced during the parallel first round are independent and do not auto-handoff to another agent.
-- Each agent turn now includes a local chat bridge CLI (`agent-chat-tools.js`) so agents can send public room replies and private notes separately instead of leaking raw chain-of-thought straight into chat.
+- Each agent turn now includes a local chat bridge CLI (`lib/agent-chat-tools.js`) so agents can send public room replies and private notes separately instead of leaking raw chain-of-thought straight into chat.
 - Public room output should go through `send-public`; `send-private` without recipients is a note to yourself, while `send-private` to another visible agent privately wakes that recipient in the same turn unless you explicitly use `--no-handoff`.
 - Multi-recipient private wake-up is supported; for example `send-private --to "AgentA,AgentB" --content "..."` wakes both and they run as a parallel fan-out batch when the turn mode allows handoffs.
 - `who_is_undercover` rooms are distinct from normal chat rooms. The backend is the host, not the model, and the room automatically applies the `who-is-undercover` skill to participants.
@@ -60,8 +60,8 @@ http://127.0.0.1:3100
 
 ## Main files
 
-- `app-server.js`
-- `chat-app-store.js`
+- `lib/app-server.js`
+- `lib/chat-app-store.js`
 - `public/index.html`
 - `public/styles.css`
 - `public/app.js`

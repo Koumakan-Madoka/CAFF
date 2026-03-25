@@ -4,7 +4,7 @@ const os = require('node:os');
 const path = require('node:path');
 const Database = require('better-sqlite3');
 const test = require('node:test');
-const { createChatAppStore } = require('../../chat-app-store');
+const { createChatAppStore } = require('../../lib/chat-app-store');
 
 function listColumnNames(db, tableName) {
   return new Set(

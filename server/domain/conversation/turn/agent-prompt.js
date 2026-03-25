@@ -1,5 +1,5 @@
 const { getAgentById } = require('../mention-routing');
-const { UNDERCOVER_CONVERSATION_TYPE } = require('../../../../who-is-undercover-game');
+const { UNDERCOVER_CONVERSATION_TYPE } = require('../../../../lib/who-is-undercover-game');
 
 const MAX_HISTORY_MESSAGES = 24;
 const MAX_PARALLEL_MENTION_BATCH_SIZE = 5;
@@ -171,7 +171,7 @@ function buildAgentToolInstructions(agentToolRelativePath) {
     '- Never put raw message text on a new shell line by itself. Always pair the text with --content or pipe it into --content-stdin.',
     '- Use --content-stdin whenever the message may contain quotes, apostrophes, or newlines. Plain --content "..." is only safe for short one-line text without embedded quotes.',
     '- CAFF_CHAT_TOOLS_PATH already contains a bash-safe portable path for this run.',
-    '- If you are using bash on Windows, avoid raw backslash paths like E:\\foo\\bar in the command line for this tool. Use ./agent-chat-tools.js or "$CAFF_CHAT_TOOLS_PATH" instead.',
+    '- If you are using bash on Windows, avoid raw backslash paths like E:\\foo\\bar in the command line for this tool. Use ./lib/agent-chat-tools.js or "$CAFF_CHAT_TOOLS_PATH" instead.',
     '- Put secret roles, hidden reasoning, scratch notes, and game identity into private notes instead of public chat.',
     '- Public handoff works when a line starts with an at-mention, or when the final line ends with a pure at-mention block containing only mentions.',
     '- Inline at-mentions inside a sentence remain visible in chat but do not trigger routing unless they are part of that final trailing mention block.',

@@ -1,5 +1,5 @@
 const { randomUUID } = require('node:crypto');
-const { createSqliteRunStore } = require('../../../../sqlite-store');
+const { createSqliteRunStore } = require('../../../../lib/sqlite-store');
 const { createHttpError } = require('../../../http/http-errors');
 const {
   buildAgentMentionLookup,

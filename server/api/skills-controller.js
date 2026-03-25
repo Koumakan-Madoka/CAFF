@@ -1,7 +1,7 @@
 const { readRequestJson } = require('../http/request-body');
 const { sendJson } = require('../http/response');
 const { createHttpError } = require('../http/http-errors');
-const { sanitizeSkillId } = require('../../skill-registry');
+const { sanitizeSkillId } = require('../../lib/skill-registry');
 
 function createSkillsController(options = {}) {
   const store = options.store;

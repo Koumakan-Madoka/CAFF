@@ -4,7 +4,7 @@ const os = require('node:os');
 const path = require('node:path');
 const Database = require('better-sqlite3');
 const test = require('node:test');
-const { createSqliteRunStore } = require('../../sqlite-store');
+const { createSqliteRunStore } = require('../../lib/sqlite-store');
 
 function listColumnNames(db, tableName) {
   return new Set(

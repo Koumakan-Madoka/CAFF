@@ -64,14 +64,14 @@ function createFakePiShimWithCli(baseDir) {
 }
 
 function loadRuntimeWithCommandPath(commandPath) {
-  const runtimeModulePath = require.resolve('../../pi-runtime');
+  const runtimeModulePath = require.resolve('../../lib/pi-runtime');
   const previousCommandPath = process.env.PI_COMMAND_PATH;
 
   delete require.cache[runtimeModulePath];
   process.env.PI_COMMAND_PATH = commandPath;
 
   return {
-    runtime: require('../../pi-runtime'),
+    runtime: require('../../lib/pi-runtime'),
     restore() {
       delete require.cache[runtimeModulePath];
 

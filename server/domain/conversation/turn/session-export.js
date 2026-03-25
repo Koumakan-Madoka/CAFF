@@ -1,5 +1,5 @@
 const path = require('node:path');
-const { resolveSessionPath } = require('../../../../minimal-pi');
+const { resolveSessionPath } = require('../../../../lib/minimal-pi');
 const { createHttpError } = require('../../../http/http-errors');
 
 function isPathWithin(parentDir, targetPath) {

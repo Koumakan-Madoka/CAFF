@@ -7,7 +7,7 @@ const {
   resolveSetting,
   sanitizeSessionName,
   startRun,
-} = require('../../../../minimal-pi');
+} = require('../../../../lib/minimal-pi');
 const {
   buildAgentMentionLookup,
   ensureVisibleMentionText,
@@ -336,7 +336,7 @@ function createAgentExecutor(options = {}) {
   const sqlitePath = options.sqlitePath;
   const toolBaseUrl = String(options.toolBaseUrl || '').trim();
   const agentToolScriptPath = options.agentToolScriptPath;
-  const agentToolRelativePath = String(options.agentToolRelativePath || './agent-chat-tools.js').trim() || './agent-chat-tools.js';
+  const agentToolRelativePath = String(options.agentToolRelativePath || './lib/agent-chat-tools.js').trim() || './lib/agent-chat-tools.js';
 
   async function executeConversationAgent({
     runStore,

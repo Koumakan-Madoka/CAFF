@@ -1,10 +1,10 @@
 const http = require('node:http');
 const path = require('node:path');
 const { URL } = require('node:url');
-const { DEFAULT_AGENT_DIR, resolveSetting } = require('../../minimal-pi');
-const { createChatAppStore } = require('../../chat-app-store');
-const { createSkillRegistry } = require('../../skill-registry');
-const { createWhoIsUndercoverHost } = require('../../who-is-undercover-game');
+const { DEFAULT_AGENT_DIR, resolveSetting } = require('../../lib/minimal-pi');
+const { createChatAppStore } = require('../../lib/chat-app-store');
+const { createSkillRegistry } = require('../../lib/skill-registry');
+const { createWhoIsUndercoverHost } = require('../../lib/who-is-undercover-game');
 const { createBootstrapPayloadBuilder } = require('../api/bootstrap-payload');
 const { createAgentToolsController } = require('../api/agent-tools-controller');
 const { createAgentsController } = require('../api/agents-controller');
@@ -86,8 +86,8 @@ function createServerApp(options = {}) {
     agentDir,
     sqlitePath,
     toolBaseUrl: `http://${host}:${port}`,
-    agentToolScriptPath: path.resolve(ROOT_DIR, 'agent-chat-tools.js'),
-    agentToolRelativePath: './agent-chat-tools.js',
+    agentToolScriptPath: path.resolve(ROOT_DIR, 'lib', 'agent-chat-tools.js'),
+    agentToolRelativePath: './lib/agent-chat-tools.js',
   });
 
   const undercoverService = createUndercoverService({

@@ -69,7 +69,7 @@ test('buildAgentTurnPrompt avoids raw @mention tokens from room context', () => 
     remainingSlots: 7,
     routingMode: 'mention_queue',
     allowHandoffs: true,
-    agentToolRelativePath: './agent-chat-tools.js',
+    agentToolRelativePath: './lib/agent-chat-tools.js',
   });
 
   assert.match(prompt, /<mention:Builder>/u);
@@ -113,7 +113,7 @@ test('buildAgentTurnPrompt gives bash-only multiline chat bridge guidance', () =
     remainingSlots: 7,
     routingMode: 'mention_queue',
     allowHandoffs: true,
-    agentToolRelativePath: './agent-chat-tools.js',
+    agentToolRelativePath: './lib/agent-chat-tools.js',
   });
 
   assert.match(prompt, /This run executes shell commands with bash/u);

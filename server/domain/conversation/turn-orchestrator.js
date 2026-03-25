@@ -23,7 +23,7 @@ function createTurnOrchestrator(options = {}) {
   const sqlitePath = String(options.sqlitePath || '').trim();
   const toolBaseUrl = String(options.toolBaseUrl || '').trim();
   const agentToolScriptPath = path.resolve(String(options.agentToolScriptPath || '').trim());
-  const agentToolRelativePath = String(options.agentToolRelativePath || './agent-chat-tools.js').trim() || './agent-chat-tools.js';
+  const agentToolRelativePath = String(options.agentToolRelativePath || './lib/agent-chat-tools.js').trim() || './lib/agent-chat-tools.js';
 
   const activeConversationIds = new Set();
   const activeTurns = new Map();

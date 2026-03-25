@@ -3,7 +3,7 @@ const {
   DEFAULT_PROVIDER,
   DEFAULT_THINKING,
   resolveSetting,
-} = require('../../../../minimal-pi');
+} = require('../../../../lib/minimal-pi');
 const { summarizeTurnState } = require('./turn-state');
 
 function createRuntimePayloadBuilder(options = {}) {

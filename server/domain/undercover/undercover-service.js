@@ -5,7 +5,7 @@ const { buildAgentMentionLookup, extractMentionedAgentIds, resolveMentionValues 
 const {
   UNDERCOVER_CONVERSATION_TYPE,
   UNDERCOVER_SKILL_ID,
-} = require('../../../who-is-undercover-game');
+} = require('../../../lib/who-is-undercover-game');
 
 function createUndercoverService(options = {}) {
   const store = options.store;
