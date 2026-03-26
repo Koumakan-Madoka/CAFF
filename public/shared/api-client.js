@@ -1,3 +1,5 @@
+// @ts-check
+
 (function registerApiClient() {
   const shared = window.CaffShared || (window.CaffShared = {});
 

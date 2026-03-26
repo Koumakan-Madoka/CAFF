@@ -1,3 +1,5 @@
+// @ts-check
+
 (function registerMentionMenuModule() {
   const chat = window.CaffChat || (window.CaffChat = {});
 

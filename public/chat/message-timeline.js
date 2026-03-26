@@ -1,3 +1,5 @@
+// @ts-check
+
 (function registerMessageTimelineModule() {
   const chat = window.CaffChat || (window.CaffChat = {});
 

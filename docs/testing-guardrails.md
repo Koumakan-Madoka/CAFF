@@ -13,7 +13,7 @@
 
 ### 已有“护栏”与测试
 
-- 语法检查：`npm run check`（`node --check ...` 覆盖 `public/`；后端/存储/运行时由 `npm run build` 与 `npm run typecheck` 覆盖）。
+- 静态检查：`npm run check`（`node --check ...` 覆盖 `public/` 的语法）+ `npm run typecheck`（`tsc --noEmit`：后端 + `public/` 的 `checkJs`）。
 - 测试入口：`npm test` 会先跑 `build`（`tsc` + copy assets），再跑 `test:fast`（含 `check`），最后跑 `test:smoke`：
   - `tests/runtime/*`：turn-orchestrator、agent-tool-bridge、pi-runtime、agent-chat-tools
   - `tests/storage/*`：chat-store、run-store（含迁移验证）

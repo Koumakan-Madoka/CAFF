@@ -1,3 +1,5 @@
+// @ts-check
+
 (function registerUndercoverPanelModule() {
   const chat = window.CaffChat || (window.CaffChat = {});
 

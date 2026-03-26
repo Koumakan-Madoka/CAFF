@@ -1,3 +1,5 @@
+// @ts-check
+
 const state = {
   agents: [],
   skills: [],
@@ -11,30 +13,30 @@ const avatarUtils = shared.avatar || {};
 const modelOptionUtils = shared.modelOptions || {};
 
 const dom = {
-  refreshButton: document.getElementById('refresh-button'),
-  newAgentButton: document.getElementById('new-agent-button'),
-  agentList: document.getElementById('agent-list'),
-  editorTitle: document.getElementById('editor-title'),
-  agentForm: document.getElementById('agent-form'),
-  agentId: document.getElementById('agent-id'),
-  agentName: document.getElementById('agent-name'),
-  agentDescription: document.getElementById('agent-description'),
-  agentSandboxName: document.getElementById('agent-sandbox-name'),
-  agentSandboxHint: document.getElementById('agent-sandbox-hint'),
-  agentAvatarPreview: document.getElementById('agent-avatar-preview'),
-  agentAvatarFile: document.getElementById('agent-avatar-file'),
-  agentAvatarData: document.getElementById('agent-avatar-data'),
-  agentPersonaPrompt: document.getElementById('agent-persona-prompt'),
-  agentProvider: document.getElementById('agent-provider'),
-  agentModel: document.getElementById('agent-model'),
-  agentThinking: document.getElementById('agent-thinking'),
-  agentAccentColor: document.getElementById('agent-accent-color'),
-  agentSkillOptions: document.getElementById('agent-skill-options'),
-  addProfileButton: document.getElementById('add-profile-button'),
-  profileList: document.getElementById('profile-list'),
-  clearAgentAvatarButton: document.getElementById('clear-agent-avatar-button'),
-  deleteAgentButton: document.getElementById('delete-agent-button'),
-  toast: document.getElementById('toast'),
+  refreshButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('refresh-button')),
+  newAgentButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('new-agent-button')),
+  agentList: /** @type {HTMLDivElement | null} */ (document.getElementById('agent-list')),
+  editorTitle: /** @type {HTMLElement | null} */ (document.getElementById('editor-title')),
+  agentForm: /** @type {HTMLFormElement | null} */ (document.getElementById('agent-form')),
+  agentId: /** @type {HTMLInputElement | null} */ (document.getElementById('agent-id')),
+  agentName: /** @type {HTMLInputElement | null} */ (document.getElementById('agent-name')),
+  agentDescription: /** @type {HTMLInputElement | null} */ (document.getElementById('agent-description')),
+  agentSandboxName: /** @type {HTMLInputElement | null} */ (document.getElementById('agent-sandbox-name')),
+  agentSandboxHint: /** @type {HTMLElement | null} */ (document.getElementById('agent-sandbox-hint')),
+  agentAvatarPreview: /** @type {HTMLElement | null} */ (document.getElementById('agent-avatar-preview')),
+  agentAvatarFile: /** @type {HTMLInputElement | null} */ (document.getElementById('agent-avatar-file')),
+  agentAvatarData: /** @type {HTMLInputElement | null} */ (document.getElementById('agent-avatar-data')),
+  agentPersonaPrompt: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('agent-persona-prompt')),
+  agentProvider: /** @type {HTMLInputElement | null} */ (document.getElementById('agent-provider')),
+  agentModel: /** @type {HTMLSelectElement | null} */ (document.getElementById('agent-model')),
+  agentThinking: /** @type {HTMLInputElement | null} */ (document.getElementById('agent-thinking')),
+  agentAccentColor: /** @type {HTMLInputElement | null} */ (document.getElementById('agent-accent-color')),
+  agentSkillOptions: /** @type {HTMLElement | null} */ (document.getElementById('agent-skill-options')),
+  addProfileButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('add-profile-button')),
+  profileList: /** @type {HTMLElement | null} */ (document.getElementById('profile-list')),
+  clearAgentAvatarButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('clear-agent-avatar-button')),
+  deleteAgentButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('delete-agent-button')),
+  toast: /** @type {HTMLElement | null} */ (document.getElementById('toast')),
 };
 
 const toast = typeof shared.createToastController === 'function' ? shared.createToastController(dom.toast) : { show() {} };
@@ -56,7 +58,9 @@ function ensureSelectedAgent() {
 }
 
 function selectedSkillIdsFromDom() {
-  return Array.from(dom.agentSkillOptions.querySelectorAll('input[name="agent-skill"]:checked')).map((input) => input.value);
+  return Array.from(dom.agentSkillOptions.querySelectorAll('input[name="agent-skill"]:checked')).map(
+    (input) => /** @type {HTMLInputElement} */ (input).value
+  );
 }
 
 function syncAgentSandboxHint(agentId = '') {
@@ -170,7 +174,7 @@ function emptyProfileState() {
 function updateProfileHeadings() {
   Array.from(dom.profileList.querySelectorAll('.profile-editor')).forEach((card, index) => {
     const title = card.querySelector('.profile-editor-title');
-    const nameInput = card.querySelector('input[data-field="name"]');
+    const nameInput = /** @type {HTMLInputElement | null} */ (card.querySelector('input[data-field="name"]'));
     const nextTitle = profileTitle({ name: nameInput ? nameInput.value.trim() : '' }, index);
 
     if (title) {
@@ -218,13 +222,13 @@ function createProfileEditor(profile = {}) {
     </label>
   `;
 
-  card.querySelector('[data-field="id"]').value = draft.id;
-  card.querySelector('[data-field="name"]').value = draft.name;
-  card.querySelector('[data-field="description"]').value = draft.description;
-  card.querySelector('[data-field="provider"]').value = draft.provider;
-  fillModelSelect(card.querySelector('[data-field="model"]'), draft.provider, draft.model);
-  card.querySelector('[data-field="thinking"]').value = draft.thinking;
-  card.querySelector('[data-field="personaPrompt"]').value = draft.personaPrompt;
+  /** @type {HTMLInputElement} */ (card.querySelector('[data-field="id"]')).value = draft.id;
+  /** @type {HTMLInputElement} */ (card.querySelector('[data-field="name"]')).value = draft.name;
+  /** @type {HTMLInputElement} */ (card.querySelector('[data-field="description"]')).value = draft.description;
+  /** @type {HTMLInputElement} */ (card.querySelector('[data-field="provider"]')).value = draft.provider;
+  fillModelSelect(/** @type {HTMLSelectElement} */ (card.querySelector('[data-field="model"]')), draft.provider, draft.model);
+  /** @type {HTMLInputElement} */ (card.querySelector('[data-field="thinking"]')).value = draft.thinking;
+  /** @type {HTMLTextAreaElement} */ (card.querySelector('[data-field="personaPrompt"]')).value = draft.personaPrompt;
 
   return card;
 }
@@ -283,24 +287,23 @@ function fillAgentForm(agent) {
 
 function collectProfilesFromDom() {
   return Array.from(dom.profileList.querySelectorAll('.profile-editor')).map((card) => {
-    const modelSelect = card.querySelector('[data-field="model"]');
-    const providerInput = card.querySelector('[data-field="provider"]');
+    const modelSelect = /** @type {HTMLSelectElement | null} */ (card.querySelector('[data-field="model"]'));
+    const providerInput = /** @type {HTMLInputElement | null} */ (card.querySelector('[data-field="provider"]'));
     const modelOption = selectedModelOption(modelSelect);
+    const idInput = /** @type {HTMLInputElement | null} */ (card.querySelector('[data-field="id"]'));
+    const nameInput = /** @type {HTMLInputElement | null} */ (card.querySelector('[data-field="name"]'));
+    const descriptionInput = /** @type {HTMLInputElement | null} */ (card.querySelector('[data-field="description"]'));
+    const thinkingInput = /** @type {HTMLInputElement | null} */ (card.querySelector('[data-field="thinking"]'));
+    const personaPromptInput = /** @type {HTMLTextAreaElement | null} */ (card.querySelector('[data-field="personaPrompt"]'));
 
     return {
-      id: card.querySelector('[data-field="id"]') ? card.querySelector('[data-field="id"]').value.trim() : '',
-      name: card.querySelector('[data-field="name"]') ? card.querySelector('[data-field="name"]').value.trim() : '',
-      description: card.querySelector('[data-field="description"]')
-        ? card.querySelector('[data-field="description"]').value.trim()
-        : '',
+      id: idInput ? idInput.value.trim() : '',
+      name: nameInput ? nameInput.value.trim() : '',
+      description: descriptionInput ? descriptionInput.value.trim() : '',
       provider: modelOption ? modelOption.provider || '' : providerInput ? providerInput.value.trim() : '',
       model: modelOption ? modelOption.model || '' : '',
-      thinking: card.querySelector('[data-field="thinking"]')
-        ? card.querySelector('[data-field="thinking"]').value.trim()
-        : '',
-      personaPrompt: card.querySelector('[data-field="personaPrompt"]')
-        ? card.querySelector('[data-field="personaPrompt"]').value.trim()
-        : '',
+      thinking: thinkingInput ? thinkingInput.value.trim() : '',
+      personaPrompt: personaPromptInput ? personaPromptInput.value.trim() : '',
     };
   });
 }
@@ -406,7 +409,8 @@ function bindEvents() {
   });
 
   dom.agentList.addEventListener('click', (event) => {
-    const item = event.target.closest('.agent-list-item');
+    const item =
+      event.target instanceof Element ? /** @type {HTMLElement | null} */ (event.target.closest('.agent-list-item')) : null;
 
     if (!item || !item.dataset.id) {
       return;
@@ -469,13 +473,13 @@ function bindEvents() {
   });
 
   dom.profileList.addEventListener('input', (event) => {
-    if (event.target.matches('input[data-field="name"]')) {
+    if (event.target instanceof Element && event.target.matches('input[data-field="name"]')) {
       updateProfileHeadings();
     }
   });
 
   dom.profileList.addEventListener('change', (event) => {
-    const modelSelect = event.target.closest('select[data-field="model"]');
+    const modelSelect = event.target instanceof Element ? event.target.closest('select[data-field="model"]') : null;
 
     if (!modelSelect) {
       return;
@@ -487,7 +491,7 @@ function bindEvents() {
   });
 
   dom.profileList.addEventListener('click', (event) => {
-    const removeButton = event.target.closest('[data-action="remove-profile"]');
+    const removeButton = event.target instanceof Element ? event.target.closest('[data-action="remove-profile"]') : null;
 
     if (!removeButton) {
       return;

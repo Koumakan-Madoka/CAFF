@@ -1,3 +1,5 @@
+// @ts-check
+
 const state = {
   runtime: null,
   modelOptions: [],
@@ -23,63 +25,63 @@ const avatarUtils = shared.avatar || {};
 const modelOptionUtils = shared.modelOptions || {};
 
 const dom = {
-  runtimePill: document.getElementById('runtime-pill'),
-  refreshButton: document.getElementById('refresh-button'),
-  newConversationForm: document.getElementById('new-conversation-form'),
-  newConversationTitle: document.getElementById('new-conversation-title'),
-  newConversationType: document.getElementById('new-conversation-type'),
-  conversationList: document.getElementById('conversation-list'),
-  conversationTitleDisplay: document.getElementById('conversation-title-display'),
-  conversationModeBadge: document.getElementById('conversation-mode-badge'),
-  conversationMeta: document.getElementById('conversation-meta'),
-  deleteConversationButton: document.getElementById('delete-conversation-button'),
-  participantList: document.getElementById('participant-list'),
-  messageList: document.getElementById('message-list'),
-  composerForm: document.getElementById('composer-form'),
-  composerInput: document.getElementById('composer-input'),
-  composerMentionMenu: document.getElementById('composer-mention-menu'),
-  composerStatus: document.getElementById('composer-status'),
-  stopButton: document.getElementById('stop-button'),
-  sendButton: document.getElementById('send-button'),
-  conversationSettingsForm: document.getElementById('conversation-settings-form'),
-  conversationTitleInput: document.getElementById('conversation-title-input'),
-  conversationAgentOptions: document.getElementById('conversation-agent-options'),
-  saveConversationButton: document.getElementById('save-conversation-button'),
-  bulkSkillSelect: document.getElementById('bulk-skill-select'),
-  applyBulkSkillButton: document.getElementById('apply-bulk-skill-button'),
-  clearBulkSkillButton: document.getElementById('clear-bulk-skill-button'),
-  undercoverGameCard: document.getElementById('undercover-game-card'),
-  undercoverGameStatus: document.getElementById('undercover-game-status'),
-  undercoverLastResult: document.getElementById('undercover-last-result'),
-  undercoverPlayerStatus: document.getElementById('undercover-player-status'),
-  undercoverSetupForm: document.getElementById('undercover-setup-form'),
-  undercoverCivilianWord: document.getElementById('undercover-civilian-word'),
-  undercoverUndercoverWord: document.getElementById('undercover-undercover-word'),
-  undercoverUndercoverCount: document.getElementById('undercover-undercover-count'),
-  undercoverBlankCount: document.getElementById('undercover-blank-count'),
-  undercoverBlankWord: document.getElementById('undercover-blank-word'),
-  undercoverStartButton: document.getElementById('undercover-start-button'),
-  undercoverResetButton: document.getElementById('undercover-reset-button'),
-  undercoverClueButton: document.getElementById('undercover-clue-button'),
-  undercoverVoteButton: document.getElementById('undercover-vote-button'),
-  undercoverRevealButton: document.getElementById('undercover-reveal-button'),
-  newAgentButton: document.getElementById('new-agent-button'),
-  agentList: document.getElementById('agent-list'),
-  agentForm: document.getElementById('agent-form'),
-  agentId: document.getElementById('agent-id'),
-  agentName: document.getElementById('agent-name'),
-  agentDescription: document.getElementById('agent-description'),
-  agentAvatarPreview: document.getElementById('agent-avatar-preview'),
-  agentAvatarFile: document.getElementById('agent-avatar-file'),
-  agentAvatarData: document.getElementById('agent-avatar-data'),
-  agentPersonaPrompt: document.getElementById('agent-persona-prompt'),
-  agentProvider: document.getElementById('agent-provider'),
-  agentModel: document.getElementById('agent-model'),
-  agentThinking: document.getElementById('agent-thinking'),
-  agentAccentColor: document.getElementById('agent-accent-color'),
-  clearAgentAvatarButton: document.getElementById('clear-agent-avatar-button'),
-  deleteAgentButton: document.getElementById('delete-agent-button'),
-  toast: document.getElementById('toast'),
+  runtimePill: /** @type {HTMLSpanElement | null} */ (document.getElementById('runtime-pill')),
+  refreshButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('refresh-button')),
+  newConversationForm: /** @type {HTMLFormElement | null} */ (document.getElementById('new-conversation-form')),
+  newConversationTitle: /** @type {HTMLInputElement | null} */ (document.getElementById('new-conversation-title')),
+  newConversationType: /** @type {HTMLSelectElement | null} */ (document.getElementById('new-conversation-type')),
+  conversationList: /** @type {HTMLDivElement | null} */ (document.getElementById('conversation-list')),
+  conversationTitleDisplay: /** @type {HTMLElement | null} */ (document.getElementById('conversation-title-display')),
+  conversationModeBadge: /** @type {HTMLElement | null} */ (document.getElementById('conversation-mode-badge')),
+  conversationMeta: /** @type {HTMLElement | null} */ (document.getElementById('conversation-meta')),
+  deleteConversationButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('delete-conversation-button')),
+  participantList: /** @type {HTMLDivElement | null} */ (document.getElementById('participant-list')),
+  messageList: /** @type {HTMLDivElement | null} */ (document.getElementById('message-list')),
+  composerForm: /** @type {HTMLFormElement | null} */ (document.getElementById('composer-form')),
+  composerInput: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('composer-input')),
+  composerMentionMenu: /** @type {HTMLDivElement | null} */ (document.getElementById('composer-mention-menu')),
+  composerStatus: /** @type {HTMLElement | null} */ (document.getElementById('composer-status')),
+  stopButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('stop-button')),
+  sendButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('send-button')),
+  conversationSettingsForm: /** @type {HTMLFormElement | null} */ (document.getElementById('conversation-settings-form')),
+  conversationTitleInput: /** @type {HTMLInputElement | null} */ (document.getElementById('conversation-title-input')),
+  conversationAgentOptions: /** @type {HTMLElement | null} */ (document.getElementById('conversation-agent-options')),
+  saveConversationButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('save-conversation-button')),
+  bulkSkillSelect: /** @type {HTMLSelectElement | null} */ (document.getElementById('bulk-skill-select')),
+  applyBulkSkillButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('apply-bulk-skill-button')),
+  clearBulkSkillButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('clear-bulk-skill-button')),
+  undercoverGameCard: /** @type {HTMLElement | null} */ (document.getElementById('undercover-game-card')),
+  undercoverGameStatus: /** @type {HTMLElement | null} */ (document.getElementById('undercover-game-status')),
+  undercoverLastResult: /** @type {HTMLElement | null} */ (document.getElementById('undercover-last-result')),
+  undercoverPlayerStatus: /** @type {HTMLElement | null} */ (document.getElementById('undercover-player-status')),
+  undercoverSetupForm: /** @type {HTMLFormElement | null} */ (document.getElementById('undercover-setup-form')),
+  undercoverCivilianWord: /** @type {HTMLInputElement | null} */ (document.getElementById('undercover-civilian-word')),
+  undercoverUndercoverWord: /** @type {HTMLInputElement | null} */ (document.getElementById('undercover-undercover-word')),
+  undercoverUndercoverCount: /** @type {HTMLInputElement | null} */ (document.getElementById('undercover-undercover-count')),
+  undercoverBlankCount: /** @type {HTMLInputElement | null} */ (document.getElementById('undercover-blank-count')),
+  undercoverBlankWord: /** @type {HTMLInputElement | null} */ (document.getElementById('undercover-blank-word')),
+  undercoverStartButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('undercover-start-button')),
+  undercoverResetButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('undercover-reset-button')),
+  undercoverClueButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('undercover-clue-button')),
+  undercoverVoteButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('undercover-vote-button')),
+  undercoverRevealButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('undercover-reveal-button')),
+  newAgentButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('new-agent-button')),
+  agentList: /** @type {HTMLElement | null} */ (document.getElementById('agent-list')),
+  agentForm: /** @type {HTMLFormElement | null} */ (document.getElementById('agent-form')),
+  agentId: /** @type {HTMLInputElement | null} */ (document.getElementById('agent-id')),
+  agentName: /** @type {HTMLInputElement | null} */ (document.getElementById('agent-name')),
+  agentDescription: /** @type {HTMLInputElement | HTMLTextAreaElement | null} */ (document.getElementById('agent-description')),
+  agentAvatarPreview: /** @type {HTMLElement | null} */ (document.getElementById('agent-avatar-preview')),
+  agentAvatarFile: /** @type {HTMLInputElement | null} */ (document.getElementById('agent-avatar-file')),
+  agentAvatarData: /** @type {HTMLInputElement | null} */ (document.getElementById('agent-avatar-data')),
+  agentPersonaPrompt: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('agent-persona-prompt')),
+  agentProvider: /** @type {HTMLInputElement | null} */ (document.getElementById('agent-provider')),
+  agentModel: /** @type {HTMLInputElement | null} */ (document.getElementById('agent-model')),
+  agentThinking: /** @type {HTMLInputElement | null} */ (document.getElementById('agent-thinking')),
+  agentAccentColor: /** @type {HTMLInputElement | null} */ (document.getElementById('agent-accent-color')),
+  clearAgentAvatarButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('clear-agent-avatar-button')),
+  deleteAgentButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('delete-agent-button')),
+  toast: /** @type {HTMLElement | null} */ (document.getElementById('toast')),
 };
 
 const toast = typeof shared.createToastController === 'function' ? shared.createToastController(dom.toast) : { show() {} };
@@ -229,11 +231,11 @@ function readAvatarFileAsDataUrl(file) {
 }
 
 const noopRenderer = {
-  render() {},
+  render(..._args) {},
 };
 
 const noopMentionMenuController = {
-  appendHighlightedMessageBody(container, text) {
+  appendHighlightedMessageBody(container, text, _agents) {
     container.textContent = String(text || '');
   },
   bindEvents() {},
@@ -245,15 +247,15 @@ const noopConversationSettingsController = {
   bindEvents() {},
   closeAllProfileMenus() {},
   render() {},
-  selectedModelProfileName() {
+  selectedModelProfileName(_agent) {
     return '默认配置';
   },
   selectedParticipants() {
     return [];
   },
-  setProfileSelectorDisabled() {},
-  setProfileSelectorValue() {},
-  toggleProfileSelector() {},
+  setProfileSelectorDisabled(..._args) {},
+  setProfileSelectorValue(..._args) {},
+  toggleProfileSelector(..._args) {},
 };
 
 let mentionMenuController = noopMentionMenuController;
@@ -1181,7 +1183,8 @@ function bindEvents() {
   }
 
   dom.conversationList.addEventListener('click', async (event) => {
-    const item = event.target.closest('.conversation-item');
+    const item =
+      event.target instanceof Element ? /** @type {HTMLElement | null} */ (event.target.closest('.conversation-item')) : null;
 
     if (!item) {
       return;
@@ -1195,7 +1198,10 @@ function bindEvents() {
   });
 
   dom.messageList.addEventListener('click', async (event) => {
-    const button = event.target.closest('.message-export-button');
+    const button =
+      event.target instanceof Element
+        ? /** @type {HTMLButtonElement | null} */ (event.target.closest('.message-export-button'))
+        : null;
 
     if (!button || !state.currentConversation) {
       return;
@@ -1450,7 +1456,7 @@ function bindEvents() {
   });
 
   dom.agentList.addEventListener('click', (event) => {
-    const item = event.target.closest('.agent-list-item');
+    const item = event.target instanceof Element ? /** @type {HTMLElement | null} */ (event.target.closest('.agent-list-item')) : null;
 
     if (!item || !item.dataset.id) {
       return;
