@@ -6,14 +6,15 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json && node scripts/copy-build-assets.js",
     "check": "node --check public/app.js && node --check public/personas.js && node --check public/skills.js && node --check public/shared/api-client.js && node --check public/shared/model-options.js && node --check public/shared/avatar.js && node --check public/shared/toast.js && node --check public/chat/conversation-list.js && node --check public/chat/participant-pane.js && node --check public/chat/message-timeline.js && node --check public/chat/conversation-settings.js && node --check public/chat/undercover-panel.js && node --check public/chat/mention-menu.js && node --check public/chat/conversation-pane.js",
-    "start": "npm run build && node build/lib/app-server.js",
-    "start:src": "npm run build && node build/lib/app-server.js",
+    "start": "node build/lib/app-server.js",
+    "start:dev": "npm run build && npm run start",
+    "start:src": "npm run start:dev",
     "typecheck": "tsc -p tsconfig.typecheck.json && tsc -p tsconfig.public.json",
     "typecheck:public": "tsc -p tsconfig.public.json",
     "test:fast": "npm run check && npm run build && node tests/runtime/agent-tool-bridge.test.js && node tests/runtime/turn-orchestrator.test.js && node tests/runtime/agent-chat-tools.test.js && node tests/http/request-body.test.js && node tests/storage/chat-store.test.js && node tests/storage/run-store.test.js && node tests/runtime/pi-runtime.test.js",
     "test:smoke": "node tests/smoke/server-smoke.test.js",
     "test": "npm run test:fast && npm run test:smoke",
-    "web": "npm run start"
+    "web": "npm run start:dev"
   },
   "keywords": [],
   "author": "",
