@@ -1,3 +1,5 @@
+// @ts-check
+
 (function registerConversationListModule() {
   const chat = window.CaffChat || (window.CaffChat = {});
 

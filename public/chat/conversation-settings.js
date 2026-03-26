@@ -1,3 +1,5 @@
+// @ts-check
+
 (function registerConversationSettingsModule() {
   const chat = window.CaffChat || (window.CaffChat = {});
 
@@ -579,7 +581,7 @@
       }
 
       document.addEventListener('click', (event) => {
-        if (event.target.closest('.profile-choice-group')) {
+        if (event.target instanceof Element && event.target.closest('.profile-choice-group')) {
           return;
         }
 

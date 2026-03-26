@@ -20,7 +20,7 @@ From the project root:
 
 ```powershell
 npm install
-npm start
+npm run start:dev
 ```
 
 Then open:

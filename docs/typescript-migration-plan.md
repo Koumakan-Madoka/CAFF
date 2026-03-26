@@ -2,6 +2,15 @@
 
 更新时间：2026-03-26
 
+## 0. 进度（本仓库）
+
+- [x] Phase 0：基线固定为 `npm test`
+- [x] Phase 1：已引入 `tsconfig.typecheck.json` + `npm run typecheck`（后端：覆盖 `server/` + `storage/` + `lib/`）
+- [x] Phase 2：已打通 build 产物可运行（`npm run build` 输出到 `build/`，`npm start` 运行 `build/lib/app-server.js`，并复制 `public/` 到 `build/public/`）
+- [x] Phase 3：按目录逐步迁移 `.js` -> `.ts`（已完成：`server/http/`、`server/api/`、`storage/`、`server/domain/runtime/`、`server/domain/conversation/`、`server/domain/undercover/`、`server/app/`、`lib/`）
+- [x] Phase 4：逐步收紧类型严谨度（已启用 `strict`/`noImplicitAny`，`npm run typecheck` + `npm test` 通过）
+- [x] Phase 5：处理 `public/`（保持 JS + `@ts-check`，新增 `tsconfig.public.json` / `npm run typecheck:public`，并纳入 `npm run typecheck`）
+
 ## 1. 背景与目标
 
 你当前的代码库主要是 Node.js（CommonJS）+ 少量前端静态脚本（`public/`）。将项目从 JS 逐步迁移到 TS 的核心目标是：
@@ -170,8 +179,10 @@
 
 方案 1（低成本，推荐优先）：继续 JS，但增强检查
 
-- 为 `public/` 增加单独的 `tsconfig.public.json`（`checkJs` + DOM lib）
-- 在关键文件头增加 `// @ts-check` 并补充 JSDoc
+- 为 `public/` 增加单独的 `tsconfig.public.json`（`checkJs` + DOM lib；建议 `moduleDetection: "force"` 以避免不同页面脚本的全局变量重名）
+- 增加 `public/global.d.ts`，声明 `window.CaffShared / window.CaffChat` 等全局对象
+- 脚本：`npm run typecheck:public`（并可让 `npm run typecheck` 串行跑后端 + public）
+- 在关键文件头增加 `// @ts-check` 并补充 JSDoc（尤其是 `document.getElementById(...)` 的 DOM 类型）
 
 方案 2（高收益/高成本）：引入构建（esbuild/rollup 等）
 
@@ -180,9 +191,7 @@
 
 ## 10. 建议的落地起步（本仓库）
 
-最稳的第一步（建议下一 PR）：
+最稳的落地方式（本仓库建议长期保持）：
 
-- 完成 Phase 1：`typecheck` 覆盖 `server/` + `storage/` + `lib/`，先排除 `public/`
-
-这样你会在**不改变运行**的情况下，立刻获得类型带来的错误发现与重构信心；等类型检查稳定后，再进入 Phase 2/3。
-
+- 回归基线：`npm test`
+- 类型检查：`npm run typecheck`（后端 + `public/`；需要时可单独跑 `npm run typecheck:public`）

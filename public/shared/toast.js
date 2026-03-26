@@ -1,3 +1,5 @@
+// @ts-check
+
 (function registerToastController() {
   const shared = window.CaffShared || (window.CaffShared = {});
 

@@ -1,6 +1,12 @@
 # Dependencies
 node_modules/
 
+# Build output
+build/
+
+# Local caches
+.npm-cache/
+
 # Runtime data
 .pi-sandbox/
 .tmp-clowder-ai/

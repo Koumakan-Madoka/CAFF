@@ -1,3 +1,5 @@
+// @ts-check
+
 const RESERVED_FILE_PATHS = new Set(['SKILL.md', 'agents/openai.yaml']);
 
 const state = {
@@ -10,26 +12,26 @@ const shared = window.CaffShared || {};
 const fetchJson = shared.fetchJson;
 
 const dom = {
-  refreshButton: document.getElementById('refresh-button'),
-  newSkillButton: document.getElementById('new-skill-button'),
-  skillList: document.getElementById('skill-list'),
-  editorTitle: document.getElementById('editor-title'),
-  skillForm: document.getElementById('skill-form'),
-  skillId: document.getElementById('skill-id'),
-  skillName: document.getElementById('skill-name'),
-  skillDescription: document.getElementById('skill-description'),
-  skillFolderPath: document.getElementById('skill-folder-path'),
-  skillBody: document.getElementById('skill-body'),
-  skillOpenAiYaml: document.getElementById('skill-openai-yaml'),
-  skillFileList: document.getElementById('skill-file-list'),
-  skillExtraFileList: document.getElementById('skill-extra-file-list'),
-  newSkillFileButton: document.getElementById('new-skill-file-button'),
-  skillExtraFilePath: document.getElementById('skill-extra-file-path'),
-  skillExtraFileContent: document.getElementById('skill-extra-file-content'),
-  saveSkillFileButton: document.getElementById('save-skill-file-button'),
-  deleteSkillFileButton: document.getElementById('delete-skill-file-button'),
-  deleteSkillButton: document.getElementById('delete-skill-button'),
-  toast: document.getElementById('toast'),
+  refreshButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('refresh-button')),
+  newSkillButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('new-skill-button')),
+  skillList: /** @type {HTMLDivElement | null} */ (document.getElementById('skill-list')),
+  editorTitle: /** @type {HTMLElement | null} */ (document.getElementById('editor-title')),
+  skillForm: /** @type {HTMLFormElement | null} */ (document.getElementById('skill-form')),
+  skillId: /** @type {HTMLInputElement | null} */ (document.getElementById('skill-id')),
+  skillName: /** @type {HTMLInputElement | null} */ (document.getElementById('skill-name')),
+  skillDescription: /** @type {HTMLInputElement | null} */ (document.getElementById('skill-description')),
+  skillFolderPath: /** @type {HTMLInputElement | null} */ (document.getElementById('skill-folder-path')),
+  skillBody: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('skill-body')),
+  skillOpenAiYaml: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('skill-openai-yaml')),
+  skillFileList: /** @type {HTMLElement | null} */ (document.getElementById('skill-file-list')),
+  skillExtraFileList: /** @type {HTMLElement | null} */ (document.getElementById('skill-extra-file-list')),
+  newSkillFileButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('new-skill-file-button')),
+  skillExtraFilePath: /** @type {HTMLInputElement | null} */ (document.getElementById('skill-extra-file-path')),
+  skillExtraFileContent: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('skill-extra-file-content')),
+  saveSkillFileButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('save-skill-file-button')),
+  deleteSkillFileButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('delete-skill-file-button')),
+  deleteSkillButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('delete-skill-button')),
+  toast: /** @type {HTMLElement | null} */ (document.getElementById('toast')),
 };
 
 const toast = typeof shared.createToastController === 'function' ? shared.createToastController(dom.toast) : { show() {} };
@@ -367,7 +369,8 @@ function bindEvents() {
   });
 
   dom.skillList.addEventListener('click', async (event) => {
-    const item = event.target.closest('.agent-list-item');
+    const item =
+      event.target instanceof Element ? /** @type {HTMLElement | null} */ (event.target.closest('.agent-list-item')) : null;
 
     if (!item || !item.dataset.id) {
       return;
@@ -455,7 +458,8 @@ function bindEvents() {
   });
 
   dom.skillExtraFileList.addEventListener('click', async (event) => {
-    const item = event.target.closest('.skill-file-item');
+    const item =
+      event.target instanceof Element ? /** @type {HTMLElement | null} */ (event.target.closest('.skill-file-item')) : null;
 
     if (!item || !item.dataset.path || !state.selectedSkillId) {
       return;

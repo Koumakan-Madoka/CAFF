@@ -1,3 +1,5 @@
+// @ts-check
+
 (function registerModelOptions() {
   const shared = window.CaffShared || (window.CaffShared = {});
 

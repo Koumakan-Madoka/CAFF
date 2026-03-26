@@ -107,7 +107,7 @@ test('server smoke: bootstrap, static files, skill, agent, and conversation flow
   const port = await findFreePort();
   const tempDir = withTempDir('caff-m0-');
   const sqlitePath = path.join(tempDir, 'smoke.sqlite');
-  const child = spawn(process.execPath, ['lib/app-server.js'], {
+  const child = spawn(process.execPath, ['build/lib/app-server.js'], {
     cwd: ROOT_DIR,
     env: {
       ...process.env,

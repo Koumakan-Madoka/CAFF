@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "forceConsistentCasingInFileNames": true,
+    "lib": ["DOM", "DOM.Iterable", "ES2022"],
+    "moduleDetection": "force",
+    "noEmit": true,
+    "skipLibCheck": true,
+    "target": "ES2022",
+    "types": []
+  },
+  "include": ["public/**/*.js", "public/**/*.d.ts"],
+  "exclude": ["node_modules"]
+}

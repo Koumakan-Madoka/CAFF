@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const { PassThrough } = require('node:stream');
 const test = require('node:test');
-const { readRequestJson } = require('../../server/http/request-body');
+const { readRequestJson } = require('../../build/server/http/request-body');
 
 test('readRequestJson parses JSON request bodies', async () => {
   const req = new PassThrough();

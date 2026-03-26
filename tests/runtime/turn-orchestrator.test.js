@@ -5,12 +5,12 @@ const test = require('node:test');
 const {
   buildAgentTurnPrompt,
   sanitizePromptMentions,
-} = require('../../server/domain/conversation/turn-orchestrator');
-const { createAgentExecutor } = require('../../server/domain/conversation/turn/agent-executor');
-const { ensureAgentSandbox } = require('../../server/domain/conversation/turn/agent-sandbox');
-const { createSessionExporter } = require('../../server/domain/conversation/turn/session-export');
-const { createTurnState } = require('../../server/domain/conversation/turn/turn-state');
-const { createTurnStopper, registerTurnHandle } = require('../../server/domain/conversation/turn/turn-stop');
+} = require('../../build/server/domain/conversation/turn-orchestrator');
+const { createAgentExecutor } = require('../../build/server/domain/conversation/turn/agent-executor');
+const { ensureAgentSandbox } = require('../../build/server/domain/conversation/turn/agent-sandbox');
+const { createSessionExporter } = require('../../build/server/domain/conversation/turn/session-export');
+const { createTurnState } = require('../../build/server/domain/conversation/turn/turn-state');
+const { createTurnStopper, registerTurnHandle } = require('../../build/server/domain/conversation/turn/turn-stop');
 
 const { withTempDir } = require('../helpers/temp-dir');
 

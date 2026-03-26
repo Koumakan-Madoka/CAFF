@@ -1,3 +1,5 @@
+// @ts-check
+
 (function registerAvatarUtils() {
   const shared = window.CaffShared || (window.CaffShared = {});
   const MAX_AVATAR_FILE_SIZE = 1024 * 1024;
