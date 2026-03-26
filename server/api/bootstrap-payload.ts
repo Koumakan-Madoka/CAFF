@@ -17,12 +17,38 @@ type ModelOption = {
   sourceLabel: string;
 };
 
+function findRepoRoot(startDir: string, maxDepth = 8) {
+  let currentDir = path.resolve(String(startDir || ''));
+
+  for (let depth = 0; depth <= maxDepth; depth += 1) {
+    if (fs.existsSync(path.join(currentDir, 'package.json'))) {
+      return currentDir;
+    }
+
+    const parentDir = path.dirname(currentDir);
+
+    if (parentDir === currentDir) {
+      break;
+    }
+
+    currentDir = parentDir;
+  }
+
+  return '';
+}
+
+function resolveRepoRoot() {
+  return findRepoRoot(process.cwd()) || findRepoRoot(String(config.ROOT_DIR || '')) || process.cwd();
+}
+
 export function createBootstrapPayloadBuilder({ store, skillRegistry, turnOrchestrator }: any) {
+  const repoRoot = resolveRepoRoot();
+
   function readConfiguredModelsFile() {
     const configuredAgentDir = resolveSetting('', process.env.PI_CODING_AGENT_DIR, DEFAULT_AGENT_DIR);
     const candidatePaths = [
       path.resolve(configuredAgentDir, 'models.json'),
-      path.resolve(config.ROOT_DIR, '.pi-sandbox', 'models.json'),
+      path.resolve(repoRoot, '.pi-sandbox', 'models.json'),
     ];
     const seenPaths = new Set();
 
