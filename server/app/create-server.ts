@@ -23,6 +23,23 @@ const { sendJson } = require('../http/response');
 const { serveStaticFile } = require('../http/static-file');
 const { createHttpError } = require('../http/http-errors');
 
+function resolveToolRelativePath(toolPath: string) {
+  const cwd = process.cwd();
+  const absolutePath = path.resolve(String(toolPath || ''));
+  const relativePath = path.relative(cwd, absolutePath) || path.basename(absolutePath);
+  const portablePath = relativePath.replace(/\\/g, '/');
+
+  if (portablePath.startsWith('.') || portablePath.startsWith('/')) {
+    return portablePath;
+  }
+
+  if (/^[A-Za-z]:\//.test(portablePath)) {
+    return portablePath;
+  }
+
+  return `./${portablePath}`;
+}
+
 export function createServerApp(options: any = {}) {
   const host = String(options.host || HOST).trim() || HOST;
   const portValue = Number.isInteger(options.port) ? options.port : Number.parseInt(String(options.port || PORT), 10);
@@ -74,6 +91,9 @@ export function createServerApp(options: any = {}) {
     },
   });
 
+  const agentToolScriptPath = path.resolve(ROOT_DIR, 'lib', 'agent-chat-tools.js');
+  const agentToolRelativePath = resolveToolRelativePath(agentToolScriptPath);
+
   turnOrchestrator = createTurnOrchestrator({
     store,
     skillRegistry,
@@ -86,8 +106,8 @@ export function createServerApp(options: any = {}) {
     agentDir,
     sqlitePath,
     toolBaseUrl: `http://${host}:${port}`,
-    agentToolScriptPath: path.resolve(ROOT_DIR, 'lib', 'agent-chat-tools.js'),
-    agentToolRelativePath: './lib/agent-chat-tools.js',
+    agentToolScriptPath,
+    agentToolRelativePath,
   });
 
   const undercoverService = createUndercoverService({
