@@ -1,6 +1,5 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const {
@@ -12,6 +11,8 @@ const { ensureAgentSandbox } = require('../../server/domain/conversation/turn/ag
 const { createSessionExporter } = require('../../server/domain/conversation/turn/session-export');
 const { createTurnState } = require('../../server/domain/conversation/turn/turn-state');
 const { createTurnStopper, registerTurnHandle } = require('../../server/domain/conversation/turn/turn-stop');
+
+const { withTempDir } = require('../helpers/temp-dir');
 
 test('sanitizePromptMentions rewrites raw @mentions into safe placeholders', () => {
   assert.equal(
@@ -127,7 +128,7 @@ test('buildAgentTurnPrompt gives bash-only multiline chat bridge guidance', () =
 });
 
 test('session export refuses non-assistant messages and out-of-bounds paths', (t) => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-session-export-'));
+  const tempDir = withTempDir('caff-session-export-');
   const agentDir = path.join(tempDir, 'agent-dir');
   fs.mkdirSync(path.join(agentDir, 'named-sessions'), { recursive: true });
 
@@ -153,7 +154,7 @@ test('session export refuses non-assistant messages and out-of-bounds paths', (t
 });
 
 test('session export requires a resolved session path', (t) => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-session-missing-'));
+  const tempDir = withTempDir('caff-session-missing-');
 
   t.after(() => {
     fs.rmSync(tempDir, { recursive: true, force: true });
@@ -230,7 +231,7 @@ test('agent decision routing only extracts actionable trailing mentions', () => 
 });
 
 test('agent sandbox helper creates private directory', (t) => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-sandbox-'));
+  const tempDir = withTempDir('caff-sandbox-');
 
   t.after(() => {
     fs.rmSync(tempDir, { recursive: true, force: true });

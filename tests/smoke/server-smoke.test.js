@@ -1,28 +1,14 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const net = require('node:net');
 const test = require('node:test');
 
+const { requireSpawn } = require('../helpers/spawn');
+const { withTempDir } = require('../helpers/temp-dir');
+
 const ROOT_DIR = path.resolve(__dirname, '..', '..');
-
-function canSpawnProcess() {
-  try {
-    const child = spawn(process.execPath, ['-e', ''], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
-
-    try {
-      child.kill();
-    } catch {}
-
-    return true;
-  } catch (error) {
-    return !(error && error.code === 'EPERM');
-  }
-}
-
-const SPAWN_AVAILABLE = canSpawnProcess();
 
 function findFreePort() {
   return new Promise((resolve, reject) => {
@@ -114,13 +100,12 @@ async function fetchJson(baseUrl, pathname, options = {}) {
 }
 
 test('server smoke: bootstrap, static files, skill, agent, and conversation flows work', async (t) => {
-  if (!SPAWN_AVAILABLE) {
-    t.skip('child_process.spawn is not permitted in this environment');
+  if (!requireSpawn(t)) {
     return;
   }
 
   const port = await findFreePort();
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-m0-'));
+  const tempDir = withTempDir('caff-m0-');
   const sqlitePath = path.join(tempDir, 'smoke.sqlite');
   const child = spawn(process.execPath, ['lib/app-server.js'], {
     cwd: ROOT_DIR,
