@@ -8,8 +8,8 @@
 
 ## 后端规则
 
-1. `lib/app-server.js`    只保留启动、依赖组装、关闭逻辑和顶层错误兜底。
-2. HTTP 请求解析、响应拼装、静态文件服务、SSE 这类基础设施不得继续写回 `lib/app-server.js`。
+1. `lib/app-server.ts`    只保留启动、依赖组装、关闭逻辑和顶层错误兜底。
+2. HTTP 请求解析、响应拼装、静态文件服务、SSE 这类基础设施不得继续写回 `lib/app-server.ts`。
 3. 新增 API 时，优先新增 controller 或 service，不要继续扩展大段 `if/else`。
 4. 业务流程代码不能直接依赖 `http.ServerResponse`。
 5. Repository 只负责数据读写，不负责 HTTP 和页面语义。

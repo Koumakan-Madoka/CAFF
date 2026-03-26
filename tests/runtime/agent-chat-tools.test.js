@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const { PassThrough } = require('node:stream');
 const test = require('node:test');
-const { formatCommandResult, resolveMessageContent, shouldEchoContent } = require('../../lib/agent-chat-tools');
+const { formatCommandResult, resolveMessageContent, shouldEchoContent } = require('../../build/lib/agent-chat-tools');
 
 test('send-public tool results are compact by default', () => {
   const result = formatCommandResult('send-public', {

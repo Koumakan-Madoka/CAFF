@@ -2,8 +2,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
-const { createChatAppStore } = require('../../lib/chat-app-store');
-const { createAgentToolBridge } = require('../../server/domain/runtime/agent-tool-bridge');
+const { createChatAppStore } = require('../../build/lib/chat-app-store');
+const { createAgentToolBridge } = require('../../build/server/domain/runtime/agent-tool-bridge');
 
 const { withTempDir } = require('../helpers/temp-dir');
 

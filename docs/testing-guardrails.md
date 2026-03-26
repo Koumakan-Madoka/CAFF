@@ -7,14 +7,14 @@
 ### 技术栈/结构
 
 - Node.js（CommonJS），无额外测试框架依赖，测试基于 `node:test` + `node:assert/strict`。
-- 后端：`lib/app-server.js` 启动 `server/app/create-server.js`，HTTP 路由由 `server/http/router.js` 串联 controllers（`server/api/*`）。
-- 核心业务：对话编排在 `server/domain/conversation/turn-orchestrator.js` 与 `server/domain/conversation/turn/*`；@mention 路由规则在 `server/domain/conversation/mention-routing.js`。
-- 持久化：SQLite（`better-sqlite3`），store 在 `lib/chat-app-store.js`，运行/任务 store 在 `lib/sqlite-store.js`。
+- 后端：入口在 `lib/app-server.ts`（build 后运行 `build/lib/app-server.js`），依赖组装在 `server/app/create-server.ts`，HTTP 路由由 `server/http/router.ts` 串联 controllers（`server/api/*`）。
+- 核心业务：对话编排在 `server/domain/conversation/turn-orchestrator.ts` 与 `server/domain/conversation/turn/*`；@mention 路由规则在 `server/domain/conversation/mention-routing.ts`。
+- 持久化：SQLite（`better-sqlite3`），store 在 `lib/chat-app-store.ts`，运行/任务 store 在 `lib/sqlite-store.ts`。
 
 ### 已有“护栏”与测试
 
-- 语法检查：`npm run check`（大量 `node --check ...`，覆盖 lib/public/server 关键文件）。
-- 测试入口：`npm test` 会先跑 `check`，再逐个运行：
+- 语法检查：`npm run check`（`node --check ...` 覆盖 `public/`；后端/存储/运行时由 `npm run build` 与 `npm run typecheck` 覆盖）。
+- 测试入口：`npm test` 会先跑 `build`（`tsc` + copy assets），再跑 `test:fast`（含 `check`），最后跑 `test:smoke`：
   - `tests/runtime/*`：turn-orchestrator、agent-tool-bridge、pi-runtime、agent-chat-tools
   - `tests/storage/*`：chat-store、run-store（含迁移验证）
   - `tests/http/*`：request-body
@@ -42,9 +42,9 @@
 目的：在不引入 flaky 的前提下，把核心业务逻辑的回归挡住；这层应该 10s~30s 内完成（视机器而定）。
 
 建议覆盖重点：
-- `server/domain/conversation/mention-routing.js`：提取 mentions、`#ideate/#execute` 模式、边界字符/换行规则
+- `server/domain/conversation/mention-routing.ts`：提取 mentions、`#ideate/#execute` 模式、边界字符/换行规则
 - `server/domain/conversation/turn/*`：turn state 变更、stop、routing executor 的队列/并发批次逻辑、decision 解析
-- `lib/chat-app-store.js` / `lib/sqlite-store.js`：迁移与写入一致性（你已有不错的覆盖）
+- `lib/chat-app-store.ts` / `lib/sqlite-store.ts`：迁移与写入一致性（你已有不错的覆盖）
 - `server/http/*`：请求体、错误码、路由匹配（尽量用“假 req/res”或直接调用 controller.handle）
 
 现状：你已经有不少 Gate B 的测试文件了；后续新增功能要坚持把大多数回归挡在这里。
@@ -86,14 +86,14 @@
 
 ### P0（最值回票价：编排/路由/停止）
 
-- `server/domain/conversation/mention-routing.js`
+- `server/domain/conversation/mention-routing.ts`
   - mention 边界字符：`(@Agent)`、`@Agent,`、`email@example.com`、中文标点、代码块 ``` ``` 内不路由
   - `#execute/#ideate` 与多 agent 的 mode 组合（serial/parallel）与 cleanedText
-- `server/domain/conversation/turn/routing-executor.js`
+- `server/domain/conversation/turn/routing-executor.ts`
   - 409：并发 turn（`activeConversationIds`）防重入
   - “首轮并发 + 后续 handoff 串行”的关键状态转移
   - 并发 fan-out 批次上限（`MAX_PARALLEL_MENTION_BATCH_SIZE = 5`）的排队行为
-- `server/domain/conversation/turn/turn-stop.js`
+- `server/domain/conversation/turn/turn-stop.ts`
   - stop 之后不再接受 tool bridge late writes（你已有一部分覆盖，但可以补“队列阶段清空 + stage 状态一致性”）
 
 ### P1（HTTP 合约与错误码）
@@ -101,11 +101,11 @@
 - `server/api/*` controllers：
   - 400/404/409 错误码保持一致（例如 conversations 不存在、内容为空、重复 turn）
   - POST body 的必填字段校验（利用 `tests/http/request-body.test.js` 的模式扩展）
-- `server/http/static-file.js`：路径穿越防护（若存在）、content-type
+- `server/http/static-file.ts`：路径穿越防护（若存在）、content-type
 
 ### P2（数据一致性与迁移回归）
 
-- `lib/chat-app-store.js` / `storage/sqlite/migrations.js`
+- `lib/chat-app-store.ts` / `storage/sqlite/migrations.ts`
   - 新增字段/表时：必须加“旧库迁移 + 历史数据保留”的测试（你已有很好的模板：`tests/storage/chat-store.test.js`、`tests/storage/run-store.test.js`）
 
 ---
