@@ -10,15 +10,15 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-function resolveUndercoverStateDir(agentDir) {
+function resolveUndercoverStateDir(agentDir: any) {
   return path.resolve(agentDir, 'who-is-undercover-games');
 }
 
-function ensureDir(dirPath) {
+function ensureDir(dirPath: any) {
   fs.mkdirSync(dirPath, { recursive: true });
 }
 
-function sanitizeConversationId(value) {
+function sanitizeConversationId(value: any) {
   return String(value || '')
     .trim()
     .replace(/[^a-zA-Z0-9._-]+/g, '-')
@@ -26,7 +26,7 @@ function sanitizeConversationId(value) {
     .replace(/^-|-$/g, '');
 }
 
-function gameStatePath(stateDir, conversationId) {
+function gameStatePath(stateDir: any, conversationId: any) {
   const normalizedId = sanitizeConversationId(conversationId);
 
   if (!normalizedId) {
@@ -36,7 +36,7 @@ function gameStatePath(stateDir, conversationId) {
   return path.join(stateDir, `${normalizedId}.json`);
 }
 
-function shuffleInPlace(items) {
+function shuffleInPlace(items: any) {
   for (let index = items.length - 1; index > 0; index -= 1) {
     const swapIndex = randomInt(index + 1);
     const nextValue = items[index];
@@ -47,7 +47,7 @@ function shuffleInPlace(items) {
   return items;
 }
 
-function normalizePositiveInteger(value, fallback, minimum = 0) {
+function normalizePositiveInteger(value: any, fallback: any, minimum = 0) {
   const parsed = Number.parseInt(String(value ?? '').trim(), 10);
 
   if (!Number.isInteger(parsed)) {
@@ -57,7 +57,7 @@ function normalizePositiveInteger(value, fallback, minimum = 0) {
   return Math.max(minimum, parsed);
 }
 
-function normalizeOptionalText(value) {
+function normalizeOptionalText(value: any) {
   const normalized = String(value || '').trim();
   return normalized || '';
 }
@@ -102,8 +102,8 @@ function validateGameConfig(config: any = {}, playerCount = 0) {
   };
 }
 
-function createAssignments(agents, config) {
-  const roles = [];
+function createAssignments(agents: any, config: any) {
+  const roles: string[] = [];
   const undercoverCount = normalizePositiveInteger(config.undercoverCount, 1, 1);
   const blankCount = normalizePositiveInteger(config.blankCount, 0, 0);
 
@@ -115,13 +115,15 @@ function createAssignments(agents, config) {
     roles.push('blank');
   }
 
-  while (roles.length < agents.length) {
+  const normalizedAgents = Array.isArray(agents) ? agents : [];
+
+  while (roles.length < normalizedAgents.length) {
     roles.push('civilian');
   }
 
   shuffleInPlace(roles);
 
-  return agents.map((agent, index) => {
+  return normalizedAgents.map((agent: any, index: number) => {
     const role = roles[index] || 'civilian';
     const word =
       role === 'undercover'
@@ -135,21 +137,21 @@ function createAssignments(agents, config) {
       name: agent.name,
       role,
       word,
-      eliminatedAt: null,
-      eliminatedRound: null,
+      eliminatedAt: null as null,
+      eliminatedRound: null as null,
     };
   });
 }
 
-function isAlive(player) {
+function isAlive(player: any) {
   return Boolean(player) && !player.eliminatedAt;
 }
 
-function countAliveByRole(players, role) {
-  return (Array.isArray(players) ? players : []).filter((player) => isAlive(player) && player.role === role).length;
+function countAliveByRole(players: any, role: any) {
+  return (Array.isArray(players) ? players : []).filter((player: any) => isAlive(player) && player.role === role).length;
 }
 
-function evaluateWinner(state) {
+function evaluateWinner(state: any) {
   const players = Array.isArray(state && state.players) ? state.players : [];
   const aliveCivilianCount = countAliveByRole(players, 'civilian');
   const aliveUndercoverCount = countAliveByRole(players, 'undercover');
@@ -173,7 +175,7 @@ function evaluateWinner(state) {
   return null;
 }
 
-function summarizeVoteHistoryEntry(entry) {
+function summarizeVoteHistoryEntry(entry: any) {
   if (!entry || entry.type !== 'vote') {
     return null;
   }
@@ -185,7 +187,7 @@ function summarizeVoteHistoryEntry(entry) {
     resolution: entry.resolution || '',
     tieAgentIds: Array.isArray(entry.tieAgentIds) ? entry.tieAgentIds : [],
     votes: Array.isArray(entry.votes)
-      ? entry.votes.map((vote) => ({
+      ? entry.votes.map((vote: any) => ({
           voterAgentId: vote.voterAgentId,
           voterName: vote.voterName,
           targetAgentId: vote.targetAgentId,
@@ -206,11 +208,11 @@ class WhoIsUndercoverHost {
     ensureDir(this.stateDir);
   }
 
-  getStatePath(conversationId) {
+  getStatePath(conversationId: any) {
     return gameStatePath(this.stateDir, conversationId);
   }
 
-  loadState(conversationId) {
+  loadState(conversationId: any) {
     const statePath = this.getStatePath(conversationId);
 
     if (!fs.existsSync(statePath)) {
@@ -220,7 +222,7 @@ class WhoIsUndercoverHost {
     return JSON.parse(fs.readFileSync(statePath, 'utf8'));
   }
 
-  saveState(state) {
+  saveState(state: any) {
     const conversationId = String(state && state.conversationId ? state.conversationId : '').trim();
 
     if (!conversationId) {
@@ -236,7 +238,7 @@ class WhoIsUndercoverHost {
     return nextState;
   }
 
-  deleteState(conversationId) {
+  deleteState(conversationId: any) {
     const statePath = this.getStatePath(conversationId);
 
     if (fs.existsSync(statePath)) {
@@ -244,7 +246,7 @@ class WhoIsUndercoverHost {
     }
   }
 
-  assertConversation(conversation) {
+  assertConversation(conversation: any) {
     if (!conversation) {
       throw new Error('会话不存在');
     }
@@ -258,7 +260,7 @@ class WhoIsUndercoverHost {
     }
   }
 
-  createGame(conversation, rawConfig: any = {}) {
+  createGame(conversation: any, rawConfig: any = {}) {
     this.assertConversation(conversation);
     const config = validateGameConfig(rawConfig, conversation.agents.length);
     const createdAt = nowIso();
@@ -282,22 +284,22 @@ class WhoIsUndercoverHost {
     });
   }
 
-  getAlivePlayers(state) {
+  getAlivePlayers(state: any) {
     return (Array.isArray(state && state.players) ? state.players : []).filter(isAlive);
   }
 
-  getAliveAgentIds(state) {
-    return this.getAlivePlayers(state).map((player) => player.agentId);
+  getAliveAgentIds(state: any) {
+    return this.getAlivePlayers(state).map((player: any) => player.agentId);
   }
 
-  getPlayer(state, agentId) {
-    return (Array.isArray(state && state.players) ? state.players : []).find((player) => player.agentId === agentId) || null;
+  getPlayer(state: any, agentId: any) {
+    return (Array.isArray(state && state.players) ? state.players : []).find((player: any) => player.agentId === agentId) || null;
   }
 
-  getAssignments(state, options: any = {}) {
+  getAssignments(state: any, options: any = {}) {
     const includeSecrets = options.includeSecrets === true;
 
-    return (Array.isArray(state && state.players) ? state.players : []).map((player) => ({
+    return (Array.isArray(state && state.players) ? state.players : []).map((player: any) => ({
       agentId: player.agentId,
       name: player.name,
       role: includeSecrets ? player.role : undefined,
@@ -308,7 +310,7 @@ class WhoIsUndercoverHost {
     }));
   }
 
-  buildRoleBriefing(player, state) {
+  buildRoleBriefing(player: any, state: any) {
     if (!player) {
       return '';
     }
@@ -327,14 +329,14 @@ class WhoIsUndercoverHost {
     ].join('\n');
   }
 
-  markClueRoundStarted(state) {
+  markClueRoundStarted(state: any) {
     return this.saveState({
       ...state,
       phase: 'clue_round',
     });
   }
 
-  markClueRoundCompleted(state, replyMessages = []) {
+  markClueRoundCompleted(state: any, replyMessages: any[] = []) {
     return this.saveState({
       ...state,
       phase: 'ready_for_vote',
@@ -350,7 +352,7 @@ class WhoIsUndercoverHost {
     });
   }
 
-  applyVoteResult(state, voteResult: any = {}) {
+  applyVoteResult(state: any, voteResult: any = {}) {
     const nextState = {
       ...state,
       history: [...(Array.isArray(state && state.history) ? state.history : [])],
@@ -391,7 +393,7 @@ class WhoIsUndercoverHost {
     return this.saveState(nextState);
   }
 
-  revealState(state) {
+  revealState(state: any) {
     return this.saveState({
       ...state,
       status: state && state.status === 'completed' ? 'completed' : 'revealed',
@@ -400,19 +402,19 @@ class WhoIsUndercoverHost {
     });
   }
 
-  buildPublicState(state) {
+  buildPublicState(state: any) {
     if (!state) {
       return {
         variant: UNDERCOVER_CONVERSATION_TYPE,
         status: 'setup',
         phase: 'setup',
         roundNumber: 1,
-        players: [],
-        aliveAgentIds: [],
-        eliminatedAgentIds: [],
-        config: null,
-        winner: null,
-        revealedAssignments: [],
+        players: [] as any[],
+        aliveAgentIds: [] as any[],
+        eliminatedAgentIds: [] as any[],
+        config: null as null,
+        winner: null as null,
+        revealedAssignments: [] as any[],
       };
     }
 
@@ -421,7 +423,7 @@ class WhoIsUndercoverHost {
     });
     const lastVoteEntry = [...(Array.isArray(state.history) ? state.history : [])]
       .reverse()
-      .find((entry) => entry && entry.type === 'vote');
+      .find((entry: any) => entry && entry.type === 'vote');
 
     return {
       variant: UNDERCOVER_CONVERSATION_TYPE,
@@ -441,13 +443,13 @@ class WhoIsUndercoverHost {
           }
         : null,
       players,
-      aliveAgentIds: players.filter((player) => player.isAlive).map((player) => player.agentId),
-      eliminatedAgentIds: players.filter((player) => !player.isAlive).map((player) => player.agentId),
+      aliveAgentIds: players.filter((player: any) => player.isAlive).map((player: any) => player.agentId),
+      eliminatedAgentIds: players.filter((player: any) => !player.isAlive).map((player: any) => player.agentId),
       winner: state.winner || null,
       lastVote: summarizeVoteHistoryEntry(lastVoteEntry),
       revealedAssignments:
         state.status === 'revealed' || state.revealedAt || state.status === 'completed'
-          ? players.map((player) => ({
+          ? players.map((player: any) => ({
               agentId: player.agentId,
               name: player.name,
               role: player.role || '',

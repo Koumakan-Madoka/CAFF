@@ -31,7 +31,7 @@ export class ChatParticipantRepository {
     `);
   }
 
-  listByConversationId(conversationId) {
+  listByConversationId(conversationId: string) {
     return this.listByConversationStatement.all(conversationId);
   }
 

@@ -6,16 +6,16 @@ const MAX_PARALLEL_MENTION_BATCH_SIZE = 5;
 const MAX_PRIVATE_CONTEXT_MESSAGES = 16;
 const PROMPT_MENTION_RE = /(^|[\s([{"'<])@([\p{L}\p{N}._-]+)/gu;
 
-export function sanitizePromptMentions(text) {
-  return String(text || '').replace(PROMPT_MENTION_RE, (match, prefix, token) => `${prefix}<mention:${token}>`);
+export function sanitizePromptMentions(text: any) {
+  return String(text || '').replace(PROMPT_MENTION_RE, (match: any, prefix: any, token: any) => `${prefix}<mention:${token}>`);
 }
 
-function formatPromptMentionReference(value) {
+function formatPromptMentionReference(value: any) {
   const token = String(value || '').trim();
   return token ? `<mention:${token}>` : '<mention:unknown>';
 }
 
-function formatPromptMentionGuidance(agent) {
+function formatPromptMentionGuidance(agent: any) {
   const nameToken = String(agent && agent.name ? agent.name : '')
     .trim()
     .replace(/\s+/g, '');
@@ -29,7 +29,7 @@ function formatPromptMentionGuidance(agent) {
   return references.join(' or ');
 }
 
-function formatSkillDocuments(skills) {
+function formatSkillDocuments(skills: any) {
   const normalizedSkills = (Array.isArray(skills) ? skills : []).filter(Boolean);
 
   if (normalizedSkills.length === 0) {
@@ -37,12 +37,12 @@ function formatSkillDocuments(skills) {
   }
 
   return normalizedSkills
-    .map((skill) =>
+    .map((skill: any) =>
       [
         `- ${skill.name} (${skill.id})`,
         skill.description ? `  Description: ${skill.description}` : '',
         skill.path ? `  Path: ${skill.path}` : '',
-        skill.body ? `  Instructions:\n${String(skill.body).split('\n').map((line) => `    ${line}`).join('\n')}` : '',
+        skill.body ? `  Instructions:\n${String(skill.body).split('\n').map((line: any) => `    ${line}`).join('\n')}` : '',
       ]
         .filter(Boolean)
         .join('\n')
@@ -50,7 +50,7 @@ function formatSkillDocuments(skills) {
     .join('\n\n');
 }
 
-function describeTurnTrigger(trigger, agents) {
+function describeTurnTrigger(trigger: any, agents: any) {
   if (!trigger) {
     return 'You are the first speaker for this user turn.';
   }
@@ -92,8 +92,10 @@ function describeTurnTrigger(trigger, agents) {
   return 'Another visible participant invited you to continue the turn.';
 }
 
-function formatHistory(messages, agents) {
-  const agentMap = new Map((Array.isArray(agents) ? agents : []).map((agent) => [agent.id, agent] as [string, any]));
+function formatHistory(messages: any, agents: any) {
+  const agentMap = new Map(
+    (Array.isArray(agents) ? agents : []).map((agent: any) => [agent.id, agent] as [string, any])
+  );
   const recentMessages = messages.slice(-MAX_HISTORY_MESSAGES);
 
   if (recentMessages.length === 0) {
@@ -101,7 +103,7 @@ function formatHistory(messages, agents) {
   }
 
   return recentMessages
-    .map((message) => {
+    .map((message: any) => {
       const agent = message.agentId ? agentMap.get(message.agentId) : null;
       const speaker = message.role === 'user' ? 'User' : message.senderName || (agent ? agent.name : 'Assistant');
       const statusSuffix = message.status === 'failed' ? ' [failed]' : '';
@@ -110,9 +112,11 @@ function formatHistory(messages, agents) {
       const mentionSuffix =
         metadata && Array.isArray(metadata.mentions) && metadata.mentions.length > 0
           ? ` -> ${metadata.mentions
-              .map((agentId) => getAgentById(agents, agentId))
+              .map((agentId: any) => getAgentById(agents, agentId))
               .filter(Boolean)
-              .map((mentionedAgent) => formatPromptMentionReference(String(mentionedAgent.name || mentionedAgent.id || '').replace(/\s+/g, '')))
+              .map((mentionedAgent: any) =>
+                formatPromptMentionReference(String(mentionedAgent.name || mentionedAgent.id || '').replace(/\s+/g, ''))
+              )
               .join(', ')}`
           : '';
       return `${speaker}${statusSuffix}${mentionSuffix}: ${sanitizePromptMentions(content)}`;
@@ -120,8 +124,10 @@ function formatHistory(messages, agents) {
     .join('\n\n');
 }
 
-function formatPrivateMailbox(messages, agents) {
-  const agentMap = new Map((Array.isArray(agents) ? agents : []).map((agent) => [agent.id, agent] as [string, any]));
+function formatPrivateMailbox(messages: any, agents: any) {
+  const agentMap = new Map(
+    (Array.isArray(agents) ? agents : []).map((agent: any) => [agent.id, agent] as [string, any])
+  );
   const recentMessages = (Array.isArray(messages) ? messages : []).slice(-MAX_PRIVATE_CONTEXT_MESSAGES);
 
   if (recentMessages.length === 0) {
@@ -129,22 +135,22 @@ function formatPrivateMailbox(messages, agents) {
   }
 
   return recentMessages
-    .map((message) => {
+    .map((message: any) => {
       const sender =
         message.senderAgentId && agentMap.has(message.senderAgentId)
           ? agentMap.get(message.senderAgentId).name
           : message.senderName || 'System';
       const recipients = (Array.isArray(message.recipientAgentIds) ? message.recipientAgentIds : [])
-        .map((agentId) => getAgentById(agents, agentId))
+        .map((agentId: any) => getAgentById(agents, agentId))
         .filter(Boolean)
-        .map((agent) => agent.name);
+        .map((agent: any) => agent.name);
       const recipientSuffix = recipients.length > 0 ? ` -> ${recipients.join(', ')}` : '';
       return `${sender}${recipientSuffix}: ${sanitizePromptMentions(message.content)}`;
     })
     .join('\n\n');
 }
 
-function buildAgentToolInstructions(agentToolRelativePath) {
+function buildAgentToolInstructions(agentToolRelativePath: string) {
   const relativeCommandPrefix = `node ${agentToolRelativePath}`;
   const envCommandPrefix = 'node "$CAFF_CHAT_TOOLS_PATH"';
 
@@ -182,7 +188,7 @@ function buildAgentToolInstructions(agentToolRelativePath) {
   ].join('\n');
 }
 
-function buildUndercoverPromptSection(conversation, agent) {
+function buildUndercoverPromptSection(conversation: any, agent: any) {
   if (!conversation || conversation.type !== UNDERCOVER_CONVERSATION_TYPE) {
     return '';
   }
@@ -190,9 +196,9 @@ function buildUndercoverPromptSection(conversation, agent) {
   const metadata = conversation.metadata && typeof conversation.metadata === 'object' ? conversation.metadata : {};
   const game = metadata.undercoverGame && typeof metadata.undercoverGame === 'object' ? metadata.undercoverGame : null;
   const players = Array.isArray(game && game.players) ? game.players : [];
-  const currentPlayer = players.find((player) => player.agentId === agent.id) || null;
-  const aliveNames = players.filter((player) => player.isAlive).map((player) => player.name);
-  const eliminatedNames = players.filter((player) => !player.isAlive).map((player) => player.name);
+  const currentPlayer = players.find((player: any) => player.agentId === agent.id) || null;
+  const aliveNames = players.filter((player: any) => player.isAlive).map((player: any) => player.name);
+  const eliminatedNames = players.filter((player: any) => !player.isAlive).map((player: any) => player.name);
   const gameFinished = Boolean(game && (game.phase === 'finished' || game.status === 'completed' || game.status === 'revealed'));
 
   return [
@@ -233,9 +239,9 @@ export function buildAgentTurnPrompt({
   routingMode,
   allowHandoffs = true,
   agentToolRelativePath,
-}) {
+}: any) {
   const participants = agents
-    .map((item) => {
+    .map((item: any) => {
       const description = item.description ? ` - ${item.description}` : '';
       return `- ${item.name}${description} | public handoff token: ${formatPromptMentionGuidance(item)}`;
     })

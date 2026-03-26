@@ -71,7 +71,7 @@ export function createTurnOrchestrator(options: any = {}) {
     activeTurns,
   });
 
-  function clearConversationState(conversationId) {
+  function clearConversationState(conversationId: any) {
     activeConversationIds.delete(conversationId);
     activeTurns.delete(conversationId);
   }

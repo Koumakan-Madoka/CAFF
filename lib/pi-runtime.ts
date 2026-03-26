@@ -19,15 +19,15 @@ const HEARTBEAT_PREFIX = '__PI_HEARTBEAT__';
 const HEARTBEAT_EXTENSION_PATH = path.resolve(__dirname, 'pi-heartbeat-extension.mjs');
 const DEFAULT_AGENT_DIR = resolveDefaultAgentDir();
 
-function resolveSetting(cliValue, envValue, fallbackValue) {
+function resolveSetting(cliValue: any, envValue: any, fallbackValue: any) {
   return String(cliValue || envValue || fallbackValue || '').trim();
 }
 
-function resolveIntegerSetting(cliValue, envValue, fallbackValue, name) {
+function resolveIntegerSetting(cliValue: any, envValue: any, fallbackValue: any, name: any) {
   return resolveIntegerSettingCandidates([cliValue, envValue, fallbackValue], name);
 }
 
-function resolveIntegerSettingCandidates(candidates, name) {
+function resolveIntegerSettingCandidates(candidates: any, name: any) {
   let rawValue;
 
   for (const candidate of candidates) {
@@ -50,7 +50,7 @@ function resolveIntegerSettingCandidates(candidates, name) {
   return value;
 }
 
-function sanitizeEnvironmentName(value) {
+function sanitizeEnvironmentName(value: any) {
   return String(value || '')
     .trim()
     .toLowerCase()
@@ -70,7 +70,7 @@ function resolveDefaultAgentDir() {
   return path.join(process.cwd(), `.pi-sandbox-${runtimeEnv}`);
 }
 
-function sanitizeSessionName(value) {
+function sanitizeSessionName(value: any) {
   return String(value || '')
     .trim()
     .replace(/\s+/g, '-')
@@ -79,11 +79,11 @@ function sanitizeSessionName(value) {
     .replace(/^-|-$/g, '');
 }
 
-function looksLikeSessionPath(value) {
+function looksLikeSessionPath(value: any) {
   return path.isAbsolute(value) || value.includes('/') || value.includes('\\') || value.endsWith('.jsonl');
 }
 
-function resolveSessionPath(sessionValue, agentDir) {
+function resolveSessionPath(sessionValue: any, agentDir: any) {
   const normalizedValue = String(sessionValue || '').trim();
 
   if (!normalizedValue) {
@@ -103,12 +103,12 @@ function resolveSessionPath(sessionValue, agentDir) {
   return path.join(agentDir, 'named-sessions', `${safeName}.jsonl`);
 }
 
-function normalizeExtraEnv(extraEnv) {
+function normalizeExtraEnv(extraEnv: any) {
   if (!extraEnv || typeof extraEnv !== 'object') {
     return {};
   }
 
-  const normalized = {};
+  const normalized: Record<string, string> = {};
 
   for (const [key, value] of Object.entries(extraEnv)) {
     const envName = String(key || '').trim();
@@ -123,7 +123,7 @@ function normalizeExtraEnv(extraEnv) {
   return normalized;
 }
 
-function getHeartbeatPayload(line) {
+function getHeartbeatPayload(line: string) {
   if (!line.startsWith(HEARTBEAT_PREFIX)) {
     return null;
   }
@@ -182,7 +182,7 @@ function findPiScriptPath() {
     if (result.status === 0 && result.stdout) {
       const lines = result.stdout
         .split(/\r?\n/)
-        .map((line) => line.trim())
+        .map((line: any) => String(line || '').trim())
         .filter(Boolean);
 
       if (lines.length > 0) {
@@ -201,7 +201,7 @@ function findPiScriptPath() {
 
 const piScriptPath = findPiScriptPath();
 
-function createPiSpawnSpec(piArgs) {
+function createPiSpawnSpec(piArgs: any) {
   const directNodeSpawnSpec = tryCreateDirectPiNodeSpawnSpec(piScriptPath, piArgs);
 
   if (directNodeSpawnSpec) {
@@ -228,7 +228,7 @@ function createPiSpawnSpec(piArgs) {
   };
 }
 
-function getAssistantMessageKey(message) {
+function getAssistantMessageKey(message: any) {
   if (!message || message.role !== 'assistant') {
     return '';
   }
@@ -240,30 +240,30 @@ function getAssistantMessageKey(message) {
   return `timestamp:${message.timestamp}:${message.provider || ''}:${message.model || ''}`;
 }
 
-function extractAssistantText(message) {
+function extractAssistantText(message: any) {
   if (!message || message.role !== 'assistant' || !Array.isArray(message.content)) {
     return '';
   }
 
   return message.content
-    .filter((item) => item && item.type === 'text' && typeof item.text === 'string')
-    .map((item) => item.text)
+    .filter((item: any) => item && item.type === 'text' && typeof item.text === 'string')
+    .map((item: any) => item.text)
     .join('');
 }
 
-function normalizeStopReason(stopReason) {
+function normalizeStopReason(stopReason: any) {
   return String(stopReason || '')
     .trim()
     .toLowerCase()
     .replace(/[\s-]+/g, '_');
 }
 
-function assistantMessageHasPendingToolUse(message) {
+function assistantMessageHasPendingToolUse(message: any) {
   if (!message || message.role !== 'assistant' || !Array.isArray(message.content)) {
     return false;
   }
 
-  return message.content.some((item) => {
+  return message.content.some((item: any) => {
     const type = String(item && item.type ? item.type : '')
       .trim()
       .toLowerCase()
@@ -273,7 +273,7 @@ function assistantMessageHasPendingToolUse(message) {
   });
 }
 
-function isTerminalAssistantMessage(message) {
+function isTerminalAssistantMessage(message: any) {
   if (!message || message.role !== 'assistant') {
     return false;
   }
@@ -287,12 +287,12 @@ function isTerminalAssistantMessage(message) {
   return !assistantMessageHasPendingToolUse(message);
 }
 
-function appendTailText(existing, chunk, limit) {
+function appendTailText(existing: any, chunk: any, limit: any) {
   const next = `${existing}${chunk}`;
   return next.length <= limit ? next : next.slice(-limit);
 }
 
-function pushRecentLine(lines, line, limit) {
+function pushRecentLine(lines: any, line: any, limit: any) {
   lines.push(line);
 
   if (lines.length > limit) {
@@ -300,7 +300,7 @@ function pushRecentLine(lines, line, limit) {
   }
 }
 
-function terminateProcessTree(child, force = false, sync = false) {
+function terminateProcessTree(child: any, force = false, sync = false) {
   if (!child || !child.pid) {
     return;
   }
@@ -329,7 +329,7 @@ function terminateProcessTree(child, force = false, sync = false) {
   } catch {}
 }
 
-function signalToExitCode(signal) {
+function signalToExitCode(signal: any) {
   if (signal === 'SIGINT') {
     return 130;
   }
@@ -345,14 +345,14 @@ function signalToExitCode(signal) {
   return 1;
 }
 
-function createInvokeError(message, details = {}) {
+function createInvokeError(message: any, details: any = {}) {
   const error = new Error(message);
   error.name = 'InvokeError';
   Object.assign(error, details);
   return error;
 }
 
-function startRun(provider, model, prompt, options: any = {}) {
+function startRun(provider: any, model: any, prompt: any, options: any = {}) {
   if (!prompt || !String(prompt).trim()) {
     throw new Error('Prompt is required');
   }
@@ -388,11 +388,11 @@ function startRun(provider, model, prompt, options: any = {}) {
   const streamOutput = options.streamOutput !== false;
   const stdout = options.stdout || process.stdout;
   const stderr = options.stderr || process.stderr;
-  let child = null;
-  let runRecord = null;
-  let beginTermination = (reason) => {};
+  let child: any = null;
+  let runRecord: any = null;
+  let beginTermination = (reason: any) => {};
 
-  function emit(type, payload = {}) {
+  function emit(type: any, payload: any = {}) {
     const event = {
       type,
       timestamp: new Date().toISOString(),
@@ -404,44 +404,44 @@ function startRun(provider, model, prompt, options: any = {}) {
     return event;
   }
 
-  function writeStdout(text) {
+  function writeStdout(text: any) {
     if (streamOutput && text) {
       stdout.write(text);
     }
   }
 
-  function writeStderr(text) {
+  function writeStderr(text: any) {
     if (streamOutput && text) {
       stderr.write(text);
     }
   }
 
   const resultPromise = new Promise((resolve, reject) => {
-    const piArgs = [];
-    let store = null;
-    let rl = null;
+    const piArgs: any[] = [];
+    let store: any = null;
+    let rl: any = null;
     const state = {
       reply: '',
-      assistantErrors: [],
+      assistantErrors: [] as any[],
       stderrTail: '',
       parseErrors: 0,
-      stdoutLines: [],
+      stdoutLines: [] as any[],
       streamedAssistantMessages: new Set(),
       printedFallbackMessages: new Set(),
       printedAssistantErrors: new Set(),
       heartbeatCount: 0,
     };
-    const childState = { code: null, signal: null };
-    const processHandlers = [];
+    const childState = { code: null as any, signal: null as any };
+    const processHandlers: Array<[any, any]> = [];
     let settled = false;
     let terminating = false;
-    let heartbeatTimeout = null;
-    let forceKillTimeout = null;
-    let terminationReason = null;
+    let heartbeatTimeout: any = null;
+    let forceKillTimeout: any = null;
+    let terminationReason: any = null;
     let stderrBuffer = '';
     let ignoreFurtherAssistantOutput = false;
 
-    function emitStorageWarning(error) {
+    function emitStorageWarning(error: any) {
       if (!error) {
         return;
       }
@@ -451,7 +451,7 @@ function startRun(provider, model, prompt, options: any = {}) {
       writeStderr(`sqlite warning: ${message}\n`);
     }
 
-    function appendAssistantFallback(message) {
+    function appendAssistantFallback(message: any) {
       const key = getAssistantMessageKey(message);
 
       if (!key || state.streamedAssistantMessages.has(key) || state.printedFallbackMessages.has(key)) {
@@ -470,7 +470,7 @@ function startRun(provider, model, prompt, options: any = {}) {
       writeStdout(text);
     }
 
-    function emitAssistantError(message) {
+    function emitAssistantError(message: any) {
       const key = getAssistantMessageKey(message);
 
       if (
@@ -501,7 +501,13 @@ function startRun(provider, model, prompt, options: any = {}) {
       }
 
       while (processHandlers.length > 0) {
-        const [eventName, handler] = processHandlers.pop();
+        const entry = processHandlers.pop();
+
+        if (!entry) {
+          break;
+        }
+
+        const [eventName, handler] = entry;
         process.removeListener(eventName, handler);
       }
 
@@ -521,7 +527,7 @@ function startRun(provider, model, prompt, options: any = {}) {
       }
     }
 
-    function persistRun(result) {
+    function persistRun(result: any) {
       if (!store || !runRecord || !runRecord.runId) {
         return;
       }
@@ -533,7 +539,7 @@ function startRun(provider, model, prompt, options: any = {}) {
       }
     }
 
-    beginTermination = (reason) => {
+    beginTermination = (reason: any) => {
       if (terminating || settled) {
         return;
       }
@@ -562,7 +568,7 @@ function startRun(provider, model, prompt, options: any = {}) {
       }
     };
 
-    function requestExpectedCompletion(message) {
+    function requestExpectedCompletion(message: any) {
       if (!isTerminalAssistantMessage(message) || terminating || settled) {
         return;
       }
@@ -597,12 +603,12 @@ function startRun(provider, model, prompt, options: any = {}) {
       }
     }
 
-    function addProcessHandler(eventName, handler) {
+    function addProcessHandler(eventName: any, handler: any) {
       process.on(eventName, handler);
       processHandlers.push([eventName, handler]);
     }
 
-    function finishWithError(error) {
+    function finishWithError(error: any) {
       if (settled) {
         return;
       }
@@ -634,7 +640,7 @@ function startRun(provider, model, prompt, options: any = {}) {
       reject(error);
     }
 
-    function finishWithResult(result) {
+    function finishWithResult(result: any) {
       if (settled) {
         return;
       }
@@ -749,7 +755,7 @@ function startRun(provider, model, prompt, options: any = {}) {
 
     addProcessHandler('exit', () => terminateProcessTree(child, true, true));
 
-    rl.on('line', (line) => {
+    rl.on('line', (line: any) => {
       if (!line.trim()) {
         return;
       }
@@ -815,13 +821,13 @@ function startRun(provider, model, prompt, options: any = {}) {
       }
     });
 
-    child.on('exit', (code, signal) => {
+    child.on('exit', (code: any, signal: any) => {
       childState.code = code;
       childState.signal = signal;
     });
 
     child.stderr.setEncoding('utf8');
-    child.stderr.on('data', (chunk) => {
+    child.stderr.on('data', (chunk: any) => {
       stderrBuffer += chunk;
 
       while (true) {
@@ -850,7 +856,7 @@ function startRun(provider, model, prompt, options: any = {}) {
       }
     });
 
-    child.on('error', (error) => {
+    child.on('error', (error: any) => {
       finishWithError(createInvokeError(`Failed to start pi: ${error.message}`, {
         cause: error,
         reply: state.reply,
@@ -861,7 +867,7 @@ function startRun(provider, model, prompt, options: any = {}) {
       }));
     });
 
-    child.on('close', (code, signal) => {
+    child.on('close', (code: any, signal: any) => {
       const finalCode = childState.code === null ? code : childState.code;
       const finalSignal = childState.signal === null ? signal : childState.signal;
 
@@ -932,15 +938,15 @@ function startRun(provider, model, prompt, options: any = {}) {
   });
 
   const handle = {
-    on(eventName, listener) {
+    on(eventName: any, listener: any) {
       emitter.on(eventName, listener);
       return handle;
     },
-    once(eventName, listener) {
+    once(eventName: any, listener: any) {
       emitter.once(eventName, listener);
       return handle;
     },
-    off(eventName, listener) {
+    off(eventName: any, listener: any) {
       if (typeof emitter.off === 'function') {
         emitter.off(eventName, listener);
       } else {
@@ -966,7 +972,7 @@ function startRun(provider, model, prompt, options: any = {}) {
   return handle;
 }
 
-function invoke(provider, model, prompt, options = {}) {
+function invoke(provider: any, model: any, prompt: any, options: any = {}) {
   try {
     return startRun(provider, model, prompt, options).resultPromise;
   } catch (error) {

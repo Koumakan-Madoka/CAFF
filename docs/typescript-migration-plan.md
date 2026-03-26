@@ -8,7 +8,7 @@
 - [x] Phase 1：已引入 `npm run typecheck`（`tsc --noEmit`，覆盖 `server/` + `storage/` + `lib/`，排除 `public/`）
 - [x] Phase 2：已打通 build 产物可运行（`npm run build` 输出到 `build/`，`npm start` 运行 `build/lib/app-server.js`，并复制 `public/` 到 `build/public/`）
 - [x] Phase 3：按目录逐步迁移 `.js` -> `.ts`（已完成：`server/http/`、`server/api/`、`storage/`、`server/domain/runtime/`、`server/domain/conversation/`、`server/domain/undercover/`、`server/app/`、`lib/`）
-- [ ] Phase 4：逐步收紧类型严谨度（`strict` 等）
+- [x] Phase 4：逐步收紧类型严谨度（已启用 `strict`/`noImplicitAny`，`npm run typecheck` + `npm test` 通过）
 - [ ] Phase 5：处理 `public/`（保持 JS + `@ts-check` 或引入 bundler）
 
 ## 1. 背景与目标

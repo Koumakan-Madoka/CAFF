@@ -23,7 +23,7 @@ function createTaskId(prefix = 'task') {
   return `${prefix}-${randomUUID()}`;
 }
 
-function normalizeConversationTurnInput(input, conversation) {
+function normalizeConversationTurnInput(input: any, conversation: any) {
   const payload =
     input && typeof input === 'object' && !Array.isArray(input)
       ? input
@@ -40,7 +40,9 @@ function normalizeConversationTurnInput(input, conversation) {
           ...payload.metadata,
         }
       : {};
-  const knownAgentIds = new Set((Array.isArray(conversation && conversation.agents) ? conversation.agents : []).map((agent) => agent.id));
+  const knownAgentIds = new Set(
+    (Array.isArray(conversation && conversation.agents) ? conversation.agents : []).map((agent: any) => agent.id)
+  );
   const initialAgentIds = [];
   const seenInitialAgentIds = new Set();
 
@@ -71,7 +73,7 @@ function normalizeConversationTurnInput(input, conversation) {
   };
 }
 
-function resolveInitialSpeakerQueue(userText, agents) {
+function resolveInitialSpeakerQueue(userText: any, agents: any) {
   const lookup = buildAgentMentionLookup(agents);
   const mentionedAgentIds = extractMentionedAgentIds(userText, agents, {
     lookup,
@@ -112,7 +114,7 @@ export function createRoutingExecutor(options: any = {}) {
   const activeConversationIds = options.activeConversationIds;
   const activeTurns = options.activeTurns;
 
-  async function runConversationTurn(conversationId, userContent) {
+  async function runConversationTurn(conversationId: any, userContent: any) {
     const conversation = store.getConversation(conversationId);
 
     if (!conversation) {
@@ -195,8 +197,8 @@ export function createRoutingExecutor(options: any = {}) {
     emitTurnProgress(turnState);
 
     const rootTaskId = createTaskId('conversation-turn');
-    const completedReplies = [];
-    const failedReplies = [];
+    const completedReplies: any[] = [];
+    const failedReplies: any[] = [];
 
     runStore.createTask({
       taskId: rootTaskId,
@@ -207,7 +209,7 @@ export function createRoutingExecutor(options: any = {}) {
       metadata: {
         conversationId,
         turnId,
-        participantAgentIds: conversation.agents.map((agent) => agent.id),
+        participantAgentIds: conversation.agents.map((agent: any) => agent.id),
         routingMode,
         entryAgentIds: initialQueue.agentIds.slice(),
         entryStrategy: initialQueue.strategy,
@@ -228,12 +230,12 @@ export function createRoutingExecutor(options: any = {}) {
     });
 
     try {
-      const queue = [];
+      const queue: any[] = [];
       const queuedAgentIds = new Set();
       const maxReplies = Math.max(8, conversation.agents.length * 4);
       let terminationReason = 'queue_exhausted';
 
-      function splitIntoMentionBatches(agentIds) {
+      function splitIntoMentionBatches(agentIds: any) {
         const batches = [];
 
         for (let index = 0; index < agentIds.length; index += MAX_PARALLEL_MENTION_BATCH_SIZE) {
@@ -243,7 +245,7 @@ export function createRoutingExecutor(options: any = {}) {
         return batches;
       }
 
-      function queueEntryItems(queueEntry) {
+      function queueEntryItems(queueEntry: any) {
         if (!queueEntry) {
           return [];
         }
@@ -252,14 +254,14 @@ export function createRoutingExecutor(options: any = {}) {
       }
 
       function queuePendingAgentIds() {
-        return queue.flatMap((queueEntry) =>
+        return queue.flatMap((queueEntry: any) =>
           queueEntryItems(queueEntry)
-            .map((item) => item.agentId)
+            .map((item: any) => item.agentId)
             .filter(Boolean)
         );
       }
 
-      function refreshParallelGroupMetadata(items) {
+      function refreshParallelGroupMetadata(items: any) {
         const normalizedItems = Array.isArray(items) ? items.filter(Boolean) : [];
         const groupSize = normalizedItems.length;
 
@@ -271,7 +273,7 @@ export function createRoutingExecutor(options: any = {}) {
         return normalizedItems;
       }
 
-      function canMergeQueuedPrivateBatch(queueEntry, queueItem) {
+      function canMergeQueuedPrivateBatch(queueEntry: any, queueItem: any) {
         const items = queueEntryItems(queueEntry);
 
         if (items.length === 0 || items.length >= MAX_PARALLEL_MENTION_BATCH_SIZE) {
@@ -283,7 +285,7 @@ export function createRoutingExecutor(options: any = {}) {
         }
 
         return items.every(
-          (item) =>
+          (item: any) =>
             String(item && item.triggerType ? item.triggerType : 'user') === 'private' &&
             String(item && item.triggeredByAgentId ? item.triggeredByAgentId : '') ===
               String(queueItem && queueItem.triggeredByAgentId ? queueItem.triggeredByAgentId : '') &&
@@ -296,7 +298,7 @@ export function createRoutingExecutor(options: any = {}) {
         );
       }
 
-      function enqueueAgent(queueItem) {
+      function enqueueAgent(queueItem: any) {
         if (!queueItem || turnState.stopRequested) {
           return [];
         }
@@ -329,7 +331,7 @@ export function createRoutingExecutor(options: any = {}) {
 
         for (const batchAgentIds of splitIntoMentionBatches(uniqueAgentIds)) {
           const batchItems = refreshParallelGroupMetadata(
-            batchAgentIds.map((agentId) => ({
+            batchAgentIds.map((agentId: any) => ({
               agentId,
               triggerType: queueItem.triggerType || 'user',
               triggeredByAgentId: queueItem.triggeredByAgentId || null,
@@ -390,7 +392,7 @@ export function createRoutingExecutor(options: any = {}) {
           emitTurnProgress(turnState);
 
           await Promise.all(
-            batchAgentIds.map(async (agentId, index) => {
+            batchAgentIds.map(async (agentId: any, index: any) => {
               if (turnState.stopRequested) {
                 return;
               }
@@ -482,11 +484,11 @@ export function createRoutingExecutor(options: any = {}) {
           }
 
           const runnableItems = queuedItems
-            .map((queueItem) => ({
+            .map((queueItem: any) => ({
               queueItem,
               agent: getAgentById(refreshedConversation.agents, queueItem.agentId),
             }))
-            .filter((item) => item.agent);
+            .filter((item: any) => item.agent);
           const executionItems = runnableItems.slice(0, remainingCapacity);
 
           if (executionItems.length === 0) {
@@ -500,14 +502,14 @@ export function createRoutingExecutor(options: any = {}) {
 
           const hopBase = turnState.hopCount || 0;
           const isParallelBatch = executionItems.length > 1;
-          const results = isParallelBatch
-            ? await Promise.all(
-                executionItems.map(({ queueItem, agent }, index) => {
-                  const hop = hopBase + index + 1;
+            const results = isParallelBatch
+              ? await Promise.all(
+                  executionItems.map(({ queueItem, agent }: any, index: any) => {
+                    const hop = hopBase + index + 1;
 
-                  return executeConversationAgent({
-                    runStore,
-                    conversationId,
+                    return executeConversationAgent({
+                      runStore,
+                      conversationId,
                     turnId,
                     rootTaskId,
                     conversation: refreshedConversation,
@@ -581,7 +583,7 @@ export function createRoutingExecutor(options: any = {}) {
 
       runStore.updateTask(rootTaskId, {
         status: terminationReason === 'stopped_by_user' ? 'cancelled' : completedReplies.length > 0 ? 'succeeded' : 'failed',
-        outputText: completedReplies.map((message) => `${message.senderName}: ${message.content}`).join('\n\n'),
+        outputText: completedReplies.map((message: any) => `${message.senderName}: ${message.content}`).join('\n\n'),
         errorMessage:
           terminationReason === 'stopped_by_user'
             ? turnState.stopReason || 'Stopped by user'
@@ -590,8 +592,8 @@ export function createRoutingExecutor(options: any = {}) {
               : 'No agent produced a completed reply',
         endedAt: turnState.endedAt,
         artifactSummary: {
-          completedAgentIds: completedReplies.map((message) => message.agentId),
-          failedAgentIds: failedReplies.map((message) => message.agentId),
+          completedAgentIds: completedReplies.map((message: any) => message.agentId),
+          failedAgentIds: failedReplies.map((message: any) => message.agentId),
           routingMode,
           entryAgentIds: initialQueue.agentIds.slice(),
           entryStrategy: initialQueue.strategy,
@@ -613,7 +615,7 @@ export function createRoutingExecutor(options: any = {}) {
       broadcastEvent('turn_finished', {
         conversationId,
         turn: finishedTurn,
-        failures: failedReplies.map((message) => ({
+        failures: failedReplies.map((message: any) => ({
           agentId: message.agentId,
           senderName: message.senderName,
           errorMessage: message.errorMessage,
@@ -626,7 +628,7 @@ export function createRoutingExecutor(options: any = {}) {
         turnId,
         conversation: finalConversation,
         replies: completedReplies,
-        failures: failedReplies.map((message) => ({
+        failures: failedReplies.map((message: any) => ({
           agentId: message.agentId,
           senderName: message.senderName,
           errorMessage: message.errorMessage,
@@ -634,6 +636,8 @@ export function createRoutingExecutor(options: any = {}) {
         turn: finishedTurn,
       };
     } catch (error) {
+      const errorValue = error as any;
+      const errorMessage = errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Unknown error');
       turnState.status = 'failed';
       turnState.endedAt = nowIso();
       turnState.currentAgentId = null;
@@ -643,13 +647,13 @@ export function createRoutingExecutor(options: any = {}) {
 
       runStore.updateTask(rootTaskId, {
         status: 'failed',
-        errorMessage: error.message,
+        errorMessage,
         endedAt: turnState.endedAt,
       });
       runStore.appendTaskEvent(rootTaskId, 'conversation_turn_failed', {
         conversationId,
         turnId,
-        errorMessage: error.message,
+        errorMessage,
       });
 
       broadcastEvent('turn_finished', {
@@ -659,7 +663,7 @@ export function createRoutingExecutor(options: any = {}) {
           {
             agentId: null,
             senderName: 'system',
-            errorMessage: error.message,
+            errorMessage,
           },
         ],
       });
@@ -673,4 +677,3 @@ export function createRoutingExecutor(options: any = {}) {
 
   return runConversationTurn;
 }
-

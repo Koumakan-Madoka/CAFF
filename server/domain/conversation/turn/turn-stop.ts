@@ -1,7 +1,7 @@
 const { createHttpError } = require('../../../http/http-errors');
 const { nowIso, resetTurnStage, summarizeTurnState, syncCurrentTurnAgent } = require('./turn-state');
 
-export function registerTurnHandle(turnState, handle) {
+export function registerTurnHandle(turnState: any, handle: any) {
   if (!turnState || !handle) {
     return;
   }
@@ -19,7 +19,7 @@ export function registerTurnHandle(turnState, handle) {
   }
 }
 
-export function unregisterTurnHandle(turnState, handle) {
+export function unregisterTurnHandle(turnState: any, handle: any) {
   if (!turnState || !handle || !(turnState.runHandles instanceof Set)) {
     return;
   }
@@ -32,7 +32,7 @@ export function createTurnStopper(options: any = {}) {
   const broadcastRuntimeState = typeof options.broadcastRuntimeState === 'function' ? options.broadcastRuntimeState : () => {};
   const emitTurnProgress = typeof options.emitTurnProgress === 'function' ? options.emitTurnProgress : () => {};
 
-  function requestStopConversationTurn(conversationId, reason = 'Stopped by user') {
+  function requestStopConversationTurn(conversationId: any, reason: any = 'Stopped by user') {
     const turnState = activeTurns.get(conversationId);
 
     if (!turnState) {

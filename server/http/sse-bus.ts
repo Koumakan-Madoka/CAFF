@@ -27,7 +27,11 @@ type SseClient = {
 };
 
 export function createSseBus(options: SseBusOptions = {}) {
-  const keepAliveMs = Number.isFinite(options.keepAliveMs) && options.keepAliveMs > 0 ? options.keepAliveMs : 15000;
+  const providedKeepAliveMs = options.keepAliveMs;
+  const keepAliveMs =
+    typeof providedKeepAliveMs === 'number' && Number.isFinite(providedKeepAliveMs) && providedKeepAliveMs > 0
+      ? providedKeepAliveMs
+      : 15000;
   const now = typeof options.now === 'function' ? options.now : () => new Date().toISOString();
   const clients = new Map<string, SseClient>();
   let nextEventId = 1;

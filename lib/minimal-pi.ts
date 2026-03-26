@@ -14,8 +14,8 @@ const {
   resolveSetting,
 } = runtime;
 
-function parseCliArgs(argv) {
-  const result = {
+function parseCliArgs(argv: any) {
+  const result: any = {
     provider: '',
     model: '',
     thinking: '',
@@ -104,7 +104,7 @@ function printUsage() {
   );
 }
 
-function printInvokeError(error) {
+function printInvokeError(error: any) {
   if (!error) {
     console.error('Unknown invoke error');
     return;
@@ -191,7 +191,7 @@ async function main(argv = process.argv.slice(2)) {
     return 0;
   } catch (error) {
     printInvokeError(error);
-    return error.exitCode || 1;
+    return (error as any).exitCode || 1;
   }
 }
 

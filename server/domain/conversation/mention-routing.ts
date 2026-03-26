@@ -1,4 +1,4 @@
-export function normalizeMentionToken(value) {
+export function normalizeMentionToken(value: any) {
   return String(value || '')
     .trim()
     .replace(/^@+/, '')
@@ -14,7 +14,7 @@ const MENTION_TOKEN_RE = /@([\p{L}\p{N}._-]+)/gu;
 const ESCAPED_NEWLINE_RE = /\\r\\n|\\n|\\r/g;
 const MENTION_SEPARATOR_RE = /[\s\p{P}\p{S}]+/gu;
 
-export function buildAgentMentionLookup(agents) {
+export function buildAgentMentionLookup(agents: any) {
   const lookup = new Map();
 
   for (const agent of Array.isArray(agents) ? agents : []) {
@@ -49,10 +49,10 @@ export function buildAgentMentionLookup(agents) {
   return lookup;
 }
 
-export function resolveMentionValues(values, agents, options: any = {}) {
+export function resolveMentionValues(values: any, agents: any, options: any = {}) {
   const lookup = options.lookup || buildAgentMentionLookup(agents);
   const excludeAgentId = options.excludeAgentId || '';
-  const result = [];
+  const result: any[] = [];
   const seen = new Set();
 
   for (const value of Array.isArray(values) ? values : [values]) {
@@ -75,24 +75,31 @@ export function resolveMentionValues(values, agents, options: any = {}) {
   return result;
 }
 
-function normalizeMentionRoutingSource(text) {
+function normalizeMentionRoutingSource(text: any) {
   return String(text || '')
     .replace(/```[\s\S]*?```/g, '')
     .replace(ESCAPED_NEWLINE_RE, '\n');
 }
 
-function isMentionBoundaryChar(character) {
+function isMentionBoundaryChar(character: any) {
   return !character || MENTION_LINE_BOUNDARY_RE.test(character) || !MENTION_HANDLE_CONTINUATION_RE.test(character);
 }
 
-function isMentionOnlySuffix(text) {
+function isMentionOnlySuffix(text: any) {
   return !String(text || '')
     .replace(MENTION_TOKEN_RE, '')
     .replace(MENTION_SEPARATOR_RE, '')
     .trim();
 }
 
-function collectMentionedAgentIdsFromSegment(segment, lookup, excludeAgentId, seen, limit, result) {
+function collectMentionedAgentIdsFromSegment(
+  segment: any,
+  lookup: any,
+  excludeAgentId: any,
+  seen: any,
+  limit: any,
+  result: any[],
+) {
   const source = String(segment || '');
   let match;
 
@@ -123,12 +130,12 @@ function collectMentionedAgentIdsFromSegment(segment, lookup, excludeAgentId, se
   }
 }
 
-export function extractMentionedAgentIds(text, agents, options: any = {}) {
+export function extractMentionedAgentIds(text: any, agents: any, options: any = {}) {
   const lookup = options.lookup || buildAgentMentionLookup(agents);
   const excludeAgentId = options.excludeAgentId || '';
   const limit =
     Number.isInteger(options.limit) && options.limit > 0 ? options.limit : Number.MAX_SAFE_INTEGER;
-  const result = [];
+  const result: any[] = [];
   const seen = new Set();
   const source = normalizeMentionRoutingSource(text);
   const lines = source.split(/\r?\n/);
@@ -192,12 +199,12 @@ export function extractMentionedAgentIds(text, agents, options: any = {}) {
   return result;
 }
 
-export function extractRoutingMentionedAgentIds(text, agents, options: any = {}) {
+export function extractRoutingMentionedAgentIds(text: any, agents: any, options: any = {}) {
   const lookup = options.lookup || buildAgentMentionLookup(agents);
   const excludeAgentId = options.excludeAgentId || '';
   const limit =
     Number.isInteger(options.limit) && options.limit > 0 ? options.limit : Number.MAX_SAFE_INTEGER;
-  const result = [];
+  const result: any[] = [];
   const seen = new Set();
   const source = String(text || '');
   const mentionRegex = /\*\*@([\p{L}\p{N}._-]+)\*\*/gu;
@@ -221,14 +228,14 @@ export function extractRoutingMentionedAgentIds(text, agents, options: any = {})
   return result;
 }
 
-export function stripTurnRoutingTags(text) {
+export function stripTurnRoutingTags(text: any) {
   return String(text || '')
     .replace(/(^|\s)#(?:ideate|execute)\b/giu, '$1')
     .replace(/\s{2,}/g, ' ')
     .trim();
 }
 
-export function resolveTurnExecutionMode(text, targetCount) {
+export function resolveTurnExecutionMode(text: any, targetCount: any) {
   const source = String(text || '');
   let explicitIntent = '';
   let match;
@@ -257,11 +264,11 @@ export function resolveTurnExecutionMode(text, targetCount) {
   };
 }
 
-export function getAgentById(agents, agentId) {
-  return Array.isArray(agents) ? agents.find((agent) => agent.id === agentId) || null : null;
+export function getAgentById(agents: any, agentId: any) {
+  return Array.isArray(agents) ? agents.find((agent: any) => agent.id === agentId) || null : null;
 }
 
-export function formatAgentMention(agent) {
+export function formatAgentMention(agent: any) {
   const name = String(agent && agent.name ? agent.name : '').trim();
 
   if (name) {
@@ -271,7 +278,7 @@ export function formatAgentMention(agent) {
   return `@${String(agent && agent.id ? agent.id : '').trim()}`;
 }
 
-function hasVisibleMentionText(text, tag) {
+function hasVisibleMentionText(text: any, tag: any) {
   const source = String(text || '');
   const normalizedTag = normalizeMentionToken(tag);
 
@@ -299,7 +306,7 @@ function hasVisibleMentionText(text, tag) {
   return false;
 }
 
-export function ensureVisibleMentionText(replyText, mentionedAgents) {
+export function ensureVisibleMentionText(replyText: any, mentionedAgents: any) {
   const reply = String(replyText || '').trim();
 
   if (!Array.isArray(mentionedAgents) || mentionedAgents.length === 0) {
@@ -308,7 +315,7 @@ export function ensureVisibleMentionText(replyText, mentionedAgents) {
 
   const missingTags = mentionedAgents
     .map(formatAgentMention)
-    .filter((tag) => {
+    .filter((tag: any) => {
       return !hasVisibleMentionText(reply, tag);
     });
 

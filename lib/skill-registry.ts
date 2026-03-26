@@ -3,13 +3,13 @@ const path = require('node:path');
 
 const RESERVED_SKILL_FILES = new Set(['SKILL.md', 'agents/openai.yaml']);
 
-function createSkillRegistryError(statusCode, message) {
+function createSkillRegistryError(statusCode: any, message: any) {
   const error = new Error(message) as any;
   error.statusCode = statusCode;
   return error;
 }
 
-export function sanitizeSkillId(value) {
+export function sanitizeSkillId(value: any) {
   return String(value || '')
     .trim()
     .toLowerCase()
@@ -19,7 +19,7 @@ export function sanitizeSkillId(value) {
     .replace(/^-|-$/g, '');
 }
 
-export function normalizeSkillFilePath(value) {
+export function normalizeSkillFilePath(value: any) {
   const normalized = path.posix.normalize(String(value || '').trim().replace(/\\/g, '/')).replace(/^\/+/, '');
 
   if (!normalized || normalized === '.' || normalized.endsWith('/')) {
@@ -33,15 +33,15 @@ export function normalizeSkillFilePath(value) {
   return normalized;
 }
 
-function isReservedSkillFile(relativePath) {
+function isReservedSkillFile(relativePath: any) {
   return RESERVED_SKILL_FILES.has(relativePath);
 }
 
-function quoteYamlString(value) {
+function quoteYamlString(value: any) {
   return JSON.stringify(String(value || ''));
 }
 
-function splitFrontmatter(content) {
+function splitFrontmatter(content: any) {
   const source = String(content || '');
 
   if (!source.startsWith('---\n')) {
@@ -66,7 +66,7 @@ function splitFrontmatter(content) {
   };
 }
 
-function parseFrontmatterValue(value) {
+function parseFrontmatterValue(value: any) {
   const trimmed = String(value || '').trim();
 
   if (!trimmed) {
@@ -87,7 +87,7 @@ function parseFrontmatterValue(value) {
   return trimmed;
 }
 
-function parseFrontmatter(frontmatter) {
+function parseFrontmatter(frontmatter: any) {
   const result = {
     name: '',
     description: '',
@@ -111,7 +111,7 @@ function parseFrontmatter(frontmatter) {
   return result;
 }
 
-function buildSkillMarkdown({ name, description, body }) {
+function buildSkillMarkdown({ name, description, body }: any) {
   return [
     '---',
     `name: ${quoteYamlString(name)}`,
@@ -123,7 +123,7 @@ function buildSkillMarkdown({ name, description, body }) {
   ].join('\n');
 }
 
-function listRelativeFiles(rootDir) {
+function listRelativeFiles(rootDir: any) {
   if (!fs.existsSync(rootDir)) {
     return [];
   }
@@ -147,10 +147,10 @@ function listRelativeFiles(rootDir) {
     }
   }
 
-  return files.sort((left, right) => left.localeCompare(right));
+  return files.sort((left: any, right: any) => left.localeCompare(right));
 }
 
-function pruneEmptyDirectories(startDir, stopDir) {
+function pruneEmptyDirectories(startDir: any, stopDir: any) {
   let currentDir = startDir;
   const finalStopDir = path.resolve(stopDir);
 
@@ -170,17 +170,17 @@ function pruneEmptyDirectories(startDir, stopDir) {
 
 export class SkillRegistry {
   [key: string]: any;
-  constructor({ agentDir }) {
+  constructor({ agentDir }: any) {
     this.agentDir = path.resolve(agentDir);
     this.skillsDir = path.join(this.agentDir, 'skills');
     fs.mkdirSync(this.skillsDir, { recursive: true });
   }
 
-  resolveSkillDir(skillId) {
+  resolveSkillDir(skillId: any) {
     return path.join(this.skillsDir, sanitizeSkillId(skillId));
   }
 
-  ensureSkill(skillId) {
+  ensureSkill(skillId: any) {
     const normalizedId = sanitizeSkillId(skillId);
 
     if (!normalizedId) {
@@ -201,7 +201,7 @@ export class SkillRegistry {
     };
   }
 
-  resolveSkillFile(skillId, filePath) {
+  resolveSkillFile(skillId: any, filePath: any) {
     const { skillId: normalizedId, skillDir } = this.ensureSkill(skillId);
     const relativePath = normalizeSkillFilePath(filePath);
     const fullPath = path.resolve(skillDir, relativePath);
@@ -226,13 +226,13 @@ export class SkillRegistry {
 
     return fs
       .readdirSync(this.skillsDir, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => this.getSkill(entry.name))
+      .filter((entry: any) => entry.isDirectory())
+      .map((entry: any) => this.getSkill(entry.name))
       .filter(Boolean)
-      .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'));
+      .sort((left: any, right: any) => left.name.localeCompare(right.name, 'zh-CN'));
   }
 
-  getSkill(skillId) {
+  getSkill(skillId: any) {
     const normalizedId = sanitizeSkillId(skillId);
 
     if (!normalizedId) {
@@ -266,7 +266,7 @@ export class SkillRegistry {
     };
   }
 
-  resolveSkills(skillIds) {
+  resolveSkills(skillIds: any) {
     const seen = new Set();
     const resolved = [];
 
@@ -344,7 +344,7 @@ export class SkillRegistry {
     return this.getSkill(normalizedId);
   }
 
-  getSkillFile(skillId, filePath) {
+  getSkillFile(skillId: any, filePath: any) {
     const target = this.resolveSkillFile(skillId, filePath);
 
     if (isReservedSkillFile(target.relativePath)) {
@@ -371,7 +371,7 @@ export class SkillRegistry {
     };
   }
 
-  saveSkillFile(skillId, filePath, content) {
+  saveSkillFile(skillId: any, filePath: any, content: any) {
     const target = this.resolveSkillFile(skillId, filePath);
 
     if (isReservedSkillFile(target.relativePath)) {
@@ -387,7 +387,7 @@ export class SkillRegistry {
     };
   }
 
-  deleteSkillFile(skillId, filePath) {
+  deleteSkillFile(skillId: any, filePath: any) {
     const target = this.resolveSkillFile(skillId, filePath);
 
     if (isReservedSkillFile(target.relativePath)) {
@@ -411,7 +411,7 @@ export class SkillRegistry {
     };
   }
 
-  deleteSkill(skillId) {
+  deleteSkill(skillId: any) {
     const normalizedId = sanitizeSkillId(skillId);
 
     if (!normalizedId) {
@@ -429,6 +429,6 @@ export class SkillRegistry {
   }
 }
 
-export function createSkillRegistry(options) {
+export function createSkillRegistry(options: any) {
   return new SkillRegistry(options);
 }

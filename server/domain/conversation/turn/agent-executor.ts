@@ -27,11 +27,11 @@ function createTaskId(prefix = 'task') {
   return `${prefix}-${randomUUID()}`;
 }
 
-function sanitizeReason(reason) {
+function sanitizeReason(reason: any) {
   return clipText(reason || '', HEARTBEAT_EVENT_REASON_LIMIT);
 }
 
-function resolveConversationAgentConfig(agent) {
+function resolveConversationAgentConfig(agent: any) {
   const selectedModelProfile =
     agent && agent.selectedModelProfile && typeof agent.selectedModelProfile === 'object' ? agent.selectedModelProfile : null;
 
@@ -49,7 +49,7 @@ function resolveConversationAgentConfig(agent) {
   };
 }
 
-function extractJsonCandidate(text) {
+function extractJsonCandidate(text: any) {
   const raw = String(text || '').trim();
   let candidate = raw;
 
@@ -131,7 +131,7 @@ function createSilentAgentTurnDecision(input: any = {}) {
   };
 }
 
-function parseAgentTurnDecision(text, agents, options: any = {}) {
+function parseAgentTurnDecision(text: any, agents: any, options: any = {}) {
   const raw = String(text || '').trim();
   const lookup = options.lookup || buildAgentMentionLookup(agents);
   const excludeAgentId = options.currentAgentId || '';
@@ -249,7 +249,7 @@ function parseAgentTurnDecision(text, agents, options: any = {}) {
   };
 }
 
-function extractStreamingJsonStringField(text, fieldNames) {
+function extractStreamingJsonStringField(text: any, fieldNames: any) {
   const source = String(text || '');
 
   for (const fieldName of Array.isArray(fieldNames) ? fieldNames : []) {
@@ -308,7 +308,7 @@ function extractStreamingJsonStringField(text, fieldNames) {
   return '';
 }
 
-function extractStreamingPublicReplyPreview(text) {
+function extractStreamingPublicReplyPreview(text: any) {
   const raw = String(text || '').trim();
 
   if (!raw) {
@@ -357,7 +357,7 @@ export function createAgentExecutor(options: any = {}) {
     enqueueAgent,
     allowHandoffs = true,
     finalStopsTurn = true,
-  }) {
+  }: any) {
     const stage = getTurnStage(turnState, agent.id);
 
     if (!stage) {
@@ -428,7 +428,7 @@ export function createAgentExecutor(options: any = {}) {
       streaming: false,
       routingMode,
       hop,
-      mentions: [],
+      mentions: [] as any[],
       toolBridgeEnabled: true,
       triggeredByAgentId: queueItem.triggeredByAgentId || null,
       triggeredByAgentName: queueItem.triggeredByAgentName || '',
@@ -621,7 +621,7 @@ export function createAgentExecutor(options: any = {}) {
     broadcastEvent('conversation_message_updated', { conversationId, message: startedMessage });
     emitTurnProgress(turnState);
 
-    handle.on('assistant_text_delta', (event) => {
+    handle.on('assistant_text_delta', (event: any) => {
       rawReply += event.delta || '';
 
       if (!toolInvocation.publicToolUsed) {
@@ -639,7 +639,7 @@ export function createAgentExecutor(options: any = {}) {
       emitTurnProgress(turnState);
     });
 
-    handle.on('heartbeat', (event) => {
+    handle.on('heartbeat', (event: any) => {
       stage.heartbeatCount = event.count || 0;
       turnState.updatedAt = nowIso();
       runStore.appendTaskEvent(stageTaskId, 'agent_reply_heartbeat', {
@@ -649,7 +649,7 @@ export function createAgentExecutor(options: any = {}) {
       emitTurnProgress(turnState);
     });
 
-    handle.on('run_terminating', (event) => {
+    handle.on('run_terminating', (event: any) => {
       stage.status = 'terminating';
       stage.errorMessage = event.reason && event.reason.message ? event.reason.message : '';
       turnState.updatedAt = nowIso();
@@ -670,7 +670,9 @@ export function createAgentExecutor(options: any = {}) {
         currentAgentId: agent.id,
         allowEmptyReply: suppressRawPublicReply,
       });
-      const mentionedAgents = decision.mentions.map((agentId) => getAgentById(conversation.agents, agentId)).filter(Boolean);
+      const mentionedAgents = decision.mentions
+        .map((agentId: any) => getAgentById(conversation.agents, agentId))
+        .filter(Boolean);
       const publicReply = suppressRawPublicReply ? '' : ensureVisibleMentionText(decision.publicReply, mentionedAgents);
       const publiclySilent = !String(publicReply || '').trim();
       const privateOnly = publiclySilent && suppressRawPublicReply;
@@ -692,7 +694,7 @@ export function createAgentExecutor(options: any = {}) {
         hop,
         mentions: decision.mentions,
         routedMentions,
-        mentionNames: mentionedAgents.map((item) => item.name),
+        mentionNames: mentionedAgents.map((item: any) => item.name),
         final: effectiveFinal,
         reason: decision.reason || '',
         fallback: Boolean(decision.fallback),
@@ -848,21 +850,22 @@ export function createAgentExecutor(options: any = {}) {
         terminationReason: '',
       };
     } catch (error) {
-      const errorMessage = error && error.message ? error.message : String(error || 'Unknown error');
+      const errorValue = error as any;
+      const errorMessage = errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Unknown error');
       const stopRequested = Boolean(turnState.stopRequested);
       const existingMessage = store.getMessage(assistantMessage.id);
       const assistantMessageFailed = store.updateMessage(assistantMessage.id, {
         content: existingMessage && existingMessage.content !== 'Thinking...' ? existingMessage.content : '',
         status: 'failed',
         taskId: stageTaskId,
-        runId: error && error.runId ? error.runId : handle.runId || null,
+        runId: errorValue && errorValue.runId ? errorValue.runId : handle.runId || null,
         errorMessage,
         metadata: {
           provider,
           model,
           sessionName,
           sessionScope: 'agent_turn',
-          sessionPath: error && error.sessionPath ? error.sessionPath : handle.sessionPath || '',
+          sessionPath: errorValue && errorValue.sessionPath ? errorValue.sessionPath : handle.sessionPath || '',
           agentSandboxDir: agentSandbox.sandboxDir,
           agentPrivateDir: agentSandbox.privateDir,
           failure: true,
@@ -883,7 +886,7 @@ export function createAgentExecutor(options: any = {}) {
       });
 
       stage.status = 'failed';
-      stage.runId = error && error.runId ? error.runId : handle.runId || null;
+      stage.runId = errorValue && errorValue.runId ? errorValue.runId : handle.runId || null;
       stage.replyLength = assistantMessageFailed && assistantMessageFailed.content ? assistantMessageFailed.content.length : 0;
       stage.preview = clipText(
         assistantMessageFailed && assistantMessageFailed.content ? assistantMessageFailed.content : errorMessage,
@@ -903,14 +906,14 @@ export function createAgentExecutor(options: any = {}) {
 
       runStore.updateTask(stageTaskId, {
         status: stopRequested ? 'cancelled' : 'failed',
-        runId: error && error.runId ? error.runId : handle.runId || null,
+        runId: errorValue && errorValue.runId ? errorValue.runId : handle.runId || null,
         errorMessage,
         endedAt: stage.endedAt,
       });
       runStore.appendTaskEvent(stageTaskId, 'agent_reply_failed', {
         agentId: agent.id,
         agentName: agent.name,
-        runId: error && error.runId ? error.runId : handle.runId || null,
+        runId: errorValue && errorValue.runId ? errorValue.runId : handle.runId || null,
         errorMessage,
         hop,
       });

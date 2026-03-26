@@ -60,7 +60,7 @@ export function createBootstrapPayloadBuilder({ store, skillRegistry, turnOrches
     const options: ModelOption[] = [];
     const modelsFile: ConfiguredModelsFile = readConfiguredModelsFile();
 
-    function addOption(provider, model, sourceLabel, displayName = '') {
+    function addOption(provider: any, model: any, sourceLabel: any, displayName = '') {
       const normalizedProvider = String(provider || '').trim();
       const normalizedModel = String(model || '').trim();
       const normalizedDisplayName = String(displayName || '').trim();

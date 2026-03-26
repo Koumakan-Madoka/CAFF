@@ -1,6 +1,6 @@
 const { getAgentById } = require('./mention-routing');
 
-export function pickConversationSummary(conversation) {
+export function pickConversationSummary(conversation: any) {
   if (!conversation) {
     return null;
   }
@@ -19,12 +19,12 @@ export function pickConversationSummary(conversation) {
   };
 }
 
-export function serializeConversationPrivateMessageForUi(message, agents) {
+export function serializeConversationPrivateMessageForUi(message: any, agents: any) {
   const metadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
   const recipientNames = (Array.isArray(message && message.recipientAgentIds) ? message.recipientAgentIds : [])
-    .map((agentId) => getAgentById(agents, agentId))
+    .map((agentId: any) => getAgentById(agents, agentId))
     .filter(Boolean)
-    .map((agent) => agent.name);
+    .map((agent: any) => agent.name);
 
   return {
     id: message.id,
@@ -34,8 +34,8 @@ export function serializeConversationPrivateMessageForUi(message, agents) {
     senderName: message.senderName,
     content: message.content,
     status: 'completed',
-    taskId: null,
-    runId: null,
+    taskId: null as string | null,
+    runId: null as string | null,
     errorMessage: '',
     metadata: {
       visibility: 'private',
@@ -48,7 +48,7 @@ export function serializeConversationPrivateMessageForUi(message, agents) {
   };
 }
 
-export function withConversationPrivateMessages(conversation, store) {
+export function withConversationPrivateMessages(conversation: any, store: any) {
   if (!conversation) {
     return null;
   }
@@ -57,7 +57,7 @@ export function withConversationPrivateMessages(conversation, store) {
     ...conversation,
     privateMessages: store
       .listPrivateMessages(conversation.id)
-      .filter((message) => !(message && message.metadata && message.metadata.uiVisible === false))
-      .map((message) => serializeConversationPrivateMessageForUi(message, conversation.agents)),
+      .filter((message: any) => !(message && message.metadata && message.metadata.uiVisible === false))
+      .map((message: any) => serializeConversationPrivateMessageForUi(message, conversation.agents)),
   };
 }

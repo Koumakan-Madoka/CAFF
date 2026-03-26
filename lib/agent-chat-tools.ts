@@ -14,10 +14,10 @@ function getConfig() {
   return { apiUrl, invocationId, callbackToken };
 }
 
-function parseArgs(argv) {
+function parseArgs(argv: any) {
   const [command = '', ...rest] = Array.isArray(argv) ? argv : [];
-  const flags = {};
-  const positionals = [];
+  const flags: Record<string, any> = {};
+  const positionals: string[] = [];
 
   for (let index = 0; index < rest.length; index += 1) {
     const token = rest[index];
@@ -54,7 +54,7 @@ function parseArgs(argv) {
   return { command, flags, positionals };
 }
 
-function normalizeRecipients(value) {
+function normalizeRecipients(value: any) {
   if (!value) {
     return [];
   }
@@ -112,7 +112,7 @@ async function resolveMessageContent(flags: any = {}, options: any = {}) {
   return String(await readTextStream(options.stream || process.stdin) || '').trim();
 }
 
-async function requestJson(url, options: any = {}) {
+async function requestJson(url: string, options: any = {}) {
   const response = await fetch(url, {
     method: options.method || 'GET',
     headers: {
@@ -131,7 +131,7 @@ async function requestJson(url, options: any = {}) {
   return data;
 }
 
-async function sendPublic(config, flags, options: any = {}) {
+async function sendPublic(config: any, flags: any, options: any = {}) {
   const content = await resolveMessageContent(flags, options);
 
   if (!content) {
@@ -152,7 +152,7 @@ async function sendPublic(config, flags, options: any = {}) {
   });
 }
 
-async function sendPrivate(config, flags, options: any = {}) {
+async function sendPrivate(config: any, flags: any, options: any = {}) {
   const content = await resolveMessageContent(flags, options);
 
   if (!content) {
@@ -183,7 +183,7 @@ async function sendPrivate(config, flags, options: any = {}) {
   });
 }
 
-async function readContext(config, flags) {
+async function readContext(config: any, flags: any) {
   const query = new URLSearchParams({
     invocationId: config.invocationId,
     callbackToken: config.callbackToken,
@@ -200,7 +200,7 @@ async function readContext(config, flags) {
   return requestJson(`${config.apiUrl}/api/agent-tools/context?${query.toString()}`);
 }
 
-async function listParticipants(config) {
+async function listParticipants(config: any) {
   const query = new URLSearchParams({
     invocationId: config.invocationId,
     callbackToken: config.callbackToken,
@@ -209,7 +209,7 @@ async function listParticipants(config) {
   return requestJson(`${config.apiUrl}/api/agent-tools/participants?${query.toString()}`);
 }
 
-function isFlagEnabled(value) {
+function isFlagEnabled(value: any) {
   if (value === true) {
     return true;
   }
@@ -229,7 +229,7 @@ function shouldEchoContent(flags: any = {}, env = process.env) {
   );
 }
 
-function compactSendPublicResult(result) {
+function compactSendPublicResult(result: any) {
   const message = result && result.message && typeof result.message === 'object' ? result.message : null;
 
   return {
@@ -247,7 +247,7 @@ function compactSendPublicResult(result) {
   };
 }
 
-function compactSendPrivateResult(result) {
+function compactSendPrivateResult(result: any) {
   const message = result && result.message && typeof result.message === 'object' ? result.message : null;
   const recipientAgentIds =
     message && Array.isArray(message.recipientAgentIds) ? message.recipientAgentIds.filter(Boolean) : [];
@@ -267,7 +267,7 @@ function compactSendPrivateResult(result) {
   };
 }
 
-function formatCommandResult(command, result, flags: any = {}, env = process.env) {
+function formatCommandResult(command: string, result: any, flags: any = {}, env = process.env) {
   if (shouldEchoContent(flags, env)) {
     return result;
   }

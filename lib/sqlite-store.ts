@@ -9,7 +9,7 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-function deriveSessionName(sessionPath, agentDir) {
+function deriveSessionName(sessionPath: any, agentDir: any) {
   if (!sessionPath) {
     return '';
   }
@@ -29,7 +29,7 @@ function deriveSessionName(sessionPath, agentDir) {
   return path.basename(normalizedSessionPath, '.jsonl');
 }
 
-function serializeJson(value) {
+function serializeJson(value: any) {
   if (value === undefined) {
     return null;
   }
@@ -37,7 +37,7 @@ function serializeJson(value) {
   return JSON.stringify(value === undefined ? null : value);
 }
 
-function parseJson(value) {
+function parseJson(value: any) {
   if (!value) {
     return null;
   }
@@ -49,7 +49,7 @@ function parseJson(value) {
   }
 }
 
-function normalizeSessionPath(sessionPath) {
+function normalizeSessionPath(sessionPath: any) {
   if (!sessionPath) {
     return null;
   }
@@ -80,7 +80,7 @@ function normalizeTaskUpdates(updates: any = {}) {
   return normalized;
 }
 
-function normalizeTaskRow(row) {
+function normalizeTaskRow(row: any) {
   if (!row) {
     return null;
   }
@@ -94,7 +94,7 @@ function normalizeTaskRow(row) {
 
 export class SqliteRunStore {
   [key: string]: any;
-  constructor({ agentDir, sqlitePath }) {
+  constructor({ agentDir, sqlitePath }: any) {
     const connection = openSqliteDatabase({ agentDir, sqlitePath });
 
     this.agentDir = connection.agentDir;
@@ -108,7 +108,7 @@ export class SqliteRunStore {
     this.taskRepository = createRunTaskRepository(this.db);
   }
 
-  ensureSession(sessionPath) {
+  ensureSession(sessionPath: any) {
     if (!sessionPath) {
       return null;
     }
@@ -142,7 +142,7 @@ export class SqliteRunStore {
     taskKind,
     taskRole,
     metadata,
-  }) {
+  }: any) {
     const sessionId = this.ensureSession(sessionPath);
     const normalizedSessionPath = normalizeSessionPath(sessionPath);
     const startedAt = nowIso();
@@ -186,7 +186,7 @@ export class SqliteRunStore {
     };
   }
 
-  finishRun(runId, result) {
+  finishRun(runId: any, result: any) {
     if (!runId) {
       return;
     }
@@ -209,7 +209,7 @@ export class SqliteRunStore {
     });
   }
 
-  createTask(task) {
+  createTask(task: any) {
     const {
       taskId,
       parentTaskId,
@@ -262,15 +262,15 @@ export class SqliteRunStore {
     );
   }
 
-  updateTask(taskId, updates = {}) {
+  updateTask(taskId: any, updates: any = {}) {
     return normalizeTaskRow(this.taskRepository.update(taskId, normalizeTaskUpdates(updates)));
   }
 
-  appendTaskEvent(taskId, eventType, payload) {
+  appendTaskEvent(taskId: any, eventType: any, payload: any) {
     this.taskRepository.appendEvent(taskId, eventType, serializeJson(payload), nowIso());
   }
 
-  addArtifact(taskId, artifact: any = {}) {
+  addArtifact(taskId: any, artifact: any = {}) {
     this.taskRepository.addArtifact(taskId, {
       kind: artifact.kind || 'text',
       name: artifact.name || null,
@@ -282,16 +282,16 @@ export class SqliteRunStore {
     });
   }
 
-  getTask(taskId) {
+  getTask(taskId: any) {
     return normalizeTaskRow(this.taskRepository.get(taskId));
   }
 
-  listTasksByParent(parentTaskId = null) {
+  listTasksByParent(parentTaskId: any = null) {
     return this.taskRepository.listByParent(parentTaskId).map(normalizeTaskRow);
   }
 
-  listTaskEvents(taskId) {
-    return this.taskRepository.listEvents(taskId).map((row) => ({
+  listTaskEvents(taskId: any) {
+    return this.taskRepository.listEvents(taskId).map((row: any) => ({
       ...row,
       payload: parseJson(row.event_json),
     }));
@@ -302,7 +302,7 @@ export class SqliteRunStore {
   }
 }
 
-export function createSqliteRunStore(options) {
+export function createSqliteRunStore(options: any) {
   return new SqliteRunStore(options);
 }
 

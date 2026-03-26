@@ -164,7 +164,7 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-function serializeJson(value) {
+function serializeJson(value: any) {
   if (value === undefined) {
     return null;
   }
@@ -172,7 +172,7 @@ function serializeJson(value) {
   return JSON.stringify(value === undefined ? null : value);
 }
 
-function parseJson(value) {
+function parseJson(value: any) {
   if (!value) {
     return null;
   }
@@ -184,7 +184,7 @@ function parseJson(value) {
   }
 }
 
-function normalizeAvatarDataUrl(value) {
+function normalizeAvatarDataUrl(value: any) {
   const avatarDataUrl = String(value || '').trim();
 
   if (!avatarDataUrl) {
@@ -202,7 +202,7 @@ function normalizeAvatarDataUrl(value) {
   return avatarDataUrl;
 }
 
-function normalizeSandboxName(value) {
+function normalizeSandboxName(value: any) {
   const rawValue = String(value || '').trim();
 
   if (!rawValue) {
@@ -227,11 +227,11 @@ function normalizeSandboxName(value) {
   return normalized;
 }
 
-function resolveEffectiveSandboxName(sandboxName, agentId) {
+function resolveEffectiveSandboxName(sandboxName: any, agentId: any) {
   return normalizeSandboxName(sandboxName) || normalizeSandboxName(agentId) || 'agent';
 }
 
-function normalizeSkillRef(skill) {
+function normalizeSkillRef(skill: any) {
   if (typeof skill === 'string') {
     return String(skill).trim() || null;
   }
@@ -243,7 +243,7 @@ function normalizeSkillRef(skill) {
   return String(skill.id || skill.skillId || skill.slug || skill.name || '').trim() || null;
 }
 
-function parseSkillRefs(value) {
+function parseSkillRefs(value: any) {
   const parsed = parseJson(value);
 
   if (!Array.isArray(parsed)) {
@@ -267,7 +267,7 @@ function parseSkillRefs(value) {
   return normalized;
 }
 
-function normalizeModelProfile(profile, index = 0) {
+function normalizeModelProfile(profile: any, index = 0) {
   if (!profile || typeof profile !== 'object') {
     return null;
   }
@@ -295,7 +295,7 @@ function normalizeModelProfile(profile, index = 0) {
   };
 }
 
-function parseModelProfiles(value) {
+function parseModelProfiles(value: any) {
   const parsed = parseJson(value);
 
   if (!Array.isArray(parsed)) {
@@ -307,7 +307,7 @@ function parseModelProfiles(value) {
     .filter(Boolean);
 }
 
-function findModelProfile(modelProfiles, profileId) {
+function findModelProfile(modelProfiles: any, profileId: any) {
   if (!profileId) {
     return null;
   }
@@ -315,7 +315,7 @@ function findModelProfile(modelProfiles, profileId) {
   return (Array.isArray(modelProfiles) ? modelProfiles : []).find((profile) => profile.id === profileId) || null;
 }
 
-function normalizeAgentRow(row) {
+function normalizeAgentRow(row: any) {
   if (!row) {
     return null;
   }
@@ -350,7 +350,7 @@ function normalizeAgentRow(row) {
   return normalized;
 }
 
-function normalizeMessageRow(row) {
+function normalizeMessageRow(row: any) {
   if (!row) {
     return null;
   }
@@ -372,7 +372,7 @@ function normalizeMessageRow(row) {
   };
 }
 
-function normalizePrivateMessageRow(row) {
+function normalizePrivateMessageRow(row: any) {
   if (!row) {
     return null;
   }
@@ -390,12 +390,12 @@ function normalizePrivateMessageRow(row) {
   };
 }
 
-function normalizeConversationType(value) {
+function normalizeConversationType(value: any) {
   const normalized = String(value || '').trim().toLowerCase();
   return normalized === 'who_is_undercover' ? 'who_is_undercover' : 'standard';
 }
 
-function normalizeConversationHeader(row) {
+function normalizeConversationHeader(row: any) {
   if (!row) {
     return null;
   }
@@ -414,7 +414,7 @@ function normalizeConversationHeader(row) {
   };
 }
 
-function normalizeConversation(row, agents, messages) {
+function normalizeConversation(row: any, agents: any, messages: any) {
   const header = normalizeConversationHeader(row);
 
   if (!header) {
@@ -428,19 +428,19 @@ function normalizeConversation(row, agents, messages) {
   };
 }
 
-function pickDefaultParticipants(agents, requestedParticipants) {
+function pickDefaultParticipants(agents: any, requestedParticipants: any) {
   if (Array.isArray(requestedParticipants) && requestedParticipants.length > 0) {
     return requestedParticipants;
   }
 
-  return agents.slice(0, 3).map((agent) => ({
-    agentId: agent.id,
-    modelProfileId: null,
-    conversationSkills: [],
+  return (Array.isArray(agents) ? agents : []).slice(0, 3).map((agent) => ({
+    agentId: agent && agent.id ? agent.id : null,
+    modelProfileId: null as null,
+    conversationSkills: [] as any[],
   }));
 }
 
-function normalizeRecipientAgentIds(recipientAgentIds) {
+function normalizeRecipientAgentIds(recipientAgentIds: any) {
   const seen = new Set();
   const normalized = [];
 
@@ -460,7 +460,7 @@ function normalizeRecipientAgentIds(recipientAgentIds) {
 
 export class ChatAppStore {
   [key: string]: any;
-  constructor({ agentDir, sqlitePath }) {
+  constructor({ agentDir, sqlitePath }: any) {
     const connection = openSqliteDatabase({ agentDir, sqlitePath });
 
     this.agentDir = connection.agentDir;
@@ -475,12 +475,12 @@ export class ChatAppStore {
     this.messageRepository = createChatMessageRepository(this.db);
     this.privateMessageRepository = createChatPrivateMessageRepository(this.db);
 
-    this.replaceConversationParticipants = (conversationId, participants) => {
+    this.replaceConversationParticipants = (conversationId: any, participants: any) => {
       const createdAt = nowIso();
 
       this.participantRepository.replaceForConversation(
         conversationId,
-        participants.map((participant) => ({
+        (Array.isArray(participants) ? participants : []).map((participant: any) => ({
           ...participant,
           conversationSkillsJson: serializeJson(participant.conversationSkills || []),
           createdAt,
@@ -488,7 +488,7 @@ export class ChatAppStore {
       );
     };
 
-    this.saveAgentTransaction = this.db.transaction((payload) => {
+    this.saveAgentTransaction = this.db.transaction((payload: any) => {
       const timestamp = nowIso();
 
       return normalizeAgentRow(
@@ -502,7 +502,7 @@ export class ChatAppStore {
       );
     });
 
-    this.createConversationTransaction = this.db.transaction((payload) => {
+    this.createConversationTransaction = this.db.transaction((payload: any) => {
       const timestamp = nowIso();
 
       this.conversationRepository.create({
@@ -519,7 +519,7 @@ export class ChatAppStore {
       return this.getConversation(payload.id);
     });
 
-    this.updateConversationTransaction = this.db.transaction((conversationId, updates) => {
+    this.updateConversationTransaction = this.db.transaction((conversationId: any, updates: any) => {
       if (updates.title !== undefined) {
         this.conversationRepository.update(conversationId, {
           title: updates.title,
@@ -541,7 +541,7 @@ export class ChatAppStore {
       return this.getConversation(conversationId);
     });
 
-    this.createMessageTransaction = this.db.transaction((payload) => {
+    this.createMessageTransaction = this.db.transaction((payload: any) => {
       const createdAt = payload.createdAt || nowIso();
 
       this.messageRepository.create({
@@ -567,7 +567,7 @@ export class ChatAppStore {
       return this.getMessage(payload.id);
     });
 
-    this.createPrivateMessageTransaction = this.db.transaction((payload) => {
+    this.createPrivateMessageTransaction = this.db.transaction((payload: any) => {
       const createdAt = payload.createdAt || nowIso();
 
       return normalizePrivateMessageRow(
@@ -598,7 +598,7 @@ export class ChatAppStore {
     }
   }
 
-  getAgent(agentId) {
+  getAgent(agentId: any) {
     return normalizeAgentRow(this.agentRepository.get(agentId));
   }
 
@@ -638,7 +638,7 @@ export class ChatAppStore {
     });
   }
 
-  deleteAgent(agentId) {
+  deleteAgent(agentId: any) {
     this.agentRepository.delete(agentId);
   }
 
@@ -646,7 +646,7 @@ export class ChatAppStore {
     return this.conversationRepository.listHeaders().map(normalizeConversationHeader);
   }
 
-  getConversation(conversationId) {
+  getConversation(conversationId: any) {
     const row = this.conversationRepository.get(conversationId);
 
     if (!row) {
@@ -674,7 +674,7 @@ export class ChatAppStore {
     });
   }
 
-  updateConversation(conversationId, updates: any = {}) {
+  updateConversation(conversationId: any, updates: any = {}) {
     const existing = this.getConversation(conversationId);
 
     if (!existing) {
@@ -703,26 +703,26 @@ export class ChatAppStore {
     });
   }
 
-  deleteConversation(conversationId) {
+  deleteConversation(conversationId: any) {
     this.conversationRepository.delete(conversationId);
   }
 
-  listConversationAgents(conversationId) {
+  listConversationAgents(conversationId: any) {
     return this.participantRepository.listByConversationId(conversationId).map(normalizeAgentRow);
   }
 
-  listMessages(conversationId) {
+  listMessages(conversationId: any) {
     return this.messageRepository.listByConversationId(conversationId).map(normalizeMessageRow);
   }
 
-  listPrivateMessages(conversationId) {
+  listPrivateMessages(conversationId: any) {
     return this.privateMessageRepository.listByConversationId(conversationId).map(normalizePrivateMessageRow);
   }
 
-  listPrivateMessagesForAgent(conversationId, agentId, options: any = {}) {
+  listPrivateMessagesForAgent(conversationId: any, agentId: any, options: any = {}) {
     const normalizedAgentId = String(agentId || '').trim();
     const limit = Number.isInteger(options.limit) && options.limit > 0 ? options.limit : 0;
-    const visibleMessages = this.listPrivateMessages(conversationId).filter((message) => {
+    const visibleMessages = this.listPrivateMessages(conversationId).filter((message: any) => {
       if (!normalizedAgentId) {
         return false;
       }
@@ -734,7 +734,7 @@ export class ChatAppStore {
     return limit > 0 ? visibleMessages.slice(-limit) : visibleMessages;
   }
 
-  getMessage(messageId) {
+  getMessage(messageId: any) {
     return normalizeMessageRow(this.messageRepository.get(messageId));
   }
 
@@ -793,7 +793,7 @@ export class ChatAppStore {
     });
   }
 
-  updateMessage(messageId, updates: any = {}) {
+  updateMessage(messageId: any, updates: any = {}) {
     const existing = this.getMessage(messageId);
 
     if (!existing) {
@@ -822,7 +822,7 @@ export class ChatAppStore {
     );
   }
 
-  appendMessageText(messageId, delta) {
+  appendMessageText(messageId: any, delta: any) {
     const text = String(delta || '');
 
     if (!text) {
@@ -842,15 +842,15 @@ export class ChatAppStore {
     const agents = this.listAgents();
     return this.createConversation({
       title: '新协作会话',
-      participants: agents.slice(0, 3).map((agent) => ({
-        agentId: agent.id,
-        modelProfileId: null,
-        conversationSkills: [],
+      participants: (Array.isArray(agents) ? agents : []).slice(0, 3).map((agent: any) => ({
+        agentId: agent && agent.id ? agent.id : null,
+        modelProfileId: null as null,
+        conversationSkills: [] as any[],
       })),
     });
   }
 
-  normalizeSkillRefs(skills) {
+  normalizeSkillRefs(skills: any) {
     const seenIds = new Set();
     const normalized = [];
 
@@ -868,7 +868,7 @@ export class ChatAppStore {
     return normalized;
   }
 
-  assertUniqueAgentSandboxName(agentId, sandboxName) {
+  assertUniqueAgentSandboxName(agentId: any, sandboxName: any) {
     const candidateSandboxName = resolveEffectiveSandboxName(sandboxName, agentId);
 
     for (const agent of this.listAgents()) {
@@ -882,7 +882,7 @@ export class ChatAppStore {
     }
   }
 
-  normalizeModelProfiles(modelProfiles) {
+  normalizeModelProfiles(modelProfiles: any) {
     const seenIds = new Set();
     const normalized = [];
 
@@ -912,18 +912,18 @@ export class ChatAppStore {
     const agentProfileIds =
       input.agentProfileIds && typeof input.agentProfileIds === 'object' ? input.agentProfileIds : {};
     const legacyParticipants = Array.isArray(input.agentIds)
-      ? input.agentIds.map((agentId) => ({
+      ? input.agentIds.map((agentId: any) => ({
           agentId,
           modelProfileId: agentProfileIds[agentId] || null,
-          conversationSkillIds: [],
+          conversationSkillIds: [] as any[],
         }))
       : [];
 
     return this.normalizeConversationParticipants(legacyParticipants);
   }
 
-  normalizeConversationParticipants(participants) {
-    const knownAgents = new Map(this.listAgents().map((agent) => [agent.id, agent]));
+  normalizeConversationParticipants(participants: any) {
+    const knownAgents = new Map(this.listAgents().map((agent: any) => [agent.id, agent]));
     const deduped = [];
     const seenAgentIds = new Set();
 
@@ -969,7 +969,7 @@ export class ChatAppStore {
     return deduped;
   }
 
-  findSkillReferences(skillId) {
+  findSkillReferences(skillId: any) {
     const targetSkillId = String(skillId || '').trim();
 
     if (!targetSkillId) {
@@ -991,7 +991,11 @@ export class ChatAppStore {
     for (const conversation of this.listConversations()) {
       const fullConversation = this.getConversation(conversation.id);
 
-      for (const agent of fullConversation && Array.isArray(fullConversation.agents) ? fullConversation.agents : []) {
+      if (!fullConversation) {
+        continue;
+      }
+
+      for (const agent of Array.isArray(fullConversation.agents) ? fullConversation.agents : []) {
         if (Array.isArray(agent.conversationSkillIds) && agent.conversationSkillIds.includes(targetSkillId)) {
           references.push({
             type: 'conversation',
@@ -1012,6 +1016,6 @@ export class ChatAppStore {
   }
 }
 
-export function createChatAppStore(options) {
+export function createChatAppStore(options: any) {
   return new ChatAppStore(options);
 }

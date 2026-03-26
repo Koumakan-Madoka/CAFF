@@ -2,7 +2,7 @@ export function nowIso() {
   return new Date().toISOString();
 }
 
-export function clipText(text, maxLength = 240) {
+export function clipText(text: any, maxLength = 240) {
   const value = String(text || '').trim();
 
   if (value.length <= maxLength) {
@@ -12,7 +12,7 @@ export function clipText(text, maxLength = 240) {
   return `${value.slice(0, maxLength - 3)}...`;
 }
 
-export function summarizeTurnState(turnState) {
+export function summarizeTurnState(turnState: any) {
   return {
     conversationId: turnState.conversationId,
     conversationTitle: turnState.conversationTitle,
@@ -34,7 +34,7 @@ export function summarizeTurnState(turnState) {
     stopReason: turnState.stopReason || '',
     stopRequestedAt: turnState.stopRequestedAt || null,
     terminationReason: turnState.terminationReason || '',
-    agents: turnState.agents.map((agent) => ({
+    agents: turnState.agents.map((agent: any) => ({
       agentId: agent.agentId,
       agentName: agent.agentName,
       status: agent.status,
@@ -55,7 +55,7 @@ export function summarizeTurnState(turnState) {
   };
 }
 
-export function createTurnState(conversation, turnId) {
+export function createTurnState(conversation: any, turnId: any) {
   const timestamp = nowIso();
 
   return {
@@ -65,47 +65,47 @@ export function createTurnState(conversation, turnId) {
     status: 'running',
     startedAt: timestamp,
     updatedAt: timestamp,
-    endedAt: null,
-    currentAgentId: null,
-    userMessageId: null,
+    endedAt: null as string | null,
+    currentAgentId: null as string | null,
+    userMessageId: null as string | null,
     agentCount: conversation.agents.length,
     completedCount: 0,
     failedCount: 0,
     hopCount: 0,
     routingMode: 'mention_queue',
-    pendingAgentIds: [],
-    entryAgentIds: [],
+    pendingAgentIds: [] as string[],
+    entryAgentIds: [] as string[],
     stopRequested: false,
     stopReason: '',
-    stopRequestedAt: null,
+    stopRequestedAt: null as string | null,
     terminationReason: '',
     runHandles: new Set(),
-    agents: conversation.agents.map((agent) => ({
+    agents: conversation.agents.map((agent: any) => ({
       agentId: agent.id,
       agentName: agent.name,
       status: 'idle',
-      messageId: null,
-      taskId: null,
-      runId: null,
+      messageId: null as string | null,
+      taskId: null as string | null,
+      runId: null as string | null,
       heartbeatCount: 0,
       replyLength: 0,
       preview: '',
       errorMessage: '',
-      triggeredByAgentId: null,
+      triggeredByAgentId: null as string | null,
       triggeredByAgentName: '',
       hop: 0,
-      lastTextDeltaAt: null,
-      startedAt: null,
-      endedAt: null,
+      lastTextDeltaAt: null as string | null,
+      startedAt: null as string | null,
+      endedAt: null as string | null,
     })),
   };
 }
 
-export function getTurnStage(turnState, agentId) {
-  return turnState.agents.find((agent) => agent.agentId === agentId) || null;
+export function getTurnStage(turnState: any, agentId: any) {
+  return turnState.agents.find((agent: any) => agent.agentId === agentId) || null;
 }
 
-export function resetTurnStage(stage, status = 'idle') {
+export function resetTurnStage(stage: any, status = 'idle') {
   if (!stage) {
     return;
   }
@@ -126,10 +126,12 @@ export function resetTurnStage(stage, status = 'idle') {
   stage.lastTextDeltaAt = null;
 }
 
-export function syncCurrentTurnAgent(turnState) {
+export function syncCurrentTurnAgent(turnState: any) {
   const activeStage =
     Array.isArray(turnState && turnState.agents)
-      ? turnState.agents.find((agent) => agent.status === 'queued' || agent.status === 'running' || agent.status === 'terminating') ||
+      ? turnState.agents.find(
+          (agent: any) => agent.status === 'queued' || agent.status === 'running' || agent.status === 'terminating'
+        ) ||
         null
       : null;
 
@@ -137,8 +139,8 @@ export function syncCurrentTurnAgent(turnState) {
   return turnState.currentAgentId;
 }
 
-export function replacePromptUserMessage(messages, promptUserMessage) {
-  return (Array.isArray(messages) ? messages : []).map((message) => {
+export function replacePromptUserMessage(messages: any, promptUserMessage: any) {
+  return (Array.isArray(messages) ? messages : []).map((message: any) => {
     if (!promptUserMessage || !message || message.id !== promptUserMessage.id) {
       return message;
     }
@@ -149,4 +151,3 @@ export function replacePromptUserMessage(messages, promptUserMessage) {
     };
   });
 }
-

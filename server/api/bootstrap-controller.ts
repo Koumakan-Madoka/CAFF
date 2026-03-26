@@ -21,7 +21,7 @@ export function createBootstrapController(options: any = {}): RouteHandler<ApiCo
 
     if (req.method === 'GET' && pathname === '/api/events') {
       const conversationId = String(requestUrl.searchParams.get('conversationId') || '').trim();
-      const turnEvents = turnOrchestrator.listTurnSummaries({ conversationId }).map((turn) => ({
+      const turnEvents = turnOrchestrator.listTurnSummaries({ conversationId }).map((turn: any) => ({
         eventName: 'turn_progress',
         payload: {
           conversationId: turn.conversationId,

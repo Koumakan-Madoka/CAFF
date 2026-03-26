@@ -8,7 +8,11 @@ export type ReadRequestJsonOptions = {
 };
 
 export function readRequestJson(req: Readable, options: ReadRequestJsonOptions = {}): Promise<any> {
-  const bodyLimit = Number.isFinite(options.bodyLimit) && options.bodyLimit > 0 ? options.bodyLimit : config.DEFAULT_BODY_LIMIT;
+  const providedBodyLimit = options.bodyLimit;
+  const bodyLimit =
+    typeof providedBodyLimit === 'number' && Number.isFinite(providedBodyLimit) && providedBodyLimit > 0
+      ? providedBodyLimit
+      : config.DEFAULT_BODY_LIMIT;
 
   return new Promise<any>((resolve, reject) => {
     let body = '';

@@ -17,11 +17,11 @@ export function createUndercoverService(options: any = {}) {
     typeof options.broadcastConversationSummary === 'function' ? options.broadcastConversationSummary : () => {};
   const activeAutoRuns = new Map();
 
-  function getConversationMetadata(conversation) {
+  function getConversationMetadata(conversation: any) {
     return conversation && conversation.metadata && typeof conversation.metadata === 'object' ? conversation.metadata : {};
   }
 
-  function buildUndercoverConversationMetadata(conversation, stateOverride) {
+  function buildUndercoverConversationMetadata(conversation: any, stateOverride: any) {
     return {
       ...getConversationMetadata(conversation),
       undercoverGame: undercoverHost.buildPublicState(
@@ -30,7 +30,7 @@ export function createUndercoverService(options: any = {}) {
     };
   }
 
-  function syncUndercoverConversationMetadata(conversationId, stateOverride = undefined) {
+  function syncUndercoverConversationMetadata(conversationId: any, stateOverride: any = undefined) {
     const conversation = store.getConversation(conversationId);
 
     if (!conversation || conversation.type !== UNDERCOVER_CONVERSATION_TYPE) {
@@ -44,7 +44,7 @@ export function createUndercoverService(options: any = {}) {
     });
   }
 
-  function mergeConversationSkillIds(skillIds, requiredSkillId) {
+  function mergeConversationSkillIds(skillIds: any, requiredSkillId: any) {
     const merged = new Set(
       (Array.isArray(skillIds) ? skillIds : [])
         .map((skillId) => String(skillId || '').trim())
@@ -58,7 +58,7 @@ export function createUndercoverService(options: any = {}) {
     return Array.from(merged);
   }
 
-  function syncUndercoverConversationParticipants(conversationId) {
+  function syncUndercoverConversationParticipants(conversationId: any) {
     const conversation = store.getConversation(conversationId);
 
     if (!conversation || conversation.type !== UNDERCOVER_CONVERSATION_TYPE) {
@@ -69,7 +69,7 @@ export function createUndercoverService(options: any = {}) {
       title: conversation.title,
       type: conversation.type,
       metadata: getConversationMetadata(conversation),
-      participants: (Array.isArray(conversation.agents) ? conversation.agents : []).map((agent) => ({
+      participants: (Array.isArray(conversation.agents) ? conversation.agents : []).map((agent: any) => ({
         agentId: agent.id,
         modelProfileId: agent.selectedModelProfileId || null,
         conversationSkillIds: mergeConversationSkillIds(agent.conversationSkillIds, UNDERCOVER_SKILL_ID),
@@ -77,12 +77,12 @@ export function createUndercoverService(options: any = {}) {
     });
   }
 
-  function prepareConversation(conversationId) {
+  function prepareConversation(conversationId: any) {
     syncUndercoverConversationMetadata(conversationId);
     return syncUndercoverConversationParticipants(conversationId);
   }
 
-  function createSystemMessage(conversationId, content, metadata = {}) {
+  function createSystemMessage(conversationId: any, content: any, metadata: any = {}) {
     return store.createMessage({
       conversationId,
       turnId: randomUUID(),
@@ -97,7 +97,7 @@ export function createUndercoverService(options: any = {}) {
     });
   }
 
-  function broadcastConversationRefresh(conversationId, message) {
+  function broadcastConversationRefresh(conversationId: any, message: any) {
     if (message) {
       broadcastEvent('conversation_message_created', {
         conversationId,
@@ -108,7 +108,7 @@ export function createUndercoverService(options: any = {}) {
     broadcastConversationSummary(conversationId);
   }
 
-  function requireConversation(conversationId) {
+  function requireConversation(conversationId: any) {
     const conversation = store.getConversation(conversationId);
 
     if (!conversation) {
@@ -118,13 +118,14 @@ export function createUndercoverService(options: any = {}) {
     try {
       undercoverHost.assertConversation(conversation);
     } catch (error) {
-      throw createHttpError(400, error.message || '无效的谁是卧底房间');
+      const errorValue = error as any;
+      throw createHttpError(400, (errorValue && errorValue.message) || '无效的谁是卧底房间');
     }
 
     return conversation;
   }
 
-  function requireState(conversationId) {
+  function requireState(conversationId: any) {
     const state = undercoverHost.loadState(conversationId);
 
     if (!state) {
@@ -134,7 +135,7 @@ export function createUndercoverService(options: any = {}) {
     return state;
   }
 
-  function canChatInConversation(conversationId) {
+  function canChatInConversation(conversationId: any) {
     const state = undercoverHost.loadState(conversationId);
 
     if (!state) {
@@ -144,13 +145,13 @@ export function createUndercoverService(options: any = {}) {
     return state.phase === 'finished' || state.status === 'completed' || state.status === 'revealed';
   }
 
-  function buildRoundParticipantsLabel(alivePlayers) {
+  function buildRoundParticipantsLabel(alivePlayers: any) {
     return (Array.isArray(alivePlayers) ? alivePlayers : [])
-      .map((player) => `@${String(player.name || '').replace(/\s+/g, '')}`)
+      .map((player: any) => `@${String(player.name || '').replace(/\s+/g, '')}`)
       .join(' ');
   }
 
-  function buildCluePrompt(state, alivePlayers) {
+  function buildCluePrompt(state: any, alivePlayers: any) {
     const roundNumber = Number.isInteger(state && state.roundNumber) ? state.roundNumber : 1;
     const mentions = buildRoundParticipantsLabel(alivePlayers);
 
@@ -162,10 +163,10 @@ export function createUndercoverService(options: any = {}) {
     ].join('\n');
   }
 
-  function buildVotePrompt(state, alivePlayers) {
+  function buildVotePrompt(state: any, alivePlayers: any) {
     const roundNumber = Number.isInteger(state && state.roundNumber) ? state.roundNumber : 1;
     const candidates = (Array.isArray(alivePlayers) ? alivePlayers : [])
-      .map((player) => `@${String(player.name || '').replace(/\s+/g, '')}`)
+      .map((player: any) => `@${String(player.name || '').replace(/\s+/g, '')}`)
       .join(' ');
 
     return [
@@ -176,7 +177,7 @@ export function createUndercoverService(options: any = {}) {
     ].join('\n');
   }
 
-  function parseVoteTarget(content, conversation, voterAgentId, allowedAgentIds) {
+  function parseVoteTarget(content: any, conversation: any, voterAgentId: any, allowedAgentIds: any) {
     const source = String(content || '').trim();
 
     if (!source) {
@@ -189,7 +190,7 @@ export function createUndercoverService(options: any = {}) {
       lookup,
       limit: 1,
       excludeAgentId: voterAgentId,
-    }).find((agentId) => allowed.has(agentId));
+    }).find((agentId: any) => allowed.has(agentId));
 
     if (explicitMention) {
       return explicitMention;
@@ -204,13 +205,13 @@ export function createUndercoverService(options: any = {}) {
     const resolved = resolveMentionValues(match[1], conversation && conversation.agents, {
       lookup,
       excludeAgentId: voterAgentId,
-    }).find((agentId) => allowed.has(agentId));
+    }).find((agentId: any) => allowed.has(agentId));
 
     return resolved || null;
   }
 
-  function buildStartMessage(conversation, state) {
-    const players = Array.isArray(state && state.players) ? state.players.map((player) => player.name) : [];
+  function buildStartMessage(conversation: any, state: any) {
+    const players = Array.isArray(state && state.players) ? state.players.map((player: any) => player.name) : [];
     const config = state && state.config ? state.config : {};
 
     return [
@@ -222,9 +223,9 @@ export function createUndercoverService(options: any = {}) {
     ].join('\n');
   }
 
-  function buildVoteSummary(state, voteResult) {
+  function buildVoteSummary(state: any, voteResult: any) {
     const playersById = new Map(
-      (Array.isArray(state && state.players) ? state.players : []).map((player) => [player.agentId, player.name])
+      (Array.isArray(state && state.players) ? state.players : []).map((player: any) => [player.agentId, player.name])
     );
     const eliminatedName = voteResult.eliminatedAgentId ? playersById.get(voteResult.eliminatedAgentId) || '未知玩家' : '无人';
     const tally = new Map();
@@ -238,7 +239,11 @@ export function createUndercoverService(options: any = {}) {
     }
 
     const summaryLines = Array.from(tally.entries())
-      .sort((left, right) => right[1] - left[1] || String(playersById.get(left[0]) || left[0]).localeCompare(String(playersById.get(right[0]) || right[0]), 'zh-CN'))
+      .sort(
+        (left: any, right: any) =>
+          right[1] - left[1] ||
+          String(playersById.get(left[0]) || left[0]).localeCompare(String(playersById.get(right[0]) || right[0]), 'zh-CN')
+      )
       .map(([agentId, count]) => `${playersById.get(agentId) || agentId}：${count} 票`);
 
     const resolutionLine =
@@ -255,7 +260,7 @@ export function createUndercoverService(options: any = {}) {
     ].join('\n');
   }
 
-  function buildWinnerMessage(state) {
+  function buildWinnerMessage(state: any) {
     const winner = state && state.winner ? state.winner : null;
 
     if (!winner) {
@@ -270,8 +275,8 @@ export function createUndercoverService(options: any = {}) {
       .join('\n');
   }
 
-  function buildRevealAssignments(state) {
-    return (Array.isArray(state && state.players) ? state.players : []).map((player) => ({
+  function buildRevealAssignments(state: any) {
+    return (Array.isArray(state && state.players) ? state.players : []).map((player: any) => ({
       agentId: player.agentId,
       name: player.name,
       roleLabel: player.role === 'undercover' ? '卧底' : player.role === 'blank' ? '白板' : '平民',
@@ -279,16 +284,16 @@ export function createUndercoverService(options: any = {}) {
     }));
   }
 
-  function buildRevealMessage(state) {
+  function buildRevealMessage(state: any) {
     const assignments = buildRevealAssignments(state);
 
     return [
       '最终身份揭晓：',
-      ...assignments.map((item) => `${item.name}：${item.roleLabel} / ${item.word || '无词'}`),
+      ...assignments.map((item: any) => `${item.name}：${item.roleLabel} / ${item.word || '无词'}`),
     ].join('\n');
   }
 
-  function createSecretAssignments(conversation, state) {
+  function createSecretAssignments(conversation: any, state: any) {
     for (const player of Array.isArray(state && state.players) ? state.players : []) {
       store.createPrivateMessage({
         conversationId: conversation.id,
@@ -305,12 +310,12 @@ export function createUndercoverService(options: any = {}) {
     }
   }
 
-  function deleteConversationState(conversationId) {
+  function deleteConversationState(conversationId: any) {
     activeAutoRuns.delete(conversationId);
     undercoverHost.deleteState(conversationId);
   }
 
-  async function revealGame(conversationId) {
+  async function revealGame(conversationId: any) {
     requireConversation(conversationId);
     let state = requireState(conversationId);
 
@@ -329,7 +334,7 @@ export function createUndercoverService(options: any = {}) {
     };
   }
 
-  async function runClueRound(conversationId) {
+  async function runClueRound(conversationId: any) {
     const conversation = requireConversation(conversationId);
     let state = requireState(conversationId);
 
@@ -362,7 +367,7 @@ export function createUndercoverService(options: any = {}) {
           source: 'undercover-host',
           phase: 'clue_round',
         },
-        initialAgentIds: alivePlayers.map((player) => player.agentId),
+        initialAgentIds: alivePlayers.map((player: any) => player.agentId),
         executionMode: 'queue',
         allowHandoffs: false,
         entryStrategy: 'host_clue_round',
@@ -405,7 +410,7 @@ export function createUndercoverService(options: any = {}) {
     };
   }
 
-  async function runVoteRound(conversationId) {
+  async function runVoteRound(conversationId: any) {
     const conversation = requireConversation(conversationId);
     let state = requireState(conversationId);
 
@@ -441,7 +446,7 @@ export function createUndercoverService(options: any = {}) {
           source: 'undercover-host',
           phase: 'vote_round',
         },
-        initialAgentIds: alivePlayers.map((player) => player.agentId),
+        initialAgentIds: alivePlayers.map((player: any) => player.agentId),
         executionMode: 'parallel',
         entryStrategy: 'host_vote_round',
         explicitIntent: true,
@@ -457,7 +462,7 @@ export function createUndercoverService(options: any = {}) {
     }
 
     const latestState = requireState(conversationId);
-    const aliveAgentIds = alivePlayers.map((player) => player.agentId);
+    const aliveAgentIds = alivePlayers.map((player: any) => player.agentId);
     const validVotes = [];
 
     for (const reply of Array.isArray(turnResult.replies) ? turnResult.replies : []) {
@@ -507,11 +512,11 @@ export function createUndercoverService(options: any = {}) {
       const tiedAgentIds = Array.from(voteCounts.entries())
         .filter(([, count]) => count === highestVoteCount)
         .map(([agentId]) => agentId);
-      const seatOrder = Array.isArray(latestState.players) ? latestState.players.map((player) => player.agentId) : [];
+      const seatOrder = Array.isArray(latestState.players) ? latestState.players.map((player: any) => player.agentId) : [];
       const eliminatedAgentId =
         tiedAgentIds.length <= 1
           ? tiedAgentIds[0]
-          : seatOrder.find((agentId) => tiedAgentIds.includes(agentId)) || tiedAgentIds[0];
+          : seatOrder.find((agentId: any) => tiedAgentIds.includes(agentId)) || tiedAgentIds[0];
 
       voteResult = {
         eliminatedAgentId,
@@ -543,7 +548,7 @@ export function createUndercoverService(options: any = {}) {
     };
   }
 
-  function queueAutoRun(conversationId) {
+  function queueAutoRun(conversationId: any) {
     if (activeAutoRuns.has(conversationId)) {
       return false;
     }
@@ -605,14 +610,15 @@ export function createUndercoverService(options: any = {}) {
           }
         }
       } catch (error) {
+        const errorValue = error as any;
         if (activeAutoRuns.get(conversationId) === runToken) {
           const conversation = store.getConversation(conversationId);
 
           if (conversation && conversation.type === UNDERCOVER_CONVERSATION_TYPE) {
             const messageText =
-              error && /stopped by user/i.test(String(error.message || ''))
+              errorValue && /stopped by user/i.test(String(errorValue.message || ''))
                 ? '当前自动对局已被停止，请重置对局后重新开始。'
-                : `自动对局已暂停：${error && error.message ? error.message : '未知错误'}`;
+                : `自动对局已暂停：${errorValue && errorValue.message ? errorValue.message : '未知错误'}`;
             const errorMessage = createSystemMessage(conversationId, messageText, {
               phase: 'game_auto_failed',
             });
@@ -629,7 +635,7 @@ export function createUndercoverService(options: any = {}) {
     return true;
   }
 
-  async function startGame(conversationId, body) {
+  async function startGame(conversationId: any, body: any) {
     const conversation = requireConversation(conversationId);
     const existingState = undercoverHost.loadState(conversationId);
 
@@ -654,7 +660,7 @@ export function createUndercoverService(options: any = {}) {
     };
   }
 
-  async function resetGame(conversationId) {
+  async function resetGame(conversationId: any) {
     requireConversation(conversationId);
     deleteConversationState(conversationId);
     const resetMessage = createSystemMessage(conversationId, '当前谁是卧底对局已重置，可以重新配置并开始新一局。', {

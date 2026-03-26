@@ -3,7 +3,7 @@ const path = require('node:path');
 
 const PI_CLI_RELATIVE_PATH = path.join('node_modules', '@mariozechner', 'pi-coding-agent', 'dist', 'cli.js');
 
-export function tryCreateDirectPiNodeSpawnSpec(piCommandPath, piArgs) {
+export function tryCreateDirectPiNodeSpawnSpec(piCommandPath: any, piArgs: any) {
   const normalizedPath = String(piCommandPath || '').trim();
 
   if (!normalizedPath || !path.isAbsolute(normalizedPath)) {

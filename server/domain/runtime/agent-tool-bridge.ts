@@ -11,7 +11,7 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-function clipText(text, maxLength = 240) {
+function clipText(text: any, maxLength = 240) {
   const value = String(text || '').trim();
 
   if (value.length <= maxLength) {
@@ -81,7 +81,7 @@ export function createAgentToolBridge(options: any = {}) {
     };
   }
 
-  function registerInvocation(context) {
+  function registerInvocation(context: any) {
     if (!context || !context.invocationId) {
       return null;
     }
@@ -90,7 +90,7 @@ export function createAgentToolBridge(options: any = {}) {
     return context;
   }
 
-  function getInvocation(invocationId, callbackToken) {
+  function getInvocation(invocationId: any, callbackToken: any) {
     const normalizedInvocationId = String(invocationId || '').trim();
     const normalizedCallbackToken = String(callbackToken || '').trim();
     const context = activeInvocations.get(normalizedInvocationId);
@@ -114,7 +114,7 @@ export function createAgentToolBridge(options: any = {}) {
     return context;
   }
 
-  function unregisterInvocation(invocationId) {
+  function unregisterInvocation(invocationId: any) {
     const normalizedInvocationId = String(invocationId || '').trim();
 
     if (!normalizedInvocationId) {
@@ -131,7 +131,7 @@ export function createAgentToolBridge(options: any = {}) {
     return context;
   }
 
-  function serializeAgentToolPublicMessage(message) {
+  function serializeAgentToolPublicMessage(message: any) {
     const metadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
     const toolBridgeMetadata =
       metadata && metadata.toolBridge && typeof metadata.toolBridge === 'object' ? metadata.toolBridge : null;
@@ -150,7 +150,7 @@ export function createAgentToolBridge(options: any = {}) {
     };
   }
 
-  function serializeAgentToolPrivateMessage(message) {
+  function serializeAgentToolPrivateMessage(message: any) {
     return {
       id: message.id,
       turnId: message.turnId,
@@ -162,8 +162,8 @@ export function createAgentToolBridge(options: any = {}) {
     };
   }
 
-  function serializeAgentToolParticipants(agents) {
-    return (Array.isArray(agents) ? agents : []).map((agent) => ({
+  function serializeAgentToolParticipants(agents: any) {
+    return (Array.isArray(agents) ? agents : []).map((agent: any) => ({
       id: agent.id,
       name: agent.name,
       description: agent.description || '',
@@ -171,13 +171,13 @@ export function createAgentToolBridge(options: any = {}) {
     }));
   }
 
-  function resolveContextUserMessage(context, conversation) {
+  function resolveContextUserMessage(context: any, conversation: any) {
     const snapshot = context && context.promptUserMessage ? normalizePromptUserMessageSnapshot(context.promptUserMessage) : null;
     const messages = conversation && Array.isArray(conversation.messages) ? conversation.messages : [];
     const targetUserMessageId = String(context && context.userMessageId ? context.userMessageId : '').trim();
     const matchedConversationMessage =
-      messages.find((message) => message && message.id === targetUserMessageId && message.role === 'user') ||
-      [...messages].reverse().find((message) => message && message.role === 'user') ||
+      messages.find((message: any) => message && message.id === targetUserMessageId && message.role === 'user') ||
+      [...messages].reverse().find((message: any) => message && message.role === 'user') ||
       null;
 
     if (!snapshot && !matchedConversationMessage) {
@@ -220,7 +220,7 @@ export function createAgentToolBridge(options: any = {}) {
     };
   }
 
-  function applyContextUserMessageSnapshot(message, contextUserMessage) {
+  function applyContextUserMessageSnapshot(message: any, contextUserMessage: any) {
     if (!message || !contextUserMessage || message.id !== contextUserMessage.id) {
       return message;
     }
@@ -241,7 +241,7 @@ export function createAgentToolBridge(options: any = {}) {
     const conversation = store.getConversation(context.conversationId);
     const contextUserMessage = resolveContextUserMessage(context, conversation);
     const publicMessageSource = conversation
-      ? conversation.messages.filter((message) => {
+      ? conversation.messages.filter((message: any) => {
           return !(
             message.id === context.assistantMessageId &&
             message.status !== 'completed' &&
@@ -251,11 +251,11 @@ export function createAgentToolBridge(options: any = {}) {
       : [];
     let selectedPublicMessages = publicMessageSource
       .slice(-publicLimit)
-      .map((message) => applyContextUserMessageSnapshot(message, contextUserMessage));
+      .map((message: any) => applyContextUserMessageSnapshot(message, contextUserMessage));
 
     if (
       contextUserMessage &&
-      !selectedPublicMessages.some((message) => message && message.id === contextUserMessage.id)
+      !selectedPublicMessages.some((message: any) => message && message.id === contextUserMessage.id)
     ) {
       selectedPublicMessages = [contextUserMessage, ...selectedPublicMessages];
     }
@@ -278,27 +278,27 @@ export function createAgentToolBridge(options: any = {}) {
     };
   }
 
-  function normalizeAgentToolRecipientValues(value) {
+  function normalizeAgentToolRecipientValues(value: any): string[] {
     if (Array.isArray(value)) {
-      return value.flatMap((item) => normalizeAgentToolRecipientValues(item));
+      return value.flatMap((item: any) => normalizeAgentToolRecipientValues(item));
     }
 
     if (typeof value === 'string') {
       return value
         .split(/[,\n\r;，；]+/u)
-        .map((item) => item.trim())
+        .map((item: any) => item.trim())
         .filter(Boolean);
     }
 
     return [];
   }
 
-  function resolveAgentToolRecipientIds(recipientValues, agents) {
+  function resolveAgentToolRecipientIds(recipientValues: any, agents: any) {
     const lookup = buildAgentMentionLookup(agents);
     return resolveMentionValues(normalizeAgentToolRecipientValues(recipientValues), agents, { lookup });
   }
 
-  function applyAgentToolPublicUpdate(context, content, mode = 'replace') {
+  function applyAgentToolPublicUpdate(context: any, content: any, mode = 'replace') {
     const existingMessage = store.getMessage(context.assistantMessageId);
 
     if (!existingMessage) {
@@ -381,7 +381,7 @@ export function createAgentToolBridge(options: any = {}) {
         conversation.agents
       );
       const resolvedRecipientAgentIds = recipientAgentIds.length > 0 ? recipientAgentIds : [context.agentId];
-      const handoffAgentIds = resolvedRecipientAgentIds.filter((agentId) => agentId && agentId !== context.agentId);
+      const handoffAgentIds = resolvedRecipientAgentIds.filter((agentId: any) => agentId && agentId !== context.agentId);
       const explicitHandoff = body.handoff === true || body.triggerReply === true;
       const explicitNoHandoff = body.handoff === false || body.triggerReply === false || body.noHandoff === true;
       const handoffRequested = !explicitNoHandoff && (explicitHandoff || handoffAgentIds.length > 0);
@@ -449,7 +449,7 @@ export function createAgentToolBridge(options: any = {}) {
     throw createHttpError(400, 'Unsupported visibility. Use public or private.');
   }
 
-  function handleReadContext(requestUrl) {
+  function handleReadContext(requestUrl: any) {
     const context = getInvocation(
       requestUrl.searchParams.get('invocationId'),
       requestUrl.searchParams.get('callbackToken')
@@ -466,7 +466,7 @@ export function createAgentToolBridge(options: any = {}) {
     };
   }
 
-  function handleListParticipants(requestUrl) {
+  function handleListParticipants(requestUrl: any) {
     const context = getInvocation(
       requestUrl.searchParams.get('invocationId'),
       requestUrl.searchParams.get('callbackToken')

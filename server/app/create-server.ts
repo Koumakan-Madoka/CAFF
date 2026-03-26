@@ -33,13 +33,13 @@ export function createServerApp(options: any = {}) {
   const skillRegistry = createSkillRegistry({ agentDir });
   const undercoverHost = createWhoIsUndercoverHost({ agentDir });
   const sseBus = createSseBus();
-  let turnOrchestrator = null;
+  let turnOrchestrator: any = null;
 
-  function broadcastEvent(eventName, payload) {
+  function broadcastEvent(eventName: any, payload: any) {
     sseBus.broadcast(eventName, payload);
   }
 
-  function broadcastConversationSummary(conversationId) {
+  function broadcastConversationSummary(conversationId: any) {
     const summary = pickConversationSummary(store.getConversation(conversationId));
 
     if (!summary) {
@@ -64,7 +64,7 @@ export function createServerApp(options: any = {}) {
     store,
     broadcastEvent,
     broadcastConversationSummary,
-    onTurnUpdated(turnState) {
+    onTurnUpdated(turnState: any) {
       if (!turnOrchestrator) {
         return;
       }
@@ -134,7 +134,7 @@ export function createServerApp(options: any = {}) {
     }),
   ]);
 
-  const server = http.createServer(async (req, res) => {
+  const server = http.createServer(async (req: any, res: any) => {
     const requestUrl = new URL(req.url, `http://${req.headers.host || `${host}:${port}`}`);
 
     try {
@@ -155,14 +155,15 @@ export function createServerApp(options: any = {}) {
 
       serveStaticFile(res, requestUrl.pathname);
     } catch (error) {
-      const statusCode = Number.isInteger(error.statusCode) ? error.statusCode : 500;
+      const errorValue = error as any;
+      const statusCode = Number.isInteger(errorValue && errorValue.statusCode) ? errorValue.statusCode : 500;
       sendJson(res, statusCode, {
-        error: error.message || 'Internal server error',
+        error: (errorValue && errorValue.message) || 'Internal server error',
       });
     }
   });
 
-  function start(onListen) {
+  function start(onListen: any) {
     server.listen(port, host, () => {
       if (typeof onListen === 'function') {
         onListen();
@@ -170,7 +171,7 @@ export function createServerApp(options: any = {}) {
     });
   }
 
-  function close(callback) {
+  function close(callback: any) {
     sseBus.closeAll();
 
     server.close(() => {
