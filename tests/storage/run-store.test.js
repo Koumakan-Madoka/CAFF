@@ -1,19 +1,15 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const Database = require('better-sqlite3');
 const test = require('node:test');
 const { createSqliteRunStore } = require('../../lib/sqlite-store');
+const { withTempDir } = require('../helpers/temp-dir');
 
 function listColumnNames(db, tableName) {
   return new Set(
     db.prepare(`PRAGMA table_info(${tableName})`).all().map((column) => String(column.name))
   );
-}
-
-function withTempDir(prefix) {
-  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
 
 test('run store migrates legacy runs schema and records task lifecycle data', (t) => {
