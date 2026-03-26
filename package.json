@@ -4,12 +4,15 @@
   "description": "",
   "main": "lib/app-server.js",
   "scripts": {
+    "build": "tsc -p tsconfig.build.json && node scripts/copy-build-assets.js",
     "check": "node --check lib/minimal-pi.js && node --check lib/pi-runtime.js && node --check lib/sqlite-store.js && node --check lib/chat-app-store.js && node --check storage/sqlite/connection.js && node --check storage/sqlite/migrations.js && node --check storage/chat/agent.repository.js && node --check storage/chat/conversation.repository.js && node --check storage/chat/participant.repository.js && node --check storage/chat/message.repository.js && node --check storage/chat/private-message.repository.js && node --check storage/run/session.repository.js && node --check storage/run/run.repository.js && node --check storage/run/task.repository.js && node --check lib/app-server.js && node --check lib/agent-chat-tools.js && node --check public/app.js && node --check public/personas.js && node --check public/skills.js && node --check public/shared/api-client.js && node --check public/shared/model-options.js && node --check public/shared/avatar.js && node --check public/shared/toast.js && node --check public/chat/conversation-list.js && node --check public/chat/participant-pane.js && node --check public/chat/message-timeline.js && node --check public/chat/conversation-settings.js && node --check public/chat/undercover-panel.js && node --check public/chat/mention-menu.js && node --check public/chat/conversation-pane.js && node --check server/app/config.js && node --check server/app/create-server.js && node --check server/api/bootstrap-payload.js && node --check server/api/bootstrap-controller.js && node --check server/api/agent-tools-controller.js && node --check server/api/skills-controller.js && node --check server/api/agents-controller.js && node --check server/api/conversations-controller.js && node --check server/api/undercover-controller.js && node --check server/domain/conversation/mention-routing.js && node --check server/domain/conversation/conversation-view.js && node --check server/domain/conversation/turn-orchestrator.js && node --check server/domain/runtime/agent-tool-bridge.js && node --check server/domain/undercover/undercover-service.js && node --check server/http/http-errors.js && node --check server/http/request-body.js && node --check server/http/response.js && node --check server/http/router.js && node --check server/http/sse-bus.js && node --check server/http/static-file.js",
-    "start": "node lib/app-server.js",
+    "start": "npm run build && node build/lib/app-server.js",
+    "start:src": "node lib/app-server.js",
+    "typecheck": "tsc -p tsconfig.typecheck.json",
     "test:fast": "npm run check && node tests/runtime/agent-tool-bridge.test.js && node tests/runtime/turn-orchestrator.test.js && node tests/runtime/agent-chat-tools.test.js && node tests/http/request-body.test.js && node tests/storage/chat-store.test.js && node tests/storage/run-store.test.js && node tests/runtime/pi-runtime.test.js",
     "test:smoke": "node tests/smoke/server-smoke.test.js",
     "test": "npm run test:fast && npm run test:smoke",
-    "web": "node lib/app-server.js"
+    "web": "npm run start"
   },
   "keywords": [],
   "author": "",
@@ -17,5 +20,9 @@
   "type": "commonjs",
   "dependencies": {
     "better-sqlite3": "^12.8.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.0.0"
   }
 }

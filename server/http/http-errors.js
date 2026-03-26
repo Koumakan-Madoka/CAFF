@@ -1,5 +1,5 @@
 function createHttpError(statusCode, message, details = {}) {
-  const error = new Error(message);
+  const error = /** @type {Error & { statusCode: number } & Record<string, any>} */ (new Error(message));
   error.statusCode = statusCode;
   Object.assign(error, details);
   return error;

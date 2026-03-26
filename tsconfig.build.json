@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": false,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "outDir": "build",
+    "rootDir": ".",
+    "skipLibCheck": true,
+    "target": "ES2022"
+  },
+  "include": ["lib/**/*.js", "lib/**/*.ts", "server/**/*.js", "server/**/*.ts", "storage/**/*.js", "storage/**/*.ts"],
+  "exclude": ["archive", "build", "docs", "node_modules", "public", "tests"]
+}

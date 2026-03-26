@@ -1,6 +1,7 @@
 ## Test guardrails checklist
 
 - [ ] Gate A: `npm run check`
+- [ ] Typecheck: `npm run typecheck`
 - [ ] Gate B: `npm run test:fast`
 - [ ] Gate C (if applicable): `npm run test:smoke`
 - [ ] Bug fixes include a regression test (red -> green)

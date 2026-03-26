@@ -12,7 +12,11 @@ function resolveSqlitePath(agentDir, sqlitePath) {
   return path.resolve(agentDir, DEFAULT_SQLITE_FILENAME);
 }
 
-function openSqliteDatabase({ agentDir, sqlitePath, timeout = 5000 } = {}) {
+/**
+ * @param {{ agentDir?: string, sqlitePath?: string, timeout?: number }} [options]
+ */
+function openSqliteDatabase(options = {}) {
+  const { agentDir, sqlitePath, timeout = 5000 } = options;
   const resolvedAgentDir = path.resolve(agentDir || process.cwd());
   const databasePath = resolveSqlitePath(resolvedAgentDir, sqlitePath);
 
