@@ -6,6 +6,7 @@ const {
   buildAgentTurnPrompt,
   sanitizePromptMentions,
 } = require('../../build/server/domain/conversation/turn-orchestrator');
+const { createRoutingExecutor } = require('../../build/server/domain/conversation/turn/routing-executor');
 const { createAgentExecutor } = require('../../build/server/domain/conversation/turn/agent-executor');
 const { ensureAgentSandbox } = require('../../build/server/domain/conversation/turn/agent-sandbox');
 const { createSessionExporter } = require('../../build/server/domain/conversation/turn/session-export');
@@ -236,6 +237,72 @@ test('buildAgentTurnPrompt blocks absolute Trellis task dirs outside project', (
 
   assert.match(prompt, /Status: STALE POINTER/u);
   assert.doesNotMatch(prompt, /SENTINEL_OUTSIDE_PRD/u);
+});
+
+test('routing executor snapshots project dir once per turn', async (t) => {
+  const tempDir = withTempDir('caff-project-snapshot-');
+  const sqlitePath = path.join(tempDir, 'snapshot.sqlite');
+  const activeConversationIds = new Set();
+  const activeTurns = new Map();
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const conversation = {
+    id: 'conversation-project-snapshot',
+    title: 'Project snapshot',
+    type: 'standard',
+    agents: [
+      { id: 'agent-a', name: 'Alpha' },
+      { id: 'agent-b', name: 'Beta' },
+    ],
+    messages: [],
+  };
+
+  const store = {
+    getConversation(conversationId) {
+      return conversationId === conversation.id ? conversation : null;
+    },
+    createMessage(input) {
+      const message = {
+        id: `message-${conversation.messages.length + 1}`,
+        ...input,
+      };
+      conversation.messages.push(message);
+      return message;
+    },
+  };
+
+  const seenProjectDirs = [];
+  let projectCalls = 0;
+
+  const executor = createRoutingExecutor({
+    store,
+    agentDir: tempDir,
+    sqlitePath,
+    activeConversationIds,
+    activeTurns,
+    getProjectDir() {
+      projectCalls += 1;
+      return projectCalls === 1 ? 'project-A' : 'project-B';
+    },
+    async executeConversationAgent({ projectDir, completedReplies, agent }) {
+      seenProjectDirs.push(String(projectDir || '').trim());
+      completedReplies.push({ agentId: agent.id, publicReply: 'ok', final: true });
+      return { stopTurn: false };
+    },
+  });
+
+  await executor(conversation.id, {
+    content: 'Hello',
+    initialAgentIds: ['agent-a', 'agent-b'],
+    executionMode: 'parallel',
+  });
+
+  assert.equal(projectCalls, 1);
+  assert.equal(seenProjectDirs.length, 2);
+  assert.ok(seenProjectDirs.every((value) => value === 'project-A'));
 });
 
 test('session export refuses non-assistant messages and out-of-bounds paths', (t) => {

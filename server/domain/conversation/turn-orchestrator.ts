@@ -63,6 +63,7 @@ export function createTurnOrchestrator(options: any = {}) {
   const runConversationTurn = createRoutingExecutor({
     store,
     executeConversationAgent: agentExecutor.executeConversationAgent,
+    getProjectDir,
     broadcastEvent,
     broadcastConversationSummary,
     broadcastRuntimeState,

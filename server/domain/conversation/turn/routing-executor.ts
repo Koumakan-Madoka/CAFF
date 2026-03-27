@@ -104,6 +104,7 @@ function resolveInitialSpeakerQueue(userText: any, agents: any) {
 export function createRoutingExecutor(options: any = {}) {
   const store = options.store;
   const executeConversationAgent = options.executeConversationAgent;
+  const getProjectDir = typeof options.getProjectDir === 'function' ? options.getProjectDir : null;
   const broadcastEvent = typeof options.broadcastEvent === 'function' ? options.broadcastEvent : () => {};
   const broadcastConversationSummary =
     typeof options.broadcastConversationSummary === 'function' ? options.broadcastConversationSummary : () => {};
@@ -135,6 +136,7 @@ export function createRoutingExecutor(options: any = {}) {
       throw createHttpError(400, 'Add at least one agent to the conversation first');
     }
 
+    const projectDirSnapshot = getProjectDir ? getProjectDir(conversation) : '';
     const runStore = createSqliteRunStore({ agentDir, sqlitePath });
     const turnId = randomUUID();
     const turnState = createTurnState(conversation, turnId);
@@ -409,6 +411,7 @@ export function createRoutingExecutor(options: any = {}) {
                 turnId,
                 rootTaskId,
                 conversation,
+                projectDir: projectDirSnapshot,
                 promptMessages: basePromptMessages,
                 promptUserMessage,
                 queueItem: {
@@ -513,6 +516,7 @@ export function createRoutingExecutor(options: any = {}) {
                     turnId,
                     rootTaskId,
                     conversation: refreshedConversation,
+                    projectDir: projectDirSnapshot,
                     promptMessages: replacePromptUserMessage(refreshedConversation.messages, promptUserMessage),
                     promptUserMessage,
                     queueItem,
@@ -536,6 +540,7 @@ export function createRoutingExecutor(options: any = {}) {
                   turnId,
                   rootTaskId,
                   conversation: refreshedConversation,
+                  projectDir: projectDirSnapshot,
                   promptMessages: replacePromptUserMessage(refreshedConversation.messages, promptUserMessage),
                   promptUserMessage,
                   queueItem: executionItems[0].queueItem,

@@ -1,4 +1,5 @@
 const { randomUUID } = require('node:crypto');
+const path = require('node:path');
 const {
   DEFAULT_MODEL,
   DEFAULT_PROVIDER,
@@ -358,6 +359,7 @@ export function createAgentExecutor(options: any = {}) {
     enqueueAgent,
     allowHandoffs = true,
     finalStopsTurn = true,
+    projectDir,
   }: any) {
     const stage = getTurnStage(turnState, agent.id);
 
@@ -377,12 +379,16 @@ export function createAgentExecutor(options: any = {}) {
 
     const agentConfig = resolveConversationAgentConfig(agent);
     const agentSandbox = ensureAgentSandbox(agentDir, agent);
-    const resolvedPersonaSkills = skillRegistry.resolveSkills(agentConfig.skillIds);
-    const resolvedConversationSkills = skillRegistry.resolveSkills(agentConfig.conversationSkillIds);
+    const projectDirCandidate = String(projectDir || '').trim() || (getProjectDir ? String(getProjectDir(conversation) || '').trim() : '');
+    const resolvedProjectDir = projectDirCandidate ? path.resolve(projectDirCandidate) : '';
+    const extraSkillDirs = resolvedProjectDir
+      ? [path.join(resolvedProjectDir, '.agents', 'skills'), path.join(resolvedProjectDir, '.codex', 'skills')]
+      : [];
+    const resolvedPersonaSkills = skillRegistry.resolveSkills(agentConfig.skillIds, { extraSkillDirs });
+    const resolvedConversationSkills = skillRegistry.resolveSkills(agentConfig.conversationSkillIds, { extraSkillDirs });
     const privateMessages = store.listPrivateMessagesForAgent(conversationId, agent.id, {
       limit: MAX_PRIVATE_CONTEXT_MESSAGES,
     });
-    const projectDir = getProjectDir ? getProjectDir(conversation) : '';
     const prompt = buildAgentTurnPrompt({
       conversation,
       agent,
@@ -390,7 +396,7 @@ export function createAgentExecutor(options: any = {}) {
       resolvedPersonaSkills,
       resolvedConversationSkills,
       sandbox: agentSandbox,
-      projectDir,
+      projectDir: resolvedProjectDir,
       agents: conversation.agents,
       messages: promptMessages,
       privateMessages,
