@@ -26,7 +26,31 @@ function readTextFile(filePath: any, maxChars = DEFAULT_MAX_CHARS) {
   }
 
   try {
-    return clipText(fs.readFileSync(resolved, 'utf8'), maxChars);
+    const stat = safeStat(resolved);
+
+    if (!stat || !stat.isFile()) {
+      return '';
+    }
+
+    const maxBytes = Math.max(0, Number.isInteger(maxChars) ? maxChars : DEFAULT_MAX_CHARS) * 4 + 128;
+
+    if (!Number.isFinite(maxBytes) || maxBytes <= 0) {
+      return '';
+    }
+
+    if (stat.size <= maxBytes) {
+      return clipText(fs.readFileSync(resolved, 'utf8'), maxChars);
+    }
+
+    const fd = fs.openSync(resolved, 'r');
+
+    try {
+      const buffer = Buffer.allocUnsafe(Math.min(maxBytes, stat.size));
+      const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, 0);
+      return clipText(buffer.subarray(0, bytesRead).toString('utf8'), maxChars);
+    } finally {
+      fs.closeSync(fd);
+    }
   } catch {
     return '';
   }
