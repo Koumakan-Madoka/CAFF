@@ -66,10 +66,20 @@ export function createProjectsController(options: any = {}): RouteHandler<ApiCon
 
     if (req.method === 'POST' && pathname === '/api/projects') {
       const body = await readRequestJson(req);
+      const projectPath = String(body && body.path ? body.path : '').trim();
+
+      if (!projectPath) {
+        throw createHttpError(400, 'path is required');
+      }
+
       const project = projectManager.ensureProject({
-        path: body && body.path,
+        path: projectPath,
         name: body && body.name,
       });
+
+      if (!project) {
+        throw createHttpError(400, 'path is required');
+      }
       if (project && project.id) {
         projectManager.setActiveProject(project.id);
       }
