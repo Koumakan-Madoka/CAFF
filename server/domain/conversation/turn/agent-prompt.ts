@@ -1,5 +1,6 @@
 const { getAgentById } = require('../mention-routing');
 const { UNDERCOVER_CONVERSATION_TYPE } = require('../../../../lib/who-is-undercover-game');
+const { buildTrellisPromptContext } = require('./trellis-context');
 
 const MAX_HISTORY_MESSAGES = 24;
 const MAX_PARALLEL_MENTION_BATCH_SIZE = 5;
@@ -240,6 +241,7 @@ export function buildAgentTurnPrompt({
   allowHandoffs = true,
   agentToolRelativePath,
 }: any) {
+  const trellisPromptContext = buildTrellisPromptContext();
   const participants = agents
     .map((item: any) => {
       const description = item.description ? ` - ${item.description}` : '';
@@ -308,6 +310,7 @@ export function buildAgentTurnPrompt({
     'Conversation-only skills for this room:',
     formatSkillDocuments(resolvedConversationSkills),
     '',
+    ...(trellisPromptContext ? ['Trellis project context:', trellisPromptContext, ''] : []),
     'Local sandbox:',
     `- PI_AGENT_SANDBOX_DIR points to your dedicated sandbox: ${sandbox && sandbox.sandboxDir ? sandbox.sandboxDir : '[unavailable]'}`,
     `- PI_AGENT_PRIVATE_DIR points to your private storage directory: ${sandbox && sandbox.privateDir ? sandbox.privateDir : '[unavailable]'}`,

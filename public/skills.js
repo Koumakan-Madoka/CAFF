@@ -105,14 +105,15 @@ function updateFileEditorActions() {
   const currentSkill = skillById(state.selectedSkillId);
   const currentPath = normalizeFilePath(dom.skillExtraFilePath.value);
   const usingReservedPath = RESERVED_FILE_PATHS.has(currentPath);
-  const canEdit = Boolean(currentSkill && currentPath && !usingReservedPath);
+  const isReadOnly = Boolean(currentSkill && currentSkill.readOnly);
+  const canEdit = Boolean(currentSkill && currentPath && !usingReservedPath && !isReadOnly);
   const isLoadedFile = Boolean(state.selectedFileOriginalPath) && currentPath === state.selectedFileOriginalPath;
 
-  dom.newSkillFileButton.disabled = !currentSkill;
+  dom.newSkillFileButton.disabled = !currentSkill || isReadOnly;
   dom.skillExtraFilePath.disabled = !currentSkill;
-  dom.skillExtraFileContent.disabled = !currentSkill;
+  dom.skillExtraFileContent.disabled = !currentSkill || isReadOnly;
   dom.saveSkillFileButton.disabled = !canEdit;
-  dom.deleteSkillFileButton.disabled = !currentSkill || !isLoadedFile;
+  dom.deleteSkillFileButton.disabled = !currentSkill || !isLoadedFile || isReadOnly;
 }
 
 function clearFileEditor(draftPath = '') {
@@ -187,7 +188,7 @@ function resetSkillForm() {
 }
 
 function fillSkillForm(skill) {
-  dom.editorTitle.textContent = `编辑 Skill · ${skill.name}`;
+  dom.editorTitle.textContent = `${skill && skill.readOnly ? '查看 Skill' : '编辑 Skill'} · ${skill.name}`;
   dom.skillId.value = skill.id;
   dom.skillName.value = skill.name || '';
   dom.skillDescription.value = skill.description || '';
@@ -196,7 +197,7 @@ function fillSkillForm(skill) {
   dom.skillOpenAiYaml.value = skill.openaiYaml || '';
   renderFileSummary(skill.files || []);
   renderExtraFileList(skill);
-  dom.deleteSkillButton.disabled = false;
+  dom.deleteSkillButton.disabled = Boolean(skill && skill.readOnly);
 
   if (!state.selectedFileOriginalPath || !extraFilesForSkill(skill).includes(state.selectedFileOriginalPath)) {
     clearFileEditor();

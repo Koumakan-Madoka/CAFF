@@ -170,14 +170,79 @@ function pruneEmptyDirectories(startDir: any, stopDir: any) {
 
 export class SkillRegistry {
   [key: string]: any;
-  constructor({ agentDir }: any) {
+  constructor(options: any = {}) {
+    const normalizedOptions = options && typeof options === 'object' ? options : {};
+    const agentDir = normalizedOptions.agentDir;
+
     this.agentDir = path.resolve(agentDir);
     this.skillsDir = path.join(this.agentDir, 'skills');
+    this.externalSkillsDirs = [];
+
+    const extraSkillDirs = Array.isArray(normalizedOptions.extraSkillDirs) ? normalizedOptions.extraSkillDirs : [];
+
+    for (const candidate of extraSkillDirs) {
+      const normalized = String(candidate || '').trim();
+      if (!normalized) {
+        continue;
+      }
+
+      const resolved = path.resolve(normalized);
+      if (resolved === this.skillsDir) {
+        continue;
+      }
+
+      this.externalSkillsDirs.push(resolved);
+    }
+
     fs.mkdirSync(this.skillsDir, { recursive: true });
   }
 
   resolveSkillDir(skillId: any) {
     return path.join(this.skillsDir, sanitizeSkillId(skillId));
+  }
+
+  resolveExternalSkillDir(rootDir: any, skillId: any) {
+    return path.join(String(rootDir || ''), sanitizeSkillId(skillId));
+  }
+
+  resolveSkillLocation(skillId: any) {
+    const normalizedId = sanitizeSkillId(skillId);
+
+    if (!normalizedId) {
+      return null;
+    }
+
+    const skillDir = this.resolveSkillDir(normalizedId);
+    const skillFilePath = path.join(skillDir, 'SKILL.md');
+
+    if (fs.existsSync(skillFilePath)) {
+      return {
+        skillId: normalizedId,
+        skillDir,
+        skillFilePath,
+        readOnly: false,
+        source: 'local',
+      };
+    }
+
+    for (const rootDir of Array.isArray(this.externalSkillsDirs) ? this.externalSkillsDirs : []) {
+      const externalDir = this.resolveExternalSkillDir(rootDir, normalizedId);
+      const externalSkillFilePath = path.join(externalDir, 'SKILL.md');
+
+      if (!fs.existsSync(externalSkillFilePath)) {
+        continue;
+      }
+
+      return {
+        skillId: normalizedId,
+        skillDir: externalDir,
+        skillFilePath: externalSkillFilePath,
+        readOnly: true,
+        source: rootDir,
+      };
+    }
+
+    return null;
   }
 
   ensureSkill(skillId: any) {
@@ -187,22 +252,17 @@ export class SkillRegistry {
       throw createSkillRegistryError(400, 'Skill id is required');
     }
 
-    const skillDir = this.resolveSkillDir(normalizedId);
-    const skillFilePath = path.join(skillDir, 'SKILL.md');
+    const location = this.resolveSkillLocation(normalizedId);
 
-    if (!fs.existsSync(skillFilePath)) {
+    if (!location) {
       throw createSkillRegistryError(404, 'Skill not found');
     }
 
-    return {
-      skillId: normalizedId,
-      skillDir,
-      skillFilePath,
-    };
+    return location;
   }
 
   resolveSkillFile(skillId: any, filePath: any) {
-    const { skillId: normalizedId, skillDir } = this.ensureSkill(skillId);
+    const { skillId: normalizedId, skillDir, readOnly, source } = this.ensureSkill(skillId);
     const relativePath = normalizeSkillFilePath(filePath);
     const fullPath = path.resolve(skillDir, relativePath);
     const relativeFromSkillDir = path.relative(skillDir, fullPath);
@@ -216,53 +276,86 @@ export class SkillRegistry {
       skillDir,
       relativePath,
       fullPath,
+      readOnly: Boolean(readOnly),
+      source,
     };
   }
 
-  listSkills() {
-    if (!fs.existsSync(this.skillsDir)) {
+  listSkillIdsInRoot(rootDir: any) {
+    const resolvedRoot = path.resolve(String(rootDir || ''));
+
+    if (!resolvedRoot || !fs.existsSync(resolvedRoot)) {
       return [];
     }
 
-    return fs
-      .readdirSync(this.skillsDir, { withFileTypes: true })
-      .filter((entry: any) => entry.isDirectory())
-      .map((entry: any) => this.getSkill(entry.name))
-      .filter(Boolean)
-      .sort((left: any, right: any) => left.name.localeCompare(right.name, 'zh-CN'));
+    try {
+      return fs
+        .readdirSync(resolvedRoot, { withFileTypes: true })
+        .filter((entry: any) => entry.isDirectory())
+        .map((entry: any) => entry.name)
+        .filter(Boolean);
+    } catch {
+      return [];
+    }
+  }
+
+  listSkills() {
+    const seen = new Set();
+    const collected = [];
+
+    for (const skillId of this.listSkillIdsInRoot(this.skillsDir)) {
+      const skill = this.getSkill(skillId);
+      if (!skill || !skill.id || seen.has(skill.id)) {
+        continue;
+      }
+      seen.add(skill.id);
+      collected.push(skill);
+    }
+
+    for (const rootDir of Array.isArray(this.externalSkillsDirs) ? this.externalSkillsDirs : []) {
+      for (const skillId of this.listSkillIdsInRoot(rootDir)) {
+        const normalizedId = sanitizeSkillId(skillId);
+        if (!normalizedId || seen.has(normalizedId)) {
+          continue;
+        }
+        const skill = this.getSkill(normalizedId);
+        if (!skill || !skill.id || seen.has(skill.id)) {
+          continue;
+        }
+        seen.add(skill.id);
+        collected.push(skill);
+      }
+    }
+
+    return collected.sort((left: any, right: any) => left.name.localeCompare(right.name, 'zh-CN'));
   }
 
   getSkill(skillId: any) {
-    const normalizedId = sanitizeSkillId(skillId);
+    const location = this.resolveSkillLocation(skillId);
 
-    if (!normalizedId) {
+    if (!location) {
       return null;
     }
 
-    const skillDir = this.resolveSkillDir(normalizedId);
-    const skillFilePath = path.join(skillDir, 'SKILL.md');
-
-    if (!fs.existsSync(skillFilePath)) {
-      return null;
-    }
-
-    const skillMarkdown = fs.readFileSync(skillFilePath, 'utf8');
+    const skillMarkdown = fs.readFileSync(location.skillFilePath, 'utf8');
     const { frontmatter, body } = splitFrontmatter(skillMarkdown);
     const metadata = parseFrontmatter(frontmatter);
-    const openaiYamlPath = path.join(skillDir, 'agents', 'openai.yaml');
+    const openaiYamlPath = path.join(location.skillDir, 'agents', 'openai.yaml');
     const openaiYaml = fs.existsSync(openaiYamlPath) ? fs.readFileSync(openaiYamlPath, 'utf8') : '';
-    const files = listRelativeFiles(skillDir);
+    const files = listRelativeFiles(location.skillDir);
 
     return {
-      id: normalizedId,
-      name: metadata.name || normalizedId,
+      id: location.skillId,
+      name: metadata.name || location.skillId,
       description: metadata.description || '',
       body,
       skillMarkdown,
       openaiYaml,
-      path: skillDir,
+      path: location.skillDir,
       files,
       hasOpenAiYaml: Boolean(openaiYaml),
+      readOnly: Boolean(location.readOnly),
+      source: location.source,
     };
   }
 
@@ -374,6 +467,10 @@ export class SkillRegistry {
   saveSkillFile(skillId: any, filePath: any, content: any) {
     const target = this.resolveSkillFile(skillId, filePath);
 
+    if (target.readOnly) {
+      throw createSkillRegistryError(409, 'Skill is read-only (managed outside the local skill sandbox)');
+    }
+
     if (isReservedSkillFile(target.relativePath)) {
       throw createSkillRegistryError(400, 'Use the main skill form to edit this file');
     }
@@ -389,6 +486,10 @@ export class SkillRegistry {
 
   deleteSkillFile(skillId: any, filePath: any) {
     const target = this.resolveSkillFile(skillId, filePath);
+
+    if (target.readOnly) {
+      throw createSkillRegistryError(409, 'Skill is read-only (managed outside the local skill sandbox)');
+    }
 
     if (isReservedSkillFile(target.relativePath)) {
       throw createSkillRegistryError(400, 'Use the main skill form to edit this file');
@@ -416,6 +517,12 @@ export class SkillRegistry {
 
     if (!normalizedId) {
       return false;
+    }
+
+    const location = this.resolveSkillLocation(normalizedId);
+
+    if (location && location.readOnly) {
+      throw createSkillRegistryError(409, 'Skill is read-only (managed outside the local skill sandbox)');
     }
 
     const skillDir = this.resolveSkillDir(normalizedId);
