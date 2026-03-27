@@ -85,15 +85,36 @@ function resolveTaskDir(projectDir: any, trellisDir: any, taskRef: any) {
     return '';
   }
 
+  const resolvedProjectDir = path.resolve(String(projectDir || '').trim());
+  const resolvedTrellisDir = path.resolve(String(trellisDir || '').trim());
+  const tasksRootDir = path.join(resolvedTrellisDir, 'tasks');
+
+  let candidateDir = '';
+
   if (path.isAbsolute(normalized)) {
-    return path.resolve(normalized);
+    candidateDir = path.resolve(normalized);
+  } else if (normalized.startsWith('.trellis/')) {
+    candidateDir = path.resolve(resolvedProjectDir, normalized);
+  } else {
+    candidateDir = path.resolve(tasksRootDir, normalized);
   }
 
-  if (normalized.startsWith('.trellis/')) {
-    return path.resolve(String(projectDir || ''), normalized);
+  if (!isPathWithinDir(tasksRootDir, candidateDir)) {
+    return '';
   }
 
-  return path.resolve(String(trellisDir || ''), 'tasks', normalized);
+  const candidateStat = safeStat(candidateDir);
+
+  if (candidateStat && candidateStat.isDirectory()) {
+    const realTasksRootDir = safeRealpath(tasksRootDir) || tasksRootDir;
+    const realCandidateDir = safeRealpath(candidateDir) || candidateDir;
+
+    if (!isPathWithinDir(realTasksRootDir, realCandidateDir)) {
+      return '';
+    }
+  }
+
+  return candidateDir;
 }
 
 function safeStat(filePath: any) {
@@ -102,6 +123,34 @@ function safeStat(filePath: any) {
   } catch {
     return null;
   }
+}
+
+function safeRealpath(filePath: any) {
+  try {
+    return fs.realpathSync(filePath);
+  } catch {
+    return '';
+  }
+}
+
+function isPathWithinDir(rootDir: any, candidatePath: any) {
+  const resolvedRoot = path.resolve(String(rootDir || '').trim());
+  const resolvedCandidate = path.resolve(String(candidatePath || '').trim());
+
+  if (!resolvedRoot || !resolvedCandidate) {
+    return false;
+  }
+
+  const rootKey = process.platform === 'win32' ? resolvedRoot.toLowerCase() : resolvedRoot;
+  const candidateKey = process.platform === 'win32' ? resolvedCandidate.toLowerCase() : resolvedCandidate;
+
+  const relative = path.relative(rootKey, candidateKey);
+
+  if (!relative) {
+    return true;
+  }
+
+  return !relative.startsWith('..') && !path.isAbsolute(relative);
 }
 
 function buildTaskStatus(projectDir: any, trellisDir: any) {
@@ -120,7 +169,7 @@ function buildTaskStatus(projectDir: any, trellisDir: any) {
 
   if (!taskDir || !fs.existsSync(taskDir) || !safeStat(taskDir)?.isDirectory()) {
     return {
-      statusText: `Status: STALE POINTER\nTask: ${normalizeTaskRef(currentTaskRef)}\nNext: Task directory not found`,
+      statusText: `Status: STALE POINTER\nTask: ${normalizeTaskRef(currentTaskRef)}\nNext: Task directory not found or is outside project scope`,
       taskDir: '',
       prdPath: '',
     };

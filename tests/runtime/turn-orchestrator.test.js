@@ -181,6 +181,63 @@ test('buildAgentTurnPrompt skips Trellis context when projectDir is empty', (t) 
   assert.doesNotMatch(prompt, /Trellis project context:/u);
 });
 
+test('buildAgentTurnPrompt blocks absolute Trellis task dirs outside project', (t) => {
+  const tempDir = withTempDir('caff-trellis-scope-');
+  const projectDir = path.join(tempDir, 'project');
+  const outsideDir = path.join(tempDir, 'outside-task');
+
+  fs.mkdirSync(path.join(projectDir, '.trellis', 'tasks'), { recursive: true });
+  fs.mkdirSync(outsideDir, { recursive: true });
+  fs.writeFileSync(path.join(outsideDir, 'prd.md'), 'SENTINEL_OUTSIDE_PRD', 'utf8');
+  fs.writeFileSync(path.join(projectDir, '.trellis', '.current-task'), outsideDir, 'utf8');
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const agent = {
+    id: 'agent-block-abs-task',
+    name: 'Builder',
+    description: 'Explains implementation details clearly.',
+    personaPrompt: 'Stay calm and practical.',
+  };
+  const conversation = {
+    id: 'conversation-trellis-scope',
+    title: 'Trellis Scope',
+    type: 'standard',
+    agents: [agent],
+  };
+  const prompt = buildAgentTurnPrompt({
+    conversation,
+    agent,
+    agentConfig: {
+      profileName: 'Default',
+      personaPrompt: agent.personaPrompt,
+    },
+    resolvedPersonaSkills: [],
+    resolvedConversationSkills: [],
+    sandbox: {
+      sandboxDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-block-abs-task',
+      privateDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-block-abs-task/private',
+    },
+    projectDir,
+    agents: [agent],
+    messages: [],
+    privateMessages: [],
+    trigger: {
+      triggerType: 'user',
+      enqueueReason: 'default_first_agent',
+    },
+    remainingSlots: 7,
+    routingMode: 'mention_queue',
+    allowHandoffs: true,
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+  });
+
+  assert.match(prompt, /Status: STALE POINTER/u);
+  assert.doesNotMatch(prompt, /SENTINEL_OUTSIDE_PRD/u);
+});
+
 test('session export refuses non-assistant messages and out-of-bounds paths', (t) => {
   const tempDir = withTempDir('caff-session-export-');
   const agentDir = path.join(tempDir, 'agent-dir');
