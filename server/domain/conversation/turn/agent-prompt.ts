@@ -242,7 +242,8 @@ export function buildAgentTurnPrompt({
   allowHandoffs = true,
   agentToolRelativePath,
 }: any) {
-  const trellisPromptContext = buildTrellisPromptContext(projectDir ? { startDir: projectDir } : {});
+  const normalizedProjectDir = String(projectDir || '').trim();
+  const trellisPromptContext = normalizedProjectDir ? buildTrellisPromptContext({ startDir: normalizedProjectDir }) : '';
   const participants = agents
     .map((item: any) => {
       const description = item.description ? ` - ${item.description}` : '';

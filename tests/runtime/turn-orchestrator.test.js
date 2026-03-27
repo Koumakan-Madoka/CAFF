@@ -127,6 +127,60 @@ test('buildAgentTurnPrompt gives bash-only multiline chat bridge guidance', () =
   assert.doesNotMatch(prompt, /PowerShell example/u);
 });
 
+test('buildAgentTurnPrompt skips Trellis context when projectDir is empty', (t) => {
+  const tempDir = withTempDir('caff-trellis-skip-');
+  fs.mkdirSync(path.join(tempDir, '.trellis'), { recursive: true });
+
+  const previousCwd = process.cwd();
+  process.chdir(tempDir);
+
+  t.after(() => {
+    process.chdir(previousCwd);
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const agent = {
+    id: 'agent-skip-trellis',
+    name: 'Builder',
+    description: 'Explains implementation details clearly.',
+    personaPrompt: 'Stay calm and practical.',
+  };
+  const conversation = {
+    id: 'conversation-trellis-skip',
+    title: 'Skip Trellis',
+    type: 'standard',
+    agents: [agent],
+  };
+  const prompt = buildAgentTurnPrompt({
+    conversation,
+    agent,
+    agentConfig: {
+      profileName: 'Default',
+      personaPrompt: agent.personaPrompt,
+    },
+    resolvedPersonaSkills: [],
+    resolvedConversationSkills: [],
+    sandbox: {
+      sandboxDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-skip-trellis',
+      privateDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-skip-trellis/private',
+    },
+    projectDir: '',
+    agents: [agent],
+    messages: [],
+    privateMessages: [],
+    trigger: {
+      triggerType: 'user',
+      enqueueReason: 'default_first_agent',
+    },
+    remainingSlots: 7,
+    routingMode: 'mention_queue',
+    allowHandoffs: true,
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+  });
+
+  assert.doesNotMatch(prompt, /Trellis project context:/u);
+});
+
 test('session export refuses non-assistant messages and out-of-bounds paths', (t) => {
   const tempDir = withTempDir('caff-session-export-');
   const agentDir = path.join(tempDir, 'agent-dir');
