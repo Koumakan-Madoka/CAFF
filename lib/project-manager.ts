@@ -284,6 +284,14 @@ export class ProjectManager {
       throw error;
     }
 
+    const projectPath = normalizeProjectPath(target.path);
+
+    if (!projectPath || !fs.existsSync(projectPath) || !fs.statSync(projectPath).isDirectory()) {
+      const error: any = new Error('Project path does not exist or is not a folder');
+      error.statusCode = 400;
+      throw error;
+    }
+
     const timestamp = nowIso();
     const nextProjects = projects.map((project: any) => {
       if (!project || project.id !== normalizedId) {
