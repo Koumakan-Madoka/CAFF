@@ -6,6 +6,7 @@ const {
   buildAgentTurnPrompt,
   sanitizePromptMentions,
 } = require('../../build/server/domain/conversation/turn-orchestrator');
+const { createRoutingExecutor } = require('../../build/server/domain/conversation/turn/routing-executor');
 const { createAgentExecutor } = require('../../build/server/domain/conversation/turn/agent-executor');
 const { ensureAgentSandbox } = require('../../build/server/domain/conversation/turn/agent-sandbox');
 const { createSessionExporter } = require('../../build/server/domain/conversation/turn/session-export');
@@ -125,6 +126,183 @@ test('buildAgentTurnPrompt gives bash-only multiline chat bridge guidance', () =
   );
   assert.match(prompt, /Never put raw message text on a new shell line by itself/u);
   assert.doesNotMatch(prompt, /PowerShell example/u);
+});
+
+test('buildAgentTurnPrompt skips Trellis context when projectDir is empty', (t) => {
+  const tempDir = withTempDir('caff-trellis-skip-');
+  fs.mkdirSync(path.join(tempDir, '.trellis'), { recursive: true });
+
+  const previousCwd = process.cwd();
+  process.chdir(tempDir);
+
+  t.after(() => {
+    process.chdir(previousCwd);
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const agent = {
+    id: 'agent-skip-trellis',
+    name: 'Builder',
+    description: 'Explains implementation details clearly.',
+    personaPrompt: 'Stay calm and practical.',
+  };
+  const conversation = {
+    id: 'conversation-trellis-skip',
+    title: 'Skip Trellis',
+    type: 'standard',
+    agents: [agent],
+  };
+  const prompt = buildAgentTurnPrompt({
+    conversation,
+    agent,
+    agentConfig: {
+      profileName: 'Default',
+      personaPrompt: agent.personaPrompt,
+    },
+    resolvedPersonaSkills: [],
+    resolvedConversationSkills: [],
+    sandbox: {
+      sandboxDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-skip-trellis',
+      privateDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-skip-trellis/private',
+    },
+    projectDir: '',
+    agents: [agent],
+    messages: [],
+    privateMessages: [],
+    trigger: {
+      triggerType: 'user',
+      enqueueReason: 'default_first_agent',
+    },
+    remainingSlots: 7,
+    routingMode: 'mention_queue',
+    allowHandoffs: true,
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+  });
+
+  assert.doesNotMatch(prompt, /Trellis project context:/u);
+});
+
+test('buildAgentTurnPrompt blocks absolute Trellis task dirs outside project', (t) => {
+  const tempDir = withTempDir('caff-trellis-scope-');
+  const projectDir = path.join(tempDir, 'project');
+  const outsideDir = path.join(tempDir, 'outside-task');
+
+  fs.mkdirSync(path.join(projectDir, '.trellis', 'tasks'), { recursive: true });
+  fs.mkdirSync(outsideDir, { recursive: true });
+  fs.writeFileSync(path.join(outsideDir, 'prd.md'), 'SENTINEL_OUTSIDE_PRD', 'utf8');
+  fs.writeFileSync(path.join(projectDir, '.trellis', '.current-task'), outsideDir, 'utf8');
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const agent = {
+    id: 'agent-block-abs-task',
+    name: 'Builder',
+    description: 'Explains implementation details clearly.',
+    personaPrompt: 'Stay calm and practical.',
+  };
+  const conversation = {
+    id: 'conversation-trellis-scope',
+    title: 'Trellis Scope',
+    type: 'standard',
+    agents: [agent],
+  };
+  const prompt = buildAgentTurnPrompt({
+    conversation,
+    agent,
+    agentConfig: {
+      profileName: 'Default',
+      personaPrompt: agent.personaPrompt,
+    },
+    resolvedPersonaSkills: [],
+    resolvedConversationSkills: [],
+    sandbox: {
+      sandboxDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-block-abs-task',
+      privateDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-block-abs-task/private',
+    },
+    projectDir,
+    agents: [agent],
+    messages: [],
+    privateMessages: [],
+    trigger: {
+      triggerType: 'user',
+      enqueueReason: 'default_first_agent',
+    },
+    remainingSlots: 7,
+    routingMode: 'mention_queue',
+    allowHandoffs: true,
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+  });
+
+  assert.match(prompt, /Status: STALE POINTER/u);
+  assert.doesNotMatch(prompt, /SENTINEL_OUTSIDE_PRD/u);
+});
+
+test('routing executor snapshots project dir once per turn', async (t) => {
+  const tempDir = withTempDir('caff-project-snapshot-');
+  const sqlitePath = path.join(tempDir, 'snapshot.sqlite');
+  const activeConversationIds = new Set();
+  const activeTurns = new Map();
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const conversation = {
+    id: 'conversation-project-snapshot',
+    title: 'Project snapshot',
+    type: 'standard',
+    agents: [
+      { id: 'agent-a', name: 'Alpha' },
+      { id: 'agent-b', name: 'Beta' },
+    ],
+    messages: [],
+  };
+
+  const store = {
+    getConversation(conversationId) {
+      return conversationId === conversation.id ? conversation : null;
+    },
+    createMessage(input) {
+      const message = {
+        id: `message-${conversation.messages.length + 1}`,
+        ...input,
+      };
+      conversation.messages.push(message);
+      return message;
+    },
+  };
+
+  const seenProjectDirs = [];
+  let projectCalls = 0;
+
+  const executor = createRoutingExecutor({
+    store,
+    agentDir: tempDir,
+    sqlitePath,
+    activeConversationIds,
+    activeTurns,
+    getProjectDir() {
+      projectCalls += 1;
+      return projectCalls === 1 ? 'project-A' : 'project-B';
+    },
+    async executeConversationAgent({ projectDir, completedReplies, agent }) {
+      seenProjectDirs.push(String(projectDir || '').trim());
+      completedReplies.push({ agentId: agent.id, publicReply: 'ok', final: true });
+      return { stopTurn: false };
+    },
+  });
+
+  await executor(conversation.id, {
+    content: 'Hello',
+    initialAgentIds: ['agent-a', 'agent-b'],
+    executionMode: 'parallel',
+  });
+
+  assert.equal(projectCalls, 1);
+  assert.equal(seenProjectDirs.length, 2);
+  assert.ok(seenProjectDirs.every((value) => value === 'project-A'));
 });
 
 test('session export refuses non-assistant messages and out-of-bounds paths', (t) => {

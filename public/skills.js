@@ -30,6 +30,7 @@ const dom = {
   skillExtraFileContent: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('skill-extra-file-content')),
   saveSkillFileButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('save-skill-file-button')),
   deleteSkillFileButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('delete-skill-file-button')),
+  saveSkillButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('save-skill-button')),
   deleteSkillButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('delete-skill-button')),
   toast: /** @type {HTMLElement | null} */ (document.getElementById('toast')),
 };
@@ -38,6 +39,19 @@ const toast = typeof shared.createToastController === 'function' ? shared.create
 
 function showToast(message) {
   toast.show(message);
+}
+
+function setMainSkillFormReadOnly(isReadOnly) {
+  const readOnly = Boolean(isReadOnly);
+
+  dom.skillName.readOnly = readOnly;
+  dom.skillDescription.readOnly = readOnly;
+  dom.skillBody.readOnly = readOnly;
+  dom.skillOpenAiYaml.readOnly = readOnly;
+
+  if (dom.saveSkillButton) {
+    dom.saveSkillButton.disabled = readOnly;
+  }
 }
 
 function normalizeFilePath(value) {
@@ -105,14 +119,15 @@ function updateFileEditorActions() {
   const currentSkill = skillById(state.selectedSkillId);
   const currentPath = normalizeFilePath(dom.skillExtraFilePath.value);
   const usingReservedPath = RESERVED_FILE_PATHS.has(currentPath);
-  const canEdit = Boolean(currentSkill && currentPath && !usingReservedPath);
+  const isReadOnly = Boolean(currentSkill && currentSkill.readOnly);
+  const canEdit = Boolean(currentSkill && currentPath && !usingReservedPath && !isReadOnly);
   const isLoadedFile = Boolean(state.selectedFileOriginalPath) && currentPath === state.selectedFileOriginalPath;
 
-  dom.newSkillFileButton.disabled = !currentSkill;
+  dom.newSkillFileButton.disabled = !currentSkill || isReadOnly;
   dom.skillExtraFilePath.disabled = !currentSkill;
-  dom.skillExtraFileContent.disabled = !currentSkill;
+  dom.skillExtraFileContent.disabled = !currentSkill || isReadOnly;
   dom.saveSkillFileButton.disabled = !canEdit;
-  dom.deleteSkillFileButton.disabled = !currentSkill || !isLoadedFile;
+  dom.deleteSkillFileButton.disabled = !currentSkill || !isLoadedFile || isReadOnly;
 }
 
 function clearFileEditor(draftPath = '') {
@@ -180,6 +195,7 @@ function resetSkillForm() {
   dom.skillFolderPath.value = '';
   dom.skillBody.value = '';
   dom.skillOpenAiYaml.value = '';
+  setMainSkillFormReadOnly(false);
   renderFileSummary([]);
   renderExtraFileList(null);
   clearFileEditor();
@@ -187,16 +203,17 @@ function resetSkillForm() {
 }
 
 function fillSkillForm(skill) {
-  dom.editorTitle.textContent = `编辑 Skill · ${skill.name}`;
+  dom.editorTitle.textContent = `${skill && skill.readOnly ? '查看 Skill' : '编辑 Skill'} · ${skill.name}`;
   dom.skillId.value = skill.id;
   dom.skillName.value = skill.name || '';
   dom.skillDescription.value = skill.description || '';
   dom.skillFolderPath.value = skill.path || '';
   dom.skillBody.value = skill.body || '';
   dom.skillOpenAiYaml.value = skill.openaiYaml || '';
+  setMainSkillFormReadOnly(Boolean(skill && skill.readOnly));
   renderFileSummary(skill.files || []);
   renderExtraFileList(skill);
-  dom.deleteSkillButton.disabled = false;
+  dom.deleteSkillButton.disabled = Boolean(skill && skill.readOnly);
 
   if (!state.selectedFileOriginalPath || !extraFilesForSkill(skill).includes(state.selectedFileOriginalPath)) {
     clearFileEditor();
@@ -388,6 +405,12 @@ function bindEvents() {
     event.preventDefault();
 
     const payload = serializeSkillForm();
+    const existingSkill = payload.id ? skillById(payload.id) : null;
+
+    if (existingSkill && existingSkill.readOnly) {
+      showToast('Skill is read-only.');
+      return;
+    }
 
     if (!payload.name) {
       showToast('Skill name is required.');

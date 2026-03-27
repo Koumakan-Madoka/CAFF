@@ -1,4 +1,5 @@
 const { randomUUID } = require('node:crypto');
+const path = require('node:path');
 const {
   DEFAULT_MODEL,
   DEFAULT_PROVIDER,
@@ -327,6 +328,7 @@ function extractStreamingPublicReplyPreview(text: any) {
 export function createAgentExecutor(options: any = {}) {
   const store = options.store;
   const skillRegistry = options.skillRegistry;
+  const getProjectDir = typeof options.getProjectDir === 'function' ? options.getProjectDir : null;
   const agentToolBridge = options.agentToolBridge;
   const broadcastEvent = typeof options.broadcastEvent === 'function' ? options.broadcastEvent : () => {};
   const broadcastConversationSummary =
@@ -357,6 +359,7 @@ export function createAgentExecutor(options: any = {}) {
     enqueueAgent,
     allowHandoffs = true,
     finalStopsTurn = true,
+    projectDir,
   }: any) {
     const stage = getTurnStage(turnState, agent.id);
 
@@ -376,8 +379,18 @@ export function createAgentExecutor(options: any = {}) {
 
     const agentConfig = resolveConversationAgentConfig(agent);
     const agentSandbox = ensureAgentSandbox(agentDir, agent);
-    const resolvedPersonaSkills = skillRegistry.resolveSkills(agentConfig.skillIds);
-    const resolvedConversationSkills = skillRegistry.resolveSkills(agentConfig.conversationSkillIds);
+    const snapshotProvided = projectDir !== undefined;
+    const projectDirCandidate = snapshotProvided
+      ? String(projectDir || '').trim()
+      : getProjectDir
+        ? String(getProjectDir(conversation) || '').trim()
+        : '';
+    const resolvedProjectDir = projectDirCandidate ? path.resolve(projectDirCandidate) : '';
+    const extraSkillDirs = resolvedProjectDir
+      ? [path.join(resolvedProjectDir, '.agents', 'skills'), path.join(resolvedProjectDir, '.codex', 'skills')]
+      : [];
+    const resolvedPersonaSkills = skillRegistry.resolveSkills(agentConfig.skillIds, { extraSkillDirs });
+    const resolvedConversationSkills = skillRegistry.resolveSkills(agentConfig.conversationSkillIds, { extraSkillDirs });
     const privateMessages = store.listPrivateMessagesForAgent(conversationId, agent.id, {
       limit: MAX_PRIVATE_CONTEXT_MESSAGES,
     });
@@ -388,6 +401,7 @@ export function createAgentExecutor(options: any = {}) {
       resolvedPersonaSkills,
       resolvedConversationSkills,
       sandbox: agentSandbox,
+      projectDir: resolvedProjectDir,
       agents: conversation.agents,
       messages: promptMessages,
       privateMessages,
