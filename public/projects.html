@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CAFF Project Manager</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script defer src="/shared/api-client.js"></script>
+    <script defer src="/shared/toast.js"></script>
+    <script defer src="/projects.js"></script>
+  </head>
+  <body>
+    <div class="ambient ambient-a"></div>
+    <div class="ambient ambient-b"></div>
+    <div class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">CAFF Project Manager</p>
+          <h1>项目管理</h1>
+          <p class="subtitle">管理当前 CAFF 实例的项目列表，并选择激活的工作目录（影响 Trellis 上下文与外部技能目录）。</p>
+        </div>
+        <div class="topbar-actions">
+          <nav class="topbar-nav" aria-label="Primary">
+            <a class="topbar-link" href="/">聊天工作台</a>
+            <a class="topbar-link" href="/personas.html">人格管理</a>
+            <a class="topbar-link" href="/skills.html">Skill 管理</a>
+            <a class="topbar-link active" href="/projects.html">项目管理</a>
+          </nav>
+          <button id="refresh-button" class="ghost-button" type="button">刷新</button>
+        </div>
+      </header>
+
+      <main class="layout persona-layout">
+        <aside class="panel panel-conversations">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Projects</p>
+              <h2>项目列表</h2>
+            </div>
+          </div>
+          <div id="project-list" class="agent-list"></div>
+        </aside>
+
+        <section class="panel panel-studio">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Editor</p>
+              <h2 id="editor-title">项目详情</h2>
+            </div>
+          </div>
+
+          <div class="stack-card">
+            <form id="new-project-form" class="settings-form compact-settings-form">
+              <label>
+                <span>项目名称（可选）</span>
+                <input id="project-name" name="name" type="text" maxlength="80" placeholder="例如：my-repo" />
+              </label>
+
+              <label>
+                <span>项目路径</span>
+                <input id="project-path" name="path" type="text" maxlength="400" placeholder="例如：E:\\repo\\my-project" />
+              </label>
+
+              <div class="button-row">
+                <button id="create-project-button" type="submit">添加并激活</button>
+              </div>
+            </form>
+          </div>
+
+          <div class="stack-card">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Selected</p>
+                <h3 id="selected-project-title">未选择项目</h3>
+                <p id="selected-project-meta" class="muted">从左侧选择一个项目</p>
+              </div>
+            </div>
+
+            <div class="button-row">
+              <button id="set-active-button" type="button">设为激活</button>
+              <button id="delete-project-button" class="ghost-button danger" type="button">删除项目</button>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div id="toast" class="toast hidden"></div>
+  </body>
+</html>
+

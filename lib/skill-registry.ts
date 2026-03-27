@@ -197,6 +197,45 @@ export class SkillRegistry {
     fs.mkdirSync(this.skillsDir, { recursive: true });
   }
 
+  normalizeExtraSkillDirs(extraSkillDirs: any) {
+    const normalized = [];
+    const seen = new Set();
+
+    for (const candidate of Array.isArray(extraSkillDirs) ? extraSkillDirs : []) {
+      const value = String(candidate || '').trim();
+      if (!value) {
+        continue;
+      }
+
+      const resolved = path.resolve(value);
+      if (resolved === this.skillsDir) {
+        continue;
+      }
+
+      const key = process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+      if (seen.has(key)) {
+        continue;
+      }
+
+      seen.add(key);
+      normalized.push(resolved);
+    }
+
+    return normalized;
+  }
+
+  setExternalSkillDirs(extraSkillDirs: any) {
+    this.externalSkillsDirs = this.normalizeExtraSkillDirs(extraSkillDirs);
+  }
+
+  resolveExternalSkillRoots(options: any = {}) {
+    if (options && typeof options === 'object' && Array.isArray(options.extraSkillDirs)) {
+      return this.normalizeExtraSkillDirs(options.extraSkillDirs);
+    }
+
+    return Array.isArray(this.externalSkillsDirs) ? this.externalSkillsDirs : [];
+  }
+
   resolveSkillDir(skillId: any) {
     return path.join(this.skillsDir, sanitizeSkillId(skillId));
   }
@@ -205,7 +244,7 @@ export class SkillRegistry {
     return path.join(String(rootDir || ''), sanitizeSkillId(skillId));
   }
 
-  resolveSkillLocation(skillId: any) {
+  resolveSkillLocation(skillId: any, options: any = {}) {
     const normalizedId = sanitizeSkillId(skillId);
 
     if (!normalizedId) {
@@ -225,7 +264,7 @@ export class SkillRegistry {
       };
     }
 
-    for (const rootDir of Array.isArray(this.externalSkillsDirs) ? this.externalSkillsDirs : []) {
+    for (const rootDir of this.resolveExternalSkillRoots(options)) {
       const externalDir = this.resolveExternalSkillDir(rootDir, normalizedId);
       const externalSkillFilePath = path.join(externalDir, 'SKILL.md');
 
@@ -245,14 +284,14 @@ export class SkillRegistry {
     return null;
   }
 
-  ensureSkill(skillId: any) {
+  ensureSkill(skillId: any, options: any = {}) {
     const normalizedId = sanitizeSkillId(skillId);
 
     if (!normalizedId) {
       throw createSkillRegistryError(400, 'Skill id is required');
     }
 
-    const location = this.resolveSkillLocation(normalizedId);
+    const location = this.resolveSkillLocation(normalizedId, options);
 
     if (!location) {
       throw createSkillRegistryError(404, 'Skill not found');
@@ -261,8 +300,8 @@ export class SkillRegistry {
     return location;
   }
 
-  resolveSkillFile(skillId: any, filePath: any) {
-    const { skillId: normalizedId, skillDir, readOnly, source } = this.ensureSkill(skillId);
+  resolveSkillFile(skillId: any, filePath: any, options: any = {}) {
+    const { skillId: normalizedId, skillDir, readOnly, source } = this.ensureSkill(skillId, options);
     const relativePath = normalizeSkillFilePath(filePath);
     const fullPath = path.resolve(skillDir, relativePath);
     const relativeFromSkillDir = path.relative(skillDir, fullPath);
@@ -299,12 +338,12 @@ export class SkillRegistry {
     }
   }
 
-  listSkills() {
+  listSkills(options: any = {}) {
     const seen = new Set();
     const collected = [];
 
     for (const skillId of this.listSkillIdsInRoot(this.skillsDir)) {
-      const skill = this.getSkill(skillId);
+      const skill = this.getSkill(skillId, options);
       if (!skill || !skill.id || seen.has(skill.id)) {
         continue;
       }
@@ -312,13 +351,13 @@ export class SkillRegistry {
       collected.push(skill);
     }
 
-    for (const rootDir of Array.isArray(this.externalSkillsDirs) ? this.externalSkillsDirs : []) {
+    for (const rootDir of this.resolveExternalSkillRoots(options)) {
       for (const skillId of this.listSkillIdsInRoot(rootDir)) {
         const normalizedId = sanitizeSkillId(skillId);
         if (!normalizedId || seen.has(normalizedId)) {
           continue;
         }
-        const skill = this.getSkill(normalizedId);
+        const skill = this.getSkill(normalizedId, options);
         if (!skill || !skill.id || seen.has(skill.id)) {
           continue;
         }
@@ -330,8 +369,8 @@ export class SkillRegistry {
     return collected.sort((left: any, right: any) => left.name.localeCompare(right.name, 'zh-CN'));
   }
 
-  getSkill(skillId: any) {
-    const location = this.resolveSkillLocation(skillId);
+  getSkill(skillId: any, options: any = {}) {
+    const location = this.resolveSkillLocation(skillId, options);
 
     if (!location) {
       return null;
@@ -359,7 +398,7 @@ export class SkillRegistry {
     };
   }
 
-  resolveSkills(skillIds: any) {
+  resolveSkills(skillIds: any, options: any = {}) {
     const seen = new Set();
     const resolved = [];
 
@@ -370,7 +409,7 @@ export class SkillRegistry {
         continue;
       }
 
-      const skill = this.getSkill(skillId);
+      const skill = this.getSkill(skillId, options);
 
       if (!skill) {
         continue;

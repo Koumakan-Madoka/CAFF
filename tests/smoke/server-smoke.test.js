@@ -99,7 +99,7 @@ async function fetchJson(baseUrl, pathname, options = {}) {
   return data;
 }
 
-test('server smoke: bootstrap, static files, skill, agent, and conversation flows work', async (t) => {
+test('server smoke: bootstrap, static files, projects, skills, agents, and conversations work', async (t) => {
   if (!requireSpawn(t)) {
     return;
   }
@@ -144,6 +144,20 @@ test('server smoke: bootstrap, static files, skill, agent, and conversation flow
   assert.ok(Array.isArray(bootstrap.conversations));
   assert.ok(Array.isArray(bootstrap.agents));
   assert.ok(Array.isArray(bootstrap.skills));
+
+  const projects = await fetchJson(baseUrl, '/api/projects');
+  assert.ok(Array.isArray(projects.projects));
+  assert.ok(projects.projects.length >= 1);
+  assert.ok(projects.projects.some((project) => project && project.active));
+
+  const createdProject = await fetchJson(baseUrl, '/api/projects', {
+    method: 'POST',
+    body: {
+      name: 'Smoke Project',
+      path: tempDir,
+    },
+  });
+  assert.equal(createdProject.activeProject.path, tempDir);
 
   const skillPayload = {
     name: 'Smoke Skill',

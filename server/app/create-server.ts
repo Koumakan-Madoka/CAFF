@@ -4,12 +4,14 @@ const { URL } = require('node:url');
 const { DEFAULT_AGENT_DIR, resolveSetting } = require('../../lib/minimal-pi');
 const { createChatAppStore } = require('../../lib/chat-app-store');
 const { createSkillRegistry } = require('../../lib/skill-registry');
+const { createProjectManager } = require('../../lib/project-manager');
 const { createWhoIsUndercoverHost } = require('../../lib/who-is-undercover-game');
 const { createBootstrapPayloadBuilder } = require('../api/bootstrap-payload');
 const { createAgentToolsController } = require('../api/agent-tools-controller');
 const { createAgentsController } = require('../api/agents-controller');
 const { createBootstrapController } = require('../api/bootstrap-controller');
 const { createConversationsController } = require('../api/conversations-controller');
+const { createProjectsController } = require('../api/projects-controller');
 const { createSkillsController } = require('../api/skills-controller');
 const { createUndercoverController } = require('../api/undercover-controller');
 const { HOST, PORT, ROOT_DIR } = require('./config');
@@ -46,13 +48,35 @@ export function createServerApp(options: any = {}) {
   const port = Number.isFinite(portValue) ? portValue : PORT;
   const agentDir = String(options.agentDir || '').trim() || resolveSetting('', process.env.PI_CODING_AGENT_DIR, DEFAULT_AGENT_DIR);
   const sqlitePath = String(options.sqlitePath || '').trim() || resolveSetting('', process.env.PI_SQLITE_PATH, '');
-  const projectDir = path.resolve(String(options.projectDir || '').trim() || process.cwd());
-  const extraSkillDirs = [path.join(projectDir, '.agents', 'skills'), path.join(projectDir, '.codex', 'skills')];
+  const initialProjectDir = path.resolve(String(options.projectDir || '').trim() || process.cwd());
+  const projectManager = createProjectManager({ agentDir, initialProjectDir });
+  let activeProjectDir = initialProjectDir;
+
+  function buildProjectExtraSkillDirs(projectDir: any) {
+    const resolvedProjectDir = String(projectDir || '').trim();
+
+    if (!resolvedProjectDir) {
+      return [];
+    }
+
+    return [path.join(resolvedProjectDir, '.agents', 'skills'), path.join(resolvedProjectDir, '.codex', 'skills')];
+  }
+
+  function syncActiveProject() {
+    const activeProject = projectManager.getActiveProject();
+    activeProjectDir = activeProject && activeProject.path ? activeProject.path : initialProjectDir;
+    const extraSkillDirs = buildProjectExtraSkillDirs(activeProjectDir);
+    skillRegistry.setExternalSkillDirs(extraSkillDirs);
+    return activeProject;
+  }
+
   const store = createChatAppStore({ agentDir, sqlitePath });
-  const skillRegistry = createSkillRegistry({ agentDir, extraSkillDirs });
+  const skillRegistry = createSkillRegistry({ agentDir, extraSkillDirs: [] });
   const undercoverHost = createWhoIsUndercoverHost({ agentDir });
   const sseBus = createSseBus();
   let turnOrchestrator: any = null;
+
+  syncActiveProject();
 
   function broadcastEvent(eventName: any, payload: any) {
     sseBus.broadcast(eventName, payload);
@@ -99,6 +123,7 @@ export function createServerApp(options: any = {}) {
   turnOrchestrator = createTurnOrchestrator({
     store,
     skillRegistry,
+    getProjectDir: () => activeProjectDir,
     agentToolBridge,
     broadcastEvent,
     broadcastConversationSummary,
@@ -131,6 +156,10 @@ export function createServerApp(options: any = {}) {
       turnOrchestrator,
       buildBootstrapPayload,
     }),
+    createProjectsController({
+      projectManager,
+      syncActiveProject,
+    }),
     createAgentToolsController({
       agentToolBridge,
     }),
@@ -149,6 +178,7 @@ export function createServerApp(options: any = {}) {
     createConversationsController({
       store,
       skillRegistry,
+      projectManager,
       undercoverHost,
       turnOrchestrator,
       undercoverService,

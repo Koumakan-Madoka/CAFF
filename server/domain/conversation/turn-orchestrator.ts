@@ -12,6 +12,7 @@ const { summarizeTurnState, syncCurrentTurnAgent } = require('./turn/turn-state'
 export function createTurnOrchestrator(options: any = {}) {
   const store = options.store;
   const skillRegistry = options.skillRegistry;
+  const getProjectDir = typeof options.getProjectDir === 'function' ? options.getProjectDir : null;
   const agentToolBridge = options.agentToolBridge;
   const broadcastEvent = typeof options.broadcastEvent === 'function' ? options.broadcastEvent : () => {};
   const broadcastConversationSummary =
@@ -47,6 +48,7 @@ export function createTurnOrchestrator(options: any = {}) {
   const agentExecutor = createAgentExecutor({
     store,
     skillRegistry,
+    getProjectDir,
     agentToolBridge,
     broadcastEvent,
     broadcastConversationSummary,

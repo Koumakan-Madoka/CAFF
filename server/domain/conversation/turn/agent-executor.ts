@@ -327,6 +327,7 @@ function extractStreamingPublicReplyPreview(text: any) {
 export function createAgentExecutor(options: any = {}) {
   const store = options.store;
   const skillRegistry = options.skillRegistry;
+  const getProjectDir = typeof options.getProjectDir === 'function' ? options.getProjectDir : null;
   const agentToolBridge = options.agentToolBridge;
   const broadcastEvent = typeof options.broadcastEvent === 'function' ? options.broadcastEvent : () => {};
   const broadcastConversationSummary =
@@ -381,6 +382,7 @@ export function createAgentExecutor(options: any = {}) {
     const privateMessages = store.listPrivateMessagesForAgent(conversationId, agent.id, {
       limit: MAX_PRIVATE_CONTEXT_MESSAGES,
     });
+    const projectDir = getProjectDir ? getProjectDir(conversation) : '';
     const prompt = buildAgentTurnPrompt({
       conversation,
       agent,
@@ -388,6 +390,7 @@ export function createAgentExecutor(options: any = {}) {
       resolvedPersonaSkills,
       resolvedConversationSkills,
       sandbox: agentSandbox,
+      projectDir,
       agents: conversation.agents,
       messages: promptMessages,
       privateMessages,

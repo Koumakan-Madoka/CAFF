@@ -232,6 +232,7 @@ export function buildAgentTurnPrompt({
   resolvedPersonaSkills,
   resolvedConversationSkills,
   sandbox,
+  projectDir,
   agents,
   messages,
   privateMessages,
@@ -241,7 +242,7 @@ export function buildAgentTurnPrompt({
   allowHandoffs = true,
   agentToolRelativePath,
 }: any) {
-  const trellisPromptContext = buildTrellisPromptContext();
+  const trellisPromptContext = buildTrellisPromptContext(projectDir ? { startDir: projectDir } : {});
   const participants = agents
     .map((item: any) => {
       const description = item.description ? ` - ${item.description}` : '';
