@@ -379,7 +379,12 @@ export function createAgentExecutor(options: any = {}) {
 
     const agentConfig = resolveConversationAgentConfig(agent);
     const agentSandbox = ensureAgentSandbox(agentDir, agent);
-    const projectDirCandidate = String(projectDir || '').trim() || (getProjectDir ? String(getProjectDir(conversation) || '').trim() : '');
+    const snapshotProvided = projectDir !== undefined;
+    const projectDirCandidate = snapshotProvided
+      ? String(projectDir || '').trim()
+      : getProjectDir
+        ? String(getProjectDir(conversation) || '').trim()
+        : '';
     const resolvedProjectDir = projectDirCandidate ? path.resolve(projectDirCandidate) : '';
     const extraSkillDirs = resolvedProjectDir
       ? [path.join(resolvedProjectDir, '.agents', 'skills'), path.join(resolvedProjectDir, '.codex', 'skills')]
