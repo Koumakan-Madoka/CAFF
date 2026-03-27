@@ -64,9 +64,15 @@ export function createServerApp(options: any = {}) {
 
   function syncActiveProject() {
     const activeProject = projectManager.getActiveProject();
-    activeProjectDir = activeProject && activeProject.path ? activeProject.path : initialProjectDir;
-    const extraSkillDirs = buildProjectExtraSkillDirs(activeProjectDir);
-    skillRegistry.setExternalSkillDirs(extraSkillDirs);
+
+    if (!activeProject || !activeProject.path) {
+      activeProjectDir = '';
+      skillRegistry.setExternalSkillDirs([]);
+      return null;
+    }
+
+    activeProjectDir = activeProject.path;
+    skillRegistry.setExternalSkillDirs(buildProjectExtraSkillDirs(activeProjectDir));
     return activeProject;
   }
 

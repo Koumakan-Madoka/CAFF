@@ -122,8 +122,12 @@ export class ProjectManager {
 
     const initialProjectDir = normalizeProjectPath(normalizedOptions.initialProjectDir);
     if (initialProjectDir) {
-      this.ensureProject({ path: initialProjectDir });
-      this.ensureActiveProjectByPath(initialProjectDir);
+      const hasConfigFile = fs.existsSync(this.configPath);
+
+      if (!hasConfigFile) {
+        this.ensureProject({ path: initialProjectDir });
+        this.ensureActiveProjectByPath(initialProjectDir);
+      }
     }
   }
 
@@ -304,4 +308,3 @@ export class ProjectManager {
 export function createProjectManager(options: any = {}) {
   return new ProjectManager(options);
 }
-

@@ -30,6 +30,7 @@ const dom = {
   skillExtraFileContent: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('skill-extra-file-content')),
   saveSkillFileButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('save-skill-file-button')),
   deleteSkillFileButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('delete-skill-file-button')),
+  saveSkillButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('save-skill-button')),
   deleteSkillButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('delete-skill-button')),
   toast: /** @type {HTMLElement | null} */ (document.getElementById('toast')),
 };
@@ -38,6 +39,19 @@ const toast = typeof shared.createToastController === 'function' ? shared.create
 
 function showToast(message) {
   toast.show(message);
+}
+
+function setMainSkillFormReadOnly(isReadOnly) {
+  const readOnly = Boolean(isReadOnly);
+
+  dom.skillName.readOnly = readOnly;
+  dom.skillDescription.readOnly = readOnly;
+  dom.skillBody.readOnly = readOnly;
+  dom.skillOpenAiYaml.readOnly = readOnly;
+
+  if (dom.saveSkillButton) {
+    dom.saveSkillButton.disabled = readOnly;
+  }
 }
 
 function normalizeFilePath(value) {
@@ -181,6 +195,7 @@ function resetSkillForm() {
   dom.skillFolderPath.value = '';
   dom.skillBody.value = '';
   dom.skillOpenAiYaml.value = '';
+  setMainSkillFormReadOnly(false);
   renderFileSummary([]);
   renderExtraFileList(null);
   clearFileEditor();
@@ -195,6 +210,7 @@ function fillSkillForm(skill) {
   dom.skillFolderPath.value = skill.path || '';
   dom.skillBody.value = skill.body || '';
   dom.skillOpenAiYaml.value = skill.openaiYaml || '';
+  setMainSkillFormReadOnly(Boolean(skill && skill.readOnly));
   renderFileSummary(skill.files || []);
   renderExtraFileList(skill);
   dom.deleteSkillButton.disabled = Boolean(skill && skill.readOnly);
@@ -389,6 +405,12 @@ function bindEvents() {
     event.preventDefault();
 
     const payload = serializeSkillForm();
+    const existingSkill = payload.id ? skillById(payload.id) : null;
+
+    if (existingSkill && existingSkill.readOnly) {
+      showToast('Skill is read-only.');
+      return;
+    }
 
     if (!payload.name) {
       showToast('Skill name is required.');

@@ -432,6 +432,12 @@ export class SkillRegistry {
       throw createSkillRegistryError(400, 'Skill id is required');
     }
 
+    const existingLocation = this.resolveSkillLocation(normalizedId);
+
+    if (existingLocation && existingLocation.readOnly) {
+      throw createSkillRegistryError(409, 'Skill is read-only (managed outside the local skill sandbox)');
+    }
+
     if (!name) {
       throw createSkillRegistryError(400, 'Skill name is required');
     }
