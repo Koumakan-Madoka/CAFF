@@ -749,6 +749,10 @@ export function createAgentToolBridge(options: any = {}) {
       throw createHttpError(400, 'Refusing to write .trellis because it is a symlink');
     }
 
+    if (trellisLstat && !trellisLstat.isDirectory()) {
+      throw createHttpError(409, 'Refusing to write .trellis because it exists and is not a directory');
+    }
+
     const files = buildTrellisInitFiles(taskName);
     const operations: any[] = [];
 
@@ -936,6 +940,10 @@ export function createAgentToolBridge(options: any = {}) {
 
     if (trellisLstat && trellisLstat.isSymbolicLink()) {
       throw createHttpError(400, 'Refusing to write .trellis because it is a symlink');
+    }
+
+    if (trellisLstat && !trellisLstat.isDirectory()) {
+      throw createHttpError(409, 'Refusing to write .trellis because it exists and is not a directory');
     }
 
     const operations: any[] = [];

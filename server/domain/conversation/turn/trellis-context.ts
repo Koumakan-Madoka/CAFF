@@ -470,8 +470,34 @@ function jsonlHasUsableEntries(projectDir: any, jsonlPath: any) {
   const jsonl = readJsonlEntries(jsonlPath, 24);
 
   for (const entry of jsonl.entries) {
+    const entryType = String(entry && entry.type ? entry.type : 'file')
+      .trim()
+      .toLowerCase();
     const resolved = resolveProjectRelativePath(projectDir, entry.file);
-    if (resolved) {
+    if (!resolved) {
+      continue;
+    }
+
+    if (entryType === 'directory' || entryType === 'dir') {
+      if (!resolved.stat.isDirectory()) {
+        continue;
+      }
+
+      const files = listMarkdownFilesInDir(resolved.absolutePath, 3);
+      for (const filePath of files) {
+        if (readTextFile(filePath, 64)) {
+          return true;
+        }
+      }
+
+      continue;
+    }
+
+    if (!resolved.stat.isFile()) {
+      continue;
+    }
+
+    if (readTextFile(resolved.absolutePath, 64)) {
       return true;
     }
   }
@@ -545,7 +571,7 @@ function buildTaskStatus(projectDir: any, trellisDir: any) {
 
   if (!hasContext) {
     return {
-      statusText: `Status: NOT READY\nTask: ${taskTitle}\nMissing: Context not configured (no jsonl files)\nNext: Configure task context before implementing`,
+      statusText: `Status: NOT READY\nTask: ${taskTitle}\nMissing: Context not configured (no usable JSONL entries)\nNext: Configure task context before implementing`,
       taskDir,
       prdPath,
     };

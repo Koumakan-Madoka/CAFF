@@ -333,6 +333,50 @@ test('agent tool trellis-init rejects invocations without an active projectDir',
   );
 });
 
+test('agent tool trellis-init rejects when .trellis exists as a file', (t) => {
+  const tempDir = withTempDir('caff-agent-tool-trellis-init-root-file-');
+  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const bridge = createAgentToolBridge({ store });
+
+  const projectDir = path.join(tempDir, 'project');
+  fs.mkdirSync(projectDir, { recursive: true });
+  fs.writeFileSync(path.join(projectDir, '.trellis'), 'not a directory', 'utf8');
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const fixture = createPublicInvocationFixture(store, 'trellis-init-root-file');
+  const context = bridge.registerInvocation(
+    bridge.createInvocationContext({
+      conversationId: fixture.conversation.id,
+      turnId: fixture.assistantMessage.turnId,
+      projectDir,
+      agentId: fixture.agent.id,
+      agentName: fixture.agent.name,
+      assistantMessageId: fixture.assistantMessage.id,
+      conversationAgents: fixture.conversation.agents,
+      stage: fixture.stage,
+      turnState: fixture.turnState,
+    })
+  );
+
+  assert.throws(
+    () =>
+      bridge.handleTrellisInit({
+        invocationId: context.invocationId,
+        callbackToken: context.callbackToken,
+        taskName: 'demo',
+        confirm: true,
+      }),
+    (error) => error && error.statusCode === 409
+  );
+});
+
 test('agent tool trellis-write previews and writes files under .trellis', (t) => {
   const tempDir = withTempDir('caff-agent-tool-trellis-write-');
   const sqlitePath = path.join(tempDir, 'bridge.sqlite');
@@ -458,6 +502,51 @@ test('agent tool trellis-write previews and writes files under .trellis', (t) =>
         force: true,
       }),
     (error) => error && error.statusCode === 400
+  );
+});
+
+test('agent tool trellis-write rejects when .trellis exists as a file', (t) => {
+  const tempDir = withTempDir('caff-agent-tool-trellis-write-root-file-');
+  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const bridge = createAgentToolBridge({ store });
+
+  const projectDir = path.join(tempDir, 'project');
+  fs.mkdirSync(projectDir, { recursive: true });
+  fs.writeFileSync(path.join(projectDir, '.trellis'), 'not a directory', 'utf8');
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const fixture = createPublicInvocationFixture(store, 'trellis-write-root-file');
+  const context = bridge.registerInvocation(
+    bridge.createInvocationContext({
+      conversationId: fixture.conversation.id,
+      turnId: fixture.assistantMessage.turnId,
+      projectDir,
+      agentId: fixture.agent.id,
+      agentName: fixture.agent.name,
+      assistantMessageId: fixture.assistantMessage.id,
+      conversationAgents: fixture.conversation.agents,
+      stage: fixture.stage,
+      turnState: fixture.turnState,
+    })
+  );
+
+  assert.throws(
+    () =>
+      bridge.handleTrellisWrite({
+        invocationId: context.invocationId,
+        callbackToken: context.callbackToken,
+        relativePath: '.trellis/tasks/demo/prd.md',
+        content: '# Hello\n',
+        confirm: true,
+      }),
+    (error) => error && error.statusCode === 409
   );
 });
 

@@ -239,6 +239,65 @@ test('buildAgentTurnPrompt blocks absolute Trellis task dirs outside project', (
   assert.doesNotMatch(prompt, /SENTINEL_OUTSIDE_PRD/u);
 });
 
+test('buildAgentTurnPrompt requires loadable JSONL entries before marking task READY', (t) => {
+  const tempDir = withTempDir('caff-trellis-jsonl-ready-');
+  const projectDir = path.join(tempDir, 'project');
+  const trellisDir = path.join(projectDir, '.trellis');
+  const taskDir = path.join(trellisDir, 'tasks', 'demo');
+
+  fs.mkdirSync(path.join(trellisDir, 'spec'), { recursive: true });
+  fs.mkdirSync(taskDir, { recursive: true });
+  fs.writeFileSync(path.join(trellisDir, '.current-task'), '.trellis/tasks/demo\n', 'utf8');
+  fs.writeFileSync(path.join(taskDir, 'prd.md'), '# Demo PRD\n', 'utf8');
+  fs.writeFileSync(path.join(taskDir, 'implement.jsonl'), '{"file": ".trellis/spec"}\n', 'utf8');
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const agent = {
+    id: 'agent-jsonl-ready',
+    name: 'Builder',
+    description: 'Explains implementation details clearly.',
+    personaPrompt: 'Stay calm and practical.',
+  };
+  const conversation = {
+    id: 'conversation-trellis-jsonl-ready',
+    title: 'Trellis JSONL READY',
+    type: 'standard',
+    agents: [agent],
+  };
+  const prompt = buildAgentTurnPrompt({
+    conversation,
+    agent,
+    agentConfig: {
+      profileName: 'Default',
+      personaPrompt: agent.personaPrompt,
+    },
+    resolvedPersonaSkills: [],
+    resolvedConversationSkills: [],
+    sandbox: {
+      sandboxDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-jsonl-ready',
+      privateDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-jsonl-ready/private',
+    },
+    projectDir,
+    agents: [agent],
+    messages: [],
+    privateMessages: [],
+    trigger: {
+      triggerType: 'user',
+      enqueueReason: 'default_first_agent',
+    },
+    remainingSlots: 7,
+    routingMode: 'mention_queue',
+    allowHandoffs: true,
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+  });
+
+  assert.match(prompt, /Status: NOT READY/u);
+  assert.match(prompt, /\[no JSONL context loaded\]/u);
+});
+
 test('buildAgentTurnPrompt preserves JSONL parse warnings when no context entries are usable', (t) => {
   const tempDir = withTempDir('caff-trellis-jsonl-warn-');
   const projectDir = path.join(tempDir, 'project');
