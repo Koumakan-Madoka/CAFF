@@ -26,34 +26,18 @@ export function createWerewolfController(options: any = {}): RouteHandler<ApiCon
 
     const conversationId = decodeURIComponent(werewolfActionMatch[1]);
     const action = werewolfActionMatch[2];
-    const body = await readRequestJson(req);
 
-    let result;
-
-    switch (action) {
-      case 'start':
-        result = await werewolfService.startGame(conversationId, body);
-        break;
-      case 'reset':
-        result = await werewolfService.resetGame(conversationId);
-        break;
-      case 'reveal':
-        result = await werewolfService.revealGame(conversationId);
-        break;
-      case 'night':
-        result = await werewolfService.runNightPhase(conversationId);
-        break;
-      case 'day':
-        result = await werewolfService.runDayPhase(conversationId);
-        break;
-      case 'vote':
-        result = await werewolfService.runVotePhase(conversationId);
-        break;
-      default:
-        throw createHttpError(400, `未知的狼人杀操作：${action}`);
+    if (action !== 'start' && action !== 'reset') {
+      throw createHttpError(409, '当前狼人杀房间已切换为后端全自动模式，请直接开始新一局或重置对局');
     }
+
+    const body = action === 'start' ? await readRequestJson(req) : null;
+
+    const result =
+      action === 'start' ? await werewolfService.startGame(conversationId, body) : await werewolfService.resetGame(conversationId);
 
     sendJson(res, 200, result);
     return true;
   };
 }
+
