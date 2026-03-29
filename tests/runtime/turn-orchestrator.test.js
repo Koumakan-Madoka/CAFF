@@ -525,6 +525,9 @@ test('agent decision routing only extracts actionable trailing mentions', () => 
   assert.deepEqual(parseAgentTurnDecision('Hello @Beta there', agents).mentions, []);
   assert.deepEqual(parseAgentTurnDecision('Thanks @Beta', agents).mentions, ['agent-b']);
   assert.deepEqual(parseAgentTurnDecision('@Beta', agents).mentions, ['agent-b']);
+  assert.deepEqual(parseAgentTurnDecision('Hello <mention:Beta> there', agents).mentions, []);
+  assert.deepEqual(parseAgentTurnDecision('Thanks <mention:Beta>', agents).mentions, ['agent-b']);
+  assert.deepEqual(parseAgentTurnDecision('<mention:Beta>', agents).mentions, ['agent-b']);
 });
 
 test('agent sandbox helper creates private directory', (t) => {

@@ -23,6 +23,7 @@ const { registerTurnHandle, unregisterTurnHandle } = require('./turn-stop');
 const HEARTBEAT_EVENT_REASON_LIMIT = 200;
 const TURN_PREVIEW_LENGTH = 180;
 const MAX_PRIVATE_CONTEXT_MESSAGES = 16;
+const PROMPT_MENTION_PLACEHOLDER_RE = /<mention:([\p{L}\p{N}._-]+)>/gu;
 
 function createTaskId(prefix = 'task') {
   return `${prefix}-${randomUUID()}`;
@@ -30,6 +31,10 @@ function createTaskId(prefix = 'task') {
 
 function sanitizeReason(reason: any) {
   return clipText(reason || '', HEARTBEAT_EVENT_REASON_LIMIT);
+}
+
+function normalizePromptMentionPlaceholders(text: any) {
+  return String(text || '').replace(PROMPT_MENTION_PLACEHOLDER_RE, (match: any, token: any) => `@${token}`);
 }
 
 function resolveConversationAgentConfig(agent: any) {
@@ -133,7 +138,7 @@ function createSilentAgentTurnDecision(input: any = {}) {
 }
 
 function parseAgentTurnDecision(text: any, agents: any, options: any = {}) {
-  const raw = String(text || '').trim();
+  const raw = normalizePromptMentionPlaceholders(text).trim();
   const lookup = options.lookup || buildAgentMentionLookup(agents);
   const excludeAgentId = options.currentAgentId || '';
 
@@ -203,6 +208,8 @@ function parseAgentTurnDecision(text: any, agents: any, options: any = {}) {
   if (!publicReply && typeof payload.answer === 'string') {
     publicReply = String(payload.answer).trim();
   }
+
+  publicReply = normalizePromptMentionPlaceholders(publicReply);
 
   const inlineMentions = extractMentionedAgentIds(publicReply, agents, {
     lookup,
