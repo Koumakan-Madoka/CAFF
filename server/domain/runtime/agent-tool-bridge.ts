@@ -761,7 +761,15 @@ export function createAgentToolBridge(options: any = {}) {
       }
 
       const exists = fs.existsSync(absolutePath);
-      const action = exists ? (force ? 'overwrite' : 'skip-existing') : 'create';
+      const existingStat = exists ? safeStat(absolutePath) : null;
+      const action =
+        existingStat && existingStat.isDirectory()
+          ? 'conflict-directory'
+          : exists
+            ? force
+              ? 'overwrite'
+              : 'skip-existing'
+            : 'create';
 
       operations.push({
         path: file.relativePath.replace(/\\/g, '/'),
@@ -794,6 +802,11 @@ export function createAgentToolBridge(options: any = {}) {
     for (const file of files) {
       const absolutePath = path.resolve(projectDir, file.relativePath);
       const exists = fs.existsSync(absolutePath);
+      const existingStat = exists ? safeStat(absolutePath) : null;
+
+      if (existingStat && existingStat.isDirectory()) {
+        throw createHttpError(400, `Refusing to write because path is a directory: ${file.relativePath}`);
+      }
 
       if (exists && !force) {
         continue;
@@ -810,10 +823,15 @@ export function createAgentToolBridge(options: any = {}) {
     for (const file of files) {
       const absolutePath = path.resolve(projectDir, file.relativePath);
       const exists = fs.existsSync(absolutePath);
+      const existingStat = exists ? safeStat(absolutePath) : null;
 
       if (exists && !force) {
         skippedFiles.push(file.relativePath.replace(/\\/g, '/'));
         continue;
+      }
+
+      if (existingStat && existingStat.isDirectory()) {
+        throw createHttpError(400, `Refusing to write because path is a directory: ${file.relativePath}`);
       }
 
       if (hasSymlinkInPath(trellisDir, absolutePath)) {
@@ -852,14 +870,40 @@ export function createAgentToolBridge(options: any = {}) {
           },
         ];
 
-    const normalizedFiles = files
-      .map((file: any) => (file && typeof file === 'object' ? file : null))
-      .filter(Boolean)
-      .map((file: any) => ({
-        relativePath: normalizeTrellisRelativePath(file.relativePath),
-        content: typeof file.content === 'string' ? file.content : String(file.content ?? ''),
-      }))
-      .filter((file: any) => file.relativePath);
+    const normalizedFiles: any[] = [];
+    const rejectedPaths: string[] = [];
+
+    for (const file of Array.isArray(files) ? files : []) {
+      const record = file && typeof file === 'object' ? file : null;
+      if (!record) {
+        rejectedPaths.push('[invalid file entry]');
+        continue;
+      }
+
+      const rawPath = record.relativePath ?? record.path ?? '';
+      const normalizedPath = normalizeTrellisRelativePath(rawPath);
+      if (!normalizedPath) {
+        rejectedPaths.push(String(rawPath || '').trim() || '[empty]');
+        continue;
+      }
+
+      normalizedFiles.push({
+        relativePath: normalizedPath,
+        content: typeof record.content === 'string' ? record.content : String(record.content ?? ''),
+      });
+    }
+
+    if (rejectedPaths.length > 0) {
+      const examples = rejectedPaths
+        .filter(Boolean)
+        .slice(0, 6)
+        .map((item) => clipText(item, 120));
+      const suffix = rejectedPaths.length > examples.length ? ` (+${rejectedPaths.length - examples.length} more)` : '';
+      throw createHttpError(
+        400,
+        `Invalid .trellis paths. Expected a file path under .trellis/**. Rejected: ${examples.join(', ')}${suffix}`
+      );
+    }
 
     if (normalizedFiles.length === 0) {
       throw createHttpError(400, 'files must include at least one .trellis-relative path');

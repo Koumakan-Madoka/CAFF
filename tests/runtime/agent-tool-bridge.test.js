@@ -245,6 +245,55 @@ test('agent tool trellis-init refuses to follow symlinks inside .trellis', (t) =
   assert.equal(fs.existsSync(path.join(trellisDir, 'workflow.md')), false);
 });
 
+test('agent tool trellis-init rejects directory collisions before writing', (t) => {
+  const tempDir = withTempDir('caff-agent-tool-trellis-init-dir-collision-');
+  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const bridge = createAgentToolBridge({ store });
+
+  const projectDir = path.join(tempDir, 'project');
+  fs.mkdirSync(path.join(projectDir, '.trellis', 'tasks', 'demo', 'prd.md'), { recursive: true });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const fixture = createPublicInvocationFixture(store, 'trellis-init-dir-collision');
+  const context = bridge.registerInvocation(
+    bridge.createInvocationContext({
+      conversationId: fixture.conversation.id,
+      turnId: fixture.assistantMessage.turnId,
+      projectDir,
+      agentId: fixture.agent.id,
+      agentName: fixture.agent.name,
+      assistantMessageId: fixture.assistantMessage.id,
+      conversationAgents: fixture.conversation.agents,
+      stage: fixture.stage,
+      turnState: fixture.turnState,
+    })
+  );
+
+  assert.equal(fs.existsSync(path.join(projectDir, '.trellis', 'workflow.md')), false);
+
+  assert.throws(
+    () =>
+      bridge.handleTrellisInit({
+        invocationId: context.invocationId,
+        callbackToken: context.callbackToken,
+        taskName: 'demo',
+        confirm: true,
+        force: true,
+      }),
+    (error) => error && error.statusCode === 400
+  );
+
+  assert.equal(fs.existsSync(path.join(projectDir, '.trellis', 'workflow.md')), false);
+  assert.equal(fs.existsSync(path.join(projectDir, '.trellis', '.gitignore')), false);
+});
+
 test('agent tool trellis-init rejects invocations without an active projectDir', (t) => {
   const tempDir = withTempDir('caff-agent-tool-trellis-init-missing-project-');
   const sqlitePath = path.join(tempDir, 'bridge.sqlite');
@@ -352,6 +401,23 @@ test('agent tool trellis-write previews and writes files under .trellis', (t) =>
       }),
     (error) => error && error.statusCode === 400
   );
+
+  assert.throws(
+    () =>
+      bridge.handleTrellisWrite({
+        invocationId: context.invocationId,
+        callbackToken: context.callbackToken,
+        files: [
+          { relativePath: '.trellis/tasks/demo/extra.md', content: 'ok' },
+          { relativePath: '../oops.txt', content: 'nope' },
+        ],
+        confirm: true,
+        force: true,
+      }),
+    (error) => error && error.statusCode === 400
+  );
+
+  assert.equal(fs.existsSync(path.join(projectDir, '.trellis', 'tasks', 'demo', 'extra.md')), false);
 
   assert.throws(
     () =>
