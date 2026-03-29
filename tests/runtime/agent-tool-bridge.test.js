@@ -185,6 +185,76 @@ test('agent tool trellis-init previews and applies a scaffold under the active p
   assert.ok(fs.existsSync(path.join(projectDir, '.trellis', 'tasks', 'demo', 'prd.md')));
 });
 
+test('agent tool trellis-write previews and writes files under .trellis', (t) => {
+  const tempDir = withTempDir('caff-agent-tool-trellis-write-');
+  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const bridge = createAgentToolBridge({ store });
+
+  const projectDir = path.join(tempDir, 'project');
+  fs.mkdirSync(projectDir, { recursive: true });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const fixture = createPublicInvocationFixture(store, 'trellis-write');
+  const context = bridge.registerInvocation(
+    bridge.createInvocationContext({
+      conversationId: fixture.conversation.id,
+      turnId: fixture.assistantMessage.turnId,
+      projectDir,
+      agentId: fixture.agent.id,
+      agentName: fixture.agent.name,
+      assistantMessageId: fixture.assistantMessage.id,
+      conversationAgents: fixture.conversation.agents,
+      stage: fixture.stage,
+      turnState: fixture.turnState,
+    })
+  );
+
+  const preview = bridge.handleTrellisWrite({
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    relativePath: '.trellis/tasks/demo/prd.md',
+    content: '# Hello\n\nFrom agent.\n',
+  });
+
+  assert.equal(preview.ok, true);
+  assert.equal(preview.applied, false);
+  assert.equal(fs.existsSync(path.join(projectDir, '.trellis')), false);
+  assert.ok(Array.isArray(preview.operations));
+  assert.ok(preview.operations.some((op) => op.path === '.trellis/tasks/demo/prd.md'));
+
+  const applied = bridge.handleTrellisWrite({
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    relativePath: '.trellis/tasks/demo/prd.md',
+    content: '# Hello\n\nFrom agent.\n',
+    confirm: true,
+  });
+
+  assert.equal(applied.ok, true);
+  assert.equal(applied.applied, true);
+  assert.ok(fs.existsSync(path.join(projectDir, '.trellis', 'tasks', 'demo', 'prd.md')));
+  assert.equal(fs.readFileSync(path.join(projectDir, '.trellis', 'tasks', 'demo', 'prd.md'), 'utf8'), '# Hello\n\nFrom agent.\n');
+
+  assert.throws(
+    () =>
+      bridge.handleTrellisWrite({
+        invocationId: context.invocationId,
+        callbackToken: context.callbackToken,
+        relativePath: '../oops.txt',
+        content: 'nope',
+        confirm: true,
+      }),
+    (error) => error && error.statusCode === 400
+  );
+});
+
 test('agent tool read-context keeps the current turn user message visible', (t) => {
   const tempDir = withTempDir('caff-agent-tool-context-');
   const sqlitePath = path.join(tempDir, 'bridge.sqlite');
