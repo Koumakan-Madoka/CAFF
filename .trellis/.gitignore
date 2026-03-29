@@ -1,0 +1,19 @@
+# Local-only Trellis runtime files
+.developer
+.current-task
+.ralph-state.json
+.agents/
+.agent-log
+.session-id
+.plan-log
+
+# Atomic update temp files
+*.tmp
+*.new
+
+# Update backup directories
+.backup-*
+
+# Python cache (if you use Trellis scripts)
+**/__pycache__/
+**/*.pyc

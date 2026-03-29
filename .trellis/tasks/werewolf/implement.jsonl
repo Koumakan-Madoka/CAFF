@@ -1,0 +1,9 @@
+{"file":".trellis/tasks/werewolf/prd.md","reason":"Task requirements (PRD)."}
+{"file":".trellis/spec/index.md","reason":"Project spec index (edit/add more spec files)."}
+{"file":"lib/werewolf-game.ts","reason":"狼人杀游戏核心逻辑，类似 who-is-undercover-game.ts，包含角色分配、日夜阶段、胜负判定等功能。","status":"completed"}
+{"file":"server/domain/werewolf/werewolf-service.ts","reason":"狼人杀服务层，处理游戏流程控制、私密邮箱、日夜阶段推进等。","status":"completed"}
+{"file":"server/api/werewolf-controller.ts","reason":"狼人杀 API 控制器，提供 start/night/day/vote/reveal/reset 等接口。","status":"completed"}
+{"file":"server/app/create-server.ts","reason":"服务器配置，已添加狼人杀路由和服务注册。","status":"completed"}
+{"file":"server/api/conversations-controller.ts","reason":"会话控制器，已添加狼人杀会话类型支持。","status":"completed"}
+{"file":"lib/chat-app-store.ts","reason":"聊天存储层，已添加 werewolf 会话类型支持。","status":"completed"}
+{"file":".pi-sandbox/skills/werewolf/SKILL.md","reason":"狼人杀 Skill 文件，已存在。","status":"completed"}
