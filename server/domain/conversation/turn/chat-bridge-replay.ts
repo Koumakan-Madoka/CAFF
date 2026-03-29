@@ -21,14 +21,15 @@ function extractBashCodeBlocks(text: any) {
   return blocks;
 }
 
-function parseChatBridgeReplayFromBashBlock(block: any): ChatBridgeReplay | null {
+function parseChatBridgeReplaysFromBashBlock(block: any): ChatBridgeReplay[] {
   const source = String(block || '').trim();
 
   if (!source) {
-    return null;
+    return [];
   }
 
   const lines = source.split(/\r?\n/);
+  const replays: ChatBridgeReplay[] = [];
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
@@ -59,26 +60,22 @@ function parseChatBridgeReplayFromBashBlock(block: any): ChatBridgeReplay | null
     }
 
     const contentLines: string[] = [];
-    let foundTerminator = false;
+    let terminatorIndex = -1;
 
     for (let j = index + 1; j < lines.length; j += 1) {
       if (String(lines[j] || '').trimEnd() === delimiter) {
-        foundTerminator = true;
+        terminatorIndex = j;
         break;
       }
 
       contentLines.push(lines[j]);
     }
 
-    if (!foundTerminator) {
+    if (terminatorIndex === -1) {
       continue;
     }
 
     const content = contentLines.join('\n').trim();
-
-    if (!content) {
-      continue;
-    }
 
     const recipients: string[] = [];
     const toRegex = /(?:^|\s)--to\s+(?:"([^"]*)"|'([^']*)'|([^\s]+))/giu;
@@ -108,18 +105,22 @@ function parseChatBridgeReplayFromBashBlock(block: any): ChatBridgeReplay | null
     const handoff = /\s--handoff\b/iu.test(commandLine) || /\s--trigger-reply\b/iu.test(commandLine);
     const noHandoff = /\s--no-handoff\b/iu.test(commandLine) || /\s--silent\b/iu.test(commandLine);
 
-    return {
-      visibility: isSendPrivate ? 'private' : 'public',
-      content,
-      recipients,
-      mode,
-      handoff,
-      noHandoff,
-      sourceBlock: source,
-    };
+    if (content) {
+      replays.push({
+        visibility: isSendPrivate ? 'private' : 'public',
+        content,
+        recipients,
+        mode,
+        handoff,
+        noHandoff,
+        sourceBlock: source,
+      });
+    }
+
+    index = terminatorIndex;
   }
 
-  return null;
+  return replays;
 }
 
 export function extractChatBridgeReplaysFromText(text: any) {
@@ -127,11 +128,7 @@ export function extractChatBridgeReplaysFromText(text: any) {
   const replays: ChatBridgeReplay[] = [];
 
   for (const block of blocks) {
-    const replay = parseChatBridgeReplayFromBashBlock(block);
-
-    if (replay) {
-      replays.push(replay);
-    }
+    replays.push(...parseChatBridgeReplaysFromBashBlock(block));
   }
 
   return replays;
@@ -165,4 +162,3 @@ export function pickChatBridgeReplay(
 
   return filtered[filtered.length - 1];
 }
-
