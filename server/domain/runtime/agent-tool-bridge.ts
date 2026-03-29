@@ -1,4 +1,6 @@
 const { randomUUID } = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
 const { createHttpError } = require('../../http/http-errors');
 const { pickConversationSummary, serializeConversationPrivateMessageForUi } = require('../conversation/conversation-view');
 const { buildAgentMentionLookup, formatAgentMention, resolveMentionValues } = require('../conversation/mention-routing');
@@ -60,6 +62,7 @@ export function createAgentToolBridge(options: any = {}) {
       callbackToken,
       conversationId: String(input.conversationId || '').trim(),
       turnId: String(input.turnId || '').trim(),
+      projectDir: String(input.projectDir || '').trim(),
       agentId: String(input.agentId || '').trim(),
       agentName: String(input.agentName || '').trim() || 'Assistant',
       assistantMessageId: String(input.assistantMessageId || '').trim(),
@@ -480,11 +483,227 @@ export function createAgentToolBridge(options: any = {}) {
     };
   }
 
+  function safeStat(filePath: any) {
+    try {
+      return fs.statSync(filePath);
+    } catch {
+      return null;
+    }
+  }
+
+  function safeLstat(filePath: any) {
+    try {
+      return fs.lstatSync(filePath);
+    } catch {
+      return null;
+    }
+  }
+
+  function isPathWithinDir(rootDir: any, candidatePath: any) {
+    const resolvedRoot = path.resolve(String(rootDir || '').trim());
+    const resolvedCandidate = path.resolve(String(candidatePath || '').trim());
+
+    if (!resolvedRoot || !resolvedCandidate) {
+      return false;
+    }
+
+    const rootKey = process.platform === 'win32' ? resolvedRoot.toLowerCase() : resolvedRoot;
+    const candidateKey = process.platform === 'win32' ? resolvedCandidate.toLowerCase() : resolvedCandidate;
+
+    const relative = path.relative(rootKey, candidateKey);
+
+    if (!relative) {
+      return true;
+    }
+
+    return !relative.startsWith('..') && !path.isAbsolute(relative);
+  }
+
+  function normalizeTaskName(value: any, fallback = 'demo') {
+    const normalized = String(value || '').trim() || String(fallback || '').trim();
+
+    if (!normalized) {
+      return '';
+    }
+
+    if (normalized === '.' || normalized === '..') {
+      return '';
+    }
+
+    if (normalized.includes('/') || normalized.includes('\\')) {
+      return '';
+    }
+
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(normalized)) {
+      return '';
+    }
+
+    return normalized;
+  }
+
+  function buildTrellisInitFiles(taskName: string) {
+    const safeTaskName = String(taskName || '').trim() || 'demo';
+
+    const workflow = [
+      '# Trellis Workflow',
+      '',
+      'This folder is used by CAFF to inject lightweight task/PRD/workflow context into agent prompts.',
+      '',
+      'Quick start:',
+      `1) Set the current task in \`.trellis/.current-task\` (example: \`${safeTaskName}\`).`,
+      '2) Write a PRD in `.trellis/tasks/<task>/prd.md`.',
+      '3) Add at least one non-empty jsonl file in the task directory (implement/check/spec) to mark it READY.',
+      '4) Optional: add spec index files under `.trellis/spec/**/index.md` for discoverability hints.',
+      '',
+    ].join('\n');
+
+    const taskJson = JSON.stringify(
+      {
+        title: `Task: ${safeTaskName}`,
+        status: 'active',
+      },
+      null,
+      2
+    );
+
+    const prd = [
+      `# PRD: ${safeTaskName}`,
+      '',
+      '## Goal',
+      '- Describe what you want to build.',
+      '',
+      '## Scope',
+      '- In scope:',
+      '- Out of scope:',
+      '',
+      '## Acceptance Criteria',
+      '- [ ] Item 1',
+      '',
+    ].join('\n');
+
+    const implementJsonl = JSON.stringify(
+      {
+        kind: 'note',
+        text: 'Placeholder context line. Replace with real implement/check/spec notes.',
+      },
+      null,
+      0
+    );
+
+    const specIndex = ['# Spec Index', '', 'Add relevant spec links here.', ''].join('\n');
+
+    return [
+      { relativePath: '.trellis/workflow.md', content: workflow },
+      { relativePath: '.trellis/.current-task', content: `${safeTaskName}\n` },
+      { relativePath: '.trellis/spec/index.md', content: specIndex },
+      { relativePath: `.trellis/tasks/${safeTaskName}/task.json`, content: `${taskJson}\n` },
+      { relativePath: `.trellis/tasks/${safeTaskName}/prd.md`, content: `${prd}\n` },
+      { relativePath: `.trellis/tasks/${safeTaskName}/implement.jsonl`, content: `${implementJsonl}\n` },
+    ];
+  }
+
+  function handleTrellisInit(body: any = {}) {
+    const context = getInvocation(body.invocationId, body.callbackToken);
+    const includeContent = body.includeContent === true;
+    const confirm = body.confirm === true;
+    const force = body.force === true;
+    const taskName = normalizeTaskName(body.taskName || body.task || body.name, 'demo');
+
+    if (!taskName) {
+      throw createHttpError(400, 'taskName must be a simple directory name (letters/numbers/._-)');
+    }
+
+    const projectDir = path.resolve(String(context.projectDir || '').trim());
+
+    if (!projectDir) {
+      throw createHttpError(409, 'No active project directory is available for this invocation');
+    }
+
+    const projectStat = safeStat(projectDir);
+
+    if (!projectStat || !projectStat.isDirectory()) {
+      throw createHttpError(409, 'Active project directory does not exist or is not a folder');
+    }
+
+    const trellisDir = path.join(projectDir, '.trellis');
+    const trellisLstat = safeLstat(trellisDir);
+
+    if (trellisLstat && trellisLstat.isSymbolicLink()) {
+      throw createHttpError(400, 'Refusing to write .trellis because it is a symlink');
+    }
+
+    const files = buildTrellisInitFiles(taskName);
+    const operations: any[] = [];
+
+    for (const file of files) {
+      const absolutePath = path.resolve(projectDir, file.relativePath);
+      const withinTrellis = isPathWithinDir(trellisDir, absolutePath);
+
+      if (!withinTrellis) {
+        throw createHttpError(400, `Refusing to write outside .trellis: ${file.relativePath}`);
+      }
+
+      const exists = fs.existsSync(absolutePath);
+      const action = exists ? (force ? 'overwrite' : 'skip-existing') : 'create';
+
+      operations.push({
+        path: file.relativePath.replace(/\\/g, '/'),
+        action,
+        bytes: Buffer.byteLength(file.content, 'utf8'),
+        ...(includeContent ? { content: file.content } : {}),
+      });
+    }
+
+    if (!confirm) {
+      return {
+        ok: true,
+        applied: false,
+        projectDir,
+        trellisDir,
+        taskName,
+        operations,
+        willWriteCount: operations.filter((op) => op.action === 'create' || op.action === 'overwrite').length,
+        skippedCount: operations.filter((op) => op.action === 'skip-existing').length,
+        confirmRequired: true,
+      };
+    }
+
+    fs.mkdirSync(trellisDir, { recursive: true });
+
+    const writtenFiles: string[] = [];
+    const skippedFiles: string[] = [];
+
+    for (const file of files) {
+      const absolutePath = path.resolve(projectDir, file.relativePath);
+      const exists = fs.existsSync(absolutePath);
+
+      if (exists && !force) {
+        skippedFiles.push(file.relativePath.replace(/\\/g, '/'));
+        continue;
+      }
+
+      fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+      fs.writeFileSync(absolutePath, file.content, 'utf8');
+      writtenFiles.push(file.relativePath.replace(/\\/g, '/'));
+    }
+
+    return {
+      ok: true,
+      applied: true,
+      projectDir,
+      trellisDir,
+      taskName,
+      writtenFiles,
+      skippedFiles,
+    };
+  }
+
   return {
     createInvocationContext,
     handleListParticipants,
     handlePostMessage,
     handleReadContext,
+    handleTrellisInit,
     registerInvocation,
     unregisterInvocation,
   };

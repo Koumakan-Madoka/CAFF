@@ -200,6 +200,22 @@ async function readContext(config: any, flags: any) {
   return requestJson(`${config.apiUrl}/api/agent-tools/context?${query.toString()}`);
 }
 
+async function trellisInit(config: any, flags: any) {
+  const taskName = String(flags.task || flags['task-name'] || flags.name || '').trim();
+
+  return requestJson(`${config.apiUrl}/api/agent-tools/trellis/init`, {
+    method: 'POST',
+    body: {
+      invocationId: config.invocationId,
+      callbackToken: config.callbackToken,
+      taskName,
+      confirm: flags.confirm === true,
+      force: flags.force === true,
+      includeContent: flags['include-content'] === true,
+    },
+  });
+}
+
 async function listParticipants(config: any) {
   const query = new URLSearchParams({
     invocationId: config.invocationId,
@@ -296,9 +312,11 @@ async function main() {
     result = await readContext(config, flags);
   } else if (command === 'list-participants') {
     result = await listParticipants(config);
+  } else if (command === 'trellis-init') {
+    result = await trellisInit(config, flags);
   } else {
     throw new Error(
-      'Unknown command. Use one of: send-public, send-private, read-context, list-participants.'
+      'Unknown command. Use one of: send-public, send-private, read-context, list-participants, trellis-init.'
     );
   }
 

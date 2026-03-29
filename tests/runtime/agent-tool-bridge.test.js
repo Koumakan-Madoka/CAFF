@@ -129,6 +129,62 @@ test('agent tool bridge rejects stale invocations after a turn stops or complete
   );
 });
 
+test('agent tool trellis-init previews and applies a scaffold under the active project', (t) => {
+  const tempDir = withTempDir('caff-agent-tool-trellis-');
+  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const bridge = createAgentToolBridge({ store });
+
+  const projectDir = path.join(tempDir, 'project');
+  fs.mkdirSync(projectDir, { recursive: true });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const fixture = createPublicInvocationFixture(store, 'trellis');
+  const context = bridge.registerInvocation(
+    bridge.createInvocationContext({
+      conversationId: fixture.conversation.id,
+      turnId: fixture.assistantMessage.turnId,
+      projectDir,
+      agentId: fixture.agent.id,
+      agentName: fixture.agent.name,
+      assistantMessageId: fixture.assistantMessage.id,
+      conversationAgents: fixture.conversation.agents,
+      stage: fixture.stage,
+      turnState: fixture.turnState,
+    })
+  );
+
+  const preview = bridge.handleTrellisInit({
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    taskName: 'demo',
+  });
+
+  assert.equal(preview.ok, true);
+  assert.equal(preview.applied, false);
+  assert.equal(fs.existsSync(path.join(projectDir, '.trellis')), false);
+  assert.ok(Array.isArray(preview.operations));
+  assert.ok(preview.operations.length > 0);
+
+  const applied = bridge.handleTrellisInit({
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    taskName: 'demo',
+    confirm: true,
+  });
+
+  assert.equal(applied.ok, true);
+  assert.equal(applied.applied, true);
+  assert.ok(fs.existsSync(path.join(projectDir, '.trellis', 'workflow.md')));
+  assert.ok(fs.existsSync(path.join(projectDir, '.trellis', 'tasks', 'demo', 'prd.md')));
+});
+
 test('agent tool read-context keeps the current turn user message visible', (t) => {
   const tempDir = withTempDir('caff-agent-tool-context-');
   const sqlitePath = path.join(tempDir, 'bridge.sqlite');
