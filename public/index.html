@@ -14,6 +14,7 @@
     <script defer src="/chat/message-timeline.js"></script>
     <script defer src="/chat/conversation-settings.js"></script>
     <script defer src="/chat/undercover-panel.js"></script>
+    <script defer src="/chat/werewolf-panel.js"></script>
     <script defer src="/chat/mention-menu.js"></script>
     <script defer src="/chat/conversation-pane.js"></script>
     <script defer src="/app.js"></script>
@@ -26,7 +27,7 @@
         <div>
           <p class="eyebrow">CAFF 本地工作台</p>
           <h1>多人 Agent 对话台</h1>
-          <p class="subtitle">本地运行的多人格协作聊天台，支持普通对话与后端主持的“谁是卧底”玩法。</p>
+          <p class="subtitle">本地运行的多人格协作聊天台，支持普通对话与后端主持的“谁是卧底 / 狼人杀”玩法。</p>
         </div>
         <div class="topbar-actions">
           <nav class="topbar-nav" aria-label="主导航">
@@ -54,6 +55,7 @@
             <select id="new-conversation-type" name="type">
               <option value="standard">普通对话</option>
               <option value="who_is_undercover">谁是卧底</option>
+              <option value="werewolf">狼人杀</option>
             </select>
             <button type="submit">新建</button>
           </form>
@@ -75,7 +77,7 @@
           <div class="participant-section">
             <div class="section-row">
               <span class="section-label">当前参与人格</span>
-              <span class="section-hint">普通房间按提及路由，谁是卧底房间由后端主持统一调度。</span>
+              <span class="section-hint">普通房间按提及路由，谁是卧底 / 狼人杀房间由后端主持统一调度。</span>
             </div>
             <div id="participant-list" class="participant-list"></div>
           </div>
@@ -158,6 +160,54 @@
             </form>
 
             <p class="muted">点击开始后，后端会自动完成发言、投票、结算与身份揭晓。</p>
+          </section>
+
+          <section id="werewolf-game-card" class="stack-card hidden">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">狼人杀主持台</p>
+                <h2>狼人杀主持台</h2>
+              </div>
+            </div>
+
+            <div class="werewolf-status-card">
+              <div id="werewolf-game-status" class="muted">选择狼人杀房间后，这里会显示全自动对局状态。</div>
+              <div id="werewolf-last-result" class="muted"></div>
+            </div>
+
+            <section class="conversation-agent-section">
+              <div class="section-row">
+                <span class="section-label">当前玩家状态</span>
+                <span class="section-hint">后端主持只会调度仍存活的玩家</span>
+              </div>
+              <div id="werewolf-player-status" class="werewolf-player-grid"></div>
+            </section>
+
+            <form id="werewolf-setup-form" class="settings-form compact-settings-form">
+              <div class="three-column-grid">
+                <label>
+                  <span>狼人数量</span>
+                  <input id="werewolf-count" type="number" min="1" max="6" value="2" />
+                </label>
+                <label>
+                  <span>预言家数量</span>
+                  <input id="werewolf-seer-count" type="number" min="0" max="2" value="1" />
+                </label>
+                <label>
+                  <span>女巫数量</span>
+                  <input id="werewolf-witch-count" type="number" min="0" max="1" value="1" />
+                </label>
+              </div>
+
+              <p class="muted">村民人数将自动补足，且总人数至少需要 4 名玩家。</p>
+
+              <div class="button-row compact-button-row">
+                <button id="werewolf-start-button" type="submit">开始全自动新一局</button>
+                <button id="werewolf-reset-button" class="ghost-button danger" type="button">重置对局</button>
+              </div>
+            </form>
+
+            <p class="muted">点击开始后，后端会自动推进夜晚、白天讨论、投票、结算与身份揭晓。</p>
           </section>
 
           <section class="stack-card">

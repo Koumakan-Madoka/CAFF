@@ -10,6 +10,7 @@ import { sendFileDownload, sendJson } from '../http/response';
 
 import { pickConversationSummary, withConversationPrivateMessages } from '../domain/conversation/conversation-view';
 import { UNDERCOVER_CONVERSATION_TYPE } from '../../lib/who-is-undercover-game';
+import { WEREWOLF_CONVERSATION_TYPE } from '../../lib/werewolf-game';
 
 type ApiContext = {
   req: IncomingMessage;
@@ -23,6 +24,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
   const skillRegistry = options.skillRegistry;
   const turnOrchestrator = options.turnOrchestrator;
   const undercoverService = options.undercoverService;
+  const werewolfService = options.werewolfService;
   const buildBootstrapPayload = options.buildBootstrapPayload;
 
   return async function handleConversationsRequest(context) {
@@ -35,26 +37,37 @@ export function createConversationsController(options: any = {}): RouteHandler<A
 
     if (req.method === 'POST' && pathname === '/api/conversations') {
       const body = await readRequestJson(req);
-      const conversationType =
-        String(body && body.type ? body.type : '').trim() === UNDERCOVER_CONVERSATION_TYPE
-          ? UNDERCOVER_CONVERSATION_TYPE
-          : 'standard';
+      const rawType = String(body && body.type ? body.type : '').trim().toLowerCase();
+      let conversationType = 'standard';
+      if (rawType === UNDERCOVER_CONVERSATION_TYPE) {
+        conversationType = UNDERCOVER_CONVERSATION_TYPE;
+      } else if (rawType === WEREWOLF_CONVERSATION_TYPE) {
+        conversationType = WEREWOLF_CONVERSATION_TYPE;
+      }
+
+      let metadata = body && body.metadata && typeof body.metadata === 'object' ? body.metadata : {};
+      if (conversationType === UNDERCOVER_CONVERSATION_TYPE) {
+        metadata = {
+          ...metadata,
+          undercoverGame: options.undercoverHost.buildPublicState(null),
+        };
+      } else if (conversationType === WEREWOLF_CONVERSATION_TYPE) {
+        metadata = {
+          ...metadata,
+          werewolfGame: options.werewolfHost.buildPublicState(null),
+        };
+      }
+
       let conversation = store.createConversation({
         ...body,
         type: conversationType,
-        metadata:
-          conversationType === UNDERCOVER_CONVERSATION_TYPE
-            ? {
-                ...(body && body.metadata && typeof body.metadata === 'object' ? body.metadata : {}),
-                undercoverGame: options.undercoverHost.buildPublicState(null),
-              }
-            : body && body.metadata && typeof body.metadata === 'object'
-              ? body.metadata
-              : {},
+        metadata,
       });
 
       if (conversation.type === UNDERCOVER_CONVERSATION_TYPE) {
         conversation = undercoverService.prepareConversation(conversation.id);
+      } else if (conversation.type === WEREWOLF_CONVERSATION_TYPE) {
+        conversation = werewolfService.prepareConversation(conversation.id);
       }
 
       sendJson(res, 201, {
@@ -100,6 +113,15 @@ export function createConversationsController(options: any = {}): RouteHandler<A
           throw createHttpError(409, '请先重置当前谁是卧底对局，再修改参与者');
         }
 
+        if (
+          existingConversation &&
+          existingConversation.type === WEREWOLF_CONVERSATION_TYPE &&
+          Array.isArray(body.participants) &&
+          options.werewolfHost.loadState(conversationId)
+        ) {
+          throw createHttpError(409, '请先重置当前狼人杀对局，再修改参与者');
+        }
+
         let conversation = store.updateConversation(conversationId, body);
 
         if (!conversation) {
@@ -108,6 +130,8 @@ export function createConversationsController(options: any = {}): RouteHandler<A
 
         if (conversation.type === UNDERCOVER_CONVERSATION_TYPE) {
           conversation = undercoverService.prepareConversation(conversation.id);
+        } else if (conversation.type === WEREWOLF_CONVERSATION_TYPE) {
+          conversation = werewolfService.prepareConversation(conversation.id);
         }
 
         sendJson(res, 200, {
@@ -120,6 +144,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
 
       if (req.method === 'DELETE') {
         undercoverService.deleteConversationState(conversationId);
+        werewolfService.deleteConversationState(conversationId);
         store.deleteConversation(conversationId);
         turnOrchestrator.clearConversationState(conversationId);
         sendJson(res, 200, {
@@ -168,6 +193,13 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         !undercoverService.canChatInConversation(conversationId)
       ) {
         throw createHttpError(409, '谁是卧底对局进行中由后端全自动主持，请等待本局结束后再发送聊天消息');
+      }
+
+      if (
+        conversation.type === WEREWOLF_CONVERSATION_TYPE &&
+        !werewolfService.canChatInConversation(conversationId)
+      ) {
+        throw createHttpError(409, '狼人杀对局进行中由后端全自动主持，请等待本局结束后再发送聊天消息');
       }
 
       const result = await turnOrchestrator.runConversationTurn(conversationId, body.content);

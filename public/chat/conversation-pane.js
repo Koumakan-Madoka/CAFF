@@ -8,19 +8,23 @@
       activeTurnForConversation,
       agentById,
       canChatInUndercoverConversation,
+      canChatInWerewolfConversation,
       clearLiveDraftFinalizingTimer,
       closeMentionMenu,
       conversationTypeLabel,
       isConversationBusy,
       isUndercoverConversation,
+      isWerewolfConversation,
       liveDraftIdleMs,
       liveStageLabel,
       renderMessages,
       renderParticipantList,
       renderUndercoverGameCard,
+      renderWerewolfGameCard,
       scheduleConversationPaneRender,
       timelineMessagesForConversation,
       undercoverGameState,
+      werewolfGameState,
     } = helpers;
 
     function render() {
@@ -47,6 +51,7 @@
         dom.composerStatus.textContent = '请选择一个房间开始。';
         closeMentionMenu();
         renderUndercoverGameCard();
+        renderWerewolfGameCard();
         return;
       }
 
@@ -55,7 +60,7 @@
       if (dom.conversationModeBadge) {
         dom.conversationModeBadge.classList.toggle('hidden', false);
         dom.conversationModeBadge.textContent = conversationTypeLabel(conversation);
-        dom.conversationModeBadge.classList.toggle('game', isUndercoverConversation(conversation));
+        dom.conversationModeBadge.classList.toggle('game', isUndercoverConversation(conversation) || isWerewolfConversation(conversation));
       }
 
       const privateCount = Array.isArray(conversation.privateMessages) ? conversation.privateMessages.length : 0;
@@ -72,6 +77,13 @@
         dom.conversationMeta.textContent = `${conversation.agents.length} 名玩家 / ${totalMessageCount} 条消息 / 第 ${roundNumber} 轮 / ${phase}`;
       }
 
+      if (isWerewolfConversation(conversation)) {
+        const game = werewolfGameState(conversation);
+        const phase = game && game.phase ? game.phase : 'setup';
+        const roundNumber = Number.isInteger(game && game.roundNumber) ? game.roundNumber : 1;
+        dom.conversationMeta.textContent = `${conversation.agents.length} 名玩家 / ${totalMessageCount} 条消息 / 第 ${roundNumber} 轮 / ${phase}`;
+      }
+
       dom.deleteConversationButton.disabled = state.sending;
 
       renderParticipantList(conversation);
@@ -81,16 +93,23 @@
       const stopRequestInFlight = state.stopRequestConversationIds.has(conversation.id);
       const canStopTurn = Boolean(activeTurn || isConversationBusy(conversation.id));
       const undercoverChatLocked = isUndercoverConversation(conversation) && !canChatInUndercoverConversation(conversation);
-      dom.composerInput.disabled = state.sending || !hasAgents || undercoverChatLocked;
+      const werewolfChatLocked = isWerewolfConversation(conversation) && !canChatInWerewolfConversation(conversation);
+      dom.composerInput.disabled = state.sending || !hasAgents || undercoverChatLocked || werewolfChatLocked;
       dom.stopButton.disabled = !canStopTurn || stopRequestInFlight || Boolean(activeTurn && activeTurn.stopRequested);
       dom.stopButton.textContent = stopRequestInFlight || (activeTurn && activeTurn.stopRequested) ? '停止中...' : '停止';
-      dom.sendButton.disabled = state.sending || !hasAgents || undercoverChatLocked;
+      dom.sendButton.disabled = state.sending || !hasAgents || undercoverChatLocked || werewolfChatLocked;
       dom.composerInput.placeholder = '输入 @Agent 可将当前消息路由给指定人格。';
 
       if (isUndercoverConversation(conversation)) {
         dom.composerInput.placeholder = canChatInUndercoverConversation(conversation)
           ? '本局谁是卧底已结束，现在可以继续和房间里的 Agent 对话。'
           : '谁是卧底对局进行中时由后端全自动主持，暂不支持手动发送聊天消息。';
+      }
+
+      if (isWerewolfConversation(conversation)) {
+        dom.composerInput.placeholder = canChatInWerewolfConversation(conversation)
+          ? '本局狼人杀已结束，现在可以继续和房间里的 Agent 对话。'
+          : '狼人杀对局进行中时由后端全自动主持，暂不支持手动发送聊天消息。';
       }
 
       const activeStages =
@@ -157,11 +176,24 @@
         }
       }
 
+      if (isWerewolfConversation(conversation) && !activeTurn && !state.sending && hasAgents) {
+        const game = werewolfGameState(conversation);
+
+        if (!game || game.status === 'setup') {
+          dom.composerStatus.textContent = '请先开始全自动新一局狼人杀。';
+        } else if (canChatInWerewolfConversation(conversation)) {
+          dom.composerStatus.textContent = '本局流程已结束，现在可以继续和房间里的 Agent 自由对话。';
+        } else {
+          dom.composerStatus.textContent = `当前阶段：${game.phase || 'setup'}。后端正在自动推进整局流程。`;
+        }
+      }
+
       if (!hasAgents || state.sending) {
         closeMentionMenu();
       }
 
       renderUndercoverGameCard();
+      renderWerewolfGameCard();
     }
 
     return {

@@ -245,6 +245,12 @@ export function createAgentToolBridge(options: any = {}) {
     const contextUserMessage = resolveContextUserMessage(context, conversation);
     const publicMessageSource = conversation
       ? conversation.messages.filter((message: any) => {
+          const metadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
+
+          if (metadata && metadata.privateOnly) {
+            return false;
+          }
+
           return !(
             message.id === context.assistantMessageId &&
             message.status !== 'completed' &&
@@ -387,10 +393,14 @@ export function createAgentToolBridge(options: any = {}) {
       const handoffAgentIds = resolvedRecipientAgentIds.filter((agentId: any) => agentId && agentId !== context.agentId);
       const explicitHandoff = body.handoff === true || body.triggerReply === true;
       const explicitNoHandoff = body.handoff === false || body.triggerReply === false || body.noHandoff === true;
-      const handoffRequested = !explicitNoHandoff && (explicitHandoff || handoffAgentIds.length > 0);
+      let handoffRequested = !explicitNoHandoff && (explicitHandoff || handoffAgentIds.length > 0);
 
       if (handoffRequested && !context.allowHandoffs) {
-        throw createHttpError(409, 'Private handoff is not available in this turn mode');
+        if (explicitHandoff && !explicitNoHandoff) {
+          throw createHttpError(409, 'Private handoff is not available in this turn mode');
+        }
+
+        handoffRequested = false;
       }
 
       if (handoffRequested && typeof context.enqueueAgent !== 'function') {

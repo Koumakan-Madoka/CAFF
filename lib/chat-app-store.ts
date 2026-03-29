@@ -392,7 +392,13 @@ function normalizePrivateMessageRow(row: any) {
 
 function normalizeConversationType(value: any) {
   const normalized = String(value || '').trim().toLowerCase();
-  return normalized === 'who_is_undercover' ? 'who_is_undercover' : 'standard';
+  if (normalized === 'who_is_undercover') {
+    return 'who_is_undercover';
+  }
+  if (normalized === 'werewolf') {
+    return 'werewolf';
+  }
+  return 'standard';
 }
 
 function normalizeConversationHeader(row: any) {
