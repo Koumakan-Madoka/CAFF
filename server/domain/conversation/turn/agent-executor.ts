@@ -485,6 +485,7 @@ export function createAgentExecutor(options: any = {}) {
       agentToolBridge.createInvocationContext({
         conversationId,
         turnId,
+        projectDir: resolvedProjectDir,
         agentId: agent.id,
         agentName: agent.name,
         assistantMessageId: assistantMessage.id,

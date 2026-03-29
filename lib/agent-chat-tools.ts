@@ -112,6 +112,18 @@ async function resolveMessageContent(flags: any = {}, options: any = {}) {
   return String(await readTextStream(options.stream || process.stdin) || '').trim();
 }
 
+async function resolveFileContent(flags: any = {}, options: any = {}) {
+  if (flags.content !== undefined && flags.content !== true) {
+    return String(flags.content ?? '');
+  }
+
+  if (flags['content-stdin'] !== true && flags.stdin !== true) {
+    return '';
+  }
+
+  return String(await readTextStream(options.stream || process.stdin) || '');
+}
+
 async function requestJson(url: string, options: any = {}) {
   const response = await fetch(url, {
     method: options.method || 'GET',
@@ -198,6 +210,45 @@ async function readContext(config: any, flags: any) {
   }
 
   return requestJson(`${config.apiUrl}/api/agent-tools/context?${query.toString()}`);
+}
+
+async function trellisInit(config: any, flags: any) {
+  const taskName = String(flags.task || flags['task-name'] || flags.name || '').trim();
+
+  return requestJson(`${config.apiUrl}/api/agent-tools/trellis/init`, {
+    method: 'POST',
+    body: {
+      invocationId: config.invocationId,
+      callbackToken: config.callbackToken,
+      taskName,
+      confirm: flags.confirm === true,
+      force: flags.force === true,
+      includeContent: flags['include-content'] === true,
+    },
+  });
+}
+
+async function trellisWrite(config: any, flags: any) {
+  const relativePath = String(flags.path || flags['relative-path'] || flags.file || '').trim();
+
+  if (!relativePath) {
+    throw new Error('Missing --path for trellis-write.');
+  }
+
+  const content = await resolveFileContent(flags);
+
+  return requestJson(`${config.apiUrl}/api/agent-tools/trellis/write`, {
+    method: 'POST',
+    body: {
+      invocationId: config.invocationId,
+      callbackToken: config.callbackToken,
+      relativePath,
+      content,
+      confirm: flags.confirm === true,
+      force: flags.force === true,
+      includeContent: flags['include-content'] === true,
+    },
+  });
 }
 
 async function listParticipants(config: any) {
@@ -296,9 +347,13 @@ async function main() {
     result = await readContext(config, flags);
   } else if (command === 'list-participants') {
     result = await listParticipants(config);
+  } else if (command === 'trellis-init') {
+    result = await trellisInit(config, flags);
+  } else if (command === 'trellis-write') {
+    result = await trellisWrite(config, flags);
   } else {
     throw new Error(
-      'Unknown command. Use one of: send-public, send-private, read-context, list-participants.'
+      'Unknown command. Use one of: send-public, send-private, read-context, list-participants, trellis-init, trellis-write.'
     );
   }
 
@@ -324,6 +379,7 @@ export {
   parseArgs,
   readTextStream,
   resolveMessageContent,
+  resolveFileContent,
   sendPrivate,
   sendPublic,
   shouldEchoContent,

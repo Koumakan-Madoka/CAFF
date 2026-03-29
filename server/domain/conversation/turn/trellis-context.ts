@@ -3,6 +3,9 @@ const path = require('node:path');
 
 const DEFAULT_MAX_CHARS = 12000;
 const DEFAULT_MAX_INDEX_PATHS = 40;
+const DEFAULT_MAX_CONTEXT_FILES = 12;
+const DEFAULT_MAX_CONTEXT_FILE_CHARS = 1200;
+const DEFAULT_MAX_CONTEXT_TOTAL_CHARS = 6000;
 
 function clipText(value: any, maxChars = DEFAULT_MAX_CHARS) {
   const text = String(value || '');
@@ -54,6 +57,54 @@ function readTextFile(filePath: any, maxChars = DEFAULT_MAX_CHARS) {
   } catch {
     return '';
   }
+}
+
+function readJsonlEntries(filePath: any, maxEntries = DEFAULT_MAX_CONTEXT_FILES) {
+  const raw = readTextFile(filePath, Math.max(4096, Math.min(DEFAULT_MAX_CHARS, maxEntries * 512)));
+  if (!raw) {
+    return { entries: [], totalLines: 0, parseErrors: 0, invalidEntries: 0 };
+  }
+
+  const lines = raw.split(/\r?\n/);
+  const entries: any[] = [];
+  let totalLines = 0;
+  let parseErrors = 0;
+  let invalidEntries = 0;
+
+  for (const line of lines) {
+    if (entries.length >= maxEntries) {
+      break;
+    }
+
+    const trimmed = String(line || '').trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    totalLines += 1;
+
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (!parsed || typeof parsed !== 'object') {
+        invalidEntries += 1;
+        continue;
+      }
+
+      const fileRef = String(parsed.file || parsed.path || '').trim();
+      if (!fileRef) {
+        invalidEntries += 1;
+        continue;
+      }
+
+      const entryType = String(parsed.type || '').trim() || 'file';
+      const reason = String(parsed.reason || '').trim();
+      entries.push({ file: fileRef, type: entryType, reason });
+    } catch {
+      parseErrors += 1;
+    }
+  }
+
+  return { entries, totalLines, parseErrors, invalidEntries };
 }
 
 function normalizeTaskRef(taskRef: any) {
@@ -153,6 +204,307 @@ function isPathWithinDir(rootDir: any, candidatePath: any) {
   return !relative.startsWith('..') && !path.isAbsolute(relative);
 }
 
+function resolveProjectRelativePath(projectDir: any, fileRef: any) {
+  const resolvedProjectDir = path.resolve(String(projectDir || '').trim());
+  let normalized = String(fileRef || '').trim();
+  if (!resolvedProjectDir || !normalized) {
+    return null;
+  }
+
+  if (path.isAbsolute(normalized)) {
+    return null;
+  }
+
+  normalized = normalized.replace(/\\/g, '/');
+  while (normalized.startsWith('./')) {
+    normalized = normalized.slice(2);
+  }
+
+  if (!normalized || normalized === '.' || normalized === '..') {
+    return null;
+  }
+
+  const absolutePath = path.resolve(resolvedProjectDir, normalized);
+
+  if (!isPathWithinDir(resolvedProjectDir, absolutePath)) {
+    return null;
+  }
+
+  const stat = safeStat(absolutePath);
+  if (!stat) {
+    return null;
+  }
+
+  const realProjectDir = safeRealpath(resolvedProjectDir) || resolvedProjectDir;
+  const realAbsolutePath = safeRealpath(absolutePath) || absolutePath;
+
+  if (!isPathWithinDir(realProjectDir, realAbsolutePath)) {
+    return null;
+  }
+
+  return {
+    absolutePath,
+    displayPath: normalized,
+    stat,
+  };
+}
+
+function listMarkdownFilesInDir(dirPath: string, maxFiles: number, maxDepth = 3) {
+  const results: string[] = [];
+
+  function visit(currentDir: string, depth: number) {
+    if (results.length >= maxFiles || depth > maxDepth) {
+      return;
+    }
+
+    let entries: any[] = [];
+
+    try {
+      entries = fs.readdirSync(currentDir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      if (results.length >= maxFiles) {
+        return;
+      }
+
+      if (entry.name.startsWith('.')) {
+        continue;
+      }
+
+      const fullPath = path.join(currentDir, entry.name);
+
+      if (entry.isDirectory()) {
+        visit(fullPath, depth + 1);
+        continue;
+      }
+
+      if (!entry.isFile()) {
+        continue;
+      }
+
+      if (!entry.name.toLowerCase().endsWith('.md')) {
+        continue;
+      }
+
+      results.push(fullPath);
+    }
+  }
+
+  visit(dirPath, 0);
+  return results;
+}
+
+function buildJsonlContextReport(projectDir: any, jsonlPath: any, options: any = {}) {
+  const resolvedProjectDir = path.resolve(String(projectDir || '').trim());
+  const resolvedJsonlPath = path.resolve(String(jsonlPath || '').trim());
+
+  if (!resolvedProjectDir || !resolvedJsonlPath) {
+    return { context: '', stats: null, warnings: [] };
+  }
+
+  const maxFiles = Number.isInteger(options.maxFiles) ? options.maxFiles : DEFAULT_MAX_CONTEXT_FILES;
+  const maxFileChars = Number.isInteger(options.maxFileChars) ? options.maxFileChars : DEFAULT_MAX_CONTEXT_FILE_CHARS;
+  const maxTotalChars = Number.isInteger(options.maxTotalChars) ? options.maxTotalChars : DEFAULT_MAX_CONTEXT_TOTAL_CHARS;
+  const maxDirFiles = Number.isInteger(options.maxDirFiles) ? options.maxDirFiles : Math.max(0, Math.floor(maxFiles / 2));
+
+  const jsonl = readJsonlEntries(resolvedJsonlPath, maxFiles);
+  const entries = jsonl.entries;
+  if (entries.length === 0) {
+    const warnings: string[] = [];
+
+    if (jsonl.parseErrors > 0) {
+      warnings.push(`JSON parse errors: ${jsonl.parseErrors}`);
+    }
+
+    if (jsonl.invalidEntries > 0) {
+      warnings.push(`Invalid JSONL entries: ${jsonl.invalidEntries}`);
+    }
+
+    return {
+      context: '',
+      stats: {
+        parsedEntries: 0,
+        referencedLines: jsonl.totalLines,
+        loadedFiles: 0,
+        skippedEntries: 0,
+        parseErrors: jsonl.parseErrors,
+        invalidEntries: jsonl.invalidEntries,
+        truncated: false,
+      },
+      warnings,
+    };
+  }
+
+  const sections: string[] = [];
+  let remainingChars = Math.max(0, maxTotalChars);
+  let emittedFiles = 0;
+  let skippedEntries = 0;
+  let truncated = false;
+  const skippedFiles: string[] = [];
+
+  for (const entry of entries) {
+    if (emittedFiles >= maxFiles || remainingChars <= 0) {
+      if (remainingChars <= 0) {
+        truncated = true;
+      }
+      break;
+    }
+
+    const entryType = String(entry && entry.type ? entry.type : 'file')
+      .trim()
+      .toLowerCase();
+
+    const resolved = resolveProjectRelativePath(resolvedProjectDir, entry.file);
+    if (!resolved) {
+      skippedEntries += 1;
+      if (skippedFiles.length < 8) {
+        skippedFiles.push(String(entry.file || '').trim());
+      }
+      continue;
+    }
+
+    if (entryType === 'directory' || entryType === 'dir') {
+      if (!resolved.stat.isDirectory()) {
+        skippedEntries += 1;
+        continue;
+      }
+
+      const files = listMarkdownFilesInDir(resolved.absolutePath, Math.max(0, maxDirFiles));
+      if (files.length === 0) {
+        skippedEntries += 1;
+        continue;
+      }
+      for (const filePath of files) {
+        if (emittedFiles >= maxFiles || remainingChars <= 0) {
+          if (remainingChars <= 0) {
+            truncated = true;
+          }
+          break;
+        }
+
+        const relative = path.relative(resolvedProjectDir, filePath).replace(/\\/g, '/');
+        const perFileChars = Math.max(0, Math.min(maxFileChars, remainingChars));
+        if (perFileChars <= 0) {
+          break;
+        }
+
+        const content = readTextFile(filePath, perFileChars);
+        if (!content) {
+          continue;
+        }
+
+        sections.push(`=== ${relative} ===\n${content}`);
+        remainingChars -= content.length;
+        emittedFiles += 1;
+      }
+
+      continue;
+    }
+
+    if (!resolved.stat.isFile()) {
+      skippedEntries += 1;
+      continue;
+    }
+
+    const perFileChars = Math.max(0, Math.min(maxFileChars, remainingChars));
+    if (perFileChars <= 0) {
+      truncated = true;
+      break;
+    }
+
+    const content = readTextFile(resolved.absolutePath, perFileChars);
+    if (!content) {
+      skippedEntries += 1;
+      continue;
+    }
+
+    const reasonSuffix = entry.reason ? ` (${entry.reason})` : '';
+    sections.push(`=== ${resolved.displayPath}${reasonSuffix} ===\n${content}`);
+    remainingChars -= content.length;
+    emittedFiles += 1;
+  }
+
+  const warnings: string[] = [];
+  if (jsonl.parseErrors > 0) {
+    warnings.push(`JSON parse errors: ${jsonl.parseErrors}`);
+  }
+  if (jsonl.invalidEntries > 0) {
+    warnings.push(`Invalid JSONL entries: ${jsonl.invalidEntries}`);
+  }
+  if (skippedEntries > 0) {
+    const examples = skippedFiles.filter(Boolean);
+    warnings.push(`Skipped entries: ${skippedEntries}${examples.length > 0 ? ` (examples: ${examples.join(', ')})` : ''}`);
+  }
+  if (truncated) {
+    warnings.push('Context truncated to fit limits');
+  }
+
+  return {
+    context: sections.join('\n\n'),
+    stats: {
+      parsedEntries: entries.length,
+      referencedLines: jsonl.totalLines,
+      loadedFiles: emittedFiles,
+      skippedEntries,
+      parseErrors: jsonl.parseErrors,
+      invalidEntries: jsonl.invalidEntries,
+      truncated,
+    },
+    warnings,
+  };
+}
+
+function buildJsonlContext(projectDir: any, jsonlPath: any, options: any = {}) {
+  return buildJsonlContextReport(projectDir, jsonlPath, options).context;
+}
+
+function jsonlHasUsableEntries(projectDir: any, jsonlPath: any) {
+  const stat = safeStat(jsonlPath);
+  if (!stat || !stat.isFile() || stat.size <= 0) {
+    return false;
+  }
+
+  const jsonl = readJsonlEntries(jsonlPath, 24);
+
+  for (const entry of jsonl.entries) {
+    const entryType = String(entry && entry.type ? entry.type : 'file')
+      .trim()
+      .toLowerCase();
+    const resolved = resolveProjectRelativePath(projectDir, entry.file);
+    if (!resolved) {
+      continue;
+    }
+
+    if (entryType === 'directory' || entryType === 'dir') {
+      if (!resolved.stat.isDirectory()) {
+        continue;
+      }
+
+      const files = listMarkdownFilesInDir(resolved.absolutePath, 3);
+      for (const filePath of files) {
+        if (readTextFile(filePath, 64)) {
+          return true;
+        }
+      }
+
+      continue;
+    }
+
+    if (!resolved.stat.isFile()) {
+      continue;
+    }
+
+    if (readTextFile(resolved.absolutePath, 64)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function buildTaskStatus(projectDir: any, trellisDir: any) {
   const currentTaskPath = path.join(trellisDir, '.current-task');
   const currentTaskRef = readTextFile(currentTaskPath, 4096).trim();
@@ -203,8 +555,7 @@ function buildTaskStatus(projectDir: any, trellisDir: any) {
   let hasContext = false;
   for (const jsonlName of ['implement.jsonl', 'check.jsonl', 'spec.jsonl']) {
     const jsonlPath = path.join(taskDir, jsonlName);
-    const stat = safeStat(jsonlPath);
-    if (stat && stat.isFile() && stat.size > 0) {
+    if (jsonlHasUsableEntries(projectDir, jsonlPath)) {
       hasContext = true;
       break;
     }
@@ -220,7 +571,7 @@ function buildTaskStatus(projectDir: any, trellisDir: any) {
 
   if (!hasContext) {
     return {
-      statusText: `Status: NOT READY\nTask: ${taskTitle}\nMissing: Context not configured (no jsonl files)\nNext: Configure task context before implementing`,
+      statusText: `Status: NOT READY\nTask: ${taskTitle}\nMissing: Context not configured (no usable JSONL entries)\nNext: Configure task context before implementing`,
       taskDir,
       prdPath,
     };
@@ -316,6 +667,13 @@ export function buildTrellisPromptContext(options: any = {}) {
   const maxChars = Number.isInteger(options.maxChars) ? options.maxChars : DEFAULT_MAX_CHARS;
   const maxWorkflowChars = Number.isInteger(options.maxWorkflowChars) ? options.maxWorkflowChars : Math.min(12000, maxChars);
   const maxPrdChars = Number.isInteger(options.maxPrdChars) ? options.maxPrdChars : Math.min(8000, maxChars);
+  const maxContextFiles = Number.isInteger(options.maxContextFiles) ? options.maxContextFiles : DEFAULT_MAX_CONTEXT_FILES;
+  const maxContextFileChars = Number.isInteger(options.maxContextFileChars)
+    ? options.maxContextFileChars
+    : DEFAULT_MAX_CONTEXT_FILE_CHARS;
+  const maxContextTotalChars = Number.isInteger(options.maxContextTotalChars)
+    ? options.maxContextTotalChars
+    : Math.min(DEFAULT_MAX_CONTEXT_TOTAL_CHARS, Math.max(0, maxChars));
   const projectDir = findTrellisProjectRoot(startDir);
 
   if (!projectDir) {
@@ -327,6 +685,43 @@ export function buildTrellisPromptContext(options: any = {}) {
   const workflow = readTextFile(workflowPath, maxWorkflowChars);
   const task = buildTaskStatus(projectDir, trellisDir);
   const prd = task.prdPath ? readTextFile(task.prdPath, maxPrdChars) : '';
+  const taskContextSourcePath = task.taskDir ? path.join(task.taskDir, 'implement.jsonl') : '';
+  const taskContextFallbackPath = task.taskDir ? path.join(task.taskDir, 'spec.jsonl') : '';
+  const implementContextReport =
+    taskContextSourcePath && fs.existsSync(taskContextSourcePath)
+      ? buildJsonlContextReport(projectDir, taskContextSourcePath, {
+          maxFiles: maxContextFiles,
+          maxFileChars: maxContextFileChars,
+          maxTotalChars: maxContextTotalChars,
+        })
+      : null;
+  const specContextReport =
+    (!implementContextReport || !implementContextReport.context) && taskContextFallbackPath && fs.existsSync(taskContextFallbackPath)
+      ? buildJsonlContextReport(projectDir, taskContextFallbackPath, {
+          maxFiles: maxContextFiles,
+          maxFileChars: maxContextFileChars,
+          maxTotalChars: maxContextTotalChars,
+        })
+      : null;
+  const activeContextReport =
+    implementContextReport && implementContextReport.context
+      ? { report: implementContextReport, sourcePath: taskContextSourcePath }
+      : specContextReport && specContextReport.context
+        ? { report: specContextReport, sourcePath: taskContextFallbackPath }
+        : implementContextReport
+          ? { report: implementContextReport, sourcePath: taskContextSourcePath }
+          : specContextReport
+            ? { report: specContextReport, sourcePath: taskContextFallbackPath }
+            : null;
+  const activeTaskContext = activeContextReport && activeContextReport.report ? activeContextReport.report.context : '';
+  const activeTaskContextSource =
+    activeContextReport && activeContextReport.sourcePath
+      ? path.relative(projectDir, activeContextReport.sourcePath).replace(/\\/g, '/')
+      : '';
+  const activeTaskContextWarnings =
+    activeContextReport && activeContextReport.report && Array.isArray(activeContextReport.report.warnings)
+      ? activeContextReport.report.warnings.filter(Boolean)
+      : [];
   const specIndexes = listSpecIndexPaths(projectDir, trellisDir);
 
   const pythonHint =
@@ -345,6 +740,19 @@ export function buildTrellisPromptContext(options: any = {}) {
   lines.push('');
   lines.push('Active PRD (if any):');
   lines.push(prd ? prd : '[no prd.md found]');
+  lines.push('');
+  lines.push('Active JSONL context (from current task):');
+  if (activeContextReport) {
+    lines.push(activeTaskContextSource ? `Source: ${activeTaskContextSource}` : 'Source: [unknown]');
+    if (activeTaskContextWarnings.length > 0) {
+      lines.push('Warnings:');
+      lines.push(activeTaskContextWarnings.map((warning) => `- ${warning}`).join('\n'));
+      lines.push('');
+    }
+    lines.push(activeTaskContext ? activeTaskContext : '[no JSONL context loaded]');
+  } else {
+    lines.push('[no JSONL files found]');
+  }
   lines.push('');
   lines.push('Workflow (from .trellis/workflow.md):');
   lines.push(workflow ? workflow : '[no workflow.md found]');
