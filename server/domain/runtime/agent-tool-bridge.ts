@@ -720,12 +720,13 @@ export function createAgentToolBridge(options: any = {}) {
       throw createHttpError(400, 'taskName must be a simple directory name (letters/numbers/._-)');
     }
 
-    const projectDir = path.resolve(String(context.projectDir || '').trim());
+    const projectDirRaw = String(context.projectDir || '').trim();
 
-    if (!projectDir) {
+    if (!projectDirRaw) {
       throw createHttpError(409, 'No active project directory is available for this invocation');
     }
 
+    const projectDir = path.resolve(projectDirRaw);
     const projectStat = safeStat(projectDir);
 
     if (!projectStat || !projectStat.isDirectory()) {
@@ -777,6 +778,23 @@ export function createAgentToolBridge(options: any = {}) {
 
     fs.mkdirSync(trellisDir, { recursive: true });
 
+    if (hasSymlinkInPath(projectDir, trellisDir)) {
+      throw createHttpError(400, 'Refusing to write .trellis because it contains a symlink');
+    }
+
+    for (const file of files) {
+      const absolutePath = path.resolve(projectDir, file.relativePath);
+      const exists = fs.existsSync(absolutePath);
+
+      if (exists && !force) {
+        continue;
+      }
+
+      if (hasSymlinkInPath(trellisDir, absolutePath)) {
+        throw createHttpError(400, `Refusing to write because path includes a symlink: ${file.relativePath}`);
+      }
+    }
+
     const writtenFiles: string[] = [];
     const skippedFiles: string[] = [];
 
@@ -787,6 +805,10 @@ export function createAgentToolBridge(options: any = {}) {
       if (exists && !force) {
         skippedFiles.push(file.relativePath.replace(/\\/g, '/'));
         continue;
+      }
+
+      if (hasSymlinkInPath(trellisDir, absolutePath)) {
+        throw createHttpError(400, `Refusing to write because path includes a symlink: ${file.relativePath}`);
       }
 
       fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
@@ -843,12 +865,13 @@ export function createAgentToolBridge(options: any = {}) {
       throw createHttpError(400, 'Refusing to write more than 256KB of content in one request');
     }
 
-    const projectDir = path.resolve(String(context.projectDir || '').trim());
+    const projectDirRaw = String(context.projectDir || '').trim();
 
-    if (!projectDir) {
+    if (!projectDirRaw) {
       throw createHttpError(409, 'No active project directory is available for this invocation');
     }
 
+    const projectDir = path.resolve(projectDirRaw);
     const projectStat = safeStat(projectDir);
 
     if (!projectStat || !projectStat.isDirectory()) {

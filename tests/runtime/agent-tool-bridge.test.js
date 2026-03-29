@@ -185,6 +185,105 @@ test('agent tool trellis-init previews and applies a scaffold under the active p
   assert.ok(fs.existsSync(path.join(projectDir, '.trellis', 'tasks', 'demo', 'prd.md')));
 });
 
+test('agent tool trellis-init refuses to follow symlinks inside .trellis', (t) => {
+  const tempDir = withTempDir('caff-agent-tool-trellis-init-symlink-');
+  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const bridge = createAgentToolBridge({ store });
+
+  const projectDir = path.join(tempDir, 'project');
+  fs.mkdirSync(projectDir, { recursive: true });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const trellisDir = path.join(projectDir, '.trellis');
+  fs.mkdirSync(trellisDir, { recursive: true });
+
+  const externalDir = path.join(tempDir, 'external-target');
+  fs.mkdirSync(externalDir, { recursive: true });
+
+  const tasksLink = path.join(trellisDir, 'tasks');
+
+  try {
+    fs.symlinkSync(externalDir, tasksLink, process.platform === 'win32' ? 'junction' : 'dir');
+  } catch (error) {
+    t.skip(`symlink creation not supported in this environment: ${error && error.message ? error.message : error}`);
+    return;
+  }
+
+  const fixture = createPublicInvocationFixture(store, 'trellis-init-symlink');
+  const context = bridge.registerInvocation(
+    bridge.createInvocationContext({
+      conversationId: fixture.conversation.id,
+      turnId: fixture.assistantMessage.turnId,
+      projectDir,
+      agentId: fixture.agent.id,
+      agentName: fixture.agent.name,
+      assistantMessageId: fixture.assistantMessage.id,
+      conversationAgents: fixture.conversation.agents,
+      stage: fixture.stage,
+      turnState: fixture.turnState,
+    })
+  );
+
+  assert.throws(
+    () =>
+      bridge.handleTrellisInit({
+        invocationId: context.invocationId,
+        callbackToken: context.callbackToken,
+        taskName: 'demo',
+        confirm: true,
+      }),
+    (err) => err && err.statusCode === 400
+  );
+
+  assert.equal(fs.existsSync(path.join(trellisDir, 'workflow.md')), false);
+});
+
+test('agent tool trellis-init rejects invocations without an active projectDir', (t) => {
+  const tempDir = withTempDir('caff-agent-tool-trellis-init-missing-project-');
+  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const bridge = createAgentToolBridge({ store });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const fixture = createPublicInvocationFixture(store, 'trellis-init-missing-project');
+  const context = bridge.registerInvocation(
+    bridge.createInvocationContext({
+      conversationId: fixture.conversation.id,
+      turnId: fixture.assistantMessage.turnId,
+      projectDir: '',
+      agentId: fixture.agent.id,
+      agentName: fixture.agent.name,
+      assistantMessageId: fixture.assistantMessage.id,
+      conversationAgents: fixture.conversation.agents,
+      stage: fixture.stage,
+      turnState: fixture.turnState,
+    })
+  );
+
+  assert.throws(
+    () =>
+      bridge.handleTrellisInit({
+        invocationId: context.invocationId,
+        callbackToken: context.callbackToken,
+        taskName: 'demo',
+      }),
+    (error) => error && error.statusCode === 409
+  );
+});
+
 test('agent tool trellis-write previews and writes files under .trellis', (t) => {
   const tempDir = withTempDir('caff-agent-tool-trellis-write-');
   const sqlitePath = path.join(tempDir, 'bridge.sqlite');
@@ -252,6 +351,46 @@ test('agent tool trellis-write previews and writes files under .trellis', (t) =>
         confirm: true,
       }),
     (error) => error && error.statusCode === 400
+  );
+});
+
+test('agent tool trellis-write rejects invocations without an active projectDir', (t) => {
+  const tempDir = withTempDir('caff-agent-tool-trellis-write-missing-project-');
+  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const bridge = createAgentToolBridge({ store });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const fixture = createPublicInvocationFixture(store, 'trellis-write-missing-project');
+  const context = bridge.registerInvocation(
+    bridge.createInvocationContext({
+      conversationId: fixture.conversation.id,
+      turnId: fixture.assistantMessage.turnId,
+      projectDir: '',
+      agentId: fixture.agent.id,
+      agentName: fixture.agent.name,
+      assistantMessageId: fixture.assistantMessage.id,
+      conversationAgents: fixture.conversation.agents,
+      stage: fixture.stage,
+      turnState: fixture.turnState,
+    })
+  );
+
+  assert.throws(
+    () =>
+      bridge.handleTrellisWrite({
+        invocationId: context.invocationId,
+        callbackToken: context.callbackToken,
+        relativePath: '.trellis/tasks/demo/prd.md',
+        content: '# Hello\n',
+      }),
+    (error) => error && error.statusCode === 409
   );
 });
 
