@@ -352,6 +352,47 @@ test('agent tool trellis-write previews and writes files under .trellis', (t) =>
       }),
     (error) => error && error.statusCode === 400
   );
+
+  assert.throws(
+    () =>
+      bridge.handleTrellisWrite({
+        invocationId: context.invocationId,
+        callbackToken: context.callbackToken,
+        relativePath: '.trellis//',
+        content: 'nope',
+        confirm: true,
+        force: true,
+      }),
+    (error) => error && error.statusCode === 400
+  );
+
+  assert.throws(
+    () =>
+      bridge.handleTrellisWrite({
+        invocationId: context.invocationId,
+        callbackToken: context.callbackToken,
+        relativePath: '.trellis/.',
+        content: 'nope',
+        confirm: true,
+        force: true,
+      }),
+    (error) => error && error.statusCode === 400
+  );
+
+  fs.mkdirSync(path.join(projectDir, '.trellis', 'spec'), { recursive: true });
+
+  assert.throws(
+    () =>
+      bridge.handleTrellisWrite({
+        invocationId: context.invocationId,
+        callbackToken: context.callbackToken,
+        relativePath: '.trellis/spec',
+        content: 'nope',
+        confirm: true,
+        force: true,
+      }),
+    (error) => error && error.statusCode === 400
+  );
 });
 
 test('agent tool trellis-write rejects invocations without an active projectDir', (t) => {

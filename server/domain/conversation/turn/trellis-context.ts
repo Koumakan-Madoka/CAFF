@@ -313,6 +313,16 @@ function buildJsonlContextReport(projectDir: any, jsonlPath: any, options: any =
   const jsonl = readJsonlEntries(resolvedJsonlPath, maxFiles);
   const entries = jsonl.entries;
   if (entries.length === 0) {
+    const warnings: string[] = [];
+
+    if (jsonl.parseErrors > 0) {
+      warnings.push(`JSON parse errors: ${jsonl.parseErrors}`);
+    }
+
+    if (jsonl.invalidEntries > 0) {
+      warnings.push(`Invalid JSONL entries: ${jsonl.invalidEntries}`);
+    }
+
     return {
       context: '',
       stats: {
@@ -324,7 +334,7 @@ function buildJsonlContextReport(projectDir: any, jsonlPath: any, options: any =
         invalidEntries: jsonl.invalidEntries,
         truncated: false,
       },
-      warnings: [],
+      warnings,
     };
   }
 

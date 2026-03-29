@@ -556,24 +556,33 @@ export function createAgentToolBridge(options: any = {}) {
     while (normalized.startsWith('./')) {
       normalized = normalized.slice(2);
     }
-
-    if (!normalized || normalized === '.trellis' || normalized === '.trellis/') {
-      return '';
-    }
-
-    if (normalized.startsWith('/')) {
+    while (normalized.startsWith('/')) {
       normalized = normalized.slice(1);
     }
 
-    if (!normalized.startsWith('.trellis/')) {
-      normalized = `.trellis/${normalized}`;
-    }
+    const parts = normalized
+      .split('/')
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .filter((part) => part !== '.');
 
-    if (normalized.split('/').some((part) => part === '..')) {
+    if (parts.length === 0) {
       return '';
     }
 
-    return normalized;
+    if (parts.some((part) => part === '..')) {
+      return '';
+    }
+
+    if (parts[0] !== '.trellis') {
+      parts.unshift('.trellis');
+    }
+
+    if (parts.length <= 1) {
+      return '';
+    }
+
+    return parts.join('/');
   }
 
   function hasSymlinkInPath(rootDir: any, candidatePath: any) {
@@ -896,6 +905,11 @@ export function createAgentToolBridge(options: any = {}) {
       }
 
       const exists = fs.existsSync(absolutePath);
+      const existingStat = exists ? safeStat(absolutePath) : null;
+
+      if (existingStat && existingStat.isDirectory()) {
+        throw createHttpError(400, `Refusing to write because path is a directory: ${file.relativePath}`);
+      }
       const action = exists ? (force ? 'overwrite' : 'skip-existing') : 'create';
 
       operations.push({
@@ -935,6 +949,12 @@ export function createAgentToolBridge(options: any = {}) {
       if (exists && !force) {
         skippedFiles.push(file.relativePath.replace(/\\/g, '/'));
         continue;
+      }
+
+      const existingStat = exists ? safeStat(absolutePath) : null;
+
+      if (existingStat && existingStat.isDirectory()) {
+        throw createHttpError(400, `Refusing to write because path is a directory: ${file.relativePath}`);
       }
 
       if (hasSymlinkInPath(trellisDir, absolutePath)) {
