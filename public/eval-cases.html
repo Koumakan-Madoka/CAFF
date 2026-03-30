@@ -135,6 +135,74 @@
                 </div>
                 <div id="a-metrics" class="tag-row"></div>
                 <textarea id="output-a" class="mono-textarea" rows="10" readonly placeholder="选择左侧记录后显示"></textarea>
+
+                <details class="trace-details">
+                  <summary>完整模型输出（thinking / tool calls / error）</summary>
+
+                  <div class="ab-grid">
+                    <div class="stack-card stack-card-inner">
+                      <div class="section-row">
+                        <span class="section-label">thinking</span>
+                        <button id="copy-a-thinking-button" class="mini-action" type="button">复制</button>
+                      </div>
+                      <textarea
+                        id="a-thinking"
+                        class="mono-textarea"
+                        rows="8"
+                        readonly
+                        placeholder="若模型未输出 thinking 或 session 不存在，则为空"
+                      ></textarea>
+                    </div>
+
+                    <div class="stack-card stack-card-inner">
+                      <div class="section-row">
+                        <span class="section-label">toolCalls</span>
+                        <button id="copy-a-tool-calls-button" class="mini-action" type="button">复制</button>
+                      </div>
+                      <textarea
+                        id="a-tool-calls"
+                        class="mono-textarea"
+                        rows="8"
+                        readonly
+                        placeholder="模型尝试调用的工具（包含失败的 tool call 片段）"
+                      ></textarea>
+                    </div>
+                  </div>
+
+                  <div class="section-row">
+                    <span class="section-label">errors / meta</span>
+                    <button id="copy-a-errors-button" class="mini-action" type="button">复制</button>
+                  </div>
+                  <textarea id="a-errors" class="mono-textarea" rows="5" readonly placeholder="运行状态、stopReason、errorMessage..."></textarea>
+
+                  <details class="trace-details trace-details-inner">
+                    <summary>更多调试（tool events / raw assistant JSON）</summary>
+
+                    <div class="section-row">
+                      <span class="section-label">agent_tool_call events</span>
+                      <button id="copy-a-tool-events-button" class="mini-action" type="button">复制</button>
+                    </div>
+                    <textarea
+                      id="a-tool-events"
+                      class="mono-textarea"
+                      rows="6"
+                      readonly
+                      placeholder="真实工具调用记录（来自 a2a_task_events）"
+                    ></textarea>
+
+                    <div class="section-row">
+                      <span class="section-label">assistantMessages (tail)</span>
+                      <button id="copy-a-raw-messages-button" class="mini-action" type="button">复制</button>
+                    </div>
+                    <textarea
+                      id="a-raw-messages"
+                      class="mono-textarea"
+                      rows="8"
+                      readonly
+                      placeholder="session JSONL 中截取的最后几条 assistant message（原始 JSON）"
+                    ></textarea>
+                  </details>
+                </details>
               </section>
 
               <section class="stack-card">
@@ -147,6 +215,50 @@
                 </div>
                 <div id="b-metrics" class="tag-row"></div>
                 <textarea id="output-b" class="mono-textarea" rows="10" readonly placeholder="运行 B 后显示"></textarea>
+
+                <details class="trace-details">
+                  <summary>B 模型轨迹（thinking / tool calls / error）</summary>
+
+                  <div class="ab-grid">
+                    <div class="stack-card stack-card-inner">
+                      <div class="section-row">
+                        <span class="section-label">thinking</span>
+                        <button id="copy-b-thinking-button" class="mini-action" type="button">复制</button>
+                      </div>
+                      <textarea id="b-thinking" class="mono-textarea" rows="8" readonly placeholder="运行 B 后显示"></textarea>
+                    </div>
+
+                    <div class="stack-card stack-card-inner">
+                      <div class="section-row">
+                        <span class="section-label">toolCalls</span>
+                        <button id="copy-b-tool-calls-button" class="mini-action" type="button">复制</button>
+                      </div>
+                      <textarea id="b-tool-calls" class="mono-textarea" rows="8" readonly placeholder="运行 B 后显示"></textarea>
+                    </div>
+                  </div>
+
+                  <div class="section-row">
+                    <span class="section-label">errors / meta</span>
+                    <button id="copy-b-errors-button" class="mini-action" type="button">复制</button>
+                  </div>
+                  <textarea id="b-errors" class="mono-textarea" rows="5" readonly placeholder="运行 B 后显示"></textarea>
+
+                  <details class="trace-details trace-details-inner">
+                    <summary>更多调试（tool events / raw assistant JSON）</summary>
+
+                    <div class="section-row">
+                      <span class="section-label">agent_tool_call events</span>
+                      <button id="copy-b-tool-events-button" class="mini-action" type="button">复制</button>
+                    </div>
+                    <textarea id="b-tool-events" class="mono-textarea" rows="6" readonly placeholder="运行 B 后显示"></textarea>
+
+                    <div class="section-row">
+                      <span class="section-label">assistantMessages (tail)</span>
+                      <button id="copy-b-raw-messages-button" class="mini-action" type="button">复制</button>
+                    </div>
+                    <textarea id="b-raw-messages" class="mono-textarea" rows="8" readonly placeholder="运行 B 后显示"></textarea>
+                  </details>
+                </details>
               </section>
             </div>
 

@@ -37,15 +37,35 @@ const dom = {
   outputA: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('output-a')),
   promptB: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('prompt-b')),
   aMetrics: /** @type {HTMLElement | null} */ (document.getElementById('a-metrics')),
+  aThinking: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('a-thinking')),
+  aToolCalls: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('a-tool-calls')),
+  aErrors: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('a-errors')),
+  aToolEvents: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('a-tool-events')),
+  aRawMessages: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('a-raw-messages')),
+  copyAThinkingButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('copy-a-thinking-button')),
+  copyAToolCallsButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('copy-a-tool-calls-button')),
+  copyAErrorsButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('copy-a-errors-button')),
+  copyAToolEventsButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('copy-a-tool-events-button')),
+  copyARawMessagesButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('copy-a-raw-messages-button')),
   bMeta: /** @type {HTMLElement | null} */ (document.getElementById('b-meta')),
   bMetrics: /** @type {HTMLElement | null} */ (document.getElementById('b-metrics')),
   outputB: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('output-b')),
   bPublicPosts: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('b-public-posts')),
   bPrivatePosts: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('b-private-posts')),
   bRawReply: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('b-raw-reply')),
+  bThinking: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('b-thinking')),
+  bToolCalls: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('b-tool-calls')),
+  bErrors: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('b-errors')),
+  bToolEvents: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('b-tool-events')),
+  bRawMessages: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('b-raw-messages')),
   copyBPublicPostsButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('copy-b-public-posts-button')),
   copyBPrivatePostsButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('copy-b-private-posts-button')),
   copyBRawReplyButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('copy-b-raw-reply-button')),
+  copyBThinkingButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('copy-b-thinking-button')),
+  copyBToolCallsButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('copy-b-tool-calls-button')),
+  copyBErrorsButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('copy-b-errors-button')),
+  copyBToolEventsButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('copy-b-tool-events-button')),
+  copyBRawMessagesButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('copy-b-raw-messages-button')),
   toast: /** @type {HTMLElement | null} */ (document.getElementById('toast')),
 };
 
@@ -186,6 +206,18 @@ function formatPosts(value) {
       return `#${index + 1}\n${content}`;
     })
     .join('\n\n---\n\n');
+}
+
+function formatJson(value) {
+  if (value === undefined) {
+    return '';
+  }
+
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value || '');
+  }
 }
 
 function updateDirtyUi() {
@@ -465,7 +497,17 @@ function renderEditor() {
     !dom.bMetrics ||
     !dom.bPublicPosts ||
     !dom.bPrivatePosts ||
-    !dom.bRawReply
+    !dom.bRawReply ||
+    !dom.aThinking ||
+    !dom.aToolCalls ||
+    !dom.aErrors ||
+    !dom.aToolEvents ||
+    !dom.aRawMessages ||
+    !dom.bThinking ||
+    !dom.bToolCalls ||
+    !dom.bErrors ||
+    !dom.bToolEvents ||
+    !dom.bRawMessages
   ) {
     return;
   }
@@ -487,6 +529,16 @@ function renderEditor() {
     dom.bPublicPosts.value = '';
     dom.bPrivatePosts.value = '';
     dom.bRawReply.value = '';
+    dom.aThinking.value = '';
+    dom.aToolCalls.value = '';
+    dom.aErrors.value = '';
+    dom.aToolEvents.value = '';
+    dom.aRawMessages.value = '';
+    dom.bThinking.value = '';
+    dom.bToolCalls.value = '';
+    dom.bErrors.value = '';
+    dom.bToolEvents.value = '';
+    dom.bRawMessages.value = '';
     dom.bMeta.textContent = '尚未运行';
     dom.copyAToBButton && (dom.copyAToBButton.disabled = true);
     dom.copyPromptAButton && (dom.copyPromptAButton.disabled = true);
@@ -496,6 +548,16 @@ function renderEditor() {
     dom.copyBPublicPostsButton && (dom.copyBPublicPostsButton.disabled = true);
     dom.copyBPrivatePostsButton && (dom.copyBPrivatePostsButton.disabled = true);
     dom.copyBRawReplyButton && (dom.copyBRawReplyButton.disabled = true);
+    dom.copyAThinkingButton && (dom.copyAThinkingButton.disabled = true);
+    dom.copyAToolCallsButton && (dom.copyAToolCallsButton.disabled = true);
+    dom.copyAErrorsButton && (dom.copyAErrorsButton.disabled = true);
+    dom.copyAToolEventsButton && (dom.copyAToolEventsButton.disabled = true);
+    dom.copyARawMessagesButton && (dom.copyARawMessagesButton.disabled = true);
+    dom.copyBThinkingButton && (dom.copyBThinkingButton.disabled = true);
+    dom.copyBToolCallsButton && (dom.copyBToolCallsButton.disabled = true);
+    dom.copyBErrorsButton && (dom.copyBErrorsButton.disabled = true);
+    dom.copyBToolEventsButton && (dom.copyBToolEventsButton.disabled = true);
+    dom.copyBRawMessagesButton && (dom.copyBRawMessagesButton.disabled = true);
     dom.saveButton && (dom.saveButton.disabled = true);
     dom.runBButton && (dom.runBButton.disabled = true);
     state.dirty = false;
@@ -516,6 +578,35 @@ function renderEditor() {
   dom.outputA.value = item.outputA || '';
   dom.promptB.value = item.promptB || '';
   dom.outputB.value = item.outputB || '';
+
+  const aSession =
+    item.aSession && typeof item.aSession === 'object'
+      ? item.aSession
+      : item.aDebug && item.aDebug.session && typeof item.aDebug.session === 'object'
+        ? item.aDebug.session
+        : null;
+
+  const aDebugTask = item.aDebug && item.aDebug.task && typeof item.aDebug.task === 'object' ? item.aDebug.task : null;
+  const aChat = item.aChat && typeof item.aChat === 'object' ? item.aChat : null;
+
+  dom.aThinking.value = aSession ? String(aSession.thinking || '') : '';
+  dom.aToolCalls.value = aSession ? formatJson(aSession.toolCalls) : '';
+  dom.aRawMessages.value = aSession ? formatJson(aSession.assistantMessagesTail) : '';
+  dom.aToolEvents.value = item.aDebug ? formatJson(item.aDebug.toolCalls) : '';
+
+  dom.aErrors.value = [
+    aChat
+      ? `chat.status=${aChat.status || ''}\nchat.errorMessage=${aChat.errorMessage || ''}\nchat.runId=${aChat.runId || ''}\nchat.sessionPath=${aChat.sessionPath || ''}`
+      : '',
+    aDebugTask
+      ? `task.status=${aDebugTask.status || ''}\ntask.errorMessage=${aDebugTask.errorMessage || ''}\ntask.runId=${aDebugTask.runId || ''}\ntask.sessionPath=${aDebugTask.sessionPath || ''}`
+      : '',
+    aSession
+      ? `session.stopReason=${aSession.stopReason || ''}\nsession.errorMessage=${aSession.errorMessage || ''}\nsession.provider=${aSession.provider || ''}\nsession.model=${aSession.model || ''}\nsession.api=${aSession.api || ''}\nsession.responseId=${aSession.responseId || ''}\nassistantErrors=${Array.isArray(aSession.assistantErrors) ? aSession.assistantErrors.join(' | ') : ''}\nusage=${aSession.usage ? JSON.stringify(aSession.usage) : ''}`
+      : '',
+  ]
+    .filter(Boolean)
+    .join('\n\n---\n\n');
 
   const expMap = expectationsMap(item);
   const expPublic = expMap ? String(expMap['send-public'] || '').trim() : '';
@@ -597,6 +688,26 @@ function renderEditor() {
   dom.bPrivatePosts.value = bResult ? formatPosts(bResult.privatePosts) : '';
   dom.bRawReply.value = bResult ? String(bResult.rawReply || '') : '';
 
+  const bSession =
+    item.bDebug && item.bDebug.session && typeof item.bDebug.session === 'object' ? item.bDebug.session : null;
+  const bDebugTask = item.bDebug && item.bDebug.task && typeof item.bDebug.task === 'object' ? item.bDebug.task : null;
+
+  dom.bThinking.value = bSession ? String(bSession.thinking || '') : '';
+  dom.bToolCalls.value = bSession ? formatJson(bSession.toolCalls) : '';
+  dom.bRawMessages.value = bSession ? formatJson(bSession.assistantMessagesTail) : '';
+  dom.bToolEvents.value = item.bDebug ? formatJson(item.bDebug.toolCalls) : '';
+
+  dom.bErrors.value = [
+    bDebugTask
+      ? `task.status=${bDebugTask.status || ''}\ntask.errorMessage=${bDebugTask.errorMessage || ''}\ntask.runId=${bDebugTask.runId || ''}\ntask.sessionPath=${bDebugTask.sessionPath || ''}`
+      : '',
+    bSession
+      ? `session.stopReason=${bSession.stopReason || ''}\nsession.errorMessage=${bSession.errorMessage || ''}\nsession.provider=${bSession.provider || ''}\nsession.model=${bSession.model || ''}\nsession.api=${bSession.api || ''}\nsession.responseId=${bSession.responseId || ''}\nassistantErrors=${Array.isArray(bSession.assistantErrors) ? bSession.assistantErrors.join(' | ') : ''}\nusage=${bSession.usage ? JSON.stringify(bSession.usage) : ''}`
+      : '',
+  ]
+    .filter(Boolean)
+    .join('\n\n---\n\n');
+
   dom.copyAToBButton && (dom.copyAToBButton.disabled = false);
   dom.copyPromptAButton && (dom.copyPromptAButton.disabled = false);
   dom.copyPromptBButton && (dom.copyPromptBButton.disabled = false);
@@ -605,6 +716,16 @@ function renderEditor() {
   dom.copyBPublicPostsButton && (dom.copyBPublicPostsButton.disabled = false);
   dom.copyBPrivatePostsButton && (dom.copyBPrivatePostsButton.disabled = false);
   dom.copyBRawReplyButton && (dom.copyBRawReplyButton.disabled = false);
+  dom.copyAThinkingButton && (dom.copyAThinkingButton.disabled = false);
+  dom.copyAToolCallsButton && (dom.copyAToolCallsButton.disabled = false);
+  dom.copyAErrorsButton && (dom.copyAErrorsButton.disabled = false);
+  dom.copyAToolEventsButton && (dom.copyAToolEventsButton.disabled = false);
+  dom.copyARawMessagesButton && (dom.copyARawMessagesButton.disabled = false);
+  dom.copyBThinkingButton && (dom.copyBThinkingButton.disabled = false);
+  dom.copyBToolCallsButton && (dom.copyBToolCallsButton.disabled = false);
+  dom.copyBErrorsButton && (dom.copyBErrorsButton.disabled = false);
+  dom.copyBToolEventsButton && (dom.copyBToolEventsButton.disabled = false);
+  dom.copyBRawMessagesButton && (dom.copyBRawMessagesButton.disabled = false);
   dom.saveButton && (dom.saveButton.disabled = false);
   dom.runBButton && (dom.runBButton.disabled = false);
 
@@ -841,6 +962,66 @@ if (dom.copyBPrivatePostsButton) {
 if (dom.copyBRawReplyButton) {
   dom.copyBRawReplyButton.addEventListener('click', () => {
     copyToClipboard(dom.bRawReply ? dom.bRawReply.value : '');
+  });
+}
+
+if (dom.copyAThinkingButton) {
+  dom.copyAThinkingButton.addEventListener('click', () => {
+    copyToClipboard(dom.aThinking ? dom.aThinking.value : '');
+  });
+}
+
+if (dom.copyAToolCallsButton) {
+  dom.copyAToolCallsButton.addEventListener('click', () => {
+    copyToClipboard(dom.aToolCalls ? dom.aToolCalls.value : '');
+  });
+}
+
+if (dom.copyAErrorsButton) {
+  dom.copyAErrorsButton.addEventListener('click', () => {
+    copyToClipboard(dom.aErrors ? dom.aErrors.value : '');
+  });
+}
+
+if (dom.copyAToolEventsButton) {
+  dom.copyAToolEventsButton.addEventListener('click', () => {
+    copyToClipboard(dom.aToolEvents ? dom.aToolEvents.value : '');
+  });
+}
+
+if (dom.copyARawMessagesButton) {
+  dom.copyARawMessagesButton.addEventListener('click', () => {
+    copyToClipboard(dom.aRawMessages ? dom.aRawMessages.value : '');
+  });
+}
+
+if (dom.copyBThinkingButton) {
+  dom.copyBThinkingButton.addEventListener('click', () => {
+    copyToClipboard(dom.bThinking ? dom.bThinking.value : '');
+  });
+}
+
+if (dom.copyBToolCallsButton) {
+  dom.copyBToolCallsButton.addEventListener('click', () => {
+    copyToClipboard(dom.bToolCalls ? dom.bToolCalls.value : '');
+  });
+}
+
+if (dom.copyBErrorsButton) {
+  dom.copyBErrorsButton.addEventListener('click', () => {
+    copyToClipboard(dom.bErrors ? dom.bErrors.value : '');
+  });
+}
+
+if (dom.copyBToolEventsButton) {
+  dom.copyBToolEventsButton.addEventListener('click', () => {
+    copyToClipboard(dom.bToolEvents ? dom.bToolEvents.value : '');
+  });
+}
+
+if (dom.copyBRawMessagesButton) {
+  dom.copyBRawMessagesButton.addEventListener('click', () => {
+    copyToClipboard(dom.bRawMessages ? dom.bRawMessages.value : '');
   });
 }
 

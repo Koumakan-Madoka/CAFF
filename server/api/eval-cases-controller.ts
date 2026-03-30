@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { URL } from 'node:url';
 
+import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
@@ -105,6 +106,146 @@ function resolveToolRelativePath(toolPath: string) {
   return `./${portablePath}`;
 }
 
+function isPathWithin(parentDir: string, targetPath: string) {
+  const relative = path.relative(parentDir, targetPath);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function normalizeSessionContentType(value: any) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_');
+}
+
+function readSessionAssistantSnapshot(sessionPath: any, agentDir: any) {
+  const pathValue = String(sessionPath || '').trim();
+  const baseDir = String(agentDir || '').trim();
+
+  if (!pathValue || !baseDir) {
+    return null;
+  }
+
+  const sessionsDir = path.resolve(baseDir, 'named-sessions');
+  const resolvedPath = path.resolve(pathValue);
+
+  if (!isPathWithin(sessionsDir, resolvedPath)) {
+    return null;
+  }
+
+  let text = '';
+
+  try {
+    if (!fs.existsSync(resolvedPath)) {
+      return null;
+    }
+
+    text = fs.readFileSync(resolvedPath, 'utf8');
+  } catch {
+    return null;
+  }
+
+  const lines = text.split(/\r?\n/);
+  const thinkingParts: string[] = [];
+  const textParts: string[] = [];
+  const toolCalls: any[] = [];
+  const assistantErrors: string[] = [];
+  const assistantMessagesTail: any[] = [];
+  let assistantMessageTotal = 0;
+  let lastAssistant: any = null;
+
+  for (const line of lines) {
+    const trimmed = String(line || '').trim();
+
+    if (!trimmed) {
+      continue;
+    }
+
+    let entry: any = null;
+
+    try {
+      entry = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+
+    if (!entry || entry.type !== 'message' || !entry.message || entry.message.role !== 'assistant') {
+      continue;
+    }
+
+    const message = entry.message;
+    assistantMessageTotal += 1;
+    lastAssistant = message;
+    assistantMessagesTail.push(message);
+
+    if (assistantMessagesTail.length > 6) {
+      assistantMessagesTail.shift();
+    }
+
+    if (message.stopReason === 'error' && message.errorMessage) {
+      assistantErrors.push(String(message.errorMessage));
+    }
+
+    const content = Array.isArray(message.content) ? message.content : [];
+
+    for (const item of content) {
+      const type = normalizeSessionContentType(item && item.type ? item.type : '');
+
+      if (type === 'thinking') {
+        const thinkingText = item && item.thinking ? String(item.thinking) : '';
+        if (thinkingText) {
+          thinkingParts.push(thinkingText);
+        }
+        continue;
+      }
+
+      if (type === 'text') {
+        const chunk = item && item.text ? String(item.text) : '';
+        if (chunk) {
+          textParts.push(chunk);
+        }
+        continue;
+      }
+
+      if (type === 'tool_call' || type === 'toolcall' || type === 'tool_use' || type === 'tooluse') {
+        toolCalls.push({
+          id: item && item.id ? String(item.id) : '',
+          name: item && item.name ? String(item.name) : '',
+          arguments: item && item.arguments !== undefined ? item.arguments : null,
+          partialJson: item && item.partialJson ? String(item.partialJson) : '',
+          raw: item,
+        });
+      }
+    }
+  }
+
+  const lastStopReason = lastAssistant && lastAssistant.stopReason ? String(lastAssistant.stopReason) : '';
+  const lastApi = lastAssistant && lastAssistant.api ? String(lastAssistant.api) : '';
+  const lastProvider = lastAssistant && lastAssistant.provider ? String(lastAssistant.provider) : '';
+  const lastModel = lastAssistant && lastAssistant.model ? String(lastAssistant.model) : '';
+  const lastError = lastAssistant && lastAssistant.errorMessage ? String(lastAssistant.errorMessage) : '';
+  const lastResponseId = lastAssistant && lastAssistant.responseId ? String(lastAssistant.responseId) : '';
+  const lastTimestamp = lastAssistant && lastAssistant.timestamp !== undefined ? lastAssistant.timestamp : null;
+
+  return {
+    sessionPath: resolvedPath,
+    assistantMessageTotal,
+    stopReason: lastStopReason,
+    errorMessage: lastError,
+    api: lastApi,
+    provider: lastProvider,
+    model: lastModel,
+    responseId: lastResponseId,
+    timestamp: lastTimestamp,
+    usage: lastAssistant && lastAssistant.usage && typeof lastAssistant.usage === 'object' ? lastAssistant.usage : null,
+    thinking: thinkingParts.filter(Boolean).join('\n\n---\n\n'),
+    text: textParts.filter(Boolean).join(''),
+    toolCalls,
+    assistantErrors,
+    assistantMessagesTail,
+  };
+}
+
 export function createEvalCasesController(options: any = {}): RouteHandler<ApiContext> {
   const store = options.store;
   const agentToolBridge = options.agentToolBridge;
@@ -129,6 +270,91 @@ export function createEvalCasesController(options: any = {}): RouteHandler<ApiCo
 
     migrateRunSchema(store.db);
     runSchemaReady = true;
+  }
+
+  function getTaskDebug(taskId: any) {
+    const normalizedTaskId = String(taskId || '').trim();
+
+    if (!normalizedTaskId) {
+      return null;
+    }
+
+    ensureRunSchema();
+
+    let taskRow: any = null;
+
+    try {
+      taskRow = store.db
+        .prepare(
+          `
+          SELECT
+            id,
+            status,
+            run_id,
+            session_path,
+            requested_session,
+            output_text,
+            error_message,
+            metadata_json,
+            started_at,
+            ended_at,
+            updated_at
+          FROM a2a_tasks
+          WHERE id = @taskId
+        `
+        )
+        .get({ taskId: normalizedTaskId });
+    } catch {
+      taskRow = null;
+    }
+
+    const taskMetadata = taskRow ? safeJsonParse(taskRow.metadata_json) : null;
+    const sessionPath = taskRow && taskRow.session_path ? String(taskRow.session_path).trim() : '';
+    const snapshot = sessionPath ? readSessionAssistantSnapshot(sessionPath, store.agentDir) : null;
+
+    let toolRows: any[] = [];
+
+    try {
+      toolRows = store.db
+        .prepare(
+          `
+          SELECT event_json, created_at
+          FROM a2a_task_events
+          WHERE task_id = @taskId
+            AND event_type = 'agent_tool_call'
+          ORDER BY id ASC
+          LIMIT 200
+        `
+        )
+        .all({ taskId: normalizedTaskId });
+    } catch {
+      toolRows = [];
+    }
+
+    return {
+      task: taskRow
+        ? {
+            id: String(taskRow.id || '').trim(),
+            status: String(taskRow.status || '').trim(),
+            runId: Number.isInteger(taskRow.run_id) ? taskRow.run_id : taskRow.run_id ? Number(taskRow.run_id) : null,
+            sessionPath: sessionPath || null,
+            requestedSession: taskRow.requested_session ? String(taskRow.requested_session).trim() : '',
+            outputText: taskRow.output_text === null || taskRow.output_text === undefined ? '' : String(taskRow.output_text),
+            errorMessage: taskRow.error_message === null || taskRow.error_message === undefined ? '' : String(taskRow.error_message),
+            metadata: taskMetadata,
+            startedAt: taskRow.started_at ? String(taskRow.started_at).trim() : '',
+            endedAt: taskRow.ended_at ? String(taskRow.ended_at).trim() : '',
+            updatedAt: taskRow.updated_at ? String(taskRow.updated_at).trim() : '',
+          }
+        : null,
+      session: snapshot,
+      toolCalls: toolRows
+        .map((row) => ({
+          createdAt: row && row.created_at ? String(row.created_at).trim() : '',
+          payload: safeJsonParse(row && row.event_json ? row.event_json : null),
+        }))
+        .filter((item) => item && item.payload),
+    };
   }
 
   function listEvalCases(limit = 80) {
@@ -180,9 +406,25 @@ export function createEvalCasesController(options: any = {}): RouteHandler<ApiCo
       return normalized;
     }
 
+    const messageMetadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
+    const sessionPathValue = messageMetadata && messageMetadata.sessionPath ? String(messageMetadata.sessionPath).trim() : '';
+    const aSession = sessionPathValue ? readSessionAssistantSnapshot(sessionPathValue, store.agentDir) : null;
+    const aDebug = getTaskDebug(normalized.stageTaskId);
+    const bDebug = normalized && normalized.b && normalized.b.taskId ? getTaskDebug(normalized.b.taskId) : null;
+
     return {
       ...normalized,
       a: buildObservedToolMetrics(message),
+      aChat: {
+        status: String(message.status || '').trim(),
+        errorMessage: String(message.errorMessage || '').trim(),
+        sessionName: messageMetadata && messageMetadata.sessionName ? String(messageMetadata.sessionName).trim() : '',
+        sessionPath: sessionPathValue,
+        runId: message && message.runId !== undefined ? message.runId : null,
+      },
+      aSession,
+      aDebug,
+      bDebug,
     };
   }
 
@@ -423,6 +665,7 @@ export function createEvalCasesController(options: any = {}): RouteHandler<ApiCo
       const runStore = createSqliteRunStore({ agentDir: store.agentDir, sqlitePath: store.databasePath });
       const taskId = `eval-case-run-${randomUUID()}`;
       const stage = { taskId, status: 'queued', runId: null as any };
+      const sessionName = `eval-case-${existing.id}-${Date.now()}`;
       const toolInvocation = agentToolBridge.registerInvocation(
         agentToolBridge.createInvocationContext({
           conversationId: existing.conversationId,
@@ -465,7 +708,7 @@ export function createEvalCasesController(options: any = {}): RouteHandler<ApiCo
         assignedRole: existing.agentName || existing.agentId || 'Agent',
         provider: provider || null,
         model: model || null,
-        requestedSession: null,
+        requestedSession: sessionName,
         sessionPath: null,
         inputText: prompt,
         metadata: {
@@ -490,10 +733,10 @@ export function createEvalCasesController(options: any = {}): RouteHandler<ApiCo
       let status = 'succeeded';
       let errorMessage = '';
       let runId: any = null;
+      let sessionPath = '';
       const endedAt = () => nowIso();
 
       try {
-        const sessionName = `eval-case-${existing.id}-${Date.now()}`;
         const handle = startRun(provider, model, prompt, {
           thinking: existing.thinking || '',
           agentDir: store.agentDir,
@@ -525,9 +768,17 @@ export function createEvalCasesController(options: any = {}): RouteHandler<ApiCo
 
         stage.runId = handle.runId || null;
         stage.status = 'running';
+        sessionPath = handle.sessionPath || '';
+        runStore.updateTask(taskId, {
+          status: 'running',
+          runId: handle.runId || null,
+          requestedSession: sessionName,
+          sessionPath: handle.sessionPath || null,
+        });
 
         result = await handle.resultPromise;
         runId = result && result.runId ? result.runId : handle.runId || null;
+        sessionPath = (result && result.sessionPath) || sessionPath;
 
         outputText = toolInvocation && toolInvocation.publicToolUsed ? String(toolInvocation.lastPublicContent || '') : String(result.reply || '');
         status = 'succeeded';
@@ -558,6 +809,7 @@ export function createEvalCasesController(options: any = {}): RouteHandler<ApiCo
       runStore.updateTask(taskId, {
         status: status === 'succeeded' ? 'succeeded' : 'failed',
         runId,
+        sessionPath: sessionPath || null,
         outputText: outputText || '',
         errorMessage: errorMessage || '',
         endedAt: finishedAt,
