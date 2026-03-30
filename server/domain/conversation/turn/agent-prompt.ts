@@ -290,7 +290,11 @@ export function buildAgentTurnPrompt({
   agentToolRelativePath,
 }: any) {
   const normalizedProjectDir = String(projectDir || '').trim();
-  const trellisPromptContext = normalizedProjectDir ? buildTrellisPromptContext({ startDir: normalizedProjectDir }) : '';
+  const conversationType = String(conversation && conversation.type ? conversation.type : '').trim();
+  const isGameplayConversation =
+    conversationType === UNDERCOVER_CONVERSATION_TYPE || conversationType === WEREWOLF_CONVERSATION_TYPE;
+  const trellisPromptContext =
+    normalizedProjectDir && !isGameplayConversation ? buildTrellisPromptContext({ startDir: normalizedProjectDir }) : '';
   const participants = agents
     .map((item: any) => {
       const description = item.description ? ` - ${item.description}` : '';
