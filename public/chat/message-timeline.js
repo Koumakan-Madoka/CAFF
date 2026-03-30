@@ -102,6 +102,17 @@
           exportButton.textContent = '导出';
           exportButton.title = sessionInfo.canExport ? '导出这条 AI 消息的会话轨迹' : '这条消息的会话轨迹暂时不可导出';
           sender.appendChild(exportButton);
+
+          const recordButton = document.createElement('button');
+          recordButton.type = 'button';
+          recordButton.className = 'message-export-button ghost-button message-record-button';
+          recordButton.dataset.messageId = message.id;
+          recordButton.disabled = !message.taskId;
+          recordButton.textContent = '记录';
+          recordButton.title = message.taskId
+            ? '记录这条 AI 回复的输入 prompt/上下文，用于错题本 A/B 测试'
+            : '这条消息暂时没有 taskId，无法记录';
+          sender.appendChild(recordButton);
         }
       }
 

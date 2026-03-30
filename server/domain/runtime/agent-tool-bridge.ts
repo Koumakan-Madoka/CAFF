@@ -87,6 +87,9 @@ export function createAgentToolBridge(options: any = {}) {
       userMessageId: String(input.userMessageId || (promptUserMessage && promptUserMessage.id) || '').trim(),
       promptUserMessage,
       conversationAgents: Array.isArray(input.conversationAgents) ? input.conversationAgents.slice() : [],
+      dryRun: input.dryRun === true,
+      dryRunPublicPosts: [] as any[],
+      dryRunPrivatePosts: [] as any[],
       runStore: input.runStore || null,
       stage: input.stage || null,
       turnState: input.turnState || null,
@@ -393,6 +396,85 @@ export function createAgentToolBridge(options: any = {}) {
 
       if (visibility === 'public') {
         const mode = String(body.mode || 'replace').trim().toLowerCase() || 'replace';
+
+        if (context.dryRun) {
+          const timestamp = nowIso();
+          const normalizedMode = String(mode || 'replace').trim().toLowerCase() || 'replace';
+          const nextContent =
+            normalizedMode === 'append' && String(context.lastPublicContent || '').trim()
+              ? `${context.lastPublicContent}${content}`
+              : content;
+          const messageId = `dryrun-${randomUUID()}`;
+
+          context.publicToolUsed = true;
+          context.publicPostCount = (context.publicPostCount || 0) + 1;
+          context.lastPublicContent = nextContent;
+          context.lastPublicPostedAt = timestamp;
+          context.dryRunPublicPosts.push({
+            id: messageId,
+            content: nextContent,
+            mode: normalizedMode,
+            createdAt: timestamp,
+          });
+
+          if (context.stage) {
+            context.stage.status = 'running';
+            context.stage.replyLength = nextContent.length;
+            context.stage.preview = clipText(nextContent, TURN_PREVIEW_LENGTH);
+            context.stage.lastTextDeltaAt = timestamp;
+          }
+
+          if (context.turnState) {
+            context.turnState.updatedAt = timestamp;
+            onTurnUpdated(context.turnState);
+          }
+
+          const serialized = {
+            id: messageId,
+            role: 'assistant',
+            agentId: context.agentId || null,
+            senderName: context.agentName,
+            content: nextContent,
+            status: 'completed',
+            createdAt: timestamp,
+            publicPostedAt: timestamp,
+            publicPostCount: context.publicPostCount || 0,
+            publicPostMode: normalizedMode,
+            mentions: [],
+          };
+
+          tryAppendInvocationEvent(context, 'agent_tool_call', {
+            schemaVersion: 1,
+            toolCallId,
+            tool: 'send-public',
+            status: 'succeeded',
+            durationMs: Date.now() - startedAt,
+            invocationId: context.invocationId,
+            conversationId: context.conversationId,
+            turnId: context.turnId,
+            agentId: context.agentId,
+            agentName: context.agentName,
+            assistantMessageId: context.assistantMessageId,
+            request: {
+              visibility: 'public',
+              mode: normalizedMode,
+              contentLength: content.length,
+            },
+            result: {
+              messageId: serialized.id,
+              publicPostCount: serialized.publicPostCount,
+              publicPostMode: serialized.publicPostMode,
+              publicPostedAt: serialized.publicPostedAt,
+            },
+          });
+
+          return {
+            ok: true,
+            visibility: 'public',
+            message: serialized,
+          };
+        }
+
         const message = applyAgentToolPublicUpdate(context, content, mode);
         const serialized = serializeAgentToolPublicMessage(message);
         tryAppendInvocationEvent(context, 'agent_tool_call', {
@@ -427,6 +509,72 @@ export function createAgentToolBridge(options: any = {}) {
       }
 
       if (visibility === 'private') {
+        if (context.dryRun) {
+          const timestamp = nowIso();
+          const recipientAgentIds = resolveAgentToolRecipientIds(
+            body.recipientAgentIds !== undefined ? body.recipientAgentIds : body.recipients,
+            context.conversationAgents
+          );
+          const resolvedRecipientAgentIds = recipientAgentIds.length > 0 ? recipientAgentIds : [context.agentId];
+          const handoffAgentIds = resolvedRecipientAgentIds.filter((agentId: any) => agentId && agentId !== context.agentId);
+          const explicitHandoff = body.handoff === true || body.triggerReply === true;
+          const explicitNoHandoff = body.handoff === false || body.triggerReply === false || body.noHandoff === true;
+          const handoffRequested =
+            context.allowHandoffs && !explicitNoHandoff && (explicitHandoff || handoffAgentIds.length > 0);
+          const messageId = `dryrun-${randomUUID()}`;
+
+          const privateMessage = {
+            id: messageId,
+            turnId: context.turnId || 'eval',
+            senderAgentId: context.agentId || null,
+            senderName: context.agentName,
+            recipientAgentIds: resolvedRecipientAgentIds,
+            content,
+            createdAt: timestamp,
+          };
+
+          context.privatePostCount = (context.privatePostCount || 0) + 1;
+          context.dryRunPrivatePosts.push({
+            ...privateMessage,
+            handoffRequested,
+          });
+
+          const response = {
+            ok: true,
+            visibility: 'private',
+            message: serializeAgentToolPrivateMessage(privateMessage),
+            handoffRequested,
+            enqueuedAgentIds: [],
+          };
+
+          tryAppendInvocationEvent(context, 'agent_tool_call', {
+            schemaVersion: 1,
+            toolCallId,
+            tool: 'send-private',
+            status: 'succeeded',
+            durationMs: Date.now() - startedAt,
+            invocationId: context.invocationId,
+            conversationId: context.conversationId,
+            turnId: context.turnId,
+            agentId: context.agentId,
+            agentName: context.agentName,
+            assistantMessageId: context.assistantMessageId,
+            request: {
+              visibility: 'private',
+              contentLength: content.length,
+              recipientCount: resolvedRecipientAgentIds.length,
+              handoffRequested,
+            },
+            result: {
+              messageId: response.message.id,
+              recipientCount: response.message.recipientAgentIds.length,
+              enqueuedCount: 0,
+            },
+          });
+
+          return response;
+        }
+
         const conversation = store.getConversation(context.conversationId);
 
         if (!conversation) {
@@ -573,6 +721,46 @@ export function createAgentToolBridge(options: any = {}) {
     const privateLimit = Number.parseInt(requestUrl.searchParams.get('privateLimit') || '', 10);
 
     try {
+      if (context.dryRun) {
+        const response = {
+          ok: true,
+          conversation: null,
+          agent: {
+            id: context.agentId,
+            name: context.agentName,
+          },
+          participants: serializeAgentToolParticipants(context.conversationAgents),
+          latestUserMessage: context.promptUserMessage ? serializeAgentToolPublicMessage(context.promptUserMessage) : null,
+          publicMessages: [],
+          privateMessages: [],
+        };
+
+        tryAppendInvocationEvent(context, 'agent_tool_call', {
+          schemaVersion: 1,
+          toolCallId: randomUUID(),
+          tool: 'read-context',
+          status: 'succeeded',
+          durationMs: Date.now() - startedAt,
+          invocationId: context.invocationId,
+          conversationId: context.conversationId,
+          turnId: context.turnId,
+          agentId: context.agentId,
+          agentName: context.agentName,
+          assistantMessageId: context.assistantMessageId,
+          request: {
+            publicLimit: Number.isFinite(publicLimit) ? publicLimit : null,
+            privateLimit: Number.isFinite(privateLimit) ? privateLimit : null,
+          },
+          result: {
+            publicMessageCount: 0,
+            privateMessageCount: 0,
+            participantCount: Array.isArray(response.participants) ? response.participants.length : 0,
+          },
+        });
+
+        return response;
+      }
+
       const payload = buildAgentToolContextPayload(context, {
         publicLimit: Number.isFinite(publicLimit) ? publicLimit : undefined,
         privateLimit: Number.isFinite(privateLimit) ? privateLimit : undefined,
@@ -640,13 +828,17 @@ export function createAgentToolBridge(options: any = {}) {
       requestUrl.searchParams.get('invocationId'),
       requestUrl.searchParams.get('callbackToken')
     );
-    const conversation = store.getConversation(context.conversationId);
+    const conversation = context.dryRun ? null : store.getConversation(context.conversationId);
 
     try {
       const response = {
         ok: true,
         conversation: conversation ? pickConversationSummary(conversation) : null,
-        participants: conversation ? serializeAgentToolParticipants(conversation.agents) : [],
+        participants: context.dryRun
+          ? serializeAgentToolParticipants(context.conversationAgents)
+          : conversation
+            ? serializeAgentToolParticipants(conversation.agents)
+            : [],
       };
 
       tryAppendInvocationEvent(context, 'agent_tool_call', {

@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CAFF 错题本</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script defer src="/shared/api-client.js"></script>
+    <script defer src="/shared/toast.js"></script>
+    <script defer src="/eval-cases.js"></script>
+  </head>
+  <body>
+    <div class="ambient ambient-a"></div>
+    <div class="ambient ambient-b"></div>
+    <div class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">CAFF Casebook</p>
+          <h1>错题本 / A/B 测试</h1>
+          <p class="subtitle">一键记录“问题 turn”的模型输入 prompt，并在这里批量调整与重放，比较 A/B 输出与工具调用行为。</p>
+        </div>
+        <div class="topbar-actions">
+          <nav class="topbar-nav" aria-label="Primary">
+            <a class="topbar-link" href="/">聊天工作台</a>
+            <a class="topbar-link" href="/personas.html">人格管理</a>
+            <a class="topbar-link" href="/skills.html">Skill 管理</a>
+            <a class="topbar-link" href="/projects.html">项目管理</a>
+            <a class="topbar-link" href="/metrics.html">评测报表</a>
+            <a class="topbar-link active" href="/eval-cases.html">错题本</a>
+          </nav>
+          <button id="refresh-button" class="ghost-button" type="button">刷新</button>
+        </div>
+      </header>
+
+      <main class="layout persona-layout">
+        <aside class="panel panel-conversations">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Case List</p>
+              <h2>记录列表</h2>
+            </div>
+          </div>
+
+          <section class="stack-card">
+            <div class="section-row">
+              <span class="section-label">错题本</span>
+              <span id="case-count" class="section-hint">加载中...</span>
+            </div>
+            <div id="case-list" class="agent-list"></div>
+          </section>
+        </aside>
+
+        <section class="panel panel-studio">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Editor</p>
+              <h2 id="editor-title">A/B 对比</h2>
+              <p id="editor-meta" class="muted">从左侧选择一条记录</p>
+            </div>
+            <div class="panel-actions">
+              <button id="copy-a-to-b-button" class="ghost-button" type="button">A 复制到 B</button>
+              <button id="save-button" class="ghost-button" type="button">保存</button>
+              <button id="run-b-button" type="button">运行 B</button>
+            </div>
+          </div>
+
+          <form id="case-form" class="settings-form">
+            <label>
+              <span>备注（可选）</span>
+              <input id="note-input" type="text" maxlength="240" placeholder="例如：本该私聊却发到了公共频道 / 本该用 send-public 但直接输出 text" />
+            </label>
+
+            <section class="stack-card">
+              <div class="section-row">
+                <span class="section-label">A（原始）Prompt</span>
+                <span class="section-hint">来自当时实际送入模型的完整 prompt</span>
+              </div>
+              <textarea id="prompt-a" rows="12" readonly placeholder="选择左侧记录后显示"></textarea>
+            </section>
+
+            <section class="stack-card">
+              <div class="section-row">
+                <span class="section-label">A（原始）输出</span>
+                <span class="section-hint">当时在聊天界面看到的输出</span>
+              </div>
+              <textarea id="output-a" rows="8" readonly placeholder="选择左侧记录后显示"></textarea>
+            </section>
+
+            <section class="stack-card">
+              <div class="section-row">
+                <span class="section-label">B（调整后）Prompt</span>
+                <span class="section-hint">你可以直接改这里的输入，然后点击“运行 B”</span>
+              </div>
+              <textarea id="prompt-b" rows="12" placeholder="在这里修改 B 版本 prompt"></textarea>
+            </section>
+
+            <section class="stack-card">
+              <div class="section-row">
+                <span class="section-label">B 结果</span>
+                <span id="b-meta" class="section-hint">尚未运行</span>
+              </div>
+              <div id="b-metrics" class="tag-row"></div>
+              <textarea id="output-b" rows="8" readonly placeholder="运行 B 后显示"></textarea>
+            </section>
+          </form>
+        </section>
+      </main>
+    </div>
+
+    <div id="toast" class="toast hidden"></div>
+  </body>
+</html>
+

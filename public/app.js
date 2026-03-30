@@ -1356,16 +1356,70 @@ function bindEvents() {
   });
 
   dom.messageList.addEventListener('click', async (event) => {
-    const button =
+    if (!state.currentConversation) {
+      return;
+    }
+
+    const recordButton =
+      event.target instanceof Element
+        ? /** @type {HTMLButtonElement | null} */ (event.target.closest('.message-record-button'))
+        : null;
+
+    if (recordButton) {
+      const messageId = recordButton.dataset.messageId || '';
+      const message =
+        state.currentConversation && Array.isArray(state.currentConversation.messages)
+          ? state.currentConversation.messages.find((item) => item.id === messageId) || null
+          : null;
+
+      if (!message) {
+        showToast('找不到要记录的消息');
+        return;
+      }
+
+      if (!message.taskId) {
+        showToast('这条消息暂时没有 taskId，无法记录');
+        return;
+      }
+
+      const previousText = recordButton.textContent;
+      recordButton.disabled = true;
+      recordButton.textContent = '记录中';
+
+      try {
+        const result = await fetchJson('/api/eval-cases', {
+          method: 'POST',
+          body: {
+            conversationId: state.currentConversation.id,
+            messageId: message.id,
+          },
+        });
+
+        if (result && result.case && result.case.id) {
+          showToast('已记录到错题本，可在「错题本」页面做 A/B 测试');
+        } else {
+          showToast('已记录到错题本');
+        }
+      } catch (error) {
+        showToast(error.message);
+      } finally {
+        recordButton.disabled = !message.taskId;
+        recordButton.textContent = previousText;
+      }
+
+      return;
+    }
+
+    const exportButton =
       event.target instanceof Element
         ? /** @type {HTMLButtonElement | null} */ (event.target.closest('.message-export-button'))
         : null;
 
-    if (!button || !state.currentConversation) {
+    if (!exportButton) {
       return;
     }
 
-    const messageId = button.dataset.messageId || '';
+    const messageId = exportButton.dataset.messageId || '';
     const message =
       state.currentConversation && Array.isArray(state.currentConversation.messages)
         ? state.currentConversation.messages.find((item) => item.id === messageId) || null
@@ -1383,9 +1437,9 @@ function bindEvents() {
       return;
     }
 
-    const previousText = button.textContent;
-    button.disabled = true;
-    button.textContent = '导出中';
+    const previousText = exportButton.textContent;
+    exportButton.disabled = true;
+    exportButton.textContent = '导出中';
 
     try {
       await exportMessageSession(state.currentConversation.id, message);
@@ -1393,8 +1447,8 @@ function bindEvents() {
     } catch (error) {
       showToast(error.message);
     } finally {
-      button.disabled = !messageSessionInfo(message).canExport;
-      button.textContent = previousText;
+      exportButton.disabled = !messageSessionInfo(message).canExport;
+      exportButton.textContent = previousText;
     }
   });
 
