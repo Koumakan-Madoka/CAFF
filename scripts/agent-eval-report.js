@@ -160,280 +160,293 @@ function summarizeToolBucket(bucket) {
   };
 }
 
-function main() {
-  const args = parseArgs(process.argv.slice(2));
-  const dbPath = resolveDbPath(args);
-  const since = normalizeIsoBoundary(args.since, '');
-  const until = normalizeIsoBoundary(args.until, '');
-  const filterAgentId = String(args.agent || args['agent-id'] || '').trim();
-  const jsonOnly = args.json === true;
-
-  const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+function loadEventsByTask(db, messageWhereSql, params) {
+  const expectationsByTask = new Map();
+  const toolCallsByTask = new Map();
 
   try {
-    const whereClauses = ["m.role = 'assistant'", "m.task_id IS NOT NULL", "m.task_id != ''"];
-    const params = {};
-
-    if (since) {
-      whereClauses.push('m.created_at >= @since');
-      params.since = since;
-    }
-
-    if (until) {
-      whereClauses.push('m.created_at < @until');
-      params.until = until;
-    }
-
-    if (filterAgentId) {
-      whereClauses.push('m.agent_id = @agentId');
-      params.agentId = filterAgentId;
-    }
-
-    const messages = db
+    const events = db
       .prepare(
         `
-        SELECT
-          m.id AS message_id,
-          m.conversation_id,
-          m.turn_id,
-          m.role,
-          m.agent_id,
-          m.sender_name,
-          m.status,
-          m.task_id,
-          m.metadata_json,
-          m.created_at
-        FROM chat_messages m
-        WHERE ${whereClauses.join(' AND ')}
-        ORDER BY m.created_at ASC, m.id ASC
+        SELECT e.task_id, e.event_type, e.event_json, e.created_at
+        FROM a2a_task_events e
+        WHERE e.event_type IN ('agent_expectations', 'agent_tool_call')
+          AND e.task_id IN (
+            SELECT DISTINCT m.task_id
+            FROM chat_messages m
+            WHERE ${messageWhereSql}
+          )
+        ORDER BY e.created_at ASC, e.id ASC
       `
       )
       .all(params);
 
-    const taskIds = new Set(messages.map((row) => String(row.task_id || '').trim()).filter(Boolean));
-    const taskIdList = Array.from(taskIds);
-
-    const expectationsByTask = new Map();
-    const toolCallsByTask = new Map();
-
-    if (taskIdList.length > 0) {
-      const placeholders = taskIdList.map((_, index) => `@task${index}`).join(', ');
-      const eventParams = {};
-      taskIdList.forEach((taskId, index) => {
-        eventParams[`task${index}`] = taskId;
-      });
-
-      const events = db
-        .prepare(
-          `
-          SELECT task_id, event_type, event_json, created_at
-          FROM a2a_task_events
-          WHERE task_id IN (${placeholders})
-            AND event_type IN ('agent_expectations', 'agent_tool_call')
-          ORDER BY created_at ASC, id ASC
-        `
-        )
-        .all(eventParams);
-
-      for (const row of events) {
-        const taskId = String(row.task_id || '').trim();
-        const eventType = String(row.event_type || '').trim();
-        const payload = safeJsonParse(row.event_json);
-
-        if (!taskId || !payload) {
-          continue;
-        }
-
-        if (eventType === 'agent_expectations') {
-          expectationsByTask.set(taskId, payload);
-          continue;
-        }
-
-        if (eventType === 'agent_tool_call') {
-          const existing = toolCallsByTask.get(taskId);
-          if (existing) {
-            existing.push(payload);
-          } else {
-            toolCallsByTask.set(taskId, [payload]);
-          }
-        }
-      }
-    }
-
-    const byAgent = new Map();
-    const globalToolCalls = {};
-
-    for (const row of messages) {
-      const agentId = String(row.agent_id || '').trim() || 'unknown';
-      const agentName = String(row.sender_name || '').trim();
-
-      const bucket = ensureAgentBucket(byAgent, agentId, agentName);
-      bucket.turns += 1;
-
-      if (row.status === 'completed') {
-        bucket.turnsCompleted += 1;
-      } else if (row.status === 'failed') {
-        bucket.turnsFailed += 1;
-      }
-
-      const metadata = safeJsonParse(row.metadata_json) || {};
-      const publicToolUsed = Boolean(metadata.publicToolUsed);
-      const publicPostCount = Number.isInteger(metadata.publicPostCount) ? metadata.publicPostCount : 0;
-      const privatePostCount = Number.isInteger(metadata.privatePostCount) ? metadata.privatePostCount : 0;
-      const privateHandoffCount = Number.isInteger(metadata.privateHandoffCount) ? metadata.privateHandoffCount : 0;
-      const privateToolUsed = privatePostCount > 0;
-
-      if (publicToolUsed) {
-        bucket.publicToolUsedTurns += 1;
-      }
-
-      if (privateToolUsed) {
-        bucket.privateToolUsedTurns += 1;
-      }
-
-      bucket.publicPostCount += publicPostCount;
-      bucket.privatePostCount += privatePostCount;
-      bucket.privateHandoffCount += privateHandoffCount;
-
+    for (const row of Array.isArray(events) ? events : []) {
       const taskId = String(row.task_id || '').trim();
-      const expectations = taskId ? expectationsByTask.get(taskId) : null;
-      const expectationMap = expectations && expectations.expectations && typeof expectations.expectations === 'object' ? expectations.expectations : null;
+      const eventType = String(row.event_type || '').trim();
+      const payload = safeJsonParse(row.event_json);
 
-      if (!expectationMap) {
-        bucket.missingExpectations += 1;
-      } else {
-        const expSendPublic = String(expectationMap['send-public'] || '').trim();
-        const expSendPrivate = String(expectationMap['send-private'] || '').trim();
+      if (!taskId || !payload) {
+        continue;
+      }
 
-        if (expSendPublic === 'required' || expSendPublic === 'forbidden') {
-          if (expSendPublic === 'required') {
-            bucket.sendPublic.required += 1;
-            if (publicToolUsed) {
-              bucket.sendPublic.tp += 1;
-            } else {
-              bucket.sendPublic.fn += 1;
-            }
-          } else {
-            bucket.sendPublic.forbidden += 1;
-            if (publicToolUsed) {
-              bucket.sendPublic.fp += 1;
-            } else {
-              bucket.sendPublic.tn += 1;
-            }
-          }
+      if (eventType === 'agent_expectations') {
+        expectationsByTask.set(taskId, payload);
+        continue;
+      }
+
+      if (eventType === 'agent_tool_call') {
+        const existing = toolCallsByTask.get(taskId);
+        if (existing) {
+          existing.push(payload);
+        } else {
+          toolCallsByTask.set(taskId, [payload]);
         }
+      }
+    }
+  } catch {
+    // Older databases may not have the run-event schema yet; treat as no events.
+  }
 
-        if (expSendPrivate === 'required' || expSendPrivate === 'forbidden') {
-          if (expSendPrivate === 'required') {
-            bucket.sendPrivate.required += 1;
-            if (privateToolUsed) {
-              bucket.sendPrivate.tp += 1;
-            } else {
-              bucket.sendPrivate.fn += 1;
-            }
+  return { expectationsByTask, toolCallsByTask };
+}
+
+function buildReport(db, options = {}) {
+  const dbPath = options.dbPath || '';
+  const since = normalizeIsoBoundary(options.since, '');
+  const until = normalizeIsoBoundary(options.until, '');
+  const filterAgentId = String(options.agent || options.agentId || '').trim();
+  const whereClauses = ["m.role = 'assistant'", "m.task_id IS NOT NULL", "m.task_id != ''"];
+  const params = {};
+
+  if (since) {
+    whereClauses.push('m.created_at >= @since');
+    params.since = since;
+  }
+
+  if (until) {
+    whereClauses.push('m.created_at < @until');
+    params.until = until;
+  }
+
+  if (filterAgentId) {
+    whereClauses.push('m.agent_id = @agentId');
+    params.agentId = filterAgentId;
+  }
+
+  const messageWhereSql = whereClauses.join(' AND ');
+
+  const messages = db
+    .prepare(
+      `
+      SELECT
+        m.id AS message_id,
+        m.conversation_id,
+        m.turn_id,
+        m.role,
+        m.agent_id,
+        m.sender_name,
+        m.status,
+        m.task_id,
+        m.metadata_json,
+        m.created_at
+      FROM chat_messages m
+      WHERE ${messageWhereSql}
+      ORDER BY m.created_at ASC, m.id ASC
+    `
+    )
+    .all(params);
+
+  const { expectationsByTask, toolCallsByTask } = loadEventsByTask(db, messageWhereSql, params);
+  const byAgent = new Map();
+  const globalToolCalls = {};
+
+  for (const row of messages) {
+    const agentId = String(row.agent_id || '').trim() || 'unknown';
+    const agentName = String(row.sender_name || '').trim();
+
+    const bucket = ensureAgentBucket(byAgent, agentId, agentName);
+    bucket.turns += 1;
+
+    if (row.status === 'completed') {
+      bucket.turnsCompleted += 1;
+    } else if (row.status === 'failed') {
+      bucket.turnsFailed += 1;
+    }
+
+    const metadata = safeJsonParse(row.metadata_json) || {};
+    const publicToolUsed = Boolean(metadata.publicToolUsed);
+    const publicPostCount = Number.isInteger(metadata.publicPostCount) ? metadata.publicPostCount : 0;
+    const privatePostCount = Number.isInteger(metadata.privatePostCount) ? metadata.privatePostCount : 0;
+    const privateHandoffCount = Number.isInteger(metadata.privateHandoffCount) ? metadata.privateHandoffCount : 0;
+    const privateToolUsed = privatePostCount > 0;
+
+    if (publicToolUsed) {
+      bucket.publicToolUsedTurns += 1;
+    }
+
+    if (privateToolUsed) {
+      bucket.privateToolUsedTurns += 1;
+    }
+
+    bucket.publicPostCount += publicPostCount;
+    bucket.privatePostCount += privatePostCount;
+    bucket.privateHandoffCount += privateHandoffCount;
+
+    const taskId = String(row.task_id || '').trim();
+    const expectations = taskId ? expectationsByTask.get(taskId) : null;
+    const expectationMap = expectations && expectations.expectations && typeof expectations.expectations === 'object' ? expectations.expectations : null;
+
+    if (!expectationMap) {
+      bucket.missingExpectations += 1;
+    } else {
+      const expSendPublic = String(expectationMap['send-public'] || '').trim();
+      const expSendPrivate = String(expectationMap['send-private'] || '').trim();
+
+      if (expSendPublic === 'required' || expSendPublic === 'forbidden') {
+        if (expSendPublic === 'required') {
+          bucket.sendPublic.required += 1;
+          if (publicToolUsed) {
+            bucket.sendPublic.tp += 1;
           } else {
-            bucket.sendPrivate.forbidden += 1;
-            if (privateToolUsed) {
-              bucket.sendPrivate.fp += 1;
-            } else {
-              bucket.sendPrivate.tn += 1;
-            }
+            bucket.sendPublic.fn += 1;
+          }
+        } else {
+          bucket.sendPublic.forbidden += 1;
+          if (publicToolUsed) {
+            bucket.sendPublic.fp += 1;
+          } else {
+            bucket.sendPublic.tn += 1;
           }
         }
       }
 
-      const toolEvents = taskId ? toolCallsByTask.get(taskId) : null;
-      for (const event of Array.isArray(toolEvents) ? toolEvents : []) {
-        const toolName = event && event.tool ? String(event.tool) : 'unknown';
-        const status = event && event.status ? String(event.status) : '';
-        const durationMs = event && Number.isFinite(event.durationMs) ? event.durationMs : null;
-
-        const agentToolBucket = ensureToolBucket(bucket.toolCalls, toolName);
-        agentToolBucket.calls += 1;
-        if (durationMs !== null) {
-          agentToolBucket.durationMs.push(durationMs);
-        }
-        if (status === 'succeeded') {
-          agentToolBucket.succeeded += 1;
-        } else if (status === 'failed') {
-          agentToolBucket.failed += 1;
-        }
-
-        const globalBucket = ensureToolBucket(globalToolCalls, toolName);
-        globalBucket.calls += 1;
-        if (durationMs !== null) {
-          globalBucket.durationMs.push(durationMs);
-        }
-        if (status === 'succeeded') {
-          globalBucket.succeeded += 1;
-        } else if (status === 'failed') {
-          globalBucket.failed += 1;
+      if (expSendPrivate === 'required' || expSendPrivate === 'forbidden') {
+        if (expSendPrivate === 'required') {
+          bucket.sendPrivate.required += 1;
+          if (privateToolUsed) {
+            bucket.sendPrivate.tp += 1;
+          } else {
+            bucket.sendPrivate.fn += 1;
+          }
+        } else {
+          bucket.sendPrivate.forbidden += 1;
+          if (privateToolUsed) {
+            bucket.sendPrivate.fp += 1;
+          } else {
+            bucket.sendPrivate.tn += 1;
+          }
         }
       }
     }
 
-    const agentRows = Array.from(byAgent.values()).map((bucket) => {
-      const sendPublicRequired = bucket.sendPublic.required;
-      const sendPublicRecall = sendPublicRequired > 0 ? bucket.sendPublic.tp / sendPublicRequired : null;
-      const sendPublicFpr = bucket.sendPublic.forbidden > 0 ? bucket.sendPublic.fp / bucket.sendPublic.forbidden : null;
+    const toolEvents = taskId ? toolCallsByTask.get(taskId) : null;
+    for (const event of Array.isArray(toolEvents) ? toolEvents : []) {
+      const toolName = event && event.tool ? String(event.tool) : 'unknown';
+      const status = event && event.status ? String(event.status) : '';
+      const durationMs = event && Number.isFinite(event.durationMs) ? event.durationMs : null;
 
-      const sendPrivateRequired = bucket.sendPrivate.required;
-      const sendPrivateRecall = sendPrivateRequired > 0 ? bucket.sendPrivate.tp / sendPrivateRequired : null;
+      const agentToolBucket = ensureToolBucket(bucket.toolCalls, toolName);
+      agentToolBucket.calls += 1;
+      if (durationMs !== null) {
+        agentToolBucket.durationMs.push(durationMs);
+      }
+      if (status === 'succeeded') {
+        agentToolBucket.succeeded += 1;
+      } else if (status === 'failed') {
+        agentToolBucket.failed += 1;
+      }
 
-      const tools = Object.values(bucket.toolCalls).map(summarizeToolBucket);
+      const globalBucket = ensureToolBucket(globalToolCalls, toolName);
+      globalBucket.calls += 1;
+      if (durationMs !== null) {
+        globalBucket.durationMs.push(durationMs);
+      }
+      if (status === 'succeeded') {
+        globalBucket.succeeded += 1;
+      } else if (status === 'failed') {
+        globalBucket.failed += 1;
+      }
+    }
+  }
 
-      return {
-        agentId: bucket.agentId,
-        agentName: bucket.agentName,
-        turns: bucket.turns,
-        turnsCompleted: bucket.turnsCompleted,
-        turnsFailed: bucket.turnsFailed,
-        missingExpectations: bucket.missingExpectations,
-        toolChatRate: bucket.turns > 0 ? bucket.publicToolUsedTurns / bucket.turns : null,
-        privateToolRate: bucket.turns > 0 ? bucket.privateToolUsedTurns / bucket.turns : null,
-        publicPostCount: bucket.publicPostCount,
-        privatePostCount: bucket.privatePostCount,
-        privateHandoffCount: bucket.privateHandoffCount,
-        sendPublic: {
-          ...bucket.sendPublic,
-          recall: sendPublicRecall,
-          falsePositiveRate: sendPublicFpr,
-        },
-        sendPrivate: {
-          ...bucket.sendPrivate,
-          recall: sendPrivateRecall,
-        },
-        tools,
-      };
-    });
+  const agentRows = Array.from(byAgent.values()).map((bucket) => {
+    const sendPublicRequired = bucket.sendPublic.required;
+    const sendPublicRecall = sendPublicRequired > 0 ? bucket.sendPublic.tp / sendPublicRequired : null;
+    const sendPublicFpr = bucket.sendPublic.forbidden > 0 ? bucket.sendPublic.fp / bucket.sendPublic.forbidden : null;
 
-    agentRows.sort((a, b) => b.turns - a.turns);
+    const sendPrivateRequired = bucket.sendPrivate.required;
+    const sendPrivateRecall = sendPrivateRequired > 0 ? bucket.sendPrivate.tp / sendPrivateRequired : null;
 
-    const toolRows = Object.values(globalToolCalls).map(summarizeToolBucket).sort((a, b) => b.calls - a.calls);
+    const tools = Object.values(bucket.toolCalls).map(summarizeToolBucket);
 
-    const report = {
-      generatedAt: new Date().toISOString(),
-      dbPath,
-      since: since || null,
-      until: until || null,
-      agentFilter: filterAgentId || null,
-      agents: agentRows,
-      tools: toolRows,
+    return {
+      agentId: bucket.agentId,
+      agentName: bucket.agentName,
+      turns: bucket.turns,
+      turnsCompleted: bucket.turnsCompleted,
+      turnsFailed: bucket.turnsFailed,
+      missingExpectations: bucket.missingExpectations,
+      toolChatRate: bucket.turns > 0 ? bucket.publicToolUsedTurns / bucket.turns : null,
+      privateToolRate: bucket.turns > 0 ? bucket.privateToolUsedTurns / bucket.turns : null,
+      publicPostCount: bucket.publicPostCount,
+      privatePostCount: bucket.privatePostCount,
+      privateHandoffCount: bucket.privateHandoffCount,
+      sendPublic: {
+        ...bucket.sendPublic,
+        recall: sendPublicRecall,
+        falsePositiveRate: sendPublicFpr,
+      },
+      sendPrivate: {
+        ...bucket.sendPrivate,
+        recall: sendPrivateRecall,
+      },
+      tools,
     };
+  });
+
+  agentRows.sort((a, b) => b.turns - a.turns);
+
+  const toolRows = Object.values(globalToolCalls).map(summarizeToolBucket).sort((a, b) => b.calls - a.calls);
+
+  return {
+    generatedAt: new Date().toISOString(),
+    dbPath,
+    since: since || null,
+    until: until || null,
+    agentFilter: filterAgentId || null,
+    agents: agentRows,
+    tools: toolRows,
+  };
+}
+
+function main(argv = process.argv.slice(2)) {
+  const args = parseArgs(argv);
+  const dbPath = resolveDbPath(args);
+  const jsonOnly = args.json === true;
+  const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+
+  try {
+    const report = buildReport(db, {
+      dbPath,
+      since: args.since,
+      until: args.until,
+      agentId: args.agent || args['agent-id'],
+    });
 
     if (jsonOnly) {
       process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
-      return;
+      return report;
     }
 
     process.stdout.write(`DB: ${dbPath}\n`);
-    if (since || until) {
-      process.stdout.write(`Range: ${since || '-inf'} .. ${until || '+inf'}\n`);
+    if (report.since || report.until) {
+      process.stdout.write(`Range: ${report.since || '-inf'} .. ${report.until || '+inf'}\n`);
     }
-    process.stdout.write(`Agents: ${agentRows.length}\n`);
+    process.stdout.write(`Agents: ${report.agents.length}\n`);
     process.stdout.write('\n');
 
-    for (const agent of agentRows) {
+    for (const agent of report.agents) {
       const nameSuffix = agent.agentName ? ` (${agent.agentName})` : '';
       process.stdout.write(`- ${agent.agentId}${nameSuffix}: turns=${agent.turns}, toolChatRate=${agent.toolChatRate ?? 'n/a'}\n`);
       if (agent.sendPublic.required > 0 || agent.sendPublic.forbidden > 0) {
@@ -451,13 +464,23 @@ function main() {
     }
 
     process.stdout.write('\nTop tools:\n');
-    for (const tool of toolRows.slice(0, 10)) {
+    for (const tool of report.tools.slice(0, 10)) {
       process.stdout.write(`- ${tool.tool}: ${tool.succeeded}/${tool.calls} (p50=${tool.p50Ms ?? 'n/a'}ms, p95=${tool.p95Ms ?? 'n/a'}ms)\n`);
     }
+
+    return report;
   } finally {
     db.close();
   }
 }
 
-main();
+if (require.main === module) {
+  main();
+}
+
+module.exports = {
+  buildReport,
+  loadEventsByTask,
+  main,
+};
 
