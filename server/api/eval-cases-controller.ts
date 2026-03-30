@@ -75,6 +75,19 @@ function normalizeEvalCaseRow(row: any) {
   };
 }
 
+function buildObservedToolMetrics(message: any) {
+  const metadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
+
+  return {
+    publicToolUsed: Boolean(metadata && metadata.publicToolUsed),
+    publicPostCount: Number.isInteger(metadata && metadata.publicPostCount) ? metadata.publicPostCount : 0,
+    privatePostCount: Number.isInteger(metadata && metadata.privatePostCount) ? metadata.privatePostCount : 0,
+    privateHandoffCount: Number.isInteger(metadata && metadata.privateHandoffCount) ? metadata.privateHandoffCount : 0,
+    publiclySilent: Boolean(metadata && metadata.publiclySilent),
+    privateOnly: Boolean(metadata && metadata.privateOnly),
+  };
+}
+
 function resolveToolRelativePath(toolPath: string) {
   const cwd = process.cwd();
   const absolutePath = path.resolve(String(toolPath || ''));
@@ -155,7 +168,22 @@ export function createEvalCasesController(options: any = {}): RouteHandler<ApiCo
     const row = store.db
       .prepare('SELECT * FROM eval_cases WHERE id = @id')
       .get({ id: String(caseId || '').trim() });
-    return normalizeEvalCaseRow(row);
+    const normalized = normalizeEvalCaseRow(row);
+
+    if (!normalized || !normalized.messageId || typeof store.getMessage !== 'function') {
+      return normalized;
+    }
+
+    const message = store.getMessage(normalized.messageId);
+
+    if (!message) {
+      return normalized;
+    }
+
+    return {
+      ...normalized,
+      a: buildObservedToolMetrics(message),
+    };
   }
 
   return async function handleEvalCasesRequest(context) {
@@ -578,4 +606,3 @@ export function createEvalCasesController(options: any = {}): RouteHandler<ApiCo
     return false;
   };
 }
-

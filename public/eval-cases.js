@@ -4,6 +4,10 @@ const state = {
   cases: [],
   selectedCaseId: null,
   selectedCase: null,
+  filters: {
+    query: '',
+    status: 'all',
+  },
 };
 
 const shared = window.CaffShared || {};
@@ -12,6 +16,9 @@ const fetchJson = shared.fetchJson;
 const dom = {
   refreshButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('refresh-button')),
   runBatchButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('run-batch-button')),
+  filterForm: /** @type {HTMLFormElement | null} */ (document.getElementById('filter-form')),
+  searchInput: /** @type {HTMLInputElement | null} */ (document.getElementById('search-input')),
+  statusFilter: /** @type {HTMLSelectElement | null} */ (document.getElementById('status-filter')),
   caseCount: /** @type {HTMLElement | null} */ (document.getElementById('case-count')),
   caseList: /** @type {HTMLDivElement | null} */ (document.getElementById('case-list')),
   editorTitle: /** @type {HTMLElement | null} */ (document.getElementById('editor-title')),
@@ -20,9 +27,11 @@ const dom = {
   saveButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('save-button')),
   runBButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('run-b-button')),
   noteInput: /** @type {HTMLInputElement | null} */ (document.getElementById('note-input')),
+  caseMetrics: /** @type {HTMLElement | null} */ (document.getElementById('case-metrics')),
   promptA: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('prompt-a')),
   outputA: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('output-a')),
   promptB: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('prompt-b')),
+  aMetrics: /** @type {HTMLElement | null} */ (document.getElementById('a-metrics')),
   bMeta: /** @type {HTMLElement | null} */ (document.getElementById('b-meta')),
   bMetrics: /** @type {HTMLElement | null} */ (document.getElementById('b-metrics')),
   outputB: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('output-b')),
@@ -34,6 +43,20 @@ const toast =
 
 function showToast(message) {
   toast.show(message);
+}
+
+function clipText(text, maxLength = 140) {
+  const value = String(text || '').trim();
+
+  if (!value) {
+    return '';
+  }
+
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  return `${value.slice(0, maxLength - 3)}...`;
 }
 
 function formatDateTime(value) {
@@ -78,6 +101,93 @@ function metricChip(label, value, hint = '') {
   return chip;
 }
 
+function expectationsMap(item) {
+  const expectations = item && item.expectations && typeof item.expectations === 'object' ? item.expectations : null;
+
+  if (!expectations) {
+    return null;
+  }
+
+  const map =
+    expectations.expectations && typeof expectations.expectations === 'object' ? expectations.expectations : null;
+
+  return map || null;
+}
+
+function evaluateAgainstExpectations(expMap, observed) {
+  if (!expMap || !observed) {
+    return { ok: null, violations: [] };
+  }
+
+  const violations = [];
+  const expPublic = String(expMap['send-public'] || '').trim();
+  const expPrivate = String(expMap['send-private'] || '').trim();
+  const usedPublic = Boolean(observed.publicToolUsed);
+  const usedPrivate = Number(observed.privatePostCount || 0) > 0;
+
+  if (expPublic === 'required' && !usedPublic) {
+    violations.push('miss send-public');
+  } else if (expPublic === 'forbidden' && usedPublic) {
+    violations.push('leak send-public');
+  }
+
+  if (expPrivate === 'required' && !usedPrivate) {
+    violations.push('miss send-private');
+  } else if (expPrivate === 'forbidden' && usedPrivate) {
+    violations.push('unexpected send-private');
+  }
+
+  return { ok: violations.length === 0, violations };
+}
+
+function filteredCaseList() {
+  const query = String(state.filters.query || '').trim().toLowerCase();
+  const status = String(state.filters.status || 'all').trim();
+
+  return (Array.isArray(state.cases) ? state.cases : []).filter((item) => {
+    if (!item) {
+      return false;
+    }
+
+    const bStatus = item.b && item.b.status ? String(item.b.status).trim() : '';
+
+    if (status === 'pending' && bStatus) {
+      return false;
+    }
+
+    if (status === 'succeeded' && bStatus !== 'succeeded') {
+      return false;
+    }
+
+    if (status === 'failed' && bStatus !== 'failed') {
+      return false;
+    }
+
+    if (!query) {
+      return true;
+    }
+
+    const haystack = [
+      item.id,
+      item.agentId,
+      item.agentName,
+      item.note,
+      item.provider,
+      item.model,
+      item.promptVersion,
+      item.modelProfileId,
+      item.conversationId,
+      item.turnId,
+      item.messageId,
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+
+    return haystack.includes(query);
+  });
+}
+
 function ensureSelectedCase() {
   if (state.selectedCaseId && state.cases.some((item) => item && item.id === state.selectedCaseId)) {
     return;
@@ -118,8 +228,10 @@ function renderCaseList() {
 
   dom.caseList.innerHTML = '';
 
+  const cases = filteredCaseList();
+
   if (dom.caseCount) {
-    dom.caseCount.textContent = `${state.cases.length} cases`;
+    dom.caseCount.textContent = `${cases.length}/${state.cases.length} cases`;
   }
 
   if (state.cases.length === 0) {
@@ -130,7 +242,15 @@ function renderCaseList() {
     return;
   }
 
-  state.cases.forEach((item) => {
+  if (cases.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state compact-empty-state';
+    empty.textContent = '没有匹配的记录，尝试清空搜索或切换状态筛选。';
+    dom.caseList.appendChild(empty);
+    return;
+  }
+
+  cases.forEach((item) => {
     const row = document.createElement('div');
     row.className = 'agent-list-item compact';
     row.dataset.id = item.id;
@@ -146,15 +266,35 @@ function renderCaseList() {
 
     const meta = document.createElement('div');
     meta.className = 'muted';
-    meta.textContent = `${formatDateTime(item.createdAt)} · ${item.provider || 'default'}:${item.model || 'default'}${
-      item.b && item.b.status ? ` · B=${item.b.status}` : ''
-    }`;
 
-    left.append(title, meta);
+    const expMap = expectationsMap(item);
+    const expPublic = expMap ? String(expMap['send-public'] || '').trim() : '';
+    const expPrivate = expMap ? String(expMap['send-private'] || '').trim() : '';
+    const expText = expPublic || expPrivate ? ` · exp pub=${expPublic || '-'} pri=${expPrivate || '-'}` : '';
+
+    meta.textContent = `${formatDateTime(item.createdAt)} · ${item.provider || 'default'}:${item.model || 'default'}${expText}`;
+
+    const preview = document.createElement('p');
+    preview.className = 'conversation-preview';
+    preview.textContent = clipText(item.note || '（无备注）', 120);
+
+    left.append(title, meta, preview);
 
     const badge = document.createElement('span');
     badge.className = 'mini-badge';
-    badge.textContent = item.b && item.b.status ? String(item.b.status) : 'A';
+
+    const bStatus = item.b && item.b.status ? String(item.b.status).trim() : '';
+
+    if (bStatus === 'succeeded') {
+      badge.classList.add('success');
+      badge.textContent = 'B ✓';
+    } else if (bStatus === 'failed') {
+      badge.classList.add('danger');
+      badge.textContent = 'B ✗';
+    } else {
+      badge.classList.add('warn');
+      badge.textContent = '待跑';
+    }
 
     row.append(left, badge);
 
@@ -175,14 +315,30 @@ function renderCaseList() {
 function renderEditor() {
   const item = state.selectedCase;
 
-  if (!dom.editorMeta || !dom.promptA || !dom.outputA || !dom.promptB || !dom.outputB || !dom.noteInput || !dom.bMeta || !dom.bMetrics) {
+  if (
+    !dom.editorMeta ||
+    !dom.promptA ||
+    !dom.outputA ||
+    !dom.promptB ||
+    !dom.outputB ||
+    !dom.noteInput ||
+    !dom.caseMetrics ||
+    !dom.aMetrics ||
+    !dom.bMeta ||
+    !dom.bMetrics
+  ) {
     return;
   }
 
+  dom.caseMetrics.innerHTML = '';
+  dom.aMetrics.innerHTML = '';
   dom.bMetrics.innerHTML = '';
 
   if (!item) {
     dom.editorMeta.textContent = '从左侧选择一条记录';
+    if (dom.editorTitle) {
+      dom.editorTitle.textContent = 'A/B 对比';
+    }
     dom.promptA.value = '';
     dom.outputA.value = '';
     dom.promptB.value = '';
@@ -195,6 +351,12 @@ function renderEditor() {
     return;
   }
 
+  const agentLabel = item.agentName || item.agentId || 'Agent';
+
+  if (dom.editorTitle) {
+    dom.editorTitle.textContent = `A/B 对比 · ${agentLabel}`;
+  }
+
   dom.editorMeta.textContent = `${item.id} · ${item.agentName || item.agentId || ''} · ${formatDateTime(item.createdAt)}`;
 
   dom.noteInput.value = item.note || '';
@@ -203,8 +365,41 @@ function renderEditor() {
   dom.promptB.value = item.promptB || '';
   dom.outputB.value = item.outputB || '';
 
+  const expMap = expectationsMap(item);
+  const expPublic = expMap ? String(expMap['send-public'] || '').trim() : '';
+  const expPrivate = expMap ? String(expMap['send-private'] || '').trim() : '';
+
+  dom.caseMetrics.append(
+    metricChip('agent', agentLabel),
+    metricChip('model', `${item.provider || 'default'}:${item.model || 'default'}`),
+    metricChip('promptVersion', item.promptVersion || 'n/a'),
+    metricChip('send-public', expPublic || 'n/a'),
+    metricChip('send-private', expPrivate || 'n/a')
+  );
+
+  if (item.modelProfileId) {
+    dom.caseMetrics.appendChild(metricChip('modelProfileId', item.modelProfileId));
+  }
+
+  const observedA = item.a && typeof item.a === 'object' ? item.a : null;
+  const verdictA = evaluateAgainstExpectations(expMap, observedA);
+
+  if (observedA) {
+    const hint = verdictA.ok === false ? `违背 expectations：${verdictA.violations.join(', ')}` : '';
+    dom.aMetrics.append(
+      metricChip('A verdict', verdictA.ok === null ? 'n/a' : verdictA.ok ? 'OK' : 'FAIL', hint),
+      metricChip('publicToolUsed', String(Boolean(observedA.publicToolUsed))),
+      metricChip('publicPostCount', formatNumber(observedA.publicPostCount)),
+      metricChip('privatePostCount', formatNumber(observedA.privatePostCount)),
+      metricChip('privateHandoffCount', formatNumber(observedA.privateHandoffCount))
+    );
+  } else {
+    dom.aMetrics.appendChild(metricChip('A verdict', 'n/a', '旧记录可能缺少 A 侧观测字段，或对应 chat message 已不存在。'));
+  }
+
   const b = item.b || {};
   const bResult = b.result && typeof b.result === 'object' ? b.result : null;
+  const verdictB = evaluateAgainstExpectations(expMap, bResult);
 
   if (b && b.status) {
     dom.bMeta.textContent = `${b.status}${b.taskId ? ` · task=${b.taskId}` : ''}${b.runId ? ` · run=${b.runId}` : ''}`;
@@ -217,6 +412,13 @@ function renderEditor() {
   }
 
   if (bResult) {
+    dom.bMetrics.appendChild(
+      metricChip(
+        'B verdict',
+        verdictB.ok === null ? 'n/a' : verdictB.ok ? 'OK' : 'FAIL',
+        verdictB.ok === false ? `违背 expectations：${verdictB.violations.join(', ')}` : ''
+      )
+    );
     dom.bMetrics.append(
       metricChip(
         'publicToolUsed',
@@ -345,6 +547,26 @@ async function bootstrap() {
 if (dom.refreshButton) {
   dom.refreshButton.addEventListener('click', () => {
     bootstrap();
+  });
+}
+
+if (dom.filterForm) {
+  dom.filterForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+  });
+}
+
+if (dom.searchInput) {
+  dom.searchInput.addEventListener('input', () => {
+    state.filters.query = dom.searchInput ? dom.searchInput.value : '';
+    renderCaseList();
+  });
+}
+
+if (dom.statusFilter) {
+  dom.statusFilter.addEventListener('change', () => {
+    state.filters.status = dom.statusFilter ? dom.statusFilter.value : 'all';
+    renderCaseList();
   });
 }
 
