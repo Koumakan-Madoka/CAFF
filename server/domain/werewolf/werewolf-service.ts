@@ -253,7 +253,7 @@ export function createWerewolfService(options: any = {}) {
 
     // 支持多种投票格式（优先解析投票命令，取最后一次有效投票）
     const voteMatches = Array.from(
-      source.matchAll(/(?:投票|vote|处决)(?:\s*[:：]\s*|\s+)@?([\p{L}\p{N}][\p{L}\p{N}._-]*)/giu),
+      source.matchAll(/(?:投票|vote|处决)(?:\s*[:：]\s*|\s+)@?([^\s,，。！？!?]+)/giu),
     );
 
     for (let index = voteMatches.length - 1; index >= 0; index -= 1) {
@@ -278,6 +278,7 @@ export function createWerewolfService(options: any = {}) {
       if (lastMatchedName) {
         console.log('[WEREWOLF DEBUG] 投票目标解析失败:', lastMatchedName);
       }
+      return null;
     }
 
     // 提取显式的 @提及（仅作为无投票命令时的兜底）
