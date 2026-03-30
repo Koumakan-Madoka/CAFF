@@ -76,6 +76,32 @@ function normalizeEvalCaseRow(row: any) {
   };
 }
 
+function normalizeEvalCaseRunRow(row: any) {
+  if (!row || typeof row !== 'object') {
+    return null;
+  }
+
+  const result = safeJsonParse(row.result_json);
+
+  return {
+    id: String(row.id || '').trim(),
+    caseId: String(row.case_id || '').trim(),
+    variant: String(row.variant || '').trim(),
+    provider: String(row.provider || '').trim(),
+    model: String(row.model || '').trim(),
+    thinking: String(row.thinking || '').trim(),
+    prompt: String(row.prompt || ''),
+    runId: Number.isInteger(row.run_id) ? row.run_id : row.run_id ? Number(row.run_id) : null,
+    taskId: String(row.task_id || '').trim(),
+    status: String(row.status || '').trim(),
+    errorMessage: row.error_message === null || row.error_message === undefined ? '' : String(row.error_message),
+    outputText: row.output_text === null || row.output_text === undefined ? '' : String(row.output_text),
+    sessionPath: row.session_path === null || row.session_path === undefined ? '' : String(row.session_path),
+    result,
+    createdAt: String(row.created_at || '').trim(),
+  };
+}
+
 function buildObservedToolMetrics(message: any) {
   const metadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
 
@@ -428,12 +454,94 @@ export function createEvalCasesController(options: any = {}): RouteHandler<ApiCo
     };
   }
 
+  function listEvalCaseRuns(caseId: any, limit = 50) {
+    const normalizedCaseId = String(caseId || '').trim();
+
+    if (!normalizedCaseId) {
+      return [];
+    }
+
+    const safeLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 200) : 50;
+
+    let rows: any[] = [];
+
+    try {
+      rows = store.db
+        .prepare(
+          `
+          SELECT *
+          FROM eval_case_runs
+          WHERE case_id = @caseId
+          ORDER BY created_at DESC
+          LIMIT @limit
+        `
+        )
+        .all({ caseId: normalizedCaseId, limit: safeLimit });
+    } catch {
+      rows = [];
+    }
+
+    return rows.map(normalizeEvalCaseRunRow).filter(Boolean);
+  }
+
+  function getEvalCaseRun(runId: any) {
+    const normalizedRunId = String(runId || '').trim();
+
+    if (!normalizedRunId) {
+      return null;
+    }
+
+    let row: any = null;
+
+    try {
+      row = store.db.prepare('SELECT * FROM eval_case_runs WHERE id = @id').get({ id: normalizedRunId });
+    } catch {
+      row = null;
+    }
+
+    const normalized = normalizeEvalCaseRunRow(row);
+
+    if (!normalized) {
+      return null;
+    }
+
+    const debug = normalized.taskId ? getTaskDebug(normalized.taskId) : null;
+
+    return {
+      ...normalized,
+      debug,
+    };
+  }
+
   return async function handleEvalCasesRequest(context) {
     const { req, res, pathname, requestUrl } = context;
 
     if (req.method === 'GET' && pathname === '/api/eval-cases') {
       const limit = Number.parseInt(requestUrl.searchParams.get('limit') || '', 10);
       sendJson(res, 200, { cases: listEvalCases(limit) });
+      return true;
+    }
+
+    const caseRunsMatch = pathname.match(/^\/api\/eval-cases\/([^/]+)\/runs$/);
+
+    if (caseRunsMatch && req.method === 'GET') {
+      const caseId = decodeURIComponent(caseRunsMatch[1]);
+      const limit = Number.parseInt(requestUrl.searchParams.get('limit') || '', 10);
+      sendJson(res, 200, { runs: listEvalCaseRuns(caseId, limit) });
+      return true;
+    }
+
+    const runDetailMatch = pathname.match(/^\/api\/eval-case-runs\/([^/]+)$/);
+
+    if (runDetailMatch && req.method === 'GET') {
+      const runId = decodeURIComponent(runDetailMatch[1]);
+      const payload = getEvalCaseRun(runId);
+
+      if (!payload) {
+        throw createHttpError(404, 'Eval case run not found');
+      }
+
+      sendJson(res, 200, { run: payload });
       return true;
     }
 
@@ -645,13 +753,28 @@ export function createEvalCasesController(options: any = {}): RouteHandler<ApiCo
       }
 
       const body = await readRequestJson(req);
-      const promptB =
-        body && body.prompt !== undefined
-          ? String(body.prompt ?? '')
-          : body && body.promptB !== undefined
+      const rawVariant = body && body.variant !== undefined ? String(body.variant ?? '') : '';
+      const normalizedVariant = rawVariant.trim().toUpperCase();
+      const variant = normalizedVariant ? normalizedVariant : 'B';
+
+      if (variant !== 'A' && variant !== 'B') {
+        throw createHttpError(400, 'variant must be A or B');
+      }
+
+      const hasPrompt = body && Object.prototype.hasOwnProperty.call(body, 'prompt');
+      const hasPromptA = body && Object.prototype.hasOwnProperty.call(body, 'promptA');
+      const hasPromptB = body && Object.prototype.hasOwnProperty.call(body, 'promptB');
+
+      const promptValue = hasPrompt
+        ? String(body.prompt ?? '')
+        : variant === 'A'
+          ? hasPromptA
+            ? String(body.promptA ?? '')
+            : existing.promptA
+          : hasPromptB
             ? String(body.promptB ?? '')
             : existing.promptB;
-      const prompt = String(promptB || '').trim();
+      const prompt = String(promptValue || '').trim();
 
       if (!prompt) {
         throw createHttpError(400, 'prompt is required');
@@ -665,7 +788,7 @@ export function createEvalCasesController(options: any = {}): RouteHandler<ApiCo
       const runStore = createSqliteRunStore({ agentDir: store.agentDir, sqlitePath: store.databasePath });
       const taskId = `eval-case-run-${randomUUID()}`;
       const stage = { taskId, status: 'queued', runId: null as any };
-      const sessionName = `eval-case-${existing.id}-${Date.now()}`;
+      const sessionName = `eval-case-${existing.id}-${variant}-${Date.now()}`;
       const toolInvocation = agentToolBridge.registerInvocation(
         agentToolBridge.createInvocationContext({
           conversationId: existing.conversationId,
@@ -713,7 +836,7 @@ export function createEvalCasesController(options: any = {}): RouteHandler<ApiCo
         inputText: prompt,
         metadata: {
           caseId: existing.id,
-          variant: 'B',
+          variant,
           conversationId: existing.conversationId || null,
           turnId: existing.turnId || null,
           messageId: existing.messageId || null,
@@ -748,7 +871,7 @@ export function createEvalCasesController(options: any = {}): RouteHandler<ApiCo
           taskRole: existing.agentName || existing.agentId || 'Agent',
           metadata: {
             caseId: existing.id,
-            variant: 'B',
+            variant,
             source: 'eval_cases',
           },
           extraEnv: {
@@ -794,8 +917,9 @@ export function createEvalCasesController(options: any = {}): RouteHandler<ApiCo
         }
       }
 
-      const bResult = {
+      const runResult = {
         status,
+        variant,
         publicToolUsed: Boolean(toolInvocation && toolInvocation.publicToolUsed),
         publicPostCount: toolInvocation ? toolInvocation.publicPostCount || 0 : 0,
         privatePostCount: toolInvocation ? toolInvocation.privatePostCount || 0 : 0,
@@ -815,43 +939,106 @@ export function createEvalCasesController(options: any = {}): RouteHandler<ApiCo
         endedAt: finishedAt,
         artifactSummary: {
           kind: 'eval_case_result',
-          publicToolUsed: bResult.publicToolUsed,
-          publicPostCount: bResult.publicPostCount,
-          privatePostCount: bResult.privatePostCount,
+          publicToolUsed: runResult.publicToolUsed,
+          publicPostCount: runResult.publicPostCount,
+          privatePostCount: runResult.privatePostCount,
         },
       });
+
+      const evalCaseRunId = randomUUID();
 
       store.db
         .prepare(
           `
-          UPDATE eval_cases
-          SET
-            prompt_b = @promptB,
-            output_b = @outputB,
-            b_run_id = @runId,
-            b_task_id = @taskId,
-            b_status = @status,
-            b_error_message = @errorMessage,
-            b_result_json = @resultJson,
-            updated_at = @updatedAt
-          WHERE id = @id
+          INSERT INTO eval_case_runs (
+            id,
+            case_id,
+            variant,
+            provider,
+            model,
+            thinking,
+            prompt,
+            run_id,
+            task_id,
+            status,
+            error_message,
+            output_text,
+            result_json,
+            session_path,
+            created_at
+          ) VALUES (
+            @id,
+            @caseId,
+            @variant,
+            @provider,
+            @model,
+            @thinking,
+            @prompt,
+            @runId,
+            @taskId,
+            @status,
+            @errorMessage,
+            @outputText,
+            @resultJson,
+            @sessionPath,
+            @createdAt
+          )
         `
         )
         .run({
-          id: existing.id,
-          promptB: prompt,
-          outputB: outputText || null,
+          id: evalCaseRunId,
+          caseId: existing.id,
+          variant,
+          provider: provider || null,
+          model: model || null,
+          thinking: existing.thinking || null,
+          prompt,
           runId,
           taskId,
           status,
           errorMessage: errorMessage || null,
-          resultJson: JSON.stringify(bResult),
-          updatedAt: finishedAt,
+          outputText: outputText || null,
+          resultJson: JSON.stringify(runResult),
+          sessionPath: sessionPath || null,
+          createdAt: finishedAt,
         });
+
+      if (variant === 'B') {
+        store.db
+          .prepare(
+            `
+            UPDATE eval_cases
+            SET
+              prompt_b = @promptB,
+              output_b = @outputB,
+              b_run_id = @runId,
+              b_task_id = @taskId,
+              b_status = @status,
+              b_error_message = @errorMessage,
+              b_result_json = @resultJson,
+              updated_at = @updatedAt
+            WHERE id = @id
+          `
+          )
+          .run({
+            id: existing.id,
+            promptB: prompt,
+            outputB: outputText || null,
+            runId,
+            taskId,
+            status,
+            errorMessage: errorMessage || null,
+            resultJson: JSON.stringify(runResult),
+            updatedAt: finishedAt,
+          });
+      }
 
       runStore.close();
 
-      sendJson(res, 200, { case: getEvalCase(existing.id) });
+      const runRow = store.db.prepare('SELECT * FROM eval_case_runs WHERE id = @id').get({ id: evalCaseRunId });
+      const runPayload = normalizeEvalCaseRunRow(runRow);
+
+      sendJson(res, 200, { case: getEvalCase(existing.id), run: runPayload });
       return true;
     }
 

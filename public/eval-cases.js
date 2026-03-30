@@ -4,6 +4,9 @@ const state = {
   cases: [],
   selectedCaseId: null,
   selectedCase: null,
+  runs: [],
+  selectedRunId: null,
+  selectedRun: null,
   dirty: false,
   filters: {
     query: '',
@@ -17,6 +20,9 @@ const fetchJson = shared.fetchJson;
 const dom = {
   refreshButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('refresh-button')),
   runBatchButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('run-batch-button')),
+  clearRunSelectionButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('clear-run-selection-button')),
+  batchVariant: /** @type {HTMLSelectElement | null} */ (document.getElementById('batch-variant')),
+  batchRepeats: /** @type {HTMLInputElement | null} */ (document.getElementById('batch-repeats')),
   filterForm: /** @type {HTMLFormElement | null} */ (document.getElementById('filter-form')),
   searchInput: /** @type {HTMLInputElement | null} */ (document.getElementById('search-input')),
   statusFilter: /** @type {HTMLSelectElement | null} */ (document.getElementById('status-filter')),
@@ -33,6 +39,8 @@ const dom = {
   runBButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('run-b-button')),
   noteInput: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('note-input')),
   caseMetrics: /** @type {HTMLElement | null} */ (document.getElementById('case-metrics')),
+  runSummary: /** @type {HTMLElement | null} */ (document.getElementById('run-summary')),
+  runList: /** @type {HTMLDivElement | null} */ (document.getElementById('run-list')),
   promptA: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('prompt-a')),
   outputA: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('output-a')),
   promptB: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('prompt-b')),
@@ -353,9 +361,58 @@ async function fetchSelectedCase() {
   state.selectedCase = payload && payload.case ? payload.case : null;
 }
 
+async function fetchSelectedRuns() {
+  if (!state.selectedCaseId) {
+    state.runs = [];
+    return;
+  }
+
+  const payload = await fetchJson(`/api/eval-cases/${encodeURIComponent(state.selectedCaseId)}/runs`);
+  state.runs = Array.isArray(payload && payload.runs) ? payload.runs : [];
+}
+
+async function fetchRunDetail(runId) {
+  const normalized = String(runId || '').trim();
+
+  if (!normalized) {
+    return null;
+  }
+
+  const payload = await fetchJson(`/api/eval-case-runs/${encodeURIComponent(normalized)}`);
+  return payload && payload.run ? payload.run : null;
+}
+
+async function selectRun(runId) {
+  const normalized = String(runId || '').trim();
+
+  if (!normalized) {
+    state.selectedRunId = null;
+    state.selectedRun = null;
+    renderAll();
+    return;
+  }
+
+  state.selectedRunId = normalized;
+  state.selectedRun = null;
+  renderAll();
+
+  try {
+    state.selectedRun = await fetchRunDetail(normalized);
+  } catch (error) {
+    state.selectedRunId = null;
+    state.selectedRun = null;
+    showToast(error && error.message ? error.message : '加载失败');
+  }
+
+  renderAll();
+}
+
 async function refreshAll() {
   await fetchCaseList();
   await fetchSelectedCase();
+  await fetchSelectedRuns();
+  state.selectedRunId = null;
+  state.selectedRun = null;
 }
 
 function renderCaseList() {
@@ -465,6 +522,9 @@ function renderCaseList() {
       state.selectedCaseId = item.id;
       try {
         await fetchSelectedCase();
+        await fetchSelectedRuns();
+        state.selectedRunId = null;
+        state.selectedRun = null;
       } catch (error) {
         showToast(error && error.message ? error.message : '加载失败');
       }
@@ -478,6 +538,151 @@ function renderCaseList() {
     });
 
     dom.caseList.appendChild(row);
+  });
+}
+
+function normalizeRunVariant(value) {
+  const normalized = String(value || '').trim().toUpperCase();
+
+  if (normalized === 'A') {
+    return 'A';
+  }
+
+  if (normalized === 'B') {
+    return 'B';
+  }
+
+  return normalized || '?';
+}
+
+function renderRunHistory() {
+  if (!dom.runSummary || !dom.runList) {
+    return;
+  }
+
+  dom.runSummary.innerHTML = '';
+  dom.runList.innerHTML = '';
+
+  if (dom.clearRunSelectionButton) {
+    dom.clearRunSelectionButton.classList.toggle('hidden', !state.selectedRunId);
+  }
+
+  const item = state.selectedCase;
+
+  if (!item) {
+    if (dom.runBatchButton) {
+      dom.runBatchButton.disabled = true;
+    }
+
+    const empty = document.createElement('div');
+    empty.className = 'empty-state compact-empty-state';
+    empty.textContent = '选择左侧记录后，可在此批量测试并查看重放历史。';
+    dom.runList.appendChild(empty);
+    return;
+  }
+
+  if (dom.runBatchButton) {
+    dom.runBatchButton.disabled = false;
+  }
+
+  const runs = Array.isArray(state.runs) ? state.runs : [];
+  const expMap = expectationsMap(item);
+
+  dom.runSummary.appendChild(metricChip('runs', formatNumber(runs.length), '该错题的重放次数（包含 A/B）。'));
+
+  ['A', 'B'].forEach((variant) => {
+    const variantRuns = runs.filter((run) => normalizeRunVariant(run && run.variant ? run.variant : '') === variant);
+    const total = variantRuns.length;
+    const succeeded = variantRuns.filter((run) => String(run && run.status ? run.status : '').trim() === 'succeeded').length;
+    const toolUsed = variantRuns.filter((run) => Boolean(run && run.result && run.result.publicToolUsed)).length;
+
+    dom.runSummary.append(
+      metricChip(`${variant} succ`, formatPercent(total ? succeeded / total : Number.NaN), `${succeeded}/${total} succeeded`),
+      metricChip(
+        `${variant} tool`,
+        formatPercent(total ? toolUsed / total : Number.NaN),
+        'publicToolUsed 命中率：用于衡量“是否按预期通过工具发言”。'
+      )
+    );
+  });
+
+  if (runs.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state compact-empty-state';
+    empty.textContent = '暂无重放记录。可先在上方选择变体与次数，然后点击“开始批量测试”。';
+    dom.runList.appendChild(empty);
+    return;
+  }
+
+  runs.forEach((run) => {
+    const row = document.createElement('div');
+    row.className = 'agent-list-item compact';
+    row.dataset.id = run.id;
+    row.classList.toggle('active', run.id === state.selectedRunId);
+
+    const left = document.createElement('div');
+    left.style.display = 'grid';
+    left.style.gap = '0.12rem';
+
+    const title = document.createElement('strong');
+    const runVariant = normalizeRunVariant(run && run.variant ? run.variant : '');
+    const runStatus = String(run && run.status ? run.status : '').trim() || 'unknown';
+    title.textContent = `${runVariant} · ${runStatus}`;
+
+    const meta = document.createElement('div');
+    meta.className = 'muted';
+    meta.textContent = `${formatDateTime(run.createdAt)} · ${run.provider || item.provider || 'default'}:${run.model || item.model || 'default'}`;
+
+    const preview = document.createElement('p');
+    preview.className = 'conversation-preview';
+    const previewText =
+      String(run && run.outputText ? run.outputText : '').trim() ||
+      (run && run.errorMessage ? `error: ${run.errorMessage}` : '(empty)');
+    preview.textContent = clipText(previewText, 120);
+
+    left.append(title, meta, preview);
+
+    const badge = document.createElement('span');
+    badge.className = 'mini-badge';
+
+    const runResult = run && run.result && typeof run.result === 'object' ? run.result : null;
+    const verdict = evaluateAgainstExpectations(expMap, runResult);
+    const isLoading = run.id === state.selectedRunId && !state.selectedRun;
+
+    if (isLoading) {
+      badge.classList.add('busy');
+      badge.textContent = '加载中';
+    } else if (runStatus === 'succeeded') {
+      if (verdict.ok === false) {
+        badge.classList.add('danger');
+        badge.textContent = 'FAIL';
+        badge.title = verdict.violations.length > 0 ? `违背 expectations：${verdict.violations.join(', ')}` : '';
+      } else if (verdict.ok === true) {
+        badge.classList.add('success');
+        badge.textContent = 'OK';
+      } else {
+        badge.classList.add('success');
+        badge.textContent = `${runVariant} ✓`;
+      }
+    } else if (runStatus === 'failed') {
+      badge.classList.add('danger');
+      badge.textContent = `${runVariant} ✗`;
+    } else {
+      badge.classList.add('warn');
+      badge.textContent = runVariant;
+    }
+
+    row.append(left, badge);
+
+    row.addEventListener('click', () => {
+      if (!run || !run.id) {
+        return;
+      }
+
+      selectRun(run.id);
+    });
+
+    dom.runList.appendChild(row);
   });
 }
 
@@ -562,6 +767,7 @@ function renderEditor() {
     dom.runBButton && (dom.runBButton.disabled = true);
     state.dirty = false;
     updateDirtyUi();
+    renderRunHistory();
     return;
   }
 
@@ -647,55 +853,70 @@ function renderEditor() {
     );
   }
 
+  const selectedRun = state.selectedRun && typeof state.selectedRun === 'object' ? state.selectedRun : null;
+  const selectedResult = selectedRun && selectedRun.result && typeof selectedRun.result === 'object' ? selectedRun.result : null;
+  const selectedDebug = selectedRun && selectedRun.debug && typeof selectedRun.debug === 'object' ? selectedRun.debug : null;
+
   const b = item.b || {};
   const bResult = b.result && typeof b.result === 'object' ? b.result : null;
-  const verdictB = evaluateAgainstExpectations(expMap, bResult);
 
-  if (b && b.status) {
-    dom.bMeta.textContent = `${b.status}${b.taskId ? ` · task=${b.taskId}` : ''}${b.runId ? ` · run=${b.runId}` : ''}`;
+  const activeVariant = selectedRun ? String(selectedRun.variant || '').trim() : 'B';
+  const activeStatus = selectedRun ? String(selectedRun.status || '').trim() : String(b.status || '').trim();
+  const activeTaskId = selectedRun ? String(selectedRun.taskId || '').trim() : String(b.taskId || '').trim();
+  const activeRunId = selectedRun ? selectedRun.runId : b.runId;
+  const activeErrorMessage = selectedRun ? String(selectedRun.errorMessage || '') : String(b.errorMessage || '');
+  const activeOutputText = selectedRun ? String(selectedRun.outputText || '') : String(item.outputB || '');
+  const activeResult = selectedRun ? selectedResult : bResult;
+  const activeDebug = selectedRun ? selectedDebug : item.bDebug;
+  const verdictActive = evaluateAgainstExpectations(expMap, activeResult);
+
+  dom.outputB.value = activeOutputText;
+
+  if (activeStatus) {
+    const createdAt = selectedRun && selectedRun.createdAt ? formatDateTime(selectedRun.createdAt) : '';
+    dom.bMeta.textContent = `${activeVariant}${createdAt ? ` · ${createdAt}` : ''} · ${activeStatus}${activeTaskId ? ` · task=${activeTaskId}` : ''}${activeRunId ? ` · run=${activeRunId}` : ''}`;
   } else {
-    dom.bMeta.textContent = '尚未运行';
+    dom.bMeta.textContent = selectedRun ? `${activeVariant} · 未获取到状态` : '尚未运行';
   }
 
-  if (b && b.errorMessage) {
-    dom.bMetrics.appendChild(metricChip('error', b.errorMessage));
+  if (activeErrorMessage) {
+    dom.bMetrics.appendChild(metricChip('error', activeErrorMessage));
   }
 
-  if (bResult) {
+  if (activeResult) {
     dom.bMetrics.appendChild(
       metricChip(
-        'B verdict',
-        verdictB.ok === null ? 'n/a' : verdictB.ok ? 'OK' : 'FAIL',
-        verdictB.ok === false ? `违背 expectations：${verdictB.violations.join(', ')}` : '',
-        verdictB.ok === null ? 'warn' : verdictB.ok ? 'success' : 'danger'
+        `${activeVariant} verdict`,
+        verdictActive.ok === null ? 'n/a' : verdictActive.ok ? 'OK' : 'FAIL',
+        verdictActive.ok === false ? `违背 expectations：${verdictActive.violations.join(', ')}` : '',
+        verdictActive.ok === null ? 'warn' : verdictActive.ok ? 'success' : 'danger'
       )
     );
     dom.bMetrics.append(
       metricChip(
         'publicToolUsed',
-        String(Boolean(bResult.publicToolUsed)),
+        String(Boolean(activeResult.publicToolUsed)),
         '是否调用过 public 工具（如 send-public）。用于判断“是否通过工具发言”。'
       ),
-      metricChip('publicPostCount', formatNumber(bResult.publicPostCount)),
-      metricChip('privatePostCount', formatNumber(bResult.privatePostCount)),
-      metricChip('privateHandoffCount', formatNumber(bResult.privateHandoffCount)),
-      metricChip('publicPosts', formatNumber(Array.isArray(bResult.publicPosts) ? bResult.publicPosts.length : 0)),
-      metricChip('privatePosts', formatNumber(Array.isArray(bResult.privatePosts) ? bResult.privatePosts.length : 0))
+      metricChip('publicPostCount', formatNumber(activeResult.publicPostCount)),
+      metricChip('privatePostCount', formatNumber(activeResult.privatePostCount)),
+      metricChip('privateHandoffCount', formatNumber(activeResult.privateHandoffCount)),
+      metricChip('publicPosts', formatNumber(Array.isArray(activeResult.publicPosts) ? activeResult.publicPosts.length : 0)),
+      metricChip('privatePosts', formatNumber(Array.isArray(activeResult.privatePosts) ? activeResult.privatePosts.length : 0))
     );
   }
 
-  dom.bPublicPosts.value = bResult ? formatPosts(bResult.publicPosts) : '';
-  dom.bPrivatePosts.value = bResult ? formatPosts(bResult.privatePosts) : '';
-  dom.bRawReply.value = bResult ? String(bResult.rawReply || '') : '';
+  dom.bPublicPosts.value = activeResult ? formatPosts(activeResult.publicPosts) : '';
+  dom.bPrivatePosts.value = activeResult ? formatPosts(activeResult.privatePosts) : '';
+  dom.bRawReply.value = activeResult ? String(activeResult.rawReply || '') : '';
 
-  const bSession =
-    item.bDebug && item.bDebug.session && typeof item.bDebug.session === 'object' ? item.bDebug.session : null;
-  const bDebugTask = item.bDebug && item.bDebug.task && typeof item.bDebug.task === 'object' ? item.bDebug.task : null;
+  const bSession = activeDebug && activeDebug.session && typeof activeDebug.session === 'object' ? activeDebug.session : null;
+  const bDebugTask = activeDebug && activeDebug.task && typeof activeDebug.task === 'object' ? activeDebug.task : null;
 
   dom.bThinking.value = bSession ? String(bSession.thinking || '') : '';
   dom.bToolCalls.value = bSession ? formatJson(bSession.toolCalls) : '';
   dom.bRawMessages.value = bSession ? formatJson(bSession.assistantMessagesTail) : '';
-  dom.bToolEvents.value = item.bDebug ? formatJson(item.bDebug.toolCalls) : '';
+  dom.bToolEvents.value = activeDebug ? formatJson(activeDebug.toolCalls) : '';
 
   dom.bErrors.value = [
     bDebugTask
@@ -731,6 +952,7 @@ function renderEditor() {
 
   state.dirty = false;
   updateDirtyUi();
+  renderRunHistory();
 }
 
 function renderAll() {
@@ -759,6 +981,9 @@ async function saveSelectedCase() {
 
   state.selectedCase = payload && payload.case ? payload.case : state.selectedCase;
   await fetchCaseList();
+  await fetchSelectedRuns();
+  state.selectedRunId = null;
+  state.selectedRun = null;
 }
 
 async function runSelectedCaseB() {
@@ -790,49 +1015,82 @@ async function runSelectedCaseB() {
   await fetchCaseList();
 }
 
-async function runBatchB() {
-  const candidates = filteredCaseList();
+function normalizeBatchRepeats(value, fallback = 3) {
+  const parsed = Number.parseInt(String(value || '').trim(), 10);
 
-  if (candidates.length === 0) {
-    showToast('当前筛选下暂无记录可运行');
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+
+  return Math.min(Math.max(parsed, 1), 20);
+}
+
+async function runBatchSelectedCase() {
+  const item = state.selectedCase;
+
+  if (!item) {
+    showToast('请先选择一条错题记录');
     return;
   }
 
-  const runnable = candidates.filter((item) => Boolean(String(item && item.promptB ? item.promptB : '').trim()));
-  const missingPrompt = candidates.length - runnable.length;
+  const repeats = normalizeBatchRepeats(dom.batchRepeats ? dom.batchRepeats.value : 3, 3);
 
-  if (runnable.length === 0) {
-    showToast(missingPrompt > 0 ? '当前筛选下的记录都缺少 B prompt（请先填写并保存）' : '当前筛选下暂无可运行记录');
+  if (dom.batchRepeats) {
+    dom.batchRepeats.value = String(repeats);
+  }
+
+  const mode = dom.batchVariant ? String(dom.batchVariant.value || 'AB').trim().toUpperCase() : 'AB';
+  const variants = [];
+
+  if (mode === 'A' || mode === 'AB') {
+    variants.push('A');
+  }
+
+  if (mode === 'B' || mode === 'AB') {
+    variants.push('B');
+  }
+
+  if (variants.length === 0) {
+    variants.push('B');
+  }
+
+  const promptB = dom.promptB ? String(dom.promptB.value || '').trim() : String(item.promptB || '').trim();
+
+  if (variants.includes('B') && !promptB) {
+    showToast('请先填写 B prompt');
     return;
   }
 
-  const ids = runnable.map((item) => String(item.id)).filter(Boolean);
+  const total = repeats * variants.length;
   let succeeded = 0;
-  let skipped = 0;
   let failed = 0;
 
-  if (missingPrompt > 0) {
-    skipped += missingPrompt;
-  }
+  for (let round = 0; round < repeats; round += 1) {
+    for (let index = 0; index < variants.length; index += 1) {
+      const variant = variants[index];
+      const seq = round * variants.length + index + 1;
 
-  for (let index = 0; index < ids.length; index += 1) {
-    const caseId = ids[index];
+      if (dom.runBatchButton) {
+        dom.runBatchButton.textContent = `批量测试 ${seq}/${total} (${variant})`;
+      }
 
-    if (dom.runBatchButton) {
-      dom.runBatchButton.textContent = `批量运行中 ${index + 1}/${ids.length}`;
-    }
-
-    try {
-      await fetchJson(`/api/eval-cases/${encodeURIComponent(caseId)}/run`, {
-        method: 'POST',
-      });
-      succeeded += 1;
-    } catch (error) {
-      const message = error && error.message ? String(error.message) : String(error || 'Unknown error');
-
-      if (/prompt is required/i.test(message) || message.includes('prompt')) {
-        skipped += 1;
-      } else {
+      try {
+        await fetchJson(`/api/eval-cases/${encodeURIComponent(item.id)}/run`, {
+          method: 'POST',
+          body: {
+            variant,
+            prompt:
+              variant === 'A'
+                ? dom.promptA
+                  ? dom.promptA.value
+                  : String(item.promptA || '')
+                : dom.promptB
+                  ? dom.promptB.value
+                  : String(item.promptB || ''),
+          },
+        });
+        succeeded += 1;
+      } catch {
         failed += 1;
       }
     }
@@ -840,7 +1098,7 @@ async function runBatchB() {
 
   await refreshAll();
   renderAll();
-  showToast(`批量完成：成功 ${succeeded} · 跳过 ${skipped} · 失败 ${failed}`);
+  showToast(`批量完成：成功 ${succeeded} · 失败 ${failed}`);
 }
 
 async function bootstrap() {
@@ -890,7 +1148,7 @@ if (dom.statusFilter) {
 if (dom.runBatchButton) {
   dom.runBatchButton.addEventListener('click', async () => {
     if (state.dirty) {
-      const proceed = window.confirm('当前有未保存的修改，批量运行会刷新页面数据并丢失这些修改。是否继续？');
+      const proceed = window.confirm('当前有未保存的修改，批量测试会刷新页面数据并丢失这些修改。是否继续？');
 
       if (!proceed) {
         return;
@@ -902,13 +1160,21 @@ if (dom.runBatchButton) {
     dom.runBatchButton.disabled = true;
 
     try {
-      await runBatchB();
+      await runBatchSelectedCase();
     } catch (error) {
-      showToast(error && error.message ? error.message : '批量运行失败');
+      showToast(error && error.message ? error.message : '批量测试失败');
     } finally {
       dom.runBatchButton.disabled = false;
       dom.runBatchButton.textContent = previousText;
     }
+  });
+}
+
+if (dom.clearRunSelectionButton) {
+  dom.clearRunSelectionButton.addEventListener('click', () => {
+    state.selectedRunId = null;
+    state.selectedRun = null;
+    renderAll();
   });
 }
 

@@ -111,6 +111,25 @@ CREATE TABLE IF NOT EXISTS eval_cases (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS eval_case_runs (
+  id TEXT PRIMARY KEY,
+  case_id TEXT NOT NULL,
+  variant TEXT NOT NULL,
+  provider TEXT,
+  model TEXT,
+  thinking TEXT,
+  prompt TEXT NOT NULL,
+  run_id INTEGER,
+  task_id TEXT,
+  status TEXT,
+  error_message TEXT,
+  output_text TEXT,
+  result_json TEXT,
+  session_path TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (case_id) REFERENCES eval_cases(id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS idx_chat_conversations_updated_at ON chat_conversations (updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_chat_conversations_last_message_at ON chat_conversations (last_message_at DESC);
 CREATE INDEX IF NOT EXISTS idx_chat_conversation_agents_agent_id ON chat_conversation_agents (agent_id, sort_order ASC);
@@ -120,6 +139,8 @@ CREATE INDEX IF NOT EXISTS idx_chat_private_messages_conversation_id ON chat_pri
 CREATE INDEX IF NOT EXISTS idx_chat_private_messages_sender_agent_id ON chat_private_messages (sender_agent_id, created_at ASC, id ASC);
 CREATE INDEX IF NOT EXISTS idx_eval_cases_created_at ON eval_cases (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_eval_cases_message_id ON eval_cases (message_id);
+CREATE INDEX IF NOT EXISTS idx_eval_case_runs_case_id ON eval_case_runs (case_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_eval_case_runs_task_id ON eval_case_runs (task_id);
   `);
 
   ensureColumn(db, 'chat_agents', 'model_profiles_json', 'model_profiles_json TEXT');

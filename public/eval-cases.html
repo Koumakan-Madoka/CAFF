@@ -39,7 +39,6 @@
               <p class="eyebrow">Case List</p>
               <h2>记录列表</h2>
             </div>
-            <button id="run-batch-button" class="ghost-button" type="button">批量运行 B</button>
           </div>
 
           <form id="filter-form" class="settings-form compact-settings-form">
@@ -98,6 +97,37 @@
                 <span class="section-hint">用于快速定位“为什么是错题”</span>
               </div>
               <div id="case-metrics" class="tag-row"></div>
+            </section>
+
+            <section class="stack-card">
+              <div class="section-row">
+                <span class="section-label">批量测试</span>
+                <span class="section-hint">对同一个错题的 A/B prompt 在同一 Agent 上重复跑多次，观察稳定性与命中率。</span>
+              </div>
+
+              <div class="field-grid">
+                <label>
+                  <span>变体</span>
+                  <select id="batch-variant">
+                    <option value="AB">A + B</option>
+                    <option value="A">仅 A</option>
+                    <option value="B">仅 B</option>
+                  </select>
+                </label>
+
+                <label>
+                  <span>次数</span>
+                  <input id="batch-repeats" type="number" min="1" max="20" value="3" />
+                </label>
+              </div>
+
+              <div class="panel-actions">
+                <button id="run-batch-button" class="ghost-button" type="button">开始批量测试</button>
+                <button id="clear-run-selection-button" class="ghost-button hidden" type="button">回到最新 B</button>
+              </div>
+
+              <div id="run-summary" class="tag-row"></div>
+              <div id="run-list" class="agent-list"></div>
             </section>
 
             <div class="ab-grid">
@@ -207,7 +237,7 @@
 
               <section class="stack-card">
                 <div class="section-row">
-                  <span class="section-label">B 结果</span>
+                  <span class="section-label">重放结果</span>
                   <div class="section-actions">
                     <button id="copy-output-b-button" class="mini-action" type="button">复制</button>
                     <span id="b-meta" class="section-hint">尚未运行</span>
