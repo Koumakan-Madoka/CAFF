@@ -9,7 +9,7 @@
     <script defer src="/shared/toast.js"></script>
     <script defer src="/eval-cases.js"></script>
   </head>
-  <body>
+  <body class="casebook">
     <div class="ambient ambient-a"></div>
     <div class="ambient ambient-b"></div>
     <div class="shell">
@@ -84,7 +84,12 @@
           <form id="case-form" class="settings-form">
             <label>
               <span>备注（可选）</span>
-              <input id="note-input" type="text" maxlength="240" placeholder="例如：本该私聊却发到了公共频道 / 本该用 send-public 但直接输出 text" />
+              <textarea
+                id="note-input"
+                rows="3"
+                maxlength="240"
+                placeholder="例如：本该私聊却发到了公共频道 / 本该用 send-public 但直接输出 text"
+              ></textarea>
             </label>
 
             <section class="stack-card">
@@ -99,7 +104,10 @@
               <section class="stack-card">
                 <div class="section-row">
                   <span class="section-label">A（原始）Prompt</span>
-                  <span class="section-hint">当时实际送入模型的完整 prompt</span>
+                  <div class="section-actions">
+                    <button id="copy-prompt-a-button" class="mini-action" type="button">复制</button>
+                    <span class="section-hint">当时实际送入模型的完整 prompt</span>
+                  </div>
                 </div>
                 <textarea id="prompt-a" class="mono-textarea" rows="12" readonly placeholder="选择左侧记录后显示"></textarea>
               </section>
@@ -107,7 +115,10 @@
               <section class="stack-card">
                 <div class="section-row">
                   <span class="section-label">B（调整后）Prompt</span>
-                  <span class="section-hint">在这里修改输入，然后点击“运行 B”</span>
+                  <div class="section-actions">
+                    <button id="copy-prompt-b-button" class="mini-action" type="button">复制</button>
+                    <span class="section-hint">在这里修改输入，然后点击“运行 B”</span>
+                  </div>
                 </div>
                 <textarea id="prompt-b" class="mono-textarea" rows="12" placeholder="在这里修改 B 版本 prompt"></textarea>
               </section>
@@ -117,7 +128,10 @@
               <section class="stack-card">
                 <div class="section-row">
                   <span class="section-label">A（原始）输出</span>
-                  <span class="section-hint">当时在聊天界面看到的输出</span>
+                  <div class="section-actions">
+                    <button id="copy-output-a-button" class="mini-action" type="button">复制</button>
+                    <span class="section-hint">当时在聊天界面看到的输出</span>
+                  </div>
                 </div>
                 <div id="a-metrics" class="tag-row"></div>
                 <textarea id="output-a" class="mono-textarea" rows="10" readonly placeholder="选择左侧记录后显示"></textarea>
@@ -126,12 +140,60 @@
               <section class="stack-card">
                 <div class="section-row">
                   <span class="section-label">B 结果</span>
-                  <span id="b-meta" class="section-hint">尚未运行</span>
+                  <div class="section-actions">
+                    <button id="copy-output-b-button" class="mini-action" type="button">复制</button>
+                    <span id="b-meta" class="section-hint">尚未运行</span>
+                  </div>
                 </div>
                 <div id="b-metrics" class="tag-row"></div>
                 <textarea id="output-b" class="mono-textarea" rows="10" readonly placeholder="运行 B 后显示"></textarea>
               </section>
             </div>
+
+            <section class="stack-card">
+              <div class="section-row">
+                <span class="section-label">B 工具轨迹（dry run）</span>
+                <span class="section-hint">不会真的发到聊天室；用于检查 send-public / send-private 是否按预期触发</span>
+              </div>
+
+              <div class="ab-grid">
+                <div class="stack-card stack-card-inner">
+                  <div class="section-row">
+                    <span class="section-label">publicPosts</span>
+                    <button id="copy-b-public-posts-button" class="mini-action" type="button">复制</button>
+                  </div>
+                  <textarea id="b-public-posts" class="mono-textarea" rows="8" readonly placeholder="运行 B 后显示"></textarea>
+                </div>
+
+                <div class="stack-card stack-card-inner">
+                  <div class="section-row">
+                    <span class="section-label">privatePosts</span>
+                    <button id="copy-b-private-posts-button" class="mini-action" type="button">复制</button>
+                  </div>
+                  <textarea id="b-private-posts" class="mono-textarea" rows="8" readonly placeholder="运行 B 后显示"></textarea>
+                </div>
+              </div>
+
+              <div class="section-row">
+                <span class="section-label">rawReply（模型原始 text）</span>
+                <button id="copy-b-raw-reply-button" class="mini-action" type="button">复制</button>
+              </div>
+              <textarea id="b-raw-reply" class="mono-textarea" rows="6" readonly placeholder="运行 B 后显示"></textarea>
+            </section>
+
+            <section class="stack-card">
+              <div class="section-row">
+                <span class="section-label">怎么看</span>
+                <span class="section-hint">减少来回猜：把“错在哪、改哪、修好了没”一次看清</span>
+              </div>
+              <ul class="metric-legend">
+                <li><strong>expectations</strong>：系统对本轮的工具调用“期望值”（例如 <code>send-public</code> required/forbidden）。</li>
+                <li><strong>A/B verdict</strong>：观测到的工具行为是否符合 expectations（OK/FAIL）。</li>
+                <li><strong>publicToolUsed</strong>：是否调用过 public 工具发言（用于监控“Agent 调用工具聊天率”）。</li>
+                <li><strong>publicPosts/privatePosts</strong>：B 在 dry run 中捕获到的“本来要发到公共/私有频道的内容”。</li>
+                <li><strong>rawReply</strong>：模型直接输出的 text；如果这里有内容但 <code>publicPosts</code> 为空，通常意味着没走工具发言。</li>
+              </ul>
+            </section>
           </form>
         </section>
       </main>

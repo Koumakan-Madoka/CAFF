@@ -4,6 +4,7 @@ const state = {
   cases: [],
   selectedCaseId: null,
   selectedCase: null,
+  dirty: false,
   filters: {
     query: '',
     status: 'all',
@@ -24,9 +25,13 @@ const dom = {
   editorTitle: /** @type {HTMLElement | null} */ (document.getElementById('editor-title')),
   editorMeta: /** @type {HTMLElement | null} */ (document.getElementById('editor-meta')),
   copyAToBButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('copy-a-to-b-button')),
+  copyPromptAButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('copy-prompt-a-button')),
+  copyPromptBButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('copy-prompt-b-button')),
+  copyOutputAButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('copy-output-a-button')),
+  copyOutputBButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('copy-output-b-button')),
   saveButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('save-button')),
   runBButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('run-b-button')),
-  noteInput: /** @type {HTMLInputElement | null} */ (document.getElementById('note-input')),
+  noteInput: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('note-input')),
   caseMetrics: /** @type {HTMLElement | null} */ (document.getElementById('case-metrics')),
   promptA: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('prompt-a')),
   outputA: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('output-a')),
@@ -35,6 +40,12 @@ const dom = {
   bMeta: /** @type {HTMLElement | null} */ (document.getElementById('b-meta')),
   bMetrics: /** @type {HTMLElement | null} */ (document.getElementById('b-metrics')),
   outputB: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('output-b')),
+  bPublicPosts: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('b-public-posts')),
+  bPrivatePosts: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('b-private-posts')),
+  bRawReply: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('b-raw-reply')),
+  copyBPublicPostsButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('copy-b-public-posts-button')),
+  copyBPrivatePostsButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('copy-b-private-posts-button')),
+  copyBRawReplyButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('copy-b-raw-reply-button')),
   toast: /** @type {HTMLElement | null} */ (document.getElementById('toast')),
 };
 
@@ -91,14 +102,36 @@ function formatPercent(value, fractionDigits = 1) {
   return `${(value * 100).toFixed(fractionDigits)}%`;
 }
 
-function metricChip(label, value, hint = '') {
+function metricChip(label, value, hint = '', variant = '') {
   const chip = document.createElement('span');
-  chip.className = 'file-chip';
+  chip.className = `file-chip${variant ? ` ${variant}` : ''}`;
   chip.textContent = `${label}: ${value}`;
   if (hint) {
     chip.title = hint;
   }
   return chip;
+}
+
+function formatExpectation(value) {
+  const normalized = String(value || '').trim();
+
+  if (!normalized) {
+    return 'n/a';
+  }
+
+  if (normalized === 'required') {
+    return '必需';
+  }
+
+  if (normalized === 'optional') {
+    return '可选';
+  }
+
+  if (normalized === 'forbidden') {
+    return '禁止';
+  }
+
+  return normalized;
 }
 
 function expectationsMap(item) {
@@ -138,6 +171,78 @@ function evaluateAgainstExpectations(expMap, observed) {
   }
 
   return { ok: violations.length === 0, violations };
+}
+
+function formatPosts(value) {
+  const posts = Array.isArray(value) ? value : [];
+
+  if (posts.length === 0) {
+    return '';
+  }
+
+  return posts
+    .map((item, index) => {
+      const content = String(item || '');
+      return `#${index + 1}\n${content}`;
+    })
+    .join('\n\n---\n\n');
+}
+
+function updateDirtyUi() {
+  if (!dom.saveButton) {
+    return;
+  }
+
+  dom.saveButton.textContent = state.dirty ? '保存*' : '保存';
+}
+
+function syncDirtyState() {
+  const item = state.selectedCase;
+
+  if (!item || !dom.promptB || !dom.noteInput) {
+    state.dirty = false;
+    updateDirtyUi();
+    return;
+  }
+
+  const promptDirty = dom.promptB.value !== String(item.promptB || '');
+  const noteDirty = dom.noteInput.value !== String(item.note || '');
+  state.dirty = promptDirty || noteDirty;
+  updateDirtyUi();
+}
+
+async function copyToClipboard(text) {
+  const value = String(text || '');
+
+  if (!value.trim()) {
+    showToast('暂无内容可复制');
+    return;
+  }
+
+  try {
+    if (navigator && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      await navigator.clipboard.writeText(value);
+      showToast('已复制');
+      return;
+    }
+  } catch {
+    // ignore
+  }
+
+  try {
+    const textarea = document.createElement('textarea');
+    textarea.value = value;
+    textarea.setAttribute('readonly', 'true');
+    textarea.style.position = 'fixed';
+    textarea.style.left = '-9999px';
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand('copy');
+    document.body.removeChild(textarea);
+    showToast('已复制');
+  } catch {
+    showToast('复制失败');
+  }
 }
 
 function filteredCaseList() {
@@ -270,7 +375,8 @@ function renderCaseList() {
     const expMap = expectationsMap(item);
     const expPublic = expMap ? String(expMap['send-public'] || '').trim() : '';
     const expPrivate = expMap ? String(expMap['send-private'] || '').trim() : '';
-    const expText = expPublic || expPrivate ? ` · exp pub=${expPublic || '-'} pri=${expPrivate || '-'}` : '';
+    const expText =
+      expPublic || expPrivate ? ` · 期望 公=${formatExpectation(expPublic)} 私=${formatExpectation(expPrivate)}` : '';
 
     meta.textContent = `${formatDateTime(item.createdAt)} · ${item.provider || 'default'}:${item.model || 'default'}${expText}`;
 
@@ -284,28 +390,59 @@ function renderCaseList() {
     badge.className = 'mini-badge';
 
     const bStatus = item.b && item.b.status ? String(item.b.status).trim() : '';
+    const bResult = item.b && item.b.result && typeof item.b.result === 'object' ? item.b.result : null;
+    const verdictB = evaluateAgainstExpectations(expMap, bResult);
+    const hasPromptB = Boolean(String(item.promptB || '').trim());
 
     if (bStatus === 'succeeded') {
-      badge.classList.add('success');
-      badge.textContent = 'B ✓';
+      if (verdictB.ok === false) {
+        badge.classList.add('danger');
+        badge.textContent = 'FAIL';
+        badge.title = verdictB.violations.length > 0 ? `违背 expectations：${verdictB.violations.join(', ')}` : '';
+      } else if (verdictB.ok === true) {
+        badge.classList.add('success');
+        badge.textContent = 'OK';
+      } else {
+        badge.classList.add('success');
+        badge.textContent = 'B ✓';
+      }
     } else if (bStatus === 'failed') {
       badge.classList.add('danger');
       badge.textContent = 'B ✗';
     } else {
       badge.classList.add('warn');
-      badge.textContent = '待跑';
+      badge.textContent = hasPromptB ? '待跑' : '无B';
+      badge.title = hasPromptB ? '' : '缺少 B prompt；请先在右侧填写并保存（或 A 复制到 B）。';
     }
 
     row.append(left, badge);
 
     row.addEventListener('click', async () => {
+      if (item.id === state.selectedCaseId) {
+        return;
+      }
+
+      if (state.dirty) {
+        const proceed = window.confirm('当前有未保存的修改，切换记录会丢失这些修改。是否继续？');
+
+        if (!proceed) {
+          return;
+        }
+      }
+
       state.selectedCaseId = item.id;
       try {
         await fetchSelectedCase();
       } catch (error) {
         showToast(error && error.message ? error.message : '加载失败');
       }
+      state.dirty = false;
       renderAll();
+
+      const studio = document.querySelector('.panel-studio');
+      if (studio && typeof studio.scrollTo === 'function') {
+        studio.scrollTo({ top: 0, behavior: 'smooth' });
+      }
     });
 
     dom.caseList.appendChild(row);
@@ -325,7 +462,10 @@ function renderEditor() {
     !dom.caseMetrics ||
     !dom.aMetrics ||
     !dom.bMeta ||
-    !dom.bMetrics
+    !dom.bMetrics ||
+    !dom.bPublicPosts ||
+    !dom.bPrivatePosts ||
+    !dom.bRawReply
   ) {
     return;
   }
@@ -344,10 +484,22 @@ function renderEditor() {
     dom.promptB.value = '';
     dom.outputB.value = '';
     dom.noteInput.value = '';
+    dom.bPublicPosts.value = '';
+    dom.bPrivatePosts.value = '';
+    dom.bRawReply.value = '';
     dom.bMeta.textContent = '尚未运行';
     dom.copyAToBButton && (dom.copyAToBButton.disabled = true);
+    dom.copyPromptAButton && (dom.copyPromptAButton.disabled = true);
+    dom.copyPromptBButton && (dom.copyPromptBButton.disabled = true);
+    dom.copyOutputAButton && (dom.copyOutputAButton.disabled = true);
+    dom.copyOutputBButton && (dom.copyOutputBButton.disabled = true);
+    dom.copyBPublicPostsButton && (dom.copyBPublicPostsButton.disabled = true);
+    dom.copyBPrivatePostsButton && (dom.copyBPrivatePostsButton.disabled = true);
+    dom.copyBRawReplyButton && (dom.copyBRawReplyButton.disabled = true);
     dom.saveButton && (dom.saveButton.disabled = true);
     dom.runBButton && (dom.runBButton.disabled = true);
+    state.dirty = false;
+    updateDirtyUi();
     return;
   }
 
@@ -373,8 +525,8 @@ function renderEditor() {
     metricChip('agent', agentLabel),
     metricChip('model', `${item.provider || 'default'}:${item.model || 'default'}`),
     metricChip('promptVersion', item.promptVersion || 'n/a'),
-    metricChip('send-public', expPublic || 'n/a'),
-    metricChip('send-private', expPrivate || 'n/a')
+    metricChip('send-public', formatExpectation(expPublic)),
+    metricChip('send-private', formatExpectation(expPrivate))
   );
 
   if (item.modelProfileId) {
@@ -387,14 +539,21 @@ function renderEditor() {
   if (observedA) {
     const hint = verdictA.ok === false ? `违背 expectations：${verdictA.violations.join(', ')}` : '';
     dom.aMetrics.append(
-      metricChip('A verdict', verdictA.ok === null ? 'n/a' : verdictA.ok ? 'OK' : 'FAIL', hint),
+      metricChip(
+        'A verdict',
+        verdictA.ok === null ? 'n/a' : verdictA.ok ? 'OK' : 'FAIL',
+        hint,
+        verdictA.ok === null ? 'warn' : verdictA.ok ? 'success' : 'danger'
+      ),
       metricChip('publicToolUsed', String(Boolean(observedA.publicToolUsed))),
       metricChip('publicPostCount', formatNumber(observedA.publicPostCount)),
       metricChip('privatePostCount', formatNumber(observedA.privatePostCount)),
       metricChip('privateHandoffCount', formatNumber(observedA.privateHandoffCount))
     );
   } else {
-    dom.aMetrics.appendChild(metricChip('A verdict', 'n/a', '旧记录可能缺少 A 侧观测字段，或对应 chat message 已不存在。'));
+    dom.aMetrics.appendChild(
+      metricChip('A verdict', 'n/a', '旧记录可能缺少 A 侧观测字段，或对应 chat message 已不存在。', 'warn')
+    );
   }
 
   const b = item.b || {};
@@ -416,7 +575,8 @@ function renderEditor() {
       metricChip(
         'B verdict',
         verdictB.ok === null ? 'n/a' : verdictB.ok ? 'OK' : 'FAIL',
-        verdictB.ok === false ? `违背 expectations：${verdictB.violations.join(', ')}` : ''
+        verdictB.ok === false ? `违背 expectations：${verdictB.violations.join(', ')}` : '',
+        verdictB.ok === null ? 'warn' : verdictB.ok ? 'success' : 'danger'
       )
     );
     dom.bMetrics.append(
@@ -433,9 +593,23 @@ function renderEditor() {
     );
   }
 
+  dom.bPublicPosts.value = bResult ? formatPosts(bResult.publicPosts) : '';
+  dom.bPrivatePosts.value = bResult ? formatPosts(bResult.privatePosts) : '';
+  dom.bRawReply.value = bResult ? String(bResult.rawReply || '') : '';
+
   dom.copyAToBButton && (dom.copyAToBButton.disabled = false);
+  dom.copyPromptAButton && (dom.copyPromptAButton.disabled = false);
+  dom.copyPromptBButton && (dom.copyPromptBButton.disabled = false);
+  dom.copyOutputAButton && (dom.copyOutputAButton.disabled = false);
+  dom.copyOutputBButton && (dom.copyOutputBButton.disabled = false);
+  dom.copyBPublicPostsButton && (dom.copyBPublicPostsButton.disabled = false);
+  dom.copyBPrivatePostsButton && (dom.copyBPrivatePostsButton.disabled = false);
+  dom.copyBRawReplyButton && (dom.copyBRawReplyButton.disabled = false);
   dom.saveButton && (dom.saveButton.disabled = false);
   dom.runBButton && (dom.runBButton.disabled = false);
+
+  state.dirty = false;
+  updateDirtyUi();
 }
 
 function renderAll() {
@@ -496,15 +670,29 @@ async function runSelectedCaseB() {
 }
 
 async function runBatchB() {
-  if (state.cases.length === 0) {
-    showToast('暂无记录可运行');
+  const candidates = filteredCaseList();
+
+  if (candidates.length === 0) {
+    showToast('当前筛选下暂无记录可运行');
     return;
   }
 
-  const ids = state.cases.map((item) => (item && item.id ? String(item.id) : '')).filter(Boolean);
+  const runnable = candidates.filter((item) => Boolean(String(item && item.promptB ? item.promptB : '').trim()));
+  const missingPrompt = candidates.length - runnable.length;
+
+  if (runnable.length === 0) {
+    showToast(missingPrompt > 0 ? '当前筛选下的记录都缺少 B prompt（请先填写并保存）' : '当前筛选下暂无可运行记录');
+    return;
+  }
+
+  const ids = runnable.map((item) => String(item.id)).filter(Boolean);
   let succeeded = 0;
   let skipped = 0;
   let failed = 0;
+
+  if (missingPrompt > 0) {
+    skipped += missingPrompt;
+  }
 
   for (let index = 0; index < ids.length; index += 1) {
     const caseId = ids[index];
@@ -546,6 +734,14 @@ async function bootstrap() {
 
 if (dom.refreshButton) {
   dom.refreshButton.addEventListener('click', () => {
+    if (state.dirty) {
+      const proceed = window.confirm('当前有未保存的修改，刷新会丢失这些修改。是否继续？');
+
+      if (!proceed) {
+        return;
+      }
+    }
+
     bootstrap();
   });
 }
@@ -572,6 +768,14 @@ if (dom.statusFilter) {
 
 if (dom.runBatchButton) {
   dom.runBatchButton.addEventListener('click', async () => {
+    if (state.dirty) {
+      const proceed = window.confirm('当前有未保存的修改，批量运行会刷新页面数据并丢失这些修改。是否继续？');
+
+      if (!proceed) {
+        return;
+      }
+    }
+
     const previousText = dom.runBatchButton ? dom.runBatchButton.textContent : '';
 
     dom.runBatchButton.disabled = true;
@@ -594,19 +798,82 @@ if (dom.copyAToBButton) {
     }
 
     dom.promptB.value = dom.promptA.value;
+    syncDirtyState();
+  });
+}
+
+if (dom.copyPromptAButton) {
+  dom.copyPromptAButton.addEventListener('click', () => {
+    copyToClipboard(dom.promptA ? dom.promptA.value : '');
+  });
+}
+
+if (dom.copyPromptBButton) {
+  dom.copyPromptBButton.addEventListener('click', () => {
+    copyToClipboard(dom.promptB ? dom.promptB.value : '');
+  });
+}
+
+if (dom.copyOutputAButton) {
+  dom.copyOutputAButton.addEventListener('click', () => {
+    copyToClipboard(dom.outputA ? dom.outputA.value : '');
+  });
+}
+
+if (dom.copyOutputBButton) {
+  dom.copyOutputBButton.addEventListener('click', () => {
+    copyToClipboard(dom.outputB ? dom.outputB.value : '');
+  });
+}
+
+if (dom.copyBPublicPostsButton) {
+  dom.copyBPublicPostsButton.addEventListener('click', () => {
+    copyToClipboard(dom.bPublicPosts ? dom.bPublicPosts.value : '');
+  });
+}
+
+if (dom.copyBPrivatePostsButton) {
+  dom.copyBPrivatePostsButton.addEventListener('click', () => {
+    copyToClipboard(dom.bPrivatePosts ? dom.bPrivatePosts.value : '');
+  });
+}
+
+if (dom.copyBRawReplyButton) {
+  dom.copyBRawReplyButton.addEventListener('click', () => {
+    copyToClipboard(dom.bRawReply ? dom.bRawReply.value : '');
+  });
+}
+
+if (dom.promptB) {
+  dom.promptB.addEventListener('input', () => {
+    syncDirtyState();
+  });
+}
+
+if (dom.noteInput) {
+  dom.noteInput.addEventListener('input', () => {
+    syncDirtyState();
   });
 }
 
 if (dom.saveButton) {
   dom.saveButton.addEventListener('click', async () => {
+    let saved = false;
+
     try {
       await saveSelectedCase();
       showToast('已保存');
+      state.dirty = false;
+      saved = true;
     } catch (error) {
       showToast(error && error.message ? error.message : '保存失败');
     }
 
-    renderAll();
+    if (saved) {
+      renderAll();
+    } else {
+      syncDirtyState();
+    }
   });
 }
 
@@ -618,9 +885,13 @@ if (dom.runBButton) {
       dom.runBButton.textContent = '运行中...';
     }
 
+    let succeeded = false;
+
     try {
       await runSelectedCaseB();
       showToast('B 已完成');
+      state.dirty = false;
+      succeeded = true;
     } catch (error) {
       showToast(error && error.message ? error.message : '运行失败');
     } finally {
@@ -630,7 +901,11 @@ if (dom.runBButton) {
       }
     }
 
-    renderAll();
+    if (succeeded) {
+      renderAll();
+    } else {
+      syncDirtyState();
+    }
   });
 }
 
