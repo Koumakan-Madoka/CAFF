@@ -251,36 +251,32 @@ export function createWerewolfService(options: any = {}) {
     const allowed = new Set(Array.isArray(allowedAgentIds) ? allowedAgentIds : []);
     const lookup = buildAgentMentionLookup(conversation && conversation.agents);
     
-    // 首先尝试提取显式的 @提及
+    // 提取显式的 @提及（仅作为无投票命令时的兜底）
     const explicitMention = extractMentionedAgentIds(source, conversation && conversation.agents, {
       lookup,
       limit: 1,
       excludeAgentId: voterAgentId,
     }).find((agentId: string) => allowed.has(agentId));
 
-    if (explicitMention) {
-      return explicitMention;
-    }
-
-    // 支持多种投票格式
+    // 支持多种投票格式（优先解析投票命令）
     const match = source.match(/(?:投票|vote|投|选|处决)\s*[:：]?\s*@?([^\s,，。!?]+)/iu);
 
-    if (!match || !match[1]) {
-      return null;
+    if (match && match[1]) {
+      const targetName = match[1].trim();
+      
+      const resolved = resolveMentionValues(targetName, conversation && conversation.agents, {
+        lookup,
+        excludeAgentId: voterAgentId,
+      }).find((agentId: string) => allowed.has(agentId));
+
+      if (!resolved) {
+        console.log('[WEREWOLF DEBUG] 投票目标解析失败:', targetName);
+      }
+
+      return resolved || null;
     }
 
-    const targetName = match[1].trim();
-    
-    const resolved = resolveMentionValues(targetName, conversation && conversation.agents, {
-      lookup,
-      excludeAgentId: voterAgentId,
-    }).find((agentId: string) => allowed.has(agentId));
-
-    if (!resolved) {
-      console.log('[WEREWOLF DEBUG] 投票目标解析失败:', targetName);
-    }
-
-    return resolved || null;
+    return explicitMention || null;
   }
 
   function parseWerewolfTarget(content: string, conversation: any, agentId: string, allowedAgentIds: string[]) {
@@ -978,9 +974,34 @@ export function createWerewolfService(options: any = {}) {
       .reverse()
       .find((entry: any) => entry && entry.type === 'night');
 
+    const lastNightDeath = lastNightEntry?.deathAgentId || null;
+
+    // resolveNight may already end the game; avoid posting a day-discussion prompt in that case.
+    if (state.phase === 'finished' || state.status !== 'active') {
+      const nightResolutionMessage = createSystemMessage(conversationId, String(lastNightEntry?.deathMessage || '').trim(), {
+        phase: 'night_resolved',
+        lastNightDeath,
+      });
+
+      if (state.winner) {
+        createSystemMessage(conversationId, buildWinnerMessage(state), {
+          phase: 'game_finished',
+        });
+      }
+
+      syncWerewolfConversationMetadata(conversationId, state);
+      broadcastConversationRefresh(conversationId, nightResolutionMessage);
+
+      return {
+        conversation: store.getConversation(conversationId),
+        conversations: store.listConversations(),
+        game: werewolfHost.buildPublicState(state),
+      };
+    }
+
     const dayStartMessage = createSystemMessage(conversationId, buildDayPrompt(state), {
       phase: state.phase,
-      lastNightDeath: lastNightEntry?.deathAgentId || null,
+      lastNightDeath,
     });
 
     syncWerewolfConversationMetadata(conversationId, state);
