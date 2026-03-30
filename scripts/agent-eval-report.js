@@ -60,13 +60,20 @@ function resolveDbPath(args) {
   return path.resolve(agentDir, 'pi-state.sqlite');
 }
 
-function normalizeIsoBoundary(value, fallback) {
+const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function normalizeIsoBoundary(value, options = {}) {
   const raw = String(value || '').trim();
   if (!raw) {
-    return fallback || '';
+    return '';
   }
 
-  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+  if (DATE_ONLY_RE.test(raw)) {
+    if (options.exclusiveEndOfDay) {
+      const [year, month, day] = raw.split('-').map((part) => Number(part));
+      return new Date(Date.UTC(year, month - 1, day + 1, 0, 0, 0, 0)).toISOString();
+    }
+
     return `${raw}T00:00:00.000Z`;
   }
 
@@ -213,8 +220,10 @@ function loadEventsByTask(db, messageWhereSql, params) {
 
 function buildReport(db, options = {}) {
   const dbPath = options.dbPath || '';
-  const since = normalizeIsoBoundary(options.since, '');
-  const until = normalizeIsoBoundary(options.until, '');
+  const sinceInput = String(options.since || '').trim();
+  const untilInput = String(options.until || '').trim();
+  const since = normalizeIsoBoundary(sinceInput);
+  const until = normalizeIsoBoundary(untilInput, { exclusiveEndOfDay: true });
   const filterAgentId = String(options.agent || options.agentId || '').trim();
   const whereClauses = ["m.role = 'assistant'", "m.task_id IS NOT NULL", "m.task_id != ''"];
   const params = {};
@@ -412,8 +421,8 @@ function buildReport(db, options = {}) {
   return {
     generatedAt: new Date().toISOString(),
     dbPath,
-    since: since || null,
-    until: until || null,
+    since: sinceInput || null,
+    until: untilInput || null,
     agentFilter: filterAgentId || null,
     agents: agentRows,
     tools: toolRows,

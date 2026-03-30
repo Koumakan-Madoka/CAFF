@@ -8,6 +8,23 @@ const Database = require('better-sqlite3');
 const { withTempDir } = require('../helpers/temp-dir');
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 
+function createChatMessagesTable(db) {
+  db.exec(`
+    CREATE TABLE chat_messages (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT,
+      turn_id TEXT,
+      role TEXT,
+      agent_id TEXT,
+      sender_name TEXT,
+      status TEXT,
+      task_id TEXT,
+      metadata_json TEXT,
+      created_at TEXT
+    );
+  `);
+}
+
 function insertAssistantMessage(db, options = {}) {
   db.prepare(
     `
@@ -60,20 +77,7 @@ test('agent eval report CLI treats missing a2a_task_events as an empty event set
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  db.exec(`
-    CREATE TABLE chat_messages (
-      id TEXT PRIMARY KEY,
-      conversation_id TEXT,
-      turn_id TEXT,
-      role TEXT,
-      agent_id TEXT,
-      sender_name TEXT,
-      status TEXT,
-      task_id TEXT,
-      metadata_json TEXT,
-      created_at TEXT
-    );
-  `);
+  createChatMessagesTable(db);
 
   insertAssistantMessage(db, {
     id: 'message-1',
@@ -106,19 +110,8 @@ test('agent eval report CLI avoids SQLite variable overflow for large task sets'
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
+  createChatMessagesTable(db);
   db.exec(`
-    CREATE TABLE chat_messages (
-      id TEXT PRIMARY KEY,
-      conversation_id TEXT,
-      turn_id TEXT,
-      role TEXT,
-      agent_id TEXT,
-      sender_name TEXT,
-      status TEXT,
-      task_id TEXT,
-      metadata_json TEXT,
-      created_at TEXT
-    );
     CREATE TABLE a2a_task_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       task_id TEXT,
@@ -186,4 +179,89 @@ test('agent eval report CLI avoids SQLite variable overflow for large task sets'
   assert.equal(report.tools[0].tool, 'send-public');
   assert.equal(report.tools[0].calls, 1005);
   assert.equal(report.tools[0].succeeded, 1005);
+});
+
+test('server agent eval report includes the selected until day for date-only filters', (t) => {
+  const { buildAgentEvalReport } = require('../../build/server/domain/metrics/agent-eval-report');
+  const tempDir = withTempDir('caff-agent-eval-report-server-until-date-');
+  const sqlitePath = path.join(tempDir, 'report.sqlite');
+  const db = new Database(sqlitePath);
+
+  t.after(() => {
+    try {
+      db.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  createChatMessagesTable(db);
+
+  insertAssistantMessage(db, {
+    id: 'message-in-range',
+    taskId: 'task-in-range',
+    createdAt: '2026-03-30T12:00:00.000Z',
+    metadata: { publicToolUsed: true, publicPostCount: 1 },
+  });
+  insertAssistantMessage(db, {
+    id: 'message-next-day',
+    taskId: 'task-next-day',
+    createdAt: '2026-03-31T12:00:00.000Z',
+    metadata: { publicToolUsed: true, publicPostCount: 1 },
+  });
+
+  const report = buildAgentEvalReport(db, {
+    since: '2026-03-30',
+    until: '2026-03-30',
+  });
+
+  assert.equal(report.since, '2026-03-30');
+  assert.equal(report.until, '2026-03-30');
+  assert.equal(report.agents.length, 1);
+  assert.equal(report.agents[0].turns, 1);
+  assert.equal(report.agents[0].publicPostCount, 1);
+});
+
+test('agent eval report CLI includes the selected until day for date-only filters', (t) => {
+  const tempDir = withTempDir('caff-agent-eval-report-cli-until-date-');
+  const sqlitePath = path.join(tempDir, 'report.sqlite');
+  const db = new Database(sqlitePath);
+
+  t.after(() => {
+    try {
+      db.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  createChatMessagesTable(db);
+
+  insertAssistantMessage(db, {
+    id: 'message-in-range',
+    taskId: 'task-in-range',
+    createdAt: '2026-03-30T12:00:00.000Z',
+    metadata: { publicToolUsed: true, publicPostCount: 1 },
+  });
+  insertAssistantMessage(db, {
+    id: 'message-next-day',
+    taskId: 'task-next-day',
+    createdAt: '2026-03-31T12:00:00.000Z',
+    metadata: { publicToolUsed: true, publicPostCount: 1 },
+  });
+
+  const report = JSON.parse(
+    execFileSync(
+      'node',
+      [path.join('scripts', 'agent-eval-report.js'), '--db-path', sqlitePath, '--since', '2026-03-30', '--until', '2026-03-30', '--json'],
+      {
+        cwd: REPO_ROOT,
+        encoding: 'utf8',
+      }
+    )
+  );
+
+  assert.equal(report.since, '2026-03-30');
+  assert.equal(report.until, '2026-03-30');
+  assert.equal(report.agents.length, 1);
+  assert.equal(report.agents[0].turns, 1);
+  assert.equal(report.agents[0].publicPostCount, 1);
 });

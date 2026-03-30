@@ -1,11 +1,18 @@
-function normalizeIsoBoundary(value: any) {
+const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function normalizeIsoBoundary(value: any, options: any = {}) {
   const raw = String(value || '').trim();
 
   if (!raw) {
     return '';
   }
 
-  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+  if (DATE_ONLY_RE.test(raw)) {
+    if (options.exclusiveEndOfDay) {
+      const [year, month, day] = raw.split('-').map((part) => Number(part));
+      return new Date(Date.UTC(year, month - 1, day + 1, 0, 0, 0, 0)).toISOString();
+    }
+
     return `${raw}T00:00:00.000Z`;
   }
 
@@ -106,8 +113,10 @@ function summarizeToolBucket(bucket: any) {
 }
 
 export function buildAgentEvalReport(db: any, options: any = {}) {
-  const since = normalizeIsoBoundary(options.since);
-  const until = normalizeIsoBoundary(options.until);
+  const sinceInput = String(options.since || '').trim();
+  const untilInput = String(options.until || '').trim();
+  const since = normalizeIsoBoundary(sinceInput);
+  const until = normalizeIsoBoundary(untilInput, { exclusiveEndOfDay: true });
   const filterAgentId = String(options.agentId || options.agent || '').trim();
   const databasePath = options.databasePath ? String(options.databasePath) : '';
 
@@ -358,11 +367,10 @@ export function buildAgentEvalReport(db: any, options: any = {}) {
   return {
     generatedAt: new Date().toISOString(),
     dbPath: databasePath || null,
-    since: since || null,
-    until: until || null,
+    since: sinceInput || null,
+    until: untilInput || null,
     agentFilter: filterAgentId || null,
     agents: agentRows,
     tools: toolRows,
   };
 }
-
