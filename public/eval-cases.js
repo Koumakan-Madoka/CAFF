@@ -11,6 +11,7 @@ const fetchJson = shared.fetchJson;
 
 const dom = {
   refreshButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('refresh-button')),
+  runBatchButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('run-batch-button')),
   caseCount: /** @type {HTMLElement | null} */ (document.getElementById('case-count')),
   caseList: /** @type {HTMLDivElement | null} */ (document.getElementById('case-list')),
   editorTitle: /** @type {HTMLElement | null} */ (document.getElementById('editor-title')),
@@ -292,6 +293,45 @@ async function runSelectedCaseB() {
   await fetchCaseList();
 }
 
+async function runBatchB() {
+  if (state.cases.length === 0) {
+    showToast('暂无记录可运行');
+    return;
+  }
+
+  const ids = state.cases.map((item) => (item && item.id ? String(item.id) : '')).filter(Boolean);
+  let succeeded = 0;
+  let skipped = 0;
+  let failed = 0;
+
+  for (let index = 0; index < ids.length; index += 1) {
+    const caseId = ids[index];
+
+    if (dom.runBatchButton) {
+      dom.runBatchButton.textContent = `批量运行中 ${index + 1}/${ids.length}`;
+    }
+
+    try {
+      await fetchJson(`/api/eval-cases/${encodeURIComponent(caseId)}/run`, {
+        method: 'POST',
+      });
+      succeeded += 1;
+    } catch (error) {
+      const message = error && error.message ? String(error.message) : String(error || 'Unknown error');
+
+      if (/prompt is required/i.test(message) || message.includes('prompt')) {
+        skipped += 1;
+      } else {
+        failed += 1;
+      }
+    }
+  }
+
+  await refreshAll();
+  renderAll();
+  showToast(`批量完成：成功 ${succeeded} · 跳过 ${skipped} · 失败 ${failed}`);
+}
+
 async function bootstrap() {
   try {
     await refreshAll();
@@ -305,6 +345,23 @@ async function bootstrap() {
 if (dom.refreshButton) {
   dom.refreshButton.addEventListener('click', () => {
     bootstrap();
+  });
+}
+
+if (dom.runBatchButton) {
+  dom.runBatchButton.addEventListener('click', async () => {
+    const previousText = dom.runBatchButton ? dom.runBatchButton.textContent : '';
+
+    dom.runBatchButton.disabled = true;
+
+    try {
+      await runBatchB();
+    } catch (error) {
+      showToast(error && error.message ? error.message : '批量运行失败');
+    } finally {
+      dom.runBatchButton.disabled = false;
+      dom.runBatchButton.textContent = previousText;
+    }
   });
 }
 
@@ -356,4 +413,3 @@ if (dom.runBButton) {
 }
 
 bootstrap();
-
