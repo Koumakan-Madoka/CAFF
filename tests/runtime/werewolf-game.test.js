@@ -636,3 +636,73 @@ test('werewolf vote parsing supports emoji-prefixed names', async (t) => {
   assert.equal(lastEntry.type, 'vote');
   assert.equal(lastEntry.eliminatedAgentId, 'test-agent-bot');
 });
+
+test('werewolf vote mention fallback respects the last mention beyond 8 candidates', async (t) => {
+  const tempDir = withTempDir('werewolf-test-');
+  const sqlitePath = path.join(tempDir, 'chat.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const host = createWerewolfHost({ agentDir: tempDir });
+
+  t.after(() => {
+    try {
+      store && store.close();
+    } catch {}
+    try {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    } catch {}
+  });
+
+  const agents = [];
+  for (let index = 1; index <= 10; index += 1) {
+    agents.push({ id: `test-agent-p${index}`, name: `Player${index}` });
+  }
+
+  for (const agent of agents) {
+    store.saveAgent({
+      id: agent.id,
+      name: agent.name,
+      personaPrompt: 'Reply tersely.',
+    });
+  }
+
+  store.createConversation({
+    id: 'test-werewolf-vote-mention-fallback-cap',
+    title: 'Werewolf Vote Parse Mention Fallback Cap Test',
+    type: 'werewolf',
+    participants: agents.map((agent) => agent.id),
+  });
+
+  const conversation = store.getConversation('test-werewolf-vote-mention-fallback-cap');
+  let state = host.createGame(conversation, { werewolfCount: 2, seerCount: 1 });
+  state = host.startVote(state);
+
+  const mentionList = agents.slice(1).map((agent) => `@${agent.name}`).join(' ');
+
+  const turnOrchestrator = {
+    runConversationTurn: async () => ({
+      replies: [
+        { agentId: 'test-agent-p1', content: mentionList },
+        { agentId: 'test-agent-p2', content: '投票：@Player9' },
+        { agentId: 'test-agent-p3', content: '投票：@Player9' },
+        { agentId: 'test-agent-p4', content: '投票：@Player10' },
+        { agentId: 'test-agent-p5', content: '投票：@Player10' },
+      ],
+    }),
+  };
+
+  const service = createWerewolfService({
+    store,
+    skillRegistry: {},
+    turnOrchestrator,
+    werewolfHost: host,
+    broadcastEvent: () => {},
+    broadcastConversationSummary: () => {},
+  });
+
+  await service.runVotePhase('test-werewolf-vote-mention-fallback-cap');
+
+  const finalState = host.loadState('test-werewolf-vote-mention-fallback-cap');
+  const lastEntry = finalState.history[finalState.history.length - 1];
+  assert.equal(lastEntry.type, 'vote');
+  assert.equal(lastEntry.eliminatedAgentId, 'test-agent-p10');
+});

@@ -284,7 +284,6 @@ export function createWerewolfService(options: any = {}) {
     // 提取显式的 @提及（仅作为无投票命令时的兜底）
     const explicitMentions = extractMentionedAgentIds(source, conversation && conversation.agents, {
       lookup,
-      limit: 8,
       excludeAgentId: voterAgentId,
     }).filter((agentId: string) => allowed.has(agentId));
 
