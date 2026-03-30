@@ -182,6 +182,68 @@ test('buildAgentTurnPrompt skips Trellis context when projectDir is empty', (t) 
   assert.doesNotMatch(prompt, /Trellis project context:/u);
 });
 
+test('buildAgentTurnPrompt skips Trellis context for gameplay conversations', (t) => {
+  const tempDir = withTempDir('caff-trellis-game-skip-');
+  const projectDir = path.join(tempDir, 'project');
+  const trellisDir = path.join(projectDir, '.trellis');
+  const taskDir = path.join(trellisDir, 'tasks', 'demo');
+
+  fs.mkdirSync(taskDir, { recursive: true });
+  fs.writeFileSync(path.join(trellisDir, '.current-task'), 'demo\n', 'utf8');
+  fs.writeFileSync(path.join(taskDir, 'prd.md'), 'SENTINEL_TRELLIS_PRD', 'utf8');
+  fs.writeFileSync(
+    path.join(taskDir, 'implement.jsonl'),
+    `${JSON.stringify({ file: '.trellis/tasks/demo/prd.md', reason: 'Test sentinel PRD injection' })}\n`,
+    'utf8'
+  );
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const agent = {
+    id: 'agent-game-skip-trellis',
+    name: 'Builder',
+    description: 'Explains implementation details clearly.',
+    personaPrompt: 'Stay calm and practical.',
+  };
+  const conversation = {
+    id: 'conversation-game-skip-trellis',
+    title: 'Skip Trellis Game Mode',
+    type: 'werewolf',
+    agents: [agent],
+  };
+  const prompt = buildAgentTurnPrompt({
+    conversation,
+    agent,
+    agentConfig: {
+      profileName: 'Default',
+      personaPrompt: agent.personaPrompt,
+    },
+    resolvedPersonaSkills: [],
+    resolvedConversationSkills: [],
+    sandbox: {
+      sandboxDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-game-skip-trellis',
+      privateDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-game-skip-trellis/private',
+    },
+    projectDir,
+    agents: [agent],
+    messages: [],
+    privateMessages: [],
+    trigger: {
+      triggerType: 'user',
+      enqueueReason: 'default_first_agent',
+    },
+    remainingSlots: 7,
+    routingMode: 'mention_queue',
+    allowHandoffs: true,
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+  });
+
+  assert.doesNotMatch(prompt, /Trellis project context:/u);
+  assert.doesNotMatch(prompt, /SENTINEL_TRELLIS_PRD/u);
+});
+
 test('buildAgentTurnPrompt blocks absolute Trellis task dirs outside project', (t) => {
   const tempDir = withTempDir('caff-trellis-scope-');
   const projectDir = path.join(tempDir, 'project');
