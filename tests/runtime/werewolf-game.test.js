@@ -2,7 +2,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const { createChatAppStore } = require('../../build/lib/chat-app-store');
 const { createWerewolfHost, WEREWOLF_CONVERSATION_TYPE } = require('../../build/lib/werewolf-game');
+const { createWerewolfService } = require('../../build/server/domain/werewolf/werewolf-service');
 const { withTempDir } = require('../helpers/temp-dir');
 
 function createMockConversation(agentCount = 6) {
@@ -424,4 +426,74 @@ test('werewolf host provides seer result message', () => {
 
   const villagerResult = host.buildSeerResult(seerPlayer, villagerPlayer);
   assert.ok(villagerResult.includes('好人'));
+});
+
+test('werewolf vote parsing tolerates tool-call wrappers and ignores narrative fragments', async (t) => {
+  const tempDir = withTempDir('werewolf-test-');
+  const sqlitePath = path.join(tempDir, 'chat.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const host = createWerewolfHost({ agentDir: tempDir });
+
+  t.after(() => {
+    try {
+      store && store.close();
+    } catch {}
+    try {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    } catch {}
+  });
+
+  const agents = [
+    { id: 'test-agent-gg', name: '咕咕' },
+    { id: 'test-agent-fbb', name: '菲比啾比' },
+    { id: 'test-agent-krs', name: '牧濑红莉栖' },
+    { id: 'test-agent-ask', name: '明日香' },
+  ];
+
+  for (const agent of agents) {
+    store.saveAgent({
+      id: agent.id,
+      name: agent.name,
+      personaPrompt: 'Reply tersely.',
+    });
+  }
+
+  store.createConversation({
+    id: 'test-werewolf-vote-parse',
+    title: 'Werewolf Vote Parse Test',
+    type: 'werewolf',
+    participants: agents.map((agent) => agent.id),
+  });
+
+  const conversation = store.getConversation('test-werewolf-vote-parse');
+  let state = host.createGame(conversation, { werewolfCount: 1, seerCount: 1 });
+  state = host.startVote(state);
+
+  const toolCallWrappedVote = `{\"type\":\"toolCall\",\"id\":\"tool_test\",\"name\":\"bash\",\"arguments\":{\"command\":\"cat <<'CAFF_PUBLIC_EOF' | node \\\"$CAFF_CHAT_TOOLS_PATH\\\" send-public --content-stdin\n（歪头，豆豆眼眨了眨）\n\n咕咕投票…投给菲比啾比姐姐咕…\n\n投票：@菲比啾比\nCAFF_PUBLIC_EOF\"}}`;
+
+  const turnOrchestrator = {
+    runConversationTurn: async () => ({
+      replies: [
+        { agentId: 'test-agent-gg', content: toolCallWrappedVote },
+        { agentId: 'test-agent-krs', content: '投票：@菲比啾比' },
+        { agentId: 'test-agent-ask', content: '投票：@牧濑红莉栖' },
+      ],
+    }),
+  };
+
+  const service = createWerewolfService({
+    store,
+    skillRegistry: {},
+    turnOrchestrator,
+    werewolfHost: host,
+    broadcastEvent: () => {},
+    broadcastConversationSummary: () => {},
+  });
+
+  await service.runVotePhase('test-werewolf-vote-parse');
+
+  const finalState = host.loadState('test-werewolf-vote-parse');
+  const lastEntry = finalState.history[finalState.history.length - 1];
+  assert.equal(lastEntry.type, 'vote');
+  assert.equal(lastEntry.eliminatedAgentId, 'test-agent-fbb');
 });
