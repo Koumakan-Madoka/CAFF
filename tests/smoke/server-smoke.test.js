@@ -145,6 +145,10 @@ test('server smoke: bootstrap, static files, projects, skills, agents, and conve
   assert.ok(Array.isArray(bootstrap.agents));
   assert.ok(Array.isArray(bootstrap.skills));
 
+  const metrics = await fetchJson(baseUrl, '/api/metrics/agent');
+  assert.ok(Array.isArray(metrics.agents));
+  assert.ok(Array.isArray(metrics.tools));
+
   const projects = await fetchJson(baseUrl, '/api/projects');
   assert.ok(Array.isArray(projects.projects));
   assert.ok(projects.projects.length >= 1);
