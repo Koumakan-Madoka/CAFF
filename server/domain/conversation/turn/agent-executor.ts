@@ -15,7 +15,7 @@ const {
   extractMentionedAgentIds,
   getAgentById,
 } = require('../mention-routing');
-const { buildAgentTurnPrompt } = require('./agent-prompt');
+const { buildAgentTurnPrompt, AGENT_PROMPT_VERSION } = require('./agent-prompt');
 const { ensureAgentSandbox, toPortableShellPath } = require('./agent-sandbox');
 const { extractChatBridgeReplaysFromText, pickChatBridgeReplay } = require('./chat-bridge-replay');
 const { clipText, getTurnStage, nowIso, syncCurrentTurnAgent } = require('./turn-state');
@@ -439,6 +439,7 @@ export function createAgentExecutor(options: any = {}) {
     const queuedMetadata = {
       provider,
       model,
+      promptVersion: AGENT_PROMPT_VERSION,
       modelProfileId: agentConfig.profileId,
       modelProfileName: agentConfig.profileName,
       agentSandboxDir: agentSandbox.sandboxDir,
@@ -501,6 +502,7 @@ export function createAgentExecutor(options: any = {}) {
         userMessageId: promptUserMessage && promptUserMessage.id ? promptUserMessage.id : null,
         promptUserMessage,
         conversationAgents: conversation.agents,
+        runStore,
         stage,
         turnState,
         enqueueAgent,
@@ -526,6 +528,7 @@ export function createAgentExecutor(options: any = {}) {
         turnId,
         agentId: agent.id,
         agentName: agent.name,
+        promptVersion: AGENT_PROMPT_VERSION,
         agentSandboxDir: agentSandbox.sandboxDir,
         agentPrivateDir: agentSandbox.privateDir,
         modelProfileId: agentConfig.profileId,
@@ -546,12 +549,43 @@ export function createAgentExecutor(options: any = {}) {
       turnId,
       agentId: agent.id,
       agentName: agent.name,
+      promptVersion: AGENT_PROMPT_VERSION,
       modelProfileId: agentConfig.profileId,
       modelProfileName: agentConfig.profileName,
       hop,
       routingMode,
       triggerType: queueItem.triggerType || 'user',
       triggeredByAgentId: queueItem.triggeredByAgentId || null,
+    });
+    runStore.appendTaskEvent(stageTaskId, 'agent_expectations', {
+      schemaVersion: 1,
+      promptVersion: AGENT_PROMPT_VERSION,
+      policy: {
+        id: 'caff_default',
+        version: 'v1',
+      },
+      expectations: {
+        'send-public': queuedMetadata.privateOnly ? 'forbidden' : 'required',
+        'send-private': queuedMetadata.privateOnly ? 'required' : 'optional',
+        'read-context': 'optional',
+        participants: 'optional',
+        'trellis-init': 'optional',
+        'trellis-write': 'optional',
+      },
+      context: {
+        conversationId,
+        conversationType: conversation && conversation.type ? conversation.type : 'standard',
+        turnId,
+        agentId: agent.id,
+        agentName: agent.name,
+        hop,
+        routingMode,
+        privateOnly: queuedMetadata.privateOnly,
+        allowHandoffs,
+        triggerType: queueItem.triggerType || 'user',
+        triggeredByAgentId: queueItem.triggeredByAgentId || null,
+        triggeredByMessageId: queueItem.triggeredByMessageId || null,
+      },
     });
 
     const handle = startRun(provider, model, prompt, {
@@ -583,6 +617,7 @@ export function createAgentExecutor(options: any = {}) {
         conversationId,
         turnId,
         agentId: agent.id,
+        promptVersion: AGENT_PROMPT_VERSION,
         agentSandboxDir: agentSandbox.sandboxDir,
         agentPrivateDir: agentSandbox.privateDir,
         modelProfileId: agentConfig.profileId,
@@ -754,6 +789,7 @@ export function createAgentExecutor(options: any = {}) {
       const finalMetadata = {
         provider,
         model,
+        promptVersion: AGENT_PROMPT_VERSION,
         heartbeatCount: result.heartbeatCount || 0,
         sessionName,
         sessionScope: 'agent_turn',

@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CAFF Agent Metrics</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script defer src="/shared/api-client.js"></script>
+    <script defer src="/shared/toast.js"></script>
+    <script defer src="/metrics.js"></script>
+  </head>
+  <body>
+    <div class="ambient ambient-a"></div>
+    <div class="ambient ambient-b"></div>
+    <div class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">CAFF Metrics</p>
+          <h1>Agent 评测报表</h1>
+          <p class="subtitle">从本地 SQLite 状态库汇总每个 Agent 的工具调用、工具聊天率与提示词回归指标。</p>
+        </div>
+        <div class="topbar-actions">
+          <nav class="topbar-nav" aria-label="Primary">
+            <a class="topbar-link" href="/">聊天工作台</a>
+            <a class="topbar-link" href="/personas.html">人格管理</a>
+            <a class="topbar-link" href="/skills.html">Skill 管理</a>
+            <a class="topbar-link" href="/projects.html">项目管理</a>
+            <a class="topbar-link active" href="/metrics.html">评测报表</a>
+          </nav>
+          <button id="refresh-button" class="ghost-button" type="button">刷新</button>
+        </div>
+      </header>
+
+      <main class="layout persona-layout">
+        <aside class="panel panel-conversations">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Filters</p>
+              <h2>筛选</h2>
+            </div>
+          </div>
+
+          <form id="filter-form" class="settings-form compact-settings-form">
+            <div class="field-grid">
+              <label>
+                <span>Since</span>
+                <input id="since-input" name="since" type="date" />
+              </label>
+              <label>
+                <span>Until</span>
+                <input id="until-input" name="until" type="date" />
+              </label>
+            </div>
+
+            <div class="button-row compact-button-row">
+              <button id="apply-filter-button" type="submit">应用</button>
+              <button id="clear-filter-button" class="ghost-button" type="button">清空</button>
+            </div>
+          </form>
+
+          <section class="stack-card">
+            <div class="section-row">
+              <span class="section-label">Agent 列表</span>
+              <span id="agent-count" class="section-hint">加载中...</span>
+            </div>
+            <div id="agent-list" class="agent-list"></div>
+          </section>
+        </aside>
+
+        <section class="panel panel-studio">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Report</p>
+              <h2 id="report-title">汇总</h2>
+              <p id="report-meta" class="muted">加载中...</p>
+            </div>
+          </div>
+
+          <section class="stack-card">
+            <div class="section-row">
+              <span class="section-label">选中 Agent</span>
+              <span id="selected-agent-meta" class="section-hint">从左侧选择一个 Agent</span>
+            </div>
+            <div id="agent-report" class="tag-row"></div>
+          </section>
+
+          <section class="stack-card">
+            <div class="section-row">
+              <span class="section-label">工具概览</span>
+              <span class="section-hint">按调用次数排序</span>
+            </div>
+            <div id="tool-report" class="tag-row"></div>
+          </section>
+
+          <section class="stack-card">
+            <div class="section-row">
+              <span class="section-label">指标说明</span>
+              <span class="section-hint">用于打磨提示词与工具链路（也可悬停查看 tooltip）</span>
+            </div>
+            <ul class="metric-legend">
+              <li><strong>toolChatRate</strong>：监控 Agent 是否通过 <code>send-public</code> 等 public 工具把最终回复发到聊天室（turn 维度占比）。</li>
+              <li><strong>privateToolRate</strong>：监控 Agent 是否按预期走 private 工具通道（turn 维度占比），用于排查私有输出/私聊指令是否生效。</li>
+              <li><strong>send-public recall</strong>：提示词回归指标：当 expectations 标记 public 输出为 required 时，实际调用 public 工具的比例。</li>
+              <li><strong>send-public fpr</strong>：提示词回归指标：当 expectations 标记 public 输出为 forbidden 时，仍调用 public 工具的比例（越低越好）。</li>
+              <li><strong>send-private recall</strong>：提示词回归指标：当 expectations 标记 private 输出为 required 时，实际调用 private 工具的比例。</li>
+              <li><strong>tool successRate</strong>：工具调用成功率；低通常是工具稳定性/参数问题（不一定是提示词问题）。</li>
+              <li><strong>p50/p95</strong>：工具耗时分位数，用于定位慢工具、超时与重试。</li>
+            </ul>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <div id="toast" class="toast hidden"></div>
+  </body>
+</html>

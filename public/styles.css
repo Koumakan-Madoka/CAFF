@@ -1084,6 +1084,23 @@ textarea {
   font-size: 0.86rem;
 }
 
+.metric-legend {
+  margin: 0.65rem 0 0;
+  padding-left: 1.25rem;
+  display: grid;
+  gap: 0.35rem;
+  font-size: 0.92rem;
+  line-height: 1.55;
+}
+
+.metric-legend code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.88em;
+  padding: 0.05rem 0.35rem;
+  border-radius: 0.5rem;
+  background: rgba(34, 49, 63, 0.06);
+}
+
 .skill-file-workspace {
   display: grid;
   grid-template-columns: minmax(220px, 0.82fr) minmax(0, 1.18fr);

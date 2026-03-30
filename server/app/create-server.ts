@@ -12,6 +12,7 @@ const { createAgentToolsController } = require('../api/agent-tools-controller');
 const { createAgentsController } = require('../api/agents-controller');
 const { createBootstrapController } = require('../api/bootstrap-controller');
 const { createConversationsController } = require('../api/conversations-controller');
+const { createMetricsController } = require('../api/metrics-controller');
 const { createProjectsController } = require('../api/projects-controller');
 const { createSkillsController } = require('../api/skills-controller');
 const { createUndercoverController } = require('../api/undercover-controller');
@@ -174,6 +175,9 @@ export function createServerApp(options: any = {}) {
       sseBus,
       turnOrchestrator,
       buildBootstrapPayload,
+    }),
+    createMetricsController({
+      store,
     }),
     createProjectsController({
       projectManager,

@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const { createChatAppStore } = require('../../build/lib/chat-app-store');
+const { createSqliteRunStore } = require('../../build/lib/sqlite-store');
 const { createAgentToolBridge } = require('../../build/server/domain/runtime/agent-tool-bridge');
 
 const { withTempDir } = require('../helpers/temp-dir');
@@ -127,6 +128,76 @@ test('agent tool bridge rejects stale invocations after a turn stops or complete
       }),
     (error) => error && error.statusCode === 409
   );
+});
+
+test('agent tool bridge appends tool-call telemetry events when runStore + stage taskId are available', (t) => {
+  const tempDir = withTempDir('caff-agent-tool-bridge-telemetry-');
+  const sqlitePath = path.join(tempDir, 'telemetry.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const runStore = createSqliteRunStore({ agentDir: tempDir, sqlitePath });
+  const bridge = createAgentToolBridge({ store });
+
+  t.after(() => {
+    try {
+      runStore.close();
+    } catch {}
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const fixture = createPublicInvocationFixture(store, 'telemetry');
+  const taskId = 'task-tool-telemetry';
+  fixture.stage.taskId = taskId;
+  runStore.createTask({
+    taskId,
+    kind: 'conversation_agent_reply',
+    title: 'Telemetry Task',
+    status: 'running',
+    metadata: { source: 'test' },
+  });
+
+  const context = bridge.registerInvocation(
+    bridge.createInvocationContext({
+      conversationId: fixture.conversation.id,
+      turnId: fixture.assistantMessage.turnId,
+      agentId: fixture.agent.id,
+      agentName: fixture.agent.name,
+      assistantMessageId: fixture.assistantMessage.id,
+      conversationAgents: fixture.conversation.agents,
+      stage: fixture.stage,
+      turnState: fixture.turnState,
+      runStore,
+    })
+  );
+
+  const okPost = bridge.handlePostMessage({
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    visibility: 'public',
+    content: 'Hello tool telemetry',
+  });
+
+  assert.equal(okPost.ok, true);
+
+  assert.throws(
+    () =>
+      bridge.handlePostMessage({
+        invocationId: context.invocationId,
+        callbackToken: context.callbackToken,
+        visibility: 'public',
+        content: '',
+      }),
+    (error) => error && error.statusCode === 400
+  );
+
+  const events = runStore.listTaskEvents(taskId);
+  const toolEvents = events.filter((event) => event && event.event_type === 'agent_tool_call');
+
+  assert.ok(toolEvents.length >= 2);
+  assert.ok(toolEvents.some((event) => event && event.payload && event.payload.tool === 'send-public' && event.payload.status === 'succeeded'));
+  assert.ok(toolEvents.some((event) => event && event.payload && event.payload.tool === 'send-public' && event.payload.status === 'failed'));
 });
 
 test('agent tool trellis-init previews and applies a scaffold under the active project', (t) => {

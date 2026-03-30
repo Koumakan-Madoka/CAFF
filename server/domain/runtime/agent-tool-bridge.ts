@@ -48,6 +48,24 @@ export function createAgentToolBridge(options: any = {}) {
   const onTurnUpdated = typeof options.onTurnUpdated === 'function' ? options.onTurnUpdated : () => {};
   const activeInvocations = new Map();
 
+  function resolveStageTaskId(context: any) {
+    const taskId = context && context.stage && context.stage.taskId ? String(context.stage.taskId).trim() : '';
+    return taskId || null;
+  }
+
+  function tryAppendInvocationEvent(context: any, eventType: string, payload: any) {
+    const runStore = context && context.runStore ? context.runStore : null;
+    const taskId = resolveStageTaskId(context);
+
+    if (!runStore || !taskId || typeof runStore.appendTaskEvent !== 'function') {
+      return;
+    }
+
+    try {
+      runStore.appendTaskEvent(taskId, eventType, payload);
+    } catch {}
+  }
+
   function createInvocationContext(input: any = {}) {
     const invocationId = String(input.invocationId || randomUUID()).trim();
     const callbackToken = String(input.callbackToken || randomUUID()).trim();
@@ -69,6 +87,7 @@ export function createAgentToolBridge(options: any = {}) {
       userMessageId: String(input.userMessageId || (promptUserMessage && promptUserMessage.id) || '').trim(),
       promptUserMessage,
       conversationAgents: Array.isArray(input.conversationAgents) ? input.conversationAgents.slice() : [],
+      runStore: input.runStore || null,
       stage: input.stage || null,
       turnState: input.turnState || null,
       enqueueAgent: typeof input.enqueueAgent === 'function' ? input.enqueueAgent : null,
@@ -360,109 +379,192 @@ export function createAgentToolBridge(options: any = {}) {
   }
 
   function handlePostMessage(body: any = {}) {
+    const startedAt = Date.now();
     const context = getInvocation(body.invocationId, body.callbackToken);
     const content = String(body.content || '').trim();
-
-    if (!content) {
-      throw createHttpError(400, 'Message content is required');
-    }
-
     const visibility = String(body.visibility || 'public').trim().toLowerCase();
+    const toolCallId = randomUUID();
+    const toolName = visibility === 'private' ? 'send-private' : visibility === 'public' ? 'send-public' : 'post-message';
 
-    if (visibility === 'public') {
-      const message = applyAgentToolPublicUpdate(context, content, body.mode);
-      return {
-        ok: true,
-        visibility: 'public',
-        message: serializeAgentToolPublicMessage(message),
-      };
-    }
-
-    if (visibility === 'private') {
-      const conversation = store.getConversation(context.conversationId);
-
-      if (!conversation) {
-        throw createHttpError(404, 'Conversation not found');
+    try {
+      if (!content) {
+        throw createHttpError(400, 'Message content is required');
       }
 
-      const recipientAgentIds = resolveAgentToolRecipientIds(
-        body.recipientAgentIds !== undefined ? body.recipientAgentIds : body.recipients,
-        conversation.agents
-      );
-      const resolvedRecipientAgentIds = recipientAgentIds.length > 0 ? recipientAgentIds : [context.agentId];
-      const handoffAgentIds = resolvedRecipientAgentIds.filter((agentId: any) => agentId && agentId !== context.agentId);
-      const explicitHandoff = body.handoff === true || body.triggerReply === true;
-      const explicitNoHandoff = body.handoff === false || body.triggerReply === false || body.noHandoff === true;
-      let handoffRequested = !explicitNoHandoff && (explicitHandoff || handoffAgentIds.length > 0);
+      if (visibility === 'public') {
+        const mode = String(body.mode || 'replace').trim().toLowerCase() || 'replace';
+        const message = applyAgentToolPublicUpdate(context, content, mode);
+        const serialized = serializeAgentToolPublicMessage(message);
+        tryAppendInvocationEvent(context, 'agent_tool_call', {
+          schemaVersion: 1,
+          toolCallId,
+          tool: 'send-public',
+          status: 'succeeded',
+          durationMs: Date.now() - startedAt,
+          invocationId: context.invocationId,
+          conversationId: context.conversationId,
+          turnId: context.turnId,
+          agentId: context.agentId,
+          agentName: context.agentName,
+          assistantMessageId: context.assistantMessageId,
+          request: {
+            visibility: 'public',
+            mode,
+            contentLength: content.length,
+          },
+          result: {
+            messageId: serialized.id,
+            publicPostCount: serialized.publicPostCount,
+            publicPostMode: serialized.publicPostMode,
+            publicPostedAt: serialized.publicPostedAt,
+          },
+        });
+        return {
+          ok: true,
+          visibility: 'public',
+          message: serialized,
+        };
+      }
 
-      if (handoffRequested && !context.allowHandoffs) {
-        if (explicitHandoff && !explicitNoHandoff) {
-          throw createHttpError(409, 'Private handoff is not available in this turn mode');
+      if (visibility === 'private') {
+        const conversation = store.getConversation(context.conversationId);
+
+        if (!conversation) {
+          throw createHttpError(404, 'Conversation not found');
         }
 
-        handoffRequested = false;
+        const recipientAgentIds = resolveAgentToolRecipientIds(
+          body.recipientAgentIds !== undefined ? body.recipientAgentIds : body.recipients,
+          conversation.agents
+        );
+        const resolvedRecipientAgentIds = recipientAgentIds.length > 0 ? recipientAgentIds : [context.agentId];
+        const handoffAgentIds = resolvedRecipientAgentIds.filter((agentId: any) => agentId && agentId !== context.agentId);
+        const explicitHandoff = body.handoff === true || body.triggerReply === true;
+        const explicitNoHandoff = body.handoff === false || body.triggerReply === false || body.noHandoff === true;
+        let handoffRequested = !explicitNoHandoff && (explicitHandoff || handoffAgentIds.length > 0);
+
+        if (handoffRequested && !context.allowHandoffs) {
+          if (explicitHandoff && !explicitNoHandoff) {
+            throw createHttpError(409, 'Private handoff is not available in this turn mode');
+          }
+
+          handoffRequested = false;
+        }
+
+        if (handoffRequested && typeof context.enqueueAgent !== 'function') {
+          throw createHttpError(409, 'Private handoff is not available for this run');
+        }
+
+        if (handoffRequested && handoffAgentIds.length === 0) {
+          throw createHttpError(400, 'Private handoff requires at least one recipient other than yourself');
+        }
+
+        const privateMessage = store.createPrivateMessage({
+          conversationId: context.conversationId,
+          turnId: context.turnId,
+          senderAgentId: context.agentId,
+          senderName: context.agentName,
+          recipientAgentIds: resolvedRecipientAgentIds,
+          content,
+          metadata: {
+            source: 'agent-tool',
+            handoffRequested,
+          },
+        });
+
+        context.privatePostCount = (context.privatePostCount || 0) + 1;
+        let enqueuedAgentIds = [];
+
+        if (handoffRequested) {
+          enqueuedAgentIds = context.enqueueAgent({
+            agentIds: handoffAgentIds,
+            triggerType: 'private',
+            triggeredByAgentId: context.agentId,
+            triggeredByAgentName: context.agentName,
+            triggeredByMessageId: privateMessage.id,
+            parentRunId: context.stage && context.stage.runId ? context.stage.runId : null,
+            enqueueReason: 'private_message',
+          });
+          context.privateHandoffCount = (context.privateHandoffCount || 0) + enqueuedAgentIds.length;
+
+          if (context.turnState) {
+            context.turnState.updatedAt = nowIso();
+            onTurnUpdated(context.turnState);
+          }
+        }
+
+        broadcastEvent('conversation_private_message_created', {
+          conversationId: context.conversationId,
+          message: serializeConversationPrivateMessageForUi(privateMessage, conversation.agents),
+        });
+
+        const response = {
+          ok: true,
+          visibility: 'private',
+          message: serializeAgentToolPrivateMessage(privateMessage),
+          handoffRequested,
+          enqueuedAgentIds,
+        };
+
+        tryAppendInvocationEvent(context, 'agent_tool_call', {
+          schemaVersion: 1,
+          toolCallId,
+          tool: 'send-private',
+          status: 'succeeded',
+          durationMs: Date.now() - startedAt,
+          invocationId: context.invocationId,
+          conversationId: context.conversationId,
+          turnId: context.turnId,
+          agentId: context.agentId,
+          agentName: context.agentName,
+          assistantMessageId: context.assistantMessageId,
+          request: {
+            visibility: 'private',
+            contentLength: content.length,
+            recipientCount: resolvedRecipientAgentIds.length,
+            handoffRequested,
+          },
+          result: {
+            messageId: response.message.id,
+            recipientCount: response.message.recipientAgentIds.length,
+            enqueuedCount: Array.isArray(enqueuedAgentIds) ? enqueuedAgentIds.length : 0,
+          },
+        });
+
+        return response;
       }
 
-      if (handoffRequested && typeof context.enqueueAgent !== 'function') {
-        throw createHttpError(409, 'Private handoff is not available for this run');
-      }
-
-      if (handoffRequested && handoffAgentIds.length === 0) {
-        throw createHttpError(400, 'Private handoff requires at least one recipient other than yourself');
-      }
-
-      const privateMessage = store.createPrivateMessage({
+      throw createHttpError(400, 'Unsupported visibility. Use public or private.');
+    } catch (error) {
+      const errorValue = error as any;
+      tryAppendInvocationEvent(context, 'agent_tool_call', {
+        schemaVersion: 1,
+        toolCallId,
+        tool: toolName,
+        status: 'failed',
+        durationMs: Date.now() - startedAt,
+        invocationId: context.invocationId,
         conversationId: context.conversationId,
         turnId: context.turnId,
-        senderAgentId: context.agentId,
-        senderName: context.agentName,
-        recipientAgentIds: resolvedRecipientAgentIds,
-        content,
-        metadata: {
-          source: 'agent-tool',
-          handoffRequested,
+        agentId: context.agentId,
+        agentName: context.agentName,
+        assistantMessageId: context.assistantMessageId,
+        request: {
+          visibility,
+          contentLength: content.length,
+        },
+        error: {
+          statusCode: Number.isInteger(errorValue && errorValue.statusCode) ? errorValue.statusCode : null,
+          message: clipText(errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Unknown error')),
         },
       });
 
-      context.privatePostCount = (context.privatePostCount || 0) + 1;
-      let enqueuedAgentIds = [];
-
-      if (handoffRequested) {
-        enqueuedAgentIds = context.enqueueAgent({
-          agentIds: handoffAgentIds,
-          triggerType: 'private',
-          triggeredByAgentId: context.agentId,
-          triggeredByAgentName: context.agentName,
-          triggeredByMessageId: privateMessage.id,
-          parentRunId: context.stage && context.stage.runId ? context.stage.runId : null,
-          enqueueReason: 'private_message',
-        });
-        context.privateHandoffCount = (context.privateHandoffCount || 0) + enqueuedAgentIds.length;
-
-        if (context.turnState) {
-          context.turnState.updatedAt = nowIso();
-          onTurnUpdated(context.turnState);
-        }
-      }
-
-      broadcastEvent('conversation_private_message_created', {
-        conversationId: context.conversationId,
-        message: serializeConversationPrivateMessageForUi(privateMessage, conversation.agents),
-      });
-
-      return {
-        ok: true,
-        visibility: 'private',
-        message: serializeAgentToolPrivateMessage(privateMessage),
-        handoffRequested,
-        enqueuedAgentIds,
-      };
+      throw error;
     }
-
-    throw createHttpError(400, 'Unsupported visibility. Use public or private.');
   }
 
   function handleReadContext(requestUrl: any) {
+    const startedAt = Date.now();
     const context = getInvocation(
       requestUrl.searchParams.get('invocationId'),
       requestUrl.searchParams.get('callbackToken')
@@ -470,27 +572,123 @@ export function createAgentToolBridge(options: any = {}) {
     const publicLimit = Number.parseInt(requestUrl.searchParams.get('publicLimit') || '', 10);
     const privateLimit = Number.parseInt(requestUrl.searchParams.get('privateLimit') || '', 10);
 
-    return {
-      ok: true,
-      ...buildAgentToolContextPayload(context, {
+    try {
+      const payload = buildAgentToolContextPayload(context, {
         publicLimit: Number.isFinite(publicLimit) ? publicLimit : undefined,
         privateLimit: Number.isFinite(privateLimit) ? privateLimit : undefined,
-      }),
-    };
+      });
+      const response = {
+        ok: true,
+        ...payload,
+      };
+
+      tryAppendInvocationEvent(context, 'agent_tool_call', {
+        schemaVersion: 1,
+        toolCallId: randomUUID(),
+        tool: 'read-context',
+        status: 'succeeded',
+        durationMs: Date.now() - startedAt,
+        invocationId: context.invocationId,
+        conversationId: context.conversationId,
+        turnId: context.turnId,
+        agentId: context.agentId,
+        agentName: context.agentName,
+        assistantMessageId: context.assistantMessageId,
+        request: {
+          publicLimit: Number.isFinite(publicLimit) ? publicLimit : null,
+          privateLimit: Number.isFinite(privateLimit) ? privateLimit : null,
+        },
+        result: {
+          publicMessageCount: Array.isArray(response.publicMessages) ? response.publicMessages.length : 0,
+          privateMessageCount: Array.isArray(response.privateMessages) ? response.privateMessages.length : 0,
+          participantCount: Array.isArray(response.participants) ? response.participants.length : 0,
+        },
+      });
+
+      return response;
+    } catch (error) {
+      const errorValue = error as any;
+      tryAppendInvocationEvent(context, 'agent_tool_call', {
+        schemaVersion: 1,
+        toolCallId: randomUUID(),
+        tool: 'read-context',
+        status: 'failed',
+        durationMs: Date.now() - startedAt,
+        invocationId: context.invocationId,
+        conversationId: context.conversationId,
+        turnId: context.turnId,
+        agentId: context.agentId,
+        agentName: context.agentName,
+        assistantMessageId: context.assistantMessageId,
+        request: {
+          publicLimit: Number.isFinite(publicLimit) ? publicLimit : null,
+          privateLimit: Number.isFinite(privateLimit) ? privateLimit : null,
+        },
+        error: {
+          statusCode: Number.isInteger(errorValue && errorValue.statusCode) ? errorValue.statusCode : null,
+          message: clipText(errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Unknown error')),
+        },
+      });
+
+      throw error;
+    }
   }
 
   function handleListParticipants(requestUrl: any) {
+    const startedAt = Date.now();
     const context = getInvocation(
       requestUrl.searchParams.get('invocationId'),
       requestUrl.searchParams.get('callbackToken')
     );
     const conversation = store.getConversation(context.conversationId);
 
-    return {
-      ok: true,
-      conversation: conversation ? pickConversationSummary(conversation) : null,
-      participants: conversation ? serializeAgentToolParticipants(conversation.agents) : [],
-    };
+    try {
+      const response = {
+        ok: true,
+        conversation: conversation ? pickConversationSummary(conversation) : null,
+        participants: conversation ? serializeAgentToolParticipants(conversation.agents) : [],
+      };
+
+      tryAppendInvocationEvent(context, 'agent_tool_call', {
+        schemaVersion: 1,
+        toolCallId: randomUUID(),
+        tool: 'participants',
+        status: 'succeeded',
+        durationMs: Date.now() - startedAt,
+        invocationId: context.invocationId,
+        conversationId: context.conversationId,
+        turnId: context.turnId,
+        agentId: context.agentId,
+        agentName: context.agentName,
+        assistantMessageId: context.assistantMessageId,
+        result: {
+          participantCount: Array.isArray(response.participants) ? response.participants.length : 0,
+        },
+      });
+
+      return response;
+    } catch (error) {
+      const errorValue = error as any;
+      tryAppendInvocationEvent(context, 'agent_tool_call', {
+        schemaVersion: 1,
+        toolCallId: randomUUID(),
+        tool: 'participants',
+        status: 'failed',
+        durationMs: Date.now() - startedAt,
+        invocationId: context.invocationId,
+        conversationId: context.conversationId,
+        turnId: context.turnId,
+        agentId: context.agentId,
+        agentName: context.agentName,
+        assistantMessageId: context.assistantMessageId,
+        error: {
+          statusCode: Number.isInteger(errorValue && errorValue.statusCode) ? errorValue.statusCode : null,
+          message: clipText(errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Unknown error')),
+        },
+      });
+
+      throw error;
+    }
   }
 
   function safeStat(filePath: any) {
@@ -729,151 +927,245 @@ export function createAgentToolBridge(options: any = {}) {
   }
 
   function handleTrellisInit(body: any = {}) {
+    const startedAt = Date.now();
     const context = getInvocation(body.invocationId, body.callbackToken);
     const includeContent = body.includeContent === true;
     const confirm = body.confirm === true;
     const force = body.force === true;
     const taskName = normalizeTaskName(body.taskName || body.task || body.name, 'demo');
 
-    if (!taskName) {
-      throw createHttpError(400, 'taskName must be a simple directory name (letters/numbers/._-)');
-    }
+    const toolCallId = randomUUID();
 
-    const projectDirRaw = String(context.projectDir || '').trim();
-
-    if (!projectDirRaw) {
-      throw createHttpError(409, 'No active project directory is available for this invocation');
-    }
-
-    const projectDir = path.resolve(projectDirRaw);
-    const projectStat = safeStat(projectDir);
-
-    if (!projectStat || !projectStat.isDirectory()) {
-      throw createHttpError(409, 'Active project directory does not exist or is not a folder');
-    }
-
-    const trellisDir = path.join(projectDir, '.trellis');
-    const trellisLstat = safeLstat(trellisDir);
-
-    if (trellisLstat && trellisLstat.isSymbolicLink()) {
-      throw createHttpError(400, 'Refusing to write .trellis because it is a symlink');
-    }
-
-    if (trellisLstat && !trellisLstat.isDirectory()) {
-      throw createHttpError(409, 'Refusing to write .trellis because it exists and is not a directory');
-    }
-
-    const files = buildTrellisInitFiles(taskName);
-    const operations: any[] = [];
-
-    for (const file of files) {
-      const absolutePath = path.resolve(projectDir, file.relativePath);
-      const withinTrellis = isPathWithinDir(trellisDir, absolutePath);
-
-      if (!withinTrellis) {
-        throw createHttpError(400, `Refusing to write outside .trellis: ${file.relativePath}`);
+    try {
+      if (!taskName) {
+        throw createHttpError(400, 'taskName must be a simple directory name (letters/numbers/._-)');
       }
 
-      const exists = fs.existsSync(absolutePath);
-      const existingStat = exists ? safeStat(absolutePath) : null;
-      const action =
-        existingStat && existingStat.isDirectory()
-          ? 'conflict-directory'
-          : exists
-            ? force
-              ? 'overwrite'
-              : 'skip-existing'
-            : 'create';
+      const projectDirRaw = String(context.projectDir || '').trim();
 
-      operations.push({
-        path: file.relativePath.replace(/\\/g, '/'),
-        action,
-        bytes: Buffer.byteLength(file.content, 'utf8'),
-        ...(includeContent ? { content: file.content } : {}),
-      });
-    }
+      if (!projectDirRaw) {
+        throw createHttpError(409, 'No active project directory is available for this invocation');
+      }
 
-    if (!confirm) {
-      return {
+      const projectDir = path.resolve(projectDirRaw);
+      const projectStat = safeStat(projectDir);
+
+      if (!projectStat || !projectStat.isDirectory()) {
+        throw createHttpError(409, 'Active project directory does not exist or is not a folder');
+      }
+
+      const trellisDir = path.join(projectDir, '.trellis');
+      const trellisLstat = safeLstat(trellisDir);
+
+      if (trellisLstat && trellisLstat.isSymbolicLink()) {
+        throw createHttpError(400, 'Refusing to write .trellis because it is a symlink');
+      }
+
+      if (trellisLstat && !trellisLstat.isDirectory()) {
+        throw createHttpError(409, 'Refusing to write .trellis because it exists and is not a directory');
+      }
+
+      const files = buildTrellisInitFiles(taskName);
+      const operations: any[] = [];
+
+      for (const file of files) {
+        const absolutePath = path.resolve(projectDir, file.relativePath);
+        const withinTrellis = isPathWithinDir(trellisDir, absolutePath);
+
+        if (!withinTrellis) {
+          throw createHttpError(400, `Refusing to write outside .trellis: ${file.relativePath}`);
+        }
+
+        const exists = fs.existsSync(absolutePath);
+        const existingStat = exists ? safeStat(absolutePath) : null;
+        const action =
+          existingStat && existingStat.isDirectory()
+            ? 'conflict-directory'
+            : exists
+              ? force
+                ? 'overwrite'
+                : 'skip-existing'
+              : 'create';
+
+        operations.push({
+          path: file.relativePath.replace(/\\/g, '/'),
+          action,
+          bytes: Buffer.byteLength(file.content, 'utf8'),
+          ...(includeContent ? { content: file.content } : {}),
+        });
+      }
+
+      if (!confirm) {
+        const response = {
+          ok: true,
+          applied: false,
+          projectDir,
+          trellisDir,
+          taskName,
+          operations,
+          willWriteCount: operations.filter((op) => op.action === 'create' || op.action === 'overwrite').length,
+          skippedCount: operations.filter((op) => op.action === 'skip-existing').length,
+          confirmRequired: true,
+        };
+
+        tryAppendInvocationEvent(context, 'agent_tool_call', {
+          schemaVersion: 1,
+          toolCallId,
+          tool: 'trellis-init',
+          status: 'succeeded',
+          durationMs: Date.now() - startedAt,
+          invocationId: context.invocationId,
+          conversationId: context.conversationId,
+          turnId: context.turnId,
+          agentId: context.agentId,
+          agentName: context.agentName,
+          assistantMessageId: context.assistantMessageId,
+          request: {
+            taskName,
+            confirm,
+            force,
+            includeContent,
+          },
+          result: {
+            applied: false,
+            operationCount: operations.length,
+            willWriteCount: response.willWriteCount,
+            skippedCount: response.skippedCount,
+          },
+        });
+
+        return response;
+      }
+
+      fs.mkdirSync(trellisDir, { recursive: true });
+
+      if (hasSymlinkInPath(projectDir, trellisDir)) {
+        throw createHttpError(400, 'Refusing to write .trellis because it contains a symlink');
+      }
+
+      for (const file of files) {
+        const absolutePath = path.resolve(projectDir, file.relativePath);
+        const exists = fs.existsSync(absolutePath);
+        const existingStat = exists ? safeStat(absolutePath) : null;
+
+        if (existingStat && existingStat.isDirectory()) {
+          throw createHttpError(400, `Refusing to write because path is a directory: ${file.relativePath}`);
+        }
+
+        if (exists && !force) {
+          continue;
+        }
+
+        if (hasSymlinkInPath(trellisDir, absolutePath)) {
+          throw createHttpError(400, `Refusing to write because path includes a symlink: ${file.relativePath}`);
+        }
+      }
+
+      const writtenFiles: string[] = [];
+      const skippedFiles: string[] = [];
+
+      for (const file of files) {
+        const absolutePath = path.resolve(projectDir, file.relativePath);
+        const exists = fs.existsSync(absolutePath);
+        const existingStat = exists ? safeStat(absolutePath) : null;
+
+        if (exists && !force) {
+          skippedFiles.push(file.relativePath.replace(/\\/g, '/'));
+          continue;
+        }
+
+        if (existingStat && existingStat.isDirectory()) {
+          throw createHttpError(400, `Refusing to write because path is a directory: ${file.relativePath}`);
+        }
+
+        if (hasSymlinkInPath(trellisDir, absolutePath)) {
+          throw createHttpError(400, `Refusing to write because path includes a symlink: ${file.relativePath}`);
+        }
+
+        fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+        fs.writeFileSync(absolutePath, file.content, 'utf8');
+        writtenFiles.push(file.relativePath.replace(/\\/g, '/'));
+      }
+
+      const response = {
         ok: true,
-        applied: false,
+        applied: true,
         projectDir,
         trellisDir,
         taskName,
-        operations,
-        willWriteCount: operations.filter((op) => op.action === 'create' || op.action === 'overwrite').length,
-        skippedCount: operations.filter((op) => op.action === 'skip-existing').length,
-        confirmRequired: true,
+        writtenFiles,
+        skippedFiles,
       };
+
+      tryAppendInvocationEvent(context, 'agent_tool_call', {
+        schemaVersion: 1,
+        toolCallId,
+        tool: 'trellis-init',
+        status: 'succeeded',
+        durationMs: Date.now() - startedAt,
+        invocationId: context.invocationId,
+        conversationId: context.conversationId,
+        turnId: context.turnId,
+        agentId: context.agentId,
+        agentName: context.agentName,
+        assistantMessageId: context.assistantMessageId,
+        request: {
+          taskName,
+          confirm,
+          force,
+          includeContent,
+        },
+        result: {
+          applied: true,
+          writtenCount: writtenFiles.length,
+          skippedCount: skippedFiles.length,
+        },
+      });
+
+      return response;
+    } catch (error) {
+      const errorValue = error as any;
+      tryAppendInvocationEvent(context, 'agent_tool_call', {
+        schemaVersion: 1,
+        toolCallId,
+        tool: 'trellis-init',
+        status: 'failed',
+        durationMs: Date.now() - startedAt,
+        invocationId: context.invocationId,
+        conversationId: context.conversationId,
+        turnId: context.turnId,
+        agentId: context.agentId,
+        agentName: context.agentName,
+        assistantMessageId: context.assistantMessageId,
+        request: {
+          taskName,
+          confirm,
+          force,
+          includeContent,
+        },
+        error: {
+          statusCode: Number.isInteger(errorValue && errorValue.statusCode) ? errorValue.statusCode : null,
+          message: clipText(errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Unknown error')),
+        },
+      });
+
+      throw error;
     }
-
-    fs.mkdirSync(trellisDir, { recursive: true });
-
-    if (hasSymlinkInPath(projectDir, trellisDir)) {
-      throw createHttpError(400, 'Refusing to write .trellis because it contains a symlink');
-    }
-
-    for (const file of files) {
-      const absolutePath = path.resolve(projectDir, file.relativePath);
-      const exists = fs.existsSync(absolutePath);
-      const existingStat = exists ? safeStat(absolutePath) : null;
-
-      if (existingStat && existingStat.isDirectory()) {
-        throw createHttpError(400, `Refusing to write because path is a directory: ${file.relativePath}`);
-      }
-
-      if (exists && !force) {
-        continue;
-      }
-
-      if (hasSymlinkInPath(trellisDir, absolutePath)) {
-        throw createHttpError(400, `Refusing to write because path includes a symlink: ${file.relativePath}`);
-      }
-    }
-
-    const writtenFiles: string[] = [];
-    const skippedFiles: string[] = [];
-
-    for (const file of files) {
-      const absolutePath = path.resolve(projectDir, file.relativePath);
-      const exists = fs.existsSync(absolutePath);
-      const existingStat = exists ? safeStat(absolutePath) : null;
-
-      if (exists && !force) {
-        skippedFiles.push(file.relativePath.replace(/\\/g, '/'));
-        continue;
-      }
-
-      if (existingStat && existingStat.isDirectory()) {
-        throw createHttpError(400, `Refusing to write because path is a directory: ${file.relativePath}`);
-      }
-
-      if (hasSymlinkInPath(trellisDir, absolutePath)) {
-        throw createHttpError(400, `Refusing to write because path includes a symlink: ${file.relativePath}`);
-      }
-
-      fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
-      fs.writeFileSync(absolutePath, file.content, 'utf8');
-      writtenFiles.push(file.relativePath.replace(/\\/g, '/'));
-    }
-
-    return {
-      ok: true,
-      applied: true,
-      projectDir,
-      trellisDir,
-      taskName,
-      writtenFiles,
-      skippedFiles,
-    };
   }
 
   function handleTrellisWrite(body: any = {}) {
+    const startedAt = Date.now();
     const context = getInvocation(body.invocationId, body.callbackToken);
     const includeContent = body.includeContent === true;
     const confirm = body.confirm === true;
     const force = body.force === true;
+    const toolCallId = randomUUID();
 
+    let fileCount = 0;
+    let totalBytes = 0;
+    let pathsSample: string[] = [];
+
+    try {
     const filesPayload = Array.isArray(body.files) ? body.files : null;
     const files = filesPayload
       ? filesPayload
@@ -907,6 +1199,9 @@ export function createAgentToolBridge(options: any = {}) {
       });
     }
 
+    fileCount = normalizedFiles.length;
+    pathsSample = normalizedFiles.slice(0, 6).map((file: any) => file.relativePath);
+
     if (rejectedPaths.length > 0) {
       const examples = rejectedPaths
         .filter(Boolean)
@@ -927,7 +1222,7 @@ export function createAgentToolBridge(options: any = {}) {
       throw createHttpError(400, 'Refusing to write more than 20 files in one request');
     }
 
-    const totalBytes = normalizedFiles.reduce((sum: number, file: any) => sum + Buffer.byteLength(file.content, 'utf8'), 0);
+    totalBytes = normalizedFiles.reduce((sum: number, file: any) => sum + Buffer.byteLength(file.content, 'utf8'), 0);
     if (totalBytes > 256 * 1024) {
       throw createHttpError(400, 'Refusing to write more than 256KB of content in one request');
     }
@@ -983,7 +1278,7 @@ export function createAgentToolBridge(options: any = {}) {
     }
 
     if (!confirm) {
-      return {
+      const response = {
         ok: true,
         applied: false,
         projectDir,
@@ -993,6 +1288,36 @@ export function createAgentToolBridge(options: any = {}) {
         skippedCount: operations.filter((op) => op.action === 'skip-existing').length,
         confirmRequired: true,
       };
+
+      tryAppendInvocationEvent(context, 'agent_tool_call', {
+        schemaVersion: 1,
+        toolCallId,
+        tool: 'trellis-write',
+        status: 'succeeded',
+        durationMs: Date.now() - startedAt,
+        invocationId: context.invocationId,
+        conversationId: context.conversationId,
+        turnId: context.turnId,
+        agentId: context.agentId,
+        agentName: context.agentName,
+        assistantMessageId: context.assistantMessageId,
+        request: {
+          confirm,
+          force,
+          includeContent,
+          fileCount,
+          totalBytes,
+          paths: pathsSample,
+        },
+        result: {
+          applied: false,
+          operationCount: operations.length,
+          willWriteCount: response.willWriteCount,
+          skippedCount: response.skippedCount,
+        },
+      });
+
+      return response;
     }
 
     fs.mkdirSync(trellisDir, { recursive: true });
@@ -1028,7 +1353,7 @@ export function createAgentToolBridge(options: any = {}) {
       writtenFiles.push(file.relativePath.replace(/\\/g, '/'));
     }
 
-    return {
+    const response = {
       ok: true,
       applied: true,
       projectDir,
@@ -1036,6 +1361,65 @@ export function createAgentToolBridge(options: any = {}) {
       writtenFiles,
       skippedFiles,
     };
+
+    tryAppendInvocationEvent(context, 'agent_tool_call', {
+      schemaVersion: 1,
+      toolCallId,
+      tool: 'trellis-write',
+      status: 'succeeded',
+      durationMs: Date.now() - startedAt,
+      invocationId: context.invocationId,
+      conversationId: context.conversationId,
+      turnId: context.turnId,
+      agentId: context.agentId,
+      agentName: context.agentName,
+      assistantMessageId: context.assistantMessageId,
+        request: {
+          confirm,
+          force,
+          includeContent,
+          fileCount,
+          totalBytes,
+          paths: pathsSample,
+        },
+        result: {
+          applied: true,
+          writtenCount: writtenFiles.length,
+          skippedCount: skippedFiles.length,
+      },
+    });
+
+    return response;
+    } catch (error) {
+      const errorValue = error as any;
+      tryAppendInvocationEvent(context, 'agent_tool_call', {
+        schemaVersion: 1,
+        toolCallId,
+        tool: 'trellis-write',
+        status: 'failed',
+        durationMs: Date.now() - startedAt,
+        invocationId: context.invocationId,
+        conversationId: context.conversationId,
+        turnId: context.turnId,
+        agentId: context.agentId,
+        agentName: context.agentName,
+        assistantMessageId: context.assistantMessageId,
+        request: {
+          confirm,
+          force,
+          includeContent,
+          fileCount,
+          totalBytes,
+          paths: pathsSample,
+        },
+        error: {
+          statusCode: Number.isInteger(errorValue && errorValue.statusCode) ? errorValue.statusCode : null,
+          message: clipText(errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Unknown error')),
+        },
+      });
+
+      throw error;
+    }
   }
 
   return {
