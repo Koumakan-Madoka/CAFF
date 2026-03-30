@@ -10,6 +10,7 @@
     "start": "node build/lib/app-server.js",
     "start:dev": "npm run build && npm run start",
     "start:src": "npm run start:dev",
+    "metrics:agent": "node scripts/agent-eval-report.js",
     "typecheck": "tsc -p tsconfig.typecheck.json && tsc -p tsconfig.public.json",
     "typecheck:public": "tsc -p tsconfig.public.json",
     "test:fast": "npm run check && npm run build && node tests/runtime/agent-tool-bridge.test.js && node tests/runtime/chat-bridge-replay.test.js && node tests/runtime/turn-orchestrator.test.js && node tests/runtime/agent-chat-tools.test.js && node tests/runtime/werewolf-game.test.js && node tests/http/request-body.test.js && node tests/storage/chat-store.test.js && node tests/storage/run-store.test.js && node tests/runtime/pi-runtime.test.js",

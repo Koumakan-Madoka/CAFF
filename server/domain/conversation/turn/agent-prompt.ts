@@ -3,6 +3,9 @@ const { UNDERCOVER_CONVERSATION_TYPE } = require('../../../../lib/who-is-underco
 const { WEREWOLF_CONVERSATION_TYPE } = require('../../../../lib/werewolf-game');
 const { buildTrellisPromptContext } = require('./trellis-context');
 
+export const AGENT_PROMPT_VERSION =
+  String(process.env.CAFF_AGENT_PROMPT_VERSION || '2026-03-30').trim() || '2026-03-30';
+
 const MAX_HISTORY_MESSAGES = 24;
 const MAX_PARALLEL_MENTION_BATCH_SIZE = 5;
 const MAX_PRIVATE_CONTEXT_MESSAGES = 16;
