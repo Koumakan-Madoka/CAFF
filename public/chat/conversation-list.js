@@ -10,6 +10,7 @@
       formatDateTime,
       isConversationBusy,
       isUndercoverConversation,
+      isWerewolfConversation,
     } = helpers;
 
     function render() {
@@ -63,7 +64,8 @@
         title.textContent = conversation.title;
 
         const typeBadge = document.createElement('span');
-        typeBadge.className = `conversation-type-badge${isUndercoverConversation(conversation) ? ' game' : ''}`;
+        const isGameRoom = isUndercoverConversation(conversation) || isWerewolfConversation(conversation);
+        typeBadge.className = `conversation-type-badge${isGameRoom ? ' game' : ''}`;
         typeBadge.textContent = conversationTypeLabel(conversation);
 
         const badge = document.createElement('span');
@@ -88,7 +90,7 @@
 
         const participants = document.createElement('span');
         participants.className = 'muted';
-        participants.textContent = isUndercoverConversation(conversation)
+        participants.textContent = isUndercoverConversation(conversation) || isWerewolfConversation(conversation)
           ? `${conversation.agentCount || 0} 名玩家`
           : `${conversation.agentCount || 0} 个 Agent`;
 

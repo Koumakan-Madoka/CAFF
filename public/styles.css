@@ -1277,7 +1277,8 @@ textarea {
   margin-left: auto;
 }
 
-.undercover-status-card {
+.undercover-status-card,
+.werewolf-status-card {
   display: grid;
   gap: 0.55rem;
   padding: 1rem 1.1rem;
@@ -1286,13 +1287,15 @@ textarea {
   border: 1px solid rgba(217, 164, 65, 0.16);
 }
 
-.undercover-player-grid {
+.undercover-player-grid,
+.werewolf-player-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.7rem;
 }
 
-.undercover-player-chip {
+.undercover-player-chip,
+.werewolf-player-chip {
   display: grid;
   gap: 0.18rem;
   padding: 0.8rem 0.9rem;
@@ -1301,7 +1304,8 @@ textarea {
   border: 1px solid rgba(34, 49, 63, 0.08);
 }
 
-.undercover-player-chip.is-eliminated {
+.undercover-player-chip.is-eliminated,
+.werewolf-player-chip.is-eliminated {
   background: rgba(176, 68, 68, 0.08);
   border-color: rgba(176, 68, 68, 0.16);
 }
@@ -1347,6 +1351,7 @@ textarea {
   }
 
   .undercover-player-grid,
+  .werewolf-player-grid,
   .two-column-grid,
   .three-column-grid {
     grid-template-columns: 1fr;

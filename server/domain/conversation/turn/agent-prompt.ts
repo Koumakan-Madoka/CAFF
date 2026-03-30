@@ -1,5 +1,6 @@
 const { getAgentById } = require('../mention-routing');
 const { UNDERCOVER_CONVERSATION_TYPE } = require('../../../../lib/who-is-undercover-game');
+const { WEREWOLF_CONVERSATION_TYPE } = require('../../../../lib/werewolf-game');
 const { buildTrellisPromptContext } = require('./trellis-context');
 
 const MAX_HISTORY_MESSAGES = 24;
@@ -58,7 +59,10 @@ function describeTurnTrigger(trigger: any, agents: any) {
 
   if (trigger.triggerType === 'user') {
     if (String(trigger.enqueueReason || '').startsWith('host_')) {
-      return 'The backend game host selected you for the current phase.';
+      const privateOnlyNote = trigger.privateOnly
+        ? ' This phase requires PRIVATE communication only. Use send-private tool, not send-public.'
+        : '';
+      return `The backend game host selected you for the current phase.${privateOnlyNote}`;
     }
 
     return trigger.enqueueReason === 'user_mentions'
@@ -173,6 +177,7 @@ function buildAgentToolInstructions(agentToolRelativePath: string) {
     `- Overwrite an existing .trellis file (dangerous): ${relativeCommandPrefix} trellis-write --path ".trellis/tasks/my-task/prd.md" --content-stdin --confirm --force`,
     `- If your shell is not in the repo root, use the env path instead: ${envCommandPrefix} ...`,
     "- This run executes shell commands with bash. Do not use PowerShell here-string syntax like @'... '@.",
+    '- IMPORTANT: Do not print ```bash``` code blocks as your answer. Code fences are plain text and will NOT execute; use the bash tool invocation instead.',
     '- For quoted or multi-line public content, use this exact bash heredoc shape:',
     `  cat <<'CAFF_PUBLIC_EOF' | ${envCommandPrefix} send-public --content-stdin`,
     '  your text here',
@@ -228,6 +233,42 @@ function buildUndercoverPromptSection(conversation: any, agent: any) {
     gameFinished
       ? '- The hosted game has already finished. You may chat with the user naturally about the result or other follow-up topics until the backend starts a new round.'
       : '- While the hosted game is still running, wait for the backend-driven clue and vote prompts instead of free chatting.',
+  ].join('\n');
+}
+
+function buildWerewolfPromptSection(conversation: any, agent: any) {
+  if (!conversation || conversation.type !== WEREWOLF_CONVERSATION_TYPE) {
+    return '';
+  }
+
+  const metadata = conversation.metadata && typeof conversation.metadata === 'object' ? conversation.metadata : {};
+  const game = metadata.werewolfGame && typeof metadata.werewolfGame === 'object' ? metadata.werewolfGame : null;
+  const players = Array.isArray(game && game.players) ? game.players : [];
+  const currentPlayer = players.find((player: any) => player.agentId === agent.id) || null;
+  const aliveNames = players.filter((player: any) => player.isAlive).map((player: any) => player.name);
+  const eliminatedNames = players.filter((player: any) => !player.isAlive).map((player: any) => player.name);
+  const gameFinished = Boolean(game && (game.phase === 'finished' || game.status === 'completed' || game.status === 'revealed'));
+
+  return [
+    'Backend-hosted full-auto Werewolf mode:',
+    gameFinished
+      ? '- The backend already hosted and finished this round. Do not fabricate a new round, new eliminations, or new host actions on your own.'
+      : '- The backend is the host and will automatically advance each phase. Do not self-assign roles, do not reveal hidden identities, and do not announce eliminations on your own.',
+    `- Public game status: ${(game && game.status) || 'setup'}`,
+    `- Current game phase: ${(game && game.phase) || 'setup'}`,
+    `- Current round: ${Number.isInteger(game && game.roundNumber) ? game.roundNumber : 1}`,
+    `- Your player status: ${currentPlayer ? (currentPlayer.isAlive ? 'alive' : 'eliminated') : 'unknown'}`,
+    `- Alive players: ${aliveNames.length > 0 ? aliveNames.join(', ') : 'none'}`,
+    `- Eliminated players: ${eliminatedNames.length > 0 ? eliminatedNames.join(', ') : 'none'}`,
+    gameFinished
+      ? '- If the backend has already revealed identities, you may discuss your revealed role and the finished result honestly with the user.'
+      : '- Your role, if assigned, is only available in your private mailbox. The backend does not reveal your role in public chat during an active game.',
+    '- During night phases, do not post public chat. Use private messages only when the host prompts you in a private-only phase.',
+    '- During vote phases, output exactly one vote target in the format "投票：@玩家名".',
+    '- If you have already been eliminated, do not keep participating unless the host explicitly asks for a reveal.',
+    gameFinished
+      ? '- The hosted game has already finished. You may chat with the user naturally about the result or other follow-up topics until the backend starts a new round.'
+      : '- While the hosted game is still running, wait for the backend-driven prompts instead of free chatting.',
   ].join('\n');
 }
 
@@ -301,6 +342,8 @@ export function buildAgentTurnPrompt({
         '- Private messages that would wake another participant are disabled in this parallel first-round mode.',
       ];
   const undercoverSection = buildUndercoverPromptSection(conversation, agent);
+  const werewolfSection = buildWerewolfPromptSection(conversation, agent);
+  const gameplaySections = [undercoverSection, werewolfSection].filter(Boolean);
 
   return [
     'You are participating in a shared local multi-agent conversation workspace.',
@@ -334,7 +377,7 @@ export function buildAgentTurnPrompt({
     'Other visible participants:',
     participants || '- none',
     '',
-    ...(undercoverSection ? ['Gameplay mode:', undercoverSection, ''] : []),
+    ...(gameplaySections.length > 0 ? ['Gameplay mode:', gameplaySections.join('\n\n'), ''] : []),
     'Why you are replying now:',
     describeTurnTrigger(trigger, agents),
     `Turn routing mode: ${routingMode === 'mention_parallel' ? 'parallel first round' : 'serial handoff queue'}`,

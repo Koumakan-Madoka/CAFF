@@ -17,6 +17,7 @@ const {
 } = require('../mention-routing');
 const { buildAgentTurnPrompt } = require('./agent-prompt');
 const { ensureAgentSandbox, toPortableShellPath } = require('./agent-sandbox');
+const { extractChatBridgeReplaysFromText, pickChatBridgeReplay } = require('./chat-bridge-replay');
 const { clipText, getTurnStage, nowIso, syncCurrentTurnAgent } = require('./turn-state');
 const { registerTurnHandle, unregisterTurnHandle } = require('./turn-stop');
 
@@ -451,6 +452,7 @@ export function createAgentExecutor(options: any = {}) {
       hop,
       mentions: [] as any[],
       toolBridgeEnabled: true,
+      privateOnly: Boolean(queueItem && queueItem.privateOnly),
       triggeredByAgentId: queueItem.triggeredByAgentId || null,
       triggeredByAgentName: queueItem.triggeredByAgentName || '',
       triggeredByMessageId: queueItem.triggeredByMessageId || null,
@@ -683,6 +685,53 @@ export function createAgentExecutor(options: any = {}) {
     try {
       const result = await handle.resultPromise;
       const finalRawReply = String(result.reply || rawReply || '').trim();
+
+      // Fallback: some models print a bash heredoc as plain text instead of emitting a tool_use block.
+      // When that happens, the command never runs and the game host cannot see the intended vote / action.
+      // We replay the safest subset of bridge commands (send-public/send-private via --content-stdin heredoc)
+      // by directly invoking the agent tool bridge, then continue with normal decision parsing.
+      if (
+        agentToolBridge &&
+        !toolInvocation.publicToolUsed &&
+        (toolInvocation.privatePostCount || 0) === 0 &&
+        finalRawReply
+      ) {
+        const replay = pickChatBridgeReplay(extractChatBridgeReplaysFromText(finalRawReply), {
+          privateOnly: Boolean(queueItem && queueItem.privateOnly),
+        });
+
+        if (replay) {
+          try {
+            const body: any = {
+              invocationId: toolInvocation.invocationId,
+              callbackToken: toolInvocation.callbackToken,
+              visibility: replay.visibility,
+              content: replay.content,
+            };
+
+            if (replay.visibility === 'public') {
+              body.mode = replay.mode || 'replace';
+            } else {
+              if (replay.recipients.length > 0) {
+                body.recipientAgentIds = replay.recipients;
+              }
+
+              if (replay.handoff) {
+                body.handoff = true;
+              }
+
+              if (replay.noHandoff) {
+                body.noHandoff = true;
+              }
+            }
+
+            agentToolBridge.handlePostMessage(body);
+          } catch {
+            // Ignore fallback failures and keep the raw reply.
+          }
+        }
+      }
+
       const suppressRawPublicReply = !toolInvocation.publicToolUsed && (toolInvocation.privatePostCount || 0) > 0;
       const decisionSource =
         toolInvocation.publicToolUsed && String(toolInvocation.lastPublicContent || '').trim()

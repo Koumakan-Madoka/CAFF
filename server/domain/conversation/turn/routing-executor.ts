@@ -23,6 +23,27 @@ function createTaskId(prefix = 'task') {
   return `${prefix}-${randomUUID()}`;
 }
 
+function isPrivateOnlyMessage(message: any) {
+  const metadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
+  return Boolean(metadata && metadata.privateOnly);
+}
+
+function filterPrivateOnlyPromptMessages(messages: any, promptUserMessage: any) {
+  const promptMessageId = promptUserMessage && promptUserMessage.id ? String(promptUserMessage.id) : '';
+
+  return (Array.isArray(messages) ? messages : []).filter((message: any) => {
+    if (!isPrivateOnlyMessage(message)) {
+      return true;
+    }
+
+    return Boolean(promptMessageId && message && String(message.id) === promptMessageId);
+  });
+}
+
+function buildPromptMessages(messages: any, promptUserMessage: any) {
+  return filterPrivateOnlyPromptMessages(replacePromptUserMessage(messages, promptUserMessage), promptUserMessage);
+}
+
 function normalizeConversationTurnInput(input: any, conversation: any) {
   const payload =
     input && typeof input === 'object' && !Array.isArray(input)
@@ -69,6 +90,7 @@ function normalizeConversationTurnInput(input: any, conversation: any) {
     allowHandoffs: payload.allowHandoffs !== false,
     entryStrategy: String(payload.entryStrategy || '').trim() || 'directed',
     explicitIntent: Boolean(payload.explicitIntent),
+    privateOnly: Boolean(payload.privateOnly),
     cleanedContent: String(payload.cleanedContent || content).trim() || content,
   };
 }
@@ -88,6 +110,7 @@ function resolveInitialSpeakerQueue(userText: any, agents: any) {
       strategy: 'user_mentions',
       executionMode: execution.mode,
       explicitIntent: execution.explicitIntent,
+      privateOnly: false,
       cleanedUserText: execution.cleanedText,
     };
   }
@@ -97,6 +120,7 @@ function resolveInitialSpeakerQueue(userText: any, agents: any) {
     strategy: 'default_first_agent',
     executionMode: execution.mode,
     explicitIntent: execution.explicitIntent,
+    privateOnly: false,
     cleanedUserText: execution.cleanedText,
   };
 }
@@ -168,7 +192,7 @@ export function createRoutingExecutor(options: any = {}) {
       senderName: turnInput.senderName,
       content: turnInput.content,
       status: 'completed',
-      metadata: turnInput.metadata,
+      metadata: turnInput.privateOnly ? { ...turnInput.metadata, privateOnly: true } : turnInput.metadata,
     });
     const initialQueue =
       turnInput.initialAgentIds.length > 0
@@ -177,6 +201,7 @@ export function createRoutingExecutor(options: any = {}) {
             strategy: turnInput.entryStrategy,
             executionMode: turnInput.executionMode,
             explicitIntent: turnInput.explicitIntent,
+            privateOnly: turnInput.privateOnly,
             cleanedUserText: turnInput.cleanedContent,
           }
         : resolveInitialSpeakerQueue(userMessage.content, conversation.agents);
@@ -184,7 +209,7 @@ export function createRoutingExecutor(options: any = {}) {
       ...userMessage,
       content: initialQueue.cleanedUserText || userMessage.content,
     };
-    const basePromptMessages = replacePromptUserMessage(store.getConversation(conversationId).messages, promptUserMessage);
+    const basePromptMessages = buildPromptMessages(store.getConversation(conversationId).messages, promptUserMessage);
     const routingMode = initialQueue.executionMode === 'parallel' ? 'mention_parallel' : 'mention_queue';
     turnState.userMessageId = userMessage.id;
     turnState.entryAgentIds = initialQueue.agentIds.slice();
@@ -343,6 +368,7 @@ export function createRoutingExecutor(options: any = {}) {
               enqueueReason: queueItem.enqueueReason || '',
               parallelGroupSize: 0,
               parallelGroupIndex: 0,
+              privateOnly: Boolean(queueItem.privateOnly),
             }))
           );
 
@@ -424,6 +450,7 @@ export function createRoutingExecutor(options: any = {}) {
                   enqueueReason: initialQueue.strategy,
                   parallelGroupSize: batchAgentIds.length,
                   parallelGroupIndex: batchAgentIds.length > 1 ? index + 1 : 0,
+                  privateOnly: initialQueue.privateOnly,
                 },
                 agent,
                 turnState,
@@ -461,6 +488,7 @@ export function createRoutingExecutor(options: any = {}) {
             triggeredByMessageId: userMessage.id,
             parentRunId: null,
             enqueueReason: initialQueue.strategy,
+            privateOnly: initialQueue.privateOnly,
           });
         }
 
@@ -517,7 +545,7 @@ export function createRoutingExecutor(options: any = {}) {
                     rootTaskId,
                     conversation: refreshedConversation,
                     projectDir: projectDirSnapshot,
-                    promptMessages: replacePromptUserMessage(refreshedConversation.messages, promptUserMessage),
+                    promptMessages: buildPromptMessages(refreshedConversation.messages, promptUserMessage),
                     promptUserMessage,
                     queueItem,
                     agent,
@@ -541,7 +569,7 @@ export function createRoutingExecutor(options: any = {}) {
                   rootTaskId,
                   conversation: refreshedConversation,
                   projectDir: projectDirSnapshot,
-                  promptMessages: replacePromptUserMessage(refreshedConversation.messages, promptUserMessage),
+                  promptMessages: buildPromptMessages(refreshedConversation.messages, promptUserMessage),
                   promptUserMessage,
                   queueItem: executionItems[0].queueItem,
                   agent: executionItems[0].agent,

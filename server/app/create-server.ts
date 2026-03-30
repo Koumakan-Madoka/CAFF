@@ -6,6 +6,7 @@ const { createChatAppStore } = require('../../lib/chat-app-store');
 const { createSkillRegistry } = require('../../lib/skill-registry');
 const { createProjectManager } = require('../../lib/project-manager');
 const { createWhoIsUndercoverHost } = require('../../lib/who-is-undercover-game');
+const { createWerewolfHost } = require('../../lib/werewolf-game');
 const { createBootstrapPayloadBuilder } = require('../api/bootstrap-payload');
 const { createAgentToolsController } = require('../api/agent-tools-controller');
 const { createAgentsController } = require('../api/agents-controller');
@@ -14,10 +15,12 @@ const { createConversationsController } = require('../api/conversations-controll
 const { createProjectsController } = require('../api/projects-controller');
 const { createSkillsController } = require('../api/skills-controller');
 const { createUndercoverController } = require('../api/undercover-controller');
+const { createWerewolfController } = require('../api/werewolf-controller');
 const { HOST, PORT, ROOT_DIR } = require('./config');
 const { createTurnOrchestrator } = require('../domain/conversation/turn-orchestrator');
 const { pickConversationSummary } = require('../domain/conversation/conversation-view');
 const { createUndercoverService } = require('../domain/undercover/undercover-service');
+const { createWerewolfService } = require('../domain/werewolf/werewolf-service');
 const { createAgentToolBridge } = require('../domain/runtime/agent-tool-bridge');
 const { createRouter } = require('../http/router');
 const { createSseBus } = require('../http/sse-bus');
@@ -151,6 +154,16 @@ export function createServerApp(options: any = {}) {
     broadcastEvent,
     broadcastConversationSummary,
   });
+  const werewolfHost = createWerewolfHost({ agentDir });
+  const werewolfService = createWerewolfService({
+    store,
+    skillRegistry,
+    werewolfHost,
+    turnOrchestrator,
+    broadcastEvent,
+    broadcastConversationSummary,
+    agentDir,
+  });
   const { buildBootstrapPayload, buildConfiguredModelOptions } = createBootstrapPayloadBuilder({
     store,
     skillRegistry,
@@ -181,13 +194,18 @@ export function createServerApp(options: any = {}) {
     createUndercoverController({
       undercoverService,
     }),
+    createWerewolfController({
+      werewolfService,
+    }),
     createConversationsController({
       store,
       skillRegistry,
       projectManager,
       undercoverHost,
+      werewolfHost,
       turnOrchestrator,
       undercoverService,
+      werewolfService,
       buildBootstrapPayload,
     }),
   ]);

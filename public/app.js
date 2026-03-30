@@ -18,6 +18,7 @@ const state = {
 };
 
 const UNDERCOVER_TYPE = 'who_is_undercover';
+const WEREWOLF_TYPE = 'werewolf';
 const shared = window.CaffShared || {};
 const chatModules = window.CaffChat || {};
 const fetchJson = shared.fetchJson;
@@ -65,6 +66,16 @@ const dom = {
   undercoverClueButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('undercover-clue-button')),
   undercoverVoteButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('undercover-vote-button')),
   undercoverRevealButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('undercover-reveal-button')),
+  werewolfGameCard: /** @type {HTMLElement | null} */ (document.getElementById('werewolf-game-card')),
+  werewolfGameStatus: /** @type {HTMLElement | null} */ (document.getElementById('werewolf-game-status')),
+  werewolfLastResult: /** @type {HTMLElement | null} */ (document.getElementById('werewolf-last-result')),
+  werewolfPlayerStatus: /** @type {HTMLElement | null} */ (document.getElementById('werewolf-player-status')),
+  werewolfSetupForm: /** @type {HTMLFormElement | null} */ (document.getElementById('werewolf-setup-form')),
+  werewolfCount: /** @type {HTMLInputElement | null} */ (document.getElementById('werewolf-count')),
+  werewolfSeerCount: /** @type {HTMLInputElement | null} */ (document.getElementById('werewolf-seer-count')),
+  werewolfWitchCount: /** @type {HTMLInputElement | null} */ (document.getElementById('werewolf-witch-count')),
+  werewolfStartButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('werewolf-start-button')),
+  werewolfResetButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('werewolf-reset-button')),
   newAgentButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('new-agent-button')),
   agentList: /** @type {HTMLElement | null} */ (document.getElementById('agent-list')),
   agentForm: /** @type {HTMLFormElement | null} */ (document.getElementById('agent-form')),
@@ -122,6 +133,21 @@ async function triggerUndercoverAction(action, body = {}) {
   return result;
 }
 
+async function triggerWerewolfAction(action, body = {}) {
+  if (!state.currentConversation) {
+    return null;
+  }
+
+  const result = await fetchJson(`/api/conversations/${state.currentConversation.id}/werewolf/${action}`, {
+    method: 'POST',
+    body,
+  });
+  applyConversationResponse(result);
+  renderAll();
+  scrollMessageListToBottom();
+  return result;
+}
+
 function formatDateTime(value) {
   if (!value) {
     return '';
@@ -157,9 +183,18 @@ function isUndercoverConversation(conversation) {
   return Boolean(conversation && conversation.type === UNDERCOVER_TYPE);
 }
 
+function isWerewolfConversation(conversation) {
+  return Boolean(conversation && conversation.type === WEREWOLF_TYPE);
+}
+
 function undercoverGameState(conversation) {
   const metadata = conversation && conversation.metadata && typeof conversation.metadata === 'object' ? conversation.metadata : null;
   return metadata && metadata.undercoverGame && typeof metadata.undercoverGame === 'object' ? metadata.undercoverGame : null;
+}
+
+function werewolfGameState(conversation) {
+  const metadata = conversation && conversation.metadata && typeof conversation.metadata === 'object' ? conversation.metadata : null;
+  return metadata && metadata.werewolfGame && typeof metadata.werewolfGame === 'object' ? metadata.werewolfGame : null;
 }
 
 function canChatInUndercoverConversation(conversation) {
@@ -168,6 +203,20 @@ function canChatInUndercoverConversation(conversation) {
   }
 
   const game = undercoverGameState(conversation);
+
+  if (!game) {
+    return false;
+  }
+
+  return game.phase === 'finished' || game.status === 'completed' || game.status === 'revealed';
+}
+
+function canChatInWerewolfConversation(conversation) {
+  if (!isWerewolfConversation(conversation)) {
+    return true;
+  }
+
+  const game = werewolfGameState(conversation);
 
   if (!game) {
     return false;
@@ -189,8 +238,37 @@ function undercoverPlayerLabel(player) {
   return player.isAlive ? '存活' : `出局${player.eliminatedRound ? ` · 第 ${player.eliminatedRound} 轮` : ''}`;
 }
 
+function werewolfPlayerEntries(conversation) {
+  const game = werewolfGameState(conversation);
+  return Array.isArray(game && game.players) ? game.players : [];
+}
+
+function werewolfPlayerLabel(player) {
+  if (!player) {
+    return '';
+  }
+
+  if (player.isAlive) {
+    return '存活';
+  }
+
+  const phaseLabel = player.eliminatedPhase === 'night' ? '夜晚' : player.eliminatedPhase === 'vote' ? '投票' : '';
+  const roundLabel = player.eliminatedRound ? `第 ${player.eliminatedRound} 轮` : '';
+  const tags = [phaseLabel, roundLabel].filter(Boolean).join(' · ');
+
+  return tags ? `出局 · ${tags}` : '出局';
+}
+
 function conversationTypeLabel(conversation) {
-  return isUndercoverConversation(conversation) ? '谁是卧底' : '普通对话';
+  if (isUndercoverConversation(conversation)) {
+    return '谁是卧底';
+  }
+
+  if (isWerewolfConversation(conversation)) {
+    return '狼人杀';
+  }
+
+  return '普通对话';
 }
 
 function modelOptionKey(provider, model) {
@@ -264,6 +342,7 @@ let participantPaneRenderer = noopRenderer;
 let messageTimelineRenderer = noopRenderer;
 let conversationSettingsController = noopConversationSettingsController;
 let undercoverPanelRenderer = noopRenderer;
+let werewolfPanelRenderer = noopRenderer;
 let conversationPaneRenderer = noopRenderer;
 
 function setupChatModules() {
@@ -296,6 +375,7 @@ function setupChatModules() {
             formatDateTime,
             isConversationBusy,
             isUndercoverConversation,
+            isWerewolfConversation,
           },
         })
       : noopRenderer;
@@ -347,6 +427,21 @@ function setupChatModules() {
         })
       : noopRenderer;
 
+  werewolfPanelRenderer =
+    typeof chatModules.createWerewolfPanelRenderer === 'function'
+      ? chatModules.createWerewolfPanelRenderer({
+          state,
+          dom,
+          helpers: {
+            activeTurnForConversation,
+            isWerewolfConversation,
+            werewolfGameState,
+            werewolfPlayerEntries,
+            werewolfPlayerLabel,
+          },
+        })
+      : noopRenderer;
+
   conversationPaneRenderer =
     typeof chatModules.createConversationPaneRenderer === 'function'
       ? chatModules.createConversationPaneRenderer({
@@ -356,19 +451,23 @@ function setupChatModules() {
             activeTurnForConversation,
             agentById,
             canChatInUndercoverConversation,
+            canChatInWerewolfConversation,
             clearLiveDraftFinalizingTimer,
             closeMentionMenu,
             conversationTypeLabel,
             isConversationBusy,
             isUndercoverConversation,
+            isWerewolfConversation,
             liveDraftIdleMs: LIVE_DRAFT_IDLE_MS,
             liveStageLabel,
             renderMessages,
             renderParticipantList,
             renderUndercoverGameCard,
+            renderWerewolfGameCard,
             scheduleConversationPaneRender,
             timelineMessagesForConversation,
             undercoverGameState,
+            werewolfGameState,
           },
         })
       : noopRenderer;
@@ -404,6 +503,10 @@ function renderCompactConversationPersonaSettings() {
 
 function renderUndercoverGameCard() {
   undercoverPanelRenderer.render();
+}
+
+function renderWerewolfGameCard() {
+  werewolfPanelRenderer.render();
 }
 
 function renderConversationPane() {
@@ -819,6 +922,7 @@ function renderAll() {
   renderConversationList();
   renderConversationPane();
   renderUndercoverGameCard();
+  renderWerewolfGameCard();
   renderCompactConversationPersonaSettings();
 }
 
@@ -1117,6 +1221,38 @@ function bindEvents() {
     }
   }
 
+  async function handleWerewolfAction(action, body, successMessage) {
+    if (!state.currentConversation || !isWerewolfConversation(state.currentConversation) || state.sending) {
+      return;
+    }
+
+    state.sending = true;
+    state.runtime = state.runtime || {};
+    state.runtime.activeConversationIds = Array.from(
+      new Set([...(state.runtime.activeConversationIds || []), state.currentConversation.id])
+    );
+    renderAll();
+
+    try {
+      await triggerWerewolfAction(action, body);
+      if (successMessage) {
+        showToast(successMessage);
+      }
+    } catch (error) {
+      showToast(error.message);
+    } finally {
+      state.sending = false;
+
+      if (state.runtime && state.currentConversation) {
+        state.runtime.activeConversationIds = (state.runtime.activeConversationIds || []).filter(
+          (id) => id !== state.currentConversation.id
+        );
+      }
+
+      renderAll();
+    }
+  }
+
   dom.refreshButton.addEventListener('click', async () => {
     try {
       await refreshAll(state.selectedConversationId);
@@ -1179,6 +1315,28 @@ function bindEvents() {
   if (dom.undercoverResetButton) {
     dom.undercoverResetButton.addEventListener('click', async () => {
       await handleUndercoverAction('reset', {}, '对局已重置');
+    });
+  }
+
+  if (dom.werewolfSetupForm && dom.werewolfCount && dom.werewolfSeerCount && dom.werewolfWitchCount) {
+    dom.werewolfSetupForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+
+      await handleWerewolfAction(
+        'start',
+        {
+          werewolfCount: dom.werewolfCount.value,
+          seerCount: dom.werewolfSeerCount.value,
+          witchCount: dom.werewolfWitchCount.value,
+        },
+        '狼人杀全自动新一局已开始'
+      );
+    });
+  }
+
+  if (dom.werewolfResetButton) {
+    dom.werewolfResetButton.addEventListener('click', async () => {
+      await handleWerewolfAction('reset', {}, '对局已重置');
     });
   }
 

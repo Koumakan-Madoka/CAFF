@@ -145,7 +145,7 @@
         const empty = document.createElement('div');
         empty.className = 'empty-state';
         empty.textContent =
-          conversation && conversation.type === 'who_is_undercover'
+          conversation && (conversation.type === 'who_is_undercover' || conversation.type === 'werewolf')
             ? '开始新一局后，后端会自动推进整局对话。'
             : '发送一条消息，开始多人格讨论。';
         dom.messageList.replaceChildren(empty);
