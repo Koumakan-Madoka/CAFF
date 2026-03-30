@@ -6,6 +6,7 @@
     <title>CAFF 错题本</title>
     <link rel="stylesheet" href="/styles.css" />
     <script defer src="/shared/api-client.js"></script>
+    <script defer src="/shared/model-options.js"></script>
     <script defer src="/shared/toast.js"></script>
     <script defer src="/eval-cases.js"></script>
   </head>
@@ -120,6 +121,12 @@
                   <input id="batch-repeats" type="number" min="1" max="20" value="3" />
                 </label>
               </div>
+
+              <label>
+                <span>模型（可多选）</span>
+                <select id="batch-models" multiple size="6"></select>
+              </label>
+              <p class="section-hint">按 Ctrl/⌘ 多选；不选则默认使用该错题的原模型。</p>
 
               <div class="panel-actions">
                 <button id="run-batch-button" class="ghost-button" type="button">开始批量测试</button>

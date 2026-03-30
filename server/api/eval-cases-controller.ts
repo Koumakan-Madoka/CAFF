@@ -780,8 +780,10 @@ export function createEvalCasesController(options: any = {}): RouteHandler<ApiCo
         throw createHttpError(400, 'prompt is required');
       }
 
-      const provider = existing.provider || '';
-      const model = existing.model || '';
+      const hasProviderOverride = body && Object.prototype.hasOwnProperty.call(body, 'provider');
+      const hasModelOverride = body && Object.prototype.hasOwnProperty.call(body, 'model');
+      const provider = String(hasProviderOverride ? body.provider ?? '' : existing.provider || '').trim();
+      const model = String(hasModelOverride ? body.model ?? '' : existing.model || '').trim();
       const agent = existing.agentId ? store.getAgent(existing.agentId) : null;
       const sandbox = ensureAgentSandbox(store.agentDir, agent || { id: existing.agentId || 'eval' });
 

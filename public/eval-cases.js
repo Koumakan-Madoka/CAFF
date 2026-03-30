@@ -7,6 +7,8 @@ const state = {
   runs: [],
   selectedRunId: null,
   selectedRun: null,
+  modelOptions: [],
+  batchModelKeys: [],
   dirty: false,
   filters: {
     query: '',
@@ -16,6 +18,7 @@ const state = {
 
 const shared = window.CaffShared || {};
 const fetchJson = shared.fetchJson;
+const modelOptionUtils = shared.modelOptions || {};
 
 const dom = {
   refreshButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('refresh-button')),
@@ -23,6 +26,7 @@ const dom = {
   clearRunSelectionButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('clear-run-selection-button')),
   batchVariant: /** @type {HTMLSelectElement | null} */ (document.getElementById('batch-variant')),
   batchRepeats: /** @type {HTMLInputElement | null} */ (document.getElementById('batch-repeats')),
+  batchModels: /** @type {HTMLSelectElement | null} */ (document.getElementById('batch-models')),
   filterForm: /** @type {HTMLFormElement | null} */ (document.getElementById('filter-form')),
   searchInput: /** @type {HTMLInputElement | null} */ (document.getElementById('search-input')),
   statusFilter: /** @type {HTMLSelectElement | null} */ (document.getElementById('status-filter')),
@@ -228,6 +232,114 @@ function formatJson(value) {
   }
 }
 
+function modelOptionKey(provider, model) {
+  if (modelOptionUtils && typeof modelOptionUtils.modelOptionKey === 'function') {
+    return modelOptionUtils.modelOptionKey(provider, model);
+  }
+
+  return `${String(provider || '').trim()}\u001f${String(model || '').trim()}`;
+}
+
+function parseModelOptionKey(key) {
+  const [provider, model] = String(key || '').split('\u001f');
+
+  return {
+    provider: String(provider || '').trim(),
+    model: String(model || '').trim(),
+  };
+}
+
+function buildModelOptionLabel(option) {
+  if (modelOptionUtils && typeof modelOptionUtils.buildModelOptionLabel === 'function') {
+    return modelOptionUtils.buildModelOptionLabel(option);
+  }
+
+  if (!option) {
+    return '系统默认模型';
+  }
+
+  const provider = String(option.provider || '').trim();
+  const model = String(option.model || '').trim();
+  return String(option.label || (provider ? `${provider} / ${model}` : model)).trim() || '系统默认模型';
+}
+
+function fillBatchModelSelect(currentProvider = '', currentModel = '') {
+  if (!dom.batchModels) {
+    return;
+  }
+
+  const select = dom.batchModels;
+  const options = Array.isArray(state.modelOptions) ? state.modelOptions : [];
+  const currentKey = currentModel ? modelOptionKey(currentProvider, currentModel) : '';
+  const desired =
+    Array.isArray(state.batchModelKeys) && state.batchModelKeys.length > 0
+      ? state.batchModelKeys.filter(Boolean)
+      : currentKey
+        ? [currentKey]
+        : [];
+
+  select.innerHTML = '';
+
+  const seen = new Set();
+
+  options.forEach((option) => {
+    if (!option || !option.key || seen.has(option.key)) {
+      return;
+    }
+
+    seen.add(option.key);
+
+    const element = document.createElement('option');
+    element.value = option.key;
+    element.textContent = buildModelOptionLabel(option);
+    element.selected = desired.includes(option.key);
+    select.appendChild(element);
+  });
+
+  if (currentKey && !seen.has(currentKey)) {
+    const parsed = parseModelOptionKey(currentKey);
+    const element = document.createElement('option');
+    element.value = currentKey;
+    element.textContent = parsed.provider ? `${parsed.provider} / ${parsed.model}` : parsed.model;
+    element.selected = desired.includes(currentKey) || desired.length === 0;
+    select.appendChild(element);
+    seen.add(currentKey);
+  }
+
+  desired.forEach((key) => {
+    if (!key || seen.has(key)) {
+      return;
+    }
+
+    const parsed = parseModelOptionKey(key);
+
+    if (!parsed.model) {
+      return;
+    }
+
+    const element = document.createElement('option');
+    element.value = key;
+    element.textContent = parsed.provider ? `${parsed.provider} / ${parsed.model}` : parsed.model;
+    element.selected = true;
+    select.appendChild(element);
+    seen.add(key);
+  });
+
+  if (select.selectedOptions.length === 0 && select.options.length > 0) {
+    const fallback = currentKey ? Array.from(select.options).find((option) => option.value === currentKey) : null;
+
+    if (fallback) {
+      fallback.selected = true;
+    } else {
+      select.options[0].selected = true;
+    }
+  }
+
+  state.batchModelKeys = Array.from(select.selectedOptions)
+    .map((option) => String(option.value || '').trim())
+    .filter(Boolean);
+}
+
 function updateDirtyUi() {
   if (!dom.saveButton) {
     return;
@@ -339,6 +451,19 @@ function ensureSelectedCase() {
   }
 
   state.selectedCaseId = state.cases[0] ? state.cases[0].id : null;
+}
+
+async function fetchModelOptions() {
+  if (Array.isArray(state.modelOptions) && state.modelOptions.length > 0) {
+    return;
+  }
+
+  if (typeof fetchJson !== 'function') {
+    throw new Error('API client 未加载');
+  }
+
+  const payload = await fetchJson('/api/bootstrap');
+  state.modelOptions = Array.isArray(payload && payload.modelOptions) ? payload.modelOptions : [];
 }
 
 async function fetchCaseList() {
@@ -590,6 +715,14 @@ function renderRunHistory() {
 
   dom.runSummary.appendChild(metricChip('runs', formatNumber(runs.length), '该错题的重放次数（包含 A/B）。'));
 
+  const modelCount = new Set(
+    runs
+      .map((run) => modelOptionKey(run && run.provider ? run.provider : '', run && run.model ? run.model : ''))
+      .filter((key) => key && key !== '\u001f')
+  ).size;
+
+  dom.runSummary.appendChild(metricChip('models', formatNumber(modelCount), 'run 历史中出现过的 provider:model 数量。'));
+
   ['A', 'B'].forEach((variant) => {
     const variantRuns = runs.filter((run) => normalizeRunVariant(run && run.variant ? run.variant : '') === variant);
     const total = variantRuns.length;
@@ -745,6 +878,10 @@ function renderEditor() {
     dom.bToolEvents.value = '';
     dom.bRawMessages.value = '';
     dom.bMeta.textContent = '尚未运行';
+    if (dom.batchModels) {
+      dom.batchModels.innerHTML = '';
+      dom.batchModels.disabled = true;
+    }
     dom.copyAToBButton && (dom.copyAToBButton.disabled = true);
     dom.copyPromptAButton && (dom.copyPromptAButton.disabled = true);
     dom.copyPromptBButton && (dom.copyPromptBButton.disabled = true);
@@ -784,6 +921,11 @@ function renderEditor() {
   dom.outputA.value = item.outputA || '';
   dom.promptB.value = item.promptB || '';
   dom.outputB.value = item.outputB || '';
+
+  if (dom.batchModels) {
+    dom.batchModels.disabled = false;
+    fillBatchModelSelect(item.provider || '', item.model || '');
+  }
 
   const aSession =
     item.aSession && typeof item.aSession === 'object'
@@ -874,7 +1016,12 @@ function renderEditor() {
 
   if (activeStatus) {
     const createdAt = selectedRun && selectedRun.createdAt ? formatDateTime(selectedRun.createdAt) : '';
-    dom.bMeta.textContent = `${activeVariant}${createdAt ? ` · ${createdAt}` : ''} · ${activeStatus}${activeTaskId ? ` · task=${activeTaskId}` : ''}${activeRunId ? ` · run=${activeRunId}` : ''}`;
+    const modelLabel =
+      selectedRun && (selectedRun.model || selectedRun.provider)
+        ? `${selectedRun.provider || 'default'}:${selectedRun.model || 'default'}`
+        : '';
+
+    dom.bMeta.textContent = `${activeVariant}${createdAt ? ` · ${createdAt}` : ''}${modelLabel ? ` · ${modelLabel}` : ''} · ${activeStatus}${activeTaskId ? ` · task=${activeTaskId}` : ''}${activeRunId ? ` · run=${activeRunId}` : ''}`;
   } else {
     dom.bMeta.textContent = selectedRun ? `${activeVariant} · 未获取到状态` : '尚未运行';
   }
@@ -1061,42 +1208,86 @@ async function runBatchSelectedCase() {
     return;
   }
 
-  const total = repeats * variants.length;
+  const defaultKey = item.model ? modelOptionKey(item.provider || '', item.model || '') : '';
+  const selectedKeys =
+    Array.isArray(state.batchModelKeys) && state.batchModelKeys.length > 0
+      ? state.batchModelKeys.filter(Boolean)
+      : defaultKey
+        ? [defaultKey]
+        : [];
+
+  const selectedModels = selectedKeys
+    .map((key) => {
+      const option = Array.isArray(state.modelOptions) ? state.modelOptions.find((item) => item && item.key === key) : null;
+      const parsed = parseModelOptionKey(key);
+
+      return {
+        key,
+        provider: option ? String(option.provider || '').trim() : parsed.provider,
+        model: option ? String(option.model || '').trim() : parsed.model,
+        label: option ? buildModelOptionLabel(option) : parsed.provider ? `${parsed.provider} / ${parsed.model}` : parsed.model,
+      };
+    })
+    .filter((item) => item && (item.model || item.provider));
+
+  if (selectedModels.length === 0) {
+    selectedModels.push({
+      key: defaultKey,
+      provider: String(item.provider || '').trim(),
+      model: String(item.model || '').trim(),
+      label: item.provider ? `${item.provider}:${item.model}` : String(item.model || 'default'),
+    });
+  }
+
+  const total = repeats * variants.length * selectedModels.length;
   let succeeded = 0;
   let failed = 0;
+  let seq = 0;
 
-  for (let round = 0; round < repeats; round += 1) {
-    for (let index = 0; index < variants.length; index += 1) {
-      const variant = variants[index];
-      const seq = round * variants.length + index + 1;
+  for (const modelSpec of selectedModels) {
+    const modelLabel = modelSpec.provider ? `${modelSpec.provider}:${modelSpec.model}` : modelSpec.model || 'default';
 
-      if (dom.runBatchButton) {
-        dom.runBatchButton.textContent = `批量测试 ${seq}/${total} (${variant})`;
-      }
+    for (let round = 0; round < repeats; round += 1) {
+      for (let index = 0; index < variants.length; index += 1) {
+        const variant = variants[index];
+        seq += 1;
 
-      try {
-        const body = {
-          variant,
-          prompt: variant === 'A' ? undefined : dom.promptB ? dom.promptB.value : String(item.promptB || ''),
-        };
+        if (dom.runBatchButton) {
+          dom.runBatchButton.textContent = `批量测试 ${seq}/${total} (${variant} · ${modelLabel})`;
+        }
 
-        await fetchJson(`/api/eval-cases/${encodeURIComponent(item.id)}/run`, {
-          method: 'POST',
-          body,
-        });
-        succeeded += 1;
-      } catch {
-        failed += 1;
+        try {
+          const body = {
+            variant,
+            provider: modelSpec.provider,
+            model: modelSpec.model,
+            prompt: variant === 'A' ? undefined : dom.promptB ? dom.promptB.value : String(item.promptB || ''),
+          };
+
+          await fetchJson(`/api/eval-cases/${encodeURIComponent(item.id)}/run`, {
+            method: 'POST',
+            body,
+          });
+          succeeded += 1;
+        } catch {
+          failed += 1;
+        }
       }
     }
   }
 
   await refreshAll();
   renderAll();
-  showToast(`批量完成：成功 ${succeeded} · 失败 ${failed}`);
+  showToast(`批量完成（${selectedModels.length} models）：成功 ${succeeded} · 失败 ${failed}`);
 }
 
 async function bootstrap() {
+  try {
+    await fetchModelOptions();
+  } catch {
+    state.modelOptions = [];
+  }
+
   try {
     await refreshAll();
   } catch (error) {
@@ -1137,6 +1328,14 @@ if (dom.statusFilter) {
   dom.statusFilter.addEventListener('change', () => {
     state.filters.status = dom.statusFilter ? dom.statusFilter.value : 'all';
     renderCaseList();
+  });
+}
+
+if (dom.batchModels) {
+  dom.batchModels.addEventListener('change', () => {
+    state.batchModelKeys = Array.from(dom.batchModels ? dom.batchModels.selectedOptions : [])
+      .map((option) => String(option.value || '').trim())
+      .filter(Boolean);
   });
 }
 
