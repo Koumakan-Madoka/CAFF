@@ -203,10 +203,28 @@ function renderMeta() {
   dom.reportMeta.textContent = parts.join(' · ');
 }
 
-function metricChip(label, value) {
+const TOOL_CHAT_RATE_HINT =
+  '工具聊天率：turn 维度，public 工具（如 send-public）被调用过的 turn 占比。用于监控 Agent 是否按预期通过工具把最终回复发到聊天室。';
+const PRIVATE_TOOL_RATE_HINT =
+  '私聊工具率：turn 维度，private 工具被调用过的 turn 占比。用于监控私有输出/私聊指令是否走对通道。';
+const SEND_PUBLIC_RECALL_HINT =
+  '提示词回归：当 expectations 标记 send-public=required 时，实际调用 public 工具的比例（tp/required）。';
+const SEND_PUBLIC_FPR_HINT =
+  '提示词回归：当 expectations 标记 send-public=forbidden 时，仍调用 public 工具的比例（fp/forbidden，越低越好）。';
+const SEND_PRIVATE_RECALL_HINT =
+  '提示词回归：当 expectations 标记 send-private=required 时，实际调用 private 工具的比例（tp/required）。';
+const TOOL_SUMMARY_HINT =
+  'successRate：工具调用成功率（更多用于定位工具链路稳定性/参数问题）。p50/p95：工具耗时分位数，用于定位慢工具、超时与重试。';
+
+function metricChip(label, value, hint = '') {
   const chip = document.createElement('span');
   chip.className = 'file-chip';
   chip.textContent = `${label}: ${value}`;
+
+  if (hint) {
+    chip.title = hint;
+  }
+
   return chip;
 }
 
@@ -235,14 +253,20 @@ function renderSelectedAgent() {
   dom.selectedAgentMeta.textContent = `${agent.agentId}${agent.agentName ? ` · ${agent.agentName}` : ''}`;
 
   dom.agentReport.append(
-    metricChip('turns', formatNumber(agent.turns)),
-    metricChip('toolChatRate', formatPercent(agent.toolChatRate)),
-    metricChip('send-public recall', formatPercent(agent.sendPublic && agent.sendPublic.recall)),
-    metricChip('send-public fpr', formatPercent(agent.sendPublic && agent.sendPublic.falsePositiveRate)),
-    metricChip('send-private recall', formatPercent(agent.sendPrivate && agent.sendPrivate.recall)),
-    metricChip('public posts', formatNumber(agent.publicPostCount)),
-    metricChip('private posts', formatNumber(agent.privatePostCount)),
-    metricChip('private handoffs', formatNumber(agent.privateHandoffCount))
+    metricChip('turns', formatNumber(agent.turns), '统计时间范围内，该 Agent 产生的 assistant turn 数（记录条数）。'),
+    metricChip('toolChatRate', formatPercent(agent.toolChatRate), TOOL_CHAT_RATE_HINT),
+    metricChip('privateToolRate', formatPercent(agent.privateToolRate), PRIVATE_TOOL_RATE_HINT),
+    metricChip('send-public recall', formatPercent(agent.sendPublic && agent.sendPublic.recall), SEND_PUBLIC_RECALL_HINT),
+    metricChip('send-public fpr', formatPercent(agent.sendPublic && agent.sendPublic.falsePositiveRate), SEND_PUBLIC_FPR_HINT),
+    metricChip('send-private recall', formatPercent(agent.sendPrivate && agent.sendPrivate.recall), SEND_PRIVATE_RECALL_HINT),
+    metricChip(
+      'missingExpectations',
+      formatNumber(agent.missingExpectations),
+      '缺失 expectations 的 turn 数：这些 turn 无法计算 send-public/send-private 回归指标。'
+    ),
+    metricChip('public posts', formatNumber(agent.publicPostCount), '统计范围内 public 工具调用次数（按 post 计数，不是 turn）。'),
+    metricChip('private posts', formatNumber(agent.privatePostCount), '统计范围内 private 工具调用次数（按 post 计数，不是 turn）。'),
+    metricChip('private handoffs', formatNumber(agent.privateHandoffCount), '统计范围内 private handoff 次数。')
   );
 }
 
@@ -266,8 +290,8 @@ function renderToolReport() {
 
   tools.slice(0, 18).forEach((tool) => {
     const label = tool.tool || 'unknown';
-    const summary = `${tool.succeeded}/${tool.calls} · p50=${formatNumber(tool.p50Ms)}ms · p95=${formatNumber(tool.p95Ms)}ms`;
-    dom.toolReport.appendChild(metricChip(label, summary));
+    const summary = `ok=${tool.succeeded}/${tool.calls} · success=${formatPercent(tool.successRate, 0)} · p50=${formatNumber(tool.p50Ms)}ms · p95=${formatNumber(tool.p95Ms)}ms`;
+    dom.toolReport.appendChild(metricChip(label, summary, TOOL_SUMMARY_HINT));
   });
 }
 
@@ -314,4 +338,3 @@ if (dom.clearFilterButton) {
 }
 
 bootstrap();
-

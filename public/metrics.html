@@ -91,6 +91,22 @@
             </div>
             <div id="tool-report" class="tag-row"></div>
           </section>
+
+          <section class="stack-card">
+            <div class="section-row">
+              <span class="section-label">指标说明</span>
+              <span class="section-hint">用于打磨提示词与工具链路（也可悬停查看 tooltip）</span>
+            </div>
+            <ul class="metric-legend">
+              <li><strong>toolChatRate</strong>：监控 Agent 是否通过 <code>send-public</code> 等 public 工具把最终回复发到聊天室（turn 维度占比）。</li>
+              <li><strong>privateToolRate</strong>：监控 Agent 是否按预期走 private 工具通道（turn 维度占比），用于排查私有输出/私聊指令是否生效。</li>
+              <li><strong>send-public recall</strong>：提示词回归指标：当 expectations 标记 public 输出为 required 时，实际调用 public 工具的比例。</li>
+              <li><strong>send-public fpr</strong>：提示词回归指标：当 expectations 标记 public 输出为 forbidden 时，仍调用 public 工具的比例（越低越好）。</li>
+              <li><strong>send-private recall</strong>：提示词回归指标：当 expectations 标记 private 输出为 required 时，实际调用 private 工具的比例。</li>
+              <li><strong>tool successRate</strong>：工具调用成功率；低通常是工具稳定性/参数问题（不一定是提示词问题）。</li>
+              <li><strong>p50/p95</strong>：工具耗时分位数，用于定位慢工具、超时与重试。</li>
+            </ul>
+          </section>
         </section>
       </main>
     </div>
@@ -98,4 +114,3 @@
     <div id="toast" class="toast hidden"></div>
   </body>
 </html>
-
