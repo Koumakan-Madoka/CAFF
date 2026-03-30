@@ -2,7 +2,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const { createChatAppStore } = require('../../build/lib/chat-app-store');
 const { createWerewolfHost, WEREWOLF_CONVERSATION_TYPE } = require('../../build/lib/werewolf-game');
+const { createWerewolfService } = require('../../build/server/domain/werewolf/werewolf-service');
 const { withTempDir } = require('../helpers/temp-dir');
 
 function createMockConversation(agentCount = 6) {
@@ -424,4 +426,283 @@ test('werewolf host provides seer result message', () => {
 
   const villagerResult = host.buildSeerResult(seerPlayer, villagerPlayer);
   assert.ok(villagerResult.includes('好人'));
+});
+
+test('werewolf vote parsing tolerates tool-call wrappers and ignores narrative fragments', async (t) => {
+  const tempDir = withTempDir('werewolf-test-');
+  const sqlitePath = path.join(tempDir, 'chat.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const host = createWerewolfHost({ agentDir: tempDir });
+
+  t.after(() => {
+    try {
+      store && store.close();
+    } catch {}
+    try {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    } catch {}
+  });
+
+  const agents = [
+    { id: 'test-agent-gg', name: '咕咕' },
+    { id: 'test-agent-fbb', name: '菲比啾比' },
+    { id: 'test-agent-krs', name: '牧濑红莉栖' },
+    { id: 'test-agent-ask', name: '明日香' },
+  ];
+
+  for (const agent of agents) {
+    store.saveAgent({
+      id: agent.id,
+      name: agent.name,
+      personaPrompt: 'Reply tersely.',
+    });
+  }
+
+  store.createConversation({
+    id: 'test-werewolf-vote-parse',
+    title: 'Werewolf Vote Parse Test',
+    type: 'werewolf',
+    participants: agents.map((agent) => agent.id),
+  });
+
+  const conversation = store.getConversation('test-werewolf-vote-parse');
+  let state = host.createGame(conversation, { werewolfCount: 1, seerCount: 1 });
+  state = host.startVote(state);
+
+  const toolCallWrappedVote = `{\"type\":\"toolCall\",\"id\":\"tool_test\",\"name\":\"bash\",\"arguments\":{\"command\":\"cat <<'CAFF_PUBLIC_EOF' | node \\\"$CAFF_CHAT_TOOLS_PATH\\\" send-public --content-stdin\n（歪头，豆豆眼眨了眨）\n\n咕咕投票…投给菲比啾比姐姐咕…\n\n投票：@菲比啾比\nCAFF_PUBLIC_EOF\"}}`;
+
+  const turnOrchestrator = {
+    runConversationTurn: async () => ({
+      replies: [
+        { agentId: 'test-agent-gg', content: toolCallWrappedVote },
+        { agentId: 'test-agent-krs', content: '投票：@菲比啾比' },
+        { agentId: 'test-agent-ask', content: '投票：@牧濑红莉栖' },
+      ],
+    }),
+  };
+
+  const service = createWerewolfService({
+    store,
+    skillRegistry: {},
+    turnOrchestrator,
+    werewolfHost: host,
+    broadcastEvent: () => {},
+    broadcastConversationSummary: () => {},
+  });
+
+  await service.runVotePhase('test-werewolf-vote-parse');
+
+  const finalState = host.loadState('test-werewolf-vote-parse');
+  const lastEntry = finalState.history[finalState.history.length - 1];
+  assert.equal(lastEntry.type, 'vote');
+  assert.equal(lastEntry.eliminatedAgentId, 'test-agent-fbb');
+});
+
+test('werewolf vote parsing does not fall back to @mentions when directives are invalid', async (t) => {
+  const tempDir = withTempDir('werewolf-test-');
+  const sqlitePath = path.join(tempDir, 'chat.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const host = createWerewolfHost({ agentDir: tempDir });
+
+  t.after(() => {
+    try {
+      store && store.close();
+    } catch {}
+    try {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    } catch {}
+  });
+
+  const agents = [
+    { id: 'test-agent-a', name: 'Alice' },
+    { id: 'test-agent-b', name: 'Bob' },
+    { id: 'test-agent-c', name: 'Charlie' },
+    { id: 'test-agent-d', name: 'Dora' },
+  ];
+
+  for (const agent of agents) {
+    store.saveAgent({
+      id: agent.id,
+      name: agent.name,
+      personaPrompt: 'Reply tersely.',
+    });
+  }
+
+  store.createConversation({
+    id: 'test-werewolf-vote-no-fallback',
+    title: 'Werewolf Vote Parse No Fallback Test',
+    type: 'werewolf',
+    participants: agents.map((agent) => agent.id),
+  });
+
+  const conversation = store.getConversation('test-werewolf-vote-no-fallback');
+  let state = host.createGame(conversation, { werewolfCount: 1, seerCount: 1 });
+  state = host.startVote(state);
+
+  const invalidDirectiveWithMention = '投票：@NotAPlayer\n@Charlie';
+
+  const turnOrchestrator = {
+    runConversationTurn: async () => ({
+      replies: [
+        { agentId: 'test-agent-a', content: invalidDirectiveWithMention },
+        { agentId: 'test-agent-b', content: '投票：@Charlie' },
+        { agentId: 'test-agent-c', content: '投票：@Bob' },
+        { agentId: 'test-agent-d', content: '投票：@Bob' },
+      ],
+    }),
+  };
+
+  const service = createWerewolfService({
+    store,
+    skillRegistry: {},
+    turnOrchestrator,
+    werewolfHost: host,
+    broadcastEvent: () => {},
+    broadcastConversationSummary: () => {},
+  });
+
+  await service.runVotePhase('test-werewolf-vote-no-fallback');
+
+  const finalState = host.loadState('test-werewolf-vote-no-fallback');
+  const lastEntry = finalState.history[finalState.history.length - 1];
+  assert.equal(lastEntry.type, 'vote');
+  assert.equal(lastEntry.eliminatedAgentId, 'test-agent-b');
+});
+
+test('werewolf vote parsing supports emoji-prefixed names', async (t) => {
+  const tempDir = withTempDir('werewolf-test-');
+  const sqlitePath = path.join(tempDir, 'chat.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const host = createWerewolfHost({ agentDir: tempDir });
+
+  t.after(() => {
+    try {
+      store && store.close();
+    } catch {}
+    try {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    } catch {}
+  });
+
+  const agents = [
+    { id: 'test-agent-alice', name: 'Alice' },
+    { id: 'test-agent-bot', name: '🤖Bot' },
+    { id: 'test-agent-charlie', name: 'Charlie' },
+    { id: 'test-agent-dora', name: 'Dora' },
+  ];
+
+  for (const agent of agents) {
+    store.saveAgent({
+      id: agent.id,
+      name: agent.name,
+      personaPrompt: 'Reply tersely.',
+    });
+  }
+
+  store.createConversation({
+    id: 'test-werewolf-vote-emoji-name',
+    title: 'Werewolf Vote Parse Emoji Name Test',
+    type: 'werewolf',
+    participants: agents.map((agent) => agent.id),
+  });
+
+  const conversation = store.getConversation('test-werewolf-vote-emoji-name');
+  let state = host.createGame(conversation, { werewolfCount: 1, seerCount: 1 });
+  state = host.startVote(state);
+
+  const turnOrchestrator = {
+    runConversationTurn: async () => ({
+      replies: [
+        { agentId: 'test-agent-alice', content: '投票：@🤖Bot' },
+        { agentId: 'test-agent-charlie', content: '投票：@🤖Bot' },
+        { agentId: 'test-agent-dora', content: '投票：@🤖Bot' },
+      ],
+    }),
+  };
+
+  const service = createWerewolfService({
+    store,
+    skillRegistry: {},
+    turnOrchestrator,
+    werewolfHost: host,
+    broadcastEvent: () => {},
+    broadcastConversationSummary: () => {},
+  });
+
+  await service.runVotePhase('test-werewolf-vote-emoji-name');
+
+  const finalState = host.loadState('test-werewolf-vote-emoji-name');
+  const lastEntry = finalState.history[finalState.history.length - 1];
+  assert.equal(lastEntry.type, 'vote');
+  assert.equal(lastEntry.eliminatedAgentId, 'test-agent-bot');
+});
+
+test('werewolf vote mention fallback respects the last mention beyond 8 candidates', async (t) => {
+  const tempDir = withTempDir('werewolf-test-');
+  const sqlitePath = path.join(tempDir, 'chat.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const host = createWerewolfHost({ agentDir: tempDir });
+
+  t.after(() => {
+    try {
+      store && store.close();
+    } catch {}
+    try {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    } catch {}
+  });
+
+  const agents = [];
+  for (let index = 1; index <= 10; index += 1) {
+    agents.push({ id: `test-agent-p${index}`, name: `Player${index}` });
+  }
+
+  for (const agent of agents) {
+    store.saveAgent({
+      id: agent.id,
+      name: agent.name,
+      personaPrompt: 'Reply tersely.',
+    });
+  }
+
+  store.createConversation({
+    id: 'test-werewolf-vote-mention-fallback-cap',
+    title: 'Werewolf Vote Parse Mention Fallback Cap Test',
+    type: 'werewolf',
+    participants: agents.map((agent) => agent.id),
+  });
+
+  const conversation = store.getConversation('test-werewolf-vote-mention-fallback-cap');
+  let state = host.createGame(conversation, { werewolfCount: 2, seerCount: 1 });
+  state = host.startVote(state);
+
+  const mentionList = agents.slice(1).map((agent) => `@${agent.name}`).join(' ');
+
+  const turnOrchestrator = {
+    runConversationTurn: async () => ({
+      replies: [
+        { agentId: 'test-agent-p1', content: mentionList },
+        { agentId: 'test-agent-p2', content: '投票：@Player9' },
+        { agentId: 'test-agent-p3', content: '投票：@Player9' },
+        { agentId: 'test-agent-p4', content: '投票：@Player10' },
+        { agentId: 'test-agent-p5', content: '投票：@Player10' },
+      ],
+    }),
+  };
+
+  const service = createWerewolfService({
+    store,
+    skillRegistry: {},
+    turnOrchestrator,
+    werewolfHost: host,
+    broadcastEvent: () => {},
+    broadcastConversationSummary: () => {},
+  });
+
+  await service.runVotePhase('test-werewolf-vote-mention-fallback-cap');
+
+  const finalState = host.loadState('test-werewolf-vote-mention-fallback-cap');
+  const lastEntry = finalState.history[finalState.history.length - 1];
+  assert.equal(lastEntry.type, 'vote');
+  assert.equal(lastEntry.eliminatedAgentId, 'test-agent-p10');
 });

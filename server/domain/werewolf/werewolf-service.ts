@@ -250,33 +250,44 @@ export function createWerewolfService(options: any = {}) {
 
     const allowed = new Set(Array.isArray(allowedAgentIds) ? allowedAgentIds : []);
     const lookup = buildAgentMentionLookup(conversation && conversation.agents);
-    
-    // 提取显式的 @提及（仅作为无投票命令时的兜底）
-    const explicitMention = extractMentionedAgentIds(source, conversation && conversation.agents, {
-      lookup,
-      limit: 1,
-      excludeAgentId: voterAgentId,
-    }).find((agentId: string) => allowed.has(agentId));
 
-    // 支持多种投票格式（优先解析投票命令）
-    const match = source.match(/(?:投票|vote|投|选|处决)\s*[:：]?\s*@?([^\s,，。!?]+)/iu);
+    // 支持多种投票格式（优先解析投票命令，取最后一次有效投票）
+    const voteMatches = Array.from(
+      source.matchAll(/(?:投票|vote|处决)(?:\s*[:：]\s*|\s+)@?([^\s,，。！？!?]+)/giu),
+    );
 
-    if (match && match[1]) {
-      const targetName = match[1].trim();
-      
+    for (let index = voteMatches.length - 1; index >= 0; index -= 1) {
+      const targetName = String(voteMatches[index] && voteMatches[index][1] ? voteMatches[index][1] : '').trim();
+
+      if (!targetName) {
+        continue;
+      }
+
       const resolved = resolveMentionValues(targetName, conversation && conversation.agents, {
         lookup,
         excludeAgentId: voterAgentId,
       }).find((agentId: string) => allowed.has(agentId));
 
-      if (!resolved) {
-        console.log('[WEREWOLF DEBUG] 投票目标解析失败:', targetName);
+      if (resolved) {
+        return resolved;
       }
-
-      return resolved || null;
     }
 
-    return explicitMention || null;
+    if (voteMatches.length > 0) {
+      const lastMatchedName = String(voteMatches[voteMatches.length - 1][1] || '').trim();
+      if (lastMatchedName) {
+        console.log('[WEREWOLF DEBUG] 投票目标解析失败:', lastMatchedName);
+      }
+      return null;
+    }
+
+    // 提取显式的 @提及（仅作为无投票命令时的兜底）
+    const explicitMentions = extractMentionedAgentIds(source, conversation && conversation.agents, {
+      lookup,
+      excludeAgentId: voterAgentId,
+    }).filter((agentId: string) => allowed.has(agentId));
+
+    return explicitMentions.length > 0 ? explicitMentions[explicitMentions.length - 1] : null;
   }
 
   function parseWerewolfTarget(content: string, conversation: any, agentId: string, allowedAgentIds: string[]) {
