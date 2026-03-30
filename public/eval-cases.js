@@ -1075,19 +1075,14 @@ async function runBatchSelectedCase() {
       }
 
       try {
+        const body = {
+          variant,
+          prompt: variant === 'A' ? undefined : dom.promptB ? dom.promptB.value : String(item.promptB || ''),
+        };
+
         await fetchJson(`/api/eval-cases/${encodeURIComponent(item.id)}/run`, {
           method: 'POST',
-          body: {
-            variant,
-            prompt:
-              variant === 'A'
-                ? dom.promptA
-                  ? dom.promptA.value
-                  : String(item.promptA || '')
-                : dom.promptB
-                  ? dom.promptB.value
-                  : String(item.promptB || ''),
-          },
+          body,
         });
         succeeded += 1;
       } catch {
