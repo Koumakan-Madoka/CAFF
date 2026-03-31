@@ -115,7 +115,7 @@
             ? '记录这条 AI 回复的输入 prompt/上下文，用于错题本 A/B 测试'
             : '这条消息暂时没有 taskId，无法记录';
           if (message.taskId && !terminalStatus) {
-            recordButton.title = '璇ユ潯 AI 娑堟伅杩樻湭瀹屾垚锛岃绛夊待读瀹屾垚鍚庡啀璁板綍';
+            recordButton.title = '该条 AI 消息还未完成，请等待完成后再记录';
           }
           sender.appendChild(recordButton);
         }
