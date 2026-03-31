@@ -851,7 +851,10 @@ export function createEvalCasesController(options: any = {}): RouteHandler<ApiCo
       const taskId = `eval-case-run-${randomUUID()}`;
       const stage = { taskId, status: 'queued', runId: null as any };
       const sessionName = `eval-case-${existing.id}-${variant}-${Date.now()}`;
-      const toolInvocation = agentToolBridge.registerInvocation(
+      let toolInvocation: any = null;
+
+      try {
+      toolInvocation = agentToolBridge.registerInvocation(
         agentToolBridge.createInvocationContext({
           conversationId: existing.conversationId,
           turnId: existing.turnId,
@@ -1085,13 +1088,17 @@ export function createEvalCasesController(options: any = {}): RouteHandler<ApiCo
           });
       }
 
-      runStore.close();
-
       const runRow = store.db.prepare('SELECT * FROM eval_case_runs WHERE id = @id').get({ id: evalCaseRunId });
       const runPayload = normalizeEvalCaseRunRow(runRow);
 
       sendJson(res, 200, { case: getEvalCase(existing.id), run: runPayload });
       return true;
+      } finally {
+        if (toolInvocation) {
+          agentToolBridge.unregisterInvocation(toolInvocation.invocationId);
+        }
+        runStore.close();
+      }
     }
 
     return false;

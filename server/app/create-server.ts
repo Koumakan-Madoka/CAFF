@@ -47,10 +47,41 @@ function resolveToolRelativePath(toolPath: string) {
   return `./${portablePath}`;
 }
 
+function normalizeToolBaseHost(rawHost: any) {
+  const host = String(rawHost || '').trim();
+
+  if (!host) {
+    return '127.0.0.1';
+  }
+
+  const normalized = host.toLowerCase();
+
+  if (normalized === '0.0.0.0') {
+    return '127.0.0.1';
+  }
+
+  if (normalized === '::' || normalized === '::1') {
+    return '[::1]';
+  }
+
+  if (host.includes(':') && !host.startsWith('[')) {
+    return `[${host}]`;
+  }
+
+  return host;
+}
+
+function buildToolBaseUrl(rawHost: any, rawPort: any) {
+  const host = normalizeToolBaseHost(rawHost);
+  const port = Number.isFinite(rawPort) ? rawPort : Number.parseInt(String(rawPort || ''), 10);
+  return `http://${host}:${Number.isFinite(port) ? port : PORT}`;
+}
+
 export function createServerApp(options: any = {}) {
   const host = String(options.host || HOST).trim() || HOST;
   const portValue = Number.isInteger(options.port) ? options.port : Number.parseInt(String(options.port || PORT), 10);
   const port = Number.isFinite(portValue) ? portValue : PORT;
+  const toolBaseUrl = buildToolBaseUrl(host, port);
   const agentDir = String(options.agentDir || '').trim() || resolveSetting('', process.env.PI_CODING_AGENT_DIR, DEFAULT_AGENT_DIR);
   const sqlitePath = String(options.sqlitePath || '').trim() || resolveSetting('', process.env.PI_SQLITE_PATH, '');
   const initialProjectDir = path.resolve(String(options.projectDir || '').trim() || process.cwd());
@@ -143,7 +174,7 @@ export function createServerApp(options: any = {}) {
     port,
     agentDir,
     sqlitePath,
-    toolBaseUrl: `http://${host}:${port}`,
+    toolBaseUrl,
     agentToolScriptPath,
     agentToolRelativePath,
   });
@@ -184,7 +215,7 @@ export function createServerApp(options: any = {}) {
       store,
       agentToolBridge,
       getProjectDir: () => activeProjectDir,
-      toolBaseUrl: `http://${host}:${port}`,
+      toolBaseUrl,
     }),
     createProjectsController({
       projectManager,
