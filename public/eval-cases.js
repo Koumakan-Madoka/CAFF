@@ -544,6 +544,8 @@ async function selectRun(runId) {
     state.selectedRunId = null;
     state.selectedRun = null;
     showToast(error && error.message ? error.message : '加载失败');
+    renderAll();
+    return;
   }
 
   if (state.runDetailRequestSeq !== requestSeq || state.selectedRunId !== normalized) {

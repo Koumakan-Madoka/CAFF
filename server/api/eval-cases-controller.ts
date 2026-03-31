@@ -276,6 +276,7 @@ export function createEvalCasesController(options: any = {}): RouteHandler<ApiCo
   const store = options.store;
   const agentToolBridge = options.agentToolBridge;
   const getProjectDir = typeof options.getProjectDir === 'function' ? options.getProjectDir : null;
+  const toolBaseUrl = String(options.toolBaseUrl || '').trim() || 'http://127.0.0.1:3100';
   let runSchemaReady = false;
 
   if (!store || !store.db) {
@@ -869,8 +870,6 @@ export function createEvalCasesController(options: any = {}): RouteHandler<ApiCo
           dryRun: true,
         })
       );
-
-      const toolBaseUrl = req.headers.host ? `http://${req.headers.host}` : 'http://127.0.0.1:3100';
       const agentToolScriptPath = path.resolve(ROOT_DIR, 'lib', 'agent-chat-tools.js');
       const agentToolRelativePath = resolveToolRelativePath(agentToolScriptPath);
 

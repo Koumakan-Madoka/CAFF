@@ -184,6 +184,7 @@ export function createServerApp(options: any = {}) {
       store,
       agentToolBridge,
       getProjectDir: () => activeProjectDir,
+      toolBaseUrl: `http://${host}:${port}`,
     }),
     createProjectsController({
       projectManager,
