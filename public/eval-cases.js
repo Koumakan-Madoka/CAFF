@@ -10,6 +10,7 @@ const state = {
   modelOptions: [],
   batchModelKeys: [],
   dirty: false,
+  editorHydratedCaseId: null,
   filters: {
     query: '',
     status: 'all',
@@ -698,6 +699,7 @@ function renderRunHistory() {
   const item = state.selectedCase;
 
   if (!item) {
+    state.editorHydratedCaseId = null;
     if (dom.runBatchButton) {
       dom.runBatchButton.disabled = true;
     }
@@ -919,11 +921,22 @@ function renderEditor() {
 
   dom.editorMeta.textContent = `${item.id} · ${item.agentName || item.agentId || ''} · ${formatDateTime(item.createdAt)}`;
 
-  dom.noteInput.value = item.note || '';
   dom.promptA.value = item.promptA || '';
   dom.outputA.value = item.outputA || '';
-  dom.promptB.value = item.promptB || '';
   dom.outputB.value = item.outputB || '';
+
+  const caseId = String(item.id || '').trim();
+  const caseChanged = state.editorHydratedCaseId !== caseId;
+  const hydrateEdits = caseChanged || !state.dirty;
+
+  if (caseChanged) {
+    state.editorHydratedCaseId = caseId;
+  }
+
+  if (hydrateEdits) {
+    dom.noteInput.value = item.note || '';
+    dom.promptB.value = item.promptB || '';
+  }
 
   if (dom.batchModels) {
     dom.batchModels.disabled = false;
@@ -1100,8 +1113,7 @@ function renderEditor() {
   dom.saveButton && (dom.saveButton.disabled = false);
   dom.runBButton && (dom.runBButton.disabled = false);
 
-  state.dirty = false;
-  updateDirtyUi();
+  syncDirtyState();
   renderRunHistory();
 }
 

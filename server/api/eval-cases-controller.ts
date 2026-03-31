@@ -582,6 +582,12 @@ export function createEvalCasesController(options: any = {}): RouteHandler<ApiCo
         throw createHttpError(409, 'This assistant message does not have a taskId yet');
       }
 
+      const messageStatus = String(message.status || '').trim();
+
+      if (messageStatus && messageStatus !== 'completed' && messageStatus !== 'failed') {
+        throw createHttpError(409, 'This assistant message is not completed yet');
+      }
+
       const taskRow = store.db
         .prepare(
           `
