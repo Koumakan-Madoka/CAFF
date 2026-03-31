@@ -10,7 +10,7 @@ import { createHttpError } from '../http/http-errors';
 import { readRequestJson } from '../http/request-body';
 import { sendJson } from '../http/response';
 import { migrateRunSchema } from '../../storage/sqlite/migrations';
-import { startRun } from '../../lib/minimal-pi';
+import { DEFAULT_THINKING, resolveSetting, startRun } from '../../lib/minimal-pi';
 import { createSqliteRunStore } from '../../lib/sqlite-store';
 import { ROOT_DIR } from '../app/config';
 import { ensureAgentSandbox, toPortableShellPath } from '../domain/conversation/turn/agent-sandbox';
@@ -602,6 +602,18 @@ export function createEvalCasesController(options: any = {}): RouteHandler<ApiCo
       const taskMetadata = safeJsonParse(taskRow.metadata_json) || {};
       const promptVersion = String(taskMetadata.promptVersion || '').trim();
       const modelProfileId = String(taskMetadata.modelProfileId || '').trim();
+      const agentId = String(message.agentId || '').trim();
+      const agent = agentId && typeof store.getAgent === 'function' ? store.getAgent(agentId) : null;
+      const modelProfiles = agent && Array.isArray(agent.modelProfiles) ? agent.modelProfiles : [];
+      const modelProfile = modelProfileId
+        ? modelProfiles.find((profile) => profile && String(profile.id || '').trim() === modelProfileId) || null
+        : null;
+      const agentThinking = resolveSetting(
+        modelProfile && modelProfile.thinking ? String(modelProfile.thinking) : '',
+        agent && agent.thinking ? String(agent.thinking) : '',
+        ''
+      );
+      const thinking = resolveSetting(agentThinking, process.env.PI_THINKING, DEFAULT_THINKING);
 
       const expectationsRow = store.db
         .prepare(
@@ -634,6 +646,7 @@ export function createEvalCasesController(options: any = {}): RouteHandler<ApiCo
             agent_name,
             provider,
             model,
+            thinking,
             prompt_version,
             model_profile_id,
             expectations_json,
@@ -652,6 +665,7 @@ export function createEvalCasesController(options: any = {}): RouteHandler<ApiCo
             @agentName,
             @provider,
             @model,
+            @thinking,
             @promptVersion,
             @modelProfileId,
             @expectationsJson,
@@ -669,10 +683,11 @@ export function createEvalCasesController(options: any = {}): RouteHandler<ApiCo
           turnId: String(message.turnId || '').trim(),
           messageId,
           stageTaskId,
-          agentId: String(message.agentId || '').trim(),
+          agentId,
           agentName: String(message.senderName || '').trim(),
           provider: taskRow.provider || null,
           model: taskRow.model || null,
+          thinking: thinking || null,
           promptVersion: promptVersion || null,
           modelProfileId: modelProfileId || null,
           expectationsJson: expectationsJson || null,

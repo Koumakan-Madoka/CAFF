@@ -214,7 +214,10 @@ function formatPosts(value) {
 
   return posts
     .map((item, index) => {
-      const content = String(item || '');
+      const content =
+        item && typeof item === 'object' && Object.prototype.hasOwnProperty.call(item, 'content')
+          ? String(item.content || '')
+          : String(item || '');
       return `#${index + 1}\n${content}`;
     })
     .join('\n\n---\n\n');
@@ -1160,6 +1163,9 @@ async function runSelectedCaseB() {
 
   state.selectedCase = payload && payload.case ? payload.case : state.selectedCase;
   await fetchCaseList();
+  await fetchSelectedRuns();
+  state.selectedRunId = null;
+  state.selectedRun = null;
 }
 
 function normalizeBatchRepeats(value, fallback = 3) {
