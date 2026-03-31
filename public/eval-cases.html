@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CAFF 错题本</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script defer src="/shared/api-client.js"></script>
+    <script defer src="/shared/model-options.js"></script>
+    <script defer src="/shared/toast.js"></script>
+    <script defer src="/eval-cases.js"></script>
+  </head>
+  <body class="casebook">
+    <div class="ambient ambient-a"></div>
+    <div class="ambient ambient-b"></div>
+    <div class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">CAFF Casebook</p>
+          <h1>错题本 / A/B 测试</h1>
+          <p class="subtitle">一键记录“问题 turn”的模型输入 prompt，并在这里批量调整与重放，比较 A/B 输出与工具调用行为。</p>
+        </div>
+        <div class="topbar-actions">
+          <nav class="topbar-nav" aria-label="Primary">
+            <a class="topbar-link" href="/">聊天工作台</a>
+            <a class="topbar-link" href="/personas.html">人格管理</a>
+            <a class="topbar-link" href="/skills.html">Skill 管理</a>
+            <a class="topbar-link" href="/projects.html">项目管理</a>
+            <a class="topbar-link" href="/metrics.html">评测报表</a>
+            <a class="topbar-link active" href="/eval-cases.html">错题本</a>
+          </nav>
+          <button id="refresh-button" class="ghost-button" type="button">刷新</button>
+        </div>
+      </header>
+
+      <main class="layout persona-layout">
+        <aside class="panel panel-conversations">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Case List</p>
+              <h2>记录列表</h2>
+            </div>
+          </div>
+
+          <form id="filter-form" class="settings-form compact-settings-form">
+            <label>
+              <span>搜索</span>
+              <input id="search-input" type="text" maxlength="120" placeholder="agent / note / id / model..." />
+            </label>
+            <label>
+              <span>状态</span>
+              <select id="status-filter">
+                <option value="all">全部</option>
+                <option value="pending">未运行 B</option>
+                <option value="succeeded">B 成功</option>
+                <option value="failed">B 失败</option>
+              </select>
+            </label>
+          </form>
+
+          <section class="stack-card">
+            <div class="section-row">
+              <span class="section-label">错题本</span>
+              <span id="case-count" class="section-hint">加载中...</span>
+            </div>
+            <div id="case-list" class="agent-list"></div>
+          </section>
+        </aside>
+
+        <section class="panel panel-studio">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Editor</p>
+              <h2 id="editor-title">A/B 对比</h2>
+              <p id="editor-meta" class="muted">从左侧选择一条记录</p>
+            </div>
+            <div class="panel-actions">
+              <button id="copy-a-to-b-button" class="ghost-button" type="button">A 复制到 B</button>
+              <button id="save-button" class="ghost-button" type="button">保存</button>
+              <button id="run-b-button" type="button">运行 B</button>
+            </div>
+          </div>
+
+          <form id="case-form" class="settings-form">
+            <label>
+              <span>备注（可选）</span>
+              <textarea
+                id="note-input"
+                rows="3"
+                maxlength="240"
+                placeholder="例如：本该私聊却发到了公共频道 / 本该用 send-public 但直接输出 text"
+              ></textarea>
+            </label>
+
+            <section class="stack-card">
+              <div class="section-row">
+                <span class="section-label">期望 / 判定</span>
+                <span class="section-hint">用于快速定位“为什么是错题”</span>
+              </div>
+              <div id="case-metrics" class="tag-row"></div>
+            </section>
+
+            <section class="stack-card">
+              <div class="section-row">
+                <span class="section-label">批量测试</span>
+                <span class="section-hint">对同一个错题的 A/B prompt 在同一 Agent 上重复跑多次，观察稳定性与命中率。</span>
+              </div>
+
+              <div class="field-grid">
+                <label>
+                  <span>变体</span>
+                  <select id="batch-variant">
+                    <option value="AB">A + B</option>
+                    <option value="A">仅 A</option>
+                    <option value="B">仅 B</option>
+                  </select>
+                </label>
+
+                <label>
+                  <span>次数</span>
+                  <input id="batch-repeats" type="number" min="1" max="20" value="3" />
+                </label>
+              </div>
+
+              <label>
+                <span>模型（可多选）</span>
+                <select id="batch-models" multiple size="6"></select>
+              </label>
+              <p class="section-hint">按 Ctrl/⌘ 多选；不选则默认使用该错题的原模型。</p>
+
+              <div class="panel-actions">
+                <button id="run-batch-button" class="ghost-button" type="button">开始批量测试</button>
+                <button id="clear-run-selection-button" class="ghost-button hidden" type="button">回到最新 B</button>
+              </div>
+
+              <div id="run-summary" class="tag-row"></div>
+              <div id="run-list" class="agent-list"></div>
+            </section>
+
+            <div class="ab-grid">
+              <section class="stack-card">
+                <div class="section-row">
+                  <span class="section-label">A（原始）Prompt</span>
+                  <div class="section-actions">
+                    <button id="copy-prompt-a-button" class="mini-action" type="button">复制</button>
+                    <span class="section-hint">当时实际送入模型的完整 prompt</span>
+                  </div>
+                </div>
+                <textarea id="prompt-a" class="mono-textarea" rows="12" readonly placeholder="选择左侧记录后显示"></textarea>
+              </section>
+
+              <section class="stack-card">
+                <div class="section-row">
+                  <span class="section-label">B（调整后）Prompt</span>
+                  <div class="section-actions">
+                    <button id="copy-prompt-b-button" class="mini-action" type="button">复制</button>
+                    <span class="section-hint">在这里修改输入，然后点击“运行 B”</span>
+                  </div>
+                </div>
+                <textarea id="prompt-b" class="mono-textarea" rows="12" placeholder="在这里修改 B 版本 prompt"></textarea>
+              </section>
+            </div>
+
+            <div class="ab-grid">
+              <section class="stack-card">
+                <div class="section-row">
+                  <span class="section-label">A（原始）输出</span>
+                  <div class="section-actions">
+                    <button id="copy-output-a-button" class="mini-action" type="button">复制</button>
+                    <span class="section-hint">当时在聊天界面看到的输出</span>
+                  </div>
+                </div>
+                <div id="a-metrics" class="tag-row"></div>
+                <textarea id="output-a" class="mono-textarea" rows="10" readonly placeholder="选择左侧记录后显示"></textarea>
+
+                <details class="trace-details">
+                  <summary>完整模型输出（thinking / tool calls / error）</summary>
+
+                  <div class="ab-grid">
+                    <div class="stack-card stack-card-inner">
+                      <div class="section-row">
+                        <span class="section-label">thinking</span>
+                        <button id="copy-a-thinking-button" class="mini-action" type="button">复制</button>
+                      </div>
+                      <textarea
+                        id="a-thinking"
+                        class="mono-textarea"
+                        rows="8"
+                        readonly
+                        placeholder="若模型未输出 thinking 或 session 不存在，则为空"
+                      ></textarea>
+                    </div>
+
+                    <div class="stack-card stack-card-inner">
+                      <div class="section-row">
+                        <span class="section-label">toolCalls</span>
+                        <button id="copy-a-tool-calls-button" class="mini-action" type="button">复制</button>
+                      </div>
+                      <textarea
+                        id="a-tool-calls"
+                        class="mono-textarea"
+                        rows="8"
+                        readonly
+                        placeholder="模型尝试调用的工具（包含失败的 tool call 片段）"
+                      ></textarea>
+                    </div>
+                  </div>
+
+                  <div class="section-row">
+                    <span class="section-label">errors / meta</span>
+                    <button id="copy-a-errors-button" class="mini-action" type="button">复制</button>
+                  </div>
+                  <textarea id="a-errors" class="mono-textarea" rows="5" readonly placeholder="运行状态、stopReason、errorMessage..."></textarea>
+
+                  <details class="trace-details trace-details-inner">
+                    <summary>更多调试（tool events / raw assistant JSON）</summary>
+
+                    <div class="section-row">
+                      <span class="section-label">agent_tool_call events</span>
+                      <button id="copy-a-tool-events-button" class="mini-action" type="button">复制</button>
+                    </div>
+                    <textarea
+                      id="a-tool-events"
+                      class="mono-textarea"
+                      rows="6"
+                      readonly
+                      placeholder="真实工具调用记录（来自 a2a_task_events）"
+                    ></textarea>
+
+                    <div class="section-row">
+                      <span class="section-label">assistantMessages (tail)</span>
+                      <button id="copy-a-raw-messages-button" class="mini-action" type="button">复制</button>
+                    </div>
+                    <textarea
+                      id="a-raw-messages"
+                      class="mono-textarea"
+                      rows="8"
+                      readonly
+                      placeholder="session JSONL 中截取的最后几条 assistant message（原始 JSON）"
+                    ></textarea>
+                  </details>
+                </details>
+              </section>
+
+              <section class="stack-card">
+                <div class="section-row">
+                  <span class="section-label">重放结果</span>
+                  <div class="section-actions">
+                    <button id="copy-output-b-button" class="mini-action" type="button">复制</button>
+                    <span id="b-meta" class="section-hint">尚未运行</span>
+                  </div>
+                </div>
+                <div id="b-metrics" class="tag-row"></div>
+                <textarea id="output-b" class="mono-textarea" rows="10" readonly placeholder="运行 B 后显示"></textarea>
+
+                <details class="trace-details">
+                  <summary>B 模型轨迹（thinking / tool calls / error）</summary>
+
+                  <div class="ab-grid">
+                    <div class="stack-card stack-card-inner">
+                      <div class="section-row">
+                        <span class="section-label">thinking</span>
+                        <button id="copy-b-thinking-button" class="mini-action" type="button">复制</button>
+                      </div>
+                      <textarea id="b-thinking" class="mono-textarea" rows="8" readonly placeholder="运行 B 后显示"></textarea>
+                    </div>
+
+                    <div class="stack-card stack-card-inner">
+                      <div class="section-row">
+                        <span class="section-label">toolCalls</span>
+                        <button id="copy-b-tool-calls-button" class="mini-action" type="button">复制</button>
+                      </div>
+                      <textarea id="b-tool-calls" class="mono-textarea" rows="8" readonly placeholder="运行 B 后显示"></textarea>
+                    </div>
+                  </div>
+
+                  <div class="section-row">
+                    <span class="section-label">errors / meta</span>
+                    <button id="copy-b-errors-button" class="mini-action" type="button">复制</button>
+                  </div>
+                  <textarea id="b-errors" class="mono-textarea" rows="5" readonly placeholder="运行 B 后显示"></textarea>
+
+                  <details class="trace-details trace-details-inner">
+                    <summary>更多调试（tool events / raw assistant JSON）</summary>
+
+                    <div class="section-row">
+                      <span class="section-label">agent_tool_call events</span>
+                      <button id="copy-b-tool-events-button" class="mini-action" type="button">复制</button>
+                    </div>
+                    <textarea id="b-tool-events" class="mono-textarea" rows="6" readonly placeholder="运行 B 后显示"></textarea>
+
+                    <div class="section-row">
+                      <span class="section-label">assistantMessages (tail)</span>
+                      <button id="copy-b-raw-messages-button" class="mini-action" type="button">复制</button>
+                    </div>
+                    <textarea id="b-raw-messages" class="mono-textarea" rows="8" readonly placeholder="运行 B 后显示"></textarea>
+                  </details>
+                </details>
+              </section>
+            </div>
+
+            <section class="stack-card">
+              <div class="section-row">
+                <span class="section-label">B 工具轨迹（dry run）</span>
+                <span class="section-hint">不会真的发到聊天室；用于检查 send-public / send-private 是否按预期触发</span>
+              </div>
+
+              <div class="ab-grid">
+                <div class="stack-card stack-card-inner">
+                  <div class="section-row">
+                    <span class="section-label">publicPosts</span>
+                    <button id="copy-b-public-posts-button" class="mini-action" type="button">复制</button>
+                  </div>
+                  <textarea id="b-public-posts" class="mono-textarea" rows="8" readonly placeholder="运行 B 后显示"></textarea>
+                </div>
+
+                <div class="stack-card stack-card-inner">
+                  <div class="section-row">
+                    <span class="section-label">privatePosts</span>
+                    <button id="copy-b-private-posts-button" class="mini-action" type="button">复制</button>
+                  </div>
+                  <textarea id="b-private-posts" class="mono-textarea" rows="8" readonly placeholder="运行 B 后显示"></textarea>
+                </div>
+              </div>
+
+              <div class="section-row">
+                <span class="section-label">rawReply（模型原始 text）</span>
+                <button id="copy-b-raw-reply-button" class="mini-action" type="button">复制</button>
+              </div>
+              <textarea id="b-raw-reply" class="mono-textarea" rows="6" readonly placeholder="运行 B 后显示"></textarea>
+            </section>
+
+            <section class="stack-card">
+              <div class="section-row">
+                <span class="section-label">怎么看</span>
+                <span class="section-hint">减少来回猜：把“错在哪、改哪、修好了没”一次看清</span>
+              </div>
+              <ul class="metric-legend">
+                <li><strong>expectations</strong>：系统对本轮的工具调用“期望值”（例如 <code>send-public</code> required/forbidden）。</li>
+                <li><strong>A/B verdict</strong>：观测到的工具行为是否符合 expectations（OK/FAIL）。</li>
+                <li><strong>publicToolUsed</strong>：是否调用过 public 工具发言（用于监控“Agent 调用工具聊天率”）。</li>
+                <li><strong>publicPosts/privatePosts</strong>：B 在 dry run 中捕获到的“本来要发到公共/私有频道的内容”。</li>
+                <li><strong>rawReply</strong>：模型直接输出的 text；如果这里有内容但 <code>publicPosts</code> 为空，通常意味着没走工具发言。</li>
+              </ul>
+            </section>
+          </form>
+        </section>
+      </main>
+    </div>
+
+    <div id="toast" class="toast hidden"></div>
+  </body>
+</html>

@@ -318,6 +318,88 @@ textarea {
   flex-wrap: wrap;
 }
 
+.section-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+  text-align: right;
+}
+
+.mini-action {
+  padding: 0.28rem 0.72rem;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  line-height: 1;
+  background: rgba(255, 252, 246, 0.75);
+  color: var(--ink);
+  box-shadow: none;
+  border: 1px solid rgba(34, 49, 63, 0.08);
+}
+
+.mini-action:hover:not(:disabled) {
+  transform: none;
+  background: rgba(255, 247, 238, 0.96);
+}
+
+.stack-card.stack-card-inner {
+  padding: 0.75rem;
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.62);
+  box-shadow: none;
+  border: 1px solid rgba(34, 49, 63, 0.08);
+  backdrop-filter: none;
+  animation: none;
+}
+
+.casebook .mono-textarea[readonly] {
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.casebook .mono-textarea[readonly]:focus {
+  border-color: rgba(34, 49, 63, 0.14);
+  box-shadow: none;
+  background: rgba(255, 255, 255, 0.65);
+}
+
+.trace-details {
+  margin-top: 0.75rem;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(34, 49, 63, 0.08);
+  background: rgba(255, 255, 255, 0.45);
+  padding: 0.55rem 0.75rem;
+}
+
+.trace-details > summary {
+  cursor: pointer;
+  font-weight: 700;
+  color: var(--ink);
+  list-style: none;
+}
+
+.trace-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.trace-details > summary::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: 0.45rem;
+  transition: transform 160ms ease;
+  color: var(--muted);
+}
+
+.trace-details[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.trace-details-inner {
+  margin-top: 0.75rem;
+  padding: 0.5rem 0.65rem;
+  background: rgba(255, 255, 255, 0.55);
+}
+
 .inline-form,
 .settings-form,
 .composer {
@@ -341,6 +423,25 @@ textarea {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.8rem;
+}
+
+.ab-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+@media (max-width: 920px) {
+  .ab-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.mono-textarea {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.86rem;
+  line-height: 1.5;
+  tab-size: 2;
 }
 
 .profile-select-row,
@@ -482,6 +583,21 @@ textarea {
 .mini-badge.busy {
   background: rgba(42, 157, 143, 0.14);
   color: #1d756a;
+}
+
+.mini-badge.success {
+  background: rgba(42, 157, 143, 0.14);
+  color: #1d756a;
+}
+
+.mini-badge.warn {
+  background: rgba(217, 164, 65, 0.18);
+  color: #8b6c1c;
+}
+
+.mini-badge.danger {
+  background: rgba(176, 68, 68, 0.14);
+  color: #b04444;
 }
 
 .participant-section {
@@ -1082,6 +1198,24 @@ textarea {
   border: 1px solid rgba(34, 49, 63, 0.08);
   color: var(--ink);
   font-size: 0.86rem;
+}
+
+.file-chip.success {
+  background: rgba(42, 157, 143, 0.14);
+  border-color: rgba(42, 157, 143, 0.22);
+  color: #1d756a;
+}
+
+.file-chip.warn {
+  background: rgba(217, 164, 65, 0.18);
+  border-color: rgba(217, 164, 65, 0.28);
+  color: #8b6c1c;
+}
+
+.file-chip.danger {
+  background: rgba(176, 68, 68, 0.14);
+  border-color: rgba(176, 68, 68, 0.24);
+  color: #b04444;
 }
 
 .metric-legend {
