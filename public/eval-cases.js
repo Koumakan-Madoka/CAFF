@@ -7,6 +7,7 @@ const state = {
   runs: [],
   selectedRunId: null,
   selectedRun: null,
+  runDetailRequestSeq: 0,
   modelOptions: [],
   batchModelKeys: [],
   dirty: false,
@@ -523,14 +524,30 @@ async function selectRun(runId) {
 
   state.selectedRunId = normalized;
   state.selectedRun = null;
+  state.runDetailRequestSeq = (state.runDetailRequestSeq || 0) + 1;
+  const requestSeq = state.runDetailRequestSeq;
   renderAll();
 
   try {
-    state.selectedRun = await fetchRunDetail(normalized);
+    const runDetail = await fetchRunDetail(normalized);
+
+    if (state.runDetailRequestSeq !== requestSeq || state.selectedRunId !== normalized) {
+      return;
+    }
+
+    state.selectedRun = runDetail;
   } catch (error) {
+    if (state.runDetailRequestSeq !== requestSeq || state.selectedRunId !== normalized) {
+      return;
+    }
+
     state.selectedRunId = null;
     state.selectedRun = null;
     showToast(error && error.message ? error.message : '加载失败');
+  }
+
+  if (state.runDetailRequestSeq !== requestSeq || state.selectedRunId !== normalized) {
+    return;
   }
 
   renderAll();
