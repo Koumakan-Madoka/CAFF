@@ -275,6 +275,7 @@ function readSessionAssistantSnapshot(sessionPath: any, agentDir: any) {
 export function createEvalCasesController(options: any = {}): RouteHandler<ApiContext> {
   const store = options.store;
   const agentToolBridge = options.agentToolBridge;
+  const getProjectDir = typeof options.getProjectDir === 'function' ? options.getProjectDir : null;
   let runSchemaReady = false;
 
   if (!store || !store.db) {
@@ -402,6 +403,7 @@ export function createEvalCasesController(options: any = {}): RouteHandler<ApiCo
           prompt_version,
           model_profile_id,
           expectations_json,
+          prompt_b,
           note,
           b_status,
           created_at,
@@ -801,6 +803,42 @@ export function createEvalCasesController(options: any = {}): RouteHandler<ApiCo
       const model = String(hasModelOverride ? body.model ?? '' : existing.model || '').trim();
       const agent = existing.agentId ? store.getAgent(existing.agentId) : null;
       const sandbox = ensureAgentSandbox(store.agentDir, agent || { id: existing.agentId || 'eval' });
+      const conversation = store.getConversation(existing.conversationId);
+      const projectDirCandidate = getProjectDir ? String(getProjectDir(conversation) || '').trim() : '';
+      const projectDir = projectDirCandidate ? path.resolve(projectDirCandidate) : '';
+      const conversationAgents = conversation && Array.isArray(conversation.agents) ? conversation.agents : [];
+      const conversationMessages = conversation && Array.isArray(conversation.messages) ? conversation.messages : [];
+      const replayUserMessage =
+        conversationMessages.find(
+          (message: any) =>
+            message &&
+            message.role === 'user' &&
+            String(message.turnId || '').trim() === String(existing.turnId || '').trim()
+        ) ||
+        [...conversationMessages]
+          .slice(0, Math.max(0, conversationMessages.findIndex((message: any) => message && message.id === existing.messageId)))
+          .reverse()
+          .find((message: any) => message && message.role === 'user') ||
+        null;
+      const promptUserMessage = replayUserMessage
+        ? {
+            id: String(replayUserMessage.id || '').trim() || 'eval-user',
+            turnId: String(replayUserMessage.turnId || existing.turnId || 'eval-turn').trim(),
+            role: 'user',
+            senderName: String(replayUserMessage.senderName || 'You').trim() || 'You',
+            content: replayUserMessage.content !== undefined ? replayUserMessage.content : '',
+            status: String(replayUserMessage.status || 'completed').trim() || 'completed',
+            createdAt: String(replayUserMessage.createdAt || nowIso()).trim() || nowIso(),
+          }
+        : {
+            id: 'eval-user',
+            turnId: existing.turnId || 'eval-turn',
+            role: 'user',
+            senderName: 'You',
+            content: '(eval case replay)',
+            status: 'completed',
+            createdAt: nowIso(),
+          };
 
       const runStore = createSqliteRunStore({ agentDir: store.agentDir, sqlitePath: store.databasePath });
       const taskId = `eval-case-run-${randomUUID()}`;
@@ -810,21 +848,13 @@ export function createEvalCasesController(options: any = {}): RouteHandler<ApiCo
         agentToolBridge.createInvocationContext({
           conversationId: existing.conversationId,
           turnId: existing.turnId,
-          projectDir: '',
+          projectDir,
           agentId: existing.agentId,
           agentName: existing.agentName || (agent && agent.name) || 'Assistant',
           assistantMessageId: '',
-          userMessageId: '',
-          promptUserMessage: {
-            id: 'eval-user',
-            turnId: existing.turnId || 'eval-turn',
-            role: 'user',
-            senderName: 'You',
-            content: '(eval case replay)',
-            status: 'completed',
-            createdAt: nowIso(),
-          },
-          conversationAgents: (store.getConversation(existing.conversationId) || {}).agents || [],
+          userMessageId: promptUserMessage && promptUserMessage.id ? promptUserMessage.id : null,
+          promptUserMessage,
+          conversationAgents,
           runStore,
           stage,
           turnState: null,

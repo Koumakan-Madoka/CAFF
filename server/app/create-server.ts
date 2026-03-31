@@ -183,6 +183,7 @@ export function createServerApp(options: any = {}) {
     createEvalCasesController({
       store,
       agentToolBridge,
+      getProjectDir: () => activeProjectDir,
     }),
     createProjectsController({
       projectManager,

@@ -722,18 +722,37 @@ export function createAgentToolBridge(options: any = {}) {
 
     try {
       if (context.dryRun) {
-        const response = {
-          ok: true,
-          conversation: null,
-          agent: {
-            id: context.agentId,
-            name: context.agentName,
-          },
-          participants: serializeAgentToolParticipants(context.conversationAgents),
-          latestUserMessage: context.promptUserMessage ? serializeAgentToolPublicMessage(context.promptUserMessage) : null,
-          publicMessages: [],
-          privateMessages: [],
-        };
+        let payload: any = null;
+
+        try {
+          payload = buildAgentToolContextPayload(context, {
+            publicLimit: Number.isFinite(publicLimit) ? publicLimit : undefined,
+            privateLimit: Number.isFinite(privateLimit) ? privateLimit : undefined,
+          });
+        } catch {
+          payload = null;
+        }
+
+        const response =
+          payload && typeof payload === 'object'
+            ? {
+                ok: true,
+                ...payload,
+              }
+            : {
+                ok: true,
+                conversation: null,
+                agent: {
+                  id: context.agentId,
+                  name: context.agentName,
+                },
+                participants: serializeAgentToolParticipants(context.conversationAgents),
+                latestUserMessage: context.promptUserMessage
+                  ? serializeAgentToolPublicMessage(context.promptUserMessage)
+                  : null,
+                publicMessages: [],
+                privateMessages: [],
+              };
 
         tryAppendInvocationEvent(context, 'agent_tool_call', {
           schemaVersion: 1,
@@ -752,8 +771,8 @@ export function createAgentToolBridge(options: any = {}) {
             privateLimit: Number.isFinite(privateLimit) ? privateLimit : null,
           },
           result: {
-            publicMessageCount: 0,
-            privateMessageCount: 0,
+            publicMessageCount: Array.isArray(response.publicMessages) ? response.publicMessages.length : 0,
+            privateMessageCount: Array.isArray(response.privateMessages) ? response.privateMessages.length : 0,
             participantCount: Array.isArray(response.participants) ? response.participants.length : 0,
           },
         });
