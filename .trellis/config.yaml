@@ -1,0 +1,44 @@
+# Trellis Configuration for CAFF Project
+# Project-level settings for the Trellis workflow system
+#
+# All values have sensible defaults. Only override what you need.
+
+#-------------------------------------------------------------------------------
+# Session Recording
+#-------------------------------------------------------------------------------
+
+# Commit message used when auto-committing journal/index changes
+# after running add_session.py
+session_commit_message: "chore: record journal"
+
+# Maximum lines per journal file before rotating to a new one
+max_journal_lines: 2000
+
+#-------------------------------------------------------------------------------
+# Packages (Monorepo)
+#-------------------------------------------------------------------------------
+
+# Declare packages in this project and their source code paths.
+# If omitted, Trellis assumes a single-repo layout (spec/backend/, spec/frontend/).
+# Uncomment and modify if CAFF becomes a monorepo:
+#
+# packages:
+#   backend:
+#     path: src
+#     type: local
+
+#-------------------------------------------------------------------------------
+# Task Lifecycle Hooks
+#-------------------------------------------------------------------------------
+
+# Shell commands to run after task lifecycle events.
+# Each hook receives TASK_JSON_PATH environment variable pointing to task.json.
+# Hook failures print a warning but do not block the main operation.
+#
+# hooks:
+#   after_create:
+#     - "python3 .trellis/scripts/hooks/linear_sync.py create"
+#   after_start:
+#     - "python3 .trellis/scripts/hooks/linear_sync.py start"
+#   after_archive:
+#     - "python3 .trellis/scripts/hooks/linear_sync.py archive"

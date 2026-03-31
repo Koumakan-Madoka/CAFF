@@ -1,0 +1,5 @@
+{"file":".trellis/spec/index.md","reason":"Root spec index for CAFF and pi-mono Trellis usage"}
+{"file":".trellis/spec/runtime/index.md","reason":"Runtime-specific checklist for Trellis injection and tool bridge work"}
+{"file":"docs/trellis-context.md","reason":"Documented scope of Trellis support in CAFF"}
+{"file":"server/domain/conversation/turn/trellis-context.ts","reason":"Prompt context loading rules"}
+{"file":"server/domain/runtime/agent-tool-bridge.ts","reason":"Trellis read/write tool behavior"}

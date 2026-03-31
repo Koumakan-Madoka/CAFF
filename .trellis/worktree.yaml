@@ -1,0 +1,20 @@
+# Worktree configuration used by `.trellis/scripts/multi_agent/start.py`.
+#
+# Current code only reads these keys:
+# - `worktree_dir`: where git worktrees are created
+# - `copy`: optional file list copied into each new worktree
+# - `post_create`: optional commands run after worktree creation
+
+# Default location for task worktrees.
+worktree_dir: ../worktrees
+
+# Optional files to copy into a new worktree.
+# Example:
+# copy:
+#   - .env
+#   - .npmrc
+
+# Optional commands to run after a new worktree is created.
+# Example:
+# post_create:
+#   - pnpm install
