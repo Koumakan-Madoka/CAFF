@@ -615,7 +615,7 @@ export function createEvalCasesController(options: any = {}): RouteHandler<ApiCo
       const agent = agentId && typeof store.getAgent === 'function' ? store.getAgent(agentId) : null;
       const modelProfiles = agent && Array.isArray(agent.modelProfiles) ? agent.modelProfiles : [];
       const modelProfile = modelProfileId
-        ? modelProfiles.find((profile) => profile && String(profile.id || '').trim() === modelProfileId) || null
+        ? modelProfiles.find((profile: any) => profile && String(profile.id || '').trim() === modelProfileId) || null
         : null;
       const agentThinking = resolveSetting(
         modelProfile && modelProfile.thinking ? String(modelProfile.thinking) : '',
@@ -1094,9 +1094,6 @@ export function createEvalCasesController(options: any = {}): RouteHandler<ApiCo
       sendJson(res, 200, { case: getEvalCase(existing.id), run: runPayload });
       return true;
       } finally {
-        if (toolInvocation) {
-          agentToolBridge.unregisterInvocation(toolInvocation.invocationId);
-        }
         runStore.close();
       }
     }
