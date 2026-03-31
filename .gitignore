@@ -38,3 +38,5 @@ logs/
 
 # Misc
 nul
+tsconfig.public.tsbuildinfo
+tsconfig.typecheck.tsbuildinfo
