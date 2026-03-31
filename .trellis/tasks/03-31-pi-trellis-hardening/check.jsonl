@@ -1,0 +1,5 @@
+{"file":".trellis/spec/index.md","reason":"Review new spec entry points"}
+{"file":".trellis/spec/runtime/agent-runtime.md","reason":"Check runtime guidance against actual code paths"}
+{"file":"tests/runtime/agent-tool-bridge.test.js","reason":"Regression coverage for Trellis tool behavior"}
+{"file":"tests/runtime/turn-orchestrator.test.js","reason":"Regression coverage for Trellis prompt injection"}
+{"status_update":"2026-03-31","completed":["spec/index.md 已替换为CAFF真实仓库结构","backend/frontend/runtime/unit-test/guides 索引已创建并包含pre-dev checklist","demo任务不再是主活跃任务（当前任务是03-31-pi-trellis-hardening）"],"remaining":["验证runtime/agent-runtime.md与实际代码路径一致","确认regression测试覆盖Trellis工具行为"]}
