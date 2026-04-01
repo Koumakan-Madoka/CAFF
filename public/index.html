@@ -55,9 +55,7 @@
           <form id="new-conversation-form" class="inline-form">
             <input id="new-conversation-title" name="title" type="text" maxlength="80" placeholder="新房间标题" />
             <select id="new-conversation-type" name="type">
-              <option value="standard">普通对话</option>
-              <option value="who_is_undercover">谁是卧底</option>
-              <option value="werewolf">狼人杀</option>
+              <!-- dynamically populated from /api/modes -->
             </select>
             <button type="submit">新建</button>
           </form>

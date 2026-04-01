@@ -206,6 +206,7 @@ export function createServerApp(options: any = {}) {
     store,
     skillRegistry,
     turnOrchestrator,
+    modeStore,
   });
   const router = createRouter([
     createBootstrapController({

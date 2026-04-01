@@ -24,35 +24,11 @@ function serializeJson(value: any) {
   return JSON.stringify(value === undefined ? null : value);
 }
 
-function normalizeSkillIds(value: any) {
-  if (Array.isArray(value)) {
-    const seen = new Set();
-    const normalized = [];
-
-    for (const item of value) {
-      const skillId = String(item || '').trim();
-
-      if (!skillId || seen.has(skillId)) {
-        continue;
-      }
-
-      seen.add(skillId);
-      normalized.push(skillId);
-    }
-
-    return normalized;
-  }
-
-  const parsed = parseJson(value);
-
-  if (!Array.isArray(parsed)) {
-    return [];
-  }
-
+function dedupSkillIds(items: any[]) {
   const seen = new Set();
   const normalized = [];
 
-  for (const item of parsed) {
+  for (const item of items) {
     const skillId = String(item || '').trim();
 
     if (!skillId || seen.has(skillId)) {
@@ -64,6 +40,20 @@ function normalizeSkillIds(value: any) {
   }
 
   return normalized;
+}
+
+function normalizeSkillIds(value: any) {
+  if (Array.isArray(value)) {
+    return dedupSkillIds(value);
+  }
+
+  const parsed = parseJson(value);
+
+  if (!Array.isArray(parsed)) {
+    return [];
+  }
+
+  return dedupSkillIds(parsed);
 }
 
 function normalizeLoadingStrategy(value: any) {

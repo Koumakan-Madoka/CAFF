@@ -41,7 +41,7 @@ function resolveRepoRoot() {
   return findRepoRoot(process.cwd()) || findRepoRoot(String(config.ROOT_DIR || '')) || process.cwd();
 }
 
-export function createBootstrapPayloadBuilder({ store, skillRegistry, turnOrchestrator }: any) {
+export function createBootstrapPayloadBuilder({ store, skillRegistry, turnOrchestrator, modeStore }: any) {
   const repoRoot = resolveRepoRoot();
 
   function readConfiguredModelsFile() {
@@ -149,6 +149,7 @@ export function createBootstrapPayloadBuilder({ store, skillRegistry, turnOrches
       modelOptions: buildConfiguredModelOptions(),
       agents: store.listAgents(),
       skills: skillRegistry.listSkills(),
+      modes: modeStore ? modeStore.list() : [],
       conversations,
       selectedConversationId,
     };

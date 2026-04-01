@@ -67,6 +67,8 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         conversationType = UNDERCOVER_CONVERSATION_TYPE;
       } else if (rawType === WEREWOLF_CONVERSATION_TYPE) {
         conversationType = WEREWOLF_CONVERSATION_TYPE;
+      } else if (rawType && modeStore && modeStore.get(rawType)) {
+        conversationType = rawType;
       }
 
       let metadata = body && body.metadata && typeof body.metadata === 'object' ? body.metadata : {};
