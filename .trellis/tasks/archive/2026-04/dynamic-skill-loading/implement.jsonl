@@ -1,0 +1,6 @@
+{"type":"file","file":".trellis/tasks/dynamic-skill-loading/prd.md","reason":"PRD: skill dynamic loading research and design"}
+{"type":"file","file":"lib/skill-registry.ts","reason":"Core skill registry - resolveSkills and getSkill methods"}
+{"type":"file","file":"server/domain/conversation/turn/agent-executor.ts","reason":"Agent executor - skill resolution and prompt injection"}
+{"type":"file","file":"server/domain/conversation/turn/agent-prompt.ts","reason":"Prompt builder - formatSkillDocuments function"}
+{"type":"file","file":"server/domain/conversation/turn/trellis-context.ts","reason":"Trellis context builder for reference"}
+{"type":"summary","date":"2026-04-01","branch":"feat/dynamic-skill-loading","commits":["5bbdcc0","5aef23b"],"changes":["agent-prompt.ts: getSkillLoadingMode() default dynamic, formatSkillDescriptors(), formatSkillDocuments(forceFull), conditional read-skill instructions","agent-chat-tools.ts: read-skill command","agent-tools-controller.ts: GET /api/agent-tools/read-skill route","agent-tool-bridge.ts: handleReadSkill() with 400/404/409/truncation/telemetry","create-server.ts: skillRegistry injection","read-skill.test.js: 11 tests all passing"],"reviewRounds":4,"reviewers":["doro","菲比啾比"],"status":"LGTM by all reviewers, pushed to remote"}

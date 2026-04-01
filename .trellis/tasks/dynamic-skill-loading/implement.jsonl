@@ -1,5 +1,0 @@
-{"type":"file","file":".trellis/tasks/dynamic-skill-loading/prd.md","reason":"PRD: skill dynamic loading research and design"}
-{"type":"file","file":"lib/skill-registry.ts","reason":"Core skill registry - resolveSkills and getSkill methods"}
-{"type":"file","file":"server/domain/conversation/turn/agent-executor.ts","reason":"Agent executor - skill resolution and prompt injection"}
-{"type":"file","file":"server/domain/conversation/turn/agent-prompt.ts","reason":"Prompt builder - formatSkillDocuments function"}
-{"type":"file","file":"server/domain/conversation/turn/trellis-context.ts","reason":"Trellis context builder for reference"}
