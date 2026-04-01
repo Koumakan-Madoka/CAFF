@@ -1,7 +1,7 @@
 {
   "name": "caff",
   "version": "1.0.0",
-  "description": "",
+  "description": "Conversational Agent Framework & Playground — a local multi-agent chat platform with built-in game modes and evaluation tooling.",
   "main": "build/lib/app-server.js",
   "scripts": {
     "build": "tsc -p tsconfig.build.json && node scripts/copy-build-assets.js",
@@ -18,9 +18,9 @@
     "test": "npm run test:fast && npm run test:smoke",
     "web": "npm run start:dev"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": ["multi-agent", "chat", "llm", "ai", "agent", "evaluation", "werewolf", "who-is-undercover"],
+  "author": "Koumakan-Madoka",
+  "license": "MIT",
   "type": "commonjs",
   "dependencies": {
     "better-sqlite3": "^12.8.0"
