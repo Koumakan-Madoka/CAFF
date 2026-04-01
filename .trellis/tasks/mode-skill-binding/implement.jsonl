@@ -1,0 +1,8 @@
+{"step":1,"action":"create","file":"lib/mode-store.ts","description":"新增 Mode 持久化模块：listModes, getMode, createMode, updateMode, deleteMode, getModeSkillBindings, seedBuiltinModes"}
+{"step":2,"action":"create","file":"server/api/modes-controller.ts","description":"REST API: GET/POST/PUT/DELETE /api/modes, GET/PUT /api/modes/:modeId/skills"}
+{"step":3,"action":"edit","file":"server/api/conversations-controller.ts","description":"创建会话时查找 mode，将绑定 skill 注入 participants 的 conversationSkillIds"}
+{"step":4,"action":"edit","file":"server/domain/conversation/turn/agent-executor.ts","description":"传递 mode 的 loading strategy 到 buildAgentTurnPrompt"}
+{"step":5,"action":"edit","file":"server/domain/conversation/turn/agent-prompt.ts","description":"formatSkillDocuments 支持按 mode strategy 控制 forceFull vs dynamic"}
+{"step":6,"action":"edit","file":"public/skills.html","description":"新增模式管理 Tab 区域：模式列表 + 编辑表单 + skill 多选 + 加载策略选择"}
+{"step":7,"action":"edit","file":"public/skills.js","description":"新增 mode 相关的 state, render, API 调用和事件绑定"}
+{"step":8,"action":"edit","file":"server/app/create-server.ts","description":"注册 modes-controller 和 mode-store 到路由"}

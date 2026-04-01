@@ -1,0 +1,4 @@
+{"spec":"mode-store","description":"Mode 持久化模块的接口签名、种子数据、CRUD 合约"}
+{"spec":"modes-controller-api","description":"REST API 路由设计、请求/响应格式"}
+{"spec":"mode-skill-injection","description":"会话创建时 skill 注入流程 + prompt 构建时的 loading strategy 分发逻辑"}
+{"spec":"mode-ui","description":"前端模式管理 Tab 的交互流程和布局"}

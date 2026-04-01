@@ -66,10 +66,11 @@ function formatSkillDocuments(skills: any, options: any = {}) {
   }
 
   // Persona skills always get full injection regardless of mode
-  // Conversation skills use the mode-level loading strategy
+  // Conversation skills use the mode-level loading strategy when set;
+  // otherwise fall back to the global CAFF_SKILL_LOADING_MODE.
+  const hasModeStrategy = options.modeLoadingStrategy === 'full' || options.modeLoadingStrategy === 'dynamic';
   const effectiveForceFull = options.forceFull
-    || (options.modeLoadingStrategy === 'full')
-    || getSkillLoadingMode() !== 'dynamic';
+    || (hasModeStrategy ? options.modeLoadingStrategy === 'full' : getSkillLoadingMode() !== 'dynamic');
 
   if (effectiveForceFull) {
     return normalizedSkills
