@@ -336,6 +336,7 @@ function extractStreamingPublicReplyPreview(text: any) {
 export function createAgentExecutor(options: any = {}) {
   const store = options.store;
   const skillRegistry = options.skillRegistry;
+  const modeStore = options.modeStore;
   const getProjectDir = typeof options.getProjectDir === 'function' ? options.getProjectDir : null;
   const agentToolBridge = options.agentToolBridge;
   const broadcastEvent = typeof options.broadcastEvent === 'function' ? options.broadcastEvent : () => {};
@@ -402,6 +403,9 @@ export function createAgentExecutor(options: any = {}) {
     const privateMessages = store.listPrivateMessagesForAgent(conversationId, agent.id, {
       limit: MAX_PRIVATE_CONTEXT_MESSAGES,
     });
+    const conversationType = conversation && conversation.type ? String(conversation.type).trim() : 'standard';
+    const modeForType = modeStore ? modeStore.get(conversationType) : null;
+    const modeLoadingStrategy = modeForType ? String(modeForType.loadingStrategy || 'dynamic').trim() : 'dynamic';
     const prompt = buildAgentTurnPrompt({
       conversation,
       agent,
@@ -418,6 +422,7 @@ export function createAgentExecutor(options: any = {}) {
       routingMode,
       allowHandoffs,
       agentToolRelativePath,
+      modeLoadingStrategy,
     });
     const provider = resolveSetting(agentConfig.provider, process.env.PI_PROVIDER, DEFAULT_PROVIDER);
     const model = resolveSetting(agentConfig.model, process.env.PI_MODEL, DEFAULT_MODEL);

@@ -66,7 +66,12 @@ function formatSkillDocuments(skills: any, options: any = {}) {
   }
 
   // Persona skills always get full injection regardless of mode
-  if (options.forceFull || getSkillLoadingMode() !== 'dynamic') {
+  // Conversation skills use the mode-level loading strategy
+  const effectiveForceFull = options.forceFull
+    || (options.modeLoadingStrategy === 'full')
+    || getSkillLoadingMode() !== 'dynamic';
+
+  if (effectiveForceFull) {
     return normalizedSkills
       .map((skill: any) =>
         [
@@ -326,6 +331,7 @@ export function buildAgentTurnPrompt({
   routingMode,
   allowHandoffs = true,
   agentToolRelativePath,
+  modeLoadingStrategy,
 }: any) {
   const normalizedProjectDir = String(projectDir || '').trim();
   const conversationType = String(conversation && conversation.type ? conversation.type : '').trim();
@@ -401,7 +407,7 @@ export function buildAgentTurnPrompt({
     formatSkillDocuments(resolvedPersonaSkills, { forceFull: true }),
     '',
     'Conversation-only skills for this room:',
-    formatSkillDocuments(resolvedConversationSkills, { forceFull: false }),
+    formatSkillDocuments(resolvedConversationSkills, { forceFull: false, modeLoadingStrategy }),
     '',
     ...(trellisPromptContext ? ['Trellis project context:', trellisPromptContext, ''] : []),
     'Local sandbox:',

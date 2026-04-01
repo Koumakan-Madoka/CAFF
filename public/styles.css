@@ -1508,3 +1508,95 @@ textarea {
     grid-template-columns: 1fr;
   }
 }
+
+.tab-bar {
+  display: flex;
+  gap: 4px;
+}
+
+.tab-button {
+  padding: 6px 14px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 6px;
+  background: transparent;
+  color: rgba(255,255,255,0.5);
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 500;
+  transition: all 0.15s ease;
+}
+
+.tab-button:hover {
+  color: rgba(255,255,255,0.8);
+  background: rgba(255,255,255,0.04);
+}
+
+.tab-button.active {
+  color: #fff;
+  background: rgba(255,255,255,0.1);
+  border-color: rgba(255,255,255,0.15);
+}
+
+.mode-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  margin-left: 6px;
+}
+
+.mode-badge.builtin {
+  background: rgba(255,255,255,0.08);
+  color: rgba(255,255,255,0.5);
+}
+
+.mode-badge.custom {
+  background: rgba(42,157,143,0.15);
+  color: #2a9d8f;
+}
+
+.strategy-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  margin-left: 4px;
+}
+
+.strategy-badge.dynamic {
+  background: rgba(87,117,144,0.2);
+  color: #577590;
+}
+
+.strategy-badge.full {
+  background: rgba(209,73,91,0.15);
+  color: #d1495b;
+}
+
+.skill-checkbox-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  margin: 3px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.skill-checkbox-item:hover {
+  background: rgba(255,255,255,0.08);
+}
+
+.skill-checkbox-item.checked {
+  background: rgba(42,157,143,0.12);
+  border-color: rgba(42,157,143,0.3);
+}
+
+.skill-checkbox-item input[type="checkbox"] {
+  accent-color: #2a9d8f;
+}

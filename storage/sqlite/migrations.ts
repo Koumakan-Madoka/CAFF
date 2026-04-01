@@ -156,6 +156,19 @@ CREATE INDEX IF NOT EXISTS idx_eval_case_runs_task_id ON eval_case_runs (task_id
     'conversation_skills_json',
     'conversation_skills_json TEXT'
   );
+
+  db.exec(`
+CREATE TABLE IF NOT EXISTS modes (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  builtin INTEGER NOT NULL DEFAULT 0,
+  skill_ids_json TEXT NOT NULL DEFAULT '[]',
+  loading_strategy TEXT NOT NULL DEFAULT 'dynamic',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+)
+  `);
 }
 
 export function migrateRunSchema(db: any) {

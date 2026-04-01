@@ -17,7 +17,7 @@
         <div>
           <p class="eyebrow">CAFF Skill Manager</p>
           <h1>Skill 管理中心</h1>
-          <p class="subtitle">管理 `.pi-sandbox/skills` 下的真实 skill 文件夹，供人格和会话按引用复用。</p>
+          <p class="subtitle">管理 `.pi-sandbox/skills` 下的真实 skill 文件夹，供人格和会话按引用复用。管理会话模式的常驻 skill 绑定。</p>
         </div>
         <div class="topbar-actions">
           <nav class="topbar-nav" aria-label="Primary">
@@ -35,16 +35,18 @@
       <main class="layout persona-layout">
         <aside class="panel panel-conversations">
           <div class="panel-header">
-            <div>
-              <p class="eyebrow">Skill List</p>
-              <h2>Skill 仓库</h2>
+            <div class="tab-bar">
+              <button id="tab-skills" class="tab-button active" type="button">Skill 仓库</button>
+              <button id="tab-modes" class="tab-button" type="button">模式管理</button>
             </div>
             <button id="new-skill-button" type="button">新建 Skill</button>
+            <button id="new-mode-button" type="button" class="ghost-button" style="display:none">新建模式</button>
           </div>
           <div id="skill-list" class="agent-list"></div>
+          <div id="mode-list" class="agent-list" style="display:none"></div>
         </aside>
 
-        <section class="panel panel-studio">
+        <section id="skill-panel" class="panel panel-studio">
           <div class="panel-header">
             <div>
               <p class="eyebrow">Editor</p>
@@ -139,6 +141,52 @@
             <div class="button-row">
               <button id="save-skill-button" type="submit">保存 Skill</button>
               <button id="delete-skill-button" class="ghost-button danger" type="button">删除 Skill</button>
+            </div>
+          </form>
+        </section>
+
+        <section id="mode-panel" class="panel panel-studio" style="display:none">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Mode Editor</p>
+              <h2 id="mode-editor-title">编辑模式</h2>
+            </div>
+          </div>
+
+          <form id="mode-form" class="settings-form">
+            <input id="mode-id" name="id" type="hidden" />
+
+            <label>
+              <span>模式名称</span>
+              <input id="mode-name" name="name" type="text" maxlength="80" placeholder="例如：Coding" />
+            </label>
+
+            <label>
+              <span>模式说明</span>
+              <input id="mode-description" name="description" type="text" maxlength="240" placeholder="描述这个模式的用途" />
+            </label>
+
+            <label>
+              <span>加载策略</span>
+              <select id="mode-loading-strategy" name="loadingStrategy">
+                <option value="dynamic">渐进式加载（仅注入描述符，Agent 按需加载）</option>
+                <option value="full">全量注入（完整注入所有 skill 内容到上下文）</option>
+              </select>
+            </label>
+
+            <section class="stack-card">
+              <div class="section-row">
+                <div>
+                  <span class="section-label">绑定 Skill</span>
+                  <span class="section-hint">选择该模式下自动注入到所有 Agent 的常驻 skill</span>
+                </div>
+              </div>
+              <div id="mode-skill-checkboxes" class="tag-row"></div>
+            </section>
+
+            <div class="button-row">
+              <button id="save-mode-button" type="submit">保存模式</button>
+              <button id="delete-mode-button" class="ghost-button danger" type="button">删除模式</button>
             </div>
           </form>
         </section>

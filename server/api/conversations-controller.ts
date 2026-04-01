@@ -19,6 +19,29 @@ type ApiContext = {
   requestUrl: URL;
 };
 
+function mergeModeSkillIdsIntoParticipants(input: any, mode: any) {
+  if (!mode || !Array.isArray(mode.skillIds) || mode.skillIds.length === 0) {
+    return input;
+  }
+
+  const modeSkillIds = mode.skillIds;
+  const participants = Array.isArray(input.participants) ? input.participants : [];
+
+  const merged = participants.map((participant: any) => {
+    const existing = Array.isArray(participant.conversationSkillIds || participant.conversationSkills)
+      ? (participant.conversationSkillIds || participant.conversationSkills)
+      : [];
+    const mergedSkills = new Set([...existing.map((id: any) => String(id || '').trim()).filter(Boolean), ...modeSkillIds]);
+
+    return {
+      ...participant,
+      conversationSkillIds: Array.from(mergedSkills),
+    };
+  });
+
+  return { ...input, participants: merged };
+}
+
 export function createConversationsController(options: any = {}): RouteHandler<ApiContext> {
   const store = options.store;
   const skillRegistry = options.skillRegistry;
@@ -26,6 +49,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
   const undercoverService = options.undercoverService;
   const werewolfService = options.werewolfService;
   const buildBootstrapPayload = options.buildBootstrapPayload;
+  const modeStore = options.modeStore;
 
   return async function handleConversationsRequest(context) {
     const { req, res, pathname, requestUrl } = context;
@@ -58,8 +82,12 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         };
       }
 
+      // Merge mode skill bindings into participants
+      const mode = modeStore ? modeStore.get(conversationType) : null;
+      const enrichedBody = mergeModeSkillIdsIntoParticipants(body, mode);
+
       let conversation = store.createConversation({
-        ...body,
+        ...enrichedBody,
         type: conversationType,
         metadata,
       });
