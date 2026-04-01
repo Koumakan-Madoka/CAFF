@@ -490,8 +490,8 @@ test('handleReadSkill finds skills from external skill directories', (t) => {
 
 // ── agent-prompt skill format tests ────────────────────────────────────────
 
-test('buildAgentTurnPrompt includes persona skill bodies in full mode', (t) => {
-  const tempDir = withTempDir('caff-prompt-full-');
+test('buildAgentTurnPrompt defaults to dynamic mode (persona full, conversation descriptors)', (t) => {
+  const tempDir = withTempDir('caff-prompt-default-');
   const sqlitePath = path.join(tempDir, 'bridge.sqlite');
   const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
 
@@ -553,18 +553,20 @@ test('buildAgentTurnPrompt includes persona skill bodies in full mode', (t) => {
       agentToolRelativePath: 'build/lib/agent-chat-tools.js',
     });
 
-    // In full mode (default), persona skills should have body
+    // Default is dynamic mode: persona skills should have body (forceFull)
     assert.ok(prompt.includes('Persona-specific skills:'), 'Should have persona skills section');
     assert.ok(prompt.includes('Persona Instructions'), 'Persona skill body should be included');
     assert.ok(prompt.includes('Be yourself.'), 'Persona skill body content should be present');
 
-    // Conversation skills should also have body in full mode
+    // Conversation skills should NOT have body in dynamic mode (only descriptors)
     assert.ok(prompt.includes('Conversation-only skills for this room:'), 'Should have conversation skills section');
-    assert.ok(prompt.includes('Conversation Instructions'), 'Conversation skill body should be included');
-    assert.ok(prompt.includes('Help with gameplay.'), 'Conversation skill body content should be present');
+    assert.ok(prompt.includes('Gameplay helper'), 'Conversation skill description should be present');
+    assert.ok(!prompt.includes('Conversation Instructions'), 'Conversation skill body should NOT be included in dynamic mode');
+    assert.ok(!prompt.includes('Help with gameplay.'), 'Conversation skill body content should NOT be present in dynamic mode');
 
-    // In full mode, read-skill tool instructions should NOT be present
-    assert.ok(!prompt.includes('read-skill'), 'read-skill instructions should not appear in full mode');
+    // In dynamic mode, read-skill tool instructions SHOULD be present
+    assert.ok(prompt.includes('read-skill'), 'read-skill instructions should appear in dynamic mode');
+    assert.ok(prompt.includes('Dynamic skill loading'), 'Dynamic skill loading hint should be present');
   } finally {
     if (originalMode !== undefined) {
       process.env.CAFF_SKILL_LOADING_MODE = originalMode;
@@ -572,8 +574,8 @@ test('buildAgentTurnPrompt includes persona skill bodies in full mode', (t) => {
   }
 });
 
-test('buildAgentTurnPrompt shows only descriptors in dynamic mode for conversation skills', (t) => {
-  const tempDir = withTempDir('caff-prompt-dynamic-');
+test('buildAgentTurnPrompt includes all skill bodies when set to full mode explicitly', (t) => {
+  const tempDir = withTempDir('caff-prompt-full-');
   const sqlitePath = path.join(tempDir, 'bridge.sqlite');
   const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
 
@@ -595,7 +597,7 @@ test('buildAgentTurnPrompt shows only descriptors in dynamic mode for conversati
 
   // Save original env
   const originalMode = process.env.CAFF_SKILL_LOADING_MODE;
-  process.env.CAFF_SKILL_LOADING_MODE = 'dynamic';
+  process.env.CAFF_SKILL_LOADING_MODE = 'full';
 
   try {
     // Clear require cache to pick up env change in getSkillLoadingMode()
@@ -638,20 +640,19 @@ test('buildAgentTurnPrompt shows only descriptors in dynamic mode for conversati
       agentToolRelativePath: 'build/lib/agent-chat-tools.js',
     });
 
-    // Persona skills should STILL have body even in dynamic mode (forceFull: true)
+    // In full mode, persona skills should have body
     assert.ok(prompt.includes('Persona-specific skills:'), 'Should have persona skills section');
-    assert.ok(prompt.includes('Always Be Dynamic'), 'Persona skill body should be included even in dynamic mode');
+    assert.ok(prompt.includes('Always Be Dynamic'), 'Persona skill body should be included');
     assert.ok(prompt.includes('Jump around!'), 'Persona skill body content should be present');
 
-    // Conversation skills should NOT have body in dynamic mode (only descriptors)
+    // In full mode, conversation skills should ALSO have body
     assert.ok(prompt.includes('Conversation-only skills for this room:'), 'Should have conversation skills section');
-    assert.ok(prompt.includes('Dynamic gameplay helper'), 'Conversation skill description should be present');
-    assert.ok(!prompt.includes('Dynamic Instructions'), 'Conversation skill body should NOT be included');
-    assert.ok(!prompt.includes('Only loaded on demand'), 'Conversation skill body content should NOT be present');
+    assert.ok(prompt.includes('Dynamic Instructions'), 'Conversation skill body should be included in full mode');
+    assert.ok(prompt.includes('Only loaded on demand'), 'Conversation skill body content should be present in full mode');
 
-    // In dynamic mode, read-skill tool instructions SHOULD be present
-    assert.ok(prompt.includes('read-skill'), 'read-skill instructions should appear in dynamic mode');
-    assert.ok(prompt.includes('Dynamic skill loading'), 'Dynamic skill loading hint should be present');
+    // In full mode, read-skill tool instructions should NOT be present
+    assert.ok(!prompt.includes('read-skill'), 'read-skill instructions should not appear in full mode');
+    assert.ok(!prompt.includes('Dynamic skill loading'), 'Dynamic skill loading hint should not appear in full mode');
   } finally {
     if (originalMode !== undefined) {
       process.env.CAFF_SKILL_LOADING_MODE = originalMode;

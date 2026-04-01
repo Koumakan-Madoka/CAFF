@@ -35,7 +35,7 @@ function formatPromptMentionGuidance(agent: any) {
 }
 
 function getSkillLoadingMode() {
-  return String(process.env.CAFF_SKILL_LOADING_MODE || 'full').trim().toLowerCase() || 'full';
+  return String(process.env.CAFF_SKILL_LOADING_MODE || 'dynamic').trim().toLowerCase() || 'dynamic';
 }
 
 function formatSkillDescriptors(skills: any) {
