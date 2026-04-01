@@ -7,6 +7,7 @@ const { createSkillRegistry } = require('../../lib/skill-registry');
 const { createProjectManager } = require('../../lib/project-manager');
 const { createWhoIsUndercoverHost } = require('../../lib/who-is-undercover-game');
 const { createWerewolfHost } = require('../../lib/werewolf-game');
+const { createModeStore } = require('../../lib/mode-store');
 const { createBootstrapPayloadBuilder } = require('../api/bootstrap-payload');
 const { createAgentToolsController } = require('../api/agent-tools-controller');
 const { createAgentsController } = require('../api/agents-controller');
@@ -15,6 +16,7 @@ const { createConversationsController } = require('../api/conversations-controll
 const { createEvalCasesController } = require('../api/eval-cases-controller');
 const { createMetricsController } = require('../api/metrics-controller');
 const { createProjectsController } = require('../api/projects-controller');
+const { createModesController } = require('../api/modes-controller');
 const { createSkillsController } = require('../api/skills-controller');
 const { createUndercoverController } = require('../api/undercover-controller');
 const { createWerewolfController } = require('../api/werewolf-controller');
@@ -113,6 +115,7 @@ export function createServerApp(options: any = {}) {
   }
 
   const store = createChatAppStore({ agentDir, sqlitePath });
+  const modeStore = createModeStore(store.db);
   const skillRegistry = createSkillRegistry({ agentDir, extraSkillDirs: [] });
   const undercoverHost = createWhoIsUndercoverHost({ agentDir });
   const sseBus = createSseBus();
@@ -166,6 +169,7 @@ export function createServerApp(options: any = {}) {
   turnOrchestrator = createTurnOrchestrator({
     store,
     skillRegistry,
+    modeStore,
     getProjectDir: () => activeProjectDir,
     agentToolBridge,
     broadcastEvent,
@@ -202,6 +206,7 @@ export function createServerApp(options: any = {}) {
     store,
     skillRegistry,
     turnOrchestrator,
+    modeStore,
   });
   const router = createRouter([
     createBootstrapController({
@@ -224,6 +229,9 @@ export function createServerApp(options: any = {}) {
     }),
     createAgentToolsController({
       agentToolBridge,
+    }),
+    createModesController({
+      modeStore,
     }),
     createSkillsController({
       store,
@@ -250,6 +258,7 @@ export function createServerApp(options: any = {}) {
       undercoverService,
       werewolfService,
       buildBootstrapPayload,
+      modeStore,
     }),
   ]);
 

@@ -4,6 +4,7 @@ const state = {
   runtime: null,
   modelOptions: [],
   skills: [],
+  modes: [],
   agents: [],
   conversations: [],
   selectedConversationId: null,
@@ -260,15 +261,12 @@ function werewolfPlayerLabel(player) {
 }
 
 function conversationTypeLabel(conversation) {
-  if (isUndercoverConversation(conversation)) {
-    return '谁是卧底';
+  if (!conversation || !conversation.type) {
+    return '普通对话';
   }
 
-  if (isWerewolfConversation(conversation)) {
-    return '狼人杀';
-  }
-
-  return '普通对话';
+  const mode = state.modes.find((m) => m.id === conversation.type);
+  return mode ? mode.name : '普通对话';
 }
 
 function modelOptionKey(provider, model) {
@@ -942,13 +940,38 @@ async function loadConversation(conversationId) {
   scrollMessageListToBottom();
 }
 
+function populateModeSelect() {
+  const select = dom.newConversationType;
+  if (!select) return;
+
+  const currentValue = select.value;
+  select.innerHTML = '';
+
+  for (const mode of state.modes) {
+    const option = document.createElement('option');
+    option.value = mode.id;
+    option.textContent = mode.name;
+    select.appendChild(option);
+  }
+
+  // Restore previous selection if still valid
+  if (currentValue && state.modes.some((m) => m.id === currentValue)) {
+    select.value = currentValue;
+  } else if (state.modes.length > 0) {
+    select.value = state.modes[0].id;
+  }
+}
+
 async function refreshAll(preferredConversationId) {
   const data = await fetchJson('/api/bootstrap');
   state.runtime = data.runtime;
   state.modelOptions = Array.isArray(data.modelOptions) ? data.modelOptions : [];
   state.skills = Array.isArray(data.skills) ? data.skills : [];
+  state.modes = Array.isArray(data.modes) ? data.modes : [];
   state.agents = data.agents;
   state.conversations = data.conversations;
+
+  populateModeSelect();
 
   const desiredConversationId =
     preferredConversationId && state.conversations.some((item) => item.id === preferredConversationId)

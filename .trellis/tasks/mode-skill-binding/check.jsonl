@@ -1,0 +1,6 @@
+{"check":"typecheck","description":"确保 npx tsc --noEmit 无新增类型错误"}
+{"check":"modes-api-crud","description":"手动测试 GET/POST/PUT/DELETE /api/modes 端到端"}
+{"check":"mode-skill-binding","description":"验证绑定 skill 后，创建对应类型会话时 skill 出现在 agent prompt"}
+{"check":"loading-strategy","description":"验证 full 策略下 skill 全量注入，dynamic 策略下仅注入描述符"}
+{"check":"backward-compat","description":"现有 werewolf/undercover 会话功能不受影响"}
+{"check":"ui-modes-tab","description":"前端 Skill 管理页面可查看、编辑模式绑定"}
