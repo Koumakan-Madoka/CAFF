@@ -1,1 +1,4 @@
-{"file":".trellis/spec/index.md","reason":"Shared spec fallback."}
+{"file":".trellis/spec/runtime/index.md","reason":"Runtime spec index - new read-skill tool documented here"}
+{"file":".trellis/spec/runtime/agent-runtime.md","reason":"Agent runtime spec - updated mirrored update paths for read-skill"}
+{"file":".trellis/spec/backend/index.md","reason":"Backend spec - new read-skill API route"}
+{"file":".trellis/tasks/dynamic-skill-loading/prd.md","reason":"Updated PRD with implementation details and acceptance criteria"}

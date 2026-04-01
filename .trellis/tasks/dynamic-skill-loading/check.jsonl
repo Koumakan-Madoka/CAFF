@@ -1,1 +1,3 @@
-{"file":".trellis/tasks/dynamic-skill-loading/prd.md","reason":"Acceptance criteria to verify."}
+{"file":".trellis/tasks/dynamic-skill-loading/prd.md","reason":"Updated PRD with implementation details and acceptance criteria."}
+{"file":".trellis/spec/runtime/agent-runtime.md","reason":"Updated runtime spec with read-skill tool documentation and mirrored paths."}
+{"file":".trellis/spec/runtime/index.md","reason":"Runtime index references agent-runtime.md which now covers skill dynamic loading."}
