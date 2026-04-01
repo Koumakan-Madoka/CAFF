@@ -6,3 +6,9 @@
 {"step":6,"action":"edit","file":"public/skills.html","description":"新增模式管理 Tab 区域：模式列表 + 编辑表单 + skill 多选 + 加载策略选择"}
 {"step":7,"action":"edit","file":"public/skills.js","description":"新增 mode 相关的 state, render, API 调用和事件绑定"}
 {"step":8,"action":"edit","file":"server/app/create-server.ts","description":"注册 modes-controller 和 mode-store 到路由"}
+{"step":9,"action":"fix","file":"server/domain/conversation/turn/agent-prompt.ts","description":"修复 loadingStrategy 优先级：mode 级别覆盖全局 CAFF_SKILL_LOADING_MODE"}
+{"step":10,"action":"fix","file":"lib/mode-store.ts","description":"提取 dedupSkillIds helper 消除 normalizeSkillIds 重复代码"}
+{"step":11,"action":"edit","file":"server/app/bootstrap-payload.ts","description":"bootstrap payload 新增 modes 字段，前端可获取所有模式"}
+{"step":12,"action":"edit","file":"public/app.js","description":"动态填充会话类型下拉框 + conversationTypeLabel 从 modes 查名称"}
+{"step":13,"action":"edit","file":"server/api/conversations-controller.ts","description":"支持自定义模式 ID 作为 conversationType（modeStore.get 兜底）"}
+{"step":14,"action":"create","file":"tests/smoke/mode-store.test.js","description":"ModeStore 单元测试 18 用例：CRUD、内置保护、normalizeSkillIds、loadingStrategy、种子幂等、排序"}
