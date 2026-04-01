@@ -67,7 +67,7 @@ CAFF uses a clean layered architecture, refactored from an original monolithic d
 
 - [Node.js](https://nodejs.org/) 20+
 - npm 9+
-- A running [pi coding agent](https://github.com/nicholasgasior/pi-coding-agent) (or compatible provider endpoint)
+- A running [pi coding agent]([https://github.com/nicholasgasior/pi-coding-agent](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent)) (or compatible provider endpoint)
 
 ### Install & Run
 
