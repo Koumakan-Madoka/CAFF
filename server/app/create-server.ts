@@ -147,6 +147,7 @@ export function createServerApp(options: any = {}) {
 
   const agentToolBridge = createAgentToolBridge({
     store,
+    skillRegistry,
     broadcastEvent,
     broadcastConversationSummary,
     onTurnUpdated(turnState: any) {

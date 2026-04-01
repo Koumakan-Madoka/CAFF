@@ -34,7 +34,11 @@ function formatPromptMentionGuidance(agent: any) {
   return references.join(' or ');
 }
 
-function formatSkillDocuments(skills: any) {
+function getSkillLoadingMode() {
+  return String(process.env.CAFF_SKILL_LOADING_MODE || 'dynamic').trim().toLowerCase() || 'dynamic';
+}
+
+function formatSkillDescriptors(skills: any) {
   const normalizedSkills = (Array.isArray(skills) ? skills : []).filter(Boolean);
 
   if (normalizedSkills.length === 0) {
@@ -47,12 +51,37 @@ function formatSkillDocuments(skills: any) {
         `- ${skill.name} (${skill.id})`,
         skill.description ? `  Description: ${skill.description}` : '',
         skill.path ? `  Path: ${skill.path}` : '',
-        skill.body ? `  Instructions:\n${String(skill.body).split('\n').map((line: any) => `    ${line}`).join('\n')}` : '',
       ]
         .filter(Boolean)
         .join('\n')
     )
     .join('\n\n');
+}
+
+function formatSkillDocuments(skills: any, options: any = {}) {
+  const normalizedSkills = (Array.isArray(skills) ? skills : []).filter(Boolean);
+
+  if (normalizedSkills.length === 0) {
+    return '- none';
+  }
+
+  // Persona skills always get full injection regardless of mode
+  if (options.forceFull || getSkillLoadingMode() !== 'dynamic') {
+    return normalizedSkills
+      .map((skill: any) =>
+        [
+          `- ${skill.name} (${skill.id})`,
+          skill.description ? `  Description: ${skill.description}` : '',
+          skill.path ? `  Path: ${skill.path}` : '',
+          skill.body ? `  Instructions:\n${String(skill.body).split('\n').map((line: any) => `    ${line}`).join('\n')}` : '',
+        ]
+          .filter(Boolean)
+          .join('\n')
+      )
+      .join('\n\n');
+  }
+
+  return formatSkillDescriptors(skills);
 }
 
 function describeTurnTrigger(trigger: any, agents: any) {
@@ -172,6 +201,12 @@ function buildAgentToolInstructions(agentToolRelativePath: string) {
     `- Optional silent direct note without wake-up: ${relativeCommandPrefix} send-private --to "AgentName" --no-handoff --content-stdin`,
     `- Read the latest public room context plus your private mailbox: ${relativeCommandPrefix} read-context`,
     `- List the visible room participants: ${relativeCommandPrefix} list-participants`,
+    ...(getSkillLoadingMode() === 'dynamic'
+      ? [
+          '- Dynamic skill loading: when conversation skills are listed as descriptors without full instructions, use the read-skill tool to load them on demand.',
+          `- Read the full body of a skill by its id: ${envCommandPrefix} read-skill <skill-id>`,
+        ]
+      : []),
     `- Preview writing a minimal .trellis scaffold in the active project (no writes): ${relativeCommandPrefix} trellis-init --task "my-task"`,
     `- Apply the .trellis scaffold (writes files; requires explicit confirm): ${relativeCommandPrefix} trellis-init --task "my-task" --confirm`,
     `- Overwrite existing scaffold files (dangerous): ${relativeCommandPrefix} trellis-init --task "my-task" --confirm --force`,
@@ -363,10 +398,10 @@ export function buildAgentTurnPrompt({
     agentConfig && agentConfig.personaPrompt ? agentConfig.personaPrompt : agent.personaPrompt,
     '',
     'Persona-specific skills:',
-    formatSkillDocuments(resolvedPersonaSkills),
+    formatSkillDocuments(resolvedPersonaSkills, { forceFull: true }),
     '',
     'Conversation-only skills for this room:',
-    formatSkillDocuments(resolvedConversationSkills),
+    formatSkillDocuments(resolvedConversationSkills, { forceFull: false }),
     '',
     ...(trellisPromptContext ? ['Trellis project context:', trellisPromptContext, ''] : []),
     'Local sandbox:',
