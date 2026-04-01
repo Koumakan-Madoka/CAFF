@@ -28,11 +28,33 @@
 - Trellis tool API:
   `lib/agent-chat-tools.ts` <-> `server/api/agent-tools-controller.ts` <->
   `server/domain/runtime/agent-tool-bridge.ts`
+- Skill dynamic loading (read-skill tool):
+  `lib/agent-chat-tools.ts` (`read-skill` command) <->
+  `server/api/agent-tools-controller.ts` (`GET /api/agent-tools/read-skill`) <-
+  `server/domain/runtime/agent-tool-bridge.ts` (`handleReadSkill`)
 - Prompt guidance:
   `server/domain/conversation/turn/agent-prompt.ts` <->
   `server/domain/conversation/turn/trellis-context.ts`
 - Project selection and skill loading:
-  `lib/project-manager.ts` <-> `server/app/create-server.ts`
+  `lib/project-manager.ts` <-> `server/app/create-server.ts` <->
+  `server/domain/conversation/turn/agent-prompt.ts` (`getSkillLoadingMode`, `formatSkillDocuments`, `formatSkillDescriptors`)
+
+## Skill Dynamic Loading
+
+CAFF uses a descriptor + on-demand loading model for conversation skills:
+
+- **`getSkillLoadingMode()`** reads `CAFF_SKILL_LOADING_MODE` env var each turn.
+  Default is `dynamic`. Set to `full` to restore legacy all-at-once injection.
+- **Persona skills** always inject full body (`forceFull: true`).
+- **Conversation skills** inject descriptors only in `dynamic` mode;
+  agent calls `read-skill` tool to load full body on demand.
+- **Body truncation:** `MAX_SKILL_BODY_LENGTH = 32768` characters;
+  oversized bodies are clipped with `...[truncated]` suffix.
+- **`read-skill` tool flow:** `agent-chat-tools.ts` CLI → `GET /api/agent-tools/read-skill`
+  → `handleReadSkill()` in bridge → `skillRegistry.getSkill(skillId)` →
+  sanitize + truncate + telemetry.
+- **Prompt instructions** for `read-skill` only appear when mode is `dynamic`;
+  in `full` mode they are omitted to reduce noise.
 
 ## Test Expectations
 
@@ -40,3 +62,4 @@
   or `tests/runtime/turn-orchestrator.test.js`
 - If the change affects pi runtime CLI behavior, also inspect
   `tests/runtime/pi-runtime.test.js`
+- `read-skill` tool is covered by `tests/runtime/read-skill.test.js` (11 tests)
