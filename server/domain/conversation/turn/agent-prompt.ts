@@ -384,6 +384,8 @@ export function buildAgentTurnPrompt({
     'Other visible participants:',
     participants || '- none',
     '',
+    buildAgentToolInstructions(agentToolRelativePath),
+    '',
     ...(gameplaySections.length > 0 ? ['Gameplay mode:', gameplaySections.join('\n\n'), ''] : []),
     'Why you are replying now:',
     describeTurnTrigger(trigger, agents),
@@ -395,8 +397,6 @@ export function buildAgentTurnPrompt({
     '',
     'Private mailbox visible only to you:',
     formatPrivateMailbox(privateMessages, agents),
-    '',
-    buildAgentToolInstructions(agentToolRelativePath),
     '',
     'Write your reply now.',
   ].join('\n');
