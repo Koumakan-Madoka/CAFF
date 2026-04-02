@@ -21,6 +21,7 @@ const { createSkillsController } = require('../api/skills-controller');
 const { createUndercoverController } = require('../api/undercover-controller');
 const { createWerewolfController } = require('../api/werewolf-controller');
 const { createSkillTestController } = require('../api/skill-test-controller');
+const { resolveToolRelativePath } = require('../http/path-utils');
 const { HOST, PORT, ROOT_DIR } = require('./config');
 const { createTurnOrchestrator } = require('../domain/conversation/turn-orchestrator');
 const { pickConversationSummary } = require('../domain/conversation/conversation-view');
@@ -33,22 +34,7 @@ const { sendJson } = require('../http/response');
 const { serveStaticFile } = require('../http/static-file');
 const { createHttpError } = require('../http/http-errors');
 
-function resolveToolRelativePath(toolPath: string) {
-  const cwd = process.cwd();
-  const absolutePath = path.resolve(String(toolPath || ''));
-  const relativePath = path.relative(cwd, absolutePath) || path.basename(absolutePath);
-  const portablePath = relativePath.replace(/\\/g, '/');
-
-  if (portablePath.startsWith('.') || portablePath.startsWith('/')) {
-    return portablePath;
-  }
-
-  if (/^[A-Za-z]:\//.test(portablePath)) {
-    return portablePath;
-  }
-
-  return `./${portablePath}`;
-}
+// resolveToolRelativePath is now imported from ../http/path-utils
 
 function normalizeToolBaseHost(rawHost: any) {
   const host = String(rawHost || '').trim();

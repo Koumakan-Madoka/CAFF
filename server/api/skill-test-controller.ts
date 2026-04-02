@@ -8,6 +8,7 @@ import type { RouteHandler } from '../http/router';
 import { createHttpError } from '../http/http-errors';
 import { readRequestJson } from '../http/request-body';
 import { sendJson } from '../http/response';
+import { resolveToolRelativePath } from '../http/path-utils';
 import { migrateSkillTestSchema } from '../../storage/sqlite/migrations';
 import { DEFAULT_THINKING, resolveSetting, startRun } from '../../lib/minimal-pi';
 import { createSqliteRunStore } from '../../lib/sqlite-store';
@@ -69,25 +70,13 @@ function normalizeTestRunRow(row: any) {
     actualTools: safeJsonParse(row.actual_tools_json) || [],
     toolAccuracy: row.tool_accuracy != null ? Number(row.tool_accuracy) : null,
     triggerPassed: row.trigger_passed != null ? Boolean(row.trigger_passed) : null,
-    executionPassed: row.execution_passed != null ? (row.execution_passed === null ? null : Boolean(row.execution_passed)) : null,
+    executionPassed: row.execution_passed != null ? Boolean(row.execution_passed) : null,
     errorMessage: String(row.error_message || '').trim(),
     createdAt: String(row.created_at || '').trim(),
   };
 }
 
-function resolveToolRelativePath(toolPath: string) {
-  const cwd = process.cwd();
-  const absolutePath = path.resolve(String(toolPath || ''));
-  const relativePath = path.relative(cwd, absolutePath) || path.basename(absolutePath);
-  const portablePath = relativePath.replace(/\\/g, '/');
-  if (portablePath.startsWith('.') || portablePath.startsWith('/')) {
-    return portablePath;
-  }
-  if (/^[A-Za-z]:\//.test(portablePath)) {
-    return portablePath;
-  }
-  return `./${portablePath}`;
-}
+// resolveToolRelativePath is now imported from ../http/path-utils
 
 export function createSkillTestController(options: any = {}): RouteHandler<ApiContext> {
   const store = options.store;
@@ -154,6 +143,16 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     if (!skillId) {
       throw createHttpError(400, 'skillId is required');
     }
+    // Validate enum fields
+    const validTestTypes = new Set(['trigger', 'execution']);
+    const validLoadingModes = new Set(['dynamic', 'full']);
+    if (!validTestTypes.has(testType)) {
+      throw createHttpError(400, `testType must be one of: ${[...validTestTypes].join(', ')}`);
+    }
+    if (!validLoadingModes.has(loadingMode)) {
+      throw createHttpError(400, `loadingMode must be one of: ${[...validLoadingModes].join(', ')}`);
+    }
+
     if (!triggerPrompt) {
       throw createHttpError(400, 'triggerPrompt is required');
     }
@@ -257,12 +256,14 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     let toolAccuracy: number | null = null;
     let executionPassed: number | null = null;
 
+    const EXECUTION_THRESHOLD = 0.8; // configurable — 80% tool match rate required
+
     if (triggerPassed && expectedTools.length > 0) {
       const matched = expectedTools.filter((expected) =>
         actualTools.some((actual) => actual === expected)
       );
       toolAccuracy = matched.length / expectedTools.length;
-      executionPassed = toolAccuracy >= 0.5 ? 1 : 0;
+      executionPassed = toolAccuracy >= EXECUTION_THRESHOLD ? 1 : 0;
     } else if (triggerPassed && expectedTools.length === 0) {
       toolAccuracy = 1;
       executionPassed = 1;
@@ -294,54 +295,59 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     const provider = String(runOptions.provider || '').trim();
     const model = String(runOptions.model || '').trim();
 
-    // Create eval_case for this test
-    const evalCaseId = randomUUID();
+    // Create or reuse eval_case for this test case
+    // Only create a new one if the test case doesn't already have one
+    let evalCaseId = testCase.evalCaseId;
     const timestamp = nowIso();
 
-    store.db
-      .prepare(
-        `INSERT INTO eval_cases (
-          id, conversation_id, turn_id, message_id, stage_task_id,
-          agent_id, agent_name, provider, model, thinking,
-          prompt_version, expectations_json,
-          prompt_a, output_a, note,
-          created_at, updated_at
-        ) VALUES (
-          @id, @conversationId, @turnId, @messageId, @stageTaskId,
-          @agentId, @agentName, @provider, @model, @thinking,
-          @promptVersion, @expectationsJson,
-          @promptA, @outputA, @note,
-          @createdAt, @updatedAt
-        )`
-      )
-      .run({
-        id: evalCaseId,
-        conversationId: `skill-test-${testCase.skillId}`,
-        turnId: `skill-test-turn-${testCase.id}`,
-        messageId: '',
-        stageTaskId: '',
-        agentId,
-        agentName,
-        provider: provider || null,
-        model: model || null,
-        thinking: null,
-        promptVersion: 'skill-test-v1',
-        expectationsJson: JSON.stringify({
-          source: 'skill_test',
-          skillId: testCase.skillId,
-          expectedTools: testCase.expectedTools || [],
-        }),
-        promptA: prompt,
-        outputA: '',
-        note: `Skill test: ${testCase.skillId} (${testCase.testType})`,
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      });
+    if (!evalCaseId) {
+      evalCaseId = randomUUID();
 
-    // Update test case with eval_case_id
-    store.db
-      .prepare('UPDATE skill_test_cases SET eval_case_id = @evalCaseId, updated_at = @updatedAt WHERE id = @id')
-      .run({ id: testCase.id, evalCaseId, updatedAt: timestamp });
+      store.db
+        .prepare(
+          `INSERT INTO eval_cases (
+            id, conversation_id, turn_id, message_id, stage_task_id,
+            agent_id, agent_name, provider, model, thinking,
+            prompt_version, expectations_json,
+            prompt_a, output_a, note,
+            created_at, updated_at
+          ) VALUES (
+            @id, @conversationId, @turnId, @messageId, @stageTaskId,
+            @agentId, @agentName, @provider, @model, @thinking,
+            @promptVersion, @expectationsJson,
+            @promptA, @outputA, @note,
+            @createdAt, @updatedAt
+          )`
+        )
+        .run({
+          id: evalCaseId,
+          conversationId: `skill-test-${testCase.skillId}`,
+          turnId: `skill-test-turn-${testCase.id}`,
+          messageId: '',
+          stageTaskId: '',
+          agentId,
+          agentName,
+          provider: provider || null,
+          model: model || null,
+          thinking: null,
+          promptVersion: 'skill-test-v1',
+          expectationsJson: JSON.stringify({
+            source: 'skill_test',
+            skillId: testCase.skillId,
+            expectedTools: testCase.expectedTools || [],
+          }),
+          promptA: prompt,
+          outputA: '',
+          note: `Skill test: ${testCase.skillId} (${testCase.testType})`,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        });
+
+      // Update test case with eval_case_id (only when newly created)
+      store.db
+        .prepare('UPDATE skill_test_cases SET eval_case_id = @evalCaseId, updated_at = @updatedAt WHERE id = @id')
+        .run({ id: testCase.id, evalCaseId, updatedAt: timestamp });
+    }
 
     // Set up run infrastructure
     const agent = { id: agentId, name: agentName };
@@ -566,8 +572,10 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
         });
 
       // Update test case validity_status based on trigger result
-      if (testCase.validityStatus === 'pending' || testCase.validityStatus === 'validated') {
-        const newValidity = evaluation.triggerPassed ? 'validated' : 'invalid';
+      // Only transition from 'pending' — never downgrade 'validated' to 'invalid'
+      // to avoid false negatives from transient environment issues
+      if (testCase.validityStatus === 'pending') {
+        const newValidity = evaluation.triggerPassed ? 'validated' : 'needs_review';
         store.db
           .prepare(
             'UPDATE skill_test_cases SET validity_status = @validityStatus, updated_at = @updatedAt WHERE id = @id'
@@ -703,13 +711,13 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
         return true;
       }
 
-      // POST /api/skills/:skillId/test-cases/run-all — run all validated
+      // POST /api/skills/:skillId/test-cases/run-all — run all validated cases
       if (req.method === 'POST' && subPath === 'run-all') {
         ensureSchema();
         const cases = store.db
           .prepare(
             `SELECT * FROM skill_test_cases
-             WHERE skill_id = @skillId AND validity_status IN ('validated', 'pending')
+             WHERE skill_id = @skillId AND validity_status = 'validated'
              ORDER BY created_at ASC`
           )
           .all({ skillId });
@@ -748,6 +756,23 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
       if (subMatch) {
         const caseId = decodeURIComponent(subMatch[1]);
         const action = subMatch[2] || '';
+
+        // GET /api/skills/:skillId/test-cases/:caseId/runs — runs for specific case
+        if (req.method === 'GET' && action === 'runs') {
+          ensureSchema();
+          const runsLimit = Number.parseInt(requestUrl.searchParams.get('limit') || '', 10);
+          const safeRunsLimit = Number.isInteger(runsLimit) && runsLimit > 0 ? Math.min(runsLimit, 500) : 50;
+          const rows = store.db
+            .prepare(
+              `SELECT * FROM skill_test_runs
+               WHERE test_case_id = @caseId
+               ORDER BY created_at DESC
+               LIMIT @limit`
+            )
+            .all({ caseId, limit: safeRunsLimit });
+          sendJson(res, 200, { runs: rows.map(normalizeTestRunRow).filter(Boolean) });
+          return true;
+        }
 
         // POST /api/skills/:skillId/test-cases/:caseId/run
         if (req.method === 'POST' && action === 'run') {

@@ -1,0 +1,6 @@
+{"source":"lib/eval-cases-controller.ts","summary":"Eval cases controller: CRUD for test cases, A/B run execution via agent-tool-bridge, session replay, tool call metrics"}
+{"source":"server/domain/metrics/agent-eval-report.ts","summary":"Agent eval report: per-agent tool chat rate, send-public/private confusion matrix, tool success rate and latency percentiles"}
+{"source":"lib/skill-registry.ts","summary":"Skill registry: CRUD for skills (SKILL.md + openai.yaml), listSkills/resolveSkills/getSkill, external skill dirs"}
+{"source":"server/domain/conversation/turn/agent-prompt.ts","summary":"Agent prompt builder: skill injection (formatSkillDescriptors/formatSkillDocuments), expectations tagging, tool bridge env injection"}
+{"source":"server/domain/runtime/agent-tool-bridge.ts","summary":"Agent tool bridge: invocation context, dryRun mode, tool call event recording, public/private post interception"}
+{"source":"docs/agent-eval-metrics.md","summary":"Agent eval metrics doc: expectations policy, tool call events, confusion matrix, eval report script usage"}

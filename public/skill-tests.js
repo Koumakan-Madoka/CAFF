@@ -198,16 +198,15 @@
 
   async function loadCaseRuns(caseId) {
     if (!dom.detailRuns) return;
-    // Fetch runs via skill endpoint
+    // Fetch runs via case-specific endpoint
     const skillId = state.selectedSkillId;
     if (!skillId) return;
 
     try {
       const data = await fetchJson(
-        `/api/skills/${encodeURIComponent(skillId)}/test-runs?limit=20`
+        `/api/skills/${encodeURIComponent(skillId)}/test-cases/${encodeURIComponent(caseId)}/runs?limit=50`
       );
-      const allRuns = Array.isArray(data.runs) ? data.runs : [];
-      const runs = allRuns.filter((r) => r.testCaseId === caseId);
+      const runs = Array.isArray(data.runs) ? data.runs : [];
       renderCaseRuns(runs);
     } catch {
       dom.detailRuns.innerHTML = '<p class="section-hint">加载运行记录失败</p>';

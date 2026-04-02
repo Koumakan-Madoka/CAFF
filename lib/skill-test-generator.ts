@@ -98,8 +98,50 @@ export interface GeneratedPrompt {
 
 /**
  * Phase 1: Template-based prompt generation using skill metadata.
- * Falls back to simple templates when the skill content is too short.
+ *
+ * Uses a two-strategy approach:
+ * - For game/interactive skills (detected by keywords): generates game-start prompts
+ * - For tool/workflow skills: generates task-actionable prompts
+ *
+ * Phase 2 will replace this with LLM-powered generation via `buildLlmGenerationPrompt`.
  */
+function isGameOrInteractiveSkill(name: string, description: string): boolean {
+  const gameKeywords = /(?:游戏|比赛|玩|杀|卧底|投票|发言|竞选|淘汰|对局|match|play|game|vote)/;
+  const combined = `${name} ${description}`.toLowerCase();
+  return gameKeywords.test(combined);
+}
+
+function generateGamePrompts(skillName: string, count: number): GeneratedPrompt[] {
+  const templates = [
+    { triggerPrompt: `我们来${skillName}吧`, note: `Direct invocation of ${skillName}` },
+    { triggerPrompt: `想玩${skillName}，能帮我开始吗？`, note: `Casual request for ${skillName}` },
+    { triggerPrompt: `大家想玩${skillName}，可以开始了吗`, note: `Social context for ${skillName}` },
+    { triggerPrompt: `${skillName}准备好了吗？开始吧`, note: `Ready-to-start pattern for ${skillName}` },
+    { triggerPrompt: `帮我开一局${skillName}游戏`, note: `Game-specific request for ${skillName}` },
+    { triggerPrompt: `有没有人想${skillName}？有的话就开始`, note: `Recruitment pattern for ${skillName}` },
+  ];
+  return templates.map((t) => ({
+    triggerPrompt: t.triggerPrompt,
+    expectedTools: [],
+    expectedBehavior: `Agent should recognize the request and trigger the ${skillName} skill`,
+    note: t.note,
+  })).slice(0, count);
+}
+
+function generateWorkflowPrompts(skillName: string, keywords: ReturnType<typeof extractKeywords>, count: number): GeneratedPrompt[] {
+  const templates = [
+    { triggerPrompt: `帮我执行${skillName}`, note: `Direct execution of ${skillName}` },
+    { triggerPrompt: `开始${skillName}任务`, note: `Task-oriented trigger for ${skillName}` },
+    { triggerPrompt: `我需要进行${skillName}，请帮我处理`, note: `Request-oriented trigger for ${skillName}` },
+    { triggerPrompt: `执行一下${skillName}`, note: `Casual command for ${skillName}` },
+  ];
+  return templates.map((t) => ({
+    triggerPrompt: t.triggerPrompt,
+    expectedTools: [],
+    expectedBehavior: `Agent should recognize the request and trigger the ${skillName} skill`,
+    note: t.note,
+  })).slice(0, count);
+}
 export function generateSkillTestPrompts(
   skill: { id: string; name: string; description: string; body?: string },
   options: { count?: number } = {}
@@ -112,96 +154,14 @@ export function generateSkillTestPrompts(
   // Extract keywords from the skill body for seed generation
   const keywords = extractKeywords(skillBody);
 
-  // Generate prompts based on skill type and content
+  // Determine strategy based on skill type
+  const isGame = isGameOrInteractiveSkill(skillName, skillDescription);
   const prompts: GeneratedPrompt[] = [];
 
-  // Template 1: Direct invocation
-  prompts.push({
-    triggerPrompt: `我们来${skillName}吧`,
-    expectedTools: [],
-    expectedBehavior: `Agent should recognize the request and trigger the ${skillName} skill`,
-    note: `Direct invocation of ${skillName}`,
-  });
-
-  // Template 2: Casual/natural language
-  if (count >= 2) {
-    prompts.push({
-      triggerPrompt: `想玩${skillName}，能帮我开始吗？`,
-      expectedTools: [],
-      expectedBehavior: `Agent should identify ${skillName} intent and activate the skill`,
-      note: `Casual request for ${skillName}`,
-    });
-  }
-
-  // Template 3: Action-oriented using extracted verbs
-  if (count >= 3 && keywords.verbs.length > 0) {
-    const verb = keywords.verbs[0];
-    prompts.push({
-      triggerPrompt: `帮我${verb}一局${skillName}`,
-      expectedTools: [],
-      expectedBehavior: `Agent should trigger the ${skillName} skill and begin the ${verb} process`,
-      note: `Action-oriented: ${verb} + ${skillName}`,
-    });
-  }
-
-  // Template 4: Multi-player / social context
-  if (count >= 4) {
-    prompts.push({
-      triggerPrompt: `大家想玩${skillName}，可以开始了吗`,
-      expectedTools: [],
-      expectedBehavior: `Agent should start the ${skillName} skill for a group`,
-      note: `Social context for ${skillName}`,
-    });
-  }
-
-  // Template 5: Using scene words
-  if (count >= 5 && keywords.scenes.length > 0) {
-    const scene = keywords.scenes[0];
-    prompts.push({
-      triggerPrompt: `${scene}怎么开始？我想直接开始玩`,
-      expectedTools: [],
-      expectedBehavior: `Agent should identify ${scene} reference and trigger ${skillName}`,
-      note: `Scene word reference: ${scene}`,
-    });
-  }
-
-  // Additional templates for count > 5
-  if (count >= 6) {
-    prompts.push({
-      triggerPrompt: `${skillName}准备好了吗？开始吧`,
-      expectedTools: [],
-      expectedBehavior: `Agent should start ${skillName} immediately`,
-      note: `Ready-to-start pattern for ${skillName}`,
-    });
-  }
-
-  if (count >= 7) {
-    prompts.push({
-      triggerPrompt: `帮我开一局${skillName}游戏`,
-      expectedTools: [],
-      expectedBehavior: `Agent should activate ${skillName} skill`,
-      note: `Game-specific request for ${skillName}`,
-    });
-  }
-
-  if (count >= 8) {
-    prompts.push({
-      triggerPrompt: `有没有人想${skillName}？有的话就开始`,
-      expectedTools: [],
-      expectedBehavior: `Agent should set up ${skillName}`,
-      note: `Recruitment pattern for ${skillName}`,
-    });
-  }
-
-  // If we still need more, add variations
-  while (prompts.length < count) {
-    const idx = prompts.length + 1;
-    prompts.push({
-      triggerPrompt: `第${idx}次测试：开始${skillName}`,
-      expectedTools: [],
-      expectedBehavior: `Agent should trigger ${skillName} skill`,
-      note: `Variation #${idx} for ${skillName}`,
-    });
+  if (isGame) {
+    prompts.push(...generateGamePrompts(skillName, count));
+  } else {
+    prompts.push(...generateWorkflowPrompts(skillName, keywords, count));
   }
 
   // Trim to requested count
