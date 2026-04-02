@@ -1516,10 +1516,10 @@ textarea {
 
 .tab-button {
   padding: 6px 14px;
-  border: 1px solid rgba(255,255,255,0.08);
+  border: 1px solid var(--line);
   border-radius: 6px;
   background: transparent;
-  color: rgba(255,255,255,0.5);
+  color: var(--muted);
   cursor: pointer;
   font-size: 0.85rem;
   font-weight: 500;
@@ -1527,14 +1527,15 @@ textarea {
 }
 
 .tab-button:hover {
-  color: rgba(255,255,255,0.8);
-  background: rgba(255,255,255,0.04);
+  color: var(--ink);
+  background: rgba(34, 49, 63, 0.04);
 }
 
 .tab-button.active {
   color: #fff;
-  background: rgba(255,255,255,0.1);
-  border-color: rgba(255,255,255,0.15);
+  background: linear-gradient(135deg, var(--accent), var(--accent-deep));
+  border-color: transparent;
+  box-shadow: 0 4px 12px rgba(196, 93, 59, 0.2);
 }
 
 .mode-badge {

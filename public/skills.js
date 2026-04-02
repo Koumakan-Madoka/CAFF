@@ -416,6 +416,7 @@ function resetModeForm() {
   dom.modeEditorTitle.textContent = '新建模式';
   dom.modeId.value = '';
   dom.modeName.value = '';
+  dom.modeName.readOnly = false;
   dom.modeDescription.value = '';
   dom.modeLoadingStrategy.value = 'dynamic';
   dom.deleteModeButton.disabled = true;
