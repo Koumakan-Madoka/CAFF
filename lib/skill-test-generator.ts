@@ -147,7 +147,9 @@ export function generateSkillTestPrompts(
   options: { count?: number } = {}
 ): GeneratedPrompt[] {
   const count = Math.max(1, Math.min(10, options.count || 3));
-  const skillName = String(skill.name || skill.id || '').trim();
+  const rawName = String(skill.name || skill.id || '').trim();
+  // Strip trailing " Skill" suffix from display names (e.g. "谁是卧底 Skill" → "谁是卧底")
+  const skillName = rawName.replace(/\s+Skill$/i, '');
   const skillDescription = String(skill.description || '').trim();
   const skillBody = String(skill.body || '').trim();
 

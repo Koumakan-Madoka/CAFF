@@ -231,14 +231,68 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
       .filter(Boolean);
   }
 
+  /**
+   * Parse tool calls from a pi session JSONL file.
+   * Returns an array of { toolName, toolCallId, arguments } objects
+   * extracted from assistant messages that contain toolCall content blocks.
+   */
+  function parseToolCallsFromSession(sessionPath: string) {
+    if (!sessionPath) return [];
+    const fs = require('node:fs');
+    let lines: string[] = [];
+    try {
+      const content = fs.readFileSync(sessionPath, 'utf-8');
+      lines = content.split('\n');
+    } catch {
+      return [];
+    }
+    const toolCalls: Array<{ toolName: string; toolCallId: string; arguments: any }> = [];
+    for (const line of lines) {
+      const entry = safeJsonParse(line);
+      if (!entry || entry.type !== 'message') continue;
+      const msg = entry.message || {};
+      if (msg.role !== 'assistant') continue;
+      const content = Array.isArray(msg.content) ? msg.content : [];
+      for (const block of content) {
+        if (block.type === 'toolCall' && block.name) {
+          toolCalls.push({
+            toolName: block.name,
+            toolCallId: block.id || '',
+            arguments: block.arguments || {},
+          });
+        }
+      }
+    }
+    return toolCalls;
+  }
+
+  /**
+   * Find session path for a given taskId from a2a_tasks table.
+   */
+  function getSessionPathForTask(taskId: string) {
+    ensureSchema();
+    try {
+      const row = store.db
+        .prepare('SELECT session_path FROM a2a_tasks WHERE id = @id')
+        .get({ id: taskId });
+      return row && row.session_path ? String(row.session_path).trim() : '';
+    } catch {
+      return '';
+    }
+  }
+
   function evaluateRun(taskId: string, testCase: any) {
     const toolCallEvents = collectToolCallsFromTask(taskId);
     const expectedTools: string[] = Array.isArray(testCase.expectedTools) ? testCase.expectedTools : [];
+    const skillId = String(testCase.skillId || '').trim();
 
-    // Step 1: trigger check — did the agent call read-skill for this skill?
-    let triggerPassed = false;
+    // Collect tool calls from two sources:
+    // 1. a2a_task_events (from HTTP callback-based tools like read-skill, send-public etc.)
+    // 2. session JSONL file (from pi built-in tools like read, write, bash)
     const actualTools: string[] = [];
+    let triggerPassed = false;
 
+    // Source 1: task events (HTTP callback tools)
     for (const event of toolCallEvents) {
       const toolName = String(event.tool || '').trim();
       actualTools.push(toolName);
@@ -246,9 +300,34 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
       if (
         toolName === 'read-skill' &&
         event.request &&
-        String(event.request.skillId || '').trim() === testCase.skillId
+        String(event.request.skillId || '').trim() === skillId
       ) {
         triggerPassed = true;
+      }
+    }
+
+    // Source 2: session file tool calls (pi built-in tools)
+    if (!triggerPassed) {
+      const sessionPath = getSessionPathForTask(taskId);
+      const sessionToolCalls = parseToolCallsFromSession(sessionPath);
+      for (const tc of sessionToolCalls) {
+        actualTools.push(tc.toolName);
+
+        if (!triggerPassed && tc.toolName === 'read') {
+          // Check if the agent read a file under a skill path matching the target skillId
+          const readPath = String(tc.arguments && (tc.arguments.path || tc.arguments.file) || '').replace(/\\/g, '/');
+          if (readPath && readPath.includes('/' + skillId + '/')) {
+            triggerPassed = true;
+          }
+        }
+
+        if (!triggerPassed && tc.toolName === 'bash') {
+          // Check if bash command includes read-skill invocation
+          const cmd = String(tc.arguments && tc.arguments.command || '');
+          if (cmd.includes('read-skill') && cmd.includes(skillId)) {
+            triggerPassed = true;
+          }
+        }
       }
     }
 
