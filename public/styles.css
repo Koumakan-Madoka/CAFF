@@ -1674,3 +1674,94 @@ textarea {
   border-color: rgba(42, 157, 143, 0.4) !important;
   background: rgba(42, 157, 143, 0.08) !important;
 }
+
+/* ---- Run detail expandable panel ---- */
+.run-detail-panel {
+  margin-top: 0.5rem;
+  padding: 0.6rem 0.8rem;
+  border-radius: var(--radius-sm);
+  background: rgba(34, 49, 63, 0.04);
+  border: 1px solid rgba(34, 49, 63, 0.08);
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.run-detail-section {
+  margin-bottom: 0.6rem;
+}
+
+.run-detail-section .section-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--muted);
+  margin-bottom: 0.3rem;
+}
+
+.run-detail-pre {
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  background: rgba(255, 255, 255, 0.6);
+  border: 1px solid rgba(34, 49, 63, 0.06);
+  border-radius: var(--radius-sm);
+  padding: 0.4rem 0.6rem;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 150px;
+  overflow-y: auto;
+  margin: 0.2rem 0;
+}
+
+.run-detail-thinking {
+  color: #6b7280;
+  font-style: italic;
+}
+
+.run-detail-tool {
+  margin-bottom: 0.3rem;
+  padding: 0.3rem 0;
+}
+
+.run-detail-diag {
+  font-size: 0.82rem;
+  color: #8d6411;
+  padding: 0.3rem 0;
+}
+
+.run-item-warning {
+  font-size: 0.78rem;
+  color: #e53e3e;
+  padding: 0.2rem 0;
+  font-weight: 500;
+}
+
+.run-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+/* ---- Batch run progress bar ---- */
+.run-progress-container {
+  margin-top: 0.6rem;
+}
+
+.run-progress-bar {
+  height: 6px;
+  background: rgba(34, 49, 63, 0.08);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.run-progress-fill {
+  height: 100%;
+  background: #2a9d8f;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.run-progress-text {
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-top: 0.25rem;
+}

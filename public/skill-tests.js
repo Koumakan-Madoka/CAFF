@@ -93,6 +93,26 @@
     }
   }
 
+  // ---- localStorage persistence for Agent/Model ----
+  const LS_KEY_AGENT = 'caff_skill_test_agent';
+  const LS_KEY_MODEL = 'caff_skill_test_model';
+
+  function persistSelections() {
+    try {
+      if (dom.agentSelect) localStorage.setItem(LS_KEY_AGENT, dom.agentSelect.value);
+      if (dom.modelSelect) localStorage.setItem(LS_KEY_MODEL, dom.modelSelect.value);
+    } catch { /* ignore */ }
+  }
+
+  function restoreSelections() {
+    try {
+      const savedAgent = localStorage.getItem(LS_KEY_AGENT);
+      const savedModel = localStorage.getItem(LS_KEY_MODEL);
+      if (savedAgent != null && dom.agentSelect) dom.agentSelect.value = savedAgent;
+      if (savedModel != null && dom.modelSelect) dom.modelSelect.value = savedModel;
+    } catch { /* ignore */ }
+  }
+
   function renderAgentSelect() {
     if (!dom.agentSelect) return;
     const current = dom.agentSelect.value;
@@ -104,6 +124,7 @@
       dom.agentSelect.appendChild(opt);
     }
     if (current) dom.agentSelect.value = current;
+    restoreSelections();
   }
 
   function renderModelSelect() {
@@ -121,7 +142,12 @@
       dom.modelSelect.appendChild(opt);
     }
     if (current) dom.modelSelect.value = current;
+    restoreSelections();
   }
+
+  // Persist on change
+  if (dom.agentSelect) dom.agentSelect.addEventListener('change', persistSelections);
+  if (dom.modelSelect) dom.modelSelect.addEventListener('change', persistSelections);
 
   function getRunOptions() {
     const agentId = dom.agentSelect ? dom.agentSelect.value.trim() : '';
@@ -316,10 +342,26 @@
           ? `<div class="agent-meta">工具: ${run.actualTools.join(', ')}</div>`
           : '';
 
+      // Trigger failure hint — show what the model did instead
+      let triggerFailHint = '';
+      if (!run.triggerPassed) {
+        triggerFailHint = '<div class="run-item-warning">⚠ 触发失败 — 点击「查看详情」了解模型实际行为</div>';
+      }
+
+      // Action buttons
+      const actionsBar = document.createElement('div');
+      actionsBar.className = 'run-item-actions';
+      actionsBar.style.marginTop = '0.4rem';
+
+      const detailBtn = document.createElement('button');
+      detailBtn.className = 'mini-action';
+      detailBtn.textContent = '查看详情';
+      detailBtn.addEventListener('click', () => toggleRunDetail(row, run.id));
+
       const downloadBtn = document.createElement('button');
       downloadBtn.className = 'mini-action';
       downloadBtn.textContent = '下载 JSON';
-      downloadBtn.style.marginLeft = '8px';
+      downloadBtn.style.marginLeft = '6px';
       downloadBtn.addEventListener('click', async () => {
         try {
           const detail = await fetchJson(`/api/skill-test-runs/${encodeURIComponent(run.id)}`);
@@ -338,21 +380,126 @@
         }
       });
 
+      actionsBar.appendChild(detailBtn);
+      actionsBar.appendChild(downloadBtn);
+
       row.innerHTML = `
         <div class="run-item-header">
           ${triggerTag} ${execTag} ${accuracy}
           <span class="agent-meta">${run.createdAt ? new Date(run.createdAt).toLocaleString() : ''}</span>
         </div>
         ${tools}
+        ${triggerFailHint}
         ${run.errorMessage ? `<div class="agent-meta" style="color:#e53e3e">${escapeHtml(run.errorMessage)}</div>` : ''}
       `;
 
-      // Append download button to the header
-      const header = row.querySelector('.run-item-header');
-      if (header) header.appendChild(downloadBtn);
+      row.appendChild(actionsBar);
 
       dom.detailRuns.appendChild(row);
     }
+  }
+
+  /** Toggle inline expandable detail for a single run */
+  async function toggleRunDetail(rowEl, runId) {
+    const existing = rowEl.querySelector('.run-detail-panel');
+    if (existing) {
+      existing.remove();
+      return;
+    }
+
+    const panel = document.createElement('div');
+    panel.className = 'run-detail-panel';
+    panel.innerHTML = '<p class="section-hint">加载中...</p>';
+    rowEl.appendChild(panel);
+
+    try {
+      const data = await fetchJson(`/api/skill-test-runs/${encodeURIComponent(runId)}`);
+      renderRunDetailPanel(panel, data);
+    } catch (err) {
+      panel.innerHTML = `<p class="section-hint" style="color:#e53e3e">加载失败: ${escapeHtml(String(err.message || err))}</p>`;
+    }
+  }
+
+  function renderRunDetailPanel(panel, data) {
+    const debug = data.debug || {};
+    const session = debug.session || {};
+    const toolEvents = Array.isArray(debug.toolCalls) ? debug.toolCalls : [];
+    const sessionToolCalls = Array.isArray(session.toolCalls) ? session.toolCalls : [];
+
+    let html = '';
+
+    // ---- Output text ----
+    if (debug.outputText) {
+      html += '<div class="run-detail-section">';
+      html += '<div class="section-label">模型输出</div>';
+      html += `<pre class="run-detail-pre">${escapeHtml(debug.outputText)}</pre>`;
+      html += '</div>';
+    }
+
+    // ---- Trigger failure diagnosis ----
+    if (data.run && !data.run.triggerPassed) {
+      html += '<div class="run-detail-section">';
+      html += '<div class="section-label" style="color:#e53e3e">⚠ 触发失败诊断</div>';
+      if (toolEvents.length === 0 && sessionToolCalls.length === 0) {
+        html += '<div class="run-detail-diag">模型未调用任何工具，直接输出了文本回复</div>';
+      } else {
+        const allTools = [
+          ...toolEvents.map(e => (e.payload && e.payload.tool) || 'unknown'),
+          ...sessionToolCalls.map(t => t.toolName || 'unknown')
+        ];
+        html += `<div class="run-detail-diag">模型调用了以下工具，但均未触发目标 skill: <strong>${allTools.join(', ')}</strong></div>`;
+      }
+      // Show thinking if available
+      if (session.thinking) {
+        html += '<div class="section-label" style="margin-top:0.4rem">模型思考过程</div>';
+        html += `<pre class="run-detail-pre run-detail-thinking">${escapeHtml(session.thinking)}</pre>`;
+      }
+      html += '</div>';
+    }
+
+    // ---- Tool Call Events (from a2a_task_events) ----
+    if (toolEvents.length > 0) {
+      html += '<div class="run-detail-section">';
+      html += '<div class="section-label">回调工具调用</div>';
+      for (const ev of toolEvents) {
+        const p = ev.payload || {};
+        html += '<div class="run-detail-tool">';
+        html += `<span class="tag">${escapeHtml(p.tool || 'unknown')}</span>`;
+        if (p.status) html += ` <span class="agent-meta">${escapeHtml(p.status)}</span>`;
+        if (p.request) html += `<pre class="run-detail-pre">${escapeHtml(JSON.stringify(p.request, null, 2))}</pre>`;
+        html += '</div>';
+      }
+      html += '</div>';
+    }
+
+    // ---- Session tool calls (pi built-in) ----
+    if (sessionToolCalls.length > 0) {
+      html += '<div class="run-detail-section">';
+      html += '<div class="section-label">内置工具调用</div>';
+      for (const tc of sessionToolCalls) {
+        html += '<div class="run-detail-tool">';
+        html += `<span class="tag">${escapeHtml(tc.toolName || 'unknown')}</span>`;
+        if (tc.arguments && Object.keys(tc.arguments).length > 0) {
+          html += `<pre class="run-detail-pre">${escapeHtml(JSON.stringify(tc.arguments, null, 2))}</pre>`;
+        }
+        html += '</div>';
+      }
+      html += '</div>';
+    }
+
+    // ---- Thinking ----
+    if (session.thinking && data.run && data.run.triggerPassed) {
+      html += '<div class="run-detail-section">';
+      html += '<div class="section-label">思考过程</div>';
+      html += `<pre class="run-detail-pre run-detail-thinking">${escapeHtml(session.thinking)}</pre>`;
+      html += '</div>';
+    }
+
+    if (!html) {
+      html = '<p class="section-hint">无调试数据</p>';
+    }
+
+    panel.innerHTML = html;
   }
 
   // ---- Generate ----
@@ -405,30 +552,107 @@
     });
   }
 
-  // ---- Run all ----
+  // ---- Run all (with progress tracking) ----
   if (dom.runAllButton) {
     dom.runAllButton.addEventListener('click', async () => {
-      if (!state.selectedSkillId) {
+      if (state.selectedSkillId) {
+        // proceed
+      } else {
         showToast('请先选择一个 Skill');
         return;
       }
       if (!confirm('确认运行所有有效测试用例？这可能需要一些时间。')) return;
-      dom.runAllButton.disabled = true;
-      dom.runAllButton.textContent = '批量运行中...';
+
+      // First get the list of validated cases to know the total count
+      let caseList = [];
       try {
-        const data = await fetchJson(
-          `/api/skills/${encodeURIComponent(state.selectedSkillId)}/test-cases/run-all`,
-          { method: 'POST', body: getRunOptions() }
-        );
-        showToast(`批量运行完成: ${data.total || 0} 个用例`);
+        const caseData = await fetchJson(`/api/skills/${encodeURIComponent(state.selectedSkillId)}/test-cases`);
+        caseList = (Array.isArray(caseData.cases) ? caseData.cases : []).filter(c => c.validityStatus === 'validated');
+      } catch {
+        // fallback — just run run-all without progress
+      }
+
+      if (caseList.length === 0) {
+        showToast('没有已验证的测试用例可运行');
+        return;
+      }
+
+      dom.runAllButton.disabled = true;
+
+      // Create progress bar
+      let progressContainer = document.getElementById('st-run-progress');
+      if (!progressContainer) {
+        progressContainer = document.createElement('div');
+        progressContainer.id = 'st-run-progress';
+        progressContainer.className = 'run-progress-container';
+        // Insert after the run-all button section
+        const runAllSection = dom.runAllButton.closest('.stack-card');
+        if (runAllSection) {
+          runAllSection.appendChild(progressContainer);
+        }
+      }
+      progressContainer.classList.remove('hidden');
+      progressContainer.innerHTML = `
+        <div class="run-progress-bar">
+          <div class="run-progress-fill" style="width:0%"></div>
+        </div>
+        <div class="run-progress-text">0 / ${caseList.length} — 准备中...</div>
+      `;
+
+      let completed = 0;
+      let triggerOk = 0;
+      let execOk = 0;
+      const results = [];
+
+      try {
+        for (const tc of caseList) {
+          const pct = Math.round(((completed) / caseList.length) * 100);
+          updateProgress(progressContainer, completed, caseList.length, `运行: ${clipText(tc.triggerPrompt, 30)}`);
+
+          try {
+            const result = await fetchJson(
+              `/api/skills/${encodeURIComponent(state.selectedSkillId)}/test-cases/${encodeURIComponent(tc.id)}/run`,
+              { method: 'POST', body: getRunOptions() }
+            );
+            results.push(result);
+            if (result.run) {
+              if (result.run.triggerPassed) triggerOk++;
+              if (result.run.executionPassed) execOk++;
+            }
+          } catch (err) {
+            results.push({ testCase: tc, error: String(err.message || err) });
+          }
+
+          completed++;
+        }
+
+        updateProgress(progressContainer, completed, caseList.length, '完成!');
+        showToast(`批量运行完成: ${completed} 个用例, 触发 ${triggerOk}/${completed}, 执行 ${execOk}/${completed}`);
         await loadTestCases();
+        // Refresh the detail if a case is selected
+        if (state.selectedCaseId) {
+          const tc = state.testCases.find(t => t.id === state.selectedCaseId);
+          if (tc) renderDetail(tc);
+        }
       } catch (err) {
         showToast('批量运行失败: ' + (err.message || err));
       } finally {
         dom.runAllButton.disabled = false;
         dom.runAllButton.textContent = '运行全部';
+        // Keep progress visible for 3 seconds then fade
+        setTimeout(() => {
+          if (progressContainer) progressContainer.classList.add('hidden');
+        }, 3000);
       }
     });
+  }
+
+  function updateProgress(container, done, total, statusText) {
+    const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+    const fill = container.querySelector('.run-progress-fill');
+    const text = container.querySelector('.run-progress-text');
+    if (fill) fill.style.width = pct + '%';
+    if (text) text.textContent = `${done} / ${total} — ${statusText}`;
   }
 
   // ---- Download all runs as JSON ----
