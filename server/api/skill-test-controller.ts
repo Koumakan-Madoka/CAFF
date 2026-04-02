@@ -3,6 +3,7 @@ import type { URL } from 'node:url';
 
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
+import fs from 'node:fs';
 
 import type { RouteHandler } from '../http/router';
 import { createHttpError } from '../http/http-errors';
@@ -238,7 +239,6 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
    */
   function parseToolCallsFromSession(sessionPath: string) {
     if (!sessionPath) return [];
-    const fs = require('node:fs');
     let lines: string[] = [];
     try {
       const content = fs.readFileSync(sessionPath, 'utf-8');
@@ -316,8 +316,13 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
         if (!triggerPassed && tc.toolName === 'read') {
           // Check if the agent read a file under a skill path matching the target skillId
           const readPath = String(tc.arguments && (tc.arguments.path || tc.arguments.file) || '').replace(/\\/g, '/');
-          if (readPath && readPath.includes('/' + skillId + '/')) {
-            triggerPassed = true;
+          if (readPath) {
+            // Precisely extract the skillId segment after /skills/ to avoid
+            // false matches like /start/ matching /starting-point/
+            const skillsMatch = readPath.match(/\/skills\/([^/]+)\//);
+            if (skillsMatch && skillsMatch[1] === skillId) {
+              triggerPassed = true;
+            }
           }
         }
 
