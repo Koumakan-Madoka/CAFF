@@ -9,6 +9,7 @@
     <script defer src="/shared/model-options.js"></script>
     <script defer src="/shared/toast.js"></script>
     <script defer src="/eval-cases.js"></script>
+    <script defer src="/skill-tests.js"></script>
   </head>
   <body class="casebook">
     <div class="ambient ambient-a"></div>
@@ -33,6 +34,156 @@
         </div>
       </header>
 
+      <div class="tab-bar">
+        <button class="tab-button active" data-tab="panel-eval-cases">错题本 / A/B 测试</button>
+        <button class="tab-button" data-tab="panel-skill-tests">Skill Tests</button>
+      </div>
+
+      <div id="panel-skill-tests" class="tab-panel hidden">
+        <main class="layout persona-layout">
+          <aside class="panel panel-conversations">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Skill Tests</p>
+                <h2>测试用例</h2>
+              </div>
+            </div>
+
+            <form class="settings-form compact-settings-form">
+              <label>
+                <span>Skill</span>
+                <select id="st-skill-select"><option value="">— 选择 Skill —</option></select>
+              </label>
+              <div class="panel-actions">
+                <button id="st-refresh-skills" class="ghost-button" type="button">刷新</button>
+              </div>
+            </form>
+
+            <section class="stack-card">
+              <div class="section-row">
+                <span class="section-label">自动生成</span>
+                <span id="st-case-count" class="section-hint">0 个用例</span>
+              </div>
+              <div class="field-grid">
+                <label>
+                  <span>数量</span>
+                  <input id="st-generate-count" type="number" min="1" max="10" value="3" />
+                </label>
+              </div>
+              <div class="panel-actions">
+                <button id="st-generate-btn" class="ghost-button" type="button">生成测试用例</button>
+                <button id="st-run-all-btn" class="ghost-button" type="button">运行全部</button>
+              </div>
+            </section>
+
+            <section class="stack-card">
+              <div class="section-row">
+                <span class="section-label">手动创建</span>
+              </div>
+              <form id="st-create-form" class="settings-form">
+                <label>
+                  <span>触发 Prompt</span>
+                  <textarea id="st-create-prompt" rows="3" maxlength="2000" placeholder="用户会说什么来触发这个 skill？"></textarea>
+                </label>
+                <div class="field-grid">
+                  <label>
+                    <span>类型</span>
+                    <select id="st-create-type">
+                      <option value="trigger">触发测试</option>
+                      <option value="execution">执行测试</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>期望工具（逗号分隔）</span>
+                    <input id="st-create-tools" type="text" maxlength="200" placeholder="read-skill, send-public" />
+                  </label>
+                </div>
+                <label>
+                  <span>备注</span>
+                  <input id="st-create-note" type="text" maxlength="120" placeholder="可选备注" />
+                </label>
+                <div class="panel-actions">
+                  <button id="st-create-submit" type="submit" class="ghost-button">创建</button>
+                </div>
+              </form>
+            </section>
+
+            <section class="stack-card">
+              <div class="section-row">
+                <span class="section-label">用例列表</span>
+              </div>
+              <div id="st-case-list" class="agent-list">
+                <p class="section-hint">选择一个 Skill 查看测试用例</p>
+              </div>
+            </section>
+          </aside>
+
+          <section class="panel panel-studio">
+            <div id="st-detail" class="hidden">
+              <div class="panel-header">
+                <div>
+                  <p class="eyebrow">Test Case Detail</p>
+                  <h2>测试用例详情</h2>
+                  <p id="st-detail-case-id" class="muted"></p>
+                </div>
+                <div class="panel-actions">
+                  <button id="st-detail-run-btn" class="ghost-button" type="button">运行测试</button>
+                  <button id="st-detail-delete-btn" class="ghost-button" type="button" style="color:#e53e3e">删除</button>
+                </div>
+              </div>
+
+              <form class="settings-form">
+                <section class="stack-card">
+                  <div class="section-row">
+                    <span class="section-label">触发 Prompt</span>
+                  </div>
+                  <textarea id="st-detail-prompt" class="mono-textarea" rows="4" readonly></textarea>
+                </section>
+
+                <section class="stack-card">
+                  <div class="section-row">
+                    <span class="section-label">期望工具</span>
+                    <span id="st-detail-expected-tools" class="section-hint">(无)</span>
+                  </div>
+                </section>
+
+                <section class="stack-card">
+                  <div class="section-row">
+                    <span class="section-label">有效性</span>
+                    <span id="st-detail-validity" class="tag tag-pending">pending</span>
+                  </div>
+                </section>
+
+                <section class="stack-card">
+                  <div class="section-row">
+                    <span class="section-label">运行历史</span>
+                  </div>
+                  <div id="st-detail-runs" class="agent-list">
+                    <p class="section-hint">暂无运行记录</p>
+                  </div>
+                </section>
+              </form>
+            </div>
+
+            <div id="st-summary-section">
+              <div class="panel-header">
+                <div>
+                  <p class="eyebrow">Summary</p>
+                  <h2>测试概览</h2>
+                </div>
+                <div class="panel-actions">
+                  <button id="st-refresh-summary" class="ghost-button" type="button">刷新</button>
+                </div>
+              </div>
+              <div id="st-summary-body">
+                <p class="section-hint">加载中...</p>
+              </div>
+            </div>
+          </section>
+        </main>
+      </div>
+
+      <div id="panel-eval-cases" class="tab-panel">
       <main class="layout persona-layout">
         <aside class="panel panel-conversations">
           <div class="panel-header">
@@ -346,7 +497,7 @@
           </form>
         </section>
       </main>
-    </div>
+      </div>
 
     <div id="toast" class="toast hidden"></div>
   </body>

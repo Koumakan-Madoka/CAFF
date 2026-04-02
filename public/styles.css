@@ -1600,3 +1600,76 @@ textarea {
 .skill-checkbox-item input[type="checkbox"] {
   accent-color: #2a9d8f;
 }
+
+/* ---- Skill Test Tags ---- */
+.tag-success {
+  background: rgba(42, 157, 143, 0.14);
+  color: #2a9d8f;
+}
+
+.tag-error {
+  background: rgba(229, 62, 62, 0.12);
+  color: #e53e3e;
+}
+
+.tag-pending {
+  background: rgba(217, 164, 65, 0.14);
+  color: #8d6411;
+}
+
+.tag {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 10px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+/* ---- Skill Test Run Item ---- */
+.run-item {
+  padding: 0.6rem 0.8rem;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.5);
+  border: 1px solid rgba(34, 49, 63, 0.06);
+  margin-bottom: 0.5rem;
+}
+
+.run-item-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+/* ---- Skill Test Summary Table ---- */
+.summary-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.summary-table th,
+.summary-table td {
+  text-align: left;
+  padding: 0.5rem 0.8rem;
+  border-bottom: 1px solid rgba(34, 49, 63, 0.08);
+}
+
+.summary-table th {
+  font-weight: 600;
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.summary-table tr:hover td {
+  background: rgba(255, 255, 255, 0.4);
+}
+
+/* ---- Agent card selected state ---- */
+.agent-card-selected {
+  border-color: rgba(42, 157, 143, 0.4) !important;
+  background: rgba(42, 157, 143, 0.08) !important;
+}

@@ -20,6 +20,7 @@ const { createModesController } = require('../api/modes-controller');
 const { createSkillsController } = require('../api/skills-controller');
 const { createUndercoverController } = require('../api/undercover-controller');
 const { createWerewolfController } = require('../api/werewolf-controller');
+const { createSkillTestController } = require('../api/skill-test-controller');
 const { HOST, PORT, ROOT_DIR } = require('./config');
 const { createTurnOrchestrator } = require('../domain/conversation/turn-orchestrator');
 const { pickConversationSummary } = require('../domain/conversation/conversation-view');
@@ -259,6 +260,13 @@ export function createServerApp(options: any = {}) {
       werewolfService,
       buildBootstrapPayload,
       modeStore,
+    }),
+    createSkillTestController({
+      store,
+      agentToolBridge: agentToolBridge,
+      skillRegistry,
+      getProjectDir: () => activeProjectDir,
+      toolBaseUrl,
     }),
   ]);
 

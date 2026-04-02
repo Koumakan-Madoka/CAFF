@@ -298,3 +298,40 @@ CREATE INDEX IF NOT EXISTS idx_a2a_task_events_task_id ON a2a_task_events (task_
 CREATE INDEX IF NOT EXISTS idx_a2a_artifacts_task_id ON a2a_artifacts (task_id, created_at ASC);
   `);
 }
+
+export function migrateSkillTestSchema(db: any) {
+  db.exec(`
+CREATE TABLE IF NOT EXISTS skill_test_cases (
+  id TEXT PRIMARY KEY,
+  skill_id TEXT NOT NULL,
+  eval_case_id TEXT,
+  test_type TEXT NOT NULL DEFAULT 'trigger',
+  loading_mode TEXT NOT NULL DEFAULT 'dynamic',
+  trigger_prompt TEXT NOT NULL,
+  expected_tools_json TEXT NOT NULL DEFAULT '[]',
+  expected_behavior TEXT NOT NULL DEFAULT '',
+  validity_status TEXT NOT NULL DEFAULT 'pending',
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS skill_test_runs (
+  id TEXT PRIMARY KEY,
+  test_case_id TEXT NOT NULL,
+  eval_case_run_id TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  actual_tools_json TEXT NOT NULL DEFAULT '[]',
+  tool_accuracy REAL,
+  trigger_passed INTEGER,
+  execution_passed INTEGER,
+  error_message TEXT DEFAULT '',
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (test_case_id) REFERENCES skill_test_cases(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_skill_test_cases_skill_id ON skill_test_cases (skill_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_skill_test_cases_validity ON skill_test_cases (validity_status);
+CREATE INDEX IF NOT EXISTS idx_skill_test_runs_case_id ON skill_test_runs (test_case_id, created_at DESC);
+  `);
+}
