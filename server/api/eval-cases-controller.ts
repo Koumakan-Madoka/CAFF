@@ -10,7 +10,7 @@ import { createHttpError } from '../http/http-errors';
 import { readRequestJson } from '../http/request-body';
 import { sendJson } from '../http/response';
 import { migrateRunSchema } from '../../storage/sqlite/migrations';
-import { DEFAULT_THINKING, resolveSetting, startRun } from '../../lib/minimal-pi';
+import { DEFAULT_THINKING, resolveSetting, resolveThinkingSetting, startRun } from '../../lib/minimal-pi';
 import { createSqliteRunStore } from '../../lib/sqlite-store';
 import { ROOT_DIR } from '../app/config';
 import { ensureAgentSandbox, toPortableShellPath } from '../domain/conversation/turn/agent-sandbox';
@@ -617,12 +617,17 @@ export function createEvalCasesController(options: any = {}): RouteHandler<ApiCo
       const modelProfile = modelProfileId
         ? modelProfiles.find((profile: any) => profile && String(profile.id || '').trim() === modelProfileId) || null
         : null;
+      const provider = resolveSetting(
+        modelProfile && modelProfile.provider ? String(modelProfile.provider) : '',
+        agent && agent.provider ? String(agent.provider) : '',
+        taskRow.provider ? String(taskRow.provider) : ''
+      );
       const agentThinking = resolveSetting(
         modelProfile && modelProfile.thinking ? String(modelProfile.thinking) : '',
         agent && agent.thinking ? String(agent.thinking) : '',
         ''
       );
-      const thinking = resolveSetting(agentThinking, process.env.PI_THINKING, DEFAULT_THINKING);
+      const thinking = resolveThinkingSetting(provider, agentThinking, process.env.PI_THINKING, DEFAULT_THINKING);
 
       const expectationsRow = store.db
         .prepare(

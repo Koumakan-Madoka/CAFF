@@ -6,6 +6,7 @@ const {
   DEFAULT_THINKING,
   resolveIntegerSettingCandidates,
   resolveSetting,
+  resolveThinkingSetting,
   sanitizeSessionName,
   startRun,
 } = require('../../../../lib/minimal-pi');
@@ -426,7 +427,7 @@ export function createAgentExecutor(options: any = {}) {
     });
     const provider = resolveSetting(agentConfig.provider, process.env.PI_PROVIDER, DEFAULT_PROVIDER);
     const model = resolveSetting(agentConfig.model, process.env.PI_MODEL, DEFAULT_MODEL);
-    const thinking = resolveSetting(agentConfig.thinking, process.env.PI_THINKING, DEFAULT_THINKING);
+    const thinking = resolveThinkingSetting(provider, agentConfig.thinking, process.env.PI_THINKING, DEFAULT_THINKING);
     const heartbeatIntervalMs = resolveIntegerSettingCandidates([process.env.PI_HEARTBEAT_INTERVAL_MS, 5000], 'heartbeatIntervalMs');
     const heartbeatTimeoutMs = resolveIntegerSettingCandidates(
       [process.env.PI_HEARTBEAT_TIMEOUT_MS, process.env.PI_IDLE_TIMEOUT_MS, 60000],

@@ -23,6 +23,21 @@ function resolveSetting(cliValue: any, envValue: any, fallbackValue: any) {
   return String(cliValue || envValue || fallbackValue || '').trim();
 }
 
+function getProviderDefaultThinking(provider: any) {
+  const normalizedProvider = String(provider || '').trim().toLowerCase();
+
+  if (normalizedProvider === 'packycode') {
+    return 'xhigh';
+  }
+
+  return DEFAULT_THINKING;
+}
+
+function resolveThinkingSetting(provider: any, cliValue: any, envValue: any, fallbackValue = DEFAULT_THINKING) {
+  const normalizedFallback = String(fallbackValue || '').trim();
+  return resolveSetting(cliValue, envValue, normalizedFallback || getProviderDefaultThinking(provider));
+}
+
 function resolveIntegerSetting(cliValue: any, envValue: any, fallbackValue: any, name: any) {
   return resolveIntegerSettingCandidates([cliValue, envValue, fallbackValue], name);
 }
@@ -358,7 +373,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
   }
 
   const emitter = new EventEmitter();
-  const thinking = resolveSetting(options.thinking, process.env.PI_THINKING, DEFAULT_THINKING);
+  const thinking = resolveThinkingSetting(provider, options.thinking, process.env.PI_THINKING, DEFAULT_THINKING);
   const agentDir = resolveSetting(options.agentDir, process.env.PI_CODING_AGENT_DIR, DEFAULT_AGENT_DIR);
   const sqlitePath = resolveSetting(options.sqlitePath, process.env.PI_SQLITE_PATH, '');
   const heartbeatIntervalMs = resolveIntegerSettingCandidates(
@@ -988,12 +1003,14 @@ export {
   DEFAULT_PROVIDER,
   DEFAULT_TERMINATE_GRACE_MS,
   DEFAULT_THINKING,
+  getProviderDefaultThinking,
   invoke,
   resolveDefaultAgentDir,
   resolveIntegerSetting,
   resolveIntegerSettingCandidates,
   resolveSessionPath,
   resolveSetting,
+  resolveThinkingSetting,
   sanitizeSessionName,
   startRun,
 };
