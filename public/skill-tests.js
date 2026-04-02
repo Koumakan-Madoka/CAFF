@@ -3,6 +3,7 @@
 (function initSkillTests() {
   const shared = window.CaffShared || {};
   const fetchJson = shared.fetchJson;
+  const modelOptionUtils = shared.modelOptions || {};
   const toastEl = document.getElementById('toast');
   const toast =
     typeof shared.createToastController === 'function' ? shared.createToastController(toastEl) : { show() {} };
@@ -17,6 +18,8 @@
     // Skill Tests tab
     skillSelect: /** @type {HTMLSelectElement | null} */ (document.getElementById('st-skill-select')),
     refreshSkillsButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('st-refresh-skills')),
+    agentSelect: /** @type {HTMLSelectElement | null} */ (document.getElementById('st-agent-select')),
+    modelSelect: /** @type {HTMLSelectElement | null} */ (document.getElementById('st-model-select')),
     generateButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('st-generate-btn')),
     generateCount: /** @type {HTMLInputElement | null} */ (document.getElementById('st-generate-count')),
     runAllButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('st-run-all-btn')),
@@ -29,6 +32,7 @@
     detailExpectedTools: /** @type {HTMLElement | null} */ (document.getElementById('st-detail-expected-tools')),
     detailValidity: /** @type {HTMLElement | null} */ (document.getElementById('st-detail-validity')),
     detailRunButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('st-detail-run-btn')),
+    detailDownloadButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('st-detail-download-btn')),
     detailDeleteButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('st-detail-delete-btn')),
     detailRuns: /** @type {HTMLDivElement | null} */ (document.getElementById('st-detail-runs')),
     // Summary
@@ -45,6 +49,8 @@
 
   const state = {
     skills: [],
+    agents: [],
+    modelOptions: [],
     selectedSkillId: '',
     testCases: [],
     selectedCaseId: '',
@@ -61,6 +67,7 @@
       panel.classList.toggle('hidden', panel.id !== tabId);
     });
     if (tabId === 'panel-skill-tests') {
+      loadBootstrapOptions();
       loadSkills();
       loadSummary();
     }
@@ -72,6 +79,71 @@
       switchTab(tabId);
     });
   });
+
+  // ---- Agent & Model selectors ----
+  async function loadBootstrapOptions() {
+    try {
+      const data = await fetchJson('/api/bootstrap');
+      state.agents = Array.isArray(data.agents) ? data.agents : [];
+      state.modelOptions = Array.isArray(data.modelOptions) ? data.modelOptions : [];
+      renderAgentSelect();
+      renderModelSelect();
+    } catch {
+      // non-critical
+    }
+  }
+
+  function renderAgentSelect() {
+    if (!dom.agentSelect) return;
+    const current = dom.agentSelect.value;
+    dom.agentSelect.innerHTML = '<option value="">— 默认 —</option>';
+    for (const agent of state.agents) {
+      const opt = document.createElement('option');
+      opt.value = agent.id || '';
+      opt.textContent = agent.name || agent.id || '';
+      dom.agentSelect.appendChild(opt);
+    }
+    if (current) dom.agentSelect.value = current;
+  }
+
+  function renderModelSelect() {
+    if (!dom.modelSelect) return;
+    const current = dom.modelSelect.value;
+    dom.modelSelect.innerHTML = '<option value="">系统默认模型</option>';
+    const options = Array.isArray(state.modelOptions) ? state.modelOptions : [];
+    for (const option of options) {
+      if (!option || !option.key) continue;
+      const opt = document.createElement('option');
+      opt.value = option.key;
+      opt.textContent = modelOptionUtils && typeof modelOptionUtils.buildModelOptionLabel === 'function'
+        ? modelOptionUtils.buildModelOptionLabel(option)
+        : (option.label || `${option.provider || ''} / ${option.model || ''}`);
+      dom.modelSelect.appendChild(opt);
+    }
+    if (current) dom.modelSelect.value = current;
+  }
+
+  function getRunOptions() {
+    const agentId = dom.agentSelect ? dom.agentSelect.value.trim() : '';
+    const modelKey = dom.modelSelect ? dom.modelSelect.value.trim() : '';
+    let provider = '';
+    let model = '';
+    if (modelKey) {
+      const parts = modelKey.split('\u001f');
+      provider = (parts[0] || '').trim();
+      model = (parts[1] || '').trim();
+    }
+    const opts = {};
+    if (provider) opts.provider = provider;
+    if (model) opts.model = model;
+    if (agentId) opts.agentId = agentId;
+    // resolve agent name from agent list
+    if (agentId && Array.isArray(state.agents)) {
+      const found = state.agents.find(a => a && a.id === agentId);
+      if (found && found.name) opts.agentName = found.name;
+    }
+    return opts;
+  }
 
   // ---- Skills ----
   async function loadSkills() {
@@ -244,6 +316,28 @@
           ? `<div class="agent-meta">工具: ${run.actualTools.join(', ')}</div>`
           : '';
 
+      const downloadBtn = document.createElement('button');
+      downloadBtn.className = 'mini-action';
+      downloadBtn.textContent = '下载 JSON';
+      downloadBtn.style.marginLeft = '8px';
+      downloadBtn.addEventListener('click', async () => {
+        try {
+          const detail = await fetchJson(`/api/skill-test-runs/${encodeURIComponent(run.id)}`);
+          const blob = new Blob([JSON.stringify(detail, null, 2)], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `skill-test-run-${run.id}.json`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+          showToast('已下载');
+        } catch (err) {
+          showToast('下载失败: ' + (err.message || err));
+        }
+      });
+
       row.innerHTML = `
         <div class="run-item-header">
           ${triggerTag} ${execTag} ${accuracy}
@@ -252,6 +346,10 @@
         ${tools}
         ${run.errorMessage ? `<div class="agent-meta" style="color:#e53e3e">${escapeHtml(run.errorMessage)}</div>` : ''}
       `;
+
+      // Append download button to the header
+      const header = row.querySelector('.run-item-header');
+      if (header) header.appendChild(downloadBtn);
 
       dom.detailRuns.appendChild(row);
     }
@@ -292,7 +390,7 @@
       try {
         await fetchJson(
           `/api/skills/${encodeURIComponent(state.selectedSkillId)}/test-cases/${encodeURIComponent(state.selectedCaseId)}/run`,
-          { method: 'POST', body: {} }
+          { method: 'POST', body: getRunOptions() }
         );
         showToast('测试运行完成');
         await loadTestCases();
@@ -320,7 +418,7 @@
       try {
         const data = await fetchJson(
           `/api/skills/${encodeURIComponent(state.selectedSkillId)}/test-cases/run-all`,
-          { method: 'POST', body: {} }
+          { method: 'POST', body: getRunOptions() }
         );
         showToast(`批量运行完成: ${data.total || 0} 个用例`);
         await loadTestCases();
@@ -329,6 +427,41 @@
       } finally {
         dom.runAllButton.disabled = false;
         dom.runAllButton.textContent = '运行全部';
+      }
+    });
+  }
+
+  // ---- Download all runs as JSON ----
+  if (dom.detailDownloadButton) {
+    dom.detailDownloadButton.addEventListener('click', async () => {
+      if (!state.selectedSkillId || !state.selectedCaseId) return;
+      try {
+        const data = await fetchJson(
+          `/api/skills/${encodeURIComponent(state.selectedSkillId)}/test-cases/${encodeURIComponent(state.selectedCaseId)}/runs?limit=100`
+        );
+        const runs = Array.isArray(data.runs) ? data.runs : [];
+        // Enrich each run with debug info
+        const enriched = [];
+        for (const run of runs) {
+          try {
+            const detail = await fetchJson(`/api/skill-test-runs/${encodeURIComponent(run.id)}`);
+            enriched.push(detail);
+          } catch {
+            enriched.push({ run });
+          }
+        }
+        const blob = new Blob([JSON.stringify({ testCaseId: state.selectedCaseId, runs: enriched }, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `skill-test-case-${state.selectedCaseId}-runs.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        showToast('已下载');
+      } catch (err) {
+        showToast('下载失败: ' + (err.message || err));
       }
     });
   }

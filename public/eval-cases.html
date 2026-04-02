@@ -61,6 +61,22 @@
 
             <section class="stack-card">
               <div class="section-row">
+                <span class="section-label">运行配置</span>
+              </div>
+              <div class="field-grid">
+                <label>
+                  <span>Agent</span>
+                  <select id="st-agent-select"><option value="">— 默认 —</option></select>
+                </label>
+                <label>
+                  <span>模型</span>
+                  <select id="st-model-select"><option value="">系统默认模型</option></select>
+                </label>
+              </div>
+            </section>
+
+            <section class="stack-card">
+              <div class="section-row">
                 <span class="section-label">自动生成</span>
                 <span id="st-case-count" class="section-hint">0 个用例</span>
               </div>
@@ -128,6 +144,7 @@
                 </div>
                 <div class="panel-actions">
                   <button id="st-detail-run-btn" class="ghost-button" type="button">运行测试</button>
+                  <button id="st-detail-download-btn" class="ghost-button" type="button">下载 JSON</button>
                   <button id="st-detail-delete-btn" class="ghost-button" type="button" style="color:#e53e3e">删除</button>
                 </div>
               </div>

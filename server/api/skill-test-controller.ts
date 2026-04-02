@@ -105,6 +105,97 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     schemaReady = true;
   }
 
+  function getSkillTestRunDebug(run: any) {
+    if (!run || !run.evalCaseRunId) return null;
+    // Look up the eval_case_run to get task_id and session info
+    let evalRun: any = null;
+    try {
+      evalRun = store.db.prepare('SELECT * FROM eval_case_runs WHERE id = @id').get({ id: run.evalCaseRunId });
+    } catch { return null; }
+    if (!evalRun) return null;
+
+    const taskId = evalRun.task_id ? String(evalRun.task_id).trim() : '';
+    const sessionPath = evalRun.session_path ? String(evalRun.session_path).trim() : '';
+
+    // Collect tool call events
+    let toolEvents: any[] = [];
+    if (taskId) {
+      try {
+        toolEvents = store.db
+          .prepare(
+            `SELECT event_json, created_at FROM a2a_task_events
+             WHERE task_id = @taskId AND event_type = 'agent_tool_call'
+             ORDER BY id ASC LIMIT 200`
+          )
+          .all({ taskId });
+      } catch { toolEvents = []; }
+    }
+
+    // Read session assistant snapshot
+    let sessionSnapshot: any = null;
+    if (sessionPath) {
+      sessionSnapshot = readSessionAssistantSnapshot(sessionPath);
+    }
+
+    return {
+      taskId,
+      sessionPath,
+      outputText: evalRun.output_text || '',
+      toolCalls: toolEvents.map(r => ({
+        createdAt: r.created_at || '',
+        payload: safeJsonParse(r.event_json),
+      })),
+      session: sessionSnapshot,
+    };
+  }
+
+  /**
+   * Read session JSONL and extract thinking, text, toolCalls, errors from assistant messages.
+   */
+  function readSessionAssistantSnapshot(sessionPath: string) {
+    const resolved = String(sessionPath || '').trim();
+    if (!resolved) return null;
+    let text = '';
+    try {
+      if (!fs.existsSync(resolved)) return null;
+      text = fs.readFileSync(resolved, 'utf8');
+    } catch { return null; }
+
+    const lines = text.split(/\r?\n/);
+    const thinkingParts: string[] = [];
+    const textParts: string[] = [];
+    const toolCalls: any[] = [];
+    const assistantMessages: any[] = [];
+
+    for (const line of lines) {
+      const trimmed = String(line || '').trim();
+      if (!trimmed) continue;
+      let entry: any = null;
+      try { entry = JSON.parse(trimmed); } catch { continue; }
+      if (!entry || entry.type !== 'message' || !entry.message || entry.message.role !== 'assistant') continue;
+
+      const message = entry.message;
+      assistantMessages.push(message);
+
+      const content = Array.isArray(message.content) ? message.content : [];
+      for (const block of content) {
+        if (block.type === 'thinking' && block.thinking) thinkingParts.push(block.thinking);
+        if (block.type === 'text' && block.text) textParts.push(block.text);
+        if (block.type === 'toolCall' && block.name) {
+          toolCalls.push({ toolName: block.name, toolCallId: block.id || '', arguments: block.arguments || {} });
+        }
+      }
+    }
+
+    return {
+      thinking: thinkingParts.join('\n'),
+      text: textParts.join('\n'),
+      toolCalls,
+      assistantMessageCount: assistantMessages.length,
+      assistantMessagesTail: assistantMessages.slice(-6),
+    };
+  }
+
   // ---- Query helpers ----
 
   function listTestCases(skillId: string, limit = 100) {
@@ -820,6 +911,8 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
             const result = await executeRun(testCase, {
               provider: body.provider,
               model: body.model,
+              agentId: body.agentId,
+              agentName: body.agentName,
             });
             results.push(result);
           } catch (error: any) {
@@ -869,6 +962,8 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
           const result = await executeRun(testCase, {
             provider: body.provider,
             model: body.model,
+            agentId: body.agentId,
+            agentName: body.agentName,
           });
           sendJson(res, 200, result);
           return true;
@@ -918,7 +1013,8 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
       if (!run) {
         throw createHttpError(404, 'Test run not found');
       }
-      sendJson(res, 200, { run });
+      const debug = getSkillTestRunDebug(run);
+      sendJson(res, 200, { run, debug });
       return true;
     }
 
