@@ -94,6 +94,33 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         metadata,
       });
 
+      // If mode has skills but the request did not include participants,
+      // the default participants were created without mode skills.
+      // Inject mode skills into the newly created conversation's participants.
+      if (
+        mode
+        && Array.isArray(mode.skillIds) && mode.skillIds.length > 0
+        && !Array.isArray(body.participants)
+      ) {
+        const currentAgents = store.listConversationAgents(conversation.id);
+        const updatedParticipants = currentAgents.map((agent: any) => {
+          const existing = Array.isArray(agent.conversationSkillIds || agent.conversationSkills)
+            ? (agent.conversationSkillIds || agent.conversationSkills)
+            : [];
+          const merged = new Set([
+            ...existing.map((id: any) => String(id || '').trim()).filter(Boolean),
+            ...mode.skillIds,
+          ]);
+          return {
+            agentId: agent.id,
+            conversationSkillIds: Array.from(merged),
+          };
+        });
+        conversation = store.updateConversation(conversation.id, {
+          participants: updatedParticipants,
+        });
+      }
+
       if (conversation.type === UNDERCOVER_CONVERSATION_TYPE) {
         conversation = undercoverService.prepareConversation(conversation.id);
       } else if (conversation.type === WEREWOLF_CONVERSATION_TYPE) {
