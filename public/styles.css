@@ -1790,24 +1790,45 @@ textarea {
   position: sticky;
   top: 0.75rem;
   z-index: 6;
+  gap: 0.8rem;
+  padding: 0.95rem 1rem;
 }
 
 .skill-tests-toolbar-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 1rem;
+  gap: 0.7rem;
   flex-wrap: wrap;
 }
 
-.skill-tests-toolbar-hints {
-  justify-content: flex-end;
+.skill-tests-toolbar-copy {
+  display: grid;
+  gap: 0.18rem;
+}
+
+.skill-tests-toolbar-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.skill-tests-toolbar-title-row h2 {
+  font-size: clamp(1.18rem, 1.4vw, 1.46rem);
+}
+
+.skill-tests-toolbar-lead,
+.skill-tests-toolbar-footnote {
+  margin: 0;
+  font-size: 0.84rem;
+  line-height: 1.45;
 }
 
 .skill-tests-toolbar-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 0.8rem;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 0.7rem;
   align-items: end;
 }
 
@@ -1818,7 +1839,7 @@ textarea {
 label.skill-tests-toolbar-field,
 .skill-tests-toolbar-field > label {
   display: grid;
-  gap: 0.38rem;
+  gap: 0.3rem;
   font-weight: 600;
   min-width: 0;
 }
@@ -1826,7 +1847,7 @@ label.skill-tests-toolbar-field,
 .skill-tests-toolbar-field:not(label) {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 0.65rem;
+  gap: 0.55rem;
   align-items: end;
 }
 
@@ -1834,10 +1855,19 @@ label.skill-tests-toolbar-field,
   grid-column: span 2;
 }
 
+.skill-tests-toolbar-panel input,
+.skill-tests-toolbar-panel select {
+  padding: 0.7rem 0.85rem;
+}
+
+.skill-tests-toolbar-panel button {
+  padding: 0.65rem 0.95rem;
+}
+
 .skill-tests-toolbar-actions {
   display: flex;
   align-items: center;
-  gap: 0.7rem;
+  gap: 0.55rem;
   flex-wrap: wrap;
 }
 
@@ -2004,6 +2034,12 @@ label.skill-tests-toolbar-field,
 
   .skill-tests-summary-panel {
     grid-area: summary;
+  }
+}
+
+@media (max-width: 1240px) {
+  .skill-tests-toolbar-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
 

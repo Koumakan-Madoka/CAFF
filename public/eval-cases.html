@@ -43,14 +43,13 @@
         <main class="skill-tests-layout">
           <section class="panel skill-tests-toolbar-panel">
             <div class="skill-tests-toolbar-head">
-              <div>
+              <div class="skill-tests-toolbar-copy">
                 <p class="eyebrow">Skill Tests</p>
-                <h2>Skill 测试工作台</h2>
-                <p class="section-hint">把高频配置和主操作固定在顶部；下面按“概览 → 列表 → 详情”顺着巡检，不再左右找按钮。</p>
-              </div>
-              <div class="tag-row skill-tests-toolbar-hints">
-                <span class="tag">高频操作常驻</span>
-                <span class="tag">窄宽度优先单列</span>
+                <div class="skill-tests-toolbar-title-row">
+                  <h2>Skill 测试</h2>
+                  <span class="tag">主操作常驻</span>
+                </div>
+                <p class="section-hint skill-tests-toolbar-lead">顶部保留主配置和常用操作，下面继续看列表和详情。</p>
               </div>
             </div>
 
@@ -100,7 +99,7 @@
               <button id="st-run-all-btn" class="ghost-button" type="button">批量运行可重试用例</button>
               <span id="st-case-count" class="section-hint">0 个用例</span>
             </div>
-            <p class="section-hint">生成后会自动做一次可触发验证；批量运行会重跑“可运行”和“触发失败”的用例。</p>
+            <p class="section-hint skill-tests-toolbar-footnote">生成后会先做可触发验证；批量运行只重跑“可运行 / 触发失败”。</p>
             <div id="st-run-progress" class="run-progress-container hidden"></div>
           </section>
 
