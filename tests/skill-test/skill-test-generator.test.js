@@ -69,6 +69,107 @@ test('generateSkillTestPrompts uses workflow templates for non-game skills', () 
   }
 });
 
+test('generateSkillTestPrompts keeps trigger cases minimal for dynamic mode', () => {
+  const skill = {
+    id: 'before-dev',
+    name: 'before-dev',
+    description: 'Discovers and injects project-specific coding guidelines from .trellis/spec/ before implementation begins.',
+    body: `Execute these steps:\n\n1. \`python3 ./.trellis/scripts/get_context.py --mode packages\`\n2. \`cat .trellis/spec/<package>/<layer>/index.md\``,
+  };
+
+  const prompts = generateSkillTestPrompts(skill, {
+    count: 2,
+    testType: 'trigger',
+    loadingMode: 'dynamic',
+  });
+
+  assert.equal(prompts.length, 2);
+  for (const p of prompts) {
+    assert.deepEqual(p.expectedTools, [
+      {
+        name: 'read-skill',
+        order: 1,
+        requiredParams: ['skillId'],
+        arguments: { skillId: 'before-dev' },
+      },
+    ]);
+  }
+});
+
+test('generateSkillTestPrompts extracts structured expectedTools for execution cases', () => {
+  const skill = {
+    id: 'before-dev',
+    name: 'before-dev',
+    description: 'Discovers and injects project-specific coding guidelines from .trellis/spec/ before implementation begins.',
+    body: `Execute these steps:\n\n1. \`python3 ./.trellis/scripts/get_context.py --mode packages\`\n2. \`cat .trellis/spec/<package>/<layer>/index.md\`\n3. \`cat .trellis/spec/guides/index.md\``,
+  };
+
+  const prompts = generateSkillTestPrompts(skill, {
+    count: 1,
+    testType: 'execution',
+    loadingMode: 'dynamic',
+  });
+
+  assert.equal(prompts.length, 1);
+  assert.equal(prompts[0].expectedTools.length, 4);
+  assert.deepEqual(prompts[0].expectedTools[0], {
+    name: 'read-skill',
+    order: 1,
+    requiredParams: ['skillId'],
+    arguments: { skillId: 'before-dev' },
+  });
+  assert.deepEqual(prompts[0].expectedTools[1], {
+    name: 'bash',
+    order: 2,
+    requiredParams: ['command'],
+    arguments: { command: '<contains:python3 ./.trellis/scripts/get_context.py --mode packages>' },
+  });
+  assert.deepEqual(prompts[0].expectedTools[2], {
+    name: 'read',
+    order: 3,
+    requiredParams: ['path'],
+    arguments: { path: '<contains:.trellis/spec>' },
+  });
+  assert.deepEqual(prompts[0].expectedTools[3], {
+    name: 'read',
+    order: 4,
+    requiredParams: ['path'],
+    arguments: { path: '<contains:.trellis/spec/guides/index.md>' },
+  });
+  assert.match(prompts[0].expectedBehavior, /read-skill → bash → read → read/);
+});
+
+test('generateSkillTestPrompts extracts command examples from plain text workflow lines', () => {
+  const skill = {
+    id: 'onboard',
+    name: 'onboard',
+    description: 'Interactive onboarding for new team members.',
+    body: `### Example 2: Planning Session\n\n**[1/4] $start** - Context needed even for non-coding work\n**[2/4] python3 ./.trellis/scripts/task.py create "Planning task" --slug planning-task** - Planning is valuable work`,
+  };
+
+  const prompts = generateSkillTestPrompts(skill, {
+    count: 1,
+    testType: 'execution',
+    loadingMode: 'dynamic',
+  });
+
+  assert.equal(prompts.length, 1);
+  assert.deepEqual(prompts[0].expectedTools, [
+    {
+      name: 'read-skill',
+      order: 1,
+      requiredParams: ['skillId'],
+      arguments: { skillId: 'onboard' },
+    },
+    {
+      name: 'bash',
+      order: 2,
+      requiredParams: ['command'],
+      arguments: { command: '<contains:python3 ./.trellis/scripts/task.py create "Planning task" --slug planning-task>' },
+    },
+  ]);
+});
+
 test('generateSkillTestPrompts respects count limits', () => {
   const skill = {
     id: 'test',
@@ -129,4 +230,5 @@ test('buildLlmGenerationPrompt uses default count', () => {
 
   const prompt = buildLlmGenerationPrompt(skill);
   assert.ok(prompt.includes('3'), 'default count should be 3');
+  assert.ok(prompt.includes('requiredParams'), 'LLM prompt should mention structured expectedTools');
 });

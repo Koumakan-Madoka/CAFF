@@ -138,17 +138,17 @@ test('validity_status transitions work correctly', () => {
   let row = db.prepare('SELECT validity_status FROM skill_test_cases WHERE id = ?').get('tc-004');
   assert.equal(row.validity_status, 'validated');
 
-  // Transition: pending → needs_review
+  // Transition: pending → invalid
   db.prepare(`
     INSERT INTO skill_test_cases (id, skill_id, test_type, loading_mode, trigger_prompt, validity_status, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `).run('tc-005', 'werewolf', 'trigger', 'dynamic', 'test', 'pending', now, now);
 
-  db.prepare("UPDATE skill_test_cases SET validity_status = 'needs_review', updated_at = ? WHERE id = ?")
+  db.prepare("UPDATE skill_test_cases SET validity_status = 'invalid', updated_at = ? WHERE id = ?")
     .run(now, 'tc-005');
 
   row = db.prepare('SELECT validity_status FROM skill_test_cases WHERE id = ?').get('tc-005');
-  assert.equal(row.validity_status, 'needs_review');
+  assert.equal(row.validity_status, 'invalid');
 
   db.close();
 });

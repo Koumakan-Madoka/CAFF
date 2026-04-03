@@ -24,7 +24,7 @@ CREATE TABLE skill_test_cases (
   trigger_prompt TEXT NOT NULL,         -- Generated/user-provided prompt
   expected_tools_json TEXT NOT NULL DEFAULT '[]',  -- Expected tool calls
   expected_behavior TEXT NOT NULL DEFAULT '',  -- AI judge criteria (future)
-  validity_status TEXT NOT NULL DEFAULT 'pending',  -- 'pending' | 'validated' | 'needs_review'
+  validity_status TEXT NOT NULL DEFAULT 'pending',  -- 'pending' | 'validated' | 'invalid'
   note TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -57,6 +57,7 @@ skill_test_cases (1) ──→ (N) skill_test_runs
 
 Each `skill_test_case` auto-creates an `eval_case` for integration with existing eval infrastructure.
 Each `skill_test_run` auto-creates an `eval_case_run` for result tracking.
+`eval_case_runs.prompt_version` stores the effective prompt version for each run so Phase 2 regression views can compare the same case across prompt/model combinations.
 
 ## Evaluation Logic
 
@@ -66,7 +67,7 @@ Each `skill_test_run` auto-creates an `eval_case_run` for result tracking.
 Step 1: Trigger Evaluation
   - Check if skill was identified and invoked
   - Dynamic mode: Detect `read-skill(skillId)` in tool calls
-  - Full mode: Check if behavior matches skill (future: AI judge)
+  - Full mode: Combine behavior-signal matching with AI judge over assistant evidence
 
   Result: trigger_passed = 1 | 0
 
@@ -79,6 +80,7 @@ Step 2: Execution Evaluation (only if trigger_passed = 1)
   Result:
     - tool_accuracy = matched / expected
     - execution_passed = (tool_accuracy >= threshold) ? 1 : 0
+    - if L3 sequence is enabled, `execution_passed` additionally requires sequence pass
     - NULL if trigger_passed = 0
 ```
 
@@ -102,6 +104,34 @@ Trigger is detected when:
      if (match && match[1] === skillId) trigger = true;
    }
    ```
+
+### Trigger Detection (Full Mode - Phase 2)
+
+Full-mode trigger evaluation now uses two signals in parallel:
+
+1. **Behavior/text cues**
+   - Build loose trigger signals from `skill.name`, `skill.description`, `expectedBehavior`, and case note
+   - Match those signals against assistant output + assistant thinking extracted from the session JSONL
+   - If any signal matches and the run produced observable output, `signalMatched = true`
+
+2. **AI judge**
+   - When observable evidence exists, run a lightweight judge prompt through `startRun()` with the same provider/model
+   - The judge only sees the captured evidence (`triggerPrompt`, `expectedBehavior`, skill metadata/body excerpt, assistant output, observed tools)
+   - It must return compact JSON:
+     ```json
+     {"passed": true, "confidence": 0.92, "reason": "...", "matchedBehaviors": ["..."]}
+     ```
+   - Parse failures or judge errors do not fail the test run; they are recorded under `triggerEvaluation.aiJudge`
+
+Full-mode `trigger_passed` becomes true when any of these sources pass:
+- `expectedToolMatched`
+- `signalMatched`
+- `aiJudge.passed === true`
+
+Per-run result JSON stores:
+- `triggerEvaluation.matchedSignals`
+- `triggerEvaluation.decisionSources`
+- `triggerEvaluation.aiJudge` (`attempted`, `passed`, `confidence`, `reason`, `matchedBehaviors`, `errorMessage`)
 
 ### Execution Evaluation (L1 - Phase 1)
 
@@ -127,6 +157,46 @@ function evaluateExecution(expectedTools: string[], actualTools: string[]): {
 }
 ```
 
+### Execution Evaluation (L2 - Phase 2)
+
+`expectedTools` now supports either plain tool names or structured specs:
+
+```json
+[
+  {
+    "name": "read-skill",
+    "order": 1,
+    "arguments": {
+      "skillId": "werewolf"
+    }
+  },
+  {
+    "name": "send-public",
+    "order": 2,
+    "requiredParams": ["content"],
+    "arguments": {
+      "content": "<string>"
+    }
+  }
+]
+```
+
+L2 keeps the L1 tool-name gate, then additionally checks whether at least one matching call satisfies:
+- `requiredParams`: dot-paths that must exist in the actual tool arguments
+- `arguments`: partial argument-shape match; placeholder values such as `<string>`, `<number>`, `<boolean>`, `<array>`, `<object>`, and `<any>` are supported
+- `arguments` also supports `<contains:...>` for generator-produced partial string matches (for example placeholder-heavy file paths or long shell commands)
+
+### Execution Evaluation (L3 - Phase 2)
+
+Structured expected tools may also declare `order` (positive integer). When at least one expected tool has an `order` value:
+- execution still uses L1/L2 matching to compute `toolAccuracy`
+- `executionEvaluation.sequenceCheck` verifies the ordered subset appears in the observed tool timeline in ascending order
+- `execution_passed` requires both the L1/L2 threshold and `sequenceCheck.passed = true`
+
+Observed order is reconstructed from session tool calls first, with lightweight alias inference for chat-bridge shell commands such as `read-skill` and `send-public`, then supplemented by `agent_tool_call` events.
+
+Per-run detail stores both `executionEvaluation.toolChecks[]` and `executionEvaluation.sequenceCheck` in `eval_case_runs.result_json`, so the UI can show which tool was missing, which parameter path was absent, and whether the ordered tools appeared in the wrong position.
+
 ## Test Case Generation
 
 ### AI-Powered Generation (`lib/skill-test-generator.ts`)
@@ -149,9 +219,15 @@ function evaluateExecution(expectedTools: string[], actualTools: string[]): {
 
 3. **Generate**: AI produces N trigger prompts for the skill.
 
+   For `execution`-focused cases, the generator also derives structured `expectedTools` directly from skill-body examples:
+   - fenced bash/code snippets
+   - inline backticked commands and tool names
+   - plain-text workflow lines that contain command examples (for example `**[2/4] python3 ...**`)
+   - placeholder-heavy paths/commands are normalized into partial string checks such as `<contains:.trellis/spec>`
+
 4. **Smoke Run Validation**: Auto-execute each prompt:
    - Trigger success → `validity_status = 'validated'`
-   - Trigger fail → `validity_status = 'needs_review'`
+   - Trigger fail → `validity_status = 'invalid'`
 
 ### Manual Test Case Creation
 
@@ -163,7 +239,19 @@ POST /api/skills/:skillId/test-cases
   "testType": "trigger",           // or "execution"
   "loadingMode": "dynamic",        // or "full"
   "triggerPrompt": "我们来玩狼人杀",
-  "expectedTools": ["read-skill", "http-post"],
+  "expectedTools": [
+    {
+      "name": "read-skill",
+      "order": 1,
+      "arguments": { "skillId": "werewolf" }
+    },
+    {
+      "name": "send-public",
+      "order": 2,
+      "requiredParams": ["content"],
+      "arguments": { "content": "<string>" }
+    }
+  ],
   "expectedBehavior": "Agent should call read-skill for werewolf",
   "note": "Manual test case"
 }
@@ -178,6 +266,7 @@ GET    /api/skills/:skillId/test-cases           -- List test cases
 POST   /api/skills/:skillId/test-cases           -- Manual create
 POST   /api/skills/:skillId/test-cases/generate  -- AI generate
 GET    /api/skills/:skillId/test-cases/:caseId   -- Get single case
+GET    /api/skills/:skillId/test-cases/:caseId/regression -- Case-level regression buckets by provider/model/promptVersion
 DELETE /api/skills/:skillId/test-cases/:caseId   -- Delete case
 ```
 
@@ -185,7 +274,7 @@ DELETE /api/skills/:skillId/test-cases/:caseId   -- Delete case
 
 ```
 POST /api/skills/:skillId/test-cases/:caseId/run   -- Run single test
-POST /api/skills/:skillId/test-cases/run-all       -- Run all validated cases
+POST /api/skills/:skillId/test-cases/run-all       -- Run all `validated` and `invalid` cases
 ```
 
 ### Results and Reports
@@ -193,6 +282,7 @@ POST /api/skills/:skillId/test-cases/run-all       -- Run all validated cases
 ```
 GET /api/skills/:skillId/test-cases/:caseId/runs   -- Run history for case
 GET /api/skills/:skillId/test-runs                 -- All runs for skill
+GET /api/skills/:skillId/regression                -- Skill-level regression buckets by provider/model/promptVersion
 GET /api/skill-test-runs/:runId                    -- Single run detail + debug
 GET /api/skill-test-summary                        -- Global summary
 ```
@@ -223,7 +313,7 @@ GET /api/skill-test-summary                        -- Global summary
 5. Persist Results
    - Create eval_case_run
    - Create skill_test_run
-   - Update test case validity_status (pending → validated/needs_review)
+   - Update test case validity_status (`pending` → `validated`/`invalid`)
 ```
 
 ## Metrics and Reporting
@@ -236,7 +326,7 @@ GET /api/skill-test-summary                        -- Global summary
   "totalCases": 10,
   "casesByValidity": {
     "validated": 8,
-    "needs_review": 2
+    "invalid": 2
   },
   "totalRuns": 50,
   "triggerPassedCount": 40,
@@ -300,12 +390,12 @@ GET /api/skill-test-summary                        -- Global summary
 - ✅ `loading_mode` field in test cases
 - ✅ Eval-case integration
 
-### Phase 2 (Future)
+### Phase 2 (In Progress)
 
-- ⬜ Full mode trigger testing (behavior matching + AI judge)
-- ⬜ L2 parameter structure validation
-- ⬜ L3 call sequence verification
-- ⬜ A/B regression comparison across prompt versions/models
+- ✅ Full mode trigger testing (behavior matching + AI judge)
+- ✅ L2 parameter structure validation
+- ✅ L3 call sequence verification via ordered `expectedTools` specs (`order`)
+- ✅ Regression buckets across provider/model/promptVersion for both skill-level and case-level views
 
 ## Testing Guidelines
 
@@ -334,7 +424,7 @@ GET /api/skill-test-summary                        -- Global summary
    - Check if expected tools are correct (maybe skill changed?)
    - Review session debug output for reasoning
 
-3. **Validity stuck at 'needs_review'**:
+3. **Validity is `invalid`**:
    - Review trigger_prompt (too vague?)
    - Manually test prompt in chat
    - Consider generating new test case

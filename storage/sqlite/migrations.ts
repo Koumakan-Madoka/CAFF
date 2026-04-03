@@ -117,6 +117,7 @@ CREATE TABLE IF NOT EXISTS eval_case_runs (
   variant TEXT NOT NULL,
   provider TEXT,
   model TEXT,
+  prompt_version TEXT,
   thinking TEXT,
   prompt TEXT NOT NULL,
   run_id INTEGER,
@@ -156,6 +157,7 @@ CREATE INDEX IF NOT EXISTS idx_eval_case_runs_task_id ON eval_case_runs (task_id
     'conversation_skills_json',
     'conversation_skills_json TEXT'
   );
+  ensureColumn(db, 'eval_case_runs', 'prompt_version', 'prompt_version TEXT');
 
   db.exec(`
 CREATE TABLE IF NOT EXISTS modes (

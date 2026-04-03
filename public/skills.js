@@ -469,7 +469,10 @@ function renderModeSkillCheckboxes(selectedSkillIds) {
 }
 
 function getSelectedModeSkillIds() {
-  const checkboxes = dom.modeSkillCheckboxes.querySelectorAll('input[type="checkbox"]:checked');
+  if (!dom.modeSkillCheckboxes) return [];
+  const checkboxes = /** @type {NodeListOf<HTMLInputElement>} */ (
+    dom.modeSkillCheckboxes.querySelectorAll('input[type="checkbox"]:checked')
+  );
   return Array.from(checkboxes).map((cb) => cb.value);
 }
 

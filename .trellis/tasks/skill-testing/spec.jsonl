@@ -1,1 +1,6 @@
 {"file":".trellis/spec/index.md","reason":"Shared spec fallback."}
+{"at":"2026-04-02T19:29:28+08:00","file":".trellis/spec/skills/skill-testing.md","reason":"Synced Phase 1 validity terminology to pending/validated/invalid and confirmed generate→smoke validate→run-all flow in spec/task context."}
+{"at":"2026-04-02T22:58:00+08:00","file":".trellis/spec/skills/skill-testing.md","reason":"Documented Phase 2 regression buckets, promptVersion persistence on eval_case_runs, and new skill/case regression endpoints for Skill Tests."}
+{"at":"2026-04-02T23:54:26+08:00","file":".trellis/spec/skills/skill-testing.md","reason":"Documented L3 ordered expectedTools (`order`) semantics, sequenceCheck result shape, and Phase 2 sequence-validation status."}
+{"at":"2026-04-03T09:50:04+08:00","file":".trellis/spec/skills/skill-testing.md","reason":"Documented Phase 2 full-mode trigger AI judge flow, decisionSources/aiJudge result shape, and marked full-mode trigger testing complete in spec scope."}
+{"at":"2026-04-03T10:30:33+08:00","file":".trellis/spec/skills/skill-testing.md","reason":"Documented generator-side structured expectedTools extraction from skill-body examples plus <contains:...> placeholder semantics for Phase 2 execution validation."}

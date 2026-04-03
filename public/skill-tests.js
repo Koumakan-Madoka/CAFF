@@ -13,36 +13,53 @@
   }
 
   const dom = {
-    tabButtons: document.querySelectorAll('.tab-bar .tab-button'),
-    tabPanels: document.querySelectorAll('.tab-panel'),
+    tabButtons: /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('.tab-bar .tab-button')),
+    tabPanels: /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('.tab-panel')),
     // Skill Tests tab
     skillSelect: /** @type {HTMLSelectElement | null} */ (document.getElementById('st-skill-select')),
     refreshSkillsButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('st-refresh-skills')),
     agentSelect: /** @type {HTMLSelectElement | null} */ (document.getElementById('st-agent-select')),
     modelSelect: /** @type {HTMLSelectElement | null} */ (document.getElementById('st-model-select')),
+    promptVersionInput: /** @type {HTMLInputElement | null} */ (document.getElementById('st-prompt-version')),
     generateButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('st-generate-btn')),
     generateCount: /** @type {HTMLInputElement | null} */ (document.getElementById('st-generate-count')),
+    generateLoadingMode: /** @type {HTMLSelectElement | null} */ (document.getElementById('st-generate-loading-mode')),
+    generateTestType: /** @type {HTMLSelectElement | null} */ (document.getElementById('st-generate-type')),
     runAllButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('st-run-all-btn')),
+    selectedHighlights: /** @type {HTMLElement | null} */ (document.getElementById('st-selected-highlights')),
+    selectedSummary: /** @type {HTMLElement | null} */ (document.getElementById('st-selected-summary')),
     caseList: /** @type {HTMLDivElement | null} */ (document.getElementById('st-case-list')),
     caseCount: /** @type {HTMLElement | null} */ (document.getElementById('st-case-count')),
+    filterCount: /** @type {HTMLElement | null} */ (document.getElementById('st-filter-count')),
+    searchInput: /** @type {HTMLInputElement | null} */ (document.getElementById('st-search-input')),
+    validityFilter: /** @type {HTMLSelectElement | null} */ (document.getElementById('st-validity-filter')),
     // Detail panel
+    detailEmpty: /** @type {HTMLElement | null} */ (document.getElementById('st-detail-empty')),
     detailPanel: /** @type {HTMLElement | null} */ (document.getElementById('st-detail')),
     detailCaseId: /** @type {HTMLElement | null} */ (document.getElementById('st-detail-case-id')),
+    detailMeta: /** @type {HTMLElement | null} */ (document.getElementById('st-detail-meta')),
     detailPrompt: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('st-detail-prompt')),
+    detailExpectedBehavior: /** @type {HTMLElement | null} */ (document.getElementById('st-detail-expected-behavior')),
     detailExpectedTools: /** @type {HTMLElement | null} */ (document.getElementById('st-detail-expected-tools')),
     detailValidity: /** @type {HTMLElement | null} */ (document.getElementById('st-detail-validity')),
+    detailValidityHelp: /** @type {HTMLElement | null} */ (document.getElementById('st-detail-validity-help')),
     detailRunButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('st-detail-run-btn')),
     detailDownloadButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('st-detail-download-btn')),
     detailDeleteButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('st-detail-delete-btn')),
+    detailRegression: /** @type {HTMLElement | null} */ (document.getElementById('st-detail-regression')),
     detailRuns: /** @type {HTMLDivElement | null} */ (document.getElementById('st-detail-runs')),
     // Summary
     summaryBody: /** @type {HTMLElement | null} */ (document.getElementById('st-summary-body')),
+    summaryHighlights: /** @type {HTMLElement | null} */ (document.getElementById('st-summary-highlights')),
     refreshSummaryButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('st-refresh-summary')),
     // Manual create
     createForm: /** @type {HTMLFormElement | null} */ (document.getElementById('st-create-form')),
     createPrompt: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('st-create-prompt')),
     createTestType: /** @type {HTMLSelectElement | null} */ (document.getElementById('st-create-type')),
+    createLoadingMode: /** @type {HTMLSelectElement | null} */ (document.getElementById('st-create-loading-mode')),
     createTools: /** @type {HTMLInputElement | null} */ (document.getElementById('st-create-tools')),
+    createToolSpecs: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('st-create-tool-specs')),
+    createBehavior: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('st-create-behavior')),
     createNote: /** @type {HTMLInputElement | null} */ (document.getElementById('st-create-note')),
     createSubmitButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('st-create-submit')),
   };
@@ -56,6 +73,8 @@
     selectedCaseId: '',
     summary: [],
     loading: false,
+    searchQuery: '',
+    validityFilter: 'all',
   };
 
   // ---- Tab switching ----
@@ -96,11 +115,15 @@
   // ---- localStorage persistence for Agent/Model ----
   const LS_KEY_AGENT = 'caff_skill_test_agent';
   const LS_KEY_MODEL = 'caff_skill_test_model';
+  const LS_KEY_SKILL = 'caff_skill_test_skill';
+  const LS_KEY_PROMPT_VERSION = 'caff_skill_test_prompt_version';
 
   function persistSelections() {
     try {
       if (dom.agentSelect) localStorage.setItem(LS_KEY_AGENT, dom.agentSelect.value);
       if (dom.modelSelect) localStorage.setItem(LS_KEY_MODEL, dom.modelSelect.value);
+      if (dom.skillSelect) localStorage.setItem(LS_KEY_SKILL, dom.skillSelect.value);
+      if (dom.promptVersionInput) localStorage.setItem(LS_KEY_PROMPT_VERSION, dom.promptVersionInput.value);
     } catch { /* ignore */ }
   }
 
@@ -108,9 +131,23 @@
     try {
       const savedAgent = localStorage.getItem(LS_KEY_AGENT);
       const savedModel = localStorage.getItem(LS_KEY_MODEL);
+      const savedPromptVersion = localStorage.getItem(LS_KEY_PROMPT_VERSION);
       if (savedAgent != null && dom.agentSelect) dom.agentSelect.value = savedAgent;
       if (savedModel != null && dom.modelSelect) dom.modelSelect.value = savedModel;
+      if (savedPromptVersion != null && dom.promptVersionInput) dom.promptVersionInput.value = savedPromptVersion;
     } catch { /* ignore */ }
+  }
+
+  function restoreSelectedSkill() {
+    if (!dom.skillSelect) return false;
+    try {
+      const savedSkill = localStorage.getItem(LS_KEY_SKILL);
+      if (savedSkill && state.skills.some((skill) => skill.id === savedSkill)) {
+        dom.skillSelect.value = savedSkill;
+        return true;
+      }
+    } catch { /* ignore */ }
+    return false;
   }
 
   function renderAgentSelect() {
@@ -148,6 +185,7 @@
   // Persist on change
   if (dom.agentSelect) dom.agentSelect.addEventListener('change', persistSelections);
   if (dom.modelSelect) dom.modelSelect.addEventListener('change', persistSelections);
+  if (dom.promptVersionInput) dom.promptVersionInput.addEventListener('change', persistSelections);
 
   function getRunOptions() {
     const agentId = dom.agentSelect ? dom.agentSelect.value.trim() : '';
@@ -163,6 +201,8 @@
     if (provider) opts.provider = provider;
     if (model) opts.model = model;
     if (agentId) opts.agentId = agentId;
+    const promptVersion = dom.promptVersionInput ? dom.promptVersionInput.value.trim() : '';
+    if (promptVersion) opts.promptVersion = promptVersion;
     // resolve agent name from agent list
     if (agentId && Array.isArray(state.agents)) {
       const found = state.agents.find(a => a && a.id === agentId);
@@ -192,16 +232,39 @@
       opt.textContent = skill.name || skill.id;
       dom.skillSelect.appendChild(opt);
     }
-    if (current && state.skills.some((s) => s.id === current)) {
+    const restored = restoreSelectedSkill();
+    if (!restored && current && state.skills.some((s) => s.id === current)) {
       dom.skillSelect.value = current;
     }
     state.selectedSkillId = dom.skillSelect.value;
+    persistSelections();
+    renderSelectedSkillOverview();
+    if (state.selectedSkillId) {
+      loadTestCases();
+    }
   }
 
   if (dom.skillSelect) {
     dom.skillSelect.addEventListener('change', () => {
       state.selectedSkillId = dom.skillSelect.value;
+      persistSelections();
       loadTestCases();
+    });
+  }
+
+  if (dom.searchInput) {
+    dom.searchInput.addEventListener('input', () => {
+      state.searchQuery = dom.searchInput.value.trim().toLowerCase();
+      renderSelectedSkillOverview();
+      renderCaseList();
+    });
+  }
+
+  if (dom.validityFilter) {
+    dom.validityFilter.addEventListener('change', () => {
+      state.validityFilter = dom.validityFilter.value || 'all';
+      renderSelectedSkillOverview();
+      renderCaseList();
     });
   }
 
@@ -213,49 +276,129 @@
   async function loadTestCases() {
     if (!state.selectedSkillId) {
       state.testCases = [];
+      state.selectedCaseId = '';
+      renderSelectedSkillOverview();
       renderCaseList();
+      hideDetail();
       return;
     }
     try {
       const data = await fetchJson(`/api/skills/${encodeURIComponent(state.selectedSkillId)}/test-cases`);
       state.testCases = Array.isArray(data.cases) ? data.cases : [];
+      if (state.selectedCaseId && !state.testCases.some((tc) => tc.id === state.selectedCaseId)) {
+        state.selectedCaseId = '';
+      }
+      renderSelectedSkillOverview();
       renderCaseList();
+      syncDetailPanel();
     } catch (err) {
       showToast('Failed to load test cases: ' + (err.message || err));
     }
   }
 
+  function renderSelectedSkillOverview() {
+    if (!dom.selectedHighlights || !dom.selectedSummary) return;
+    if (!state.selectedSkillId) {
+      dom.selectedHighlights.innerHTML = '<span class="tag tag-pending">先选一个 Skill</span>';
+      dom.selectedSummary.textContent = '这里会显示当前 Skill 的用例数量、可重试范围和最近表现。';
+      return;
+    }
+
+    const totalCases = state.testCases.length;
+    const validated = state.testCases.filter((tc) => tc.validityStatus === 'validated').length;
+    const invalid = state.testCases.filter((tc) => tc.validityStatus === 'invalid').length;
+    const pending = Math.max(0, totalCases - validated - invalid);
+    const recentFailing = state.testCases.filter((tc) => {
+      const run = tc.latestRun || null;
+      return run && (run.triggerPassed === 0 || run.executionPassed === 0 || run.errorMessage);
+    }).length;
+    const runnable = validated + invalid;
+    const selectedSummary = state.summary.find((entry) => entry.skillId === state.selectedSkillId) || null;
+    const triggerRate = selectedSummary && selectedSummary.triggerRate != null
+      ? `${Math.round(selectedSummary.triggerRate * 100)}%`
+      : '—';
+    const executionRate = selectedSummary && selectedSummary.executionRate != null
+      ? `${Math.round(selectedSummary.executionRate * 100)}%`
+      : '—';
+
+    dom.selectedHighlights.innerHTML = `
+      <span class="tag">共 ${totalCases} 条</span>
+      <span class="tag tag-success">可运行 ${validated}</span>
+      <span class="tag tag-error">触发失败 ${invalid}</span>
+      <span class="tag tag-pending">待验证 ${pending}</span>
+      <span class="tag">可批量重跑 ${runnable}</span>
+      <span class="tag">最近失败 ${recentFailing}</span>
+    `;
+
+    const filterHint = state.searchQuery || state.validityFilter !== 'all'
+      ? `当前筛选后显示 ${getFilteredCases().length} 条；`
+      : '';
+    dom.selectedSummary.textContent = `${filterHint}当前 Skill 的触发成功率 ${triggerRate}，执行成功率 ${executionRate}。`;
+  }
+
+  function getFilteredCases() {
+    return state.testCases.filter((tc) => {
+      const matchesQuery = !state.searchQuery || [
+        tc.triggerPrompt,
+        tc.note,
+        tc.expectedBehavior,
+        getExpectedToolsSearchText(tc.expectedTools),
+        tc.testType,
+        tc.loadingMode,
+      ].some((value) => String(value || '').toLowerCase().includes(state.searchQuery));
+
+      const latestRun = tc.latestRun || null;
+      const matchesValidity = state.validityFilter === 'all'
+        || tc.validityStatus === state.validityFilter
+        || (state.validityFilter === 'failing' && latestRun && (latestRun.triggerPassed === 0 || latestRun.executionPassed === 0 || latestRun.errorMessage));
+
+      return matchesQuery && matchesValidity;
+    });
+  }
+
   function renderCaseList() {
     if (!dom.caseList) return;
     if (!dom.caseCount) return;
-    dom.caseCount.textContent = String(state.testCases.length);
+    dom.caseCount.textContent = `${state.testCases.length} 个用例`;
 
-    if (state.testCases.length === 0) {
-      dom.caseList.innerHTML = '<p class="section-hint">暂无测试用例，点击「生成」或「手动创建」</p>';
+    const filteredCases = getFilteredCases();
+
+    if (dom.filterCount) {
+      dom.filterCount.textContent = `显示 ${filteredCases.length} / ${state.testCases.length}`;
+    }
+
+    if (filteredCases.length === 0) {
+      dom.caseList.innerHTML = state.selectedSkillId
+        ? '<p class="section-hint">没有符合当前筛选的用例，试试切换状态或清空搜索。</p>'
+        : '<p class="section-hint">先选一个 Skill，再来看它的测试用例。</p>';
       return;
     }
 
     dom.caseList.innerHTML = '';
-    for (const tc of state.testCases) {
+    for (const tc of filteredCases) {
       const card = document.createElement('div');
       card.className = 'agent-card' + (tc.id === state.selectedCaseId ? ' agent-card-selected' : '');
       card.dataset.caseId = tc.id;
 
-      const validityClass =
-        tc.validityStatus === 'validated'
-          ? 'tag-success'
-          : tc.validityStatus === 'invalid'
-            ? 'tag-error'
-            : 'tag-pending';
+      const validityMeta = getValidityMeta(tc.validityStatus);
+      const testTypeLabel = getTestTypeLabel(tc.testType);
+      const loadingModeLabel = getLoadingModeLabel(tc.loadingMode);
+      const expectedToolsText = formatExpectedTools(tc.expectedTools);
+      const lastOutcome = getLastOutcomeSummary(tc.latestRun);
+      const goalSummary = clipText(tc.expectedBehavior || tc.note || '生成后会先自动验证一次', 80);
+      const latestSummary = clipText(lastOutcome, 86);
 
       card.innerHTML = `
         <div class="agent-card-header">
           <span class="agent-name">${escapeHtml(clipText(tc.triggerPrompt, 60))}</span>
-          <span class="tag ${validityClass}">${tc.validityStatus}</span>
+          <span class="tag ${validityMeta.className}">${validityMeta.label}</span>
         </div>
         <div class="agent-meta">
-          <span>${tc.testType} · ${tc.loadingMode}</span>
+          <span>${testTypeLabel} · ${loadingModeLabel}</span>
+          <span>· ${escapeHtml(expectedToolsText)}</span>
         </div>
+        <div class="agent-meta">${escapeHtml(goalSummary)}</div>
+        <div class="agent-meta">${escapeHtml(latestSummary)}</div>
       `;
 
       card.addEventListener('click', () => {
@@ -270,33 +413,63 @@
 
   function renderDetail(tc) {
     if (!dom.detailPanel) return;
+    if (dom.detailEmpty) dom.detailEmpty.classList.add('hidden');
     dom.detailPanel.classList.remove('hidden');
     if (dom.detailCaseId) dom.detailCaseId.textContent = tc.id;
+    if (dom.detailMeta) {
+      dom.detailMeta.innerHTML = `
+        <span class="tag">${escapeHtml(getTestTypeLabel(tc.testType))}</span>
+        <span class="tag">${escapeHtml(getLoadingModeLabel(tc.loadingMode))}</span>
+        ${tc.note ? `<span class="tag">${escapeHtml(clipText(tc.note, 36))}</span>` : ''}
+      `;
+    }
     if (dom.detailPrompt) dom.detailPrompt.value = tc.triggerPrompt;
+    if (dom.detailExpectedBehavior) {
+      dom.detailExpectedBehavior.textContent = tc.expectedBehavior || '主要关注：这条 prompt 能不能稳定触发目标 skill。';
+    }
     if (dom.detailExpectedTools) {
-      dom.detailExpectedTools.textContent =
-        Array.isArray(tc.expectedTools) && tc.expectedTools.length > 0
-          ? tc.expectedTools.join(', ')
-          : '(无特定工具期望)';
+      dom.detailExpectedTools.textContent = formatExpectedTools(tc.expectedTools);
     }
     if (dom.detailValidity) {
-      dom.detailValidity.className =
-        'tag ' +
-        (tc.validityStatus === 'validated'
-          ? 'tag-success'
-          : tc.validityStatus === 'invalid'
-            ? 'tag-error'
-            : 'tag-pending');
-      dom.detailValidity.textContent = tc.validityStatus;
+      const validityMeta = getValidityMeta(tc.validityStatus);
+      dom.detailValidity.className = 'tag ' + validityMeta.className;
+      dom.detailValidity.textContent = validityMeta.label;
+    }
+    if (dom.detailValidityHelp) {
+      dom.detailValidityHelp.textContent = getValidityHelpText(tc);
     }
 
-    // Load runs for this case
     loadCaseRuns(tc.id);
+    loadCaseRegression(tc.id);
+  }
+
+  function hideDetail() {
+    if (dom.detailPanel) {
+      dom.detailPanel.classList.add('hidden');
+    }
+    if (dom.detailEmpty) {
+      dom.detailEmpty.classList.remove('hidden');
+    }
+    if (dom.detailRegression) {
+      dom.detailRegression.innerHTML = '<p class="section-hint">先运行几次，再看不同模型或 prompt version 的表现差异。</p>';
+    }
+  }
+
+  function syncDetailPanel() {
+    if (!state.selectedCaseId) {
+      hideDetail();
+      return;
+    }
+    const selectedCase = state.testCases.find((tc) => tc.id === state.selectedCaseId);
+    if (!selectedCase) {
+      hideDetail();
+      return;
+    }
+    renderDetail(selectedCase);
   }
 
   async function loadCaseRuns(caseId) {
     if (!dom.detailRuns) return;
-    // Fetch runs via case-specific endpoint
     const skillId = state.selectedSkillId;
     if (!skillId) return;
 
@@ -309,6 +482,55 @@
     } catch {
       dom.detailRuns.innerHTML = '<p class="section-hint">加载运行记录失败</p>';
     }
+  }
+
+  async function loadCaseRegression(caseId) {
+    if (!dom.detailRegression) return;
+    const skillId = state.selectedSkillId;
+    if (!skillId) return;
+
+    dom.detailRegression.innerHTML = '<p class="section-hint">加载回归对比中...</p>';
+    try {
+      const data = await fetchJson(
+        `/api/skills/${encodeURIComponent(skillId)}/test-cases/${encodeURIComponent(caseId)}/regression`
+      );
+      renderCaseRegression(Array.isArray(data.regression) ? data.regression : []);
+    } catch {
+      dom.detailRegression.innerHTML = '<p class="section-hint">加载回归对比失败</p>';
+    }
+  }
+
+  function renderCaseRegression(regression) {
+    if (!dom.detailRegression) return;
+    if (!Array.isArray(regression) || regression.length === 0) {
+      dom.detailRegression.innerHTML = '<p class="section-hint">还没有足够的运行记录来做对比。</p>';
+      return;
+    }
+
+    let html = '<table class="summary-table"><thead><tr>';
+    html += '<th>模型</th><th>Prompt Version</th><th>运行</th><th>触发成功</th><th>执行成功</th><th>工具命中</th><th>最近运行</th>';
+    html += '</tr></thead><tbody>';
+
+    for (const entry of regression) {
+      const modelLabel = [entry.provider, entry.model].filter(Boolean).join(' / ');
+      const triggerRate = entry.triggerRate != null ? `${(entry.triggerRate * 100).toFixed(1)}%` : '—';
+      const executionRate = entry.executionRate != null ? `${(entry.executionRate * 100).toFixed(1)}%` : '—';
+      const accuracy = entry.avgToolAccuracy != null ? `${(entry.avgToolAccuracy * 100).toFixed(1)}%` : '—';
+      const lastRunAt = entry.lastRunAt ? new Date(entry.lastRunAt).toLocaleString() : '—';
+
+      html += '<tr>';
+      html += `<td>${escapeHtml(modelLabel || 'default')}</td>`;
+      html += `<td>${escapeHtml(entry.promptVersion || 'skill-test-v1')}</td>`;
+      html += `<td>${Number(entry.totalRuns || 0)}</td>`;
+      html += `<td>${escapeHtml(triggerRate)}</td>`;
+      html += `<td>${escapeHtml(executionRate)}</td>`;
+      html += `<td>${escapeHtml(accuracy)}</td>`;
+      html += `<td>${escapeHtml(lastRunAt)}</td>`;
+      html += '</tr>';
+    }
+
+    html += '</tbody></table>';
+    dom.detailRegression.innerHTML = html;
   }
 
   function renderCaseRuns(runs) {
@@ -324,18 +546,18 @@
       row.className = 'run-item';
 
       const triggerTag = run.triggerPassed
-        ? '<span class="tag tag-success">触发 ✓</span>'
-        : '<span class="tag tag-error">触发 ✗</span>';
+        ? '<span class="tag tag-success">已触发技能</span>'
+        : '<span class="tag tag-error">未触发技能</span>';
 
       const execTag =
         run.executionPassed === null
-          ? '<span class="tag tag-pending">执行跳过</span>'
+          ? '<span class="tag tag-pending">未评估执行</span>'
           : run.executionPassed
-            ? '<span class="tag tag-success">执行 ✓</span>'
-            : '<span class="tag tag-error">执行 ✗</span>';
+            ? '<span class="tag tag-success">工具执行符合预期</span>'
+            : '<span class="tag tag-error">工具执行未达预期</span>';
 
       const accuracy =
-        run.toolAccuracy != null ? `<span class="tag">准确率 ${(run.toolAccuracy * 100).toFixed(0)}%</span>` : '';
+        run.toolAccuracy != null ? `<span class="tag">工具命中 ${(run.toolAccuracy * 100).toFixed(0)}%</span>` : '';
 
       const tools =
         Array.isArray(run.actualTools) && run.actualTools.length > 0
@@ -345,7 +567,7 @@
       // Trigger failure hint — show what the model did instead
       let triggerFailHint = '';
       if (!run.triggerPassed) {
-        triggerFailHint = '<div class="run-item-warning">⚠ 触发失败 — 点击「查看详情」了解模型实际行为</div>';
+        triggerFailHint = '<div class="run-item-warning">⚠ 这次没有触发到目标 skill，可点「查看详情」看模型实际做了什么</div>';
       }
 
       // Action buttons
@@ -383,10 +605,13 @@
       actionsBar.appendChild(detailBtn);
       actionsBar.appendChild(downloadBtn);
 
+      const runModelMeta = [run.provider, run.model].filter(Boolean).join(' / ');
+      const runPromptVersion = run.promptVersion ? ` · ${run.promptVersion}` : '';
+
       row.innerHTML = `
         <div class="run-item-header">
           ${triggerTag} ${execTag} ${accuracy}
-          <span class="agent-meta">${run.createdAt ? new Date(run.createdAt).toLocaleString() : ''}</span>
+          <span class="agent-meta">${run.createdAt ? new Date(run.createdAt).toLocaleString() : ''}${runModelMeta ? ` · ${escapeHtml(runModelMeta)}` : ''}${runPromptVersion ? escapeHtml(runPromptVersion) : ''}</span>
         </div>
         ${tools}
         ${triggerFailHint}
@@ -422,6 +647,16 @@
 
   function renderRunDetailPanel(panel, data) {
     const debug = data.debug || {};
+    const result = data.result || {};
+    const triggerEvaluation = result.triggerEvaluation || null;
+    const aiJudge = triggerEvaluation && triggerEvaluation.aiJudge ? triggerEvaluation.aiJudge : null;
+    const executionEvaluation = result.executionEvaluation || null;
+    const toolChecks = executionEvaluation && Array.isArray(executionEvaluation.toolChecks)
+      ? executionEvaluation.toolChecks
+      : [];
+    const sequenceCheck = executionEvaluation && executionEvaluation.sequenceCheck && executionEvaluation.sequenceCheck.enabled
+      ? executionEvaluation.sequenceCheck
+      : null;
     const session = debug.session || {};
     const toolEvents = Array.isArray(debug.toolCalls) ? debug.toolCalls : [];
     const sessionToolCalls = Array.isArray(session.toolCalls) ? session.toolCalls : [];
@@ -436,7 +671,119 @@
       html += '</div>';
     }
 
-    // ---- Trigger failure diagnosis ----
+    if (triggerEvaluation && (triggerEvaluation.mode === 'full' || (Array.isArray(triggerEvaluation.matchedSignals) && triggerEvaluation.matchedSignals.length > 0) || aiJudge)) {
+      const sourceLabels = {
+        'expected-tool': '工具命中',
+        'behavior-signals': '文本/行为线索',
+        'ai-judge': 'AI Judge',
+        none: '未命中',
+      };
+      const decisionSources = Array.isArray(triggerEvaluation.decisionSources)
+        ? triggerEvaluation.decisionSources.map((entry) => sourceLabels[entry] || entry)
+        : [];
+      const judgeStatus = !aiJudge
+        ? ''
+        : aiJudge.passed === true
+          ? '<span class="tag tag-success">AI Judge 通过</span>'
+          : aiJudge.passed === false
+            ? '<span class="tag tag-error">AI Judge 未通过</span>'
+            : aiJudge.attempted
+              ? '<span class="tag tag-pending">AI Judge 未定</span>'
+              : '<span class="tag">AI Judge 跳过</span>';
+      html += '<div class="run-detail-section">';
+      html += '<div class="section-label">触发评估</div>';
+      html += `<div class="agent-meta">模式：${escapeHtml(triggerEvaluation.mode || 'unknown')}</div>`;
+      if (decisionSources.length > 0) {
+        html += `<div class="agent-meta">判定来源：${escapeHtml(decisionSources.join(' / '))}</div>`;
+      }
+      if (Array.isArray(triggerEvaluation.matchedSignals) && triggerEvaluation.matchedSignals.length > 0) {
+        html += `<div class="agent-meta">命中文本线索：${escapeHtml(triggerEvaluation.matchedSignals.join(' / '))}</div>`;
+      }
+      if (judgeStatus) {
+        html += judgeStatus;
+        if (aiJudge && aiJudge.confidence != null) {
+          html += ` <span class="agent-meta">置信度 ${escapeHtml(String(Math.round(Number(aiJudge.confidence) * 100)))}%</span>`;
+        }
+      }
+      if (aiJudge && aiJudge.reason) {
+        html += `<div class="agent-meta">AI Judge 说明：${escapeHtml(aiJudge.reason)}</div>`;
+      }
+      if (aiJudge && Array.isArray(aiJudge.matchedBehaviors) && aiJudge.matchedBehaviors.length > 0) {
+        html += `<div class="agent-meta">AI 命中行为：${escapeHtml(aiJudge.matchedBehaviors.join(' / '))}</div>`;
+      }
+      if (aiJudge && aiJudge.errorMessage) {
+        html += `<div class="agent-meta" style="color:#e53e3e">AI Judge 异常：${escapeHtml(aiJudge.errorMessage)}</div>`;
+      }
+      html += '</div>';
+    }
+
+    if (sequenceCheck) {
+      const sequenceStatus = sequenceCheck.passed
+        ? '<span class="tag tag-success">顺序命中</span>'
+        : '<span class="tag tag-error">顺序不符</span>';
+      html += '<div class="run-detail-section">';
+      html += '<div class="section-label">时序校验</div>';
+      html += `${sequenceStatus} <span class="agent-meta">按顺序命中 ${escapeHtml(String(sequenceCheck.matchedCount || 0))} / ${escapeHtml(String(sequenceCheck.orderedExpectedCount || 0))}</span>`;
+      if (Array.isArray(sequenceCheck.observedTools) && sequenceCheck.observedTools.length > 0) {
+        html += `<div class="agent-meta">实际顺序：${escapeHtml(sequenceCheck.observedTools.join(' → '))}</div>`;
+      }
+      const steps = Array.isArray(sequenceCheck.steps) ? sequenceCheck.steps : [];
+      for (const step of steps) {
+        const stepStatus = step.matched
+          ? '<span class="tag tag-success">命中</span>'
+          : step.outOfOrder
+            ? '<span class="tag tag-error">顺序不符</span>'
+            : '<span class="tag tag-error">未命中</span>';
+        html += '<div class="run-detail-tool">';
+        html += `${stepStatus} <span class="tag">${escapeHtml(step.name || 'unknown')}</span>`;
+        if (step.order != null) {
+          html += ` <span class="agent-meta">期望顺序 #${escapeHtml(String(step.order))}</span>`;
+        }
+        if (step.matchedCallIndex != null) {
+          html += `<div class="agent-meta">命中位置：第 ${escapeHtml(String(Number(step.matchedCallIndex) + 1))} 步</div>`;
+        }
+        if (step.outOfOrder) {
+          html += '<div class="agent-meta" style="color:#e53e3e">工具出现过，但出现在更早的位置</div>';
+        }
+        html += '</div>';
+      }
+      html += '</div>';
+    }
+
+    if (toolChecks.length > 0) {
+      html += '<div class="run-detail-section">';
+      html += '<div class="section-label">执行评估</div>';
+      for (const check of toolChecks) {
+        const statusTag = check.matched
+          ? '<span class="tag tag-success">命中</span>'
+          : check.matchedByName
+            ? '<span class="tag tag-error">参数不符</span>'
+            : '<span class="tag tag-error">未调用</span>';
+        html += '<div class="run-detail-tool">';
+        html += `${statusTag} <span class="tag">${escapeHtml(check.name || 'unknown')}</span>`;
+        if (check.order != null) {
+          html += ` <span class="agent-meta">期望顺序 #${escapeHtml(String(check.order))}</span>`;
+        }
+        if (check.requiredParams && check.requiredParams.length > 0) {
+          html += `<div class="agent-meta">必填参数：${escapeHtml(check.requiredParams.join(', '))}</div>`;
+        }
+        if (check.expectedArguments) {
+          html += `<div class="agent-meta">期望结构</div><pre class="run-detail-pre">${escapeHtml(JSON.stringify(check.expectedArguments, null, 2))}</pre>`;
+        }
+        if (Array.isArray(check.missingParams) && check.missingParams.length > 0) {
+          html += `<div class="agent-meta" style="color:#e53e3e">缺少参数：${escapeHtml(check.missingParams.join(', '))}</div>`;
+        }
+        if (check.hasParameterExpectation && check.argumentShapePassed === false) {
+          html += '<div class="agent-meta" style="color:#e53e3e">参数结构未通过</div>';
+        }
+        if (check.actualArguments && typeof check.actualArguments === 'object') {
+          html += `<div class="agent-meta">实际参数</div><pre class="run-detail-pre">${escapeHtml(JSON.stringify(check.actualArguments, null, 2))}</pre>`;
+        }
+        html += '</div>';
+      }
+      html += '</div>';
+    }
+
     if (data.run && !data.run.triggerPassed) {
       html += '<div class="run-detail-section">';
       html += '<div class="section-label" style="color:#e53e3e">⚠ 触发失败诊断</div>';
@@ -510,15 +857,17 @@
         return;
       }
       const count = dom.generateCount ? Math.max(1, Math.min(10, Number(dom.generateCount.value) || 3)) : 3;
+      const loadingMode = dom.generateLoadingMode ? dom.generateLoadingMode.value : 'dynamic';
+      const testType = dom.generateTestType ? dom.generateTestType.value : 'trigger';
       dom.generateButton.disabled = true;
       dom.generateButton.textContent = '生成中...';
       try {
         const data = await fetchJson(
           `/api/skills/${encodeURIComponent(state.selectedSkillId)}/test-cases/generate`,
-          { method: 'POST', body: { count } }
+          { method: 'POST', body: { count, loadingMode, testType, ...getRunOptions() } }
         );
         showToast(`已生成 ${data.generated || 0} 个测试用例`);
-        await loadTestCases();
+        await Promise.all([loadTestCases(), loadSummary()]);
       } catch (err) {
         showToast('生成失败: ' + (err.message || err));
       } finally {
@@ -540,9 +889,7 @@
           { method: 'POST', body: getRunOptions() }
         );
         showToast('测试运行完成');
-        await loadTestCases();
-        const tc = state.testCases.find((t) => t.id === state.selectedCaseId);
-        if (tc) renderDetail(tc);
+        await Promise.all([loadTestCases(), loadSummary()]);
       } catch (err) {
         showToast('运行失败: ' + (err.message || err));
       } finally {
@@ -561,19 +908,21 @@
         showToast('请先选择一个 Skill');
         return;
       }
-      if (!confirm('确认运行所有有效测试用例？这可能需要一些时间。')) return;
+      if (!confirm('确认批量运行当前 Skill 下所有“可运行 / 触发失败”的用例吗？这可能需要一些时间。')) return;
 
       // First get the list of validated cases to know the total count
       let caseList = [];
       try {
         const caseData = await fetchJson(`/api/skills/${encodeURIComponent(state.selectedSkillId)}/test-cases`);
-        caseList = (Array.isArray(caseData.cases) ? caseData.cases : []).filter(c => c.validityStatus === 'validated');
+        caseList = (Array.isArray(caseData.cases) ? caseData.cases : []).filter(
+          c => c.validityStatus === 'validated' || c.validityStatus === 'invalid'
+        );
       } catch {
         // fallback — just run run-all without progress
       }
 
       if (caseList.length === 0) {
-        showToast('没有已验证的测试用例可运行');
+        showToast('没有可运行的测试用例（仅运行可运行/触发失败的用例）');
         return;
       }
 
@@ -627,18 +976,13 @@
         }
 
         updateProgress(progressContainer, completed, caseList.length, '完成!');
-        showToast(`批量运行完成: ${completed} 个用例, 触发 ${triggerOk}/${completed}, 执行 ${execOk}/${completed}`);
-        await loadTestCases();
-        // Refresh the detail if a case is selected
-        if (state.selectedCaseId) {
-          const tc = state.testCases.find(t => t.id === state.selectedCaseId);
-          if (tc) renderDetail(tc);
-        }
+        showToast(`批量运行完成：${completed} 个用例，触发成功 ${triggerOk}/${completed}，执行达标 ${execOk}/${completed}`);
+        await Promise.all([loadTestCases(), loadSummary()]);
       } catch (err) {
         showToast('批量运行失败: ' + (err.message || err));
       } finally {
         dom.runAllButton.disabled = false;
-        dom.runAllButton.textContent = '运行全部';
+        dom.runAllButton.textContent = '批量运行可重试用例';
         // Keep progress visible for 3 seconds then fade
         setTimeout(() => {
           if (progressContainer) progressContainer.classList.add('hidden');
@@ -702,8 +1046,8 @@
         );
         showToast('已删除');
         state.selectedCaseId = '';
-        if (dom.detailPanel) dom.detailPanel.classList.add('hidden');
-        await loadTestCases();
+        hideDetail();
+        await Promise.all([loadTestCases(), loadSummary()]);
       } catch (err) {
         showToast('删除失败: ' + (err.message || err));
       }
@@ -726,6 +1070,13 @@
 
       const toolsStr = dom.createTools ? dom.createTools.value.trim() : '';
       const expectedTools = toolsStr ? toolsStr.split(/[,，\s]+/).filter(Boolean) : [];
+      const structuredToolsText = dom.createToolSpecs ? dom.createToolSpecs.value.trim() : '';
+      const structuredTools = parseStructuredExpectedTools(structuredToolsText);
+      if (structuredToolsText && !structuredTools) {
+        showToast('参数校验 JSON 格式不对');
+        return;
+      }
+      const expectedBehavior = dom.createBehavior ? dom.createBehavior.value.trim() : '';
 
       if (dom.createSubmitButton) {
         dom.createSubmitButton.disabled = true;
@@ -737,14 +1088,18 @@
           body: {
             triggerPrompt: prompt,
             testType: dom.createTestType ? dom.createTestType.value : 'trigger',
-            expectedTools,
+            loadingMode: dom.createLoadingMode ? dom.createLoadingMode.value : 'dynamic',
+            expectedTools: [...expectedTools, ...(structuredTools || [])],
+            expectedBehavior,
             note: dom.createNote ? dom.createNote.value.trim() : '',
           },
         });
         showToast('测试用例已创建');
         if (dom.createPrompt) dom.createPrompt.value = '';
+        if (dom.createToolSpecs) dom.createToolSpecs.value = '';
+        if (dom.createBehavior) dom.createBehavior.value = '';
         if (dom.createNote) dom.createNote.value = '';
-        await loadTestCases();
+        await Promise.all([loadTestCases(), loadSummary()]);
       } catch (err) {
         showToast('创建失败: ' + (err.message || err));
       } finally {
@@ -764,31 +1119,63 @@
       state.summary = Array.isArray(data.summary) ? data.summary : [];
       renderSummary();
     } catch {
+      renderSelectedSkillOverview();
       // Summary is optional, don't block
     }
   }
 
   function renderSummary() {
     if (!dom.summaryBody) return;
+    renderSelectedSkillOverview();
     if (state.summary.length === 0) {
+      if (dom.summaryHighlights) {
+        dom.summaryHighlights.innerHTML = '<span class="tag tag-pending">还没有可展示的 skill 测试结果</span>';
+      }
       dom.summaryBody.innerHTML = '<p class="section-hint">暂无测试数据</p>';
       return;
     }
 
+    const totals = state.summary.reduce((acc, entry) => {
+      acc.totalCases += Number(entry.totalCases || 0);
+      acc.totalRuns += Number(entry.totalRuns || 0);
+      acc.validated += Number((entry.casesByValidity && entry.casesByValidity.validated) || 0);
+      acc.invalid += Number((entry.casesByValidity && entry.casesByValidity.invalid) || 0);
+      acc.triggerPassed += Number(entry.triggerPassedCount || 0);
+      acc.executionPassed += Number(entry.executionPassedCount || 0);
+      return acc;
+    }, { totalCases: 0, totalRuns: 0, validated: 0, invalid: 0, triggerPassed: 0, executionPassed: 0 });
+
+    if (dom.summaryHighlights) {
+      const triggerRate = totals.totalRuns > 0 ? Math.round((totals.triggerPassed / totals.totalRuns) * 100) : 0;
+      const executionBase = totals.triggerPassed > 0 ? totals.triggerPassed : 0;
+      const executionRate = executionBase > 0 ? Math.round((totals.executionPassed / executionBase) * 100) : 0;
+      dom.summaryHighlights.innerHTML = `
+        <span class="tag">共 ${totals.totalCases} 条用例</span>
+        <span class="tag tag-success">可运行 ${totals.validated}</span>
+        <span class="tag tag-error">触发失败 ${totals.invalid}</span>
+        <span class="tag">触发成功率 ${triggerRate}%</span>
+        <span class="tag">执行成功率 ${executionRate || 0}%</span>
+      `;
+    }
+
     let html = '<table class="summary-table"><thead><tr>';
-    html += '<th>Skill</th><th>用例数</th><th>运行次数</th>';
-    html += '<th>触发通过率</th><th>执行通过率</th><th>工具准确率</th>';
+    html += '<th>Skill</th><th>用例</th><th>运行</th>';
+    html += '<th>状态</th><th>触发成功</th><th>执行成功</th><th>工具命中</th>';
     html += '</tr></thead><tbody>';
 
     for (const entry of state.summary) {
       const triggerRate = entry.triggerRate != null ? (entry.triggerRate * 100).toFixed(1) + '%' : '—';
       const execRate = entry.executionRate != null ? (entry.executionRate * 100).toFixed(1) + '%' : '—';
       const accuracy = entry.avgToolAccuracy != null ? (entry.avgToolAccuracy * 100).toFixed(1) + '%' : '—';
+      const validatedCount = Number((entry.casesByValidity && entry.casesByValidity.validated) || 0);
+      const invalidCount = Number((entry.casesByValidity && entry.casesByValidity.invalid) || 0);
+      const pendingCount = Math.max(0, Number(entry.totalCases || 0) - validatedCount - invalidCount);
 
       html += `<tr>`;
       html += `<td>${escapeHtml(entry.skillId)}</td>`;
       html += `<td>${entry.totalCases}</td>`;
       html += `<td>${entry.totalRuns}</td>`;
+      html += `<td>可运行 ${validatedCount} / 失败 ${invalidCount} / 待验证 ${pendingCount}</td>`;
       html += `<td>${triggerRate}</td>`;
       html += `<td>${execRate}</td>`;
       html += `<td>${accuracy}</td>`;
@@ -804,6 +1191,122 @@
   }
 
   // ---- Utilities ----
+  function getTestTypeLabel(testType) {
+    return testType === 'execution' ? '执行侧重点' : '触发侧重点';
+  }
+
+  function getLoadingModeLabel(loadingMode) {
+    return loadingMode === 'full' ? 'Full 模式' : 'Dynamic 模式';
+  }
+
+  function normalizeExpectedToolSpec(entry) {
+    if (typeof entry === 'string') {
+      const name = entry.trim();
+      return name ? { name, requiredParams: [], hasArgumentShape: false, arguments: null, order: null } : null;
+    }
+    if (!entry || typeof entry !== 'object') {
+      return null;
+    }
+    const name = String(entry.name || entry.tool || '').trim();
+    if (!name) {
+      return null;
+    }
+    const requiredParams = Array.isArray(entry.requiredParams)
+      ? entry.requiredParams.map((item) => String(item || '').trim()).filter(Boolean)
+      : Array.isArray(entry.required_params)
+        ? entry.required_params.map((item) => String(item || '').trim()).filter(Boolean)
+        : [];
+    const hasArgumentShape = Object.prototype.hasOwnProperty.call(entry, 'arguments')
+      || Object.prototype.hasOwnProperty.call(entry, 'args')
+      || Object.prototype.hasOwnProperty.call(entry, 'params');
+    const rawOrder = Object.prototype.hasOwnProperty.call(entry, 'order')
+      ? entry.order
+      : (Object.prototype.hasOwnProperty.call(entry, 'sequence')
+        ? entry.sequence
+        : (Object.prototype.hasOwnProperty.call(entry, 'sequenceIndex')
+          ? entry.sequenceIndex
+          : entry.sequence_index));
+    const parsedOrder = rawOrder == null || rawOrder === '' ? null : Number.parseInt(String(rawOrder), 10);
+    return {
+      name,
+      requiredParams,
+      hasArgumentShape,
+      arguments: hasArgumentShape ? (Object.prototype.hasOwnProperty.call(entry, 'arguments') ? entry.arguments : (Object.prototype.hasOwnProperty.call(entry, 'args') ? entry.args : entry.params)) : null,
+      order: Number.isInteger(parsedOrder) && parsedOrder > 0 ? parsedOrder : null,
+    };
+  }
+
+  function formatExpectedToolSpec(entry) {
+    const spec = normalizeExpectedToolSpec(entry);
+    if (!spec) return '';
+    const parts = [spec.name];
+    if (spec.order != null) {
+      parts.push(`顺序 #${spec.order}`);
+    }
+    if (spec.requiredParams.length > 0) {
+      parts.push(`必填 ${spec.requiredParams.join(', ')}`);
+    }
+    if (spec.hasArgumentShape) {
+      parts.push('校验参数结构');
+    }
+    return parts.join(' · ');
+  }
+
+  function getExpectedToolsSearchText(expectedTools) {
+    return Array.isArray(expectedTools)
+      ? expectedTools.map((entry) => formatExpectedToolSpec(entry)).filter(Boolean).join(' ')
+      : '';
+  }
+
+  function parseStructuredExpectedTools(value) {
+    const text = String(value || '').trim();
+    if (!text) return [];
+    try {
+      const parsed = JSON.parse(text);
+      return Array.isArray(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function formatExpectedTools(expectedTools) {
+    if (!Array.isArray(expectedTools) || expectedTools.length === 0) {
+      return '主要看能否触发 skill';
+    }
+    const labels = expectedTools.map((entry) => formatExpectedToolSpec(entry)).filter(Boolean);
+    return labels.length > 0 ? `期望工具：${labels.join('；')}` : '主要看能否触发 skill';
+  }
+
+  function getValidityMeta(validityStatus) {
+    if (validityStatus === 'validated') {
+      return { label: '可运行', className: 'tag-success' };
+    }
+    if (validityStatus === 'invalid') {
+      return { label: '触发失败', className: 'tag-error' };
+    }
+    return { label: '待验证', className: 'tag-pending' };
+  }
+
+  function getValidityHelpText(testCase) {
+    if (testCase.validityStatus === 'validated') {
+      return '这条用例已经通过可触发验证，可以继续重复运行观察稳定性。';
+    }
+    if (testCase.validityStatus === 'invalid') {
+      return getLastOutcomeSummary(testCase.latestRun) || '这条用例最近一次没有成功触发目标 skill，可以修改 prompt 后重试。';
+    }
+    return '这条用例还没有完成验证；生成后会自动做一次 smoke run。';
+  }
+
+  function getLastOutcomeSummary(run) {
+    if (!run) return '还没有运行记录';
+    if (run.errorMessage) return `最近失败：${run.errorMessage}`;
+    if (run.triggerPassed === 0) return '最近失败：没有触发到目标 skill';
+    if (run.executionPassed === 0) return '最近失败：触发成功，但工具调用不符合预期';
+    if (run.triggerPassed === 1 && run.executionPassed === 1) return '最近运行：触发和执行都符合预期';
+    if (run.triggerPassed === 1 && run.executionPassed === null) return '最近运行：已触发 skill，执行评估被跳过';
+    return '最近运行：已记录结果';
+  }
+
   function escapeHtml(text) {
     const el = document.createElement('span');
     el.textContent = String(text || '');

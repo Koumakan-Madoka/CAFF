@@ -39,6 +39,131 @@ function safeJsonParse(value: any) {
   }
 }
 
+function isPlainObject(value: any) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function hasOwn(value: any, key: string) {
+  return Boolean(value) && Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function parseExpectedToolOrder(value: any) {
+  if (!isPlainObject(value)) {
+    return null;
+  }
+
+  const rawValue = hasOwn(value, 'order')
+    ? value.order
+    : hasOwn(value, 'sequence')
+      ? value.sequence
+      : hasOwn(value, 'sequenceIndex')
+        ? value.sequenceIndex
+        : hasOwn(value, 'sequence_index')
+          ? value.sequence_index
+          : null;
+
+  if (rawValue == null || rawValue === '') {
+    return null;
+  }
+
+  const order = typeof rawValue === 'string'
+    ? Number.parseInt(rawValue, 10)
+    : Number(rawValue);
+
+  return Number.isInteger(order) && order > 0 ? order : null;
+}
+
+function sanitizeExpectedToolSpecEntry(value: any) {
+  if (typeof value === 'string') {
+    const name = String(value || '').trim();
+    return name || null;
+  }
+  if (!isPlainObject(value)) {
+    return null;
+  }
+
+  const name = String(value.name || value.tool || '').trim();
+  if (!name) {
+    return null;
+  }
+
+  const requiredParamsSource = Array.isArray(value.requiredParams)
+    ? value.requiredParams
+    : Array.isArray(value.required_params)
+      ? value.required_params
+      : [];
+  const requiredParams = [...new Set(
+    requiredParamsSource
+      .map((entry: any) => String(entry || '').trim())
+      .filter(Boolean)
+  )];
+
+  let argumentsShape: any;
+  if (hasOwn(value, 'arguments')) {
+    argumentsShape = value.arguments;
+  } else if (hasOwn(value, 'args')) {
+    argumentsShape = value.args;
+  } else if (hasOwn(value, 'params')) {
+    argumentsShape = value.params;
+  }
+
+  const order = parseExpectedToolOrder(value);
+  const normalized: any = { name };
+  if (argumentsShape !== undefined) {
+    normalized.arguments = argumentsShape;
+  }
+  if (requiredParams.length > 0) {
+    normalized.requiredParams = requiredParams;
+  }
+  if (order != null) {
+    normalized.order = order;
+  }
+  return normalized;
+}
+
+function sanitizeExpectedToolSpecs(value: any) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((entry) => sanitizeExpectedToolSpecEntry(entry))
+    .filter(Boolean);
+}
+
+function normalizeExpectedToolSpecs(value: any) {
+  return sanitizeExpectedToolSpecs(value).map((entry: any, index: number) => {
+    if (typeof entry === 'string') {
+      return {
+        name: entry,
+        requiredParams: [],
+        hasArgumentShape: false,
+        hasParameterExpectation: false,
+        hasSequenceExpectation: false,
+        arguments: undefined,
+        order: null,
+        sourceOrder: index,
+      };
+    }
+
+    const requiredParams = Array.isArray(entry.requiredParams)
+      ? entry.requiredParams.map((item: any) => String(item || '').trim()).filter(Boolean)
+      : [];
+    const hasArgumentShape = hasOwn(entry, 'arguments');
+    const order = parseExpectedToolOrder(entry);
+
+    return {
+      name: String(entry.name || '').trim(),
+      requiredParams,
+      hasArgumentShape,
+      hasParameterExpectation: hasArgumentShape || requiredParams.length > 0,
+      hasSequenceExpectation: order != null,
+      arguments: hasArgumentShape ? entry.arguments : undefined,
+      order,
+      sourceOrder: index,
+    };
+  }).filter((entry: any) => entry.name);
+}
+
 function normalizeTestCaseRow(row: any) {
   if (!row || typeof row !== 'object') {
     return null;
@@ -50,7 +175,7 @@ function normalizeTestCaseRow(row: any) {
     testType: String(row.test_type || 'trigger').trim(),
     loadingMode: String(row.loading_mode || 'dynamic').trim(),
     triggerPrompt: String(row.trigger_prompt || '').trim(),
-    expectedTools: safeJsonParse(row.expected_tools_json) || [],
+    expectedTools: sanitizeExpectedToolSpecs(safeJsonParse(row.expected_tools_json) || []),
     expectedBehavior: String(row.expected_behavior || '').trim(),
     validityStatus: String(row.validity_status || 'pending').trim(),
     note: String(row.note || '').trim(),
@@ -68,6 +193,9 @@ function normalizeTestRunRow(row: any) {
     testCaseId: String(row.test_case_id || '').trim(),
     evalCaseRunId: row.eval_case_run_id ? String(row.eval_case_run_id).trim() : null,
     status: String(row.status || 'pending').trim(),
+    provider: String(row.provider || '').trim(),
+    model: String(row.model || '').trim(),
+    promptVersion: String(row.prompt_version || '').trim(),
     actualTools: safeJsonParse(row.actual_tools_json) || [],
     toolAccuracy: row.tool_accuracy != null ? Number(row.tool_accuracy) : null,
     triggerPassed: row.trigger_passed != null ? Boolean(row.trigger_passed) : null,
@@ -85,6 +213,8 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
   const skillRegistry = options.skillRegistry;
   const getProjectDir = typeof options.getProjectDir === 'function' ? options.getProjectDir : null;
   const toolBaseUrl = String(options.toolBaseUrl || '').trim() || 'http://127.0.0.1:3100';
+  const startRunImpl = typeof options.startRunImpl === 'function' ? options.startRunImpl : startRun;
+  const evaluateRunImpl = typeof options.evaluateRunImpl === 'function' ? options.evaluateRunImpl : null;
   let schemaReady = false;
 
   if (!store || !store.db) {
@@ -226,9 +356,10 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     const testType = String(input.testType || 'trigger').trim();
     const loadingMode = String(input.loadingMode || 'dynamic').trim();
     const triggerPrompt = String(input.triggerPrompt || input.trigger_prompt || '').trim();
-    const expectedTools = Array.isArray(input.expectedTools || input.expected_tools)
+    const rawExpectedTools = Array.isArray(input.expectedTools || input.expected_tools)
       ? input.expectedTools || input.expected_tools
       : [];
+    const expectedTools = sanitizeExpectedToolSpecs(rawExpectedTools);
     const expectedBehavior = String(input.expectedBehavior || input.expected_behavior || '').trim();
     const note = String(input.note || '').trim();
 
@@ -253,6 +384,12 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     }
     if (triggerPrompt.length > 2000) {
       throw createHttpError(400, 'triggerPrompt is too long (maximum 2000 characters)');
+    }
+    if (rawExpectedTools.length > 0 && expectedTools.length !== rawExpectedTools.length) {
+      throw createHttpError(
+        400,
+        'expectedTools items must be tool names or { name, arguments?, requiredParams?, order? } objects'
+      );
     }
 
     const id = randomUUID();
@@ -292,14 +429,71 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     const safeLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 500) : 100;
     const rows = store.db
       .prepare(
-        `SELECT r.* FROM skill_test_runs r
+        `SELECT
+           r.*, 
+           e.provider AS provider,
+           e.model AS model,
+           e.prompt_version AS prompt_version
+         FROM skill_test_runs r
          INNER JOIN skill_test_cases c ON r.test_case_id = c.id
+         LEFT JOIN eval_case_runs e ON e.id = r.eval_case_run_id
          WHERE c.skill_id = @skillId
          ORDER BY r.created_at DESC
          LIMIT @limit`
       )
       .all({ skillId, limit: safeLimit });
     return rows.map(normalizeTestRunRow).filter(Boolean);
+  }
+
+  function getRegressionBuckets(whereSql: string, params: Record<string, any>) {
+    ensureSchema();
+    const rows = store.db
+      .prepare(
+        `SELECT
+           COALESCE(NULLIF(e.provider, ''), 'default') AS provider_label,
+           COALESCE(NULLIF(e.model, ''), 'default') AS model_label,
+           COALESCE(NULLIF(e.prompt_version, ''), 'skill-test-v1') AS prompt_version,
+           COUNT(r.id) AS total_runs,
+           COALESCE(SUM(CASE WHEN r.status = 'succeeded' THEN 1 ELSE 0 END), 0) AS succeeded_runs,
+           COALESCE(SUM(CASE WHEN r.trigger_passed = 1 THEN 1 ELSE 0 END), 0) AS trigger_passed_count,
+           COALESCE(SUM(CASE WHEN r.execution_passed = 1 THEN 1 ELSE 0 END), 0) AS execution_passed_count,
+           COALESCE(AVG(CASE WHEN r.tool_accuracy IS NOT NULL THEN r.tool_accuracy END), 0) AS avg_tool_accuracy,
+           MAX(r.created_at) AS last_run_at
+         FROM skill_test_runs r
+         INNER JOIN skill_test_cases c ON r.test_case_id = c.id
+         LEFT JOIN eval_case_runs e ON e.id = r.eval_case_run_id
+         WHERE ${whereSql}
+         GROUP BY provider_label, model_label, prompt_version
+         ORDER BY total_runs DESC, last_run_at DESC`
+      )
+      .all(params);
+
+    return rows.map((row: any) => {
+      const totalRuns = Number(row.total_runs || 0);
+      const triggerPassedCount = Number(row.trigger_passed_count || 0);
+      const executionPassedCount = Number(row.execution_passed_count || 0);
+      return {
+        provider: String(row.provider_label || '').trim(),
+        model: String(row.model_label || '').trim(),
+        promptVersion: String(row.prompt_version || '').trim() || 'skill-test-v1',
+        totalRuns,
+        succeededRuns: Number(row.succeeded_runs || 0),
+        triggerPassedCount,
+        executionPassedCount,
+        triggerRate: totalRuns > 0 ? triggerPassedCount / totalRuns : null,
+        executionRate: triggerPassedCount > 0 ? executionPassedCount / triggerPassedCount : null,
+        avgToolAccuracy: row.avg_tool_accuracy != null ? Number(row.avg_tool_accuracy) : null,
+        lastRunAt: String(row.last_run_at || '').trim(),
+      };
+    });
+  }
+
+  function getSkillRegressionSummary(skillId: string) {
+    return getRegressionBuckets('c.skill_id = @skillId', { skillId });
+  }
+
+  function getCaseRegressionSummary(caseId: string) {
+    return getRegressionBuckets('c.id = @caseId', { caseId });
   }
 
   // ---- Run execution ----
@@ -372,21 +566,688 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     }
   }
 
-  function evaluateRun(taskId: string, testCase: any) {
-    const toolCallEvents = collectToolCallsFromTask(taskId);
-    const expectedTools: string[] = Array.isArray(testCase.expectedTools) ? testCase.expectedTools : [];
-    const skillId = String(testCase.skillId || '').trim();
+  function normalizeSkillDisplayName(value: any) {
+    return String(value || '').trim().replace(/\s+Skill$/i, '');
+  }
 
-    // Collect tool calls from two sources:
-    // 1. a2a_task_events (from HTTP callback-based tools like read-skill, send-public etc.)
-    // 2. session JSONL file (from pi built-in tools like read, write, bash)
-    const actualTools: string[] = [];
-    let triggerPassed = false;
+  function normalizeLooseText(value: any) {
+    return String(value || '')
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
 
-    // Source 1: task events (HTTP callback tools)
+  function extractTriggerSignalTokens(value: any, limit = 12) {
+    const text = String(value || '').trim();
+    if (!text) {
+      return [];
+    }
+
+    const stopWords = new Set([
+      'agent',
+      'should',
+      'recognize',
+      'request',
+      'trigger',
+      'skill',
+      'user',
+      'mode',
+      'test',
+      'case',
+      'expected',
+      'behavior',
+      'tool',
+      'tools',
+      'full',
+      'dynamic',
+      '用于',
+      '后端',
+      '自动',
+      '主持',
+      '模型',
+      '测试',
+      '触发',
+      '执行',
+      '用户',
+      '技能',
+    ]);
+
+    const matches = text.match(/[A-Za-z][A-Za-z0-9-]{2,}|[\u4e00-\u9fff]{2,12}/g) || [];
+    const tokens: string[] = [];
+    const seen = new Set<string>();
+    for (const match of matches) {
+      const token = String(match || '').trim();
+      const normalized = normalizeLooseText(token);
+      if (!normalized || stopWords.has(normalized) || seen.has(normalized)) {
+        continue;
+      }
+      seen.add(normalized);
+      tokens.push(token);
+      if (tokens.length >= limit) {
+        break;
+      }
+    }
+    return tokens;
+  }
+
+  function buildFullModeTriggerSignals(skill: any, testCase: any) {
+    const signals: string[] = [];
+    const seen = new Set<string>();
+
+    const pushSignal = (value: any) => {
+      const text = String(value || '').trim();
+      const normalized = normalizeLooseText(text);
+      if (!text || !normalized || seen.has(normalized)) {
+        return;
+      }
+      seen.add(normalized);
+      signals.push(text);
+    };
+
+    pushSignal(normalizeSkillDisplayName(skill && skill.name));
+    pushSignal(skill && skill.id);
+    pushSignal(testCase && testCase.skillId);
+
+    const secondarySources = [
+      skill && skill.description,
+      testCase && testCase.expectedBehavior,
+      testCase && testCase.note,
+    ];
+    for (const source of secondarySources) {
+      for (const token of extractTriggerSignalTokens(source)) {
+        pushSignal(token);
+      }
+    }
+
+    return signals.slice(0, 16);
+  }
+
+  function clipJudgeText(value: any, maxLength = 2400) {
+    const text = String(value || '').trim();
+    if (!text) {
+      return '';
+    }
+    if (text.length <= maxLength) {
+      return text;
+    }
+    const safeLength = Math.max(0, maxLength - 16);
+    return `${text.slice(0, safeLength).trim()}\n...[truncated]`;
+  }
+
+  function extractJsonObjectFromText(value: any) {
+    const text = String(value || '').trim();
+    if (!text) {
+      return null;
+    }
+
+    const candidates: string[] = [];
+    const pushCandidate = (candidateValue: any) => {
+      const candidate = String(candidateValue || '').trim();
+      if (!candidate || candidates.includes(candidate)) {
+        return;
+      }
+      candidates.push(candidate);
+    };
+
+    const fencedMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fencedMatch && fencedMatch[1]) {
+      pushCandidate(fencedMatch[1]);
+    }
+
+    pushCandidate(text);
+
+    const firstBraceIndex = text.indexOf('{');
+    const lastBraceIndex = text.lastIndexOf('}');
+    if (firstBraceIndex !== -1 && lastBraceIndex > firstBraceIndex) {
+      pushCandidate(text.slice(firstBraceIndex, lastBraceIndex + 1));
+    }
+
+    for (const candidate of candidates) {
+      try {
+        const parsed = JSON.parse(candidate);
+        if (isPlainObject(parsed)) {
+          return parsed;
+        }
+      } catch {
+      }
+    }
+
+    return null;
+  }
+
+  function normalizeJudgePassed(value: any) {
+    if (typeof value === 'boolean') {
+      return value;
+    }
+
+    const normalized = String(value || '').trim().toLowerCase();
+    if (!normalized) {
+      return null;
+    }
+    if (['true', '1', 'yes', 'y', 'pass', 'passed'].includes(normalized)) {
+      return true;
+    }
+    if (['false', '0', 'no', 'n', 'fail', 'failed'].includes(normalized)) {
+      return false;
+    }
+    return null;
+  }
+
+  function normalizeJudgeConfidence(value: any) {
+    if (value == null || value === '') {
+      return null;
+    }
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) {
+      return null;
+    }
+    if (parsed < 0) {
+      return 0;
+    }
+    if (parsed > 1) {
+      return 1;
+    }
+    return parsed;
+  }
+
+  function parseFullModeTriggerJudgeResponse(value: any) {
+    const rawResponse = clipJudgeText(value, 600);
+    const parsed = extractJsonObjectFromText(value);
+    const matchedBehaviorsSource = parsed
+      ? (Array.isArray(parsed.matchedBehaviors)
+        ? parsed.matchedBehaviors
+        : Array.isArray(parsed.matched_behaviors)
+          ? parsed.matched_behaviors
+          : Array.isArray(parsed.matchedEvidence)
+            ? parsed.matchedEvidence
+            : Array.isArray(parsed.evidence)
+              ? parsed.evidence
+              : [])
+      : [];
+    const matchedBehaviors = [...new Set(
+      matchedBehaviorsSource
+        .map((entry: any) => String(entry || '').trim())
+        .filter(Boolean)
+    )].slice(0, 8);
+
+    return {
+      attempted: Boolean(rawResponse),
+      skipped: false,
+      skippedReason: '',
+      parsed: Boolean(parsed),
+      passed: parsed && hasOwn(parsed, 'passed') ? normalizeJudgePassed(parsed.passed) : null,
+      confidence: parsed && hasOwn(parsed, 'confidence') ? normalizeJudgeConfidence(parsed.confidence) : null,
+      reason: parsed && hasOwn(parsed, 'reason') ? String(parsed.reason || '').trim() : '',
+      matchedBehaviors,
+      rawResponse,
+      errorMessage: parsed || !rawResponse ? '' : 'judge-response-not-json',
+    };
+  }
+
+  function buildFullModeTriggerJudgePrompt(skill: any, testCase: any, actualTools: string[], evidenceText: string) {
+    const observedTools = [...new Set((Array.isArray(actualTools) ? actualTools : []).filter(Boolean))];
+    const skillName = clipJudgeText(normalizeSkillDisplayName(skill && skill.name), 120);
+    const skillId = clipJudgeText(testCase && testCase.skillId || skill && skill.id, 80);
+    const skillDescription = clipJudgeText(skill && skill.description, 500);
+    const skillBody = clipJudgeText(skill && skill.body, 1800);
+    const expectedBehavior = clipJudgeText(testCase && testCase.expectedBehavior, 600);
+    const note = clipJudgeText(testCase && testCase.note, 300);
+    const triggerPrompt = clipJudgeText(testCase && testCase.triggerPrompt, 600);
+    const assistantEvidence = clipJudgeText(evidenceText, 2200);
+    const observedToolsJson = clipJudgeText(JSON.stringify(observedTools, null, 2), 300);
+
+    return [
+      '你是一个严格的 Skill 触发评审器。',
+      '任务：判断 assistant 是否在 full mode 下真正遵循了目标 skill，而不是仅仅聊到相关话题。',
+      '只依据下面提供的证据判断，不要调用工具，不要查看文件，不要补充额外解释。',
+      '只返回一行 JSON，格式必须严格为：',
+      '{"passed":true|false,"confidence":0.0,"reason":"一句话原因","matchedBehaviors":["命中的关键行为"]}',
+      '判定规则：',
+      '- 只有当 assistant 明确采用了目标 skill 的行为、身份、约束或流程时，passed 才能为 true。',
+      '- 如果 assistant 只是解释概念、泛泛回答、或行为与 skill 不符，passed=false。',
+      '- 如果证据不足或你不确定，passed=false。',
+      '',
+      `Skill Name: ${skillName || 'unknown'}`,
+      `Skill ID: ${skillId || 'unknown'}`,
+      `Skill Description:\n${skillDescription || '(none)'}`,
+      `Expected Behavior:\n${expectedBehavior || '(none)'}`,
+      `Case Note:\n${note || '(none)'}`,
+      `User Prompt:\n${triggerPrompt || '(none)'}`,
+      `Observed Tools:\n${observedToolsJson || '[]'}`,
+      `Assistant Evidence:\n${assistantEvidence || '(none)'}`,
+      `Skill Body Excerpt:\n${skillBody || '(none)'}`,
+    ].join('\n\n');
+  }
+
+  async function runFullModeTriggerAiJudge(skill: any, testCase: any, actualTools: string[], evidenceText: string, runtime: any = {}) {
+    const hasObservableEvidence = Boolean(String(evidenceText || '').trim()) || actualTools.length > 0;
+    if (!hasObservableEvidence) {
+      return {
+        attempted: false,
+        skipped: true,
+        skippedReason: 'no-observable-evidence',
+        parsed: false,
+        passed: null,
+        confidence: null,
+        reason: '',
+        matchedBehaviors: [],
+        rawResponse: '',
+        errorMessage: '',
+        sessionPath: '',
+      };
+    }
+
+    const judgePrompt = buildFullModeTriggerJudgePrompt(skill, testCase, actualTools, evidenceText);
+    const judgeTaskId = `skill-test-judge-${randomUUID()}`;
+    const judgeSessionName = `skill-test-judge-${String(testCase && testCase.id || 'case').trim() || 'case'}-${Date.now()}`;
+    const provider = String(runtime && runtime.provider || '').trim();
+    const model = String(runtime && runtime.model || '').trim();
+    const judgeAgentIdBase = String(runtime && runtime.agentId || 'skill-test-agent').trim() || 'skill-test-agent';
+    const sandboxDir = runtime && runtime.sandbox && runtime.sandbox.sandboxDir
+      ? String(runtime.sandbox.sandboxDir)
+      : '';
+    const privateDir = runtime && runtime.sandbox && runtime.sandbox.privateDir
+      ? String(runtime.sandbox.privateDir)
+      : '';
+
+    try {
+      const handle = startRunImpl(provider, model, judgePrompt, {
+        thinking: '',
+        agentDir: store.agentDir,
+        sqlitePath: store.databasePath,
+        streamOutput: false,
+        session: judgeSessionName,
+        taskId: judgeTaskId,
+        taskKind: 'skill_test_trigger_judge',
+        taskRole: 'Skill Trigger Judge',
+        metadata: {
+          source: 'skill_test_trigger_judge',
+          parentTaskId: runtime && runtime.taskId ? runtime.taskId : null,
+          testCaseId: testCase && testCase.id ? testCase.id : null,
+          skillId: testCase && testCase.skillId ? testCase.skillId : null,
+        },
+        extraEnv: {
+          PI_AGENT_ID: `${judgeAgentIdBase}-judge`,
+          PI_AGENT_NAME: 'Skill Trigger Judge',
+          PI_AGENT_SANDBOX_DIR: sandboxDir,
+          PI_AGENT_PRIVATE_DIR: privateDir,
+          CAFF_SKILL_LOADING_MODE: 'full',
+        },
+      });
+      const judgeResult = await handle.resultPromise;
+      const parsed = parseFullModeTriggerJudgeResponse(judgeResult && judgeResult.reply ? judgeResult.reply : '');
+      return {
+        ...parsed,
+        attempted: true,
+        sessionPath: String((judgeResult && judgeResult.sessionPath) || handle.sessionPath || '').trim(),
+      };
+    } catch (error: any) {
+      return {
+        attempted: true,
+        skipped: false,
+        skippedReason: '',
+        parsed: false,
+        passed: null,
+        confidence: null,
+        reason: '',
+        matchedBehaviors: [],
+        rawResponse: '',
+        errorMessage: error && error.message ? String(error.message) : String(error || 'AI judge failed'),
+        sessionPath: '',
+      };
+    }
+  }
+
+  async function evaluateFullModeTrigger(skill: any, testCase: any, actualTools: string[], evidenceText: string, runtime: any = {}) {
+    const expectedTools = normalizeExpectedToolSpecs(testCase && testCase.expectedTools).map((entry: any) => entry.name);
+    const normalizedEvidence = normalizeLooseText(evidenceText);
+    const triggerSignals = buildFullModeTriggerSignals(skill, testCase);
+    const matchedSignals = triggerSignals.filter((signal) => {
+      const normalizedSignal = normalizeLooseText(signal);
+      return normalizedSignal ? normalizedEvidence.includes(normalizedSignal) : false;
+    });
+    const expectedToolMatched = expectedTools.some((tool) => actualTools.includes(tool));
+    const hasObservableOutput = Boolean(String(evidenceText || '').trim()) || actualTools.length > 0;
+    const signalMatched = matchedSignals.length > 0 && hasObservableOutput;
+    const aiJudge = await runFullModeTriggerAiJudge(skill, testCase, actualTools, evidenceText, runtime);
+    const triggerPassed = expectedToolMatched || signalMatched || aiJudge.passed === true;
+    const decisionSources = [];
+
+    if (expectedToolMatched) {
+      decisionSources.push('expected-tool');
+    }
+    if (signalMatched) {
+      decisionSources.push('behavior-signals');
+    }
+    if (aiJudge.passed === true) {
+      decisionSources.push('ai-judge');
+    }
+    if (decisionSources.length === 0) {
+      decisionSources.push('none');
+    }
+
+    return {
+      triggerPassed,
+      triggerEvaluation: {
+        mode: 'full',
+        matchedSignals,
+        expectedToolMatched,
+        signalMatched,
+        hasObservableOutput,
+        decisionSources,
+        aiJudge,
+      },
+    };
+  }
+
+  function getArgumentPathState(value: any, pathExpression: string) {
+    const segments = String(pathExpression || '').split('.').map((segment) => segment.trim()).filter(Boolean);
+    if (segments.length === 0) {
+      return { found: false, value: undefined };
+    }
+
+    let current = value;
+    for (const segment of segments) {
+      if (Array.isArray(current) && /^\d+$/.test(segment)) {
+        current = current[Number(segment)];
+      } else if (current != null && (typeof current === 'object' || Array.isArray(current))) {
+        current = current[segment as keyof typeof current];
+      } else {
+        return { found: false, value: undefined };
+      }
+
+      if (current === undefined) {
+        return { found: false, value: undefined };
+      }
+    }
+
+    return { found: true, value: current };
+  }
+
+  function matchesArgumentPattern(expected: any, actual: any): boolean {
+    if (typeof expected === 'string') {
+      const normalized = expected.trim().toLowerCase();
+      if (normalized === '<any>') {
+        return actual !== undefined;
+      }
+      if (normalized === '<string>') {
+        return typeof actual === 'string' && actual.trim().length > 0;
+      }
+      if (normalized === '<number>') {
+        return typeof actual === 'number' && Number.isFinite(actual);
+      }
+      if (normalized === '<boolean>') {
+        return typeof actual === 'boolean';
+      }
+      if (normalized === '<array>') {
+        return Array.isArray(actual);
+      }
+      if (normalized === '<object>') {
+        return isPlainObject(actual);
+      }
+      if (normalized.startsWith('<contains:') && normalized.endsWith('>')) {
+        if (typeof actual !== 'string') {
+          return false;
+        }
+        const needle = expected.slice('<contains:'.length, -1).trim().toLowerCase();
+        return needle.length > 0 && actual.toLowerCase().includes(needle);
+      }
+      return actual === expected;
+    }
+
+    if (Array.isArray(expected)) {
+      if (!Array.isArray(actual) || actual.length < expected.length) {
+        return false;
+      }
+      return expected.every((item, index) => matchesArgumentPattern(item, actual[index]));
+    }
+
+    if (isPlainObject(expected)) {
+      if (!isPlainObject(actual)) {
+        return false;
+      }
+      return Object.entries(expected).every(([key, value]) => matchesArgumentPattern(value, actual[key]));
+    }
+
+    return Object.is(expected, actual);
+  }
+
+  function evaluateExpectedToolCall(spec: any, observedToolCalls: any[]) {
+    const matchingCalls = observedToolCalls.filter((entry) => entry.toolName === spec.name);
+    const hasParameterExpectation = Boolean(spec && spec.hasParameterExpectation);
+    const fallbackArguments = matchingCalls.length > 0 ? matchingCalls[0].arguments : null;
+    const baseResult: any = {
+      name: spec.name,
+      order: spec.order != null ? spec.order : null,
+      matched: false,
+      matchedByName: matchingCalls.length > 0,
+      callCount: matchingCalls.length,
+      hasParameterExpectation,
+      requiredParams: spec.requiredParams || [],
+      expectedArguments: spec.hasArgumentShape ? spec.arguments : null,
+      missingParams: [],
+      argumentShapePassed: spec.hasArgumentShape ? false : null,
+      parameterPassed: hasParameterExpectation ? false : null,
+      actualArguments: fallbackArguments,
+    };
+
+    if (matchingCalls.length === 0) {
+      return baseResult;
+    }
+
+    if (!hasParameterExpectation) {
+      return {
+        ...baseResult,
+        matched: true,
+        parameterPassed: null,
+      };
+    }
+
+    for (const call of matchingCalls) {
+      const actualArguments = call && hasOwn(call, 'arguments') ? call.arguments : undefined;
+      const missingParams = (spec.requiredParams || []).filter((pathValue: string) => {
+        const state = getArgumentPathState(actualArguments, pathValue);
+        return !state.found;
+      });
+      const argumentShapePassed = spec.hasArgumentShape
+        ? matchesArgumentPattern(spec.arguments, actualArguments)
+        : true;
+
+      if (missingParams.length === 0 && argumentShapePassed) {
+        return {
+          ...baseResult,
+          matched: true,
+          parameterPassed: true,
+          missingParams: [],
+          argumentShapePassed,
+          actualArguments,
+        };
+      }
+
+      if (!baseResult.matched) {
+        baseResult.missingParams = missingParams;
+        baseResult.argumentShapePassed = spec.hasArgumentShape ? argumentShapePassed : null;
+        baseResult.actualArguments = actualArguments;
+      }
+    }
+
+    return baseResult;
+  }
+
+  const INFERRED_SESSION_TOOL_SEQUENCE_NAMES = [
+    'read-skill',
+    'send-public',
+    'send-private',
+    'read-context',
+    'list-participants',
+    'trellis-init',
+    'trellis-write',
+  ];
+
+  function inferSequenceToolNameFromSessionCall(toolCall: any) {
+    const toolName = String(toolCall && toolCall.toolName || '').trim();
+    if (!toolName) {
+      return '';
+    }
+
+    if (toolName === 'read') {
+      const readPath = String(toolCall && toolCall.arguments && (toolCall.arguments.path || toolCall.arguments.file) || '')
+        .replace(/\\/g, '/')
+        .toLowerCase();
+      if (readPath.includes('/skills/')) {
+        return 'read-skill';
+      }
+      return '';
+    }
+
+    if (toolName !== 'bash') {
+      return '';
+    }
+
+    const command = String(toolCall && toolCall.arguments && toolCall.arguments.command || '').trim().toLowerCase();
+    if (!command) {
+      return '';
+    }
+
+    for (const candidate of INFERRED_SESSION_TOOL_SEQUENCE_NAMES) {
+      if (command.includes(candidate)) {
+        return candidate;
+      }
+    }
+
+    return '';
+  }
+
+  function buildObservedSequenceCalls(toolCallEvents: any[], sessionToolCalls: any[]) {
+    const sequenceCalls: any[] = [];
+
+    const pushSequenceCall = (toolName: any, source: string) => {
+      const normalizedToolName = String(toolName || '').trim();
+      if (!normalizedToolName) {
+        return;
+      }
+      sequenceCalls.push({
+        toolName: normalizedToolName,
+        source,
+        orderIndex: sequenceCalls.length,
+      });
+    };
+
+    for (const toolCall of sessionToolCalls) {
+      const actualToolName = String(toolCall && toolCall.toolName || '').trim();
+      if (actualToolName) {
+        pushSequenceCall(actualToolName, 'session');
+      }
+      const inferredToolName = inferSequenceToolNameFromSessionCall(toolCall);
+      if (inferredToolName && inferredToolName !== actualToolName) {
+        pushSequenceCall(inferredToolName, 'session-inferred');
+      }
+    }
+
     for (const event of toolCallEvents) {
-      const toolName = String(event.tool || '').trim();
-      actualTools.push(toolName);
+      pushSequenceCall(event && event.tool, 'event');
+    }
+
+    return sequenceCalls;
+  }
+
+  function evaluateToolSequence(expectedTools: any[], observedSequenceCalls: any[]) {
+    const orderedSpecs = expectedTools
+      .filter((entry: any) => entry && entry.hasSequenceExpectation)
+      .sort((a: any, b: any) => {
+        const orderDelta = Number(a.order || 0) - Number(b.order || 0);
+        return orderDelta || Number(a.sourceOrder || 0) - Number(b.sourceOrder || 0);
+      });
+
+    if (orderedSpecs.length === 0) {
+      return {
+        enabled: false,
+        orderedExpectedCount: 0,
+        matchedCount: 0,
+        passed: null,
+        skipped: false,
+        observedTools: observedSequenceCalls.map((entry: any) => entry.toolName),
+        steps: [],
+      };
+    }
+
+    let cursor = 0;
+    let matchedCount = 0;
+    const steps: any[] = [];
+
+    for (const spec of orderedSpecs) {
+      const expectedAfterIndex = cursor;
+      let matchedCallIndex = -1;
+      let observedCallCount = 0;
+      let firstObservedIndex = -1;
+
+      for (let index = 0; index < observedSequenceCalls.length; index += 1) {
+        const call = observedSequenceCalls[index];
+        if (!call || call.toolName !== spec.name) {
+          continue;
+        }
+        observedCallCount += 1;
+        if (firstObservedIndex === -1) {
+          firstObservedIndex = index;
+        }
+        if (matchedCallIndex === -1 && index >= cursor) {
+          matchedCallIndex = index;
+        }
+      }
+
+      const matched = matchedCallIndex >= 0;
+      if (matched) {
+        matchedCount += 1;
+        cursor = matchedCallIndex + 1;
+      }
+
+      steps.push({
+        name: spec.name,
+        order: spec.order != null ? spec.order : null,
+        matched,
+        outOfOrder: !matched && firstObservedIndex !== -1 && firstObservedIndex < expectedAfterIndex,
+        matchedCallIndex: matched ? matchedCallIndex : null,
+        observedCallCount,
+        source: matched ? observedSequenceCalls[matchedCallIndex].source : '',
+      });
+    }
+
+    return {
+      enabled: true,
+      orderedExpectedCount: orderedSpecs.length,
+      matchedCount,
+      passed: matchedCount === orderedSpecs.length,
+      skipped: false,
+      observedTools: observedSequenceCalls.map((entry: any) => entry.toolName),
+      steps,
+    };
+  }
+
+  async function evaluateRun(taskId: string, testCase: any, runtime: any = {}) {
+    const toolCallEvents = collectToolCallsFromTask(taskId);
+    const expectedTools = normalizeExpectedToolSpecs(testCase.expectedTools);
+    const skillId = String(testCase.skillId || '').trim();
+    const loadingMode = String(testCase.loadingMode || 'dynamic').trim().toLowerCase() || 'dynamic';
+    const skill = skillRegistry ? skillRegistry.getSkill(skillId) : null;
+
+    const observedToolCalls: any[] = [];
+    let triggerPassed = false;
+    let triggerEvaluation: any = {
+      mode: loadingMode === 'full' ? 'full' : 'dynamic',
+      matchedSignals: [],
+      expectedToolMatched: false,
+    };
+
+    for (const event of toolCallEvents) {
+      const toolName = String(event && event.tool || '').trim();
+      if (!toolName) {
+        continue;
+      }
+      observedToolCalls.push({
+        toolName,
+        arguments: event && hasOwn(event, 'request') ? event.request : undefined,
+        source: 'event',
+      });
 
       if (
         toolName === 'read-skill' &&
@@ -397,51 +1258,138 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
       }
     }
 
-    // Source 2: session file tool calls (pi built-in tools)
-    if (!triggerPassed) {
-      const sessionPath = getSessionPathForTask(taskId);
-      const sessionToolCalls = parseToolCallsFromSession(sessionPath);
-      for (const tc of sessionToolCalls) {
-        actualTools.push(tc.toolName);
+    const sessionPath = String(runtime.sessionPath || '').trim() || getSessionPathForTask(taskId);
+    const sessionSnapshot = sessionPath ? readSessionAssistantSnapshot(sessionPath) : null;
+    const sessionToolCalls = parseToolCallsFromSession(sessionPath);
 
-        if (!triggerPassed && tc.toolName === 'read') {
-          // Check if the agent read a file under a skill path matching the target skillId
-          const readPath = String(tc.arguments && (tc.arguments.path || tc.arguments.file) || '').replace(/\\/g, '/');
-          if (readPath) {
-            // Precisely extract the skillId segment after /skills/ to avoid
-            // false matches like /start/ matching /starting-point/
-            const skillsMatch = readPath.match(/\/skills\/([^/]+)\//);
-            if (skillsMatch && skillsMatch[1] === skillId) {
-              triggerPassed = true;
-            }
-          }
-        }
+    for (const tc of sessionToolCalls) {
+      const toolName = String(tc && tc.toolName || '').trim();
+      if (!toolName) {
+        continue;
+      }
+      observedToolCalls.push({
+        toolName,
+        arguments: tc.arguments,
+        source: 'session',
+      });
 
-        if (!triggerPassed && tc.toolName === 'bash') {
-          // Check if bash command includes read-skill invocation
-          const cmd = String(tc.arguments && tc.arguments.command || '');
-          if (cmd.includes('read-skill') && cmd.includes(skillId)) {
+      if (!triggerPassed && toolName === 'read') {
+        const readPath = String(tc.arguments && (tc.arguments.path || tc.arguments.file) || '').replace(/\\/g, '/');
+        if (readPath) {
+          const skillsMatch = readPath.match(/\/skills\/([^/]+)\//);
+          if (skillsMatch && skillsMatch[1] === skillId) {
             triggerPassed = true;
           }
         }
       }
+
+      if (!triggerPassed && toolName === 'bash') {
+        const cmd = String(tc.arguments && tc.arguments.command || '');
+        if (cmd.includes('read-skill') && cmd.includes(skillId)) {
+          triggerPassed = true;
+        }
+      }
     }
 
-    // Step 2: execution check — tool name matching (only if trigger passed)
+    const observedSequenceCalls = buildObservedSequenceCalls(toolCallEvents, sessionToolCalls);
+    const actualTools = observedToolCalls
+      .map((entry) => String(entry && entry.toolName || '').trim())
+      .filter(Boolean);
+
+    const evidenceText = [
+      runtime && runtime.outputText,
+      sessionSnapshot && sessionSnapshot.text,
+      sessionSnapshot && sessionSnapshot.thinking,
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    if (!triggerPassed && loadingMode === 'full') {
+      const fullModeEvaluation = await evaluateFullModeTrigger(skill, testCase, actualTools, evidenceText, {
+        ...runtime,
+        taskId,
+      });
+      triggerPassed = Boolean(fullModeEvaluation.triggerPassed);
+      triggerEvaluation = fullModeEvaluation.triggerEvaluation;
+    }
+
+    const usesParameterValidation = expectedTools.some((entry: any) => entry.hasParameterExpectation);
+    const usesSequenceValidation = expectedTools.some((entry: any) => entry.hasSequenceExpectation);
+    const observedSequenceTools = observedSequenceCalls.map((entry: any) => entry.toolName);
+
     let toolAccuracy: number | null = null;
     let executionPassed: number | null = null;
+    let executionEvaluation: any = {
+      threshold: 0.8,
+      expectedCount: expectedTools.length,
+      matchedCount: 0,
+      toolChecks: [],
+      usedParameterValidation: usesParameterValidation,
+      usedSequenceValidation: usesSequenceValidation,
+      sequenceCheck: {
+        enabled: usesSequenceValidation,
+        orderedExpectedCount: expectedTools.filter((entry: any) => entry.hasSequenceExpectation).length,
+        matchedCount: 0,
+        passed: usesSequenceValidation ? false : null,
+        skipped: true,
+        observedTools: observedSequenceTools,
+        steps: [],
+      },
+      skipped: !triggerPassed,
+    };
 
-    const EXECUTION_THRESHOLD = 0.8; // configurable — 80% tool match rate required
+    const EXECUTION_THRESHOLD = 0.8;
 
     if (triggerPassed && expectedTools.length > 0) {
-      const matched = expectedTools.filter((expected) =>
-        actualTools.some((actual) => actual === expected)
-      );
-      toolAccuracy = matched.length / expectedTools.length;
+      const toolChecks = expectedTools.map((entry: any) => evaluateExpectedToolCall(entry, observedToolCalls));
+      const matchedCount = toolChecks.filter((entry: any) => entry.matched).length;
+      const sequenceCheck = usesSequenceValidation
+        ? { ...evaluateToolSequence(expectedTools, observedSequenceCalls), skipped: false }
+        : {
+            enabled: false,
+            orderedExpectedCount: 0,
+            matchedCount: 0,
+            passed: null,
+            skipped: true,
+            observedTools: observedSequenceTools,
+            steps: [],
+          };
+      toolAccuracy = matchedCount / expectedTools.length;
       executionPassed = toolAccuracy >= EXECUTION_THRESHOLD ? 1 : 0;
+      if (usesSequenceValidation && !sequenceCheck.passed) {
+        executionPassed = 0;
+      }
+      executionEvaluation = {
+        threshold: EXECUTION_THRESHOLD,
+        expectedCount: expectedTools.length,
+        matchedCount,
+        toolChecks,
+        usedParameterValidation: toolChecks.some((entry: any) => entry.hasParameterExpectation),
+        usedSequenceValidation: usesSequenceValidation,
+        sequenceCheck,
+        skipped: false,
+      };
     } else if (triggerPassed && expectedTools.length === 0) {
       toolAccuracy = 1;
       executionPassed = 1;
+      executionEvaluation = {
+        threshold: EXECUTION_THRESHOLD,
+        expectedCount: 0,
+        matchedCount: 0,
+        toolChecks: [],
+        usedParameterValidation: false,
+        usedSequenceValidation: false,
+        sequenceCheck: {
+          enabled: false,
+          orderedExpectedCount: 0,
+          matchedCount: 0,
+          passed: null,
+          skipped: true,
+          observedTools: observedSequenceTools,
+          steps: [],
+        },
+        skipped: false,
+      };
     }
 
     return {
@@ -449,6 +1397,109 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
       executionPassed,
       toolAccuracy,
       actualToolsJson: JSON.stringify([...new Set(actualTools)]),
+      triggerEvaluation,
+      executionEvaluation,
+    };
+  }
+
+  function getCaseValidityAfterEvaluation(testCase: any, evaluation: any) {
+    const currentValidity = String(testCase && testCase.validityStatus || 'pending').trim() || 'pending';
+    if (!evaluation || !evaluation.triggerPassed) {
+      return 'invalid';
+    }
+    if (currentValidity === 'validated') {
+      return 'validated';
+    }
+    return 'validated';
+  }
+
+  function classifyPromptForSmokeRun(skillId: string, triggerPrompt: string) {
+    const normalizedSkillId = String(skillId || '').trim();
+    const normalizedPrompt = String(triggerPrompt || '').trim();
+    if (!normalizedSkillId) {
+      return { valid: false, reason: 'missing-skill-id' };
+    }
+    if (!normalizedPrompt) {
+      return { valid: false, reason: 'empty-prompt' };
+    }
+    if (normalizedPrompt.length < 5) {
+      return { valid: false, reason: 'prompt-too-short' };
+    }
+    if (normalizedPrompt.length > 500) {
+      return { valid: false, reason: 'prompt-too-long' };
+    }
+    const skillExists = !!(skillRegistry && skillRegistry.getSkill(normalizedSkillId));
+    if (!skillExists) {
+      return { valid: false, reason: 'skill-missing' };
+    }
+    return { valid: true, reason: '' };
+  }
+
+  function markTestCaseValidity(caseId: string, validityStatus: string, noteSuffix = '') {
+    ensureSchema();
+    const existing = getTestCase(caseId);
+    if (!existing) {
+      return null;
+    }
+    const nextNote = noteSuffix
+      ? [existing.note, noteSuffix].filter(Boolean).join(' | ')
+      : existing.note;
+    store.db
+      .prepare(
+        'UPDATE skill_test_cases SET validity_status = @validityStatus, note = @note, updated_at = @updatedAt WHERE id = @id'
+      )
+      .run({
+        id: caseId,
+        validityStatus,
+        note: nextNote,
+        updatedAt: nowIso(),
+      });
+    return getTestCase(caseId);
+  }
+
+  async function smokeValidateGeneratedCases(cases: any[], runOptions: any = {}) {
+    const validatedCases: any[] = [];
+    const invalidCases: any[] = [];
+    const smokeRuns: any[] = [];
+
+    for (const testCase of cases) {
+      const check = classifyPromptForSmokeRun(testCase && testCase.skillId, testCase && testCase.triggerPrompt);
+      if (!check.valid) {
+        const invalidCase = markTestCaseValidity(testCase.id, 'invalid', `Smoke validation skipped: ${check.reason}`);
+        if (invalidCase) {
+          invalidCases.push(invalidCase);
+        }
+        continue;
+      }
+
+      try {
+        const result = await executeRun(testCase, {
+          ...runOptions,
+          smokeValidation: true,
+        });
+        smokeRuns.push(result);
+        const refreshed = result && result.testCase ? result.testCase : getTestCase(testCase.id);
+        if (refreshed && refreshed.validityStatus === 'validated') {
+          validatedCases.push(refreshed);
+        } else if (refreshed) {
+          invalidCases.push(refreshed);
+        }
+      } catch (error: any) {
+        const invalidCase = markTestCaseValidity(
+          testCase.id,
+          'invalid',
+          `Smoke validation failed: ${String(error && error.message ? error.message : error || 'unknown error')}`
+        );
+        if (invalidCase) {
+          invalidCases.push(invalidCase);
+        }
+      }
+    }
+
+    return {
+      validatedCases,
+      invalidCases,
+      smokeRuns,
     };
   }
 
@@ -469,6 +1520,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     const agentName = String(runOptions.agentName || 'Skill Test Agent').trim();
     const provider = String(runOptions.provider || '').trim();
     const model = String(runOptions.model || '').trim();
+    const promptVersion = String(runOptions.promptVersion || '').trim() || 'skill-test-v1';
 
     // Create or reuse eval_case for this test case
     // Only create a new one if the test case doesn't already have one
@@ -505,7 +1557,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
           provider: provider || null,
           model: model || null,
           thinking: null,
-          promptVersion: 'skill-test-v1',
+          promptVersion,
           expectationsJson: JSON.stringify({
             source: 'skill_test',
             skillId: testCase.skillId,
@@ -600,7 +1652,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
       let sessionPath = '';
 
       try {
-        const handle = startRun(provider || '', model || '', prompt, {
+        const handle = startRunImpl(provider || '', model || '', prompt, {
           thinking: '',
           agentDir: store.agentDir,
           sqlitePath: store.databasePath,
@@ -659,12 +1711,44 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
       }
 
       // Evaluate results
-      const evaluation = status === 'succeeded' ? evaluateRun(taskId, testCase) : {
-        triggerPassed: 0,
-        executionPassed: null,
-        toolAccuracy: null,
-        actualToolsJson: '[]',
-      };
+      const evaluation = status === 'succeeded'
+        ? await Promise.resolve(
+          evaluateRunImpl
+            ? evaluateRunImpl(taskId, testCase, {
+              outputText,
+              sessionPath,
+              status,
+              provider,
+              model,
+              promptVersion,
+              agentId,
+              agentName,
+              taskId,
+              prompt,
+              sandbox,
+            })
+            : evaluateRun(taskId, testCase, {
+              outputText,
+              sessionPath,
+              status,
+              provider,
+              model,
+              promptVersion,
+              agentId,
+              agentName,
+              taskId,
+              prompt,
+              sandbox,
+            })
+        )
+        : {
+          triggerPassed: 0,
+          executionPassed: null,
+          toolAccuracy: null,
+          actualToolsJson: '[]',
+          triggerEvaluation: null,
+          executionEvaluation: null,
+        };
 
       const finishedAt = nowIso();
 
@@ -682,21 +1766,24 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
       const evalCaseRunId = randomUUID();
       const runResult = {
         status,
+        promptVersion,
         triggerPassed: evaluation.triggerPassed,
         executionPassed: evaluation.executionPassed,
         toolAccuracy: evaluation.toolAccuracy,
         actualTools: safeJsonParse(evaluation.actualToolsJson) || [],
+        triggerEvaluation: evaluation.triggerEvaluation || null,
+        executionEvaluation: evaluation.executionEvaluation || null,
         source: 'skill_test',
       };
 
       store.db
         .prepare(
           `INSERT INTO eval_case_runs (
-            id, case_id, variant, provider, model, thinking,
+            id, case_id, variant, provider, model, prompt_version, thinking,
             prompt, run_id, task_id, status, error_message,
             output_text, result_json, session_path, created_at
           ) VALUES (
-            @id, @caseId, @variant, @provider, @model, @thinking,
+            @id, @caseId, @variant, @provider, @model, @promptVersion, @thinking,
             @prompt, @runId, @taskId, @status, @errorMessage,
             @outputText, @resultJson, @sessionPath, @createdAt
           )`
@@ -707,6 +1794,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
           variant: 'B',
           provider: provider || null,
           model: model || null,
+          promptVersion,
           thinking: null,
           prompt,
           runId,
@@ -746,19 +1834,25 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
           createdAt: finishedAt,
         });
 
-      // Update test case validity_status based on trigger result
-      // Only transition from 'pending' — never downgrade 'validated' to 'invalid'
-      // to avoid false negatives from transient environment issues
-      if (testCase.validityStatus === 'pending') {
-        const newValidity = evaluation.triggerPassed ? 'validated' : 'needs_review';
-        store.db
-          .prepare(
-            'UPDATE skill_test_cases SET validity_status = @validityStatus, updated_at = @updatedAt WHERE id = @id'
-          )
-          .run({ id: testCase.id, validityStatus: newValidity, updatedAt: finishedAt });
-      }
+      const newValidity = getCaseValidityAfterEvaluation(testCase, evaluation);
+      store.db
+        .prepare(
+          'UPDATE skill_test_cases SET validity_status = @validityStatus, updated_at = @updatedAt WHERE id = @id'
+        )
+        .run({ id: testCase.id, validityStatus: newValidity, updatedAt: finishedAt });
 
-      const runRow = store.db.prepare('SELECT * FROM skill_test_runs WHERE id = @id').get({ id: testRunId });
+      const runRow = store.db
+        .prepare(
+          `SELECT
+             r.*, 
+             e.provider AS provider,
+             e.model AS model,
+             e.prompt_version AS prompt_version
+           FROM skill_test_runs r
+           LEFT JOIN eval_case_runs e ON e.id = r.eval_case_run_id
+           WHERE r.id = @id`
+        )
+        .get({ id: testRunId });
       return {
         testCase: getTestCase(testCase.id),
         run: normalizeTestRunRow(runRow),
@@ -844,7 +1938,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
         return true;
       }
 
-      // POST /api/skills/:skillId/test-cases/generate — AI generate
+      // POST /api/skills/:skillId/test-cases/generate — AI generate + smoke validate
       if (req.method === 'POST' && subPath === 'generate') {
         const skill = skillRegistry ? skillRegistry.getSkill(skillId) : null;
         if (!skill) {
@@ -853,14 +1947,20 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
 
         const body = await readRequestJson(req).catch(() => ({}));
         const count = Math.max(1, Math.min(10, Number(body.count || 3)));
-        const prompts = generateSkillTestPrompts(skill, { count });
+        const loadingMode = String(body.loadingMode || 'dynamic').trim() || 'dynamic';
+        const testType = String(body.testType || 'trigger').trim() || 'trigger';
+        const prompts = generateSkillTestPrompts(skill, {
+          count,
+          testType,
+          loadingMode,
+        });
 
         const cases: any[] = [];
         for (const prompt of prompts) {
           const tc = createTestCase({
             skillId,
-            testType: 'trigger',
-            loadingMode: 'dynamic',
+            testType,
+            loadingMode,
             triggerPrompt: prompt.triggerPrompt,
             expectedTools: prompt.expectedTools || [],
             expectedBehavior: prompt.expectedBehavior || '',
@@ -871,7 +1971,21 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
           }
         }
 
-        sendJson(res, 201, { generated: cases.length, cases });
+        const smoke = await smokeValidateGeneratedCases(cases, {
+          provider: body.provider,
+          model: body.model,
+          promptVersion: body.promptVersion,
+          agentId: body.agentId,
+          agentName: body.agentName,
+        });
+
+        sendJson(res, 201, {
+          generated: cases.length,
+          validated: smoke.validatedCases.length,
+          invalid: smoke.invalidCases.length,
+          cases: cases.map((testCase) => getTestCase(testCase.id)).filter(Boolean),
+          smokeRuns: smoke.smokeRuns,
+        });
         return true;
       }
 
@@ -886,13 +2000,13 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
         return true;
       }
 
-      // POST /api/skills/:skillId/test-cases/run-all — run all validated cases
+      // POST /api/skills/:skillId/test-cases/run-all — run all validated + invalid cases
       if (req.method === 'POST' && subPath === 'run-all') {
         ensureSchema();
         const cases = store.db
           .prepare(
             `SELECT * FROM skill_test_cases
-             WHERE skill_id = @skillId AND validity_status = 'validated'
+             WHERE skill_id = @skillId AND validity_status IN ('validated', 'invalid')
              ORDER BY created_at ASC`
           )
           .all({ skillId });
@@ -911,6 +2025,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
             const result = await executeRun(testCase, {
               provider: body.provider,
               model: body.model,
+              promptVersion: body.promptVersion,
               agentId: body.agentId,
               agentName: body.agentName,
             });
@@ -941,13 +2056,32 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
           const safeRunsLimit = Number.isInteger(runsLimit) && runsLimit > 0 ? Math.min(runsLimit, 500) : 50;
           const rows = store.db
             .prepare(
-              `SELECT * FROM skill_test_runs
-               WHERE test_case_id = @caseId
-               ORDER BY created_at DESC
+              `SELECT
+                 r.*, 
+                 e.provider AS provider,
+                 e.model AS model,
+                 e.prompt_version AS prompt_version
+               FROM skill_test_runs r
+               LEFT JOIN eval_case_runs e ON e.id = r.eval_case_run_id
+               WHERE r.test_case_id = @caseId
+               ORDER BY r.created_at DESC
                LIMIT @limit`
             )
             .all({ caseId, limit: safeRunsLimit });
           sendJson(res, 200, { runs: rows.map(normalizeTestRunRow).filter(Boolean) });
+          return true;
+        }
+
+        // GET /api/skills/:skillId/test-cases/:caseId/regression
+        if (req.method === 'GET' && action === 'regression') {
+          const testCase = getTestCase(caseId);
+          if (!testCase) {
+            throw createHttpError(404, 'Test case not found');
+          }
+          sendJson(res, 200, {
+            testCaseId: caseId,
+            regression: getCaseRegressionSummary(caseId),
+          });
           return true;
         }
 
@@ -962,6 +2096,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
           const result = await executeRun(testCase, {
             provider: body.provider,
             model: body.model,
+            promptVersion: body.promptVersion,
             agentId: body.agentId,
             agentName: body.agentName,
           });
@@ -994,6 +2129,16 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
       }
     }
 
+    const skillRegressionMatch = pathname.match(/^\/api\/skills\/([^/]+)\/regression$/);
+    if (skillRegressionMatch && req.method === 'GET') {
+      const skillId = decodeURIComponent(skillRegressionMatch[1]);
+      sendJson(res, 200, {
+        skillId,
+        regression: getSkillRegressionSummary(skillId),
+      });
+      return true;
+    }
+
     // ---- Skill-scoped runs: /api/skills/:skillId/test-runs ----
     const testRunsMatch = pathname.match(/^\/api\/skills\/([^/]+)\/test-runs$/);
     if (testRunsMatch && req.method === 'GET') {
@@ -1008,13 +2153,26 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     if (runDetailMatch && req.method === 'GET') {
       ensureSchema();
       const runId = decodeURIComponent(runDetailMatch[1]);
-      const row = store.db.prepare('SELECT * FROM skill_test_runs WHERE id = @id').get({ id: runId });
+      const row = store.db
+        .prepare(
+          `SELECT
+             r.*, 
+             e.provider AS provider,
+             e.model AS model,
+             e.prompt_version AS prompt_version,
+             e.result_json AS result_json
+           FROM skill_test_runs r
+           LEFT JOIN eval_case_runs e ON e.id = r.eval_case_run_id
+           WHERE r.id = @id`
+        )
+        .get({ id: runId });
       const run = normalizeTestRunRow(row);
       if (!run) {
         throw createHttpError(404, 'Test run not found');
       }
       const debug = getSkillTestRunDebug(run);
-      sendJson(res, 200, { run, debug });
+      const result = safeJsonParse(row && row.result_json);
+      sendJson(res, 200, { run, debug, result });
       return true;
     }
 
