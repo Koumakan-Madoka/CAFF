@@ -193,7 +193,7 @@ Structured expected tools may also declare `order` (positive integer). When at l
 - `executionEvaluation.sequenceCheck` verifies the ordered subset appears in the observed tool timeline in ascending order
 - `execution_passed` requires both the L1/L2 threshold and `sequenceCheck.passed = true`
 
-Observed order is reconstructed from session tool calls first, with lightweight alias inference for chat-bridge shell commands such as `read-skill` and `send-public`, then supplemented by `agent_tool_call` events.
+Observed order is reconstructed from a single timeline source to avoid cross-source false positives: use the session tool-call timeline first (with lightweight alias inference for chat-bridge shell commands such as `read-skill` and `send-public`), and fall back to `agent_tool_call` events only when the session has no tool-call timeline.
 
 Per-run detail stores both `executionEvaluation.toolChecks[]` and `executionEvaluation.sequenceCheck` in `eval_case_runs.result_json`, so the UI can show which tool was missing, which parameter path was absent, and whether the ordered tools appeared in the wrong position.
 

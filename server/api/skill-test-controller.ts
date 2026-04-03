@@ -328,6 +328,35 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
 
   // ---- Query helpers ----
 
+  function getLatestRunForCase(caseId: string) {
+    ensureSchema();
+    const row = store.db
+      .prepare(
+        `SELECT
+           r.*,
+           e.provider AS provider,
+           e.model AS model,
+           e.prompt_version AS prompt_version
+         FROM skill_test_runs r
+         LEFT JOIN eval_case_runs e ON e.id = r.eval_case_run_id
+         WHERE r.test_case_id = @caseId
+         ORDER BY r.created_at DESC
+         LIMIT 1`
+      )
+      .get({ caseId });
+    return normalizeTestRunRow(row);
+  }
+
+  function attachLatestRun(testCase: any) {
+    if (!testCase || !testCase.id) {
+      return testCase;
+    }
+    return {
+      ...testCase,
+      latestRun: getLatestRunForCase(testCase.id),
+    };
+  }
+
   function listTestCases(skillId: string, limit = 100) {
     ensureSchema();
     const safeLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 500) : 100;
@@ -339,7 +368,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
          LIMIT @limit`
       )
       .all({ skillId, limit: safeLimit });
-    return rows.map(normalizeTestCaseRow).filter(Boolean);
+    return rows.map(normalizeTestCaseRow).filter(Boolean).map((testCase: any) => attachLatestRun(testCase));
   }
 
   function getTestCase(caseId: string) {
@@ -347,7 +376,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     const row = store.db
       .prepare('SELECT * FROM skill_test_cases WHERE id = @id')
       .get({ id: caseId });
-    return normalizeTestCaseRow(row);
+    return attachLatestRun(normalizeTestCaseRow(row));
   }
 
   function createTestCase(input: any) {
@@ -966,7 +995,8 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
 
   function matchesArgumentPattern(expected: any, actual: any): boolean {
     if (typeof expected === 'string') {
-      const normalized = expected.trim().toLowerCase();
+      const expectedText = expected.trim();
+      const normalized = expectedText.toLowerCase();
       if (normalized === '<any>') {
         return actual !== undefined;
       }
@@ -989,10 +1019,10 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
         if (typeof actual !== 'string') {
           return false;
         }
-        const needle = expected.slice('<contains:'.length, -1).trim().toLowerCase();
+        const needle = expectedText.slice('<contains:'.length, -1).trim().toLowerCase();
         return needle.length > 0 && actual.toLowerCase().includes(needle);
       }
-      return actual === expected;
+      return actual === expectedText;
     }
 
     if (Array.isArray(expected)) {
@@ -1119,36 +1149,49 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
   }
 
   function buildObservedSequenceCalls(toolCallEvents: any[], sessionToolCalls: any[]) {
-    const sequenceCalls: any[] = [];
+    const buildSequenceCalls = (entries: any[], sourceBuilder: (entry: any) => any[]) => {
+      const sequenceCalls: any[] = [];
+      const pushSequenceCall = (toolName: any, source: string) => {
+        const normalizedToolName = String(toolName || '').trim();
+        if (!normalizedToolName) {
+          return;
+        }
+        sequenceCalls.push({
+          toolName: normalizedToolName,
+          source,
+          orderIndex: sequenceCalls.length,
+        });
+      };
 
-    const pushSequenceCall = (toolName: any, source: string) => {
-      const normalizedToolName = String(toolName || '').trim();
-      if (!normalizedToolName) {
-        return;
+      for (const entry of entries) {
+        for (const item of sourceBuilder(entry)) {
+          pushSequenceCall(item.toolName, item.source);
+        }
       }
-      sequenceCalls.push({
-        toolName: normalizedToolName,
-        source,
-        orderIndex: sequenceCalls.length,
-      });
+
+      return sequenceCalls;
     };
 
-    for (const toolCall of sessionToolCalls) {
+    const sessionSequenceCalls = buildSequenceCalls(sessionToolCalls, (toolCall) => {
+      const calls: any[] = [];
       const actualToolName = String(toolCall && toolCall.toolName || '').trim();
       if (actualToolName) {
-        pushSequenceCall(actualToolName, 'session');
+        calls.push({ toolName: actualToolName, source: 'session' });
       }
       const inferredToolName = inferSequenceToolNameFromSessionCall(toolCall);
       if (inferredToolName && inferredToolName !== actualToolName) {
-        pushSequenceCall(inferredToolName, 'session-inferred');
+        calls.push({ toolName: inferredToolName, source: 'session-inferred' });
       }
+      return calls;
+    });
+
+    if (sessionSequenceCalls.length > 0) {
+      return sessionSequenceCalls;
     }
 
-    for (const event of toolCallEvents) {
-      pushSequenceCall(event && event.tool, 'event');
-    }
-
-    return sequenceCalls;
+    return buildSequenceCalls(toolCallEvents, (event) => [
+      { toolName: event && event.tool, source: 'event' },
+    ]);
   }
 
   function evaluateToolSequence(expectedTools: any[], observedSequenceCalls: any[]) {

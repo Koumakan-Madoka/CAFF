@@ -310,7 +310,7 @@
     const pending = Math.max(0, totalCases - validated - invalid);
     const recentFailing = state.testCases.filter((tc) => {
       const run = tc.latestRun || null;
-      return run && (run.triggerPassed === 0 || run.executionPassed === 0 || run.errorMessage);
+      return isFailingRun(run);
     }).length;
     const runnable = validated + invalid;
     const selectedSummary = state.summary.find((entry) => entry.skillId === state.selectedSkillId) || null;
@@ -350,7 +350,7 @@
       const latestRun = tc.latestRun || null;
       const matchesValidity = state.validityFilter === 'all'
         || tc.validityStatus === state.validityFilter
-        || (state.validityFilter === 'failing' && latestRun && (latestRun.triggerPassed === 0 || latestRun.executionPassed === 0 || latestRun.errorMessage));
+        || (state.validityFilter === 'failing' && isFailingRun(latestRun));
 
       return matchesQuery && matchesValidity;
     });
@@ -387,6 +387,10 @@
       const lastOutcome = getLastOutcomeSummary(tc.latestRun);
       const goalSummary = clipText(tc.expectedBehavior || tc.note || '生成后会先自动验证一次', 80);
       const latestSummary = clipText(lastOutcome, 86);
+      const caseIdentity = tc.id ? `#${tc.id.slice(0, 8)}` : '';
+      const recentRunLabel = tc.latestRun && tc.latestRun.createdAt
+        ? `最近运行 ${new Date(tc.latestRun.createdAt).toLocaleString()}`
+        : '还没跑过';
 
       card.innerHTML = `
         <div class="agent-card-header">
@@ -397,6 +401,7 @@
           <span>${testTypeLabel} · ${loadingModeLabel}</span>
           <span>· ${escapeHtml(expectedToolsText)}</span>
         </div>
+        <div class="agent-meta">${escapeHtml([caseIdentity, recentRunLabel].filter(Boolean).join(' · '))}</div>
         <div class="agent-meta">${escapeHtml(goalSummary)}</div>
         <div class="agent-meta">${escapeHtml(latestSummary)}</div>
       `;
@@ -1073,7 +1078,7 @@
       const structuredToolsText = dom.createToolSpecs ? dom.createToolSpecs.value.trim() : '';
       const structuredTools = parseStructuredExpectedTools(structuredToolsText);
       if (structuredToolsText && !structuredTools) {
-        showToast('参数校验 JSON 格式不对');
+        showToast('结构化校验 JSON 需要是数组，例如 [{"name":"read-skill","order":1}]');
         return;
       }
       const expectedBehavior = dom.createBehavior ? dom.createBehavior.value.trim() : '';
@@ -1297,13 +1302,25 @@
     return '这条用例还没有完成验证；生成后会自动做一次 smoke run。';
   }
 
+  function isPassedFlag(value) {
+    return value === true || value === 1;
+  }
+
+  function isFailedFlag(value) {
+    return value === false || value === 0;
+  }
+
+  function isFailingRun(run) {
+    return Boolean(run) && (isFailedFlag(run.triggerPassed) || isFailedFlag(run.executionPassed) || Boolean(run.errorMessage));
+  }
+
   function getLastOutcomeSummary(run) {
     if (!run) return '还没有运行记录';
     if (run.errorMessage) return `最近失败：${run.errorMessage}`;
-    if (run.triggerPassed === 0) return '最近失败：没有触发到目标 skill';
-    if (run.executionPassed === 0) return '最近失败：触发成功，但工具调用不符合预期';
-    if (run.triggerPassed === 1 && run.executionPassed === 1) return '最近运行：触发和执行都符合预期';
-    if (run.triggerPassed === 1 && run.executionPassed === null) return '最近运行：已触发 skill，执行评估被跳过';
+    if (isFailedFlag(run.triggerPassed)) return '最近失败：没有触发到目标 skill';
+    if (isFailedFlag(run.executionPassed)) return '最近失败：触发成功，但工具调用不符合预期';
+    if (isPassedFlag(run.triggerPassed) && isPassedFlag(run.executionPassed)) return '最近运行：触发和执行都符合预期';
+    if (isPassedFlag(run.triggerPassed) && run.executionPassed === null) return '最近运行：已触发 skill，执行评估被跳过';
     return '最近运行：已记录结果';
   }
 

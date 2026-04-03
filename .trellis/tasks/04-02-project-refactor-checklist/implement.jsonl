@@ -1,0 +1,6 @@
+{"file": ".trellis/workflow.md", "reason": "Project workflow and conventions"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend development guide"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend development guide"}
+{"file": ".trellis/spec/runtime/index.md", "reason": "Runtime hotspot boundaries and Trellis-related runtime guidance"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "This task plans changes across backend, runtime, storage, and frontend"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "This task targets duplicated lifecycle and UI patterns"}
