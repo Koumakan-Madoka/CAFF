@@ -40,81 +40,213 @@
       </div>
 
       <div id="panel-skill-tests" class="tab-panel hidden">
-        <main class="layout persona-layout">
-          <aside class="panel panel-conversations">
-            <div class="panel-header">
+        <main class="skill-tests-layout">
+          <section class="panel skill-tests-toolbar-panel">
+            <div class="skill-tests-toolbar-head">
               <div>
                 <p class="eyebrow">Skill Tests</p>
-                <h2>测试用例</h2>
+                <h2>Skill 测试工作台</h2>
+                <p class="section-hint">把高频配置和主操作固定在顶部；下面按“概览 → 列表 → 详情”顺着巡检，不再左右找按钮。</p>
+              </div>
+              <div class="tag-row skill-tests-toolbar-hints">
+                <span class="tag">高频操作常驻</span>
+                <span class="tag">窄宽度优先单列</span>
               </div>
             </div>
 
-            <form class="settings-form compact-settings-form">
-              <label>
-                <span>Skill</span>
-                <select id="st-skill-select"><option value="">— 选择 Skill —</option></select>
-              </label>
-              <div class="panel-actions">
+            <div class="skill-tests-toolbar-grid">
+              <div class="skill-tests-toolbar-field skill-tests-toolbar-field-wide">
+                <label>
+                  <span>Skill</span>
+                  <select id="st-skill-select"><option value="">— 选择 Skill —</option></select>
+                </label>
                 <button id="st-refresh-skills" class="ghost-button" type="button">刷新</button>
               </div>
-            </form>
+              <label class="skill-tests-toolbar-field">
+                <span>Agent</span>
+                <select id="st-agent-select"><option value="">— 默认 —</option></select>
+              </label>
+              <label class="skill-tests-toolbar-field skill-tests-toolbar-field-wide">
+                <span>模型</span>
+                <select id="st-model-select"><option value="">系统默认模型</option></select>
+              </label>
+              <label class="skill-tests-toolbar-field">
+                <span>Prompt Version</span>
+                <input id="st-prompt-version" type="text" maxlength="80" placeholder="skill-test-v2" />
+              </label>
+              <label class="skill-tests-toolbar-field">
+                <span>数量</span>
+                <input id="st-generate-count" type="number" min="1" max="10" value="3" />
+              </label>
+              <label class="skill-tests-toolbar-field">
+                <span>加载方式</span>
+                <select id="st-generate-loading-mode">
+                  <option value="dynamic">Dynamic（推荐）</option>
+                  <option value="full">Full</option>
+                </select>
+              </label>
+              <label class="skill-tests-toolbar-field">
+                <span>测试侧重点</span>
+                <select id="st-generate-type">
+                  <option value="trigger">先验证能否触发</option>
+                  <option value="execution">重点检查工具执行</option>
+                </select>
+              </label>
+            </div>
 
-            <section class="stack-card">
-              <div class="section-row">
-                <span class="section-label">运行配置</span>
+            <div class="skill-tests-toolbar-actions">
+              <button id="st-generate-btn" class="ghost-button" type="button">生成测试用例</button>
+              <button id="st-open-create-btn" class="ghost-button" type="button">手动创建</button>
+              <button id="st-run-all-btn" class="ghost-button" type="button">批量运行可重试用例</button>
+              <span id="st-case-count" class="section-hint">0 个用例</span>
+            </div>
+            <p class="section-hint">生成后会自动做一次可触发验证；批量运行会重跑“可运行”和“触发失败”的用例。</p>
+            <div id="st-run-progress" class="run-progress-container hidden"></div>
+          </section>
+
+          <div class="skill-tests-main">
+            <section class="panel skill-tests-overview-panel">
+              <div class="panel-header">
+                <div>
+                  <p class="eyebrow">Overview</p>
+                  <h2>当前 Skill 概览</h2>
+                </div>
+              </div>
+              <div id="st-selected-highlights" class="tag-row">
+                <span class="tag tag-pending">先选一个 Skill</span>
+              </div>
+              <p id="st-selected-summary" class="section-hint">这里会显示当前 Skill 的用例数量、可重试范围和最近表现。</p>
+            </section>
+
+            <section class="panel skill-tests-list-panel">
+              <div class="panel-header">
+                <div>
+                  <p class="eyebrow">Case List</p>
+                  <h2>用例列表</h2>
+                </div>
+                <span id="st-filter-count" class="section-hint">显示 0 / 0</span>
               </div>
               <div class="field-grid">
                 <label>
-                  <span>Agent</span>
-                  <select id="st-agent-select"><option value="">— 默认 —</option></select>
+                  <span>搜索</span>
+                  <input id="st-search-input" type="text" maxlength="120" placeholder="按 case id、prompt、备注、工具搜索" />
                 </label>
                 <label>
-                  <span>模型</span>
-                  <select id="st-model-select"><option value="">系统默认模型</option></select>
-                </label>
-                <label>
-                  <span>Prompt Version</span>
-                  <input id="st-prompt-version" type="text" maxlength="80" placeholder="skill-test-v2" />
-                </label>
-              </div>
-            </section>
-
-            <section class="stack-card">
-              <div class="section-row">
-                <span class="section-label">自动生成</span>
-                <span id="st-case-count" class="section-hint">0 个用例</span>
-              </div>
-              <div class="field-grid">
-                <label>
-                  <span>数量</span>
-                  <input id="st-generate-count" type="number" min="1" max="10" value="3" />
-                </label>
-                <label>
-                  <span>加载方式</span>
-                  <select id="st-generate-loading-mode">
-                    <option value="dynamic">Dynamic（推荐）</option>
-                    <option value="full">Full</option>
-                  </select>
-                </label>
-                <label>
-                  <span>测试侧重点</span>
-                  <select id="st-generate-type">
-                    <option value="trigger">先验证能否触发</option>
-                    <option value="execution">重点检查工具执行</option>
+                  <span>筛选</span>
+                  <select id="st-validity-filter">
+                    <option value="all">全部状态</option>
+                    <option value="pending">待验证</option>
+                    <option value="validated">可运行</option>
+                    <option value="invalid">触发失败</option>
+                    <option value="failing">最近失败</option>
                   </select>
                 </label>
               </div>
-              <p class="section-hint">生成后会自动做一次可触发验证；批量运行会重跑“可运行”和“触发失败”的用例。</p>
-              <div class="panel-actions">
-                <button id="st-generate-btn" class="ghost-button" type="button">生成测试用例</button>
-                <button id="st-run-all-btn" class="ghost-button" type="button">批量运行可重试用例</button>
+              <div id="st-case-list" class="skill-test-case-list">
+                <p class="section-hint">选择一个 Skill 查看测试用例</p>
               </div>
             </section>
 
-            <section class="stack-card">
-              <div class="section-row">
-                <span class="section-label">手动创建</span>
+            <section class="panel skill-tests-detail-panel">
+              <div id="st-detail-empty" class="empty-state skill-test-empty-state">
+                <p class="eyebrow">Skill Test Detail</p>
+                <h2 class="skill-test-empty-title">先选一条用例</h2>
+                <p class="section-hint">从上面的列表点开一条，或者先生成 / 手动创建一条用例；详情区会按页签拆开显示，不再把历史和回归都堆在一起。</p>
               </div>
+
+              <div id="st-detail" class="hidden skill-test-detail-shell">
+                <div class="skill-test-detail-header">
+                  <div>
+                    <p class="eyebrow">Skill Test Detail</p>
+                    <div class="skill-test-detail-title-row">
+                      <h2>测试用例详情</h2>
+                      <span id="st-detail-validity" class="tag tag-pending">待验证</span>
+                    </div>
+                    <p id="st-detail-case-id" class="muted"></p>
+                    <div id="st-detail-meta" class="tag-row"></div>
+                    <p id="st-detail-last-outcome" class="section-hint">先运行一条再看最近结果摘要。</p>
+                  </div>
+                  <div class="panel-actions">
+                    <button id="st-detail-run-btn" class="ghost-button" type="button">运行测试</button>
+                    <button id="st-detail-download-btn" class="ghost-button" type="button">下载 JSON</button>
+                    <button id="st-detail-delete-btn" class="ghost-button danger" type="button">删除</button>
+                  </div>
+                </div>
+
+                <div class="tab-bar skill-test-detail-tabs" role="tablist" aria-label="Skill test detail tabs">
+                  <button class="tab-button active" type="button" data-st-detail-tab="overview" aria-selected="true">概览</button>
+                  <button class="tab-button" type="button" data-st-detail-tab="details" aria-selected="false">详情</button>
+                  <button class="tab-button" type="button" data-st-detail-tab="runs" aria-selected="false">运行历史</button>
+                  <button class="tab-button" type="button" data-st-detail-tab="regression" aria-selected="false">回归对比</button>
+                </div>
+
+                <div class="skill-test-detail-content">
+                  <div data-st-detail-panel="overview" class="skill-test-detail-panel">
+                    <div class="skill-test-detail-grid">
+                      <section class="stack-card">
+                        <div class="section-row">
+                          <span class="section-label">这条用例想测什么</span>
+                        </div>
+                        <p id="st-detail-expected-behavior" class="section-hint">主要关注能否触发 skill。</p>
+                      </section>
+
+                      <section class="stack-card">
+                        <div class="section-row">
+                          <span class="section-label">期望工具</span>
+                        </div>
+                        <p id="st-detail-expected-tools" class="section-hint">(无)</p>
+                      </section>
+
+                      <section class="stack-card">
+                        <div class="section-row">
+                          <span class="section-label">当前状态说明</span>
+                        </div>
+                        <p id="st-detail-validity-help" class="section-hint">生成后会先自动做一次可触发验证。</p>
+                      </section>
+                    </div>
+                  </div>
+
+                  <div data-st-detail-panel="details" class="skill-test-detail-panel hidden">
+                    <div class="skill-test-detail-grid">
+                      <section class="stack-card skill-test-detail-span-full">
+                        <div class="section-row">
+                          <span class="section-label">触发 Prompt</span>
+                        </div>
+                        <textarea id="st-detail-prompt" class="mono-textarea" rows="5" readonly></textarea>
+                      </section>
+
+                      <section class="stack-card">
+                        <div class="section-row">
+                          <span class="section-label">备注</span>
+                        </div>
+                        <p id="st-detail-note" class="section-hint">无备注</p>
+                      </section>
+                    </div>
+                  </div>
+
+                  <div data-st-detail-panel="runs" class="skill-test-detail-panel hidden">
+                    <div id="st-detail-runs" class="agent-list">
+                      <p class="section-hint">暂无运行记录</p>
+                    </div>
+                  </div>
+
+                  <div data-st-detail-panel="regression" class="skill-test-detail-panel hidden">
+                    <div id="st-detail-regression">
+                      <p class="section-hint">先运行几次，再看不同模型或 prompt version 的表现差异。</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section id="st-create-section" class="panel skill-tests-create-panel">
+              <div class="panel-header">
+                <div>
+                  <p class="eyebrow">Create</p>
+                  <h2>手动创建</h2>
+                </div>
+              </div>
+              <p class="section-hint">当自动生成不够精确时，在这里手动补一条带结构化校验的用例。</p>
               <form id="st-create-form" class="settings-form">
                 <label>
                   <span>触发 Prompt</span>
@@ -158,117 +290,7 @@
               </form>
             </section>
 
-            <section class="stack-card">
-              <div class="section-row">
-                <span class="section-label">当前 Skill 概览</span>
-              </div>
-              <div id="st-selected-highlights" class="tag-row">
-                <span class="tag tag-pending">先选一个 Skill</span>
-              </div>
-              <p id="st-selected-summary" class="section-hint">这里会显示当前 Skill 的用例数量、可重试范围和最近表现。</p>
-            </section>
-
-            <section class="stack-card">
-              <div class="section-row">
-                <span class="section-label">用例列表</span>
-                <span id="st-filter-count" class="section-hint">显示 0 / 0</span>
-              </div>
-              <div class="field-grid">
-                <label>
-                  <span>搜索</span>
-                  <input id="st-search-input" type="text" maxlength="120" placeholder="按 prompt、备注、工具搜索" />
-                </label>
-                <label>
-                  <span>筛选</span>
-                  <select id="st-validity-filter">
-                    <option value="all">全部状态</option>
-                    <option value="pending">待验证</option>
-                    <option value="validated">可运行</option>
-                    <option value="invalid">触发失败</option>
-                    <option value="failing">最近失败</option>
-                  </select>
-                </label>
-              </div>
-              <div id="st-case-list" class="agent-list">
-                <p class="section-hint">选择一个 Skill 查看测试用例</p>
-              </div>
-            </section>
-          </aside>
-
-          <section class="panel panel-studio">
-            <div id="st-detail-empty" class="empty-state">
-              <p class="eyebrow">Skill Test Detail</p>
-              <h2 style="margin-top:0">先选一条用例</h2>
-              <p class="section-hint">左侧会先告诉你这条用例测什么、当前能不能跑；点开后，这里会按“目标 → 触发 → 执行”展示完整结果。</p>
-            </div>
-
-            <div id="st-detail" class="hidden">
-              <div class="panel-header">
-                <div>
-                  <p class="eyebrow">Skill Test Detail</p>
-                  <h2>测试用例详情</h2>
-                  <p id="st-detail-case-id" class="muted"></p>
-                  <div id="st-detail-meta" class="tag-row"></div>
-                </div>
-                <div class="panel-actions">
-                  <button id="st-detail-run-btn" class="ghost-button" type="button">运行测试</button>
-                  <button id="st-detail-download-btn" class="ghost-button" type="button">下载 JSON</button>
-                  <button id="st-detail-delete-btn" class="ghost-button" type="button" style="color:#e53e3e">删除</button>
-                </div>
-              </div>
-
-              <form class="settings-form">
-                <section class="stack-card">
-                  <div class="section-row">
-                    <span class="section-label">触发 Prompt</span>
-                  </div>
-                  <textarea id="st-detail-prompt" class="mono-textarea" rows="4" readonly></textarea>
-                </section>
-
-                <section class="stack-card">
-                  <div class="section-row">
-                    <span class="section-label">这条用例想测什么</span>
-                  </div>
-                  <p id="st-detail-expected-behavior" class="section-hint">主要关注能否触发 skill。</p>
-                </section>
-
-                <section class="stack-card">
-                  <div class="section-row">
-                    <span class="section-label">期望工具</span>
-                    <span id="st-detail-expected-tools" class="section-hint">(无)</span>
-                  </div>
-                </section>
-
-                <section class="stack-card">
-                  <div class="section-row">
-                    <span class="section-label">当前状态</span>
-                    <span id="st-detail-validity" class="tag tag-pending">待验证</span>
-                  </div>
-                  <p id="st-detail-validity-help" class="section-hint">生成后会先自动做一次可触发验证。</p>
-                </section>
-
-                <section class="stack-card">
-                  <div class="section-row">
-                    <span class="section-label">回归对比</span>
-                    <span class="section-hint">按模型 / prompt version 聚合</span>
-                  </div>
-                  <div id="st-detail-regression">
-                    <p class="section-hint">先运行几次，再看不同模型或 prompt version 的表现差异。</p>
-                  </div>
-                </section>
-
-                <section class="stack-card">
-                  <div class="section-row">
-                    <span class="section-label">运行历史</span>
-                  </div>
-                  <div id="st-detail-runs" class="agent-list">
-                    <p class="section-hint">暂无运行记录</p>
-                  </div>
-                </section>
-              </form>
-            </div>
-
-            <div id="st-summary-section">
+            <section id="st-summary-section" class="panel skill-tests-summary-panel">
               <div class="panel-header">
                 <div>
                   <p class="eyebrow">Summary</p>
@@ -284,8 +306,8 @@
               <div id="st-summary-body">
                 <p class="section-hint">加载中...</p>
               </div>
-            </div>
-          </section>
+            </section>
+          </div>
         </main>
       </div>
 

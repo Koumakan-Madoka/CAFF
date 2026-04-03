@@ -1,0 +1,2 @@
+{"file": ".agents/skills/check/SKILL.md", "reason": "Run project-specific quality checks after the UI refactor lands."}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Validate responsive behavior and page ergonomics against frontend guidance."}

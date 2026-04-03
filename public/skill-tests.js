@@ -13,7 +13,7 @@
   }
 
   const dom = {
-    tabButtons: /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('.tab-bar .tab-button')),
+    tabButtons: /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('.tab-button[data-tab]')),
     tabPanels: /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('.tab-panel')),
     // Skill Tests tab
     skillSelect: /** @type {HTMLSelectElement | null} */ (document.getElementById('st-skill-select')),
@@ -26,6 +26,7 @@
     generateLoadingMode: /** @type {HTMLSelectElement | null} */ (document.getElementById('st-generate-loading-mode')),
     generateTestType: /** @type {HTMLSelectElement | null} */ (document.getElementById('st-generate-type')),
     runAllButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('st-run-all-btn')),
+    openCreateButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('st-open-create-btn')),
     selectedHighlights: /** @type {HTMLElement | null} */ (document.getElementById('st-selected-highlights')),
     selectedSummary: /** @type {HTMLElement | null} */ (document.getElementById('st-selected-summary')),
     caseList: /** @type {HTMLDivElement | null} */ (document.getElementById('st-case-list')),
@@ -38,7 +39,9 @@
     detailPanel: /** @type {HTMLElement | null} */ (document.getElementById('st-detail')),
     detailCaseId: /** @type {HTMLElement | null} */ (document.getElementById('st-detail-case-id')),
     detailMeta: /** @type {HTMLElement | null} */ (document.getElementById('st-detail-meta')),
+    detailLastOutcome: /** @type {HTMLElement | null} */ (document.getElementById('st-detail-last-outcome')),
     detailPrompt: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('st-detail-prompt')),
+    detailNote: /** @type {HTMLElement | null} */ (document.getElementById('st-detail-note')),
     detailExpectedBehavior: /** @type {HTMLElement | null} */ (document.getElementById('st-detail-expected-behavior')),
     detailExpectedTools: /** @type {HTMLElement | null} */ (document.getElementById('st-detail-expected-tools')),
     detailValidity: /** @type {HTMLElement | null} */ (document.getElementById('st-detail-validity')),
@@ -48,11 +51,14 @@
     detailDeleteButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('st-detail-delete-btn')),
     detailRegression: /** @type {HTMLElement | null} */ (document.getElementById('st-detail-regression')),
     detailRuns: /** @type {HTMLDivElement | null} */ (document.getElementById('st-detail-runs')),
+    detailTabButtons: /** @type {NodeListOf<HTMLButtonElement>} */ (document.querySelectorAll('[data-st-detail-tab]')),
+    detailTabPanels: /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('[data-st-detail-panel]')),
     // Summary
     summaryBody: /** @type {HTMLElement | null} */ (document.getElementById('st-summary-body')),
     summaryHighlights: /** @type {HTMLElement | null} */ (document.getElementById('st-summary-highlights')),
     refreshSummaryButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('st-refresh-summary')),
     // Manual create
+    createSection: /** @type {HTMLElement | null} */ (document.getElementById('st-create-section')),
     createForm: /** @type {HTMLFormElement | null} */ (document.getElementById('st-create-form')),
     createPrompt: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('st-create-prompt')),
     createTestType: /** @type {HTMLSelectElement | null} */ (document.getElementById('st-create-type')),
@@ -75,6 +81,7 @@
     loading: false,
     searchQuery: '',
     validityFilter: 'all',
+    activeDetailTab: 'overview',
   };
 
   // ---- Tab switching ----
@@ -98,6 +105,66 @@
       switchTab(tabId);
     });
   });
+
+  function switchDetailTab(tabName) {
+    const nextTab = tabName || 'overview';
+    state.activeDetailTab = nextTab;
+    dom.detailTabButtons.forEach((btn) => {
+      const active = btn.dataset.stDetailTab === nextTab;
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-selected', active ? 'true' : 'false');
+      btn.tabIndex = active ? 0 : -1;
+    });
+    dom.detailTabPanels.forEach((panel) => {
+      panel.classList.toggle('hidden', panel.dataset.stDetailPanel !== nextTab);
+    });
+  }
+
+  function focusCreateSection() {
+    if (dom.createSection) {
+      dom.createSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    if (dom.createPrompt) {
+      window.setTimeout(() => {
+        dom.createPrompt.focus();
+      }, 120);
+    }
+  }
+
+  function openCreateFlow() {
+    if (!state.selectedSkillId) {
+      showToast('先从顶部选择一个 Skill，再手动创建用例');
+      if (dom.skillSelect) {
+        dom.skillSelect.focus();
+      }
+      return;
+    }
+    focusCreateSection();
+  }
+
+  function selectCase(caseId, options = {}) {
+    if (!caseId) return;
+    state.selectedCaseId = caseId;
+    if (options.detailTab) {
+      switchDetailTab(options.detailTab);
+    }
+    renderCaseList();
+    syncDetailPanel();
+    if (options.scrollIntoView && dom.detailPanel && !dom.detailPanel.classList.contains('hidden')) {
+      dom.detailPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }
+
+  dom.detailTabButtons.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      switchDetailTab(btn.dataset.stDetailTab || 'overview');
+    });
+  });
+  switchDetailTab(state.activeDetailTab);
+
+  if (dom.openCreateButton) {
+    dom.openCreateButton.addEventListener('click', openCreateFlow);
+  }
 
   // ---- Agent & Model selectors ----
   async function loadBootstrapOptions() {
@@ -192,20 +259,29 @@
     const modelKey = dom.modelSelect ? dom.modelSelect.value.trim() : '';
     let provider = '';
     let model = '';
-    if (modelKey) {
+
+    const selectedModelOption =
+      modelOptionUtils && typeof modelOptionUtils.selectedModelOption === 'function'
+        ? modelOptionUtils.selectedModelOption(dom.modelSelect, state.modelOptions)
+        : null;
+
+    if (selectedModelOption) {
+      provider = String(selectedModelOption.provider || '').trim();
+      model = String(selectedModelOption.model || '').trim();
+    } else if (modelKey) {
       const parts = modelKey.split('\u001f');
       provider = (parts[0] || '').trim();
       model = (parts[1] || '').trim();
     }
+
     const opts = {};
     if (provider) opts.provider = provider;
     if (model) opts.model = model;
     if (agentId) opts.agentId = agentId;
     const promptVersion = dom.promptVersionInput ? dom.promptVersionInput.value.trim() : '';
     if (promptVersion) opts.promptVersion = promptVersion;
-    // resolve agent name from agent list
     if (agentId && Array.isArray(state.agents)) {
-      const found = state.agents.find(a => a && a.id === agentId);
+      const found = state.agents.find((agent) => agent && agent.id === agentId);
       if (found && found.name) opts.agentName = found.name;
     }
     return opts;
@@ -272,6 +348,32 @@
     dom.refreshSkillsButton.addEventListener('click', loadSkills);
   }
 
+  if (dom.caseList) {
+    dom.caseList.addEventListener('click', (event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const actionButton = target.closest('[data-st-case-action]');
+      if (!actionButton) return;
+      const action = actionButton.getAttribute('data-st-case-action') || '';
+      if (action === 'generate' && dom.generateButton) {
+        dom.generateButton.click();
+        return;
+      }
+      if (action === 'open-create') {
+        openCreateFlow();
+        return;
+      }
+      if (action === 'clear-filters') {
+        state.searchQuery = '';
+        state.validityFilter = 'all';
+        if (dom.searchInput) dom.searchInput.value = '';
+        if (dom.validityFilter) dom.validityFilter.value = 'all';
+        renderSelectedSkillOverview();
+        renderCaseList();
+      }
+    });
+  }
+
   // ---- Test Cases ----
   async function loadTestCases() {
     if (!state.selectedSkillId) {
@@ -293,6 +395,50 @@
       syncDetailPanel();
     } catch (err) {
       showToast('Failed to load test cases: ' + (err.message || err));
+    }
+  }
+
+  async function runTestCase(caseId, options = {}) {
+    if (!state.selectedSkillId || !caseId) {
+      showToast('请先选择一个 Skill 和测试用例');
+      return false;
+    }
+
+    const button = options.button || null;
+    const idleLabel = options.idleLabel || (button ? button.textContent : '运行');
+    const busyLabel = options.busyLabel || '运行中...';
+
+    state.selectedCaseId = caseId;
+    if (options.detailTab) {
+      switchDetailTab(options.detailTab);
+    }
+    renderCaseList();
+    syncDetailPanel();
+
+    if (button) {
+      button.disabled = true;
+      button.textContent = busyLabel;
+    }
+
+    try {
+      await fetchJson(
+        `/api/skills/${encodeURIComponent(state.selectedSkillId)}/test-cases/${encodeURIComponent(caseId)}/run`,
+        { method: 'POST', body: getRunOptions() }
+      );
+      showToast('测试运行完成');
+      await Promise.all([loadTestCases(), loadSummary()]);
+      if (options.scrollIntoView && dom.detailPanel && !dom.detailPanel.classList.contains('hidden')) {
+        dom.detailPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+      return true;
+    } catch (err) {
+      showToast('运行失败: ' + (err.message || err));
+      return false;
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.textContent = idleLabel;
+      }
     }
   }
 
@@ -339,6 +485,7 @@
   function getFilteredCases() {
     return state.testCases.filter((tc) => {
       const matchesQuery = !state.searchQuery || [
+        tc.id,
         tc.triggerPrompt,
         tc.note,
         tc.expectedBehavior,
@@ -357,8 +504,7 @@
   }
 
   function renderCaseList() {
-    if (!dom.caseList) return;
-    if (!dom.caseCount) return;
+    if (!dom.caseList || !dom.caseCount) return;
     dom.caseCount.textContent = `${state.testCases.length} 个用例`;
 
     const filteredCases = getFilteredCases();
@@ -368,16 +514,41 @@
     }
 
     if (filteredCases.length === 0) {
-      dom.caseList.innerHTML = state.selectedSkillId
-        ? '<p class="section-hint">没有符合当前筛选的用例，试试切换状态或清空搜索。</p>'
-        : '<p class="section-hint">先选一个 Skill，再来看它的测试用例。</p>';
+      if (!state.selectedSkillId) {
+        dom.caseList.innerHTML = `
+          <div class="empty-state compact-empty-state">
+            <p class="section-hint">先从顶部选一个 Skill，再来看它的测试用例。</p>
+          </div>
+        `;
+        return;
+      }
+
+      const hasCases = state.testCases.length > 0;
+      dom.caseList.innerHTML = hasCases
+        ? `
+          <div class="empty-state compact-empty-state">
+            <p class="section-hint">没有符合当前筛选的用例，试试清空搜索或切回“全部状态”。</p>
+            <div class="panel-actions skill-test-empty-actions">
+              <button class="ghost-button" type="button" data-st-case-action="clear-filters">清空筛选</button>
+            </div>
+          </div>
+        `
+        : `
+          <div class="empty-state compact-empty-state">
+            <p class="section-hint">这个 Skill 还没有测试用例；你可以直接生成，或者手动补一条更精确的 case。</p>
+            <div class="panel-actions skill-test-empty-actions">
+              <button class="ghost-button" type="button" data-st-case-action="generate">生成测试用例</button>
+              <button class="ghost-button" type="button" data-st-case-action="open-create">手动创建</button>
+            </div>
+          </div>
+        `;
       return;
     }
 
     dom.caseList.innerHTML = '';
     for (const tc of filteredCases) {
-      const card = document.createElement('div');
-      card.className = 'agent-card' + (tc.id === state.selectedCaseId ? ' agent-card-selected' : '');
+      const card = document.createElement('article');
+      card.className = 'skill-test-case-card' + (tc.id === state.selectedCaseId ? ' agent-card-selected' : '');
       card.dataset.caseId = tc.id;
 
       const validityMeta = getValidityMeta(tc.validityStatus);
@@ -385,31 +556,62 @@
       const loadingModeLabel = getLoadingModeLabel(tc.loadingMode);
       const expectedToolsText = formatExpectedTools(tc.expectedTools);
       const lastOutcome = getLastOutcomeSummary(tc.latestRun);
-      const goalSummary = clipText(tc.expectedBehavior || tc.note || '生成后会先自动验证一次', 80);
-      const latestSummary = clipText(lastOutcome, 86);
-      const caseIdentity = tc.id ? `#${tc.id.slice(0, 8)}` : '';
+      const goalSummary = clipText(tc.expectedBehavior || tc.note || '生成后会先自动验证一次', 90);
+      const latestSummary = clipText(lastOutcome, 96);
+      const caseIdentity = tc.id ? `#${tc.id.slice(0, 8)}` : '未命名';
       const recentRunLabel = tc.latestRun && tc.latestRun.createdAt
         ? `最近运行 ${new Date(tc.latestRun.createdAt).toLocaleString()}`
         : '还没跑过';
 
       card.innerHTML = `
-        <div class="agent-card-header">
-          <span class="agent-name">${escapeHtml(clipText(tc.triggerPrompt, 60))}</span>
+        <div class="skill-test-case-card-head">
+          <div>
+            <div class="skill-test-case-card-id">${escapeHtml(caseIdentity)}</div>
+            <div class="skill-test-case-card-meta">${escapeHtml(testTypeLabel)} · ${escapeHtml(loadingModeLabel)}</div>
+          </div>
           <span class="tag ${validityMeta.className}">${validityMeta.label}</span>
         </div>
-        <div class="agent-meta">
-          <span>${testTypeLabel} · ${loadingModeLabel}</span>
-          <span>· ${escapeHtml(expectedToolsText)}</span>
-        </div>
-        <div class="agent-meta">${escapeHtml([caseIdentity, recentRunLabel].filter(Boolean).join(' · '))}</div>
-        <div class="agent-meta">${escapeHtml(goalSummary)}</div>
-        <div class="agent-meta">${escapeHtml(latestSummary)}</div>
+        <p class="skill-test-case-card-prompt">${escapeHtml(clipText(tc.triggerPrompt, 120))}</p>
+        <div class="skill-test-case-card-meta">${escapeHtml(recentRunLabel)}</div>
+        <div class="skill-test-case-card-meta">${escapeHtml(goalSummary)}</div>
+        <div class="skill-test-case-card-meta">${escapeHtml(clipText(expectedToolsText, 120))}</div>
+        <div class="skill-test-case-card-meta">${escapeHtml(latestSummary)}</div>
       `;
 
+      const actions = document.createElement('div');
+      actions.className = 'skill-test-case-card-actions';
+
+      const viewButton = document.createElement('button');
+      viewButton.type = 'button';
+      viewButton.className = 'mini-action';
+      viewButton.textContent = '查看详情';
+      viewButton.addEventListener('click', (event) => {
+        event.stopPropagation();
+        selectCase(tc.id, { detailTab: 'overview', scrollIntoView: true });
+      });
+
+      const runButton = document.createElement('button');
+      runButton.type = 'button';
+      runButton.className = 'mini-action';
+      runButton.textContent = '运行';
+      runButton.addEventListener('click', async (event) => {
+        event.stopPropagation();
+        selectCase(tc.id, { detailTab: 'runs', scrollIntoView: true });
+        await runTestCase(tc.id, {
+          button: runButton,
+          idleLabel: '运行',
+          busyLabel: '运行中...',
+          detailTab: 'runs',
+          scrollIntoView: true,
+        });
+      });
+
+      actions.appendChild(viewButton);
+      actions.appendChild(runButton);
+      card.appendChild(actions);
+
       card.addEventListener('click', () => {
-        state.selectedCaseId = tc.id;
-        renderCaseList();
-        renderDetail(tc);
+        selectCase(tc.id, { detailTab: 'overview' });
       });
 
       dom.caseList.appendChild(card);
@@ -428,7 +630,13 @@
         ${tc.note ? `<span class="tag">${escapeHtml(clipText(tc.note, 36))}</span>` : ''}
       `;
     }
+    if (dom.detailLastOutcome) {
+      dom.detailLastOutcome.textContent = getLastOutcomeSummary(tc.latestRun);
+    }
     if (dom.detailPrompt) dom.detailPrompt.value = tc.triggerPrompt;
+    if (dom.detailNote) {
+      dom.detailNote.textContent = tc.note || '无备注';
+    }
     if (dom.detailExpectedBehavior) {
       dom.detailExpectedBehavior.textContent = tc.expectedBehavior || '主要关注：这条 prompt 能不能稳定触发目标 skill。';
     }
@@ -455,9 +663,16 @@
     if (dom.detailEmpty) {
       dom.detailEmpty.classList.remove('hidden');
     }
+    if (dom.detailLastOutcome) {
+      dom.detailLastOutcome.textContent = '先运行一条再看最近结果摘要。';
+    }
     if (dom.detailRegression) {
       dom.detailRegression.innerHTML = '<p class="section-hint">先运行几次，再看不同模型或 prompt version 的表现差异。</p>';
     }
+    if (dom.detailRuns) {
+      dom.detailRuns.innerHTML = '<p class="section-hint">暂无运行记录</p>';
+    }
+    switchDetailTab('overview');
   }
 
   function syncDetailPanel() {
@@ -473,19 +688,40 @@
     renderDetail(selectedCase);
   }
 
+  function renderRetryState(container, message, onRetry) {
+    container.innerHTML = `
+      <div class="empty-state compact-empty-state">
+        <p class="section-hint">${escapeHtml(message)}</p>
+        <div class="skill-test-empty-actions">
+          <button type="button" class="ghost-button">重试</button>
+        </div>
+      </div>
+    `;
+
+    const retryButton = container.querySelector('button');
+    if (retryButton) {
+      retryButton.addEventListener('click', onRetry);
+    }
+  }
+
   async function loadCaseRuns(caseId) {
     if (!dom.detailRuns) return;
     const skillId = state.selectedSkillId;
     if (!skillId) return;
 
+    dom.detailRuns.innerHTML = '<p class="section-hint">加载运行记录中...</p>';
     try {
       const data = await fetchJson(
         `/api/skills/${encodeURIComponent(skillId)}/test-cases/${encodeURIComponent(caseId)}/runs?limit=50`
       );
+      if (state.selectedCaseId !== caseId) return;
       const runs = Array.isArray(data.runs) ? data.runs : [];
       renderCaseRuns(runs);
     } catch {
-      dom.detailRuns.innerHTML = '<p class="section-hint">加载运行记录失败</p>';
+      if (state.selectedCaseId !== caseId) return;
+      renderRetryState(dom.detailRuns, '加载运行记录失败，请重试。', () => {
+        loadCaseRuns(caseId);
+      });
     }
   }
 
@@ -499,20 +735,28 @@
       const data = await fetchJson(
         `/api/skills/${encodeURIComponent(skillId)}/test-cases/${encodeURIComponent(caseId)}/regression`
       );
+      if (state.selectedCaseId !== caseId) return;
       renderCaseRegression(Array.isArray(data.regression) ? data.regression : []);
     } catch {
-      dom.detailRegression.innerHTML = '<p class="section-hint">加载回归对比失败</p>';
+      if (state.selectedCaseId !== caseId) return;
+      renderRetryState(dom.detailRegression, '加载回归对比失败，请重试。', () => {
+        loadCaseRegression(caseId);
+      });
     }
   }
 
   function renderCaseRegression(regression) {
     if (!dom.detailRegression) return;
     if (!Array.isArray(regression) || regression.length === 0) {
-      dom.detailRegression.innerHTML = '<p class="section-hint">还没有足够的运行记录来做对比。</p>';
+      dom.detailRegression.innerHTML = `
+        <div class="empty-state compact-empty-state">
+          <p class="section-hint">还没有足够的运行记录来做对比；先跑几次不同模型或 prompt version，再回来这里看回归差异。</p>
+        </div>
+      `;
       return;
     }
 
-    let html = '<table class="summary-table"><thead><tr>';
+    let html = '<div class="table-scroll"><table class="summary-table"><thead><tr>';
     html += '<th>模型</th><th>Prompt Version</th><th>运行</th><th>触发成功</th><th>执行成功</th><th>工具命中</th><th>最近运行</th>';
     html += '</tr></thead><tbody>';
 
@@ -534,14 +778,18 @@
       html += '</tr>';
     }
 
-    html += '</tbody></table>';
+    html += '</tbody></table></div>';
     dom.detailRegression.innerHTML = html;
   }
 
   function renderCaseRuns(runs) {
     if (!dom.detailRuns) return;
     if (runs.length === 0) {
-      dom.detailRuns.innerHTML = '<p class="section-hint">暂无运行记录</p>';
+      dom.detailRuns.innerHTML = `
+        <div class="empty-state compact-empty-state">
+          <p class="section-hint">这条用例还没有运行记录；点上方“运行测试”就能在这里看到失败原因和诊断信息。</p>
+        </div>
+      `;
       return;
     }
 
@@ -550,28 +798,31 @@
       const row = document.createElement('div');
       row.className = 'run-item';
 
-      const triggerTag = run.triggerPassed
+      const triggerTag = isPassedFlag(run.triggerPassed)
         ? '<span class="tag tag-success">已触发技能</span>'
-        : '<span class="tag tag-error">未触发技能</span>';
+        : isFailedFlag(run.triggerPassed)
+          ? '<span class="tag tag-error">未触发技能</span>'
+          : '<span class="tag tag-pending">触发结果待定</span>';
 
       const execTag =
-        run.executionPassed === null
+        run.executionPassed === null || typeof run.executionPassed === 'undefined'
           ? '<span class="tag tag-pending">未评估执行</span>'
-          : run.executionPassed
+          : isPassedFlag(run.executionPassed)
             ? '<span class="tag tag-success">工具执行符合预期</span>'
-            : '<span class="tag tag-error">工具执行未达预期</span>';
+            : isFailedFlag(run.executionPassed)
+              ? '<span class="tag tag-error">工具执行未达预期</span>'
+              : '<span class="tag tag-pending">执行结果待定</span>';
 
       const accuracy =
         run.toolAccuracy != null ? `<span class="tag">工具命中 ${(run.toolAccuracy * 100).toFixed(0)}%</span>` : '';
 
       const tools =
         Array.isArray(run.actualTools) && run.actualTools.length > 0
-          ? `<div class="agent-meta">工具: ${run.actualTools.join(', ')}</div>`
+          ? `<div class="agent-meta">工具: ${run.actualTools.map((toolName) => escapeHtml(toolName)).join(', ')}</div>`
           : '';
 
-      // Trigger failure hint — show what the model did instead
       let triggerFailHint = '';
-      if (!run.triggerPassed) {
+      if (isFailedFlag(run.triggerPassed)) {
         triggerFailHint = '<div class="run-item-warning">⚠ 这次没有触发到目标 skill，可点「查看详情」看模型实际做了什么</div>';
       }
 
@@ -789,7 +1040,7 @@
       html += '</div>';
     }
 
-    if (data.run && !data.run.triggerPassed) {
+    if (data.run && isFailedFlag(data.run.triggerPassed)) {
       html += '<div class="run-detail-section">';
       html += '<div class="section-label" style="color:#e53e3e">⚠ 触发失败诊断</div>';
       if (toolEvents.length === 0 && sessionToolCalls.length === 0) {
@@ -799,7 +1050,7 @@
           ...toolEvents.map(e => (e.payload && e.payload.tool) || 'unknown'),
           ...sessionToolCalls.map(t => t.toolName || 'unknown')
         ];
-        html += `<div class="run-detail-diag">模型调用了以下工具，但均未触发目标 skill: <strong>${allTools.join(', ')}</strong></div>`;
+        html += `<div class="run-detail-diag">模型调用了以下工具，但均未触发目标 skill: <strong>${escapeHtml(allTools.join(', '))}</strong></div>`;
       }
       // Show thinking if available
       if (session.thinking) {
@@ -840,7 +1091,7 @@
     }
 
     // ---- Thinking ----
-    if (session.thinking && data.run && data.run.triggerPassed) {
+    if (session.thinking && data.run && isPassedFlag(data.run.triggerPassed)) {
       html += '<div class="run-detail-section">';
       html += '<div class="section-label">思考过程</div>';
       html += `<pre class="run-detail-pre run-detail-thinking">${escapeHtml(session.thinking)}</pre>`;
@@ -885,22 +1136,13 @@
   // ---- Run single ----
   if (dom.detailRunButton) {
     dom.detailRunButton.addEventListener('click', async () => {
-      if (!state.selectedSkillId || !state.selectedCaseId) return;
-      dom.detailRunButton.disabled = true;
-      dom.detailRunButton.textContent = '运行中...';
-      try {
-        await fetchJson(
-          `/api/skills/${encodeURIComponent(state.selectedSkillId)}/test-cases/${encodeURIComponent(state.selectedCaseId)}/run`,
-          { method: 'POST', body: getRunOptions() }
-        );
-        showToast('测试运行完成');
-        await Promise.all([loadTestCases(), loadSummary()]);
-      } catch (err) {
-        showToast('运行失败: ' + (err.message || err));
-      } finally {
-        dom.detailRunButton.disabled = false;
-        dom.detailRunButton.textContent = '运行测试';
-      }
+      if (!state.selectedCaseId) return;
+      await runTestCase(state.selectedCaseId, {
+        button: dom.detailRunButton,
+        idleLabel: '运行测试',
+        busyLabel: '运行中...',
+        detailTab: 'runs',
+      });
     });
   }
 
@@ -956,11 +1198,9 @@
       let completed = 0;
       let triggerOk = 0;
       let execOk = 0;
-      const results = [];
 
       try {
         for (const tc of caseList) {
-          const pct = Math.round(((completed) / caseList.length) * 100);
           updateProgress(progressContainer, completed, caseList.length, `运行: ${clipText(tc.triggerPrompt, 30)}`);
 
           try {
@@ -968,13 +1208,12 @@
               `/api/skills/${encodeURIComponent(state.selectedSkillId)}/test-cases/${encodeURIComponent(tc.id)}/run`,
               { method: 'POST', body: getRunOptions() }
             );
-            results.push(result);
             if (result.run) {
-              if (result.run.triggerPassed) triggerOk++;
-              if (result.run.executionPassed) execOk++;
+              if (isPassedFlag(result.run.triggerPassed)) triggerOk++;
+              if (isPassedFlag(result.run.executionPassed)) execOk++;
             }
           } catch (err) {
-            results.push({ testCase: tc, error: String(err.message || err) });
+            void err;
           }
 
           completed++;
@@ -1163,7 +1402,7 @@
       `;
     }
 
-    let html = '<table class="summary-table"><thead><tr>';
+    let html = '<div class="table-scroll"><table class="summary-table"><thead><tr>';
     html += '<th>Skill</th><th>用例</th><th>运行</th>';
     html += '<th>状态</th><th>触发成功</th><th>执行成功</th><th>工具命中</th>';
     html += '</tr></thead><tbody>';
@@ -1187,7 +1426,7 @@
       html += `</tr>`;
     }
 
-    html += '</tbody></table>';
+    html += '</tbody></table></div>';
     dom.summaryBody.innerHTML = html;
   }
 

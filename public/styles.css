@@ -1765,3 +1765,278 @@ textarea {
   color: var(--muted);
   margin-top: 0.25rem;
 }
+
+/* ---- Skill Tests UI refactor ---- */
+.skill-tests-layout {
+  display: grid;
+  gap: 1rem;
+  align-items: start;
+}
+
+.skill-tests-toolbar-panel,
+.skill-tests-overview-panel,
+.skill-tests-list-panel,
+.skill-tests-detail-panel,
+.skill-tests-create-panel,
+.skill-tests-summary-panel {
+  display: grid;
+  gap: 1rem;
+  align-content: start;
+  overflow: visible;
+  max-height: none;
+}
+
+.skill-tests-toolbar-panel {
+  position: sticky;
+  top: 0.75rem;
+  z-index: 6;
+}
+
+.skill-tests-toolbar-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.skill-tests-toolbar-hints {
+  justify-content: flex-end;
+}
+
+.skill-tests-toolbar-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.8rem;
+  align-items: end;
+}
+
+.skill-tests-toolbar-field {
+  min-width: 0;
+}
+
+label.skill-tests-toolbar-field,
+.skill-tests-toolbar-field > label {
+  display: grid;
+  gap: 0.38rem;
+  font-weight: 600;
+  min-width: 0;
+}
+
+.skill-tests-toolbar-field:not(label) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.65rem;
+  align-items: end;
+}
+
+.skill-tests-toolbar-field-wide {
+  grid-column: span 2;
+}
+
+.skill-tests-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+}
+
+.skill-tests-toolbar-actions > button {
+  flex: 0 1 auto;
+}
+
+.skill-tests-main {
+  display: grid;
+  gap: 1rem;
+}
+
+.skill-test-case-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.skill-test-case-card {
+  display: grid;
+  gap: 0.55rem;
+  padding: 0.95rem;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(34, 49, 63, 0.08);
+  background: rgba(255, 255, 255, 0.56);
+  cursor: pointer;
+  transition:
+    transform 160ms ease,
+    border-color 160ms ease,
+    background 160ms ease;
+}
+
+.skill-test-case-card:hover {
+  transform: translateY(-1px);
+  border-color: rgba(239, 125, 87, 0.28);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.skill-test-case-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.skill-test-case-card-id {
+  font-size: 0.88rem;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.skill-test-case-card-prompt {
+  margin: 0;
+  color: var(--ink);
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.skill-test-case-card-meta {
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.skill-test-case-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  padding-top: 0.1rem;
+}
+
+.skill-test-empty-actions {
+  margin-top: 0.2rem;
+}
+
+.skill-test-empty-title {
+  margin-top: 0;
+  margin-bottom: 0.35rem;
+}
+
+.skill-test-detail-shell {
+  display: grid;
+  gap: 1rem;
+}
+
+.skill-test-detail-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding-bottom: 0.2rem;
+  border-bottom: 1px solid rgba(34, 49, 63, 0.08);
+}
+
+.skill-test-detail-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.skill-test-detail-title-row h2 {
+  margin: 0;
+}
+
+.skill-test-detail-tabs {
+  flex-wrap: wrap;
+}
+
+.skill-test-detail-content,
+.skill-test-detail-panel {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.skill-test-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.skill-test-detail-span-full {
+  grid-column: 1 / -1;
+}
+
+.table-scroll {
+  width: 100%;
+  overflow-x: auto;
+  border-radius: var(--radius-md);
+}
+
+.table-scroll .summary-table {
+  min-width: 680px;
+}
+
+@media (min-width: 1280px) {
+  .skill-tests-main {
+    grid-template-columns: minmax(0, 1.02fr) minmax(360px, 0.98fr);
+    grid-template-areas:
+      "overview detail"
+      "list detail"
+      "create summary";
+    align-items: start;
+  }
+
+  .skill-tests-overview-panel {
+    grid-area: overview;
+  }
+
+  .skill-tests-list-panel {
+    grid-area: list;
+  }
+
+  .skill-tests-detail-panel {
+    grid-area: detail;
+  }
+
+  .skill-tests-create-panel {
+    grid-area: create;
+  }
+
+  .skill-tests-summary-panel {
+    grid-area: summary;
+  }
+}
+
+@media (max-width: 1180px) {
+  .skill-tests-toolbar-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .skill-test-detail-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  .skill-tests-toolbar-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .skill-tests-toolbar-field-wide {
+    grid-column: auto;
+  }
+
+  .skill-tests-toolbar-field:not(label) {
+    grid-template-columns: 1fr;
+  }
+
+  .skill-tests-toolbar-actions > button {
+    flex: 1 1 100%;
+  }
+
+  .skill-test-case-card-head,
+  .skill-test-detail-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}

@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/frontend/index.md", "reason": "This task will likely require a frontend spec update for responsive Skill Tests layout and UI affordances."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Document any extracted reusable layout or state patterns if the refactor introduces them."}
