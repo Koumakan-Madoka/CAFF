@@ -11,7 +11,7 @@ import { readRequestJson } from '../http/request-body';
 import { sendJson } from '../http/response';
 import { resolveToolRelativePath } from '../http/path-utils';
 import { migrateChatSchema, migrateRunSchema, migrateSkillTestSchema } from '../../storage/sqlite/migrations';
-import { DEFAULT_THINKING, resolveSetting, startRun } from '../../lib/minimal-pi';
+import { DEFAULT_MODEL, DEFAULT_PROVIDER, DEFAULT_THINKING, resolveSetting, startRun } from '../../lib/minimal-pi';
 import { createSqliteRunStore } from '../../lib/sqlite-store';
 import { buildLlmGenerationPrompt, generateSkillTestPrompts } from '../../lib/skill-test-generator';
 import { ROOT_DIR } from '../app/config';
@@ -415,7 +415,9 @@ function buildEffectiveExecutionPassedSql(caseAlias = 'c', runAlias = 'r') {
   const loadingModeExpr = `LOWER(TRIM(COALESCE(${casePrefix}loading_mode, '')))`;
   const verdictExpr = `LOWER(TRIM(COALESCE(${runPrefix}verdict, '')))`;
   return `CASE
-    WHEN ${loadingModeExpr} = 'full' AND ${verdictExpr} != '' THEN CASE WHEN ${verdictExpr} = 'pass' THEN 1 ELSE 0 END
+    WHEN ${runPrefix}id IS NULL THEN 0
+    WHEN ${loadingModeExpr} != 'full' THEN 0
+    WHEN ${verdictExpr} != '' THEN CASE WHEN ${verdictExpr} = 'pass' THEN 1 ELSE 0 END
     WHEN ${runPrefix}execution_passed = 1 THEN 1
     ELSE 0
   END`;
@@ -425,12 +427,9 @@ function buildExecutionRateEligibleRunSql(caseAlias = 'c', runAlias = 'r') {
   const casePrefix = caseAlias ? `${caseAlias}.` : '';
   const runPrefix = runAlias ? `${runAlias}.` : '';
   const loadingModeExpr = `LOWER(TRIM(COALESCE(${casePrefix}loading_mode, '')))`;
-  const testTypeExpr = `LOWER(TRIM(COALESCE(${casePrefix}test_type, '')))`;
   return `CASE
     WHEN ${runPrefix}id IS NULL THEN 0
     WHEN ${loadingModeExpr} = 'full' THEN 1
-    WHEN ${testTypeExpr} = 'execution' THEN 1
-    WHEN ${runPrefix}execution_passed IS NOT NULL THEN 1
     ELSE 0
   END`;
 }
@@ -5247,6 +5246,8 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     const provider = String(runOptions.provider || '').trim();
     const model = String(runOptions.model || '').trim();
     const promptVersion = String(runOptions.promptVersion || '').trim() || 'skill-test-v1';
+    const effectiveProvider = resolveSetting(provider, process.env.PI_PROVIDER, DEFAULT_PROVIDER);
+    const effectiveModel = resolveSetting(model, process.env.PI_MODEL, DEFAULT_MODEL);
 
     // Create or reuse eval_case for this test case
     // Only create a new one if the test case doesn't already have one
@@ -5280,8 +5281,8 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
           stageTaskId: '',
           agentId,
           agentName,
-          provider: provider || null,
-          model: model || null,
+          provider: effectiveProvider || null,
+          model: effectiveModel || null,
           thinking: null,
           promptVersion,
           expectationsJson: JSON.stringify({
@@ -5359,8 +5360,8 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
         status: 'queued',
         assignedAgent: 'pi',
         assignedRole: agentName,
-        provider: provider || null,
-        model: model || null,
+        provider: effectiveProvider || null,
+        model: effectiveModel || null,
         requestedSession: sessionName,
         sessionPath: null,
         inputText: prompt,
@@ -5383,7 +5384,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
       let sessionPath = '';
 
       try {
-        const handle = startRunImpl(provider || '', model || '', prompt, {
+        const handle = startRunImpl(effectiveProvider, effectiveModel, prompt, {
           thinking: '',
           agentDir: store.agentDir,
           sqlitePath: store.databasePath,
@@ -5545,8 +5546,8 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
           id: evalCaseRunId,
           caseId: evalCaseId,
           variant: 'B',
-          provider: provider || null,
-          model: model || null,
+          provider: effectiveProvider || null,
+          model: effectiveModel || null,
           promptVersion,
           thinking: null,
           prompt,

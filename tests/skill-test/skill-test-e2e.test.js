@@ -2523,6 +2523,114 @@ test('case regression groups runs by provider/model and promptVersion', async ()
   }
 });
 
+test('run persists effective provider/model when request uses environment defaults', async () => {
+  const harness = createTempHarness();
+  const originalProvider = process.env.PI_PROVIDER;
+  const originalModel = process.env.PI_MODEL;
+  let capturedProvider = '';
+  let capturedModel = '';
+
+  process.env.PI_PROVIDER = 'env-provider';
+  process.env.PI_MODEL = 'env-model';
+
+  try {
+    const store = createInMemoryStore(harness.db, {
+      agentDir: path.join(harness.tempDir, 'agent'),
+      databasePath: harness.databasePath,
+    });
+
+    const controller = createSkillTestController({
+      store,
+      agentToolBridge: createFakeAgentToolBridge(),
+      skillRegistry: createFakeSkillRegistry(['werewolf']),
+      getProjectDir: () => harness.tempDir,
+      toolBaseUrl: 'http://127.0.0.1:3100',
+      startRunImpl: (provider, model) => {
+        capturedProvider = provider;
+        capturedModel = model;
+        const sessionPath = path.join(harness.tempDir, `session-${Date.now()}.jsonl`);
+        return {
+          runId: null,
+          sessionPath,
+          resultPromise: Promise.resolve({ reply: 'ok', sessionPath }),
+        };
+      },
+      evaluateRunImpl: () => ({
+        triggerPassed: 1,
+        executionPassed: 1,
+        toolAccuracy: 1,
+        actualToolsJson: JSON.stringify(['read']),
+        verdict: 'pass',
+        evaluation: { verdict: 'pass', summary: 'pass run' },
+      }),
+    });
+
+    const createRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('POST', '/api/skills/werewolf/test-cases', {
+        testType: 'execution',
+        loadingMode: 'full',
+        triggerPrompt: '我们来玩狼人杀吧',
+        expectedGoal: '作为玩家参与，不接管主持。',
+        expectedBehavior: '应保持玩家视角，不承担主持职责。',
+      }),
+      res: createRes,
+      pathname: '/api/skills/werewolf/test-cases',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases'),
+    });
+
+    const caseId = createRes.json.testCase.id;
+    const runRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('POST', `/api/skills/werewolf/test-cases/${caseId}/run`, {
+        promptVersion: 'env-defaults',
+      }),
+      res: runRes,
+      pathname: `/api/skills/werewolf/test-cases/${caseId}/run`,
+      requestUrl: new URL(`http://localhost/api/skills/werewolf/test-cases/${caseId}/run`),
+    });
+
+    assert.equal(runRes.statusCode, 200);
+    assert.equal(capturedProvider, 'env-provider');
+    assert.equal(capturedModel, 'env-model');
+
+    const evalRunRow = harness.db
+      .prepare('SELECT provider, model, prompt_version FROM eval_case_runs WHERE id = ?')
+      .get(runRes.json.run.evalCaseRunId);
+    assert.equal(evalRunRow.provider, 'env-provider');
+    assert.equal(evalRunRow.model, 'env-model');
+    assert.equal(evalRunRow.prompt_version, 'env-defaults');
+
+    const regressionRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('GET', `/api/skills/werewolf/test-cases/${caseId}/regression`),
+      res: regressionRes,
+      pathname: `/api/skills/werewolf/test-cases/${caseId}/regression`,
+      requestUrl: new URL(`http://localhost/api/skills/werewolf/test-cases/${caseId}/regression`),
+    });
+
+    assert.equal(regressionRes.statusCode, 200);
+    assert.equal(regressionRes.json.regression.length, 1);
+    assert.equal(regressionRes.json.regression[0].provider, 'env-provider');
+    assert.equal(regressionRes.json.regression[0].model, 'env-model');
+    assert.equal(regressionRes.json.regression[0].promptVersion, 'env-defaults');
+  } finally {
+    if (originalProvider === undefined) {
+      delete process.env.PI_PROVIDER;
+    } else {
+      process.env.PI_PROVIDER = originalProvider;
+    }
+
+    if (originalModel === undefined) {
+      delete process.env.PI_MODEL;
+    } else {
+      process.env.PI_MODEL = originalModel;
+    }
+
+    harness.cleanup();
+  }
+});
+
 test('list test cases includes latestRun metadata for UI state', async () => {
   const harness = createTempHarness();
 
@@ -2887,7 +2995,7 @@ test('full mode can pass without expected tools when toolErrorRate is n/a', asyn
   }
 });
 
-test('summary and regression execution rates exclude dynamic trigger-only runs and use full-mode verdict pass', async () => {
+test('summary and regression execution metrics ignore legacy dynamic runs and use full-mode verdict pass', async () => {
   const harness = createTempHarness();
   const queuedEvaluations = [
     {
@@ -2911,6 +3019,14 @@ test('summary and regression execution rates exclude dynamic trigger-only runs a
       executionPassed: null,
       toolAccuracy: null,
       actualToolsJson: JSON.stringify([]),
+      verdict: '',
+      evaluation: null,
+    },
+    {
+      triggerPassed: 1,
+      executionPassed: 1,
+      toolAccuracy: 1,
+      actualToolsJson: JSON.stringify(['read']),
       verdict: '',
       evaluation: null,
     },
@@ -3001,6 +3117,35 @@ test('summary and regression execution rates exclude dynamic trigger-only runs a
     assert.equal(dynamicRunRes.statusCode, 200);
     assert.equal(dynamicRunRes.json.run.executionPassed, null);
 
+    const createLegacyExecutionCaseRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('POST', '/api/skills/werewolf/test-cases', {
+        testType: 'execution',
+        loadingMode: 'dynamic',
+        triggerPrompt: '先读技能，再按旧版动态执行检查来跑。',
+        expectedTools: ['read'],
+        expectedBehavior: '旧版 dynamic execution 个例仍会在单次 run 里保留 executionPassed。',
+      }),
+      res: createLegacyExecutionCaseRes,
+      pathname: '/api/skills/werewolf/test-cases',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases'),
+    });
+
+    const legacyExecutionCaseId = createLegacyExecutionCaseRes.json.testCase.id;
+    const legacyExecutionRunRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('POST', `/api/skills/werewolf/test-cases/${legacyExecutionCaseId}/run`, {
+        provider: 'openai',
+        model: 'gpt-4.1',
+        promptVersion: 'phase3',
+      }),
+      res: legacyExecutionRunRes,
+      pathname: `/api/skills/werewolf/test-cases/${legacyExecutionCaseId}/run`,
+      requestUrl: new URL(`http://localhost/api/skills/werewolf/test-cases/${legacyExecutionCaseId}/run`),
+    });
+    assert.equal(legacyExecutionRunRes.statusCode, 200);
+    assert.equal(legacyExecutionRunRes.json.run.executionPassed, true);
+
     const summaryRes = createCaptureResponse();
     await controller({
       req: createJsonRequest('GET', '/api/skill-test-summary'),
@@ -3012,7 +3157,7 @@ test('summary and regression execution rates exclude dynamic trigger-only runs a
     assert.equal(summaryRes.statusCode, 200);
     const summaryEntry = summaryRes.json.summary.find((entry) => entry.skillId === 'werewolf');
     assert.ok(summaryEntry);
-    assert.equal(summaryEntry.totalRuns, 3);
+    assert.equal(summaryEntry.totalRuns, 4);
     assert.equal(summaryEntry.executionPassedCount, 1);
     assert.equal(summaryEntry.executionRate, 0.5);
 
@@ -3026,7 +3171,7 @@ test('summary and regression execution rates exclude dynamic trigger-only runs a
 
     assert.equal(skillRegressionRes.statusCode, 200);
     assert.equal(skillRegressionRes.json.regression.length, 1);
-    assert.equal(skillRegressionRes.json.regression[0].totalRuns, 3);
+    assert.equal(skillRegressionRes.json.regression[0].totalRuns, 4);
     assert.equal(skillRegressionRes.json.regression[0].executionPassedCount, 1);
     assert.equal(skillRegressionRes.json.regression[0].executionRate, 0.5);
 

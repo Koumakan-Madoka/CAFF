@@ -361,8 +361,8 @@ Regression endpoints group by:
 - `model`
 - `promptVersion`
 
-For full mode, regression/summary `executionPassedCount` uses verdict-pass semantics.
-- `executionRate` uses only execution-eligible runs as its denominator (full mode runs plus legacy dynamic execution cases); trigger-only dynamic runs are excluded from both numerator and denominator.
+Regression/summary execution metrics are full-mode only: `executionPassedCount` uses full-mode verdict-pass semantics (falling back to `execution_passed` only for older full-mode rows without verdict projection), and `executionRate` uses only full-mode runs as its denominator.
+- `eval_case_runs.provider` / `model` persist the effective runtime settings after request/env/default resolution, so defaulted runs still group into the correct regression bucket instead of collapsing into `default` labels.
 
 ## UI Contract (Workstream D)
 
