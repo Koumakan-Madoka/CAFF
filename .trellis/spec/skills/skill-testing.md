@@ -411,7 +411,7 @@ Frontend (`public/skill-tests.js`) consumes structured validation/evaluation:
 ### Phase 1 (Completed)
 
 - ✅ Dynamic-mode trigger detection via target `SKILL.md` read
-- ✅ L1 tool matching for legacy execution checks
+- ✅ L1 tool matching for legacy execution checks (including runtime alias normalization such as `participants` -> `list-participants`)
 - ✅ eval-case integration baseline
 
 ### Phase 2 (Completed)

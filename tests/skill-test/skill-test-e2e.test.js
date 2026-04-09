@@ -2037,6 +2037,114 @@ test('execution sequence avoids combining session and event timelines', async ()
   }
 });
 
+test('execution evaluation normalizes participants tool alias for expected tools', async () => {
+  const harness = createTempHarness();
+  const reply = '我先看看当前房间里都有谁。';
+
+  try {
+    const store = createInMemoryStore(harness.db, {
+      agentDir: path.join(harness.tempDir, 'agent'),
+      databasePath: harness.databasePath,
+    });
+
+    const controller = createSkillTestController({
+      store,
+      agentToolBridge: createFakeAgentToolBridge(),
+      skillRegistry: createFakeSkillRegistry([
+        {
+          id: 'werewolf',
+          name: '狼人杀 Skill',
+          description: '用于后端全自动主持的狼人杀玩法。模型只扮演玩家，按后端推进的日夜阶段行动。',
+        },
+      ]),
+      getProjectDir: () => harness.tempDir,
+      toolBaseUrl: 'http://127.0.0.1:3100',
+      startRunImpl: (_provider, _model, _prompt, runOptions = {}) => {
+        const sessionPath = path.join(harness.tempDir, `session-${Date.now()}.jsonl`);
+        fs.writeFileSync(
+          sessionPath,
+          `${JSON.stringify({
+            type: 'message',
+            message: {
+              role: 'assistant',
+              content: [
+                { type: 'text', text: reply },
+                { type: 'toolCall', name: 'read', id: 'tool-participants-read', arguments: { path: '/tmp/skills/werewolf/SKILL.md' } },
+              ],
+            },
+          })}\n`,
+          'utf8'
+        );
+        harness.db.prepare(
+          'INSERT INTO a2a_task_events (task_id, event_type, event_json, created_at) VALUES (?, ?, ?, ?)'
+        ).run(
+          runOptions.taskId,
+          'agent_tool_call',
+          JSON.stringify({
+            tool: 'participants',
+            request: {},
+            status: 'succeeded',
+          }),
+          new Date().toISOString()
+        );
+        return {
+          runId: null,
+          sessionPath,
+          resultPromise: Promise.resolve({ reply, sessionPath }),
+        };
+      },
+    });
+
+    const createReq = createJsonRequest('POST', '/api/skills/werewolf/test-cases', {
+      testType: 'execution',
+      loadingMode: 'dynamic',
+      triggerPrompt: '进入狼人杀房间前，先看看房间参与者。',
+      expectedTools: ['list-participants'],
+      expectedBehavior: '应该读取 skill 并查看当前参与者列表。',
+      note: 'participants alias case',
+    });
+    const createRes = createCaptureResponse();
+
+    await controller({
+      req: createReq,
+      res: createRes,
+      pathname: '/api/skills/werewolf/test-cases',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases'),
+    });
+
+    const caseId = createRes.json.testCase.id;
+    const runReq = createJsonRequest('POST', `/api/skills/werewolf/test-cases/${caseId}/run`, {});
+    const runRes = createCaptureResponse();
+    await controller({
+      req: runReq,
+      res: runRes,
+      pathname: `/api/skills/werewolf/test-cases/${caseId}/run`,
+      requestUrl: new URL(`http://localhost/api/skills/werewolf/test-cases/${caseId}/run`),
+    });
+
+    assert.equal(runRes.statusCode, 200);
+    assert.equal(runRes.json.run.triggerPassed, true);
+    assert.equal(runRes.json.run.executionPassed, true);
+    assert.equal(runRes.json.run.toolAccuracy, 1);
+
+    const detailReq = createJsonRequest('GET', `/api/skill-test-runs/${runRes.json.run.id}`, undefined);
+    const detailRes = createCaptureResponse();
+    await controller({
+      req: detailReq,
+      res: detailRes,
+      pathname: `/api/skill-test-runs/${runRes.json.run.id}`,
+      requestUrl: new URL(`http://localhost/api/skill-test-runs/${runRes.json.run.id}`),
+    });
+
+    assert.equal(detailRes.statusCode, 200);
+    assert.equal(detailRes.json.result.executionEvaluation.toolChecks[0].name, 'list-participants');
+    assert.equal(detailRes.json.result.executionEvaluation.toolChecks[0].matched, true);
+    assert.equal(detailRes.json.result.executionEvaluation.toolChecks[0].matchedByName, true);
+  } finally {
+    harness.cleanup();
+  }
+});
+
 test('case regression groups runs by provider/model and promptVersion', async () => {
   const harness = createTempHarness();
 

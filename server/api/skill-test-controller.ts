@@ -276,8 +276,16 @@ function sanitizeExpectedToolSpecs(value: any) {
     .filter(Boolean);
 }
 
+const TOOL_NAME_MATCH_ALIASES: Record<string, string> = {
+  participants: 'list-participants',
+};
+
 function normalizeToolNameForMatch(value: any) {
-  return String(value || '').trim();
+  const normalized = String(value || '').trim();
+  if (!normalized) {
+    return '';
+  }
+  return TOOL_NAME_MATCH_ALIASES[normalized.toLowerCase()] || normalized;
 }
 
 function toolNamesMatch(expectedName: any, actualName: any) {
