@@ -403,6 +403,129 @@ test('legacy validity_status rows stay draft in list, summary, and run-all', asy
   db.close();
 });
 
+test('skill test summary counts distinct cases and averages metrics across status buckets', async () => {
+  const db = createTestDb();
+  const store = createInMemoryStore(db);
+  const controller = createSkillTestController({
+    store,
+    agentToolBridge: createFakeAgentToolBridge(),
+    skillRegistry: createFakeSkillRegistry(['werewolf']),
+    getProjectDir: () => '/tmp/project',
+    toolBaseUrl: 'http://127.0.0.1:3100',
+  });
+
+  const baseTime = Date.now();
+  const caseStmt = db.prepare(
+    `INSERT INTO skill_test_cases (
+      id, skill_id, test_type, loading_mode, trigger_prompt,
+      expected_tools_json, expected_behavior, validity_status, case_status,
+      expected_goal, expected_sequence_json, evaluation_rubric_json,
+      note, created_at, updated_at
+    ) VALUES (
+      @id, @skillId, 'trigger', 'dynamic', @triggerPrompt,
+      '[]', '', 'pending', @caseStatus,
+      '', '[]', '{}',
+      '', @createdAt, @updatedAt
+    )`
+  );
+  caseStmt.run({
+    id: 'summary-draft-case',
+    skillId: 'werewolf',
+    triggerPrompt: 'draft summary case',
+    caseStatus: 'draft',
+    createdAt: new Date(baseTime).toISOString(),
+    updatedAt: new Date(baseTime).toISOString(),
+  });
+  caseStmt.run({
+    id: 'summary-ready-case',
+    skillId: 'werewolf',
+    triggerPrompt: 'ready summary case',
+    caseStatus: 'ready',
+    createdAt: new Date(baseTime + 1000).toISOString(),
+    updatedAt: new Date(baseTime + 1000).toISOString(),
+  });
+
+  const runStmt = db.prepare(
+    `INSERT INTO skill_test_runs (
+      id, test_case_id, status, actual_tools_json,
+      tool_accuracy, trigger_passed, execution_passed,
+      required_step_completion_rate, step_completion_rate,
+      tool_call_success_rate, goal_achievement,
+      evaluation_json, created_at
+    ) VALUES (
+      @id, @testCaseId, 'succeeded', '[]',
+      @toolAccuracy, @triggerPassed, @executionPassed,
+      @requiredStepCompletionRate, @stepCompletionRate,
+      @toolCallSuccessRate, @goalAchievement,
+      '{}', @createdAt
+    )`
+  );
+  runStmt.run({
+    id: 'summary-run-1',
+    testCaseId: 'summary-draft-case',
+    toolAccuracy: 0.2,
+    triggerPassed: 1,
+    executionPassed: 0,
+    requiredStepCompletionRate: 0.3,
+    stepCompletionRate: 0.4,
+    toolCallSuccessRate: 0.6,
+    goalAchievement: 0.5,
+    createdAt: new Date(baseTime + 2000).toISOString(),
+  });
+  runStmt.run({
+    id: 'summary-run-2',
+    testCaseId: 'summary-draft-case',
+    toolAccuracy: 0.4,
+    triggerPassed: 0,
+    executionPassed: 1,
+    requiredStepCompletionRate: 0.5,
+    stepCompletionRate: 0.6,
+    toolCallSuccessRate: 0.8,
+    goalAchievement: 0.7,
+    createdAt: new Date(baseTime + 3000).toISOString(),
+  });
+  runStmt.run({
+    id: 'summary-run-3',
+    testCaseId: 'summary-ready-case',
+    toolAccuracy: 1,
+    triggerPassed: 1,
+    executionPassed: 1,
+    requiredStepCompletionRate: 0.9,
+    stepCompletionRate: 0.8,
+    toolCallSuccessRate: 0.6,
+    goalAchievement: 0.7,
+    createdAt: new Date(baseTime + 4000).toISOString(),
+  });
+
+  const summaryRes = createCaptureResponse();
+  await controller({
+    req: createJsonRequest('GET', '/api/skill-test-summary'),
+    res: summaryRes,
+    pathname: '/api/skill-test-summary',
+    requestUrl: new URL('http://localhost/api/skill-test-summary'),
+  });
+
+  assert.equal(summaryRes.statusCode, 200);
+  const summaryEntry = summaryRes.json.summary.find((entry) => entry.skillId === 'werewolf');
+  assert.ok(summaryEntry);
+  assert.equal(summaryEntry.casesByStatus.draft, 1);
+  assert.equal(summaryEntry.casesByStatus.ready, 1);
+  assert.equal(summaryEntry.totalCases, 2);
+  assert.equal(summaryEntry.totalRuns, 3);
+
+  const assertApprox = (actual, expected) => {
+    assert.ok(Math.abs(actual - expected) < 1e-9, `expected ${actual} ≈ ${expected}`);
+  };
+
+  assertApprox(summaryEntry.avgToolAccuracy, (0.2 + 0.4 + 1) / 3);
+  assertApprox(summaryEntry.avgRequiredStepCompletionRate, (0.3 + 0.5 + 0.9) / 3);
+  assertApprox(summaryEntry.avgStepCompletionRate, (0.4 + 0.6 + 0.8) / 3);
+  assertApprox(summaryEntry.avgGoalAchievement, (0.5 + 0.7 + 0.7) / 3);
+  assertApprox(summaryEntry.avgToolCallSuccessRate, (0.6 + 0.8 + 0.6) / 3);
+
+  db.close();
+});
+
 test('generate preserves requested loadingMode and testType for AI full drafts', async () => {
   const db = createTestDb();
   const store = createInMemoryStore(db);
@@ -3057,6 +3180,96 @@ test('case reads expose schema validation metadata and mark-ready rejects invali
       return true;
     }
   );
+
+  db.close();
+});
+
+test('skill-scoped case routes reject case ids from another skill', async () => {
+  const db = createTestDb();
+  const store = createInMemoryStore(db);
+  const controller = createSkillTestController({
+    store,
+    agentToolBridge: createFakeAgentToolBridge(),
+    skillRegistry: createFakeSkillRegistry(['werewolf', 'undercover']),
+    getProjectDir: () => '/tmp/project',
+    toolBaseUrl: 'http://127.0.0.1:3100',
+  });
+
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO skill_test_cases (
+      id, skill_id, test_type, loading_mode, trigger_prompt,
+      expected_tools_json, expected_behavior, validity_status, case_status,
+      expected_goal, expected_sequence_json, evaluation_rubric_json,
+      note, created_at, updated_at
+    ) VALUES (
+      @id, @skillId, 'trigger', 'dynamic', @triggerPrompt,
+      '[]', '', 'pending', 'draft',
+      '', '[]', '{}',
+      '', @createdAt, @updatedAt
+    )`
+  ).run({
+    id: 'cross-skill-case',
+    skillId: 'werewolf',
+    triggerPrompt: 'cross skill ownership case',
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  db.prepare(
+    `INSERT INTO skill_test_runs (
+      id, test_case_id, status, actual_tools_json, evaluation_json, created_at
+    ) VALUES (
+      @id, @testCaseId, 'succeeded', '[]', '{}', @createdAt
+    )`
+  ).run({
+    id: 'cross-skill-run',
+    testCaseId: 'cross-skill-case',
+    createdAt: now,
+  });
+
+  await assert.rejects(
+    () => controller({
+      req: createJsonRequest('GET', '/api/skills/undercover/test-cases/cross-skill-case'),
+      res: createCaptureResponse(),
+      pathname: '/api/skills/undercover/test-cases/cross-skill-case',
+      requestUrl: new URL('http://localhost/api/skills/undercover/test-cases/cross-skill-case'),
+    }),
+    (err) => {
+      assert.equal(err.statusCode, 404);
+      assert.equal(err.message, 'Test case not found');
+      return true;
+    }
+  );
+
+  await assert.rejects(
+    () => controller({
+      req: createJsonRequest('DELETE', '/api/skills/undercover/test-cases/cross-skill-case'),
+      res: createCaptureResponse(),
+      pathname: '/api/skills/undercover/test-cases/cross-skill-case',
+      requestUrl: new URL('http://localhost/api/skills/undercover/test-cases/cross-skill-case'),
+    }),
+    (err) => {
+      assert.equal(err.statusCode, 404);
+      assert.equal(err.message, 'Test case not found');
+      return true;
+    }
+  );
+
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM skill_test_cases WHERE id = ?').get('cross-skill-case').count, 1);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM skill_test_runs WHERE test_case_id = ?').get('cross-skill-case').count, 1);
+
+  const deleteRes = createCaptureResponse();
+  await controller({
+    req: createJsonRequest('DELETE', '/api/skills/werewolf/test-cases/cross-skill-case'),
+    res: deleteRes,
+    pathname: '/api/skills/werewolf/test-cases/cross-skill-case',
+    requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases/cross-skill-case'),
+  });
+
+  assert.equal(deleteRes.statusCode, 200);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM skill_test_cases WHERE id = ?').get('cross-skill-case').count, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM skill_test_runs WHERE test_case_id = ?').get('cross-skill-case').count, 0);
 
   db.close();
 });

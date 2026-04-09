@@ -413,6 +413,14 @@ function buildEffectiveExecutionPassedSql(caseAlias = 'c', runAlias = 'r') {
   END`;
 }
 
+const SKILL_TEST_SUMMARY_AVERAGE_METRICS = [
+  { key: 'avgToolAccuracy', sumColumn: 'sum_tool_accuracy', countColumn: 'tool_accuracy_count' },
+  { key: 'avgRequiredStepCompletionRate', sumColumn: 'sum_required_step_completion_rate', countColumn: 'required_step_completion_rate_count' },
+  { key: 'avgStepCompletionRate', sumColumn: 'sum_step_completion_rate', countColumn: 'step_completion_rate_count' },
+  { key: 'avgGoalAchievement', sumColumn: 'sum_goal_achievement', countColumn: 'goal_achievement_count' },
+  { key: 'avgToolCallSuccessRate', sumColumn: 'sum_tool_call_success_rate', countColumn: 'tool_call_success_rate_count' },
+];
+
 function resolveTestTypeForLoadingMode(loadingMode: any, testType?: any) {
   const normalizedLoadingMode = String(loadingMode || 'dynamic').trim().toLowerCase() || 'dynamic';
   const normalizedTestType = String(testType || '').trim().toLowerCase();
@@ -2398,11 +2406,17 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
       .filter(Boolean);
   }
 
-  function getTestCase(caseId: string) {
+  function getTestCase(caseId: string, skillId?: string) {
     ensureSchema();
+    const params: Record<string, any> = { id: caseId };
+    let sql = 'SELECT * FROM skill_test_cases WHERE id = @id';
+    if (skillId) {
+      sql += ' AND skill_id = @skillId';
+      params.skillId = skillId;
+    }
     const row = store.db
-      .prepare('SELECT * FROM skill_test_cases WHERE id = @id')
-      .get({ id: caseId });
+      .prepare(sql)
+      .get(params);
     const testCase = normalizeTestCaseRow(row);
     return attachLatestRun(attachCaseValidation(testCase, row));
   }
@@ -5596,15 +5610,20 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
         `SELECT
           c.skill_id,
           ${buildEffectiveCaseStatusSql('c')} AS case_status_bucket,
-          COUNT(c.id) AS case_count,
+          COUNT(DISTINCT c.id) AS case_count,
           COALESCE(SUM(CASE WHEN r.trigger_passed = 1 THEN 1 ELSE 0 END), 0) AS trigger_passed_count,
           COALESCE(SUM(${buildEffectiveExecutionPassedSql('c', 'r')}), 0) AS execution_passed_count,
           COALESCE(SUM(CASE WHEN r.id IS NOT NULL THEN 1 ELSE 0 END), 0) AS total_runs,
-          COALESCE(AVG(CASE WHEN r.tool_accuracy IS NOT NULL THEN r.tool_accuracy END), 0) AS avg_tool_accuracy,
-          COALESCE(AVG(CASE WHEN r.required_step_completion_rate IS NOT NULL THEN r.required_step_completion_rate END), 0) AS avg_required_step_completion_rate,
-          COALESCE(AVG(CASE WHEN r.step_completion_rate IS NOT NULL THEN r.step_completion_rate END), 0) AS avg_step_completion_rate,
-          COALESCE(AVG(CASE WHEN r.goal_achievement IS NOT NULL THEN r.goal_achievement END), 0) AS avg_goal_achievement,
-          COALESCE(AVG(CASE WHEN r.tool_call_success_rate IS NOT NULL THEN r.tool_call_success_rate END), 0) AS avg_tool_call_success_rate
+          COALESCE(SUM(CASE WHEN r.tool_accuracy IS NOT NULL THEN r.tool_accuracy ELSE 0 END), 0) AS sum_tool_accuracy,
+          COUNT(r.tool_accuracy) AS tool_accuracy_count,
+          COALESCE(SUM(CASE WHEN r.required_step_completion_rate IS NOT NULL THEN r.required_step_completion_rate ELSE 0 END), 0) AS sum_required_step_completion_rate,
+          COUNT(r.required_step_completion_rate) AS required_step_completion_rate_count,
+          COALESCE(SUM(CASE WHEN r.step_completion_rate IS NOT NULL THEN r.step_completion_rate ELSE 0 END), 0) AS sum_step_completion_rate,
+          COUNT(r.step_completion_rate) AS step_completion_rate_count,
+          COALESCE(SUM(CASE WHEN r.goal_achievement IS NOT NULL THEN r.goal_achievement ELSE 0 END), 0) AS sum_goal_achievement,
+          COUNT(r.goal_achievement) AS goal_achievement_count,
+          COALESCE(SUM(CASE WHEN r.tool_call_success_rate IS NOT NULL THEN r.tool_call_success_rate ELSE 0 END), 0) AS sum_tool_call_success_rate,
+          COUNT(r.tool_call_success_rate) AS tool_call_success_rate_count
          FROM skill_test_cases c
          LEFT JOIN skill_test_runs r ON r.test_case_id = c.id
          GROUP BY c.skill_id, case_status_bucket
@@ -5629,6 +5648,8 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
           avgStepCompletionRate: 0,
           avgGoalAchievement: 0,
           avgToolCallSuccessRate: 0,
+          _metricSums: {},
+          _metricCounts: {},
         };
       }
       const bucket = summary[skillId];
@@ -5637,16 +5658,21 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
       bucket.totalRuns += Number(row.total_runs || 0);
       bucket.triggerPassedCount += Number(row.trigger_passed_count || 0);
       bucket.executionPassedCount += Number(row.execution_passed_count || 0);
-      bucket.avgToolAccuracy = Number(row.avg_tool_accuracy || 0);
-      bucket.avgRequiredStepCompletionRate = Number(row.avg_required_step_completion_rate || 0);
-      bucket.avgStepCompletionRate = Number(row.avg_step_completion_rate || 0);
-      bucket.avgGoalAchievement = Number(row.avg_goal_achievement || 0);
-      bucket.avgToolCallSuccessRate = Number(row.avg_tool_call_success_rate || 0);
+      for (const metric of SKILL_TEST_SUMMARY_AVERAGE_METRICS) {
+        bucket._metricSums[metric.key] = Number(bucket._metricSums[metric.key] || 0) + Number(row[metric.sumColumn] || 0);
+        bucket._metricCounts[metric.key] = Number(bucket._metricCounts[metric.key] || 0) + Number(row[metric.countColumn] || 0);
+      }
     }
 
     for (const entry of Object.values(summary) as any[]) {
       entry.triggerRate = entry.totalRuns > 0 ? entry.triggerPassedCount / entry.totalRuns : null;
       entry.executionRate = entry.totalRuns > 0 ? entry.executionPassedCount / entry.totalRuns : null;
+      for (const metric of SKILL_TEST_SUMMARY_AVERAGE_METRICS) {
+        const metricCount = Number(entry._metricCounts[metric.key] || 0);
+        entry[metric.key] = metricCount > 0 ? Number(entry._metricSums[metric.key] || 0) / metricCount : 0;
+      }
+      delete entry._metricSums;
+      delete entry._metricCounts;
     }
 
     return Object.values(summary);
@@ -5858,10 +5884,18 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
       if (subMatch) {
         const caseId = decodeURIComponent(subMatch[1]);
         const action = subMatch[2] || '';
+        const requireSkillScopedTestCase = () => {
+          const testCase = getTestCase(caseId, skillId);
+          if (!testCase) {
+            throw createHttpError(404, 'Test case not found');
+          }
+          return testCase;
+        };
 
         // GET /api/skills/:skillId/test-cases/:caseId/runs — runs for specific case
         if (req.method === 'GET' && action === 'runs') {
           ensureSchema();
+          requireSkillScopedTestCase();
           const runsLimit = Number.parseInt(requestUrl.searchParams.get('limit') || '', 10);
           const safeRunsLimit = Number.isInteger(runsLimit) && runsLimit > 0 ? Math.min(runsLimit, 500) : 50;
           const rows = store.db
@@ -5884,10 +5918,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
 
         // GET /api/skills/:skillId/test-cases/:caseId/regression
         if (req.method === 'GET' && action === 'regression') {
-          const testCase = getTestCase(caseId);
-          if (!testCase) {
-            throw createHttpError(404, 'Test case not found');
-          }
+          requireSkillScopedTestCase();
           sendJson(res, 200, {
             testCaseId: caseId,
             regression: getCaseRegressionSummary(caseId),
@@ -5897,10 +5928,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
 
         // POST /api/skills/:skillId/test-cases/:caseId/run
         if (req.method === 'POST' && action === 'run') {
-          const testCase = getTestCase(caseId);
-          if (!testCase) {
-            throw createHttpError(404, 'Test case not found');
-          }
+          const testCase = requireSkillScopedTestCase();
 
           const body = await readRequestJson(req).catch(() => ({}));
           const result = await executeRun(testCase, {
@@ -5916,6 +5944,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
 
         // PATCH /api/skills/:skillId/test-cases/:caseId
         if (req.method === 'PATCH' && !action) {
+          requireSkillScopedTestCase();
           const body = await readRequestJson(req).catch(() => ({}));
           const updatedCase = updateTestCase(caseId, body || {});
           sendJson(res, 200, { testCase: updatedCase.testCase, issues: updatedCase.issues });
@@ -5924,6 +5953,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
 
         // POST /api/skills/:skillId/test-cases/:caseId/mark-ready
         if (req.method === 'POST' && action === 'mark-ready') {
+          requireSkillScopedTestCase();
           const updatedCase = markTestCaseStatus(caseId, 'ready');
           sendJson(res, 200, { testCase: updatedCase.testCase, issues: updatedCase.issues });
           return true;
@@ -5931,6 +5961,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
 
         // POST /api/skills/:skillId/test-cases/:caseId/mark-draft
         if (req.method === 'POST' && action === 'mark-draft') {
+          requireSkillScopedTestCase();
           const updatedCase = markTestCaseStatus(caseId, 'draft');
           sendJson(res, 200, { testCase: updatedCase.testCase, issues: updatedCase.issues });
           return true;
@@ -5938,10 +5969,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
 
         // GET /api/skills/:skillId/test-cases/:caseId
         if (req.method === 'GET' && !action) {
-          const testCase = getTestCase(caseId);
-          if (!testCase) {
-            throw createHttpError(404, 'Test case not found');
-          }
+          const testCase = requireSkillScopedTestCase();
           sendJson(res, 200, { testCase });
           return true;
         }
@@ -5949,10 +5977,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
         // DELETE /api/skills/:skillId/test-cases/:caseId
         if (req.method === 'DELETE' && !action) {
           ensureSchema();
-          const existing = getTestCase(caseId);
-          if (!existing) {
-            throw createHttpError(404, 'Test case not found');
-          }
+          requireSkillScopedTestCase();
           store.db.prepare('DELETE FROM skill_test_runs WHERE test_case_id = @id').run({ id: caseId });
           store.db.prepare('DELETE FROM skill_test_cases WHERE id = @id').run({ id: caseId });
           sendJson(res, 200, { deletedId: caseId });
