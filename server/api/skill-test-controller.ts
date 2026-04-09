@@ -413,6 +413,20 @@ function buildEffectiveExecutionPassedSql(caseAlias = 'c', runAlias = 'r') {
   END`;
 }
 
+function buildExecutionRateEligibleRunSql(caseAlias = 'c', runAlias = 'r') {
+  const casePrefix = caseAlias ? `${caseAlias}.` : '';
+  const runPrefix = runAlias ? `${runAlias}.` : '';
+  const loadingModeExpr = `LOWER(TRIM(COALESCE(${casePrefix}loading_mode, '')))`;
+  const testTypeExpr = `LOWER(TRIM(COALESCE(${casePrefix}test_type, '')))`;
+  return `CASE
+    WHEN ${runPrefix}id IS NULL THEN 0
+    WHEN ${loadingModeExpr} = 'full' THEN 1
+    WHEN ${testTypeExpr} = 'execution' THEN 1
+    WHEN ${runPrefix}execution_passed IS NOT NULL THEN 1
+    ELSE 0
+  END`;
+}
+
 const SKILL_TEST_SUMMARY_AVERAGE_METRICS = [
   { key: 'avgToolAccuracy', sumColumn: 'sum_tool_accuracy', countColumn: 'tool_accuracy_count' },
   { key: 'avgRequiredStepCompletionRate', sumColumn: 'sum_required_step_completion_rate', countColumn: 'required_step_completion_rate_count' },
@@ -2734,6 +2748,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
            COALESCE(SUM(CASE WHEN r.status = 'succeeded' THEN 1 ELSE 0 END), 0) AS succeeded_runs,
            COALESCE(SUM(CASE WHEN r.trigger_passed = 1 THEN 1 ELSE 0 END), 0) AS trigger_passed_count,
            COALESCE(SUM(${buildEffectiveExecutionPassedSql('c', 'r')}), 0) AS execution_passed_count,
+           COALESCE(SUM(${buildExecutionRateEligibleRunSql('c', 'r')}), 0) AS execution_eligible_runs,
            COALESCE(AVG(CASE WHEN r.tool_accuracy IS NOT NULL THEN r.tool_accuracy END), 0) AS avg_tool_accuracy,
            COALESCE(AVG(CASE WHEN r.required_step_completion_rate IS NOT NULL THEN r.required_step_completion_rate END), 0) AS avg_required_step_completion_rate,
            COALESCE(AVG(CASE WHEN r.step_completion_rate IS NOT NULL THEN r.step_completion_rate END), 0) AS avg_step_completion_rate,
@@ -2755,6 +2770,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
       const totalRuns = Number(row.total_runs || 0);
       const triggerPassedCount = Number(row.trigger_passed_count || 0);
       const executionPassedCount = Number(row.execution_passed_count || 0);
+      const executionEligibleRuns = Number(row.execution_eligible_runs || 0);
       return {
         provider: String(row.provider_label || '').trim(),
         model: String(row.model_label || '').trim(),
@@ -2764,7 +2780,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
         triggerPassedCount,
         executionPassedCount,
         triggerRate: totalRuns > 0 ? triggerPassedCount / totalRuns : null,
-        executionRate: totalRuns > 0 ? executionPassedCount / totalRuns : null,
+        executionRate: executionEligibleRuns > 0 ? executionPassedCount / executionEligibleRuns : null,
         avgToolAccuracy: row.avg_tool_accuracy != null ? Number(row.avg_tool_accuracy) : null,
         avgRequiredStepCompletionRate: row.avg_required_step_completion_rate != null ? Number(row.avg_required_step_completion_rate) : null,
         avgStepCompletionRate: row.avg_step_completion_rate != null ? Number(row.avg_step_completion_rate) : null,
@@ -5613,6 +5629,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
           COUNT(DISTINCT c.id) AS case_count,
           COALESCE(SUM(CASE WHEN r.trigger_passed = 1 THEN 1 ELSE 0 END), 0) AS trigger_passed_count,
           COALESCE(SUM(${buildEffectiveExecutionPassedSql('c', 'r')}), 0) AS execution_passed_count,
+          COALESCE(SUM(${buildExecutionRateEligibleRunSql('c', 'r')}), 0) AS execution_eligible_runs,
           COALESCE(SUM(CASE WHEN r.id IS NOT NULL THEN 1 ELSE 0 END), 0) AS total_runs,
           COALESCE(SUM(CASE WHEN r.tool_accuracy IS NOT NULL THEN r.tool_accuracy ELSE 0 END), 0) AS sum_tool_accuracy,
           COUNT(r.tool_accuracy) AS tool_accuracy_count,
@@ -5648,6 +5665,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
           avgStepCompletionRate: 0,
           avgGoalAchievement: 0,
           avgToolCallSuccessRate: 0,
+          _executionEligibleRuns: 0,
           _metricSums: {},
           _metricCounts: {},
         };
@@ -5658,6 +5676,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
       bucket.totalRuns += Number(row.total_runs || 0);
       bucket.triggerPassedCount += Number(row.trigger_passed_count || 0);
       bucket.executionPassedCount += Number(row.execution_passed_count || 0);
+      bucket._executionEligibleRuns += Number(row.execution_eligible_runs || 0);
       for (const metric of SKILL_TEST_SUMMARY_AVERAGE_METRICS) {
         bucket._metricSums[metric.key] = Number(bucket._metricSums[metric.key] || 0) + Number(row[metric.sumColumn] || 0);
         bucket._metricCounts[metric.key] = Number(bucket._metricCounts[metric.key] || 0) + Number(row[metric.countColumn] || 0);
@@ -5666,11 +5685,12 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
 
     for (const entry of Object.values(summary) as any[]) {
       entry.triggerRate = entry.totalRuns > 0 ? entry.triggerPassedCount / entry.totalRuns : null;
-      entry.executionRate = entry.totalRuns > 0 ? entry.executionPassedCount / entry.totalRuns : null;
+      entry.executionRate = entry._executionEligibleRuns > 0 ? entry.executionPassedCount / entry._executionEligibleRuns : null;
       for (const metric of SKILL_TEST_SUMMARY_AVERAGE_METRICS) {
         const metricCount = Number(entry._metricCounts[metric.key] || 0);
         entry[metric.key] = metricCount > 0 ? Number(entry._metricSums[metric.key] || 0) / metricCount : 0;
       }
+      delete entry._executionEligibleRuns;
       delete entry._metricSums;
       delete entry._metricCounts;
     }
@@ -5945,7 +5965,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
         // PATCH /api/skills/:skillId/test-cases/:caseId
         if (req.method === 'PATCH' && !action) {
           requireSkillScopedTestCase();
-          const body = await readRequestJson(req).catch(() => ({}));
+          const body = await readRequestJson(req);
           const updatedCase = updateTestCase(caseId, body || {});
           sendJson(res, 200, { testCase: updatedCase.testCase, issues: updatedCase.issues });
           return true;

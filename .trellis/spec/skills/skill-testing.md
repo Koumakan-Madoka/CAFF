@@ -360,6 +360,7 @@ Regression endpoints group by:
 - `promptVersion`
 
 For full mode, regression/summary `executionPassedCount` uses verdict-pass semantics.
+- `executionRate` uses only execution-eligible runs as its denominator (full mode runs plus legacy dynamic execution cases); trigger-only dynamic runs are excluded from both numerator and denominator.
 
 ## UI Contract (Workstream D)
 
