@@ -34,6 +34,67 @@ test('run store supports sqlite special in-memory paths', (t) => {
   assert.equal(store.databasePath, ':memory:');
 });
 
+test('run store reuses a provided sqlite db handle without closing it', (t) => {
+  const tempDir = withTempDir('caff-run-shared-db-');
+  const db = new Database(':memory:');
+  const store = createSqliteRunStore({
+    agentDir: tempDir,
+    sqlitePath: ':memory:',
+    databasePath: ':memory:',
+    db,
+  });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    try {
+      db.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const createdTask = store.createTask({
+    taskId: 'shared-db-task',
+    kind: 'workflow',
+    title: 'Shared DB Task',
+    status: 'queued',
+  });
+
+  assert.equal(createdTask.id, 'shared-db-task');
+
+  store.close();
+
+  const persistedRow = db.prepare('SELECT id FROM a2a_tasks WHERE id = ?').get('shared-db-task');
+  assert.equal(persistedRow.id, 'shared-db-task');
+});
+
+test('run store creates parent dirs for file sqlite URIs', (t) => {
+  const tempDir = withTempDir('caff-run-file-uri-');
+  const sqliteDir = path.join(tempDir, 'nested', 'state');
+  const sqlitePath = path.join(sqliteDir, 'run-store.sqlite');
+  const sqliteUri = `file:${sqlitePath.replace(/\\/g, '/')}`;
+  const store = createSqliteRunStore({ agentDir: tempDir, sqlitePath: sqliteUri });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const createdTask = store.createTask({
+    taskId: 'file-uri-task',
+    kind: 'workflow',
+    title: 'File URI Task',
+    status: 'queued',
+  });
+
+  assert.equal(createdTask.id, 'file-uri-task');
+  assert.equal(fs.existsSync(sqliteDir), true);
+  assert.equal(fs.existsSync(sqlitePath), true);
+});
+
 test('run store migrates legacy runs schema and records task lifecycle data', (t) => {
   const tempDir = withTempDir('caff-run-m2-');
   const sqlitePath = path.join(tempDir, 'legacy-run.sqlite');

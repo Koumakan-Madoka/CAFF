@@ -414,6 +414,90 @@ test('run endpoint bootstraps dependent schemas for fresh skill-test databases',
   }
 });
 
+test('run endpoint reuses the main in-memory db for tool-call telemetry', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-skill-test-in-memory-run-'));
+  const db = createTestDb();
+  let invocationContext = null;
+
+  try {
+    const store = createInMemoryStore(db, {
+      agentDir: path.join(tempDir, 'agent'),
+      databasePath: ':memory:',
+    });
+
+    const controller = createSkillTestController({
+      store,
+      agentToolBridge: {
+        createInvocationContext(ctx) {
+          return ctx;
+        },
+        registerInvocation(ctx) {
+          invocationContext = ctx;
+          return { invocationId: 'inv-memory-run', callbackToken: 'token-memory-run' };
+        },
+        unregisterInvocation() {},
+      },
+      skillRegistry: createFakeSkillRegistry([
+        {
+          id: 'werewolf',
+          path: '/tmp/skills/werewolf',
+        },
+      ]),
+      getProjectDir: () => tempDir,
+      toolBaseUrl: 'http://127.0.0.1:3100',
+      startRunImpl: (_provider, _model, _prompt, runOptions = {}) => {
+        assert.ok(invocationContext);
+        invocationContext.runStore.appendTaskEvent(runOptions.taskId, 'agent_tool_call', {
+          tool: 'read',
+          request: { path: '/tmp/skills/werewolf/SKILL.md' },
+          status: 'succeeded',
+        });
+        return {
+          runId: null,
+          sessionPath: '',
+          resultPromise: Promise.resolve({ reply: 'ok' }),
+        };
+      },
+    });
+
+    const createRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('POST', '/api/skills/werewolf/test-cases', {
+        testType: 'execution',
+        loadingMode: 'dynamic',
+        triggerPrompt: '先读取狼人杀 skill 说明。',
+        expectedTools: ['read'],
+        expectedBehavior: '应该读取目标 SKILL.md。',
+      }),
+      res: createRes,
+      pathname: '/api/skills/werewolf/test-cases',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases'),
+    });
+
+    const caseId = createRes.json.testCase.id;
+    const runRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('POST', `/api/skills/werewolf/test-cases/${caseId}/run`, {}),
+      res: runRes,
+      pathname: `/api/skills/werewolf/test-cases/${caseId}/run`,
+      requestUrl: new URL(`http://localhost/api/skills/werewolf/test-cases/${caseId}/run`),
+    });
+
+    assert.equal(runRes.statusCode, 200);
+    assert.equal(runRes.json.run.triggerPassed, true);
+    assert.equal(runRes.json.run.executionPassed, true);
+    assert.equal(runRes.json.run.toolAccuracy, 1);
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM a2a_task_events').get().count, 1);
+  } finally {
+    try {
+      db.close();
+    } catch {
+      // ignore cleanup errors
+    }
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test('legacy validity_status rows stay draft in list, summary, and run-all', async () => {
   const db = createTestDb();
   const store = createInMemoryStore(db);

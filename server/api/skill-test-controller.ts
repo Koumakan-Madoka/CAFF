@@ -5306,7 +5306,12 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     const agent = { id: agentId, name: agentName };
     const sandbox = ensureAgentSandbox(store.agentDir, agent);
     const projectDir = getProjectDir ? String(getProjectDir() || '').trim() : '';
-    const runStore = createSqliteRunStore({ agentDir: store.agentDir, sqlitePath: store.databasePath });
+    const runStore = createSqliteRunStore({
+      agentDir: store.agentDir,
+      sqlitePath: store.databasePath,
+      databasePath: store.databasePath,
+      db: store.db,
+    });
     const taskId = `skill-test-run-${randomUUID()}`;
     const stage = { taskId, status: 'queued', runId: null as any };
     const sessionName = `skill-test-${testCase.id}-${Date.now()}`;

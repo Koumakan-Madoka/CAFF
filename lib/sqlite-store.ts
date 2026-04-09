@@ -94,12 +94,24 @@ function normalizeTaskRow(row: any) {
 
 export class SqliteRunStore {
   [key: string]: any;
-  constructor({ agentDir, sqlitePath }: any) {
-    const connection = openSqliteDatabase({ agentDir, sqlitePath });
+  constructor({ agentDir, sqlitePath, databasePath, db }: any) {
+    const resolvedAgentDir = path.resolve(agentDir || process.cwd());
+    const connection = db
+      ? {
+          agentDir: resolvedAgentDir,
+          databasePath: String(databasePath || resolveSqlitePath(resolvedAgentDir, sqlitePath)).trim(),
+          db,
+          ownsDb: false,
+        }
+      : {
+          ...openSqliteDatabase({ agentDir: resolvedAgentDir, sqlitePath }),
+          ownsDb: true,
+        };
 
     this.agentDir = connection.agentDir;
     this.databasePath = connection.databasePath;
     this.db = connection.db;
+    this.ownsDb = connection.ownsDb;
 
     migrateRunSchema(this.db);
 
@@ -298,7 +310,9 @@ export class SqliteRunStore {
   }
 
   close() {
-    this.db.close();
+    if (this.ownsDb) {
+      this.db.close();
+    }
   }
 }
 
