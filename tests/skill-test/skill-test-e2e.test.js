@@ -598,6 +598,97 @@ test('patch test-case propagates invalid JSON body errors', async () => {
   db.close();
 });
 
+test('generate test-cases propagates invalid JSON body errors', async () => {
+  const db = createTestDb();
+  const store = createInMemoryStore(db);
+  const controller = createSkillTestController({
+    store,
+    agentToolBridge: createFakeAgentToolBridge(),
+    skillRegistry: createFakeSkillRegistry(['werewolf']),
+    getProjectDir: () => '/tmp/project',
+    toolBaseUrl: 'http://127.0.0.1:3100',
+  });
+
+  await assert.rejects(
+    () => controller({
+      req: createRawJsonRequest('POST', '/api/skills/werewolf/test-cases/generate', '{"count":'),
+      res: createCaptureResponse(),
+      pathname: '/api/skills/werewolf/test-cases/generate',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases/generate'),
+    }),
+    (err) => {
+      assert.equal(err.statusCode, 400);
+      assert.equal(err.message, 'Invalid JSON body');
+      return true;
+    }
+  );
+
+  db.close();
+});
+
+test('run endpoints propagate invalid JSON body errors', async () => {
+  const db = createTestDb();
+  const store = createInMemoryStore(db);
+  const controller = createSkillTestController({
+    store,
+    agentToolBridge: createFakeAgentToolBridge(),
+    skillRegistry: createFakeSkillRegistry(['werewolf']),
+    getProjectDir: () => '/tmp/project',
+    toolBaseUrl: 'http://127.0.0.1:3100',
+  });
+
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO skill_test_cases (
+      id, skill_id, test_type, loading_mode, trigger_prompt,
+      expected_tools_json, expected_behavior, validity_status, case_status,
+      expected_goal, expected_sequence_json, evaluation_rubric_json,
+      note, created_at, updated_at
+    ) VALUES (
+      @id, @skillId, 'trigger', 'dynamic', @triggerPrompt,
+      '[]', '', 'ready', 'ready',
+      '', '[]', '{}',
+      '', @createdAt, @updatedAt
+    )`
+  ).run({
+    id: 'invalid-json-run-case',
+    skillId: 'werewolf',
+    triggerPrompt: 'run me',
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  await assert.rejects(
+    () => controller({
+      req: createRawJsonRequest('POST', '/api/skills/werewolf/test-cases/run-all', '{"provider":'),
+      res: createCaptureResponse(),
+      pathname: '/api/skills/werewolf/test-cases/run-all',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases/run-all'),
+    }),
+    (err) => {
+      assert.equal(err.statusCode, 400);
+      assert.equal(err.message, 'Invalid JSON body');
+      return true;
+    }
+  );
+
+  await assert.rejects(
+    () => controller({
+      req: createRawJsonRequest('POST', '/api/skills/werewolf/test-cases/invalid-json-run-case/run', '{"provider":'),
+      res: createCaptureResponse(),
+      pathname: '/api/skills/werewolf/test-cases/invalid-json-run-case/run',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases/invalid-json-run-case/run'),
+    }),
+    (err) => {
+      assert.equal(err.statusCode, 400);
+      assert.equal(err.message, 'Invalid JSON body');
+      return true;
+    }
+  );
+
+  db.close();
+});
+
 test('generate preserves requested loadingMode and testType for AI full drafts', async () => {
   const db = createTestDb();
   const store = createInMemoryStore(db);

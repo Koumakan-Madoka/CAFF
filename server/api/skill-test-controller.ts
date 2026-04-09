@@ -5735,7 +5735,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
           throw createHttpError(404, `Skill not found: ${skillId}`);
         }
 
-        const body = await readRequestJson(req).catch(() => ({}));
+        const body = await readRequestJson(req);
         const count = Math.max(1, Math.min(10, Number(body.count || 3)));
         const loadingMode = String(body.loadingMode || 'dynamic').trim().toLowerCase() || 'dynamic';
         const createDrafts = body.createDrafts !== false;
@@ -5878,7 +5878,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
           throw createHttpError(404, 'No test cases to run');
         }
 
-        const body = await readRequestJson(req).catch(() => ({}));
+        const body = await readRequestJson(req);
         const results: any[] = [];
 
         for (const caseRow of cases) {
@@ -5958,7 +5958,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
         if (req.method === 'POST' && action === 'run') {
           const testCase = requireSkillScopedTestCase();
 
-          const body = await readRequestJson(req).catch(() => ({}));
+          const body = await readRequestJson(req);
           const result = await executeRun(testCase, {
             provider: body.provider,
             model: body.model,

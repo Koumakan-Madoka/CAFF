@@ -291,6 +291,7 @@ POST /api/skills/:skillId/test-cases/run-all
 Notes:
 
 - `run-all` runs only effective `ready` cases.
+- `POST /generate`, `POST /run-all`, and `POST /:caseId/run` parse JSON bodies strictly; malformed bodies must surface `400 Invalid JSON body` instead of silently falling back to default options.
 - legacy rows (`validity_status`) are mapped to effective status for compatibility.
 
 ### Results and Reports
