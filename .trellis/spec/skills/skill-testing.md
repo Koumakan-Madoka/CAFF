@@ -376,6 +376,15 @@ Frontend (`public/skill-tests.js`) consumes structured validation/evaluation:
   - `aiJudge` status, `verdictSuggestion`, `missedExpectations`
 - run detail reads `result.evaluation` first and falls back to `run.evaluation`
 
+### Skill Tests Workspace Layout
+
+- `public/eval-cases.html` keeps the Skill Tests workspace in a single-column-first flow: sticky top toolbar → overview → case list → detail → create → summary, with wide-screen enhancement only at larger breakpoints.
+- The sticky toolbar is the only always-pinned control surface for high-frequency actions (`skill`, `agent`, `model`, `promptVersion`, generate, manual create, run-all); page-level horizontal scrolling should be avoided outside local table overflow.
+- The detail area stays tabbed (`overview`, `details`, `runs`, `regression`) so long histories and regression output do not crowd the editor surface.
+- The detail header keeps case status, last-outcome summary, and primary actions visible at the top of the detail card, but it intentionally remains in normal document flow (`position: static`) instead of becoming sticky, because zoomed desktop layouts made a sticky header float above the workspace and obscure nearby content.
+- Case list cards should expose short case id, status, recent run context, and direct run/detail actions, plus lightweight search/filter by `case id` or prompt keywords.
+- Empty, loading, and failure states should point to the next action (`generate`, `manual create`, `retry`, `clear filter`) instead of leaving the workspace blank.
+
 ## Implementation Files
 
 ### Core Components

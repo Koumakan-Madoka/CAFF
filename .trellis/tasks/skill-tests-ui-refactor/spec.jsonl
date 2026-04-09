@@ -1,2 +1,3 @@
 {"file": ".trellis/spec/frontend/index.md", "reason": "This task will likely require a frontend spec update for responsive Skill Tests layout and UI affordances."}
 {"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Document any extracted reusable layout or state patterns if the refactor introduces them."}
+{"at":"2026-04-09T10:04:46+08:00","file":".trellis/spec/skills/skill-testing.md","reason":"Documented the final Skill Tests workspace layout contract for the UI refactor, including the sticky top toolbar, single-column-first flow, tabbed detail panels, zoom-safe list actions, and the intentional non-sticky detail header decision."}

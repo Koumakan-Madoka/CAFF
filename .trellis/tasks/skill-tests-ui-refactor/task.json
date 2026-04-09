@@ -3,7 +3,7 @@
   "name": "skill-tests-ui-refactor",
   "title": "Skill Tests UI refactor",
   "description": "Restructure the Skill Tests frontend for zoom-safe actions, responsive layout, and lower information density while preserving feature parity.",
-  "status": "planning",
+  "status": "completed",
   "dev_type": "frontend",
   "scope": "public/eval-cases.html, public/skill-tests.js",
   "package": "public",
@@ -11,25 +11,12 @@
   "creator": "咕咕嘎嘎",
   "assignee": "咕咕嘎嘎",
   "createdAt": "2026-04-03",
-  "completedAt": null,
-  "branch": null,
+  "completedAt": "2026-04-09",
+  "branch": "feat/skill-testing-phase-2",
   "base_branch": null,
   "worktree_path": null,
-  "current_phase": 0,
-  "next_action": [
-    {
-      "phase": 1,
-      "action": "implement"
-    },
-    {
-      "phase": 2,
-      "action": "check"
-    },
-    {
-      "phase": 3,
-      "action": "finish"
-    }
-  ],
+  "current_phase": 3,
+  "next_action": [],
   "commit": null,
   "pr_url": null,
   "subtasks": [],
