@@ -51,7 +51,6 @@ const KNOWN_TOOL_NAMES = new Set([
   'write',
   'edit',
   'bash',
-  'read-skill',
   'send-public',
   'send-private',
   'read-context',
@@ -309,9 +308,6 @@ function parseSnippetAsExpectedTool(snippet: string, skill: { id?: string; path?
   }
 
   if (KNOWN_TOOL_NAMES.has(cleaned)) {
-    if (cleaned === 'read-skill') {
-      return buildDynamicSkillReadSpec(skill, order);
-    }
     return { name: cleaned, order };
   }
 

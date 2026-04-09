@@ -30,7 +30,7 @@ const { createWerewolfService } = require('../domain/werewolf/werewolf-service')
 const { createAgentToolBridge } = require('../domain/runtime/agent-tool-bridge');
 const { createRouter } = require('../http/router');
 const { createSseBus } = require('../http/sse-bus');
-const { sendJson } = require('../http/response');
+const { buildErrorJsonPayload, sendJson } = require('../http/response');
 const { serveStaticFile } = require('../http/static-file');
 const { createHttpError } = require('../http/http-errors');
 
@@ -137,7 +137,6 @@ export function createServerApp(options: any = {}) {
 
   const agentToolBridge = createAgentToolBridge({
     store,
-    skillRegistry,
     broadcastEvent,
     broadcastConversationSummary,
     onTurnUpdated(turnState: any) {
@@ -279,15 +278,7 @@ export function createServerApp(options: any = {}) {
     } catch (error) {
       const errorValue = error as any;
       const statusCode = Number.isInteger(errorValue && errorValue.statusCode) ? errorValue.statusCode : 500;
-      const errorDetails = errorValue && typeof errorValue === 'object'
-        ? Object.fromEntries(
-          Object.entries(errorValue).filter(([key]) => key !== 'statusCode' && key !== 'message' && key !== 'error')
-        )
-        : {};
-      sendJson(res, statusCode, {
-        error: (errorValue && errorValue.message) || 'Internal server error',
-        ...errorDetails,
-      });
+      sendJson(res, statusCode, buildErrorJsonPayload(errorValue));
     }
   });
 

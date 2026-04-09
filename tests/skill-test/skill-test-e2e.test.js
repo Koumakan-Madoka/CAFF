@@ -1195,6 +1195,93 @@ test('execution evaluation trims surrounding whitespace for <contains:...> argum
   }
 });
 
+test('execution evaluation normalizes slash direction for <contains:...> argument matching', async () => {
+  const harness = createTempHarness();
+  const reply = '请切换到单独的狼人杀玩法房间，我在房间内只扮演玩家。';
+
+  try {
+    const store = createInMemoryStore(harness.db, {
+      agentDir: path.join(harness.tempDir, 'agent'),
+      databasePath: harness.databasePath,
+    });
+
+    const controller = createSkillTestController({
+      store,
+      agentToolBridge: createFakeAgentToolBridge(),
+      skillRegistry: createFakeSkillRegistry([
+        {
+          id: 'werewolf',
+          name: '狼人杀 Skill',
+          description: '用于后端全自动主持的狼人杀玩法。模型只扮演玩家，按后端推进的日夜阶段行动。',
+        },
+      ]),
+      getProjectDir: () => harness.tempDir,
+      toolBaseUrl: 'http://127.0.0.1:3100',
+      startRunImpl: () => {
+        const sessionPath = path.join(harness.tempDir, `session-${Date.now()}.jsonl`);
+        fs.writeFileSync(
+          sessionPath,
+          `${JSON.stringify({
+            type: 'message',
+            message: {
+              role: 'assistant',
+              content: [
+                { type: 'text', text: reply },
+                { type: 'toolCall', name: 'read', id: 'tool-contains-slash-1', arguments: { path: 'C:\\tmp\\project\\.trellis\\spec\\backend\\index.md' } },
+              ],
+            },
+          })}\n`,
+          'utf8'
+        );
+        return {
+          runId: null,
+          sessionPath,
+          resultPromise: Promise.resolve({ reply, sessionPath }),
+        };
+      },
+    });
+
+    const createReq = createJsonRequest('POST', '/api/skills/werewolf/test-cases', {
+      testType: 'execution',
+      loadingMode: 'full',
+      triggerPrompt: '我们来玩狼人杀吧',
+      expectedGoal: '作为玩家参与，不接管主持。',
+      expectedTools: [
+        {
+          name: 'read',
+          requiredParams: ['path'],
+          arguments: { path: '<contains:/tmp/project/.trellis/spec/backend/index.md>' },
+        },
+      ],
+      expectedBehavior: '遇到这类请求时，应该提示去单独的狼人杀房间，并在房间里只扮演玩家。',
+      note: 'contains placeholder slash normalization pass case',
+    });
+    const createRes = createCaptureResponse();
+
+    await controller({
+      req: createReq,
+      res: createRes,
+      pathname: '/api/skills/werewolf/test-cases',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases'),
+    });
+
+    const caseId = createRes.json.testCase.id;
+    const runReq = createJsonRequest('POST', `/api/skills/werewolf/test-cases/${caseId}/run`, {});
+    const runRes = createCaptureResponse();
+    await controller({
+      req: runReq,
+      res: runRes,
+      pathname: `/api/skills/werewolf/test-cases/${caseId}/run`,
+      requestUrl: new URL(`http://localhost/api/skills/werewolf/test-cases/${caseId}/run`),
+    });
+
+    assert.equal(runRes.statusCode, 200);
+    assert.equal(runRes.json.run.toolAccuracy, 1);
+  } finally {
+    harness.cleanup();
+  }
+});
+
 test('execution evaluation reports missing parameters for structured expectedTools', async () => {
   const harness = createTempHarness();
   const reply = '请切换到单独的狼人杀玩法房间，我在房间内只扮演玩家。';

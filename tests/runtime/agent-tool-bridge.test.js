@@ -661,6 +661,22 @@ test('agent tool trellis-write rejects invocations without an active projectDir'
   );
 });
 
+test('agent tool bridge no longer exposes read-skill compatibility handler', (t) => {
+  const tempDir = withTempDir('caff-agent-tool-no-read-skill-');
+  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const bridge = createAgentToolBridge({ store });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  assert.equal(typeof bridge.handleReadSkill, 'undefined');
+});
+
 test('agent tool read-context keeps the current turn user message visible', (t) => {
   const tempDir = withTempDir('caff-agent-tool-context-');
   const sqlitePath = path.join(tempDir, 'bridge.sqlite');

@@ -276,11 +276,27 @@ function sanitizeExpectedToolSpecs(value: any) {
     .filter(Boolean);
 }
 
+function normalizeToolNameForMatch(value: any) {
+  return String(value || '').trim();
+}
+
+function toolNamesMatch(expectedName: any, actualName: any) {
+  return normalizeToolNameForMatch(expectedName) === normalizeToolNameForMatch(actualName);
+}
+
+function normalizeContainsComparableText(value: any) {
+  return String(value || '')
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/\/+/g, '/')
+    .toLowerCase();
+}
+
 function normalizeExpectedToolSpecs(value: any) {
   return sanitizeExpectedToolSpecs(value).map((entry: any, index: number) => {
     if (typeof entry === 'string') {
       return {
-        name: entry,
+        name: normalizeToolNameForMatch(entry),
         requiredParams: [],
         hasArgumentShape: false,
         hasParameterExpectation: false,
@@ -298,7 +314,7 @@ function normalizeExpectedToolSpecs(value: any) {
     const order = parseExpectedToolOrder(entry);
 
     return {
-      name: String(entry.name || '').trim(),
+      name: normalizeToolNameForMatch(entry.name),
       requiredParams,
       hasArgumentShape,
       hasParameterExpectation: hasArgumentShape || requiredParams.length > 0,
@@ -353,8 +369,12 @@ function isSkillMarkdownReadPath(pathValue: any, skillId: any, skillPath?: any) 
 }
 
 function isTargetSkillReadToolCall(toolName: any, argumentsValue: any, skillId: any, skillPath?: any) {
-  return String(toolName || '').trim() === 'read'
-    && isSkillMarkdownReadPath(getReadToolPath(argumentsValue), skillId, skillPath);
+  const normalizedToolName = String(toolName || '').trim();
+  if (normalizedToolName === 'read') {
+    return isSkillMarkdownReadPath(getReadToolPath(argumentsValue), skillId, skillPath);
+  }
+
+  return false;
 }
 
 function normalizeStoredCaseStatus(value: any) {
@@ -450,12 +470,12 @@ function normalizeStepSequenceReference(value: any) {
 
 function normalizeSequenceEntryName(value: any) {
   if (typeof value === 'string') {
-    return String(value || '').trim();
+    return normalizeToolNameForMatch(value);
   }
   if (!isPlainObject(value)) {
     return '';
   }
-  return String(value.name || value.tool || value.id || '').trim();
+  return normalizeToolNameForMatch(value.name || value.tool || value.id || '');
 }
 
 function normalizeJudgeConfidence(value: any) {
@@ -511,7 +531,7 @@ function normalizeStrongSignalEntry(signal: any, stepId: string, stepIndex: numb
   }
 
   if (type === 'tool') {
-    const toolName = String(signal.toolName || signal.name || signal.tool || '').trim();
+    const toolName = normalizeToolNameForMatch(signal.toolName || signal.name || signal.tool || '');
     if (!toolName) {
       issues.push(
         buildValidationIssue('signal_shape_invalid', 'error', basePath, 'Tool signals require toolName')
@@ -983,12 +1003,13 @@ function buildLegacyExpectedStepFromTool(toolSpec: any, index: number) {
   const normalizedTool = typeof toolSpec === 'string'
     ? { name: String(toolSpec || '').trim() }
     : sanitizeExpectedToolSpecEntry(toolSpec);
-  if (!normalizedTool || !normalizedTool.name) {
+  const toolName = normalizeToolNameForMatch(normalizedTool && normalizedTool.name || '');
+  if (!normalizedTool || !toolName) {
     return null;
   }
 
   const stepId = `legacy-step-${index + 1}`;
-  const title = `调用 ${normalizedTool.name}`;
+  const title = `调用 ${toolName}`;
   const hints: string[] = [];
   if (Array.isArray(normalizedTool.requiredParams) && normalizedTool.requiredParams.length > 0) {
     hints.push(`包含参数 ${normalizedTool.requiredParams.join(', ')}`);
@@ -997,12 +1018,12 @@ function buildLegacyExpectedStepFromTool(toolSpec: any, index: number) {
     hints.push(`参数模式 ${JSON.stringify(normalizedTool.arguments)}`);
   }
   const expectedBehavior = hints.length > 0
-    ? `按预期调用 ${normalizedTool.name}，并满足：${hints.join('；')}`
-    : `按预期调用 ${normalizedTool.name} 完成步骤。`;
+    ? `按预期调用 ${toolName}，并满足：${hints.join('；')}`
+    : `按预期调用 ${toolName} 完成步骤。`;
   const strongSignal: any = {
-    id: `sig-${stepId}-${slugifyValidationId(normalizedTool.name, 'tool')}`,
+    id: `sig-${stepId}-${slugifyValidationId(toolName, 'tool')}`,
     type: 'tool',
-    toolName: normalizedTool.name,
+    toolName,
   };
   if (isPlainObject(normalizedTool.arguments)) {
     strongSignal.arguments = normalizedTool.arguments;
@@ -3810,12 +3831,12 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
 
   function normalizeSequenceEntryName(entry: any) {
     if (typeof entry === 'string') {
-      return String(entry || '').trim();
+      return normalizeToolNameForMatch(entry);
     }
     if (!entry || typeof entry !== 'object') {
       return '';
     }
-    return String(entry.name || entry.tool || '').trim();
+    return normalizeToolNameForMatch(entry.name || entry.tool || '');
   }
 
   function buildExpectedSequenceSpecsWithDiagnostics(testCase: any, expectedTools: any[]) {
@@ -4393,7 +4414,9 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
   }
 
   async function buildFullModeExecutionEvaluation(skill: any, testCase: any, expectedTools: any[], observedToolCalls: any[], toolCallEvents: any[], _toolChecks: any[], _sequenceCheck: any, evidenceText: string, runtime: any = {}) {
-    const toolChecks = expectedTools.map((entry: any) => evaluateExpectedToolCall(entry, observedToolCalls));
+    const toolChecks = Array.isArray(_toolChecks) && _toolChecks.length === expectedTools.length
+      ? _toolChecks
+      : expectedTools.map((entry: any) => evaluateExpectedToolCall(entry, observedToolCalls));
     const matchedToolChecks = toolChecks.filter((entry: any) => entry && entry.matched);
     const requiredToolCoverage = expectedTools.length > 0 ? matchedToolChecks.length / expectedTools.length : null;
     const successfulMatchedCount = matchedToolChecks.filter((entry: any) => String(entry.actualStatus || '').trim().toLowerCase() !== 'failed').length;
@@ -4404,7 +4427,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     const missingTools = toolChecks.filter((entry: any) => !entry.matched).map((entry: any) => entry.name);
     const expectedToolNames = [...new Set(expectedTools.map((entry: any) => entry.name).filter(Boolean))];
     const unexpectedTools = [...new Set(observedToolCalls.map((entry: any) => entry.toolName).filter(Boolean))]
-      .filter((toolName) => !expectedToolNames.includes(toolName));
+      .filter((toolName) => !expectedToolNames.some((expectedName) => toolNamesMatch(expectedName, toolName)));
     const failedCalls = failedEventCalls.map((entry: any) => ({
       tool: String(entry && entry.tool || '').trim() || 'unknown',
       reason: String(entry && entry.error && entry.error.message || 'tool call failed').trim(),
@@ -4621,7 +4644,9 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
           return false;
         }
         const needle = expectedText.slice('<contains:'.length, -1).trim().toLowerCase();
-        return needle.length > 0 && actual.toLowerCase().includes(needle);
+        const normalizedNeedle = normalizeContainsComparableText(expectedText.slice('<contains:'.length, -1));
+        return (needle.length > 0 && actual.toLowerCase().includes(needle))
+          || (normalizedNeedle.length > 0 && normalizeContainsComparableText(actual).includes(normalizedNeedle));
       }
       return actual === expectedText;
     }
@@ -4644,7 +4669,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
   }
 
   function evaluateExpectedToolCall(spec: any, observedToolCalls: any[]) {
-    const matchingCalls = observedToolCalls.filter((entry) => entry.toolName === spec.name);
+    const matchingCalls = observedToolCalls.filter((entry) => toolNamesMatch(spec && spec.name, entry && entry.toolName));
     const hasParameterExpectation = Boolean(spec && spec.hasParameterExpectation);
     const fallbackCall = matchingCalls.length > 0 ? matchingCalls[0] : null;
     const fallbackArguments = fallbackCall ? fallbackCall.arguments : null;
@@ -4829,7 +4854,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
 
       for (let index = 0; index < observedSequenceCalls.length; index += 1) {
         const call = observedSequenceCalls[index];
-        if (!call || call.toolName !== spec.name) {
+        if (!call || !toolNamesMatch(spec.name, call.toolName)) {
           continue;
         }
         observedCallCount += 1;

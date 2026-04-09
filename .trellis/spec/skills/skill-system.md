@@ -177,7 +177,7 @@ When changing how skills are loaded or formatted:
 
 ### Testing Skill Loading
 
-- Use `tests/runtime/read-skill.test.js` for dynamic prompt path-loading behavior
+- Use `tests/runtime/skill-loading.test.js` for dynamic prompt path-loading behavior
 - Use skill testing framework (`server/api/skill-test-controller.ts`) for end-to-end validation
 - Verify descriptor format matches prompt expectations
 - Test truncation with oversized skill bodies

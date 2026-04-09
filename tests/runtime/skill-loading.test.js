@@ -144,7 +144,7 @@ test('buildAgentTurnPrompt full mode includes full skill bodies without dynamic 
   }
 });
 
-test('agent tools controller no longer exposes read-skill route', async () => {
+test('agent tools controller no longer handles removed read-skill route', async () => {
   const controller = createAgentToolsController({
     agentToolBridge: {
       handleListParticipants() { return { ok: true }; },
@@ -155,12 +155,24 @@ test('agent tools controller no longer exposes read-skill route', async () => {
     },
   });
 
+  const res = {
+    statusCode: 200,
+    writeHead(statusCode) {
+      this.statusCode = statusCode;
+    },
+    end(body) {
+      this.body = body;
+      this.json = JSON.parse(body);
+    },
+  };
+
   const handled = await controller({
     req: { method: 'GET' },
-    res: {},
+    res,
     pathname: '/api/agent-tools/read-skill',
     requestUrl: new URL('http://localhost/api/agent-tools/read-skill'),
   });
 
   assert.equal(handled, false);
+  assert.equal(typeof res.body, 'undefined');
 });

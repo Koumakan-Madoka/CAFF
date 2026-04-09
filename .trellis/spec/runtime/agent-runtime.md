@@ -61,4 +61,4 @@ CAFF uses a descriptor + on-demand loading model for conversation skills:
   or `tests/runtime/turn-orchestrator.test.js`
 - If the change affects pi runtime CLI behavior, also inspect
   `tests/runtime/pi-runtime.test.js`
-- Dynamic skill path-loading prompt behavior is covered by `tests/runtime/read-skill.test.js`
+- Dynamic skill path-loading prompt behavior is covered by `tests/runtime/skill-loading.test.js`
