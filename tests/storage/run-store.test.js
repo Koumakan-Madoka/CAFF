@@ -12,6 +12,28 @@ function listColumnNames(db, tableName) {
   );
 }
 
+test('run store supports sqlite special in-memory paths', (t) => {
+  const tempDir = withTempDir('caff-run-memory-');
+  const store = createSqliteRunStore({ agentDir: tempDir, sqlitePath: ':memory:' });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const createdTask = store.createTask({
+    taskId: 'memory-task',
+    kind: 'workflow',
+    title: 'Memory Task',
+    status: 'queued',
+  });
+
+  assert.equal(createdTask.id, 'memory-task');
+  assert.equal(store.databasePath, ':memory:');
+});
+
 test('run store migrates legacy runs schema and records task lifecycle data', (t) => {
   const tempDir = withTempDir('caff-run-m2-');
   const sqlitePath = path.join(tempDir, 'legacy-run.sqlite');

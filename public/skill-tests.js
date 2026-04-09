@@ -24,11 +24,13 @@
     generateButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('st-generate-btn')),
     generateCount: /** @type {HTMLInputElement | null} */ (document.getElementById('st-generate-count')),
     generateLoadingMode: /** @type {HTMLSelectElement | null} */ (document.getElementById('st-generate-loading-mode')),
-    generateTestType: /** @type {HTMLSelectElement | null} */ (document.getElementById('st-generate-type')),
     runAllButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('st-run-all-btn')),
+    runProgress: /** @type {HTMLDivElement | null} */ (document.getElementById('st-run-progress')),
+    toolbarPanel: /** @type {HTMLElement | null} */ (document.querySelector('.skill-tests-toolbar-panel')),
     openCreateButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('st-open-create-btn')),
     selectedHighlights: /** @type {HTMLElement | null} */ (document.getElementById('st-selected-highlights')),
     selectedSummary: /** @type {HTMLElement | null} */ (document.getElementById('st-selected-summary')),
+    selectedStatusCallout: /** @type {HTMLElement | null} */ (document.getElementById('st-selected-callout')),
     caseList: /** @type {HTMLDivElement | null} */ (document.getElementById('st-case-list')),
     caseCount: /** @type {HTMLElement | null} */ (document.getElementById('st-case-count')),
     filterCount: /** @type {HTMLElement | null} */ (document.getElementById('st-filter-count')),
@@ -41,11 +43,21 @@
     detailMeta: /** @type {HTMLElement | null} */ (document.getElementById('st-detail-meta')),
     detailLastOutcome: /** @type {HTMLElement | null} */ (document.getElementById('st-detail-last-outcome')),
     detailPrompt: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('st-detail-prompt')),
-    detailNote: /** @type {HTMLElement | null} */ (document.getElementById('st-detail-note')),
+    detailGoal: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('st-detail-goal')),
+    detailBehavior: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('st-detail-behavior')),
+    detailStepsJson: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('st-detail-steps-json')),
+    detailToolsJson: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('st-detail-tools-json')),
+    detailSequenceJson: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('st-detail-sequence-json')),
+    detailRubricJson: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('st-detail-rubric-json')),
+    detailNote: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('st-detail-note')),
     detailExpectedBehavior: /** @type {HTMLElement | null} */ (document.getElementById('st-detail-expected-behavior')),
     detailExpectedTools: /** @type {HTMLElement | null} */ (document.getElementById('st-detail-expected-tools')),
     detailValidity: /** @type {HTMLElement | null} */ (document.getElementById('st-detail-validity')),
     detailValidityHelp: /** @type {HTMLElement | null} */ (document.getElementById('st-detail-validity-help')),
+    detailStatusCallout: /** @type {HTMLElement | null} */ (document.getElementById('st-detail-status-callout')),
+    detailIssues: /** @type {HTMLElement | null} */ (document.getElementById('st-detail-issues')),
+    detailSaveButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('st-detail-save-btn')),
+    detailToggleStatusButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('st-detail-toggle-status-btn')),
     detailRunButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('st-detail-run-btn')),
     detailDownloadButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('st-detail-download-btn')),
     detailDeleteButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('st-detail-delete-btn')),
@@ -61,12 +73,16 @@
     createSection: /** @type {HTMLElement | null} */ (document.getElementById('st-create-section')),
     createForm: /** @type {HTMLFormElement | null} */ (document.getElementById('st-create-form')),
     createPrompt: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('st-create-prompt')),
-    createTestType: /** @type {HTMLSelectElement | null} */ (document.getElementById('st-create-type')),
     createLoadingMode: /** @type {HTMLSelectElement | null} */ (document.getElementById('st-create-loading-mode')),
     createTools: /** @type {HTMLInputElement | null} */ (document.getElementById('st-create-tools')),
     createToolSpecs: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('st-create-tool-specs')),
+    createGoal: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('st-create-goal')),
+    createSteps: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('st-create-steps')),
+    createSequence: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('st-create-sequence')),
+    createRubric: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('st-create-rubric')),
     createBehavior: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('st-create-behavior')),
     createNote: /** @type {HTMLInputElement | null} */ (document.getElementById('st-create-note')),
+    createIssues: /** @type {HTMLElement | null} */ (document.getElementById('st-create-issues')),
     createSubmitButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('st-create-submit')),
   };
 
@@ -82,7 +98,612 @@
     searchQuery: '',
     validityFilter: 'all',
     activeDetailTab: 'overview',
+    casesLoading: false,
+    casesLoadError: '',
+    casesLastLoadedAt: '',
+    summaryLoading: false,
+    summaryLoadError: '',
+    summaryLastLoadedAt: '',
   };
+
+  function normalizeIssueSeverity(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (normalized === 'error' || normalized === 'warning' || normalized === 'needs-review') {
+      return normalized;
+    }
+    return 'warning';
+  }
+
+  function normalizeValidationIssue(value) {
+    if (!value || typeof value !== 'object') {
+      return null;
+    }
+    const code = String(value.code || 'validation_issue').trim() || 'validation_issue';
+    const path = String(value.path || '').trim();
+    const message = String(value.message || value.reason || code).trim();
+    if (!message) {
+      return null;
+    }
+    return {
+      code,
+      path,
+      message,
+      severity: normalizeIssueSeverity(value.severity),
+    };
+  }
+
+  function normalizeIssueList(value) {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+    return value.map((issue) => normalizeValidationIssue(issue)).filter(Boolean);
+  }
+
+  function extractIssuesFromError(error) {
+    if (!error || typeof error !== 'object') {
+      return [];
+    }
+    if (Array.isArray(error.issues)) {
+      return normalizeIssueList(error.issues);
+    }
+    const payload = error.payload && typeof error.payload === 'object' ? error.payload : null;
+    if (payload && Array.isArray(payload.issues)) {
+      return normalizeIssueList(payload.issues);
+    }
+    return [];
+  }
+
+  const ISSUE_SEVERITY_ORDER = {
+    error: 0,
+    'needs-review': 1,
+    warning: 2,
+  };
+
+  function getIssueCounters(issues) {
+    return normalizeIssueList(issues).reduce((acc, issue) => {
+      acc.total += 1;
+      if (issue.severity === 'error') {
+        acc.error += 1;
+      } else if (issue.severity === 'needs-review') {
+        acc.needsReview += 1;
+      } else {
+        acc.warning += 1;
+      }
+      return acc;
+    }, { total: 0, error: 0, warning: 0, needsReview: 0 });
+  }
+
+  function sortIssuesBySeverity(issues) {
+    return normalizeIssueList(issues).slice().sort((left, right) => {
+      const leftOrder = ISSUE_SEVERITY_ORDER[left.severity] ?? 99;
+      const rightOrder = ISSUE_SEVERITY_ORDER[right.severity] ?? 99;
+      if (leftOrder !== rightOrder) {
+        return leftOrder - rightOrder;
+      }
+      return `${left.code || ''}:${left.path || ''}`.localeCompare(`${right.code || ''}:${right.path || ''}`);
+    });
+  }
+
+  function getHighestIssueSeverity(issues) {
+    const normalized = sortIssuesBySeverity(issues);
+    return normalized.length > 0 ? normalized[0].severity : '';
+  }
+
+  function getIssuePanelToneClass(issues) {
+    const severity = getHighestIssueSeverity(issues);
+    return severity ? `skill-test-issues-${severity}` : '';
+  }
+
+  function buildIssueSummary(issues) {
+    const normalized = normalizeIssueList(issues);
+    if (normalized.length === 0) {
+      return '无校验提示';
+    }
+    const counters = getIssueCounters(normalized);
+    const parts = [`${counters.total} 条`];
+    if (counters.error > 0) {
+      parts.push(`${counters.error} 错误`);
+    }
+    if (counters.warning > 0) {
+      parts.push(`${counters.warning} 提示`);
+    }
+    if (counters.needsReview > 0) {
+      parts.push(`${counters.needsReview} 待复核`);
+    }
+    return parts.join('，');
+  }
+
+  function buildIssueToastMessage(prefix, issues) {
+    const normalized = sortIssuesBySeverity(issues);
+    if (normalized.length === 0) {
+      return '';
+    }
+    const firstIssue = normalized[0];
+    return `${prefix}${buildIssueSummary(normalized)}：${getIssueDisplayMessage(firstIssue)}`;
+  }
+
+  function getIssueSeverityLabel(severity) {
+    if (severity === 'error') {
+      return '错误';
+    }
+    if (severity === 'needs-review') {
+      return '待复核';
+    }
+    return '提示';
+  }
+
+  const ISSUE_MESSAGE_BY_CODE = {
+    prompt_alias_conflict: 'userPrompt 与 triggerPrompt 归一化后不一致',
+    user_prompt_required: '用户任务输入不能为空',
+    user_prompt_too_short: '用户任务输入过短（至少 5 个字符）',
+    user_prompt_too_long: '用户任务输入过长（最多 2000 个字符）',
+    expected_steps_required: 'Expected Steps JSON 需要是数组',
+    expected_tools_invalid: '期望工具字段格式无效',
+    expected_sequence_invalid: '关键顺序字段必须是数组',
+    evaluation_rubric_invalid: '评估 Rubric 字段必须是对象',
+    case_schema_invalid: '用例结构校验未通过，无法继续运行',
+    judge_parse_failed: '评审结果解析失败，需人工复核',
+    judge_runtime_failed: '评审执行失败，需人工复核',
+    sequence_config_invalid: '顺序配置无效，请检查 step/order 配置',
+    signal_shape_invalid: '信号结构不完整，请补齐必填字段',
+  };
+
+  const FULL_DIMENSION_LABELS = {
+    requiredStepCompletionRate: '必选步骤完成度',
+    stepCompletionRate: '步骤完成度',
+    sequenceAdherence: '顺序执行度',
+    goalAchievement: '目标达成度',
+    instructionAdherence: '行为符合度',
+    requiredToolCoverage: '工具覆盖度',
+    toolCallSuccessRate: '工具成功度',
+    toolErrorRate: '工具错误率',
+  };
+
+  const FULL_AGGREGATION_REASON_LABELS = {
+    'missing-required-step': '缺少必选步骤',
+    'goal-hard-fail': '目标达成度低于硬失败阈值',
+    'instruction-hard-fail': '行为符合度低于硬失败阈值',
+    'critical-sequence-hard-fail': '关键顺序约束未达标',
+    'critical-constraint': '违反关键约束',
+    'judge-backed-hard-fail': 'AI Judge 给出有证据的 fail',
+    'judge-needs-review': 'AI Judge 结果需复核',
+    'critical-constraint-needs-review': '关键约束检查不完整，需人工复核',
+    'critical-sequence-needs-review': '关键顺序证据不足，需人工复核',
+    'primary-dimension-below-pass-threshold': '主判维度未达到通过阈值',
+    'needs-human-review-or-supporting-signals-weak': '证据偏弱或存在可疑信号，建议人工复核',
+    'supporting-metrics-weak': '辅证维度偏弱',
+    'primary-dimensions-met': '主判维度已达标',
+  };
+
+  function getIssueDisplayMessage(issue) {
+    if (!issue || typeof issue !== 'object') {
+      return '';
+    }
+    return ISSUE_MESSAGE_BY_CODE[issue.code] || issue.message || issue.code || '校验提示';
+  }
+
+  function normalizeRunDetailStringList(value, maxItems = 16) {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+    const normalized = [];
+    for (const entry of value) {
+      const text = String(entry || '').trim();
+      if (!text) {
+        continue;
+      }
+      normalized.push(text);
+      if (normalized.length >= maxItems) {
+        break;
+      }
+    }
+    return normalized;
+  }
+
+  function formatRunDetailPercent(value) {
+    if (value == null || value === '') {
+      return 'n/a';
+    }
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) {
+      return 'n/a';
+    }
+    return `${(numeric * 100).toFixed(1)}%`;
+  }
+
+  function getFullAggregationReasonLabel(reason) {
+    const key = String(reason || '').trim();
+    if (!key) {
+      return '';
+    }
+    return FULL_AGGREGATION_REASON_LABELS[key] || key;
+  }
+
+  function getFullJudgeStatusMeta(status) {
+    const normalized = String(status || '').trim().toLowerCase();
+    if (normalized === 'succeeded') {
+      return { label: 'AI Judge 成功', className: 'tag-success' };
+    }
+    if (normalized === 'parse_failed') {
+      return { label: 'AI Judge 解析失败', className: 'tag-error' };
+    }
+    if (normalized === 'runtime_failed') {
+      return { label: 'AI Judge 运行失败', className: 'tag-error' };
+    }
+    if (normalized === 'skipped') {
+      return { label: 'AI Judge 跳过', className: 'tag-pending' };
+    }
+    if (!normalized) {
+      return null;
+    }
+    return { label: `AI Judge ${normalized}`, className: 'tag' };
+  }
+
+  function buildRunDetailReasonListHtml(title, reasons, formatter = null) {
+    const normalized = normalizeRunDetailStringList(reasons);
+    if (normalized.length === 0) {
+      return `<div class="agent-meta">${escapeHtml(title)}：无</div>`;
+    }
+    const listItems = normalized
+      .map((reason) => `<li>${escapeHtml(formatter ? formatter(reason) : reason)}</li>`)
+      .join('');
+    return `<div class="run-detail-subsection"><div class="agent-meta">${escapeHtml(title)}</div><ul class="run-detail-list">${listItems}</ul></div>`;
+  }
+
+  function mergeIssues(...issueLists) {
+    const merged = [];
+    const seen = new Set();
+    issueLists.forEach((list) => {
+      normalizeIssueList(list).forEach((issue) => {
+        const dedupeKey = [issue.severity, issue.code, issue.path, issue.message].join('|');
+        if (seen.has(dedupeKey)) {
+          return;
+        }
+        seen.add(dedupeKey);
+        merged.push(issue);
+      });
+    });
+    return merged;
+  }
+
+  function buildLocalValidationIssue(code, path, message, severity = 'error') {
+    return normalizeValidationIssue({ code, path, message, severity });
+  }
+
+  function buildLocalValidationError(message, issues) {
+    return {
+      message: String(message || '本地校验失败'),
+      issues: normalizeIssueList(issues),
+    };
+  }
+
+  function buildIssuePanelHtml(issues, title = '') {
+    const normalized = sortIssuesBySeverity(issues);
+    if (normalized.length === 0) {
+      return '';
+    }
+
+    const counters = getIssueCounters(normalized);
+    const summaryText = title
+      ? `${title}（${buildIssueSummary(normalized)}）`
+      : buildIssueSummary(normalized);
+    const summaryBadges = [
+      counters.error > 0 ? `<span class="skill-test-issue-chip skill-test-issue-chip-error">错误 ${counters.error}</span>` : '',
+      counters.warning > 0 ? `<span class="skill-test-issue-chip skill-test-issue-chip-warning">提示 ${counters.warning}</span>` : '',
+      counters.needsReview > 0 ? `<span class="skill-test-issue-chip skill-test-issue-chip-needs-review">待复核 ${counters.needsReview}</span>` : '',
+    ].filter(Boolean).join('');
+
+    let html = '<div class="skill-test-issues-heading">';
+    html += `<p class="section-hint skill-test-issues-summary">${escapeHtml(summaryText)}</p>`;
+    if (summaryBadges) {
+      html += `<div class="skill-test-issue-badges">${summaryBadges}</div>`;
+    }
+    html += '</div>';
+    html += '<ul class="skill-test-issue-list">';
+    for (const issue of normalized) {
+      const severityClass = `skill-test-issue-item-${issue.severity}`;
+      const codeLabel = issue.code ? `<span class="skill-test-issue-code">${escapeHtml(issue.code)}</span>` : '';
+      const pathLabel = issue.path ? `<span class="skill-test-issue-path">${escapeHtml(issue.path)}</span>` : '';
+      html += `<li class="skill-test-issue-item ${severityClass}"><span class="skill-test-issue-severity skill-test-issue-severity-${issue.severity}">${escapeHtml(getIssueSeverityLabel(issue.severity))}</span>${codeLabel}<span class="skill-test-issue-message">${escapeHtml(getIssueDisplayMessage(issue))}</span>${pathLabel}</li>`;
+    }
+    html += '</ul>';
+    return html;
+  }
+
+  function renderIssuePanel(container, issues, title = '') {
+    if (!container) {
+      return;
+    }
+    container.classList.remove('skill-test-issues-error', 'skill-test-issues-warning', 'skill-test-issues-needs-review');
+    const html = buildIssuePanelHtml(issues, title);
+    if (!html) {
+      container.classList.add('hidden');
+      container.innerHTML = '';
+      return;
+    }
+
+    const toneClass = getIssuePanelToneClass(issues);
+    if (toneClass) {
+      container.classList.add(toneClass);
+    }
+    container.innerHTML = html;
+    container.classList.remove('hidden');
+  }
+
+  function readRunValidation(data) {
+    const payload = data && typeof data === 'object' ? data : {};
+    const resultValidation = payload.result && payload.result.validation && typeof payload.result.validation === 'object'
+      ? payload.result.validation
+      : null;
+    const runValidation = payload.run
+      && payload.run.evaluation
+      && payload.run.evaluation.validation
+      && typeof payload.run.evaluation.validation === 'object'
+      ? payload.run.evaluation.validation
+      : null;
+
+    const issues = mergeIssues(
+      payload.issues,
+      resultValidation ? resultValidation.issues : null,
+      runValidation ? runValidation.issues : null
+    );
+
+    let caseSchemaStatus = '';
+    const schemaCandidates = [payload.caseSchemaStatus, resultValidation && resultValidation.caseSchemaStatus, runValidation && runValidation.caseSchemaStatus];
+    for (const candidate of schemaCandidates) {
+      const normalized = String(candidate || '').trim().toLowerCase();
+      if (normalized) {
+        caseSchemaStatus = normalized;
+        break;
+      }
+    }
+
+    let derivedFromLegacy = null;
+    const legacyCandidates = [payload.derivedFromLegacy, resultValidation && resultValidation.derivedFromLegacy, runValidation && runValidation.derivedFromLegacy];
+    for (const candidate of legacyCandidates) {
+      if (typeof candidate === 'boolean') {
+        derivedFromLegacy = candidate;
+        break;
+      }
+    }
+
+    return {
+      issues,
+      caseSchemaStatus,
+      derivedFromLegacy,
+    };
+  }
+
+  function readCaseValidation(testCase) {
+    const payload = testCase && typeof testCase === 'object' ? testCase : {};
+    const storedValidation = payload.validation && typeof payload.validation === 'object'
+      ? payload.validation
+      : null;
+
+    const issues = mergeIssues(
+      payload.issues,
+      storedValidation ? storedValidation.issues : null
+    );
+
+    let caseSchemaStatus = '';
+    const schemaCandidates = [payload.caseSchemaStatus, storedValidation && storedValidation.caseSchemaStatus];
+    for (const candidate of schemaCandidates) {
+      const normalized = String(candidate || '').trim().toLowerCase();
+      if (normalized) {
+        caseSchemaStatus = normalized;
+        break;
+      }
+    }
+
+    let derivedFromLegacy = null;
+    const legacyCandidates = [payload.derivedFromLegacy, storedValidation && storedValidation.derivedFromLegacy];
+    for (const candidate of legacyCandidates) {
+      if (typeof candidate === 'boolean') {
+        derivedFromLegacy = candidate;
+        break;
+      }
+    }
+
+    return {
+      issues,
+      caseSchemaStatus,
+      derivedFromLegacy,
+    };
+  }
+
+  function getCaseSchemaStatusMeta(caseSchemaStatus) {
+    const normalized = String(caseSchemaStatus || '').trim().toLowerCase();
+    if (normalized === 'invalid') {
+      return { label: 'Case Schema Invalid', className: 'tag-error' };
+    }
+    if (normalized === 'warning') {
+      return { label: 'Case Schema Warning', className: 'tag-pending' };
+    }
+    if (normalized === 'valid') {
+      return { label: 'Case Schema Valid', className: 'tag-success' };
+    }
+    return null;
+  }
+
+  function getCaseReadinessMeta(testCase, caseValidation) {
+    if (testCase && testCase.caseStatus === 'archived') {
+      return { label: '已归档', className: 'tag' };
+    }
+    if (caseValidation && String(caseValidation.caseSchemaStatus || '').trim().toLowerCase() === 'invalid') {
+      return { label: '需修结构', className: 'tag-error' };
+    }
+    if (!testCase || testCase.caseStatus !== 'ready') {
+      return { label: '待验证', className: 'tag-pending' };
+    }
+    return { label: '可运行', className: 'tag-success' };
+  }
+
+  function getLatestRunStatusMeta(run) {
+    if (!run) {
+      return null;
+    }
+    if (run.errorMessage) {
+      return { label: '运行失败', className: 'tag-error' };
+    }
+    if (isFailedFlag(run.triggerPassed)) {
+      return { label: '触发失败', className: 'tag-error' };
+    }
+    const executionState = getExecutionOutcomeState(run);
+    if (executionState === 'fail') {
+      return { label: '执行失败', className: 'tag-error' };
+    }
+    if (executionState === 'review') {
+      return { label: '待复核', className: 'tag-pending' };
+    }
+    if (executionState === 'pass') {
+      return { label: '最近通过', className: 'tag-success' };
+    }
+    if (isPassedFlag(run.triggerPassed)) {
+      return { label: '已触发', className: 'tag-success' };
+    }
+    return { label: '已运行', className: 'tag' };
+  }
+
+  function getCasePrompt(testCase) {
+    return String((testCase && (testCase.userPrompt ?? testCase.triggerPrompt)) || '').trim();
+  }
+
+  function formatRefreshTime(value) {
+    if (!value) {
+      return '';
+    }
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return '';
+    }
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  }
+
+  function getCaseActionCallout(testCase, caseValidation) {
+    if (!testCase) {
+      return null;
+    }
+
+    const validation = caseValidation || readCaseValidation(testCase);
+    const latestRun = testCase.latestRun || null;
+    const highestIssueSeverity = getHighestIssueSeverity(validation.issues);
+    const schemaStatus = String(validation.caseSchemaStatus || '').trim().toLowerCase();
+
+    if (schemaStatus === 'invalid') {
+      return {
+        tone: 'error',
+        label: '先修结构',
+        message: '这条用例的结构校验还没过；先修 JSON、Rubric 或顺序字段，再标记 Ready 或重新运行。',
+      };
+    }
+
+    if (highestIssueSeverity === 'error') {
+      return {
+        tone: 'error',
+        label: '先看校验提示',
+        message: '这条用例还有错误级 issues；先处理详情里的校验提示，再继续后续操作。',
+      };
+    }
+
+    if (latestRun && latestRun.errorMessage) {
+      return {
+        tone: 'error',
+        label: '先看失败原因',
+        message: '最近一次运行直接报错；先打开运行详情看错误和校验提示，再决定是否重试。',
+      };
+    }
+
+    if (latestRun && isFailedFlag(latestRun.triggerPassed)) {
+      return {
+        tone: 'error',
+        label: '先看触发失败',
+        message: '最近一次没有成功加载目标 skill；优先检查用户任务输入、加载方式和失败诊断。',
+      };
+    }
+
+    if (latestRun && getExecutionOutcomeState(latestRun) === 'fail') {
+      return {
+        tone: 'error',
+        label: '优先重试失败 case',
+        message: '最近执行结果未达预期；先看运行详情里的步骤、工具和 judge 提示，再决定如何修。',
+      };
+    }
+
+    if (latestRun && getExecutionOutcomeState(latestRun) === 'review') {
+      return {
+        tone: 'pending',
+        label: '待复核',
+        message: '最近一次结果需要人工复核；先展开运行详情看 validation、judge 和回归信息。',
+      };
+    }
+
+    if (highestIssueSeverity === 'needs-review' || highestIssueSeverity === 'warning' || validation.derivedFromLegacy === true) {
+      return {
+        tone: highestIssueSeverity === 'needs-review' ? 'pending' : 'warning',
+        label: validation.derivedFromLegacy === true ? '建议补齐 canonical 字段' : '先看提示再继续',
+        message: validation.derivedFromLegacy === true
+          ? '这条 case 还是 legacy 映射结构，建议顺手补成 canonical 字段，减少后续漂移。'
+          : '这条用例有提示级校验项；先看详情里的 issues，确认无误后再继续。',
+      };
+    }
+
+    if (testCase.caseStatus !== 'ready') {
+      return {
+        tone: 'pending',
+        label: '下一步',
+        message: '这条用例还是 Draft；确认 prompt、目标和期望结构后，再标记 Ready。',
+      };
+    }
+
+    if (!latestRun) {
+      return {
+        tone: 'success',
+        label: '可以开跑',
+        message: '这条用例已经 Ready 但还没跑过；可以先单条运行，确认顺手后再批量跑。',
+      };
+    }
+
+    return {
+      tone: 'success',
+      label: '继续巡检',
+      message: '最近结果看起来正常；可以继续批量运行，或者切到回归对比看不同模型 / Prompt Version。',
+    };
+  }
+
+  function renderStatusCallout(container, callout) {
+    if (!container) {
+      return;
+    }
+    container.classList.remove(
+      'skill-test-status-callout-error',
+      'skill-test-status-callout-warning',
+      'skill-test-status-callout-pending',
+      'skill-test-status-callout-success'
+    );
+    if (!callout) {
+      container.classList.add('hidden');
+      container.innerHTML = '';
+      return;
+    }
+
+    const tone = callout.tone || 'pending';
+    container.classList.add(`skill-test-status-callout-${tone}`);
+    container.innerHTML = `
+      <div class="skill-test-status-callout-label">${escapeHtml(callout.label || '当前建议')}</div>
+      <p class="section-hint">${escapeHtml(callout.message || '')}</p>
+    `;
+    container.classList.remove('hidden');
+  }
+
+  function scheduleSkillTestStickyOffsetSync() {
+    window.requestAnimationFrame(() => {
+      const toolbarPanel = dom.toolbarPanel;
+      if (!toolbarPanel) return;
+      const visible = toolbarPanel.getClientRects().length > 0;
+      const offset = visible ? Math.ceil(toolbarPanel.getBoundingClientRect().height + 20) : 0;
+      document.documentElement.style.setProperty('--skill-tests-toolbar-offset', `${offset}px`);
+    });
+  }
 
   // ---- Tab switching ----
   function switchTab(tabId) {
@@ -96,6 +717,7 @@
       loadBootstrapOptions();
       loadSkills();
       loadSummary();
+      scheduleSkillTestStickyOffsetSync();
     }
   }
 
@@ -145,6 +767,7 @@
   function selectCase(caseId, options = {}) {
     if (!caseId) return;
     state.selectedCaseId = caseId;
+    renderIssuePanel(dom.detailIssues, []);
     if (options.detailTab) {
       switchDetailTab(options.detailTab);
     }
@@ -161,6 +784,7 @@
     });
   });
   switchDetailTab(state.activeDetailTab);
+  window.addEventListener('resize', scheduleSkillTestStickyOffsetSync);
 
   if (dom.openCreateButton) {
     dom.openCreateButton.addEventListener('click', openCreateFlow);
@@ -323,7 +947,14 @@
   if (dom.skillSelect) {
     dom.skillSelect.addEventListener('change', () => {
       state.selectedSkillId = dom.skillSelect.value;
+      state.selectedCaseId = '';
+      state.testCases = [];
+      state.casesLoadError = '';
+      renderIssuePanel(dom.createIssues, []);
       persistSelections();
+      renderSelectedSkillOverview();
+      renderCaseList();
+      hideDetail();
       loadTestCases();
     });
   }
@@ -370,6 +1001,10 @@
         if (dom.validityFilter) dom.validityFilter.value = 'all';
         renderSelectedSkillOverview();
         renderCaseList();
+        return;
+      }
+      if (action === 'retry-load') {
+        loadTestCases();
       }
     });
   }
@@ -379,22 +1014,45 @@
     if (!state.selectedSkillId) {
       state.testCases = [];
       state.selectedCaseId = '';
+      state.casesLoading = false;
+      state.casesLoadError = '';
+      state.casesLastLoadedAt = '';
       renderSelectedSkillOverview();
       renderCaseList();
       hideDetail();
       return;
     }
+
+    const requestedSkillId = state.selectedSkillId;
+    state.casesLoading = true;
+    state.casesLoadError = '';
+    renderSelectedSkillOverview();
+    renderCaseList();
+
     try {
-      const data = await fetchJson(`/api/skills/${encodeURIComponent(state.selectedSkillId)}/test-cases`);
+      const data = await fetchJson(`/api/skills/${encodeURIComponent(requestedSkillId)}/test-cases`);
+      if (state.selectedSkillId !== requestedSkillId) {
+        return;
+      }
       state.testCases = Array.isArray(data.cases) ? data.cases : [];
       if (state.selectedCaseId && !state.testCases.some((tc) => tc.id === state.selectedCaseId)) {
         state.selectedCaseId = '';
       }
+      state.casesLoading = false;
+      state.casesLoadError = '';
+      state.casesLastLoadedAt = new Date().toISOString();
       renderSelectedSkillOverview();
       renderCaseList();
       syncDetailPanel();
     } catch (err) {
-      showToast('Failed to load test cases: ' + (err.message || err));
+      if (state.selectedSkillId !== requestedSkillId) {
+        return;
+      }
+      state.casesLoading = false;
+      state.casesLoadError = '加载当前 Skill 的用例失败，请重试。';
+      renderSelectedSkillOverview();
+      renderCaseList();
+      showToast('加载测试用例失败: ' + (err.message || err));
     }
   }
 
@@ -421,18 +1079,30 @@
     }
 
     try {
-      await fetchJson(
+      const runResult = await fetchJson(
         `/api/skills/${encodeURIComponent(state.selectedSkillId)}/test-cases/${encodeURIComponent(caseId)}/run`,
         { method: 'POST', body: getRunOptions() }
       );
-      showToast('测试运行完成');
+      const runValidation = readRunValidation(runResult);
+      const runIssues = runValidation.issues;
+      const runMessage = runIssues.length > 0
+        ? `测试运行完成（${buildIssueSummary(runIssues)}）`
+        : '测试运行完成';
+      showToast(runMessage);
+      renderIssuePanel(dom.detailIssues, runIssues, '运行返回校验提示');
       await Promise.all([loadTestCases(), loadSummary()]);
+      if (runIssues.length > 0) {
+        renderIssuePanel(dom.detailIssues, runIssues, '运行返回校验提示');
+      }
       if (options.scrollIntoView && dom.detailPanel && !dom.detailPanel.classList.contains('hidden')) {
         dom.detailPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
       }
       return true;
     } catch (err) {
-      showToast('运行失败: ' + (err.message || err));
+      const issues = extractIssuesFromError(err);
+      renderIssuePanel(dom.detailIssues, issues, '运行失败校验提示');
+      const issueMessage = buildIssueToastMessage('运行失败，', issues);
+      showToast(issueMessage || ('运行失败: ' + (err.message || err)));
       return false;
     } finally {
       if (button) {
@@ -446,19 +1116,50 @@
     if (!dom.selectedHighlights || !dom.selectedSummary) return;
     if (!state.selectedSkillId) {
       dom.selectedHighlights.innerHTML = '<span class="tag tag-pending">先选一个 Skill</span>';
-      dom.selectedSummary.textContent = '这里会显示当前 Skill 的用例数量、可重试范围和最近表现。';
+      dom.selectedSummary.textContent = '这里会显示当前 Skill 的用例数量、草稿/Ready 分布、刷新状态和下一步建议。';
+      renderStatusCallout(dom.selectedStatusCallout, {
+        tone: 'pending',
+        label: '先选一个 Skill',
+        message: '先在顶部选择 Skill，下面的列表、详情和概览建议才会一起联动。',
+      });
+      return;
+    }
+
+    if (state.casesLoading && state.testCases.length === 0) {
+      dom.selectedHighlights.innerHTML = '<span class="tag tag-pending">正在加载当前 Skill 用例...</span>';
+      dom.selectedSummary.textContent = '正在拉取这个 Skill 的用例、状态和最近表现。';
+      renderStatusCallout(dom.selectedStatusCallout, {
+        tone: 'pending',
+        label: '正在刷新当前 Skill',
+        message: '正在同步这组 case 的列表、状态和最近结果；等一会儿就能继续巡检。',
+      });
+      return;
+    }
+
+    if (state.casesLoadError && state.testCases.length === 0) {
+      dom.selectedHighlights.innerHTML = '<span class="tag tag-error">用例加载失败</span>';
+      dom.selectedSummary.textContent = state.casesLoadError;
+      renderStatusCallout(dom.selectedStatusCallout, {
+        tone: 'error',
+        label: '先重试刷新',
+        message: '当前 Skill 的用例还没拉下来；先点重试拿到列表，再继续看详情或批量运行。',
+      });
       return;
     }
 
     const totalCases = state.testCases.length;
-    const validated = state.testCases.filter((tc) => tc.validityStatus === 'validated').length;
-    const invalid = state.testCases.filter((tc) => tc.validityStatus === 'invalid').length;
-    const pending = Math.max(0, totalCases - validated - invalid);
+    const draftCount = state.testCases.filter((tc) => tc.caseStatus === 'draft').length;
+    const readyCount = state.testCases.filter((tc) => tc.caseStatus === 'ready').length;
+    const archivedCount = state.testCases.filter((tc) => tc.caseStatus === 'archived').length;
     const recentFailing = state.testCases.filter((tc) => {
       const run = tc.latestRun || null;
       return isFailingRun(run);
     }).length;
-    const runnable = validated + invalid;
+    const neverRunCount = state.testCases.filter((tc) => !tc.latestRun).length;
+    const caseValidations = state.testCases.map((tc) => readCaseValidation(tc));
+    const invalidCount = caseValidations.filter((validation) => validation.caseSchemaStatus === 'invalid').length;
+    const warningCount = caseValidations.filter((validation) => validation.caseSchemaStatus === 'warning').length;
+    const legacyCount = caseValidations.filter((validation) => validation.derivedFromLegacy === true).length;
     const selectedSummary = state.summary.find((entry) => entry.skillId === state.selectedSkillId) || null;
     const triggerRate = selectedSummary && selectedSummary.triggerRate != null
       ? `${Math.round(selectedSummary.triggerRate * 100)}%`
@@ -466,37 +1167,112 @@
     const executionRate = selectedSummary && selectedSummary.executionRate != null
       ? `${Math.round(selectedSummary.executionRate * 100)}%`
       : '—';
+    const casesRefreshLabel = formatRefreshTime(state.casesLastLoadedAt);
+    const summaryRefreshLabel = formatRefreshTime(state.summaryLastLoadedAt);
+    const listRefreshTag = state.casesLoading
+      ? '<span class="tag tag-pending">列表刷新中...</span>'
+      : (state.casesLoadError ? '<span class="tag tag-error">列表刷新失败</span>' : '');
 
-    dom.selectedHighlights.innerHTML = `
-      <span class="tag">共 ${totalCases} 条</span>
-      <span class="tag tag-success">可运行 ${validated}</span>
-      <span class="tag tag-error">触发失败 ${invalid}</span>
-      <span class="tag tag-pending">待验证 ${pending}</span>
-      <span class="tag">可批量重跑 ${runnable}</span>
-      <span class="tag">最近失败 ${recentFailing}</span>
-    `;
+    dom.selectedHighlights.innerHTML = [
+      `<span class="tag">共 ${totalCases} 条</span>`,
+      `<span class="tag tag-pending">Draft ${draftCount}</span>`,
+      `<span class="tag tag-success">Ready ${readyCount}</span>`,
+      `<span class="tag">Archived ${archivedCount}</span>`,
+      `<span class="tag">可批量运行 ${readyCount}</span>`,
+      `<span class="tag">最近失败 ${recentFailing}</span>`,
+      neverRunCount > 0 ? `<span class="tag">未运行 ${neverRunCount}</span>` : '',
+      invalidCount > 0 ? `<span class="tag tag-error">结构异常 ${invalidCount}</span>` : '',
+      warningCount > 0 ? `<span class="tag tag-pending">结构提示 ${warningCount}</span>` : '',
+      legacyCount > 0 ? `<span class="tag">Legacy ${legacyCount}</span>` : '',
+      casesRefreshLabel ? `<span class="tag">列表更新 ${escapeHtml(casesRefreshLabel)}</span>` : '',
+      summaryRefreshLabel ? `<span class="tag">概览更新 ${escapeHtml(summaryRefreshLabel)}</span>` : '',
+      listRefreshTag,
+    ].filter(Boolean).join('');
 
     const filterHint = state.searchQuery || state.validityFilter !== 'all'
       ? `当前筛选后显示 ${getFilteredCases().length} 条；`
       : '';
-    dom.selectedSummary.textContent = `${filterHint}当前 Skill 的触发成功率 ${triggerRate}，执行成功率 ${executionRate}。`;
+    const refreshHint = state.casesLoadError
+      ? `最近一次列表刷新失败，当前仍显示${casesRefreshLabel ? `${casesRefreshLabel} 的` : '上一次成功加载的'}结果；`
+      : (casesRefreshLabel ? `列表最近一次成功刷新在 ${casesRefreshLabel}；` : '');
+    const summaryHint = summaryRefreshLabel ? `全局概览更新在 ${summaryRefreshLabel}；` : '';
+    const nextStep = totalCases === 0
+      ? '下一步：先 AI 生成或手动创建第一条用例。'
+      : invalidCount > 0
+        ? `下一步：先修 ${invalidCount} 条结构异常 case，再标记 Ready 或运行。`
+        : readyCount === 0
+          ? '下一步：先把检查通过的 draft 标记为 Ready，再试单条或批量运行。'
+          : recentFailing > 0
+            ? `下一步：优先重试 ${recentFailing} 条最近失败 case，直接看失败原因。`
+            : neverRunCount > 0
+              ? `下一步：还有 ${neverRunCount} 条没跑过的 case，可以先单条跑一轮。`
+              : '下一步：可以继续批量运行 Ready 用例，或者切到回归对比看模型差异。';
+    dom.selectedSummary.textContent = `${refreshHint}${summaryHint}${filterHint}当前 Skill 的加载成功率 ${triggerRate}，执行通过率 ${executionRate}。${nextStep}`;
+
+    let overviewCallout = null;
+    if (totalCases === 0) {
+      overviewCallout = {
+        tone: 'pending',
+        label: '先创建第一条 case',
+        message: '这个 Skill 还没有测试用例；先 AI 生成或手动创建，再继续跑列表和详情。',
+      };
+    } else if (invalidCount > 0) {
+      overviewCallout = {
+        tone: 'error',
+        label: '先修结构异常',
+        message: `当前有 ${invalidCount} 条 case 结构没过；先修 JSON / Rubric / 顺序字段，再标记 Ready 或运行。`,
+      };
+    } else if (recentFailing > 0) {
+      overviewCallout = {
+        tone: 'error',
+        label: '优先看失败 case',
+        message: `当前有 ${recentFailing} 条最近失败；可直接从列表点重试，或打开详情看失败原因和运行校验提示。`,
+      };
+    } else if (state.casesLoadError) {
+      overviewCallout = {
+        tone: 'warning',
+        label: '当前先看已加载结果',
+        message: `列表刷新失败，当前仍显示${casesRefreshLabel ? `${casesRefreshLabel} 的` : '上一次成功加载的'}结果；需要最新状态时点重试。`,
+      };
+    } else if (readyCount === 0) {
+      overviewCallout = {
+        tone: 'pending',
+        label: '先把 Draft 变 Ready',
+        message: '当前还没有可批量运行的 case；先确认详情内容，再把通过检查的 draft 标成 Ready。',
+      };
+    } else if (neverRunCount > 0) {
+      overviewCallout = {
+        tone: 'success',
+        label: '可以先跑一轮',
+        message: `还有 ${neverRunCount} 条 case 没跑过；先单条跑一轮，会更容易找到失败原因。`,
+      };
+    } else {
+      overviewCallout = {
+        tone: 'success',
+        label: '继续巡检',
+        message: '列表和概览都已就绪；可以继续批量运行 Ready 用例，或者切到回归对比看模型差异。',
+      };
+    }
+    renderStatusCallout(dom.selectedStatusCallout, overviewCallout);
   }
 
   function getFilteredCases() {
     return state.testCases.filter((tc) => {
       const matchesQuery = !state.searchQuery || [
         tc.id,
-        tc.triggerPrompt,
+        getCasePrompt(tc),
         tc.note,
         tc.expectedBehavior,
+        tc.expectedGoal,
+        getExpectedStepsSearchText(tc.expectedSteps),
         getExpectedToolsSearchText(tc.expectedTools),
-        tc.testType,
+        tc.caseStatus,
         tc.loadingMode,
       ].some((value) => String(value || '').toLowerCase().includes(state.searchQuery));
 
       const latestRun = tc.latestRun || null;
       const matchesValidity = state.validityFilter === 'all'
-        || tc.validityStatus === state.validityFilter
+        || tc.caseStatus === state.validityFilter
         || (state.validityFilter === 'failing' && isFailingRun(latestRun));
 
       return matchesQuery && matchesValidity;
@@ -511,6 +1287,27 @@
 
     if (dom.filterCount) {
       dom.filterCount.textContent = `显示 ${filteredCases.length} / ${state.testCases.length}`;
+    }
+
+    if (state.casesLoading && state.testCases.length === 0) {
+      dom.caseList.innerHTML = `
+        <div class="empty-state compact-empty-state">
+          <p class="section-hint">正在加载测试用例...</p>
+        </div>
+      `;
+      return;
+    }
+
+    if (state.casesLoadError && state.testCases.length === 0) {
+      dom.caseList.innerHTML = `
+        <div class="empty-state compact-empty-state">
+          <p class="section-hint">${escapeHtml(state.casesLoadError)}</p>
+          <div class="panel-actions skill-test-empty-actions">
+            <button class="ghost-button" type="button" data-st-case-action="retry-load">重试</button>
+          </div>
+        </div>
+      `;
+      return;
     }
 
     if (filteredCases.length === 0) {
@@ -537,7 +1334,7 @@
           <div class="empty-state compact-empty-state">
             <p class="section-hint">这个 Skill 还没有测试用例；你可以直接生成，或者手动补一条更精确的 case。</p>
             <div class="panel-actions skill-test-empty-actions">
-              <button class="ghost-button" type="button" data-st-case-action="generate">生成测试用例</button>
+              <button class="ghost-button" type="button" data-st-case-action="generate">AI 生成测试用例</button>
               <button class="ghost-button" type="button" data-st-case-action="open-create">手动创建</button>
             </div>
           </div>
@@ -546,36 +1343,79 @@
     }
 
     dom.caseList.innerHTML = '';
+
+    if (state.casesLoading || state.casesLoadError) {
+      const banner = document.createElement('div');
+      const casesRefreshLabel = formatRefreshTime(state.casesLastLoadedAt);
+      banner.className = `skill-test-inline-banner ${state.casesLoadError ? 'skill-test-inline-banner-error' : 'skill-test-inline-banner-pending'}`;
+      banner.innerHTML = state.casesLoadError
+        ? `
+          <p class="section-hint">列表刷新失败，当前仍显示${casesRefreshLabel ? `${escapeHtml(casesRefreshLabel)} 的` : '上一次成功加载的'}结果。</p>
+          <div class="panel-actions">
+            <button class="ghost-button" type="button" data-st-case-action="retry-load">重试</button>
+          </div>
+        `
+        : `<p class="section-hint">列表刷新中${casesRefreshLabel ? `，当前先显示 ${escapeHtml(casesRefreshLabel)} 的结果。` : '，你可以先查看已加载结果。'}</p>`;
+      dom.caseList.appendChild(banner);
+    }
+
     for (const tc of filteredCases) {
       const card = document.createElement('article');
       card.className = 'skill-test-case-card' + (tc.id === state.selectedCaseId ? ' agent-card-selected' : '');
       card.dataset.caseId = tc.id;
 
-      const validityMeta = getValidityMeta(tc.validityStatus);
-      const testTypeLabel = getTestTypeLabel(tc.testType);
+      const validityMeta = getCaseStatusMeta(tc.caseStatus);
+      const caseValidation = readCaseValidation(tc);
+      const readinessMeta = getCaseReadinessMeta(tc, caseValidation);
+      const latestRunMeta = getLatestRunStatusMeta(tc.latestRun);
+      const schemaStatusMeta = getCaseSchemaStatusMeta(caseValidation.caseSchemaStatus);
       const loadingModeLabel = getLoadingModeLabel(tc.loadingMode);
       const expectedToolsText = formatExpectedTools(tc.expectedTools);
       const lastOutcome = getLastOutcomeSummary(tc.latestRun);
-      const goalSummary = clipText(tc.expectedBehavior || tc.note || '生成后会先自动验证一次', 90);
+      const goalSummary = clipText(tc.expectedGoal || tc.expectedBehavior || tc.note || '生成后先进入 draft，等待你修改。', 90);
       const latestSummary = clipText(lastOutcome, 96);
       const caseIdentity = tc.id ? `#${tc.id.slice(0, 8)}` : '未命名';
       const recentRunLabel = tc.latestRun && tc.latestRun.createdAt
         ? `最近运行 ${new Date(tc.latestRun.createdAt).toLocaleString()}`
         : '还没跑过';
+      const validationSummary = caseValidation.issues.length > 0
+        ? `用例校验 ${buildIssueSummary(caseValidation.issues)}`
+        : caseValidation.derivedFromLegacy === true
+          ? '用例由 legacy 结构映射而来'
+          : '';
+      const schemaTag = schemaStatusMeta && caseValidation.caseSchemaStatus !== 'valid'
+        ? `<span class="tag ${schemaStatusMeta.className}">${escapeHtml(schemaStatusMeta.label)}</span>`
+        : '';
+      const caseCallout = getCaseActionCallout(tc, caseValidation);
+      const calloutHtml = caseCallout
+        ? `
+        <div class="skill-test-case-callout skill-test-status-callout skill-test-status-callout-${caseCallout.tone}">
+          <div class="skill-test-status-callout-label">${escapeHtml(caseCallout.label)}</div>
+          <p class="section-hint">${escapeHtml(caseCallout.message)}</p>
+        </div>
+      `
+        : '';
 
       card.innerHTML = `
         <div class="skill-test-case-card-head">
           <div>
             <div class="skill-test-case-card-id">${escapeHtml(caseIdentity)}</div>
-            <div class="skill-test-case-card-meta">${escapeHtml(testTypeLabel)} · ${escapeHtml(loadingModeLabel)}</div>
+            <div class="skill-test-case-card-meta">${escapeHtml(loadingModeLabel)}</div>
           </div>
-          <span class="tag ${validityMeta.className}">${validityMeta.label}</span>
+          <div class="skill-test-case-card-tags">
+            <span class="tag ${validityMeta.className}">${validityMeta.label}</span>
+            <span class="tag ${readinessMeta.className}">${escapeHtml(readinessMeta.label)}</span>
+            ${latestRunMeta ? `<span class="tag ${latestRunMeta.className}">${escapeHtml(latestRunMeta.label)}</span>` : ''}
+            ${schemaTag}
+          </div>
         </div>
-        <p class="skill-test-case-card-prompt">${escapeHtml(clipText(tc.triggerPrompt, 120))}</p>
+        <p class="skill-test-case-card-prompt">${escapeHtml(clipText(getCasePrompt(tc), 120))}</p>
         <div class="skill-test-case-card-meta">${escapeHtml(recentRunLabel)}</div>
         <div class="skill-test-case-card-meta">${escapeHtml(goalSummary)}</div>
         <div class="skill-test-case-card-meta">${escapeHtml(clipText(expectedToolsText, 120))}</div>
+        ${validationSummary ? `<div class="skill-test-case-card-meta">${escapeHtml(validationSummary)}</div>` : ''}
         <div class="skill-test-case-card-meta">${escapeHtml(latestSummary)}</div>
+        ${calloutHtml}
       `;
 
       const actions = document.createElement('div');
@@ -593,21 +1433,40 @@
       const runButton = document.createElement('button');
       runButton.type = 'button';
       runButton.className = 'mini-action';
-      runButton.textContent = '运行';
+      runButton.textContent = isFailingRun(tc.latestRun) ? '重试' : '运行';
       runButton.addEventListener('click', async (event) => {
         event.stopPropagation();
         selectCase(tc.id, { detailTab: 'runs', scrollIntoView: true });
         await runTestCase(tc.id, {
           button: runButton,
-          idleLabel: '运行',
+          idleLabel: runButton.textContent || '运行',
           busyLabel: '运行中...',
           detailTab: 'runs',
           scrollIntoView: true,
         });
       });
 
+      const statusButton = document.createElement('button');
+      statusButton.type = 'button';
+      statusButton.className = 'mini-action';
+      statusButton.textContent = tc.caseStatus === 'ready' ? '改回 Draft' : (caseValidation.caseSchemaStatus === 'invalid' ? '修好后再 Ready' : '标记 Ready');
+      statusButton.addEventListener('click', async (event) => {
+        event.stopPropagation();
+        try {
+          await toggleCaseStatus(tc);
+        } catch (err) {
+          const issues = extractIssuesFromError(err);
+          if (tc.id === state.selectedCaseId) {
+            renderIssuePanel(dom.detailIssues, issues, '切换状态失败校验提示');
+          }
+          const issueMessage = buildIssueToastMessage('切换状态失败，', issues);
+          showToast(issueMessage || ('切换状态失败: ' + (err.message || err)));
+        }
+      });
+
       actions.appendChild(viewButton);
       actions.appendChild(runButton);
+      actions.appendChild(statusButton);
       card.appendChild(actions);
 
       card.addEventListener('click', () => {
@@ -622,35 +1481,59 @@
     if (!dom.detailPanel) return;
     if (dom.detailEmpty) dom.detailEmpty.classList.add('hidden');
     dom.detailPanel.classList.remove('hidden');
+    const caseValidation = readCaseValidation(tc);
+    const readinessMeta = getCaseReadinessMeta(tc, caseValidation);
+    const latestRunMeta = getLatestRunStatusMeta(tc.latestRun);
+    const schemaStatusMeta = getCaseSchemaStatusMeta(caseValidation.caseSchemaStatus);
     if (dom.detailCaseId) dom.detailCaseId.textContent = tc.id;
     if (dom.detailMeta) {
       dom.detailMeta.innerHTML = `
-        <span class="tag">${escapeHtml(getTestTypeLabel(tc.testType))}</span>
         <span class="tag">${escapeHtml(getLoadingModeLabel(tc.loadingMode))}</span>
+        <span class="tag ${readinessMeta.className}">${escapeHtml(readinessMeta.label)}</span>
+        ${latestRunMeta ? `<span class="tag ${latestRunMeta.className}">${escapeHtml(latestRunMeta.label)}</span>` : ''}
+        ${schemaStatusMeta && caseValidation.caseSchemaStatus === 'warning' ? `<span class="tag ${schemaStatusMeta.className}">${escapeHtml(schemaStatusMeta.label)}</span>` : ''}
+        ${caseValidation.derivedFromLegacy === true ? '<span class="tag tag-pending">Legacy 映射</span>' : ''}
         ${tc.note ? `<span class="tag">${escapeHtml(clipText(tc.note, 36))}</span>` : ''}
       `;
     }
     if (dom.detailLastOutcome) {
       dom.detailLastOutcome.textContent = getLastOutcomeSummary(tc.latestRun);
     }
-    if (dom.detailPrompt) dom.detailPrompt.value = tc.triggerPrompt;
+    if (dom.detailPrompt) dom.detailPrompt.value = getCasePrompt(tc);
+    if (dom.detailGoal) dom.detailGoal.value = tc.expectedGoal || '';
+    if (dom.detailBehavior) dom.detailBehavior.value = tc.expectedBehavior || '';
+    if (dom.detailStepsJson) dom.detailStepsJson.value = stringifyJsonPretty(tc.expectedSteps || []);
+    if (dom.detailToolsJson) dom.detailToolsJson.value = stringifyJsonPretty(tc.expectedTools || []);
+    if (dom.detailSequenceJson) dom.detailSequenceJson.value = stringifyJsonPretty(tc.expectedSequence || []);
+    if (dom.detailRubricJson) dom.detailRubricJson.value = stringifyJsonPretty(tc.evaluationRubric || {});
     if (dom.detailNote) {
-      dom.detailNote.textContent = tc.note || '无备注';
+      dom.detailNote.value = tc.note || '';
     }
     if (dom.detailExpectedBehavior) {
-      dom.detailExpectedBehavior.textContent = tc.expectedBehavior || '主要关注：这条 prompt 能不能稳定触发目标 skill。';
+      dom.detailExpectedBehavior.textContent = tc.expectedGoal || tc.expectedBehavior || 'Dynamic 模式主要关注能否成功加载目标 skill。';
     }
     if (dom.detailExpectedTools) {
       dom.detailExpectedTools.textContent = formatExpectedTools(tc.expectedTools);
     }
     if (dom.detailValidity) {
-      const validityMeta = getValidityMeta(tc.validityStatus);
+      const validityMeta = getCaseStatusMeta(tc.caseStatus);
       dom.detailValidity.className = 'tag ' + validityMeta.className;
       dom.detailValidity.textContent = validityMeta.label;
     }
     if (dom.detailValidityHelp) {
-      dom.detailValidityHelp.textContent = getValidityHelpText(tc);
+      dom.detailValidityHelp.textContent = getCaseStatusHelpText(tc);
     }
+    renderStatusCallout(dom.detailStatusCallout, getCaseActionCallout(tc, caseValidation));
+    if (dom.detailToggleStatusButton) {
+      dom.detailToggleStatusButton.textContent = tc.caseStatus === 'ready'
+        ? '改回 Draft'
+        : (caseValidation.caseSchemaStatus === 'invalid' ? '修好后再 Ready' : '标记 Ready');
+    }
+    if (dom.detailRunButton) {
+      dom.detailRunButton.textContent = isFailingRun(tc.latestRun) ? '重试运行' : '运行测试';
+    }
+
+    renderIssuePanel(dom.detailIssues, caseValidation.issues, '用例校验提示');
 
     loadCaseRuns(tc.id);
     loadCaseRegression(tc.id);
@@ -672,6 +1555,14 @@
     if (dom.detailRuns) {
       dom.detailRuns.innerHTML = '<p class="section-hint">暂无运行记录</p>';
     }
+    renderStatusCallout(dom.detailStatusCallout, null);
+    renderIssuePanel(dom.detailIssues, []);
+    if (dom.detailRunButton) {
+      dom.detailRunButton.textContent = '运行测试';
+    }
+    if (dom.detailToggleStatusButton) {
+      dom.detailToggleStatusButton.textContent = '标记 Ready';
+    }
     switchDetailTab('overview');
   }
 
@@ -686,6 +1577,93 @@
       return;
     }
     renderDetail(selectedCase);
+  }
+
+  function stringifyJsonPretty(value) {
+    try {
+      return JSON.stringify(value == null ? null : value, null, 2);
+    } catch {
+      return '';
+    }
+  }
+
+  async function toggleCaseStatus(testCase) {
+    if (!state.selectedSkillId || !testCase || !testCase.id) return;
+    const action = testCase.caseStatus === 'ready' ? 'mark-draft' : 'mark-ready';
+    const nextLabel = action === 'mark-ready' ? 'Ready' : 'Draft';
+    await fetchJson(
+      `/api/skills/${encodeURIComponent(state.selectedSkillId)}/test-cases/${encodeURIComponent(testCase.id)}/${action}`,
+      { method: 'POST' }
+    );
+    showToast(`已切换为 ${nextLabel}`);
+    await Promise.all([loadTestCases(), loadSummary()]);
+    selectCase(testCase.id, { detailTab: state.activeDetailTab });
+  }
+
+  async function saveCurrentCase() {
+    if (!state.selectedSkillId || !state.selectedCaseId) return;
+    const selectedCase = state.testCases.find((tc) => tc.id === state.selectedCaseId);
+    if (!selectedCase) return;
+
+    const expectedStepsText = dom.detailStepsJson ? dom.detailStepsJson.value.trim() : '';
+    const expectedSteps = parseStructuredArray(expectedStepsText);
+
+    const expectedToolsText = dom.detailToolsJson ? dom.detailToolsJson.value.trim() : '';
+    const expectedTools = parseStructuredExpectedTools(expectedToolsText);
+
+    const expectedSequenceText = dom.detailSequenceJson ? dom.detailSequenceJson.value.trim() : '';
+    const expectedSequence = parseStructuredArray(expectedSequenceText);
+
+    const evaluationRubricText = dom.detailRubricJson ? dom.detailRubricJson.value.trim() : '';
+    const evaluationRubric = parseStructuredObject(evaluationRubricText);
+
+    const localIssues = mergeIssues(
+      expectedStepsText && !expectedSteps
+        ? [buildLocalValidationIssue('expected_steps_required', 'expectedSteps', 'Expected Steps JSON 需要是数组')]
+        : [],
+      expectedToolsText && !expectedTools
+        ? [buildLocalValidationIssue('expected_tools_invalid', 'expectedTools', 'Expected Tools JSON 需要是数组')]
+        : [],
+      expectedSequenceText && !expectedSequence
+        ? [buildLocalValidationIssue('expected_sequence_invalid', 'expectedSequence', '关键顺序 JSON 需要是数组')]
+        : [],
+      evaluationRubricText && !evaluationRubric
+        ? [buildLocalValidationIssue('evaluation_rubric_invalid', 'evaluationRubric', '评估 Rubric JSON 需要是对象')]
+        : []
+    );
+
+    if (localIssues.length > 0) {
+      throw buildLocalValidationError('保存前校验失败', localIssues);
+    }
+
+    const prompt = dom.detailPrompt ? dom.detailPrompt.value.trim() : getCasePrompt(selectedCase);
+    const body = {
+      userPrompt: prompt,
+      triggerPrompt: prompt,
+      expectedGoal: dom.detailGoal ? dom.detailGoal.value.trim() : selectedCase.expectedGoal,
+      expectedBehavior: dom.detailBehavior ? dom.detailBehavior.value.trim() : selectedCase.expectedBehavior,
+      expectedSteps: expectedSteps || [],
+      expectedTools: expectedTools || [],
+      expectedSequence: expectedSequence || [],
+      evaluationRubric: evaluationRubric || {},
+      note: dom.detailNote ? dom.detailNote.value.trim() : selectedCase.note,
+      loadingMode: selectedCase.loadingMode,
+      caseStatus: selectedCase.caseStatus,
+    };
+
+    const result = await fetchJson(
+      `/api/skills/${encodeURIComponent(state.selectedSkillId)}/test-cases/${encodeURIComponent(state.selectedCaseId)}`,
+      { method: 'PATCH', body }
+    );
+    const saveIssues = normalizeIssueList(result && result.issues);
+    const saveMessage = saveIssues.length > 0
+      ? `草稿已保存（${buildIssueSummary(saveIssues)}）`
+      : '草稿已保存';
+    showToast(saveMessage);
+    await Promise.all([loadTestCases(), loadSummary()]);
+    selectCase(state.selectedCaseId, { detailTab: 'details' });
+    renderIssuePanel(dom.detailIssues, saveIssues, '保存返回校验提示');
+    return saveIssues;
   }
 
   function renderRetryState(container, message, onRetry) {
@@ -757,14 +1735,15 @@
     }
 
     let html = '<div class="table-scroll"><table class="summary-table"><thead><tr>';
-    html += '<th>模型</th><th>Prompt Version</th><th>运行</th><th>触发成功</th><th>执行成功</th><th>工具命中</th><th>最近运行</th>';
+    html += '<th>模型</th><th>Prompt Version</th><th>运行</th><th>加载成功</th><th>执行成功</th><th>目标达成</th><th>工具成功</th><th>最近运行</th>';
     html += '</tr></thead><tbody>';
 
     for (const entry of regression) {
       const modelLabel = [entry.provider, entry.model].filter(Boolean).join(' / ');
       const triggerRate = entry.triggerRate != null ? `${(entry.triggerRate * 100).toFixed(1)}%` : '—';
       const executionRate = entry.executionRate != null ? `${(entry.executionRate * 100).toFixed(1)}%` : '—';
-      const accuracy = entry.avgToolAccuracy != null ? `${(entry.avgToolAccuracy * 100).toFixed(1)}%` : '—';
+      const goalAchievement = entry.avgGoalAchievement != null ? `${(entry.avgGoalAchievement * 100).toFixed(1)}%` : '—';
+      const toolSuccess = entry.avgToolCallSuccessRate != null ? `${(entry.avgToolCallSuccessRate * 100).toFixed(1)}%` : '—';
       const lastRunAt = entry.lastRunAt ? new Date(entry.lastRunAt).toLocaleString() : '—';
 
       html += '<tr>';
@@ -773,7 +1752,8 @@
       html += `<td>${Number(entry.totalRuns || 0)}</td>`;
       html += `<td>${escapeHtml(triggerRate)}</td>`;
       html += `<td>${escapeHtml(executionRate)}</td>`;
-      html += `<td>${escapeHtml(accuracy)}</td>`;
+      html += `<td>${escapeHtml(goalAchievement)}</td>`;
+      html += `<td>${escapeHtml(toolSuccess)}</td>`;
       html += `<td>${escapeHtml(lastRunAt)}</td>`;
       html += '</tr>';
     }
@@ -798,20 +1778,27 @@
       const row = document.createElement('div');
       row.className = 'run-item';
 
-      const triggerTag = isPassedFlag(run.triggerPassed)
-        ? '<span class="tag tag-success">已触发技能</span>'
-        : isFailedFlag(run.triggerPassed)
-          ? '<span class="tag tag-error">未触发技能</span>'
-          : '<span class="tag tag-pending">触发结果待定</span>';
+      const triggerTag = run.verdict
+        ? ''
+        : isPassedFlag(run.triggerPassed)
+          ? '<span class="tag tag-success">已加载 skill</span>'
+          : isFailedFlag(run.triggerPassed)
+            ? '<span class="tag tag-error">未加载 skill</span>'
+            : '<span class="tag tag-pending">加载结果待定</span>';
 
-      const execTag =
-        run.executionPassed === null || typeof run.executionPassed === 'undefined'
+      const execTag = run.verdict
+        ? (run.verdict === 'pass'
+          ? '<span class="tag tag-success">Full 执行通过</span>'
+          : run.verdict === 'borderline'
+            ? '<span class="tag tag-pending">Full 待复核</span>'
+            : '<span class="tag tag-error">Full 执行失败</span>')
+        : (run.executionPassed === null || typeof run.executionPassed === 'undefined'
           ? '<span class="tag tag-pending">未评估执行</span>'
           : isPassedFlag(run.executionPassed)
             ? '<span class="tag tag-success">工具执行符合预期</span>'
             : isFailedFlag(run.executionPassed)
               ? '<span class="tag tag-error">工具执行未达预期</span>'
-              : '<span class="tag tag-pending">执行结果待定</span>';
+              : '<span class="tag tag-pending">执行结果待定</span>');
 
       const accuracy =
         run.toolAccuracy != null ? `<span class="tag">工具命中 ${(run.toolAccuracy * 100).toFixed(0)}%</span>` : '';
@@ -822,8 +1809,8 @@
           : '';
 
       let triggerFailHint = '';
-      if (isFailedFlag(run.triggerPassed)) {
-        triggerFailHint = '<div class="run-item-warning">⚠ 这次没有触发到目标 skill，可点「查看详情」看模型实际做了什么</div>';
+      if (!run.verdict && isFailedFlag(run.triggerPassed)) {
+        triggerFailHint = '<div class="run-item-warning">⚠ 这次没有加载到目标 skill，可点「查看详情」看模型实际做了什么</div>';
       }
 
       // Action buttons
@@ -902,10 +1889,17 @@
   }
 
   function renderRunDetailPanel(panel, data) {
-    const debug = data.debug || {};
-    const result = data.result || {};
+    const payload = data && typeof data === 'object' ? data : {};
+    const debug = payload.debug || {};
+    const result = payload.result || {};
+    const run = payload.run && typeof payload.run === 'object' ? payload.run : {};
+    const fullEvaluation = result && result.evaluation && typeof result.evaluation === 'object'
+      ? result.evaluation
+      : (run.evaluation && typeof run.evaluation === 'object' ? run.evaluation : null);
     const triggerEvaluation = result.triggerEvaluation || null;
-    const aiJudge = triggerEvaluation && triggerEvaluation.aiJudge ? triggerEvaluation.aiJudge : null;
+    const aiJudge = fullEvaluation && fullEvaluation.aiJudge
+      ? fullEvaluation.aiJudge
+      : (triggerEvaluation && triggerEvaluation.aiJudge ? triggerEvaluation.aiJudge : null);
     const executionEvaluation = result.executionEvaluation || null;
     const toolChecks = executionEvaluation && Array.isArray(executionEvaluation.toolChecks)
       ? executionEvaluation.toolChecks
@@ -916,8 +1910,26 @@
     const session = debug.session || {};
     const toolEvents = Array.isArray(debug.toolCalls) ? debug.toolCalls : [];
     const sessionToolCalls = Array.isArray(session.toolCalls) ? session.toolCalls : [];
+    const runValidation = readRunValidation(data);
 
     let html = '';
+
+    if (runValidation.issues.length > 0 || runValidation.caseSchemaStatus || runValidation.derivedFromLegacy === true) {
+      const schemaStatusMeta = getCaseSchemaStatusMeta(runValidation.caseSchemaStatus);
+      html += '<div class="run-detail-section">';
+      html += '<div class="section-label">运行校验提示</div>';
+      if (schemaStatusMeta) {
+        html += `<span class="tag ${schemaStatusMeta.className}">${escapeHtml(schemaStatusMeta.label)}</span>`;
+      }
+      if (runValidation.derivedFromLegacy === true) {
+        html += ' <span class="tag tag-pending">Derived From Legacy</span>';
+      }
+      if (runValidation.issues.length > 0) {
+        const issueToneClass = getIssuePanelToneClass(runValidation.issues);
+        html += `<div class="skill-test-issues skill-test-issues-inline${issueToneClass ? ` ${issueToneClass}` : ''}">${buildIssuePanelHtml(runValidation.issues, '运行校验') || ''}</div>`;
+      }
+      html += '</div>';
+    }
 
     // ---- Output text ----
     if (debug.outputText) {
@@ -927,7 +1939,207 @@
       html += '</div>';
     }
 
-    if (triggerEvaluation && (triggerEvaluation.mode === 'full' || (Array.isArray(triggerEvaluation.matchedSignals) && triggerEvaluation.matchedSignals.length > 0) || aiJudge)) {
+    if (fullEvaluation) {
+      const dimensions = fullEvaluation && fullEvaluation.dimensions && typeof fullEvaluation.dimensions === 'object'
+        ? fullEvaluation.dimensions
+        : null;
+      const verdictLabel = fullEvaluation.verdict === 'pass'
+        ? '<span class="tag tag-success">Pass</span>'
+        : fullEvaluation.verdict === 'borderline'
+          ? '<span class="tag tag-pending">Borderline</span>'
+          : '<span class="tag tag-error">Fail</span>';
+      const judgeStatusMeta = getFullJudgeStatusMeta(fullEvaluation.aiJudge && fullEvaluation.aiJudge.status);
+      html += '<div class="run-detail-section">';
+      html += '<div class="section-label">Full 模式多维评估</div>';
+      html += `${verdictLabel}`;
+      if (judgeStatusMeta) {
+        html += ` <span class="tag ${judgeStatusMeta.className}">${escapeHtml(judgeStatusMeta.label)}</span>`;
+      }
+      if (fullEvaluation.summary) {
+        html += `<div class="agent-meta">${escapeHtml(fullEvaluation.summary)}</div>`;
+      }
+      if (dimensions) {
+        const orderedDimensionKeys = Object.keys(FULL_DIMENSION_LABELS);
+        const extraDimensionKeys = Object.keys(dimensions).filter((key) => !orderedDimensionKeys.includes(key));
+        for (const key of [...orderedDimensionKeys, ...extraDimensionKeys]) {
+          if (!(key in dimensions)) {
+            continue;
+          }
+          const value = dimensions[key];
+          const score = value && typeof value === 'object'
+            ? formatRunDetailPercent(value.score)
+            : formatRunDetailPercent(value);
+          const reason = value && typeof value === 'object' ? String(value.reason || '').trim() : '';
+          const role = value && typeof value === 'object'
+            ? String(value.role || '').trim().toLowerCase()
+            : '';
+          html += '<div class="run-detail-tool">';
+          html += '<div class="run-detail-tag-row">';
+          html += `<span class="tag">${escapeHtml(FULL_DIMENSION_LABELS[key] || key)}</span>`;
+          html += `<span class="agent-meta">${escapeHtml(score)}</span>`;
+          if (role === 'supporting') {
+            html += '<span class="tag">辅证</span>';
+          }
+          html += '</div>';
+          if (reason) {
+            html += `<div class="agent-meta">${escapeHtml(reason)}</div>`;
+          }
+          html += '</div>';
+        }
+      } else {
+        html += '<div class="agent-meta">本次 run 未返回 dimensions 详情。</div>';
+      }
+      if (Array.isArray(fullEvaluation.missingTools) && fullEvaluation.missingTools.length > 0) {
+        html += `<div class="agent-meta">缺少工具：${escapeHtml(fullEvaluation.missingTools.join(' / '))}</div>`;
+      }
+      if (Array.isArray(fullEvaluation.unexpectedTools) && fullEvaluation.unexpectedTools.length > 0) {
+        html += `<div class="agent-meta">额外工具：${escapeHtml(fullEvaluation.unexpectedTools.join(' / '))}</div>`;
+      }
+      if (Array.isArray(fullEvaluation.failedCalls) && fullEvaluation.failedCalls.length > 0) {
+        html += '<div class="run-detail-subsection">';
+        html += '<div class="agent-meta">失败工具调用</div>';
+        html += '<ul class="run-detail-list">';
+        for (const failedCall of fullEvaluation.failedCalls) {
+          const toolName = failedCall && failedCall.tool ? String(failedCall.tool) : 'unknown';
+          const reason = failedCall && failedCall.reason ? String(failedCall.reason) : 'tool call failed';
+          html += `<li><span class="tag">${escapeHtml(toolName)}</span> ${escapeHtml(reason)}</li>`;
+        }
+        html += '</ul>';
+        html += '</div>';
+      }
+      html += '</div>';
+
+      const stepResults = Array.isArray(fullEvaluation.steps) ? fullEvaluation.steps : [];
+      const missingSteps = fullEvaluation.missingSteps && typeof fullEvaluation.missingSteps === 'object'
+        ? fullEvaluation.missingSteps
+        : {};
+      const missingRequiredSteps = normalizeRunDetailStringList(missingSteps.required);
+      const missingNonRequiredSteps = normalizeRunDetailStringList(missingSteps.nonRequired);
+      if (stepResults.length > 0 || missingRequiredSteps.length > 0 || missingNonRequiredSteps.length > 0) {
+        html += '<div class="run-detail-section">';
+        html += '<div class="section-label">步骤判定</div>';
+        if (missingRequiredSteps.length > 0) {
+          html += `<div class="run-detail-diag" style="color:#e53e3e">缺少必选步骤：${escapeHtml(missingRequiredSteps.join(' / '))}</div>`;
+        }
+        if (missingNonRequiredSteps.length > 0) {
+          html += `<div class="agent-meta">缺少非必选步骤：${escapeHtml(missingNonRequiredSteps.join(' / '))}</div>`;
+        }
+        if (stepResults.length === 0) {
+          html += '<div class="agent-meta">AI Judge 未返回步骤级结果。</div>';
+        }
+        for (const stepResult of stepResults) {
+          const stepId = String(stepResult && (stepResult.stepId || stepResult.id) || '').trim() || 'unknown-step';
+          const completed = stepResult && stepResult.completed;
+          const confidence = stepResult && stepResult.confidence != null
+            ? formatRunDetailPercent(stepResult.confidence)
+            : '';
+          const reason = String(stepResult && stepResult.reason || '').trim();
+          const evidenceIds = normalizeRunDetailStringList(stepResult && stepResult.evidenceIds, 10);
+          const matchedSignalIds = normalizeRunDetailStringList(stepResult && stepResult.matchedSignalIds, 10);
+          const stepTag = completed === true
+            ? '<span class="tag tag-success">完成</span>'
+            : completed === false
+              ? '<span class="tag tag-error">未完成</span>'
+              : '<span class="tag tag-pending">待复核</span>';
+          html += '<div class="run-detail-card">';
+          html += '<div class="run-detail-tag-row">';
+          html += `${stepTag} <span class="tag">${escapeHtml(stepId)}</span>`;
+          if (confidence) {
+            html += ` <span class="agent-meta">置信度 ${escapeHtml(confidence)}</span>`;
+          }
+          html += '</div>';
+          if (reason) {
+            html += `<div class="agent-meta">${escapeHtml(reason)}</div>`;
+          }
+          if (evidenceIds.length > 0) {
+            html += buildRunDetailReasonListHtml('证据 ID', evidenceIds);
+          }
+          if (matchedSignalIds.length > 0) {
+            html += buildRunDetailReasonListHtml('命中 Signal', matchedSignalIds);
+          }
+          html += '</div>';
+        }
+        html += '</div>';
+      }
+
+      const constraintChecks = Array.isArray(fullEvaluation.constraintChecks) ? fullEvaluation.constraintChecks : [];
+      if (constraintChecks.length > 0) {
+        html += '<div class="run-detail-section">';
+        html += '<div class="section-label">关键约束检查</div>';
+        for (const check of constraintChecks) {
+          const constraintId = String(check && check.constraintId || '').trim() || 'unknown-constraint';
+          const satisfied = check && check.satisfied;
+          const reason = String(check && check.reason || '').trim();
+          const evidenceIds = normalizeRunDetailStringList(check && check.evidenceIds, 10);
+          const statusTag = satisfied === true
+            ? '<span class="tag tag-success">满足</span>'
+            : satisfied === false
+              ? '<span class="tag tag-error">违反</span>'
+              : '<span class="tag tag-pending">待复核</span>';
+          html += '<div class="run-detail-card">';
+          html += `<div class="run-detail-tag-row">${statusTag} <span class="tag">${escapeHtml(constraintId)}</span></div>`;
+          if (reason) {
+            html += `<div class="agent-meta">${escapeHtml(reason)}</div>`;
+          }
+          if (evidenceIds.length > 0) {
+            html += buildRunDetailReasonListHtml('证据 ID', evidenceIds);
+          }
+          html += '</div>';
+        }
+        html += '</div>';
+      }
+
+      const aggregation = fullEvaluation.aggregation && typeof fullEvaluation.aggregation === 'object'
+        ? fullEvaluation.aggregation
+        : null;
+      const hardFailReasons = normalizeRunDetailStringList(aggregation && aggregation.hardFailReasons);
+      const borderlineReasons = normalizeRunDetailStringList(aggregation && aggregation.borderlineReasons);
+      const supportingWarnings = normalizeRunDetailStringList(aggregation && aggregation.supportingWarnings);
+      if (aggregation || hardFailReasons.length > 0 || borderlineReasons.length > 0 || supportingWarnings.length > 0) {
+        html += '<div class="run-detail-section">';
+        html += '<div class="section-label">聚合判定依据</div>';
+        html += buildRunDetailReasonListHtml('Hard Fail 原因', hardFailReasons, getFullAggregationReasonLabel);
+        html += buildRunDetailReasonListHtml('Borderline 原因', borderlineReasons, getFullAggregationReasonLabel);
+        html += buildRunDetailReasonListHtml('辅证告警', supportingWarnings, getFullAggregationReasonLabel);
+        html += '</div>';
+      }
+
+      const fullJudge = fullEvaluation.aiJudge && typeof fullEvaluation.aiJudge === 'object'
+        ? fullEvaluation.aiJudge
+        : null;
+      if (fullJudge) {
+        const statusMeta = getFullJudgeStatusMeta(fullJudge.status);
+        const verdictSuggestion = String(fullJudge.verdictSuggestion || '').trim();
+        const missedExpectations = normalizeRunDetailStringList(fullJudge.missedExpectations);
+        html += '<div class="run-detail-section">';
+        html += '<div class="section-label">AI Judge 诊断</div>';
+        if (statusMeta) {
+          html += `<span class="tag ${statusMeta.className}">${escapeHtml(statusMeta.label)}</span>`;
+        }
+        if (verdictSuggestion) {
+          html += ` <span class="tag">建议：${escapeHtml(verdictSuggestion)}</span>`;
+        }
+        if (fullJudge.errorMessage) {
+          html += `<div class="run-detail-diag" style="color:#e53e3e">${escapeHtml(String(fullJudge.errorMessage))}</div>`;
+        }
+        if (missedExpectations.length > 0) {
+          html += buildRunDetailReasonListHtml('缺失预期', missedExpectations);
+        }
+        if (fullJudge.status !== 'succeeded' && fullJudge.rawResponse) {
+          html += '<details class="run-detail-collapse">';
+          html += '<summary class="agent-meta">查看原始 judge 回包</summary>';
+          html += `<pre class="run-detail-pre">${escapeHtml(String(fullJudge.rawResponse))}</pre>`;
+          html += '</details>';
+        }
+        html += '</div>';
+      }
+    }
+
+    const matchedSignals = Array.isArray(triggerEvaluation && triggerEvaluation.matchedSignalIds)
+      ? triggerEvaluation.matchedSignalIds
+      : (Array.isArray(triggerEvaluation && triggerEvaluation.matchedSignals) ? triggerEvaluation.matchedSignals : []);
+
+    if (triggerEvaluation && triggerEvaluation.mode !== 'full' && (matchedSignals.length > 0 || aiJudge)) {
       const sourceLabels = {
         'expected-tool': '工具命中',
         'behavior-signals': '文本/行为线索',
@@ -952,8 +2164,8 @@
       if (decisionSources.length > 0) {
         html += `<div class="agent-meta">判定来源：${escapeHtml(decisionSources.join(' / '))}</div>`;
       }
-      if (Array.isArray(triggerEvaluation.matchedSignals) && triggerEvaluation.matchedSignals.length > 0) {
-        html += `<div class="agent-meta">命中文本线索：${escapeHtml(triggerEvaluation.matchedSignals.join(' / '))}</div>`;
+      if (matchedSignals.length > 0) {
+        html += `<div class="agent-meta">命中信号：${escapeHtml(matchedSignals.join(' / '))}</div>`;
       }
       if (judgeStatus) {
         html += judgeStatus;
@@ -1040,7 +2252,7 @@
       html += '</div>';
     }
 
-    if (data.run && isFailedFlag(data.run.triggerPassed)) {
+    if (run && !run.verdict && isFailedFlag(run.triggerPassed)) {
       html += '<div class="run-detail-section">';
       html += '<div class="section-label" style="color:#e53e3e">⚠ 触发失败诊断</div>';
       if (toolEvents.length === 0 && sessionToolCalls.length === 0) {
@@ -1091,7 +2303,7 @@
     }
 
     // ---- Thinking ----
-    if (session.thinking && data.run && isPassedFlag(data.run.triggerPassed)) {
+    if (session.thinking && run && (isPassedFlag(run.triggerPassed) || Boolean(run.verdict))) {
       html += '<div class="run-detail-section">';
       html += '<div class="section-label">思考过程</div>';
       html += `<pre class="run-detail-pre run-detail-thinking">${escapeHtml(session.thinking)}</pre>`;
@@ -1114,21 +2326,54 @@
       }
       const count = dom.generateCount ? Math.max(1, Math.min(10, Number(dom.generateCount.value) || 3)) : 3;
       const loadingMode = dom.generateLoadingMode ? dom.generateLoadingMode.value : 'dynamic';
-      const testType = dom.generateTestType ? dom.generateTestType.value : 'trigger';
       dom.generateButton.disabled = true;
-      dom.generateButton.textContent = '生成中...';
+      dom.generateButton.textContent = 'AI 生成中...';
       try {
         const data = await fetchJson(
           `/api/skills/${encodeURIComponent(state.selectedSkillId)}/test-cases/generate`,
-          { method: 'POST', body: { count, loadingMode, testType, ...getRunOptions() } }
+          { method: 'POST', body: { count, loadingMode, createDrafts: true, ...getRunOptions() } }
         );
-        showToast(`已生成 ${data.generated || 0} 个测试用例`);
+        showToast(`已生成 ${data.generated || 0} 个草稿`);
         await Promise.all([loadTestCases(), loadSummary()]);
       } catch (err) {
         showToast('生成失败: ' + (err.message || err));
       } finally {
         dom.generateButton.disabled = false;
-        dom.generateButton.textContent = '生成测试用例';
+        dom.generateButton.textContent = 'AI 生成测试用例';
+      }
+    });
+  }
+
+  if (dom.detailSaveButton) {
+    dom.detailSaveButton.addEventListener('click', async () => {
+      try {
+        dom.detailSaveButton.disabled = true;
+        await saveCurrentCase();
+      } catch (err) {
+        const issues = extractIssuesFromError(err);
+        renderIssuePanel(dom.detailIssues, issues, '保存失败校验提示');
+        const issueMessage = buildIssueToastMessage('保存失败，', issues);
+        showToast(issueMessage || ('保存失败: ' + (err.message || err)));
+      } finally {
+        dom.detailSaveButton.disabled = false;
+      }
+    });
+  }
+
+  if (dom.detailToggleStatusButton) {
+    dom.detailToggleStatusButton.addEventListener('click', async () => {
+      const selectedCase = state.testCases.find((tc) => tc.id === state.selectedCaseId);
+      if (!selectedCase) return;
+      try {
+        dom.detailToggleStatusButton.disabled = true;
+        await toggleCaseStatus(selectedCase);
+      } catch (err) {
+        const issues = extractIssuesFromError(err);
+        renderIssuePanel(dom.detailIssues, issues, '切换状态失败校验提示');
+        const issueMessage = buildIssueToastMessage('切换状态失败，', issues);
+        showToast(issueMessage || ('切换状态失败: ' + (err.message || err)));
+      } finally {
+        dom.detailToggleStatusButton.disabled = false;
       }
     });
   }
@@ -1139,7 +2384,7 @@
       if (!state.selectedCaseId) return;
       await runTestCase(state.selectedCaseId, {
         button: dom.detailRunButton,
-        idleLabel: '运行测试',
+        idleLabel: dom.detailRunButton.textContent || '运行测试',
         busyLabel: '运行中...',
         detailTab: 'runs',
       });
@@ -1155,36 +2400,65 @@
         showToast('请先选择一个 Skill');
         return;
       }
-      if (!confirm('确认批量运行当前 Skill 下所有“可运行 / 触发失败”的用例吗？这可能需要一些时间。')) return;
+      if (!confirm('确认批量运行当前 Skill 下所有 Ready 用例吗？这可能需要一些时间。')) return;
 
-      // First get the list of validated cases to know the total count
+      const runAllViaServerFallback = async () => {
+        dom.runAllButton.disabled = true;
+        try {
+          const result = await fetchJson(
+            `/api/skills/${encodeURIComponent(state.selectedSkillId)}/test-cases/run-all`,
+            { method: 'POST', body: getRunOptions() }
+          );
+          const results = Array.isArray(result.results) ? result.results : [];
+          const total = Number(result.total || results.length || 0);
+          const triggerOk = results.reduce((count, item) => count + (item && item.run && isPassedFlag(item.run.triggerPassed) ? 1 : 0), 0);
+          const execOk = results.reduce((count, item) => count + (getExecutionOutcomeState(item && item.run) === 'pass' ? 1 : 0), 0);
+          showToast(`批量运行完成：${total} 个用例，加载成功 ${triggerOk}/${total || 1}，执行达标 ${execOk}/${total || 1}`);
+          await Promise.all([loadTestCases(), loadSummary()]);
+        } catch (err) {
+          const message = err && err.message ? String(err.message) : String(err || '');
+          if (message.includes('No test cases to run')) {
+            showToast('没有 Ready 状态的测试用例');
+          } else {
+            showToast('批量运行失败: ' + message);
+          }
+        } finally {
+          dom.runAllButton.disabled = false;
+          dom.runAllButton.textContent = '批量运行 Ready 用例';
+        }
+      };
+
       let caseList = [];
+      let useServerFallback = false;
       try {
         const caseData = await fetchJson(`/api/skills/${encodeURIComponent(state.selectedSkillId)}/test-cases`);
         caseList = (Array.isArray(caseData.cases) ? caseData.cases : []).filter(
-          c => c.validityStatus === 'validated' || c.validityStatus === 'invalid'
+          c => c.caseStatus === 'ready'
         );
       } catch {
-        // fallback — just run run-all without progress
+        useServerFallback = true;
+      }
+
+      if (useServerFallback) {
+        await runAllViaServerFallback();
+        return;
       }
 
       if (caseList.length === 0) {
-        showToast('没有可运行的测试用例（仅运行可运行/触发失败的用例）');
+        showToast('没有 Ready 状态的测试用例');
         return;
       }
 
       dom.runAllButton.disabled = true;
 
-      // Create progress bar
-      let progressContainer = document.getElementById('st-run-progress');
+      let progressContainer = dom.runProgress || document.getElementById('st-run-progress');
       if (!progressContainer) {
         progressContainer = document.createElement('div');
         progressContainer.id = 'st-run-progress';
         progressContainer.className = 'run-progress-container';
-        // Insert after the run-all button section
-        const runAllSection = dom.runAllButton.closest('.stack-card');
-        if (runAllSection) {
-          runAllSection.appendChild(progressContainer);
+        const toolbarPanel = dom.runAllButton.closest('.skill-tests-toolbar-panel') || dom.runAllButton.parentElement;
+        if (toolbarPanel) {
+          toolbarPanel.appendChild(progressContainer);
         }
       }
       progressContainer.classList.remove('hidden');
@@ -1194,6 +2468,7 @@
         </div>
         <div class="run-progress-text">0 / ${caseList.length} — 准备中...</div>
       `;
+      scheduleSkillTestStickyOffsetSync();
 
       let completed = 0;
       let triggerOk = 0;
@@ -1201,7 +2476,7 @@
 
       try {
         for (const tc of caseList) {
-          updateProgress(progressContainer, completed, caseList.length, `运行: ${clipText(tc.triggerPrompt, 30)}`);
+          updateProgress(progressContainer, completed, caseList.length, `运行: ${clipText(getCasePrompt(tc), 30)}`);
 
           try {
             const result = await fetchJson(
@@ -1210,7 +2485,7 @@
             );
             if (result.run) {
               if (isPassedFlag(result.run.triggerPassed)) triggerOk++;
-              if (isPassedFlag(result.run.executionPassed)) execOk++;
+              if (getExecutionOutcomeState(result.run) === 'pass') execOk++;
             }
           } catch (err) {
             void err;
@@ -1220,16 +2495,17 @@
         }
 
         updateProgress(progressContainer, completed, caseList.length, '完成!');
-        showToast(`批量运行完成：${completed} 个用例，触发成功 ${triggerOk}/${completed}，执行达标 ${execOk}/${completed}`);
+        showToast(`批量运行完成：${completed} 个用例，加载成功 ${triggerOk}/${completed}，执行达标 ${execOk}/${completed}`);
         await Promise.all([loadTestCases(), loadSummary()]);
       } catch (err) {
         showToast('批量运行失败: ' + (err.message || err));
       } finally {
         dom.runAllButton.disabled = false;
-        dom.runAllButton.textContent = '批量运行可重试用例';
+        dom.runAllButton.textContent = '批量运行 Ready 用例';
         // Keep progress visible for 3 seconds then fade
         setTimeout(() => {
           if (progressContainer) progressContainer.classList.add('hidden');
+          scheduleSkillTestStickyOffsetSync();
         }, 3000);
       }
     });
@@ -1308,7 +2584,10 @@
       }
       const prompt = dom.createPrompt ? dom.createPrompt.value.trim() : '';
       if (!prompt) {
-        showToast('触发 prompt 不能为空');
+        const promptIssues = [buildLocalValidationIssue('user_prompt_required', 'userPrompt', '用户任务输入不能为空')];
+        renderIssuePanel(dom.createIssues, promptIssues, '创建前校验提示');
+        const issueMessage = buildIssueToastMessage('创建前校验失败，', promptIssues);
+        showToast(issueMessage || '用户任务输入不能为空');
         return;
       }
 
@@ -1316,36 +2595,87 @@
       const expectedTools = toolsStr ? toolsStr.split(/[,，\s]+/).filter(Boolean) : [];
       const structuredToolsText = dom.createToolSpecs ? dom.createToolSpecs.value.trim() : '';
       const structuredTools = parseStructuredExpectedTools(structuredToolsText);
-      if (structuredToolsText && !structuredTools) {
-        showToast('结构化校验 JSON 需要是数组，例如 [{"name":"read-skill","order":1}]');
+      const expectedBehavior = dom.createBehavior ? dom.createBehavior.value.trim() : '';
+      const expectedGoal = dom.createGoal ? dom.createGoal.value.trim() : '';
+      const expectedStepsText = dom.createSteps ? dom.createSteps.value.trim() : '';
+      const expectedSteps = parseStructuredArray(expectedStepsText);
+      const expectedSequenceText = dom.createSequence ? dom.createSequence.value.trim() : '';
+      const expectedSequence = parseStructuredArray(expectedSequenceText);
+      const evaluationRubricText = dom.createRubric ? dom.createRubric.value.trim() : '';
+      const evaluationRubric = parseStructuredObject(evaluationRubricText);
+
+      const localIssues = mergeIssues(
+        structuredToolsText && !structuredTools
+          ? [buildLocalValidationIssue('expected_tools_invalid', 'expectedTools', 'Structured expectedTools JSON 需要是数组')]
+          : [],
+        expectedStepsText && !expectedSteps
+          ? [buildLocalValidationIssue('expected_steps_required', 'expectedSteps', 'Expected Steps JSON 需要是数组')]
+          : [],
+        expectedSequenceText && !expectedSequence
+          ? [buildLocalValidationIssue('expected_sequence_invalid', 'expectedSequence', '关键顺序 JSON 需要是数组')]
+          : [],
+        evaluationRubricText && !evaluationRubric
+          ? [buildLocalValidationIssue('evaluation_rubric_invalid', 'evaluationRubric', '评估 Rubric JSON 需要是对象')]
+          : []
+      );
+      if (localIssues.length > 0) {
+        renderIssuePanel(dom.createIssues, localIssues, '创建前校验提示');
+        const issueMessage = buildIssueToastMessage('创建前校验失败，', localIssues);
+        showToast(issueMessage || '创建前校验失败，请修正结构化 JSON 字段');
         return;
       }
-      const expectedBehavior = dom.createBehavior ? dom.createBehavior.value.trim() : '';
 
       if (dom.createSubmitButton) {
         dom.createSubmitButton.disabled = true;
         dom.createSubmitButton.textContent = '创建中...';
       }
       try {
-        await fetchJson(`/api/skills/${encodeURIComponent(state.selectedSkillId)}/test-cases`, {
+        const createResult = await fetchJson(`/api/skills/${encodeURIComponent(state.selectedSkillId)}/test-cases`, {
           method: 'POST',
           body: {
+            userPrompt: prompt,
             triggerPrompt: prompt,
-            testType: dom.createTestType ? dom.createTestType.value : 'trigger',
             loadingMode: dom.createLoadingMode ? dom.createLoadingMode.value : 'dynamic',
             expectedTools: [...expectedTools, ...(structuredTools || [])],
+            expectedSteps: expectedSteps || [],
             expectedBehavior,
+            expectedGoal,
+            expectedSequence: expectedSequence || [],
+            evaluationRubric: evaluationRubric || {},
+            caseStatus: 'draft',
             note: dom.createNote ? dom.createNote.value.trim() : '',
           },
         });
-        showToast('测试用例已创建');
+        const createIssues = normalizeIssueList(createResult && createResult.issues);
+        const createdCaseId = createResult && createResult.testCase && typeof createResult.testCase.id === 'string'
+          ? createResult.testCase.id
+          : '';
+        const createdMessage = createIssues.length > 0
+          ? `测试用例已创建（${buildIssueSummary(createIssues)}）`
+          : '测试用例已创建为 draft';
+        showToast(createdMessage);
+        if (createIssues.length > 0) {
+          renderIssuePanel(dom.createIssues, createIssues, '创建返回校验提示');
+        } else {
+          renderIssuePanel(dom.createIssues, []);
+        }
         if (dom.createPrompt) dom.createPrompt.value = '';
         if (dom.createToolSpecs) dom.createToolSpecs.value = '';
+        if (dom.createGoal) dom.createGoal.value = '';
+        if (dom.createSteps) dom.createSteps.value = '';
+        if (dom.createSequence) dom.createSequence.value = '';
+        if (dom.createRubric) dom.createRubric.value = '';
         if (dom.createBehavior) dom.createBehavior.value = '';
         if (dom.createNote) dom.createNote.value = '';
         await Promise.all([loadTestCases(), loadSummary()]);
+        if (createdCaseId) {
+          selectCase(createdCaseId, { detailTab: 'details' });
+        }
       } catch (err) {
-        showToast('创建失败: ' + (err.message || err));
+        const issues = extractIssuesFromError(err);
+        renderIssuePanel(dom.createIssues, issues, '创建失败校验提示');
+        const issueMessage = buildIssueToastMessage('创建失败，', issues);
+        showToast(issueMessage || ('创建失败: ' + (err.message || err)));
       } finally {
         if (dom.createSubmitButton) {
           dom.createSubmitButton.disabled = false;
@@ -1358,76 +2688,124 @@
   // ---- Summary ----
   async function loadSummary() {
     if (!dom.summaryBody) return;
+    state.summaryLoading = true;
+    state.summaryLoadError = '';
+    renderSummary();
     try {
       const data = await fetchJson('/api/skill-test-summary');
       state.summary = Array.isArray(data.summary) ? data.summary : [];
+      state.summaryLoading = false;
+      state.summaryLoadError = '';
+      state.summaryLastLoadedAt = new Date().toISOString();
       renderSummary();
     } catch {
-      renderSelectedSkillOverview();
-      // Summary is optional, don't block
+      state.summaryLoading = false;
+      state.summaryLoadError = '加载全部 Skill 概览失败，请重试。';
+      renderSummary();
     }
   }
 
   function renderSummary() {
     if (!dom.summaryBody) return;
     renderSelectedSkillOverview();
+    const summaryRefreshLabel = formatRefreshTime(state.summaryLastLoadedAt);
+    if (state.summaryLoading && state.summary.length === 0) {
+      if (dom.summaryHighlights) {
+        dom.summaryHighlights.innerHTML = '<span class="tag tag-pending">正在加载 Skill 测试概览...</span>';
+      }
+      dom.summaryBody.innerHTML = '<p class="section-hint">加载中...</p>';
+      return;
+    }
+    if (state.summaryLoadError && state.summary.length === 0) {
+      if (dom.summaryHighlights) {
+        dom.summaryHighlights.innerHTML = '<span class="tag tag-error">Skill 概览加载失败</span>';
+      }
+      renderRetryState(dom.summaryBody, state.summaryLoadError, loadSummary);
+      return;
+    }
     if (state.summary.length === 0) {
       if (dom.summaryHighlights) {
         dom.summaryHighlights.innerHTML = '<span class="tag tag-pending">还没有可展示的 skill 测试结果</span>';
       }
-      dom.summaryBody.innerHTML = '<p class="section-hint">暂无测试数据</p>';
+      dom.summaryBody.innerHTML = '<p class="section-hint">暂无测试数据；先选一个 Skill 生成或手动创建用例，再回来这里看整体概览。</p>';
       return;
     }
 
     const totals = state.summary.reduce((acc, entry) => {
       acc.totalCases += Number(entry.totalCases || 0);
       acc.totalRuns += Number(entry.totalRuns || 0);
-      acc.validated += Number((entry.casesByValidity && entry.casesByValidity.validated) || 0);
-      acc.invalid += Number((entry.casesByValidity && entry.casesByValidity.invalid) || 0);
+      acc.draft += Number((entry.casesByStatus && entry.casesByStatus.draft) || 0);
+      acc.ready += Number((entry.casesByStatus && entry.casesByStatus.ready) || 0);
+      acc.archived += Number((entry.casesByStatus && entry.casesByStatus.archived) || 0);
       acc.triggerPassed += Number(entry.triggerPassedCount || 0);
       acc.executionPassed += Number(entry.executionPassedCount || 0);
       return acc;
-    }, { totalCases: 0, totalRuns: 0, validated: 0, invalid: 0, triggerPassed: 0, executionPassed: 0 });
+    }, { totalCases: 0, totalRuns: 0, draft: 0, ready: 0, archived: 0, triggerPassed: 0, executionPassed: 0 });
 
     if (dom.summaryHighlights) {
       const triggerRate = totals.totalRuns > 0 ? Math.round((totals.triggerPassed / totals.totalRuns) * 100) : 0;
-      const executionBase = totals.triggerPassed > 0 ? totals.triggerPassed : 0;
-      const executionRate = executionBase > 0 ? Math.round((totals.executionPassed / executionBase) * 100) : 0;
+      const executionRate = totals.totalRuns > 0 ? Math.round((totals.executionPassed / totals.totalRuns) * 100) : 0;
+      const refreshTag = summaryRefreshLabel ? `<span class="tag">最近刷新 ${escapeHtml(summaryRefreshLabel)}</span>` : '';
+      const loadingTag = state.summaryLoading
+        ? '<span class="tag tag-pending">概览刷新中...</span>'
+        : (state.summaryLoadError ? '<span class="tag tag-error">概览刷新失败</span>' : '');
       dom.summaryHighlights.innerHTML = `
         <span class="tag">共 ${totals.totalCases} 条用例</span>
-        <span class="tag tag-success">可运行 ${totals.validated}</span>
-        <span class="tag tag-error">触发失败 ${totals.invalid}</span>
-        <span class="tag">触发成功率 ${triggerRate}%</span>
-        <span class="tag">执行成功率 ${executionRate || 0}%</span>
+        <span class="tag tag-pending">Draft ${totals.draft}</span>
+        <span class="tag tag-success">Ready ${totals.ready}</span>
+        <span class="tag">Archived ${totals.archived}</span>
+        <span class="tag">加载成功率 ${triggerRate}%</span>
+        <span class="tag">执行通过率 ${executionRate || 0}%</span>
+        ${refreshTag}
+        ${loadingTag}
       `;
     }
 
-    let html = '<div class="table-scroll"><table class="summary-table"><thead><tr>';
+    let html = '';
+    if (state.summaryLoadError) {
+      html += `
+        <div class="skill-test-inline-banner skill-test-inline-banner-error">
+          <p class="section-hint">概览刷新失败，当前仍显示${summaryRefreshLabel ? `${escapeHtml(summaryRefreshLabel)} 的` : '上一次成功加载的'}结果。</p>
+          <div class="panel-actions">
+            <button class="ghost-button" type="button" data-st-summary-retry="true">重试</button>
+          </div>
+        </div>
+      `;
+    } else if (state.summaryLoading) {
+      html += `<div class="skill-test-inline-banner skill-test-inline-banner-pending"><p class="section-hint">概览刷新中${summaryRefreshLabel ? `，当前先显示 ${escapeHtml(summaryRefreshLabel)} 的结果。` : '，你可以先查看已加载结果。'}</p></div>`;
+    }
+    html += '<div class="table-scroll"><table class="summary-table"><thead><tr>';
     html += '<th>Skill</th><th>用例</th><th>运行</th>';
-    html += '<th>状态</th><th>触发成功</th><th>执行成功</th><th>工具命中</th>';
+    html += '<th>状态</th><th>加载成功</th><th>执行通过</th><th>目标达成</th><th>工具成功</th>';
     html += '</tr></thead><tbody>';
 
     for (const entry of state.summary) {
       const triggerRate = entry.triggerRate != null ? (entry.triggerRate * 100).toFixed(1) + '%' : '—';
       const execRate = entry.executionRate != null ? (entry.executionRate * 100).toFixed(1) + '%' : '—';
-      const accuracy = entry.avgToolAccuracy != null ? (entry.avgToolAccuracy * 100).toFixed(1) + '%' : '—';
-      const validatedCount = Number((entry.casesByValidity && entry.casesByValidity.validated) || 0);
-      const invalidCount = Number((entry.casesByValidity && entry.casesByValidity.invalid) || 0);
-      const pendingCount = Math.max(0, Number(entry.totalCases || 0) - validatedCount - invalidCount);
+      const goalAchievement = entry.avgGoalAchievement != null ? (entry.avgGoalAchievement * 100).toFixed(1) + '%' : '—';
+      const toolSuccess = entry.avgToolCallSuccessRate != null ? (entry.avgToolCallSuccessRate * 100).toFixed(1) + '%' : '—';
+      const draftCount = Number((entry.casesByStatus && entry.casesByStatus.draft) || 0);
+      const readyCount = Number((entry.casesByStatus && entry.casesByStatus.ready) || 0);
+      const archivedCount = Number((entry.casesByStatus && entry.casesByStatus.archived) || 0);
 
       html += `<tr>`;
       html += `<td>${escapeHtml(entry.skillId)}</td>`;
       html += `<td>${entry.totalCases}</td>`;
       html += `<td>${entry.totalRuns}</td>`;
-      html += `<td>可运行 ${validatedCount} / 失败 ${invalidCount} / 待验证 ${pendingCount}</td>`;
+      html += `<td>Draft ${draftCount} / Ready ${readyCount} / Archived ${archivedCount}</td>`;
       html += `<td>${triggerRate}</td>`;
       html += `<td>${execRate}</td>`;
-      html += `<td>${accuracy}</td>`;
+      html += `<td>${goalAchievement}</td>`;
+      html += `<td>${toolSuccess}</td>`;
       html += `</tr>`;
     }
 
     html += '</tbody></table></div>';
     dom.summaryBody.innerHTML = html;
+    const retryButton = dom.summaryBody.querySelector('[data-st-summary-retry="true"]');
+    if (retryButton) {
+      retryButton.addEventListener('click', loadSummary);
+    }
   }
 
   if (dom.refreshSummaryButton) {
@@ -1502,12 +2880,36 @@
       : '';
   }
 
-  function parseStructuredExpectedTools(value) {
+  function getExpectedStepsSearchText(expectedSteps) {
+    return Array.isArray(expectedSteps)
+      ? expectedSteps.map((entry) => {
+          if (!entry || typeof entry !== 'object') return '';
+          return [entry.id, entry.title, entry.expectedBehavior].filter(Boolean).join(' ');
+        }).filter(Boolean).join(' ')
+      : '';
+  }
+
+  function parseStructuredArray(value) {
     const text = String(value || '').trim();
     if (!text) return [];
     try {
       const parsed = JSON.parse(text);
       return Array.isArray(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function parseStructuredExpectedTools(value) {
+    return parseStructuredArray(value);
+  }
+
+  function parseStructuredObject(value) {
+    const text = String(value || '').trim();
+    if (!text) return {};
+    try {
+      const parsed = JSON.parse(text);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
     } catch {
       return null;
     }
@@ -1521,24 +2923,24 @@
     return labels.length > 0 ? `期望工具：${labels.join('；')}` : '主要看能否触发 skill';
   }
 
-  function getValidityMeta(validityStatus) {
-    if (validityStatus === 'validated') {
-      return { label: '可运行', className: 'tag-success' };
+  function getCaseStatusMeta(caseStatus) {
+    if (caseStatus === 'ready') {
+      return { label: 'Ready', className: 'tag-success' };
     }
-    if (validityStatus === 'invalid') {
-      return { label: '触发失败', className: 'tag-error' };
+    if (caseStatus === 'archived') {
+      return { label: 'Archived', className: 'tag' };
     }
-    return { label: '待验证', className: 'tag-pending' };
+    return { label: 'Draft', className: 'tag-pending' };
   }
 
-  function getValidityHelpText(testCase) {
-    if (testCase.validityStatus === 'validated') {
-      return '这条用例已经通过可触发验证，可以继续重复运行观察稳定性。';
+  function getCaseStatusHelpText(testCase) {
+    if (testCase.caseStatus === 'ready') {
+      return '这条用例已确认可纳入批量运行；后续主要看稳定性和回归表现。';
     }
-    if (testCase.validityStatus === 'invalid') {
-      return getLastOutcomeSummary(testCase.latestRun) || '这条用例最近一次没有成功触发目标 skill，可以修改 prompt 后重试。';
+    if (testCase.caseStatus === 'archived') {
+      return '这条用例已归档，不会再进入批量运行。';
     }
-    return '这条用例还没有完成验证；生成后会自动做一次 smoke run。';
+    return '这条用例当前是 draft；先改 prompt / 目标 / 工具，再标记 ready。';
   }
 
   function isPassedFlag(value) {
@@ -1549,17 +2951,33 @@
     return value === false || value === 0;
   }
 
+  function getExecutionOutcomeState(run) {
+    if (!run) return 'unknown';
+    if (run.verdict === 'pass') return 'pass';
+    if (run.verdict === 'fail') return 'fail';
+    if (run.verdict === 'borderline') return 'review';
+    if (isPassedFlag(run.executionPassed)) return 'pass';
+    if (isFailedFlag(run.executionPassed)) return 'fail';
+    return 'unknown';
+  }
+
   function isFailingRun(run) {
-    return Boolean(run) && (isFailedFlag(run.triggerPassed) || isFailedFlag(run.executionPassed) || Boolean(run.errorMessage));
+    return Boolean(run) && (isFailedFlag(run.triggerPassed) || getExecutionOutcomeState(run) === 'fail' || Boolean(run.errorMessage));
   }
 
   function getLastOutcomeSummary(run) {
     if (!run) return '还没有运行记录';
     if (run.errorMessage) return `最近失败：${run.errorMessage}`;
-    if (isFailedFlag(run.triggerPassed)) return '最近失败：没有触发到目标 skill';
-    if (isFailedFlag(run.executionPassed)) return '最近失败：触发成功，但工具调用不符合预期';
-    if (isPassedFlag(run.triggerPassed) && isPassedFlag(run.executionPassed)) return '最近运行：触发和执行都符合预期';
-    if (isPassedFlag(run.triggerPassed) && run.executionPassed === null) return '最近运行：已触发 skill，执行评估被跳过';
+    if (run.verdict) {
+      const summary = run.evaluation && run.evaluation.summary ? `：${run.evaluation.summary}` : '';
+      if (run.verdict === 'pass') return `最近运行：Full 模式通过${summary}`;
+      if (run.verdict === 'borderline') return `最近运行：Full 模式待复核${summary}`;
+      if (run.verdict === 'fail') return `最近失败：Full 模式未达标${summary}`;
+    }
+    if (isFailedFlag(run.triggerPassed)) return '最近失败：没有成功加载目标 skill';
+    if (isFailedFlag(run.executionPassed)) return '最近失败：执行结果未达标';
+    if (isPassedFlag(run.triggerPassed) && run.executionPassed === null) return '最近运行：Dynamic 模式已成功加载 skill';
+    if (isPassedFlag(run.executionPassed)) return '最近运行：执行结果达标';
     return '最近运行：已记录结果';
   }
 

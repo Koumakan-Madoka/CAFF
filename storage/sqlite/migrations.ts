@@ -313,6 +313,14 @@ CREATE TABLE IF NOT EXISTS skill_test_cases (
   expected_tools_json TEXT NOT NULL DEFAULT '[]',
   expected_behavior TEXT NOT NULL DEFAULT '',
   validity_status TEXT NOT NULL DEFAULT 'pending',
+  case_status TEXT NOT NULL DEFAULT 'draft',
+  expected_goal TEXT NOT NULL DEFAULT '',
+  expected_steps_json TEXT NOT NULL DEFAULT '[]',
+  expected_sequence_json TEXT NOT NULL DEFAULT '[]',
+  evaluation_rubric_json TEXT NOT NULL DEFAULT '{}',
+  generation_provider TEXT NOT NULL DEFAULT '',
+  generation_model TEXT NOT NULL DEFAULT '',
+  generation_created_at TEXT NOT NULL DEFAULT '',
   note TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -327,6 +335,16 @@ CREATE TABLE IF NOT EXISTS skill_test_runs (
   tool_accuracy REAL,
   trigger_passed INTEGER,
   execution_passed INTEGER,
+  required_step_completion_rate REAL,
+  step_completion_rate REAL,
+  required_tool_coverage REAL,
+  tool_call_success_rate REAL,
+  tool_error_rate REAL,
+  sequence_adherence REAL,
+  goal_achievement REAL,
+  instruction_adherence REAL,
+  verdict TEXT DEFAULT '',
+  evaluation_json TEXT NOT NULL DEFAULT '{}',
   error_message TEXT DEFAULT '',
   created_at TEXT NOT NULL,
   FOREIGN KEY (test_case_id) REFERENCES skill_test_cases(id)
@@ -335,5 +353,30 @@ CREATE TABLE IF NOT EXISTS skill_test_runs (
 CREATE INDEX IF NOT EXISTS idx_skill_test_cases_skill_id ON skill_test_cases (skill_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_skill_test_cases_validity ON skill_test_cases (validity_status);
 CREATE INDEX IF NOT EXISTS idx_skill_test_runs_case_id ON skill_test_runs (test_case_id, created_at DESC);
+  `);
+
+  ensureColumn(db, 'skill_test_cases', 'case_status', "case_status TEXT NOT NULL DEFAULT 'draft'");
+  ensureColumn(db, 'skill_test_cases', 'expected_goal', "expected_goal TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'skill_test_cases', 'expected_steps_json', "expected_steps_json TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn(db, 'skill_test_cases', 'expected_sequence_json', "expected_sequence_json TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn(db, 'skill_test_cases', 'evaluation_rubric_json', "evaluation_rubric_json TEXT NOT NULL DEFAULT '{}' ");
+  ensureColumn(db, 'skill_test_cases', 'generation_provider', "generation_provider TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'skill_test_cases', 'generation_model', "generation_model TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'skill_test_cases', 'generation_created_at', "generation_created_at TEXT NOT NULL DEFAULT ''");
+
+  ensureColumn(db, 'skill_test_runs', 'required_step_completion_rate', 'required_step_completion_rate REAL');
+  ensureColumn(db, 'skill_test_runs', 'step_completion_rate', 'step_completion_rate REAL');
+  ensureColumn(db, 'skill_test_runs', 'required_tool_coverage', 'required_tool_coverage REAL');
+  ensureColumn(db, 'skill_test_runs', 'tool_call_success_rate', 'tool_call_success_rate REAL');
+  ensureColumn(db, 'skill_test_runs', 'tool_error_rate', 'tool_error_rate REAL');
+  ensureColumn(db, 'skill_test_runs', 'sequence_adherence', 'sequence_adherence REAL');
+  ensureColumn(db, 'skill_test_runs', 'goal_achievement', 'goal_achievement REAL');
+  ensureColumn(db, 'skill_test_runs', 'instruction_adherence', 'instruction_adherence REAL');
+  ensureColumn(db, 'skill_test_runs', 'verdict', "verdict TEXT DEFAULT ''");
+  ensureColumn(db, 'skill_test_runs', 'evaluation_json', "evaluation_json TEXT NOT NULL DEFAULT '{}' ");
+
+  db.exec(`
+CREATE INDEX IF NOT EXISTS idx_skill_test_cases_status ON skill_test_cases (case_status);
+CREATE INDEX IF NOT EXISTS idx_skill_test_runs_verdict ON skill_test_runs (verdict);
   `);
 }

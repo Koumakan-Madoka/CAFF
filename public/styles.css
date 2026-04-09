@@ -1722,6 +1722,42 @@ textarea {
   padding: 0.3rem 0;
 }
 
+.run-detail-tag-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.run-detail-subsection {
+  margin-top: 0.28rem;
+}
+
+.run-detail-list {
+  margin: 0.2rem 0 0 1rem;
+  padding: 0;
+  display: grid;
+  gap: 0.18rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.run-detail-card {
+  margin-top: 0.35rem;
+  padding: 0.45rem 0.55rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(34, 49, 63, 0.08);
+  background: rgba(255, 255, 255, 0.65);
+}
+
+.run-detail-collapse {
+  margin-top: 0.35rem;
+}
+
+.run-detail-collapse summary {
+  cursor: pointer;
+}
+
 .run-detail-diag {
   font-size: 0.82rem;
   color: #8d6411;
@@ -1834,6 +1870,8 @@ textarea {
 
 .skill-tests-toolbar-field {
   min-width: 0;
+  display: grid;
+  gap: 0.3rem;
 }
 
 label.skill-tests-toolbar-field,
@@ -1844,7 +1882,11 @@ label.skill-tests-toolbar-field,
   min-width: 0;
 }
 
-.skill-tests-toolbar-field:not(label) {
+.skill-tests-toolbar-field > span {
+  font-weight: 600;
+}
+
+.skill-tests-toolbar-field-inline {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 0.55rem;
@@ -1912,6 +1954,14 @@ label.skill-tests-toolbar-field,
   gap: 0.75rem;
 }
 
+.skill-test-case-card-tags {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
 .skill-test-case-card-id {
   font-size: 0.88rem;
   font-weight: 700;
@@ -1949,6 +1999,236 @@ label.skill-tests-toolbar-field,
   margin-bottom: 0.35rem;
 }
 
+.skill-test-status-callout,
+.skill-test-inline-banner {
+  margin-top: 0.55rem;
+  padding: 0.7rem 0.8rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(34, 49, 63, 0.12);
+  background: rgba(248, 250, 252, 0.96);
+}
+
+.skill-test-status-callout-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: var(--ink);
+}
+
+.skill-test-status-callout .section-hint,
+.skill-test-inline-banner .section-hint {
+  margin: 0.18rem 0 0;
+}
+
+.skill-test-status-callout-warning,
+.skill-test-inline-banner-pending {
+  border-color: rgba(217, 164, 65, 0.24);
+  background: rgba(255, 249, 238, 0.95);
+}
+
+.skill-test-status-callout-warning .skill-test-status-callout-label,
+.skill-test-inline-banner-pending .section-hint {
+  color: #8d6411;
+}
+
+.skill-test-status-callout-pending {
+  border-color: rgba(76, 110, 245, 0.18);
+  background: rgba(243, 246, 255, 0.95);
+}
+
+.skill-test-status-callout-pending .skill-test-status-callout-label {
+  color: #3656d4;
+}
+
+.skill-test-status-callout-error,
+.skill-test-inline-banner-error {
+  border-color: rgba(229, 62, 62, 0.24);
+  background: rgba(255, 244, 244, 0.95);
+}
+
+.skill-test-status-callout-error .skill-test-status-callout-label,
+.skill-test-inline-banner-error .section-hint {
+  color: #c53030;
+}
+
+.skill-test-status-callout-success {
+  border-color: rgba(42, 157, 143, 0.24);
+  background: rgba(241, 255, 251, 0.95);
+}
+
+.skill-test-status-callout-success .skill-test-status-callout-label {
+  color: #1f7a6f;
+}
+
+.skill-test-case-callout {
+  margin-top: 0.1rem;
+}
+
+.skill-test-inline-banner {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.skill-test-inline-banner .panel-actions {
+  margin-top: 0;
+}
+
+.skill-test-issues {
+  margin-top: 0.55rem;
+  padding: 0.65rem 0.75rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(217, 164, 65, 0.22);
+  background: rgba(255, 249, 238, 0.92);
+}
+
+.skill-test-issues.skill-test-issues-error {
+  border-color: rgba(229, 62, 62, 0.22);
+  background: rgba(255, 244, 244, 0.92);
+}
+
+.skill-test-issues.skill-test-issues-needs-review {
+  border-color: rgba(76, 110, 245, 0.22);
+  background: rgba(243, 246, 255, 0.94);
+}
+
+.skill-test-issues.skill-test-issues-warning {
+  border-color: rgba(217, 164, 65, 0.24);
+  background: rgba(255, 249, 238, 0.94);
+}
+
+.skill-test-issues-inline {
+  margin-top: 0.45rem;
+}
+
+.skill-test-issues-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.skill-test-issues-summary {
+  margin: 0;
+  color: #7c6123;
+}
+
+.skill-test-issues.skill-test-issues-error .skill-test-issues-summary {
+  color: #8f3d3d;
+}
+
+.skill-test-issues.skill-test-issues-needs-review .skill-test-issues-summary {
+  color: #3656d4;
+}
+
+.skill-test-issue-badges {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.skill-test-issue-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.08rem 0.48rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.skill-test-issue-chip-error {
+  background: rgba(229, 62, 62, 0.12);
+  color: #c53030;
+}
+
+.skill-test-issue-chip-warning {
+  background: rgba(217, 164, 65, 0.14);
+  color: #8d6411;
+}
+
+.skill-test-issue-chip-needs-review {
+  background: rgba(76, 110, 245, 0.12);
+  color: #3656d4;
+}
+
+.skill-test-issue-list {
+  margin: 0.35rem 0 0;
+  padding-left: 1.05rem;
+  display: grid;
+  gap: 0.32rem;
+}
+
+.skill-test-issue-item {
+  color: #7c6123;
+}
+
+.skill-test-issue-item-error {
+  color: #8f3d3d;
+}
+
+.skill-test-issue-item-needs-review {
+  color: #3656d4;
+}
+
+.skill-test-issue-severity {
+  display: inline-flex;
+  align-items: center;
+  font-weight: 600;
+  margin-right: 0.35rem;
+  padding: 0 0.35rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
+
+.skill-test-issue-severity-error {
+  background: rgba(229, 62, 62, 0.12);
+  color: #c53030;
+}
+
+.skill-test-issue-severity-warning {
+  background: rgba(217, 164, 65, 0.14);
+  color: #8d6411;
+}
+
+.skill-test-issue-severity-needs-review {
+  background: rgba(76, 110, 245, 0.12);
+  color: #3656d4;
+}
+
+.skill-test-issue-code {
+  margin-right: 0.35rem;
+  padding: 0 0.3rem;
+  border-radius: 999px;
+  background: rgba(34, 49, 63, 0.08);
+  color: var(--muted);
+  font-family: var(--mono-font);
+  font-size: 0.74rem;
+}
+
+.skill-test-issue-item-error .skill-test-issue-code {
+  background: rgba(229, 62, 62, 0.12);
+  color: #c53030;
+}
+
+.skill-test-issue-item-needs-review .skill-test-issue-code {
+  background: rgba(76, 110, 245, 0.12);
+  color: #3656d4;
+}
+
+.skill-test-issue-message {
+  word-break: break-word;
+}
+
+.skill-test-issue-path {
+  margin-left: 0.45rem;
+  color: var(--muted);
+  font-family: var(--mono-font);
+  font-size: 0.8rem;
+}
+
 .skill-test-detail-shell {
   display: grid;
   gap: 1rem;
@@ -1962,6 +2242,21 @@ label.skill-tests-toolbar-field,
   flex-wrap: wrap;
   padding-bottom: 0.2rem;
   border-bottom: 1px solid rgba(34, 49, 63, 0.08);
+}
+
+.skill-test-detail-header .skill-test-status-callout,
+.skill-test-detail-header .skill-test-issues {
+  flex: 1 1 100%;
+}
+
+@media (min-width: 760px) {
+  .skill-test-detail-header {
+    position: static;
+    top: auto;
+    z-index: auto;
+    background: transparent;
+    box-shadow: none;
+  }
 }
 
 .skill-test-detail-title-row {
@@ -2062,7 +2357,7 @@ label.skill-tests-toolbar-field,
     grid-column: auto;
   }
 
-  .skill-tests-toolbar-field:not(label) {
+  .skill-tests-toolbar-field-inline {
     grid-template-columns: 1fr;
   }
 

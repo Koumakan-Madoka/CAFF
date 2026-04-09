@@ -5,9 +5,14 @@ import Database = require('better-sqlite3');
 
 export const DEFAULT_SQLITE_FILENAME = 'pi-state.sqlite';
 
+function isSpecialSqlitePath(sqlitePath?: string): boolean {
+  const normalizedPath = String(sqlitePath || '').trim().toLowerCase();
+  return normalizedPath === ':memory:' || normalizedPath.startsWith('file:');
+}
+
 export function resolveSqlitePath(agentDir: string, sqlitePath?: string): string {
   if (sqlitePath) {
-    return path.resolve(sqlitePath);
+    return isSpecialSqlitePath(sqlitePath) ? String(sqlitePath).trim() : path.resolve(sqlitePath);
   }
 
   return path.resolve(agentDir, DEFAULT_SQLITE_FILENAME);
@@ -30,7 +35,9 @@ export function openSqliteDatabase(options: OpenSqliteDatabaseOptions = {}): Ope
   const resolvedAgentDir = path.resolve(agentDir || process.cwd());
   const databasePath = resolveSqlitePath(resolvedAgentDir, sqlitePath);
 
-  fs.mkdirSync(path.dirname(databasePath), { recursive: true });
+  if (!isSpecialSqlitePath(databasePath)) {
+    fs.mkdirSync(path.dirname(databasePath), { recursive: true });
+  }
 
   const db = new Database(databasePath, { timeout });
   db.pragma('journal_mode = WAL');

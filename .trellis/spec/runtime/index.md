@@ -26,4 +26,4 @@ Use this index for pi-mono runtime work and Trellis injection changes.
 
 - `agent-runtime.md`: pi-mono runtime flow, Trellis prompt injection, and safety
   rules
-- See `../skills/skill-system.md` for skill loading and `read-skill` tool details
+- See `../skills/skill-system.md` for skill loading and dynamic `read`-path details

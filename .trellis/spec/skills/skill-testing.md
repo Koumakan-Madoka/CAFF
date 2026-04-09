@@ -2,46 +2,66 @@
 
 ## Overview
 
-The skill testing framework evaluates whether agents correctly identify and execute skills. It builds on the existing eval-cases infrastructure and provides:
+The skill testing framework verifies skill behavior across two loading modes and persists run-level evidence for regression.
 
-1. **Trigger Testing**: Verifies that agents correctly identify and invoke a skill
-2. **Execution Testing**: Validates correct tool usage specified by the skill
-3. **Automated Test Generation**: AI-powered generation of test prompts from skill content
-4. **Regression Testing**: Persistent test cases for comparing prompt/model changes
+Core capabilities:
+
+1. **Dynamic mode load verification**: confirms the agent loads the target skill (`read` on `/skills/<skillId>/SKILL.md`)
+2. **Full mode execution evaluation**: step-level + constraint-level + dimension scoring + aggregated verdict
+3. **Draft-first generation**: AI-generated cases are persisted as editable drafts (no auto-run)
+4. **Structured validation**: all save/run/judge paths emit canonical `issues[]` and `caseSchemaStatus`
+5. **Regression tracking**: buckets by `provider/model/promptVersion` for skill-level and case-level views
 
 ## Architecture
 
 ### Data Model
 
 ```sql
--- Skill test cases (persistent test definitions)
 CREATE TABLE skill_test_cases (
   id TEXT PRIMARY KEY,
   skill_id TEXT NOT NULL,
-  eval_case_id TEXT,                    -- Links to eval_cases
-  test_type TEXT NOT NULL DEFAULT 'trigger',  -- 'trigger' | 'execution'
-  loading_mode TEXT NOT NULL DEFAULT 'dynamic',  -- 'dynamic' | 'full'
-  trigger_prompt TEXT NOT NULL,         -- Generated/user-provided prompt
-  expected_tools_json TEXT NOT NULL DEFAULT '[]',  -- Expected tool calls
-  expected_behavior TEXT NOT NULL DEFAULT '',  -- AI judge criteria (future)
-  validity_status TEXT NOT NULL DEFAULT 'pending',  -- 'pending' | 'validated' | 'invalid'
+  eval_case_id TEXT,
+  test_type TEXT NOT NULL DEFAULT 'trigger',
+  loading_mode TEXT NOT NULL DEFAULT 'dynamic',
+  trigger_prompt TEXT NOT NULL,
+  expected_tools_json TEXT NOT NULL DEFAULT '[]',
+  expected_behavior TEXT NOT NULL DEFAULT '',
+  validity_status TEXT NOT NULL DEFAULT 'pending',
+  case_status TEXT NOT NULL DEFAULT 'draft',
+  expected_goal TEXT NOT NULL DEFAULT '',
+  expected_steps_json TEXT NOT NULL DEFAULT '[]',
+  expected_sequence_json TEXT NOT NULL DEFAULT '[]',
+  evaluation_rubric_json TEXT NOT NULL DEFAULT '{}',
+  generation_provider TEXT NOT NULL DEFAULT '',
+  generation_model TEXT NOT NULL DEFAULT '',
+  generation_created_at TEXT NOT NULL DEFAULT '',
   note TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
 
--- Skill test runs (execution results)
 CREATE TABLE skill_test_runs (
   id TEXT PRIMARY KEY,
   test_case_id TEXT NOT NULL,
-  eval_case_run_id TEXT,                -- Links to eval_case_runs
-  status TEXT NOT NULL DEFAULT 'pending',  -- 'pending' | 'running' | 'succeeded' | 'failed'
-  actual_tools_json TEXT NOT NULL DEFAULT '[]',  -- Actual tool calls
-  tool_accuracy REAL,                    -- Tool name match rate (0-1)
-  trigger_passed INTEGER,               -- 1 = skill was triggered
-  execution_passed INTEGER,              -- 1 = tools called correctly (NULL if trigger failed)
+  eval_case_run_id TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  actual_tools_json TEXT NOT NULL DEFAULT '[]',
+  tool_accuracy REAL,
+  trigger_passed INTEGER,
+  execution_passed INTEGER,
+  required_step_completion_rate REAL,
+  step_completion_rate REAL,
+  required_tool_coverage REAL,
+  tool_call_success_rate REAL,
+  tool_error_rate REAL,
+  sequence_adherence REAL,
+  goal_achievement REAL,
+  instruction_adherence REAL,
+  verdict TEXT DEFAULT '',
+  evaluation_json TEXT NOT NULL DEFAULT '{}',
   error_message TEXT DEFAULT '',
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (test_case_id) REFERENCES skill_test_cases(id)
 );
 ```
 
@@ -55,376 +75,375 @@ skill_test_cases (1) ──→ (N) skill_test_runs
    eval_cases (1) ──→ (N) eval_case_runs
 ```
 
-Each `skill_test_case` auto-creates an `eval_case` for integration with existing eval infrastructure.
-Each `skill_test_run` auto-creates an `eval_case_run` for result tracking.
-`eval_case_runs.prompt_version` stores the effective prompt version for each run so Phase 2 regression views can compare the same case across prompt/model combinations.
+- Each skill test case links to one `eval_case`.
+- Each skill test run links to one `eval_case_run`.
+- `eval_case_runs.prompt_version` is the regression bucket key with provider/model.
 
 ## Evaluation Logic
 
-### Two-Stage Gating
+### Mode Semantics (Phase 3)
 
-```
-Step 1: Trigger Evaluation
-  - Check if skill was identified and invoked
-  - Dynamic mode: Detect `read-skill(skillId)` in tool calls
-  - Full mode: Combine behavior-signal matching with AI judge over assistant evidence
+- **Dynamic mode (default)**:
+  - primary goal: load/trigger evidence
+  - `trigger_passed` is based on target `SKILL.md` read evidence
+  - execution gate is only meaningful for legacy dynamic execution cases (`test_type = execution`)
 
-  Result: trigger_passed = 1 | 0
+- **Full mode**:
+  - primary goal: behavior-chain quality evaluation (`expectedSteps`, constraints, goal/adherence)
+  - run output is a structured `evaluation` object with dimensions and aggregated verdict
+  - `execution_passed = 1` only when `evaluation.verdict === 'pass'`
 
-Step 2: Execution Evaluation (only if trigger_passed = 1)
-  - Compare actual tools vs expected tools
-  - L1: Tool name matching (Phase 1)
-  - L2: Parameter structure validation (Phase 2)
-  - L3: Call sequence verification (Phase 2)
+### Dynamic Trigger Detection
 
-  Result:
-    - tool_accuracy = matched / expected
-    - execution_passed = (tool_accuracy >= threshold) ? 1 : 0
-    - if L3 sequence is enabled, `execution_passed` additionally requires sequence pass
-    - NULL if trigger_passed = 0
-```
+Trigger is detected when either source contains a target read:
 
-### Trigger Detection (Dynamic Mode)
+1. **Tool call event** (`a2a_task_events`)
+2. **Session JSONL tool blocks**
 
-Trigger is detected when:
+Target path match is normalized to:
 
-1. **Tool call event** (from `a2a_task_events` table):
-   ```sql
-   WHERE event_type = 'agent_tool_call'
-     AND tool = 'read-skill'
-     AND json_extract(request, '$.skillId') = @targetSkillId
-   ```
+- `/skills/<skillId>/SKILL.md` (case-insensitive, slash-normalized)
 
-2. **Session file tool call** (from session JSONL):
-   ```javascript
-   // Extract from assistant messages
-   if (block.type === 'toolCall' && block.name === 'read') {
-     // Check if path contains /skills/<skillId>/
-     const match = path.match(/\/skills\/([^/]+)\//);
-     if (match && match[1] === skillId) trigger = true;
-   }
-   ```
+### Full-Mode Judge Contract
 
-### Trigger Detection (Full Mode - Phase 2)
+Full execution judge must return structured JSON:
 
-Full-mode trigger evaluation now uses two signals in parallel:
-
-1. **Behavior/text cues**
-   - Build loose trigger signals from `skill.name`, `skill.description`, `expectedBehavior`, and case note
-   - Match those signals against assistant output + assistant thinking extracted from the session JSONL
-   - If any signal matches and the run produced observable output, `signalMatched = true`
-
-2. **AI judge**
-   - When observable evidence exists, run a lightweight judge prompt through `startRun()` with the same provider/model
-   - The judge only sees the captured evidence (`triggerPrompt`, `expectedBehavior`, skill metadata/body excerpt, assistant output, observed tools)
-   - It must return compact JSON:
-     ```json
-     {"passed": true, "confidence": 0.92, "reason": "...", "matchedBehaviors": ["..."]}
-     ```
-   - Parse failures or judge errors do not fail the test run; they are recorded under `triggerEvaluation.aiJudge`
-
-Full-mode `trigger_passed` becomes true when any of these sources pass:
-- `expectedToolMatched`
-- `signalMatched`
-- `aiJudge.passed === true`
-
-Per-run result JSON stores:
-- `triggerEvaluation.matchedSignals`
-- `triggerEvaluation.decisionSources`
-- `triggerEvaluation.aiJudge` (`attempted`, `passed`, `confidence`, `reason`, `matchedBehaviors`, `errorMessage`)
-
-### Execution Evaluation (L1 - Phase 1)
-
-```typescript
-function evaluateExecution(expectedTools: string[], actualTools: string[]): {
-  toolAccuracy: number;
-  executionPassed: number;
-} {
-  const matched = expectedTools.filter(exp =>
-    actualTools.some(act => act === exp)
-  );
-
-  const toolAccuracy = expectedTools.length > 0
-    ? matched.length / expectedTools.length
-    : 1;
-
-  const EXECUTION_THRESHOLD = 0.8; // 80% match rate required
-
-  return {
-    toolAccuracy,
-    executionPassed: toolAccuracy >= EXECUTION_THRESHOLD ? 1 : 0
-  };
+```json
+{
+  "steps": [
+    {
+      "stepId": "step-1",
+      "completed": true,
+      "confidence": 0.9,
+      "evidenceIds": ["msg-1"],
+      "matchedSignalIds": ["sig-step-1-read"],
+      "reason": "..."
+    }
+  ],
+  "constraintChecks": [
+    {
+      "constraintId": "confirm-before-action",
+      "satisfied": true,
+      "evidenceIds": ["msg-1"],
+      "reason": "..."
+    }
+  ],
+  "goalAchievement": { "score": 0.8, "reason": "..." },
+  "instructionAdherence": { "score": 0.85, "reason": "..." },
+  "summary": "...",
+  "verdictSuggestion": "pass|borderline|fail",
+  "missedExpectations": ["..."]
 }
 ```
 
-### Execution Evaluation (L2 - Phase 2)
+Validation rules (`validateJudgeOutput`):
 
-`expectedTools` now supports either plain tool names or structured specs:
+- `status` enum: `succeeded | parse_failed | runtime_failed | skipped`
+- `confidence` / `score` must be in `0..1`
+- `evidenceIds` can only reference timeline ids: `msg-*`, `thinking-*`, `tool-call-*`, `tool-result-*`
+- `matchedSignalIds` can only reference normalized `expectedSteps[].strongSignals[].id`
+- unknown step/constraint/signal/evidence ids are stripped with warning issues
+- missing step/constraint rows are backfilled with placeholder results (`needs-review` issues)
+- duplicate step/constraint ids or invalid verdict suggestion downgrade to `parse_failed`
+
+### Full-Mode Aggregation & Metrics
+
+`buildFullModeExecutionEvaluation(...)` calculates:
+
+- `requiredStepCompletionRate`
+- `stepCompletionRate`
+- `requiredToolCoverage`
+- `toolCallSuccessRate`
+- `toolErrorRate`
+- `sequenceAdherence` (computed from step `evidenceIds` order, not judge free-scoring)
+- `goalAchievement`
+- `instructionAdherence`
+
+`aggregateFullVerdict(...)` outputs `pass | borderline | fail`.
+
+Hard-fail examples:
+
+- missing required steps
+- critical constraint violated
+- critical sequence hard-fail (when sequence is configured + marked critical)
+- goal/adherence below hard-fail thresholds
+- judge suggests fail with observable evidence backing
+
+Borderline examples:
+
+- judge runtime/parse failure
+- missing critical checks / weak evidence
+- primary dimensions below pass threshold but not hard-fail
+- supporting metrics weakness
+
+### Persistence Truth Source
+
+- `evaluation_json` is the source of truth for full-mode evaluation payload.
+- mirror columns are projection fields (`*_rate`, `sequence_adherence`, `goal_achievement`, etc.).
+- projection consistency warnings:
+  - `evaluation_projection_mismatch`
+  - `evaluation_projection_failed`
+
+## Canonical Case Schema
+
+### Prompt Canonicalization
+
+- canonical input field: `userPrompt`
+- compatibility alias: `triggerPrompt`
+- if both provided and differ after normalization -> `prompt_alias_conflict`
+- prompt length constraints: `5..2000`
+
+### Full-Mode Required Fields
+
+Full case save/update/run requires canonical schema:
+
+- `userPrompt` (non-empty)
+- `expectedGoal` (non-empty)
+- `expectedSteps` array size `1..12`
+- at least one `required = true` step
+- `evaluationRubric` object (may be empty but must be object shape)
+
+Step constraints:
+
+- stable `id` (case-unique)
+- non-empty `title` + `expectedBehavior`
+- optional `order` (positive, unique)
+- `strongSignals` max 5 per step
+- signal type only: `tool | text | state`
+
+Rubric constraints:
+
+- `criticalDimensions` only allows `sequenceAdherence`
+- thresholds in `0..1`, and `hardFail <= pass`
+- `criticalConstraints[].appliesToStepIds` must reference known steps
+- `supportingSignalOverrides` must reference existing `stepId + signalId`
+
+### Validation Envelope
+
+All save/run/read paths expose canonical validation envelope:
 
 ```json
-[
-  {
-    "name": "read-skill",
-    "order": 1,
-    "arguments": {
-      "skillId": "werewolf"
+{
+  "issues": [
+    {
+      "code": "expected_steps_required",
+      "severity": "error|warning|needs-review",
+      "path": "expectedSteps",
+      "message": "..."
     }
-  },
-  {
-    "name": "send-public",
-    "order": 2,
-    "requiredParams": ["content"],
-    "arguments": {
-      "content": "<string>"
-    }
-  }
-]
+  ],
+  "caseSchemaStatus": "valid|warning|invalid",
+  "derivedFromLegacy": false
+}
 ```
 
-L2 keeps the L1 tool-name gate, then additionally checks whether at least one matching call satisfies:
-- `requiredParams`: dot-paths that must exist in the actual tool arguments
-- `arguments`: partial argument-shape match; placeholder values such as `<string>`, `<number>`, `<boolean>`, `<array>`, `<object>`, and `<any>` are supported
-- `arguments` also supports `<contains:...>` for generator-produced partial string matches (for example placeholder-heavy file paths or long shell commands)
+Preflight rule:
 
-### Execution Evaluation (L3 - Phase 2)
-
-Structured expected tools may also declare `order` (positive integer). When at least one expected tool has an `order` value:
-- execution still uses L1/L2 matching to compute `toolAccuracy`
-- `executionEvaluation.sequenceCheck` verifies the ordered subset appears in the observed tool timeline in ascending order
-- `execution_passed` requires both the L1/L2 threshold and `sequenceCheck.passed = true`
-
-Observed order is reconstructed from a single timeline source to avoid cross-source false positives: use the session tool-call timeline first (with lightweight alias inference for chat-bridge shell commands such as `read-skill` and `send-public`), and fall back to `agent_tool_call` events only when the session has no tool-call timeline.
-
-Per-run detail stores both `executionEvaluation.toolChecks[]` and `executionEvaluation.sequenceCheck` in `eval_case_runs.result_json`, so the UI can show which tool was missing, which parameter path was absent, and whether the ordered tools appeared in the wrong position.
+- if schema is invalid (`caseSchemaStatus = invalid`), run is rejected with `case_schema_invalid` and agent run does not start.
 
 ## Test Case Generation
 
-### AI-Powered Generation (`lib/skill-test-generator.ts`)
+### AI Draft Generation (`lib/skill-test-generator.ts`)
 
-**Goal**: Generate natural-language prompts that trigger specific skills.
+- Both loading modes support AI generation via `/generate`.
+- Dynamic mode drafts prioritize load-trigger language.
+- Full mode drafts prioritize:
+  - `expectedGoal`
+  - `expectedSteps` (stable `step-{n}` IDs)
+  - optional `expectedSequence`
+  - `evaluationRubric`
+  - optional supporting `expectedTools`
+- Generator prompt enforces canonical `userPrompt` and keeps `triggerPrompt` as legacy alias.
 
-**Process**:
+### Draft-First Persistence
 
-1. **Seed Extraction**: Parse skill SKILL.md for:
-   - Action verbs (e.g., "投票", "发言", "执行")
-   - Context keywords (e.g., "狼人杀", "谁是卧底")
-   - Tool names mentioned in examples
+Generated rows persist as drafts by default:
 
-2. **Few-Shot Prompting**: Provide 2-3 examples of good triggers:
-   ```text
-   Skill: werewolf (description: 后端全自动主持的狼人杀玩法...)
-   Good trigger: "我们来玩一局狼人杀吧！我来当玩家"
-   Bad trigger: "狼人杀是什么？" (This is a question, won't trigger execution)
-   ```
-
-3. **Generate**: AI produces N trigger prompts for the skill.
-
-   For `execution`-focused cases, the generator also derives structured `expectedTools` directly from skill-body examples:
-   - fenced bash/code snippets
-   - inline backticked commands and tool names
-   - plain-text workflow lines that contain command examples (for example `**[2/4] python3 ...**`)
-   - placeholder-heavy paths/commands are normalized into partial string checks such as `<contains:.trellis/spec>`
-
-4. **Smoke Run Validation**: Auto-execute each prompt:
-   - Trigger success → `validity_status = 'validated'`
-   - Trigger fail → `validity_status = 'invalid'`
-
-### Manual Test Case Creation
-
-Users can manually create test cases via API:
-
-```javascript
-POST /api/skills/:skillId/test-cases
-{
-  "testType": "trigger",           // or "execution"
-  "loadingMode": "dynamic",        // or "full"
-  "triggerPrompt": "我们来玩狼人杀",
-  "expectedTools": [
-    {
-      "name": "read-skill",
-      "order": 1,
-      "arguments": { "skillId": "werewolf" }
-    },
-    {
-      "name": "send-public",
-      "order": 2,
-      "requiredParams": ["content"],
-      "arguments": { "content": "<string>" }
-    }
-  ],
-  "expectedBehavior": "Agent should call read-skill for werewolf",
-  "note": "Manual test case"
-}
-```
+- no automatic smoke run
+- user edits first, then run manually or promote to ready
+- generation metadata persisted:
+  - `generationProvider`
+  - `generationModel`
+  - `generationCreatedAt`
 
 ## API Endpoints
 
 ### Test Case Management
 
 ```
-GET    /api/skills/:skillId/test-cases           -- List test cases
-POST   /api/skills/:skillId/test-cases           -- Manual create
-POST   /api/skills/:skillId/test-cases/generate  -- AI generate
-GET    /api/skills/:skillId/test-cases/:caseId   -- Get single case
-GET    /api/skills/:skillId/test-cases/:caseId/regression -- Case-level regression buckets by provider/model/promptVersion
-DELETE /api/skills/:skillId/test-cases/:caseId   -- Delete case
+GET    /api/skills/:skillId/test-cases
+POST   /api/skills/:skillId/test-cases
+POST   /api/skills/:skillId/test-cases/generate
+GET    /api/skills/:skillId/test-cases/:caseId
+PATCH  /api/skills/:skillId/test-cases/:caseId
+POST   /api/skills/:skillId/test-cases/:caseId/mark-ready
+POST   /api/skills/:skillId/test-cases/:caseId/mark-draft
+DELETE /api/skills/:skillId/test-cases/:caseId
 ```
 
 ### Test Execution
 
 ```
-POST /api/skills/:skillId/test-cases/:caseId/run   -- Run single test
-POST /api/skills/:skillId/test-cases/run-all       -- Run all `validated` and `invalid` cases
+POST /api/skills/:skillId/test-cases/:caseId/run
+POST /api/skills/:skillId/test-cases/run-all
 ```
+
+Notes:
+
+- `run-all` runs only effective `ready` cases.
+- legacy rows (`validity_status`) are mapped to effective status for compatibility.
 
 ### Results and Reports
 
 ```
-GET /api/skills/:skillId/test-cases/:caseId/runs   -- Run history for case
-GET /api/skills/:skillId/test-runs                 -- All runs for skill
-GET /api/skills/:skillId/regression                -- Skill-level regression buckets by provider/model/promptVersion
-GET /api/skill-test-runs/:runId                    -- Single run detail + debug
-GET /api/skill-test-summary                        -- Global summary
+GET /api/skills/:skillId/test-cases/:caseId/runs
+GET /api/skills/:skillId/test-cases/:caseId/regression
+GET /api/skills/:skillId/test-runs
+GET /api/skills/:skillId/regression
+GET /api/skill-test-runs/:runId
+GET /api/skill-test-summary
 ```
 
-## Test Execution Flow
+## Execution Flow
 
 ```
-1. Prepare Test
-   - Load test case
-   - Ensure agent sandbox exists
-   - Set up eval_case linkage
+1. Preflight
+   - Load stored case + schema envelope
+   - Reject run when caseSchemaStatus = invalid
 
-2. Configure Environment
-   - CAFF_SKILL_LOADING_MODE = testCase.loadingMode
-   - PI_AGENT_SANDBOX_DIR points to skill registry
-   - Tool bridge enabled (dry-run mode)
+2. Runtime execution
+   - Start pi run with CAFF_SKILL_LOADING_MODE
+   - Capture session + task tool events
 
-3. Execute Agent Run
-   - Start pi runtime with trigger_prompt
-   - Register tool invocation
-   - Await completion
+3. Evidence normalization
+   - Build timeline ids: msg-*, thinking-*, tool-call-*, tool-result-*
+   - Normalize expected tools / steps / sequence
 
-4. Evaluate Results
-   - Collect tool calls from a2a_task_events + session file
-   - Check trigger (read-skill or behavior match)
-   - Check execution (tool matching)
+4. Mode-specific evaluation
+   - Dynamic: load trigger evaluation (+ legacy execution checks)
+   - Full: execution judge validation + dimension metrics + aggregate verdict
 
-5. Persist Results
-   - Create eval_case_run
-   - Create skill_test_run
-   - Update test case validity_status (`pending` → `validated`/`invalid`)
+5. Persistence
+   - Write eval_case_run.result_json
+   - Write skill_test_runs with mirror metrics + evaluation_json
+   - Attach validation envelope to response and stored evaluation
 ```
 
-## Metrics and Reporting
+## Metrics and Regression
 
-### Summary by Skill
+### Skill Summary Shape
 
 ```json
 {
   "skillId": "werewolf",
-  "totalCases": 10,
-  "casesByValidity": {
-    "validated": 8,
-    "invalid": 2
-  },
-  "totalRuns": 50,
-  "triggerPassedCount": 40,
-  "executionPassedCount": 38,
-  "triggerRate": 0.8,        // 40 / 50
-  "executionRate": 0.95,      // 38 / 40
-  "avgToolAccuracy": 0.92
+  "casesByStatus": { "draft": 3, "ready": 5, "archived": 1 },
+  "totalCases": 9,
+  "totalRuns": 42,
+  "triggerPassedCount": 30,
+  "executionPassedCount": 18,
+  "triggerRate": 0.714,
+  "executionRate": 0.429,
+  "avgToolAccuracy": 0.88,
+  "avgRequiredStepCompletionRate": 0.79,
+  "avgStepCompletionRate": 0.83,
+  "avgGoalAchievement": 0.76,
+  "avgToolCallSuccessRate": 0.91
 }
 ```
 
-### Run Detail with Debug
+### Regression Buckets
 
-```json
-{
-  "run": {
-    "id": "...",
-    "status": "succeeded",
-    "triggerPassed": 1,
-    "executionPassed": 1,
-    "toolAccuracy": 0.9
-  },
-  "debug": {
-    "taskId": "...",
-    "sessionPath": "/path/to/session.jsonl",
-    "outputText": "...",
-    "toolCalls": [...],
-    "session": {
-      "thinking": "...",
-      "text": "...",
-      "toolCalls": [...]
-    }
-  }
-}
-```
+Regression endpoints group by:
+
+- `provider`
+- `model`
+- `promptVersion`
+
+For full mode, regression/summary `executionPassedCount` uses verdict-pass semantics.
+
+## UI Contract (Workstream D)
+
+Frontend (`public/skill-tests.js`) consumes structured validation/evaluation:
+
+- unified issues panels:
+  - detail panel: `st-detail-issues`
+  - create panel: `st-create-issues`
+- local JSON parse errors are transformed into canonical `issues[]` instead of toast-only flows
+- full run detail renders:
+  - step results (`steps[]`)
+  - `constraintChecks[]`
+  - `aggregation` reasons
+  - `aiJudge` status, `verdictSuggestion`, `missedExpectations`
+- run detail reads `result.evaluation` first and falls back to `run.evaluation`
 
 ## Implementation Files
 
 ### Core Components
 
-- `lib/skill-test-generator.ts`: AI test case generation
-- `server/api/skill-test-controller.ts`: HTTP endpoints and execution logic
-- `storage/sqlite/migrations.ts`: Database schema migrations
-- `tests/skill-test/skill-test-generator.test.js`: Generation logic tests
-- `tests/skill-test/skill-test-schema.test.js`: Schema validation tests
+- `lib/skill-test-generator.ts`
+- `server/api/skill-test-controller.ts`
+- `storage/sqlite/migrations.ts`
+- `tests/skill-test/skill-test-generator.test.js`
+- `tests/skill-test/skill-test-schema.test.js`
+- `tests/skill-test/skill-test-e2e.test.js`
+- `tests/storage/run-store.test.js`
+- `public/skill-tests.js`
 
 ### Integration Points
 
-- `lib/minimal-pi.ts` (`startRun`): Executes agent runs for tests
-- `lib/agent-chat-tools.ts`: `read-skill` CLI tool definition
-- `server/domain/runtime/agent-tool-bridge.ts`: Tool invocation registration
-- `server/domain/conversation/turn/agent-sandbox.ts`: Sandbox setup
-- `public/skill-tests.js`: Frontend UI for test management
+- `server/domain/conversation/turn/agent-prompt.ts`
+- `server/domain/runtime/agent-tool-bridge.ts`
+- `server/domain/conversation/turn/agent-sandbox.ts`
+- `lib/minimal-pi.ts`
 
 ## Phase Scope
 
-### Phase 1 (Current)
+### Phase 1 (Completed)
 
-- ✅ Trigger testing for dynamic mode only (via `read-skill` detection)
-- ✅ L1 execution testing (tool name matching)
-- ✅ AI test case generation with smoke run validation
-- ✅ `loading_mode` field in test cases
-- ✅ Eval-case integration
+- ✅ Dynamic-mode trigger detection via target `SKILL.md` read
+- ✅ L1 tool matching for legacy execution checks
+- ✅ eval-case integration baseline
 
-### Phase 2 (In Progress)
+### Phase 2 (Completed)
 
-- ✅ Full mode trigger testing (behavior matching + AI judge)
+- ✅ Full-mode trigger judge (compatibility path)
 - ✅ L2 parameter structure validation
-- ✅ L3 call sequence verification via ordered `expectedTools` specs (`order`)
-- ✅ Regression buckets across provider/model/promptVersion for both skill-level and case-level views
+- ✅ L3 ordered tool sequence validation
+- ✅ provider/model/promptVersion regression buckets
 
-## Testing Guidelines
+### Phase 3 (Completed: Workstream B/C/D/E)
 
-### When to Add Skill Tests
+- ✅ **B Generator / Judge Contract**:
+  - full draft canonical output (`userPrompt`, `expectedGoal`, `expectedSteps`, `evaluationRubric`)
+  - stable `step-{n}` / `strongSignals[].id`
+  - judge structured output + strict validator and parse-failed downgrade
+- ✅ **C Aggregation / Persistence / Regression**:
+  - timeline id normalization + evidence-bound sequence scoring
+  - `aggregateFullVerdict()` and verdict pass semantics
+  - `evaluation_json` truth source + projection mismatch/failure diagnostics
+- ✅ **D UI Editor / Result UX**:
+  - unified issues panel across create/edit/run
+  - full run diagnostic rendering for steps/constraints/aggregation/aiJudge
+- ✅ **E Tests / Rollout**:
+  - contract + e2e regression matrix expanded
+  - rollout checklist added at `.trellis/tasks/skill-testing/rollout-checklist.md`
 
-- When creating a new skill (auto-generate initial test cases)
-- When modifying skill body that affects tool usage
-- When changing skill loading mode behavior
-- When updating prompt templates or model configurations
+## Testing & Rollout Guidelines
 
-### Test Coverage Targets
+Run this baseline before release:
 
-- Each skill should have at least 3-5 validated test cases
-- Mix of trigger-focused and execution-focused test types
-- Both dynamic and full mode tests (if skill supports both)
+```bash
+npm run check
+npm run build
+node --test tests/skill-test/skill-test-schema.test.js
+node --test tests/skill-test/skill-test-generator.test.js
+node --test tests/skill-test/skill-test-e2e.test.js
+node --test tests/storage/run-store.test.js
+```
 
-### Debugging Failed Tests
+When adding or changing skill behavior, ensure:
 
-1. **Trigger failure**:
-   - Check `read-skill` tool call payload
-   - Verify skill registry contains the skill
-   - Verify `CAFF_SKILL_LOADING_MODE` environment variable
-
-2. **Execution failure**:
-   - Compare `actualTools` vs `expectedTools`
-   - Check if expected tools are correct (maybe skill changed?)
-   - Review session debug output for reasoning
-
-3. **Validity is `invalid`**:
-   - Review trigger_prompt (too vague?)
-   - Manually test prompt in chat
-   - Consider generating new test case
+- dynamic and full contracts remain schema-valid
+- issue codes remain stable across save/run/judge paths
+- regression buckets still compare equivalent case/provider/model/promptVersion slices
+- UI diagnostics remain readable for `error | warning | needs-review`

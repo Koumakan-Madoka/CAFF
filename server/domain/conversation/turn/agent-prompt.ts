@@ -38,6 +38,16 @@ function getSkillLoadingMode() {
   return String(process.env.CAFF_SKILL_LOADING_MODE || 'dynamic').trim().toLowerCase() || 'dynamic';
 }
 
+function formatSkillDescriptorPath(skill: any) {
+  const rawPath = String(skill && skill.path || '').trim();
+  if (!rawPath) {
+    return '';
+  }
+
+  const normalizedPath = rawPath.replace(/\\/g, '/').replace(/\/+$/g, '');
+  return /\/skill\.md$/i.test(normalizedPath) ? normalizedPath : `${normalizedPath}/SKILL.md`;
+}
+
 function formatSkillDescriptors(skills: any) {
   const normalizedSkills = (Array.isArray(skills) ? skills : []).filter(Boolean);
 
@@ -46,15 +56,17 @@ function formatSkillDescriptors(skills: any) {
   }
 
   return normalizedSkills
-    .map((skill: any) =>
-      [
+    .map((skill: any) => {
+      const skillPath = formatSkillDescriptorPath(skill);
+      return [
         `- ${skill.name} (${skill.id})`,
         skill.description ? `  Description: ${skill.description}` : '',
-        skill.path ? `  Path: ${skill.path}` : '',
+        skillPath ? `  Path: ${skillPath}` : '',
+        skillPath ? '  Load with: Use the `read` tool on the `Path` above when you need the full instructions' : '',
       ]
         .filter(Boolean)
-        .join('\n')
-    )
+        .join('\n');
+    })
     .join('\n\n');
 }
 
@@ -74,16 +86,17 @@ function formatSkillDocuments(skills: any, options: any = {}) {
 
   if (effectiveForceFull) {
     return normalizedSkills
-      .map((skill: any) =>
-        [
+      .map((skill: any) => {
+        const skillPath = formatSkillDescriptorPath(skill);
+        return [
           `- ${skill.name} (${skill.id})`,
           skill.description ? `  Description: ${skill.description}` : '',
-          skill.path ? `  Path: ${skill.path}` : '',
+          skillPath ? `  Path: ${skillPath}` : '',
           skill.body ? `  Instructions:\n${String(skill.body).split('\n').map((line: any) => `    ${line}`).join('\n')}` : '',
         ]
           .filter(Boolean)
-          .join('\n')
-      )
+          .join('\n');
+      })
       .join('\n\n');
   }
 
@@ -209,8 +222,8 @@ function buildAgentToolInstructions(agentToolRelativePath: string) {
     `- List the visible room participants: ${relativeCommandPrefix} list-participants`,
     ...(getSkillLoadingMode() === 'dynamic'
       ? [
-          '- Dynamic skill loading: when conversation skills are listed as descriptors without full instructions, use the read-skill tool to load them on demand.',
-          `- Read the full body of a skill by its id: ${envCommandPrefix} read-skill <skill-id>`,
+          '- Dynamic skill loading: when conversation skills are listed as descriptors without full instructions, use the `read` tool on the listed `Path` to load the full `SKILL.md` on demand.',
+          '- Each descriptor `Path` already points at the skill `SKILL.md`; read that file directly instead of using a dedicated skill-loading tool.',
         ]
       : []),
     `- Preview writing a minimal .trellis scaffold in the active project (no writes): ${relativeCommandPrefix} trellis-init --task "my-task"`,

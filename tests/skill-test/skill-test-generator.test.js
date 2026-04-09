@@ -21,6 +21,8 @@ test('generateSkillTestPrompts returns correct number of game prompts', () => {
   assert.equal(prompts.length, 3);
   for (const p of prompts) {
     assert.ok(p.triggerPrompt, 'should have triggerPrompt');
+    assert.ok(p.userPrompt, 'should have canonical userPrompt');
+    assert.equal(p.userPrompt, p.triggerPrompt, 'userPrompt should mirror triggerPrompt in generator defaults');
     assert.ok(p.triggerPrompt.length >= 5, 'triggerPrompt should be at least 5 chars');
     assert.ok(p.triggerPrompt.length <= 2000, 'triggerPrompt should be at most 2000 chars');
     assert.ok(p.expectedBehavior, 'should have expectedBehavior');
@@ -87,10 +89,10 @@ test('generateSkillTestPrompts keeps trigger cases minimal for dynamic mode', ()
   for (const p of prompts) {
     assert.deepEqual(p.expectedTools, [
       {
-        name: 'read-skill',
+        name: 'read',
         order: 1,
-        requiredParams: ['skillId'],
-        arguments: { skillId: 'before-dev' },
+        requiredParams: ['path'],
+        arguments: { path: '<contains:/skills/before-dev/SKILL.md>' },
       },
     ]);
   }
@@ -113,10 +115,10 @@ test('generateSkillTestPrompts extracts structured expectedTools for execution c
   assert.equal(prompts.length, 1);
   assert.equal(prompts[0].expectedTools.length, 4);
   assert.deepEqual(prompts[0].expectedTools[0], {
-    name: 'read-skill',
+    name: 'read',
     order: 1,
-    requiredParams: ['skillId'],
-    arguments: { skillId: 'before-dev' },
+    requiredParams: ['path'],
+    arguments: { path: '<contains:/skills/before-dev/SKILL.md>' },
   });
   assert.deepEqual(prompts[0].expectedTools[1], {
     name: 'bash',
@@ -136,7 +138,31 @@ test('generateSkillTestPrompts extracts structured expectedTools for execution c
     requiredParams: ['path'],
     arguments: { path: '<contains:.trellis/spec/guides/index.md>' },
   });
-  assert.match(prompts[0].expectedBehavior, /read-skill → bash → read → read/);
+  assert.match(prompts[0].expectedBehavior, /read → bash → read → read/);
+});
+
+test('generateSkillTestPrompts emits expectedSteps for full execution drafts', () => {
+  const skill = {
+    id: 'before-dev',
+    name: 'before-dev',
+    description: 'Discovers and injects project-specific coding guidelines from .trellis/spec/ before implementation begins.',
+    body: 'Execute these steps:\n\n1. python3 ./.trellis/scripts/get_context.py --mode packages\n2. cat .trellis/spec/<package>/<layer>/index.md\n3. cat .trellis/spec/guides/index.md',
+  };
+
+  const prompts = generateSkillTestPrompts(skill, {
+    count: 1,
+    testType: 'execution',
+    loadingMode: 'full',
+  });
+
+  assert.equal(prompts.length, 1);
+  assert.ok(Array.isArray(prompts[0].expectedSteps));
+  assert.equal(prompts[0].expectedSteps.length, 3);
+  assert.equal(prompts[0].expectedSteps[0].id, 'step-1');
+  assert.equal(prompts[0].expectedSteps[0].title, 'Use bash');
+  assert.equal(prompts[0].expectedSteps[0].required, true);
+  assert.equal(prompts[0].expectedSteps[0].strongSignals[0].toolName, 'bash');
+  assert.equal(prompts[0].expectedSteps[0].strongSignals[0].id, 'sig-step-1-bash');
 });
 
 test('generateSkillTestPrompts extracts command examples from plain text workflow lines', () => {
@@ -156,10 +182,10 @@ test('generateSkillTestPrompts extracts command examples from plain text workflo
   assert.equal(prompts.length, 1);
   assert.deepEqual(prompts[0].expectedTools, [
     {
-      name: 'read-skill',
+      name: 'read',
       order: 1,
-      requiredParams: ['skillId'],
-      arguments: { skillId: 'onboard' },
+      requiredParams: ['path'],
+      arguments: { path: '<contains:/skills/onboard/SKILL.md>' },
     },
     {
       name: 'bash',
@@ -204,7 +230,7 @@ test('generateSkillTestPrompts handles empty/missing skill data', () => {
 
 // ---- buildLlmGenerationPrompt ----
 
-test('buildLlmGenerationPrompt produces a non-empty prompt string', () => {
+test('buildLlmGenerationPrompt produces a non-empty dynamic prompt string', () => {
   const skill = {
     id: 'werewolf',
     name: '狼人杀 Skill',
@@ -212,15 +238,18 @@ test('buildLlmGenerationPrompt produces a non-empty prompt string', () => {
     body: '狼人杀规则详细内容...',
   };
 
-  const prompt = buildLlmGenerationPrompt(skill, { count: 3 });
+  const prompt = buildLlmGenerationPrompt(skill, { count: 3, loadingMode: 'dynamic' });
 
   assert.ok(typeof prompt === 'string');
   assert.ok(prompt.length > 100, 'LLM prompt should be substantial');
   assert.ok(prompt.includes('werewolf') || prompt.includes('狼人杀'), 'should mention skill');
+  assert.ok(prompt.includes('Mode: dynamic'), 'should mention dynamic mode');
   assert.ok(prompt.includes('JSON'), 'should ask for JSON output');
+  assert.ok(prompt.includes('userPrompt'), 'should request canonical userPrompt field');
+  assert.ok(prompt.includes('Do not call tools'), 'should forbid tool calls during generation');
 });
 
-test('buildLlmGenerationPrompt uses default count', () => {
+test('buildLlmGenerationPrompt uses default count and full-mode schema hints', () => {
   const skill = {
     id: 'test',
     name: 'Test',
@@ -228,7 +257,11 @@ test('buildLlmGenerationPrompt uses default count', () => {
     body: '',
   };
 
-  const prompt = buildLlmGenerationPrompt(skill);
-  assert.ok(prompt.includes('3'), 'default count should be 3');
+  const prompt = buildLlmGenerationPrompt(skill, { loadingMode: 'full' });
+  assert.ok(prompt.includes('EXACTLY 3'), 'default count should be 3');
+  assert.ok(prompt.includes('expectedGoal'), 'full-mode prompt should mention expectedGoal');
+  assert.ok(prompt.includes('expectedSteps'), 'full-mode prompt should mention expectedSteps');
+  assert.ok(prompt.includes('evaluationRubric'), 'full-mode prompt should mention evaluationRubric');
+  assert.ok(prompt.includes('triggerPrompt": string (legacy alias'), 'full-mode prompt should document triggerPrompt alias');
   assert.ok(prompt.includes('requiredParams'), 'LLM prompt should mention structured expectedTools');
 });

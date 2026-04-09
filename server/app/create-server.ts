@@ -279,8 +279,14 @@ export function createServerApp(options: any = {}) {
     } catch (error) {
       const errorValue = error as any;
       const statusCode = Number.isInteger(errorValue && errorValue.statusCode) ? errorValue.statusCode : 500;
+      const errorDetails = errorValue && typeof errorValue === 'object'
+        ? Object.fromEntries(
+          Object.entries(errorValue).filter(([key]) => key !== 'statusCode' && key !== 'message' && key !== 'error')
+        )
+        : {};
       sendJson(res, statusCode, {
         error: (errorValue && errorValue.message) || 'Internal server error',
+        ...errorDetails,
       });
     }
   });

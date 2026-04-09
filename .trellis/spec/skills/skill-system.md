@@ -4,7 +4,7 @@
 
 CAFF uses a modular skill system that injects agent instructions (skills) into prompts. Skills can be loaded in two modes:
 
-- **Dynamic mode** (default): Skills are described by lightweight descriptors; agents call `read-skill` to load full bodies on demand
+- **Dynamic mode** (default): Skills are described by lightweight descriptors; agents use the generic `read` tool on the descriptor `Path` to load `SKILL.md` on demand
 - **Full mode**: Full skill bodies are injected into prompts upfront
 
 ## Skill Structure
@@ -41,31 +41,31 @@ Detailed instructions, tool usage patterns, and behavioral guidance.
    ```text
    Available skills:
    - werewolf: 后端全自动主持的狼人杀玩法，模型只扮演玩家，按后端推进的日夜阶段行动。
-       Use: read-skill with skillId "werewolf"
+       Path: /skills/werewolf/SKILL.md
+       Load with: Use read on the Path above when you need the full instructions
    ```
 
-2. **On-Demand Loading**: Agent calls `read-skill` tool:
+2. **On-Demand Loading**: Agent calls the generic `read` tool:
    ```javascript
    // Tool call
    {
-     "tool": "read-skill",
-     "arguments": { "skillId": "werewolf" }
+     "tool": "read",
+     "arguments": { "path": "/skills/werewolf/SKILL.md" }
    }
    ```
 
 3. **Flow**:
    ```
-   lib/agent-chat-tools.ts (read-skill CLI)
-   → GET /api/agent-tools/read-skill
-   → server/domain/runtime/agent-tool-bridge.ts (handleReadSkill)
-   → lib/skill-registry.ts (getSkill)
-   → Returns full skill body (truncated to 32768 chars if needed)
+   lib/skill-registry.ts (getSkill / skill.path)
+   → server/domain/conversation/turn/agent-prompt.ts (descriptor Path guidance)
+   → agent reads the listed SKILL.md with the generic read tool
+   → Returns full skill body from the normal file-reading path
    ```
 
 ### Full Mode (`CAFF_SKILL_LOADING_MODE=full`)
 
 1. **Full Body Injection**: Skill registry injects complete SKILL.md body into prompt
-2. **No `read-skill` tool**: Tool instructions are omitted from prompt
+2. **No extra loading step**: Full skill bodies are already in the prompt
 3. **Performance Tradeoff**: Higher token usage, lower latency (no tool calls)
 
 ### Mode Selection Logic
@@ -109,7 +109,7 @@ interface Skill {
   tags: string[]
   body: string                  // SKILL.md content (truncated to 32768 chars)
   bodyTruncated: boolean        // Whether body was truncated
-  path: string                 // Full path to SKILL.md
+  path: string                 // Full path to the skill directory; prompts append /SKILL.md for dynamic loading
   config?: any                  // Optional config.json content
 }
 ```
@@ -142,15 +142,11 @@ const skillDocuments = formatSkillDocuments(skills, mode);
 const skillDescriptors = formatSkillDescriptors(skills, mode);
 ```
 
-### Tool Bridge (`server/domain/runtime/agent-tool-bridge.ts`)
+### Prompt Descriptor Path (`server/domain/conversation/turn/agent-prompt.ts`)
 
 ```typescript
-// Handle read-skill tool calls
-async function handleReadSkill(params: { skillId: string }): Promise<string> {
-  const skill = skillRegistry.getSkill(params.skillId);
-  if (!skill) throw new Error('Skill not found');
-  return skill.body;
-}
+// Dynamic-mode descriptors point directly at SKILL.md
+const descriptorPath = `${skill.path}/SKILL.md`;
 ```
 
 ### Environment Variables
@@ -175,13 +171,13 @@ When changing how skills are loaded or formatted:
 
 1. Update `lib/skill-registry.ts` if changing loading/structure
 2. Update `server/domain/conversation/turn/agent-prompt.ts` if changing prompt injection
-3. Update `server/domain/runtime/agent-tool-bridge.ts` if changing `read-skill` handling
-4. Check `lib/agent-chat-tools.ts` for CLI tool definitions
+3. Update `server/api/skill-test-controller.ts` if changing dynamic trigger detection via `read` path
+4. Check prompt descriptor wording in `server/domain/conversation/turn/agent-prompt.ts`
 5. Add/update tests in `tests/skill-test/` or `tests/runtime/`
 
 ### Testing Skill Loading
 
-- Use `tests/runtime/read-skill.test.js` for `read-skill` tool behavior
+- Use `tests/runtime/read-skill.test.js` for dynamic prompt path-loading behavior
 - Use skill testing framework (`server/api/skill-test-controller.ts`) for end-to-end validation
 - Verify descriptor format matches prompt expectations
 - Test truncation with oversized skill bodies
@@ -211,11 +207,13 @@ if (skill.body.length > MAX_SKILL_BODY_LENGTH) {
 
 ```
 - <skillId>: <description>
-    Use: read-skill with skillId "<skillId>"
+    Path: /skills/<skillId>/SKILL.md
+    Load with: Use read on the Path above when you need the full instructions
 ```
 
 Example:
 ```
 - werewolf: 后端全自动主持的狼人杀玩法，模型只扮演玩家，按后端推进的日夜阶段行动。
-    Use: read-skill with skillId "werewolf"
+    Path: /skills/werewolf/SKILL.md
+    Load with: Use read on the Path above when you need the full instructions
 ```

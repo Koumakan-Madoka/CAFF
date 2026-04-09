@@ -251,22 +251,6 @@ async function trellisWrite(config: any, flags: any) {
   });
 }
 
-async function readSkill(config: any, flags: any, positionals: string[] = []) {
-  const skillId = String(flags.skill || flags['skill-id'] || '').trim() || (positionals.length > 0 ? String(positionals[0]).trim() : '');
-
-  if (!skillId) {
-    throw new Error(
-      'read-skill requires a skill id. Usage: node "$CAFF_CHAT_TOOLS_PATH" read-skill <skill-id>'
-    );
-  }
-
-  return requestJson(`${config.apiUrl}/api/agent-tools/read-skill?${new URLSearchParams({
-    invocationId: config.invocationId,
-    callbackToken: config.callbackToken,
-    skillId,
-  }).toString()}`);
-}
-
 async function listParticipants(config: any) {
   const query = new URLSearchParams({
     invocationId: config.invocationId,
@@ -351,7 +335,7 @@ function formatCommandResult(command: string, result: any, flags: any = {}, env 
 }
 
 async function main() {
-  const { command, flags, positionals } = parseArgs(process.argv.slice(2));
+  const { command, flags } = parseArgs(process.argv.slice(2));
   const config = getConfig();
   let result;
 
@@ -363,15 +347,13 @@ async function main() {
     result = await readContext(config, flags);
   } else if (command === 'list-participants') {
     result = await listParticipants(config);
-  } else if (command === 'read-skill') {
-    result = await readSkill(config, flags, positionals);
   } else if (command === 'trellis-init') {
     result = await trellisInit(config, flags);
   } else if (command === 'trellis-write') {
     result = await trellisWrite(config, flags);
   } else {
     throw new Error(
-      'Unknown command. Use one of: send-public, send-private, read-context, list-participants, read-skill, trellis-init, trellis-write.'
+      'Unknown command. Use one of: send-public, send-private, read-context, list-participants, trellis-init, trellis-write.'
     );
   }
 
@@ -395,7 +377,6 @@ export {
   main,
   normalizeRecipients,
   parseArgs,
-  readSkill,
   readTextStream,
   resolveMessageContent,
   resolveFileContent,

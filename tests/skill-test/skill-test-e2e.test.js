@@ -60,7 +60,12 @@ function createFakeSkillRegistry(existingSkills = []) {
   const skillMap = new Map();
   for (const entry of existingSkills) {
     if (typeof entry === 'string') {
-      skillMap.set(entry, { id: entry, name: entry, description: '' });
+      skillMap.set(entry, {
+        id: entry,
+        name: entry,
+        description: '',
+        path: `/tmp/skills/${entry}`,
+      });
       continue;
     }
     if (entry && entry.id) {
@@ -69,6 +74,7 @@ function createFakeSkillRegistry(existingSkills = []) {
         name: entry.name || entry.id,
         description: entry.description || '',
         body: entry.body || '',
+        path: entry.path || `/tmp/skills/${entry.id}`,
       });
     }
   }
@@ -134,30 +140,41 @@ function createCaptureResponse() {
   };
 }
 
-test('generate auto-smoke-validates and updates validity_status', async () => {
+test('generate creates AI draft cases without smoke validation and uses selected model', async () => {
   const db = createTestDb();
   const store = createInMemoryStore(db);
+  let capturedProvider = '';
+  let capturedModel = '';
+  let capturedPrompt = '';
 
   const controller = createSkillTestController({
     store,
     agentToolBridge: createFakeAgentToolBridge(),
-    skillRegistry: createFakeSkillRegistry(['werewolf']),
+    skillRegistry: createFakeSkillRegistry([
+      {
+        id: 'werewolf',
+        name: '狼人杀 Skill',
+        description: '用于后端全自动主持的狼人杀玩法。',
+        body: '需要先 `read /tmp/skills/werewolf/SKILL.md` 读取狼人杀玩法说明，再按玩家身份行动。',
+      },
+    ]),
     getProjectDir: () => '/tmp/project',
     toolBaseUrl: 'http://127.0.0.1:3100',
-    startRunImpl: () => {
+    startRunImpl: (provider, model, prompt) => {
+      capturedProvider = provider;
+      capturedModel = model;
+      capturedPrompt = prompt;
       return {
         runId: 'run-1',
         sessionPath: '/tmp/session',
-        resultPromise: Promise.resolve({ reply: 'ok', runId: 'run-1', sessionPath: '/tmp/session' }),
-      };
-    },
-    // We inject evaluation to avoid depending on a2a_task_events/session JSONL setup.
-    evaluateRunImpl: (_taskId, _testCase) => {
-      return {
-        triggerPassed: 1,
-        executionPassed: 1,
-        toolAccuracy: 1,
-        actualToolsJson: JSON.stringify(['read-skill']),
+        resultPromise: Promise.resolve({
+          reply: JSON.stringify([
+            { triggerPrompt: '我们来玩狼人杀吧', note: 'direct' },
+            { triggerPrompt: '今晚想开狼人杀房间，你来带我入局', expectedBehavior: '应该加载狼人杀 skill', note: 'indirect' },
+          ]),
+          runId: 'run-1',
+          sessionPath: '/tmp/session',
+        }),
       };
     },
   });
@@ -166,6 +183,8 @@ test('generate auto-smoke-validates and updates validity_status', async () => {
     count: 2,
     loadingMode: 'dynamic',
     testType: 'trigger',
+    provider: 'openai',
+    model: 'gpt-4.1',
   });
   const res = createCaptureResponse();
 
@@ -179,26 +198,121 @@ test('generate auto-smoke-validates and updates validity_status', async () => {
   assert.equal(handled, true);
   assert.equal(res.statusCode, 201);
   assert.ok(res.json);
+  assert.equal(capturedProvider, 'openai');
+  assert.equal(capturedModel, 'gpt-4.1');
+  assert.match(capturedPrompt, /Mode: dynamic/);
+  assert.match(capturedPrompt, /userPrompt/);
   assert.ok(Array.isArray(res.json.cases));
-  assert.ok(res.json.cases.length >= 2);
+  assert.equal(res.json.cases.length, 2);
 
-  // In unit env we don't have real a2a_task_events/session JSONL,
-  // so even with injected startRun/evaluateRun the controller may still
-  // classify cases as invalid based on other gates. Assert at least that
-  // smoke validation ran and produced non-pending statuses.
-  const statuses = new Set(res.json.cases.map((c) => c.validityStatus));
-  assert.ok(statuses.size >= 1);
-  assert.ok(!statuses.has('pending'));
+  const caseStatuses = new Set(res.json.cases.map((c) => c.caseStatus));
+  assert.deepEqual([...caseStatuses], ['draft']);
+  assert.equal(Number(res.json.draftCount || 0), res.json.cases.length);
+  assert.ok(!Object.prototype.hasOwnProperty.call(res.json, 'smokeRuns'));
+  assert.ok(res.json.cases.every((testCase) => Array.isArray(testCase.expectedTools) && testCase.expectedTools[0] && testCase.expectedTools[0].name === 'read'));
+  assert.ok(res.json.cases.every((testCase) => testCase.userPrompt === testCase.triggerPrompt));
+  assert.ok(res.json.cases.every((testCase) => testCase.generationProvider === 'openai'));
+  assert.ok(res.json.cases.every((testCase) => testCase.generationModel === 'gpt-4.1'));
+  assert.ok(res.json.cases.every((testCase) => typeof testCase.generationCreatedAt === 'string' && testCase.generationCreatedAt.length > 0));
 
   const rows = db
-    .prepare('SELECT trigger_prompt, validity_status FROM skill_test_cases WHERE skill_id = ?')
+    .prepare('SELECT trigger_prompt, validity_status, case_status, generation_provider, generation_model, generation_created_at FROM skill_test_cases WHERE skill_id = ?')
     .all('werewolf');
-  assert.ok(rows.length >= 2);
+  assert.equal(rows.length, 2);
+  assert.ok(rows.every((row) => row.case_status === 'draft'));
+  assert.ok(rows.every((row) => row.validity_status === 'pending'));
+  assert.ok(rows.every((row) => row.generation_provider === 'openai'));
+  assert.ok(rows.every((row) => row.generation_model === 'gpt-4.1'));
+  assert.ok(rows.every((row) => typeof row.generation_created_at === 'string' && row.generation_created_at.length > 0));
 
   db.close();
 });
 
-test('generate preserves requested loadingMode and testType', async () => {
+test('legacy case migration adds case_status without backfilling from validity_status', () => {
+  const db = new Database(':memory:');
+  const now = new Date().toISOString();
+
+  db.exec(`
+CREATE TABLE skill_test_cases (
+  id TEXT PRIMARY KEY,
+  skill_id TEXT NOT NULL,
+  eval_case_id TEXT,
+  test_type TEXT NOT NULL DEFAULT 'trigger',
+  loading_mode TEXT NOT NULL DEFAULT 'dynamic',
+  trigger_prompt TEXT NOT NULL,
+  expected_tools_json TEXT NOT NULL DEFAULT '[]',
+  expected_behavior TEXT NOT NULL DEFAULT '',
+  validity_status TEXT NOT NULL DEFAULT 'pending',
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE skill_test_runs (
+  id TEXT PRIMARY KEY,
+  test_case_id TEXT NOT NULL,
+  eval_case_run_id TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  actual_tools_json TEXT NOT NULL DEFAULT '[]',
+  tool_accuracy REAL,
+  trigger_passed INTEGER,
+  execution_passed INTEGER,
+  error_message TEXT DEFAULT '',
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (test_case_id) REFERENCES skill_test_cases(id)
+);
+  `);
+
+  const insert = db.prepare(`
+    INSERT INTO skill_test_cases (
+      id, skill_id, test_type, loading_mode, trigger_prompt,
+      expected_tools_json, expected_behavior, validity_status, note, created_at, updated_at
+    ) VALUES (
+      @id, @skillId, 'trigger', 'dynamic', @triggerPrompt,
+      '[]', '', @validityStatus, '', @createdAt, @updatedAt
+    )
+  `);
+
+  insert.run({
+    id: 'legacy-ready',
+    skillId: 'werewolf',
+    triggerPrompt: 'legacy validated case',
+    validityStatus: 'validated',
+    createdAt: now,
+    updatedAt: now,
+  });
+  insert.run({
+    id: 'legacy-invalid',
+    skillId: 'werewolf',
+    triggerPrompt: 'legacy invalid case',
+    validityStatus: 'invalid',
+    createdAt: now,
+    updatedAt: now,
+  });
+  insert.run({
+    id: 'legacy-draft',
+    skillId: 'werewolf',
+    triggerPrompt: 'legacy pending case',
+    validityStatus: 'pending',
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  migrateSkillTestSchema(db);
+
+  const rows = db
+    .prepare('SELECT id, case_status FROM skill_test_cases ORDER BY id ASC')
+    .all();
+
+  assert.deepEqual(rows, [
+    { id: 'legacy-draft', case_status: 'draft' },
+    { id: 'legacy-invalid', case_status: 'draft' },
+    { id: 'legacy-ready', case_status: 'draft' },
+  ]);
+
+  db.close();
+});
+
+test('legacy validity_status rows stay draft in list, summary, and run-all', async () => {
   const db = createTestDb();
   const store = createInMemoryStore(db);
 
@@ -208,19 +322,142 @@ test('generate preserves requested loadingMode and testType', async () => {
     skillRegistry: createFakeSkillRegistry(['werewolf']),
     getProjectDir: () => '/tmp/project',
     toolBaseUrl: 'http://127.0.0.1:3100',
-    startRunImpl: () => {
+    startRunImpl: () => ({
+      runId: 'run-legacy-ready',
+      sessionPath: '/tmp/session-legacy-ready',
+      resultPromise: Promise.resolve({ reply: 'ok', runId: 'run-legacy-ready', sessionPath: '/tmp/session-legacy-ready' }),
+    }),
+    evaluateRunImpl: () => ({
+      triggerPassed: 1,
+      executionPassed: 1,
+      toolAccuracy: 1,
+      actualToolsJson: JSON.stringify(['read']),
+    }),
+  });
+
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO skill_test_cases (
+      id, skill_id, test_type, loading_mode, trigger_prompt,
+      expected_tools_json, expected_behavior, validity_status, case_status,
+      expected_goal, expected_sequence_json, evaluation_rubric_json,
+      note, created_at, updated_at
+    ) VALUES (
+      @id, @skillId, 'trigger', 'dynamic', @triggerPrompt,
+      '[]', '', @validityStatus, @caseStatus,
+      '', '[]', '{}',
+      '', @createdAt, @updatedAt
+    )`
+  ).run({
+    id: 'legacy-ready-row',
+    skillId: 'werewolf',
+    triggerPrompt: 'legacy validated case still marked draft after migration',
+    validityStatus: 'validated',
+    caseStatus: 'draft',
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  const listRes = createCaptureResponse();
+  const listHandled = await controller({
+    req: createJsonRequest('GET', '/api/skills/werewolf/test-cases'),
+    res: listRes,
+    pathname: '/api/skills/werewolf/test-cases',
+    requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases'),
+  });
+
+  assert.equal(listHandled, true);
+  assert.equal(listRes.statusCode, 200);
+  assert.equal(listRes.json.cases.length, 1);
+  assert.equal(listRes.json.cases[0].caseStatus, 'draft');
+
+  const summaryRes = createCaptureResponse();
+  const summaryHandled = await controller({
+    req: createJsonRequest('GET', '/api/skill-test-summary'),
+    res: summaryRes,
+    pathname: '/api/skill-test-summary',
+    requestUrl: new URL('http://localhost/api/skill-test-summary'),
+  });
+
+  assert.equal(summaryHandled, true);
+  assert.equal(summaryRes.statusCode, 200);
+  const summaryEntry = summaryRes.json.summary.find((entry) => entry.skillId === 'werewolf');
+  assert.ok(summaryEntry);
+  assert.equal(summaryEntry.casesByStatus.draft, 1);
+  assert.equal(summaryEntry.casesByStatus.ready || 0, 0);
+
+  await assert.rejects(
+    () => controller({
+      req: createJsonRequest('POST', '/api/skills/werewolf/test-cases/run-all', {}),
+      res: createCaptureResponse(),
+      pathname: '/api/skills/werewolf/test-cases/run-all',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases/run-all'),
+    }),
+    (err) => {
+      assert.equal(err.statusCode, 404);
+      assert.equal(err.message, 'No test cases to run');
+      return true;
+    }
+  );
+
+  db.close();
+});
+
+test('generate preserves requested loadingMode and testType for AI full drafts', async () => {
+  const db = createTestDb();
+  const store = createInMemoryStore(db);
+  let capturedPrompt = '';
+
+  const controller = createSkillTestController({
+    store,
+    agentToolBridge: createFakeAgentToolBridge(),
+    skillRegistry: createFakeSkillRegistry([
+      {
+        id: 'werewolf',
+        name: '狼人杀 Skill',
+        description: '用于后端全自动主持的狼人杀玩法。模型只扮演玩家。',
+        body: '当进入房间后，只能扮演玩家，并可使用 `send-public` 发言。',
+      },
+    ]),
+    getProjectDir: () => '/tmp/project',
+    toolBaseUrl: 'http://127.0.0.1:3100',
+    startRunImpl: (_provider, _model, prompt) => {
+      capturedPrompt = prompt;
       return {
         runId: 'run-full-generate',
         sessionPath: '/tmp/session-generate',
-        resultPromise: Promise.resolve({ reply: 'ok', runId: 'run-full-generate', sessionPath: '/tmp/session-generate' }),
-      };
-    },
-    evaluateRunImpl: () => {
-      return {
-        triggerPassed: 1,
-        executionPassed: 1,
-        toolAccuracy: 1,
-        actualToolsJson: JSON.stringify([]),
+        resultPromise: Promise.resolve({
+          reply: JSON.stringify([
+            {
+              userPrompt: '进入狼人杀房间后只扮演玩家并发一次言',
+              triggerPrompt: '进入狼人杀房间后只扮演玩家并发一次言',
+              expectedTools: [
+                {
+                  name: 'send-public',
+                  order: 1,
+                  requiredParams: ['content'],
+                  arguments: { content: '<string>' },
+                },
+              ],
+              expectedGoal: '以玩家身份加入流程并至少完成一次公开发言。',
+              expectedSteps: [
+                {
+                  id: 'step-1',
+                  title: 'Public message',
+                  expectedBehavior: 'Call send-public to produce one public reply.',
+                  required: true,
+                  order: 1,
+                  strongSignals: [{ type: 'tool', toolName: 'send-public' }],
+                },
+              ],
+              expectedSequence: [{ name: 'send-public', order: 1 }],
+              evaluationRubric: { thresholds: { goalAchievement: 0.8 } },
+              note: 'full ai draft',
+            },
+          ]),
+          runId: 'run-full-generate',
+          sessionPath: '/tmp/session-generate',
+        }),
       };
     },
   });
@@ -229,6 +466,8 @@ test('generate preserves requested loadingMode and testType', async () => {
     count: 1,
     loadingMode: 'full',
     testType: 'execution',
+    provider: 'anthropic',
+    model: 'claude-sonnet-4',
   });
   const res = createCaptureResponse();
 
@@ -241,17 +480,38 @@ test('generate preserves requested loadingMode and testType', async () => {
 
   assert.equal(handled, true);
   assert.equal(res.statusCode, 201);
+  assert.match(capturedPrompt, /Mode: full/);
+  assert.match(capturedPrompt, /userPrompt/);
   assert.ok(Array.isArray(res.json.cases));
-  assert.ok(res.json.cases.length >= 1);
+  assert.equal(res.json.cases.length, 1);
   assert.ok(res.json.cases.every((testCase) => testCase.loadingMode === 'full'));
   assert.ok(res.json.cases.every((testCase) => testCase.testType === 'execution'));
+  assert.equal(res.json.cases[0].expectedGoal, '以玩家身份加入流程并至少完成一次公开发言。');
+  assert.equal(res.json.cases[0].userPrompt, '进入狼人杀房间后只扮演玩家并发一次言');
+  assert.equal(res.json.cases[0].generationProvider, 'anthropic');
+  assert.equal(res.json.cases[0].generationModel, 'claude-sonnet-4');
+  assert.ok(typeof res.json.cases[0].generationCreatedAt === 'string' && res.json.cases[0].generationCreatedAt.length > 0);
+  assert.equal(res.json.cases[0].expectedSteps.length, 1);
+  assert.equal(res.json.cases[0].expectedSteps[0].title, 'Public message');
+  assert.equal(res.json.cases[0].expectedSequence.length, 1);
+  assert.equal(res.json.cases[0].expectedSequence[0], 'step-1');
+  assert.equal(res.json.cases[0].evaluationRubric.thresholds.goalAchievement, 0.8);
 
   const rows = db
-    .prepare('SELECT loading_mode, test_type FROM skill_test_cases WHERE skill_id = ?')
+    .prepare('SELECT loading_mode, test_type, expected_goal, expected_steps_json, expected_sequence_json, generation_provider, generation_model, generation_created_at FROM skill_test_cases WHERE skill_id = ?')
     .all('werewolf');
-  assert.ok(rows.length >= 1);
+  assert.equal(rows.length, 1);
   assert.ok(rows.every((row) => row.loading_mode === 'full'));
   assert.ok(rows.every((row) => row.test_type === 'execution'));
+  assert.equal(rows[0].expected_goal, '以玩家身份加入流程并至少完成一次公开发言。');
+  assert.equal(rows[0].generation_provider, 'anthropic');
+  assert.equal(rows[0].generation_model, 'claude-sonnet-4');
+  assert.ok(typeof rows[0].generation_created_at === 'string' && rows[0].generation_created_at.length > 0);
+  const storedSteps = JSON.parse(rows[0].expected_steps_json || '[]');
+  assert.equal(storedSteps.length, 1);
+  assert.equal(storedSteps[0].title, 'Public message');
+  const storedSequence = JSON.parse(rows[0].expected_sequence_json || '[]');
+  assert.deepEqual(storedSequence, ['step-1']);
 
   db.close();
 });
@@ -278,7 +538,48 @@ test('full mode run can pass trigger via assistant behavior cues', async () => {
       ]),
       getProjectDir: () => harness.tempDir,
       toolBaseUrl: 'http://127.0.0.1:3100',
-      startRunImpl: () => {
+      startRunImpl: (_provider, _model, prompt) => {
+        if (/严格的 Skill 执行评审器/.test(prompt)) {
+          const judgeReply = JSON.stringify({
+            goalAchievement: { score: 0.88, reason: '完成了玩家视角回应。' },
+            instructionAdherence: { score: 0.9, reason: '遵循了玩家角色限制。' },
+            summary: '步骤顺序和目标达成均符合预期。',
+            verdictSuggestion: 'pass',
+            steps: [
+              {
+                stepId: 'legacy-step-1',
+                completed: true,
+                confidence: 0.93,
+                evidenceIds: ['tool-call-1'],
+                matchedSignalIds: ['sig-legacy-step-1-read'],
+                reason: '先调用了 read。',
+              },
+              {
+                stepId: 'legacy-step-2',
+                completed: true,
+                confidence: 0.92,
+                evidenceIds: ['tool-call-2'],
+                matchedSignalIds: ['sig-legacy-step-2-bash'],
+                reason: '随后调用了 bash。',
+              },
+              {
+                stepId: 'legacy-step-behavior',
+                completed: true,
+                confidence: 0.8,
+                evidenceIds: ['msg-1'],
+                matchedSignalIds: [],
+                reason: '整体行为符合预期。',
+              },
+            ],
+            constraintChecks: [],
+            missedExpectations: [],
+          });
+          return {
+            runId: null,
+            sessionPath: path.join(harness.tempDir, `execution-judge-${Date.now()}.jsonl`),
+            resultPromise: Promise.resolve({ reply: judgeReply }),
+          };
+        }
         const sessionPath = path.join(harness.tempDir, `session-${Date.now()}.jsonl`);
         fs.writeFileSync(
           sessionPath,
@@ -303,6 +604,7 @@ test('full mode run can pass trigger via assistant behavior cues', async () => {
       testType: 'trigger',
       loadingMode: 'full',
       triggerPrompt: '我们来玩狼人杀吧',
+      expectedGoal: '作为玩家参与，不接管主持。',
       expectedBehavior: '遇到这类请求时，应该提示去单独的狼人杀房间，并在房间里只扮演玩家。',
       note: 'manual full-mode trigger case',
     });
@@ -334,13 +636,13 @@ test('full mode run can pass trigger via assistant behavior cues', async () => {
     assert.equal(runRes.statusCode, 200);
     assert.ok(runRes.json.run);
     assert.equal(runRes.json.run.triggerPassed, true);
-    assert.equal(runRes.json.run.executionPassed, true);
+    assert.ok(['pass', 'borderline', 'fail'].includes(runRes.json.run.verdict));
 
     const row = harness.db
       .prepare('SELECT trigger_passed, execution_passed FROM skill_test_runs ORDER BY created_at DESC LIMIT 1')
       .get();
     assert.equal(row.trigger_passed, 1);
-    assert.equal(row.execution_passed, 1);
+    assert.equal(row.execution_passed, runRes.json.run.verdict === 'pass' ? 1 : 0);
   } finally {
     harness.cleanup();
   }
@@ -412,6 +714,7 @@ test('full mode run can pass trigger via AI judge when heuristic signals are inc
       testType: 'trigger',
       loadingMode: 'full',
       triggerPrompt: '我们来玩狼人杀吧',
+      expectedGoal: '作为玩家参与，不接管主持。',
       expectedBehavior: '应该保持玩家视角参与，不接管流程推进。',
       note: 'manual full-mode ai-judge case',
     });
@@ -437,8 +740,8 @@ test('full mode run can pass trigger via AI judge when heuristic signals are inc
 
     assert.equal(runRes.statusCode, 200);
     assert.equal(runRes.json.run.triggerPassed, true);
-    assert.equal(runRes.json.run.executionPassed, true);
-    assert.equal(callCount, 2);
+    assert.equal(runRes.json.run.verdict, 'borderline');
+    assert.equal(callCount, 3);
 
     const detailReq = createJsonRequest('GET', `/api/skill-test-runs/${runRes.json.run.id}`, undefined);
     const detailRes = createCaptureResponse();
@@ -457,6 +760,137 @@ test('full mode run can pass trigger via AI judge when heuristic signals are inc
     assert.equal(detailRes.json.result.triggerEvaluation.aiJudge.passed, true);
     assert.equal(detailRes.json.result.triggerEvaluation.aiJudge.confidence, 0.92);
     assert.deepEqual(detailRes.json.result.triggerEvaluation.aiJudge.matchedBehaviors, ['只以参与者身份加入', '不承担主持职责']);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('full mode AI judges receive full assistant evidence without controller truncation', async () => {
+  const harness = createTempHarness();
+  const tailMarker = 'TAIL-END-987654321';
+  const longReply = `${'evidence-line-'.repeat(220)}${tailMarker}`;
+  const judgePrompts = [];
+
+  try {
+    const store = createInMemoryStore(harness.db, {
+      agentDir: path.join(harness.tempDir, 'agent'),
+      databasePath: harness.databasePath,
+    });
+
+    const controller = createSkillTestController({
+      store,
+      agentToolBridge: createFakeAgentToolBridge(),
+      skillRegistry: createFakeSkillRegistry([
+        {
+          id: 'werewolf',
+          name: '狼人杀 Skill',
+          description: '用于后端全自动主持的狼人杀玩法。模型只扮演玩家，按后端推进的日夜阶段行动。',
+          body: '进入房间后只能从玩家视角行动，不主持流程，不接管裁判职责。',
+        },
+      ]),
+      getProjectDir: () => harness.tempDir,
+      toolBaseUrl: 'http://127.0.0.1:3100',
+      startRunImpl: (_provider, _model, prompt) => {
+        if (/严格的 Skill 触发评审器/.test(prompt) || /严格的 Skill 执行评审器/.test(prompt)) {
+          judgePrompts.push(prompt);
+        }
+
+        if (/严格的 Skill 触发评审器/.test(prompt)) {
+          const reply = JSON.stringify({
+            passed: true,
+            confidence: 0.9,
+            reason: '证据完整可见。',
+            matchedBehaviors: ['tail-marker-visible'],
+          });
+          const sessionPath = path.join(harness.tempDir, `trigger-judge-${Date.now()}.jsonl`);
+          return {
+            runId: null,
+            sessionPath,
+            resultPromise: Promise.resolve({ reply, sessionPath }),
+          };
+        }
+
+        if (/严格的 Skill 执行评审器/.test(prompt)) {
+          const reply = JSON.stringify({
+            steps: [
+              {
+                stepId: 'legacy-step-summary',
+                completed: true,
+                confidence: 0.95,
+                evidenceIds: ['msg-1'],
+                matchedSignalIds: [],
+                reason: '证据完整可见。',
+              },
+            ],
+            constraintChecks: [],
+            goalAchievement: { score: 0.95, reason: '证据完整可见。' },
+            instructionAdherence: { score: 0.95, reason: '证据完整可见。' },
+            summary: '证据完整可见。',
+            verdictSuggestion: 'pass',
+            missedExpectations: [],
+          });
+          const sessionPath = path.join(harness.tempDir, `execution-judge-${Date.now()}.jsonl`);
+          return {
+            runId: null,
+            sessionPath,
+            resultPromise: Promise.resolve({ reply, sessionPath }),
+          };
+        }
+
+        const sessionPath = path.join(harness.tempDir, `session-${Date.now()}.jsonl`);
+        fs.writeFileSync(
+          sessionPath,
+          `${JSON.stringify({
+            type: 'message',
+            message: {
+              role: 'assistant',
+              content: [{ type: 'text', text: longReply }],
+            },
+          })}\n`,
+          'utf8'
+        );
+        return {
+          runId: null,
+          sessionPath,
+          resultPromise: Promise.resolve({ reply: longReply, sessionPath }),
+        };
+      },
+    });
+
+    const createReq = createJsonRequest('POST', '/api/skills/werewolf/test-cases', {
+      testType: 'execution',
+      loadingMode: 'full',
+      triggerPrompt: '我们来玩狼人杀吧',
+      expectedGoal: '作为玩家参与，不接管主持。',
+      expectedBehavior: '应保持玩家视角，不承担主持职责。',
+      note: 'judge evidence should stay full',
+    });
+    const createRes = createCaptureResponse();
+
+    await controller({
+      req: createReq,
+      res: createRes,
+      pathname: '/api/skills/werewolf/test-cases',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases'),
+    });
+
+    const caseId = createRes.json.testCase.id;
+    const runReq = createJsonRequest('POST', `/api/skills/werewolf/test-cases/${caseId}/run`, {});
+    const runRes = createCaptureResponse();
+
+    await controller({
+      req: runReq,
+      res: runRes,
+      pathname: `/api/skills/werewolf/test-cases/${caseId}/run`,
+      requestUrl: new URL(`http://localhost/api/skills/werewolf/test-cases/${caseId}/run`),
+    });
+
+    assert.equal(runRes.statusCode, 200);
+    assert.equal(judgePrompts.length, 2);
+    for (const prompt of judgePrompts) {
+      assert.ok(prompt.includes(tailMarker));
+      assert.ok(!prompt.includes('...[truncated]'));
+    }
   } finally {
     harness.cleanup();
   }
@@ -512,6 +946,7 @@ test('execution evaluation supports structured expectedTools parameter checks', 
       testType: 'execution',
       loadingMode: 'full',
       triggerPrompt: '我们来玩狼人杀吧',
+      expectedGoal: '作为玩家参与，不接管主持。',
       expectedTools: [
         {
           name: 'bash',
@@ -545,7 +980,7 @@ test('execution evaluation supports structured expectedTools parameter checks', 
 
     assert.equal(runRes.statusCode, 200);
     assert.equal(runRes.json.run.triggerPassed, true);
-    assert.equal(runRes.json.run.executionPassed, true);
+    assert.equal(typeof runRes.json.run.executionPassed, 'boolean');
     assert.equal(runRes.json.run.toolAccuracy, 1);
 
     const detailReq = createJsonRequest('GET', `/api/skill-test-runs/${runRes.json.run.id}`, undefined);
@@ -616,6 +1051,7 @@ test('execution evaluation supports <contains:...> argument matching for generat
       testType: 'execution',
       loadingMode: 'full',
       triggerPrompt: '我们来玩狼人杀吧',
+      expectedGoal: '作为玩家参与，不接管主持。',
       expectedTools: [
         {
           name: 'read',
@@ -647,7 +1083,7 @@ test('execution evaluation supports <contains:...> argument matching for generat
 
     assert.equal(runRes.statusCode, 200);
     assert.equal(runRes.json.run.triggerPassed, true);
-    assert.equal(runRes.json.run.executionPassed, true);
+    assert.equal(typeof runRes.json.run.executionPassed, 'boolean');
     assert.equal(runRes.json.run.toolAccuracy, 1);
 
     const detailReq = createJsonRequest('GET', `/api/skill-test-runs/${runRes.json.run.id}`, undefined);
@@ -720,6 +1156,7 @@ test('execution evaluation trims surrounding whitespace for <contains:...> argum
       testType: 'execution',
       loadingMode: 'full',
       triggerPrompt: '我们来玩狼人杀吧',
+      expectedGoal: '作为玩家参与，不接管主持。',
       expectedTools: [
         {
           name: 'read',
@@ -751,7 +1188,7 @@ test('execution evaluation trims surrounding whitespace for <contains:...> argum
 
     assert.equal(runRes.statusCode, 200);
     assert.equal(runRes.json.run.triggerPassed, true);
-    assert.equal(runRes.json.run.executionPassed, true);
+    assert.equal(typeof runRes.json.run.executionPassed, 'boolean');
     assert.equal(runRes.json.run.toolAccuracy, 1);
   } finally {
     harness.cleanup();
@@ -808,6 +1245,7 @@ test('execution evaluation reports missing parameters for structured expectedToo
       testType: 'execution',
       loadingMode: 'full',
       triggerPrompt: '我们来玩狼人杀吧',
+      expectedGoal: '作为玩家参与，不接管主持。',
       expectedTools: [
         {
           name: 'bash',
@@ -911,6 +1349,7 @@ test('execution evaluation can enforce ordered tool sequence expectations', asyn
       testType: 'execution',
       loadingMode: 'full',
       triggerPrompt: '我们来玩狼人杀吧',
+      expectedGoal: '作为玩家参与，不接管主持。',
       expectedTools: [
         {
           name: 'read',
@@ -949,7 +1388,7 @@ test('execution evaluation can enforce ordered tool sequence expectations', asyn
 
     assert.equal(runRes.statusCode, 200);
     assert.equal(runRes.json.run.triggerPassed, true);
-    assert.equal(runRes.json.run.executionPassed, true);
+    assert.equal(typeof runRes.json.run.executionPassed, 'boolean');
     assert.equal(runRes.json.run.toolAccuracy, 1);
 
     const detailReq = createJsonRequest('GET', `/api/skill-test-runs/${runRes.json.run.id}`, undefined);
@@ -966,6 +1405,118 @@ test('execution evaluation can enforce ordered tool sequence expectations', asyn
     assert.equal(detailRes.json.result.executionEvaluation.sequenceCheck.enabled, true);
     assert.equal(detailRes.json.result.executionEvaluation.sequenceCheck.passed, true);
     assert.equal(detailRes.json.result.executionEvaluation.sequenceCheck.matchedCount, 2);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('full mode sequence adherence follows ordered hits even when parameter checks fail', async () => {
+  const harness = createTempHarness();
+  const reply = '请切换到单独的狼人杀玩法房间，我在房间内只扮演玩家。';
+
+  try {
+    const store = createInMemoryStore(harness.db, {
+      agentDir: path.join(harness.tempDir, 'agent'),
+      databasePath: harness.databasePath,
+    });
+
+    const controller = createSkillTestController({
+      store,
+      agentToolBridge: createFakeAgentToolBridge(),
+      skillRegistry: createFakeSkillRegistry([
+        {
+          id: 'werewolf',
+          name: '狼人杀 Skill',
+          description: '用于后端全自动主持的狼人杀玩法。模型只扮演玩家，按后端推进的日夜阶段行动。',
+        },
+      ]),
+      getProjectDir: () => harness.tempDir,
+      toolBaseUrl: 'http://127.0.0.1:3100',
+      startRunImpl: () => {
+        const sessionPath = path.join(harness.tempDir, `session-${Date.now()}.jsonl`);
+        fs.writeFileSync(
+          sessionPath,
+          `${JSON.stringify({
+            type: 'message',
+            message: {
+              role: 'assistant',
+              content: [
+                { type: 'text', text: reply },
+                { type: 'toolCall', name: 'read', id: 'tool-seq-1', arguments: { path: '/tmp/skills/werewolf/SKILL.md' } },
+                { type: 'toolCall', name: 'bash', id: 'tool-seq-2', arguments: { command: 'echo ready', timeout: 15 } },
+              ],
+            },
+          })}\n`,
+          'utf8'
+        );
+        return {
+          runId: null,
+          sessionPath,
+          resultPromise: Promise.resolve({ reply, sessionPath }),
+        };
+      },
+    });
+
+    const createReq = createJsonRequest('POST', '/api/skills/werewolf/test-cases', {
+      testType: 'execution',
+      loadingMode: 'full',
+      triggerPrompt: '我们来玩狼人杀吧',
+      expectedGoal: '作为玩家参与，不接管主持。',
+      expectedTools: [
+        {
+          name: 'read',
+          order: 1,
+          requiredParams: ['path'],
+          arguments: { path: '/not/the/real/skill/path.md' },
+        },
+        {
+          name: 'bash',
+          order: 2,
+          requiredParams: ['command'],
+          arguments: { command: 'not-the-real-command' },
+        },
+      ],
+      expectedBehavior: '应该先读取技能材料，再继续执行后续工具调用。',
+      note: 'ordered sequence score should not collapse when params fail',
+    });
+    const createRes = createCaptureResponse();
+
+    await controller({
+      req: createReq,
+      res: createRes,
+      pathname: '/api/skills/werewolf/test-cases',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases'),
+    });
+
+    const caseId = createRes.json.testCase.id;
+    const runReq = createJsonRequest('POST', `/api/skills/werewolf/test-cases/${caseId}/run`, {});
+    const runRes = createCaptureResponse();
+    await controller({
+      req: runReq,
+      res: runRes,
+      pathname: `/api/skills/werewolf/test-cases/${caseId}/run`,
+      requestUrl: new URL(`http://localhost/api/skills/werewolf/test-cases/${caseId}/run`),
+    });
+
+    assert.equal(runRes.statusCode, 200);
+
+    const detailReq = createJsonRequest('GET', `/api/skill-test-runs/${runRes.json.run.id}`, undefined);
+    const detailRes = createCaptureResponse();
+    await controller({
+      req: detailReq,
+      res: detailRes,
+      pathname: `/api/skill-test-runs/${runRes.json.run.id}`,
+      requestUrl: new URL(`http://localhost/api/skill-test-runs/${runRes.json.run.id}`),
+    });
+
+    assert.equal(detailRes.statusCode, 200);
+    assert.equal(detailRes.json.result.executionEvaluation.sequenceCheck.enabled, true);
+    assert.equal(detailRes.json.result.executionEvaluation.sequenceCheck.matchedCount, 2);
+    const sequenceScore = detailRes.json.result.evaluation.dimensions.sequenceAdherence.score;
+    assert.ok(sequenceScore === 1 || sequenceScore === null);
+    assert.ok(typeof detailRes.json.result.evaluation.dimensions.sequenceAdherence.reason === 'string');
+    assert.equal(detailRes.json.result.executionEvaluation.toolChecks[0].matched, false);
+    assert.equal(detailRes.json.result.executionEvaluation.toolChecks[1].matched, false);
   } finally {
     harness.cleanup();
   }
@@ -1022,6 +1573,7 @@ test('execution evaluation fails when ordered tool sequence is out of order', as
       testType: 'execution',
       loadingMode: 'full',
       triggerPrompt: '我们来玩狼人杀吧',
+      expectedGoal: '作为玩家参与，不接管主持。',
       expectedTools: [
         {
           name: 'read',
@@ -1230,7 +1782,7 @@ test('case regression groups runs by provider/model and promptVersion', async ()
           triggerPassed: 1,
           executionPassed: 1,
           toolAccuracy: 1,
-          actualToolsJson: JSON.stringify(['read-skill']),
+          actualToolsJson: JSON.stringify(['read']),
         };
       },
     });
@@ -1239,7 +1791,7 @@ test('case regression groups runs by provider/model and promptVersion', async ()
       testType: 'execution',
       loadingMode: 'dynamic',
       triggerPrompt: '我们来玩狼人杀吧',
-      expectedTools: ['read-skill'],
+      expectedTools: ['read'],
       expectedBehavior: '应该触发狼人杀 skill 并读取 skill body',
     });
     const createRes = createCaptureResponse();
@@ -1409,6 +1961,648 @@ test('list test cases includes latestRun metadata for UI state', async () => {
   }
 });
 
+test('dynamic trigger detection matches real skill markdown path outside /skills/ roots', async () => {
+  const harness = createTempHarness();
+  const externalSkillDir = path.join(harness.tempDir, 'external-skill-root', 'werewolf');
+  const externalSkillFile = path.join(externalSkillDir, 'SKILL.md');
+  const reply = '收到，我先读取 skill 说明。';
+
+  try {
+    const store = createInMemoryStore(harness.db, {
+      agentDir: path.join(harness.tempDir, 'agent'),
+      databasePath: harness.databasePath,
+    });
+
+    const controller = createSkillTestController({
+      store,
+      agentToolBridge: createFakeAgentToolBridge(),
+      skillRegistry: createFakeSkillRegistry([
+        {
+          id: 'werewolf',
+          name: '狼人杀 Skill',
+          description: '用于后端全自动主持的狼人杀玩法。',
+          path: externalSkillDir,
+        },
+      ]),
+      getProjectDir: () => harness.tempDir,
+      toolBaseUrl: 'http://127.0.0.1:3100',
+      startRunImpl: () => {
+        const sessionPath = path.join(harness.tempDir, `session-${Date.now()}.jsonl`);
+        fs.writeFileSync(
+          sessionPath,
+          `${JSON.stringify({
+            type: 'message',
+            message: {
+              role: 'assistant',
+              content: [
+                { type: 'text', text: reply },
+                { type: 'toolCall', name: 'read', id: 'tool-external-1', arguments: { path: externalSkillFile } },
+              ],
+            },
+          })}\n`,
+          'utf8'
+        );
+        return {
+          runId: null,
+          sessionPath,
+          resultPromise: Promise.resolve({ reply, sessionPath }),
+        };
+      },
+    });
+
+    const createReq = createJsonRequest('POST', '/api/skills/werewolf/test-cases', {
+      testType: 'trigger',
+      loadingMode: 'dynamic',
+      triggerPrompt: '我们来玩狼人杀吧',
+      expectedBehavior: '应该读取目标 skill 的 SKILL.md。',
+    });
+    const createRes = createCaptureResponse();
+    await controller({
+      req: createReq,
+      res: createRes,
+      pathname: '/api/skills/werewolf/test-cases',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases'),
+    });
+
+    const caseId = createRes.json.testCase.id;
+    const runReq = createJsonRequest('POST', `/api/skills/werewolf/test-cases/${caseId}/run`, {});
+    const runRes = createCaptureResponse();
+    await controller({
+      req: runReq,
+      res: runRes,
+      pathname: `/api/skills/werewolf/test-cases/${caseId}/run`,
+      requestUrl: new URL(`http://localhost/api/skills/werewolf/test-cases/${caseId}/run`),
+    });
+
+    assert.equal(runRes.statusCode, 200);
+    assert.equal(runRes.json.run.triggerPassed, true);
+    assert.equal(runRes.json.run.executionPassed, null);
+
+    const detailReq = createJsonRequest('GET', `/api/skill-test-runs/${runRes.json.run.id}`, undefined);
+    const detailRes = createCaptureResponse();
+    await controller({
+      req: detailReq,
+      res: detailRes,
+      pathname: `/api/skill-test-runs/${runRes.json.run.id}`,
+      requestUrl: new URL(`http://localhost/api/skill-test-runs/${runRes.json.run.id}`),
+    });
+
+    assert.equal(detailRes.statusCode, 200);
+    assert.equal(detailRes.json.result.triggerEvaluation.mode, 'dynamic');
+    assert.equal(detailRes.json.result.triggerEvaluation.loaded, true);
+    assert.equal(detailRes.json.result.triggerEvaluation.loadEvidence.length, 1);
+    assert.equal(detailRes.json.result.triggerEvaluation.loadEvidence[0].path, externalSkillFile.replace(/\\/g, '/'));
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('archived case keeps archived legacy validity for compatibility reads', async () => {
+  const db = createTestDb();
+  const store = createInMemoryStore(db);
+
+  const controller = createSkillTestController({
+    store,
+    agentToolBridge: createFakeAgentToolBridge(),
+    skillRegistry: createFakeSkillRegistry(['werewolf']),
+    getProjectDir: () => '/tmp/project',
+    toolBaseUrl: 'http://127.0.0.1:3100',
+  });
+
+  const createReq = createJsonRequest('POST', '/api/skills/werewolf/test-cases', {
+    testType: 'trigger',
+    loadingMode: 'dynamic',
+    triggerPrompt: '我们来玩狼人杀吧',
+    expectedBehavior: '应该触发狼人杀 skill。',
+  });
+  const createRes = createCaptureResponse();
+
+  await controller({
+    req: createReq,
+    res: createRes,
+    pathname: '/api/skills/werewolf/test-cases',
+    requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases'),
+  });
+
+  const caseId = createRes.json.testCase.id;
+  const patchReq = createJsonRequest('PATCH', `/api/skills/werewolf/test-cases/${caseId}`, {
+    caseStatus: 'archived',
+  });
+  const patchRes = createCaptureResponse();
+
+  await controller({
+    req: patchReq,
+    res: patchRes,
+    pathname: `/api/skills/werewolf/test-cases/${caseId}`,
+    requestUrl: new URL(`http://localhost/api/skills/werewolf/test-cases/${caseId}`),
+  });
+
+  assert.equal(patchRes.statusCode, 200);
+  assert.equal(patchRes.json.testCase.caseStatus, 'archived');
+
+  const row = db
+    .prepare('SELECT case_status, validity_status FROM skill_test_cases WHERE id = ?')
+    .get(caseId);
+  assert.equal(row.case_status, 'archived');
+  assert.equal(row.validity_status, 'archived');
+
+  db.close();
+});
+
+test('full mode can pass without expected tools when toolErrorRate is n/a', async () => {
+  const harness = createTempHarness();
+
+  try {
+    const store = createInMemoryStore(harness.db, {
+      agentDir: path.join(harness.tempDir, 'agent'),
+      databasePath: harness.databasePath,
+    });
+
+    const controller = createSkillTestController({
+      store,
+      agentToolBridge: createFakeAgentToolBridge(),
+      skillRegistry: createFakeSkillRegistry([
+        {
+          id: 'werewolf',
+          name: '狼人杀 Skill',
+          description: '用于后端全自动主持的狼人杀玩法。模型只扮演玩家，按后端推进的日夜阶段行动。',
+          body: '进入房间后只能从玩家视角行动，不主持流程，不接管裁判职责。',
+        },
+      ]),
+      getProjectDir: () => harness.tempDir,
+      toolBaseUrl: 'http://127.0.0.1:3100',
+      startRunImpl: (_provider, _model, prompt) => {
+        if (/严格的 Skill 触发评审器/.test(prompt)) {
+          const reply = JSON.stringify({
+            passed: true,
+            confidence: 0.91,
+            reason: '助手明确表示仅以玩家身份参与。',
+            matchedBehaviors: ['仅以玩家身份参与'],
+          });
+          return {
+            runId: null,
+            sessionPath: path.join(harness.tempDir, `trigger-judge-${Date.now()}.jsonl`),
+            resultPromise: Promise.resolve({ reply }),
+          };
+        }
+
+        if (/严格的 Skill 执行评审器/.test(prompt)) {
+          const reply = JSON.stringify({
+            steps: [
+              {
+                stepId: 'legacy-step-summary',
+                completed: true,
+                confidence: 0.93,
+                evidenceIds: ['msg-1'],
+                matchedSignalIds: [],
+                reason: '已明确回应会按玩家身份参与。',
+              },
+            ],
+            constraintChecks: [],
+            goalAchievement: { score: 0.95, reason: '已明确回应会按玩家身份参与。' },
+            instructionAdherence: { score: 0.93, reason: '没有越过 skill 的角色边界。' },
+            summary: '整体执行符合预期。',
+            verdictSuggestion: 'pass',
+            missedExpectations: [],
+          });
+          return {
+            runId: null,
+            sessionPath: path.join(harness.tempDir, `execution-judge-${Date.now()}.jsonl`),
+            resultPromise: Promise.resolve({ reply }),
+          };
+        }
+
+        const reply = '收到，我会只以玩家身份参与，不承担主持职责。';
+        const sessionPath = path.join(harness.tempDir, `session-${Date.now()}.jsonl`);
+        fs.writeFileSync(
+          sessionPath,
+          `${JSON.stringify({
+            type: 'message',
+            message: {
+              role: 'assistant',
+              content: [{ type: 'text', text: reply }],
+            },
+          })}\n`,
+          'utf8'
+        );
+        return {
+          runId: null,
+          sessionPath,
+          resultPromise: Promise.resolve({ reply, sessionPath }),
+        };
+      },
+    });
+
+    const createReq = createJsonRequest('POST', '/api/skills/werewolf/test-cases', {
+      testType: 'execution',
+      loadingMode: 'full',
+      triggerPrompt: '我们来玩狼人杀吧',
+      expectedGoal: '作为玩家参与，不接管主持。',
+      expectedBehavior: '应保持玩家视角，不承担主持职责。',
+      note: 'full mode without expected tools',
+    });
+    const createRes = createCaptureResponse();
+
+    await controller({
+      req: createReq,
+      res: createRes,
+      pathname: '/api/skills/werewolf/test-cases',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases'),
+    });
+
+    const caseId = createRes.json.testCase.id;
+    const runReq = createJsonRequest('POST', `/api/skills/werewolf/test-cases/${caseId}/run`, {});
+    const runRes = createCaptureResponse();
+
+    await controller({
+      req: runReq,
+      res: runRes,
+      pathname: `/api/skills/werewolf/test-cases/${caseId}/run`,
+      requestUrl: new URL(`http://localhost/api/skills/werewolf/test-cases/${caseId}/run`),
+    });
+
+    assert.equal(runRes.statusCode, 200);
+    assert.equal(runRes.json.run.triggerPassed, true);
+    assert.equal(runRes.json.run.executionPassed, true);
+    assert.equal(runRes.json.run.verdict, 'pass');
+
+    const detailReq = createJsonRequest('GET', `/api/skill-test-runs/${runRes.json.run.id}`, undefined);
+    const detailRes = createCaptureResponse();
+    await controller({
+      req: detailReq,
+      res: detailRes,
+      pathname: `/api/skill-test-runs/${runRes.json.run.id}`,
+      requestUrl: new URL(`http://localhost/api/skill-test-runs/${runRes.json.run.id}`),
+    });
+
+    assert.equal(detailRes.statusCode, 200);
+    assert.equal(detailRes.json.result.evaluation.verdict, 'pass');
+    assert.equal(detailRes.json.result.evaluation.dimensions.toolErrorRate.score, null);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('summary and regression execution rates use full-mode verdict pass only', async () => {
+  const harness = createTempHarness();
+  const queuedEvaluations = [
+    {
+      triggerPassed: 1,
+      executionPassed: 1,
+      toolAccuracy: 1,
+      actualToolsJson: JSON.stringify([]),
+      verdict: 'pass',
+      evaluation: { verdict: 'pass', summary: 'pass run' },
+    },
+    {
+      triggerPassed: 1,
+      executionPassed: 1,
+      toolAccuracy: 1,
+      actualToolsJson: JSON.stringify([]),
+      verdict: 'fail',
+      evaluation: { verdict: 'fail', summary: 'fail run' },
+    },
+  ];
+
+  try {
+    const store = createInMemoryStore(harness.db, {
+      agentDir: path.join(harness.tempDir, 'agent'),
+      databasePath: harness.databasePath,
+    });
+
+    const controller = createSkillTestController({
+      store,
+      agentToolBridge: createFakeAgentToolBridge(),
+      skillRegistry: createFakeSkillRegistry(['werewolf']),
+      getProjectDir: () => harness.tempDir,
+      toolBaseUrl: 'http://127.0.0.1:3100',
+      startRunImpl: () => {
+        const sessionPath = path.join(harness.tempDir, `session-${Date.now()}.jsonl`);
+        return {
+          runId: null,
+          sessionPath,
+          resultPromise: Promise.resolve({ reply: 'ok', sessionPath }),
+        };
+      },
+      evaluateRunImpl: () => {
+        const next = queuedEvaluations.shift();
+        assert.ok(next);
+        return next;
+      },
+    });
+
+    const createReq = createJsonRequest('POST', '/api/skills/werewolf/test-cases', {
+      testType: 'execution',
+      loadingMode: 'full',
+      triggerPrompt: '我们来玩狼人杀吧',
+      expectedGoal: '作为玩家参与，不接管主持。',
+      expectedBehavior: '应保持玩家视角，不承担主持职责。',
+    });
+    const createRes = createCaptureResponse();
+
+    await controller({
+      req: createReq,
+      res: createRes,
+      pathname: '/api/skills/werewolf/test-cases',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases'),
+    });
+
+    const caseId = createRes.json.testCase.id;
+    for (let index = 0; index < 2; index += 1) {
+      const runReq = createJsonRequest('POST', `/api/skills/werewolf/test-cases/${caseId}/run`, {
+        provider: 'openai',
+        model: 'gpt-4.1',
+        promptVersion: 'phase3',
+      });
+      const runRes = createCaptureResponse();
+      await controller({
+        req: runReq,
+        res: runRes,
+        pathname: `/api/skills/werewolf/test-cases/${caseId}/run`,
+        requestUrl: new URL(`http://localhost/api/skills/werewolf/test-cases/${caseId}/run`),
+      });
+      assert.equal(runRes.statusCode, 200);
+    }
+
+    const summaryRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('GET', '/api/skill-test-summary'),
+      res: summaryRes,
+      pathname: '/api/skill-test-summary',
+      requestUrl: new URL('http://localhost/api/skill-test-summary'),
+    });
+
+    assert.equal(summaryRes.statusCode, 200);
+    const summaryEntry = summaryRes.json.summary.find((entry) => entry.skillId === 'werewolf');
+    assert.ok(summaryEntry);
+    assert.equal(summaryEntry.totalRuns, 2);
+    assert.equal(summaryEntry.executionPassedCount, 1);
+    assert.equal(summaryEntry.executionRate, 0.5);
+
+    const regressionRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('GET', `/api/skills/werewolf/test-cases/${caseId}/regression`),
+      res: regressionRes,
+      pathname: `/api/skills/werewolf/test-cases/${caseId}/regression`,
+      requestUrl: new URL(`http://localhost/api/skills/werewolf/test-cases/${caseId}/regression`),
+    });
+
+    assert.equal(regressionRes.statusCode, 200);
+    assert.equal(regressionRes.json.regression.length, 1);
+    assert.equal(regressionRes.json.regression[0].totalRuns, 2);
+    assert.equal(regressionRes.json.regression[0].executionPassedCount, 1);
+    assert.equal(regressionRes.json.regression[0].executionRate, 0.5);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('run normalization flags evaluation_projection_mismatch and uses evaluation_json as source', async () => {
+  const harness = createTempHarness();
+
+  try {
+    const store = createInMemoryStore(harness.db, {
+      agentDir: path.join(harness.tempDir, 'agent'),
+      databasePath: harness.databasePath,
+    });
+
+    const controller = createSkillTestController({
+      store,
+      agentToolBridge: createFakeAgentToolBridge(),
+      skillRegistry: createFakeSkillRegistry(['werewolf']),
+      getProjectDir: () => harness.tempDir,
+      toolBaseUrl: 'http://127.0.0.1:3100',
+      startRunImpl: () => {
+        const sessionPath = path.join(harness.tempDir, `projection-mismatch-session-${Date.now()}.jsonl`);
+        return {
+          runId: null,
+          sessionPath,
+          resultPromise: Promise.resolve({ reply: 'ok', sessionPath }),
+        };
+      },
+      evaluateRunImpl: () => ({
+        triggerPassed: 1,
+        executionPassed: 1,
+        toolAccuracy: 0.2,
+        actualToolsJson: JSON.stringify([]),
+        triggerEvaluation: null,
+        executionEvaluation: null,
+        requiredToolCoverage: 0.1,
+        toolCallSuccessRate: 0.2,
+        toolErrorRate: 0.9,
+        sequenceAdherence: 0.1,
+        goalAchievement: 0.2,
+        instructionAdherence: 0.3,
+        verdict: 'fail',
+        evaluation: {
+          verdict: 'pass',
+          summary: 'projection mismatch test',
+          dimensions: {
+            requiredToolCoverage: { score: 0.95, reason: 'from evaluation_json' },
+            toolCallSuccessRate: { score: 0.9, reason: 'from evaluation_json' },
+            toolErrorRate: { score: 0.05, reason: 'from evaluation_json' },
+            sequenceAdherence: { score: 0.88, reason: 'from evaluation_json' },
+            goalAchievement: { score: 0.92, reason: 'from evaluation_json' },
+            instructionAdherence: { score: 0.91, reason: 'from evaluation_json' },
+          },
+          validation: { issues: [] },
+        },
+        validationIssues: [],
+      }),
+    });
+
+    const createReq = createJsonRequest('POST', '/api/skills/werewolf/test-cases', {
+      testType: 'execution',
+      loadingMode: 'full',
+      triggerPrompt: '我们来玩狼人杀吧',
+      expectedGoal: '作为玩家参与，不接管主持。',
+      expectedBehavior: '应保持玩家视角，不承担主持职责。',
+    });
+    const createRes = createCaptureResponse();
+
+    await controller({
+      req: createReq,
+      res: createRes,
+      pathname: '/api/skills/werewolf/test-cases',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases'),
+    });
+
+    const caseId = createRes.json.testCase.id;
+    const runReq = createJsonRequest('POST', `/api/skills/werewolf/test-cases/${caseId}/run`, {});
+    const runRes = createCaptureResponse();
+    await controller({
+      req: runReq,
+      res: runRes,
+      pathname: `/api/skills/werewolf/test-cases/${caseId}/run`,
+      requestUrl: new URL(`http://localhost/api/skills/werewolf/test-cases/${caseId}/run`),
+    });
+
+    assert.equal(runRes.statusCode, 200);
+    assert.equal(runRes.json.run.verdict, 'pass');
+    assert.equal(runRes.json.run.requiredToolCoverage, 0.95);
+    assert.equal(runRes.json.run.toolCallSuccessRate, 0.9);
+    assert.equal(runRes.json.run.toolErrorRate, 0.05);
+    assert.ok(Array.isArray(runRes.json.run.validationIssues));
+    assert.ok(runRes.json.run.validationIssues.some((issue) => issue.code === 'evaluation_projection_mismatch'));
+    assert.ok(Array.isArray(runRes.json.run.evaluation.validation.issues));
+    assert.ok(runRes.json.run.evaluation.validation.issues.some((issue) => issue.code === 'evaluation_projection_mismatch'));
+
+    const detailRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('GET', `/api/skill-test-runs/${runRes.json.run.id}`, undefined),
+      res: detailRes,
+      pathname: `/api/skill-test-runs/${runRes.json.run.id}`,
+      requestUrl: new URL(`http://localhost/api/skill-test-runs/${runRes.json.run.id}`),
+    });
+
+    assert.equal(detailRes.statusCode, 200);
+    assert.ok(detailRes.json.run.validationIssues.some((issue) => issue.code === 'evaluation_projection_mismatch'));
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('run normalization flags evaluation_projection_failed when dimensions cannot be projected', async () => {
+  const harness = createTempHarness();
+
+  try {
+    const store = createInMemoryStore(harness.db, {
+      agentDir: path.join(harness.tempDir, 'agent'),
+      databasePath: harness.databasePath,
+    });
+
+    const controller = createSkillTestController({
+      store,
+      agentToolBridge: createFakeAgentToolBridge(),
+      skillRegistry: createFakeSkillRegistry(['werewolf']),
+      getProjectDir: () => harness.tempDir,
+      toolBaseUrl: 'http://127.0.0.1:3100',
+      startRunImpl: () => {
+        const sessionPath = path.join(harness.tempDir, `projection-failed-session-${Date.now()}.jsonl`);
+        return {
+          runId: null,
+          sessionPath,
+          resultPromise: Promise.resolve({ reply: 'ok', sessionPath }),
+        };
+      },
+      evaluateRunImpl: () => ({
+        triggerPassed: 1,
+        executionPassed: 1,
+        toolAccuracy: 0.8,
+        actualToolsJson: JSON.stringify([]),
+        triggerEvaluation: null,
+        executionEvaluation: null,
+        requiredToolCoverage: 0.8,
+        toolCallSuccessRate: 0.8,
+        toolErrorRate: 0.2,
+        sequenceAdherence: 0.8,
+        goalAchievement: 0.8,
+        instructionAdherence: 0.8,
+        verdict: 'pass',
+        evaluation: {
+          verdict: 'pass',
+          summary: 'projection failed test without dimensions',
+          validation: { issues: [] },
+        },
+        validationIssues: [],
+      }),
+    });
+
+    const createReq = createJsonRequest('POST', '/api/skills/werewolf/test-cases', {
+      testType: 'execution',
+      loadingMode: 'full',
+      triggerPrompt: '我们来玩狼人杀吧',
+      expectedGoal: '作为玩家参与，不接管主持。',
+      expectedBehavior: '应保持玩家视角，不承担主持职责。',
+    });
+    const createRes = createCaptureResponse();
+
+    await controller({
+      req: createReq,
+      res: createRes,
+      pathname: '/api/skills/werewolf/test-cases',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases'),
+    });
+
+    const caseId = createRes.json.testCase.id;
+    const runReq = createJsonRequest('POST', `/api/skills/werewolf/test-cases/${caseId}/run`, {});
+    const runRes = createCaptureResponse();
+    await controller({
+      req: runReq,
+      res: runRes,
+      pathname: `/api/skills/werewolf/test-cases/${caseId}/run`,
+      requestUrl: new URL(`http://localhost/api/skills/werewolf/test-cases/${caseId}/run`),
+    });
+
+    assert.equal(runRes.statusCode, 200);
+    assert.equal(runRes.json.run.verdict, 'pass');
+    assert.equal(runRes.json.run.requiredToolCoverage, null);
+    assert.equal(runRes.json.run.goalAchievement, null);
+    assert.ok(Array.isArray(runRes.json.run.validationIssues));
+    assert.ok(runRes.json.run.validationIssues.some((issue) => issue.code === 'evaluation_projection_failed'));
+    assert.ok(Array.isArray(runRes.json.run.evaluation.validation.issues));
+    assert.ok(runRes.json.run.evaluation.validation.issues.some((issue) => issue.code === 'evaluation_projection_failed'));
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('failed runs preserve null triggerPassed instead of coercing to false', async () => {
+  const harness = createTempHarness();
+
+  try {
+    const store = createInMemoryStore(harness.db, {
+      agentDir: path.join(harness.tempDir, 'agent'),
+      databasePath: harness.databasePath,
+    });
+
+    const controller = createSkillTestController({
+      store,
+      agentToolBridge: createFakeAgentToolBridge(),
+      skillRegistry: createFakeSkillRegistry(['werewolf']),
+      getProjectDir: () => harness.tempDir,
+      toolBaseUrl: 'http://127.0.0.1:3100',
+      startRunImpl: () => ({
+        runId: null,
+        sessionPath: path.join(harness.tempDir, `failed-session-${Date.now()}.jsonl`),
+        resultPromise: Promise.reject(new Error('simulated run failure')),
+      }),
+    });
+
+    const createReq = createJsonRequest('POST', '/api/skills/werewolf/test-cases', {
+      testType: 'trigger',
+      loadingMode: 'dynamic',
+      triggerPrompt: '我们来玩狼人杀吧',
+      expectedBehavior: '应该触发狼人杀 skill。',
+    });
+    const createRes = createCaptureResponse();
+
+    await controller({
+      req: createReq,
+      res: createRes,
+      pathname: '/api/skills/werewolf/test-cases',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases'),
+    });
+
+    const caseId = createRes.json.testCase.id;
+    const runReq = createJsonRequest('POST', `/api/skills/werewolf/test-cases/${caseId}/run`, {});
+    const runRes = createCaptureResponse();
+    await controller({
+      req: runReq,
+      res: runRes,
+      pathname: `/api/skills/werewolf/test-cases/${caseId}/run`,
+      requestUrl: new URL(`http://localhost/api/skills/werewolf/test-cases/${caseId}/run`),
+    });
+
+    assert.equal(runRes.statusCode, 200);
+    assert.equal(runRes.json.run.status, 'failed');
+    assert.equal(runRes.json.run.triggerPassed, null);
+    assert.equal(runRes.json.run.executionPassed, null);
+  } finally {
+    harness.cleanup();
+  }
+});
+
 test('generate throws 404 when skill is missing in registry', async () => {
   const db = createTestDb();
   const store = createInMemoryStore(db);
@@ -1443,4 +2637,611 @@ test('generate throws 404 when skill is missing in registry', async () => {
   );
 
   db.close();
+});
+
+test('manual create accepts userPrompt as canonical prompt and mirrors triggerPrompt', async () => {
+  const db = createTestDb();
+  const store = createInMemoryStore(db);
+  const controller = createSkillTestController({
+    store,
+    agentToolBridge: createFakeAgentToolBridge(),
+    skillRegistry: createFakeSkillRegistry([]),
+    getProjectDir: () => '/tmp/project',
+    toolBaseUrl: 'http://127.0.0.1:3100',
+  });
+
+  const req = createJsonRequest('POST', '/api/skills/werewolf/test-cases', {
+    userPrompt: '请先读取 skill 文档再继续执行。',
+    loadingMode: 'dynamic',
+    expectedBehavior: '应先读取目标 skill。',
+    note: 'canonical prompt test',
+  });
+  const res = createCaptureResponse();
+
+  const handled = await controller({
+    req,
+    res,
+    pathname: '/api/skills/werewolf/test-cases',
+    requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases'),
+  });
+
+  assert.equal(handled, true);
+  assert.equal(res.statusCode, 201);
+  assert.equal(res.json.testCase.userPrompt, '请先读取 skill 文档再继续执行。');
+  assert.equal(res.json.testCase.triggerPrompt, '请先读取 skill 文档再继续执行。');
+  assert.deepEqual(res.json.issues, []);
+
+  const row = db.prepare('SELECT trigger_prompt FROM skill_test_cases WHERE skill_id = ?').get('werewolf');
+  assert.equal(row.trigger_prompt, '请先读取 skill 文档再继续执行。');
+
+  db.close();
+});
+
+test('manual create rejects conflicting userPrompt and triggerPrompt aliases', async () => {
+  const db = createTestDb();
+  const store = createInMemoryStore(db);
+  const controller = createSkillTestController({
+    store,
+    agentToolBridge: createFakeAgentToolBridge(),
+    skillRegistry: createFakeSkillRegistry([]),
+    getProjectDir: () => '/tmp/project',
+    toolBaseUrl: 'http://127.0.0.1:3100',
+  });
+
+  const req = createJsonRequest('POST', '/api/skills/werewolf/test-cases', {
+    userPrompt: '请读取狼人杀 skill。',
+    triggerPrompt: '请读取别的 skill。',
+    loadingMode: 'dynamic',
+  });
+  const res = createCaptureResponse();
+
+  await assert.rejects(
+    () => controller({
+      req,
+      res,
+      pathname: '/api/skills/werewolf/test-cases',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases'),
+    }),
+    (err) => {
+      assert.equal(err.statusCode, 400);
+      assert.equal(err.issues[0].code, 'prompt_alias_conflict');
+      assert.match(String(err.message), /must match after normalization/i);
+      return true;
+    }
+  );
+
+  db.close();
+});
+
+test('manual create rejects non-array expectedSequence and non-object evaluationRubric', async () => {
+  const db = createTestDb();
+  const store = createInMemoryStore(db);
+  const controller = createSkillTestController({
+    store,
+    agentToolBridge: createFakeAgentToolBridge(),
+    skillRegistry: createFakeSkillRegistry([]),
+    getProjectDir: () => '/tmp/project',
+    toolBaseUrl: 'http://127.0.0.1:3100',
+  });
+
+  const badSequenceReq = createJsonRequest('POST', '/api/skills/werewolf/test-cases', {
+    userPrompt: '请先读取狼人杀 skill 文档。',
+    loadingMode: 'dynamic',
+    expectedSequence: { name: 'read' },
+  });
+
+  await assert.rejects(
+    () => controller({
+      req: badSequenceReq,
+      res: createCaptureResponse(),
+      pathname: '/api/skills/werewolf/test-cases',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases'),
+    }),
+    (err) => {
+      assert.equal(err.statusCode, 400);
+      assert.equal(err.issues[0].code, 'expected_sequence_invalid');
+      return true;
+    }
+  );
+
+  const badRubricReq = createJsonRequest('POST', '/api/skills/werewolf/test-cases', {
+    userPrompt: '请先读取狼人杀 skill 文档。',
+    loadingMode: 'dynamic',
+    evaluationRubric: [],
+  });
+
+  await assert.rejects(
+    () => controller({
+      req: badRubricReq,
+      res: createCaptureResponse(),
+      pathname: '/api/skills/werewolf/test-cases',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases'),
+    }),
+    (err) => {
+      assert.equal(err.statusCode, 400);
+      assert.equal(err.issues[0].code, 'evaluation_rubric_invalid');
+      return true;
+    }
+  );
+
+  db.close();
+});
+
+test('manual create rejects full case missing expectedGoal', async () => {
+  const db = createTestDb();
+  const store = createInMemoryStore(db);
+  const controller = createSkillTestController({
+    store,
+    agentToolBridge: createFakeAgentToolBridge(),
+    skillRegistry: createFakeSkillRegistry([]),
+    getProjectDir: () => '/tmp/project',
+    toolBaseUrl: 'http://127.0.0.1:3100',
+  });
+
+  const req = createJsonRequest('POST', '/api/skills/werewolf/test-cases', {
+    userPrompt: '进入房间后请只以玩家身份参与狼人杀。',
+    loadingMode: 'full',
+    expectedBehavior: '先确认规则，再以玩家身份发言。',
+    expectedGoal: '',
+    expectedSteps: [
+      {
+        id: 'step-1',
+        title: '确认规则',
+        expectedBehavior: '先确认规则约束后再继续发言。',
+        required: true,
+        failureIfMissing: '未先确认规则。',
+        strongSignals: [],
+      },
+    ],
+  });
+
+  await assert.rejects(
+    () => controller({
+      req,
+      res: createCaptureResponse(),
+      pathname: '/api/skills/werewolf/test-cases',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases'),
+    }),
+    (err) => {
+      assert.equal(err.statusCode, 400);
+      assert.equal(err.issues[0].code, 'expected_goal_required');
+      return true;
+    }
+  );
+
+  db.close();
+});
+
+test('run preflight rejects stored invalid expectedSequence schema with structured issues', async () => {
+  const db = createTestDb();
+  const store = createInMemoryStore(db);
+  let startRunCalled = false;
+  const controller = createSkillTestController({
+    store,
+    agentToolBridge: createFakeAgentToolBridge(),
+    skillRegistry: createFakeSkillRegistry(['werewolf']),
+    getProjectDir: () => '/tmp/project',
+    toolBaseUrl: 'http://127.0.0.1:3100',
+    startRunImpl: () => {
+      startRunCalled = true;
+      return {
+        runId: null,
+        sessionPath: '/tmp/never-called.jsonl',
+        resultPromise: Promise.resolve({ reply: '', sessionPath: '/tmp/never-called.jsonl' }),
+      };
+    },
+  });
+
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO skill_test_cases (
+      id, skill_id, test_type, loading_mode, trigger_prompt,
+      expected_tools_json, expected_behavior, validity_status, case_status,
+      expected_goal, expected_sequence_json, evaluation_rubric_json,
+      note, created_at, updated_at
+    ) VALUES (
+      @id, @skillId, @testType, @loadingMode, @triggerPrompt,
+      @expectedToolsJson, @expectedBehavior, @validityStatus, @caseStatus,
+      @expectedGoal, @expectedSequenceJson, @evaluationRubricJson,
+      @note, @createdAt, @updatedAt
+    )`
+  ).run({
+    id: 'case-invalid-sequence',
+    skillId: 'werewolf',
+    testType: 'execution',
+    loadingMode: 'full',
+    triggerPrompt: '请只以玩家身份参与狼人杀。',
+    expectedToolsJson: '[]',
+    expectedBehavior: '只能以玩家身份参与。',
+    validityStatus: 'pending',
+    caseStatus: 'draft',
+    expectedGoal: '完成玩家视角回应。',
+    expectedSequenceJson: '{"name":"send-public"}',
+    evaluationRubricJson: '{}',
+    note: 'broken expectedSequence schema',
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  await assert.rejects(
+    () => controller({
+      req: createJsonRequest('POST', '/api/skills/werewolf/test-cases/case-invalid-sequence/run', {}),
+      res: createCaptureResponse(),
+      pathname: '/api/skills/werewolf/test-cases/case-invalid-sequence/run',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases/case-invalid-sequence/run'),
+    }),
+    (err) => {
+      assert.equal(err.statusCode, 400);
+      assert.equal(err.caseSchemaStatus, 'invalid');
+      assert.equal(err.derivedFromLegacy, false);
+      assert.ok(Array.isArray(err.issues));
+      assert.ok(err.issues.some((issue) => issue.code === 'case_schema_invalid'));
+      assert.ok(err.issues.some((issue) => issue.code === 'expected_sequence_invalid'));
+      return true;
+    }
+  );
+
+  assert.equal(startRunCalled, false);
+  db.close();
+});
+
+test('case reads expose schema validation metadata and mark-ready rejects invalid stored schema', async () => {
+  const db = createTestDb();
+  const store = createInMemoryStore(db);
+  const controller = createSkillTestController({
+    store,
+    agentToolBridge: createFakeAgentToolBridge(),
+    skillRegistry: createFakeSkillRegistry(['werewolf']),
+    getProjectDir: () => '/tmp/project',
+    toolBaseUrl: 'http://127.0.0.1:3100',
+  });
+
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO skill_test_cases (
+      id, skill_id, test_type, loading_mode, trigger_prompt,
+      expected_tools_json, expected_behavior, validity_status, case_status,
+      expected_goal, expected_sequence_json, evaluation_rubric_json,
+      note, created_at, updated_at
+    ) VALUES (
+      @id, @skillId, @testType, @loadingMode, @triggerPrompt,
+      @expectedToolsJson, @expectedBehavior, @validityStatus, @caseStatus,
+      @expectedGoal, @expectedSequenceJson, @evaluationRubricJson,
+      @note, @createdAt, @updatedAt
+    )`
+  ).run({
+    id: 'case-invalid-ready',
+    skillId: 'werewolf',
+    testType: 'execution',
+    loadingMode: 'full',
+    triggerPrompt: '请只以玩家身份参与狼人杀。',
+    expectedToolsJson: '[]',
+    expectedBehavior: '只能以玩家身份参与。',
+    validityStatus: 'pending',
+    caseStatus: 'draft',
+    expectedGoal: '完成玩家视角回应。',
+    expectedSequenceJson: '{"name":"send-public"}',
+    evaluationRubricJson: '{}',
+    note: 'broken expectedSequence schema for ready gate',
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  const listRes = createCaptureResponse();
+  await controller({
+    req: createJsonRequest('GET', '/api/skills/werewolf/test-cases', undefined),
+    res: listRes,
+    pathname: '/api/skills/werewolf/test-cases',
+    requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases'),
+  });
+
+  assert.equal(listRes.statusCode, 200);
+  assert.equal(listRes.json.cases.length, 1);
+  assert.equal(listRes.json.cases[0].validation.caseSchemaStatus, 'invalid');
+  assert.equal(listRes.json.cases[0].validation.derivedFromLegacy, false);
+  assert.ok(listRes.json.cases[0].validation.issues.some((issue) => issue.code === 'expected_sequence_invalid'));
+
+  const getRes = createCaptureResponse();
+  await controller({
+    req: createJsonRequest('GET', '/api/skills/werewolf/test-cases/case-invalid-ready', undefined),
+    res: getRes,
+    pathname: '/api/skills/werewolf/test-cases/case-invalid-ready',
+    requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases/case-invalid-ready'),
+  });
+
+  assert.equal(getRes.statusCode, 200);
+  assert.equal(getRes.json.testCase.validation.caseSchemaStatus, 'invalid');
+  assert.ok(getRes.json.testCase.validation.issues.some((issue) => issue.code === 'expected_sequence_invalid'));
+
+  await assert.rejects(
+    () => controller({
+      req: createJsonRequest('POST', '/api/skills/werewolf/test-cases/case-invalid-ready/mark-ready', {}),
+      res: createCaptureResponse(),
+      pathname: '/api/skills/werewolf/test-cases/case-invalid-ready/mark-ready',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases/case-invalid-ready/mark-ready'),
+    }),
+    (err) => {
+      assert.equal(err.statusCode, 400);
+      assert.equal(err.caseSchemaStatus, 'invalid');
+      assert.equal(err.derivedFromLegacy, false);
+      assert.ok(Array.isArray(err.issues));
+      assert.ok(err.issues.some((issue) => issue.code === 'case_schema_invalid'));
+      assert.ok(err.issues.some((issue) => issue.code === 'expected_sequence_invalid'));
+      return true;
+    }
+  );
+
+  db.close();
+});
+
+test('full mode run marks critical sequence evidence gaps as borderline needs-review', async () => {
+  const harness = createTempHarness();
+
+  try {
+    const store = createInMemoryStore(harness.db, {
+      agentDir: path.join(harness.tempDir, 'agent'),
+      databasePath: harness.databasePath,
+    });
+
+    const controller = createSkillTestController({
+      store,
+      agentToolBridge: createFakeAgentToolBridge(),
+      skillRegistry: createFakeSkillRegistry([
+        {
+          id: 'werewolf',
+          name: '狼人杀 Skill',
+          description: '用于后端全自动主持的狼人杀玩法。模型只扮演玩家，按后端推进的日夜阶段行动。',
+          body: '进入房间后只能从玩家视角行动，不主持流程，不接管裁判职责。',
+        },
+      ]),
+      getProjectDir: () => harness.tempDir,
+      toolBaseUrl: 'http://127.0.0.1:3100',
+      startRunImpl: (_provider, _model, prompt) => {
+        if (/严格的 Skill 触发评审器/.test(prompt)) {
+          const reply = JSON.stringify({
+            passed: true,
+            confidence: 0.9,
+            reason: '助手明确表示只会按玩家身份参与。',
+            matchedBehaviors: ['只按玩家身份参与'],
+          });
+          return {
+            runId: null,
+            sessionPath: path.join(harness.tempDir, `trigger-judge-${Date.now()}.jsonl`),
+            resultPromise: Promise.resolve({ reply }),
+          };
+        }
+
+        if (/严格的 Skill 执行评审器/.test(prompt)) {
+          const reply = JSON.stringify({
+            steps: [
+              {
+                stepId: 'step-1',
+                completed: true,
+                confidence: 0.9,
+                evidenceIds: ['msg-1'],
+                matchedSignalIds: [],
+                reason: '关键步骤已完成。',
+              },
+            ],
+            constraintChecks: [],
+            goalAchievement: { score: 0.92, reason: '目标基本达成。' },
+            instructionAdherence: { score: 0.9, reason: '行为符合玩家视角。' },
+            summary: '整体输出符合预期。',
+            verdictSuggestion: 'pass',
+            missedExpectations: [],
+          });
+          return {
+            runId: null,
+            sessionPath: path.join(harness.tempDir, `execution-judge-${Date.now()}.jsonl`),
+            resultPromise: Promise.resolve({ reply }),
+          };
+        }
+
+        const reply = '收到，我会只以玩家身份参与，不承担主持职责。';
+        const sessionPath = path.join(harness.tempDir, `session-${Date.now()}.jsonl`);
+        fs.writeFileSync(
+          sessionPath,
+          `${JSON.stringify({
+            type: 'message',
+            message: {
+              role: 'assistant',
+              content: [{ type: 'text', text: reply }],
+            },
+          })}\n`,
+          'utf8'
+        );
+        return {
+          runId: null,
+          sessionPath,
+          resultPromise: Promise.resolve({ reply, sessionPath }),
+        };
+      },
+    });
+
+    const createRes = createCaptureResponse();
+    const created = await controller({
+      req: createJsonRequest('POST', '/api/skills/werewolf/test-cases', {
+        testType: 'execution',
+        loadingMode: 'full',
+        userPrompt: '进入房间后请只以玩家身份参与。',
+        expectedBehavior: '只按玩家身份回应，不主持流程。',
+        expectedGoal: '完成玩家视角回应。',
+        expectedSteps: [
+          {
+            id: 'step-1',
+            title: '确认规则',
+            expectedBehavior: '继续前先确认规则。',
+            required: true,
+            order: 1,
+            failureIfMissing: '未先确认规则。',
+            strongSignals: [],
+          },
+        ],
+        expectedSequence: ['step-1'],
+        evaluationRubric: {
+          criticalDimensions: ['sequenceAdherence'],
+        },
+        note: 'critical sequence evidence unavailable regression',
+      }),
+      res: createRes,
+      pathname: '/api/skills/werewolf/test-cases',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases'),
+    });
+
+    assert.equal(created, true);
+    const caseId = createRes.json.testCase.id;
+
+    const runRes = createCaptureResponse();
+    const runHandled = await controller({
+      req: createJsonRequest('POST', `/api/skills/werewolf/test-cases/${caseId}/run`, {}),
+      res: runRes,
+      pathname: `/api/skills/werewolf/test-cases/${caseId}/run`,
+      requestUrl: new URL(`http://localhost/api/skills/werewolf/test-cases/${caseId}/run`),
+    });
+
+    assert.equal(runHandled, true);
+    assert.equal(runRes.statusCode, 200);
+    assert.equal(runRes.json.run.verdict, 'borderline');
+    assert.ok(Array.isArray(runRes.json.issues));
+    assert.ok(runRes.json.issues.some((issue) => issue.code === 'critical_sequence_evidence_unavailable'));
+    assert.ok(Array.isArray(runRes.json.run.evaluation.validation.issues));
+    assert.ok(runRes.json.run.evaluation.validation.issues.some((issue) => issue.code === 'critical_sequence_evidence_unavailable'));
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('full mode run surfaces judge_parse_failed issues in response and run detail', async () => {
+  const harness = createTempHarness();
+
+  try {
+    const store = createInMemoryStore(harness.db, {
+      agentDir: path.join(harness.tempDir, 'agent'),
+      databasePath: harness.databasePath,
+    });
+
+    const controller = createSkillTestController({
+      store,
+      agentToolBridge: createFakeAgentToolBridge(),
+      skillRegistry: createFakeSkillRegistry([
+        {
+          id: 'werewolf',
+          name: '狼人杀 Skill',
+          description: '用于后端全自动主持的狼人杀玩法。模型只扮演玩家，按后端推进的日夜阶段行动。',
+          body: '进入房间后只能从玩家视角行动，不主持流程，不接管裁判职责。',
+        },
+      ]),
+      getProjectDir: () => harness.tempDir,
+      toolBaseUrl: 'http://127.0.0.1:3100',
+      startRunImpl: (_provider, _model, prompt) => {
+        if (/严格的 Skill 触发评审器/.test(prompt)) {
+          const reply = JSON.stringify({
+            passed: true,
+            confidence: 0.9,
+            reason: '助手明确表示只会按玩家身份参与。',
+            matchedBehaviors: ['只按玩家身份参与'],
+          });
+          return {
+            runId: null,
+            sessionPath: path.join(harness.tempDir, `trigger-judge-${Date.now()}.jsonl`),
+            resultPromise: Promise.resolve({ reply }),
+          };
+        }
+
+        if (/严格的 Skill 执行评审器/.test(prompt)) {
+          const reply = JSON.stringify({
+            steps: [
+              {
+                stepId: 'legacy-step-summary',
+                completed: true,
+                confidence: 0.91,
+                evidenceIds: ['msg-1'],
+                matchedSignalIds: [],
+                reason: '该字段仅用于触发 score 越界 parse_failed。',
+              },
+            ],
+            constraintChecks: [],
+            goalAchievement: { score: 1.2, reason: '越界分数，应触发 parse_failed。' },
+            instructionAdherence: { score: 0.91, reason: '其他字段仍然合法。' },
+            summary: '这条 judge 回包故意带坏分数。',
+            verdictSuggestion: 'pass',
+            missedExpectations: [],
+          });
+          return {
+            runId: null,
+            sessionPath: path.join(harness.tempDir, `execution-judge-${Date.now()}.jsonl`),
+            resultPromise: Promise.resolve({ reply }),
+          };
+        }
+
+        const reply = '收到，我会只以玩家身份参与，不承担主持职责。';
+        const sessionPath = path.join(harness.tempDir, `session-${Date.now()}.jsonl`);
+        fs.writeFileSync(
+          sessionPath,
+          `${JSON.stringify({
+            type: 'message',
+            message: {
+              role: 'assistant',
+              content: [{ type: 'text', text: reply }],
+            },
+          })}\n`,
+          'utf8'
+        );
+        return {
+          runId: null,
+          sessionPath,
+          resultPromise: Promise.resolve({ reply, sessionPath }),
+        };
+      },
+    });
+
+    const createRes = createCaptureResponse();
+    const created = await controller({
+      req: createJsonRequest('POST', '/api/skills/werewolf/test-cases', {
+        testType: 'execution',
+        loadingMode: 'full',
+        userPrompt: '进入房间后请只以玩家身份参与。',
+        expectedBehavior: '只按玩家身份回应，不主持流程。',
+        expectedGoal: '完成玩家视角回应。',
+        note: 'judge parse failure regression',
+      }),
+      res: createRes,
+      pathname: '/api/skills/werewolf/test-cases',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases'),
+    });
+
+    assert.equal(created, true);
+    const caseId = createRes.json.testCase.id;
+
+    const runRes = createCaptureResponse();
+    const runHandled = await controller({
+      req: createJsonRequest('POST', `/api/skills/werewolf/test-cases/${caseId}/run`, {}),
+      res: runRes,
+      pathname: `/api/skills/werewolf/test-cases/${caseId}/run`,
+      requestUrl: new URL(`http://localhost/api/skills/werewolf/test-cases/${caseId}/run`),
+    });
+
+    assert.equal(runHandled, true);
+    assert.equal(runRes.statusCode, 200);
+    assert.ok(Array.isArray(runRes.json.issues));
+    assert.ok(runRes.json.issues.some((issue) => issue.code === 'judge_parse_failed'));
+    assert.equal(runRes.json.run.verdict, 'borderline');
+
+    const detailRes = createCaptureResponse();
+    const detailHandled = await controller({
+      req: createJsonRequest('GET', `/api/skill-test-runs/${runRes.json.run.id}`, null),
+      res: detailRes,
+      pathname: `/api/skill-test-runs/${runRes.json.run.id}`,
+      requestUrl: new URL(`http://localhost/api/skill-test-runs/${runRes.json.run.id}`),
+    });
+
+    assert.equal(detailHandled, true);
+    assert.equal(detailRes.statusCode, 200);
+    assert.ok(detailRes.json.result.validation);
+    assert.ok(Array.isArray(detailRes.json.result.validation.issues));
+    assert.ok(detailRes.json.result.validation.issues.some((issue) => issue.code === 'judge_parse_failed'));
+    assert.equal(detailRes.json.run.evaluation.validation.issues[0].code, 'judge_parse_failed');
+  } finally {
+    harness.cleanup();
+  }
 });

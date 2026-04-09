@@ -16,10 +16,33 @@ export interface StructuredExpectedTool {
 
 export type GeneratedExpectedTool = string | StructuredExpectedTool;
 
+export interface GeneratedExpectedStepSignal {
+  id?: string;
+  type: 'tool' | 'text' | 'state';
+  toolName?: string;
+  matcher?: 'contains' | 'equals' | 'regex';
+  value?: string;
+}
+
+export interface GeneratedExpectedStep {
+  id?: string;
+  title: string;
+  expectedBehavior: string;
+  required?: boolean;
+  order?: number | null;
+  failureIfMissing?: string;
+  strongSignals?: GeneratedExpectedStepSignal[];
+}
+
 export interface GeneratedPrompt {
+  userPrompt?: string;
   triggerPrompt: string;
   expectedTools: GeneratedExpectedTool[];
+  expectedSteps?: GeneratedExpectedStep[];
   expectedBehavior: string;
+  expectedGoal?: string;
+  expectedSequence?: Array<string | StructuredExpectedTool>;
+  evaluationRubric?: Record<string, any>;
   note: string;
 }
 
@@ -88,15 +111,18 @@ function extractKeywords(text: string): { verbs: string[]; scenes: string[]; too
   return { verbs, scenes, tools };
 }
 
-function buildFewShotContext(skillName: string, skillDescription: string): string {
+function buildFewShotContext(skillName: string, skillDescription: string, loadingMode: string): string {
   return [
-    'You are generating test prompts to verify that an AI agent correctly identifies and activates a skill.',
+    'You are generating editable skill test case drafts for the CAFF Skill Testing system.',
     '',
     `The skill being tested is "${skillName}": ${skillDescription}`,
     '',
-    'Generate prompts that a user would naturally say to trigger this skill.',
-    'The prompts should be varied: some direct, some indirect, some creative.',
-    'Each prompt should be 10-100 characters long.',
+    loadingMode === 'full'
+      ? 'Full mode only checks whether the skill follows the intended tool flow and completes the goal.'
+      : 'Dynamic mode only checks whether the agent reads the target SKILL.md to load the skill.',
+    'Generate drafts that a user would naturally say in chat.',
+    'The drafts should be varied: some direct, some indirect, some creative.',
+    'Each userPrompt (or triggerPrompt alias) should be 10-120 characters long.',
     '',
     'Good trigger prompts (examples for "werewolf" skill):',
     '- "我们来玩狼人杀吧"',
@@ -112,13 +138,47 @@ function buildFewShotContext(skillName: string, skillDescription: string): strin
     '- "玩谁是卧底吧"',
     '- "我们几个人想玩谁是卧底游戏"',
     '',
-    'Now generate prompts for the target skill. Output ONLY a JSON array of objects.',
-    'Each object should have:',
-    '- "triggerPrompt": string (the user message)',
-    '- "expectedTools": array (tool names or { name, requiredParams, arguments, order } objects when the skill body shows clear tool examples)',
-    '- "expectedBehavior": string (what the agent should do)',
-    '- "note": string (brief explanation)',
+    'Now generate drafts for the target skill.',
+    'Output ONLY a JSON array of objects. Do not wrap the answer in markdown. Do not call tools.',
   ].join('\n');
+}
+
+function clipPromptJson(value: any, maxLength = 1800): string {
+  const text = JSON.stringify(value, null, 2);
+  if (text.length <= maxLength) {
+    return text;
+  }
+  const safeLength = Math.max(0, maxLength - 16);
+  return `${text.slice(0, safeLength).trim()}\n...[truncated]`;
+}
+
+function buildOutputContract(loadingMode: string): string[] {
+  if (loadingMode === 'full') {
+    return [
+      'Each JSON item MUST contain:',
+      '- "userPrompt": string (canonical case input field for Full mode)',
+      '- "expectedSteps": array of 1-12 step objects with stable ids (step-{n}) and { id, title, expectedBehavior, required?, order?, failureIfMissing?, strongSignals? }',
+      '- "expectedGoal": string',
+      '- "evaluationRubric": object (may be empty)',
+      '- "expectedBehavior": string',
+      '- "note": string',
+      'Optional full-mode fields:',
+      '- "triggerPrompt": string (legacy alias; if present it should mirror userPrompt)',
+      '- "expectedSequence": array (preferred when order matters)',
+      '- "expectedTools": array of tool names or { name, requiredParams, arguments, order } objects as supporting/legacy evidence',
+      '- Every strongSignals item should include a stable "id" like sig-step-1-read',
+    ];
+  }
+
+  return [
+    'Each JSON item MUST contain:',
+    '- "userPrompt": string (canonical case input; triggerPrompt is accepted as alias)',
+    '- "expectedBehavior": string',
+    '- "note": string',
+    'Optional fields:',
+    '- "triggerPrompt": string (legacy alias of userPrompt)',
+    '- "expectedTools": array of tool names or { name, requiredParams, arguments, order } objects',
+  ];
 }
 
 function isGameOrInteractiveSkill(name: string, description: string): boolean {
@@ -216,18 +276,28 @@ function buildBashToolSpec(rawCommand: string, order: number): StructuredExpecte
   };
 }
 
-function buildDynamicReadSkillSpec(skillId: string, order: number): StructuredExpectedTool {
+function resolveSkillMarkdownPath(skill: { id?: string; path?: string }) {
+  const skillId = String(skill && skill.id || '').trim();
+  const rawPath = String(skill && skill.path || '').trim();
+  if (rawPath) {
+    const normalizedPath = normalizeInlineValue(rawPath).replace(/\/+$/g, '');
+    return /\/skill\.md$/i.test(normalizedPath) ? normalizedPath : `${normalizedPath}/SKILL.md`;
+  }
+  return `/skills/${skillId}/SKILL.md`;
+}
+
+function buildDynamicSkillReadSpec(skill: { id?: string; path?: string }, order: number): StructuredExpectedTool {
   return {
-    name: 'read-skill',
+    name: 'read',
     order,
-    requiredParams: ['skillId'],
+    requiredParams: ['path'],
     arguments: {
-      skillId,
+      path: buildContainsPattern(resolveSkillMarkdownPath(skill), `<contains:/skills/${String(skill && skill.id || '').trim()}/SKILL.md>`),
     },
   };
 }
 
-function parseSnippetAsExpectedTool(snippet: string, skillId: string, order: number): StructuredExpectedTool | null {
+function parseSnippetAsExpectedTool(snippet: string, skill: { id?: string; path?: string }, order: number): StructuredExpectedTool | null {
   const cleaned = cleanSnippet(snippet);
   if (!cleaned) {
     return null;
@@ -235,12 +305,12 @@ function parseSnippetAsExpectedTool(snippet: string, skillId: string, order: num
 
   const assignedCommandMatch = cleaned.match(/^[A-Z_][A-Z0-9_]*=\$\((.+)\)$/);
   if (assignedCommandMatch && assignedCommandMatch[1]) {
-    return parseSnippetAsExpectedTool(assignedCommandMatch[1], skillId, order);
+    return parseSnippetAsExpectedTool(assignedCommandMatch[1], skill, order);
   }
 
   if (KNOWN_TOOL_NAMES.has(cleaned)) {
     if (cleaned === 'read-skill') {
-      return buildDynamicReadSkillSpec(skillId, order);
+      return buildDynamicSkillReadSpec(skill, order);
     }
     return { name: cleaned, order };
   }
@@ -355,30 +425,39 @@ function dedupeToolSpecs(specs: StructuredExpectedTool[]): StructuredExpectedToo
   }));
 }
 
+function resolveTestTypeFromLoadingMode(loadingMode: string, testType?: string): string {
+  const normalizedLoadingMode = String(loadingMode || 'dynamic').trim().toLowerCase() || 'dynamic';
+  const normalizedTestType = String(testType || '').trim().toLowerCase();
+  if (normalizedTestType === 'trigger' || normalizedTestType === 'execution') {
+    return normalizedTestType;
+  }
+  return normalizedLoadingMode === 'full' ? 'execution' : 'trigger';
+}
+
 function extractExpectedToolsFromSkill(
-  skill: { id: string; body?: string },
+  skill: { id: string; path?: string; body?: string },
   options: { testType?: string; loadingMode?: string } = {}
 ): GeneratedExpectedTool[] {
-  const testType = String(options.testType || 'trigger').trim().toLowerCase() || 'trigger';
   const loadingMode = String(options.loadingMode || 'dynamic').trim().toLowerCase() || 'dynamic';
+  const testType = resolveTestTypeFromLoadingMode(loadingMode, options.testType);
   const skillId = String(skill.id || '').trim();
 
   if (testType !== 'execution') {
     return loadingMode === 'dynamic' && skillId
-      ? [buildDynamicReadSkillSpec(skillId, 1)]
+      ? [buildDynamicSkillReadSpec(skill, 1)]
       : [];
   }
 
   const extracted: StructuredExpectedTool[] = [];
   if (loadingMode === 'dynamic' && skillId) {
-    extracted.push(buildDynamicReadSkillSpec(skillId, 1));
+    extracted.push(buildDynamicSkillReadSpec(skill, 1));
   }
 
   const snippets = collectOrderedSnippets(skill.body || '');
   let nextOrder = extracted.length + 1;
 
   for (const entry of snippets) {
-    const spec = parseSnippetAsExpectedTool(entry.snippet, skillId, nextOrder);
+    const spec = parseSnippetAsExpectedTool(entry.snippet, skill, nextOrder);
     if (!spec) {
       continue;
     }
@@ -392,7 +471,7 @@ function extractExpectedToolsFromSkill(
 function buildExpectedBehavior(skillName: string, expectedTools: GeneratedExpectedTool[], testType: string): string {
   const normalizedTestType = String(testType || 'trigger').trim().toLowerCase() || 'trigger';
   if (normalizedTestType !== 'execution') {
-    return `Agent should recognize the request and trigger the ${skillName} skill`;
+    return `Agent should recognize the request and read the ${skillName} SKILL.md to load the skill`;
   }
 
   const toolNames = expectedTools
@@ -406,10 +485,145 @@ function buildExpectedBehavior(skillName: string, expectedTools: GeneratedExpect
   return `Agent should recognize the request and follow the ${skillName} skill instructions, including ${toolNames.join(' → ')}`;
 }
 
+function buildExpectedGoal(skillName: string, skillDescription: string, loadingMode: string): string {
+  if (loadingMode === 'full') {
+    return `Complete the ${skillName} workflow as intended.${skillDescription ? ` ${skillDescription}` : ''}`.trim();
+  }
+  return `Read the ${skillName} SKILL.md when the request clearly calls for it.`;
+}
+
+function buildExpectedStepFailure(title: string): string {
+  return `Missing the "${title}" step, so the core workflow is incomplete.`;
+}
+
+function toStableIdFragment(value: string, fallback: string): string {
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40);
+  return normalized || fallback;
+}
+
+function buildGoalSummaryStep(expectedGoal: string, expectedBehavior: string): GeneratedExpectedStep {
+  const behavior = String(expectedGoal || expectedBehavior || '').trim() || 'Complete the workflow goal as intended.';
+  const title = expectedGoal ? 'Complete the goal' : 'Follow the expected behavior';
+  return {
+    title,
+    expectedBehavior: behavior,
+    required: true,
+    order: 1,
+    failureIfMissing: buildExpectedStepFailure(title),
+    strongSignals: [],
+  };
+}
+
+function buildExpectedSteps(
+  expectedTools: GeneratedExpectedTool[],
+  expectedGoal: string,
+  expectedBehavior: string,
+  loadingMode: string
+): GeneratedExpectedStep[] {
+  if (loadingMode !== 'full') {
+    return [];
+  }
+
+  const toolSteps = expectedTools
+    .map((entry, index) => {
+      const rawOrder = typeof entry === 'string' ? null : entry && entry.order;
+      const parsedOrder = rawOrder == null ? null : Number.parseInt(String(rawOrder), 10);
+      const validParsedOrder = Number.isInteger(parsedOrder) ? parsedOrder : null;
+      const normalized = typeof entry === 'string'
+        ? { name: entry.trim(), order: index + 1 }
+        : {
+            name: String(entry && entry.name || '').trim(),
+            order: validParsedOrder != null && validParsedOrder > 0 ? validParsedOrder : index + 1,
+          };
+      if (!normalized.name) {
+        return null;
+      }
+      const stepId = `step-${index + 1}`;
+      const signalId = `sig-${stepId}-${toStableIdFragment(normalized.name, `tool-${index + 1}`)}`;
+      const title = `Use ${normalized.name}`;
+      return {
+        id: stepId,
+        title,
+        expectedBehavior: `Call ${normalized.name} correctly as part of the workflow.`,
+        required: true,
+        order: normalized.order,
+        failureIfMissing: buildExpectedStepFailure(title),
+        strongSignals: [
+          {
+            id: signalId,
+            type: 'tool' as const,
+            toolName: normalized.name,
+          },
+        ],
+      };
+    })
+    .filter(Boolean) as GeneratedExpectedStep[];
+
+  if (toolSteps.length > 0) {
+    return toolSteps;
+  }
+
+  return [buildGoalSummaryStep(expectedGoal, expectedBehavior)];
+}
+
+function buildExpectedSequence(expectedTools: GeneratedExpectedTool[], loadingMode: string): Array<string | StructuredExpectedTool> {
+  if (loadingMode !== 'full') {
+    return [];
+  }
+  return expectedTools
+    .filter(Boolean)
+    .map((entry) => (typeof entry === 'string'
+      ? entry
+      : {
+          name: entry.name,
+          requiredParams: entry.requiredParams,
+          arguments: entry.arguments,
+          order: entry.order,
+        }));
+}
+
+function buildEvaluationRubric(loadingMode: string, expectedTools: GeneratedExpectedTool[]) {
+  if (loadingMode !== 'full') {
+    return {};
+  }
+
+  const hasSequenceExpectation = expectedTools.some((entry) => typeof entry !== 'string' && entry && entry.order != null);
+  const passThresholds = {
+    goalAchievement: 0.7,
+    instructionAdherence: 0.7,
+    sequenceAdherence: hasSequenceExpectation ? 0.7 : null,
+  };
+  const hardFailThresholds = {
+    goalAchievement: 0.5,
+    instructionAdherence: 0.5,
+    sequenceAdherence: hasSequenceExpectation ? 0.4 : null,
+  };
+
+  return {
+    criticalConstraints: [],
+    criticalDimensions: [],
+    passThresholds,
+    hardFailThresholds,
+    supportingSignalOverrides: [],
+    thresholds: {
+      goalAchievement: passThresholds.goalAchievement,
+      instructionAdherence: passThresholds.instructionAdherence,
+      sequenceAdherence: passThresholds.sequenceAdherence,
+    },
+  };
+}
+
 function generateGamePrompts(
   skillName: string,
+  skillDescription: string,
   expectedTools: GeneratedExpectedTool[],
   testType: string,
+  loadingMode: string,
   count: number
 ): GeneratedPrompt[] {
   const templates = [
@@ -422,20 +636,31 @@ function generateGamePrompts(
   ];
 
   return templates
-    .map((template) => ({
-      triggerPrompt: template.triggerPrompt,
-      expectedTools,
-      expectedBehavior: buildExpectedBehavior(skillName, expectedTools, testType),
-      note: template.note,
-    }))
+    .map((template) => {
+      const expectedBehavior = buildExpectedBehavior(skillName, expectedTools, testType);
+      const expectedGoal = buildExpectedGoal(skillName, skillDescription, loadingMode);
+      return {
+        userPrompt: template.triggerPrompt,
+        triggerPrompt: template.triggerPrompt,
+        expectedTools,
+        expectedSteps: buildExpectedSteps(expectedTools, expectedGoal, expectedBehavior, loadingMode),
+        expectedBehavior,
+        expectedGoal,
+        expectedSequence: buildExpectedSequence(expectedTools, loadingMode),
+        evaluationRubric: buildEvaluationRubric(loadingMode, expectedTools),
+        note: template.note,
+      };
+    })
     .slice(0, count);
 }
 
 function generateWorkflowPrompts(
   skillName: string,
+  skillDescription: string,
   keywords: ReturnType<typeof extractKeywords>,
   expectedTools: GeneratedExpectedTool[],
   testType: string,
+  loadingMode: string,
   count: number
 ): GeneratedPrompt[] {
   const preferredVerb = keywords.verbs[0] || '执行';
@@ -450,12 +675,21 @@ function generateWorkflowPrompts(
   ];
 
   return templates
-    .map((template) => ({
-      triggerPrompt: template.triggerPrompt,
-      expectedTools,
-      expectedBehavior: buildExpectedBehavior(skillName, expectedTools, testType),
-      note: template.note,
-    }))
+    .map((template) => {
+      const expectedBehavior = buildExpectedBehavior(skillName, expectedTools, testType);
+      const expectedGoal = buildExpectedGoal(skillName, skillDescription, loadingMode);
+      return {
+        userPrompt: template.triggerPrompt,
+        triggerPrompt: template.triggerPrompt,
+        expectedTools,
+        expectedSteps: buildExpectedSteps(expectedTools, expectedGoal, expectedBehavior, loadingMode),
+        expectedBehavior,
+        expectedGoal,
+        expectedSequence: buildExpectedSequence(expectedTools, loadingMode),
+        evaluationRubric: buildEvaluationRubric(loadingMode, expectedTools),
+        note: template.note,
+      };
+    })
     .slice(0, count);
 }
 
@@ -470,18 +704,18 @@ export function generateSkillTestPrompts(
   const skillName = normalizeSkillName(skill.name, skill.id);
   const skillDescription = String(skill.description || '').trim();
   const skillBody = String(skill.body || '').trim();
-  const testType = String(options.testType || 'trigger').trim().toLowerCase() || 'trigger';
   const loadingMode = String(options.loadingMode || 'dynamic').trim().toLowerCase() || 'dynamic';
+  const testType = resolveTestTypeFromLoadingMode(loadingMode, options.testType);
 
   const keywords = extractKeywords(skillBody);
   const isGame = isGameOrInteractiveSkill(skillName, skillDescription);
   const expectedTools = extractExpectedToolsFromSkill(skill, { testType, loadingMode });
 
   if (isGame) {
-    return generateGamePrompts(skillName, expectedTools, testType, count);
+    return generateGamePrompts(skillName, skillDescription, expectedTools, testType, loadingMode, count);
   }
 
-  return generateWorkflowPrompts(skillName, keywords, expectedTools, testType, count);
+  return generateWorkflowPrompts(skillName, skillDescription, keywords, expectedTools, testType, loadingMode, count);
 }
 
 /**
@@ -490,17 +724,52 @@ export function generateSkillTestPrompts(
  */
 export function buildLlmGenerationPrompt(
   skill: { id: string; name: string; description: string; body?: string },
-  options: { count?: number } = {}
+  options: { count?: number; testType?: string; loadingMode?: string } = {}
 ): string {
-  const count = options.count || 3;
-  const fewShot = buildFewShotContext(skill.name, skill.description);
-  const bodyPreview = String(skill.body || '').slice(0, 2000);
+  const count = Math.max(1, Math.min(10, options.count || 3));
+  const loadingMode = String(options.loadingMode || 'dynamic').trim().toLowerCase() || 'dynamic';
+  const testType = resolveTestTypeFromLoadingMode(loadingMode, options.testType);
+  const skillName = normalizeSkillName(skill.name, skill.id);
+  const skillDescription = String(skill.description || '').trim();
+  const expectedTools = extractExpectedToolsFromSkill(skill, { testType, loadingMode });
+  const expectedBehavior = buildExpectedBehavior(skillName, expectedTools, testType);
+  const expectedGoal = buildExpectedGoal(skillName, skillDescription, loadingMode);
+  const expectedSteps = buildExpectedSteps(expectedTools, expectedGoal, expectedBehavior, loadingMode);
+  const expectedSequence = buildExpectedSequence(expectedTools, loadingMode);
+  const evaluationRubric = buildEvaluationRubric(loadingMode, expectedTools);
+  const fewShot = buildFewShotContext(skillName, skillDescription, loadingMode);
+  const bodyPreview = String(skill.body || '').slice(0, 4000);
+  const modeSummary = loadingMode === 'full'
+    ? 'Full mode = execution-only. Generate task scenarios, expected goals, and concise tool-flow expectations.'
+    : 'Dynamic mode = load-only. Generate prompts that strongly suggest the agent should read the target SKILL.md, not complete the full workflow.';
 
   return [
     fewShot,
     '',
-    `Skill body (first 2000 chars):\n---\n${bodyPreview}\n---`,
+    `Mode: ${loadingMode}`,
+    `Resolved testType: ${testType}`,
+    modeSummary,
+    `Return EXACTLY ${count} items as a JSON array.`,
     '',
-    `Generate exactly ${count} test prompts. Output a JSON array.`,
+    ...buildOutputContract(loadingMode),
+    '',
+    'Quality bar:',
+    '- Prompts must sound like real user requests, not evaluator instructions.',
+    '- Keep the cases editable: concise, concrete, and easy for humans to tweak.',
+    '- Use userPrompt as the canonical input field; triggerPrompt is legacy alias only.',
+    '- Avoid near-duplicate prompts.',
+    '- If the skill body does not support a field confidently, keep it simple rather than inventing details.',
+    '',
+    'Structured hints derived from the skill body:',
+    `- Suggested expectedSteps: ${clipPromptJson(expectedSteps)}`,
+    `- Suggested expectedTools: ${clipPromptJson(expectedTools)}`,
+    `- Suggested expectedBehavior: ${expectedBehavior}`,
+    `- Suggested expectedGoal: ${expectedGoal}`,
+    `- Suggested expectedSequence: ${clipPromptJson(expectedSequence)}`,
+    `- Suggested evaluationRubric: ${clipPromptJson(evaluationRubric)}`,
+    '',
+    `Skill body (first 4000 chars):\n---\n${bodyPreview}\n---`,
+    '',
+    `Generate exactly ${count} editable AI draft cases. Output ONLY the JSON array.`,
   ].join('\n');
 }
