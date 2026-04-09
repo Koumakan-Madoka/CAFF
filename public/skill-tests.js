@@ -1587,6 +1587,10 @@
     }
   }
 
+  function shouldIncludeExpectedSteps(loadingMode, expectedSteps) {
+    return loadingMode === 'full' || (Array.isArray(expectedSteps) && expectedSteps.length > 0);
+  }
+
   async function toggleCaseStatus(testCase) {
     if (!state.selectedSkillId || !testCase || !testCase.id) return;
     const action = testCase.caseStatus === 'ready' ? 'mark-draft' : 'mark-ready';
@@ -1642,7 +1646,6 @@
       triggerPrompt: prompt,
       expectedGoal: dom.detailGoal ? dom.detailGoal.value.trim() : selectedCase.expectedGoal,
       expectedBehavior: dom.detailBehavior ? dom.detailBehavior.value.trim() : selectedCase.expectedBehavior,
-      expectedSteps: expectedSteps || [],
       expectedTools: expectedTools || [],
       expectedSequence: expectedSequence || [],
       evaluationRubric: evaluationRubric || {},
@@ -1650,6 +1653,9 @@
       loadingMode: selectedCase.loadingMode,
       caseStatus: selectedCase.caseStatus,
     };
+    if (shouldIncludeExpectedSteps(selectedCase.loadingMode, expectedSteps)) {
+      body.expectedSteps = expectedSteps || [];
+    }
 
     const result = await fetchJson(
       `/api/skills/${encodeURIComponent(state.selectedSkillId)}/test-cases/${encodeURIComponent(state.selectedCaseId)}`,
@@ -2630,21 +2636,25 @@
         dom.createSubmitButton.textContent = '创建中...';
       }
       try {
+        const loadingMode = dom.createLoadingMode ? dom.createLoadingMode.value : 'dynamic';
+        const createBody = {
+          userPrompt: prompt,
+          triggerPrompt: prompt,
+          loadingMode,
+          expectedTools: [...expectedTools, ...(structuredTools || [])],
+          expectedBehavior,
+          expectedGoal,
+          expectedSequence: expectedSequence || [],
+          evaluationRubric: evaluationRubric || {},
+          caseStatus: 'draft',
+          note: dom.createNote ? dom.createNote.value.trim() : '',
+        };
+        if (shouldIncludeExpectedSteps(loadingMode, expectedSteps)) {
+          createBody.expectedSteps = expectedSteps || [];
+        }
         const createResult = await fetchJson(`/api/skills/${encodeURIComponent(state.selectedSkillId)}/test-cases`, {
           method: 'POST',
-          body: {
-            userPrompt: prompt,
-            triggerPrompt: prompt,
-            loadingMode: dom.createLoadingMode ? dom.createLoadingMode.value : 'dynamic',
-            expectedTools: [...expectedTools, ...(structuredTools || [])],
-            expectedSteps: expectedSteps || [],
-            expectedBehavior,
-            expectedGoal,
-            expectedSequence: expectedSequence || [],
-            evaluationRubric: evaluationRubric || {},
-            caseStatus: 'draft',
-            note: dom.createNote ? dom.createNote.value.trim() : '',
-          },
+          body: createBody,
         });
         const createIssues = normalizeIssueList(createResult && createResult.issues);
         const createdCaseId = createResult && createResult.testCase && typeof createResult.testCase.id === 'string'
