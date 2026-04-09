@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import Database = require('better-sqlite3');
 
@@ -20,6 +21,52 @@ function parseSqliteFileUri(sqlitePath?: string) {
     rawPath: queryIndex >= 0 ? withoutFragment.slice(0, queryIndex) : withoutFragment,
     query: queryIndex >= 0 ? withoutFragment.slice(queryIndex + 1) : '',
   };
+}
+
+function buildNormalizedSqliteFileUri(sqlitePath?: string): string | null {
+  const parsedFileUri = parseSqliteFileUri(sqlitePath);
+  const resolvedPath = resolveSqliteFileUriPath(sqlitePath);
+  if (!parsedFileUri || !resolvedPath) {
+    return null;
+  }
+
+  const normalizedUri = pathToFileURL(resolvedPath).toString();
+  return `${normalizedUri}${parsedFileUri.query ? `?${parsedFileUri.query}` : ''}`;
+}
+
+function resolveSqliteOpenOptions(sqlitePath?: string) {
+  const parsedFileUri = parseSqliteFileUri(sqlitePath);
+  if (!parsedFileUri) {
+    return {};
+  }
+
+  const params = new URLSearchParams(parsedFileUri.query);
+  const unsupportedParamNames = Array.from(
+    new Set(
+      Array.from(params.keys())
+        .map((key) => String(key || '').trim().toLowerCase())
+        .filter((key) => key && key !== 'mode')
+    )
+  );
+
+  if (unsupportedParamNames.length > 0) {
+    throw new Error(`Unsupported SQLite URI query parameter(s): ${unsupportedParamNames.join(', ')}`);
+  }
+
+  const mode = String(params.get('mode') || '').trim().toLowerCase();
+  if (!mode || mode === 'rwc' || mode === 'memory') {
+    return {};
+  }
+
+  if (mode === 'ro') {
+    return { readonly: true };
+  }
+
+  if (mode === 'rw') {
+    return { fileMustExist: true };
+  }
+
+  throw new Error(`Unsupported SQLite URI mode: ${mode}`);
 }
 
 function isSpecialSqlitePath(sqlitePath?: string): boolean {
@@ -75,16 +122,18 @@ function resolveSqliteParentDir(sqlitePath?: string): string | null {
     return null;
   }
 
-  return path.dirname(trimmedPath);
+  return path.dirname(resolveSqliteFileUriPath(trimmedPath) || trimmedPath);
 }
 
 export function resolveSqlitePath(agentDir: string, sqlitePath?: string): string {
   if (sqlitePath) {
-    if (isSpecialSqlitePath(sqlitePath)) {
-      return String(sqlitePath).trim();
+    const normalizedPath = String(sqlitePath).trim();
+
+    if (isSpecialSqlitePath(normalizedPath)) {
+      return ':memory:';
     }
 
-    return resolveSqliteFileUriPath(sqlitePath) || path.resolve(sqlitePath);
+    return buildNormalizedSqliteFileUri(normalizedPath) || path.resolve(normalizedPath);
   }
 
   return path.resolve(agentDir, DEFAULT_SQLITE_FILENAME);
@@ -106,20 +155,35 @@ export function openSqliteDatabase(options: OpenSqliteDatabaseOptions = {}): Ope
   const { agentDir, sqlitePath, timeout = 5000 } = options;
   const resolvedAgentDir = path.resolve(agentDir || process.cwd());
   const databasePath = resolveSqlitePath(resolvedAgentDir, sqlitePath);
+  const openOptions = { timeout, ...resolveSqliteOpenOptions(sqlitePath || databasePath) };
+  const openPath = resolveSqliteFileUriPath(databasePath) || databasePath;
   const parentDir = resolveSqliteParentDir(databasePath);
 
   if (parentDir) {
     fs.mkdirSync(parentDir, { recursive: true });
   }
 
-  const db = new Database(databasePath, { timeout });
-  db.pragma('journal_mode = WAL');
-  db.pragma('synchronous = NORMAL');
-  db.pragma('foreign_keys = ON');
+  let db;
 
-  return {
-    agentDir: resolvedAgentDir,
-    databasePath,
-    db,
-  };
+  try {
+    db = new Database(openPath, openOptions);
+
+    if (!db.readonly) {
+      db.pragma('journal_mode = WAL');
+      db.pragma('synchronous = NORMAL');
+    }
+
+    db.pragma('foreign_keys = ON');
+
+    return {
+      agentDir: resolvedAgentDir,
+      databasePath,
+      db,
+    };
+  } catch (error) {
+    try {
+      db && db.close();
+    } catch {}
+    throw error;
+  }
 }

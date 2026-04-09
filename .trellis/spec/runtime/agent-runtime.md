@@ -22,6 +22,10 @@
 - Prefer bounded reads for prompt context. This code intentionally clips file
   content and limits context fan-out.
 - Preserve symlink and path traversal guards when touching `.trellis` file IO.
+- Preserve supported SQLite `file:` URI semantics when opening runtime stores:
+  on-disk URIs keep `mode=ro` / `mode=rw` intent through explicit open options,
+  parent directory creation uses the decoded underlying filesystem path, and
+  unsupported URI query parameters fail fast instead of being silently ignored.
 
 ## Mirrored Update Paths
 

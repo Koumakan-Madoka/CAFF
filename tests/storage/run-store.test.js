@@ -95,6 +95,42 @@ test('run store creates parent dirs for file sqlite URIs', (t) => {
   assert.equal(fs.existsSync(sqlitePath), true);
 });
 
+test('run store preserves sqlite file URI mode query params when opening databases', (t) => {
+  const tempDir = withTempDir('caff-run-file-uri-query-');
+  const sqliteDir = path.join(tempDir, 'readonly');
+  const sqlitePath = path.join(sqliteDir, 'run-store.sqlite');
+  const sqliteUri = `file:${sqlitePath.replace(/\\/g, '/')}?mode=ro`;
+
+  fs.mkdirSync(sqliteDir, { recursive: true });
+  const seedDb = new Database(sqlitePath);
+  seedDb.exec('CREATE TABLE IF NOT EXISTS sentinel (id INTEGER PRIMARY KEY)');
+  seedDb.close();
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  assert.throws(
+    () => createSqliteRunStore({ agentDir: tempDir, sqlitePath: sqliteUri }),
+    /readonly|read-only|attempt to write/i
+  );
+});
+
+test('run store rejects unsupported sqlite file URI query params', (t) => {
+  const tempDir = withTempDir('caff-run-file-uri-unsupported-query-');
+  const sqlitePath = path.join(tempDir, 'unsupported', 'run-store.sqlite');
+  const sqliteUri = `file:${sqlitePath.replace(/\\/g, '/')}?cache=shared`;
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  assert.throws(
+    () => createSqliteRunStore({ agentDir: tempDir, sqlitePath: sqliteUri }),
+    /Unsupported SQLite URI query parameter\(s\): cache/i
+  );
+});
+
 test('run store migrates legacy runs schema and records task lifecycle data', (t) => {
   const tempDir = withTempDir('caff-run-m2-');
   const sqlitePath = path.join(tempDir, 'legacy-run.sqlite');

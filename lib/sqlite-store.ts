@@ -108,16 +108,25 @@ export class SqliteRunStore {
           ownsDb: true,
         };
 
-    this.agentDir = connection.agentDir;
-    this.databasePath = connection.databasePath;
-    this.db = connection.db;
-    this.ownsDb = connection.ownsDb;
+    try {
+      this.agentDir = connection.agentDir;
+      this.databasePath = connection.databasePath;
+      this.db = connection.db;
+      this.ownsDb = connection.ownsDb;
 
-    migrateRunSchema(this.db);
+      migrateRunSchema(this.db);
 
-    this.sessionRepository = createRunSessionRepository(this.db);
-    this.runRepository = createRunRepository(this.db);
-    this.taskRepository = createRunTaskRepository(this.db);
+      this.sessionRepository = createRunSessionRepository(this.db);
+      this.runRepository = createRunRepository(this.db);
+      this.taskRepository = createRunTaskRepository(this.db);
+    } catch (error) {
+      if (connection.ownsDb) {
+        try {
+          connection.db.close();
+        } catch {}
+      }
+      throw error;
+    }
   }
 
   ensureSession(sessionPath: any) {
