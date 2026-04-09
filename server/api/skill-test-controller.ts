@@ -10,7 +10,7 @@ import { createHttpError } from '../http/http-errors';
 import { readRequestJson } from '../http/request-body';
 import { sendJson } from '../http/response';
 import { resolveToolRelativePath } from '../http/path-utils';
-import { migrateSkillTestSchema } from '../../storage/sqlite/migrations';
+import { migrateChatSchema, migrateRunSchema, migrateSkillTestSchema } from '../../storage/sqlite/migrations';
 import { DEFAULT_THINKING, resolveSetting, startRun } from '../../lib/minimal-pi';
 import { createSqliteRunStore } from '../../lib/sqlite-store';
 import { buildLlmGenerationPrompt, generateSkillTestPrompts } from '../../lib/skill-test-generator';
@@ -2263,6 +2263,8 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     if (schemaReady) {
       return;
     }
+    migrateChatSchema(store.db);
+    migrateRunSchema(store.db);
     migrateSkillTestSchema(store.db);
     schemaReady = true;
   }

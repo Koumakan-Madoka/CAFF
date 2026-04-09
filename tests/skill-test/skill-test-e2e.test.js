@@ -335,6 +335,85 @@ CREATE TABLE skill_test_runs (
   db.close();
 });
 
+test('run endpoint bootstraps dependent schemas for fresh skill-test databases', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-skill-test-fresh-schema-'));
+  const databasePath = path.join(tempDir, 'skill-test.sqlite');
+  const db = new Database(databasePath);
+  db.pragma('journal_mode = WAL');
+  migrateSkillTestSchema(db);
+
+  try {
+    const store = createInMemoryStore(db, {
+      agentDir: path.join(tempDir, 'agent'),
+      databasePath,
+    });
+
+    const controller = createSkillTestController({
+      store,
+      agentToolBridge: createFakeAgentToolBridge(),
+      skillRegistry: createFakeSkillRegistry(['werewolf']),
+      getProjectDir: () => tempDir,
+      toolBaseUrl: 'http://127.0.0.1:3100',
+      startRunImpl: () => ({
+        runId: 'run-fresh-schema',
+        sessionPath: path.join(tempDir, 'session-fresh-schema.jsonl'),
+        resultPromise: Promise.resolve({
+          reply: 'ok',
+          runId: 'run-fresh-schema',
+          sessionPath: path.join(tempDir, 'session-fresh-schema.jsonl'),
+        }),
+      }),
+      evaluateRunImpl: () => ({
+        triggerPassed: 1,
+        executionPassed: 1,
+        toolAccuracy: 1,
+        actualToolsJson: JSON.stringify(['read']),
+      }),
+    });
+
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO skill_test_cases (
+        id, skill_id, test_type, loading_mode, trigger_prompt,
+        expected_tools_json, expected_behavior, validity_status, case_status,
+        expected_goal, expected_sequence_json, evaluation_rubric_json,
+        note, created_at, updated_at
+      ) VALUES (
+        @id, @skillId, 'trigger', 'dynamic', @triggerPrompt,
+        '[]', '', 'ready', 'ready',
+        '', '[]', '{}',
+        '', @createdAt, @updatedAt
+      )`
+    ).run({
+      id: 'fresh-schema-case',
+      skillId: 'werewolf',
+      triggerPrompt: 'run me on a fresh database',
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const runRes = createCaptureResponse();
+    const handled = await controller({
+      req: createJsonRequest('POST', '/api/skills/werewolf/test-cases/fresh-schema-case/run', {}),
+      res: runRes,
+      pathname: '/api/skills/werewolf/test-cases/fresh-schema-case/run',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases/fresh-schema-case/run'),
+    });
+
+    assert.equal(handled, true);
+    assert.equal(runRes.statusCode, 200);
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM eval_cases').get().count, 1);
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM eval_case_runs').get().count, 1);
+  } finally {
+    try {
+      db.close();
+    } catch {
+      // ignore cleanup errors
+    }
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test('legacy validity_status rows stay draft in list, summary, and run-all', async () => {
   const db = createTestDb();
   const store = createInMemoryStore(db);

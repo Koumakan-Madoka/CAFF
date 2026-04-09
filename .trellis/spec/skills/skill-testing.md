@@ -77,6 +77,7 @@ skill_test_cases (1) ──→ (N) skill_test_runs
 
 - Each skill test case links to one `eval_case`.
 - Each skill test run links to one `eval_case_run`.
+- `server/api/skill-test-controller.ts` must ensure dependent chat/run/skill-test schema migrations before handlers touch `eval_cases`, `eval_case_runs`, or run-debug tables on the shared store DB.
 - `eval_case_runs.prompt_version` is the regression bucket key with provider/model.
 
 ## Evaluation Logic
