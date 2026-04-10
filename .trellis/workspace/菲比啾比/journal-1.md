@@ -86,3 +86,70 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 3: Chat 主界面 Markdown 渲染与工具链路可视化
+
+**Date**: 2026-04-10
+**Task**: Chat 主界面 Markdown 渲染与工具链路可视化
+**Branch**: `feat/chat-markdown-tool-trace`
+
+### Summary
+
+完成主聊天 Markdown 渲染、工具链路可视化与多轮交互打磨，补齐测试、spec 与任务归档。
+
+### Main Changes
+
+## 完成内容
+
+| 改动 | 说明 |
+|------|------|
+| 安全 Markdown 渲染 | 为 agent 消息增加安全 Markdown 渲染，支持常见结构并拦截危险链接/原始 HTML 注入 |
+| 工具链路可视化 | 为消息补充工具摘要、时间线、失败高亮、当前调用工具 live 面板 |
+| 交互打磨 | 修复空 `{}` 参数摘要、展开区滚动位置回跳、当前工具面板文案与配色问题 |
+| 运行时契约 | 新增 message tool trace 聚合逻辑，稳定关联 session/bridge 步骤并保留最新事件 |
+| 验证与文档 | 补充 runtime 测试、更新前端/运行时 spec，并归档任务 `04-10-chat-markdown-tool-trace` |
+
+**改动文件**:
+- `public/chat/message-timeline.js`
+- `public/styles.css`
+- `public/shared/safe-markdown.js`
+- `public/shared/clipboard.js`
+- `server/domain/runtime/message-tool-trace.ts`
+- `server/domain/runtime/agent-tool-bridge.ts`
+- `server/domain/conversation/turn/agent-executor.ts`
+- `server/api/conversations-controller.ts`
+- `tests/runtime/message-tool-trace.test.js`
+- `.trellis/spec/frontend/ui-structure.md`
+- `.trellis/spec/runtime/agent-runtime.md`
+
+### Testing
+
+- [OK] `npm test`
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task archived and code committed
+
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `55f080d` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
