@@ -106,6 +106,7 @@ let pendingConversationRefreshTimer = null;
 let conversationPaneRenderPending = false;
 let liveDraftFinalizingTimer = null;
 const LIVE_DRAFT_IDLE_MS = 1600;
+const MAX_WARM_TOOL_TRACE_MESSAGES = 6;
 
 function applyConversationResponse(result) {
   if (!result) {
@@ -1458,12 +1459,42 @@ async function fetchMessageToolTrace(conversationId, message, options = {}) {
   return request;
 }
 
+function collectWarmConversationToolTraceMessages(conversation) {
+  const inspectableMessages =
+    conversation && Array.isArray(conversation.messages)
+      ? conversation.messages.filter((message) => canInspectToolTrace(message))
+      : [];
+
+  if (inspectableMessages.length <= MAX_WARM_TOOL_TRACE_MESSAGES) {
+    return inspectableMessages;
+  }
+
+  return inspectableMessages
+    .map((message, index) => {
+      const traceState = toolTraceStateForMessage(message.id);
+      const isPinned = Boolean(traceState && (traceState.open || traceState.status === 'loading'));
+      const isRunning = Boolean(message && (message.status === 'queued' || message.status === 'streaming'));
+      const isFailed = Boolean(message && message.status === 'failed');
+      const hasError = Boolean(traceState && traceState.status === 'error');
+
+      return {
+        index,
+        message,
+        priority: (isPinned ? 300 : 0) + (isRunning ? 200 : 0) + (isFailed ? 100 : 0) + (hasError ? 50 : 0) + index,
+      };
+    })
+    .sort((left, right) => right.priority - left.priority)
+    .slice(0, MAX_WARM_TOOL_TRACE_MESSAGES)
+    .sort((left, right) => left.index - right.index)
+    .map((entry) => entry.message);
+}
+
 function warmConversationToolTraces(conversation) {
   if (!conversation || !conversation.id || !Array.isArray(conversation.messages)) {
     return;
   }
 
-  conversation.messages.filter((message) => canInspectToolTrace(message)).forEach((message) => {
+  collectWarmConversationToolTraceMessages(conversation).forEach((message) => {
     const traceState = toolTraceStateForMessage(message.id);
     const requestKey = computeMessageToolTraceRequestKey(message);
 

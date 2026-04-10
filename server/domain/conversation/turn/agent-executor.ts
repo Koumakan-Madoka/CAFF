@@ -398,7 +398,145 @@ function liveSessionToolStepSignature(step: any) {
   ]);
 }
 
-function extractLiveSessionToolFromPiEvent(piEvent: any, options: any = {}) {
+function stringifyLiveToolIdentityValue(value: any) {
+  if (value == null || value === '') {
+    return '';
+  }
+
+  if (typeof value === 'string') {
+    return value.trim();
+  }
+
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function liveToolIdentityTextMatches(previous: any, next: any) {
+  const previousText = String(previous || '');
+  const nextText = String(next || '');
+
+  if (!previousText || !nextText) {
+    return false;
+  }
+
+  return previousText === nextText || previousText.startsWith(nextText) || nextText.startsWith(previousText);
+}
+
+function liveAnonymousSessionToolFingerprint(input: any = {}) {
+  return JSON.stringify([
+    String(input.toolName || '').trim().toLowerCase(),
+    String(input.toolKind || '').trim().toLowerCase(),
+    String(input.rawToolName || '').trim().toLowerCase(),
+    stringifyLiveToolIdentityValue(input.arguments !== undefined ? input.arguments : null),
+    String(input.partialJson || '').trim(),
+  ]);
+}
+
+function sessionStepOrdinal(stepId: any) {
+  const match = String(stepId || '')
+    .trim()
+    .match(/^session-(\d+)$/);
+
+  if (!match) {
+    return 0;
+  }
+
+  const value = Number.parseInt(match[1], 10);
+  return Number.isInteger(value) && value > 0 ? value : 0;
+}
+
+export function resolveLiveSessionToolIndex(toolCall: any, options: any = {}) {
+  const toolCallId = String(toolCall && toolCall.id ? toolCall.id : toolCall && toolCall.toolCallId ? toolCall.toolCallId : '').trim();
+  const toolCallIndex = Number.isInteger(options.toolCallIndex) && Number(options.toolCallIndex) >= 0 ? Number(options.toolCallIndex) : -1;
+  const tracker = options.anonymousTracker && typeof options.anonymousTracker === 'object' ? options.anonymousTracker : null;
+
+  if (!tracker) {
+    return toolCallIndex >= 0 ? toolCallIndex : 0;
+  }
+
+  if (!Number.isInteger(tracker.nextIndex) || tracker.nextIndex < 0) {
+    tracker.nextIndex = 0;
+  }
+
+  if (toolCallId) {
+    tracker.activeStepId = '';
+    tracker.activeFingerprint = '';
+    tracker.activeToolName = '';
+    tracker.activeToolKind = '';
+    tracker.activeArgumentsText = '';
+    tracker.activePartialJsonText = '';
+
+    if (toolCallIndex >= 0) {
+      tracker.nextIndex = Math.max(tracker.nextIndex, toolCallIndex + 1);
+    }
+
+    return toolCallIndex >= 0 ? toolCallIndex : 0;
+  }
+
+  const resolvedToolName = String(options.resolvedToolName || options.rawToolName || '').trim().toLowerCase();
+  const resolvedToolKind = String(options.resolvedToolKind || 'session').trim().toLowerCase() || 'session';
+  const currentToolName = String(options.currentToolName || '').trim().toLowerCase();
+  const currentToolKind = String(options.currentToolKind || '').trim().toLowerCase();
+  const currentToolStepId = String(options.currentToolStepId || '').trim();
+  const nextArgumentsText = stringifyLiveToolIdentityValue(toolCall && toolCall.arguments !== undefined ? toolCall.arguments : null);
+  const nextPartialJsonText = String(toolCall && toolCall.partialJson ? toolCall.partialJson : '').trim();
+  const nextFingerprint = liveAnonymousSessionToolFingerprint({
+    toolName: resolvedToolName,
+    toolKind: resolvedToolKind,
+    rawToolName: options.rawToolName,
+    arguments: toolCall && toolCall.arguments !== undefined ? toolCall.arguments : null,
+    partialJson: toolCall && toolCall.partialJson ? toolCall.partialJson : '',
+  });
+  const activeStepId = String(tracker.activeStepId || '').trim();
+  const activeToolName = String(tracker.activeToolName || '').trim().toLowerCase();
+  const activeToolKind = String(tracker.activeToolKind || '').trim().toLowerCase();
+  const activeFingerprint = String(tracker.activeFingerprint || '');
+  const activeArgumentsText = String(tracker.activeArgumentsText || '');
+  const activePartialJsonText = String(tracker.activePartialJsonText || '');
+  const payloadLooksContinuous =
+    liveToolIdentityTextMatches(activeFingerprint, nextFingerprint) ||
+    liveToolIdentityTextMatches(activeArgumentsText, nextArgumentsText) ||
+    liveToolIdentityTextMatches(activePartialJsonText, nextPartialJsonText) ||
+    liveToolIdentityTextMatches(activeArgumentsText, nextPartialJsonText) ||
+    liveToolIdentityTextMatches(activePartialJsonText, nextArgumentsText) ||
+    ((!activeArgumentsText && !activePartialJsonText) || (!nextArgumentsText && !nextPartialJsonText));
+
+  if (
+    activeStepId &&
+    currentToolStepId === activeStepId &&
+    currentToolName === activeToolName &&
+    currentToolKind === activeToolKind &&
+    resolvedToolName === activeToolName &&
+    resolvedToolKind === activeToolKind &&
+    payloadLooksContinuous
+  ) {
+    const activeOrdinal = sessionStepOrdinal(activeStepId);
+
+    if (activeOrdinal > 0) {
+      tracker.nextIndex = Math.max(tracker.nextIndex, activeOrdinal);
+      tracker.activeFingerprint = nextFingerprint;
+      tracker.activeArgumentsText = nextArgumentsText;
+      tracker.activePartialJsonText = nextPartialJsonText;
+      return activeOrdinal - 1;
+    }
+  }
+
+  const nextOrdinal = Math.max(tracker.nextIndex + 1, toolCallIndex + 1, 1);
+
+  tracker.nextIndex = nextOrdinal;
+  tracker.activeStepId = `session-${nextOrdinal}`;
+  tracker.activeToolName = resolvedToolName;
+  tracker.activeToolKind = resolvedToolKind;
+  tracker.activeFingerprint = nextFingerprint;
+  tracker.activeArgumentsText = nextArgumentsText;
+  tracker.activePartialJsonText = nextPartialJsonText;
+  return nextOrdinal - 1;
+}
+
+export function extractLiveSessionToolFromPiEvent(piEvent: any, options: any = {}) {
   const message = piEvent && piEvent.message && piEvent.message.role === 'assistant' ? piEvent.message : null;
 
   if (!message || !Array.isArray(message.content)) {
@@ -436,10 +574,30 @@ function extractLiveSessionToolFromPiEvent(piEvent: any, options: any = {}) {
       ? inferBridgeToolNameFromCommand(toolCall && toolCall.arguments ? toolCall.arguments.command : '')
       : '';
   const toolName = inferredBridgeToolName || rawToolName;
+  const toolKind = inferredBridgeToolName ? 'bridge' : 'session';
 
   if (!toolName) {
     return null;
   }
+
+  const stepIndex = resolveLiveSessionToolIndex(
+    {
+      id: toolCall && toolCall.id ? toolCall.id : '',
+      toolCallId: toolCall && toolCall.toolCallId ? toolCall.toolCallId : '',
+      arguments: toolCall && toolCall.arguments !== undefined ? toolCall.arguments : null,
+      partialJson: toolCall && toolCall.partialJson ? toolCall.partialJson : '',
+    },
+    {
+      toolCallIndex,
+      rawToolName,
+      resolvedToolName: toolName,
+      resolvedToolKind: toolKind,
+      currentToolName: options.currentToolName,
+      currentToolKind: options.currentToolKind,
+      currentToolStepId: options.currentToolStepId,
+      anonymousTracker: options.anonymousTracker,
+    }
+  );
 
   const step = createLiveSessionToolStep(
     {
@@ -452,14 +610,14 @@ function extractLiveSessionToolFromPiEvent(piEvent: any, options: any = {}) {
       agentDir: options.agentDir,
       createdAt: options.createdAt || nowIso(),
       status: 'running',
-      index: toolCallIndex >= 0 ? toolCallIndex : 0,
+      index: stepIndex,
     }
   );
 
   return {
     currentTool: {
       toolName,
-      toolKind: inferredBridgeToolName ? 'bridge' : 'session',
+      toolKind,
       toolStepId: step && step.stepId ? String(step.stepId) : String(toolCall && toolCall.id ? toolCall.id : '').trim(),
       inferred: Boolean(inferredBridgeToolName),
     },
@@ -823,6 +981,13 @@ export function createAgentExecutor(options: any = {}) {
     let rawReply = '';
     let lastLiveSessionToolStepId = '';
     let lastLiveSessionToolSignature = '';
+    const liveSessionAnonymousToolTracker = {
+      nextIndex: 0,
+      activeStepId: '',
+      activeFingerprint: '',
+      activeToolName: '',
+      activeToolKind: '',
+    };
     const startedMetadata = {
       ...queuedMetadata,
       sessionPath: handle.sessionPath || '',
@@ -873,6 +1038,10 @@ export function createAgentExecutor(options: any = {}) {
       const liveTool = extractLiveSessionToolFromPiEvent(event && event.piEvent ? event.piEvent : null, {
         agentDir,
         createdAt: nowIso(),
+        currentToolName: stage.currentToolName,
+        currentToolKind: stage.currentToolKind,
+        currentToolStepId: stage.currentToolStepId,
+        anonymousTracker: liveSessionAnonymousToolTracker,
       });
 
       if (!liveTool || !liveTool.currentTool) {
