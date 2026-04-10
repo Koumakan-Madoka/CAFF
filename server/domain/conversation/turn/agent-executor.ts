@@ -405,14 +405,21 @@ function extractLiveSessionToolFromPiEvent(piEvent: any, options: any = {}) {
     return null;
   }
 
-  const toolCall =
-    message.content
-      .slice()
-      .reverse()
-      .find((item: any) => {
-        const type = normalizePiToolContentType(item && item.type ? item.type : '');
-        return type === 'tool_call' || type === 'toolcall' || type === 'tool_use' || type === 'tooluse';
-      }) || null;
+  let toolCall = null;
+  let toolCallIndex = -1;
+  let seenToolCalls = 0;
+
+  for (const item of message.content) {
+    const type = normalizePiToolContentType(item && item.type ? item.type : '');
+
+    if (type !== 'tool_call' && type !== 'toolcall' && type !== 'tool_use' && type !== 'tooluse') {
+      continue;
+    }
+
+    toolCall = item;
+    toolCallIndex = seenToolCalls;
+    seenToolCalls += 1;
+  }
 
   if (!toolCall) {
     return null;
@@ -445,6 +452,7 @@ function extractLiveSessionToolFromPiEvent(piEvent: any, options: any = {}) {
       agentDir: options.agentDir,
       createdAt: options.createdAt || nowIso(),
       status: 'running',
+      index: toolCallIndex >= 0 ? toolCallIndex : 0,
     }
   );
 

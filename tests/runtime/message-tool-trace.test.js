@@ -406,11 +406,38 @@ test('live tool step helpers keep stable ids and redact sensitive payloads', () 
       arguments: {
         command: `cat ${path.join(projectDir, '.trellis', 'spec', 'frontend', 'index.md')}`,
       },
-      partialJson: `{"path":"${path.join(projectDir, '.trellis', 'spec', 'frontend', 'index.md')}"}`,
+      partialJson: `{"path":"${path.join(projectDir, '.trellis', 'spec', 'frontend', 'index.md')}","apiKey":"sk-live-secret"}`,
     },
     {
       agentDir: tempDir,
       createdAt: '2026-04-10T00:00:00.000Z',
+    }
+  );
+  const anonymousSessionStep = createLiveSessionToolStep(
+    {
+      name: 'read',
+      arguments: {
+        path: path.join(projectDir, '.trellis', 'spec', 'frontend', 'index.md'),
+      },
+      partialJson: '{"apiKey":"sk-live-fragment","password":"hunter2"',
+    },
+    {
+      agentDir: tempDir,
+      createdAt: '2026-04-10T00:00:00.500Z',
+      index: 1,
+    }
+  );
+  const nextAnonymousSessionStep = createLiveSessionToolStep(
+    {
+      name: 'bash',
+      arguments: {
+        command: 'echo ping',
+      },
+    },
+    {
+      agentDir: tempDir,
+      createdAt: '2026-04-10T00:00:00.750Z',
+      index: 2,
     }
   );
   const bridgeStep = createLiveBridgeToolStep(
@@ -434,10 +461,16 @@ test('live tool step helpers keep stable ids and redact sensitive payloads', () 
 
   assert.equal(sessionStep.stepId, 'session-session-tool-live-1');
   assert.equal(sessionStep.createdAt, '2026-04-10T00:00:00.000Z');
+  assert.equal(anonymousSessionStep.stepId, 'session-2');
+  assert.equal(nextAnonymousSessionStep.stepId, 'session-3');
   assert.equal(bridgeStep.stepId, 'bridge-tool-live-1');
   assert.equal(bridgeStep.status, 'failed');
   assert.equal(JSON.stringify(sessionStep.requestSummary).includes(projectDir), false);
   assert.equal(JSON.stringify(sessionStep.partialJson).includes(projectDir), false);
+  assert.equal(JSON.stringify(sessionStep.partialJson).includes('sk-live-secret'), false);
+  assert.equal(JSON.stringify(anonymousSessionStep.partialJson).includes('sk-live-fragment'), false);
+  assert.equal(JSON.stringify(anonymousSessionStep.partialJson).includes('hunter2'), false);
+  assert.equal(String(anonymousSessionStep.partialJson).includes('[redacted]'), true);
   assert.equal(JSON.stringify(bridgeStep.requestSummary).includes(projectDir), false);
   assert.equal(JSON.stringify(bridgeStep.requestSummary).includes('super-secret-token'), false);
   assert.equal(JSON.stringify(bridgeStep.errorSummary).includes('hidden-token'), false);

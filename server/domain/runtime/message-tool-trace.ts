@@ -79,6 +79,51 @@ function isSensitiveKey(key: any) {
   ].some((part) => normalized.includes(part));
 }
 
+function extractJsonStyleKey(segment: any) {
+  const match = String(segment || '').match(/(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_.-]+))\s*:\s*$/);
+
+  if (!match) {
+    return '';
+  }
+
+  return String(match[1] || match[2] || match[3] || '').trim();
+}
+
+function redactJsonStyleSecrets(value: any) {
+  return String(value || '').replace(
+    /((?:"[^"]+"|'[^']+'|[A-Za-z0-9_.-]+)\s*:\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^,}\]]*)/g,
+    (match, prefix) => {
+      const key = extractJsonStyleKey(prefix);
+
+      if (!isSensitiveKey(key)) {
+        return match;
+      }
+
+      return `${prefix}"[redacted]"`;
+    }
+  );
+}
+
+function redactJsonContainer(value: any, options: any = {}) {
+  const text = String(value || '').trim();
+
+  if (!text || (text[0] !== '{' && text[0] !== '[')) {
+    return '';
+  }
+
+  const parsed = safeJsonParse(text);
+
+  if (!parsed || typeof parsed !== 'object') {
+    return '';
+  }
+
+  try {
+    return JSON.stringify(summarizeValue(parsed, options));
+  } catch {
+    return '';
+  }
+}
+
 function toPortablePath(value: string) {
   return String(value || '').replace(/\\/g, '/');
 }
@@ -130,6 +175,13 @@ function redactString(value: any, options: any = {}) {
     return '';
   }
 
+  const jsonRedacted = redactJsonContainer(text, options);
+
+  if (jsonRedacted) {
+    text = jsonRedacted;
+  }
+
+  text = redactJsonStyleSecrets(text);
   text = text.replace(/(authorization\s*[:=]\s*bearer\s+)([^\s,;]+)/gi, '$1[redacted]');
   text = text.replace(/(authorization\s*[:=]\s*)([^\s,;]+)/gi, '$1[redacted]');
   text = text.replace(/\b(bearer)\s+([A-Za-z0-9._~+/=-]+)/gi, '$1 [redacted]');
@@ -439,6 +491,7 @@ function normalizeSessionToolCall(toolCall: any, index: number, options: any = {
 }
 
 export function createLiveSessionToolStep(toolCall: any, options: any = {}) {
+  const index = Number.isInteger(options.index) && Number(options.index) >= 0 ? Number(options.index) : 0;
   const normalized = normalizeSessionToolCall(
     {
       toolCallId: toolCall && toolCall.toolCallId ? toolCall.toolCallId : toolCall && toolCall.id ? toolCall.id : '',
@@ -446,7 +499,7 @@ export function createLiveSessionToolStep(toolCall: any, options: any = {}) {
       arguments: toolCall && toolCall.arguments !== undefined ? toolCall.arguments : null,
       partialJson: toolCall && toolCall.partialJson ? toolCall.partialJson : '',
     },
-    0,
+    index,
     options
   );
 
