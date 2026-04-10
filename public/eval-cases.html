@@ -9,6 +9,7 @@
     <script defer src="/shared/model-options.js"></script>
     <script defer src="/shared/toast.js"></script>
     <script defer src="/eval-cases.js"></script>
+    <script defer src="/skill-tests.js"></script>
   </head>
   <body class="casebook">
     <div class="ambient ambient-a"></div>
@@ -33,6 +34,337 @@
         </div>
       </header>
 
+      <div class="tab-bar">
+        <button class="tab-button active" data-tab="panel-eval-cases">错题本 / A/B 测试</button>
+        <button class="tab-button" data-tab="panel-skill-tests">Skill 测试</button>
+      </div>
+
+      <div id="panel-skill-tests" class="tab-panel hidden">
+        <main class="skill-tests-layout">
+          <section class="panel skill-tests-toolbar-panel">
+            <div class="skill-tests-toolbar-head">
+              <div class="skill-tests-toolbar-copy">
+                <p class="eyebrow">Skill Tests</p>
+                <div class="skill-tests-toolbar-title-row">
+                  <h2>Skill 测试</h2>
+                  <span class="tag">主操作常驻</span>
+                </div>
+                <p class="section-hint skill-tests-toolbar-lead">顶部保留主配置和常用操作，下面继续看列表和详情。</p>
+              </div>
+            </div>
+
+            <div class="skill-tests-toolbar-grid">
+              <div class="skill-tests-toolbar-field skill-tests-toolbar-field-inline skill-tests-toolbar-field-wide">
+                <label>
+                  <span>Skill</span>
+                  <select id="st-skill-select"><option value="">— 选择 Skill —</option></select>
+                </label>
+                <button id="st-refresh-skills" class="ghost-button" type="button">刷新</button>
+              </div>
+              <label class="skill-tests-toolbar-field">
+                <span>Agent</span>
+                <select id="st-agent-select"><option value="">— 默认 —</option></select>
+              </label>
+              <label class="skill-tests-toolbar-field skill-tests-toolbar-field-wide">
+                <span>模型</span>
+                <select id="st-model-select"><option value="">系统默认模型</option></select>
+              </label>
+              <label class="skill-tests-toolbar-field">
+                <span>Prompt Version</span>
+                <input id="st-prompt-version" type="text" maxlength="80" placeholder="skill-test-v2" />
+              </label>
+              <label class="skill-tests-toolbar-field">
+                <span>数量</span>
+                <input id="st-generate-count" type="number" min="1" max="10" value="3" />
+              </label>
+              <label class="skill-tests-toolbar-field">
+                <span>加载方式</span>
+                <select id="st-generate-loading-mode">
+                  <option value="dynamic">Dynamic（推荐）</option>
+                  <option value="full">Full</option>
+                </select>
+              </label>
+              <div class="skill-tests-toolbar-field">
+                <span>模式说明</span>
+                <p class="section-hint">Dynamic：看 skill 是否成功加载；Full：看执行质量与目标达成。</p>
+              </div>
+            </div>
+
+            <div class="skill-tests-toolbar-actions">
+              <button id="st-generate-btn" class="ghost-button" type="button">AI 生成测试用例</button>
+              <button id="st-open-create-btn" class="ghost-button" type="button">手动创建</button>
+              <button id="st-run-all-btn" class="ghost-button" type="button">批量运行 Ready 用例</button>
+              <span id="st-case-count" class="section-hint">0 个用例</span>
+            </div>
+            <p class="section-hint skill-tests-toolbar-footnote">使用顶部模型 AI 生成 draft；先改草稿，再手动运行。批量运行只跑 ready。</p>
+            <div id="st-run-progress" class="run-progress-container hidden"></div>
+          </section>
+
+          <div class="skill-tests-main">
+            <section class="panel skill-tests-overview-panel">
+              <div class="panel-header">
+                <div>
+                  <p class="eyebrow">Overview</p>
+                  <h2>当前 Skill 概览</h2>
+                </div>
+              </div>
+              <div id="st-selected-highlights" class="tag-row">
+                <span class="tag tag-pending">先选一个 Skill</span>
+              </div>
+              <p id="st-selected-summary" class="section-hint">这里会显示当前 Skill 的用例数量、可重试范围和最近表现。</p>
+              <div id="st-selected-callout" class="skill-test-status-callout hidden" aria-live="polite"></div>
+            </section>
+
+            <section class="panel skill-tests-list-panel">
+              <div class="panel-header">
+                <div>
+                  <p class="eyebrow">Case List</p>
+                  <h2>用例列表</h2>
+                </div>
+                <span id="st-filter-count" class="section-hint">显示 0 / 0</span>
+              </div>
+              <div class="field-grid">
+                <label>
+                  <span>搜索</span>
+                  <input id="st-search-input" type="text" maxlength="120" placeholder="按 case id、prompt、备注、工具搜索" />
+                </label>
+                <label>
+                  <span>筛选</span>
+                  <select id="st-validity-filter">
+                    <option value="all">全部状态</option>
+                    <option value="draft">Draft</option>
+                    <option value="ready">Ready</option>
+                    <option value="archived">Archived</option>
+                    <option value="failing">最近失败</option>
+                  </select>
+                </label>
+              </div>
+              <div id="st-case-list" class="skill-test-case-list">
+                <p class="section-hint">选择一个 Skill 查看测试用例</p>
+              </div>
+            </section>
+
+            <section class="panel skill-tests-detail-panel">
+              <div id="st-detail-empty" class="empty-state skill-test-empty-state">
+                <p class="eyebrow">Skill Test Detail</p>
+                <h2 class="skill-test-empty-title">先选一条用例</h2>
+                <p class="section-hint">从上面的列表点开一条，或者先生成 / 手动创建一条用例；详情区会按页签拆开显示，不再把历史和回归都堆在一起。</p>
+              </div>
+
+              <div id="st-detail" class="hidden skill-test-detail-shell">
+                <div class="skill-test-detail-header">
+                  <div>
+                    <p class="eyebrow">Skill Test Detail</p>
+                    <div class="skill-test-detail-title-row">
+                      <h2>测试用例详情</h2>
+                      <span id="st-detail-validity" class="tag tag-pending">Draft</span>
+                    </div>
+                    <p id="st-detail-case-id" class="muted"></p>
+                    <div id="st-detail-meta" class="tag-row"></div>
+                    <p id="st-detail-last-outcome" class="section-hint">先运行一条再看最近结果摘要。</p>
+                  </div>
+                  <div id="st-detail-status-callout" class="skill-test-status-callout hidden" aria-live="polite"></div>
+                  <div class="panel-actions">
+                    <button id="st-detail-save-btn" class="ghost-button" type="button">保存草稿</button>
+                    <button id="st-detail-toggle-status-btn" class="ghost-button" type="button">标记 Ready</button>
+                    <button id="st-detail-run-btn" class="ghost-button" type="button">运行测试</button>
+                    <button id="st-detail-download-btn" class="ghost-button" type="button">下载 JSON</button>
+                    <button id="st-detail-delete-btn" class="ghost-button danger" type="button">删除</button>
+                  </div>
+                  <div id="st-detail-issues" class="skill-test-issues hidden" aria-live="polite"></div>
+                </div>
+
+                <div class="tab-bar skill-test-detail-tabs" role="tablist" aria-label="Skill test detail tabs">
+                  <button id="st-detail-tab-overview" class="tab-button active" type="button" role="tab" aria-controls="st-detail-panel-overview" data-st-detail-tab="overview" aria-selected="true">概览</button>
+                  <button id="st-detail-tab-details" class="tab-button" type="button" role="tab" aria-controls="st-detail-panel-details" data-st-detail-tab="details" aria-selected="false">详情</button>
+                  <button id="st-detail-tab-runs" class="tab-button" type="button" role="tab" aria-controls="st-detail-panel-runs" data-st-detail-tab="runs" aria-selected="false">运行历史</button>
+                  <button id="st-detail-tab-regression" class="tab-button" type="button" role="tab" aria-controls="st-detail-panel-regression" data-st-detail-tab="regression" aria-selected="false">回归对比</button>
+                </div>
+
+                <div class="skill-test-detail-content">
+                  <div id="st-detail-panel-overview" data-st-detail-panel="overview" class="skill-test-detail-panel" role="tabpanel" aria-labelledby="st-detail-tab-overview">
+                    <div class="skill-test-detail-grid">
+                      <section class="stack-card">
+                        <div class="section-row">
+                          <span class="section-label">这条用例想测什么</span>
+                        </div>
+                        <p id="st-detail-expected-behavior" class="section-hint">主要关注能否触发 skill。</p>
+                      </section>
+
+                      <section class="stack-card">
+                        <div class="section-row">
+                          <span class="section-label">期望工具</span>
+                        </div>
+                        <p id="st-detail-expected-tools" class="section-hint">(无)</p>
+                      </section>
+
+                      <section class="stack-card">
+                        <div class="section-row">
+                          <span class="section-label">当前生命周期状态</span>
+                        </div>
+                        <p id="st-detail-validity-help" class="section-hint">生成后先进入 draft；确认无误后再标记 ready。</p>
+                      </section>
+                    </div>
+                  </div>
+
+                  <div id="st-detail-panel-details" data-st-detail-panel="details" class="skill-test-detail-panel hidden" role="tabpanel" aria-labelledby="st-detail-tab-details">
+                    <div class="skill-test-detail-grid">
+                      <section class="stack-card skill-test-detail-span-full">
+                        <div class="section-row">
+                          <span class="section-label">用户任务输入（兼容 triggerPrompt）</span>
+                        </div>
+                        <textarea id="st-detail-prompt" class="mono-textarea" rows="5" placeholder="用户会说什么来触发或驱动这条测试用例？"></textarea>
+                      </section>
+
+                      <section class="stack-card skill-test-detail-span-full">
+                        <div class="section-row">
+                          <span class="section-label">目标描述</span>
+                        </div>
+                        <textarea id="st-detail-goal" class="mono-textarea" rows="3" placeholder="Full 模式下，这条 case 想完成什么？"></textarea>
+                      </section>
+
+                      <section class="stack-card skill-test-detail-span-full">
+                        <div class="section-row">
+                          <span class="section-label">Expected Steps JSON</span>
+                        </div>
+                        <textarea id="st-detail-steps-json" class="mono-textarea" rows="6" placeholder='[{"title":"Read the skill","expectedBehavior":"Open the target SKILL.md first.","required":true,"order":1,"strongSignals":[{"type":"tool","toolName":"read"}]}]'></textarea>
+                      </section>
+
+                      <section class="stack-card skill-test-detail-span-full">
+                        <div class="section-row">
+                          <span class="section-label">行为说明</span>
+                        </div>
+                        <textarea id="st-detail-behavior" class="mono-textarea" rows="3" placeholder="补充这条 case 想验证的关键行为"></textarea>
+                      </section>
+
+                      <section class="stack-card skill-test-detail-span-full">
+                        <div class="section-row">
+                          <span class="section-label">期望工具 JSON</span>
+                        </div>
+                        <textarea id="st-detail-tools-json" class="mono-textarea" rows="5" placeholder='[{"name":"read","order":1,"requiredParams":["path"],"arguments":{"path":"<contains:/skills/werewolf/SKILL.md>"}}]'></textarea>
+                      </section>
+
+                      <section class="stack-card skill-test-detail-span-full">
+                        <div class="section-row">
+                          <span class="section-label">关键顺序 JSON</span>
+                        </div>
+                        <textarea id="st-detail-sequence-json" class="mono-textarea" rows="4" placeholder='["read", {"name":"bash","order":2}]'></textarea>
+                      </section>
+
+                      <section class="stack-card skill-test-detail-span-full">
+                        <div class="section-row">
+                          <span class="section-label">评估 Rubric JSON</span>
+                        </div>
+                        <textarea id="st-detail-rubric-json" class="mono-textarea" rows="4" placeholder='{"thresholds":{"goalAchievement":0.7}}'></textarea>
+                      </section>
+
+                      <section class="stack-card skill-test-detail-span-full">
+                        <div class="section-row">
+                          <span class="section-label">备注</span>
+                        </div>
+                        <textarea id="st-detail-note" class="mono-textarea" rows="2" placeholder="无备注"></textarea>
+                      </section>
+                    </div>
+                  </div>
+
+                  <div id="st-detail-panel-runs" data-st-detail-panel="runs" class="skill-test-detail-panel hidden" role="tabpanel" aria-labelledby="st-detail-tab-runs">
+                    <div id="st-detail-runs" class="agent-list">
+                      <p class="section-hint">暂无运行记录</p>
+                    </div>
+                  </div>
+
+                  <div id="st-detail-panel-regression" data-st-detail-panel="regression" class="skill-test-detail-panel hidden" role="tabpanel" aria-labelledby="st-detail-tab-regression">
+                    <div id="st-detail-regression">
+                      <p class="section-hint">先运行几次，再看不同模型或 prompt version 的表现差异。</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section id="st-create-section" class="panel skill-tests-create-panel">
+              <div class="panel-header">
+                <div>
+                  <p class="eyebrow">Create</p>
+                  <h2>手动创建</h2>
+                </div>
+              </div>
+              <p class="section-hint">当自动生成不够精确时，在这里手动补一条带结构化校验的用例。</p>
+              <form id="st-create-form" class="settings-form">
+                <label>
+                  <span>用户任务输入（兼容 triggerPrompt）</span>
+                  <textarea id="st-create-prompt" rows="3" maxlength="2000" placeholder="用户会说什么来触发或驱动这条测试用例？"></textarea>
+                </label>
+                <div class="field-grid">
+                  <label>
+                    <span>加载方式</span>
+                    <select id="st-create-loading-mode">
+                      <option value="dynamic">Dynamic（只测加载）</option>
+                      <option value="full">Full（只测执行）</option>
+                    </select>
+                  </label>
+                </div>
+                <label>
+                  <span>期望工具（逗号分隔）</span>
+                  <input id="st-create-tools" type="text" maxlength="200" placeholder="read, send-public" />
+                </label>
+                <label>
+                  <span>结构化校验（JSON，可选）</span>
+                  <textarea id="st-create-tool-specs" rows="4" maxlength="1200" placeholder='[{"name":"read","order":1,"requiredParams":["path"],"arguments":{"path":"<contains:/skills/werewolf/SKILL.md>"}},{"name":"send-public","order":2,"requiredParams":["content"]}]'></textarea>
+                </label>
+                <label>
+                  <span>目标描述</span>
+                  <textarea id="st-create-goal" rows="2" maxlength="240" placeholder="例如：完成 skill 对应的工作流目标"></textarea>
+                </label>
+                <label>
+                  <span>Expected Steps JSON</span>
+                  <textarea id="st-create-steps" rows="5" maxlength="2400" placeholder='[{"title":"Read the skill","expectedBehavior":"Open the target SKILL.md first.","required":true,"order":1,"strongSignals":[{"type":"tool","toolName":"read"}]}]'></textarea>
+                </label>
+                <label>
+                  <span>这条用例想验证什么</span>
+                  <textarea id="st-create-behavior" rows="2" maxlength="240" placeholder="例如：Agent 应先读取 skill 的 SKILL.md，再调用 send-public 回复房间"></textarea>
+                </label>
+                <label>
+                  <span>关键顺序（JSON，可选）</span>
+                  <textarea id="st-create-sequence" rows="3" maxlength="1200" placeholder='["read", {"name":"send-public","order":2}]'></textarea>
+                </label>
+                <label>
+                  <span>评估 Rubric（JSON，可选）</span>
+                  <textarea id="st-create-rubric" rows="3" maxlength="1200" placeholder='{"thresholds":{"goalAchievement":0.7}}'></textarea>
+                </label>
+                <label>
+                  <span>备注</span>
+                  <input id="st-create-note" type="text" maxlength="120" placeholder="可选备注" />
+                </label>
+                <div class="panel-actions">
+                  <button id="st-create-submit" type="submit" class="ghost-button">创建</button>
+                </div>
+                <div id="st-create-issues" class="skill-test-issues hidden" aria-live="polite"></div>
+              </form>
+            </section>
+
+            <section id="st-summary-section" class="panel skill-tests-summary-panel">
+              <div class="panel-header">
+                <div>
+                  <p class="eyebrow">Summary</p>
+                  <h2>全部 Skill 概览</h2>
+                </div>
+                <div class="panel-actions">
+                  <button id="st-refresh-summary" class="ghost-button" type="button">刷新</button>
+                </div>
+              </div>
+              <div id="st-summary-highlights" class="tag-row">
+                <span class="tag tag-pending">加载中...</span>
+              </div>
+              <div id="st-summary-body">
+                <p class="section-hint">加载中...</p>
+              </div>
+            </section>
+          </div>
+        </main>
+      </div>
+
+      <div id="panel-eval-cases" class="tab-panel">
       <main class="layout persona-layout">
         <aside class="panel panel-conversations">
           <div class="panel-header">
@@ -346,7 +678,7 @@
           </form>
         </section>
       </main>
-    </div>
+      </div>
 
     <div id="toast" class="toast hidden"></div>
   </body>

@@ -8,6 +8,7 @@ const {
   DEFAULT_PROVIDER,
   DEFAULT_TERMINATE_GRACE_MS,
   DEFAULT_THINKING,
+  resolveThinkingSetting,
   invoke,
   resolveIntegerSetting,
   resolveIntegerSettingCandidates,
@@ -147,7 +148,7 @@ async function main(argv = process.argv.slice(2)) {
   const prompt = cli.prompt;
   const provider = resolveSetting(cli.provider, process.env.PI_PROVIDER, DEFAULT_PROVIDER);
   const model = resolveSetting(cli.model, process.env.PI_MODEL, DEFAULT_MODEL);
-  const thinking = resolveSetting(cli.thinking, process.env.PI_THINKING, DEFAULT_THINKING);
+  const thinking = resolveThinkingSetting(provider, cli.thinking, process.env.PI_THINKING, DEFAULT_THINKING);
   const agentDir = resolveSetting('', process.env.PI_CODING_AGENT_DIR, DEFAULT_AGENT_DIR);
   const sqlitePath = resolveSetting(cli.sqlitePath, process.env.PI_SQLITE_PATH, '');
   const heartbeatIntervalMs = resolveIntegerSettingCandidates(
@@ -216,6 +217,7 @@ export {
   resolveIntegerSetting,
   resolveIntegerSettingCandidates,
   resolveSetting,
+  resolveThinkingSetting,
 };
 
 if (require.main === module) {

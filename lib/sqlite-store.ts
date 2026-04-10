@@ -94,18 +94,39 @@ function normalizeTaskRow(row: any) {
 
 export class SqliteRunStore {
   [key: string]: any;
-  constructor({ agentDir, sqlitePath }: any) {
-    const connection = openSqliteDatabase({ agentDir, sqlitePath });
+  constructor({ agentDir, sqlitePath, databasePath, db }: any) {
+    const resolvedAgentDir = path.resolve(agentDir || process.cwd());
+    const connection = db
+      ? {
+          agentDir: resolvedAgentDir,
+          databasePath: String(databasePath || resolveSqlitePath(resolvedAgentDir, sqlitePath)).trim(),
+          db,
+          ownsDb: false,
+        }
+      : {
+          ...openSqliteDatabase({ agentDir: resolvedAgentDir, sqlitePath }),
+          ownsDb: true,
+        };
 
-    this.agentDir = connection.agentDir;
-    this.databasePath = connection.databasePath;
-    this.db = connection.db;
+    try {
+      this.agentDir = connection.agentDir;
+      this.databasePath = connection.databasePath;
+      this.db = connection.db;
+      this.ownsDb = connection.ownsDb;
 
-    migrateRunSchema(this.db);
+      migrateRunSchema(this.db);
 
-    this.sessionRepository = createRunSessionRepository(this.db);
-    this.runRepository = createRunRepository(this.db);
-    this.taskRepository = createRunTaskRepository(this.db);
+      this.sessionRepository = createRunSessionRepository(this.db);
+      this.runRepository = createRunRepository(this.db);
+      this.taskRepository = createRunTaskRepository(this.db);
+    } catch (error) {
+      if (connection.ownsDb) {
+        try {
+          connection.db.close();
+        } catch {}
+      }
+      throw error;
+    }
   }
 
   ensureSession(sessionPath: any) {
@@ -298,7 +319,9 @@ export class SqliteRunStore {
   }
 
   close() {
-    this.db.close();
+    if (this.ownsDb) {
+      this.db.close();
+    }
   }
 }
 

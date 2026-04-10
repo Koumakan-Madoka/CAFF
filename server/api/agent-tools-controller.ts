@@ -46,11 +46,6 @@ export function createAgentToolsController(options: any = {}): RouteHandler<ApiC
       return true;
     }
 
-    if (pathname === '/api/agent-tools/read-skill' && req.method === 'GET') {
-      sendJson(res, 200, agentToolBridge.handleReadSkill(requestUrl));
-      return true;
-    }
-
     return false;
   };
 }

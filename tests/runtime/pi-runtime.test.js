@@ -66,6 +66,17 @@ function loadRuntimeWithCommandPath(commandPath) {
   };
 }
 
+test('pi runtime resolves provider-specific default thinking without overriding explicit values', () => {
+  const runtime = require('../../build/lib/pi-runtime');
+
+  assert.equal(runtime.getProviderDefaultThinking('packycode'), 'xhigh');
+  assert.equal(runtime.getProviderDefaultThinking('kimi-coding'), '');
+  assert.equal(runtime.resolveThinkingSetting('packycode', '', '', ''), 'xhigh');
+  assert.equal(runtime.resolveThinkingSetting('packycode', 'low', '', ''), 'low');
+  assert.equal(runtime.resolveThinkingSetting('packycode', '', 'medium', ''), 'medium');
+  assert.equal(runtime.resolveThinkingSetting('kimi-coding', '', '', ''), '');
+});
+
 test('pi runtime treats a terminal assistant message as successful completion even if the child keeps running', async (t) => {
   if (process.platform !== 'win32') {
     t.skip('PI_COMMAND_PATH override fixture is currently exercised on Windows only');

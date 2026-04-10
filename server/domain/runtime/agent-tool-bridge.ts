@@ -902,102 +902,6 @@ export function createAgentToolBridge(options: any = {}) {
     }
   }
 
-  function handleReadSkill(requestUrl: any) {
-    const startedAt = Date.now();
-    const context = getInvocation(
-      requestUrl.searchParams.get('invocationId'),
-      requestUrl.searchParams.get('callbackToken')
-    );
-    const toolCallId = randomUUID();
-
-    try {
-      const skillId = String(requestUrl.searchParams.get('skillId') || '').trim();
-
-      if (!skillId) {
-        throw createHttpError(400, 'skillId query parameter is required');
-      }
-
-      const skillRegistry = options.skillRegistry;
-
-      if (!skillRegistry || typeof skillRegistry.getSkill !== 'function') {
-        throw createHttpError(409, 'Skill registry is not available for this invocation');
-      }
-
-      // Use the skillRegistry's built-in resolution which already includes
-      // the sandbox skillsDir and project externalSkillDirs.
-      const skill = skillRegistry.getSkill(skillId);
-
-      if (!skill) {
-        throw createHttpError(404, `Skill not found: ${skillId}`);
-      }
-
-      const MAX_SKILL_BODY_LENGTH = 32768;
-      let bodyText = String(skill.body || '');
-      if (bodyText.length > MAX_SKILL_BODY_LENGTH) {
-        bodyText = bodyText.slice(0, MAX_SKILL_BODY_LENGTH) + '\n\n...[truncated]';
-      }
-
-      const response = {
-        ok: true,
-        skill: {
-          id: skill.id,
-          name: skill.name,
-          description: skill.description,
-          body: bodyText,
-          path: skill.path || '',
-        },
-      };
-
-      tryAppendInvocationEvent(context, 'agent_tool_call', {
-        schemaVersion: 1,
-        toolCallId,
-        tool: 'read-skill',
-        status: 'succeeded',
-        durationMs: Date.now() - startedAt,
-        invocationId: context.invocationId,
-        conversationId: context.conversationId,
-        turnId: context.turnId,
-        agentId: context.agentId,
-        agentName: context.agentName,
-        assistantMessageId: context.assistantMessageId,
-        request: {
-          skillId,
-        },
-        result: {
-          skillId: skill.id,
-          skillName: skill.name,
-          bodyLength: String(skill.body || '').length,
-        },
-      });
-
-      return response;
-    } catch (error) {
-      const errorValue = error as any;
-      tryAppendInvocationEvent(context, 'agent_tool_call', {
-        schemaVersion: 1,
-        toolCallId,
-        tool: 'read-skill',
-        status: 'failed',
-        durationMs: Date.now() - startedAt,
-        invocationId: context.invocationId,
-        conversationId: context.conversationId,
-        turnId: context.turnId,
-        agentId: context.agentId,
-        agentName: context.agentName,
-        assistantMessageId: context.assistantMessageId,
-        request: {
-          skillId: String(requestUrl.searchParams.get('skillId') || '').trim(),
-        },
-        error: {
-          statusCode: Number.isInteger(errorValue && errorValue.statusCode) ? errorValue.statusCode : null,
-          message: clipText(errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Unknown error')),
-        },
-      });
-
-      throw error;
-    }
-  }
-
   function safeStat(filePath: any) {
     try {
       return fs.statSync(filePath);
@@ -1734,7 +1638,6 @@ export function createAgentToolBridge(options: any = {}) {
     handleListParticipants,
     handlePostMessage,
     handleReadContext,
-    handleReadSkill,
     handleTrellisInit,
     handleTrellisWrite,
     registerInvocation,

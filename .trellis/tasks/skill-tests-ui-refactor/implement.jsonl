@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/frontend/index.md", "reason": "Skill Tests UI refactor primarily changes browser-side layout, structure, and interaction patterns."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Reuse existing eval-cases UI patterns where possible instead of forking behavior."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Keep the refactor front-end focused and avoid accidental backend churn."}
+{"at":"2026-04-08","summary":"Skill Tests UI refactor follow-up: restored the summary retry binding after a truncated renderSummary block, added overview/detail status callout containers with shared styles, and surfaced clearer refresh/next-step guidance for list/summary/detail states without changing backend contracts."}
+{"at":"2026-04-09T10:04:46+08:00","summary":"Finalized the Skill Tests UI refactor for closeout: kept the sticky top action bar, single-column-first layout, tabbed detail workflow, and list-side quick actions as the final interaction model, while accepting the non-sticky detail header as the zoom-safe final UX after manual review."}

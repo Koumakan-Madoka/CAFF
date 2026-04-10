@@ -466,129 +466,136 @@ export class ChatAppStore {
   constructor({ agentDir, sqlitePath }: any) {
     const connection = openSqliteDatabase({ agentDir, sqlitePath });
 
-    this.agentDir = connection.agentDir;
-    this.databasePath = connection.databasePath;
-    this.db = connection.db;
+    try {
+      this.agentDir = connection.agentDir;
+      this.databasePath = connection.databasePath;
+      this.db = connection.db;
 
-    migrateChatSchema(this.db);
+      migrateChatSchema(this.db);
 
-    this.agentRepository = createChatAgentRepository(this.db);
-    this.conversationRepository = createChatConversationRepository(this.db);
-    this.participantRepository = createChatParticipantRepository(this.db);
-    this.messageRepository = createChatMessageRepository(this.db);
-    this.privateMessageRepository = createChatPrivateMessageRepository(this.db);
+      this.agentRepository = createChatAgentRepository(this.db);
+      this.conversationRepository = createChatConversationRepository(this.db);
+      this.participantRepository = createChatParticipantRepository(this.db);
+      this.messageRepository = createChatMessageRepository(this.db);
+      this.privateMessageRepository = createChatPrivateMessageRepository(this.db);
 
-    this.replaceConversationParticipants = (conversationId: any, participants: any) => {
-      const createdAt = nowIso();
+      this.replaceConversationParticipants = (conversationId: any, participants: any) => {
+        const createdAt = nowIso();
 
-      this.participantRepository.replaceForConversation(
-        conversationId,
-        (Array.isArray(participants) ? participants : []).map((participant: any) => ({
-          ...participant,
-          conversationSkillsJson: serializeJson(participant.conversationSkills || []),
-          createdAt,
-        }))
-      );
-    };
+        this.participantRepository.replaceForConversation(
+          conversationId,
+          (Array.isArray(participants) ? participants : []).map((participant: any) => ({
+            ...participant,
+            conversationSkillsJson: serializeJson(participant.conversationSkills || []),
+            createdAt,
+          }))
+        );
+      };
 
-    this.saveAgentTransaction = this.db.transaction((payload: any) => {
-      const timestamp = nowIso();
+      this.saveAgentTransaction = this.db.transaction((payload: any) => {
+        const timestamp = nowIso();
 
-      return normalizeAgentRow(
-        this.agentRepository.save({
-          ...payload,
-          skillsJson: serializeJson(payload.skills),
-          modelProfilesJson: serializeJson(payload.modelProfiles),
+        return normalizeAgentRow(
+          this.agentRepository.save({
+            ...payload,
+            skillsJson: serializeJson(payload.skills),
+            modelProfilesJson: serializeJson(payload.modelProfiles),
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          })
+        );
+      });
+
+      this.createConversationTransaction = this.db.transaction((payload: any) => {
+        const timestamp = nowIso();
+
+        this.conversationRepository.create({
+          id: payload.id,
+          title: payload.title,
+          type: normalizeConversationType(payload.type),
+          metadataJson: serializeJson(payload.metadata || {}),
           createdAt: timestamp,
           updatedAt: timestamp,
-        })
-      );
-    });
-
-    this.createConversationTransaction = this.db.transaction((payload: any) => {
-      const timestamp = nowIso();
-
-      this.conversationRepository.create({
-        id: payload.id,
-        title: payload.title,
-        type: normalizeConversationType(payload.type),
-        metadataJson: serializeJson(payload.metadata || {}),
-        createdAt: timestamp,
-        updatedAt: timestamp,
-        lastMessageAt: null,
-      });
-      this.replaceConversationParticipants(payload.id, payload.participants);
-
-      return this.getConversation(payload.id);
-    });
-
-    this.updateConversationTransaction = this.db.transaction((conversationId: any, updates: any) => {
-      if (updates.title !== undefined) {
-        this.conversationRepository.update(conversationId, {
-          title: updates.title,
-          type: normalizeConversationType(updates.type),
-          metadataJson: serializeJson(updates.metadata || {}),
-          updatedAt: nowIso(),
-        });
-      } else {
-        this.conversationRepository.touch(conversationId, {
-          updatedAt: nowIso(),
           lastMessageAt: null,
         });
-      }
+        this.replaceConversationParticipants(payload.id, payload.participants);
 
-      if (Array.isArray(updates.participants)) {
-        this.replaceConversationParticipants(conversationId, updates.participants);
-      }
-
-      return this.getConversation(conversationId);
-    });
-
-    this.createMessageTransaction = this.db.transaction((payload: any) => {
-      const createdAt = payload.createdAt || nowIso();
-
-      this.messageRepository.create({
-        id: payload.id,
-        conversationId: payload.conversationId,
-        turnId: payload.turnId,
-        role: payload.role,
-        agentId: payload.agentId || null,
-        senderName: payload.senderName,
-        content: payload.content || '',
-        status: payload.status || 'completed',
-        taskId: payload.taskId || null,
-        runId: payload.runId || null,
-        errorMessage: payload.errorMessage || null,
-        metadataJson: serializeJson(payload.metadata),
-        createdAt,
-      });
-      this.conversationRepository.touch(payload.conversationId, {
-        updatedAt: createdAt,
-        lastMessageAt: createdAt,
+        return this.getConversation(payload.id);
       });
 
-      return this.getMessage(payload.id);
-    });
+      this.updateConversationTransaction = this.db.transaction((conversationId: any, updates: any) => {
+        if (updates.title !== undefined) {
+          this.conversationRepository.update(conversationId, {
+            title: updates.title,
+            type: normalizeConversationType(updates.type),
+            metadataJson: serializeJson(updates.metadata || {}),
+            updatedAt: nowIso(),
+          });
+        } else {
+          this.conversationRepository.touch(conversationId, {
+            updatedAt: nowIso(),
+            lastMessageAt: null,
+          });
+        }
 
-    this.createPrivateMessageTransaction = this.db.transaction((payload: any) => {
-      const createdAt = payload.createdAt || nowIso();
+        if (Array.isArray(updates.participants)) {
+          this.replaceConversationParticipants(conversationId, updates.participants);
+        }
 
-      return normalizePrivateMessageRow(
-        this.privateMessageRepository.create({
+        return this.getConversation(conversationId);
+      });
+
+      this.createMessageTransaction = this.db.transaction((payload: any) => {
+        const createdAt = payload.createdAt || nowIso();
+
+        this.messageRepository.create({
           id: payload.id,
           conversationId: payload.conversationId,
           turnId: payload.turnId,
-          senderAgentId: payload.senderAgentId || null,
+          role: payload.role,
+          agentId: payload.agentId || null,
           senderName: payload.senderName,
-          recipientAgentIdsJson: serializeJson(payload.recipientAgentIds || []),
           content: payload.content || '',
+          status: payload.status || 'completed',
+          taskId: payload.taskId || null,
+          runId: payload.runId || null,
+          errorMessage: payload.errorMessage || null,
           metadataJson: serializeJson(payload.metadata),
           createdAt,
-        })
-      );
-    });
+        });
+        this.conversationRepository.touch(payload.conversationId, {
+          updatedAt: createdAt,
+          lastMessageAt: createdAt,
+        });
 
-    this.seedDefaultAgents();
+        return this.getMessage(payload.id);
+      });
+
+      this.createPrivateMessageTransaction = this.db.transaction((payload: any) => {
+        const createdAt = payload.createdAt || nowIso();
+
+        return normalizePrivateMessageRow(
+          this.privateMessageRepository.create({
+            id: payload.id,
+            conversationId: payload.conversationId,
+            turnId: payload.turnId,
+            senderAgentId: payload.senderAgentId || null,
+            senderName: payload.senderName,
+            recipientAgentIdsJson: serializeJson(payload.recipientAgentIds || []),
+            content: payload.content || '',
+            metadataJson: serializeJson(payload.metadata),
+            createdAt,
+          })
+        );
+      });
+
+      this.seedDefaultAgents();
+    } catch (error) {
+      try {
+        connection.db.close();
+      } catch {}
+      throw error;
+    }
   }
 
   seedDefaultAgents() {

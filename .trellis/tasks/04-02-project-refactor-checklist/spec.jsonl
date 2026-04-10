@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "This refactor spans runtime, backend, storage, and frontend boundaries."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Primary objective is reducing duplicated execution and UI patterns."}
+{"file": ".trellis/spec/guides/cross-platform-thinking-guide.md", "reason": "Runtime and Trellis tool flows include shell, env, and path concerns on Windows."}
+{"file": ".trellis/spec/runtime/index.md", "reason": "Runtime and Trellis injection hotspots are part of the highest-priority cleanup."}
+{"file": ".trellis/spec/skills/skill-system.md", "reason": "Skill loading and skill-test flows are part of the current runtime hotspot map."}

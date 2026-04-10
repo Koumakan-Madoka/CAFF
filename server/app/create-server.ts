@@ -20,6 +20,8 @@ const { createModesController } = require('../api/modes-controller');
 const { createSkillsController } = require('../api/skills-controller');
 const { createUndercoverController } = require('../api/undercover-controller');
 const { createWerewolfController } = require('../api/werewolf-controller');
+const { createSkillTestController } = require('../api/skill-test-controller');
+const { resolveToolRelativePath } = require('../http/path-utils');
 const { HOST, PORT, ROOT_DIR } = require('./config');
 const { createTurnOrchestrator } = require('../domain/conversation/turn-orchestrator');
 const { pickConversationSummary } = require('../domain/conversation/conversation-view');
@@ -28,26 +30,11 @@ const { createWerewolfService } = require('../domain/werewolf/werewolf-service')
 const { createAgentToolBridge } = require('../domain/runtime/agent-tool-bridge');
 const { createRouter } = require('../http/router');
 const { createSseBus } = require('../http/sse-bus');
-const { sendJson } = require('../http/response');
+const { buildErrorJsonPayload, sendJson } = require('../http/response');
 const { serveStaticFile } = require('../http/static-file');
 const { createHttpError } = require('../http/http-errors');
 
-function resolveToolRelativePath(toolPath: string) {
-  const cwd = process.cwd();
-  const absolutePath = path.resolve(String(toolPath || ''));
-  const relativePath = path.relative(cwd, absolutePath) || path.basename(absolutePath);
-  const portablePath = relativePath.replace(/\\/g, '/');
-
-  if (portablePath.startsWith('.') || portablePath.startsWith('/')) {
-    return portablePath;
-  }
-
-  if (/^[A-Za-z]:\//.test(portablePath)) {
-    return portablePath;
-  }
-
-  return `./${portablePath}`;
-}
+// resolveToolRelativePath is now imported from ../http/path-utils
 
 function normalizeToolBaseHost(rawHost: any) {
   const host = String(rawHost || '').trim();
@@ -150,7 +137,6 @@ export function createServerApp(options: any = {}) {
 
   const agentToolBridge = createAgentToolBridge({
     store,
-    skillRegistry,
     broadcastEvent,
     broadcastConversationSummary,
     onTurnUpdated(turnState: any) {
@@ -260,6 +246,13 @@ export function createServerApp(options: any = {}) {
       buildBootstrapPayload,
       modeStore,
     }),
+    createSkillTestController({
+      store,
+      agentToolBridge: agentToolBridge,
+      skillRegistry,
+      getProjectDir: () => activeProjectDir,
+      toolBaseUrl,
+    }),
   ]);
 
   const server = http.createServer(async (req: any, res: any) => {
@@ -285,9 +278,7 @@ export function createServerApp(options: any = {}) {
     } catch (error) {
       const errorValue = error as any;
       const statusCode = Number.isInteger(errorValue && errorValue.statusCode) ? errorValue.statusCode : 500;
-      sendJson(res, statusCode, {
-        error: (errorValue && errorValue.message) || 'Internal server error',
-      });
+      sendJson(res, statusCode, buildErrorJsonPayload(errorValue));
     }
   });
 
