@@ -18,6 +18,20 @@
 - Preserve the existing plain JavaScript style; this repo is not using a
   framework build step for the browser code.
 
+## Chat Message Rendering
+
+- Route assistant rich text rendering through shared helpers in `public/shared/`
+  instead of injecting raw HTML from `public/chat/` modules.
+- `public/shared/safe-markdown.js` is the shared Markdown entry point for agent
+  message bodies. Keep raw HTML disabled, sanitize link protocols, and fall back
+  to plain text if rendering throws.
+- Keep natural-language content and tool diagnostics visually separated:
+  `public/app.js` owns conversation-level trace state and SSE syncing, while
+  `public/chat/message-timeline.js` owns expandable per-message trace UI.
+- Streaming trace rerenders must preserve reader context. Use stable step ids
+  and restore scroll/anchor state for expanded tool timelines instead of
+  snapping the viewport back to the top.
+
 ## Cross-Layer Watch Points
 
 - UI payload expectations must stay aligned with controller and domain output.

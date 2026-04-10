@@ -21,6 +21,7 @@ const state = {
 const shared = window.CaffShared || {};
 const fetchJson = shared.fetchJson;
 const modelOptionUtils = shared.modelOptions || {};
+const copyTextToClipboard = shared.copyTextToClipboard;
 
 const dom = {
   refreshButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('refresh-button')),
@@ -377,13 +378,20 @@ async function copyToClipboard(text) {
   }
 
   try {
+    if (typeof copyTextToClipboard === 'function') {
+      await copyTextToClipboard(value);
+      showToast('已复制');
+      return;
+    }
+
     if (navigator && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
       await navigator.clipboard.writeText(value);
       showToast('已复制');
       return;
     }
-  } catch {
-    // ignore
+  } catch (error) {
+    showToast(error && error.message ? error.message : '复制失败');
+    return;
   }
 
   try {

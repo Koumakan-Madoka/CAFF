@@ -59,10 +59,37 @@ CAFF uses a descriptor + on-demand loading model for conversation skills:
 - **Prompt instructions** for dynamic loading only appear when mode is `dynamic`;
   in `full` mode they are omitted to reduce noise.
 
+## Tool Trace Event Contract
+
+- Assistant tool visibility currently has two live sources:
+  `server/domain/runtime/agent-tool-bridge.ts` for bridge tool calls and
+  `server/domain/conversation/turn/agent-executor.ts` for pi session tool
+  events.
+- Both sources must emit `conversation_tool_event` payloads keyed by
+  `conversationId`, `turnId`, `taskId`, `agentId`, `agentName`,
+  `assistantMessageId` / `messageId`, `phase`, and a `step` object.
+- `step.stepId` must remain stable across `started` / `updated` / terminal
+  events for the same logical tool call so the browser can merge live updates
+  without duplicating rows or losing scroll anchors.
+- `turn_progress` summaries mirror the live tool headline through
+  `currentToolName`, `currentToolKind`, `currentToolStepId`,
+  `currentToolStartedAt`, and `currentToolInferred`. Any contract change here
+  must be mirrored in `public/app.js`, `public/chat/message-timeline.js`, and
+  the runtime tests.
+- Redact before persistence or UI exposure. Tool previews must strip secrets,
+  auth headers, tokens, and unnecessary absolute paths, and long bridge-event
+  histories must keep the newest events so the latest failure context survives
+  truncation.
+- `GET /api/conversations/:conversationId/messages/:messageId/tool-trace`
+  remains assistant-only and should return a merged trace built from session
+  snapshot data plus stored bridge events.
+
 ## Test Expectations
 
 - Runtime changes should usually be covered by `tests/runtime/agent-tool-bridge.test.js`
   or `tests/runtime/turn-orchestrator.test.js`
+- Tool trace aggregation and redaction changes should also be covered by
+  `tests/runtime/message-tool-trace.test.js`
 - If the change affects pi runtime CLI behavior, also inspect
   `tests/runtime/pi-runtime.test.js`
 - Dynamic skill path-loading prompt behavior is covered by `tests/runtime/skill-loading.test.js`

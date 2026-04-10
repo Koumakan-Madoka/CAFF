@@ -49,6 +49,11 @@ export function summarizeTurnState(turnState: any) {
       triggeredByAgentName: agent.triggeredByAgentName || '',
       hop: agent.hop || 0,
       lastTextDeltaAt: agent.lastTextDeltaAt || null,
+      currentToolName: agent.currentToolName || '',
+      currentToolKind: agent.currentToolKind || '',
+      currentToolStepId: agent.currentToolStepId || '',
+      currentToolStartedAt: agent.currentToolStartedAt || null,
+      currentToolInferred: Boolean(agent.currentToolInferred),
       startedAt: agent.startedAt || null,
       endedAt: agent.endedAt || null,
     })),
@@ -95,6 +100,11 @@ export function createTurnState(conversation: any, turnId: any) {
       triggeredByAgentName: '',
       hop: 0,
       lastTextDeltaAt: null as string | null,
+      currentToolName: '',
+      currentToolKind: '',
+      currentToolStepId: '',
+      currentToolStartedAt: null as string | null,
+      currentToolInferred: false,
       startedAt: null as string | null,
       endedAt: null as string | null,
     })),
@@ -124,6 +134,11 @@ export function resetTurnStage(stage: any, status = 'idle') {
   stage.startedAt = null;
   stage.endedAt = null;
   stage.lastTextDeltaAt = null;
+  stage.currentToolName = '';
+  stage.currentToolKind = '';
+  stage.currentToolStepId = '';
+  stage.currentToolStartedAt = null;
+  stage.currentToolInferred = false;
 }
 
 export function syncCurrentTurnAgent(turnState: any) {

@@ -10,7 +10,7 @@ const { createRoutingExecutor } = require('../../build/server/domain/conversatio
 const { createAgentExecutor } = require('../../build/server/domain/conversation/turn/agent-executor');
 const { ensureAgentSandbox } = require('../../build/server/domain/conversation/turn/agent-sandbox');
 const { createSessionExporter } = require('../../build/server/domain/conversation/turn/session-export');
-const { createTurnState } = require('../../build/server/domain/conversation/turn/turn-state');
+const { createTurnState, resetTurnStage, summarizeTurnState } = require('../../build/server/domain/conversation/turn/turn-state');
 const { createTurnStopper, registerTurnHandle } = require('../../build/server/domain/conversation/turn/turn-stop');
 
 const { withTempDir } = require('../helpers/temp-dir');
@@ -525,6 +525,39 @@ test('session export requires a resolved session path', (t) => {
     () => resolveAssistantMessageSessionPath({ role: 'assistant', metadata: {} }),
     (error) => error && error.statusCode === 404
   );
+});
+
+test('turn state summary exposes live current tool fields and reset clears them', () => {
+  const conversation = {
+    id: 'conversation-live-tool',
+    title: 'Live tool test',
+    agents: [{ id: 'agent-a', name: 'Alpha' }],
+  };
+  const turnState = createTurnState(conversation, 'turn-live-tool');
+  const stage = turnState.agents[0];
+
+  stage.status = 'running';
+  stage.currentToolName = 'send-public';
+  stage.currentToolKind = 'bridge';
+  stage.currentToolStepId = 'tool-123';
+  stage.currentToolStartedAt = '2026-04-10T00:00:00.000Z';
+  stage.currentToolInferred = true;
+
+  const summary = summarizeTurnState(turnState);
+
+  assert.equal(summary.agents[0].currentToolName, 'send-public');
+  assert.equal(summary.agents[0].currentToolKind, 'bridge');
+  assert.equal(summary.agents[0].currentToolStepId, 'tool-123');
+  assert.equal(summary.agents[0].currentToolStartedAt, '2026-04-10T00:00:00.000Z');
+  assert.equal(summary.agents[0].currentToolInferred, true);
+
+  resetTurnStage(stage);
+
+  assert.equal(stage.currentToolName, '');
+  assert.equal(stage.currentToolKind, '');
+  assert.equal(stage.currentToolStepId, '');
+  assert.equal(stage.currentToolStartedAt, null);
+  assert.equal(stage.currentToolInferred, false);
 });
 
 test('turn stop cancels active handles and clears queued stages', () => {

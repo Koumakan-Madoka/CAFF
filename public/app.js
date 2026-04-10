@@ -16,6 +16,8 @@ const state = {
   mentionSuggestions: [],
   mentionSelectionIndex: 0,
   activeMentionContext: null,
+  messageToolTraceById: new Map(),
+  messageToolTraceTimers: new Map(),
 };
 
 const UNDERCOVER_TYPE = 'who_is_undercover';
@@ -25,6 +27,7 @@ const chatModules = window.CaffChat || {};
 const fetchJson = shared.fetchJson;
 const avatarUtils = shared.avatar || {};
 const modelOptionUtils = shared.modelOptions || {};
+const copyTextToClipboard = shared.copyTextToClipboard;
 
 const dom = {
   runtimePill: /** @type {HTMLSpanElement | null} */ (document.getElementById('runtime-pill')),
@@ -396,8 +399,8 @@ function setupChatModules() {
           dom,
           helpers: {
             agentById,
-            appendHighlightedMessageBody,
             buildAgentAvatarElement,
+            canInspectToolTrace,
             displayedMessageBody,
             formatDateTime,
             isPrivateTimelineMessage,
@@ -405,7 +408,10 @@ function setupChatModules() {
             liveStageLabel,
             messageSessionInfo,
             privateRecipientNames,
+            renderMessageBody,
             timelineMessagesForConversation,
+            toolTraceSignatureForMessage,
+            toolTraceStateForMessage,
           },
         })
       : noopRenderer;
@@ -481,6 +487,1025 @@ function closeMentionMenu() {
 
 function appendHighlightedMessageBody(container, text, agents) {
   mentionMenuController.appendHighlightedMessageBody(container, text, agents);
+}
+
+function renderMessageBody(container, text, agents) {
+  if (!container) {
+    return;
+  }
+
+  container.textContent = '';
+  container.classList.remove('plain-text');
+
+  const markdown = shared.safeMarkdown;
+  const source = normalizeEscapedMessageText(text);
+
+  if (markdown && typeof markdown.render === 'function') {
+    try {
+      markdown.render(container, source, {
+        appendText(target, value) {
+          appendHighlightedMessageBody(target, value, agents);
+        },
+      });
+      return;
+    } catch {}
+  }
+
+  container.classList.add('plain-text');
+  appendHighlightedMessageBody(container, source, agents);
+}
+
+function canInspectToolTrace(message) {
+  return Boolean(message && message.role === 'assistant');
+}
+
+function toolTraceStateForMessage(messageId) {
+  return messageId ? state.messageToolTraceById.get(messageId) || null : null;
+}
+
+function getMessageToolTraceState(messageId) {
+  const normalizedMessageId = String(messageId || '').trim();
+
+  if (!normalizedMessageId) {
+    return null;
+  }
+
+  const existing = toolTraceStateForMessage(normalizedMessageId);
+
+  if (existing) {
+    return existing;
+  }
+
+  const created = {
+    open: false,
+    status: 'idle',
+    requestKey: '',
+    errorMessage: '',
+    data: null,
+    promise: null,
+    userToggled: false,
+  };
+
+  state.messageToolTraceById.set(normalizedMessageId, created);
+  return created;
+}
+
+function emptyToolTraceSummary() {
+  return {
+    totalSteps: 0,
+    sessionToolCount: 0,
+    bridgeToolCount: 0,
+    failedSteps: 0,
+    succeededSteps: 0,
+    totalDurationMs: 0,
+    retryCount: 0,
+    hasRetries: false,
+    status: 'idle',
+  };
+}
+
+function emptyToolTraceActivity() {
+  return {
+    status: 'idle',
+    hasCurrentTool: false,
+    currentToolName: '',
+    currentStepId: '',
+    currentStepKind: '',
+    inferred: false,
+    label: '',
+  };
+}
+
+function emptyToolTraceFailureContext() {
+  return {
+    hasFailure: false,
+    source: '',
+    stepId: '',
+    toolName: '',
+    text: '',
+  };
+}
+
+function createEmptyToolTraceData(messageId = '') {
+  return {
+    message: messageId
+      ? {
+          id: messageId,
+          status: '',
+          taskId: null,
+          runId: null,
+          createdAt: '',
+        }
+      : null,
+    task: null,
+    session: null,
+    sessionToolCalls: [],
+    bridgeToolEvents: [],
+    steps: [],
+    summary: emptyToolTraceSummary(),
+    activity: emptyToolTraceActivity(),
+    failureContext: emptyToolTraceFailureContext(),
+  };
+}
+
+function normalizeToolTraceStepStatus(status) {
+  const normalized = String(status || '').trim().toLowerCase();
+
+  if (normalized === 'succeeded' || normalized === 'completed' || normalized === 'ok') {
+    return 'succeeded';
+  }
+
+  if (normalized === 'failed' || normalized === 'error' || normalized === 'timeout') {
+    return 'failed';
+  }
+
+  if (normalized === 'running' || normalized === 'queued' || normalized === 'pending') {
+    return normalized;
+  }
+
+  return normalized || 'observed';
+}
+
+function cloneTraceValue(value) {
+  if (value == null || typeof value !== 'object') {
+    return value;
+  }
+
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return value;
+  }
+}
+
+function currentConversationMessageById(messageId) {
+  if (!messageId || !state.currentConversation || !Array.isArray(state.currentConversation.messages)) {
+    return null;
+  }
+
+  return state.currentConversation.messages.find((item) => item && item.id === messageId) || null;
+}
+
+/**
+ * @param {any} step
+ * @param {string | Record<string, string>} [fallbackStatus='observed']
+ */
+function resolveFinalizedTraceStatus(step, fallbackStatus = 'observed') {
+  if (fallbackStatus && typeof fallbackStatus === 'object') {
+    const kind = step && step.kind ? String(step.kind) : '';
+    return normalizeToolTraceStepStatus(fallbackStatus[kind] || fallbackStatus.default || 'observed');
+  }
+
+  return normalizeToolTraceStepStatus(fallbackStatus || 'observed');
+}
+
+function mergeToolTraceStep(existingStep, incomingStep) {
+  const nextStep = {
+    ...(existingStep && typeof existingStep === 'object' ? existingStep : {}),
+    ...(incomingStep && typeof incomingStep === 'object' ? incomingStep : {}),
+  };
+  const existingStatus = normalizeToolTraceStepStatus(existingStep && existingStep.status ? existingStep.status : '');
+  const incomingStatus = normalizeToolTraceStepStatus(incomingStep && incomingStep.status ? incomingStep.status : '');
+  const stepKind = String(nextStep && nextStep.kind ? nextStep.kind : '').trim();
+
+  if (stepKind === 'session' && incomingStatus === 'observed' && existingStatus === 'running') {
+    nextStep.status = 'running';
+  } else {
+    nextStep.status = incomingStatus || existingStatus || 'observed';
+  }
+
+  return nextStep;
+}
+
+function computeToolTraceSummary(message, task, steps) {
+  const normalizedSteps = Array.isArray(steps) ? steps.filter(Boolean) : [];
+  const bridgeSteps = normalizedSteps.filter((step) => step && step.kind === 'bridge');
+  const sessionSteps = normalizedSteps.filter((step) => step && step.kind === 'session');
+  const failedSteps = normalizedSteps.filter((step) => normalizeToolTraceStepStatus(step && step.status) === 'failed');
+  const succeededBridgeSteps = bridgeSteps.filter((step) => normalizeToolTraceStepStatus(step && step.status) === 'succeeded');
+  const totalDurationMs = bridgeSteps.reduce((sum, step) => {
+    const duration = Number(step && step.durationMs);
+    return sum + (Number.isFinite(duration) ? duration : 0);
+  }, 0);
+  const retryFingerprints = new Map();
+  let retryCount = 0;
+
+  bridgeSteps.forEach((step) => {
+    const fingerprint = JSON.stringify([step && step.toolName ? step.toolName : '', step && step.requestSummary ? step.requestSummary : null]);
+    retryFingerprints.set(fingerprint, (retryFingerprints.get(fingerprint) || 0) + 1);
+  });
+
+  retryFingerprints.forEach((count) => {
+    if (count > 1) {
+      retryCount += count - 1;
+    }
+  });
+
+  const messageStatus = String(message && message.status ? message.status : '').trim().toLowerCase();
+  const taskStatus = String(task && task.status ? task.status : '').trim().toLowerCase();
+  const hasRunningStep = normalizedSteps.some((step) => {
+    const status = normalizeToolTraceStepStatus(step && step.status ? step.status : '');
+    return status === 'running' || status === 'queued';
+  });
+  const running =
+    messageStatus === 'queued' ||
+    messageStatus === 'streaming' ||
+    taskStatus === 'queued' ||
+    taskStatus === 'running' ||
+    hasRunningStep;
+  const failed = failedSteps.length > 0 || messageStatus === 'failed' || taskStatus === 'failed';
+
+  return {
+    totalSteps: normalizedSteps.length,
+    sessionToolCount: sessionSteps.length,
+    bridgeToolCount: bridgeSteps.length,
+    failedSteps: failedSteps.length,
+    succeededSteps: succeededBridgeSteps.length,
+    totalDurationMs,
+    retryCount,
+    hasRetries: retryCount > 0,
+    status: failed ? 'failed' : running ? 'running' : normalizedSteps.length > 0 ? 'succeeded' : 'idle',
+  };
+}
+
+function computeToolTraceActivity(summary, steps) {
+  const normalizedSteps = Array.isArray(steps) ? steps.filter(Boolean) : [];
+  const summaryStatus = String(summary && summary.status ? summary.status : '').trim().toLowerCase() || 'idle';
+  const runningStep =
+    normalizedSteps
+      .slice()
+      .reverse()
+      .find((step) => {
+        const status = normalizeToolTraceStepStatus(step && step.status ? step.status : '');
+        return status === 'running' || status === 'queued';
+      }) || null;
+
+  if (runningStep && runningStep.toolName) {
+    return {
+      status: summaryStatus,
+      hasCurrentTool: true,
+      currentToolName: String(runningStep.toolName),
+      currentStepId: String(runningStep.stepId || ''),
+      currentStepKind: String(runningStep.kind || ''),
+      inferred: false,
+      label: `当前工具：${runningStep.toolName}`,
+    };
+  }
+
+  if (summaryStatus !== 'running') {
+    return emptyToolTraceActivity();
+  }
+
+  const lastStep = normalizedSteps.length > 0 ? normalizedSteps[normalizedSteps.length - 1] : null;
+  const inferredToolName = String(
+    lastStep && (lastStep.bridgeToolHint || lastStep.toolName) ? lastStep.bridgeToolHint || lastStep.toolName : ''
+  ).trim();
+
+  if (!lastStep || !inferredToolName || lastStep.kind !== 'session') {
+    return {
+      ...emptyToolTraceActivity(),
+      status: summaryStatus,
+    };
+  }
+
+  return {
+    status: summaryStatus,
+    hasCurrentTool: true,
+    currentToolName: inferredToolName,
+    currentStepId: String(lastStep.stepId || ''),
+    currentStepKind: String(lastStep.bridgeToolHint ? 'bridge' : lastStep.kind || 'session'),
+    inferred: true,
+    label: `当前工具：${inferredToolName}`,
+  };
+}
+
+function buildFallbackFailureContext(trace, message) {
+  const normalizedTrace = trace && typeof trace === 'object' ? trace : createEmptyToolTraceData(message && message.id ? message.id : '');
+  const normalizedSteps = Array.isArray(normalizedTrace.steps) ? normalizedTrace.steps.filter(Boolean) : [];
+  const failedStep = normalizedSteps.find((step) => normalizeToolTraceStepStatus(step && step.status ? step.status : '') === 'failed') || null;
+  const existing = toolTraceFailureContext(normalizedTrace);
+  const taskStatus = String(normalizedTrace.task && normalizedTrace.task.status ? normalizedTrace.task.status : '').trim().toLowerCase();
+  const messageStatus = String(message && message.status ? message.status : normalizedTrace.message && normalizedTrace.message.status ? normalizedTrace.message.status : '')
+    .trim()
+    .toLowerCase();
+
+  if (failedStep) {
+    const detail = failedStep.errorSummary || failedStep.resultSummary || failedStep.requestSummary || failedStep.partialJson || '';
+    return {
+      hasFailure: true,
+      source: 'step',
+      stepId: String(failedStep.stepId || ''),
+      toolName: String(failedStep.toolName || ''),
+      text: detail ? `${failedStep.toolName || 'tool'} · ${typeof detail === 'string' ? detail : JSON.stringify(detail)}` : '',
+    };
+  }
+
+  if (existing && existing.hasFailure) {
+    return existing;
+  }
+
+  if (taskStatus === 'failed' || messageStatus === 'failed') {
+    return {
+      hasFailure: true,
+      source: taskStatus === 'failed' ? 'task' : 'message',
+      stepId: '',
+      toolName: '',
+      text: '',
+    };
+  }
+
+  return emptyToolTraceFailureContext();
+}
+
+function rebuildMessageToolTraceData(trace, message) {
+  const normalizedMessage = message || (trace && trace.message ? trace.message : null);
+  const nextTrace = trace && typeof trace === 'object' ? trace : createEmptyToolTraceData(normalizedMessage && normalizedMessage.id ? normalizedMessage.id : '');
+  const sourceSteps =
+    Array.isArray(nextTrace.steps) && nextTrace.steps.length > 0
+      ? nextTrace.steps
+      : [].concat(
+          Array.isArray(nextTrace.sessionToolCalls) ? nextTrace.sessionToolCalls : [],
+          Array.isArray(nextTrace.bridgeToolEvents) ? nextTrace.bridgeToolEvents : []
+        );
+  const mergedSteps = [];
+  const stepIndexById = new Map();
+
+  sourceSteps.forEach((rawStep) => {
+    if (!rawStep) {
+      return;
+    }
+
+    const stepId = String(rawStep.stepId || '').trim() || `tool-step-${mergedSteps.length + 1}`;
+    const nextStep = {
+      ...rawStep,
+      stepId,
+      status: normalizeToolTraceStepStatus(rawStep.status),
+      kind: rawStep.kind ? String(rawStep.kind) : 'session',
+    };
+    const existingIndex = stepIndexById.get(stepId);
+
+    if (existingIndex === undefined) {
+      stepIndexById.set(stepId, mergedSteps.length);
+      mergedSteps.push(nextStep);
+      return;
+    }
+
+    mergedSteps[existingIndex] = mergeToolTraceStep(mergedSteps[existingIndex], nextStep);
+  });
+
+  nextTrace.steps = mergedSteps.map((step, index) => ({
+    ...step,
+    timelineIndex: index,
+  }));
+  nextTrace.sessionToolCalls = nextTrace.steps.filter((step) => step && step.kind === 'session');
+  nextTrace.bridgeToolEvents = nextTrace.steps.filter((step) => step && step.kind === 'bridge');
+  nextTrace.summary = computeToolTraceSummary(normalizedMessage, nextTrace.task, nextTrace.steps);
+  nextTrace.activity = computeToolTraceActivity(nextTrace.summary, nextTrace.steps);
+  nextTrace.failureContext = buildFallbackFailureContext(nextTrace, normalizedMessage);
+
+  if (normalizedMessage || nextTrace.message) {
+    nextTrace.message = {
+      ...(nextTrace.message && typeof nextTrace.message === 'object' ? nextTrace.message : {}),
+      ...(normalizedMessage && typeof normalizedMessage === 'object'
+        ? {
+            id: normalizedMessage.id || (nextTrace.message && nextTrace.message.id) || '',
+            status: normalizedMessage.status || (nextTrace.message && nextTrace.message.status) || '',
+            taskId: normalizedMessage.taskId || (nextTrace.message && nextTrace.message.taskId) || null,
+            runId: normalizedMessage.runId === undefined ? (nextTrace.message && nextTrace.message.runId) || null : normalizedMessage.runId,
+            createdAt: normalizedMessage.createdAt || (nextTrace.message && nextTrace.message.createdAt) || '',
+          }
+        : {}),
+    };
+  }
+
+  return nextTrace;
+}
+
+function mergeMessageToolTraceData(existingTrace, incomingTrace, message) {
+  if (!incomingTrace) {
+    return rebuildMessageToolTraceData(existingTrace || createEmptyToolTraceData(message && message.id ? message.id : ''), message);
+  }
+
+  if (!existingTrace) {
+    return rebuildMessageToolTraceData(cloneTraceValue(incomingTrace), message);
+  }
+
+  const nextTrace = {
+    ...cloneTraceValue(incomingTrace),
+    task: incomingTrace.task || existingTrace.task || null,
+    session: incomingTrace.session || existingTrace.session || null,
+    message: {
+      ...(existingTrace.message && typeof existingTrace.message === 'object' ? existingTrace.message : {}),
+      ...(incomingTrace.message && typeof incomingTrace.message === 'object' ? incomingTrace.message : {}),
+    },
+  };
+  const nextSteps = Array.isArray(nextTrace.steps) ? nextTrace.steps.slice() : [];
+  const stepIndexById = new Map();
+
+  nextSteps.forEach((step, index) => {
+    if (!step || !step.stepId) {
+      return;
+    }
+
+    stepIndexById.set(String(step.stepId), index);
+  });
+
+  const existingSteps = Array.isArray(existingTrace.steps) && existingTrace.steps.length > 0
+    ? existingTrace.steps
+    : [].concat(
+        Array.isArray(existingTrace.sessionToolCalls) ? existingTrace.sessionToolCalls : [],
+        Array.isArray(existingTrace.bridgeToolEvents) ? existingTrace.bridgeToolEvents : []
+      );
+
+  existingSteps.forEach((step) => {
+    if (!step) {
+      return;
+    }
+
+    const stepId = String(step.stepId || '').trim();
+
+    if (!stepId) {
+      nextSteps.push(cloneTraceValue(step));
+      return;
+    }
+
+    const existingIndex = stepIndexById.get(stepId);
+
+    if (existingIndex === undefined) {
+      stepIndexById.set(stepId, nextSteps.length);
+      nextSteps.push(cloneTraceValue(step));
+      return;
+    }
+
+    nextSteps[existingIndex] = mergeToolTraceStep(step, nextSteps[existingIndex]);
+  });
+
+  nextTrace.steps = nextSteps;
+  return rebuildMessageToolTraceData(nextTrace, message);
+}
+
+function mutateMessageToolTrace(messageId, mutator) {
+  const traceState = getMessageToolTraceState(messageId);
+
+  if (!traceState) {
+    return null;
+  }
+
+  const message = currentConversationMessageById(messageId);
+  const baseTrace = rebuildMessageToolTraceData(
+    traceState.data ? traceState.data : createEmptyToolTraceData(messageId),
+    message
+  );
+
+  if (typeof mutator === 'function') {
+    mutator(baseTrace, message);
+  }
+
+  traceState.data = rebuildMessageToolTraceData(baseTrace, message);
+  maybeAutoOpenMessageToolTrace(message || { id: messageId, status: traceState.data.message && traceState.data.message.status }, traceState);
+  return traceState;
+}
+
+/**
+ * @param {any} trace
+ * @param {string | Record<string, string>} [fallbackStatus='observed']
+ * @param {string} [nextStepId='']
+ * @param {string[] | null} [kinds=null]
+ */
+function finalizeRunningStepsInTrace(trace, fallbackStatus = 'observed', nextStepId = '', kinds = null) {
+  if (!trace || !Array.isArray(trace.steps)) {
+    return false;
+  }
+
+  const allowedKinds = Array.isArray(kinds) && kinds.length > 0 ? new Set(kinds.map((kind) => String(kind))) : null;
+  let changed = false;
+
+  trace.steps = trace.steps.map((step) => {
+    if (!step || normalizeToolTraceStepStatus(step.status) !== 'running' || (nextStepId && step.stepId === nextStepId)) {
+      return step;
+    }
+
+    if (allowedKinds && !allowedKinds.has(String(step.kind || ''))) {
+      return step;
+    }
+
+    changed = true;
+    return {
+      ...step,
+      status: resolveFinalizedTraceStatus(step, fallbackStatus),
+    };
+  });
+
+  return changed;
+}
+
+/**
+ * @param {string} messageId
+ * @param {string} stepId
+ * @param {string | Record<string, string>} [fallbackStatus='observed']
+ */
+function finalizeMessageToolTraceRunningStep(messageId, stepId, fallbackStatus = 'observed') {
+  if (!messageId || !stepId) {
+    return false;
+  }
+
+  const traceState = mutateMessageToolTrace(messageId, (trace) => {
+    if (!trace || !Array.isArray(trace.steps)) {
+      return;
+    }
+
+    trace.steps = trace.steps.map((step) => {
+      if (!step || step.stepId !== stepId || normalizeToolTraceStepStatus(step.status) !== 'running') {
+        return step;
+      }
+
+      return {
+        ...step,
+        status: resolveFinalizedTraceStatus(step, fallbackStatus),
+      };
+    });
+  });
+
+  return Boolean(traceState);
+}
+
+/**
+ * @param {string} messageId
+ * @param {string | Record<string, string>} [fallbackStatus='observed']
+ */
+function finalizeMessageToolTraceRunningSteps(messageId, fallbackStatus = 'observed') {
+  if (!messageId) {
+    return false;
+  }
+
+  const traceState = mutateMessageToolTrace(messageId, (trace) => {
+    finalizeRunningStepsInTrace(trace, fallbackStatus);
+  });
+
+  return Boolean(traceState);
+}
+
+function applyConversationToolEvent(payload) {
+  if (!payload || typeof payload !== 'object') {
+    return false;
+  }
+
+  const messageId = String(payload.messageId || payload.assistantMessageId || '').trim();
+  const taskId = String(payload.taskId || '').trim() || null;
+  const step = payload.step && typeof payload.step === 'object' ? cloneTraceValue(payload.step) : null;
+
+  if (!messageId || !step) {
+    return false;
+  }
+
+  const traceState = mutateMessageToolTrace(messageId, (trace, message) => {
+    const nextMessage = message || currentConversationMessageById(messageId);
+
+    trace.message = {
+      ...(trace.message && typeof trace.message === 'object' ? trace.message : {}),
+      id: messageId,
+      status: nextMessage && nextMessage.status ? nextMessage.status : trace.message && trace.message.status ? trace.message.status : '',
+      taskId: taskId || (nextMessage && nextMessage.taskId ? nextMessage.taskId : trace.message && trace.message.taskId ? trace.message.taskId : null),
+      runId: nextMessage && nextMessage.runId !== undefined ? nextMessage.runId : trace.message && trace.message.runId !== undefined ? trace.message.runId : null,
+      createdAt: nextMessage && nextMessage.createdAt ? nextMessage.createdAt : trace.message && trace.message.createdAt ? trace.message.createdAt : '',
+    };
+
+    if (taskId) {
+      trace.task = {
+        ...(trace.task && typeof trace.task === 'object' ? trace.task : {}),
+        id: taskId,
+        status: trace.task && trace.task.status ? trace.task.status : step.status === 'failed' ? 'failed' : 'running',
+      };
+    }
+
+    if (!Array.isArray(trace.steps)) {
+      trace.steps = [];
+    }
+
+    if (payload.phase === 'started' && step.kind === 'session') {
+      finalizeRunningStepsInTrace(trace, 'observed', step.stepId || '', ['session']);
+    }
+
+    const stepId = String(step.stepId || '').trim();
+    const existingIndex = stepId ? trace.steps.findIndex((entry) => entry && entry.stepId === stepId) : -1;
+
+    if (existingIndex === -1) {
+      trace.steps.push(step);
+    } else {
+      trace.steps[existingIndex] = mergeToolTraceStep(trace.steps[existingIndex], step);
+    }
+
+    if (trace.task && step.status === 'failed') {
+      trace.task.status = 'failed';
+    }
+  });
+
+  if (!traceState) {
+    return false;
+  }
+
+  if (state.selectedConversationId === payload.conversationId) {
+    scheduleConversationPaneRender();
+  }
+
+  return true;
+}
+
+function syncToolTraceStatesWithConversation(conversation) {
+  if (!conversation || !Array.isArray(conversation.messages)) {
+    return;
+  }
+
+  conversation.messages
+    .filter((message) => canInspectToolTrace(message))
+    .forEach((message) => {
+      const traceState = toolTraceStateForMessage(message.id);
+
+      if (!traceState || !traceState.data) {
+        return;
+      }
+
+      const finalStatusMap = {
+        session: message.status === 'failed' ? 'failed' : 'observed',
+        bridge: message.status === 'failed' ? 'failed' : 'succeeded',
+        default: message.status === 'failed' ? 'failed' : 'observed',
+      };
+
+      mutateMessageToolTrace(message.id, (trace) => {
+        if (message.status === 'completed' || message.status === 'failed') {
+          finalizeRunningStepsInTrace(trace, finalStatusMap);
+        }
+      });
+    });
+}
+
+function syncToolTraceStatesFromTurnProgress(previousTurn, nextTurn) {
+  if (!previousTurn || !Array.isArray(previousTurn.agents)) {
+    return;
+  }
+
+  const nextAgentsById = new Map(
+    Array.isArray(nextTurn && nextTurn.agents) ? nextTurn.agents.map((agent) => [agent.agentId, agent]) : []
+  );
+
+  previousTurn.agents.forEach((previousAgent) => {
+    if (!previousAgent || !previousAgent.messageId || !previousAgent.currentToolStepId) {
+      return;
+    }
+
+    const nextAgent = nextAgentsById.get(previousAgent.agentId) || null;
+    const sameMessage = Boolean(nextAgent && nextAgent.messageId === previousAgent.messageId);
+    const sameStep = sameMessage && String(nextAgent.currentToolStepId || '').trim() === String(previousAgent.currentToolStepId || '').trim();
+    const nextToolName = sameMessage ? String(nextAgent && nextAgent.currentToolName ? nextAgent.currentToolName : '').trim() : '';
+
+    if (sameStep && nextToolName) {
+      return;
+    }
+
+    const nextFailed = String(nextAgent && nextAgent.status ? nextAgent.status : '').trim().toLowerCase() === 'failed';
+    const fallbackStatus = {
+      session: nextFailed ? 'failed' : 'observed',
+      bridge: nextFailed ? 'failed' : 'succeeded',
+      default: nextFailed ? 'failed' : 'observed',
+    };
+
+    finalizeMessageToolTraceRunningStep(previousAgent.messageId, previousAgent.currentToolStepId, fallbackStatus);
+  });
+}
+
+function computeMessageToolTraceRequestKey(message) {
+  const sessionInfo = messageSessionInfo(message);
+
+  return [
+    message && message.taskId ? message.taskId : '',
+    message && message.status ? message.status : '',
+    message && message.runId ? message.runId : '',
+    sessionInfo.sessionPath,
+    sessionInfo.sessionName,
+  ].join('|');
+}
+
+function toolTraceFailureContext(trace) {
+  return trace && trace.failureContext && typeof trace.failureContext === 'object' ? trace.failureContext : null;
+}
+
+function messageHasFailedStatus(message) {
+  return String(message && message.status ? message.status : '').trim().toLowerCase() === 'failed';
+}
+
+function messageToolTraceHasFailure(message, traceState) {
+  if (traceState && traceState.status === 'error') {
+    return true;
+  }
+
+  const trace = traceState && traceState.data ? traceState.data : null;
+  const failureContext = toolTraceFailureContext(trace);
+  const summary = trace && trace.summary ? trace.summary : null;
+
+  return Boolean(
+    (failureContext && failureContext.hasFailure) ||
+    (summary && summary.status === 'failed') ||
+    messageHasFailedStatus(message)
+  );
+}
+
+function maybeAutoOpenMessageToolTrace(message, traceState) {
+  if (!traceState || traceState.open || traceState.userToggled) {
+    return false;
+  }
+
+  if (!messageToolTraceHasFailure(message, traceState)) {
+    return false;
+  }
+
+  traceState.open = true;
+  return true;
+}
+
+function buildMessageToolTraceErrorContext(message, traceState) {
+  const trace = traceState && traceState.data ? traceState.data : null;
+  const failureContext = toolTraceFailureContext(trace);
+
+  if (failureContext && failureContext.text) {
+    return String(failureContext.text);
+  }
+
+  if (traceState && traceState.errorMessage) {
+    return [
+      `消息: ${message && message.id ? message.id : '(unknown)'}`,
+      `状态: ${message && message.status ? message.status : 'unknown'}`,
+      '',
+      `工具链路加载失败：${traceState.errorMessage}`,
+    ].join('\n');
+  }
+
+  return '';
+}
+
+async function copyMessageToolTraceErrorContext(message) {
+  const traceState = toolTraceStateForMessage(message && message.id);
+  const text = buildMessageToolTraceErrorContext(message, traceState);
+
+  if (!text) {
+    showToast('暂无可复制的错误上下文');
+    return;
+  }
+
+  if (typeof copyTextToClipboard === 'function') {
+    await copyTextToClipboard(text);
+    showToast('已复制错误上下文');
+    return;
+  }
+
+  if (navigator && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+    await navigator.clipboard.writeText(text);
+    showToast('已复制错误上下文');
+    return;
+  }
+
+  throw new Error('当前环境不支持复制');
+}
+
+function toolTraceDetailSignature(trace) {
+  if (!trace) {
+    return '';
+  }
+
+  function traceValueSignature(value, maxLength = 160) {
+    if (value == null || value === '') {
+      return '';
+    }
+
+    if (typeof value === 'string') {
+      return value.slice(0, maxLength);
+    }
+
+    try {
+      return JSON.stringify(value).slice(0, maxLength);
+    } catch {
+      return String(value).slice(0, maxLength);
+    }
+  }
+
+  const timelineSteps = Array.isArray(trace.steps) && trace.steps.length > 0
+    ? trace.steps
+    : [].concat(
+        Array.isArray(trace.sessionToolCalls) ? trace.sessionToolCalls : [],
+        Array.isArray(trace.bridgeToolEvents) ? trace.bridgeToolEvents : []
+      );
+
+  return timelineSteps
+    .map((step) =>
+      [
+        step && step.stepId ? step.stepId : '',
+        step && step.kind ? step.kind : '',
+        step && step.toolName ? step.toolName : '',
+        step && step.status ? step.status : '',
+        step && step.durationMs ? step.durationMs : 0,
+        step && step.createdAt ? step.createdAt : '',
+        step && step.partialJson ? traceValueSignature(step.partialJson) : '',
+        step && step.requestSummary ? traceValueSignature(step.requestSummary) : '',
+        step && step.resultSummary ? traceValueSignature(step.resultSummary) : '',
+        step && step.errorSummary ? traceValueSignature(step.errorSummary) : '',
+        step && step.bridgeToolHint ? step.bridgeToolHint : '',
+        step && step.linkedFromStepId ? step.linkedFromStepId : '',
+      ].join('\u001c')
+    )
+    .join('\u001d');
+}
+
+function toolTraceSignatureForMessage(message) {
+  const traceState = toolTraceStateForMessage(message && message.id);
+  const trace = traceState && traceState.data ? traceState.data : null;
+  const summary = trace && trace.summary ? trace.summary : null;
+  const task = trace && trace.task ? trace.task : null;
+  const session = trace && trace.session ? trace.session : null;
+  const activity = trace && trace.activity && typeof trace.activity === 'object' ? trace.activity : null;
+  const failureContext = toolTraceFailureContext(trace);
+
+  return [
+    traceState && traceState.open ? 'open' : 'closed',
+    traceState && traceState.status ? traceState.status : 'idle',
+    traceState && traceState.requestKey ? traceState.requestKey : '',
+    traceState && traceState.errorMessage ? traceState.errorMessage : '',
+    traceState && traceState.userToggled ? 'toggled' : 'auto',
+    summary && summary.status ? summary.status : '',
+    summary && summary.totalSteps ? summary.totalSteps : 0,
+    summary && summary.failedSteps ? summary.failedSteps : 0,
+    summary && summary.totalDurationMs ? summary.totalDurationMs : 0,
+    summary && summary.retryCount ? summary.retryCount : 0,
+    task && task.status ? task.status : '',
+    task && task.errorMessage ? task.errorMessage : '',
+    session && session.stopReason ? session.stopReason : '',
+    session && session.assistantMessageTotal ? session.assistantMessageTotal : 0,
+    activity && activity.status ? activity.status : '',
+    activity && activity.hasCurrentTool ? 'active' : 'idle',
+    activity && activity.currentToolName ? activity.currentToolName : '',
+    activity && activity.currentStepId ? activity.currentStepId : '',
+    activity && activity.currentStepKind ? activity.currentStepKind : '',
+    activity && activity.inferred ? 'inferred' : 'direct',
+    activity && activity.label ? activity.label : '',
+    failureContext && failureContext.hasFailure ? 'failed' : 'ok',
+    failureContext && failureContext.source ? failureContext.source : '',
+    failureContext && failureContext.stepId ? failureContext.stepId : '',
+    failureContext && failureContext.toolName ? failureContext.toolName : '',
+    failureContext && failureContext.text ? failureContext.text : '',
+    toolTraceDetailSignature(trace),
+  ].join('\u001e');
+}
+
+function messageToolTraceUrl(conversationId, messageId) {
+  return `/api/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/tool-trace`;
+}
+
+function clearMessageToolTraceTimer(messageId) {
+  const timer = state.messageToolTraceTimers.get(messageId);
+
+  if (!timer) {
+    return;
+  }
+
+  window.clearTimeout(timer);
+  state.messageToolTraceTimers.delete(messageId);
+}
+
+function clearAllMessageToolTraceTimers() {
+  for (const messageId of Array.from(state.messageToolTraceTimers.keys())) {
+    clearMessageToolTraceTimer(messageId);
+  }
+}
+
+function shouldPollMessageToolTrace(_message, _traceState) {
+  return false;
+}
+
+function scheduleMessageToolTracePoll(conversationId, message) {
+  if (!message || !message.id) {
+    return;
+  }
+
+  clearMessageToolTraceTimer(message.id);
+
+  const traceState = toolTraceStateForMessage(message.id);
+
+  if (!shouldPollMessageToolTrace(message, traceState)) {
+    return;
+  }
+
+  const timer = window.setTimeout(() => {
+    void fetchMessageToolTrace(conversationId, message, { force: true, silent: true });
+  }, 1500);
+
+  state.messageToolTraceTimers.set(message.id, timer);
+}
+
+async function fetchMessageToolTrace(conversationId, message, options = {}) {
+  if (!conversationId || !canInspectToolTrace(message)) {
+    return null;
+  }
+
+  const traceState = getMessageToolTraceState(message.id);
+
+  if (!traceState) {
+    return null;
+  }
+
+  const requestKey = computeMessageToolTraceRequestKey(message);
+
+  if (!options.force && traceState.status === 'loading' && traceState.requestKey === requestKey && traceState.promise) {
+    return traceState.promise;
+  }
+
+  if (!options.force && traceState.status === 'ready' && traceState.requestKey === requestKey) {
+    scheduleMessageToolTracePoll(conversationId, message);
+    return traceState.data;
+  }
+
+  traceState.status = 'loading';
+  traceState.errorMessage = '';
+  traceState.requestKey = requestKey;
+  scheduleConversationPaneRender();
+
+  const request = fetchJson(messageToolTraceUrl(conversationId, message.id))
+    .then((result) => {
+      traceState.status = 'ready';
+      traceState.data = mergeMessageToolTraceData(traceState.data, result && result.trace ? result.trace : null, message);
+      traceState.errorMessage = '';
+      maybeAutoOpenMessageToolTrace(message, traceState);
+      if (state.selectedConversationId === conversationId) {
+        scheduleConversationPaneRender();
+      }
+      scheduleMessageToolTracePoll(conversationId, message);
+      return traceState.data;
+    })
+    .catch((error) => {
+      traceState.status = 'error';
+      traceState.errorMessage = error && error.message ? error.message : '工具链路加载失败';
+      maybeAutoOpenMessageToolTrace(message, traceState);
+      if (state.selectedConversationId === conversationId) {
+        scheduleConversationPaneRender();
+      }
+      clearMessageToolTraceTimer(message.id);
+      return null;
+    })
+    .finally(() => {
+      if (traceState.promise === request) {
+        traceState.promise = null;
+      }
+    });
+
+  traceState.promise = request;
+  return request;
+}
+
+function warmConversationToolTraces(conversation) {
+  if (!conversation || !conversation.id || !Array.isArray(conversation.messages)) {
+    return;
+  }
+
+  conversation.messages.filter((message) => canInspectToolTrace(message)).forEach((message) => {
+    const traceState = toolTraceStateForMessage(message.id);
+    const requestKey = computeMessageToolTraceRequestKey(message);
+
+    if (
+      !traceState ||
+      traceState.status === 'idle' ||
+      (traceState.status !== 'loading' && traceState.requestKey !== requestKey) ||
+      (traceState.status !== 'ready' && traceState.requestKey === requestKey)
+    ) {
+      void fetchMessageToolTrace(conversation.id, message, { silent: true });
+      return;
+    }
+
+    maybeAutoOpenMessageToolTrace(message, traceState);
+    scheduleMessageToolTracePoll(conversation.id, message);
+  });
+}
+
+function toggleMessageToolTrace(conversationId, message) {
+  if (!conversationId || !canInspectToolTrace(message)) {
+    return;
+  }
+
+  const traceState = getMessageToolTraceState(message.id);
+
+  if (!traceState) {
+    return;
+  }
+
+  traceState.userToggled = true;
+  traceState.open = !traceState.open;
+
+  if (!traceState.open) {
+    scheduleConversationPaneRender();
+    scheduleMessageToolTracePoll(conversationId, message);
+    return;
+  }
+
+  scheduleConversationPaneRender();
+  void fetchMessageToolTrace(conversationId, message, {
+    force: traceState.status === 'error' || traceState.status === 'idle',
+  });
 }
 
 function renderConversationList() {
@@ -568,6 +1593,11 @@ function turnProgressSignature(turn) {
           errorMessage: agent.errorMessage || '',
           hop: agent.hop || 0,
           lastTextDeltaAt: agent.lastTextDeltaAt || null,
+          currentToolName: agent.currentToolName || '',
+          currentToolKind: agent.currentToolKind || '',
+          currentToolStepId: agent.currentToolStepId || '',
+          currentToolStartedAt: agent.currentToolStartedAt || null,
+          currentToolInferred: Boolean(agent.currentToolInferred),
         }))
       : [],
   });
@@ -799,11 +1829,20 @@ function liveStageLabel(stage) {
     return '';
   }
 
+  const currentToolName = stage.currentToolName ? String(stage.currentToolName).trim() : '';
+  const currentToolLabel = currentToolName
+    ? `调用 ${currentToolName}${stage.currentToolInferred ? '（推断）' : ''}`
+    : '';
+
   if (stage.status === 'queued') {
-    return '思考中';
+    return currentToolLabel || '思考中';
   }
 
   if (stage.status === 'running') {
+    if (currentToolLabel && !stage.preview) {
+      return currentToolLabel;
+    }
+
     if (!stage.preview) {
       return '思考中';
     }
@@ -820,7 +1859,7 @@ function liveStageLabel(stage) {
   }
 
   if (stage.status === 'terminating') {
-    return '收尾中';
+    return currentToolLabel || '收尾中';
   }
 
   return '';
@@ -925,6 +1964,8 @@ function renderAll() {
 }
 
 async function loadConversation(conversationId) {
+  clearAllMessageToolTraceTimers();
+
   if (!conversationId) {
     state.currentConversation = null;
     closeMentionMenu();
@@ -937,6 +1978,8 @@ async function loadConversation(conversationId) {
   state.currentConversation = data.conversation;
   closeMentionMenu();
   renderAll();
+  warmConversationToolTraces(state.currentConversation);
+  syncToolTraceStatesWithConversation(state.currentConversation);
   scrollMessageListToBottom();
 }
 
@@ -1027,6 +2070,8 @@ async function refreshConversationFromEvent(conversationId) {
     state.currentConversation = data.conversation;
     renderConversationPane();
     renderUndercoverGameCard();
+    warmConversationToolTraces(state.currentConversation);
+    syncToolTraceStatesWithConversation(state.currentConversation);
 
     if (shouldStickToBottom) {
       scrollMessageListToBottom();
@@ -1120,6 +2165,11 @@ function connectEventStream() {
     scheduleConversationRefresh(payload.conversationId);
   });
 
+  source.addEventListener('conversation_tool_event', (event) => {
+    const payload = JSON.parse(event.data);
+    applyConversationToolEvent(payload);
+  });
+
   source.addEventListener('turn_progress', (event) => {
     const payload = JSON.parse(event.data);
 
@@ -1138,6 +2188,8 @@ function connectEventStream() {
     }
 
     if (hasChanged) {
+      syncToolTraceStatesFromTurnProgress(existingTurn, payload.turn);
+
       if (index === -1) {
         activeTurns.push(payload.turn);
       } else {
@@ -1161,8 +2213,19 @@ function connectEventStream() {
     const payload = JSON.parse(event.data);
     state.stopRequestConversationIds.delete(payload.conversationId);
 
+    const existingTurn =
+      state.runtime && Array.isArray(state.runtime.activeTurns)
+        ? state.runtime.activeTurns.find((turn) => turn.conversationId === payload.conversationId) || null
+        : null;
+
+    syncToolTraceStatesFromTurnProgress(existingTurn, null);
+
     if (state.runtime && Array.isArray(state.runtime.activeTurns)) {
       state.runtime.activeTurns = state.runtime.activeTurns.filter((turn) => turn.conversationId !== payload.conversationId);
+    }
+
+    if (state.currentConversation && state.currentConversation.id === payload.conversationId) {
+      syncToolTraceStatesWithConversation(state.currentConversation);
     }
 
     renderConversationPane();
@@ -1304,6 +2367,7 @@ function bindEvents() {
       state.selectedConversationId = result.conversation.id;
       state.currentConversation = result.conversation;
       renderAll();
+      syncToolTraceStatesWithConversation(state.currentConversation);
       showToast('新会话已创建');
     } catch (error) {
       showToast(error.message);
@@ -1380,6 +2444,60 @@ function bindEvents() {
 
   dom.messageList.addEventListener('click', async (event) => {
     if (!state.currentConversation) {
+      return;
+    }
+
+    const toolTraceToggle =
+      event.target instanceof Element
+        ? /** @type {HTMLButtonElement | null} */ (event.target.closest('.message-tool-trace-toggle'))
+        : null;
+
+    if (toolTraceToggle) {
+      const messageId = toolTraceToggle.dataset.messageId || '';
+      const message =
+        state.currentConversation && Array.isArray(state.currentConversation.messages)
+          ? state.currentConversation.messages.find((item) => item.id === messageId) || null
+          : null;
+
+      if (!message) {
+        showToast('找不到工具链路对应的消息');
+        return;
+      }
+
+      toggleMessageToolTrace(state.currentConversation.id, message);
+      return;
+    }
+
+    const toolTraceCopyButton =
+      event.target instanceof Element
+        ? /** @type {HTMLButtonElement | null} */ (event.target.closest('.message-tool-trace-copy-button'))
+        : null;
+
+    if (toolTraceCopyButton) {
+      const messageId = toolTraceCopyButton.dataset.messageId || '';
+      const message =
+        state.currentConversation && Array.isArray(state.currentConversation.messages)
+          ? state.currentConversation.messages.find((item) => item.id === messageId) || null
+          : null;
+
+      if (!message) {
+        showToast('找不到要复制的错误上下文');
+        return;
+      }
+
+      const previousText = toolTraceCopyButton.textContent;
+      toolTraceCopyButton.disabled = true;
+      toolTraceCopyButton.textContent = '复制中';
+
+      try {
+        await copyMessageToolTraceErrorContext(message);
+      } catch (error) {
+        showToast(error && error.message ? error.message : '复制失败');
+      } finally {
+        toolTraceCopyButton.disabled = false;
+        toolTraceCopyButton.textContent = previousText;
+      }
+
       return;
     }
 
@@ -1511,6 +2629,8 @@ function bindEvents() {
         );
       }
       renderAll();
+      warmConversationToolTraces(state.currentConversation);
+      syncToolTraceStatesWithConversation(state.currentConversation);
       scrollMessageListToBottom();
 
       if (Array.isArray(result.failures) && result.failures.length > 0) {
@@ -1595,6 +2715,7 @@ function bindEvents() {
       state.currentConversation = result.conversation;
       state.conversations = result.conversations;
       renderAll();
+      syncToolTraceStatesWithConversation(state.currentConversation);
       showToast('会话设置已保存');
     } catch (error) {
       showToast(error.message);

@@ -1,0 +1,11 @@
+{"file": ".trellis/workflow.md", "reason": "Project workflow and conventions"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend development guide"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend development guide"}
+{"file": ".trellis/spec/index.md", "reason": "Repo shape and layer boundaries for chat UI + tool bridge changes"}
+{"file": ".trellis/spec/frontend/ui-structure.md", "reason": "Browser UI module structure for chat page changes"}
+{"file": ".trellis/spec/runtime/index.md", "reason": "Runtime/tool bridge scope and mirrored update paths"}
+{"file": ".trellis/spec/runtime/agent-runtime.md", "reason": "pi-mono runtime and agent tool bridge rules"}
+{"file": ".trellis/spec/guides/index.md", "reason": "Thinking guide entry points for cross-layer and platform-sensitive work"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Task likely spans UI event rendering and tool bridge payloads"}
+{"file": ".trellis/spec/guides/cross-platform-thinking-guide.md", "reason": "Tool bridge and CLI details must stay shell/path safe"}
+{"at":"2026-04-10T20:55:19+08:00","summary":"Closed out chat markdown + tool trace work: shipped safe Markdown rendering for assistant messages, merged live/session tool events into per-message trace state, added the current-tool panel plus expandable timeline UI, preserved expanded-trace scroll position during streaming updates, tightened link sanitization and long-history retention, and fixed live parameter summaries so empty {} no longer masks partial arguments."}

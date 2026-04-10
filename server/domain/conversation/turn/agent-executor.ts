@@ -19,6 +19,7 @@ const {
 const { buildAgentTurnPrompt, AGENT_PROMPT_VERSION } = require('./agent-prompt');
 const { ensureAgentSandbox, toPortableShellPath } = require('./agent-sandbox');
 const { extractChatBridgeReplaysFromText, pickChatBridgeReplay } = require('./chat-bridge-replay');
+const { createLiveSessionToolStep } = require('../../runtime/message-tool-trace');
 const { clipText, getTurnStage, nowIso, syncCurrentTurnAgent } = require('./turn-state');
 const { registerTurnHandle, unregisterTurnHandle } = require('./turn-stop');
 
@@ -334,6 +335,176 @@ function extractStreamingPublicReplyPreview(text: any) {
   return raw.startsWith('{') ? '' : raw;
 }
 
+const LIVE_TOOL_BRIDGE_HINTS = [
+  { token: 'send-public', toolName: 'send-public' },
+  { token: 'send-private', toolName: 'send-private' },
+  { token: 'read-context', toolName: 'read-context' },
+  { token: 'list-participants', toolName: 'participants' },
+  { token: 'trellis-init', toolName: 'trellis-init' },
+  { token: 'trellis-write', toolName: 'trellis-write' },
+];
+
+function normalizePiToolContentType(value: any) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_');
+}
+
+function inferBridgeToolNameFromCommand(command: any) {
+  const normalizedCommand = String(command || '').trim().toLowerCase();
+
+  if (!normalizedCommand) {
+    return '';
+  }
+
+  for (const candidate of LIVE_TOOL_BRIDGE_HINTS) {
+    if (normalizedCommand.includes(candidate.token)) {
+      return candidate.toolName;
+    }
+  }
+
+  return '';
+}
+
+function stringifyLiveToolStepSignatureValue(value: any) {
+  if (value == null || value === '') {
+    return '';
+  }
+
+  if (typeof value === 'string') {
+    return clipText(value, 240);
+  }
+
+  try {
+    return clipText(JSON.stringify(value), 240);
+  } catch {
+    return clipText(String(value), 240);
+  }
+}
+
+function liveSessionToolStepSignature(step: any) {
+  if (!step || typeof step !== 'object') {
+    return '';
+  }
+
+  return JSON.stringify([
+    step && step.stepId ? String(step.stepId).trim() : '',
+    step && step.toolName ? String(step.toolName).trim() : '',
+    step && step.bridgeToolHint ? String(step.bridgeToolHint).trim() : '',
+    step && step.status ? String(step.status).trim().toLowerCase() : '',
+    stringifyLiveToolStepSignatureValue(step && step.requestSummary !== undefined ? step.requestSummary : null),
+    stringifyLiveToolStepSignatureValue(step && step.partialJson ? step.partialJson : ''),
+  ]);
+}
+
+function extractLiveSessionToolFromPiEvent(piEvent: any, options: any = {}) {
+  const message = piEvent && piEvent.message && piEvent.message.role === 'assistant' ? piEvent.message : null;
+
+  if (!message || !Array.isArray(message.content)) {
+    return null;
+  }
+
+  const toolCall =
+    message.content
+      .slice()
+      .reverse()
+      .find((item: any) => {
+        const type = normalizePiToolContentType(item && item.type ? item.type : '');
+        return type === 'tool_call' || type === 'toolcall' || type === 'tool_use' || type === 'tooluse';
+      }) || null;
+
+  if (!toolCall) {
+    return null;
+  }
+
+  const rawToolName = String(toolCall && toolCall.name ? toolCall.name : '').trim();
+
+  if (!rawToolName) {
+    return null;
+  }
+
+  const inferredBridgeToolName =
+    rawToolName.toLowerCase() === 'bash'
+      ? inferBridgeToolNameFromCommand(toolCall && toolCall.arguments ? toolCall.arguments.command : '')
+      : '';
+  const toolName = inferredBridgeToolName || rawToolName;
+
+  if (!toolName) {
+    return null;
+  }
+
+  const step = createLiveSessionToolStep(
+    {
+      id: toolCall && toolCall.id ? toolCall.id : '',
+      name: rawToolName,
+      arguments: toolCall && toolCall.arguments !== undefined ? toolCall.arguments : null,
+      partialJson: toolCall && toolCall.partialJson ? toolCall.partialJson : '',
+    },
+    {
+      agentDir: options.agentDir,
+      createdAt: options.createdAt || nowIso(),
+      status: 'running',
+    }
+  );
+
+  return {
+    currentTool: {
+      toolName,
+      toolKind: inferredBridgeToolName ? 'bridge' : 'session',
+      toolStepId: step && step.stepId ? String(step.stepId) : String(toolCall && toolCall.id ? toolCall.id : '').trim(),
+      inferred: Boolean(inferredBridgeToolName),
+    },
+    step,
+  };
+}
+
+function applyStageCurrentTool(stage: any, nextTool: any = null) {
+  if (!stage) {
+    return false;
+  }
+
+  const nextToolName = nextTool && nextTool.toolName ? String(nextTool.toolName).trim() : '';
+  const nextToolKind = nextTool && nextTool.toolKind ? String(nextTool.toolKind).trim() : '';
+  const nextToolStepId = nextTool && nextTool.toolStepId ? String(nextTool.toolStepId).trim() : '';
+  const nextToolInferred = Boolean(nextTool && nextTool.inferred && nextToolName);
+  const currentToolName = String(stage.currentToolName || '').trim();
+  const currentToolKind = String(stage.currentToolKind || '').trim();
+  const currentToolStepId = String(stage.currentToolStepId || '').trim();
+  const currentToolInferred = Boolean(stage.currentToolInferred);
+
+  if (
+    currentToolName === nextToolName &&
+    currentToolKind === nextToolKind &&
+    currentToolStepId === nextToolStepId &&
+    currentToolInferred === nextToolInferred
+  ) {
+    return false;
+  }
+
+  stage.currentToolName = nextToolName;
+  stage.currentToolKind = nextToolName ? nextToolKind || 'session' : '';
+  stage.currentToolStepId = nextToolName ? nextToolStepId : '';
+  stage.currentToolInferred = nextToolInferred;
+  stage.currentToolStartedAt = nextToolName ? nowIso() : null;
+  return true;
+}
+
+function updateStageCurrentTool(stage: any, turnState: any, emitTurnProgress: any, nextTool: any = null) {
+  if (!applyStageCurrentTool(stage, nextTool)) {
+    return false;
+  }
+
+  if (!turnState || typeof emitTurnProgress !== 'function') {
+    return true;
+  }
+
+  turnState.updatedAt = nowIso();
+  syncCurrentTurnAgent(turnState);
+  emitTurnProgress(turnState);
+  return true;
+}
+
 export function createAgentExecutor(options: any = {}) {
   const store = options.store;
   const skillRegistry = options.skillRegistry;
@@ -489,6 +660,7 @@ export function createAgentExecutor(options: any = {}) {
     stage.startedAt = null;
     stage.endedAt = null;
     stage.lastTextDeltaAt = null;
+    applyStageCurrentTool(stage, null);
     turnState.hopCount = Math.max(turnState.hopCount || 0, hop);
     turnState.updatedAt = nowIso();
     syncCurrentTurnAgent(turnState);
@@ -641,6 +813,8 @@ export function createAgentExecutor(options: any = {}) {
 
     const startedAt = nowIso();
     let rawReply = '';
+    let lastLiveSessionToolStepId = '';
+    let lastLiveSessionToolSignature = '';
     const startedMetadata = {
       ...queuedMetadata,
       sessionPath: handle.sessionPath || '',
@@ -657,6 +831,7 @@ export function createAgentExecutor(options: any = {}) {
     stage.preview = '';
     stage.errorMessage = '';
     stage.lastTextDeltaAt = null;
+    applyStageCurrentTool(stage, null);
     turnState.updatedAt = startedAt;
     syncCurrentTurnAgent(turnState);
 
@@ -686,8 +861,75 @@ export function createAgentExecutor(options: any = {}) {
     broadcastEvent('conversation_message_updated', { conversationId, message: startedMessage });
     emitTurnProgress(turnState);
 
+    handle.on('pi_event', (event: any) => {
+      const liveTool = extractLiveSessionToolFromPiEvent(event && event.piEvent ? event.piEvent : null, {
+        agentDir,
+        createdAt: nowIso(),
+      });
+
+      if (!liveTool || !liveTool.currentTool) {
+        return;
+      }
+
+      const step = liveTool.step || null;
+      const stepId = step && step.stepId ? String(step.stepId).trim() : '';
+      const stepSignature = liveSessionToolStepSignature(step);
+      const changed = updateStageCurrentTool(stage, turnState, emitTurnProgress, liveTool.currentTool);
+      const detailChanged = Boolean(
+        step &&
+          stepId &&
+          stepSignature &&
+          stepId === lastLiveSessionToolStepId &&
+          stepSignature !== lastLiveSessionToolSignature
+      );
+
+      if (stepId && stepSignature) {
+        lastLiveSessionToolStepId = stepId;
+        lastLiveSessionToolSignature = stepSignature;
+      } else if (changed) {
+        lastLiveSessionToolStepId = '';
+        lastLiveSessionToolSignature = '';
+      }
+
+      if (!step) {
+        return;
+      }
+
+      if (changed) {
+        broadcastEvent('conversation_tool_event', {
+          conversationId,
+          turnId,
+          taskId: stageTaskId,
+          agentId: agent.id,
+          agentName: agent.name,
+          assistantMessageId: assistantMessage.id,
+          messageId: assistantMessage.id,
+          phase: 'started',
+          step,
+        });
+        return;
+      }
+
+      if (!detailChanged) {
+        return;
+      }
+
+      broadcastEvent('conversation_tool_event', {
+        conversationId,
+        turnId,
+        taskId: stageTaskId,
+        agentId: agent.id,
+        agentName: agent.name,
+        assistantMessageId: assistantMessage.id,
+        messageId: assistantMessage.id,
+        phase: 'updated',
+        step,
+      });
+    });
+
     handle.on('assistant_text_delta', (event: any) => {
       rawReply += event.delta || '';
+      updateStageCurrentTool(stage, turnState, emitTurnProgress, null);
 
       if (!toolInvocation.publicToolUsed) {
         return;
@@ -717,6 +959,7 @@ export function createAgentExecutor(options: any = {}) {
     handle.on('run_terminating', (event: any) => {
       stage.status = 'terminating';
       stage.errorMessage = event.reason && event.reason.message ? event.reason.message : '';
+      applyStageCurrentTool(stage, null);
       turnState.updatedAt = nowIso();
       syncCurrentTurnAgent(turnState);
       runStore.appendTaskEvent(stageTaskId, 'agent_reply_terminating', event.reason || null);
@@ -844,6 +1087,7 @@ export function createAgentExecutor(options: any = {}) {
       stage.errorMessage = '';
       stage.lastTextDeltaAt = stage.lastTextDeltaAt || null;
       stage.endedAt = nowIso();
+      applyStageCurrentTool(stage, null);
       turnState.completedCount += 1;
       turnState.updatedAt = nowIso();
       syncCurrentTurnAgent(turnState);
@@ -1008,6 +1252,7 @@ export function createAgentExecutor(options: any = {}) {
       stage.errorMessage = errorMessage;
       stage.lastTextDeltaAt = stage.lastTextDeltaAt || null;
       stage.endedAt = nowIso();
+      applyStageCurrentTool(stage, null);
 
       if (!stopRequested) {
         failedReplies.push(assistantMessageFailed);

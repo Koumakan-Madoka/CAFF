@@ -9,6 +9,7 @@ import { readRequestJson } from '../http/request-body';
 import { sendFileDownload, sendJson } from '../http/response';
 
 import { pickConversationSummary, withConversationPrivateMessages } from '../domain/conversation/conversation-view';
+import { buildAssistantMessageToolTrace } from '../domain/runtime/message-tool-trace';
 import { UNDERCOVER_CONVERSATION_TYPE } from '../../lib/who-is-undercover-game';
 import { WEREWOLF_CONVERSATION_TYPE } from '../../lib/werewolf-game';
 
@@ -231,6 +232,46 @@ export function createConversationsController(options: any = {}): RouteHandler<A
 
       const sessionPath = turnOrchestrator.resolveAssistantMessageSessionPath(message);
       sendFileDownload(res, sessionPath, path.basename(sessionPath));
+      return true;
+    }
+
+    const messageToolTraceMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/messages\/([^/]+)\/tool-trace$/);
+
+    if (messageToolTraceMatch && req.method === 'GET') {
+      const conversationId = decodeURIComponent(messageToolTraceMatch[1]);
+      const messageId = decodeURIComponent(messageToolTraceMatch[2]);
+      const conversation = store.getConversation(conversationId);
+
+      if (!conversation) {
+        throw createHttpError(404, 'Conversation not found');
+      }
+
+      const message = store.getMessage(messageId);
+
+      if (!message || message.conversationId !== conversationId) {
+        throw createHttpError(404, 'Message not found');
+      }
+
+      if (message.role !== 'assistant') {
+        throw createHttpError(400, 'Only assistant messages can inspect a tool trace');
+      }
+
+      let resolvedSessionPath = '';
+
+      try {
+        resolvedSessionPath = turnOrchestrator.resolveAssistantMessageSessionPath(message);
+      } catch {
+        resolvedSessionPath = '';
+      }
+
+      sendJson(res, 200, {
+        trace: buildAssistantMessageToolTrace({
+          db: store.db,
+          agentDir: store.agentDir,
+          message,
+          resolvedSessionPath,
+        }),
+      });
       return true;
     }
 
