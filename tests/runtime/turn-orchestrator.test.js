@@ -7,10 +7,13 @@ const {
   sanitizePromptMentions,
 } = require('../../build/server/domain/conversation/turn-orchestrator');
 const { createRoutingExecutor } = require('../../build/server/domain/conversation/turn/routing-executor');
-const { createAgentExecutor } = require('../../build/server/domain/conversation/turn/agent-executor');
+const {
+  createAgentExecutor,
+  extractLiveSessionToolFromPiEvent,
+} = require('../../build/server/domain/conversation/turn/agent-executor');
 const { ensureAgentSandbox } = require('../../build/server/domain/conversation/turn/agent-sandbox');
 const { createSessionExporter } = require('../../build/server/domain/conversation/turn/session-export');
-const { createTurnState } = require('../../build/server/domain/conversation/turn/turn-state');
+const { createTurnState, resetTurnStage, summarizeTurnState } = require('../../build/server/domain/conversation/turn/turn-state');
 const { createTurnStopper, registerTurnHandle } = require('../../build/server/domain/conversation/turn/turn-stop');
 
 const { withTempDir } = require('../helpers/temp-dir');
@@ -527,6 +530,39 @@ test('session export requires a resolved session path', (t) => {
   );
 });
 
+test('turn state summary exposes live current tool fields and reset clears them', () => {
+  const conversation = {
+    id: 'conversation-live-tool',
+    title: 'Live tool test',
+    agents: [{ id: 'agent-a', name: 'Alpha' }],
+  };
+  const turnState = createTurnState(conversation, 'turn-live-tool');
+  const stage = turnState.agents[0];
+
+  stage.status = 'running';
+  stage.currentToolName = 'send-public';
+  stage.currentToolKind = 'bridge';
+  stage.currentToolStepId = 'tool-123';
+  stage.currentToolStartedAt = '2026-04-10T00:00:00.000Z';
+  stage.currentToolInferred = true;
+
+  const summary = summarizeTurnState(turnState);
+
+  assert.equal(summary.agents[0].currentToolName, 'send-public');
+  assert.equal(summary.agents[0].currentToolKind, 'bridge');
+  assert.equal(summary.agents[0].currentToolStepId, 'tool-123');
+  assert.equal(summary.agents[0].currentToolStartedAt, '2026-04-10T00:00:00.000Z');
+  assert.equal(summary.agents[0].currentToolInferred, true);
+
+  resetTurnStage(stage);
+
+  assert.equal(stage.currentToolName, '');
+  assert.equal(stage.currentToolKind, '');
+  assert.equal(stage.currentToolStepId, '');
+  assert.equal(stage.currentToolStartedAt, null);
+  assert.equal(stage.currentToolInferred, false);
+});
+
 test('turn stop cancels active handles and clears queued stages', () => {
   const activeTurns = new Map();
   let broadcastCount = 0;
@@ -575,6 +611,89 @@ test('turn stop cancels active handles and clears queued stages', () => {
   assert.equal(summary.stopRequested, true);
   assert.equal(broadcastCount, 1);
   assert.equal(emitCount, 1);
+});
+
+test('live session tool extraction gives anonymous calls stable monotonic step ids', () => {
+  const anonymousTracker = {
+    nextIndex: 0,
+    activeStepId: '',
+    activeFingerprint: '',
+    activeToolName: '',
+    activeToolKind: '',
+  };
+
+  const first = extractLiveSessionToolFromPiEvent(
+    {
+      message: {
+        role: 'assistant',
+        content: [{ type: 'toolCall', name: 'read', arguments: { path: '/tmp/a.md' } }],
+      },
+    },
+    {
+      createdAt: '2026-04-10T00:00:00.000Z',
+      anonymousTracker,
+    }
+  );
+
+  assert.ok(first);
+  assert.equal(first.step.stepId, 'session-1');
+
+  const second = extractLiveSessionToolFromPiEvent(
+    {
+      message: {
+        role: 'assistant',
+        content: [{ type: 'toolCall', name: 'read', partialJson: '{"path":"/tmp/a.md"' }],
+      },
+    },
+    {
+      createdAt: '2026-04-10T00:00:00.100Z',
+      currentToolName: first.currentTool.toolName,
+      currentToolKind: first.currentTool.toolKind,
+      currentToolStepId: first.currentTool.toolStepId,
+      anonymousTracker,
+    }
+  );
+
+  assert.ok(second);
+  assert.equal(second.step.stepId, 'session-1');
+
+  const third = extractLiveSessionToolFromPiEvent(
+    {
+      message: {
+        role: 'assistant',
+        content: [{ type: 'toolCall', name: 'read', arguments: { path: '/tmp/b.md' } }],
+      },
+    },
+    {
+      createdAt: '2026-04-10T00:00:00.200Z',
+      currentToolName: second.currentTool.toolName,
+      currentToolKind: second.currentTool.toolKind,
+      currentToolStepId: second.currentTool.toolStepId,
+      anonymousTracker,
+    }
+  );
+
+  assert.ok(third);
+  assert.equal(third.step.stepId, 'session-2');
+
+  const fourth = extractLiveSessionToolFromPiEvent(
+    {
+      message: {
+        role: 'assistant',
+        content: [{ type: 'toolCall', name: 'read', partialJson: '{"path":"/tmp/b.md"' }],
+      },
+    },
+    {
+      createdAt: '2026-04-10T00:00:00.300Z',
+      currentToolName: third.currentTool.toolName,
+      currentToolKind: third.currentTool.toolKind,
+      currentToolStepId: third.currentTool.toolStepId,
+      anonymousTracker,
+    }
+  );
+
+  assert.ok(fourth);
+  assert.equal(fourth.step.stepId, 'session-2');
 });
 
 test('agent decision routing only extracts actionable trailing mentions', () => {

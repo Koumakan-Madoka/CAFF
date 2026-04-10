@@ -4,6 +4,7 @@ const path = require('node:path');
 const { createHttpError } = require('../../http/http-errors');
 const { pickConversationSummary, serializeConversationPrivateMessageForUi } = require('../conversation/conversation-view');
 const { buildAgentMentionLookup, formatAgentMention, resolveMentionValues } = require('../conversation/mention-routing');
+const { createLiveBridgeToolStep } = require('./message-tool-trace');
 
 const MAX_HISTORY_MESSAGES = 24;
 const MAX_PRIVATE_CONTEXT_MESSAGES = 16;
@@ -42,6 +43,7 @@ function normalizePromptUserMessageSnapshot(message: any, fallback: any = {}) {
 
 export function createAgentToolBridge(options: any = {}) {
   const store = options.store;
+  const agentDir = String(options.agentDir || '').trim();
   const broadcastEvent = typeof options.broadcastEvent === 'function' ? options.broadcastEvent : () => {};
   const broadcastConversationSummary =
     typeof options.broadcastConversationSummary === 'function' ? options.broadcastConversationSummary : () => {};
@@ -53,17 +55,102 @@ export function createAgentToolBridge(options: any = {}) {
     return taskId || null;
   }
 
+  function broadcastConversationToolEvent(context: any, phase: string, step: any) {
+    if (!context || !step || !context.conversationId || !context.assistantMessageId) {
+      return;
+    }
+
+    broadcastEvent('conversation_tool_event', {
+      conversationId: context.conversationId,
+      turnId: context.turnId || '',
+      taskId: resolveStageTaskId(context),
+      agentId: context.agentId || '',
+      agentName: context.agentName || '',
+      assistantMessageId: context.assistantMessageId,
+      messageId: context.assistantMessageId,
+      phase,
+      step,
+    });
+  }
+
   function tryAppendInvocationEvent(context: any, eventType: string, payload: any) {
     const runStore = context && context.runStore ? context.runStore : null;
     const taskId = resolveStageTaskId(context);
 
-    if (!runStore || !taskId || typeof runStore.appendTaskEvent !== 'function') {
+    if (runStore && taskId && typeof runStore.appendTaskEvent === 'function') {
+      try {
+        runStore.appendTaskEvent(taskId, eventType, payload);
+      } catch {}
+    }
+
+    if (eventType !== 'agent_tool_call' || !payload || typeof payload !== 'object') {
       return;
     }
 
-    try {
-      runStore.appendTaskEvent(taskId, eventType, payload);
-    } catch {}
+    const liveStep = createLiveBridgeToolStep(payload, { agentDir, createdAt: nowIso() });
+
+    if (liveStep) {
+      broadcastConversationToolEvent(context, 'updated', liveStep);
+    }
+  }
+
+  function setContextCurrentTool(context: any, nextTool: any = null) {
+    const stage = context && context.stage ? context.stage : null;
+
+    if (!stage) {
+      return false;
+    }
+
+    const nextToolName = nextTool && nextTool.toolName ? String(nextTool.toolName).trim() : '';
+    const nextToolKind = nextTool && nextTool.toolKind ? String(nextTool.toolKind).trim() : '';
+    const nextToolStepId = nextTool && nextTool.toolStepId ? String(nextTool.toolStepId).trim() : '';
+    const nextToolInferred = Boolean(nextTool && nextTool.inferred && nextToolName);
+    const nextToolRequest = nextTool && nextTool.request !== undefined ? nextTool.request : null;
+    const currentToolName = String(stage.currentToolName || '').trim();
+    const currentToolKind = String(stage.currentToolKind || '').trim();
+    const currentToolStepId = String(stage.currentToolStepId || '').trim();
+    const currentToolInferred = Boolean(stage.currentToolInferred);
+
+    if (
+      currentToolName === nextToolName &&
+      currentToolKind === nextToolKind &&
+      currentToolStepId === nextToolStepId &&
+      currentToolInferred === nextToolInferred
+    ) {
+      return false;
+    }
+
+    stage.currentToolName = nextToolName;
+    stage.currentToolKind = nextToolName ? nextToolKind || 'bridge' : '';
+    stage.currentToolStepId = nextToolName ? nextToolStepId : '';
+    stage.currentToolInferred = nextToolInferred;
+    stage.currentToolStartedAt = nextToolName ? nowIso() : null;
+
+    if (nextToolName) {
+      const liveStep = createLiveBridgeToolStep(
+        {
+          toolCallId: nextToolStepId,
+          tool: nextToolName,
+          status: 'running',
+          request: nextToolRequest,
+        },
+        {
+          agentDir,
+          createdAt: stage.currentToolStartedAt || nowIso(),
+        }
+      );
+
+      if (liveStep) {
+        broadcastConversationToolEvent(context, 'started', liveStep);
+      }
+    }
+
+    if (context && context.turnState) {
+      context.turnState.updatedAt = nowIso();
+      onTurnUpdated(context.turnState);
+    }
+
+    return true;
   }
 
   function createInvocationContext(input: any = {}) {
@@ -386,8 +473,30 @@ export function createAgentToolBridge(options: any = {}) {
     const context = getInvocation(body.invocationId, body.callbackToken);
     const content = String(body.content || '').trim();
     const visibility = String(body.visibility || 'public').trim().toLowerCase();
+    const mode = String(body.mode || 'replace').trim().toLowerCase() || 'replace';
+    const rawRecipients = body.recipientAgentIds !== undefined ? body.recipientAgentIds : body.recipients;
+    const requestedRecipientCount = normalizeAgentToolRecipientValues(rawRecipients).length;
     const toolCallId = randomUUID();
     const toolName = visibility === 'private' ? 'send-private' : visibility === 'public' ? 'send-public' : 'post-message';
+
+    setContextCurrentTool(context, {
+      toolName,
+      toolKind: 'bridge',
+      toolStepId: toolCallId,
+      inferred: false,
+      request:
+        visibility === 'private'
+          ? {
+              visibility: 'private',
+              contentLength: content.length,
+              recipientCount: requestedRecipientCount,
+            }
+          : {
+              visibility,
+              mode,
+              contentLength: content.length,
+            },
+    });
 
     try {
       if (!content) {
@@ -395,8 +504,6 @@ export function createAgentToolBridge(options: any = {}) {
       }
 
       if (visibility === 'public') {
-        const mode = String(body.mode || 'replace').trim().toLowerCase() || 'replace';
-
         if (context.dryRun) {
           const timestamp = nowIso();
           const normalizedMode = String(mode || 'replace').trim().toLowerCase() || 'replace';
@@ -708,6 +815,8 @@ export function createAgentToolBridge(options: any = {}) {
       });
 
       throw error;
+    } finally {
+      setContextCurrentTool(context, null);
     }
   }
 
@@ -719,6 +828,18 @@ export function createAgentToolBridge(options: any = {}) {
     );
     const publicLimit = Number.parseInt(requestUrl.searchParams.get('publicLimit') || '', 10);
     const privateLimit = Number.parseInt(requestUrl.searchParams.get('privateLimit') || '', 10);
+    const toolCallId = randomUUID();
+
+    setContextCurrentTool(context, {
+      toolName: 'read-context',
+      toolKind: 'bridge',
+      toolStepId: toolCallId,
+      inferred: false,
+      request: {
+        publicLimit: Number.isFinite(publicLimit) ? publicLimit : null,
+        privateLimit: Number.isFinite(privateLimit) ? privateLimit : null,
+      },
+    });
 
     try {
       if (context.dryRun) {
@@ -756,7 +877,7 @@ export function createAgentToolBridge(options: any = {}) {
 
         tryAppendInvocationEvent(context, 'agent_tool_call', {
           schemaVersion: 1,
-          toolCallId: randomUUID(),
+          toolCallId,
           tool: 'read-context',
           status: 'succeeded',
           durationMs: Date.now() - startedAt,
@@ -791,7 +912,7 @@ export function createAgentToolBridge(options: any = {}) {
 
       tryAppendInvocationEvent(context, 'agent_tool_call', {
         schemaVersion: 1,
-        toolCallId: randomUUID(),
+        toolCallId,
         tool: 'read-context',
         status: 'succeeded',
         durationMs: Date.now() - startedAt,
@@ -817,7 +938,7 @@ export function createAgentToolBridge(options: any = {}) {
       const errorValue = error as any;
       tryAppendInvocationEvent(context, 'agent_tool_call', {
         schemaVersion: 1,
-        toolCallId: randomUUID(),
+        toolCallId,
         tool: 'read-context',
         status: 'failed',
         durationMs: Date.now() - startedAt,
@@ -838,6 +959,8 @@ export function createAgentToolBridge(options: any = {}) {
       });
 
       throw error;
+    } finally {
+      setContextCurrentTool(context, null);
     }
   }
 
@@ -848,6 +971,17 @@ export function createAgentToolBridge(options: any = {}) {
       requestUrl.searchParams.get('callbackToken')
     );
     const conversation = context.dryRun ? null : store.getConversation(context.conversationId);
+    const toolCallId = randomUUID();
+
+    setContextCurrentTool(context, {
+      toolName: 'participants',
+      toolKind: 'bridge',
+      toolStepId: toolCallId,
+      inferred: false,
+      request: {
+        scope: 'conversation',
+      },
+    });
 
     try {
       const response = {
@@ -862,7 +996,7 @@ export function createAgentToolBridge(options: any = {}) {
 
       tryAppendInvocationEvent(context, 'agent_tool_call', {
         schemaVersion: 1,
-        toolCallId: randomUUID(),
+        toolCallId,
         tool: 'participants',
         status: 'succeeded',
         durationMs: Date.now() - startedAt,
@@ -882,7 +1016,7 @@ export function createAgentToolBridge(options: any = {}) {
       const errorValue = error as any;
       tryAppendInvocationEvent(context, 'agent_tool_call', {
         schemaVersion: 1,
-        toolCallId: randomUUID(),
+        toolCallId,
         tool: 'participants',
         status: 'failed',
         durationMs: Date.now() - startedAt,
@@ -899,6 +1033,8 @@ export function createAgentToolBridge(options: any = {}) {
       });
 
       throw error;
+    } finally {
+      setContextCurrentTool(context, null);
     }
   }
 
@@ -1147,6 +1283,19 @@ export function createAgentToolBridge(options: any = {}) {
 
     const toolCallId = randomUUID();
 
+    setContextCurrentTool(context, {
+      toolName: 'trellis-init',
+      toolKind: 'bridge',
+      toolStepId: toolCallId,
+      inferred: false,
+      request: {
+        taskName,
+        confirm,
+        force,
+        includeContent,
+      },
+    });
+
     try {
       if (!taskName) {
         throw createHttpError(400, 'taskName must be a simple directory name (letters/numbers/._-)');
@@ -1361,6 +1510,8 @@ export function createAgentToolBridge(options: any = {}) {
       });
 
       throw error;
+    } finally {
+      setContextCurrentTool(context, null);
     }
   }
 
@@ -1371,6 +1522,18 @@ export function createAgentToolBridge(options: any = {}) {
     const confirm = body.confirm === true;
     const force = body.force === true;
     const toolCallId = randomUUID();
+
+    setContextCurrentTool(context, {
+      toolName: 'trellis-write',
+      toolKind: 'bridge',
+      toolStepId: toolCallId,
+      inferred: false,
+      request: {
+        confirm,
+        force,
+        includeContent,
+      },
+    });
 
     let fileCount = 0;
     let totalBytes = 0;
@@ -1630,6 +1793,8 @@ export function createAgentToolBridge(options: any = {}) {
       });
 
       throw error;
+    } finally {
+      setContextCurrentTool(context, null);
     }
   }
 

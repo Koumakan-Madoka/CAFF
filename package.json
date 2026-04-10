@@ -5,7 +5,7 @@
   "main": "build/lib/app-server.js",
   "scripts": {
     "build": "tsc -p tsconfig.build.json && node scripts/copy-build-assets.js",
-    "check": "node --check public/app.js && node --check public/personas.js && node --check public/skills.js && node --check public/projects.js && node --check public/metrics.js && node --check public/eval-cases.js && node --check public/skill-tests.js && node --check public/shared/api-client.js && node --check public/shared/model-options.js && node --check public/shared/avatar.js && node --check public/shared/toast.js && node --check public/chat/conversation-list.js && node --check public/chat/participant-pane.js && node --check public/chat/message-timeline.js && node --check public/chat/conversation-settings.js && node --check public/chat/undercover-panel.js && node --check public/chat/werewolf-panel.js && node --check public/chat/mention-menu.js && node --check public/chat/conversation-pane.js",
+    "check": "node --check public/app.js && node --check public/personas.js && node --check public/skills.js && node --check public/projects.js && node --check public/metrics.js && node --check public/eval-cases.js && node --check public/skill-tests.js && node --check public/shared/api-client.js && node --check public/shared/model-options.js && node --check public/shared/avatar.js && node --check public/shared/toast.js && node --check public/shared/clipboard.js && node --check public/shared/safe-markdown.js && node --check public/chat/conversation-list.js && node --check public/chat/participant-pane.js && node --check public/chat/message-timeline.js && node --check public/chat/conversation-settings.js && node --check public/chat/undercover-panel.js && node --check public/chat/werewolf-panel.js && node --check public/chat/mention-menu.js && node --check public/chat/conversation-pane.js",
     "prestart": "node scripts/ensure-build.js",
     "start": "node build/lib/app-server.js",
     "start:dev": "npm run build && npm run start",
@@ -13,7 +13,7 @@
     "metrics:agent": "node scripts/agent-eval-report.js",
     "typecheck": "tsc -p tsconfig.typecheck.json && tsc -p tsconfig.public.json",
     "typecheck:public": "tsc -p tsconfig.public.json",
-    "test:fast": "npm run check && npm run build && node tests/runtime/agent-tool-bridge.test.js && node tests/runtime/agent-eval-report.test.js && node tests/runtime/chat-bridge-replay.test.js && node tests/runtime/turn-orchestrator.test.js && node tests/runtime/agent-chat-tools.test.js && node tests/runtime/werewolf-game.test.js && node tests/runtime/skill-loading.test.js && node tests/http/request-body.test.js && node tests/storage/chat-store.test.js && node tests/storage/run-store.test.js && node tests/runtime/pi-runtime.test.js",
+    "test:fast": "npm run check && npm run build && node tests/runtime/agent-tool-bridge.test.js && node tests/runtime/agent-eval-report.test.js && node tests/runtime/chat-bridge-replay.test.js && node tests/runtime/turn-orchestrator.test.js && node tests/runtime/agent-chat-tools.test.js && node tests/runtime/message-tool-trace.test.js && node tests/runtime/werewolf-game.test.js && node tests/runtime/skill-loading.test.js && node tests/http/request-body.test.js && node tests/storage/chat-store.test.js && node tests/storage/run-store.test.js && node tests/runtime/pi-runtime.test.js",
     "test:smoke": "npm run build && node tests/smoke/server-smoke.test.js",
     "test": "npm run test:fast && npm run test:smoke",
     "web": "npm run start:dev"

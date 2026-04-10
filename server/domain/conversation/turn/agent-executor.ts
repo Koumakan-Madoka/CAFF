@@ -19,6 +19,7 @@ const {
 const { buildAgentTurnPrompt, AGENT_PROMPT_VERSION } = require('./agent-prompt');
 const { ensureAgentSandbox, toPortableShellPath } = require('./agent-sandbox');
 const { extractChatBridgeReplaysFromText, pickChatBridgeReplay } = require('./chat-bridge-replay');
+const { createLiveSessionToolStep } = require('../../runtime/message-tool-trace');
 const { clipText, getTurnStage, nowIso, syncCurrentTurnAgent } = require('./turn-state');
 const { registerTurnHandle, unregisterTurnHandle } = require('./turn-stop');
 
@@ -334,6 +335,342 @@ function extractStreamingPublicReplyPreview(text: any) {
   return raw.startsWith('{') ? '' : raw;
 }
 
+const LIVE_TOOL_BRIDGE_HINTS = [
+  { token: 'send-public', toolName: 'send-public' },
+  { token: 'send-private', toolName: 'send-private' },
+  { token: 'read-context', toolName: 'read-context' },
+  { token: 'list-participants', toolName: 'participants' },
+  { token: 'trellis-init', toolName: 'trellis-init' },
+  { token: 'trellis-write', toolName: 'trellis-write' },
+];
+
+function normalizePiToolContentType(value: any) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_');
+}
+
+function inferBridgeToolNameFromCommand(command: any) {
+  const normalizedCommand = String(command || '').trim().toLowerCase();
+
+  if (!normalizedCommand) {
+    return '';
+  }
+
+  for (const candidate of LIVE_TOOL_BRIDGE_HINTS) {
+    if (normalizedCommand.includes(candidate.token)) {
+      return candidate.toolName;
+    }
+  }
+
+  return '';
+}
+
+function stringifyLiveToolStepSignatureValue(value: any) {
+  if (value == null || value === '') {
+    return '';
+  }
+
+  if (typeof value === 'string') {
+    return clipText(value, 240);
+  }
+
+  try {
+    return clipText(JSON.stringify(value), 240);
+  } catch {
+    return clipText(String(value), 240);
+  }
+}
+
+function liveSessionToolStepSignature(step: any) {
+  if (!step || typeof step !== 'object') {
+    return '';
+  }
+
+  return JSON.stringify([
+    step && step.stepId ? String(step.stepId).trim() : '',
+    step && step.toolName ? String(step.toolName).trim() : '',
+    step && step.bridgeToolHint ? String(step.bridgeToolHint).trim() : '',
+    step && step.status ? String(step.status).trim().toLowerCase() : '',
+    stringifyLiveToolStepSignatureValue(step && step.requestSummary !== undefined ? step.requestSummary : null),
+    stringifyLiveToolStepSignatureValue(step && step.partialJson ? step.partialJson : ''),
+  ]);
+}
+
+function stringifyLiveToolIdentityValue(value: any) {
+  if (value == null || value === '') {
+    return '';
+  }
+
+  if (typeof value === 'string') {
+    return value.trim();
+  }
+
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function liveToolIdentityTextMatches(previous: any, next: any) {
+  const previousText = String(previous || '');
+  const nextText = String(next || '');
+
+  if (!previousText || !nextText) {
+    return false;
+  }
+
+  return previousText === nextText || previousText.startsWith(nextText) || nextText.startsWith(previousText);
+}
+
+function liveAnonymousSessionToolFingerprint(input: any = {}) {
+  return JSON.stringify([
+    String(input.toolName || '').trim().toLowerCase(),
+    String(input.toolKind || '').trim().toLowerCase(),
+    String(input.rawToolName || '').trim().toLowerCase(),
+    stringifyLiveToolIdentityValue(input.arguments !== undefined ? input.arguments : null),
+    String(input.partialJson || '').trim(),
+  ]);
+}
+
+function sessionStepOrdinal(stepId: any) {
+  const match = String(stepId || '')
+    .trim()
+    .match(/^session-(\d+)$/);
+
+  if (!match) {
+    return 0;
+  }
+
+  const value = Number.parseInt(match[1], 10);
+  return Number.isInteger(value) && value > 0 ? value : 0;
+}
+
+export function resolveLiveSessionToolIndex(toolCall: any, options: any = {}) {
+  const toolCallId = String(toolCall && toolCall.id ? toolCall.id : toolCall && toolCall.toolCallId ? toolCall.toolCallId : '').trim();
+  const toolCallIndex = Number.isInteger(options.toolCallIndex) && Number(options.toolCallIndex) >= 0 ? Number(options.toolCallIndex) : -1;
+  const tracker = options.anonymousTracker && typeof options.anonymousTracker === 'object' ? options.anonymousTracker : null;
+
+  if (!tracker) {
+    return toolCallIndex >= 0 ? toolCallIndex : 0;
+  }
+
+  if (!Number.isInteger(tracker.nextIndex) || tracker.nextIndex < 0) {
+    tracker.nextIndex = 0;
+  }
+
+  if (toolCallId) {
+    tracker.activeStepId = '';
+    tracker.activeFingerprint = '';
+    tracker.activeToolName = '';
+    tracker.activeToolKind = '';
+    tracker.activeArgumentsText = '';
+    tracker.activePartialJsonText = '';
+
+    if (toolCallIndex >= 0) {
+      tracker.nextIndex = Math.max(tracker.nextIndex, toolCallIndex + 1);
+    }
+
+    return toolCallIndex >= 0 ? toolCallIndex : 0;
+  }
+
+  const resolvedToolName = String(options.resolvedToolName || options.rawToolName || '').trim().toLowerCase();
+  const resolvedToolKind = String(options.resolvedToolKind || 'session').trim().toLowerCase() || 'session';
+  const currentToolName = String(options.currentToolName || '').trim().toLowerCase();
+  const currentToolKind = String(options.currentToolKind || '').trim().toLowerCase();
+  const currentToolStepId = String(options.currentToolStepId || '').trim();
+  const nextArgumentsText = stringifyLiveToolIdentityValue(toolCall && toolCall.arguments !== undefined ? toolCall.arguments : null);
+  const nextPartialJsonText = String(toolCall && toolCall.partialJson ? toolCall.partialJson : '').trim();
+  const nextFingerprint = liveAnonymousSessionToolFingerprint({
+    toolName: resolvedToolName,
+    toolKind: resolvedToolKind,
+    rawToolName: options.rawToolName,
+    arguments: toolCall && toolCall.arguments !== undefined ? toolCall.arguments : null,
+    partialJson: toolCall && toolCall.partialJson ? toolCall.partialJson : '',
+  });
+  const activeStepId = String(tracker.activeStepId || '').trim();
+  const activeToolName = String(tracker.activeToolName || '').trim().toLowerCase();
+  const activeToolKind = String(tracker.activeToolKind || '').trim().toLowerCase();
+  const activeFingerprint = String(tracker.activeFingerprint || '');
+  const activeArgumentsText = String(tracker.activeArgumentsText || '');
+  const activePartialJsonText = String(tracker.activePartialJsonText || '');
+  const payloadLooksContinuous =
+    liveToolIdentityTextMatches(activeFingerprint, nextFingerprint) ||
+    liveToolIdentityTextMatches(activeArgumentsText, nextArgumentsText) ||
+    liveToolIdentityTextMatches(activePartialJsonText, nextPartialJsonText) ||
+    liveToolIdentityTextMatches(activeArgumentsText, nextPartialJsonText) ||
+    liveToolIdentityTextMatches(activePartialJsonText, nextArgumentsText) ||
+    ((!activeArgumentsText && !activePartialJsonText) || (!nextArgumentsText && !nextPartialJsonText));
+
+  if (
+    activeStepId &&
+    currentToolStepId === activeStepId &&
+    currentToolName === activeToolName &&
+    currentToolKind === activeToolKind &&
+    resolvedToolName === activeToolName &&
+    resolvedToolKind === activeToolKind &&
+    payloadLooksContinuous
+  ) {
+    const activeOrdinal = sessionStepOrdinal(activeStepId);
+
+    if (activeOrdinal > 0) {
+      tracker.nextIndex = Math.max(tracker.nextIndex, activeOrdinal);
+      tracker.activeFingerprint = nextFingerprint;
+      tracker.activeArgumentsText = nextArgumentsText;
+      tracker.activePartialJsonText = nextPartialJsonText;
+      return activeOrdinal - 1;
+    }
+  }
+
+  const nextOrdinal = Math.max(tracker.nextIndex + 1, toolCallIndex + 1, 1);
+
+  tracker.nextIndex = nextOrdinal;
+  tracker.activeStepId = `session-${nextOrdinal}`;
+  tracker.activeToolName = resolvedToolName;
+  tracker.activeToolKind = resolvedToolKind;
+  tracker.activeFingerprint = nextFingerprint;
+  tracker.activeArgumentsText = nextArgumentsText;
+  tracker.activePartialJsonText = nextPartialJsonText;
+  return nextOrdinal - 1;
+}
+
+export function extractLiveSessionToolFromPiEvent(piEvent: any, options: any = {}) {
+  const message = piEvent && piEvent.message && piEvent.message.role === 'assistant' ? piEvent.message : null;
+
+  if (!message || !Array.isArray(message.content)) {
+    return null;
+  }
+
+  let toolCall = null;
+  let toolCallIndex = -1;
+  let seenToolCalls = 0;
+
+  for (const item of message.content) {
+    const type = normalizePiToolContentType(item && item.type ? item.type : '');
+
+    if (type !== 'tool_call' && type !== 'toolcall' && type !== 'tool_use' && type !== 'tooluse') {
+      continue;
+    }
+
+    toolCall = item;
+    toolCallIndex = seenToolCalls;
+    seenToolCalls += 1;
+  }
+
+  if (!toolCall) {
+    return null;
+  }
+
+  const rawToolName = String(toolCall && toolCall.name ? toolCall.name : '').trim();
+
+  if (!rawToolName) {
+    return null;
+  }
+
+  const inferredBridgeToolName =
+    rawToolName.toLowerCase() === 'bash'
+      ? inferBridgeToolNameFromCommand(toolCall && toolCall.arguments ? toolCall.arguments.command : '')
+      : '';
+  const toolName = inferredBridgeToolName || rawToolName;
+  const toolKind = inferredBridgeToolName ? 'bridge' : 'session';
+
+  if (!toolName) {
+    return null;
+  }
+
+  const stepIndex = resolveLiveSessionToolIndex(
+    {
+      id: toolCall && toolCall.id ? toolCall.id : '',
+      toolCallId: toolCall && toolCall.toolCallId ? toolCall.toolCallId : '',
+      arguments: toolCall && toolCall.arguments !== undefined ? toolCall.arguments : null,
+      partialJson: toolCall && toolCall.partialJson ? toolCall.partialJson : '',
+    },
+    {
+      toolCallIndex,
+      rawToolName,
+      resolvedToolName: toolName,
+      resolvedToolKind: toolKind,
+      currentToolName: options.currentToolName,
+      currentToolKind: options.currentToolKind,
+      currentToolStepId: options.currentToolStepId,
+      anonymousTracker: options.anonymousTracker,
+    }
+  );
+
+  const step = createLiveSessionToolStep(
+    {
+      id: toolCall && toolCall.id ? toolCall.id : '',
+      name: rawToolName,
+      arguments: toolCall && toolCall.arguments !== undefined ? toolCall.arguments : null,
+      partialJson: toolCall && toolCall.partialJson ? toolCall.partialJson : '',
+    },
+    {
+      agentDir: options.agentDir,
+      createdAt: options.createdAt || nowIso(),
+      status: 'running',
+      index: stepIndex,
+    }
+  );
+
+  return {
+    currentTool: {
+      toolName,
+      toolKind,
+      toolStepId: step && step.stepId ? String(step.stepId) : String(toolCall && toolCall.id ? toolCall.id : '').trim(),
+      inferred: Boolean(inferredBridgeToolName),
+    },
+    step,
+  };
+}
+
+function applyStageCurrentTool(stage: any, nextTool: any = null) {
+  if (!stage) {
+    return false;
+  }
+
+  const nextToolName = nextTool && nextTool.toolName ? String(nextTool.toolName).trim() : '';
+  const nextToolKind = nextTool && nextTool.toolKind ? String(nextTool.toolKind).trim() : '';
+  const nextToolStepId = nextTool && nextTool.toolStepId ? String(nextTool.toolStepId).trim() : '';
+  const nextToolInferred = Boolean(nextTool && nextTool.inferred && nextToolName);
+  const currentToolName = String(stage.currentToolName || '').trim();
+  const currentToolKind = String(stage.currentToolKind || '').trim();
+  const currentToolStepId = String(stage.currentToolStepId || '').trim();
+  const currentToolInferred = Boolean(stage.currentToolInferred);
+
+  if (
+    currentToolName === nextToolName &&
+    currentToolKind === nextToolKind &&
+    currentToolStepId === nextToolStepId &&
+    currentToolInferred === nextToolInferred
+  ) {
+    return false;
+  }
+
+  stage.currentToolName = nextToolName;
+  stage.currentToolKind = nextToolName ? nextToolKind || 'session' : '';
+  stage.currentToolStepId = nextToolName ? nextToolStepId : '';
+  stage.currentToolInferred = nextToolInferred;
+  stage.currentToolStartedAt = nextToolName ? nowIso() : null;
+  return true;
+}
+
+function updateStageCurrentTool(stage: any, turnState: any, emitTurnProgress: any, nextTool: any = null) {
+  if (!applyStageCurrentTool(stage, nextTool)) {
+    return false;
+  }
+
+  if (!turnState || typeof emitTurnProgress !== 'function') {
+    return true;
+  }
+
+  turnState.updatedAt = nowIso();
+  syncCurrentTurnAgent(turnState);
+  emitTurnProgress(turnState);
+  return true;
+}
+
 export function createAgentExecutor(options: any = {}) {
   const store = options.store;
   const skillRegistry = options.skillRegistry;
@@ -489,6 +826,7 @@ export function createAgentExecutor(options: any = {}) {
     stage.startedAt = null;
     stage.endedAt = null;
     stage.lastTextDeltaAt = null;
+    applyStageCurrentTool(stage, null);
     turnState.hopCount = Math.max(turnState.hopCount || 0, hop);
     turnState.updatedAt = nowIso();
     syncCurrentTurnAgent(turnState);
@@ -641,6 +979,15 @@ export function createAgentExecutor(options: any = {}) {
 
     const startedAt = nowIso();
     let rawReply = '';
+    let lastLiveSessionToolStepId = '';
+    let lastLiveSessionToolSignature = '';
+    const liveSessionAnonymousToolTracker = {
+      nextIndex: 0,
+      activeStepId: '',
+      activeFingerprint: '',
+      activeToolName: '',
+      activeToolKind: '',
+    };
     const startedMetadata = {
       ...queuedMetadata,
       sessionPath: handle.sessionPath || '',
@@ -657,6 +1004,7 @@ export function createAgentExecutor(options: any = {}) {
     stage.preview = '';
     stage.errorMessage = '';
     stage.lastTextDeltaAt = null;
+    applyStageCurrentTool(stage, null);
     turnState.updatedAt = startedAt;
     syncCurrentTurnAgent(turnState);
 
@@ -686,8 +1034,79 @@ export function createAgentExecutor(options: any = {}) {
     broadcastEvent('conversation_message_updated', { conversationId, message: startedMessage });
     emitTurnProgress(turnState);
 
+    handle.on('pi_event', (event: any) => {
+      const liveTool = extractLiveSessionToolFromPiEvent(event && event.piEvent ? event.piEvent : null, {
+        agentDir,
+        createdAt: nowIso(),
+        currentToolName: stage.currentToolName,
+        currentToolKind: stage.currentToolKind,
+        currentToolStepId: stage.currentToolStepId,
+        anonymousTracker: liveSessionAnonymousToolTracker,
+      });
+
+      if (!liveTool || !liveTool.currentTool) {
+        return;
+      }
+
+      const step = liveTool.step || null;
+      const stepId = step && step.stepId ? String(step.stepId).trim() : '';
+      const stepSignature = liveSessionToolStepSignature(step);
+      const changed = updateStageCurrentTool(stage, turnState, emitTurnProgress, liveTool.currentTool);
+      const detailChanged = Boolean(
+        step &&
+          stepId &&
+          stepSignature &&
+          stepId === lastLiveSessionToolStepId &&
+          stepSignature !== lastLiveSessionToolSignature
+      );
+
+      if (stepId && stepSignature) {
+        lastLiveSessionToolStepId = stepId;
+        lastLiveSessionToolSignature = stepSignature;
+      } else if (changed) {
+        lastLiveSessionToolStepId = '';
+        lastLiveSessionToolSignature = '';
+      }
+
+      if (!step) {
+        return;
+      }
+
+      if (changed) {
+        broadcastEvent('conversation_tool_event', {
+          conversationId,
+          turnId,
+          taskId: stageTaskId,
+          agentId: agent.id,
+          agentName: agent.name,
+          assistantMessageId: assistantMessage.id,
+          messageId: assistantMessage.id,
+          phase: 'started',
+          step,
+        });
+        return;
+      }
+
+      if (!detailChanged) {
+        return;
+      }
+
+      broadcastEvent('conversation_tool_event', {
+        conversationId,
+        turnId,
+        taskId: stageTaskId,
+        agentId: agent.id,
+        agentName: agent.name,
+        assistantMessageId: assistantMessage.id,
+        messageId: assistantMessage.id,
+        phase: 'updated',
+        step,
+      });
+    });
+
     handle.on('assistant_text_delta', (event: any) => {
       rawReply += event.delta || '';
+      updateStageCurrentTool(stage, turnState, emitTurnProgress, null);
 
       if (!toolInvocation.publicToolUsed) {
         return;
@@ -717,6 +1136,7 @@ export function createAgentExecutor(options: any = {}) {
     handle.on('run_terminating', (event: any) => {
       stage.status = 'terminating';
       stage.errorMessage = event.reason && event.reason.message ? event.reason.message : '';
+      applyStageCurrentTool(stage, null);
       turnState.updatedAt = nowIso();
       syncCurrentTurnAgent(turnState);
       runStore.appendTaskEvent(stageTaskId, 'agent_reply_terminating', event.reason || null);
@@ -844,6 +1264,7 @@ export function createAgentExecutor(options: any = {}) {
       stage.errorMessage = '';
       stage.lastTextDeltaAt = stage.lastTextDeltaAt || null;
       stage.endedAt = nowIso();
+      applyStageCurrentTool(stage, null);
       turnState.completedCount += 1;
       turnState.updatedAt = nowIso();
       syncCurrentTurnAgent(turnState);
@@ -1008,6 +1429,7 @@ export function createAgentExecutor(options: any = {}) {
       stage.errorMessage = errorMessage;
       stage.lastTextDeltaAt = stage.lastTextDeltaAt || null;
       stage.endedAt = nowIso();
+      applyStageCurrentTool(stage, null);
 
       if (!stopRequested) {
         failedReplies.push(assistantMessageFailed);

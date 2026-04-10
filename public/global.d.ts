@@ -48,11 +48,21 @@ declare global {
     ) => void;
   };
 
+  type CaffSafeMarkdown = {
+    render: (
+      container: HTMLElement | null,
+      source: string,
+      options?: { appendText?: (container: HTMLElement, text: string) => void }
+    ) => void;
+  };
+
   type CaffShared = {
     fetchJson: <T = unknown>(url: string, options?: CaffFetchJsonOptions) => Promise<T>;
     modelOptions: CaffModelOptionUtils;
     avatar: CaffAvatarUtils;
     createToastController: (element: HTMLElement | null, delayMs?: number) => CaffToastController;
+    copyTextToClipboard?: (text: string) => Promise<void>;
+    safeMarkdown?: CaffSafeMarkdown;
   };
 
   type CaffChat = {

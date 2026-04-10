@@ -200,6 +200,77 @@ test('agent tool bridge appends tool-call telemetry events when runStore + stage
   assert.ok(toolEvents.some((event) => event && event.payload && event.payload.tool === 'send-public' && event.payload.status === 'failed'));
 });
 
+test('agent tool bridge broadcasts live tool events for started and finished bridge steps', (t) => {
+  const tempDir = withTempDir('caff-agent-tool-bridge-live-events-');
+  const sqlitePath = path.join(tempDir, 'bridge-live-events.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const liveEvents = [];
+  const bridge = createAgentToolBridge({
+    store,
+    agentDir: tempDir,
+    broadcastEvent(eventName, payload) {
+      if (eventName === 'conversation_tool_event') {
+        liveEvents.push({ eventName, payload });
+      }
+    },
+  });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const fixture = createPublicInvocationFixture(store, 'live-events');
+  const context = bridge.registerInvocation(
+    bridge.createInvocationContext({
+      conversationId: fixture.conversation.id,
+      turnId: fixture.assistantMessage.turnId,
+      agentId: fixture.agent.id,
+      agentName: fixture.agent.name,
+      assistantMessageId: fixture.assistantMessage.id,
+      conversationAgents: fixture.conversation.agents,
+      stage: fixture.stage,
+      turnState: fixture.turnState,
+    })
+  );
+
+  const response = bridge.handlePostMessage({
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    visibility: 'public',
+    content: 'Live bridge event test',
+  });
+
+  assert.equal(response.ok, true);
+  assert.ok(liveEvents.length >= 2);
+  assert.ok(
+    liveEvents.some(
+      (entry) =>
+        entry &&
+        entry.payload &&
+        entry.payload.phase === 'started' &&
+        entry.payload.step &&
+        entry.payload.step.toolName === 'send-public' &&
+        entry.payload.step.status === 'running' &&
+        entry.payload.step.requestSummary &&
+        entry.payload.step.requestSummary.visibility === 'public'
+    )
+  );
+  assert.ok(
+    liveEvents.some(
+      (entry) =>
+        entry &&
+        entry.payload &&
+        entry.payload.phase === 'updated' &&
+        entry.payload.step &&
+        entry.payload.step.toolName === 'send-public' &&
+        entry.payload.step.status === 'succeeded'
+    )
+  );
+});
+
 test('agent tool trellis-init previews and applies a scaffold under the active project', (t) => {
   const tempDir = withTempDir('caff-agent-tool-trellis-');
   const sqlitePath = path.join(tempDir, 'bridge.sqlite');
