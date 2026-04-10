@@ -11,8 +11,10 @@
     }
 
     if (navigator && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-      await navigator.clipboard.writeText(value);
-      return;
+      try {
+        await navigator.clipboard.writeText(value);
+        return;
+      } catch {}
     }
 
     const textarea = document.createElement('textarea');
@@ -24,7 +26,7 @@
     textarea.select();
 
     try {
-      const copied = document.execCommand('copy');
+      const copied = typeof document.execCommand === 'function' && document.execCommand('copy');
 
       if (!copied) {
         throw new Error('复制失败');
