@@ -79,6 +79,7 @@
   - `POST /stop` must stop the active main turn, mark active side slots as `stopRequested`, persist a cancellation marker on their source side messages, and cancel queued side waiters before they acquire a slot
   - queued side waiters cancelled by stop must also persist a cancellation marker on their source side messages
   - orchestrator startup must recover persisted side-lane user messages that have no cancellation marker and no terminal assistant reply; any stale queued/streaming assistant placeholder tied to that source message must be marked failed before the side run is rescheduled
+  - orchestrator startup must also mark stale queued/streaming assistant placeholders failed for cancelled persisted side-lane user messages before skipping replay
   - delete stays blocked while runtime reports active/dispatching main work, active side slots, queued main batches, or queued side-slot work
   - force delete remains only for idle failed main-lane queued batches; it must not discard queued side-slot work through the same override
 - UI / timeline ownership:
@@ -129,6 +130,7 @@
   - stop cancels queued side waiters before they start and persists a cancellation marker on the source side message
   - queued side-dispatch rehydrates snapshot content on grant
   - persisted side-dispatch messages without terminal replies recover on orchestrator startup
+  - cancelled persisted side-dispatch messages finalize stale assistant placeholders without replaying
   - main queue still excludes late messages from the active prompt snapshot and drains serially
 - `tests/smoke/server-smoke.test.js`
   - `POST /messages` still accepts immediately and exposes lane/runtime fields

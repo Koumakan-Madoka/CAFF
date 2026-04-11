@@ -294,7 +294,9 @@ export function createAgentSlotRegistry() {
       return;
     }
 
-    for (const slotKey of Array.from(waiters.keys())) {
+    const slotKeys = new Set([...Array.from(waiters.keys()), ...Array.from(holders.keys())]);
+
+    for (const slotKey of slotKeys) {
       const parsed = parseSlotKey(slotKey);
 
       if (parsed.conversationId !== normalizedConversationId) {

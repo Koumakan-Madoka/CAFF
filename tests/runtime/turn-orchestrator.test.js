@@ -16,6 +16,7 @@ const { ensureAgentSandbox } = require('../../build/server/domain/conversation/t
 const { createSessionExporter } = require('../../build/server/domain/conversation/turn/session-export');
 const { createTurnState, resetTurnStage, summarizeTurnState } = require('../../build/server/domain/conversation/turn/turn-state');
 const { createTurnStopper, registerTurnHandle } = require('../../build/server/domain/conversation/turn/turn-stop');
+const { createAgentSlotRegistry } = require('../../build/server/domain/conversation/turn/agent-slot-registry');
 
 const { withTempDir } = require('../helpers/temp-dir');
 
@@ -34,6 +35,26 @@ async function waitForCondition(check, timeoutMs = 5000, intervalMs = 20) {
 
   throw new Error('Condition was not met in time');
 }
+
+test('agent slot registry clears held slots without queued waiters', async () => {
+  const registry = createAgentSlotRegistry();
+  const firstRequest = registry.requestSlot({ conversationId: 'conversation-clear-slot', agentId: 'agent-a', lane: 'side' });
+  const firstGrant = await firstRequest.promise;
+
+  assert.equal(firstRequest.queued, false);
+  assert.equal(registry.isAgentBusy('conversation-clear-slot', 'agent-a'), true);
+
+  registry.clearConversation('conversation-clear-slot');
+
+  assert.equal(registry.isAgentBusy('conversation-clear-slot', 'agent-a'), false);
+
+  const secondRequest = registry.requestSlot({ conversationId: 'conversation-clear-slot', agentId: 'agent-a', lane: 'side' });
+  const secondGrant = await secondRequest.promise;
+
+  assert.equal(secondRequest.queued, false);
+  assert.equal(firstGrant.release(), false);
+  assert.equal(secondGrant.release(), true);
+});
 
 test('sanitizePromptMentions rewrites raw @mentions into safe placeholders', () => {
   assert.equal(
@@ -1989,6 +2010,152 @@ test('turn orchestrator recovers persisted side-dispatch messages after restart'
   assert.equal(conversation.messages[3].status, 'failed');
   assert.equal(conversation.messages[3].errorMessage, 'Recovered after process restart before side dispatch completed');
   assert.equal(conversation.messages[3].metadata.recoveredAfterRestart, true);
+});
+
+test('turn orchestrator finalizes stale cancelled side-dispatch replies during restart recovery', { concurrency: false }, async (t) => {
+  const tempDir = withTempDir('caff-side-dispatch-cancelled-restart-');
+  const sqlitePath = path.join(tempDir, 'side-dispatch-cancelled-restart.sqlite');
+  const conversation = {
+    id: 'conversation-side-dispatch-cancelled-restart',
+    title: 'Side dispatch cancelled restart cleanup',
+    type: 'standard',
+    agents: [{ id: 'agent-a', name: 'Alpha' }],
+    messages: [
+      {
+        id: 'cancelled-side-user',
+        conversationId: 'conversation-side-dispatch-cancelled-restart',
+        turnId: 'turn-1',
+        role: 'user',
+        senderName: 'You',
+        content: '@Alpha Stop me',
+        status: 'completed',
+        metadata: {
+          dispatchLane: 'side',
+          dispatchTargetAgentId: 'agent-a',
+          dispatchCancelled: true,
+          dispatchCancelledAt: '2026-04-10T00:16:00.000Z',
+        },
+      },
+      {
+        id: 'cancelled-stale-assistant',
+        conversationId: 'conversation-side-dispatch-cancelled-restart',
+        turnId: 'turn-1',
+        role: 'assistant',
+        senderName: 'Alpha',
+        agentId: 'agent-a',
+        content: 'Thinking...',
+        status: 'streaming',
+        metadata: {
+          triggeredByMessageId: 'cancelled-side-user',
+          streaming: true,
+        },
+      },
+    ],
+  };
+  let messageCounter = conversation.messages.length;
+  const executions = [];
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const store = {
+    databasePath: sqlitePath,
+    getConversation(conversationId) {
+      return conversationId === conversation.id ? conversation : null;
+    },
+    listConversations() {
+      const lastMessage = conversation.messages[conversation.messages.length - 1] || null;
+      return [
+        {
+          id: conversation.id,
+          title: conversation.title,
+          type: conversation.type,
+          metadata: {},
+          createdAt: '2026-04-10T00:00:00.000Z',
+          updatedAt: lastMessage ? lastMessage.createdAt : '2026-04-10T00:00:00.000Z',
+          lastMessageAt: lastMessage ? lastMessage.createdAt : null,
+          messageCount: conversation.messages.length,
+          agentCount: conversation.agents.length,
+          lastMessagePreview: lastMessage ? lastMessage.content : '',
+        },
+      ];
+    },
+    createMessage(input) {
+      messageCounter += 1;
+      const message = {
+        id: input.id || `cancelled-side-message-${messageCounter}`,
+        errorMessage: '',
+        taskId: null,
+        runId: null,
+        metadata: null,
+        createdAt: input.createdAt || `2026-04-10T00:16:${String(messageCounter).padStart(2, '0')}.000Z`,
+        ...input,
+      };
+      conversation.messages.push(message);
+      return message;
+    },
+    updateMessage(messageId, updates) {
+      const message = conversation.messages.find((item) => item.id === messageId) || null;
+
+      if (!message) {
+        return null;
+      }
+
+      if (updates.content !== undefined) {
+        message.content = String(updates.content || '');
+      }
+      if (updates.status !== undefined) {
+        message.status = updates.status;
+      }
+      if (updates.taskId !== undefined) {
+        message.taskId = updates.taskId || null;
+      }
+      if (updates.runId !== undefined) {
+        message.runId = updates.runId || null;
+      }
+      if (updates.errorMessage !== undefined) {
+        message.errorMessage = String(updates.errorMessage || '');
+      }
+      if (updates.metadata !== undefined) {
+        message.metadata = updates.metadata;
+      }
+
+      return message;
+    },
+  };
+
+  createTurnOrchestrator({
+    store,
+    skillRegistry: { listSkills() { return []; }, resolveSkills() { return []; } },
+    modeStore: { get() { return null; } },
+    agentToolBridge: {},
+    host: '127.0.0.1',
+    port: 0,
+    agentDir: tempDir,
+    sqlitePath,
+    toolBaseUrl: 'http://127.0.0.1:0',
+    agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
+    executeConversationAgent: async ({ completedReplies }) => {
+      executions.push({ lane: 'side' });
+      completedReplies.push({
+        agentId: 'agent-a',
+        senderName: 'Alpha',
+        content: 'ok',
+        status: 'completed',
+      });
+      return { stopTurn: false };
+    },
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.equal(executions.length, 0);
+  assert.equal(conversation.messages[1].content, '');
+  assert.equal(conversation.messages[1].status, 'failed');
+  assert.equal(conversation.messages[1].errorMessage, 'Recovered after process restart before side dispatch completed');
+  assert.equal(conversation.messages[1].metadata.streaming, false);
+  assert.equal(conversation.messages[1].metadata.recoveredAfterRestart, true);
 });
 
 test('session export refuses non-assistant messages and out-of-bounds paths', (t) => {

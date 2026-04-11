@@ -1047,6 +1047,7 @@ export function createTurnOrchestrator(options: any = {}) {
         const metadata = message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
 
         if (metadata && (metadata.dispatchCancelled === true || String(metadata.dispatchCancelledAt || '').trim())) {
+          markStaleSideDispatchReplyMessages(conversationId, message.id);
           continue;
         }
 
@@ -1107,7 +1108,7 @@ export function createTurnOrchestrator(options: any = {}) {
           ? {
               ...turnInput.metadata,
               dispatchLane: 'side',
-              dispatchTargetAgentId: sideTarget.targetAgentId,
+              dispatchTargetAgentId: sideTarget ? sideTarget.targetAgentId : null,
             }
           : turnInput.metadata,
       })
