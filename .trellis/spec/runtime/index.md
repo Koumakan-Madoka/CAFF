@@ -14,6 +14,8 @@ Use this index for pi-mono runtime work and Trellis injection changes.
 ## Pre-Development Checklist
 
 - [ ] Read `agent-runtime.md`
+- [ ] Read `conversation-turn-queue.md` when changing conversation send/stop,
+      queue drain, active-turn summaries, or runtime busy/queue payload fields
 - [ ] Read `../guides/cross-platform-thinking-guide.md` for path, shell, or env
       handling changes
 - [ ] Read `../guides/cross-layer-thinking-guide.md` if the change affects both
@@ -26,4 +28,6 @@ Use this index for pi-mono runtime work and Trellis injection changes.
 
 - `agent-runtime.md`: pi-mono runtime flow, Trellis prompt injection, and safety
   rules
+- `conversation-turn-queue.md`: continuous-send turn orchestration, batch snapshot,
+  runtime queue payload, and stop/delete guardrails
 - See `../skills/skill-system.md` for skill loading and dynamic `read`-path details

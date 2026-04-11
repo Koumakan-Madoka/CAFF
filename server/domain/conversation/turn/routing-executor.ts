@@ -40,11 +40,29 @@ function filterPrivateOnlyPromptMessages(messages: any, promptUserMessage: any) 
   });
 }
 
-function buildPromptMessages(messages: any, promptUserMessage: any) {
-  return filterPrivateOnlyPromptMessages(replacePromptUserMessage(messages, promptUserMessage), promptUserMessage);
+function buildPromptMessages(messages: any, promptUserMessage: any, options: any = {}) {
+  const snapshotMessageIds = options.snapshotMessageIds instanceof Set ? options.snapshotMessageIds : null;
+  const currentTurnId = String(options.currentTurnId || '').trim();
+  const replacePromptMessage = options.replacePromptUserMessage !== false;
+  const visibleMessages = (Array.isArray(messages) ? messages : []).filter((message: any) => {
+    if (!snapshotMessageIds) {
+      return true;
+    }
+
+    const messageId = message && message.id ? String(message.id) : '';
+
+    if (messageId && snapshotMessageIds.has(messageId)) {
+      return true;
+    }
+
+    return Boolean(currentTurnId && message && String(message.turnId || '') === currentTurnId);
+  });
+  const promptMessages = replacePromptMessage ? replacePromptUserMessage(visibleMessages, promptUserMessage) : visibleMessages;
+
+  return filterPrivateOnlyPromptMessages(promptMessages, promptUserMessage);
 }
 
-function normalizeConversationTurnInput(input: any, conversation: any) {
+export function normalizeConversationTurnInput(input: any, conversation: any) {
   const payload =
     input && typeof input === 'object' && !Array.isArray(input)
       ? input
@@ -93,6 +111,31 @@ function normalizeConversationTurnInput(input: any, conversation: any) {
     privateOnly: Boolean(payload.privateOnly),
     cleanedContent: String(payload.cleanedContent || content).trim() || content,
   };
+}
+
+function buildBatchedPromptContent(batchMessages: any) {
+  return (Array.isArray(batchMessages) ? batchMessages : [])
+    .map((message: any) => String(message && message.content ? message.content : '').trim())
+    .filter(Boolean)
+    .join('\n\n')
+    .trim();
+}
+
+function resolveExistingBatchMessages(conversation: any, batchMessageIds: any) {
+  const messages = Array.isArray(conversation && conversation.messages) ? conversation.messages : [];
+  const byId = new Map(messages.map((message: any) => [String(message && message.id ? message.id : ''), message]));
+
+  return (Array.isArray(batchMessageIds) ? batchMessageIds : [])
+    .map((messageId: any) => byId.get(String(messageId || '').trim()) || null)
+    .filter((message: any) => message && message.role === 'user');
+}
+
+function buildPromptSnapshotMessageIds(messages: any) {
+  return new Set(
+    (Array.isArray(messages) ? messages : [])
+      .map((message: any) => String(message && message.id ? message.id : '').trim())
+      .filter(Boolean)
+  );
 }
 
 function resolveInitialSpeakerQueue(userText: any, agents: any) {
@@ -150,7 +193,46 @@ export function createRoutingExecutor(options: any = {}) {
       throw createHttpError(409, 'This conversation is already processing another turn');
     }
 
-    const turnInput = normalizeConversationTurnInput(userContent, conversation);
+    const usesExistingBatch = Boolean(
+      userContent &&
+        typeof userContent === 'object' &&
+        !Array.isArray(userContent) &&
+        Array.isArray(userContent.batchMessageIds) &&
+        userContent.batchMessageIds.length > 0
+    );
+    let turnInput = null as any;
+    let userMessage = null as any;
+    let batchMessages = [] as any[];
+    let promptUserMessage = null as any;
+    let promptSnapshotMessageIds = new Set();
+    let inputText = '';
+    let shouldBroadcastUserMessageCreated = false;
+
+    if (usesExistingBatch) {
+      batchMessages = resolveExistingBatchMessages(conversation, userContent.batchMessageIds);
+
+      if (batchMessages.length === 0) {
+        throw createHttpError(400, 'No queued user messages are available for this batch');
+      }
+
+      inputText = buildBatchedPromptContent(batchMessages);
+      const anchorMessage = batchMessages[batchMessages.length - 1];
+      turnInput = normalizeConversationTurnInput(
+        {
+          ...(userContent && typeof userContent === 'object' ? userContent : {}),
+          content: inputText,
+          role: anchorMessage.role || 'user',
+          senderName: anchorMessage.senderName || 'You',
+          metadata: anchorMessage.metadata,
+          privateOnly: batchMessages.some((message: any) => isPrivateOnlyMessage(message)),
+        },
+        conversation
+      );
+      userMessage = anchorMessage;
+    } else {
+      turnInput = normalizeConversationTurnInput(userContent, conversation);
+      inputText = turnInput.content;
+    }
 
     if (!turnInput.content) {
       throw createHttpError(400, 'Message content is required');
@@ -185,15 +267,20 @@ export function createRoutingExecutor(options: any = {}) {
     broadcastRuntimeState();
     emitTurnProgress(turnState);
 
-    const userMessage = store.createMessage({
-      conversationId,
-      turnId,
-      role: turnInput.role,
-      senderName: turnInput.senderName,
-      content: turnInput.content,
-      status: 'completed',
-      metadata: turnInput.privateOnly ? { ...turnInput.metadata, privateOnly: true } : turnInput.metadata,
-    });
+    if (!usesExistingBatch) {
+      userMessage = store.createMessage({
+        conversationId,
+        turnId,
+        role: turnInput.role,
+        senderName: turnInput.senderName,
+        content: turnInput.content,
+        status: 'completed',
+        metadata: turnInput.privateOnly ? { ...turnInput.metadata, privateOnly: true } : turnInput.metadata,
+      });
+      shouldBroadcastUserMessageCreated = true;
+      batchMessages = [userMessage];
+    }
+
     const initialQueue =
       turnInput.initialAgentIds.length > 0
         ? {
@@ -204,23 +291,40 @@ export function createRoutingExecutor(options: any = {}) {
             privateOnly: turnInput.privateOnly,
             cleanedUserText: turnInput.cleanedContent,
           }
-        : resolveInitialSpeakerQueue(userMessage.content, conversation.agents);
-    const promptUserMessage = {
+        : resolveInitialSpeakerQueue(turnInput.cleanedContent || turnInput.content || userMessage.content, conversation.agents);
+
+    promptUserMessage = {
       ...userMessage,
-      content: initialQueue.cleanedUserText || userMessage.content,
+      content: initialQueue.cleanedUserText || turnInput.cleanedContent || turnInput.content || userMessage.content,
     };
-    const basePromptMessages = buildPromptMessages(store.getConversation(conversationId).messages, promptUserMessage);
+    const initialPromptMessages = store.getConversation(conversationId).messages;
+    promptSnapshotMessageIds = buildPromptSnapshotMessageIds(initialPromptMessages);
+    const basePromptMessages = buildPromptMessages(initialPromptMessages, promptUserMessage, {
+      snapshotMessageIds: promptSnapshotMessageIds,
+      currentTurnId: turnId,
+      replacePromptUserMessage: !usesExistingBatch,
+    });
     const routingMode = initialQueue.executionMode === 'parallel' ? 'mention_parallel' : 'mention_queue';
     turnState.userMessageId = userMessage.id;
+    turnState.batchStartMessageId = batchMessages[0] ? batchMessages[0].id : userMessage.id;
+    turnState.batchEndMessageId = batchMessages[batchMessages.length - 1]
+      ? batchMessages[batchMessages.length - 1].id
+      : userMessage.id;
+    turnState.consumedUpToMessageId = turnState.batchEndMessageId;
+    turnState.inputMessageCount = batchMessages.length > 0 ? batchMessages.length : 1;
+    turnState.queueDepth = 0;
     turnState.entryAgentIds = initialQueue.agentIds.slice();
     turnState.routingMode = routingMode;
     turnState.updatedAt = nowIso();
 
-    broadcastEvent('conversation_message_created', {
-      conversationId,
-      message: userMessage,
-    });
-    broadcastConversationSummary(conversationId);
+    if (shouldBroadcastUserMessageCreated) {
+      broadcastEvent('conversation_message_created', {
+        conversationId,
+        message: userMessage,
+      });
+      broadcastConversationSummary(conversationId);
+    }
+
     emitTurnProgress(turnState);
 
     const rootTaskId = createTaskId('conversation-turn');
@@ -232,7 +336,7 @@ export function createRoutingExecutor(options: any = {}) {
       kind: 'conversation_turn',
       title: `Conversation turn for ${conversation.title}`,
       status: 'running',
-      inputText: userMessage.content,
+      inputText: inputText,
       metadata: {
         conversationId,
         turnId,
@@ -545,7 +649,11 @@ export function createRoutingExecutor(options: any = {}) {
                     rootTaskId,
                     conversation: refreshedConversation,
                     projectDir: projectDirSnapshot,
-                    promptMessages: buildPromptMessages(refreshedConversation.messages, promptUserMessage),
+                    promptMessages: buildPromptMessages(refreshedConversation.messages, promptUserMessage, {
+                      snapshotMessageIds: promptSnapshotMessageIds,
+                      currentTurnId: turnId,
+                      replacePromptUserMessage: !usesExistingBatch,
+                    }),
                     promptUserMessage,
                     queueItem,
                     agent,
@@ -569,7 +677,11 @@ export function createRoutingExecutor(options: any = {}) {
                   rootTaskId,
                   conversation: refreshedConversation,
                   projectDir: projectDirSnapshot,
-                  promptMessages: buildPromptMessages(refreshedConversation.messages, promptUserMessage),
+                  promptMessages: buildPromptMessages(refreshedConversation.messages, promptUserMessage, {
+                    snapshotMessageIds: promptSnapshotMessageIds,
+                    currentTurnId: turnId,
+                    replacePromptUserMessage: !usesExistingBatch,
+                  }),
                   promptUserMessage,
                   queueItem: executionItems[0].queueItem,
                   agent: executionItems[0].agent,
