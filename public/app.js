@@ -2480,7 +2480,7 @@ function connectEventStream() {
         ? state.runtime.activeTurns.find((turn) => turn.conversationId === payload.conversationId) || null
         : null;
 
-    syncToolTraceStatesFromTurnProgress(existingTurn, null);
+    syncToolTraceStatesFromTurnProgress(existingTurn, payload.turn || null);
 
     if (state.runtime && Array.isArray(state.runtime.activeTurns)) {
       state.runtime.activeTurns = state.runtime.activeTurns.filter((turn) => turn.conversationId !== payload.conversationId);
@@ -2535,7 +2535,7 @@ function connectEventStream() {
         ? state.runtime.activeAgentSlots.find((slot) => slot && slot.slotId === payload.slot.slotId) || null
         : null;
 
-    syncToolTraceStatesFromAgentSlotProgress(existingSlot, null);
+    syncToolTraceStatesFromAgentSlotProgress(existingSlot, payload.slot || null);
     removeActiveAgentSlot(payload.slot && payload.slot.slotId ? payload.slot.slotId : '');
 
     if (state.currentConversation && state.currentConversation.id === payload.conversationId) {

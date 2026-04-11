@@ -86,6 +86,7 @@
   - `state.sending` only means the browser is waiting for the `POST /messages` HTTP response
   - busy / stop / delete / live-stage UI must combine `activeTurns`, `dispatchingConversationIds`, `conversationQueueDepths`, `conversationQueueFailures`, `activeAgentSlots`, and `agentSlotQueueDepths`
   - live message stages may come from either the main turn or an active side slot; timeline rendering must follow both
+  - `turn_finished` and `agent_slot_finished` UI handlers must pass the final `payload.turn` / `payload.slot` into tool-trace synchronization before removing active runtime state; passing `null` drops failed terminal status and can finalize a running bridge step as succeeded/observed
 - Game exception:
   - who-is-undercover / werewolf automatic-host phases still reject manual chat sends with `409`
 
@@ -136,6 +137,8 @@
   - `POST /messages` still accepts immediately and exposes lane/runtime fields
   - delete rejects active side slots
   - delete rejects queued side-slot work
+- `tests/runtime/message-tool-trace.test.js`
+  - finished main-turn and side-slot SSE payloads finalize failed running tool steps before runtime state removal
 - Validation commands for closeout:
   - `npm run check`
   - `npm run typecheck`
