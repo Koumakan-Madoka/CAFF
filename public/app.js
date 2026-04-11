@@ -454,6 +454,7 @@ function setupChatModules() {
           dom,
           helpers: {
             activeTurnForConversation,
+            activeAgentSlotsForConversation,
             agentById,
             canChatInUndercoverConversation,
             canChatInWerewolfConversation,
@@ -467,6 +468,7 @@ function setupChatModules() {
             liveStageLabel,
             queueFailureForConversation,
             renderMessages,
+            queuedAgentSlotMessageCountForConversation,
             queuedUserMessageCountForConversation,
             renderParticipantList,
             renderUndercoverGameCard,
@@ -1176,6 +1178,29 @@ function syncToolTraceStatesFromTurnProgress(previousTurn, nextTurn) {
   });
 }
 
+function syncToolTraceStatesFromAgentSlotProgress(previousSlot, nextSlot) {
+  if (!previousSlot || !previousSlot.assistantMessageId || !previousSlot.currentToolStepId) {
+    return;
+  }
+
+  const sameMessage = Boolean(nextSlot && nextSlot.assistantMessageId === previousSlot.assistantMessageId);
+  const sameStep = sameMessage && String(nextSlot.currentToolStepId || '').trim() === String(previousSlot.currentToolStepId || '').trim();
+  const nextToolName = sameMessage ? String(nextSlot && nextSlot.currentToolName ? nextSlot.currentToolName : '').trim() : '';
+
+  if (sameStep && nextToolName) {
+    return;
+  }
+
+  const nextFailed = String(nextSlot && nextSlot.status ? nextSlot.status : '').trim().toLowerCase() === 'failed';
+  const fallbackStatus = {
+    session: nextFailed ? 'failed' : 'observed',
+    bridge: nextFailed ? 'failed' : 'succeeded',
+    default: nextFailed ? 'failed' : 'observed',
+  };
+
+  finalizeMessageToolTraceRunningStep(previousSlot.assistantMessageId, previousSlot.currentToolStepId, fallbackStatus);
+}
+
 function computeMessageToolTraceRequestKey(message) {
   const sessionInfo = messageSessionInfo(message);
 
@@ -1549,8 +1574,8 @@ function renderParticipantList(conversation) {
   participantPaneRenderer.render(conversation);
 }
 
-function renderMessages(conversation, activeTurn) {
-  messageTimelineRenderer.render(conversation, activeTurn);
+function renderMessages(conversation, activeTurn, activeAgentSlots = []) {
+  messageTimelineRenderer.render(conversation, activeTurn, activeAgentSlots);
 }
 
 function renderCompactConversationPersonaSettings() {
@@ -1581,6 +1606,14 @@ function activeTurnForConversation(conversationId) {
   return state.runtime.activeTurns.find((turn) => turn.conversationId === conversationId) || null;
 }
 
+function activeAgentSlotsForConversation(conversationId) {
+  if (!state.runtime || !Array.isArray(state.runtime.activeAgentSlots)) {
+    return [];
+  }
+
+  return state.runtime.activeAgentSlots.filter((slot) => slot && slot.conversationId === conversationId);
+}
+
 function queuedUserMessageCountForConversation(conversationId) {
   const activeTurn = activeTurnForConversation(conversationId);
 
@@ -1595,6 +1628,22 @@ function queuedUserMessageCountForConversation(conversationId) {
   const value = queueDepths && conversationId ? Number(queueDepths[conversationId] || 0) : 0;
 
   return Number.isFinite(value) ? Math.max(0, value) : 0;
+}
+
+function queuedAgentSlotMessageCountForConversation(conversationId) {
+  const queueDepths =
+    state.runtime && state.runtime.agentSlotQueueDepths && typeof state.runtime.agentSlotQueueDepths === 'object'
+      ? state.runtime.agentSlotQueueDepths
+      : null;
+  const perAgentDepths = queueDepths && conversationId && typeof queueDepths[conversationId] === 'object' ? queueDepths[conversationId] : null;
+
+  if (!perAgentDepths) {
+    return 0;
+  }
+
+  return Object.values(perAgentDepths).reduce((sum, value) => {
+    return sum + Math.max(0, Number(value || 0));
+  }, 0);
 }
 
 function queueFailureForConversation(conversationId) {
@@ -1691,6 +1740,32 @@ function upsertRuntimeTurn(turn) {
   state.runtime.activeTurns = activeTurns;
 }
 
+function upsertActiveAgentSlot(slot) {
+  if (!slot || !slot.slotId) {
+    return;
+  }
+
+  state.runtime = state.runtime || {};
+  const activeAgentSlots = Array.isArray(state.runtime.activeAgentSlots) ? state.runtime.activeAgentSlots.slice() : [];
+  const index = activeAgentSlots.findIndex((item) => item && item.slotId === slot.slotId);
+
+  if (index === -1) {
+    activeAgentSlots.push(slot);
+  } else {
+    activeAgentSlots[index] = slot;
+  }
+
+  state.runtime.activeAgentSlots = activeAgentSlots;
+}
+
+function removeActiveAgentSlot(slotId) {
+  if (!slotId || !state.runtime || !Array.isArray(state.runtime.activeAgentSlots)) {
+    return;
+  }
+
+  state.runtime.activeAgentSlots = state.runtime.activeAgentSlots.filter((slot) => slot && slot.slotId !== slotId);
+}
+
 function turnProgressSignature(turn) {
   if (!turn) {
     return 'none';
@@ -1730,6 +1805,33 @@ function turnProgressSignature(turn) {
           currentToolInferred: Boolean(agent.currentToolInferred),
         }))
       : [],
+  });
+}
+
+function agentSlotProgressSignature(slot) {
+  if (!slot) {
+    return 'none';
+  }
+
+  return JSON.stringify({
+    slotId: slot.slotId || null,
+    turnId: slot.turnId || null,
+    status: slot.status || '',
+    turnStatus: slot.turnStatus || '',
+    assistantMessageId: slot.assistantMessageId || null,
+    taskId: slot.taskId || null,
+    runId: slot.runId || null,
+    replyLength: slot.replyLength || 0,
+    preview: slot.preview || '',
+    errorMessage: slot.errorMessage || '',
+    lastTextDeltaAt: slot.lastTextDeltaAt || null,
+    currentToolName: slot.currentToolName || '',
+    currentToolKind: slot.currentToolKind || '',
+    currentToolStepId: slot.currentToolStepId || '',
+    currentToolStartedAt: slot.currentToolStartedAt || null,
+    currentToolInferred: Boolean(slot.currentToolInferred),
+    stopRequested: Boolean(slot.stopRequested),
+    stopReason: slot.stopReason || '',
   });
 }
 
@@ -1795,8 +1897,10 @@ function isConversationBusy(conversationId) {
   const dispatchingIds = Array.isArray(state.runtime && state.runtime.dispatchingConversationIds)
     ? state.runtime.dispatchingConversationIds
     : [];
+  const activeTurnBusy = Boolean(activeTurnForConversation(conversationId));
+  const activeSlotBusy = activeAgentSlotsForConversation(conversationId).length > 0;
 
-  return runtimeBusyIds.includes(conversationId) || dispatchingIds.includes(conversationId);
+  return runtimeBusyIds.includes(conversationId) || dispatchingIds.includes(conversationId) || activeTurnBusy || activeSlotBusy;
 }
 
 function renderRuntime() {
@@ -1805,8 +1909,14 @@ function renderRuntime() {
     return;
   }
 
-  const busyCount = Array.isArray(state.runtime.activeConversationIds) ? state.runtime.activeConversationIds.length : 0;
-  dom.runtimePill.textContent = `${state.runtime.host}:${state.runtime.port} · ${state.agents.length} Agent · ${busyCount} 个房间处理中`;
+  const busyConversationIds = new Set(
+    []
+      .concat(Array.isArray(state.runtime.activeConversationIds) ? state.runtime.activeConversationIds : [])
+      .concat(Array.isArray(state.runtime.activeTurns) ? state.runtime.activeTurns.map((turn) => turn.conversationId) : [])
+      .concat(Array.isArray(state.runtime.activeAgentSlots) ? state.runtime.activeAgentSlots.map((slot) => slot.conversationId) : [])
+      .filter(Boolean)
+  );
+  dom.runtimePill.textContent = `${state.runtime.host}:${state.runtime.port} · ${state.agents.length} Agent · ${busyConversationIds.size} 个房间处理中`;
 }
 
 function messageDisplayText(message) {
@@ -1949,12 +2059,26 @@ async function exportMessageSession(conversationId, message) {
   }, 0);
 }
 
-function liveStageForMessage(activeTurn, messageId) {
-  if (!activeTurn || !Array.isArray(activeTurn.agents) || !messageId) {
+function liveStageForMessage(conversationId, activeTurn, activeAgentSlots, messageId) {
+  if (!messageId) {
     return null;
   }
 
-  return activeTurn.agents.find((agent) => agent.messageId === messageId) || null;
+  if (activeTurn && Array.isArray(activeTurn.agents)) {
+    const activeTurnStage = activeTurn.agents.find((agent) => agent.messageId === messageId) || null;
+
+    if (activeTurnStage) {
+      return activeTurnStage;
+    }
+  }
+
+  const slotStages = Array.isArray(activeAgentSlots)
+    ? activeAgentSlots
+    : conversationId
+      ? activeAgentSlotsForConversation(conversationId)
+      : [];
+
+  return slotStages.find((slot) => slot && slot.assistantMessageId === messageId) || null;
 }
 
 function liveStageLabel(stage) {
@@ -2265,8 +2389,13 @@ function connectEventStream() {
           Array.isArray(payload.activeTurns) && conversationId
             ? payload.activeTurns.find((item) => item.conversationId === conversationId) || null
             : null;
+        const agentSlots =
+          Array.isArray(payload.activeAgentSlots) && conversationId
+            ? payload.activeAgentSlots.filter((item) => item && item.conversationId === conversationId)
+            : [];
+        const anyStopRequested = Boolean(turn && turn.stopRequested) || agentSlots.some((slot) => slot.stopRequested);
 
-        if (!turn || turn.stopRequested) {
+        if ((!turn && agentSlots.length === 0) || anyStopRequested) {
           state.stopRequestConversationIds.delete(conversationId);
         }
       }
@@ -2356,6 +2485,58 @@ function connectEventStream() {
     if (state.runtime && Array.isArray(state.runtime.activeTurns)) {
       state.runtime.activeTurns = state.runtime.activeTurns.filter((turn) => turn.conversationId !== payload.conversationId);
     }
+
+    if (state.currentConversation && state.currentConversation.id === payload.conversationId) {
+      syncToolTraceStatesWithConversation(state.currentConversation);
+    }
+
+    renderConversationPane();
+    renderConversationList();
+    renderRuntime();
+    void refreshConversationFromEvent(payload.conversationId);
+  });
+
+  source.addEventListener('agent_slot_progress', (event) => {
+    const payload = JSON.parse(event.data);
+
+    if (!state.runtime) {
+      state.runtime = {};
+    }
+
+    const existingSlot =
+      state.runtime && Array.isArray(state.runtime.activeAgentSlots)
+        ? state.runtime.activeAgentSlots.find((slot) => slot && slot.slotId === payload.slot.slotId) || null
+        : null;
+    const hasChanged = agentSlotProgressSignature(existingSlot) !== agentSlotProgressSignature(payload.slot);
+
+    if (payload.slot && payload.slot.stopRequested) {
+      state.stopRequestConversationIds.delete(payload.conversationId);
+    }
+
+    if (hasChanged) {
+      syncToolTraceStatesFromAgentSlotProgress(existingSlot, payload.slot);
+      upsertActiveAgentSlot(payload.slot);
+
+      if (state.selectedConversationId === payload.conversationId) {
+        scheduleConversationPaneRender();
+      }
+
+      if (!existingSlot || existingSlot.status !== payload.slot.status) {
+        renderConversationList();
+        renderRuntime();
+      }
+    }
+  });
+
+  source.addEventListener('agent_slot_finished', (event) => {
+    const payload = JSON.parse(event.data);
+    const existingSlot =
+      state.runtime && Array.isArray(state.runtime.activeAgentSlots)
+        ? state.runtime.activeAgentSlots.find((slot) => slot && slot.slotId === payload.slot.slotId) || null
+        : null;
+
+    syncToolTraceStatesFromAgentSlotProgress(existingSlot, null);
+    removeActiveAgentSlot(payload.slot && payload.slot.slotId ? payload.slot.slotId : '');
 
     if (state.currentConversation && state.currentConversation.id === payload.conversationId) {
       syncToolTraceStatesWithConversation(state.currentConversation);
@@ -2825,7 +3006,11 @@ function bindEvents() {
         upsertRuntimeTurn(result.turn);
       }
 
-      showToast('正在停止当前回合...');
+      if (Array.isArray(result.agentSlots)) {
+        result.agentSlots.forEach((slot) => upsertActiveAgentSlot(slot));
+      }
+
+      showToast('正在停止当前会话中的活跃执行...');
     } catch (error) {
       showToast(error.message);
     } finally {
@@ -2881,17 +3066,24 @@ function bindEvents() {
     }
 
     const activeTurn = activeTurnForConversation(conversationId);
+    const activeAgentSlots = activeAgentSlotsForConversation(conversationId);
     const queuedUserCount = queuedUserMessageCountForConversation(conversationId);
+    const queuedAgentSlotCount = queuedAgentSlotMessageCountForConversation(conversationId);
     const queueFailure = queueFailureForConversation(conversationId);
     const conversationBusy = isConversationBusy(conversationId);
 
     if (state.stopRequestConversationIds.has(conversationId)) {
-      showToast('正在停止当前回合，请稍后再试');
+      showToast('正在停止当前会话中的活跃执行，请稍后再试');
       return;
     }
 
-    if (conversationBusy || activeTurn) {
+    if (conversationBusy || activeTurn || activeAgentSlots.length > 0) {
       showToast('当前房间正在处理消息，请先停止并等待处理完成后再删除');
+      return;
+    }
+
+    if (queuedAgentSlotCount > 0) {
+      showToast('当前房间仍有按 Agent 排队的待处理消息，请等待执行完成后再删除');
       return;
     }
 

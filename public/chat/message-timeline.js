@@ -915,7 +915,7 @@
       restoreTraceViewportState(container, preservedViewport);
     }
 
-    function createMessageCard(message, agents, activeTurn) {
+    function createMessageCard(message, conversationId, agents, activeTurn, activeAgentSlots) {
       const card = document.createElement('article');
       const meta = document.createElement('div');
       const sender = document.createElement('span');
@@ -933,16 +933,18 @@
 
       meta.append(sender, time);
       card.append(meta, toolTrace, body, liveHint);
-      syncMessageCard(card, message, agents, activeTurn);
+      syncMessageCard(card, message, conversationId, agents, activeTurn, activeAgentSlots);
 
       return card;
     }
 
-    function syncMessageCard(card, message, agents, activeTurn) {
+    function syncMessageCard(card, message, conversationId, agents, activeTurn, activeAgentSlots) {
       const agent = message.agentId
         ? (Array.isArray(agents) ? agents.find((item) => item.id === message.agentId) : null) || agentById(message.agentId)
         : null;
-      const liveStage = isPrivateTimelineMessage(message) ? null : liveStageForMessage(activeTurn, message.id);
+      const liveStage = isPrivateTimelineMessage(message)
+        ? null
+        : liveStageForMessage(conversationId || (message && message.conversationId) || '', activeTurn, activeAgentSlots, message.id);
       const liveLabel = liveStageLabel(liveStage);
       const bodyText = displayedMessageBody(message, liveStage);
       const sessionInfo = messageSessionInfo(message);
@@ -1067,7 +1069,7 @@
       card.classList.toggle('terminating', liveStage ? liveStage.status === 'terminating' : false);
     }
 
-    function render(conversation, activeTurn) {
+    function render(conversation, activeTurn, activeAgentSlots = []) {
       const messages = timelineMessagesForConversation(conversation);
       const hasMessages = messages.length > 0;
 
@@ -1094,25 +1096,25 @@
 
       if (matchesExistingPrefix && existingCards.length === messages.length) {
         existingCards.forEach((card, index) => {
-          syncMessageCard(card, messages[index], conversation.agents, activeTurn);
+          syncMessageCard(card, messages[index], conversation.id, conversation.agents, activeTurn, activeAgentSlots);
         });
         return;
       }
 
       if (matchesExistingPrefix && existingCards.length < messages.length) {
         existingCards.forEach((card, index) => {
-          syncMessageCard(card, messages[index], conversation.agents, activeTurn);
+          syncMessageCard(card, messages[index], conversation.id, conversation.agents, activeTurn, activeAgentSlots);
         });
 
         messages.slice(existingCards.length).forEach((message) => {
-          dom.messageList.appendChild(createMessageCard(message, conversation.agents, activeTurn));
+          dom.messageList.appendChild(createMessageCard(message, conversation.id, conversation.agents, activeTurn, activeAgentSlots));
         });
         return;
       }
 
       const fragment = document.createDocumentFragment();
       messages.forEach((message) => {
-        fragment.appendChild(createMessageCard(message, conversation.agents, activeTurn));
+        fragment.appendChild(createMessageCard(message, conversation.id, conversation.agents, activeTurn, activeAgentSlots));
       });
       dom.messageList.replaceChildren(fragment);
     }

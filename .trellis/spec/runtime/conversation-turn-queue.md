@@ -1,12 +1,15 @@
 # Conversation Turn Queue
 
-## Scenario: Chat Workbench Continuous Send
+## Scenario: Chat Workbench Continuous Send and Agent Side Dispatch
 
 ### 1. Scope / Trigger
-- Trigger: touching `server/api/conversations-controller.ts`, `server/domain/conversation/turn-orchestrator.ts`, `server/domain/conversation/turn/routing-executor.ts`, `server/domain/conversation/turn/turn-state.ts`, `server/domain/conversation/turn/turn-runtime-payload.ts`, `public/app.js`, or `public/chat/conversation-pane.js`.
-- Goal: decouple **message acceptance** from **turn execution** so the user can keep sending while one turn is already running.
-- Constraint: one conversation still has at most one active run at a time. This spec does **not** authorize same-conversation multi-run parallel execution.
-- Related runtime feature: `mention_parallel` still applies only inside one already-started turn when the routing mode explicitly chooses parallel speaker execution.
+- Trigger: touching `server/api/conversations-controller.ts`, `server/api/bootstrap-controller.ts`, `server/domain/conversation/turn-orchestrator.ts`, `server/domain/conversation/turn/routing-executor.ts`, `server/domain/conversation/turn/turn-events.ts`, `server/domain/conversation/turn/turn-state.ts`, `server/domain/conversation/turn/turn-runtime-payload.ts`, `public/app.js`, `public/chat/conversation-pane.js`, or `public/chat/message-timeline.js`.
+- Goal: decouple **message acceptance** from **turn execution** so the user can keep sending while a conversation is already busy, while allowing a narrow same-conversation side-dispatch lane for explicit single-agent mentions.
+- Constraints:
+  - the main lane still allows only one active conversation turn at a time
+  - same-conversation parallelism is limited to user-authored explicit single `@Agent` messages
+  - multi-mention, no-mention/broadcast, and agent-to-agent handoff stay on the main lane in v1
+  - each `(conversationId, agentId)` pair may have at most one active slot at a time
 
 ### 2. Signatures
 - `POST /api/conversations/:conversationId/messages`
@@ -16,62 +19,69 @@
     - `conversation`: latest stored conversation snapshot
     - `conversations`: updated conversation summaries
     - `dispatch`: `'started' | 'queued'`
+    - `dispatchLane`: `'main' | 'side'`
+    - `dispatchTargetAgentId`: `string | null`
     - `runtime`: latest runtime payload from `buildRuntimePayload()`
 - `POST /api/conversations/:conversationId/stop`
-  - Success response: `{ conversationId, turn, runtime }`
+  - Success response: `{ conversationId, turn, agentSlots, runtime }`
+  - Domain result from `turnOrchestrator.requestStopConversationExecution(...)` also tracks `cancelledQueuedSideDispatchCount`
 - `DELETE /api/conversations/:conversationId`
-  - Default behavior rejects active/dispatching/queued conversations with `409`
-  - `?force=1` may delete an idle conversation whose queued batch already failed and is still pending
+  - Default behavior rejects active/dispatching/queued main-lane conversations and any active/queued side-slot work with `409`
+  - `?force=1` may delete only an idle conversation whose queued main-lane batch already failed and is still pending
+  - `force` does not override queued side-slot work
+- `GET /api/events?conversationId=...`
+  - Initial events must include `runtime_state`, existing `turn_progress`, and existing `agent_slot_progress` for that conversation
+  - Side-slot streaming events use `agent_slot_progress` and terminal `agent_slot_finished`
 - `turnOrchestrator.submitConversationMessage(conversationId, input)`
-  - Persists the message, triggers queue drain, returns the same payload shape as the HTTP route
+  - Persists the message first, dispatches to main lane or side lane, and returns the same payload shape as the HTTP route
 - `turnOrchestrator.getConversationQueueDepth(conversationId)`
-  - Returns pending user-message count for the next batch
-- `runConversationTurn(conversationId, { batchMessageIds })`
-  - Starts a new turn from already-persisted queued user messages
+  - Returns pending main-lane user-message count for the next batch
+- `turnOrchestrator.runConversationTurn(conversationId, { batchMessageIds? | content? })`
+  - Starts a main-lane turn from stored queued messages or normalized input
+  - Must reject with `409` when the conversation is already dispatching or any side slot is active
 - Runtime payload additions from `buildRuntimePayload()`:
   - `dispatchingConversationIds: string[]`
   - `conversationQueueDepths: Record<string, number>`
   - `conversationQueueFailures: Record<string, { failedBatchCount: number, lastFailureAt: string, lastFailureMessage: string }>`
-  - `activeTurns[].batchStartMessageId`
-  - `activeTurns[].batchEndMessageId`
-  - `activeTurns[].consumedUpToMessageId`
-  - `activeTurns[].inputMessageCount`
-  - `activeTurns[].queueDepth`
+  - `agentSlotQueueDepths: Record<string, Record<string, number>>`
+  - `activeTurns[]` with `batchStartMessageId`, `batchEndMessageId`, `consumedUpToMessageId`, `inputMessageCount`, and `queueDepth`
+  - `activeAgentSlots[]` with `slotId`, `conversationId`, `turnId`, `sourceMessageId`, `agentId`, `agentName`, `status`, `turnStatus`, `assistantMessageId`, `taskId`, `runId`, `replyLength`, `preview`, `errorMessage`, `currentTool*`, and stop fields
 
 ### 3. Contracts
 - `POST /messages` must not wait for the full agent turn to finish. It acknowledges accepted work immediately and relies on SSE/runtime updates for the long-running state.
 - New user messages are always stored first, then scheduled:
-  - no active/dispatching run → `dispatch = 'started'`
-  - already active/dispatching run → `dispatch = 'queued'`
-- Same-conversation concurrency stays serialized:
-  - at most one conversation turn may be active
-  - later user messages become the next batch instead of opening a second run
-- Queue consumption is anchored by `lastConsumedUserMessageId`:
-  - only successful batch completion advances the boundary
-  - failed batches stay pending for a later drain/retry
-  - queue failure state (`failedBatchCount`, `lastFailureAt`, `lastFailureMessage`) stays observable in runtime payload until a later drain succeeds or the conversation is force-deleted
-- Batch metadata semantics:
-  - `batchStartMessageId`: first queued user message consumed by this run
-  - `batchEndMessageId`: last queued user message consumed by this run
-  - `consumedUpToMessageId`: current consumed boundary for the run, normally equal to `batchEndMessageId`
-  - `inputMessageCount`: number of stored user messages included in the batch
-  - `queueDepth`: how many user messages are still waiting behind the active run
+  - no active/dispatching work → main lane `dispatch = 'started'`, `dispatchLane = 'main'`
+  - explicit single `@Agent` while the conversation already has active/dispatching work → side lane `dispatchLane = 'side'`
+  - if that target agent's slot is idle → side lane `dispatch = 'started'`
+  - if that target agent's slot is busy → side lane `dispatch = 'queued'` and `agentSlotQueueDepths[conversationId][agentId]` increments
+  - anything else (broadcast, multi-mention, no explicit single mention) stays on the main lane and uses queued main-batch semantics
+- Main-lane serialization rules:
+  - at most one main turn may be active/dispatching per conversation
+  - later main-lane user messages become the next batch instead of opening a second main turn
+  - direct `runConversationTurn()` calls must respect active side slots and reject instead of bypassing the gate
+- Side-lane slot rules:
+  - side dispatch uses a per-agent slot key `(conversationId, agentId)`
+  - different agents in the same conversation may have side/main work concurrently
+  - the same target agent cannot run two side invocations at once; later requests queue behind the slot
+  - queued side waiters must be cancellable by conversation stop and cleared by conversation delete/reset
+- Side message persistence rules:
+  - accepted side-lane user messages must store `metadata.dispatchLane = 'side'`
+  - accepted side-lane user messages must store `metadata.dispatchTargetAgentId = <agentId>`
+  - main-lane queue discovery must filter persisted side-lane messages by metadata instead of relying only on in-memory bookkeeping
 - Prompt snapshot semantics:
-  - `promptSnapshotMessageIds` freezes the conversation messages visible at dispatch time
-  - later user messages must **not** hot-insert into the active prompt
-  - messages created by the current turn may still remain visible via `currentTurnId`
-- Queued-batch prompt construction rules:
-  - reuse the original stored user messages from `batchMessageIds`
-  - preserve original message order in prompt history
-  - do not replace the whole queued range with one synthetic history item
-  - `inputText` for task metadata may be joined text, but `promptMessages` must still preserve stored history ordering
-- UI/runtime ownership:
+  - main-lane `promptSnapshotMessageIds` still freezes visibility at dispatch time
+  - side-lane submission stores snapshot message ids, not a frozen cloned transcript
+  - when a queued side slot is finally granted, prompt history is rehydrated from current store messages for those ids so already-visible messages can carry their latest persisted content
+  - later messages whose ids were not in the snapshot remain invisible to that side run
+  - the side prompt user message may replace the stored content with the cleaned single-mention text, but keeps the same message id
+- Stop / delete / recovery:
+  - `POST /stop` must stop the active main turn, mark active side slots as `stopRequested`, and cancel queued side waiters before they acquire a slot
+  - delete stays blocked while runtime reports active/dispatching main work, active side slots, queued main batches, or queued side-slot work
+  - force delete remains only for idle failed main-lane queued batches; it must not discard queued side-slot work through the same override
+- UI / timeline ownership:
   - `state.sending` only means the browser is waiting for the `POST /messages` HTTP response
-  - conversation busy/queued/stopping state must come from runtime payload fields (`activeTurns`, `activeConversationIds`, `dispatchingConversationIds`, `conversationQueueDepths`, `conversationQueueFailures`)
-  - normal conversations keep composer input/send enabled while a turn is running
-  - stop stays enabled only when a real `activeTurn` exists
-  - delete stays blocked while the conversation is active, dispatching, queued, or already stopping
-  - if an idle queued batch already failed, the UI may surface a guarded force-delete affordance that explicitly discards the pending queued messages
+  - busy / stop / delete / live-stage UI must combine `activeTurns`, `dispatchingConversationIds`, `conversationQueueDepths`, `conversationQueueFailures`, `activeAgentSlots`, and `agentSlotQueueDepths`
+  - live message stages may come from either the main turn or an active side slot; timeline rendering must follow both
 - Game exception:
   - who-is-undercover / werewolf automatic-host phases still reject manual chat sends with `409`
 
@@ -83,38 +93,42 @@
 | `POST /messages` | no agents selected | `400 Add at least one agent to the conversation first` |
 | `POST /messages` | undercover auto-host phase | `409` and keep manual input blocked |
 | `POST /messages` | werewolf auto-host phase | `409` and keep manual input blocked |
+| `POST /messages` | explicit single `@Agent`, conversation busy, target idle | `200`, `dispatch = 'started'`, `dispatchLane = 'side'`, `dispatchTargetAgentId = <agentId>` |
+| `POST /messages` | explicit single `@Agent`, conversation busy, target busy | `200`, `dispatch = 'queued'`, `dispatchLane = 'side'`, and slot queue depth increments |
 | `runConversationTurn(..., { batchMessageIds })` | no queued user messages resolved | `400 No queued user messages are available for this batch` |
-| `POST /stop` | no active turn | `409 This conversation is not processing a turn` |
-| `DELETE /conversation` | active or dispatching conversation | `409 当前会话正在处理消息，请先停止并等待当前回合结束后再删除` |
-| `DELETE /conversation` | queued conversation without `force=1` recovery path | `409 当前会话仍有待处理消息，请等待自动续跑完成后再删除` |
-| `DELETE /conversation?force=1` | idle queued conversation with recorded queue failure | delete succeeds and drops the queued messages with the conversation |
+| `runConversationTurn(...)` | conversation dispatching or any side slot active | `409 This conversation is already processing another turn` |
+| `POST /stop` | no active turn, no active side slot, and no queued side waiter | `409 This conversation is not processing a turn` |
+| `DELETE /conversation` | active or dispatching main turn | `409 当前会话正在处理消息，请先停止并等待当前回合结束后再删除` |
+| `DELETE /conversation` | active side slot | `409 当前会话正在处理消息，请先停止并等待当前回合结束后再删除` |
+| `DELETE /conversation` | queued main-lane work without valid recovery override | `409 当前会话仍有待处理消息，请等待自动续跑完成后再删除` |
+| `DELETE /conversation` | queued side-slot work | `409 当前会话仍有待处理消息，请等待自动续跑完成后再删除` |
+| `DELETE /conversation?force=1` | idle queued main-lane failure | delete succeeds and drops the queued main-lane messages with the conversation |
 | queue drain loop | `runConversationTurn()` throws | log the failure, keep queue pending, do not advance `lastConsumedUserMessageId`, and expose queue failure metadata |
 
 ### 5. Good / Base / Bad Cases
-- Good: idle conversation accepts a user message, returns `dispatch = 'started'`, creates one active turn, and shows queue depth `0`.
-- Good: while the first turn is running, a second user message still persists immediately, returns `dispatch = 'queued'`, increments `queueDepth`, and becomes the next batch after the active turn ends.
-- Good: when queued batch dispatch starts, any assistant messages that already existed in stored history before dispatch remain visible in the next prompt snapshot.
-- Base: user presses Stop during an active turn; the turn becomes `stopRequested`, stops at a safe boundary, and the next queued batch starts afterward.
-- Base: queue drain fails once; the failed batch remains pending and a later drain can retry it without message loss.
-- Base: queued drain is stuck after a failure; the UI shows the failure state and the user can explicitly force-delete the conversation to discard the stuck queued messages.
-- Bad: rejecting a second user message with `409` only because the conversation already has an active turn.
-- Bad: advancing `lastConsumedUserMessageId` when `runConversationTurn()` failed.
-- Bad: enabling Stop during a dispatching-only window where there is no `activeTurn` yet.
-- Bad: allowing deletion while runtime still reports active/dispatching work or queued user messages.
-- Bad: rebuilding queued history as one synthetic user message and dropping interleaving assistant context.
+- Good: idle conversation accepts a user message, returns `dispatch = 'started'`, creates one active main turn, and shows main queue depth `0`.
+- Good: while the main turn is running, an explicit single `@Beta` message with idle target returns `dispatch = 'started'`, `dispatchLane = 'side'`, and runtime shows one `activeTurn` plus one `activeAgentSlot`.
+- Good: when the same target agent is already busy, a second explicit single mention returns `dispatch = 'queued'`, increments `agentSlotQueueDepths`, and runs after the first slot releases.
+- Good: side-lane user messages persist `metadata.dispatchLane = 'side'`, so main queue drain never consumes them as normal queued user batches after restart or retry.
+- Base: the main turn ends while a side slot still runs; direct `runConversationTurn()` remains blocked until the side slot finishes.
+- Base: user presses Stop during an active main turn with queued side waiters; the main turn stops at a safe boundary and queued side waiters are cancelled before they auto-start.
+- Base: a queued side waiter stores snapshot ids at submission time and rehydrates the latest persisted content for those ids when the slot is granted.
+- Bad: allowing an explicit single-mention side message to fall into `conversationQueueDepths` main-batch consumption.
+- Bad: cloning the entire side prompt transcript at submit time so a queued side run misses already-persisted updates from snapshotted messages.
+- Bad: allowing delete just because main queue depth is zero while a side slot is still active or queued.
 
 ### 6. Tests Required
 - `tests/runtime/turn-orchestrator.test.js`
-  - queued batch excludes late user messages from the active prompt snapshot
-  - queued batch preserves context that already existed before dispatch
-  - user messages queue behind the active run and drain serially
-  - stop request yields to the next queued batch
-  - failed batch remains pending and can be retried later
+  - idle target side-dispatch starts concurrently with the main lane
+  - direct main turns are blocked while a side slot is active
+  - busy target side-dispatch queues per agent slot and later runs
+  - stop cancels queued side waiters before they start
+  - queued side-dispatch rehydrates snapshot content on grant
+  - main queue still excludes late messages from the active prompt snapshot and drains serially
 - `tests/smoke/server-smoke.test.js`
-  - `POST /messages` returns accepted payload immediately
-  - assistant completion is later observed asynchronously through normal conversation polling/SSE flow
-  - direct conversation delete rejects queued runtime work, not only active/dispatching work
-  - explicit force delete succeeds for idle queued conversations that are stuck after a recorded drain failure
+  - `POST /messages` still accepts immediately and exposes lane/runtime fields
+  - delete rejects active side slots
+  - delete rejects queued side-slot work
 - Validation commands for closeout:
   - `npm run check`
   - `npm run typecheck`
@@ -123,46 +137,54 @@
 ### 7. Wrong vs Correct
 #### Wrong
 ```ts
-const result = await turnOrchestrator.runConversationTurn(conversationId, body.content);
-sendJson(res, 200, result);
+function isSideDispatchMessage(conversationId, messageId) {
+  return sideDispatchMessageIds.get(conversationId)?.has(messageId);
+}
 ```
-- This ties the HTTP lifetime to the full turn lifetime.
-- It prevents continuous send because the browser cannot distinguish “message accepted” from “turn finished”.
+- This relies only on in-memory bookkeeping.
+- After a restart, persisted side-lane user messages can be mistaken for normal queued main-lane input.
 
 #### Correct
 ```ts
-const result = turnOrchestrator.submitConversationMessage(conversationId, {
-  content: body.content,
-});
-sendJson(res, 200, result);
+function isSideDispatchMessage(conversationId, messageId, message) {
+  const dispatchLane =
+    message && message.metadata && typeof message.metadata === 'object'
+      ? String(message.metadata.dispatchLane || '').trim()
+      : '';
+
+  if (dispatchLane === 'side') {
+    return true;
+  }
+
+  return sideDispatchMessageIds.get(conversationId)?.has(messageId) === true;
+}
 ```
-- Persist first.
-- Return accepted/queued/started state immediately.
-- Let runtime events drive the rest of the UX.
+- Persist the dispatch lane on the message metadata.
+- Use metadata as the durable filter and keep the in-memory set only as a fast-path helper.
 
 #### Wrong
 ```ts
-try {
-  await runConversationTurn(conversationId, { batchMessageIds });
-} finally {
-  queueState.lastConsumedUserMessageId = batchEndMessageId;
+async function runConversationTurn(conversationId, input) {
+  return baseRunConversationTurn(conversationId, input);
 }
 ```
-- Failed batches disappear from the queue.
-- Later retries lose context and user trust.
+- This bypasses side-slot activity.
+- Internal callers can start a new main turn while a side slot is still running.
 
 #### Correct
 ```ts
-let batchSucceeded = false;
+async function runConversationTurn(conversationId, input) {
+  const normalizedConversationId = String(conversationId || '').trim();
 
-try {
-  await runConversationTurn(conversationId, { batchMessageIds });
-  batchSucceeded = true;
-} finally {
-  if (batchSucceeded) {
-    queueState.lastConsumedUserMessageId = batchEndMessageId;
+  if (
+    normalizedConversationId
+    && (dispatchingConversationIds.has(normalizedConversationId) || hasActiveAgentSlots(normalizedConversationId))
+  ) {
+    throw createHttpError(409, 'This conversation is already processing another turn');
   }
+
+  return baseRunConversationTurn(conversationId, input);
 }
 ```
-- Only successful batches advance the consumed boundary.
-- Failures remain observable and retryable.
+- Main-lane entrypoints must respect side-lane activity.
+- Orchestrator-level gating keeps controller and internal call paths aligned.

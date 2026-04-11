@@ -6,6 +6,7 @@
   chat.createConversationPaneRenderer = function createConversationPaneRenderer({ state, dom, helpers }) {
     const {
       activeTurnForConversation,
+      activeAgentSlotsForConversation,
       agentById,
       canChatInUndercoverConversation,
       canChatInWerewolfConversation,
@@ -18,6 +19,7 @@
       liveDraftIdleMs,
       liveStageLabel,
       queueFailureForConversation,
+      queuedAgentSlotMessageCountForConversation,
       queuedUserMessageCountForConversation,
       renderMessages,
       renderParticipantList,
@@ -32,6 +34,7 @@
     function render() {
       const conversation = state.currentConversation;
       const activeTurn = conversation ? activeTurnForConversation(conversation.id) : null;
+      const activeAgentSlots = conversation ? activeAgentSlotsForConversation(conversation.id) : [];
       clearLiveDraftFinalizingTimer();
 
       if (!conversation) {
@@ -45,7 +48,7 @@
         dom.conversationMeta.textContent = '选择一个房间后，这里会显示参与人格和消息记录。';
         dom.deleteConversationButton.disabled = true;
         renderParticipantList(null);
-        renderMessages(null, null);
+        renderMessages(null, null, []);
         dom.composerInput.disabled = true;
         dom.stopButton.disabled = true;
         dom.stopButton.textContent = '停止';
@@ -89,21 +92,32 @@
       const hasAgents = conversation.agents.length > 0;
       const stopRequestInFlight = state.stopRequestConversationIds.has(conversation.id);
       const queuedUserCount = queuedUserMessageCountForConversation(conversation.id);
+      const queuedAgentSlotCount = queuedAgentSlotMessageCountForConversation(conversation.id);
       const queueFailure = queueFailureForConversation(conversation.id);
       const conversationBusy = isConversationBusy(conversation.id);
       dom.deleteConversationButton.disabled =
-        state.sending || conversationBusy || Boolean(activeTurn) || stopRequestInFlight || (queuedUserCount > 0 && !queueFailure);
+        state.sending ||
+        conversationBusy ||
+        Boolean(activeTurn) ||
+        activeAgentSlots.length > 0 ||
+        stopRequestInFlight ||
+        (queuedUserCount > 0 && !queueFailure) ||
+        queuedAgentSlotCount > 0;
 
       renderParticipantList(conversation);
-      renderMessages(conversation, activeTurn);
+      renderMessages(conversation, activeTurn, activeAgentSlots);
 
-      const canStopTurn = Boolean(activeTurn);
+      const canStopTurn = Boolean(activeTurn) || activeAgentSlots.length > 0;
       const queuedUserSuffix = queuedUserCount > 0 ? ` 后面还有 ${queuedUserCount} 条新消息待处理。` : '';
       const undercoverChatLocked = isUndercoverConversation(conversation) && !canChatInUndercoverConversation(conversation);
       const werewolfChatLocked = isWerewolfConversation(conversation) && !canChatInWerewolfConversation(conversation);
       dom.composerInput.disabled = !hasAgents || undercoverChatLocked || werewolfChatLocked;
-      dom.stopButton.disabled = !canStopTurn || stopRequestInFlight || Boolean(activeTurn && activeTurn.stopRequested);
-      dom.stopButton.textContent = stopRequestInFlight || (activeTurn && activeTurn.stopRequested) ? '停止中...' : '停止';
+      dom.stopButton.disabled =
+        !canStopTurn || stopRequestInFlight || Boolean(activeTurn && activeTurn.stopRequested) || activeAgentSlots.some((slot) => slot.stopRequested);
+      dom.stopButton.textContent =
+        stopRequestInFlight || (activeTurn && activeTurn.stopRequested) || activeAgentSlots.some((slot) => slot.stopRequested)
+          ? '停止中...'
+          : '停止';
       dom.sendButton.disabled = !hasAgents || undercoverChatLocked || werewolfChatLocked;
       dom.composerInput.placeholder = '输入 @Agent 可将当前消息路由给指定人格。';
 
@@ -119,12 +133,20 @@
           : '狼人杀对局进行中时由后端全自动主持，暂不支持手动发送聊天消息。';
       }
 
-      const activeStages =
-        activeTurn && Array.isArray(activeTurn.agents)
-          ? activeTurn.agents.filter((agent) => agent.status === 'queued' || agent.status === 'running' || agent.status === 'terminating')
-          : [];
+      const activeStages = []
+        .concat(
+          activeTurn && Array.isArray(activeTurn.agents)
+            ? activeTurn.agents.filter((agent) => agent.status === 'queued' || agent.status === 'running' || agent.status === 'terminating')
+            : []
+        )
+        .concat(
+          Array.isArray(activeAgentSlots)
+            ? activeAgentSlots.filter((slot) => slot.status === 'queued' || slot.status === 'running' || slot.status === 'terminating')
+            : []
+        );
+      const activeSlotStopRequested = activeAgentSlots.some((slot) => slot.stopRequested);
 
-      if (activeTurn && activeTurn.stopRequested) {
+      if ((activeTurn && activeTurn.stopRequested) || activeSlotStopRequested) {
         const stoppingCount = activeStages.filter((agent) => agent.status === 'running' || agent.status === 'terminating').length;
         dom.composerStatus.textContent =
           stoppingCount > 1
@@ -132,14 +154,16 @@
             : stoppingCount === 1
               ? `正在安全停止当前人格。${queuedUserCount > 0 ? ` 稍后会继续处理 ${queuedUserCount} 条补充消息。` : ''}`
               : `正在安全停止当前回合。${queuedUserCount > 0 ? ` 稍后会继续处理 ${queuedUserCount} 条补充消息。` : ''}`;
-      } else if (activeTurn && activeStages.length > 1) {
+      } else if (activeStages.length > 1) {
         dom.composerStatus.textContent = `${activeStages.length} 名人格正在并行回复。${queuedUserSuffix}`;
-      } else if (activeTurn && activeTurn.currentAgentId) {
-        const activeAgent = agentById(activeTurn.currentAgentId);
+      } else if ((activeTurn && activeTurn.currentAgentId) || activeAgentSlots[0]) {
+        const singleActiveSlot = activeAgentSlots[0] || null;
+        const activeAgentId = activeTurn && activeTurn.currentAgentId ? activeTurn.currentAgentId : singleActiveSlot && singleActiveSlot.agentId;
+        const activeAgent = activeAgentId ? agentById(activeAgentId) : null;
         const activeStage =
-          Array.isArray(activeTurn.agents) && activeTurn.currentAgentId
+          activeTurn && Array.isArray(activeTurn.agents) && activeTurn.currentAgentId
             ? activeTurn.agents.find((agent) => agent.agentId === activeTurn.currentAgentId) || null
-            : null;
+            : singleActiveSlot;
         const activeStageText = liveStageLabel(activeStage);
         dom.composerStatus.textContent = activeAgent
           ? activeStage && activeStage.preview
@@ -167,8 +191,14 @@
         const failureCount = Math.max(1, Number(queueFailure.failedBatchCount || 0));
         const failureSuffix = queueFailure.lastFailureMessage ? ` 最近一次失败：${queueFailure.lastFailureMessage}` : '';
         dom.composerStatus.textContent = `上一轮续跑失败了 ${failureCount} 次，仍有 ${queuedUserCount} 条消息排队中。继续发送会重试，也可以删除这个对话放弃队列。${failureSuffix}`;
-      } else if (queuedUserCount > 0) {
-        dom.composerStatus.textContent = `已收到 ${queuedUserCount} 条新消息，正在准备下一轮。`;
+      } else if (queuedUserCount > 0 || queuedAgentSlotCount > 0) {
+        if (queuedUserCount > 0 && queuedAgentSlotCount > 0) {
+          dom.composerStatus.textContent = `已收到 ${queuedUserCount} 条主队列消息，还有 ${queuedAgentSlotCount} 条按 Agent 排队的消息。`;
+        } else if (queuedUserCount > 0) {
+          dom.composerStatus.textContent = `已收到 ${queuedUserCount} 条新消息，正在准备下一轮。`;
+        } else {
+          dom.composerStatus.textContent = `当前还有 ${queuedAgentSlotCount} 条按 Agent 排队的消息等待执行。`;
+        }
       } else if (state.sending) {
         dom.composerStatus.textContent = '当前房间正在路由这一轮消息...';
       } else if (!hasAgents) {

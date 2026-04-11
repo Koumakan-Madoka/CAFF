@@ -28,6 +28,13 @@ export function createBootstrapController(options: any = {}): RouteHandler<ApiCo
           turn,
         },
       }));
+      const agentSlotEvents = turnOrchestrator.listAgentSlotSummaries({ conversationId }).map((slot: any) => ({
+        eventName: 'agent_slot_progress',
+        payload: {
+          conversationId: slot.conversationId,
+          slot,
+        },
+      }));
 
       sseBus.openStream(req, res, {
         conversationId,
@@ -37,6 +44,7 @@ export function createBootstrapController(options: any = {}): RouteHandler<ApiCo
             payload: turnOrchestrator.buildRuntimePayload(),
           },
           ...turnEvents,
+          ...agentSlotEvents,
         ],
       });
       return true;

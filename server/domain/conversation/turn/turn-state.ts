@@ -65,6 +65,41 @@ export function summarizeTurnState(turnState: any) {
   };
 }
 
+export function summarizeAgentSlotState(turnState: any) {
+  const stage = Array.isArray(turnState && turnState.agents) ? turnState.agents[0] || null : null;
+
+  return {
+    slotId: turnState.slotId || '',
+    conversationId: turnState.conversationId,
+    conversationTitle: turnState.conversationTitle,
+    turnId: turnState.turnId,
+    sourceMessageId: turnState.sourceMessageId || null,
+    agentId: stage && stage.agentId ? stage.agentId : turnState.currentAgentId || null,
+    agentName: stage && stage.agentName ? stage.agentName : turnState.targetAgentName || '',
+    status: stage && stage.status ? stage.status : turnState.status,
+    turnStatus: turnState.status,
+    startedAt: turnState.startedAt,
+    updatedAt: turnState.updatedAt,
+    endedAt: turnState.endedAt || null,
+    assistantMessageId: stage && stage.messageId ? stage.messageId : null,
+    taskId: stage && stage.taskId ? stage.taskId : null,
+    runId: stage && stage.runId ? stage.runId : null,
+    heartbeatCount: stage && stage.heartbeatCount ? stage.heartbeatCount : 0,
+    replyLength: stage && stage.replyLength ? stage.replyLength : 0,
+    preview: stage && stage.preview ? stage.preview : '',
+    errorMessage: stage && stage.errorMessage ? stage.errorMessage : '',
+    lastTextDeltaAt: stage && stage.lastTextDeltaAt ? stage.lastTextDeltaAt : null,
+    currentToolName: stage && stage.currentToolName ? stage.currentToolName : '',
+    currentToolKind: stage && stage.currentToolKind ? stage.currentToolKind : '',
+    currentToolStepId: stage && stage.currentToolStepId ? stage.currentToolStepId : '',
+    currentToolStartedAt: stage && stage.currentToolStartedAt ? stage.currentToolStartedAt : null,
+    currentToolInferred: Boolean(stage && stage.currentToolInferred),
+    stopRequested: Boolean(turnState.stopRequested),
+    stopReason: turnState.stopReason || '',
+    stopRequestedAt: turnState.stopRequestedAt || null,
+  };
+}
+
 export function createTurnState(conversation: any, turnId: any) {
   const timestamp = nowIso();
 
@@ -119,6 +154,33 @@ export function createTurnState(conversation: any, turnId: any) {
       endedAt: null as string | null,
     })),
   };
+}
+
+export function createAgentSlotState(conversation: any, agent: any, options: any = {}) {
+  const slotTurnId = String(options.turnId || '').trim() || `slot-turn-${nowIso()}`;
+  const slotState = createTurnState(
+    {
+      id: conversation.id,
+      title: conversation.title,
+      agents: [agent],
+    },
+    slotTurnId
+  ) as any;
+
+  slotState.slotId = String(options.slotId || `${conversation.id}:${agent.id}`).trim() || `${conversation.id}:${agent.id}`;
+  slotState.executionLane = 'side';
+  slotState.sourceMessageId = String(options.sourceMessageId || '').trim() || null;
+  slotState.targetAgentName = String(agent && agent.name ? agent.name : '').trim() || 'Assistant';
+  slotState.userMessageId = slotState.sourceMessageId;
+  slotState.batchStartMessageId = slotState.sourceMessageId;
+  slotState.batchEndMessageId = slotState.sourceMessageId;
+  slotState.consumedUpToMessageId = slotState.sourceMessageId;
+  slotState.inputMessageCount = 1;
+  slotState.entryAgentIds = [agent.id];
+  slotState.pendingAgentIds = [];
+  slotState.queueDepth = 0;
+  slotState.routingMode = 'mention_queue';
+  return slotState;
 }
 
 export function getTurnStage(turnState: any, agentId: any) {
