@@ -67,6 +67,7 @@
 - Side message persistence rules:
   - accepted side-lane user messages must store `metadata.dispatchLane = 'side'`
   - accepted side-lane user messages must store `metadata.dispatchTargetAgentId = <agentId>`
+  - stopped side-lane source messages must persist `metadata.dispatchCancelled = true` plus timestamp/reason so restart recovery does not replay intentionally cancelled work
   - main-lane queue discovery must filter persisted side-lane messages by metadata instead of relying only on in-memory bookkeeping
 - Prompt snapshot semantics:
   - main-lane `promptSnapshotMessageIds` still freezes visibility at dispatch time
@@ -75,7 +76,9 @@
   - later messages whose ids were not in the snapshot remain invisible to that side run
   - the side prompt user message may replace the stored content with the cleaned single-mention text, but keeps the same message id
 - Stop / delete / recovery:
-  - `POST /stop` must stop the active main turn, mark active side slots as `stopRequested`, and cancel queued side waiters before they acquire a slot
+  - `POST /stop` must stop the active main turn, mark active side slots as `stopRequested`, persist a cancellation marker on their source side messages, and cancel queued side waiters before they acquire a slot
+  - queued side waiters cancelled by stop must also persist a cancellation marker on their source side messages
+  - orchestrator startup must recover persisted side-lane user messages that have no cancellation marker and no terminal assistant reply; any stale queued/streaming assistant placeholder tied to that source message must be marked failed before the side run is rescheduled
   - delete stays blocked while runtime reports active/dispatching main work, active side slots, queued main batches, or queued side-slot work
   - force delete remains only for idle failed main-lane queued batches; it must not discard queued side-slot work through the same override
 - UI / timeline ownership:
@@ -113,6 +116,7 @@
 - Base: the main turn ends while a side slot still runs; direct `runConversationTurn()` remains blocked until the side slot finishes.
 - Base: user presses Stop during an active main turn with queued side waiters; the main turn stops at a safe boundary and queued side waiters are cancelled before they auto-start.
 - Base: a queued side waiter stores snapshot ids at submission time and rehydrates the latest persisted content for those ids when the slot is granted.
+- Base: after a restart, a persisted side-lane source message without a terminal reply is rescheduled, while stale `Thinking...` placeholders tied to it are marked failed and stopped side-lane source messages stay cancelled.
 - Bad: allowing an explicit single-mention side message to fall into `conversationQueueDepths` main-batch consumption.
 - Bad: cloning the entire side prompt transcript at submit time so a queued side run misses already-persisted updates from snapshotted messages.
 - Bad: allowing delete just because main queue depth is zero while a side slot is still active or queued.
@@ -122,8 +126,9 @@
   - idle target side-dispatch starts concurrently with the main lane
   - direct main turns are blocked while a side slot is active
   - busy target side-dispatch queues per agent slot and later runs
-  - stop cancels queued side waiters before they start
+  - stop cancels queued side waiters before they start and persists a cancellation marker on the source side message
   - queued side-dispatch rehydrates snapshot content on grant
+  - persisted side-dispatch messages without terminal replies recover on orchestrator startup
   - main queue still excludes late messages from the active prompt snapshot and drains serially
 - `tests/smoke/server-smoke.test.js`
   - `POST /messages` still accepts immediately and exposes lane/runtime fields

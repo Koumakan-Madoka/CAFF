@@ -257,6 +257,123 @@ export function createTurnOrchestrator(options: any = {}) {
     return sideDispatchMessageIds.get(normalizedConversationId).has(normalizedMessageId);
   }
 
+  function isTerminalMessageStatus(message: any) {
+    const status = String(message && message.status ? message.status : '').trim();
+    return status === 'completed' || status === 'failed';
+  }
+
+  function listSideDispatchReplyMessages(conversationId: any, sourceMessageId: any) {
+    const normalizedSourceMessageId = String(sourceMessageId || '').trim();
+
+    if (!normalizedSourceMessageId) {
+      return [] as any[];
+    }
+
+    return listConversationMessages(conversationId).filter((message: any) => {
+      if (!message || message.role !== 'assistant') {
+        return false;
+      }
+
+      const metadata = message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
+      return String(metadata && metadata.triggeredByMessageId ? metadata.triggeredByMessageId : '').trim() === normalizedSourceMessageId;
+    });
+  }
+
+  function updateSideDispatchSourceMessageMetadata(conversationId: any, sourceMessageId: any, updates: any = {}) {
+    const normalizedSourceMessageId = String(sourceMessageId || '').trim();
+
+    if (!normalizedSourceMessageId || !store || typeof store.updateMessage !== 'function') {
+      return null;
+    }
+
+    const sourceMessage = resolveConversationMessage(conversationId, normalizedSourceMessageId);
+
+    if (!sourceMessage || !isSideDispatchMessage(conversationId, normalizedSourceMessageId, sourceMessage)) {
+      return null;
+    }
+
+    const existingMetadata = sourceMessage.metadata && typeof sourceMessage.metadata === 'object' ? sourceMessage.metadata : {};
+    return store.updateMessage(normalizedSourceMessageId, {
+      metadata: {
+        ...existingMetadata,
+        ...updates,
+      },
+    });
+  }
+
+  function markSideDispatchCancelled(conversationId: any, sourceMessageId: any, reason: any) {
+    const stopReason = String(reason || 'Stopped by user').trim() || 'Stopped by user';
+
+    updateSideDispatchSourceMessageMetadata(conversationId, sourceMessageId, {
+      dispatchCancelled: true,
+      dispatchCancelledAt: nowIso(),
+      dispatchCancelReason: stopReason,
+    });
+  }
+
+  function markStaleSideDispatchReplyMessages(conversationId: any, sourceMessageId: any) {
+    if (!store || typeof store.updateMessage !== 'function') {
+      return;
+    }
+
+    for (const message of listSideDispatchReplyMessages(conversationId, sourceMessageId)) {
+      if (isTerminalMessageStatus(message)) {
+        continue;
+      }
+
+      const metadata = message.metadata && typeof message.metadata === 'object' ? message.metadata : {};
+      store.updateMessage(message.id, {
+        content: message.content === 'Thinking...' ? '' : String(message.content || ''),
+        status: 'failed',
+        errorMessage: 'Recovered after process restart before side dispatch completed',
+        metadata: {
+          ...metadata,
+          failure: true,
+          streaming: false,
+          recoveredAfterRestart: true,
+        },
+      });
+    }
+  }
+
+  function buildPromptSnapshotMessageIdsThroughMessage(conversationId: any, sourceMessageId: any) {
+    const normalizedSourceMessageId = String(sourceMessageId || '').trim();
+    const snapshotMessageIds = [] as any[];
+
+    for (const message of listConversationMessages(conversationId)) {
+      const messageId = String(message && message.id ? message.id : '').trim();
+
+      if (!messageId) {
+        continue;
+      }
+
+      snapshotMessageIds.push(messageId);
+
+      if (messageId === normalizedSourceMessageId) {
+        break;
+      }
+    }
+
+    return snapshotMessageIds;
+  }
+
+  function resolvePersistedSideDispatchTarget(conversation: any, acceptedMessage: any) {
+    const metadata = acceptedMessage && acceptedMessage.metadata && typeof acceptedMessage.metadata === 'object' ? acceptedMessage.metadata : null;
+    const targetAgentId = String(metadata && metadata.dispatchTargetAgentId ? metadata.dispatchTargetAgentId : '').trim();
+
+    if (!targetAgentId || !getAgentById(conversation && conversation.agents, targetAgentId)) {
+      return null;
+    }
+
+    const execution = resolveTurnExecutionMode(acceptedMessage && acceptedMessage.content ? acceptedMessage.content : '', 1);
+
+    return {
+      targetAgentId,
+      cleanedContent: execution.cleanedText || (acceptedMessage && acceptedMessage.content ? acceptedMessage.content : ''),
+      explicitIntent: execution.explicitIntent || '',
+    };
+  }
+
   function listPendingUserMessages(conversationId: any, afterMessageId: any = '') {
     const messages = listConversationMessages(conversationId);
     const normalizedAfterMessageId = String(afterMessageId || '').trim();
@@ -817,18 +934,23 @@ export function createTurnOrchestrator(options: any = {}) {
     }
   }
 
-  function submitSideDispatch(conversation: any, turnInput: any, acceptedMessage: any, sideTarget: any) {
+  function buildSideDispatchEntry(conversation: any, turnInput: any, acceptedMessage: any, sideTarget: any, options: any = {}) {
     const conversationId = conversation.id;
-    markSideDispatchMessage(conversationId, acceptedMessage.id);
-
-    const promptUserMessage = {
-      ...cloneMessageSnapshot(acceptedMessage),
-      content: sideTarget.cleanedContent || acceptedMessage.content,
-    };
     const snapshotConversation = store.getConversation(conversationId) || conversation;
-    const snapshotMessages = Array.isArray(snapshotConversation && snapshotConversation.messages) ? snapshotConversation.messages : [];
-    const promptSnapshotMessageIds = Array.from(buildPromptSnapshotMessageIds(snapshotMessages));
-    const entry = {
+    const promptUserMessage =
+      options.promptUserMessage || {
+        ...cloneMessageSnapshot(acceptedMessage),
+        content: sideTarget.cleanedContent || acceptedMessage.content,
+      };
+    const promptSnapshotMessageIds = Array.isArray(options.promptSnapshotMessageIds)
+      ? options.promptSnapshotMessageIds.map((messageId: any) => String(messageId || '').trim()).filter(Boolean)
+      : Array.from(
+          buildPromptSnapshotMessageIds(
+            Array.isArray(snapshotConversation && snapshotConversation.messages) ? snapshotConversation.messages : []
+          )
+        );
+
+    return {
       conversationId,
       conversationTitle: conversation.title,
       targetAgentId: sideTarget.targetAgentId,
@@ -836,13 +958,23 @@ export function createTurnOrchestrator(options: any = {}) {
       acceptedMessage: cloneMessageSnapshot(acceptedMessage),
       promptUserMessage: cloneMessageSnapshot(promptUserMessage),
       promptSnapshotMessageIds,
-      projectDirSnapshot: getProjectDir ? String(getProjectDir(snapshotConversation) || '').trim() : '',
-      metadata: turnInput.metadata,
+      projectDirSnapshot:
+        options.projectDirSnapshot !== undefined
+          ? String(options.projectDirSnapshot || '').trim()
+          : getProjectDir
+            ? String(getProjectDir(snapshotConversation) || '').trim()
+            : '',
+      metadata: turnInput && turnInput.metadata,
     };
+  }
+
+  function startSideDispatch(entry: any) {
+    const conversationId = entry.conversationId;
+    markSideDispatchMessage(conversationId, entry.acceptedMessage.id);
 
     const slotRequest = agentSlotRegistry.requestSlot({
       conversationId,
-      agentId: sideTarget.targetAgentId,
+      agentId: entry.targetAgentId,
       lane: 'side',
       onGranted(grant: any) {
         return runSideDispatch(entry, grant);
@@ -851,10 +983,10 @@ export function createTurnOrchestrator(options: any = {}) {
 
     if (slotRequest.queued) {
       const queuedSideDispatch = {
-        requestId: String(slotRequest.waiterId || acceptedMessage.id || '').trim(),
+        requestId: String(slotRequest.waiterId || entry.acceptedMessage.id || '').trim(),
         conversationId,
-        targetAgentId: sideTarget.targetAgentId,
-        sourceMessageId: acceptedMessage.id,
+        targetAgentId: entry.targetAgentId,
+        sourceMessageId: entry.acceptedMessage.id,
         cancel(reason: any) {
           return slotRequest.cancel(reason || 'Stopped by user');
         },
@@ -872,7 +1004,7 @@ export function createTurnOrchestrator(options: any = {}) {
           }
 
           console.error(
-            `[turn-orchestrator] Side dispatch slot wait failed for ${conversationId}/${sideTarget.targetAgentId}: ${
+            `[turn-orchestrator] Side dispatch slot wait failed for ${conversationId}/${entry.targetAgentId}: ${
               error && error.stack ? error.stack : error
             }`
           );
@@ -881,11 +1013,69 @@ export function createTurnOrchestrator(options: any = {}) {
       broadcastRuntimeState();
     }
 
+    return slotRequest;
+  }
+
+  function submitSideDispatch(conversation: any, turnInput: any, acceptedMessage: any, sideTarget: any, options: any = {}) {
+    const entry = buildSideDispatchEntry(conversation, turnInput, acceptedMessage, sideTarget, options);
+    const slotRequest = startSideDispatch(entry);
+
     return {
       dispatch: slotRequest.queued ? 'queued' : 'started',
       dispatchLane: 'side',
-      dispatchTargetAgentId: sideTarget.targetAgentId,
+      dispatchTargetAgentId: entry.targetAgentId,
     };
+  }
+
+  function recoverPersistedSideDispatches() {
+    const listedConversations = store && typeof store.listConversations === 'function' ? store.listConversations() : [];
+    const conversationSummaries = Array.isArray(listedConversations) ? listedConversations : [];
+
+    for (const summary of conversationSummaries) {
+      const conversationId = String(summary && summary.id ? summary.id : '').trim();
+      const conversation = conversationId ? store.getConversation(conversationId) : null;
+
+      if (!conversation || !Array.isArray(conversation.messages)) {
+        continue;
+      }
+
+      for (const message of conversation.messages) {
+        if (!message || message.role !== 'user' || !isSideDispatchMessage(conversationId, message.id, message)) {
+          continue;
+        }
+
+        const metadata = message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
+
+        if (metadata && (metadata.dispatchCancelled === true || String(metadata.dispatchCancelledAt || '').trim())) {
+          continue;
+        }
+
+        const sideTarget = resolvePersistedSideDispatchTarget(conversation, message);
+
+        if (!sideTarget) {
+          continue;
+        }
+
+        const replyMessages = listSideDispatchReplyMessages(conversationId, message.id);
+
+        if (replyMessages.some((replyMessage: any) => isTerminalMessageStatus(replyMessage))) {
+          markSideDispatchMessage(conversationId, message.id);
+          continue;
+        }
+
+        markStaleSideDispatchReplyMessages(conversationId, message.id);
+        submitSideDispatch(
+          conversation,
+          { metadata },
+          message,
+          sideTarget,
+          {
+            promptSnapshotMessageIds: buildPromptSnapshotMessageIdsThroughMessage(conversationId, message.id),
+            projectDirSnapshot: getProjectDir ? String(getProjectDir(conversation) || '').trim() : '',
+          }
+        );
+      }
+    }
   }
 
   function submitConversationMessage(conversationId: any, input: any) {
@@ -979,6 +1169,7 @@ export function createTurnOrchestrator(options: any = {}) {
       try {
         if (queuedSideDispatch.cancel(stopReason)) {
           cancelledQueuedSideDispatchCount += 1;
+          markSideDispatchCancelled(normalizedConversationId, queuedSideDispatch.sourceMessageId, stopReason);
           untrackQueuedSideDispatch(normalizedConversationId, queuedSideDispatch.requestId);
         }
       } catch {}
@@ -991,6 +1182,8 @@ export function createTurnOrchestrator(options: any = {}) {
         slotState.stopRequestedAt = nowIso();
         slotState.status = 'stopping';
       }
+
+      markSideDispatchCancelled(normalizedConversationId, slotState.sourceMessageId, stopReason);
 
       const handles = slotState.runHandles instanceof Set ? (Array.from(slotState.runHandles) as any[]) : [];
 
@@ -1053,6 +1246,8 @@ export function createTurnOrchestrator(options: any = {}) {
       .filter((turnState) => !conversationId || turnState.conversationId === conversationId)
       .map(summarizeAgentSlotState);
   }
+
+  recoverPersistedSideDispatches();
 
   return {
     buildRuntimePayload,
