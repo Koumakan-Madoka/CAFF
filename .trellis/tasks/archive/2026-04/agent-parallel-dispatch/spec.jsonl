@@ -1,0 +1,5 @@
+{"file":".trellis/spec/index.md","reason":"Shared spec fallback."}
+{"at":"2026-04-11T16:41:33+08:00","file":".trellis/spec/runtime/conversation-turn-queue.md","reason":"Captured the executable v1 contract for same-conversation side dispatch: lane fields, per-agent slot rules, prompt snapshot rehydration, stop/delete guardrails, SSE events, and required regressions."}
+{"at":"2026-04-11T16:41:33+08:00","file":".trellis/spec/frontend/ui-structure.md","reason":"Documented that chat composer, stop/delete affordances, and live message stages must merge main-turn and side-slot runtime/SSE state."}
+{"at":"2026-04-11T16:41:33+08:00","file":".trellis/spec/backend/controller-patterns.md","reason":"Documented controller-side lane passthrough and the delete guard requirements for active or queued side-slot work."}
+{"at":"2026-04-11T16:41:33+08:00","file":".trellis/tasks/agent-parallel-dispatch/prd.md","reason":"Updated the task PRD from research-only framing to the final v1 implementation closeout and checked acceptance criteria."}
