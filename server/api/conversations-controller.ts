@@ -214,18 +214,31 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         const conversationQueueFailures = runtime && runtime.conversationQueueFailures && typeof runtime.conversationQueueFailures === 'object'
           ? runtime.conversationQueueFailures
           : {};
+        const agentSlotQueueDepths = runtime && runtime.agentSlotQueueDepths && typeof runtime.agentSlotQueueDepths === 'object'
+          ? runtime.agentSlotQueueDepths
+          : {};
+        const activeAgentSlots = Array.isArray(runtime && runtime.activeAgentSlots) ? runtime.activeAgentSlots : [];
         const queuedUserCount = Math.max(0, Number(conversationQueueDepths[conversationId] || 0));
+        const queuedAgentSlotDepths =
+          agentSlotQueueDepths[conversationId] && typeof agentSlotQueueDepths[conversationId] === 'object'
+            ? (agentSlotQueueDepths[conversationId] as Record<string, any>)
+            : {};
+        const queuedAgentSlotCount = Object.values(queuedAgentSlotDepths).reduce(
+          (sum: number, value: any) => sum + Math.max(0, Number(value || 0)),
+          0
+        );
         const forceDelete = requestUrl.searchParams.get('force') === '1' || requestUrl.searchParams.get('force') === 'true';
         const queueFailure =
           conversationQueueFailures[conversationId] && typeof conversationQueueFailures[conversationId] === 'object'
             ? conversationQueueFailures[conversationId]
             : null;
+        const hasActiveAgentSlots = activeAgentSlots.some((slot: any) => slot && slot.conversationId === conversationId);
 
-        if (activeConversationIds.includes(conversationId) || dispatchingConversationIds.includes(conversationId)) {
+        if (activeConversationIds.includes(conversationId) || dispatchingConversationIds.includes(conversationId) || hasActiveAgentSlots) {
           throw createHttpError(409, '当前会话正在处理消息，请先停止并等待当前回合结束后再删除');
         }
 
-        if (queuedUserCount > 0 && (!forceDelete || !queueFailure)) {
+        if ((queuedUserCount > 0 && (!forceDelete || !queueFailure)) || queuedAgentSlotCount > 0) {
           throw createHttpError(409, '当前会话仍有待处理消息，请等待自动续跑完成后再删除');
         }
 
@@ -328,8 +341,10 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         throw createHttpError(409, '狼人杀对局进行中由后端全自动主持，请等待本局结束后再发送聊天消息');
       }
 
+      const clientRequestId = typeof body.clientRequestId === 'string' ? body.clientRequestId.trim() : '';
       const result = turnOrchestrator.submitConversationMessage(conversationId, {
         content: body.content,
+        metadata: clientRequestId ? { clientRequestId } : undefined,
       });
       sendJson(res, 200, result);
       return true;
@@ -340,10 +355,11 @@ export function createConversationsController(options: any = {}): RouteHandler<A
     if (conversationStopMatch && req.method === 'POST') {
       const conversationId = decodeURIComponent(conversationStopMatch[1]);
       const body = await readRequestJson(req);
-      const turn = turnOrchestrator.requestStopConversationTurn(conversationId, body.reason);
+      const result = turnOrchestrator.requestStopConversationExecution(conversationId, body.reason);
       sendJson(res, 200, {
         conversationId,
-        turn,
+        turn: result.turn,
+        agentSlots: result.agentSlots,
         runtime: turnOrchestrator.buildRuntimePayload(),
       });
       return true;

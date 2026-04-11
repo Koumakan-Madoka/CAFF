@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const vm = require('node:vm');
 
 const { createChatAppStore } = require('../../build/lib/chat-app-store');
 const { createSqliteRunStore } = require('../../build/lib/sqlite-store');
@@ -11,6 +12,375 @@ const {
   createLiveSessionToolStep,
 } = require('../../build/server/domain/runtime/message-tool-trace');
 const { withTempDir } = require('../helpers/temp-dir');
+
+function createClassListStub() {
+  const classes = new Set();
+
+  return {
+    add(...tokens) {
+      tokens.filter(Boolean).forEach((token) => classes.add(token));
+    },
+    remove(...tokens) {
+      tokens.filter(Boolean).forEach((token) => classes.delete(token));
+    },
+    toggle(token, force) {
+      if (!token) {
+        return false;
+      }
+
+      if (force === true) {
+        classes.add(token);
+        return true;
+      }
+
+      if (force === false) {
+        classes.delete(token);
+        return false;
+      }
+
+      if (classes.has(token)) {
+        classes.delete(token);
+        return false;
+      }
+
+      classes.add(token);
+      return true;
+    },
+    contains(token) {
+      return classes.has(token);
+    },
+  };
+}
+
+function createDomElementStub() {
+  const listeners = new Map();
+
+  return {
+    textContent: '',
+    value: '',
+    innerHTML: '',
+    dataset: {},
+    style: {
+      setProperty() {},
+      removeProperty() {},
+    },
+    disabled: false,
+    checked: false,
+    files: [],
+    scrollTop: 0,
+    scrollHeight: 0,
+    clientHeight: 0,
+    childElementCount: 0,
+    firstElementChild: null,
+    className: '',
+    classList: createClassListStub(),
+    addEventListener(type, handler) {
+      listeners.set(type, (listeners.get(type) || []).concat(handler));
+    },
+    removeEventListener(type, handler) {
+      if (!listeners.has(type)) {
+        return;
+      }
+
+      listeners.set(
+        type,
+        listeners.get(type).filter((candidate) => candidate !== handler)
+      );
+    },
+    emit(type, event = {}) {
+      const handlers = listeners.get(type) || [];
+      const payload = {
+        preventDefault() {},
+        target: this,
+        currentTarget: this,
+        ...event,
+      };
+      return Promise.all(handlers.map((handler) => handler(payload)));
+    },
+    append(...children) {
+      this.childElementCount += children.length;
+      if (!this.firstElementChild && children[0]) {
+        this.firstElementChild = children[0];
+      }
+    },
+    appendChild(child) {
+      this.childElementCount += 1;
+      if (!this.firstElementChild) {
+        this.firstElementChild = child;
+      }
+      return child;
+    },
+    replaceChildren(...children) {
+      this.childElementCount = children.length;
+      this.firstElementChild = children[0] || null;
+    },
+    querySelectorAll() {
+      return [];
+    },
+    querySelector() {
+      return null;
+    },
+    closest() {
+      return null;
+    },
+    focus() {},
+    blur() {},
+    setAttribute() {},
+    removeAttribute() {},
+  };
+}
+
+function loadPublicAppHarness(options = {}) {
+  const sourcePath = path.join(__dirname, '../../public/app.js');
+  const source = fs.readFileSync(sourcePath, 'utf8');
+  const instrumented = source.replace(
+    /\ninit\(\);\s*$/,
+    `
+
+globalThis.__testExports = {
+  state,
+  dom,
+  bindEvents,
+  connectEventStream,
+  mergeConversationFromSendResponse,
+  applyOptimisticUserMessage,
+  clearOptimisticUserMessage,
+  pruneOptimisticMessagesForConversation,
+  timelineMessagesForConversation,
+  createEmptyToolTraceData,
+  getMessageToolTraceState,
+  toolTraceStateForMessage,
+  setOverrides(overrides = {}) {
+    renderConversationPane = overrides.renderConversationPane || renderConversationPane;
+    renderConversationList = overrides.renderConversationList || renderConversationList;
+    renderRuntime = overrides.renderRuntime || renderRuntime;
+    refreshConversationFromEvent = overrides.refreshConversationFromEvent || refreshConversationFromEvent;
+  },
+};
+`
+  );
+
+  assert.notEqual(instrumented, source, 'expected public/app.js test instrumentation to replace init()');
+
+  class FakeEventSource {
+    constructor(url) {
+      this.url = url;
+      this.readyState = FakeEventSource.OPEN;
+      this.listeners = new Map();
+      FakeEventSource.instance = this;
+    }
+
+    addEventListener(type, handler) {
+      this.listeners.set(type, (this.listeners.get(type) || []).concat(handler));
+    }
+
+    close() {
+      this.readyState = FakeEventSource.CLOSED;
+    }
+
+    dispatch(type, payload) {
+      (this.listeners.get(type) || []).forEach((handler) => handler({ data: JSON.stringify(payload) }));
+    }
+  }
+
+  FakeEventSource.OPEN = 1;
+  FakeEventSource.CLOSED = 2;
+  FakeEventSource.instance = null;
+
+  const elementById = new Map();
+  const document = {
+    body: createDomElementStub(),
+    getElementById(id) {
+      if (!elementById.has(id)) {
+        elementById.set(id, createDomElementStub());
+      }
+
+      return elementById.get(id);
+    },
+    createElement() {
+      return createDomElementStub();
+    },
+  };
+  const window = {
+    CaffShared: {
+      fetchJson: typeof options.fetchJson === 'function' ? options.fetchJson : async () => ({}),
+    },
+    CaffChat: {},
+    document,
+    EventSource: FakeEventSource,
+    navigator: { clipboard: null },
+    confirm() {
+      return true;
+    },
+    setTimeout() {
+      return 1;
+    },
+    clearTimeout() {},
+  };
+  const context = {
+    window,
+    document,
+    navigator: window.navigator,
+    EventSource: FakeEventSource,
+    console,
+    Intl,
+    URL,
+    Map,
+    Set,
+    Date,
+    JSON,
+    Array,
+    String,
+    Number,
+    Object,
+    Promise,
+    RegExp,
+    Math,
+    parseInt,
+    parseFloat,
+    setTimeout: window.setTimeout,
+    clearTimeout: window.clearTimeout,
+  };
+
+  context.globalThis = context;
+  context.global = context;
+  context.self = window;
+
+  vm.runInNewContext(instrumented, context, { filename: sourcePath });
+
+  const app = context.__testExports;
+  app.setOverrides({
+    renderConversationPane() {},
+    renderConversationList() {},
+    renderRuntime() {},
+    refreshConversationFromEvent: async () => {},
+  });
+
+  return { app, FakeEventSource };
+}
+
+function createDeferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+
+  return { promise, resolve, reject };
+}
+
+test('composer submit shows optimistic user message before the POST resolves', async () => {
+  const request = createDeferred();
+  const fetchCalls = [];
+  const { app } = loadPublicAppHarness({
+    fetchJson: async (url, options = {}) => {
+      fetchCalls.push({ url, options });
+      return request.promise;
+    },
+  });
+
+  app.setOverrides({
+    renderConversationPane() {},
+    renderConversationList() {},
+    renderRuntime() {},
+    refreshConversationFromEvent: async () => {},
+  });
+  app.bindEvents();
+
+  app.state.currentConversation = {
+    id: 'conversation-1',
+    title: 'Demo',
+    type: 'standard',
+    metadata: {},
+    createdAt: '2026-04-11T10:00:00.000Z',
+    updatedAt: '2026-04-11T10:00:00.000Z',
+    lastMessageAt: '2026-04-11T10:00:00.000Z',
+    messageCount: 0,
+    agentCount: 1,
+    lastMessagePreview: '',
+    agents: [{ id: 'agent-1', name: 'Alpha' }],
+    messages: [],
+    privateMessages: [],
+  };
+  app.state.selectedConversationId = 'conversation-1';
+  app.state.conversations = [
+    {
+      id: 'conversation-1',
+      title: 'Demo',
+      type: 'standard',
+      metadata: {},
+      createdAt: '2026-04-11T10:00:00.000Z',
+      updatedAt: '2026-04-11T10:00:00.000Z',
+      lastMessageAt: '2026-04-11T10:00:00.000Z',
+      messageCount: 0,
+      agentCount: 1,
+      lastMessagePreview: '',
+    },
+  ];
+
+  app.dom.composerInput.value = '马上显示我';
+  app.dom.messageList.scrollHeight = 200;
+  app.dom.messageList.clientHeight = 120;
+  app.dom.messageList.scrollTop = 90;
+
+  const submitPromise = app.dom.composerForm.emit('submit');
+  await Promise.resolve();
+
+  const optimisticTimeline = app.timelineMessagesForConversation(app.state.currentConversation);
+  assert.equal(fetchCalls.length, 1);
+  assert.equal(fetchCalls[0].url, '/api/conversations/conversation-1/messages');
+  assert.equal(fetchCalls[0].options.body.content, '马上显示我');
+  assert.equal(typeof fetchCalls[0].options.body.clientRequestId, 'string');
+  assert.equal(app.dom.composerInput.value, '');
+  assert.equal(optimisticTimeline.length, 1);
+  assert.match(String(optimisticTimeline[0].id), /^optimistic-/u);
+  assert.equal(optimisticTimeline[0].content, '马上显示我');
+
+  const acceptedMessage = {
+    id: 'message-1',
+    conversationId: 'conversation-1',
+    turnId: 'turn-1',
+    role: 'user',
+    senderName: 'You',
+    content: '马上显示我',
+    status: 'completed',
+    metadata: {
+      clientRequestId: fetchCalls[0].options.body.clientRequestId,
+    },
+    createdAt: '2026-04-11T10:00:01.000Z',
+  };
+
+  request.resolve({
+    acceptedMessage,
+    conversation: {
+      ...app.state.currentConversation,
+      messages: [acceptedMessage],
+      privateMessages: [],
+      updatedAt: '2026-04-11T10:00:01.000Z',
+      lastMessageAt: '2026-04-11T10:00:01.000Z',
+      messageCount: 1,
+      lastMessagePreview: '马上显示我',
+    },
+    conversations: [
+      {
+        ...app.state.conversations[0],
+        updatedAt: '2026-04-11T10:00:01.000Z',
+        lastMessageAt: '2026-04-11T10:00:01.000Z',
+        messageCount: 1,
+        lastMessagePreview: '马上显示我',
+      },
+    ],
+    runtime: null,
+  });
+
+  await submitPromise;
+
+  const reconciledTimeline = app.timelineMessagesForConversation(app.state.currentConversation);
+  assert.equal(reconciledTimeline.length, 1);
+  assert.equal(reconciledTimeline[0].id, 'message-1');
+  assert.equal(reconciledTimeline[0].content, '马上显示我');
+});
 
 test('assistant message tool trace summarizes session calls and redacts sensitive tool data', (t) => {
   const tempDir = withTempDir('caff-message-tool-trace-');
@@ -621,4 +991,124 @@ test('assistant message tool trace keeps the newest bridge events when the task 
   assert.equal(trace.failureContext.hasFailure, true);
   assert.equal(trace.failureContext.toolName, 'send-public');
   assert.equal(trace.failureContext.text.includes('latest step failed'), true);
+});
+
+test('public app finalizes failed side-slot tool traces from the finished payload before removing the slot', () => {
+  const { app, FakeEventSource } = loadPublicAppHarness();
+  const messageId = 'side-trace-message-1';
+
+  app.connectEventStream();
+  const source = FakeEventSource.instance;
+  assert.ok(source, 'expected EventSource instance');
+
+  const traceState = app.getMessageToolTraceState(messageId);
+  traceState.data = app.createEmptyToolTraceData(messageId);
+  traceState.data.message = {
+    id: messageId,
+    status: 'streaming',
+    taskId: null,
+    runId: null,
+    createdAt: '',
+  };
+  traceState.data.steps = [
+    {
+      stepId: 'side-tool-step-1',
+      kind: 'bridge',
+      toolName: 'send-public',
+      status: 'running',
+    },
+  ];
+
+  app.state.runtime = {
+    activeAgentSlots: [
+      {
+        slotId: 'slot-1',
+        conversationId: 'conversation-1',
+        assistantMessageId: messageId,
+        currentToolStepId: 'side-tool-step-1',
+        currentToolName: 'send-public',
+        status: 'running',
+      },
+    ],
+  };
+
+  source.dispatch('agent_slot_finished', {
+    conversationId: 'conversation-1',
+    slot: {
+      slotId: 'slot-1',
+      conversationId: 'conversation-1',
+      assistantMessageId: messageId,
+      currentToolStepId: '',
+      currentToolName: '',
+      status: 'failed',
+    },
+  });
+
+  const updatedTrace = app.toolTraceStateForMessage(messageId);
+  assert.equal(updatedTrace.data.steps[0].status, 'failed');
+  assert.equal(app.state.runtime.activeAgentSlots.length, 0);
+});
+
+test('public app finalizes failed main-turn tool traces from the finished payload before removing the turn', () => {
+  const { app, FakeEventSource } = loadPublicAppHarness();
+  const messageId = 'main-trace-message-1';
+
+  app.connectEventStream();
+  const source = FakeEventSource.instance;
+  assert.ok(source, 'expected EventSource instance');
+
+  const traceState = app.getMessageToolTraceState(messageId);
+  traceState.data = app.createEmptyToolTraceData(messageId);
+  traceState.data.message = {
+    id: messageId,
+    status: 'streaming',
+    taskId: null,
+    runId: null,
+    createdAt: '',
+  };
+  traceState.data.steps = [
+    {
+      stepId: 'main-tool-step-1',
+      kind: 'bridge',
+      toolName: 'send-public',
+      status: 'running',
+    },
+  ];
+
+  app.state.runtime = {
+    activeTurns: [
+      {
+        conversationId: 'conversation-2',
+        agents: [
+          {
+            agentId: 'agent-1',
+            messageId,
+            currentToolStepId: 'main-tool-step-1',
+            currentToolName: 'send-public',
+            status: 'running',
+          },
+        ],
+      },
+    ],
+  };
+
+  source.dispatch('turn_finished', {
+    conversationId: 'conversation-2',
+    turn: {
+      conversationId: 'conversation-2',
+      agents: [
+        {
+          agentId: 'agent-1',
+          messageId,
+          currentToolStepId: '',
+          currentToolName: '',
+          status: 'failed',
+        },
+      ],
+    },
+  });
+
+  const updatedTrace = app.toolTraceStateForMessage(messageId);
+  assert.equal(updatedTrace.data.steps[0].status, 'failed');
+  assert.equal(app.state.runtime.activeTurns.length, 0);
 });

@@ -200,3 +200,60 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 5: Agent Parallel Dispatch v1 closeout
+
+**Date**: 2026-04-11
+**Task**: Agent Parallel Dispatch v1 closeout
+**Branch**: `main`
+
+### Summary
+
+Implemented and accepted CAFF minimal agent parallel dispatch v1, including per-agent side slots, slot-aware queueing, runtime/UI payload updates, review follow-up fixes, and task/spec closeout. Code was validated and accepted; journal is recorded without a code commit hash because the main worktree is not committed yet.
+
+### Main Changes
+
+| Area | Description |
+|------|-------------|
+| Runtime | Added per-agent slot registry and side-dispatch flow so explicit single `@Agent` can run concurrently when the target agent is idle. |
+| Queueing | Kept the main conversation turn queue semantics while routing busy side-dispatches into per-agent slot queues. |
+| Review Fixes | Closed direct main-turn bypass, persisted side-lane metadata, added queued side stop, and rehydrated queued prompt snapshots on slot grant. |
+| UI/API | Exposed `activeAgentSlots` and related lane metadata through runtime payloads, SSE/bootstrap state, and conversation timeline UI. |
+| Validation | Previously passed `npm run build`, `npm run check`, `node tests/runtime/turn-orchestrator.test.js`, and `node tests/smoke/server-smoke.test.js`. |
+
+**Archived Task**:
+- `.trellis/tasks/agent-parallel-dispatch`
+
+**Key Files**:
+- `server/domain/conversation/turn-orchestrator.ts`
+- `server/domain/conversation/turn/agent-slot-registry.ts`
+- `server/domain/conversation/turn/prompt-visibility.ts`
+- `server/domain/conversation/turn/turn-runtime-payload.ts`
+- `server/api/conversations-controller.ts`
+- `public/app.js`
+- `public/chat/conversation-pane.js`
+- `public/chat/message-timeline.js`
+- `tests/runtime/turn-orchestrator.test.js`
+- `tests/smoke/server-smoke.test.js`
+
+**Notes**:
+- Acceptance is complete and task closeout docs/specs were updated before archiving.
+- The journal intentionally uses `-` for code commits until the human creates the main code commit.
+
+
+### Git Commits
+
+(No commits - planning session)
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

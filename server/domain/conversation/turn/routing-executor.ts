@@ -11,11 +11,11 @@ const {
   createTurnState,
   getTurnStage,
   nowIso,
-  replacePromptUserMessage,
   resetTurnStage,
   summarizeTurnState,
   syncCurrentTurnAgent,
 } = require('./turn-state');
+const { buildPromptMessages, buildPromptSnapshotMessageIds, isPrivateOnlyMessage } = require('./prompt-visibility');
 
 const MAX_PARALLEL_MENTION_BATCH_SIZE = 5;
 
@@ -23,44 +23,6 @@ function createTaskId(prefix = 'task') {
   return `${prefix}-${randomUUID()}`;
 }
 
-function isPrivateOnlyMessage(message: any) {
-  const metadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
-  return Boolean(metadata && metadata.privateOnly);
-}
-
-function filterPrivateOnlyPromptMessages(messages: any, promptUserMessage: any) {
-  const promptMessageId = promptUserMessage && promptUserMessage.id ? String(promptUserMessage.id) : '';
-
-  return (Array.isArray(messages) ? messages : []).filter((message: any) => {
-    if (!isPrivateOnlyMessage(message)) {
-      return true;
-    }
-
-    return Boolean(promptMessageId && message && String(message.id) === promptMessageId);
-  });
-}
-
-function buildPromptMessages(messages: any, promptUserMessage: any, options: any = {}) {
-  const snapshotMessageIds = options.snapshotMessageIds instanceof Set ? options.snapshotMessageIds : null;
-  const currentTurnId = String(options.currentTurnId || '').trim();
-  const replacePromptMessage = options.replacePromptUserMessage !== false;
-  const visibleMessages = (Array.isArray(messages) ? messages : []).filter((message: any) => {
-    if (!snapshotMessageIds) {
-      return true;
-    }
-
-    const messageId = message && message.id ? String(message.id) : '';
-
-    if (messageId && snapshotMessageIds.has(messageId)) {
-      return true;
-    }
-
-    return Boolean(currentTurnId && message && String(message.turnId || '') === currentTurnId);
-  });
-  const promptMessages = replacePromptMessage ? replacePromptUserMessage(visibleMessages, promptUserMessage) : visibleMessages;
-
-  return filterPrivateOnlyPromptMessages(promptMessages, promptUserMessage);
-}
 
 export function normalizeConversationTurnInput(input: any, conversation: any) {
   const payload =
@@ -128,14 +90,6 @@ function resolveExistingBatchMessages(conversation: any, batchMessageIds: any) {
   return (Array.isArray(batchMessageIds) ? batchMessageIds : [])
     .map((messageId: any) => byId.get(String(messageId || '').trim()) || null)
     .filter((message: any) => message && message.role === 'user');
-}
-
-function buildPromptSnapshotMessageIds(messages: any) {
-  return new Set(
-    (Array.isArray(messages) ? messages : [])
-      .map((message: any) => String(message && message.id ? message.id : '').trim())
-      .filter(Boolean)
-  );
 }
 
 function resolveInitialSpeakerQueue(userText: any, agents: any) {

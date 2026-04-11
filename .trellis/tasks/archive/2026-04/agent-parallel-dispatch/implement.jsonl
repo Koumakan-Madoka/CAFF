@@ -1,0 +1,4 @@
+{"file":".trellis/tasks/agent-parallel-dispatch/prd.md","reason":"Task requirements (PRD)."}
+{"file":".trellis/spec/index.md","reason":"Project spec index (edit/add more spec files)."}
+{"file":".trellis/tasks/agent-parallel-dispatch/research.md","reason":"CAFF vs clowder-ai parallel dispatch research and phased v1 design."}
+{"at":"2026-04-11T16:41:33+08:00","summary":"Implemented CAFF agent parallel dispatch v1: explicit single @Agent messages now side-dispatch through per-agent slot registry and slot-aware queue, side-lane user messages persist durable dispatch metadata, runtime/SSE expose activeAgentSlots plus agentSlotQueueDepths, UI busy/stop/timeline state follows both main and side lanes, and queued side runs rehydrate snapshot message content on slot grant."}

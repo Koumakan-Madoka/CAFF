@@ -250,6 +250,138 @@ test('conversations controller force-deletes failed queued conversations when id
   assert.equal(deleteCalled, true);
 });
 
+test('conversations controller rejects deleting conversations with active side slots', async () => {
+  const conversationId = 'active-side-slot-delete-conversation';
+  let deleteCalled = false;
+  const handler = createConversationsController({
+    store: {
+      getConversation(id) {
+        return id === conversationId
+          ? {
+              id: conversationId,
+              title: 'Active side slot delete conversation',
+              type: 'standard',
+              agents: [],
+              messages: [],
+            }
+          : null;
+      },
+      deleteConversation() {
+        deleteCalled = true;
+      },
+      listConversations() {
+        return [];
+      },
+    },
+    turnOrchestrator: {
+      buildRuntimePayload() {
+        return {
+          activeConversationIds: [],
+          dispatchingConversationIds: [],
+          conversationQueueDepths: {},
+          agentSlotQueueDepths: {},
+          activeAgentSlots: [
+            {
+              slotId: 'slot-1',
+              conversationId,
+              agentId: 'agent-b',
+              agentName: 'Beta',
+              status: 'running',
+            },
+          ],
+        };
+      },
+      clearConversationState() {},
+    },
+    undercoverService: { deleteConversationState() {} },
+    werewolfService: { deleteConversationState() {} },
+    buildBootstrapPayload() {
+      return { conversations: [], agents: [], runtime: {} };
+    },
+    modeStore: { get() { return null; } },
+  });
+
+  await assert.rejects(
+    () => handler({
+      req: { method: 'DELETE' },
+      res: {},
+      pathname: `/api/conversations/${encodeURIComponent(conversationId)}`,
+      requestUrl: new URL(`http://127.0.0.1/api/conversations/${encodeURIComponent(conversationId)}`),
+    }),
+    (error) => {
+      assert.equal(error.statusCode, 409);
+      assert.match(error.message, /待处理消息|正在处理消息/u);
+      return true;
+    }
+  );
+
+  assert.equal(deleteCalled, false);
+});
+
+test('conversations controller rejects deleting conversations with queued agent slot work', async () => {
+  const conversationId = 'queued-side-slot-delete-conversation';
+  let deleteCalled = false;
+  const handler = createConversationsController({
+    store: {
+      getConversation(id) {
+        return id === conversationId
+          ? {
+              id: conversationId,
+              title: 'Queued side slot delete conversation',
+              type: 'standard',
+              agents: [],
+              messages: [],
+            }
+          : null;
+      },
+      deleteConversation() {
+        deleteCalled = true;
+      },
+      listConversations() {
+        return [];
+      },
+    },
+    turnOrchestrator: {
+      buildRuntimePayload() {
+        return {
+          activeConversationIds: [],
+          dispatchingConversationIds: [],
+          conversationQueueDepths: {},
+          agentSlotQueueDepths: {
+            [conversationId]: {
+              'agent-b': 1,
+            },
+          },
+          activeAgentSlots: [],
+        };
+      },
+      clearConversationState() {},
+    },
+    undercoverService: { deleteConversationState() {} },
+    werewolfService: { deleteConversationState() {} },
+    buildBootstrapPayload() {
+      return { conversations: [], agents: [], runtime: {} };
+    },
+    modeStore: { get() { return null; } },
+  });
+
+  await assert.rejects(
+    () => handler({
+      req: { method: 'DELETE' },
+      res: {},
+      pathname: `/api/conversations/${encodeURIComponent(conversationId)}`,
+      requestUrl: new URL(`http://127.0.0.1/api/conversations/${encodeURIComponent(conversationId)}`),
+    }),
+    (error) => {
+      assert.equal(error.statusCode, 409);
+      assert.match(error.message, /待处理消息|正在处理消息/u);
+      return true;
+    }
+  );
+
+  assert.equal(deleteCalled, false);
+});
+
 test('server smoke: bootstrap, static files, projects, skills, agents, and conversations work', async (t) => {
   if (!requireSpawn(t)) {
     return;
@@ -431,6 +563,7 @@ test('server smoke: pi-mono agent can initialize and write Trellis files for the
   const workflowPath = path.join(trellisDir, 'workflow.md');
   const taskJsonPath = path.join(trellisDir, 'tasks', 'pi-tool-smoke', 'task.json');
 
+  const clientRequestId = 'smoke-client-request-id';
   const messageResult = await fetchJson(
     baseUrl,
     `/api/conversations/${encodeURIComponent(conversationResult.conversation.id)}/messages`,
@@ -438,12 +571,14 @@ test('server smoke: pi-mono agent can initialize and write Trellis files for the
       method: 'POST',
       body: {
         content: 'Please initialize Trellis for the active project and write the PRD for a smoke task.',
+        clientRequestId,
       },
     }
   );
 
   assert.match(String(messageResult.dispatch || ''), /^(started|queued)$/u);
   assert.equal(messageResult.acceptedMessage.role, 'user');
+  assert.equal(messageResult.acceptedMessage.metadata.clientRequestId, clientRequestId);
 
   const completedConversation = await waitForCondition(async () => {
     if (!fs.existsSync(prdPath) || !fs.existsSync(taskJsonPath) || !fs.existsSync(workflowPath)) {
