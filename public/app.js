@@ -18,6 +18,7 @@ const state = {
   activeMentionContext: null,
   messageToolTraceById: new Map(),
   messageToolTraceTimers: new Map(),
+  optimisticMessagesByConversation: new Map(),
 };
 
 const UNDERCOVER_TYPE = 'who_is_undercover';
@@ -1686,6 +1687,119 @@ function compareMessageOrder(left, right) {
   return String(left && left.id ? left.id : '').localeCompare(String(right && right.id ? right.id : ''), 'zh-CN');
 }
 
+function createClientRequestId() {
+  if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+    return window.crypto.randomUUID();
+  }
+
+  return `web-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function messageClientRequestId(message) {
+  const metadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
+  return String(metadata && metadata.clientRequestId ? metadata.clientRequestId : '').trim();
+}
+
+function optimisticMessagesForConversation(conversationId) {
+  const normalizedConversationId = String(conversationId || '').trim();
+
+  if (!normalizedConversationId) {
+    return [];
+  }
+
+  const optimisticMessages = state.optimisticMessagesByConversation.get(normalizedConversationId);
+  return Array.isArray(optimisticMessages) ? optimisticMessages.slice() : [];
+}
+
+function setOptimisticMessagesForConversation(conversationId, messages) {
+  const normalizedConversationId = String(conversationId || '').trim();
+
+  if (!normalizedConversationId) {
+    return;
+  }
+
+  const nextMessages = Array.isArray(messages) ? messages.filter(Boolean) : [];
+
+  if (nextMessages.length === 0) {
+    state.optimisticMessagesByConversation.delete(normalizedConversationId);
+    return;
+  }
+
+  state.optimisticMessagesByConversation.set(normalizedConversationId, nextMessages);
+}
+
+function applyOptimisticUserMessage(conversationId, content, clientRequestId) {
+  const normalizedConversationId = String(conversationId || '').trim();
+  const normalizedContent = String(content || '').trim();
+  const normalizedClientRequestId = String(clientRequestId || '').trim();
+
+  if (!normalizedConversationId || !normalizedContent || !normalizedClientRequestId) {
+    return null;
+  }
+
+  const optimisticMessage = {
+    id: `optimistic-${normalizedClientRequestId}`,
+    turnId: normalizedClientRequestId,
+    conversationId: normalizedConversationId,
+    role: 'user',
+    senderName: 'You',
+    content: normalizedContent,
+    status: 'pending',
+    metadata: {
+      source: 'web-ui',
+      clientRequestId: normalizedClientRequestId,
+      optimistic: true,
+    },
+    createdAt: new Date().toISOString(),
+  };
+  const nextMessages = optimisticMessagesForConversation(normalizedConversationId).filter(
+    (message) => messageClientRequestId(message) !== normalizedClientRequestId
+  );
+
+  nextMessages.push(optimisticMessage);
+  nextMessages.sort(compareMessageOrder);
+  setOptimisticMessagesForConversation(normalizedConversationId, nextMessages);
+
+  return optimisticMessage;
+}
+
+function clearOptimisticUserMessage(conversationId, clientRequestId) {
+  const normalizedConversationId = String(conversationId || '').trim();
+  const normalizedClientRequestId = String(clientRequestId || '').trim();
+
+  if (!normalizedConversationId || !normalizedClientRequestId) {
+    return;
+  }
+
+  const nextMessages = optimisticMessagesForConversation(normalizedConversationId).filter(
+    (message) => messageClientRequestId(message) !== normalizedClientRequestId
+  );
+  setOptimisticMessagesForConversation(normalizedConversationId, nextMessages);
+}
+
+function pruneOptimisticMessagesForConversation(conversationId, persistedMessages) {
+  const normalizedConversationId = String(conversationId || '').trim();
+
+  if (!normalizedConversationId) {
+    return;
+  }
+
+  const persistedClientRequestIds = new Set(
+    (Array.isArray(persistedMessages) ? persistedMessages : []).map(messageClientRequestId).filter(Boolean)
+  );
+
+  if (persistedClientRequestIds.size === 0) {
+    return;
+  }
+
+  const nextMessages = optimisticMessagesForConversation(normalizedConversationId).filter((message) => {
+    const clientRequestId = messageClientRequestId(message);
+    return !clientRequestId || !persistedClientRequestIds.has(clientRequestId);
+  });
+
+  setOptimisticMessagesForConversation(normalizedConversationId, nextMessages);
+}
+
 function mergeConversationFromSendResponse(conversationId, payloadConversation, acceptedMessage) {
   if (!state.currentConversation || state.currentConversation.id !== conversationId) {
     return;
@@ -1710,6 +1824,7 @@ function mergeConversationFromSendResponse(conversationId, payloadConversation, 
   }
 
   mergedMessages.sort(compareMessageOrder);
+  pruneOptimisticMessagesForConversation(conversationId, mergedMessages);
 
   state.currentConversation = {
     ...state.currentConversation,
@@ -1955,7 +2070,16 @@ function privateRecipientNames(message) {
 function timelineMessagesForConversation(conversation) {
   const publicMessages = conversation && Array.isArray(conversation.messages) ? conversation.messages : [];
   const privateMessages = conversation && Array.isArray(conversation.privateMessages) ? conversation.privateMessages : [];
-  const timeline = [...publicMessages, ...privateMessages];
+  const optimisticMessages = conversation ? optimisticMessagesForConversation(conversation.id) : [];
+  const persistedClientRequestIds = new Set(publicMessages.map(messageClientRequestId).filter(Boolean));
+  const timeline = [
+    ...publicMessages,
+    ...privateMessages,
+    ...optimisticMessages.filter((message) => {
+      const clientRequestId = messageClientRequestId(message);
+      return !clientRequestId || !persistedClientRequestIds.has(clientRequestId);
+    }),
+  ];
 
   timeline.sort((left, right) => {
     const leftTime = left && left.createdAt ? new Date(left.createdAt).getTime() : 0;
@@ -2233,6 +2357,7 @@ async function loadConversation(conversationId) {
   const data = await fetchJson(`/api/conversations/${conversationId}?includePrivateMessages=1`);
   state.selectedConversationId = conversationId;
   state.currentConversation = data.conversation;
+  pruneOptimisticMessagesForConversation(conversationId, data.conversation && data.conversation.messages);
   closeMentionMenu();
   renderAll();
   warmConversationToolTraces(state.currentConversation);
@@ -2325,6 +2450,7 @@ async function refreshConversationFromEvent(conversationId) {
     }
 
     state.currentConversation = data.conversation;
+    pruneOptimisticMessagesForConversation(conversationId, data.conversation && data.conversation.messages);
     renderConversationPane();
     renderUndercoverGameCard();
     warmConversationToolTraces(state.currentConversation);
@@ -2922,16 +3048,24 @@ function bindEvents() {
       return;
     }
 
+    const clientRequestId = createClientRequestId();
     const shouldStickToBottom = isMessageListNearBottom();
     dom.composerInput.value = '';
     closeMentionMenu();
+    applyOptimisticUserMessage(conversationId, content, clientRequestId);
     renderConversationPane();
+
+    if (shouldStickToBottom) {
+      scrollMessageListToBottom();
+    }
 
     try {
       const result = await fetchJson(`/api/conversations/${conversationId}/messages`, {
         method: 'POST',
-        body: { content },
+        body: { content, clientRequestId },
       });
+
+      clearOptimisticUserMessage(conversationId, clientRequestId);
 
       if (result.runtime) {
         mergeRuntimePayload(result.runtime);
@@ -2967,6 +3101,8 @@ function bindEvents() {
         scrollMessageListToBottom();
       }
     } catch (error) {
+      clearOptimisticUserMessage(conversationId, clientRequestId);
+
       if (state.selectedConversationId === conversationId && !dom.composerInput.value.trim()) {
         dom.composerInput.value = content;
       }

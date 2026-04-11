@@ -13,18 +13,124 @@ const {
 } = require('../../build/server/domain/runtime/message-tool-trace');
 const { withTempDir } = require('../helpers/temp-dir');
 
-function createDomElementStub() {
+function createClassListStub() {
+  const classes = new Set();
+
   return {
-    textContent: '',
-    value: '',
-    dataset: {},
-    style: {},
-    addEventListener() {},
-    removeEventListener() {},
+    add(...tokens) {
+      tokens.filter(Boolean).forEach((token) => classes.add(token));
+    },
+    remove(...tokens) {
+      tokens.filter(Boolean).forEach((token) => classes.delete(token));
+    },
+    toggle(token, force) {
+      if (!token) {
+        return false;
+      }
+
+      if (force === true) {
+        classes.add(token);
+        return true;
+      }
+
+      if (force === false) {
+        classes.delete(token);
+        return false;
+      }
+
+      if (classes.has(token)) {
+        classes.delete(token);
+        return false;
+      }
+
+      classes.add(token);
+      return true;
+    },
+    contains(token) {
+      return classes.has(token);
+    },
   };
 }
 
-function loadPublicAppHarness() {
+function createDomElementStub() {
+  const listeners = new Map();
+
+  return {
+    textContent: '',
+    value: '',
+    innerHTML: '',
+    dataset: {},
+    style: {
+      setProperty() {},
+      removeProperty() {},
+    },
+    disabled: false,
+    checked: false,
+    files: [],
+    scrollTop: 0,
+    scrollHeight: 0,
+    clientHeight: 0,
+    childElementCount: 0,
+    firstElementChild: null,
+    className: '',
+    classList: createClassListStub(),
+    addEventListener(type, handler) {
+      listeners.set(type, (listeners.get(type) || []).concat(handler));
+    },
+    removeEventListener(type, handler) {
+      if (!listeners.has(type)) {
+        return;
+      }
+
+      listeners.set(
+        type,
+        listeners.get(type).filter((candidate) => candidate !== handler)
+      );
+    },
+    emit(type, event = {}) {
+      const handlers = listeners.get(type) || [];
+      const payload = {
+        preventDefault() {},
+        target: this,
+        currentTarget: this,
+        ...event,
+      };
+      return Promise.all(handlers.map((handler) => handler(payload)));
+    },
+    append(...children) {
+      this.childElementCount += children.length;
+      if (!this.firstElementChild && children[0]) {
+        this.firstElementChild = children[0];
+      }
+    },
+    appendChild(child) {
+      this.childElementCount += 1;
+      if (!this.firstElementChild) {
+        this.firstElementChild = child;
+      }
+      return child;
+    },
+    replaceChildren(...children) {
+      this.childElementCount = children.length;
+      this.firstElementChild = children[0] || null;
+    },
+    querySelectorAll() {
+      return [];
+    },
+    querySelector() {
+      return null;
+    },
+    closest() {
+      return null;
+    },
+    focus() {},
+    blur() {},
+    setAttribute() {},
+    removeAttribute() {},
+  };
+}
+
+function loadPublicAppHarness(options = {}) {
   const sourcePath = path.join(__dirname, '../../public/app.js');
   const source = fs.readFileSync(sourcePath, 'utf8');
   const instrumented = source.replace(
@@ -33,7 +139,14 @@ function loadPublicAppHarness() {
 
 globalThis.__testExports = {
   state,
+  dom,
+  bindEvents,
   connectEventStream,
+  mergeConversationFromSendResponse,
+  applyOptimisticUserMessage,
+  clearOptimisticUserMessage,
+  pruneOptimisticMessagesForConversation,
+  timelineMessagesForConversation,
   createEmptyToolTraceData,
   getMessageToolTraceState,
   toolTraceStateForMessage,
@@ -74,13 +187,24 @@ globalThis.__testExports = {
   FakeEventSource.CLOSED = 2;
   FakeEventSource.instance = null;
 
+  const elementById = new Map();
   const document = {
     body: createDomElementStub(),
-    getElementById: createDomElementStub,
-    createElement: createDomElementStub,
+    getElementById(id) {
+      if (!elementById.has(id)) {
+        elementById.set(id, createDomElementStub());
+      }
+
+      return elementById.get(id);
+    },
+    createElement() {
+      return createDomElementStub();
+    },
   };
   const window = {
-    CaffShared: {},
+    CaffShared: {
+      fetchJson: typeof options.fetchJson === 'function' ? options.fetchJson : async () => ({}),
+    },
     CaffChat: {},
     document,
     EventSource: FakeEventSource,
@@ -134,6 +258,129 @@ globalThis.__testExports = {
 
   return { app, FakeEventSource };
 }
+
+function createDeferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+
+  return { promise, resolve, reject };
+}
+
+test('composer submit shows optimistic user message before the POST resolves', async () => {
+  const request = createDeferred();
+  const fetchCalls = [];
+  const { app } = loadPublicAppHarness({
+    fetchJson: async (url, options = {}) => {
+      fetchCalls.push({ url, options });
+      return request.promise;
+    },
+  });
+
+  app.setOverrides({
+    renderConversationPane() {},
+    renderConversationList() {},
+    renderRuntime() {},
+    refreshConversationFromEvent: async () => {},
+  });
+  app.bindEvents();
+
+  app.state.currentConversation = {
+    id: 'conversation-1',
+    title: 'Demo',
+    type: 'standard',
+    metadata: {},
+    createdAt: '2026-04-11T10:00:00.000Z',
+    updatedAt: '2026-04-11T10:00:00.000Z',
+    lastMessageAt: '2026-04-11T10:00:00.000Z',
+    messageCount: 0,
+    agentCount: 1,
+    lastMessagePreview: '',
+    agents: [{ id: 'agent-1', name: 'Alpha' }],
+    messages: [],
+    privateMessages: [],
+  };
+  app.state.selectedConversationId = 'conversation-1';
+  app.state.conversations = [
+    {
+      id: 'conversation-1',
+      title: 'Demo',
+      type: 'standard',
+      metadata: {},
+      createdAt: '2026-04-11T10:00:00.000Z',
+      updatedAt: '2026-04-11T10:00:00.000Z',
+      lastMessageAt: '2026-04-11T10:00:00.000Z',
+      messageCount: 0,
+      agentCount: 1,
+      lastMessagePreview: '',
+    },
+  ];
+
+  app.dom.composerInput.value = '马上显示我';
+  app.dom.messageList.scrollHeight = 200;
+  app.dom.messageList.clientHeight = 120;
+  app.dom.messageList.scrollTop = 90;
+
+  const submitPromise = app.dom.composerForm.emit('submit');
+  await Promise.resolve();
+
+  const optimisticTimeline = app.timelineMessagesForConversation(app.state.currentConversation);
+  assert.equal(fetchCalls.length, 1);
+  assert.equal(fetchCalls[0].url, '/api/conversations/conversation-1/messages');
+  assert.equal(fetchCalls[0].options.body.content, '马上显示我');
+  assert.equal(typeof fetchCalls[0].options.body.clientRequestId, 'string');
+  assert.equal(app.dom.composerInput.value, '');
+  assert.equal(optimisticTimeline.length, 1);
+  assert.match(String(optimisticTimeline[0].id), /^optimistic-/u);
+  assert.equal(optimisticTimeline[0].content, '马上显示我');
+
+  const acceptedMessage = {
+    id: 'message-1',
+    conversationId: 'conversation-1',
+    turnId: 'turn-1',
+    role: 'user',
+    senderName: 'You',
+    content: '马上显示我',
+    status: 'completed',
+    metadata: {
+      clientRequestId: fetchCalls[0].options.body.clientRequestId,
+    },
+    createdAt: '2026-04-11T10:00:01.000Z',
+  };
+
+  request.resolve({
+    acceptedMessage,
+    conversation: {
+      ...app.state.currentConversation,
+      messages: [acceptedMessage],
+      privateMessages: [],
+      updatedAt: '2026-04-11T10:00:01.000Z',
+      lastMessageAt: '2026-04-11T10:00:01.000Z',
+      messageCount: 1,
+      lastMessagePreview: '马上显示我',
+    },
+    conversations: [
+      {
+        ...app.state.conversations[0],
+        updatedAt: '2026-04-11T10:00:01.000Z',
+        lastMessageAt: '2026-04-11T10:00:01.000Z',
+        messageCount: 1,
+        lastMessagePreview: '马上显示我',
+      },
+    ],
+    runtime: null,
+  });
+
+  await submitPromise;
+
+  const reconciledTimeline = app.timelineMessagesForConversation(app.state.currentConversation);
+  assert.equal(reconciledTimeline.length, 1);
+  assert.equal(reconciledTimeline[0].id, 'message-1');
+  assert.equal(reconciledTimeline[0].content, '马上显示我');
+});
 
 test('assistant message tool trace summarizes session calls and redacts sensitive tool data', (t) => {
   const tempDir = withTempDir('caff-message-tool-trace-');

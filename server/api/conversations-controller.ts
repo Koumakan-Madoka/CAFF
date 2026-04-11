@@ -341,8 +341,10 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         throw createHttpError(409, '狼人杀对局进行中由后端全自动主持，请等待本局结束后再发送聊天消息');
       }
 
+      const clientRequestId = typeof body.clientRequestId === 'string' ? body.clientRequestId.trim() : '';
       const result = turnOrchestrator.submitConversationMessage(conversationId, {
         content: body.content,
+        metadata: clientRequestId ? { clientRequestId } : undefined,
       });
       sendJson(res, 200, result);
       return true;

@@ -563,6 +563,7 @@ test('server smoke: pi-mono agent can initialize and write Trellis files for the
   const workflowPath = path.join(trellisDir, 'workflow.md');
   const taskJsonPath = path.join(trellisDir, 'tasks', 'pi-tool-smoke', 'task.json');
 
+  const clientRequestId = 'smoke-client-request-id';
   const messageResult = await fetchJson(
     baseUrl,
     `/api/conversations/${encodeURIComponent(conversationResult.conversation.id)}/messages`,
@@ -570,12 +571,14 @@ test('server smoke: pi-mono agent can initialize and write Trellis files for the
       method: 'POST',
       body: {
         content: 'Please initialize Trellis for the active project and write the PRD for a smoke task.',
+        clientRequestId,
       },
     }
   );
 
   assert.match(String(messageResult.dispatch || ''), /^(started|queued)$/u);
   assert.equal(messageResult.acceptedMessage.role, 'user');
+  assert.equal(messageResult.acceptedMessage.metadata.clientRequestId, clientRequestId);
 
   const completedConversation = await waitForCondition(async () => {
     if (!fs.existsSync(prdPath) || !fs.existsSync(taskJsonPath) || !fs.existsSync(workflowPath)) {

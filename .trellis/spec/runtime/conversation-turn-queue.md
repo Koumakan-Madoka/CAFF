@@ -13,7 +13,7 @@
 
 ### 2. Signatures
 - `POST /api/conversations/:conversationId/messages`
-  - Request: `{ content: string }`
+  - Request: `{ content: string, clientRequestId?: string }`
   - Success response:
     - `acceptedMessage`: persisted user message that was accepted immediately
     - `conversation`: latest stored conversation snapshot
@@ -49,6 +49,7 @@
 
 ### 3. Contracts
 - `POST /messages` must not wait for the full agent turn to finish. It acknowledges accepted work immediately and relies on SSE/runtime updates for the long-running state.
+- When the browser sends `clientRequestId`, the accepted persisted user message must echo it in `acceptedMessage.metadata.clientRequestId` so optimistic user-message rendering can reconcile without showing duplicates after SSE or refresh.
 - New user messages are always stored first, then scheduled:
   - no active/dispatching work → main lane `dispatch = 'started'`, `dispatchLane = 'main'`
   - explicit single `@Agent` while the conversation already has active/dispatching work → side lane `dispatchLane = 'side'`
