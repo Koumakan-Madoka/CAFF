@@ -201,6 +201,34 @@ export function createConversationsController(options: any = {}): RouteHandler<A
       }
 
       if (req.method === 'DELETE') {
+        const runtime = turnOrchestrator.buildRuntimePayload();
+        const activeConversationIds = Array.isArray(runtime && runtime.activeConversationIds)
+          ? runtime.activeConversationIds
+          : [];
+        const dispatchingConversationIds = Array.isArray(runtime && runtime.dispatchingConversationIds)
+          ? runtime.dispatchingConversationIds
+          : [];
+        const conversationQueueDepths = runtime && runtime.conversationQueueDepths && typeof runtime.conversationQueueDepths === 'object'
+          ? runtime.conversationQueueDepths
+          : {};
+        const conversationQueueFailures = runtime && runtime.conversationQueueFailures && typeof runtime.conversationQueueFailures === 'object'
+          ? runtime.conversationQueueFailures
+          : {};
+        const queuedUserCount = Math.max(0, Number(conversationQueueDepths[conversationId] || 0));
+        const forceDelete = requestUrl.searchParams.get('force') === '1' || requestUrl.searchParams.get('force') === 'true';
+        const queueFailure =
+          conversationQueueFailures[conversationId] && typeof conversationQueueFailures[conversationId] === 'object'
+            ? conversationQueueFailures[conversationId]
+            : null;
+
+        if (activeConversationIds.includes(conversationId) || dispatchingConversationIds.includes(conversationId)) {
+          throw createHttpError(409, '当前会话正在处理消息，请先停止并等待当前回合结束后再删除');
+        }
+
+        if (queuedUserCount > 0 && (!forceDelete || !queueFailure)) {
+          throw createHttpError(409, '当前会话仍有待处理消息，请等待自动续跑完成后再删除');
+        }
+
         undercoverService.deleteConversationState(conversationId);
         werewolfService.deleteConversationState(conversationId);
         store.deleteConversation(conversationId);
@@ -300,11 +328,10 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         throw createHttpError(409, '狼人杀对局进行中由后端全自动主持，请等待本局结束后再发送聊天消息');
       }
 
-      const result = await turnOrchestrator.runConversationTurn(conversationId, body.content);
-      sendJson(res, 200, {
-        ...result,
-        conversations: store.listConversations(),
+      const result = turnOrchestrator.submitConversationMessage(conversationId, {
+        content: body.content,
       });
+      sendJson(res, 200, result);
       return true;
     }
 

@@ -17,6 +17,8 @@
       isWerewolfConversation,
       liveDraftIdleMs,
       liveStageLabel,
+      queueFailureForConversation,
+      queuedUserMessageCountForConversation,
       renderMessages,
       renderParticipantList,
       renderUndercoverGameCard,
@@ -84,20 +86,25 @@
         dom.conversationMeta.textContent = `${conversation.agents.length} 名玩家 / ${totalMessageCount} 条消息 / 第 ${roundNumber} 轮 / ${phase}`;
       }
 
-      dom.deleteConversationButton.disabled = state.sending;
+      const hasAgents = conversation.agents.length > 0;
+      const stopRequestInFlight = state.stopRequestConversationIds.has(conversation.id);
+      const queuedUserCount = queuedUserMessageCountForConversation(conversation.id);
+      const queueFailure = queueFailureForConversation(conversation.id);
+      const conversationBusy = isConversationBusy(conversation.id);
+      dom.deleteConversationButton.disabled =
+        state.sending || conversationBusy || Boolean(activeTurn) || stopRequestInFlight || (queuedUserCount > 0 && !queueFailure);
 
       renderParticipantList(conversation);
       renderMessages(conversation, activeTurn);
 
-      const hasAgents = conversation.agents.length > 0;
-      const stopRequestInFlight = state.stopRequestConversationIds.has(conversation.id);
-      const canStopTurn = Boolean(activeTurn || isConversationBusy(conversation.id));
+      const canStopTurn = Boolean(activeTurn);
+      const queuedUserSuffix = queuedUserCount > 0 ? ` 后面还有 ${queuedUserCount} 条新消息待处理。` : '';
       const undercoverChatLocked = isUndercoverConversation(conversation) && !canChatInUndercoverConversation(conversation);
       const werewolfChatLocked = isWerewolfConversation(conversation) && !canChatInWerewolfConversation(conversation);
-      dom.composerInput.disabled = state.sending || !hasAgents || undercoverChatLocked || werewolfChatLocked;
+      dom.composerInput.disabled = !hasAgents || undercoverChatLocked || werewolfChatLocked;
       dom.stopButton.disabled = !canStopTurn || stopRequestInFlight || Boolean(activeTurn && activeTurn.stopRequested);
       dom.stopButton.textContent = stopRequestInFlight || (activeTurn && activeTurn.stopRequested) ? '停止中...' : '停止';
-      dom.sendButton.disabled = state.sending || !hasAgents || undercoverChatLocked || werewolfChatLocked;
+      dom.sendButton.disabled = !hasAgents || undercoverChatLocked || werewolfChatLocked;
       dom.composerInput.placeholder = '输入 @Agent 可将当前消息路由给指定人格。';
 
       if (isUndercoverConversation(conversation)) {
@@ -121,12 +128,12 @@
         const stoppingCount = activeStages.filter((agent) => agent.status === 'running' || agent.status === 'terminating').length;
         dom.composerStatus.textContent =
           stoppingCount > 1
-            ? `正在停止 ${stoppingCount} 个活跃人格，后续排队接力不会继续执行。`
+            ? `正在停止 ${stoppingCount} 个活跃人格。${queuedUserCount > 0 ? ` 稍后会继续处理 ${queuedUserCount} 条补充消息。` : ''}`
             : stoppingCount === 1
-              ? '正在停止当前人格，后续排队接力不会继续执行。'
-              : '正在停止当前回合，后续排队接力不会继续执行。';
+              ? `正在安全停止当前人格。${queuedUserCount > 0 ? ` 稍后会继续处理 ${queuedUserCount} 条补充消息。` : ''}`
+              : `正在安全停止当前回合。${queuedUserCount > 0 ? ` 稍后会继续处理 ${queuedUserCount} 条补充消息。` : ''}`;
       } else if (activeTurn && activeStages.length > 1) {
-        dom.composerStatus.textContent = `${activeStages.length} 名人格正在并行回复。`;
+        dom.composerStatus.textContent = `${activeStages.length} 名人格正在并行回复。${queuedUserSuffix}`;
       } else if (activeTurn && activeTurn.currentAgentId) {
         const activeAgent = agentById(activeTurn.currentAgentId);
         const activeStage =
@@ -137,10 +144,10 @@
         dom.composerStatus.textContent = activeAgent
           ? activeStage && activeStage.preview
             ? activeStageText === '收尾中'
-              ? `${activeAgent.name} 正在收尾下方这条回复。`
-              : `${activeAgent.name} 正在实时生成下方回复。`
-            : `${activeAgent.name} 正在回复，可用 @Agent 继续接力。`
-          : '当前房间正在按显式接力规则路由这一轮。';
+              ? `${activeAgent.name} 正在收尾下方这条回复。${queuedUserSuffix}`
+              : `${activeAgent.name} 正在实时生成下方回复。${queuedUserSuffix}`
+            : `${activeAgent.name} 正在回复。${queuedUserSuffix || ' 可以用 @Agent 继续接力。'}`
+          : `当前房间正在按显式接力规则路由这一轮。${queuedUserSuffix}`;
 
         if (
           activeStage &&
@@ -156,6 +163,12 @@
             scheduleConversationPaneRender(delayMs);
           }
         }
+      } else if (queuedUserCount > 0 && queueFailure) {
+        const failureCount = Math.max(1, Number(queueFailure.failedBatchCount || 0));
+        const failureSuffix = queueFailure.lastFailureMessage ? ` 最近一次失败：${queueFailure.lastFailureMessage}` : '';
+        dom.composerStatus.textContent = `上一轮续跑失败了 ${failureCount} 次，仍有 ${queuedUserCount} 条消息排队中。继续发送会重试，也可以删除这个对话放弃队列。${failureSuffix}`;
+      } else if (queuedUserCount > 0) {
+        dom.composerStatus.textContent = `已收到 ${queuedUserCount} 条新消息，正在准备下一轮。`;
       } else if (state.sending) {
         dom.composerStatus.textContent = '当前房间正在路由这一轮消息...';
       } else if (!hasAgents) {
@@ -188,7 +201,7 @@
         }
       }
 
-      if (!hasAgents || state.sending) {
+      if (!hasAgents) {
         closeMentionMenu();
       }
 

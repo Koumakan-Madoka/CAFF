@@ -465,7 +465,9 @@ function setupChatModules() {
             isWerewolfConversation,
             liveDraftIdleMs: LIVE_DRAFT_IDLE_MS,
             liveStageLabel,
+            queueFailureForConversation,
             renderMessages,
+            queuedUserMessageCountForConversation,
             renderParticipantList,
             renderUndercoverGameCard,
             renderWerewolfGameCard,
@@ -1579,6 +1581,98 @@ function activeTurnForConversation(conversationId) {
   return state.runtime.activeTurns.find((turn) => turn.conversationId === conversationId) || null;
 }
 
+function queuedUserMessageCountForConversation(conversationId) {
+  const activeTurn = activeTurnForConversation(conversationId);
+
+  if (activeTurn && Number.isFinite(Number(activeTurn.queueDepth))) {
+    return Math.max(0, Number(activeTurn.queueDepth || 0));
+  }
+
+  const queueDepths =
+    state.runtime && state.runtime.conversationQueueDepths && typeof state.runtime.conversationQueueDepths === 'object'
+      ? state.runtime.conversationQueueDepths
+      : null;
+  const value = queueDepths && conversationId ? Number(queueDepths[conversationId] || 0) : 0;
+
+  return Number.isFinite(value) ? Math.max(0, value) : 0;
+}
+
+function queueFailureForConversation(conversationId) {
+  const queueFailures =
+    state.runtime && state.runtime.conversationQueueFailures && typeof state.runtime.conversationQueueFailures === 'object'
+      ? state.runtime.conversationQueueFailures
+      : null;
+  const failure = queueFailures && conversationId ? queueFailures[conversationId] : null;
+
+  if (!failure || typeof failure !== 'object' || !failure.lastFailureAt) {
+    return null;
+  }
+
+  return {
+    failedBatchCount: Math.max(0, Number(failure.failedBatchCount || 0)),
+    lastFailureAt: String(failure.lastFailureAt || ''),
+    lastFailureMessage: String(failure.lastFailureMessage || ''),
+  };
+}
+
+function mergeRuntimePayload(payload) {
+  if (!payload || typeof payload !== 'object') {
+    return;
+  }
+
+  state.runtime = {
+    ...(state.runtime || {}),
+    ...payload,
+  };
+}
+
+function compareMessageOrder(left, right) {
+  const leftTime = left && left.createdAt ? Date.parse(left.createdAt) : Number.NaN;
+  const rightTime = right && right.createdAt ? Date.parse(right.createdAt) : Number.NaN;
+
+  if (!Number.isNaN(leftTime) && !Number.isNaN(rightTime) && leftTime !== rightTime) {
+    return leftTime - rightTime;
+  }
+
+  return String(left && left.id ? left.id : '').localeCompare(String(right && right.id ? right.id : ''), 'zh-CN');
+}
+
+function mergeConversationFromSendResponse(conversationId, payloadConversation, acceptedMessage) {
+  if (!state.currentConversation || state.currentConversation.id !== conversationId) {
+    return;
+  }
+
+  const mergedMessages = [];
+  const seenMessageIds = new Set();
+  const currentMessages = Array.isArray(state.currentConversation.messages) ? state.currentConversation.messages : [];
+  const payloadMessages = Array.isArray(payloadConversation && payloadConversation.messages) ? payloadConversation.messages : [];
+
+  currentMessages.concat(payloadMessages).forEach((message) => {
+    if (!message || !message.id || seenMessageIds.has(message.id)) {
+      return;
+    }
+
+    seenMessageIds.add(message.id);
+    mergedMessages.push(message);
+  });
+
+  if (acceptedMessage && acceptedMessage.id && !seenMessageIds.has(acceptedMessage.id)) {
+    mergedMessages.push(acceptedMessage);
+  }
+
+  mergedMessages.sort(compareMessageOrder);
+
+  state.currentConversation = {
+    ...state.currentConversation,
+    ...(payloadConversation || {}),
+    messages: mergedMessages,
+    privateMessages:
+      payloadConversation && Array.isArray(payloadConversation.privateMessages)
+        ? payloadConversation.privateMessages
+        : state.currentConversation.privateMessages,
+  };
+}
+
 function upsertRuntimeTurn(turn) {
   if (!turn || !turn.conversationId) {
     return;
@@ -1609,6 +1703,11 @@ function turnProgressSignature(turn) {
     completedCount: turn.completedCount || 0,
     failedCount: turn.failedCount || 0,
     hopCount: turn.hopCount || 0,
+    batchStartMessageId: turn.batchStartMessageId || null,
+    batchEndMessageId: turn.batchEndMessageId || null,
+    consumedUpToMessageId: turn.consumedUpToMessageId || null,
+    inputMessageCount: turn.inputMessageCount || 0,
+    queueDepth: turn.queueDepth || 0,
     pendingAgentIds: Array.isArray(turn.pendingAgentIds) ? turn.pendingAgentIds : [],
     entryAgentIds: Array.isArray(turn.entryAgentIds) ? turn.entryAgentIds : [],
     stopRequested: Boolean(turn.stopRequested),
@@ -1693,8 +1792,11 @@ function isConversationBusy(conversationId) {
   const runtimeBusyIds = Array.isArray(state.runtime && state.runtime.activeConversationIds)
     ? state.runtime.activeConversationIds
     : [];
+  const dispatchingIds = Array.isArray(state.runtime && state.runtime.dispatchingConversationIds)
+    ? state.runtime.dispatchingConversationIds
+    : [];
 
-  return runtimeBusyIds.includes(conversationId) || (state.sending && state.selectedConversationId === conversationId);
+  return runtimeBusyIds.includes(conversationId) || dispatchingIds.includes(conversationId);
 }
 
 function renderRuntime() {
@@ -2627,10 +2729,11 @@ function bindEvents() {
   dom.composerForm.addEventListener('submit', async (event) => {
     event.preventDefault();
 
-    if (!state.currentConversation || state.sending) {
+    if (!state.currentConversation) {
       return;
     }
 
+    const conversationId = state.currentConversation.id;
     const content = dom.composerInput.value.trim();
 
     if (!content) {
@@ -2638,45 +2741,57 @@ function bindEvents() {
       return;
     }
 
-    state.sending = true;
-    state.runtime = state.runtime || {};
-    state.runtime.activeConversationIds = Array.from(
-      new Set([...(state.runtime.activeConversationIds || []), state.currentConversation.id])
-    );
-    renderAll();
+    const shouldStickToBottom = isMessageListNearBottom();
+    dom.composerInput.value = '';
+    closeMentionMenu();
+    renderConversationPane();
 
     try {
-      const result = await fetchJson(`/api/conversations/${state.currentConversation.id}/messages`, {
+      const result = await fetchJson(`/api/conversations/${conversationId}/messages`, {
         method: 'POST',
         body: { content },
       });
-      dom.composerInput.value = '';
-      closeMentionMenu();
-      state.currentConversation = result.conversation;
-      state.conversations = result.conversations;
-      if (state.runtime) {
-        state.runtime.activeConversationIds = (state.runtime.activeConversationIds || []).filter(
-          (id) => id !== state.currentConversation.id
-        );
-      }
-      renderAll();
-      warmConversationToolTraces(state.currentConversation);
-      syncToolTraceStatesWithConversation(state.currentConversation);
-      scrollMessageListToBottom();
 
-      if (Array.isArray(result.failures) && result.failures.length > 0) {
-        showToast(`本轮完成，但有 ${result.failures.length} 个 Agent 失败`);
+      if (result.runtime) {
+        mergeRuntimePayload(result.runtime);
+      }
+
+      if (state.selectedConversationId === conversationId) {
+        mergeConversationFromSendResponse(conversationId, result.conversation, result.acceptedMessage);
+
+        if (state.currentConversation) {
+          warmConversationToolTraces(state.currentConversation);
+          syncToolTraceStatesWithConversation(state.currentConversation);
+        }
+      }
+
+      if (result.conversation && result.conversation.id) {
+        mergeConversationSummary({
+          id: result.conversation.id,
+          title: result.conversation.title,
+          type: result.conversation.type,
+          metadata: result.conversation.metadata,
+          createdAt: result.conversation.createdAt,
+          updatedAt: result.conversation.updatedAt,
+          lastMessageAt: result.conversation.lastMessageAt,
+          messageCount: result.conversation.messageCount,
+          agentCount: result.conversation.agentCount,
+          lastMessagePreview: result.conversation.lastMessagePreview,
+        });
+      }
+
+      renderAll();
+
+      if (state.selectedConversationId === conversationId && shouldStickToBottom) {
+        scrollMessageListToBottom();
       }
     } catch (error) {
-      showToast(error.message);
-    } finally {
-      state.sending = false;
-      if (state.runtime && state.currentConversation) {
-        state.runtime.activeConversationIds = (state.runtime.activeConversationIds || []).filter(
-          (id) => id !== state.currentConversation.id
-        );
+      if (state.selectedConversationId === conversationId && !dom.composerInput.value.trim()) {
+        dom.composerInput.value = content;
       }
-      renderAll();
+
+      showToast(error.message);
+      renderConversationPane();
     }
   });
 
@@ -2758,12 +2873,49 @@ function bindEvents() {
       return;
     }
 
-    if (!window.confirm(`确定删除对话“${state.currentConversation.title}”吗？`)) {
+    const conversationId = state.currentConversation.id;
+    const conversationTitle = state.currentConversation.title;
+
+    if (!window.confirm(`确定删除对话“${conversationTitle}”吗？`)) {
       return;
     }
 
+    const activeTurn = activeTurnForConversation(conversationId);
+    const queuedUserCount = queuedUserMessageCountForConversation(conversationId);
+    const queueFailure = queueFailureForConversation(conversationId);
+    const conversationBusy = isConversationBusy(conversationId);
+
+    if (state.stopRequestConversationIds.has(conversationId)) {
+      showToast('正在停止当前回合，请稍后再试');
+      return;
+    }
+
+    if (conversationBusy || activeTurn) {
+      showToast('当前房间正在处理消息，请先停止并等待处理完成后再删除');
+      return;
+    }
+
+    let deleteUrl = `/api/conversations/${conversationId}`;
+
+    if (queuedUserCount > 0) {
+      if (!queueFailure) {
+        showToast('当前房间仍有待处理消息，请等待自动续跑完成后再删除');
+        return;
+      }
+
+      if (
+        !window.confirm(
+          `这个对话里还有 ${queuedUserCount} 条失败后保留的待处理消息。强制删除会直接放弃这些消息，确定继续吗？`
+        )
+      ) {
+        return;
+      }
+
+      deleteUrl = `${deleteUrl}?force=1`;
+    }
+
     try {
-      const result = await fetchJson(`/api/conversations/${state.currentConversation.id}`, {
+      const result = await fetchJson(deleteUrl, {
         method: 'DELETE',
       });
       state.runtime = result.runtime;

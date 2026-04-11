@@ -4,6 +4,7 @@ const path = require('node:path');
 const test = require('node:test');
 const {
   buildAgentTurnPrompt,
+  createTurnOrchestrator,
   sanitizePromptMentions,
 } = require('../../build/server/domain/conversation/turn-orchestrator');
 const { createRoutingExecutor } = require('../../build/server/domain/conversation/turn/routing-executor');
@@ -17,6 +18,22 @@ const { createTurnState, resetTurnStage, summarizeTurnState } = require('../../b
 const { createTurnStopper, registerTurnHandle } = require('../../build/server/domain/conversation/turn/turn-stop');
 
 const { withTempDir } = require('../helpers/temp-dir');
+
+async function waitForCondition(check, timeoutMs = 5000, intervalMs = 20) {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const result = await check();
+
+    if (result) {
+      return result;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+
+  throw new Error('Condition was not met in time');
+}
 
 test('sanitizePromptMentions rewrites raw @mentions into safe placeholders', () => {
   assert.equal(
@@ -487,6 +504,581 @@ test('routing executor snapshots project dir once per turn', async (t) => {
   assert.equal(projectCalls, 1);
   assert.equal(seenProjectDirs.length, 2);
   assert.ok(seenProjectDirs.every((value) => value === 'project-A'));
+});
+
+test('routing executor keeps late user messages out of the active prompt snapshot', { concurrency: false }, async (t) => {
+  const tempDir = withTempDir('caff-turn-snapshot-');
+  const sqlitePath = path.join(tempDir, 'prompt-snapshot.sqlite');
+  const activeConversationIds = new Set();
+  const activeTurns = new Map();
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const conversation = {
+    id: 'conversation-prompt-snapshot',
+    title: 'Prompt snapshot',
+    type: 'standard',
+    agents: [
+      { id: 'agent-a', name: 'Alpha' },
+      { id: 'agent-b', name: 'Beta' },
+    ],
+    messages: [],
+  };
+  let messageCounter = 0;
+
+  const store = {
+    getConversation(conversationId) {
+      return conversationId === conversation.id ? conversation : null;
+    },
+    createMessage(input) {
+      messageCounter += 1;
+      const message = {
+        id: input.id || `message-${messageCounter}`,
+        errorMessage: '',
+        taskId: null,
+        runId: null,
+        metadata: null,
+        createdAt: input.createdAt || `2026-04-10T00:00:${String(messageCounter).padStart(2, '0')}.000Z`,
+        ...input,
+      };
+      conversation.messages.push(message);
+      return message;
+    },
+  };
+
+  const seenPromptSnapshots = [];
+
+  const executor = createRoutingExecutor({
+    store,
+    agentDir: tempDir,
+    sqlitePath,
+    activeConversationIds,
+    activeTurns,
+    async executeConversationAgent({ promptMessages, completedReplies, agent }) {
+      seenPromptSnapshots.push(promptMessages.map((message) => message.content));
+
+      if (agent.id === 'agent-a') {
+        store.createMessage({
+          conversationId: conversation.id,
+          turnId: 'queued-follow-up',
+          role: 'user',
+          senderName: 'You',
+          content: 'Late follow up',
+          status: 'completed',
+        });
+      }
+
+      completedReplies.push({ agentId: agent.id, publicReply: 'ok', senderName: agent.name, status: 'completed' });
+      return { stopTurn: false };
+    },
+  });
+
+  await executor(conversation.id, {
+    content: 'Hello there',
+    initialAgentIds: ['agent-a', 'agent-b'],
+    executionMode: 'queue',
+  });
+
+  assert.equal(seenPromptSnapshots.length, 2);
+  assert.ok(seenPromptSnapshots.every((snapshot) => snapshot.some((content) => content.includes('Hello there'))));
+  assert.ok(seenPromptSnapshots.every((snapshot) => snapshot.every((content) => !content.includes('Late follow up'))));
+});
+
+test('routing executor preserves queued batch context that existed before dispatch', async (t) => {
+  const tempDir = withTempDir('caff-turn-batch-context-');
+  const sqlitePath = path.join(tempDir, 'batch-context.sqlite');
+  const activeConversationIds = new Set();
+  const activeTurns = new Map();
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const conversation = {
+    id: 'conversation-batch-context',
+    title: 'Batch context',
+    type: 'standard',
+    agents: [{ id: 'agent-a', name: 'Alpha' }],
+    messages: [
+      {
+        id: 'message-1',
+        conversationId: 'conversation-batch-context',
+        turnId: 'turn-0',
+        role: 'user',
+        senderName: 'You',
+        content: 'Earlier question',
+        status: 'completed',
+      },
+      {
+        id: 'message-2',
+        conversationId: 'conversation-batch-context',
+        turnId: 'turn-0',
+        role: 'assistant',
+        senderName: 'Alpha',
+        agentId: 'agent-a',
+        content: 'Earlier answer',
+        status: 'completed',
+      },
+      {
+        id: 'message-3',
+        conversationId: 'conversation-batch-context',
+        turnId: 'turn-1',
+        role: 'user',
+        senderName: 'You',
+        content: 'Queued follow up one',
+        status: 'completed',
+      },
+      {
+        id: 'message-4',
+        conversationId: 'conversation-batch-context',
+        turnId: 'turn-1',
+        role: 'assistant',
+        senderName: 'Alpha',
+        agentId: 'agent-a',
+        content: 'Interleaving assistant context',
+        status: 'completed',
+      },
+      {
+        id: 'message-5',
+        conversationId: 'conversation-batch-context',
+        turnId: 'turn-1',
+        role: 'user',
+        senderName: 'You',
+        content: 'Queued follow up two',
+        status: 'completed',
+      },
+      {
+        id: 'message-6',
+        conversationId: 'conversation-batch-context',
+        turnId: 'turn-1',
+        role: 'assistant',
+        senderName: 'Alpha',
+        agentId: 'agent-a',
+        content: 'Late previous-turn assistant',
+        status: 'completed',
+      },
+    ],
+  };
+  let messageCounter = conversation.messages.length;
+  const seenPromptSnapshots = [];
+
+  const store = {
+    getConversation(conversationId) {
+      return conversationId === conversation.id ? conversation : null;
+    },
+    createMessage(input) {
+      messageCounter += 1;
+      const message = {
+        id: input.id || `message-${messageCounter}`,
+        errorMessage: '',
+        taskId: null,
+        runId: null,
+        metadata: null,
+        createdAt: input.createdAt || `2026-04-10T00:02:${String(messageCounter).padStart(2, '0')}.000Z`,
+        ...input,
+      };
+      conversation.messages.push(message);
+      return message;
+    },
+  };
+
+  const executor = createRoutingExecutor({
+    store,
+    agentDir: tempDir,
+    sqlitePath,
+    activeConversationIds,
+    activeTurns,
+    async executeConversationAgent({ promptMessages, completedReplies, agent }) {
+      seenPromptSnapshots.push(promptMessages.map((message) => message.content));
+      completedReplies.push({ agentId: agent.id, publicReply: 'ok', senderName: agent.name, status: 'completed' });
+      return { stopTurn: false };
+    },
+  });
+
+  await executor(conversation.id, {
+    batchMessageIds: ['message-3', 'message-5'],
+  });
+
+  assert.equal(seenPromptSnapshots.length, 1);
+  assert.deepEqual(seenPromptSnapshots[0], [
+    'Earlier question',
+    'Earlier answer',
+    'Queued follow up one',
+    'Interleaving assistant context',
+    'Queued follow up two',
+    'Late previous-turn assistant',
+  ]);
+});
+
+test('turn orchestrator queues user messages behind the active run and drains them serially', { concurrency: false }, async (t) => {
+  const tempDir = withTempDir('caff-turn-queue-');
+  const sqlitePath = path.join(tempDir, 'turn-queue.sqlite');
+  const conversation = {
+    id: 'conversation-queue',
+    title: 'Queued Conversation',
+    type: 'standard',
+    agents: [{ id: 'agent-a', name: 'Alpha' }],
+    messages: [],
+  };
+  let messageCounter = 0;
+  let releaseFirstTurn = null;
+  const firstTurnGate = new Promise((resolve) => {
+    releaseFirstTurn = resolve;
+  });
+  const seenBatches = [];
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const store = {
+    databasePath: sqlitePath,
+    getConversation(conversationId) {
+      return conversationId === conversation.id ? conversation : null;
+    },
+    listConversations() {
+      const lastMessage = conversation.messages[conversation.messages.length - 1] || null;
+      return [
+        {
+          id: conversation.id,
+          title: conversation.title,
+          type: conversation.type,
+          metadata: {},
+          createdAt: '2026-04-10T00:00:00.000Z',
+          updatedAt: lastMessage ? lastMessage.createdAt : '2026-04-10T00:00:00.000Z',
+          lastMessageAt: lastMessage ? lastMessage.createdAt : null,
+          messageCount: conversation.messages.length,
+          agentCount: conversation.agents.length,
+          lastMessagePreview: lastMessage ? lastMessage.content : '',
+        },
+      ];
+    },
+    createMessage(input) {
+      messageCounter += 1;
+      const message = {
+        id: input.id || `queued-message-${messageCounter}`,
+        errorMessage: '',
+        taskId: null,
+        runId: null,
+        metadata: null,
+        createdAt: input.createdAt || `2026-04-10T00:00:${String(messageCounter).padStart(2, '0')}.000Z`,
+        ...input,
+      };
+      conversation.messages.push(message);
+      return message;
+    },
+  };
+
+  const orchestrator = createTurnOrchestrator({
+    store,
+    skillRegistry: { listSkills() { return []; }, resolveSkills() { return []; } },
+    modeStore: { get() { return null; } },
+    agentToolBridge: {},
+    host: '127.0.0.1',
+    port: 0,
+    agentDir: tempDir,
+    sqlitePath,
+    toolBaseUrl: 'http://127.0.0.1:0',
+    agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
+    executeConversationAgent: async ({ promptMessages, completedReplies, agent, turnState }) => {
+      seenBatches.push({
+        turnId: turnState.turnId,
+        batchEndMessageId: turnState.batchEndMessageId,
+        queueDepth: turnState.queueDepth,
+        promptMessages: promptMessages.map((message) => message.content),
+      });
+
+      if (seenBatches.length === 1) {
+        await firstTurnGate;
+      }
+
+      completedReplies.push({
+        agentId: agent.id,
+        senderName: agent.name,
+        content: 'ok',
+        status: 'completed',
+      });
+      return { stopTurn: false };
+    },
+  });
+
+  const firstResult = orchestrator.submitConversationMessage(conversation.id, { content: 'First queued message' });
+  const secondResult = orchestrator.submitConversationMessage(conversation.id, { content: 'Second queued message' });
+
+  assert.equal(firstResult.dispatch, 'started');
+  assert.equal(secondResult.dispatch, 'queued');
+  assert.equal(orchestrator.getConversationQueueDepth(conversation.id), 1);
+
+  const activeTurn = orchestrator.listTurnSummaries({ conversationId: conversation.id })[0];
+  assert.equal(activeTurn.batchEndMessageId, firstResult.acceptedMessage.id);
+  assert.equal(activeTurn.queueDepth, 1);
+
+  releaseFirstTurn();
+
+  await waitForCondition(() => seenBatches.length === 2 && orchestrator.listTurnSummaries({ conversationId: conversation.id }).length === 0);
+
+  assert.equal(seenBatches[0].batchEndMessageId, firstResult.acceptedMessage.id);
+  assert.equal(seenBatches[1].batchEndMessageId, secondResult.acceptedMessage.id);
+  assert.ok(seenBatches[0].promptMessages.some((content) => content.includes('First queued message')));
+  assert.ok(seenBatches[0].promptMessages.every((content) => !content.includes('Second queued message')));
+  assert.ok(seenBatches[1].promptMessages.some((content) => content.includes('Second queued message')));
+});
+
+test('turn orchestrator continues with the next queued batch after a stop request', { concurrency: false }, async (t) => {
+  const tempDir = withTempDir('caff-turn-stop-queue-');
+  const sqlitePath = path.join(tempDir, 'turn-stop-queue.sqlite');
+  const conversation = {
+    id: 'conversation-stop-queue',
+    title: 'Stop then continue',
+    type: 'standard',
+    agents: [{ id: 'agent-a', name: 'Alpha' }],
+    messages: [],
+  };
+  let messageCounter = 0;
+  const seenBatches = [];
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const store = {
+    databasePath: sqlitePath,
+    getConversation(conversationId) {
+      return conversationId === conversation.id ? conversation : null;
+    },
+    listConversations() {
+      return [
+        {
+          id: conversation.id,
+          title: conversation.title,
+          type: conversation.type,
+          metadata: {},
+          createdAt: '2026-04-10T00:00:00.000Z',
+          updatedAt: '2026-04-10T00:00:00.000Z',
+          lastMessageAt: conversation.messages[conversation.messages.length - 1]
+            ? conversation.messages[conversation.messages.length - 1].createdAt
+            : null,
+          messageCount: conversation.messages.length,
+          agentCount: conversation.agents.length,
+          lastMessagePreview: conversation.messages[conversation.messages.length - 1]
+            ? conversation.messages[conversation.messages.length - 1].content
+            : '',
+        },
+      ];
+    },
+    createMessage(input) {
+      messageCounter += 1;
+      const message = {
+        id: input.id || `stop-message-${messageCounter}`,
+        errorMessage: '',
+        taskId: null,
+        runId: null,
+        metadata: null,
+        createdAt: input.createdAt || `2026-04-10T00:01:${String(messageCounter).padStart(2, '0')}.000Z`,
+        ...input,
+      };
+      conversation.messages.push(message);
+      return message;
+    },
+  };
+
+  const orchestrator = createTurnOrchestrator({
+    store,
+    skillRegistry: { listSkills() { return []; }, resolveSkills() { return []; } },
+    modeStore: { get() { return null; } },
+    agentToolBridge: {},
+    host: '127.0.0.1',
+    port: 0,
+    agentDir: tempDir,
+    sqlitePath,
+    toolBaseUrl: 'http://127.0.0.1:0',
+    agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
+    executeConversationAgent: async ({ completedReplies, agent, turnState }) => {
+      seenBatches.push({
+        turnId: turnState.turnId,
+        batchEndMessageId: turnState.batchEndMessageId,
+      });
+
+      if (seenBatches.length === 1) {
+        await waitForCondition(() => turnState.stopRequested === true);
+        return { stopTurn: true, terminationReason: 'stopped_by_user' };
+      }
+
+      completedReplies.push({
+        agentId: agent.id,
+        senderName: agent.name,
+        content: 'ok',
+        status: 'completed',
+      });
+      return { stopTurn: false };
+    },
+  });
+
+  const firstResult = orchestrator.submitConversationMessage(conversation.id, { content: 'Please stop this one' });
+  const secondResult = orchestrator.submitConversationMessage(conversation.id, { content: 'Run after stop' });
+
+  await waitForCondition(() => orchestrator.listTurnSummaries({ conversationId: conversation.id }).length === 1);
+
+  const stopSummary = orchestrator.requestStopConversationTurn(conversation.id, 'User stop');
+  assert.equal(stopSummary.stopRequested, true);
+
+  await waitForCondition(() => seenBatches.length === 2 && orchestrator.listTurnSummaries({ conversationId: conversation.id }).length === 0);
+
+  assert.equal(seenBatches[0].batchEndMessageId, firstResult.acceptedMessage.id);
+  assert.equal(seenBatches[1].batchEndMessageId, secondResult.acceptedMessage.id);
+});
+
+test('turn orchestrator keeps failed queued batches pending for a later retry', { concurrency: false }, async (t) => {
+  const tempDir = withTempDir('caff-turn-failed-queue-');
+  const sqlitePath = path.join(tempDir, 'turn-failed-queue.sqlite');
+  const conversation = {
+    id: 'conversation-failed-queue',
+    title: 'Failed queue retry',
+    type: 'standard',
+    agents: [{ id: 'agent-a', name: 'Alpha' }],
+    messages: [],
+  };
+  let messageCounter = 0;
+  let failNextBatch = true;
+  const seenBatches = [];
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const store = {
+    databasePath: sqlitePath,
+    getConversation(conversationId) {
+      return conversationId === conversation.id ? conversation : null;
+    },
+    listConversations() {
+      const lastMessage = conversation.messages[conversation.messages.length - 1] || null;
+      return [
+        {
+          id: conversation.id,
+          title: conversation.title,
+          type: conversation.type,
+          metadata: {},
+          createdAt: '2026-04-10T00:00:00.000Z',
+          updatedAt: lastMessage ? lastMessage.createdAt : '2026-04-10T00:00:00.000Z',
+          lastMessageAt: lastMessage ? lastMessage.createdAt : null,
+          messageCount: conversation.messages.length,
+          agentCount: conversation.agents.length,
+          lastMessagePreview: lastMessage ? lastMessage.content : '',
+        },
+      ];
+    },
+    createMessage(input) {
+      messageCounter += 1;
+      const message = {
+        id: input.id || `failed-message-${messageCounter}`,
+        errorMessage: '',
+        taskId: null,
+        runId: null,
+        metadata: null,
+        createdAt: input.createdAt || `2026-04-10T00:03:${String(messageCounter).padStart(2, '0')}.000Z`,
+        ...input,
+      };
+      conversation.messages.push(message);
+      return message;
+    },
+    getMessage(messageId) {
+      return conversation.messages.find((message) => message.id === messageId) || null;
+    },
+    updateMessage(messageId, patch) {
+      const index = conversation.messages.findIndex((message) => message.id === messageId);
+
+      if (index === -1) {
+        return null;
+      }
+
+      conversation.messages[index] = {
+        ...conversation.messages[index],
+        ...patch,
+      };
+      return conversation.messages[index];
+    },
+    listPrivateMessagesForAgent() {
+      return [];
+    },
+  };
+
+  const orchestrator = createTurnOrchestrator({
+    store,
+    skillRegistry: { listSkills() { return []; }, resolveSkills() { return []; } },
+    modeStore: { get() { return null; } },
+    agentToolBridge: {
+      createInvocationContext(input) {
+        return { ...input, invocationId: 'noop', callbackToken: 'noop' };
+      },
+      registerInvocation(context) {
+        return context;
+      },
+      unregisterInvocation() {
+        return null;
+      },
+    },
+    host: '127.0.0.1',
+    port: 0,
+    agentDir: tempDir,
+    sqlitePath,
+    toolBaseUrl: 'http://127.0.0.1:0',
+    agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
+    executeConversationAgent: async ({ promptMessages, completedReplies, agent, turnState }) => {
+      seenBatches.push({
+        turnId: turnState.turnId,
+        batchEndMessageId: turnState.batchEndMessageId,
+        promptMessages: promptMessages.map((message) => message.content),
+      });
+
+      if (failNextBatch) {
+        failNextBatch = false;
+        throw new Error('Synthetic queued failure');
+      }
+
+      completedReplies.push({
+        agentId: agent.id,
+        senderName: agent.name,
+        content: 'ok',
+        status: 'completed',
+      });
+      return { stopTurn: false };
+    },
+  });
+
+  const firstResult = orchestrator.submitConversationMessage(conversation.id, { content: 'Failed queued message' });
+
+  await waitForCondition(
+    () =>
+      orchestrator.listTurnSummaries({ conversationId: conversation.id }).length === 0
+      && orchestrator.getConversationQueueDepth(conversation.id) === 1
+  );
+
+  assert.equal(seenBatches.length, 1);
+  assert.equal(seenBatches[0].batchEndMessageId, firstResult.acceptedMessage.id);
+  assert.equal(orchestrator.getConversationQueueDepth(conversation.id), 1);
+  assert.deepEqual(orchestrator.buildRuntimePayload().conversationQueueFailures[conversation.id], {
+    failedBatchCount: 1,
+    lastFailureAt: orchestrator.buildRuntimePayload().conversationQueueFailures[conversation.id].lastFailureAt,
+    lastFailureMessage: 'Synthetic queued failure',
+  });
+
+  const secondResult = orchestrator.submitConversationMessage(conversation.id, { content: 'Retry after failure' });
+  assert.equal(secondResult.dispatch, 'started');
+
+  await waitForCondition(
+    () =>
+      seenBatches.length === 2
+      && orchestrator.listTurnSummaries({ conversationId: conversation.id }).length === 0
+      && orchestrator.getConversationQueueDepth(conversation.id) === 0
+  );
+
+  assert.equal(seenBatches[1].batchEndMessageId, secondResult.acceptedMessage.id);
+  assert.ok(seenBatches[1].promptMessages.some((content) => content.includes('Failed queued message')));
+  assert.ok(seenBatches[1].promptMessages.some((content) => content.includes('Retry after failure')));
+  assert.equal(orchestrator.buildRuntimePayload().conversationQueueFailures[conversation.id], undefined);
 });
 
 test('session export refuses non-assistant messages and out-of-bounds paths', (t) => {

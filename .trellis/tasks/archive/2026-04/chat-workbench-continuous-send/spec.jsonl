@@ -1,0 +1,8 @@
+{"file":".trellis/spec/index.md","reason":"Shared spec fallback."}
+{"at":"2026-04-11T10:19:16+08:00","file":".trellis/spec/runtime/conversation-turn-queue.md","reason":"Captured the continuous-send code-spec: accept-vs-dispatch split, single-active-run queue semantics, batch snapshot rules, runtime payload fields, error matrix, and required regressions."}
+{"at":"2026-04-11T10:19:16+08:00","file":".trellis/spec/runtime/index.md","reason":"Indexed the continuous-send runtime spec so future turn-queue changes read the dedicated contract before editing."}
+{"at":"2026-04-11T10:19:16+08:00","file":".trellis/spec/frontend/ui-structure.md","reason":"Documented that chat composer availability now follows runtime turn state instead of the transient send-request lifecycle."}
+{"at":"2026-04-11T10:19:16+08:00","file":".trellis/spec/backend/controller-patterns.md","reason":"Documented the controller rule for accept-and-schedule chat endpoints instead of waiting for the entire turn to finish inline."}
+{"at":"2026-04-11T10:57:24+08:00","file":".trellis/spec/runtime/conversation-turn-queue.md","reason":"Extended the continuous-send spec with observable queue-failure metadata and the guarded force-delete recovery path for idle failed queued batches."}
+{"at":"2026-04-11T10:57:24+08:00","file":".trellis/spec/frontend/ui-structure.md","reason":"Documented that failed queued batches surface in composer status and may enable an explicit confirmed delete recovery path."}
+{"at":"2026-04-11T10:57:24+08:00","file":".trellis/spec/backend/controller-patterns.md","reason":"Documented the narrow controller-side force delete override for idle queued conversations with recorded queue failures."}

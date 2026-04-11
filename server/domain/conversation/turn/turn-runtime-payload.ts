@@ -14,6 +14,11 @@ export function createRuntimePayloadBuilder(options: any = {}) {
   const store = options.store;
   const activeConversationIds = options.activeConversationIds;
   const activeTurns = options.activeTurns;
+  const dispatchingConversationIds = options.dispatchingConversationIds;
+  const getConversationQueueDepths =
+    typeof options.getConversationQueueDepths === 'function' ? options.getConversationQueueDepths : () => ({});
+  const getConversationQueueFailures =
+    typeof options.getConversationQueueFailures === 'function' ? options.getConversationQueueFailures : () => ({});
 
   function buildRuntimePayload() {
     const defaultProvider = resolveSetting('', process.env.PI_PROVIDER, DEFAULT_PROVIDER);
@@ -26,6 +31,9 @@ export function createRuntimePayloadBuilder(options: any = {}) {
       defaultThinking: resolveThinkingSetting(defaultProvider, '', process.env.PI_THINKING, DEFAULT_THINKING),
       databasePath: store.databasePath,
       activeConversationIds: Array.from(activeConversationIds),
+      dispatchingConversationIds: Array.from(dispatchingConversationIds || []),
+      conversationQueueDepths: getConversationQueueDepths(),
+      conversationQueueFailures: getConversationQueueFailures(),
       activeTurns: Array.from(activeTurns.values()).map(summarizeTurnState),
     };
   }

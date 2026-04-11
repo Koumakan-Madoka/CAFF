@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 3
-- **Last Active**: 2026-04-10
+- **Total Sessions**: 4
+- **Last Active**: 2026-04-11
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~155 | Active |
+| `journal-1.md` | ~202 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 4 | 2026-04-11 | Close out continuous-send and archive completed tasks | `587c094`, `02f6a61`, `a17e1c1`, `755718c` | `feat/chat-workbench-continuous-send` |
 | 3 | 2026-04-10 | Chat 主界面 Markdown 渲染与工具链路可视化 | `55f080d` | `feat/chat-markdown-tool-trace` |
 | 2 | 2026-04-01 | Skill 动态加载机制实现 | `5bbdcc0`, `5aef23b`, `3e72c32` | `feat/dynamic-skill-loading` |
 | 1 | 2026-03-31 | Trellis移植：scripts+commands+config | - | `feat/eval-casebook` |

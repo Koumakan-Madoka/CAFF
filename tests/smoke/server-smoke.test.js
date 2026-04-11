@@ -5,6 +5,8 @@ const { spawn } = require('node:child_process');
 const net = require('node:net');
 const test = require('node:test');
 
+const { createConversationsController } = require('../../build/server/api/conversations-controller');
+
 const { requireSpawn } = require('../helpers/spawn');
 const { withTempDir } = require('../helpers/temp-dir');
 
@@ -57,6 +59,27 @@ async function waitForServer(baseUrl, child, timeoutMs = 15000) {
   throw new Error(lastError);
 }
 
+async function waitForCondition(check, timeoutMs = 15000, intervalMs = 200) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError = 'Condition was not met in time';
+
+  while (Date.now() < deadline) {
+    try {
+      const result = await check();
+
+      if (result) {
+        return result;
+      }
+    } catch (error) {
+      lastError = error && error.message ? error.message : String(error);
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+
+  throw new Error(lastError);
+}
+
 async function stopServer(child) {
   if (!child || child.exitCode !== null) {
     return;
@@ -99,6 +122,133 @@ async function fetchJson(baseUrl, pathname, options = {}) {
 
   return data;
 }
+
+test('conversations controller rejects deleting queued conversations', async () => {
+  const conversationId = 'queued-delete-conversation';
+  let deleteCalled = false;
+  const handler = createConversationsController({
+    store: {
+      getConversation(id) {
+        return id === conversationId
+          ? {
+              id: conversationId,
+              title: 'Queued delete conversation',
+              type: 'standard',
+              agents: [],
+              messages: [],
+            }
+          : null;
+      },
+      deleteConversation() {
+        deleteCalled = true;
+      },
+      listConversations() {
+        return [];
+      },
+    },
+    turnOrchestrator: {
+      buildRuntimePayload() {
+        return {
+          activeConversationIds: [],
+          dispatchingConversationIds: [],
+          conversationQueueDepths: {
+            [conversationId]: 1,
+          },
+        };
+      },
+      clearConversationState() {},
+    },
+    undercoverService: { deleteConversationState() {} },
+    werewolfService: { deleteConversationState() {} },
+    buildBootstrapPayload() {
+      return { conversations: [], agents: [], runtime: {} };
+    },
+    modeStore: { get() { return null; } },
+  });
+
+  await assert.rejects(
+    () => handler({
+      req: { method: 'DELETE' },
+      res: {},
+      pathname: `/api/conversations/${encodeURIComponent(conversationId)}`,
+      requestUrl: new URL(`http://127.0.0.1/api/conversations/${encodeURIComponent(conversationId)}`),
+    }),
+    (error) => {
+      assert.equal(error.statusCode, 409);
+      assert.match(error.message, /待处理消息|正在处理消息/u);
+      return true;
+    }
+  );
+
+  assert.equal(deleteCalled, false);
+});
+
+test('conversations controller force-deletes failed queued conversations when idle', async () => {
+  const conversationId = 'failed-queued-delete-conversation';
+  let deleteCalled = false;
+  const handler = createConversationsController({
+    store: {
+      getConversation(id) {
+        return id === conversationId
+          ? {
+              id: conversationId,
+              title: 'Failed queued delete conversation',
+              type: 'standard',
+              agents: [],
+              messages: [],
+            }
+          : null;
+      },
+      deleteConversation(id) {
+        deleteCalled = id === conversationId;
+      },
+      listConversations() {
+        return [];
+      },
+    },
+    turnOrchestrator: {
+      buildRuntimePayload() {
+        return {
+          activeConversationIds: [],
+          dispatchingConversationIds: [],
+          conversationQueueDepths: {
+            [conversationId]: 2,
+          },
+          conversationQueueFailures: {
+            [conversationId]: {
+              failedBatchCount: 1,
+              lastFailureAt: '2026-04-11T10:30:00.000Z',
+              lastFailureMessage: 'Synthetic queued failure',
+            },
+          },
+        };
+      },
+      clearConversationState() {},
+    },
+    undercoverService: { deleteConversationState() {} },
+    werewolfService: { deleteConversationState() {} },
+    buildBootstrapPayload() {
+      return { conversations: [], agents: [], runtime: {} };
+    },
+    modeStore: { get() { return null; } },
+  });
+
+  const reqUrl = new URL(`http://127.0.0.1/api/conversations/${encodeURIComponent(conversationId)}?force=1`);
+  const res = {
+    writeHead() {},
+    end() {},
+  };
+
+  const handled = await handler({
+    req: { method: 'DELETE' },
+    res,
+    pathname: `/api/conversations/${encodeURIComponent(conversationId)}`,
+    requestUrl: reqUrl,
+  });
+
+  assert.equal(handled, true);
+  assert.equal(deleteCalled, true);
+});
 
 test('server smoke: bootstrap, static files, projects, skills, agents, and conversations work', async (t) => {
   if (!requireSpawn(t)) {
@@ -275,6 +425,12 @@ test('server smoke: pi-mono agent can initialize and write Trellis files for the
     },
   });
 
+  const trellisDir = path.join(projectDir, '.trellis');
+  const currentTaskPath = path.join(trellisDir, '.current-task');
+  const prdPath = path.join(trellisDir, 'tasks', 'pi-tool-smoke', 'prd.md');
+  const workflowPath = path.join(trellisDir, 'workflow.md');
+  const taskJsonPath = path.join(trellisDir, 'tasks', 'pi-tool-smoke', 'task.json');
+
   const messageResult = await fetchJson(
     baseUrl,
     `/api/conversations/${encodeURIComponent(conversationResult.conversation.id)}/messages`,
@@ -286,16 +442,28 @@ test('server smoke: pi-mono agent can initialize and write Trellis files for the
     }
   );
 
-  assert.equal(messageResult.turn.status, 'completed');
-  assert.equal(messageResult.failures.length, 0);
-  assert.equal(messageResult.replies.length, 1);
-  assert.equal(messageResult.replies[0].status, 'completed');
+  assert.match(String(messageResult.dispatch || ''), /^(started|queued)$/u);
+  assert.equal(messageResult.acceptedMessage.role, 'user');
 
-  const trellisDir = path.join(projectDir, '.trellis');
-  const currentTaskPath = path.join(trellisDir, '.current-task');
-  const prdPath = path.join(trellisDir, 'tasks', 'pi-tool-smoke', 'prd.md');
-  const workflowPath = path.join(trellisDir, 'workflow.md');
-  const taskJsonPath = path.join(trellisDir, 'tasks', 'pi-tool-smoke', 'task.json');
+  const completedConversation = await waitForCondition(async () => {
+    if (!fs.existsSync(prdPath) || !fs.existsSync(taskJsonPath) || !fs.existsSync(workflowPath)) {
+      return null;
+    }
+
+    const conversationPayload = await fetchJson(
+      baseUrl,
+      `/api/conversations/${encodeURIComponent(conversationResult.conversation.id)}?includePrivateMessages=1`
+    );
+    const assistantReplies = Array.isArray(conversationPayload.conversation && conversationPayload.conversation.messages)
+      ? conversationPayload.conversation.messages.filter((message) => message && message.role === 'assistant')
+      : [];
+
+    return assistantReplies.some((message) => message.status === 'completed') ? conversationPayload.conversation : null;
+  });
+
+  const assistantReplies = completedConversation.messages.filter((message) => message && message.role === 'assistant');
+  assert.ok(assistantReplies.length >= 1);
+  assert.equal(assistantReplies[assistantReplies.length - 1].status, 'completed');
 
   assert.ok(fs.existsSync(trellisDir));
   assert.ok(fs.existsSync(workflowPath));

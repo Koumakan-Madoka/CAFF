@@ -35,5 +35,15 @@
 ## Cross-Layer Watch Points
 
 - UI payload expectations must stay aligned with controller and domain output.
+- Chat composer lock state must come from runtime turn state, not only from the
+  transient `POST /messages` request lifecycle. Continuous-send keeps normal
+  conversation input/send enabled while `activeTurns`,
+  `dispatchingConversationIds`, `conversationQueueDepths`, and
+  `conversationQueueFailures` describe the real background state.
+- Recovery affordances for failed queued batches belong in the same runtime-fed
+  status area: if a queued batch is idle because dispatch previously failed,
+  show that failure state in composer status and require an explicit confirmation
+  before force-deleting the conversation and dropping the pending queued
+  messages.
 - Trellis-related UI affordances usually depend on backend prompt/runtime state,
   so verify both sides when changing labels, status handling, or tool exposure.
