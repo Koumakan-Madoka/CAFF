@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 5
-- **Last Active**: 2026-04-11
+- **Total Sessions**: 7
+- **Last Active**: 2026-04-12
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~259 | Active |
+| `journal-1.md` | ~346 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,8 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 7 | 2026-04-12 | Close out dynamic skill-test early-stop task | `b70cc3f` | `feat/04-12-caff-feishu-integration` |
+| 6 | 2026-04-12 | Close out Feishu integration MVP task | `f30d1f2` | `feat/04-12-caff-feishu-integration` |
 | 5 | 2026-04-11 | Agent Parallel Dispatch v1 closeout | - | `main` |
 | 4 | 2026-04-11 | Close out continuous-send and archive completed tasks | `587c094`, `02f6a61`, `a17e1c1`, `755718c` | `feat/chat-workbench-continuous-send` |
 | 3 | 2026-04-10 | Chat 主界面 Markdown 渲染与工具链路可视化 | `55f080d` | `feat/chat-markdown-tool-trace` |

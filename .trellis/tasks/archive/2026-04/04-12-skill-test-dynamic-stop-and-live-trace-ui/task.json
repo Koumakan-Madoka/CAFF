@@ -1,0 +1,55 @@
+{
+  "id": "skill-test-dynamic-stop-and-live-trace-ui",
+  "name": "skill-test-dynamic-stop-and-live-trace-ui",
+  "title": "Optimize skill test dynamic stop and live trace UI",
+  "description": "Focus dynamic skill evaluation on successful skill loading, stop the agent loop immediately after confirmed target skill load, and add live tool/output trace visibility in the skill test UI with chat workbench code reuse where practical.",
+  "status": "completed",
+  "dev_type": "fullstack",
+  "scope": null,
+  "package": null,
+  "priority": "P1",
+  "creator": "菲比啾比",
+  "assignee": "菲比啾比",
+  "createdAt": "2026-04-12",
+  "completedAt": "2026-04-12",
+  "branch": null,
+  "base_branch": "feat/agent-parallel-side-dispatch",
+  "worktree_path": null,
+  "current_phase": 0,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "check"
+    },
+    {
+      "phase": 3,
+      "action": "finish"
+    },
+    {
+      "phase": 4,
+      "action": "create-pr"
+    }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "server/api/skill-test-controller.ts",
+    "lib/pi-runtime.ts",
+    "server/domain/runtime/message-tool-trace.ts",
+    "public/skill-tests.js",
+    "public/eval-cases.html",
+    "public/chat/message-timeline.js",
+    "public/app.js",
+    "tests/skill-test/skill-test-e2e.test.js",
+    "tests/runtime/message-tool-trace.test.js"
+  ],
+  "notes": "Dynamic mode should stop as soon as the target skill load is confirmed. Frontend should expose live tool/output traces and prefer reuse of chat workbench trace helpers.",
+  "meta": {}
+}

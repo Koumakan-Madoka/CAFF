@@ -14,6 +14,7 @@ const { createAgentsController } = require('../api/agents-controller');
 const { createBootstrapController } = require('../api/bootstrap-controller');
 const { createConversationsController } = require('../api/conversations-controller');
 const { createEvalCasesController } = require('../api/eval-cases-controller');
+const { createFeishuController } = require('../api/feishu-controller');
 const { createMetricsController } = require('../api/metrics-controller');
 const { createProjectsController } = require('../api/projects-controller');
 const { createModesController } = require('../api/modes-controller');
@@ -28,6 +29,9 @@ const { pickConversationSummary } = require('../domain/conversation/conversation
 const { createUndercoverService } = require('../domain/undercover/undercover-service');
 const { createWerewolfService } = require('../domain/werewolf/werewolf-service');
 const { createAgentToolBridge } = require('../domain/runtime/agent-tool-bridge');
+const { createFeishuClient } = require('../domain/integrations/feishu/feishu-client');
+const { createFeishuIntegrationService } = require('../domain/integrations/feishu/feishu-service');
+const { createFeishuLongConnectionSource } = require('../domain/integrations/feishu/feishu-long-connection');
 const { createRouter } = require('../http/router');
 const { createSseBus } = require('../http/sse-bus');
 const { buildErrorJsonPayload, sendJson } = require('../http/response');
@@ -150,6 +154,8 @@ export function createServerApp(options: any = {}) {
     },
   });
 
+  const feishuClient = createFeishuClient();
+  let feishuIntegration: any = null;
   const agentToolScriptPath = path.resolve(ROOT_DIR, 'lib', 'agent-chat-tools.js');
   const agentToolRelativePath = resolveToolRelativePath(agentToolScriptPath);
 
@@ -169,6 +175,22 @@ export function createServerApp(options: any = {}) {
     toolBaseUrl,
     agentToolScriptPath,
     agentToolRelativePath,
+    onAssistantMessageCompleted(message: any) {
+      if (!feishuIntegration) {
+        return;
+      }
+
+      return feishuIntegration.deliverAssistantMessage(message);
+    },
+  });
+
+  feishuIntegration = createFeishuIntegrationService({
+    store,
+    turnOrchestrator,
+    client: feishuClient,
+  });
+  const feishuLongConnection = createFeishuLongConnectionSource({
+    feishuService: feishuIntegration,
   });
 
   const undercoverService = createUndercoverService({
@@ -200,6 +222,9 @@ export function createServerApp(options: any = {}) {
       sseBus,
       turnOrchestrator,
       buildBootstrapPayload,
+    }),
+    createFeishuController({
+      feishuService: feishuIntegration,
     }),
     createMetricsController({
       store,
@@ -253,6 +278,7 @@ export function createServerApp(options: any = {}) {
       skillRegistry,
       getProjectDir: () => activeProjectDir,
       toolBaseUrl,
+      broadcastEvent,
     }),
   ]);
 
@@ -289,10 +315,22 @@ export function createServerApp(options: any = {}) {
         onListen();
       }
     });
+
+    if (feishuIntegration) {
+      void Promise.resolve(feishuIntegration.initialize()).catch(() => null);
+    }
+
+    if (feishuLongConnection) {
+      feishuLongConnection.start();
+    }
   }
 
   function close(callback: any) {
     sseBus.closeAll();
+
+    if (feishuLongConnection) {
+      feishuLongConnection.stop();
+    }
 
     server.close(() => {
       store.close();

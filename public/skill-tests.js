@@ -62,6 +62,7 @@
     detailDownloadButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('st-detail-download-btn')),
     detailDeleteButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('st-detail-delete-btn')),
     detailRegression: /** @type {HTMLElement | null} */ (document.getElementById('st-detail-regression')),
+    liveRun: /** @type {HTMLDivElement | null} */ (document.getElementById('st-live-run')),
     detailRuns: /** @type {HTMLDivElement | null} */ (document.getElementById('st-detail-runs')),
     detailTabButtons: /** @type {NodeListOf<HTMLButtonElement>} */ (document.querySelectorAll('[data-st-detail-tab]')),
     detailTabPanels: /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('[data-st-detail-panel]')),
@@ -104,7 +105,432 @@
     summaryLoading: false,
     summaryLoadError: '',
     summaryLastLoadedAt: '',
+    skillTestEventSource: null,
+    liveSkillRunsByCaseId: new Map(),
+    liveSkillRunCaseIdByMessageId: new Map(),
   };
+
+  function emptyTraceSummary() {
+    return {
+      totalSteps: 0,
+      sessionToolCount: 0,
+      bridgeToolCount: 0,
+      failedSteps: 0,
+      succeededSteps: 0,
+      totalDurationMs: 0,
+      retryCount: 0,
+      hasRetries: false,
+      status: 'idle',
+    };
+  }
+
+  function emptyTraceActivity() {
+    return {
+      status: 'idle',
+      hasCurrentTool: false,
+      currentToolName: '',
+      currentStepId: '',
+      currentStepKind: '',
+      inferred: false,
+      label: '',
+    };
+  }
+
+  function normalizeToolTraceStepStatus(status) {
+    const normalized = String(status || '').trim().toLowerCase();
+    if (normalized === 'succeeded' || normalized === 'completed' || normalized === 'ok') return 'succeeded';
+    if (normalized === 'failed' || normalized === 'error' || normalized === 'timeout') return 'failed';
+    if (normalized === 'running' || normalized === 'queued' || normalized === 'pending') return normalized;
+    return normalized || 'observed';
+  }
+
+  function mergeToolTraceStep(existingStep, incomingStep) {
+    const nextStep = {
+      ...(existingStep && typeof existingStep === 'object' ? existingStep : {}),
+      ...(incomingStep && typeof incomingStep === 'object' ? incomingStep : {}),
+    };
+    const existingStatus = normalizeToolTraceStepStatus(existingStep && existingStep.status ? existingStep.status : '');
+    const incomingStatus = normalizeToolTraceStepStatus(incomingStep && incomingStep.status ? incomingStep.status : '');
+    const stepKind = String(nextStep && nextStep.kind ? nextStep.kind : '').trim();
+    if (stepKind === 'session' && incomingStatus === 'observed' && existingStatus === 'running') {
+      nextStep.status = 'running';
+    } else {
+      nextStep.status = incomingStatus || existingStatus || 'observed';
+    }
+    return nextStep;
+  }
+
+  function rebuildLiveRunTrace(trace) {
+    const nextTrace = trace && typeof trace === 'object'
+      ? trace
+      : {
+          message: null,
+          task: null,
+          session: null,
+          sessionToolCalls: [],
+          bridgeToolEvents: [],
+          steps: [],
+          summary: emptyTraceSummary(),
+          activity: emptyTraceActivity(),
+          failureContext: null,
+        };
+    const steps = Array.isArray(nextTrace.steps) ? nextTrace.steps.filter(Boolean) : [];
+    const mergedSteps = [];
+    const stepIndexById = new Map();
+    for (const rawStep of steps) {
+      const stepId = String(rawStep && rawStep.stepId ? rawStep.stepId : '').trim() || `tool-step-${mergedSteps.length + 1}`;
+      const nextStep = {
+        ...rawStep,
+        stepId,
+        kind: rawStep && rawStep.kind ? String(rawStep.kind) : 'session',
+        status: normalizeToolTraceStepStatus(rawStep && rawStep.status ? rawStep.status : ''),
+      };
+      const existingIndex = stepIndexById.get(stepId);
+      if (existingIndex === undefined) {
+        stepIndexById.set(stepId, mergedSteps.length);
+        mergedSteps.push(nextStep);
+      } else {
+        mergedSteps[existingIndex] = mergeToolTraceStep(mergedSteps[existingIndex], nextStep);
+      }
+    }
+    const sessionSteps = mergedSteps.filter((step) => step && step.kind === 'session');
+    const bridgeSteps = mergedSteps.filter((step) => step && step.kind === 'bridge');
+    const failedSteps = mergedSteps.filter((step) => normalizeToolTraceStepStatus(step && step.status) === 'failed');
+    const runningStep = mergedSteps.slice().reverse().find((step) => {
+      const status = normalizeToolTraceStepStatus(step && step.status ? step.status : '');
+      return status === 'running' || status === 'queued';
+    }) || null;
+    const summaryStatus = failedSteps.length > 0
+      ? 'failed'
+      : runningStep || String(nextTrace && nextTrace.task && nextTrace.task.status || '').trim().toLowerCase() === 'running'
+        ? 'running'
+        : mergedSteps.length > 0
+          ? 'succeeded'
+          : 'idle';
+    nextTrace.steps = mergedSteps.map((step, index) => ({ ...step, timelineIndex: index }));
+    nextTrace.sessionToolCalls = sessionSteps;
+    nextTrace.bridgeToolEvents = bridgeSteps;
+    nextTrace.summary = {
+      totalSteps: mergedSteps.length,
+      sessionToolCount: sessionSteps.length,
+      bridgeToolCount: bridgeSteps.length,
+      failedSteps: failedSteps.length,
+      succeededSteps: bridgeSteps.filter((step) => normalizeToolTraceStepStatus(step && step.status) === 'succeeded').length,
+      totalDurationMs: bridgeSteps.reduce((sum, step) => {
+        const value = Number(step && step.durationMs);
+        return sum + (Number.isFinite(value) ? value : 0);
+      }, 0),
+      retryCount: 0,
+      hasRetries: false,
+      status: summaryStatus,
+    };
+    if (runningStep && runningStep.toolName) {
+      nextTrace.activity = {
+        status: summaryStatus,
+        hasCurrentTool: true,
+        currentToolName: String(runningStep.toolName),
+        currentStepId: String(runningStep.stepId || ''),
+        currentStepKind: String(runningStep.kind || ''),
+        inferred: false,
+        label: `当前工具：${runningStep.toolName}`,
+      };
+    } else {
+      nextTrace.activity = {
+        ...emptyTraceActivity(),
+        status: summaryStatus,
+      };
+    }
+    return nextTrace;
+  }
+
+  function createLiveSkillRun(payload = {}) {
+    const messageId = String(payload.messageId || '').trim();
+    const taskId = String(payload.taskId || '').trim();
+    return {
+      caseId: String(payload.caseId || '').trim(),
+      skillId: String(payload.skillId || '').trim(),
+      loadingMode: String(payload.loadingMode || '').trim(),
+      testType: String(payload.testType || '').trim(),
+      conversationId: String(payload.conversationId || '').trim(),
+      turnId: String(payload.turnId || '').trim(),
+      taskId,
+      messageId,
+      runId: payload.runId || null,
+      provider: String(payload.provider || '').trim(),
+      model: String(payload.model || '').trim(),
+      promptVersion: String(payload.promptVersion || '').trim(),
+      status: String(payload.status || 'running').trim() || 'running',
+      createdAt: String(payload.createdAt || '').trim(),
+      finishedAt: String(payload.finishedAt || '').trim(),
+      outputText: String(payload.outputText || '').trim(),
+      errorMessage: String(payload.errorMessage || '').trim(),
+      trace: rebuildLiveRunTrace(payload.trace || {
+        message: messageId ? { id: messageId, status: 'streaming', taskId, runId: payload.runId || null, createdAt: String(payload.createdAt || '').trim() } : null,
+        task: taskId ? { id: taskId, status: 'running', runId: payload.runId || null } : null,
+        session: null,
+        sessionToolCalls: [],
+        bridgeToolEvents: [],
+        steps: [],
+        summary: emptyTraceSummary(),
+        activity: emptyTraceActivity(),
+        failureContext: null,
+      }),
+    };
+  }
+
+  function finalizeLiveSkillRunSteps(liveRun) {
+    if (!liveRun || !liveRun.trace || !Array.isArray(liveRun.trace.steps)) {
+      return;
+    }
+    const fallbackStatus = liveRun.status === 'failed' ? 'failed' : 'succeeded';
+    liveRun.trace.steps = liveRun.trace.steps.map((step) => {
+      if (!step || normalizeToolTraceStepStatus(step.status) !== 'running') {
+        return step;
+      }
+      return { ...step, status: fallbackStatus };
+    });
+    liveRun.trace = rebuildLiveRunTrace(liveRun.trace);
+  }
+
+  function applyLiveSkillRunPayload(payload) {
+    if (!payload || typeof payload !== 'object') {
+      return;
+    }
+    const caseId = String(payload.caseId || '').trim();
+    if (!caseId) {
+      return;
+    }
+    const phase = String(payload.phase || '').trim().toLowerCase();
+    const existing = state.liveSkillRunsByCaseId.get(caseId) || null;
+    const nextRun = existing ? {
+      ...existing,
+      ...payload,
+      ...(phase === 'started' ? { outputText: '', errorMessage: '', finishedAt: '' } : {}),
+      status: String(payload.status || existing.status || '').trim() || existing.status,
+      outputText: payload.outputText !== undefined ? String(payload.outputText || '') : phase === 'started' ? '' : existing.outputText,
+      errorMessage: payload.errorMessage !== undefined ? String(payload.errorMessage || '') : phase === 'started' ? '' : existing.errorMessage,
+      finishedAt: payload.finishedAt !== undefined ? String(payload.finishedAt || '') : phase === 'started' ? '' : existing.finishedAt,
+      trace: rebuildLiveRunTrace(payload.trace || existing.trace),
+    } : createLiveSkillRun(payload);
+
+    const previousMessageId = existing && existing.messageId ? String(existing.messageId).trim() : '';
+    const nextMessageId = nextRun.messageId ? String(nextRun.messageId).trim() : '';
+    const terminalPhase = phase === 'completed' || phase === 'failed';
+
+    state.liveSkillRunsByCaseId.set(caseId, nextRun);
+    if (previousMessageId && (previousMessageId !== nextMessageId || terminalPhase)) {
+      state.liveSkillRunCaseIdByMessageId.delete(previousMessageId);
+    }
+    if (nextMessageId && !terminalPhase) {
+      state.liveSkillRunCaseIdByMessageId.set(nextMessageId, caseId);
+    }
+
+    if (terminalPhase) {
+      finalizeLiveSkillRunSteps(nextRun);
+    }
+
+    renderLiveSkillRun();
+  }
+
+  function applyLiveSkillToolEvent(payload) {
+    if (!payload || typeof payload !== 'object') {
+      return;
+    }
+    const messageId = String(payload.messageId || payload.assistantMessageId || '').trim();
+    if (!messageId) {
+      return;
+    }
+    const caseId = state.liveSkillRunCaseIdByMessageId.get(messageId);
+    if (!caseId) {
+      return;
+    }
+    const liveRun = state.liveSkillRunsByCaseId.get(caseId);
+    const step = payload.step && typeof payload.step === 'object' ? { ...payload.step } : null;
+    if (!liveRun || !step) {
+      return;
+    }
+    if (String(liveRun.messageId || '').trim() !== messageId) {
+      return;
+    }
+    const liveRunStatus = String(liveRun.status || '').trim().toLowerCase();
+    if (liveRunStatus === 'completed' || liveRunStatus === 'succeeded' || liveRunStatus === 'failed') {
+      return;
+    }
+
+    const trace = rebuildLiveRunTrace(liveRun.trace);
+    if (!trace.message) {
+      trace.message = { id: messageId, status: 'streaming', taskId: liveRun.taskId || null, runId: liveRun.runId || null, createdAt: liveRun.createdAt || '' };
+    }
+    if (!trace.task && liveRun.taskId) {
+      trace.task = { id: liveRun.taskId, status: liveRunStatus === 'terminating' ? 'terminating' : 'running', runId: liveRun.runId || null };
+    }
+    const stepId = String(step.stepId || '').trim();
+    const existingIndex = stepId ? trace.steps.findIndex((entry) => entry && entry.stepId === stepId) : -1;
+    if (payload.phase === 'started' && step.kind === 'session') {
+      trace.steps = trace.steps.map((entry) => {
+        if (!entry || entry.kind !== 'session' || normalizeToolTraceStepStatus(entry.status) !== 'running' || entry.stepId === stepId) {
+          return entry;
+        }
+        return { ...entry, status: 'observed' };
+      });
+    }
+    if (existingIndex === -1) {
+      trace.steps.push(step);
+    } else {
+      trace.steps[existingIndex] = mergeToolTraceStep(trace.steps[existingIndex], step);
+    }
+    liveRun.trace = rebuildLiveRunTrace(trace);
+    state.liveSkillRunsByCaseId.set(caseId, liveRun);
+    renderLiveSkillRun();
+  }
+
+  function liveRunTone(status) {
+    const normalized = String(status || '').trim().toLowerCase();
+    if (normalized === 'failed') return 'failed';
+    if (normalized === 'running' || normalized === 'terminating') return 'running';
+    if (normalized === 'completed' || normalized === 'succeeded') return 'success';
+    return 'neutral';
+  }
+
+  function liveRunStatusLabel(status) {
+    const normalized = String(status || '').trim().toLowerCase();
+    if (normalized === 'failed') return '运行失败';
+    if (normalized === 'running') return '运行中';
+    if (normalized === 'terminating') return '收尾中';
+    if (normalized === 'completed' || normalized === 'succeeded') return '运行完成';
+    return '等待中';
+  }
+
+  function formatTracePayloadText(value) {
+    if (value == null || value === '') {
+      return '';
+    }
+    if (typeof value === 'string') {
+      return value;
+    }
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch {
+      return String(value);
+    }
+  }
+
+  function renderLiveSkillRun() {
+    const container = dom.liveRun;
+    if (!container) {
+      return;
+    }
+    const liveRun = state.selectedCaseId ? state.liveSkillRunsByCaseId.get(state.selectedCaseId) || null : null;
+    if (!liveRun) {
+      container.innerHTML = '';
+      container.classList.add('hidden');
+      return;
+    }
+    const trace = rebuildLiveRunTrace(liveRun.trace);
+    const activity = trace.activity || emptyTraceActivity();
+    const tone = liveRunTone(liveRun.status);
+    const pills = [
+      `<span class="message-tool-trace-pill ${tone}">${escapeHtml(liveRunStatusLabel(liveRun.status))}</span>`,
+      activity && activity.hasCurrentTool && activity.currentToolName
+        ? `<span class="message-tool-trace-pill running">当前：${escapeHtml(activity.currentToolName)}</span>`
+        : '',
+      trace.summary && trace.summary.totalSteps > 0
+        ? `<span class="message-tool-trace-pill time">步骤 ${escapeHtml(String(trace.summary.totalSteps))}</span>`
+        : '',
+      liveRun.provider || liveRun.model
+        ? `<span class="message-tool-trace-pill duration">${escapeHtml([liveRun.provider, liveRun.model].filter(Boolean).join(' / '))}</span>`
+        : '',
+    ].filter(Boolean).join(' ');
+
+    const stepsHtml = Array.isArray(trace.steps) && trace.steps.length > 0
+      ? trace.steps.map((step, index, arr) => {
+          const stepTone = normalizeToolTraceStepStatus(step && step.status) === 'failed'
+            ? 'failed'
+            : normalizeToolTraceStepStatus(step && step.status) === 'running'
+              ? 'running'
+              : 'success';
+          const requestText = formatTracePayloadText(step && step.requestSummary !== undefined ? step.requestSummary : null);
+          const resultText = formatTracePayloadText(
+            step && step.errorSummary !== undefined && step.errorSummary !== null && step.errorSummary !== ''
+              ? step.errorSummary
+              : step && step.resultSummary !== undefined
+                ? step.resultSummary
+                : step && step.partialJson
+                  ? step.partialJson
+                  : ''
+          );
+          return `<article class="message-tool-trace-step ${stepTone}${index === arr.length - 1 ? ' last' : ''}">
+            <div class="message-tool-trace-step-rail"><div class="message-tool-trace-step-index">${index + 1}</div><div class="message-tool-trace-step-line"></div></div>
+            <div class="message-tool-trace-step-main">
+              <div class="message-tool-trace-step-header">
+                <div class="message-tool-trace-step-title-wrap">
+                  <div class="message-tool-trace-step-eyebrow">${escapeHtml(step && step.kind ? String(step.kind) : 'tool')}</div>
+                  <div class="message-tool-trace-step-title">${escapeHtml(step && step.toolName ? String(step.toolName) : 'tool')}</div>
+                </div>
+                <div class="message-tool-trace-step-meta"><span class="message-tool-trace-pill ${stepTone}">${escapeHtml(normalizeToolTraceStepStatus(step && step.status))}</span></div>
+              </div>
+              ${requestText ? `<div class="message-tool-trace-payload-wrap"><div class="message-tool-trace-payload-label">输入</div><pre class="message-tool-trace-payload">${escapeHtml(requestText)}</pre></div>` : ''}
+              ${resultText ? `<div class="message-tool-trace-payload-wrap"><div class="message-tool-trace-payload-label">输出</div><pre class="message-tool-trace-payload${stepTone === 'failed' ? ' failed' : ''}">${escapeHtml(resultText)}</pre></div>` : ''}
+            </div>
+          </article>`;
+        }).join('')
+      : '<div class="message-tool-trace-note">正在等待工具调用…</div>';
+
+    const outputText = liveRun.outputText
+      ? `<div class="message-tool-trace-note">模型输出：${escapeHtml(clipText(liveRun.outputText, 240))}</div>`
+      : '';
+    const errorText = liveRun.errorMessage
+      ? `<div class="message-tool-trace-note failed">错误：${escapeHtml(liveRun.errorMessage)}</div>`
+      : '';
+
+    container.classList.remove('hidden');
+    container.innerHTML = `
+      <div class="run-detail-section">
+        <div class="section-label">Live Trace</div>
+        <div class="agent-meta">${escapeHtml(liveRun.createdAt ? new Date(liveRun.createdAt).toLocaleString() : '')}${liveRun.promptVersion ? ` · ${escapeHtml(liveRun.promptVersion)}` : ''}</div>
+      </div>
+      <section class="message-tool-trace open">
+        <div class="message-tool-trace-header">
+          <div class="message-tool-trace-summary">${pills}</div>
+        </div>
+        <div class="message-tool-trace-details">
+          ${outputText}
+          ${errorText}
+          <section class="message-tool-trace-section">
+            <div class="message-tool-trace-section-header">
+              <div class="message-tool-trace-section-title">工具时间线</div>
+              <div class="message-tool-trace-section-meta"></div>
+            </div>
+            <div class="message-tool-trace-steps-viewport scrollable">
+              <div class="message-tool-trace-section-steps">${stepsHtml}</div>
+            </div>
+          </section>
+        </div>
+      </section>
+    `;
+  }
+
+  function connectSkillTestEventStream() {
+    if (state.skillTestEventSource || typeof window.EventSource !== 'function') {
+      return;
+    }
+    const source = new window.EventSource('/api/events');
+    state.skillTestEventSource = source;
+    source.addEventListener('skill_test_run_event', (event) => {
+      try {
+        applyLiveSkillRunPayload(JSON.parse(event.data));
+      } catch {}
+    });
+    source.addEventListener('conversation_tool_event', (event) => {
+      try {
+        const payload = JSON.parse(event.data);
+        if (!payload || !payload.conversationId || !String(payload.conversationId).startsWith('skill-test-')) {
+          return;
+        }
+        applyLiveSkillToolEvent(payload);
+      } catch {}
+    });
+  }
 
   function normalizeIssueSeverity(value) {
     const normalized = String(value || '').trim().toLowerCase();
@@ -714,6 +1140,7 @@
       panel.classList.toggle('hidden', panel.id !== tabId);
     });
     if (tabId === 'panel-skill-tests') {
+      connectSkillTestEventStream();
       loadBootstrapOptions();
       loadSkills();
       loadSummary();
@@ -1534,6 +1961,7 @@
     }
 
     renderIssuePanel(dom.detailIssues, caseValidation.issues, '用例校验提示');
+    renderLiveSkillRun();
 
     loadCaseRuns(tc.id);
     loadCaseRegression(tc.id);
@@ -1551,6 +1979,10 @@
     }
     if (dom.detailRegression) {
       dom.detailRegression.innerHTML = '<p class="section-hint">先运行几次，再看不同模型或 prompt version 的表现差异。</p>';
+    }
+    if (dom.liveRun) {
+      dom.liveRun.innerHTML = '';
+      dom.liveRun.classList.add('hidden');
     }
     if (dom.detailRuns) {
       dom.detailRuns.innerHTML = '<p class="section-hint">暂无运行记录</p>';

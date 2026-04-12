@@ -93,6 +93,14 @@ const BUILTIN_MODES = [
     loadingStrategy: 'dynamic',
   },
   {
+    id: 'coding',
+    name: 'Coding',
+    description: '面向编码协作的默认会话模式',
+    builtin: true,
+    skillIds: [],
+    loadingStrategy: 'dynamic',
+  },
+  {
     id: 'werewolf',
     name: '狼人杀',
     description: '后端全自动主持的狼人杀游戏模式',

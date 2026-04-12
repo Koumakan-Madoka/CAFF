@@ -16,6 +16,8 @@ import { createSqliteRunStore } from '../../lib/sqlite-store';
 import { buildLlmGenerationPrompt, generateSkillTestPrompts } from '../../lib/skill-test-generator';
 import { ROOT_DIR } from '../app/config';
 import { ensureAgentSandbox, toPortableShellPath } from '../domain/conversation/turn/agent-sandbox';
+import { extractLiveSessionToolFromPiEvent } from '../domain/conversation/turn/agent-executor';
+import { buildAssistantMessageToolTrace } from '../domain/runtime/message-tool-trace';
 
 type ApiContext = {
   req: IncomingMessage;
@@ -37,6 +39,58 @@ function safeJsonParse(value: any) {
   } catch {
     return null;
   }
+}
+
+function normalizePiToolContentType(value: any) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_');
+}
+
+function extractPiToolCalls(piEvent: any) {
+  const message = piEvent && piEvent.message && piEvent.message.role === 'assistant' ? piEvent.message : null;
+
+  if (!message || !Array.isArray(message.content)) {
+    return [];
+  }
+
+  const toolCalls: any[] = [];
+
+  for (const item of message.content) {
+    const type = normalizePiToolContentType(item && item.type ? item.type : '');
+
+    if (type !== 'tool_call' && type !== 'toolcall' && type !== 'tool_use' && type !== 'tooluse') {
+      continue;
+    }
+
+    if (!item || !item.name) {
+      continue;
+    }
+
+    toolCalls.push({
+      toolName: String(item.name || '').trim(),
+      arguments: item.arguments !== undefined ? item.arguments : null,
+      toolCallId: String(item.id || item.toolCallId || '').trim(),
+    });
+  }
+
+  return toolCalls;
+}
+
+function liveSessionToolStepSignature(step: any) {
+  if (!step || typeof step !== 'object') {
+    return '';
+  }
+
+  return JSON.stringify([
+    step && step.stepId ? String(step.stepId).trim() : '',
+    step && step.toolName ? String(step.toolName).trim() : '',
+    step && step.bridgeToolHint ? String(step.bridgeToolHint).trim() : '',
+    step && step.status ? String(step.status).trim().toLowerCase() : '',
+    step && step.requestSummary !== undefined ? step.requestSummary : null,
+    step && step.partialJson ? String(step.partialJson) : '',
+  ]);
 }
 
 function isPlainObject(value: any) {
@@ -2246,6 +2300,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
   const toolBaseUrl = String(options.toolBaseUrl || '').trim() || 'http://127.0.0.1:3100';
   const startRunImpl = typeof options.startRunImpl === 'function' ? options.startRunImpl : startRun;
   const evaluateRunImpl = typeof options.evaluateRunImpl === 'function' ? options.evaluateRunImpl : null;
+  const broadcastEvent = typeof options.broadcastEvent === 'function' ? options.broadcastEvent : () => {};
   let schemaReady = false;
 
   if (!store || !store.db) {
@@ -2266,6 +2321,47 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     migrateRunSchema(store.db);
     migrateSkillTestSchema(store.db);
     schemaReady = true;
+  }
+
+  function buildSkillTestLiveTrace(messageId: string, taskId: string, status: string, runId: any, createdAt: string, sessionPath = '') {
+    return buildAssistantMessageToolTrace({
+      db: store.db,
+      agentDir: store.agentDir,
+      message: {
+        id: messageId,
+        status,
+        taskId,
+        runId,
+        createdAt,
+      },
+      resolvedSessionPath: sessionPath,
+    });
+  }
+
+  function broadcastSkillTestRunEvent(phase: string, payload: any = {}) {
+    broadcastEvent('skill_test_run_event', {
+      phase,
+      ...(payload && typeof payload === 'object' ? payload : {}),
+    });
+  }
+
+  function broadcastSkillTestToolEvent(payload: any = {}) {
+    broadcastEvent('conversation_tool_event', payload);
+  }
+
+  function stopSkillTestRunHandle(handle: any, reason: string) {
+    if (!handle || typeof handle !== 'object') {
+      return;
+    }
+
+    if (typeof handle.complete === 'function') {
+      handle.complete(reason);
+      return;
+    }
+
+    if (typeof handle.cancel === 'function') {
+      handle.cancel(reason);
+    }
   }
 
   function getSkillTestRunDebug(run: any) {
@@ -2812,23 +2908,31 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
 
   // ---- Run execution ----
 
-  function collectToolCallsFromTask(taskId: string) {
+  function collectTaskEventPayloads(taskId: string, eventType: string) {
     ensureSchema();
     let rows: any[] = [];
     try {
       rows = store.db
         .prepare(
           `SELECT event_json FROM a2a_task_events
-           WHERE task_id = @taskId AND event_type = 'agent_tool_call'
+           WHERE task_id = @taskId AND event_type = @eventType
            ORDER BY id ASC LIMIT 200`
         )
-        .all({ taskId });
+        .all({ taskId, eventType });
     } catch {
       rows = [];
     }
     return rows
       .map((row) => safeJsonParse(row.event_json))
       .filter(Boolean);
+  }
+
+  function collectToolCallsFromTask(taskId: string) {
+    return collectTaskEventPayloads(taskId, 'agent_tool_call');
+  }
+
+  function collectDynamicSkillLoadConfirmationsFromTask(taskId: string) {
+    return collectTaskEventPayloads(taskId, 'skill_test_dynamic_load_confirmed');
   }
 
   /**
@@ -4968,6 +5072,9 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     const sessionPath = String(runtime.sessionPath || '').trim() || getSessionPathForTask(taskId);
     const sessionSnapshot = sessionPath ? readSessionAssistantSnapshot(sessionPath) : null;
     const sessionToolCalls = parseToolCallsFromSession(sessionPath);
+    const dynamicSkillLoadConfirmations = loadingMode === 'dynamic'
+      ? collectDynamicSkillLoadConfirmationsFromTask(taskId)
+      : [];
 
     for (const tc of sessionToolCalls) {
       const toolName = String(tc && tc.toolName || '').trim();
@@ -4986,6 +5093,36 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
       if (loadingMode === 'dynamic' && !triggerPassed && isTargetSkillReadToolCall(toolName, tc.arguments, skillId, targetSkillMarkdownPath)) {
         triggerPassed = true;
       }
+    }
+
+    for (const confirmation of dynamicSkillLoadConfirmations) {
+      const confirmationPath = normalizeToolPathForMatch(confirmation && confirmation.path || '');
+      if (!isSkillMarkdownReadPath(confirmationPath, skillId, targetSkillMarkdownPath)) {
+        continue;
+      }
+
+      triggerPassed = true;
+
+      const alreadyObserved = observedToolCalls.some((entry: any) => {
+        if (String(entry && entry.toolName || '').trim() !== 'read') {
+          return false;
+        }
+        const observedPath = getReadToolPath(entry && entry.arguments);
+        return isSkillMarkdownReadPath(observedPath, skillId, targetSkillMarkdownPath)
+          && (!confirmationPath || observedPath === confirmationPath);
+      });
+      if (alreadyObserved) {
+        continue;
+      }
+
+      observedToolCalls.push({
+        toolName: 'read',
+        arguments: confirmationPath ? { path: confirmationPath } : {},
+        source: 'task',
+        status: 'succeeded',
+        orderIndex: observedOrderIndex,
+      });
+      observedOrderIndex += 1;
     }
 
     const observedSequenceCalls = buildObservedSequenceCalls(toolCallEvents, sessionToolCalls);
@@ -5248,6 +5385,11 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     const promptVersion = String(runOptions.promptVersion || '').trim() || 'skill-test-v1';
     const effectiveProvider = resolveSetting(provider, process.env.PI_PROVIDER, DEFAULT_PROVIDER);
     const effectiveModel = resolveSetting(model, process.env.PI_MODEL, DEFAULT_MODEL);
+    const loadingMode = String(testCase.loadingMode || 'dynamic').trim().toLowerCase() || 'dynamic';
+    const testType = String(testCase.testType || '').trim().toLowerCase();
+    const conversationId = `skill-test-${testCase.skillId}`;
+    const turnId = `skill-test-turn-${testCase.id}`;
+    const shouldEarlyStopOnSkillLoad = loadingMode === 'dynamic' && testType !== 'execution';
 
     // Create or reuse eval_case for this test case
     // Only create a new one if the test case doesn't already have one
@@ -5275,8 +5417,8 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
         )
         .run({
           id: evalCaseId,
-          conversationId: `skill-test-${testCase.skillId}`,
-          turnId: `skill-test-turn-${testCase.id}`,
+          conversationId,
+          turnId,
           messageId: '',
           stageTaskId: '',
           agentId,
@@ -5314,7 +5456,17 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
       db: store.db,
     });
     const taskId = `skill-test-run-${randomUUID()}`;
-    const stage = { taskId, status: 'queued', runId: null as any };
+    const liveMessageId = `skill-test-trace-${taskId}`;
+    const stage = {
+      taskId,
+      status: 'queued',
+      runId: null as any,
+      currentToolName: '',
+      currentToolKind: '',
+      currentToolStepId: '',
+      currentToolStartedAt: null as any,
+      currentToolInferred: false,
+    };
     const sessionName = `skill-test-${testCase.id}-${Date.now()}`;
 
     let toolInvocation: any = null;
@@ -5322,7 +5474,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     try {
       const promptUserMessage = {
         id: 'skill-test-user',
-        turnId: `skill-test-turn-${testCase.id}`,
+        turnId,
         role: 'user',
         senderName: 'TestUser',
         content: prompt,
@@ -5332,12 +5484,12 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
 
       toolInvocation = agentToolBridge.registerInvocation(
         agentToolBridge.createInvocationContext({
-          conversationId: `skill-test-${testCase.skillId}`,
-          turnId: `skill-test-turn-${testCase.id}`,
+          conversationId,
+          turnId,
           projectDir,
           agentId,
           agentName,
-          assistantMessageId: '',
+          assistantMessageId: liveMessageId,
           userMessageId: promptUserMessage.id,
           promptUserMessage,
           conversationAgents: [agent],
@@ -5382,6 +5534,16 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
       let errorMessage = '';
       let runId: any = null;
       let sessionPath = '';
+      let dynamicSkillLoadConfirmed = false;
+      let lastLiveSessionToolStepId = '';
+      let lastLiveSessionToolSignature = '';
+      const liveSessionAnonymousToolTracker = {
+        nextIndex: 0,
+        activeStepId: '',
+        activeFingerprint: '',
+        activeToolName: '',
+        activeToolKind: '',
+      };
 
       try {
         const handle = startRunImpl(effectiveProvider, effectiveModel, prompt, {
@@ -5409,8 +5571,8 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
             CAFF_CHAT_CALLBACK_TOKEN: toolInvocation.callbackToken,
             CAFF_CHAT_TOOLS_PATH: toPortableShellPath(agentToolScriptPath),
             CAFF_CHAT_TOOLS_RELATIVE_PATH: agentToolRelativePath,
-            CAFF_CHAT_CONVERSATION_ID: `skill-test-${testCase.skillId}`,
-            CAFF_CHAT_TURN_ID: `skill-test-turn-${testCase.id}`,
+            CAFF_CHAT_CONVERSATION_ID: conversationId,
+            CAFF_CHAT_TURN_ID: turnId,
             CAFF_SKILL_LOADING_MODE: testCase.loadingMode || 'dynamic',
           },
         });
@@ -5426,6 +5588,113 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
           sessionPath: handle.sessionPath || null,
         });
 
+        broadcastSkillTestRunEvent('started', {
+          caseId: testCase.id,
+          skillId: testCase.skillId,
+          loadingMode,
+          testType,
+          conversationId,
+          turnId,
+          taskId,
+          messageId: liveMessageId,
+          runId: handle.runId || null,
+          provider: effectiveProvider || '',
+          model: effectiveModel || '',
+          promptVersion,
+          status: 'running',
+          createdAt: timestamp,
+          trace: buildSkillTestLiveTrace(liveMessageId, taskId, 'streaming', handle.runId || null, timestamp, sessionPath),
+        });
+
+        if (handle && typeof handle.on === 'function') {
+          handle.on('pi_event', (event: any) => {
+            const piEvent = event && event.piEvent ? event.piEvent : null;
+            const liveTool = extractLiveSessionToolFromPiEvent(piEvent, {
+              agentDir: store.agentDir,
+              createdAt: nowIso(),
+              currentToolName: stage.currentToolName,
+              currentToolKind: stage.currentToolKind,
+              currentToolStepId: stage.currentToolStepId,
+              anonymousTracker: liveSessionAnonymousToolTracker,
+            });
+
+            if (liveTool && liveTool.currentTool) {
+              const nextTool = liveTool.currentTool;
+              stage.currentToolName = nextTool.toolName || '';
+              stage.currentToolKind = nextTool.toolKind || '';
+              stage.currentToolStepId = nextTool.toolStepId || '';
+              stage.currentToolInferred = Boolean(nextTool.inferred);
+              stage.currentToolStartedAt = nowIso();
+            }
+
+            const step = liveTool && liveTool.step ? liveTool.step : null;
+            const stepId = step && step.stepId ? String(step.stepId).trim() : '';
+            const stepSignature = liveSessionToolStepSignature(step);
+            const changed = Boolean(stepId && stepId !== lastLiveSessionToolStepId);
+            const detailChanged = Boolean(
+              step &&
+                stepId &&
+                stepSignature &&
+                stepId === lastLiveSessionToolStepId &&
+                stepSignature !== lastLiveSessionToolSignature
+            );
+
+            if (stepId && stepSignature) {
+              lastLiveSessionToolStepId = stepId;
+              lastLiveSessionToolSignature = stepSignature;
+            } else if (changed) {
+              lastLiveSessionToolStepId = '';
+              lastLiveSessionToolSignature = '';
+            }
+
+            if (step && (changed || detailChanged)) {
+              broadcastSkillTestToolEvent({
+                conversationId,
+                turnId,
+                taskId,
+                agentId,
+                agentName,
+                assistantMessageId: liveMessageId,
+                messageId: liveMessageId,
+                phase: changed ? 'started' : 'updated',
+                step,
+              });
+            }
+
+            const matchedSkillLoadCall = shouldEarlyStopOnSkillLoad && !dynamicSkillLoadConfirmed
+              ? extractPiToolCalls(piEvent).find((toolCall: any) => (
+                isTargetSkillReadToolCall(toolCall.toolName, toolCall.arguments, testCase.skillId, skill && skill.path)
+              ))
+              : null;
+            if (matchedSkillLoadCall) {
+              dynamicSkillLoadConfirmed = true;
+              runStore.appendTaskEvent(taskId, 'skill_test_dynamic_load_confirmed', {
+                caseId: testCase.id,
+                skillId: testCase.skillId,
+                path: getReadToolPath(matchedSkillLoadCall.arguments),
+                toolCallId: matchedSkillLoadCall.toolCallId || '',
+              });
+              stopSkillTestRunHandle(handle, 'Dynamic skill load confirmed');
+            }
+          });
+
+          handle.on('run_terminating', (event: any) => {
+            broadcastSkillTestRunEvent('terminating', {
+              caseId: testCase.id,
+              skillId: testCase.skillId,
+              loadingMode,
+              testType,
+              conversationId,
+              turnId,
+              taskId,
+              messageId: liveMessageId,
+              runId: stage.runId || null,
+              status: 'terminating',
+              reason: event && event.reason ? event.reason : null,
+            });
+          });
+        }
+
         result = await handle.resultPromise;
         runId = result && result.runId ? result.runId : handle.runId || null;
         sessionPath = (result && result.sessionPath) || sessionPath;
@@ -5433,8 +5702,21 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
         status = 'succeeded';
       } catch (error) {
         const err: any = error;
-        status = 'failed';
-        errorMessage = err && err.message ? String(err.message) : String(err || 'Unknown error');
+        if (shouldEarlyStopOnSkillLoad && dynamicSkillLoadConfirmed) {
+          runId = err && err.runId ? err.runId : stage.runId || null;
+          sessionPath = (err && err.sessionPath) || sessionPath;
+          outputText = String(err && err.reply ? err.reply : '');
+          result = {
+            reply: outputText,
+            runId,
+            sessionPath,
+          };
+          status = 'succeeded';
+          errorMessage = '';
+        } else {
+          status = 'failed';
+          errorMessage = err && err.message ? String(err.message) : String(err || 'Unknown error');
+        }
       } finally {
         stage.status = status === 'succeeded' ? 'completed' : 'failed';
         if (toolInvocation) {
@@ -5511,6 +5793,34 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
         outputText: outputText || '',
         errorMessage: errorMessage || '',
         endedAt: finishedAt,
+      });
+
+      broadcastSkillTestRunEvent(status === 'succeeded' ? 'completed' : 'failed', {
+        caseId: testCase.id,
+        skillId: testCase.skillId,
+        loadingMode,
+        testType,
+        conversationId,
+        turnId,
+        taskId,
+        messageId: liveMessageId,
+        runId,
+        provider: effectiveProvider || '',
+        model: effectiveModel || '',
+        promptVersion,
+        status,
+        errorMessage: errorMessage || '',
+        outputText: outputText || '',
+        createdAt: timestamp,
+        finishedAt,
+        trace: buildSkillTestLiveTrace(
+          liveMessageId,
+          taskId,
+          status === 'succeeded' ? 'completed' : 'failed',
+          runId,
+          timestamp,
+          sessionPath
+        ),
       });
 
       // Create eval_case_run
