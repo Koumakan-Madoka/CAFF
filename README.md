@@ -96,6 +96,42 @@ Then open **http://127.0.0.1:3100** in your browser.
 | `PI_PROVIDER` | — | LLM provider identifier |
 | `PI_MODEL` | — | Default model name |
 | `PI_THINKING` | — | Enable thinking/reasoning mode |
+| `FEISHU_APP_ID` | — | Feishu app ID used for outbound replies, bot identity lookup, and long connection auth |
+| `FEISHU_APP_SECRET` | — | Feishu app secret used for tenant access token requests and long connection auth |
+| `FEISHU_VERIFICATION_TOKEN` | — | Verification token required only for `POST /api/integrations/feishu/webhook` |
+| `FEISHU_BOT_OPEN_ID` | — | Optional fallback bot `open_id` when `GET /open-apis/bot/v3/info` is unavailable |
+| `FEISHU_CONNECTION_MODE` | `webhook` | Inbound mode: `webhook` or `long-connection` |
+| `FEISHU_LONG_CONNECTION_LOGGER_LEVEL` | `info` | Optional official SDK long connection log level: `fatal`, `error`, `warn`, `info`, `debug`, or `trace` |
+
+CAFF reads configuration from the process environment. When you start it with `npm run start` or `npm run start:dev`, it also auto-loads `./.env.local` if that file exists. Existing process environment variables still take precedence over file values. If you launch `node build/lib/app-server.js` directly, you still need to provide env vars yourself.
+
+## 飞书接入 MVP
+
+CAFF now ships with a minimal Feishu integration:
+
+- Inbound modes: webhook via `POST /api/integrations/feishu/webhook`, or long connection via `FEISHU_CONNECTION_MODE=long-connection`
+- Long connection transport: CAFF manages the official `@larksuiteoapi/node-sdk` `WSClient` and reuses the same parsing, dedup, and conversation-mapping pipeline
+- Inbound scope: text messages only
+- Conversation mapping: one Feishu `chat_id` maps to one CAFF conversation
+- Group trigger: private and group text messages are forwarded by default; CAFF keeps existing in-conversation mention routing semantics
+- Outbound scope: completed assistant text replies only
+- Current limitation: encrypted webhook payloads are not supported in this MVP
+
+### 飞书应用配置步骤
+
+1. Create a custom Feishu app with a bot capability enabled.
+2. Choose an inbound mode:
+   - Webhook mode: configure event subscription in webhook mode and point it at `https://<your-public-host>/api/integrations/feishu/webhook`, then set `FEISHU_VERIFICATION_TOKEN` to match the console.
+   - Long connection mode: switch Feishu event delivery to long connection and set `FEISHU_CONNECTION_MODE=long-connection`; CAFF starts the official Node SDK `WSClient` in-process.
+3. Subscribe to the inbound message event `im.message.receive_v1`.
+4. Grant the app the permissions needed to receive IM text messages and send bot text replies. If your tenant cannot use `GET /open-apis/bot/v3/info`, set `FEISHU_BOT_OPEN_ID` manually.
+5. Keep webhook event encryption disabled for this MVP; encrypted webhook payloads are currently rejected.
+6. Export the Feishu env vars and start CAFF. In long connection mode, CAFF passes `FEISHU_APP_ID` / `FEISHU_APP_SECRET` directly to the official SDK, so no public webhook URL or CLI bridge is required.
+7. Verify with a private text message or any normal group text message routed to the bot.
+
+### Feishu env example
+
+See `./.env.example` for a minimal reference file, then copy it to `./.env.local` for local development. `npm run start` and `npm run start:dev` load that file automatically.
 
 ## 🧪 Testing
 
