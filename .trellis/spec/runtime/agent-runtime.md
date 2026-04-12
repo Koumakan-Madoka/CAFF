@@ -83,6 +83,15 @@ CAFF uses a descriptor + on-demand loading model for conversation skills:
 - `GET /api/conversations/:conversationId/messages/:messageId/tool-trace`
   remains assistant-only and should return a merged trace built from session
   snapshot data plus stored bridge events.
+- Skill-test runs reuse the same `conversation_tool_event.step` shape for live
+  tool rows, with `server/api/skill-test-controller.ts` emitting companion
+  `skill_test_run_event` lifecycle payloads that carry the synthetic trace
+  `messageId` and terminal merged `trace` snapshot.
+- Dynamic skill-test trigger runs may also persist a
+  `skill_test_dynamic_load_confirmed` task event when a live pi event proves the
+  target `read .../SKILL.md` before session JSONL or `agent_tool_call`
+  persistence catches up; evaluation treats that task event as authoritative
+  load evidence for the target skill.
 
 ## Test Expectations
 

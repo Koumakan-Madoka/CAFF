@@ -253,6 +253,7 @@ export function createServerApp(options: any = {}) {
       skillRegistry,
       getProjectDir: () => activeProjectDir,
       toolBaseUrl,
+      broadcastEvent,
     }),
   ]);
 

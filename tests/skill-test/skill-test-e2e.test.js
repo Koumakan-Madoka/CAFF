@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
+const { EventEmitter } = require('node:events');
 const Database = require('better-sqlite3');
 
 const { migrateChatSchema, migrateRunSchema, migrateSkillTestSchema } = require('../../build/storage/sqlite/migrations');
@@ -2804,6 +2805,490 @@ test('dynamic trigger detection matches real skill markdown path outside /skills
     assert.equal(detailRes.json.result.triggerEvaluation.loaded, true);
     assert.equal(detailRes.json.result.triggerEvaluation.loadEvidence.length, 1);
     assert.equal(detailRes.json.result.triggerEvaluation.loadEvidence[0].path, externalSkillFile.replace(/\\/g, '/'));
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('dynamic trigger run stops immediately after target skill load and emits live trace events', async () => {
+  const harness = createTempHarness();
+  const sessionPath = path.join(harness.tempDir, 'agent', 'named-sessions', 'dynamic-stop-session.jsonl');
+  const broadcastEvents = [];
+  const completionReasons = [];
+  let lateWorkflowStepObserved = false;
+
+  try {
+    const store = createInMemoryStore(harness.db, {
+      agentDir: path.join(harness.tempDir, 'agent'),
+      databasePath: harness.databasePath,
+    });
+
+    const controller = createSkillTestController({
+      store,
+      agentToolBridge: createFakeAgentToolBridge(),
+      skillRegistry: createFakeSkillRegistry([
+        {
+          id: 'werewolf',
+          name: '狼人杀 Skill',
+          description: '用于后端全自动主持的狼人杀玩法。',
+          path: '/tmp/skills/werewolf',
+        },
+      ]),
+      getProjectDir: () => harness.tempDir,
+      toolBaseUrl: 'http://127.0.0.1:3100',
+      broadcastEvent(eventName, payload) {
+        broadcastEvents.push({ eventName, payload });
+      },
+      startRunImpl: () => {
+        const emitter = new EventEmitter();
+        let settled = false;
+        let resolveResult;
+        const resultPromise = new Promise((resolve) => {
+          resolveResult = resolve;
+        });
+        const finish = (reply = '') => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          fs.mkdirSync(path.dirname(sessionPath), { recursive: true });
+          fs.writeFileSync(
+            sessionPath,
+            `${JSON.stringify({
+              type: 'message',
+              message: {
+                role: 'assistant',
+                content: [
+                  { type: 'toolCall', name: 'read', id: 'tool-stop-1', arguments: { path: '/tmp/skills/werewolf/SKILL.md' } },
+                ],
+              },
+            })}\n`,
+            'utf8'
+          );
+          resolveResult({ reply, runId: 'run-dynamic-stop', sessionPath });
+        };
+        const handle = {
+          runId: 'run-dynamic-stop',
+          sessionPath,
+          on(eventName, listener) {
+            emitter.on(eventName, listener);
+            return handle;
+          },
+          complete(reason) {
+            completionReasons.push(String(reason || ''));
+            finish('stopped after skill load');
+            return handle;
+          },
+          cancel(reason) {
+            completionReasons.push(String(reason || ''));
+            finish('stopped after skill load');
+            return handle;
+          },
+          resultPromise,
+        };
+        setTimeout(() => {
+          emitter.emit('pi_event', {
+            piEvent: {
+              message: {
+                role: 'assistant',
+                content: [
+                  { type: 'toolCall', name: 'read', id: 'tool-stop-1', arguments: { path: '/tmp/skills/werewolf/SKILL.md' } },
+                ],
+              },
+            },
+          });
+        }, 0);
+        setTimeout(() => {
+          if (!settled) {
+            lateWorkflowStepObserved = true;
+            finish('late step should not happen');
+          }
+        }, 40);
+        return handle;
+      },
+    });
+
+    const createReq = createJsonRequest('POST', '/api/skills/werewolf/test-cases', {
+      testType: 'trigger',
+      loadingMode: 'dynamic',
+      triggerPrompt: '我们来玩狼人杀吧',
+      expectedBehavior: '应该只验证目标 skill 是否被正确加载。',
+    });
+    const createRes = createCaptureResponse();
+    await controller({
+      req: createReq,
+      res: createRes,
+      pathname: '/api/skills/werewolf/test-cases',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases'),
+    });
+
+    const caseId = createRes.json.testCase.id;
+    const runRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('POST', `/api/skills/werewolf/test-cases/${caseId}/run`, {}),
+      res: runRes,
+      pathname: `/api/skills/werewolf/test-cases/${caseId}/run`,
+      requestUrl: new URL(`http://localhost/api/skills/werewolf/test-cases/${caseId}/run`),
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    assert.equal(runRes.statusCode, 200);
+    assert.equal(runRes.json.run.status, 'succeeded');
+    assert.equal(runRes.json.run.triggerPassed, true);
+    assert.equal(runRes.json.run.executionPassed, null);
+    assert.equal(lateWorkflowStepObserved, false);
+    assert.ok(completionReasons.some((reason) => reason.includes('Dynamic skill load confirmed')));
+
+    const detailRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('GET', `/api/skill-test-runs/${runRes.json.run.id}`, undefined),
+      res: detailRes,
+      pathname: `/api/skill-test-runs/${runRes.json.run.id}`,
+      requestUrl: new URL(`http://localhost/api/skill-test-runs/${runRes.json.run.id}`),
+    });
+
+    assert.equal(detailRes.statusCode, 200);
+    assert.deepEqual(detailRes.json.run.actualTools, ['read']);
+
+    const startedEvent = broadcastEvents.find((entry) => entry.eventName === 'skill_test_run_event' && entry.payload && entry.payload.phase === 'started');
+    const completedEvent = broadcastEvents.find((entry) => entry.eventName === 'skill_test_run_event' && entry.payload && entry.payload.phase === 'completed');
+    const toolEvent = broadcastEvents.find(
+      (entry) =>
+        entry.eventName === 'conversation_tool_event' &&
+        entry.payload &&
+        entry.payload.step &&
+        entry.payload.step.toolName === 'read'
+    );
+
+    assert.ok(startedEvent, 'expected skill_test_run_event started payload');
+    assert.ok(completedEvent, 'expected skill_test_run_event completed payload');
+    assert.ok(toolEvent, 'expected live conversation_tool_event payload');
+    assert.equal(startedEvent.payload.caseId, caseId);
+    assert.equal(completedEvent.payload.caseId, caseId);
+    assert.equal(toolEvent.payload.messageId, startedEvent.payload.messageId);
+    assert.equal(completedEvent.payload.trace.summary.totalSteps, 1);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('dynamic trigger evaluation falls back to load-confirmed task event when session evidence is absent', async () => {
+  const harness = createTempHarness();
+  const completionReasons = [];
+
+  try {
+    const store = createInMemoryStore(harness.db, {
+      agentDir: path.join(harness.tempDir, 'agent'),
+      databasePath: harness.databasePath,
+    });
+
+    const controller = createSkillTestController({
+      store,
+      agentToolBridge: createFakeAgentToolBridge(),
+      skillRegistry: createFakeSkillRegistry([
+        {
+          id: 'werewolf',
+          path: '/tmp/skills/werewolf',
+        },
+      ]),
+      getProjectDir: () => harness.tempDir,
+      toolBaseUrl: 'http://127.0.0.1:3100',
+      startRunImpl: () => {
+        const emitter = new EventEmitter();
+        let resolveResult;
+        const resultPromise = new Promise((resolve) => {
+          resolveResult = resolve;
+        });
+        const handle = {
+          runId: 'run-dynamic-confirmed-task-event',
+          sessionPath: '',
+          on(eventName, listener) {
+            emitter.on(eventName, listener);
+            return handle;
+          },
+          complete(reason) {
+            completionReasons.push(String(reason || ''));
+            resolveResult({ reply: 'stopped after skill load', runId: 'run-dynamic-confirmed-task-event', sessionPath: '' });
+            return handle;
+          },
+          cancel(reason) {
+            completionReasons.push(String(reason || ''));
+            resolveResult({ reply: 'stopped after skill load', runId: 'run-dynamic-confirmed-task-event', sessionPath: '' });
+            return handle;
+          },
+          resultPromise,
+        };
+        setTimeout(() => {
+          emitter.emit('pi_event', {
+            piEvent: {
+              message: {
+                role: 'assistant',
+                content: [
+                  { type: 'toolCall', name: 'read', id: 'tool-confirm-only-1', arguments: { path: '/tmp/skills/werewolf/SKILL.md' } },
+                ],
+              },
+            },
+          });
+        }, 0);
+        return handle;
+      },
+    });
+
+    const createReq = createJsonRequest('POST', '/api/skills/werewolf/test-cases', {
+      testType: 'trigger',
+      loadingMode: 'dynamic',
+      triggerPrompt: '我们来玩狼人杀吧',
+      expectedBehavior: '应该在 runtime 事件确认加载后立即通过。',
+    });
+    const createRes = createCaptureResponse();
+    await controller({
+      req: createReq,
+      res: createRes,
+      pathname: '/api/skills/werewolf/test-cases',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases'),
+    });
+
+    const caseId = createRes.json.testCase.id;
+    const runRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('POST', `/api/skills/werewolf/test-cases/${caseId}/run`, {}),
+      res: runRes,
+      pathname: `/api/skills/werewolf/test-cases/${caseId}/run`,
+      requestUrl: new URL(`http://localhost/api/skills/werewolf/test-cases/${caseId}/run`),
+    });
+
+    assert.equal(runRes.statusCode, 200);
+    assert.equal(runRes.json.run.status, 'succeeded');
+    assert.equal(runRes.json.run.triggerPassed, true);
+    assert.deepEqual(runRes.json.run.actualTools, ['read']);
+    assert.ok(completionReasons.some((reason) => reason.includes('Dynamic skill load confirmed')));
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('dynamic trigger early-stop matches target read even when it is not the last tool call in the pi event', async () => {
+  const harness = createTempHarness();
+  let lateWorkflowStepObserved = false;
+  const completionReasons = [];
+
+  try {
+    const store = createInMemoryStore(harness.db, {
+      agentDir: path.join(harness.tempDir, 'agent'),
+      databasePath: harness.databasePath,
+    });
+
+    const controller = createSkillTestController({
+      store,
+      agentToolBridge: createFakeAgentToolBridge(),
+      skillRegistry: createFakeSkillRegistry([
+        {
+          id: 'werewolf',
+          path: '/tmp/skills/werewolf',
+        },
+      ]),
+      getProjectDir: () => harness.tempDir,
+      toolBaseUrl: 'http://127.0.0.1:3100',
+      startRunImpl: () => {
+        const emitter = new EventEmitter();
+        let settled = false;
+        let resolveResult;
+        const resultPromise = new Promise((resolve) => {
+          resolveResult = resolve;
+        });
+        const finish = (reply = '') => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          resolveResult({ reply, runId: 'run-dynamic-multi-tool-event', sessionPath: '' });
+        };
+        const handle = {
+          runId: 'run-dynamic-multi-tool-event',
+          sessionPath: '',
+          on(eventName, listener) {
+            emitter.on(eventName, listener);
+            return handle;
+          },
+          complete(reason) {
+            completionReasons.push(String(reason || ''));
+            finish('stopped after skill load');
+            return handle;
+          },
+          cancel(reason) {
+            completionReasons.push(String(reason || ''));
+            finish('stopped after skill load');
+            return handle;
+          },
+          resultPromise,
+        };
+        setTimeout(() => {
+          emitter.emit('pi_event', {
+            piEvent: {
+              message: {
+                role: 'assistant',
+                content: [
+                  { type: 'toolCall', name: 'read', id: 'tool-multi-1', arguments: { path: '/tmp/skills/werewolf/SKILL.md' } },
+                  { type: 'toolCall', name: 'bash', id: 'tool-multi-2', arguments: { command: 'echo ready' } },
+                ],
+              },
+            },
+          });
+        }, 0);
+        setTimeout(() => {
+          if (!settled) {
+            lateWorkflowStepObserved = true;
+            finish('late step should not happen');
+          }
+        }, 40);
+        return handle;
+      },
+    });
+
+    const createReq = createJsonRequest('POST', '/api/skills/werewolf/test-cases', {
+      testType: 'trigger',
+      loadingMode: 'dynamic',
+      triggerPrompt: '先加载狼人杀 skill，然后再决定下一步。',
+      expectedBehavior: '命中目标 SKILL.md 后应立刻停止，不必继续处理同条消息里的其他 tool。',
+    });
+    const createRes = createCaptureResponse();
+    await controller({
+      req: createReq,
+      res: createRes,
+      pathname: '/api/skills/werewolf/test-cases',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases'),
+    });
+
+    const caseId = createRes.json.testCase.id;
+    const runRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('POST', `/api/skills/werewolf/test-cases/${caseId}/run`, {}),
+      res: runRes,
+      pathname: `/api/skills/werewolf/test-cases/${caseId}/run`,
+      requestUrl: new URL(`http://localhost/api/skills/werewolf/test-cases/${caseId}/run`),
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    assert.equal(runRes.statusCode, 200);
+    assert.equal(runRes.json.run.status, 'succeeded');
+    assert.equal(runRes.json.run.triggerPassed, true);
+    assert.deepEqual(runRes.json.run.actualTools, ['read']);
+    assert.equal(lateWorkflowStepObserved, false);
+    assert.ok(completionReasons.some((reason) => reason.includes('Dynamic skill load confirmed')));
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('legacy dynamic execution runs keep executing after skill load instead of early-stopping', async () => {
+  const harness = createTempHarness();
+  const sessionPath = path.join(harness.tempDir, 'agent', 'named-sessions', 'dynamic-execution-session.jsonl');
+  let completionCount = 0;
+
+  try {
+    const store = createInMemoryStore(harness.db, {
+      agentDir: path.join(harness.tempDir, 'agent'),
+      databasePath: harness.databasePath,
+    });
+
+    const controller = createSkillTestController({
+      store,
+      agentToolBridge: createFakeAgentToolBridge(),
+      skillRegistry: createFakeSkillRegistry([
+        {
+          id: 'werewolf',
+          path: '/tmp/skills/werewolf',
+        },
+      ]),
+      getProjectDir: () => harness.tempDir,
+      toolBaseUrl: 'http://127.0.0.1:3100',
+      startRunImpl: () => {
+        const emitter = new EventEmitter();
+        const resultPromise = new Promise((resolve) => {
+          setTimeout(() => {
+            fs.mkdirSync(path.dirname(sessionPath), { recursive: true });
+            fs.writeFileSync(
+              sessionPath,
+              `${JSON.stringify({
+                type: 'message',
+                message: {
+                  role: 'assistant',
+                  content: [
+                    { type: 'toolCall', name: 'read', id: 'tool-read-1', arguments: { path: '/tmp/skills/werewolf/SKILL.md' } },
+                    { type: 'toolCall', name: 'bash', id: 'tool-bash-1', arguments: { command: 'echo ready', timeout: 15 } },
+                  ],
+                },
+              })}\n`,
+              'utf8'
+            );
+            resolve({ reply: 'done', runId: 'run-dynamic-execution', sessionPath });
+          }, 30);
+        });
+        const handle = {
+          runId: 'run-dynamic-execution',
+          sessionPath,
+          on(eventName, listener) {
+            emitter.on(eventName, listener);
+            return handle;
+          },
+          complete() {
+            completionCount += 1;
+            return handle;
+          },
+          cancel() {
+            completionCount += 1;
+            return handle;
+          },
+          resultPromise,
+        };
+        setTimeout(() => {
+          emitter.emit('pi_event', {
+            piEvent: {
+              message: {
+                role: 'assistant',
+                content: [
+                  { type: 'toolCall', name: 'read', id: 'tool-read-1', arguments: { path: '/tmp/skills/werewolf/SKILL.md' } },
+                ],
+              },
+            },
+          });
+        }, 0);
+        return handle;
+      },
+    });
+
+    const createReq = createJsonRequest('POST', '/api/skills/werewolf/test-cases', {
+      testType: 'execution',
+      loadingMode: 'dynamic',
+      triggerPrompt: '先加载狼人杀 skill，再继续执行后续步骤。',
+      expectedTools: ['read', 'bash'],
+      expectedBehavior: '旧版 dynamic execution 应继续执行后续工具。',
+    });
+    const createRes = createCaptureResponse();
+    await controller({
+      req: createReq,
+      res: createRes,
+      pathname: '/api/skills/werewolf/test-cases',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases'),
+    });
+
+    const caseId = createRes.json.testCase.id;
+    const runRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('POST', `/api/skills/werewolf/test-cases/${caseId}/run`, {}),
+      res: runRes,
+      pathname: `/api/skills/werewolf/test-cases/${caseId}/run`,
+      requestUrl: new URL(`http://localhost/api/skills/werewolf/test-cases/${caseId}/run`),
+    });
+
+    assert.equal(runRes.statusCode, 200);
+    assert.equal(runRes.json.run.triggerPassed, true);
+    assert.equal(runRes.json.run.executionPassed, true);
+    assert.equal(runRes.json.run.toolAccuracy, 1);
+    assert.equal(completionCount, 0);
+    assert.deepEqual(runRes.json.run.actualTools, ['read', 'bash']);
   } finally {
     harness.cleanup();
   }

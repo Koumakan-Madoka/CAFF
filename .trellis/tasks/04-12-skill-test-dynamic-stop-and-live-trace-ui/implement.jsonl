@@ -1,0 +1,15 @@
+{"file": ".trellis/workflow.md", "reason": "Project workflow and conventions"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend development guide"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend development guide"}
+{"file": ".trellis/spec/skills/skill-system.md", "reason": "Dynamic skill loading contract and SKILL.md read-path semantics"}
+{"file": ".trellis/spec/skills/skill-testing.md", "reason": "Dynamic mode is load-only and skill test UI/result contracts live here"}
+{"file": ".trellis/spec/runtime/agent-runtime.md", "reason": "Runtime cancel handle and live tool trace event contract"}
+{"file": ".trellis/spec/frontend/ui-structure.md", "reason": "Reuse existing chat UI modules instead of growing another monolith"}
+{"file": ".trellis/spec/backend/controller-patterns.md", "reason": "Keep skill test HTTP changes thin at the controller edge"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Task spans backend, runtime, tests, and browser UI"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Requested UI work should reuse chat workbench tool-trace patterns"}
+{"file": "server/api/skill-test-controller.ts", "reason": "Owns skill test run execution, evaluation, and result payloads"}
+{"file": "public/skill-tests.js", "reason": "Current skill test workspace and completed-run detail renderer"}
+{"file": "public/chat/message-timeline.js", "reason": "Existing live tool-trace renderer to consider for reuse"}
+{"file": "public/app.js", "reason": "Owns tool trace state helpers and SSE event handling in chat workbench"}
+{"file": "server/domain/runtime/message-tool-trace.ts", "reason": "Backend trace normalization and merged timeline shape"}

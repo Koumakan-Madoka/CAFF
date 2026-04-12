@@ -974,6 +974,15 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
       beginTermination({ type: 'cancelled', message: reason });
       return handle;
     },
+    complete(reason = 'Run completed by caller') {
+      beginTermination({
+        type: 'expected_completion',
+        message: reason,
+        assistantStopReason: null,
+        assistantMessageKey: null,
+      });
+      return handle;
+    },
     resultPromise,
   };
 

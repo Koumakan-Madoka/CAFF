@@ -87,7 +87,8 @@ skill_test_cases (1) ──→ (N) skill_test_runs
 - **Dynamic mode (default)**:
   - primary goal: load/trigger evidence
   - `trigger_passed` is based on target `SKILL.md` read evidence
-  - execution gate is only meaningful for legacy dynamic execution cases (`test_type = execution`)
+  - trigger-style dynamic runs stop the agent loop immediately after the target `SKILL.md` load is observed
+  - legacy dynamic execution cases (`test_type = execution`) keep their end-to-end execution semantics and do not use the early-stop path
 
 - **Full mode**:
   - primary goal: behavior-chain quality evaluation (`expectedSteps`, constraints, goal/adherence)
@@ -96,10 +97,11 @@ skill_test_cases (1) ──→ (N) skill_test_runs
 
 ### Dynamic Trigger Detection
 
-Trigger is detected when either source contains a target read:
+Trigger is detected when any supported evidence source contains a target read:
 
-1. **Tool call event** (`a2a_task_events`)
+1. **Tool call event** (`a2a_task_events` / `agent_tool_call`)
 2. **Session JSONL tool blocks**
+3. **Dynamic-load confirmation task event** (`a2a_task_events` / `skill_test_dynamic_load_confirmed`) when the live pi event proves the target read before session/tool-call persistence lands
 
 Target path match is normalized to:
 
@@ -378,6 +380,18 @@ Frontend (`public/skill-tests.js`) consumes structured validation/evaluation:
   - `aggregation` reasons
   - `aiJudge` status, `verdictSuggestion`, `missedExpectations`
 - run detail reads `result.evaluation` first and falls back to `run.evaluation`
+- live run panel renders the active tool trace while a run is in progress and keeps the finalized trace visible after terminal events land
+
+### Live Run SSE Contract
+
+`server/api/skill-test-controller.ts` emits live progress over the shared `/api/events` SSE stream so the skill-tests workspace can render in-flight tool activity without waiting for the final `POST /run` response.
+
+- `skill_test_run_event`
+  - `phase`: `started | terminating | completed | failed`
+  - includes `caseId`, `skillId`, `taskId`, synthetic `messageId`, provider/model metadata, status, and final `trace` on terminal phases
+- `conversation_tool_event`
+  - skill-test runs reuse the same live tool-step payload shape as chat workbench traces
+  - payload is keyed by the synthetic skill-test `messageId` so the frontend can merge session + bridge steps with the existing step schema and CSS patterns
 
 ### Skill Tests Workspace Layout
 

@@ -8,6 +8,7 @@ build/
 .npm-cache/
 
 # Runtime data
+.pi/
 .pi-sandbox/
 .tmp-clowder-ai/
 *.sqlite
