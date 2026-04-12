@@ -1,3 +1,0 @@
-{"file":".trellis/spec/index.md","reason":"Shared spec fallback."}
-{"at":"2026-04-12T22:51:26+08:00","file":".trellis/spec/backend/feishu-integration.md","reason":"Captured Feishu MVP code-spec contracts for official SDK long connection, shared inbound service routing, chat-level conversation binding, /new rebinding, persistent inbound/outbound dedupe, non-text/self-message ignore behavior, outbound Agent-name prefixes, non-blocking bootstrap warm-up, and attempt-vs-ready long-connection logging."}
-{"at":"2026-04-12T22:51:26+08:00","file":".trellis/spec/backend/index.md","reason":"Ensured future Feishu webhook, long-connection, event parsing, external event dedupe, and outbound delivery changes read the dedicated backend Feishu integration spec."}

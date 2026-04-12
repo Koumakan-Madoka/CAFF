@@ -686,8 +686,6 @@ export function createAgentExecutor(options: any = {}) {
   const toolBaseUrl = String(options.toolBaseUrl || '').trim();
   const agentToolScriptPath = options.agentToolScriptPath;
   const agentToolRelativePath = String(options.agentToolRelativePath || './lib/agent-chat-tools.js').trim() || './lib/agent-chat-tools.js';
-  const onAssistantMessageCompleted =
-    typeof options.onAssistantMessageCompleted === 'function' ? options.onAssistantMessageCompleted : null;
 
   async function executeConversationAgent({
     runStore,
@@ -1324,13 +1322,6 @@ export function createAgentExecutor(options: any = {}) {
       broadcastEvent('conversation_message_updated', { conversationId, message: assistantMessageDone });
       broadcastConversationSummary(conversationId);
       emitTurnProgress(turnState);
-
-      if (onAssistantMessageCompleted) {
-        void Promise.resolve(onAssistantMessageCompleted(assistantMessageDone)).catch((error: any) => {
-          const errorMessage = error && error.message ? error.message : String(error || 'Unknown error');
-          console.error('[assistant-message-hook] Failed to handle completed assistant message:', errorMessage);
-        });
-      }
 
       if (!allowHandoffs) {
         return {

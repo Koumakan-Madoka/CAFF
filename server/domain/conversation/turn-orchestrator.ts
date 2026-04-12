@@ -509,7 +509,6 @@ export function createTurnOrchestrator(options: any = {}) {
         toolBaseUrl,
         agentToolScriptPath,
         agentToolRelativePath,
-        onAssistantMessageCompleted: options.onAssistantMessageCompleted,
       });
   const baseExecuteConversationAgent = providedExecuteConversationAgent || agentExecutor.executeConversationAgent;
 

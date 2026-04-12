@@ -3,7 +3,7 @@
   "name": "project-refactor-checklist",
   "title": "Project refactor checklist",
   "description": "Architecture review summary and prioritized refactor checklist for stabilizing CAFF without a rewrite.",
-  "status": "completed",
+  "status": "planning",
   "dev_type": "fullstack",
   "scope": null,
   "package": null,
@@ -11,7 +11,7 @@
   "creator": "菲比啾比",
   "assignee": "菲比啾比",
   "createdAt": "2026-04-02",
-  "completedAt": "2026-04-12",
+  "completedAt": null,
   "branch": null,
   "base_branch": "feature/skill-testing-phase1",
   "worktree_path": null,
@@ -46,6 +46,6 @@
     "public/app.js",
     "lib/chat-app-store.ts"
   ],
-  "notes": "Created from repo review on 2026-04-02 as a planning mother-card for incremental refactor slices, not a rewrite plan. Archived on 2026-04-12 as preserved historical roadmap context after later implementation tasks absorbed the relevant work without using this card as a standalone execution branch.",
+  "notes": "Created from repo review on 2026-04-02. Use this task as the execution anchor for incremental refactor work, not a rewrite plan.",
   "meta": {}
 }

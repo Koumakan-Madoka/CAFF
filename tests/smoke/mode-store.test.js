@@ -18,15 +18,15 @@ function createTestDb() {
 
 // ─── CRUD ────────────────────────────────────────────────────
 
-test('ModeStore: seeds 4 builtin modes on construction', () => {
+test('ModeStore: seeds 3 builtin modes on construction', () => {
   const db = createTestDb();
   const store = new ModeStore(db);
 
   const modes = store.list();
-  assert.equal(modes.length, 4);
+  assert.equal(modes.length, 3);
 
   const ids = modes.map((m) => m.id).sort();
-  assert.deepEqual(ids, ['coding', 'standard', 'werewolf', 'who_is_undercover']);
+  assert.deepEqual(ids, ['standard', 'werewolf', 'who_is_undercover']);
 
   assert.ok(modes.every((m) => m.builtin === true));
 });
@@ -97,8 +97,8 @@ test('ModeStore: save updates an existing mode', () => {
   assert.equal(updated.name, 'Updated');
   assert.equal(updated.description, 'Now with desc');
 
-  // Only one extra custom mode (total 5)
-  assert.equal(store.list().length, 5);
+  // Only one extra custom mode (total 4)
+  assert.equal(store.list().length, 4);
 });
 
 test('ModeStore: save throws if name is empty', () => {
@@ -113,11 +113,11 @@ test('ModeStore: delete removes a custom mode', () => {
   const store = new ModeStore(db);
 
   const created = store.save({ name: 'ToDelete' });
-  assert.equal(store.list().length, 5);
+  assert.equal(store.list().length, 4);
 
   store.delete(created.id);
   assert.equal(store.get(created.id), null);
-  assert.equal(store.list().length, 4);
+  assert.equal(store.list().length, 3);
 });
 
 // ─── Builtin protection ──────────────────────────────────────
@@ -126,7 +126,7 @@ test('ModeStore: cannot delete builtin modes', () => {
   const db = createTestDb();
   const store = new ModeStore(db);
 
-  for (const id of ['standard', 'coding', 'werewolf', 'who_is_undercover']) {
+  for (const id of ['standard', 'werewolf', 'who_is_undercover']) {
     assert.throws(() => store.delete(id), /cannot delete builtin/i);
   }
 });
@@ -214,11 +214,11 @@ test('ModeStore: seedBuiltinModes is idempotent (constructing twice does not dup
   const db = createTestDb();
 
   const store1 = new ModeStore(db);
-  assert.equal(store1.list().length, 4);
+  assert.equal(store1.list().length, 3);
 
   // Construct again on the same db — should not add duplicates
   const store2 = new ModeStore(db);
-  assert.equal(store2.list().length, 4);
+  assert.equal(store2.list().length, 3);
 });
 
 // ─── list ordering ──────────────────────────────────────────
@@ -231,16 +231,15 @@ test('ModeStore: list returns builtin modes first, then custom by created_at', (
   store.save({ name: 'Alpha Mode' });
 
   const modes = store.list();
-  // 4 builtin + 2 custom = 6
-  assert.equal(modes.length, 6);
+  // 3 builtin + 2 custom = 5
+  assert.equal(modes.length, 5);
 
-  // First 4 are builtin
+  // First 3 are builtin
   assert.ok(modes[0].builtin);
   assert.ok(modes[1].builtin);
   assert.ok(modes[2].builtin);
-  assert.ok(modes[3].builtin);
 
   // Last 2 are custom (order depends on created_at resolution)
-  const customNames = [modes[4].name, modes[5].name].sort();
+  const customNames = [modes[3].name, modes[4].name].sort();
   assert.deepEqual(customNames, ['Alpha Mode', 'Zebra Mode']);
 });
