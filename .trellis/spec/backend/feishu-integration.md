@@ -24,10 +24,12 @@
 ### 4. Validation & Error Matrix
 - Missing long-connection app credentials: `start()` returns `false` and logs a warning; no process or network client is started.
 - Missing SDK `WSClient` / `EventDispatcher`: `start()` returns `false` and logs a warning.
-- SDK start rejection: log the failure and clear the active client reference; do not crash CAFF.
+- Server bootstrap: Feishu bot identity warm-up and websocket start are best-effort side effects; `server.listen(...)` must not wait for `feishuIntegration.initialize()` or `feishuLongConnection.start()` to settle.
+- SDK start lifecycle: log a start attempt before `WSClient.start(...)` resolves, log readiness only after the promise resolves, and clear active client references on rejection so a later `start()` can retry.
 - Encrypted long-connection payload: return an ignored result from the Feishu service; encryption support remains out of scope for MVP.
 - Unsupported or ignored message event: return success-shaped ignored payload to avoid Feishu retries when the event reached the service.
 - Bot self messages are ignored by sender type or bot `open_id` to prevent outbound echo loops.
+- Inbound failure after `reserveExternalEvent(...)`: update the reserved record with `metadata.status = 'failed'` and keep it persisted; do not delete it because Feishu retries would duplicate user messages or turns.
 - Outbound assistant delivery is idempotent by local assistant message id; duplicate delivery attempts should not call Feishu again.
 
 ### 5. Good/Base/Bad Cases
@@ -38,7 +40,8 @@
 ### 6. Tests Required
 - Runtime: assert `createFeishuLongConnectionSource` constructs SDK `WSClient`, registers `im.message.receive_v1`, normalizes flat SDK events, forwards them to `handleLongConnectionEvent`, and closes the client on stop.
 - Runtime: assert long-connection events are processed without webhook token verification.
-- HTTP: keep challenge/token, dedup, group text without bot mention, `/new` rebinding, and bot self-message webhook coverage green because both transports share parsing logic.
+- Runtime: assert long-connection start logs distinguish attempt vs ready states and `stop()` permits a later `start()` retry/reuse.
+- HTTP: keep challenge/token, dedup, group text without bot mention, non-text ignore, `/new` rebinding, downstream-failure dedupe retention, and bot self-message webhook coverage green because both transports share parsing logic.
 - Runtime: assert outbound delivery prefixes assistant replies with the resolved Agent display name and keeps duplicate delivery idempotent.
 
 ### 7. Wrong vs Correct

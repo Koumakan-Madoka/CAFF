@@ -257,3 +257,48 @@ Implemented and accepted CAFF minimal agent parallel dispatch v1, including per-
 ### Next Steps
 
 - None - task complete
+
+
+## Session 6: Close out Feishu integration MVP task
+
+**Date**: 2026-04-12
+**Task**: Close out Feishu integration MVP task
+**Branch**: `feat/04-12-caff-feishu-integration`
+
+### Summary
+
+Archived the completed Feishu integration MVP task after re-validating the branch, repairing Trellis context records, and syncing the Feishu backend code-spec with the final startup and dedupe guardrails.
+
+### Main Changes
+
+| Area | Description |
+|------|-------------|
+| Feishu MVP | Confirmed the long-connection + shared inbound path ships with chat-level conversation binding, `/new` rebinding, persistent inbound/outbound dedupe, self-message ignore, and `【Agent名】` outbound prefixes. |
+| Validation | Re-ran `npm run check`, `npm run typecheck`, and `npm test`, all green before archival. |
+| Trellis closure | Converted `implement.jsonl` legacy activity lines into valid file-context entries, appended final check/spec records, archived `04-12-caff-feishu-integration`, and updated the workspace journal. |
+| Code-spec | Extended `.trellis/spec/backend/feishu-integration.md` with non-blocking bootstrap warm-up, start-attempt vs ready logging, retryable stop/start lifecycle, and failed inbound dedupe retention. |
+
+**Acceptance notes**:
+- Long connection remains the primary Feishu ingress path.
+- Group text no longer requires `@bot`; routing stays at the CAFF conversation level.
+- Unsupported non-text or encrypted long-connection payloads are ignored safely with diagnostics.
+- Startup errors stay best-effort and do not block the CAFF main process.
+
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f30d1f2` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
