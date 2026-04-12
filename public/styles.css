@@ -2444,6 +2444,11 @@ textarea {
   overflow-y: auto;
 }
 
+#st-live-run {
+  margin-bottom: 0.8rem;
+  max-height: 520px;
+}
+
 .run-detail-section {
   margin-bottom: 0.6rem;
 }

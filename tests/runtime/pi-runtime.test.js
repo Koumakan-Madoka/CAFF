@@ -130,6 +130,54 @@ test('pi runtime treats a terminal assistant message as successful completion ev
   assert.ok(terminatingReasons.some((reason) => reason && reason.type === 'expected_completion'));
 });
 
+test('pi runtime allows callers to mark a run complete early', async (t) => {
+  if (process.platform !== 'win32') {
+    t.skip('PI_COMMAND_PATH override fixture is currently exercised on Windows only');
+    return;
+  }
+
+  if (!requireSpawn(t)) {
+    return;
+  }
+
+  const tempDir = withTempDir('caff-pi-runtime-complete-');
+  const sqlitePath = path.join(tempDir, 'pi-runtime-complete.sqlite');
+  const { runtime, restore } = loadRuntimeWithCommandPath(FAKE_PI_ECHO_STDIN_PATH);
+  let handle = null;
+
+  t.after(() => {
+    try {
+      handle && handle.cancel('test cleanup');
+    } catch {}
+
+    restore();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  handle = runtime.startRun('test-provider', 'test-model', 'Say hello', {
+    agentDir: tempDir,
+    sqlitePath,
+    heartbeatIntervalMs: 50,
+    heartbeatTimeoutMs: 10000,
+    terminateGraceMs: 100,
+    streamOutput: false,
+  });
+
+  handle.complete('external early completion');
+
+  const timeoutPromise = new Promise((_, reject) => {
+    setTimeout(() => {
+      reject(new Error('Timed out waiting for external completion'));
+    }, 2000);
+  });
+
+  const result = await Promise.race([handle.resultPromise, timeoutPromise]);
+
+  assert.equal(result.code, 0);
+  assert.equal(result.signal, null);
+  assert.equal(result.completionStopReason, null);
+});
+
 test('pi runtime pipes the full prompt through stdin so quoted history is preserved', async (t) => {
   if (process.platform !== 'win32') {
     t.skip('PI_COMMAND_PATH override fixture is currently exercised on Windows only');
