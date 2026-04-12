@@ -302,3 +302,45 @@ Archived the completed Feishu integration MVP task after re-validating the branc
 ### Next Steps
 
 - None - task complete
+
+
+## Session 7: Close out dynamic skill-test early-stop task
+
+**Date**: 2026-04-12
+**Task**: Close out dynamic skill-test early-stop task
+**Branch**: `feat/04-12-caff-feishu-integration`
+
+### Summary
+
+Archived the completed dynamic skill-test early-stop/live-trace task after confirming its implementation commit is already contained in the current branch and its task/spec context is valid.
+
+### Main Changes
+
+| Area | Description |
+|------|-------------|
+| Task archival | Archived `04-12-skill-test-dynamic-stop-and-live-trace-ui` into `.trellis/tasks/archive/2026-04/` on the current branch. |
+| Implementation anchor | Closed the Trellis card against implementation commit `b70cc3f` (`fix: harden skill-test dynamic early stop`). |
+| Behavior shipped | Dynamic trigger runs stop immediately after the target `SKILL.md` load, and the Skill Tests workspace shows live tool-trace updates while the run is active. |
+| Key files | `server/api/skill-test-controller.ts`, `public/skill-tests.js`, `lib/pi-runtime.ts`, `tests/skill-test/skill-test-e2e.test.js`, `tests/runtime/pi-runtime.test.js`. |
+| Spec coverage | Existing code-spec updates in `.trellis/spec/skills/skill-testing.md` and `.trellis/spec/runtime/agent-runtime.md` already capture the dynamic-stop and live-trace contracts. |
+| Validation | Ran `python ./.trellis/scripts/task.py validate 04-12-skill-test-dynamic-stop-and-live-trace-ui` before archiving; context files passed. |
+| Remaining active task | `04-02-project-refactor-checklist` stays unarchived. |
+
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b70cc3f` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
