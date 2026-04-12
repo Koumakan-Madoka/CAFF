@@ -1,65 +1,72 @@
 # CAFF
 
-**Conversational Agent Framework & Playground** — a local multi-agent chat platform with built-in game modes and evaluation tooling.
+**Conversational Agent Framework & Playground** — 一个本地多 Agent 聊天平台，集成多人协作、游戏模式、技能系统、评测面板，以及飞书与 CLI 自动化接入能力。
 
 ![Node.js](https://img.shields.io/badge/Node.js-20+-green?logo=node.js)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-blue?logo=typescript)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 ![Tests](https://img.shields.io/badge/tests-passing-brightgreen)
 
-## ✨ Features
+## ✨ 当前能力概览
 
-- **Multi-Agent Chat Rooms** — Create conversations with multiple AI agents, each with a unique persona. Agents can talk to each other via `@mention` routing with parallel and serial turn modes.
-- **Persona Management** — Create and edit agent personas (system prompts, avatar, model settings) through a web UI.
-- **Skill System** — Attach reusable skill files to agents for domain-specific behavior (e.g. game hosting, code review).
-- **Who is Undercover** 🕵️ — A fully backend-hosted "Who is Undercover" game mode with automatic clue rounds, voting, and reveal. Agents play as participants while the backend acts as the host.
-- **Werewolf** 🐺 — A backend-hosted Werewolf game with day/night phase progression, role assignment, and win condition checks.
-- **A/B Evaluation Framework** — Run batch A/B replays on prompt pairs, compare agent outputs with metrics, and track evaluation history over time.
-- **Trellis Workflow** — Built-in project workflow context system (`.trellis/`) for AI-assisted development sessions.
+- **多 Agent 聊天工作台** — 在同一个房间里让多个 Agent 协作，支持 `@mention` 路由、串行/并行 handoff、停止当前 turn，以及公开 / 私有消息通道。
+- **人格管理** — 在 Web UI 中维护 Agent 的基础 persona、头像、默认模型，以及按模型拆分的 persona profile。
+- **Skill 与模式系统** — 统一管理 `.pi-sandbox/skills` 下的技能目录，并支持会话模式绑定、`dynamic` / `full` 两种注入策略。
+- **项目管理与 Trellis 上下文** — 选择当前激活项目目录，联动 Trellis 工作流上下文和项目内额外技能目录。
+- **后端主持游戏模式** — 内置“谁是卧底”和“狼人杀”两种玩法，由后端推进阶段、分配身份、处理结算。
+- **评测与回归工具** — 提供 Agent 指标报表、错题本 / A/B 重放，以及 Skill 测试工作台。
+- **飞书接入 MVP** — 支持通过 webhook 或 long connection 收发飞书私聊 / 群聊文本消息。
+- **CLI 自动化友好** — Agent 聊天桥接工具与 GitHub CLI (`gh`) 都能直接融入本地自动化流程。
 
 ## 🏗 Architecture
 
-CAFF uses a clean layered architecture, refactored from an original monolithic design:
+CAFF 目前是一个以本地 Web 工作台为入口、Node/TypeScript 后端为核心的分层应用：
 
-```
-┌─────────────────────────────────────────────────┐
-│                   Browser UI                     │
-│  (Vanilla JS, SSE, modular page structure)       │
-└────────────────────┬────────────────────────────┘
-                     │ HTTP / SSE
-┌────────────────────▼────────────────────────────┐
-│               server/api/                        │
-│         (controllers per resource)               │
-├──────────────────────────────────────────────────┤
-│             server/domain/                       │
-│  ┌──────────────┐ ┌───────────┐ ┌────────────┐  │
-│  │ conversation  │ │ undercover│ │  werewolf  │  │
-│  │  orchestrator │ │  service  │ │  service   │  │
-│  └──────────────┘ └───────────┘ └────────────┘  │
-│  ┌──────────────────────────────────────────┐    │
-│  │       runtime (agent-tool-bridge)         │    │
-│  └──────────────────────────────────────────┘    │
-├──────────────────────────────────────────────────┤
-│               storage/                           │
-│  ┌─────────────┐  ┌──────────┐  ┌────────────┐  │
-│  │  chat store  │  │ run store│  │   SQLite   │  │
-│  └─────────────┘  └──────────┘  └────────────┘  │
-└──────────────────────────────────────────────────┘
+```text
+┌──────────────────────────────────────────────────────────┐
+│                        Browser UI                        │
+│ /  /personas.html  /skills.html  /projects.html         │
+│ /metrics.html  /eval-cases.html                         │
+└─────────────────────────────┬────────────────────────────┘
+                              │ HTTP / SSE
+┌─────────────────────────────▼────────────────────────────┐
+│                    server/api + server/http              │
+│ bootstrap / conversations / agents / skills / modes     │
+│ projects / metrics / eval-cases / skill-tests / feishu  │
+└─────────────────────────────┬────────────────────────────┘
+                              │
+┌─────────────────────────────▼────────────────────────────┐
+│                       Domain Services                    │
+│ turn-orchestrator / mention-routing / agent-tool-bridge │
+│ skill-registry / project-manager / mode-store           │
+│ undercover / werewolf / feishu integration              │
+└─────────────────────────────┬────────────────────────────┘
+                              │
+┌─────────────────────────────▼────────────────────────────┐
+│                         Storage                          │
+│ chat repositories / run repositories / SQLite / modes   │
+└─────────────────────────────┬────────────────────────────┘
+                              │
+┌─────────────────────────────▼────────────────────────────┐
+│                    External Runtime & Tools              │
+│ pi coding agent / .pi-sandbox / Feishu / GitHub CLI     │
+└──────────────────────────────────────────────────────────┘
 ```
 
-**Key directories:**
+**核心目录：**
 
 | Path | Description |
 |---|---|
-| `server/app/` | Server bootstrap, config, dependency wiring |
-| `server/http/` | HTTP router, SSE bus, request/response helpers |
-| `server/api/` | Resource controllers (one per API domain) |
-| `server/domain/` | Business logic — conversation orchestration, game services, runtime bridge |
-| `server/domain/conversation/turn/` | Turn lifecycle — agent execution, routing, stop, events |
-| `storage/` | SQLite repositories for chat data and run records |
-| `lib/` | Shared utilities — Pi runtime integration, skill registry, project manager |
-| `public/` | Frontend — chat UI, persona editor, skill editor, metrics dashboard |
-| `tests/` | Test suites — runtime, storage, HTTP, smoke |
+| `server/app/` | 服务启动、配置读取、依赖装配 |
+| `server/http/` | HTTP 路由、SSE 总线、请求响应工具 |
+| `server/api/` | 各资源控制器：会话、人格、技能、项目、评测、飞书等 |
+| `server/domain/` | 领域逻辑：turn 编排、运行时桥接、游戏服务、飞书集成 |
+| `storage/` | SQLite 仓储：聊天数据、运行记录、模式与外部事件 |
+| `lib/` | 共享运行时辅助、pi 集成、skill registry、project manager |
+| `public/` | 前端页面与共享 JS 模块 |
+| `tests/` | runtime、HTTP、storage、skill-test、smoke 测试 |
+| `.trellis/` | Trellis 工作流、spec、task 与 workspace 上下文 |
+| `.pi-sandbox/` | skills、agent sandboxes、本地 runtime 状态 |
 
 ## 🚀 Quick Start
 
@@ -67,164 +74,245 @@ CAFF uses a clean layered architecture, refactored from an original monolithic d
 
 - [Node.js](https://nodejs.org/) 20+
 - npm 9+
-- A running [pi coding agent](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent) (or compatible provider endpoint)
+- 一个可用的 [pi coding agent](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent) 或兼容 provider endpoint
 
 ### Install & Run
 
 ```bash
-# Clone the repository
 git clone https://github.com/Koumakan-Madoka/caff.git
 cd caff
-
-# Install dependencies
 npm install
-
-# Build and start
+cp .env.example .env.local  # Windows PowerShell: copy .env.example .env.local
 npm run start:dev
 ```
 
-Then open **http://127.0.0.1:3100** in your browser.
+打开浏览器访问：**http://127.0.0.1:3100**
 
 ### Environment Variables
 
 | Variable | Default | Description |
 |---|---|---|
-| `CHAT_APP_HOST` | `127.0.0.1` | Server bind address |
-| `CHAT_APP_PORT` | `3100` | Server port |
-| `PI_CODING_AGENT_DIR` | auto-detected | Path to pi coding agent installation |
-| `PI_SQLITE_PATH` | auto-detected | SQLite database file path |
-| `PI_PROVIDER` | — | LLM provider identifier |
-| `PI_MODEL` | — | Default model name |
-| `PI_THINKING` | — | Enable thinking/reasoning mode |
-| `FEISHU_APP_ID` | — | Feishu app ID used for outbound replies, bot identity lookup, and long connection auth |
-| `FEISHU_APP_SECRET` | — | Feishu app secret used for tenant access token requests and long connection auth |
-| `FEISHU_VERIFICATION_TOKEN` | — | Verification token required only for `POST /api/integrations/feishu/webhook` |
-| `FEISHU_BOT_OPEN_ID` | — | Optional fallback bot `open_id` when `GET /open-apis/bot/v3/info` is unavailable |
-| `FEISHU_CONNECTION_MODE` | `webhook` | Inbound mode: `webhook` or `long-connection` |
-| `FEISHU_LONG_CONNECTION_LOGGER_LEVEL` | `info` | Optional official SDK long connection log level: `fatal`, `error`, `warn`, `info`, `debug`, or `trace` |
+| `CHAT_APP_HOST` | `127.0.0.1` | 服务监听地址 |
+| `CHAT_APP_PORT` | `3100` | 服务端口 |
+| `PI_CODING_AGENT_DIR` | auto-detected | pi 运行目录（默认 `.pi-sandbox/`） |
+| `PI_SQLITE_PATH` | auto-detected | SQLite 数据文件路径 |
+| `PI_PROVIDER` | — | 默认模型提供商 |
+| `PI_MODEL` | — | 默认模型名 |
+| `PI_THINKING` | — | 默认 thinking / reasoning 配置 |
+| `FEISHU_APP_ID` | — | 飞书 app id |
+| `FEISHU_APP_SECRET` | — | 飞书 app secret |
+| `FEISHU_VERIFICATION_TOKEN` | — | webhook 模式下的校验 token |
+| `FEISHU_BOT_OPEN_ID` | — | 获取 bot info 失败时的可选回退值 |
+| `FEISHU_CONNECTION_MODE` | `webhook` | 飞书入站模式：`webhook` 或 `long-connection` |
+| `FEISHU_LONG_CONNECTION_LOGGER_LEVEL` | `info` | 官方 SDK long connection 日志级别 |
 
-CAFF reads configuration from the process environment. When you start it with `npm run start` or `npm run start:dev`, it also auto-loads `./.env.local` if that file exists. Existing process environment variables still take precedence over file values. If you launch `node build/lib/app-server.js` directly, you still need to provide env vars yourself.
+CAFF 在 `npm run start` / `npm run start:dev` 时会自动读取 `./.env.local`。如果变量已经存在于当前进程环境中，则进程环境优先。
 
-## 飞书接入 MVP
+## 🧭 Web 工作台
 
-CAFF now ships with a minimal Feishu integration:
+| Page | What it does |
+|---|---|
+| `/` | 聊天工作台：会话列表、消息流、参与人格、游戏主持台、发送 / 停止控制 |
+| `/personas.html` | 人格管理：基础 persona、模型 profile、头像、默认模型与常驻 skill |
+| `/skills.html` | Skill 与模式管理：维护 `SKILL.md`、额外文件、模式绑定与加载策略 |
+| `/projects.html` | 项目管理：维护项目列表、切换激活项目、联动 Trellis 与额外技能目录 |
+| `/metrics.html` | Agent 指标报表：工具调用成功率、public/private 工具使用率、延迟分位数 |
+| `/eval-cases.html` | 错题本 / A/B 测试 + Skill 测试工作台 |
 
-- Inbound modes: webhook via `POST /api/integrations/feishu/webhook`, or long connection via `FEISHU_CONNECTION_MODE=long-connection`
-- Long connection transport: CAFF manages the official `@larksuiteoapi/node-sdk` `WSClient` and reuses the same parsing, dedup, and conversation-mapping pipeline
-- Inbound scope: text messages only
-- Conversation mapping: one Feishu `chat_id` maps to one CAFF conversation
-- Group trigger: private and group text messages are forwarded by default; CAFF keeps existing in-conversation mention routing semantics
-- Outbound scope: completed assistant text replies only
-- Current limitation: encrypted webhook payloads are not supported in this MVP
+## 🎛 Built-in Modes
 
-### 飞书应用配置步骤
+当前内置 4 种会话模式：
 
-1. Create a custom Feishu app with a bot capability enabled.
-2. Choose an inbound mode:
-   - Webhook mode: configure event subscription in webhook mode and point it at `https://<your-public-host>/api/integrations/feishu/webhook`, then set `FEISHU_VERIFICATION_TOKEN` to match the console.
-   - Long connection mode: switch Feishu event delivery to long connection and set `FEISHU_CONNECTION_MODE=long-connection`; CAFF starts the official Node SDK `WSClient` in-process.
-3. Subscribe to the inbound message event `im.message.receive_v1`.
-4. Grant the app the permissions needed to receive IM text messages and send bot text replies. If your tenant cannot use `GET /open-apis/bot/v3/info`, set `FEISHU_BOT_OPEN_ID` manually.
-5. Keep webhook event encryption disabled for this MVP; encrypted webhook payloads are currently rejected.
-6. Export the Feishu env vars and start CAFF. In long connection mode, CAFF passes `FEISHU_APP_ID` / `FEISHU_APP_SECRET` directly to the official SDK, so no public webhook URL or CLI bridge is required.
-7. Verify with a private text message or any normal group text message routed to the bot.
+- `standard`：普通对话，不自动注入额外 skill。
+- `coding`：面向编码协作的默认会话模式。
+- `werewolf`：狼人杀，全自动后端主持，默认 `full` 注入。
+- `who_is_undercover`：谁是卧底，全自动后端主持，默认 `full` 注入。
 
-### Feishu env example
+## 🔌 Automation & Integrations
 
-See `./.env.example` for a minimal reference file, then copy it to `./.env.local` for local development. `npm run start` and `npm run start:dev` load that file automatically.
+### Agent 聊天桥接 CLI
+
+CAFF 内置一个给 Agent 使用的本地聊天桥：运行时入口是 `build/lib/agent-chat-tools.js`（源码在 `lib/agent-chat-tools.ts`）。
+
+常见能力包括：
+
+- `send-public`：把内容发到公开聊天室
+- `send-private`：给自己或其他 Agent 发私有消息
+- `read-context`：读取最新公开 / 私有上下文
+- `list-participants`：读取当前房间参与者
+- `trellis-init` / `trellis-write`：辅助初始化或写入 `.trellis/` 文件
+
+这套工具是多 Agent 本地协作、private mailbox、handoff 路由和工具埋点的基础。
+
+### 飞书接入 MVP
+
+CAFF 当前提供一版最小可用的飞书接入：
+
+- 入站模式：`POST /api/integrations/feishu/webhook` webhook，或 `FEISHU_CONNECTION_MODE=long-connection`
+- 传输层：long connection 模式下复用官方 `@larksuiteoapi/node-sdk` `WSClient`
+- 入站范围：文本消息
+- 会话映射：一个飞书 `chat_id` 映射到一个 CAFF conversation
+- 转发策略：私聊和普通群聊文本都会进入 CAFF；群内继续沿用房间中的 mention 路由语义
+- 出站范围：已完成的 assistant 文本回复
+- 当前限制：暂不支持加密 webhook payload
+
+### 飞书配置步骤
+
+1. 创建自建飞书应用，并启用 bot capability。
+2. 选择入站模式：
+   - webhook：把事件订阅地址指向 `https://<your-public-host>/api/integrations/feishu/webhook`，并设置 `FEISHU_VERIFICATION_TOKEN`
+   - long connection：切换到 long connection，并设置 `FEISHU_CONNECTION_MODE=long-connection`
+3. 订阅事件 `im.message.receive_v1`。
+4. 授予接收 IM 文本与发送 bot 文本消息所需权限。
+5. 如果租户无法使用 `GET /open-apis/bot/v3/info`，手动设置 `FEISHU_BOT_OPEN_ID`。
+6. 当前 MVP 需要保持 webhook 事件加密关闭；加密 payload 会被拒绝。
+7. 配好环境变量后启动 CAFF，再通过私聊或普通群聊文本验证。
+
+### GitHub CLI 自动化接入
+
+CAFF 的本地开发与 Agent 自动化推荐优先通过官方 GitHub CLI (`gh`) 接入 GitHub；复杂场景再按需落到 GitHub REST 或 GraphQL API。
+
+**安装示例：**
+
+```bash
+winget install --id GitHub.cli
+# or
+choco install gh
+```
+
+**本地登录验证：**
+
+```bash
+gh auth login
+gh auth status
+gh repo view
+```
+
+**脚本与 Agent 常用命令：**
+
+- 输出结构化数据：`gh pr list --json number,title,url,state`
+- 调 REST API：`gh api repos/OWNER/REPO/issues`
+- 调 GraphQL：`gh api graphql -f query='query { viewer { login } }'`
+- 创建 PR：`gh pr create --fill`
+- 非交互认证优先使用 `GH_TOKEN`，GitHub Actions 内优先使用 `GITHUB_TOKEN`
+- 不要把 token 写进代码、日志、README 示例或共享配置
 
 ## 🧪 Testing
 
-CAFF uses a three-gate testing strategy:
+CAFF 使用三道测试门来保证基础健康：
 
 | Gate | Command | What it checks |
 |---|---|---|
-| **A — Syntax** | `npm run check` | `node --check` on all frontend JS files |
-| **B — Types** | `npm run typecheck` | TypeScript `--noEmit` for backend + `checkJs` for frontend |
-| **C — Tests** | `npm run test:fast` | Unit tests for runtime, storage, HTTP layers |
+| **A — Syntax** | `npm run check` | 前端 JS 语法检查 |
+| **B — Types** | `npm run typecheck` | TypeScript `--noEmit` + `public/` 的 `checkJs` |
+| **C — Tests** | `npm run test:fast` | runtime、HTTP、storage、飞书、skill-loading 等快速测试 |
 
-Run everything:
+常用命令：
 
 ```bash
-npm test          # check + typecheck + build + unit + smoke
-npm run test:fast # check + build + unit (no server startup)
-npm run test:smoke # build + server smoke test
+npm run check
+npm run typecheck
+npm run test:fast
+npm run test:smoke
+npm test
 ```
 
-Tests use Node.js built-in `node:test` + `node:assert/strict` — no extra test framework required.
+- `npm run test:smoke` 会构建并执行服务启动 smoke test。
+- `npm test` 会串联 `test:fast` 与 `test:smoke`。
+- 测试基于 Node.js 内置 `node:test` 与 `node:assert/strict`。
+
+## 📊 Evaluation & Skill Testing
+
+### 指标报表
+
+`/metrics.html` 会从本地 SQLite 中汇总：
+
+- 每个 Agent 的工具调用成功率
+- `send-public` / `send-private` 使用情况
+- public/private 工具调用的提示词回归指标
+- 工具延迟分位数（如 p50 / p95）
+
+### 错题本 / A/B 测试
+
+`/eval-cases.html` 支持：
+
+- 记录问题 turn 的输入 prompt
+- 批量重放 A/B prompt 或配置
+- 对比输出与工具调用行为
+- 沉淀回归样例
+
+### Skill 测试工作台
+
+同一页面下还集成了 Skill 测试面板，可用于：
+
+- 让 AI 生成 Skill 测试草稿
+- 手动编辑 test case 并标记 `draft` / `ready`
+- 批量运行 ready 用例
+- 查看运行历史、回归对比和工具轨迹
 
 ## 🎮 Game Modes
 
 ### Who is Undercover
 
-1. Create a conversation with type `who_is_undercover`
-2. Add agents as players
-3. The backend automatically acts as host — assigning identities, running clue/vote rounds, and revealing results
-4. Agents play using a dedicated skill that guides their responses
+1. 创建 `who_is_undercover` 房间
+2. 选择参与 Agent 作为玩家
+3. 配置平民词、卧底词、卧底人数、白板人数等参数
+4. 点击开始后，由后端自动完成发言、投票、结算与揭晓
 
 ### Werewolf
 
-1. Create a conversation with type `werewolf`
-2. Configure roles (werewolf, seer, witch, villager)
-3. The backend manages day/night phases, role actions, and win conditions
-4. Each agent receives role-specific private instructions
-
-## 📊 Evaluation Framework
-
-The metrics dashboard (`/metrics.html`) provides:
-
-- **A/B Batch Replay** — Run the same prompt with two different agent configurations and compare outputs
-- **Per-Case History** — Track evaluation results over time
-- **Metrics Collection** — Automated scoring on configurable dimensions
-
-## 🛠 Tech Stack
-
-| Layer | Technology |
-|---|---|
-| Backend | Node.js, TypeScript (CommonJS) |
-| Database | SQLite via `better-sqlite3` |
-| Frontend | Vanilla JavaScript, Server-Sent Events (SSE) |
-| Testing | `node:test`, `node:assert/strict` |
-| CI | GitHub Actions |
+1. 创建 `werewolf` 房间
+2. 配置狼人、预言家、女巫数量
+3. 选择参与 Agent 作为玩家
+4. 点击开始后，由后端自动推进夜晚、白天讨论、投票与胜负判定
 
 ## 📁 Project Structure
 
-```
+```text
 caff/
 ├── server/
-│   ├── app/          # Server bootstrap & config
-│   ├── http/         # Router, SSE, request/response
-│   ├── api/          # REST controllers
-│   └── domain/       # Business logic
-│       ├── conversation/   # Turn orchestration, mention routing
-│       ├── undercover/     # "Who is Undercover" game
-│       ├── werewolf/       # Werewolf game
-│       ├── runtime/        # Agent tool bridge
-│       └── metrics/        # Eval report generation
+│   ├── app/                # 启动、配置、依赖装配
+│   ├── http/               # Router、SSE、请求/响应工具
+│   ├── api/                # REST controllers
+│   └── domain/
+│       ├── conversation/   # Turn orchestration、mention routing、session export
+│       ├── runtime/        # Agent tool bridge、message tool trace
+│       ├── integrations/   # Feishu 集成
+│       ├── undercover/     # 谁是卧底服务
+│       ├── werewolf/       # 狼人杀服务
+│       └── metrics/        # Agent 评测报表
 ├── storage/
-│   ├── chat/         # Chat repository (conversations, messages, agents)
-│   ├── run/          # Run & task repository
-│   └── sqlite/       # DB connection & migrations
-├── lib/              # Shared: Pi runtime, skill registry, project manager
-├── public/           # Frontend: chat UI, editors, metrics
-├── tests/            # Test suites (runtime, storage, HTTP, smoke)
-├── docs/             # Design documents & migration plans
-├── scripts/          # Build & utility scripts
-└── types/            # Shared TypeScript type definitions
+│   ├── chat/               # Conversations、messages、participants、channel bindings
+│   ├── run/                # Runs、sessions、tasks
+│   └── sqlite/             # 连接与迁移
+├── lib/                    # pi runtime、skill registry、project manager、CLI 工具
+├── public/                 # 聊天页、人格页、技能页、项目页、报表页、错题本
+├── tests/                  # runtime / http / storage / skill-test / smoke
+├── docs/                   # 设计文档与迁移笔记
+├── scripts/                # 构建与实用脚本
+├── types/                  # TypeScript 类型声明
+├── .trellis/               # Trellis workflow / spec / tasks / workspace
+└── .pi-sandbox/            # skills、agent sandboxes、本地状态与配置
 ```
+
+## 🤝 Contributing
+
+欢迎继续扩展 CAFF。提交前建议至少完成：
+
+- `npm run check`
+- `npm run typecheck`
+- `npm test`
+
+并遵循以下约定：
+
+- 新功能优先放到对应 domain module，不要把逻辑堆回 server 入口
+- 新页面优先复用 `public/shared/` 中的公共模块
+- 变更技能、运行时或跨层协议时，同步更新 `.trellis/spec/` 中的相关文档
 
 ## 📜 License
 
 This project is licensed under the [MIT License](LICENSE).
 
-## 🤝 Contributing
-
-Contributions are welcome! Please make sure:
-
-- `npm test` passes before submitting a PR
-- New features go into the appropriate domain module (not the server entry point)
-- New pages use shared utilities from `public/shared/` instead of duplicating code
-
 ---
 
-*CAFF — where agents chat, play games, and (sometimes) get evaluated.* 🐧
+*CAFF — where agents chat, collaborate, play games, and regression-test each other.* 🐧
