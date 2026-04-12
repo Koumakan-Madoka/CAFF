@@ -83,6 +83,31 @@ CREATE TABLE IF NOT EXISTS chat_private_messages (
   FOREIGN KEY (sender_agent_id) REFERENCES chat_agents(id) ON DELETE SET NULL
 );
 
+CREATE TABLE IF NOT EXISTS chat_channel_bindings (
+  platform TEXT NOT NULL,
+  external_chat_id TEXT NOT NULL,
+  conversation_id TEXT NOT NULL,
+  metadata_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (platform, external_chat_id),
+  FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS chat_external_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  platform TEXT NOT NULL,
+  direction TEXT NOT NULL,
+  external_event_id TEXT,
+  external_message_id TEXT,
+  conversation_id TEXT,
+  message_id TEXT,
+  metadata_json TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE,
+  FOREIGN KEY (message_id) REFERENCES chat_messages(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS eval_cases (
   id TEXT PRIMARY KEY,
   conversation_id TEXT,
@@ -138,6 +163,18 @@ CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation_id ON chat_messages (c
 CREATE INDEX IF NOT EXISTS idx_chat_messages_turn_id ON chat_messages (turn_id, created_at ASC, id ASC);
 CREATE INDEX IF NOT EXISTS idx_chat_private_messages_conversation_id ON chat_private_messages (conversation_id, created_at ASC, id ASC);
 CREATE INDEX IF NOT EXISTS idx_chat_private_messages_sender_agent_id ON chat_private_messages (sender_agent_id, created_at ASC, id ASC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_channel_bindings_platform_conversation_id ON chat_channel_bindings (platform, conversation_id);
+CREATE INDEX IF NOT EXISTS idx_chat_channel_bindings_conversation_id ON chat_channel_bindings (conversation_id);
+CREATE INDEX IF NOT EXISTS idx_chat_external_events_conversation_id ON chat_external_events (conversation_id, created_at ASC, id ASC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_external_events_platform_direction_event_id
+  ON chat_external_events (platform, direction, external_event_id)
+  WHERE external_event_id IS NOT NULL AND external_event_id <> '';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_external_events_platform_direction_external_message_id
+  ON chat_external_events (platform, direction, external_message_id)
+  WHERE external_message_id IS NOT NULL AND external_message_id <> '';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_external_events_platform_direction_message_id
+  ON chat_external_events (platform, direction, message_id)
+  WHERE message_id IS NOT NULL AND message_id <> '';
 CREATE INDEX IF NOT EXISTS idx_eval_cases_created_at ON eval_cases (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_eval_cases_message_id ON eval_cases (message_id);
 CREATE INDEX IF NOT EXISTS idx_eval_case_runs_case_id ON eval_case_runs (case_id, created_at DESC);

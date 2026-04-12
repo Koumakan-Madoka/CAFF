@@ -17,6 +17,8 @@ backend domain services.
 - [ ] Read `architecture.md`
 - [ ] Read `controller-patterns.md` if you touch controllers, request parsing, or
       HTTP responses
+- [ ] Read `feishu-integration.md` if you touch Feishu webhook, long connection,
+      event parsing, external event dedup, or outbound reply delivery
 - [ ] Also read `../runtime/index.md` if the change touches agent execution,
       prompt context, sandbox env vars, or tool bridge behavior
 - [ ] Read `../guides/cross-layer-thinking-guide.md` when data crosses backend,
@@ -27,4 +29,6 @@ backend domain services.
 
 - `architecture.md`: backend module boundaries and ownership
 - `controller-patterns.md`: handler conventions, error flow, and response shape
+- `feishu-integration.md`: Feishu webhook/long-connection contracts, env keys,
+  event normalization, dedup expectations, and test points
 - See `../skills/` for skill-related backend patterns (skill-test-controller.ts, skills-controller.ts)

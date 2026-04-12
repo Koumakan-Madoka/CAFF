@@ -6,6 +6,8 @@ const { createChatConversationRepository } = require('../storage/chat/conversati
 const { createChatParticipantRepository } = require('../storage/chat/participant.repository');
 const { createChatMessageRepository } = require('../storage/chat/message.repository');
 const { createChatPrivateMessageRepository } = require('../storage/chat/private-message.repository');
+const { createChatChannelBindingRepository } = require('../storage/chat/channel-binding.repository');
+const { createChatExternalEventRepository } = require('../storage/chat/external-event.repository');
 
 const MAX_AVATAR_DATA_URL_LENGTH = 2 * 1024 * 1024;
 const MAX_AGENT_SANDBOX_NAME_LENGTH = 80;
@@ -182,6 +184,11 @@ function parseJson(value: any) {
   } catch {
     return null;
   }
+}
+
+function isSqliteUniqueConstraintError(error: any) {
+  const code = String(error && error.code ? error.code : '').trim().toUpperCase();
+  return code.startsWith('SQLITE_CONSTRAINT');
 }
 
 function normalizeAvatarDataUrl(value: any) {
@@ -417,6 +424,39 @@ function normalizeConversationHeader(row: any) {
   };
 }
 
+function normalizeConversationChannelBindingRow(row: any) {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    platform: row.platform,
+    externalChatId: row.external_chat_id,
+    conversationId: row.conversation_id,
+    metadata: parseJson(row.metadata_json) || {},
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function normalizeExternalEventRow(row: any) {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    id: Number(row.id),
+    platform: row.platform,
+    direction: row.direction,
+    externalEventId: row.external_event_id || null,
+    externalMessageId: row.external_message_id || null,
+    conversationId: row.conversation_id || null,
+    messageId: row.message_id || null,
+    metadata: parseJson(row.metadata_json) || {},
+    createdAt: row.created_at,
+  };
+}
+
 function normalizeConversation(row: any, agents: any, messages: any) {
   const header = normalizeConversationHeader(row);
 
@@ -478,6 +518,8 @@ export class ChatAppStore {
       this.participantRepository = createChatParticipantRepository(this.db);
       this.messageRepository = createChatMessageRepository(this.db);
       this.privateMessageRepository = createChatPrivateMessageRepository(this.db);
+      this.channelBindingRepository = createChatChannelBindingRepository(this.db);
+      this.externalEventRepository = createChatExternalEventRepository(this.db);
 
       this.replaceConversationParticipants = (conversationId: any, participants: any) => {
         const createdAt = nowIso();
@@ -589,6 +631,112 @@ export class ChatAppStore {
         );
       });
 
+      this.createConversationChannelBindingTransaction = this.db.transaction((payload: any) =>
+        normalizeConversationChannelBindingRow(
+          this.channelBindingRepository.create({
+            platform: payload.platform,
+            externalChatId: payload.externalChatId,
+            conversationId: payload.conversationId,
+            metadataJson: serializeJson(payload.metadata),
+            createdAt: payload.createdAt,
+            updatedAt: payload.updatedAt,
+          })
+        )
+      );
+
+      this.updateConversationChannelBindingTransaction = this.db.transaction((payload: any) =>
+        normalizeConversationChannelBindingRow(
+          this.channelBindingRepository.update(payload.platform, payload.externalChatId, {
+            conversationId: payload.conversationId,
+            metadataJson: serializeJson(payload.metadata),
+            updatedAt: payload.updatedAt,
+          })
+        )
+      );
+
+      this.getOrCreateExternalConversationTransaction = this.db.transaction((payload: any) => {
+        const existingBinding = normalizeConversationChannelBindingRow(
+          this.channelBindingRepository.getByExternalChatId(payload.platform, payload.externalChatId)
+        );
+
+        if (existingBinding) {
+          return {
+            binding: existingBinding,
+            conversation: this.getConversation(existingBinding.conversationId),
+          };
+        }
+
+        const timestamp = nowIso();
+        const conversationId = String(payload.conversationId || randomUUID()).trim();
+        const participants = this.normalizeConversationParticipantsInput(payload);
+
+        this.conversationRepository.create({
+          id: conversationId,
+          title: payload.title,
+          type: normalizeConversationType(payload.type),
+          metadataJson: serializeJson(payload.metadata || {}),
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          lastMessageAt: null,
+        });
+        this.replaceConversationParticipants(conversationId, pickDefaultParticipants(this.listAgents(), participants));
+
+        const binding = normalizeConversationChannelBindingRow(
+          this.channelBindingRepository.create({
+            platform: payload.platform,
+            externalChatId: payload.externalChatId,
+            conversationId,
+            metadataJson: serializeJson(payload.bindingMetadata),
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          })
+        );
+
+        return {
+          binding,
+          conversation: this.getConversation(conversationId),
+        };
+      });
+
+      this.reserveExternalEventTransaction = this.db.transaction((payload: any) =>
+        normalizeExternalEventRow(
+          this.externalEventRepository.create({
+            platform: payload.platform,
+            direction: payload.direction,
+            externalEventId: payload.externalEventId || null,
+            externalMessageId: payload.externalMessageId || null,
+            conversationId: payload.conversationId || null,
+            messageId: payload.messageId || null,
+            metadataJson: serializeJson(payload.metadata),
+            createdAt: payload.createdAt,
+          })
+        )
+      );
+
+      this.updateExternalEventTransaction = this.db.transaction((eventRecordId: any, payload: any) => {
+        const existing = normalizeExternalEventRow(this.externalEventRepository.get(eventRecordId));
+
+        if (!existing) {
+          return null;
+        }
+
+        return normalizeExternalEventRow(
+          this.externalEventRepository.update(eventRecordId, {
+            externalEventId:
+              payload.externalEventId === undefined ? existing.externalEventId : payload.externalEventId || null,
+            externalMessageId:
+              payload.externalMessageId === undefined ? existing.externalMessageId : payload.externalMessageId || null,
+            conversationId: payload.conversationId === undefined ? existing.conversationId : payload.conversationId || null,
+            messageId: payload.messageId === undefined ? existing.messageId : payload.messageId || null,
+            metadataJson: serializeJson(payload.metadata === undefined ? existing.metadata : payload.metadata),
+          })
+        );
+      });
+
+      this.deleteExternalEventTransaction = this.db.transaction((eventRecordId: any) => {
+        this.externalEventRepository.delete(eventRecordId);
+      });
+
       this.seedDefaultAgents();
     } catch (error) {
       try {
@@ -668,6 +816,126 @@ export class ChatAppStore {
       this.listConversationAgents(conversationId),
       this.listMessages(conversationId)
     );
+  }
+
+  getConversationChannelBinding(platform: any, externalChatId: any) {
+    return normalizeConversationChannelBindingRow(
+      this.channelBindingRepository.getByExternalChatId(String(platform || '').trim(), String(externalChatId || '').trim())
+    );
+  }
+
+  getConversationChannelBindingByConversationId(platform: any, conversationId: any) {
+    return normalizeConversationChannelBindingRow(
+      this.channelBindingRepository.getByConversationId(String(platform || '').trim(), String(conversationId || '').trim())
+    );
+  }
+
+  createConversationChannelBinding(input: any = {}) {
+    const platform = String(input.platform || '').trim();
+    const externalChatId = String(input.externalChatId || '').trim();
+    const conversationId = String(input.conversationId || '').trim();
+
+    if (!platform || !externalChatId || !conversationId) {
+      throw new Error('platform, externalChatId, and conversationId are required');
+    }
+
+    try {
+      return this.createConversationChannelBindingTransaction({
+        platform,
+        externalChatId,
+        conversationId,
+        metadata: input.metadata && typeof input.metadata === 'object' ? input.metadata : {},
+        createdAt: nowIso(),
+        updatedAt: nowIso(),
+      });
+    } catch (error) {
+      if (isSqliteUniqueConstraintError(error)) {
+        return null;
+      }
+
+      throw error;
+    }
+  }
+
+  updateConversationChannelBinding(input: any = {}) {
+    const platform = String(input.platform || '').trim();
+    const externalChatId = String(input.externalChatId || '').trim();
+    const conversationId = String(input.conversationId || '').trim();
+
+    if (!platform || !externalChatId || !conversationId) {
+      throw new Error('platform, externalChatId, and conversationId are required');
+    }
+
+    return this.updateConversationChannelBindingTransaction({
+      platform,
+      externalChatId,
+      conversationId,
+      metadata: input.metadata && typeof input.metadata === 'object' ? input.metadata : {},
+      updatedAt: nowIso(),
+    });
+  }
+
+  getOrCreateExternalConversation(input: any = {}) {
+    const platform = String(input.platform || '').trim();
+    const externalChatId = String(input.externalChatId || '').trim();
+
+    if (!platform || !externalChatId) {
+      throw new Error('platform and externalChatId are required');
+    }
+
+    return this.getOrCreateExternalConversationTransaction({
+      ...input,
+      platform,
+      externalChatId,
+      title: String(input.title || '').trim() || 'External Conversation',
+      type: normalizeConversationType(input.type),
+      metadata: input.metadata && typeof input.metadata === 'object' ? input.metadata : {},
+      bindingMetadata: input.bindingMetadata && typeof input.bindingMetadata === 'object' ? input.bindingMetadata : {},
+    });
+  }
+
+  reserveExternalEvent(input: any = {}) {
+    const platform = String(input.platform || '').trim();
+    const direction = String(input.direction || '').trim().toLowerCase();
+    const externalEventId = String(input.externalEventId || '').trim();
+    const externalMessageId = String(input.externalMessageId || '').trim();
+    const conversationId = String(input.conversationId || '').trim();
+    const messageId = String(input.messageId || '').trim();
+
+    if (!platform || !direction) {
+      throw new Error('platform and direction are required');
+    }
+
+    if (!externalEventId && !externalMessageId && !messageId) {
+      throw new Error('At least one external or local message identifier is required');
+    }
+
+    try {
+      return this.reserveExternalEventTransaction({
+        platform,
+        direction,
+        externalEventId,
+        externalMessageId,
+        conversationId: conversationId || null,
+        messageId: messageId || null,
+        metadata: input.metadata && typeof input.metadata === 'object' ? input.metadata : {},
+        createdAt: nowIso(),
+      });
+    } catch (error) {
+      if (isSqliteUniqueConstraintError(error)) {
+        return null;
+      }
+
+      throw error;
+    }
+  }
+
+  updateExternalEvent(eventRecordId: any, updates: any = {}) {
+    return this.updateExternalEventTransaction(eventRecordId, updates);
+  }
+
+  deleteExternalEvent(eventRecordId: any) {
+    this.deleteExternalEventTransaction(eventRecordId);
   }
 
   createConversation(input: any = {}) {
