@@ -130,6 +130,129 @@ test('agent tool bridge rejects stale invocations after a turn stops or complete
   );
 });
 
+test('agent tool bridge enforces skill-test run and case auth scope', (t) => {
+  const tempDir = withTempDir('caff-agent-tool-bridge-skill-test-auth-');
+  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const bridge = createAgentToolBridge({ store });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const fixture = createPublicInvocationFixture(store, 'skill-test-auth');
+  const context = bridge.registerInvocation(
+    bridge.createInvocationContext({
+      conversationId: fixture.conversation.id,
+      turnId: fixture.assistantMessage.turnId,
+      agentId: fixture.agent.id,
+      agentName: fixture.agent.name,
+      assistantMessageId: fixture.assistantMessage.id,
+      conversationAgents: fixture.conversation.agents,
+      stage: fixture.stage,
+      turnState: fixture.turnState,
+      authScope: 'skill-test',
+      caseId: 'case-1',
+      runId: 'run-1',
+      tokenTtlSec: 60,
+      dryRun: true,
+    })
+  );
+
+  assert.throws(
+    () =>
+      bridge.handlePostMessage({
+        invocationId: context.invocationId,
+        callbackToken: context.callbackToken,
+        visibility: 'public',
+        content: 'missing scope',
+      }),
+    (error) => error && error.statusCode === 403
+  );
+
+  assert.throws(
+    () =>
+      bridge.handlePostMessage({
+        invocationId: context.invocationId,
+        callbackToken: context.callbackToken,
+        skillTestRunId: 'run-1',
+        skillTestCaseId: 'case-2',
+        visibility: 'public',
+        content: 'wrong case',
+      }),
+    (error) => error && error.statusCode === 403
+  );
+
+  const okPost = bridge.handlePostMessage({
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    skillTestRunId: 'run-1',
+    skillTestCaseId: 'case-1',
+    visibility: 'public',
+    content: 'scoped ok',
+  });
+
+  assert.equal(okPost.ok, true);
+  assert.equal(context.auth.validated, true);
+  assert.equal(context.auth.validatedCount, 1);
+  assert.deepEqual(
+    context.auth.rejects.map((entry) => entry.reason),
+    ['missing_case_binding', 'case_binding_mismatch']
+  );
+});
+
+test('agent tool bridge expires invocation auth tokens', (t) => {
+  const tempDir = withTempDir('caff-agent-tool-bridge-auth-expiry-');
+  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const bridge = createAgentToolBridge({ store });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const fixture = createPublicInvocationFixture(store, 'auth-expiry');
+  const context = bridge.registerInvocation(
+    bridge.createInvocationContext({
+      conversationId: fixture.conversation.id,
+      turnId: fixture.assistantMessage.turnId,
+      agentId: fixture.agent.id,
+      agentName: fixture.agent.name,
+      assistantMessageId: fixture.assistantMessage.id,
+      conversationAgents: fixture.conversation.agents,
+      stage: fixture.stage,
+      turnState: fixture.turnState,
+      authScope: 'skill-test',
+      caseId: 'case-expired',
+      runId: 'run-expired',
+      expiresAt: '2000-01-01T00:00:00.000Z',
+      dryRun: true,
+    })
+  );
+
+  assert.throws(
+    () =>
+      bridge.handlePostMessage({
+        invocationId: context.invocationId,
+        callbackToken: context.callbackToken,
+        skillTestRunId: 'run-expired',
+        skillTestCaseId: 'case-expired',
+        visibility: 'public',
+        content: 'too late',
+      }),
+    (error) => error && error.statusCode === 401
+  );
+
+  assert.equal(context.auth.rejects.length, 1);
+  assert.equal(context.auth.rejects[0].reason, 'token_expired');
+});
+
 test('agent tool bridge appends tool-call telemetry events when runStore + stage taskId are available', (t) => {
   const tempDir = withTempDir('caff-agent-tool-bridge-telemetry-');
   const sqlitePath = path.join(tempDir, 'telemetry.sqlite');
@@ -1247,4 +1370,108 @@ test('agent tool memory cards update and forget durable local-user scope safely'
 
   const listedAfterForget = bridge.handleListMemories(listUrl);
   assert.equal(listedAfterForget.cardCount, 0);
+});
+
+test('agent tool bridge routes memory writes to invocation store overrides', (t) => {
+  const liveDir = withTempDir('caff-agent-tool-live-store-');
+  const isolatedDir = withTempDir('caff-agent-tool-isolated-store-');
+  const liveStore = createChatAppStore({ agentDir: liveDir, sqlitePath: path.join(liveDir, 'live.sqlite') });
+  const isolatedStore = createChatAppStore({ agentDir: isolatedDir, sqlitePath: path.join(isolatedDir, 'isolated.sqlite') });
+  const bridge = createAgentToolBridge({ store: liveStore });
+
+  t.after(() => {
+    try {
+      isolatedStore.close();
+    } catch {}
+    try {
+      liveStore.close();
+    } catch {}
+    fs.rmSync(liveDir, { recursive: true, force: true });
+    fs.rmSync(isolatedDir, { recursive: true, force: true });
+  });
+
+  const fixture = createPublicInvocationFixture(liveStore, 'store-override');
+  isolatedStore.saveAgent({
+    id: fixture.agent.id,
+    name: fixture.agent.name,
+    personaPrompt: 'Reply briefly.',
+  });
+  isolatedStore.createConversation({
+    id: fixture.conversation.id,
+    title: fixture.conversation.title,
+    participants: [fixture.agent.id],
+  });
+
+  const context = bridge.registerInvocation(
+    bridge.createInvocationContext({
+      conversationId: fixture.conversation.id,
+      turnId: fixture.assistantMessage.turnId,
+      agentId: fixture.agent.id,
+      agentName: fixture.agent.name,
+      assistantMessageId: fixture.assistantMessage.id,
+      conversationAgents: fixture.conversation.agents,
+      stage: fixture.stage,
+      turnState: fixture.turnState,
+      store: isolatedStore,
+      toolPolicy: { allowedTools: ['save-memory', 'list-memories'], rejects: [] },
+    })
+  );
+
+  const saved = bridge.handleSaveMemory({
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    title: 'preference',
+    content: 'User prefers isolated test worlds.',
+    ttlDays: 30,
+  });
+
+  assert.equal(saved.ok, true);
+  assert.equal(liveStore.listVisibleMemoryCards(fixture.conversation.id, fixture.agent.id, { limit: 6 }).length, 0);
+  assert.equal(isolatedStore.listVisibleMemoryCards(fixture.conversation.id, fixture.agent.id, { limit: 6 }).length, 1);
+});
+
+test('agent tool bridge rejects blocked tools via invocation policy and records evidence', (t) => {
+  const tempDir = withTempDir('caff-agent-tool-policy-');
+  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const bridge = createAgentToolBridge({ store });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const fixture = createPublicInvocationFixture(store, 'policy');
+  const context = bridge.registerInvocation(
+    bridge.createInvocationContext({
+      conversationId: fixture.conversation.id,
+      turnId: fixture.assistantMessage.turnId,
+      projectDir: tempDir,
+      agentId: fixture.agent.id,
+      agentName: fixture.agent.name,
+      assistantMessageId: fixture.assistantMessage.id,
+      conversationAgents: fixture.conversation.agents,
+      stage: fixture.stage,
+      turnState: fixture.turnState,
+      dryRun: true,
+      toolPolicy: { allowedTools: ['read-context'], rejects: [] },
+    })
+  );
+
+  assert.throws(
+    () =>
+      bridge.handleTrellisWrite({
+        invocationId: context.invocationId,
+        callbackToken: context.callbackToken,
+        path: '.trellis/tasks/policy/prd.md',
+        content: '# blocked',
+      }),
+    (error) => error && error.statusCode === 403
+  );
+
+  assert.equal(Array.isArray(context.policyRejects), true);
+  assert.equal(context.policyRejects.length, 1);
+  assert.equal(context.policyRejects[0].toolName, 'trellis-write');
 });

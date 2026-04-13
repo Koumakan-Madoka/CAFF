@@ -18,6 +18,11 @@ import { ROOT_DIR } from '../app/config';
 import { ensureAgentSandbox, toPortableShellPath } from '../domain/conversation/turn/agent-sandbox';
 import { extractLiveSessionToolFromPiEvent } from '../domain/conversation/turn/agent-executor';
 import { buildAssistantMessageToolTrace } from '../domain/runtime/message-tool-trace';
+import {
+  buildSkillTestIsolationIssues,
+  createSkillTestIsolationDriver,
+  getSkillTestIsolationFailureMessage,
+} from '../domain/skill-test/isolation';
 
 type ApiContext = {
   req: IncomingMessage;
@@ -118,6 +123,7 @@ const THRESHOLD_DIMENSION_KEYS = [
   'sequenceAdherence',
   'toolErrorRate',
 ];
+const DEFAULT_SKILL_TEST_BRIDGE_TOKEN_TTL_SECONDS = 600;
 
 function buildValidationIssue(code: string, severity: 'error' | 'warning' | 'needs-review', path: string, message: string) {
   return { code, severity, path, message };
@@ -153,6 +159,126 @@ function mergeValidationIssues(...groups: any[]) {
 
 function hasBlockingValidationIssue(issues: any[]) {
   return Array.isArray(issues) && issues.some((issue) => issue && issue.severity === 'error');
+}
+
+function summarizeBridgeAuthFromInvocation(toolInvocation: any, agentToolBridge: any = null) {
+  if (agentToolBridge && typeof agentToolBridge.summarizeInvocationAuth === 'function') {
+    const summary = agentToolBridge.summarizeInvocationAuth(toolInvocation);
+    if (summary && typeof summary === 'object') {
+      return summary;
+    }
+  }
+
+  const auth = toolInvocation && toolInvocation.auth && typeof toolInvocation.auth === 'object' ? toolInvocation.auth : null;
+  if (!auth) {
+    return null;
+  }
+
+  return {
+    scope: String(auth.scope || '').trim(),
+    caseId: String(auth.caseId || '').trim(),
+    runId: String(auth.runId || '').trim(),
+    taskId: String(auth.taskId || '').trim(),
+    tokenTtlSec: Number.isInteger(auth.tokenTtlSec) ? auth.tokenTtlSec : 0,
+    createdAt: String(auth.createdAt || '').trim(),
+    expiresAt: String(auth.expiresAt || '').trim(),
+    validated: auth.validated === true,
+    validatedCount: Number.isInteger(auth.validatedCount) ? auth.validatedCount : 0,
+    lastValidatedAt: String(auth.lastValidatedAt || '').trim(),
+    rejects: Array.isArray(auth.rejects) ? auth.rejects.slice() : [],
+  };
+}
+
+function buildSkillTestChatBridgeEvidence(toolInvocation: any, options: any = {}) {
+  const auth = summarizeBridgeAuthFromInvocation(toolInvocation, options.agentToolBridge);
+  const configuredUrl = String(options.toolBaseUrl || '').trim();
+  const rejects = auth && Array.isArray(auth.rejects) ? auth.rejects.slice() : [];
+  const validatedCount = auth && Number.isInteger(auth.validatedCount) ? auth.validatedCount : 0;
+
+  return {
+    mode: 'direct-http',
+    configured: Boolean(configuredUrl),
+    configuredUrl,
+    reachable: validatedCount > 0,
+    dryRun: true,
+    auth: auth
+      ? {
+          scope: auth.scope || '',
+          caseId: auth.caseId || '',
+          runId: auth.runId || '',
+          taskId: auth.taskId || '',
+          tokenTtlSec: auth.tokenTtlSec || 0,
+          expiresAt: auth.expiresAt || '',
+          validated: auth.validated === true,
+          validatedCount,
+          lastValidatedAt: auth.lastValidatedAt || '',
+        }
+      : {
+          scope: 'skill-test',
+          caseId: String(options.caseId || '').trim(),
+          runId: String(options.runId || '').trim(),
+          taskId: String(options.runId || '').trim(),
+          tokenTtlSec: 0,
+          expiresAt: '',
+          validated: false,
+          validatedCount: 0,
+          lastValidatedAt: '',
+        },
+    rejects,
+  };
+}
+
+function buildSkillTestFailureDebugPayload(error: any, options: any = {}) {
+  const stderrTail = String(error && error.stderrTail || '').trim();
+  const stdoutLines = Array.isArray(error && error.stdoutLines)
+    ? error.stdoutLines.map((entry: any) => String(entry))
+    : [];
+  const assistantErrors = Array.isArray(error && error.assistantErrors)
+    ? error.assistantErrors.map((entry: any) => String(entry))
+    : [];
+  const parseErrors = Number.isInteger(error && error.parseErrors) ? error.parseErrors : 0;
+  const exitCode = Number.isInteger(error && error.exitCode) ? error.exitCode : null;
+  const signal = error && error.signal ? String(error.signal).trim() : '';
+  const runId = String(options.runId || error && error.runId || '').trim();
+  const sessionPath = String(options.sessionPath || error && error.sessionPath || '').trim();
+  const sandboxCommand = isPlainObject(error && error.sandboxCommand) ? { ...error.sandboxCommand } : null;
+
+  if (
+    !stderrTail &&
+    stdoutLines.length === 0 &&
+    assistantErrors.length === 0 &&
+    parseErrors === 0 &&
+    exitCode == null &&
+    !signal &&
+    !sandboxCommand &&
+    !runId &&
+    !sessionPath
+  ) {
+    return null;
+  }
+
+  return {
+    ...(runId ? { runId } : {}),
+    ...(sessionPath ? { sessionPath } : {}),
+    stderrTail,
+    stdoutLines,
+    parseErrors,
+    assistantErrors,
+    sandboxCommand,
+    exitCode,
+    signal: signal || null,
+  };
+}
+
+function mergeSkillTestRunDebugPayload(baseDebug: any, extraDebug: any) {
+  if (!isPlainObject(extraDebug)) {
+    return baseDebug;
+  }
+
+  return {
+    ...(isPlainObject(baseDebug) ? baseDebug : {}),
+    ...extraDebug,
+  };
 }
 
 function parseStoredJsonField(rawValue: any, fieldName: string, expectedKind: 'array' | 'object', invalidCode: string) {
@@ -2262,6 +2388,9 @@ function normalizeTestRunRow(row: any) {
     return null;
   }
   const normalizedProjection = normalizeRunEvaluationProjection(row);
+  const isolation = normalizedProjection.evaluation && typeof normalizedProjection.evaluation === 'object'
+    ? normalizedProjection.evaluation.isolation || null
+    : null;
   return {
     id: String(row.id || '').trim(),
     testCaseId: String(row.test_case_id || '').trim(),
@@ -2284,6 +2413,8 @@ function normalizeTestRunRow(row: any) {
     instructionAdherence: normalizedProjection.metrics.instructionAdherence,
     verdict: normalizedProjection.verdict,
     evaluation: normalizedProjection.evaluation,
+    isolation,
+    notIsolated: Boolean(isolation && isolation.notIsolated),
     validationIssues: normalizedProjection.issues,
     errorMessage: String(row.error_message || '').trim(),
     createdAt: String(row.created_at || '').trim(),
@@ -2298,9 +2429,18 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
   const skillRegistry = options.skillRegistry;
   const getProjectDir = typeof options.getProjectDir === 'function' ? options.getProjectDir : null;
   const toolBaseUrl = String(options.toolBaseUrl || '').trim() || 'http://127.0.0.1:3100';
+  const skillTestChatApiUrl = String(options.skillTestChatApiUrl || '').trim() || toolBaseUrl;
+  const skillTestBridgeTokenTtlSec =
+    normalizePositiveInteger(options.skillTestBridgeTokenTtlSec || process.env.CAFF_SKILL_TEST_BRIDGE_TOKEN_TTL_SEC) ||
+    DEFAULT_SKILL_TEST_BRIDGE_TOKEN_TTL_SECONDS;
   const startRunImpl = typeof options.startRunImpl === 'function' ? options.startRunImpl : startRun;
   const evaluateRunImpl = typeof options.evaluateRunImpl === 'function' ? options.evaluateRunImpl : null;
   const broadcastEvent = typeof options.broadcastEvent === 'function' ? options.broadcastEvent : () => {};
+  const skillTestIsolationDriver = createSkillTestIsolationDriver({
+    openSandboxFactory: options.openSandboxFactory,
+    defaultMode: options.defaultIsolationMode,
+    allowLiveTrellis: options.allowLiveTrellis === true,
+  });
   let schemaReady = false;
 
   if (!store || !store.db) {
@@ -2347,6 +2487,29 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
 
   function broadcastSkillTestToolEvent(payload: any = {}) {
     broadcastEvent('conversation_tool_event', payload);
+  }
+
+  function readSkillTestIsolationInput(body: any = {}) {
+    const payload = body && typeof body === 'object' ? body : {};
+    const isolation = payload.isolation && typeof payload.isolation === 'object' ? payload.isolation : {};
+
+    if (payload.isolationMode !== undefined) {
+      isolation.mode = payload.isolationMode;
+    }
+    if (payload.trellisMode !== undefined) {
+      isolation.trellisMode = payload.trellisMode;
+    }
+    if (payload.egressMode !== undefined) {
+      isolation.egressMode = payload.egressMode;
+    }
+    if (payload.allowedBridgeTools !== undefined) {
+      isolation.allowedBridgeTools = payload.allowedBridgeTools;
+    }
+    if (payload.publishGate !== undefined) {
+      isolation.publishGate = payload.publishGate;
+    }
+
+    return isolation;
   }
 
   function stopSkillTestRunHandle(handle: any, reason: string) {
@@ -5042,7 +5205,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     const expectedTools = normalizeExpectedToolSpecs(testCase.expectedTools);
     const skillId = String(testCase.skillId || '').trim();
     const loadingMode = String(testCase.loadingMode || 'dynamic').trim().toLowerCase() || 'dynamic';
-    const skill = skillRegistry ? skillRegistry.getSkill(skillId) : null;
+    const skill = runtime && runtime.skill ? runtime.skill : skillRegistry ? skillRegistry.getSkill(skillId) : null;
     const targetSkillMarkdownPath = formatSkillMarkdownPathForMatch(skill && skill.path);
 
     const observedToolCalls: any[] = [];
@@ -5377,7 +5540,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
       throw createHttpError(400, 'Test case has no trigger prompt');
     }
 
-    const skill = skillRegistry ? skillRegistry.getSkill(testCase.skillId) : null;
+    const liveSkill = skillRegistry ? skillRegistry.getSkill(testCase.skillId) : null;
     const agentId = String(runOptions.agentId || 'skill-test-agent').trim();
     const agentName = String(runOptions.agentName || 'Skill Test Agent').trim();
     const provider = String(runOptions.provider || '').trim();
@@ -5390,11 +5553,62 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     const conversationId = `skill-test-${testCase.skillId}`;
     const turnId = `skill-test-turn-${testCase.id}`;
     const shouldEarlyStopOnSkillLoad = loadingMode === 'dynamic' && testType !== 'execution';
-
-    // Create or reuse eval_case for this test case
-    // Only create a new one if the test case doesn't already have one
-    let evalCaseId = testCase.evalCaseId;
     const timestamp = nowIso();
+    const taskId = `skill-test-run-${randomUUID()}`;
+    const liveMessageId = `skill-test-trace-${taskId}`;
+    const promptUserMessage = {
+      id: 'skill-test-user',
+      turnId,
+      role: 'user',
+      senderName: 'TestUser',
+      content: prompt,
+      status: 'completed',
+      createdAt: timestamp,
+    };
+    const agent = { id: agentId, name: agentName };
+    const liveProjectDir = getProjectDir ? String(getProjectDir() || '').trim() : '';
+    const isolationContext = await Promise.resolve(
+      skillTestIsolationDriver.createCaseContext({
+        caseId: testCase.id,
+        runId: taskId,
+        isolation: runOptions.isolation,
+        agent,
+        agentId,
+        agentName,
+        conversationId,
+        turnId,
+        promptUserMessage,
+        liveStore: store,
+        liveAgentDir: store.agentDir,
+        liveDatabasePath: store.databasePath,
+        liveProjectDir,
+        skill: liveSkill,
+      })
+    );
+    const runtimeSkill = isolationContext && isolationContext.skill ? isolationContext.skill : liveSkill;
+    const sandbox = isolationContext && isolationContext.sandbox ? isolationContext.sandbox : ensureAgentSandbox(store.agentDir, agent);
+    const projectDir = isolationContext && isolationContext.projectDir ? String(isolationContext.projectDir).trim() : liveProjectDir;
+    const runtimeAgentDir = isolationContext && isolationContext.agentDir ? String(isolationContext.agentDir).trim() : store.agentDir;
+    const runtimeSqlitePath = isolationContext && isolationContext.sqlitePath ? String(isolationContext.sqlitePath).trim() : store.databasePath;
+    const runStore = createSqliteRunStore({
+      agentDir: store.agentDir,
+      sqlitePath: store.databasePath,
+      databasePath: store.databasePath,
+      db: store.db,
+    });
+    const stage = {
+      taskId,
+      status: 'queued',
+      runId: null as any,
+      currentToolName: '',
+      currentToolKind: '',
+      currentToolStepId: '',
+      currentToolStartedAt: null as any,
+      currentToolInferred: false,
+    };
+    const sessionName = `skill-test-${testCase.id}-${Date.now()}`;
+
+    let evalCaseId = testCase.evalCaseId;
 
     if (!evalCaseId) {
       evalCaseId = randomUUID();
@@ -5439,49 +5653,16 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
           updatedAt: timestamp,
         });
 
-      // Update test case with eval_case_id (only when newly created)
       store.db
         .prepare('UPDATE skill_test_cases SET eval_case_id = @evalCaseId, updated_at = @updatedAt WHERE id = @id')
         .run({ id: testCase.id, evalCaseId, updatedAt: timestamp });
     }
 
-    // Set up run infrastructure
-    const agent = { id: agentId, name: agentName };
-    const sandbox = ensureAgentSandbox(store.agentDir, agent);
-    const projectDir = getProjectDir ? String(getProjectDir() || '').trim() : '';
-    const runStore = createSqliteRunStore({
-      agentDir: store.agentDir,
-      sqlitePath: store.databasePath,
-      databasePath: store.databasePath,
-      db: store.db,
-    });
-    const taskId = `skill-test-run-${randomUUID()}`;
-    const liveMessageId = `skill-test-trace-${taskId}`;
-    const stage = {
-      taskId,
-      status: 'queued',
-      runId: null as any,
-      currentToolName: '',
-      currentToolKind: '',
-      currentToolStepId: '',
-      currentToolStartedAt: null as any,
-      currentToolInferred: false,
-    };
-    const sessionName = `skill-test-${testCase.id}-${Date.now()}`;
-
     let toolInvocation: any = null;
+    let isolationEvidence: any = null;
+    let isolationFinalized = false;
 
     try {
-      const promptUserMessage = {
-        id: 'skill-test-user',
-        turnId,
-        role: 'user',
-        senderName: 'TestUser',
-        content: prompt,
-        status: 'completed',
-        createdAt: timestamp,
-      };
-
       toolInvocation = agentToolBridge.registerInvocation(
         agentToolBridge.createInvocationContext({
           conversationId,
@@ -5493,6 +5674,14 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
           userMessageId: promptUserMessage.id,
           promptUserMessage,
           conversationAgents: [agent],
+          authScope: 'skill-test',
+          caseId: testCase.id,
+          runId: taskId,
+          taskId,
+          tokenTtlSec: skillTestBridgeTokenTtlSec,
+          requireAuthScope: true,
+          store: isolationContext && isolationContext.store ? isolationContext.store : null,
+          toolPolicy: isolationContext && isolationContext.toolPolicy ? isolationContext.toolPolicy : null,
           runStore,
           stage,
           turnState: null,
@@ -5524,17 +5713,21 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
           source: 'skill_test',
           toolBridgeEnabled: true,
           toolBridgeDryRun: true,
+          isolationMode: isolationContext && isolationContext.isolation ? isolationContext.isolation.mode : 'legacy-local',
+          trellisMode: isolationContext && isolationContext.isolation ? isolationContext.isolation.trellisMode : 'none',
         },
         startedAt: timestamp,
       });
 
       let result: any = null;
       let outputText = '';
+      let liveOutputText = '';
       let status = 'succeeded';
       let errorMessage = '';
       let runId: any = null;
       let sessionPath = '';
       let dynamicSkillLoadConfirmed = false;
+      let runFailureDebug: any = null;
       let lastLiveSessionToolStepId = '';
       let lastLiveSessionToolSignature = '';
       const liveSessionAnonymousToolTracker = {
@@ -5544,12 +5737,19 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
         activeToolName: '',
         activeToolKind: '',
       };
+      let liveExecutionRuntime = isolationContext && typeof isolationContext.startRun === 'function' ? 'sandbox' : 'host';
+      let liveProgressLabel = liveExecutionRuntime === 'sandbox'
+        ? '正在准备 sandbox runner…'
+        : '正在等待工具调用…';
 
       try {
-        const handle = startRunImpl(effectiveProvider, effectiveModel, prompt, {
+        const startSkillTestRun = isolationContext && typeof isolationContext.startRun === 'function'
+          ? isolationContext.startRun
+          : startRunImpl;
+        const handle = await Promise.resolve(startSkillTestRun(effectiveProvider, effectiveModel, prompt, {
           thinking: '',
-          agentDir: store.agentDir,
-          sqlitePath: store.databasePath,
+          agentDir: runtimeAgentDir,
+          sqlitePath: runtimeSqlitePath,
           streamOutput: false,
           session: sessionName,
           taskId,
@@ -5566,16 +5766,19 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
             PI_AGENT_NAME: agentName,
             PI_AGENT_SANDBOX_DIR: sandbox.sandboxDir,
             PI_AGENT_PRIVATE_DIR: sandbox.privateDir,
-            CAFF_CHAT_API_URL: toolBaseUrl,
+            CAFF_CHAT_API_URL: skillTestChatApiUrl,
             CAFF_CHAT_INVOCATION_ID: toolInvocation.invocationId,
             CAFF_CHAT_CALLBACK_TOKEN: toolInvocation.callbackToken,
             CAFF_CHAT_TOOLS_PATH: toPortableShellPath(agentToolScriptPath),
             CAFF_CHAT_TOOLS_RELATIVE_PATH: agentToolRelativePath,
             CAFF_CHAT_CONVERSATION_ID: conversationId,
             CAFF_CHAT_TURN_ID: turnId,
+            CAFF_SKILL_TEST_RUN_ID: taskId,
+            CAFF_SKILL_TEST_CASE_ID: testCase.id,
             CAFF_SKILL_LOADING_MODE: testCase.loadingMode || 'dynamic',
+            ...(isolationContext && isolationContext.extraEnv ? isolationContext.extraEnv : {}),
           },
-        });
+        }));
 
         stage.runId = handle.runId || null;
         stage.status = 'running';
@@ -5587,6 +5790,11 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
           requestedSession: sessionName,
           sessionPath: handle.sessionPath || null,
         });
+
+        liveExecutionRuntime = isolationContext && typeof isolationContext.startRun === 'function' ? 'sandbox' : 'host';
+        liveProgressLabel = liveExecutionRuntime === 'sandbox'
+          ? '正在准备 sandbox runner…'
+          : '正在等待工具调用…';
 
         broadcastSkillTestRunEvent('started', {
           caseId: testCase.id,
@@ -5602,15 +5810,61 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
           model: effectiveModel || '',
           promptVersion,
           status: 'running',
+          executionRuntime: liveExecutionRuntime,
+          progressLabel: liveProgressLabel,
           createdAt: timestamp,
           trace: buildSkillTestLiveTrace(liveMessageId, taskId, 'streaming', handle.runId || null, timestamp, sessionPath),
         });
 
+        const broadcastLiveRunnerProgress = (event: any, fallbackLabel = '正在 sandbox 内执行…') => {
+          const eventPayload = event && typeof event === 'object' ? event : {};
+          const nextLabel = String(eventPayload.label || fallbackLabel || '').trim();
+          if (!nextLabel) {
+            return;
+          }
+          liveProgressLabel = nextLabel;
+          broadcastSkillTestRunEvent('progress', {
+            caseId: testCase.id,
+            skillId: testCase.skillId,
+            loadingMode,
+            testType,
+            conversationId,
+            turnId,
+            taskId,
+            messageId: liveMessageId,
+            runId: stage.runId || null,
+            provider: effectiveProvider || '',
+            model: effectiveModel || '',
+            promptVersion,
+            status: 'running',
+            executionRuntime: liveExecutionRuntime,
+            progressLabel: liveProgressLabel,
+            runnerStage: eventPayload.stage ? String(eventPayload.stage).trim() : '',
+            runnerPid: eventPayload.pid !== undefined && eventPayload.pid !== null ? eventPayload.pid : null,
+            runnerSessionPath: eventPayload.sessionPath ? String(eventPayload.sessionPath).trim() : '',
+            createdAt: timestamp,
+            updatedAt: nowIso(),
+          });
+        };
+
         if (handle && typeof handle.on === 'function') {
+          handle.on('run_started', (event: any) => {
+            const eventPayload = event && typeof event === 'object' ? event : {};
+            broadcastLiveRunnerProgress({
+              ...eventPayload,
+              stage: eventPayload.stage || 'run_started',
+              label: eventPayload.label || 'sandbox runner 已启动，等待工具或输出…',
+            }, 'sandbox runner 已启动，等待工具或输出…');
+          });
+
+          handle.on('runner_status', (event: any) => {
+            broadcastLiveRunnerProgress(event, '正在 sandbox 内执行…');
+          });
+
           handle.on('pi_event', (event: any) => {
             const piEvent = event && event.piEvent ? event.piEvent : null;
             const liveTool = extractLiveSessionToolFromPiEvent(piEvent, {
-              agentDir: store.agentDir,
+              agentDir: runtimeAgentDir,
               createdAt: nowIso(),
               currentToolName: stage.currentToolName,
               currentToolKind: stage.currentToolKind,
@@ -5663,7 +5917,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
 
             const matchedSkillLoadCall = shouldEarlyStopOnSkillLoad && !dynamicSkillLoadConfirmed
               ? extractPiToolCalls(piEvent).find((toolCall: any) => (
-                isTargetSkillReadToolCall(toolCall.toolName, toolCall.arguments, testCase.skillId, skill && skill.path)
+                isTargetSkillReadToolCall(toolCall.toolName, toolCall.arguments, testCase.skillId, runtimeSkill && runtimeSkill.path)
               ))
               : null;
             if (matchedSkillLoadCall) {
@@ -5678,6 +5932,38 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
             }
           });
 
+          handle.on('assistant_text_delta', (event: any) => {
+            const delta = event && event.delta !== undefined ? String(event.delta || '') : '';
+            if (!delta) {
+              return;
+            }
+            liveOutputText += delta;
+            liveProgressLabel = event && event.isFallback ? '正在同步模型输出…' : '模型正在输出…';
+            broadcastSkillTestRunEvent('output_delta', {
+              caseId: testCase.id,
+              skillId: testCase.skillId,
+              loadingMode,
+              testType,
+              conversationId,
+              turnId,
+              taskId,
+              messageId: liveMessageId,
+              runId: stage.runId || null,
+              provider: effectiveProvider || '',
+              model: effectiveModel || '',
+              promptVersion,
+              status: 'running',
+              executionRuntime: liveExecutionRuntime,
+              progressLabel: liveProgressLabel,
+              delta,
+              outputText: liveOutputText,
+              isFallback: Boolean(event && event.isFallback),
+              messageKey: event && event.messageKey ? String(event.messageKey) : '',
+              createdAt: timestamp,
+              updatedAt: nowIso(),
+            });
+          });
+
           handle.on('run_terminating', (event: any) => {
             broadcastSkillTestRunEvent('terminating', {
               caseId: testCase.id,
@@ -5690,6 +5976,8 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
               messageId: liveMessageId,
               runId: stage.runId || null,
               status: 'terminating',
+              executionRuntime: liveExecutionRuntime,
+              progressLabel: '正在收尾…',
               reason: event && event.reason ? event.reason : null,
             });
           });
@@ -5698,14 +5986,17 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
         result = await handle.resultPromise;
         runId = result && result.runId ? result.runId : handle.runId || null;
         sessionPath = (result && result.sessionPath) || sessionPath;
-        outputText = String(result.reply || '');
+        outputText = String(result && result.reply !== undefined ? result.reply : liveOutputText || '');
+        if (!outputText && liveOutputText) {
+          outputText = liveOutputText;
+        }
         status = 'succeeded';
       } catch (error) {
         const err: any = error;
         if (shouldEarlyStopOnSkillLoad && dynamicSkillLoadConfirmed) {
           runId = err && err.runId ? err.runId : stage.runId || null;
           sessionPath = (err && err.sessionPath) || sessionPath;
-          outputText = String(err && err.reply ? err.reply : '');
+          outputText = String(err && err.reply ? err.reply : liveOutputText || '');
           result = {
             reply: outputText,
             runId,
@@ -5715,12 +6006,20 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
           errorMessage = '';
         } else {
           status = 'failed';
+          outputText = String(err && err.reply ? err.reply : liveOutputText || '');
           errorMessage = err && err.message ? String(err.message) : String(err || 'Unknown error');
+          runFailureDebug = buildSkillTestFailureDebugPayload(err, {
+            runId: stage.runId || runId,
+            sessionPath: (err && err.sessionPath) || sessionPath,
+          });
         }
       } finally {
         stage.status = status === 'succeeded' ? 'completed' : 'failed';
         if (toolInvocation) {
-          agentToolBridge.unregisterInvocation(toolInvocation.invocationId);
+          const closedInvocation = agentToolBridge.unregisterInvocation(toolInvocation.invocationId);
+          if (closedInvocation && typeof closedInvocation === 'object') {
+            toolInvocation = closedInvocation;
+          }
         }
       }
 
@@ -5740,6 +6039,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
               taskId,
               prompt,
               sandbox,
+              skill: runtimeSkill,
             })
             : evaluateRun(taskId, testCase, {
               outputText,
@@ -5753,6 +6053,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
               taskId,
               prompt,
               sandbox,
+              skill: runtimeSkill,
             })
         )
         : {
@@ -5775,14 +6076,30 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
           validationIssues: [],
         };
 
+      isolationEvidence = isolationContext ? await Promise.resolve(isolationContext.finalize()) : null;
+      isolationFinalized = true;
+      if (isolationEvidence && typeof isolationEvidence === 'object') {
+        isolationEvidence.chatBridge = buildSkillTestChatBridgeEvidence(toolInvocation, {
+          agentToolBridge,
+          toolBaseUrl: skillTestChatApiUrl,
+          caseId: testCase.id,
+          runId: taskId,
+        });
+      }
+      const isolationIssues = buildSkillTestIsolationIssues(isolationEvidence);
+      if (isolationEvidence && isolationEvidence.unsafe) {
+        status = 'failed';
+        errorMessage = errorMessage || getSkillTestIsolationFailureMessage(isolationEvidence);
+      }
+      const finalVerdict = isolationEvidence && isolationEvidence.unsafe ? 'fail' : evaluation.verdict || '';
       const runValidation = {
         caseSchemaStatus: preflight.caseSchemaStatus,
         derivedFromLegacy: preflight.derivedFromLegacy,
-        issues: mergeValidationIssues(evaluation.validationIssues, preflight.issues),
+        issues: mergeValidationIssues(evaluation.validationIssues, preflight.issues, isolationIssues),
       };
       const evaluationJsonPayload = isPlainObject(evaluation.evaluation)
-        ? { ...evaluation.evaluation, validation: runValidation }
-        : { validation: runValidation };
+        ? { ...evaluation.evaluation, validation: runValidation, isolation: isolationEvidence }
+        : { validation: runValidation, isolation: isolationEvidence };
       const finishedAt = nowIso();
 
       // Update task
@@ -5809,6 +6126,8 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
         model: effectiveModel || '',
         promptVersion,
         status,
+        executionRuntime: liveExecutionRuntime,
+        progressLabel: '',
         errorMessage: errorMessage || '',
         outputText: outputText || '',
         createdAt: timestamp,
@@ -5836,7 +6155,9 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
         executionEvaluation: evaluation.executionEvaluation || null,
         evaluation: evaluation.evaluation || null,
         validation: runValidation,
-        verdict: evaluation.verdict || '',
+        isolation: isolationEvidence,
+        verdict: finalVerdict,
+        ...(runFailureDebug ? { debug: { failure: runFailureDebug } } : {}),
         source: 'skill_test',
       };
 
@@ -5908,7 +6229,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
           sequenceAdherence: evaluation.sequenceAdherence,
           goalAchievement: evaluation.goalAchievement,
           instructionAdherence: evaluation.instructionAdherence,
-          verdict: evaluation.verdict || '',
+          verdict: finalVerdict,
           evaluationJson: JSON.stringify(evaluationJsonPayload),
           errorMessage: errorMessage || '',
           createdAt: finishedAt,
@@ -5918,7 +6239,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
         .prepare(
           'UPDATE skill_test_cases SET validity_status = @validityStatus, updated_at = @updatedAt WHERE id = @id'
         )
-        .run({ id: testCase.id, validityStatus: getCaseValidityAfterEvaluation(testCase, evaluation), updatedAt: finishedAt });
+        .run({ id: testCase.id, validityStatus: getCaseValidityAfterEvaluation(testCase, { ...evaluation, verdict: finalVerdict }), updatedAt: finishedAt });
 
       const runRow = store.db
         .prepare(
@@ -5940,6 +6261,11 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
         derivedFromLegacy: runValidation.derivedFromLegacy,
       };
     } finally {
+      if (!isolationFinalized && isolationContext && typeof isolationContext.finalize === 'function') {
+        try {
+          await Promise.resolve(isolationContext.finalize());
+        } catch {}
+      }
       runStore.close();
     }
   }
@@ -6209,6 +6535,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
               promptVersion: body.promptVersion,
               agentId: body.agentId,
               agentName: body.agentName,
+              isolation: readSkillTestIsolationInput(body),
             });
             results.push(result);
           } catch (error: any) {
@@ -6283,6 +6610,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
             promptVersion: body.promptVersion,
             agentId: body.agentId,
             agentName: body.agentName,
+            isolation: readSkillTestIsolationInput(body),
           });
           sendJson(res, 200, result);
           return true;
@@ -6373,8 +6701,8 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
       if (!run) {
         throw createHttpError(404, 'Test run not found');
       }
-      const debug = getSkillTestRunDebug(run);
       const result = safeJsonParse(row && row.result_json);
+      const debug = mergeSkillTestRunDebugPayload(getSkillTestRunDebug(run), result && result.debug);
       sendJson(res, 200, { run, debug, result });
       return true;
     }

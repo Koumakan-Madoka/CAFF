@@ -1,0 +1,24 @@
+{"file":".trellis/spec/skills/skill-testing.md","reason":"Existing skill-testing contracts, run evidence, case schema, and regression semantics"}
+{"file":".trellis/spec/skills/skill-system.md","reason":"Published/draft skill loading and dynamic SKILL.md read path semantics"}
+{"file":".trellis/spec/runtime/agent-runtime.md","reason":"Runtime sandbox env, tool bridge, and prompt/tool mirrored update constraints"}
+{"file":".trellis/spec/backend/architecture.md","reason":"Backend layering and controller/domain split for isolation driver integration"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Isolation crosses API, runtime, storage, bridge, and skill layers"}
+{"file":".trellis/spec/guides/cross-platform-thinking-guide.md","reason":"Sandbox paths, env rewriting, and OpenSandbox execution must be platform-aware"}
+{"file":".trellis/tasks/04-13-skill-test-isolation-foundation/prd.md","reason":"Task-specific PRD and isolation contract scope"}
+{"file":"server/api/skill-test-controller.ts","reason":"Primary skill-test run orchestration and result persistence integration point"}
+{"file":"server/domain/conversation/turn/agent-sandbox.ts","reason":"Existing agent sandbox setup to adapt behind isolation context"}
+{"file":"server/domain/runtime/agent-tool-bridge.ts","reason":"Thin bridge/policy enforcement for tool/path/db/Trellis governance"}
+{"file":"lib/pi-runtime.ts","reason":"Runtime process/env launch path that may need OpenSandbox driver integration"}
+{"file":"lib/skill-registry.ts","reason":"Skill snapshot/draft/published boundaries for isolated test runs"}
+{"file":"tests/skill-test/","reason":"Regression coverage for isolated skill-test execution"}
+{"file":"server/domain/skill-test/isolation.ts","reason":"Implemented skill-test isolation driver contract, case-scoped writable worlds, Trellis fixture/snapshot handling, pollution checks, cleanup evidence, and isolation issue mapping."}
+{"file":"server/domain/skill-test/open-sandbox-factory.ts","reason":"Added env/config-backed OpenSandbox adapter that prepares remote case worlds and preserves sandbox resource evidence while failing closed when unavailable."}
+{"file":"server/api/skill-test-controller.ts","reason":"Threaded isolation options through run/run-all execution and persisted isolation evidence in evaluation JSON without breaking dynamic/full evaluation envelopes."}
+{"file":"server/domain/runtime/agent-tool-bridge.ts","reason":"Added invocation-scoped store override and policy enforcement for tool allowlists, Trellis path rewriting, and reject evidence during isolated runs."}
+{"file":"server/app/create-server.ts","reason":"Wired optional OpenSandbox factory configuration into skill-test controller setup for explicit isolated backend enablement."}
+{"file":"package.json","reason":"Added OpenSandbox SDK dependency path needed by the optional container-backed skill-test isolation adapter."}
+{"file":"tests/skill-test/skill-test-e2e.test.js","reason":"Added regressions for isolated case worlds, policy rejection, Trellis fixture routing, pollution failure, cleanup failure, and async OpenSandbox-backed execution."}
+{"file":"tests/skill-test/skill-test-schema.test.js","reason":"Added schema coverage for isolation options and evidence envelopes."}
+{"file":"tests/runtime/agent-tool-bridge.test.js","reason":"Added bridge coverage for isolated store overrides and policy rejects."}
+{"file":"tests/runtime/open-sandbox-factory.test.js","reason":"Added unit coverage for configured OpenSandbox factory disabled mode, availability failure, remote world preparation, and evidence fields."}
+{"at":"2026-04-13T09:08:47.992Z","phase":"opensandbox-chat-bridge-poc","summary":"Added skill-test chat bridge run/case binding, TTL validation, scoped agent-chat-tools payloads, and isolation chatBridge evidence for OpenSandbox direct-HTTP POC hardening.","files":["lib/agent-chat-tools.ts","server/domain/runtime/agent-tool-bridge.ts","server/api/skill-test-controller.ts","server/domain/skill-test/open-sandbox-factory.ts","tests/runtime/agent-chat-tools.test.js","tests/runtime/agent-tool-bridge.test.js","tests/runtime/open-sandbox-factory.test.js","tests/skill-test/skill-test-e2e.test.js",".trellis/spec/skills/skill-testing.md",".trellis/tasks/04-13-skill-test-isolation-foundation/prd.md"]}

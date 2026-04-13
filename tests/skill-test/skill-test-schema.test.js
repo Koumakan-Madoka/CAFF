@@ -11,6 +11,7 @@ const {
   normalizeCaseForRun,
   validateJudgeOutput,
 } = require('../../build/server/api/skill-test-controller');
+const { normalizeSkillTestIsolationOptions } = require('../../build/server/domain/skill-test/isolation');
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -179,6 +180,28 @@ test('indexes are created correctly', () => {
   assert.ok(indexes.includes('idx_skill_test_runs_case_id'));
 
   db.close();
+});
+
+test('normalizeSkillTestIsolationOptions defaults to legacy-local without a driver', () => {
+  const normalized = normalizeSkillTestIsolationOptions({}, {
+    driverAvailable: false,
+    defaultMode: 'legacy-local',
+  });
+
+  assert.equal(normalized.mode, 'legacy-local');
+  assert.equal(normalized.notIsolated, true);
+  assert.equal(normalized.trellisMode, 'none');
+  assert.equal(normalized.egressMode, 'deny');
+});
+
+test('normalizeSkillTestIsolationOptions fails closed when isolated mode lacks a driver', () => {
+  assert.throws(
+    () => normalizeSkillTestIsolationOptions({ mode: 'isolated' }, { driverAvailable: false }),
+    (error) => {
+      assert.equal(error.statusCode, 503);
+      return true;
+    }
+  );
 });
 
 test('validateAndNormalizeCaseInput rejects full case without expectedGoal', () => {

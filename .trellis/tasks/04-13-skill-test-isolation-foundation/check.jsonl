@@ -1,0 +1,10 @@
+{"file":"tests/skill-test/","reason":"Planned skill-test isolation regression coverage"}
+{"file":"tests/runtime/agent-tool-bridge.test.js","reason":"Planned policy rejection and bridge governance coverage"}
+{"file":"tests/runtime/skill-loading.test.js","reason":"Planned dynamic skill loading compatibility coverage"}
+{"file":"package.json","reason":"Passed npm run build after skill-test isolation and OpenSandbox adapter changes."}
+{"file":"tests/skill-test/skill-test-schema.test.js","reason":"Passed targeted skill-test schema regression coverage for isolation request/evidence shape."}
+{"file":"tests/skill-test/skill-test-e2e.test.js","reason":"Passed targeted skill-test e2e regression coverage for isolated execution, policy, pollution, cleanup, and async driver behavior."}
+{"file":"tests/runtime/open-sandbox-factory.test.js","reason":"Passed OpenSandbox factory unit coverage for disabled/unavailable/success adapter paths."}
+{"file":"package.json","reason":"npm run typecheck remains blocked by an existing lib/chat-app-store.ts nullability diagnostic, not introduced by this task."}
+{"file":"package.json","reason":"Closure check reran npm run build plus targeted isolation regressions (agent-tool-bridge, open-sandbox-factory, skill-test schema, skill-test e2e); all passed, while npm run typecheck still fails only on the pre-existing lib/chat-app-store.ts nullability diagnostics."}
+{"at":"2026-04-13T09:08:47.992Z","phase":"opensandbox-chat-bridge-poc","commands":["npm run build","node tests/runtime/agent-chat-tools.test.js","node tests/runtime/agent-tool-bridge.test.js","node tests/runtime/open-sandbox-factory.test.js","node tests/skill-test/skill-test-e2e.test.js","git diff --check"],"result":"passed"}

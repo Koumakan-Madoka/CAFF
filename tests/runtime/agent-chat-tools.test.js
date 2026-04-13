@@ -8,6 +8,7 @@ const {
   searchMessages,
   shouldEchoContent,
   updateMemory,
+  withSkillTestScope,
 } = require('../../build/lib/agent-chat-tools');
 
 test('send-public tool results are compact by default', () => {
@@ -113,6 +114,27 @@ test('memory tool results stay fully visible by default', () => {
   assert.equal(result, original);
 });
 
+test('agent-chat-tools attaches skill-test run and case scope when present', () => {
+  assert.deepEqual(
+    withSkillTestScope(
+      {
+        skillTestRunId: 'run-1',
+        skillTestCaseId: 'case-1',
+      },
+      {
+        invocationId: 'inv-1',
+        callbackToken: 'token-1',
+      }
+    ),
+    {
+      invocationId: 'inv-1',
+      callbackToken: 'token-1',
+      skillTestRunId: 'run-1',
+      skillTestCaseId: 'case-1',
+    }
+  );
+});
+
 test('search-messages forwards speaker filters without requiring a query', async (t) => {
   let requestUrl = '';
   let requestOptions = null;
@@ -134,6 +156,8 @@ test('search-messages forwards speaker filters without requiring a query', async
       apiUrl: 'http://127.0.0.1:3100',
       invocationId: 'inv-search-filters',
       callbackToken: 'token-search-filters',
+      skillTestRunId: 'run-search-scope',
+      skillTestCaseId: 'case-search-scope',
     },
     {
       speaker: 'doro',
@@ -150,6 +174,8 @@ test('search-messages forwards speaker filters without requiring a query', async
     speaker: 'doro',
     agentId: 'agent-critic',
     limit: 3,
+    skillTestRunId: 'run-search-scope',
+    skillTestCaseId: 'case-search-scope',
   });
 });
 
