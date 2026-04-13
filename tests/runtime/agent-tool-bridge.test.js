@@ -835,3 +835,416 @@ test('agent tool read-context keeps the current turn user message visible', (t) 
   );
   assert.equal(result.publicMessages[0].content, '@BridgeAgent 请继续这个方案');
 });
+
+test('agent tool search-messages returns scoped public recall results', (t) => {
+  const tempDir = withTempDir('caff-agent-tool-search-');
+  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const bridge = createAgentToolBridge({ store });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const fixture = createPublicInvocationFixture(store, 'search');
+  const otherAgent = store.saveAgent({
+    id: 'bridge-search-other-agent',
+    name: 'Bridge Search Other Agent',
+    personaPrompt: 'Reply briefly too.',
+  });
+  const otherConversation = store.createConversation({
+    id: 'bridge-conversation-search-other',
+    title: 'Bridge Search Other',
+    participants: [fixture.agent.id],
+  });
+
+  store.createMessage({
+    id: 'bridge-search-hit-1',
+    conversationId: fixture.conversation.id,
+    turnId: fixture.assistantMessage.turnId,
+    role: 'user',
+    senderName: 'You',
+    content: 'Hermes memory retrieval is useful here.',
+    status: 'completed',
+  });
+  store.createMessage({
+    id: 'bridge-search-hit-2',
+    conversationId: fixture.conversation.id,
+    turnId: fixture.assistantMessage.turnId,
+    role: 'assistant',
+    agentId: fixture.agent.id,
+    senderName: fixture.agent.name,
+    content: 'Hermes recall should stay scoped.',
+    status: 'completed',
+  });
+  store.createMessage({
+    id: 'bridge-search-hit-cjk',
+    conversationId: fixture.conversation.id,
+    turnId: fixture.assistantMessage.turnId,
+    role: 'user',
+    senderName: 'You',
+    content: 'Hermes 是一个开源项目。',
+    status: 'completed',
+  });
+  store.createMessage({
+    id: 'bridge-search-hit-other-agent',
+    conversationId: fixture.conversation.id,
+    turnId: fixture.assistantMessage.turnId,
+    role: 'assistant',
+    agentId: otherAgent.id,
+    senderName: otherAgent.name,
+    content: 'Hermes was mentioned by another agent here.',
+    status: 'completed',
+  });
+  store.createMessage({
+    id: 'bridge-search-miss-other',
+    conversationId: otherConversation.id,
+    turnId: 'bridge-search-turn-other',
+    role: 'user',
+    senderName: 'Other User',
+    content: 'Hermes appears in another conversation.',
+    status: 'completed',
+  });
+
+  const context = bridge.registerInvocation(
+    bridge.createInvocationContext({
+      conversationId: fixture.conversation.id,
+      turnId: fixture.assistantMessage.turnId,
+      agentId: fixture.agent.id,
+      agentName: fixture.agent.name,
+      assistantMessageId: fixture.assistantMessage.id,
+      conversationAgents: fixture.conversation.agents,
+      stage: fixture.stage,
+      turnState: fixture.turnState,
+    })
+  );
+
+  const result = bridge.handleSearchMessages({
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    query: 'Hermes',
+    limit: 1,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.scope, 'conversation-public');
+  assert.equal(result.query, 'Hermes');
+  assert.equal(result.resultCount, 1);
+  assert.ok(result.searchMode === 'fts5' || result.searchMode === 'like');
+  assert.equal(Array.isArray(result.results), true);
+  assert.equal(result.results[0].conversationId, fixture.conversation.id);
+  assert.equal(result.results.some((entry) => entry.messageId === 'bridge-search-miss-other'), false);
+  assert.match(result.results[0].snippet, /Hermes/u);
+
+  const cjkResult = bridge.handleSearchMessages({
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    query: 'Hermes 开源项目',
+    limit: 5,
+  });
+
+  assert.equal(cjkResult.ok, true);
+  assert.equal(cjkResult.scope, 'conversation-public');
+  assert.equal(cjkResult.query, 'Hermes 开源项目');
+  assert.equal(cjkResult.resultCount >= 1, true);
+  assert.equal(cjkResult.results.some((entry) => entry.messageId === 'bridge-search-hit-cjk'), true);
+  assert.equal(cjkResult.results.some((entry) => entry.messageId === 'bridge-search-miss-other'), false);
+  if (cjkResult.searchMode === 'like') {
+    assert.equal(cjkResult.diagnostics.some((entry) => entry && entry.code === 'fts5_no_match_fallback'), true);
+  }
+
+  const speakerResult = bridge.handleSearchMessages({
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    speaker: fixture.agent.name,
+    limit: 5,
+  });
+
+  assert.equal(speakerResult.ok, true);
+  assert.equal(speakerResult.query, '');
+  assert.equal(speakerResult.scope, 'conversation-public');
+  assert.equal(speakerResult.filters.speaker, fixture.agent.name);
+  assert.equal(speakerResult.searchMode, 'filtered');
+  assert.equal(speakerResult.results.every((entry) => entry.senderName === fixture.agent.name), true);
+  assert.equal(speakerResult.results.some((entry) => entry.messageId === 'bridge-search-hit-2'), true);
+  assert.equal(speakerResult.results.some((entry) => entry.messageId === 'bridge-search-hit-other-agent'), false);
+
+  const agentFilteredResult = bridge.handleSearchMessages({
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    query: 'Hermes',
+    agentId: otherAgent.id,
+    limit: 5,
+  });
+
+  assert.equal(agentFilteredResult.ok, true);
+  assert.equal(agentFilteredResult.filters.agentId, otherAgent.id);
+  assert.equal(agentFilteredResult.resultCount, 1);
+  assert.equal(agentFilteredResult.results[0].messageId, 'bridge-search-hit-other-agent');
+});
+
+test('agent tool memory cards save durable local-user scope and stay agent-scoped', (t) => {
+  const tempDir = withTempDir('caff-agent-tool-memory-');
+  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const bridge = createAgentToolBridge({ store });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const fixture = createPublicInvocationFixture(store, 'memory');
+  const otherAgent = store.saveAgent({
+    id: 'bridge-memory-other-agent',
+    name: 'Other Memory Agent',
+    personaPrompt: 'Stay scoped.',
+  });
+  const secondConversation = store.createConversation({
+    id: 'bridge-memory-conversation-second',
+    title: 'Bridge Memory Second',
+    participants: [fixture.agent.id, otherAgent.id],
+  });
+
+  store.updateConversation(fixture.conversation.id, {
+    participants: [fixture.agent.id, otherAgent.id],
+  });
+
+  const context = bridge.registerInvocation(
+    bridge.createInvocationContext({
+      conversationId: fixture.conversation.id,
+      turnId: fixture.assistantMessage.turnId,
+      agentId: fixture.agent.id,
+      agentName: fixture.agent.name,
+      assistantMessageId: fixture.assistantMessage.id,
+      conversationAgents: store.getConversation(fixture.conversation.id).agents,
+      stage: fixture.stage,
+      turnState: fixture.turnState,
+    })
+  );
+
+  const saved = bridge.handleSaveMemory({
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    title: 'preference',
+    content: 'User prefers retrieval-first experiments.',
+    ttlDays: 14,
+  });
+
+  assert.equal(saved.ok, true);
+  assert.equal(saved.scope, 'local-user-agent');
+  assert.equal(saved.card.title, 'preference');
+  assert.equal(saved.card.agentId, fixture.agent.id);
+  assert.equal(saved.card.scope, 'local-user-agent');
+  assert.equal(saved.card.conversationId, null);
+  assert.equal(saved.cardCount, 1);
+
+  const memoriesUrl = new URL('http://127.0.0.1/api/agent-tools/memories');
+  memoriesUrl.searchParams.set('invocationId', context.invocationId);
+  memoriesUrl.searchParams.set('callbackToken', context.callbackToken);
+  const listed = bridge.handleListMemories(memoriesUrl);
+
+  assert.equal(listed.ok, true);
+  assert.equal(listed.scope, 'agent-visible');
+  assert.deepEqual(listed.scopes, ['conversation-agent', 'local-user-agent']);
+  assert.equal(listed.cardCount, 1);
+  assert.equal(listed.cards[0].title, 'preference');
+  assert.equal(listed.cards[0].scope, 'local-user-agent');
+
+  const secondAssistantMessage = store.createMessage({
+    id: 'bridge-memory-second-assistant-message',
+    conversationId: secondConversation.id,
+    turnId: 'bridge-memory-second-turn',
+    role: 'assistant',
+    agentId: fixture.agent.id,
+    senderName: fixture.agent.name,
+    content: 'Continuing the durable memory check.',
+    status: 'completed',
+  });
+  const secondContext = bridge.registerInvocation(
+    bridge.createInvocationContext({
+      conversationId: secondConversation.id,
+      turnId: secondAssistantMessage.turnId,
+      agentId: fixture.agent.id,
+      agentName: fixture.agent.name,
+      assistantMessageId: secondAssistantMessage.id,
+      conversationAgents: store.getConversation(secondConversation.id).agents,
+      stage: fixture.stage,
+      turnState: {
+        ...fixture.turnState,
+        conversationId: secondConversation.id,
+        turnId: secondAssistantMessage.turnId,
+      },
+    })
+  );
+  const secondMemoriesUrl = new URL('http://127.0.0.1/api/agent-tools/memories');
+  secondMemoriesUrl.searchParams.set('invocationId', secondContext.invocationId);
+  secondMemoriesUrl.searchParams.set('callbackToken', secondContext.callbackToken);
+  const crossConversationList = bridge.handleListMemories(secondMemoriesUrl);
+
+  assert.equal(crossConversationList.cardCount, 1);
+  assert.equal(crossConversationList.cards[0].scope, 'local-user-agent');
+  assert.equal(crossConversationList.cards[0].title, 'preference');
+
+  const otherCards = store.listVisibleMemoryCards(secondConversation.id, otherAgent.id);
+  assert.equal(otherCards.length, 0);
+
+  assert.throws(
+    () =>
+      bridge.handleSaveMemory({
+        invocationId: context.invocationId,
+        callbackToken: context.callbackToken,
+        title: 'secret',
+        content: 'API key is abc123',
+      }),
+    /Do not save secrets/u
+  );
+});
+
+test('agent tool bridge keeps case-distinct overlay and durable memory titles visible', (t) => {
+  const tempDir = withTempDir('caff-agent-tool-memory-case-visible-');
+  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const bridge = createAgentToolBridge({ store });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const fixture = createPublicInvocationFixture(store, 'memory-case-visible');
+  store.saveLocalUserMemoryCard(fixture.agent.id, {
+    title: 'Preference',
+    content: 'Durable uppercase preference.',
+    ttlDays: 30,
+  });
+  store.saveConversationMemoryCard(fixture.conversation.id, fixture.agent.id, {
+    title: 'preference',
+    content: 'Conversation lowercase preference.',
+    ttlDays: 7,
+  });
+
+  const context = bridge.registerInvocation(
+    bridge.createInvocationContext({
+      conversationId: fixture.conversation.id,
+      turnId: fixture.assistantMessage.turnId,
+      agentId: fixture.agent.id,
+      agentName: fixture.agent.name,
+      assistantMessageId: fixture.assistantMessage.id,
+      conversationAgents: fixture.conversation.agents,
+      stage: fixture.stage,
+      turnState: fixture.turnState,
+    })
+  );
+
+  const listUrl = new URL('http://127.0.0.1/api/agent-tools/memories');
+  listUrl.searchParams.set('invocationId', context.invocationId);
+  listUrl.searchParams.set('callbackToken', context.callbackToken);
+  const listed = bridge.handleListMemories(listUrl);
+
+  assert.equal(listed.ok, true);
+  assert.equal(listed.cardCount, 2);
+  assert.deepEqual(
+    listed.cards.map((card) => ({ title: card.title, scope: card.scope })),
+    [
+      { title: 'preference', scope: 'conversation-agent' },
+      { title: 'Preference', scope: 'local-user-agent' },
+    ]
+  );
+});
+
+test('agent tool memory cards update and forget durable local-user scope safely', (t) => {
+  const tempDir = withTempDir('caff-agent-tool-memory-mutation-');
+  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const bridge = createAgentToolBridge({ store });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const fixture = createPublicInvocationFixture(store, 'memory-mutation');
+  const context = bridge.registerInvocation(
+    bridge.createInvocationContext({
+      conversationId: fixture.conversation.id,
+      turnId: fixture.assistantMessage.turnId,
+      agentId: fixture.agent.id,
+      agentName: fixture.agent.name,
+      assistantMessageId: fixture.assistantMessage.id,
+      conversationAgents: fixture.conversation.agents,
+      stage: fixture.stage,
+      turnState: fixture.turnState,
+    })
+  );
+
+  const saved = bridge.handleSaveMemory({
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    title: 'preference',
+    content: 'User prefers retrieval-first rollouts.',
+    ttlDays: 30,
+  });
+
+  const updated = bridge.handleUpdateMemory({
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    title: 'preference',
+    content: 'User now prefers answer-first replies.',
+    reason: 'User corrected this durable preference',
+    expectedUpdatedAt: saved.card.updatedAt,
+  });
+
+  assert.equal(updated.ok, true);
+  assert.equal(updated.scope, 'local-user-agent');
+  assert.equal(updated.action, 'update');
+  assert.equal(updated.card.content, 'User now prefers answer-first replies.');
+  assert.equal(updated.card.status, 'active');
+
+  const listUrl = new URL('http://127.0.0.1/api/agent-tools/memories');
+  listUrl.searchParams.set('invocationId', context.invocationId);
+  listUrl.searchParams.set('callbackToken', context.callbackToken);
+  const listedAfterUpdate = bridge.handleListMemories(listUrl);
+
+  assert.equal(listedAfterUpdate.cardCount, 1);
+  assert.equal(listedAfterUpdate.cards[0].content, 'User now prefers answer-first replies.');
+
+  assert.throws(
+    () =>
+      bridge.handleUpdateMemory({
+        invocationId: context.invocationId,
+        callbackToken: context.callbackToken,
+        title: 'preference',
+        content: 'Stale overwrite should fail.',
+        reason: 'Old snapshot',
+        expectedUpdatedAt: '2000-01-01T00:00:00.000Z',
+      }),
+    (error) => error && error.statusCode === 409
+  );
+
+  const forgotten = bridge.handleForgetMemory({
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    title: 'preference',
+    reason: 'User said this should not persist',
+    expectedUpdatedAt: updated.card.updatedAt,
+  });
+
+  assert.equal(forgotten.ok, true);
+  assert.equal(forgotten.scope, 'local-user-agent');
+  assert.equal(forgotten.action, 'forget');
+  assert.equal(forgotten.card.status, 'deleted');
+  assert.equal('content' in forgotten.card, false);
+
+  const listedAfterForget = bridge.handleListMemories(listUrl);
+  assert.equal(listedAfterForget.cardCount, 0);
+});

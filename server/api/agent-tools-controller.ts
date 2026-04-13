@@ -29,6 +29,35 @@ export function createAgentToolsController(options: any = {}): RouteHandler<ApiC
       return true;
     }
 
+    if (pathname === '/api/agent-tools/search-messages' && req.method === 'POST') {
+      const body = await readRequestJson(req);
+      sendJson(res, 200, agentToolBridge.handleSearchMessages(body));
+      return true;
+    }
+
+    if (pathname === '/api/agent-tools/memories' && req.method === 'GET') {
+      sendJson(res, 200, agentToolBridge.handleListMemories(requestUrl));
+      return true;
+    }
+
+    if (pathname === '/api/agent-tools/memories' && req.method === 'POST') {
+      const body = await readRequestJson(req);
+      sendJson(res, 200, agentToolBridge.handleSaveMemory(body));
+      return true;
+    }
+
+    if (pathname === '/api/agent-tools/memories/update' && req.method === 'POST') {
+      const body = await readRequestJson(req);
+      sendJson(res, 200, agentToolBridge.handleUpdateMemory(body));
+      return true;
+    }
+
+    if (pathname === '/api/agent-tools/memories/forget' && req.method === 'POST') {
+      const body = await readRequestJson(req);
+      sendJson(res, 200, agentToolBridge.handleForgetMemory(body));
+      return true;
+    }
+
     if (pathname === '/api/agent-tools/trellis/init' && req.method === 'POST') {
       const body = await readRequestJson(req);
       sendJson(res, 200, agentToolBridge.handleTrellisInit(body));

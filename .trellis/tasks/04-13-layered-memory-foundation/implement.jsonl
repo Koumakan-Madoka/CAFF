@@ -1,0 +1,12 @@
+{"file":".trellis/spec/runtime/agent-runtime.md","reason":"Runtime prompt/tool bridge constraints for memory tools and prompt injection"}
+{"file":".trellis/spec/backend/architecture.md","reason":"Backend layering and store/controller boundaries for memory implementation"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Memory spans storage, bridge, CLI, and prompt layers"}
+{"file":".trellis/spec/guides/cross-platform-thinking-guide.md","reason":"Memory tooling and SQLite paths must remain platform-safe"}
+{"file":".trellis/tasks/04-13-layered-memory-foundation/prd.md","reason":"Task-specific PRD and scope boundary"}
+{"file":"storage/sqlite/migrations.ts","reason":"SQLite schema/index changes for recall and memory cards"}
+{"file":"storage/chat/message.repository.ts","reason":"Message retrieval foundation for episodic recall"}
+{"file":"storage/chat/memory-card.repository.ts","reason":"Curated memory card persistence"}
+{"file":"lib/chat-app-store.ts","reason":"Store surface for memory and recall APIs"}
+{"file":"server/domain/runtime/agent-tool-bridge.ts","reason":"Agent-facing memory tool handlers and safety checks"}
+{"file":"lib/agent-chat-tools.ts","reason":"CLI bridge commands for memory tools"}
+{"file":"server/domain/conversation/turn/agent-prompt.ts","reason":"Bounded prompt guidance and memory card injection"}

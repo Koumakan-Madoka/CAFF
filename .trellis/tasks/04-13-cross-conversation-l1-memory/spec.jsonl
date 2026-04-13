@@ -1,0 +1,1 @@
+{"file":".trellis/spec/runtime/agent-runtime.md","reason":"Documented durable-only update/forget contracts, optimistic concurrency, tombstone semantics, and reason-tag-only traces for memory mutation."}

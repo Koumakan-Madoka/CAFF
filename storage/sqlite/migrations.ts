@@ -1,5 +1,9 @@
+function listTableInfo(db: any, tableName: string) {
+  return db.prepare(`PRAGMA table_info(${tableName})`).all();
+}
+
 function listTableColumns(db: any, tableName: string) {
-  return new Set(db.prepare(`PRAGMA table_info(${tableName})`).all().map((column: any) => String(column.name)));
+  return new Set(listTableInfo(db, tableName).map((column: any) => String(column.name)));
 }
 
 function ensureColumn(db: any, tableName: string, columnName: string, definitionSql: string) {
@@ -8,6 +12,212 @@ function ensureColumn(db: any, tableName: string, columnName: string, definition
   }
 
   db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${definitionSql}`);
+}
+
+function ensureChatMessageSearchSchema(db: any) {
+  try {
+    db.exec(`
+CREATE VIRTUAL TABLE IF NOT EXISTS chat_message_search USING fts5(
+  message_id UNINDEXED,
+  conversation_id UNINDEXED,
+  turn_id UNINDEXED,
+  role UNINDEXED,
+  agent_id UNINDEXED,
+  sender_name,
+  content,
+  status UNINDEXED,
+  created_at UNINDEXED,
+  tokenize = 'unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS chat_messages_search_ai AFTER INSERT ON chat_messages BEGIN
+  INSERT INTO chat_message_search (
+    rowid,
+    message_id,
+    conversation_id,
+    turn_id,
+    role,
+    agent_id,
+    sender_name,
+    content,
+    status,
+    created_at
+  ) VALUES (
+    new.rowid,
+    new.id,
+    new.conversation_id,
+    new.turn_id,
+    new.role,
+    new.agent_id,
+    new.sender_name,
+    new.content,
+    new.status,
+    new.created_at
+  );
+END;
+
+CREATE TRIGGER IF NOT EXISTS chat_messages_search_ad AFTER DELETE ON chat_messages BEGIN
+  DELETE FROM chat_message_search WHERE rowid = old.rowid;
+END;
+
+CREATE TRIGGER IF NOT EXISTS chat_messages_search_au AFTER UPDATE ON chat_messages BEGIN
+  DELETE FROM chat_message_search WHERE rowid = old.rowid;
+  INSERT INTO chat_message_search (
+    rowid,
+    message_id,
+    conversation_id,
+    turn_id,
+    role,
+    agent_id,
+    sender_name,
+    content,
+    status,
+    created_at
+  ) VALUES (
+    new.rowid,
+    new.id,
+    new.conversation_id,
+    new.turn_id,
+    new.role,
+    new.agent_id,
+    new.sender_name,
+    new.content,
+    new.status,
+    new.created_at
+  );
+END;
+    `);
+
+    db.exec(`
+INSERT INTO chat_message_search (
+  rowid,
+  message_id,
+  conversation_id,
+  turn_id,
+  role,
+  agent_id,
+  sender_name,
+  content,
+  status,
+  created_at
+)
+SELECT
+  m.rowid,
+  m.id,
+  m.conversation_id,
+  m.turn_id,
+  m.role,
+  m.agent_id,
+  m.sender_name,
+  m.content,
+  m.status,
+  m.created_at
+FROM chat_messages m
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM chat_message_search s
+  WHERE s.rowid = m.rowid
+);
+    `);
+  } catch {}
+}
+
+function ensureChatMemoryCardSchema(db: any) {
+  const columns = listTableInfo(db, 'chat_memory_cards');
+
+  if (!Array.isArray(columns) || columns.length === 0) {
+    return;
+  }
+
+  const hasOwnerKey = columns.some((column: any) => String(column && column.name || '') === 'owner_key');
+  const conversationColumn = columns.find((column: any) => String(column && column.name || '') === 'conversation_id');
+  const conversationAllowsNull = !conversationColumn || Number(conversationColumn.notnull || 0) === 0;
+
+  if (hasOwnerKey && conversationAllowsNull) {
+    db.exec(`
+CREATE INDEX IF NOT EXISTS idx_chat_memory_cards_scope
+  ON chat_memory_cards(scope, owner_key, agent_id, status, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_chat_memory_cards_expires_at
+  ON chat_memory_cards(expires_at);
+`);
+    return;
+  }
+
+  db.exec(`
+DROP INDEX IF EXISTS idx_chat_memory_cards_scope;
+DROP INDEX IF EXISTS idx_chat_memory_cards_expires_at;
+`);
+
+  db.exec(`
+CREATE TABLE chat_memory_cards_migrated (
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT,
+  agent_id TEXT NOT NULL,
+  scope TEXT NOT NULL DEFAULT 'conversation-agent',
+  owner_key TEXT NOT NULL,
+  title TEXT NOT NULL,
+  content TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT 'agent-tool',
+  status TEXT NOT NULL DEFAULT 'active',
+  ttl_days INTEGER,
+  expires_at TEXT,
+  metadata_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(scope, owner_key, agent_id, title),
+  FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE,
+  FOREIGN KEY (agent_id) REFERENCES chat_agents(id) ON DELETE CASCADE
+);
+
+INSERT INTO chat_memory_cards_migrated (
+  id,
+  conversation_id,
+  agent_id,
+  scope,
+  owner_key,
+  title,
+  content,
+  source,
+  status,
+  ttl_days,
+  expires_at,
+  metadata_json,
+  created_at,
+  updated_at
+)
+SELECT
+  id,
+  conversation_id,
+  agent_id,
+  CASE
+    WHEN COALESCE(scope, 'conversation-agent') = 'local-user-agent' THEN 'local-user-agent'
+    ELSE 'conversation-agent'
+  END,
+  CASE
+    WHEN COALESCE(scope, 'conversation-agent') = 'local-user-agent' THEN 'local-user'
+    ELSE conversation_id
+  END,
+  title,
+  content,
+  source,
+  status,
+  ttl_days,
+  expires_at,
+  metadata_json,
+  created_at,
+  updated_at
+FROM chat_memory_cards;
+
+DROP TABLE chat_memory_cards;
+ALTER TABLE chat_memory_cards_migrated RENAME TO chat_memory_cards;
+
+CREATE INDEX IF NOT EXISTS idx_chat_memory_cards_scope
+  ON chat_memory_cards(scope, owner_key, agent_id, status, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_chat_memory_cards_expires_at
+  ON chat_memory_cards(expires_at);
+`);
 }
 
 export function migrateChatSchema(db: any) {
@@ -81,6 +291,26 @@ CREATE TABLE IF NOT EXISTS chat_private_messages (
   created_at TEXT NOT NULL,
   FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE,
   FOREIGN KEY (sender_agent_id) REFERENCES chat_agents(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS chat_memory_cards (
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT,
+  agent_id TEXT NOT NULL,
+  scope TEXT NOT NULL DEFAULT 'conversation-agent',
+  owner_key TEXT NOT NULL,
+  title TEXT NOT NULL,
+  content TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT 'agent-tool',
+  status TEXT NOT NULL DEFAULT 'active',
+  ttl_days INTEGER,
+  expires_at TEXT,
+  metadata_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(scope, owner_key, agent_id, title),
+  FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE,
+  FOREIGN KEY (agent_id) REFERENCES chat_agents(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS chat_channel_bindings (
@@ -195,6 +425,9 @@ CREATE INDEX IF NOT EXISTS idx_eval_case_runs_task_id ON eval_case_runs (task_id
     'conversation_skills_json TEXT'
   );
   ensureColumn(db, 'eval_case_runs', 'prompt_version', 'prompt_version TEXT');
+
+  ensureChatMessageSearchSchema(db);
+  ensureChatMemoryCardSchema(db);
 
   db.exec(`
 CREATE TABLE IF NOT EXISTS modes (

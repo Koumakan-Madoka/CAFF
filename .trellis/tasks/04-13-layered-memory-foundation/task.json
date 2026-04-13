@@ -1,0 +1,59 @@
+{
+  "id": "layered-memory-foundation",
+  "name": "layered-memory-foundation",
+  "title": "Layered Memory Foundation",
+  "description": "Own CAFF episodic recall and scoped curated memory implementation separately from skill-test isolation work.",
+  "status": "completed",
+  "dev_type": "backend",
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "菲比啾比",
+  "assignee": "菲比啾比",
+  "createdAt": "2026-04-13",
+  "completedAt": "2026-04-13",
+  "branch": "feat/layered-memory-foundation",
+  "base_branch": "main",
+  "worktree_path": null,
+  "current_phase": 0,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "check"
+    },
+    {
+      "phase": 3,
+      "action": "finish"
+    },
+    {
+      "phase": 4,
+      "action": "create-pr"
+    }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "hermes-memory-skill-iteration",
+  "relatedFiles": [
+    "storage/sqlite/migrations.ts",
+    "storage/chat/message.repository.ts",
+    "storage/chat/memory-card.repository.ts",
+    "lib/chat-app-store.ts",
+    "server/domain/runtime/agent-tool-bridge.ts",
+    "server/api/agent-tools-controller.ts",
+    "lib/agent-chat-tools.ts",
+    "server/domain/conversation/turn/agent-prompt.ts",
+    "server/domain/conversation/turn/agent-executor.ts",
+    "tests/storage/chat-store.test.js",
+    "tests/runtime/agent-tool-bridge.test.js",
+    "tests/runtime/turn-orchestrator.test.js",
+    "tests/runtime/agent-chat-tools.test.js"
+  ],
+  "notes": "Child of hermes-memory-skill-iteration. Owns memory only; skill-test isolation is a separate child task.",
+  "meta": {}
+}

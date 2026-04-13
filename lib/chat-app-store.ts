@@ -6,11 +6,21 @@ const { createChatConversationRepository } = require('../storage/chat/conversati
 const { createChatParticipantRepository } = require('../storage/chat/participant.repository');
 const { createChatMessageRepository } = require('../storage/chat/message.repository');
 const { createChatPrivateMessageRepository } = require('../storage/chat/private-message.repository');
+const { createChatMemoryCardRepository } = require('../storage/chat/memory-card.repository');
 const { createChatChannelBindingRepository } = require('../storage/chat/channel-binding.repository');
 const { createChatExternalEventRepository } = require('../storage/chat/external-event.repository');
 
 const MAX_AVATAR_DATA_URL_LENGTH = 2 * 1024 * 1024;
 const MAX_AGENT_SANDBOX_NAME_LENGTH = 80;
+const MAX_MEMORY_CARD_TITLE_LENGTH = 64;
+const MAX_MEMORY_CARD_CONTENT_LENGTH = 280;
+const MAX_MEMORY_CARDS_PER_SCOPE = 6;
+const DEFAULT_MEMORY_CARD_TTL_DAYS = 30;
+const MAX_MEMORY_CARD_TTL_DAYS = 90;
+const CONVERSATION_MEMORY_SCOPE = 'conversation-agent';
+const LOCAL_USER_MEMORY_SCOPE = 'local-user-agent';
+const LOCAL_USER_MEMORY_OWNER_KEY = 'local-user';
+const DELETED_MEMORY_CARD_STATUS = 'deleted';
 
 export const DEFAULT_AGENT_SEEDS = [
   {
@@ -379,6 +389,43 @@ function normalizeMessageRow(row: any) {
   };
 }
 
+function clipSearchSnippet(value: any, maxLength = 240) {
+  const text = String(value || '').trim();
+
+  if (!text) {
+    return '';
+  }
+
+  if (text.length <= maxLength) {
+    return text;
+  }
+
+  return `${text.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
+}
+
+function normalizeMessageSearchResultRow(row: any) {
+  if (!row) {
+    return null;
+  }
+
+  const normalized: any = {
+    messageId: row.message_id || row.id || '',
+    conversationId: row.conversation_id || '',
+    turnId: row.turn_id || '',
+    role: row.role || '',
+    agentId: row.agent_id || null,
+    senderName: row.sender_name || '',
+    createdAt: row.created_at || '',
+    snippet: clipSearchSnippet(row.snippet || row.content || ''),
+  };
+
+  if (Number.isFinite(row.score)) {
+    normalized.score = Number(row.score);
+  }
+
+  return normalized;
+}
+
 function normalizePrivateMessageRow(row: any) {
   if (!row) {
     return null;
@@ -395,6 +442,123 @@ function normalizePrivateMessageRow(row: any) {
     metadata: parseJson(row.metadata_json),
     createdAt: row.created_at,
   };
+}
+
+function normalizeMemoryCardRow(row: any) {
+  if (!row) {
+    return null;
+  }
+
+  const scope = row.scope || CONVERSATION_MEMORY_SCOPE;
+
+  return {
+    id: row.id,
+    conversationId: row.conversation_id || null,
+    agentId: row.agent_id,
+    scope,
+    ownerKey: row.owner_key || (scope === LOCAL_USER_MEMORY_SCOPE ? LOCAL_USER_MEMORY_OWNER_KEY : row.conversation_id || ''),
+    title: row.title || '',
+    content: row.content || '',
+    source: row.source || 'agent-tool',
+    status: row.status || 'active',
+    ttlDays: Number.isInteger(row.ttl_days) ? row.ttl_days : row.ttl_days ? Number(row.ttl_days) : null,
+    expiresAt: row.expires_at || null,
+    metadata: parseJson(row.metadata_json) || {},
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function normalizeMemoryCardText(value: any, maxLength: number, fieldName: string) {
+  const normalized = String(value || '').trim().replace(/\s+/g, ' ');
+
+  if (!normalized) {
+    throw new Error(`${fieldName} is required`);
+  }
+
+  if (normalized.length > maxLength) {
+    throw new Error(`${fieldName} must be ${maxLength} characters or fewer`);
+  }
+
+  return normalized;
+}
+
+function normalizeMemoryCardTtlDays(value: any) {
+  if (value === undefined || value === null || value === '') {
+    return DEFAULT_MEMORY_CARD_TTL_DAYS;
+  }
+
+  const parsed = Number.parseInt(String(value), 10);
+
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    throw new Error('ttlDays must be a positive integer');
+  }
+
+  return Math.min(parsed, MAX_MEMORY_CARD_TTL_DAYS);
+}
+
+function addDaysIso(baseIso: string, days: number) {
+  const date = new Date(baseIso);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString();
+}
+
+function isMemoryCardActiveAt(card: any, at = nowIso()) {
+  if (!card) {
+    return false;
+  }
+
+  if (String(card.status || '').trim() !== 'active') {
+    return false;
+  }
+
+  if (!card.expiresAt) {
+    return true;
+  }
+
+  return String(card.expiresAt).trim() > String(at).trim();
+}
+
+function mergeMemoryCardMetadata(existingMetadata: any, nextMetadata: any = {}, lastMutation: any = null) {
+  const merged = {
+    ...(existingMetadata && typeof existingMetadata === 'object' ? existingMetadata : {}),
+    ...(nextMetadata && typeof nextMetadata === 'object' ? nextMetadata : {}),
+  };
+
+  if (lastMutation && typeof lastMutation === 'object') {
+    merged.lastMutation = lastMutation;
+  }
+
+  return merged;
+}
+
+function mergeVisibleMemoryCards(primaryCards: any, secondaryCards: any, limit = MAX_MEMORY_CARDS_PER_SCOPE) {
+  const visibleCards = [];
+  const seenTitles = new Set();
+
+  for (const card of [...(Array.isArray(primaryCards) ? primaryCards : []), ...(Array.isArray(secondaryCards) ? secondaryCards : [])]) {
+    if (!card) {
+      continue;
+    }
+
+    const titleKey = String(card.title || '').trim();
+
+    if (titleKey && seenTitles.has(titleKey)) {
+      continue;
+    }
+
+    if (titleKey) {
+      seenTitles.add(titleKey);
+    }
+
+    visibleCards.push(card);
+
+    if (visibleCards.length >= limit) {
+      break;
+    }
+  }
+
+  return visibleCards;
 }
 
 function normalizeConversationType(value: any) {
@@ -518,6 +682,7 @@ export class ChatAppStore {
       this.participantRepository = createChatParticipantRepository(this.db);
       this.messageRepository = createChatMessageRepository(this.db);
       this.privateMessageRepository = createChatPrivateMessageRepository(this.db);
+      this.memoryCardRepository = createChatMemoryCardRepository(this.db);
       this.channelBindingRepository = createChatChannelBindingRepository(this.db);
       this.externalEventRepository = createChatExternalEventRepository(this.db);
 
@@ -627,6 +792,145 @@ export class ChatAppStore {
             content: payload.content || '',
             metadataJson: serializeJson(payload.metadata),
             createdAt,
+          })
+        );
+      });
+
+      this.saveMemoryCardTransaction = this.db.transaction((payload: any) => {
+        const timestamp = payload.updatedAt || nowIso();
+        const scope = String(payload.scope || CONVERSATION_MEMORY_SCOPE).trim() || CONVERSATION_MEMORY_SCOPE;
+        const ownerKey = String(
+          payload.ownerKey || (scope === LOCAL_USER_MEMORY_SCOPE ? LOCAL_USER_MEMORY_OWNER_KEY : payload.conversationId || '')
+        ).trim();
+        const existing = this.memoryCardRepository.getByScopeOwnerAgentTitle(
+          scope,
+          ownerKey,
+          payload.agentId,
+          payload.title
+        );
+
+        if (!existing) {
+          const activeCount = this.memoryCardRepository.countActiveByScopeOwnerAgent(scope, ownerKey, payload.agentId, {
+            now: timestamp,
+          });
+
+          if (activeCount >= MAX_MEMORY_CARDS_PER_SCOPE) {
+            throw new Error(`Memory card budget exceeded: max ${MAX_MEMORY_CARDS_PER_SCOPE} active cards per ${scope}`);
+          }
+
+          return normalizeMemoryCardRow(
+            this.memoryCardRepository.create({
+              id: payload.id,
+              conversationId: payload.conversationId || null,
+              agentId: payload.agentId,
+              scope,
+              ownerKey,
+              title: payload.title,
+              content: payload.content,
+              source: payload.source,
+              status: 'active',
+              ttlDays: payload.ttlDays,
+              expiresAt: payload.expiresAt,
+              metadataJson: serializeJson(payload.metadata),
+              createdAt: timestamp,
+              updatedAt: timestamp,
+            })
+          );
+        }
+
+        const existingCard = normalizeMemoryCardRow(existing);
+        const existingIsActive = isMemoryCardActiveAt(existingCard, timestamp);
+
+        if (!existingIsActive) {
+          const activeCount = this.memoryCardRepository.countActiveByScopeOwnerAgent(scope, ownerKey, payload.agentId, {
+            now: timestamp,
+          });
+
+          if (activeCount >= MAX_MEMORY_CARDS_PER_SCOPE) {
+            throw new Error(`Memory card budget exceeded: max ${MAX_MEMORY_CARDS_PER_SCOPE} active cards per ${scope}`);
+          }
+        }
+
+        const metadata = mergeMemoryCardMetadata(parseJson(existing.metadata_json), payload.metadata);
+
+        if (!existingIsActive) {
+          delete metadata.lastMutation;
+        }
+
+        return normalizeMemoryCardRow(
+          this.memoryCardRepository.update(existing.id, {
+            conversationId: payload.conversationId || null,
+            content: payload.content,
+            source: payload.source,
+            status: 'active',
+            ttlDays: payload.ttlDays,
+            expiresAt: payload.expiresAt,
+            metadataJson: serializeJson(metadata),
+            updatedAt: timestamp,
+          })
+        );
+      });
+
+      this.updateLocalUserMemoryCardTransaction = this.db.transaction((payload: any) => {
+        const timestamp = payload.updatedAt || nowIso();
+        const ownerKey = String(payload.ownerKey || LOCAL_USER_MEMORY_OWNER_KEY).trim() || LOCAL_USER_MEMORY_OWNER_KEY;
+        const existingRow = this.memoryCardRepository.getByLocalUserAgentTitle(payload.agentId, payload.title, { ownerKey });
+        const existing = normalizeMemoryCardRow(existingRow);
+
+        if (!isMemoryCardActiveAt(existing, timestamp)) {
+          throw new Error('Memory card not found');
+        }
+
+        if (payload.expectedUpdatedAt && existing.updatedAt !== payload.expectedUpdatedAt) {
+          throw new Error('Memory card changed since it was last read');
+        }
+
+        const ttlDays = Number.isInteger(existing.ttlDays) && existing.ttlDays > 0
+          ? existing.ttlDays
+          : DEFAULT_MEMORY_CARD_TTL_DAYS;
+
+        return normalizeMemoryCardRow(
+          this.memoryCardRepository.update(existing.id, {
+            conversationId: null,
+            content: payload.content,
+            source: payload.source,
+            status: 'active',
+            ttlDays,
+            expiresAt: addDaysIso(timestamp, ttlDays),
+            metadataJson: serializeJson(
+              mergeMemoryCardMetadata(parseJson(existingRow && existingRow.metadata_json), payload.metadata, payload.lastMutation)
+            ),
+            updatedAt: timestamp,
+          })
+        );
+      });
+
+      this.forgetLocalUserMemoryCardTransaction = this.db.transaction((payload: any) => {
+        const timestamp = payload.updatedAt || nowIso();
+        const ownerKey = String(payload.ownerKey || LOCAL_USER_MEMORY_OWNER_KEY).trim() || LOCAL_USER_MEMORY_OWNER_KEY;
+        const existingRow = this.memoryCardRepository.getByLocalUserAgentTitle(payload.agentId, payload.title, { ownerKey });
+        const existing = normalizeMemoryCardRow(existingRow);
+
+        if (!isMemoryCardActiveAt(existing, timestamp)) {
+          throw new Error('Memory card not found');
+        }
+
+        if (payload.expectedUpdatedAt && existing.updatedAt !== payload.expectedUpdatedAt) {
+          throw new Error('Memory card changed since it was last read');
+        }
+
+        return normalizeMemoryCardRow(
+          this.memoryCardRepository.update(existing.id, {
+            conversationId: null,
+            content: existing.content,
+            source: payload.source,
+            status: DELETED_MEMORY_CARD_STATUS,
+            ttlDays: existing.ttlDays,
+            expiresAt: existing.expiresAt,
+            metadataJson: serializeJson(
+              mergeMemoryCardMetadata(parseJson(existingRow && existingRow.metadata_json), payload.metadata, payload.lastMutation)
+            ),
+            updatedAt: timestamp,
           })
         );
       });
@@ -997,6 +1301,239 @@ export class ChatAppStore {
     return this.privateMessageRepository.listByConversationId(conversationId).map(normalizePrivateMessageRow);
   }
 
+  listConversationMemoryCards(conversationId: any, agentId: any, options: any = {}) {
+    const normalizedConversationId = String(conversationId || '').trim();
+    const normalizedAgentId = String(agentId || '').trim();
+    const limit = Number.isInteger(options.limit) && options.limit > 0
+      ? Math.min(options.limit, MAX_MEMORY_CARDS_PER_SCOPE)
+      : MAX_MEMORY_CARDS_PER_SCOPE;
+
+    if (!normalizedConversationId) {
+      throw new Error('Conversation id is required');
+    }
+
+    if (!normalizedAgentId) {
+      throw new Error('Agent id is required');
+    }
+
+    if (!this.conversationRepository.get(normalizedConversationId)) {
+      throw new Error('Conversation not found');
+    }
+
+    if (!this.agentRepository.get(normalizedAgentId)) {
+      throw new Error('Agent not found');
+    }
+
+    return this.memoryCardRepository
+      .listActiveByConversationAgent(normalizedConversationId, normalizedAgentId, {
+        limit,
+        now: options.now || nowIso(),
+      })
+      .map(normalizeMemoryCardRow)
+      .filter(Boolean);
+  }
+
+  listLocalUserMemoryCards(agentId: any, options: any = {}) {
+    const normalizedAgentId = String(agentId || '').trim();
+    const limit = Number.isInteger(options.limit) && options.limit > 0
+      ? Math.min(options.limit, MAX_MEMORY_CARDS_PER_SCOPE)
+      : MAX_MEMORY_CARDS_PER_SCOPE;
+
+    if (!normalizedAgentId) {
+      throw new Error('Agent id is required');
+    }
+
+    if (!this.agentRepository.get(normalizedAgentId)) {
+      throw new Error('Agent not found');
+    }
+
+    return this.memoryCardRepository
+      .listActiveByLocalUserAgent(normalizedAgentId, {
+        ownerKey: options.ownerKey || LOCAL_USER_MEMORY_OWNER_KEY,
+        limit,
+        now: options.now || nowIso(),
+      })
+      .map(normalizeMemoryCardRow)
+      .filter(Boolean);
+  }
+
+  listVisibleMemoryCards(conversationId: any, agentId: any, options: any = {}) {
+    const normalizedConversationId = String(conversationId || '').trim();
+    const normalizedAgentId = String(agentId || '').trim();
+    const limit = Number.isInteger(options.limit) && options.limit > 0
+      ? Math.min(options.limit, MAX_MEMORY_CARDS_PER_SCOPE)
+      : MAX_MEMORY_CARDS_PER_SCOPE;
+    const now = options.now || nowIso();
+    const conversationCards = this.listConversationMemoryCards(normalizedConversationId, normalizedAgentId, {
+      limit,
+      now,
+    });
+    const localUserCards = this.listLocalUserMemoryCards(normalizedAgentId, {
+      ownerKey: options.ownerKey || LOCAL_USER_MEMORY_OWNER_KEY,
+      limit,
+      now,
+    });
+
+    return mergeVisibleMemoryCards(conversationCards, localUserCards, limit);
+  }
+
+  saveConversationMemoryCard(conversationId: any, agentId: any, input: any = {}) {
+    const normalizedConversationId = String(conversationId || '').trim();
+    const normalizedAgentId = String(agentId || '').trim();
+
+    if (!normalizedConversationId) {
+      throw new Error('Conversation id is required');
+    }
+
+    if (!normalizedAgentId) {
+      throw new Error('Agent id is required');
+    }
+
+    if (!this.conversationRepository.get(normalizedConversationId)) {
+      throw new Error('Conversation not found');
+    }
+
+    if (!this.agentRepository.get(normalizedAgentId)) {
+      throw new Error('Agent not found');
+    }
+
+    const updatedAt = nowIso();
+    const title = normalizeMemoryCardText(input.title, MAX_MEMORY_CARD_TITLE_LENGTH, 'title');
+    const content = normalizeMemoryCardText(input.content, MAX_MEMORY_CARD_CONTENT_LENGTH, 'content');
+    const ttlDays = normalizeMemoryCardTtlDays(input.ttlDays);
+    const memoryCard = this.saveMemoryCardTransaction({
+      id: String(input.id || randomUUID()).trim(),
+      conversationId: normalizedConversationId,
+      agentId: normalizedAgentId,
+      scope: CONVERSATION_MEMORY_SCOPE,
+      ownerKey: normalizedConversationId,
+      title,
+      content,
+      source: String(input.source || 'agent-tool').trim() || 'agent-tool',
+      ttlDays,
+      expiresAt: addDaysIso(updatedAt, ttlDays),
+      metadata: input.metadata && typeof input.metadata === 'object' ? input.metadata : {},
+      updatedAt,
+    });
+
+    return {
+      card: memoryCard,
+      cardCount: this.memoryCardRepository.countActiveByConversationAgent(normalizedConversationId, normalizedAgentId, {
+        now: updatedAt,
+      }),
+      budget: {
+        maxCards: MAX_MEMORY_CARDS_PER_SCOPE,
+      },
+    };
+  }
+
+  saveLocalUserMemoryCard(agentId: any, input: any = {}) {
+    const normalizedAgentId = String(agentId || '').trim();
+
+    if (!normalizedAgentId) {
+      throw new Error('Agent id is required');
+    }
+
+    if (!this.agentRepository.get(normalizedAgentId)) {
+      throw new Error('Agent not found');
+    }
+
+    const updatedAt = nowIso();
+    const title = normalizeMemoryCardText(input.title, MAX_MEMORY_CARD_TITLE_LENGTH, 'title');
+    const content = normalizeMemoryCardText(input.content, MAX_MEMORY_CARD_CONTENT_LENGTH, 'content');
+    const ttlDays = normalizeMemoryCardTtlDays(input.ttlDays);
+    const ownerKey = String(input.ownerKey || '').trim() || LOCAL_USER_MEMORY_OWNER_KEY;
+    const memoryCard = this.saveMemoryCardTransaction({
+      id: String(input.id || randomUUID()).trim(),
+      conversationId: null,
+      agentId: normalizedAgentId,
+      scope: LOCAL_USER_MEMORY_SCOPE,
+      ownerKey,
+      title,
+      content,
+      source: String(input.source || 'agent-tool').trim() || 'agent-tool',
+      ttlDays,
+      expiresAt: addDaysIso(updatedAt, ttlDays),
+      metadata: input.metadata && typeof input.metadata === 'object' ? input.metadata : {},
+      updatedAt,
+    });
+
+    return {
+      card: memoryCard,
+      cardCount: this.memoryCardRepository.countActiveByLocalUserAgent(normalizedAgentId, {
+        ownerKey,
+        now: updatedAt,
+      }),
+      budget: {
+        maxCards: MAX_MEMORY_CARDS_PER_SCOPE,
+      },
+    };
+  }
+
+  updateLocalUserMemoryCard(agentId: any, input: any = {}) {
+    const normalizedAgentId = String(agentId || '').trim();
+
+    if (!normalizedAgentId) {
+      throw new Error('Agent id is required');
+    }
+
+    if (!this.agentRepository.get(normalizedAgentId)) {
+      throw new Error('Agent not found');
+    }
+
+    const ownerKey = String(input.ownerKey || '').trim() || LOCAL_USER_MEMORY_OWNER_KEY;
+    const updatedAt = nowIso();
+    const title = normalizeMemoryCardText(input.title, MAX_MEMORY_CARD_TITLE_LENGTH, 'title');
+    const content = normalizeMemoryCardText(input.content, MAX_MEMORY_CARD_CONTENT_LENGTH, 'content');
+    const expectedUpdatedAt = String(input.expectedUpdatedAt || '').trim() || null;
+    const memoryCard = this.updateLocalUserMemoryCardTransaction({
+      agentId: normalizedAgentId,
+      ownerKey,
+      title,
+      content,
+      expectedUpdatedAt,
+      source: String(input.source || 'agent-tool').trim() || 'agent-tool',
+      metadata: input.metadata && typeof input.metadata === 'object' ? input.metadata : {},
+      lastMutation: input.lastMutation && typeof input.lastMutation === 'object' ? input.lastMutation : null,
+      updatedAt,
+    });
+
+    return {
+      card: memoryCard,
+    };
+  }
+
+  forgetLocalUserMemoryCard(agentId: any, input: any = {}) {
+    const normalizedAgentId = String(agentId || '').trim();
+
+    if (!normalizedAgentId) {
+      throw new Error('Agent id is required');
+    }
+
+    if (!this.agentRepository.get(normalizedAgentId)) {
+      throw new Error('Agent not found');
+    }
+
+    const ownerKey = String(input.ownerKey || '').trim() || LOCAL_USER_MEMORY_OWNER_KEY;
+    const updatedAt = nowIso();
+    const title = normalizeMemoryCardText(input.title, MAX_MEMORY_CARD_TITLE_LENGTH, 'title');
+    const expectedUpdatedAt = String(input.expectedUpdatedAt || '').trim() || null;
+    const memoryCard = this.forgetLocalUserMemoryCardTransaction({
+      agentId: normalizedAgentId,
+      ownerKey,
+      title,
+      expectedUpdatedAt,
+      source: String(input.source || 'agent-tool').trim() || 'agent-tool',
+      metadata: input.metadata && typeof input.metadata === 'object' ? input.metadata : {},
+      lastMutation: input.lastMutation && typeof input.lastMutation === 'object' ? input.lastMutation : null,
+      updatedAt,
+    });
+
+    return {
+      card: memoryCard,
+    };
+  }
+
   listPrivateMessagesForAgent(conversationId: any, agentId: any, options: any = {}) {
     const normalizedAgentId = String(agentId || '').trim();
     const limit = Number.isInteger(options.limit) && options.limit > 0 ? options.limit : 0;
@@ -1108,6 +1645,43 @@ export class ChatAppStore {
     }
 
     return normalizeMessageRow(this.messageRepository.appendText(messageId, text));
+  }
+
+  searchConversationMessages(conversationId: any, options: any = {}) {
+    const normalizedConversationId = String(conversationId || '').trim();
+    const query = String(options.query || '').trim().replace(/\s+/g, ' ');
+    const limit = Number.isInteger(options.limit) && options.limit > 0
+      ? Math.min(options.limit, 5)
+      : 5;
+
+    if (!normalizedConversationId) {
+      throw new Error('Conversation id is required');
+    }
+
+    if (!this.conversationRepository.get(normalizedConversationId)) {
+      throw new Error('Conversation not found');
+    }
+
+    const speaker = String(options.speaker || options.senderName || options.sender || '').trim().replace(/\s+/g, ' ');
+    const agentId = String(options.agentId || options.agentID || '').trim().replace(/\s+/g, ' ');
+    const result = this.messageRepository.searchByConversationId(normalizedConversationId, {
+      query,
+      limit,
+      speaker,
+      agentId,
+    });
+
+    return {
+      query,
+      scope: 'conversation-public',
+      filters: result && result.filters && typeof result.filters === 'object' ? result.filters : {},
+      searchMode: result && result.searchMode ? result.searchMode : 'unavailable',
+      resultCount: Array.isArray(result && result.rows) ? result.rows.length : 0,
+      results: (Array.isArray(result && result.rows) ? result.rows : [])
+        .map(normalizeMessageSearchResultRow)
+        .filter(Boolean),
+      diagnostics: Array.isArray(result && result.diagnostics) ? result.diagnostics : [],
+    };
   }
 
   ensureStarterConversation() {

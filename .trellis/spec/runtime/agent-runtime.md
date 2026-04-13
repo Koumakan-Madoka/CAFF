@@ -10,7 +10,7 @@
 - `server/domain/conversation/turn/trellis-context.ts` loads `.trellis/` task,
   PRD, JSONL, workflow, and spec index context
 - `server/domain/runtime/agent-tool-bridge.ts` handles `trellis-init`,
-  `trellis-write`, and chat bridge calls
+  `trellis-write`, chat bridge calls, and conversation memory tools
 
 ## Runtime Rules
 
@@ -32,6 +32,13 @@
 - Trellis tool API:
   `lib/agent-chat-tools.ts` <-> `server/api/agent-tools-controller.ts` <->
   `server/domain/runtime/agent-tool-bridge.ts`
+- Conversation memory tool API:
+  `lib/chat-app-store.ts` (`searchConversationMessages`,
+  `listVisibleMemoryCards`, `saveLocalUserMemoryCard`,
+  `listConversationMemoryCards`, `saveConversationMemoryCard`) <->
+  `server/domain/runtime/agent-tool-bridge.ts` <->
+  `server/api/agent-tools-controller.ts` <-> `lib/agent-chat-tools.ts` <->
+  `server/domain/conversation/turn/agent-prompt.ts`
 - Skill dynamic loading (descriptor path + `read`):
   `lib/skill-registry.ts` (`skill.path`) <->
   `server/domain/conversation/turn/agent-prompt.ts` (descriptor `Path` + `read` guidance) <->
@@ -58,6 +65,58 @@ CAFF uses a descriptor + on-demand loading model for conversation skills:
   and the agent calls the generic `read` tool with that path when it needs the full skill body.
 - **Prompt instructions** for dynamic loading only appear when mode is `dynamic`;
   in `full` mode they are omitted to reduce noise.
+
+## Conversation Memory Contract
+
+- `search-messages` is retrieval-only and must stay scoped to the current
+  conversation's public messages. Runtime derives the conversation from the
+  active invocation; agents do not choose a wider scope.
+- `search-messages` may optionally accept bounded speaker filters such as
+  `speaker` or `agentId`, but those filters only narrow the active
+  conversation-public scope and never widen it.
+- Message recall stays bounded: query text is validated and clipped, speaker
+  filters are length-limited, result limit is capped, and the response includes
+  `searchMode`, `scope`, `resultCount`, bounded `results[]`, and
+  `diagnostics[]`.
+- If FTS5 is unavailable, a MATCH query fails, or FTS5 returns no results for a
+  tokenizer gap such as CJK text, diagnostics must say so before the
+  implementation falls back to the bounded LIKE path. Do not silently widen the
+  scan beyond the active conversation.
+- `save-memory` writes durable cards for the current `local-user + agent`
+  scope; scope still comes from bridge invocation context, not from
+  agent-provided ids.
+- `update-memory` only mutates an existing durable card in the current
+  `local-user + agent` scope; it requires `title`, full replacement `content`,
+  a non-empty `reason`, and may use `expectedUpdatedAt` for optimistic
+  concurrency.
+- `forget-memory` only tombstones an existing durable card in the current
+  `local-user + agent` scope; it requires `title`, a non-empty `reason`, and
+  may use `expectedUpdatedAt` for optimistic concurrency. Tombstoned cards stay
+  out of visible-memory lists and prompt injection, but remain auditable in
+  storage.
+- `list-memories` returns bounded visible cards for the current agent by
+  layering current `conversation + agent` overlay cards ahead of the same
+  `local-user + agent` durable cards.
+- Memory title matching stays exact after trimming (case-sensitive) across
+  storage, visible layering, `update-memory`, and `forget-memory` so
+  case-distinct titles remain separately addressable.
+- Prompt assembly may inject only bounded active visible memory cards using the
+  same overlay order. Episodic recall results are not auto-injected; the prompt
+  only teaches the agent when to call `search-messages`, `list-memories`,
+  `save-memory`, `update-memory`, and `forget-memory`.
+- Memory cards are intentionally small and durable: active-card budget is 6 per
+  scope, default TTL is 30 days, max TTL is 90 days, and expired or non-active
+  cards stay out of the prompt.
+- `save-memory` and `update-memory` must reject obvious secrets, tokens,
+  passwords, private keys, and transient TODO / next-step / temporary status
+  content.
+- `update-memory` and `forget-memory` must stay durable-only: they do not mutate
+  current-conversation overlay cards, they must reject missing targets, and they
+  should surface optimistic-concurrency conflicts instead of silently
+  overwriting a newer correction.
+- Tool traces should keep diagnostics such as scope, query preview, result
+  count, memory title, reason tag, and rejection reason without echoing full
+  memory bodies or secret-like payloads.
 
 ## Tool Trace Event Contract
 
@@ -97,6 +156,9 @@ CAFF uses a descriptor + on-demand loading model for conversation skills:
 
 - Runtime changes should usually be covered by `tests/runtime/agent-tool-bridge.test.js`
   or `tests/runtime/turn-orchestrator.test.js`
+- Conversation memory changes should also keep `tests/storage/chat-store.test.js`
+  and `tests/runtime/agent-chat-tools.test.js` in sync with the bridge/prompt
+  contract.
 - Tool trace aggregation and redaction changes should also be covered by
   `tests/runtime/message-tool-trace.test.js`
 - If the change affects pi runtime CLI behavior, also inspect

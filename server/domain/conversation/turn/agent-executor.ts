@@ -339,6 +339,11 @@ const LIVE_TOOL_BRIDGE_HINTS = [
   { token: 'send-public', toolName: 'send-public' },
   { token: 'send-private', toolName: 'send-private' },
   { token: 'read-context', toolName: 'read-context' },
+  { token: 'search-messages', toolName: 'search-messages' },
+  { token: 'list-memories', toolName: 'list-memories' },
+  { token: 'save-memory', toolName: 'save-memory' },
+  { token: 'update-memory', toolName: 'update-memory' },
+  { token: 'forget-memory', toolName: 'forget-memory' },
   { token: 'list-participants', toolName: 'participants' },
   { token: 'trellis-init', toolName: 'trellis-init' },
   { token: 'trellis-write', toolName: 'trellis-write' },
@@ -743,6 +748,12 @@ export function createAgentExecutor(options: any = {}) {
     const privateMessages = store.listPrivateMessagesForAgent(conversationId, agent.id, {
       limit: MAX_PRIVATE_CONTEXT_MESSAGES,
     });
+    const memoryCards =
+      store && typeof store.listVisibleMemoryCards === 'function'
+        ? store.listVisibleMemoryCards(conversationId, agent.id)
+        : store && typeof store.listConversationMemoryCards === 'function'
+          ? store.listConversationMemoryCards(conversationId, agent.id)
+          : [];
     const conversationType = conversation && conversation.type ? String(conversation.type).trim() : 'standard';
     const modeForType = modeStore ? modeStore.get(conversationType) : null;
     const modeLoadingStrategy = modeForType ? String(modeForType.loadingStrategy || 'dynamic').trim() : 'dynamic';
@@ -757,6 +768,7 @@ export function createAgentExecutor(options: any = {}) {
       agents: conversation.agents,
       messages: promptMessages,
       privateMessages,
+      memoryCards,
       trigger: queueItem,
       remainingSlots,
       routingMode,
@@ -914,6 +926,11 @@ export function createAgentExecutor(options: any = {}) {
         'send-public': queuedMetadata.privateOnly ? 'forbidden' : 'required',
         'send-private': queuedMetadata.privateOnly ? 'required' : 'optional',
         'read-context': 'optional',
+        'search-messages': 'optional',
+        'list-memories': 'optional',
+        'save-memory': 'optional',
+        'update-memory': 'optional',
+        'forget-memory': 'optional',
         participants: 'optional',
         'trellis-init': 'optional',
         'trellis-write': 'optional',

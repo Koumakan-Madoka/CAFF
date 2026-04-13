@@ -1,0 +1,8 @@
+{"file":"tests/storage/chat-store.test.js","reason":"Planned storage regression coverage for recall and memory card behavior"}
+{"file":"tests/runtime/agent-tool-bridge.test.js","reason":"Planned bridge regression coverage for scope and safety guardrails"}
+{"file":"tests/runtime/turn-orchestrator.test.js","reason":"Planned prompt injection and backwards compatibility regression coverage"}
+{"file":"tests/runtime/agent-chat-tools.test.js","reason":"Planned CLI formatting regression coverage"}
+{"file":"tests/storage/chat-store.test.js","reason":"Passed after npm run build for scoped recall and memory card persistence"}
+{"file":"tests/runtime/agent-tool-bridge.test.js","reason":"Passed after npm run build for search-messages, list-memories, and save-memory scope/safety"}
+{"file":"tests/runtime/turn-orchestrator.test.js","reason":"Passed after npm run build for prompt guidance and scoped memory card injection"}
+{"file":"tests/runtime/agent-chat-tools.test.js","reason":"Passed after npm run build for CLI memory tool result formatting"}

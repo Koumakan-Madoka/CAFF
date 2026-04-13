@@ -1,0 +1,34 @@
+{"file": ".trellis/workflow.md", "reason": "Project workflow and conventions"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend development guide"}
+{"file": ".trellis/spec/runtime/agent-runtime.md", "reason": "Runtime prompt and tool bridge constraints"}
+{"file": ".trellis/spec/skills/skill-system.md", "reason": "Dynamic skills and draft/published skill mechanics"}
+{"file": ".trellis/spec/skills/skill-testing.md", "reason": "Reuse skill testing as publish gate"}
+{"file": ".trellis/spec/backend/architecture.md", "reason": "Backend module boundaries for memory and proposal flows"}
+{"file": ".trellis/spec/backend/controller-patterns.md", "reason": "API contracts for recall or proposal endpoints"}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Regression patterns for runtime and storage changes"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Task spans storage runtime backend and skills"}
+{"file": ".trellis/spec/guides/cross-platform-thinking-guide.md", "reason": "Sandbox path and tool command handling"}
+{"file": ".trellis/tasks/04-13-hermes-memory-skill-iteration/research.md", "reason": "Current technical decisions, phase boundaries, and MVP slice"}
+{"file": "server/domain/conversation/turn/agent-prompt.ts", "reason": "Prompt injection budgets and agent-facing tool guidance for recall"}
+{"file": "server/domain/conversation/turn/agent-executor.ts", "reason": "Bridge tool expectations, task events, and CAFF_CHAT env wiring"}
+{"file": "server/domain/runtime/agent-tool-bridge.ts", "reason": "Existing agent-facing bridge handlers where recall tool should land"}
+{"file": "lib/agent-chat-tools.ts", "reason": "CLI bridge commands exposed to the agent runtime"}
+{"file": "server/api/agent-tools-controller.ts", "reason": "HTTP entry point for bridge tools"}
+{"file": "server/app/create-server.ts", "reason": "App wiring point for stores, bridge helpers, and controllers"}
+{"file": "lib/chat-app-store.ts", "reason": "Chat store surface for message retrieval and scope filtering"}
+{"file": "storage/chat/message.repository.ts", "reason": "Public message repository queries for recall"}
+{"file": "storage/sqlite/migrations.ts", "reason": "SQLite schema evolution for recall indexes/tables"}
+{"file": "lib/skill-registry.ts", "reason": "Draft vs published skill isolation constraints for later phases"}
+{"file": "server/api/skills-controller.ts", "reason": "Current operator-only skill CRUD that later proposal flow must avoid bypassing"}
+{"file": "storage/chat/memory-card.repository.ts", "reason": "Conversation-agent curated memory card persistence for L1 memory"}
+{"file": "storage/sqlite/migrations.ts", "reason": "Add chat_memory_cards schema for scoped curated memory"}
+{"file": "lib/chat-app-store.ts", "reason": "Expose save/list memory card APIs with TTL, budget, and upsert semantics"}
+{"file": "server/domain/runtime/agent-tool-bridge.ts", "reason": "Add list-memories and save-memory bridge handlers with validation and audit"}
+{"file": "server/api/agent-tools-controller.ts", "reason": "Expose memory card bridge endpoints"}
+{"file": "lib/agent-chat-tools.ts", "reason": "Add list-memories and save-memory CLI commands for agents"}
+{"file": "server/domain/conversation/turn/agent-prompt.ts", "reason": "Inject scoped curated memory cards and guidance into prompts"}
+{"file": "server/domain/conversation/turn/agent-executor.ts", "reason": "Pass memory cards into prompts and expectations"}
+{"file": "tests/storage/chat-store.test.js", "reason": "Regression coverage for memory card TTL, scope, and budget"}
+{"file": "tests/runtime/agent-tool-bridge.test.js", "reason": "Regression coverage for memory card tool scope and safety guardrails"}
+{"file": "tests/runtime/turn-orchestrator.test.js", "reason": "Regression coverage for prompt memory injection and tool guidance"}
+{"file": "tests/runtime/agent-chat-tools.test.js", "reason": "Regression coverage for memory tool CLI result formatting"}
