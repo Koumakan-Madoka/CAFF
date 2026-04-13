@@ -206,6 +206,24 @@ function formatPrivateMailbox(messages: any, agents: any) {
     .join('\n\n');
 }
 
+function formatMemoryCards(memoryCards: any) {
+  const cards = (Array.isArray(memoryCards) ? memoryCards : []).filter(Boolean);
+
+  if (cards.length === 0) {
+    return 'No saved memory cards.';
+  }
+
+  return cards
+    .map((card: any) => {
+      const title = sanitizePromptMentions(card.title || 'memory');
+      const content = sanitizePromptMentions(card.content || '');
+      const expiresSuffix = card.expiresAt ? ` (expires ${card.expiresAt})` : '';
+      const scopePrefix = card.scope === 'local-user-agent' ? '[local-user] ' : card.scope === 'conversation-agent' ? '[conversation] ' : '';
+      return `- ${scopePrefix}${title}: ${content}${expiresSuffix}`;
+    })
+    .join('\n');
+}
+
 function buildAgentToolInstructions(agentToolRelativePath: string) {
   const relativeCommandPrefix = `node ${agentToolRelativePath}`;
   const envCommandPrefix = 'node "$CAFF_CHAT_TOOLS_PATH"';
@@ -219,6 +237,12 @@ function buildAgentToolInstructions(agentToolRelativePath: string) {
     `- Safest private wake-up for multiple recipients: ${relativeCommandPrefix} send-private --to "AgentA,AgentB" --content-stdin`,
     `- Optional silent direct note without wake-up: ${relativeCommandPrefix} send-private --to "AgentName" --no-handoff --content-stdin`,
     `- Read the latest public room context plus your private mailbox: ${relativeCommandPrefix} read-context`,
+    `- Need older public conversation context beyond the injected history? Search this conversation only with: ${relativeCommandPrefix} search-messages --query "topic keywords" --limit 5 (optionally add --speaker "AgentName" or --agent-id "agent-id")`,
+    `- Review your saved durable memory cards for this agent in this local workspace: ${relativeCommandPrefix} list-memories`,
+    `- Save one tiny stable fact, preference, or agreement for this agent across conversations in this local workspace with: ${relativeCommandPrefix} save-memory --title "preference" --content "User prefers retrieval-first POCs" --ttl-days 30`,
+    `- Update an existing durable memory only when the user clearly corrects it: ${relativeCommandPrefix} update-memory --title "preference" --content "User now prefers answer-first replies" --reason "User corrected this durable preference" --expected-updated-at "2026-04-13T00:00:00.000Z"`,
+    `- Soft-forget a mistaken durable memory only when the user explicitly asks: ${relativeCommandPrefix} forget-memory --title "temporary preference" --reason "User said this should not persist" --expected-updated-at "2026-04-13T00:00:00.000Z"`,
+    '- Save only durable facts/preferences/agreements. Never save secrets, raw logs, TODOs, transient status updates, or silently rewrite durable memory without a clear user correction/removal.',
     `- List the visible room participants: ${relativeCommandPrefix} list-participants`,
     ...(getSkillLoadingMode() === 'dynamic'
       ? [
@@ -340,6 +364,7 @@ export function buildAgentTurnPrompt({
   agents,
   messages,
   privateMessages,
+  memoryCards,
   trigger,
   remainingSlots,
   routingMode,
@@ -452,6 +477,9 @@ export function buildAgentTurnPrompt({
     '',
     'Private mailbox visible only to you:',
     formatPrivateMailbox(privateMessages, agents),
+    '',
+    'Curated memory cards for you (conversation overlay + local durable):',
+    formatMemoryCards(memoryCards),
     '',
     'Write your reply now.',
   ].join('\n');

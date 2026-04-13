@@ -1,0 +1,56 @@
+{
+  "id": "cross-conversation-l1-memory",
+  "name": "cross-conversation-l1-memory",
+  "title": "Cross-Conversation L1 Memory",
+  "description": "Promote L1 curated memory from conversation-scoped cards to local-user + agent durable memory with conversation overlay precedence.",
+  "status": "in_progress",
+  "dev_type": "backend",
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "菲比啾比",
+  "assignee": "菲比啾比",
+  "createdAt": "2026-04-13",
+  "completedAt": null,
+  "branch": "feat/hermes-memory-skill-iteration",
+  "base_branch": "main",
+  "worktree_path": null,
+  "current_phase": 1,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "check"
+    },
+    {
+      "phase": 3,
+      "action": "finish"
+    },
+    {
+      "phase": 4,
+      "action": "create-pr"
+    }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "hermes-memory-skill-iteration",
+  "relatedFiles": [
+    "storage/sqlite/migrations.ts",
+    "storage/chat/memory-card.repository.ts",
+    "lib/chat-app-store.ts",
+    "server/domain/runtime/agent-tool-bridge.ts",
+    "server/domain/conversation/turn/agent-prompt.ts",
+    "server/domain/conversation/turn/agent-executor.ts",
+    "tests/storage/chat-store.test.js",
+    "tests/runtime/agent-tool-bridge.test.js",
+    "tests/runtime/turn-orchestrator.test.js",
+    ".trellis/spec/runtime/agent-runtime.md"
+  ],
+  "notes": "Follows layered-memory-foundation by promoting durable L1 to local-user + agent while preserving conversation overlay and agent isolation.",
+  "meta": {}
+}

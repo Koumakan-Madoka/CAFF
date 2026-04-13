@@ -165,8 +165,65 @@ test('buildAgentTurnPrompt gives bash-only multiline chat bridge guidance', () =
     prompt,
     /cat <<'CAFF_PRIVATE_EOF' \| node "\$CAFF_CHAT_TOOLS_PATH" send-private --to "AgentName" --content-stdin/u
   );
+  assert.match(prompt, /search-messages --query "topic keywords" --limit 5/u);
+  assert.match(prompt, /--speaker "AgentName" or --agent-id "agent-id"/u);
+  assert.match(prompt, /list-memories/u);
+  assert.match(prompt, /save-memory --title "preference" --content "User prefers retrieval-first POCs" --ttl-days 30/u);
+  assert.match(prompt, /update-memory --title "preference" --content "User now prefers answer-first replies" --reason/u);
+  assert.match(prompt, /forget-memory --title "temporary preference" --reason "User said this should not persist" --expected-updated-at/u);
   assert.match(prompt, /Never put raw message text on a new shell line by itself/u);
   assert.doesNotMatch(prompt, /PowerShell example/u);
+});
+
+test('buildAgentTurnPrompt includes scoped curated memory cards', () => {
+  const agent = {
+    id: 'agent-memory-prompt',
+    name: 'Builder',
+    description: 'Explains implementation details clearly.',
+    personaPrompt: 'Stay calm and practical.',
+  };
+  const conversation = {
+    id: 'conversation-memory-prompt',
+    title: 'Memory Prompt',
+    type: 'standard',
+    agents: [agent],
+  };
+  const prompt = buildAgentTurnPrompt({
+    conversation,
+    agent,
+    agentConfig: {
+      profileName: 'Default',
+      personaPrompt: agent.personaPrompt,
+    },
+    resolvedPersonaSkills: [],
+    resolvedConversationSkills: [],
+    sandbox: {
+      sandboxDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-memory-prompt',
+      privateDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-memory-prompt/private',
+    },
+    agents: [agent],
+    messages: [],
+    privateMessages: [],
+    memoryCards: [
+      {
+        scope: 'local-user-agent',
+        title: 'preference',
+        content: 'User prefers retrieval-first rollouts.',
+        expiresAt: '2026-05-01T00:00:00.000Z',
+      },
+    ],
+    trigger: {
+      triggerType: 'user',
+      enqueueReason: 'default_first_agent',
+    },
+    remainingSlots: 7,
+    routingMode: 'mention_queue',
+    allowHandoffs: true,
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+  });
+
+  assert.match(prompt, /Curated memory cards for you \(conversation overlay \+ local durable\):/u);
+  assert.match(prompt, /- \[local-user\] preference: User prefers retrieval-first rollouts\. \(expires 2026-05-01T00:00:00\.000Z\)/u);
 });
 
 test('buildAgentTurnPrompt skips Trellis context when projectDir is empty', (t) => {

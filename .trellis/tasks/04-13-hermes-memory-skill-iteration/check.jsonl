@@ -1,0 +1,18 @@
+{"file": ".agents/skills/finish-work/SKILL.md", "reason": "Finish work checklist"}
+{"file": ".agents/skills/check/SKILL.md", "reason": "Code quality check spec"}
+{"file": ".trellis/spec/runtime/agent-runtime.md", "reason": "Review runtime prompt and tool bridge changes"}
+{"file": ".trellis/spec/skills/skill-system.md", "reason": "Verify skill loading and draft isolation rules"}
+{"file": ".trellis/spec/skills/skill-testing.md", "reason": "Verify publish gate and regression coverage"}
+{"file": ".trellis/spec/backend/controller-patterns.md", "reason": "Review controller contracts and error handling"}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Check regression coverage shape"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Catch missed cross-layer updates"}
+{"file": ".trellis/spec/guides/cross-platform-thinking-guide.md", "reason": "Catch path or shell drift"}
+{"file": ".trellis/tasks/04-13-hermes-memory-skill-iteration/research.md", "reason": "Verify implementation still matches the chosen MVP slice"}
+{"file": "tests/storage/chat-store.test.js", "reason": "Storage-level regression coverage for recall scope and limits"}
+{"file": "tests/runtime/agent-tool-bridge.test.js", "reason": "Bridge tool contract and audit regression coverage"}
+{"file": "tests/runtime/turn-orchestrator.test.js", "reason": "Prompt/runtime regression coverage for new recall guidance"}
+{"file": "tests/runtime/message-tool-trace.test.js", "reason": "Trace regression coverage if the new tool affects live tool rows"}
+{"file": "tests/storage/chat-store.test.js", "reason": "Verified curated memory card TTL, scope, and budget behavior"}
+{"file": "tests/runtime/agent-tool-bridge.test.js", "reason": "Verified list-memories/save-memory bridge contracts and unsafe write rejection"}
+{"file": "tests/runtime/turn-orchestrator.test.js", "reason": "Verified prompt guidance and injected memory card section"}
+{"file": "tests/runtime/agent-chat-tools.test.js", "reason": "Verified memory tool results remain visible by default"}

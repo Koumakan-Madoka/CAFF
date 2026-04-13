@@ -1,0 +1,60 @@
+{
+  "id": "hermes-memory-skill-iteration",
+  "name": "hermes-memory-skill-iteration",
+  "title": "Hermes-inspired memory and skill iteration",
+  "description": "Umbrella architecture task for CAFF layered memory, skill-test isolation, and later skill self-iteration.",
+  "status": "planning",
+  "dev_type": "backend",
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "菲比啾比",
+  "assignee": "菲比啾比",
+  "createdAt": "2026-04-13",
+  "completedAt": null,
+  "branch": "feat/hermes-memory-skill-iteration",
+  "base_branch": "main",
+  "worktree_path": null,
+  "current_phase": 0,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "check"
+    },
+    {
+      "phase": 3,
+      "action": "finish"
+    },
+    {
+      "phase": 4,
+      "action": "create-pr"
+    }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "layered-memory-foundation",
+    "cross-conversation-l1-memory",
+    "skill-test-isolation-foundation"
+  ],
+  "parent": null,
+  "relatedFiles": [
+    ".trellis/tasks/04-13-layered-memory-foundation/prd.md",
+    ".trellis/tasks/04-13-cross-conversation-l1-memory/prd.md",
+    ".trellis/tasks/04-13-skill-test-isolation-foundation/prd.md"
+  ],
+  "notes": "Umbrella only. Concrete implementation should continue in the memory and skill-test isolation child tasks.",
+  "meta": {
+    "taskSplit": {
+      "memoryTask": "04-13-layered-memory-foundation",
+      "crossConversationMemoryTask": "04-13-cross-conversation-l1-memory",
+      "isolationTask": "04-13-skill-test-isolation-foundation",
+      "deferredTask": "skill-proposal-and-publish-gate"
+    }
+  }
+}

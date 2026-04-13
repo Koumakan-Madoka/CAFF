@@ -212,6 +212,152 @@ async function readContext(config: any, flags: any) {
   return requestJson(`${config.apiUrl}/api/agent-tools/context?${query.toString()}`);
 }
 
+async function searchMessages(config: any, flags: any) {
+  const query = String(flags.query || '').trim();
+  const speaker = String(flags.speaker || flags.sender || flags['speaker-name'] || '').trim();
+  const agentId = String(flags['agent-id'] || flags.agentId || '').trim();
+
+  if (!query && !speaker && !agentId) {
+    throw new Error('search-messages requires --query "keywords" or a speaker filter like --speaker "AgentName".');
+  }
+
+  const body: any = {
+    invocationId: config.invocationId,
+    callbackToken: config.callbackToken,
+  };
+
+  if (query) {
+    body.query = query;
+  }
+
+  if (speaker) {
+    body.speaker = speaker;
+  }
+
+  if (agentId) {
+    body.agentId = agentId;
+  }
+
+  if (flags.limit !== undefined) {
+    body.limit = flags.limit;
+  }
+
+  return requestJson(`${config.apiUrl}/api/agent-tools/search-messages`, {
+    method: 'POST',
+    body,
+  });
+}
+
+async function listMemories(config: any, flags: any) {
+  const query = new URLSearchParams({
+    invocationId: config.invocationId,
+    callbackToken: config.callbackToken,
+  });
+
+  if (flags.limit !== undefined) {
+    query.set('limit', String(flags.limit));
+  }
+
+  return requestJson(`${config.apiUrl}/api/agent-tools/memories?${query.toString()}`);
+}
+
+async function saveMemory(config: any, flags: any) {
+  const title = String(flags.title || '').trim();
+  const content = String(flags.content || '').trim();
+
+  if (!title) {
+    throw new Error('save-memory requires --title "memory name".');
+  }
+
+  if (!content) {
+    throw new Error('save-memory requires --content "durable fact".');
+  }
+
+  const body: any = {
+    invocationId: config.invocationId,
+    callbackToken: config.callbackToken,
+    title,
+    content,
+  };
+
+  if (flags['ttl-days'] !== undefined) {
+    body.ttlDays = flags['ttl-days'];
+  } else if (flags.ttl !== undefined) {
+    body.ttlDays = flags.ttl;
+  }
+
+  return requestJson(`${config.apiUrl}/api/agent-tools/memories`, {
+    method: 'POST',
+    body,
+  });
+}
+
+async function updateMemory(config: any, flags: any) {
+  const title = String(flags.title || '').trim();
+  const content = String(flags.content || '').trim();
+  const reason = String(flags.reason || '').trim();
+  const expectedUpdatedAt = String(flags['expected-updated-at'] || flags.expectedUpdatedAt || '').trim();
+
+  if (!title) {
+    throw new Error('update-memory requires --title "memory name".');
+  }
+
+  if (!content) {
+    throw new Error('update-memory requires --content "updated durable fact".');
+  }
+
+  if (!reason) {
+    throw new Error('update-memory requires --reason "why this durable memory changed".');
+  }
+
+  const body: any = {
+    invocationId: config.invocationId,
+    callbackToken: config.callbackToken,
+    title,
+    content,
+    reason,
+  };
+
+  if (expectedUpdatedAt) {
+    body.expectedUpdatedAt = expectedUpdatedAt;
+  }
+
+  return requestJson(`${config.apiUrl}/api/agent-tools/memories/update`, {
+    method: 'POST',
+    body,
+  });
+}
+
+async function forgetMemory(config: any, flags: any) {
+  const title = String(flags.title || '').trim();
+  const reason = String(flags.reason || '').trim();
+  const expectedUpdatedAt = String(flags['expected-updated-at'] || flags.expectedUpdatedAt || '').trim();
+
+  if (!title) {
+    throw new Error('forget-memory requires --title "memory name".');
+  }
+
+  if (!reason) {
+    throw new Error('forget-memory requires --reason "why this durable memory should be removed".');
+  }
+
+  const body: any = {
+    invocationId: config.invocationId,
+    callbackToken: config.callbackToken,
+    title,
+    reason,
+  };
+
+  if (expectedUpdatedAt) {
+    body.expectedUpdatedAt = expectedUpdatedAt;
+  }
+
+  return requestJson(`${config.apiUrl}/api/agent-tools/memories/forget`, {
+    method: 'POST',
+    body,
+  });
+}
+
 async function trellisInit(config: any, flags: any) {
   const taskName = String(flags.task || flags['task-name'] || flags.name || '').trim();
 
@@ -345,6 +491,16 @@ async function main() {
     result = await sendPrivate(config, flags);
   } else if (command === 'read-context') {
     result = await readContext(config, flags);
+  } else if (command === 'search-messages') {
+    result = await searchMessages(config, flags);
+  } else if (command === 'list-memories') {
+    result = await listMemories(config, flags);
+  } else if (command === 'save-memory') {
+    result = await saveMemory(config, flags);
+  } else if (command === 'update-memory') {
+    result = await updateMemory(config, flags);
+  } else if (command === 'forget-memory') {
+    result = await forgetMemory(config, flags);
   } else if (command === 'list-participants') {
     result = await listParticipants(config);
   } else if (command === 'trellis-init') {
@@ -353,7 +509,7 @@ async function main() {
     result = await trellisWrite(config, flags);
   } else {
     throw new Error(
-      'Unknown command. Use one of: send-public, send-private, read-context, list-participants, trellis-init, trellis-write.'
+      'Unknown command. Use one of: send-public, send-private, read-context, search-messages, list-memories, save-memory, update-memory, forget-memory, list-participants, trellis-init, trellis-write.'
     );
   }
 
@@ -382,5 +538,10 @@ export {
   resolveFileContent,
   sendPrivate,
   sendPublic,
+  forgetMemory,
+  listMemories,
+  saveMemory,
+  searchMessages,
   shouldEchoContent,
+  updateMemory,
 };

@@ -8,7 +8,20 @@ const { createLiveBridgeToolStep } = require('./message-tool-trace');
 
 const MAX_HISTORY_MESSAGES = 24;
 const MAX_PRIVATE_CONTEXT_MESSAGES = 16;
+const MAX_MESSAGE_SEARCH_LIMIT = 5;
+const MAX_MESSAGE_SEARCH_QUERY_LENGTH = 120;
+const MAX_MESSAGE_SEARCH_FILTER_LENGTH = 80;
+const MAX_MEMORY_CARD_LIMIT = 6;
+const MAX_MEMORY_CARD_TITLE_LENGTH = 64;
+const MAX_MEMORY_CARD_CONTENT_LENGTH = 280;
+const MAX_MEMORY_CARD_TTL_DAYS = 90;
+const DEFAULT_MEMORY_CARD_TTL_DAYS = 30;
+const MAX_MEMORY_MUTATION_REASON_LENGTH = 120;
+const MAX_MEMORY_UPDATED_AT_LENGTH = 80;
+const MEMORY_MUTATION_REASON_TAG = 'explicit-user-request';
 const TURN_PREVIEW_LENGTH = 180;
+const MEMORY_SECRET_RE = /\b(password|passwd|secret|token|api[_ -]?key|private[_ -]?key|ssh[_ -]?key|cookie|session)\b|密码|口令|令牌|密钥|私钥/iu;
+const MEMORY_TRANSIENT_RE = /\b(todo|fixme|later|temporary|temp|today|tomorrow|next step|pending|wip)\b|待办|临时|今天|明天|稍后|下一步|本轮|这次/iu;
 
 function nowIso() {
   return new Date().toISOString();
@@ -22,6 +35,122 @@ function clipText(text: any, maxLength = 240) {
   }
 
   return `${value.slice(0, maxLength - 3)}...`;
+}
+
+function normalizeMemoryField(value: any, maxLength: number, fieldName: string) {
+  const normalized = String(value || '').trim().replace(/\s+/g, ' ');
+
+  if (!normalized) {
+    throw createHttpError(400, `${fieldName} is required`);
+  }
+
+  if (normalized.length > maxLength) {
+    throw createHttpError(400, `${fieldName} must be at most ${maxLength} characters`);
+  }
+
+  return normalized;
+}
+
+function normalizeMemoryTtlDays(value: any) {
+  if (value === undefined || value === null || value === '') {
+    return DEFAULT_MEMORY_CARD_TTL_DAYS;
+  }
+
+  const parsed = Number.parseInt(String(value), 10);
+
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    throw createHttpError(400, 'ttlDays must be a positive integer');
+  }
+
+  if (parsed > MAX_MEMORY_CARD_TTL_DAYS) {
+    throw createHttpError(400, `ttlDays must be at most ${MAX_MEMORY_CARD_TTL_DAYS}`);
+  }
+
+  return parsed;
+}
+
+function validateMemoryCardCandidate(title: string, content: string) {
+  const combined = `${title} ${content}`;
+
+  if (MEMORY_SECRET_RE.test(combined)) {
+    throw createHttpError(400, 'Do not save secrets, tokens, passwords, or private keys in memory cards');
+  }
+
+  if (MEMORY_TRANSIENT_RE.test(combined)) {
+    throw createHttpError(400, 'Memory cards only accept stable facts, preferences, or durable agreements');
+  }
+}
+
+function normalizeMemoryListLimit(value: any) {
+  if (value === undefined || value === null || value === '') {
+    return MAX_MEMORY_CARD_LIMIT;
+  }
+
+  const parsed = Number.parseInt(String(value), 10);
+
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    throw createHttpError(400, 'limit must be a positive integer');
+  }
+
+  return Math.max(1, Math.min(MAX_MEMORY_CARD_LIMIT, parsed));
+}
+
+function normalizeMemoryReason(value: any) {
+  return normalizeMemoryField(value, MAX_MEMORY_MUTATION_REASON_LENGTH, 'reason');
+}
+
+function normalizeExpectedUpdatedAt(value: any) {
+  const normalized = String(value || '').trim();
+
+  if (!normalized) {
+    return null;
+  }
+
+  if (normalized.length > MAX_MEMORY_UPDATED_AT_LENGTH) {
+    throw createHttpError(400, `expectedUpdatedAt must be at most ${MAX_MEMORY_UPDATED_AT_LENGTH} characters`);
+  }
+
+  return normalized;
+}
+
+function coerceMemoryMutationError(error: any, fallbackMessage: string) {
+  if (error && error.statusCode) {
+    return error;
+  }
+
+  const message = error && error.message ? String(error.message) : fallbackMessage;
+
+  if (/not found/i.test(message)) {
+    return createHttpError(404, message);
+  }
+
+  if (/changed since it was last read/i.test(message)) {
+    return createHttpError(409, message);
+  }
+
+  return createHttpError(400, message || fallbackMessage);
+}
+
+function summarizeForgottenMemoryCard(card: any) {
+  if (!card || typeof card !== 'object') {
+    return null;
+  }
+
+  return {
+    id: String(card.id || '').trim(),
+    conversationId: card.conversationId || null,
+    agentId: String(card.agentId || '').trim(),
+    scope: String(card.scope || '').trim(),
+    ownerKey: String(card.ownerKey || '').trim(),
+    title: String(card.title || '').trim(),
+    source: String(card.source || '').trim(),
+    status: String(card.status || '').trim(),
+    ttlDays: Number.isInteger(card.ttlDays) ? card.ttlDays : card.ttlDays ? Number(card.ttlDays) : null,
+    expiresAt: card.expiresAt || null,
+    createdAt: String(card.createdAt || '').trim(),
+    updatedAt: String(card.updatedAt || '').trim(),
+    metadata: card.metadata && typeof card.metadata === 'object' ? card.metadata : {},
+  };
 }
 
 function normalizePromptUserMessageSnapshot(message: any, fallback: any = {}) {
@@ -1038,6 +1167,554 @@ export function createAgentToolBridge(options: any = {}) {
     }
   }
 
+  function handleSearchMessages(body: any = {}) {
+    const startedAt = Date.now();
+    const context = getInvocation(body.invocationId, body.callbackToken);
+    const query = String(body.query || '').trim().replace(/\s+/g, ' ');
+    const speaker = String(body.speaker || body.senderName || body.sender || '').trim().replace(/\s+/g, ' ');
+    const agentId = String(body.agentId || body.agentID || '').trim().replace(/\s+/g, ' ');
+    const requestedLimit = Number.parseInt(String(body.limit || ''), 10);
+    const limit = Number.isFinite(requestedLimit)
+      ? Math.max(1, Math.min(MAX_MESSAGE_SEARCH_LIMIT, requestedLimit))
+      : MAX_MESSAGE_SEARCH_LIMIT;
+    const filters = {
+      ...(speaker ? { speaker } : {}),
+      ...(agentId ? { agentId } : {}),
+    };
+    const toolCallId = randomUUID();
+
+    setContextCurrentTool(context, {
+      toolName: 'search-messages',
+      toolKind: 'bridge',
+      toolStepId: toolCallId,
+      inferred: false,
+      request: {
+        scope: 'conversation-public',
+        queryPreview: clipText(query, MAX_MESSAGE_SEARCH_QUERY_LENGTH),
+        limit,
+        filters,
+      },
+    });
+
+    try {
+      if (!query && !speaker && !agentId) {
+        throw createHttpError(400, 'query is required unless speaker or agentId filter is provided');
+      }
+
+      if (query && query.length < 2) {
+        throw createHttpError(400, 'query must be at least 2 characters');
+      }
+
+      if (query.length > MAX_MESSAGE_SEARCH_QUERY_LENGTH) {
+        throw createHttpError(400, `query must be at most ${MAX_MESSAGE_SEARCH_QUERY_LENGTH} characters`);
+      }
+
+      if (speaker.length > MAX_MESSAGE_SEARCH_FILTER_LENGTH) {
+        throw createHttpError(400, `speaker must be at most ${MAX_MESSAGE_SEARCH_FILTER_LENGTH} characters`);
+      }
+
+      if (agentId.length > MAX_MESSAGE_SEARCH_FILTER_LENGTH) {
+        throw createHttpError(400, `agentId must be at most ${MAX_MESSAGE_SEARCH_FILTER_LENGTH} characters`);
+      }
+
+      if (!store || typeof store.searchConversationMessages !== 'function') {
+        throw createHttpError(501, 'Message search is not available');
+      }
+
+      const response = {
+        ok: true,
+        ...store.searchConversationMessages(context.conversationId, {
+          query,
+          limit,
+          speaker,
+          agentId,
+        }),
+      };
+
+      tryAppendInvocationEvent(context, 'agent_tool_call', {
+        schemaVersion: 1,
+        toolCallId,
+        tool: 'search-messages',
+        status: 'succeeded',
+        durationMs: Date.now() - startedAt,
+        invocationId: context.invocationId,
+        conversationId: context.conversationId,
+        turnId: context.turnId,
+        agentId: context.agentId,
+        agentName: context.agentName,
+        assistantMessageId: context.assistantMessageId,
+        request: {
+          scope: 'conversation-public',
+          queryPreview: clipText(query, MAX_MESSAGE_SEARCH_QUERY_LENGTH),
+          limit,
+          filters,
+        },
+        result: {
+          searchMode: response.searchMode,
+          resultCount: Array.isArray(response.results) ? response.results.length : 0,
+          diagnosticCount: Array.isArray(response.diagnostics) ? response.diagnostics.length : 0,
+          filters: response.filters || {},
+        },
+      });
+
+      return response;
+    } catch (error) {
+      const errorValue = error as any;
+      tryAppendInvocationEvent(context, 'agent_tool_call', {
+        schemaVersion: 1,
+        toolCallId,
+        tool: 'search-messages',
+        status: 'failed',
+        durationMs: Date.now() - startedAt,
+        invocationId: context.invocationId,
+        conversationId: context.conversationId,
+        turnId: context.turnId,
+        agentId: context.agentId,
+        agentName: context.agentName,
+        assistantMessageId: context.assistantMessageId,
+        request: {
+          scope: 'conversation-public',
+          queryPreview: clipText(query, MAX_MESSAGE_SEARCH_QUERY_LENGTH),
+          limit,
+          filters,
+        },
+        error: {
+          statusCode: Number.isInteger(errorValue && errorValue.statusCode) ? errorValue.statusCode : null,
+          message: clipText(errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Unknown error')),
+        },
+      });
+
+      throw error;
+    } finally {
+      setContextCurrentTool(context, null);
+    }
+  }
+
+  function handleListMemories(requestUrl: any) {
+    const startedAt = Date.now();
+    const context = getInvocation(
+      requestUrl.searchParams.get('invocationId'),
+      requestUrl.searchParams.get('callbackToken')
+    );
+    const limit = normalizeMemoryListLimit(requestUrl.searchParams.get('limit'));
+    const toolCallId = randomUUID();
+
+    setContextCurrentTool(context, {
+      toolName: 'list-memories',
+      toolKind: 'bridge',
+      toolStepId: toolCallId,
+      inferred: false,
+      request: {
+        scope: 'agent-visible',
+        limit,
+      },
+    });
+
+    try {
+      if (!store || typeof store.listVisibleMemoryCards !== 'function') {
+        throw createHttpError(501, 'Memory cards are not available');
+      }
+
+      const cards = store.listVisibleMemoryCards(context.conversationId, context.agentId, { limit });
+      const response = {
+        ok: true,
+        scope: 'agent-visible',
+        scopes: ['conversation-agent', 'local-user-agent'],
+        cardCount: Array.isArray(cards) ? cards.length : 0,
+        budget: {
+          maxCards: MAX_MEMORY_CARD_LIMIT,
+          maxCardsPerScope: MAX_MEMORY_CARD_LIMIT,
+        },
+        cards: Array.isArray(cards) ? cards : [],
+      };
+
+      tryAppendInvocationEvent(context, 'agent_tool_call', {
+        schemaVersion: 1,
+        toolCallId,
+        tool: 'list-memories',
+        status: 'succeeded',
+        durationMs: Date.now() - startedAt,
+        invocationId: context.invocationId,
+        conversationId: context.conversationId,
+        turnId: context.turnId,
+        agentId: context.agentId,
+        agentName: context.agentName,
+        assistantMessageId: context.assistantMessageId,
+        request: {
+          scope: 'agent-visible',
+          limit,
+        },
+        result: {
+          cardCount: response.cardCount,
+          maxCards: MAX_MEMORY_CARD_LIMIT,
+        },
+      });
+
+      return response;
+    } catch (error) {
+      const errorValue = error as any;
+      tryAppendInvocationEvent(context, 'agent_tool_call', {
+        schemaVersion: 1,
+        toolCallId,
+        tool: 'list-memories',
+        status: 'failed',
+        durationMs: Date.now() - startedAt,
+        invocationId: context.invocationId,
+        conversationId: context.conversationId,
+        turnId: context.turnId,
+        agentId: context.agentId,
+        agentName: context.agentName,
+        assistantMessageId: context.assistantMessageId,
+        request: {
+          scope: 'agent-visible',
+          limit,
+        },
+        error: {
+          statusCode: Number.isInteger(errorValue && errorValue.statusCode) ? errorValue.statusCode : null,
+          message: clipText(errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Unknown error')),
+        },
+      });
+
+      throw error;
+    } finally {
+      setContextCurrentTool(context, null);
+    }
+  }
+
+  function handleSaveMemory(body: any = {}) {
+    const startedAt = Date.now();
+    const context = getInvocation(body.invocationId, body.callbackToken);
+    const title = normalizeMemoryField(body.title, MAX_MEMORY_CARD_TITLE_LENGTH, 'title');
+    const content = normalizeMemoryField(body.content, MAX_MEMORY_CARD_CONTENT_LENGTH, 'content');
+    const ttlDays = normalizeMemoryTtlDays(body.ttlDays);
+    const toolCallId = randomUUID();
+
+    setContextCurrentTool(context, {
+      toolName: 'save-memory',
+      toolKind: 'bridge',
+      toolStepId: toolCallId,
+      inferred: false,
+      request: {
+        scope: 'local-user-agent',
+        title,
+        ttlDays,
+      },
+    });
+
+    try {
+      validateMemoryCardCandidate(title, content);
+
+      if (!store || typeof store.saveLocalUserMemoryCard !== 'function') {
+        throw createHttpError(501, 'Memory cards are not available');
+      }
+
+      const saved = store.saveLocalUserMemoryCard(context.agentId, {
+        title,
+        content,
+        ttlDays,
+        source: 'agent-tool',
+        metadata: {
+          tool: 'save-memory',
+          invocationId: context.invocationId,
+          turnId: context.turnId,
+          assistantMessageId: context.assistantMessageId,
+          conversationId: context.conversationId,
+        },
+      });
+      const response = {
+        ok: true,
+        scope: 'local-user-agent',
+        ...saved,
+      };
+
+      tryAppendInvocationEvent(context, 'agent_tool_call', {
+        schemaVersion: 1,
+        toolCallId,
+        tool: 'save-memory',
+        status: 'succeeded',
+        durationMs: Date.now() - startedAt,
+        invocationId: context.invocationId,
+        conversationId: context.conversationId,
+        turnId: context.turnId,
+        agentId: context.agentId,
+        agentName: context.agentName,
+        assistantMessageId: context.assistantMessageId,
+        request: {
+          scope: 'local-user-agent',
+          title,
+          ttlDays,
+        },
+        result: {
+          cardId: response.card && response.card.id ? response.card.id : null,
+          cardCount: Number.isInteger(response.cardCount) ? response.cardCount : 0,
+          maxCards: MAX_MEMORY_CARD_LIMIT,
+        },
+      });
+
+      return response;
+    } catch (error) {
+      const errorValue = error as any;
+      tryAppendInvocationEvent(context, 'agent_tool_call', {
+        schemaVersion: 1,
+        toolCallId,
+        tool: 'save-memory',
+        status: 'failed',
+        durationMs: Date.now() - startedAt,
+        invocationId: context.invocationId,
+        conversationId: context.conversationId,
+        turnId: context.turnId,
+        agentId: context.agentId,
+        agentName: context.agentName,
+        assistantMessageId: context.assistantMessageId,
+        request: {
+          scope: 'local-user-agent',
+          title: clipText(title, MAX_MEMORY_CARD_TITLE_LENGTH),
+          ttlDays,
+        },
+        error: {
+          statusCode: Number.isInteger(errorValue && errorValue.statusCode) ? errorValue.statusCode : null,
+          message: clipText(errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Unknown error')),
+        },
+      });
+
+      if (errorValue && errorValue.statusCode) {
+        throw error;
+      }
+
+      throw createHttpError(400, errorValue && errorValue.message ? String(errorValue.message) : 'Failed to save memory');
+    } finally {
+      setContextCurrentTool(context, null);
+    }
+  }
+
+  function handleUpdateMemory(body: any = {}) {
+    const startedAt = Date.now();
+    const context = getInvocation(body.invocationId, body.callbackToken);
+    const title = normalizeMemoryField(body.title, MAX_MEMORY_CARD_TITLE_LENGTH, 'title');
+    const content = normalizeMemoryField(body.content, MAX_MEMORY_CARD_CONTENT_LENGTH, 'content');
+    const reason = normalizeMemoryReason(body.reason);
+    const expectedUpdatedAt = normalizeExpectedUpdatedAt(body.expectedUpdatedAt || body['expected-updated-at']);
+    const toolCallId = randomUUID();
+
+    setContextCurrentTool(context, {
+      toolName: 'update-memory',
+      toolKind: 'bridge',
+      toolStepId: toolCallId,
+      inferred: false,
+      request: {
+        scope: 'local-user-agent',
+        title,
+        reasonTag: MEMORY_MUTATION_REASON_TAG,
+        reasonLength: reason.length,
+        hasExpectedUpdatedAt: Boolean(expectedUpdatedAt),
+      },
+    });
+
+    try {
+      validateMemoryCardCandidate(title, content);
+
+      if (!store || typeof store.updateLocalUserMemoryCard !== 'function') {
+        throw createHttpError(501, 'Memory cards are not available');
+      }
+
+      const updated = store.updateLocalUserMemoryCard(context.agentId, {
+        title,
+        content,
+        expectedUpdatedAt,
+        source: 'agent-tool',
+        metadata: {
+          tool: 'update-memory',
+          invocationId: context.invocationId,
+          turnId: context.turnId,
+          assistantMessageId: context.assistantMessageId,
+          conversationId: context.conversationId,
+        },
+        lastMutation: {
+          action: 'update',
+          reasonTag: MEMORY_MUTATION_REASON_TAG,
+          reasonLength: reason.length,
+          tool: 'update-memory',
+        },
+      });
+      const response = {
+        ok: true,
+        scope: 'local-user-agent',
+        action: 'update',
+        card: updated.card,
+      };
+
+      tryAppendInvocationEvent(context, 'agent_tool_call', {
+        schemaVersion: 1,
+        toolCallId,
+        tool: 'update-memory',
+        status: 'succeeded',
+        durationMs: Date.now() - startedAt,
+        invocationId: context.invocationId,
+        conversationId: context.conversationId,
+        turnId: context.turnId,
+        agentId: context.agentId,
+        agentName: context.agentName,
+        assistantMessageId: context.assistantMessageId,
+        request: {
+          scope: 'local-user-agent',
+          title,
+          reasonTag: MEMORY_MUTATION_REASON_TAG,
+          reasonLength: reason.length,
+          hasExpectedUpdatedAt: Boolean(expectedUpdatedAt),
+        },
+        result: {
+          cardId: response.card && response.card.id ? response.card.id : null,
+          status: response.card && response.card.status ? response.card.status : null,
+          updatedAt: response.card && response.card.updatedAt ? response.card.updatedAt : null,
+        },
+      });
+
+      return response;
+    } catch (error) {
+      const normalizedError = coerceMemoryMutationError(error, 'Failed to update memory');
+      tryAppendInvocationEvent(context, 'agent_tool_call', {
+        schemaVersion: 1,
+        toolCallId,
+        tool: 'update-memory',
+        status: 'failed',
+        durationMs: Date.now() - startedAt,
+        invocationId: context.invocationId,
+        conversationId: context.conversationId,
+        turnId: context.turnId,
+        agentId: context.agentId,
+        agentName: context.agentName,
+        assistantMessageId: context.assistantMessageId,
+        request: {
+          scope: 'local-user-agent',
+          title: clipText(title, MAX_MEMORY_CARD_TITLE_LENGTH),
+          reasonTag: MEMORY_MUTATION_REASON_TAG,
+          reasonLength: reason.length,
+          hasExpectedUpdatedAt: Boolean(expectedUpdatedAt),
+        },
+        error: {
+          statusCode: Number.isInteger(normalizedError && normalizedError.statusCode) ? normalizedError.statusCode : null,
+          message: clipText(normalizedError && normalizedError.message ? normalizedError.message : String(normalizedError || 'Unknown error')),
+        },
+      });
+
+      throw normalizedError;
+    } finally {
+      setContextCurrentTool(context, null);
+    }
+  }
+
+  function handleForgetMemory(body: any = {}) {
+    const startedAt = Date.now();
+    const context = getInvocation(body.invocationId, body.callbackToken);
+    const title = normalizeMemoryField(body.title, MAX_MEMORY_CARD_TITLE_LENGTH, 'title');
+    const reason = normalizeMemoryReason(body.reason);
+    const expectedUpdatedAt = normalizeExpectedUpdatedAt(body.expectedUpdatedAt || body['expected-updated-at']);
+    const toolCallId = randomUUID();
+
+    setContextCurrentTool(context, {
+      toolName: 'forget-memory',
+      toolKind: 'bridge',
+      toolStepId: toolCallId,
+      inferred: false,
+      request: {
+        scope: 'local-user-agent',
+        title,
+        reasonTag: MEMORY_MUTATION_REASON_TAG,
+        reasonLength: reason.length,
+        hasExpectedUpdatedAt: Boolean(expectedUpdatedAt),
+      },
+    });
+
+    try {
+      if (!store || typeof store.forgetLocalUserMemoryCard !== 'function') {
+        throw createHttpError(501, 'Memory cards are not available');
+      }
+
+      const forgotten = store.forgetLocalUserMemoryCard(context.agentId, {
+        title,
+        expectedUpdatedAt,
+        source: 'agent-tool',
+        metadata: {
+          tool: 'forget-memory',
+          invocationId: context.invocationId,
+          turnId: context.turnId,
+          assistantMessageId: context.assistantMessageId,
+          conversationId: context.conversationId,
+        },
+        lastMutation: {
+          action: 'forget',
+          reasonTag: MEMORY_MUTATION_REASON_TAG,
+          reasonLength: reason.length,
+          tool: 'forget-memory',
+        },
+      });
+      const response = {
+        ok: true,
+        scope: 'local-user-agent',
+        action: 'forget',
+        card: summarizeForgottenMemoryCard(forgotten.card),
+      };
+
+      tryAppendInvocationEvent(context, 'agent_tool_call', {
+        schemaVersion: 1,
+        toolCallId,
+        tool: 'forget-memory',
+        status: 'succeeded',
+        durationMs: Date.now() - startedAt,
+        invocationId: context.invocationId,
+        conversationId: context.conversationId,
+        turnId: context.turnId,
+        agentId: context.agentId,
+        agentName: context.agentName,
+        assistantMessageId: context.assistantMessageId,
+        request: {
+          scope: 'local-user-agent',
+          title,
+          reasonTag: MEMORY_MUTATION_REASON_TAG,
+          reasonLength: reason.length,
+          hasExpectedUpdatedAt: Boolean(expectedUpdatedAt),
+        },
+        result: {
+          cardId: response.card && response.card.id ? response.card.id : null,
+          status: response.card && response.card.status ? response.card.status : null,
+          updatedAt: response.card && response.card.updatedAt ? response.card.updatedAt : null,
+        },
+      });
+
+      return response;
+    } catch (error) {
+      const normalizedError = coerceMemoryMutationError(error, 'Failed to forget memory');
+      tryAppendInvocationEvent(context, 'agent_tool_call', {
+        schemaVersion: 1,
+        toolCallId,
+        tool: 'forget-memory',
+        status: 'failed',
+        durationMs: Date.now() - startedAt,
+        invocationId: context.invocationId,
+        conversationId: context.conversationId,
+        turnId: context.turnId,
+        agentId: context.agentId,
+        agentName: context.agentName,
+        assistantMessageId: context.assistantMessageId,
+        request: {
+          scope: 'local-user-agent',
+          title: clipText(title, MAX_MEMORY_CARD_TITLE_LENGTH),
+          reasonTag: MEMORY_MUTATION_REASON_TAG,
+          reasonLength: reason.length,
+          hasExpectedUpdatedAt: Boolean(expectedUpdatedAt),
+        },
+        error: {
+          statusCode: Number.isInteger(normalizedError && normalizedError.statusCode) ? normalizedError.statusCode : null,
+          message: clipText(normalizedError && normalizedError.message ? normalizedError.message : String(normalizedError || 'Unknown error')),
+        },
+      });
+
+      throw normalizedError;
+    } finally {
+      setContextCurrentTool(context, null);
+    }
+  }
+
   function safeStat(filePath: any) {
     try {
       return fs.statSync(filePath);
@@ -1800,11 +2477,16 @@ export function createAgentToolBridge(options: any = {}) {
 
   return {
     createInvocationContext,
+    handleForgetMemory,
+    handleListMemories,
     handleListParticipants,
     handlePostMessage,
     handleReadContext,
+    handleSaveMemory,
+    handleSearchMessages,
     handleTrellisInit,
     handleTrellisWrite,
+    handleUpdateMemory,
     registerInvocation,
     unregisterInvocation,
   };

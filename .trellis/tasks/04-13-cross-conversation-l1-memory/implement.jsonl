@@ -1,0 +1,13 @@
+{"file":".trellis/tasks/04-13-cross-conversation-l1-memory/prd.md","reason":"Expanded the durable-memory task contract to include update-memory and forget-memory safety flow."}
+{"file":"lib/chat-app-store.ts","reason":"Added durable memory update/forget store APIs with optimistic concurrency and tombstone semantics."}
+{"file":"server/domain/runtime/agent-tool-bridge.ts","reason":"Added bridge handlers for update-memory and forget-memory with scoped diagnostics and conflict handling."}
+{"file":"server/api/agent-tools-controller.ts","reason":"Exposed HTTP routes for update-memory and forget-memory."}
+{"file":"lib/agent-chat-tools.ts","reason":"Added CLI commands for update-memory and forget-memory."}
+{"file":"server/domain/conversation/turn/agent-prompt.ts","reason":"Updated prompt guidance so agents know when to update or forget durable memory cards."}
+{"file":"server/domain/conversation/turn/agent-executor.ts","reason":"Added live-tool detection and expectations for update-memory and forget-memory."}
+{"file":"tests/storage/chat-store.test.js","reason":"Added regression coverage for durable memory mutation and tombstone visibility."}
+{"file":"tests/runtime/agent-tool-bridge.test.js","reason":"Added bridge regression coverage for update-memory and forget-memory."}
+{"file":"tests/runtime/agent-chat-tools.test.js","reason":"Added CLI forwarding coverage for durable memory mutation commands."}
+{"file":"tests/runtime/turn-orchestrator.test.js","reason":"Added prompt guidance regression coverage for update-memory and forget-memory."}
+{"file":"lib/chat-app-store.ts","reason":"Cleared stale memory mutation metadata when reviving tombstoned or expired cards via save-memory."}
+{"file":"tests/storage/chat-store.test.js","reason":"Added regression coverage that revived durable cards do not keep stale lastMutation metadata."}
