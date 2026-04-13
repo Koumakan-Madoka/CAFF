@@ -106,7 +106,8 @@ Case-scoped isolation payload is stored under `evaluation_json.isolation` and su
 - `chatBridge.{mode,configured,configuredUrl,reachable,auth,rejects}` so sandbox direct-HTTP bridge POCs show whether case-scoped credentials were validated; the auth payload must include run/case/task binding and TTL metadata but never the callback token
 - `toolPolicy.allowedTools[]` and `toolPolicy.rejects[]`
 - `resources` such as case project root, sandbox/private dir, isolated SQLite path, skill snapshot path, and adapter-specific remote/container resource paths when available
-- `pollutionCheck` comparing live `.trellis`, shared skills/store, and live private dirs before/after the run
+- `pollutionCheck` comparing live `.trellis`, shared skills/store, and live private dirs before/after the run; shared SQLite detection must watch the main database plus the `-wal` sidecar, while volatile `-shm` lock metadata should not be hashed as data pollution
+- isolated-mode telemetry (`a2a_tasks` / `a2a_task_events`) must write to the case-scoped run store during execution; final shared eval/result persistence happens outside the pollution-check window and stores a debug/trace snapshot for later run detail views
 - `cleanup.ok|error`; cleanup is idempotent, so an OpenSandbox `not found`/404 during cleanup means the sandbox is already gone and should not be reported as `skill_test_cleanup_failed`
 
 Publish-gate interpretation rules:

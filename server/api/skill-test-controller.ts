@@ -2463,10 +2463,14 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     schemaReady = true;
   }
 
-  function buildSkillTestLiveTrace(messageId: string, taskId: string, status: string, runId: any, createdAt: string, sessionPath = '') {
+  function buildSkillTestLiveTrace(messageId: string, taskId: string, status: string, runId: any, createdAt: string, sessionPath = '', options: any = {}) {
+    const traceRunStore = options && typeof options === 'object' ? options.runStore : null;
+    const traceDb = traceRunStore && traceRunStore.db ? traceRunStore.db : store.db;
+    const traceAgentDir = traceRunStore && traceRunStore.agentDir ? traceRunStore.agentDir : store.agentDir;
+
     return buildAssistantMessageToolTrace({
-      db: store.db,
-      agentDir: store.agentDir,
+      db: traceDb,
+      agentDir: traceAgentDir,
       message: {
         id: messageId,
         status,
@@ -3071,31 +3075,63 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
 
   // ---- Run execution ----
 
-  function collectTaskEventPayloads(taskId: string, eventType: string) {
+  function collectTaskEvents(taskId: string, options: any = {}) {
+    if (!taskId) {
+      return [];
+    }
+
+    const runStore = options && typeof options === 'object' ? options.runStore : null;
+    if (runStore && typeof runStore.listTaskEvents === 'function') {
+      try {
+        return runStore
+          .listTaskEvents(taskId)
+          .map((row: any) => ({
+            eventType: String(row && (row.event_type || row.eventType) || '').trim(),
+            createdAt: String(row && (row.created_at || row.createdAt) || '').trim(),
+            payload: row && Object.prototype.hasOwnProperty.call(row, 'payload') ? row.payload : safeJsonParse(row && row.event_json),
+          }))
+          .filter((row: any) => row && row.payload)
+          .slice(0, 200);
+      } catch {
+      }
+    }
+
     ensureSchema();
     let rows: any[] = [];
     try {
       rows = store.db
         .prepare(
-          `SELECT event_json FROM a2a_task_events
-           WHERE task_id = @taskId AND event_type = @eventType
+          `SELECT event_type, event_json, created_at FROM a2a_task_events
+           WHERE task_id = @taskId
            ORDER BY id ASC LIMIT 200`
         )
-        .all({ taskId, eventType });
+        .all({ taskId });
     } catch {
       rows = [];
     }
+
     return rows
-      .map((row) => safeJsonParse(row.event_json))
+      .map((row) => ({
+        eventType: String(row && row.event_type || '').trim(),
+        createdAt: String(row && row.created_at || '').trim(),
+        payload: safeJsonParse(row && row.event_json),
+      }))
+      .filter((row) => row && row.payload);
+  }
+
+  function collectTaskEventPayloads(taskId: string, eventType: string, options: any = {}) {
+    return collectTaskEvents(taskId, options)
+      .filter((row: any) => row && row.eventType === eventType)
+      .map((row: any) => row.payload)
       .filter(Boolean);
   }
 
-  function collectToolCallsFromTask(taskId: string) {
-    return collectTaskEventPayloads(taskId, 'agent_tool_call');
+  function collectToolCallsFromTask(taskId: string, options: any = {}) {
+    return collectTaskEventPayloads(taskId, 'agent_tool_call', options);
   }
 
-  function collectDynamicSkillLoadConfirmationsFromTask(taskId: string) {
-    return collectTaskEventPayloads(taskId, 'skill_test_dynamic_load_confirmed');
+  function collectDynamicSkillLoadConfirmationsFromTask(taskId: string, options: any = {}) {
+    return collectTaskEventPayloads(taskId, 'skill_test_dynamic_load_confirmed', options);
   }
 
   /**
@@ -3135,7 +3171,18 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
   /**
    * Find session path for a given taskId from a2a_tasks table.
    */
-  function getSessionPathForTask(taskId: string) {
+  function getSessionPathForTask(taskId: string, options: any = {}) {
+    const runStore = options && typeof options === 'object' ? options.runStore : null;
+    if (runStore && typeof runStore.getTask === 'function') {
+      try {
+        const task = runStore.getTask(taskId);
+        if (task && task.sessionPath) {
+          return String(task.sessionPath).trim();
+        }
+      } catch {
+      }
+    }
+
     ensureSchema();
     try {
       const row = store.db
@@ -3145,6 +3192,24 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     } catch {
       return '';
     }
+  }
+
+  function buildSkillTestRunDebugSnapshot(taskId: string, outputText: string, sessionPath = '', options: any = {}) {
+    const resolvedSessionPath = String(sessionPath || '').trim() || getSessionPathForTask(taskId, options);
+    const toolCalls = collectTaskEvents(taskId, options)
+      .filter((row: any) => row && row.eventType === 'agent_tool_call')
+      .map((row: any) => ({
+        createdAt: row.createdAt || '',
+        payload: row.payload,
+      }));
+
+    return {
+      taskId,
+      sessionPath: resolvedSessionPath,
+      outputText: outputText || '',
+      toolCalls,
+      session: resolvedSessionPath ? readSessionAssistantSnapshot(resolvedSessionPath) : null,
+    };
   }
 
   function normalizeSkillDisplayName(value: any) {
@@ -5201,7 +5266,8 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
   }
 
   async function evaluateRun(taskId: string, testCase: any, runtime: any = {}) {
-    const toolCallEvents = collectToolCallsFromTask(taskId);
+    const runtimeRunStore = runtime && runtime.runStore ? runtime.runStore : null;
+    const toolCallEvents = collectToolCallsFromTask(taskId, { runStore: runtimeRunStore });
     const expectedTools = normalizeExpectedToolSpecs(testCase.expectedTools);
     const skillId = String(testCase.skillId || '').trim();
     const loadingMode = String(testCase.loadingMode || 'dynamic').trim().toLowerCase() || 'dynamic';
@@ -5232,11 +5298,11 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
       }
     }
 
-    const sessionPath = String(runtime.sessionPath || '').trim() || getSessionPathForTask(taskId);
+    const sessionPath = String(runtime.sessionPath || '').trim() || getSessionPathForTask(taskId, { runStore: runtimeRunStore });
     const sessionSnapshot = sessionPath ? readSessionAssistantSnapshot(sessionPath) : null;
     const sessionToolCalls = parseToolCallsFromSession(sessionPath);
     const dynamicSkillLoadConfirmations = loadingMode === 'dynamic'
-      ? collectDynamicSkillLoadConfirmationsFromTask(taskId)
+      ? collectDynamicSkillLoadConfirmationsFromTask(taskId, { runStore: runtimeRunStore })
       : [];
 
     for (const tc of sessionToolCalls) {
@@ -5567,46 +5633,6 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     };
     const agent = { id: agentId, name: agentName };
     const liveProjectDir = getProjectDir ? String(getProjectDir() || '').trim() : '';
-    const isolationContext = await Promise.resolve(
-      skillTestIsolationDriver.createCaseContext({
-        caseId: testCase.id,
-        runId: taskId,
-        isolation: runOptions.isolation,
-        agent,
-        agentId,
-        agentName,
-        conversationId,
-        turnId,
-        promptUserMessage,
-        liveStore: store,
-        liveAgentDir: store.agentDir,
-        liveDatabasePath: store.databasePath,
-        liveProjectDir,
-        skill: liveSkill,
-      })
-    );
-    const runtimeSkill = isolationContext && isolationContext.skill ? isolationContext.skill : liveSkill;
-    const sandbox = isolationContext && isolationContext.sandbox ? isolationContext.sandbox : ensureAgentSandbox(store.agentDir, agent);
-    const projectDir = isolationContext && isolationContext.projectDir ? String(isolationContext.projectDir).trim() : liveProjectDir;
-    const runtimeAgentDir = isolationContext && isolationContext.agentDir ? String(isolationContext.agentDir).trim() : store.agentDir;
-    const runtimeSqlitePath = isolationContext && isolationContext.sqlitePath ? String(isolationContext.sqlitePath).trim() : store.databasePath;
-    const runStore = createSqliteRunStore({
-      agentDir: store.agentDir,
-      sqlitePath: store.databasePath,
-      databasePath: store.databasePath,
-      db: store.db,
-    });
-    const stage = {
-      taskId,
-      status: 'queued',
-      runId: null as any,
-      currentToolName: '',
-      currentToolKind: '',
-      currentToolStepId: '',
-      currentToolStartedAt: null as any,
-      currentToolInferred: false,
-    };
-    const sessionName = `skill-test-${testCase.id}-${Date.now()}`;
 
     let evalCaseId = testCase.evalCaseId;
 
@@ -5657,6 +5683,50 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
         .prepare('UPDATE skill_test_cases SET eval_case_id = @evalCaseId, updated_at = @updatedAt WHERE id = @id')
         .run({ id: testCase.id, evalCaseId, updatedAt: timestamp });
     }
+
+    const isolationContext = await Promise.resolve(
+      skillTestIsolationDriver.createCaseContext({
+        caseId: testCase.id,
+        runId: taskId,
+        isolation: runOptions.isolation,
+        agent,
+        agentId,
+        agentName,
+        conversationId,
+        turnId,
+        promptUserMessage,
+        liveStore: store,
+        liveAgentDir: store.agentDir,
+        liveDatabasePath: store.databasePath,
+        liveProjectDir,
+        skill: liveSkill,
+      })
+    );
+    const runtimeSkill = isolationContext && isolationContext.skill ? isolationContext.skill : liveSkill;
+    const sandbox = isolationContext && isolationContext.sandbox ? isolationContext.sandbox : ensureAgentSandbox(store.agentDir, agent);
+    const projectDir = isolationContext && isolationContext.projectDir ? String(isolationContext.projectDir).trim() : liveProjectDir;
+    const runtimeAgentDir = isolationContext && isolationContext.agentDir ? String(isolationContext.agentDir).trim() : store.agentDir;
+    const runtimeSqlitePath = isolationContext && isolationContext.sqlitePath ? String(isolationContext.sqlitePath).trim() : store.databasePath;
+    const telemetryStore = isolationContext && isolationContext.store && isolationContext.store.db
+      ? isolationContext.store
+      : store;
+    const runStore = createSqliteRunStore({
+      agentDir: runtimeAgentDir,
+      sqlitePath: telemetryStore && telemetryStore.databasePath ? telemetryStore.databasePath : runtimeSqlitePath,
+      databasePath: telemetryStore && telemetryStore.databasePath ? telemetryStore.databasePath : runtimeSqlitePath,
+      db: telemetryStore && telemetryStore.db ? telemetryStore.db : store.db,
+    });
+    const stage = {
+      taskId,
+      status: 'queued',
+      runId: null as any,
+      currentToolName: '',
+      currentToolKind: '',
+      currentToolStepId: '',
+      currentToolStartedAt: null as any,
+      currentToolInferred: false,
+    };
+    const sessionName = `skill-test-${testCase.id}-${Date.now()}`;
 
     let toolInvocation: any = null;
     let isolationEvidence: any = null;
@@ -5813,7 +5883,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
           executionRuntime: liveExecutionRuntime,
           progressLabel: liveProgressLabel,
           createdAt: timestamp,
-          trace: buildSkillTestLiveTrace(liveMessageId, taskId, 'streaming', handle.runId || null, timestamp, sessionPath),
+          trace: buildSkillTestLiveTrace(liveMessageId, taskId, 'streaming', handle.runId || null, timestamp, sessionPath, { runStore }),
         });
 
         const broadcastLiveRunnerProgress = (event: any, fallbackLabel = '正在 sandbox 内执行…') => {
@@ -6040,6 +6110,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
               prompt,
               sandbox,
               skill: runtimeSkill,
+              runStore,
             })
             : evaluateRun(taskId, testCase, {
               outputText,
@@ -6054,6 +6125,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
               prompt,
               sandbox,
               skill: runtimeSkill,
+              runStore,
             })
         )
         : {
@@ -6076,6 +6148,27 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
           validationIssues: [],
         };
 
+      const finishedAt = nowIso();
+      const completedTrace = buildSkillTestLiveTrace(
+        liveMessageId,
+        taskId,
+        status === 'succeeded' ? 'completed' : 'failed',
+        runId,
+        timestamp,
+        sessionPath,
+        { runStore }
+      );
+      const debugSnapshot = buildSkillTestRunDebugSnapshot(taskId, outputText || '', sessionPath, { runStore });
+
+      runStore.updateTask(taskId, {
+        status: status === 'succeeded' ? 'succeeded' : 'failed',
+        runId: normalizeRunStoreRunId(runId),
+        sessionPath: sessionPath || null,
+        outputText: outputText || '',
+        errorMessage: errorMessage || '',
+        endedAt: finishedAt,
+      });
+
       isolationEvidence = isolationContext ? await Promise.resolve(isolationContext.finalize()) : null;
       isolationFinalized = true;
       if (isolationEvidence && typeof isolationEvidence === 'object') {
@@ -6091,6 +6184,15 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
         status = 'failed';
         errorMessage = errorMessage || getSkillTestIsolationFailureMessage(isolationEvidence);
       }
+      const finalTraceStatus = status === 'succeeded' ? 'completed' : 'failed';
+      if (completedTrace && typeof completedTrace === 'object') {
+        if (completedTrace.message && typeof completedTrace.message === 'object') {
+          completedTrace.message.status = finalTraceStatus;
+        }
+        if (completedTrace.task && typeof completedTrace.task === 'object') {
+          completedTrace.task.status = status;
+        }
+      }
       const finalVerdict = isolationEvidence && isolationEvidence.unsafe ? 'fail' : evaluation.verdict || '';
       const runValidation = {
         caseSchemaStatus: preflight.caseSchemaStatus,
@@ -6100,17 +6202,6 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
       const evaluationJsonPayload = isPlainObject(evaluation.evaluation)
         ? { ...evaluation.evaluation, validation: runValidation, isolation: isolationEvidence }
         : { validation: runValidation, isolation: isolationEvidence };
-      const finishedAt = nowIso();
-
-      // Update task
-      runStore.updateTask(taskId, {
-        status: status === 'succeeded' ? 'succeeded' : 'failed',
-        runId: normalizeRunStoreRunId(runId),
-        sessionPath: sessionPath || null,
-        outputText: outputText || '',
-        errorMessage: errorMessage || '',
-        endedAt: finishedAt,
-      });
 
       broadcastSkillTestRunEvent(status === 'succeeded' ? 'completed' : 'failed', {
         caseId: testCase.id,
@@ -6132,18 +6223,15 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
         outputText: outputText || '',
         createdAt: timestamp,
         finishedAt,
-        trace: buildSkillTestLiveTrace(
-          liveMessageId,
-          taskId,
-          status === 'succeeded' ? 'completed' : 'failed',
-          runId,
-          timestamp,
-          sessionPath
-        ),
+        trace: completedTrace,
       });
 
       // Create eval_case_run
       const evalCaseRunId = randomUUID();
+      const mergedRunDebug = mergeSkillTestRunDebugPayload(
+        debugSnapshot,
+        runFailureDebug ? { failure: runFailureDebug } : null
+      );
       const runResult = {
         status,
         promptVersion,
@@ -6157,7 +6245,8 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
         validation: runValidation,
         isolation: isolationEvidence,
         verdict: finalVerdict,
-        ...(runFailureDebug ? { debug: { failure: runFailureDebug } } : {}),
+        trace: completedTrace,
+        ...(mergedRunDebug ? { debug: mergedRunDebug } : {}),
         source: 'skill_test',
       };
 

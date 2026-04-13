@@ -6,6 +6,7 @@ const path = require('node:path');
 
 const { createHttpError } = require('../../http/http-errors');
 const { createChatAppStore } = require('../../../lib/chat-app-store');
+const { resolveSqliteFileUriPath } = require('../../../storage/sqlite/connection');
 const {
   ensureAgentSandbox,
   resolveAgentPrivateDir,
@@ -638,6 +639,21 @@ function snapshotSkillIntoAgentDir(skill, agentDir) {
   };
 }
 
+function appendSqlitePollutionTargets(targets, label, sqlitePath) {
+  const rawPath = String(sqlitePath || '').trim();
+  if (!rawPath || rawPath === ':memory:') {
+    return;
+  }
+
+  const normalizedPath = resolveSqliteFileUriPath(rawPath) || path.resolve(rawPath);
+  if (!normalizedPath || normalizedPath === ':memory:') {
+    return;
+  }
+
+  targets.push({ label, path: normalizedPath });
+  targets.push({ label: `${label}-wal`, path: `${normalizedPath}-wal` });
+}
+
 function buildPollutionWatchTargets(input = {}) {
   const targets = [];
   const liveProjectDir = String(input.liveProjectDir || '').trim();
@@ -654,9 +670,7 @@ function buildPollutionWatchTargets(input = {}) {
     targets.push({ label: 'shared-skills-root', path: path.join(liveAgentDir, 'skills') });
   }
 
-  if (liveDatabasePath && liveDatabasePath !== ':memory:') {
-    targets.push({ label: 'live-chat-store', path: liveDatabasePath });
-  }
+  appendSqlitePollutionTargets(targets, 'live-chat-store', liveDatabasePath);
 
   if (liveAgentDir && agent) {
     targets.push({ label: 'live-agent-private-dir', path: resolveAgentPrivateDir(liveAgentDir, agent) });

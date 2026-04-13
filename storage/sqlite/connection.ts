@@ -93,7 +93,7 @@ function decodeSqliteUriComponent(value: string) {
   }
 }
 
-function resolveSqliteFileUriPath(sqlitePath?: string): string | null {
+export function resolveSqliteFileUriPath(sqlitePath?: string): string | null {
   const parsedFileUri = parseSqliteFileUri(sqlitePath);
   if (!parsedFileUri || isSpecialSqlitePath(sqlitePath)) {
     return null;

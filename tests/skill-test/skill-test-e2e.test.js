@@ -499,6 +499,116 @@ test('run endpoint reuses the main in-memory db for tool-call telemetry', async 
   }
 });
 
+test('isolated run keeps tool-call telemetry inside the case store and persists debug snapshot', async () => {
+  const harness = createTempHarness();
+  let invocationContext = null;
+
+  try {
+    const liveProjectDir = path.join(harness.tempDir, 'live-project');
+    const skillDir = path.join(harness.tempDir, 'live-skills', 'werewolf');
+    fs.mkdirSync(liveProjectDir, { recursive: true });
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '# Werewolf\n\nFixture skill body.\n', 'utf8');
+
+    const now = new Date().toISOString();
+    harness.db.prepare(`
+      INSERT INTO skill_test_cases (
+        id, skill_id, test_type, loading_mode, trigger_prompt,
+        expected_tools_json, expected_behavior, validity_status, case_status, note,
+        created_at, updated_at
+      ) VALUES (
+        'isolated-telemetry-case', 'werewolf', 'trigger', 'dynamic', '请读取狼人杀 skill。',
+        '[]', '', 'pending', 'ready', '',
+        @createdAt, @updatedAt
+      )
+    `).run({ createdAt: now, updatedAt: now });
+
+    const controller = createSkillTestController({
+      store: createInMemoryStore(harness.db, {
+        agentDir: path.join(harness.tempDir, 'agent-root'),
+        databasePath: harness.databasePath,
+      }),
+      agentToolBridge: {
+        createInvocationContext(ctx) {
+          return ctx;
+        },
+        registerInvocation(ctx) {
+          invocationContext = ctx;
+          return { invocationId: 'inv-isolated-telemetry', callbackToken: 'token-isolated-telemetry' };
+        },
+        unregisterInvocation() {},
+      },
+      skillRegistry: createFakeSkillRegistry([
+        {
+          id: 'werewolf',
+          name: 'Werewolf',
+          description: 'Fixture skill',
+          path: skillDir,
+        },
+      ]),
+      getProjectDir: () => liveProjectDir,
+      toolBaseUrl: 'http://127.0.0.1:3100',
+      openSandboxFactory: ({ caseId }) => ({
+        driverName: 'opensandbox',
+        driverVersion: 'test',
+        sandboxId: `sandbox-${caseId}`,
+      }),
+      startRunImpl: (_provider, _model, _prompt, runOptions = {}) => {
+        assert.ok(invocationContext);
+        const runtimeSkillPath = path.join(runOptions.agentDir || invocationContext.runStore.agentDir, 'skills', 'werewolf', 'SKILL.md');
+        invocationContext.runStore.appendTaskEvent(runOptions.taskId, 'agent_tool_call', {
+          tool: 'read',
+          request: { path: runtimeSkillPath },
+          status: 'succeeded',
+        });
+        return {
+          runId: 'isolated-telemetry-run',
+          sessionPath: '',
+          resultPromise: Promise.resolve({
+            reply: 'ok',
+            runId: 'isolated-telemetry-run',
+            sessionPath: '',
+          }),
+        };
+      },
+    });
+
+    const runRes = createCaptureResponse();
+    const handled = await controller({
+      req: createJsonRequest('POST', '/api/skills/werewolf/test-cases/isolated-telemetry-case/run', {
+        isolation: { mode: 'isolated', trellisMode: 'fixture' },
+      }),
+      res: runRes,
+      pathname: '/api/skills/werewolf/test-cases/isolated-telemetry-case/run',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases/isolated-telemetry-case/run'),
+    });
+
+    assert.equal(handled, true);
+    assert.equal(runRes.statusCode, 200);
+    assert.equal(runRes.json.run.status, 'succeeded');
+    assert.ok(runRes.json.run.isolation);
+    assert.equal(runRes.json.run.isolation.pollutionCheck.ok, true);
+    assert.equal(harness.db.prepare('SELECT COUNT(*) AS count FROM a2a_task_events').get().count, 0);
+
+    const detailRes = createCaptureResponse();
+    const detailHandled = await controller({
+      req: createJsonRequest('GET', `/api/skill-test-runs/${runRes.json.run.id}`, undefined),
+      res: detailRes,
+      pathname: `/api/skill-test-runs/${runRes.json.run.id}`,
+      requestUrl: new URL(`http://localhost/api/skill-test-runs/${runRes.json.run.id}`),
+    });
+
+    assert.equal(detailHandled, true);
+    assert.equal(detailRes.statusCode, 200);
+    assert.ok(detailRes.json.debug);
+    assert.equal(Array.isArray(detailRes.json.debug.toolCalls), true);
+    assert.equal(detailRes.json.debug.toolCalls.length, 1);
+    assert.equal(detailRes.json.debug.toolCalls[0].payload.tool, 'read');
+  } finally {
+    harness.cleanup();
+  }
+});
+
 test('legacy validity_status rows stay draft in list, summary, and run-all', async () => {
   const db = createTestDb();
   const store = createInMemoryStore(db);
@@ -4852,6 +4962,115 @@ test('isolated run fails when pollution check detects live trellis changes', asy
     assert.ok(Array.isArray(res.json.issues));
     assert.ok(res.json.issues.some((issue) => issue.code === 'skill_test_pollution_detected'));
   } finally {
+    harness.cleanup();
+  }
+});
+
+test('isolated run fails when pollution check detects live sqlite WAL changes', async () => {
+  const harness = createTempHarness();
+  let pollutionDb = null;
+
+  try {
+    harness.db.pragma('wal_autocheckpoint = 0');
+    const liveProjectDir = path.join(harness.tempDir, 'live-project');
+    const skillDir = path.join(harness.tempDir, 'live-skills', 'werewolf');
+    fs.mkdirSync(liveProjectDir, { recursive: true });
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '# Werewolf\n\nFixture skill body.\n', 'utf8');
+
+    const now = new Date().toISOString();
+    harness.db.prepare(`
+      INSERT INTO skill_test_cases (
+        id, skill_id, test_type, loading_mode, trigger_prompt,
+        expected_tools_json, expected_behavior, validity_status, case_status, note,
+        created_at, updated_at
+      ) VALUES (
+        'sqlite-pollution-case', 'werewolf', 'trigger', 'dynamic', 'sqlite pollution prompt',
+        '[]', '', 'pending', 'ready', '',
+        @createdAt, @updatedAt
+      )
+    `).run({ createdAt: now, updatedAt: now });
+
+    const controller = createSkillTestController({
+      store: createInMemoryStore(harness.db, {
+        agentDir: path.join(harness.tempDir, 'agent-root'),
+        databasePath: harness.databasePath,
+      }),
+      agentToolBridge: createFakeAgentToolBridge(),
+      skillRegistry: createFakeSkillRegistry([
+        {
+          id: 'werewolf',
+          name: 'Werewolf',
+          description: 'Fixture skill',
+          path: skillDir,
+        },
+      ]),
+      getProjectDir: () => liveProjectDir,
+      toolBaseUrl: 'http://127.0.0.1:3100',
+      openSandboxFactory: ({ caseId }) => ({
+        driverName: 'opensandbox',
+        driverVersion: 'test',
+        sandboxId: `sandbox-${caseId}`,
+      }),
+      startRunImpl: () => {
+        pollutionDb = new Database(harness.databasePath);
+        pollutionDb.pragma('journal_mode = WAL');
+        pollutionDb.pragma('wal_autocheckpoint = 0');
+        pollutionDb.prepare(
+          `INSERT INTO chat_agents (
+            id, name, persona_prompt, description, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?)`
+        ).run(
+          'live-pollution-agent',
+          'Live Pollution Agent',
+          'polluted',
+          'x'.repeat(4096),
+          new Date().toISOString(),
+          new Date().toISOString()
+        );
+        const sessionPath = path.join(harness.tempDir, 'sqlite-pollution-run.jsonl');
+        return {
+          runId: 'sqlite-pollution-run',
+          sessionPath,
+          resultPromise: Promise.resolve({
+            reply: 'polluted',
+            runId: 'sqlite-pollution-run',
+            sessionPath,
+          }),
+        };
+      },
+    });
+
+    const res = createCaptureResponse();
+    const handled = await controller({
+      req: createJsonRequest('POST', '/api/skills/werewolf/test-cases/sqlite-pollution-case/run', {
+        isolation: { mode: 'isolated', trellisMode: 'fixture' },
+      }),
+      res,
+      pathname: '/api/skills/werewolf/test-cases/sqlite-pollution-case/run',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases/sqlite-pollution-case/run'),
+    });
+
+    assert.equal(handled, true);
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.json.run.status, 'failed');
+    assert.ok(res.json.run.isolation);
+    assert.equal(res.json.run.isolation.pollutionCheck.ok, false);
+    assert.ok(Array.isArray(res.json.run.isolation.pollutionCheck.changes));
+    assert.ok(
+      res.json.run.isolation.pollutionCheck.changes.some((change) => {
+        const changedPath = String(change && change.path || '');
+        return changedPath.endsWith('.sqlite-wal');
+      })
+    );
+    assert.ok(Array.isArray(res.json.issues));
+    assert.ok(res.json.issues.some((issue) => issue.code === 'skill_test_pollution_detected'));
+  } finally {
+    try {
+      pollutionDb && pollutionDb.close();
+    } catch {
+      // ignore cleanup errors
+    }
     harness.cleanup();
   }
 });
