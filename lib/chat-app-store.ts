@@ -541,7 +541,7 @@ function mergeVisibleMemoryCards(primaryCards: any, secondaryCards: any, limit =
       continue;
     }
 
-    const titleKey = String(card.title || '').trim().toLowerCase();
+    const titleKey = String(card.title || '').trim();
 
     if (titleKey && seenTitles.has(titleKey)) {
       continue;

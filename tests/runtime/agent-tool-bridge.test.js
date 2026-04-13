@@ -1106,6 +1106,60 @@ test('agent tool memory cards save durable local-user scope and stay agent-scope
   );
 });
 
+test('agent tool bridge keeps case-distinct overlay and durable memory titles visible', (t) => {
+  const tempDir = withTempDir('caff-agent-tool-memory-case-visible-');
+  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const bridge = createAgentToolBridge({ store });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const fixture = createPublicInvocationFixture(store, 'memory-case-visible');
+  store.saveLocalUserMemoryCard(fixture.agent.id, {
+    title: 'Preference',
+    content: 'Durable uppercase preference.',
+    ttlDays: 30,
+  });
+  store.saveConversationMemoryCard(fixture.conversation.id, fixture.agent.id, {
+    title: 'preference',
+    content: 'Conversation lowercase preference.',
+    ttlDays: 7,
+  });
+
+  const context = bridge.registerInvocation(
+    bridge.createInvocationContext({
+      conversationId: fixture.conversation.id,
+      turnId: fixture.assistantMessage.turnId,
+      agentId: fixture.agent.id,
+      agentName: fixture.agent.name,
+      assistantMessageId: fixture.assistantMessage.id,
+      conversationAgents: fixture.conversation.agents,
+      stage: fixture.stage,
+      turnState: fixture.turnState,
+    })
+  );
+
+  const listUrl = new URL('http://127.0.0.1/api/agent-tools/memories');
+  listUrl.searchParams.set('invocationId', context.invocationId);
+  listUrl.searchParams.set('callbackToken', context.callbackToken);
+  const listed = bridge.handleListMemories(listUrl);
+
+  assert.equal(listed.ok, true);
+  assert.equal(listed.cardCount, 2);
+  assert.deepEqual(
+    listed.cards.map((card) => ({ title: card.title, scope: card.scope })),
+    [
+      { title: 'preference', scope: 'conversation-agent' },
+      { title: 'Preference', scope: 'local-user-agent' },
+    ]
+  );
+});
+
 test('agent tool memory cards update and forget durable local-user scope safely', (t) => {
   const tempDir = withTempDir('caff-agent-tool-memory-mutation-');
   const sqlitePath = path.join(tempDir, 'bridge.sqlite');

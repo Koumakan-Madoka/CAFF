@@ -576,6 +576,51 @@ test('chat store lists local-user durable memory cards across conversations with
   assert.equal(localUserCards[0].content, 'User prefers cross-session durable memory.');
 });
 
+test('chat store keeps case-distinct memory titles visible across overlay layering', (t) => {
+  const tempDir = withTempDir('caff-chat-memory-case-visible-');
+  const sqlitePath = path.join(tempDir, 'chat.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const agent = store.saveAgent({
+    id: 'memory-case-visible-agent',
+    name: 'Case Visible Agent',
+    personaPrompt: 'Keep case-distinct memory titles separate.',
+  });
+  const conversation = store.createConversation({
+    id: 'memory-case-visible-conversation',
+    title: 'Case Visible Conversation',
+    participants: [agent.id],
+  });
+
+  store.saveLocalUserMemoryCard(agent.id, {
+    title: 'Preference',
+    content: 'Durable uppercase preference.',
+    ttlDays: 30,
+  });
+  store.saveConversationMemoryCard(conversation.id, agent.id, {
+    title: 'preference',
+    content: 'Conversation lowercase preference.',
+    ttlDays: 7,
+  });
+
+  const visible = store.listVisibleMemoryCards(conversation.id, agent.id);
+  assert.equal(visible.length, 2);
+  assert.deepEqual(
+    visible.map((card) => ({ title: card.title, scope: card.scope })),
+    [
+      { title: 'preference', scope: 'conversation-agent' },
+      { title: 'Preference', scope: 'local-user-agent' },
+    ]
+  );
+});
+
 test('chat store updates and forgets durable memory cards with optimistic concurrency', async (t) => {
   const tempDir = withTempDir('caff-chat-memory-mutation-');
   const sqlitePath = path.join(tempDir, 'chat.sqlite');

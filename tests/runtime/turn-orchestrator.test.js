@@ -168,6 +168,7 @@ test('buildAgentTurnPrompt gives bash-only multiline chat bridge guidance', () =
   assert.match(prompt, /search-messages --query "topic keywords" --limit 5/u);
   assert.match(prompt, /--speaker "AgentName" or --agent-id "agent-id"/u);
   assert.match(prompt, /list-memories/u);
+  assert.match(prompt, /Memory titles are matched exactly after trimming; case matters/u);
   assert.match(prompt, /save-memory --title "preference" --content "User prefers retrieval-first POCs" --ttl-days 30/u);
   assert.match(prompt, /update-memory --title "preference" --content "User now prefers answer-first replies" --reason/u);
   assert.match(prompt, /forget-memory --title "temporary preference" --reason "User said this should not persist" --expected-updated-at/u);
@@ -224,6 +225,61 @@ test('buildAgentTurnPrompt includes scoped curated memory cards', () => {
 
   assert.match(prompt, /Curated memory cards for you \(conversation overlay \+ local durable\):/u);
   assert.match(prompt, /- \[local-user\] preference: User prefers retrieval-first rollouts\. \(expires 2026-05-01T00:00:00\.000Z\)/u);
+});
+
+test('buildAgentTurnPrompt keeps case-distinct curated memory titles separate', () => {
+  const agent = {
+    id: 'agent-memory-case-prompt',
+    name: 'Builder',
+    description: 'Explains implementation details clearly.',
+    personaPrompt: 'Stay calm and practical.',
+  };
+  const conversation = {
+    id: 'conversation-memory-case-prompt',
+    title: 'Memory Case Prompt',
+    type: 'standard',
+    agents: [agent],
+  };
+  const prompt = buildAgentTurnPrompt({
+    conversation,
+    agent,
+    agentConfig: {
+      profileName: 'Default',
+      personaPrompt: agent.personaPrompt,
+    },
+    resolvedPersonaSkills: [],
+    resolvedConversationSkills: [],
+    sandbox: {
+      sandboxDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-memory-case-prompt',
+      privateDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-memory-case-prompt/private',
+    },
+    agents: [agent],
+    messages: [],
+    privateMessages: [],
+    memoryCards: [
+      {
+        scope: 'conversation-agent',
+        title: 'preference',
+        content: 'Conversation lowercase preference.',
+      },
+      {
+        scope: 'local-user-agent',
+        title: 'Preference',
+        content: 'Durable uppercase preference.',
+      },
+    ],
+    trigger: {
+      triggerType: 'user',
+      enqueueReason: 'default_first_agent',
+    },
+    remainingSlots: 7,
+    routingMode: 'mention_queue',
+    allowHandoffs: true,
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+  });
+
+  assert.match(prompt, /- \[conversation\] preference: Conversation lowercase preference\./u);
+  assert.match(prompt, /- \[local-user\] Preference: Durable uppercase preference\./u);
 });
 
 test('buildAgentTurnPrompt skips Trellis context when projectDir is empty', (t) => {

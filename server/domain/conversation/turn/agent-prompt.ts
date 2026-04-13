@@ -239,6 +239,7 @@ function buildAgentToolInstructions(agentToolRelativePath: string) {
     `- Read the latest public room context plus your private mailbox: ${relativeCommandPrefix} read-context`,
     `- Need older public conversation context beyond the injected history? Search this conversation only with: ${relativeCommandPrefix} search-messages --query "topic keywords" --limit 5 (optionally add --speaker "AgentName" or --agent-id "agent-id")`,
     `- Review your saved durable memory cards for this agent in this local workspace: ${relativeCommandPrefix} list-memories`,
+    '- Memory titles are matched exactly after trimming; case matters, so reuse the title exactly as shown by list-memories when updating or forgetting.',
     `- Save one tiny stable fact, preference, or agreement for this agent across conversations in this local workspace with: ${relativeCommandPrefix} save-memory --title "preference" --content "User prefers retrieval-first POCs" --ttl-days 30`,
     `- Update an existing durable memory only when the user clearly corrects it: ${relativeCommandPrefix} update-memory --title "preference" --content "User now prefers answer-first replies" --reason "User corrected this durable preference" --expected-updated-at "2026-04-13T00:00:00.000Z"`,
     `- Soft-forget a mistaken durable memory only when the user explicitly asks: ${relativeCommandPrefix} forget-memory --title "temporary preference" --reason "User said this should not persist" --expected-updated-at "2026-04-13T00:00:00.000Z"`,

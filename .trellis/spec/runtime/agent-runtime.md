@@ -97,6 +97,9 @@ CAFF uses a descriptor + on-demand loading model for conversation skills:
 - `list-memories` returns bounded visible cards for the current agent by
   layering current `conversation + agent` overlay cards ahead of the same
   `local-user + agent` durable cards.
+- Memory title matching stays exact after trimming (case-sensitive) across
+  storage, visible layering, `update-memory`, and `forget-memory` so
+  case-distinct titles remain separately addressable.
 - Prompt assembly may inject only bounded active visible memory cards using the
   same overlay order. Episodic recall results are not auto-injected; the prompt
   only teaches the agent when to call `search-messages`, `list-memories`,
