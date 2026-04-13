@@ -382,3 +382,36 @@ Archived the completed durable-memory task, recorded the validated implementatio
 ### Next Steps
 
 - None - task complete
+
+
+## Session 9: Skill-Test Isolation Foundation
+
+**Date**: 2026-04-14
+**Task**: Skill-Test Isolation Foundation
+**Branch**: `feat/skill-test-isolation-foundation`
+
+### Summary
+
+Completed sandbox-isolated skill test execution, live trace streaming, cleanup/idempotency fixes, and Trellis-safe isolation guardrails.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `ab6fca3` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
