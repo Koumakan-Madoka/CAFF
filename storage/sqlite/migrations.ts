@@ -2,6 +2,24 @@ function listTableInfo(db: any, tableName: string) {
   return db.prepare(`PRAGMA table_info(${tableName})`).all();
 }
 
+function isTruthyEnvFlag(value: any) {
+  if (value === true || value === 1) {
+    return true;
+  }
+
+  const normalized = String(value || '').trim().toLowerCase();
+  return normalized === '1' || normalized === 'true' || normalized === 'yes';
+}
+
+function emitSqliteMigrationDebug(message: string, error: any) {
+  if (!isTruthyEnvFlag(process.env.CAFF_DEBUG_SQLITE_MIGRATIONS)) {
+    return;
+  }
+
+  const detail = error && error.message ? String(error.message) : String(error || 'unknown error');
+  console.warn(`[sqlite-migration] ${message}: ${detail}`);
+}
+
 function listTableColumns(db: any, tableName: string) {
   return new Set(listTableInfo(db, tableName).map((column: any) => String(column.name)));
 }
@@ -119,7 +137,9 @@ WHERE NOT EXISTS (
   WHERE s.rowid = m.rowid
 );
     `);
-  } catch {}
+  } catch (error) {
+    emitSqliteMigrationDebug('chat_message_search schema setup skipped', error);
+  }
 }
 
 function ensureChatMemoryCardSchema(db: any) {

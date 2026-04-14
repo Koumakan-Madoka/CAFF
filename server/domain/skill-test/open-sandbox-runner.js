@@ -135,6 +135,15 @@ function resetEventLog(eventPath) {
   } catch {}
 }
 
+function writePromptToChild(child, prompt) {
+  if (!child || !child.stdin) {
+    return;
+  }
+
+  child.stdin.on('error', () => {});
+  child.stdin.end(String(prompt || ''));
+}
+
 function appendEvent(eventPath, type, payload = {}) {
   const normalizedPath = String(eventPath || '').trim();
   const normalizedType = String(type || '').trim();
@@ -222,8 +231,6 @@ async function runPi(input) {
     ensureDir(path.dirname(sessionPath));
     args.push('--session', sessionPath);
   }
-  args.push(prompt);
-
   return new Promise((resolve, reject) => {
     const child = spawn(nodeCommand, args, {
       cwd,
@@ -236,9 +243,11 @@ async function runPi(input) {
             .map(([key, value]) => [String(key), String(value)])
         ),
       },
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
     });
+
+    writePromptToChild(child, prompt);
 
     const state = {
       reply: '',

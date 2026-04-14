@@ -32,6 +32,7 @@ const DEFAULT_EGRESS_MODE = 'deny';
 const DEFAULT_TRELLIS_MODE = 'none';
 const DEFAULT_ISOLATION_MODE = 'legacy-local';
 const SNAPSHOT_IGNORED_DIR_NAMES = new Set(['workspace']);
+const DIRECTORY_POLLUTION_SNAPSHOT_MODE = 'metadata';
 
 function nowIso() {
   return new Date().toISOString();
@@ -301,26 +302,37 @@ function snapshotSymlinkEntry(filePath, stat = null) {
       type: 'symlink',
       size: buffer.length,
       mtimeMs: linkStat.mtimeMs,
+      ctimeMs: linkStat.ctimeMs,
       sha1: hashBuffer(buffer),
+      snapshotMode: 'link-target-sha1',
     };
   } catch {
     return null;
   }
 }
 
-function snapshotFileEntry(filePath, stat = null) {
+function snapshotFileEntry(filePath, stat = null, options = {}) {
   try {
     const fileStat = stat || fs.lstatSync(filePath);
     if (fileStat.isSymbolicLink()) {
       return snapshotSymlinkEntry(filePath, fileStat);
     }
-    const buffer = fs.readFileSync(filePath);
-    return {
+
+    const hashContents = options.hashContents !== false;
+    const entry = {
       type: 'file',
       size: fileStat.size,
       mtimeMs: fileStat.mtimeMs,
-      sha1: hashBuffer(buffer),
+      ctimeMs: fileStat.ctimeMs,
+      sha1: '',
+      snapshotMode: hashContents ? 'sha1' : DIRECTORY_POLLUTION_SNAPSHOT_MODE,
     };
+
+    if (hashContents) {
+      entry.sha1 = hashBuffer(fs.readFileSync(filePath));
+    }
+
+    return entry;
   } catch {
     return null;
   }
@@ -348,7 +360,7 @@ function snapshotDirectoryEntries(rootDir) {
       continue;
     }
 
-    const fileEntry = snapshotFileEntry(absolutePath, stat);
+    const fileEntry = snapshotFileEntry(absolutePath, stat, { hashContents: false });
     if (!fileEntry) {
       continue;
     }
@@ -386,6 +398,24 @@ function capturePathSnapshot(label, targetPath) {
   snapshot.entries = { '.': snapshotFileEntry(resolvedPath, stat) };
   snapshot.fileCount = snapshot.entries['.'] ? 1 : 0;
   return snapshot;
+}
+
+function normalizeSnapshotTimestamp(value) {
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) ? numberValue : 0;
+}
+
+function didSnapshotEntryChange(beforeEntry, afterEntry) {
+  if (beforeEntry.type !== afterEntry.type || beforeEntry.size !== afterEntry.size) {
+    return true;
+  }
+
+  if (beforeEntry.sha1 || afterEntry.sha1) {
+    return beforeEntry.sha1 !== afterEntry.sha1;
+  }
+
+  return normalizeSnapshotTimestamp(beforeEntry.mtimeMs) !== normalizeSnapshotTimestamp(afterEntry.mtimeMs)
+    || normalizeSnapshotTimestamp(beforeEntry.ctimeMs) !== normalizeSnapshotTimestamp(afterEntry.ctimeMs);
 }
 
 function comparePathSnapshots(before, after) {
@@ -431,13 +461,15 @@ function comparePathSnapshots(before, after) {
     if (!beforeEntry || !afterEntry) {
       continue;
     }
-    if (beforeEntry.type !== afterEntry.type || beforeEntry.sha1 !== afterEntry.sha1 || beforeEntry.size !== afterEntry.size) {
+    if (didSnapshotEntryChange(beforeEntry, afterEntry)) {
       changes.push({
         label: after.label,
         path: normalizePathForJson(path.join(after.normalizedPath, key === '.' ? '' : key)),
         kind: 'modified',
         beforeSha1: beforeEntry.sha1,
         afterSha1: afterEntry.sha1,
+        beforeMtimeMs: beforeEntry.mtimeMs,
+        afterMtimeMs: afterEntry.mtimeMs,
       });
     }
   }
