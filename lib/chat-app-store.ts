@@ -635,15 +635,29 @@ function normalizeConversation(row: any, agents: any, messages: any) {
   };
 }
 
-function pickDefaultParticipants(agents: any, requestedParticipants: any) {
+function pickDefaultParticipants(agents: any, requestedParticipants: any, defaultConversationSkillIds: any = []) {
   if (Array.isArray(requestedParticipants) && requestedParticipants.length > 0) {
     return requestedParticipants;
+  }
+
+  const conversationSkills = [] as any[];
+  const seenSkillIds = new Set();
+
+  for (const skill of Array.isArray(defaultConversationSkillIds) ? defaultConversationSkillIds : []) {
+    const skillId = normalizeSkillRef(skill);
+
+    if (!skillId || seenSkillIds.has(skillId)) {
+      continue;
+    }
+
+    seenSkillIds.add(skillId);
+    conversationSkills.push(skillId);
   }
 
   return (Array.isArray(agents) ? agents : []).slice(0, 3).map((agent) => ({
     agentId: agent && agent.id ? agent.id : null,
     modelProfileId: null as null,
-    conversationSkills: [] as any[],
+    conversationSkills,
   }));
 }
 
@@ -877,7 +891,7 @@ export class ChatAppStore {
         const existingRow = this.memoryCardRepository.getByLocalUserAgentTitle(payload.agentId, payload.title, { ownerKey });
         const existing = normalizeMemoryCardRow(existingRow);
 
-        if (!isMemoryCardActiveAt(existing, timestamp)) {
+        if (!existing || !isMemoryCardActiveAt(existing, timestamp)) {
           throw new Error('Memory card not found');
         }
 
@@ -911,7 +925,7 @@ export class ChatAppStore {
         const existingRow = this.memoryCardRepository.getByLocalUserAgentTitle(payload.agentId, payload.title, { ownerKey });
         const existing = normalizeMemoryCardRow(existingRow);
 
-        if (!isMemoryCardActiveAt(existing, timestamp)) {
+        if (!existing || !isMemoryCardActiveAt(existing, timestamp)) {
           throw new Error('Memory card not found');
         }
 
@@ -983,7 +997,10 @@ export class ChatAppStore {
           updatedAt: timestamp,
           lastMessageAt: null,
         });
-        this.replaceConversationParticipants(conversationId, pickDefaultParticipants(this.listAgents(), participants));
+        this.replaceConversationParticipants(
+          conversationId,
+          pickDefaultParticipants(this.listAgents(), participants, payload.defaultConversationSkillIds)
+        );
 
         const binding = normalizeConversationChannelBindingRow(
           this.channelBindingRepository.create({
@@ -1195,6 +1212,7 @@ export class ChatAppStore {
       type: normalizeConversationType(input.type),
       metadata: input.metadata && typeof input.metadata === 'object' ? input.metadata : {},
       bindingMetadata: input.bindingMetadata && typeof input.bindingMetadata === 'object' ? input.bindingMetadata : {},
+      defaultConversationSkillIds: this.normalizeSkillRefs(input.defaultConversationSkillIds || input.defaultConversationSkills),
     });
   }
 
@@ -1252,7 +1270,11 @@ export class ChatAppStore {
       title,
       type: normalizeConversationType(input.type),
       metadata: input.metadata && typeof input.metadata === 'object' ? input.metadata : {},
-      participants: pickDefaultParticipants(this.listAgents(), participants),
+      participants: pickDefaultParticipants(
+        this.listAgents(),
+        participants,
+        this.normalizeSkillRefs(input.defaultConversationSkillIds || input.defaultConversationSkills)
+      ),
     });
   }
 

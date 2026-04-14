@@ -58,6 +58,26 @@ function resolveConversationAgentConfig(agent: any) {
   };
 }
 
+function mergeSkillIds(...groups: any[]) {
+  const seenSkillIds = new Set();
+  const mergedSkillIds = [] as string[];
+
+  for (const group of groups) {
+    for (const item of Array.isArray(group) ? group : []) {
+      const skillId = String(item || '').trim();
+
+      if (!skillId || seenSkillIds.has(skillId)) {
+        continue;
+      }
+
+      seenSkillIds.add(skillId);
+      mergedSkillIds.push(skillId);
+    }
+  }
+
+  return mergedSkillIds;
+}
+
 function extractJsonCandidate(text: any) {
   const raw = String(text || '').trim();
   let candidate = raw;
@@ -731,7 +751,15 @@ export function createAgentExecutor(options: any = {}) {
       };
     }
 
-    const agentConfig = resolveConversationAgentConfig(agent);
+    const baseAgentConfig = resolveConversationAgentConfig(agent);
+    const conversationType = conversation && conversation.type ? String(conversation.type).trim() : 'standard';
+    const modeForType = modeStore ? modeStore.get(conversationType) : null;
+    const modeSkillIds = modeForType && Array.isArray(modeForType.skillIds) ? modeForType.skillIds : [];
+    const modeLoadingStrategy = modeForType ? String(modeForType.loadingStrategy || 'dynamic').trim() : 'dynamic';
+    const agentConfig = {
+      ...baseAgentConfig,
+      conversationSkillIds: mergeSkillIds(baseAgentConfig.conversationSkillIds, modeSkillIds),
+    };
     const agentSandbox = ensureAgentSandbox(agentDir, agent);
     const snapshotProvided = projectDir !== undefined;
     const projectDirCandidate = snapshotProvided
@@ -754,9 +782,6 @@ export function createAgentExecutor(options: any = {}) {
         : store && typeof store.listConversationMemoryCards === 'function'
           ? store.listConversationMemoryCards(conversationId, agent.id)
           : [];
-    const conversationType = conversation && conversation.type ? String(conversation.type).trim() : 'standard';
-    const modeForType = modeStore ? modeStore.get(conversationType) : null;
-    const modeLoadingStrategy = modeForType ? String(modeForType.loadingStrategy || 'dynamic').trim() : 'dynamic';
     const prompt = buildAgentTurnPrompt({
       conversation,
       agent,

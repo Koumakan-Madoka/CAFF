@@ -19,7 +19,7 @@
 - SDK event handler receives a flat event object with top-level `event_id`, `event_type`, `sender`, and `message`; normalize it to `{ header, event }` before handing it to the shared service path.
 - Mention data may arrive in either parsed `message.content.mentions` or SDK-level `message.mentions`; merge both into metadata while leaving inbound text for CAFF's own group-routing logic.
 - Inbound text events bind one Feishu `chat_id` to one CAFF conversation; the Feishu layer must not split conversations by `@agent` or require an `@bot` mention.
-- New Feishu chats and `/new` command-created chats use conversation type `coding`; `/new` switches the existing `chat_id` binding to a newly created conversation and must not submit `/new` as a CAFF user message.
+- New Feishu chats and `/new` command-created chats resolve the configured Coding mode (prefer a user-created `Coding` mode with Trellis skill bindings over the legacy empty `coding` row, otherwise fall back to `standard`); `/new` switches the existing `chat_id` binding to a newly created conversation and must not submit `/new` as a CAFF user message.
 
 ### 4. Validation & Error Matrix
 - Missing long-connection app credentials: `start()` returns `false` and logs a warning; no process or network client is started.
