@@ -195,7 +195,7 @@ test('feishu controller creates a conversation binding and deduplicates repeated
   const binding = store.getConversationChannelBinding('feishu', 'oc-chat-1');
   assert.ok(binding);
   assert.equal(binding.platform, 'feishu');
-  assert.equal(store.getConversation(binding.conversationId).type, 'coding');
+  assert.equal(store.getConversation(binding.conversationId).type, 'standard');
 
   const firstEventCount = store.db.prepare('SELECT COUNT(*) AS count FROM chat_external_events').get().count;
   assert.equal(firstEventCount, 1);
@@ -320,13 +320,13 @@ test('feishu controller handles /new by rebinding the chat without submitting a 
   assert.deepEqual(sentMessages, [
     {
       chatId: 'oc-chat-new',
-      text: '已新建并切换到新的 coding 会话。',
+      text: '已新建并切换到新的会话。',
     },
   ]);
 
   const reboundBinding = store.getConversationChannelBinding('feishu', 'oc-chat-new');
   assert.notEqual(reboundBinding.conversationId, firstConversationId);
-  assert.equal(store.getConversation(reboundBinding.conversationId).type, 'coding');
+  assert.equal(store.getConversation(reboundBinding.conversationId).type, 'standard');
 
   const duplicateCommandResponse = await invokeWebhook(controller, buildPayload('evt-new-command', 'om-new-command', ' /new '));
   assert.equal(duplicateCommandResponse.statusCode, 200);

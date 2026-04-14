@@ -56,6 +56,27 @@ function normalizeSkillIds(value: any) {
   return dedupSkillIds(parsed);
 }
 
+function mergeSkillIds(...groups: any[]) {
+  const merged = [] as string[];
+
+  for (const group of groups) {
+    merged.push(...normalizeSkillIds(group));
+  }
+
+  return dedupSkillIds(merged);
+}
+
+function normalizeModeName(value: any) {
+  return String(value || '').trim().toLowerCase();
+}
+
+const LEGACY_FEISHU_CODING_MODE_ID = 'coding';
+const CODING_MODE_NAME = 'coding';
+
+function modeHasSkillBindings(mode: any) {
+  return Array.isArray(mode && mode.skillIds) && mode.skillIds.length > 0;
+}
+
 function normalizeLoadingStrategy(value: any) {
   const normalized = String(value || '').trim().toLowerCase();
 
@@ -88,14 +109,6 @@ const BUILTIN_MODES = [
     id: 'standard',
     name: '普通对话',
     description: '标准对话模式，不自动注入额外 skill',
-    builtin: true,
-    skillIds: [],
-    loadingStrategy: 'dynamic',
-  },
-  {
-    id: 'coding',
-    name: 'Coding',
-    description: '面向编码协作的默认会话模式',
     builtin: true,
     skillIds: [],
     loadingStrategy: 'dynamic',
@@ -156,6 +169,82 @@ export class ModeStore {
     this.deleteStatement = db.prepare('DELETE FROM modes WHERE id = ?');
 
     this.seedBuiltinModes();
+    this.migrateLegacyFeishuCodingMode();
+  }
+
+  resolveCodingMode() {
+    const modes = this.list();
+    const namedCodingModes = modes.filter((mode: any) => (
+      mode
+      && (mode.id === LEGACY_FEISHU_CODING_MODE_ID || normalizeModeName(mode.name) === CODING_MODE_NAME)
+    ));
+
+    return namedCodingModes.find((mode: any) => !mode.builtin && modeHasSkillBindings(mode))
+      || namedCodingModes.find((mode: any) => !mode.builtin)
+      || namedCodingModes.find((mode: any) => mode.id === LEGACY_FEISHU_CODING_MODE_ID && modeHasSkillBindings(mode))
+      || null;
+  }
+
+  applyModeSkillIdsToConversationParticipants(conversationIds: any[], mode: any) {
+    const modeSkillIds = normalizeSkillIds(mode && mode.skillIds);
+    const normalizedConversationIds = Array.from(new Set(
+      (Array.isArray(conversationIds) ? conversationIds : [])
+        .map((conversationId) => String(conversationId || '').trim())
+        .filter(Boolean)
+    ));
+
+    if (modeSkillIds.length === 0 || normalizedConversationIds.length === 0) {
+      return;
+    }
+
+    const listParticipants = this.db.prepare(`
+      SELECT conversation_id, agent_id, conversation_skills_json
+      FROM chat_conversation_agents
+      WHERE conversation_id = ?
+    `);
+    const updateParticipant = this.db.prepare(`
+      UPDATE chat_conversation_agents
+      SET conversation_skills_json = ?
+      WHERE conversation_id = ? AND agent_id = ?
+    `);
+
+    for (const conversationId of normalizedConversationIds) {
+      const participants = listParticipants.all(conversationId);
+
+      for (const participant of participants) {
+        const mergedSkillIds = mergeSkillIds(participant.conversation_skills_json, modeSkillIds);
+        updateParticipant.run(
+          serializeJson(mergedSkillIds),
+          participant.conversation_id,
+          participant.agent_id,
+        );
+      }
+    }
+  }
+
+  migrateLegacyFeishuCodingMode() {
+    const legacyMode = normalizeModeRow(this.getStatement.get(LEGACY_FEISHU_CODING_MODE_ID));
+
+    if (!legacyMode || !legacyMode.builtin || modeHasSkillBindings(legacyMode)) {
+      return;
+    }
+
+    const preferredMode = this.resolveCodingMode();
+
+    if (!preferredMode || preferredMode.id === legacyMode.id || !modeHasSkillBindings(preferredMode)) {
+      return;
+    }
+
+    const conversationRows = this.db.prepare('SELECT id FROM chat_conversations WHERE type = ?').all(legacyMode.id);
+    const conversationIds = conversationRows.map((row: any) => row.id);
+    const migrateLegacyMode = this.db.transaction(() => {
+      this.db.prepare('UPDATE chat_conversations SET type = ?, updated_at = ? WHERE type = ?')
+        .run(preferredMode.id, nowIso(), legacyMode.id);
+      this.applyModeSkillIdsToConversationParticipants(conversationIds, preferredMode);
+      this.deleteStatement.run(legacyMode.id);
+    });
+
+    migrateLegacyMode();
   }
 
   seedBuiltinModes() {

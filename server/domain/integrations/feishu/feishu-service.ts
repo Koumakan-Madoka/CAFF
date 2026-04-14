@@ -1,7 +1,8 @@
 const { createHttpError } = require('../../../http/http-errors');
 
 const FEISHU_PLATFORM = 'feishu';
-const FEISHU_DEFAULT_CONVERSATION_TYPE = 'coding';
+const FEISHU_LEGACY_CODING_MODE_ID = 'coding';
+const FEISHU_FALLBACK_CONVERSATION_TYPE = 'standard';
 const FEISHU_NEW_CONVERSATION_COMMAND = '/new';
 
 function nowIso() {
@@ -187,6 +188,7 @@ export function createFeishuIntegrationService(options: any = {}) {
   const store = options.store;
   const turnOrchestrator = options.turnOrchestrator;
   const client = options.client;
+  const modeStore = options.modeStore;
   const verificationToken = trimString(options.verificationToken || process.env.FEISHU_VERIFICATION_TOKEN);
   const logger = options.logger || console;
 
@@ -293,10 +295,36 @@ export function createFeishuIntegrationService(options: any = {}) {
     };
   }
 
-  function bindNewConversationToFeishuChat(acceptedInbound: any, bindingMetadata: any = {}) {
-    const conversation = store.createConversation({
+  function resolveFeishuConversationMode() {
+    if (modeStore && typeof modeStore.resolveCodingMode === 'function') {
+      const resolvedMode = modeStore.resolveCodingMode();
+
+      if (resolvedMode && resolvedMode.id) {
+        return resolvedMode;
+      }
+    }
+
+    if (modeStore && typeof modeStore.get === 'function') {
+      const legacyMode = modeStore.get(FEISHU_LEGACY_CODING_MODE_ID);
+
+      if (legacyMode && legacyMode.id && Array.isArray(legacyMode.skillIds) && legacyMode.skillIds.length > 0) {
+        return legacyMode;
+      }
+    }
+
+    return {
+      id: FEISHU_FALLBACK_CONVERSATION_TYPE,
+      skillIds: [],
+    };
+  }
+
+  function buildFeishuConversationInput(acceptedInbound: any) {
+    const mode = resolveFeishuConversationMode();
+
+    return {
       title: buildConversationTitle(String(acceptedInbound.chatType || ''), String(acceptedInbound.chatId || '')),
-      type: FEISHU_DEFAULT_CONVERSATION_TYPE,
+      type: trimString(mode && mode.id) || FEISHU_FALLBACK_CONVERSATION_TYPE,
+      defaultConversationSkillIds: Array.isArray(mode && mode.skillIds) ? mode.skillIds : [],
       metadata: {
         source: FEISHU_PLATFORM,
         feishu: {
@@ -304,7 +332,11 @@ export function createFeishuIntegrationService(options: any = {}) {
           chatType: acceptedInbound.chatType,
         },
       },
-    });
+    };
+  }
+
+  function bindNewConversationToFeishuChat(acceptedInbound: any, bindingMetadata: any = {}) {
+    const conversation = store.createConversation(buildFeishuConversationInput(acceptedInbound));
     const metadata = {
       chatType: acceptedInbound.chatType,
       ...bindingMetadata,
@@ -338,7 +370,7 @@ export function createFeishuIntegrationService(options: any = {}) {
       };
     }
 
-    const result = await client.sendTextMessage(chatId, '已新建并切换到新的 coding 会话。');
+    const result = await client.sendTextMessage(chatId, '已新建并切换到新的会话。');
     return {
       sent: true,
       externalMessageId: result && result.messageId ? result.messageId : null,
@@ -455,15 +487,7 @@ export function createFeishuIntegrationService(options: any = {}) {
       ensured = store.getOrCreateExternalConversation({
         platform: FEISHU_PLATFORM,
         externalChatId: acceptedInbound.chatId,
-        title: buildConversationTitle(String(acceptedInbound.chatType || ''), String(acceptedInbound.chatId || '')),
-        type: FEISHU_DEFAULT_CONVERSATION_TYPE,
-        metadata: {
-          source: FEISHU_PLATFORM,
-          feishu: {
-            chatId: acceptedInbound.chatId,
-            chatType: acceptedInbound.chatType,
-          },
-        },
+        ...buildFeishuConversationInput(acceptedInbound),
         bindingMetadata: {
           chatType: acceptedInbound.chatType,
         },

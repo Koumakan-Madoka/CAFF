@@ -206,6 +206,7 @@ export function createServerApp(options: any = {}) {
     store,
     turnOrchestrator,
     client: feishuClient,
+    modeStore,
   });
   const feishuLongConnection = createFeishuLongConnectionSource({
     feishuService: feishuIntegration,
