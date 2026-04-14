@@ -75,6 +75,37 @@
                 <input id="st-prompt-version" type="text" maxlength="80" placeholder="skill-test-v2" />
               </label>
               <label class="skill-tests-toolbar-field">
+                <span>隔离模式</span>
+                <select id="st-isolation-mode">
+                  <option value="isolated">isolated（推荐）</option>
+                  <option value="legacy-local">legacy-local（仅本地调试）</option>
+                </select>
+              </label>
+              <label class="skill-tests-toolbar-field">
+                <span>Trellis 上下文</span>
+                <select id="st-trellis-mode">
+                  <option value="none">none</option>
+                  <option value="fixture">fixture</option>
+                  <option value="readonlySnapshot">readonlySnapshot</option>
+                </select>
+                <p id="st-trellis-mode-help" class="section-hint">none：不给 .trellis；fixture：给最小可用样板；readonlySnapshot：给接近真实项目的只读快照。</p>
+              </label>
+              <label class="skill-tests-toolbar-field">
+                <span>网络</span>
+                <select id="st-egress-mode">
+                  <option value="deny">deny（默认）</option>
+                  <option value="allow">allow</option>
+                </select>
+              </label>
+              <div class="skill-tests-toolbar-field skill-tests-toolbar-field-wide">
+                <span>Publish Gate</span>
+                <label>
+                  <input id="st-publish-gate" type="checkbox" />
+                  <span>将本次运行作为 publish gate 证据</span>
+                </label>
+                <p class="section-hint">仅真正 sandbox 隔离结果可作为 gate；legacy-local 不算。</p>
+              </div>
+              <label class="skill-tests-toolbar-field">
                 <span>数量</span>
                 <input id="st-generate-count" type="number" min="1" max="10" value="3" />
               </label>
@@ -97,7 +128,7 @@
               <button id="st-run-all-btn" class="ghost-button" type="button">批量运行 Ready 用例</button>
               <span id="st-case-count" class="section-hint">0 个用例</span>
             </div>
-            <p class="section-hint skill-tests-toolbar-footnote">使用顶部模型 AI 生成 draft；先改草稿，再手动运行。批量运行只跑 ready。</p>
+            <p id="st-run-settings-hint" class="section-hint skill-tests-toolbar-footnote">当前运行默认：isolated / none / deny。普通 skill 建议保持 none；Trellis 类 skill 可切到 fixture 或 readonlySnapshot。</p>
             <div id="st-run-progress" class="run-progress-container hidden"></div>
           </section>
 

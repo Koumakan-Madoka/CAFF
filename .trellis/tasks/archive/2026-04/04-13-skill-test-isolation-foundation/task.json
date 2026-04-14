@@ -1,0 +1,60 @@
+{
+  "id": "skill-test-isolation-foundation",
+  "name": "skill-test-isolation-foundation",
+  "title": "Skill-Test Isolation Foundation",
+  "description": "Add container-first skill-test isolation using OpenSandbox plus CAFF thin bridge/policy governance.",
+  "status": "completed",
+  "dev_type": "backend",
+  "scope": null,
+  "package": null,
+  "priority": "P1",
+  "creator": "菲比啾比",
+  "assignee": "菲比啾比",
+  "createdAt": "2026-04-13",
+  "completedAt": "2026-04-14",
+  "branch": "feat/skill-test-isolation-foundation",
+  "base_branch": "main",
+  "worktree_path": null,
+  "current_phase": 0,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "check"
+    },
+    {
+      "phase": 3,
+      "action": "finish"
+    },
+    {
+      "phase": 4,
+      "action": "create-pr"
+    }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "hermes-memory-skill-iteration",
+  "relatedFiles": [
+    "server/api/skill-test-controller.ts",
+    "server/domain/conversation/turn/agent-sandbox.ts",
+    "server/domain/runtime/agent-tool-bridge.ts",
+    "server/domain/conversation/turn/agent-prompt.ts",
+    "server/domain/conversation/turn/agent-executor.ts",
+    "lib/pi-runtime.ts",
+    "lib/skill-registry.ts",
+    "storage/sqlite/migrations.ts",
+    "tests/skill-test/",
+    "tests/runtime/agent-tool-bridge.test.js",
+    "tests/runtime/skill-loading.test.js"
+  ],
+  "notes": "Child of hermes-memory-skill-iteration. Owns isolation only; memory and proposal publishing are separate tasks.",
+  "meta": {
+    "sandboxBackendCandidate": "OpenSandbox",
+    "defaultGateMode": "container-with-thin-bridge-policy"
+  }
+}

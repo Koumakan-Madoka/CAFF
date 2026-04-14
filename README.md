@@ -94,6 +94,12 @@ npm run start:dev
 |---|---|---|
 | `CHAT_APP_HOST` | `127.0.0.1` | 服务监听地址 |
 | `CHAT_APP_PORT` | `3100` | 服务端口 |
+| `CHAT_APP_ADVERTISE_URL` | — | 供 sandbox / 外部环境回连本机 CAFF 时使用的可达 base URL |
+| `CAFF_SKILL_TEST_OPENSANDBOX_CHAT_API_URL` | — | 仅给 OpenSandbox skill-test 直连 bridge 使用的显式覆盖 URL |
+| `CAFF_SKILL_TEST_OPENSANDBOX_API_URL` | — | OpenSandbox lifecycle API 地址；本地部署通常是 `http://127.0.0.1:8080` |
+| `CAFF_SKILL_TEST_OPENSANDBOX_SDK_PATH` | — | 官方 OpenSandbox JS SDK `dist/index.js` 本地路径 |
+| `CAFF_SKILL_TEST_OPENSANDBOX_IMAGE` | `node:20-bookworm` | skill-test sandbox 默认镜像；需要内置 Node |
+| `CAFF_SKILL_TEST_OPENSANDBOX_USE_SERVER_PROXY` | `true` | 是否通过 lifecycle server proxy 访问 sandbox execd |
 | `PI_CODING_AGENT_DIR` | auto-detected | pi 运行目录（默认 `.pi-sandbox/`） |
 | `PI_SQLITE_PATH` | auto-detected | SQLite 数据文件路径 |
 | `PI_PROVIDER` | — | 默认模型提供商 |
@@ -107,6 +113,10 @@ npm run start:dev
 | `FEISHU_LONG_CONNECTION_LOGGER_LEVEL` | `info` | 官方 SDK long connection 日志级别 |
 
 CAFF 在 `npm run start` / `npm run start:dev` 时会自动读取 `./.env.local`。如果变量已经存在于当前进程环境中，则进程环境优先。
+
+OpenSandbox chat bridge POC 推荐这样配：把 `CHAT_APP_HOST` 设成 `0.0.0.0`，再把 `CHAT_APP_ADVERTISE_URL` 设成 sandbox 真能访问到的 CAFF 地址（例如局域网 IP、host alias 或临时 tunnel URL）。如果只想给 skill-test sandbox 单独覆写，就设置 `CAFF_SKILL_TEST_OPENSANDBOX_CHAT_API_URL`。
+
+如果你使用本地 OpenSandbox 源码而不是云端：先在 `OpenSandbox/server` 启动 lifecycle server，再把 `CAFF_SKILL_TEST_OPENSANDBOX_API_URL` 指向本地地址；同时把 `CAFF_SKILL_TEST_OPENSANDBOX_SDK_PATH` 指到本地构建好的官方 JS SDK `dist/index.js`。这条链路需要 Docker 可用，而且镜像里要有 Node（默认 `node:20-bookworm`）。
 
 ## 🧭 Web 工作台
 

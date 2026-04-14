@@ -3,7 +3,7 @@
   "name": "cross-conversation-l1-memory",
   "title": "Cross-Conversation L1 Memory",
   "description": "Promote L1 curated memory from conversation-scoped cards to local-user + agent durable memory with conversation overlay precedence.",
-  "status": "in_progress",
+  "status": "completed",
   "dev_type": "backend",
   "scope": null,
   "package": null,
@@ -11,11 +11,11 @@
   "creator": "菲比啾比",
   "assignee": "菲比啾比",
   "createdAt": "2026-04-13",
-  "completedAt": null,
+  "completedAt": "2026-04-13",
   "branch": "feat/hermes-memory-skill-iteration",
   "base_branch": "main",
   "worktree_path": null,
-  "current_phase": 1,
+  "current_phase": 0,
   "next_action": [
     {
       "phase": 1,

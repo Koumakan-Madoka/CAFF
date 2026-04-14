@@ -16,3 +16,5 @@
 {"file": "tests/runtime/agent-tool-bridge.test.js", "reason": "Verified list-memories/save-memory bridge contracts and unsafe write rejection"}
 {"file": "tests/runtime/turn-orchestrator.test.js", "reason": "Verified prompt guidance and injected memory card section"}
 {"file": "tests/runtime/agent-chat-tools.test.js", "reason": "Verified memory tool results remain visible by default"}
+{"file": ".trellis/tasks/archive/2026-04/04-13-layered-memory-foundation/task.json", "reason": "Verified the layered-memory child is already completed and ready to archive under the umbrella closeout."}
+{"file": ".trellis/tasks/archive/2026-04/04-13-skill-test-isolation-foundation/task.json", "reason": "Verified the isolation child is already completed and archived; publish-gate follow-up stays deferred outside this umbrella."}

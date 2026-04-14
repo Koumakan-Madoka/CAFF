@@ -108,9 +108,9 @@
 - [x] Memory and skill-test isolation have separate child task directories and PRDs.
 - [x] Child task metadata binds each implementation line to a dedicated branch name with `main` as base.
 - [x] This umbrella PRD records the architecture split and dependency order.
-- [ ] Memory implementation and verification are completed under `04-13-layered-memory-foundation`.
-- [ ] Skill-test isolation implementation and verification are completed under `04-13-skill-test-isolation-foundation`.
-- [ ] Skill proposal / publish gate remains deferred until isolation is available.
+- [x] Memory implementation and verification are completed under `04-13-layered-memory-foundation`.
+- [x] Skill-test isolation implementation and verification are completed under `04-13-skill-test-isolation-foundation`.
+- [x] Skill proposal / publish gate remains deferred as a follow-up task outside this umbrella closure.
 
 ## Technical Notes
 

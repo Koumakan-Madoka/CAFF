@@ -4,7 +4,45 @@ const path = require('node:path');
 const Database = require('better-sqlite3');
 const test = require('node:test');
 const { createChatAppStore } = require('../../build/lib/chat-app-store');
+const { migrateChatSchema } = require('../../build/storage/sqlite/migrations');
 const { withTempDir } = require('../helpers/temp-dir');
+
+test('migrateChatSchema emits debug warning when FTS setup fails and debug logging is enabled', (t) => {
+  const originalWarn = console.warn;
+  const originalFlag = process.env.CAFF_DEBUG_SQLITE_MIGRATIONS;
+  const warnings = [];
+  const fakeDb = {
+    prepare() {
+      return {
+        all() {
+          return [];
+        },
+      };
+    },
+    exec(sql) {
+      if (String(sql || '').includes('CREATE VIRTUAL TABLE IF NOT EXISTS chat_message_search')) {
+        throw new Error('fts unavailable in test');
+      }
+    },
+  };
+
+  console.warn = (message) => {
+    warnings.push(String(message));
+  };
+  process.env.CAFF_DEBUG_SQLITE_MIGRATIONS = '1';
+
+  t.after(() => {
+    console.warn = originalWarn;
+    if (originalFlag === undefined) {
+      delete process.env.CAFF_DEBUG_SQLITE_MIGRATIONS;
+    } else {
+      process.env.CAFF_DEBUG_SQLITE_MIGRATIONS = originalFlag;
+    }
+  });
+
+  migrateChatSchema(fakeDb);
+  assert.ok(warnings.some((message) => message.includes('chat_message_search schema setup skipped')));
+});
 
 function listColumnNames(db, tableName) {
   return new Set(

@@ -21,6 +21,12 @@
     agentSelect: /** @type {HTMLSelectElement | null} */ (document.getElementById('st-agent-select')),
     modelSelect: /** @type {HTMLSelectElement | null} */ (document.getElementById('st-model-select')),
     promptVersionInput: /** @type {HTMLInputElement | null} */ (document.getElementById('st-prompt-version')),
+    isolationModeSelect: /** @type {HTMLSelectElement | null} */ (document.getElementById('st-isolation-mode')),
+    trellisModeSelect: /** @type {HTMLSelectElement | null} */ (document.getElementById('st-trellis-mode')),
+    trellisModeHelp: /** @type {HTMLElement | null} */ (document.getElementById('st-trellis-mode-help')),
+    egressModeSelect: /** @type {HTMLSelectElement | null} */ (document.getElementById('st-egress-mode')),
+    publishGateInput: /** @type {HTMLInputElement | null} */ (document.getElementById('st-publish-gate')),
+    runSettingsHint: /** @type {HTMLElement | null} */ (document.getElementById('st-run-settings-hint')),
     generateButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('st-generate-btn')),
     generateCount: /** @type {HTMLInputElement | null} */ (document.getElementById('st-generate-count')),
     generateLoadingMode: /** @type {HTMLSelectElement | null} */ (document.getElementById('st-generate-loading-mode')),
@@ -136,6 +142,10 @@
     };
   }
 
+  function hasOwn(value, key) {
+    return Boolean(value) && Object.prototype.hasOwnProperty.call(value, key);
+  }
+
   function normalizeToolTraceStepStatus(status) {
     const normalized = String(status || '').trim().toLowerCase();
     if (normalized === 'succeeded' || normalized === 'completed' || normalized === 'ok') return 'succeeded';
@@ -243,9 +253,23 @@
     return nextTrace;
   }
 
+  function resolveLiveRunOutputText(payload, existingOutputText, phase) {
+    if (hasOwn(payload, 'outputText')) {
+      return String(payload.outputText || '');
+    }
+    if ((phase === 'output_delta' || phase === 'assistant_text_delta') && hasOwn(payload, 'delta')) {
+      return `${String(existingOutputText || '')}${String(payload.delta || '')}`;
+    }
+    if (phase === 'started') {
+      return '';
+    }
+    return String(existingOutputText || '');
+  }
+
   function createLiveSkillRun(payload = {}) {
     const messageId = String(payload.messageId || '').trim();
     const taskId = String(payload.taskId || '').trim();
+    const phase = String(payload.phase || '').trim().toLowerCase();
     return {
       caseId: String(payload.caseId || '').trim(),
       skillId: String(payload.skillId || '').trim(),
@@ -260,9 +284,11 @@
       model: String(payload.model || '').trim(),
       promptVersion: String(payload.promptVersion || '').trim(),
       status: String(payload.status || 'running').trim() || 'running',
+      executionRuntime: String(payload.executionRuntime || '').trim(),
+      progressLabel: String(payload.progressLabel || '').trim(),
       createdAt: String(payload.createdAt || '').trim(),
       finishedAt: String(payload.finishedAt || '').trim(),
-      outputText: String(payload.outputText || '').trim(),
+      outputText: resolveLiveRunOutputText(payload, '', phase),
       errorMessage: String(payload.errorMessage || '').trim(),
       trace: rebuildLiveRunTrace(payload.trace || {
         message: messageId ? { id: messageId, status: 'streaming', taskId, runId: payload.runId || null, createdAt: String(payload.createdAt || '').trim() } : null,
@@ -292,6 +318,11 @@
     liveRun.trace = rebuildLiveRunTrace(liveRun.trace);
   }
 
+  function isTerminalLiveRunStatus(status) {
+    const normalized = String(status || '').trim().toLowerCase();
+    return normalized === 'completed' || normalized === 'succeeded' || normalized === 'failed';
+  }
+
   function applyLiveSkillRunPayload(payload) {
     if (!payload || typeof payload !== 'object') {
       return;
@@ -307,7 +338,7 @@
       ...payload,
       ...(phase === 'started' ? { outputText: '', errorMessage: '', finishedAt: '' } : {}),
       status: String(payload.status || existing.status || '').trim() || existing.status,
-      outputText: payload.outputText !== undefined ? String(payload.outputText || '') : phase === 'started' ? '' : existing.outputText,
+      outputText: resolveLiveRunOutputText(payload, existing.outputText, phase),
       errorMessage: payload.errorMessage !== undefined ? String(payload.errorMessage || '') : phase === 'started' ? '' : existing.errorMessage,
       finishedAt: payload.finishedAt !== undefined ? String(payload.finishedAt || '') : phase === 'started' ? '' : existing.finishedAt,
       trace: rebuildLiveRunTrace(payload.trace || existing.trace),
@@ -401,6 +432,27 @@
     return '等待中';
   }
 
+  function liveRunPendingLabel(liveRun) {
+    if (liveRun && liveRun.progressLabel) {
+      return String(liveRun.progressLabel);
+    }
+    const runtime = String(liveRun && liveRun.executionRuntime ? liveRun.executionRuntime : '').trim().toLowerCase();
+    const status = String(liveRun && liveRun.status ? liveRun.status : '').trim().toLowerCase();
+    if (status === 'terminating') {
+      return '正在收尾…';
+    }
+    if (status === 'failed') {
+      return '运行失败；结束前没有收到实时工具事件。';
+    }
+    if (status === 'completed' || status === 'succeeded') {
+      return '运行完成；本次没有收到实时工具事件。';
+    }
+    if (runtime === 'sandbox') {
+      return '正在准备 sandbox runner…';
+    }
+    return '正在等待工具调用…';
+  }
+
   function formatTracePayloadText(value) {
     if (value == null || value === '') {
       return '';
@@ -415,11 +467,106 @@
     }
   }
 
+  function captureElementScrollState(element) {
+    if (!(element instanceof HTMLElement)) {
+      return null;
+    }
+
+    const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
+    const distanceFromBottom = Math.max(0, maxScrollTop - element.scrollTop);
+
+    return {
+      scrollTop: element.scrollTop,
+      stickToBottom: distanceFromBottom <= 24,
+    };
+  }
+
+  function restoreElementScrollState(element, snapshot) {
+    if (!(element instanceof HTMLElement) || !snapshot) {
+      return;
+    }
+
+    const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
+    element.scrollTop = snapshot.stickToBottom
+      ? maxScrollTop
+      : Math.max(0, Math.min(snapshot.scrollTop, maxScrollTop));
+  }
+
+  function captureLiveTraceViewportState(container) {
+    if (!container) {
+      return null;
+    }
+
+    const viewport = container.querySelector('.message-tool-trace-steps-viewport.scrollable');
+    if (!(viewport instanceof HTMLElement)) {
+      return null;
+    }
+
+    const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+    const distanceFromBottom = Math.max(0, maxScrollTop - viewport.scrollTop);
+    const viewportTop = viewport.getBoundingClientRect().top;
+    const stepElements = Array.from(viewport.querySelectorAll('.message-tool-trace-step'));
+    let anchorStepId = '';
+    let anchorOffset = 0;
+
+    for (const stepElement of stepElements) {
+      if (!(stepElement instanceof HTMLElement)) {
+        continue;
+      }
+      const rect = stepElement.getBoundingClientRect();
+      if (rect.bottom <= viewportTop) {
+        continue;
+      }
+      anchorStepId = stepElement.dataset.stepId || '';
+      anchorOffset = rect.top - viewportTop;
+      break;
+    }
+
+    return {
+      scrollTop: viewport.scrollTop,
+      stickToBottom: distanceFromBottom <= 24,
+      anchorStepId,
+      anchorOffset,
+    };
+  }
+
+  function restoreLiveTraceViewportState(container, snapshot) {
+    if (!container || !snapshot) {
+      return;
+    }
+
+    const viewport = container.querySelector('.message-tool-trace-steps-viewport.scrollable');
+    if (!(viewport instanceof HTMLElement)) {
+      return;
+    }
+
+    const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+    if (snapshot.stickToBottom) {
+      viewport.scrollTop = maxScrollTop;
+      return;
+    }
+
+    if (snapshot.anchorStepId) {
+      const anchorStep = Array.from(viewport.querySelectorAll('.message-tool-trace-step')).find(
+        (stepElement) => stepElement instanceof HTMLElement && stepElement.dataset.stepId === snapshot.anchorStepId
+      );
+      if (anchorStep instanceof HTMLElement) {
+        const targetScrollTop = anchorStep.offsetTop - snapshot.anchorOffset;
+        viewport.scrollTop = Math.max(0, Math.min(targetScrollTop, maxScrollTop));
+        return;
+      }
+    }
+
+    viewport.scrollTop = Math.max(0, Math.min(snapshot.scrollTop, maxScrollTop));
+  }
+
   function renderLiveSkillRun() {
     const container = dom.liveRun;
     if (!container) {
       return;
     }
+    const preservedContainerScroll = captureElementScrollState(container);
+    const preservedViewport = captureLiveTraceViewportState(container);
     const liveRun = state.selectedCaseId ? state.liveSkillRunsByCaseId.get(state.selectedCaseId) || null : null;
     if (!liveRun) {
       container.innerHTML = '';
@@ -459,7 +606,7 @@
                   ? step.partialJson
                   : ''
           );
-          return `<article class="message-tool-trace-step ${stepTone}${index === arr.length - 1 ? ' last' : ''}">
+          return `<article class="message-tool-trace-step ${stepTone}${index === arr.length - 1 ? ' last' : ''}" data-step-id="${escapeHtml(step && step.stepId ? String(step.stepId) : `tool-step-${index + 1}`)}">
             <div class="message-tool-trace-step-rail"><div class="message-tool-trace-step-index">${index + 1}</div><div class="message-tool-trace-step-line"></div></div>
             <div class="message-tool-trace-step-main">
               <div class="message-tool-trace-step-header">
@@ -474,10 +621,10 @@
             </div>
           </article>`;
         }).join('')
-      : '<div class="message-tool-trace-note">正在等待工具调用…</div>';
+      : `<div class="message-tool-trace-note">${escapeHtml(liveRunPendingLabel(liveRun))}</div>`;
 
     const outputText = liveRun.outputText
-      ? `<div class="message-tool-trace-note">模型输出：${escapeHtml(clipText(liveRun.outputText, 240))}</div>`
+      ? `<div class="message-tool-trace-note">模型输出：${escapeHtml(clipText(liveRun.outputText, 800))}</div>`
       : '';
     const errorText = liveRun.errorMessage
       ? `<div class="message-tool-trace-note failed">错误：${escapeHtml(liveRun.errorMessage)}</div>`
@@ -508,6 +655,8 @@
         </div>
       </section>
     `;
+    restoreElementScrollState(container, preservedContainerScroll);
+    restoreLiveTraceViewportState(container, preservedViewport);
   }
 
   function connectSkillTestEventStream() {
@@ -1140,6 +1289,7 @@
       panel.classList.toggle('hidden', panel.id !== tabId);
     });
     if (tabId === 'panel-skill-tests') {
+      restoreSelections();
       connectSkillTestEventStream();
       loadBootstrapOptions();
       loadSkills();
@@ -1235,6 +1385,101 @@
   const LS_KEY_MODEL = 'caff_skill_test_model';
   const LS_KEY_SKILL = 'caff_skill_test_skill';
   const LS_KEY_PROMPT_VERSION = 'caff_skill_test_prompt_version';
+  const LS_KEY_ISOLATION_MODE = 'caff_skill_test_isolation_mode';
+  const LS_KEY_TRELLIS_MODE = 'caff_skill_test_trellis_mode';
+  const LS_KEY_EGRESS_MODE = 'caff_skill_test_egress_mode';
+  const LS_KEY_PUBLISH_GATE = 'caff_skill_test_publish_gate';
+  const DEFAULT_UI_ISOLATION_MODE = 'isolated';
+  const DEFAULT_UI_TRELLIS_MODE = 'none';
+  const DEFAULT_UI_EGRESS_MODE = 'deny';
+
+  function normalizeUiIsolationMode(value) {
+    return String(value || '').trim().toLowerCase() === 'legacy-local' ? 'legacy-local' : DEFAULT_UI_ISOLATION_MODE;
+  }
+
+  function normalizeUiTrellisMode(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (normalized === 'fixture') return 'fixture';
+    if (normalized === 'readonlysnapshot') return 'readonlySnapshot';
+    return DEFAULT_UI_TRELLIS_MODE;
+  }
+
+  function normalizeUiEgressMode(value) {
+    return String(value || '').trim().toLowerCase() === 'allow' ? 'allow' : DEFAULT_UI_EGRESS_MODE;
+  }
+
+  function getIsolationModeLabel(mode) {
+    return normalizeUiIsolationMode(mode) === 'legacy-local' ? 'legacy-local（本地调试）' : 'isolated（隔离）';
+  }
+
+  function getTrellisModeLabel(mode) {
+    const normalized = normalizeUiTrellisMode(mode);
+    if (normalized === 'fixture') return 'fixture（最小 Trellis）';
+    if (normalized === 'readonlySnapshot') return 'readonlySnapshot（只读快照）';
+    return 'none（无 Trellis）';
+  }
+
+  function getEgressModeLabel(mode) {
+    return normalizeUiEgressMode(mode) === 'allow' ? 'allow（允许外连）' : 'deny（禁止外连）';
+  }
+
+  function getTrellisModeHelpText(isolationMode, trellisMode) {
+    if (normalizeUiIsolationMode(isolationMode) !== 'isolated') {
+      return 'legacy-local 不会提供 Trellis fixture 或 snapshot；这个选项只在 isolated 模式下生效。';
+    }
+    const normalized = normalizeUiTrellisMode(trellisMode);
+    if (normalized === 'fixture') {
+      return 'fixture：给最小可用的 .trellis 样板，适合 before-dev、trellis-write 这类稳定测试。';
+    }
+    if (normalized === 'readonlySnapshot') {
+      return 'readonlySnapshot：给接近真实项目的只读快照，读取更像真环境，但写入仍只留在 case 世界。';
+    }
+    return 'none：不给 .trellis，适合普通 skill，或验证这个 skill 不该依赖 Trellis。';
+  }
+
+  function readRunIsolationSettings() {
+    const isolationMode = normalizeUiIsolationMode(dom.isolationModeSelect ? dom.isolationModeSelect.value : DEFAULT_UI_ISOLATION_MODE);
+    const publishGateChecked = Boolean(dom.publishGateInput && dom.publishGateInput.checked);
+    return {
+      isolationMode,
+      trellisMode: normalizeUiTrellisMode(dom.trellisModeSelect ? dom.trellisModeSelect.value : DEFAULT_UI_TRELLIS_MODE),
+      egressMode: normalizeUiEgressMode(dom.egressModeSelect ? dom.egressModeSelect.value : DEFAULT_UI_EGRESS_MODE),
+      publishGate: isolationMode === 'isolated' ? publishGateChecked : false,
+    };
+  }
+
+  function syncRunSettingsUi() {
+    const settings = readRunIsolationSettings();
+    const isolated = settings.isolationMode === 'isolated';
+
+    if (dom.trellisModeSelect) {
+      dom.trellisModeSelect.disabled = !isolated;
+    }
+    if (dom.egressModeSelect) {
+      dom.egressModeSelect.disabled = !isolated;
+    }
+    if (dom.publishGateInput) {
+      if (!isolated) {
+        dom.publishGateInput.checked = false;
+      }
+      dom.publishGateInput.disabled = !isolated;
+    }
+    if (dom.trellisModeHelp) {
+      dom.trellisModeHelp.textContent = getTrellisModeHelpText(settings.isolationMode, settings.trellisMode);
+    }
+    if (dom.runSettingsHint) {
+      if (!isolated) {
+        dom.runSettingsHint.textContent = '当前运行默认：legacy-local（仅本地调试）。它不会 materialize Trellis fixture，也不能作为 publish gate 的隔离证据。';
+      } else if (settings.trellisMode === 'fixture') {
+        dom.runSettingsHint.textContent = `当前运行默认：${getIsolationModeLabel(settings.isolationMode)} / ${getTrellisModeLabel(settings.trellisMode)} / ${getEgressModeLabel(settings.egressMode)}。适合 before-dev、trellis-write 这类要最小 .trellis 的稳定测试${settings.publishGate ? '；Publish Gate 已开启。' : '。'}`;
+      } else if (settings.trellisMode === 'readonlySnapshot') {
+        dom.runSettingsHint.textContent = `当前运行默认：${getIsolationModeLabel(settings.isolationMode)} / ${getTrellisModeLabel(settings.trellisMode)} / ${getEgressModeLabel(settings.egressMode)}。适合贴近真实 .trellis/spec 的回归，写操作只会留在 case 世界${settings.publishGate ? '；Publish Gate 已开启。' : '。'}`;
+      } else {
+        dom.runSettingsHint.textContent = `当前运行默认：${getIsolationModeLabel(settings.isolationMode)} / ${getTrellisModeLabel(settings.trellisMode)} / ${getEgressModeLabel(settings.egressMode)}。普通 skill 建议保持 none；Trellis 类 skill 可切到 fixture 或 readonlySnapshot${settings.publishGate ? '；Publish Gate 已开启。' : '。'}`;
+      }
+    }
+    scheduleSkillTestStickyOffsetSync();
+  }
 
   function persistSelections() {
     try {
@@ -1242,6 +1487,10 @@
       if (dom.modelSelect) localStorage.setItem(LS_KEY_MODEL, dom.modelSelect.value);
       if (dom.skillSelect) localStorage.setItem(LS_KEY_SKILL, dom.skillSelect.value);
       if (dom.promptVersionInput) localStorage.setItem(LS_KEY_PROMPT_VERSION, dom.promptVersionInput.value);
+      if (dom.isolationModeSelect) localStorage.setItem(LS_KEY_ISOLATION_MODE, normalizeUiIsolationMode(dom.isolationModeSelect.value));
+      if (dom.trellisModeSelect) localStorage.setItem(LS_KEY_TRELLIS_MODE, normalizeUiTrellisMode(dom.trellisModeSelect.value));
+      if (dom.egressModeSelect) localStorage.setItem(LS_KEY_EGRESS_MODE, normalizeUiEgressMode(dom.egressModeSelect.value));
+      if (dom.publishGateInput) localStorage.setItem(LS_KEY_PUBLISH_GATE, dom.publishGateInput.checked ? 'true' : 'false');
     } catch { /* ignore */ }
   }
 
@@ -1250,10 +1499,19 @@
       const savedAgent = localStorage.getItem(LS_KEY_AGENT);
       const savedModel = localStorage.getItem(LS_KEY_MODEL);
       const savedPromptVersion = localStorage.getItem(LS_KEY_PROMPT_VERSION);
+      const savedIsolationMode = localStorage.getItem(LS_KEY_ISOLATION_MODE);
+      const savedTrellisMode = localStorage.getItem(LS_KEY_TRELLIS_MODE);
+      const savedEgressMode = localStorage.getItem(LS_KEY_EGRESS_MODE);
+      const savedPublishGate = localStorage.getItem(LS_KEY_PUBLISH_GATE);
       if (savedAgent != null && dom.agentSelect) dom.agentSelect.value = savedAgent;
       if (savedModel != null && dom.modelSelect) dom.modelSelect.value = savedModel;
       if (savedPromptVersion != null && dom.promptVersionInput) dom.promptVersionInput.value = savedPromptVersion;
+      if (savedIsolationMode != null && dom.isolationModeSelect) dom.isolationModeSelect.value = normalizeUiIsolationMode(savedIsolationMode);
+      if (savedTrellisMode != null && dom.trellisModeSelect) dom.trellisModeSelect.value = normalizeUiTrellisMode(savedTrellisMode);
+      if (savedEgressMode != null && dom.egressModeSelect) dom.egressModeSelect.value = normalizeUiEgressMode(savedEgressMode);
+      if (savedPublishGate != null && dom.publishGateInput) dom.publishGateInput.checked = savedPublishGate === 'true';
     } catch { /* ignore */ }
+    syncRunSettingsUi();
   }
 
   function restoreSelectedSkill() {
@@ -1300,10 +1558,20 @@
     restoreSelections();
   }
 
+  function handleRunSettingChange() {
+    syncRunSettingsUi();
+    persistSelections();
+    renderSelectedSkillOverview();
+  }
+
   // Persist on change
   if (dom.agentSelect) dom.agentSelect.addEventListener('change', persistSelections);
   if (dom.modelSelect) dom.modelSelect.addEventListener('change', persistSelections);
   if (dom.promptVersionInput) dom.promptVersionInput.addEventListener('change', persistSelections);
+  if (dom.isolationModeSelect) dom.isolationModeSelect.addEventListener('change', handleRunSettingChange);
+  if (dom.trellisModeSelect) dom.trellisModeSelect.addEventListener('change', handleRunSettingChange);
+  if (dom.egressModeSelect) dom.egressModeSelect.addEventListener('change', handleRunSettingChange);
+  if (dom.publishGateInput) dom.publishGateInput.addEventListener('change', handleRunSettingChange);
 
   function getRunOptions() {
     const agentId = dom.agentSelect ? dom.agentSelect.value.trim() : '';
@@ -1334,6 +1602,16 @@
     if (agentId && Array.isArray(state.agents)) {
       const found = state.agents.find((agent) => agent && agent.id === agentId);
       if (found && found.name) opts.agentName = found.name;
+    }
+
+    const isolationSettings = readRunIsolationSettings();
+    opts.isolationMode = isolationSettings.isolationMode;
+    if (isolationSettings.isolationMode === 'isolated') {
+      opts.trellisMode = isolationSettings.trellisMode;
+      opts.egressMode = isolationSettings.egressMode;
+      if (isolationSettings.publishGate) {
+        opts.publishGate = true;
+      }
     }
     return opts;
   }
@@ -1483,6 +1761,36 @@
     }
   }
 
+  function reconcileLiveSkillRunFromFinalResult(caseId, runResult) {
+    const liveRun = state.liveSkillRunsByCaseId.get(caseId);
+    if (!liveRun) {
+      return;
+    }
+    const resultPayload = runResult && typeof runResult === 'object' ? runResult : {};
+    const run = resultPayload.run && typeof resultPayload.run === 'object' ? resultPayload.run : null;
+    if (!run) {
+      return;
+    }
+    const normalizedStatus = String(run.status || '').trim().toLowerCase();
+    const nextStatus = normalizedStatus === 'failed'
+      ? 'failed'
+      : (normalizedStatus === 'completed' || normalizedStatus === 'succeeded' ? 'succeeded' : '');
+    if (!nextStatus) {
+      return;
+    }
+    if (isTerminalLiveRunStatus(liveRun.status) && String(liveRun.finishedAt || '').trim()) {
+      return;
+    }
+    applyLiveSkillRunPayload({
+      caseId,
+      phase: nextStatus === 'failed' ? 'failed' : 'completed',
+      status: nextStatus,
+      progressLabel: '',
+      errorMessage: String(run.errorMessage || liveRun.errorMessage || ''),
+      finishedAt: String(run.createdAt || liveRun.finishedAt || new Date().toISOString()),
+    });
+  }
+
   async function runTestCase(caseId, options = {}) {
     if (!state.selectedSkillId || !caseId) {
       showToast('请先选择一个 Skill 和测试用例');
@@ -1510,6 +1818,7 @@
         `/api/skills/${encodeURIComponent(state.selectedSkillId)}/test-cases/${encodeURIComponent(caseId)}/run`,
         { method: 'POST', body: getRunOptions() }
       );
+      reconcileLiveSkillRunFromFinalResult(caseId, runResult);
       const runValidation = readRunValidation(runResult);
       const runIssues = runValidation.issues;
       const runMessage = runIssues.length > 0
@@ -1582,6 +1891,10 @@
       const run = tc.latestRun || null;
       return isFailingRun(run);
     }).length;
+    const runSettings = readRunIsolationSettings();
+    const runModeLabel = getIsolationModeLabel(runSettings.isolationMode);
+    const trellisModeLabel = getTrellisModeLabel(runSettings.trellisMode);
+    const egressModeLabel = getEgressModeLabel(runSettings.egressMode);
     const neverRunCount = state.testCases.filter((tc) => !tc.latestRun).length;
     const caseValidations = state.testCases.map((tc) => readCaseValidation(tc));
     const invalidCount = caseValidations.filter((validation) => validation.caseSchemaStatus === 'invalid').length;
@@ -1605,6 +1918,10 @@
       `<span class="tag tag-pending">Draft ${draftCount}</span>`,
       `<span class="tag tag-success">Ready ${readyCount}</span>`,
       `<span class="tag">Archived ${archivedCount}</span>`,
+      `<span class="tag">${escapeHtml(runModeLabel)}</span>`,
+      runSettings.isolationMode === 'isolated' ? `<span class="tag">${escapeHtml(trellisModeLabel)}</span>` : '<span class="tag tag-pending">非隔离 host 运行</span>',
+      runSettings.isolationMode === 'isolated' ? `<span class="tag">${escapeHtml(egressModeLabel)}</span>` : '',
+      runSettings.publishGate ? '<span class="tag tag-success">Publish Gate</span>' : '',
       `<span class="tag">可批量运行 ${readyCount}</span>`,
       `<span class="tag">最近失败 ${recentFailing}</span>`,
       neverRunCount > 0 ? `<span class="tag">未运行 ${neverRunCount}</span>` : '',
@@ -1623,6 +1940,9 @@
       ? `最近一次列表刷新失败，当前仍显示${casesRefreshLabel ? `${casesRefreshLabel} 的` : '上一次成功加载的'}结果；`
       : (casesRefreshLabel ? `列表最近一次成功刷新在 ${casesRefreshLabel}；` : '');
     const summaryHint = summaryRefreshLabel ? `全局概览更新在 ${summaryRefreshLabel}；` : '';
+    const runDefaultsHint = runSettings.isolationMode === 'isolated'
+      ? `当前运行默认 ${runModeLabel} / ${trellisModeLabel} / ${egressModeLabel}${runSettings.publishGate ? ' / Publish Gate' : ''}；`
+      : '当前运行默认 legacy-local，仅适合本地调试，不能作为隔离证据；';
     const nextStep = totalCases === 0
       ? '下一步：先 AI 生成或手动创建第一条用例。'
       : invalidCount > 0
@@ -1634,7 +1954,7 @@
             : neverRunCount > 0
               ? `下一步：还有 ${neverRunCount} 条没跑过的 case，可以先单条跑一轮。`
               : '下一步：可以继续批量运行 Ready 用例，或者切到回归对比看模型差异。';
-    dom.selectedSummary.textContent = `${refreshHint}${summaryHint}${filterHint}当前 Skill 的加载成功率 ${triggerRate}，执行通过率 ${executionRate}。${nextStep}`;
+    dom.selectedSummary.textContent = `${runDefaultsHint}${refreshHint}${summaryHint}${filterHint}当前 Skill 的加载成功率 ${triggerRate}，执行通过率 ${executionRate}。${nextStep}`;
 
     let overviewCallout = null;
     if (totalCases === 0) {

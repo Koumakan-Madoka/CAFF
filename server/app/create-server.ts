@@ -23,12 +23,13 @@ const { createUndercoverController } = require('../api/undercover-controller');
 const { createWerewolfController } = require('../api/werewolf-controller');
 const { createSkillTestController } = require('../api/skill-test-controller');
 const { resolveToolRelativePath } = require('../http/path-utils');
-const { HOST, PORT, ROOT_DIR } = require('./config');
+const { HOST, PORT, ROOT_DIR, SKILL_TEST_OPENSANDBOX_CHAT_API_URL } = require('./config');
 const { createTurnOrchestrator } = require('../domain/conversation/turn-orchestrator');
 const { pickConversationSummary } = require('../domain/conversation/conversation-view');
 const { createUndercoverService } = require('../domain/undercover/undercover-service');
 const { createWerewolfService } = require('../domain/werewolf/werewolf-service');
 const { createAgentToolBridge } = require('../domain/runtime/agent-tool-bridge');
+const { createConfiguredOpenSandboxFactory } = require('../domain/skill-test/open-sandbox-factory');
 const { createFeishuClient } = require('../domain/integrations/feishu/feishu-client');
 const { createFeishuIntegrationService } = require('../domain/integrations/feishu/feishu-service');
 const { createFeishuLongConnectionSource } = require('../domain/integrations/feishu/feishu-long-connection');
@@ -113,6 +114,23 @@ export function createServerApp(options: any = {}) {
   let turnOrchestrator: any = null;
 
   syncActiveProject();
+
+  const skillTestOpenSandboxFactory = options.openSandboxFactory !== undefined
+    ? options.openSandboxFactory
+    : createConfiguredOpenSandboxFactory({
+        enabled: options.skillTestOpenSandboxEnabled,
+        apiUrl: options.skillTestOpenSandboxApiUrl,
+        apiKey: options.skillTestOpenSandboxApiKey,
+        template: options.skillTestOpenSandboxTemplate,
+        timeoutSeconds: options.skillTestOpenSandboxTimeoutSeconds,
+        cpuCount: options.skillTestOpenSandboxCpuCount,
+        memoryMB: options.skillTestOpenSandboxMemoryMB,
+        remoteRoot: options.skillTestOpenSandboxRemoteRoot,
+        driverVersion: options.skillTestOpenSandboxDriverVersion,
+        chatApiUrl: options.skillTestOpenSandboxChatApiUrl !== undefined
+          ? options.skillTestOpenSandboxChatApiUrl
+          : SKILL_TEST_OPENSANDBOX_CHAT_API_URL,
+      });
 
   function broadcastEvent(eventName: any, payload: any) {
     sseBus.broadcast(eventName, payload);
@@ -278,7 +296,13 @@ export function createServerApp(options: any = {}) {
       skillRegistry,
       getProjectDir: () => activeProjectDir,
       toolBaseUrl,
+      skillTestChatApiUrl: options.skillTestOpenSandboxChatApiUrl !== undefined
+        ? options.skillTestOpenSandboxChatApiUrl
+        : SKILL_TEST_OPENSANDBOX_CHAT_API_URL,
       broadcastEvent,
+      openSandboxFactory: skillTestOpenSandboxFactory,
+      defaultIsolationMode: options.skillTestDefaultIsolationMode,
+      allowLiveTrellis: options.skillTestAllowLiveTrellis === true,
     }),
   ]);
 

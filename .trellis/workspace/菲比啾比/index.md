@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 7
-- **Last Active**: 2026-04-12
+- **Total Sessions**: 9
+- **Last Active**: 2026-04-14
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~346 | Active |
+| `journal-1.md` | ~417 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,8 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 9 | 2026-04-14 | Skill-Test Isolation Foundation | `ab6fca3` | `feat/skill-test-isolation-foundation` |
+| 8 | 2026-04-13 | Close Cross-Conversation L1 Memory | `d16c92d` | `feat/cross-conversation-l1-memory` |
 | 7 | 2026-04-12 | Close out dynamic skill-test early-stop task | `b70cc3f` | `feat/04-12-caff-feishu-integration` |
 | 6 | 2026-04-12 | Close out Feishu integration MVP task | `f30d1f2` | `feat/04-12-caff-feishu-integration` |
 | 5 | 2026-04-11 | Agent Parallel Dispatch v1 closeout | - | `main` |

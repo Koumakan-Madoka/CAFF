@@ -344,3 +344,74 @@ Archived the completed dynamic skill-test early-stop/live-trace task after confi
 ### Next Steps
 
 - None - task complete
+
+
+## Session 8: Close Cross-Conversation L1 Memory
+
+**Date**: 2026-04-13
+**Task**: Close Cross-Conversation L1 Memory
+**Branch**: `feat/cross-conversation-l1-memory`
+
+### Summary
+
+Archived the completed durable-memory task, recorded the validated implementation session, and prepared to move to skill-test isolation work.
+
+### Main Changes
+
+| Area | Description |
+|------|-------------|
+| Durable L1 memory | Promoted curated memory visibility to `local-user + agent` durable scope while preserving `conversation + agent` overlay precedence. |
+| Mutation safety | Added `update-memory` / `forget-memory` flows with optimistic concurrency via `expectedUpdatedAt` and tombstone semantics. |
+| Regression coverage | Verified store, bridge, CLI, prompt, migration, and visibility behavior with `npm run test:fast`. |
+
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `d16c92d` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 9: Skill-Test Isolation Foundation
+
+**Date**: 2026-04-14
+**Task**: Skill-Test Isolation Foundation
+**Branch**: `feat/skill-test-isolation-foundation`
+
+### Summary
+
+Completed sandbox-isolated skill test execution, live trace streaming, cleanup/idempotency fixes, and Trellis-safe isolation guardrails.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `ab6fca3` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

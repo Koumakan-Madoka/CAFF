@@ -58,10 +58,10 @@
 
 ## Acceptance Criteria
 
-- [ ] `save-memory` 写入的 card 在同一 agent 的其他 conversation 中仍可见。
-- [ ] 其他 agent 在同一房间或其他房间中默认看不到该 durable card。
-- [ ] 同标题时，当前 conversation overlay 在 `list-memories` 和 prompt 中优先显示。
-- [ ] `update-memory` 只能更新当前 agent 的 durable card，并在 `expectedUpdatedAt` 失配时返回冲突。
-- [ ] `forget-memory` tombstone 后，该 durable card 不再出现在 `list-memories` 与 prompt 中。
-- [ ] Legacy `conversation-agent` cards 经 migration 后仍可读取。
-- [ ] Regression tests 覆盖 store、bridge、prompt 文案与可见性。
+- [x] `save-memory` 写入的 card 在同一 agent 的其他 conversation 中仍可见。
+- [x] 其他 agent 在同一房间或其他房间中默认看不到该 durable card。
+- [x] 同标题时，当前 conversation overlay 在 `list-memories` 和 prompt 中优先显示。
+- [x] `update-memory` 只能更新当前 agent 的 durable card，并在 `expectedUpdatedAt` 失配时返回冲突。
+- [x] `forget-memory` tombstone 后，该 durable card 不再出现在 `list-memories` 与 prompt 中。
+- [x] Legacy `conversation-agent` cards 经 migration 后仍可读取。
+- [x] Regression tests 覆盖 store、bridge、prompt 文案与可见性。

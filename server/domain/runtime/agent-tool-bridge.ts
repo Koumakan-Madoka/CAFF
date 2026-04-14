@@ -22,6 +22,8 @@ const MEMORY_MUTATION_REASON_TAG = 'explicit-user-request';
 const TURN_PREVIEW_LENGTH = 180;
 const MEMORY_SECRET_RE = /\b(password|passwd|secret|token|api[_ -]?key|private[_ -]?key|ssh[_ -]?key|cookie|session)\b|密码|口令|令牌|密钥|私钥/iu;
 const MEMORY_TRANSIENT_RE = /\b(todo|fixme|later|temporary|temp|today|tomorrow|next step|pending|wip)\b|待办|临时|今天|明天|稍后|下一步|本轮|这次/iu;
+const DEFAULT_SKILL_TEST_TOKEN_TTL_SECONDS = 600;
+const MAX_AUTH_REJECTS = 20;
 
 function nowIso() {
   return new Date().toISOString();
@@ -170,6 +172,129 @@ function normalizePromptUserMessageSnapshot(message: any, fallback: any = {}) {
   };
 }
 
+function normalizePositiveInteger(value: any, fallback = 0) {
+  if (value === undefined || value === null || value === '') {
+    return fallback;
+  }
+
+  const parsed = Number.parseInt(String(value), 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+
+  return parsed;
+}
+
+function resolveSkillTestAuthValue(input: any, key: string) {
+  const auth = input && input.auth && typeof input.auth === 'object' ? input.auth : null;
+  return String(
+    (auth && auth[key] !== undefined ? auth[key] : undefined) ||
+      input[`skillTest${key.charAt(0).toUpperCase()}${key.slice(1)}`] ||
+      input[key] ||
+      ''
+  ).trim();
+}
+
+function normalizeIsoTimestamp(value: any) {
+  const normalized = String(value || '').trim();
+  if (!normalized) {
+    return '';
+  }
+
+  const timestamp = Date.parse(normalized);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : '';
+}
+
+function createInvocationAuth(input: any = {}) {
+  const auth = input && input.auth && typeof input.auth === 'object' ? input.auth : null;
+  const scope = String((auth && auth.scope) || input.authScope || input.scope || 'conversation').trim() || 'conversation';
+  const isSkillTest = scope === 'skill-test';
+  const requestedTtlSec = normalizePositiveInteger((auth && auth.tokenTtlSec) || input.tokenTtlSec || input.ttlSec, 0);
+  const tokenTtlSec = requestedTtlSec || (isSkillTest ? DEFAULT_SKILL_TEST_TOKEN_TTL_SECONDS : 0);
+  const createdAt = nowIso();
+  const explicitExpiresAt = normalizeIsoTimestamp((auth && auth.expiresAt) || input.expiresAt);
+  const expiresAt = explicitExpiresAt || (tokenTtlSec > 0 ? new Date(Date.now() + tokenTtlSec * 1000).toISOString() : '');
+
+  return {
+    scope,
+    caseId: resolveSkillTestAuthValue(input, 'caseId'),
+    runId: resolveSkillTestAuthValue(input, 'runId'),
+    taskId: resolveSkillTestAuthValue(input, 'taskId'),
+    requireScope: (auth && auth.requireScope === true) || input.requireAuthScope === true || isSkillTest,
+    tokenTtlSec,
+    createdAt,
+    expiresAt,
+    validated: false,
+    validatedCount: 0,
+    lastValidatedAt: '',
+    rejects: [] as any[],
+  };
+}
+
+function buildRequestAuthScope(source: any = {}) {
+  return {
+    caseId: String(source.skillTestCaseId || source.caseId || '').trim(),
+    runId: String(source.skillTestRunId || source.runId || '').trim(),
+  };
+}
+
+function buildUrlRequestAuthScope(requestUrl: any) {
+  const params = requestUrl && requestUrl.searchParams ? requestUrl.searchParams : null;
+  if (!params) {
+    return {};
+  }
+
+  return buildRequestAuthScope({
+    caseId: params.get('caseId'),
+    runId: params.get('runId'),
+    skillTestCaseId: params.get('skillTestCaseId'),
+    skillTestRunId: params.get('skillTestRunId'),
+  });
+}
+
+function recordAuthReject(context: any, reason: string, details: any = {}) {
+  if (!context || !context.auth) {
+    return null;
+  }
+
+  const rejectEntry = {
+    reason: clipText(reason, 240),
+    details: details && typeof details === 'object' ? details : {},
+    createdAt: nowIso(),
+  };
+
+  if (!Array.isArray(context.auth.rejects)) {
+    context.auth.rejects = [];
+  }
+  context.auth.rejects.push(rejectEntry);
+  if (context.auth.rejects.length > MAX_AUTH_REJECTS) {
+    context.auth.rejects = context.auth.rejects.slice(-MAX_AUTH_REJECTS);
+  }
+
+  return rejectEntry;
+}
+
+function summarizeInvocationAuth(context: any) {
+  const auth = context && context.auth && typeof context.auth === 'object' ? context.auth : null;
+  if (!auth) {
+    return null;
+  }
+
+  return {
+    scope: String(auth.scope || '').trim(),
+    caseId: String(auth.caseId || '').trim(),
+    runId: String(auth.runId || '').trim(),
+    taskId: String(auth.taskId || '').trim(),
+    tokenTtlSec: Number.isInteger(auth.tokenTtlSec) ? auth.tokenTtlSec : 0,
+    createdAt: String(auth.createdAt || '').trim(),
+    expiresAt: String(auth.expiresAt || '').trim(),
+    validated: auth.validated === true,
+    validatedCount: Number.isInteger(auth.validatedCount) ? auth.validatedCount : 0,
+    lastValidatedAt: String(auth.lastValidatedAt || '').trim(),
+    rejects: Array.isArray(auth.rejects) ? auth.rejects.slice() : [],
+  };
+}
+
 export function createAgentToolBridge(options: any = {}) {
   const store = options.store;
   const agentDir = String(options.agentDir || '').trim();
@@ -178,6 +303,65 @@ export function createAgentToolBridge(options: any = {}) {
     typeof options.broadcastConversationSummary === 'function' ? options.broadcastConversationSummary : () => {};
   const onTurnUpdated = typeof options.onTurnUpdated === 'function' ? options.onTurnUpdated : () => {};
   const activeInvocations = new Map();
+
+  function normalizePolicyToolName(value: any) {
+    const normalized = String(value || '').trim().toLowerCase();
+    return normalized === 'participants' ? 'list-participants' : normalized;
+  }
+
+  function resolveContextStore(context: any) {
+    return context && context.store ? context.store : store;
+  }
+
+  function recordPolicyReject(context: any, toolName: string, reason: string, details: any = {}) {
+    const normalizedToolName = normalizePolicyToolName(toolName);
+    const policy = context && context.toolPolicy && typeof context.toolPolicy === 'object' ? context.toolPolicy : null;
+    const rejectEntry = {
+      toolName: normalizedToolName,
+      reason: clipText(reason, 240),
+      details: details && typeof details === 'object' ? details : {},
+      createdAt: nowIso(),
+    };
+
+    if (policy && Array.isArray(policy.rejects)) {
+      policy.rejects.push(rejectEntry);
+    }
+
+    if (context) {
+      if (!Array.isArray(context.policyRejects)) {
+        context.policyRejects = [];
+      }
+      context.policyRejects.push(rejectEntry);
+    }
+
+    tryAppendInvocationEvent(context, 'agent_tool_policy_reject', {
+      schemaVersion: 1,
+      tool: normalizedToolName,
+      invocationId: context && context.invocationId ? context.invocationId : '',
+      conversationId: context && context.conversationId ? context.conversationId : '',
+      turnId: context && context.turnId ? context.turnId : '',
+      agentId: context && context.agentId ? context.agentId : '',
+      agentName: context && context.agentName ? context.agentName : '',
+      assistantMessageId: context && context.assistantMessageId ? context.assistantMessageId : '',
+      reject: rejectEntry,
+    });
+  }
+
+  function ensureToolAllowed(context: any, toolName: string, details: any = {}) {
+    const policy = context && context.toolPolicy && typeof context.toolPolicy === 'object' ? context.toolPolicy : null;
+    if (!policy || !Array.isArray(policy.allowedTools) || policy.allowedTools.length === 0) {
+      return;
+    }
+
+    const normalizedToolName = normalizePolicyToolName(toolName);
+    const allowed = policy.allowedTools.some((entry: any) => normalizePolicyToolName(entry) === normalizedToolName);
+    if (allowed) {
+      return;
+    }
+
+    recordPolicyReject(context, normalizedToolName, `${normalizedToolName} is blocked by tool policy`, details);
+    throw createHttpError(403, `${normalizedToolName} is blocked by tool policy`);
+  }
 
   function resolveStageTaskId(context: any) {
     const taskId = context && context.stage && context.stage.taskId ? String(context.stage.taskId).trim() : '';
@@ -290,6 +474,10 @@ export function createAgentToolBridge(options: any = {}) {
       turnId: input.turnId,
       createdAt: input.createdAt,
     });
+    const auth = createInvocationAuth({
+      ...input,
+      taskId: input.taskId || (input.stage && input.stage.taskId) || '',
+    });
 
     return {
       invocationId,
@@ -306,6 +494,9 @@ export function createAgentToolBridge(options: any = {}) {
       dryRun: input.dryRun === true,
       dryRunPublicPosts: [] as any[],
       dryRunPrivatePosts: [] as any[],
+      store: input.store || null,
+      toolPolicy: input.toolPolicy || null,
+      policyRejects: [],
       runStore: input.runStore || null,
       stage: input.stage || null,
       turnState: input.turnState || null,
@@ -318,6 +509,7 @@ export function createAgentToolBridge(options: any = {}) {
       lastPublicContent: '',
       lastPublicPostedAt: '',
       closedAt: '',
+      auth,
       createdAt: nowIso(),
     };
   }
@@ -331,16 +523,62 @@ export function createAgentToolBridge(options: any = {}) {
     return context;
   }
 
-  function getInvocation(invocationId: any, callbackToken: any) {
+  function getInvocation(invocationId: any, callbackToken: any, requestAuthScope: any = {}) {
     const normalizedInvocationId = String(invocationId || '').trim();
     const normalizedCallbackToken = String(callbackToken || '').trim();
+    const normalizedRequestScope = buildRequestAuthScope(requestAuthScope);
     const context = activeInvocations.get(normalizedInvocationId);
     const stageStatus = String(context && context.stage && context.stage.status ? context.stage.status : '')
       .trim()
       .toLowerCase();
 
     if (!context || !normalizedCallbackToken || context.callbackToken !== normalizedCallbackToken) {
+      recordAuthReject(context, 'invalid_or_expired_credentials', {
+        hasInvocation: Boolean(context),
+        hasCallbackToken: Boolean(normalizedCallbackToken),
+        caseId: normalizedRequestScope.caseId,
+        runId: normalizedRequestScope.runId,
+      });
       throw createHttpError(401, 'Invalid or expired agent tool credentials');
+    }
+
+    const auth = context.auth && typeof context.auth === 'object' ? context.auth : null;
+    const expiresAtMs = auth && auth.expiresAt ? Date.parse(auth.expiresAt) : NaN;
+    if (Number.isFinite(expiresAtMs) && expiresAtMs <= Date.now()) {
+      recordAuthReject(context, 'token_expired', {
+        expiresAt: auth.expiresAt,
+        caseId: normalizedRequestScope.caseId,
+        runId: normalizedRequestScope.runId,
+      });
+      activeInvocations.delete(normalizedInvocationId);
+      throw createHttpError(401, 'Invalid or expired agent tool credentials');
+    }
+
+    if (auth && auth.requireScope) {
+      if (auth.caseId && !normalizedRequestScope.caseId) {
+        recordAuthReject(context, 'missing_case_binding', { expectedCaseId: auth.caseId });
+        throw createHttpError(403, 'Agent tool credentials are missing skill-test case binding');
+      }
+      if (auth.runId && !normalizedRequestScope.runId) {
+        recordAuthReject(context, 'missing_run_binding', { expectedRunId: auth.runId });
+        throw createHttpError(403, 'Agent tool credentials are missing skill-test run binding');
+      }
+    }
+
+    if (auth && auth.caseId && normalizedRequestScope.caseId && normalizedRequestScope.caseId !== auth.caseId) {
+      recordAuthReject(context, 'case_binding_mismatch', {
+        expectedCaseId: auth.caseId,
+        requestCaseId: normalizedRequestScope.caseId,
+      });
+      throw createHttpError(403, 'Agent tool credentials do not match the active skill-test case');
+    }
+
+    if (auth && auth.runId && normalizedRequestScope.runId && normalizedRequestScope.runId !== auth.runId) {
+      recordAuthReject(context, 'run_binding_mismatch', {
+        expectedRunId: auth.runId,
+        requestRunId: normalizedRequestScope.runId,
+      });
+      throw createHttpError(403, 'Agent tool credentials do not match the active skill-test run');
     }
 
     if (
@@ -348,8 +586,15 @@ export function createAgentToolBridge(options: any = {}) {
       (context.turnState && context.turnState.stopRequested) ||
       (stageStatus && stageStatus !== 'queued' && stageStatus !== 'running')
     ) {
+      recordAuthReject(context, 'invocation_no_longer_active', { stageStatus });
       activeInvocations.delete(normalizedInvocationId);
       throw createHttpError(409, 'This agent tool invocation is no longer active');
+    }
+
+    if (auth) {
+      auth.validated = true;
+      auth.validatedCount = (Number.isInteger(auth.validatedCount) ? auth.validatedCount : 0) + 1;
+      auth.lastValidatedAt = nowIso();
     }
 
     return context;
@@ -476,10 +721,11 @@ export function createAgentToolBridge(options: any = {}) {
   }
 
   function buildAgentToolContextPayload(context: any, options: any = {}) {
+    const activeStore = resolveContextStore(context);
     const publicLimit = Number.isInteger(options.publicLimit) && options.publicLimit > 0 ? options.publicLimit : MAX_HISTORY_MESSAGES;
     const privateLimit =
       Number.isInteger(options.privateLimit) && options.privateLimit > 0 ? options.privateLimit : MAX_PRIVATE_CONTEXT_MESSAGES;
-    const conversation = store.getConversation(context.conversationId);
+    const conversation = activeStore.getConversation(context.conversationId);
     const contextUserMessage = resolveContextUserMessage(context, conversation);
     const publicMessageSource = conversation
       ? conversation.messages.filter((message: any) => {
@@ -508,7 +754,7 @@ export function createAgentToolBridge(options: any = {}) {
     }
 
     const publicMessages = selectedPublicMessages.map(serializeAgentToolPublicMessage);
-    const privateMessages = store
+    const privateMessages = activeStore
       .listPrivateMessagesForAgent(context.conversationId, context.agentId, { limit: privateLimit })
       .map(serializeAgentToolPrivateMessage);
 
@@ -546,7 +792,8 @@ export function createAgentToolBridge(options: any = {}) {
   }
 
   function applyAgentToolPublicUpdate(context: any, content: any, mode = 'replace') {
-    const existingMessage = store.getMessage(context.assistantMessageId);
+    const activeStore = resolveContextStore(context);
+    const existingMessage = activeStore.getMessage(context.assistantMessageId);
 
     if (!existingMessage) {
       throw createHttpError(404, 'Active assistant message not found');
@@ -569,7 +816,7 @@ export function createAgentToolBridge(options: any = {}) {
         lastPublicMode: normalizedMode,
       },
     };
-    const updatedMessage = store.updateMessage(context.assistantMessageId, {
+    const updatedMessage = activeStore.updateMessage(context.assistantMessageId, {
       content: nextContent,
       metadata: nextMetadata,
     });
@@ -599,7 +846,8 @@ export function createAgentToolBridge(options: any = {}) {
 
   function handlePostMessage(body: any = {}) {
     const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken);
+    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
+    const activeStore = resolveContextStore(context);
     const content = String(body.content || '').trim();
     const visibility = String(body.visibility || 'public').trim().toLowerCase();
     const mode = String(body.mode || 'replace').trim().toLowerCase() || 'replace';
@@ -628,6 +876,10 @@ export function createAgentToolBridge(options: any = {}) {
     });
 
     try {
+      ensureToolAllowed(context, toolName, {
+        visibility,
+      });
+
       if (!content) {
         throw createHttpError(400, 'Message content is required');
       }
@@ -811,7 +1063,7 @@ export function createAgentToolBridge(options: any = {}) {
           return response;
         }
 
-        const conversation = store.getConversation(context.conversationId);
+        const conversation = activeStore.getConversation(context.conversationId);
 
         if (!conversation) {
           throw createHttpError(404, 'Conversation not found');
@@ -843,7 +1095,7 @@ export function createAgentToolBridge(options: any = {}) {
           throw createHttpError(400, 'Private handoff requires at least one recipient other than yourself');
         }
 
-        const privateMessage = store.createPrivateMessage({
+        const privateMessage = activeStore.createPrivateMessage({
           conversationId: context.conversationId,
           turnId: context.turnId,
           senderAgentId: context.agentId,
@@ -953,7 +1205,8 @@ export function createAgentToolBridge(options: any = {}) {
     const startedAt = Date.now();
     const context = getInvocation(
       requestUrl.searchParams.get('invocationId'),
-      requestUrl.searchParams.get('callbackToken')
+      requestUrl.searchParams.get('callbackToken'),
+      buildUrlRequestAuthScope(requestUrl)
     );
     const publicLimit = Number.parseInt(requestUrl.searchParams.get('publicLimit') || '', 10);
     const privateLimit = Number.parseInt(requestUrl.searchParams.get('privateLimit') || '', 10);
@@ -971,6 +1224,8 @@ export function createAgentToolBridge(options: any = {}) {
     });
 
     try {
+      ensureToolAllowed(context, 'read-context');
+
       if (context.dryRun) {
         let payload: any = null;
 
@@ -1097,9 +1352,11 @@ export function createAgentToolBridge(options: any = {}) {
     const startedAt = Date.now();
     const context = getInvocation(
       requestUrl.searchParams.get('invocationId'),
-      requestUrl.searchParams.get('callbackToken')
+      requestUrl.searchParams.get('callbackToken'),
+      buildUrlRequestAuthScope(requestUrl)
     );
-    const conversation = context.dryRun ? null : store.getConversation(context.conversationId);
+    const activeStore = resolveContextStore(context);
+    const conversation = context.dryRun ? null : activeStore.getConversation(context.conversationId);
     const toolCallId = randomUUID();
 
     setContextCurrentTool(context, {
@@ -1113,6 +1370,8 @@ export function createAgentToolBridge(options: any = {}) {
     });
 
     try {
+      ensureToolAllowed(context, 'list-participants');
+
       const response = {
         ok: true,
         conversation: conversation ? pickConversationSummary(conversation) : null,
@@ -1169,7 +1428,8 @@ export function createAgentToolBridge(options: any = {}) {
 
   function handleSearchMessages(body: any = {}) {
     const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken);
+    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
+    const activeStore = resolveContextStore(context);
     const query = String(body.query || '').trim().replace(/\s+/g, ' ');
     const speaker = String(body.speaker || body.senderName || body.sender || '').trim().replace(/\s+/g, ' ');
     const agentId = String(body.agentId || body.agentID || '').trim().replace(/\s+/g, ' ');
@@ -1217,13 +1477,17 @@ export function createAgentToolBridge(options: any = {}) {
         throw createHttpError(400, `agentId must be at most ${MAX_MESSAGE_SEARCH_FILTER_LENGTH} characters`);
       }
 
-      if (!store || typeof store.searchConversationMessages !== 'function') {
+      ensureToolAllowed(context, 'search-messages', {
+        scope: 'conversation-public',
+      });
+
+      if (!activeStore || typeof activeStore.searchConversationMessages !== 'function') {
         throw createHttpError(501, 'Message search is not available');
       }
 
       const response = {
         ok: true,
-        ...store.searchConversationMessages(context.conversationId, {
+        ...activeStore.searchConversationMessages(context.conversationId, {
           query,
           limit,
           speaker,
@@ -1294,8 +1558,10 @@ export function createAgentToolBridge(options: any = {}) {
     const startedAt = Date.now();
     const context = getInvocation(
       requestUrl.searchParams.get('invocationId'),
-      requestUrl.searchParams.get('callbackToken')
+      requestUrl.searchParams.get('callbackToken'),
+      buildUrlRequestAuthScope(requestUrl)
     );
+    const activeStore = resolveContextStore(context);
     const limit = normalizeMemoryListLimit(requestUrl.searchParams.get('limit'));
     const toolCallId = randomUUID();
 
@@ -1311,11 +1577,15 @@ export function createAgentToolBridge(options: any = {}) {
     });
 
     try {
-      if (!store || typeof store.listVisibleMemoryCards !== 'function') {
+      ensureToolAllowed(context, 'list-memories', {
+        scope: 'agent-visible',
+      });
+
+      if (!activeStore || typeof activeStore.listVisibleMemoryCards !== 'function') {
         throw createHttpError(501, 'Memory cards are not available');
       }
 
-      const cards = store.listVisibleMemoryCards(context.conversationId, context.agentId, { limit });
+      const cards = activeStore.listVisibleMemoryCards(context.conversationId, context.agentId, { limit });
       const response = {
         ok: true,
         scope: 'agent-visible',
@@ -1383,7 +1653,8 @@ export function createAgentToolBridge(options: any = {}) {
 
   function handleSaveMemory(body: any = {}) {
     const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken);
+    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
+    const activeStore = resolveContextStore(context);
     const title = normalizeMemoryField(body.title, MAX_MEMORY_CARD_TITLE_LENGTH, 'title');
     const content = normalizeMemoryField(body.content, MAX_MEMORY_CARD_CONTENT_LENGTH, 'content');
     const ttlDays = normalizeMemoryTtlDays(body.ttlDays);
@@ -1403,12 +1674,16 @@ export function createAgentToolBridge(options: any = {}) {
 
     try {
       validateMemoryCardCandidate(title, content);
+      ensureToolAllowed(context, 'save-memory', {
+        scope: 'local-user-agent',
+        title,
+      });
 
-      if (!store || typeof store.saveLocalUserMemoryCard !== 'function') {
+      if (!activeStore || typeof activeStore.saveLocalUserMemoryCard !== 'function') {
         throw createHttpError(501, 'Memory cards are not available');
       }
 
-      const saved = store.saveLocalUserMemoryCard(context.agentId, {
+      const saved = activeStore.saveLocalUserMemoryCard(context.agentId, {
         title,
         content,
         ttlDays,
@@ -1489,7 +1764,8 @@ export function createAgentToolBridge(options: any = {}) {
 
   function handleUpdateMemory(body: any = {}) {
     const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken);
+    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
+    const activeStore = resolveContextStore(context);
     const title = normalizeMemoryField(body.title, MAX_MEMORY_CARD_TITLE_LENGTH, 'title');
     const content = normalizeMemoryField(body.content, MAX_MEMORY_CARD_CONTENT_LENGTH, 'content');
     const reason = normalizeMemoryReason(body.reason);
@@ -1512,12 +1788,16 @@ export function createAgentToolBridge(options: any = {}) {
 
     try {
       validateMemoryCardCandidate(title, content);
+      ensureToolAllowed(context, 'update-memory', {
+        scope: 'local-user-agent',
+        title,
+      });
 
-      if (!store || typeof store.updateLocalUserMemoryCard !== 'function') {
+      if (!activeStore || typeof activeStore.updateLocalUserMemoryCard !== 'function') {
         throw createHttpError(501, 'Memory cards are not available');
       }
 
-      const updated = store.updateLocalUserMemoryCard(context.agentId, {
+      const updated = activeStore.updateLocalUserMemoryCard(context.agentId, {
         title,
         content,
         expectedUpdatedAt,
@@ -1605,7 +1885,8 @@ export function createAgentToolBridge(options: any = {}) {
 
   function handleForgetMemory(body: any = {}) {
     const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken);
+    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
+    const activeStore = resolveContextStore(context);
     const title = normalizeMemoryField(body.title, MAX_MEMORY_CARD_TITLE_LENGTH, 'title');
     const reason = normalizeMemoryReason(body.reason);
     const expectedUpdatedAt = normalizeExpectedUpdatedAt(body.expectedUpdatedAt || body['expected-updated-at']);
@@ -1626,11 +1907,16 @@ export function createAgentToolBridge(options: any = {}) {
     });
 
     try {
-      if (!store || typeof store.forgetLocalUserMemoryCard !== 'function') {
+      ensureToolAllowed(context, 'forget-memory', {
+        scope: 'local-user-agent',
+        title,
+      });
+
+      if (!activeStore || typeof activeStore.forgetLocalUserMemoryCard !== 'function') {
         throw createHttpError(501, 'Memory cards are not available');
       }
 
-      const forgotten = store.forgetLocalUserMemoryCard(context.agentId, {
+      const forgotten = activeStore.forgetLocalUserMemoryCard(context.agentId, {
         title,
         expectedUpdatedAt,
         source: 'agent-tool',
@@ -1952,7 +2238,7 @@ export function createAgentToolBridge(options: any = {}) {
 
   function handleTrellisInit(body: any = {}) {
     const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken);
+    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
     const includeContent = body.includeContent === true;
     const confirm = body.confirm === true;
     const force = body.force === true;
@@ -1974,6 +2260,8 @@ export function createAgentToolBridge(options: any = {}) {
     });
 
     try {
+      ensureToolAllowed(context, 'trellis-init');
+
       if (!taskName) {
         throw createHttpError(400, 'taskName must be a simple directory name (letters/numbers/._-)');
       }
@@ -2194,7 +2482,7 @@ export function createAgentToolBridge(options: any = {}) {
 
   function handleTrellisWrite(body: any = {}) {
     const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken);
+    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
     const includeContent = body.includeContent === true;
     const confirm = body.confirm === true;
     const force = body.force === true;
@@ -2217,127 +2505,201 @@ export function createAgentToolBridge(options: any = {}) {
     let pathsSample: string[] = [];
 
     try {
-    const filesPayload = Array.isArray(body.files) ? body.files : null;
-    const files = filesPayload
-      ? filesPayload
-      : [
-          {
-            relativePath: body.relativePath || body.path,
-            content: body.content,
+      ensureToolAllowed(context, 'trellis-write');
+      const filesPayload = Array.isArray(body.files) ? body.files : null;
+      const files = filesPayload
+        ? filesPayload
+        : [
+            {
+              relativePath: body.relativePath || body.path,
+              content: body.content,
+            },
+          ];
+
+      const normalizedFiles: any[] = [];
+      const rejectedPaths: string[] = [];
+
+      for (const file of Array.isArray(files) ? files : []) {
+        const record = file && typeof file === 'object' ? file : null;
+        if (!record) {
+          rejectedPaths.push('[invalid file entry]');
+          continue;
+        }
+
+        const rawPath = record.relativePath ?? record.path ?? '';
+        const normalizedPath = normalizeTrellisRelativePath(rawPath);
+        if (!normalizedPath) {
+          rejectedPaths.push(String(rawPath || '').trim() || '[empty]');
+          continue;
+        }
+
+        normalizedFiles.push({
+          relativePath: normalizedPath,
+          content: typeof record.content === 'string' ? record.content : String(record.content ?? ''),
+        });
+      }
+
+      fileCount = normalizedFiles.length;
+      pathsSample = normalizedFiles.slice(0, 6).map((file: any) => file.relativePath);
+
+      if (rejectedPaths.length > 0) {
+        const examples = rejectedPaths
+          .filter(Boolean)
+          .slice(0, 6)
+          .map((item) => clipText(item, 120));
+        const suffix = rejectedPaths.length > examples.length ? ` (+${rejectedPaths.length - examples.length} more)` : '';
+        throw createHttpError(
+          400,
+          `Invalid .trellis paths. Expected a file path under .trellis/**. Rejected: ${examples.join(', ')}${suffix}`
+        );
+      }
+
+      if (normalizedFiles.length === 0) {
+        throw createHttpError(400, 'files must include at least one .trellis-relative path');
+      }
+
+      if (normalizedFiles.length > 20) {
+        throw createHttpError(400, 'Refusing to write more than 20 files in one request');
+      }
+
+      totalBytes = normalizedFiles.reduce((sum: number, file: any) => sum + Buffer.byteLength(file.content, 'utf8'), 0);
+      if (totalBytes > 256 * 1024) {
+        throw createHttpError(400, 'Refusing to write more than 256KB of content in one request');
+      }
+
+      const projectDirRaw = String(context.projectDir || '').trim();
+
+      if (!projectDirRaw) {
+        throw createHttpError(409, 'No active project directory is available for this invocation');
+      }
+
+      const projectDir = path.resolve(projectDirRaw);
+      const projectStat = safeStat(projectDir);
+
+      if (!projectStat || !projectStat.isDirectory()) {
+        throw createHttpError(409, 'Active project directory does not exist or is not a folder');
+      }
+
+      const trellisDir = path.join(projectDir, '.trellis');
+      const trellisLstat = safeLstat(trellisDir);
+
+      if (trellisLstat && trellisLstat.isSymbolicLink()) {
+        throw createHttpError(400, 'Refusing to write .trellis because it is a symlink');
+      }
+
+      if (trellisLstat && !trellisLstat.isDirectory()) {
+        throw createHttpError(409, 'Refusing to write .trellis because it exists and is not a directory');
+      }
+
+      const operations: any[] = [];
+
+      for (const file of normalizedFiles) {
+        const absolutePath = path.resolve(projectDir, file.relativePath);
+        const withinTrellis = isPathWithinDir(trellisDir, absolutePath);
+
+        if (!withinTrellis) {
+          throw createHttpError(400, `Refusing to write outside .trellis: ${file.relativePath}`);
+        }
+
+        const exists = fs.existsSync(absolutePath);
+        const existingStat = exists ? safeStat(absolutePath) : null;
+
+        if (existingStat && existingStat.isDirectory()) {
+          throw createHttpError(400, `Refusing to write because path is a directory: ${file.relativePath}`);
+        }
+        const action = exists ? (force ? 'overwrite' : 'skip-existing') : 'create';
+
+        operations.push({
+          path: file.relativePath.replace(/\\/g, '/'),
+          action,
+          bytes: Buffer.byteLength(file.content, 'utf8'),
+          ...(includeContent ? { content: file.content } : {}),
+        });
+      }
+
+      if (!confirm) {
+        const response = {
+          ok: true,
+          applied: false,
+          projectDir,
+          trellisDir,
+          operations,
+          willWriteCount: operations.filter((op) => op.action === 'create' || op.action === 'overwrite').length,
+          skippedCount: operations.filter((op) => op.action === 'skip-existing').length,
+          confirmRequired: true,
+        };
+
+        tryAppendInvocationEvent(context, 'agent_tool_call', {
+          schemaVersion: 1,
+          toolCallId,
+          tool: 'trellis-write',
+          status: 'succeeded',
+          durationMs: Date.now() - startedAt,
+          invocationId: context.invocationId,
+          conversationId: context.conversationId,
+          turnId: context.turnId,
+          agentId: context.agentId,
+          agentName: context.agentName,
+          assistantMessageId: context.assistantMessageId,
+          request: {
+            confirm,
+            force,
+            includeContent,
+            fileCount,
+            totalBytes,
+            paths: pathsSample,
           },
-        ];
+          result: {
+            applied: false,
+            operationCount: operations.length,
+            willWriteCount: response.willWriteCount,
+            skippedCount: response.skippedCount,
+          },
+        });
 
-    const normalizedFiles: any[] = [];
-    const rejectedPaths: string[] = [];
-
-    for (const file of Array.isArray(files) ? files : []) {
-      const record = file && typeof file === 'object' ? file : null;
-      if (!record) {
-        rejectedPaths.push('[invalid file entry]');
-        continue;
+        return response;
       }
 
-      const rawPath = record.relativePath ?? record.path ?? '';
-      const normalizedPath = normalizeTrellisRelativePath(rawPath);
-      if (!normalizedPath) {
-        rejectedPaths.push(String(rawPath || '').trim() || '[empty]');
-        continue;
+      fs.mkdirSync(trellisDir, { recursive: true });
+
+      if (hasSymlinkInPath(projectDir, trellisDir)) {
+        throw createHttpError(400, 'Refusing to write .trellis because it contains a symlink');
       }
 
-      normalizedFiles.push({
-        relativePath: normalizedPath,
-        content: typeof record.content === 'string' ? record.content : String(record.content ?? ''),
-      });
-    }
+      const writtenFiles: string[] = [];
+      const skippedFiles: string[] = [];
 
-    fileCount = normalizedFiles.length;
-    pathsSample = normalizedFiles.slice(0, 6).map((file: any) => file.relativePath);
+      for (const file of normalizedFiles) {
+        const absolutePath = path.resolve(projectDir, file.relativePath);
+        const exists = fs.existsSync(absolutePath);
 
-    if (rejectedPaths.length > 0) {
-      const examples = rejectedPaths
-        .filter(Boolean)
-        .slice(0, 6)
-        .map((item) => clipText(item, 120));
-      const suffix = rejectedPaths.length > examples.length ? ` (+${rejectedPaths.length - examples.length} more)` : '';
-      throw createHttpError(
-        400,
-        `Invalid .trellis paths. Expected a file path under .trellis/**. Rejected: ${examples.join(', ')}${suffix}`
-      );
-    }
+        if (exists && !force) {
+          skippedFiles.push(file.relativePath.replace(/\\/g, '/'));
+          continue;
+        }
 
-    if (normalizedFiles.length === 0) {
-      throw createHttpError(400, 'files must include at least one .trellis-relative path');
-    }
+        const existingStat = exists ? safeStat(absolutePath) : null;
 
-    if (normalizedFiles.length > 20) {
-      throw createHttpError(400, 'Refusing to write more than 20 files in one request');
-    }
+        if (existingStat && existingStat.isDirectory()) {
+          throw createHttpError(400, `Refusing to write because path is a directory: ${file.relativePath}`);
+        }
 
-    totalBytes = normalizedFiles.reduce((sum: number, file: any) => sum + Buffer.byteLength(file.content, 'utf8'), 0);
-    if (totalBytes > 256 * 1024) {
-      throw createHttpError(400, 'Refusing to write more than 256KB of content in one request');
-    }
+        if (hasSymlinkInPath(trellisDir, absolutePath)) {
+          throw createHttpError(400, `Refusing to write because path includes a symlink: ${file.relativePath}`);
+        }
 
-    const projectDirRaw = String(context.projectDir || '').trim();
-
-    if (!projectDirRaw) {
-      throw createHttpError(409, 'No active project directory is available for this invocation');
-    }
-
-    const projectDir = path.resolve(projectDirRaw);
-    const projectStat = safeStat(projectDir);
-
-    if (!projectStat || !projectStat.isDirectory()) {
-      throw createHttpError(409, 'Active project directory does not exist or is not a folder');
-    }
-
-    const trellisDir = path.join(projectDir, '.trellis');
-    const trellisLstat = safeLstat(trellisDir);
-
-    if (trellisLstat && trellisLstat.isSymbolicLink()) {
-      throw createHttpError(400, 'Refusing to write .trellis because it is a symlink');
-    }
-
-    if (trellisLstat && !trellisLstat.isDirectory()) {
-      throw createHttpError(409, 'Refusing to write .trellis because it exists and is not a directory');
-    }
-
-    const operations: any[] = [];
-
-    for (const file of normalizedFiles) {
-      const absolutePath = path.resolve(projectDir, file.relativePath);
-      const withinTrellis = isPathWithinDir(trellisDir, absolutePath);
-
-      if (!withinTrellis) {
-        throw createHttpError(400, `Refusing to write outside .trellis: ${file.relativePath}`);
+        fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+        fs.writeFileSync(absolutePath, file.content, 'utf8');
+        writtenFiles.push(file.relativePath.replace(/\\/g, '/'));
       }
 
-      const exists = fs.existsSync(absolutePath);
-      const existingStat = exists ? safeStat(absolutePath) : null;
-
-      if (existingStat && existingStat.isDirectory()) {
-        throw createHttpError(400, `Refusing to write because path is a directory: ${file.relativePath}`);
-      }
-      const action = exists ? (force ? 'overwrite' : 'skip-existing') : 'create';
-
-      operations.push({
-        path: file.relativePath.replace(/\\/g, '/'),
-        action,
-        bytes: Buffer.byteLength(file.content, 'utf8'),
-        ...(includeContent ? { content: file.content } : {}),
-      });
-    }
-
-    if (!confirm) {
       const response = {
         ok: true,
-        applied: false,
+        applied: true,
         projectDir,
         trellisDir,
-        operations,
-        willWriteCount: operations.filter((op) => op.action === 'create' || op.action === 'overwrite').length,
-        skippedCount: operations.filter((op) => op.action === 'skip-existing').length,
-        confirmRequired: true,
+        writtenFiles,
+        skippedFiles,
       };
 
       tryAppendInvocationEvent(context, 'agent_tool_call', {
@@ -2361,86 +2723,13 @@ export function createAgentToolBridge(options: any = {}) {
           paths: pathsSample,
         },
         result: {
-          applied: false,
-          operationCount: operations.length,
-          willWriteCount: response.willWriteCount,
-          skippedCount: response.skippedCount,
+          applied: true,
+          writtenCount: writtenFiles.length,
+          skippedCount: skippedFiles.length,
         },
       });
 
       return response;
-    }
-
-    fs.mkdirSync(trellisDir, { recursive: true });
-
-    if (hasSymlinkInPath(projectDir, trellisDir)) {
-      throw createHttpError(400, 'Refusing to write .trellis because it contains a symlink');
-    }
-
-    const writtenFiles: string[] = [];
-    const skippedFiles: string[] = [];
-
-    for (const file of normalizedFiles) {
-      const absolutePath = path.resolve(projectDir, file.relativePath);
-      const exists = fs.existsSync(absolutePath);
-
-      if (exists && !force) {
-        skippedFiles.push(file.relativePath.replace(/\\/g, '/'));
-        continue;
-      }
-
-      const existingStat = exists ? safeStat(absolutePath) : null;
-
-      if (existingStat && existingStat.isDirectory()) {
-        throw createHttpError(400, `Refusing to write because path is a directory: ${file.relativePath}`);
-      }
-
-      if (hasSymlinkInPath(trellisDir, absolutePath)) {
-        throw createHttpError(400, `Refusing to write because path includes a symlink: ${file.relativePath}`);
-      }
-
-      fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
-      fs.writeFileSync(absolutePath, file.content, 'utf8');
-      writtenFiles.push(file.relativePath.replace(/\\/g, '/'));
-    }
-
-    const response = {
-      ok: true,
-      applied: true,
-      projectDir,
-      trellisDir,
-      writtenFiles,
-      skippedFiles,
-    };
-
-    tryAppendInvocationEvent(context, 'agent_tool_call', {
-      schemaVersion: 1,
-      toolCallId,
-      tool: 'trellis-write',
-      status: 'succeeded',
-      durationMs: Date.now() - startedAt,
-      invocationId: context.invocationId,
-      conversationId: context.conversationId,
-      turnId: context.turnId,
-      agentId: context.agentId,
-      agentName: context.agentName,
-      assistantMessageId: context.assistantMessageId,
-        request: {
-          confirm,
-          force,
-          includeContent,
-          fileCount,
-          totalBytes,
-          paths: pathsSample,
-        },
-        result: {
-          applied: true,
-          writtenCount: writtenFiles.length,
-          skippedCount: skippedFiles.length,
-      },
-    });
-
-    return response;
     } catch (error) {
       const errorValue = error as any;
       tryAppendInvocationEvent(context, 'agent_tool_call', {
@@ -2488,6 +2777,7 @@ export function createAgentToolBridge(options: any = {}) {
     handleTrellisWrite,
     handleUpdateMemory,
     registerInvocation,
+    summarizeInvocationAuth,
     unregisterInvocation,
   };
 }

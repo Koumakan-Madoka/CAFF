@@ -2446,7 +2446,8 @@ textarea {
 
 #st-live-run {
   margin-bottom: 0.8rem;
-  max-height: 520px;
+  max-height: none;
+  overflow: visible;
 }
 
 .run-detail-section {
@@ -2628,13 +2629,17 @@ textarea {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 0.7rem;
-  align-items: end;
+  align-items: start;
 }
 
 .skill-tests-toolbar-field {
   min-width: 0;
   display: grid;
   gap: 0.3rem;
+}
+
+.skill-tests-toolbar-field .section-hint {
+  margin: 0;
 }
 
 label.skill-tests-toolbar-field,

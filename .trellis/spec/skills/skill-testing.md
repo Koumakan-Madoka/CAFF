@@ -80,6 +80,50 @@ skill_test_cases (1) ──→ (N) skill_test_runs
 - `server/api/skill-test-controller.ts` must ensure dependent chat/run/skill-test schema migrations before handlers touch `eval_cases`, `eval_case_runs`, or run-debug tables on the shared store DB.
 - `eval_case_runs.prompt_version` is the regression bucket key with provider/model.
 
+### Isolation Contract (MVP)
+
+Skill-test execution now supports an explicit isolation layer before the pi run starts.
+
+- `legacy-local`:
+  - keeps the pre-existing host/shared behavior for explicit local debugging
+  - must be marked as `notIsolated = true`
+  - cannot be treated as publish-gate evidence
+- `isolated`:
+  - requires an isolation driver (preferred backend: `OpenSandbox`)
+  - supports async driver setup and async adapter-provided `startRun(...)` handles so remote/container backends can prepare case worlds before the pi run starts
+  - creates a case-scoped writable world: sandbox dirs, project root, SQLite/chat store, skill snapshot, and audit evidence
+  - the env/config-backed `OpenSandbox` adapter may upload a sandbox-side Node runner plus pi runtime assets and execute the skill-test case through `commands.run`; when that path succeeds, session JSONL is copied back into the case outputs and evidence must report `execution.runtime = sandbox`
+  - sandbox direct-HTTP bridge POCs must use an explicitly reachable CAFF base URL (`CHAT_APP_ADVERTISE_URL` or `CAFF_SKILL_TEST_OPENSANDBOX_CHAT_API_URL`) instead of assuming `127.0.0.1` inside the sandbox maps back to the host service
+  - default server wiring may opt into an env/config-backed `OpenSandbox` adapter; isolated publish-gate paths must fail closed when that driver is unavailable
+
+Case-scoped isolation payload is stored under `evaluation_json.isolation` and surfaced from run-detail endpoints. The payload includes:
+
+- `mode`, `notIsolated`, `publishGate`, `driver.{name,version}`, `sandboxId`, `runId`, `caseId`
+- `trellisMode` (`none | fixture | readonlySnapshot | liveExplicit`)
+- `egressMode`
+- `execution.{runtime,preparedOnly,adapterStartRun,reason}` so prepared-only adapters cannot masquerade as sandbox execution, and sandbox-side runner execution stays distinguishable from remote-world preparation only
+- `egress.{mode,enforced,scope,reason}` so record-only network policy requests stay explicit in evidence
+- `chatBridge.{mode,configured,configuredUrl,reachable,auth,rejects}` so sandbox direct-HTTP bridge POCs show whether case-scoped credentials were validated; the auth payload must include run/case/task binding and TTL metadata but never the callback token
+- `toolPolicy.allowedTools[]` and `toolPolicy.rejects[]`
+- `resources` such as case project root, sandbox/private dir, isolated SQLite path, skill snapshot path, and adapter-specific remote/container resource paths when available
+- `pollutionCheck` comparing live `.trellis`, shared skills/store, and live private dirs before/after the run; shared SQLite detection must watch the main database plus the `-wal` sidecar, while volatile `-shm` lock metadata should not be hashed as data pollution
+- isolated-mode telemetry (`a2a_tasks` / `a2a_task_events`) must write to the case-scoped run store during execution; final shared eval/result persistence happens outside the pollution-check window and stores a debug/trace snapshot for later run detail views
+- `cleanup.ok|error`; cleanup is idempotent, so an OpenSandbox `not found`/404 during cleanup means the sandbox is already gone and should not be reported as `skill_test_cleanup_failed`
+
+Publish-gate interpretation rules:
+
+- isolated publish-gate runs fail closed when `execution.runtime !== sandbox`
+- isolated publish-gate runs with `egressMode = deny` fail closed unless `egress.enforced = true`
+
+Isolation failures must surface canonical validation issues such as:
+
+- `skill_test_not_isolated`
+- `skill_test_policy_rejects_present`
+- `skill_test_execution_not_sandboxed`
+- `skill_test_egress_not_enforced`
+- `skill_test_pollution_detected`
+- `skill_test_cleanup_failed`
+
 ## Evaluation Logic
 
 ### Mode Semantics (Phase 3)
@@ -387,8 +431,10 @@ Frontend (`public/skill-tests.js`) consumes structured validation/evaluation:
 `server/api/skill-test-controller.ts` emits live progress over the shared `/api/events` SSE stream so the skill-tests workspace can render in-flight tool activity without waiting for the final `POST /run` response.
 
 - `skill_test_run_event`
-  - `phase`: `started | terminating | completed | failed`
+  - `phase`: `started | progress | output_delta | terminating | completed | failed`
   - includes `caseId`, `skillId`, `taskId`, synthetic `messageId`, provider/model metadata, status, and final `trace` on terminal phases
+  - `progress` includes `executionRuntime`, `progressLabel`, optional `runnerStage`, `runnerPid`, and `runnerSessionPath` so OpenSandbox runner preparation/startup is visible before the first tool or text event
+  - `output_delta` includes `delta`, accumulated `outputText`, `isFallback`, optional `messageKey`, `executionRuntime`, and `progressLabel`; the browser updates the live output preview without waiting for terminal `trace`
 - `conversation_tool_event`
   - skill-test runs reuse the same live tool-step payload shape as chat workbench traces
   - payload is keyed by the synthetic skill-test `messageId` so the frontend can merge session + bridge steps with the existing step schema and CSS patterns
@@ -396,7 +442,7 @@ Frontend (`public/skill-tests.js`) consumes structured validation/evaluation:
 ### Skill Tests Workspace Layout
 
 - `public/eval-cases.html` keeps the Skill Tests workspace in a single-column-first flow: sticky top toolbar → overview → case list → detail → create → summary, with wide-screen enhancement only at larger breakpoints.
-- The sticky toolbar is the only always-pinned control surface for high-frequency actions (`skill`, `agent`, `model`, `promptVersion`, generate, manual create, run-all); page-level horizontal scrolling should be avoided outside local table overflow.
+- The sticky toolbar is the only always-pinned control surface for high-frequency actions (`skill`, `agent`, `model`, `promptVersion`, run isolation defaults such as `isolationMode` / `trellisMode` / `egressMode` / `publishGate`, plus generate / manual create / run-all); page-level horizontal scrolling should be avoided outside local table overflow.
 - The detail area stays tabbed (`overview`, `details`, `runs`, `regression`) so long histories and regression output do not crowd the editor surface.
 - The detail header keeps case status, last-outcome summary, and primary actions visible at the top of the detail card, but it intentionally remains in normal document flow (`position: static`) instead of becoming sticky, because zoomed desktop layouts made a sticky header float above the workspace and obscure nearby content.
 - Case list cards should expose short case id, status, recent run context, and direct run/detail actions, plus lightweight search/filter by `case id` or prompt keywords.
