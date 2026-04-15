@@ -3,7 +3,7 @@
   "name": "caff-deployability-newcomer-friendliness",
   "title": "CAFF deployability and newcomer-friendliness review",
   "description": "Assess current deployability and first-run onboarding friction, then propose concrete improvements.",
-  "status": "planning",
+  "status": "completed",
   "dev_type": "backend",
   "scope": null,
   "package": null,
@@ -11,7 +11,7 @@
   "creator": "菲比啾比",
   "assignee": "菲比啾比",
   "createdAt": "2026-04-15",
-  "completedAt": null,
+  "completedAt": "2026-04-15",
   "branch": "chore/04-15-caff-deployability-review",
   "base_branch": "feat/skill-test-fidelity-and-windows-stack",
   "worktree_path": null,
@@ -34,12 +34,28 @@
       "action": "create-pr"
     }
   ],
-  "commit": null,
+  "commit": "a691567",
   "pr_url": null,
   "subtasks": [],
   "children": [],
   "parent": null,
-  "relatedFiles": [],
-  "notes": "",
-  "meta": {}
+  "relatedFiles": [
+    ".env.example",
+    "README.md",
+    "docs/local-chat-ui.md",
+    "lib/app-server.ts",
+    "server/app/create-server.ts",
+    ".trellis/tasks/04-15-caff-deployability-newcomer-friendliness/prd.md"
+  ],
+  "notes": "Review concluded that CAFF has four setup profiles, P0 landed in a691567, and the next highest-value follow-up is a CAFF-owned readiness/health view.",
+  "meta": {
+    "setupProfiles": [
+      "minimal-local-chat",
+      "local-skill-test-opensandbox",
+      "feishu-runtime",
+      "windows-autostart-stack"
+    ],
+    "landedP0Commit": "a691567",
+    "nextRecommendedSlice": "P1 readiness/health view"
+  }
 }

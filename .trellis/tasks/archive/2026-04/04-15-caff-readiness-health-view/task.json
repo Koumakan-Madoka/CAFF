@@ -1,0 +1,50 @@
+{
+  "id": "caff-readiness-health-view",
+  "name": "caff-readiness-health-view",
+  "title": "CAFF readiness/health view (P1)",
+  "description": "Implement a lightweight /api/health endpoint that reports core-ready, provider-ready, and optional integration status separately.",
+  "status": "completed",
+  "dev_type": "backend",
+  "scope": null,
+  "package": null,
+  "priority": "P1",
+  "creator": "菲比啾比",
+  "assignee": "咕咕嘎嘎",
+  "createdAt": "2026-04-15",
+  "completedAt": "2026-04-15",
+  "branch": "chore/04-15-caff-deployability-review",
+  "base_branch": "chore/04-15-caff-deployability-review",
+  "worktree_path": null,
+  "current_phase": 0,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "check"
+    },
+    {
+      "phase": 3,
+      "action": "finish"
+    }
+  ],
+  "commit": "a691567+",
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "caff-deployability-newcomer-friendliness",
+  "relatedFiles": [
+    "server/app/create-server.ts",
+    "lib/app-server.ts",
+    "server/api/bootstrap-payload.ts",
+    "README.md",
+    "docs/local-chat-ui.md"
+  ],
+  "notes": "Follow-up to P0 (a691567). Focus on reusing existing bootstrap/runtime config resolution and keeping the endpoint lightweight.",
+  "meta": {
+    "endpoint": "/api/health",
+    "responseVersion": "v1"
+  }
+}

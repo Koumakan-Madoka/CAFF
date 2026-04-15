@@ -1,0 +1,9 @@
+{"file": ".trellis/workflow.md", "reason": "Project workflow and conventions"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend development guide"}
+{"file": ".trellis/spec/guides/index.md", "reason": "Shared thinking triggers for deployability and onboarding review"}
+{"file": ".trellis/spec/guides/cross-platform-thinking-guide.md", "reason": "Windows/WSL deployment and script behavior must stay explicit"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Prefer existing startup/docs entry points over parallel setup flows"}
+{"file": "README.md", "reason": "Current quick-start, prerequisites, and product surface review"}
+{"file": "docs/windows-local-stack.md", "reason": "Current Windows autostart and verification path"}
+{"action": "P0 implementation", "files": [".env.example", "README.md", "docs/local-chat-ui.md", "lib/app-server.ts", "server/app/create-server.ts"], "commit": "a691567", "summary": "Tiered README Quick Start, layered .env.example with PI_PROVIDER/PI_MODEL, startup status logging for provider/model/optional integrations, and emphasized provider misconfiguration trap in docs."}
+{"at":"2026-04-15T14:55:45+08:00","action":"task-closeout","files":[".trellis/tasks/04-15-caff-deployability-newcomer-friendliness/prd.md",".trellis/tasks/04-15-caff-deployability-newcomer-friendliness/task.json",".trellis/tasks/04-15-caff-deployability-newcomer-friendliness/check.jsonl",".trellis/tasks/04-15-caff-deployability-newcomer-friendliness/spec.jsonl"],"summary":"Closed the deployability review with explicit findings, prioritized P0-P3 follow-ups, completion metadata, and a recorded validation pass after P0 landed in a691567."}

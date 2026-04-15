@@ -1,0 +1,6 @@
+{"file":".trellis/tasks/04-15-caff-install-path-minimization/prd.md","reason":"Acceptance criteria to verify."}
+{"file":"package.json","reason":"Verify optionalDependencies vs dependencies change."}
+{"file":"README.md","reason":"Verify Quick Start shows full vs minimal install."}
+{"file":"docs/feishu-integration.md","reason":"Verify Feishu lane mentions extra install when omitting optional deps."}
+{"file":"docs/opensandbox-setup.md","reason":"Verify OpenSandbox lane mentions extra install when omitting optional deps."}
+{"timestamp":"2026-04-15T09:52:55.000Z","action":"check","agent":"doro","commands":["npm install --omit=optional","npm run typecheck","npm run build","node scripts/start-app.js (+ fetch /api/health)","npm ci --omit=optional (clean worktree)"],"result":"pass","note":"Core starts and /api/health responds without opensandbox/@larksuiteoapi/node-sdk installed; clean env npm ci --omit=optional succeeds."}

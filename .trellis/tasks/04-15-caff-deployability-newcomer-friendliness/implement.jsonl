@@ -1,7 +1,0 @@
-{"file": ".trellis/workflow.md", "reason": "Project workflow and conventions"}
-{"file": ".trellis/spec/backend/index.md", "reason": "Backend development guide"}
-{"file": ".trellis/spec/guides/index.md", "reason": "Shared thinking triggers for deployability and onboarding review"}
-{"file": ".trellis/spec/guides/cross-platform-thinking-guide.md", "reason": "Windows/WSL deployment and script behavior must stay explicit"}
-{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Prefer existing startup/docs entry points over parallel setup flows"}
-{"file": "README.md", "reason": "Current quick-start, prerequisites, and product surface review"}
-{"file": "docs/windows-local-stack.md", "reason": "Current Windows autostart and verification path"}

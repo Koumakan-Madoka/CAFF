@@ -1,0 +1,5 @@
+{"ts":"2026-04-15T08:00:00.000Z","action":"create","file":"docs/feishu-integration.md","desc":"新建飞书集成 lane doc，包含 Prerequisites / Setup Steps / Environment Variables / Verification / Troubleshooting / Limitations 四段式结构"}
+{"ts":"2026-04-15T08:00:00.000Z","action":"create","file":"docs/opensandbox-setup.md","desc":"新建 OpenSandbox 设置 lane doc，包含 Prerequisites / Setup Steps / Environment Variables / Recommended Config / Pre-baked Image / Verification / Troubleshooting 四段式结构"}
+{"ts":"2026-04-15T08:00:00.000Z","action":"edit","file":"README.md","desc":"OpenSandbox 和 Feishu 环境变量表+配置说明缩减为 3~5 行摘要+链接到独立 lane doc；飞书接入 MVP+配置步骤替换为摘要+链接；保留 Windows 自启动引用"}
+{"ts":"2026-04-15T08:00:00.000Z","action":"edit","file":"docs/local-chat-ui.md","desc":"补充进阶集成交叉引用段落，指向 opensandbox-setup.md / feishu-integration.md / windows-local-stack.md"}
+{"ts":"2026-04-15T08:00:00.000Z","action":"verify","desc":"npm run typecheck 通过（纯文档变更不影响类型）"}

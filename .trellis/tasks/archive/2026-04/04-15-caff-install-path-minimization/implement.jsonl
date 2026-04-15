@@ -1,0 +1,14 @@
+{"file":".trellis/tasks/04-15-caff-install-path-minimization/prd.md","reason":"Task requirements (PRD)."}
+{"file":"package.json","reason":"Move optional integrations to optionalDependencies."}
+{"file":"README.md","reason":"Document minimal install (--omit=optional) vs full install."}
+{"file":"docs/feishu-integration.md","reason":"Lane doc: add note for users who installed with --omit=optional."}
+{"file":"docs/opensandbox-setup.md","reason":"Lane doc: add note for users who installed with --omit=optional."}
+{"file":"server/domain/integrations/feishu/feishu-long-connection.ts","reason":"Ensure missing Feishu SDK stays graceful."}
+{"file":"server/domain/skill-test/open-sandbox-factory.ts","reason":"Ensure missing OpenSandbox SDK stays graceful."}
+{"file":".trellis/spec/index.md","reason":"Project spec index (edit/add more spec files)."}
+{"ts":"2026-04-15T09:52:50.000Z","action":"edit","file":"package.json","desc":"Move opensandbox and @larksuiteoapi/node-sdk to optionalDependencies; keep better-sqlite3 as core dependency."}
+{"ts":"2026-04-15T09:52:50.000Z","action":"edit","file":"package-lock.json","desc":"Update lockfile to reflect optionalDependencies (so --omit=optional prunes them)."}
+{"ts":"2026-04-15T09:52:50.000Z","action":"edit","file":"README.md","desc":"Quick Start: document full install (npm install) vs minimal install (npm install --omit=optional)."}
+{"ts":"2026-04-15T09:52:50.000Z","action":"edit","file":"docs/feishu-integration.md","desc":"Add note for --omit=optional users: long-connection needs @larksuiteoapi/node-sdk."}
+{"ts":"2026-04-15T09:52:50.000Z","action":"edit","file":"docs/opensandbox-setup.md","desc":"Add note for --omit=optional users: install opensandbox (or point to local SDK)."}
+{"ts":"2026-04-15T09:52:50.000Z","action":"verify","desc":"Verified npm install --omit=optional + typecheck/build + start + /api/health works without optional packages; verified npm ci --omit=optional works in a clean worktree."}

@@ -1,0 +1,16 @@
+{
+  "title": "CAFF install-path minimization (P3)",
+  "status": "completed",
+  "createdAt": "2026-04-15",
+  "completedAt": "2026-04-15",
+  "priority": "P3",
+  "parentTask": "04-15-caff-deployability-newcomer-friendliness",
+  "description": "Move optional integrations (OpenSandbox SDK + Feishu long-connection SDK) out of the core install path via optionalDependencies; document npm install --omit=optional minimal lane.",
+  "deliverables": [
+    "package.json",
+    "package-lock.json",
+    "README.md",
+    "docs/feishu-integration.md",
+    "docs/opensandbox-setup.md"
+  ]
+}
