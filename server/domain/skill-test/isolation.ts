@@ -1,5 +1,6 @@
 // @ts-nocheck
 const nodeCrypto = require('node:crypto');
+const Database = require('better-sqlite3');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -64,6 +65,47 @@ function clipText(value, maxLength = 200) {
 
 function hashBuffer(buffer) {
   return nodeCrypto.createHash('sha1').update(buffer).digest('hex');
+}
+
+function uniqueNonEmptyStrings(values) {
+  const seen = new Set();
+  const results = [];
+  for (const entry of Array.isArray(values) ? values : []) {
+    const normalized = String(entry || '').trim();
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    results.push(normalized);
+  }
+  return results;
+}
+
+function safeParseJsonObject(value) {
+  if (!value || typeof value !== 'string') {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function isIsoTimestampInWindow(value, startedAt, finishedAt) {
+  const normalized = String(value || '').trim();
+  if (!normalized) {
+    return false;
+  }
+  if (startedAt && normalized < startedAt) {
+    return false;
+  }
+  if (finishedAt && normalized > finishedAt) {
+    return false;
+  }
+  return true;
 }
 
 function ensureDirectory(dirPath) {
@@ -400,6 +442,324 @@ function capturePathSnapshot(label, targetPath) {
   return snapshot;
 }
 
+function pushSqlitePollutionChange(changes, seenEntries, target, input = {}) {
+  const table = String(input.table || 'sqlite').trim() || 'sqlite';
+  const rowId = String(input.rowId != null ? input.rowId : '').trim();
+  const dedupeKey = `${table}:${rowId || input.taskId || input.agentId || input.path || changes.length}`;
+  if (seenEntries.has(dedupeKey)) {
+    return;
+  }
+  seenEntries.add(dedupeKey);
+
+  const basePath = String(target && target.normalizedPath || target && target.path || '').trim();
+  changes.push({
+    label: target && target.label ? target.label : 'live-chat-store',
+    path: rowId ? `${basePath}#${table}:${rowId}` : basePath,
+    kind: String(input.kind || 'sqlite-row-touched').trim() || 'sqlite-row-touched',
+    table,
+    rowId,
+    ...(input.taskId ? { taskId: String(input.taskId).trim() } : {}),
+    ...(input.agentId ? { agentId: String(input.agentId).trim() } : {}),
+    ...(input.createdAt ? { createdAt: String(input.createdAt).trim() } : {}),
+    ...(input.updatedAt ? { updatedAt: String(input.updatedAt).trim() } : {}),
+    ...(input.message ? { message: clipText(input.message, 240) } : {}),
+  });
+}
+
+function detectSqlitePollutionChanges(target, options = {}) {
+  const normalizedPath = String(target && target.path || '').trim();
+  const startedAt = String(target && target.startedAt || options.startedAt || '').trim();
+  const finishedAt = String(options.finishedAt || target && target.finishedAt || nowIso()).trim() || nowIso();
+  const changes = [];
+  const seenEntries = new Set();
+
+  if (!normalizedPath || normalizedPath === ':memory:' || !fs.existsSync(normalizedPath)) {
+    return changes;
+  }
+
+  const conversationId = String(target && target.conversationId || '').trim();
+  const turnId = String(target && target.turnId || '').trim();
+  const caseId = String(target && target.caseId || '').trim();
+  const taskIds = new Set(uniqueNonEmptyStrings(target && target.taskIds));
+  const agentIds = new Set(uniqueNonEmptyStrings(target && target.agentIds));
+  let db = null;
+
+  try {
+    db = new Database(normalizedPath, { readonly: true, fileMustExist: true });
+  } catch (error) {
+    pushSqlitePollutionChange(changes, seenEntries, target, {
+      kind: 'scan-error',
+      table: 'sqlite',
+      message: error && error.message ? error.message : String(error || 'Failed to inspect live SQLite store'),
+    });
+    return changes;
+  }
+
+  try {
+    const runRows = db.prepare(`
+      SELECT id, task_id, task_kind, run_metadata_json, started_at
+      FROM runs
+      WHERE task_kind LIKE 'skill_test%'
+        AND started_at >= @startedAt
+        AND started_at <= @finishedAt
+      ORDER BY started_at ASC, id ASC
+    `).all({ startedAt, finishedAt });
+    for (const row of runRows) {
+      const metadata = safeParseJsonObject(row.run_metadata_json);
+      const rowTaskId = String(row && row.task_id || '').trim();
+      const rowCaseId = String(metadata && metadata.testCaseId || '').trim();
+      if (!taskIds.has(rowTaskId) && (!caseId || rowCaseId !== caseId)) {
+        continue;
+      }
+      pushSqlitePollutionChange(changes, seenEntries, target, {
+        table: 'runs',
+        rowId: row.id,
+        taskId: rowTaskId,
+        createdAt: row.started_at,
+        message: `Unexpected shared run row for ${String(row && row.task_kind || 'skill_test').trim() || 'skill_test'}`,
+      });
+    }
+
+    const taskRows = db.prepare(`
+      SELECT id, kind, metadata_json, created_at, updated_at
+      FROM a2a_tasks
+      WHERE kind LIKE 'skill_test%'
+        AND (
+          (created_at >= @startedAt AND created_at <= @finishedAt)
+          OR (updated_at >= @startedAt AND updated_at <= @finishedAt)
+        )
+      ORDER BY created_at ASC, id ASC
+    `).all({ startedAt, finishedAt });
+    for (const row of taskRows) {
+      const metadata = safeParseJsonObject(row.metadata_json);
+      const rowTaskId = String(row && row.id || '').trim();
+      const rowCaseId = String(metadata && metadata.testCaseId || '').trim();
+      if (!taskIds.has(rowTaskId) && (!caseId || rowCaseId !== caseId)) {
+        continue;
+      }
+      pushSqlitePollutionChange(changes, seenEntries, target, {
+        table: 'a2a_tasks',
+        rowId: row.id,
+        taskId: rowTaskId,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        message: `Unexpected shared A2A task row for ${String(row && row.kind || 'skill_test').trim() || 'skill_test'}`,
+      });
+    }
+
+    const taskEventRows = db.prepare(`
+      SELECT id, task_id, event_type, created_at
+      FROM a2a_task_events
+      WHERE created_at >= @startedAt
+        AND created_at <= @finishedAt
+      ORDER BY created_at ASC, id ASC
+    `).all({ startedAt, finishedAt });
+    for (const row of taskEventRows) {
+      const rowTaskId = String(row && row.task_id || '').trim();
+      if (!taskIds.has(rowTaskId)) {
+        continue;
+      }
+      pushSqlitePollutionChange(changes, seenEntries, target, {
+        table: 'a2a_task_events',
+        rowId: row.id,
+        taskId: rowTaskId,
+        createdAt: row.created_at,
+        message: `Unexpected shared task event ${String(row && row.event_type || 'unknown').trim() || 'unknown'}`,
+      });
+    }
+
+    const artifactRows = db.prepare(`
+      SELECT id, task_id, kind, created_at
+      FROM a2a_artifacts
+      WHERE created_at >= @startedAt
+        AND created_at <= @finishedAt
+      ORDER BY created_at ASC, id ASC
+    `).all({ startedAt, finishedAt });
+    for (const row of artifactRows) {
+      const rowTaskId = String(row && row.task_id || '').trim();
+      if (!taskIds.has(rowTaskId)) {
+        continue;
+      }
+      pushSqlitePollutionChange(changes, seenEntries, target, {
+        table: 'a2a_artifacts',
+        rowId: row.id,
+        taskId: rowTaskId,
+        createdAt: row.created_at,
+        message: `Unexpected shared task artifact ${String(row && row.kind || 'unknown').trim() || 'unknown'}`,
+      });
+    }
+
+    const agentRows = db.prepare(`
+      SELECT id, updated_at
+      FROM chat_agents
+      WHERE updated_at >= @startedAt
+        AND updated_at <= @finishedAt
+      ORDER BY id ASC
+    `).all({ startedAt, finishedAt });
+    for (const row of agentRows) {
+      const rowAgentId = String(row && row.id || '').trim();
+      if (!agentIds.has(rowAgentId)) {
+        continue;
+      }
+      pushSqlitePollutionChange(changes, seenEntries, target, {
+        table: 'chat_agents',
+        rowId: row.id,
+        agentId: rowAgentId,
+        updatedAt: row.updated_at,
+        message: 'Unexpected shared chat agent mutation for the isolated skill-test agent',
+      });
+    }
+
+    if (conversationId) {
+      const conversationRows = db.prepare(`
+        SELECT id, created_at, updated_at, last_message_at
+        FROM chat_conversations
+        WHERE id = @conversationId
+      `).all({ conversationId });
+      for (const row of conversationRows) {
+        if (
+          !isIsoTimestampInWindow(row.created_at, startedAt, finishedAt)
+          && !isIsoTimestampInWindow(row.updated_at, startedAt, finishedAt)
+          && !isIsoTimestampInWindow(row.last_message_at, startedAt, finishedAt)
+        ) {
+          continue;
+        }
+        pushSqlitePollutionChange(changes, seenEntries, target, {
+          table: 'chat_conversations',
+          rowId: row.id,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+          message: 'Unexpected shared conversation mutation for the isolated skill-test conversation',
+        });
+      }
+
+      const participantRows = db.prepare(`
+        SELECT conversation_id, agent_id, created_at
+        FROM chat_conversation_agents
+        WHERE conversation_id = @conversationId
+          AND created_at >= @startedAt
+          AND created_at <= @finishedAt
+        ORDER BY created_at ASC, agent_id ASC
+      `).all({ conversationId, startedAt, finishedAt });
+      for (const row of participantRows) {
+        pushSqlitePollutionChange(changes, seenEntries, target, {
+          table: 'chat_conversation_agents',
+          rowId: `${row.conversation_id}:${row.agent_id}`,
+          agentId: row.agent_id,
+          createdAt: row.created_at,
+          message: 'Unexpected shared conversation participant row for the isolated skill-test conversation',
+        });
+      }
+    }
+
+    const messageRows = db.prepare(`
+      SELECT id, conversation_id, turn_id, agent_id, task_id, created_at
+      FROM chat_messages
+      WHERE created_at >= @startedAt
+        AND created_at <= @finishedAt
+      ORDER BY created_at ASC, id ASC
+    `).all({ startedAt, finishedAt });
+    for (const row of messageRows) {
+      const rowConversationId = String(row && row.conversation_id || '').trim();
+      const rowTurnId = String(row && row.turn_id || '').trim();
+      const rowAgentId = String(row && row.agent_id || '').trim();
+      const rowTaskId = String(row && row.task_id || '').trim();
+      if (
+        rowConversationId !== conversationId
+        && rowTurnId !== turnId
+        && !agentIds.has(rowAgentId)
+        && !taskIds.has(rowTaskId)
+      ) {
+        continue;
+      }
+      pushSqlitePollutionChange(changes, seenEntries, target, {
+        table: 'chat_messages',
+        rowId: row.id,
+        agentId: rowAgentId,
+        taskId: rowTaskId,
+        createdAt: row.created_at,
+        message: 'Unexpected shared chat message for the isolated skill-test conversation',
+      });
+    }
+
+    const privateMessageRows = db.prepare(`
+      SELECT id, conversation_id, turn_id, sender_agent_id, created_at
+      FROM chat_private_messages
+      WHERE created_at >= @startedAt
+        AND created_at <= @finishedAt
+      ORDER BY created_at ASC, id ASC
+    `).all({ startedAt, finishedAt });
+    for (const row of privateMessageRows) {
+      const rowConversationId = String(row && row.conversation_id || '').trim();
+      const rowTurnId = String(row && row.turn_id || '').trim();
+      const rowAgentId = String(row && row.sender_agent_id || '').trim();
+      if (rowConversationId !== conversationId && rowTurnId !== turnId && !agentIds.has(rowAgentId)) {
+        continue;
+      }
+      pushSqlitePollutionChange(changes, seenEntries, target, {
+        table: 'chat_private_messages',
+        rowId: row.id,
+        agentId: rowAgentId,
+        createdAt: row.created_at,
+        message: 'Unexpected shared private message for the isolated skill-test conversation',
+      });
+    }
+
+    const memoryRows = db.prepare(`
+      SELECT id, conversation_id, agent_id, updated_at
+      FROM chat_memory_cards
+      WHERE updated_at >= @startedAt
+        AND updated_at <= @finishedAt
+      ORDER BY updated_at ASC, id ASC
+    `).all({ startedAt, finishedAt });
+    for (const row of memoryRows) {
+      const rowConversationId = String(row && row.conversation_id || '').trim();
+      const rowAgentId = String(row && row.agent_id || '').trim();
+      if (rowConversationId !== conversationId && !agentIds.has(rowAgentId)) {
+        continue;
+      }
+      pushSqlitePollutionChange(changes, seenEntries, target, {
+        table: 'chat_memory_cards',
+        rowId: row.id,
+        agentId: rowAgentId,
+        updatedAt: row.updated_at,
+        message: 'Unexpected shared memory-card mutation for the isolated skill-test agent',
+      });
+    }
+  } finally {
+    try {
+      db.close();
+    } catch {
+      // ignore readonly close failures
+    }
+  }
+
+  return changes;
+}
+
+function captureSqlitePollutionSnapshot(target, options = {}) {
+  const finishedAt = String(options.finishedAt || '').trim();
+  const snapshot = {
+    label: target && target.label ? target.label : 'live-chat-store',
+    path: String(target && target.path || '').trim(),
+    normalizedPath: normalizePathForJson(target && target.path || ''),
+    exists: Boolean(target && target.path && fs.existsSync(target.path)),
+    type: 'sqlite-logical',
+    startedAt: String(target && target.startedAt || '').trim(),
+    finishedAt,
+    checked: Boolean(finishedAt),
+    changes: [],
+    changeCount: 0,
+  };
+
+  if (snapshot.checked) {
+    snapshot.changes = detectSqlitePollutionChanges({ ...target, finishedAt }, options);
+    snapshot.changeCount = snapshot.changes.length;
+  }
+
+  return snapshot;
+}
+
 function normalizeSnapshotTimestamp(value) {
   const numberValue = Number(value);
   return Number.isFinite(numberValue) ? numberValue : 0;
@@ -477,8 +837,13 @@ function comparePathSnapshots(before, after) {
   return changes;
 }
 
-function capturePollutionTargets(targets) {
-  return (Array.isArray(targets) ? targets : []).map((target) => capturePathSnapshot(target.label, target.path));
+function capturePollutionTargets(targets, options = {}) {
+  return (Array.isArray(targets) ? targets : []).map((target) => {
+    if (target && target.type === 'sqlite-logical') {
+      return captureSqlitePollutionSnapshot(target, options);
+    }
+    return capturePathSnapshot(target.label, target.path);
+  });
 }
 
 function comparePollutionTargets(beforeSnapshots, afterSnapshots) {
@@ -487,7 +852,16 @@ function comparePollutionTargets(beforeSnapshots, afterSnapshots) {
   const changes = [];
 
   for (let index = 0; index < Math.max(beforeList.length, afterList.length); index += 1) {
-    changes.push(...comparePathSnapshots(beforeList[index], afterList[index]));
+    const beforeSnapshot = beforeList[index];
+    const afterSnapshot = afterList[index];
+    const snapshotType = String(afterSnapshot && afterSnapshot.type || beforeSnapshot && beforeSnapshot.type || '').trim();
+
+    if (snapshotType === 'sqlite-logical') {
+      changes.push(...(Array.isArray(afterSnapshot && afterSnapshot.changes) ? afterSnapshot.changes : []));
+      continue;
+    }
+
+    changes.push(...comparePathSnapshots(beforeSnapshot, afterSnapshot));
   }
 
   return {
@@ -671,28 +1045,46 @@ function snapshotSkillIntoAgentDir(skill, agentDir) {
   };
 }
 
-function appendSqlitePollutionTargets(targets, label, sqlitePath) {
-  const rawPath = String(sqlitePath || '').trim();
+function buildSqlitePollutionTarget(input = {}) {
+  const rawPath = String(input.liveDatabasePath || '').trim();
   if (!rawPath || rawPath === ':memory:') {
-    return;
+    return null;
   }
 
   const normalizedPath = resolveSqliteFileUriPath(rawPath) || path.resolve(rawPath);
   if (!normalizedPath || normalizedPath === ':memory:') {
-    return;
+    return null;
   }
 
-  targets.push({ label, path: normalizedPath });
-  targets.push({ label: `${label}-wal`, path: `${normalizedPath}-wal` });
+  const agent = input.agent && typeof input.agent === 'object' ? input.agent : null;
+  const agentIdBase = String(agent && agent.id || input.agentId || '').trim();
+
+  return {
+    label: 'live-chat-store',
+    type: 'sqlite-logical',
+    path: normalizedPath,
+    normalizedPath: normalizePathForJson(normalizedPath),
+    startedAt: String(input.startedAt || nowIso()).trim() || nowIso(),
+    caseId: String(input.caseId || '').trim(),
+    skillId: String(input.skillId || '').trim(),
+    conversationId: String(input.conversationId || '').trim(),
+    turnId: String(input.turnId || '').trim(),
+    taskIds: uniqueNonEmptyStrings([input.runId]),
+    agentIds: uniqueNonEmptyStrings([
+      agentIdBase,
+      agentIdBase ? `${agentIdBase}-judge` : '',
+      agentIdBase ? `${agentIdBase}-execution-judge` : '',
+    ]),
+  };
 }
 
 function buildPollutionWatchTargets(input = {}) {
   const targets = [];
   const liveProjectDir = String(input.liveProjectDir || '').trim();
   const liveAgentDir = String(input.liveAgentDir || '').trim();
-  const liveDatabasePath = String(input.liveDatabasePath || '').trim();
   const agent = input.agent && typeof input.agent === 'object' ? input.agent : null;
   const skill = input.skill && typeof input.skill === 'object' ? input.skill : null;
+  const sqliteTarget = buildSqlitePollutionTarget(input);
 
   if (liveProjectDir) {
     targets.push({ label: 'live-trellis', path: path.join(liveProjectDir, '.trellis') });
@@ -702,7 +1094,9 @@ function buildPollutionWatchTargets(input = {}) {
     targets.push({ label: 'shared-skills-root', path: path.join(liveAgentDir, 'skills') });
   }
 
-  appendSqlitePollutionTargets(targets, 'live-chat-store', liveDatabasePath);
+  if (sqliteTarget) {
+    targets.push(sqliteTarget);
+  }
 
   if (liveAgentDir && agent) {
     targets.push({ label: 'live-agent-private-dir', path: resolveAgentPrivateDir(liveAgentDir, agent) });
@@ -837,10 +1231,17 @@ function createSkillTestIsolationDriver(options = {}) {
         : path.join(caseRoot, 'project');
       const caseOutputsDir = path.join(caseRoot, 'outputs');
       const caseSqlitePath = path.join(caseRoot, 'store', 'chat.sqlite');
+      const createdAt = nowIso();
       const pollutionTargets = buildPollutionWatchTargets({
         liveProjectDir: input.liveProjectDir,
         liveAgentDir: input.liveAgentDir,
         liveDatabasePath: input.liveDatabasePath,
+        runId: input.runId,
+        caseId: input.caseId,
+        skillId: input.skill && input.skill.id ? input.skill.id : '',
+        conversationId: input.conversationId,
+        turnId: input.turnId,
+        startedAt: createdAt,
         agent,
         skill: input.skill,
       });
@@ -895,8 +1296,6 @@ function createSkillTestIsolationDriver(options = {}) {
         scope: 'record-only',
         reason: 'Requested egress policy is recorded in isolation evidence but not actively enforced by the current adapter',
       });
-      const createdAt = nowIso();
-
       return {
         isolation,
         store: isolatedStore,
@@ -923,7 +1322,7 @@ function createSkillTestIsolationDriver(options = {}) {
         startRun: typeof adapter.startRun === 'function' ? adapter.startRun : null,
         async finalize() {
           const finishedAt = nowIso();
-          const pollutionAfter = capturePollutionTargets(pollutionTargets);
+          const pollutionAfter = capturePollutionTargets(pollutionTargets, { finishedAt });
           const pollutionCheck = comparePollutionTargets(pollutionBefore, pollutionAfter);
           let cleanupError = '';
 

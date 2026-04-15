@@ -15,6 +15,8 @@ const DEFAULT_TIMEOUT_SECONDS = 300;
 const DEFAULT_REMOTE_ROOT = '/workspace/caff-skill-test';
 const DEFAULT_REMOTE_NODE_COMMAND = 'node';
 const DEFAULT_OFFICIAL_IMAGE = 'node:20-bookworm';
+const DEFAULT_PREBAKED_RUNTIME_DIR = '/opt/caff-skill-test/runtime';
+const DEFAULT_PREBAKED_PROJECT_DIR = '/opt/caff-skill-test/project';
 const DEFAULT_EVENT_POLL_INTERVAL_MS = 250;
 const DEFAULT_FORWARD_ENV_NAMES = [
   'HTTP_PROXY',
@@ -669,7 +671,81 @@ async function createSandboxInstance(Sandbox, moduleValue, metadata, options = {
 }
 
 function describeOpenSandboxError(error, maxLength = 120) {
-  return clipText(error && error.message ? error.message : String(error || 'unknown error'), maxLength);
+  return clipText(collectOpenSandboxErrorText(error) || String(error || 'unknown error'), maxLength);
+}
+
+function collectOpenSandboxErrorText(error, maxDepth = 4) {
+  if (!error) {
+    return '';
+  }
+
+  const seen = new Set();
+  const fragments = [];
+
+  function pushFragment(value) {
+    const normalized = String(value || '').trim();
+    if (!normalized) {
+      return;
+    }
+    if (!fragments.includes(normalized)) {
+      fragments.push(normalized);
+    }
+  }
+
+  function visit(value, depth) {
+    if (value === undefined || value === null || depth > maxDepth) {
+      return;
+    }
+
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+      pushFragment(value);
+      return;
+    }
+
+    if (typeof value !== 'object') {
+      return;
+    }
+
+    if (seen.has(value)) {
+      return;
+    }
+    seen.add(value);
+
+    if (value instanceof Error) {
+      pushFragment(value.message);
+    }
+
+    if (Array.isArray(value)) {
+      value.slice(0, 8).forEach((entry) => visit(entry, depth + 1));
+      return;
+    }
+
+    const priorityKeys = ['message', 'detail', 'rawBody', 'error', 'cause', 'response', 'body'];
+    for (const key of priorityKeys) {
+      if (Object.prototype.hasOwnProperty.call(value, key)) {
+        visit(value[key], depth + 1);
+      }
+    }
+
+    for (const [key, entry] of Object.entries(value)) {
+      if (priorityKeys.includes(key)) {
+        continue;
+      }
+      if (key === 'code' || key === 'status' || key === 'statusCode' || key === 'name') {
+        pushFragment(entry);
+        continue;
+      }
+      if (key === 'requestId') {
+        continue;
+      }
+      if (typeof entry === 'string' || typeof entry === 'number' || typeof entry === 'boolean') {
+        pushFragment(entry);
+      }
+    }
+  }
+
+  visit(error, 0);
+  return fragments.join('\n');
 }
 
 function isOpenSandboxNotFoundError(error) {
@@ -689,6 +765,16 @@ function isOpenSandboxNotFoundError(error) {
 
   const message = describeOpenSandboxError(error, 500).toLowerCase();
   return /\b404\b/u.test(message) || (message.includes('not found') && message.includes('sandbox'));
+}
+
+function isOpenSandboxAlreadyDeletingError(error) {
+  if (!error) {
+    return false;
+  }
+
+  const message = collectOpenSandboxErrorText(error).toLowerCase();
+  return /removal of container[\s\S]*already(?:\s+in\s+progress)?/u.test(message)
+    || /removal of container[\s\S]*is\s+alr(?:eady)?/u.test(message);
 }
 
 async function createSandboxInstanceFromModule(moduleValue, metadata, options = {}) {
@@ -734,7 +820,7 @@ async function cleanupSandbox(sandbox) {
       await Promise.resolve(sandbox.kill());
     }
   } catch (error) {
-    if (!isOpenSandboxNotFoundError(error)) {
+    if (!isOpenSandboxNotFoundError(error) && !isOpenSandboxAlreadyDeletingError(error)) {
       cleanupError = error;
     }
   } finally {
@@ -743,7 +829,7 @@ async function cleanupSandbox(sandbox) {
         await Promise.resolve(sandbox.close());
       }
     } catch (error) {
-      if (!cleanupError && !isOpenSandboxNotFoundError(error)) {
+      if (!cleanupError && !isOpenSandboxNotFoundError(error) && !isOpenSandboxAlreadyDeletingError(error)) {
         cleanupError = error;
       }
     }
@@ -793,6 +879,49 @@ async function uploadTreeToSandbox(sandbox, localRootDir, remoteRootDir, options
   return uploadedFiles;
 }
 
+async function prepareSandboxProjectDir(sandbox, factoryInput, layout, options = {}) {
+  if (!layout.usesPrebakedProjectSource) {
+    return {
+      files: await uploadTreeToSandbox(sandbox, factoryInput.projectDir, layout.remoteProjectDir),
+      source: 'upload',
+      templateDir: '',
+      copyCommand: '',
+    };
+  }
+
+  if (!sandbox || !sandbox.commands || typeof sandbox.commands.run !== 'function') {
+    throw new Error('OpenSandbox pre-baked CAFF source requires commands.run to copy the case project template');
+  }
+
+  const packageJsonPath = joinRemotePath(layout.remoteProjectTemplateDir, 'package.json');
+  if (!(await remoteFileExists(sandbox, packageJsonPath))) {
+    throw new Error(`OpenSandbox pre-baked CAFF source is missing package.json in ${layout.remoteProjectTemplateDir}`);
+  }
+
+  const remoteProjectParentDir = path.posix.dirname(layout.remoteProjectDir);
+  const remoteProjectTemplateContents = `${layout.remoteProjectTemplateDir.replace(/\/+$/u, '')}/.`;
+  const copyCommand = [
+    `rm -rf ${shellQuote(layout.remoteProjectDir)}`,
+    `mkdir -p ${shellQuote(remoteProjectParentDir)}`,
+    `cp -a ${shellQuote(remoteProjectTemplateContents)} ${shellQuote(layout.remoteProjectDir)}`,
+  ].join(' && ');
+  const copyResult = await sandbox.commands.run(copyCommand, {
+    timeout: options.timeoutSeconds,
+    cwd: '/',
+  });
+  const exitCode = extractCommandExitCode(copyResult);
+  if (exitCode !== null && exitCode !== 0) {
+    throw new Error(`OpenSandbox pre-baked CAFF source copy failed with exit code ${exitCode}: ${clipText(extractCommandText(copyResult, 'stderr'), 240)}`);
+  }
+
+  return {
+    files: await uploadTreeToSandbox(sandbox, factoryInput.projectDir, layout.remoteProjectDir),
+    source: 'prebaked',
+    templateDir: layout.remoteProjectTemplateDir,
+    copyCommand,
+  };
+}
+
 function buildRemoteLayout(input = {}, options = {}) {
   const remoteRootBase = normalizeRemotePath(options.remoteRoot || DEFAULT_REMOTE_ROOT, DEFAULT_REMOTE_ROOT);
   const remoteRoot = joinRemotePath(
@@ -802,16 +931,19 @@ function buildRemoteLayout(input = {}, options = {}) {
   );
   const remoteAgentDir = joinRemotePath(remoteRoot, 'agent');
   const remoteProjectDir = joinRemotePath(remoteRoot, 'project');
+  const configuredProjectTemplateDir = normalizeRemotePath(options.prebakedProjectDir || '', '');
   const remoteOutputDir = joinRemotePath(remoteRoot, 'outputs');
   const remoteStoreDir = joinRemotePath(remoteRoot, 'store');
   const remoteRuntimeDir = joinRemotePath(remoteRoot, 'runtime');
+  const configuredRuntimeAssetDir = normalizeRemotePath(options.prebakedRuntimeDir || '', '');
+  const remoteRuntimeAssetDir = configuredRuntimeAssetDir || remoteRuntimeDir;
   const remoteRunnerInputDir = joinRemotePath(remoteRuntimeDir, 'inputs');
   const remoteRunnerResultDir = joinRemotePath(remoteRuntimeDir, 'results');
   const remoteRunnerEventDir = joinRemotePath(remoteRuntimeDir, 'events');
   const remoteRunnerControlDir = joinRemotePath(remoteRuntimeDir, 'controls');
-  const remoteRunnerPath = joinRemotePath(remoteRuntimeDir, 'open-sandbox-runner.js');
-  const remoteAgentChatToolsPath = joinRemotePath(remoteRuntimeDir, 'agent-chat-tools.js');
-  const remotePiPackageDir = joinRemotePath(remoteRuntimeDir, 'pi-coding-agent');
+  const remoteRunnerPath = joinRemotePath(remoteRuntimeAssetDir, 'open-sandbox-runner.js');
+  const remoteAgentChatToolsPath = joinRemotePath(remoteRuntimeAssetDir, 'agent-chat-tools.js');
+  const remotePiPackageDir = joinRemotePath(remoteRuntimeAssetDir, 'pi-coding-agent');
   const remotePiCliPath = joinRemotePath(remotePiPackageDir, 'dist', 'cli.js');
   const sqliteFileName = path.basename(String(input.sqlitePath || 'chat.sqlite').trim() || 'chat.sqlite');
   const remoteSqlitePath = joinRemotePath(remoteStoreDir, sqliteFileName);
@@ -823,9 +955,11 @@ function buildRemoteLayout(input = {}, options = {}) {
     remoteRoot,
     remoteAgentDir,
     remoteProjectDir,
+    remoteProjectTemplateDir: configuredProjectTemplateDir,
     remoteOutputDir,
     remoteStoreDir,
     remoteRuntimeDir,
+    remoteRuntimeAssetDir,
     remoteRunnerInputDir,
     remoteRunnerResultDir,
     remoteRunnerEventDir,
@@ -838,6 +972,8 @@ function buildRemoteLayout(input = {}, options = {}) {
     remoteSandboxDir,
     remotePrivateDir,
     remoteSkillPath,
+    usesPrebakedRuntimeAssets: !!configuredRuntimeAssetDir,
+    usesPrebakedProjectSource: !!configuredProjectTemplateDir,
   };
 }
 
@@ -855,6 +991,14 @@ function normalizeOpenSandboxFactoryOptions(input = {}) {
     chatApiUrl: normalizeText(input.chatApiUrl !== undefined ? input.chatApiUrl : process.env.CAFF_SKILL_TEST_OPENSANDBOX_CHAT_API_URL),
     sdkModulePath: normalizeText(input.sdkModulePath !== undefined ? input.sdkModulePath : process.env.CAFF_SKILL_TEST_OPENSANDBOX_SDK_PATH),
     image: normalizeText(input.image !== undefined ? input.image : process.env.CAFF_SKILL_TEST_OPENSANDBOX_IMAGE, DEFAULT_OFFICIAL_IMAGE),
+    prebakedRuntimeDir: normalizeRemotePath(
+      input.prebakedRuntimeDir !== undefined ? input.prebakedRuntimeDir : process.env.CAFF_SKILL_TEST_OPENSANDBOX_PREBAKED_RUNTIME_DIR,
+      ''
+    ),
+    prebakedProjectDir: normalizeRemotePath(
+      input.prebakedProjectDir !== undefined ? input.prebakedProjectDir : process.env.CAFF_SKILL_TEST_OPENSANDBOX_PREBAKED_PROJECT_DIR,
+      ''
+    ),
     useServerProxy: normalizeBoolean(input.useServerProxy !== undefined ? input.useServerProxy : process.env.CAFF_SKILL_TEST_OPENSANDBOX_USE_SERVER_PROXY, true),
     piPackageDir: normalizeText(input.piPackageDir !== undefined ? input.piPackageDir : process.env.CAFF_SKILL_TEST_OPENSANDBOX_PI_PACKAGE_DIR),
     piCommandPath: normalizeText(input.piCommandPath !== undefined ? input.piCommandPath : process.env.CAFF_SKILL_TEST_OPENSANDBOX_PI_COMMAND_PATH || process.env.PI_COMMAND_PATH),
@@ -1112,6 +1256,21 @@ function buildSandboxExecutionSupport(sandbox, options = {}) {
       runnerPath: '',
       chatToolsPath: '',
       piPackageDir: '',
+      runtimeAssetSource: 'unavailable',
+      prebakedRuntimeDir: '',
+    };
+  }
+
+  const prebakedRuntimeDir = normalizeRemotePath(options.prebakedRuntimeDir, '');
+  if (prebakedRuntimeDir) {
+    return {
+      startRunAvailable: true,
+      blockReason: '',
+      runnerPath: '',
+      chatToolsPath: '',
+      piPackageDir: '',
+      runtimeAssetSource: 'prebaked',
+      prebakedRuntimeDir,
     };
   }
 
@@ -1123,6 +1282,8 @@ function buildSandboxExecutionSupport(sandbox, options = {}) {
       runnerPath: '',
       chatToolsPath: '',
       piPackageDir: '',
+      runtimeAssetSource: 'upload',
+      prebakedRuntimeDir: '',
     };
   }
 
@@ -1134,6 +1295,8 @@ function buildSandboxExecutionSupport(sandbox, options = {}) {
       runnerPath,
       chatToolsPath: '',
       piPackageDir: '',
+      runtimeAssetSource: 'upload',
+      prebakedRuntimeDir: '',
     };
   }
 
@@ -1145,6 +1308,8 @@ function buildSandboxExecutionSupport(sandbox, options = {}) {
       runnerPath,
       chatToolsPath,
       piPackageDir: '',
+      runtimeAssetSource: 'upload',
+      prebakedRuntimeDir: '',
     };
   }
 
@@ -1154,6 +1319,8 @@ function buildSandboxExecutionSupport(sandbox, options = {}) {
     runnerPath,
     chatToolsPath,
     piPackageDir,
+    runtimeAssetSource: 'upload',
+    prebakedRuntimeDir: '',
   };
 }
 
@@ -1190,6 +1357,36 @@ async function uploadSandboxRuntimeAssets(sandbox, layout, support) {
   await ensureRemoteDirectory(sandbox, layout.remoteRunnerResultDir);
   await ensureRemoteDirectory(sandbox, layout.remoteRunnerEventDir);
   await ensureRemoteDirectory(sandbox, layout.remoteRunnerControlDir);
+
+  if (support.runtimeAssetSource === 'prebaked') {
+    const requiredAssets = [
+      { name: 'open-sandbox-runner.js', remotePath: layout.remoteRunnerPath },
+      { name: 'agent-chat-tools.js', remotePath: layout.remoteAgentChatToolsPath },
+      { name: 'pi-coding-agent/dist/cli.js', remotePath: layout.remotePiCliPath },
+    ];
+    const missingAssets = [];
+
+    for (const asset of requiredAssets) {
+      if (!(await remoteFileExists(sandbox, asset.remotePath))) {
+        missingAssets.push(asset.name);
+      }
+    }
+
+    if (missingAssets.length > 0) {
+      throw new Error(
+        `OpenSandbox pre-baked runtime is missing required assets in ${layout.remoteRuntimeAssetDir}: ${missingAssets.join(', ')}`
+      );
+    }
+
+    return {
+      runnerUploaded: false,
+      chatToolsUploaded: false,
+      piFileCount: 0,
+      source: 'prebaked',
+      runtimeAssetDir: layout.remoteRuntimeAssetDir,
+    };
+  }
+
   await writeRemoteFile(sandbox, layout.remoteRunnerPath, fs.readFileSync(support.runnerPath));
   await writeRemoteFile(sandbox, layout.remoteAgentChatToolsPath, fs.readFileSync(support.chatToolsPath));
   const piFiles = await uploadTreeToSandbox(sandbox, support.piPackageDir, layout.remotePiPackageDir, {
@@ -1200,6 +1397,8 @@ async function uploadSandboxRuntimeAssets(sandbox, layout, support) {
     runnerUploaded: true,
     chatToolsUploaded: true,
     piFileCount: piFiles.length,
+    source: 'upload',
+    runtimeAssetDir: layout.remoteRuntimeAssetDir,
   };
 }
 
@@ -1374,12 +1573,14 @@ function createSandboxStartRun(adapterInput = {}) {
     const resultPromise = (async () => {
       deferRunnerStatus({
         stage: 'preparing_assets',
-        label: '正在准备 sandbox runner…',
+        label: support.runtimeAssetSource === 'prebaked' ? '正在检查预烘焙 sandbox runner…' : '正在准备 sandbox runner…',
+        assetSource: support.runtimeAssetSource || 'upload',
       });
       await ensureRuntimeAssets();
       emitRunnerStatus({
         stage: 'assets_ready',
         label: '正在启动 sandbox runner…',
+        assetSource: support.runtimeAssetSource || 'upload',
       });
 
       const runEnv = buildSandboxRunEnv(startOptions, layout, options, factoryInput, provider);
@@ -1535,6 +1736,8 @@ async function createOpenSandboxAdapter(factoryInput = {}, options = {}) {
   const uploaded = {
     agentFiles: [],
     projectFiles: [],
+    projectSource: 'upload',
+    projectTemplateDir: '',
     sqliteSeeded: false,
   };
 
@@ -1544,7 +1747,10 @@ async function createOpenSandboxAdapter(factoryInput = {}, options = {}) {
     await ensureRemoteDirectory(sandbox, layout.remoteStoreDir);
     await ensureRemoteDirectory(sandbox, layout.remoteRuntimeDir);
     uploaded.agentFiles = await uploadTreeToSandbox(sandbox, factoryInput.agentDir, layout.remoteAgentDir);
-    uploaded.projectFiles = await uploadTreeToSandbox(sandbox, factoryInput.projectDir, layout.remoteProjectDir);
+    const projectPreparation = await prepareSandboxProjectDir(sandbox, factoryInput, layout, normalizedOptions);
+    uploaded.projectFiles = projectPreparation.files;
+    uploaded.projectSource = projectPreparation.source;
+    uploaded.projectTemplateDir = projectPreparation.templateDir;
     if (factoryInput.sqlitePath && fs.existsSync(factoryInput.sqlitePath)) {
       await writeRemoteFile(sandbox, layout.remoteSqlitePath, fs.readFileSync(factoryInput.sqlitePath));
       uploaded.sqliteSeeded = true;
@@ -1605,12 +1811,14 @@ async function createOpenSandboxAdapter(factoryInput = {}, options = {}) {
       remoteRoot: layout.remoteRoot,
       remoteAgentDir: layout.remoteAgentDir,
       remoteProjectDir: layout.remoteProjectDir,
+      remoteProjectTemplateDir: layout.remoteProjectTemplateDir,
       remoteSandboxDir: layout.remoteSandboxDir,
       remotePrivateDir: layout.remotePrivateDir,
       remoteOutputDir: layout.remoteOutputDir,
       remoteSqlitePath: layout.remoteSqlitePath,
       remoteSkillPath: layout.remoteSkillPath,
       remoteRuntimeDir: layout.remoteRuntimeDir,
+      remoteRuntimeAssetDir: layout.remoteRuntimeAssetDir,
       remoteRunnerEventDir: layout.remoteRunnerEventDir,
       remoteRunnerControlDir: layout.remoteRunnerControlDir,
       remoteRunnerPath: layout.remoteRunnerPath,
@@ -1618,6 +1826,8 @@ async function createOpenSandboxAdapter(factoryInput = {}, options = {}) {
       remoteAgentChatToolsPath: layout.remoteAgentChatToolsPath,
       remoteDomain: resolveSandboxDomain(sandbox),
       sdkFlavor: sandboxFlavor,
+      usesPrebakedRuntimeAssets: layout.usesPrebakedRuntimeAssets,
+      usesPrebakedProjectSource: layout.usesPrebakedProjectSource,
       startRunAvailable: executionSupport.startRunAvailable,
       startRunBlockReason: executionSupport.startRunAvailable ? '' : executionSupport.blockReason,
       upload: uploaded,
@@ -1643,10 +1853,17 @@ function createConfiguredOpenSandboxFactory(input = {}) {
 export {
   DEFAULT_DRIVER_NAME,
   DEFAULT_DRIVER_VERSION,
+  DEFAULT_PREBAKED_PROJECT_DIR,
+  DEFAULT_PREBAKED_RUNTIME_DIR,
   DEFAULT_REMOTE_ROOT,
   DEFAULT_TEMPLATE,
   DEFAULT_TIMEOUT_SECONDS,
+  createPiPackageFilter,
   createConfiguredOpenSandboxFactory,
   createOpenSandboxAdapter,
   normalizeOpenSandboxFactoryOptions,
+  resolveLocalChatToolsPath,
+  resolveLocalPiPackageDir,
+  resolveLocalRunnerPath,
+  resolveProviderAuthEnv,
 };

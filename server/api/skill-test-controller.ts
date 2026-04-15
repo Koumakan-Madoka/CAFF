@@ -23,6 +23,7 @@ import {
   createSkillTestIsolationDriver,
   getSkillTestIsolationFailureMessage,
 } from '../domain/skill-test/isolation';
+const { resolveProviderAuthEnv } = require('../domain/skill-test/open-sandbox-factory');
 
 type ApiContext = {
   req: IncomingMessage;
@@ -2435,6 +2436,9 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     DEFAULT_SKILL_TEST_BRIDGE_TOKEN_TTL_SECONDS;
   const startRunImpl = typeof options.startRunImpl === 'function' ? options.startRunImpl : startRun;
   const evaluateRunImpl = typeof options.evaluateRunImpl === 'function' ? options.evaluateRunImpl : null;
+  const resolveProviderAuthEnvImpl = typeof options.resolveProviderAuthEnvImpl === 'function'
+    ? options.resolveProviderAuthEnvImpl
+    : resolveProviderAuthEnv;
   const broadcastEvent = typeof options.broadcastEvent === 'function' ? options.broadcastEvent : () => {};
   const skillTestIsolationDriver = createSkillTestIsolationDriver({
     openSandboxFactory: options.openSandboxFactory,
@@ -2442,6 +2446,22 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     allowLiveTrellis: options.allowLiveTrellis === true,
   });
   let schemaReady = false;
+
+  function buildProviderAuthEnv(provider: any) {
+    const resolved = typeof resolveProviderAuthEnvImpl === 'function'
+      ? resolveProviderAuthEnvImpl(provider, process.env, options)
+      : null;
+
+    if (!isPlainObject(resolved)) {
+      return {};
+    }
+
+    return Object.fromEntries(
+      Object.entries(resolved)
+        .filter(([key, value]) => String(key || '').trim() && value !== undefined && value !== null && String(value).trim())
+        .map(([key, value]) => [String(key), String(value)])
+    );
+  }
 
   if (!store || !store.db) {
     return async function handleMissingSkillTestController(context) {
@@ -3547,6 +3567,8 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     const taskId = `skill-test-generate-${randomUUID()}`;
     const sessionName = `skill-test-generate-${String(skill && skill.id || 'skill').trim() || 'skill'}-${Date.now()}`;
 
+    const providerAuthEnv = buildProviderAuthEnv(provider);
+
     let generationResult: any;
     try {
       const handle = startRunImpl(provider, model, generationPrompt, {
@@ -3566,6 +3588,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
           requestedCount: count,
         },
         extraEnv: {
+          ...providerAuthEnv,
           PI_AGENT_ID: 'skill-test-generator',
           PI_AGENT_NAME: 'Skill Test Generator',
           CAFF_SKILL_LOADING_MODE: 'full',
@@ -3714,12 +3737,19 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     const privateDir = runtime && runtime.sandbox && runtime.sandbox.privateDir
       ? String(runtime.sandbox.privateDir)
       : '';
+    const runtimeExtraEnv = isPlainObject(runtime && runtime.extraEnv) ? { ...(runtime.extraEnv as any) } : {};
+    const providerAuthEnv = buildProviderAuthEnv(provider);
+    const judgeProjectDir = String(runtime && runtime.projectDir || runtimeExtraEnv.CAFF_TRELLIS_PROJECT_DIR || '').trim();
+    const judgeAgentDir = String(runtime && runtime.agentDir || store.agentDir || '').trim() || store.agentDir;
+    const judgeSqlitePath = String(runtime && runtime.sqlitePath || store.databasePath || '').trim() || store.databasePath;
+
+    let handle: any = null;
 
     try {
-      const handle = startRunImpl(provider, model, judgePrompt, {
+      handle = startRunImpl(provider, model, judgePrompt, {
         thinking: '',
-        agentDir: store.agentDir,
-        sqlitePath: store.databasePath,
+        agentDir: judgeAgentDir,
+        sqlitePath: judgeSqlitePath,
         streamOutput: false,
         session: judgeSessionName,
         taskId: judgeTaskId,
@@ -3732,10 +3762,14 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
           skillId: testCase && testCase.skillId ? testCase.skillId : null,
         },
         extraEnv: {
+          ...runtimeExtraEnv,
+          ...providerAuthEnv,
           PI_AGENT_ID: `${judgeAgentIdBase}-judge`,
           PI_AGENT_NAME: 'Skill Trigger Judge',
-          PI_AGENT_SANDBOX_DIR: sandboxDir,
-          PI_AGENT_PRIVATE_DIR: privateDir,
+          ...(sandboxDir ? { PI_AGENT_SANDBOX_DIR: sandboxDir } : {}),
+          ...(privateDir ? { PI_AGENT_PRIVATE_DIR: privateDir } : {}),
+          ...(judgeSqlitePath ? { PI_SQLITE_PATH: judgeSqlitePath } : {}),
+          ...(judgeProjectDir ? { CAFF_TRELLIS_PROJECT_DIR: judgeProjectDir } : {}),
           CAFF_SKILL_LOADING_MODE: 'full',
         },
       });
@@ -3758,7 +3792,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
         matchedBehaviors: [],
         rawResponse: '',
         errorMessage: error && error.message ? String(error.message) : String(error || 'AI judge failed'),
-        sessionPath: '',
+        sessionPath: String((error && error.sessionPath) || (handle && handle.sessionPath) || '').trim(),
       };
     }
   }
@@ -4039,12 +4073,19 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     const privateDir = runtime && runtime.sandbox && runtime.sandbox.privateDir
       ? String(runtime.sandbox.privateDir)
       : '';
+    const runtimeExtraEnv = isPlainObject(runtime && runtime.extraEnv) ? { ...(runtime.extraEnv as any) } : {};
+    const providerAuthEnv = buildProviderAuthEnv(provider);
+    const judgeProjectDir = String(runtime && runtime.projectDir || runtimeExtraEnv.CAFF_TRELLIS_PROJECT_DIR || '').trim();
+    const judgeAgentDir = String(runtime && runtime.agentDir || store.agentDir || '').trim() || store.agentDir;
+    const judgeSqlitePath = String(runtime && runtime.sqlitePath || store.databasePath || '').trim() || store.databasePath;
+
+    let handle: any = null;
 
     try {
-      const handle = startRunImpl(provider, model, judgePrompt, {
+      handle = startRunImpl(provider, model, judgePrompt, {
         thinking: '',
-        agentDir: store.agentDir,
-        sqlitePath: store.databasePath,
+        agentDir: judgeAgentDir,
+        sqlitePath: judgeSqlitePath,
         streamOutput: false,
         session: judgeSessionName,
         taskId: judgeTaskId,
@@ -4057,10 +4098,14 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
           skillId: testCase && testCase.skillId ? testCase.skillId : null,
         },
         extraEnv: {
+          ...runtimeExtraEnv,
+          ...providerAuthEnv,
           PI_AGENT_ID: `${judgeAgentIdBase}-execution-judge`,
           PI_AGENT_NAME: 'Skill Execution Judge',
-          PI_AGENT_SANDBOX_DIR: sandboxDir,
-          PI_AGENT_PRIVATE_DIR: privateDir,
+          ...(sandboxDir ? { PI_AGENT_SANDBOX_DIR: sandboxDir } : {}),
+          ...(privateDir ? { PI_AGENT_PRIVATE_DIR: privateDir } : {}),
+          ...(judgeSqlitePath ? { PI_SQLITE_PATH: judgeSqlitePath } : {}),
+          ...(judgeProjectDir ? { CAFF_TRELLIS_PROJECT_DIR: judgeProjectDir } : {}),
           CAFF_SKILL_LOADING_MODE: 'full',
         },
       });
@@ -4083,7 +4128,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
         missedExpectations: [],
         steps: [],
         constraintChecks: [],
-        sessionPath: '',
+        sessionPath: String((error && error.sessionPath) || (handle && handle.sessionPath) || '').trim(),
       };
     }
   }
@@ -5816,6 +5861,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
         const startSkillTestRun = isolationContext && typeof isolationContext.startRun === 'function'
           ? isolationContext.startRun
           : startRunImpl;
+        const providerAuthEnv = buildProviderAuthEnv(effectiveProvider);
         const handle = await Promise.resolve(startSkillTestRun(effectiveProvider, effectiveModel, prompt, {
           thinking: '',
           agentDir: runtimeAgentDir,
@@ -5832,6 +5878,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
             source: 'skill_test',
           },
           extraEnv: {
+            ...providerAuthEnv,
             PI_AGENT_ID: agentId,
             PI_AGENT_NAME: agentName,
             PI_AGENT_SANDBOX_DIR: sandbox.sandboxDir,
@@ -6101,14 +6148,18 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
               outputText,
               sessionPath,
               status,
-              provider,
-              model,
+              provider: effectiveProvider,
+              model: effectiveModel,
               promptVersion,
               agentId,
               agentName,
               taskId,
               prompt,
               sandbox,
+              projectDir,
+              agentDir: runtimeAgentDir,
+              sqlitePath: runtimeSqlitePath,
+              extraEnv: isolationContext && isolationContext.extraEnv ? isolationContext.extraEnv : {},
               skill: runtimeSkill,
               runStore,
             })
@@ -6116,14 +6167,18 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
               outputText,
               sessionPath,
               status,
-              provider,
-              model,
+              provider: effectiveProvider,
+              model: effectiveModel,
               promptVersion,
               agentId,
               agentName,
               taskId,
               prompt,
               sandbox,
+              projectDir,
+              agentDir: runtimeAgentDir,
+              sqlitePath: runtimeSqlitePath,
+              extraEnv: isolationContext && isolationContext.extraEnv ? isolationContext.extraEnv : {},
               skill: runtimeSkill,
               runStore,
             })

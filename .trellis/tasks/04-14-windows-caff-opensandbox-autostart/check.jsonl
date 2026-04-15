@@ -1,0 +1,4 @@
+{"file": ".agents/skills/finish-work/SKILL.md", "reason": "Finish work checklist"}
+{"file": ".agents/skills/check/SKILL.md", "reason": "Code quality check spec"}
+{"file": ".trellis/spec/guides/cross-platform-thinking-guide.md", "reason": "Validate Windows command, path, and shell handling"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Check startup flow reuses existing CAFF/OpenSandbox entry points"}

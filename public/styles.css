@@ -2690,6 +2690,14 @@ label.skill-tests-toolbar-field,
   gap: 1rem;
 }
 
+.skill-tests-main-primary,
+.skill-tests-main-detail-column {
+  display: grid;
+  gap: 1rem;
+  align-content: start;
+  min-width: 0;
+}
+
 .skill-test-case-list {
   display: grid;
   gap: 0.75rem;
@@ -3072,31 +3080,23 @@ label.skill-tests-toolbar-field,
 @media (min-width: 1280px) {
   .skill-tests-main {
     grid-template-columns: minmax(0, 1.02fr) minmax(360px, 0.98fr);
-    grid-template-areas:
-      "overview detail"
-      "list detail"
-      "create summary";
     align-items: start;
   }
 
-  .skill-tests-overview-panel {
-    grid-area: overview;
+  .skill-tests-main-primary {
+    grid-column: 1;
   }
 
-  .skill-tests-list-panel {
-    grid-area: list;
-  }
-
-  .skill-tests-detail-panel {
-    grid-area: detail;
+  .skill-tests-main-detail-column {
+    grid-column: 2;
   }
 
   .skill-tests-create-panel {
-    grid-area: create;
+    grid-column: 1;
   }
 
   .skill-tests-summary-panel {
-    grid-area: summary;
+    grid-column: 2;
   }
 }
 
