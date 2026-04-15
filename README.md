@@ -78,10 +78,15 @@ CAFF 目前是一个以本地 Web 工作台为入口、Node/TypeScript 后端为
 
 ### Step 1 — 最小运行（3 分钟）
 
+安装依赖有两种方式：
+
+- **完整安装**：`npm install`（包含 OpenSandbox / Feishu long-connection 等可选集成依赖）
+- **最小安装**：`npm install --omit=optional`（仅核心依赖，适合只跑本地聊天 UI）
+
 ```bash
 git clone https://github.com/Koumakan-Madoka/caff.git
 cd caff
-npm install
+npm install --omit=optional
 cp .env.example .env.local  # Windows PowerShell: copy .env.example .env.local
 npm run start:dev
 ```

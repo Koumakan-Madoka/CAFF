@@ -25,8 +25,10 @@
   "license": "MIT",
   "type": "commonjs",
   "dependencies": {
+    "better-sqlite3": "^12.8.0"
+  },
+  "optionalDependencies": {
     "@larksuiteoapi/node-sdk": "^1.60.0",
-    "better-sqlite3": "^12.8.0",
     "opensandbox": "^0.4.0"
   },
   "overrides": {
