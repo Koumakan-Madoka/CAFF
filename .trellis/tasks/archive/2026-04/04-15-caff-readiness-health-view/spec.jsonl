@@ -1,0 +1,1 @@
+{"timestamp":"2026-04-15T07:25:15.000Z","action":"update-spec","agent":"咕咕嘎嘎","files":[".trellis/spec/backend/health-endpoint.md",".trellis/spec/backend/index.md"],"note":"Captured executable /api/health response contract, provider key mapping behavior, optional integration flags, and smoke-test requirements."}

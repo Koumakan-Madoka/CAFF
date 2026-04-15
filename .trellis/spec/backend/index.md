@@ -29,6 +29,7 @@ backend domain services.
 
 - `architecture.md`: backend module boundaries and ownership
 - `controller-patterns.md`: handler conventions, error flow, and response shape
+- `health-endpoint.md`: readiness API contract, provider key checks, optional integration flags, and smoke assertions
 - `feishu-integration.md`: Feishu webhook/long-connection contracts, env keys,
   event normalization, dedup expectations, and test points
 - See `../skills/` for skill-related backend patterns (skill-test-controller.ts, skills-controller.ts)

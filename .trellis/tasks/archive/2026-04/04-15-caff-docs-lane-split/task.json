@@ -1,0 +1,15 @@
+{
+  "title": "CAFF docs lane split (P2)",
+  "status": "completed",
+  "createdAt": "2026-04-15",
+  "completedAt": "2026-04-15",
+  "priority": "P2",
+  "parentTask": "04-15-caff-deployability-newcomer-friendliness",
+  "description": "把 README 中的 Feishu / OpenSandbox 可选集成内容拆成独立 lane 文档",
+  "deliverables": [
+    "docs/feishu-integration.md",
+    "docs/opensandbox-setup.md",
+    "README 瘦身",
+    "docs/local-chat-ui.md 交叉引用"
+  ]
+}
