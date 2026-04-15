@@ -10,6 +10,8 @@
     "start": "node scripts/start-app.js",
     "start:dev": "npm run build && npm run start",
     "start:src": "npm run start:dev",
+    "opensandbox:build-runtime-image": "node scripts/opensandbox/build-runtime-image.js",
+    "opensandbox:build-caff-image": "node scripts/opensandbox/build-runtime-image.js --include-project --tag caff-skill-test-caff:local",
     "metrics:agent": "node scripts/agent-eval-report.js",
     "typecheck": "tsc -p tsconfig.typecheck.json && tsc -p tsconfig.public.json",
     "typecheck:public": "tsc -p tsconfig.public.json",

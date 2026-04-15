@@ -4966,7 +4966,7 @@ test('isolated run fails when pollution check detects live trellis changes', asy
   }
 });
 
-test('isolated run fails when pollution check detects live sqlite WAL changes', async () => {
+test('isolated run fails when pollution check detects case-scoped live sqlite writes', async () => {
   const harness = createTempHarness();
   let pollutionDb = null;
 
@@ -5012,16 +5012,17 @@ test('isolated run fails when pollution check detects live sqlite WAL changes', 
         driverVersion: 'test',
         sandboxId: `sandbox-${caseId}`,
       }),
-      startRunImpl: () => {
+      startRunImpl: (_provider, _model, _prompt, options = {}) => {
         pollutionDb = new Database(harness.databasePath);
         pollutionDb.pragma('journal_mode = WAL');
         pollutionDb.pragma('wal_autocheckpoint = 0');
+        const pollutedAgentId = String(options && options.extraEnv && options.extraEnv.PI_AGENT_ID || 'skill-test-agent').trim() || 'skill-test-agent';
         pollutionDb.prepare(
           `INSERT INTO chat_agents (
             id, name, persona_prompt, description, created_at, updated_at
           ) VALUES (?, ?, ?, ?, ?, ?)`
         ).run(
-          'live-pollution-agent',
+          pollutedAgentId,
           'Live Pollution Agent',
           'polluted',
           'x'.repeat(4096),
@@ -5058,13 +5059,115 @@ test('isolated run fails when pollution check detects live sqlite WAL changes', 
     assert.equal(res.json.run.isolation.pollutionCheck.ok, false);
     assert.ok(Array.isArray(res.json.run.isolation.pollutionCheck.changes));
     assert.ok(
-      res.json.run.isolation.pollutionCheck.changes.some((change) => {
-        const changedPath = String(change && change.path || '');
-        return changedPath.endsWith('.sqlite-wal');
-      })
+      res.json.run.isolation.pollutionCheck.changes.some((change) => (
+        String(change && change.table || '').trim() === 'chat_agents'
+      ))
     );
     assert.ok(Array.isArray(res.json.issues));
     assert.ok(res.json.issues.some((issue) => issue.code === 'skill_test_pollution_detected'));
+  } finally {
+    try {
+      pollutionDb && pollutionDb.close();
+    } catch {
+      // ignore cleanup errors
+    }
+    harness.cleanup();
+  }
+});
+
+test('isolated run ignores unrelated live sqlite activity outside the case scope', async () => {
+  const harness = createTempHarness();
+  let pollutionDb = null;
+
+  try {
+    harness.db.pragma('wal_autocheckpoint = 0');
+    const liveProjectDir = path.join(harness.tempDir, 'live-project');
+    const skillDir = path.join(harness.tempDir, 'live-skills', 'werewolf');
+    fs.mkdirSync(liveProjectDir, { recursive: true });
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '# Werewolf\n\nFixture skill body.\n', 'utf8');
+
+    const now = new Date().toISOString();
+    harness.db.prepare(`
+      INSERT INTO skill_test_cases (
+        id, skill_id, test_type, loading_mode, trigger_prompt,
+        expected_tools_json, expected_behavior, validity_status, case_status, note,
+        created_at, updated_at
+      ) VALUES (
+        'sqlite-unrelated-case', 'werewolf', 'trigger', 'dynamic', 'sqlite unrelated prompt',
+        '[]', '', 'pending', 'ready', '',
+        @createdAt, @updatedAt
+      )
+    `).run({ createdAt: now, updatedAt: now });
+
+    const controller = createSkillTestController({
+      store: createInMemoryStore(harness.db, {
+        agentDir: path.join(harness.tempDir, 'agent-root'),
+        databasePath: harness.databasePath,
+      }),
+      agentToolBridge: createFakeAgentToolBridge(),
+      skillRegistry: createFakeSkillRegistry([
+        {
+          id: 'werewolf',
+          name: 'Werewolf',
+          description: 'Fixture skill',
+          path: skillDir,
+        },
+      ]),
+      getProjectDir: () => liveProjectDir,
+      toolBaseUrl: 'http://127.0.0.1:3100',
+      openSandboxFactory: ({ caseId }) => ({
+        driverName: 'opensandbox',
+        driverVersion: 'test',
+        sandboxId: `sandbox-${caseId}`,
+      }),
+      startRunImpl: () => {
+        pollutionDb = new Database(harness.databasePath);
+        pollutionDb.pragma('journal_mode = WAL');
+        pollutionDb.pragma('wal_autocheckpoint = 0');
+        pollutionDb.prepare(
+          `INSERT INTO chat_agents (
+            id, name, persona_prompt, description, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?)`
+        ).run(
+          'unrelated-live-agent',
+          'Unrelated Live Agent',
+          'clean',
+          'x'.repeat(2048),
+          new Date().toISOString(),
+          new Date().toISOString()
+        );
+        const sessionPath = path.join(harness.tempDir, 'sqlite-unrelated-run.jsonl');
+        return {
+          runId: 'sqlite-unrelated-run',
+          sessionPath,
+          resultPromise: Promise.resolve({
+            reply: 'clean',
+            runId: 'sqlite-unrelated-run',
+            sessionPath,
+          }),
+        };
+      },
+    });
+
+    const res = createCaptureResponse();
+    const handled = await controller({
+      req: createJsonRequest('POST', '/api/skills/werewolf/test-cases/sqlite-unrelated-case/run', {
+        isolation: { mode: 'isolated', trellisMode: 'fixture' },
+      }),
+      res,
+      pathname: '/api/skills/werewolf/test-cases/sqlite-unrelated-case/run',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases/sqlite-unrelated-case/run'),
+    });
+
+    assert.equal(handled, true);
+    assert.equal(res.statusCode, 200);
+    assert.ok(res.json.run.isolation);
+    assert.equal(res.json.run.isolation.pollutionCheck.ok, true);
+    assert.ok(Array.isArray(res.json.run.isolation.pollutionCheck.changes));
+    assert.equal(res.json.run.isolation.pollutionCheck.changes.length, 0);
+    assert.ok(Array.isArray(res.json.issues));
+    assert.ok(!res.json.issues.some((issue) => issue.code === 'skill_test_pollution_detected'));
   } finally {
     try {
       pollutionDb && pollutionDb.close();
@@ -5381,6 +5484,241 @@ test('isolated run records skill-test chat bridge auth evidence and scoped env',
     assert.equal(capturedExtraEnv.CAFF_CHAT_API_URL, 'https://bridge.example.test');
     assert.equal(capturedExtraEnv.CAFF_SKILL_TEST_CASE_ID, 'chat-bridge-case');
   } finally {
+    harness.cleanup();
+  }
+});
+
+test('isolated full-mode judges reuse the case-scoped runtime store', async () => {
+  const harness = createTempHarness();
+  const originalProvider = process.env.PI_PROVIDER;
+  const originalModel = process.env.PI_MODEL;
+
+  process.env.PI_PROVIDER = 'judge-env-provider';
+  process.env.PI_MODEL = 'judge-env-model';
+
+  try {
+    const liveProjectDir = path.join(harness.tempDir, 'live-project');
+    const skillDir = path.join(harness.tempDir, 'live-skills', 'werewolf');
+    fs.mkdirSync(liveProjectDir, { recursive: true });
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '# Werewolf\n\nFixture skill body.\n', 'utf8');
+
+    const liveAgentDir = path.join(harness.tempDir, 'agent-root');
+    const mainRunCalls = [];
+    const judgeRunCalls = [];
+    const controller = createSkillTestController({
+      store: createInMemoryStore(harness.db, {
+        agentDir: liveAgentDir,
+        databasePath: harness.databasePath,
+      }),
+      agentToolBridge: createFakeAgentToolBridge(),
+      skillRegistry: createFakeSkillRegistry([
+        {
+          id: 'werewolf',
+          name: 'Werewolf',
+          description: 'Fixture skill',
+          body: 'Follow the requested workflow and report the result.',
+          path: skillDir,
+        },
+      ]),
+      getProjectDir: () => liveProjectDir,
+      toolBaseUrl: 'http://127.0.0.1:3100',
+      resolveProviderAuthEnvImpl: (provider) => (
+        provider === 'judge-env-provider'
+          ? { ZAI_API_KEY: 'judge-auth-key' }
+          : {}
+      ),
+      openSandboxFactory: ({ caseId }) => ({
+        driverName: 'opensandbox',
+        driverVersion: 'judge-scope-test',
+        sandboxId: `sandbox-${caseId}`,
+      }),
+      startRunImpl: (provider, model, prompt, runOptions = {}) => {
+        const taskKind = String(runOptions.taskKind || '').trim();
+
+        if (taskKind === 'skill_test_trigger_judge') {
+          judgeRunCalls.push({
+            taskKind,
+            provider,
+            model,
+            agentDir: runOptions.agentDir,
+            sqlitePath: runOptions.sqlitePath,
+            prompt,
+            extraEnv: runOptions.extraEnv || {},
+          });
+          const sessionPath = path.join(harness.tempDir, `trigger-judge-${Date.now()}.jsonl`);
+          return {
+            runId: null,
+            sessionPath,
+            resultPromise: Promise.resolve({
+              reply: JSON.stringify({
+                passed: true,
+                confidence: 0.95,
+                reason: 'Assistant follows the requested finish-work style workflow.',
+                matchedBehaviors: ['workflow-followed'],
+              }),
+              sessionPath,
+            }),
+          };
+        }
+
+        if (taskKind === 'skill_test_execution_judge') {
+          judgeRunCalls.push({
+            taskKind,
+            provider,
+            model,
+            agentDir: runOptions.agentDir,
+            sqlitePath: runOptions.sqlitePath,
+            prompt,
+            extraEnv: runOptions.extraEnv || {},
+          });
+          const sessionPath = path.join(harness.tempDir, `execution-judge-${Date.now()}.jsonl`);
+          return {
+            runId: null,
+            sessionPath,
+            resultPromise: Promise.resolve({
+              reply: JSON.stringify({
+                goalAchievement: { score: 0.9, reason: 'The workflow is completed.' },
+                instructionAdherence: { score: 0.92, reason: 'The assistant stays on checklist scope.' },
+                summary: 'The assistant completes the requested isolated workflow.',
+                verdictSuggestion: 'pass',
+                steps: [
+                  {
+                    stepId: 'step-1',
+                    completed: true,
+                    confidence: 0.91,
+                    evidenceIds: ['msg-1'],
+                    matchedSignalIds: [],
+                    reason: 'Observed the expected readiness summary.',
+                  },
+                ],
+                constraintChecks: [],
+                missedExpectations: [],
+              }),
+              sessionPath,
+            }),
+          };
+        }
+
+        mainRunCalls.push({
+          provider,
+          model,
+          agentDir: runOptions.agentDir,
+          sqlitePath: runOptions.sqlitePath,
+          prompt,
+          extraEnv: runOptions.extraEnv || {},
+        });
+        const reply = '我会先跑 lint、type-check、tests，再检查 git diff 和 spec 同步状态。';
+        const sessionPath = path.join(harness.tempDir, 'isolated-full-main-run.jsonl');
+        fs.writeFileSync(
+          sessionPath,
+          `${JSON.stringify({
+            type: 'message',
+            message: {
+              role: 'assistant',
+              content: [{ type: 'text', text: reply }],
+            },
+          })}\n`,
+          'utf8'
+        );
+        return {
+          runId: 'isolated-full-main-run',
+          sessionPath,
+          resultPromise: Promise.resolve({
+            reply,
+            runId: 'isolated-full-main-run',
+            sessionPath,
+          }),
+        };
+      },
+    });
+
+    const createRes = createCaptureResponse();
+    const created = await controller({
+      req: createJsonRequest('POST', '/api/skills/werewolf/test-cases', {
+        testType: 'execution',
+        loadingMode: 'full',
+        triggerPrompt: '代码写完了，帮我跑一下提交前检查',
+        expectedGoal: 'Complete the finish-work style quality gate review.',
+        expectedBehavior: 'Run the quality gate workflow and summarize readiness.',
+        expectedSteps: [
+          {
+            id: 'step-1',
+            title: 'Summarize readiness',
+            expectedBehavior: 'Return a concise readiness summary after the checks.',
+            required: true,
+            order: 1,
+            strongSignals: [],
+          },
+        ],
+        evaluationRubric: {
+          criticalConstraints: [],
+          criticalDimensions: [],
+          passThresholds: {
+            goalAchievement: 0.7,
+            instructionAdherence: 0.7,
+            sequenceAdherence: 0.6,
+          },
+          hardFailThresholds: {
+            goalAchievement: 0.4,
+            instructionAdherence: 0.4,
+            sequenceAdherence: 0.3,
+          },
+        },
+      }),
+      res: createRes,
+      pathname: '/api/skills/werewolf/test-cases',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases'),
+    });
+
+    assert.equal(created, true);
+    assert.equal(createRes.statusCode, 201);
+    const caseId = createRes.json.testCase.id;
+
+    const runRes = createCaptureResponse();
+    const handled = await controller({
+      req: createJsonRequest('POST', `/api/skills/werewolf/test-cases/${caseId}/run`, {
+        isolation: { mode: 'isolated', trellisMode: 'fixture' },
+      }),
+      res: runRes,
+      pathname: `/api/skills/werewolf/test-cases/${caseId}/run`,
+      requestUrl: new URL(`http://localhost/api/skills/werewolf/test-cases/${caseId}/run`),
+    });
+
+    assert.equal(handled, true);
+    assert.equal(runRes.statusCode, 200);
+    assert.equal(runRes.json.run.isolation.pollutionCheck.ok, true);
+    assert.equal(mainRunCalls.length, 1);
+    assert.equal(judgeRunCalls.length, 2);
+    assert.notEqual(mainRunCalls[0].agentDir, liveAgentDir);
+    assert.notEqual(mainRunCalls[0].sqlitePath, harness.databasePath);
+    assert.equal(runRes.json.run.isolation.resources.sqlitePath, mainRunCalls[0].sqlitePath.replace(/\\/g, '/'));
+    assert.equal(mainRunCalls[0].provider, 'judge-env-provider');
+    assert.equal(mainRunCalls[0].model, 'judge-env-model');
+    assert.equal(mainRunCalls[0].extraEnv.PI_SQLITE_PATH, mainRunCalls[0].sqlitePath);
+    assert.equal(mainRunCalls[0].extraEnv.CAFF_TRELLIS_PROJECT_DIR, runRes.json.run.isolation.resources.projectDir.replace(/\//g, path.sep));
+    assert.equal(mainRunCalls[0].extraEnv.ZAI_API_KEY, 'judge-auth-key');
+    assert.ok(judgeRunCalls.every((entry) => entry.provider === mainRunCalls[0].provider));
+    assert.ok(judgeRunCalls.every((entry) => entry.model === mainRunCalls[0].model));
+    assert.ok(judgeRunCalls.every((entry) => entry.agentDir === mainRunCalls[0].agentDir));
+    assert.ok(judgeRunCalls.every((entry) => entry.sqlitePath === mainRunCalls[0].sqlitePath));
+    assert.ok(judgeRunCalls.every((entry) => entry.extraEnv.PI_SQLITE_PATH === mainRunCalls[0].sqlitePath));
+    assert.ok(judgeRunCalls.every((entry) => entry.extraEnv.CAFF_TRELLIS_PROJECT_DIR === mainRunCalls[0].extraEnv.CAFF_TRELLIS_PROJECT_DIR));
+    assert.ok(judgeRunCalls.every((entry) => entry.extraEnv.CAFF_SKILL_TEST_SKILL_PATH === mainRunCalls[0].extraEnv.CAFF_SKILL_TEST_SKILL_PATH));
+    assert.ok(judgeRunCalls.every((entry) => entry.extraEnv.ZAI_API_KEY === 'judge-auth-key'));
+  } finally {
+    if (originalProvider === undefined) {
+      delete process.env.PI_PROVIDER;
+    } else {
+      process.env.PI_PROVIDER = originalProvider;
+    }
+
+    if (originalModel === undefined) {
+      delete process.env.PI_MODEL;
+    } else {
+      process.env.PI_MODEL = originalModel;
+    }
+
     harness.cleanup();
   }
 });

@@ -5,6 +5,9 @@ const test = require('node:test');
 
 const { withTempDir } = require('../helpers/temp-dir');
 
+delete process.env.CAFF_SKILL_TEST_OPENSANDBOX_PREBAKED_RUNTIME_DIR;
+delete process.env.CAFF_SKILL_TEST_OPENSANDBOX_PREBAKED_PROJECT_DIR;
+
 test('open sandbox factory stays disabled by default', () => {
   const {
     createConfiguredOpenSandboxFactory,
@@ -273,6 +276,226 @@ test('open sandbox factory cleanup treats missing sandbox as already cleaned', a
       const error = new Error('Sandbox sandbox-missing-1 not found.');
       error.status = 404;
       throw error;
+    },
+  };
+
+  const factory = createConfiguredOpenSandboxFactory({
+    enabled: true,
+    remoteRoot: '/remote-root',
+    driverVersion: 'test-driver',
+    loadModule: async () => ({
+      Sandbox: {
+        async create() {
+          return fakeSandbox;
+        },
+      },
+    }),
+  });
+
+  try {
+    const adapter = await factory({
+      caseId: 'case-1',
+      runId: 'run-1',
+      isolation: {
+        mode: 'isolated',
+        trellisMode: 'none',
+        egressMode: 'deny',
+      },
+      agentDir,
+      projectDir,
+      sandboxDir,
+      privateDir,
+      outputDir,
+    });
+
+    await assert.doesNotReject(adapter.cleanup());
+    assert.equal(killCalls, 1);
+    assert.equal(closeCalls, 1);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('open sandbox factory cleanup treats already-deleting sandbox as already cleaned', async () => {
+  const {
+    createConfiguredOpenSandboxFactory,
+  } = require('../../build/server/domain/skill-test/open-sandbox-factory');
+
+  const tempDir = withTempDir('caff-open-sandbox-factory-cleanup-deleting-');
+  const agentDir = path.join(tempDir, 'agent');
+  const projectDir = path.join(tempDir, 'project');
+  const sandboxDir = path.join(agentDir, 'agent-sandboxes', 'agent-test');
+  const privateDir = path.join(sandboxDir, 'private');
+  const outputDir = path.join(tempDir, 'outputs');
+  let killCalls = 0;
+  let closeCalls = 0;
+
+  fs.mkdirSync(privateDir, { recursive: true });
+  fs.mkdirSync(projectDir, { recursive: true });
+  fs.mkdirSync(outputDir, { recursive: true });
+
+  const fakeSandbox = {
+    sandboxId: 'sandbox-deleting-1',
+    domain: 'sandbox.example.test',
+    files: {
+      async makeDir() {},
+      async write() {},
+    },
+    async kill() {
+      killCalls += 1;
+      throw new Error('Delete sandbox failed: Failed to delete sandbox container: 409 Client Error for http+docker://localhost/v1.45/containers/container-id?v=False&link=False&force=True: Conflict ("removal of container container-id is already in progress")');
+    },
+    async close() {
+      closeCalls += 1;
+    },
+  };
+
+  const factory = createConfiguredOpenSandboxFactory({
+    enabled: true,
+    remoteRoot: '/remote-root',
+    driverVersion: 'test-driver',
+    loadModule: async () => ({
+      Sandbox: {
+        async create() {
+          return fakeSandbox;
+        },
+      },
+    }),
+  });
+
+  try {
+    const adapter = await factory({
+      caseId: 'case-1',
+      runId: 'run-1',
+      isolation: {
+        mode: 'isolated',
+        trellisMode: 'none',
+        egressMode: 'deny',
+      },
+      agentDir,
+      projectDir,
+      sandboxDir,
+      privateDir,
+      outputDir,
+    });
+
+    await assert.doesNotReject(adapter.cleanup());
+    assert.equal(killCalls, 1);
+    assert.equal(closeCalls, 1);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('open sandbox factory cleanup treats already-deleting rawBody detail as already cleaned', async () => {
+  const {
+    createConfiguredOpenSandboxFactory,
+  } = require('../../build/server/domain/skill-test/open-sandbox-factory');
+
+  const tempDir = withTempDir('caff-open-sandbox-factory-cleanup-deleting-raw-body-');
+  const agentDir = path.join(tempDir, 'agent');
+  const projectDir = path.join(tempDir, 'project');
+  const sandboxDir = path.join(agentDir, 'agent-sandboxes', 'agent-test');
+  const privateDir = path.join(sandboxDir, 'private');
+  const outputDir = path.join(tempDir, 'outputs');
+  let killCalls = 0;
+  let closeCalls = 0;
+
+  fs.mkdirSync(privateDir, { recursive: true });
+  fs.mkdirSync(projectDir, { recursive: true });
+  fs.mkdirSync(outputDir, { recursive: true });
+
+  const deletingError = new Error('Delete sandbox failed');
+  deletingError.rawBody = {
+    error: {
+      message: 'Failed to delete sandbox container: 409 Client Error for http+docker://localhost/v1.45/containers/container-id?v=False&link=False&force=True: Conflict ("removal of container container-id is already in progress")',
+    },
+  };
+
+  const fakeSandbox = {
+    sandboxId: 'sandbox-deleting-raw-body-1',
+    domain: 'sandbox.example.test',
+    files: {
+      async makeDir() {},
+      async write() {},
+    },
+    async kill() {
+      killCalls += 1;
+      throw deletingError;
+    },
+    async close() {
+      closeCalls += 1;
+    },
+  };
+
+  const factory = createConfiguredOpenSandboxFactory({
+    enabled: true,
+    remoteRoot: '/remote-root',
+    driverVersion: 'test-driver',
+    loadModule: async () => ({
+      Sandbox: {
+        async create() {
+          return fakeSandbox;
+        },
+      },
+    }),
+  });
+
+  try {
+    const adapter = await factory({
+      caseId: 'case-1',
+      runId: 'run-1',
+      isolation: {
+        mode: 'isolated',
+        trellisMode: 'none',
+        egressMode: 'deny',
+      },
+      agentDir,
+      projectDir,
+      sandboxDir,
+      privateDir,
+      outputDir,
+    });
+
+    await assert.doesNotReject(adapter.cleanup());
+    assert.equal(killCalls, 1);
+    assert.equal(closeCalls, 1);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('open sandbox factory cleanup treats truncated already-deleting message as already cleaned', async () => {
+  const {
+    createConfiguredOpenSandboxFactory,
+  } = require('../../build/server/domain/skill-test/open-sandbox-factory');
+
+  const tempDir = withTempDir('caff-open-sandbox-factory-cleanup-deleting-truncated-');
+  const agentDir = path.join(tempDir, 'agent');
+  const projectDir = path.join(tempDir, 'project');
+  const sandboxDir = path.join(agentDir, 'agent-sandboxes', 'agent-test');
+  const privateDir = path.join(sandboxDir, 'private');
+  const outputDir = path.join(tempDir, 'outputs');
+  let killCalls = 0;
+  let closeCalls = 0;
+
+  fs.mkdirSync(privateDir, { recursive: true });
+  fs.mkdirSync(projectDir, { recursive: true });
+  fs.mkdirSync(outputDir, { recursive: true });
+
+  const fakeSandbox = {
+    sandboxId: 'sandbox-deleting-truncated-1',
+    domain: 'sandbox.example.test',
+    files: {
+      async makeDir() {},
+      async write() {},
+    },
+    async kill() {
+      killCalls += 1;
+      throw new Error('Failed to delete sandbox container: 409 Client Error for http+docker://localhost/v1.45/containers/container-id?v=False&link=False&force=True: Conflict ("removal of container container-id is alr...")');
+    },
+    async close() {
+      closeCalls += 1;
     },
   };
 
@@ -693,6 +916,343 @@ test('open sandbox factory streams runner events and writes remote control reque
 
     await adapter.cleanup();
     assert.equal(killCalls, 1);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('open sandbox factory reuses pre-baked runtime image assets when configured', async () => {
+  const {
+    createConfiguredOpenSandboxFactory,
+    DEFAULT_PREBAKED_RUNTIME_DIR,
+  } = require('../../build/server/domain/skill-test/open-sandbox-factory');
+
+  const tempDir = withTempDir('caff-open-sandbox-factory-prebaked-');
+  const agentDir = path.join(tempDir, 'agent');
+  const projectDir = path.join(tempDir, 'project');
+  const sandboxDir = path.join(agentDir, 'agent-sandboxes', 'agent-test');
+  const privateDir = path.join(sandboxDir, 'private');
+  const outputDir = path.join(tempDir, 'outputs');
+  const sqlitePath = path.join(tempDir, 'store', 'chat.sqlite');
+  const skillPath = path.join(agentDir, 'skills', 'werewolf');
+  const remoteFiles = new Map();
+  const writeCalls = [];
+  const commandCalls = [];
+  const runnerStatuses = [];
+  let killCalls = 0;
+  let closeCalls = 0;
+  let capturedInput = null;
+
+  fs.mkdirSync(privateDir, { recursive: true });
+  fs.mkdirSync(path.join(projectDir, '.trellis'), { recursive: true });
+  fs.mkdirSync(skillPath, { recursive: true });
+  fs.mkdirSync(path.dirname(sqlitePath), { recursive: true });
+  fs.mkdirSync(outputDir, { recursive: true });
+  fs.writeFileSync(path.join(projectDir, '.trellis', 'workflow.md'), '# Workflow\n', 'utf8');
+  fs.writeFileSync(path.join(skillPath, 'SKILL.md'), '# Werewolf\n', 'utf8');
+  fs.writeFileSync(sqlitePath, 'seed-sqlite', 'utf8');
+
+  remoteFiles.set(`${DEFAULT_PREBAKED_RUNTIME_DIR}/open-sandbox-runner.js`, 'console.log("runner");\n');
+  remoteFiles.set(`${DEFAULT_PREBAKED_RUNTIME_DIR}/agent-chat-tools.js`, 'console.log("chat tools");\n');
+  remoteFiles.set(`${DEFAULT_PREBAKED_RUNTIME_DIR}/pi-coding-agent/dist/cli.js`, 'console.log("fake pi");\n');
+
+  const fakeSandbox = {
+    id: 'official-sandbox-prebaked',
+    domain: 'local.opensandbox.test',
+    files: {
+      async makeDir(targetPath) {
+        remoteFiles.set(targetPath, remoteFiles.get(targetPath) || '');
+      },
+      async write(targetPath, data) {
+        const content = Buffer.isBuffer(data) ? data.toString('utf8') : String(data);
+        writeCalls.push({ remotePath: targetPath, content });
+        remoteFiles.set(targetPath, content);
+      },
+      async read(targetPath) {
+        if (!remoteFiles.has(targetPath)) {
+          throw new Error(`Missing remote file: ${targetPath}`);
+        }
+        return remoteFiles.get(targetPath);
+      },
+      async exists(targetPath) {
+        return remoteFiles.has(targetPath);
+      },
+      async createDirectories(entries) {
+        for (const entry of entries) {
+          remoteFiles.set(entry.path, remoteFiles.get(entry.path) || '');
+        }
+      },
+      async writeFiles(entries) {
+        for (const entry of entries) {
+          const content = Buffer.isBuffer(entry.data) ? entry.data.toString('utf8') : String(entry.data);
+          writeCalls.push({ remotePath: entry.path, content });
+          remoteFiles.set(entry.path, content);
+        }
+      },
+      async getFileInfo(paths) {
+        const result = {};
+        for (const targetPath of paths) {
+          if (remoteFiles.has(targetPath)) {
+            result[targetPath] = { path: targetPath };
+          }
+        }
+        return result;
+      },
+      async readFile(targetPath) {
+        if (!remoteFiles.has(targetPath)) {
+          throw new Error(`Missing remote file: ${targetPath}`);
+        }
+        return remoteFiles.get(targetPath);
+      },
+    },
+    commands: {
+      async run(command, options) {
+        commandCalls.push({ command, options });
+        const quoted = [...command.matchAll(/'([^']*)'/g)].map((entry) => entry[1]);
+        const inputPath = quoted[2];
+        const resultPath = quoted[3];
+        capturedInput = JSON.parse(remoteFiles.get(inputPath));
+        remoteFiles.set(capturedInput.sessionPath, '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"prebaked-ok"}]}}\n');
+        remoteFiles.set(resultPath, JSON.stringify({
+          status: 'succeeded',
+          reply: 'prebaked-ok',
+          sessionPath: capturedInput.sessionPath,
+          exitCode: 0,
+          signal: null,
+          stderrTail: '',
+          parseErrors: 0,
+          assistantErrors: [],
+          stdoutLines: [],
+          errorMessage: '',
+        }));
+        return {
+          exitCode: 0,
+          logs: {
+            stdout: [{ text: 'runner stdout' }],
+            stderr: [],
+          },
+        };
+      },
+    },
+    async kill() {
+      killCalls += 1;
+    },
+    async close() {
+      closeCalls += 1;
+    },
+  };
+
+  const factory = createConfiguredOpenSandboxFactory({
+    enabled: true,
+    apiUrl: 'http://127.0.0.1:8080/v1',
+    image: 'caff-skill-test-runtime:local',
+    prebakedRuntimeDir: DEFAULT_PREBAKED_RUNTIME_DIR,
+    remoteRoot: '/remote-root',
+    driverVersion: 'official-driver',
+    useServerProxy: true,
+    loadModule: async () => ({
+      ConnectionConfig: function ConnectionConfig() {},
+      Sandbox: {
+        async create() {
+          return fakeSandbox;
+        },
+      },
+    }),
+  });
+
+  try {
+    const adapter = await factory({
+      caseId: 'case-1',
+      runId: 'run-1',
+      isolation: {
+        mode: 'isolated',
+        trellisMode: 'fixture',
+        egressMode: 'deny',
+      },
+      agentDir,
+      projectDir,
+      sandboxDir,
+      privateDir,
+      sqlitePath,
+      outputDir,
+      skillPath,
+    });
+
+    assert.equal(adapter.execution.runtime, 'sandbox');
+    assert.equal(adapter.resources.remoteRuntimeAssetDir, DEFAULT_PREBAKED_RUNTIME_DIR);
+    assert.equal(adapter.resources.usesPrebakedRuntimeAssets, true);
+
+    const handle = adapter.startRun('provider-1', 'model-1', 'say hi', {
+      session: 'prebaked-session',
+    });
+    handle.on('runner_status', (event) => {
+      runnerStatuses.push(event);
+    });
+    const result = await handle.resultPromise;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    assert.equal(result.reply, 'prebaked-ok');
+    assert.equal(commandCalls.length, 1);
+    assert.equal(capturedInput.piCliPath, `${DEFAULT_PREBAKED_RUNTIME_DIR}/pi-coding-agent/dist/cli.js`);
+    assert.equal(capturedInput.extraEnv.CAFF_CHAT_TOOLS_PATH, `${DEFAULT_PREBAKED_RUNTIME_DIR}/agent-chat-tools.js`);
+    assert.ok(commandCalls[0].command.includes(`'${DEFAULT_PREBAKED_RUNTIME_DIR}/open-sandbox-runner.js'`));
+    assert.ok(runnerStatuses.some((event) => event && event.stage === 'preparing_assets' && event.assetSource === 'prebaked'));
+    assert.ok(!writeCalls.some((entry) => entry.remotePath === `${DEFAULT_PREBAKED_RUNTIME_DIR}/open-sandbox-runner.js`));
+    assert.ok(!writeCalls.some((entry) => entry.remotePath === `${DEFAULT_PREBAKED_RUNTIME_DIR}/agent-chat-tools.js`));
+    assert.ok(!writeCalls.some((entry) => entry.remotePath.startsWith(`${DEFAULT_PREBAKED_RUNTIME_DIR}/pi-coding-agent/`)));
+    assert.ok(writeCalls.some((entry) => entry.remotePath === '/remote-root/run-1/case-1/runtime/inputs/prebaked-session.json'));
+
+    await adapter.cleanup();
+    assert.equal(killCalls, 1);
+    assert.equal(closeCalls, 1);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('open sandbox factory copies pre-baked CAFF source into isolated project dir', async () => {
+  const {
+    createConfiguredOpenSandboxFactory,
+    DEFAULT_PREBAKED_PROJECT_DIR,
+  } = require('../../build/server/domain/skill-test/open-sandbox-factory');
+
+  const tempDir = withTempDir('caff-open-sandbox-factory-prebaked-project-');
+  const agentDir = path.join(tempDir, 'agent');
+  const projectDir = path.join(tempDir, 'project');
+  const sandboxDir = path.join(agentDir, 'agent-sandboxes', 'agent-test');
+  const privateDir = path.join(sandboxDir, 'private');
+  const outputDir = path.join(tempDir, 'outputs');
+  const skillPath = path.join(agentDir, 'skills', 'werewolf');
+  const remoteFiles = new Map();
+  const writeCalls = [];
+  const commandCalls = [];
+  let killCalls = 0;
+  let closeCalls = 0;
+
+  fs.mkdirSync(privateDir, { recursive: true });
+  fs.mkdirSync(path.join(projectDir, '.trellis'), { recursive: true });
+  fs.mkdirSync(skillPath, { recursive: true });
+  fs.mkdirSync(outputDir, { recursive: true });
+  fs.writeFileSync(path.join(projectDir, '.trellis', 'workflow.md'), '# Case Workflow\n', 'utf8');
+  fs.writeFileSync(path.join(skillPath, 'SKILL.md'), '# Werewolf\n', 'utf8');
+
+  remoteFiles.set(`${DEFAULT_PREBAKED_PROJECT_DIR}/package.json`, '{"name":"caff"}\n');
+  remoteFiles.set(`${DEFAULT_PREBAKED_PROJECT_DIR}/server/domain/example.js`, 'console.log("source");\n');
+
+  const fakeSandbox = {
+    id: 'official-sandbox-prebaked-project',
+    domain: 'local.opensandbox.test',
+    files: {
+      async makeDir(targetPath) {
+        remoteFiles.set(targetPath, remoteFiles.get(targetPath) || '');
+      },
+      async write(targetPath, data) {
+        const content = Buffer.isBuffer(data) ? data.toString('utf8') : String(data);
+        writeCalls.push({ remotePath: targetPath, content });
+        remoteFiles.set(targetPath, content);
+      },
+      async exists(targetPath) {
+        return remoteFiles.has(targetPath);
+      },
+      async createDirectories(entries) {
+        for (const entry of entries) {
+          remoteFiles.set(entry.path, remoteFiles.get(entry.path) || '');
+        }
+      },
+      async writeFiles(entries) {
+        for (const entry of entries) {
+          const content = Buffer.isBuffer(entry.data) ? entry.data.toString('utf8') : String(entry.data);
+          writeCalls.push({ remotePath: entry.path, content });
+          remoteFiles.set(entry.path, content);
+        }
+      },
+      async getFileInfo(paths) {
+        const result = {};
+        for (const targetPath of paths) {
+          if (remoteFiles.has(targetPath)) {
+            result[targetPath] = { path: targetPath };
+          }
+        }
+        return result;
+      },
+    },
+    commands: {
+      async run(command, options) {
+        commandCalls.push({ command, options });
+        const remoteProjectDir = '/remote-root/run-1/case-1/project';
+        for (const [remotePath, content] of Array.from(remoteFiles.entries())) {
+          if (remotePath.startsWith(`${DEFAULT_PREBAKED_PROJECT_DIR}/`)) {
+            const relativePath = remotePath.slice(DEFAULT_PREBAKED_PROJECT_DIR.length + 1);
+            remoteFiles.set(`${remoteProjectDir}/${relativePath}`, content);
+          }
+        }
+        return {
+          exitCode: 0,
+          logs: {
+            stdout: [{ text: 'copied project' }],
+            stderr: [],
+          },
+        };
+      },
+    },
+    async kill() {
+      killCalls += 1;
+    },
+    async close() {
+      closeCalls += 1;
+    },
+  };
+
+  const factory = createConfiguredOpenSandboxFactory({
+    enabled: true,
+    apiUrl: 'http://127.0.0.1:8080/v1',
+    image: 'caff-skill-test-caff:local',
+    prebakedProjectDir: DEFAULT_PREBAKED_PROJECT_DIR,
+    remoteRoot: '/remote-root',
+    driverVersion: 'official-driver',
+    useServerProxy: true,
+    loadModule: async () => ({
+      ConnectionConfig: function ConnectionConfig() {},
+      Sandbox: {
+        async create() {
+          return fakeSandbox;
+        },
+      },
+    }),
+  });
+
+  try {
+    const adapter = await factory({
+      caseId: 'case-1',
+      runId: 'run-1',
+      isolation: {
+        mode: 'isolated',
+        trellisMode: 'fixture',
+        egressMode: 'deny',
+      },
+      agentDir,
+      projectDir,
+      sandboxDir,
+      privateDir,
+      outputDir,
+      skillPath,
+    });
+
+    assert.equal(commandCalls.length, 1);
+    assert.ok(commandCalls[0].command.includes(`cp -a '${DEFAULT_PREBAKED_PROJECT_DIR}/.' '/remote-root/run-1/case-1/project'`));
+    assert.equal(commandCalls[0].options.cwd, '/');
+    assert.equal(adapter.resources.remoteProjectDir, '/remote-root/run-1/case-1/project');
+    assert.equal(adapter.resources.remoteProjectTemplateDir, DEFAULT_PREBAKED_PROJECT_DIR);
+    assert.equal(adapter.resources.usesPrebakedProjectSource, true);
+    assert.equal(adapter.resources.upload.projectSource, 'prebaked');
+    assert.equal(adapter.resources.upload.projectTemplateDir, DEFAULT_PREBAKED_PROJECT_DIR);
+    assert.equal(remoteFiles.get('/remote-root/run-1/case-1/project/package.json'), '{"name":"caff"}\n');
+    assert.equal(remoteFiles.get('/remote-root/run-1/case-1/project/server/domain/example.js'), 'console.log("source");\n');
+    assert.ok(writeCalls.some((entry) => entry.remotePath === '/remote-root/run-1/case-1/project/.trellis/workflow.md' && entry.content === '# Case Workflow\n'));
+
+    await adapter.cleanup();
+    assert.equal(killCalls, 1);
+    assert.equal(closeCalls, 1);
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }

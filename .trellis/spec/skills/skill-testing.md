@@ -106,9 +106,13 @@ Case-scoped isolation payload is stored under `evaluation_json.isolation` and su
 - `chatBridge.{mode,configured,configuredUrl,reachable,auth,rejects}` so sandbox direct-HTTP bridge POCs show whether case-scoped credentials were validated; the auth payload must include run/case/task binding and TTL metadata but never the callback token
 - `toolPolicy.allowedTools[]` and `toolPolicy.rejects[]`
 - `resources` such as case project root, sandbox/private dir, isolated SQLite path, skill snapshot path, and adapter-specific remote/container resource paths when available
-- `pollutionCheck` comparing live `.trellis`, shared skills/store, and live private dirs before/after the run; shared SQLite detection must watch the main database plus the `-wal` sidecar, while volatile `-shm` lock metadata should not be hashed as data pollution
+- `pollutionCheck` compares live `.trellis`, shared skills, and live private dirs before/after the run; shared SQLite detection must use case-scoped logical markers (skill-test task ids, case ids, conversation ids, and agent ids) within the run window instead of hashing the entire live database / `-wal` files, so unrelated room traffic does not look like isolation pollution
 - isolated-mode telemetry (`a2a_tasks` / `a2a_task_events`) must write to the case-scoped run store during execution; final shared eval/result persistence happens outside the pollution-check window and stores a debug/trace snapshot for later run detail views
+- OpenSandbox may use pre-baked runtime assets and a pre-baked CAFF source template, but the source template must be copied into the case-scoped project directory before execution; runner `cwd` and `CAFF_TRELLIS_PROJECT_DIR` must continue to point at the isolated case project, and case-level `.trellis` materialization must be overlaid there
+- full-mode trigger/execution AI judges must reuse the same case-scoped `agentDir` + SQLite path and the same effective runtime `provider/model` as the isolated run; judge helper runs must not fall back to the live shared store or unresolved default provider selection inside the pollution-check window
 - `cleanup.ok|error`; cleanup is idempotent, so an OpenSandbox `not found`/404 during cleanup means the sandbox is already gone and should not be reported as `skill_test_cleanup_failed`
+- OpenSandbox Docker cleanup errors that say `removal of container ... is already in progress` are also idempotent cleanup success: the auto-expiration path already owns deletion, so CAFF must not report `skill_test_cleanup_failed` for that cleanup race
+- Local Full-mode runs can exceed the default `CAFF_SKILL_TEST_OPENSANDBOX_TIMEOUT_SEC=300` while uploading/executing the case world; raise the env var (for example `3600`) rather than relying on Docker auto-expiration to clean active runs
 
 Publish-gate interpretation rules:
 
