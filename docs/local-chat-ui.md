@@ -56,7 +56,7 @@ http://127.0.0.1:3100
 - Once a Who is Undercover game starts, the backend automatically runs clue rounds, vote rounds, settlement, and reveal without requiring manual round buttons.
 - Undercover identity assignments are stored as private messages with `uiVisible: false`, so they stay available to the agents but are not exposed in the normal chat UI.
 - The chat composer includes a `Stop` button that cancels the active turn and prevents queued handoffs from continuing.
-- If `pi` is unavailable or the provider/model is not configured correctly, the server will still start, but that agent reply will be stored as a failed assistant message.
+- **Important**: If the provider or API key is not configured correctly, the server will still start and the UI will load, but agent replies will fail. In this case, check the terminal startup log for the active `Provider` and `Model`, and verify that the corresponding API key is set in your environment or `.env.local`.
 
 ## Main files
 

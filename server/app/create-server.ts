@@ -334,6 +334,20 @@ export function createServerApp(options: any = {}) {
     }
   });
 
+  function getStatus() {
+    const { DEFAULT_PROVIDER, DEFAULT_MODEL } = require('../../lib/pi-runtime');
+    const provider = process.env.PI_PROVIDER || DEFAULT_PROVIDER || 'kimi-coding';
+    const model = process.env.PI_MODEL || DEFAULT_MODEL || 'k2p5';
+    const feishuEnabled = !!(process.env.FEISHU_APP_ID && process.env.FEISHU_APP_SECRET);
+    const openSandboxAvailable = !!skillTestOpenSandboxFactory;
+    return {
+      provider,
+      model,
+      feishuEnabled,
+      openSandboxAvailable,
+    };
+  }
+
   function start(onListen: any) {
     server.listen(port, host, () => {
       if (typeof onListen === 'function') {
@@ -368,6 +382,7 @@ export function createServerApp(options: any = {}) {
 
   return {
     close,
+    getStatus,
     host,
     port,
     server,
