@@ -7,6 +7,7 @@ const { EventEmitter } = require('node:events');
 const { randomUUID } = require('node:crypto');
 const { pathToFileURL } = require('node:url');
 const { createHttpError } = require('../../http/http-errors');
+const { resolveProviderApiKeyEnvName } = require('../runtime/provider-api-key');
 
 const DEFAULT_DRIVER_NAME = 'opensandbox';
 const DEFAULT_DRIVER_VERSION = '0.4.0';
@@ -52,25 +53,6 @@ const DEFAULT_FORWARD_ENV_PREFIXES = [
   'PACKYCODE_',
 ];
 const DEFAULT_PI_AUTH_FILE_SEGMENTS = ['.pi', 'agent', 'auth.json'];
-const PROVIDER_API_KEY_ENV_MAP = {
-  openai: 'OPENAI_API_KEY',
-  'azure-openai-responses': 'AZURE_OPENAI_API_KEY',
-  google: 'GEMINI_API_KEY',
-  groq: 'GROQ_API_KEY',
-  cerebras: 'CEREBRAS_API_KEY',
-  xai: 'XAI_API_KEY',
-  openrouter: 'OPENROUTER_API_KEY',
-  'vercel-ai-gateway': 'AI_GATEWAY_API_KEY',
-  zai: 'ZAI_API_KEY',
-  mistral: 'MISTRAL_API_KEY',
-  minimax: 'MINIMAX_API_KEY',
-  'minimax-cn': 'MINIMAX_CN_API_KEY',
-  huggingface: 'HF_TOKEN',
-  opencode: 'OPENCODE_API_KEY',
-  'opencode-go': 'OPENCODE_API_KEY',
-  'kimi-coding': 'KIMI_API_KEY',
-};
-
 function clipText(value, maxLength = 240) {
   const text = String(value || '').trim();
   if (text.length <= maxLength) {
@@ -1108,7 +1090,7 @@ function resolveProviderAuthEnv(provider, envSource = {}, options = {}) {
     return {};
   }
 
-  const envName = PROVIDER_API_KEY_ENV_MAP[providerId];
+  const envName = resolveProviderApiKeyEnvName(providerId);
   if (!envName) {
     return {};
   }

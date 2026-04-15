@@ -15,6 +15,7 @@ const { createBootstrapController } = require('../api/bootstrap-controller');
 const { createConversationsController } = require('../api/conversations-controller');
 const { createEvalCasesController } = require('../api/eval-cases-controller');
 const { createFeishuController } = require('../api/feishu-controller');
+const { createHealthController } = require('../api/health-controller');
 const { createMetricsController } = require('../api/metrics-controller');
 const { createProjectsController } = require('../api/projects-controller');
 const { createModesController } = require('../api/modes-controller');
@@ -30,6 +31,7 @@ const { createUndercoverService } = require('../domain/undercover/undercover-ser
 const { createWerewolfService } = require('../domain/werewolf/werewolf-service');
 const { createAgentToolBridge } = require('../domain/runtime/agent-tool-bridge');
 const { createConfiguredOpenSandboxFactory } = require('../domain/skill-test/open-sandbox-factory');
+const { resolveProviderApiKeyEnvName } = require('../domain/runtime/provider-api-key');
 const { createFeishuClient } = require('../domain/integrations/feishu/feishu-client');
 const { createFeishuIntegrationService } = require('../domain/integrations/feishu/feishu-service');
 const { createFeishuLongConnectionSource } = require('../domain/integrations/feishu/feishu-long-connection');
@@ -237,6 +239,9 @@ export function createServerApp(options: any = {}) {
     modeStore,
   });
   const router = createRouter([
+    createHealthController({
+      getHealthStatus,
+    }),
     createBootstrapController({
       sseBus,
       turnOrchestrator,
@@ -334,17 +339,62 @@ export function createServerApp(options: any = {}) {
     }
   });
 
-  function getStatus() {
-    const { DEFAULT_PROVIDER, DEFAULT_MODEL } = require('../../lib/pi-runtime');
-    const provider = process.env.PI_PROVIDER || DEFAULT_PROVIDER || 'kimi-coding';
-    const model = process.env.PI_MODEL || DEFAULT_MODEL || 'k2p5';
-    const feishuEnabled = !!(process.env.FEISHU_APP_ID && process.env.FEISHU_APP_SECRET);
+  function hasConfiguredValue(value: any) {
+    return String(value || '').trim().length > 0;
+  }
+
+  function getHealthStatus() {
+    const runtimePayload = turnOrchestrator
+      ? turnOrchestrator.buildRuntimePayload()
+      : {
+          host,
+          port,
+          databasePath: store.databasePath,
+          defaultProvider: resolveSetting('', process.env.PI_PROVIDER, ''),
+          defaultModel: resolveSetting('', process.env.PI_MODEL, ''),
+        };
+    const provider = String(runtimePayload && runtimePayload.defaultProvider || '').trim();
+    const model = String(runtimePayload && runtimePayload.defaultModel || '').trim();
+    const apiKeyEnvName = resolveProviderApiKeyEnvName(provider, { fallbackEnvName: 'PI_API_KEY' });
+    const apiKeyConfigured = hasConfiguredValue(apiKeyEnvName ? process.env[apiKeyEnvName] : '');
+    const feishuConfigured = hasConfiguredValue(process.env.FEISHU_APP_ID) && hasConfiguredValue(process.env.FEISHU_APP_SECRET);
     const openSandboxAvailable = !!skillTestOpenSandboxFactory;
+    const providerReady = Boolean(provider && apiKeyConfigured);
+    const core = {
+      ready: true,
+      host: String(runtimePayload && runtimePayload.host || host).trim() || host,
+      port: Number.isFinite(runtimePayload && runtimePayload.port) ? runtimePayload.port : port,
+      databasePath: String(runtimePayload && runtimePayload.databasePath || store.databasePath || '').trim(),
+    };
+
     return {
-      provider,
-      model,
-      feishuEnabled,
-      openSandboxAvailable,
+      ok: core.ready && providerReady,
+      core,
+      provider: {
+        ready: providerReady,
+        provider,
+        model,
+        apiKeyConfigured,
+      },
+      optional: {
+        feishu: {
+          configured: feishuConfigured,
+        },
+        openSandbox: {
+          available: openSandboxAvailable,
+        },
+      },
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  function getStatus() {
+    const health = getHealthStatus();
+    return {
+      provider: health.provider.provider,
+      model: health.provider.model,
+      feishuEnabled: health.optional.feishu.configured,
+      openSandboxAvailable: health.optional.openSandbox.available,
     };
   }
 
@@ -382,6 +432,7 @@ export function createServerApp(options: any = {}) {
 
   return {
     close,
+    getHealthStatus,
     getStatus,
     host,
     port,

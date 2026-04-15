@@ -398,6 +398,11 @@ test('server smoke: bootstrap, static files, projects, skills, agents, and conve
       CHAT_APP_PORT: String(port),
       PI_CODING_AGENT_DIR: tempDir,
       PI_SQLITE_PATH: sqlitePath,
+      KIMI_API_KEY: 'smoke-kimi-key',
+      FEISHU_APP_ID: '',
+      FEISHU_APP_SECRET: '',
+      FEISHU_CONNECTION_MODE: 'webhook',
+      CAFF_SKILL_TEST_OPENSANDBOX_ENABLED: '0',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -431,6 +436,20 @@ test('server smoke: bootstrap, static files, projects, skills, agents, and conve
   assert.ok(Array.isArray(bootstrap.conversations), `Expected conversations to be an array, got ${typeof bootstrap.conversations}`);
   assert.ok(Array.isArray(bootstrap.agents), `Expected agents to be an array, got ${typeof bootstrap.agents}`);
   assert.ok(Array.isArray(bootstrap.skills), `Expected skills to be an array, got ${typeof bootstrap.skills}`);
+
+  const health = await fetchJson(baseUrl, '/api/health');
+  assert.equal(health.ok, true);
+  assert.equal(health.core.ready, true);
+  assert.equal(health.core.host, '127.0.0.1');
+  assert.equal(health.core.port, port);
+  assert.equal(health.core.databasePath, sqlitePath);
+  assert.equal(health.provider.ready, true);
+  assert.equal(health.provider.provider, 'kimi-coding');
+  assert.equal(health.provider.model, 'k2p5');
+  assert.equal(health.provider.apiKeyConfigured, true);
+  assert.equal(health.optional.feishu.configured, false);
+  assert.equal(health.optional.openSandbox.available, false);
+  assert.match(String(health.timestamp || ''), /^\d{4}-\d{2}-\d{2}T/u);
 
   const metrics = await fetchJson(baseUrl, '/api/metrics/agent');
   assert.ok(Array.isArray(metrics.agents), `Expected metrics.agents to be an array, got ${typeof metrics.agents}`);
@@ -514,6 +533,10 @@ test('server smoke: pi-mono agent can initialize and write Trellis files for the
       PI_CODING_AGENT_DIR: tempDir,
       PI_SQLITE_PATH: sqlitePath,
       PI_COMMAND_PATH: FAKE_PI_TRELLIS_TOOLS_PATH,
+      FEISHU_APP_ID: '',
+      FEISHU_APP_SECRET: '',
+      FEISHU_CONNECTION_MODE: 'webhook',
+      CAFF_SKILL_TEST_OPENSANDBOX_ENABLED: '0',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
