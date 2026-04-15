@@ -90,9 +90,10 @@ npm run start:dev
 
 ### Step 2 — 验证成功
 
-1. 打开浏览器访问 **http://127.0.0.1:3100**，看到聊天界面即表示服务已启动。
-2. 在终端查看启动日志，确认 `Provider` 和 `Model` 是否为你期望的值。
-3. 在聊天页面发送一条消息，观察 Agent 是否能正常回复。
+1. 运行 `curl http://127.0.0.1:3100/api/health`，确认 `core.ready`、`provider.ready` 和 `optional` 状态符合预期。
+2. 打开浏览器访问 **http://127.0.0.1:3100**，看到聊天界面即表示服务已启动。
+3. 在终端查看启动日志，确认 `Provider` 和 `Model` 是否为你期望的值。
+4. 在聊天页面发送一条消息，观察 Agent 是否能正常回复。
 
 > **注意**：如果 provider 或 API key 未正确配置，服务仍然可以启动，但 Agent 回复会失败。详见 [`docs/local-chat-ui.md`](docs/local-chat-ui.md)。
 
@@ -100,8 +101,8 @@ npm run start:dev
 
 | 能力 | 说明 | 文档 |
 |---|---|---|
-| **OpenSandbox skill-test** | 在隔离 sandbox 中运行 Skill 测试 | 下文环境变量表 + [`docs/windows-local-stack.md`](docs/windows-local-stack.md) |
-| **飞书接入** | 通过 webhook 或 long connection 收发飞书消息 | 下文「飞书接入 MVP」 |
+| **OpenSandbox skill-test** | 在隔离 sandbox 中运行 Skill 测试 | [`docs/opensandbox-setup.md`](docs/opensandbox-setup.md) |
+| **飞书接入** | 通过 webhook 或 long connection 收发飞书消息 | [`docs/feishu-integration.md`](docs/feishu-integration.md) |
 | **Windows 自启动** | 登录后自动恢复 WSL + OpenSandbox + CAFF 全栈 | [`docs/windows-local-stack.md`](docs/windows-local-stack.md) |
 
 ### Environment Variables
@@ -122,38 +123,17 @@ CAFF 在 `npm run start` / `npm run start:dev` 时会自动读取 `./.env.local`
 
 #### OpenSandbox (optional)
 
-| Variable | Default | Description |
-|---|---|---|
-| `CHAT_APP_ADVERTISE_URL` | — | 供 sandbox / 外部环境回连本机 CAFF 时使用的可达 base URL |
-| `CAFF_SKILL_TEST_OPENSANDBOX_CHAT_API_URL` | — | 仅给 OpenSandbox skill-test 直连 bridge 使用的显式覆盖 URL |
-| `CAFF_SKILL_TEST_OPENSANDBOX_API_URL` | — | OpenSandbox lifecycle API 地址；本地部署通常是 `http://127.0.0.1:8080`，Windows + WSL 常用 `http://localhost:8080` |
-| `CAFF_SKILL_TEST_OPENSANDBOX_SDK_PATH` | — | 官方 OpenSandbox JS SDK `dist/index.js` 本地路径 |
-| `CAFF_SKILL_TEST_OPENSANDBOX_IMAGE` | `node:20-bookworm` | skill-test sandbox 默认镜像；需要内置 Node |
-| `CAFF_SKILL_TEST_OPENSANDBOX_PREBAKED_RUNTIME_DIR` | — | 可选：使用预烘焙 runtime 资产目录（容器内路径） |
-| `CAFF_SKILL_TEST_OPENSANDBOX_PREBAKED_PROJECT_DIR` | — | 可选：使用预烘焙 CAFF 源码模板目录（容器内路径） |
-| `CAFF_SKILL_TEST_OPENSANDBOX_TIMEOUT_SEC` | `300` | OpenSandbox sandbox TTL 秒数；本地 Full 模式建议调大 |
-| `CAFF_SKILL_TEST_OPENSANDBOX_USE_SERVER_PROXY` | `true` | 是否通过 lifecycle server proxy 访问 sandbox execd |
+在隔离 Docker 容器中运行 Skill 测试。需要 Docker 可用，配置 8 个环境变量（API 地址、SDK 路径、镜像、TTL 等）。高级用法支持预烘焙镜像加速。
 
-OpenSandbox 推荐配置：把 `CHAT_APP_HOST` 设成 `0.0.0.0`，再把 `CHAT_APP_ADVERTISE_URL` 设成 sandbox 能访问到的地址。若只想给 skill-test sandbox 单独覆写，设置 `CAFF_SKILL_TEST_OPENSANDBOX_CHAT_API_URL`。
-
-如果你使用本地 OpenSandbox 源码：先在 `OpenSandbox/server` 启动 lifecycle server，再把 `CAFF_SKILL_TEST_OPENSANDBOX_API_URL` 指向本地地址；同时把 `CAFF_SKILL_TEST_OPENSANDBOX_SDK_PATH` 指到本地构建好的官方 JS SDK `dist/index.js`。这条链路需要 Docker 可用，而且镜像里要有 Node（默认 `node:20-bookworm`）。在 Windows + WSL 上，优先使用 `http://localhost:8080`，避免把地址写死成会漂移的 WSL `172.x.x.x`。如果本地 Full 模式在上传隔离目录或执行期间超过默认 5 分钟 TTL，把 `CAFF_SKILL_TEST_OPENSANDBOX_TIMEOUT_SEC` 调大后重启 CAFF。
-
-如果 Full 模式经常卡在“正在准备 sandbox runner…”，可以用预烘焙 runtime 镜像加速：先运行 `npm run opensandbox:build-runtime-image` 构建 `caff-skill-test-runtime:local`，再在 `.env.local` 里设置 `CAFF_SKILL_TEST_OPENSANDBOX_IMAGE=caff-skill-test-runtime:local` 和 `CAFF_SKILL_TEST_OPENSANDBOX_PREBAKED_RUNTIME_DIR=/opt/caff-skill-test/runtime`。
-
-如果你想让 sandbox case 里有一份更仿真的 CAFF 源码 checkout，运行 `npm run opensandbox:build-caff-image` 构建 `caff-skill-test-caff:local`，再设置 `CAFF_SKILL_TEST_OPENSANDBOX_IMAGE=caff-skill-test-caff:local`、`CAFF_SKILL_TEST_OPENSANDBOX_PREBAKED_RUNTIME_DIR=/opt/caff-skill-test/runtime`、`CAFF_SKILL_TEST_OPENSANDBOX_PREBAKED_PROJECT_DIR=/opt/caff-skill-test/project`。运行时仍会复制到每个 case 的隔离项目目录，并覆盖 case 级 `.trellis`，不会让多个 case 共用同一个可写源码目录。
+→ **完整配置指南**：[`docs/opensandbox-setup.md`](docs/opensandbox-setup.md)
 
 #### Feishu (optional)
 
-| Variable | Default | Description |
-|---|---|---|
-| `FEISHU_APP_ID` | — | 飞书 app id |
-| `FEISHU_APP_SECRET` | — | 飞书 app secret |
-| `FEISHU_VERIFICATION_TOKEN` | — | webhook 模式下的校验 token |
-| `FEISHU_BOT_OPEN_ID` | — | 获取 bot info 失败时的可选回退值 |
-| `FEISHU_CONNECTION_MODE` | `webhook` | 飞书入站模式：`webhook` 或 `long-connection` |
-| `FEISHU_LONG_CONNECTION_LOGGER_LEVEL` | `info` | 官方 SDK long connection 日志级别 |
+通过 webhook 或 long connection 收发飞书私聊 / 群聊文本消息。配置 6 个环境变量。
 
-如果你希望 Windows 登录后自动恢复整条本地链路（`WSL Debian` + `docker` + `opensandbox-local` + `CAFF`），仓库附带了 `scripts/windows/run-caff-stack.ps1` 和 `scripts/windows/register-caff-stack-task.ps1`。详细步骤见 `docs/windows-local-stack.md`。
+→ **完整接入指南**：[`docs/feishu-integration.md`](docs/feishu-integration.md)
+
+如果你希望 Windows 登录后自动恢复整条本地链路（`WSL Debian` + `docker` + `opensandbox-local` + `CAFF`），详见 [`docs/windows-local-stack.md`](docs/windows-local-stack.md)。
 
 ## 🧭 Web 工作台
 
@@ -191,29 +171,11 @@ CAFF 内置一个给 Agent 使用的本地聊天桥：运行时入口是 `build/
 
 这套工具是多 Agent 本地协作、private mailbox、handoff 路由和工具埋点的基础。
 
-### 飞书接入 MVP
+### 飞书接入
 
-CAFF 当前提供一版最小可用的飞书接入：
+CAFF 支持通过 webhook 或 long connection 接入飞书，收发私聊和群聊文本消息。一个飞书 `chat_id` 映射到一个 CAFF conversation。
 
-- 入站模式：`POST /api/integrations/feishu/webhook` webhook，或 `FEISHU_CONNECTION_MODE=long-connection`
-- 传输层：long connection 模式下复用官方 `@larksuiteoapi/node-sdk` `WSClient`
-- 入站范围：文本消息
-- 会话映射：一个飞书 `chat_id` 映射到一个 CAFF conversation
-- 转发策略：私聊和普通群聊文本都会进入 CAFF；群内继续沿用房间中的 mention 路由语义
-- 出站范围：已完成的 assistant 文本回复
-- 当前限制：暂不支持加密 webhook payload
-
-### 飞书配置步骤
-
-1. 创建自建飞书应用，并启用 bot capability。
-2. 选择入站模式：
-   - webhook：把事件订阅地址指向 `https://<your-public-host>/api/integrations/feishu/webhook`，并设置 `FEISHU_VERIFICATION_TOKEN`
-   - long connection：切换到 long connection，并设置 `FEISHU_CONNECTION_MODE=long-connection`
-3. 订阅事件 `im.message.receive_v1`。
-4. 授予接收 IM 文本与发送 bot 文本消息所需权限。
-5. 如果租户无法使用 `GET /open-apis/bot/v3/info`，手动设置 `FEISHU_BOT_OPEN_ID`。
-6. 当前 MVP 需要保持 webhook 事件加密关闭；加密 payload 会被拒绝。
-7. 配好环境变量后启动 CAFF，再通过私聊或普通群聊文本验证。
+快速开始：创建自建应用 → 启用 Bot → 配置环境变量 → 启动验证。详细步骤、权限要求和常见问题见 [`docs/feishu-integration.md`](docs/feishu-integration.md)。
 
 ### GitHub CLI 自动化接入
 

@@ -39,6 +39,12 @@ http://127.0.0.1:3100
 - `PI_MODEL`
 - `PI_THINKING`
 
+## 进阶集成
+
+- **OpenSandbox Skill Test**：在隔离 Docker 容器中运行 Skill 测试。详见 [OpenSandbox 设置指南](opensandbox-setup.md)。
+- **飞书接入**：通过 webhook 或 long connection 收发飞书消息。详见 [飞书集成指南](feishu-integration.md)。
+- **Windows 自启动**：登录后自动恢复 WSL + Docker + OpenSandbox + CAFF 全栈。详见 [Windows Local Stack](windows-local-stack.md)。
+
 ## Notes
 
 - The web app uses the same SQLite database path as the existing runtime.
@@ -56,7 +62,7 @@ http://127.0.0.1:3100
 - Once a Who is Undercover game starts, the backend automatically runs clue rounds, vote rounds, settlement, and reveal without requiring manual round buttons.
 - Undercover identity assignments are stored as private messages with `uiVisible: false`, so they stay available to the agents but are not exposed in the normal chat UI.
 - The chat composer includes a `Stop` button that cancels the active turn and prevents queued handoffs from continuing.
-- **Important**: If the provider or API key is not configured correctly, the server will still start and the UI will load, but agent replies will fail. In this case, check the terminal startup log for the active `Provider` and `Model`, and verify that the corresponding API key is set in your environment or `.env.local`.
+- **Important**: If the provider or API key is not configured correctly, the server will still start and the UI will load, but agent replies will fail. In this case, check `GET /api/health` plus the terminal startup log for the active `Provider` and `Model`, and verify that the corresponding API key is set in your environment or `.env.local`.
 
 ## Main files
 
