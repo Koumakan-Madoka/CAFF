@@ -86,6 +86,29 @@ function createFakeSkillRegistry(existingSkills = []) {
   };
 }
 
+function createSandboxToolAdapterStub(options = {}) {
+  const stdout = String(options.stdout || '/case/project\n');
+  const stderr = String(options.stderr || '');
+  const exitCode = Number.isInteger(options.exitCode) ? options.exitCode : 0;
+  const fileContent = Buffer.isBuffer(options.fileContent)
+    ? options.fileContent
+    : Buffer.from(String(options.fileContent || '# sandbox skill\n'), 'utf8');
+
+  return {
+    async access() {},
+    async readFile() {
+      return fileContent;
+    },
+    async runCommand() {
+      return {
+        stdout,
+        stderr,
+        exitCode,
+      };
+    },
+  };
+}
+
 function createJsonRequest(method, urlPath, body) {
   return {
     method,
@@ -4839,6 +4862,7 @@ test('isolated run-all assigns distinct case project roots and records isolation
         driverName: 'opensandbox',
         driverVersion: 'test',
         sandboxId: `sandbox-${caseId}`,
+        toolAdapter: createSandboxToolAdapterStub(),
       }),
       startRunImpl: (_provider, _model, _prompt, runOptions = {}) => {
         runIndex += 1;
@@ -4874,7 +4898,10 @@ test('isolated run-all assigns distinct case project roots and records isolation
     assert.equal(new Set(seenProjectDirs).size, 2);
     assert.ok(res.json.results.every((entry) => entry.run && entry.run.isolation && entry.run.isolation.mode === 'isolated'));
     assert.ok(res.json.results.every((entry) => entry.run.isolation.execution.runtime === 'host'));
-    assert.ok(res.json.results.every((entry) => entry.run.isolation.execution.preparedOnly === true));
+    assert.ok(res.json.results.every((entry) => entry.run.isolation.execution.loopRuntime === 'host'));
+    assert.ok(res.json.results.every((entry) => entry.run.isolation.execution.toolRuntime === 'sandbox'));
+    assert.ok(res.json.results.every((entry) => entry.run.isolation.execution.pathSemantics === 'sandbox'));
+    assert.ok(res.json.results.every((entry) => entry.run.isolation.execution.preparedOnly === false));
     const projectDirs = res.json.results.map((entry) => entry.run.isolation.resources.projectDir);
     assert.equal(new Set(projectDirs).size, 2);
     assert.equal(fs.existsSync(path.join(liveProjectDir, '.trellis')), false);
@@ -5273,7 +5300,7 @@ test('readonlySnapshot rejects symlinked live Trellis entries', async (t) => {
   }
 });
 
-test('isolated run awaits async openSandboxFactory and async adapter startRun', async () => {
+test('isolated run awaits async openSandboxFactory and still uses host loop by default', async () => {
   const harness = createTempHarness();
 
   try {
@@ -5297,6 +5324,7 @@ test('isolated run awaits async openSandboxFactory and async adapter startRun', 
     `).run({ createdAt: now, updatedAt: now });
 
     let factoryCalls = 0;
+    let adapterStartRunCalls = 0;
     let startRunCalls = 0;
     let cleanupCalls = 0;
     const controller = createSkillTestController({
@@ -5321,18 +5349,19 @@ test('isolated run awaits async openSandboxFactory and async adapter startRun', 
           driverName: 'opensandbox',
           driverVersion: 'async-test',
           sandboxId: `sandbox-${caseId}`,
+          toolAdapter: createSandboxToolAdapterStub(),
           resources: {
             remoteRoot: `/remote/${caseId}`,
           },
           startRun: async () => {
-            startRunCalls += 1;
-            const sessionPath = path.join(harness.tempDir, 'async-run.jsonl');
+            adapterStartRunCalls += 1;
+            const sessionPath = path.join(harness.tempDir, 'async-adapter-run.jsonl');
             return {
-              runId: 'async-run',
+              runId: 'async-adapter-run',
               sessionPath,
               resultPromise: Promise.resolve({
-                reply: 'async-ok',
-                runId: 'async-run',
+                reply: 'async-adapter-ok',
+                runId: 'async-adapter-run',
                 sessionPath,
               }),
             };
@@ -5343,7 +5372,17 @@ test('isolated run awaits async openSandboxFactory and async adapter startRun', 
         };
       },
       startRunImpl: () => {
-        throw new Error('adapter startRun should be used');
+        startRunCalls += 1;
+        const sessionPath = path.join(harness.tempDir, 'async-run.jsonl');
+        return {
+          runId: 'async-run',
+          sessionPath,
+          resultPromise: Promise.resolve({
+            reply: 'async-ok',
+            runId: 'async-run',
+            sessionPath,
+          }),
+        };
       },
     });
 
@@ -5361,10 +5400,15 @@ test('isolated run awaits async openSandboxFactory and async adapter startRun', 
     assert.equal(res.statusCode, 200);
     assert.equal(res.json.run.status, 'succeeded');
     assert.equal(factoryCalls, 1);
+    assert.equal(adapterStartRunCalls, 0);
     assert.equal(startRunCalls, 1);
     assert.equal(cleanupCalls, 1);
     assert.equal(res.json.run.isolation.driver.version, 'async-test');
-    assert.equal(res.json.run.isolation.execution.runtime, 'sandbox');
+    assert.equal(res.json.run.isolation.execution.runtime, 'host');
+    assert.equal(res.json.run.isolation.execution.loopRuntime, 'host');
+    assert.equal(res.json.run.isolation.execution.toolRuntime, 'sandbox');
+    assert.equal(res.json.run.isolation.execution.pathSemantics, 'sandbox');
+    assert.ok(!Object.prototype.hasOwnProperty.call(res.json.run.isolation.execution, 'adapterStartRun'));
     assert.equal(res.json.run.isolation.resources.remoteRoot, '/remote/async-case');
   } finally {
     harness.cleanup();
@@ -5447,6 +5491,10 @@ test('isolated run records skill-test chat bridge auth evidence and scoped env',
         driverName: 'opensandbox',
         driverVersion: 'chat-bridge-test',
         sandboxId: `sandbox-${caseId}`,
+        extraEnv: {
+          CAFF_CHAT_TOOLS_PATH: `/case-runtime/${caseId}/agent-chat-tools.js`,
+          CAFF_CHAT_TOOLS_RELATIVE_PATH: `../runtime/${caseId}/agent-chat-tools.js`,
+        },
       }),
       startRunImpl: (_provider, _model, _prompt, runOptions = {}) => {
         capturedExtraEnv = runOptions.extraEnv || {};
@@ -5482,6 +5530,8 @@ test('isolated run records skill-test chat bridge auth evidence and scoped env',
     assert.equal(res.json.run.isolation.chatBridge.auth.runId, capturedExtraEnv.CAFF_SKILL_TEST_RUN_ID);
     assert.equal(res.json.run.isolation.chatBridge.auth.tokenTtlSec, 600);
     assert.equal(capturedExtraEnv.CAFF_CHAT_API_URL, 'https://bridge.example.test');
+    assert.equal(capturedExtraEnv.CAFF_CHAT_TOOLS_PATH, '/case-runtime/chat-bridge-case/agent-chat-tools.js');
+    assert.equal(capturedExtraEnv.CAFF_CHAT_TOOLS_RELATIVE_PATH, '../runtime/chat-bridge-case/agent-chat-tools.js');
     assert.equal(capturedExtraEnv.CAFF_SKILL_TEST_CASE_ID, 'chat-bridge-case');
   } finally {
     harness.cleanup();
@@ -5815,7 +5865,7 @@ test('run detail surfaces sandbox failure debug payload', async () => {
   }
 });
 
-test('isolated publish-gate fails when execution remains on host after sandbox preparation', async () => {
+test('isolated publish-gate allows host loop when sandbox tools also provide sandbox path semantics', async () => {
   const harness = createTempHarness();
 
   try {
@@ -5858,6 +5908,7 @@ test('isolated publish-gate fails when execution remains on host after sandbox p
         driverName: 'opensandbox',
         driverVersion: 'prepared-only',
         sandboxId: `sandbox-${caseId}`,
+        toolAdapter: createSandboxToolAdapterStub(),
       }),
       startRunImpl: () => {
         const sessionPath = path.join(harness.tempDir, 'publish-gate-host-execution.jsonl');
@@ -5885,12 +5936,15 @@ test('isolated publish-gate fails when execution remains on host after sandbox p
 
     assert.equal(handled, true);
     assert.equal(res.statusCode, 200);
-    assert.equal(res.json.run.status, 'failed');
+    assert.equal(res.json.run.status, 'succeeded');
     assert.equal(res.json.run.isolation.publishGate, true);
     assert.equal(res.json.run.isolation.execution.runtime, 'host');
-    assert.equal(res.json.run.isolation.execution.preparedOnly, true);
+    assert.equal(res.json.run.isolation.execution.loopRuntime, 'host');
+    assert.equal(res.json.run.isolation.execution.toolRuntime, 'sandbox');
+    assert.equal(res.json.run.isolation.execution.pathSemantics, 'sandbox');
+    assert.equal(res.json.run.isolation.execution.preparedOnly, false);
     assert.ok(Array.isArray(res.json.issues));
-    assert.ok(res.json.issues.some((issue) => issue.code === 'skill_test_execution_not_sandboxed'));
+    assert.ok(!res.json.issues.some((issue) => issue.code === 'skill_test_path_semantics_not_sandboxed'));
   } finally {
     harness.cleanup();
   }
@@ -5939,21 +5993,34 @@ test('isolated publish-gate fails when deny egress is not enforced by the adapte
         driverName: 'opensandbox',
         driverVersion: 'sandbox-start-run',
         sandboxId: `sandbox-${caseId}`,
+        toolAdapter: createSandboxToolAdapterStub(),
+        execution: {
+          pathSemantics: 'sandbox',
+        },
         startRun: async () => {
-          const sessionPath = path.join(harness.tempDir, 'publish-gate-egress.jsonl');
+          const sessionPath = path.join(harness.tempDir, 'publish-gate-egress-adapter.jsonl');
           return {
-            runId: 'publish-gate-egress-run',
+            runId: 'publish-gate-egress-adapter-run',
             sessionPath,
             resultPromise: Promise.resolve({
-              reply: 'egress-run',
-              runId: 'publish-gate-egress-run',
+              reply: 'egress-adapter-run',
+              runId: 'publish-gate-egress-adapter-run',
               sessionPath,
             }),
           };
         },
       }),
       startRunImpl: () => {
-        throw new Error('adapter startRun should handle publish-gate egress test');
+        const sessionPath = path.join(harness.tempDir, 'publish-gate-egress.jsonl');
+        return {
+          runId: 'publish-gate-egress-run',
+          sessionPath,
+          resultPromise: Promise.resolve({
+            reply: 'egress-run',
+            runId: 'publish-gate-egress-run',
+            sessionPath,
+          }),
+        };
       },
     });
 
@@ -5970,7 +6037,10 @@ test('isolated publish-gate fails when deny egress is not enforced by the adapte
     assert.equal(handled, true);
     assert.equal(res.statusCode, 200);
     assert.equal(res.json.run.status, 'failed');
-    assert.equal(res.json.run.isolation.execution.runtime, 'sandbox');
+    assert.equal(res.json.run.isolation.execution.runtime, 'host');
+    assert.equal(res.json.run.isolation.execution.loopRuntime, 'host');
+    assert.equal(res.json.run.isolation.execution.toolRuntime, 'sandbox');
+    assert.equal(res.json.run.isolation.execution.pathSemantics, 'sandbox');
     assert.equal(res.json.run.isolation.egress.mode, 'deny');
     assert.equal(res.json.run.isolation.egress.enforced, false);
     assert.ok(Array.isArray(res.json.issues));

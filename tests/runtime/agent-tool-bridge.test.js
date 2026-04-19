@@ -1475,3 +1475,110 @@ test('agent tool bridge rejects blocked tools via invocation policy and records 
   assert.equal(context.policyRejects.length, 1);
   assert.equal(context.policyRejects[0].toolName, 'trellis-write');
 });
+
+test('agent tool bridge proxies sandbox file and bash tools via invocation adapter', async (t) => {
+  const tempDir = withTempDir('caff-agent-tool-bridge-sandbox-tools-');
+  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const bridge = createAgentToolBridge({ store });
+  const sandboxFilePath = path.join(tempDir, 'project', 'SKILL.md');
+  const sandboxWritePath = path.join(tempDir, 'project', 'notes.md');
+  const sandboxDirPath = path.join(tempDir, 'project', 'nested');
+  const sandboxCwd = path.join(tempDir, 'project');
+  const calls = {
+    access: [],
+    read: [],
+    write: [],
+    mkdir: [],
+    bash: [],
+  };
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const fixture = createPublicInvocationFixture(store, 'sandbox-tools');
+  const context = bridge.registerInvocation(
+    bridge.createInvocationContext({
+      conversationId: fixture.conversation.id,
+      turnId: fixture.assistantMessage.turnId,
+      projectDir: tempDir,
+      agentId: fixture.agent.id,
+      agentName: fixture.agent.name,
+      assistantMessageId: fixture.assistantMessage.id,
+      conversationAgents: fixture.conversation.agents,
+      stage: fixture.stage,
+      turnState: fixture.turnState,
+      dryRun: true,
+      sandboxToolAdapter: {
+        async access(targetPath) {
+          calls.access.push(targetPath);
+        },
+        async readFile(targetPath) {
+          calls.read.push(targetPath);
+          return Uint8Array.from(Buffer.from('# sandbox skill\n', 'utf8'));
+        },
+        async writeFile(targetPath, content) {
+          calls.write.push({ targetPath, content });
+        },
+        async mkdir(targetPath) {
+          calls.mkdir.push(targetPath);
+        },
+        async runCommand(command, options = {}) {
+          calls.bash.push({ command, options });
+          return {
+            stdout: '/case/project\n',
+            stderr: '',
+            exitCode: 0,
+          };
+        },
+      },
+    })
+  );
+
+  const accessResult = await bridge.handleSandboxAccess({
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    absolutePath: sandboxFilePath,
+  });
+  const readResult = await bridge.handleSandboxRead({
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    absolutePath: sandboxFilePath,
+  });
+  const writeResult = await bridge.handleSandboxWrite({
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    absolutePath: sandboxWritePath,
+    content: '# sandbox write\n',
+  });
+  const mkdirResult = await bridge.handleSandboxMkdir({
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    absolutePath: sandboxDirPath,
+  });
+  const bashResult = await bridge.handleSandboxBash({
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    command: 'pwd',
+    cwd: sandboxCwd,
+    timeout: 12,
+    env: { DEMO_FLAG: '1' },
+  });
+
+  assert.deepEqual(accessResult, { ok: true });
+  assert.equal(Buffer.from(readResult.base64, 'base64').toString('utf8'), '# sandbox skill\n');
+  assert.deepEqual(writeResult, { ok: true });
+  assert.deepEqual(mkdirResult, { ok: true });
+  assert.equal(bashResult.stdout, '/case/project\n');
+  assert.equal(bashResult.stderr, '');
+  assert.equal(bashResult.exitCode, 0);
+  assert.deepEqual(calls.access, [sandboxFilePath]);
+  assert.deepEqual(calls.read, [sandboxFilePath]);
+  assert.deepEqual(calls.write, [{ targetPath: sandboxWritePath, content: '# sandbox write\n' }]);
+  assert.deepEqual(calls.mkdir, [sandboxDirPath]);
+  assert.deepEqual(calls.bash, [{ command: 'pwd', options: { cwd: sandboxCwd, timeout: 12, env: { DEMO_FLAG: '1' } } }]);
+});

@@ -496,6 +496,7 @@ export function createAgentToolBridge(options: any = {}) {
       dryRunPrivatePosts: [] as any[],
       store: input.store || null,
       toolPolicy: input.toolPolicy || null,
+      sandboxToolAdapter: input.sandboxToolAdapter || null,
       policyRejects: [],
       runStore: input.runStore || null,
       stage: input.stage || null,
@@ -2764,6 +2765,119 @@ export function createAgentToolBridge(options: any = {}) {
     }
   }
 
+  async function handleSandboxAccess(body: any = {}) {
+    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
+    const adapter = context && context.sandboxToolAdapter ? context.sandboxToolAdapter : null;
+    const absolutePath = String(body.absolutePath || body.path || '').trim();
+
+    if (!adapter || typeof adapter.access !== 'function') {
+      throw createHttpError(503, 'Sandbox tool adapter is unavailable for this invocation');
+    }
+
+    if (!absolutePath) {
+      throw createHttpError(400, 'absolutePath is required');
+    }
+
+    await Promise.resolve(adapter.access(absolutePath));
+    return { ok: true };
+  }
+
+  async function handleSandboxRead(body: any = {}) {
+    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
+    const adapter = context && context.sandboxToolAdapter ? context.sandboxToolAdapter : null;
+    const absolutePath = String(body.absolutePath || body.path || '').trim();
+
+    if (!adapter || typeof adapter.readFile !== 'function') {
+      throw createHttpError(503, 'Sandbox tool adapter is unavailable for this invocation');
+    }
+
+    if (!absolutePath) {
+      throw createHttpError(400, 'absolutePath is required');
+    }
+
+    const value = await Promise.resolve(adapter.readFile(absolutePath));
+    const buffer = Buffer.isBuffer(value)
+      ? value
+      : value instanceof Uint8Array
+        ? Buffer.from(value)
+        : ArrayBuffer.isView(value)
+          ? Buffer.from(value.buffer, value.byteOffset, value.byteLength)
+          : value instanceof ArrayBuffer
+            ? Buffer.from(value)
+            : Buffer.from(String(value || ''), 'utf8');
+    return {
+      ok: true,
+      base64: buffer.toString('base64'),
+    };
+  }
+
+  async function handleSandboxWrite(body: any = {}) {
+    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
+    const adapter = context && context.sandboxToolAdapter ? context.sandboxToolAdapter : null;
+    const absolutePath = String(body.absolutePath || body.path || '').trim();
+    const content = body.content !== undefined && body.content !== null ? String(body.content) : '';
+
+    if (!adapter || typeof adapter.writeFile !== 'function') {
+      throw createHttpError(503, 'Sandbox tool adapter is unavailable for this invocation');
+    }
+
+    if (!absolutePath) {
+      throw createHttpError(400, 'absolutePath is required');
+    }
+
+    await Promise.resolve(adapter.writeFile(absolutePath, content));
+    return { ok: true };
+  }
+
+  async function handleSandboxMkdir(body: any = {}) {
+    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
+    const adapter = context && context.sandboxToolAdapter ? context.sandboxToolAdapter : null;
+    const absolutePath = String(body.absolutePath || body.path || '').trim();
+
+    if (!adapter || typeof adapter.mkdir !== 'function') {
+      throw createHttpError(503, 'Sandbox tool adapter is unavailable for this invocation');
+    }
+
+    if (!absolutePath) {
+      throw createHttpError(400, 'absolutePath is required');
+    }
+
+    await Promise.resolve(adapter.mkdir(absolutePath));
+    return { ok: true };
+  }
+
+  async function handleSandboxBash(body: any = {}) {
+    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
+    const adapter = context && context.sandboxToolAdapter ? context.sandboxToolAdapter : null;
+    const command = String(body.command || '').trim();
+    const cwd = String(body.cwd || '').trim();
+    const timeout = body.timeout !== undefined && body.timeout !== null && body.timeout !== ''
+      ? Number(body.timeout)
+      : undefined;
+    const env = body.env && typeof body.env === 'object' ? body.env : {};
+
+    if (!adapter || typeof adapter.runCommand !== 'function') {
+      throw createHttpError(503, 'Sandbox tool adapter is unavailable for this invocation');
+    }
+
+    if (!command) {
+      throw createHttpError(400, 'command is required');
+    }
+
+    const result = await Promise.resolve(adapter.runCommand(command, {
+      cwd: cwd || undefined,
+      timeout,
+      env,
+    }));
+
+    return {
+      ok: true,
+      stdout: String(result && result.stdout ? result.stdout : ''),
+      stderr: String(result && result.stderr ? result.stderr : ''),
+      exitCode: Number.isInteger(result && result.exitCode) ? result.exitCode : null,
+    };
+  }
+
   return {
     createInvocationContext,
     handleForgetMemory,
@@ -2771,6 +2885,11 @@ export function createAgentToolBridge(options: any = {}) {
     handleListParticipants,
     handlePostMessage,
     handleReadContext,
+    handleSandboxAccess,
+    handleSandboxBash,
+    handleSandboxMkdir,
+    handleSandboxRead,
+    handleSandboxWrite,
     handleSaveMemory,
     handleSearchMessages,
     handleTrellisInit,

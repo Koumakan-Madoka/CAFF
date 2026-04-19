@@ -223,17 +223,26 @@ test('open sandbox factory prepares remote case world and cleanup', async () => 
     assert.equal(adapter.driverVersion, 'test-driver');
     assert.equal(adapter.sandboxId, 'sandbox-test-1');
     assert.equal(adapter.execution.runtime, 'host');
-    assert.equal(adapter.execution.preparedOnly, true);
+    assert.equal(adapter.execution.loopRuntime, 'host');
+    assert.equal(adapter.execution.toolRuntime, 'sandbox');
+    assert.equal(adapter.execution.pathSemantics, 'sandbox');
+    assert.equal(adapter.execution.preparedOnly, false);
     assert.equal(adapter.egress.mode, 'deny');
     assert.equal(adapter.egress.enforced, false);
     assert.equal(adapter.resources.remoteRoot, '/remote-root/run-1/case-1');
     assert.equal(adapter.resources.remoteProjectDir, '/remote-root/run-1/case-1/project');
     assert.equal(adapter.resources.remoteSqlitePath, '/remote-root/run-1/case-1/store/chat.sqlite');
     assert.equal(adapter.resources.remoteSkillPath, '/remote-root/run-1/case-1/agent/skills/werewolf');
+    assert.equal(adapter.extraEnv.CAFF_CHAT_TOOLS_PATH, '/remote-root/run-1/case-1/runtime/agent-chat-tools.js');
+    assert.equal(adapter.extraEnv.CAFF_CHAT_TOOLS_RELATIVE_PATH, '../runtime/agent-chat-tools.js');
     assert.ok(mkdirCalls.includes('/remote-root/run-1/case-1'));
     assert.ok(writeCalls.some((entry) => entry.remotePath === '/remote-root/run-1/case-1/project/.trellis/workflow.md'));
     assert.ok(writeCalls.some((entry) => entry.remotePath === '/remote-root/run-1/case-1/agent/skills/werewolf/SKILL.md'));
     assert.ok(writeCalls.some((entry) => entry.remotePath === '/remote-root/run-1/case-1/store/chat.sqlite'));
+    await assert.rejects(
+      adapter.toolAdapter.access(path.join(tempDir, 'outside.txt')),
+      /outside the sandbox case world/
+    );
 
     await adapter.cleanup();
     assert.equal(killCalls, 1);
@@ -663,8 +672,21 @@ test('open sandbox factory startRun uses commands.run and copies session output'
       skillPath,
     });
 
-    assert.equal(adapter.execution.runtime, 'sandbox');
+    assert.equal(adapter.execution.runtime, 'host');
+    assert.equal(adapter.execution.loopRuntime, 'host');
+    assert.equal(adapter.execution.toolRuntime, 'sandbox');
+    assert.equal(adapter.execution.pathSemantics, 'sandbox');
     assert.equal(adapter.execution.preparedOnly, false);
+    assert.ok(!Object.prototype.hasOwnProperty.call(adapter.execution, 'adapterStartRun'));
+    assert.equal(adapter.extraEnv.CAFF_SKILL_TEST_VISIBLE_PROJECT_DIR, '/remote-root/run-1/case-1/project');
+    assert.equal(adapter.extraEnv.CAFF_SKILL_TEST_VISIBLE_SANDBOX_DIR, '/remote-root/run-1/case-1/agent/agent-sandboxes/agent-test');
+    assert.equal(adapter.extraEnv.CAFF_SKILL_TEST_VISIBLE_PRIVATE_DIR, '/remote-root/run-1/case-1/agent/agent-sandboxes/agent-test/private');
+    assert.equal(adapter.extraEnv.CAFF_SKILL_TEST_VISIBLE_SKILL_PATH, '/remote-root/run-1/case-1/agent/skills/werewolf/SKILL.md');
+    assert.equal(adapter.extraEnv.CAFF_CHAT_TOOLS_PATH, '/remote-root/run-1/case-1/runtime/agent-chat-tools.js');
+    assert.equal(adapter.extraEnv.CAFF_CHAT_TOOLS_RELATIVE_PATH, '../runtime/agent-chat-tools.js');
+    assert.ok(!Object.prototype.hasOwnProperty.call(adapter.extraEnv, 'CAFF_SKILL_TEST_REMOTE_RUNNER_PATH'));
+    assert.ok(!Object.prototype.hasOwnProperty.call(adapter.extraEnv, 'CAFF_SKILL_TEST_REMOTE_PI_CLI_PATH'));
+    assert.ok(!Object.prototype.hasOwnProperty.call(adapter.extraEnv, 'CAFF_SKILL_TEST_REMOTE_CHAT_TOOLS_PATH'));
     assert.equal(typeof adapter.startRun, 'function');
 
     const handle = adapter.startRun('kimi-coding', 'model-1', 'say hi', {
@@ -1078,7 +1100,10 @@ test('open sandbox factory reuses pre-baked runtime image assets when configured
       skillPath,
     });
 
-    assert.equal(adapter.execution.runtime, 'sandbox');
+    assert.equal(adapter.execution.runtime, 'host');
+    assert.equal(adapter.execution.loopRuntime, 'host');
+    assert.equal(adapter.execution.toolRuntime, 'sandbox');
+    assert.equal(adapter.execution.pathSemantics, 'sandbox');
     assert.equal(adapter.resources.remoteRuntimeAssetDir, DEFAULT_PREBAKED_RUNTIME_DIR);
     assert.equal(adapter.resources.usesPrebakedRuntimeAssets, true);
 
@@ -1428,7 +1453,10 @@ test('open sandbox factory supports official local lifecycle sdk shape', async (
     assert.equal(adapter.sandboxId, 'official-sandbox-1');
     assert.equal(adapter.extraEnv.CAFF_OPENSANDBOX_FLAVOR, 'official');
     assert.equal(adapter.resources.sdkFlavor, 'official');
-    assert.equal(adapter.execution.runtime, 'sandbox');
+    assert.equal(adapter.execution.runtime, 'host');
+    assert.equal(adapter.execution.loopRuntime, 'host');
+    assert.equal(adapter.execution.toolRuntime, 'sandbox');
+    assert.equal(adapter.execution.pathSemantics, 'sandbox');
 
     const handle = adapter.startRun('provider-1', 'model-1', 'say hi', {
       session: 'official-session',

@@ -128,6 +128,37 @@ function toPortablePath(value: string) {
   return String(value || '').replace(/\\/g, '/');
 }
 
+function normalizeVisiblePathRoots(options: any = {}) {
+  const roots = Array.isArray(options.visiblePathRoots)
+    ? options.visiblePathRoots
+    : Array.isArray(options.visibleRoots)
+      ? options.visibleRoots
+      : [];
+  const normalized = new Set<string>();
+
+  for (const entry of roots) {
+    const raw = String(entry || '').trim();
+
+    if (!raw) {
+      continue;
+    }
+
+    const portable = toPortablePath(raw).replace(/\/+$/g, '');
+    if (portable) {
+      normalized.add(portable);
+    }
+
+    try {
+      const resolved = toPortablePath(path.resolve(raw)).replace(/\/+$/g, '');
+      if (resolved) {
+        normalized.add(resolved);
+      }
+    } catch {}
+  }
+
+  return Array.from(normalized).sort((left, right) => right.length - left.length);
+}
+
 function previewAbsolutePath(value: any, options: any = {}) {
   const rawValue = String(value || '').trim();
 
@@ -136,12 +167,23 @@ function previewAbsolutePath(value: any, options: any = {}) {
   }
 
   const portableValue = toPortablePath(rawValue);
+  const portableComparableValue = portableValue.replace(/\/+$/g, '');
+  const visibleRoots = normalizeVisiblePathRoots(options);
+  const compareValue = process.platform === 'win32' ? portableComparableValue.toLowerCase() : portableComparableValue;
+
+  for (const root of visibleRoots) {
+    const compareRoot = process.platform === 'win32' ? root.toLowerCase() : root;
+
+    if (compareValue === compareRoot || compareValue.startsWith(`${compareRoot}/`)) {
+      return portableValue;
+    }
+  }
+
   const roots = [process.cwd(), options.agentDir]
     .map((entry) => String(entry || '').trim())
     .filter(Boolean)
-    .map((entry) => toPortablePath(path.resolve(entry)))
+    .map((entry) => toPortablePath(path.resolve(entry)).replace(/\/+$/g, ''))
     .sort((left, right) => right.length - left.length);
-  const compareValue = process.platform === 'win32' ? portableValue.toLowerCase() : portableValue;
 
   for (const root of roots) {
     const compareRoot = process.platform === 'win32' ? root.toLowerCase() : root;
@@ -911,8 +953,12 @@ export function buildAssistantMessageToolTrace(options: any = {}) {
   const taskSessionPath = taskRow && taskRow.session_path ? String(taskRow.session_path).trim() : '';
   const sessionSnapshot = readSessionAssistantSnapshot(taskSessionPath || resolvedSessionPath, agentDir);
   const sessionToolSource = sessionSnapshot && Array.isArray(sessionSnapshot.toolCalls) ? sessionSnapshot.toolCalls : [];
+  const visiblePathRoots = taskMetadata && Array.isArray(taskMetadata.visiblePathRoots)
+    ? taskMetadata.visiblePathRoots
+    : [];
+  const traceOptions = { agentDir, visiblePathRoots };
   const sessionToolCalls = sessionToolSource.map((toolCall: any, index: number) =>
-    normalizeSessionToolCall(toolCall, index, { agentDir })
+    normalizeSessionToolCall(toolCall, index, traceOptions)
   );
   const bridgeToolEvents = loadToolEventRows(db, taskId)
     .map((row: any) => ({
@@ -920,7 +966,7 @@ export function buildAssistantMessageToolTrace(options: any = {}) {
       payload: safeJsonParse(row && row.event_json ? row.event_json : null),
     }))
     .filter((row: any) => row && row.payload)
-    .map((row: any) => normalizeBridgeToolEvent(row, { agentDir }))
+    .map((row: any) => normalizeBridgeToolEvent(row, traceOptions))
     .filter(Boolean);
   const steps = buildMergedTimelineSteps(sessionToolCalls, bridgeToolEvents);
 
@@ -929,14 +975,14 @@ export function buildAssistantMessageToolTrace(options: any = {}) {
         id: String(taskRow.id || '').trim(),
         status: String(taskRow.status || '').trim(),
         runId: Number.isInteger(taskRow.run_id) ? taskRow.run_id : taskRow.run_id ? Number(taskRow.run_id) : null,
-        sessionPath: taskSessionPath ? previewAbsolutePath(taskSessionPath, { agentDir }) : null,
+        sessionPath: taskSessionPath ? previewAbsolutePath(taskSessionPath, traceOptions) : null,
         requestedSession: taskRow.requested_session ? clipText(String(taskRow.requested_session)) : '',
-        outputText: taskRow.output_text === null || taskRow.output_text === undefined ? '' : clipText(redactString(taskRow.output_text, { agentDir }), 360),
+        outputText: taskRow.output_text === null || taskRow.output_text === undefined ? '' : clipText(redactString(taskRow.output_text, traceOptions), 360),
         errorMessage:
           taskRow.error_message === null || taskRow.error_message === undefined
             ? ''
-            : clipText(redactString(taskRow.error_message, { agentDir }), 240),
-        metadata: summarizeValue(taskMetadata, { agentDir }),
+            : clipText(redactString(taskRow.error_message, traceOptions), 240),
+        metadata: summarizeValue(taskMetadata, traceOptions),
         startedAt: taskRow.started_at ? String(taskRow.started_at).trim() : '',
         endedAt: taskRow.ended_at ? String(taskRow.ended_at).trim() : '',
         updatedAt: taskRow.updated_at ? String(taskRow.updated_at).trim() : '',
@@ -945,15 +991,15 @@ export function buildAssistantMessageToolTrace(options: any = {}) {
 
   const session = sessionSnapshot
     ? {
-        sessionPath: previewAbsolutePath(sessionSnapshot.sessionPath, { agentDir }),
+        sessionPath: previewAbsolutePath(sessionSnapshot.sessionPath, traceOptions),
         assistantMessageTotal: sessionSnapshot.assistantMessageTotal,
         stopReason: sessionSnapshot.stopReason,
-        errorMessage: clipText(redactString(sessionSnapshot.errorMessage, { agentDir }), 240),
+        errorMessage: clipText(redactString(sessionSnapshot.errorMessage, traceOptions), 240),
         provider: sessionSnapshot.provider,
         model: sessionSnapshot.model,
         api: sessionSnapshot.api,
-        usage: summarizeValue(sessionSnapshot.usage, { agentDir }),
-        assistantErrors: summarizeValue(sessionSnapshot.assistantErrors, { agentDir }),
+        usage: summarizeValue(sessionSnapshot.usage, traceOptions),
+        assistantErrors: summarizeValue(sessionSnapshot.assistantErrors, traceOptions),
       }
     : null;
 

@@ -44,6 +44,39 @@ function createFakePiShimWithCli(baseDir) {
   return shimPath;
 }
 
+function createFakePiShimCapturingRuntimeInfo(baseDir) {
+  const shimDir = path.join(baseDir, 'fake-pi-shim-capture');
+  const cliDir = path.join(shimDir, 'node_modules', '@mariozechner', 'pi-coding-agent', 'dist');
+  const shimPath = path.join(shimDir, 'pi.ps1');
+  const cliPath = path.join(cliDir, 'cli.js');
+
+  fs.mkdirSync(cliDir, { recursive: true });
+  fs.writeFileSync(shimPath, '# intentionally unused shim', 'utf8');
+  fs.writeFileSync(
+    cliPath,
+    [
+      'const fs = require("node:fs");',
+      'const payload = { cwd: process.cwd(), argv: process.argv.slice(2) };',
+      'if (process.env.TEST_CAPTURE_PATH) {',
+      '  fs.writeFileSync(process.env.TEST_CAPTURE_PATH, JSON.stringify(payload), "utf8");',
+      '}',
+      'const message = {',
+      '  type: "message_end",',
+      '  message: {',
+      '    role: "assistant",',
+      '    content: [{ type: "text", text: JSON.stringify(payload) }],',
+      '    stopReason: "stop",',
+      '    timestamp: Date.now(),',
+      '  },',
+      '};',
+      'process.stdout.write(`${JSON.stringify(message)}\\n`);',
+    ].join('\n'),
+    'utf8'
+  );
+
+  return shimPath;
+}
+
 function loadRuntimeWithCommandPath(commandPath) {
   const runtimeModulePath = require.resolve('../../build/lib/pi-runtime');
   const previousCommandPath = process.env.PI_COMMAND_PATH;
@@ -272,4 +305,70 @@ test('pi runtime bypasses PowerShell shims so unicode stdin prompts stay intact 
   assert.equal(result.reply, prompt);
   assert.match(result.reply, /中文内容 "保留后文"/u);
   assert.match(result.reply, /继续看乱码/u);
+});
+
+test('pi runtime respects explicit cwd and forwards extra extensions', async (t) => {
+  if (process.platform !== 'win32') {
+    t.skip('PI_COMMAND_PATH override fixture is currently exercised on Windows only');
+    return;
+  }
+
+  if (!requireSpawn(t)) {
+    return;
+  }
+
+  const tempDir = withTempDir('caff-pi-runtime-cwd-');
+  const projectDir = path.join(tempDir, 'project-root');
+  const sqlitePath = path.join(tempDir, 'pi-runtime-cwd.sqlite');
+  const capturePath = path.join(tempDir, 'capture.json');
+  const extraExtensionPath = path.join(tempDir, 'extra-extension.mjs');
+  const fakeShimPath = createFakePiShimCapturingRuntimeInfo(tempDir);
+  const { runtime, restore } = loadRuntimeWithCommandPath(fakeShimPath);
+  let handle = null;
+
+  fs.mkdirSync(projectDir, { recursive: true });
+  fs.writeFileSync(extraExtensionPath, 'export default {}\n', 'utf8');
+
+  t.after(() => {
+    try {
+      handle && handle.cancel('test cleanup');
+    } catch {}
+
+    restore();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  handle = runtime.startRun('test-provider', 'test-model', 'check cwd', {
+    agentDir: tempDir,
+    sqlitePath,
+    cwd: projectDir,
+    extensionPaths: [extraExtensionPath],
+    heartbeatIntervalMs: 50,
+    heartbeatTimeoutMs: 10000,
+    terminateGraceMs: 100,
+    streamOutput: false,
+    extraEnv: {
+      TEST_CAPTURE_PATH: capturePath,
+    },
+  });
+
+  const timeoutPromise = new Promise((_, reject) => {
+    setTimeout(() => {
+      reject(new Error('Timed out waiting for cwd capture completion'));
+    }, 2000);
+  });
+
+  await Promise.race([handle.resultPromise, timeoutPromise]);
+
+  const captured = JSON.parse(fs.readFileSync(capturePath, 'utf8'));
+  const extensionArgs = [];
+
+  for (let i = 0; i < captured.argv.length; i += 1) {
+    if (captured.argv[i] === '--extension' && captured.argv[i + 1]) {
+      extensionArgs.push(captured.argv[i + 1]);
+    }
+  }
+
+  assert.equal(captured.cwd, projectDir);
+  assert.ok(extensionArgs.includes(path.resolve(extraExtensionPath)));
 });

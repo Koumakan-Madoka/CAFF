@@ -26,6 +26,8 @@
   on-disk URIs keep `mode=ro` / `mode=rw` intent through explicit open options,
   parent directory creation uses the decoded underlying filesystem path, and
   unsupported URI query parameters fail fast instead of being silently ignored.
+- Skill-test isolated runs now default to `host-loop + sandbox-tools`: if you change runtime `cwd`, extension injection, or tool routing for skill-test runs, keep `server/api/skill-test-controller.ts`, `lib/pi-runtime.ts`, `lib/pi-skill-test-sandbox-extension.mjs`, `server/domain/runtime/agent-tool-bridge.ts`, and `server/domain/skill-test/isolation.ts` aligned.
+- Sandbox-visible path semantics for host-loop skill-test runs flow through `CAFF_SKILL_TEST_VISIBLE_*` envs. Prefer those visible paths for tool `cwd`, trace redaction, and agent-facing path echoes instead of mutating the host process working directory.
 
 ## Mirrored Update Paths
 

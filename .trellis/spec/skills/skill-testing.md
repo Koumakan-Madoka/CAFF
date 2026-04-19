@@ -90,9 +90,9 @@ Skill-test execution now supports an explicit isolation layer before the pi run 
   - cannot be treated as publish-gate evidence
 - `isolated`:
   - requires an isolation driver (preferred backend: `OpenSandbox`)
-  - supports async driver setup and async adapter-provided `startRun(...)` handles so remote/container backends can prepare case worlds before the pi run starts
   - creates a case-scoped writable world: sandbox dirs, project root, SQLite/chat store, skill snapshot, and audit evidence
-  - the env/config-backed `OpenSandbox` adapter may upload a sandbox-side Node runner plus pi runtime assets and execute the skill-test case through `commands.run`; when that path succeeds, session JSONL is copied back into the case outputs and evidence must report `execution.runtime = sandbox`
+  - default execution is `host-loop + sandbox-tools`: the agent loop, orchestration, live events, chat bridge, and result persistence stay on the host, while file and command side effects are delegated into the sandbox case world
+  - the env/config-backed `OpenSandbox` adapter may still expose a sandbox-side `startRun(...)` compatibility path, but that is no longer the default skill-test execution chain
   - sandbox direct-HTTP bridge POCs must use an explicitly reachable CAFF base URL (`CHAT_APP_ADVERTISE_URL` or `CAFF_SKILL_TEST_OPENSANDBOX_CHAT_API_URL`) instead of assuming `127.0.0.1` inside the sandbox maps back to the host service
   - default server wiring may opt into an env/config-backed `OpenSandbox` adapter; isolated publish-gate paths must fail closed when that driver is unavailable
 
@@ -101,7 +101,9 @@ Case-scoped isolation payload is stored under `evaluation_json.isolation` and su
 - `mode`, `notIsolated`, `publishGate`, `driver.{name,version}`, `sandboxId`, `runId`, `caseId`
 - `trellisMode` (`none | fixture | readonlySnapshot | liveExplicit`)
 - `egressMode`
-- `execution.{runtime,preparedOnly,adapterStartRun,reason}` so prepared-only adapters cannot masquerade as sandbox execution, and sandbox-side runner execution stays distinguishable from remote-world preparation only
+- `execution.{runtime,loopRuntime,toolRuntime,pathSemantics,preparedOnly,reason}` where `runtime` is a compatibility projection, `loopRuntime` captures where the agent loop ran, `toolRuntime` captures where file or command side effects ran, and `pathSemantics` captures whether the agent saw host or sandbox path/cwd semantics
+- sandbox adapters may still keep an internal `startRun(...)` compatibility hook, but that adapter detail is not part of the public execution evidence contract
+- host-loop isolated runs may expose `CAFF_SKILL_TEST_VISIBLE_*` envs (project, sandbox, private, skill, root, output, sqlite) so runtime extensions and trace mapping can prefer sandbox-visible paths without changing the host loop's real filesystem cwd
 - `egress.{mode,enforced,scope,reason}` so record-only network policy requests stay explicit in evidence
 - `chatBridge.{mode,configured,configuredUrl,reachable,auth,rejects}` so sandbox direct-HTTP bridge POCs show whether case-scoped credentials were validated; the auth payload must include run/case/task binding and TTL metadata but never the callback token
 - `toolPolicy.allowedTools[]` and `toolPolicy.rejects[]`
@@ -116,14 +118,15 @@ Case-scoped isolation payload is stored under `evaluation_json.isolation` and su
 
 Publish-gate interpretation rules:
 
-- isolated publish-gate runs fail closed when `execution.runtime !== sandbox`
+- isolated publish-gate runs fail closed when `execution.toolRuntime !== sandbox` or `execution.pathSemantics !== sandbox`
 - isolated publish-gate runs with `egressMode = deny` fail closed unless `egress.enforced = true`
 
 Isolation failures must surface canonical validation issues such as:
 
 - `skill_test_not_isolated`
 - `skill_test_policy_rejects_present`
-- `skill_test_execution_not_sandboxed`
+- `skill_test_tools_not_sandboxed`
+- `skill_test_path_semantics_not_sandboxed`
 - `skill_test_egress_not_enforced`
 - `skill_test_pollution_detected`
 - `skill_test_cleanup_failed`

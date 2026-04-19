@@ -29,3 +29,5 @@ function copyFile(sourcePath, targetPath) {
 
 copyDir(path.join(ROOT_DIR, 'public'), path.join(BUILD_DIR, 'public'));
 copyFile(path.join(ROOT_DIR, 'lib', 'pi-heartbeat-extension.mjs'), path.join(BUILD_DIR, 'lib', 'pi-heartbeat-extension.mjs'));
+copyFile(path.join(ROOT_DIR, 'lib', 'pi-skill-test-sandbox-env.mjs'), path.join(BUILD_DIR, 'lib', 'pi-skill-test-sandbox-env.mjs'));
+copyFile(path.join(ROOT_DIR, 'lib', 'pi-skill-test-sandbox-extension.mjs'), path.join(BUILD_DIR, 'lib', 'pi-skill-test-sandbox-extension.mjs'));

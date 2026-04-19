@@ -2502,6 +2502,35 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     });
   }
 
+  function collectSkillTestVisiblePathRoots(extraEnv: any = {}, execution: any = null) {
+    if (!execution || execution.pathSemantics !== 'sandbox') {
+      return [];
+    }
+
+    const env = extraEnv && typeof extraEnv === 'object' ? extraEnv : {};
+    const roots = [
+      env.CAFF_SKILL_TEST_VISIBLE_ROOT || env.CAFF_SKILL_TEST_REMOTE_ROOT,
+      env.CAFF_SKILL_TEST_VISIBLE_PROJECT_DIR || env.CAFF_SKILL_TEST_REMOTE_PROJECT_DIR || env.CAFF_TRELLIS_PROJECT_DIR,
+      env.CAFF_SKILL_TEST_VISIBLE_AGENT_DIR || env.CAFF_SKILL_TEST_REMOTE_AGENT_DIR,
+      env.CAFF_SKILL_TEST_VISIBLE_OUTPUT_DIR || env.CAFF_SKILL_TEST_REMOTE_OUTPUT_DIR,
+      env.CAFF_SKILL_TEST_VISIBLE_SANDBOX_DIR || env.PI_AGENT_SANDBOX_DIR,
+      env.CAFF_SKILL_TEST_VISIBLE_PRIVATE_DIR || env.PI_AGENT_PRIVATE_DIR,
+      env.CAFF_SKILL_TEST_VISIBLE_SQLITE_PATH || env.CAFF_SKILL_TEST_REMOTE_SQLITE_PATH,
+    ];
+    const skillPath = String(env.CAFF_SKILL_TEST_VISIBLE_SKILL_PATH || env.CAFF_SKILL_TEST_SKILL_PATH || '').trim();
+
+    if (skillPath) {
+      roots.push(skillPath);
+      roots.push(skillPath.replace(/[\\/]+SKILL\.md$/i, ''));
+    }
+
+    return Array.from(new Set(
+      roots
+        .map((entry) => String(entry || '').trim().replace(/\\/g, '/').replace(/\/+$/u, ''))
+        .filter(Boolean)
+    ));
+  }
+
   function broadcastSkillTestRunEvent(phase: string, payload: any = {}) {
     broadcastEvent('skill_test_run_event', {
       phase,
@@ -3750,6 +3779,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
         thinking: '',
         agentDir: judgeAgentDir,
         sqlitePath: judgeSqlitePath,
+        cwd: judgeProjectDir || undefined,
         streamOutput: false,
         session: judgeSessionName,
         taskId: judgeTaskId,
@@ -4086,6 +4116,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
         thinking: '',
         agentDir: judgeAgentDir,
         sqlitePath: judgeSqlitePath,
+        cwd: judgeProjectDir || undefined,
         streamOutput: false,
         session: judgeSessionName,
         taskId: judgeTaskId,
@@ -5797,6 +5828,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
           requireAuthScope: true,
           store: isolationContext && isolationContext.store ? isolationContext.store : null,
           toolPolicy: isolationContext && isolationContext.toolPolicy ? isolationContext.toolPolicy : null,
+          sandboxToolAdapter: isolationContext && isolationContext.sandboxToolAdapter ? isolationContext.sandboxToolAdapter : null,
           runStore,
           stage,
           turnState: null,
@@ -5808,6 +5840,14 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
 
       const agentToolScriptPath = path.resolve(ROOT_DIR, 'lib', 'agent-chat-tools.js');
       const agentToolRelativePath = resolveToolRelativePath(agentToolScriptPath);
+      const skillTestSandboxExtensionPath = path.resolve(ROOT_DIR, 'lib', 'pi-skill-test-sandbox-extension.mjs');
+      const isolationExecution = isolationContext && isolationContext.execution && typeof isolationContext.execution === 'object'
+        ? isolationContext.execution
+        : null;
+      const visiblePathRoots = collectSkillTestVisiblePathRoots(
+        isolationContext && isolationContext.extraEnv ? isolationContext.extraEnv : null,
+        isolationExecution
+      );
 
       runStore.createTask({
         taskId,
@@ -5830,6 +5870,14 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
           toolBridgeDryRun: true,
           isolationMode: isolationContext && isolationContext.isolation ? isolationContext.isolation.mode : 'legacy-local',
           trellisMode: isolationContext && isolationContext.isolation ? isolationContext.isolation.trellisMode : 'none',
+          isolationExecution: isolationExecution
+            ? {
+                loopRuntime: isolationExecution.loopRuntime || 'host',
+                toolRuntime: isolationExecution.toolRuntime || 'host',
+                pathSemantics: isolationExecution.pathSemantics || 'host',
+              }
+            : null,
+          visiblePathRoots,
         },
         startedAt: timestamp,
       });
@@ -5852,20 +5900,22 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
         activeToolName: '',
         activeToolKind: '',
       };
-      let liveExecutionRuntime = isolationContext && typeof isolationContext.startRun === 'function' ? 'sandbox' : 'host';
+      const liveUsesSandboxTools = isolationExecution && isolationExecution.toolRuntime === 'sandbox';
+      let liveExecutionRuntime = isolationExecution && isolationExecution.loopRuntime === 'sandbox' ? 'sandbox' : 'host';
       let liveProgressLabel = liveExecutionRuntime === 'sandbox'
         ? '正在准备 sandbox runner…'
-        : '正在等待工具调用…';
+        : liveUsesSandboxTools
+          ? 'host loop 正在等待 sandbox 工具调用…'
+          : '正在等待工具调用…';
 
       try {
-        const startSkillTestRun = isolationContext && typeof isolationContext.startRun === 'function'
-          ? isolationContext.startRun
-          : startRunImpl;
         const providerAuthEnv = buildProviderAuthEnv(effectiveProvider);
-        const handle = await Promise.resolve(startSkillTestRun(effectiveProvider, effectiveModel, prompt, {
+        const handle = await Promise.resolve(startRunImpl(effectiveProvider, effectiveModel, prompt, {
           thinking: '',
           agentDir: runtimeAgentDir,
           sqlitePath: runtimeSqlitePath,
+          cwd: projectDir || undefined,
+          extensionPaths: isolationContext && isolationContext.sandboxToolAdapter ? [skillTestSandboxExtensionPath] : undefined,
           streamOutput: false,
           session: sessionName,
           taskId,
@@ -5893,6 +5943,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
             CAFF_SKILL_TEST_RUN_ID: taskId,
             CAFF_SKILL_TEST_CASE_ID: testCase.id,
             CAFF_SKILL_LOADING_MODE: testCase.loadingMode || 'dynamic',
+            ...(isolationContext && isolationContext.sandboxToolAdapter ? { CAFF_SKILL_TEST_SANDBOX_TOOL_BRIDGE: '1' } : {}),
             ...(isolationContext && isolationContext.extraEnv ? isolationContext.extraEnv : {}),
           },
         }));
@@ -5908,10 +5959,12 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
           sessionPath: handle.sessionPath || null,
         });
 
-        liveExecutionRuntime = isolationContext && typeof isolationContext.startRun === 'function' ? 'sandbox' : 'host';
+        liveExecutionRuntime = isolationExecution && isolationExecution.loopRuntime === 'sandbox' ? 'sandbox' : 'host';
         liveProgressLabel = liveExecutionRuntime === 'sandbox'
           ? '正在准备 sandbox runner…'
-          : '正在等待工具调用…';
+          : liveUsesSandboxTools
+            ? 'host loop 正在等待 sandbox 工具调用…'
+            : '正在等待工具调用…';
 
         broadcastSkillTestRunEvent('started', {
           caseId: testCase.id,
