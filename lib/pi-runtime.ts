@@ -138,6 +138,31 @@ function normalizeExtraEnv(extraEnv: any) {
   return normalized;
 }
 
+function normalizeExtensionPaths(value: any) {
+  const entries = Array.isArray(value) ? value : [value];
+  const seen = new Set();
+  const normalized = [];
+
+  for (const entry of entries) {
+    const rawPath = String(entry || '').trim();
+
+    if (!rawPath) {
+      continue;
+    }
+
+    const resolvedPath = path.resolve(rawPath);
+
+    if (seen.has(resolvedPath)) {
+      continue;
+    }
+
+    seen.add(resolvedPath);
+    normalized.push(resolvedPath);
+  }
+
+  return normalized;
+}
+
 function getHeartbeatPayload(line: string) {
   if (!line.startsWith(HEARTBEAT_PREFIX)) {
     return null;
@@ -400,6 +425,8 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
   );
   const resume = Boolean(options.resume);
   const sessionPath = resolveSessionPath(options.session, agentDir);
+  const cwd = path.resolve(String(options.cwd || process.cwd()).trim() || process.cwd());
+  const extensionPaths = normalizeExtensionPaths(options.extensionPaths || options.extensions);
   const streamOutput = options.streamOutput !== false;
   const stdout = options.stdout || process.stdout;
   const stderr = options.stderr || process.stderr;
@@ -702,6 +729,10 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
     piArgs.push('--mode', 'json', '--print');
     piArgs.push('--extension', HEARTBEAT_EXTENSION_PATH);
 
+    for (const extensionPath of extensionPaths) {
+      piArgs.push('--extension', extensionPath);
+    }
+
     if (sessionPath) {
       fs.mkdirSync(path.dirname(sessionPath), { recursive: true });
       piArgs.push('--session', sessionPath);
@@ -722,7 +753,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
         heartbeatIntervalMs,
         heartbeatTimeoutMs,
         terminateGraceMs,
-        cwd: process.cwd(),
+        cwd,
         parentRunId: options.parentRunId,
         taskId: options.taskId,
         taskKind: options.taskKind,
@@ -744,6 +775,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
 
     const piSpawnSpec = createPiSpawnSpec(piArgs);
     child = spawn(piSpawnSpec.command, piSpawnSpec.args, {
+      cwd,
       env: {
         ...process.env,
         PI_CODING_AGENT_DIR: agentDir,

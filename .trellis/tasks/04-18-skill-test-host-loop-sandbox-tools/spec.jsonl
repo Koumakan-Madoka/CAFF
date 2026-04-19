@@ -1,0 +1,3 @@
+{"file":".trellis/spec/index.md","reason":"Shared spec fallback."}
+{"at":"2026-04-19T09:19:08+08:00","file":".trellis/spec/skills/skill-testing.md","reason":"Closed out the skill-test isolation spec around the default host-loop + sandbox-tools execution model, public execution evidence fields, sandbox-visible path semantics, and publish-gate issue codes after adapterStartRun left the public contract."}
+{"at":"2026-04-19T09:19:08+08:00","file":".trellis/spec/runtime/agent-runtime.md","reason":"Captured the host-loop skill-test runtime alignment points: runtime cwd/extension/tool-routing changes must stay consistent with the sandbox bridge, and agent-facing path/cwd echoes should prefer CAFF_SKILL_TEST_VISIBLE_* roots over host cwd mutation."}

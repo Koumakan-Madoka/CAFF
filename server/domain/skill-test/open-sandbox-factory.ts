@@ -185,10 +185,10 @@ function mapHostPathToRemote(hostBaseDir, hostTargetPath, remoteBaseDir) {
   const baseDir = path.resolve(String(hostBaseDir || '').trim() || '.');
   const targetPath = path.resolve(String(hostTargetPath || '').trim() || '.');
   const relativePath = path.relative(baseDir, targetPath);
-  if (!relativePath || relativePath.startsWith('..')) {
+  if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
     return '';
   }
-  return joinRemotePath(remoteBaseDir, relativePath.replace(/\\/g, '/'));
+  return relativePath ? joinRemotePath(remoteBaseDir, relativePath.replace(/\\/g, '/')) : remoteBaseDir;
 }
 
 function shellQuote(value) {
@@ -569,6 +569,22 @@ async function readRemoteFileIfPresent(sandbox, remotePath) {
   }
 
   return '';
+}
+
+function normalizeRemoteFileBuffer(content) {
+  if (Buffer.isBuffer(content)) {
+    return content;
+  }
+  if (content instanceof Uint8Array) {
+    return Buffer.from(content);
+  }
+  if (ArrayBuffer.isView(content)) {
+    return Buffer.from(content.buffer, content.byteOffset, content.byteLength);
+  }
+  if (content instanceof ArrayBuffer) {
+    return Buffer.from(content);
+  }
+  return Buffer.from(typeof content === 'string' ? content : String(content || ''), 'utf8');
 }
 
 function flattenExecutionText(entries) {
@@ -1709,6 +1725,117 @@ function createSandboxStartRun(adapterInput = {}) {
   };
 }
 
+function createSandboxToolAdapter(adapterInput = {}) {
+  const {
+    sandbox,
+    layout,
+    factoryInput,
+  } = adapterInput;
+
+  const pathMappings = [
+    { hostBaseDir: factoryInput.caseRoot, remoteBaseDir: layout.remoteRoot },
+    { hostBaseDir: factoryInput.projectDir, remoteBaseDir: layout.remoteProjectDir },
+    { hostBaseDir: factoryInput.agentDir, remoteBaseDir: layout.remoteAgentDir },
+    { hostBaseDir: factoryInput.outputDir, remoteBaseDir: layout.remoteOutputDir },
+    ...(factoryInput.sqlitePath
+      ? [{ hostBaseDir: path.dirname(String(factoryInput.sqlitePath).trim()), remoteBaseDir: layout.remoteStoreDir }]
+      : []),
+  ].filter((entry) => entry.hostBaseDir && entry.remoteBaseDir);
+  const visiblePathMappings = pathMappings
+    .map((entry) => ({
+      hostBaseDir: path.resolve(String(entry.remoteBaseDir || '').trim() || '.'),
+      remoteBaseDir: entry.remoteBaseDir,
+    }))
+    .filter((entry) => entry.hostBaseDir && entry.remoteBaseDir);
+  const allPathMappings = pathMappings.concat(visiblePathMappings);
+  const visibleRemoteRoots = [
+    layout.remoteRoot,
+    layout.remoteProjectDir,
+    layout.remoteAgentDir,
+    layout.remoteOutputDir,
+    layout.remoteStoreDir,
+    layout.remoteRuntimeDir,
+    layout.remoteSandboxDir,
+    layout.remotePrivateDir,
+    layout.remoteSkillPath,
+    layout.remoteSqlitePath,
+  ]
+    .map((entry) => String(entry || '').trim().replace(/\\/g, '/').replace(/\/+$/u, ''))
+    .filter(Boolean)
+    .sort((left, right) => right.length - left.length);
+
+  function resolveRemotePath(hostPath) {
+    const rawPath = String(hostPath || '').trim();
+    const portableRawPath = rawPath.replace(/\\/g, '/').replace(/\/+$/u, '');
+
+    if (portableRawPath && portableRawPath.startsWith('/')) {
+      for (const root of visibleRemoteRoots) {
+        if (portableRawPath === root || portableRawPath.startsWith(`${root}/`)) {
+          return portableRawPath;
+        }
+      }
+    }
+
+    const normalizedHostPath = path.resolve(rawPath || '.');
+
+    if (factoryInput.sqlitePath && normalizedHostPath === path.resolve(String(factoryInput.sqlitePath).trim())) {
+      return layout.remoteSqlitePath;
+    }
+
+    for (const entry of allPathMappings) {
+      const remotePath = mapHostPathToRemote(entry.hostBaseDir, normalizedHostPath, entry.remoteBaseDir);
+      if (remotePath) {
+        return remotePath;
+      }
+    }
+
+    throw new Error(`Path is outside the sandbox case world: ${normalizedHostPath}`);
+  }
+
+  return {
+    mapHostPathToRemote(hostPath) {
+      return resolveRemotePath(hostPath);
+    },
+    async access(hostPath) {
+      const remotePath = resolveRemotePath(hostPath);
+      if (!(await remoteFileExists(sandbox, remotePath))) {
+        throw new Error(`File not found in sandbox: ${hostPath}`);
+      }
+    },
+    async mkdir(hostPath) {
+      const remotePath = resolveRemotePath(hostPath);
+      await ensureRemoteDirectory(sandbox, remotePath);
+    },
+    async readFile(hostPath) {
+      const remotePath = resolveRemotePath(hostPath);
+      if (!(await remoteFileExists(sandbox, remotePath))) {
+        throw new Error(`File not found in sandbox: ${hostPath}`);
+      }
+      const content = await readRemoteFileIfPresent(sandbox, remotePath);
+      return normalizeRemoteFileBuffer(content);
+    },
+    async writeFile(hostPath, content) {
+      const remotePath = resolveRemotePath(hostPath);
+      await ensureRemoteDirectory(sandbox, path.posix.dirname(remotePath));
+      await writeRemoteFile(sandbox, remotePath, String(content || ''));
+    },
+    async runCommand(command, input = {}) {
+      const options = input && typeof input === 'object' ? input : {};
+      const remoteCwd = options.cwd ? resolveRemotePath(options.cwd) : layout.remoteProjectDir;
+      const result = await sandbox.commands.run(String(command || ''), {
+        cwd: remoteCwd,
+        timeout: Number.isFinite(options.timeout) ? options.timeout : undefined,
+        env: normalizeEnvObject(options.env),
+      });
+      return {
+        stdout: extractCommandText(result, 'stdout'),
+        stderr: extractCommandText(result, 'stderr'),
+        exitCode: extractCommandExitCode(result),
+      };
+    },
+  };
+}
+
 async function createOpenSandboxAdapter(factoryInput = {}, options = {}) {
   const normalizedOptions = normalizeOpenSandboxFactoryOptions(options);
   const openSandboxModule = await loadOpenSandboxModule(normalizedOptions.loadModule, normalizedOptions);
@@ -1773,17 +1900,24 @@ async function createOpenSandboxAdapter(factoryInput = {}, options = {}) {
       })
     : null;
   const executionReason = executionSupport.startRunAvailable
-    ? 'OpenSandbox runs a sandbox-side Node runner via commands.run for skill-test execution'
-    : executionSupport.blockReason || 'OpenSandbox prepared a remote case world, but the current adapter still delegates execution to the host runtime';
+    ? 'OpenSandbox prepares a remote case world and proxies file or command tools there while the default skill-test agent loop stays on the host runtime; sandbox-side startRun remains available only as a compatibility path'
+    : 'OpenSandbox prepares a remote case world and proxies file or command tools there while the agent loop continues on the host runtime';
 
   return {
     driverName: DEFAULT_DRIVER_NAME,
     driverVersion: normalizedOptions.driverVersion,
     sandboxId: resolveSandboxId(sandbox),
+    toolAdapter: createSandboxToolAdapter({
+      sandbox,
+      layout,
+      factoryInput,
+    }),
     execution: {
-      runtime: executionSupport.startRunAvailable ? 'sandbox' : 'host',
-      preparedOnly: !executionSupport.startRunAvailable,
-      adapterStartRun: executionSupport.startRunAvailable,
+      runtime: 'host',
+      loopRuntime: 'host',
+      toolRuntime: 'sandbox',
+      pathSemantics: 'sandbox',
+      preparedOnly: false,
       reason: executionReason,
     },
     egress: {
@@ -1801,11 +1935,16 @@ async function createOpenSandboxAdapter(factoryInput = {}, options = {}) {
       CAFF_SKILL_TEST_REMOTE_PROJECT_DIR: layout.remoteProjectDir,
       CAFF_SKILL_TEST_REMOTE_OUTPUT_DIR: layout.remoteOutputDir,
       CAFF_SKILL_TEST_REMOTE_SQLITE_PATH: layout.remoteSqlitePath,
-      ...(executionSupport.startRunAvailable ? {
-        CAFF_SKILL_TEST_REMOTE_RUNNER_PATH: layout.remoteRunnerPath,
-        CAFF_SKILL_TEST_REMOTE_PI_CLI_PATH: layout.remotePiCliPath,
-        CAFF_SKILL_TEST_REMOTE_CHAT_TOOLS_PATH: layout.remoteAgentChatToolsPath,
-      } : {}),
+      CAFF_CHAT_TOOLS_PATH: layout.remoteAgentChatToolsPath,
+      CAFF_CHAT_TOOLS_RELATIVE_PATH: formatRelativeToolPath(layout.remoteProjectDir, layout.remoteAgentChatToolsPath),
+      CAFF_SKILL_TEST_VISIBLE_ROOT: layout.remoteRoot,
+      CAFF_SKILL_TEST_VISIBLE_AGENT_DIR: layout.remoteAgentDir,
+      CAFF_SKILL_TEST_VISIBLE_PROJECT_DIR: layout.remoteProjectDir,
+      CAFF_SKILL_TEST_VISIBLE_OUTPUT_DIR: layout.remoteOutputDir,
+      CAFF_SKILL_TEST_VISIBLE_SANDBOX_DIR: layout.remoteSandboxDir,
+      CAFF_SKILL_TEST_VISIBLE_PRIVATE_DIR: layout.remotePrivateDir,
+      CAFF_SKILL_TEST_VISIBLE_SQLITE_PATH: layout.remoteSqlitePath,
+      ...(layout.remoteSkillPath ? { CAFF_SKILL_TEST_VISIBLE_SKILL_PATH: joinRemotePath(layout.remoteSkillPath, 'SKILL.md') } : {}),
     },
     resources: {
       remoteRoot: layout.remoteRoot,

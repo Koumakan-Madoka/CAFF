@@ -916,31 +916,54 @@ function normalizeSkillTestIsolationOptions(input = {}, options = {}) {
   };
 }
 
+function normalizeExecutionPlane(value, fallback = 'host') {
+  const normalized = String(value || fallback || 'host').trim().toLowerCase() || 'host';
+  return normalized === 'sandbox' ? 'sandbox' : 'host';
+}
+
+function normalizeExecutionPathSemantics(value, fallback = 'host') {
+  const normalized = String(value || fallback || 'host').trim().toLowerCase() || 'host';
+  return normalized === 'sandbox' ? 'sandbox' : 'host';
+}
+
 function normalizeExecutionEvidence(input = {}, fallback = {}) {
   const value = isPlainObject(input) ? input : {};
-  const runtime = String(value.runtime || value.mode || fallback.runtime || 'host').trim().toLowerCase() || 'host';
-  const normalizedRuntime = runtime === 'sandbox' ? 'sandbox' : 'host';
-  const adapterStartRun = normalizeBoolean(
-    value.adapterStartRun,
-    fallback.adapterStartRun !== undefined ? fallback.adapterStartRun : normalizedRuntime === 'sandbox'
+  const loopRuntime = normalizeExecutionPlane(
+    value.loopRuntime || fallback.loopRuntime || value.runtime || value.mode || fallback.runtime || 'host'
+  );
+  const toolRuntime = normalizeExecutionPlane(
+    value.toolRuntime,
+    fallback.toolRuntime !== undefined ? fallback.toolRuntime : (loopRuntime === 'sandbox' ? 'sandbox' : 'host')
+  );
+  const pathSemantics = normalizeExecutionPathSemantics(
+    value.pathSemantics || value.pathView,
+    fallback.pathSemantics !== undefined ? fallback.pathSemantics : (loopRuntime === 'sandbox' ? 'sandbox' : 'host')
+  );
+  const runtime = normalizeExecutionPlane(
+    value.runtime || value.mode,
+    fallback.runtime !== undefined ? fallback.runtime : loopRuntime
   );
   const preparedOnly = normalizeBoolean(
     value.preparedOnly,
-    fallback.preparedOnly !== undefined ? fallback.preparedOnly : normalizedRuntime !== 'sandbox'
+    fallback.preparedOnly !== undefined ? fallback.preparedOnly : false
   );
   const reason = clipText(
     value.reason || fallback.reason || (
-      normalizedRuntime === 'sandbox'
-        ? 'Execution is delegated to the isolation adapter startRun implementation'
-        : 'Isolation prepared case resources, then execution continued on the host runtime'
+      loopRuntime === 'sandbox'
+        ? 'Agent loop and tool execution both run inside the isolation adapter'
+        : toolRuntime === 'sandbox'
+          ? 'Agent loop runs on the host while file and command tools are delegated into the sandbox case world'
+          : 'Isolation prepared case resources, then execution continued on the host runtime'
     ),
     240
   );
 
   return {
-    runtime: normalizedRuntime,
+    runtime,
+    loopRuntime,
+    toolRuntime,
+    pathSemantics,
     preparedOnly,
-    adapterStartRun,
     reason,
   };
 }
@@ -1129,8 +1152,10 @@ function buildLegacyIsolationEvidence(input = {}) {
     },
     execution: {
       runtime: 'host',
+      loopRuntime: 'host',
+      toolRuntime: 'host',
+      pathSemantics: 'host',
       preparedOnly: false,
-      adapterStartRun: false,
       reason: 'Legacy-local mode executes directly on the host runtime',
     },
     egress: {
@@ -1195,6 +1220,14 @@ function createSkillTestIsolationDriver(options = {}) {
 
       if (isolation.mode !== 'isolated') {
         const sandbox = ensureAgentSandbox(String(input.liveAgentDir || '').trim(), agent);
+        const execution = normalizeExecutionEvidence({
+          runtime: 'host',
+          loopRuntime: 'host',
+          toolRuntime: 'host',
+          pathSemantics: 'host',
+          preparedOnly: false,
+          reason: 'Legacy-local mode executes directly on the host runtime',
+        });
         return {
           isolation,
           store: input.liveStore || null,
@@ -1204,8 +1237,8 @@ function createSkillTestIsolationDriver(options = {}) {
           projectDir: String(input.liveProjectDir || '').trim(),
           skill: input.skill || null,
           toolPolicy,
+          execution,
           extraEnv: {},
-          startRun: null,
           async finalize() {
             return buildLegacyIsolationEvidence({
               runId: input.runId,
@@ -1282,13 +1315,16 @@ function createSkillTestIsolationDriver(options = {}) {
       const driverName = String(adapter.driverName || DEFAULT_DRIVER_NAME).trim() || DEFAULT_DRIVER_NAME;
       const driverVersion = String(adapter.driverVersion || '').trim();
       const sandboxId = String(adapter.sandboxId || `opensandbox-${nodeCrypto.randomUUID()}`).trim();
+      const hasSandboxToolAdapter = adapter && typeof adapter.toolAdapter === 'object';
       const execution = normalizeExecutionEvidence(adapter.execution, {
-        runtime: typeof adapter.startRun === 'function' ? 'sandbox' : 'host',
-        preparedOnly: typeof adapter.startRun !== 'function',
-        adapterStartRun: typeof adapter.startRun === 'function',
-        reason: typeof adapter.startRun === 'function'
-          ? 'Execution is delegated to the isolation adapter startRun implementation'
-          : 'Isolation adapter prepared case resources, then controller fell back to the host startRun implementation',
+        runtime: 'host',
+        loopRuntime: 'host',
+        toolRuntime: hasSandboxToolAdapter ? 'sandbox' : 'host',
+        pathSemantics: hasSandboxToolAdapter ? 'sandbox' : 'host',
+        preparedOnly: false,
+        reason: hasSandboxToolAdapter
+          ? 'Agent loop runs on the host while sandbox file and command tools proxy into the case world with sandbox-visible path semantics'
+          : 'Isolation adapter prepared case resources, then controller continued on the host runtime',
       });
       const egress = normalizeEgressEvidence(adapter.egress, {
         mode: isolation.egressMode,
@@ -1306,6 +1342,7 @@ function createSkillTestIsolationDriver(options = {}) {
         outputDir: caseOutputsDir,
         skill: isolatedSkill,
         toolPolicy,
+        execution,
         extraEnv: {
           PI_AGENT_SANDBOX_DIR: sandbox.sandboxDir,
           PI_AGENT_PRIVATE_DIR: sandbox.privateDir,
@@ -1317,9 +1354,15 @@ function createSkillTestIsolationDriver(options = {}) {
           CAFF_SKILL_TEST_TRELLIS_MODE: isolation.trellisMode,
           CAFF_SKILL_TEST_EGRESS_MODE: isolation.egressMode,
           ...(isolatedSkill && isolatedSkill.path ? { CAFF_SKILL_TEST_SKILL_PATH: normalizePathForJson(path.join(isolatedSkill.path, 'SKILL.md')) } : {}),
+          ...(hasSandboxToolAdapter ? {
+            CAFF_SKILL_TEST_VISIBLE_PROJECT_DIR: normalizePathForJson(caseProjectDir),
+            CAFF_SKILL_TEST_VISIBLE_SANDBOX_DIR: normalizePathForJson(sandbox.sandboxDir),
+            CAFF_SKILL_TEST_VISIBLE_PRIVATE_DIR: normalizePathForJson(sandbox.privateDir),
+            ...(isolatedSkill && isolatedSkill.path ? { CAFF_SKILL_TEST_VISIBLE_SKILL_PATH: normalizePathForJson(path.join(isolatedSkill.path, 'SKILL.md')) } : {}),
+          } : {}),
           ...(isPlainObject(adapter.extraEnv) ? adapter.extraEnv : {}),
         },
-        startRun: typeof adapter.startRun === 'function' ? adapter.startRun : null,
+        sandboxToolAdapter: adapter && typeof adapter.toolAdapter === 'object' ? adapter.toolAdapter : null,
         async finalize() {
           const finishedAt = nowIso();
           const pollutionAfter = capturePollutionTargets(pollutionTargets, { finishedAt });
@@ -1352,8 +1395,11 @@ function createSkillTestIsolationDriver(options = {}) {
           if (!pollutionCheck.ok) {
             unsafeReasons.push('pollution_check_failed');
           }
-          if (isolation.publishGate && execution.runtime !== 'sandbox') {
-            unsafeReasons.push('execution_not_sandboxed');
+          if (isolation.publishGate && execution.toolRuntime !== 'sandbox') {
+            unsafeReasons.push('tool_runtime_not_sandboxed');
+          }
+          if (isolation.publishGate && execution.pathSemantics !== 'sandbox') {
+            unsafeReasons.push('path_semantics_not_sandboxed');
           }
           if (isolation.publishGate && isolation.egressMode === 'deny' && egress.enforced !== true) {
             unsafeReasons.push('egress_not_enforced');
@@ -1433,12 +1479,21 @@ function buildSkillTestIsolationIssues(isolationEvidence) {
     });
   }
 
-  if (isolationEvidence.mode === 'isolated' && isolationEvidence.execution && isolationEvidence.execution.runtime !== 'sandbox') {
+  if (isolationEvidence.mode === 'isolated' && isolationEvidence.execution && isolationEvidence.execution.toolRuntime !== 'sandbox') {
     issues.push({
-      code: 'skill_test_execution_not_sandboxed',
+      code: 'skill_test_tools_not_sandboxed',
       severity: isolationEvidence.publishGate ? 'error' : 'warning',
-      path: 'isolation.execution',
-      message: clipText(isolationEvidence.execution.reason || 'Run executed on the host runtime instead of inside the isolation backend', 240),
+      path: 'isolation.execution.toolRuntime',
+      message: 'Run kept file or command tool execution on the host instead of delegating it into the sandbox case world',
+    });
+  }
+
+  if (isolationEvidence.mode === 'isolated' && isolationEvidence.execution && isolationEvidence.execution.pathSemantics !== 'sandbox') {
+    issues.push({
+      code: 'skill_test_path_semantics_not_sandboxed',
+      severity: isolationEvidence.publishGate ? 'error' : 'warning',
+      path: 'isolation.execution.pathSemantics',
+      message: 'Run still exposed host-visible cwd or path semantics instead of a sandbox path view',
     });
   }
 
@@ -1478,6 +1533,21 @@ function getSkillTestIsolationFailureMessage(isolationEvidence) {
   }
 
   const unsafeReasons = Array.isArray(isolationEvidence.unsafeReasons) ? isolationEvidence.unsafeReasons : [];
+
+  const toolsNotSandboxed = unsafeReasons.includes('tool_runtime_not_sandboxed');
+  const pathSemanticsNotSandboxed = unsafeReasons.includes('path_semantics_not_sandboxed');
+
+  if (toolsNotSandboxed && pathSemanticsNotSandboxed) {
+    return 'Skill test publish-gate requires sandbox-routed tools and sandbox path semantics, but the current run still exposed host execution semantics';
+  }
+
+  if (toolsNotSandboxed) {
+    return 'Skill test publish-gate requires sandbox-routed file and command tools, but the current run kept tool execution on the host';
+  }
+
+  if (pathSemanticsNotSandboxed) {
+    return 'Skill test publish-gate requires sandbox path semantics, but the current run still exposed host cwd or file paths';
+  }
 
   if (unsafeReasons.includes('execution_not_sandboxed')) {
     return 'Skill test publish-gate requires sandbox execution, but the run executed on the host runtime';

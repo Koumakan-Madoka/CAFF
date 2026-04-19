@@ -810,6 +810,20 @@ test('live tool step helpers keep stable ids and redact sensitive payloads', () 
       index: 2,
     }
   );
+  const sandboxVisibleStep = createLiveSessionToolStep(
+    {
+      name: 'read',
+      arguments: {
+        path: '/remote-root/run-1/case-1/project/.trellis/spec/frontend/index.md',
+      },
+    },
+    {
+      agentDir: tempDir,
+      createdAt: '2026-04-10T00:00:00.900Z',
+      index: 3,
+      visiblePathRoots: ['/remote-root/run-1/case-1'],
+    }
+  );
   const bridgeStep = createLiveBridgeToolStep(
     {
       toolCallId: 'bridge-tool-live-1',
@@ -835,6 +849,10 @@ test('live tool step helpers keep stable ids and redact sensitive payloads', () 
   assert.equal(nextAnonymousSessionStep.stepId, 'session-3');
   assert.equal(bridgeStep.stepId, 'bridge-tool-live-1');
   assert.equal(bridgeStep.status, 'failed');
+  assert.equal(
+    JSON.stringify(sandboxVisibleStep.requestSummary).includes('/remote-root/run-1/case-1/project/.trellis/spec/frontend/index.md'),
+    true
+  );
   assert.equal(JSON.stringify(sessionStep.requestSummary).includes(projectDir), false);
   assert.equal(JSON.stringify(sessionStep.partialJson).includes(projectDir), false);
   assert.equal(JSON.stringify(sessionStep.partialJson).includes('sk-live-secret'), false);

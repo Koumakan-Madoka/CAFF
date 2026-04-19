@@ -75,6 +75,36 @@ export function createAgentToolsController(options: any = {}): RouteHandler<ApiC
       return true;
     }
 
+    if (pathname === '/api/agent-tools/sandbox/access' && req.method === 'POST') {
+      const body = await readRequestJson(req);
+      sendJson(res, 200, await agentToolBridge.handleSandboxAccess(body));
+      return true;
+    }
+
+    if (pathname === '/api/agent-tools/sandbox/read' && req.method === 'POST') {
+      const body = await readRequestJson(req);
+      sendJson(res, 200, await agentToolBridge.handleSandboxRead(body));
+      return true;
+    }
+
+    if (pathname === '/api/agent-tools/sandbox/write' && req.method === 'POST') {
+      const body = await readRequestJson(req);
+      sendJson(res, 200, await agentToolBridge.handleSandboxWrite(body));
+      return true;
+    }
+
+    if (pathname === '/api/agent-tools/sandbox/mkdir' && req.method === 'POST') {
+      const body = await readRequestJson(req);
+      sendJson(res, 200, await agentToolBridge.handleSandboxMkdir(body));
+      return true;
+    }
+
+    if (pathname === '/api/agent-tools/sandbox/bash' && req.method === 'POST') {
+      const body = await readRequestJson(req);
+      sendJson(res, 200, await agentToolBridge.handleSandboxBash(body));
+      return true;
+    }
+
     return false;
   };
 }
