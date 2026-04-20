@@ -1,0 +1,1 @@
+{"at":"2026-04-20T22:25:00+08:00","file":".trellis/spec/skills/skill-testing.md","reason":"Documented the optional environment readiness chain, TESTING.md fallback, cache manifest/result contract, and sandbox-only environment command execution for skill-test."}

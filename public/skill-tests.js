@@ -55,9 +55,11 @@
     detailToolsJson: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('st-detail-tools-json')),
     detailSequenceJson: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('st-detail-sequence-json')),
     detailRubricJson: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('st-detail-rubric-json')),
+    detailEnvironmentJson: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('st-detail-environment-json')),
     detailNote: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('st-detail-note')),
     detailExpectedBehavior: /** @type {HTMLElement | null} */ (document.getElementById('st-detail-expected-behavior')),
     detailExpectedTools: /** @type {HTMLElement | null} */ (document.getElementById('st-detail-expected-tools')),
+    detailEnvironmentSummary: /** @type {HTMLElement | null} */ (document.getElementById('st-detail-environment-summary')),
     detailValidity: /** @type {HTMLElement | null} */ (document.getElementById('st-detail-validity')),
     detailValidityHelp: /** @type {HTMLElement | null} */ (document.getElementById('st-detail-validity-help')),
     detailStatusCallout: /** @type {HTMLElement | null} */ (document.getElementById('st-detail-status-callout')),
@@ -87,6 +89,7 @@
     createSteps: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('st-create-steps')),
     createSequence: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('st-create-sequence')),
     createRubric: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('st-create-rubric')),
+    createEnvironmentJson: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('st-create-environment-json')),
     createBehavior: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('st-create-behavior')),
     createNote: /** @type {HTMLInputElement | null} */ (document.getElementById('st-create-note')),
     createIssues: /** @type {HTMLElement | null} */ (document.getElementById('st-create-issues')),
@@ -914,6 +917,239 @@
     return { label: `AI Judge ${normalized}`, className: 'tag' };
   }
 
+  function isEnvironmentConfigEnabled(config) {
+    return Boolean(config && typeof config === 'object' && config.enabled === true);
+  }
+
+  function getEnvironmentStatusMeta(status) {
+    const normalized = String(status || '').trim().toLowerCase();
+    if (!normalized) {
+      return null;
+    }
+    if (normalized === 'passed') {
+      return { label: '环境通过', className: 'tag-success' };
+    }
+    if (normalized === 'skipped') {
+      return { label: '环境跳过', className: 'tag-pending' };
+    }
+    if (normalized === 'runtime_unsupported') {
+      return { label: '运行时不支持', className: 'tag-error' };
+    }
+    if (normalized === 'env_missing') {
+      return { label: '环境缺失', className: 'tag-error' };
+    }
+    if (normalized === 'env_install_failed') {
+      return { label: '安装失败', className: 'tag-error' };
+    }
+    if (normalized === 'env_verify_failed') {
+      return { label: '验证失败', className: 'tag-error' };
+    }
+    return { label: `环境 ${normalized}`, className: 'tag' };
+  }
+
+  function getEnvironmentCacheStatusMeta(status) {
+    const normalized = String(status || '').trim().toLowerCase();
+    if (!normalized) {
+      return null;
+    }
+    if (normalized === 'restored') {
+      return { label: 'Cache 已恢复', className: 'tag-success' };
+    }
+    if (normalized === 'saved') {
+      return { label: 'Cache 已保存', className: 'tag-success' };
+    }
+    if (normalized === 'miss') {
+      return { label: 'Cache Miss', className: 'tag-pending' };
+    }
+    if (normalized === 'restore_failed') {
+      return { label: 'Cache 恢复失败', className: 'tag-error' };
+    }
+    if (normalized === 'save_failed') {
+      return { label: 'Cache 保存失败', className: 'tag-error' };
+    }
+    if (normalized === 'disabled') {
+      return { label: 'Cache 关闭', className: 'tag' };
+    }
+    return { label: `Cache ${normalized}`, className: 'tag' };
+  }
+
+  function formatEnvironmentRequirementLabel(entry) {
+    if (!entry || typeof entry !== 'object') {
+      return '';
+    }
+    const name = String(entry.name || '').trim() || 'unknown';
+    const kind = String(entry.kind || '').trim();
+    const versionHint = String(entry.versionHint || '').trim();
+    return [kind ? `[${kind}]` : '', name, versionHint ? `(${versionHint})` : ''].filter(Boolean).join(' ');
+  }
+
+  function getEnvironmentRunOutcomeSummary(run) {
+    if (!run || !run.evaluation || typeof run.evaluation !== 'object' || !run.evaluation.environment || typeof run.evaluation.environment !== 'object') {
+      return '';
+    }
+    const environment = run.evaluation.environment;
+    const meta = getEnvironmentStatusMeta(environment.status || run.environmentStatus || '');
+    if (!meta) {
+      return '';
+    }
+    const reason = clipText(String(environment.reason || run.errorMessage || '').trim(), 96);
+    return reason ? `${meta.label}：${reason}` : meta.label;
+  }
+
+  function formatEnvironmentConfigSummary(config, latestRun = null) {
+    if (!isEnvironmentConfigEnabled(config)) {
+      return '未配置环境链；默认直接运行 skill。';
+    }
+    const requirements = Array.isArray(config.requirements) ? config.requirements : [];
+    const bootstrapCommands = Array.isArray(config.bootstrap && config.bootstrap.commands) ? config.bootstrap.commands : [];
+    const verifyCommands = Array.isArray(config.verify && config.verify.commands) ? config.verify.commands : [];
+    const docsTarget = config.docs && config.docs.target ? String(config.docs.target).trim() : 'TESTING.md';
+    const cachePaths = Array.isArray(config.cache && config.cache.paths) ? config.cache.paths : [];
+    const cacheEnabled = Boolean(config.cache && typeof config.cache === 'object' && config.cache.enabled === true);
+    const parts = [
+      '已启用环境链',
+      requirements.length > 0 ? `${requirements.length} 项依赖` : '无显式依赖',
+      bootstrapCommands.length > 0 ? `${bootstrapCommands.length} 条 bootstrap` : '无 bootstrap',
+      verifyCommands.length > 0 ? `${verifyCommands.length} 条 verify` : '无 verify',
+      cacheEnabled ? (cachePaths.length > 0 ? `${cachePaths.length} 条 cache 路径` : '未声明 cache 路径') : 'cache 未启用',
+      `建议文档 ${docsTarget || 'TESTING.md'}`,
+    ];
+    const latestSummary = getEnvironmentRunOutcomeSummary(latestRun);
+    return latestSummary ? `${parts.join('；')}。最近一次：${latestSummary}` : `${parts.join('；')}。`;
+  }
+
+  function getEnvironmentConfigSearchText(config) {
+    if (!isEnvironmentConfigEnabled(config)) {
+      return '';
+    }
+    const requirements = Array.isArray(config.requirements) ? config.requirements.map((entry) => formatEnvironmentRequirementLabel(entry)) : [];
+    const bootstrapCommands = Array.isArray(config.bootstrap && config.bootstrap.commands) ? config.bootstrap.commands : [];
+    const verifyCommands = Array.isArray(config.verify && config.verify.commands) ? config.verify.commands : [];
+    const docsTarget = config.docs && config.docs.target ? String(config.docs.target).trim() : '';
+    const cachePaths = Array.isArray(config.cache && config.cache.paths)
+      ? config.cache.paths.map((entry) => `${entry && entry.root ? String(entry.root).trim() : ''}:${entry && entry.path ? String(entry.path).trim() : ''}`)
+      : [];
+    return ['environment', 'bootstrap', 'verify', 'cache', docsTarget, ...requirements, ...bootstrapCommands, ...verifyCommands, ...cachePaths].filter(Boolean).join(' ');
+  }
+
+  function buildEnvironmentRequirementListHtml(title, entries) {
+    const normalized = Array.isArray(entries) ? entries.filter(Boolean) : [];
+    if (normalized.length === 0) {
+      return `<div class="agent-meta">${escapeHtml(title)}：无</div>`;
+    }
+    const items = normalized.map((entry) => {
+      const label = formatEnvironmentRequirementLabel(entry);
+      const reason = String(entry && entry.reason || '').trim();
+      return `<li>${escapeHtml(label || 'unknown')}${reason ? `：${escapeHtml(reason)}` : ''}</li>`;
+    }).join('');
+    return `<div class="run-detail-subsection"><div class="agent-meta">${escapeHtml(title)}</div><ul class="run-detail-list">${items}</ul></div>`;
+  }
+
+  function buildEnvironmentCommandSectionHtml(title, payload) {
+    const commands = Array.isArray(payload && payload.commands) ? payload.commands : [];
+    const results = Array.isArray(payload && payload.results) ? payload.results : [];
+    const attempted = Boolean(payload && payload.attempted);
+    let html = '<div class="run-detail-subsection">';
+    html += `<div class="agent-meta">${escapeHtml(title)}${attempted ? '' : '（未执行）'}</div>`;
+    if (commands.length === 0) {
+      html += '<div class="agent-meta">无命令</div>';
+      html += '</div>';
+      return html;
+    }
+    commands.forEach((command, index) => {
+      const result = results[index] && typeof results[index] === 'object' ? results[index] : null;
+      const exitCode = result && result.exitCode != null ? Number(result.exitCode) : null;
+      const statusTag = exitCode == null
+        ? '<span class="tag tag-pending">未执行</span>'
+        : exitCode === 0
+          ? '<span class="tag tag-success">成功</span>'
+          : `<span class="tag tag-error">失败 (${escapeHtml(String(exitCode))})</span>`;
+      html += '<div class="run-detail-card">';
+      html += `<div class="run-detail-tag-row">${statusTag} <span class="tag">${escapeHtml(title)}</span></div>`;
+      html += `<pre class="run-detail-pre">${escapeHtml(String(command || ''))}</pre>`;
+      if (result && String(result.stdout || '').trim()) {
+        html += `<div class="agent-meta">stdout</div><pre class="run-detail-pre">${escapeHtml(String(result.stdout || ''))}</pre>`;
+      }
+      if (result && String(result.stderr || '').trim()) {
+        html += `<div class="agent-meta">stderr</div><pre class="run-detail-pre">${escapeHtml(String(result.stderr || ''))}</pre>`;
+      }
+      html += '</div>';
+    });
+    html += '</div>';
+    return html;
+  }
+
+  function buildEnvironmentCacheDetailsHtml(payload) {
+    if (!payload || typeof payload !== 'object') {
+      return '';
+    }
+    const cacheStatusMeta = getEnvironmentCacheStatusMeta(payload.status);
+    const cachePaths = Array.isArray(payload.paths) ? payload.paths.filter(Boolean) : [];
+    const key = String(payload.key || '').trim();
+    const reason = String(payload.reason || '').trim();
+    const manifestPath = String(payload.manifestPath || '').trim();
+    const summaryPath = String(payload.summaryPath || '').trim();
+    const artifactBytes = Number.isFinite(payload.artifactBytes) ? Number(payload.artifactBytes) : null;
+    const artifactSha256 = String(payload.artifactSha256 || '').trim();
+    const restoredFiles = Number.isFinite(payload.restoredFiles) ? Number(payload.restoredFiles) : 0;
+    const restoredDirectories = Number.isFinite(payload.restoredDirectories) ? Number(payload.restoredDirectories) : 0;
+    const restoredSymlinks = Number.isFinite(payload.restoredSymlinks) ? Number(payload.restoredSymlinks) : 0;
+    const ignoredEntries = Number.isFinite(payload.ignoredEntries) ? Number(payload.ignoredEntries) : 0;
+    const createdAt = String(payload.createdAt || '').trim();
+    const savedAt = String(payload.savedAt || '').trim();
+    const expiresAt = String(payload.expiresAt || '').trim();
+    const lastValidatedAt = String(payload.lastValidatedAt || '').trim();
+
+    if (!cacheStatusMeta && !key && cachePaths.length === 0 && !reason && !manifestPath && !summaryPath) {
+      return '';
+    }
+
+    let html = '<div class="run-detail-subsection">';
+    html += '<div class="agent-meta">Environment Cache</div>';
+    if (cacheStatusMeta) {
+      html += `<div class="run-detail-tag-row"><span class="tag ${cacheStatusMeta.className}">${escapeHtml(cacheStatusMeta.label)}</span>`;
+      if (artifactBytes != null) {
+        html += ` <span class="tag">${escapeHtml(String(artifactBytes))} bytes</span>`;
+      }
+      html += '</div>';
+    }
+    if (reason) {
+      html += `<div class="agent-meta">${escapeHtml(reason)}</div>`;
+    }
+    if (key) {
+      html += `<div class="agent-meta">cacheKey：${escapeHtml(key)}</div>`;
+    }
+    if (manifestPath) {
+      html += `<div class="agent-meta">manifest：${escapeHtml(manifestPath)}</div>`;
+    }
+    if (summaryPath) {
+      html += `<div class="agent-meta">summary：${escapeHtml(summaryPath)}</div>`;
+    }
+    if (artifactSha256) {
+      html += `<div class="agent-meta">sha256：${escapeHtml(artifactSha256)}</div>`;
+    }
+    if (createdAt) {
+      html += `<div class="agent-meta">创建：${escapeHtml(createdAt)}</div>`;
+    }
+    if (savedAt) {
+      html += `<div class="agent-meta">最近保存：${escapeHtml(savedAt)}</div>`;
+    }
+    if (lastValidatedAt) {
+      html += `<div class="agent-meta">最近验证：${escapeHtml(lastValidatedAt)}</div>`;
+    }
+    if (expiresAt) {
+      html += `<div class="agent-meta">过期时间：${escapeHtml(expiresAt)}</div>`;
+    }
+    if (cachePaths.length > 0) {
+      html += `<div class="agent-meta">路径：${escapeHtml(cachePaths.map((entry) => `${entry.root || '?'}:${entry.path || '?'}`).join(', '))}</div>`;
+    }
+    if (restoredFiles || restoredDirectories || restoredSymlinks || ignoredEntries) {
+      html += `<div class="agent-meta">恢复文件 ${escapeHtml(String(restoredFiles))}，目录 ${escapeHtml(String(restoredDirectories))}，软链 ${escapeHtml(String(restoredSymlinks))}，忽略 ${escapeHtml(String(ignoredEntries))}</div>`;
+    }
+    html += '</div>';
+    return html;
+  }
+
   function buildRunDetailReasonListHtml(title, reasons, formatter = null) {
     const normalized = normalizeRunDetailStringList(reasons);
     if (normalized.length === 0) {
@@ -1120,6 +1356,10 @@
     if (run.errorMessage) {
       return { label: '运行失败', className: 'tag-error' };
     }
+    const environmentMeta = getEnvironmentStatusMeta(run.environmentStatus);
+    if (environmentMeta && String(run.environmentStatus || '').trim().toLowerCase() !== 'passed' && String(run.environmentStatus || '').trim().toLowerCase() !== 'skipped') {
+      return environmentMeta;
+    }
     if (isFailedFlag(run.triggerPassed)) {
       return { label: '触发失败', className: 'tag-error' };
     }
@@ -1132,6 +1372,9 @@
     }
     if (executionState === 'pass') {
       return { label: '最近通过', className: 'tag-success' };
+    }
+    if (environmentMeta && String(run.environmentStatus || '').trim().toLowerCase() === 'passed') {
+      return environmentMeta;
     }
     if (isPassedFlag(run.triggerPassed)) {
       return { label: '已触发', className: 'tag-success' };
@@ -1185,6 +1428,14 @@
         tone: 'error',
         label: '先看失败原因',
         message: '最近一次运行直接报错；先打开运行详情看错误和校验提示，再决定是否重试。',
+      };
+    }
+
+    if (latestRun && latestRun.environmentStatus && !['passed', 'skipped'].includes(String(latestRun.environmentStatus).trim().toLowerCase())) {
+      return {
+        tone: 'error',
+        label: '先看环境链',
+        message: '最近一次卡在 preflight / bootstrap / verify；先看运行详情里的环境状态、命令结果和 TESTING.md 建议 patch。',
       };
     }
 
@@ -2013,6 +2264,7 @@
         tc.expectedGoal,
         getExpectedStepsSearchText(tc.expectedSteps),
         getExpectedToolsSearchText(tc.expectedTools),
+        getEnvironmentConfigSearchText(tc.environmentConfig),
         tc.caseStatus,
         tc.loadingMode,
       ].some((value) => String(value || '').toLowerCase().includes(state.searchQuery));
@@ -2118,6 +2370,8 @@
       const schemaStatusMeta = getCaseSchemaStatusMeta(caseValidation.caseSchemaStatus);
       const loadingModeLabel = getLoadingModeLabel(tc.loadingMode);
       const expectedToolsText = formatExpectedTools(tc.expectedTools);
+      const environmentEnabled = isEnvironmentConfigEnabled(tc.environmentConfig);
+      const environmentSummary = environmentEnabled ? clipText(formatEnvironmentConfigSummary(tc.environmentConfig, tc.latestRun), 120) : '';
       const lastOutcome = getLastOutcomeSummary(tc.latestRun);
       const goalSummary = clipText(tc.expectedGoal || tc.expectedBehavior || tc.note || '生成后先进入 draft，等待你修改。', 90);
       const latestSummary = clipText(lastOutcome, 96);
@@ -2153,6 +2407,7 @@
             <span class="tag ${validityMeta.className}">${validityMeta.label}</span>
             <span class="tag ${readinessMeta.className}">${escapeHtml(readinessMeta.label)}</span>
             ${latestRunMeta ? `<span class="tag ${latestRunMeta.className}">${escapeHtml(latestRunMeta.label)}</span>` : ''}
+            ${environmentEnabled ? '<span class="tag">环境链</span>' : ''}
             ${schemaTag}
           </div>
         </div>
@@ -2160,6 +2415,7 @@
         <div class="skill-test-case-card-meta">${escapeHtml(recentRunLabel)}</div>
         <div class="skill-test-case-card-meta">${escapeHtml(goalSummary)}</div>
         <div class="skill-test-case-card-meta">${escapeHtml(clipText(expectedToolsText, 120))}</div>
+        ${environmentSummary ? `<div class="skill-test-case-card-meta">${escapeHtml(environmentSummary)}</div>` : ''}
         ${validationSummary ? `<div class="skill-test-case-card-meta">${escapeHtml(validationSummary)}</div>` : ''}
         <div class="skill-test-case-card-meta">${escapeHtml(latestSummary)}</div>
         ${calloutHtml}
@@ -2238,6 +2494,7 @@
         <span class="tag">${escapeHtml(getLoadingModeLabel(tc.loadingMode))}</span>
         <span class="tag ${readinessMeta.className}">${escapeHtml(readinessMeta.label)}</span>
         ${latestRunMeta ? `<span class="tag ${latestRunMeta.className}">${escapeHtml(latestRunMeta.label)}</span>` : ''}
+        ${isEnvironmentConfigEnabled(tc.environmentConfig) ? '<span class="tag">环境链</span>' : ''}
         ${schemaStatusMeta && caseValidation.caseSchemaStatus === 'warning' ? `<span class="tag ${schemaStatusMeta.className}">${escapeHtml(schemaStatusMeta.label)}</span>` : ''}
         ${caseValidation.derivedFromLegacy === true ? '<span class="tag tag-pending">Legacy 映射</span>' : ''}
         ${tc.note ? `<span class="tag">${escapeHtml(clipText(tc.note, 36))}</span>` : ''}
@@ -2253,6 +2510,7 @@
     if (dom.detailToolsJson) dom.detailToolsJson.value = stringifyJsonPretty(tc.expectedTools || []);
     if (dom.detailSequenceJson) dom.detailSequenceJson.value = stringifyJsonPretty(tc.expectedSequence || []);
     if (dom.detailRubricJson) dom.detailRubricJson.value = stringifyJsonPretty(tc.evaluationRubric || {});
+    if (dom.detailEnvironmentJson) dom.detailEnvironmentJson.value = tc.environmentConfig ? stringifyJsonPretty(tc.environmentConfig) : '';
     if (dom.detailNote) {
       dom.detailNote.value = tc.note || '';
     }
@@ -2261,6 +2519,9 @@
     }
     if (dom.detailExpectedTools) {
       dom.detailExpectedTools.textContent = formatExpectedTools(tc.expectedTools);
+    }
+    if (dom.detailEnvironmentSummary) {
+      dom.detailEnvironmentSummary.textContent = formatEnvironmentConfigSummary(tc.environmentConfig, tc.latestRun);
     }
     if (dom.detailValidity) {
       const validityMeta = getCaseStatusMeta(tc.caseStatus);
@@ -2297,6 +2558,9 @@
     if (dom.detailLastOutcome) {
       dom.detailLastOutcome.textContent = '先运行一条再看最近结果摘要。';
     }
+    if (dom.detailEnvironmentSummary) {
+      dom.detailEnvironmentSummary.textContent = '未配置环境链；默认直接运行 skill。';
+    }
     if (dom.detailRegression) {
       dom.detailRegression.innerHTML = '<p class="section-hint">先运行几次，再看不同模型或 prompt version 的表现差异。</p>';
     }
@@ -2311,6 +2575,9 @@
     renderIssuePanel(dom.detailIssues, []);
     if (dom.detailRunButton) {
       dom.detailRunButton.textContent = '运行测试';
+    }
+    if (dom.detailEnvironmentJson) {
+      dom.detailEnvironmentJson.value = '';
     }
     if (dom.detailToggleStatusButton) {
       dom.detailToggleStatusButton.textContent = '标记 Ready';
@@ -2373,6 +2640,9 @@
     const evaluationRubricText = dom.detailRubricJson ? dom.detailRubricJson.value.trim() : '';
     const evaluationRubric = parseStructuredObject(evaluationRubricText);
 
+    const environmentConfigText = dom.detailEnvironmentJson ? dom.detailEnvironmentJson.value.trim() : '';
+    const environmentConfig = parseStructuredObject(environmentConfigText);
+
     const localIssues = mergeIssues(
       expectedStepsText && !expectedSteps
         ? [buildLocalValidationIssue('expected_steps_required', 'expectedSteps', 'Expected Steps JSON 需要是数组')]
@@ -2385,6 +2655,9 @@
         : [],
       evaluationRubricText && !evaluationRubric
         ? [buildLocalValidationIssue('evaluation_rubric_invalid', 'evaluationRubric', '评估 Rubric JSON 需要是对象')]
+        : [],
+      environmentConfigText && !environmentConfig
+        ? [buildLocalValidationIssue('environment_config_invalid', 'environmentConfig', 'Environment Config JSON 需要是对象')]
         : []
     );
 
@@ -2401,6 +2674,7 @@
       expectedTools: expectedTools || [],
       expectedSequence: expectedSequence || [],
       evaluationRubric: evaluationRubric || {},
+      environmentConfig: environmentConfig || {},
       note: dom.detailNote ? dom.detailNote.value.trim() : selectedCase.note,
       loadingMode: selectedCase.loadingMode,
       caseStatus: selectedCase.caseStatus,
@@ -2560,6 +2834,10 @@
 
       const accuracy =
         run.toolAccuracy != null ? `<span class="tag">工具命中 ${(run.toolAccuracy * 100).toFixed(0)}%</span>` : '';
+      const environmentTagMeta = getEnvironmentStatusMeta(run.environmentStatus);
+      const environmentTag = environmentTagMeta
+        ? `<span class="tag ${environmentTagMeta.className}">${escapeHtml(environmentTagMeta.label)}</span>`
+        : '';
 
       const tools =
         Array.isArray(run.actualTools) && run.actualTools.length > 0
@@ -2611,7 +2889,7 @@
 
       row.innerHTML = `
         <div class="run-item-header">
-          ${triggerTag} ${execTag} ${accuracy}
+          ${triggerTag} ${execTag} ${environmentTag} ${accuracy}
           <span class="agent-meta">${run.createdAt ? new Date(run.createdAt).toLocaleString() : ''}${runModelMeta ? ` · ${escapeHtml(runModelMeta)}` : ''}${runPromptVersion ? escapeHtml(runPromptVersion) : ''}</span>
         </div>
         ${tools}
@@ -2651,9 +2929,22 @@
     const debug = payload.debug || {};
     const result = payload.result || {};
     const run = payload.run && typeof payload.run === 'object' ? payload.run : {};
-    const fullEvaluation = result && result.evaluation && typeof result.evaluation === 'object'
+    const evaluationPayload = result && result.evaluation && typeof result.evaluation === 'object'
       ? result.evaluation
       : (run.evaluation && typeof run.evaluation === 'object' ? run.evaluation : null);
+    const fullEvaluation = evaluationPayload
+      && (
+        typeof evaluationPayload.verdict === 'string'
+        || (evaluationPayload.dimensions && typeof evaluationPayload.dimensions === 'object')
+        || Array.isArray(evaluationPayload.steps)
+        || Array.isArray(evaluationPayload.constraintChecks)
+        || (evaluationPayload.aiJudge && typeof evaluationPayload.aiJudge === 'object')
+      )
+      ? evaluationPayload
+      : null;
+    const environmentEvaluation = evaluationPayload && evaluationPayload.environment && typeof evaluationPayload.environment === 'object'
+      ? evaluationPayload.environment
+      : null;
     const triggerEvaluation = result.triggerEvaluation || null;
     const aiJudge = fullEvaluation && fullEvaluation.aiJudge
       ? fullEvaluation.aiJudge
@@ -2685,6 +2976,77 @@
       if (runValidation.issues.length > 0) {
         const issueToneClass = getIssuePanelToneClass(runValidation.issues);
         html += `<div class="skill-test-issues skill-test-issues-inline${issueToneClass ? ` ${issueToneClass}` : ''}">${buildIssuePanelHtml(runValidation.issues, '运行校验') || ''}</div>`;
+      }
+      html += '</div>';
+    }
+
+    const environmentRequirements = environmentEvaluation && environmentEvaluation.requirements && typeof environmentEvaluation.requirements === 'object'
+      ? environmentEvaluation.requirements
+      : { satisfied: [], missing: [], unsupported: [] };
+    const environmentAdvice = environmentEvaluation && environmentEvaluation.advice && typeof environmentEvaluation.advice === 'object'
+      ? environmentEvaluation.advice
+      : null;
+    const environmentCache = environmentEvaluation && environmentEvaluation.cache && typeof environmentEvaluation.cache === 'object'
+      ? environmentEvaluation.cache
+      : null;
+    const environmentSource = environmentEvaluation && environmentEvaluation.source && typeof environmentEvaluation.source === 'object'
+      ? environmentEvaluation.source
+      : null;
+    const environmentStatus = String(environmentEvaluation && environmentEvaluation.status || run.environmentStatus || '').trim().toLowerCase();
+    const showEnvironmentSection = Boolean(environmentEvaluation) && (
+      (environmentStatus && environmentStatus !== 'skipped')
+      || (Array.isArray(environmentRequirements.satisfied) && environmentRequirements.satisfied.length > 0)
+      || (Array.isArray(environmentRequirements.missing) && environmentRequirements.missing.length > 0)
+      || (Array.isArray(environmentRequirements.unsupported) && environmentRequirements.unsupported.length > 0)
+      || (environmentEvaluation.bootstrap && Array.isArray(environmentEvaluation.bootstrap.commands) && environmentEvaluation.bootstrap.commands.length > 0)
+      || (environmentEvaluation.verify && Array.isArray(environmentEvaluation.verify.commands) && environmentEvaluation.verify.commands.length > 0)
+      || environmentAdvice
+      || environmentCache
+    );
+
+    if (showEnvironmentSection) {
+      const environmentStatusMeta = getEnvironmentStatusMeta(environmentStatus);
+      const environmentPhase = String(environmentEvaluation && environmentEvaluation.phase || run.environmentPhase || '').trim();
+      const environmentReason = String(environmentEvaluation && environmentEvaluation.reason || '').trim();
+      html += '<div class="run-detail-section">';
+      html += '<div class="section-label">环境预检 / 安装链</div>';
+      if (environmentStatusMeta) {
+        html += `<span class="tag ${environmentStatusMeta.className}">${escapeHtml(environmentStatusMeta.label)}</span>`;
+      }
+      if (environmentPhase) {
+        html += ` <span class="tag">${escapeHtml(environmentPhase)}</span>`;
+      }
+      if (environmentAdvice && environmentAdvice.target) {
+        html += ` <span class="tag">${escapeHtml(String(environmentAdvice.target || 'TESTING.md'))}</span>`;
+      }
+      if (environmentSource && environmentSource.testingDocUsed) {
+        html += ' <span class="tag">来自 TESTING.md</span>';
+      }
+      if (environmentReason) {
+        html += `<div class="${environmentStatus && environmentStatus !== 'passed' ? 'run-detail-diag' : 'agent-meta'}">${escapeHtml(environmentReason)}</div>`;
+      }
+      if (environmentSource && environmentSource.testingDocUsed && environmentSource.testingDocPath) {
+        html += `<div class="agent-meta">配置来源：${escapeHtml(String(environmentSource.testingDocPath || 'TESTING.md'))}</div>`;
+      }
+      html += buildEnvironmentCacheDetailsHtml(environmentCache);
+      html += buildEnvironmentRequirementListHtml('已满足依赖', environmentRequirements.satisfied);
+      html += buildEnvironmentRequirementListHtml('缺失依赖', environmentRequirements.missing);
+      html += buildEnvironmentRequirementListHtml('已知限制', environmentRequirements.unsupported);
+      html += buildEnvironmentCommandSectionHtml('Bootstrap', environmentEvaluation.bootstrap);
+      html += buildEnvironmentCommandSectionHtml('Verify', environmentEvaluation.verify);
+      if (environmentAdvice) {
+        html += '<details class="run-detail-collapse">';
+        html += `<summary class="agent-meta">${escapeHtml(String(environmentAdvice.summary || `查看 ${environmentAdvice.target || 'TESTING.md'} 建议 patch`))}</summary>`;
+        if (environmentAdvice.mode) {
+          html += `<div class="agent-meta">模式：${escapeHtml(String(environmentAdvice.mode || 'suggest-patch'))}</div>`;
+        }
+        if (environmentAdvice.target) {
+          html += `<div class="agent-meta">目标文件：${escapeHtml(String(environmentAdvice.target || 'TESTING.md'))}</div>`;
+        }
+        if (environmentAdvice.patch) {
+          html += `<pre class="run-detail-pre">${escapeHtml(String(environmentAdvice.patch || ''))}</pre>`;
+        }
+        html += '</details>';
       }
       html += '</div>';
     }
@@ -3361,6 +3723,8 @@
       const expectedSequence = parseStructuredArray(expectedSequenceText);
       const evaluationRubricText = dom.createRubric ? dom.createRubric.value.trim() : '';
       const evaluationRubric = parseStructuredObject(evaluationRubricText);
+      const environmentConfigText = dom.createEnvironmentJson ? dom.createEnvironmentJson.value.trim() : '';
+      const environmentConfig = parseStructuredObject(environmentConfigText);
 
       const localIssues = mergeIssues(
         structuredToolsText && !structuredTools
@@ -3374,6 +3738,9 @@
           : [],
         evaluationRubricText && !evaluationRubric
           ? [buildLocalValidationIssue('evaluation_rubric_invalid', 'evaluationRubric', '评估 Rubric JSON 需要是对象')]
+          : [],
+        environmentConfigText && !environmentConfig
+          ? [buildLocalValidationIssue('environment_config_invalid', 'environmentConfig', 'Environment Config JSON 需要是对象')]
           : []
       );
       if (localIssues.length > 0) {
@@ -3398,6 +3765,7 @@
           expectedGoal,
           expectedSequence: expectedSequence || [],
           evaluationRubric: evaluationRubric || {},
+          environmentConfig: environmentConfig || {},
           caseStatus: 'draft',
           note: dom.createNote ? dom.createNote.value.trim() : '',
         };
@@ -3427,6 +3795,7 @@
         if (dom.createSteps) dom.createSteps.value = '';
         if (dom.createSequence) dom.createSequence.value = '';
         if (dom.createRubric) dom.createRubric.value = '';
+        if (dom.createEnvironmentJson) dom.createEnvironmentJson.value = '';
         if (dom.createBehavior) dom.createBehavior.value = '';
         if (dom.createNote) dom.createNote.value = '';
         await Promise.all([loadTestCases(), loadSummary()]);
@@ -3730,14 +4099,20 @@
   function getLastOutcomeSummary(run) {
     if (!run) return '还没有运行记录';
     if (run.errorMessage) return `最近失败：${run.errorMessage}`;
+    const environmentSummary = getEnvironmentRunOutcomeSummary(run);
+    const environmentStatus = String(run.environmentStatus || '').trim().toLowerCase();
+    if (environmentSummary && environmentStatus && environmentStatus !== 'passed' && environmentStatus !== 'skipped') {
+      return `最近失败：${environmentSummary}`;
+    }
     if (run.verdict) {
       const summary = run.evaluation && run.evaluation.summary ? `：${run.evaluation.summary}` : '';
-      if (run.verdict === 'pass') return `最近运行：Full 模式通过${summary}`;
-      if (run.verdict === 'borderline') return `最近运行：Full 模式待复核${summary}`;
+      if (run.verdict === 'pass') return `最近运行：Full 模式通过${summary}${environmentSummary && environmentStatus === 'passed' ? `；${environmentSummary}` : ''}`;
+      if (run.verdict === 'borderline') return `最近运行：Full 模式待复核${summary}${environmentSummary && environmentStatus === 'passed' ? `；${environmentSummary}` : ''}`;
       if (run.verdict === 'fail') return `最近失败：Full 模式未达标${summary}`;
     }
     if (isFailedFlag(run.triggerPassed)) return '最近失败：没有成功加载目标 skill';
     if (isFailedFlag(run.executionPassed)) return '最近失败：执行结果未达标';
+    if (environmentSummary && environmentStatus === 'passed') return `最近运行：${environmentSummary}`;
     if (isPassedFlag(run.triggerPassed) && run.executionPassed === null) return '最近运行：Dynamic 模式已成功加载 skill';
     if (isPassedFlag(run.executionPassed)) return '最近运行：执行结果达标';
     return '最近运行：已记录结果';

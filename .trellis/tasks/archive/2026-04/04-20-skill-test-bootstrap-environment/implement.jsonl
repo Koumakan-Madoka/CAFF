@@ -1,0 +1,15 @@
+{"file": ".trellis/workflow.md", "reason": "Project workflow and conventions"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend development guide"}
+{"file": ".trellis/spec/skills/index.md", "reason": "Task touches skill discovery and testing scope"}
+{"file": ".trellis/spec/skills/skill-testing.md", "reason": "Defines skill-test execution, isolation, and evaluation contracts"}
+{"file": ".trellis/spec/skills/skill-system.md", "reason": "Defines skill loading, SKILL.md layout, and registry behavior"}
+{"file": ".trellis/spec/runtime/index.md", "reason": "Runtime changes affect host-loop and sandbox tool execution"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Work spans API, runtime, persistence, and docs"}
+{"file": ".trellis/spec/guides/cross-platform-thinking-guide.md", "reason": "Bootstrap and env handling are platform-sensitive"}
+{"at":"2026-04-20T11:50:21+08:00","file":".trellis/tasks/04-20-skill-test-bootstrap-environment/prd.md","reason":"Expanded the bootstrap-environment PRD with execution flow, API/schema proposal, failure taxonomy, runtime capability diff, and TESTING.md advice sink."}
+{"at":"2026-04-20T12:40:00+08:00","file":"server/api/skill-test-controller.ts","reason":"Implemented optional environmentConfig + run-time environment flow for skill-test: preflight/bootstrap/verify, failure taxonomy, persisted environment status, and sandbox-only gating for bootstrap commands."}
+{"at":"2026-04-20T18:35:00+08:00","file":"server/api/skill-test-controller.ts","reason":"Added TESTING.md-backed environment sourcing so skill-test can reuse documented prerequisites/bootstrap/verify steps when a case has no explicit environmentConfig, and surfaced the source in run details."}
+{"at":"2026-04-20T19:10:00+08:00","file":".trellis/tasks/04-20-skill-test-bootstrap-environment/phase-3-environment-cache.md","reason":"Drafted the Phase 3 environment-cache design: restore-then-verify flow, cache key/artifact layout, explicit cache paths, save/restore mechanics, result contract, and rollout plan."}
+{"at":"2026-04-20T20:25:00+08:00","file":"server/api/skill-test-controller.ts","reason":"Implemented Phase 3B restore-on-hit environment cache metadata + manifest lookup + sandbox restore flow, exposed cache evidence in run detail, and added regression coverage for cache hits skipping bootstrap."}
+{"at":"2026-04-20T21:05:00+08:00","file":"server/api/skill-test-controller.ts","reason":"Implemented Phase 3C save-on-success cache persistence, manifest/summary/sha writeback, TTL janitor cleanup, and run-detail evidence for saved cache artifacts."}
+{"at":"2026-04-20T22:25:00+08:00","file":".trellis/spec/skills/skill-testing.md","reason":"Followed up review closeout by documenting the environment-readiness chain, cache/result contracts, TESTING.md sourcing, and the sandbox-only probe/command execution rule."}

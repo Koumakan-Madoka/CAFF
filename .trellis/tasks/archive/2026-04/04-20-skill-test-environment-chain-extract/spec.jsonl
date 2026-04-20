@@ -1,0 +1,1 @@
+{"at":"2026-04-20T23:21:00+08:00","file":".trellis/spec/skills/skill-testing.md","reason":"Documented that server/domain/skill-test/environment-chain.ts now owns environment config normalization, TESTING.md fallback parsing, and environment workflow orchestration while the controller stays focused on wiring and persistence."}

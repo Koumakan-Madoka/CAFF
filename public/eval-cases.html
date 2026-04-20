@@ -239,6 +239,13 @@
                         </div>
                         <p id="st-detail-validity-help" class="section-hint">生成后先进入 draft；确认无误后再标记 ready。</p>
                       </section>
+
+                      <section class="stack-card">
+                        <div class="section-row">
+                          <span class="section-label">环境预检 / 安装链</span>
+                        </div>
+                        <p id="st-detail-environment-summary" class="section-hint">未配置环境链；默认直接运行 skill。</p>
+                      </section>
                     </div>
                   </div>
 
@@ -291,6 +298,14 @@
                           <span class="section-label">评估 Rubric JSON</span>
                         </div>
                         <textarea id="st-detail-rubric-json" class="mono-textarea" rows="4" placeholder='{"thresholds":{"goalAchievement":0.7}}'></textarea>
+                      </section>
+
+                      <section class="stack-card skill-test-detail-span-full">
+                        <div class="section-row">
+                          <span class="section-label">Environment Config JSON（可选）</span>
+                        </div>
+                        <textarea id="st-detail-environment-json" class="mono-textarea" rows="9" placeholder='{"enabled":true,"requirements":[{"kind":"command","name":"python","versionHint":">=3.10"}],"bootstrap":{"commands":["python --version"]},"verify":{"commands":["python --version"]},"docs":{"mode":"suggest-patch","target":"TESTING.md"}}'></textarea>
+                        <p class="section-hint">可选：让这条 case 在正式运行前先做 preflight / bootstrap / verify，并给出 `TESTING.md` 建议 patch。</p>
                       </section>
 
                       <section class="stack-card skill-test-detail-span-full">
@@ -368,6 +383,10 @@
                 <label>
                   <span>评估 Rubric（JSON，可选）</span>
                   <textarea id="st-create-rubric" rows="3" maxlength="1200" placeholder='{"thresholds":{"goalAchievement":0.7}}'></textarea>
+                </label>
+                <label>
+                  <span>Environment Config JSON（可选）</span>
+                  <textarea id="st-create-environment-json" rows="8" maxlength="4000" placeholder='{"enabled":true,"requirements":[{"kind":"command","name":"python"}],"bootstrap":{"commands":["python --version"]},"verify":{"commands":["python --version"]},"docs":{"mode":"suggest-patch","target":"TESTING.md"}}'></textarea>
                 </label>
                 <label>
                   <span>备注</span>

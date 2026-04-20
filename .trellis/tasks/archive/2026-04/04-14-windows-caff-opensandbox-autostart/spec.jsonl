@@ -1,0 +1,1 @@
+{"at":"2026-04-20T23:06:00+08:00","file":".trellis/spec/guides/cross-platform-thinking-guide.md","reason":"Reviewed the cross-platform startup guidance while administratively closing the Windows autostart task; no additional Trellis spec diff was needed because the durable operator contract already lives in scripts/windows/* and docs/windows-local-stack.md."}

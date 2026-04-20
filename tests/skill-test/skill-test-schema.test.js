@@ -11,7 +11,11 @@ const {
   normalizeCaseForRun,
   validateJudgeOutput,
 } = require('../../build/server/api/skill-test-controller');
-const { normalizeSkillTestIsolationOptions } = require('../../build/server/domain/skill-test/isolation');
+const {
+  buildSkillTestIsolationIssues,
+  getSkillTestIsolationFailureMessage,
+  normalizeSkillTestIsolationOptions,
+} = require('../../build/server/domain/skill-test/isolation');
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -36,9 +40,14 @@ test('migrateSkillTestSchema creates tables without error', () => {
 
   const caseColumns = db.prepare('PRAGMA table_info(skill_test_cases)').all().map((row) => row.name);
   assert.ok(caseColumns.includes('expected_steps_json'));
+  assert.ok(caseColumns.includes('environment_config_json'));
   assert.ok(caseColumns.includes('generation_provider'));
   assert.ok(caseColumns.includes('generation_model'));
   assert.ok(caseColumns.includes('generation_created_at'));
+
+  const runColumns = db.prepare('PRAGMA table_info(skill_test_runs)').all().map((row) => row.name);
+  assert.ok(runColumns.includes('environment_status'));
+  assert.ok(runColumns.includes('environment_phase'));
 
   db.close();
 });
@@ -204,6 +213,36 @@ test('normalizeSkillTestIsolationOptions fails closed when isolated mode lacks a
   );
 });
 
+test('buildSkillTestIsolationIssues escalates publish-gate sandbox mismatches to errors', () => {
+  const issues = buildSkillTestIsolationIssues({
+    mode: 'isolated',
+    publishGate: true,
+    toolPolicy: { rejects: [] },
+    execution: { toolRuntime: 'host', pathSemantics: 'host' },
+    egress: { mode: 'deny', enforced: false, reason: 'record only' },
+    pollutionCheck: { checked: false, ok: true },
+    cleanup: { ok: true },
+  });
+
+  assert.deepEqual(
+    issues.map((issue) => issue.code),
+    [
+      'skill_test_tools_not_sandboxed',
+      'skill_test_path_semantics_not_sandboxed',
+      'skill_test_egress_not_enforced',
+    ]
+  );
+  assert.ok(issues.every((issue) => issue.severity === 'error'));
+});
+
+test('getSkillTestIsolationFailureMessage prefers the combined sandbox mismatch message', () => {
+  const message = getSkillTestIsolationFailureMessage({
+    unsafeReasons: ['tool_runtime_not_sandboxed', 'path_semantics_not_sandboxed'],
+  });
+
+  assert.match(message, /sandbox-routed tools and sandbox path semantics/);
+});
+
 test('validateAndNormalizeCaseInput rejects full case without expectedGoal', () => {
   assert.throws(
     () => validateAndNormalizeCaseInput({
@@ -270,6 +309,50 @@ test('validateAndNormalizeCaseInput preserves canonical expectedSteps with warni
   assert.equal(normalized.expectedSteps[0].strongSignals[0].id, 'sig-step-1-read');
   assert.ok(normalized.issues.some((issue) => issue.code === 'failure_if_missing_defaulted'));
   assert.ok(normalized.issues.some((issue) => issue.code === 'legacy_expected_tools_present'));
+});
+
+test('validateAndNormalizeCaseInput accepts environmentConfig', () => {
+  const normalized = validateAndNormalizeCaseInput({
+    skillId: 'werewolf',
+    loadingMode: 'dynamic',
+    userPrompt: '请先检查并准备运行环境。',
+    expectedBehavior: '先准备环境再执行 skill。',
+    environmentConfig: {
+      enabled: true,
+      policy: 'optional',
+      requirements: [
+        {
+          kind: 'command',
+          name: 'python',
+          versionHint: '>=3.10',
+        },
+      ],
+      bootstrap: {
+        commands: ['python --version'],
+      },
+      verify: {
+        commands: ['python --version'],
+      },
+      cache: {
+        enabled: true,
+        paths: [
+          { root: 'project', path: '.venv' },
+        ],
+        ttlHours: 24,
+      },
+      docs: {
+        mode: 'suggest-patch',
+        target: 'TESTING.md',
+      },
+    },
+  });
+
+  assert.ok(normalized.environmentConfig);
+  assert.equal(normalized.environmentConfig.enabled, true);
+  assert.equal(normalized.environmentConfig.requirements[0].name, 'python');
+  assert.equal(normalized.environmentConfig.bootstrap.commands[0], 'python --version');
+  assert.equal(normalized.environmentConfig.cache.enabled, true);
+  assert.equal(normalized.environmentConfig.cache.paths[0].path, '.venv');
 });
 
 test('normalizeCaseForRun keeps legacy full-mode fields as-is without step derivation', () => {

@@ -1,0 +1,9 @@
+{"file": ".agents/skills/finish-work/SKILL.md", "reason": "Finish work checklist"}
+{"file": ".agents/skills/check/SKILL.md", "reason": "Code quality check spec"}
+{"file": ".trellis/spec/skills/skill-testing.md", "reason": "Check skill-test contract changes"}
+{"file": ".trellis/spec/skills/skill-system.md", "reason": "Check skill loading/document boundary changes"}
+{"file": ".trellis/spec/runtime/index.md", "reason": "Check runtime and sandbox execution assumptions"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Check cross-layer data and result flow"}
+{"file": ".trellis/spec/guides/cross-platform-thinking-guide.md", "reason": "Check platform-sensitive bootstrap behavior"}
+{"status_update":"2026-04-20T22:35:00+08:00","completed":["Hardened environment probe/command execution errors so sandbox-only case-world execution is explicit in the controller contract","Synced .trellis/spec/skills/skill-testing.md with environment readiness, TESTING.md sourcing, cache/result payloads, and projection columns","Marked PRD acceptance criteria complete and advanced task metadata from planning to review/phase 3","Ran npm run build","Ran node --test tests/skill-test/skill-test-schema.test.js","Ran node --test tests/skill-test/skill-test-e2e.test.js with the environment-focused regression pattern set"],"remaining":["Optional next: split the environment workflow helpers out of server/api/skill-test-controller.ts into a domain module to reduce controller size"]}
+{"at": "2026-04-20T19:54:01+08:00", "status_update": "Closed the bootstrap-environment feature task after the extracted environment-chain and sandbox typing follow-ups completed and kept the documented readiness/cache contract intact.", "completed": ["Marked task metadata completed after the follow-up refactors landed"], "remaining": ["Optional next: archive with record-session after commit if you want the workspace journal updated"]}

@@ -1,0 +1,1 @@
+{"at":"2026-04-20T23:59:00+08:00","file":".trellis/spec/skills/skill-testing.md","reason":"Documented the shared sandbox-tool contract, the normalized environment runtime facade, the commandEnv vs availableEnv contract, and the remaining @ts-nocheck blockers for isolation/open-sandbox modules."}

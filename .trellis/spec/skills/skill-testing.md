@@ -32,6 +32,7 @@ CREATE TABLE skill_test_cases (
   expected_steps_json TEXT NOT NULL DEFAULT '[]',
   expected_sequence_json TEXT NOT NULL DEFAULT '[]',
   evaluation_rubric_json TEXT NOT NULL DEFAULT '{}',
+  environment_config_json TEXT NOT NULL DEFAULT '{}',
   generation_provider TEXT NOT NULL DEFAULT '',
   generation_model TEXT NOT NULL DEFAULT '',
   generation_created_at TEXT NOT NULL DEFAULT '',
@@ -59,6 +60,8 @@ CREATE TABLE skill_test_runs (
   instruction_adherence REAL,
   verdict TEXT DEFAULT '',
   evaluation_json TEXT NOT NULL DEFAULT '{}',
+  environment_status TEXT DEFAULT '',
+  environment_phase TEXT DEFAULT '',
   error_message TEXT DEFAULT '',
   created_at TEXT NOT NULL,
   FOREIGN KEY (test_case_id) REFERENCES skill_test_cases(id)
@@ -130,6 +133,97 @@ Isolation failures must surface canonical validation issues such as:
 - `skill_test_egress_not_enforced`
 - `skill_test_pollution_detected`
 - `skill_test_cleanup_failed`
+
+## Environment Readiness Chain
+
+Skill-test can optionally run an environment workflow before the main pi execution starts.
+
+### Config Sources & Preconditions
+
+- `server/domain/skill-test/environment-chain.ts` owns environment config normalization, `TESTING.md` fallback parsing, and `preflight -> bootstrap -> verify -> cache` orchestration; `server/api/skill-test-controller.ts` only wires request/runtime inputs, live events, and persistence.
+- Run-request `environment.override` wins over stored case `environmentConfig`; when a case has no explicit environment config, the controller may derive one from the skill's `TESTING.md` sections `Prerequisites`, `Bootstrap`, and `Verification`.
+- When the environment chain is disabled, skill-test keeps the existing default flow and starts the run without extra preflight/bootstrap/verify work.
+- Environment probes, bootstrap commands, and verify commands are only allowed when isolated execution uses `host-loop + sandbox-tools` and `evaluation_json.isolation.execution.toolRuntime = 'sandbox'`; otherwise the run must return `runtime_unsupported`.
+- `probeCommand`, `bootstrap.commands[]`, and `verify.commands[]` always execute through the sandbox tool adapter inside the case world. They must never fall back to host-side command execution.
+- `server/domain/skill-test/sandbox-tool-contract.ts` is the typed facade for environment-chain sandbox capabilities. `createSkillTestEnvironmentRuntime()` normalizes `sandboxToolAdapter`, `commandEnv`, `availableEnv`, and execution metadata before `executeEnvironmentWorkflow()` runs.
+- The typed sandbox adapter contract must normalize `runCommand()` results to `{ stdout, stderr, exitCode }`, coerce `readFile()` payloads to `Buffer`, and preserve the distinction between `commandEnv` (forwarded into sandbox commands) and `availableEnv` (broader runtime baseline used by `env` requirement preflight checks).
+- `server/domain/skill-test/isolation.ts` and `server/domain/skill-test/open-sandbox-factory.ts` may temporarily keep file-wide `@ts-nocheck`, but their exported signatures should import the shared contract so typed callers do not fall back to ad-hoc object shapes.
+
+### Case / Run Contract
+
+- `skill_test_cases.environment_config_json` is the stored truth source for case-level environment plans.
+- `skill_test_runs.environment_status` and `skill_test_runs.environment_phase` are summary projections. Detailed evidence stays under `evaluation_json.environment`.
+- Supported requirement kinds are `command | package | env | capability | service`.
+- `environment.cache.paths[]` only allows `{ root: 'project' | 'private', path: <relative path> }`; absolute paths, `..`, and paths escaping the case world are invalid.
+
+### Result Shape
+
+`evaluation_json.environment` is the canonical environment result envelope.
+
+```json
+{
+  "status": "passed | env_missing | env_install_failed | env_verify_failed | runtime_unsupported | skipped",
+  "phase": "preflight | bootstrap | verify | completed | skipped",
+  "requirements": {
+    "satisfied": [],
+    "missing": [],
+    "unsupported": []
+  },
+  "bootstrap": {
+    "attempted": true,
+    "commands": [],
+    "results": []
+  },
+  "verify": {
+    "attempted": true,
+    "commands": [],
+    "results": []
+  },
+  "source": {
+    "testingDocUsed": true,
+    "testingDocPath": "/skills/<skillId>/TESTING.md",
+    "testingDocHash": "..."
+  },
+  "advice": {
+    "mode": "none | suggest-patch",
+    "target": "TESTING.md",
+    "summary": "...",
+    "patch": "..."
+  },
+  "cache": {
+    "enabled": true,
+    "key": "...",
+    "status": "disabled | miss | restored | restore_failed | saved | save_failed",
+    "reason": "...",
+    "paths": [],
+    "manifestPath": ".pi-sandbox/skill-test-environment-cache/<cacheKey>/manifest.json",
+    "summaryPath": ".pi-sandbox/skill-test-environment-cache/<cacheKey>/summary.json",
+    "artifactBytes": 123,
+    "artifactSha256": "...",
+    "createdAt": "...",
+    "savedAt": "...",
+    "expiresAt": "...",
+    "lastValidatedAt": "...",
+    "restoredFiles": 0,
+    "restoredDirectories": 0,
+    "restoredSymlinks": 0,
+    "ignoredEntries": 0
+  }
+}
+```
+
+### Cache Contract
+
+- Cache root is `.pi-sandbox/skill-test-environment-cache/<cacheKey>/` with `manifest.json`, `artifact.tgz`, and `summary.json`.
+- Cache key must cover `skillId + planHash + worldHash`. `planHash` includes normalized requirements/bootstrap/verify plus the `TESTING.md` source hash when used. `worldHash` includes driver name/version, platform/arch, egress mode, tool runtime, and path semantics.
+- Cache behavior is `restore-then-verify`: try restore only after the initial preflight reports missing required items, then re-run preflight + verify before the main skill run.
+- Cache save is `save-on-success`: only after `bootstrap + verify` succeed. Save failure degrades to cache warning metadata and must not replace an already passed environment result.
+- TTL janitor may remove expired or incomplete entries before lookup/save. Cache never expands side effects outside the sandbox case world.
+
+### UI / Regression Expectations
+
+- `public/skill-tests.js` renders environment status, requirement diffs, command evidence, TESTING.md advice, and cache metadata from `result.evaluation.environment` (falling back to `run.evaluation.environment` for older rows).
+- Summary and regression views bucket environment outcomes from `environment_status` so environment failures do not get collapsed into generic skill failures.
 
 ## Evaluation Logic
 
@@ -461,6 +555,7 @@ Frontend (`public/skill-tests.js`) consumes structured validation/evaluation:
 
 - `lib/skill-test-generator.ts`
 - `server/api/skill-test-controller.ts`
+- `server/domain/skill-test/environment-chain.ts`
 - `storage/sqlite/migrations.ts`
 - `tests/skill-test/skill-test-generator.test.js`
 - `tests/skill-test/skill-test-schema.test.js`

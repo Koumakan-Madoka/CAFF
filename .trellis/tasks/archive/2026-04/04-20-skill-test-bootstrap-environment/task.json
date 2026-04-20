@@ -1,0 +1,53 @@
+{
+  "id": "04-20-skill-test-bootstrap-environment",
+  "name": "04-20-skill-test-bootstrap-environment",
+  "title": "Skill-test bootstrap and environment readiness",
+  "description": "为外部 skill 增加可选的 preflight/bootstrap/verify 测试阶段，并沉淀环境依赖与已知限制。",
+  "status": "completed",
+  "dev_type": "backend",
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "菲比啾比",
+  "assignee": "咕咕嘎嘎",
+  "createdAt": "2026-04-20",
+  "completedAt": "2026-04-20",
+  "branch": null,
+  "base_branch": "feat/04-18-skill-test-host-loop-sandbox-tools",
+  "worktree_path": null,
+  "current_phase": 3,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "check"
+    },
+    {
+      "phase": 3,
+      "action": "finish"
+    },
+    {
+      "phase": 4,
+      "action": "create-pr"
+    }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    ".trellis/tasks/04-20-skill-test-environment-chain-extract/prd.md",
+    ".trellis/tasks/04-20-skill-test-sandbox-type-hardening/prd.md"
+  ],
+  "notes": "Closed after the environment-readiness feature landed and both low-risk follow-up refactors (`04-20-skill-test-environment-chain-extract` and `04-20-skill-test-sandbox-type-hardening`) also completed without changing the documented sandbox-only environment workflow contract.",
+  "meta": {
+    "followups": {
+      "environmentChainExtract": "04-20-skill-test-environment-chain-extract",
+      "sandboxTypeHardening": "04-20-skill-test-sandbox-type-hardening"
+    }
+  }
+}

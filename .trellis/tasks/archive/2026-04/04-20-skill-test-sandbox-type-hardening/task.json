@@ -1,0 +1,57 @@
+{
+  "id": "04-20-skill-test-sandbox-type-hardening",
+  "name": "04-20-skill-test-sandbox-type-hardening",
+  "title": "Harden typed sandbox tool adapter surfaces",
+  "description": "为 skill-test 环境链依赖的 sandbox tool adapter、路径语义与二进制 cache artifact 流程补显式类型，缩小 `@ts-nocheck` 影响面。",
+  "status": "completed",
+  "dev_type": "backend",
+  "scope": null,
+  "package": null,
+  "priority": "P3",
+  "creator": "咕咕嘎嘎",
+  "assignee": "咕咕嘎嘎",
+  "createdAt": "2026-04-20",
+  "completedAt": "2026-04-20",
+  "branch": null,
+  "base_branch": "feat/04-18-skill-test-host-loop-sandbox-tools",
+  "worktree_path": null,
+  "current_phase": 3,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "check"
+    },
+    {
+      "phase": 3,
+      "action": "finish"
+    },
+    {
+      "phase": 4,
+      "action": "create-pr"
+    }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "04-20-skill-test-bootstrap-environment",
+  "relatedFiles": [
+    "server/domain/skill-test/isolation.ts",
+    "server/domain/skill-test/open-sandbox-factory.ts",
+    "server/domain/skill-test/sandbox-tool-contract.ts",
+    "server/api/skill-test-controller.ts",
+    "tests/skill-test/skill-test-schema.test.js",
+    "tests/skill-test/skill-test-e2e.test.js",
+    ".trellis/spec/skills/skill-testing.md"
+  ],
+  "notes": "Closed after the typed facade / contract hardening landed and the remaining helper-cluster follow-ups were completed in `04-20-skill-test-open-sandbox-typing-pass` and `04-20-skill-test-isolation-typing-pass`; this task stays scoped to boundary hardening rather than a full-file strict-typing rewrite.",
+  "meta": {
+    "kind": "follow-up-refactor",
+    "risk": "low",
+    "behaviorChange": false
+  }
+}
