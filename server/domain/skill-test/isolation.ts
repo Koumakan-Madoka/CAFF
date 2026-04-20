@@ -5,6 +5,19 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
+import type { SkillTestIsolationDriver } from './sandbox-tool-contract';
+import {
+  buildLegacySkillTestIsolationEvidence,
+  buildSkillTestIsolationIssues,
+  buildSkillTestIsolationUnsafeReasons,
+  createSkillTestIsolationPolicyRejectRecorder,
+  getSkillTestIsolationFailureMessage,
+  normalizeSkillTestEgressEvidence,
+  normalizeSkillTestExecutionEvidence,
+  resolveSkillTestSandboxToolAdapter,
+  seedIsolatedConversationStore,
+} from './isolation-typed-helpers';
+
 const { createHttpError } = require('../../http/http-errors');
 const { createChatAppStore } = require('../../../lib/chat-app-store');
 const { resolveSqliteFileUriPath } = require('../../../storage/sqlite/connection');
@@ -916,138 +929,6 @@ function normalizeSkillTestIsolationOptions(input = {}, options = {}) {
   };
 }
 
-function normalizeExecutionPlane(value, fallback = 'host') {
-  const normalized = String(value || fallback || 'host').trim().toLowerCase() || 'host';
-  return normalized === 'sandbox' ? 'sandbox' : 'host';
-}
-
-function normalizeExecutionPathSemantics(value, fallback = 'host') {
-  const normalized = String(value || fallback || 'host').trim().toLowerCase() || 'host';
-  return normalized === 'sandbox' ? 'sandbox' : 'host';
-}
-
-function normalizeExecutionEvidence(input = {}, fallback = {}) {
-  const value = isPlainObject(input) ? input : {};
-  const loopRuntime = normalizeExecutionPlane(
-    value.loopRuntime || fallback.loopRuntime || value.runtime || value.mode || fallback.runtime || 'host'
-  );
-  const toolRuntime = normalizeExecutionPlane(
-    value.toolRuntime,
-    fallback.toolRuntime !== undefined ? fallback.toolRuntime : (loopRuntime === 'sandbox' ? 'sandbox' : 'host')
-  );
-  const pathSemantics = normalizeExecutionPathSemantics(
-    value.pathSemantics || value.pathView,
-    fallback.pathSemantics !== undefined ? fallback.pathSemantics : (loopRuntime === 'sandbox' ? 'sandbox' : 'host')
-  );
-  const runtime = normalizeExecutionPlane(
-    value.runtime || value.mode,
-    fallback.runtime !== undefined ? fallback.runtime : loopRuntime
-  );
-  const preparedOnly = normalizeBoolean(
-    value.preparedOnly,
-    fallback.preparedOnly !== undefined ? fallback.preparedOnly : false
-  );
-  const reason = clipText(
-    value.reason || fallback.reason || (
-      loopRuntime === 'sandbox'
-        ? 'Agent loop and tool execution both run inside the isolation adapter'
-        : toolRuntime === 'sandbox'
-          ? 'Agent loop runs on the host while file and command tools are delegated into the sandbox case world'
-          : 'Isolation prepared case resources, then execution continued on the host runtime'
-    ),
-    240
-  );
-
-  return {
-    runtime,
-    loopRuntime,
-    toolRuntime,
-    pathSemantics,
-    preparedOnly,
-    reason,
-  };
-}
-
-function normalizeEgressEvidence(input = {}, fallback = {}) {
-  const value = isPlainObject(input) ? input : {};
-  const mode = String(value.mode || fallback.mode || DEFAULT_EGRESS_MODE).trim().toLowerCase() || DEFAULT_EGRESS_MODE;
-  const enforced = normalizeBoolean(value.enforced, fallback.enforced !== undefined ? fallback.enforced : false);
-  const fallbackScope = enforced ? 'sandbox' : 'record-only';
-  const scope = clipText(
-    String(value.scope || fallback.scope || fallbackScope).trim().toLowerCase() || fallbackScope,
-    80
-  );
-  const reason = clipText(
-    value.reason || fallback.reason || (
-      enforced
-        ? 'Network policy is enforced by the isolation adapter'
-        : 'Requested egress policy is recorded in evidence but not actively enforced by the current adapter'
-    ),
-    240
-  );
-
-  return {
-    mode,
-    enforced,
-    scope,
-    reason,
-  };
-}
-
-function createPolicyRejectRecorder(sharedRejects) {
-  const rejectList = Array.isArray(sharedRejects) ? sharedRejects : [];
-  return {
-    rejects: rejectList,
-    allowedTools: DEFAULT_ALLOWED_BRIDGE_TOOLS,
-    record(toolName, reason, details = {}) {
-      rejectList.push({
-        toolName: normalizeToolName(toolName),
-        reason: clipText(reason, 240),
-        details: isPlainObject(details) ? details : {},
-        createdAt: nowIso(),
-      });
-    },
-  };
-}
-
-function seedIsolatedConversationStore(store, input = {}) {
-  const agentId = String(input.agentId || 'skill-test-agent').trim() || 'skill-test-agent';
-  const agentName = String(input.agentName || 'Skill Test Agent').trim() || 'Skill Test Agent';
-  const conversationId = String(input.conversationId || `skill-test-${agentId}`).trim() || `skill-test-${agentId}`;
-  const promptUserMessage = input.promptUserMessage && typeof input.promptUserMessage === 'object'
-    ? input.promptUserMessage
-    : null;
-
-  if (!store.getAgent(agentId)) {
-    store.saveAgent({
-      id: agentId,
-      name: agentName,
-      personaPrompt: 'Skill test isolated agent.',
-    });
-  }
-
-  if (!store.getConversation(conversationId)) {
-    store.createConversation({
-      id: conversationId,
-      title: `Skill Test ${conversationId}`,
-      participants: [agentId],
-    });
-  }
-
-  if (promptUserMessage && promptUserMessage.id && !store.getMessage(promptUserMessage.id)) {
-    store.createMessage({
-      id: String(promptUserMessage.id).trim(),
-      conversationId,
-      turnId: String(promptUserMessage.turnId || input.turnId || 'skill-test-turn').trim() || 'skill-test-turn',
-      role: 'user',
-      senderName: String(promptUserMessage.senderName || 'TestUser').trim() || 'TestUser',
-      content: promptUserMessage.content !== undefined ? promptUserMessage.content : '',
-      status: String(promptUserMessage.status || 'completed').trim() || 'completed',
-      createdAt: String(promptUserMessage.createdAt || nowIso()).trim() || nowIso(),
-    });
-  }
-}
-
 function snapshotSkillIntoAgentDir(skill, agentDir) {
   if (!skill || !skill.path) {
     return null;
@@ -1132,63 +1013,7 @@ function buildPollutionWatchTargets(input = {}) {
   return targets;
 }
 
-function buildLegacyIsolationEvidence(input = {}) {
-  return {
-    mode: 'legacy-local',
-    notIsolated: true,
-    publishGate: normalizeBoolean(input.publishGate, false),
-    driver: {
-      name: 'legacy-local',
-      version: '',
-    },
-    sandboxId: '',
-    runId: String(input.runId || '').trim(),
-    caseId: String(input.caseId || '').trim(),
-    trellisMode: String(input.trellisMode || DEFAULT_TRELLIS_MODE).trim() || DEFAULT_TRELLIS_MODE,
-    egressMode: 'host',
-    toolPolicy: {
-      allowedTools: normalizeAllowedBridgeTools(input.allowedBridgeTools),
-      rejects: Array.isArray(input.rejects) ? input.rejects.slice() : [],
-    },
-    execution: {
-      runtime: 'host',
-      loopRuntime: 'host',
-      toolRuntime: 'host',
-      pathSemantics: 'host',
-      preparedOnly: false,
-      reason: 'Legacy-local mode executes directly on the host runtime',
-    },
-    egress: {
-      mode: 'host',
-      enforced: false,
-      scope: 'host',
-      reason: 'Legacy-local mode does not apply a sandbox network policy',
-    },
-    resources: {
-      projectDir: normalizePathForJson(input.projectDir),
-      sandboxDir: normalizePathForJson(input.sandboxDir),
-      privateDir: normalizePathForJson(input.privateDir),
-      sqlitePath: normalizePathForJson(input.sqlitePath),
-      skillPath: input.skill && input.skill.path ? normalizePathForJson(input.skill.path) : '',
-    },
-    pollutionCheck: {
-      checked: false,
-      ok: false,
-      changeCount: 0,
-      changes: [],
-    },
-    cleanup: {
-      ok: true,
-      error: '',
-    },
-    unsafe: false,
-    unsafeReasons: ['not_isolated'],
-    createdAt: nowIso(),
-    finishedAt: nowIso(),
-  };
-}
-
-function createSkillTestIsolationDriver(options = {}) {
+function createSkillTestIsolationDriver(options = {}): SkillTestIsolationDriver {
   const createStore = typeof options.createChatAppStore === 'function' ? options.createChatAppStore : createChatAppStore;
   const openSandboxFactory = typeof options.openSandboxFactory === 'function' ? options.openSandboxFactory : null;
   const defaultMode = String(options.defaultMode || (openSandboxFactory ? 'isolated' : DEFAULT_ISOLATION_MODE)).trim().toLowerCase() || DEFAULT_ISOLATION_MODE;
@@ -1215,12 +1040,12 @@ function createSkillTestIsolationDriver(options = {}) {
             name: String(input.agentName || 'Skill Test Agent').trim() || 'Skill Test Agent',
           };
       const policyRejects = [];
-      const toolPolicy = createPolicyRejectRecorder(policyRejects);
+      const toolPolicy = createSkillTestIsolationPolicyRejectRecorder(policyRejects);
       toolPolicy.allowedTools = isolation.allowedBridgeTools.slice();
 
       if (isolation.mode !== 'isolated') {
         const sandbox = ensureAgentSandbox(String(input.liveAgentDir || '').trim(), agent);
-        const execution = normalizeExecutionEvidence({
+        const execution = normalizeSkillTestExecutionEvidence({
           runtime: 'host',
           loopRuntime: 'host',
           toolRuntime: 'host',
@@ -1239,8 +1064,9 @@ function createSkillTestIsolationDriver(options = {}) {
           toolPolicy,
           execution,
           extraEnv: {},
+          sandboxToolAdapter: null,
           async finalize() {
-            return buildLegacyIsolationEvidence({
+            return buildLegacySkillTestIsolationEvidence({
               runId: input.runId,
               caseId: input.caseId,
               trellisMode: isolation.trellisMode,
@@ -1315,8 +1141,9 @@ function createSkillTestIsolationDriver(options = {}) {
       const driverName = String(adapter.driverName || DEFAULT_DRIVER_NAME).trim() || DEFAULT_DRIVER_NAME;
       const driverVersion = String(adapter.driverVersion || '').trim();
       const sandboxId = String(adapter.sandboxId || `opensandbox-${nodeCrypto.randomUUID()}`).trim();
-      const hasSandboxToolAdapter = adapter && typeof adapter.toolAdapter === 'object';
-      const execution = normalizeExecutionEvidence(adapter.execution, {
+      const sandboxToolAdapter = resolveSkillTestSandboxToolAdapter(adapter);
+      const hasSandboxToolAdapter = Boolean(sandboxToolAdapter);
+      const execution = normalizeSkillTestExecutionEvidence(adapter.execution, {
         runtime: 'host',
         loopRuntime: 'host',
         toolRuntime: hasSandboxToolAdapter ? 'sandbox' : 'host',
@@ -1326,7 +1153,7 @@ function createSkillTestIsolationDriver(options = {}) {
           ? 'Agent loop runs on the host while sandbox file and command tools proxy into the case world with sandbox-visible path semantics'
           : 'Isolation adapter prepared case resources, then controller continued on the host runtime',
       });
-      const egress = normalizeEgressEvidence(adapter.egress, {
+      const egress = normalizeSkillTestEgressEvidence(adapter.egress, {
         mode: isolation.egressMode,
         enforced: false,
         scope: 'record-only',
@@ -1341,6 +1168,10 @@ function createSkillTestIsolationDriver(options = {}) {
         projectDir: caseProjectDir,
         outputDir: caseOutputsDir,
         skill: isolatedSkill,
+        driver: {
+          name: driverName,
+          version: driverVersion,
+        },
         toolPolicy,
         execution,
         extraEnv: {
@@ -1362,7 +1193,7 @@ function createSkillTestIsolationDriver(options = {}) {
           } : {}),
           ...(isPlainObject(adapter.extraEnv) ? adapter.extraEnv : {}),
         },
-        sandboxToolAdapter: adapter && typeof adapter.toolAdapter === 'object' ? adapter.toolAdapter : null,
+        sandboxToolAdapter,
         async finalize() {
           const finishedAt = nowIso();
           const pollutionAfter = capturePollutionTargets(pollutionTargets, { finishedAt });
@@ -1391,22 +1222,14 @@ function createSkillTestIsolationDriver(options = {}) {
             cleanupError = cleanupError || clipText(error && error.message ? error.message : String(error || 'Failed to cleanup case root'), 300);
           }
 
-          const unsafeReasons = [];
-          if (!pollutionCheck.ok) {
-            unsafeReasons.push('pollution_check_failed');
-          }
-          if (isolation.publishGate && execution.toolRuntime !== 'sandbox') {
-            unsafeReasons.push('tool_runtime_not_sandboxed');
-          }
-          if (isolation.publishGate && execution.pathSemantics !== 'sandbox') {
-            unsafeReasons.push('path_semantics_not_sandboxed');
-          }
-          if (isolation.publishGate && isolation.egressMode === 'deny' && egress.enforced !== true) {
-            unsafeReasons.push('egress_not_enforced');
-          }
-          if (cleanupError) {
-            unsafeReasons.push('cleanup_failed');
-          }
+          const unsafeReasons = buildSkillTestIsolationUnsafeReasons({
+            publishGate: isolation.publishGate,
+            execution,
+            egressMode: isolation.egressMode,
+            egress,
+            pollutionCheck,
+            cleanupError,
+          });
 
           return {
             mode: isolation.mode,
@@ -1452,120 +1275,6 @@ function createSkillTestIsolationDriver(options = {}) {
       };
     },
   };
-}
-
-function buildSkillTestIsolationIssues(isolationEvidence) {
-  if (!isolationEvidence || typeof isolationEvidence !== 'object') {
-    return [];
-  }
-
-  const issues = [];
-
-  if (isolationEvidence.notIsolated) {
-    issues.push({
-      code: 'skill_test_not_isolated',
-      severity: 'warning',
-      path: 'isolation',
-      message: 'Run used legacy-local mode and cannot serve as isolated publish-gate evidence',
-    });
-  }
-
-  if (Array.isArray(isolationEvidence.toolPolicy && isolationEvidence.toolPolicy.rejects) && isolationEvidence.toolPolicy.rejects.length > 0) {
-    issues.push({
-      code: 'skill_test_policy_rejects_present',
-      severity: 'warning',
-      path: 'isolation.toolPolicy.rejects',
-      message: `Tool policy rejected ${isolationEvidence.toolPolicy.rejects.length} request(s) during the run`,
-    });
-  }
-
-  if (isolationEvidence.mode === 'isolated' && isolationEvidence.execution && isolationEvidence.execution.toolRuntime !== 'sandbox') {
-    issues.push({
-      code: 'skill_test_tools_not_sandboxed',
-      severity: isolationEvidence.publishGate ? 'error' : 'warning',
-      path: 'isolation.execution.toolRuntime',
-      message: 'Run kept file or command tool execution on the host instead of delegating it into the sandbox case world',
-    });
-  }
-
-  if (isolationEvidence.mode === 'isolated' && isolationEvidence.execution && isolationEvidence.execution.pathSemantics !== 'sandbox') {
-    issues.push({
-      code: 'skill_test_path_semantics_not_sandboxed',
-      severity: isolationEvidence.publishGate ? 'error' : 'warning',
-      path: 'isolation.execution.pathSemantics',
-      message: 'Run still exposed host-visible cwd or path semantics instead of a sandbox path view',
-    });
-  }
-
-  if (isolationEvidence.mode === 'isolated' && isolationEvidence.egress && isolationEvidence.egress.mode === 'deny' && isolationEvidence.egress.enforced !== true) {
-    issues.push({
-      code: 'skill_test_egress_not_enforced',
-      severity: isolationEvidence.publishGate ? 'error' : 'warning',
-      path: 'isolation.egress',
-      message: clipText(isolationEvidence.egress.reason || 'Run requested deny egress mode without an enforced network policy', 240),
-    });
-  }
-
-  if (isolationEvidence.pollutionCheck && isolationEvidence.pollutionCheck.checked && isolationEvidence.pollutionCheck.ok === false) {
-    issues.push({
-      code: 'skill_test_pollution_detected',
-      severity: 'error',
-      path: 'isolation.pollutionCheck',
-      message: 'Live project or shared state changed during an isolated skill test run',
-    });
-  }
-
-  if (isolationEvidence.cleanup && isolationEvidence.cleanup.ok === false) {
-    issues.push({
-      code: 'skill_test_cleanup_failed',
-      severity: 'error',
-      path: 'isolation.cleanup',
-      message: clipText(isolationEvidence.cleanup.error || 'Isolated skill test cleanup failed', 240),
-    });
-  }
-
-  return issues;
-}
-
-function getSkillTestIsolationFailureMessage(isolationEvidence) {
-  if (!isolationEvidence || typeof isolationEvidence !== 'object') {
-    return 'Skill test isolation failed';
-  }
-
-  const unsafeReasons = Array.isArray(isolationEvidence.unsafeReasons) ? isolationEvidence.unsafeReasons : [];
-
-  const toolsNotSandboxed = unsafeReasons.includes('tool_runtime_not_sandboxed');
-  const pathSemanticsNotSandboxed = unsafeReasons.includes('path_semantics_not_sandboxed');
-
-  if (toolsNotSandboxed && pathSemanticsNotSandboxed) {
-    return 'Skill test publish-gate requires sandbox-routed tools and sandbox path semantics, but the current run still exposed host execution semantics';
-  }
-
-  if (toolsNotSandboxed) {
-    return 'Skill test publish-gate requires sandbox-routed file and command tools, but the current run kept tool execution on the host';
-  }
-
-  if (pathSemanticsNotSandboxed) {
-    return 'Skill test publish-gate requires sandbox path semantics, but the current run still exposed host cwd or file paths';
-  }
-
-  if (unsafeReasons.includes('execution_not_sandboxed')) {
-    return 'Skill test publish-gate requires sandbox execution, but the run executed on the host runtime';
-  }
-
-  if (unsafeReasons.includes('egress_not_enforced')) {
-    return 'Skill test publish-gate requires enforced deny-egress policy, but the current adapter only recorded the request';
-  }
-
-  if (isolationEvidence.pollutionCheck && isolationEvidence.pollutionCheck.ok === false) {
-    return 'Skill test isolation detected live-state pollution';
-  }
-
-  if (isolationEvidence.cleanup && isolationEvidence.cleanup.ok === false) {
-    return `Skill test isolation cleanup failed: ${clipText(isolationEvidence.cleanup.error || 'unknown error', 200)}`;
-  }
-
-  return 'Skill test isolation failed';
 }
 
 export {

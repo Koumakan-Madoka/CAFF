@@ -23,6 +23,15 @@ import {
   createSkillTestIsolationDriver,
   getSkillTestIsolationFailureMessage,
 } from '../domain/skill-test/isolation';
+import {
+  DEFAULT_ENVIRONMENT_CACHE_ROOT_DIR,
+  createEnvironmentFailureMessage,
+  createSkippedEnvironmentResult,
+  executeEnvironmentWorkflow,
+  normalizeEnvironmentConfigInput,
+  resolveEnvironmentRunConfig,
+} from '../domain/skill-test/environment-chain';
+import { createSkillTestEnvironmentRuntime } from '../domain/skill-test/sandbox-tool-contract';
 const { resolveProviderAuthEnv } = require('../domain/skill-test/open-sandbox-factory');
 
 type ApiContext = {
@@ -101,6 +110,10 @@ function liveSessionToolStepSignature(step: any) {
 
 function isPlainObject(value: any) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function normalizePathForJson(value: any) {
+  return String(value || '').trim().replace(/\\/g, '/');
 }
 
 function hasOwn(value: any, key: string) {
@@ -367,6 +380,14 @@ function normalizePositiveInteger(value: any) {
     ? Number.parseInt(value, 10)
     : Number(value);
   return Number.isInteger(normalized) && normalized > 0 ? normalized : null;
+}
+
+function clipSkillTestText(value: any, maxLength = 240) {
+  const text = String(value || '').trim();
+  if (!text) {
+    return '';
+  }
+  return text.length > maxLength ? `${text.slice(0, Math.max(0, maxLength - 1))}…` : text;
 }
 
 function normalizeMatcherName(value: any) {
@@ -1563,6 +1584,13 @@ export function validateAndNormalizeCaseInput(input: any, options: { requireSkil
   const generationModel = String(input.generationModel || input.generation_model || existing && existing.generationModel || '').trim();
   const generationCreatedAt = String(input.generationCreatedAt || input.generation_created_at || existing && existing.generationCreatedAt || '').trim();
 
+  const hasEnvironmentConfigInput = hasOwn(input, 'environmentConfig') || hasOwn(input, 'environment_config');
+  const environmentConfigSource = hasEnvironmentConfigInput
+    ? (hasOwn(input, 'environmentConfig') ? input.environmentConfig : input.environment_config)
+    : existing && existing.environmentConfig;
+  const environmentConfigResult = normalizeEnvironmentConfigInput(environmentConfigSource);
+  issues.push(...environmentConfigResult.issues);
+
   const hasEvaluationRubricInput = hasOwn(input, 'evaluationRubric') || hasOwn(input, 'evaluation_rubric');
   const evaluationRubricSource = hasEvaluationRubricInput
     ? (hasOwn(input, 'evaluationRubric') ? input.evaluationRubric : input.evaluation_rubric)
@@ -1664,6 +1692,7 @@ export function validateAndNormalizeCaseInput(input: any, options: { requireSkil
     generationProvider,
     generationModel,
     generationCreatedAt,
+    environmentConfig: environmentConfigResult.config,
     note,
     issues: mergeValidationIssues(issues),
   };
@@ -2134,6 +2163,7 @@ function normalizeTestCaseRow(row: any) {
   const loadingMode = String(row.loading_mode || 'dynamic').trim() || 'dynamic';
   const validityStatus = String(row.validity_status || 'pending').trim() || 'pending';
   const prompt = normalizePromptText(row.trigger_prompt);
+  const environmentConfig = normalizeEnvironmentConfigInput(safeJsonParse(row.environment_config_json) || null).config;
   return {
     id: String(row.id || '').trim(),
     skillId: String(row.skill_id || '').trim(),
@@ -2148,6 +2178,7 @@ function normalizeTestCaseRow(row: any) {
     expectedGoal: String(row.expected_goal || '').trim(),
     expectedSequence: sanitizeExpectedSequence(safeJsonParse(row.expected_sequence_json) || []),
     evaluationRubric: sanitizeEvaluationRubric(safeJsonParse(row.evaluation_rubric_json) || {}),
+    environmentConfig,
     validityStatus,
     caseStatus: resolveCaseStatus(row),
     generationProvider: String(row.generation_provider || '').trim(),
@@ -2389,6 +2420,9 @@ function normalizeTestRunRow(row: any) {
     return null;
   }
   const normalizedProjection = normalizeRunEvaluationProjection(row);
+  const evaluationEnvironment = normalizedProjection.evaluation && typeof normalizedProjection.evaluation === 'object'
+    ? normalizedProjection.evaluation.environment || null
+    : null;
   const isolation = normalizedProjection.evaluation && typeof normalizedProjection.evaluation === 'object'
     ? normalizedProjection.evaluation.isolation || null
     : null;
@@ -2414,6 +2448,8 @@ function normalizeTestRunRow(row: any) {
     instructionAdherence: normalizedProjection.metrics.instructionAdherence,
     verdict: normalizedProjection.verdict,
     evaluation: normalizedProjection.evaluation,
+    environmentStatus: String(row.environment_status || evaluationEnvironment && evaluationEnvironment.status || '').trim(),
+    environmentPhase: String(row.environment_phase || evaluationEnvironment && evaluationEnvironment.phase || '').trim(),
     isolation,
     notIsolated: Boolean(isolation && isolation.notIsolated),
     validationIssues: normalizedProjection.issues,
@@ -2436,6 +2472,9 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     DEFAULT_SKILL_TEST_BRIDGE_TOKEN_TTL_SECONDS;
   const startRunImpl = typeof options.startRunImpl === 'function' ? options.startRunImpl : startRun;
   const evaluateRunImpl = typeof options.evaluateRunImpl === 'function' ? options.evaluateRunImpl : null;
+  const environmentCacheRootDir = typeof options.environmentCacheRootDir === 'string' && options.environmentCacheRootDir.trim()
+    ? String(options.environmentCacheRootDir).trim()
+    : DEFAULT_ENVIRONMENT_CACHE_ROOT_DIR;
   const resolveProviderAuthEnvImpl = typeof options.resolveProviderAuthEnvImpl === 'function'
     ? options.resolveProviderAuthEnvImpl
     : resolveProviderAuthEnv;
@@ -2563,6 +2602,14 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     }
 
     return isolation;
+  }
+
+  function readSkillTestEnvironmentInput(body: any = {}) {
+    const payload = body && typeof body === 'object' ? body : {};
+    if (!hasOwn(payload, 'environment')) {
+      return null;
+    }
+    return payload.environment;
   }
 
   function stopSkillTestRunHandle(handle: any, reason: string) {
@@ -2924,13 +2971,13 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
           id, skill_id, test_type, loading_mode, trigger_prompt,
           expected_tools_json, expected_behavior, validity_status, case_status,
           expected_goal, expected_steps_json, expected_sequence_json, evaluation_rubric_json,
-          generation_provider, generation_model, generation_created_at,
+          environment_config_json, generation_provider, generation_model, generation_created_at,
           note, created_at, updated_at
         ) VALUES (
           @id, @skillId, @testType, @loadingMode, @triggerPrompt,
           @expectedToolsJson, @expectedBehavior, @validityStatus, @caseStatus,
           @expectedGoal, @expectedStepsJson, @expectedSequenceJson, @evaluationRubricJson,
-          @generationProvider, @generationModel, @generationCreatedAt,
+          @environmentConfigJson, @generationProvider, @generationModel, @generationCreatedAt,
           @note, @createdAt, @updatedAt
         )`
       )
@@ -2948,6 +2995,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
         expectedStepsJson: JSON.stringify(normalized.expectedSteps || []),
         expectedSequenceJson: JSON.stringify(normalized.expectedSequence),
         evaluationRubricJson: JSON.stringify(normalized.evaluationRubric),
+        environmentConfigJson: JSON.stringify(normalized.environmentConfig || {}),
         generationProvider: normalized.generationProvider || '',
         generationModel: normalized.generationModel || '',
         generationCreatedAt: normalized.generationCreatedAt || '',
@@ -2983,6 +3031,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
              expected_steps_json = @expectedStepsJson,
              expected_sequence_json = @expectedSequenceJson,
              evaluation_rubric_json = @evaluationRubricJson,
+             environment_config_json = @environmentConfigJson,
              generation_provider = @generationProvider,
              generation_model = @generationModel,
              generation_created_at = @generationCreatedAt,
@@ -3003,6 +3052,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
         expectedStepsJson: JSON.stringify(normalized.expectedSteps || []),
         expectedSequenceJson: JSON.stringify(normalized.expectedSequence),
         evaluationRubricJson: JSON.stringify(normalized.evaluationRubric),
+        environmentConfigJson: JSON.stringify(normalized.environmentConfig || {}),
         generationProvider: normalized.generationProvider || '',
         generationModel: normalized.generationModel || '',
         generationCreatedAt: normalized.generationCreatedAt || '',
@@ -4174,8 +4224,10 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     const expectedStepsParsed = parseStoredJsonField(row.expected_steps_json, 'expectedSteps', 'array', 'expected_steps_required');
     const expectedSequenceParsed = parseStoredJsonField(row.expected_sequence_json, 'expectedSequence', 'array', 'expected_sequence_invalid');
     const evaluationRubricParsed = parseStoredJsonField(row.evaluation_rubric_json, 'evaluationRubric', 'object', 'evaluation_rubric_invalid');
+    const environmentConfigParsed = parseStoredJsonField(row.environment_config_json, 'environmentConfig', 'object', 'environment_config_invalid');
+    const normalizedEnvironmentConfig = normalizeEnvironmentConfigInput(environmentConfigParsed.value).config;
 
-    issues.push(...expectedToolsParsed.issues, ...expectedStepsParsed.issues, ...expectedSequenceParsed.issues, ...evaluationRubricParsed.issues);
+    issues.push(...expectedToolsParsed.issues, ...expectedStepsParsed.issues, ...expectedSequenceParsed.issues, ...evaluationRubricParsed.issues, ...environmentConfigParsed.issues);
 
     return {
       input: {
@@ -4190,6 +4242,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
         expectedGoal: row.expected_goal,
         expectedSequence: expectedSequenceParsed.value,
         evaluationRubric: evaluationRubricParsed.value,
+        environmentConfig: normalizedEnvironmentConfig,
         generationProvider: row.generation_provider,
         generationModel: row.generation_model,
         generationCreatedAt: row.generation_created_at,
@@ -5848,6 +5901,8 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
         isolationContext && isolationContext.extraEnv ? isolationContext.extraEnv : null,
         isolationExecution
       );
+      const resolvedEnvironment = resolveEnvironmentRunConfig(testCase, runOptions.environment, runtimeSkill);
+      const environmentConfigIssues = Array.isArray(resolvedEnvironment.issues) ? resolvedEnvironment.issues : [];
 
       runStore.createTask({
         taskId,
@@ -5891,6 +5946,10 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
       let sessionPath = '';
       let dynamicSkillLoadConfirmed = false;
       let runFailureDebug: any = null;
+      let environmentResult: any = resolvedEnvironment.enabled
+        ? createSkippedEnvironmentResult('environment chain pending')
+        : createSkippedEnvironmentResult('environment chain not requested');
+      let startedEventSent = false;
       let lastLiveSessionToolStepId = '';
       let lastLiveSessionToolSignature = '';
       const liveSessionAnonymousToolTracker = {
@@ -5910,83 +5969,172 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
 
       try {
         const providerAuthEnv = buildProviderAuthEnv(effectiveProvider);
-        const handle = await Promise.resolve(startRunImpl(effectiveProvider, effectiveModel, prompt, {
-          thinking: '',
-          agentDir: runtimeAgentDir,
-          sqlitePath: runtimeSqlitePath,
-          cwd: projectDir || undefined,
-          extensionPaths: isolationContext && isolationContext.sandboxToolAdapter ? [skillTestSandboxExtensionPath] : undefined,
-          streamOutput: false,
-          session: sessionName,
-          taskId,
-          taskKind: 'skill_test_run',
-          taskRole: agentName,
-          metadata: {
-            testCaseId: testCase.id,
+        const environmentCommandEnv = {
+          ...providerAuthEnv,
+          ...(isolationContext && isolationContext.extraEnv ? isolationContext.extraEnv : {}),
+        };
+        const runtimeExtraEnv = {
+          ...providerAuthEnv,
+          PI_AGENT_ID: agentId,
+          PI_AGENT_NAME: agentName,
+          PI_AGENT_SANDBOX_DIR: sandbox.sandboxDir,
+          PI_AGENT_PRIVATE_DIR: sandbox.privateDir,
+          CAFF_CHAT_API_URL: skillTestChatApiUrl,
+          CAFF_CHAT_INVOCATION_ID: toolInvocation.invocationId,
+          CAFF_CHAT_CALLBACK_TOKEN: toolInvocation.callbackToken,
+          CAFF_CHAT_TOOLS_PATH: toPortableShellPath(agentToolScriptPath),
+          CAFF_CHAT_TOOLS_RELATIVE_PATH: agentToolRelativePath,
+          CAFF_CHAT_CONVERSATION_ID: conversationId,
+          CAFF_CHAT_TURN_ID: turnId,
+          CAFF_SKILL_TEST_RUN_ID: taskId,
+          CAFF_SKILL_TEST_CASE_ID: testCase.id,
+          CAFF_SKILL_LOADING_MODE: testCase.loadingMode || 'dynamic',
+          ...(isolationContext && isolationContext.sandboxToolAdapter ? { CAFF_SKILL_TEST_SANDBOX_TOOL_BRIDGE: '1' } : {}),
+          ...(isolationContext && isolationContext.extraEnv ? isolationContext.extraEnv : {}),
+        };
+        const emitEnvironmentProgress = (phase: string, label: string) => {
+          liveProgressLabel = label;
+          const eventPhase = startedEventSent ? 'progress' : 'started';
+          broadcastSkillTestRunEvent(eventPhase, {
+            caseId: testCase.id,
             skillId: testCase.skillId,
-            evalCaseId,
-            source: 'skill_test',
-          },
-          extraEnv: {
-            ...providerAuthEnv,
-            PI_AGENT_ID: agentId,
-            PI_AGENT_NAME: agentName,
-            PI_AGENT_SANDBOX_DIR: sandbox.sandboxDir,
-            PI_AGENT_PRIVATE_DIR: sandbox.privateDir,
-            CAFF_CHAT_API_URL: skillTestChatApiUrl,
-            CAFF_CHAT_INVOCATION_ID: toolInvocation.invocationId,
-            CAFF_CHAT_CALLBACK_TOKEN: toolInvocation.callbackToken,
-            CAFF_CHAT_TOOLS_PATH: toPortableShellPath(agentToolScriptPath),
-            CAFF_CHAT_TOOLS_RELATIVE_PATH: agentToolRelativePath,
-            CAFF_CHAT_CONVERSATION_ID: conversationId,
-            CAFF_CHAT_TURN_ID: turnId,
-            CAFF_SKILL_TEST_RUN_ID: taskId,
-            CAFF_SKILL_TEST_CASE_ID: testCase.id,
-            CAFF_SKILL_LOADING_MODE: testCase.loadingMode || 'dynamic',
-            ...(isolationContext && isolationContext.sandboxToolAdapter ? { CAFF_SKILL_TEST_SANDBOX_TOOL_BRIDGE: '1' } : {}),
-            ...(isolationContext && isolationContext.extraEnv ? isolationContext.extraEnv : {}),
-          },
-        }));
+            loadingMode,
+            testType,
+            conversationId,
+            turnId,
+            taskId,
+            messageId: liveMessageId,
+            runId: stage.runId || null,
+            provider: effectiveProvider || '',
+            model: effectiveModel || '',
+            promptVersion,
+            status: 'running',
+            executionRuntime: liveExecutionRuntime,
+            progressLabel: label,
+            environmentPhase: phase,
+            createdAt: timestamp,
+            updatedAt: nowIso(),
+            ...(startedEventSent ? {} : { trace: buildSkillTestLiveTrace(liveMessageId, taskId, 'streaming', stage.runId || null, timestamp, sessionPath, { runStore }) }),
+          });
+          startedEventSent = true;
+        };
 
-        stage.runId = handle.runId || null;
-        stage.status = 'running';
-        sessionPath = handle.sessionPath || '';
+        if (resolvedEnvironment.enabled && resolvedEnvironment.config) {
+          stage.status = 'running';
+          runStore.updateTask(taskId, {
+            status: 'running',
+            requestedSession: sessionName,
+          });
+          const environmentRuntime = createSkillTestEnvironmentRuntime({
+            sandboxToolAdapter: isolationContext && isolationContext.sandboxToolAdapter ? isolationContext.sandboxToolAdapter : null,
+            toolRuntime: isolationExecution && isolationExecution.toolRuntime ? isolationExecution.toolRuntime : 'host',
+            execution: isolationExecution || null,
+            isolation: isolationContext && isolationContext.isolation ? isolationContext.isolation : null,
+            driver: isolationContext && isolationContext.driver ? isolationContext.driver : null,
+            projectDir,
+            outputDir: isolationContext && isolationContext.outputDir ? isolationContext.outputDir : '',
+            privateDir: sandbox.privateDir,
+            skillId: testCase.skillId,
+            environmentCacheRootDir,
+            commandEnv: environmentCommandEnv,
+            availableEnv: {
+              ...process.env,
+              ...environmentCommandEnv,
+            },
+          });
+          environmentResult = await executeEnvironmentWorkflow(resolvedEnvironment.config, environmentRuntime, {
+            allowBootstrap: resolvedEnvironment.allowBootstrap,
+            persistAdvice: resolvedEnvironment.persistAdvice,
+            source: resolvedEnvironment.source,
+            onPhase: (phase: string, label: string) => {
+              runStore.appendTaskEvent(taskId, 'skill_test_environment_phase', {
+                phase,
+                label,
+                createdAt: nowIso(),
+              });
+              emitEnvironmentProgress(phase, label);
+            },
+            onCommandResult: (phase: string, commandResult: any) => {
+              runStore.appendTaskEvent(taskId, 'skill_test_environment_command', {
+                phase,
+                ...commandResult,
+                createdAt: nowIso(),
+              });
+            },
+          });
 
-        runStore.updateTask(taskId, {
-          status: 'running',
-          runId: normalizeRunStoreRunId(handle.runId),
-          requestedSession: sessionName,
-          sessionPath: handle.sessionPath || null,
-        });
+          if (resolvedEnvironment.source && typeof resolvedEnvironment.source === 'object') {
+            environmentResult.source = resolvedEnvironment.source;
+          }
 
-        liveExecutionRuntime = isolationExecution && isolationExecution.loopRuntime === 'sandbox' ? 'sandbox' : 'host';
-        liveProgressLabel = liveExecutionRuntime === 'sandbox'
-          ? '正在准备 sandbox runner…'
-          : liveUsesSandboxTools
-            ? 'host loop 正在等待 sandbox 工具调用…'
-            : '正在等待工具调用…';
+          if (environmentResult.status !== 'passed' && environmentResult.status !== 'skipped') {
+            status = 'failed';
+            errorMessage = createEnvironmentFailureMessage(environmentResult);
+          }
+        }
 
-        broadcastSkillTestRunEvent('started', {
-          caseId: testCase.id,
-          skillId: testCase.skillId,
-          loadingMode,
-          testType,
-          conversationId,
-          turnId,
-          taskId,
-          messageId: liveMessageId,
-          runId: handle.runId || null,
-          provider: effectiveProvider || '',
-          model: effectiveModel || '',
-          promptVersion,
-          status: 'running',
-          executionRuntime: liveExecutionRuntime,
-          progressLabel: liveProgressLabel,
-          createdAt: timestamp,
-          trace: buildSkillTestLiveTrace(liveMessageId, taskId, 'streaming', handle.runId || null, timestamp, sessionPath, { runStore }),
-        });
+        if (status === 'succeeded') {
+          const handle = await Promise.resolve(startRunImpl(effectiveProvider, effectiveModel, prompt, {
+            thinking: '',
+            agentDir: runtimeAgentDir,
+            sqlitePath: runtimeSqlitePath,
+            cwd: projectDir || undefined,
+            extensionPaths: isolationContext && isolationContext.sandboxToolAdapter ? [skillTestSandboxExtensionPath] : undefined,
+            streamOutput: false,
+            session: sessionName,
+            taskId,
+            taskKind: 'skill_test_run',
+            taskRole: agentName,
+            metadata: {
+              testCaseId: testCase.id,
+              skillId: testCase.skillId,
+              evalCaseId,
+              source: 'skill_test',
+            },
+            extraEnv: runtimeExtraEnv,
+          }));
 
-        const broadcastLiveRunnerProgress = (event: any, fallbackLabel = '正在 sandbox 内执行…') => {
+          stage.runId = handle.runId || null;
+          stage.status = 'running';
+          sessionPath = handle.sessionPath || '';
+
+          runStore.updateTask(taskId, {
+            status: 'running',
+            runId: normalizeRunStoreRunId(handle.runId),
+            requestedSession: sessionName,
+            sessionPath: handle.sessionPath || null,
+          });
+
+          liveExecutionRuntime = isolationExecution && isolationExecution.loopRuntime === 'sandbox' ? 'sandbox' : 'host';
+          liveProgressLabel = liveExecutionRuntime === 'sandbox'
+            ? '正在准备 sandbox runner…'
+            : liveUsesSandboxTools
+              ? 'host loop 正在等待 sandbox 工具调用…'
+              : '正在等待工具调用…';
+
+          broadcastSkillTestRunEvent(startedEventSent ? 'progress' : 'started', {
+            caseId: testCase.id,
+            skillId: testCase.skillId,
+            loadingMode,
+            testType,
+            conversationId,
+            turnId,
+            taskId,
+            messageId: liveMessageId,
+            runId: handle.runId || null,
+            provider: effectiveProvider || '',
+            model: effectiveModel || '',
+            promptVersion,
+            status: 'running',
+            executionRuntime: liveExecutionRuntime,
+            progressLabel: liveProgressLabel,
+            createdAt: timestamp,
+            updatedAt: nowIso(),
+            trace: buildSkillTestLiveTrace(liveMessageId, taskId, 'streaming', handle.runId || null, timestamp, sessionPath, { runStore }),
+          });
+          startedEventSent = true;
+
+          const broadcastLiveRunnerProgress = (event: any, fallbackLabel = '正在 sandbox 内执行…') => {
           const eventPayload = event && typeof event === 'object' ? event : {};
           const nextLabel = String(eventPayload.label || fallbackLabel || '').trim();
           if (!nextLabel) {
@@ -6161,6 +6309,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
           outputText = liveOutputText;
         }
         status = 'succeeded';
+        }
       } catch (error) {
         const err: any = error;
         if (shouldEarlyStopOnSkillLoad && dynamicSkillLoadConfirmed) {
@@ -6301,15 +6450,19 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
           completedTrace.task.status = status;
         }
       }
-      const finalVerdict = isolationEvidence && isolationEvidence.unsafe ? 'fail' : evaluation.verdict || '';
+      const finalVerdict = isolationEvidence && isolationEvidence.unsafe
+        ? 'fail'
+        : status === 'failed'
+          ? 'fail'
+          : evaluation.verdict || '';
       const runValidation = {
         caseSchemaStatus: preflight.caseSchemaStatus,
         derivedFromLegacy: preflight.derivedFromLegacy,
-        issues: mergeValidationIssues(evaluation.validationIssues, preflight.issues, isolationIssues),
+        issues: mergeValidationIssues(evaluation.validationIssues, preflight.issues, environmentConfigIssues, isolationIssues),
       };
       const evaluationJsonPayload = isPlainObject(evaluation.evaluation)
-        ? { ...evaluation.evaluation, validation: runValidation, isolation: isolationEvidence }
-        : { validation: runValidation, isolation: isolationEvidence };
+        ? { ...evaluation.evaluation, environment: environmentResult, validation: runValidation, isolation: isolationEvidence }
+        : { environment: environmentResult, validation: runValidation, isolation: isolationEvidence };
 
       broadcastSkillTestRunEvent(status === 'succeeded' ? 'completed' : 'failed', {
         caseId: testCase.id,
@@ -6349,7 +6502,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
         actualTools: safeJsonParse(evaluation.actualToolsJson) || [],
         triggerEvaluation: evaluation.triggerEvaluation || null,
         executionEvaluation: evaluation.executionEvaluation || null,
-        evaluation: evaluation.evaluation || null,
+        evaluation: evaluationJsonPayload,
         validation: runValidation,
         isolation: isolationEvidence,
         verdict: finalVerdict,
@@ -6399,6 +6552,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
             required_step_completion_rate, step_completion_rate,
             required_tool_coverage, tool_call_success_rate, tool_error_rate,
             sequence_adherence, goal_achievement, instruction_adherence,
+            environment_status, environment_phase,
             verdict, evaluation_json, error_message, created_at
           ) VALUES (
             @id, @testCaseId, @evalCaseRunId, @status,
@@ -6406,6 +6560,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
             @requiredStepCompletionRate, @stepCompletionRate,
             @requiredToolCoverage, @toolCallSuccessRate, @toolErrorRate,
             @sequenceAdherence, @goalAchievement, @instructionAdherence,
+            @environmentStatus, @environmentPhase,
             @verdict, @evaluationJson, @errorMessage, @createdAt
           )`
         )
@@ -6426,6 +6581,8 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
           sequenceAdherence: evaluation.sequenceAdherence,
           goalAchievement: evaluation.goalAchievement,
           instructionAdherence: evaluation.instructionAdherence,
+          environmentStatus: String(environmentResult && environmentResult.status || '').trim(),
+          environmentPhase: String(environmentResult && environmentResult.phase || '').trim(),
           verdict: finalVerdict,
           evaluationJson: JSON.stringify(evaluationJsonPayload),
           errorMessage: errorMessage || '',
@@ -6733,6 +6890,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
               agentId: body.agentId,
               agentName: body.agentName,
               isolation: readSkillTestIsolationInput(body),
+              environment: readSkillTestEnvironmentInput(body),
             });
             results.push(result);
           } catch (error: any) {
@@ -6808,6 +6966,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
             agentId: body.agentId,
             agentName: body.agentName,
             isolation: readSkillTestIsolationInput(body),
+            environment: readSkillTestEnvironmentInput(body),
           });
           sendJson(res, 200, result);
           return true;

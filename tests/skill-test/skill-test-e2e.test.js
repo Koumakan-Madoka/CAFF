@@ -2,9 +2,11 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const zlib = require('node:zlib');
 const test = require('node:test');
 const { EventEmitter } = require('node:events');
 const Database = require('better-sqlite3');
+const tarStream = require('tar-stream');
 
 const { migrateChatSchema, migrateRunSchema, migrateSkillTestSchema } = require('../../build/storage/sqlite/migrations');
 const { createSkillTestController } = require('../../build/server/api/skill-test-controller');
@@ -86,6 +88,44 @@ function createFakeSkillRegistry(existingSkills = []) {
   };
 }
 
+async function createTarGzBuffer(entries = []) {
+  return await new Promise((resolve, reject) => {
+    const pack = tarStream.pack();
+    const gzip = zlib.createGzip();
+    const chunks = [];
+
+    gzip.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+    gzip.on('end', () => resolve(Buffer.concat(chunks)));
+    gzip.on('error', reject);
+    pack.on('error', reject);
+    pack.pipe(gzip);
+
+    const writeNext = (index) => {
+      if (index >= entries.length) {
+        pack.finalize();
+        return;
+      }
+      const entry = entries[index] || {};
+      const entryType = entry.type || 'file';
+      const entryBody = entryType === 'file' ? Buffer.from(entry.content || '') : undefined;
+      pack.entry({
+        name: String(entry.name || '').trim(),
+        type: entryType,
+        mode: Number.isInteger(entry.mode) ? entry.mode : 0o644,
+        linkname: entry.linkname || undefined,
+      }, entryBody, (error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        writeNext(index + 1);
+      });
+    };
+
+    writeNext(0);
+  });
+}
+
 function createSandboxToolAdapterStub(options = {}) {
   const stdout = String(options.stdout || '/case/project\n');
   const stderr = String(options.stderr || '');
@@ -98,6 +138,13 @@ function createSandboxToolAdapterStub(options = {}) {
     async access() {},
     async readFile() {
       return fileContent;
+    },
+    async writeFile(hostPath, content) {
+      fs.mkdirSync(path.dirname(hostPath), { recursive: true });
+      fs.writeFileSync(hostPath, content == null ? '' : content);
+    },
+    async mkdir(hostPath) {
+      fs.mkdirSync(hostPath, { recursive: true });
     },
     async runCommand() {
       return {
@@ -4153,6 +4200,693 @@ test('manual create accepts userPrompt as canonical prompt and mirrors triggerPr
   assert.equal(row.trigger_prompt, '请先读取 skill 文档再继续执行。');
 
   db.close();
+});
+
+test('manual create persists environmentConfig on skill test cases', async () => {
+  const db = createTestDb();
+  const store = createInMemoryStore(db);
+  const controller = createSkillTestController({
+    store,
+    agentToolBridge: createFakeAgentToolBridge(),
+    skillRegistry: createFakeSkillRegistry([]),
+    getProjectDir: () => '/tmp/project',
+    toolBaseUrl: 'http://127.0.0.1:3100',
+  });
+
+  const req = createJsonRequest('POST', '/api/skills/werewolf/test-cases', {
+    userPrompt: '先检查环境，再执行 skill。',
+    loadingMode: 'dynamic',
+    expectedBehavior: '环境通过后继续运行。',
+    environmentConfig: {
+      enabled: true,
+      requirements: [{ kind: 'command', name: 'python' }],
+      bootstrap: { commands: ['python --version'] },
+      verify: { commands: ['python --version'] },
+    },
+  });
+  const res = createCaptureResponse();
+
+  const handled = await controller({
+    req,
+    res,
+    pathname: '/api/skills/werewolf/test-cases',
+    requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases'),
+  });
+
+  assert.equal(handled, true);
+  assert.equal(res.statusCode, 201);
+  assert.equal(res.json.testCase.environmentConfig.enabled, true);
+  assert.equal(res.json.testCase.environmentConfig.requirements[0].name, 'python');
+
+  const row = db.prepare('SELECT environment_config_json FROM skill_test_cases WHERE id = ?').get(res.json.testCase.id);
+  assert.ok(row);
+  const storedConfig = JSON.parse(row.environment_config_json || '{}');
+  assert.equal(storedConfig.enabled, true);
+  assert.equal(storedConfig.bootstrap.commands[0], 'python --version');
+
+  db.close();
+});
+
+test('isolated run executes environment bootstrap before model run and persists environment status', async () => {
+  const harness = createTempHarness();
+
+  try {
+    const liveProjectDir = path.join(harness.tempDir, 'live-project');
+    const skillDir = path.join(harness.tempDir, 'live-skills', 'werewolf');
+    fs.mkdirSync(liveProjectDir, { recursive: true });
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '# Werewolf\n\nFixture skill body.\n', 'utf8');
+
+    let installed = false;
+    const seenCommands = [];
+    let startRunCalls = 0;
+    const controller = createSkillTestController({
+      store: createInMemoryStore(harness.db, {
+        agentDir: path.join(harness.tempDir, 'agent-root'),
+        databasePath: harness.databasePath,
+      }),
+      agentToolBridge: createFakeAgentToolBridge(),
+      skillRegistry: createFakeSkillRegistry([
+        {
+          id: 'werewolf',
+          name: 'Werewolf',
+          description: 'Fixture skill',
+          path: skillDir,
+        },
+      ]),
+      getProjectDir: () => liveProjectDir,
+      toolBaseUrl: 'http://127.0.0.1:3100',
+      openSandboxFactory: ({ caseId }) => ({
+        driverName: 'opensandbox',
+        driverVersion: 'env-test',
+        sandboxId: `sandbox-${caseId}`,
+        toolAdapter: {
+          async access() {},
+          async readFile() {
+            return Buffer.from('# sandbox skill\n', 'utf8');
+          },
+          async writeFile() {},
+          async mkdir() {},
+          async runCommand(command) {
+            seenCommands.push(String(command));
+            if (String(command).includes("command -v 'fakecli'")) {
+              return installed
+                ? { stdout: '/usr/bin/fakecli\n', stderr: '', exitCode: 0 }
+                : { stdout: '', stderr: 'not found', exitCode: 1 };
+            }
+            if (String(command) === 'install fakecli') {
+              installed = true;
+              return { stdout: 'installed', stderr: '', exitCode: 0 };
+            }
+            if (String(command) === 'fakecli --version') {
+              return installed
+                ? { stdout: 'fakecli 1.0.0\n', stderr: '', exitCode: 0 }
+                : { stdout: '', stderr: 'not found', exitCode: 1 };
+            }
+            return { stdout: '', stderr: '', exitCode: 0 };
+          },
+        },
+        cleanup: async () => {},
+      }),
+      startRunImpl: () => {
+        startRunCalls += 1;
+        return {
+          runId: 'env-bootstrap-run',
+          sessionPath: path.join(harness.tempDir, 'env-bootstrap-run.jsonl'),
+          resultPromise: Promise.resolve({
+            reply: 'ok',
+            runId: 'env-bootstrap-run',
+            sessionPath: path.join(harness.tempDir, 'env-bootstrap-run.jsonl'),
+          }),
+        };
+      },
+      evaluateRunImpl: () => ({
+        triggerPassed: 1,
+        executionPassed: null,
+        toolAccuracy: null,
+        actualToolsJson: '[]',
+        triggerEvaluation: { mode: 'dynamic', loaded: true, loadEvidence: [] },
+        executionEvaluation: null,
+        requiredStepCompletionRate: null,
+        stepCompletionRate: null,
+        requiredToolCoverage: null,
+        toolCallSuccessRate: null,
+        toolErrorRate: null,
+        sequenceAdherence: null,
+        goalAchievement: null,
+        instructionAdherence: null,
+        verdict: 'pass',
+        evaluation: { verdict: 'pass', dimensions: {} },
+        validationIssues: [],
+      }),
+    });
+
+    const createRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('POST', '/api/skills/werewolf/test-cases', {
+        userPrompt: '先把 fakecli 装好，再继续运行狼人杀 skill。',
+        loadingMode: 'dynamic',
+        expectedBehavior: '先准备依赖再运行。',
+        caseStatus: 'ready',
+        environmentConfig: {
+          enabled: true,
+          requirements: [{ kind: 'command', name: 'fakecli' }],
+          bootstrap: { commands: ['install fakecli'] },
+          verify: { commands: ['fakecli --version'] },
+        },
+      }),
+      res: createRes,
+      pathname: '/api/skills/werewolf/test-cases',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases'),
+    });
+
+    const caseId = createRes.json.testCase.id;
+    const runRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('POST', `/api/skills/werewolf/test-cases/${caseId}/run`, {
+        isolation: { mode: 'isolated', trellisMode: 'fixture' },
+        environment: { enabled: true },
+      }),
+      res: runRes,
+      pathname: `/api/skills/werewolf/test-cases/${caseId}/run`,
+      requestUrl: new URL(`http://localhost/api/skills/werewolf/test-cases/${caseId}/run`),
+    });
+
+    assert.equal(runRes.statusCode, 200);
+    assert.equal(runRes.json.run.status, 'succeeded');
+    assert.equal(runRes.json.run.environmentStatus, 'passed');
+    assert.equal(runRes.json.run.environmentPhase, 'completed');
+    assert.equal(runRes.json.run.evaluation.environment.status, 'passed');
+    assert.equal(startRunCalls, 1);
+    assert.ok(seenCommands.some((entry) => entry.includes("command -v 'fakecli'")));
+    assert.ok(seenCommands.includes('install fakecli'));
+    assert.ok(seenCommands.includes('fakecli --version'));
+
+    const storedRun = harness.db.prepare('SELECT environment_status, environment_phase FROM skill_test_runs WHERE id = ?').get(runRes.json.run.id);
+    assert.equal(storedRun.environment_status, 'passed');
+    assert.equal(storedRun.environment_phase, 'completed');
+
+    const detailRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('GET', `/api/skill-test-runs/${runRes.json.run.id}`),
+      res: detailRes,
+      pathname: `/api/skill-test-runs/${runRes.json.run.id}`,
+      requestUrl: new URL(`http://localhost/api/skill-test-runs/${runRes.json.run.id}`),
+    });
+
+    assert.equal(detailRes.statusCode, 200);
+    assert.equal(detailRes.json.result.evaluation.environment.advice.target, 'TESTING.md');
+    assert.match(detailRes.json.result.evaluation.environment.advice.patch, /# Testing Environment/);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('run can source environment bootstrap config from skill TESTING.md', async () => {
+  const harness = createTempHarness();
+
+  try {
+    const liveProjectDir = path.join(harness.tempDir, 'live-project');
+    const skillDir = path.join(harness.tempDir, 'live-skills', 'werewolf');
+    fs.mkdirSync(liveProjectDir, { recursive: true });
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '# Werewolf\n\nFixture skill body.\n', 'utf8');
+    fs.writeFileSync(path.join(skillDir, 'TESTING.md'), [
+      '# Testing Environment',
+      '',
+      '## Prerequisites',
+      '- fakecli',
+      '',
+      '## Bootstrap',
+      '- install fakecli',
+      '',
+      '## Verification',
+      '- fakecli --version',
+      '',
+    ].join('\n'), 'utf8');
+
+    let installed = false;
+    const seenCommands = [];
+    let startRunCalls = 0;
+    const controller = createSkillTestController({
+      store: createInMemoryStore(harness.db, {
+        agentDir: path.join(harness.tempDir, 'agent-root'),
+        databasePath: harness.databasePath,
+      }),
+      agentToolBridge: createFakeAgentToolBridge(),
+      skillRegistry: createFakeSkillRegistry([
+        {
+          id: 'werewolf',
+          name: 'Werewolf',
+          description: 'Fixture skill',
+          path: skillDir,
+        },
+      ]),
+      getProjectDir: () => liveProjectDir,
+      toolBaseUrl: 'http://127.0.0.1:3100',
+      openSandboxFactory: ({ caseId }) => ({
+        driverName: 'opensandbox',
+        driverVersion: 'testing-doc-env',
+        sandboxId: `sandbox-${caseId}`,
+        toolAdapter: {
+          async access() {},
+          async readFile() {
+            return Buffer.from('# sandbox skill\n', 'utf8');
+          },
+          async writeFile() {},
+          async mkdir() {},
+          async runCommand(command) {
+            seenCommands.push(String(command));
+            if (String(command).includes("command -v 'fakecli'")) {
+              return installed
+                ? { stdout: '/usr/bin/fakecli\n', stderr: '', exitCode: 0 }
+                : { stdout: '', stderr: 'not found', exitCode: 1 };
+            }
+            if (String(command) === 'install fakecli') {
+              installed = true;
+              return { stdout: 'installed', stderr: '', exitCode: 0 };
+            }
+            if (String(command) === 'fakecli --version') {
+              return installed
+                ? { stdout: 'fakecli 1.0.0\n', stderr: '', exitCode: 0 }
+                : { stdout: '', stderr: 'not found', exitCode: 1 };
+            }
+            return { stdout: '', stderr: '', exitCode: 0 };
+          },
+        },
+        cleanup: async () => {},
+      }),
+      startRunImpl: () => {
+        startRunCalls += 1;
+        return {
+          runId: 'testing-doc-run',
+          sessionPath: path.join(harness.tempDir, 'testing-doc-run.jsonl'),
+          resultPromise: Promise.resolve({
+            reply: 'ok',
+            runId: 'testing-doc-run',
+            sessionPath: path.join(harness.tempDir, 'testing-doc-run.jsonl'),
+          }),
+        };
+      },
+      evaluateRunImpl: () => ({
+        triggerPassed: 1,
+        executionPassed: null,
+        toolAccuracy: null,
+        actualToolsJson: '[]',
+        triggerEvaluation: { mode: 'dynamic', loaded: true, loadEvidence: [] },
+        executionEvaluation: null,
+        requiredStepCompletionRate: null,
+        stepCompletionRate: null,
+        requiredToolCoverage: null,
+        toolCallSuccessRate: null,
+        toolErrorRate: null,
+        sequenceAdherence: null,
+        goalAchievement: null,
+        instructionAdherence: null,
+        verdict: 'pass',
+        evaluation: { verdict: 'pass', dimensions: {} },
+        validationIssues: [],
+      }),
+    });
+
+    const createRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('POST', '/api/skills/werewolf/test-cases', {
+        userPrompt: '先读测试文档里的环境说明，再执行狼人杀 skill。',
+        loadingMode: 'dynamic',
+        expectedBehavior: '支持从 TESTING.md 自动读取环境链。',
+        caseStatus: 'ready',
+      }),
+      res: createRes,
+      pathname: '/api/skills/werewolf/test-cases',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases'),
+    });
+
+    const caseId = createRes.json.testCase.id;
+    const runRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('POST', `/api/skills/werewolf/test-cases/${caseId}/run`, {
+        isolation: { mode: 'isolated', trellisMode: 'fixture' },
+        environment: { enabled: true },
+      }),
+      res: runRes,
+      pathname: `/api/skills/werewolf/test-cases/${caseId}/run`,
+      requestUrl: new URL(`http://localhost/api/skills/werewolf/test-cases/${caseId}/run`),
+    });
+
+    assert.equal(runRes.statusCode, 200);
+    assert.equal(runRes.json.run.status, 'succeeded');
+    assert.equal(runRes.json.run.environmentStatus, 'passed');
+    assert.equal(runRes.json.run.evaluation.environment.status, 'passed');
+    assert.equal(runRes.json.run.evaluation.environment.source.testingDocUsed, true);
+    assert.match(String(runRes.json.run.evaluation.environment.source.testingDocPath || ''), /TESTING\.md$/);
+    assert.equal(startRunCalls, 1);
+    assert.ok(seenCommands.some((entry) => entry.includes("command -v 'fakecli'")));
+    assert.ok(seenCommands.includes('install fakecli'));
+    assert.ok(seenCommands.includes('fakecli --version'));
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('isolated run saves environment cache, restores on hit, and rebuilds after expiry', async () => {
+  const harness = createTempHarness();
+
+  try {
+    const liveProjectDir = path.join(harness.tempDir, 'live-project');
+    const cacheRootDir = path.join(harness.tempDir, 'environment-cache');
+    const skillDir = path.join(harness.tempDir, 'live-skills', 'werewolf');
+    fs.mkdirSync(liveProjectDir, { recursive: true });
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.mkdirSync(cacheRootDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '# Werewolf\n\nFixture skill body.\n', 'utf8');
+
+    let startRunCalls = 0;
+    let bootstrapExecutions = 0;
+    let cacheSaveExecutions = 0;
+    const seenCommands = [];
+    const controller = createSkillTestController({
+      store: createInMemoryStore(harness.db, {
+        agentDir: path.join(harness.tempDir, 'agent-root'),
+        databasePath: harness.databasePath,
+      }),
+      agentToolBridge: createFakeAgentToolBridge(),
+      skillRegistry: createFakeSkillRegistry([
+        {
+          id: 'werewolf',
+          name: 'Werewolf',
+          description: 'Fixture skill',
+          path: skillDir,
+        },
+      ]),
+      getProjectDir: () => liveProjectDir,
+      toolBaseUrl: 'http://127.0.0.1:3100',
+      environmentCacheRootDir: cacheRootDir,
+      openSandboxFactory: ({ caseId, projectDir, outputDir }) => ({
+        driverName: 'opensandbox',
+        driverVersion: 'cache-restore',
+        sandboxId: `sandbox-${caseId}`,
+        toolAdapter: {
+          async access(hostPath) {
+            if (!fs.existsSync(hostPath)) {
+              throw new Error(`File not found: ${hostPath}`);
+            }
+          },
+          async readFile(hostPath) {
+            if (!fs.existsSync(hostPath)) {
+              throw new Error(`File not found: ${hostPath}`);
+            }
+            return fs.readFileSync(hostPath);
+          },
+          async writeFile(hostPath, content) {
+            fs.mkdirSync(path.dirname(hostPath), { recursive: true });
+            fs.writeFileSync(hostPath, content == null ? '' : content);
+          },
+          async mkdir(hostPath) {
+            fs.mkdirSync(hostPath, { recursive: true });
+          },
+          async runCommand(command, input = {}) {
+            const cwd = input && input.cwd ? String(input.cwd) : projectDir;
+            const normalizedCommand = String(command || '').trim();
+            seenCommands.push(normalizedCommand);
+            if (normalizedCommand === 'test -f .cache-bin/fakecli') {
+              return fs.existsSync(path.join(cwd, '.cache-bin', 'fakecli'))
+                ? { stdout: 'ok\n', stderr: '', exitCode: 0 }
+                : { stdout: '', stderr: 'missing', exitCode: 1 };
+            }
+            if (normalizedCommand === 'mkdir -p .cache-bin && printf "ok" > .cache-bin/fakecli') {
+              bootstrapExecutions += 1;
+              fs.mkdirSync(path.join(cwd, '.cache-bin'), { recursive: true });
+              fs.writeFileSync(path.join(cwd, '.cache-bin', 'fakecli'), 'ok', 'utf8');
+              return { stdout: 'installed\n', stderr: '', exitCode: 0 };
+            }
+            if (normalizedCommand.includes('tar -czf') && normalizedCommand.includes('artifact.tgz')) {
+              cacheSaveExecutions += 1;
+              const entries = [];
+              const cacheDir = path.join(projectDir, '.cache-bin');
+              const fakeCliPath = path.join(cacheDir, 'fakecli');
+              if (fs.existsSync(cacheDir)) {
+                entries.push({ name: 'project/.cache-bin', type: 'directory', mode: 0o755 });
+              }
+              if (fs.existsSync(fakeCliPath)) {
+                entries.push({
+                  name: 'project/.cache-bin/fakecli',
+                  type: 'file',
+                  mode: 0o755,
+                  content: fs.readFileSync(fakeCliPath),
+                });
+              }
+              fs.mkdirSync(path.join(outputDir, 'environment-cache'), { recursive: true });
+              fs.writeFileSync(
+                path.join(outputDir, 'environment-cache', 'artifact.tgz'),
+                await createTarGzBuffer(entries),
+              );
+              return { stdout: 'saved\n', stderr: '', exitCode: 0 };
+            }
+            if (normalizedCommand.startsWith('chmod ')) {
+              return { stdout: '', stderr: '', exitCode: 0 };
+            }
+            if (normalizedCommand.startsWith('ln -sfn ')) {
+              return { stdout: '', stderr: '', exitCode: 0 };
+            }
+            return { stdout: '', stderr: '', exitCode: 0 };
+          },
+        },
+        cleanup: async () => {},
+      }),
+      startRunImpl: () => {
+        startRunCalls += 1;
+        return {
+          runId: `cache-run-${startRunCalls}`,
+          sessionPath: path.join(harness.tempDir, `cache-run-${startRunCalls}.jsonl`),
+          resultPromise: Promise.resolve({
+            reply: 'ok',
+            runId: `cache-run-${startRunCalls}`,
+            sessionPath: path.join(harness.tempDir, `cache-run-${startRunCalls}.jsonl`),
+          }),
+        };
+      },
+      evaluateRunImpl: () => ({
+        triggerPassed: 1,
+        executionPassed: null,
+        toolAccuracy: null,
+        actualToolsJson: '[]',
+        triggerEvaluation: { mode: 'dynamic', loaded: true, loadEvidence: [] },
+        executionEvaluation: null,
+        requiredStepCompletionRate: null,
+        stepCompletionRate: null,
+        requiredToolCoverage: null,
+        toolCallSuccessRate: null,
+        toolErrorRate: null,
+        sequenceAdherence: null,
+        goalAchievement: null,
+        instructionAdherence: null,
+        verdict: 'pass',
+        evaluation: { verdict: 'pass', dimensions: {} },
+        validationIssues: [],
+      }),
+    });
+
+    const createRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('POST', '/api/skills/werewolf/test-cases', {
+        userPrompt: '命中 cache 时应先恢复环境，再继续运行。',
+        loadingMode: 'dynamic',
+        expectedBehavior: 'restore-on-hit 应跳过 bootstrap。',
+        caseStatus: 'ready',
+        environmentConfig: {
+          enabled: true,
+          requirements: [{ kind: 'command', name: 'fakecli', probeCommand: 'test -f .cache-bin/fakecli' }],
+          bootstrap: { commands: ['mkdir -p .cache-bin && printf "ok" > .cache-bin/fakecli'] },
+          verify: { commands: ['test -f .cache-bin/fakecli'] },
+          cache: {
+            enabled: true,
+            paths: [{ root: 'project', path: '.cache-bin' }],
+            ttlHours: 24,
+          },
+        },
+      }),
+      res: createRes,
+      pathname: '/api/skills/werewolf/test-cases',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases'),
+    });
+
+    const caseId = createRes.json.testCase.id;
+    const firstRunRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('POST', `/api/skills/werewolf/test-cases/${caseId}/run`, {
+        isolation: { mode: 'isolated', trellisMode: 'fixture' },
+        environment: { enabled: true },
+      }),
+      res: firstRunRes,
+      pathname: `/api/skills/werewolf/test-cases/${caseId}/run`,
+      requestUrl: new URL(`http://localhost/api/skills/werewolf/test-cases/${caseId}/run`),
+    });
+
+    assert.equal(firstRunRes.statusCode, 200);
+    assert.equal(firstRunRes.json.run.environmentStatus, 'passed');
+    assert.equal(firstRunRes.json.run.evaluation.environment.cache.status, 'saved');
+    assert.equal(bootstrapExecutions, 1);
+    assert.equal(cacheSaveExecutions, 1);
+
+    const cacheKey = String(firstRunRes.json.run.evaluation.environment.cache.key || '').trim();
+    assert.ok(cacheKey);
+    const cacheEntryDir = path.join(cacheRootDir, cacheKey);
+    assert.ok(fs.existsSync(path.join(cacheEntryDir, 'artifact.tgz')));
+    assert.ok(fs.existsSync(path.join(cacheEntryDir, 'manifest.json')));
+    assert.ok(fs.existsSync(path.join(cacheEntryDir, 'summary.json')));
+    assert.match(String(firstRunRes.json.run.evaluation.environment.cache.summaryPath || ''), /summary\.json$/);
+    assert.ok(String(firstRunRes.json.run.evaluation.environment.cache.artifactSha256 || '').trim());
+
+    const expiredOtherKey = 'expired-other';
+    const expiredOtherDir = path.join(cacheRootDir, expiredOtherKey);
+    fs.mkdirSync(expiredOtherDir, { recursive: true });
+    fs.writeFileSync(path.join(expiredOtherDir, 'artifact.tgz'), await createTarGzBuffer([
+      { name: 'project/.noop', type: 'file', mode: 0o644, content: 'noop' },
+    ]));
+    fs.writeFileSync(path.join(expiredOtherDir, 'manifest.json'), JSON.stringify({
+      cacheKey: expiredOtherKey,
+      skillId: 'werewolf',
+      createdAt: '2020-01-01T00:00:00.000Z',
+      savedAt: '2020-01-01T00:00:00.000Z',
+      lastValidatedAt: '2020-01-01T00:00:00.000Z',
+      expiresAt: '2020-01-02T00:00:00.000Z',
+      paths: [{ root: 'project', path: '.noop' }],
+    }, null, 2), 'utf8');
+    fs.writeFileSync(path.join(expiredOtherDir, 'keep-me-if-janitor-breaks.txt'), 'stale', 'utf8');
+
+    seenCommands.length = 0;
+    const bootstrapExecutionsBeforeRestore = bootstrapExecutions;
+    const secondRunRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('POST', `/api/skills/werewolf/test-cases/${caseId}/run`, {
+        isolation: { mode: 'isolated', trellisMode: 'fixture' },
+        environment: { enabled: true },
+      }),
+      res: secondRunRes,
+      pathname: `/api/skills/werewolf/test-cases/${caseId}/run`,
+      requestUrl: new URL(`http://localhost/api/skills/werewolf/test-cases/${caseId}/run`),
+    });
+
+    assert.equal(secondRunRes.statusCode, 200);
+    assert.equal(secondRunRes.json.run.status, 'succeeded');
+    assert.equal(secondRunRes.json.run.environmentStatus, 'passed');
+    assert.equal(secondRunRes.json.run.evaluation.environment.cache.status, 'restored');
+    assert.equal(secondRunRes.json.run.evaluation.environment.cache.restoredFiles, 1);
+    assert.match(String(secondRunRes.json.run.evaluation.environment.cache.manifestPath || ''), /manifest\.json$/);
+    assert.match(String(secondRunRes.json.run.evaluation.environment.cache.summaryPath || ''), /summary\.json$/);
+    assert.equal(bootstrapExecutions, bootstrapExecutionsBeforeRestore);
+    assert.equal(cacheSaveExecutions, 1);
+    assert.ok(seenCommands.includes('test -f .cache-bin/fakecli'));
+    assert.ok(!seenCommands.includes('mkdir -p .cache-bin && printf "ok" > .cache-bin/fakecli'));
+    assert.ok(!seenCommands.some((entry) => entry.includes('tar -czf')));
+    assert.ok(!fs.existsSync(expiredOtherDir));
+
+    const currentManifestPath = path.join(cacheEntryDir, 'manifest.json');
+    const currentManifest = JSON.parse(fs.readFileSync(currentManifestPath, 'utf8'));
+    currentManifest.lastValidatedAt = '2020-01-01T00:00:00.000Z';
+    currentManifest.savedAt = '2020-01-01T00:00:00.000Z';
+    currentManifest.expiresAt = '2020-01-02T00:00:00.000Z';
+    fs.writeFileSync(currentManifestPath, JSON.stringify(currentManifest, null, 2), 'utf8');
+
+    seenCommands.length = 0;
+    const bootstrapExecutionsBeforeExpiry = bootstrapExecutions;
+    const thirdRunRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('POST', `/api/skills/werewolf/test-cases/${caseId}/run`, {
+        isolation: { mode: 'isolated', trellisMode: 'fixture' },
+        environment: { enabled: true },
+      }),
+      res: thirdRunRes,
+      pathname: `/api/skills/werewolf/test-cases/${caseId}/run`,
+      requestUrl: new URL(`http://localhost/api/skills/werewolf/test-cases/${caseId}/run`),
+    });
+
+    assert.equal(thirdRunRes.statusCode, 200);
+    assert.equal(thirdRunRes.json.run.status, 'succeeded');
+    assert.equal(thirdRunRes.json.run.environmentStatus, 'passed');
+    assert.equal(thirdRunRes.json.run.evaluation.environment.cache.status, 'saved');
+    assert.equal(bootstrapExecutions, bootstrapExecutionsBeforeExpiry + 1);
+    assert.equal(cacheSaveExecutions, 2);
+    assert.ok(seenCommands.includes('mkdir -p .cache-bin && printf "ok" > .cache-bin/fakecli'));
+    assert.equal(startRunCalls, 3);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('environment-enabled run fails fast as runtime_unsupported without sandbox tools', async () => {
+  const harness = createTempHarness();
+
+  try {
+    const skillDir = path.join(harness.tempDir, 'live-skills', 'werewolf');
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '# Werewolf\n\nFixture skill body.\n', 'utf8');
+
+    let startRunCalls = 0;
+    const controller = createSkillTestController({
+      store: createInMemoryStore(harness.db, {
+        agentDir: path.join(harness.tempDir, 'agent-root'),
+        databasePath: harness.databasePath,
+      }),
+      agentToolBridge: createFakeAgentToolBridge(),
+      skillRegistry: createFakeSkillRegistry([
+        {
+          id: 'werewolf',
+          name: 'Werewolf',
+          description: 'Fixture skill',
+          path: skillDir,
+        },
+      ]),
+      getProjectDir: () => harness.tempDir,
+      toolBaseUrl: 'http://127.0.0.1:3100',
+      startRunImpl: () => {
+        startRunCalls += 1;
+        return {
+          runId: 'should-not-run',
+          sessionPath: path.join(harness.tempDir, 'should-not-run.jsonl'),
+          resultPromise: Promise.resolve({ reply: 'unexpected', runId: 'should-not-run', sessionPath: path.join(harness.tempDir, 'should-not-run.jsonl') }),
+        };
+      },
+    });
+
+    const createRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('POST', '/api/skills/werewolf/test-cases', {
+        userPrompt: '先准备环境，再执行。',
+        loadingMode: 'dynamic',
+        expectedBehavior: '环境准备失败时不要继续。',
+        caseStatus: 'ready',
+        environmentConfig: {
+          enabled: true,
+          requirements: [{ kind: 'command', name: 'fakecli' }],
+          bootstrap: { commands: ['install fakecli'] },
+        },
+      }),
+      res: createRes,
+      pathname: '/api/skills/werewolf/test-cases',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases'),
+    });
+
+    const caseId = createRes.json.testCase.id;
+    const runRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('POST', `/api/skills/werewolf/test-cases/${caseId}/run`, {
+        environment: { enabled: true },
+      }),
+      res: runRes,
+      pathname: `/api/skills/werewolf/test-cases/${caseId}/run`,
+      requestUrl: new URL(`http://localhost/api/skills/werewolf/test-cases/${caseId}/run`),
+    });
+
+    assert.equal(runRes.statusCode, 200);
+    assert.equal(runRes.json.run.status, 'failed');
+    assert.equal(runRes.json.run.environmentStatus, 'runtime_unsupported');
+    assert.equal(runRes.json.run.evaluation.environment.status, 'runtime_unsupported');
+    assert.equal(startRunCalls, 0);
+  } finally {
+    harness.cleanup();
+  }
 });
 
 test('manual create rejects conflicting userPrompt and triggerPrompt aliases', async () => {

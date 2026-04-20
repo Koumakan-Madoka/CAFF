@@ -1,0 +1,1 @@
+{"at":"2026-04-20T23:20:00+08:00","status_update":"Extracted the skill-test environment readiness chain into server/domain/skill-test/environment-chain.ts and rewired server/api/skill-test-controller.ts to use the domain helper while preserving sandbox-only execution semantics and environment result contracts."}

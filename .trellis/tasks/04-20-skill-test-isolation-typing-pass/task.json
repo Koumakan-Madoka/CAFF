@@ -1,0 +1,57 @@
+{
+  "id": "04-20-skill-test-isolation-typing-pass",
+  "name": "04-20-skill-test-isolation-typing-pass",
+  "title": "Type isolation helper clusters",
+  "description": "将 `server/domain/skill-test/isolation.ts` 里的 execution evidence、publish gate、case context 与 driver assembly helper cluster 补显式类型，低风险继续缩小 `@ts-nocheck`。",
+  "status": "completed",
+  "dev_type": "backend",
+  "scope": null,
+  "package": null,
+  "priority": "P3",
+  "creator": "咕咕嘎嘎",
+  "assignee": "咕咕嘎嘎",
+  "createdAt": "2026-04-20",
+  "completedAt": "2026-04-20",
+  "branch": null,
+  "base_branch": "feat/04-18-skill-test-host-loop-sandbox-tools",
+  "worktree_path": null,
+  "current_phase": 3,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "check"
+    },
+    {
+      "phase": 3,
+      "action": "finish"
+    },
+    {
+      "phase": 4,
+      "action": "create-pr"
+    }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "server/domain/skill-test/isolation.ts",
+    "server/domain/skill-test/isolation-typed-helpers.ts",
+    "server/domain/skill-test/sandbox-tool-contract.ts",
+    "tests/skill-test/skill-test-schema.test.js",
+    "tests/skill-test/skill-test-e2e.test.js",
+    ".trellis/spec/skills/skill-testing.md"
+  ],
+  "notes": "Standalone low-risk follow-up spun out after 04-20-skill-test-sandbox-type-hardening. Preserve loop-on-host/tool-in-sandbox semantics, keep controller responsibilities unchanged, and only type the isolation helper clusters needed to reduce the remaining `@ts-nocheck` surface.",
+  "meta": {
+    "kind": "follow-up-refactor",
+    "risk": "low",
+    "behaviorChange": false,
+    "follows": "04-20-skill-test-sandbox-type-hardening"
+  }
+}

@@ -1,0 +1,2 @@
+{"file":".trellis/spec/skills/skill-testing.md","reason":"Update only if the open-sandbox helper typing pass changes the documented host-loop + sandbox-tools contract or compat-path wording."}
+{"at":"2026-04-20T19:06:25+08:00","file":".trellis/spec/skills/skill-testing.md","reason":"No spec text change required because this pass only moved helper clusters behind typed boundaries and preserved the documented host-loop + sandbox-tools / compat startRun semantics."}

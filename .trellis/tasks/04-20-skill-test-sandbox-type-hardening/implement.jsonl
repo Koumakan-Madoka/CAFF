@@ -1,0 +1,1 @@
+{"at":"2026-04-20T23:58:00+08:00","status_update":"Added server/domain/skill-test/sandbox-tool-contract.ts as the typed sandbox facade, rewired skill-test controller/environment-chain to consume createSkillTestEnvironmentRuntime(), and annotated isolation/open-sandbox exported signatures so environment-chain no longer depends on ad-hoc sandbox adapter shapes."}

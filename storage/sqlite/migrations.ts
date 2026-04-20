@@ -608,6 +608,7 @@ CREATE TABLE IF NOT EXISTS skill_test_cases (
   expected_steps_json TEXT NOT NULL DEFAULT '[]',
   expected_sequence_json TEXT NOT NULL DEFAULT '[]',
   evaluation_rubric_json TEXT NOT NULL DEFAULT '{}',
+  environment_config_json TEXT NOT NULL DEFAULT '{}',
   generation_provider TEXT NOT NULL DEFAULT '',
   generation_model TEXT NOT NULL DEFAULT '',
   generation_created_at TEXT NOT NULL DEFAULT '',
@@ -633,6 +634,8 @@ CREATE TABLE IF NOT EXISTS skill_test_runs (
   sequence_adherence REAL,
   goal_achievement REAL,
   instruction_adherence REAL,
+  environment_status TEXT NOT NULL DEFAULT '',
+  environment_phase TEXT NOT NULL DEFAULT '',
   verdict TEXT DEFAULT '',
   evaluation_json TEXT NOT NULL DEFAULT '{}',
   error_message TEXT DEFAULT '',
@@ -650,6 +653,7 @@ CREATE INDEX IF NOT EXISTS idx_skill_test_runs_case_id ON skill_test_runs (test_
   ensureColumn(db, 'skill_test_cases', 'expected_steps_json', "expected_steps_json TEXT NOT NULL DEFAULT '[]'");
   ensureColumn(db, 'skill_test_cases', 'expected_sequence_json', "expected_sequence_json TEXT NOT NULL DEFAULT '[]'");
   ensureColumn(db, 'skill_test_cases', 'evaluation_rubric_json', "evaluation_rubric_json TEXT NOT NULL DEFAULT '{}' ");
+  ensureColumn(db, 'skill_test_cases', 'environment_config_json', "environment_config_json TEXT NOT NULL DEFAULT '{}' ");
   ensureColumn(db, 'skill_test_cases', 'generation_provider', "generation_provider TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, 'skill_test_cases', 'generation_model', "generation_model TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, 'skill_test_cases', 'generation_created_at', "generation_created_at TEXT NOT NULL DEFAULT ''");
@@ -662,6 +666,8 @@ CREATE INDEX IF NOT EXISTS idx_skill_test_runs_case_id ON skill_test_runs (test_
   ensureColumn(db, 'skill_test_runs', 'sequence_adherence', 'sequence_adherence REAL');
   ensureColumn(db, 'skill_test_runs', 'goal_achievement', 'goal_achievement REAL');
   ensureColumn(db, 'skill_test_runs', 'instruction_adherence', 'instruction_adherence REAL');
+  ensureColumn(db, 'skill_test_runs', 'environment_status', "environment_status TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'skill_test_runs', 'environment_phase', "environment_phase TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, 'skill_test_runs', 'verdict', "verdict TEXT DEFAULT ''");
   ensureColumn(db, 'skill_test_runs', 'evaluation_json', "evaluation_json TEXT NOT NULL DEFAULT '{}' ");
 
