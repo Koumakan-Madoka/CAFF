@@ -2,3 +2,4 @@
 {"file": ".trellis/spec/backend/index.md", "reason": "Backend development guide"}
 {"file": ".trellis/spec/guides/cross-platform-thinking-guide.md", "reason": "Windows/WSL startup scripts and Task Scheduler setup"}
 {"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Reuse existing start commands and avoid duplicate config paths"}
+{"at":"2026-04-20T23:06:00+08:00","file":"scripts/windows/run-caff-stack.ps1","reason":"Backfilled the implementation record after confirming the Windows autostart task had already landed earlier in commit 5a86c48 together with the scheduled-task registration script, local-stack docs, and README entry."}
