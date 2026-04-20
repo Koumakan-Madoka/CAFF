@@ -1,8 +1,8 @@
 {
-  "id": "04-20-skill-test-sandbox-type-hardening",
-  "name": "04-20-skill-test-sandbox-type-hardening",
-  "title": "Harden typed sandbox tool adapter surfaces",
-  "description": "为 skill-test 环境链依赖的 sandbox tool adapter、路径语义与二进制 cache artifact 流程补显式类型，缩小 `@ts-nocheck` 影响面。",
+  "id": "04-20-skill-test-environment-chain-extract",
+  "name": "04-20-skill-test-environment-chain-extract",
+  "title": "Extract skill-test environment chain from controller",
+  "description": "将 skill-test 环境链的 normalization、TESTING.md fallback、preflight/bootstrap/verify 与 cache helper 从 controller 中抽离为 domain 模块，保持行为不变。",
   "status": "completed",
   "dev_type": "backend",
   "scope": null,
@@ -40,15 +40,13 @@
   "children": [],
   "parent": "04-20-skill-test-bootstrap-environment",
   "relatedFiles": [
-    "server/domain/skill-test/isolation.ts",
-    "server/domain/skill-test/open-sandbox-factory.ts",
-    "server/domain/skill-test/sandbox-tool-contract.ts",
     "server/api/skill-test-controller.ts",
-    "tests/skill-test/skill-test-schema.test.js",
+    "server/domain/skill-test/",
     "tests/skill-test/skill-test-e2e.test.js",
+    "tests/skill-test/skill-test-schema.test.js",
     ".trellis/spec/skills/skill-testing.md"
   ],
-  "notes": "Closed after the typed facade / contract hardening landed and the remaining helper-cluster follow-ups were completed in `04-20-skill-test-open-sandbox-typing-pass` and `04-20-skill-test-isolation-typing-pass`; this task stays scoped to boundary hardening rather than a full-file strict-typing rewrite.",
+  "notes": "Behavior-preserving refactor follow-up split out from 04-20-skill-test-bootstrap-environment after review highlighted controller size and maintenance risk.",
   "meta": {
     "kind": "follow-up-refactor",
     "risk": "low",

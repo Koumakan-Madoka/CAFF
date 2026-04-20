@@ -1,0 +1,56 @@
+{
+  "id": "04-20-skill-test-open-sandbox-typing-pass",
+  "name": "04-20-skill-test-open-sandbox-typing-pass",
+  "title": "Type open-sandbox helper clusters",
+  "description": "将 `server/domain/skill-test/open-sandbox-factory.ts` 里的 tool adapter 与 `startRun` 兼容 helper cluster 补显式类型，继续缩小 `@ts-nocheck` 影响面。",
+  "status": "completed",
+  "dev_type": "backend",
+  "scope": null,
+  "package": null,
+  "priority": "P3",
+  "creator": "咕咕嘎嘎",
+  "assignee": "咕咕嘎嘎",
+  "createdAt": "2026-04-20",
+  "completedAt": "2026-04-20",
+  "branch": null,
+  "base_branch": "feat/04-18-skill-test-host-loop-sandbox-tools",
+  "worktree_path": null,
+  "current_phase": 3,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "check"
+    },
+    {
+      "phase": 3,
+      "action": "finish"
+    },
+    {
+      "phase": 4,
+      "action": "create-pr"
+    }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "server/domain/skill-test/open-sandbox-factory.ts",
+    "server/domain/skill-test/sandbox-tool-contract.ts",
+    "tests/skill-test/skill-test-schema.test.js",
+    "tests/skill-test/skill-test-e2e.test.js",
+    ".trellis/spec/skills/skill-testing.md"
+  ],
+  "notes": "Standalone low-risk follow-up spun out after 04-20-skill-test-sandbox-type-hardening. Keep the default host-loop + sandbox-tools path unchanged, do not re-promote full-sandbox execution, and only type the open-sandbox helper clusters needed to shrink the remaining `@ts-nocheck` surface.",
+  "meta": {
+    "kind": "follow-up-refactor",
+    "risk": "low",
+    "behaviorChange": false,
+    "follows": "04-20-skill-test-sandbox-type-hardening"
+  }
+}

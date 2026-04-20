@@ -415,3 +415,49 @@ Completed sandbox-isolated skill test execution, live trace streaming, cleanup/i
 ### Next Steps
 
 - None - task complete
+
+
+## Session 10: Close out skill-test sandbox environment hardening
+
+**Date**: 2026-04-20
+**Task**: Close out skill-test sandbox environment hardening
+**Branch**: `feat/04-18-skill-test-host-loop-sandbox-tools`
+
+### Summary
+
+Committed the skill-test sandbox environment bootstrap and typing-hardening stack, archived six completed Trellis tasks, and recorded final validation results for the branch.
+
+### Main Changes
+
+| Area | Description |
+|------|-------------|
+| Runtime contracts | Added `server/domain/skill-test/sandbox-tool-contract.ts` plus typed runtime helpers for environment bootstrap, open-sandbox compatibility, and isolation evidence flows. |
+| Orchestration | Updated `server/api/skill-test-controller.ts`, `server/domain/skill-test/environment-chain.ts`, `server/domain/skill-test/open-sandbox-factory.ts`, and `server/domain/skill-test/isolation.ts` to keep the default `host-loop + sandbox-tools` model while making sandbox/runtime boundaries explicit. |
+| Coverage | Extended `tests/skill-test/skill-test-schema.test.js`, `tests/skill-test/skill-test-e2e.test.js`, and `tests/runtime/open-sandbox-factory.test.js`; updated `.trellis/spec/skills/skill-testing.md`. |
+| Task closeout | Archived `04-18-skill-test-host-loop-sandbox-tools`, `04-20-skill-test-bootstrap-environment`, `04-20-skill-test-environment-chain-extract`, `04-20-skill-test-sandbox-type-hardening`, `04-20-skill-test-open-sandbox-typing-pass`, and `04-20-skill-test-isolation-typing-pass`. |
+
+**Validation**
+- `npm run typecheck`
+- `npm run build`
+- `node --test tests/runtime/open-sandbox-factory.test.js`
+- `node --test tests/skill-test/skill-test-schema.test.js`
+- `node --test tests/skill-test/skill-test-e2e.test.js --test-name-pattern "environment|cache|runtime_unsupported"`
+
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `8b05f67` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

@@ -37,10 +37,7 @@
   "commit": null,
   "pr_url": null,
   "subtasks": [],
-  "children": [
-    "04-20-skill-test-environment-chain-extract",
-    "04-20-skill-test-sandbox-type-hardening"
-  ],
+  "children": [],
   "parent": null,
   "relatedFiles": [
     ".trellis/tasks/04-20-skill-test-environment-chain-extract/prd.md",

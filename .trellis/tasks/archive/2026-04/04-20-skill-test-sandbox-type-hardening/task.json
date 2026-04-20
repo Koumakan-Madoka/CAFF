@@ -1,8 +1,8 @@
 {
-  "id": "04-20-skill-test-open-sandbox-typing-pass",
-  "name": "04-20-skill-test-open-sandbox-typing-pass",
-  "title": "Type open-sandbox helper clusters",
-  "description": "将 `server/domain/skill-test/open-sandbox-factory.ts` 里的 tool adapter 与 `startRun` 兼容 helper cluster 补显式类型，继续缩小 `@ts-nocheck` 影响面。",
+  "id": "04-20-skill-test-sandbox-type-hardening",
+  "name": "04-20-skill-test-sandbox-type-hardening",
+  "title": "Harden typed sandbox tool adapter surfaces",
+  "description": "为 skill-test 环境链依赖的 sandbox tool adapter、路径语义与二进制 cache artifact 流程补显式类型，缩小 `@ts-nocheck` 影响面。",
   "status": "completed",
   "dev_type": "backend",
   "scope": null,
@@ -38,19 +38,20 @@
   "pr_url": null,
   "subtasks": [],
   "children": [],
-  "parent": null,
+  "parent": "04-20-skill-test-bootstrap-environment",
   "relatedFiles": [
+    "server/domain/skill-test/isolation.ts",
     "server/domain/skill-test/open-sandbox-factory.ts",
     "server/domain/skill-test/sandbox-tool-contract.ts",
+    "server/api/skill-test-controller.ts",
     "tests/skill-test/skill-test-schema.test.js",
     "tests/skill-test/skill-test-e2e.test.js",
     ".trellis/spec/skills/skill-testing.md"
   ],
-  "notes": "Standalone low-risk follow-up spun out after 04-20-skill-test-sandbox-type-hardening. Keep the default host-loop + sandbox-tools path unchanged, do not re-promote full-sandbox execution, and only type the open-sandbox helper clusters needed to shrink the remaining `@ts-nocheck` surface.",
+  "notes": "Closed after the typed facade / contract hardening landed and the remaining helper-cluster follow-ups were completed in `04-20-skill-test-open-sandbox-typing-pass` and `04-20-skill-test-isolation-typing-pass`; this task stays scoped to boundary hardening rather than a full-file strict-typing rewrite.",
   "meta": {
     "kind": "follow-up-refactor",
     "risk": "low",
-    "behaviorChange": false,
-    "follows": "04-20-skill-test-sandbox-type-hardening"
+    "behaviorChange": false
   }
 }
