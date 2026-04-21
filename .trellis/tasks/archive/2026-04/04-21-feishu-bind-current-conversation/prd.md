@@ -12,13 +12,13 @@ Allow a user to bind the currently open CAFF conversation to a Feishu `chat_id`,
 - Show clear success and error feedback in the UI.
 
 ## Acceptance Criteria
-- [ ] A user can open a conversation, enter a Feishu `chat_id`, and bind that Feishu chat to the conversation.
-- [ ] The backend validates that the conversation exists and `chat_id` is non-empty.
-- [ ] The backend refuses to bind a busy conversation and returns a structured error.
-- [ ] Existing Feishu binding rows are reused/updated instead of duplicating bindings.
-- [ ] The UI exposes the action without breaking existing conversation settings.
-- [ ] Existing Feishu `/new` behavior continues to work.
-- [ ] Relevant backend and/or frontend tests cover the new binding flow where existing test infrastructure allows it.
+- [x] A user can open a conversation, enter a Feishu `chat_id`, and bind that Feishu chat to the conversation.
+- [x] The backend validates that the conversation exists and `chat_id` is non-empty.
+- [x] The backend refuses to bind a busy conversation and returns a structured error.
+- [x] Existing Feishu binding rows are reused/updated instead of duplicating bindings.
+- [x] The UI exposes the action without breaking existing conversation settings.
+- [x] Existing Feishu `/new` behavior continues to work.
+- [x] Relevant backend and/or frontend tests cover the new binding flow where existing test infrastructure allows it.
 
 ## Technical Notes
 - Candidate endpoint: `PUT /api/conversations/:id/channel-bindings/feishu` with body `{ "chatId": "..." }`.

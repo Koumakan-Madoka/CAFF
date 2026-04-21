@@ -1,0 +1,1 @@
+{"at":"2026-04-21T20:57:43+08:00","file":".trellis/spec/backend/feishu-integration.md","reason":"Documented the manual Feishu conversation binding API, UI/store contracts, validation matrix, expected tests, and wrong-vs-correct busy-conversation guard."}
