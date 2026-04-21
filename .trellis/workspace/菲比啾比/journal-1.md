@@ -461,3 +461,44 @@ Committed the skill-test sandbox environment bootstrap and typing-hardening stac
 ### Next Steps
 
 - None - task complete
+
+
+## Session 11: Bind Current Conversation To Feishu Chat
+
+**Date**: 2026-04-21
+**Task**: Bind Current Conversation To Feishu Chat
+**Branch**: `feat/feishu-conversation-binding`
+
+### Summary
+
+Completed and merged the manual Feishu chat binding flow for active CAFF conversations.
+
+### Main Changes
+
+| Area | Result |
+|------|--------|
+| Backend | Added manual Feishu binding endpoint using existing `chat_channel_bindings`, including empty chat id, missing conversation, busy conversation, existing chat rebinding, existing conversation binding, and storage conflict handling. |
+| Frontend | Added conversation settings controls for known Feishu chats, manual `chat_id` entry, bind action, and clear success/error feedback. |
+| Spec / Task | Documented the manual binding contract in `.trellis/spec/backend/feishu-integration.md`, marked PRD acceptance complete, and archived the Trellis task. |
+| PR | Merged PR #39: https://github.com/Koumakan-Madoka/CAFF/pull/39 |
+| Validation | `npm run typecheck` and `npm test` passed before archival. |
+
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `7036ad8` | (see git log) |
+| `299d713` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
