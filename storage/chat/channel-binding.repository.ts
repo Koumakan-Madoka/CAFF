@@ -1,6 +1,7 @@
 export class ChatChannelBindingRepository {
   getByExternalChatIdStatement: any;
   getByConversationIdStatement: any;
+  listByPlatformStatement: any;
   insertStatement: any;
   updateStatement: any;
 
@@ -16,6 +17,12 @@ export class ChatChannelBindingRepository {
       FROM chat_channel_bindings
       WHERE platform = ? AND conversation_id = ?
       LIMIT 1
+    `);
+    this.listByPlatformStatement = db.prepare(`
+      SELECT *
+      FROM chat_channel_bindings
+      WHERE platform = ?
+      ORDER BY updated_at DESC, created_at DESC, external_chat_id ASC
     `);
     this.insertStatement = db.prepare(`
       INSERT INTO chat_channel_bindings (
@@ -43,6 +50,10 @@ export class ChatChannelBindingRepository {
 
   getByConversationId(platform: string, conversationId: string) {
     return this.getByConversationIdStatement.get(platform, conversationId);
+  }
+
+  listByPlatform(platform: string) {
+    return this.listByPlatformStatement.all(platform);
   }
 
   create(payload: any) {

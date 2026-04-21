@@ -237,6 +237,27 @@
                 </div>
               </section>
 
+              <section class="bulk-skill-card feishu-binding-card">
+                <div class="section-row">
+                  <span class="section-label">飞书接入</span>
+                  <span class="section-hint">从已知飞书聊天里选择并绑定</span>
+                </div>
+                <label>
+                  <span>已知飞书聊天</span>
+                  <select id="feishu-chat-select">
+                    <option value="">正在加载...</option>
+                  </select>
+                </label>
+                <label>
+                  <span>手动输入 chat_id</span>
+                  <input id="feishu-chat-id-input" type="text" autocomplete="off" placeholder="选不到时再手动输入，例如 oc_xxx" />
+                </label>
+                <p id="feishu-binding-status" class="section-hint">可从已知飞书聊天里选择，也可手动输入 chat_id。</p>
+                <div class="button-row compact-button-row">
+                  <button id="bind-feishu-chat-button" class="ghost-button" type="button">绑定到当前会话</button>
+                </div>
+              </section>
+
               <div class="conversation-agent-section">
                 <div class="section-row">
                   <span class="section-label">参与人格</span>

@@ -59,3 +59,62 @@ const eventDispatcher = new lark.EventDispatcher({}).register({
 });
 await wsClient.start({ eventDispatcher });
 ```
+
+## Scenario: Manual Feishu Conversation Binding
+
+### 1. Scope / Trigger
+- Trigger: changing the UI/API that maps an existing CAFF conversation to a Feishu `chat_id`.
+- Goal: let an operator move one Feishu chat binding to the selected conversation without bypassing the existing `chat_channel_bindings` table or causing in-flight assistant replies to be delivered to a newly selected chat.
+
+### 2. Signatures
+- Binding HTTP entry: `PUT /api/conversations/:conversationId/channel-bindings/feishu`.
+- Known chat list entry: `GET /api/channel-bindings/feishu`.
+- Request body: `{ "chatId": "<feishu chat_id>" }`.
+- Store reads: `getConversationChannelBinding('feishu', chatId)`, `getConversationChannelBindingByConversationId('feishu', conversationId)`, and `listConversationChannelBindings('feishu')`.
+- Store writes: `updateConversationChannelBinding(...)` when the `chat_id` already exists, otherwise `createConversationChannelBinding(...)`.
+
+### 3. Contracts
+- The endpoint binds exactly one Feishu `chat_id` to exactly one CAFF conversation by reusing `chat_channel_bindings`.
+- If the `chat_id` is already bound to a different conversation, the binding row is updated to the requested `conversationId`; no duplicate row is inserted.
+- If the target conversation is already bound to a different Feishu `chat_id`, MVP must fail closed with `409` instead of silently replacing that separate binding.
+- Manual binding metadata must preserve existing binding metadata when present and add `manualBinding.source = "web-ui"` plus `manualBinding.boundAt`.
+- Binding does not send any Feishu message and does not submit a CAFF user message.
+- The known chat list is derived from existing `chat_channel_bindings` rows and sorted by the bound conversation's latest activity timestamp; it does not create rows or send Feishu messages.
+- The right-side conversation settings UI owns the small manual binding control, loads known Feishu chats for a select dropdown, and calls the binding endpoint with the active conversation id.
+
+### 4. Validation & Error Matrix
+- Missing or blank `chatId`: `400` with `issues[0].code = "missing_chat_id"`.
+- Unknown `conversationId`: `404` with `Conversation not found`.
+- Active, dispatching, active side-slot, queued main-lane, or queued side-slot work for the conversation: `409` with `issues[0].code = "conversation_busy"`.
+- Target conversation already has another Feishu binding: `409` with `issues[0].code = "conversation_already_bound"` and the existing `externalChatId`.
+- SQLite uniqueness race or failed insert/update: `409` with `issues[0].code = "binding_conflict"`.
+
+### 5. Good/Base/Bad Cases
+- Good: `oc_a` is bound to conversation A, operator binds `oc_a` to idle conversation B, and the single binding row now points to B while preserving metadata.
+- Base: idle conversation B has no Feishu binding and `oc_b` has no existing row, so a new draft binding row is created.
+- Bad: conversation B is processing a turn or has queued work; rebinding would make that pending assistant output deliver to Feishu, so the endpoint rejects the request.
+
+### 6. Tests Required
+- HTTP/controller: assert the known Feishu chat list returns bound chat ids with conversation labels sorted by recent activity.
+- HTTP/controller: assert an existing Feishu `chat_id` binding moves to the selected conversation and preserves metadata.
+- HTTP/controller: assert active or queued conversation work rejects manual binding with `conversation_busy`.
+- HTTP/controller: assert a target conversation already bound to a different Feishu `chat_id` rejects with `conversation_already_bound`.
+- Feishu integration: keep `/new` rebinding coverage green because manual binding and `/new` share the same storage constraints.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+```typescript
+// Overwrites the target conversation binding without checking pending turns.
+store.updateConversationChannelBinding({ platform: 'feishu', externalChatId: chatId, conversationId });
+```
+
+#### Correct
+```typescript
+const workState = conversationWorkState(turnOrchestrator.buildRuntimePayload(), conversationId);
+if (workState.busy) {
+  throw createHttpError(409, '当前会话正在处理或仍有待处理消息，请结束后再绑定飞书 chat_id', {
+    issues: [{ code: 'conversation_busy' }],
+  });
+}
+```

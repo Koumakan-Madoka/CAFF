@@ -1151,6 +1151,13 @@ export class ChatAppStore {
     );
   }
 
+  listConversationChannelBindings(platform: any) {
+    return this.channelBindingRepository
+      .listByPlatform(String(platform || '').trim())
+      .map(normalizeConversationChannelBindingRow)
+      .filter(Boolean);
+  }
+
   createConversationChannelBinding(input: any = {}) {
     const platform = String(input.platform || '').trim();
     const externalChatId = String(input.externalChatId || '').trim();

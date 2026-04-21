@@ -20,6 +20,108 @@ type ApiContext = {
   requestUrl: URL;
 };
 
+const FEISHU_PLATFORM = 'feishu';
+
+function runtimeArray(runtime: any, key: string): any[] {
+  const value = runtime && runtime[key];
+  return Array.isArray(value) ? value : [];
+}
+
+function queuedUserMessageCount(runtime: any, conversationId: string): number {
+  const depths = runtime && runtime.conversationQueueDepths && typeof runtime.conversationQueueDepths === 'object'
+    ? runtime.conversationQueueDepths
+    : {};
+  const value = Number(depths[conversationId] || 0);
+  return Number.isFinite(value) ? Math.max(0, value) : 0;
+}
+
+function queuedAgentSlotMessageCount(runtime: any, conversationId: string): number {
+  const queueDepths = runtime && runtime.agentSlotQueueDepths && typeof runtime.agentSlotQueueDepths === 'object'
+    ? runtime.agentSlotQueueDepths
+    : {};
+  const perAgentDepths: Record<string, any> = queueDepths[conversationId] && typeof queueDepths[conversationId] === 'object'
+    ? queueDepths[conversationId]
+    : {};
+
+  return Object.values(perAgentDepths).reduce<number>((sum: number, value: any) => {
+    const count = Number(value || 0);
+    return sum + (Number.isFinite(count) ? Math.max(0, count) : 0);
+  }, 0);
+}
+
+function conversationWorkState(runtime: any, conversationId: string) {
+  const active = runtimeArray(runtime, 'activeConversationIds').includes(conversationId);
+  const dispatching = runtimeArray(runtime, 'dispatchingConversationIds').includes(conversationId);
+  const activeTurnCount = runtimeArray(runtime, 'activeTurns').filter(
+    (turn: any) => turn && turn.conversationId === conversationId
+  ).length;
+  const activeAgentSlotCount = runtimeArray(runtime, 'activeAgentSlots').filter(
+    (slot: any) => slot && slot.conversationId === conversationId
+  ).length;
+  const queuedUserCount = queuedUserMessageCount(runtime, conversationId);
+  const queuedAgentSlotCount = queuedAgentSlotMessageCount(runtime, conversationId);
+
+  return {
+    active,
+    dispatching,
+    activeTurnCount,
+    activeAgentSlotCount,
+    queuedUserCount,
+    queuedAgentSlotCount,
+    busy: active || dispatching || activeTurnCount > 0 || activeAgentSlotCount > 0 || queuedUserCount > 0 || queuedAgentSlotCount > 0,
+  };
+}
+
+function mergeFeishuBindingMetadata(existingBinding: any) {
+  const metadata = existingBinding && existingBinding.metadata && typeof existingBinding.metadata === 'object'
+    ? existingBinding.metadata
+    : {};
+
+  return {
+    ...metadata,
+    manualBinding: {
+      source: 'web-ui',
+      boundAt: new Date().toISOString(),
+    },
+  };
+}
+
+function timestampValue(value: any) {
+  const timestamp = Date.parse(String(value || ''));
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function listKnownFeishuChats(store: any) {
+  const conversationsById = new Map<string, any>(
+    store.listConversations().map((conversation: any) => [conversation.id, conversation] as [string, any])
+  );
+
+  return store.listConversationChannelBindings(FEISHU_PLATFORM)
+    .map((binding: any) => {
+      const metadata = binding && binding.metadata && typeof binding.metadata === 'object' ? binding.metadata : {};
+      const conversation = conversationsById.get(binding.conversationId) || null;
+      const lastActivityAt = conversation
+        ? conversation.lastMessageAt || conversation.updatedAt || conversation.createdAt || binding.updatedAt || binding.createdAt || null
+        : binding.updatedAt || binding.createdAt || null;
+
+      return {
+        chatId: binding.externalChatId,
+        chatType: String(metadata.chatType || '').trim(),
+        conversationId: binding.conversationId,
+        conversationTitle: conversation ? String(conversation.title || '').trim() : '',
+        lastActivityAt,
+      };
+    })
+    .sort((left: any, right: any) => {
+      const byActivity = timestampValue(right.lastActivityAt) - timestampValue(left.lastActivityAt);
+      if (byActivity !== 0) {
+        return byActivity;
+      }
+
+      return String(left.chatId || '').localeCompare(String(right.chatId || ''), 'zh-CN');
+    });
+}
+
 function mergeModeSkillIdsIntoParticipants(input: any, mode: any) {
   if (!mode || !Array.isArray(mode.skillIds) || mode.skillIds.length === 0) {
     return input;
@@ -132,6 +234,109 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         conversation,
         summary: pickConversationSummary(conversation),
         conversations: store.listConversations(),
+      });
+      return true;
+    }
+
+    if (req.method === 'GET' && pathname === '/api/channel-bindings/feishu') {
+      sendJson(res, 200, { chats: listKnownFeishuChats(store) });
+      return true;
+    }
+
+    const feishuBindingMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/channel-bindings\/feishu$/);
+
+    if (feishuBindingMatch && req.method === 'PUT') {
+      const conversationId = decodeURIComponent(feishuBindingMatch[1]);
+      const body = await readRequestJson(req);
+      const chatId = String(body && body.chatId ? body.chatId : '').trim();
+
+      if (!chatId) {
+        throw createHttpError(400, 'Feishu chat_id 不能为空', {
+          issues: [
+            {
+              code: 'missing_chat_id',
+              message: 'Feishu chat_id is required',
+            },
+          ],
+        });
+      }
+
+      const conversation = store.getConversation(conversationId);
+
+      if (!conversation) {
+        throw createHttpError(404, 'Conversation not found');
+      }
+
+      const runtime = turnOrchestrator && typeof turnOrchestrator.buildRuntimePayload === 'function'
+        ? turnOrchestrator.buildRuntimePayload()
+        : {};
+      const workState = conversationWorkState(runtime, conversationId);
+
+      if (workState.busy) {
+        throw createHttpError(409, '当前会话正在处理或仍有待处理消息，请结束后再绑定飞书 chat_id', {
+          issues: [
+            {
+              code: 'conversation_busy',
+              message: 'Conversation is busy or has queued work',
+              active: workState.active,
+              dispatching: workState.dispatching,
+              activeTurnCount: workState.activeTurnCount,
+              activeAgentSlotCount: workState.activeAgentSlotCount,
+              queuedUserCount: workState.queuedUserCount,
+              queuedAgentSlotCount: workState.queuedAgentSlotCount,
+            },
+          ],
+        });
+      }
+
+      const existingConversationBinding = store.getConversationChannelBindingByConversationId(FEISHU_PLATFORM, conversationId);
+
+      if (existingConversationBinding && existingConversationBinding.externalChatId !== chatId) {
+        throw createHttpError(409, '当前会话已绑定其他飞书 chat_id，MVP 暂不支持直接覆盖', {
+          issues: [
+            {
+              code: 'conversation_already_bound',
+              message: 'Conversation is already bound to another Feishu chat_id',
+              externalChatId: existingConversationBinding.externalChatId,
+            },
+          ],
+        });
+      }
+
+      const existingChatBinding = store.getConversationChannelBinding(FEISHU_PLATFORM, chatId);
+      const previousConversationId = existingChatBinding && existingChatBinding.conversationId
+        ? existingChatBinding.conversationId
+        : null;
+      const metadata = mergeFeishuBindingMetadata(existingChatBinding || existingConversationBinding);
+      const binding = existingChatBinding
+        ? store.updateConversationChannelBinding({
+            platform: FEISHU_PLATFORM,
+            externalChatId: chatId,
+            conversationId,
+            metadata,
+          })
+        : store.createConversationChannelBinding({
+            platform: FEISHU_PLATFORM,
+            externalChatId: chatId,
+            conversationId,
+            metadata,
+          });
+
+      if (!binding) {
+        throw createHttpError(409, '飞书 chat_id 绑定冲突，请刷新后重试', {
+          issues: [
+            {
+              code: 'binding_conflict',
+              message: 'Feishu chat binding could not be saved',
+            },
+          ],
+        });
+      }
+
+      sendJson(res, 200, {
+        binding,
+        moved: Boolean(previousConversationId && previousConversationId !== conversationId),
+        previousConversationId,
       });
       return true;
     }
