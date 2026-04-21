@@ -1,0 +1,9 @@
+{"file": ".trellis/workflow.md", "reason": "Project workflow and conventions"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend development guide"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend development guide"}
+{"file": ".trellis/spec/backend/architecture.md", "reason": "Backend route/service wiring conventions"}
+{"file": ".trellis/spec/backend/controller-patterns.md", "reason": "Controller validation and response conventions"}
+{"file": ".trellis/spec/backend/feishu-integration.md", "reason": "Feishu chat binding contract"}
+{"file": ".trellis/spec/frontend/ui-structure.md", "reason": "Conversation settings UI conventions"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Backend/frontend payload alignment"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Reuse existing UI/API patterns"}

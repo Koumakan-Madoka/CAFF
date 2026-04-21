@@ -3,8 +3,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const net = require('node:net');
+const { PassThrough } = require('node:stream');
 const test = require('node:test');
 
+const { createChatAppStore } = require('../../build/lib/chat-app-store');
 const { createConversationsController } = require('../../build/server/api/conversations-controller');
 
 const { requireSpawn } = require('../helpers/spawn');
@@ -122,6 +124,301 @@ async function fetchJson(baseUrl, pathname, options = {}) {
 
   return data;
 }
+
+async function invokeConversationsController(handler, options = {}) {
+  const req = new PassThrough();
+  req.method = options.method || 'GET';
+  const pathname = options.pathname || '/api/conversations';
+  const requestUrl = new URL(`http://127.0.0.1${pathname}`);
+  const responseState = {
+    statusCode: 0,
+    headers: null,
+    body: '',
+  };
+  const res = {
+    writeHead(statusCode, headers) {
+      responseState.statusCode = statusCode;
+      responseState.headers = headers;
+    },
+    end(chunk = '') {
+      responseState.body = String(chunk || '');
+    },
+  };
+
+  const handledPromise = handler({ req, res, pathname, requestUrl });
+  req.end(options.body ? JSON.stringify(options.body) : '');
+  const handled = await handledPromise;
+
+  return {
+    handled,
+    statusCode: responseState.statusCode,
+    json: responseState.body ? JSON.parse(responseState.body) : {},
+  };
+}
+
+function createConversationsControllerHarness(t, options = {}) {
+  const tempDir = withTempDir('caff-conversations-controller-');
+  const sqlitePath = path.join(tempDir, 'chat.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const runtimePayload = options.runtimePayload || {
+    activeConversationIds: [],
+    dispatchingConversationIds: [],
+    conversationQueueDepths: {},
+    agentSlotQueueDepths: {},
+    activeTurns: [],
+    activeAgentSlots: [],
+  };
+  const handler = createConversationsController({
+    store,
+    turnOrchestrator: {
+      buildRuntimePayload() {
+        return runtimePayload;
+      },
+      clearConversationState() {},
+    },
+    undercoverService: { deleteConversationState() {} },
+    werewolfService: { deleteConversationState() {} },
+    buildBootstrapPayload() {
+      return { conversations: store.listConversations(), agents: [], runtime: runtimePayload };
+    },
+    modeStore: { get() { return null; } },
+  });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  return { handler, store };
+}
+
+test('conversations controller lists known Feishu chats by recent activity', async (t) => {
+  const { handler, store } = createConversationsControllerHarness(t);
+  const olderConversation = store.createConversation({
+    id: 'feishu-known-chat-older',
+    title: 'Older Feishu Chat',
+  });
+  const newerConversation = store.createConversation({
+    id: 'feishu-known-chat-newer',
+    title: 'Newer Feishu Chat',
+  });
+  store.createConversationChannelBinding({
+    platform: 'feishu',
+    externalChatId: 'oc-known-old',
+    conversationId: olderConversation.id,
+    metadata: { chatType: 'p2p' },
+  });
+  store.createConversationChannelBinding({
+    platform: 'feishu',
+    externalChatId: 'oc-known-new',
+    conversationId: newerConversation.id,
+    metadata: { chatType: 'group' },
+  });
+  store.db.prepare('UPDATE chat_conversations SET last_message_at = ?, updated_at = ? WHERE id = ?')
+    .run('2026-04-20T10:00:00.000Z', '2026-04-20T10:00:00.000Z', olderConversation.id);
+  store.db.prepare('UPDATE chat_conversations SET last_message_at = ?, updated_at = ? WHERE id = ?')
+    .run('2026-04-21T10:00:00.000Z', '2026-04-21T10:00:00.000Z', newerConversation.id);
+
+  const response = await invokeConversationsController(handler, {
+    method: 'GET',
+    pathname: '/api/channel-bindings/feishu',
+  });
+
+  assert.equal(response.handled, true);
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json.chats.map((chat) => chat.chatId), ['oc-known-new', 'oc-known-old']);
+  assert.equal(response.json.chats[0].conversationId, newerConversation.id);
+  assert.equal(response.json.chats[0].conversationTitle, 'Newer Feishu Chat');
+  assert.equal(response.json.chats[0].chatType, 'group');
+  assert.equal(response.json.chats[0].lastActivityAt, '2026-04-21T10:00:00.000Z');
+});
+
+test('conversations controller binds an existing Feishu chat to the selected conversation', async (t) => {
+  const { handler, store } = createConversationsControllerHarness(t);
+  const firstConversation = store.createConversation({
+    id: 'feishu-binding-source-conversation',
+    title: 'Feishu Binding Source',
+  });
+  const targetConversation = store.createConversation({
+    id: 'feishu-binding-target-conversation',
+    title: 'Feishu Binding Target',
+  });
+  store.createConversationChannelBinding({
+    platform: 'feishu',
+    externalChatId: 'oc-bind-existing',
+    conversationId: firstConversation.id,
+    metadata: { chatType: 'p2p' },
+  });
+
+  const response = await invokeConversationsController(handler, {
+    method: 'PUT',
+    pathname: `/api/conversations/${encodeURIComponent(targetConversation.id)}/channel-bindings/feishu`,
+    body: { chatId: 'oc-bind-existing' },
+  });
+
+  assert.equal(response.handled, true);
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.json.moved, true);
+  assert.equal(response.json.previousConversationId, firstConversation.id);
+  assert.equal(response.json.binding.conversationId, targetConversation.id);
+  assert.equal(response.json.binding.metadata.chatType, 'p2p');
+  assert.equal(response.json.binding.metadata.manualBinding.source, 'web-ui');
+
+  const persistedBinding = store.getConversationChannelBinding('feishu', 'oc-bind-existing');
+  const bindingCount = store.db.prepare('SELECT COUNT(*) AS count FROM chat_channel_bindings').get().count;
+  assert.equal(persistedBinding.conversationId, targetConversation.id);
+  assert.equal(bindingCount, 1);
+});
+
+test('conversations controller rejects Feishu binding without chatId', async (t) => {
+  const { handler, store } = createConversationsControllerHarness(t);
+  const conversation = store.createConversation({
+    id: 'feishu-binding-missing-chat-id',
+    title: 'Feishu Binding Missing Chat Id',
+  });
+
+  await assert.rejects(
+    () => invokeConversationsController(handler, {
+      method: 'PUT',
+      pathname: `/api/conversations/${encodeURIComponent(conversation.id)}/channel-bindings/feishu`,
+      body: { chatId: '   ' },
+    }),
+    (error) => {
+      assert.equal(error.statusCode, 400);
+      assert.equal(error.issues[0].code, 'missing_chat_id');
+      return true;
+    }
+  );
+});
+
+test('conversations controller rejects Feishu binding for unknown conversations', async (t) => {
+  const { handler } = createConversationsControllerHarness(t);
+
+  await assert.rejects(
+    () => invokeConversationsController(handler, {
+      method: 'PUT',
+      pathname: '/api/conversations/feishu-binding-missing-conversation/channel-bindings/feishu',
+      body: { chatId: 'oc-bind-missing-conversation' },
+    }),
+    (error) => {
+      assert.equal(error.statusCode, 404);
+      assert.equal(error.message, 'Conversation not found');
+      return true;
+    }
+  );
+});
+
+test('conversations controller rejects Feishu binding while conversation has active work', async (t) => {
+  const conversationId = 'feishu-binding-busy-conversation';
+  const { handler, store } = createConversationsControllerHarness(t, {
+    runtimePayload: {
+      activeConversationIds: [conversationId],
+      dispatchingConversationIds: [],
+      conversationQueueDepths: {},
+      agentSlotQueueDepths: {},
+      activeTurns: [],
+      activeAgentSlots: [],
+    },
+  });
+  store.createConversation({
+    id: conversationId,
+    title: 'Feishu Binding Busy',
+  });
+
+  await assert.rejects(
+    () => invokeConversationsController(handler, {
+      method: 'PUT',
+      pathname: `/api/conversations/${encodeURIComponent(conversationId)}/channel-bindings/feishu`,
+      body: { chatId: 'oc-bind-busy' },
+    }),
+    (error) => {
+      assert.equal(error.statusCode, 409);
+      assert.equal(error.issues[0].code, 'conversation_busy');
+      return true;
+    }
+  );
+
+  assert.equal(store.getConversationChannelBinding('feishu', 'oc-bind-busy'), null);
+});
+
+test('conversations controller rejects Feishu binding while conversation has an active turn', async (t) => {
+  const conversationId = 'feishu-binding-active-turn-conversation';
+  const { handler, store } = createConversationsControllerHarness(t, {
+    runtimePayload: {
+      activeConversationIds: [],
+      dispatchingConversationIds: [],
+      conversationQueueDepths: {},
+      agentSlotQueueDepths: {},
+      activeTurns: [
+        {
+          conversationId,
+          queueDepth: 0,
+        },
+      ],
+      activeAgentSlots: [],
+    },
+  });
+  store.createConversation({
+    id: conversationId,
+    title: 'Feishu Binding Active Turn',
+  });
+
+  await assert.rejects(
+    () => invokeConversationsController(handler, {
+      method: 'PUT',
+      pathname: `/api/conversations/${encodeURIComponent(conversationId)}/channel-bindings/feishu`,
+      body: { chatId: 'oc-bind-active-turn' },
+    }),
+    (error) => {
+      assert.equal(error.statusCode, 409);
+      assert.equal(error.issues[0].code, 'conversation_busy');
+      assert.equal(error.issues[0].activeTurnCount, 1);
+      return true;
+    }
+  );
+
+  assert.equal(store.getConversationChannelBinding('feishu', 'oc-bind-active-turn'), null);
+});
+
+test('conversations controller rejects Feishu binding when target conversation is already bound elsewhere', async (t) => {
+  const { handler, store } = createConversationsControllerHarness(t);
+  const sourceConversation = store.createConversation({
+    id: 'feishu-binding-conflict-source',
+    title: 'Feishu Binding Conflict Source',
+  });
+  const targetConversation = store.createConversation({
+    id: 'feishu-binding-conflict-target',
+    title: 'Feishu Binding Conflict Target',
+  });
+  store.createConversationChannelBinding({
+    platform: 'feishu',
+    externalChatId: 'oc-bind-source',
+    conversationId: sourceConversation.id,
+  });
+  store.createConversationChannelBinding({
+    platform: 'feishu',
+    externalChatId: 'oc-bind-target',
+    conversationId: targetConversation.id,
+  });
+
+  await assert.rejects(
+    () => invokeConversationsController(handler, {
+      method: 'PUT',
+      pathname: `/api/conversations/${encodeURIComponent(targetConversation.id)}/channel-bindings/feishu`,
+      body: { chatId: 'oc-bind-source' },
+    }),
+    (error) => {
+      assert.equal(error.statusCode, 409);
+      assert.equal(error.issues[0].code, 'conversation_already_bound');
+      return true;
+    }
+  );
+
+  assert.equal(store.getConversationChannelBinding('feishu', 'oc-bind-source').conversationId, sourceConversation.id);
+  assert.equal(store.getConversationChannelBinding('feishu', 'oc-bind-target').conversationId, targetConversation.id);
+});
 
 test('conversations controller rejects deleting queued conversations', async () => {
   const conversationId = 'queued-delete-conversation';

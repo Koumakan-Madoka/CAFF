@@ -19,6 +19,11 @@ const state = {
   messageToolTraceById: new Map(),
   messageToolTraceTimers: new Map(),
   optimisticMessagesByConversation: new Map(),
+  bindingFeishuChat: false,
+  feishuBindingNotice: '',
+  feishuBindingNoticeConversationId: null,
+  knownFeishuChats: [],
+  loadingFeishuChats: false,
 };
 
 const UNDERCOVER_TYPE = 'who_is_undercover';
@@ -56,6 +61,10 @@ const dom = {
   bulkSkillSelect: /** @type {HTMLSelectElement | null} */ (document.getElementById('bulk-skill-select')),
   applyBulkSkillButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('apply-bulk-skill-button')),
   clearBulkSkillButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('clear-bulk-skill-button')),
+  feishuChatSelect: /** @type {HTMLSelectElement | null} */ (document.getElementById('feishu-chat-select')),
+  feishuChatIdInput: /** @type {HTMLInputElement | null} */ (document.getElementById('feishu-chat-id-input')),
+  bindFeishuChatButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('bind-feishu-chat-button')),
+  feishuBindingStatus: /** @type {HTMLElement | null} */ (document.getElementById('feishu-binding-status')),
   undercoverGameCard: /** @type {HTMLElement | null} */ (document.getElementById('undercover-game-card')),
   undercoverGameStatus: /** @type {HTMLElement | null} */ (document.getElementById('undercover-game-status')),
   undercoverLastResult: /** @type {HTMLElement | null} */ (document.getElementById('undercover-last-result')),
@@ -361,6 +370,8 @@ function setupChatModules() {
           dom,
           helpers: {
             buildAgentAvatarElement,
+            formatDateTime,
+            isConversationBusy,
             normalizedSkillIds,
           },
           showToast,
@@ -1599,6 +1610,36 @@ function selectedConversationParticipants() {
   return conversationSettingsController.selectedParticipants();
 }
 
+function setFeishuBindingNotice(conversationId, message) {
+  state.feishuBindingNoticeConversationId = conversationId || null;
+  state.feishuBindingNotice = String(message || '').trim();
+}
+
+async function refreshKnownFeishuChats(options = {}) {
+  const render = options.render !== false;
+  const swallowErrors = options.swallowErrors !== false;
+
+  state.loadingFeishuChats = true;
+  if (render) {
+    renderCompactConversationPersonaSettings();
+  }
+
+  try {
+    const data = await fetchJson('/api/channel-bindings/feishu');
+    state.knownFeishuChats = Array.isArray(data && data.chats) ? data.chats : [];
+  } catch (error) {
+    state.knownFeishuChats = [];
+    if (!swallowErrors) {
+      throw error;
+    }
+  } finally {
+    state.loadingFeishuChats = false;
+    if (render) {
+      renderCompactConversationPersonaSettings();
+    }
+  }
+}
+
 function activeTurnForConversation(conversationId) {
   if (!state.runtime || !Array.isArray(state.runtime.activeTurns)) {
     return null;
@@ -2395,6 +2436,7 @@ async function refreshAll(preferredConversationId) {
   state.modes = Array.isArray(data.modes) ? data.modes : [];
   state.agents = data.agents;
   state.conversations = data.conversations;
+  await refreshKnownFeishuChats({ render: false });
 
   populateModeSelect();
 
@@ -3188,6 +3230,69 @@ function bindEvents() {
       showToast(error.message);
     }
   });
+
+  if (dom.feishuChatSelect) {
+    dom.feishuChatSelect.addEventListener('change', () => {
+      const chatId = dom.feishuChatSelect ? dom.feishuChatSelect.value.trim() : '';
+      if (chatId && dom.feishuChatIdInput) {
+        dom.feishuChatIdInput.value = chatId;
+      }
+    });
+  }
+
+  if (dom.bindFeishuChatButton) {
+    dom.bindFeishuChatButton.addEventListener('click', async (event) => {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+
+      if (!state.currentConversation) {
+        showToast('请先选择一个会话');
+        return;
+      }
+
+      const conversationId = state.currentConversation.id;
+      const chatId = dom.feishuChatIdInput ? dom.feishuChatIdInput.value.trim() : '';
+
+      if (!chatId) {
+        showToast('请输入飞书 chat_id');
+        return;
+      }
+
+      if (
+        isConversationBusy(conversationId) ||
+        queuedUserMessageCountForConversation(conversationId) > 0 ||
+        queuedAgentSlotMessageCountForConversation(conversationId) > 0
+      ) {
+        showToast('当前房间正在处理或仍有待处理消息，请稍后再绑定飞书');
+        return;
+      }
+
+      state.bindingFeishuChat = true;
+      conversationSettingsController.render();
+
+      try {
+        const result = await fetchJson(
+          `/api/conversations/${encodeURIComponent(conversationId)}/channel-bindings/feishu`,
+          {
+            method: 'PUT',
+            body: { chatId },
+          }
+        );
+        await refreshKnownFeishuChats({ render: false });
+        const movedText = result && result.moved && result.previousConversationId
+          ? `，已从 ${result.previousConversationId} 移动过来`
+          : '';
+        setFeishuBindingNotice(conversationId, `已绑定飞书 chat_id：${chatId}${movedText}`);
+        showToast('飞书会话已绑定到当前会话');
+      } catch (error) {
+        setFeishuBindingNotice(conversationId, error.message);
+        showToast(error.message);
+      } finally {
+        state.bindingFeishuChat = false;
+        conversationSettingsController.render();
+      }
+    });
+  }
 
   dom.deleteConversationButton.addEventListener('click', async () => {
     if (!state.currentConversation) {

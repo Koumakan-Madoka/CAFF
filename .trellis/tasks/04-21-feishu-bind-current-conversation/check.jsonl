@@ -1,0 +1,6 @@
+{"file": ".agents/skills/finish-work/SKILL.md", "reason": "Finish work checklist"}
+{"file": ".agents/skills/check/SKILL.md", "reason": "Code quality check spec"}
+{"file": ".trellis/spec/backend/controller-patterns.md", "reason": "Check controller validation and errors"}
+{"file": ".trellis/spec/backend/feishu-integration.md", "reason": "Check Feishu binding behavior"}
+{"file": ".trellis/spec/frontend/ui-structure.md", "reason": "Check UI structure"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Check cross-layer contract"}
