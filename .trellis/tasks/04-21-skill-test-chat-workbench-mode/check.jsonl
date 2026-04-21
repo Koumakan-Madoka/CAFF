@@ -1,0 +1,15 @@
+{"file": ".agents/skills/finish-work/SKILL.md", "reason": "Finish work checklist"}
+{"file": ".agents/skills/check/SKILL.md", "reason": "Code quality check spec"}
+{"file": ".trellis/spec/skills/index.md", "reason": "Skill testing and skill-system scope overview"}
+{"file": ".trellis/spec/skills/skill-testing.md", "reason": "Canonical skill-test schema, generation flow, and draft-first export contract"}
+{"file": ".trellis/spec/skills/skill-system.md", "reason": "Dynamic/full skill loading and prompt descriptor contract"}
+{"file": ".trellis/spec/runtime/index.md", "reason": "Runtime prompt injection and conversation-mode integration overview"}
+{"file": ".trellis/spec/runtime/agent-runtime.md", "reason": "Agent runtime, Trellis injection, and mirrored update paths"}
+{"file": ".trellis/spec/runtime/conversation-turn-queue.md", "reason": "Conversation queue semantics for chat-workbench mode changes"}
+{"file": ".trellis/spec/backend/controller-patterns.md", "reason": "HTTP controller boundaries and request handling rules"}
+{"file": ".trellis/spec/frontend/ui-structure.md", "reason": "Chat and browser UI module structure expectations"}
+{"file": ".trellis/spec/unit-test/index.md", "reason": "Test coverage expectations for runtime and skill-test changes"}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Runtime-oriented regression test patterns"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Feature spans workbench UI, runtime, backend, and skill-test persistence"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Avoid duplicating workbench or skill-test helper logic"}
+{"file": ".trellis/spec/guides/cross-platform-thinking-guide.md", "reason": "Guard Windows/path/tooling assumptions in runtime and tooling changes"}

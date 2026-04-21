@@ -1,0 +1,60 @@
+{
+  "id": "skill-test-lifecycle-chain-planning",
+  "name": "skill-test-lifecycle-chain-planning",
+  "title": "Skill test lifecycle chain planning and draft export",
+  "description": "Plan chain-aware matrix fields and draft export metadata for lifecycle-dependent skills without changing runner semantics yet.",
+  "status": "planning",
+  "dev_type": "fullstack",
+  "scope": ".agents/skills/skill-test-design-workbench/SKILL.md, public/chat/skill-test-design-panel.js, server/api/skill-test-controller.ts, server/domain/skill-test/chat-workbench-mode.ts, tests/skill-test/*, .trellis/spec/skills/skill-testing.md",
+  "package": null,
+  "priority": "P2",
+  "creator": "菲比啾比",
+  "assignee": "菲比啾比",
+  "createdAt": "2026-04-21",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "feat/skill-test-chat-workbench-mode",
+  "worktree_path": null,
+  "current_phase": 0,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "check"
+    },
+    {
+      "phase": 3,
+      "action": "finish"
+    },
+    {
+      "phase": 4,
+      "action": "create-pr"
+    }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "04-21-skill-test-chat-workbench-mode",
+  "relatedFiles": [
+    ".agents/skills/skill-test-design-workbench/SKILL.md",
+    "public/chat/skill-test-design-panel.js",
+    "server/api/skill-test-controller.ts",
+    "server/domain/skill-test/chat-workbench-mode.ts",
+    "tests/skill-test/skill-test-e2e.test.js",
+    ".trellis/spec/skills/skill-testing.md"
+  ],
+  "notes": "Child of 04-21-skill-test-chat-workbench-mode. Owns chain-aware matrix planning and draft metadata export only; runner-level environment inheritance remains a later follow-up.",
+  "meta": {
+    "kind": "follow-up-design",
+    "executionLayerDeferred": true,
+    "deferredFollowups": [
+      "chain runner",
+      "shared sandbox inheritance",
+      "checkpoint / resume"
+    ]
+  }
+}

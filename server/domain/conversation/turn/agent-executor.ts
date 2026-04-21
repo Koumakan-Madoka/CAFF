@@ -16,10 +16,16 @@ const {
   extractMentionedAgentIds,
   getAgentById,
 } = require('../mention-routing');
+const { SKILL_TEST_DESIGN_WORKBENCH_SKILL_ID } = require('../../../../lib/mode-store');
 const { buildAgentTurnPrompt, AGENT_PROMPT_VERSION } = require('./agent-prompt');
 const { ensureAgentSandbox, toPortableShellPath } = require('./agent-sandbox');
 const { extractChatBridgeReplaysFromText, pickChatBridgeReplay } = require('./chat-bridge-replay');
 const { createLiveSessionToolStep } = require('../../runtime/message-tool-trace');
+const {
+  SKILL_TEST_DESIGN_CONVERSATION_TYPE,
+  buildSkillTestDesignCaseSummary,
+  getSkillTestDesignState,
+} = require('../../skill-test/chat-workbench-mode');
 const { clipText, getTurnStage, nowIso, syncCurrentTurnAgent } = require('./turn-state');
 const { registerTurnHandle, unregisterTurnHandle } = require('./turn-stop');
 
@@ -76,6 +82,45 @@ function mergeSkillIds(...groups: any[]) {
   }
 
   return mergedSkillIds;
+}
+
+function buildModePromptContext(conversation: any, currentAgentId: any, skillRegistry: any, store: any, options: any = {}) {
+  const conversationType = conversation && conversation.type ? String(conversation.type).trim() : 'standard';
+  if (conversationType !== SKILL_TEST_DESIGN_CONVERSATION_TYPE) {
+    return null;
+  }
+
+  const state = getSkillTestDesignState(conversation);
+  if (!state || !state.skillId) {
+    return null;
+  }
+
+  const participantRoles = state.participantRoles && typeof state.participantRoles === 'object' ? state.participantRoles : {};
+  const currentAgentRole = String(participantRoles[currentAgentId] || '').trim() || 'planner';
+  const skill = skillRegistry && typeof skillRegistry.getSkill === 'function'
+    ? skillRegistry.getSkill(state.skillId, { extraSkillDirs: options.extraSkillDirs })
+    : null;
+  const caseSummary = buildSkillTestDesignCaseSummary(store && store.db, state.skillId);
+
+  return {
+    kind: 'skill_test_design',
+    currentAgentRole,
+    targetSkill: skill
+      ? {
+          id: String(skill.id || '').trim(),
+          name: String(skill.name || '').trim(),
+          description: String(skill.description || '').trim(),
+          path: String(skill.path || '').trim(),
+        }
+      : {
+          id: state.skillId,
+          name: state.skillName || state.skillId,
+          description: '',
+          path: '',
+        },
+    state,
+    caseSummary,
+  };
 }
 
 function extractJsonCandidate(text: any) {
@@ -773,6 +818,13 @@ export function createAgentExecutor(options: any = {}) {
       : [];
     const resolvedPersonaSkills = skillRegistry.resolveSkills(agentConfig.skillIds, { extraSkillDirs });
     const resolvedConversationSkills = skillRegistry.resolveSkills(agentConfig.conversationSkillIds, { extraSkillDirs });
+    const modeContext = buildModePromptContext(conversation, agent.id, skillRegistry, store, { extraSkillDirs });
+    const forceFullConversationSkillIds = conversationType === SKILL_TEST_DESIGN_CONVERSATION_TYPE
+      ? mergeSkillIds([
+          SKILL_TEST_DESIGN_WORKBENCH_SKILL_ID,
+          modeContext && modeContext.state ? modeContext.state.skillId : '',
+        ])
+      : [];
     const privateMessages = store.listPrivateMessagesForAgent(conversationId, agent.id, {
       limit: MAX_PRIVATE_CONTEXT_MESSAGES,
     });
@@ -800,6 +852,8 @@ export function createAgentExecutor(options: any = {}) {
       allowHandoffs,
       agentToolRelativePath,
       modeLoadingStrategy,
+      modeContext,
+      forceFullConversationSkillIds,
     });
     const provider = resolveSetting(agentConfig.provider, process.env.PI_PROVIDER, DEFAULT_PROVIDER);
     const model = resolveSetting(agentConfig.model, process.env.PI_MODEL, DEFAULT_MODEL);

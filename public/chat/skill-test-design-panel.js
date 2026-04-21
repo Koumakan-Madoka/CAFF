@@ -1,0 +1,494 @@
+// @ts-check
+
+(function registerSkillTestDesignPanelModule() {
+  const chat = window.CaffChat || (window.CaffChat = {});
+
+  var SKILL_TEST_DESIGN_TYPE = 'skill_test_design';
+
+  var PHASE_LABELS = {
+    collecting_context: '收集上下文',
+    planning_matrix: '形成测试矩阵',
+    awaiting_confirmation: '等待确认',
+    generating_drafts: '生成草稿',
+    exported: '已导出',
+  };
+
+  var PRIORITY_LABELS = {
+    P0: 'P0 必须有',
+    P1: 'P1 应该有',
+    P2: 'P2 可选',
+  };
+
+  function isSkillTestDesignConversation(conversation) {
+    return Boolean(conversation && String(conversation.type || '').trim() === SKILL_TEST_DESIGN_TYPE);
+  }
+
+  function getDesignState(conversation) {
+    var metadata = conversation && conversation.metadata && typeof conversation.metadata === 'object'
+      ? conversation.metadata
+      : {};
+    return metadata.skillTestDesign && typeof metadata.skillTestDesign === 'object'
+      ? metadata.skillTestDesign
+      : null;
+  }
+
+  function phaseLabel(phase) {
+    return PHASE_LABELS[String(phase || '').trim()] || phase || '-';
+  }
+
+  function priorityLabel(priority) {
+    return PRIORITY_LABELS[String(priority || '').trim()] || priority || '-';
+  }
+
+  function escapeHtml(text) {
+    var div = document.createElement('div');
+    div.textContent = String(text || '');
+    return div.innerHTML;
+  }
+
+  function normalizeArtifactPath(value) {
+    return String(value || '')
+      .trim()
+      .replace(/^`+|`+$/g, '')
+      .replace(/^['"]+|['"]+$/g, '')
+      .replace(/\\/g, '/')
+      .replace(/^\.\//, '');
+  }
+
+  function extractMatrixCandidateFromContent(content) {
+    var matrix = null;
+    var jsonBlockRegex = /```(?:json)?\s*\n?([\s\S]*?)```/g;
+    var match;
+    while ((match = jsonBlockRegex.exec(content)) !== null) {
+      try {
+        var parsed = JSON.parse(match[1]);
+        if (parsed && parsed.kind === 'skill_test_matrix') {
+          matrix = parsed;
+          break;
+        }
+      } catch (error) {
+        void error;
+      }
+    }
+
+    if (!matrix) {
+      var jsonObjectRegex = /\{[\s\S]*"kind"\s*:\s*"skill_test_matrix"[\s\S]*\}/g;
+      while ((match = jsonObjectRegex.exec(content)) !== null) {
+        try {
+          var parsedObject = JSON.parse(match[0]);
+          if (parsedObject && parsedObject.kind === 'skill_test_matrix') {
+            matrix = parsedObject;
+            break;
+          }
+        } catch (error) {
+          void error;
+        }
+      }
+    }
+
+    if (matrix) {
+      return { matrix: matrix, matrixPath: '' };
+    }
+
+    var artifactMatch = String(content || '').match(/^\s*MATRIX_ARTIFACT\s*:\s*([^\r\n]+)\s*$/im);
+    var matrixPath = normalizeArtifactPath(artifactMatch && artifactMatch[1]);
+    if (matrixPath) {
+      return { matrix: null, matrixPath: matrixPath };
+    }
+
+    return null;
+  }
+
+  function findLatestMatrixCandidate(conversation) {
+    var messages = Array.isArray(conversation && conversation.messages) ? conversation.messages : [];
+    for (var index = messages.length - 1; index >= 0; index--) {
+      var message = messages[index];
+      if (!message || message.role !== 'assistant') {
+        continue;
+      }
+      var candidate = extractMatrixCandidateFromContent(String(message.content || ''));
+      if (candidate && (candidate.matrix || candidate.matrixPath)) {
+        return {
+          messageId: String(message.id || '').trim(),
+          matrix: candidate.matrix,
+          matrixPath: candidate.matrixPath,
+        };
+      }
+    }
+    return null;
+  }
+
+  function candidateKey(conversationId, candidate) {
+    var normalizedConversationId = String(conversationId || '').trim();
+    var messageId = candidate && candidate.messageId ? String(candidate.messageId).trim() : '';
+    if (!normalizedConversationId || !messageId) {
+      return '';
+    }
+    return normalizedConversationId + ':' + messageId;
+  }
+
+  chat.createSkillTestDesignPanelRenderer = function createSkillTestDesignPanelRenderer({ state }) {
+    var card = document.getElementById('skill-test-design-card');
+    var statusEl = document.getElementById('skill-test-design-status');
+    var skillNameEl = document.getElementById('skill-test-design-skill-name');
+    var phaseEl = document.getElementById('skill-test-design-phase');
+    var caseSummaryEl = document.getElementById('skill-test-design-case-summary');
+    var matrixSection = document.getElementById('skill-test-design-matrix-section');
+    var matrixStatusEl = document.getElementById('skill-test-design-matrix-status');
+    var matrixRowsEl = document.getElementById('skill-test-design-matrix-rows');
+    var actionsEl = document.getElementById('skill-test-design-actions');
+    var importButton = document.getElementById('skill-test-import-matrix-button');
+    var confirmButton = document.getElementById('skill-test-confirm-matrix-button');
+    var exportButton = document.getElementById('skill-test-export-drafts-button');
+    var exportResultEl = document.getElementById('skill-test-design-export-result');
+    var exportSummaryEl = document.getElementById('skill-test-design-export-summary');
+
+    var summaryFetchTimer = null;
+    var autoImportInFlightKey = '';
+    var autoImportFailedKey = '';
+    var primaryActionInFlight = false;
+
+    function syncConversationState(nextConversation) {
+      if (!nextConversation || !nextConversation.id) {
+        return;
+      }
+      state.currentConversation = nextConversation;
+      var index = state.conversations.findIndex(function (item) {
+        return item && item.id === nextConversation.id;
+      });
+      if (index >= 0) {
+        state.conversations[index] = nextConversation;
+      }
+    }
+
+    function showToast(message) {
+      if (typeof window.showToast === 'function') {
+        window.showToast(message);
+      }
+    }
+
+    function fetchSkillTestDesignSummary(conversationId) {
+      if (summaryFetchTimer) {
+        clearTimeout(summaryFetchTimer);
+      }
+      summaryFetchTimer = setTimeout(function () {
+        summaryFetchTimer = null;
+        fetch('/api/conversations/' + encodeURIComponent(conversationId) + '/skill-test-design', {
+          credentials: 'include',
+        })
+          .then(function (res) {
+            if (!res.ok) throw new Error('Failed to fetch design summary');
+            return res.json();
+          })
+          .then(function (data) {
+            if (!data || !data.state) return;
+            var summary = data.state.existingCaseSummary || {};
+            if (caseSummaryEl) {
+              caseSummaryEl.textContent =
+                '总计 ' + (summary.totalCases || 0) +
+                ' / 草稿 ' + (summary.draftCases || 0) +
+                ' / 就绪 ' + (summary.readyCases || 0) +
+                ' / 归档 ' + (summary.archivedCases || 0);
+            }
+          })
+          .catch(function () {
+            // Ignore summary fetch errors.
+          });
+      }, 300);
+    }
+
+    function postDesignAction(conversationId, action, body) {
+      return fetch('/api/conversations/' + encodeURIComponent(conversationId) + '/skill-test-design/' + action, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(body || {}),
+      })
+        .then(function (res) {
+          if (!res.ok) {
+            return res.json().then(function (err) {
+              throw new Error(err.message || '请求失败');
+            });
+          }
+          return res.json();
+        });
+    }
+
+    function renderMatrixRows(rows) {
+      if (!matrixRowsEl) return;
+      matrixRowsEl.innerHTML = '';
+
+      if (!Array.isArray(rows) || rows.length === 0) {
+        matrixRowsEl.innerHTML = '<p class="muted">矩阵为空</p>';
+        return;
+      }
+
+      var table = document.createElement('table');
+      table.className = 'skill-test-matrix-table';
+
+      var thead = document.createElement('thead');
+      thead.innerHTML = '<tr>' +
+        '<th>场景</th>' +
+        '<th>优先级</th>' +
+        '<th>类型</th>' +
+        '<th>模式</th>' +
+        '<th>MVP</th>' +
+        '</tr>';
+      table.appendChild(thead);
+
+      var tbody = document.createElement('tbody');
+      for (var index = 0; index < rows.length; index++) {
+        var row = rows[index] || {};
+        var tr = document.createElement('tr');
+        tr.innerHTML =
+          '<td title="' + escapeHtml(row.scenario || '') + '">' + escapeHtml((row.scenario || '').substring(0, 60)) + '</td>' +
+          '<td>' + escapeHtml(priorityLabel(row.priority)) + '</td>' +
+          '<td>' + escapeHtml(row.testType || '-') + '</td>' +
+          '<td>' + escapeHtml(row.loadingMode || '-') + '</td>' +
+          '<td>' + (row.includeInMvp !== false ? '✓' : '✗') + '</td>';
+        tbody.appendChild(tr);
+      }
+      table.appendChild(tbody);
+      matrixRowsEl.appendChild(table);
+    }
+
+    function handleImportMatrix(options) {
+      var conversation = state.currentConversation;
+      var silent = Boolean(options && options.silent);
+      var candidate = options && options.candidate ? options.candidate : findLatestMatrixCandidate(conversation);
+      var key = options && options.key ? options.key : candidateKey(conversation && conversation.id, candidate);
+
+      if (!isSkillTestDesignConversation(conversation)) {
+        return Promise.resolve(null);
+      }
+      if (!candidate || (!candidate.matrix && !candidate.matrixPath)) {
+        if (!silent) {
+          showToast('没有找到可同步的测试矩阵');
+        }
+        return Promise.resolve(null);
+      }
+
+      if (key) {
+        autoImportInFlightKey = key;
+      }
+
+      return postDesignAction(conversation.id, 'import-matrix', {
+        messageId: candidate.messageId,
+        matrix: candidate.matrix || undefined,
+        matrixPath: candidate.matrixPath || undefined,
+      })
+        .then(function (data) {
+          autoImportInFlightKey = '';
+          autoImportFailedKey = '';
+          if (data && data.conversation) {
+            syncConversationState(data.conversation);
+          }
+          render();
+          if (!silent) {
+            showToast('已同步最新测试矩阵');
+          }
+          return data;
+        })
+        .catch(function (error) {
+          autoImportInFlightKey = '';
+          autoImportFailedKey = key || '';
+          render();
+          showToast(error && error.message ? error.message : '同步测试矩阵失败');
+          throw error;
+        });
+    }
+
+    function handlePrimaryAction() {
+      var conversation = state.currentConversation;
+      if (!isSkillTestDesignConversation(conversation)) return;
+
+      var designState = getDesignState(conversation) || {};
+      var matrix = designState.matrix && typeof designState.matrix === 'object' ? designState.matrix : null;
+      var confirmation = designState.confirmation && typeof designState.confirmation === 'object' ? designState.confirmation : null;
+      var matrixId = matrix && matrix.matrixId ? String(matrix.matrixId).trim() : '';
+      var isConfirmed = Boolean(
+        matrixId && confirmation && String(confirmation.matrixId || '').trim() === matrixId
+      );
+
+      if (!matrixId) {
+        showToast('还没有可导出的测试矩阵');
+        return;
+      }
+
+      primaryActionInFlight = true;
+      render();
+
+      postDesignAction(conversation.id, 'export-drafts', {
+        matrixId: matrixId,
+        confirmMatrix: !isConfirmed,
+        confirmationMessageId: String(matrix.sourceMessageId || '').trim(),
+        exportedBy: 'user',
+      })
+        .then(function (data) {
+          if (data && data.conversation) {
+            syncConversationState(data.conversation);
+          }
+          render();
+          var message = '已导出 ' + (data && data.exportedCount || 0) + ' 条测试草稿';
+          if (data && Array.isArray(data.duplicateWarnings) && data.duplicateWarnings.length > 0) {
+            message += '（' + data.duplicateWarnings.length + ' 条可能与现有用例重复）';
+          }
+          if (data && Array.isArray(data.skippedRows) && data.skippedRows.length > 0) {
+            message += '，另有 ' + data.skippedRows.length + ' 行因当前 Phase 1 限制被跳过';
+          }
+          showToast(message);
+        })
+        .catch(function (error) {
+          showToast(error && error.message ? error.message : '导出失败');
+        })
+        .finally(function () {
+          primaryActionInFlight = false;
+          render();
+        });
+    }
+
+    function render() {
+      if (!card) {
+        return;
+      }
+
+      var conversation = state.currentConversation;
+      var isDesignRoom = isSkillTestDesignConversation(conversation);
+      card.classList.toggle('hidden', !isDesignRoom);
+
+      if (!isDesignRoom || !conversation) {
+        return;
+      }
+
+      var designState = getDesignState(conversation) || {};
+      var skillName = String(designState.skillName || designState.skillId || '-').trim();
+      var phase = String(designState.phase || 'collecting_context').trim();
+      var matrix = designState.matrix && typeof designState.matrix === 'object' ? designState.matrix : null;
+      var confirmation = designState.confirmation && typeof designState.confirmation === 'object' ? designState.confirmation : null;
+      var exportInfo = designState.export && typeof designState.export === 'object' ? designState.export : null;
+      var importedMessageId = matrix && matrix.sourceMessageId ? String(matrix.sourceMessageId || '').trim() : '';
+      var latestCandidate = findLatestMatrixCandidate(conversation);
+      var latestCandidateKey = candidateKey(conversation.id, latestCandidate);
+      var hasFreshCandidate = Boolean(
+        latestCandidateKey && latestCandidate && latestCandidate.messageId && latestCandidate.messageId !== importedMessageId
+      );
+      var autoImportPending = Boolean(latestCandidateKey && latestCandidateKey === autoImportInFlightKey);
+      var autoImportFailed = Boolean(latestCandidateKey && latestCandidateKey === autoImportFailedKey);
+
+      if (hasFreshCandidate && !autoImportPending && !autoImportFailed) {
+        autoImportInFlightKey = latestCandidateKey;
+        autoImportPending = true;
+        setTimeout(function () {
+          handleImportMatrix({
+            candidate: latestCandidate,
+            silent: true,
+            key: latestCandidateKey,
+          }).catch(function () {
+            // Failure toast already shown in handleImportMatrix.
+          });
+        }, 0);
+      }
+
+      skillNameEl.textContent = skillName;
+      phaseEl.textContent = phaseLabel(phase);
+      fetchSkillTestDesignSummary(conversation.id);
+
+      var displayMatrix = matrix && matrix.matrixId
+        ? matrix
+        : latestCandidate && latestCandidate.matrix
+          ? latestCandidate.matrix
+          : null;
+
+      if (displayMatrix && displayMatrix.rows) {
+        matrixSection.classList.remove('hidden');
+        renderMatrixRows(displayMatrix.rows || []);
+      } else {
+        matrixSection.classList.add('hidden');
+      }
+
+      var isConfirmed = Boolean(
+        matrix && matrix.matrixId && confirmation && String(confirmation.matrixId || '').trim() === String(matrix.matrixId || '').trim()
+      );
+      var alreadyExported = Boolean(
+        matrix && matrix.matrixId && exportInfo && String(exportInfo.matrixId || '').trim() === String(matrix.matrixId || '').trim() && phase === 'exported'
+      );
+      var matrixStatus = '未导入';
+      var hasCandidatePointer = Boolean(latestCandidate && (latestCandidate.matrix || latestCandidate.matrixPath));
+
+      if (matrix && matrix.matrixId) {
+        matrixStatus = isConfirmed
+          ? '已确认 (matrixId: ' + matrix.matrixId + ')'
+          : '已同步，待确认 (matrixId: ' + matrix.matrixId + ')';
+      } else if (displayMatrix || hasCandidatePointer) {
+        matrixStatus = autoImportFailed ? '检测到矩阵，但自动同步失败，可重试' : '检测到矩阵，正在自动同步';
+      }
+
+      if (matrix && matrix.matrixId && hasFreshCandidate) {
+        if (autoImportPending) {
+          matrixStatus += '；正在同步最新矩阵';
+        } else if (autoImportFailed) {
+          matrixStatus += '；最新矩阵同步失败，可重试';
+        }
+      }
+
+      if (matrixStatusEl) {
+        matrixStatusEl.textContent = matrixStatus;
+      }
+      if (statusEl) {
+        statusEl.textContent = autoImportPending
+          ? '检测到新的测试矩阵，正在自动同步。同步完成后可直接一键确认并导出。'
+          : '检测到有效测试矩阵后会自动同步；你只需要确认并导出草稿。';
+      }
+
+      var canRetryImport = Boolean(latestCandidateKey && autoImportFailed);
+      var canPrimaryAction = Boolean(matrix && matrix.matrixId && !alreadyExported && !autoImportPending);
+
+      actionsEl.classList.toggle('hidden', !canRetryImport && !canPrimaryAction);
+
+      if (importButton) {
+        importButton.textContent = autoImportPending ? '同步中...' : '重试同步矩阵';
+        importButton.disabled = autoImportPending;
+        importButton.classList.toggle('hidden', !canRetryImport);
+      }
+
+      if (confirmButton) {
+        confirmButton.classList.add('hidden');
+      }
+
+      if (exportButton) {
+        exportButton.textContent = isConfirmed ? '导出草稿' : '确认并导出草稿';
+        exportButton.disabled = primaryActionInFlight || autoImportPending;
+        exportButton.classList.toggle('hidden', !canPrimaryAction);
+      }
+
+      if (exportInfo && exportInfo.exportedCaseIds) {
+        exportResultEl.classList.remove('hidden');
+        exportSummaryEl.textContent = '已导出 ' + (exportInfo.exportedCaseIds.length || 0) + ' 条草稿';
+      } else {
+        exportResultEl.classList.add('hidden');
+      }
+    }
+
+    if (importButton) {
+      importButton.addEventListener('click', function () {
+        handleImportMatrix({ silent: false }).catch(function () {
+          // Failure toast already handled.
+        });
+      });
+    }
+
+    if (confirmButton) {
+      confirmButton.addEventListener('click', handlePrimaryAction);
+    }
+
+    if (exportButton) {
+      exportButton.addEventListener('click', handlePrimaryAction);
+    }
+
+    return {
+      render: render,
+    };
+  };
+
+  chat.isSkillTestDesignConversation = isSkillTestDesignConversation;
+})();

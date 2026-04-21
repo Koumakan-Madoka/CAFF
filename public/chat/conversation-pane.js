@@ -25,6 +25,7 @@
       renderParticipantList,
       renderUndercoverGameCard,
       renderWerewolfGameCard,
+      renderSkillTestDesignCard,
       scheduleConversationPaneRender,
       timelineMessagesForConversation,
       undercoverGameState,
@@ -57,6 +58,7 @@
         closeMentionMenu();
         renderUndercoverGameCard();
         renderWerewolfGameCard();
+        renderSkillTestDesignCard();
         return;
       }
 
@@ -237,6 +239,7 @@
 
       renderUndercoverGameCard();
       renderWerewolfGameCard();
+      renderSkillTestDesignCard();
     }
 
     return {

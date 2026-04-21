@@ -32,6 +32,16 @@ import {
   resolveEnvironmentRunConfig,
 } from '../domain/skill-test/environment-chain';
 import { createSkillTestEnvironmentRuntime } from '../domain/skill-test/sandbox-tool-contract';
+import {
+  SKILL_TEST_DESIGN_CONVERSATION_TYPE,
+  SKILL_TEST_DESIGN_PHASES,
+  buildSkillTestDesignCaseSummary,
+  buildSkillTestDraftInputFromMatrixRow,
+  getSkillTestDesignState,
+  normalizeSkillTestMatrix,
+  normalizeSkillTestPromptKey,
+  setSkillTestDesignStateMetadata,
+} from '../domain/skill-test/chat-workbench-mode';
 const { resolveProviderAuthEnv } = require('../domain/skill-test/open-sandbox-factory');
 
 type ApiContext = {
@@ -334,6 +344,100 @@ function createValidationHttpError(issueOrIssues: any, fallbackMessage?: string,
     issues,
     ...(extraDetails && typeof extraDetails === 'object' ? extraDetails : {}),
   });
+}
+
+const SKILL_TEST_MATRIX_ARTIFACT_ROOT = '.tmp/skill-test-design';
+const SKILL_TEST_MATRIX_ARTIFACT_MAX_BYTES = 1024 * 1024;
+
+function normalizeSkillTestMatrixArtifactPath(value: any) {
+  return String(value || '')
+    .trim()
+    .replace(/^`+|`+$/g, '')
+    .replace(/^[\'"]+|[\'"]+$/g, '')
+    .replace(/\\/g, '/')
+    .replace(/^\.\//, '');
+}
+
+function isPathWithinDirectory(candidatePath: string, directoryPath: string) {
+  const relativePath = path.relative(directoryPath, candidatePath);
+  return Boolean(relativePath) && !relativePath.startsWith('..') && !path.isAbsolute(relativePath);
+}
+
+function resolveSkillTestMatrixArtifactPath(rawPath: any, projectDir: any) {
+  const relativePath = normalizeSkillTestMatrixArtifactPath(rawPath);
+  if (!relativePath) {
+    throw createValidationHttpError(
+      buildValidationIssue('matrix_artifact_path_required', 'error', 'matrixPath', '矩阵 artifact 路径不能为空')
+    );
+  }
+  if (relativePath.includes('\0') || /^file:/iu.test(relativePath) || path.isAbsolute(relativePath) || /^[A-Za-z]:\//u.test(relativePath)) {
+    throw createValidationHttpError(
+      buildValidationIssue('matrix_artifact_path_invalid', 'error', 'matrixPath', '矩阵 artifact 必须使用项目内相对路径')
+    );
+  }
+  if (!relativePath.startsWith(`${SKILL_TEST_MATRIX_ARTIFACT_ROOT}/`) || !relativePath.toLowerCase().endsWith('.json')) {
+    throw createValidationHttpError(
+      buildValidationIssue('matrix_artifact_path_invalid', 'error', 'matrixPath', '矩阵 artifact 必须位于 .tmp/skill-test-design/ 且使用 .json 文件')
+    );
+  }
+  if (relativePath.split('/').some((segment) => !segment || segment === '.' || segment === '..')) {
+    throw createValidationHttpError(
+      buildValidationIssue('matrix_artifact_path_invalid', 'error', 'matrixPath', '矩阵 artifact 路径不能包含空段或路径跳转')
+    );
+  }
+
+  const projectRoot = path.resolve(String(projectDir || '').trim() || process.cwd());
+  const artifactRoot = path.resolve(projectRoot, SKILL_TEST_MATRIX_ARTIFACT_ROOT);
+  const absolutePath = path.resolve(projectRoot, relativePath);
+  if (!isPathWithinDirectory(absolutePath, artifactRoot)) {
+    throw createValidationHttpError(
+      buildValidationIssue('matrix_artifact_path_invalid', 'error', 'matrixPath', '矩阵 artifact 路径越过了允许目录')
+    );
+  }
+
+  return { relativePath, absolutePath };
+}
+
+function readSkillTestMatrixArtifact(rawPath: any, projectDir: any) {
+  const resolved = resolveSkillTestMatrixArtifactPath(rawPath, projectDir);
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(resolved.absolutePath);
+  } catch {
+    throw createValidationHttpError(
+      buildValidationIssue('matrix_artifact_missing', 'error', 'matrixPath', '矩阵 artifact 文件不存在或不可读取')
+    );
+  }
+  if (!stat.isFile()) {
+    throw createValidationHttpError(
+      buildValidationIssue('matrix_artifact_invalid', 'error', 'matrixPath', '矩阵 artifact 路径必须指向文件')
+    );
+  }
+  if (stat.size > SKILL_TEST_MATRIX_ARTIFACT_MAX_BYTES) {
+    throw createValidationHttpError(
+      buildValidationIssue('matrix_artifact_too_large', 'error', 'matrixPath', '矩阵 artifact 超过 1MB 限制')
+    );
+  }
+
+  try {
+    return {
+      relativePath: resolved.relativePath,
+      matrix: JSON.parse(fs.readFileSync(resolved.absolutePath, 'utf8')),
+    };
+  } catch {
+    throw createValidationHttpError(
+      buildValidationIssue('matrix_artifact_json_invalid', 'error', 'matrixPath', '矩阵 artifact 必须是合法 JSON')
+    );
+  }
+}
+
+function sourceMessageMentionsMatrixArtifactPath(message: any, matrixPath: any) {
+  const relativePath = normalizeSkillTestMatrixArtifactPath(matrixPath);
+  if (!relativePath) {
+    return false;
+  }
+  const content = normalizePathForJson(String(message && message.content || ''));
+  return content.includes(relativePath) || content.includes(`./${relativePath}`);
 }
 
 function getCanonicalCasePrompt(value: any) {
@@ -1583,6 +1687,17 @@ export function validateAndNormalizeCaseInput(input: any, options: { requireSkil
   const generationProvider = String(input.generationProvider || input.generation_provider || existing && existing.generationProvider || '').trim();
   const generationModel = String(input.generationModel || input.generation_model || existing && existing.generationModel || '').trim();
   const generationCreatedAt = String(input.generationCreatedAt || input.generation_created_at || existing && existing.generationCreatedAt || '').trim();
+  const sourceMetadataInput = hasOwn(input, 'sourceMetadata')
+    ? input.sourceMetadata
+    : hasOwn(input, 'source_metadata')
+      ? input.source_metadata
+      : existing && existing.sourceMetadata;
+  if (sourceMetadataInput != null && !isPlainObject(sourceMetadataInput)) {
+    throw createValidationHttpError(
+      buildValidationIssue('source_metadata_invalid', 'error', 'sourceMetadata', 'sourceMetadata must be an object')
+    );
+  }
+  const sourceMetadata = isPlainObject(sourceMetadataInput) ? sourceMetadataInput : {};
 
   const hasEnvironmentConfigInput = hasOwn(input, 'environmentConfig') || hasOwn(input, 'environment_config');
   const environmentConfigSource = hasEnvironmentConfigInput
@@ -1693,6 +1808,7 @@ export function validateAndNormalizeCaseInput(input: any, options: { requireSkil
     generationModel,
     generationCreatedAt,
     environmentConfig: environmentConfigResult.config,
+    sourceMetadata,
     note,
     issues: mergeValidationIssues(issues),
   };
@@ -2184,6 +2300,7 @@ function normalizeTestCaseRow(row: any) {
     generationProvider: String(row.generation_provider || '').trim(),
     generationModel: String(row.generation_model || '').trim(),
     generationCreatedAt: String(row.generation_created_at || '').trim(),
+    sourceMetadata: isPlainObject(safeJsonParse(row.source_metadata_json)) ? safeJsonParse(row.source_metadata_json) : {},
     note: String(row.note || '').trim(),
     createdAt: String(row.created_at || '').trim(),
     updatedAt: String(row.updated_at || '').trim(),
@@ -2972,13 +3089,13 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
           expected_tools_json, expected_behavior, validity_status, case_status,
           expected_goal, expected_steps_json, expected_sequence_json, evaluation_rubric_json,
           environment_config_json, generation_provider, generation_model, generation_created_at,
-          note, created_at, updated_at
+          source_metadata_json, note, created_at, updated_at
         ) VALUES (
           @id, @skillId, @testType, @loadingMode, @triggerPrompt,
           @expectedToolsJson, @expectedBehavior, @validityStatus, @caseStatus,
           @expectedGoal, @expectedStepsJson, @expectedSequenceJson, @evaluationRubricJson,
           @environmentConfigJson, @generationProvider, @generationModel, @generationCreatedAt,
-          @note, @createdAt, @updatedAt
+          @sourceMetadataJson, @note, @createdAt, @updatedAt
         )`
       )
       .run({
@@ -2999,6 +3116,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
         generationProvider: normalized.generationProvider || '',
         generationModel: normalized.generationModel || '',
         generationCreatedAt: normalized.generationCreatedAt || '',
+        sourceMetadataJson: JSON.stringify(normalized.sourceMetadata || {}),
         note: normalized.note,
         createdAt: timestamp,
         updatedAt: timestamp,
@@ -3035,6 +3153,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
              generation_provider = @generationProvider,
              generation_model = @generationModel,
              generation_created_at = @generationCreatedAt,
+             source_metadata_json = @sourceMetadataJson,
              note = @note,
              updated_at = @updatedAt
          WHERE id = @id`
@@ -3056,6 +3175,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
         generationProvider: normalized.generationProvider || '',
         generationModel: normalized.generationModel || '',
         generationCreatedAt: normalized.generationCreatedAt || '',
+        sourceMetadataJson: JSON.stringify(normalized.sourceMetadata || {}),
         note: normalized.note,
         updatedAt,
       });
@@ -3084,6 +3204,197 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
       }
     }
     return updateTestCase(caseId, { caseStatus: nextStatus });
+  }
+
+  function requireSkillTestDesignConversation(conversationId: string) {
+    const conversation = store.getConversation(conversationId);
+    if (!conversation) {
+      throw createHttpError(404, 'Conversation not found');
+    }
+    if (String(conversation.type || '').trim() !== SKILL_TEST_DESIGN_CONVERSATION_TYPE) {
+      throw createHttpError(400, 'Conversation is not a Skill Test 设计模式会话');
+    }
+    const designState = getSkillTestDesignState(conversation);
+    if (!designState || !designState.skillId) {
+      throw createHttpError(400, 'Skill Test 设计模式缺少目标 skill 配置');
+    }
+    return { conversation, designState };
+  }
+
+  function summarizeSkillTestDesignConversation(conversation: any, designState: any) {
+    const skill = skillRegistry && typeof skillRegistry.getSkill === 'function' ? skillRegistry.getSkill(designState.skillId) : null;
+    return {
+      conversationId: conversation.id,
+      skill: skill
+        ? {
+            id: String(skill.id || '').trim(),
+            name: String(skill.name || '').trim(),
+            description: String(skill.description || '').trim(),
+            path: String(skill.path || '').trim(),
+          }
+        : {
+            id: designState.skillId,
+            name: designState.skillName || designState.skillId,
+            description: '',
+            path: '',
+          },
+      phase: String(designState.phase || '').trim() || SKILL_TEST_DESIGN_PHASES.COLLECTING_CONTEXT,
+      participantRoles: designState.participantRoles && typeof designState.participantRoles === 'object' ? designState.participantRoles : {},
+      matrix: designState.matrix || null,
+      confirmation: designState.confirmation || null,
+      export: designState.export || null,
+      existingCaseSummary: buildSkillTestDesignCaseSummary(store.db, designState.skillId),
+    };
+  }
+
+  function updateSkillTestDesignConversationState(conversation: any, nextState: any) {
+    const currentMetadata = conversation && conversation.metadata && typeof conversation.metadata === 'object' ? conversation.metadata : {};
+    const metadata = setSkillTestDesignStateMetadata(currentMetadata, nextState);
+    return store.updateConversation(conversation.id, {
+      title: conversation.title,
+      metadata,
+    });
+  }
+
+  function buildSkillTestDesignConfirmationRecord(conversation: any, designState: any, matrix: any, body: any = {}) {
+    if (!matrix || !matrix.matrixId) {
+      throw createValidationHttpError(
+        buildValidationIssue('matrix_missing', 'error', 'matrix', '当前没有可确认的测试矩阵')
+      );
+    }
+
+    const confirmationMessageId = String(body && (body.confirmationMessageId || body.messageId) || matrix.sourceMessageId || '').trim();
+    if (!confirmationMessageId) {
+      throw createValidationHttpError(
+        buildValidationIssue('matrix_source_message_required', 'error', 'messageId', '确认/导出测试矩阵必须关联来源 assistant 消息')
+      );
+    }
+
+    const sourceMessage = Array.isArray(conversation.messages)
+      ? conversation.messages.find((message: any) => message && message.id === confirmationMessageId)
+      : null;
+
+    if (!sourceMessage || sourceMessage.role !== 'assistant') {
+      throw createValidationHttpError(
+        buildValidationIssue('matrix_source_message_invalid', 'error', 'messageId', 'messageId 必须指向当前会话中的 assistant 消息')
+      );
+    }
+
+    const sourceAgentRole = sourceMessage && sourceMessage.agentId
+      ? String(designState.participantRoles && designState.participantRoles[sourceMessage.agentId] || '').trim()
+      : String(matrix.agentRole || '').trim();
+
+    return {
+      matrixId: String(matrix.matrixId || '').trim(),
+      messageId: confirmationMessageId,
+      agentRole: sourceAgentRole || 'scribe',
+      confirmedAt: nowIso(),
+    };
+  }
+
+  function findSkillTestDraftDuplicates(skillId: string, draftInput: any) {
+    ensureSchema();
+    const normalizedPrompt = normalizeSkillTestPromptKey(draftInput && draftInput.triggerPrompt);
+    if (!normalizedPrompt) {
+      return [];
+    }
+
+    const rows = store.db.prepare(`
+      SELECT id, loading_mode, test_type, trigger_prompt, case_status
+      FROM skill_test_cases
+      WHERE skill_id = ?
+        AND loading_mode = ?
+        AND test_type = ?
+      ORDER BY updated_at DESC, created_at DESC
+      LIMIT 100
+    `).all(skillId, draftInput.loadingMode || 'dynamic', draftInput.testType || 'trigger');
+
+    return rows
+      .map((row: any) => ({
+        id: String(row && row.id || '').trim(),
+        loadingMode: String(row && row.loading_mode || '').trim(),
+        testType: String(row && row.test_type || '').trim(),
+        triggerPrompt: normalizePromptText(row && row.trigger_prompt),
+        caseStatus: String(row && row.case_status || 'draft').trim() || 'draft',
+      }))
+      .filter((row: any) => normalizeSkillTestPromptKey(row.triggerPrompt) === normalizedPrompt);
+  }
+
+  function buildSkillTestDesignExportDrafts(conversation: any, designState: any, options: any = {}) {
+    const matrix = designState.matrix && typeof designState.matrix === 'object' ? designState.matrix : null;
+    const confirmation = designState.confirmation && typeof designState.confirmation === 'object' ? designState.confirmation : null;
+
+    if (!matrix || !matrix.matrixId) {
+      throw createValidationHttpError(
+        buildValidationIssue('matrix_missing', 'error', 'matrix', '当前没有可导出的测试矩阵')
+      );
+    }
+
+    if (!confirmation || String(confirmation.matrixId || '').trim() !== String(matrix.matrixId || '').trim()) {
+      throw createValidationHttpError(
+        buildValidationIssue('matrix_not_confirmed', 'error', 'confirmation', '测试矩阵尚未确认，不能导出草稿')
+      );
+    }
+
+    const includeRows = Array.isArray(matrix.rows)
+      ? matrix.rows.filter((row: any) => row && row.includeInMvp !== false)
+      : [];
+
+    if (includeRows.length === 0) {
+      throw createValidationHttpError(
+        buildValidationIssue('matrix_rows_empty', 'error', 'matrix.rows', '当前矩阵没有可导出的 MVP 行')
+      );
+    }
+
+    const draftInputs = [] as any[];
+    const duplicateWarnings = [] as any[];
+    const skippedRows = [] as any[];
+
+    for (const row of includeRows) {
+      if (String(row && row.loadingMode || '').trim().toLowerCase() !== 'dynamic' || String(row && row.testType || '').trim().toLowerCase() !== 'trigger') {
+        skippedRows.push({
+          rowId: String(row && row.rowId || '').trim(),
+          reason: 'Phase 1 目前仅稳定支持 dynamic + trigger 草稿导出',
+        });
+        continue;
+      }
+
+      const draftInput = buildSkillTestDraftInputFromMatrixRow(designState.skillId, matrix, row, {
+        conversationId: conversation.id,
+        messageId: String(confirmation.messageId || matrix.sourceMessageId || '').trim(),
+        agentRole: String(confirmation.agentRole || 'scribe').trim() || 'scribe',
+        exportedBy: String(options.exportedBy || 'user').trim() || 'user',
+      });
+      const duplicates = findSkillTestDraftDuplicates(designState.skillId, draftInput);
+      if (duplicates.length > 0) {
+        duplicateWarnings.push({
+          rowId: String(row && row.rowId || '').trim(),
+          duplicates,
+        });
+      }
+      draftInputs.push(draftInput);
+    }
+
+    const createDraftsTransaction = store.db.transaction((inputs: any[]) => inputs.map((draftInput: any) => createTestCase(draftInput).testCase));
+    const createdCases = draftInputs.length > 0 ? createDraftsTransaction(draftInputs) : [];
+
+    if (createdCases.length === 0) {
+      throw createValidationHttpError(
+        skippedRows.map((entry: any, index: number) => buildValidationIssue(
+          'export_row_skipped',
+          'error',
+          `matrix.rows[${index}]`,
+          String(entry && entry.reason || 'No exportable rows remain')
+        )),
+        '没有可导出的测试草稿'
+      );
+    }
+
+    return {
+      cases: createdCases,
+      duplicateWarnings,
+      skippedRows,
+    };
   }
 
   function listTestRuns(skillId: string, limit = 100) {
@@ -6706,6 +7017,166 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
 
   return async function handleSkillTestRequest(context) {
     const { req, res, pathname, requestUrl } = context;
+
+    const skillTestDesignMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/skill-test-design(?:\/(import-matrix|confirm-matrix|export-drafts))?$/);
+    if (skillTestDesignMatch) {
+      ensureSchema();
+      const conversationId = decodeURIComponent(skillTestDesignMatch[1]);
+      const action = skillTestDesignMatch[2] || '';
+      const { conversation, designState } = requireSkillTestDesignConversation(conversationId);
+
+      if (req.method === 'GET' && !action) {
+        sendJson(res, 200, {
+          conversation,
+          state: summarizeSkillTestDesignConversation(conversation, designState),
+        });
+        return true;
+      }
+
+      if (req.method === 'POST' && action === 'import-matrix') {
+        const body = await readRequestJson(req);
+        const sourceMessageId = String(body && body.messageId || '').trim();
+        if (!sourceMessageId) {
+          throw createValidationHttpError(
+            buildValidationIssue('matrix_source_message_required', 'error', 'messageId', '导入测试矩阵必须关联来源 assistant 消息')
+          );
+        }
+        const sourceMessage = Array.isArray(conversation.messages)
+          ? conversation.messages.find((message: any) => message && message.id === sourceMessageId)
+          : null;
+        if (!sourceMessage || sourceMessage.role !== 'assistant') {
+          throw createValidationHttpError(
+            buildValidationIssue('matrix_source_message_invalid', 'error', 'messageId', 'messageId 必须指向当前会话中的 assistant 消息')
+          );
+        }
+
+        let matrixInput = body && body.matrix;
+        let sourceArtifactPath = '';
+        const matrixPath = normalizeSkillTestMatrixArtifactPath(body && (body.matrixPath || body.artifactPath || body.matrixArtifactPath));
+        if (!matrixInput && matrixPath) {
+          if (!sourceMessageMentionsMatrixArtifactPath(sourceMessage, matrixPath)) {
+            throw createValidationHttpError(
+              buildValidationIssue('matrix_artifact_source_mismatch', 'error', 'matrixPath', '矩阵 artifact 路径必须出现在来源 assistant 消息中')
+            );
+          }
+          const artifact = readSkillTestMatrixArtifact(matrixPath, getProjectDir ? getProjectDir() : process.cwd());
+          matrixInput = artifact.matrix;
+          sourceArtifactPath = artifact.relativePath;
+        }
+        if (!matrixInput) {
+          throw createValidationHttpError(
+            buildValidationIssue('matrix_missing', 'error', 'matrix', '导入测试矩阵需要提供 matrix 对象或 matrixPath artifact')
+          );
+        }
+
+        let matrix: any = null;
+        try {
+          matrix = normalizeSkillTestMatrix(matrixInput, { skillId: designState.skillId });
+        } catch (error: any) {
+          throw createValidationHttpError(
+            buildValidationIssue('matrix_invalid', 'error', 'matrix', String(error && error.message ? error.message : error || '测试矩阵不合法'))
+          );
+        }
+        const sourceAgentRole = sourceMessage && sourceMessage.agentId
+          ? String(designState.participantRoles && designState.participantRoles[sourceMessage.agentId] || '').trim()
+          : '';
+        const nextConversation = updateSkillTestDesignConversationState(conversation, {
+          ...designState,
+          phase: SKILL_TEST_DESIGN_PHASES.AWAITING_CONFIRMATION,
+          matrix: {
+            ...matrix,
+            sourceMessageId,
+            sourceArtifactPath,
+            agentRole: sourceAgentRole || 'scribe',
+            importedAt: nowIso(),
+          },
+          confirmation: null,
+          export: null,
+        });
+        const nextState = getSkillTestDesignState(nextConversation);
+        sendJson(res, 200, {
+          conversation: nextConversation,
+          state: summarizeSkillTestDesignConversation(nextConversation, nextState),
+        });
+        return true;
+      }
+
+      if (req.method === 'POST' && action === 'confirm-matrix') {
+        const body = await readRequestJson(req);
+        const matrix = designState.matrix && typeof designState.matrix === 'object' ? designState.matrix : null;
+        const requestedMatrixId = String(body && body.matrixId || '').trim();
+        if (!matrix || !matrix.matrixId) {
+          throw createValidationHttpError(
+            buildValidationIssue('matrix_missing', 'error', 'matrix', '当前没有可确认的测试矩阵')
+          );
+        }
+        if (requestedMatrixId && requestedMatrixId !== String(matrix.matrixId || '').trim()) {
+          throw createValidationHttpError(
+            buildValidationIssue('matrix_id_mismatch', 'error', 'matrixId', 'matrixId 与当前导入矩阵不一致')
+          );
+        }
+
+        const nextConversation = updateSkillTestDesignConversationState(conversation, {
+          ...designState,
+          phase: SKILL_TEST_DESIGN_PHASES.GENERATING_DRAFTS,
+          confirmation: buildSkillTestDesignConfirmationRecord(conversation, designState, matrix, body),
+        });
+        const nextState = getSkillTestDesignState(nextConversation);
+        sendJson(res, 200, {
+          conversation: nextConversation,
+          state: summarizeSkillTestDesignConversation(nextConversation, nextState),
+        });
+        return true;
+      }
+
+      if (req.method === 'POST' && action === 'export-drafts') {
+        const body = await readRequestJson(req);
+        const requestedMatrixId = String(body && body.matrixId || '').trim();
+        const matrix = designState.matrix && typeof designState.matrix === 'object' ? designState.matrix : null;
+        if (!matrix || !matrix.matrixId) {
+          throw createValidationHttpError(
+            buildValidationIssue('matrix_missing', 'error', 'matrix', '当前没有可导出的测试矩阵')
+          );
+        }
+        if (requestedMatrixId && requestedMatrixId !== String(matrix.matrixId || '').trim()) {
+          throw createValidationHttpError(
+            buildValidationIssue('matrix_id_mismatch', 'error', 'matrixId', 'matrixId 与当前导入矩阵不一致')
+          );
+        }
+
+        const requestedConfirmation = body && body.confirmMatrix
+          ? buildSkillTestDesignConfirmationRecord(conversation, designState, matrix, body)
+          : null;
+        const exportState = requestedConfirmation
+          ? {
+              ...designState,
+              confirmation: requestedConfirmation,
+            }
+          : designState;
+        const exported = buildSkillTestDesignExportDrafts(conversation, exportState, {
+          exportedBy: body && body.exportedBy ? body.exportedBy : 'user',
+        });
+        const nextConversation = updateSkillTestDesignConversationState(conversation, {
+          ...exportState,
+          phase: SKILL_TEST_DESIGN_PHASES.EXPORTED,
+          export: {
+            matrixId: String(matrix.matrixId || '').trim(),
+            exportedAt: nowIso(),
+            exportedCaseIds: exported.cases.map((entry: any) => entry.id),
+          },
+        });
+        const nextState = getSkillTestDesignState(nextConversation);
+        sendJson(res, 200, {
+          conversation: nextConversation,
+          state: summarizeSkillTestDesignConversation(nextConversation, nextState),
+          exportedCount: exported.cases.length,
+          cases: exported.cases,
+          duplicateWarnings: exported.duplicateWarnings,
+          skippedRows: exported.skippedRows,
+        });
+        return true;
+      }
+    }
 
     // ---- Global summary ----
     if (req.method === 'GET' && pathname === '/api/skill-test-summary') {

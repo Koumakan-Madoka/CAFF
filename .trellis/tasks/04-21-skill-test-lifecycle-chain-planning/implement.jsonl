@@ -1,0 +1,8 @@
+{"file": ".trellis/workflow.md", "reason": "Project workflow and conventions"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend development guide"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend development guide"}
+{"file": ".trellis/spec/skills/index.md", "reason": "Skill-system scope and pre-development checklist for chain planning"}
+{"file": ".trellis/spec/skills/skill-testing.md", "reason": "Canonical skill-test schema and draft-first export contract for chain metadata mapping"}
+{"file": ".trellis/spec/runtime/index.md", "reason": "Runtime context for prompt/tool execution boundaries that lifecycle chains must not silently change"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Chain planning spans helper skill, backend export, and UI labels across layers"}
+{"file":".trellis/tasks/04-21-skill-test-lifecycle-chain-planning/prd.md","reason":"Clarified chain metadata destination, fail-closed boundaries, dependency mapping, validation authority, and Phase 1 inheritance semantics"}

@@ -6783,3 +6783,292 @@ test('isolated publish-gate fails when deny egress is not enforced by the adapte
     harness.cleanup();
   }
 });
+
+test('skill test design import-matrix requires a source assistant message id', async () => {
+  const db = createTestDb();
+  let conversation = {
+    id: 'design-conv-import',
+    title: 'Skill Test Design',
+    type: 'skill_test_design',
+    metadata: {
+      skillTestDesign: {
+        version: 1,
+        skillId: 'demo-skill',
+        skillName: 'Demo Skill',
+        phase: 'collecting_context',
+        participantRoles: { 'agent-builder': 'scribe' },
+        matrix: null,
+        confirmation: null,
+        export: null,
+        createdAt: '2026-04-21T00:00:00.000Z',
+        updatedAt: '2026-04-21T00:00:00.000Z',
+      },
+    },
+    messages: [],
+  };
+  const store = {
+    db,
+    getConversation(id) {
+      return id === conversation.id ? conversation : null;
+    },
+    updateConversation(id, updates) {
+      if (id !== conversation.id) {
+        return null;
+      }
+      conversation = { ...conversation, ...updates };
+      return conversation;
+    },
+  };
+  const controller = createSkillTestController({
+    store,
+    agentToolBridge: createFakeAgentToolBridge(),
+    skillRegistry: createFakeSkillRegistry(['demo-skill']),
+  });
+
+  await assert.rejects(
+    controller({
+      req: createJsonRequest('POST', '/api/conversations/design-conv-import/skill-test-design/import-matrix', {
+        matrix: {
+          kind: 'skill_test_matrix',
+          matrixId: 'matrix-import-1',
+          skillId: 'demo-skill',
+          phase: 'awaiting_confirmation',
+          rows: [
+            {
+              rowId: 'row-1',
+              scenario: 'cover the happy path for import validation',
+              priority: 'P0',
+              coverageReason: 'need a valid row so only messageId is under test',
+              testType: 'trigger',
+              loadingMode: 'dynamic',
+              riskPoints: ['missing source audit'],
+              keyAssertions: ['matrix imports only with assistant source'],
+              includeInMvp: true,
+              draftingHints: {},
+            },
+          ],
+        },
+      }),
+      res: createCaptureResponse(),
+      pathname: '/api/conversations/design-conv-import/skill-test-design/import-matrix',
+      requestUrl: new URL('http://localhost/api/conversations/design-conv-import/skill-test-design/import-matrix'),
+    }),
+    (err) => {
+      assert.equal(err.statusCode, 400);
+      assert.ok(err.issues.some((issue) => issue.code === 'matrix_source_message_required'));
+      return true;
+    }
+  );
+});
+
+test('skill test design import-matrix can read project-local matrix artifact', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-skill-test-design-artifact-'));
+  try {
+    const db = createTestDb();
+    const artifactRelativePath = '.tmp/skill-test-design/demo-skill/matrix-artifact-1.json';
+    const artifactAbsolutePath = path.join(tempDir, ...artifactRelativePath.split('/'));
+    fs.mkdirSync(path.dirname(artifactAbsolutePath), { recursive: true });
+    fs.writeFileSync(artifactAbsolutePath, JSON.stringify({
+      kind: 'skill_test_matrix',
+      matrixId: 'matrix-artifact-1',
+      skillId: 'demo-skill',
+      phase: 'awaiting_confirmation',
+      rows: [
+        {
+          rowId: 'row-1',
+          scenario: 'cover artifact-backed matrix import without posting full JSON',
+          priority: 'P0',
+          coverageReason: 'large matrices should stay out of the chat message body',
+          testType: 'trigger',
+          loadingMode: 'dynamic',
+          riskPoints: ['chat message limit'],
+          keyAssertions: ['imports the matrix from a trusted project artifact'],
+          includeInMvp: true,
+          draftingHints: {
+            triggerPrompt: 'please load the demo skill for artifact import coverage',
+            expectedBehavior: 'reads the demo skill instructions',
+          },
+        },
+      ],
+    }), 'utf8');
+
+    let conversation = {
+      id: 'design-conv-artifact',
+      title: 'Skill Test Design',
+      type: 'skill_test_design',
+      metadata: {
+        skillTestDesign: {
+          version: 1,
+          skillId: 'demo-skill',
+          skillName: 'Demo Skill',
+          phase: 'collecting_context',
+          participantRoles: { 'agent-builder': 'scribe' },
+          matrix: null,
+          confirmation: null,
+          export: null,
+          createdAt: '2026-04-21T00:00:00.000Z',
+          updatedAt: '2026-04-21T00:00:00.000Z',
+        },
+      },
+      messages: [
+        {
+          id: 'assistant-msg-artifact',
+          role: 'assistant',
+          agentId: 'agent-builder',
+          content: `矩阵已写入 artifact。\nMATRIX_ARTIFACT: ${artifactRelativePath}`,
+        },
+      ],
+    };
+    const store = {
+      db,
+      getConversation(id) {
+        return id === conversation.id ? conversation : null;
+      },
+      updateConversation(id, updates) {
+        if (id !== conversation.id) {
+          return null;
+        }
+        conversation = { ...conversation, ...updates };
+        return conversation;
+      },
+    };
+    const controller = createSkillTestController({
+      store,
+      agentToolBridge: createFakeAgentToolBridge(),
+      skillRegistry: createFakeSkillRegistry(['demo-skill']),
+      getProjectDir: () => tempDir,
+    });
+
+    const res = createCaptureResponse();
+    const handled = await controller({
+      req: createJsonRequest('POST', '/api/conversations/design-conv-artifact/skill-test-design/import-matrix', {
+        messageId: 'assistant-msg-artifact',
+        matrixPath: artifactRelativePath,
+      }),
+      res,
+      pathname: '/api/conversations/design-conv-artifact/skill-test-design/import-matrix',
+      requestUrl: new URL('http://localhost/api/conversations/design-conv-artifact/skill-test-design/import-matrix'),
+    });
+
+    assert.equal(handled, true);
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.json.state.matrix.matrixId, 'matrix-artifact-1');
+    assert.equal(res.json.state.matrix.sourceMessageId, 'assistant-msg-artifact');
+    assert.equal(res.json.state.matrix.sourceArtifactPath, artifactRelativePath);
+    assert.equal(res.json.state.matrix.rows[0].scenario, 'cover artifact-backed matrix import without posting full JSON');
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('skill test design export-drafts rolls back partial draft creation on validation failure', async () => {
+  const db = createTestDb();
+  let conversation = {
+    id: 'design-conv-export',
+    title: 'Skill Test Design',
+    type: 'skill_test_design',
+    metadata: {
+      skillTestDesign: {
+        version: 1,
+        skillId: 'demo-skill',
+        skillName: 'Demo Skill',
+        phase: 'awaiting_confirmation',
+        participantRoles: { 'agent-builder': 'scribe' },
+        matrix: {
+          kind: 'skill_test_matrix',
+          matrixId: 'matrix-export-1',
+          skillId: 'demo-skill',
+          phase: 'awaiting_confirmation',
+          sourceMessageId: 'assistant-msg-1',
+          agentRole: 'scribe',
+          importedAt: '2026-04-21T00:00:00.000Z',
+          rows: [
+            {
+              rowId: 'row-valid',
+              scenario: 'cover a valid dynamic trigger planning row',
+              priority: 'P0',
+              coverageReason: 'should be exportable when isolated',
+              testType: 'trigger',
+              loadingMode: 'dynamic',
+              riskPoints: ['duplicate drafts'],
+              keyAssertions: ['creates a draft case'],
+              includeInMvp: true,
+              draftingHints: {
+                triggerPrompt: 'please load the demo skill and explain the main flow',
+                expectedBehavior: 'reads the correct skill and explains the main flow',
+              },
+            },
+            {
+              rowId: 'row-invalid',
+              scenario: 'cover an invalid short prompt row for rollback proof',
+              priority: 'P1',
+              coverageReason: 'forces export validation to fail after the first row',
+              testType: 'trigger',
+              loadingMode: 'dynamic',
+              riskPoints: ['partial export'],
+              keyAssertions: ['transaction should roll back'],
+              includeInMvp: true,
+              draftingHints: {
+                triggerPrompt: 'bad',
+                expectedBehavior: 'this row should fail validation',
+              },
+            },
+          ],
+        },
+        confirmation: null,
+        export: null,
+        createdAt: '2026-04-21T00:00:00.000Z',
+        updatedAt: '2026-04-21T00:00:00.000Z',
+      },
+    },
+    messages: [
+      {
+        id: 'assistant-msg-1',
+        role: 'assistant',
+        agentId: 'agent-builder',
+        content: '```json\n{"kind":"skill_test_matrix"}\n```',
+      },
+    ],
+  };
+  const store = {
+    db,
+    getConversation(id) {
+      return id === conversation.id ? conversation : null;
+    },
+    updateConversation(id, updates) {
+      if (id !== conversation.id) {
+        return null;
+      }
+      conversation = { ...conversation, ...updates };
+      return conversation;
+    },
+  };
+  const controller = createSkillTestController({
+    store,
+    agentToolBridge: createFakeAgentToolBridge(),
+    skillRegistry: createFakeSkillRegistry(['demo-skill']),
+  });
+
+  await assert.rejects(
+    controller({
+      req: createJsonRequest('POST', '/api/conversations/design-conv-export/skill-test-design/export-drafts', {
+        matrixId: 'matrix-export-1',
+        confirmMatrix: true,
+        confirmationMessageId: 'assistant-msg-1',
+        exportedBy: 'user',
+      }),
+      res: createCaptureResponse(),
+      pathname: '/api/conversations/design-conv-export/skill-test-design/export-drafts',
+      requestUrl: new URL('http://localhost/api/conversations/design-conv-export/skill-test-design/export-drafts'),
+    }),
+    (err) => {
+      assert.equal(err.statusCode, 400);
+      assert.ok(Array.isArray(err.issues));
+      assert.ok(err.issues.length > 0);
+      return true;
+    }
+  );
+
+  const storedCases = db.prepare('SELECT COUNT(*) AS count FROM skill_test_cases WHERE skill_id = ?').get('demo-skill');
+  assert.equal(storedCases.count, 0);
+});

@@ -414,6 +414,14 @@ Generated rows persist as drafts by default:
   - `generationModel`
   - `generationCreatedAt`
 
+Chat workbench draft export keeps the same draft-first rule and adds stricter audit guarantees:
+
+- matrix import/confirmation/export must reference an assistant `messageId`; missing source message fails closed
+- large official matrices may be written by the scribe to project-local `.tmp/skill-test-design/<skillId>/<matrixId>.json` artifacts instead of pasted into chat
+- artifact import accepts only paths mentioned by the source assistant message, only within `.tmp/skill-test-design/`, only `.json`, and only up to 1MB before normal matrix validation
+- exported rows persist `source_metadata_json` with at least `conversationId`, `messageId`, `matrixId`, `matrixRowId`, `agentRole`, `exportedBy`, and `exportedAt`; artifact-backed imports may also persist `matrixArtifactPath`
+- batch export must be atomic for a single request; if any candidate row fails validation, no partial `skill_test_cases` rows may remain from that export attempt
+
 ## API Endpoints
 
 ### Test Case Management

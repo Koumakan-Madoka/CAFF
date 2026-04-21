@@ -675,4 +675,6 @@ CREATE INDEX IF NOT EXISTS idx_skill_test_runs_case_id ON skill_test_runs (test_
 CREATE INDEX IF NOT EXISTS idx_skill_test_cases_status ON skill_test_cases (case_status);
 CREATE INDEX IF NOT EXISTS idx_skill_test_runs_verdict ON skill_test_runs (verdict);
   `);
+
+  ensureColumn(db, 'skill_test_cases', 'source_metadata_json', "source_metadata_json TEXT NOT NULL DEFAULT '{}'");
 }

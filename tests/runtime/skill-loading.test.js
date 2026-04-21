@@ -144,6 +144,75 @@ test('buildAgentTurnPrompt full mode includes full skill bodies without dynamic 
   }
 });
 
+test('buildAgentTurnPrompt can full-mount selected conversation skills while keeping others dynamic', () => {
+  const tempDir = withTempDir('caff-skill-path-mixed-');
+  const { store, agent, conversation } = createPromptFixture(tempDir);
+  const originalMode = process.env.CAFF_SKILL_LOADING_MODE;
+  delete process.env.CAFF_SKILL_LOADING_MODE;
+
+  try {
+    const { buildAgentTurnPrompt } = loadPromptModule();
+    const helperPath = path.join(tempDir, 'skills', 'skill-test-design-workbench');
+    const targetPath = path.join(tempDir, 'skills', 'target-skill');
+    const extraPath = path.join(tempDir, 'skills', 'extra-skill');
+    const prompt = buildAgentTurnPrompt({
+      conversation,
+      agent,
+      agentConfig: { profileName: 'Default', personaPrompt: 'Reply briefly.' },
+      resolvedPersonaSkills: [],
+      resolvedConversationSkills: [
+        {
+          id: 'skill-test-design-workbench',
+          name: 'Workbench Helper',
+          description: 'Mode workflow helper',
+          body: '# Helper Instructions\n\nKeep the workflow aligned.',
+          path: helperPath,
+        },
+        {
+          id: 'target-skill',
+          name: 'Target Skill',
+          description: 'Target skill body',
+          body: '# Target Instructions\n\nRead me up front.',
+          path: targetPath,
+        },
+        {
+          id: 'extra-skill',
+          name: 'Extra Skill',
+          description: 'Should stay dynamic',
+          body: '# Extra Instructions\n\nDo not inline me.',
+          path: extraPath,
+        },
+      ],
+      sandbox: { sandboxDir: '/sandbox', privateDir: '/sandbox/private' },
+      projectDir: '',
+      agents: [agent],
+      messages: [],
+      privateMessages: [],
+      trigger: { triggerType: 'user', enqueueReason: 'user_mentions' },
+      remainingSlots: 5,
+      routingMode: 'serial',
+      allowHandoffs: true,
+      agentToolRelativePath: 'build/lib/agent-chat-tools.js',
+      modeLoadingStrategy: 'dynamic',
+      forceFullConversationSkillIds: ['skill-test-design-workbench', 'target-skill'],
+    });
+
+    const extraSkillFile = `${extraPath.replace(/\\/g, '/')}/SKILL.md`;
+    assert.ok(prompt.includes('Helper Instructions'), 'Forced-full helper skill should inject full body');
+    assert.ok(prompt.includes('Target Instructions'), 'Forced-full target skill should inject full body');
+    assert.ok(prompt.includes(`Path: ${extraSkillFile}`), 'Dynamic skill should still point at SKILL.md');
+    assert.ok(prompt.includes('Load with: Use the `read` tool on the `Path` above when you need the full instructions'), 'Dynamic skill should keep read guidance');
+    assert.ok(!prompt.includes('Extra Instructions'), 'Dynamic skill should not inline its full body');
+  } finally {
+    if (originalMode !== undefined) {
+      process.env.CAFF_SKILL_LOADING_MODE = originalMode;
+    } else {
+      delete process.env.CAFF_SKILL_LOADING_MODE;
+    }
+    try { store.close(); } catch {}
+  }
+});
+
 test('agent tools controller no longer handles removed read-skill route', async () => {
   const controller = createAgentToolsController({
     agentToolBridge: {

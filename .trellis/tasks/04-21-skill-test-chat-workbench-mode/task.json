@@ -1,0 +1,47 @@
+{
+  "id": "skill-test-chat-workbench-mode",
+  "name": "skill-test-chat-workbench-mode",
+  "title": "Skill Test Chat Workbench Mode",
+  "description": "Draft and implement a chat-workbench mode for interactive multi-agent skill test case design and batch draft generation.",
+  "status": "planning",
+  "dev_type": "fullstack",
+  "scope": "public/chat/*, public/eval-cases.html, public/skill-tests.js, server/api/*, server/domain/conversation/turn/*, lib/skill-test-generator.ts, tests/skill-test/*",
+  "package": null,
+  "priority": "P1",
+  "creator": "菲比啾比",
+  "assignee": "菲比啾比",
+  "createdAt": "2026-04-21",
+  "completedAt": null,
+  "branch": "feat/skill-test-chat-workbench-mode",
+  "base_branch": "main",
+  "worktree_path": null,
+  "current_phase": 0,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "check"
+    },
+    {
+      "phase": 3,
+      "action": "finish"
+    },
+    {
+      "phase": 4,
+      "action": "create-pr"
+    }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "04-21-skill-test-lifecycle-chain-planning"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}
