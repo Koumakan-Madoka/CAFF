@@ -36,6 +36,7 @@ CREATE TABLE skill_test_cases (
   generation_provider TEXT NOT NULL DEFAULT '',
   generation_model TEXT NOT NULL DEFAULT '',
   generation_created_at TEXT NOT NULL DEFAULT '',
+  source_metadata_json TEXT NOT NULL DEFAULT '{}',
   note TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -420,7 +421,173 @@ Chat workbench draft export keeps the same draft-first rule and adds stricter au
 - large official matrices may be written by the scribe to project-local `.tmp/skill-test-design/<skillId>/<matrixId>.json` artifacts instead of pasted into chat
 - artifact import accepts only paths mentioned by the source assistant message, only within `.tmp/skill-test-design/`, only `.json`, and only up to 1MB before normal matrix validation
 - exported rows persist `source_metadata_json` with at least `conversationId`, `messageId`, `matrixId`, `matrixRowId`, `agentRole`, `exportedBy`, and `exportedAt`; artifact-backed imports may also persist `matrixArtifactPath`
+- conversation `skillTestDesign.export` persists the user-facing export summary: `exportedCaseIds[]`, `exportedCount`, `duplicateWarningCount`, `skippedRowCount`, and `skippedRows[]` so refreshes still show duplicate/skipped context without re-running export
+- the chat panel deep-link into Skill Tests uses `/eval-cases.html?tab=panel-skill-tests&skillId=<skillId>&caseId=<first-exported-case-id>&matrixId=<matrixId>`; `public/skill-tests.js` reads this query once, opens the Skill Tests tab, selects the target skill/case, and then falls back to normal localStorage selection
+- Skill Tests case detail renders chat-export tags from `sourceMetadata.source = skill_test_chat_workbench`, including matrix/row ids, environment source, and lifecycle chain id when present
 - batch export must be atomic for a single request; if any candidate row fails validation, no partial `skill_test_cases` rows may remain from that export attempt
+
+## Scenario: Skill-Test Design Matrix Contract
+
+### 1. Scope / Trigger
+
+- Trigger: a `skill_test_design` conversation imports a matrix, confirms scope, or exports draft cases.
+- Cross-layer path: `server/domain/skill-test/chat-workbench-mode.ts` -> `server/api/skill-test-controller.ts` -> `public/chat/skill-test-design-panel.js` -> `skill_test_cases.source_metadata_json`.
+- Phase boundary: current implementation already enforces assistant-source audit, confirm-before-export, duplicate warnings, and atomic draft export. Environment-contract gating and lifecycle-chain metadata are the next required contract for matrix rows.
+
+### 2. Signatures
+
+- Conversation type: `skill_test_design`
+- Conversation phases: `collecting_context | planning_matrix | awaiting_confirmation | generating_drafts | exported`
+- HTTP routes:
+
+```text
+GET  /api/conversations/:conversationId/skill-test-design
+POST /api/conversations/:conversationId/skill-test-design/import-matrix
+POST /api/conversations/:conversationId/skill-test-design/confirm-matrix
+POST /api/conversations/:conversationId/skill-test-design/export-drafts
+```
+
+- Baseline matrix shape:
+
+```ts
+type SkillTestMatrix = {
+  kind?: 'skill_test_matrix';
+  matrixId: string;
+  skillId: string;
+  phase: 'collecting_context' | 'planning_matrix' | 'awaiting_confirmation' | 'generating_drafts' | 'exported';
+  rows: SkillTestMatrixRow[];
+};
+
+type SkillTestMatrixRow = {
+  rowId: string;
+  scenario: string;
+  priority: 'P0' | 'P1' | 'P2';
+  coverageReason: string;
+  testType: 'trigger' | 'execution';
+  loadingMode: 'dynamic' | 'full';
+  riskPoints: string[];
+  keyAssertions: string[];
+  includeInMvp: boolean;
+  draftingHints?: Record<string, unknown>;
+  environmentContractRef?: string;
+  environmentSource?: 'skill_contract' | 'user_supplied' | 'missing';
+  scenarioKind?: 'single' | 'chain_step';
+  chainId?: string;
+  chainName?: string;
+  sequenceIndex?: number;
+  dependsOnRowIds?: string[];
+  inheritance?: Array<'filesystem' | 'artifacts' | 'conversation' | 'externalState'>;
+};
+```
+
+- `environmentContractRef` format: `<relative-path>#<heading-or-contract-id>`, relative to the target skill root, for example `TESTING.md#Bootstrap`.
+- `environmentSource` semantics:
+  - `skill_contract`: the row references an existing contract from `TESTING.md`, `SKILL.md`, or stable spec.
+  - `user_supplied`: the user supplied temporary setup information in chat; it is not yet a skill-owned contract.
+  - `missing`: no trustworthy environment contract could be located.
+- Exported draft metadata must keep the baseline audit envelope:
+
+```json
+{
+  "source": "skill_test_chat_workbench",
+  "conversationId": "conv-123",
+  "messageId": "msg-456",
+  "matrixId": "matrix-789",
+  "matrixRowId": "row-1",
+  "matrixArtifactPath": ".tmp/skill-test-design/demo-skill/matrix-789.json",
+  "agentRole": "scribe",
+  "exportedBy": "user",
+  "exportedAt": "2026-04-21T00:00:00.000Z"
+}
+```
+
+- When matrix rows carry environment or lifecycle-chain fields, export metadata should additionally preserve them under `source_metadata_json.skillTestDesign`, rather than flattening setup knowledge into free-text `note` fields.
+
+### 3. Contracts
+
+- Context assembly for planning should prefer the target skill's environment contract in this order: `TESTING.md` -> `SKILL.md` -> stable spec. If none of those contain actionable setup information, the row must be marked `environmentSource = missing`.
+- A `TESTING.md` contract is only considered valid when it contains actionable content in at least one of `Prerequisites`, `Bootstrap` / `Setup`, `Teardown`, or `Verification`; an empty heading is not enough.
+- User-supplied environment instructions are temporary planning input. They must remain `environmentSource = user_supplied` until a human actually writes them back into `TESTING.md` or another stable spec.
+- Planning rows for `execution` or any row that explicitly depends on real external environment, credentials, or sandbox capabilities must fail closed at formal generate/export time when `environmentSource = missing`.
+- Trigger-only planning rows may continue with warning metadata when `environmentSource = missing`, but the gap must remain visible in the matrix and export metadata.
+- `inheritance` only describes reuse intent between chain steps. It must never be used to smuggle install/bootstrap/teardown instructions.
+- Lifecycle-chain fields are planning/export metadata only. Even when rows share `chainId`, Phase 1 runner behavior remains independent-case execution unless a later runner contract explicitly says otherwise.
+- Confirm/export requests must keep assistant-source audit intact: `messageId` must point to an assistant message in the same conversation, `matrixId` must match the currently imported matrix, and export stays atomic for the whole batch.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior | Status / signal |
+|-----------|-------------------|-----------------|
+| `import-matrix` without `messageId` | Reject request | `matrix_source_message_required` |
+| `messageId` does not point to an assistant message in the same conversation | Reject request | `matrix_source_message_invalid` |
+| Matrix artifact path is not mentioned by the source assistant message | Reject request | `matrix_artifact_source_mismatch` |
+| Request omits both inline `matrix` and `matrixPath` | Reject request | `matrix_missing` |
+| Matrix shape is invalid after normalization | Reject request | `matrix_invalid` |
+| `confirm-matrix` or `export-drafts` references a different `matrixId` | Reject request | `matrix_id_mismatch` |
+| Export runs before confirmation | Reject request | `matrix_not_confirmed` |
+| Confirmed matrix contains no MVP rows | Reject request | `matrix_rows_empty` |
+| Candidate draft validation fails during batch export | Reject whole batch and leave no partial `skill_test_cases` rows | atomic 400 failure |
+| Matrix row is not `dynamic + trigger` in Phase 1 export | Skip row, return structured `skippedRows[]`, do not silently coerce type | export warning |
+| Planned: `execution` or real-env row has `environmentSource = missing` | Reject formal generate/export; do not downcast to trigger | fail closed |
+| Planned: chain row has cycle, cross-chain dependency, missing `sequenceIndex`, or unresolved `dependsOnRowIds` | Block confirmation/export and return structured validation errors | fail closed |
+
+### 5. Good / Base / Bad Cases
+
+- Good: the skill exposes `TESTING.md#Bootstrap`, a matrix row references `environmentContractRef = "TESTING.md#Bootstrap"`, `environmentSource = skill_contract`, and export metadata preserves both audit fields and the contract reference.
+- Base: the skill has no durable contract, the user supplies temporary setup steps in chat, the row is marked `environmentSource = user_supplied`, and trigger-only draft export is allowed with advice to write the setup back into `TESTING.md`.
+- Bad: an execution row depends on external setup but leaves `environmentSource = missing`; formal generate/export must stop instead of guessing commands.
+- Bad: a chain step puts bootstrap logic in `inheritance` or a free-text `note`; setup knowledge must stay in `environmentContractRef` / `environmentSource` and chain metadata must describe only dependency intent.
+
+### 6. Tests Required
+
+- `tests/skill-test/skill-test-e2e.test.js`: import requires assistant `messageId` and rejects non-assistant or mismatched artifact sources.
+- `tests/skill-test/skill-test-e2e.test.js`: export remains atomic when one candidate row fails validation.
+- `tests/skill-test/skill-test-schema.test.js`: `skill_test_cases` includes `source_metadata_json`, nested `skillTestDesign` metadata survives persistence, and draft builders keep environment/chain metadata out of free-text `note`.
+- `tests/skill-test/skill-test-e2e.test.js`: `environmentSource = missing` blocks execution / real-env export without silently rewriting the row.
+- `tests/skill-test/skill-test-e2e.test.js`: chain topology issues such as cycles, cross-chain dependencies, missing middle steps, and unresolved `dependsOnRowIds` are blocked before export.
+- Future UI test coverage: explicit user-facing messaging that chain grouping is planning-only and does not imply shared execution in Phase 1.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```json
+{
+  "rowId": "row-cleanup",
+  "scenario": "reuse prepared environment and then clean up",
+  "testType": "execution",
+  "loadingMode": "full",
+  "inheritance": ["filesystem", "sudo apt install ffmpeg && ./bootstrap.sh"]
+}
+```
+
+- Problems:
+  - mixes dependency installation into `inheritance`
+  - has no traceable environment contract source
+  - cannot be safely exported or reviewed
+
+#### Correct
+
+```json
+{
+  "rowId": "row-cleanup",
+  "scenario": "reuse prepared environment and then clean up",
+  "testType": "execution",
+  "loadingMode": "full",
+  "environmentContractRef": "TESTING.md#Bootstrap",
+  "environmentSource": "skill_contract",
+  "scenarioKind": "chain_step",
+  "chainId": "env-lifecycle",
+  "sequenceIndex": 3,
+  "dependsOnRowIds": ["row-bootstrap", "row-run"],
+  "inheritance": ["filesystem", "artifacts"]
+}
+```
+
+- Why this is correct:
+  - environment setup is traceable to a skill-owned contract
+  - chain fields only describe dependency intent
+  - review/export logic can block or warn using structured fields instead of parsing prose
 
 ## API Endpoints
 

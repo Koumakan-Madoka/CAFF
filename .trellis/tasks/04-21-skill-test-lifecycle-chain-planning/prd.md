@@ -28,18 +28,23 @@
 - 链信息统一持久化到 `skill_test_cases.source_metadata_json`；不得新增割裂现有 run/evaluation 链路的临时 case schema。
 - `inheritance` 必须显式声明，未声明时默认不继承，不能由 agent 自行脑补外部状态。
 - Phase 1 的 `inheritance` 只是声明式意图，不代表 runner 会实际共享 sandbox、conversation、artifact 或外部状态。
+- 生命周期链若涉及环境安装、初始化、验证或清理步骤，必须优先引用被评测 skill 内已声明的环境依赖契约（优先 `TESTING.md`，必要时回退到 `SKILL.md` 或稳定关联 spec）；链规划只负责表达“谁依赖谁、谁先谁后”，不负责把安装知识临时发明进 row 文本。
+- `inheritance` 只表示环境/产物/状态的继承意图，不替代依赖安装定义；安装步骤来源必须可追溯到 `skill_contract` 或用户明确补充。
+- 若 skill 未提供环境契约，则链式 row 只能显式标记为 `environmentSource = missing` 或 `user_supplied`，并要求用户确认；若用户未补充且链步骤需要真实环境准备，应阻止该链整组进入导出；不得默认视为可继承环境。
 - `dependsOnRowIds` 必须通过拓扑校验，不能出现循环依赖、跨链依赖或与 `sequenceIndex` 冲突的顺序。
 - `scenarioKind = chain_step` 时，缺少 `chainId`、缺少 `sequenceIndex`、依赖不存在、依赖跨链或依赖成环都必须 fail closed，不允许静默降级。
 - 只有未声明为链式 step、且 canonical case 必填字段完整的 row，才允许按 `single` case 导出。
-- UI 可做早期错误提示，但后端 confirm/export 必须执行权威校验，并以后端结构化错误为准。
-- UI 至少能提示“这些 draft 属于同一条建议测试链”，即使 runner 仍按独立 case 工作。
+- 在 `确认范围` 阶段，UI / agent 应对成环、断链、删除中间 step、跨链依赖等问题给出可见提示，并阻止进入 `生成草稿`；后端 confirm/export 必须执行权威校验，并以后端结构化错误为准。
+- UI 至少能提示“这些 draft 属于同一条建议测试链”，并明确“当前仅作规划展示，运行仍为独立 case”，避免用户误以为 Phase 1 runner 已支持共享执行。
 - 来源审计继续保留 `conversationId`、`messageId`、`matrixId`，并补充链级 metadata，确保后续 runner 改造时可追溯。
 
 ## Acceptance Criteria
 - [ ] 测试矩阵 schema 能表示链式 step，并区分单 case 与链式 case。
 - [ ] helper skill 会主动追问 skill 是否存在生命周期链或状态依赖。
 - [ ] 已确认的链式矩阵 row 可导出为现有 `skill_test_cases` draft，且 metadata 中保留链信息。
-- [ ] 非法链结构（如成环、顺序冲突、跨链依赖）会在导入或导出前被结构化拦截。
+- [ ] 链式 row 若涉及环境准备，矩阵与导出 metadata 能明确标识引用了哪个 skill 内环境契约，或明确标记契约缺失 / 用户补充；缺失且未确认时会阻止整链导出。
+- [ ] agent 不会把未沉淀到 skill 的安装步骤偷偷塞进 `inheritance` 语义里。
+- [ ] 非法链结构（如成环、顺序冲突、跨链依赖、删除中间 step 后断链）会在确认范围或导出前被结构化拦截。
 - [ ] 现有单 case 规划、确认、导出与运行流程不受破坏。
 - [ ] spec 至少补充“链只属于规划/导出层，不代表 runner 已支持共享环境执行”的约束。
 
@@ -52,8 +57,16 @@
   - `sequenceIndex`
   - `dependsOnRowIds[]`
   - `inheritance[]`，候选值先限制在 `filesystem | artifacts | conversation | externalState`
+  - `environmentContractRef`，采用主 PRD 定义的 `<relative-path>#<heading-or-contract-id>` 格式
+  - `environmentSource: skill_contract | user_supplied | missing`，语义以主 PRD 的环境来源定义为准
 - `chainId` 只要求在同一个 `matrixId` 内唯一；导出时服务端可标准化为持久化用的链组标识，避免跨会话或多轮生成撞名。
+- `inheritance[]` 候选值含义：
+  - `filesystem`：计划复用前序步骤产生的文件或沙箱路径
+  - `artifacts`：计划复用前序步骤导出的产物、报告或结构化输出
+  - `conversation`：计划复用同一测试链的会话上下文或历史消息摘要；Phase 1 不代表 runner 会自动共享 conversation
+  - `externalState`：计划复用外部系统、服务或应用状态；必须配套显式 reset / teardown 契约或标记缺失
 - 保持现有 `scenario`、`priority`、`coverageReason`、`testType`、`loadingMode`、`riskPoints[]`、`keyAssertions[]` 不变。
+- `inheritance` 不能替代环境依赖契约；如果链步骤需要安装或初始化信息，必须通过 `environmentContractRef` 或 `environmentSource` 明确来源。
 - 上述链字段只描述规划关系；Phase 1 不承诺 runner 会执行任何继承行为。
 
 ### Export Mapping
@@ -63,6 +76,7 @@
 - `source_metadata_json.skillTestDesign.chainPlanning` 至少保留规划期字段：`matrixId`、`rowId`、`scenarioKind`、`chainId`、`chainName`、`sequenceIndex`、`dependsOnRowIds`、`inheritance`。
 - 导出完成后，服务端应补充 draft 级解析结果：`exportChainId`、`dependsOnCaseIds`、`exportedCaseId`；其中 `dependsOnCaseIds` 由同批导出的 `dependsOnRowIds` 映射而来。
 - 若 `dependsOnRowIds` 无法解析为同批导出的 case id，后端必须返回结构化错误并阻止导出。
+- 如果用户在确认阶段删除或排除中间 row，系统必须重新计算依赖或显式提示断链，不能等到导出后才静默丢弃依赖。
 
 ### Deferred Execution Work
 - runner 后续再决定：

@@ -3292,6 +3292,365 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     };
   }
 
+  function normalizeSkillTestDesignEnvironmentSource(row: any) {
+    const normalized = String(row && row.environmentSource || '').trim().toLowerCase();
+    if (normalized === 'skill_contract' || normalized === 'user_supplied' || normalized === 'missing') {
+      return normalized;
+    }
+    return String(row && row.environmentContractRef || '').trim() ? 'skill_contract' : 'missing';
+  }
+
+  function hasSkillTestDesignChainMetadata(row: any) {
+    return Boolean(
+      String(row && row.scenarioKind || '').trim().toLowerCase() === 'chain_step'
+      || String(row && row.chainId || '').trim()
+      || String(row && row.chainName || '').trim()
+      || normalizePositiveInteger(row && row.sequenceIndex)
+      || (Array.isArray(row && row.dependsOnRowIds) && row.dependsOnRowIds.length > 0)
+      || (Array.isArray(row && row.inheritance) && row.inheritance.length > 0)
+    );
+  }
+
+  function isSkillTestDesignChainRow(row: any) {
+    return hasSkillTestDesignChainMetadata(row);
+  }
+
+  function skillTestDesignRowDependsOnRealEnvironment(row: any) {
+    if (String(row && row.testType || '').trim().toLowerCase() === 'execution') {
+      return true;
+    }
+
+    const inheritance = Array.isArray(row && row.inheritance)
+      ? row.inheritance.map((entry: any) => String(entry || '').trim())
+      : [];
+    if (inheritance.includes('externalState')) {
+      return true;
+    }
+
+    const environmentConfig = row && row.draftingHints && typeof row.draftingHints === 'object'
+      ? row.draftingHints.environmentConfig
+      : null;
+    return isPlainObject(environmentConfig) && Object.keys(environmentConfig).length > 0;
+  }
+
+  function buildSkillTestMatrixRowPath(matrix: any, rowId: string, field = '') {
+    const rows = Array.isArray(matrix && matrix.rows) ? matrix.rows : [];
+    const index = rows.findIndex((row: any) => String(row && row.rowId || '').trim() === rowId);
+    const basePath = index >= 0 ? `matrix.rows[${index}]` : 'matrix.rows';
+    return field ? `${basePath}.${field}` : basePath;
+  }
+
+  function buildSkillTestDesignMatrixValidationIssues(matrix: any) {
+    const issues: any[] = [];
+    const rows = Array.isArray(matrix && matrix.rows) ? matrix.rows : [];
+    const includedRows = rows.filter((row: any) => row && row.includeInMvp !== false);
+    const includedRowMap = new Map<string, any>();
+
+    for (const row of includedRows) {
+      const rowId = String(row && row.rowId || '').trim();
+      if (rowId) {
+        includedRowMap.set(rowId, row);
+      }
+    }
+
+    const exportableRowIds = new Set(
+      includedRows
+        .filter((row: any) => String(row && row.loadingMode || '').trim().toLowerCase() === 'dynamic'
+          && String(row && row.testType || '').trim().toLowerCase() === 'trigger')
+        .map((row: any) => String(row && row.rowId || '').trim())
+        .filter(Boolean)
+    );
+    const chainGroups = new Map<string, any[]>();
+
+    for (const row of includedRows) {
+      const rowId = String(row && row.rowId || '').trim();
+      const environmentSource = normalizeSkillTestDesignEnvironmentSource(row);
+      if (environmentSource === 'missing' && skillTestDesignRowDependsOnRealEnvironment(row)) {
+        issues.push(
+          buildValidationIssue(
+            'matrix_environment_source_missing',
+            'error',
+            buildSkillTestMatrixRowPath(matrix, rowId, 'environmentSource'),
+            '该行需要真实环境或 execution 支持，但 environmentSource 仍为 missing，不能正式确认或导出'
+          )
+        );
+      }
+
+      if (!isSkillTestDesignChainRow(row)) {
+        continue;
+      }
+
+      const chainId = String(row && row.chainId || '').trim();
+      const sequenceIndex = normalizePositiveInteger(row && row.sequenceIndex);
+      if (!chainId) {
+        issues.push(
+          buildValidationIssue(
+            'matrix_chain_id_required',
+            'error',
+            buildSkillTestMatrixRowPath(matrix, rowId, 'chainId'),
+            '链式 row 必须声明 chainId'
+          )
+        );
+      } else {
+        const group = chainGroups.get(chainId) || [];
+        group.push(row);
+        chainGroups.set(chainId, group);
+      }
+
+      if (sequenceIndex == null) {
+        issues.push(
+          buildValidationIssue(
+            'matrix_chain_sequence_required',
+            'error',
+            buildSkillTestMatrixRowPath(matrix, rowId, 'sequenceIndex'),
+            '链式 row 必须声明正整数 sequenceIndex'
+          )
+        );
+      }
+
+      const dependsOnRowIds = Array.isArray(row && row.dependsOnRowIds)
+        ? row.dependsOnRowIds.map((entry: any) => String(entry || '').trim()).filter(Boolean)
+        : [];
+
+      for (const dependencyRowId of dependsOnRowIds) {
+        if (dependencyRowId === rowId) {
+          issues.push(
+            buildValidationIssue(
+              'matrix_chain_cycle',
+              'error',
+              buildSkillTestMatrixRowPath(matrix, rowId, 'dependsOnRowIds'),
+              `链式 row ${rowId} 不能依赖自己`
+            )
+          );
+          continue;
+        }
+
+        const dependencyRow = includedRowMap.get(dependencyRowId);
+        if (!dependencyRow) {
+          issues.push(
+            buildValidationIssue(
+              'matrix_chain_dependency_missing',
+              'error',
+              buildSkillTestMatrixRowPath(matrix, rowId, 'dependsOnRowIds'),
+              `链式 row ${rowId} 依赖的 ${dependencyRowId} 不存在，或未纳入当前 MVP 范围`
+            )
+          );
+          continue;
+        }
+
+        const dependencyChainId = String(dependencyRow && dependencyRow.chainId || '').trim();
+        if (chainId && dependencyChainId && dependencyChainId !== chainId) {
+          issues.push(
+            buildValidationIssue(
+              'matrix_chain_dependency_cross_chain',
+              'error',
+              buildSkillTestMatrixRowPath(matrix, rowId, 'dependsOnRowIds'),
+              `链式 row ${rowId} 不能跨链依赖 ${dependencyRowId}`
+            )
+          );
+        }
+
+        if (exportableRowIds.has(rowId) && !exportableRowIds.has(dependencyRowId)) {
+          issues.push(
+            buildValidationIssue(
+              'matrix_chain_dependency_not_exportable',
+              'error',
+              buildSkillTestMatrixRowPath(matrix, rowId, 'dependsOnRowIds'),
+              `链式 row ${rowId} 依赖的 ${dependencyRowId} 不在本次 Phase 1 可导出集合中`
+            )
+          );
+        }
+      }
+    }
+
+    for (const [chainId, chainRows] of chainGroups.entries()) {
+      const sequenceOwners = new Map<number, string>();
+      const sequenceValues = [] as number[];
+
+      for (const row of chainRows) {
+        const rowId = String(row && row.rowId || '').trim();
+        const sequenceIndex = normalizePositiveInteger(row && row.sequenceIndex);
+        if (sequenceIndex == null) {
+          continue;
+        }
+
+        if (sequenceOwners.has(sequenceIndex)) {
+          issues.push(
+            buildValidationIssue(
+              'matrix_chain_sequence_duplicate',
+              'error',
+              buildSkillTestMatrixRowPath(matrix, rowId, 'sequenceIndex'),
+              `链 ${chainId} 中 sequenceIndex=${sequenceIndex} 重复`
+            )
+          );
+          continue;
+        }
+
+        sequenceOwners.set(sequenceIndex, rowId);
+        sequenceValues.push(sequenceIndex);
+      }
+
+      sequenceValues.sort((left, right) => left - right);
+      if (sequenceValues.length > 0) {
+        let expectedSequence = 1;
+        for (const value of sequenceValues) {
+          if (value !== expectedSequence) {
+            issues.push(
+              buildValidationIssue(
+                'matrix_chain_sequence_gap',
+                'error',
+                buildSkillTestMatrixRowPath(matrix, sequenceOwners.get(value) || '', 'sequenceIndex'),
+                `链 ${chainId} 的 sequenceIndex 必须连续，当前缺少 ${expectedSequence}`
+              )
+            );
+            break;
+          }
+          expectedSequence += 1;
+        }
+      }
+
+      const chainRowMap = new Map<string, any>();
+      const adjacency = new Map<string, string[]>();
+      for (const row of chainRows) {
+        const rowId = String(row && row.rowId || '').trim();
+        chainRowMap.set(rowId, row);
+        adjacency.set(
+          rowId,
+          (Array.isArray(row && row.dependsOnRowIds) ? row.dependsOnRowIds : [])
+            .map((entry: any) => String(entry || '').trim())
+            .filter((dependencyRowId: string) => chainRowMap.has(dependencyRowId) || includedRowMap.has(dependencyRowId))
+        );
+      }
+
+      for (const row of chainRows) {
+        const rowId = String(row && row.rowId || '').trim();
+        const rowSequenceIndex = normalizePositiveInteger(row && row.sequenceIndex);
+        const dependsOnRowIds = Array.isArray(row && row.dependsOnRowIds)
+          ? row.dependsOnRowIds.map((entry: any) => String(entry || '').trim()).filter(Boolean)
+          : [];
+        for (const dependencyRowId of dependsOnRowIds) {
+          const dependencyRow = includedRowMap.get(dependencyRowId);
+          const dependencySequenceIndex = normalizePositiveInteger(dependencyRow && dependencyRow.sequenceIndex);
+          if (rowSequenceIndex != null && dependencySequenceIndex != null && dependencySequenceIndex >= rowSequenceIndex) {
+            issues.push(
+              buildValidationIssue(
+                'matrix_chain_sequence_conflict',
+                'error',
+                buildSkillTestMatrixRowPath(matrix, rowId, 'dependsOnRowIds'),
+                `链 ${chainId} 中 ${rowId} 依赖的 ${dependencyRowId} 顺序不合法`
+              )
+            );
+          }
+        }
+      }
+
+      const visited = new Set<string>();
+      const visiting = new Set<string>();
+      let cycleDetected = false;
+
+      function visit(rowId: string) {
+        if (cycleDetected || visited.has(rowId)) {
+          return;
+        }
+        if (visiting.has(rowId)) {
+          cycleDetected = true;
+          return;
+        }
+
+        visiting.add(rowId);
+        for (const dependencyRowId of adjacency.get(rowId) || []) {
+          if (!chainRowMap.has(dependencyRowId)) {
+            continue;
+          }
+          visit(dependencyRowId);
+          if (cycleDetected) {
+            return;
+          }
+        }
+        visiting.delete(rowId);
+        visited.add(rowId);
+      }
+
+      for (const row of chainRows) {
+        visit(String(row && row.rowId || '').trim());
+        if (cycleDetected) {
+          issues.push(
+            buildValidationIssue(
+              'matrix_chain_cycle',
+              'error',
+              buildSkillTestMatrixRowPath(matrix, String(chainRows[0] && chainRows[0].rowId || '').trim(), 'dependsOnRowIds'),
+              `链 ${chainId} 存在循环依赖`
+            )
+          );
+          break;
+        }
+      }
+    }
+
+    return issues;
+  }
+
+  function buildSkillTestDesignSourceMetadataUpdate(testCase: any, row: any, rowIdToCaseId: Map<string, string>) {
+    const sourceMetadata = isPlainObject(testCase && testCase.sourceMetadata) ? { ...testCase.sourceMetadata } : {};
+    const currentDesignMetadata = isPlainObject(sourceMetadata.skillTestDesign) ? { ...sourceMetadata.skillTestDesign } : {};
+    const rowId = String(row && row.rowId || '').trim();
+    const exportedCaseId = String(rowIdToCaseId.get(rowId) || testCase && testCase.id || '').trim();
+    const environmentContractRef = String(currentDesignMetadata.environmentContractRef || row && row.environmentContractRef || '').trim();
+    const environmentSource = normalizeSkillTestDesignEnvironmentSource({
+      ...row,
+      environmentContractRef,
+      environmentSource: currentDesignMetadata.environmentSource || row && row.environmentSource,
+    });
+    const scenarioKind = String(currentDesignMetadata.scenarioKind || row && row.scenarioKind || '').trim() || (hasSkillTestDesignChainMetadata(row) ? 'chain_step' : 'single');
+
+    currentDesignMetadata.environmentContractRef = environmentContractRef;
+    currentDesignMetadata.environmentSource = environmentSource;
+    currentDesignMetadata.scenarioKind = scenarioKind;
+
+    if (hasSkillTestDesignChainMetadata(row) || isPlainObject(currentDesignMetadata.chainPlanning)) {
+      const currentChainPlanning = isPlainObject(currentDesignMetadata.chainPlanning) ? { ...currentDesignMetadata.chainPlanning } : {};
+      const dependsOnRowIds = Array.isArray(currentChainPlanning.dependsOnRowIds)
+        ? currentChainPlanning.dependsOnRowIds.map((entry: any) => String(entry || '').trim()).filter(Boolean)
+        : (Array.isArray(row && row.dependsOnRowIds) ? row.dependsOnRowIds.map((entry: any) => String(entry || '').trim()).filter(Boolean) : []);
+      const dependsOnCaseIds = dependsOnRowIds.map((dependencyRowId: string) => {
+        const dependencyCaseId = String(rowIdToCaseId.get(dependencyRowId) || '').trim();
+        if (!dependencyCaseId) {
+          throw createValidationHttpError(
+            buildValidationIssue(
+              'matrix_chain_dependency_missing',
+              'error',
+              'sourceMetadata.skillTestDesign.chainPlanning.dependsOnRowIds',
+              `导出草稿时无法解析链式依赖 ${dependencyRowId}`
+            )
+          );
+        }
+        return dependencyCaseId;
+      });
+
+      currentDesignMetadata.chainPlanning = {
+        ...currentChainPlanning,
+        matrixId: String(currentChainPlanning.matrixId || sourceMetadata.matrixId || testCase && testCase.sourceMetadata && testCase.sourceMetadata.matrixId || '').trim(),
+        rowId: String(currentChainPlanning.rowId || rowId).trim(),
+        scenarioKind,
+        chainId: String(currentChainPlanning.chainId || row && row.chainId || '').trim(),
+        chainName: String(currentChainPlanning.chainName || row && row.chainName || '').trim(),
+        sequenceIndex: normalizePositiveInteger(currentChainPlanning.sequenceIndex || row && row.sequenceIndex),
+        dependsOnRowIds,
+        inheritance: Array.isArray(currentChainPlanning.inheritance)
+          ? currentChainPlanning.inheritance.map((entry: any) => String(entry || '').trim()).filter(Boolean)
+          : (Array.isArray(row && row.inheritance) ? row.inheritance.map((entry: any) => String(entry || '').trim()).filter(Boolean) : []),
+        environmentContractRef,
+        environmentSource,
+        exportChainId: String(currentChainPlanning.chainId || row && row.chainId || '').trim(),
+        dependsOnCaseIds,
+        exportedCaseId,
+      };
+    }
+
+    sourceMetadata.skillTestDesign = currentDesignMetadata;
+    return sourceMetadata;
+  }
+
   function findSkillTestDraftDuplicates(skillId: string, draftInput: any) {
     ensureSchema();
     const normalizedPrompt = normalizeSkillTestPromptKey(draftInput && draftInput.triggerPrompt);
@@ -3336,6 +3695,11 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
       );
     }
 
+    const validationIssues = buildSkillTestDesignMatrixValidationIssues(matrix);
+    if (validationIssues.length > 0) {
+      throw createValidationHttpError(validationIssues, '测试矩阵存在未解决的链路或环境问题');
+    }
+
     const includeRows = Array.isArray(matrix.rows)
       ? matrix.rows.filter((row: any) => row && row.includeInMvp !== false)
       : [];
@@ -3346,7 +3710,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
       );
     }
 
-    const draftInputs = [] as any[];
+    const draftPlans = [] as any[];
     const duplicateWarnings = [] as any[];
     const skippedRows = [] as any[];
 
@@ -3355,6 +3719,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
         skippedRows.push({
           rowId: String(row && row.rowId || '').trim(),
           reason: 'Phase 1 目前仅稳定支持 dynamic + trigger 草稿导出',
+          nextAction: '该行仍保留在矩阵中；后续 Phase 支持该类型后可重新导出',
         });
         continue;
       }
@@ -3372,18 +3737,45 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
           duplicates,
         });
       }
-      draftInputs.push(draftInput);
+      draftPlans.push({ row, draftInput });
     }
 
-    const createDraftsTransaction = store.db.transaction((inputs: any[]) => inputs.map((draftInput: any) => createTestCase(draftInput).testCase));
-    const createdCases = draftInputs.length > 0 ? createDraftsTransaction(draftInputs) : [];
+    const updateSourceMetadataStatement = store.db.prepare(`
+      UPDATE skill_test_cases
+      SET source_metadata_json = @sourceMetadataJson,
+          updated_at = @updatedAt
+      WHERE id = @id
+    `);
+    const createDraftsTransaction = store.db.transaction((plans: any[]) => {
+      const createdEntries = plans.map((plan: any) => ({
+        row: plan.row,
+        testCase: createTestCase(plan.draftInput).testCase,
+      }));
+      const rowIdToCaseId = new Map<string, string>(
+        createdEntries
+          .map((entry: any) => [String(entry && entry.row && entry.row.rowId || '').trim(), String(entry && entry.testCase && entry.testCase.id || '').trim()] as [string, string])
+          .filter(([rowId, caseId]) => rowId && caseId)
+      );
+
+      return createdEntries.map((entry: any) => {
+        const patchedSourceMetadata = buildSkillTestDesignSourceMetadataUpdate(entry.testCase, entry.row, rowIdToCaseId);
+        const updatedAt = nowIso();
+        updateSourceMetadataStatement.run({
+          id: entry.testCase.id,
+          sourceMetadataJson: JSON.stringify(patchedSourceMetadata || {}),
+          updatedAt,
+        });
+        return getTestCase(entry.testCase.id);
+      });
+    });
+    const createdCases = draftPlans.length > 0 ? createDraftsTransaction(draftPlans) : [];
 
     if (createdCases.length === 0) {
       throw createValidationHttpError(
-        skippedRows.map((entry: any, index: number) => buildValidationIssue(
+        skippedRows.map((entry: any) => buildValidationIssue(
           'export_row_skipped',
           'error',
-          `matrix.rows[${index}]`,
+          buildSkillTestMatrixRowPath(matrix, String(entry && entry.rowId || '').trim()),
           String(entry && entry.reason || 'No exportable rows remain')
         )),
         '没有可导出的测试草稿'
@@ -7116,6 +7508,11 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
           );
         }
 
+        const matrixValidationIssues = buildSkillTestDesignMatrixValidationIssues(matrix);
+        if (matrixValidationIssues.length > 0) {
+          throw createValidationHttpError(matrixValidationIssues, '测试矩阵仍有未解决的链路或环境问题');
+        }
+
         const nextConversation = updateSkillTestDesignConversationState(conversation, {
           ...designState,
           phase: SKILL_TEST_DESIGN_PHASES.GENERATING_DRAFTS,
@@ -7144,6 +7541,11 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
           );
         }
 
+        const matrixValidationIssues = buildSkillTestDesignMatrixValidationIssues(matrix);
+        if (matrixValidationIssues.length > 0) {
+          throw createValidationHttpError(matrixValidationIssues, '测试矩阵仍有未解决的链路或环境问题');
+        }
+
         const requestedConfirmation = body && body.confirmMatrix
           ? buildSkillTestDesignConfirmationRecord(conversation, designState, matrix, body)
           : null;
@@ -7163,6 +7565,10 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
             matrixId: String(matrix.matrixId || '').trim(),
             exportedAt: nowIso(),
             exportedCaseIds: exported.cases.map((entry: any) => entry.id),
+            exportedCount: exported.cases.length,
+            duplicateWarningCount: Array.isArray(exported.duplicateWarnings) ? exported.duplicateWarnings.length : 0,
+            skippedRowCount: Array.isArray(exported.skippedRows) ? exported.skippedRows.length : 0,
+            skippedRows: Array.isArray(exported.skippedRows) ? exported.skippedRows : [],
           },
         });
         const nextState = getSkillTestDesignState(nextConversation);

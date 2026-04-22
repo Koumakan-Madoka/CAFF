@@ -399,6 +399,8 @@ function buildSkillTestDesignPromptSection(modeContext: any, agent: any, agents:
     `- Target skill: ${String(targetSkill.name || targetSkill.id || designState.skillId || 'unknown').trim()} (${String(targetSkill.id || designState.skillId || 'unknown').trim()})`,
     targetSkill.description ? `- Target skill description: ${targetSkill.description}` : '',
     targetSkill.path ? `- Target skill path: ${targetSkill.path}` : '',
+    targetSkill.testingDocPath ? `- Target skill TESTING.md path: ${targetSkill.testingDocPath}${targetSkill.testingDocExists ? '' : ' (not found yet)'}` : '',
+    '- Environment contract lookup order: TESTING.md -> SKILL.md -> stable spec; if none is actionable, mark environmentSource=missing instead of inventing setup steps.',
     `- Existing cases: total ${Number(caseSummary.totalCases || 0)}, draft ${Number(caseSummary.draftCases || 0)}, ready ${Number(caseSummary.readyCases || 0)}, archived ${Number(caseSummary.archivedCases || 0)}`,
     recentPrompts.length > 0 ? `- Recent case prompts: ${recentPrompts.join(' | ')}` : '- Recent case prompts: none',
     roleEntries.length > 0 ? 'Fixed agent roles:' : '',

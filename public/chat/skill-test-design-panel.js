@@ -40,6 +40,32 @@
     return PRIORITY_LABELS[String(priority || '').trim()] || priority || '-';
   }
 
+  function environmentSourceLabel(source) {
+    var normalized = String(source || '').trim();
+    if (normalized === 'skill_contract') return 'skill 契约';
+    if (normalized === 'user_supplied') return '用户补充';
+    if (normalized === 'missing') return '缺失';
+    return normalized || '缺失';
+  }
+
+  function hasChainMetadata(row) {
+    return Boolean(
+      String(row && row.scenarioKind || '').trim() === 'chain_step' ||
+      String(row && row.chainId || '').trim() ||
+      String(row && row.chainName || '').trim() ||
+      row && row.sequenceIndex ||
+      (Array.isArray(row && row.dependsOnRowIds) && row.dependsOnRowIds.length > 0) ||
+      (Array.isArray(row && row.inheritance) && row.inheritance.length > 0)
+    );
+  }
+
+  function chainLabel(row) {
+    if (!hasChainMetadata(row)) return '-';
+    var chainName = String(row && (row.chainName || row.chainId) || '').trim() || 'chain';
+    var sequenceIndex = row && row.sequenceIndex ? String(row.sequenceIndex).trim() : '?';
+    return chainName + ' #' + sequenceIndex;
+  }
+
   function escapeHtml(text) {
     var div = document.createElement('div');
     div.textContent = String(text || '');
@@ -53,6 +79,15 @@
       .replace(/^['"]+|['"]+$/g, '')
       .replace(/\\/g, '/')
       .replace(/^\.\//, '');
+  }
+
+  function buildSkillTestsUrl(skillId, caseId, matrixId) {
+    var params = new URLSearchParams();
+    params.set('tab', 'panel-skill-tests');
+    if (skillId) params.set('skillId', String(skillId));
+    if (caseId) params.set('caseId', String(caseId));
+    if (matrixId) params.set('matrixId', String(matrixId));
+    return '/eval-cases.html?' + params.toString();
   }
 
   function extractMatrixCandidateFromContent(content) {
@@ -128,20 +163,23 @@
   }
 
   chat.createSkillTestDesignPanelRenderer = function createSkillTestDesignPanelRenderer({ state }) {
-    var card = document.getElementById('skill-test-design-card');
-    var statusEl = document.getElementById('skill-test-design-status');
-    var skillNameEl = document.getElementById('skill-test-design-skill-name');
-    var phaseEl = document.getElementById('skill-test-design-phase');
-    var caseSummaryEl = document.getElementById('skill-test-design-case-summary');
-    var matrixSection = document.getElementById('skill-test-design-matrix-section');
-    var matrixStatusEl = document.getElementById('skill-test-design-matrix-status');
-    var matrixRowsEl = document.getElementById('skill-test-design-matrix-rows');
-    var actionsEl = document.getElementById('skill-test-design-actions');
-    var importButton = document.getElementById('skill-test-import-matrix-button');
-    var confirmButton = document.getElementById('skill-test-confirm-matrix-button');
-    var exportButton = document.getElementById('skill-test-export-drafts-button');
-    var exportResultEl = document.getElementById('skill-test-design-export-result');
-    var exportSummaryEl = document.getElementById('skill-test-design-export-summary');
+    var shared = window.CaffShared || {};
+    var toastEl = /** @type {HTMLElement | null} */ (document.getElementById('toast'));
+    var toast = typeof shared.createToastController === 'function' ? shared.createToastController(toastEl) : { show: function () {} };
+    var card = /** @type {HTMLElement | null} */ (document.getElementById('skill-test-design-card'));
+    var statusEl = /** @type {HTMLElement | null} */ (document.getElementById('skill-test-design-status'));
+    var skillNameEl = /** @type {HTMLElement | null} */ (document.getElementById('skill-test-design-skill-name'));
+    var phaseEl = /** @type {HTMLElement | null} */ (document.getElementById('skill-test-design-phase'));
+    var caseSummaryEl = /** @type {HTMLElement | null} */ (document.getElementById('skill-test-design-case-summary'));
+    var matrixSection = /** @type {HTMLElement | null} */ (document.getElementById('skill-test-design-matrix-section'));
+    var matrixStatusEl = /** @type {HTMLElement | null} */ (document.getElementById('skill-test-design-matrix-status'));
+    var matrixRowsEl = /** @type {HTMLElement | null} */ (document.getElementById('skill-test-design-matrix-rows'));
+    var actionsEl = /** @type {HTMLElement | null} */ (document.getElementById('skill-test-design-actions'));
+    var importButton = /** @type {HTMLButtonElement | null} */ (document.getElementById('skill-test-import-matrix-button'));
+    var confirmButton = /** @type {HTMLButtonElement | null} */ (document.getElementById('skill-test-confirm-matrix-button'));
+    var exportButton = /** @type {HTMLButtonElement | null} */ (document.getElementById('skill-test-export-drafts-button'));
+    var exportResultEl = /** @type {HTMLElement | null} */ (document.getElementById('skill-test-design-export-result'));
+    var exportSummaryEl = /** @type {HTMLElement | null} */ (document.getElementById('skill-test-design-export-summary'));
 
     var summaryFetchTimer = null;
     var autoImportInFlightKey = '';
@@ -162,9 +200,7 @@
     }
 
     function showToast(message) {
-      if (typeof window.showToast === 'function') {
-        window.showToast(message);
-      }
+      toast.show(message);
     }
 
     function fetchSkillTestDesignSummary(conversationId) {
@@ -232,24 +268,50 @@
         '<th>优先级</th>' +
         '<th>类型</th>' +
         '<th>模式</th>' +
+        '<th>环境</th>' +
+        '<th>链</th>' +
         '<th>MVP</th>' +
         '</tr>';
       table.appendChild(thead);
 
       var tbody = document.createElement('tbody');
+      var hasChainRows = false;
+      var missingEnvironmentRows = 0;
       for (var index = 0; index < rows.length; index++) {
         var row = rows[index] || {};
+        var environmentSource = String(row.environmentSource || '').trim() || (row.environmentContractRef ? 'skill_contract' : 'missing');
+        var environmentLabel = environmentSourceLabel(environmentSource);
+        var environmentTitle = environmentLabel + (row.environmentContractRef ? ' · ' + row.environmentContractRef : '');
+        var chainText = chainLabel(row);
+        if (chainText !== '-') hasChainRows = true;
+        if (environmentSource === 'missing') missingEnvironmentRows += 1;
         var tr = document.createElement('tr');
         tr.innerHTML =
           '<td title="' + escapeHtml(row.scenario || '') + '">' + escapeHtml((row.scenario || '').substring(0, 60)) + '</td>' +
           '<td>' + escapeHtml(priorityLabel(row.priority)) + '</td>' +
           '<td>' + escapeHtml(row.testType || '-') + '</td>' +
           '<td>' + escapeHtml(row.loadingMode || '-') + '</td>' +
+          '<td title="' + escapeHtml(environmentTitle) + '">' + escapeHtml(environmentLabel) + '</td>' +
+          '<td title="' + escapeHtml(chainText) + '">' + escapeHtml(chainText) + '</td>' +
           '<td>' + (row.includeInMvp !== false ? '✓' : '✗') + '</td>';
         tbody.appendChild(tr);
       }
       table.appendChild(tbody);
       matrixRowsEl.appendChild(table);
+
+      if (hasChainRows) {
+        var chainNote = document.createElement('p');
+        chainNote.className = 'muted';
+        chainNote.textContent = '链式分组仅用于规划 / 导出 metadata；Phase 1 运行仍按独立 case 执行，不会自动共享环境或产物。';
+        matrixRowsEl.appendChild(chainNote);
+      }
+
+      if (missingEnvironmentRows > 0) {
+        var environmentNote = document.createElement('p');
+        environmentNote.className = 'muted';
+        environmentNote.textContent = missingEnvironmentRows + ' 行环境契约缺失；trigger-only 可继续保留缺口 metadata，execution / 真实环境依赖会在确认或导出时被拦截。';
+        matrixRowsEl.appendChild(environmentNote);
+      }
     }
 
     function handleImportMatrix(options) {
@@ -334,7 +396,7 @@
             message += '（' + data.duplicateWarnings.length + ' 条可能与现有用例重复）';
           }
           if (data && Array.isArray(data.skippedRows) && data.skippedRows.length > 0) {
-            message += '，另有 ' + data.skippedRows.length + ' 行因当前 Phase 1 限制被跳过';
+            message += '，另有 ' + data.skippedRows.length + ' 行因当前 Phase 1 限制被跳过（仍保留在矩阵中，后续 Phase 可重新导出）';
           }
           showToast(message);
         })
@@ -462,8 +524,24 @@
       }
 
       if (exportInfo && exportInfo.exportedCaseIds) {
+        var exportedCaseIds = Array.isArray(exportInfo.exportedCaseIds) ? exportInfo.exportedCaseIds : [];
+        var exportedCount = Number(exportInfo.exportedCount || exportedCaseIds.length || 0);
+        var duplicateWarningCount = Number(exportInfo.duplicateWarningCount || 0);
+        var skippedRowCount = Number(exportInfo.skippedRowCount || (Array.isArray(exportInfo.skippedRows) ? exportInfo.skippedRows.length : 0) || 0);
+        var summaryText = '已导出 ' + exportedCount + ' 条草稿';
+        if (duplicateWarningCount > 0) summaryText += '，' + duplicateWarningCount + ' 条可能重复';
+        if (skippedRowCount > 0) summaryText += '，' + skippedRowCount + ' 行因当前 Phase 1 限制跳过（仍保留在矩阵中，后续 Phase 可重新导出）';
         exportResultEl.classList.remove('hidden');
-        exportSummaryEl.textContent = '已导出 ' + (exportInfo.exportedCaseIds.length || 0) + ' 条草稿';
+        exportSummaryEl.textContent = summaryText + '。';
+        if (exportedCaseIds.length > 0) {
+          var link = document.createElement('a');
+          link.href = buildSkillTestsUrl(designState.skillId, exportedCaseIds[0], matrix && matrix.matrixId);
+          link.textContent = '打开 Skill Tests 查看草稿';
+          link.target = '_blank';
+          link.rel = 'noopener';
+          exportSummaryEl.appendChild(document.createTextNode(' '));
+          exportSummaryEl.appendChild(link);
+        }
       } else {
         exportResultEl.classList.add('hidden');
       }

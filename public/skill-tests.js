@@ -119,6 +119,23 @@
     liveSkillRunCaseIdByMessageId: new Map(),
   };
 
+  function readInitialSkillTestDeepLink() {
+    try {
+      const params = new URLSearchParams(window.location.search || '');
+      const tab = String(params.get('tab') || params.get('panel') || '').trim();
+      const skillId = String(params.get('skillId') || params.get('skill') || '').trim();
+      const caseId = String(params.get('caseId') || params.get('case') || '').trim();
+      const rawDetailTab = String(params.get('detailTab') || 'overview').trim() || 'overview';
+      const detailTab = ['overview', 'details', 'runs', 'regression'].includes(rawDetailTab) ? rawDetailTab : 'overview';
+      const openSkillTests = tab === 'panel-skill-tests' || tab === 'skill-tests' || Boolean(skillId || caseId);
+      return { openSkillTests, skillId, caseId, detailTab };
+    } catch {
+      return { openSkillTests: false, skillId: '', caseId: '', detailTab: 'overview' };
+    }
+  }
+
+  let pendingSkillTestDeepLink = readInitialSkillTestDeepLink();
+
   function emptyTraceSummary() {
     return {
       totalSteps: 0,
@@ -1765,6 +1782,19 @@
     syncRunSettingsUi();
   }
 
+  function applyPendingSkillTestDeepLink() {
+    if (!pendingSkillTestDeepLink || !pendingSkillTestDeepLink.skillId || !dom.skillSelect) return false;
+    const skillId = pendingSkillTestDeepLink.skillId;
+    if (!state.skills.some((skill) => skill.id === skillId)) {
+      return false;
+    }
+    dom.skillSelect.value = skillId;
+    state.selectedCaseId = pendingSkillTestDeepLink.caseId || '';
+    switchDetailTab(pendingSkillTestDeepLink.detailTab || 'overview');
+    pendingSkillTestDeepLink = null;
+    return true;
+  }
+
   function restoreSelectedSkill() {
     if (!dom.skillSelect) return false;
     try {
@@ -1888,7 +1918,7 @@
       opt.textContent = skill.name || skill.id;
       dom.skillSelect.appendChild(opt);
     }
-    const restored = restoreSelectedSkill();
+    const restored = applyPendingSkillTestDeepLink() || restoreSelectedSkill();
     if (!restored && current && state.skills.some((s) => s.id === current)) {
       dom.skillSelect.value = current;
     }
@@ -2480,6 +2510,42 @@
     }
   }
 
+  function buildSkillTestDesignSourceTags(tc) {
+    const sourceMetadata = tc && tc.sourceMetadata && typeof tc.sourceMetadata === 'object' ? tc.sourceMetadata : null;
+    if (!sourceMetadata || sourceMetadata.source !== 'skill_test_chat_workbench') {
+      return '';
+    }
+
+    const designMetadata = sourceMetadata.skillTestDesign && typeof sourceMetadata.skillTestDesign === 'object'
+      ? sourceMetadata.skillTestDesign
+      : {};
+    const chainPlanning = designMetadata.chainPlanning && typeof designMetadata.chainPlanning === 'object'
+      ? designMetadata.chainPlanning
+      : null;
+    const tags = [];
+    const sourceTitle = [
+      sourceMetadata.conversationId ? `conversation=${sourceMetadata.conversationId}` : '',
+      sourceMetadata.messageId ? `message=${sourceMetadata.messageId}` : '',
+      sourceMetadata.matrixId ? `matrix=${sourceMetadata.matrixId}` : '',
+      sourceMetadata.matrixRowId ? `row=${sourceMetadata.matrixRowId}` : '',
+    ].filter(Boolean).join(' · ');
+
+    tags.push(`<span class="tag tag-pending" title="${escapeHtml(sourceTitle || 'Skill Test 聊天工作台导出')}">聊天导出</span>`);
+    if (sourceMetadata.matrixId) {
+      tags.push(`<span class="tag">matrix ${escapeHtml(clipText(sourceMetadata.matrixId, 24))}</span>`);
+    }
+    if (sourceMetadata.matrixRowId) {
+      tags.push(`<span class="tag">row ${escapeHtml(clipText(sourceMetadata.matrixRowId, 24))}</span>`);
+    }
+    if (designMetadata.environmentSource) {
+      tags.push(`<span class="tag">环境 ${escapeHtml(designMetadata.environmentSource)}</span>`);
+    }
+    if (chainPlanning && chainPlanning.chainId) {
+      tags.push(`<span class="tag">链 ${escapeHtml(clipText(chainPlanning.chainId, 24))}</span>`);
+    }
+    return tags.join('');
+  }
+
   function renderDetail(tc) {
     if (!dom.detailPanel) return;
     if (dom.detailEmpty) dom.detailEmpty.classList.add('hidden');
@@ -2488,6 +2554,7 @@
     const readinessMeta = getCaseReadinessMeta(tc, caseValidation);
     const latestRunMeta = getLatestRunStatusMeta(tc.latestRun);
     const schemaStatusMeta = getCaseSchemaStatusMeta(caseValidation.caseSchemaStatus);
+    const sourceTags = buildSkillTestDesignSourceTags(tc);
     if (dom.detailCaseId) dom.detailCaseId.textContent = tc.id;
     if (dom.detailMeta) {
       dom.detailMeta.innerHTML = `
@@ -2497,6 +2564,7 @@
         ${isEnvironmentConfigEnabled(tc.environmentConfig) ? '<span class="tag">环境链</span>' : ''}
         ${schemaStatusMeta && caseValidation.caseSchemaStatus === 'warning' ? `<span class="tag ${schemaStatusMeta.className}">${escapeHtml(schemaStatusMeta.label)}</span>` : ''}
         ${caseValidation.derivedFromLegacy === true ? '<span class="tag tag-pending">Legacy 映射</span>' : ''}
+        ${sourceTags}
         ${tc.note ? `<span class="tag">${escapeHtml(clipText(tc.note, 36))}</span>` : ''}
       `;
     }
@@ -4128,5 +4196,9 @@
     const value = String(text || '').trim();
     if (!value) return '';
     return value.length <= maxLength ? value : value.slice(0, maxLength - 3) + '...';
+  }
+
+  if (pendingSkillTestDeepLink && pendingSkillTestDeepLink.openSkillTests) {
+    switchTab('panel-skill-tests');
   }
 })();

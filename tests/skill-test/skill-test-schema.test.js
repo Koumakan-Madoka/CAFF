@@ -16,6 +16,9 @@ const {
   getSkillTestIsolationFailureMessage,
   normalizeSkillTestIsolationOptions,
 } = require('../../build/server/domain/skill-test/isolation');
+const {
+  buildSkillTestDraftInputFromMatrixRow,
+} = require('../../build/server/domain/skill-test/chat-workbench-mode');
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -44,6 +47,7 @@ test('migrateSkillTestSchema creates tables without error', () => {
   assert.ok(caseColumns.includes('generation_provider'));
   assert.ok(caseColumns.includes('generation_model'));
   assert.ok(caseColumns.includes('generation_created_at'));
+  assert.ok(caseColumns.includes('source_metadata_json'));
 
   const runColumns = db.prepare('PRAGMA table_info(skill_test_runs)').all().map((row) => row.name);
   assert.ok(runColumns.includes('environment_status'));
@@ -57,6 +61,107 @@ test('migrateSkillTestSchema is idempotent', () => {
   // Run migration again — should not throw
   assert.doesNotThrow(() => migrateSkillTestSchema(db));
   db.close();
+});
+
+test('source_metadata_json preserves skill test design audit metadata', () => {
+  const db = createTestDb();
+  const now = new Date().toISOString();
+  const sourceMetadata = {
+    source: 'skill_test_chat_workbench',
+    conversationId: 'conv-1',
+    messageId: 'msg-1',
+    matrixId: 'matrix-1',
+    matrixRowId: 'row-1',
+    agentRole: 'scribe',
+    exportedBy: 'user',
+    exportedAt: now,
+    skillTestDesign: {
+      environmentContractRef: 'TESTING.md#Bootstrap',
+      environmentSource: 'skill_contract',
+      chainPlanning: {
+        chainId: 'chain-1',
+        dependsOnRowIds: ['row-0'],
+        dependsOnCaseIds: ['tc-000'],
+        exportedCaseId: 'tc-006',
+      },
+    },
+  };
+
+  db.prepare(`
+    INSERT INTO skill_test_cases (
+      id, skill_id, test_type, loading_mode, trigger_prompt,
+      source_metadata_json, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    'tc-006', 'demo-skill', 'trigger', 'dynamic', 'load the demo skill',
+    JSON.stringify(sourceMetadata), now, now
+  );
+
+  const row = db.prepare('SELECT source_metadata_json FROM skill_test_cases WHERE id = ?').get('tc-006');
+  const parsed = JSON.parse(row.source_metadata_json);
+  assert.equal(parsed.source, 'skill_test_chat_workbench');
+  assert.equal(parsed.conversationId, 'conv-1');
+  assert.equal(parsed.messageId, 'msg-1');
+  assert.equal(parsed.matrixId, 'matrix-1');
+  assert.equal(parsed.matrixRowId, 'row-1');
+  assert.equal(parsed.skillTestDesign.environmentContractRef, 'TESTING.md#Bootstrap');
+  assert.equal(parsed.skillTestDesign.environmentSource, 'skill_contract');
+  assert.deepEqual(parsed.skillTestDesign.chainPlanning.dependsOnCaseIds, ['tc-000']);
+  assert.equal(parsed.skillTestDesign.chainPlanning.exportedCaseId, 'tc-006');
+
+  db.close();
+});
+
+test('skill test design draft builder keeps environment and chain metadata out of note', () => {
+  const draft = buildSkillTestDraftInputFromMatrixRow(
+    'demo-skill',
+    { matrixId: 'matrix-structured-note' },
+    {
+      rowId: 'row-verify',
+      scenario: 'verify the skill after bootstrap',
+      priority: 'P1',
+      coverageReason: 'covers the follow-up verification step',
+      testType: 'trigger',
+      loadingMode: 'dynamic',
+      environmentSource: 'skill_contract',
+      environmentContractRef: 'TESTING.md#Verification',
+      scenarioKind: 'chain_step',
+      chainId: 'chain-1',
+      chainName: 'Demo Chain',
+      sequenceIndex: 2,
+      dependsOnRowIds: ['row-bootstrap'],
+      inheritance: ['filesystem'],
+      riskPoints: ['metadata drift'],
+      keyAssertions: ['metadata is structured'],
+      includeInMvp: true,
+      draftingHints: {
+        triggerPrompt: 'verify the demo skill after bootstrap',
+        note: 'human readable note',
+      },
+    },
+    {
+      conversationId: 'conv-structured-note',
+      messageId: 'msg-structured-note',
+      agentRole: 'scribe',
+      exportedBy: 'user',
+    }
+  );
+
+  assert.match(draft.note, /场景：verify the skill after bootstrap/);
+  assert.match(draft.note, /human readable note/);
+  assert.doesNotMatch(draft.note, /environmentSource=/);
+  assert.doesNotMatch(draft.note, /environmentContractRef=/);
+  assert.doesNotMatch(draft.note, /chain=/);
+  assert.equal(draft.sourceMetadata.source, 'skill_test_chat_workbench');
+  assert.equal(draft.sourceMetadata.conversationId, 'conv-structured-note');
+  assert.equal(draft.sourceMetadata.messageId, 'msg-structured-note');
+  assert.equal(draft.sourceMetadata.matrixId, 'matrix-structured-note');
+  assert.equal(draft.sourceMetadata.matrixRowId, 'row-verify');
+  assert.equal(draft.sourceMetadata.skillTestDesign.environmentContractRef, 'TESTING.md#Verification');
+  assert.equal(draft.sourceMetadata.skillTestDesign.environmentSource, 'skill_contract');
+  assert.equal(draft.sourceMetadata.skillTestDesign.chainPlanning.chainId, 'chain-1');
+  assert.deepEqual(draft.sourceMetadata.skillTestDesign.chainPlanning.dependsOnRowIds, ['row-bootstrap']);
+  assert.deepEqual(draft.sourceMetadata.skillTestDesign.chainPlanning.inheritance, ['filesystem']);
 });
 
 // ---- skill_test_cases CRUD ----

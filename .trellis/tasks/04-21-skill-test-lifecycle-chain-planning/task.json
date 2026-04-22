@@ -3,7 +3,7 @@
   "name": "skill-test-lifecycle-chain-planning",
   "title": "Skill test lifecycle chain planning and draft export",
   "description": "Plan chain-aware matrix fields and draft export metadata for lifecycle-dependent skills without changing runner semantics yet.",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": "fullstack",
   "scope": ".agents/skills/skill-test-design-workbench/SKILL.md, public/chat/skill-test-design-panel.js, server/api/skill-test-controller.ts, server/domain/skill-test/chat-workbench-mode.ts, tests/skill-test/*, .trellis/spec/skills/skill-testing.md",
   "package": null,
@@ -15,7 +15,7 @@
   "branch": null,
   "base_branch": "feat/skill-test-chat-workbench-mode",
   "worktree_path": null,
-  "current_phase": 0,
+  "current_phase": 3,
   "next_action": [
     {
       "phase": 1,

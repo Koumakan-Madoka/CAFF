@@ -2830,7 +2830,8 @@ function bindEvents() {
 
   if (dom.newConversationType) {
     dom.newConversationType.addEventListener('change', (event) => {
-      toggleSkillTestDesignSkillSelect(event.target.value);
+      const target = /** @type {HTMLSelectElement | null} */ (event.target instanceof HTMLSelectElement ? event.target : null);
+      toggleSkillTestDesignSkillSelect(target ? target.value : 'standard');
     });
   }
 
@@ -2846,7 +2847,7 @@ function bindEvents() {
 
       // For skill_test_design mode, require a skill selection
       if (conversationType === 'skill_test_design') {
-        const skillSelect = document.getElementById('new-conversation-skill-select');
+        const skillSelect = /** @type {HTMLSelectElement | null} */ (document.getElementById('new-conversation-skill-select'));
         if (!skillSelect || !skillSelect.value) {
           showToast('Skill Test 设计模式需要选择一个目标 Skill');
           return;

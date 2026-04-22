@@ -7072,3 +7072,481 @@ test('skill test design export-drafts rolls back partial draft creation on valid
   const storedCases = db.prepare('SELECT COUNT(*) AS count FROM skill_test_cases WHERE skill_id = ?').get('demo-skill');
   assert.equal(storedCases.count, 0);
 });
+
+test('skill test design export-drafts records duplicate and skipped row summary in conversation export state', async () => {
+  const db = createTestDb();
+  let conversation = {
+    id: 'design-conv-export-summary',
+    title: 'Skill Test Design',
+    type: 'skill_test_design',
+    metadata: {
+      skillTestDesign: {
+        version: 1,
+        skillId: 'demo-skill',
+        skillName: 'Demo Skill',
+        phase: 'awaiting_confirmation',
+        participantRoles: { 'agent-builder': 'scribe' },
+        matrix: {
+          kind: 'skill_test_matrix',
+          matrixId: 'matrix-export-summary-1',
+          skillId: 'demo-skill',
+          phase: 'awaiting_confirmation',
+          sourceMessageId: 'assistant-msg-export-summary',
+          agentRole: 'scribe',
+          importedAt: '2026-04-21T00:00:00.000Z',
+          rows: [
+            {
+              rowId: 'row-duplicate',
+              scenario: 'cover duplicate prompt warning for chat generated draft export',
+              priority: 'P0',
+              coverageReason: 'export should proceed while reporting duplicate candidates',
+              testType: 'trigger',
+              loadingMode: 'dynamic',
+              riskPoints: ['duplicate prompt'],
+              keyAssertions: ['duplicate warning is returned and summarized'],
+              includeInMvp: true,
+              draftingHints: {
+                triggerPrompt: 'please load the demo skill and explain the main flow',
+                expectedBehavior: 'reads the correct skill and explains the main flow',
+              },
+            },
+            {
+              rowId: 'row-full-skipped',
+              scenario: 'cover full execution row skipped by phase one export',
+              priority: 'P1',
+              coverageReason: 'Phase 1 should keep full execution rows out of dynamic trigger export',
+              testType: 'execution',
+              loadingMode: 'full',
+              environmentSource: 'skill_contract',
+              environmentContractRef: 'TESTING.md#Bootstrap',
+              riskPoints: ['phase scope'],
+              keyAssertions: ['skipped row is summarized'],
+              includeInMvp: true,
+              draftingHints: {
+                triggerPrompt: 'please execute the full demo skill scenario',
+                expectedBehavior: 'full execution remains out of Phase 1 export',
+              },
+            },
+          ],
+        },
+        confirmation: null,
+        export: null,
+        createdAt: '2026-04-21T00:00:00.000Z',
+        updatedAt: '2026-04-21T00:00:00.000Z',
+      },
+    },
+    messages: [
+      {
+        id: 'assistant-msg-export-summary',
+        role: 'assistant',
+        agentId: 'agent-builder',
+        content: '```json\n{"kind":"skill_test_matrix"}\n```',
+      },
+    ],
+  };
+  const store = {
+    db,
+    getConversation(id) {
+      return id === conversation.id ? conversation : null;
+    },
+    updateConversation(id, updates) {
+      if (id !== conversation.id) {
+        return null;
+      }
+      conversation = { ...conversation, ...updates };
+      return conversation;
+    },
+  };
+  const controller = createSkillTestController({
+    store,
+    agentToolBridge: createFakeAgentToolBridge(),
+    skillRegistry: createFakeSkillRegistry(['demo-skill']),
+  });
+
+  const createRes = createCaptureResponse();
+  const created = await controller({
+    req: createJsonRequest('POST', '/api/skills/demo-skill/test-cases', {
+      skillId: 'demo-skill',
+      loadingMode: 'dynamic',
+      testType: 'trigger',
+      userPrompt: 'please load the demo skill and explain the main flow',
+      expectedBehavior: 'existing draft for duplicate warning coverage',
+      caseStatus: 'draft',
+    }),
+    res: createRes,
+    pathname: '/api/skills/demo-skill/test-cases',
+    requestUrl: new URL('http://localhost/api/skills/demo-skill/test-cases'),
+  });
+  assert.equal(created, true);
+  assert.equal(createRes.statusCode, 201);
+
+  const res = createCaptureResponse();
+  const handled = await controller({
+    req: createJsonRequest('POST', '/api/conversations/design-conv-export-summary/skill-test-design/export-drafts', {
+      matrixId: 'matrix-export-summary-1',
+      confirmMatrix: true,
+      confirmationMessageId: 'assistant-msg-export-summary',
+      exportedBy: 'user',
+    }),
+    res,
+    pathname: '/api/conversations/design-conv-export-summary/skill-test-design/export-drafts',
+    requestUrl: new URL('http://localhost/api/conversations/design-conv-export-summary/skill-test-design/export-drafts'),
+  });
+
+  assert.equal(handled, true);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.json.exportedCount, 1);
+  assert.equal(res.json.cases.length, 1);
+  assert.equal(res.json.duplicateWarnings.length, 1);
+  assert.equal(res.json.duplicateWarnings[0].rowId, 'row-duplicate');
+  assert.equal(res.json.skippedRows.length, 1);
+  assert.equal(res.json.skippedRows[0].rowId, 'row-full-skipped');
+  assert.match(res.json.skippedRows[0].nextAction, /后续 Phase/);
+  assert.equal(res.json.state.export.exportedCount, 1);
+  assert.equal(res.json.state.export.duplicateWarningCount, 1);
+  assert.equal(res.json.state.export.skippedRowCount, 1);
+  assert.deepEqual(res.json.state.export.exportedCaseIds, [res.json.cases[0].id]);
+  assert.equal(conversation.metadata.skillTestDesign.export.duplicateWarningCount, 1);
+  assert.equal(conversation.metadata.skillTestDesign.export.skippedRows[0].rowId, 'row-full-skipped');
+  assert.match(conversation.metadata.skillTestDesign.export.skippedRows[0].nextAction, /后续 Phase/);
+});
+
+test('skill test design confirm-matrix rejects unresolved chain dependencies before export', async () => {
+  const db = createTestDb();
+  let conversation = {
+    id: 'design-conv-confirm-chain',
+    title: 'Skill Test Design',
+    type: 'skill_test_design',
+    metadata: {
+      skillTestDesign: {
+        version: 1,
+        skillId: 'demo-skill',
+        skillName: 'Demo Skill',
+        phase: 'awaiting_confirmation',
+        participantRoles: { 'agent-builder': 'scribe' },
+        matrix: {
+          kind: 'skill_test_matrix',
+          matrixId: 'matrix-chain-confirm-1',
+          skillId: 'demo-skill',
+          phase: 'awaiting_confirmation',
+          sourceMessageId: 'assistant-msg-chain-confirm',
+          agentRole: 'scribe',
+          importedAt: '2026-04-21T00:00:00.000Z',
+          rows: [
+            {
+              rowId: 'row-chain-2',
+              scenario: 'reuse the prepared environment for the next chain step',
+              priority: 'P0',
+              coverageReason: 'chain export should block when dependencies are broken',
+              testType: 'trigger',
+              loadingMode: 'dynamic',
+              environmentSource: 'skill_contract',
+              environmentContractRef: 'TESTING.md#Bootstrap',
+              scenarioKind: 'chain_step',
+              chainId: 'demo-chain',
+              chainName: 'Demo Chain',
+              sequenceIndex: 2,
+              dependsOnRowIds: ['row-chain-missing'],
+              inheritance: ['filesystem'],
+              riskPoints: ['broken dependency graph'],
+              keyAssertions: ['confirmation fails before export'],
+              includeInMvp: true,
+              draftingHints: {
+                triggerPrompt: 'please continue the demo chain after bootstrap',
+                expectedBehavior: 'uses the confirmed chain context',
+              },
+            },
+          ],
+        },
+        confirmation: null,
+        export: null,
+        createdAt: '2026-04-21T00:00:00.000Z',
+        updatedAt: '2026-04-21T00:00:00.000Z',
+      },
+    },
+    messages: [
+      {
+        id: 'assistant-msg-chain-confirm',
+        role: 'assistant',
+        agentId: 'agent-builder',
+        content: 'MATRIX_ARTIFACT: .tmp/skill-test-design/demo-skill/matrix-chain-confirm-1.json',
+      },
+    ],
+  };
+  const store = {
+    db,
+    getConversation(id) {
+      return id === conversation.id ? conversation : null;
+    },
+    updateConversation(id, updates) {
+      if (id !== conversation.id) {
+        return null;
+      }
+      conversation = { ...conversation, ...updates };
+      return conversation;
+    },
+  };
+  const controller = createSkillTestController({
+    store,
+    agentToolBridge: createFakeAgentToolBridge(),
+    skillRegistry: createFakeSkillRegistry(['demo-skill']),
+  });
+
+  await assert.rejects(
+    controller({
+      req: createJsonRequest('POST', '/api/conversations/design-conv-confirm-chain/skill-test-design/confirm-matrix', {
+        matrixId: 'matrix-chain-confirm-1',
+        confirmationMessageId: 'assistant-msg-chain-confirm',
+      }),
+      res: createCaptureResponse(),
+      pathname: '/api/conversations/design-conv-confirm-chain/skill-test-design/confirm-matrix',
+      requestUrl: new URL('http://localhost/api/conversations/design-conv-confirm-chain/skill-test-design/confirm-matrix'),
+    }),
+    (err) => {
+      assert.equal(err.statusCode, 400);
+      assert.ok(err.issues.some((issue) => issue.code === 'matrix_chain_dependency_missing'));
+      return true;
+    }
+  );
+});
+
+test('skill test design export-drafts blocks execution rows when environmentSource is missing', async () => {
+  const db = createTestDb();
+  let conversation = {
+    id: 'design-conv-env-gate',
+    title: 'Skill Test Design',
+    type: 'skill_test_design',
+    metadata: {
+      skillTestDesign: {
+        version: 1,
+        skillId: 'demo-skill',
+        skillName: 'Demo Skill',
+        phase: 'awaiting_confirmation',
+        participantRoles: { 'agent-builder': 'scribe' },
+        matrix: {
+          kind: 'skill_test_matrix',
+          matrixId: 'matrix-env-gate-1',
+          skillId: 'demo-skill',
+          phase: 'awaiting_confirmation',
+          sourceMessageId: 'assistant-msg-env-gate',
+          agentRole: 'scribe',
+          importedAt: '2026-04-21T00:00:00.000Z',
+          rows: [
+            {
+              rowId: 'row-execution-missing-env',
+              scenario: 'run the full execution path that needs a real prepared environment',
+              priority: 'P0',
+              coverageReason: 'execution export must fail closed without a trusted environment contract',
+              testType: 'execution',
+              loadingMode: 'full',
+              environmentSource: 'missing',
+              riskPoints: ['unguarded export'],
+              keyAssertions: ['formal export is blocked'],
+              includeInMvp: true,
+              draftingHints: {
+                triggerPrompt: 'please complete the full execution path for the demo skill',
+                expectedGoal: 'finish the full environment-dependent flow',
+                expectedBehavior: 'requires a real prepared environment',
+              },
+            },
+          ],
+        },
+        confirmation: null,
+        export: null,
+        createdAt: '2026-04-21T00:00:00.000Z',
+        updatedAt: '2026-04-21T00:00:00.000Z',
+      },
+    },
+    messages: [
+      {
+        id: 'assistant-msg-env-gate',
+        role: 'assistant',
+        agentId: 'agent-builder',
+        content: '```json\n{"kind":"skill_test_matrix"}\n```',
+      },
+    ],
+  };
+  const store = {
+    db,
+    getConversation(id) {
+      return id === conversation.id ? conversation : null;
+    },
+    updateConversation(id, updates) {
+      if (id !== conversation.id) {
+        return null;
+      }
+      conversation = { ...conversation, ...updates };
+      return conversation;
+    },
+  };
+  const controller = createSkillTestController({
+    store,
+    agentToolBridge: createFakeAgentToolBridge(),
+    skillRegistry: createFakeSkillRegistry(['demo-skill']),
+  });
+
+  await assert.rejects(
+    controller({
+      req: createJsonRequest('POST', '/api/conversations/design-conv-env-gate/skill-test-design/export-drafts', {
+        matrixId: 'matrix-env-gate-1',
+        confirmMatrix: true,
+        confirmationMessageId: 'assistant-msg-env-gate',
+        exportedBy: 'user',
+      }),
+      res: createCaptureResponse(),
+      pathname: '/api/conversations/design-conv-env-gate/skill-test-design/export-drafts',
+      requestUrl: new URL('http://localhost/api/conversations/design-conv-env-gate/skill-test-design/export-drafts'),
+    }),
+    (err) => {
+      assert.equal(err.statusCode, 400);
+      assert.ok(err.issues.some((issue) => issue.code === 'matrix_environment_source_missing'));
+      return true;
+    }
+  );
+
+  const storedCases = db.prepare('SELECT COUNT(*) AS count FROM skill_test_cases WHERE skill_id = ?').get('demo-skill');
+  assert.equal(storedCases.count, 0);
+});
+
+test('skill test design export-drafts preserves chain planning metadata and dependsOnCaseIds', async () => {
+  const db = createTestDb();
+  let conversation = {
+    id: 'design-conv-chain-export',
+    title: 'Skill Test Design',
+    type: 'skill_test_design',
+    metadata: {
+      skillTestDesign: {
+        version: 1,
+        skillId: 'demo-skill',
+        skillName: 'Demo Skill',
+        phase: 'awaiting_confirmation',
+        participantRoles: { 'agent-builder': 'scribe' },
+        matrix: {
+          kind: 'skill_test_matrix',
+          matrixId: 'matrix-chain-export-1',
+          skillId: 'demo-skill',
+          phase: 'awaiting_confirmation',
+          sourceMessageId: 'assistant-msg-chain-export',
+          agentRole: 'scribe',
+          importedAt: '2026-04-21T00:00:00.000Z',
+          rows: [
+            {
+              rowId: 'row-chain-bootstrap',
+              scenario: 'bootstrap the demo skill environment via the declared contract',
+              priority: 'P0',
+              coverageReason: 'first chain step prepares the reusable environment',
+              testType: 'trigger',
+              loadingMode: 'dynamic',
+              environmentSource: 'skill_contract',
+              environmentContractRef: 'TESTING.md#Bootstrap',
+              scenarioKind: 'chain_step',
+              chainId: 'demo-chain',
+              chainName: 'Demo Chain',
+              sequenceIndex: 1,
+              dependsOnRowIds: [],
+              inheritance: ['filesystem'],
+              riskPoints: ['bootstrap drift'],
+              keyAssertions: ['first step is exported as a draft'],
+              includeInMvp: true,
+              draftingHints: {
+                triggerPrompt: 'please bootstrap the demo skill according to the testing contract',
+                expectedBehavior: 'reads the contract and prepares the environment',
+              },
+            },
+            {
+              rowId: 'row-chain-verify',
+              scenario: 'verify the follow-up trigger after bootstrap completes',
+              priority: 'P1',
+              coverageReason: 'second chain step reuses the planned environment metadata',
+              testType: 'trigger',
+              loadingMode: 'dynamic',
+              environmentSource: 'skill_contract',
+              environmentContractRef: 'TESTING.md#Verification',
+              scenarioKind: 'chain_step',
+              chainId: 'demo-chain',
+              chainName: 'Demo Chain',
+              sequenceIndex: 2,
+              dependsOnRowIds: ['row-chain-bootstrap'],
+              inheritance: ['filesystem', 'artifacts'],
+              riskPoints: ['dependency mapping'],
+              keyAssertions: ['dependsOnCaseIds is preserved'],
+              includeInMvp: true,
+              draftingHints: {
+                triggerPrompt: 'please verify the demo skill after bootstrap using the same planned chain',
+                expectedBehavior: 'continues from the planned chain metadata',
+              },
+            },
+          ],
+        },
+        confirmation: null,
+        export: null,
+        createdAt: '2026-04-21T00:00:00.000Z',
+        updatedAt: '2026-04-21T00:00:00.000Z',
+      },
+    },
+    messages: [
+      {
+        id: 'assistant-msg-chain-export',
+        role: 'assistant',
+        agentId: 'agent-builder',
+        content: 'MATRIX_ARTIFACT: .tmp/skill-test-design/demo-skill/matrix-chain-export-1.json',
+      },
+    ],
+  };
+  const store = {
+    db,
+    getConversation(id) {
+      return id === conversation.id ? conversation : null;
+    },
+    updateConversation(id, updates) {
+      if (id !== conversation.id) {
+        return null;
+      }
+      conversation = { ...conversation, ...updates };
+      return conversation;
+    },
+  };
+  const controller = createSkillTestController({
+    store,
+    agentToolBridge: createFakeAgentToolBridge(),
+    skillRegistry: createFakeSkillRegistry(['demo-skill']),
+  });
+
+  const res = createCaptureResponse();
+  const handled = await controller({
+    req: createJsonRequest('POST', '/api/conversations/design-conv-chain-export/skill-test-design/export-drafts', {
+      matrixId: 'matrix-chain-export-1',
+      confirmMatrix: true,
+      confirmationMessageId: 'assistant-msg-chain-export',
+      exportedBy: 'user',
+    }),
+    res,
+    pathname: '/api/conversations/design-conv-chain-export/skill-test-design/export-drafts',
+    requestUrl: new URL('http://localhost/api/conversations/design-conv-chain-export/skill-test-design/export-drafts'),
+  });
+
+  assert.equal(handled, true);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.json.exportedCount, 2);
+  assert.equal(res.json.cases.length, 2);
+
+  const byRowId = new Map(res.json.cases.map((testCase) => [testCase.sourceMetadata.matrixRowId, testCase]));
+  const bootstrapCase = byRowId.get('row-chain-bootstrap');
+  const verifyCase = byRowId.get('row-chain-verify');
+  assert.ok(bootstrapCase);
+  assert.ok(verifyCase);
+  assert.equal(bootstrapCase.sourceMetadata.skillTestDesign.environmentContractRef, 'TESTING.md#Bootstrap');
+  assert.equal(bootstrapCase.sourceMetadata.skillTestDesign.environmentSource, 'skill_contract');
+  assert.equal(bootstrapCase.sourceMetadata.skillTestDesign.chainPlanning.exportedCaseId, bootstrapCase.id);
+  assert.deepEqual(bootstrapCase.sourceMetadata.skillTestDesign.chainPlanning.dependsOnCaseIds, []);
+  assert.equal(verifyCase.sourceMetadata.skillTestDesign.environmentContractRef, 'TESTING.md#Verification');
+  assert.equal(verifyCase.sourceMetadata.skillTestDesign.chainPlanning.exportChainId, 'demo-chain');
+  assert.equal(verifyCase.sourceMetadata.skillTestDesign.chainPlanning.exportedCaseId, verifyCase.id);
+  assert.deepEqual(verifyCase.sourceMetadata.skillTestDesign.chainPlanning.dependsOnRowIds, ['row-chain-bootstrap']);
+  assert.deepEqual(verifyCase.sourceMetadata.skillTestDesign.chainPlanning.dependsOnCaseIds, [bootstrapCase.id]);
+
+  const storedCases = db.prepare('SELECT id, source_metadata_json FROM skill_test_cases WHERE skill_id = ? ORDER BY created_at ASC').all('demo-skill');
+  assert.equal(storedCases.length, 2);
+  const storedById = new Map(storedCases.map((row) => [row.id, JSON.parse(row.source_metadata_json)]));
+  assert.deepEqual(storedById.get(verifyCase.id).skillTestDesign.chainPlanning.dependsOnCaseIds, [bootstrapCase.id]);
+});

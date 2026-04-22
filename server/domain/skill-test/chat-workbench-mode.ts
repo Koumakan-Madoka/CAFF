@@ -20,6 +20,9 @@ const VALID_PHASES = new Set(Object.values(SKILL_TEST_DESIGN_PHASES));
 const VALID_PRIORITIES = new Set(['P0', 'P1', 'P2']);
 const VALID_TEST_TYPES = new Set(['trigger', 'execution']);
 const VALID_LOADING_MODES = new Set(['dynamic', 'full']);
+const VALID_ENVIRONMENT_SOURCES = new Set(['skill_contract', 'user_supplied', 'missing']);
+const VALID_SCENARIO_KINDS = new Set(['single', 'chain_step']);
+const VALID_CHAIN_INHERITANCE = new Set(['filesystem', 'artifacts', 'conversation', 'externalState']);
 
 function normalizeText(value: any) {
   return String(value || '').trim();
@@ -27,6 +30,22 @@ function normalizeText(value: any) {
 
 function normalizeMultilineText(value: any) {
   return String(value || '').replace(/\r\n/g, '\n').trim();
+}
+
+function hasOwn(value: any, key: string) {
+  return Boolean(value) && Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function normalizePositiveInteger(value: any) {
+  if (value == null || value === '') {
+    return null;
+  }
+
+  const normalized = typeof value === 'string'
+    ? Number.parseInt(value, 10)
+    : Number(value);
+
+  return Number.isInteger(normalized) && normalized > 0 ? normalized : null;
 }
 
 function normalizeStringArray(value: any) {
@@ -67,6 +86,111 @@ function normalizeTestType(value: any) {
 function normalizeLoadingMode(value: any) {
   const normalized = normalizeText(value).toLowerCase() || 'dynamic';
   return VALID_LOADING_MODES.has(normalized) ? normalized : 'dynamic';
+}
+
+function normalizeEnvironmentContractRef(value: any) {
+  const normalized = normalizeText(value).replace(/\\/g, '/');
+  if (!normalized) {
+    return '';
+  }
+
+  if (normalized.includes('\0') || /^file:/iu.test(normalized) || normalized.startsWith('/') || /^[A-Za-z]:\//u.test(normalized)) {
+    return null;
+  }
+
+  const hashIndex = normalized.indexOf('#');
+  if (hashIndex <= 0 || hashIndex >= normalized.length - 1) {
+    return null;
+  }
+
+  const relativePath = normalized.slice(0, hashIndex);
+  const anchor = normalized.slice(hashIndex + 1).trim();
+  if (!anchor) {
+    return null;
+  }
+
+  const segments = relativePath.split('/');
+  if (segments.some((segment) => !segment || segment === '.' || segment === '..')) {
+    return null;
+  }
+
+  return `${relativePath}#${anchor}`;
+}
+
+function normalizeEnvironmentSource(value: any, fallbackRef = '') {
+  const normalized = normalizeText(value).toLowerCase();
+  if (normalized) {
+    return VALID_ENVIRONMENT_SOURCES.has(normalized) ? normalized : null;
+  }
+  return fallbackRef ? 'skill_contract' : 'missing';
+}
+
+function hasChainMetadata(value: any) {
+  return Boolean(
+    normalizeText(value && value.chainId)
+    || normalizeText(value && value.chainName)
+    || normalizePositiveInteger(value && value.sequenceIndex)
+    || (Array.isArray(value && value.dependsOnRowIds) && value.dependsOnRowIds.length > 0)
+    || (Array.isArray(value && value.inheritance) && value.inheritance.length > 0)
+    || normalizeText(value && value.scenarioKind).toLowerCase() === 'chain_step'
+  );
+}
+
+function normalizeScenarioKind(value: any, row: any) {
+  const normalized = normalizeText(value).toLowerCase();
+  if (normalized) {
+    return VALID_SCENARIO_KINDS.has(normalized) ? normalized : null;
+  }
+  return hasChainMetadata(row) ? 'chain_step' : 'single';
+}
+
+function normalizeDependsOnRowIds(value: any) {
+  return normalizeStringArray(value);
+}
+
+function normalizeChainInheritanceEntry(value: any) {
+  const normalized = normalizeText(value);
+  if (!normalized) {
+    return '';
+  }
+
+  const token = normalized.replace(/[\s_-]+/g, '').toLowerCase();
+  if (token === 'filesystem') {
+    return 'filesystem';
+  }
+  if (token === 'artifacts') {
+    return 'artifacts';
+  }
+  if (token === 'conversation') {
+    return 'conversation';
+  }
+  if (token === 'externalstate') {
+    return 'externalState';
+  }
+  return null;
+}
+
+function normalizeInheritance(value: any) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const seen = new Set<string>();
+  const normalized = [] as string[];
+
+  for (const entry of value) {
+    const candidate = normalizeChainInheritanceEntry(entry);
+    if (candidate == null) {
+      return null;
+    }
+    if (!candidate || seen.has(candidate) || !VALID_CHAIN_INHERITANCE.has(candidate)) {
+      continue;
+    }
+    seen.add(candidate);
+    normalized.push(candidate);
+  }
+
+  return normalized;
 }
 
 function normalizeDraftingHints(value: any) {
@@ -237,9 +361,13 @@ export function normalizeSkillTestMatrix(input: any, options: any = {}) {
     throw new Error('测试矩阵必须是对象');
   }
 
-  const skillId = normalizeText(options.skillId || input.skillId);
+  const providedSkillId = normalizeText(input.skillId);
+  const skillId = normalizeText(options.skillId || providedSkillId);
   if (!skillId) {
     throw new Error('测试矩阵缺少 skillId');
+  }
+  if (providedSkillId && normalizeText(options.skillId) && providedSkillId !== normalizeText(options.skillId)) {
+    throw new Error('测试矩阵 skillId 与当前会话目标 skill 不一致');
   }
 
   const rowsInput = Array.isArray(input.rows) ? input.rows : [];
@@ -257,8 +385,43 @@ export function normalizeSkillTestMatrix(input: any, options: any = {}) {
       throw new Error(`测试矩阵第 ${index + 1} 行缺少 coverageReason`);
     }
 
+    const rowId = normalizeText(row && row.rowId) || `row-${index + 1}`;
+    const environmentContractRef = normalizeEnvironmentContractRef(
+      hasOwn(row, 'environmentContractRef')
+        ? row.environmentContractRef
+        : row && row.environment_contract_ref
+    );
+    if (environmentContractRef == null) {
+      throw new Error(`测试矩阵第 ${index + 1} 行 environmentContractRef 格式不合法`);
+    }
+
+    const environmentSource = normalizeEnvironmentSource(
+      hasOwn(row, 'environmentSource')
+        ? row.environmentSource
+        : row && row.environment_source,
+      environmentContractRef
+    );
+    if (!environmentSource) {
+      throw new Error(`测试矩阵第 ${index + 1} 行 environmentSource 不合法`);
+    }
+
+    const scenarioKind = normalizeScenarioKind(row && row.scenarioKind, row);
+    if (!scenarioKind) {
+      throw new Error(`测试矩阵第 ${index + 1} 行 scenarioKind 不合法`);
+    }
+
+    const sequenceIndex = normalizePositiveInteger(row && row.sequenceIndex);
+    if (hasOwn(row, 'sequenceIndex') && row.sequenceIndex != null && row.sequenceIndex !== '' && sequenceIndex == null) {
+      throw new Error(`测试矩阵第 ${index + 1} 行 sequenceIndex 必须是正整数`);
+    }
+
+    const inheritance = normalizeInheritance(row && row.inheritance);
+    if (inheritance == null) {
+      throw new Error(`测试矩阵第 ${index + 1} 行 inheritance 存在不支持的值`);
+    }
+
     return {
-      rowId: normalizeText(row && row.rowId) || `row-${index + 1}`,
+      rowId,
       scenario,
       priority: normalizePriority(row && row.priority),
       coverageReason,
@@ -268,8 +431,24 @@ export function normalizeSkillTestMatrix(input: any, options: any = {}) {
       keyAssertions: normalizeStringArray(row && row.keyAssertions),
       includeInMvp: row && row.includeInMvp !== undefined ? Boolean(row.includeInMvp) : true,
       draftingHints: normalizeDraftingHints(row && row.draftingHints),
+      environmentContractRef,
+      environmentSource,
+      scenarioKind,
+      chainId: normalizeText(row && row.chainId),
+      chainName: normalizeText(row && row.chainName),
+      sequenceIndex,
+      dependsOnRowIds: normalizeDependsOnRowIds(row && row.dependsOnRowIds),
+      inheritance,
     };
   });
+
+  const seenRowIds = new Set<string>();
+  for (const row of rows) {
+    if (seenRowIds.has(row.rowId)) {
+      throw new Error(`测试矩阵存在重复 rowId: ${row.rowId}`);
+    }
+    seenRowIds.add(row.rowId);
+  }
 
   return {
     kind: 'skill_test_matrix',
@@ -295,19 +474,56 @@ export function buildSkillTestDraftInputFromMatrixRow(skillId: any, matrix: any,
   const draftingHints = normalizeDraftingHints(row && row.draftingHints);
   const loadingMode = normalizeLoadingMode(row && row.loadingMode);
   const testType = normalizeTestType(row && row.testType);
+  const environmentContractRef = normalizeText(row && row.environmentContractRef);
+  const environmentSource = normalizeEnvironmentSource(row && row.environmentSource, environmentContractRef) || 'missing';
+  const scenarioKind = normalizeScenarioKind(row && row.scenarioKind, row) || 'single';
+  const dependsOnRowIds = normalizeDependsOnRowIds(row && row.dependsOnRowIds);
+  const inheritance = normalizeInheritance(row && row.inheritance) || [];
   const expectedBehavior = draftingHints.expectedBehavior
     || normalizeStringArray(row && row.keyAssertions).join('；')
     || normalizeMultilineText(row && row.coverageReason)
     || normalizeMultilineText(row && row.scenario);
   const noteParts = [
-    `source=scenario:${normalizeMultilineText(row && row.scenario)}`,
-    `priority=${normalizePriority(row && row.priority)}`,
-    normalizeMultilineText(row && row.coverageReason) ? `coverage=${normalizeMultilineText(row && row.coverageReason)}` : '',
-    Array.isArray(row && row.riskPoints) && row.riskPoints.length > 0 ? `risks=${row.riskPoints.join(' | ')}` : '',
+    `场景：${normalizeMultilineText(row && row.scenario)}`,
+    `优先级：${normalizePriority(row && row.priority)}`,
+    normalizeMultilineText(row && row.coverageReason) ? `覆盖理由：${normalizeMultilineText(row && row.coverageReason)}` : '',
+    Array.isArray(row && row.riskPoints) && row.riskPoints.length > 0 ? `风险点：${row.riskPoints.join(' | ')}` : '',
     draftingHints.note || '',
   ].filter(Boolean);
 
-  return {
+  const sourceMetadata: any = {
+    source: 'skill_test_chat_workbench',
+    conversationId: normalizeText(options.conversationId),
+    messageId: normalizeText(options.messageId),
+    matrixId: normalizeText(matrix && matrix.matrixId),
+    matrixRowId: normalizeText(row && row.rowId),
+    matrixArtifactPath: normalizeText(matrix && matrix.sourceArtifactPath),
+    agentRole: normalizeText(options.agentRole || 'scribe'),
+    exportedBy: normalizeText(options.exportedBy || 'user'),
+    exportedAt: new Date().toISOString(),
+    skillTestDesign: {
+      environmentContractRef,
+      environmentSource,
+      scenarioKind,
+    },
+  };
+
+  if (scenarioKind === 'chain_step' || normalizeText(row && row.chainId) || normalizeText(row && row.chainName) || dependsOnRowIds.length > 0 || inheritance.length > 0) {
+    sourceMetadata.skillTestDesign.chainPlanning = {
+      matrixId: normalizeText(matrix && matrix.matrixId),
+      rowId: normalizeText(row && row.rowId),
+      scenarioKind,
+      chainId: normalizeText(row && row.chainId),
+      chainName: normalizeText(row && row.chainName),
+      sequenceIndex: normalizePositiveInteger(row && row.sequenceIndex),
+      dependsOnRowIds,
+      inheritance,
+      environmentContractRef,
+      environmentSource,
+    };
+  }
+
+  const draftInput: any = {
     skillId: normalizedSkillId,
     loadingMode,
     testType,
@@ -315,27 +531,26 @@ export function buildSkillTestDraftInputFromMatrixRow(skillId: any, matrix: any,
     triggerPrompt: draftingHints.triggerPrompt || normalizeMultilineText(row && row.scenario),
     expectedTools: Array.isArray(draftingHints.expectedTools) ? draftingHints.expectedTools : [],
     expectedBehavior,
-    expectedGoal: loadingMode === 'full' ? (draftingHints.expectedGoal || normalizeMultilineText(row && row.scenario)) : '',
-    expectedSteps: loadingMode === 'full' && Array.isArray(draftingHints.expectedSteps) ? draftingHints.expectedSteps : [],
-    expectedSequence: loadingMode === 'full' && Array.isArray(draftingHints.expectedSequence) ? draftingHints.expectedSequence : [],
-    evaluationRubric: loadingMode === 'full' && draftingHints.evaluationRubric && typeof draftingHints.evaluationRubric === 'object'
-      ? draftingHints.evaluationRubric
-      : {},
     environmentConfig: draftingHints.environmentConfig && typeof draftingHints.environmentConfig === 'object'
       ? draftingHints.environmentConfig
       : {},
     caseStatus: 'draft',
     note: noteParts.join('\n'),
-    sourceMetadata: {
-      source: 'skill_test_chat_workbench',
-      conversationId: normalizeText(options.conversationId),
-      messageId: normalizeText(options.messageId),
-      matrixId: normalizeText(matrix && matrix.matrixId),
-      matrixRowId: normalizeText(row && row.rowId),
-      matrixArtifactPath: normalizeText(matrix && matrix.sourceArtifactPath),
-      agentRole: normalizeText(options.agentRole || 'scribe'),
-      exportedBy: normalizeText(options.exportedBy || 'user'),
-      exportedAt: new Date().toISOString(),
-    },
+    sourceMetadata,
   };
+
+  if (loadingMode === 'full') {
+    draftInput.expectedGoal = draftingHints.expectedGoal || normalizeMultilineText(row && row.scenario);
+    if (Array.isArray(draftingHints.expectedSteps)) {
+      draftInput.expectedSteps = draftingHints.expectedSteps;
+    }
+    if (Array.isArray(draftingHints.expectedSequence)) {
+      draftInput.expectedSequence = draftingHints.expectedSequence;
+    }
+    draftInput.evaluationRubric = draftingHints.evaluationRubric && typeof draftingHints.evaluationRubric === 'object'
+      ? draftingHints.evaluationRubric
+      : {};
+  }
+
+  return draftInput;
 }

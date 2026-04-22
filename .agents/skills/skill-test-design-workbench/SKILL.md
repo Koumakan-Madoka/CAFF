@@ -23,6 +23,8 @@ Use the prompt's `Mode state context` as the runtime source of truth for:
 - Formal draft creation/export only happens through the guarded UI/API flow; chat text alone never writes cases.
 - Exported cases must remain draft-first: `case_status = draft` and no automatic run.
 - Do not invent environment, mock, isolation, or regression details that the user has not provided.
+- For environment setup, prefer durable contracts in this order: target skill `TESTING.md` -> target `SKILL.md` -> stable related spec.
+- If no actionable environment contract exists, mark matrix rows with `environmentSource: "missing"`; if the user supplies temporary setup in chat, use `environmentSource: "user_supplied"`, not `skill_contract`.
 - Prefer `dynamic + trigger` rows for Phase 1 unless the user explicitly asks for `full + execution` and gives enough concrete expectations.
 
 ## Agent Roles
@@ -111,10 +113,23 @@ Each `rows[]` entry must include:
 - `coverageReason`
 - `testType`: `trigger` or `execution`
 - `loadingMode`: `dynamic` or `full`
+- `environmentContractRef`: optional `<relative-path>#<heading-or-contract-id>`, e.g. `TESTING.md#Bootstrap`
+- `environmentSource`: `skill_contract`, `user_supplied`, or `missing`
 - `riskPoints[]`
 - `keyAssertions[]`
 - `includeInMvp`
 - `draftingHints`
+
+For lifecycle-chain planning rows, also include:
+
+- `scenarioKind`: `chain_step`
+- `chainId`
+- `chainName`
+- `sequenceIndex`
+- `dependsOnRowIds[]`
+- `inheritance[]`: only `filesystem`, `artifacts`, `conversation`, or `externalState`
+
+`inheritance[]` only describes reuse intent between chain steps. Never put install, bootstrap, teardown, credentials, or sandbox commands inside `inheritance[]`.
 
 ## Drafting Hints
 
@@ -140,4 +155,6 @@ For `full + execution`, only when concrete enough, add:
 - If no confirmed matrix exists, do not claim that drafts have been generated or exported.
 - If the user asks to skip confirmation, explain that confirmation is the write gate, but the UI may combine confirm and export in one action.
 - If a row seems duplicate, mention it as a warning; duplication hints should not block export by default.
+- If `environmentSource` is `missing` for an execution row or a row that depends on real external environment, warn that formal generation/export must fail closed until the contract is supplied.
+- If chain rows are present, say clearly that Phase 1 chain metadata is planning/export metadata only; runner execution remains independent case-by-case.
 - If schema details are uncertain, leave the hint empty or mark it for user follow-up instead of hallucinating required fields.

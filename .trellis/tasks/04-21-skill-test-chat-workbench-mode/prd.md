@@ -35,7 +35,7 @@
 ### In Scope
 
 - 聊天工作台新增“Skill Test 生成/设计”模式入口
-- 模式级上下文装配：目标 skill、相关 `SKILL.md`、已有测试草稿/历史、必要 spec 文档
+- 模式级上下文装配：目标 skill、相关 `SKILL.md` / `TESTING.md`、已有测试草稿/历史、必要 spec 文档
 - 模式级 agent 指令：优先先追问和形成测试矩阵，而不是立刻输出测试代码或 case JSON
 - 轻量状态机：
   - `收集上下文`
@@ -61,12 +61,14 @@
 1. 用户在聊天工作台选择 `Skill Test` 模式，并指定目标 `skill`。
 2. 系统为该模式装配专用上下文：
    - skill 描述与 `SKILL.md`
+   - 目标 skill 已声明的环境依赖契约（优先读取 `TESTING.md` 中有效的 `Prerequisites` / `Bootstrap` / `Setup` / `Teardown` / `Verification`，不存在或内容不足时再读取 `SKILL.md` 或稳定关联 spec 中可复用的 setup 约定；仍无法定位时标记为缺失）
    - 相关 spec（skill testing / runtime / UI 等）
    - 当前 skill 已有测试用例与最近运行摘要（如可用）
 3. agent 首轮优先追问：
    - 想优先覆盖哪些主路径/异常路径/回归问题
    - 是否有 mock / 环境 / 隔离限制
    - 是否只想产出测试计划，还是直接落草稿
+   - 如目标 skill 未声明环境依赖契约，显式标记缺口，并把聊天中补充的安装/初始化信息视为待确认输入，而非默认既有定义
 4. 多 agent 产出测试矩阵：场景、优先级、关键断言、风险点、是否建议纳入 MVP。
 5. 用户确认或修订范围后，系统按确认矩阵批量生成结构化测试草稿。
 6. 用户选择“导出”后，草稿写入 `skill_test_cases`，状态为 `draft`，并能回跳到 Skill Tests 工作区继续编辑/运行。
@@ -123,27 +125,38 @@ MVP 可先固定一组默认分工：
   - `coverageReason`：纳入该场景的覆盖理由
   - `testType`：`trigger | execution`
   - `loadingMode`：`dynamic | full`
+  - `environmentContractRef`：可选，指向目标 skill 内的环境依赖契约位置；格式采用相对 skill 根目录的 `<relative-path>#<heading-or-contract-id>`，例如 `TESTING.md#Bootstrap`
+  - `environmentSource`：`skill_contract | user_supplied | missing`，表示环境信息来自 skill 内契约、用户临时补充或仍缺失；后续子任务复用该字段时以本 PRD 定义为准
   - `riskPoints[]`：关键风险点、边界点、反例点
   - `keyAssertions[]`：关键断言或预期行为摘要
   - `includeInMvp`：是否建议纳入当前导出范围
   - `draftingHints`：可选，供后续草稿生成使用的补充提示
 
-### 2. 测试矩阵到 canonical case 的映射原则
+### 2. 环境依赖与 setup 契约
+- 被评测 skill 应显式提供可复用的环境依赖契约，优先落在目标 skill 目录下的 `TESTING.md`；`TESTING.md` 至少应包含 `Prerequisites`、`Bootstrap` / `Setup`、`Teardown`、`Verification` 中一类有实际内容的段落，才可视为有效契约。
+- 若 `TESTING.md` 不存在或没有可执行 / 可验证的 setup 内容，系统应按顺序回退到 `SKILL.md`、稳定关联 spec；仍无法定位时将 `environmentSource` 标记为 `missing`，而不是从聊天记录或常识推断。
+- 聊天工作台在 `收集上下文`、`形成测试矩阵`、`生成草稿` 阶段，必须优先引用 skill 内已有契约；只有在契约缺失或用户明确补充临时环境时，才允许把聊天内容作为补充输入。
+- 若用户在聊天中补充环境安装 / 初始化信息，应标记为 `user_supplied` 和待确认补充；系统可在导出摘要中提示“建议沉淀到 `TESTING.md` / spec”，但不得在未实际回写前把它视为 `skill_contract`。
+- 测试矩阵与导出 metadata 至少应保留 `environmentContractRef` 与 `environmentSource` 这类环境来源字段，用于区分 `skill_contract`、`user_supplied`、`missing`。
+- 未声明的安装步骤、外部依赖、凭据需求、sandbox 限制不得由 agent 臆造；对 `testType = execution` 或明确依赖外部环境 / 凭据 / sandbox 的 row，若 `environmentSource = missing`，正式生成 / 导出必须 fail closed；纯 trigger 规划可降级为警告，但仍需保留缺口状态。
+
+### 3. 测试矩阵到 canonical case 的映射原则
 - 每个已确认的 `matrix row` 都必须能映射到一个或多个现有 `skill_test_cases` 草稿
 - `dynamic + trigger` 行至少要能映射到现有 canonical 字段：`skill_id`、`test_type`、`loading_mode`、`trigger_prompt`、`expected_tools_json`、`expected_behavior`
 - `full + execution` 行如纳入实现范围，则在不破坏现有 schema 的前提下补充映射到 `expected_goal`、`expected_steps_json`、`evaluation_rubric_json` 等 full mode 字段
 - 测试矩阵中的字段是“规划输入”，最终导出结果必须落回现有 canonical schema，不新增割裂 run/evaluation 链路的临时 case 格式
-- 环境、隔离、mock 等信息若未在对话中明确，不应由 agent 臆造；可在草稿中留空或保留待补状态，由用户后续补充
+- 环境、隔离、mock 等信息应优先从目标 skill 已声明的环境契约读取；若 skill 与对话均未明确，不应由 agent 臆造；可在草稿中留空或保留待补状态，由用户后续补充
 - 所有导出结果默认 `case_status = draft`，且不会自动运行
 
-### 3. 生成与导出门禁
+### 4. 生成与导出门禁
 - 会话阶段必须显式持久化，并在 prompt、工具调用、UI 状态和服务端校验中保持一致
 - 在 `确认范围` 完成前，agent 的目标是追问、整理和输出测试矩阵，而不是直接导出正式 case 草稿
 - 正式生成草稿或导出时，必须至少关联：`conversationId`、`messageId`、`matrixId` 以及一个可验证的确认状态
 - 若当前没有已确认的测试矩阵，则生成草稿和导出操作必须 fail closed，并返回结构化错误，而不是隐式降级为直接生成
+- 正式生成或导出时，如果 row 的 `environmentSource = missing` 且该 row 是 execution 类型或明确依赖真实外部环境，必须 fail closed；如果只是 trigger 规划，可以降级为警告但必须保留缺口 metadata
 - 即使 agent 在聊天文本中提前给出草稿示例，也不应视为正式导出结果；只有通过门禁校验的生成/导出链路才会写入 `skill_test_cases`
 
-### 4. 来源审计与重复提示
+### 5. 来源审计与重复提示
 - 聊天模式导出的测试草稿必须保留来源审计信息，至少包含：`conversationId`、`messageId`、`matrixId`、`agentRole`、`exportedBy`、`exportedAt`
 - 来源信息应通过统一 metadata/source 落点持久化，避免前端、后端、运行时分别维护不一致的来源字段语义
 - 导出前应进行轻量重复提示；MVP 可按 `skillId + loadingMode + testType + normalizedTriggerPrompt` 做粗粒度相似性判断
@@ -182,6 +195,9 @@ MVP 可先固定一组默认分工：
 4. **保持跨层一致性**
    - 模式入口、后端 bootstrap、prompt 指令、导出 API、Skill Tests UI 之间的字段和状态语义必须一致
 
+5. **环境准备知识尽量内聚在 skill 内**
+   - 依赖安装、初始化、验证、清理等知识优先沉淀在被评测 skill 自身（优先 `TESTING.md`）；聊天工作台与测试 case 负责引用、确认和映射，不负责长期承载安装知识本体
+
 ## 验收标准
 
 - [ ] 聊天工作台可创建一个 `Skill Test` 专用模式会话
@@ -192,6 +208,10 @@ MVP 可先固定一组默认分工：
 - [ ] 用户未确认测试矩阵前，系统不能正式生成或导出测试草稿；缺少确认状态时会返回明确错误
 - [ ] 导出的 case 默认为 `draft`，不会自动运行
 - [ ] 导出的测试草稿带有可审计的来源信息，至少可追踪到 `conversation / message / matrix`
+- [ ] 若目标 skill 已声明环境依赖契约（如 `TESTING.md` 中的 `Prerequisites` / `Bootstrap` / `Verification`），聊天工作台会在测试矩阵与导出阶段优先引用这些定义
+- [ ] 若目标 skill 按 `TESTING.md` → `SKILL.md` → 关联 spec 回退后仍未声明环境依赖契约，agent 会显式报告缺口，并把聊天补充标记为待确认输入，而不是自行编造安装步骤
+- [ ] 导出 metadata 至少能区分“引用 skill 内环境契约”与“用户临时补充环境信息”，且 `user_supplied` 信息不会在未回写前被当作 `skill_contract`
+- [ ] 对 execution 或明确依赖真实外部环境的 row，`environmentSource = missing` 会阻止正式生成 / 导出；trigger-only 规划可降级为警告
 - [ ] 系统会对明显重复的候选草稿给出提示，且不影响现有 Skill Tests 页面继续编辑这些聊天生成草稿
 - [ ] 生成失败、导出失败、schema 不合法、来源缺失时，聊天中能看到明确错误并继续修正
 - [ ] 现有 Skill Tests 页面功能保持可用，且能继续编辑/运行这些聊天生成的草稿

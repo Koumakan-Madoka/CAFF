@@ -1,4 +1,5 @@
 const { randomUUID } = require('node:crypto');
+const fs = require('node:fs');
 const path = require('node:path');
 const {
   DEFAULT_MODEL,
@@ -100,6 +101,9 @@ function buildModePromptContext(conversation: any, currentAgentId: any, skillReg
   const skill = skillRegistry && typeof skillRegistry.getSkill === 'function'
     ? skillRegistry.getSkill(state.skillId, { extraSkillDirs: options.extraSkillDirs })
     : null;
+  const skillPath = skill ? String(skill.path || '').trim() : '';
+  const testingDocPath = skillPath ? path.join(skillPath, 'TESTING.md') : '';
+  const testingDocExists = testingDocPath ? fs.existsSync(testingDocPath) : false;
   const caseSummary = buildSkillTestDesignCaseSummary(store && store.db, state.skillId);
 
   return {
@@ -110,13 +114,17 @@ function buildModePromptContext(conversation: any, currentAgentId: any, skillReg
           id: String(skill.id || '').trim(),
           name: String(skill.name || '').trim(),
           description: String(skill.description || '').trim(),
-          path: String(skill.path || '').trim(),
+          path: skillPath,
+          testingDocPath,
+          testingDocExists,
         }
       : {
           id: state.skillId,
           name: state.skillName || state.skillId,
           description: '',
           path: '',
+          testingDocPath: '',
+          testingDocExists: false,
         },
     state,
     caseSummary,
