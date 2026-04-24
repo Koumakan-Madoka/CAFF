@@ -38,7 +38,9 @@
   "pr_url": null,
   "subtasks": [],
   "children": [
-    "04-21-skill-test-lifecycle-chain-planning"
+    "04-21-skill-test-lifecycle-chain-planning",
+    "04-22-skill-test-testing-doc-contract-workflow",
+    "04-22-skill-test-lifecycle-chain-runner"
   ],
   "parent": null,
   "relatedFiles": [],

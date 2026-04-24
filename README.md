@@ -96,9 +96,11 @@ npm run start:dev
 | `CHAT_APP_PORT` | `3100` | 服务端口 |
 | `CHAT_APP_ADVERTISE_URL` | — | 供 sandbox / 外部环境回连本机 CAFF 时使用的可达 base URL |
 | `CAFF_SKILL_TEST_OPENSANDBOX_CHAT_API_URL` | — | 仅给 OpenSandbox skill-test 直连 bridge 使用的显式覆盖 URL |
+| `CAFF_SKILL_TEST_BRIDGE_TOKEN_TTL_SEC` | `600` | Skill-test chat bridge 凭据 TTL 秒数，默认用于 trigger / dynamic 等短跑用例 |
+| `CAFF_SKILL_TEST_EXECUTION_BRIDGE_TOKEN_TTL_SEC` | `3600` | Full execution / 链步骤的 chat bridge 凭据 TTL 秒数，用于 docx 这类长跑用例 |
 | `CAFF_SKILL_TEST_OPENSANDBOX_API_URL` | — | OpenSandbox lifecycle API 地址；本地部署通常是 `http://127.0.0.1:8080`，Windows + WSL 常用 `http://localhost:8080` |
 | `CAFF_SKILL_TEST_OPENSANDBOX_SDK_PATH` | — | 官方 OpenSandbox JS SDK `dist/index.js` 本地路径 |
-| `CAFF_SKILL_TEST_OPENSANDBOX_IMAGE` | `node:20-bookworm` | skill-test sandbox 默认镜像；需要内置 Node |
+| `CAFF_SKILL_TEST_OPENSANDBOX_IMAGE` | `node:20-bookworm` | skill-test sandbox 默认镜像；未覆盖时只保证 Node，Python / pip 类 skill 推荐使用预烘焙镜像 |
 | `CAFF_SKILL_TEST_OPENSANDBOX_PREBAKED_RUNTIME_DIR` | — | 可选：使用预烘焙 runtime 资产目录（容器内路径）；开启后不会在每个 case 里重复上传 runner / pi 包 |
 | `CAFF_SKILL_TEST_OPENSANDBOX_PREBAKED_PROJECT_DIR` | — | 可选：使用预烘焙 CAFF 源码模板目录（容器内路径）；开启后每个 case 会先复制模板到隔离项目目录，再覆盖 case 级 `.trellis` |
 | `CAFF_SKILL_TEST_OPENSANDBOX_TIMEOUT_SEC` | `300` | OpenSandbox sandbox TTL 秒数；本地 Full 模式上传/执行较慢时建议调大，例如 `3600` |
@@ -119,11 +121,13 @@ CAFF 在 `npm run start` / `npm run start:dev` 时会自动读取 `./.env.local`
 
 OpenSandbox chat bridge POC 推荐这样配：把 `CHAT_APP_HOST` 设成 `0.0.0.0`，再把 `CHAT_APP_ADVERTISE_URL` 设成 sandbox 真能访问到的 CAFF 地址（例如局域网 IP、host alias 或临时 tunnel URL）。如果只想给 skill-test sandbox 单独覆写，就设置 `CAFF_SKILL_TEST_OPENSANDBOX_CHAT_API_URL`。
 
-如果你使用本地 OpenSandbox 源码而不是云端：先在 `OpenSandbox/server` 启动 lifecycle server，再把 `CAFF_SKILL_TEST_OPENSANDBOX_API_URL` 指向本地地址；同时把 `CAFF_SKILL_TEST_OPENSANDBOX_SDK_PATH` 指到本地构建好的官方 JS SDK `dist/index.js`。这条链路需要 Docker 可用，而且镜像里要有 Node（默认 `node:20-bookworm`）。在 Windows + WSL 上，优先使用 `http://localhost:8080`，避免把地址写死成会漂移的 WSL `172.x.x.x`。如果本地 Full 模式在上传隔离目录或执行期间超过默认 5 分钟 TTL，把 `CAFF_SKILL_TEST_OPENSANDBOX_TIMEOUT_SEC` 调大后重启 CAFF。
+如果你使用本地 OpenSandbox 源码而不是云端：先在 `OpenSandbox/server` 启动 lifecycle server，再把 `CAFF_SKILL_TEST_OPENSANDBOX_API_URL` 指向本地地址；同时把 `CAFF_SKILL_TEST_OPENSANDBOX_SDK_PATH` 指到本地构建好的官方 JS SDK `dist/index.js`。这条链路需要 Docker 可用，而且镜像里要有 Node；未覆盖时默认 `node:20-bookworm`，它不保证带 `pip`，Python 包依赖类 skill 应改用下方预烘焙镜像。在 Windows + WSL 上，优先使用 `http://localhost:8080`，避免把地址写死成会漂移的 WSL `172.x.x.x`。如果本地 Full 模式在上传隔离目录或执行期间超过默认 5 分钟 sandbox TTL，把 `CAFF_SKILL_TEST_OPENSANDBOX_TIMEOUT_SEC` 调大后重启 CAFF；如果长跑 full execution / 链步骤仍提示 `tool credentials have expired`，再调大 `CAFF_SKILL_TEST_EXECUTION_BRIDGE_TOKEN_TTL_SEC`。
 
-如果 Full 模式经常卡在“正在准备 sandbox runner…”，可以用预烘焙 runtime 镜像加速：先运行 `npm run opensandbox:build-runtime-image` 构建 `caff-skill-test-runtime:local`，再在 `.env.local` 里设置 `CAFF_SKILL_TEST_OPENSANDBOX_IMAGE=caff-skill-test-runtime:local` 和 `CAFF_SKILL_TEST_OPENSANDBOX_PREBAKED_RUNTIME_DIR=/opt/caff-skill-test/runtime`。
+如果 Full 模式经常卡在“正在准备 sandbox runner…”，或 skill 需要 `python` / `python3` / `pip` 安装包，可以用预烘焙 runtime 镜像：先运行 `npm run opensandbox:build-runtime-image` 构建内置 Node + Python + pip + venv 的 `caff-skill-test-runtime:local`，再在 `.env.local` 里设置 `CAFF_SKILL_TEST_OPENSANDBOX_IMAGE=caff-skill-test-runtime:local` 和 `CAFF_SKILL_TEST_OPENSANDBOX_PREBAKED_RUNTIME_DIR=/opt/caff-skill-test/runtime`。
 
-如果你想让 sandbox case 里有一份更仿真的 CAFF 源码 checkout，运行 `npm run opensandbox:build-caff-image` 构建 `caff-skill-test-caff:local`，再设置 `CAFF_SKILL_TEST_OPENSANDBOX_IMAGE=caff-skill-test-caff:local`、`CAFF_SKILL_TEST_OPENSANDBOX_PREBAKED_RUNTIME_DIR=/opt/caff-skill-test/runtime`、`CAFF_SKILL_TEST_OPENSANDBOX_PREBAKED_PROJECT_DIR=/opt/caff-skill-test/project`。运行时仍会复制到每个 case 的隔离项目目录，并覆盖 case 级 `.trellis`，不会让多个 case 共用同一个可写源码目录。
+如果你想让 sandbox case 里有一份更仿真的 CAFF 源码 checkout，运行 `npm run opensandbox:build-caff-image` 构建同样内置 Node + Python + pip + venv 的 `caff-skill-test-caff:local`，再设置 `CAFF_SKILL_TEST_OPENSANDBOX_IMAGE=caff-skill-test-caff:local`、`CAFF_SKILL_TEST_OPENSANDBOX_PREBAKED_RUNTIME_DIR=/opt/caff-skill-test/runtime`、`CAFF_SKILL_TEST_OPENSANDBOX_PREBAKED_PROJECT_DIR=/opt/caff-skill-test/project`。运行时仍会复制到每个 case 的隔离项目目录，并覆盖 case 级 `.trellis`，不会让多个 case 共用同一个可写源码目录。
+
+Skill 专属重环境走资产化路线：环境构建用例产出 `environment-manifest.json` / recipe lock 后，可用 `node scripts/opensandbox/build-runtime-image.js --environment-manifest path/to/environment-manifest.json` 生成干净镜像；普通 execution case 通过 `environmentConfig.asset` 绑定 `envProfile + image + testingMdHash + manifestHash`，不再依赖 `docker commit` 黑箱快照。
 
 如果你希望 Windows 登录后自动恢复整条本地链路（`WSL Debian` + `docker` + `opensandbox-local` + `CAFF`），仓库附带了 `scripts/windows/run-caff-stack.ps1` 和 `scripts/windows/register-caff-stack-task.ps1`。详细步骤见 `docs/windows-local-stack.md`。
 

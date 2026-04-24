@@ -61,7 +61,7 @@
 1. 用户在聊天工作台选择 `Skill Test` 模式，并指定目标 `skill`。
 2. 系统为该模式装配专用上下文：
    - skill 描述与 `SKILL.md`
-   - 目标 skill 已声明的环境依赖契约（优先读取 `TESTING.md` 中有效的 `Prerequisites` / `Bootstrap` / `Setup` / `Teardown` / `Verification`，不存在或内容不足时再读取 `SKILL.md` 或稳定关联 spec 中可复用的 setup 约定；仍无法定位时标记为缺失）
+   - 目标 skill 的 `TESTING.md` 全文参考与环境契约状态（`TESTING.md` 全文注入给 agent；可执行门禁只信显式 `skill-test-environment` 机器合同块；不存在有效机器合同块时标记为 reference-only / missing，再回退到 `SKILL.md` 或稳定关联 spec 中的明确契约）
    - 相关 spec（skill testing / runtime / UI 等）
    - 当前 skill 已有测试用例与最近运行摘要（如可用）
 3. agent 首轮优先追问：
@@ -125,7 +125,7 @@ MVP 可先固定一组默认分工：
   - `coverageReason`：纳入该场景的覆盖理由
   - `testType`：`trigger | execution`
   - `loadingMode`：`dynamic | full`
-  - `environmentContractRef`：可选，指向目标 skill 内的环境依赖契约位置；格式采用相对 skill 根目录的 `<relative-path>#<heading-or-contract-id>`，例如 `TESTING.md#Bootstrap`
+  - `environmentContractRef`：可选，指向目标 skill 内的环境依赖契约位置；格式采用相对 skill 根目录的 `<relative-path>#<heading-or-contract-id>`，例如 `TESTING.md#skill-test-environment`
   - `environmentSource`：`skill_contract | user_supplied | missing`，表示环境信息来自 skill 内契约、用户临时补充或仍缺失；后续子任务复用该字段时以本 PRD 定义为准
   - `riskPoints[]`：关键风险点、边界点、反例点
   - `keyAssertions[]`：关键断言或预期行为摘要
@@ -133,11 +133,11 @@ MVP 可先固定一组默认分工：
   - `draftingHints`：可选，供后续草稿生成使用的补充提示
 
 ### 2. 环境依赖与 setup 契约
-- 被评测 skill 应显式提供可复用的环境依赖契约，优先落在目标 skill 目录下的 `TESTING.md`；`TESTING.md` 至少应包含 `Prerequisites`、`Bootstrap` / `Setup`、`Teardown`、`Verification` 中一类有实际内容的段落，才可视为有效契约。
-- 若 `TESTING.md` 不存在或没有可执行 / 可验证的 setup 内容，系统应按顺序回退到 `SKILL.md`、稳定关联 spec；仍无法定位时将 `environmentSource` 标记为 `missing`，而不是从聊天记录或常识推断。
-- 聊天工作台在 `收集上下文`、`形成测试矩阵`、`生成草稿` 阶段，必须优先引用 skill 内已有契约；只有在契约缺失或用户明确补充临时环境时，才允许把聊天内容作为补充输入。
-- 若用户在聊天中补充环境安装 / 初始化信息，应标记为 `user_supplied` 和待确认补充；系统可在导出摘要中提示“建议沉淀到 `TESTING.md` / spec”，但不得在未实际回写前把它视为 `skill_contract`。
-- 测试矩阵与导出 metadata 至少应保留 `environmentContractRef` 与 `environmentSource` 这类环境来源字段，用于区分 `skill_contract`、`user_supplied`、`missing`。
+- 被评测 skill 应显式提供可复用的环境依赖契约，优先落在目标 skill 目录下的 `TESTING.md`；`TESTING.md` 全文可作为 agent 的人类可读参考上下文，但 runtime 可执行门禁只信显式 `skill-test-environment` fenced JSON 机器合同块。
+- 若 `TESTING.md` 不存在、只有 prose / table / bullet / 编号说明、或没有有效机器合同块，系统可继续把全文注入给 agent 参考，但契约状态应标记为 reference-only / insufficient，并按顺序回退到 `SKILL.md`、稳定关联 spec 中的明确契约；仍无法定位时将 `environmentSource` 标记为 `missing`。
+- 聊天工作台在 `收集上下文`、`形成测试矩阵`、`生成草稿` 阶段，必须区分“全文参考”和“可执行契约”：全文参考可帮助模型理解目标 skill，只有显式机器合同块或稳定 skill-owned 契约才能作为 `skill_contract`。
+- 若用户在聊天中补充环境安装 / 初始化信息，应标记为 `user_supplied` 和待确认补充；系统可在导出摘要中提示“建议沉淀到 `TESTING.md` 的 `skill-test-environment` 机器合同块或稳定 spec”，但不得在未实际回写前把它视为 `skill_contract`。
+- 测试矩阵与导出 metadata 至少应保留 `environmentContractRef` 与 `environmentSource` 这类环境来源字段，用于区分 `skill_contract`、`user_supplied`、`missing`；当仅有 `TESTING.md` 全文参考时，不得伪装成 `skill_contract`。
 - 未声明的安装步骤、外部依赖、凭据需求、sandbox 限制不得由 agent 臆造；对 `testType = execution` 或明确依赖外部环境 / 凭据 / sandbox 的 row，若 `environmentSource = missing`，正式生成 / 导出必须 fail closed；纯 trigger 规划可降级为警告，但仍需保留缺口状态。
 
 ### 3. 测试矩阵到 canonical case 的映射原则
@@ -145,7 +145,7 @@ MVP 可先固定一组默认分工：
 - `dynamic + trigger` 行至少要能映射到现有 canonical 字段：`skill_id`、`test_type`、`loading_mode`、`trigger_prompt`、`expected_tools_json`、`expected_behavior`
 - `full + execution` 行如纳入实现范围，则在不破坏现有 schema 的前提下补充映射到 `expected_goal`、`expected_steps_json`、`evaluation_rubric_json` 等 full mode 字段
 - 测试矩阵中的字段是“规划输入”，最终导出结果必须落回现有 canonical schema，不新增割裂 run/evaluation 链路的临时 case 格式
-- 环境、隔离、mock 等信息应优先从目标 skill 已声明的环境契约读取；若 skill 与对话均未明确，不应由 agent 臆造；可在草稿中留空或保留待补状态，由用户后续补充
+- 环境、隔离、mock 等信息应优先从目标 skill 已声明的环境契约读取；`TESTING.md` 全文只能作为参考上下文，不能替代显式机器合同；若 skill 与对话均未明确，不应由 agent 臆造；可在草稿中留空或保留待补状态，由用户后续补充
 - 所有导出结果默认 `case_status = draft`，且不会自动运行
 
 ### 4. 生成与导出门禁
@@ -196,7 +196,19 @@ MVP 可先固定一组默认分工：
    - 模式入口、后端 bootstrap、prompt 指令、导出 API、Skill Tests UI 之间的字段和状态语义必须一致
 
 5. **环境准备知识尽量内聚在 skill 内**
-   - 依赖安装、初始化、验证、清理等知识优先沉淀在被评测 skill 自身（优先 `TESTING.md`）；聊天工作台与测试 case 负责引用、确认和映射，不负责长期承载安装知识本体
+   - 依赖安装、初始化、验证、清理等知识优先沉淀在被评测 skill 自身（优先 `TESTING.md`）；`TESTING.md` 全文用于模型参考，可执行 setup / verification 则应沉淀为显式 `skill-test-environment` 机器合同块；聊天工作台与测试 case 负责引用、确认和映射，不负责长期承载安装知识本体
+   - OpenSandbox 的预烘焙 runtime / CAFF 镜像需要内置 Node.js 与 Python 基础工具链（`python` / `python3`、`pip`、`python3-venv`、`apt`/`apt-get` 基础安装能力）；`node:20-bookworm` 只能作为 Node-only fallback，不应承载需要 Python 包安装的 skill-test 环境准备。
+
+6. **环境构建资产化，而不是每次测试临场 bootstrap**
+   - 新增 `environment-build` 用例类型作为后续主线：它运行在具备最小工具链和受控安装权限的构建 sandbox 中，负责探测、安装、验证并维护目标 skill 的 `TESTING.md` / 环境 profile。
+   - `environment-build` 的正式产物不是 `docker commit` 得到的黑箱容器，而是机器可读的 `environment-manifest.json` / recipe lock；其中至少记录 `skillId`、`envProfile`、`baseImageDigest`、`testingMdHash`、安装步骤清单、版本约束、verify 证据、`buildCaseId`、`manifestHash` 与最终 `imageDigest`。
+   - 构建系统基于 manifest 生成 Dockerfile 并重新 `docker build` 出干净环境镜像；`docker commit` 只能作为本机短期缓存或调试快照，不能作为共享真相或普通 case 的正式依赖。
+   - 普通业务 case 不再临场修环境：它通过 `environmentConfig.asset` 绑定 `skillId + envProfile + testingMdHash + baseImageDigest + imageDigest + manifestHash`；镜像缺失返回 `env_not_built`，hash 不匹配返回 `env_stale`，并引导用户先运行环境构建用例。
+   - 环境 profile 不应强制“一个 skill 一个胖镜像”；`dynamic + trigger` 默认使用基础环境并跳过重环境门禁，只有 `full + execution` 或明确依赖真实环境的 case 才绑定对应 profile（如 `docx:full` / `docx:redline`）。
+   - 迁移期保留现有 `TESTING.md` 机器合同 `preflight -> bootstrap -> verify -> cache` 作为 fallback，但新代码和 UI 应优先表达“缺少已构建环境镜像 / 环境已过期”，而不是让普通业务 case 自动猜测安装命令。
+
+7. **链运行继续门禁与最终 verdict 分离**
+   - 聊天工作台导出的 lifecycle-chain case 仍保留每一步自己的 full-mode verdict；链 runner 可在显式 `stop_on_failure_goal_threshold` 策略下用 `goalAchievement >= 0.8` 且无 critical constraint fail 的结果继续下一步，并把该 step 审计为 `continued`，但不得把原始 verdict 改写成 pass。
 
 ## 验收标准
 
@@ -208,13 +220,18 @@ MVP 可先固定一组默认分工：
 - [ ] 用户未确认测试矩阵前，系统不能正式生成或导出测试草稿；缺少确认状态时会返回明确错误
 - [ ] 导出的 case 默认为 `draft`，不会自动运行
 - [ ] 导出的测试草稿带有可审计的来源信息，至少可追踪到 `conversation / message / matrix`
-- [ ] 若目标 skill 已声明环境依赖契约（如 `TESTING.md` 中的 `Prerequisites` / `Bootstrap` / `Verification`），聊天工作台会在测试矩阵与导出阶段优先引用这些定义
-- [ ] 若目标 skill 按 `TESTING.md` → `SKILL.md` → 关联 spec 回退后仍未声明环境依赖契约，agent 会显式报告缺口，并把聊天补充标记为待确认输入，而不是自行编造安装步骤
-- [ ] 导出 metadata 至少能区分“引用 skill 内环境契约”与“用户临时补充环境信息”，且 `user_supplied` 信息不会在未回写前被当作 `skill_contract`
+- [ ] 若目标 skill 已声明环境依赖契约（如 `TESTING.md` 中的 `skill-test-environment` 机器合同块），聊天工作台会在测试矩阵与导出阶段优先引用这些定义
+- [ ] 若目标 skill 只有 prose / table / bullet / 编号说明形式的 `TESTING.md`，系统会把全文作为模型参考，但不会把它误判成可执行环境契约
+- [ ] 若目标 skill 按 `TESTING.md` 机器合同块 → `SKILL.md` → 关联 spec 回退后仍未声明环境依赖契约，agent 会显式报告缺口，并把聊天补充标记为待确认输入，而不是自行编造安装步骤
+- [ ] 导出 metadata 至少能区分“引用 skill 内机器环境契约”与“用户临时补充环境信息”，且 `user_supplied` 信息不会在未回写前被当作 `skill_contract`
 - [ ] 对 execution 或明确依赖真实外部环境的 row，`environmentSource = missing` 会阻止正式生成 / 导出；trigger-only 规划可降级为警告
 - [ ] 系统会对明显重复的候选草稿给出提示，且不影响现有 Skill Tests 页面继续编辑这些聊天生成草稿
 - [ ] 生成失败、导出失败、schema 不合法、来源缺失时，聊天中能看到明确错误并继续修正
 - [ ] 现有 Skill Tests 页面功能保持可用，且能继续编辑/运行这些聊天生成的草稿
+- [ ] 对 lifecycle-chain 草稿执行“按链运行”时，默认 strict 策略保持失败即停；用户显式选择 goal-threshold 策略后，目标达成度过阈值且无 critical constraint fail 的 borderline step 可继续后续步骤，并在链审计中显示为 `continued`
+- [ ] `dynamic + trigger` case 默认不被重环境契约 / 镜像缺失阻塞，仍可验证目标 skill 的动态加载行为
+- [ ] 后续 `environment-build` case 产出的正式环境资产必须是 manifest/recipe 驱动的可重建镜像，而不是直接复用 `docker commit` 的黑箱快照
+- [ ] 普通 execution case 在目标环境镜像缺失或与 `TESTING.md` / base image hash 不匹配时，返回 `env_not_built` / `env_stale` 类结构化错误，而不是自动临场安装
 
 ## 初步实施分阶段
 
@@ -233,6 +250,12 @@ MVP 可先固定一组默认分工：
 - 增强对已有 case / 最近 run 的引用
 - 完善导出校验、失败修复与回归对比入口
 - 视效果评估是否逐步弱化旧的单点 `/generate` 入口
+
+### Phase 4：环境构建资产化迁移
+- 新增 `environment-build` case / env profile / `environment-manifest.json` 领域模型
+- 先在 docx 等重依赖 skill 上验证 manifest → Dockerfile → env image 链路
+- 普通 `full + execution` case 优先查可用 env image，缺失或过期时提示运行环境构建用例
+- 逐步将现有每次运行的 `preflight -> bootstrap -> verify` 降级为兼容 fallback，最终让普通业务 case 不再承担环境安装职责
 
 ## 待确认问题
 
