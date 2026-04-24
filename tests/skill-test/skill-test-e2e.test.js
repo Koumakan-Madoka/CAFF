@@ -6174,6 +6174,35 @@ test('skill-scoped case routes reject case ids from another skill', async () => 
     createdAt: now,
   });
 
+  db.prepare(
+    `INSERT INTO skill_test_chain_runs (
+      id, skill_id, export_chain_id, created_at, updated_at
+    ) VALUES (
+      @id, @skillId, @exportChainId, @createdAt, @updatedAt
+    )`
+  ).run({
+    id: 'cross-skill-chain-run',
+    skillId: 'werewolf',
+    exportChainId: 'cross-skill-chain',
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  db.prepare(
+    `INSERT INTO skill_test_chain_run_steps (
+      id, chain_run_id, test_case_id, sequence_index, created_at, updated_at
+    ) VALUES (
+      @id, @chainRunId, @testCaseId, @sequenceIndex, @createdAt, @updatedAt
+    )`
+  ).run({
+    id: 'cross-skill-chain-step',
+    chainRunId: 'cross-skill-chain-run',
+    testCaseId: 'cross-skill-case',
+    sequenceIndex: 1,
+    createdAt: now,
+    updatedAt: now,
+  });
+
   await assert.rejects(
     () => controller({
       req: createJsonRequest('GET', '/api/skills/undercover/test-cases/cross-skill-case'),
@@ -6204,6 +6233,7 @@ test('skill-scoped case routes reject case ids from another skill', async () => 
 
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM skill_test_cases WHERE id = ?').get('cross-skill-case').count, 1);
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM skill_test_runs WHERE test_case_id = ?').get('cross-skill-case').count, 1);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM skill_test_chain_run_steps WHERE test_case_id = ?').get('cross-skill-case').count, 1);
 
   const deleteRes = createCaptureResponse();
   await controller({
@@ -6216,6 +6246,7 @@ test('skill-scoped case routes reject case ids from another skill', async () => 
   assert.equal(deleteRes.statusCode, 200);
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM skill_test_cases WHERE id = ?').get('cross-skill-case').count, 0);
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM skill_test_runs WHERE test_case_id = ?').get('cross-skill-case').count, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM skill_test_chain_run_steps WHERE test_case_id = ?').get('cross-skill-case').count, 0);
 
   db.close();
 });
@@ -8965,6 +8996,226 @@ test('skill test design export-drafts records duplicate summary while exporting 
   assert.equal(fullCase.evaluationRubric.thresholds.goalAchievement, 0.8);
   assert.equal(fullCase.sourceMetadata.skillTestDesign.environmentContractRef, 'TESTING.md#Bootstrap');
   assert.equal(fullCase.sourceMetadata.skillTestDesign.environmentSource, 'skill_contract');
+});
+
+test('skill test design export-drafts reuses same-conversation drafts on repeated export', async () => {
+  const db = createTestDb();
+  let conversation = {
+    id: 'design-conv-repeat-export',
+    title: 'Skill Test Design',
+    type: 'skill_test_design',
+    metadata: {
+      skillTestDesign: {
+        version: 1,
+        skillId: 'demo-skill',
+        skillName: 'Demo Skill',
+        phase: 'awaiting_confirmation',
+        participantRoles: { 'agent-builder': 'scribe' },
+        matrix: {
+          kind: 'skill_test_matrix',
+          matrixId: 'matrix-repeat-export-1',
+          skillId: 'demo-skill',
+          phase: 'awaiting_confirmation',
+          sourceMessageId: 'assistant-msg-repeat-export-1',
+          agentRole: 'scribe',
+          importedAt: '2026-04-21T00:00:00.000Z',
+          rows: [
+            {
+              rowId: 'row-stable',
+              scenario: 'cover a row that keeps the same row id across re-export',
+              priority: 'P0',
+              coverageReason: 'same conversation re-export should update this draft instead of creating a duplicate',
+              testType: 'trigger',
+              loadingMode: 'dynamic',
+              riskPoints: ['repeat export duplication'],
+              keyAssertions: ['reuses the original draft by row id'],
+              includeInMvp: true,
+              draftingHints: {
+                triggerPrompt: 'please load the demo skill and summarize the stable path',
+                expectedBehavior: 'first export stable behavior',
+              },
+            },
+            {
+              rowId: 'row-prompt-old',
+              scenario: 'cover a row that may get a new row id on re-export',
+              priority: 'P1',
+              coverageReason: 'same conversation re-export should reuse this draft by normalized prompt when row id changes',
+              testType: 'trigger',
+              loadingMode: 'dynamic',
+              riskPoints: ['matrix row id drift'],
+              keyAssertions: ['reuses the original draft by prompt'],
+              includeInMvp: true,
+              draftingHints: {
+                triggerPrompt: 'please load the demo skill and explain the fallback path',
+                expectedBehavior: 'first export fallback behavior',
+              },
+            },
+          ],
+        },
+        confirmation: null,
+        export: null,
+        createdAt: '2026-04-21T00:00:00.000Z',
+        updatedAt: '2026-04-21T00:00:00.000Z',
+      },
+    },
+    messages: [
+      {
+        id: 'assistant-msg-repeat-export-1',
+        role: 'assistant',
+        agentId: 'agent-builder',
+        content: '```json\n{"kind":"skill_test_matrix"}\n```',
+      },
+    ],
+  };
+  const store = {
+    db,
+    getConversation(id) {
+      return id === conversation.id ? conversation : null;
+    },
+    updateConversation(id, updates) {
+      if (id !== conversation.id) {
+        return null;
+      }
+      conversation = { ...conversation, ...updates };
+      return conversation;
+    },
+  };
+  const controller = createSkillTestController({
+    store,
+    agentToolBridge: createFakeAgentToolBridge(),
+    skillRegistry: createFakeSkillRegistry(['demo-skill']),
+  });
+
+  const firstRes = createCaptureResponse();
+  const firstHandled = await controller({
+    req: createJsonRequest('POST', '/api/conversations/design-conv-repeat-export/skill-test-design/export-drafts', {
+      matrixId: 'matrix-repeat-export-1',
+      confirmMatrix: true,
+      confirmationMessageId: 'assistant-msg-repeat-export-1',
+      exportedBy: 'user',
+    }),
+    res: firstRes,
+    pathname: '/api/conversations/design-conv-repeat-export/skill-test-design/export-drafts',
+    requestUrl: new URL('http://localhost/api/conversations/design-conv-repeat-export/skill-test-design/export-drafts'),
+  });
+
+  assert.equal(firstHandled, true);
+  assert.equal(firstRes.statusCode, 200);
+  assert.equal(firstRes.json.exportedCount, 2);
+  const firstByRowId = new Map(firstRes.json.cases.map((testCase) => [testCase.sourceMetadata.matrixRowId, testCase]));
+  const stableFirstCase = firstByRowId.get('row-stable');
+  const fallbackFirstCase = firstByRowId.get('row-prompt-old');
+  assert.ok(stableFirstCase);
+  assert.ok(fallbackFirstCase);
+
+  conversation = {
+    ...conversation,
+    metadata: {
+      ...conversation.metadata,
+      skillTestDesign: {
+        ...conversation.metadata.skillTestDesign,
+        phase: 'awaiting_confirmation',
+        matrix: {
+          kind: 'skill_test_matrix',
+          matrixId: 'matrix-repeat-export-2',
+          skillId: 'demo-skill',
+          phase: 'awaiting_confirmation',
+          sourceMessageId: 'assistant-msg-repeat-export-2',
+          agentRole: 'scribe',
+          importedAt: '2026-04-21T01:00:00.000Z',
+          rows: [
+            {
+              rowId: 'row-stable',
+              scenario: 'cover a row that keeps the same row id across re-export',
+              priority: 'P0',
+              coverageReason: 'same conversation re-export should update this draft instead of creating a duplicate',
+              testType: 'trigger',
+              loadingMode: 'dynamic',
+              riskPoints: ['repeat export duplication'],
+              keyAssertions: ['reuses the original draft by row id'],
+              includeInMvp: true,
+              draftingHints: {
+                triggerPrompt: 'please load the demo skill and summarize the stable path again',
+                expectedBehavior: 'second export stable behavior',
+              },
+            },
+            {
+              rowId: 'row-prompt-new',
+              scenario: 'cover a row that may get a new row id on re-export',
+              priority: 'P1',
+              coverageReason: 'same conversation re-export should reuse this draft by normalized prompt when row id changes',
+              testType: 'trigger',
+              loadingMode: 'dynamic',
+              riskPoints: ['matrix row id drift'],
+              keyAssertions: ['reuses the original draft by prompt'],
+              includeInMvp: true,
+              draftingHints: {
+                triggerPrompt: 'please load the demo skill and explain the fallback path',
+                expectedBehavior: 'second export fallback behavior',
+              },
+            },
+          ],
+        },
+        confirmation: null,
+        export: null,
+      },
+    },
+    messages: [
+      {
+        id: 'assistant-msg-repeat-export-1',
+        role: 'assistant',
+        agentId: 'agent-builder',
+        content: '```json\n{"kind":"skill_test_matrix"}\n```',
+      },
+      {
+        id: 'assistant-msg-repeat-export-2',
+        role: 'assistant',
+        agentId: 'agent-builder',
+        content: '```json\n{"kind":"skill_test_matrix"}\n```',
+      },
+    ],
+  };
+
+  const secondRes = createCaptureResponse();
+  const secondHandled = await controller({
+    req: createJsonRequest('POST', '/api/conversations/design-conv-repeat-export/skill-test-design/export-drafts', {
+      matrixId: 'matrix-repeat-export-2',
+      confirmMatrix: true,
+      confirmationMessageId: 'assistant-msg-repeat-export-2',
+      exportedBy: 'user',
+    }),
+    res: secondRes,
+    pathname: '/api/conversations/design-conv-repeat-export/skill-test-design/export-drafts',
+    requestUrl: new URL('http://localhost/api/conversations/design-conv-repeat-export/skill-test-design/export-drafts'),
+  });
+
+  assert.equal(secondHandled, true);
+  assert.equal(secondRes.statusCode, 200);
+  assert.equal(secondRes.json.exportedCount, 2);
+  assert.equal(secondRes.json.duplicateWarnings.length, 0);
+
+  const secondByRowId = new Map(secondRes.json.cases.map((testCase) => [testCase.sourceMetadata.matrixRowId, testCase]));
+  const stableSecondCase = secondByRowId.get('row-stable');
+  const fallbackSecondCase = secondByRowId.get('row-prompt-new');
+  assert.ok(stableSecondCase);
+  assert.ok(fallbackSecondCase);
+  assert.equal(stableSecondCase.id, stableFirstCase.id);
+  assert.equal(stableSecondCase.triggerPrompt, 'please load the demo skill and summarize the stable path again');
+  assert.equal(stableSecondCase.expectedBehavior, 'second export stable behavior');
+  assert.equal(stableSecondCase.sourceMetadata.messageId, 'assistant-msg-repeat-export-2');
+  assert.equal(stableSecondCase.sourceMetadata.matrixId, 'matrix-repeat-export-2');
+  assert.equal(fallbackSecondCase.id, fallbackFirstCase.id);
+  assert.equal(fallbackSecondCase.sourceMetadata.matrixRowId, 'row-prompt-new');
+  assert.equal(fallbackSecondCase.expectedBehavior, 'second export fallback behavior');
+  assert.equal(fallbackSecondCase.sourceMetadata.messageId, 'assistant-msg-repeat-export-2');
+  assert.equal(fallbackSecondCase.sourceMetadata.matrixId, 'matrix-repeat-export-2');
+
+  const storedCases = db.prepare('SELECT id FROM skill_test_cases WHERE skill_id = ? ORDER BY created_at ASC').all('demo-skill');
+  assert.equal(storedCases.length, 2);
+  assert.deepEqual(
+    storedCases.map((row) => row.id).sort(),
+    [stableFirstCase.id, fallbackFirstCase.id].sort()
+  );
 });
 
 test('skill test design export-drafts can create environment-build drafts', async () => {

@@ -258,18 +258,18 @@
   - 链详情与单 case run 明确分栏，避免把 `chain step audit` 误读成普通单 case run 历史
 
 ## Acceptance Criteria
-- [ ] Skill Tests 能识别同一 `exportChainId` 的链式 draft，并提供显式“Run as chain”入口。
-- [ ] 非链式 cases、结构不完整的链式 cases、混入不兼容 case 的集合不会误触发链运行。
-- [ ] 链运行会先做一次链级 bootstrap / verify，再按 `sequenceIndex` 顺序运行 steps。
-- [ ] 默认策略下某一步失败后，后续依赖 steps 会标记 `skipped`，整链状态为 `failed` 或 `partial`，而不是继续盲跑。
-- [ ] 当请求显式使用 `stop_on_failure_goal_threshold`，`status = succeeded`、无 critical constraint fail、且 `goalAchievement >= 0.8` 的 borderline step 会标记为 `continued` 并继续后续 steps；该 step 自己的原始 verdict 不会被改写成 pass。
-- [ ] 已执行 steps 仍保留现有 run/evaluation 记录；所有链 steps（含 `skipped` / `aborted`）都能通过链级审计回溯到所属 `chainRunId`。
-- [ ] UI 能看到链级摘要、当前步骤、失败步骤和跳过步骤。
-- [ ] `environmentSource = missing` 会阻止整链运行；`user_supplied` 至少会给出明确风险提示。
-- [ ] 声明 `conversation` 或 `externalState` 继承的链 steps，在 MVP 中会被结构化拒绝，而不是悄悄降级运行。
-- [ ] 启动前 validation failures 返回稳定 `issues[].code`，并符合 PRD 中的 validation error matrix；runtime 阶段失败会落链级审计而不是消失在启动错误里。
-- [ ] 现有单 case run、draft 编辑、普通 regression 视图不受破坏。
-- [ ] spec 明确补充“链 runner 的最小共享上下文 contract”和“仍未支持的执行语义边界”。
+- [x] Skill Tests 能识别同一 `exportChainId` 的链式 draft，并提供显式“Run as chain”入口。
+- [x] 非链式 cases、结构不完整的链式 cases、混入不兼容 case 的集合不会误触发链运行。
+- [x] 链运行会先做一次链级 bootstrap / verify，再按 `sequenceIndex` 顺序运行 steps。
+- [x] 默认策略下某一步失败后，后续依赖 steps 会标记 `skipped`，整链状态为 `failed` 或 `partial`，而不是继续盲跑。
+- [x] 当请求显式使用 `stop_on_failure_goal_threshold`，`status = succeeded`、无 critical constraint fail、且 `goalAchievement >= 0.8` 的 borderline step 会标记为 `continued` 并继续后续 steps；该 step 自己的原始 verdict 不会被改写成 pass。
+- [x] 已执行 steps 仍保留现有 run/evaluation 记录；所有链 steps（含 `skipped` / `aborted`）都能通过链级审计回溯到所属 `chainRunId`。
+- [x] UI 能看到链级摘要、当前步骤、失败步骤和跳过步骤。
+- [x] `environmentSource = missing` 会阻止整链运行；`user_supplied` 至少会给出明确风险提示。
+- [x] 声明 `conversation` 或 `externalState` 继承的链 steps，在 MVP 中会被结构化拒绝，而不是悄悄降级运行。
+- [x] 启动前 validation failures 返回稳定 `issues[].code`，并符合 PRD 中的 validation error matrix；runtime 阶段失败会落链级审计而不是消失在启动错误里。
+- [x] 现有单 case run、draft 编辑、普通 regression 视图不受破坏。
+- [x] spec 明确补充“链 runner 的最小共享上下文 contract”和“仍未支持的执行语义边界”。
 
 ## Validation
 - 后端 / e2e：链资格校验、线性执行顺序、失败即停、后续 step skip、链级审计回写、环境门禁与 unsupported inheritance 拦截。

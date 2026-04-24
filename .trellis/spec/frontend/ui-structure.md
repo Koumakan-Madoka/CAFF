@@ -2,21 +2,33 @@
 
 ## Current Shape
 
-- `public/*.js`: page-level entry files
+- `public/*.js`: page-level entry files and screen composition
 - `public/chat/*.js`: chat room UI modules
+- `public/skill-tests/*.js`: Skill Tests-only helper modules loaded by
+  `public/eval-cases.html`
 - `public/shared/*.js`: shared browser helpers like API access, avatars, and
   toasts
 - `public/styles.css`: shared styling
 
 ## Conventions
 
-- Keep page entry files focused on composition and screen-level state.
+- Keep page entry files focused on composition, screen-level state, and
+  cross-module wiring.
+- For a larger page without a bundler, keep the main entry in `public/<page>.js`
+  and move focused view/data helpers into `public/<page>/` instead of growing
+  another monolith.
+- Skill Tests follows the plain-script registration pattern: each helper file is
+  an IIFE that registers a `create*Helpers()` factory on `window.CaffSkillTests`,
+  `public/eval-cases.html` loads those helpers before `public/skill-tests.js`,
+  and `public/skill-tests.js` passes explicit dependencies into the factories.
 - Put reusable browser helpers in `public/shared/` instead of copying fetch or
   DOM utility logic across pages.
 - When a chat feature grows beyond one screen concern, split it into
   `public/chat/` modules rather than expanding a single monolith.
 - Preserve the existing plain JavaScript style; this repo is not using a
   framework build step for the browser code.
+- Fail fast when a required page helper is missing. Prefer explicit
+  missing-module errors in the page entry over silently skipping part of the UI.
 
 ## Chat Message Rendering
 

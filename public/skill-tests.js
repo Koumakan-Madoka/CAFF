@@ -38,7 +38,7 @@
     if (utf8Match && utf8Match[1]) {
       try {
         return decodeURIComponent(utf8Match[1]);
-      } catch {
+      } catch (_decodeError) {
       }
     }
 
@@ -55,13 +55,13 @@
         if (errorPayload && errorPayload.error) {
           message = String(errorPayload.error);
         }
-      } catch {
+      } catch (_jsonError) {
         try {
           const errorText = await response.text();
           if (errorText) {
             message = errorText;
           }
-        } catch {
+        } catch (_textError) {
         }
       }
       throw new Error(message);
@@ -113,7 +113,6 @@
     trellisModeHelp: /** @type {HTMLElement | null} */ (document.getElementById('st-trellis-mode-help')),
     egressModeSelect: /** @type {HTMLSelectElement | null} */ (document.getElementById('st-egress-mode')),
     chainStopPolicySelect: /** @type {HTMLSelectElement | null} */ (document.getElementById('st-chain-stop-policy')),
-    publishGateInput: /** @type {HTMLInputElement | null} */ (document.getElementById('st-publish-gate')),
     environmentBuildImageField: /** @type {HTMLElement | null} */ (document.getElementById('st-environment-build-image-field')),
     environmentBuildImageInput: /** @type {HTMLInputElement | null} */ (document.getElementById('st-environment-build-image')),
     environmentBuildImageHelp: /** @type {HTMLElement | null} */ (document.getElementById('st-environment-build-image-help')),
@@ -133,12 +132,14 @@
     filterCount: /** @type {HTMLElement | null} */ (document.getElementById('st-filter-count')),
     searchInput: /** @type {HTMLInputElement | null} */ (document.getElementById('st-search-input')),
     validityFilter: /** @type {HTMLSelectElement | null} */ (document.getElementById('st-validity-filter')),
+    caseChainFilter: /** @type {HTMLSelectElement | null} */ (document.getElementById('st-case-chain-filter')),
     // Detail panel
     detailEmpty: /** @type {HTMLElement | null} */ (document.getElementById('st-detail-empty')),
     detailPanel: /** @type {HTMLElement | null} */ (document.getElementById('st-detail')),
     detailCaseId: /** @type {HTMLElement | null} */ (document.getElementById('st-detail-case-id')),
     detailMeta: /** @type {HTMLElement | null} */ (document.getElementById('st-detail-meta')),
     detailLastOutcome: /** @type {HTMLElement | null} */ (document.getElementById('st-detail-last-outcome')),
+    detailChainSummary: /** @type {HTMLElement | null} */ (document.getElementById('st-detail-chain-summary')),
     detailPrompt: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('st-detail-prompt')),
     detailGoal: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('st-detail-goal')),
     detailBehavior: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('st-detail-behavior')),
@@ -200,6 +201,7 @@
     loading: false,
     searchQuery: '',
     validityFilter: 'all',
+    chainFilter: 'all',
     activeDetailTab: 'overview',
     casesLoading: false,
     casesLoadError: '',
@@ -216,6 +218,8 @@
     liveSkillChainRunsByChainRunId: new Map(),
     liveSkillChainRunIdByExportChainId: new Map(),
   };
+  let syncSelectedCaseRunsAutoRefresh = () => {};
+  let scheduleSelectedCaseRunsRefresh = (_caseId, _options = {}) => {};
 
   function readInitialSkillTestDeepLink() {
     try {
@@ -551,6 +555,8 @@
     }
 
     renderLiveSkillRun();
+    scheduleSelectedCaseRunsRefresh(caseId, { force: terminalPhase });
+    syncSelectedCaseRunsAutoRefresh();
   }
 
   function applyLiveSkillToolEvent(payload) {
@@ -619,6 +625,24 @@
     return chainRunId ? state.liveSkillChainRunsByChainRunId.get(chainRunId) || null : null;
   }
 
+  function isLiveSkillRunActive(liveRun) {
+    const status = String(liveRun && liveRun.status || '').trim().toLowerCase();
+    return status === 'running' || status === 'terminating' || status === 'pending';
+  }
+
+  function hasSelectedCaseLiveRun() {
+    if (!state.selectedCaseId) {
+      return false;
+    }
+    return isLiveSkillRunActive(state.liveSkillRunsByCaseId.get(state.selectedCaseId) || null);
+  }
+
+  function hasSelectedCaseLiveChainRun() {
+    const liveChainRun = getSelectedLiveSkillChainRun();
+    const status = String(liveChainRun && liveChainRun.status || liveChainRun && liveChainRun.chainRun && liveChainRun.chainRun.status || '').trim().toLowerCase();
+    return status === 'running' || status === 'pending';
+  }
+
   function normalizeLiveSkillChainRunPayload(payload) {
     const chainRun = payload && payload.chainRun && typeof payload.chainRun === 'object' ? payload.chainRun : {};
     const chainRunId = String(payload && (payload.chainRunId || payload.id) || chainRun.id || '').trim();
@@ -679,6 +703,20 @@
     state.liveSkillChainRunsByChainRunId.set(normalized.chainRunId, next);
     state.liveSkillChainRunIdByExportChainId.set(normalized.exportChainId, normalized.chainRunId);
     renderLiveSkillRun();
+    const terminalStatus = ['passed', 'failed', 'partial', 'aborted'].includes(String(next.status || '').trim().toLowerCase());
+    const selectedCase = state.selectedCaseId
+      ? state.testCases.find((testCase) => testCase && testCase.id === state.selectedCaseId) || null
+      : null;
+    const selectedChainRunRequest = getCaseChainRunRequest(selectedCase);
+    const selectedExportChainId = selectedChainRunRequest && selectedChainRunRequest.exportChainId
+      ? String(selectedChainRunRequest.exportChainId).trim()
+      : '';
+    const affectsSelectedCase = Boolean(state.selectedCaseId)
+      && (selectedExportChainId === normalized.exportChainId || state.selectedCaseId === String(next.currentTestCaseId || '').trim());
+    if (affectsSelectedCase) {
+      scheduleSelectedCaseRunsRefresh(state.selectedCaseId, { force: terminalStatus });
+    }
+    syncSelectedCaseRunsAutoRefresh();
   }
 
   function reconcileLiveSkillChainRunFromFinalResult(exportChainId, result) {
@@ -724,6 +762,10 @@
     return '链运行待定';
   }
 
+  function getLiveCaseActionLabel(hasLiveRun) {
+    return hasLiveRun ? '查看实时调用' : '切到当前步骤';
+  }
+
   function buildLiveSkillChainRunHtml(liveChainRun) {
     const chainRun = liveChainRun && liveChainRun.chainRun && typeof liveChainRun.chainRun === 'object' ? liveChainRun.chainRun : {};
     const steps = Array.isArray(liveChainRun && liveChainRun.steps) ? liveChainRun.steps : [];
@@ -745,7 +787,13 @@
           const sequenceIndex = Number(step && step.sequenceIndex || 0) || 0;
           const title = String(step && (step.title || step.testCaseId) || 'chain step').trim();
           const summary = String(step && (step.summary || step.errorMessage) || '').trim();
+          const stepCaseId = String(step && step.testCaseId || '').trim();
+          const hasLiveRun = Boolean(stepCaseId && state.liveSkillRunsByCaseId.get(stepCaseId));
           const isCurrent = currentStepIndex > 0 && sequenceIndex === currentStepIndex && status === 'running';
+          const liveActionLabel = getLiveCaseActionLabel(hasLiveRun);
+          const liveAction = stepCaseId && (isCurrent || hasLiveRun)
+            ? `<div class="run-item-actions" style="margin-top:0.4rem"><button type="button" class="mini-action" data-live-chain-step-case-id="${escapeHtml(stepCaseId)}">${liveActionLabel}</button></div>`
+            : '';
           return `<article class="message-tool-trace-step ${stepTone}${isCurrent ? ' last' : ''}" data-step-id="chain-step-${escapeHtml(String(step && step.id || sequenceIndex || ''))}">
             <div class="message-tool-trace-step-rail"><div class="message-tool-trace-step-index">${escapeHtml(String(sequenceIndex || '—'))}</div><div class="message-tool-trace-step-line"></div></div>
             <div class="message-tool-trace-step-main">
@@ -757,6 +805,7 @@
                 <div class="message-tool-trace-step-meta"><span class="message-tool-trace-pill ${stepTone}">${escapeHtml(stepStatus)}</span></div>
               </div>
               ${summary ? `<div class="message-tool-trace-note${stepStatus === 'failed' ? ' failed' : ''}">${escapeHtml(summary)}</div>` : ''}
+              ${liveAction}
             </div>
           </article>`;
         }).join('')
@@ -767,12 +816,22 @@
     const errorText = chainRun.errorMessage
       ? `<div class="message-tool-trace-note failed">错误：${escapeHtml(String(chainRun.errorMessage || ''))}</div>`
       : '';
+    const summaryHtml = buildRunSummarySectionHtml({
+      title: '链运行摘要',
+      tags: [
+        buildStatusTagHtml(status, liveChainRunStatusLabel(status)),
+        `<span class="tag">steps ${escapeHtml(String(chainRun.lastCompletedStepIndex || 0))}/${escapeHtml(String(chainRun.totalSteps || steps.length || 0))}</span>`,
+        chainRun.bootstrapStatus ? `<span class="tag">bootstrap ${escapeHtml(String(chainRun.bootstrapStatus))}</span>` : '',
+        chainRun.teardownStatus ? `<span class="tag">teardown ${escapeHtml(String(chainRun.teardownStatus))}</span>` : '',
+      ],
+      metaParts: [
+        chainRun.startedAt ? new Date(chainRun.startedAt).toLocaleString() : '',
+        chainRun.exportChainId ? String(chainRun.exportChainId) : '',
+      ],
+    });
 
     return `
-      <div class="run-detail-section">
-        <div class="section-label">Live Chain</div>
-        <div class="agent-meta">${escapeHtml(chainRun.startedAt ? new Date(chainRun.startedAt).toLocaleString() : '')}${chainRun.exportChainId ? ` · ${escapeHtml(String(chainRun.exportChainId))}` : ''}</div>
-      </div>
+      ${summaryHtml}
       <section class="message-tool-trace open">
         <div class="message-tool-trace-header">
           <div class="message-tool-trace-summary">
@@ -816,6 +875,88 @@
     if (normalized === 'completed' || normalized === 'succeeded') return '运行完成';
     return '等待中';
   }
+
+  const skillTestUiModules = window.CaffSkillTests || {};
+  if (typeof skillTestUiModules.createPanelStateViewHelpers !== 'function') {
+    throw new Error('Missing skill-test panel state helpers');
+  }
+  const panelStateViewHelpers = skillTestUiModules.createPanelStateViewHelpers({
+    escapeHtml,
+  });
+  const buildCompactEmptyStateHtml = panelStateViewHelpers.buildCompactEmptyStateHtml;
+  const buildInlineBannerHtml = panelStateViewHelpers.buildInlineBannerHtml;
+  const renderLoadingState = panelStateViewHelpers.renderLoadingState;
+  const renderRetryState = panelStateViewHelpers.renderRetryState;
+
+  if (typeof skillTestUiModules.createSummaryViewHelpers !== 'function') {
+    throw new Error('Missing skill-test summary view helpers');
+  }
+  const summaryViewHelpers = skillTestUiModules.createSummaryViewHelpers({
+    escapeHtml,
+    formatRefreshTime,
+    renderRetryState,
+    renderLoadingState,
+    buildCompactEmptyStateHtml,
+    buildInlineBannerHtml,
+  });
+
+  if (typeof skillTestUiModules.createSelectedSkillOverviewViewHelpers !== 'function') {
+    throw new Error('Missing skill-test selected skill overview helpers');
+  }
+  const selectedSkillOverviewViewHelpers = skillTestUiModules.createSelectedSkillOverviewViewHelpers({
+    escapeHtml,
+    formatRefreshTime,
+    renderStatusCallout,
+    isFailingRun,
+    readCaseValidation,
+    getSkillTestChainPlanningMeta,
+  });
+
+  if (typeof skillTestUiModules.createRunDetailViewHelpers !== 'function') {
+    throw new Error('Missing skill-test run detail helpers');
+  }
+  const runDetailViewHelpers = skillTestUiModules.createRunDetailViewHelpers({
+    escapeHtml,
+    rebuildLiveRunTrace,
+    buildToolTraceStepsHtml,
+    liveRunTone,
+    liveRunStatusLabel,
+    getExecutionOutcomeState,
+    isPassedFlag,
+    isFailedFlag,
+    getEnvironmentStatusMeta,
+    getEnvironmentBuildStatusMeta,
+  });
+  const getRunStatusTagMeta = runDetailViewHelpers.getRunStatusTagMeta;
+  const buildStatusTagHtml = runDetailViewHelpers.buildStatusTagHtml;
+  const buildRunOutcomeTagHtml = runDetailViewHelpers.buildRunOutcomeTagHtml;
+  const buildEnvironmentStatusTagHtml = runDetailViewHelpers.buildEnvironmentStatusTagHtml;
+  const buildEnvironmentBuildTagHtml = runDetailViewHelpers.buildEnvironmentBuildTagHtml;
+  const buildRunSummarySectionHtml = runDetailViewHelpers.buildRunSummarySectionHtml;
+  const buildToolTracePanelHtml = runDetailViewHelpers.buildToolTracePanelHtml;
+
+  if (typeof skillTestUiModules.createEnvironmentViewHelpers !== 'function') {
+    throw new Error('Missing skill-test environment view helpers');
+  }
+  const environmentViewHelpers = skillTestUiModules.createEnvironmentViewHelpers({
+    escapeHtml,
+    clipText,
+    isEnvironmentConfigEnabled,
+    getEnvironmentStatusMeta,
+    getEnvironmentCacheStatusMeta,
+    getEnvironmentBuildStatusMeta,
+    readEnvironmentBuildResultFromEvaluation,
+    getEnvironmentBuildResultSummary,
+  });
+  const getEnvironmentBuildRunOutcomeSummary = environmentViewHelpers.getEnvironmentBuildRunOutcomeSummary;
+  const formatEnvironmentRequirementLabel = environmentViewHelpers.formatEnvironmentRequirementLabel;
+  const getEnvironmentRunOutcomeSummary = environmentViewHelpers.getEnvironmentRunOutcomeSummary;
+  const formatEnvironmentConfigSummary = environmentViewHelpers.formatEnvironmentConfigSummary;
+  const getEnvironmentConfigSearchText = environmentViewHelpers.getEnvironmentConfigSearchText;
+  const buildEnvironmentRequirementListHtml = environmentViewHelpers.buildEnvironmentRequirementListHtml;
+  const buildEnvironmentCommandSectionHtml = environmentViewHelpers.buildEnvironmentCommandSectionHtml;
+  const buildEnvironmentCacheDetailsHtml = environmentViewHelpers.buildEnvironmentCacheDetailsHtml;
+  const buildEnvironmentBuildDetailsHtml = environmentViewHelpers.buildEnvironmentBuildDetailsHtml;
 
   function liveRunPendingLabel(liveRun) {
     if (liveRun && liveRun.progressLabel) {
@@ -982,6 +1123,17 @@
     viewport.scrollTop = Math.max(0, Math.min(snapshot.scrollTop, maxScrollTop));
   }
 
+  function bindLiveSkillRunActions(container) {
+    if (!container || typeof container.querySelectorAll !== 'function') {
+      return;
+    }
+    container.querySelectorAll('[data-live-chain-step-case-id]').forEach((button) => {
+      button.addEventListener('click', () => {
+        openCaseLiveRun(button.getAttribute('data-live-chain-step-case-id'));
+      });
+    });
+  }
+
   function renderLiveSkillRun() {
     const container = dom.liveRun;
     if (!container) {
@@ -1000,6 +1152,7 @@
     if (!liveRun) {
       container.classList.remove('hidden');
       container.innerHTML = chainHtml;
+      bindLiveSkillRunActions(container);
       restoreElementScrollState(container, preservedContainerScroll);
       restoreLiveTraceViewportState(container, preservedViewport);
       return;
@@ -1007,53 +1160,51 @@
     const trace = rebuildLiveRunTrace(liveRun.trace);
     const activity = trace.activity || emptyTraceActivity();
     const tone = liveRunTone(liveRun.status);
-    const pills = [
-      `<span class="message-tool-trace-pill ${tone}">${escapeHtml(liveRunStatusLabel(liveRun.status))}</span>`,
-      activity && activity.hasCurrentTool && activity.currentToolName
-        ? `<span class="message-tool-trace-pill running">当前：${escapeHtml(activity.currentToolName)}</span>`
-        : '',
-      trace.summary && trace.summary.totalSteps > 0
-        ? `<span class="message-tool-trace-pill time">步骤 ${escapeHtml(String(trace.summary.totalSteps))}</span>`
-        : '',
-      liveRun.provider || liveRun.model
-        ? `<span class="message-tool-trace-pill duration">${escapeHtml([liveRun.provider, liveRun.model].filter(Boolean).join(' / '))}</span>`
-        : '',
-    ].filter(Boolean).join(' ');
-
-    const stepsHtml = buildToolTraceStepsHtml(trace, liveRunPendingLabel(liveRun));
-
     const outputText = liveRun.outputText
       ? `<div class="message-tool-trace-note">模型输出：${escapeHtml(clipText(liveRun.outputText, 800))}</div>`
       : '';
     const errorText = liveRun.errorMessage
       ? `<div class="message-tool-trace-note failed">错误：${escapeHtml(liveRun.errorMessage)}</div>`
       : '';
+    const liveSummaryHtml = buildRunSummarySectionHtml({
+      title: '运行中摘要',
+      tags: [
+        buildStatusTagHtml(liveRun.status, liveRunStatusLabel(liveRun.status)),
+        trace.summary && trace.summary.totalSteps > 0 ? `<span class="tag">步骤 ${escapeHtml(String(trace.summary.totalSteps))}</span>` : '',
+        activity && activity.hasCurrentTool && activity.currentToolName ? `<span class="tag tag-pending">当前 ${escapeHtml(activity.currentToolName)}</span>` : '',
+      ],
+      metaParts: [
+        liveRun.createdAt ? new Date(liveRun.createdAt).toLocaleString() : '',
+        [liveRun.provider, liveRun.model].filter(Boolean).join(' / '),
+        liveRun.promptVersion ? `prompt ${liveRun.promptVersion}` : '',
+      ],
+    });
+    const liveTraceHtml = buildToolTracePanelHtml({
+      sectionLabel: '工具时间线',
+      helperText: '这里显示 agent 在这次运行里的实时调用顺序。',
+      trace,
+      status: liveRun.status,
+      statusLabel: liveRunStatusLabel(liveRun.status),
+      tone,
+      extraPills: [
+        activity && activity.hasCurrentTool && activity.currentToolName
+          ? `<span class="message-tool-trace-pill running">当前：${escapeHtml(activity.currentToolName)}</span>`
+          : '',
+        trace.summary && trace.summary.totalSteps > 0
+          ? `<span class="message-tool-trace-pill time">步骤 ${escapeHtml(String(trace.summary.totalSteps))}</span>`
+          : '',
+      ],
+      notes: [
+        liveRun.progressLabel ? `<div class="message-tool-trace-note">${escapeHtml(String(liveRun.progressLabel))}</div>` : '',
+        outputText,
+        errorText,
+      ],
+      emptyLabel: liveRunPendingLabel(liveRun),
+    });
 
     container.classList.remove('hidden');
-    container.innerHTML = `${chainHtml}
-      <div class="run-detail-section">
-        <div class="section-label">Live Trace</div>
-        <div class="agent-meta">${escapeHtml(liveRun.createdAt ? new Date(liveRun.createdAt).toLocaleString() : '')}${liveRun.promptVersion ? ` · ${escapeHtml(liveRun.promptVersion)}` : ''}</div>
-      </div>
-      <section class="message-tool-trace open">
-        <div class="message-tool-trace-header">
-          <div class="message-tool-trace-summary">${pills}</div>
-        </div>
-        <div class="message-tool-trace-details">
-          ${outputText}
-          ${errorText}
-          <section class="message-tool-trace-section">
-            <div class="message-tool-trace-section-header">
-              <div class="message-tool-trace-section-title">工具时间线</div>
-              <div class="message-tool-trace-section-meta"></div>
-            </div>
-            <div class="message-tool-trace-steps-viewport scrollable">
-              <div class="message-tool-trace-section-steps">${stepsHtml}</div>
-            </div>
-          </section>
-        </div>
-      </section>
-    `;
+    container.innerHTML = `${chainHtml}${liveSummaryHtml}${liveTraceHtml}`;
+    bindLiveSkillRunActions(container);
     restoreElementScrollState(container, preservedContainerScroll);
     restoreLiveTraceViewportState(container, preservedViewport);
   }
@@ -1067,12 +1218,12 @@
     source.addEventListener('skill_test_run_event', (event) => {
       try {
         applyLiveSkillRunPayload(JSON.parse(event.data));
-      } catch {}
+      } catch (_runEventParseError) {}
     });
     source.addEventListener('skill_test_chain_run_event', (event) => {
       try {
         applyLiveSkillChainRunPayload(JSON.parse(event.data));
-      } catch {}
+      } catch (_chainEventParseError) {}
     });
     source.addEventListener('conversation_tool_event', (event) => {
       try {
@@ -1081,7 +1232,7 @@
           return;
         }
         applyLiveSkillToolEvent(payload);
-      } catch {}
+      } catch (_toolEventParseError) {}
     });
   }
 
@@ -1423,262 +1574,6 @@
       return statusMeta.label;
     }
     return manifestPath ? `manifest：${manifestPath}` : '';
-  }
-
-  function getEnvironmentBuildRunOutcomeSummary(run) {
-    const buildResult = readEnvironmentBuildResultFromEvaluation(run && run.evaluation);
-    return getEnvironmentBuildResultSummary(buildResult);
-  }
-
-  function formatEnvironmentRequirementLabel(entry) {
-    if (!entry || typeof entry !== 'object') {
-      return '';
-    }
-    const name = String(entry.name || '').trim() || 'unknown';
-    const kind = String(entry.kind || '').trim();
-    const versionHint = String(entry.versionHint || '').trim();
-    return [kind ? `[${kind}]` : '', name, versionHint ? `(${versionHint})` : ''].filter(Boolean).join(' ');
-  }
-
-  function getEnvironmentRunOutcomeSummary(run) {
-    if (!run || !run.evaluation || typeof run.evaluation !== 'object' || !run.evaluation.environment || typeof run.evaluation.environment !== 'object') {
-      return '';
-    }
-    const environment = run.evaluation.environment;
-    const meta = getEnvironmentStatusMeta(environment.status || run.environmentStatus || '');
-    if (!meta) {
-      return '';
-    }
-    const reason = clipText(String(environment.reason || run.errorMessage || '').trim(), 96);
-    return reason ? `${meta.label}：${reason}` : meta.label;
-  }
-
-  function formatEnvironmentConfigSummary(config, latestRun = null) {
-    if (!isEnvironmentConfigEnabled(config)) {
-      return '未配置环境链；默认直接运行 skill。';
-    }
-    const requirements = Array.isArray(config.requirements) ? config.requirements : [];
-    const bootstrapCommands = Array.isArray(config.bootstrap && config.bootstrap.commands) ? config.bootstrap.commands : [];
-    const verifyCommands = Array.isArray(config.verify && config.verify.commands) ? config.verify.commands : [];
-    const docsTarget = config.docs && config.docs.target ? String(config.docs.target).trim() : 'TESTING.md';
-    const cachePaths = Array.isArray(config.cache && config.cache.paths) ? config.cache.paths : [];
-    const cacheEnabled = Boolean(config.cache && typeof config.cache === 'object' && config.cache.enabled === true);
-    const parts = [
-      '已启用环境链',
-      requirements.length > 0 ? `${requirements.length} 项依赖` : '无显式依赖',
-      bootstrapCommands.length > 0 ? `${bootstrapCommands.length} 条 bootstrap` : '无 bootstrap',
-      verifyCommands.length > 0 ? `${verifyCommands.length} 条 verify` : '无 verify',
-      cacheEnabled ? (cachePaths.length > 0 ? `${cachePaths.length} 条 cache 路径` : '未声明 cache 路径') : 'cache 未启用',
-      `建议文档 ${docsTarget || 'TESTING.md'}`,
-    ];
-    const latestSummary = getEnvironmentRunOutcomeSummary(latestRun);
-    return latestSummary ? `${parts.join('；')}。最近一次：${latestSummary}` : `${parts.join('；')}。`;
-  }
-
-  function getEnvironmentConfigSearchText(config) {
-    if (!isEnvironmentConfigEnabled(config)) {
-      return '';
-    }
-    const requirements = Array.isArray(config.requirements) ? config.requirements.map((entry) => formatEnvironmentRequirementLabel(entry)) : [];
-    const bootstrapCommands = Array.isArray(config.bootstrap && config.bootstrap.commands) ? config.bootstrap.commands : [];
-    const verifyCommands = Array.isArray(config.verify && config.verify.commands) ? config.verify.commands : [];
-    const docsTarget = config.docs && config.docs.target ? String(config.docs.target).trim() : '';
-    const cachePaths = Array.isArray(config.cache && config.cache.paths)
-      ? config.cache.paths.map((entry) => `${entry && entry.root ? String(entry.root).trim() : ''}:${entry && entry.path ? String(entry.path).trim() : ''}`)
-      : [];
-    return ['environment', 'bootstrap', 'verify', 'cache', docsTarget, ...requirements, ...bootstrapCommands, ...verifyCommands, ...cachePaths].filter(Boolean).join(' ');
-  }
-
-  function buildEnvironmentRequirementListHtml(title, entries) {
-    const normalized = Array.isArray(entries) ? entries.filter(Boolean) : [];
-    if (normalized.length === 0) {
-      return `<div class="agent-meta">${escapeHtml(title)}：无</div>`;
-    }
-    const items = normalized.map((entry) => {
-      const label = formatEnvironmentRequirementLabel(entry);
-      const reason = String(entry && entry.reason || '').trim();
-      return `<li>${escapeHtml(label || 'unknown')}${reason ? `：${escapeHtml(reason)}` : ''}</li>`;
-    }).join('');
-    return `<div class="run-detail-subsection"><div class="agent-meta">${escapeHtml(title)}</div><ul class="run-detail-list">${items}</ul></div>`;
-  }
-
-  function buildEnvironmentCommandSectionHtml(title, payload) {
-    const commands = Array.isArray(payload && payload.commands) ? payload.commands : [];
-    const results = Array.isArray(payload && payload.results) ? payload.results : [];
-    const attempted = Boolean(payload && payload.attempted);
-    let html = '<div class="run-detail-subsection">';
-    html += `<div class="agent-meta">${escapeHtml(title)}${attempted ? '' : '（未执行）'}</div>`;
-    if (commands.length === 0) {
-      html += '<div class="agent-meta">无命令</div>';
-      html += '</div>';
-      return html;
-    }
-    commands.forEach((command, index) => {
-      const result = results[index] && typeof results[index] === 'object' ? results[index] : null;
-      const exitCode = result && result.exitCode != null ? Number(result.exitCode) : null;
-      const statusTag = exitCode == null
-        ? '<span class="tag tag-pending">未执行</span>'
-        : exitCode === 0
-          ? '<span class="tag tag-success">成功</span>'
-          : `<span class="tag tag-error">失败 (${escapeHtml(String(exitCode))})</span>`;
-      html += '<div class="run-detail-card">';
-      html += `<div class="run-detail-tag-row">${statusTag} <span class="tag">${escapeHtml(title)}</span></div>`;
-      html += `<pre class="run-detail-pre">${escapeHtml(String(command || ''))}</pre>`;
-      if (result && String(result.stdout || '').trim()) {
-        html += `<div class="agent-meta">stdout</div><pre class="run-detail-pre">${escapeHtml(String(result.stdout || ''))}</pre>`;
-      }
-      if (result && String(result.stderr || '').trim()) {
-        html += `<div class="agent-meta">stderr</div><pre class="run-detail-pre">${escapeHtml(String(result.stderr || ''))}</pre>`;
-      }
-      html += '</div>';
-    });
-    html += '</div>';
-    return html;
-  }
-
-  function buildEnvironmentCacheDetailsHtml(payload) {
-    if (!payload || typeof payload !== 'object') {
-      return '';
-    }
-    const cacheStatusMeta = getEnvironmentCacheStatusMeta(payload.status);
-    const cachePaths = Array.isArray(payload.paths) ? payload.paths.filter(Boolean) : [];
-    const key = String(payload.key || '').trim();
-    const reason = String(payload.reason || '').trim();
-    const manifestPath = String(payload.manifestPath || '').trim();
-    const summaryPath = String(payload.summaryPath || '').trim();
-    const artifactBytes = Number.isFinite(payload.artifactBytes) ? Number(payload.artifactBytes) : null;
-    const artifactSha256 = String(payload.artifactSha256 || '').trim();
-    const restoredFiles = Number.isFinite(payload.restoredFiles) ? Number(payload.restoredFiles) : 0;
-    const restoredDirectories = Number.isFinite(payload.restoredDirectories) ? Number(payload.restoredDirectories) : 0;
-    const restoredSymlinks = Number.isFinite(payload.restoredSymlinks) ? Number(payload.restoredSymlinks) : 0;
-    const ignoredEntries = Number.isFinite(payload.ignoredEntries) ? Number(payload.ignoredEntries) : 0;
-    const createdAt = String(payload.createdAt || '').trim();
-    const savedAt = String(payload.savedAt || '').trim();
-    const expiresAt = String(payload.expiresAt || '').trim();
-    const lastValidatedAt = String(payload.lastValidatedAt || '').trim();
-
-    if (!cacheStatusMeta && !key && cachePaths.length === 0 && !reason && !manifestPath && !summaryPath) {
-      return '';
-    }
-
-    let html = '<div class="run-detail-subsection">';
-    html += '<div class="agent-meta">Environment Cache</div>';
-    if (cacheStatusMeta) {
-      html += `<div class="run-detail-tag-row"><span class="tag ${cacheStatusMeta.className}">${escapeHtml(cacheStatusMeta.label)}</span>`;
-      if (artifactBytes != null) {
-        html += ` <span class="tag">${escapeHtml(String(artifactBytes))} bytes</span>`;
-      }
-      html += '</div>';
-    }
-    if (reason) {
-      html += `<div class="agent-meta">${escapeHtml(reason)}</div>`;
-    }
-    if (key) {
-      html += `<div class="agent-meta">cacheKey：${escapeHtml(key)}</div>`;
-    }
-    if (manifestPath) {
-      html += `<div class="agent-meta">manifest：${escapeHtml(manifestPath)}</div>`;
-    }
-    if (summaryPath) {
-      html += `<div class="agent-meta">summary：${escapeHtml(summaryPath)}</div>`;
-    }
-    if (artifactSha256) {
-      html += `<div class="agent-meta">sha256：${escapeHtml(artifactSha256)}</div>`;
-    }
-    if (createdAt) {
-      html += `<div class="agent-meta">创建：${escapeHtml(createdAt)}</div>`;
-    }
-    if (savedAt) {
-      html += `<div class="agent-meta">最近保存：${escapeHtml(savedAt)}</div>`;
-    }
-    if (lastValidatedAt) {
-      html += `<div class="agent-meta">最近验证：${escapeHtml(lastValidatedAt)}</div>`;
-    }
-    if (expiresAt) {
-      html += `<div class="agent-meta">过期时间：${escapeHtml(expiresAt)}</div>`;
-    }
-    if (cachePaths.length > 0) {
-      html += `<div class="agent-meta">路径：${escapeHtml(cachePaths.map((entry) => `${entry.root || '?'}:${entry.path || '?'}`).join(', '))}</div>`;
-    }
-    if (restoredFiles || restoredDirectories || restoredSymlinks || ignoredEntries) {
-      html += `<div class="agent-meta">恢复文件 ${escapeHtml(String(restoredFiles))}，目录 ${escapeHtml(String(restoredDirectories))}，软链 ${escapeHtml(String(restoredSymlinks))}，忽略 ${escapeHtml(String(ignoredEntries))}</div>`;
-    }
-    html += '</div>';
-    return html;
-  }
-
-  function buildEnvironmentBuildDetailsHtml(buildResult) {
-    if (!buildResult || typeof buildResult !== 'object') {
-      return '';
-    }
-    const statusMeta = getEnvironmentBuildStatusMeta(buildResult.status);
-    const asset = buildResult.asset && typeof buildResult.asset === 'object' ? buildResult.asset : {};
-    const envProfile = String(buildResult.envProfile || buildResult.env_profile || asset.envProfile || asset.env_profile || '').trim();
-    const image = String(buildResult.image || asset.image || '').trim();
-    const suggestedImage = String(buildResult.suggestedImage || buildResult.suggested_image || '').trim();
-    const imageDigest = String(buildResult.imageDigest || buildResult.image_digest || asset.imageDigest || asset.image_digest || '').trim();
-    const manifestPath = String(buildResult.manifestPath || buildResult.manifest_path || asset.manifestPath || asset.manifest_path || '').trim();
-    const manifestHash = String(buildResult.manifestHash || buildResult.manifest_hash || asset.manifestHash || asset.manifest_hash || '').trim();
-    const baseImage = String(buildResult.baseImage || buildResult.base_image || '').trim();
-    const baseImageDigest = String(buildResult.baseImageDigest || buildResult.base_image_digest || asset.baseImageDigest || asset.base_image_digest || '').trim();
-    const testingMdHash = String(buildResult.testingMdHash || buildResult.testing_md_hash || asset.testingMdHash || asset.testing_md_hash || '').trim();
-    const buildCommand = String(buildResult.buildCommand || buildResult.build_command || '').trim();
-    const error = String(buildResult.error || '').trim();
-    const logs = String(buildResult.logs || '').trim();
-    const summary = getEnvironmentBuildResultSummary(buildResult);
-
-    if (!statusMeta && !summary && !error && !manifestPath && !manifestHash && !image && !suggestedImage && !envProfile) {
-      return '';
-    }
-
-    let html = '<div class="run-detail-section">';
-    html += '<div class="section-label">环境资产构建</div>';
-    if (statusMeta) {
-      html += `<span class="tag ${statusMeta.className}">${escapeHtml(statusMeta.label)}</span>`;
-    }
-    if (envProfile) {
-      html += ` <span class="tag">profile ${escapeHtml(envProfile)}</span>`;
-    }
-    if (summary) {
-      html += `<div class="agent-meta">${escapeHtml(summary)}</div>`;
-    }
-    if (error) {
-      html += `<div class="run-detail-diag">${escapeHtml(error)}</div>`;
-    }
-    if (manifestPath) {
-      html += `<div class="agent-meta">manifest：${escapeHtml(manifestPath)}</div>`;
-    }
-    if (manifestHash) {
-      html += `<div class="agent-meta">manifestHash：${escapeHtml(manifestHash)}</div>`;
-    }
-    if (image) {
-      html += `<div class="agent-meta">image：${escapeHtml(image)}</div>`;
-    } else if (suggestedImage) {
-      html += `<div class="agent-meta">建议 image：${escapeHtml(suggestedImage)}</div>`;
-    }
-    if (imageDigest) {
-      html += `<div class="agent-meta">imageDigest：${escapeHtml(imageDigest)}</div>`;
-    }
-    if (baseImage) {
-      html += `<div class="agent-meta">baseImage：${escapeHtml(baseImage)}</div>`;
-    }
-    if (baseImageDigest) {
-      html += `<div class="agent-meta">baseImageDigest：${escapeHtml(baseImageDigest)}</div>`;
-    }
-    if (testingMdHash) {
-      html += `<div class="agent-meta">TESTING.md hash：${escapeHtml(testingMdHash)}</div>`;
-    }
-    if (buildCommand) {
-      html += `<div class="agent-meta">build 命令</div><pre class="run-detail-pre">${escapeHtml(buildCommand)}</pre>`;
-    }
-    if (logs) {
-      html += '<details class="run-detail-collapse">';
-      html += '<summary class="agent-meta">查看 image build 日志</summary>';
-      html += `<pre class="run-detail-pre">${escapeHtml(logs)}</pre>`;
-      html += '</details>';
-    }
-    html += '</div>';
-    return html;
   }
 
   function buildRunDetailReasonListHtml(title, reasons, formatter = null) {
@@ -2099,6 +1994,10 @@
     dom.detailTabPanels.forEach((panel) => {
       panel.classList.toggle('hidden', panel.dataset.stDetailPanel !== nextTab);
     });
+    syncSelectedCaseRunsAutoRefresh();
+    if (nextTab === 'runs' && state.selectedCaseId) {
+      scheduleSelectedCaseRunsRefresh(state.selectedCaseId, { force: true });
+    }
   }
 
   function focusCreateSection() {
@@ -2137,6 +2036,19 @@
     }
   }
 
+  function openCaseLiveRun(caseId) {
+    const normalizedCaseId = String(caseId || '').trim();
+    if (!normalizedCaseId) {
+      return false;
+    }
+    const targetCase = state.testCases.find((testCase) => testCase && testCase.id === normalizedCaseId) || null;
+    if (!targetCase) {
+      return false;
+    }
+    selectCase(normalizedCaseId, { detailTab: 'runs', scrollIntoView: true });
+    return true;
+  }
+
   dom.detailTabButtons.forEach((btn) => {
     btn.addEventListener('click', () => {
       switchDetailTab(btn.dataset.stDetailTab || 'overview');
@@ -2171,7 +2083,6 @@
   const LS_KEY_TRELLIS_MODE = 'caff_skill_test_trellis_mode';
   const LS_KEY_EGRESS_MODE = 'caff_skill_test_egress_mode';
   const LS_KEY_CHAIN_STOP_POLICY = 'caff_skill_test_chain_stop_policy';
-  const LS_KEY_PUBLISH_GATE = 'caff_skill_test_publish_gate';
   const LS_KEY_ENVIRONMENT_BUILD_IMAGE = 'caff_skill_test_environment_build_image';
   const DEFAULT_UI_ISOLATION_MODE = 'isolated';
   const DEFAULT_UI_TRELLIS_MODE = 'none';
@@ -2238,12 +2149,10 @@
 
   function readRunIsolationSettings() {
     const isolationMode = normalizeUiIsolationMode(dom.isolationModeSelect ? dom.isolationModeSelect.value : DEFAULT_UI_ISOLATION_MODE);
-    const publishGateChecked = Boolean(dom.publishGateInput && dom.publishGateInput.checked);
     return {
       isolationMode,
       trellisMode: normalizeUiTrellisMode(dom.trellisModeSelect ? dom.trellisModeSelect.value : DEFAULT_UI_TRELLIS_MODE),
       egressMode: normalizeUiEgressMode(dom.egressModeSelect ? dom.egressModeSelect.value : DEFAULT_UI_EGRESS_MODE),
-      publishGate: isolationMode === 'isolated' ? publishGateChecked : false,
     };
   }
 
@@ -2314,25 +2223,19 @@
     if (dom.egressModeSelect) {
       dom.egressModeSelect.disabled = !isolated;
     }
-    if (dom.publishGateInput) {
-      if (!isolated) {
-        dom.publishGateInput.checked = false;
-      }
-      dom.publishGateInput.disabled = !isolated;
-    }
     if (dom.trellisModeHelp) {
       dom.trellisModeHelp.textContent = getTrellisModeHelpText(settings.isolationMode, settings.trellisMode);
     }
     if (dom.runSettingsHint) {
       const chainPolicyLabel = getChainStopPolicyLabel(readRunChainSettings().stopPolicy);
       if (!isolated) {
-        dom.runSettingsHint.textContent = `当前运行默认：legacy-local（仅本地调试）；链继续策略 ${chainPolicyLabel}。它不会 materialize Trellis fixture，也不能作为 publish gate 的隔离证据。`;
+        dom.runSettingsHint.textContent = `当前运行默认：legacy-local（仅本地调试）；链继续策略 ${chainPolicyLabel}。它不会 materialize Trellis fixture，也不能作为隔离证据。`;
       } else if (settings.trellisMode === 'fixture') {
-        dom.runSettingsHint.textContent = `当前运行默认：${getIsolationModeLabel(settings.isolationMode)} / ${getTrellisModeLabel(settings.trellisMode)} / ${getEgressModeLabel(settings.egressMode)} / ${chainPolicyLabel}。适合 before-dev、trellis-write 这类要最小 .trellis 的稳定测试${settings.publishGate ? '；Publish Gate 已开启。' : '。'}`;
+        dom.runSettingsHint.textContent = `当前运行默认：${getIsolationModeLabel(settings.isolationMode)} / ${getTrellisModeLabel(settings.trellisMode)} / ${getEgressModeLabel(settings.egressMode)} / ${chainPolicyLabel}。适合 before-dev、trellis-write 这类要最小 .trellis 的稳定测试。`;
       } else if (settings.trellisMode === 'readonlySnapshot') {
-        dom.runSettingsHint.textContent = `当前运行默认：${getIsolationModeLabel(settings.isolationMode)} / ${getTrellisModeLabel(settings.trellisMode)} / ${getEgressModeLabel(settings.egressMode)} / ${chainPolicyLabel}。适合贴近真实 .trellis/spec 的回归，写操作只会留在 case 世界${settings.publishGate ? '；Publish Gate 已开启。' : '。'}`;
+        dom.runSettingsHint.textContent = `当前运行默认：${getIsolationModeLabel(settings.isolationMode)} / ${getTrellisModeLabel(settings.trellisMode)} / ${getEgressModeLabel(settings.egressMode)} / ${chainPolicyLabel}。适合贴近真实 .trellis/spec 的回归，写操作只会留在 case 世界。`;
       } else {
-        dom.runSettingsHint.textContent = `当前运行默认：${getIsolationModeLabel(settings.isolationMode)} / ${getTrellisModeLabel(settings.trellisMode)} / ${getEgressModeLabel(settings.egressMode)} / ${chainPolicyLabel}。普通 skill 建议保持 none；Trellis 类 skill 可切到 fixture 或 readonlySnapshot${settings.publishGate ? '；Publish Gate 已开启。' : '。'}`;
+        dom.runSettingsHint.textContent = `当前运行默认：${getIsolationModeLabel(settings.isolationMode)} / ${getTrellisModeLabel(settings.trellisMode)} / ${getEgressModeLabel(settings.egressMode)} / ${chainPolicyLabel}。普通 skill 建议保持 none；Trellis 类 skill 可切到 fixture 或 readonlySnapshot。`;
       }
     }
     syncEnvironmentBuildRunUi(getSelectedTestCase());
@@ -2349,7 +2252,6 @@
       if (dom.trellisModeSelect) localStorage.setItem(LS_KEY_TRELLIS_MODE, normalizeUiTrellisMode(dom.trellisModeSelect.value));
       if (dom.egressModeSelect) localStorage.setItem(LS_KEY_EGRESS_MODE, normalizeUiEgressMode(dom.egressModeSelect.value));
       if (dom.chainStopPolicySelect) localStorage.setItem(LS_KEY_CHAIN_STOP_POLICY, normalizeUiChainStopPolicy(dom.chainStopPolicySelect.value));
-      if (dom.publishGateInput) localStorage.setItem(LS_KEY_PUBLISH_GATE, dom.publishGateInput.checked ? 'true' : 'false');
       if (dom.environmentBuildImageInput) localStorage.setItem(LS_KEY_ENVIRONMENT_BUILD_IMAGE, dom.environmentBuildImageInput.checked ? 'true' : 'false');
     } catch { /* ignore */ }
   }
@@ -2363,7 +2265,6 @@
       const savedTrellisMode = localStorage.getItem(LS_KEY_TRELLIS_MODE);
       const savedEgressMode = localStorage.getItem(LS_KEY_EGRESS_MODE);
       const savedChainStopPolicy = localStorage.getItem(LS_KEY_CHAIN_STOP_POLICY);
-      const savedPublishGate = localStorage.getItem(LS_KEY_PUBLISH_GATE);
       const savedEnvironmentBuildImage = localStorage.getItem(LS_KEY_ENVIRONMENT_BUILD_IMAGE);
       if (savedAgent != null && dom.agentSelect) dom.agentSelect.value = savedAgent;
       if (savedModel != null && dom.modelSelect) dom.modelSelect.value = savedModel;
@@ -2372,7 +2273,6 @@
       if (savedTrellisMode != null && dom.trellisModeSelect) dom.trellisModeSelect.value = normalizeUiTrellisMode(savedTrellisMode);
       if (savedEgressMode != null && dom.egressModeSelect) dom.egressModeSelect.value = normalizeUiEgressMode(savedEgressMode);
       if (savedChainStopPolicy != null && dom.chainStopPolicySelect) dom.chainStopPolicySelect.value = normalizeUiChainStopPolicy(savedChainStopPolicy);
-      if (savedPublishGate != null && dom.publishGateInput) dom.publishGateInput.checked = savedPublishGate === 'true';
       if (savedEnvironmentBuildImage != null && dom.environmentBuildImageInput) dom.environmentBuildImageInput.checked = savedEnvironmentBuildImage === 'true';
     } catch { /* ignore */ }
     syncRunSettingsUi();
@@ -2449,7 +2349,6 @@
   if (dom.trellisModeSelect) dom.trellisModeSelect.addEventListener('change', handleRunSettingChange);
   if (dom.egressModeSelect) dom.egressModeSelect.addEventListener('change', handleRunSettingChange);
   if (dom.chainStopPolicySelect) dom.chainStopPolicySelect.addEventListener('change', handleRunSettingChange);
-  if (dom.publishGateInput) dom.publishGateInput.addEventListener('change', handleRunSettingChange);
   if (dom.environmentBuildImageInput) dom.environmentBuildImageInput.addEventListener('change', handleRunSettingChange);
 
   function getRunOptions(context = {}) {
@@ -2488,9 +2387,6 @@
     if (isolationSettings.isolationMode === 'isolated') {
       opts.trellisMode = isolationSettings.trellisMode;
       opts.egressMode = isolationSettings.egressMode;
-      if (isolationSettings.publishGate) {
-        opts.publishGate = true;
-      }
     }
     const chainSettings = readRunChainSettings();
     opts.stopPolicy = chainSettings.stopPolicy;
@@ -2566,6 +2462,14 @@
     });
   }
 
+  if (dom.caseChainFilter) {
+    dom.caseChainFilter.addEventListener('change', () => {
+      state.chainFilter = dom.caseChainFilter.value || 'all';
+      renderSelectedSkillOverview();
+      renderCaseList();
+    });
+  }
+
   if (dom.refreshSkillsButton) {
     dom.refreshSkillsButton.addEventListener('click', loadSkills);
   }
@@ -2588,8 +2492,10 @@
       if (action === 'clear-filters') {
         state.searchQuery = '';
         state.validityFilter = 'all';
+        state.chainFilter = 'all';
         if (dom.searchInput) dom.searchInput.value = '';
         if (dom.validityFilter) dom.validityFilter.value = 'all';
+        if (dom.caseChainFilter) dom.caseChainFilter.value = 'all';
         renderSelectedSkillOverview();
         renderCaseList();
         return;
@@ -2796,7 +2702,7 @@
       showToast(`链运行完成：${chainStatus}${warnings.length > 0 ? `（${warnings.length} 条提醒）` : ''}`);
       await Promise.all([loadTestCases(), loadSummary()]);
       if (state.selectedCaseId) {
-        await loadCaseRuns(state.selectedCaseId);
+        await caseDetailDataViewHelpers.loadCaseRuns(state.selectedCaseId);
       }
       return true;
     } catch (err) {
@@ -2814,175 +2720,39 @@
   }
 
   function renderSelectedSkillOverview() {
-    if (!dom.selectedHighlights || !dom.selectedSummary) return;
-    if (!state.selectedSkillId) {
-      dom.selectedHighlights.innerHTML = '<span class="tag tag-pending">先选一个 Skill</span>';
-      dom.selectedSummary.textContent = '这里会显示当前 Skill 的用例数量、草稿/Ready 分布、刷新状态和下一步建议。';
-      renderStatusCallout(dom.selectedStatusCallout, {
-        tone: 'pending',
-        label: '先选一个 Skill',
-        message: '先在顶部选择 Skill，下面的列表、详情和概览建议才会一起联动。',
-      });
-      return;
-    }
-
-    if (state.casesLoading && state.testCases.length === 0) {
-      dom.selectedHighlights.innerHTML = '<span class="tag tag-pending">正在加载当前 Skill 用例...</span>';
-      dom.selectedSummary.textContent = '正在拉取这个 Skill 的用例、状态和最近表现。';
-      renderStatusCallout(dom.selectedStatusCallout, {
-        tone: 'pending',
-        label: '正在刷新当前 Skill',
-        message: '正在同步这组 case 的列表、状态和最近结果；等一会儿就能继续巡检。',
-      });
-      return;
-    }
-
-    if (state.casesLoadError && state.testCases.length === 0) {
-      dom.selectedHighlights.innerHTML = '<span class="tag tag-error">用例加载失败</span>';
-      dom.selectedSummary.textContent = state.casesLoadError;
-      renderStatusCallout(dom.selectedStatusCallout, {
-        tone: 'error',
-        label: '先重试刷新',
-        message: '当前 Skill 的用例还没拉下来；先点重试拿到列表，再继续看详情或批量运行。',
-      });
-      return;
-    }
-
-    const totalCases = state.testCases.length;
-    const draftCount = state.testCases.filter((tc) => tc.caseStatus === 'draft').length;
-    const readyCount = state.testCases.filter((tc) => tc.caseStatus === 'ready').length;
-    const archivedCount = state.testCases.filter((tc) => tc.caseStatus === 'archived').length;
-    const recentFailing = state.testCases.filter((tc) => {
-      const run = tc.latestRun || null;
-      return isFailingRun(run);
-    }).length;
     const runSettings = readRunIsolationSettings();
-    const runModeLabel = getIsolationModeLabel(runSettings.isolationMode);
-    const trellisModeLabel = getTrellisModeLabel(runSettings.trellisMode);
-    const egressModeLabel = getEgressModeLabel(runSettings.egressMode);
-    const neverRunCount = state.testCases.filter((tc) => !tc.latestRun).length;
-    const caseValidations = state.testCases.map((tc) => readCaseValidation(tc));
-    const invalidCount = caseValidations.filter((validation) => validation.caseSchemaStatus === 'invalid').length;
-    const warningCount = caseValidations.filter((validation) => validation.caseSchemaStatus === 'warning').length;
-    const legacyCount = caseValidations.filter((validation) => validation.derivedFromLegacy === true).length;
-    const selectedSummary = state.summary.find((entry) => entry.skillId === state.selectedSkillId) || null;
-    const triggerRate = selectedSummary && selectedSummary.triggerRate != null
-      ? `${Math.round(selectedSummary.triggerRate * 100)}%`
-      : '—';
-    const executionRate = selectedSummary && selectedSummary.executionRate != null
-      ? `${Math.round(selectedSummary.executionRate * 100)}%`
-      : '—';
-    const environmentAssets = Array.isArray(state.environmentAssets) ? state.environmentAssets : [];
-    const readyEnvironmentAssets = environmentAssets.filter((entry) => entry && entry.asset && entry.asset.image).length;
-    const manifestOnlyEnvironmentAssets = environmentAssets.filter((entry) => entry && (!entry.asset || !entry.asset.image)).length;
-    const casesRefreshLabel = formatRefreshTime(state.casesLastLoadedAt);
-    const summaryRefreshLabel = formatRefreshTime(state.summaryLastLoadedAt);
-    const environmentAssetsRefreshLabel = formatRefreshTime(state.environmentAssetsLastLoadedAt);
-    const listRefreshTag = state.casesLoading
-      ? '<span class="tag tag-pending">列表刷新中...</span>'
-      : (state.casesLoadError ? '<span class="tag tag-error">列表刷新失败</span>' : '');
-
-    dom.selectedHighlights.innerHTML = [
-      `<span class="tag">共 ${totalCases} 条</span>`,
-      `<span class="tag tag-pending">Draft ${draftCount}</span>`,
-      `<span class="tag tag-success">Ready ${readyCount}</span>`,
-      `<span class="tag">Archived ${archivedCount}</span>`,
-      `<span class="tag">${escapeHtml(runModeLabel)}</span>`,
-      runSettings.isolationMode === 'isolated' ? `<span class="tag">${escapeHtml(trellisModeLabel)}</span>` : '<span class="tag tag-pending">非隔离 host 运行</span>',
-      runSettings.isolationMode === 'isolated' ? `<span class="tag">${escapeHtml(egressModeLabel)}</span>` : '',
-      runSettings.publishGate ? '<span class="tag tag-success">Publish Gate</span>' : '',
-      `<span class="tag">可批量运行 ${readyCount}</span>`,
-      readyEnvironmentAssets > 0 ? `<span class="tag tag-success">环境资产 ${readyEnvironmentAssets}</span>` : '',
-      manifestOnlyEnvironmentAssets > 0 ? `<span class="tag tag-pending">待 build 资产 ${manifestOnlyEnvironmentAssets}</span>` : '',
-      state.environmentAssetsLoadError ? '<span class="tag tag-error">环境资产刷新失败</span>' : '',
-      environmentAssetsRefreshLabel ? `<span class="tag">环境资产更新 ${escapeHtml(environmentAssetsRefreshLabel)}</span>` : '',
-      `<span class="tag">最近失败 ${recentFailing}</span>`,
-      neverRunCount > 0 ? `<span class="tag">未运行 ${neverRunCount}</span>` : '',
-      invalidCount > 0 ? `<span class="tag tag-error">结构异常 ${invalidCount}</span>` : '',
-      warningCount > 0 ? `<span class="tag tag-pending">结构提示 ${warningCount}</span>` : '',
-      legacyCount > 0 ? `<span class="tag">Legacy ${legacyCount}</span>` : '',
-      casesRefreshLabel ? `<span class="tag">列表更新 ${escapeHtml(casesRefreshLabel)}</span>` : '',
-      summaryRefreshLabel ? `<span class="tag">概览更新 ${escapeHtml(summaryRefreshLabel)}</span>` : '',
-      listRefreshTag,
-    ].filter(Boolean).join('');
-
-    const filterHint = state.searchQuery || state.validityFilter !== 'all'
-      ? `当前筛选后显示 ${getFilteredCases().length} 条；`
-      : '';
-    const refreshHint = state.casesLoadError
-      ? `最近一次列表刷新失败，当前仍显示${casesRefreshLabel ? `${casesRefreshLabel} 的` : '上一次成功加载的'}结果；`
-      : (casesRefreshLabel ? `列表最近一次成功刷新在 ${casesRefreshLabel}；` : '');
-    const summaryHint = summaryRefreshLabel ? `全局概览更新在 ${summaryRefreshLabel}；` : '';
-    const environmentAssetsHint = state.environmentAssetsLoadError
-      ? '共享环境资产刷新失败；'
-      : environmentAssets.length > 0
-        ? `共享环境资产 ${readyEnvironmentAssets} 个可直接复用${manifestOnlyEnvironmentAssets > 0 ? `，${manifestOnlyEnvironmentAssets} 个还只有 manifest` : ''}；`
-        : '';
-    const runDefaultsHint = runSettings.isolationMode === 'isolated'
-      ? `当前运行默认 ${runModeLabel} / ${trellisModeLabel} / ${egressModeLabel}${runSettings.publishGate ? ' / Publish Gate' : ''}；`
-      : '当前运行默认 legacy-local，仅适合本地调试，不能作为隔离证据；';
-    const nextStep = totalCases === 0
-      ? '下一步：先 AI 生成或手动创建第一条用例。'
-      : invalidCount > 0
-        ? `下一步：先修 ${invalidCount} 条结构异常 case，再标记 Ready 或运行。`
-        : readyCount === 0
-          ? '下一步：先把检查通过的 draft 标记为 Ready，再试单条或批量运行。'
-          : recentFailing > 0
-            ? `下一步：优先重试 ${recentFailing} 条最近失败 case，直接看失败原因。`
-            : neverRunCount > 0
-              ? `下一步：还有 ${neverRunCount} 条没跑过的 case，可以先单条跑一轮。`
-              : '下一步：可以继续批量运行 Ready 用例，或者切到回归对比看模型差异。';
-    dom.selectedSummary.textContent = `${runDefaultsHint}${refreshHint}${summaryHint}${environmentAssetsHint}${filterHint}当前 Skill 的加载成功率 ${triggerRate}，执行通过率 ${executionRate}。${nextStep}`;
-
-    let overviewCallout = null;
-    if (totalCases === 0) {
-      overviewCallout = {
-        tone: 'pending',
-        label: '先创建第一条 case',
-        message: '这个 Skill 还没有测试用例；先 AI 生成或手动创建，再继续跑列表和详情。',
-      };
-    } else if (invalidCount > 0) {
-      overviewCallout = {
-        tone: 'error',
-        label: '先修结构异常',
-        message: `当前有 ${invalidCount} 条 case 结构没过；先修 JSON / Rubric / 顺序字段，再标记 Ready 或运行。`,
-      };
-    } else if (recentFailing > 0) {
-      overviewCallout = {
-        tone: 'error',
-        label: '优先看失败 case',
-        message: `当前有 ${recentFailing} 条最近失败；可直接从列表点重试，或打开详情看失败原因和运行校验提示。`,
-      };
-    } else if (state.casesLoadError) {
-      overviewCallout = {
-        tone: 'warning',
-        label: '当前先看已加载结果',
-        message: `列表刷新失败，当前仍显示${casesRefreshLabel ? `${casesRefreshLabel} 的` : '上一次成功加载的'}结果；需要最新状态时点重试。`,
-      };
-    } else if (readyCount === 0) {
-      overviewCallout = {
-        tone: 'pending',
-        label: '先把 Draft 变 Ready',
-        message: '当前还没有可批量运行的 case；先确认详情内容，再把通过检查的 draft 标成 Ready。',
-      };
-    } else if (neverRunCount > 0) {
-      overviewCallout = {
-        tone: 'success',
-        label: '可以先跑一轮',
-        message: `还有 ${neverRunCount} 条 case 没跑过；先单条跑一轮，会更容易找到失败原因。`,
-      };
-    } else {
-      overviewCallout = {
-        tone: 'success',
-        label: '继续巡检',
-        message: '列表和概览都已就绪；可以继续批量运行 Ready 用例，或者切到回归对比看模型差异。',
-      };
-    }
-    renderStatusCallout(dom.selectedStatusCallout, overviewCallout);
+    selectedSkillOverviewViewHelpers.renderSelectedSkillOverview({
+      selectedHighlights: dom.selectedHighlights,
+      selectedSummary: dom.selectedSummary,
+      selectedStatusCallout: dom.selectedStatusCallout,
+    }, {
+      selectedSkillId: state.selectedSkillId,
+      testCases: state.testCases,
+      casesLoading: state.casesLoading,
+      casesLoadError: state.casesLoadError,
+      casesLastLoadedAt: state.casesLastLoadedAt,
+      summary: state.summary,
+      summaryLastLoadedAt: state.summaryLastLoadedAt,
+      environmentAssets: state.environmentAssets,
+      environmentAssetsLoadError: state.environmentAssetsLoadError,
+      environmentAssetsLastLoadedAt: state.environmentAssetsLastLoadedAt,
+      searchQuery: state.searchQuery,
+      validityFilter: state.validityFilter,
+      chainFilter: state.chainFilter,
+      filteredCaseCount: getFilteredCases().length,
+      runSettings,
+      runLabels: {
+        isolationModeLabel: getIsolationModeLabel(runSettings.isolationMode),
+        trellisModeLabel: getTrellisModeLabel(runSettings.trellisMode),
+        egressModeLabel: getEgressModeLabel(runSettings.egressMode),
+      },
+    });
   }
 
   function getFilteredCases() {
     return state.testCases.filter((tc) => {
+      const chainMeta = getSkillTestChainPlanningMeta(tc);
+      const chainCase = Boolean(chainMeta.exportChainId && chainMeta.sequenceIndex != null);
       const matchesQuery = !state.searchQuery || [
         tc.id,
         getCasePrompt(tc),
@@ -2994,217 +2764,77 @@
         getEnvironmentConfigSearchText(tc.environmentConfig),
         tc.caseStatus,
         tc.loadingMode,
+        chainMeta.chainId,
+        chainMeta.exportChainId,
+        chainCase ? 'chain' : 'single',
       ].some((value) => String(value || '').toLowerCase().includes(state.searchQuery));
 
       const latestRun = tc.latestRun || null;
       const matchesValidity = state.validityFilter === 'all'
         || tc.caseStatus === state.validityFilter
         || (state.validityFilter === 'failing' && isFailingRun(latestRun));
+      const matchesChain = state.chainFilter === 'all'
+        || (state.chainFilter === 'chain' && chainCase)
+        || (state.chainFilter === 'single' && !chainCase);
 
-      return matchesQuery && matchesValidity;
+      return matchesQuery && matchesValidity && matchesChain;
     });
   }
 
-  function renderCaseList() {
-    if (!dom.caseList || !dom.caseCount) return;
-    dom.caseCount.textContent = `${state.testCases.length} 个用例`;
-
-    const filteredCases = getFilteredCases();
-
-    if (dom.filterCount) {
-      dom.filterCount.textContent = `显示 ${filteredCases.length} / ${state.testCases.length}`;
-    }
-
-    if (state.casesLoading && state.testCases.length === 0) {
-      dom.caseList.innerHTML = `
-        <div class="empty-state compact-empty-state">
-          <p class="section-hint">正在加载测试用例...</p>
-        </div>
-      `;
+  async function runCaseFromList(testCase, button) {
+    if (!testCase || !testCase.id) {
       return;
     }
+    selectCase(testCase.id, { detailTab: 'runs', scrollIntoView: true });
+    await runTestCase(testCase.id, {
+      button,
+      idleLabel: button && button.textContent ? button.textContent : '运行',
+      busyLabel: '运行中...',
+      detailTab: 'runs',
+      scrollIntoView: true,
+    });
+  }
 
-    if (state.casesLoadError && state.testCases.length === 0) {
-      dom.caseList.innerHTML = `
-        <div class="empty-state compact-empty-state">
-          <p class="section-hint">${escapeHtml(state.casesLoadError)}</p>
-          <div class="panel-actions skill-test-empty-actions">
-            <button class="ghost-button" type="button" data-st-case-action="retry-load">重试</button>
-          </div>
-        </div>
-      `;
+  async function toggleCaseStatusFromList(testCase) {
+    if (!testCase || !testCase.id) {
       return;
     }
-
-    if (filteredCases.length === 0) {
-      if (!state.selectedSkillId) {
-        dom.caseList.innerHTML = `
-          <div class="empty-state compact-empty-state">
-            <p class="section-hint">先从顶部选一个 Skill，再来看它的测试用例。</p>
-          </div>
-        `;
-        return;
+    try {
+      await caseFormViewHelpers.toggleCaseStatus(testCase);
+    } catch (err) {
+      const issues = extractIssuesFromError(err);
+      if (testCase.id === state.selectedCaseId) {
+        renderIssuePanel(dom.detailIssues, issues, '切换状态失败校验提示');
       }
-
-      const hasCases = state.testCases.length > 0;
-      dom.caseList.innerHTML = hasCases
-        ? `
-          <div class="empty-state compact-empty-state">
-            <p class="section-hint">没有符合当前筛选的用例，试试清空搜索或切回“全部状态”。</p>
-            <div class="panel-actions skill-test-empty-actions">
-              <button class="ghost-button" type="button" data-st-case-action="clear-filters">清空筛选</button>
-            </div>
-          </div>
-        `
-        : `
-          <div class="empty-state compact-empty-state">
-            <p class="section-hint">这个 Skill 还没有测试用例；你可以直接生成，或者手动补一条更精确的 case。</p>
-            <div class="panel-actions skill-test-empty-actions">
-              <button class="ghost-button" type="button" data-st-case-action="generate">AI 生成测试用例</button>
-              <button class="ghost-button" type="button" data-st-case-action="open-create">手动创建</button>
-            </div>
-          </div>
-        `;
-      return;
+      const issueMessage = buildIssueToastMessage('切换状态失败，', issues);
+      showToast(issueMessage || ('切换状态失败: ' + (err.message || err)));
     }
+  }
 
-    dom.caseList.innerHTML = '';
-
-    if (state.casesLoading || state.casesLoadError) {
-      const banner = document.createElement('div');
-      const casesRefreshLabel = formatRefreshTime(state.casesLastLoadedAt);
-      banner.className = `skill-test-inline-banner ${state.casesLoadError ? 'skill-test-inline-banner-error' : 'skill-test-inline-banner-pending'}`;
-      banner.innerHTML = state.casesLoadError
-        ? `
-          <p class="section-hint">列表刷新失败，当前仍显示${casesRefreshLabel ? `${escapeHtml(casesRefreshLabel)} 的` : '上一次成功加载的'}结果。</p>
-          <div class="panel-actions">
-            <button class="ghost-button" type="button" data-st-case-action="retry-load">重试</button>
-          </div>
-        `
-        : `<p class="section-hint">列表刷新中${casesRefreshLabel ? `，当前先显示 ${escapeHtml(casesRefreshLabel)} 的结果。` : '，你可以先查看已加载结果。'}</p>`;
-      dom.caseList.appendChild(banner);
-    }
-
-    for (const tc of filteredCases) {
-      const card = document.createElement('article');
-      card.className = 'skill-test-case-card' + (tc.id === state.selectedCaseId ? ' agent-card-selected' : '');
-      card.dataset.caseId = tc.id;
-
-      const validityMeta = getCaseStatusMeta(tc.caseStatus);
-      const caseValidation = readCaseValidation(tc);
-      const readinessMeta = getCaseReadinessMeta(tc, caseValidation);
-      const latestRunMeta = getLatestRunStatusMeta(tc.latestRun);
-      const schemaStatusMeta = getCaseSchemaStatusMeta(caseValidation.caseSchemaStatus);
-      const loadingModeLabel = getLoadingModeLabel(tc.loadingMode);
-      const expectedToolsText = formatExpectedTools(tc.expectedTools);
-      const environmentEnabled = isEnvironmentConfigEnabled(tc.environmentConfig);
-      const environmentSummary = environmentEnabled ? clipText(formatEnvironmentConfigSummary(tc.environmentConfig, tc.latestRun), 120) : '';
-      const lastOutcome = getLastOutcomeSummary(tc.latestRun);
-      const goalSummary = clipText(tc.expectedGoal || tc.expectedBehavior || tc.note || '生成后先进入 draft，等待你修改。', 90);
-      const latestSummary = clipText(lastOutcome, 96);
-      const caseIdentity = tc.id ? `#${tc.id.slice(0, 8)}` : '未命名';
-      const recentRunLabel = tc.latestRun && tc.latestRun.createdAt
-        ? `最近运行 ${new Date(tc.latestRun.createdAt).toLocaleString()}`
-        : '还没跑过';
-      const validationSummary = caseValidation.issues.length > 0
-        ? `用例校验 ${buildIssueSummary(caseValidation.issues)}`
-        : caseValidation.derivedFromLegacy === true
-          ? '用例由 legacy 结构映射而来'
-          : '';
-      const schemaTag = schemaStatusMeta && caseValidation.caseSchemaStatus !== 'valid'
-        ? `<span class="tag ${schemaStatusMeta.className}">${escapeHtml(schemaStatusMeta.label)}</span>`
-        : '';
-      const caseCallout = getCaseActionCallout(tc, caseValidation);
-      const calloutHtml = caseCallout
-        ? `
-        <div class="skill-test-case-callout skill-test-status-callout skill-test-status-callout-${caseCallout.tone}">
-          <div class="skill-test-status-callout-label">${escapeHtml(caseCallout.label)}</div>
-          <p class="section-hint">${escapeHtml(caseCallout.message)}</p>
-        </div>
-      `
-        : '';
-
-      card.innerHTML = `
-        <div class="skill-test-case-card-head">
-          <div>
-            <div class="skill-test-case-card-id">${escapeHtml(caseIdentity)}</div>
-            <div class="skill-test-case-card-meta">${escapeHtml(loadingModeLabel)}</div>
-          </div>
-          <div class="skill-test-case-card-tags">
-            <span class="tag ${validityMeta.className}">${validityMeta.label}</span>
-            <span class="tag ${readinessMeta.className}">${escapeHtml(readinessMeta.label)}</span>
-            ${latestRunMeta ? `<span class="tag ${latestRunMeta.className}">${escapeHtml(latestRunMeta.label)}</span>` : ''}
-            ${environmentEnabled ? '<span class="tag">环境链</span>' : ''}
-            ${schemaTag}
-          </div>
-        </div>
-        <p class="skill-test-case-card-prompt">${escapeHtml(clipText(getCasePrompt(tc), 120))}</p>
-        <div class="skill-test-case-card-meta">${escapeHtml(recentRunLabel)}</div>
-        <div class="skill-test-case-card-meta">${escapeHtml(goalSummary)}</div>
-        <div class="skill-test-case-card-meta">${escapeHtml(clipText(expectedToolsText, 120))}</div>
-        ${environmentSummary ? `<div class="skill-test-case-card-meta">${escapeHtml(environmentSummary)}</div>` : ''}
-        ${validationSummary ? `<div class="skill-test-case-card-meta">${escapeHtml(validationSummary)}</div>` : ''}
-        <div class="skill-test-case-card-meta">${escapeHtml(latestSummary)}</div>
-        ${calloutHtml}
-      `;
-
-      const actions = document.createElement('div');
-      actions.className = 'skill-test-case-card-actions';
-
-      const viewButton = document.createElement('button');
-      viewButton.type = 'button';
-      viewButton.className = 'mini-action';
-      viewButton.textContent = '查看详情';
-      viewButton.addEventListener('click', (event) => {
-        event.stopPropagation();
-        selectCase(tc.id, { detailTab: 'overview', scrollIntoView: true });
-      });
-
-      const runButton = document.createElement('button');
-      runButton.type = 'button';
-      runButton.className = 'mini-action';
-      runButton.textContent = isFailingRun(tc.latestRun) ? '重试' : '运行';
-      runButton.addEventListener('click', async (event) => {
-        event.stopPropagation();
-        selectCase(tc.id, { detailTab: 'runs', scrollIntoView: true });
-        await runTestCase(tc.id, {
-          button: runButton,
-          idleLabel: runButton.textContent || '运行',
-          busyLabel: '运行中...',
-          detailTab: 'runs',
-          scrollIntoView: true,
-        });
-      });
-
-      const statusButton = document.createElement('button');
-      statusButton.type = 'button';
-      statusButton.className = 'mini-action';
-      statusButton.textContent = tc.caseStatus === 'ready' ? '改回 Draft' : (caseValidation.caseSchemaStatus === 'invalid' ? '修好后再 Ready' : '标记 Ready');
-      statusButton.addEventListener('click', async (event) => {
-        event.stopPropagation();
-        try {
-          await toggleCaseStatus(tc);
-        } catch (err) {
-          const issues = extractIssuesFromError(err);
-          if (tc.id === state.selectedCaseId) {
-            renderIssuePanel(dom.detailIssues, issues, '切换状态失败校验提示');
-          }
-          const issueMessage = buildIssueToastMessage('切换状态失败，', issues);
-          showToast(issueMessage || ('切换状态失败: ' + (err.message || err)));
-        }
-      });
-
-      actions.appendChild(viewButton);
-      actions.appendChild(runButton);
-      actions.appendChild(statusButton);
-      card.appendChild(actions);
-
-      card.addEventListener('click', () => {
-        selectCase(tc.id, { detailTab: 'overview' });
-      });
-
-      dom.caseList.appendChild(card);
-    }
+  function renderCaseList() {
+    caseListViewHelpers.renderCaseList(
+      {
+        caseList: dom.caseList,
+        caseCount: dom.caseCount,
+        filterCount: dom.filterCount,
+      },
+      {
+        selectedSkillId: state.selectedSkillId,
+        testCases: state.testCases,
+        filteredCases: getFilteredCases(),
+        selectedCaseId: state.selectedCaseId,
+        casesLoading: state.casesLoading,
+        casesLoadError: state.casesLoadError,
+        casesLastLoadedAt: state.casesLastLoadedAt,
+      },
+      {
+        onSelectCase: (caseId, options) => {
+          selectCase(caseId, options);
+        },
+        onRunCase: (testCase, button) => runCaseFromList(testCase, button),
+        onToggleCaseStatus: (testCase) => toggleCaseStatusFromList(testCase),
+      }
+    );
   }
 
   function getSkillTestChainPlanningMeta(testCase) {
@@ -3237,14 +2867,57 @@
     if (!normalizedExportChainId) {
       return [];
     }
+    const seenCaseIds = new Set();
     return state.testCases
       .filter((testCase) => getSkillTestChainPlanningMeta(testCase).exportChainId === normalizedExportChainId)
       .slice()
       .sort((left, right) => {
         const leftSequence = getSkillTestChainPlanningMeta(left).sequenceIndex || 0;
         const rightSequence = getSkillTestChainPlanningMeta(right).sequenceIndex || 0;
-        return leftSequence - rightSequence;
+        if (leftSequence !== rightSequence) {
+          return leftSequence - rightSequence;
+        }
+        const leftId = String(left && left.id || '').trim();
+        const rightId = String(right && right.id || '').trim();
+        return leftId.localeCompare(rightId);
+      })
+      .filter((testCase) => {
+        const caseId = String(testCase && testCase.id || '').trim();
+        if (!caseId) {
+          return true;
+        }
+        if (seenCaseIds.has(caseId)) {
+          return false;
+        }
+        seenCaseIds.add(caseId);
+        return true;
       });
+  }
+
+  function isRunnableChainCaseSet(chainCases, exportChainId) {
+    if (!Array.isArray(chainCases) || chainCases.length === 0 || !exportChainId) {
+      return false;
+    }
+    const sequenceOwners = new Set();
+    const orderedSequenceIndexes = [];
+    for (const entry of chainCases) {
+      const entryMeta = getSkillTestChainPlanningMeta(entry);
+      if (
+        entryMeta.exportChainId !== exportChainId
+        || entryMeta.sequenceIndex == null
+        || entryMeta.loadingMode !== 'full'
+        || entryMeta.testType !== 'execution'
+      ) {
+        return false;
+      }
+      if (sequenceOwners.has(entryMeta.sequenceIndex)) {
+        return false;
+      }
+      sequenceOwners.add(entryMeta.sequenceIndex);
+      orderedSequenceIndexes.push(entryMeta.sequenceIndex);
+    }
+    orderedSequenceIndexes.sort((left, right) => left - right);
+    return orderedSequenceIndexes.every((sequenceIndex, index) => sequenceIndex === index + 1);
   }
 
   function getCaseChainRunRequest(testCase) {
@@ -3259,1351 +2932,215 @@
     if (chainCases.length === 0) {
       return null;
     }
-    const eligible = chainCases.every((entry) => {
-      const entryMeta = getSkillTestChainPlanningMeta(entry);
-      return entryMeta.exportChainId === chainMeta.exportChainId
-        && entryMeta.sequenceIndex != null
-        && entryMeta.loadingMode === 'full'
-        && entryMeta.testType === 'execution';
-    });
     return {
       exportChainId: chainMeta.exportChainId,
       chainId: chainMeta.chainId || chainMeta.exportChainId,
       caseIds: chainCases.map((entry) => entry.id),
       chainCases,
-      eligible,
+      eligible: isRunnableChainCaseSet(chainCases, chainMeta.exportChainId),
     };
   }
 
-  function buildSkillTestDesignSourceTags(tc) {
-    const sourceMetadata = tc && tc.sourceMetadata && typeof tc.sourceMetadata === 'object' ? tc.sourceMetadata : null;
-    if (!sourceMetadata || sourceMetadata.source !== 'skill_test_chat_workbench') {
-      return '';
-    }
-
-    const designMetadata = sourceMetadata.skillTestDesign && typeof sourceMetadata.skillTestDesign === 'object'
-      ? sourceMetadata.skillTestDesign
-      : {};
-    const chainPlanning = designMetadata.chainPlanning && typeof designMetadata.chainPlanning === 'object'
-      ? designMetadata.chainPlanning
-      : null;
-    const tags = [];
-    const sourceTitle = [
-      sourceMetadata.conversationId ? `conversation=${sourceMetadata.conversationId}` : '',
-      sourceMetadata.messageId ? `message=${sourceMetadata.messageId}` : '',
-      sourceMetadata.matrixId ? `matrix=${sourceMetadata.matrixId}` : '',
-      sourceMetadata.matrixRowId ? `row=${sourceMetadata.matrixRowId}` : '',
-    ].filter(Boolean).join(' · ');
-
-    tags.push(`<span class="tag tag-pending" title="${escapeHtml(sourceTitle || 'Skill Test 聊天工作台导出')}">聊天导出</span>`);
-    if (sourceMetadata.matrixId) {
-      tags.push(`<span class="tag">matrix ${escapeHtml(clipText(sourceMetadata.matrixId, 24))}</span>`);
-    }
-    if (sourceMetadata.matrixRowId) {
-      tags.push(`<span class="tag">row ${escapeHtml(clipText(sourceMetadata.matrixRowId, 24))}</span>`);
-    }
-    if (designMetadata.environmentSource) {
-      tags.push(`<span class="tag">环境 ${escapeHtml(designMetadata.environmentSource)}</span>`);
-    }
-    if (chainPlanning && chainPlanning.chainId) {
-      tags.push(`<span class="tag">链 ${escapeHtml(clipText(chainPlanning.chainId, 24))}</span>`);
-    }
-    return tags.join('');
+  if (typeof skillTestUiModules.createChainRailViewHelpers !== 'function') {
+    throw new Error('Missing skill-test chain rail helpers');
   }
+  const chainRailViewHelpers = skillTestUiModules.createChainRailViewHelpers({
+    getSkillTestChainPlanningMeta,
+    getChainCasesForExportChain,
+    getLiveRunForCaseId: (caseId) => state.liveSkillRunsByCaseId.get(caseId) || null,
+    isFailingRun,
+    isPassedFlag,
+    clipText,
+    escapeHtml,
+    getCasePrompt,
+  });
+  const isChainCase = chainRailViewHelpers.isChainCase;
+  const getChainCaseView = chainRailViewHelpers.getChainCaseView;
+  const getChainRailNodeState = chainRailViewHelpers.getChainRailNodeState;
+  const getChainRailDescriptors = chainRailViewHelpers.getChainRailDescriptors;
+  const buildChainRailHtml = chainRailViewHelpers.buildChainRailHtml;
+
+  if (typeof skillTestUiModules.createCaseListViewHelpers !== 'function') {
+    throw new Error('Missing skill-test case list view helpers');
+  }
+  const caseListViewHelpers = skillTestUiModules.createCaseListViewHelpers({
+    escapeHtml,
+    clipText,
+    formatRefreshTime,
+    buildCompactEmptyStateHtml,
+    buildInlineBannerHtml,
+    getChainCaseView,
+    buildChainRailHtml,
+    getCaseStatusMeta,
+    readCaseValidation,
+    getCaseReadinessMeta,
+    getLatestRunStatusMeta,
+    getLoadingModeLabel,
+    formatExpectedTools,
+    isEnvironmentConfigEnabled,
+    formatEnvironmentConfigSummary,
+    getLastOutcomeSummary,
+    getCasePrompt,
+    buildIssueSummary,
+    getCaseSchemaStatusMeta,
+    getCaseActionCallout,
+    isFailingRun,
+  });
+
+  if (typeof skillTestUiModules.createCaseRunsViewHelpers !== 'function') {
+    throw new Error('Missing skill-test case runs view helpers');
+  }
+  const caseRunsViewHelpers = skillTestUiModules.createCaseRunsViewHelpers({
+    escapeHtml,
+    fetchJson,
+    getSelectedSkillId: () => state.selectedSkillId,
+    showToast,
+    downloadJsonFile,
+    exportSkillTestRunSession,
+    buildStatusTagHtml,
+    buildRunOutcomeTagHtml,
+    buildEnvironmentStatusTagHtml,
+    buildEnvironmentBuildTagHtml,
+    buildRunSummarySectionHtml,
+    buildToolTracePanelHtml,
+    liveRunStatusLabel,
+    liveChainRunStatusLabel,
+    liveRunTone,
+    isPassedFlag,
+    isFailedFlag,
+    getEnvironmentStatusMeta,
+    getEnvironmentBuildStatusMeta,
+    readEnvironmentBuildResultFromEvaluation,
+    buildEnvironmentRequirementListHtml,
+    buildEnvironmentCommandSectionHtml,
+    buildEnvironmentCacheDetailsHtml,
+    buildEnvironmentBuildDetailsHtml,
+    normalizeRunDetailStringList,
+    formatRunDetailPercent,
+    getFullAggregationReasonLabel,
+    getFullJudgeStatusMeta,
+    buildRunDetailReasonListHtml,
+    readRunValidation,
+    getIssuePanelToneClass,
+    buildIssuePanelHtml,
+    getCaseSchemaStatusMeta,
+    buildRunDetailTrace,
+    openCaseLiveRun,
+    getLiveCaseActionLabel,
+    fullDimensionLabels: FULL_DIMENSION_LABELS,
+  });
+  const renderCaseRuns = caseRunsViewHelpers.renderCaseRuns;
+
+  if (typeof skillTestUiModules.createCaseDetailViewHelpers !== 'function') {
+    throw new Error('Missing skill-test case detail view helpers');
+  }
+  const caseDetailViewHelpers = skillTestUiModules.createCaseDetailViewHelpers({
+    escapeHtml,
+    clipText,
+    getLoadingModeLabel,
+    getCaseReadinessMeta,
+    getLatestRunStatusMeta,
+    getCaseSchemaStatusMeta,
+    getCasePrompt,
+    formatExpectedTools,
+    formatEnvironmentConfigSummary,
+    getCaseStatusMeta,
+    getCaseStatusHelpText,
+    renderStatusCallout,
+    getCaseActionCallout,
+    syncEnvironmentBuildRunUi,
+    renderIssuePanel,
+    readCaseValidation,
+    getChainCaseView,
+    buildChainRailHtml,
+    isEnvironmentConfigEnabled,
+    getCaseChainRunRequest,
+    getChainStopPolicyLabel,
+    readRunChainSettings,
+    getLastOutcomeSummary,
+  });
+
+  if (typeof skillTestUiModules.createCaseDetailDataViewHelpers !== 'function') {
+    throw new Error('Missing skill-test case detail data helpers');
+  }
+  const caseDetailDataViewHelpers = skillTestUiModules.createCaseDetailDataViewHelpers({
+    fetchJson,
+    getSelectedSkillId: () => state.selectedSkillId,
+    getSelectedCaseId: () => state.selectedCaseId,
+    getActiveDetailTab: () => state.activeDetailTab,
+    findCaseById: (caseId) => state.testCases.find((tc) => tc.id === caseId) || null,
+    getCaseChainRunRequest,
+    renderCaseRuns,
+    renderCaseRegression: caseDetailViewHelpers.renderCaseRegression,
+    renderRetryState,
+    renderLoadingState,
+    hasSelectedCaseLiveRun,
+    hasSelectedCaseLiveChainRun,
+    detailRunsElement: dom.detailRuns,
+    detailRegressionElement: dom.detailRegression,
+  });
+  syncSelectedCaseRunsAutoRefresh = caseDetailDataViewHelpers.syncLiveRunsAutoRefresh;
+  scheduleSelectedCaseRunsRefresh = caseDetailDataViewHelpers.scheduleCaseRunsRefresh;
+
+  if (typeof skillTestUiModules.createCaseFormViewHelpers !== 'function') {
+    throw new Error('Missing skill-test case form helpers');
+  }
+  const caseFormViewHelpers = skillTestUiModules.createCaseFormViewHelpers({
+    fetchJson,
+    showToast,
+    renderIssuePanel,
+    extractIssuesFromError,
+    buildIssueToastMessage,
+    getSelectedSkillId: () => state.selectedSkillId,
+    getSelectedCaseId: () => state.selectedCaseId,
+    getActiveDetailTab: () => state.activeDetailTab,
+    findSelectedCase: () => state.testCases.find((tc) => tc.id === state.selectedCaseId) || null,
+    getCasePrompt,
+    parseStructuredArray,
+    parseStructuredExpectedTools,
+    parseStructuredObject,
+    mergeIssues,
+    buildLocalValidationIssue,
+    buildLocalValidationError,
+    normalizeIssueList,
+    buildIssueSummary,
+    shouldIncludeExpectedSteps,
+    loadTestCases,
+    loadSummary,
+    selectCase,
+  });
+  caseFormViewHelpers.bindDetailFormActions(dom);
 
   function renderDetail(tc) {
-    if (!dom.detailPanel) return;
-    if (dom.detailEmpty) dom.detailEmpty.classList.add('hidden');
-    dom.detailPanel.classList.remove('hidden');
-    const caseValidation = readCaseValidation(tc);
-    const readinessMeta = getCaseReadinessMeta(tc, caseValidation);
-    const latestRunMeta = getLatestRunStatusMeta(tc.latestRun);
-    const schemaStatusMeta = getCaseSchemaStatusMeta(caseValidation.caseSchemaStatus);
-    const sourceTags = buildSkillTestDesignSourceTags(tc);
-    if (dom.detailCaseId) dom.detailCaseId.textContent = tc.id;
-    if (dom.detailMeta) {
-      dom.detailMeta.innerHTML = `
-        <span class="tag">${escapeHtml(getLoadingModeLabel(tc.loadingMode))}</span>
-        <span class="tag ${readinessMeta.className}">${escapeHtml(readinessMeta.label)}</span>
-        ${latestRunMeta ? `<span class="tag ${latestRunMeta.className}">${escapeHtml(latestRunMeta.label)}</span>` : ''}
-        ${isEnvironmentConfigEnabled(tc.environmentConfig) ? '<span class="tag">环境链</span>' : ''}
-        ${schemaStatusMeta && caseValidation.caseSchemaStatus === 'warning' ? `<span class="tag ${schemaStatusMeta.className}">${escapeHtml(schemaStatusMeta.label)}</span>` : ''}
-        ${caseValidation.derivedFromLegacy === true ? '<span class="tag tag-pending">Legacy 映射</span>' : ''}
-        ${sourceTags}
-        ${tc.note ? `<span class="tag">${escapeHtml(clipText(tc.note, 36))}</span>` : ''}
-      `;
-    }
-    if (dom.detailLastOutcome) {
-      dom.detailLastOutcome.textContent = getLastOutcomeSummary(tc.latestRun);
-    }
-    if (dom.detailPrompt) dom.detailPrompt.value = getCasePrompt(tc);
-    if (dom.detailGoal) dom.detailGoal.value = tc.expectedGoal || '';
-    if (dom.detailBehavior) dom.detailBehavior.value = tc.expectedBehavior || '';
-    if (dom.detailStepsJson) dom.detailStepsJson.value = stringifyJsonPretty(tc.expectedSteps || []);
-    if (dom.detailToolsJson) dom.detailToolsJson.value = stringifyJsonPretty(tc.expectedTools || []);
-    if (dom.detailSequenceJson) dom.detailSequenceJson.value = stringifyJsonPretty(tc.expectedSequence || []);
-    if (dom.detailRubricJson) dom.detailRubricJson.value = stringifyJsonPretty(tc.evaluationRubric || {});
-    if (dom.detailEnvironmentJson) dom.detailEnvironmentJson.value = tc.environmentConfig ? stringifyJsonPretty(tc.environmentConfig) : '';
-    if (dom.detailNote) {
-      dom.detailNote.value = tc.note || '';
-    }
-    if (dom.detailExpectedBehavior) {
-      dom.detailExpectedBehavior.textContent = tc.expectedGoal || tc.expectedBehavior || 'Dynamic 模式主要关注能否成功加载目标 skill。';
-    }
-    if (dom.detailExpectedTools) {
-      dom.detailExpectedTools.textContent = formatExpectedTools(tc.expectedTools);
-    }
-    if (dom.detailEnvironmentSummary) {
-      dom.detailEnvironmentSummary.textContent = formatEnvironmentConfigSummary(tc.environmentConfig, tc.latestRun);
-    }
-    if (dom.detailValidity) {
-      const validityMeta = getCaseStatusMeta(tc.caseStatus);
-      dom.detailValidity.className = 'tag ' + validityMeta.className;
-      dom.detailValidity.textContent = validityMeta.label;
-    }
-    if (dom.detailValidityHelp) {
-      dom.detailValidityHelp.textContent = getCaseStatusHelpText(tc);
-    }
-    renderStatusCallout(dom.detailStatusCallout, getCaseActionCallout(tc, caseValidation));
-    if (dom.detailToggleStatusButton) {
-      dom.detailToggleStatusButton.textContent = tc.caseStatus === 'ready'
-        ? '改回 Draft'
-        : (caseValidation.caseSchemaStatus === 'invalid' ? '修好后再 Ready' : '标记 Ready');
-    }
-    syncEnvironmentBuildRunUi(tc);
-    if (dom.detailRunChainButton) {
-      const chainRunRequest = getCaseChainRunRequest(tc);
-      if (chainRunRequest && chainRunRequest.exportChainId) {
-        dom.detailRunChainButton.classList.remove('hidden');
-        dom.detailRunChainButton.disabled = !chainRunRequest.eligible;
-        dom.detailRunChainButton.textContent = chainRunRequest.chainCases.length > 1
-          ? `按链运行 (${chainRunRequest.chainCases.length})`
-          : '按链运行';
-        dom.detailRunChainButton.title = chainRunRequest.eligible
-          ? `当前链继续策略：${getChainStopPolicyLabel(readRunChainSettings().stopPolicy)}`
-          : '只有 metadata 完整的 full + execution 链才支持按链运行';
-      } else {
-        dom.detailRunChainButton.classList.add('hidden');
-        dom.detailRunChainButton.disabled = true;
-        dom.detailRunChainButton.textContent = '按链运行';
-        dom.detailRunChainButton.title = '';
-      }
-    }
-
-    renderIssuePanel(dom.detailIssues, caseValidation.issues, '用例校验提示');
-    renderLiveSkillRun();
-
-    loadCaseRuns(tc.id);
-    loadCaseRegression(tc.id);
+    caseDetailViewHelpers.renderDetail(dom, tc, {
+      onRenderLiveRun: renderLiveSkillRun,
+      onLoadCaseRuns: caseDetailDataViewHelpers.loadCaseRuns,
+      onLoadCaseRegression: caseDetailDataViewHelpers.loadCaseRegression,
+    });
   }
 
   function hideDetail() {
-    if (dom.detailPanel) {
-      dom.detailPanel.classList.add('hidden');
-    }
-    if (dom.detailEmpty) {
-      dom.detailEmpty.classList.remove('hidden');
-    }
-    if (dom.detailLastOutcome) {
-      dom.detailLastOutcome.textContent = '先运行一条再看最近结果摘要。';
-    }
-    if (dom.detailEnvironmentSummary) {
-      dom.detailEnvironmentSummary.textContent = '未配置环境链；默认直接运行 skill。';
-    }
-    if (dom.detailRegression) {
-      dom.detailRegression.innerHTML = '<p class="section-hint">先运行几次，再看不同模型或 prompt version 的表现差异。</p>';
-    }
-    if (dom.liveRun) {
-      dom.liveRun.innerHTML = '';
-      dom.liveRun.classList.add('hidden');
-    }
-    if (dom.detailRuns) {
-      dom.detailRuns.innerHTML = '<p class="section-hint">暂无运行记录</p>';
-    }
-    renderStatusCallout(dom.detailStatusCallout, null);
-    renderIssuePanel(dom.detailIssues, []);
-    if (dom.detailRunButton) {
-      dom.detailRunButton.textContent = '运行测试';
-      dom.detailRunButton.title = '';
-    }
-    syncEnvironmentBuildRunUi(null);
-    if (dom.detailRunChainButton) {
-      dom.detailRunChainButton.classList.add('hidden');
-      dom.detailRunChainButton.disabled = true;
-      dom.detailRunChainButton.textContent = '按链运行';
-      dom.detailRunChainButton.title = '';
-    }
-    if (dom.detailEnvironmentJson) {
-      dom.detailEnvironmentJson.value = '';
-    }
-    if (dom.detailToggleStatusButton) {
-      dom.detailToggleStatusButton.textContent = '标记 Ready';
-    }
-    switchDetailTab('overview');
+    caseDetailViewHelpers.hideDetail(dom, { switchDetailTab });
   }
 
   function syncDetailPanel() {
     if (!state.selectedCaseId) {
       hideDetail();
+      syncSelectedCaseRunsAutoRefresh();
       return;
     }
     const selectedCase = state.testCases.find((tc) => tc.id === state.selectedCaseId);
     if (!selectedCase) {
       hideDetail();
+      syncSelectedCaseRunsAutoRefresh();
       return;
     }
     renderDetail(selectedCase);
-  }
-
-  function stringifyJsonPretty(value) {
-    try {
-      return JSON.stringify(value == null ? null : value, null, 2);
-    } catch {
-      return '';
-    }
+    syncSelectedCaseRunsAutoRefresh();
   }
 
   function shouldIncludeExpectedSteps(loadingMode, expectedSteps) {
     return loadingMode === 'full' || (Array.isArray(expectedSteps) && expectedSteps.length > 0);
-  }
-
-  async function toggleCaseStatus(testCase) {
-    if (!state.selectedSkillId || !testCase || !testCase.id) return;
-    const action = testCase.caseStatus === 'ready' ? 'mark-draft' : 'mark-ready';
-    const nextLabel = action === 'mark-ready' ? 'Ready' : 'Draft';
-    await fetchJson(
-      `/api/skills/${encodeURIComponent(state.selectedSkillId)}/test-cases/${encodeURIComponent(testCase.id)}/${action}`,
-      { method: 'POST' }
-    );
-    showToast(`已切换为 ${nextLabel}`);
-    await Promise.all([loadTestCases(), loadSummary()]);
-    selectCase(testCase.id, { detailTab: state.activeDetailTab });
-  }
-
-  async function saveCurrentCase() {
-    if (!state.selectedSkillId || !state.selectedCaseId) return;
-    const selectedCase = state.testCases.find((tc) => tc.id === state.selectedCaseId);
-    if (!selectedCase) return;
-
-    const expectedStepsText = dom.detailStepsJson ? dom.detailStepsJson.value.trim() : '';
-    const expectedSteps = parseStructuredArray(expectedStepsText);
-
-    const expectedToolsText = dom.detailToolsJson ? dom.detailToolsJson.value.trim() : '';
-    const expectedTools = parseStructuredExpectedTools(expectedToolsText);
-
-    const expectedSequenceText = dom.detailSequenceJson ? dom.detailSequenceJson.value.trim() : '';
-    const expectedSequence = parseStructuredArray(expectedSequenceText);
-
-    const evaluationRubricText = dom.detailRubricJson ? dom.detailRubricJson.value.trim() : '';
-    const evaluationRubric = parseStructuredObject(evaluationRubricText);
-
-    const environmentConfigText = dom.detailEnvironmentJson ? dom.detailEnvironmentJson.value.trim() : '';
-    const environmentConfig = parseStructuredObject(environmentConfigText);
-
-    const localIssues = mergeIssues(
-      expectedStepsText && !expectedSteps
-        ? [buildLocalValidationIssue('expected_steps_required', 'expectedSteps', 'Expected Steps JSON 需要是数组')]
-        : [],
-      expectedToolsText && !expectedTools
-        ? [buildLocalValidationIssue('expected_tools_invalid', 'expectedTools', 'Expected Tools JSON 需要是数组')]
-        : [],
-      expectedSequenceText && !expectedSequence
-        ? [buildLocalValidationIssue('expected_sequence_invalid', 'expectedSequence', '关键顺序 JSON 需要是数组')]
-        : [],
-      evaluationRubricText && !evaluationRubric
-        ? [buildLocalValidationIssue('evaluation_rubric_invalid', 'evaluationRubric', '评估 Rubric JSON 需要是对象')]
-        : [],
-      environmentConfigText && !environmentConfig
-        ? [buildLocalValidationIssue('environment_config_invalid', 'environmentConfig', 'Environment Config JSON 需要是对象')]
-        : []
-    );
-
-    if (localIssues.length > 0) {
-      throw buildLocalValidationError('保存前校验失败', localIssues);
-    }
-
-    const prompt = dom.detailPrompt ? dom.detailPrompt.value.trim() : getCasePrompt(selectedCase);
-    const body = {
-      userPrompt: prompt,
-      triggerPrompt: prompt,
-      expectedGoal: dom.detailGoal ? dom.detailGoal.value.trim() : selectedCase.expectedGoal,
-      expectedBehavior: dom.detailBehavior ? dom.detailBehavior.value.trim() : selectedCase.expectedBehavior,
-      expectedTools: expectedTools || [],
-      expectedSequence: expectedSequence || [],
-      evaluationRubric: evaluationRubric || {},
-      environmentConfig: environmentConfig || {},
-      note: dom.detailNote ? dom.detailNote.value.trim() : selectedCase.note,
-      loadingMode: selectedCase.loadingMode,
-      caseStatus: selectedCase.caseStatus,
-    };
-    if (shouldIncludeExpectedSteps(selectedCase.loadingMode, expectedSteps)) {
-      body.expectedSteps = expectedSteps || [];
-    }
-
-    const result = await fetchJson(
-      `/api/skills/${encodeURIComponent(state.selectedSkillId)}/test-cases/${encodeURIComponent(state.selectedCaseId)}`,
-      { method: 'PATCH', body }
-    );
-    const saveIssues = normalizeIssueList(result && result.issues);
-    const saveMessage = saveIssues.length > 0
-      ? `草稿已保存（${buildIssueSummary(saveIssues)}）`
-      : '草稿已保存';
-    showToast(saveMessage);
-    await Promise.all([loadTestCases(), loadSummary()]);
-    selectCase(state.selectedCaseId, { detailTab: 'details' });
-    renderIssuePanel(dom.detailIssues, saveIssues, '保存返回校验提示');
-    return saveIssues;
-  }
-
-  function renderRetryState(container, message, onRetry) {
-    container.innerHTML = `
-      <div class="empty-state compact-empty-state">
-        <p class="section-hint">${escapeHtml(message)}</p>
-        <div class="skill-test-empty-actions">
-          <button type="button" class="ghost-button">重试</button>
-        </div>
-      </div>
-    `;
-
-    const retryButton = container.querySelector('button');
-    if (retryButton) {
-      retryButton.addEventListener('click', onRetry);
-    }
-  }
-
-  async function loadCaseRuns(caseId) {
-    if (!dom.detailRuns) return;
-    const skillId = state.selectedSkillId;
-    if (!skillId) return;
-
-    dom.detailRuns.innerHTML = '<p class="section-hint">加载运行记录中...</p>';
-    const selectedCase = state.testCases.find((tc) => tc.id === caseId) || null;
-    const chainRunRequest = getCaseChainRunRequest(selectedCase);
-    let chainRuns = [];
-
-    if (chainRunRequest && chainRunRequest.exportChainId) {
-      try {
-        const chainData = await fetchJson(
-          `/api/skills/${encodeURIComponent(skillId)}/test-chains/by-export/${encodeURIComponent(chainRunRequest.exportChainId)}/runs?limit=20`
-        );
-        chainRuns = Array.isArray(chainData.runs) ? chainData.runs : [];
-      } catch {
-        chainRuns = [];
-      }
-    }
-
-    try {
-      const data = await fetchJson(
-        `/api/skills/${encodeURIComponent(skillId)}/test-cases/${encodeURIComponent(caseId)}/runs?limit=50`
-      );
-      if (state.selectedCaseId !== caseId) return;
-      const runs = Array.isArray(data.runs) ? data.runs : [];
-      renderCaseRuns(runs, { chainRuns, chainRunRequest });
-    } catch {
-      if (state.selectedCaseId !== caseId) return;
-      renderRetryState(dom.detailRuns, '加载运行记录失败，请重试。', () => {
-        loadCaseRuns(caseId);
-      });
-    }
-  }
-
-  async function loadCaseRegression(caseId) {
-    if (!dom.detailRegression) return;
-    const skillId = state.selectedSkillId;
-    if (!skillId) return;
-
-    dom.detailRegression.innerHTML = '<p class="section-hint">加载回归对比中...</p>';
-    try {
-      const data = await fetchJson(
-        `/api/skills/${encodeURIComponent(skillId)}/test-cases/${encodeURIComponent(caseId)}/regression`
-      );
-      if (state.selectedCaseId !== caseId) return;
-      renderCaseRegression(Array.isArray(data.regression) ? data.regression : []);
-    } catch {
-      if (state.selectedCaseId !== caseId) return;
-      renderRetryState(dom.detailRegression, '加载回归对比失败，请重试。', () => {
-        loadCaseRegression(caseId);
-      });
-    }
-  }
-
-  function renderCaseRegression(regression) {
-    if (!dom.detailRegression) return;
-    if (!Array.isArray(regression) || regression.length === 0) {
-      dom.detailRegression.innerHTML = `
-        <div class="empty-state compact-empty-state">
-          <p class="section-hint">还没有足够的运行记录来做对比；先跑几次不同模型或 prompt version，再回来这里看回归差异。</p>
-        </div>
-      `;
-      return;
-    }
-
-    let html = '<div class="table-scroll"><table class="summary-table"><thead><tr>';
-    html += '<th>模型</th><th>Prompt Version</th><th>运行</th><th>加载成功</th><th>执行成功</th><th>目标达成</th><th>工具成功</th><th>最近运行</th>';
-    html += '</tr></thead><tbody>';
-
-    for (const entry of regression) {
-      const modelLabel = [entry.provider, entry.model].filter(Boolean).join(' / ');
-      const triggerRate = entry.triggerRate != null ? `${(entry.triggerRate * 100).toFixed(1)}%` : '—';
-      const executionRate = entry.executionRate != null ? `${(entry.executionRate * 100).toFixed(1)}%` : '—';
-      const goalAchievement = entry.avgGoalAchievement != null ? `${(entry.avgGoalAchievement * 100).toFixed(1)}%` : '—';
-      const toolSuccess = entry.avgToolCallSuccessRate != null ? `${(entry.avgToolCallSuccessRate * 100).toFixed(1)}%` : '—';
-      const lastRunAt = entry.lastRunAt ? new Date(entry.lastRunAt).toLocaleString() : '—';
-
-      html += '<tr>';
-      html += `<td>${escapeHtml(modelLabel || 'default')}</td>`;
-      html += `<td>${escapeHtml(entry.promptVersion || 'skill-test-v1')}</td>`;
-      html += `<td>${Number(entry.totalRuns || 0)}</td>`;
-      html += `<td>${escapeHtml(triggerRate)}</td>`;
-      html += `<td>${escapeHtml(executionRate)}</td>`;
-      html += `<td>${escapeHtml(goalAchievement)}</td>`;
-      html += `<td>${escapeHtml(toolSuccess)}</td>`;
-      html += `<td>${escapeHtml(lastRunAt)}</td>`;
-      html += '</tr>';
-    }
-
-    html += '</tbody></table></div>';
-    dom.detailRegression.innerHTML = html;
-  }
-
-  function buildChainRunStatusTag(status) {
-    const normalized = String(status || '').trim().toLowerCase();
-    if (normalized === 'passed') return '<span class="tag tag-success">链运行通过</span>';
-    if (normalized === 'failed') return '<span class="tag tag-error">链运行失败</span>';
-    if (normalized === 'partial') return '<span class="tag tag-pending">链运行部分完成</span>';
-    if (normalized === 'aborted') return '<span class="tag tag-error">链运行中止</span>';
-    if (normalized === 'running') return '<span class="tag tag-pending">链运行中</span>';
-    return '<span class="tag tag-pending">链运行待定</span>';
-  }
-
-  function buildChainStepStatusTag(status) {
-    const normalized = String(status || '').trim().toLowerCase();
-    if (normalized === 'passed') return '<span class="tag tag-success">passed</span>';
-    if (normalized === 'continued') return '<span class="tag tag-pending">continued</span>';
-    if (normalized === 'failed') return '<span class="tag tag-error">failed</span>';
-    if (normalized === 'skipped') return '<span class="tag tag-pending">skipped</span>';
-    if (normalized === 'running') return '<span class="tag tag-pending">running</span>';
-    if (normalized === 'aborted') return '<span class="tag tag-error">aborted</span>';
-    return `<span class="tag tag-pending">${escapeHtml(normalized || 'pending')}</span>`;
-  }
-
-  function renderChainRunStepsHtml(steps) {
-    if (!Array.isArray(steps) || steps.length === 0) {
-      return '<p class="section-hint">这次链运行还没有 step 审计。</p>';
-    }
-
-    let html = '';
-    for (const step of steps) {
-      const runId = String(step && step.skillTestRunId || '').trim();
-      const artifactCount = Array.isArray(step && step.artifactRefs) ? step.artifactRefs.length : 0;
-      html += '<div class="run-detail-card">';
-      html += '<div class="run-detail-tag-row">';
-      html += `${buildChainStepStatusTag(step && step.status)} <span class="tag">#${escapeHtml(String(step && step.sequenceIndex || 0))}</span> <span class="tag">${escapeHtml(step && (step.title || step.testCaseId) || 'chain step')}</span>`;
-      if (runId) {
-        html += ` <span class="agent-meta">run ${escapeHtml(runId)}</span>`;
-      }
-      if (artifactCount > 0) {
-        html += ` <span class="tag">artifacts ${escapeHtml(String(artifactCount))}</span>`;
-      }
-      html += '</div>';
-      if (step && step.summary) {
-        html += `<div class="agent-meta">${escapeHtml(step.summary)}</div>`;
-      }
-      if (step && step.errorMessage) {
-        html += `<div class="agent-meta" style="color:#e53e3e">${escapeHtml(step.errorMessage)}</div>`;
-      }
-      if (runId) {
-        html += '<div class="run-item-actions" style="margin-top:0.4rem">';
-        html += `<button type="button" class="mini-action" data-chain-step-run-detail-id="${escapeHtml(runId)}">查看调用步骤</button>`;
-        html += `<button type="button" class="mini-action" style="margin-left:6px" data-run-session-export-id="${escapeHtml(runId)}">导出 Session</button>`;
-        html += '</div>';
-      }
-      html += '</div>';
-    }
-    return html;
-  }
-
-  function bindChainRunStepActions(container) {
-    if (!container || typeof container.querySelectorAll !== 'function') return;
-    container.querySelectorAll('[data-chain-step-run-detail-id]').forEach((button) => {
-      button.addEventListener('click', () => {
-        const runId = button.getAttribute('data-chain-step-run-detail-id');
-        const card = button.closest('.run-detail-card') || container;
-        toggleRunDetail(card, runId);
-      });
-    });
-    bindRunSessionExportButtons(container);
-  }
-
-  function summarizeChainPollutionChange(change) {
-    if (typeof change === 'string') {
-      return change;
-    }
-    if (!change || typeof change !== 'object') {
-      return '';
-    }
-    const parts = [];
-    if (change.kind) parts.push(String(change.kind));
-    if (change.label) parts.push(String(change.label));
-    if (change.table) parts.push(`table=${String(change.table)}`);
-    if (change.path) parts.push(String(change.path));
-    if (change.message) parts.push(String(change.message));
-    return parts.join(' · ');
-  }
-
-  function renderChainPollutionCheckHtml(pollutionCheck) {
-    if (!pollutionCheck || typeof pollutionCheck !== 'object' || !pollutionCheck.checked) {
-      return '';
-    }
-    const changes = Array.isArray(pollutionCheck.changes) ? pollutionCheck.changes : [];
-    const tagClass = pollutionCheck.ok ? 'tag-success' : 'tag-error';
-    let html = '<div class="run-detail-section">';
-    html += '<div class="section-label">隔离污染检查</div>';
-    html += `<span class="tag ${tagClass}">${pollutionCheck.ok ? 'clean' : 'polluted'}</span> `;
-    html += `<span class="tag">changes ${escapeHtml(String(pollutionCheck.changeCount || changes.length || 0))}</span>`;
-    if (changes.length > 0) {
-      html += '<ul class="run-detail-list">';
-      for (const change of changes.slice(0, 12)) {
-        const summary = summarizeChainPollutionChange(change) || JSON.stringify(change);
-        html += `<li>${escapeHtml(summary)}</li>`;
-      }
-      if (changes.length > 12) {
-        html += `<li>${escapeHtml(`另有 ${changes.length - 12} 条变化，下载 JSON 查看完整内容`)}</li>`;
-      }
-      html += '</ul>';
-    }
-    html += '</div>';
-    return html;
-  }
-
-  async function toggleChainRunDetail(rowEl, chainRunId) {
-    const existing = rowEl.querySelector('.run-detail-panel');
-    if (existing) {
-      existing.remove();
-      return;
-    }
-
-    const panel = document.createElement('div');
-    panel.className = 'run-detail-panel';
-    panel.innerHTML = '<p class="section-hint">加载中...</p>';
-    rowEl.appendChild(panel);
-
-    try {
-      const data = await fetchJson(`/api/skills/${encodeURIComponent(state.selectedSkillId)}/test-chains/${encodeURIComponent(chainRunId)}`);
-      renderChainRunDetailPanel(panel, data);
-    } catch (err) {
-      panel.innerHTML = `<p class="section-hint" style="color:#e53e3e">加载失败: ${escapeHtml(String(err.message || err))}</p>`;
-    }
-  }
-
-  function renderChainRunDetailPanel(panel, data) {
-    const payload = data && typeof data === 'object' ? data : {};
-    const chainRun = payload.chainRun && typeof payload.chainRun === 'object' ? payload.chainRun : {};
-    const steps = Array.isArray(payload.steps) ? payload.steps : [];
-    const warnings = Array.isArray(payload.warnings) ? payload.warnings : [];
-
-    let html = '<div class="run-detail-section">';
-    html += '<div class="section-label">链运行摘要</div>';
-    html += `${buildChainRunStatusTag(chainRun.status)} `;
-    html += `<span class="tag">steps ${escapeHtml(String(chainRun.lastCompletedStepIndex || 0))}/${escapeHtml(String(chainRun.totalSteps || 0))}</span>`;
-    if (chainRun.bootstrapStatus) {
-      html += ` <span class="tag">bootstrap ${escapeHtml(String(chainRun.bootstrapStatus))}</span>`;
-    }
-    if (chainRun.teardownStatus) {
-      html += ` <span class="tag">teardown ${escapeHtml(String(chainRun.teardownStatus))}</span>`;
-    }
-    if (chainRun.errorMessage) {
-      html += `<div class="agent-meta" style="color:#e53e3e">${escapeHtml(String(chainRun.errorMessage || ''))}</div>`;
-    }
-    html += '</div>';
-
-    html += renderChainPollutionCheckHtml(chainRun.pollutionCheck);
-
-    if (warnings.length > 0) {
-      html += '<div class="run-detail-section">';
-      html += '<div class="section-label">提醒</div>';
-      html += '<ul class="run-detail-list">';
-      for (const warning of warnings) {
-        html += `<li><span class="tag">${escapeHtml(String(warning.code || 'warning'))}</span> ${escapeHtml(String(warning.message || ''))}</li>`;
-      }
-      html += '</ul></div>';
-    }
-
-    html += '<div class="run-detail-section">';
-    html += '<div class="section-label">步骤</div>';
-    html += renderChainRunStepsHtml(steps);
-    html += '</div>';
-
-    panel.innerHTML = html;
-    bindChainRunStepActions(panel);
-  }
-
-  function renderCaseRuns(runs, options = {}) {
-    if (!dom.detailRuns) return;
-    const chainRuns = Array.isArray(options.chainRuns) ? options.chainRuns : [];
-    const chainRunRequest = options.chainRunRequest && typeof options.chainRunRequest === 'object'
-      ? options.chainRunRequest
-      : null;
-    if (runs.length === 0 && chainRuns.length === 0) {
-      dom.detailRuns.innerHTML = `
-        <div class="empty-state compact-empty-state">
-          <p class="section-hint">这条用例还没有运行记录；点上方“运行测试”或“按链运行”就能在这里看到失败原因和诊断信息。</p>
-        </div>
-      `;
-      return;
-    }
-
-    dom.detailRuns.innerHTML = '';
-
-    if (chainRuns.length > 0) {
-      const heading = document.createElement('p');
-      heading.className = 'section-hint';
-      heading.textContent = `链运行历史 · ${chainRunRequest && chainRunRequest.chainId ? chainRunRequest.chainId : '未命名链'}`;
-      dom.detailRuns.appendChild(heading);
-
-      for (const chainRun of chainRuns) {
-        const row = document.createElement('div');
-        row.className = 'run-item';
-        const warningTag = Array.isArray(chainRun.warningFlags) && chainRun.warningFlags.length > 0
-          ? `<span class="tag tag-pending">${chainRun.warningFlags.length} 条提醒</span>`
-          : '';
-        const failedStepText = chainRun.failedStepIndex ? ` · 失败于 #${chainRun.failedStepIndex}` : '';
-        row.innerHTML = `
-          <div class="run-item-header">
-            ${buildChainRunStatusTag(chainRun.status)}
-            <span class="tag">steps ${escapeHtml(String(chainRun.lastCompletedStepIndex || 0))}/${escapeHtml(String(chainRun.totalSteps || 0))}</span>
-            <span class="tag">bootstrap ${escapeHtml(String(chainRun.bootstrapStatus || 'pending'))}</span>
-            <span class="tag">teardown ${escapeHtml(String(chainRun.teardownStatus || 'pending'))}</span>
-            ${warningTag}
-            <span class="agent-meta">${chainRun.startedAt ? new Date(chainRun.startedAt).toLocaleString() : ''}${failedStepText}</span>
-          </div>
-          ${chainRun.errorMessage ? `<div class="agent-meta" style="color:#e53e3e">${escapeHtml(chainRun.errorMessage)}</div>` : ''}
-        `;
-
-        const actionsBar = document.createElement('div');
-        actionsBar.className = 'run-item-actions';
-        actionsBar.style.marginTop = '0.4rem';
-
-        const detailBtn = document.createElement('button');
-        detailBtn.className = 'mini-action';
-        detailBtn.textContent = '查看链详情';
-        detailBtn.addEventListener('click', () => toggleChainRunDetail(row, chainRun.id));
-
-        const downloadBtn = document.createElement('button');
-        downloadBtn.className = 'mini-action';
-        downloadBtn.textContent = '下载 JSON';
-        downloadBtn.addEventListener('click', async () => {
-          try {
-            const detail = await fetchJson(`/api/skills/${encodeURIComponent(state.selectedSkillId)}/test-chains/${encodeURIComponent(chainRun.id)}`);
-            downloadJsonFile(detail, `skill-test-chain-run-${chainRun.id}.json`);
-            showToast('已下载');
-          } catch (err) {
-            showToast('下载失败: ' + (err.message || err));
-          }
-        });
-
-        actionsBar.appendChild(detailBtn);
-        actionsBar.appendChild(downloadBtn);
-        row.appendChild(actionsBar);
-
-        const inlineSteps = Array.isArray(chainRun.steps) ? chainRun.steps : [];
-        if (inlineSteps.length > 0) {
-          const stepsPanel = document.createElement('div');
-          stepsPanel.className = 'run-detail-section';
-          stepsPanel.innerHTML = `<div class="section-label">步骤明细</div>${renderChainRunStepsHtml(inlineSteps)}`;
-          row.appendChild(stepsPanel);
-          bindChainRunStepActions(stepsPanel);
-        }
-
-        dom.detailRuns.appendChild(row);
-      }
-    }
-
-    if (runs.length > 0 && chainRuns.length > 0) {
-      const secondaryHeading = document.createElement('p');
-      secondaryHeading.className = 'section-hint';
-      secondaryHeading.textContent = '单用例运行历史';
-      dom.detailRuns.appendChild(secondaryHeading);
-    }
-
-    for (const run of runs) {
-      const row = document.createElement('div');
-      row.className = 'run-item';
-
-      const triggerTag = run.verdict
-        ? ''
-        : isPassedFlag(run.triggerPassed)
-          ? '<span class="tag tag-success">已加载 skill</span>'
-          : isFailedFlag(run.triggerPassed)
-            ? '<span class="tag tag-error">未加载 skill</span>'
-            : '<span class="tag tag-pending">加载结果待定</span>';
-
-      const execTag = run.verdict
-        ? (run.verdict === 'pass'
-          ? '<span class="tag tag-success">Full 执行通过</span>'
-          : run.verdict === 'borderline'
-            ? '<span class="tag tag-pending">Full 待复核</span>'
-            : '<span class="tag tag-error">Full 执行失败</span>')
-        : (run.executionPassed === null || typeof run.executionPassed === 'undefined'
-          ? '<span class="tag tag-pending">未评估执行</span>'
-          : isPassedFlag(run.executionPassed)
-            ? '<span class="tag tag-success">工具执行符合预期</span>'
-            : isFailedFlag(run.executionPassed)
-              ? '<span class="tag tag-error">工具执行未达预期</span>'
-              : '<span class="tag tag-pending">执行结果待定</span>');
-
-      const accuracy =
-        run.toolAccuracy != null ? `<span class="tag">工具命中 ${(run.toolAccuracy * 100).toFixed(0)}%</span>` : '';
-      const environmentTagMeta = getEnvironmentStatusMeta(run.environmentStatus);
-      const environmentTag = environmentTagMeta
-        ? `<span class="tag ${environmentTagMeta.className}">${escapeHtml(environmentTagMeta.label)}</span>`
-        : '';
-      const environmentBuildResult = readEnvironmentBuildResultFromEvaluation(run.evaluation);
-      const environmentBuildTagMeta = getEnvironmentBuildStatusMeta(environmentBuildResult && environmentBuildResult.status);
-      const environmentBuildTag = environmentBuildTagMeta
-        ? `<span class="tag ${environmentBuildTagMeta.className}">${escapeHtml(environmentBuildTagMeta.label)}</span>`
-        : '';
-
-      const tools =
-        Array.isArray(run.actualTools) && run.actualTools.length > 0
-          ? `<div class="agent-meta">工具: ${run.actualTools.map((toolName) => escapeHtml(toolName)).join(', ')}</div>`
-          : '';
-
-      let triggerFailHint = '';
-      if (!run.verdict && isFailedFlag(run.triggerPassed)) {
-        triggerFailHint = '<div class="run-item-warning">⚠ 这次没有加载到目标 skill，可点「查看详情」看模型实际做了什么</div>';
-      }
-
-      // Action buttons
-      const actionsBar = document.createElement('div');
-      actionsBar.className = 'run-item-actions';
-      actionsBar.style.marginTop = '0.4rem';
-
-      const detailBtn = document.createElement('button');
-      detailBtn.className = 'mini-action';
-      detailBtn.textContent = '查看详情';
-      detailBtn.addEventListener('click', () => toggleRunDetail(row, run.id));
-
-      const downloadBtn = document.createElement('button');
-      downloadBtn.className = 'mini-action';
-      downloadBtn.textContent = '下载 JSON';
-      downloadBtn.style.marginLeft = '6px';
-      downloadBtn.addEventListener('click', async () => {
-        try {
-          const detail = await fetchJson(`/api/skill-test-runs/${encodeURIComponent(run.id)}`);
-          downloadJsonFile(detail, `skill-test-run-${run.id}.json`);
-          showToast('已下载');
-        } catch (err) {
-          showToast('下载失败: ' + (err.message || err));
-        }
-      });
-
-      const sessionBtn = document.createElement('button');
-      sessionBtn.className = 'mini-action';
-      sessionBtn.textContent = '导出 Session';
-      sessionBtn.style.marginLeft = '6px';
-      sessionBtn.title = '导出本次 run 的原始 session JSONL，便于查看 agent 在沙盒内的具体行为';
-      sessionBtn.addEventListener('click', () => {
-        exportSkillTestRunSession(run.id);
-      });
-
-      actionsBar.appendChild(detailBtn);
-      actionsBar.appendChild(downloadBtn);
-      actionsBar.appendChild(sessionBtn);
-
-      const runModelMeta = [run.provider, run.model].filter(Boolean).join(' / ');
-      const runPromptVersion = run.promptVersion ? ` · ${run.promptVersion}` : '';
-
-      row.innerHTML = `
-        <div class="run-item-header">
-          ${triggerTag} ${execTag} ${environmentTag} ${environmentBuildTag} ${accuracy}
-          <span class="agent-meta">${run.createdAt ? new Date(run.createdAt).toLocaleString() : ''}${runModelMeta ? ` · ${escapeHtml(runModelMeta)}` : ''}${runPromptVersion ? escapeHtml(runPromptVersion) : ''}</span>
-        </div>
-        ${tools}
-        ${triggerFailHint}
-        ${run.errorMessage ? `<div class="agent-meta" style="color:#e53e3e">${escapeHtml(run.errorMessage)}</div>` : ''}
-      `;
-
-      row.appendChild(actionsBar);
-
-      dom.detailRuns.appendChild(row);
-    }
-  }
-
-  /** Toggle inline expandable detail for a single run */
-  async function toggleRunDetail(rowEl, runId) {
-    const existing = rowEl.querySelector('.run-detail-panel');
-    if (existing) {
-      existing.remove();
-      return;
-    }
-
-    const panel = document.createElement('div');
-    panel.className = 'run-detail-panel';
-    panel.innerHTML = '<p class="section-hint">加载中...</p>';
-    rowEl.appendChild(panel);
-
-    try {
-      const data = await fetchJson(`/api/skill-test-runs/${encodeURIComponent(runId)}`);
-      renderRunDetailPanel(panel, data);
-    } catch (err) {
-      panel.innerHTML = `<p class="section-hint" style="color:#e53e3e">加载失败: ${escapeHtml(String(err.message || err))}</p>`;
-    }
-  }
-
-  function renderRunDetailPanel(panel, data) {
-    const payload = data && typeof data === 'object' ? data : {};
-    const debug = payload.debug || {};
-    const result = payload.result || {};
-    const run = payload.run && typeof payload.run === 'object' ? payload.run : {};
-    const evaluationPayload = result && result.evaluation && typeof result.evaluation === 'object'
-      ? result.evaluation
-      : (run.evaluation && typeof run.evaluation === 'object' ? run.evaluation : null);
-    const fullEvaluation = evaluationPayload
-      && (
-        typeof evaluationPayload.verdict === 'string'
-        || (evaluationPayload.dimensions && typeof evaluationPayload.dimensions === 'object')
-        || Array.isArray(evaluationPayload.steps)
-        || Array.isArray(evaluationPayload.constraintChecks)
-        || (evaluationPayload.aiJudge && typeof evaluationPayload.aiJudge === 'object')
-      )
-      ? evaluationPayload
-      : null;
-    const environmentEvaluation = evaluationPayload && evaluationPayload.environment && typeof evaluationPayload.environment === 'object'
-      ? evaluationPayload.environment
-      : null;
-    const environmentBuildResult = readEnvironmentBuildResultFromEvaluation(evaluationPayload);
-    const triggerEvaluation = result.triggerEvaluation || null;
-    const aiJudge = fullEvaluation && fullEvaluation.aiJudge
-      ? fullEvaluation.aiJudge
-      : (triggerEvaluation && triggerEvaluation.aiJudge ? triggerEvaluation.aiJudge : null);
-    const executionEvaluation = result.executionEvaluation || null;
-    const toolChecks = executionEvaluation && Array.isArray(executionEvaluation.toolChecks)
-      ? executionEvaluation.toolChecks
-      : [];
-    const sequenceCheck = executionEvaluation && executionEvaluation.sequenceCheck && executionEvaluation.sequenceCheck.enabled
-      ? executionEvaluation.sequenceCheck
-      : null;
-    const session = debug.session || {};
-    const toolEvents = Array.isArray(debug.toolCalls) ? debug.toolCalls : [];
-    const sessionToolCalls = Array.isArray(session.toolCalls) ? session.toolCalls : [];
-    const trace = buildRunDetailTrace(payload.trace, debug, run);
-    const runValidation = readRunValidation(data);
-
-    let html = '';
-
-    if (runValidation.issues.length > 0 || runValidation.caseSchemaStatus || runValidation.derivedFromLegacy === true) {
-      const schemaStatusMeta = getCaseSchemaStatusMeta(runValidation.caseSchemaStatus);
-      html += '<div class="run-detail-section">';
-      html += '<div class="section-label">运行校验提示</div>';
-      if (schemaStatusMeta) {
-        html += `<span class="tag ${schemaStatusMeta.className}">${escapeHtml(schemaStatusMeta.label)}</span>`;
-      }
-      if (runValidation.derivedFromLegacy === true) {
-        html += ' <span class="tag tag-pending">Derived From Legacy</span>';
-      }
-      if (runValidation.issues.length > 0) {
-        const issueToneClass = getIssuePanelToneClass(runValidation.issues);
-        html += `<div class="skill-test-issues skill-test-issues-inline${issueToneClass ? ` ${issueToneClass}` : ''}">${buildIssuePanelHtml(runValidation.issues, '运行校验') || ''}</div>`;
-      }
-      html += '</div>';
-    }
-
-    const environmentRequirements = environmentEvaluation && environmentEvaluation.requirements && typeof environmentEvaluation.requirements === 'object'
-      ? environmentEvaluation.requirements
-      : { satisfied: [], missing: [], unsupported: [] };
-    const environmentAdvice = environmentEvaluation && environmentEvaluation.advice && typeof environmentEvaluation.advice === 'object'
-      ? environmentEvaluation.advice
-      : null;
-    const environmentCache = environmentEvaluation && environmentEvaluation.cache && typeof environmentEvaluation.cache === 'object'
-      ? environmentEvaluation.cache
-      : null;
-    const environmentSource = environmentEvaluation && environmentEvaluation.source && typeof environmentEvaluation.source === 'object'
-      ? environmentEvaluation.source
-      : null;
-    const environmentStatus = String(environmentEvaluation && environmentEvaluation.status || run.environmentStatus || '').trim().toLowerCase();
-    const showEnvironmentSection = Boolean(environmentEvaluation) && (
-      (environmentStatus && environmentStatus !== 'skipped')
-      || (Array.isArray(environmentRequirements.satisfied) && environmentRequirements.satisfied.length > 0)
-      || (Array.isArray(environmentRequirements.missing) && environmentRequirements.missing.length > 0)
-      || (Array.isArray(environmentRequirements.unsupported) && environmentRequirements.unsupported.length > 0)
-      || (environmentEvaluation.bootstrap && Array.isArray(environmentEvaluation.bootstrap.commands) && environmentEvaluation.bootstrap.commands.length > 0)
-      || (environmentEvaluation.verify && Array.isArray(environmentEvaluation.verify.commands) && environmentEvaluation.verify.commands.length > 0)
-      || environmentAdvice
-      || environmentCache
-    );
-
-    if (showEnvironmentSection) {
-      const environmentStatusMeta = getEnvironmentStatusMeta(environmentStatus);
-      const environmentPhase = String(environmentEvaluation && environmentEvaluation.phase || run.environmentPhase || '').trim();
-      const environmentReason = String(environmentEvaluation && environmentEvaluation.reason || '').trim();
-      html += '<div class="run-detail-section">';
-      html += '<div class="section-label">环境预检 / 安装链</div>';
-      if (environmentStatusMeta) {
-        html += `<span class="tag ${environmentStatusMeta.className}">${escapeHtml(environmentStatusMeta.label)}</span>`;
-      }
-      if (environmentPhase) {
-        html += ` <span class="tag">${escapeHtml(environmentPhase)}</span>`;
-      }
-      if (environmentAdvice && environmentAdvice.target) {
-        html += ` <span class="tag">${escapeHtml(String(environmentAdvice.target || 'TESTING.md'))}</span>`;
-      }
-      if (environmentSource && environmentSource.testingDocUsed) {
-        html += ' <span class="tag">来自 TESTING.md</span>';
-      }
-      if (environmentReason) {
-        html += `<div class="${environmentStatus && environmentStatus !== 'passed' ? 'run-detail-diag' : 'agent-meta'}">${escapeHtml(environmentReason)}</div>`;
-      }
-      if (environmentSource && environmentSource.testingDocUsed && environmentSource.testingDocPath) {
-        html += `<div class="agent-meta">配置来源：${escapeHtml(String(environmentSource.testingDocPath || 'TESTING.md'))}</div>`;
-      }
-      html += buildEnvironmentCacheDetailsHtml(environmentCache);
-      html += buildEnvironmentRequirementListHtml('已满足依赖', environmentRequirements.satisfied);
-      html += buildEnvironmentRequirementListHtml('缺失依赖', environmentRequirements.missing);
-      html += buildEnvironmentRequirementListHtml('已知限制', environmentRequirements.unsupported);
-      html += buildEnvironmentCommandSectionHtml('Bootstrap', environmentEvaluation.bootstrap);
-      html += buildEnvironmentCommandSectionHtml('Verify', environmentEvaluation.verify);
-      if (environmentAdvice) {
-        html += '<details class="run-detail-collapse">';
-        html += `<summary class="agent-meta">${escapeHtml(String(environmentAdvice.summary || `查看 ${environmentAdvice.target || 'TESTING.md'} 建议 patch`))}</summary>`;
-        if (environmentAdvice.mode) {
-          html += `<div class="agent-meta">模式：${escapeHtml(String(environmentAdvice.mode || 'suggest-patch'))}</div>`;
-        }
-        if (environmentAdvice.target) {
-          html += `<div class="agent-meta">目标文件：${escapeHtml(String(environmentAdvice.target || 'TESTING.md'))}</div>`;
-        }
-        if (environmentAdvice.patch) {
-          html += `<pre class="run-detail-pre">${escapeHtml(String(environmentAdvice.patch || ''))}</pre>`;
-        }
-        html += '</details>';
-      }
-      html += '</div>';
-    }
-
-    html += buildEnvironmentBuildDetailsHtml(environmentBuildResult);
-
-    if (trace && ((trace.summary && trace.summary.totalSteps > 0) || (trace.failureContext && trace.failureContext.text))) {
-      const traceStatus = String(trace.summary && trace.summary.status || run.status || '').trim();
-      const traceTone = liveRunTone(traceStatus);
-      const tracePills = [
-        `<span class="message-tool-trace-pill ${traceTone}">${escapeHtml(liveRunStatusLabel(traceStatus || run.status || 'completed'))}</span>`,
-        trace.summary && trace.summary.totalSteps > 0
-          ? `<span class="message-tool-trace-pill time">步骤 ${escapeHtml(String(trace.summary.totalSteps))}</span>`
-          : '',
-        trace.summary && trace.summary.sessionToolCount > 0
-          ? `<span class="message-tool-trace-pill duration">session ${escapeHtml(String(trace.summary.sessionToolCount))}</span>`
-          : '',
-        trace.summary && trace.summary.bridgeToolCount > 0
-          ? `<span class="message-tool-trace-pill duration">bridge ${escapeHtml(String(trace.summary.bridgeToolCount))}</span>`
-          : '',
-      ].filter(Boolean).join(' ');
-      html += '<div class="run-detail-section">';
-      html += '<div class="section-label">工具时间线</div>';
-      html += '<div class="agent-meta">这里显示的是 agent 在这一步 run 里的具体调用顺序。</div>';
-      html += '</div>';
-      html += '<section class="message-tool-trace open">';
-      html += `<div class="message-tool-trace-header"><div class="message-tool-trace-summary">${tracePills}</div></div>`;
-      html += '<div class="message-tool-trace-details">';
-      if (trace.failureContext && trace.failureContext.text) {
-        html += `<div class="message-tool-trace-note failed">${escapeHtml(trace.failureContext.text)}</div>`;
-      }
-      html += '<section class="message-tool-trace-section">';
-      html += '<div class="message-tool-trace-section-header">';
-      html += '<div class="message-tool-trace-section-title">调用步骤</div>';
-      html += '<div class="message-tool-trace-section-meta"></div>';
-      html += '</div>';
-      html += '<div class="message-tool-trace-steps-viewport scrollable">';
-      html += `<div class="message-tool-trace-section-steps">${buildToolTraceStepsHtml(trace, '本次 run 没有持久化到工具时间线。')}</div>`;
-      html += '</div>';
-      html += '</section>';
-      html += '</div>';
-      html += '</section>';
-    }
-
-    // ---- Output text ----
-    if (debug.outputText) {
-      html += '<div class="run-detail-section">';
-      html += '<div class="section-label">模型输出</div>';
-      html += `<pre class="run-detail-pre">${escapeHtml(debug.outputText)}</pre>`;
-      html += '</div>';
-    }
-
-    if (fullEvaluation) {
-      const dimensions = fullEvaluation && fullEvaluation.dimensions && typeof fullEvaluation.dimensions === 'object'
-        ? fullEvaluation.dimensions
-        : null;
-      const verdictLabel = fullEvaluation.verdict === 'pass'
-        ? '<span class="tag tag-success">Pass</span>'
-        : fullEvaluation.verdict === 'borderline'
-          ? '<span class="tag tag-pending">Borderline</span>'
-          : '<span class="tag tag-error">Fail</span>';
-      const judgeStatusMeta = getFullJudgeStatusMeta(fullEvaluation.aiJudge && fullEvaluation.aiJudge.status);
-      html += '<div class="run-detail-section">';
-      html += '<div class="section-label">Full 模式多维评估</div>';
-      html += `${verdictLabel}`;
-      if (judgeStatusMeta) {
-        html += ` <span class="tag ${judgeStatusMeta.className}">${escapeHtml(judgeStatusMeta.label)}</span>`;
-      }
-      if (fullEvaluation.summary) {
-        html += `<div class="agent-meta">${escapeHtml(fullEvaluation.summary)}</div>`;
-      }
-      if (dimensions) {
-        const orderedDimensionKeys = Object.keys(FULL_DIMENSION_LABELS);
-        const extraDimensionKeys = Object.keys(dimensions).filter((key) => !orderedDimensionKeys.includes(key));
-        for (const key of [...orderedDimensionKeys, ...extraDimensionKeys]) {
-          if (!(key in dimensions)) {
-            continue;
-          }
-          const value = dimensions[key];
-          const score = value && typeof value === 'object'
-            ? formatRunDetailPercent(value.score)
-            : formatRunDetailPercent(value);
-          const reason = value && typeof value === 'object' ? String(value.reason || '').trim() : '';
-          const role = value && typeof value === 'object'
-            ? String(value.role || '').trim().toLowerCase()
-            : '';
-          html += '<div class="run-detail-tool">';
-          html += '<div class="run-detail-tag-row">';
-          html += `<span class="tag">${escapeHtml(FULL_DIMENSION_LABELS[key] || key)}</span>`;
-          html += `<span class="agent-meta">${escapeHtml(score)}</span>`;
-          if (role === 'supporting') {
-            html += '<span class="tag">辅证</span>';
-          }
-          html += '</div>';
-          if (reason) {
-            html += `<div class="agent-meta">${escapeHtml(reason)}</div>`;
-          }
-          html += '</div>';
-        }
-      } else {
-        html += '<div class="agent-meta">本次 run 未返回 dimensions 详情。</div>';
-      }
-      if (Array.isArray(fullEvaluation.missingTools) && fullEvaluation.missingTools.length > 0) {
-        html += `<div class="agent-meta">缺少工具：${escapeHtml(fullEvaluation.missingTools.join(' / '))}</div>`;
-      }
-      if (Array.isArray(fullEvaluation.unexpectedTools) && fullEvaluation.unexpectedTools.length > 0) {
-        html += `<div class="agent-meta">额外工具：${escapeHtml(fullEvaluation.unexpectedTools.join(' / '))}</div>`;
-      }
-      if (Array.isArray(fullEvaluation.failedCalls) && fullEvaluation.failedCalls.length > 0) {
-        html += '<div class="run-detail-subsection">';
-        html += '<div class="agent-meta">失败工具调用</div>';
-        html += '<ul class="run-detail-list">';
-        for (const failedCall of fullEvaluation.failedCalls) {
-          const toolName = failedCall && failedCall.tool ? String(failedCall.tool) : 'unknown';
-          const reason = failedCall && failedCall.reason ? String(failedCall.reason) : 'tool call failed';
-          html += `<li><span class="tag">${escapeHtml(toolName)}</span> ${escapeHtml(reason)}</li>`;
-        }
-        html += '</ul>';
-        html += '</div>';
-      }
-      html += '</div>';
-
-      const stepResults = Array.isArray(fullEvaluation.steps) ? fullEvaluation.steps : [];
-      const missingSteps = fullEvaluation.missingSteps && typeof fullEvaluation.missingSteps === 'object'
-        ? fullEvaluation.missingSteps
-        : {};
-      const missingRequiredSteps = normalizeRunDetailStringList(missingSteps.required);
-      const missingNonRequiredSteps = normalizeRunDetailStringList(missingSteps.nonRequired);
-      if (stepResults.length > 0 || missingRequiredSteps.length > 0 || missingNonRequiredSteps.length > 0) {
-        html += '<div class="run-detail-section">';
-        html += '<div class="section-label">步骤判定</div>';
-        if (missingRequiredSteps.length > 0) {
-          html += `<div class="run-detail-diag" style="color:#e53e3e">缺少必选步骤：${escapeHtml(missingRequiredSteps.join(' / '))}</div>`;
-        }
-        if (missingNonRequiredSteps.length > 0) {
-          html += `<div class="agent-meta">缺少非必选步骤：${escapeHtml(missingNonRequiredSteps.join(' / '))}</div>`;
-        }
-        if (stepResults.length === 0) {
-          html += '<div class="agent-meta">AI Judge 未返回步骤级结果。</div>';
-        }
-        for (const stepResult of stepResults) {
-          const stepId = String(stepResult && (stepResult.stepId || stepResult.id) || '').trim() || 'unknown-step';
-          const completed = stepResult && stepResult.completed;
-          const confidence = stepResult && stepResult.confidence != null
-            ? formatRunDetailPercent(stepResult.confidence)
-            : '';
-          const reason = String(stepResult && stepResult.reason || '').trim();
-          const evidenceIds = normalizeRunDetailStringList(stepResult && stepResult.evidenceIds, 10);
-          const matchedSignalIds = normalizeRunDetailStringList(stepResult && stepResult.matchedSignalIds, 10);
-          const stepTag = completed === true
-            ? '<span class="tag tag-success">完成</span>'
-            : completed === false
-              ? '<span class="tag tag-error">未完成</span>'
-              : '<span class="tag tag-pending">待复核</span>';
-          html += '<div class="run-detail-card">';
-          html += '<div class="run-detail-tag-row">';
-          html += `${stepTag} <span class="tag">${escapeHtml(stepId)}</span>`;
-          if (confidence) {
-            html += ` <span class="agent-meta">置信度 ${escapeHtml(confidence)}</span>`;
-          }
-          html += '</div>';
-          if (reason) {
-            html += `<div class="agent-meta">${escapeHtml(reason)}</div>`;
-          }
-          if (evidenceIds.length > 0) {
-            html += buildRunDetailReasonListHtml('证据 ID', evidenceIds);
-          }
-          if (matchedSignalIds.length > 0) {
-            html += buildRunDetailReasonListHtml('命中 Signal', matchedSignalIds);
-          }
-          html += '</div>';
-        }
-        html += '</div>';
-      }
-
-      const constraintChecks = Array.isArray(fullEvaluation.constraintChecks) ? fullEvaluation.constraintChecks : [];
-      if (constraintChecks.length > 0) {
-        html += '<div class="run-detail-section">';
-        html += '<div class="section-label">关键约束检查</div>';
-        for (const check of constraintChecks) {
-          const constraintId = String(check && check.constraintId || '').trim() || 'unknown-constraint';
-          const satisfied = check && check.satisfied;
-          const reason = String(check && check.reason || '').trim();
-          const evidenceIds = normalizeRunDetailStringList(check && check.evidenceIds, 10);
-          const statusTag = satisfied === true
-            ? '<span class="tag tag-success">满足</span>'
-            : satisfied === false
-              ? '<span class="tag tag-error">违反</span>'
-              : '<span class="tag tag-pending">待复核</span>';
-          html += '<div class="run-detail-card">';
-          html += `<div class="run-detail-tag-row">${statusTag} <span class="tag">${escapeHtml(constraintId)}</span></div>`;
-          if (reason) {
-            html += `<div class="agent-meta">${escapeHtml(reason)}</div>`;
-          }
-          if (evidenceIds.length > 0) {
-            html += buildRunDetailReasonListHtml('证据 ID', evidenceIds);
-          }
-          html += '</div>';
-        }
-        html += '</div>';
-      }
-
-      const aggregation = fullEvaluation.aggregation && typeof fullEvaluation.aggregation === 'object'
-        ? fullEvaluation.aggregation
-        : null;
-      const hardFailReasons = normalizeRunDetailStringList(aggregation && aggregation.hardFailReasons);
-      const borderlineReasons = normalizeRunDetailStringList(aggregation && aggregation.borderlineReasons);
-      const supportingWarnings = normalizeRunDetailStringList(aggregation && aggregation.supportingWarnings);
-      if (aggregation || hardFailReasons.length > 0 || borderlineReasons.length > 0 || supportingWarnings.length > 0) {
-        html += '<div class="run-detail-section">';
-        html += '<div class="section-label">聚合判定依据</div>';
-        html += buildRunDetailReasonListHtml('Hard Fail 原因', hardFailReasons, getFullAggregationReasonLabel);
-        html += buildRunDetailReasonListHtml('Borderline 原因', borderlineReasons, getFullAggregationReasonLabel);
-        html += buildRunDetailReasonListHtml('辅证告警', supportingWarnings, getFullAggregationReasonLabel);
-        html += '</div>';
-      }
-
-      const fullJudge = fullEvaluation.aiJudge && typeof fullEvaluation.aiJudge === 'object'
-        ? fullEvaluation.aiJudge
-        : null;
-      if (fullJudge) {
-        const statusMeta = getFullJudgeStatusMeta(fullJudge.status);
-        const verdictSuggestion = String(fullJudge.verdictSuggestion || '').trim();
-        const missedExpectations = normalizeRunDetailStringList(fullJudge.missedExpectations);
-        html += '<div class="run-detail-section">';
-        html += '<div class="section-label">AI Judge 诊断</div>';
-        if (statusMeta) {
-          html += `<span class="tag ${statusMeta.className}">${escapeHtml(statusMeta.label)}</span>`;
-        }
-        if (verdictSuggestion) {
-          html += ` <span class="tag">建议：${escapeHtml(verdictSuggestion)}</span>`;
-        }
-        if (fullJudge.errorMessage) {
-          html += `<div class="run-detail-diag" style="color:#e53e3e">${escapeHtml(String(fullJudge.errorMessage))}</div>`;
-        }
-        if (missedExpectations.length > 0) {
-          html += buildRunDetailReasonListHtml('缺失预期', missedExpectations);
-        }
-        if (fullJudge.status !== 'succeeded' && fullJudge.rawResponse) {
-          html += '<details class="run-detail-collapse">';
-          html += '<summary class="agent-meta">查看原始 judge 回包</summary>';
-          html += `<pre class="run-detail-pre">${escapeHtml(String(fullJudge.rawResponse))}</pre>`;
-          html += '</details>';
-        }
-        html += '</div>';
-      }
-    }
-
-    const matchedSignals = Array.isArray(triggerEvaluation && triggerEvaluation.matchedSignalIds)
-      ? triggerEvaluation.matchedSignalIds
-      : (Array.isArray(triggerEvaluation && triggerEvaluation.matchedSignals) ? triggerEvaluation.matchedSignals : []);
-
-    if (triggerEvaluation && triggerEvaluation.mode !== 'full' && (matchedSignals.length > 0 || aiJudge)) {
-      const sourceLabels = {
-        'expected-tool': '工具命中',
-        'behavior-signals': '文本/行为线索',
-        'ai-judge': 'AI Judge',
-        none: '未命中',
-      };
-      const decisionSources = Array.isArray(triggerEvaluation.decisionSources)
-        ? triggerEvaluation.decisionSources.map((entry) => sourceLabels[entry] || entry)
-        : [];
-      const judgeStatus = !aiJudge
-        ? ''
-        : aiJudge.passed === true
-          ? '<span class="tag tag-success">AI Judge 通过</span>'
-          : aiJudge.passed === false
-            ? '<span class="tag tag-error">AI Judge 未通过</span>'
-            : aiJudge.attempted
-              ? '<span class="tag tag-pending">AI Judge 未定</span>'
-              : '<span class="tag">AI Judge 跳过</span>';
-      html += '<div class="run-detail-section">';
-      html += '<div class="section-label">触发评估</div>';
-      html += `<div class="agent-meta">模式：${escapeHtml(triggerEvaluation.mode || 'unknown')}</div>`;
-      if (decisionSources.length > 0) {
-        html += `<div class="agent-meta">判定来源：${escapeHtml(decisionSources.join(' / '))}</div>`;
-      }
-      if (matchedSignals.length > 0) {
-        html += `<div class="agent-meta">命中信号：${escapeHtml(matchedSignals.join(' / '))}</div>`;
-      }
-      if (judgeStatus) {
-        html += judgeStatus;
-        if (aiJudge && aiJudge.confidence != null) {
-          html += ` <span class="agent-meta">置信度 ${escapeHtml(String(Math.round(Number(aiJudge.confidence) * 100)))}%</span>`;
-        }
-      }
-      if (aiJudge && aiJudge.reason) {
-        html += `<div class="agent-meta">AI Judge 说明：${escapeHtml(aiJudge.reason)}</div>`;
-      }
-      if (aiJudge && Array.isArray(aiJudge.matchedBehaviors) && aiJudge.matchedBehaviors.length > 0) {
-        html += `<div class="agent-meta">AI 命中行为：${escapeHtml(aiJudge.matchedBehaviors.join(' / '))}</div>`;
-      }
-      if (aiJudge && aiJudge.errorMessage) {
-        html += `<div class="agent-meta" style="color:#e53e3e">AI Judge 异常：${escapeHtml(aiJudge.errorMessage)}</div>`;
-      }
-      html += '</div>';
-    }
-
-    if (sequenceCheck) {
-      const sequenceStatus = sequenceCheck.passed
-        ? '<span class="tag tag-success">顺序命中</span>'
-        : '<span class="tag tag-error">顺序不符</span>';
-      html += '<div class="run-detail-section">';
-      html += '<div class="section-label">时序校验</div>';
-      html += `${sequenceStatus} <span class="agent-meta">按顺序命中 ${escapeHtml(String(sequenceCheck.matchedCount || 0))} / ${escapeHtml(String(sequenceCheck.orderedExpectedCount || 0))}</span>`;
-      if (Array.isArray(sequenceCheck.observedTools) && sequenceCheck.observedTools.length > 0) {
-        html += `<div class="agent-meta">实际顺序：${escapeHtml(sequenceCheck.observedTools.join(' → '))}</div>`;
-      }
-      const steps = Array.isArray(sequenceCheck.steps) ? sequenceCheck.steps : [];
-      for (const step of steps) {
-        const stepStatus = step.matched
-          ? '<span class="tag tag-success">命中</span>'
-          : step.outOfOrder
-            ? '<span class="tag tag-error">顺序不符</span>'
-            : '<span class="tag tag-error">未命中</span>';
-        html += '<div class="run-detail-tool">';
-        html += `${stepStatus} <span class="tag">${escapeHtml(step.name || 'unknown')}</span>`;
-        if (step.order != null) {
-          html += ` <span class="agent-meta">期望顺序 #${escapeHtml(String(step.order))}</span>`;
-        }
-        if (step.matchedCallIndex != null) {
-          html += `<div class="agent-meta">命中位置：第 ${escapeHtml(String(Number(step.matchedCallIndex) + 1))} 步</div>`;
-        }
-        if (step.outOfOrder) {
-          html += '<div class="agent-meta" style="color:#e53e3e">工具出现过，但出现在更早的位置</div>';
-        }
-        html += '</div>';
-      }
-      html += '</div>';
-    }
-
-    if (toolChecks.length > 0) {
-      html += '<div class="run-detail-section">';
-      html += '<div class="section-label">执行评估</div>';
-      for (const check of toolChecks) {
-        const statusTag = check.matched
-          ? '<span class="tag tag-success">命中</span>'
-          : check.matchedByName
-            ? '<span class="tag tag-error">参数不符</span>'
-            : '<span class="tag tag-error">未调用</span>';
-        html += '<div class="run-detail-tool">';
-        html += `${statusTag} <span class="tag">${escapeHtml(check.name || 'unknown')}</span>`;
-        if (check.order != null) {
-          html += ` <span class="agent-meta">期望顺序 #${escapeHtml(String(check.order))}</span>`;
-        }
-        if (check.requiredParams && check.requiredParams.length > 0) {
-          html += `<div class="agent-meta">必填参数：${escapeHtml(check.requiredParams.join(', '))}</div>`;
-        }
-        if (check.expectedArguments) {
-          html += `<div class="agent-meta">期望结构</div><pre class="run-detail-pre">${escapeHtml(JSON.stringify(check.expectedArguments, null, 2))}</pre>`;
-        }
-        if (Array.isArray(check.missingParams) && check.missingParams.length > 0) {
-          html += `<div class="agent-meta" style="color:#e53e3e">缺少参数：${escapeHtml(check.missingParams.join(', '))}</div>`;
-        }
-        if (check.hasParameterExpectation && check.argumentShapePassed === false) {
-          html += '<div class="agent-meta" style="color:#e53e3e">参数结构未通过</div>';
-        }
-        if (check.actualArguments && typeof check.actualArguments === 'object') {
-          html += `<div class="agent-meta">实际参数</div><pre class="run-detail-pre">${escapeHtml(JSON.stringify(check.actualArguments, null, 2))}</pre>`;
-        }
-        html += '</div>';
-      }
-      html += '</div>';
-    }
-
-    if (run && !run.verdict && isFailedFlag(run.triggerPassed)) {
-      html += '<div class="run-detail-section">';
-      html += '<div class="section-label" style="color:#e53e3e">⚠ 触发失败诊断</div>';
-      if (toolEvents.length === 0 && sessionToolCalls.length === 0) {
-        html += '<div class="run-detail-diag">模型未调用任何工具，直接输出了文本回复</div>';
-      } else {
-        const allTools = [
-          ...toolEvents.map(e => (e.payload && e.payload.tool) || 'unknown'),
-          ...sessionToolCalls.map(t => t.toolName || 'unknown')
-        ];
-        html += `<div class="run-detail-diag">模型调用了以下工具，但均未触发目标 skill: <strong>${escapeHtml(allTools.join(', '))}</strong></div>`;
-      }
-      // Show thinking if available
-      if (session.thinking) {
-        html += '<div class="section-label" style="margin-top:0.4rem">模型思考过程</div>';
-        html += `<pre class="run-detail-pre run-detail-thinking">${escapeHtml(session.thinking)}</pre>`;
-      }
-      html += '</div>';
-    }
-
-    // ---- Tool Call Events (from a2a_task_events) ----
-    if (toolEvents.length > 0) {
-      html += '<div class="run-detail-section">';
-      html += '<div class="section-label">回调工具调用</div>';
-      for (const ev of toolEvents) {
-        const p = ev.payload || {};
-        html += '<div class="run-detail-tool">';
-        html += `<span class="tag">${escapeHtml(p.tool || 'unknown')}</span>`;
-        if (p.status) html += ` <span class="agent-meta">${escapeHtml(p.status)}</span>`;
-        if (p.request) html += `<pre class="run-detail-pre">${escapeHtml(JSON.stringify(p.request, null, 2))}</pre>`;
-        html += '</div>';
-      }
-      html += '</div>';
-    }
-
-    // ---- Session tool calls (pi built-in) ----
-    if (sessionToolCalls.length > 0) {
-      html += '<div class="run-detail-section">';
-      html += '<div class="section-label">内置工具调用</div>';
-      for (const tc of sessionToolCalls) {
-        html += '<div class="run-detail-tool">';
-        html += `<span class="tag">${escapeHtml(tc.toolName || 'unknown')}</span>`;
-        if (tc.arguments && Object.keys(tc.arguments).length > 0) {
-          html += `<pre class="run-detail-pre">${escapeHtml(JSON.stringify(tc.arguments, null, 2))}</pre>`;
-        }
-        html += '</div>';
-      }
-      html += '</div>';
-    }
-
-    // ---- Thinking ----
-    if (session.thinking && run && (isPassedFlag(run.triggerPassed) || Boolean(run.verdict))) {
-      html += '<div class="run-detail-section">';
-      html += '<div class="section-label">思考过程</div>';
-      html += `<pre class="run-detail-pre run-detail-thinking">${escapeHtml(session.thinking)}</pre>`;
-      html += '</div>';
-    }
-
-    if (!html) {
-      html = '<p class="section-hint">无调试数据</p>';
-    }
-
-    panel.innerHTML = html;
   }
 
   // ---- Generate ----
@@ -4629,40 +3166,6 @@
       } finally {
         dom.generateButton.disabled = false;
         dom.generateButton.textContent = 'AI 生成测试用例';
-      }
-    });
-  }
-
-  if (dom.detailSaveButton) {
-    dom.detailSaveButton.addEventListener('click', async () => {
-      try {
-        dom.detailSaveButton.disabled = true;
-        await saveCurrentCase();
-      } catch (err) {
-        const issues = extractIssuesFromError(err);
-        renderIssuePanel(dom.detailIssues, issues, '保存失败校验提示');
-        const issueMessage = buildIssueToastMessage('保存失败，', issues);
-        showToast(issueMessage || ('保存失败: ' + (err.message || err)));
-      } finally {
-        dom.detailSaveButton.disabled = false;
-      }
-    });
-  }
-
-  if (dom.detailToggleStatusButton) {
-    dom.detailToggleStatusButton.addEventListener('click', async () => {
-      const selectedCase = state.testCases.find((tc) => tc.id === state.selectedCaseId);
-      if (!selectedCase) return;
-      try {
-        dom.detailToggleStatusButton.disabled = true;
-        await toggleCaseStatus(selectedCase);
-      } catch (err) {
-        const issues = extractIssuesFromError(err);
-        renderIssuePanel(dom.detailIssues, issues, '切换状态失败校验提示');
-        const issueMessage = buildIssueToastMessage('切换状态失败，', issues);
-        showToast(issueMessage || ('切换状态失败: ' + (err.message || err)));
-      } finally {
-        dom.detailToggleStatusButton.disabled = false;
       }
     });
   }
@@ -5018,106 +3521,22 @@
   }
 
   function renderSummary() {
-    if (!dom.summaryBody) return;
-    renderSelectedSkillOverview();
-    const summaryRefreshLabel = formatRefreshTime(state.summaryLastLoadedAt);
-    if (state.summaryLoading && state.summary.length === 0) {
-      if (dom.summaryHighlights) {
-        dom.summaryHighlights.innerHTML = '<span class="tag tag-pending">正在加载 Skill 测试概览...</span>';
+    summaryViewHelpers.renderSummary(
+      {
+        summaryBody: dom.summaryBody,
+        summaryHighlights: dom.summaryHighlights,
+      },
+      {
+        summary: state.summary,
+        summaryLoading: state.summaryLoading,
+        summaryLoadError: state.summaryLoadError,
+        summaryLastLoadedAt: state.summaryLastLoadedAt,
+      },
+      {
+        onRenderSelectedSkillOverview: renderSelectedSkillOverview,
+        onRetry: loadSummary,
       }
-      dom.summaryBody.innerHTML = '<p class="section-hint">加载中...</p>';
-      return;
-    }
-    if (state.summaryLoadError && state.summary.length === 0) {
-      if (dom.summaryHighlights) {
-        dom.summaryHighlights.innerHTML = '<span class="tag tag-error">Skill 概览加载失败</span>';
-      }
-      renderRetryState(dom.summaryBody, state.summaryLoadError, loadSummary);
-      return;
-    }
-    if (state.summary.length === 0) {
-      if (dom.summaryHighlights) {
-        dom.summaryHighlights.innerHTML = '<span class="tag tag-pending">还没有可展示的 skill 测试结果</span>';
-      }
-      dom.summaryBody.innerHTML = '<p class="section-hint">暂无测试数据；先选一个 Skill 生成或手动创建用例，再回来这里看整体概览。</p>';
-      return;
-    }
-
-    const totals = state.summary.reduce((acc, entry) => {
-      acc.totalCases += Number(entry.totalCases || 0);
-      acc.totalRuns += Number(entry.totalRuns || 0);
-      acc.draft += Number((entry.casesByStatus && entry.casesByStatus.draft) || 0);
-      acc.ready += Number((entry.casesByStatus && entry.casesByStatus.ready) || 0);
-      acc.archived += Number((entry.casesByStatus && entry.casesByStatus.archived) || 0);
-      acc.triggerPassed += Number(entry.triggerPassedCount || 0);
-      acc.executionPassed += Number(entry.executionPassedCount || 0);
-      return acc;
-    }, { totalCases: 0, totalRuns: 0, draft: 0, ready: 0, archived: 0, triggerPassed: 0, executionPassed: 0 });
-
-    if (dom.summaryHighlights) {
-      const triggerRate = totals.totalRuns > 0 ? Math.round((totals.triggerPassed / totals.totalRuns) * 100) : 0;
-      const executionRate = totals.totalRuns > 0 ? Math.round((totals.executionPassed / totals.totalRuns) * 100) : 0;
-      const refreshTag = summaryRefreshLabel ? `<span class="tag">最近刷新 ${escapeHtml(summaryRefreshLabel)}</span>` : '';
-      const loadingTag = state.summaryLoading
-        ? '<span class="tag tag-pending">概览刷新中...</span>'
-        : (state.summaryLoadError ? '<span class="tag tag-error">概览刷新失败</span>' : '');
-      dom.summaryHighlights.innerHTML = `
-        <span class="tag">共 ${totals.totalCases} 条用例</span>
-        <span class="tag tag-pending">Draft ${totals.draft}</span>
-        <span class="tag tag-success">Ready ${totals.ready}</span>
-        <span class="tag">Archived ${totals.archived}</span>
-        <span class="tag">加载成功率 ${triggerRate}%</span>
-        <span class="tag">执行通过率 ${executionRate || 0}%</span>
-        ${refreshTag}
-        ${loadingTag}
-      `;
-    }
-
-    let html = '';
-    if (state.summaryLoadError) {
-      html += `
-        <div class="skill-test-inline-banner skill-test-inline-banner-error">
-          <p class="section-hint">概览刷新失败，当前仍显示${summaryRefreshLabel ? `${escapeHtml(summaryRefreshLabel)} 的` : '上一次成功加载的'}结果。</p>
-          <div class="panel-actions">
-            <button class="ghost-button" type="button" data-st-summary-retry="true">重试</button>
-          </div>
-        </div>
-      `;
-    } else if (state.summaryLoading) {
-      html += `<div class="skill-test-inline-banner skill-test-inline-banner-pending"><p class="section-hint">概览刷新中${summaryRefreshLabel ? `，当前先显示 ${escapeHtml(summaryRefreshLabel)} 的结果。` : '，你可以先查看已加载结果。'}</p></div>`;
-    }
-    html += '<div class="table-scroll"><table class="summary-table"><thead><tr>';
-    html += '<th>Skill</th><th>用例</th><th>运行</th>';
-    html += '<th>状态</th><th>加载成功</th><th>执行通过</th><th>目标达成</th><th>工具成功</th>';
-    html += '</tr></thead><tbody>';
-
-    for (const entry of state.summary) {
-      const triggerRate = entry.triggerRate != null ? (entry.triggerRate * 100).toFixed(1) + '%' : '—';
-      const execRate = entry.executionRate != null ? (entry.executionRate * 100).toFixed(1) + '%' : '—';
-      const goalAchievement = entry.avgGoalAchievement != null ? (entry.avgGoalAchievement * 100).toFixed(1) + '%' : '—';
-      const toolSuccess = entry.avgToolCallSuccessRate != null ? (entry.avgToolCallSuccessRate * 100).toFixed(1) + '%' : '—';
-      const draftCount = Number((entry.casesByStatus && entry.casesByStatus.draft) || 0);
-      const readyCount = Number((entry.casesByStatus && entry.casesByStatus.ready) || 0);
-      const archivedCount = Number((entry.casesByStatus && entry.casesByStatus.archived) || 0);
-
-      html += `<tr>`;
-      html += `<td>${escapeHtml(entry.skillId)}</td>`;
-      html += `<td>${entry.totalCases}</td>`;
-      html += `<td>${entry.totalRuns}</td>`;
-      html += `<td>Draft ${draftCount} / Ready ${readyCount} / Archived ${archivedCount}</td>`;
-      html += `<td>${triggerRate}</td>`;
-      html += `<td>${execRate}</td>`;
-      html += `<td>${goalAchievement}</td>`;
-      html += `<td>${toolSuccess}</td>`;
-      html += `</tr>`;
-    }
-
-    html += '</tbody></table></div>';
-    dom.summaryBody.innerHTML = html;
-    const retryButton = dom.summaryBody.querySelector('[data-st-summary-retry="true"]');
-    if (retryButton) {
-      retryButton.addEventListener('click', loadSummary);
-    }
+    );
   }
 
   if (dom.refreshSummaryButton) {

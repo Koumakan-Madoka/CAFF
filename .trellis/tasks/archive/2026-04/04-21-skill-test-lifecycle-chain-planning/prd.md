@@ -39,14 +39,14 @@
 - 来源审计继续保留 `conversationId`、`messageId`、`matrixId`，并补充链级 metadata，确保后续 runner 改造时可追溯。
 
 ## Acceptance Criteria
-- [ ] 测试矩阵 schema 能表示链式 step，并区分单 case 与链式 case。
-- [ ] helper skill 会主动追问 skill 是否存在生命周期链或状态依赖。
-- [ ] 已确认的链式矩阵 row 可导出为现有 `skill_test_cases` draft，且 metadata 中保留链信息。
-- [ ] 链式 row 若涉及环境准备，矩阵与导出 metadata 能明确标识引用了哪个 skill 内环境契约，或明确标记契约缺失 / 用户补充；缺失且未确认时会阻止整链导出。
-- [ ] agent 不会把未沉淀到 skill 的安装步骤偷偷塞进 `inheritance` 语义里。
-- [ ] 非法链结构（如成环、顺序冲突、跨链依赖、删除中间 step 后断链）会在确认范围或导出前被结构化拦截。
-- [ ] 现有单 case 规划、确认、导出与运行流程不受破坏。
-- [ ] spec 至少补充“链只属于规划/导出层，不代表 runner 已支持共享环境执行”的约束。
+- [x] 测试矩阵 schema 能表示链式 step，并区分单 case 与链式 case。
+- [x] helper skill 会主动追问 skill 是否存在生命周期链或状态依赖。
+- [x] 已确认的链式矩阵 row 可导出为现有 `skill_test_cases` draft，且 metadata 中保留链信息。
+- [x] 链式 row 若涉及环境准备，矩阵与导出 metadata 能明确标识引用了哪个 skill 内环境契约，或明确标记契约缺失 / 用户补充；缺失且未确认时会阻止整链导出。
+- [x] agent 不会把未沉淀到 skill 的安装步骤偷偷塞进 `inheritance` 语义里。
+- [x] 非法链结构（如成环、顺序冲突、跨链依赖、删除中间 step 后断链）会在确认范围或导出前被结构化拦截。
+- [x] 现有单 case 规划、确认、导出与运行流程不受破坏。
+- [x] spec 至少补充“链只属于规划/导出层，不代表 runner 已支持共享环境执行”的约束。
 
 ## Proposed Cut
 ### Matrix Shape

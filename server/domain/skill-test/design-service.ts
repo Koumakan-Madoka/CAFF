@@ -29,7 +29,7 @@ function safeJsonParseObject(value: any) {
   try {
     const parsed = JSON.parse(String(value));
     return isPlainObject(parsed) ? parsed : {};
-  } catch {
+  } catch (_parseError) {
     return {};
   }
 }
@@ -83,10 +83,98 @@ function normalizeSkillTestEnvironmentBuildContractRef(value: any) {
   ).trim().replace(/\\/g, '/');
 }
 
+type SkillTestStoredDraftRow = {
+  id?: unknown;
+  loading_mode?: unknown;
+  test_type?: unknown;
+  trigger_prompt?: unknown;
+  case_status?: unknown;
+  environment_config_json?: unknown;
+  source_metadata_json?: unknown;
+};
+
+type SkillTestDraftInputLike = {
+  loadingMode?: unknown;
+  testType?: unknown;
+  triggerPrompt?: unknown;
+  environmentConfig?: unknown;
+  environment_config_json?: unknown;
+  sourceMetadata?: unknown;
+  source_metadata_json?: unknown;
+  environmentContractRef?: unknown;
+  [key: string]: unknown;
+};
+
+type SkillTestDesignMatrixRowLike = {
+  rowId?: unknown;
+  [key: string]: unknown;
+};
+
+type SkillTestDraftLookupOptions = {
+  excludeCaseIds?: unknown;
+};
+
+type SkillTestDraftMatch = {
+  id: string;
+  loadingMode: string;
+  testType: string;
+  triggerPrompt: string;
+  caseStatus: string;
+  envProfile: string;
+  environmentContractRef: string;
+};
+
+type SkillTestConversationDraftCandidate = SkillTestDraftMatch & {
+  conversationId: string;
+  matrixRowId: string;
+  source: string;
+};
+
+function buildExcludedCaseIdsSet(value: unknown): Set<string> {
+  return new Set(
+    Array.isArray(value)
+      ? value.map((entry) => String(entry || '').trim()).filter(Boolean)
+      : []
+  );
+}
+
+function buildSkillTestDraftMatch(storedRow: SkillTestStoredDraftRow): SkillTestDraftMatch {
+  return {
+    id: String(storedRow && storedRow.id || '').trim(),
+    loadingMode: String(storedRow && storedRow.loading_mode || '').trim().toLowerCase() || 'dynamic',
+    testType: String(storedRow && storedRow.test_type || '').trim().toLowerCase() || 'trigger',
+    triggerPrompt: normalizePromptText(storedRow && storedRow.trigger_prompt),
+    caseStatus: String(storedRow && storedRow.case_status || 'draft').trim().toLowerCase() || 'draft',
+    envProfile: normalizeSkillTestEnvironmentBuildProfile(storedRow),
+    environmentContractRef: normalizeSkillTestEnvironmentBuildContractRef(storedRow),
+  };
+}
+
+function buildSkillTestConversationDraftCandidate(storedRow: SkillTestStoredDraftRow): SkillTestConversationDraftCandidate {
+  const sourceMetadata = safeJsonParseObject(storedRow && storedRow.source_metadata_json);
+  const designMetadata = isPlainObject(sourceMetadata && sourceMetadata.skillTestDesign)
+    ? sourceMetadata.skillTestDesign
+    : {};
+  const draftMatch = buildSkillTestDraftMatch(storedRow);
+
+  return {
+    ...draftMatch,
+    conversationId: String(sourceMetadata && sourceMetadata.conversationId || '').trim(),
+    matrixRowId: String(sourceMetadata && sourceMetadata.matrixRowId || '').trim(),
+    source: String(sourceMetadata && sourceMetadata.source || '').trim(),
+    environmentContractRef: String(
+      designMetadata && designMetadata.environmentContractRef
+      || draftMatch.environmentContractRef
+      || ''
+    ).trim(),
+  };
+}
+
 export function createSkillTestDesignService(options: any = {}) {
   const store = options.store;
   const skillRegistry = options.skillRegistry;
   const createTestCase = typeof options.createTestCase === 'function' ? options.createTestCase : null;
+  const updateTestCase = typeof options.updateTestCase === 'function' ? options.updateTestCase : null;
   const getTestCase = typeof options.getTestCase === 'function' ? options.getTestCase : () => null;
   const ensureSchema = typeof options.ensureSchema === 'function' ? options.ensureSchema : () => {};
   const nowIsoImpl = typeof options.nowIso === 'function' ? options.nowIso : nowIso;
@@ -587,8 +675,9 @@ export function createSkillTestDesignService(options: any = {}) {
     return sourceMetadata;
   }
 
-  function findSkillTestDraftDuplicates(skillId: string, draftInput: any) {
+  function findSkillTestDraftDuplicates(skillId: string, draftInput: SkillTestDraftInputLike, options: SkillTestDraftLookupOptions = {}) {
     ensureSchema();
+    const excludedCaseIds = buildExcludedCaseIdsSet(options.excludeCaseIds);
     const testType = String(draftInput && draftInput.testType || 'trigger').trim().toLowerCase() || 'trigger';
 
     if (testType === 'environment-build') {
@@ -604,16 +693,9 @@ export function createSkillTestDesignService(options: any = {}) {
       `).all(skillId, 'environment-build');
 
       return rows
-        .map((row: any) => ({
-          id: String(row && row.id || '').trim(),
-          loadingMode: String(row && row.loading_mode || '').trim(),
-          testType: String(row && row.test_type || '').trim(),
-          triggerPrompt: normalizePromptText(row && row.trigger_prompt),
-          caseStatus: String(row && row.case_status || 'draft').trim() || 'draft',
-          envProfile: normalizeSkillTestEnvironmentBuildProfile(row),
-          environmentContractRef: normalizeSkillTestEnvironmentBuildContractRef(row),
-        }))
-        .filter((row: any) => {
+        .map((row: SkillTestStoredDraftRow) => buildSkillTestDraftMatch(row))
+        .filter((row) => row.id && !excludedCaseIds.has(row.id))
+        .filter((row) => {
           if (row.envProfile && row.envProfile === draftEnvProfile) {
             return true;
           }
@@ -637,14 +719,79 @@ export function createSkillTestDesignService(options: any = {}) {
     `).all(skillId, draftInput.loadingMode || 'dynamic', draftInput.testType || 'trigger');
 
     return rows
-      .map((row: any) => ({
-        id: String(row && row.id || '').trim(),
-        loadingMode: String(row && row.loading_mode || '').trim(),
-        testType: String(row && row.test_type || '').trim(),
-        triggerPrompt: normalizePromptText(row && row.trigger_prompt),
-        caseStatus: String(row && row.case_status || 'draft').trim() || 'draft',
-      }))
-      .filter((row: any) => normalizeSkillTestPromptKey(row.triggerPrompt) === normalizedPrompt);
+      .map((row: SkillTestStoredDraftRow) => buildSkillTestDraftMatch(row))
+      .filter((row) => row.id && !excludedCaseIds.has(row.id))
+      .filter((row) => normalizeSkillTestPromptKey(row.triggerPrompt) === normalizedPrompt);
+  }
+
+  function findReusableSkillTestConversationDraft(
+    skillId: string,
+    conversationId: string,
+    row: SkillTestDesignMatrixRowLike,
+    draftInput: SkillTestDraftInputLike,
+    options: SkillTestDraftLookupOptions = {}
+  ) {
+    ensureSchema();
+    const normalizedConversationId = String(conversationId || '').trim();
+    if (!normalizedConversationId) {
+      return null;
+    }
+
+    const excludedCaseIds = buildExcludedCaseIdsSet(options.excludeCaseIds);
+    const matrixRowId = String(row && row.rowId || '').trim();
+    const testType = String(draftInput && draftInput.testType || 'trigger').trim().toLowerCase() || 'trigger';
+    const loadingMode = String(draftInput && draftInput.loadingMode || 'dynamic').trim().toLowerCase() || 'dynamic';
+    const normalizedPrompt = normalizeSkillTestPromptKey(draftInput && draftInput.triggerPrompt);
+    const draftEnvProfile = testType === 'environment-build'
+      ? normalizeSkillTestEnvironmentBuildProfile(draftInput)
+      : '';
+    const draftContractRef = testType === 'environment-build'
+      ? normalizeSkillTestEnvironmentBuildContractRef(draftInput)
+      : '';
+
+    const rows = store.db.prepare(`
+      SELECT id, loading_mode, test_type, trigger_prompt, case_status, environment_config_json, source_metadata_json
+      FROM skill_test_cases
+      WHERE skill_id = ?
+      ORDER BY updated_at DESC, created_at DESC
+      LIMIT 200
+    `).all(skillId);
+
+    const candidates = rows
+      .map((storedRow: SkillTestStoredDraftRow) => buildSkillTestConversationDraftCandidate(storedRow))
+      .filter((candidate) => candidate.id && !excludedCaseIds.has(candidate.id))
+      .filter((candidate) => candidate.caseStatus === 'draft')
+      .filter((candidate) => candidate.source === 'skill_test_chat_workbench')
+      .filter((candidate) => candidate.conversationId === normalizedConversationId);
+
+    if (matrixRowId) {
+      const rowMatch = candidates.find((candidate) => candidate.matrixRowId === matrixRowId);
+      if (rowMatch) {
+        return rowMatch;
+      }
+    }
+
+    if (testType === 'environment-build') {
+      return candidates.find((candidate) => {
+        if (candidate.testType !== 'environment-build' || candidate.loadingMode !== loadingMode) {
+          return false;
+        }
+        if (candidate.envProfile && candidate.envProfile === draftEnvProfile) {
+          return true;
+        }
+        return Boolean(draftContractRef && candidate.environmentContractRef && candidate.environmentContractRef === draftContractRef);
+      }) || null;
+    }
+
+    if (!normalizedPrompt) {
+      return null;
+    }
+
+    return candidates.find((candidate) => (
+      candidate.loadingMode === loadingMode
+      && candidate.testType === testType
+      && normalizeSkillTestPromptKey(candidate.triggerPrompt) === normalizedPrompt
+    )) || null;
   }
 
   function buildSkillTestDesignExportDrafts(conversation: any, designState: any, options: any = {}) {
@@ -685,6 +832,7 @@ export function createSkillTestDesignService(options: any = {}) {
     const draftPlans = [] as any[];
     const duplicateWarnings = [] as any[];
     const skippedRows = [] as any[];
+    const reservedReusableCaseIds = new Set<string>();
 
     for (const row of includeRows) {
       if (!isSkillTestDesignDraftExportCandidate(row)) {
@@ -702,14 +850,26 @@ export function createSkillTestDesignService(options: any = {}) {
         agentRole: String(confirmation.agentRole || 'scribe').trim() || 'scribe',
         exportedBy: String(options.exportedBy || 'user').trim() || 'user',
       });
-      const duplicates = findSkillTestDraftDuplicates(designState.skillId, draftInput);
+      const reusableDraft = findReusableSkillTestConversationDraft(designState.skillId, conversation.id, row, draftInput, {
+        excludeCaseIds: [...reservedReusableCaseIds],
+      });
+      if (reusableDraft && reusableDraft.id) {
+        reservedReusableCaseIds.add(reusableDraft.id);
+      }
+      const duplicates = findSkillTestDraftDuplicates(designState.skillId, draftInput, {
+        excludeCaseIds: reusableDraft && reusableDraft.id ? [reusableDraft.id] : [],
+      });
       if (duplicates.length > 0) {
         duplicateWarnings.push({
           rowId: String(row && row.rowId || '').trim(),
           duplicates,
         });
       }
-      draftPlans.push({ row, draftInput });
+      draftPlans.push({
+        row,
+        draftInput,
+        reusableCaseId: reusableDraft && reusableDraft.id ? reusableDraft.id : '',
+      });
     }
 
     const updateSourceMetadataStatement = store.db.prepare(`
@@ -719,10 +879,15 @@ export function createSkillTestDesignService(options: any = {}) {
       WHERE id = @id
     `);
     const createDraftsTransaction = store.db.transaction((plans: any[]) => {
-      const createdEntries = plans.map((plan: any) => ({
-        row: plan.row,
-        testCase: createTestCase(plan.draftInput).testCase,
-      }));
+      const createdEntries = plans.map((plan: any) => {
+        const testCaseResult = plan.reusableCaseId && updateTestCase
+          ? updateTestCase(plan.reusableCaseId, plan.draftInput)
+          : createTestCase(plan.draftInput);
+        return {
+          row: plan.row,
+          testCase: testCaseResult.testCase,
+        };
+      });
       const rowIdToCaseId = new Map<string, string>(
         createdEntries
           .map((entry: any) => [String(entry && entry.row && entry.row.rowId || '').trim(), String(entry && entry.testCase && entry.testCase.id || '').trim()] as [string, string])

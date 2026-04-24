@@ -3,7 +3,7 @@
   "name": "skill-test-lifecycle-chain-planning",
   "title": "Skill test lifecycle chain planning and draft export",
   "description": "Plan chain-aware matrix fields and draft export metadata for lifecycle-dependent skills without changing runner semantics yet.",
-  "status": "in_progress",
+  "status": "completed",
   "dev_type": "fullstack",
   "scope": ".agents/skills/skill-test-design-workbench/SKILL.md, public/chat/skill-test-design-panel.js, server/api/skill-test-controller.ts, server/domain/skill-test/chat-workbench-mode.ts, tests/skill-test/*, .trellis/spec/skills/skill-testing.md",
   "package": null,
@@ -11,7 +11,7 @@
   "creator": "菲比啾比",
   "assignee": "菲比啾比",
   "createdAt": "2026-04-21",
-  "completedAt": null,
+  "completedAt": "2026-04-24",
   "branch": null,
   "base_branch": "feat/skill-test-chat-workbench-mode",
   "worktree_path": null,
@@ -47,7 +47,7 @@
     "tests/skill-test/skill-test-e2e.test.js",
     ".trellis/spec/skills/skill-testing.md"
   ],
-  "notes": "Child of 04-21-skill-test-chat-workbench-mode. Owns chain-aware matrix planning and draft metadata export only; runner-level environment inheritance remains a later follow-up.",
+  "notes": "Closed after the chain-aware matrix planning and draft-export metadata contract landed under the umbrella task and stayed aligned with later runner/workbench follow-ups; final manual acceptance of the overall flow did not surface regressions in the planning/export contract.",
   "meta": {
     "kind": "follow-up-design",
     "executionLayerDeferred": true,

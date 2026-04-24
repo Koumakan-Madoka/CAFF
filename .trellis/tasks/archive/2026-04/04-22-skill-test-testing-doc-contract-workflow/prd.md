@@ -89,18 +89,18 @@
 - 写入成功后显示回流提示：建议重新生成矩阵或重新确认受影响 rows。
 
 ## Acceptance Criteria
-- [ ] 当目标 skill 缺少有效 `TESTING.md` 且 execution row 被环境门禁阻塞时，聊天工作台能提示“可起草 TESTING.md”。
-- [ ] 缺口检测本身不会自动生成文档草稿；只有用户显式请求后，系统才会生成结构化 `TESTING.md` 草稿预览。
-- [ ] 系统能生成结构化 `TESTING.md` 草稿预览，至少覆盖环境准备、启动/初始化、验证、清理和开放问题。
-- [ ] 草稿段落能区分 `skill_md`、`stable_spec`、`user_supplied`、`missing` 来源，且这些值是闭合枚举。
-- [ ] 用户未确认前，不会写入文件，也不会把 `user_supplied` 当作 `skill_contract`。
-- [ ] 用户确认后，仅能写入目标 skill 根目录的 `TESTING.md`；已有文件时必须先展示完整覆盖预览并显式确认。
-- [ ] 写入后会刷新环境契约上下文，并要求重新生成或重新确认相关矩阵 rows。
-- [ ] 后续导出的 case metadata 能引用新 `TESTING.md#...`，并仅在重新确认后将来源标记为 `skill_contract`。
-- [ ] 如果草稿仍缺少 `Prerequisites` / `Setup` 等关键 execution 环境信息，或仍有影响 execution 的 `Open Questions`，导出仍会 fail closed，而不是因为存在 `TESTING.md` 文件就放行。
-- [ ] `Verification` / `Teardown` 缺失在 MVP 至少会给出显式警告，不会被静默吞掉。
-- [ ] apply / preview / refresh 失败时返回结构化错误，聊天中可继续修正。
-- [ ] 现有 Skill Tests 手动创建、编辑、运行功能不受影响。
+- [x] 当目标 skill 缺少有效 `TESTING.md` 且 execution row 被环境门禁阻塞时，聊天工作台能提示“可起草 TESTING.md”。
+- [x] 缺口检测本身不会自动生成文档草稿；只有用户显式请求后，系统才会生成结构化 `TESTING.md` 草稿预览。
+- [x] 系统能生成结构化 `TESTING.md` 草稿预览，至少覆盖环境准备、启动/初始化、验证、清理和开放问题。
+- [x] 草稿段落能区分 `skill_md`、`stable_spec`、`user_supplied`、`missing` 来源，且这些值是闭合枚举。
+- [x] 用户未确认前，不会写入文件，也不会把 `user_supplied` 当作 `skill_contract`。
+- [x] 用户确认后，仅能写入目标 skill 根目录的 `TESTING.md`；已有文件时必须先展示完整覆盖预览并显式确认。
+- [x] 写入后会刷新环境契约上下文，并要求重新生成或重新确认相关矩阵 rows。
+- [x] 后续导出的 case metadata 能引用新 `TESTING.md#...`，并仅在重新确认后将来源标记为 `skill_contract`。
+- [x] 如果草稿仍缺少 `Prerequisites` / `Setup` 等关键 execution 环境信息，或仍有影响 execution 的 `Open Questions`，导出仍会 fail closed，而不是因为存在 `TESTING.md` 文件就放行。
+- [x] `Verification` / `Teardown` 缺失在 MVP 至少会给出显式警告，不会被静默吞掉。
+- [x] apply / preview / refresh 失败时返回结构化错误，聊天中可继续修正。
+- [x] 现有 Skill Tests 手动创建、编辑、运行功能不受影响。
 
 ## Validation
 - 后端单测 / e2e：缺口检测、显式 preview 触发、固定路径写入门禁、已有文件覆盖预览、写入后刷新上下文、`superseded` 草稿处理。

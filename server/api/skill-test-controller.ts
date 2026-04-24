@@ -1281,6 +1281,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     store,
     skillRegistry,
     createTestCase,
+    updateTestCase,
     getTestCase,
     ensureSchema,
     nowIso,
@@ -3145,8 +3146,12 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
         if (req.method === 'DELETE' && !action) {
           ensureSchema();
           requireSkillScopedTestCase();
-          store.db.prepare('DELETE FROM skill_test_runs WHERE test_case_id = @id').run({ id: caseId });
-          store.db.prepare('DELETE FROM skill_test_cases WHERE id = @id').run({ id: caseId });
+          const deleteSkillTestCaseTransaction = store.db.transaction((id: string) => {
+            store.db.prepare('DELETE FROM skill_test_chain_run_steps WHERE test_case_id = @id').run({ id });
+            store.db.prepare('DELETE FROM skill_test_runs WHERE test_case_id = @id').run({ id });
+            store.db.prepare('DELETE FROM skill_test_cases WHERE id = @id').run({ id });
+          });
+          deleteSkillTestCaseTransaction(caseId);
           sendJson(res, 200, { deletedId: caseId });
           return true;
         }

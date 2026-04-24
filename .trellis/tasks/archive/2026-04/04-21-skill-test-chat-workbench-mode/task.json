@@ -3,7 +3,7 @@
   "name": "skill-test-chat-workbench-mode",
   "title": "Skill Test Chat Workbench Mode",
   "description": "Draft and implement a chat-workbench mode for interactive multi-agent skill test case design and batch draft generation.",
-  "status": "in_progress",
+  "status": "completed",
   "dev_type": "fullstack",
   "scope": "public/chat/*, public/eval-cases.html, public/skill-tests.js, server/api/*, server/domain/conversation/turn/*, lib/skill-test-generator.ts, tests/skill-test/*",
   "package": null,
@@ -11,7 +11,7 @@
   "creator": "菲比啾比",
   "assignee": "菲比啾比",
   "createdAt": "2026-04-21",
-  "completedAt": null,
+  "completedAt": "2026-04-24",
   "branch": "feat/skill-test-chat-workbench-mode",
   "base_branch": "main",
   "worktree_path": null,
@@ -37,13 +37,9 @@
   "commit": null,
   "pr_url": null,
   "subtasks": [],
-  "children": [
-    "04-21-skill-test-lifecycle-chain-planning",
-    "04-22-skill-test-testing-doc-contract-workflow",
-    "04-22-skill-test-lifecycle-chain-runner"
-  ],
+  "children": [],
   "parent": null,
   "relatedFiles": [],
-  "notes": "",
+  "notes": "Closed after the Skill Test chat workbench mode, repeated-export draft reuse, chain-step deletion cleanup, running-chain observability, and runs-tab live refresh all landed; human browser acceptance confirmed the current end-to-end flow.",
   "meta": {}
 }

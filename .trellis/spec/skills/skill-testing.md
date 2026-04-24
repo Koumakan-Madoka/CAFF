@@ -444,6 +444,7 @@ Chat workbench draft export keeps the same draft-first rule and adds stricter au
 - large official matrices may be written by the scribe to project-local `.tmp/skill-test-design/<skillId>/<matrixId>.json` artifacts instead of pasted into chat
 - artifact import accepts only paths mentioned by the source assistant message, only within `.tmp/skill-test-design/`, only `.json`, and only up to 1MB before normal matrix validation
 - exported rows persist `source_metadata_json` with at least `conversationId`, `messageId`, `matrixId`, `matrixRowId`, `agentRole`, `exportedBy`, and `exportedAt`; artifact-backed imports may also persist `matrixArtifactPath`
+- repeated export from the same chat workbench conversation should reuse the latest matching chat-export draft (`conversationId + matrixRowId`, then same normalized prompt / environment-build identity) while the case is still `draft`, updating the existing row instead of creating another duplicate draft
 - conversation `skillTestDesign.export` persists the user-facing export summary: `exportedCaseIds[]`, `exportedCount`, `duplicateWarningCount`, `skippedRowCount`, and `skippedRows[]` so refreshes still show duplicate/skipped context without re-running export
 - the chat panel deep-link into Skill Tests uses `/eval-cases.html?tab=panel-skill-tests&skillId=<skillId>&caseId=<first-exported-case-id>&matrixId=<matrixId>`; `public/skill-tests.js` reads this query once, opens the Skill Tests tab, selects the target skill/case, and then falls back to normal localStorage selection
 - Skill Tests case detail renders chat-export tags from `sourceMetadata.source = skill_test_chat_workbench`, including matrix/row ids, environment source, and lifecycle chain id when present
@@ -571,6 +572,7 @@ type SkillTestMatrixRow = {
 - `tests/skill-test/skill-test-schema.test.js`: `skill_test_cases` includes `source_metadata_json`, nested `skillTestDesign` metadata survives persistence, draft builders keep environment/chain metadata out of free-text `note`, and matrix normalization defaults chat-workbench rows to `full + execution` while accepting `includeInExport` input.
 - `tests/skill-test/skill-test-e2e.test.js`: `environmentSource = missing` blocks execution / environment-build / real-env export without silently rewriting the row.
 - `tests/skill-test/skill-test-e2e.test.js`: chat workbench export can persist `environment-build` drafts when a skill contract or user-supplied environment source is present and can warn on existing `skillId + envProfile` / `environmentContractRef` duplicates.
+- `tests/skill-test/skill-test-e2e.test.js`: repeated export from the same conversation reuses existing draft rows by `matrixRowId` or normalized prompt instead of multiplying duplicate drafts.
 - `tests/skill-test/skill-test-e2e.test.js`: chain topology issues such as cycles, cross-chain dependencies, missing middle steps, and unresolved `dependsOnRowIds` are blocked before export.
 - Future UI test coverage: explicit user-facing messaging that chain grouping is planning-only and does not imply shared execution in Phase 1.
 
@@ -743,6 +745,7 @@ Notes:
 
 - `run-all` runs only effective `ready` cases.
 - `POST /generate`, `POST /run-all`, and `POST /:caseId/run` parse JSON bodies strictly; malformed bodies must surface `400 Invalid JSON body` instead of silently falling back to default options.
+- `DELETE /api/skills/:skillId/test-cases/:caseId` must remove dependent `skill_test_runs` and `skill_test_chain_run_steps` rows in the same transaction before deleting the case row, so previously executed chain history does not trip a raw SQLite foreign-key failure.
 - legacy rows (`validity_status`) are mapped to effective status for compatibility.
 
 ### Results and Reports
@@ -770,6 +773,7 @@ GET /api/skill-test-summary
 - `GET /api/skills/:skillId/test-chains/:chainRunId` returns chain summary plus ordered step audit; `GET /api/skills/:skillId/test-chains/by-export/:exportChainId/runs` returns recent chain summaries with ordered `steps[]` previews so the Skill Tests UI can show every step directly in chain history.
 - Chain teardown evidence is persisted in `skill_test_chain_runs.teardown_evidence_json`. Chain detail responses include full isolation teardown evidence, including `pollutionCheck.changes`; summary/list responses only expose compact pollution status/count metadata.
 - Chain history step cards surface each executed step's `skillTestRunId`, normal run detail, and session export action; skipped steps stay visible even though they intentionally have no `skill_test_runs` row.
+- Running chain steps do not have a persisted `skill_test_runs` row until the single-case executor finishes, so chain history / detail UI must still expose a live-observability action that jumps to the step case's realtime trace instead of waiting for the final run-detail button to appear.
 
 ## Execution Flow
 
@@ -831,7 +835,13 @@ Regression/summary execution metrics are full-mode only: `executionPassedCount` 
 
 ## UI Contract (Workstream D)
 
-Frontend (`public/skill-tests.js`) consumes structured validation/evaluation:
+Frontend keeps `public/skill-tests.js` as the Skill Tests page entry and pushes
+focused rendering / data helpers into `public/skill-tests/*.js`.
+`public/eval-cases.html` must load those helper scripts before
+`public/skill-tests.js`; each helper registers a
+`window.CaffSkillTests.create*Helpers()` factory, while the page entry remains
+responsible for state, SSE wiring, fetch orchestration, and cross-panel
+coordination.
 
 - unified issues panels:
   - detail panel: `st-detail-issues`
@@ -844,7 +854,11 @@ Frontend (`public/skill-tests.js`) consumes structured validation/evaluation:
   - `aiJudge` status, `verdictSuggestion`, `missedExpectations`
 - run detail reads `result.evaluation` first and falls back to `run.evaluation`
 - run detail prefers the finalized persisted `result.trace` snapshot for completed runs, then only falls back to rebuilding from live DB/session evidence for older rows that lack stored trace data
+- run detail and run history keep a stable `运行摘要 -> 工具时间线 -> 环境/评估细节` reading order so live and finalized runs do not drift into separate layouts
 - live run panel renders the active tool trace while a run is in progress and keeps the finalized trace visible after terminal events land
+- live chain panels and chain step cards should expose a running-step jump action (`查看实时调用` or equivalent) that selects the active case and reuses the existing live trace panel, because final run detail/session-export actions depend on persisted run rows that do not exist mid-run
+- when the detail `runs` tab is active, relevant live run / live chain events should trigger a debounced refresh and a short polling fallback while the selected case still has in-flight activity, so newly persisted run rows and chain history cards appear without forcing humans to reselect the case; background refreshes should preserve the current panel content instead of flashing the loading state on every tick
+- live runs use `status` as the explicit placeholder when no final verdict exists; finalized runs may add `verdict`, environment status, and step counts, but the UI must not invent `pass/fail` before persisted evidence exists
 - run history actions keep both `下载 JSON` (normalized detail payload) and `导出 Session` (raw session JSONL evidence) so sandbox-side behavior can be inspected without guessing from summary cards
 
 ### Live Run SSE Contract
@@ -867,10 +881,11 @@ Frontend (`public/skill-tests.js`) consumes structured validation/evaluation:
 ### Skill Tests Workspace Layout
 
 - `public/eval-cases.html` keeps the Skill Tests workspace in a single-column-first flow: sticky top toolbar → overview → case list → detail → create → summary, with wide-screen enhancement only at larger breakpoints.
-- The sticky toolbar is the only always-pinned control surface for high-frequency actions (`skill`, `agent`, `model`, `promptVersion`, run isolation defaults such as `isolationMode` / `trellisMode` / `egressMode` / `publishGate`, plus generate / manual create / run-all); page-level horizontal scrolling should be avoided outside local table overflow.
+- The sticky toolbar is the only always-pinned control surface for high-frequency actions (`skill`, `agent`, `model`, `promptVersion`, run isolation defaults such as `isolationMode` / `trellisMode` / `egressMode`, plus `chainStopPolicy`, generate / manual-create / run-all actions, and the conditional environment-build image toggle); page-level horizontal scrolling should be avoided outside local table overflow.
 - The detail area stays tabbed (`overview`, `details`, `runs`, `regression`) so long histories and regression output do not crowd the editor surface.
-- The detail header keeps case status, last-outcome summary, and primary actions visible at the top of the detail card, but it intentionally remains in normal document flow (`position: static`) instead of becoming sticky, because zoomed desktop layouts made a sticky header float above the workspace and obscure nearby content.
-- Case list cards should expose short case id, status, recent run context, and direct run/detail actions, plus lightweight search/filter by `case id` or prompt keywords.
+- The detail header keeps case status, last-outcome summary, chain-summary rail, and primary actions visible at the top of the detail card, but it intentionally remains in normal document flow (`position: static`) instead of becoming sticky, because zoomed desktop layouts made a sticky header float above the workspace and obscure nearby content.
+- Case list stays single-list-first, adds lightweight `全部 / 链式 / 普通` filtering, and cards should expose short case id, status, recent run context, and direct run/detail actions.
+- Chain cases must be derived from `getSkillTestChainPlanningMeta(testCase)` and rendered with a compact rail in the card header; long chains collapse to `first / gap / current / last` or `first / +N / last` instead of stretching the whole card.
 - Empty, loading, and failure states should point to the next action (`generate`, `manual create`, `retry`, `clear filter`) instead of leaving the workspace blank.
 
 ## Implementation Files
@@ -887,7 +902,19 @@ Frontend (`public/skill-tests.js`) consumes structured validation/evaluation:
 - `tests/skill-test/skill-test-schema.test.js`
 - `tests/skill-test/skill-test-e2e.test.js`
 - `tests/storage/run-store.test.js`
+- `public/eval-cases.html`
 - `public/skill-tests.js`
+- `public/skill-tests/panel-state-view.js`
+- `public/skill-tests/summary-view.js`
+- `public/skill-tests/selected-skill-overview-view.js`
+- `public/skill-tests/chain-rail-view.js`
+- `public/skill-tests/run-detail-view.js`
+- `public/skill-tests/environment-view.js`
+- `public/skill-tests/case-list-view.js`
+- `public/skill-tests/case-runs-view.js`
+- `public/skill-tests/case-detail-view.js`
+- `public/skill-tests/case-detail-data-view.js`
+- `public/skill-tests/case-form-view.js`
 
 ### Integration Points
 

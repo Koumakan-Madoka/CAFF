@@ -10,6 +10,17 @@
     <script defer src="/shared/toast.js"></script>
     <script defer src="/shared/clipboard.js"></script>
     <script defer src="/eval-cases.js"></script>
+    <script defer src="/skill-tests/run-detail-view.js"></script>
+    <script defer src="/skill-tests/environment-view.js"></script>
+    <script defer src="/skill-tests/chain-rail-view.js"></script>
+    <script defer src="/skill-tests/panel-state-view.js"></script>
+    <script defer src="/skill-tests/selected-skill-overview-view.js"></script>
+    <script defer src="/skill-tests/summary-view.js"></script>
+    <script defer src="/skill-tests/case-list-view.js"></script>
+    <script defer src="/skill-tests/case-runs-view.js"></script>
+    <script defer src="/skill-tests/case-detail-data-view.js"></script>
+    <script defer src="/skill-tests/case-form-view.js"></script>
+    <script defer src="/skill-tests/case-detail-view.js"></script>
     <script defer src="/skill-tests.js"></script>
   </head>
   <body class="casebook">
@@ -105,14 +116,6 @@
                 </select>
                 <p class="section-hint">仅“按链运行”生效；不会改写单条 case 的最终 verdict。</p>
               </label>
-              <div class="skill-tests-toolbar-field skill-tests-toolbar-field-wide">
-                <span>Publish Gate</span>
-                <label>
-                  <input id="st-publish-gate" type="checkbox" />
-                  <span>将本次运行作为 publish gate 证据</span>
-                </label>
-                <p class="section-hint">仅真正 sandbox 隔离结果可作为 gate；legacy-local 不算。</p>
-              </div>
               <div id="st-environment-build-image-field" class="skill-tests-toolbar-field skill-tests-toolbar-field-wide skill-tests-environment-build-field hidden">
                 <span>环境镜像</span>
                 <label class="skill-tests-checkbox-row">
@@ -187,6 +190,14 @@
                     <option value="failing">最近失败</option>
                   </select>
                 </label>
+                <label>
+                  <span>形态</span>
+                  <select id="st-case-chain-filter">
+                    <option value="all">全部</option>
+                    <option value="chain">链式</option>
+                    <option value="single">普通</option>
+                  </select>
+                </label>
               </div>
               <div id="st-case-list" class="skill-test-case-list">
                 <p class="section-hint">选择一个 Skill 查看测试用例</p>
@@ -213,6 +224,7 @@
                     <p id="st-detail-case-id" class="muted"></p>
                     <div id="st-detail-meta" class="tag-row"></div>
                     <p id="st-detail-last-outcome" class="section-hint">先运行一条再看最近结果摘要。</p>
+                    <div id="st-detail-chain-summary" class="skill-test-detail-chain hidden"></div>
                   </div>
                   <div id="st-detail-status-callout" class="skill-test-status-callout hidden" aria-live="polite"></div>
                   <div class="panel-actions">

@@ -3,7 +3,7 @@
   "name": "skill-test-lifecycle-chain-runner",
   "title": "Skill test lifecycle chain runner MVP",
   "description": "Add explicit linear chain execution for lifecycle-tagged skill test drafts, with chain-level audit, fail-fast sequencing, bounded carry-forward, and shared environment orchestration.",
-  "status": "in_progress",
+  "status": "completed",
   "dev_type": "fullstack",
   "scope": "public/skill-tests.js, public/chat/skill-test-design-panel.js, server/api/skill-test-controller.ts, server/domain/skill-test/*, tests/skill-test/*, .trellis/spec/skills/skill-testing.md",
   "package": null,
@@ -11,7 +11,7 @@
   "creator": "菲比啾比",
   "assignee": "菲比啾比",
   "createdAt": "2026-04-22",
-  "completedAt": null,
+  "completedAt": "2026-04-24",
   "branch": null,
   "base_branch": "feat/skill-test-chat-workbench-mode",
   "worktree_path": null,
@@ -49,7 +49,7 @@
     "tests/skill-test/skill-test-e2e.test.js",
     ".trellis/spec/skills/skill-testing.md"
   ],
-  "notes": "Follow-up child of 04-21-skill-test-chat-workbench-mode. Existing 04-21-skill-test-lifecycle-chain-planning owns chain-aware matrix/export metadata only; this task tracks the actual linear chain runner, chain-level audit, and explicit run-as-chain UX/API.",
+  "notes": "Closed after the linear chain runner, live SSE progress, continuation policy, and related Skill Tests UI hooks landed under the umbrella task; final manual acceptance covered the current chain execution and observability flow.",
   "meta": {
     "kind": "follow-up-design",
     "dependsOnTask": "04-21-skill-test-lifecycle-chain-planning",

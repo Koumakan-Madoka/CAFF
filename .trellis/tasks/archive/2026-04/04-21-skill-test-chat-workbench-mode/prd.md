@@ -212,26 +212,26 @@ MVP 可先固定一组默认分工：
 
 ## 验收标准
 
-- [ ] 聊天工作台可创建一个 `Skill Test` 专用模式会话
-- [ ] 进入该模式后，agent 会先围绕目标 skill 与测试目标进行追问，而不是直接生成 case
-- [ ] agent 能产出一份结构化测试矩阵，至少包含场景、优先级、覆盖理由
-- [ ] 用户确认矩阵后，系统可批量生成并导出测试草稿到现有 `skill_test_cases`
-- [ ] 测试矩阵是结构化对象，至少包含 `scenario`、`priority`、`coverageReason`、`testType`、`loadingMode`
-- [ ] 用户未确认测试矩阵前，系统不能正式生成或导出测试草稿；缺少确认状态时会返回明确错误
-- [ ] 导出的 case 默认为 `draft`，不会自动运行
-- [ ] 导出的测试草稿带有可审计的来源信息，至少可追踪到 `conversation / message / matrix`
-- [ ] 若目标 skill 已声明环境依赖契约（如 `TESTING.md` 中的 `skill-test-environment` 机器合同块），聊天工作台会在测试矩阵与导出阶段优先引用这些定义
-- [ ] 若目标 skill 只有 prose / table / bullet / 编号说明形式的 `TESTING.md`，系统会把全文作为模型参考，但不会把它误判成可执行环境契约
-- [ ] 若目标 skill 按 `TESTING.md` 机器合同块 → `SKILL.md` → 关联 spec 回退后仍未声明环境依赖契约，agent 会显式报告缺口，并把聊天补充标记为待确认输入，而不是自行编造安装步骤
-- [ ] 导出 metadata 至少能区分“引用 skill 内机器环境契约”与“用户临时补充环境信息”，且 `user_supplied` 信息不会在未回写前被当作 `skill_contract`
-- [ ] 对 execution 或明确依赖真实外部环境的 row，`environmentSource = missing` 会阻止正式生成 / 导出；trigger-only 规划可降级为警告
-- [ ] 系统会对明显重复的候选草稿给出提示，且不影响现有 Skill Tests 页面继续编辑这些聊天生成草稿
-- [ ] 生成失败、导出失败、schema 不合法、来源缺失时，聊天中能看到明确错误并继续修正
-- [ ] 现有 Skill Tests 页面功能保持可用，且能继续编辑/运行这些聊天生成的草稿
-- [ ] 对 lifecycle-chain 草稿执行“按链运行”时，默认 strict 策略保持失败即停；用户显式选择 goal-threshold 策略后，目标达成度过阈值且无 critical constraint fail 的 borderline step 可继续后续步骤，并在链审计中显示为 `continued`
-- [ ] `dynamic + trigger` case 默认不被重环境契约 / 镜像缺失阻塞，仍可验证目标 skill 的动态加载行为
-- [ ] 后续 `environment-build` case 产出的正式环境资产必须是 manifest/recipe 驱动的可重建镜像，而不是直接复用 `docker commit` 的黑箱快照
-- [ ] 普通 execution case 在目标环境镜像缺失或与 `TESTING.md` / base image hash 不匹配时，返回 `env_not_built` / `env_stale` 类结构化错误，而不是自动临场安装
+- [x] 聊天工作台可创建一个 `Skill Test` 专用模式会话
+- [x] 进入该模式后，agent 会先围绕目标 skill 与测试目标进行追问，而不是直接生成 case
+- [x] agent 能产出一份结构化测试矩阵，至少包含场景、优先级、覆盖理由
+- [x] 用户确认矩阵后，系统可批量生成并导出测试草稿到现有 `skill_test_cases`
+- [x] 测试矩阵是结构化对象，至少包含 `scenario`、`priority`、`coverageReason`、`testType`、`loadingMode`
+- [x] 用户未确认测试矩阵前，系统不能正式生成或导出测试草稿；缺少确认状态时会返回明确错误
+- [x] 导出的 case 默认为 `draft`，不会自动运行
+- [x] 导出的测试草稿带有可审计的来源信息，至少可追踪到 `conversation / message / matrix`
+- [x] 若目标 skill 已声明环境依赖契约（如 `TESTING.md` 中的 `skill-test-environment` 机器合同块），聊天工作台会在测试矩阵与导出阶段优先引用这些定义
+- [x] 若目标 skill 只有 prose / table / bullet / 编号说明形式的 `TESTING.md`，系统会把全文作为模型参考，但不会把它误判成可执行环境契约
+- [x] 若目标 skill 按 `TESTING.md` 机器合同块 → `SKILL.md` → 关联 spec 回退后仍未声明环境依赖契约，agent 会显式报告缺口，并把聊天补充标记为待确认输入，而不是自行编造安装步骤
+- [x] 导出 metadata 至少能区分“引用 skill 内机器环境契约”与“用户临时补充环境信息”，且 `user_supplied` 信息不会在未回写前被当作 `skill_contract`
+- [x] 对 execution 或明确依赖真实外部环境的 row，`environmentSource = missing` 会阻止正式生成 / 导出；trigger-only 规划可降级为警告
+- [x] 系统会对明显重复的候选草稿给出提示，且不影响现有 Skill Tests 页面继续编辑这些聊天生成草稿
+- [x] 生成失败、导出失败、schema 不合法、来源缺失时，聊天中能看到明确错误并继续修正
+- [x] 现有 Skill Tests 页面功能保持可用，且能继续编辑/运行这些聊天生成的草稿
+- [x] 对 lifecycle-chain 草稿执行“按链运行”时，默认 strict 策略保持失败即停；用户显式选择 goal-threshold 策略后，目标达成度过阈值且无 critical constraint fail 的 borderline step 可继续后续步骤，并在链审计中显示为 `continued`
+- [x] `dynamic + trigger` case 默认不被重环境契约 / 镜像缺失阻塞，仍可验证目标 skill 的动态加载行为
+- [x] 后续 `environment-build` case 产出的正式环境资产必须是 manifest/recipe 驱动的可重建镜像，而不是直接复用 `docker commit` 的黑箱快照
+- [x] 普通 execution case 在目标环境镜像缺失或与 `TESTING.md` / base image hash 不匹配时，返回 `env_not_built` / `env_stale` 类结构化错误，而不是自动临场安装
 
 ## 初步实施分阶段
 
