@@ -643,9 +643,73 @@ CREATE TABLE IF NOT EXISTS skill_test_runs (
   FOREIGN KEY (test_case_id) REFERENCES skill_test_cases(id)
 );
 
+CREATE TABLE IF NOT EXISTS skill_test_environment_assets (
+  id TEXT PRIMARY KEY,
+  skill_id TEXT NOT NULL,
+  env_profile TEXT NOT NULL DEFAULT 'default',
+  status TEXT NOT NULL DEFAULT 'manifest_ready',
+  image TEXT NOT NULL DEFAULT '',
+  image_digest TEXT NOT NULL DEFAULT '',
+  base_image TEXT NOT NULL DEFAULT '',
+  base_image_digest TEXT NOT NULL DEFAULT '',
+  testing_md_hash TEXT NOT NULL DEFAULT '',
+  manifest_hash TEXT NOT NULL DEFAULT '',
+  manifest_path TEXT NOT NULL DEFAULT '',
+  build_case_id TEXT NOT NULL DEFAULT '',
+  build_run_id TEXT NOT NULL DEFAULT '',
+  source_metadata_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(skill_id, env_profile)
+);
+
+CREATE TABLE IF NOT EXISTS skill_test_chain_runs (
+  id TEXT PRIMARY KEY,
+  skill_id TEXT NOT NULL,
+  export_chain_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  stop_policy TEXT NOT NULL DEFAULT 'stop_on_failure',
+  shared_environment_policy TEXT NOT NULL DEFAULT 'single_chain_environment',
+  bootstrap_status TEXT NOT NULL DEFAULT 'pending',
+  teardown_status TEXT NOT NULL DEFAULT 'pending',
+  warning_flags_json TEXT NOT NULL DEFAULT '[]',
+  teardown_evidence_json TEXT NOT NULL DEFAULT '{}',
+  error_code TEXT NOT NULL DEFAULT '',
+  error_message TEXT NOT NULL DEFAULT '',
+  last_completed_step_index INTEGER NOT NULL DEFAULT 0,
+  started_at TEXT NOT NULL DEFAULT '',
+  finished_at TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS skill_test_chain_run_steps (
+  id TEXT PRIMARY KEY,
+  chain_run_id TEXT NOT NULL,
+  test_case_id TEXT NOT NULL,
+  sequence_index INTEGER NOT NULL,
+  depends_on_step_ids_json TEXT NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL DEFAULT 'pending',
+  skill_test_run_id TEXT NOT NULL DEFAULT '',
+  carry_forward_json TEXT NOT NULL DEFAULT '{}',
+  artifact_refs_json TEXT NOT NULL DEFAULT '[]',
+  error_code TEXT NOT NULL DEFAULT '',
+  error_message TEXT NOT NULL DEFAULT '',
+  started_at TEXT NOT NULL DEFAULT '',
+  finished_at TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (chain_run_id) REFERENCES skill_test_chain_runs(id),
+  FOREIGN KEY (test_case_id) REFERENCES skill_test_cases(id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_skill_test_cases_skill_id ON skill_test_cases (skill_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_skill_test_cases_validity ON skill_test_cases (validity_status);
 CREATE INDEX IF NOT EXISTS idx_skill_test_runs_case_id ON skill_test_runs (test_case_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_skill_test_environment_assets_skill_profile ON skill_test_environment_assets (skill_id, env_profile);
+CREATE INDEX IF NOT EXISTS idx_skill_test_chain_runs_skill_chain ON skill_test_chain_runs (skill_id, export_chain_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_skill_test_chain_run_steps_chain ON skill_test_chain_run_steps (chain_run_id, sequence_index);
+CREATE INDEX IF NOT EXISTS idx_skill_test_chain_run_steps_case ON skill_test_chain_run_steps (test_case_id, created_at DESC);
   `);
 
   ensureColumn(db, 'skill_test_cases', 'case_status', "case_status TEXT NOT NULL DEFAULT 'draft'");
@@ -671,9 +735,40 @@ CREATE INDEX IF NOT EXISTS idx_skill_test_runs_case_id ON skill_test_runs (test_
   ensureColumn(db, 'skill_test_runs', 'verdict', "verdict TEXT DEFAULT ''");
   ensureColumn(db, 'skill_test_runs', 'evaluation_json', "evaluation_json TEXT NOT NULL DEFAULT '{}' ");
 
+  ensureColumn(db, 'skill_test_chain_runs', 'status', "status TEXT NOT NULL DEFAULT 'pending'");
+  ensureColumn(db, 'skill_test_chain_runs', 'stop_policy', "stop_policy TEXT NOT NULL DEFAULT 'stop_on_failure'");
+  ensureColumn(db, 'skill_test_chain_runs', 'shared_environment_policy', "shared_environment_policy TEXT NOT NULL DEFAULT 'single_chain_environment'");
+  ensureColumn(db, 'skill_test_chain_runs', 'bootstrap_status', "bootstrap_status TEXT NOT NULL DEFAULT 'pending'");
+  ensureColumn(db, 'skill_test_chain_runs', 'teardown_status', "teardown_status TEXT NOT NULL DEFAULT 'pending'");
+  ensureColumn(db, 'skill_test_chain_runs', 'warning_flags_json', "warning_flags_json TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn(db, 'skill_test_chain_runs', 'teardown_evidence_json', "teardown_evidence_json TEXT NOT NULL DEFAULT '{}'");
+  ensureColumn(db, 'skill_test_chain_runs', 'error_code', "error_code TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'skill_test_chain_runs', 'error_message', "error_message TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'skill_test_chain_runs', 'last_completed_step_index', "last_completed_step_index INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, 'skill_test_chain_runs', 'started_at', "started_at TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'skill_test_chain_runs', 'finished_at', "finished_at TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'skill_test_chain_runs', 'created_at', "created_at TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'skill_test_chain_runs', 'updated_at', "updated_at TEXT NOT NULL DEFAULT ''");
+
+  ensureColumn(db, 'skill_test_chain_run_steps', 'depends_on_step_ids_json', "depends_on_step_ids_json TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn(db, 'skill_test_chain_run_steps', 'status', "status TEXT NOT NULL DEFAULT 'pending'");
+  ensureColumn(db, 'skill_test_chain_run_steps', 'skill_test_run_id', "skill_test_run_id TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'skill_test_chain_run_steps', 'carry_forward_json', "carry_forward_json TEXT NOT NULL DEFAULT '{}' ");
+  ensureColumn(db, 'skill_test_chain_run_steps', 'artifact_refs_json', "artifact_refs_json TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn(db, 'skill_test_chain_run_steps', 'error_code', "error_code TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'skill_test_chain_run_steps', 'error_message', "error_message TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'skill_test_chain_run_steps', 'started_at', "started_at TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'skill_test_chain_run_steps', 'finished_at', "finished_at TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'skill_test_chain_run_steps', 'created_at', "created_at TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'skill_test_chain_run_steps', 'updated_at', "updated_at TEXT NOT NULL DEFAULT ''");
+
   db.exec(`
 CREATE INDEX IF NOT EXISTS idx_skill_test_cases_status ON skill_test_cases (case_status);
 CREATE INDEX IF NOT EXISTS idx_skill_test_runs_verdict ON skill_test_runs (verdict);
+CREATE INDEX IF NOT EXISTS idx_skill_test_environment_assets_skill_profile ON skill_test_environment_assets (skill_id, env_profile);
+CREATE INDEX IF NOT EXISTS idx_skill_test_chain_runs_skill_chain ON skill_test_chain_runs (skill_id, export_chain_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_skill_test_chain_run_steps_chain ON skill_test_chain_run_steps (chain_run_id, sequence_index);
+CREATE INDEX IF NOT EXISTS idx_skill_test_chain_run_steps_case ON skill_test_chain_run_steps (test_case_id, created_at DESC);
   `);
 
   ensureColumn(db, 'skill_test_cases', 'source_metadata_json', "source_metadata_json TEXT NOT NULL DEFAULT '{}'");

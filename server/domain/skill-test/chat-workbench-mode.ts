@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
+import { normalizeTestingDocDraftState } from './testing-doc-draft';
+
 export const SKILL_TEST_DESIGN_CONVERSATION_TYPE = 'skill_test_design';
 
 export const SKILL_TEST_DESIGN_PHASES = {
@@ -18,7 +20,7 @@ export const SKILL_TEST_DESIGN_FIXED_PARTICIPANTS = [
 
 const VALID_PHASES = new Set(Object.values(SKILL_TEST_DESIGN_PHASES));
 const VALID_PRIORITIES = new Set(['P0', 'P1', 'P2']);
-const VALID_TEST_TYPES = new Set(['trigger', 'execution']);
+const VALID_TEST_TYPES = new Set(['trigger', 'execution', 'environment-build']);
 const VALID_LOADING_MODES = new Set(['dynamic', 'full']);
 const VALID_ENVIRONMENT_SOURCES = new Set(['skill_contract', 'user_supplied', 'missing']);
 const VALID_SCENARIO_KINDS = new Set(['single', 'chain_step']);
@@ -79,13 +81,13 @@ function normalizePhase(value: any, fallback: string = SKILL_TEST_DESIGN_PHASES.
 }
 
 function normalizeTestType(value: any) {
-  const normalized = normalizeText(value).toLowerCase() || 'trigger';
-  return VALID_TEST_TYPES.has(normalized) ? normalized : 'trigger';
+  const normalized = normalizeText(value).toLowerCase() || 'execution';
+  return VALID_TEST_TYPES.has(normalized) ? normalized : 'execution';
 }
 
 function normalizeLoadingMode(value: any) {
-  const normalized = normalizeText(value).toLowerCase() || 'dynamic';
-  return VALID_LOADING_MODES.has(normalized) ? normalized : 'dynamic';
+  const normalized = normalizeText(value).toLowerCase() || 'full';
+  return VALID_LOADING_MODES.has(normalized) ? normalized : 'full';
 }
 
 function normalizeEnvironmentContractRef(value: any) {
@@ -259,6 +261,8 @@ export function createSkillTestDesignMetadata(skill: any, overrides: any = {}) {
       matrix: null,
       confirmation: null,
       export: null,
+      testingDocDraft: null,
+      environmentContract: null,
       createdAt: timestamp,
       updatedAt: timestamp,
     },
@@ -290,6 +294,8 @@ export function getSkillTestDesignState(conversation: any) {
     matrix: rawState.matrix && typeof rawState.matrix === 'object' ? rawState.matrix : null,
     confirmation: rawState.confirmation && typeof rawState.confirmation === 'object' ? rawState.confirmation : null,
     export: rawState.export && typeof rawState.export === 'object' ? rawState.export : null,
+    testingDocDraft: normalizeTestingDocDraftState(rawState.testingDocDraft),
+    environmentContract: rawState.environmentContract && typeof rawState.environmentContract === 'object' ? rawState.environmentContract : null,
     createdAt: normalizeText(rawState.createdAt),
     updatedAt: normalizeText(rawState.updatedAt),
   };
@@ -429,7 +435,13 @@ export function normalizeSkillTestMatrix(input: any, options: any = {}) {
       loadingMode: normalizeLoadingMode(row && row.loadingMode),
       riskPoints: normalizeStringArray(row && row.riskPoints),
       keyAssertions: normalizeStringArray(row && row.keyAssertions),
-      includeInMvp: row && row.includeInMvp !== undefined ? Boolean(row.includeInMvp) : true,
+      includeInMvp: row && row.includeInMvp !== undefined
+        ? Boolean(row.includeInMvp)
+        : row && row.includeInExport !== undefined
+          ? Boolean(row.includeInExport)
+          : row && row.include_in_export !== undefined
+            ? Boolean(row.include_in_export)
+            : true,
       draftingHints: normalizeDraftingHints(row && row.draftingHints),
       environmentContractRef,
       environmentSource,
@@ -523,6 +535,27 @@ export function buildSkillTestDraftInputFromMatrixRow(skillId: any, matrix: any,
     };
   }
 
+  // environment-build rows are contract-driven: they skip prompt/goal fields
+  // and rely on TESTING.md contract or user-supplied environmentConfig instead.
+  if (testType === 'environment-build') {
+    const envConfig = draftingHints.environmentConfig && typeof draftingHints.environmentConfig === 'object'
+      ? draftingHints.environmentConfig
+      : {};
+    const draftInput: any = {
+      skillId: normalizedSkillId,
+      loadingMode,
+      testType: 'environment-build',
+      userPrompt: draftingHints.triggerPrompt || `构建 ${normalizedSkillId} 的测试环境`,
+      expectedTools: [],
+      expectedBehavior: expectedBehavior || '产出 environment-manifest.json，可选产出环境镜像',
+      environmentConfig: envConfig,
+      caseStatus: 'draft',
+      note: noteParts.join('\n'),
+      sourceMetadata,
+    };
+    return draftInput;
+  }
+
   const draftInput: any = {
     skillId: normalizedSkillId,
     loadingMode,
@@ -542,10 +575,19 @@ export function buildSkillTestDraftInputFromMatrixRow(skillId: any, matrix: any,
   if (loadingMode === 'full') {
     draftInput.expectedGoal = draftingHints.expectedGoal || normalizeMultilineText(row && row.scenario);
     if (Array.isArray(draftingHints.expectedSteps)) {
-      draftInput.expectedSteps = draftingHints.expectedSteps;
+      draftInput.expectedSteps = draftingHints.expectedSteps.map((step: any, idx: number) => {
+        if (typeof step === 'string') {
+          const title = String(step);
+          return { id: `step-${idx + 1}`, title, expectedBehavior: title, failureIfMissing: `未完成: ${title}` };
+        }
+        return step;
+      });
     }
-    if (Array.isArray(draftingHints.expectedSequence)) {
-      draftInput.expectedSequence = draftingHints.expectedSequence;
+    if (Array.isArray(draftingHints.expectedSequence) && draftInput.expectedSteps) {
+      // Generate sequence from step IDs in order; the draftingHints sequence
+      // uses descriptive references that don't map to generated step ids
+      const steps = draftInput.expectedSteps as Array<{id?: string}>;
+      draftInput.expectedSequence = steps.map((s) => s.id).filter(Boolean) as string[];
     }
     draftInput.evaluationRubric = draftingHints.evaluationRubric && typeof draftingHints.evaluationRubric === 'object'
       ? draftingHints.evaluationRubric

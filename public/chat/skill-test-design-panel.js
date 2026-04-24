@@ -48,6 +48,23 @@
     return normalized || '缺失';
   }
 
+  function testingDocSourceKindLabel(sourceKind) {
+    var normalized = String(sourceKind || '').trim();
+    if (normalized === 'skill_md') return 'SKILL.md';
+    if (normalized === 'stable_spec') return '稳定 spec';
+    if (normalized === 'user_supplied') return '用户补充';
+    if (normalized === 'missing') return '缺失';
+    return normalized || '缺失';
+  }
+
+  function environmentContractStatusLabel(status) {
+    var normalized = String(status || '').trim();
+    if (normalized === 'available') return '已可引用';
+    if (normalized === 'insufficient') return '内容不足';
+    if (normalized === 'missing') return '缺失';
+    return normalized || '未检测';
+  }
+
   function hasChainMetadata(row) {
     return Boolean(
       String(row && row.scenarioKind || '').trim() === 'chain_step' ||
@@ -162,6 +179,17 @@
     return normalizedConversationId + ':' + messageId;
   }
 
+  function findLatestConversationMessageId(conversation) {
+    var messages = Array.isArray(conversation && conversation.messages) ? conversation.messages : [];
+    for (var index = messages.length - 1; index >= 0; index--) {
+      var message = messages[index];
+      if (message && message.id && (message.role === 'user' || message.role === 'assistant')) {
+        return String(message.id || '').trim();
+      }
+    }
+    return '';
+  }
+
   chat.createSkillTestDesignPanelRenderer = function createSkillTestDesignPanelRenderer({ state }) {
     var shared = window.CaffShared || {};
     var toastEl = /** @type {HTMLElement | null} */ (document.getElementById('toast'));
@@ -174,6 +202,12 @@
     var matrixSection = /** @type {HTMLElement | null} */ (document.getElementById('skill-test-design-matrix-section'));
     var matrixStatusEl = /** @type {HTMLElement | null} */ (document.getElementById('skill-test-design-matrix-status'));
     var matrixRowsEl = /** @type {HTMLElement | null} */ (document.getElementById('skill-test-design-matrix-rows'));
+    var testingDocSection = /** @type {HTMLElement | null} */ (document.getElementById('skill-test-design-testing-doc-section'));
+    var testingDocStatusEl = /** @type {HTMLElement | null} */ (document.getElementById('skill-test-design-testing-doc-status'));
+    var testingDocDraftEl = /** @type {HTMLElement | null} */ (document.getElementById('skill-test-design-testing-doc-draft'));
+    var testingDocActionsEl = /** @type {HTMLElement | null} */ (document.getElementById('skill-test-design-testing-doc-actions'));
+    var previewTestingDocButton = /** @type {HTMLButtonElement | null} */ (document.getElementById('skill-test-preview-testing-doc-button'));
+    var applyTestingDocButton = /** @type {HTMLButtonElement | null} */ (document.getElementById('skill-test-apply-testing-doc-button'));
     var actionsEl = /** @type {HTMLElement | null} */ (document.getElementById('skill-test-design-actions'));
     var importButton = /** @type {HTMLButtonElement | null} */ (document.getElementById('skill-test-import-matrix-button'));
     var confirmButton = /** @type {HTMLButtonElement | null} */ (document.getElementById('skill-test-confirm-matrix-button'));
@@ -185,6 +219,8 @@
     var autoImportInFlightKey = '';
     var autoImportFailedKey = '';
     var primaryActionInFlight = false;
+    var testingDocActionInFlight = false;
+    var lastDesignSummary = null;
 
     function syncConversationState(nextConversation) {
       if (!nextConversation || !nextConversation.id) {
@@ -218,6 +254,10 @@
           })
           .then(function (data) {
             if (!data || !data.state) return;
+            if (data.conversation) {
+              syncConversationState(data.conversation);
+            }
+            lastDesignSummary = data.state;
             var summary = data.state.existingCaseSummary || {};
             if (caseSummaryEl) {
               caseSummaryEl.textContent =
@@ -226,6 +266,7 @@
                 ' / 就绪 ' + (summary.readyCases || 0) +
                 ' / 归档 ' + (summary.archivedCases || 0);
             }
+            renderTestingDocSection(getDesignState(state.currentConversation) || {}, lastDesignSummary);
           })
           .catch(function () {
             // Ignore summary fetch errors.
@@ -243,7 +284,7 @@
         .then(function (res) {
           if (!res.ok) {
             return res.json().then(function (err) {
-              throw new Error(err.message || '请求失败');
+              throw new Error(err && (err.error || err.message) || '请求失败');
             });
           }
           return res.json();
@@ -270,7 +311,7 @@
         '<th>模式</th>' +
         '<th>环境</th>' +
         '<th>链</th>' +
-        '<th>MVP</th>' +
+        '<th>导出</th>' +
         '</tr>';
       table.appendChild(thead);
 
@@ -390,6 +431,9 @@
           if (data && data.conversation) {
             syncConversationState(data.conversation);
           }
+          if (data && data.state) {
+            lastDesignSummary = data.state;
+          }
           render();
           var message = '已导出 ' + (data && data.exportedCount || 0) + ' 条测试草稿';
           if (data && Array.isArray(data.duplicateWarnings) && data.duplicateWarnings.length > 0) {
@@ -409,6 +453,169 @@
         });
     }
 
+    function renderTestingDocSection(designState, designSummary) {
+      if (!testingDocSection || !testingDocStatusEl || !testingDocDraftEl || !testingDocActionsEl) {
+        return;
+      }
+
+      var environmentContract = designSummary && designSummary.environmentContract && typeof designSummary.environmentContract === 'object'
+        ? designSummary.environmentContract
+        : designState && designState.environmentContract && typeof designState.environmentContract === 'object'
+          ? designState.environmentContract
+          : null;
+      var draft = designSummary && designSummary.testingDocDraft && typeof designSummary.testingDocDraft === 'object'
+        ? designSummary.testingDocDraft
+        : designState && designState.testingDocDraft && typeof designState.testingDocDraft === 'object'
+          ? designState.testingDocDraft
+          : null;
+      var matrix = designState && designState.matrix && typeof designState.matrix === 'object' ? designState.matrix : null;
+      var rows = Array.isArray(matrix && matrix.rows) ? matrix.rows : [];
+      var blockedRows = rows.filter(function (row) {
+        var source = String(row && row.environmentSource || '').trim() || (row && row.environmentContractRef ? 'skill_contract' : 'missing');
+        return source === 'missing' && (String(row && row.testType || '').trim() === 'execution');
+      });
+      var shouldShowSection = Boolean(environmentContract || draft || blockedRows.length > 0 || rows.length > 0);
+      testingDocSection.classList.toggle('hidden', !shouldShowSection);
+      if (!shouldShowSection) {
+        return;
+      }
+
+      var statusText = environmentContract
+        ? environmentContractStatusLabel(environmentContract.status)
+        : '未检测';
+      if (environmentContract && Array.isArray(environmentContract.candidates) && environmentContract.candidates.length > 0) {
+        statusText += ' · ' + environmentContract.candidates.map(function (entry) {
+          return String(entry && entry.environmentContractRef || '').trim();
+        }).filter(Boolean).join(' / ');
+      }
+      if (blockedRows.length > 0) {
+        statusText += ' · ' + blockedRows.length + ' 个 execution 行仍缺环境契约';
+      }
+      testingDocStatusEl.textContent = statusText;
+
+      var html = '';
+      if (environmentContract && Array.isArray(environmentContract.warnings) && environmentContract.warnings.length > 0) {
+        html += '<p class="muted">' + escapeHtml(environmentContract.warnings.join('；')) + '</p>';
+      }
+      if (draft) {
+        html += '<div class="muted">当前草稿：' + escapeHtml(String(draft.status || 'proposed')) + '</div>';
+        if (draft.file && draft.file.existsAtPreview) {
+          html += '<p class="muted">将覆盖现有 `TESTING.md`；确认写入前请再次检查完整预览。</p>';
+        }
+        if (draft.readiness && Array.isArray(draft.readiness.warnings) && draft.readiness.warnings.length > 0) {
+          html += '<p class="muted">' + escapeHtml(draft.readiness.warnings.join('；')) + '</p>';
+        }
+        if (Array.isArray(draft.sections) && draft.sections.length > 0) {
+          html += '<table class="skill-test-matrix-table"><thead><tr><th>段落</th><th>来源</th><th>状态</th></tr></thead><tbody>';
+          draft.sections.forEach(function (section) {
+            var heading = String(section && section.heading || '-').trim() || '-';
+            var sourceKind = testingDocSourceKindLabel(section && section.sourceKind);
+            var hasOpenQuestions = Array.isArray(section && section.openQuestions) && section.openQuestions.length > 0;
+            html += '<tr>' +
+              '<td title="' + escapeHtml(String(section && section.content || '')) + '">' + escapeHtml(heading) + '</td>' +
+              '<td>' + escapeHtml(sourceKind) + '</td>' +
+              '<td>' + (hasOpenQuestions ? '待确认' : '已整理') + '</td>' +
+              '</tr>';
+          });
+          html += '</tbody></table>';
+        }
+      } else if (environmentContract && environmentContract.status !== 'available') {
+        html += '<p class="muted">当前缺少可复用的 `TESTING.md` 契约；缺少 `TESTING.md` 时系统会自动准备预览草稿。在写入并重新确认矩阵前，execution 仍会保持 fail-closed。</p>';
+      } else {
+        html += '<p class="muted">当前 `TESTING.md` 契约已可引用；如果环境变化，再重新起草并确认覆盖。</p>';
+      }
+      testingDocDraftEl.innerHTML = html;
+
+      var canPreview = !testingDocActionInFlight;
+      var canApply = !testingDocActionInFlight && draft && draft.draftId && ['proposed', 'needs_user_input', 'confirmed'].indexOf(String(draft.status || '')) !== -1;
+      testingDocActionsEl.classList.toggle('hidden', !canPreview && !canApply);
+      if (previewTestingDocButton) {
+        previewTestingDocButton.classList.toggle('hidden', !canPreview);
+        previewTestingDocButton.disabled = testingDocActionInFlight;
+        previewTestingDocButton.textContent = testingDocActionInFlight ? '处理中...' : (draft ? '重新起草 TESTING.md' : '起草 TESTING.md');
+      }
+      if (applyTestingDocButton) {
+        applyTestingDocButton.classList.toggle('hidden', !canApply);
+        applyTestingDocButton.disabled = testingDocActionInFlight;
+        applyTestingDocButton.textContent = testingDocActionInFlight ? '处理中...' : '确认写入 TESTING.md';
+      }
+    }
+
+    function handlePreviewTestingDoc() {
+      var conversation = state.currentConversation;
+      if (!isSkillTestDesignConversation(conversation)) return;
+      var messageId = findLatestConversationMessageId(conversation);
+      if (!messageId) {
+        showToast('先在聊天里补充环境信息，再起草 TESTING.md');
+        return;
+      }
+      testingDocActionInFlight = true;
+      render();
+      postDesignAction(conversation.id, 'preview-testing-doc-draft', {
+        messageId: messageId,
+        requestedBy: 'user',
+      })
+        .then(function (data) {
+          if (data && data.conversation) {
+            syncConversationState(data.conversation);
+          }
+          if (data && data.state) {
+            lastDesignSummary = data.state;
+          }
+          showToast('已生成 TESTING.md 草稿预览');
+          render();
+        })
+        .catch(function (error) {
+          showToast(error && error.message ? error.message : '起草 TESTING.md 失败');
+        })
+        .finally(function () {
+          testingDocActionInFlight = false;
+          render();
+        });
+    }
+
+    function handleApplyTestingDoc() {
+      var conversation = state.currentConversation;
+      if (!isSkillTestDesignConversation(conversation)) return;
+      var designState = getDesignState(conversation) || {};
+      var designSummary = lastDesignSummary && lastDesignSummary.conversationId === conversation.id ? lastDesignSummary : null;
+      var draft = designSummary && designSummary.testingDocDraft ? designSummary.testingDocDraft : designState.testingDocDraft;
+      if (!draft || !draft.draftId) {
+        showToast('当前没有可写入的 TESTING.md 草稿');
+        return;
+      }
+      var confirmOverwrite = Boolean(draft.file && draft.file.existsAtPreview);
+      if (confirmOverwrite && window.confirm && !window.confirm('目标 skill 已存在 TESTING.md。当前预览内容会覆盖现有文件，确认继续吗？')) {
+        return;
+      }
+      testingDocActionInFlight = true;
+      render();
+      postDesignAction(conversation.id, 'apply-testing-doc-draft', {
+        draftId: String(draft.draftId || '').trim(),
+        confirmOverwrite: confirmOverwrite,
+        appliedBy: 'user',
+      })
+        .then(function (data) {
+          if (data && data.conversation) {
+            syncConversationState(data.conversation);
+          }
+          if (data && data.state) {
+            lastDesignSummary = data.state;
+          }
+          showToast(data && data.requiresMatrixReconfirmation
+            ? '已写入 TESTING.md，请重新生成或重新确认受影响矩阵行'
+            : '已写入 TESTING.md');
+          render();
+        })
+        .catch(function (error) {
+          showToast(error && error.message ? error.message : '写入 TESTING.md 失败');
+        })
+        .finally(function () {
+          testingDocActionInFlight = false;
+          render();
+        });
+    }
+
     function render() {
       if (!card) {
         return;
@@ -423,6 +630,7 @@
       }
 
       var designState = getDesignState(conversation) || {};
+      var designSummary = lastDesignSummary && lastDesignSummary.conversationId === conversation.id ? lastDesignSummary : null;
       var skillName = String(designState.skillName || designState.skillId || '-').trim();
       var phase = String(designState.phase || 'collecting_context').trim();
       var matrix = designState.matrix && typeof designState.matrix === 'object' ? designState.matrix : null;
@@ -460,6 +668,8 @@
         : latestCandidate && latestCandidate.matrix
           ? latestCandidate.matrix
           : null;
+
+      renderTestingDocSection(designState, designSummary);
 
       if (displayMatrix && displayMatrix.rows) {
         matrixSection.classList.remove('hidden');
@@ -499,7 +709,7 @@
       if (statusEl) {
         statusEl.textContent = autoImportPending
           ? '检测到新的测试矩阵，正在自动同步。同步完成后可直接一键确认并导出。'
-          : '检测到有效测试矩阵后会自动同步；你只需要确认并导出草稿。';
+          : 'Skill Test 默认运行在隔离沙盒里；这里只需要确认目标 skill 的额外依赖与 TESTING.md 契约。缺少 TESTING.md 时会自动生成预览草稿；检测到有效测试矩阵后会自动同步。';
       }
 
       var canRetryImport = Boolean(latestCandidateKey && autoImportFailed);
@@ -553,6 +763,14 @@
           // Failure toast already handled.
         });
       });
+    }
+
+    if (previewTestingDocButton) {
+      previewTestingDocButton.addEventListener('click', handlePreviewTestingDoc);
+    }
+
+    if (applyTestingDocButton) {
+      applyTestingDocButton.addEventListener('click', handleApplyTestingDoc);
     }
 
     if (confirmButton) {

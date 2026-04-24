@@ -2236,6 +2236,10 @@ textarea {
   margin-top: 0.5rem;
 }
 
+.skill-test-testing-doc-draft {
+  margin-top: 0.5rem;
+}
+
 .skill-test-design-status-card {
   padding: 0.5rem 0;
 }
@@ -2691,6 +2695,19 @@ label.skill-tests-toolbar-field,
   font-weight: 600;
 }
 
+.skill-tests-toolbar-field > label.skill-tests-checkbox-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.45rem;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.skill-tests-checkbox-row input[type="checkbox"] {
+  flex: 0 0 auto;
+  margin-top: 0.1rem;
+}
+
 .skill-tests-toolbar-field-inline {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -2705,6 +2722,11 @@ label.skill-tests-toolbar-field,
 .skill-tests-toolbar-panel input,
 .skill-tests-toolbar-panel select {
   padding: 0.7rem 0.85rem;
+}
+
+.skill-tests-toolbar-panel .skill-tests-checkbox-row input[type="checkbox"] {
+  width: auto;
+  padding: 0;
 }
 
 .skill-tests-toolbar-panel button {

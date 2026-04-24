@@ -9,6 +9,7 @@ export const AGENT_PROMPT_VERSION =
 const MAX_HISTORY_MESSAGES = 24;
 const MAX_PARALLEL_MENTION_BATCH_SIZE = 5;
 const MAX_PRIVATE_CONTEXT_MESSAGES = 16;
+const MAX_SKILL_TESTING_DOC_PROMPT_LENGTH = 12000;
 const PROMPT_MENTION_RE = /(^|[\s([{"'<])@([\p{L}\p{N}._-]+)/gu;
 
 export function sanitizePromptMentions(text: any) {
@@ -115,6 +116,26 @@ function formatSkillDocuments(skills: any, options: any = {}) {
         : formatSkillDescriptor(skill);
     })
     .join('\n\n');
+}
+
+function hasDynamicSkillDescriptors(skills: any, options: any = {}) {
+  const normalizedSkills = (Array.isArray(skills) ? skills : []).filter(Boolean);
+  if (normalizedSkills.length === 0) {
+    return false;
+  }
+
+  const forceFullSkillIds = normalizeForceFullSkillIds(options.forceFullSkillIds);
+  const hasModeStrategy = options.modeLoadingStrategy === 'full' || options.modeLoadingStrategy === 'dynamic';
+  const modeForcesFull = hasModeStrategy ? options.modeLoadingStrategy === 'full' : getSkillLoadingMode() !== 'dynamic';
+  const forceAllFull = Boolean(options.forceFull) || modeForcesFull;
+  if (forceAllFull) {
+    return false;
+  }
+
+  return normalizedSkills.some((skill: any) => {
+    const skillId = String(skill && skill.id || '').trim();
+    return !forceFullSkillIds.has(skillId);
+  });
 }
 
 function describeTurnTrigger(trigger: any, agents: any) {
@@ -238,7 +259,7 @@ function formatMemoryCards(memoryCards: any) {
     .join('\n');
 }
 
-function buildAgentToolInstructions(agentToolRelativePath: string) {
+function buildAgentToolInstructions(agentToolRelativePath: string, options: any = {}) {
   const relativeCommandPrefix = `node ${agentToolRelativePath}`;
   const envCommandPrefix = 'node "$CAFF_CHAT_TOOLS_PATH"';
 
@@ -259,7 +280,7 @@ function buildAgentToolInstructions(agentToolRelativePath: string) {
     `- Soft-forget a mistaken durable memory only when the user explicitly asks: ${relativeCommandPrefix} forget-memory --title "temporary preference" --reason "User said this should not persist" --expected-updated-at "2026-04-13T00:00:00.000Z"`,
     '- Save only durable facts/preferences/agreements. Never save secrets, raw logs, TODOs, transient status updates, or silently rewrite durable memory without a clear user correction/removal.',
     `- List the visible room participants: ${relativeCommandPrefix} list-participants`,
-    ...(getSkillLoadingMode() === 'dynamic'
+    ...(options.includeDynamicSkillLoadingGuidance
       ? [
           '- Dynamic skill loading: when conversation skills are listed as descriptors without full instructions, use the `read` tool on the listed `Path` to load the full `SKILL.md` on demand.',
           '- Each descriptor `Path` already points at the skill `SKILL.md`; read that file directly instead of using a dedicated skill-loading tool.',
@@ -368,6 +389,17 @@ function buildWerewolfPromptSection(conversation: any, agent: any) {
   ].join('\n');
 }
 
+function clipSkillTestTestingDocPrompt(value: any, maxLength = MAX_SKILL_TESTING_DOC_PROMPT_LENGTH) {
+  const text = String(value || '').trim();
+  if (!text) {
+    return '';
+  }
+  if (text.length <= maxLength) {
+    return text;
+  }
+  return `${text.slice(0, Math.max(1, maxLength - 16)).trimEnd()}\n...[truncated]`;
+}
+
 function buildSkillTestDesignPromptSection(modeContext: any, agent: any, agents: any) {
   if (!modeContext || modeContext.kind !== 'skill_test_design') {
     return '';
@@ -387,6 +419,9 @@ function buildSkillTestDesignPromptSection(modeContext: any, agent: any, agents:
     .filter(Boolean);
   const matrix = designState.matrix && typeof designState.matrix === 'object' ? designState.matrix : null;
   const confirmation = designState.confirmation && typeof designState.confirmation === 'object' ? designState.confirmation : null;
+  const testingDocDraft = designState.testingDocDraft && typeof designState.testingDocDraft === 'object' ? designState.testingDocDraft : null;
+  const environmentContract = designState.environmentContract && typeof designState.environmentContract === 'object' ? designState.environmentContract : null;
+  const testingDocContent = clipSkillTestTestingDocPrompt(targetSkill.testingDocContent);
   const currentRole = String(modeContext.currentAgentRole || '').trim() || 'planner';
   const recentPrompts = Array.isArray(caseSummary.recentPrompts) ? caseSummary.recentPrompts.slice(0, 3) : [];
   const phase = String(designState.phase || '').trim() || 'collecting_context';
@@ -400,7 +435,14 @@ function buildSkillTestDesignPromptSection(modeContext: any, agent: any, agents:
     targetSkill.description ? `- Target skill description: ${targetSkill.description}` : '',
     targetSkill.path ? `- Target skill path: ${targetSkill.path}` : '',
     targetSkill.testingDocPath ? `- Target skill TESTING.md path: ${targetSkill.testingDocPath}${targetSkill.testingDocExists ? '' : ' (not found yet)'}` : '',
+    testingDocContent ? `- Target skill TESTING.md content:\n${testingDocContent}` : '',
+    environmentContract ? `- Environment contract status: ${String(environmentContract.status || 'unknown').trim()}, refs=${Array.isArray(environmentContract.candidates) ? environmentContract.candidates.map((entry: any) => String(entry && entry.environmentContractRef || '').trim()).filter(Boolean).join(', ') || 'none' : 'none'}` : '',
+    testingDocDraft ? `- TESTING.md draft: draftId=${String(testingDocDraft.draftId || '').trim() || 'unknown'}, status=${String(testingDocDraft.status || '').trim() || 'unknown'}, executionBlocked=${testingDocDraft.readiness && testingDocDraft.readiness.executionBlocked ? 'yes' : 'no'}` : '- TESTING.md draft: none. When the target TESTING.md is missing, the UI/API should auto-create a guarded preview draft; do not ask permission before preview, and do not paste a large TESTING.md body into chat.',
+    '- Skill Test runtime baseline: runs default to an isolated sandbox case world (`host-loop + sandbox-tools`). Do not ask the user to confirm whether sandboxing is used; only ask about extra skill-specific dependencies, credentials, external services, egress, GUI, persistence, or setup/teardown needs beyond that baseline.',
+    '- Skill Test design default: build complete `full + execution` draft cases for the target skill. Do not ask the user to choose a loading mode; use load/trigger-only coverage only when the user explicitly requests it.',
+    '- Do not frame scope as a minimum viable subset in user-facing replies. The matrix inclusion flag means current export scope; call it 导出范围 / coverage scope.',
     '- Environment contract lookup order: TESTING.md -> SKILL.md -> stable spec; if none is actionable, mark environmentSource=missing instead of inventing setup steps.',
+    '- For tracked-change or redline execution scenarios, keep the task phrased as apply/edit work. Do not quietly downgrade those rows into review-only, analysis-only, diff-only, or report-only prompts unless the user explicitly wants a read-only review.',
     `- Existing cases: total ${Number(caseSummary.totalCases || 0)}, draft ${Number(caseSummary.draftCases || 0)}, ready ${Number(caseSummary.readyCases || 0)}, archived ${Number(caseSummary.archivedCases || 0)}`,
     recentPrompts.length > 0 ? `- Recent case prompts: ${recentPrompts.join(' | ')}` : '- Recent case prompts: none',
     roleEntries.length > 0 ? 'Fixed agent roles:' : '',
@@ -492,6 +534,11 @@ export function buildAgentTurnPrompt({
   const werewolfSection = buildWerewolfPromptSection(conversation, agent);
   const skillTestDesignSection = buildSkillTestDesignPromptSection(modeContext, agent, agents);
   const gameplaySections = [undercoverSection, werewolfSection].filter(Boolean);
+  const includeDynamicSkillLoadingGuidance = hasDynamicSkillDescriptors(resolvedConversationSkills, {
+    forceFull: false,
+    modeLoadingStrategy,
+    forceFullSkillIds: forceFullConversationSkillIds,
+  });
 
   return [
     'You are participating in a shared local multi-agent conversation workspace.',
@@ -529,7 +576,7 @@ export function buildAgentTurnPrompt({
     'Other visible participants:',
     participants || '- none',
     '',
-    buildAgentToolInstructions(agentToolRelativePath),
+    buildAgentToolInstructions(agentToolRelativePath, { includeDynamicSkillLoadingGuidance }),
     '',
     ...(gameplaySections.length > 0 ? ['Gameplay mode:', gameplaySections.join('\n\n'), ''] : []),
     ...(skillTestDesignSection ? ['Mode state context:', skillTestDesignSection, ''] : []),

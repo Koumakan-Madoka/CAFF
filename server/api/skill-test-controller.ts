@@ -8,40 +8,83 @@ import fs from 'node:fs';
 import type { RouteHandler } from '../http/router';
 import { createHttpError } from '../http/http-errors';
 import { readRequestJson } from '../http/request-body';
-import { sendJson } from '../http/response';
-import { resolveToolRelativePath } from '../http/path-utils';
+import { sendJson, sendTextDownload } from '../http/response';
 import { migrateChatSchema, migrateRunSchema, migrateSkillTestSchema } from '../../storage/sqlite/migrations';
-import { DEFAULT_MODEL, DEFAULT_PROVIDER, DEFAULT_THINKING, resolveSetting, startRun } from '../../lib/minimal-pi';
-import { createSqliteRunStore } from '../../lib/sqlite-store';
+import { DEFAULT_PROVIDER, DEFAULT_THINKING, resolveSetting, startRun } from '../../lib/minimal-pi';
 import { buildLlmGenerationPrompt, generateSkillTestPrompts } from '../../lib/skill-test-generator';
 import { ROOT_DIR } from '../app/config';
-import { ensureAgentSandbox, toPortableShellPath } from '../domain/conversation/turn/agent-sandbox';
-import { extractLiveSessionToolFromPiEvent } from '../domain/conversation/turn/agent-executor';
+import { isPathWithin } from '../domain/conversation/turn/session-export';
 import { buildAssistantMessageToolTrace } from '../domain/runtime/message-tool-trace';
-import {
-  buildSkillTestIsolationIssues,
-  createSkillTestIsolationDriver,
-  getSkillTestIsolationFailureMessage,
-} from '../domain/skill-test/isolation';
+import { createSkillTestIsolationDriver } from '../domain/skill-test/isolation';
 import {
   DEFAULT_ENVIRONMENT_CACHE_ROOT_DIR,
-  createEnvironmentFailureMessage,
-  createSkippedEnvironmentResult,
-  executeEnvironmentWorkflow,
+  DEFAULT_ENVIRONMENT_MANIFEST_ROOT_DIR,
   normalizeEnvironmentConfigInput,
-  resolveEnvironmentRunConfig,
 } from '../domain/skill-test/environment-chain';
-import { createSkillTestEnvironmentRuntime } from '../domain/skill-test/sandbox-tool-contract';
 import {
-  SKILL_TEST_DESIGN_CONVERSATION_TYPE,
+  buildEnvironmentImageFromManifest,
+  createSkillTestEnvironmentAssetStore,
+} from '../domain/skill-test/environment-assets';
+import {
+  buildValidationEnvelope,
+  buildValidationIssue,
+  buildEffectiveCaseStatusSql,
+  buildEffectiveExecutionPassedSql,
+  buildEvaluationTimelineIds,
+  buildExecutionRateEligibleRunSql,
+  createValidationHttpError,
+  DEFAULT_SKILL_TEST_BRIDGE_TOKEN_TTL_SECONDS,
+  formatSkillMarkdownPathForMatch,
+  getReadToolPath,
+  hasBlockingValidationIssue,
+  hasOwn,
+  isPlainObject,
+  isSkillMarkdownReadPath,
+  isTargetSkillReadToolCall,
+  mapCaseStatusToLegacyValidity,
+  mergeValidationIssues,
+  normalizeBooleanFlag,
+  normalizeCaseForRun,
+  normalizeExpectedStepsInput,
+  normalizeExpectedToolSpecs,
+  normalizePathForJson,
+  normalizePositiveInteger,
+  normalizePromptText,
+  normalizeStepSequenceReference,
+  normalizeToolPathForMatch,
+  parseCaseStatus,
+  resolveCaseStatus,
+  resolveTestTypeForLoadingMode,
+  roundMetric,
+  sanitizeEvaluationRubric,
+  sanitizeExpectedSequence,
+  sanitizeExpectedToolSpecs,
+  SKILL_TEST_SUMMARY_AVERAGE_METRICS,
+  validateAndNormalizeCaseInput,
+  validateJudgeOutput,
+} from '../domain/skill-test/case-schema';
+import { getCanonicalCasePrompt } from '../domain/skill-test/run-prompt';
+import {
+  SKILL_TESTING_DOC_TARGET_PATH,
+  assertCanWriteTestingDocTarget,
+  buildTestingDocContractSummary,
+  hashTestingDocContent,
+  readTestingDocFileInfo,
+  resolveSkillTestingDocTarget,
+} from '../domain/skill-test/testing-doc-target';
+import { buildTestingDocDraftFromSkillContext } from '../domain/skill-test/testing-doc-draft';
+import {
   SKILL_TEST_DESIGN_PHASES,
-  buildSkillTestDesignCaseSummary,
-  buildSkillTestDraftInputFromMatrixRow,
   getSkillTestDesignState,
   normalizeSkillTestMatrix,
-  normalizeSkillTestPromptKey,
-  setSkillTestDesignStateMetadata,
 } from '../domain/skill-test/chat-workbench-mode';
+import { createSkillTestDesignService } from '../domain/skill-test/design-service';
+import {
+  buildSkillTestChainStepPrompt,
+  createSkillTestChainRunner,
+} from '../domain/skill-test/chain-runner';
+import { createSkillTestRunEvaluationHelpers } from '../domain/skill-test/run-evaluation';
+import { createSkillTestRunExecutor } from '../domain/skill-test/run-executor';
 const { resolveProviderAuthEnv } = require('../domain/skill-test/open-sandbox-factory');
 
 type ApiContext = {
@@ -116,73 +159,6 @@ function liveSessionToolStepSignature(step: any) {
     step && step.requestSummary !== undefined ? step.requestSummary : null,
     step && step.partialJson ? String(step.partialJson) : '',
   ]);
-}
-
-function isPlainObject(value: any) {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-}
-
-function normalizePathForJson(value: any) {
-  return String(value || '').trim().replace(/\\/g, '/');
-}
-
-function hasOwn(value: any, key: string) {
-  return Boolean(value) && Object.prototype.hasOwnProperty.call(value, key);
-}
-
-function normalizePromptText(value: any) {
-  return String(value || '').replace(/\r\n/g, '\n').trim();
-}
-
-const FULL_CASE_MAX_EXPECTED_STEPS = 12;
-const STEP_SIGNAL_MAX_COUNT = 5;
-const ALLOWED_SIGNAL_TYPES = new Set(['tool', 'text', 'state']);
-const ALLOWED_SIGNAL_MATCHERS = new Set(['contains', 'equals', 'regex']);
-const ALLOWED_CRITICAL_DIMENSIONS = new Set(['sequenceAdherence']);
-const THRESHOLD_DIMENSION_KEYS = [
-  'requiredToolCoverage',
-  'toolCallSuccessRate',
-  'goalAchievement',
-  'instructionAdherence',
-  'sequenceAdherence',
-  'toolErrorRate',
-];
-const DEFAULT_SKILL_TEST_BRIDGE_TOKEN_TTL_SECONDS = 600;
-
-function buildValidationIssue(code: string, severity: 'error' | 'warning' | 'needs-review', path: string, message: string) {
-  return { code, severity, path, message };
-}
-
-function mergeValidationIssues(...groups: any[]) {
-  const merged: any[] = [];
-  const seen = new Set<string>();
-  for (const group of groups) {
-    if (!Array.isArray(group)) {
-      continue;
-    }
-    for (const entry of group) {
-      if (!entry || typeof entry !== 'object') {
-        continue;
-      }
-      const issue = buildValidationIssue(
-        String(entry.code || 'validation_issue').trim() || 'validation_issue',
-        entry.severity === 'warning' || entry.severity === 'needs-review' ? entry.severity : 'error',
-        String(entry.path || '').trim(),
-        String(entry.message || '').trim()
-      );
-      const key = `${issue.code}\u0000${issue.severity}\u0000${issue.path}\u0000${issue.message}`;
-      if (seen.has(key)) {
-        continue;
-      }
-      seen.add(key);
-      merged.push(issue);
-    }
-  }
-  return merged;
-}
-
-function hasBlockingValidationIssue(issues: any[]) {
-  return Array.isArray(issues) && issues.some((issue) => issue && issue.severity === 'error');
 }
 
 function summarizeBridgeAuthFromInvocation(toolInvocation: any, agentToolBridge: any = null) {
@@ -337,15 +313,6 @@ function parseStoredJsonField(rawValue: any, fieldName: string, expectedKind: 'a
   return { value: parsed, issues: [] };
 }
 
-function createValidationHttpError(issueOrIssues: any, fallbackMessage?: string, extraDetails: any = {}) {
-  const issues = mergeValidationIssues(Array.isArray(issueOrIssues) ? issueOrIssues : [issueOrIssues]);
-  const firstMessage = issues[0] && issues[0].message ? String(issues[0].message) : '';
-  return createHttpError(400, fallbackMessage || firstMessage || 'Validation failed', {
-    issues,
-    ...(extraDetails && typeof extraDetails === 'object' ? extraDetails : {}),
-  });
-}
-
 const SKILL_TEST_MATRIX_ARTIFACT_ROOT = '.tmp/skill-test-design';
 const SKILL_TEST_MATRIX_ARTIFACT_MAX_BYTES = 1024 * 1024;
 
@@ -440,1829 +407,24 @@ function sourceMessageMentionsMatrixArtifactPath(message: any, matrixPath: any) 
   return content.includes(relativePath) || content.includes(`./${relativePath}`);
 }
 
-function getCanonicalCasePrompt(value: any) {
-  if (!value || typeof value !== 'object') {
-    return '';
-  }
-  return normalizePromptText(value.userPrompt ?? value.triggerPrompt ?? value.trigger_prompt);
-}
-
-function slugifyValidationId(value: any, fallback: string) {
-  const normalized = String(value || '')
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 48);
-  return normalized || fallback;
-}
-
-function normalizeBooleanFlag(value: any, fallback = true) {
-  if (value === true || value === false) {
-    return value;
-  }
-  if (typeof value === 'number') {
-    return value !== 0;
-  }
-  if (typeof value === 'string') {
-    const normalized = value.trim().toLowerCase();
-    if (normalized === 'true' || normalized === '1' || normalized === 'yes') {
-      return true;
-    }
-    if (normalized === 'false' || normalized === '0' || normalized === 'no') {
-      return false;
-    }
-  }
-  return fallback;
-}
-
-function normalizePositiveInteger(value: any) {
-  if (value == null || value === '') {
+function findConversationMessage(conversation: any, messageId: any) {
+  const normalizedMessageId = String(messageId || '').trim();
+  const messages = Array.isArray(conversation && conversation.messages) ? conversation.messages : [];
+  if (!normalizedMessageId) {
     return null;
   }
-  const normalized = typeof value === 'string'
-    ? Number.parseInt(value, 10)
-    : Number(value);
-  return Number.isInteger(normalized) && normalized > 0 ? normalized : null;
+  return messages.find((message: any) => message && String(message.id || '').trim() === normalizedMessageId) || null;
 }
 
-function clipSkillTestText(value: any, maxLength = 240) {
-  const text = String(value || '').trim();
-  if (!text) {
-    return '';
-  }
-  return text.length > maxLength ? `${text.slice(0, Math.max(0, maxLength - 1))}…` : text;
-}
-
-function normalizeMatcherName(value: any) {
-  const normalized = String(value || '').trim().toLowerCase();
-  return ALLOWED_SIGNAL_MATCHERS.has(normalized) ? normalized : '';
-}
-
-function parseExpectedToolOrder(value: any) {
-  if (!isPlainObject(value)) {
-    return null;
-  }
-
-  const rawValue = hasOwn(value, 'order')
-    ? value.order
-    : hasOwn(value, 'sequence')
-      ? value.sequence
-      : hasOwn(value, 'sequenceIndex')
-        ? value.sequenceIndex
-        : hasOwn(value, 'sequence_index')
-          ? value.sequence_index
-          : null;
-
-  if (rawValue == null || rawValue === '') {
-    return null;
-  }
-
-  const order = typeof rawValue === 'string'
-    ? Number.parseInt(rawValue, 10)
-    : Number(rawValue);
-
-  return Number.isInteger(order) && order > 0 ? order : null;
-}
-
-function sanitizeExpectedToolSpecEntry(value: any) {
-  if (typeof value === 'string') {
-    const name = String(value || '').trim();
-    return name || null;
-  }
-  if (!isPlainObject(value)) {
-    return null;
-  }
-
-  const name = String(value.name || value.tool || '').trim();
-  if (!name) {
-    return null;
-  }
-
-  const requiredParamsSource = Array.isArray(value.requiredParams)
-    ? value.requiredParams
-    : Array.isArray(value.required_params)
-      ? value.required_params
-      : [];
-  const requiredParams = [...new Set(
-    requiredParamsSource
-      .map((entry: any) => String(entry || '').trim())
-      .filter(Boolean)
-  )];
-
-  let argumentsShape: any;
-  if (hasOwn(value, 'arguments')) {
-    argumentsShape = value.arguments;
-  } else if (hasOwn(value, 'args')) {
-    argumentsShape = value.args;
-  } else if (hasOwn(value, 'params')) {
-    argumentsShape = value.params;
-  }
-
-  const order = parseExpectedToolOrder(value);
-  const normalized: any = { name };
-  if (argumentsShape !== undefined) {
-    normalized.arguments = argumentsShape;
-  }
-  if (requiredParams.length > 0) {
-    normalized.requiredParams = requiredParams;
-  }
-  if (order != null) {
-    normalized.order = order;
-  }
-  return normalized;
-}
-
-function sanitizeExpectedToolSpecs(value: any) {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value
-    .map((entry) => sanitizeExpectedToolSpecEntry(entry))
-    .filter(Boolean);
-}
-
-const TOOL_NAME_MATCH_ALIASES: Record<string, string> = {
-  participants: 'list-participants',
-};
-
-function normalizeToolNameForMatch(value: any) {
-  const normalized = String(value || '').trim();
-  if (!normalized) {
-    return '';
-  }
-  return TOOL_NAME_MATCH_ALIASES[normalized.toLowerCase()] || normalized;
-}
-
-function toolNamesMatch(expectedName: any, actualName: any) {
-  return normalizeToolNameForMatch(expectedName) === normalizeToolNameForMatch(actualName);
-}
-
-function normalizeContainsComparableText(value: any) {
-  return String(value || '')
-    .trim()
-    .replace(/\\/g, '/')
-    .replace(/\/+/g, '/')
-    .toLowerCase();
-}
-
-function normalizeExpectedToolSpecs(value: any) {
-  return sanitizeExpectedToolSpecs(value).map((entry: any, index: number) => {
-    if (typeof entry === 'string') {
-      return {
-        name: normalizeToolNameForMatch(entry),
-        requiredParams: [],
-        hasArgumentShape: false,
-        hasParameterExpectation: false,
-        hasSequenceExpectation: false,
-        arguments: undefined,
-        order: null,
-        sourceOrder: index,
-      };
-    }
-
-    const requiredParams = Array.isArray(entry.requiredParams)
-      ? entry.requiredParams.map((item: any) => String(item || '').trim()).filter(Boolean)
-      : [];
-    const hasArgumentShape = hasOwn(entry, 'arguments');
-    const order = parseExpectedToolOrder(entry);
-
-    return {
-      name: normalizeToolNameForMatch(entry.name),
-      requiredParams,
-      hasArgumentShape,
-      hasParameterExpectation: hasArgumentShape || requiredParams.length > 0,
-      hasSequenceExpectation: order != null,
-      arguments: hasArgumentShape ? entry.arguments : undefined,
-      order,
-      sourceOrder: index,
-    };
-  }).filter((entry: any) => entry.name);
-}
-
-function normalizeToolPathForMatch(value: any) {
-  return String(value || '').replace(/\\/g, '/').trim();
-}
-
-function formatSkillMarkdownPathForMatch(skillPath: any) {
-  const normalizedPath = normalizeToolPathForMatch(skillPath).replace(/\/+$/g, '');
-  if (!normalizedPath) {
-    return '';
-  }
-  return /\/skill\.md$/i.test(normalizedPath) ? normalizedPath : `${normalizedPath}/SKILL.md`;
-}
-
-function getReadToolPath(argumentsValue: any) {
-  if (!argumentsValue || typeof argumentsValue !== 'object') {
-    return '';
-  }
-  return normalizeToolPathForMatch(argumentsValue.path || argumentsValue.file || '');
-}
-
-function isSkillMarkdownReadPath(pathValue: any, skillId: any, skillPath?: any) {
-  const normalizedPath = normalizeToolPathForMatch(pathValue).toLowerCase();
-  const normalizedSkillId = String(skillId || '').trim().toLowerCase();
-  const normalizedExpectedSkillPath = formatSkillMarkdownPathForMatch(skillPath).toLowerCase();
-
-  if (!normalizedPath || (!normalizedSkillId && !normalizedExpectedSkillPath)) {
-    return false;
-  }
-
-  if (normalizedExpectedSkillPath) {
-    if (normalizedPath === normalizedExpectedSkillPath || normalizedPath.endsWith(normalizedExpectedSkillPath)) {
-      return true;
+function findLatestConversationMessage(conversation: any) {
+  const messages = Array.isArray(conversation && conversation.messages) ? conversation.messages : [];
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message && message.id && (message.role === 'user' || message.role === 'assistant')) {
+      return message;
     }
   }
-
-  if (!normalizedSkillId) {
-    return false;
-  }
-
-  return normalizedPath.includes(`/skills/${normalizedSkillId}/skill.md`)
-    || normalizedPath.endsWith(`skills/${normalizedSkillId}/skill.md`);
-}
-
-function isTargetSkillReadToolCall(toolName: any, argumentsValue: any, skillId: any, skillPath?: any) {
-  const normalizedToolName = String(toolName || '').trim();
-  if (normalizedToolName === 'read') {
-    return isSkillMarkdownReadPath(getReadToolPath(argumentsValue), skillId, skillPath);
-  }
-
-  return false;
-}
-
-function normalizeStoredCaseStatus(value: any) {
-  const normalized = String(value || '').trim().toLowerCase();
-  if (normalized === 'draft' || normalized === 'ready' || normalized === 'archived') {
-    return normalized;
-  }
-  return '';
-}
-
-function resolveCaseStatus(row: any) {
-  const explicit = normalizeStoredCaseStatus(row && row.case_status);
-  return explicit || 'draft';
-}
-
-function buildEffectiveCaseStatusSql(alias = '') {
-  const prefix = alias ? `${alias}.` : '';
-  const caseStatusExpr = `LOWER(TRIM(COALESCE(${prefix}case_status, '')))`;
-  return `CASE
-    WHEN ${caseStatusExpr} = 'ready' THEN 'ready'
-    WHEN ${caseStatusExpr} = 'archived' THEN 'archived'
-    WHEN ${caseStatusExpr} = 'draft' THEN 'draft'
-    ELSE 'draft'
-  END`;
-}
-
-function buildEffectiveExecutionPassedSql(caseAlias = 'c', runAlias = 'r') {
-  const casePrefix = caseAlias ? `${caseAlias}.` : '';
-  const runPrefix = runAlias ? `${runAlias}.` : '';
-  const loadingModeExpr = `LOWER(TRIM(COALESCE(${casePrefix}loading_mode, '')))`;
-  const verdictExpr = `LOWER(TRIM(COALESCE(${runPrefix}verdict, '')))`;
-  return `CASE
-    WHEN ${runPrefix}id IS NULL THEN 0
-    WHEN ${loadingModeExpr} != 'full' THEN 0
-    WHEN ${verdictExpr} != '' THEN CASE WHEN ${verdictExpr} = 'pass' THEN 1 ELSE 0 END
-    WHEN ${runPrefix}execution_passed = 1 THEN 1
-    ELSE 0
-  END`;
-}
-
-function buildExecutionRateEligibleRunSql(caseAlias = 'c', runAlias = 'r') {
-  const casePrefix = caseAlias ? `${caseAlias}.` : '';
-  const runPrefix = runAlias ? `${runAlias}.` : '';
-  const loadingModeExpr = `LOWER(TRIM(COALESCE(${casePrefix}loading_mode, '')))`;
-  return `CASE
-    WHEN ${runPrefix}id IS NULL THEN 0
-    WHEN ${loadingModeExpr} = 'full' THEN 1
-    ELSE 0
-  END`;
-}
-
-const SKILL_TEST_SUMMARY_AVERAGE_METRICS = [
-  { key: 'avgToolAccuracy', sumColumn: 'sum_tool_accuracy', countColumn: 'tool_accuracy_count' },
-  { key: 'avgRequiredStepCompletionRate', sumColumn: 'sum_required_step_completion_rate', countColumn: 'required_step_completion_rate_count' },
-  { key: 'avgStepCompletionRate', sumColumn: 'sum_step_completion_rate', countColumn: 'step_completion_rate_count' },
-  { key: 'avgGoalAchievement', sumColumn: 'sum_goal_achievement', countColumn: 'goal_achievement_count' },
-  { key: 'avgToolCallSuccessRate', sumColumn: 'sum_tool_call_success_rate', countColumn: 'tool_call_success_rate_count' },
-];
-
-function resolveTestTypeForLoadingMode(loadingMode: any, testType?: any) {
-  const normalizedLoadingMode = String(loadingMode || 'dynamic').trim().toLowerCase() || 'dynamic';
-  const normalizedTestType = String(testType || '').trim().toLowerCase();
-  if (normalizedTestType === 'trigger' || normalizedTestType === 'execution') {
-    return normalizedTestType;
-  }
-  return normalizedLoadingMode === 'full' ? 'execution' : 'trigger';
-}
-
-function mapCaseStatusToLegacyValidity(caseStatus: string) {
-  if (caseStatus === 'ready') {
-    return 'validated';
-  }
-  if (caseStatus === 'archived') {
-    return 'archived';
-  }
-  return 'pending';
-}
-
-function parseCaseStatus(value: any, fallback = 'draft') {
-  const normalized = String(value || fallback).trim().toLowerCase() || fallback;
-  if (normalized === 'draft' || normalized === 'ready' || normalized === 'archived') {
-    return normalized;
-  }
-  throw createHttpError(400, 'caseStatus must be one of: draft, ready, archived');
-}
-
-function buildDefaultFailureIfMissing(stepTitle: string) {
-  const title = String(stepTitle || '').trim() || '该步骤';
-  return `缺少“${title}”步骤，说明关键行为未完成。`;
-}
-
-function createLegacySummaryStep(stepId: string, text: string, required = false) {
-  const summary = String(text || '').trim();
-  return {
-    id: stepId,
-    title: required ? '满足整体目标' : '满足整体行为预期',
-    expectedBehavior: summary,
-    required,
-    order: null,
-    failureIfMissing: buildDefaultFailureIfMissing(required ? '满足整体目标' : '满足整体行为预期'),
-    strongSignals: [],
-  };
-}
-
-function normalizeStepSequenceReference(value: any) {
-  if (typeof value === 'string') {
-    return String(value || '').trim();
-  }
-  if (!isPlainObject(value)) {
-    return '';
-  }
-  return String(value.stepId || value.id || value.name || value.tool || '').trim();
-}
-
-function normalizeSequenceEntryName(value: any) {
-  if (typeof value === 'string') {
-    return normalizeToolNameForMatch(value);
-  }
-  if (!isPlainObject(value)) {
-    return '';
-  }
-  return normalizeToolNameForMatch(value.name || value.tool || value.id || '');
-}
-
-function normalizeJudgeConfidence(value: any) {
-  if (value == null || value === '') {
-    return null;
-  }
-  const normalized = Number(value);
-  return Number.isFinite(normalized) && normalized >= 0 && normalized <= 1 ? normalized : null;
-}
-
-function normalizeStrongSignalEntry(signal: any, stepId: string, stepIndex: number, signalIndex: number, issues: any[]) {
-  const basePath = `expectedSteps[${stepIndex}].strongSignals[${signalIndex}]`;
-  if (!isPlainObject(signal)) {
-    issues.push(
-      buildValidationIssue('signal_shape_invalid', 'error', basePath, 'strongSignals items must be objects')
-    );
-    return null;
-  }
-
-  const type = String(signal.type || '').trim().toLowerCase();
-  if (!ALLOWED_SIGNAL_TYPES.has(type)) {
-    issues.push(
-      buildValidationIssue('signal_type_invalid', 'error', `${basePath}.type`, 'strongSignals type must be one of: tool, text, state')
-    );
-    return null;
-  }
-
-  const normalizedSignal: any = {
-    id: String(signal.id || '').trim(),
-    type,
-  };
-
-  if (!normalizedSignal.id) {
-    const sourceName = type === 'tool'
-      ? String(signal.toolName || signal.name || signal.tool || '').trim()
-      : type === 'state'
-        ? String(signal.key || '').trim()
-        : String(signal.text || signal.pattern || '').trim();
-    normalizedSignal.id = `sig-${stepId}-${slugifyValidationId(sourceName, `signal-${signalIndex + 1}`)}`;
-  }
-
-  const rawMatcher = signal.matcher ?? signal.argumentsMatcher;
-  const matcher = normalizeMatcherName(rawMatcher);
-  if (rawMatcher != null && String(rawMatcher || '').trim() && !matcher) {
-    issues.push(
-      buildValidationIssue(
-        'unsupported_signal_matcher',
-        'warning',
-        `${basePath}.matcher`,
-        'Unsupported signal matcher was downgraded to judge-only guidance'
-      )
-    );
-  }
-
-  if (type === 'tool') {
-    const toolName = normalizeToolNameForMatch(signal.toolName || signal.name || signal.tool || '');
-    if (!toolName) {
-      issues.push(
-        buildValidationIssue('signal_shape_invalid', 'error', basePath, 'Tool signals require toolName')
-      );
-      return null;
-    }
-    normalizedSignal.toolName = toolName;
-    if (isPlainObject(signal.arguments)) {
-      normalizedSignal.arguments = signal.arguments;
-    }
-    if (matcher) {
-      normalizedSignal.matcher = matcher;
-    }
-    return normalizedSignal;
-  }
-
-  if (type === 'text') {
-    const text = String(signal.text || '').trim();
-    const pattern = String(signal.pattern || '').trim();
-    if (!text && !pattern) {
-      issues.push(
-        buildValidationIssue('signal_shape_invalid', 'error', basePath, 'Text signals require text or pattern')
-      );
-      return null;
-    }
-    if (text) {
-      normalizedSignal.text = text;
-    }
-    if (pattern) {
-      normalizedSignal.pattern = pattern;
-    }
-    if (matcher) {
-      normalizedSignal.matcher = matcher;
-    }
-    return normalizedSignal;
-  }
-
-  const key = String(signal.key || '').trim();
-  if (!key || !hasOwn(signal, 'expected')) {
-    issues.push(
-      buildValidationIssue('signal_shape_invalid', 'error', basePath, 'State signals require key and expected')
-    );
-    return null;
-  }
-  normalizedSignal.key = key;
-  normalizedSignal.expected = signal.expected;
-  if (matcher) {
-    normalizedSignal.matcher = matcher;
-  }
-  return normalizedSignal;
-}
-
-function normalizeExpectedStepsInput(rawValue: any, rawExpectedSequence: any, expectedTools: any[], options: { explicit?: boolean } = {}) {
-  const issues: any[] = [];
-  const explicit = options && options.explicit === true;
-  if (rawValue == null || rawValue === '') {
-    return { expectedSteps: [], sequenceStepIds: [], issues };
-  }
-  if (!Array.isArray(rawValue)) {
-    issues.push(
-      buildValidationIssue('expected_steps_required', 'error', 'expectedSteps', 'expectedSteps must be an array')
-    );
-    return { expectedSteps: [], sequenceStepIds: [], issues };
-  }
-  if ((explicit && rawValue.length === 0) || rawValue.length > FULL_CASE_MAX_EXPECTED_STEPS) {
-    issues.push(
-      buildValidationIssue(
-        'expected_steps_required',
-        'error',
-        'expectedSteps',
-        `expectedSteps must contain between 1 and ${FULL_CASE_MAX_EXPECTED_STEPS} steps`
-      )
-    );
-  }
-
-  const expectedSteps: any[] = [];
-  const stepIdSet = new Set<string>();
-  const signalIdSet = new Set<string>();
-  const explicitOrderToStepId = new Map<number, string>();
-
-  for (let index = 0; index < rawValue.length; index += 1) {
-    const entry = rawValue[index];
-    const basePath = `expectedSteps[${index}]`;
-    if (!isPlainObject(entry)) {
-      issues.push(
-        buildValidationIssue('step_title_or_behavior_missing', 'error', basePath, 'Each expected step must be an object')
-      );
-      continue;
-    }
-
-    const stepId = String(entry.id || '').trim() || `step-${index + 1}`;
-    if (stepIdSet.has(stepId)) {
-      issues.push(
-        buildValidationIssue('step_id_duplicate', 'error', `${basePath}.id`, `Duplicate step id: ${stepId}`)
-      );
-      continue;
-    }
-    stepIdSet.add(stepId);
-
-    const title = String(entry.title || '').trim();
-    const expectedBehavior = String(entry.expectedBehavior || entry.expected_behavior || '').trim();
-    if (!title || !expectedBehavior) {
-      issues.push(
-        buildValidationIssue(
-          'step_title_or_behavior_missing',
-          'error',
-          basePath,
-          'Each expected step requires non-empty title and expectedBehavior'
-        )
-      );
-    }
-
-    const step: any = {
-      id: stepId,
-      title,
-      expectedBehavior,
-      required: normalizeBooleanFlag(entry.required, true),
-      order: null,
-      failureIfMissing: String(entry.failureIfMissing || entry.failure_if_missing || '').trim(),
-      strongSignals: [] as any[],
-    };
-
-    if (!step.failureIfMissing) {
-      step.failureIfMissing = buildDefaultFailureIfMissing(title);
-      issues.push(
-        buildValidationIssue(
-          'failure_if_missing_defaulted',
-          'warning',
-          `${basePath}.failureIfMissing`,
-          'failureIfMissing was defaulted for this step'
-        )
-      );
-    }
-
-    if (hasOwn(entry, 'order') && entry.order != null && entry.order !== '') {
-      const normalizedOrder = normalizePositiveInteger(entry.order);
-      if (normalizedOrder == null) {
-        issues.push(
-          buildValidationIssue('sequence_config_invalid', 'error', `${basePath}.order`, 'Step order must be a positive integer')
-        );
-      } else if (explicitOrderToStepId.has(normalizedOrder)) {
-        issues.push(
-          buildValidationIssue(
-            'sequence_config_invalid',
-            'error',
-            `${basePath}.order`,
-            `Duplicate step order: ${normalizedOrder}`
-          )
-        );
-      } else {
-        explicitOrderToStepId.set(normalizedOrder, stepId);
-        step.order = normalizedOrder;
-      }
-    }
-
-    const rawSignals = hasOwn(entry, 'strongSignals') ? entry.strongSignals : [];
-    if (rawSignals != null && !Array.isArray(rawSignals)) {
-      issues.push(
-        buildValidationIssue('signal_shape_invalid', 'error', `${basePath}.strongSignals`, 'strongSignals must be an array')
-      );
-    } else if (Array.isArray(rawSignals)) {
-      if (rawSignals.length > STEP_SIGNAL_MAX_COUNT) {
-        issues.push(
-          buildValidationIssue(
-            'signal_shape_invalid',
-            'error',
-            `${basePath}.strongSignals`,
-            `Each step supports at most ${STEP_SIGNAL_MAX_COUNT} strongSignals`
-          )
-        );
-      }
-      const signalLimit = Math.min(rawSignals.length, STEP_SIGNAL_MAX_COUNT);
-      for (let signalIndex = 0; signalIndex < signalLimit; signalIndex += 1) {
-        const normalizedSignal = normalizeStrongSignalEntry(rawSignals[signalIndex], stepId, index, signalIndex, issues);
-        if (!normalizedSignal) {
-          continue;
-        }
-        if (signalIdSet.has(normalizedSignal.id)) {
-          issues.push(
-            buildValidationIssue(
-              'signal_id_duplicate',
-              'error',
-              `${basePath}.strongSignals[${signalIndex}].id`,
-              `Duplicate signal id: ${normalizedSignal.id}`
-            )
-          );
-          continue;
-        }
-        signalIdSet.add(normalizedSignal.id);
-        step.strongSignals.push(normalizedSignal);
-      }
-    }
-
-    expectedSteps.push(step);
-  }
-
-  if (expectedSteps.length > 0 && !expectedSteps.some((step) => step.required)) {
-    issues.push(
-      buildValidationIssue('required_step_missing', 'error', 'expectedSteps', 'At least one expected step must be required')
-    );
-  }
-
-  const expectedSequence = sanitizeExpectedSequence(Array.isArray(rawExpectedSequence) ? rawExpectedSequence : []);
-  let sequenceStepIds = expectedSteps
-    .filter((step) => step.order != null)
-    .slice()
-    .sort((left, right) => Number(left.order || 0) - Number(right.order || 0))
-    .map((step) => step.id);
-
-  if (expectedSequence.length > 0 && expectedSteps.length > 0) {
-    const resolvedStepIds: string[] = [];
-    const seenStepIds = new Set<string>();
-    for (let index = 0; index < expectedSequence.length; index += 1) {
-      const reference = normalizeStepSequenceReference(expectedSequence[index]);
-      if (!reference || !stepIdSet.has(reference)) {
-        issues.push(
-          buildValidationIssue(
-            'sequence_config_invalid',
-            'error',
-            `expectedSequence[${index}]`,
-            `expectedSequence must reference existing step ids, received: ${reference || 'unknown'}`
-          )
-        );
-        continue;
-      }
-      if (seenStepIds.has(reference)) {
-        issues.push(
-          buildValidationIssue(
-            'sequence_config_invalid',
-            'error',
-            `expectedSequence[${index}]`,
-            `expectedSequence contains duplicate step id: ${reference}`
-          )
-        );
-        continue;
-      }
-      seenStepIds.add(reference);
-      resolvedStepIds.push(reference);
-    }
-
-    if (resolvedStepIds.length > 0 && sequenceStepIds.length > 0 && JSON.stringify(sequenceStepIds) !== JSON.stringify(resolvedStepIds)) {
-      issues.push(
-        buildValidationIssue(
-          'sequence_source_conflict',
-          'warning',
-          'expectedSequence',
-          'expectedSequence overrides conflicting step.order values'
-        )
-      );
-    }
-
-    if (resolvedStepIds.length > 0) {
-      sequenceStepIds = resolvedStepIds;
-      const orderMap = new Map<string, number>();
-      for (let index = 0; index < resolvedStepIds.length; index += 1) {
-        orderMap.set(resolvedStepIds[index], index + 1);
-      }
-      for (const step of expectedSteps) {
-        if (orderMap.has(step.id)) {
-          step.order = orderMap.get(step.id);
-        }
-      }
-    }
-  }
-
-  if (expectedTools.length > 0 && expectedSteps.length > 0) {
-    issues.push(
-      buildValidationIssue(
-        'legacy_expected_tools_present',
-        'warning',
-        'expectedTools',
-        'expectedTools remains a supporting legacy field when expectedSteps is present'
-      )
-    );
-  }
-
-  return { expectedSteps, sequenceStepIds, issues };
-}
-
-function normalizeThresholdConfig(rawValue: any, issues: any[], passThresholds: Record<string, number | null>, hardFailThresholds: Record<string, number | null>) {
-  if (!isPlainObject(rawValue)) {
-    return;
-  }
-  for (const key of THRESHOLD_DIMENSION_KEYS) {
-    const hasPassThreshold = hasOwn(rawValue, 'passThresholds') && isPlainObject(rawValue.passThresholds) && hasOwn(rawValue.passThresholds, key);
-    const hasHardFailThreshold = hasOwn(rawValue, 'hardFailThresholds') && isPlainObject(rawValue.hardFailThresholds) && hasOwn(rawValue.hardFailThresholds, key);
-    const hasLegacyThreshold = hasOwn(rawValue, 'thresholds') && isPlainObject(rawValue.thresholds) && hasOwn(rawValue.thresholds, key);
-    const passSource = hasPassThreshold
-      ? rawValue.passThresholds[key]
-      : hasLegacyThreshold
-        ? rawValue.thresholds[key]
-        : null;
-    const hardFailSource = hasHardFailThreshold ? rawValue.hardFailThresholds[key] : null;
-
-    if (passSource != null && passSource !== '') {
-      const passValue = Number(passSource);
-      if (!Number.isFinite(passValue) || passValue < 0 || passValue > 1) {
-        issues.push(
-          buildValidationIssue('threshold_range_invalid', 'error', `evaluationRubric.passThresholds.${key}`, `${key} passThreshold must be between 0 and 1`)
-        );
-      } else {
-        passThresholds[key] = passValue;
-      }
-    }
-
-    if (hardFailSource != null && hardFailSource !== '') {
-      const hardFailValue = Number(hardFailSource);
-      if (!Number.isFinite(hardFailValue) || hardFailValue < 0 || hardFailValue > 1) {
-        issues.push(
-          buildValidationIssue('threshold_range_invalid', 'error', `evaluationRubric.hardFailThresholds.${key}`, `${key} hardFailThreshold must be between 0 and 1`)
-        );
-      } else {
-        hardFailThresholds[key] = hardFailValue;
-      }
-    }
-
-    if (passThresholds[key] != null && hardFailThresholds[key] != null && Number(hardFailThresholds[key]) > Number(passThresholds[key])) {
-      issues.push(
-        buildValidationIssue(
-          'threshold_range_invalid',
-          'error',
-          `evaluationRubric.hardFailThresholds.${key}`,
-          `${key} hardFailThreshold must be less than or equal to passThreshold`
-        )
-      );
-    }
-  }
-}
-
-function normalizeEvaluationRubricForFullMode(rawValue: any, expectedSteps: any[], sequenceStepIds: string[]) {
-  const issues: any[] = [];
-  const rubric = sanitizeEvaluationRubric(rawValue);
-  const stepIdSet = new Set(expectedSteps.map((step) => step.id));
-  const signalKeySet = new Set<string>();
-  for (const step of expectedSteps) {
-    const signals = Array.isArray(step && step.strongSignals) ? step.strongSignals : [];
-    for (const signal of signals) {
-      signalKeySet.add(`${step.id}\u0000${String(signal && signal.id || '').trim()}`);
-    }
-  }
-
-  const criticalConstraints: any[] = [];
-  const seenConstraintIds = new Set<string>();
-  const rawConstraints = Array.isArray(rubric.criticalConstraints) ? rubric.criticalConstraints : [];
-  for (let index = 0; index < rawConstraints.length; index += 1) {
-    const entry = rawConstraints[index];
-    if (!isPlainObject(entry)) {
-      continue;
-    }
-    const id = String(entry.id || '').trim() || `constraint-${index + 1}`;
-    if (seenConstraintIds.has(id)) {
-      issues.push(
-        buildValidationIssue('evaluation_rubric_invalid', 'error', `evaluationRubric.criticalConstraints[${index}].id`, `Duplicate constraint id: ${id}`)
-      );
-      continue;
-    }
-    seenConstraintIds.add(id);
-    const appliesToStepIdsSource = Array.isArray(entry.appliesToStepIds) ? entry.appliesToStepIds : [];
-    const appliesToStepIds = appliesToStepIdsSource
-      .map((stepId: any) => String(stepId || '').trim())
-      .filter(Boolean);
-    const missingTarget = appliesToStepIds.find((stepId: string) => !stepIdSet.has(stepId));
-    if (missingTarget) {
-      issues.push(
-        buildValidationIssue(
-          'constraint_target_missing',
-          'error',
-          `evaluationRubric.criticalConstraints[${index}].appliesToStepIds`,
-          `criticalConstraints references unknown step id: ${missingTarget}`
-        )
-      );
-    }
-    criticalConstraints.push({
-      id,
-      description: String(entry.description || '').trim(),
-      failureReason: String(entry.failureReason || entry.failure_reason || '').trim(),
-      appliesToStepIds,
-    });
-  }
-
-  const criticalDimensions = Array.isArray(rubric.criticalDimensions)
-    ? rubric.criticalDimensions
-      .map((entry: any) => String(entry || '').trim())
-      .filter((entry: string) => ALLOWED_CRITICAL_DIMENSIONS.has(entry))
-    : [];
-  if (criticalDimensions.includes('sequenceAdherence') && sequenceStepIds.length === 0) {
-    issues.push(
-      buildValidationIssue(
-        'critical_dimension_requires_sequence',
-        'error',
-        'evaluationRubric.criticalDimensions',
-        'sequenceAdherence cannot be critical without a normalized sequence constraint'
-      )
-    );
-  }
-
-  const passThresholds: Record<string, number | null> = {};
-  const hardFailThresholds: Record<string, number | null> = {};
-  normalizeThresholdConfig(rubric, issues, passThresholds, hardFailThresholds);
-
-  const supportingSignalOverrides: any[] = [];
-  const seenOverrideKeys = new Set<string>();
-  const rawOverrides = Array.isArray(rubric.supportingSignalOverrides) ? rubric.supportingSignalOverrides : [];
-  for (let index = 0; index < rawOverrides.length; index += 1) {
-    const entry = rawOverrides[index];
-    if (!isPlainObject(entry)) {
-      continue;
-    }
-    const stepId = String(entry.stepId || '').trim();
-    const signalId = String(entry.signalId || '').trim();
-    const severity = String(entry.severity || 'critical').trim().toLowerCase() || 'critical';
-    const signalKey = `${stepId}\u0000${signalId}`;
-    if (!stepId || !signalId || !signalKeySet.has(signalKey)) {
-      issues.push(
-        buildValidationIssue(
-          'override_target_missing',
-          'error',
-          `evaluationRubric.supportingSignalOverrides[${index}]`,
-          'supportingSignalOverrides must reference an existing stepId + signalId pair'
-        )
-      );
-      continue;
-    }
-    if (severity !== 'critical') {
-      issues.push(
-        buildValidationIssue(
-          'evaluation_rubric_invalid',
-          'error',
-          `evaluationRubric.supportingSignalOverrides[${index}].severity`,
-          'supportingSignalOverrides severity must be "critical"'
-        )
-      );
-      continue;
-    }
-    if (seenOverrideKeys.has(signalKey)) {
-      issues.push(
-        buildValidationIssue(
-          'override_target_missing',
-          'error',
-          `evaluationRubric.supportingSignalOverrides[${index}]`,
-          'Duplicate supportingSignalOverride target'
-        )
-      );
-      continue;
-    }
-    seenOverrideKeys.add(signalKey);
-    supportingSignalOverrides.push({
-      stepId,
-      signalId,
-      severity: 'critical',
-      failureReason: String(entry.failureReason || entry.failure_reason || '').trim(),
-    });
-  }
-
-  return {
-    evaluationRubric: {
-      criticalConstraints,
-      criticalDimensions,
-      passThresholds,
-      hardFailThresholds,
-      supportingSignalOverrides,
-      thresholds: { ...passThresholds },
-    },
-    issues,
-  };
-}
-
-function buildLegacyExpectedStepFromTool(toolSpec: any, index: number) {
-  const normalizedTool = typeof toolSpec === 'string'
-    ? { name: String(toolSpec || '').trim() }
-    : sanitizeExpectedToolSpecEntry(toolSpec);
-  const toolName = normalizeToolNameForMatch(normalizedTool && normalizedTool.name || '');
-  if (!normalizedTool || !toolName) {
-    return null;
-  }
-
-  const stepId = `legacy-step-${index + 1}`;
-  const title = `调用 ${toolName}`;
-  const hints: string[] = [];
-  if (Array.isArray(normalizedTool.requiredParams) && normalizedTool.requiredParams.length > 0) {
-    hints.push(`包含参数 ${normalizedTool.requiredParams.join(', ')}`);
-  }
-  if (isPlainObject(normalizedTool.arguments)) {
-    hints.push(`参数模式 ${JSON.stringify(normalizedTool.arguments)}`);
-  }
-  const expectedBehavior = hints.length > 0
-    ? `按预期调用 ${toolName}，并满足：${hints.join('；')}`
-    : `按预期调用 ${toolName} 完成步骤。`;
-  const strongSignal: any = {
-    id: `sig-${stepId}-${slugifyValidationId(toolName, 'tool')}`,
-    type: 'tool',
-    toolName,
-  };
-  if (isPlainObject(normalizedTool.arguments)) {
-    strongSignal.arguments = normalizedTool.arguments;
-  }
-
-  return {
-    id: stepId,
-    title,
-    expectedBehavior,
-    required: true,
-    order: normalizePositiveInteger((normalizedTool as any).order),
-    failureIfMissing: buildDefaultFailureIfMissing(title),
-    strongSignals: [strongSignal],
-  };
-}
-
-function deriveLegacyExpectedSteps(testCase: any) {
-  const issues: any[] = [];
-  const expectedTools = sanitizeExpectedToolSpecs(Array.isArray(testCase && testCase.expectedTools) ? testCase.expectedTools : []);
-  const expectedSequence = sanitizeExpectedSequence(Array.isArray(testCase && testCase.expectedSequence) ? testCase.expectedSequence : []);
-  const expectedBehavior = String(testCase && testCase.expectedBehavior || '').trim();
-  const note = String(testCase && testCase.note || '').trim();
-  const expectedGoal = String(testCase && testCase.expectedGoal || '').trim() || expectedBehavior || note;
-
-  const derivedSteps = expectedTools
-    .map((entry, index) => buildLegacyExpectedStepFromTool(entry, index))
-    .filter(Boolean) as any[];
-
-  if (derivedSteps.length === 0 && expectedBehavior) {
-    derivedSteps.push(createLegacySummaryStep('legacy-step-summary', expectedBehavior, true));
-  } else if (derivedSteps.length > 0 && expectedBehavior) {
-    derivedSteps.push(createLegacySummaryStep('legacy-step-behavior', expectedBehavior, false));
-  }
-
-  if (expectedSequence.length > 0 && derivedSteps.length > 0) {
-    const availableSteps = derivedSteps.map((step) => ({
-      step,
-      toolName: String(step && step.strongSignals && step.strongSignals[0] && step.strongSignals[0].toolName || '').trim(),
-    }));
-    const usedStepIds = new Set<string>();
-    let nextOrder = 1;
-    for (let index = 0; index < expectedSequence.length; index += 1) {
-      const name = normalizeSequenceEntryName(expectedSequence[index]);
-      if (!name) {
-        issues.push(
-          buildValidationIssue('legacy_mapping_incomplete', 'warning', `expectedSequence[${index}]`, 'Legacy sequence entry could not be mapped')
-        );
-        continue;
-      }
-      const match = availableSteps.find((candidate) => candidate.toolName === name && !usedStepIds.has(candidate.step.id));
-      if (!match) {
-        issues.push(
-          buildValidationIssue(
-            'legacy_mapping_incomplete',
-            'warning',
-            `expectedSequence[${index}]`,
-            `Legacy sequence entry could not be matched to a derived step: ${name}`
-          )
-        );
-        continue;
-      }
-      match.step.order = nextOrder;
-      nextOrder += 1;
-      usedStepIds.add(match.step.id);
-    }
-  }
-
-  if (derivedSteps.length > 0) {
-    issues.unshift(
-      buildValidationIssue(
-        'legacy_steps_derived',
-        'warning',
-        'expectedSteps',
-        'expectedSteps was derived from legacy expectedTools/expectedSequence fields'
-      )
-    );
-  }
-
-  return {
-    expectedGoal,
-    expectedSteps: derivedSteps,
-    issues,
-  };
-}
-
-function buildCriticalSequenceEvidencePreflightIssues(testCase: any) {
-  if (!testCase || String(testCase.loadingMode || '').trim().toLowerCase() !== 'full') {
-    return [];
-  }
-
-  const rubric = sanitizeEvaluationRubric(testCase && testCase.evaluationRubric);
-  const criticalDimensions = Array.isArray(rubric.criticalDimensions)
-    ? rubric.criticalDimensions.map((entry: any) => String(entry || '').trim())
-    : [];
-  if (!criticalDimensions.includes('sequenceAdherence')) {
-    return [];
-  }
-
-  const expectedTools = Array.isArray(testCase && testCase.expectedTools) ? testCase.expectedTools : [];
-  const expectedSteps = Array.isArray(testCase && testCase.expectedSteps) ? testCase.expectedSteps : [];
-  const explicitSequence = sanitizeExpectedSequence(testCase && testCase.expectedSequence);
-  const orderToToolName = new Map<number, string>();
-  const stepIdSet = new Set<string>();
-  const stepIdToToolName = new Map<string, string>();
-  const unresolvedStepIds = new Set<string>();
-
-  for (const entry of expectedTools) {
-    const toolName = String(entry && entry.name || '').trim();
-    const order = parseExpectedToolOrder(entry);
-    if (!toolName || order == null || orderToToolName.has(order)) {
-      continue;
-    }
-    orderToToolName.set(order, toolName);
-  }
-
-  for (const step of expectedSteps) {
-    const stepId = String(step && step.id || '').trim();
-    if (!stepId) {
-      continue;
-    }
-    stepIdSet.add(stepId);
-
-    const strongSignals = Array.isArray(step && step.strongSignals) ? step.strongSignals : [];
-    let mappedToolName = '';
-    for (const signal of strongSignals) {
-      if (!isPlainObject(signal) || String(signal.type || '').trim() !== 'tool') {
-        continue;
-      }
-      const toolName = String(signal.toolName || signal.tool || signal.name || '').trim();
-      if (toolName) {
-        mappedToolName = toolName;
-        break;
-      }
-    }
-
-    if (!mappedToolName) {
-      const order = normalizePositiveInteger(step && step.order);
-      if (order != null && orderToToolName.has(order)) {
-        mappedToolName = String(orderToToolName.get(order) || '').trim();
-      }
-    }
-
-    if (mappedToolName) {
-      stepIdToToolName.set(stepId, mappedToolName);
-    }
-  }
-
-  const sequenceSpecs = explicitSequence.length > 0
-    ? explicitSequence
-      .map((entry: any, index: number) => {
-        const reference = normalizeStepSequenceReference(entry);
-        const referencesKnownStep = Boolean(reference && stepIdSet.has(reference));
-        let name = '';
-        if (referencesKnownStep) {
-          name = String(stepIdToToolName.get(reference) || '').trim();
-          if (!name) {
-            unresolvedStepIds.add(reference);
-            return null;
-          }
-        } else {
-          name = normalizeSequenceEntryName(entry);
-        }
-        if (!name) {
-          return null;
-        }
-        const order = parseExpectedToolOrder(entry);
-        return {
-          name,
-          order: order != null ? order : index + 1,
-          sourceOrder: index,
-        };
-      })
-      .filter(Boolean)
-    : expectedTools
-      .filter((entry: any) => entry && entry.hasSequenceExpectation)
-      .map((entry: any) => ({
-        name: entry.name,
-        order: entry.order != null ? entry.order : null,
-        sourceOrder: entry.sourceOrder != null ? entry.sourceOrder : null,
-      }))
-      .filter((entry: any) => entry && entry.name);
-
-  const normalizedUnresolved = [...unresolvedStepIds];
-  if (normalizedUnresolved.length > 0) {
-    return [
-      buildValidationIssue(
-        'critical_sequence_evidence_unavailable',
-        'needs-review',
-        'evaluationRubric.criticalDimensions',
-        `sequenceAdherence is critical, but no verifiable sequence evidence mapping exists for steps: ${normalizedUnresolved.join(', ')}`
-      ),
-    ];
-  }
-  if (sequenceSpecs.length === 0) {
-    return [
-      buildValidationIssue(
-        'critical_sequence_evidence_unavailable',
-        'needs-review',
-        'evaluationRubric.criticalDimensions',
-        'sequenceAdherence is critical, but no verifiable sequence evidence could be constructed'
-      ),
-    ];
-  }
-  return [];
-}
-
-export type SkillTestSchemaStatus = 'valid' | 'warning' | 'invalid';
-
-export type SkillTestValidationEnvelope = {
-  normalizedCase: any | null;
-  issues: any[];
-  derivedFromLegacy: boolean;
-  caseSchemaStatus: SkillTestSchemaStatus;
-};
-
-export function buildValidationEnvelope(params: {
-  normalizedCase: any | null;
-  issues?: any[];
-  issueGroups?: any[];
-  derivedFromLegacy?: boolean;
-}): SkillTestValidationEnvelope {
-  const groups: any[] = [];
-  if (Array.isArray(params.issues)) {
-    groups.push(params.issues);
-  }
-  if (Array.isArray(params.issueGroups)) {
-    for (const group of params.issueGroups) {
-      if (Array.isArray(group)) {
-        groups.push(group);
-      }
-    }
-  }
-
-  const issues = mergeValidationIssues(...groups);
-  const normalizedCase = params.normalizedCase;
-  const derivedFromLegacy = Boolean(params.derivedFromLegacy);
-
-  const caseSchemaStatus: SkillTestSchemaStatus = !normalizedCase || hasBlockingValidationIssue(issues)
-    ? 'invalid'
-    : issues.length > 0
-      ? 'warning'
-      : 'valid';
-
-  return {
-    normalizedCase,
-    issues,
-    derivedFromLegacy,
-    caseSchemaStatus,
-  };
-}
-
-export function validateAndNormalizeCaseInput(input: any, options: { requireSkillId?: boolean; existing?: any; allowExpectedGoalFallback?: boolean } = {}) {
-  const existing = options.existing || null;
-  const allowExpectedGoalFallback = Boolean(options.allowExpectedGoalFallback);
-  const skillId = String(input.skillId || existing && existing.skillId || '').trim();
-  const loadingMode = String(input.loadingMode || input.loading_mode || existing && existing.loadingMode || 'dynamic').trim().toLowerCase() || 'dynamic';
-  const testType = resolveTestTypeForLoadingMode(loadingMode, input.testType || input.test_type || existing && existing.testType);
-  const issues: any[] = [];
-
-  const explicitUserPrompt = hasOwn(input, 'userPrompt') || hasOwn(input, 'user_prompt');
-  const explicitTriggerPrompt = hasOwn(input, 'triggerPrompt') || hasOwn(input, 'trigger_prompt');
-  const rawUserPrompt = hasOwn(input, 'userPrompt') ? input.userPrompt : input.user_prompt;
-  const rawTriggerPrompt = hasOwn(input, 'triggerPrompt') ? input.triggerPrompt : input.trigger_prompt;
-  const normalizedUserPrompt = explicitUserPrompt ? normalizePromptText(rawUserPrompt) : '';
-  const normalizedTriggerPrompt = explicitTriggerPrompt ? normalizePromptText(rawTriggerPrompt) : '';
-
-  if (explicitUserPrompt && explicitTriggerPrompt && normalizedUserPrompt !== normalizedTriggerPrompt) {
-    throw createValidationHttpError(
-      buildValidationIssue(
-        'prompt_alias_conflict',
-        'error',
-        'userPrompt',
-        'userPrompt and triggerPrompt must match after normalization'
-      )
-    );
-  }
-
-  const userPrompt = normalizePromptText(
-    explicitUserPrompt
-      ? rawUserPrompt
-      : explicitTriggerPrompt
-        ? rawTriggerPrompt
-        : getCanonicalCasePrompt(existing)
-  );
-
-  const hasExpectedToolsInput = hasOwn(input, 'expectedTools') || hasOwn(input, 'expected_tools');
-  const rawExpectedToolsSource = hasExpectedToolsInput
-    ? (hasOwn(input, 'expectedTools') ? input.expectedTools : input.expected_tools)
-    : existing && Array.isArray(existing.expectedTools)
-      ? existing.expectedTools
-      : [];
-  if (hasExpectedToolsInput && rawExpectedToolsSource != null && !Array.isArray(rawExpectedToolsSource)) {
-    throw createValidationHttpError(
-      buildValidationIssue('expected_tools_invalid', 'error', 'expectedTools', 'expectedTools must be an array')
-    );
-  }
-  const expectedTools = sanitizeExpectedToolSpecs(Array.isArray(rawExpectedToolsSource) ? rawExpectedToolsSource : []);
-
-  const hasExpectedSequenceInput = hasOwn(input, 'expectedSequence') || hasOwn(input, 'expected_sequence');
-  const rawExpectedSequenceSource = hasExpectedSequenceInput
-    ? (hasOwn(input, 'expectedSequence') ? input.expectedSequence : input.expected_sequence)
-    : existing && Array.isArray(existing.expectedSequence)
-      ? existing.expectedSequence
-      : [];
-  if (hasExpectedSequenceInput && rawExpectedSequenceSource != null && !Array.isArray(rawExpectedSequenceSource)) {
-    throw createValidationHttpError(
-      buildValidationIssue('expected_sequence_invalid', 'error', 'expectedSequence', 'expectedSequence must be an array')
-    );
-  }
-  const expectedSequence = sanitizeExpectedSequence(Array.isArray(rawExpectedSequenceSource) ? rawExpectedSequenceSource : []);
-
-  const hasExpectedStepsInput = hasOwn(input, 'expectedSteps') || hasOwn(input, 'expected_steps');
-  const rawExpectedStepsSource = hasExpectedStepsInput
-    ? (hasOwn(input, 'expectedSteps') ? input.expectedSteps : input.expected_steps)
-    : existing && Array.isArray(existing.expectedSteps)
-      ? existing.expectedSteps
-      : [];
-  if (hasExpectedStepsInput && rawExpectedStepsSource != null && !Array.isArray(rawExpectedStepsSource)) {
-    throw createValidationHttpError(
-      buildValidationIssue('expected_steps_required', 'error', 'expectedSteps', 'expectedSteps must be an array')
-    );
-  }
-
-  const expectedBehavior = String(input.expectedBehavior || input.expected_behavior || existing && existing.expectedBehavior || '').trim();
-  let expectedGoal = String(input.expectedGoal || input.expected_goal || existing && existing.expectedGoal || '').trim();
-  const generationProvider = String(input.generationProvider || input.generation_provider || existing && existing.generationProvider || '').trim();
-  const generationModel = String(input.generationModel || input.generation_model || existing && existing.generationModel || '').trim();
-  const generationCreatedAt = String(input.generationCreatedAt || input.generation_created_at || existing && existing.generationCreatedAt || '').trim();
-  const sourceMetadataInput = hasOwn(input, 'sourceMetadata')
-    ? input.sourceMetadata
-    : hasOwn(input, 'source_metadata')
-      ? input.source_metadata
-      : existing && existing.sourceMetadata;
-  if (sourceMetadataInput != null && !isPlainObject(sourceMetadataInput)) {
-    throw createValidationHttpError(
-      buildValidationIssue('source_metadata_invalid', 'error', 'sourceMetadata', 'sourceMetadata must be an object')
-    );
-  }
-  const sourceMetadata = isPlainObject(sourceMetadataInput) ? sourceMetadataInput : {};
-
-  const hasEnvironmentConfigInput = hasOwn(input, 'environmentConfig') || hasOwn(input, 'environment_config');
-  const environmentConfigSource = hasEnvironmentConfigInput
-    ? (hasOwn(input, 'environmentConfig') ? input.environmentConfig : input.environment_config)
-    : existing && existing.environmentConfig;
-  const environmentConfigResult = normalizeEnvironmentConfigInput(environmentConfigSource);
-  issues.push(...environmentConfigResult.issues);
-
-  const hasEvaluationRubricInput = hasOwn(input, 'evaluationRubric') || hasOwn(input, 'evaluation_rubric');
-  const evaluationRubricSource = hasEvaluationRubricInput
-    ? (hasOwn(input, 'evaluationRubric') ? input.evaluationRubric : input.evaluation_rubric)
-    : existing && existing.evaluationRubric;
-  if (hasEvaluationRubricInput && evaluationRubricSource != null && !isPlainObject(evaluationRubricSource)) {
-    throw createValidationHttpError(
-      buildValidationIssue('evaluation_rubric_invalid', 'error', 'evaluationRubric', 'evaluationRubric must be an object')
-    );
-  }
-
-  const expectedStepsResult = normalizeExpectedStepsInput(
-    Array.isArray(rawExpectedStepsSource) ? rawExpectedStepsSource : [],
-    rawExpectedSequenceSource,
-    expectedTools,
-    { explicit: hasExpectedStepsInput }
-  );
-  issues.push(...expectedStepsResult.issues);
-
-  if (!expectedGoal && loadingMode === 'full' && allowExpectedGoalFallback) {
-    expectedGoal = expectedBehavior || String(existing && existing.note || input.note || '').trim();
-  }
-  if (!expectedGoal && loadingMode === 'full') {
-    issues.push(
-      buildValidationIssue('expected_goal_required', 'error', 'expectedGoal', 'expectedGoal is required for full mode')
-    );
-  }
-
-  const evaluationRubricResult = loadingMode === 'full' && expectedStepsResult.expectedSteps.length > 0
-    ? normalizeEvaluationRubricForFullMode(evaluationRubricSource, expectedStepsResult.expectedSteps, expectedStepsResult.sequenceStepIds)
-    : { evaluationRubric: sanitizeEvaluationRubric(evaluationRubricSource), issues: [] };
-  issues.push(...evaluationRubricResult.issues);
-
-  const note = String(input.note || existing && existing.note || '').trim();
-  const caseStatus = parseCaseStatus(input.caseStatus || input.case_status || existing && existing.caseStatus || 'draft');
-
-  if (options.requireSkillId !== false && !skillId) {
-    throw createHttpError(400, 'skillId is required');
-  }
-
-  const validLoadingModes = new Set(['dynamic', 'full']);
-  if (!validLoadingModes.has(loadingMode)) {
-    throw createHttpError(400, `loadingMode must be one of: ${[...validLoadingModes].join(', ')}`);
-  }
-
-  if (!userPrompt) {
-    throw createValidationHttpError(
-      buildValidationIssue('user_prompt_required', 'error', 'userPrompt', 'userPrompt is required')
-    );
-  }
-  if (userPrompt.length < 5) {
-    throw createValidationHttpError(
-      buildValidationIssue('user_prompt_too_short', 'error', 'userPrompt', 'userPrompt is too short (minimum 5 characters)')
-    );
-  }
-  if (userPrompt.length > 2000) {
-    throw createValidationHttpError(
-      buildValidationIssue('user_prompt_too_long', 'error', 'userPrompt', 'userPrompt is too long (maximum 2000 characters)')
-    );
-  }
-  if (Array.isArray(rawExpectedToolsSource) && rawExpectedToolsSource.length > 0 && expectedTools.length !== rawExpectedToolsSource.length) {
-    throw createValidationHttpError(
-      buildValidationIssue(
-        'expected_tools_invalid',
-        'error',
-        'expectedTools',
-        'expectedTools items must be tool names or { name, arguments?, requiredParams?, order? } objects'
-      )
-    );
-  }
-  if (Array.isArray(rawExpectedSequenceSource) && rawExpectedSequenceSource.length > 0 && expectedSequence.length !== rawExpectedSequenceSource.length) {
-    throw createValidationHttpError(
-      buildValidationIssue(
-        'expected_sequence_invalid',
-        'error',
-        'expectedSequence',
-        'expectedSequence items must be strings or { name, arguments?, requiredParams?, order? } objects'
-      )
-    );
-  }
-  if (issues.some((issue) => issue && issue.severity === 'error')) {
-    throw createValidationHttpError(issues);
-  }
-
-  return {
-    skillId,
-    loadingMode,
-    testType,
-    userPrompt,
-    triggerPrompt: userPrompt,
-    expectedTools,
-    expectedSteps: expectedStepsResult.expectedSteps,
-    expectedBehavior,
-    expectedGoal,
-    expectedSequence,
-    sequenceStepIds: expectedStepsResult.sequenceStepIds,
-    evaluationRubric: evaluationRubricResult.evaluationRubric,
-    caseStatus,
-    validityStatus: mapCaseStatusToLegacyValidity(caseStatus),
-    generationProvider,
-    generationModel,
-    generationCreatedAt,
-    environmentConfig: environmentConfigResult.config,
-    sourceMetadata,
-    note,
-    issues: mergeValidationIssues(issues),
-  };
-}
-
-export function normalizeCaseForRun(storedCase: any, options: { existing?: any; storedIssues?: any[] } = {}): SkillTestValidationEnvelope {
-  const existing = options.existing || null;
-  if (hasBlockingValidationIssue(options.storedIssues || [])) {
-    return buildValidationEnvelope({
-      normalizedCase: null,
-      issueGroups: [options.storedIssues],
-      derivedFromLegacy: false,
-    });
-  }
-  try {
-    const preflightInput = isPlainObject(storedCase)
-      && Array.isArray(storedCase.expectedSteps)
-      && storedCase.expectedSteps.length === 0
-      ? (() => {
-          const copied = { ...storedCase };
-          delete copied.expectedSteps;
-          delete copied.expected_steps;
-          return copied;
-        })()
-      : storedCase;
-    const normalizedCase = validateAndNormalizeCaseInput(preflightInput, {
-      requireSkillId: true,
-      existing,
-      allowExpectedGoalFallback: true,
-    });
-
-    const preflightSequenceIssues = normalizedCase
-      ? buildCriticalSequenceEvidencePreflightIssues(normalizedCase)
-      : [];
-
-    return buildValidationEnvelope({
-      normalizedCase,
-      issueGroups: [options.storedIssues, normalizedCase && normalizedCase.issues, preflightSequenceIssues],
-      derivedFromLegacy: false,
-    });
-  } catch (error: any) {
-    const errorIssues = error && Array.isArray(error.issues) ? error.issues : [];
-    return buildValidationEnvelope({
-      normalizedCase: null,
-      issueGroups: [options.storedIssues, errorIssues],
-      derivedFromLegacy: false,
-    });
-  }
-}
-
-export function validateJudgeOutput(judgeJson: any, normalizedCase: any = null, timelineIds: any = null) {
-  const issues: any[] = [];
-  if (!judgeJson || typeof judgeJson !== 'object') {
-    return { judge: null, issues };
-  }
-
-  const status = String((judgeJson as any).status || '').trim();
-  const normalizedStatus = status.toLowerCase();
-  const allowedStatuses = new Set(['succeeded', 'parse_failed', 'runtime_failed', 'skipped']);
-
-  if (!allowedStatuses.has(normalizedStatus)) {
-    issues.push(
-      buildValidationIssue(
-        'judge_parse_failed',
-        'error',
-        'evaluation.aiJudge',
-        `Execution judge status is invalid: ${status || 'unknown'}`
-      )
-    );
-    return {
-      judge: { ...(judgeJson as any), status: 'parse_failed' },
-      issues: mergeValidationIssues(issues),
-    };
-  }
-
-  const normalizedTimelineIds = timelineIds instanceof Set
-    ? timelineIds
-    : new Set(
-      Array.isArray(timelineIds)
-        ? timelineIds.map((entry: any) => String(entry || '').trim()).filter(Boolean)
-        : []
-    );
-  const expectedSteps = Array.isArray(normalizedCase && normalizedCase.expectedSteps)
-    ? normalizedCase.expectedSteps
-    : [];
-  const criticalConstraints = Array.isArray(normalizedCase && normalizedCase.evaluationRubric && normalizedCase.evaluationRubric.criticalConstraints)
-    ? normalizedCase.evaluationRubric.criticalConstraints
-    : [];
-  const knownStepIds = new Set(expectedSteps.map((step: any) => String(step && step.id || '').trim()).filter(Boolean));
-  const knownSignalIds = new Set<string>();
-  for (const step of expectedSteps) {
-    const strongSignals = Array.isArray(step && step.strongSignals) ? step.strongSignals : [];
-    for (const signal of strongSignals) {
-      const signalId = String(signal && signal.id || '').trim();
-      if (signalId) {
-        knownSignalIds.add(signalId);
-      }
-    }
-  }
-
-  if (normalizedStatus === 'parse_failed') {
-    issues.push(
-      buildValidationIssue(
-        'judge_parse_failed',
-        'error',
-        'evaluation.aiJudge',
-        String((judgeJson as any).errorMessage || 'Execution judge response could not be parsed')
-      )
-    );
-    return {
-      judge: { ...(judgeJson as any), status: 'parse_failed' },
-      issues: mergeValidationIssues(issues),
-    };
-  }
-
-  if (normalizedStatus === 'runtime_failed') {
-    issues.push(
-      buildValidationIssue(
-        'judge_runtime_failed',
-        'needs-review',
-        'evaluation.aiJudge',
-        String((judgeJson as any).errorMessage || 'Execution judge failed at runtime')
-      )
-    );
-    return {
-      judge: { ...(judgeJson as any), status: 'runtime_failed' },
-      issues: mergeValidationIssues(issues),
-    };
-  }
-
-  if (normalizedStatus === 'skipped') {
-    return {
-      judge: { ...(judgeJson as any), status: 'skipped' },
-      issues: mergeValidationIssues(issues),
-    };
-  }
-
-  const verdictSuggestion = String((judgeJson as any).verdictSuggestion || '').trim().toLowerCase();
-  if (verdictSuggestion && verdictSuggestion !== 'pass' && verdictSuggestion !== 'borderline' && verdictSuggestion !== 'fail') {
-    issues.push(
-      buildValidationIssue(
-        'judge_verdict_invalid',
-        'error',
-        'evaluation.aiJudge.verdictSuggestion',
-        'verdictSuggestion must be one of: pass, borderline, fail'
-      )
-    );
-    issues.push(
-      buildValidationIssue(
-        'judge_parse_failed',
-        'error',
-        'evaluation.aiJudge',
-        'Execution judge response has invalid verdictSuggestion'
-      )
-    );
-    return {
-      judge: { ...(judgeJson as any), status: 'parse_failed' },
-      issues: mergeValidationIssues(issues),
-    };
-  }
-
-  const rawSteps = Array.isArray((judgeJson as any).steps) ? (judgeJson as any).steps : [];
-  const normalizedSteps: any[] = [];
-  const seenStepIds = new Set<string>();
-  for (let index = 0; index < rawSteps.length; index += 1) {
-    const entry = rawSteps[index];
-    if (!isPlainObject(entry)) {
-      continue;
-    }
-    const stepId = String(entry.stepId || '').trim();
-    if (!stepId || !knownStepIds.has(stepId)) {
-      issues.push(
-        buildValidationIssue(
-          'judge_unknown_step_id',
-          'warning',
-          `evaluation.aiJudge.steps[${index}].stepId`,
-          `Judge referenced unknown step id: ${stepId || 'unknown'}`
-        )
-      );
-      continue;
-    }
-    if (seenStepIds.has(stepId)) {
-      issues.push(
-        buildValidationIssue(
-          'judge_parse_failed',
-          'error',
-          'evaluation.aiJudge.steps',
-          `Judge returned duplicate stepId: ${stepId}`
-        )
-      );
-      return {
-        judge: { ...(judgeJson as any), status: 'parse_failed' },
-        issues: mergeValidationIssues(issues),
-      };
-    }
-    seenStepIds.add(stepId);
-
-    const normalizedConfidence = entry.confidence == null || entry.confidence === ''
-      ? 0
-      : normalizeJudgeConfidence(entry.confidence);
-    if (entry.confidence != null && entry.confidence !== '' && normalizedConfidence == null) {
-      issues.push(
-        buildValidationIssue(
-          'judge_parse_failed',
-          'error',
-          `evaluation.aiJudge.steps[${index}].confidence`,
-          `Judge returned invalid confidence for step ${stepId}`
-        )
-      );
-      return {
-        judge: { ...(judgeJson as any), status: 'parse_failed' },
-        issues: mergeValidationIssues(issues),
-      };
-    }
-
-    const evidenceIds = Array.isArray(entry.evidenceIds)
-      ? entry.evidenceIds
-        .map((value: any) => String(value || '').trim())
-        .filter(Boolean)
-        .filter((evidenceId: string) => {
-          if (normalizedTimelineIds.size > 0 && !normalizedTimelineIds.has(evidenceId)) {
-            issues.push(
-              buildValidationIssue(
-                'judge_unknown_evidence_id',
-                'warning',
-                `evaluation.aiJudge.steps[${index}].evidenceIds`,
-                `Judge referenced unknown evidence id: ${evidenceId}`
-              )
-            );
-            return false;
-          }
-          return true;
-        })
-      : [];
-    const matchedSignalIds = Array.isArray(entry.matchedSignalIds)
-      ? entry.matchedSignalIds
-        .map((value: any) => String(value || '').trim())
-        .filter(Boolean)
-        .filter((signalId: string) => {
-          if (!knownSignalIds.has(signalId)) {
-            issues.push(
-              buildValidationIssue(
-                'judge_unknown_signal_id',
-                'warning',
-                `evaluation.aiJudge.steps[${index}].matchedSignalIds`,
-                `Judge referenced unknown signal id: ${signalId}`
-              )
-            );
-            return false;
-          }
-          return true;
-        })
-      : [];
-
-    normalizedSteps.push({
-      stepId,
-      completed: normalizeBooleanFlag(entry.completed, false),
-      confidence: normalizedConfidence ?? 0,
-      evidenceIds,
-      matchedSignalIds,
-      reason: String(entry.reason || '').trim(),
-    });
-  }
-
-  for (const step of expectedSteps) {
-    if (!step || !step.id || seenStepIds.has(step.id)) {
-      continue;
-    }
-    issues.push(
-      buildValidationIssue(
-        'judge_step_missing',
-        'needs-review',
-        `evaluation.aiJudge.steps.${step.id}`,
-        `Judge did not return a result for step ${step.id}`
-      )
-    );
-    normalizedSteps.push({
-      stepId: step.id,
-      completed: false,
-      confidence: 0,
-      evidenceIds: [],
-      matchedSignalIds: [],
-      reason: 'Judge did not provide a step result.',
-    });
-  }
-
-  const rawConstraintChecks = Array.isArray((judgeJson as any).constraintChecks) ? (judgeJson as any).constraintChecks : [];
-  const normalizedConstraintChecks: any[] = [];
-  const knownConstraintIds = new Set(criticalConstraints.map((entry: any) => String(entry && entry.id || '').trim()).filter(Boolean));
-  const seenConstraintIds = new Set<string>();
-  for (let index = 0; index < rawConstraintChecks.length; index += 1) {
-    const entry = rawConstraintChecks[index];
-    if (!isPlainObject(entry)) {
-      continue;
-    }
-    const constraintId = String(entry.constraintId || '').trim();
-    if (!constraintId || !knownConstraintIds.has(constraintId)) {
-      issues.push(
-        buildValidationIssue(
-          'judge_unknown_constraint_id',
-          'warning',
-          `evaluation.aiJudge.constraintChecks[${index}].constraintId`,
-          `Judge referenced unknown constraint id: ${constraintId || 'unknown'}`
-        )
-      );
-      continue;
-    }
-    if (seenConstraintIds.has(constraintId)) {
-      issues.push(
-        buildValidationIssue(
-          'judge_parse_failed',
-          'error',
-          'evaluation.aiJudge.constraintChecks',
-          `Judge returned duplicate constraintId: ${constraintId}`
-        )
-      );
-      return {
-        judge: { ...(judgeJson as any), status: 'parse_failed' },
-        issues: mergeValidationIssues(issues),
-      };
-    }
-    seenConstraintIds.add(constraintId);
-
-    const evidenceIds = Array.isArray(entry.evidenceIds)
-      ? entry.evidenceIds
-        .map((value: any) => String(value || '').trim())
-        .filter(Boolean)
-        .filter((evidenceId: string) => {
-          if (normalizedTimelineIds.size > 0 && !normalizedTimelineIds.has(evidenceId)) {
-            issues.push(
-              buildValidationIssue(
-                'judge_unknown_evidence_id',
-                'warning',
-                `evaluation.aiJudge.constraintChecks[${index}].evidenceIds`,
-                `Judge referenced unknown evidence id: ${evidenceId}`
-              )
-            );
-            return false;
-          }
-          return true;
-        })
-      : [];
-
-    normalizedConstraintChecks.push({
-      constraintId,
-      satisfied: entry.satisfied === true ? true : entry.satisfied === false ? false : null,
-      evidenceIds,
-      reason: String(entry.reason || '').trim(),
-    });
-  }
-
-  for (const constraint of criticalConstraints) {
-    if (!constraint || !constraint.id || seenConstraintIds.has(constraint.id)) {
-      continue;
-    }
-    issues.push(
-      buildValidationIssue(
-        'judge_constraint_missing',
-        'needs-review',
-        `evaluation.aiJudge.constraintChecks.${constraint.id}`,
-        `Judge did not return a result for constraint ${constraint.id}`
-      )
-    );
-    normalizedConstraintChecks.push({
-      constraintId: constraint.id,
-      satisfied: null,
-      evidenceIds: [],
-      reason: 'Judge did not provide a constraint result.',
-    });
-  }
-
-  return {
-    judge: {
-      ...(judgeJson as any),
-      status: 'succeeded',
-      verdictSuggestion: verdictSuggestion || '',
-      steps: normalizedSteps,
-      constraintChecks: normalizedConstraintChecks,
-    },
-    issues: mergeValidationIssues(issues),
-  };
-}
-
-function sanitizeExpectedSequence(value: any) {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value
-    .map((entry) => {
-      if (typeof entry === 'string') {
-        const text = String(entry || '').trim();
-        return text || null;
-      }
-      return sanitizeExpectedToolSpecEntry(entry);
-    })
-    .filter(Boolean);
-}
-
-function sanitizeEvaluationRubric(value: any) {
-  if (!isPlainObject(value)) {
-    return {};
-  }
-  const rubric: any = { ...value };
-  if (!Array.isArray(rubric.criticalConstraints)) {
-    rubric.criticalConstraints = [];
-  }
-  if (!Array.isArray(rubric.criticalDimensions)) {
-    rubric.criticalDimensions = [];
-  }
-  if (!Array.isArray(rubric.supportingSignalOverrides)) {
-    rubric.supportingSignalOverrides = [];
-  }
-  if (!isPlainObject(rubric.passThresholds)) {
-    rubric.passThresholds = {};
-  }
-  if (!isPlainObject(rubric.hardFailThresholds)) {
-    rubric.hardFailThresholds = {};
-  }
-  if (!isPlainObject(rubric.thresholds)) {
-    rubric.thresholds = { ...rubric.passThresholds };
-  }
-  return rubric;
-}
-
-function roundMetric(value: any) {
-  if (value == null || !Number.isFinite(Number(value))) {
-    return null;
-  }
-  return Math.round(Number(value) * 10000) / 10000;
-}
-
-function buildEvaluationTimelineIds(sessionSnapshot: any, toolCallEvents: any[], observedToolCalls: any[]) {
-  const timelineIds: string[] = [];
-  const textBlocks = Array.isArray(sessionSnapshot && sessionSnapshot.textBlocks)
-    ? sessionSnapshot.textBlocks.filter((entry: any) => String(entry || '').trim())
-    : (sessionSnapshot && String(sessionSnapshot.text || '').trim() ? [String(sessionSnapshot.text)] : []);
-  const thinkingBlocks = Array.isArray(sessionSnapshot && sessionSnapshot.thinkingBlocks)
-    ? sessionSnapshot.thinkingBlocks.filter((entry: any) => String(entry || '').trim())
-    : (sessionSnapshot && String(sessionSnapshot.thinking || '').trim() ? [String(sessionSnapshot.thinking)] : []);
-  for (let index = 0; index < textBlocks.length; index += 1) {
-    timelineIds.push(`msg-${index + 1}`);
-  }
-  for (let index = 0; index < thinkingBlocks.length; index += 1) {
-    timelineIds.push(`thinking-${index + 1}`);
-  }
-  const observedCalls = Array.isArray(observedToolCalls) ? observedToolCalls : [];
-  for (let index = 0; index < observedCalls.length; index += 1) {
-    timelineIds.push(`tool-call-${index + 1}`);
-  }
-  const toolEvents = Array.isArray(toolCallEvents) ? toolCallEvents : [];
-  for (let index = 0; index < toolEvents.length; index += 1) {
-    timelineIds.push(`tool-result-${index + 1}`);
-  }
-  return timelineIds;
+  return null;
 }
 
 function normalizeRunStoreRunId(value: any) {
@@ -2575,7 +737,7 @@ function normalizeTestRunRow(row: any) {
   };
 }
 
-// resolveToolRelativePath is now imported from ../http/path-utils
+export { buildValidationEnvelope, normalizeCaseForRun, validateAndNormalizeCaseInput, validateJudgeOutput };
 
 export function createSkillTestController(options: any = {}): RouteHandler<ApiContext> {
   const store = options.store;
@@ -2587,11 +749,20 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
   const skillTestBridgeTokenTtlSec =
     normalizePositiveInteger(options.skillTestBridgeTokenTtlSec || process.env.CAFF_SKILL_TEST_BRIDGE_TOKEN_TTL_SEC) ||
     DEFAULT_SKILL_TEST_BRIDGE_TOKEN_TTL_SECONDS;
+  const skillTestExecutionBridgeTokenTtlSec = normalizePositiveInteger(
+    options.skillTestExecutionBridgeTokenTtlSec || process.env.CAFF_SKILL_TEST_EXECUTION_BRIDGE_TOKEN_TTL_SEC
+  );
   const startRunImpl = typeof options.startRunImpl === 'function' ? options.startRunImpl : startRun;
   const evaluateRunImpl = typeof options.evaluateRunImpl === 'function' ? options.evaluateRunImpl : null;
   const environmentCacheRootDir = typeof options.environmentCacheRootDir === 'string' && options.environmentCacheRootDir.trim()
     ? String(options.environmentCacheRootDir).trim()
     : DEFAULT_ENVIRONMENT_CACHE_ROOT_DIR;
+  const environmentManifestRootDir = typeof options.environmentManifestRootDir === 'string' && options.environmentManifestRootDir.trim()
+    ? String(options.environmentManifestRootDir).trim()
+    : DEFAULT_ENVIRONMENT_MANIFEST_ROOT_DIR;
+  const environmentImageBuilderImpl = typeof options.environmentImageBuilder === 'function'
+    ? options.environmentImageBuilder
+    : buildEnvironmentImageFromManifest;
   const resolveProviderAuthEnvImpl = typeof options.resolveProviderAuthEnvImpl === 'function'
     ? options.resolveProviderAuthEnvImpl
     : resolveProviderAuthEnv;
@@ -2638,6 +809,17 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     migrateSkillTestSchema(store.db);
     schemaReady = true;
   }
+
+  const environmentAssetStore = createSkillTestEnvironmentAssetStore({
+    db: store.db,
+    ensureSchema,
+  });
+  const {
+    applySharedEnvironmentAssetDefault,
+    getSkillEnvironmentAsset,
+    listSkillEnvironmentAssets,
+    upsertSkillEnvironmentAsset,
+  } = environmentAssetStore;
 
   function buildSkillTestLiveTrace(messageId: string, taskId: string, status: string, runId: any, createdAt: string, sessionPath = '', options: any = {}) {
     const traceRunStore = options && typeof options === 'object' ? options.runStore : null;
@@ -2698,6 +880,13 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     broadcastEvent('conversation_tool_event', payload);
   }
 
+  function broadcastSkillTestChainRunEvent(phase: string, payload: any = {}) {
+    broadcastEvent('skill_test_chain_run_event', {
+      ...(payload && typeof payload === 'object' ? payload : {}),
+      phase,
+    });
+  }
+
   function readSkillTestIsolationInput(body: any = {}) {
     const payload = body && typeof body === 'object' ? body : {};
     const isolation = payload.isolation && typeof payload.isolation === 'object' ? payload.isolation : {};
@@ -2727,6 +916,17 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
       return null;
     }
     return payload.environment;
+  }
+
+  function readSkillTestEnvironmentBuildInput(body: any = {}) {
+    const payload = body && typeof body === 'object' ? body : {};
+    if (hasOwn(payload, 'environmentBuild')) {
+      return payload.environmentBuild;
+    }
+    if (hasOwn(payload, 'environment_build')) {
+      return payload.environment_build;
+    }
+    return null;
   }
 
   function stopSkillTestRunHandle(handle: any, reason: string) {
@@ -2920,160 +1120,31 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     return attachLatestRun(attachCaseValidation(testCase, row));
   }
 
-  function mapCaseStatusToLegacyValidity(caseStatus: string) {
-    if (caseStatus === 'ready') {
-      return 'validated';
+  function updateTestCaseSourceMetadata(caseId: string, updater: any) {
+    ensureSchema();
+    const existingRow = store.db
+      .prepare('SELECT source_metadata_json FROM skill_test_cases WHERE id = @id')
+      .get({ id: caseId });
+    if (!existingRow) {
+      return null;
     }
-    if (caseStatus === 'archived') {
-      return 'archived';
-    }
-    return 'pending';
-  }
-
-  function parseCaseStatus(value: any, fallback = 'draft') {
-    const normalized = String(value || fallback).trim().toLowerCase() || fallback;
-    if (normalized === 'draft' || normalized === 'ready' || normalized === 'archived') {
-      return normalized;
-    }
-    throw createHttpError(400, 'caseStatus must be one of: draft, ready, archived');
-  }
-
-  function _validateAndNormalizeCaseInput(input: any, options: { requireSkillId?: boolean; existing?: any } = {}) {
-    const existing = options.existing || null;
-    const skillId = String(input.skillId || existing && existing.skillId || '').trim();
-    const loadingMode = String(input.loadingMode || input.loading_mode || existing && existing.loadingMode || 'dynamic').trim().toLowerCase() || 'dynamic';
-    const testType = resolveTestTypeForLoadingMode(loadingMode, input.testType || input.test_type || existing && existing.testType);
-    const issues: any[] = [];
-
-    const explicitUserPrompt = hasOwn(input, 'userPrompt') || hasOwn(input, 'user_prompt');
-    const explicitTriggerPrompt = hasOwn(input, 'triggerPrompt') || hasOwn(input, 'trigger_prompt');
-    const rawUserPrompt = hasOwn(input, 'userPrompt') ? input.userPrompt : input.user_prompt;
-    const rawTriggerPrompt = hasOwn(input, 'triggerPrompt') ? input.triggerPrompt : input.trigger_prompt;
-    const normalizedUserPrompt = explicitUserPrompt ? normalizePromptText(rawUserPrompt) : '';
-    const normalizedTriggerPrompt = explicitTriggerPrompt ? normalizePromptText(rawTriggerPrompt) : '';
-
-    if (explicitUserPrompt && explicitTriggerPrompt && normalizedUserPrompt !== normalizedTriggerPrompt) {
-      throw createValidationHttpError(
-        buildValidationIssue(
-          'prompt_alias_conflict',
-          'error',
-          'userPrompt',
-          'userPrompt and triggerPrompt must match after normalization'
-        )
-      );
-    }
-
-    const userPrompt = normalizePromptText(
-      explicitUserPrompt
-        ? rawUserPrompt
-        : explicitTriggerPrompt
-          ? rawTriggerPrompt
-          : getCanonicalCasePrompt(existing)
-    );
-
-    const hasExpectedToolsInput = hasOwn(input, 'expectedTools') || hasOwn(input, 'expected_tools');
-    const rawExpectedToolsSource = hasExpectedToolsInput
-      ? (hasOwn(input, 'expectedTools') ? input.expectedTools : input.expected_tools)
-      : existing && Array.isArray(existing.expectedTools)
-        ? existing.expectedTools
-        : [];
-    if (hasExpectedToolsInput && rawExpectedToolsSource != null && !Array.isArray(rawExpectedToolsSource)) {
-      throw createValidationHttpError(
-        buildValidationIssue('expected_tools_invalid', 'error', 'expectedTools', 'expectedTools must be an array')
-      );
-    }
-    const expectedTools = sanitizeExpectedToolSpecs(Array.isArray(rawExpectedToolsSource) ? rawExpectedToolsSource : []);
-
-    const hasExpectedSequenceInput = hasOwn(input, 'expectedSequence') || hasOwn(input, 'expected_sequence');
-    const rawExpectedSequenceSource = hasExpectedSequenceInput
-      ? (hasOwn(input, 'expectedSequence') ? input.expectedSequence : input.expected_sequence)
-      : existing && Array.isArray(existing.expectedSequence)
-        ? existing.expectedSequence
-        : [];
-    if (hasExpectedSequenceInput && rawExpectedSequenceSource != null && !Array.isArray(rawExpectedSequenceSource)) {
-      throw createValidationHttpError(
-        buildValidationIssue('expected_sequence_invalid', 'error', 'expectedSequence', 'expectedSequence must be an array')
-      );
-    }
-    const expectedSequence = sanitizeExpectedSequence(Array.isArray(rawExpectedSequenceSource) ? rawExpectedSequenceSource : []);
-
-    const expectedBehavior = String(input.expectedBehavior || input.expected_behavior || existing && existing.expectedBehavior || '').trim();
-    const expectedGoal = String(input.expectedGoal || input.expected_goal || existing && existing.expectedGoal || '').trim();
-
-    const hasEvaluationRubricInput = hasOwn(input, 'evaluationRubric') || hasOwn(input, 'evaluation_rubric');
-    const evaluationRubricSource = hasEvaluationRubricInput
-      ? (hasOwn(input, 'evaluationRubric') ? input.evaluationRubric : input.evaluation_rubric)
-      : existing && existing.evaluationRubric;
-    if (hasEvaluationRubricInput && evaluationRubricSource != null && !isPlainObject(evaluationRubricSource)) {
-      throw createValidationHttpError(
-        buildValidationIssue('evaluation_rubric_invalid', 'error', 'evaluationRubric', 'evaluationRubric must be an object')
-      );
-    }
-    const evaluationRubric = sanitizeEvaluationRubric(evaluationRubricSource);
-    const note = String(input.note || existing && existing.note || '').trim();
-    const caseStatus = parseCaseStatus(input.caseStatus || input.case_status || existing && existing.caseStatus || 'draft');
-
-    if (options.requireSkillId !== false && !skillId) {
-      throw createHttpError(400, 'skillId is required');
-    }
-
-    const validLoadingModes = new Set(['dynamic', 'full']);
-    if (!validLoadingModes.has(loadingMode)) {
-      throw createHttpError(400, `loadingMode must be one of: ${[...validLoadingModes].join(', ')}`);
-    }
-
-    if (!userPrompt) {
-      throw createValidationHttpError(
-        buildValidationIssue('user_prompt_required', 'error', 'userPrompt', 'userPrompt is required')
-      );
-    }
-    if (userPrompt.length < 5) {
-      throw createValidationHttpError(
-        buildValidationIssue('user_prompt_too_short', 'error', 'userPrompt', 'userPrompt is too short (minimum 5 characters)')
-      );
-    }
-    if (userPrompt.length > 2000) {
-      throw createValidationHttpError(
-        buildValidationIssue('user_prompt_too_long', 'error', 'userPrompt', 'userPrompt is too long (maximum 2000 characters)')
-      );
-    }
-    if (Array.isArray(rawExpectedToolsSource) && rawExpectedToolsSource.length > 0 && expectedTools.length !== rawExpectedToolsSource.length) {
-      throw createValidationHttpError(
-        buildValidationIssue(
-          'expected_tools_invalid',
-          'error',
-          'expectedTools',
-          'expectedTools items must be tool names or { name, arguments?, requiredParams?, order? } objects'
-        )
-      );
-    }
-    if (Array.isArray(rawExpectedSequenceSource) && rawExpectedSequenceSource.length > 0 && expectedSequence.length !== rawExpectedSequenceSource.length) {
-      throw createValidationHttpError(
-        buildValidationIssue(
-          'expected_sequence_invalid',
-          'error',
-          'expectedSequence',
-          'expectedSequence items must be strings or { name, arguments?, requiredParams?, order? } objects'
-        )
-      );
-    }
-
-    return {
-      skillId,
-      loadingMode,
-      testType,
-      userPrompt,
-      triggerPrompt: userPrompt,
-      expectedTools,
-      expectedBehavior,
-      expectedGoal,
-      expectedSequence,
-      evaluationRubric,
-      caseStatus,
-      validityStatus: mapCaseStatusToLegacyValidity(caseStatus),
-      note,
-      issues,
-    };
+    const existingMetadata = isPlainObject(safeJsonParse(existingRow.source_metadata_json))
+      ? safeJsonParse(existingRow.source_metadata_json)
+      : {};
+    const nextMetadata = typeof updater === 'function'
+      ? updater(existingMetadata)
+      : {
+          ...existingMetadata,
+          ...(isPlainObject(updater) ? updater : {}),
+        };
+    store.db
+      .prepare('UPDATE skill_test_cases SET source_metadata_json = @sourceMetadataJson, updated_at = @updatedAt WHERE id = @id')
+      .run({
+        id: caseId,
+        sourceMetadataJson: JSON.stringify(nextMetadata || {}),
+        updatedAt: nowIso(),
+      });
+    return nextMetadata;
   }
 
   function createTestCase(input: any) {
@@ -3206,588 +1277,23 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     return updateTestCase(caseId, { caseStatus: nextStatus });
   }
 
-  function requireSkillTestDesignConversation(conversationId: string) {
-    const conversation = store.getConversation(conversationId);
-    if (!conversation) {
-      throw createHttpError(404, 'Conversation not found');
-    }
-    if (String(conversation.type || '').trim() !== SKILL_TEST_DESIGN_CONVERSATION_TYPE) {
-      throw createHttpError(400, 'Conversation is not a Skill Test 设计模式会话');
-    }
-    const designState = getSkillTestDesignState(conversation);
-    if (!designState || !designState.skillId) {
-      throw createHttpError(400, 'Skill Test 设计模式缺少目标 skill 配置');
-    }
-    return { conversation, designState };
-  }
-
-  function summarizeSkillTestDesignConversation(conversation: any, designState: any) {
-    const skill = skillRegistry && typeof skillRegistry.getSkill === 'function' ? skillRegistry.getSkill(designState.skillId) : null;
-    return {
-      conversationId: conversation.id,
-      skill: skill
-        ? {
-            id: String(skill.id || '').trim(),
-            name: String(skill.name || '').trim(),
-            description: String(skill.description || '').trim(),
-            path: String(skill.path || '').trim(),
-          }
-        : {
-            id: designState.skillId,
-            name: designState.skillName || designState.skillId,
-            description: '',
-            path: '',
-          },
-      phase: String(designState.phase || '').trim() || SKILL_TEST_DESIGN_PHASES.COLLECTING_CONTEXT,
-      participantRoles: designState.participantRoles && typeof designState.participantRoles === 'object' ? designState.participantRoles : {},
-      matrix: designState.matrix || null,
-      confirmation: designState.confirmation || null,
-      export: designState.export || null,
-      existingCaseSummary: buildSkillTestDesignCaseSummary(store.db, designState.skillId),
-    };
-  }
-
-  function updateSkillTestDesignConversationState(conversation: any, nextState: any) {
-    const currentMetadata = conversation && conversation.metadata && typeof conversation.metadata === 'object' ? conversation.metadata : {};
-    const metadata = setSkillTestDesignStateMetadata(currentMetadata, nextState);
-    return store.updateConversation(conversation.id, {
-      title: conversation.title,
-      metadata,
-    });
-  }
-
-  function buildSkillTestDesignConfirmationRecord(conversation: any, designState: any, matrix: any, body: any = {}) {
-    if (!matrix || !matrix.matrixId) {
-      throw createValidationHttpError(
-        buildValidationIssue('matrix_missing', 'error', 'matrix', '当前没有可确认的测试矩阵')
-      );
-    }
-
-    const confirmationMessageId = String(body && (body.confirmationMessageId || body.messageId) || matrix.sourceMessageId || '').trim();
-    if (!confirmationMessageId) {
-      throw createValidationHttpError(
-        buildValidationIssue('matrix_source_message_required', 'error', 'messageId', '确认/导出测试矩阵必须关联来源 assistant 消息')
-      );
-    }
-
-    const sourceMessage = Array.isArray(conversation.messages)
-      ? conversation.messages.find((message: any) => message && message.id === confirmationMessageId)
-      : null;
-
-    if (!sourceMessage || sourceMessage.role !== 'assistant') {
-      throw createValidationHttpError(
-        buildValidationIssue('matrix_source_message_invalid', 'error', 'messageId', 'messageId 必须指向当前会话中的 assistant 消息')
-      );
-    }
-
-    const sourceAgentRole = sourceMessage && sourceMessage.agentId
-      ? String(designState.participantRoles && designState.participantRoles[sourceMessage.agentId] || '').trim()
-      : String(matrix.agentRole || '').trim();
-
-    return {
-      matrixId: String(matrix.matrixId || '').trim(),
-      messageId: confirmationMessageId,
-      agentRole: sourceAgentRole || 'scribe',
-      confirmedAt: nowIso(),
-    };
-  }
-
-  function normalizeSkillTestDesignEnvironmentSource(row: any) {
-    const normalized = String(row && row.environmentSource || '').trim().toLowerCase();
-    if (normalized === 'skill_contract' || normalized === 'user_supplied' || normalized === 'missing') {
-      return normalized;
-    }
-    return String(row && row.environmentContractRef || '').trim() ? 'skill_contract' : 'missing';
-  }
-
-  function hasSkillTestDesignChainMetadata(row: any) {
-    return Boolean(
-      String(row && row.scenarioKind || '').trim().toLowerCase() === 'chain_step'
-      || String(row && row.chainId || '').trim()
-      || String(row && row.chainName || '').trim()
-      || normalizePositiveInteger(row && row.sequenceIndex)
-      || (Array.isArray(row && row.dependsOnRowIds) && row.dependsOnRowIds.length > 0)
-      || (Array.isArray(row && row.inheritance) && row.inheritance.length > 0)
-    );
-  }
-
-  function isSkillTestDesignChainRow(row: any) {
-    return hasSkillTestDesignChainMetadata(row);
-  }
-
-  function skillTestDesignRowDependsOnRealEnvironment(row: any) {
-    if (String(row && row.testType || '').trim().toLowerCase() === 'execution') {
-      return true;
-    }
-
-    const inheritance = Array.isArray(row && row.inheritance)
-      ? row.inheritance.map((entry: any) => String(entry || '').trim())
-      : [];
-    if (inheritance.includes('externalState')) {
-      return true;
-    }
-
-    const environmentConfig = row && row.draftingHints && typeof row.draftingHints === 'object'
-      ? row.draftingHints.environmentConfig
-      : null;
-    return isPlainObject(environmentConfig) && Object.keys(environmentConfig).length > 0;
-  }
-
-  function buildSkillTestMatrixRowPath(matrix: any, rowId: string, field = '') {
-    const rows = Array.isArray(matrix && matrix.rows) ? matrix.rows : [];
-    const index = rows.findIndex((row: any) => String(row && row.rowId || '').trim() === rowId);
-    const basePath = index >= 0 ? `matrix.rows[${index}]` : 'matrix.rows';
-    return field ? `${basePath}.${field}` : basePath;
-  }
-
-  function buildSkillTestDesignMatrixValidationIssues(matrix: any) {
-    const issues: any[] = [];
-    const rows = Array.isArray(matrix && matrix.rows) ? matrix.rows : [];
-    const includedRows = rows.filter((row: any) => row && row.includeInMvp !== false);
-    const includedRowMap = new Map<string, any>();
-
-    for (const row of includedRows) {
-      const rowId = String(row && row.rowId || '').trim();
-      if (rowId) {
-        includedRowMap.set(rowId, row);
-      }
-    }
-
-    const exportableRowIds = new Set(
-      includedRows
-        .filter((row: any) => String(row && row.loadingMode || '').trim().toLowerCase() === 'dynamic'
-          && String(row && row.testType || '').trim().toLowerCase() === 'trigger')
-        .map((row: any) => String(row && row.rowId || '').trim())
-        .filter(Boolean)
-    );
-    const chainGroups = new Map<string, any[]>();
-
-    for (const row of includedRows) {
-      const rowId = String(row && row.rowId || '').trim();
-      const environmentSource = normalizeSkillTestDesignEnvironmentSource(row);
-      if (environmentSource === 'missing' && skillTestDesignRowDependsOnRealEnvironment(row)) {
-        issues.push(
-          buildValidationIssue(
-            'matrix_environment_source_missing',
-            'error',
-            buildSkillTestMatrixRowPath(matrix, rowId, 'environmentSource'),
-            '该行需要真实环境或 execution 支持，但 environmentSource 仍为 missing，不能正式确认或导出'
-          )
-        );
-      }
-
-      if (!isSkillTestDesignChainRow(row)) {
-        continue;
-      }
-
-      const chainId = String(row && row.chainId || '').trim();
-      const sequenceIndex = normalizePositiveInteger(row && row.sequenceIndex);
-      if (!chainId) {
-        issues.push(
-          buildValidationIssue(
-            'matrix_chain_id_required',
-            'error',
-            buildSkillTestMatrixRowPath(matrix, rowId, 'chainId'),
-            '链式 row 必须声明 chainId'
-          )
-        );
-      } else {
-        const group = chainGroups.get(chainId) || [];
-        group.push(row);
-        chainGroups.set(chainId, group);
-      }
-
-      if (sequenceIndex == null) {
-        issues.push(
-          buildValidationIssue(
-            'matrix_chain_sequence_required',
-            'error',
-            buildSkillTestMatrixRowPath(matrix, rowId, 'sequenceIndex'),
-            '链式 row 必须声明正整数 sequenceIndex'
-          )
-        );
-      }
-
-      const dependsOnRowIds = Array.isArray(row && row.dependsOnRowIds)
-        ? row.dependsOnRowIds.map((entry: any) => String(entry || '').trim()).filter(Boolean)
-        : [];
-
-      for (const dependencyRowId of dependsOnRowIds) {
-        if (dependencyRowId === rowId) {
-          issues.push(
-            buildValidationIssue(
-              'matrix_chain_cycle',
-              'error',
-              buildSkillTestMatrixRowPath(matrix, rowId, 'dependsOnRowIds'),
-              `链式 row ${rowId} 不能依赖自己`
-            )
-          );
-          continue;
-        }
-
-        const dependencyRow = includedRowMap.get(dependencyRowId);
-        if (!dependencyRow) {
-          issues.push(
-            buildValidationIssue(
-              'matrix_chain_dependency_missing',
-              'error',
-              buildSkillTestMatrixRowPath(matrix, rowId, 'dependsOnRowIds'),
-              `链式 row ${rowId} 依赖的 ${dependencyRowId} 不存在，或未纳入当前 MVP 范围`
-            )
-          );
-          continue;
-        }
-
-        const dependencyChainId = String(dependencyRow && dependencyRow.chainId || '').trim();
-        if (chainId && dependencyChainId && dependencyChainId !== chainId) {
-          issues.push(
-            buildValidationIssue(
-              'matrix_chain_dependency_cross_chain',
-              'error',
-              buildSkillTestMatrixRowPath(matrix, rowId, 'dependsOnRowIds'),
-              `链式 row ${rowId} 不能跨链依赖 ${dependencyRowId}`
-            )
-          );
-        }
-
-        if (exportableRowIds.has(rowId) && !exportableRowIds.has(dependencyRowId)) {
-          issues.push(
-            buildValidationIssue(
-              'matrix_chain_dependency_not_exportable',
-              'error',
-              buildSkillTestMatrixRowPath(matrix, rowId, 'dependsOnRowIds'),
-              `链式 row ${rowId} 依赖的 ${dependencyRowId} 不在本次 Phase 1 可导出集合中`
-            )
-          );
-        }
-      }
-    }
-
-    for (const [chainId, chainRows] of chainGroups.entries()) {
-      const sequenceOwners = new Map<number, string>();
-      const sequenceValues = [] as number[];
-
-      for (const row of chainRows) {
-        const rowId = String(row && row.rowId || '').trim();
-        const sequenceIndex = normalizePositiveInteger(row && row.sequenceIndex);
-        if (sequenceIndex == null) {
-          continue;
-        }
-
-        if (sequenceOwners.has(sequenceIndex)) {
-          issues.push(
-            buildValidationIssue(
-              'matrix_chain_sequence_duplicate',
-              'error',
-              buildSkillTestMatrixRowPath(matrix, rowId, 'sequenceIndex'),
-              `链 ${chainId} 中 sequenceIndex=${sequenceIndex} 重复`
-            )
-          );
-          continue;
-        }
-
-        sequenceOwners.set(sequenceIndex, rowId);
-        sequenceValues.push(sequenceIndex);
-      }
-
-      sequenceValues.sort((left, right) => left - right);
-      if (sequenceValues.length > 0) {
-        let expectedSequence = 1;
-        for (const value of sequenceValues) {
-          if (value !== expectedSequence) {
-            issues.push(
-              buildValidationIssue(
-                'matrix_chain_sequence_gap',
-                'error',
-                buildSkillTestMatrixRowPath(matrix, sequenceOwners.get(value) || '', 'sequenceIndex'),
-                `链 ${chainId} 的 sequenceIndex 必须连续，当前缺少 ${expectedSequence}`
-              )
-            );
-            break;
-          }
-          expectedSequence += 1;
-        }
-      }
-
-      const chainRowMap = new Map<string, any>();
-      const adjacency = new Map<string, string[]>();
-      for (const row of chainRows) {
-        const rowId = String(row && row.rowId || '').trim();
-        chainRowMap.set(rowId, row);
-        adjacency.set(
-          rowId,
-          (Array.isArray(row && row.dependsOnRowIds) ? row.dependsOnRowIds : [])
-            .map((entry: any) => String(entry || '').trim())
-            .filter((dependencyRowId: string) => chainRowMap.has(dependencyRowId) || includedRowMap.has(dependencyRowId))
-        );
-      }
-
-      for (const row of chainRows) {
-        const rowId = String(row && row.rowId || '').trim();
-        const rowSequenceIndex = normalizePositiveInteger(row && row.sequenceIndex);
-        const dependsOnRowIds = Array.isArray(row && row.dependsOnRowIds)
-          ? row.dependsOnRowIds.map((entry: any) => String(entry || '').trim()).filter(Boolean)
-          : [];
-        for (const dependencyRowId of dependsOnRowIds) {
-          const dependencyRow = includedRowMap.get(dependencyRowId);
-          const dependencySequenceIndex = normalizePositiveInteger(dependencyRow && dependencyRow.sequenceIndex);
-          if (rowSequenceIndex != null && dependencySequenceIndex != null && dependencySequenceIndex >= rowSequenceIndex) {
-            issues.push(
-              buildValidationIssue(
-                'matrix_chain_sequence_conflict',
-                'error',
-                buildSkillTestMatrixRowPath(matrix, rowId, 'dependsOnRowIds'),
-                `链 ${chainId} 中 ${rowId} 依赖的 ${dependencyRowId} 顺序不合法`
-              )
-            );
-          }
-        }
-      }
-
-      const visited = new Set<string>();
-      const visiting = new Set<string>();
-      let cycleDetected = false;
-
-      function visit(rowId: string) {
-        if (cycleDetected || visited.has(rowId)) {
-          return;
-        }
-        if (visiting.has(rowId)) {
-          cycleDetected = true;
-          return;
-        }
-
-        visiting.add(rowId);
-        for (const dependencyRowId of adjacency.get(rowId) || []) {
-          if (!chainRowMap.has(dependencyRowId)) {
-            continue;
-          }
-          visit(dependencyRowId);
-          if (cycleDetected) {
-            return;
-          }
-        }
-        visiting.delete(rowId);
-        visited.add(rowId);
-      }
-
-      for (const row of chainRows) {
-        visit(String(row && row.rowId || '').trim());
-        if (cycleDetected) {
-          issues.push(
-            buildValidationIssue(
-              'matrix_chain_cycle',
-              'error',
-              buildSkillTestMatrixRowPath(matrix, String(chainRows[0] && chainRows[0].rowId || '').trim(), 'dependsOnRowIds'),
-              `链 ${chainId} 存在循环依赖`
-            )
-          );
-          break;
-        }
-      }
-    }
-
-    return issues;
-  }
-
-  function buildSkillTestDesignSourceMetadataUpdate(testCase: any, row: any, rowIdToCaseId: Map<string, string>) {
-    const sourceMetadata = isPlainObject(testCase && testCase.sourceMetadata) ? { ...testCase.sourceMetadata } : {};
-    const currentDesignMetadata = isPlainObject(sourceMetadata.skillTestDesign) ? { ...sourceMetadata.skillTestDesign } : {};
-    const rowId = String(row && row.rowId || '').trim();
-    const exportedCaseId = String(rowIdToCaseId.get(rowId) || testCase && testCase.id || '').trim();
-    const environmentContractRef = String(currentDesignMetadata.environmentContractRef || row && row.environmentContractRef || '').trim();
-    const environmentSource = normalizeSkillTestDesignEnvironmentSource({
-      ...row,
-      environmentContractRef,
-      environmentSource: currentDesignMetadata.environmentSource || row && row.environmentSource,
-    });
-    const scenarioKind = String(currentDesignMetadata.scenarioKind || row && row.scenarioKind || '').trim() || (hasSkillTestDesignChainMetadata(row) ? 'chain_step' : 'single');
-
-    currentDesignMetadata.environmentContractRef = environmentContractRef;
-    currentDesignMetadata.environmentSource = environmentSource;
-    currentDesignMetadata.scenarioKind = scenarioKind;
-
-    if (hasSkillTestDesignChainMetadata(row) || isPlainObject(currentDesignMetadata.chainPlanning)) {
-      const currentChainPlanning = isPlainObject(currentDesignMetadata.chainPlanning) ? { ...currentDesignMetadata.chainPlanning } : {};
-      const dependsOnRowIds = Array.isArray(currentChainPlanning.dependsOnRowIds)
-        ? currentChainPlanning.dependsOnRowIds.map((entry: any) => String(entry || '').trim()).filter(Boolean)
-        : (Array.isArray(row && row.dependsOnRowIds) ? row.dependsOnRowIds.map((entry: any) => String(entry || '').trim()).filter(Boolean) : []);
-      const dependsOnCaseIds = dependsOnRowIds.map((dependencyRowId: string) => {
-        const dependencyCaseId = String(rowIdToCaseId.get(dependencyRowId) || '').trim();
-        if (!dependencyCaseId) {
-          throw createValidationHttpError(
-            buildValidationIssue(
-              'matrix_chain_dependency_missing',
-              'error',
-              'sourceMetadata.skillTestDesign.chainPlanning.dependsOnRowIds',
-              `导出草稿时无法解析链式依赖 ${dependencyRowId}`
-            )
-          );
-        }
-        return dependencyCaseId;
-      });
-
-      currentDesignMetadata.chainPlanning = {
-        ...currentChainPlanning,
-        matrixId: String(currentChainPlanning.matrixId || sourceMetadata.matrixId || testCase && testCase.sourceMetadata && testCase.sourceMetadata.matrixId || '').trim(),
-        rowId: String(currentChainPlanning.rowId || rowId).trim(),
-        scenarioKind,
-        chainId: String(currentChainPlanning.chainId || row && row.chainId || '').trim(),
-        chainName: String(currentChainPlanning.chainName || row && row.chainName || '').trim(),
-        sequenceIndex: normalizePositiveInteger(currentChainPlanning.sequenceIndex || row && row.sequenceIndex),
-        dependsOnRowIds,
-        inheritance: Array.isArray(currentChainPlanning.inheritance)
-          ? currentChainPlanning.inheritance.map((entry: any) => String(entry || '').trim()).filter(Boolean)
-          : (Array.isArray(row && row.inheritance) ? row.inheritance.map((entry: any) => String(entry || '').trim()).filter(Boolean) : []),
-        environmentContractRef,
-        environmentSource,
-        exportChainId: String(currentChainPlanning.chainId || row && row.chainId || '').trim(),
-        dependsOnCaseIds,
-        exportedCaseId,
-      };
-    }
-
-    sourceMetadata.skillTestDesign = currentDesignMetadata;
-    return sourceMetadata;
-  }
-
-  function findSkillTestDraftDuplicates(skillId: string, draftInput: any) {
-    ensureSchema();
-    const normalizedPrompt = normalizeSkillTestPromptKey(draftInput && draftInput.triggerPrompt);
-    if (!normalizedPrompt) {
-      return [];
-    }
-
-    const rows = store.db.prepare(`
-      SELECT id, loading_mode, test_type, trigger_prompt, case_status
-      FROM skill_test_cases
-      WHERE skill_id = ?
-        AND loading_mode = ?
-        AND test_type = ?
-      ORDER BY updated_at DESC, created_at DESC
-      LIMIT 100
-    `).all(skillId, draftInput.loadingMode || 'dynamic', draftInput.testType || 'trigger');
-
-    return rows
-      .map((row: any) => ({
-        id: String(row && row.id || '').trim(),
-        loadingMode: String(row && row.loading_mode || '').trim(),
-        testType: String(row && row.test_type || '').trim(),
-        triggerPrompt: normalizePromptText(row && row.trigger_prompt),
-        caseStatus: String(row && row.case_status || 'draft').trim() || 'draft',
-      }))
-      .filter((row: any) => normalizeSkillTestPromptKey(row.triggerPrompt) === normalizedPrompt);
-  }
-
-  function buildSkillTestDesignExportDrafts(conversation: any, designState: any, options: any = {}) {
-    const matrix = designState.matrix && typeof designState.matrix === 'object' ? designState.matrix : null;
-    const confirmation = designState.confirmation && typeof designState.confirmation === 'object' ? designState.confirmation : null;
-
-    if (!matrix || !matrix.matrixId) {
-      throw createValidationHttpError(
-        buildValidationIssue('matrix_missing', 'error', 'matrix', '当前没有可导出的测试矩阵')
-      );
-    }
-
-    if (!confirmation || String(confirmation.matrixId || '').trim() !== String(matrix.matrixId || '').trim()) {
-      throw createValidationHttpError(
-        buildValidationIssue('matrix_not_confirmed', 'error', 'confirmation', '测试矩阵尚未确认，不能导出草稿')
-      );
-    }
-
-    const validationIssues = buildSkillTestDesignMatrixValidationIssues(matrix);
-    if (validationIssues.length > 0) {
-      throw createValidationHttpError(validationIssues, '测试矩阵存在未解决的链路或环境问题');
-    }
-
-    const includeRows = Array.isArray(matrix.rows)
-      ? matrix.rows.filter((row: any) => row && row.includeInMvp !== false)
-      : [];
-
-    if (includeRows.length === 0) {
-      throw createValidationHttpError(
-        buildValidationIssue('matrix_rows_empty', 'error', 'matrix.rows', '当前矩阵没有可导出的 MVP 行')
-      );
-    }
-
-    const draftPlans = [] as any[];
-    const duplicateWarnings = [] as any[];
-    const skippedRows = [] as any[];
-
-    for (const row of includeRows) {
-      if (String(row && row.loadingMode || '').trim().toLowerCase() !== 'dynamic' || String(row && row.testType || '').trim().toLowerCase() !== 'trigger') {
-        skippedRows.push({
-          rowId: String(row && row.rowId || '').trim(),
-          reason: 'Phase 1 目前仅稳定支持 dynamic + trigger 草稿导出',
-          nextAction: '该行仍保留在矩阵中；后续 Phase 支持该类型后可重新导出',
-        });
-        continue;
-      }
-
-      const draftInput = buildSkillTestDraftInputFromMatrixRow(designState.skillId, matrix, row, {
-        conversationId: conversation.id,
-        messageId: String(confirmation.messageId || matrix.sourceMessageId || '').trim(),
-        agentRole: String(confirmation.agentRole || 'scribe').trim() || 'scribe',
-        exportedBy: String(options.exportedBy || 'user').trim() || 'user',
-      });
-      const duplicates = findSkillTestDraftDuplicates(designState.skillId, draftInput);
-      if (duplicates.length > 0) {
-        duplicateWarnings.push({
-          rowId: String(row && row.rowId || '').trim(),
-          duplicates,
-        });
-      }
-      draftPlans.push({ row, draftInput });
-    }
-
-    const updateSourceMetadataStatement = store.db.prepare(`
-      UPDATE skill_test_cases
-      SET source_metadata_json = @sourceMetadataJson,
-          updated_at = @updatedAt
-      WHERE id = @id
-    `);
-    const createDraftsTransaction = store.db.transaction((plans: any[]) => {
-      const createdEntries = plans.map((plan: any) => ({
-        row: plan.row,
-        testCase: createTestCase(plan.draftInput).testCase,
-      }));
-      const rowIdToCaseId = new Map<string, string>(
-        createdEntries
-          .map((entry: any) => [String(entry && entry.row && entry.row.rowId || '').trim(), String(entry && entry.testCase && entry.testCase.id || '').trim()] as [string, string])
-          .filter(([rowId, caseId]) => rowId && caseId)
-      );
-
-      return createdEntries.map((entry: any) => {
-        const patchedSourceMetadata = buildSkillTestDesignSourceMetadataUpdate(entry.testCase, entry.row, rowIdToCaseId);
-        const updatedAt = nowIso();
-        updateSourceMetadataStatement.run({
-          id: entry.testCase.id,
-          sourceMetadataJson: JSON.stringify(patchedSourceMetadata || {}),
-          updatedAt,
-        });
-        return getTestCase(entry.testCase.id);
-      });
-    });
-    const createdCases = draftPlans.length > 0 ? createDraftsTransaction(draftPlans) : [];
-
-    if (createdCases.length === 0) {
-      throw createValidationHttpError(
-        skippedRows.map((entry: any) => buildValidationIssue(
-          'export_row_skipped',
-          'error',
-          buildSkillTestMatrixRowPath(matrix, String(entry && entry.rowId || '').trim()),
-          String(entry && entry.reason || 'No exportable rows remain')
-        )),
-        '没有可导出的测试草稿'
-      );
-    }
-
-    return {
-      cases: createdCases,
-      duplicateWarnings,
-      skippedRows,
-    };
-  }
+  const skillTestDesignService = createSkillTestDesignService({
+    store,
+    skillRegistry,
+    createTestCase,
+    getTestCase,
+    ensureSchema,
+    nowIso,
+  });
+  const {
+    requireSkillTestDesignConversation,
+    summarizeSkillTestDesignConversation,
+    updateSkillTestDesignConversationState,
+    ensureAutomaticTestingDocPreview,
+    buildSkillTestDesignConfirmationRecord,
+    buildSkillTestDesignMatrixValidationIssues,
+    buildSkillTestDesignExportDrafts,
+  } = skillTestDesignService;
 
   function listTestRuns(skillId: string, limit = 100) {
     ensureSchema();
@@ -3795,7 +1301,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     const rows = store.db
       .prepare(
         `SELECT
-           r.*, 
+           r.*,
            e.provider AS provider,
            e.model AS model,
            e.prompt_version AS prompt_version
@@ -4014,153 +1520,147 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     };
   }
 
-  function normalizeSkillDisplayName(value: any) {
-    return String(value || '').trim().replace(/\s+Skill$/i, '');
-  }
-
-  function normalizeLooseText(value: any) {
-    return String(value || '')
-      .toLowerCase()
-      .replace(/\s+/g, ' ')
-      .trim();
-  }
-
-  function extractTriggerSignalTokens(value: any, limit = 12) {
-    const text = String(value || '').trim();
-    if (!text) {
-      return [];
+  function hasSkillTestTraceEvidence(trace: any) {
+    if (!isPlainObject(trace)) {
+      return false;
     }
 
-    const stopWords = new Set([
-      'agent',
-      'should',
-      'recognize',
-      'request',
-      'trigger',
-      'skill',
-      'user',
-      'mode',
-      'test',
-      'case',
-      'expected',
-      'behavior',
-      'tool',
-      'tools',
-      'full',
-      'dynamic',
-      '用于',
-      '后端',
-      '自动',
-      '主持',
-      '模型',
-      '测试',
-      '触发',
-      '执行',
-      '用户',
-      '技能',
-    ]);
-
-    const matches = text.match(/[A-Za-z][A-Za-z0-9-]{2,}|[\u4e00-\u9fff]{2,12}/g) || [];
-    const tokens: string[] = [];
-    const seen = new Set<string>();
-    for (const match of matches) {
-      const token = String(match || '').trim();
-      const normalized = normalizeLooseText(token);
-      if (!normalized || stopWords.has(normalized) || seen.has(normalized)) {
-        continue;
-      }
-      seen.add(normalized);
-      tokens.push(token);
-      if (tokens.length >= limit) {
-        break;
-      }
-    }
-    return tokens;
+    const steps = Array.isArray(trace.steps) ? trace.steps.filter(Boolean) : [];
+    const totalSteps = Number(trace && trace.summary && trace.summary.totalSteps);
+    const failureText = String(trace && trace.failureContext && trace.failureContext.text || '').trim();
+    return steps.length > 0 || (Number.isFinite(totalSteps) && totalSteps > 0) || Boolean(failureText);
   }
 
-  function buildFullModeTriggerSignals(skill: any, testCase: any) {
-    const signals: string[] = [];
-    const seen = new Set<string>();
-
-    const pushSignal = (value: any) => {
-      const text = String(value || '').trim();
-      const normalized = normalizeLooseText(text);
-      if (!text || !normalized || seen.has(normalized)) {
-        return;
+  function buildStoredSkillTestRunTrace(run: any, result: any, debug: any) {
+    const storedTrace = result && isPlainObject(result.trace) ? { ...result.trace } : null;
+    if (hasSkillTestTraceEvidence(storedTrace)) {
+      if (storedTrace.message && typeof storedTrace.message === 'object') {
+        storedTrace.message = {
+          ...storedTrace.message,
+          status: String(run && run.status || storedTrace.message.status || '').trim() || 'completed',
+          ...(run && run.id ? { runId: run.id } : {}),
+        };
       }
-      seen.add(normalized);
-      signals.push(text);
-    };
-
-    pushSignal(normalizeSkillDisplayName(skill && skill.name));
-    pushSignal(skill && skill.id);
-    pushSignal(testCase && testCase.skillId);
-
-    const secondarySources = [
-      skill && skill.description,
-      testCase && testCase.expectedBehavior,
-      testCase && testCase.note,
-    ];
-    for (const source of secondarySources) {
-      for (const token of extractTriggerSignalTokens(source)) {
-        pushSignal(token);
+      if (storedTrace.task && typeof storedTrace.task === 'object') {
+        storedTrace.task = {
+          ...storedTrace.task,
+          status: String(run && run.status || storedTrace.task.status || '').trim() || 'completed',
+        };
       }
+      return storedTrace;
     }
 
-    return signals.slice(0, 16);
+    const traceTaskId = debug && debug.taskId ? String(debug.taskId).trim() : '';
+    const traceSessionPath = debug && debug.sessionPath ? String(debug.sessionPath).trim() : '';
+    return traceTaskId || traceSessionPath
+      ? buildSkillTestLiveTrace(
+          traceTaskId ? `skill-test-trace-${traceTaskId}` : `skill-test-run-${run && run.id ? run.id : ''}`,
+          traceTaskId,
+          String(run && run.status || 'completed').trim() || 'completed',
+          run && run.id ? run.id : null,
+          String(run && run.createdAt || '').trim(),
+          traceSessionPath
+        )
+      : null;
   }
 
-  function clipJudgeText(value: any, maxLength = 2400) {
-    const text = String(value || '').trim();
-    if (!text) {
+  function getSkillTestRunDetailPayload(runId: string) {
+    ensureSchema();
+    const row = store.db
+      .prepare(
+        `SELECT
+           r.*,
+           e.provider AS provider,
+           e.model AS model,
+           e.prompt_version AS prompt_version,
+           e.result_json AS result_json
+         FROM skill_test_runs r
+         LEFT JOIN eval_case_runs e ON e.id = r.eval_case_run_id
+         WHERE r.id = @id`
+      )
+      .get({ id: runId });
+    const run = normalizeTestRunRow(row);
+    if (!run) {
+      throw createHttpError(404, 'Test run not found');
+    }
+    const result = safeJsonParse(row && row.result_json);
+    const debug = mergeSkillTestRunDebugPayload(getSkillTestRunDebug(run), result && result.debug);
+    const trace = buildStoredSkillTestRunTrace(run, result, debug);
+    return { row, run, result, debug, trace };
+  }
+
+  function persistSkillTestRunSessionExport(runId: string, sessionPath: string) {
+    const normalizedRunId = String(runId || '').trim().replace(/[^A-Za-z0-9._-]+/g, '_');
+    const sourcePath = String(sessionPath || '').trim();
+    if (!normalizedRunId || !sourcePath) {
       return '';
     }
-    if (text.length <= maxLength) {
-      return text;
+
+    try {
+      const resolvedSourcePath = path.resolve(sourcePath);
+      if (!fs.existsSync(resolvedSourcePath) || !fs.statSync(resolvedSourcePath).isFile()) {
+        return '';
+      }
+      const exportRoot = path.join(path.resolve(String(store.agentDir || ROOT_DIR || '.').trim() || '.'), 'skill-test-session-exports');
+      fs.mkdirSync(exportRoot, { recursive: true });
+      const persistedPath = path.join(exportRoot, `${normalizedRunId}.jsonl`);
+      fs.copyFileSync(resolvedSourcePath, persistedPath);
+      return persistedPath;
+    } catch {
+      return '';
     }
-    const safeLength = Math.max(0, maxLength - 16);
-    return `${text.slice(0, safeLength).trim()}\n...[truncated]`;
   }
 
-  function extractJsonObjectFromText(value: any) {
-    const text = String(value || '').trim();
-    if (!text) {
-      return null;
-    }
+  function collectSkillTestRunSessionExportRoots() {
+    const roots = new Set<string>();
 
-    const candidates: string[] = [];
-    const pushCandidate = (candidateValue: any) => {
-      const candidate = String(candidateValue || '').trim();
-      if (!candidate || candidates.includes(candidate)) {
-        return;
+    function normalizeRoot(value: any) {
+      const trimmed = String(value || '').trim();
+      if (!trimmed || trimmed === ':memory:' || /^file:/i.test(trimmed)) {
+        return '';
       }
-      candidates.push(candidate);
-    };
-
-    const fencedMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-    if (fencedMatch && fencedMatch[1]) {
-      pushCandidate(fencedMatch[1]);
+      return path.resolve(trimmed);
     }
 
-    pushCandidate(text);
-
-    const firstBraceIndex = text.indexOf('{');
-    const lastBraceIndex = text.lastIndexOf('}');
-    if (firstBraceIndex !== -1 && lastBraceIndex > firstBraceIndex) {
-      pushCandidate(text.slice(firstBraceIndex, lastBraceIndex + 1));
-    }
-
-    for (const candidate of candidates) {
-      try {
-        const parsed = JSON.parse(candidate);
-        if (isPlainObject(parsed)) {
-          return parsed;
-        }
-      } catch {
+    function addRoot(value: any) {
+      const normalized = normalizeRoot(value);
+      if (!normalized) {
+        return '';
       }
+      roots.add(normalized);
+      return normalized;
     }
 
-    return null;
+    const agentDir = addRoot(store.agentDir);
+    if (agentDir) {
+      addRoot(path.dirname(agentDir));
+      addRoot(path.join(agentDir, 'skill-test-session-exports'));
+    }
+    const databasePath = addRoot(store.databasePath);
+    if (databasePath) {
+      addRoot(path.dirname(databasePath));
+    }
+    addRoot(ROOT_DIR);
+    return Array.from(roots);
+  }
+
+  function resolveSkillTestRunSessionExportPath(runDetail: any) {
+    const persistedSessionPath = String(runDetail && runDetail.debug && runDetail.debug.sessionExportPath || '').trim();
+    const sessionPath = persistedSessionPath || String(runDetail && runDetail.debug && runDetail.debug.sessionPath || '').trim();
+    if (!sessionPath) {
+      throw createHttpError(404, 'No session export is available for this test run yet');
+    }
+
+    const resolvedSessionPath = path.resolve(sessionPath);
+    const allowedRoots = collectSkillTestRunSessionExportRoots();
+    const allowed = allowedRoots.some((root) => isPathWithin(root, resolvedSessionPath));
+    if (!allowed) {
+      throw createHttpError(400, 'Session path is outside the allowed export roots');
+    }
+    if (!fs.existsSync(resolvedSessionPath) || !fs.statSync(resolvedSessionPath).isFile()) {
+      throw createHttpError(404, 'Requested session export was not found');
+    }
+    return resolvedSessionPath;
   }
 
   function extractJsonArrayFromText(value: any) {
@@ -4391,532 +1891,6 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     });
   }
 
-  function normalizeJudgePassed(value: any) {
-    if (typeof value === 'boolean') {
-      return value;
-    }
-
-    const normalized = String(value || '').trim().toLowerCase();
-    if (!normalized) {
-      return null;
-    }
-    if (['true', '1', 'yes', 'y', 'pass', 'passed'].includes(normalized)) {
-      return true;
-    }
-    if (['false', '0', 'no', 'n', 'fail', 'failed'].includes(normalized)) {
-      return false;
-    }
-    return null;
-  }
-
-  function normalizeJudgeConfidence(value: any) {
-    if (value == null || value === '') {
-      return null;
-    }
-    const parsed = Number(value);
-    if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
-      return null;
-    }
-    return parsed;
-  }
-
-  function parseFullModeTriggerJudgeResponse(value: any) {
-    const rawResponse = clipJudgeText(value, 600);
-    const parsed = extractJsonObjectFromText(value);
-    const matchedBehaviorsSource = parsed
-      ? (Array.isArray(parsed.matchedBehaviors)
-        ? parsed.matchedBehaviors
-        : Array.isArray(parsed.matched_behaviors)
-          ? parsed.matched_behaviors
-          : Array.isArray(parsed.matchedEvidence)
-            ? parsed.matchedEvidence
-            : Array.isArray(parsed.evidence)
-              ? parsed.evidence
-              : [])
-      : [];
-    const matchedBehaviors = [...new Set(
-      matchedBehaviorsSource
-        .map((entry: any) => String(entry || '').trim())
-        .filter(Boolean)
-    )].slice(0, 8);
-
-    return {
-      attempted: Boolean(rawResponse),
-      skipped: false,
-      skippedReason: '',
-      parsed: Boolean(parsed),
-      passed: parsed && hasOwn(parsed, 'passed') ? normalizeJudgePassed(parsed.passed) : null,
-      confidence: parsed && hasOwn(parsed, 'confidence') ? normalizeJudgeConfidence(parsed.confidence) : null,
-      reason: parsed && hasOwn(parsed, 'reason') ? String(parsed.reason || '').trim() : '',
-      matchedBehaviors,
-      rawResponse,
-      errorMessage: parsed || !rawResponse ? '' : 'judge-response-not-json',
-    };
-  }
-
-  function buildFullModeTriggerJudgePrompt(skill: any, testCase: any, actualTools: string[], evidenceText: string) {
-    const observedTools = [...new Set((Array.isArray(actualTools) ? actualTools : []).filter(Boolean))];
-    const skillName = clipJudgeText(normalizeSkillDisplayName(skill && skill.name), 120);
-    const skillId = clipJudgeText(testCase && testCase.skillId || skill && skill.id, 80);
-    const skillDescription = clipJudgeText(skill && skill.description, 500);
-    const skillBody = clipJudgeText(skill && skill.body, 1800);
-    const expectedBehavior = clipJudgeText(testCase && testCase.expectedBehavior, 600);
-    const note = clipJudgeText(testCase && testCase.note, 300);
-    const triggerPrompt = clipJudgeText(getCanonicalCasePrompt(testCase), 600);
-    const assistantEvidence = String(evidenceText || '').trim();
-    const observedToolsJson = clipJudgeText(JSON.stringify(observedTools, null, 2), 300);
-
-    return [
-      '你是一个严格的 Skill 触发评审器。',
-      '任务：判断 assistant 是否在 full mode 下真正遵循了目标 skill，而不是仅仅聊到相关话题。',
-      '只依据下面提供的证据判断，不要调用工具，不要查看文件，不要补充额外解释。',
-      '只返回一行 JSON，格式必须严格为：',
-      '{"passed":true|false,"confidence":0.0,"reason":"一句话原因","matchedBehaviors":["命中的关键行为"]}',
-      '判定规则：',
-      '- 只有当 assistant 明确采用了目标 skill 的行为、身份、约束或流程时，passed 才能为 true。',
-      '- 如果 assistant 只是解释概念、泛泛回答、或行为与 skill 不符，passed=false。',
-      '- 如果证据不足或你不确定，passed=false。',
-      '',
-      `Skill Name: ${skillName || 'unknown'}`,
-      `Skill ID: ${skillId || 'unknown'}`,
-      `Skill Description:\n${skillDescription || '(none)'}`,
-      `Expected Behavior:\n${expectedBehavior || '(none)'}`,
-      `Case Note:\n${note || '(none)'}`,
-      `User Prompt:\n${triggerPrompt || '(none)'}`,
-      `Observed Tools:\n${observedToolsJson || '[]'}`,
-      `Assistant Evidence:\n${assistantEvidence || '(none)'}`,
-      `Skill Body Excerpt:\n${skillBody || '(none)'}`,
-    ].join('\n\n');
-  }
-
-  async function runFullModeTriggerAiJudge(skill: any, testCase: any, actualTools: string[], evidenceText: string, runtime: any = {}) {
-    const hasObservableEvidence = Boolean(String(evidenceText || '').trim()) || actualTools.length > 0;
-    if (!hasObservableEvidence) {
-      return {
-        attempted: false,
-        skipped: true,
-        skippedReason: 'no-observable-evidence',
-        parsed: false,
-        passed: null,
-        confidence: null,
-        reason: '',
-        matchedBehaviors: [],
-        rawResponse: '',
-        errorMessage: '',
-        sessionPath: '',
-      };
-    }
-
-    const judgePrompt = buildFullModeTriggerJudgePrompt(skill, testCase, actualTools, evidenceText);
-    const judgeTaskId = `skill-test-judge-${randomUUID()}`;
-    const judgeSessionName = `skill-test-judge-${String(testCase && testCase.id || 'case').trim() || 'case'}-${Date.now()}`;
-    const provider = String(runtime && runtime.provider || '').trim();
-    const model = String(runtime && runtime.model || '').trim();
-    const judgeAgentIdBase = String(runtime && runtime.agentId || 'skill-test-agent').trim() || 'skill-test-agent';
-    const sandboxDir = runtime && runtime.sandbox && runtime.sandbox.sandboxDir
-      ? String(runtime.sandbox.sandboxDir)
-      : '';
-    const privateDir = runtime && runtime.sandbox && runtime.sandbox.privateDir
-      ? String(runtime.sandbox.privateDir)
-      : '';
-    const runtimeExtraEnv = isPlainObject(runtime && runtime.extraEnv) ? { ...(runtime.extraEnv as any) } : {};
-    const providerAuthEnv = buildProviderAuthEnv(provider);
-    const judgeProjectDir = String(runtime && runtime.projectDir || runtimeExtraEnv.CAFF_TRELLIS_PROJECT_DIR || '').trim();
-    const judgeAgentDir = String(runtime && runtime.agentDir || store.agentDir || '').trim() || store.agentDir;
-    const judgeSqlitePath = String(runtime && runtime.sqlitePath || store.databasePath || '').trim() || store.databasePath;
-
-    let handle: any = null;
-
-    try {
-      handle = startRunImpl(provider, model, judgePrompt, {
-        thinking: '',
-        agentDir: judgeAgentDir,
-        sqlitePath: judgeSqlitePath,
-        cwd: judgeProjectDir || undefined,
-        streamOutput: false,
-        session: judgeSessionName,
-        taskId: judgeTaskId,
-        taskKind: 'skill_test_trigger_judge',
-        taskRole: 'Skill Trigger Judge',
-        metadata: {
-          source: 'skill_test_trigger_judge',
-          parentTaskId: runtime && runtime.taskId ? runtime.taskId : null,
-          testCaseId: testCase && testCase.id ? testCase.id : null,
-          skillId: testCase && testCase.skillId ? testCase.skillId : null,
-        },
-        extraEnv: {
-          ...runtimeExtraEnv,
-          ...providerAuthEnv,
-          PI_AGENT_ID: `${judgeAgentIdBase}-judge`,
-          PI_AGENT_NAME: 'Skill Trigger Judge',
-          ...(sandboxDir ? { PI_AGENT_SANDBOX_DIR: sandboxDir } : {}),
-          ...(privateDir ? { PI_AGENT_PRIVATE_DIR: privateDir } : {}),
-          ...(judgeSqlitePath ? { PI_SQLITE_PATH: judgeSqlitePath } : {}),
-          ...(judgeProjectDir ? { CAFF_TRELLIS_PROJECT_DIR: judgeProjectDir } : {}),
-          CAFF_SKILL_LOADING_MODE: 'full',
-        },
-      });
-      const judgeResult = await handle.resultPromise;
-      const parsed = parseFullModeTriggerJudgeResponse(judgeResult && judgeResult.reply ? judgeResult.reply : '');
-      return {
-        ...parsed,
-        attempted: true,
-        sessionPath: String((judgeResult && judgeResult.sessionPath) || handle.sessionPath || '').trim(),
-      };
-    } catch (error: any) {
-      return {
-        attempted: true,
-        skipped: false,
-        skippedReason: '',
-        parsed: false,
-        passed: null,
-        confidence: null,
-        reason: '',
-        matchedBehaviors: [],
-        rawResponse: '',
-        errorMessage: error && error.message ? String(error.message) : String(error || 'AI judge failed'),
-        sessionPath: String((error && error.sessionPath) || (handle && handle.sessionPath) || '').trim(),
-      };
-    }
-  }
-
-  async function evaluateFullModeTrigger(skill: any, testCase: any, actualTools: string[], evidenceText: string, runtime: any = {}) {
-    const expectedTools = normalizeExpectedToolSpecs(testCase && testCase.expectedTools).map((entry: any) => entry.name);
-    const normalizedEvidence = normalizeLooseText(evidenceText);
-    const triggerSignals = buildFullModeTriggerSignals(skill, testCase);
-    const matchedSignals = triggerSignals.filter((signal) => {
-      const normalizedSignal = normalizeLooseText(signal);
-      return normalizedSignal ? normalizedEvidence.includes(normalizedSignal) : false;
-    });
-    const expectedToolMatched = expectedTools.some((tool) => actualTools.includes(tool));
-    const hasObservableOutput = Boolean(String(evidenceText || '').trim()) || actualTools.length > 0;
-    const signalMatched = matchedSignals.length > 0 && hasObservableOutput;
-    const aiJudge = await runFullModeTriggerAiJudge(skill, testCase, actualTools, evidenceText, runtime);
-    const triggerPassed = expectedToolMatched || signalMatched || aiJudge.passed === true;
-    const decisionSources = [];
-
-    if (expectedToolMatched) {
-      decisionSources.push('expected-tool');
-    }
-    if (signalMatched) {
-      decisionSources.push('behavior-signals');
-    }
-    if (aiJudge.passed === true) {
-      decisionSources.push('ai-judge');
-    }
-    if (decisionSources.length === 0) {
-      decisionSources.push('none');
-    }
-
-    return {
-      triggerPassed,
-      triggerEvaluation: {
-        mode: 'full',
-        matchedSignals,
-        expectedToolMatched,
-        signalMatched,
-        hasObservableOutput,
-        decisionSources,
-        aiJudge,
-      },
-    };
-  }
-
-  function normalizeJudgeSuggestion(value: any) {
-    const normalized = String(value || '').trim().toLowerCase();
-    if (normalized === 'pass' || normalized === 'borderline' || normalized === 'fail') {
-      return normalized;
-    }
-    return '';
-  }
-
-  function parseJudgeDimension(value: any) {
-    if (!isPlainObject(value)) {
-      return { score: null, reason: '', invalid: false };
-    }
-    const rawScore = hasOwn(value, 'score') ? value.score : null;
-    const score = normalizeJudgeConfidence(rawScore);
-    return {
-      score,
-      reason: String(value.reason || '').trim(),
-      invalid: rawScore != null && rawScore !== '' && score == null,
-    };
-  }
-
-  function parseFullModeExecutionJudgeResponse(value: any) {
-    const rawResponse = clipJudgeText(value, 3000);
-    const parsed = extractJsonObjectFromText(value);
-
-    if (!rawResponse) {
-      return {
-        status: 'skipped',
-        parsed: false,
-        rawResponse: '',
-        errorMessage: '',
-        goalAchievement: { score: null, reason: '' },
-        instructionAdherence: { score: null, reason: '' },
-        summary: '',
-        verdictSuggestion: '',
-        missedExpectations: [],
-        steps: [],
-        constraintChecks: [],
-      };
-    }
-
-    if (!parsed) {
-      return {
-        status: 'parse_failed',
-        parsed: false,
-        rawResponse,
-        errorMessage: 'judge-response-not-json',
-        goalAchievement: { score: null, reason: '' },
-        instructionAdherence: { score: null, reason: '' },
-        summary: '',
-        verdictSuggestion: '',
-        missedExpectations: [],
-        steps: [],
-        constraintChecks: [],
-      };
-    }
-
-    const goalAchievement = parseJudgeDimension(parsed.goalAchievement || parsed.goal_achievement);
-    const instructionAdherence = parseJudgeDimension(parsed.instructionAdherence || parsed.instruction_adherence);
-    const verdictSuggestion = normalizeJudgeSuggestion(parsed.verdictSuggestion || parsed.verdict_suggestion);
-    const steps = Array.isArray(parsed.steps)
-      ? parsed.steps
-      : Array.isArray(parsed.stepResults)
-        ? parsed.stepResults
-        : null;
-    const constraintChecks = Array.isArray(parsed.constraintChecks)
-      ? parsed.constraintChecks
-      : Array.isArray(parsed.constraint_checks)
-        ? parsed.constraint_checks
-        : null;
-    const missedExpectationsSource = Array.isArray(parsed.missedExpectations)
-      ? parsed.missedExpectations
-      : Array.isArray(parsed.missed_expectations)
-        ? parsed.missed_expectations
-        : null;
-
-    const hasRequiredFields = (
-      (hasOwn(parsed, 'goalAchievement') || hasOwn(parsed, 'goal_achievement'))
-      && (hasOwn(parsed, 'instructionAdherence') || hasOwn(parsed, 'instruction_adherence'))
-      && hasOwn(parsed, 'summary')
-      && (hasOwn(parsed, 'verdictSuggestion') || hasOwn(parsed, 'verdict_suggestion'))
-      && (hasOwn(parsed, 'steps') || hasOwn(parsed, 'stepResults'))
-      && (hasOwn(parsed, 'constraintChecks') || hasOwn(parsed, 'constraint_checks'))
-      && (hasOwn(parsed, 'missedExpectations') || hasOwn(parsed, 'missed_expectations'))
-    );
-
-    if (
-      !hasRequiredFields
-      || goalAchievement.invalid
-      || instructionAdherence.invalid
-      || !verdictSuggestion
-      || !Array.isArray(steps)
-      || !Array.isArray(constraintChecks)
-      || !Array.isArray(missedExpectationsSource)
-    ) {
-      return {
-        status: 'parse_failed',
-        parsed: false,
-        rawResponse,
-        errorMessage: 'judge-response-invalid-schema',
-        goalAchievement: { score: null, reason: '' },
-        instructionAdherence: { score: null, reason: '' },
-        summary: '',
-        verdictSuggestion: '',
-        missedExpectations: [],
-        steps: [],
-        constraintChecks: [],
-      };
-    }
-
-    const missedExpectations = missedExpectationsSource
-      .map((entry: any) => String(entry || '').trim())
-      .filter(Boolean)
-      .slice(0, 16);
-
-    return {
-      status: 'succeeded',
-      parsed: true,
-      rawResponse,
-      errorMessage: '',
-      goalAchievement: { score: goalAchievement.score, reason: goalAchievement.reason },
-      instructionAdherence: { score: instructionAdherence.score, reason: instructionAdherence.reason },
-      summary: String(parsed.summary || '').trim(),
-      verdictSuggestion,
-      missedExpectations,
-      steps,
-      constraintChecks,
-    };
-  }
-
-  function buildFullModeExecutionJudgePrompt(
-    skill: any,
-    testCase: any,
-    actualTools: string[],
-    failedCalls: any[],
-    evidenceText: string,
-    timelineIds: any = null
-  ) {
-    const observedTools = [...new Set((Array.isArray(actualTools) ? actualTools : []).filter(Boolean))];
-    const skillName = clipJudgeText(normalizeSkillDisplayName(skill && skill.name), 120);
-    const skillId = clipJudgeText(testCase && testCase.skillId || skill && skill.id, 80);
-    const skillDescription = clipJudgeText(skill && skill.description, 500);
-    const skillBody = clipJudgeText(skill && skill.body, 1800);
-    const expectedBehavior = clipJudgeText(testCase && testCase.expectedBehavior, 600);
-    const expectedGoal = clipJudgeText(testCase && testCase.expectedGoal, 500);
-    const note = clipJudgeText(testCase && testCase.note, 300);
-    const triggerPrompt = clipJudgeText(getCanonicalCasePrompt(testCase), 600);
-    const assistantEvidence = String(evidenceText || '').trim();
-    const observedToolsJson = clipJudgeText(JSON.stringify(observedTools, null, 2), 300);
-    const failedCallsJson = clipJudgeText(JSON.stringify(failedCalls || [], null, 2), 400);
-    const expectedSteps = Array.isArray(testCase && testCase.expectedSteps) ? testCase.expectedSteps : [];
-    const expectedStepsJson = clipJudgeText(JSON.stringify(expectedSteps, null, 2), 2400);
-    const rubric = sanitizeEvaluationRubric(testCase && testCase.evaluationRubric);
-    const criticalConstraints = Array.isArray(rubric.criticalConstraints) ? rubric.criticalConstraints : [];
-    const criticalConstraintsJson = clipJudgeText(JSON.stringify(criticalConstraints, null, 2), 1200);
-    const normalizedTimelineIds = Array.isArray(timelineIds)
-      ? timelineIds.map((entry: any) => String(entry || '').trim()).filter(Boolean)
-      : [];
-    const timelineIdsJson = clipJudgeText(JSON.stringify(normalizedTimelineIds, null, 2), 1500);
-    const knownSignalIds = expectedSteps
-      .flatMap((step: any) => (Array.isArray(step && step.strongSignals) ? step.strongSignals : []))
-      .map((signal: any) => String(signal && signal.id || '').trim())
-      .filter(Boolean);
-    const knownSignalIdsJson = clipJudgeText(JSON.stringify(knownSignalIds, null, 2), 1000);
-
-    return [
-      '你是一个严格的 Skill 执行评审器。',
-      '任务：判断 assistant 在 full mode 下是否按预期完成目标、遵循 skill 约束、并返回结构化 step / constraint 评估。',
-      '只依据下面提供的证据判断，不要调用工具，不要查看文件，不要补充额外解释。',
-      '只返回一行 JSON，格式必须严格为：',
-      '{"steps":[{"stepId":"step-1","completed":true,"confidence":0.9,"evidenceIds":["msg-1"],"matchedSignalIds":["sig-step-1-read"],"reason":"..."}],"constraintChecks":[{"constraintId":"confirm-before-action","satisfied":true,"evidenceIds":["msg-1"],"reason":"..."}],"goalAchievement":{"score":0.0,"reason":"..."},"instructionAdherence":{"score":0.0,"reason":"..."},"summary":"一句话总结","verdictSuggestion":"pass|borderline|fail","missedExpectations":["..."]}',
-      '规则：',
-      '- 所有 score / confidence 必须在 0 到 1 之间。',
-      '- reason 必须依据可观察证据。',
-      '- evidenceIds 只能引用 Timeline IDs 中已有的 id。',
-      '- matchedSignalIds 只能引用 Known Signal IDs 中已有的 id。',
-      '- 不能发明 stepId / constraintId。',
-      '',
-      `Skill Name: ${skillName || 'unknown'}`,
-      `Skill ID: ${skillId || 'unknown'}`,
-      `Skill Description:\n${skillDescription || '(none)'}`,
-      `Expected Goal:\n${expectedGoal || '(none)'}`,
-      `Expected Behavior:\n${expectedBehavior || '(none)'}`,
-      `Expected Steps:\n${expectedStepsJson || '[]'}`,
-      `Critical Constraints:\n${criticalConstraintsJson || '[]'}`,
-      `Known Signal IDs:\n${knownSignalIdsJson || '[]'}`,
-      `Case Note:\n${note || '(none)'}`,
-      `User Prompt:\n${triggerPrompt || '(none)'}`,
-      `Observed Tools:\n${observedToolsJson || '[]'}`,
-      `Failed Calls:\n${failedCallsJson || '[]'}`,
-      `Timeline IDs:\n${timelineIdsJson || '[]'}`,
-      `Assistant Evidence:\n${assistantEvidence || '(none)'}`,
-      `Skill Body Excerpt:\n${skillBody || '(none)'}`,
-    ].join('\n\n');
-  }
-
-  async function runFullModeExecutionAiJudge(skill: any, testCase: any, actualTools: string[], failedCalls: any[], evidenceText: string, runtime: any = {}) {
-    const hasObservableEvidence = Boolean(String(evidenceText || '').trim()) || actualTools.length > 0;
-    if (!hasObservableEvidence) {
-      return {
-        status: 'skipped',
-        parsed: false,
-        rawResponse: '',
-        errorMessage: '',
-        goalAchievement: { score: null, reason: '' },
-        instructionAdherence: { score: null, reason: '' },
-        summary: '',
-        verdictSuggestion: '',
-        missedExpectations: [],
-        steps: [],
-        constraintChecks: [],
-        sessionPath: '',
-      };
-    }
-
-    const judgePrompt = buildFullModeExecutionJudgePrompt(
-      skill,
-      testCase,
-      actualTools,
-      failedCalls,
-      evidenceText,
-      runtime && runtime.timelineIds
-    );
-    const judgeTaskId = `skill-test-execution-judge-${randomUUID()}`;
-    const judgeSessionName = `skill-test-execution-judge-${String(testCase && testCase.id || 'case').trim() || 'case'}-${Date.now()}`;
-    const provider = String(runtime && runtime.provider || '').trim();
-    const model = String(runtime && runtime.model || '').trim();
-    const judgeAgentIdBase = String(runtime && runtime.agentId || 'skill-test-agent').trim() || 'skill-test-agent';
-    const sandboxDir = runtime && runtime.sandbox && runtime.sandbox.sandboxDir
-      ? String(runtime.sandbox.sandboxDir)
-      : '';
-    const privateDir = runtime && runtime.sandbox && runtime.sandbox.privateDir
-      ? String(runtime.sandbox.privateDir)
-      : '';
-    const runtimeExtraEnv = isPlainObject(runtime && runtime.extraEnv) ? { ...(runtime.extraEnv as any) } : {};
-    const providerAuthEnv = buildProviderAuthEnv(provider);
-    const judgeProjectDir = String(runtime && runtime.projectDir || runtimeExtraEnv.CAFF_TRELLIS_PROJECT_DIR || '').trim();
-    const judgeAgentDir = String(runtime && runtime.agentDir || store.agentDir || '').trim() || store.agentDir;
-    const judgeSqlitePath = String(runtime && runtime.sqlitePath || store.databasePath || '').trim() || store.databasePath;
-
-    let handle: any = null;
-
-    try {
-      handle = startRunImpl(provider, model, judgePrompt, {
-        thinking: '',
-        agentDir: judgeAgentDir,
-        sqlitePath: judgeSqlitePath,
-        cwd: judgeProjectDir || undefined,
-        streamOutput: false,
-        session: judgeSessionName,
-        taskId: judgeTaskId,
-        taskKind: 'skill_test_execution_judge',
-        taskRole: 'Skill Execution Judge',
-        metadata: {
-          source: 'skill_test_execution_judge',
-          parentTaskId: runtime && runtime.taskId ? runtime.taskId : null,
-          testCaseId: testCase && testCase.id ? testCase.id : null,
-          skillId: testCase && testCase.skillId ? testCase.skillId : null,
-        },
-        extraEnv: {
-          ...runtimeExtraEnv,
-          ...providerAuthEnv,
-          PI_AGENT_ID: `${judgeAgentIdBase}-execution-judge`,
-          PI_AGENT_NAME: 'Skill Execution Judge',
-          ...(sandboxDir ? { PI_AGENT_SANDBOX_DIR: sandboxDir } : {}),
-          ...(privateDir ? { PI_AGENT_PRIVATE_DIR: privateDir } : {}),
-          ...(judgeSqlitePath ? { PI_SQLITE_PATH: judgeSqlitePath } : {}),
-          ...(judgeProjectDir ? { CAFF_TRELLIS_PROJECT_DIR: judgeProjectDir } : {}),
-          CAFF_SKILL_LOADING_MODE: 'full',
-        },
-      });
-      const judgeResult = await handle.resultPromise;
-      const parsed = parseFullModeExecutionJudgeResponse(judgeResult && judgeResult.reply ? judgeResult.reply : '');
-      return {
-        ...parsed,
-        sessionPath: String((judgeResult && judgeResult.sessionPath) || handle.sessionPath || '').trim(),
-      };
-    } catch (error: any) {
-      return {
-        status: 'runtime_failed',
-        parsed: false,
-        rawResponse: '',
-        errorMessage: error && error.message ? String(error.message) : String(error || 'AI judge failed'),
-        goalAchievement: { score: null, reason: '' },
-        instructionAdherence: { score: null, reason: '' },
-        summary: '',
-        verdictSuggestion: '',
-        missedExpectations: [],
-        steps: [],
-        constraintChecks: [],
-        sessionPath: String((error && error.sessionPath) || (handle && handle.sessionPath) || '').trim(),
-      };
-    }
-  }
-
   function buildStoredCaseValidationInputFromRow(row: any) {
     const issues: any[] = [];
     if (!row || typeof row !== 'object') {
@@ -5005,1097 +1979,20 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     return validation;
   }
 
-  function getExecutionJudgeValidationIssues(aiJudge: any) {
-    if (!aiJudge || typeof aiJudge !== 'object') {
-      return [];
-    }
-    if (aiJudge.status === 'parse_failed') {
-      return [
-        buildValidationIssue(
-          'judge_parse_failed',
-          'error',
-          'evaluation.aiJudge',
-          String(aiJudge.errorMessage || 'Execution judge response could not be parsed')
-        ),
-      ];
-    }
-    if (aiJudge.status === 'runtime_failed') {
-      return [
-        buildValidationIssue(
-          'judge_runtime_failed',
-          'needs-review',
-          'evaluation.aiJudge',
-          String(aiJudge.errorMessage || 'Execution judge failed at runtime')
-        ),
-      ];
-    }
-    return [];
-  }
-
-  function normalizeSequenceEntryName(entry: any) {
-    if (typeof entry === 'string') {
-      return normalizeToolNameForMatch(entry);
-    }
-    if (!entry || typeof entry !== 'object') {
-      return '';
-    }
-    return normalizeToolNameForMatch(entry.name || entry.tool || '');
-  }
-
-  function buildExpectedSequenceSpecsWithDiagnostics(testCase: any, expectedTools: any[]) {
-    const expectedSteps = Array.isArray(testCase && testCase.expectedSteps) ? testCase.expectedSteps : [];
-    const stepIdSet = new Set<string>();
-    const stepIdToToolName = new Map<string, string>();
-    const orderedExpectedTools = Array.isArray(expectedTools) ? expectedTools : [];
-    const orderToToolName = new Map<number, string>();
-
-    for (const entry of orderedExpectedTools) {
-      const toolName = String(entry && entry.name || '').trim();
-      const order = parseExpectedToolOrder(entry);
-      if (!toolName || order == null || orderToToolName.has(order)) {
-        continue;
-      }
-      orderToToolName.set(order, toolName);
-    }
-
-    for (const step of expectedSteps) {
-      const stepId = String(step && step.id || '').trim();
-      if (!stepId) {
-        continue;
-      }
-      stepIdSet.add(stepId);
-
-      const strongSignals = Array.isArray(step && step.strongSignals) ? step.strongSignals : [];
-      let mappedToolName = '';
-      for (const signal of strongSignals) {
-        if (!isPlainObject(signal) || String(signal.type || '').trim() !== 'tool') {
-          continue;
-        }
-        const toolName = String(signal.toolName || signal.tool || signal.name || '').trim();
-        if (toolName) {
-          mappedToolName = toolName;
-          break;
-        }
-      }
-
-      if (!mappedToolName) {
-        const order = normalizePositiveInteger(step && step.order);
-        if (order != null && orderToToolName.has(order)) {
-          mappedToolName = String(orderToToolName.get(order) || '').trim();
-        }
-      }
-
-      if (mappedToolName) {
-        stepIdToToolName.set(stepId, mappedToolName);
-      }
-    }
-
-    const explicitSequence = sanitizeExpectedSequence(testCase && testCase.expectedSequence);
-    const unresolvedStepIds = new Set<string>();
-
-    if (explicitSequence.length > 0) {
-      const specs = explicitSequence
-        .map((entry: any, index: number) => {
-          const reference = normalizeStepSequenceReference(entry);
-          const referencesKnownStep = Boolean(reference && stepIdSet.has(reference));
-          let name = '';
-
-          if (referencesKnownStep) {
-            name = String(stepIdToToolName.get(reference) || '').trim();
-            if (!name) {
-              unresolvedStepIds.add(reference);
-              return null;
-            }
-          } else {
-            name = normalizeSequenceEntryName(entry);
-          }
-
-          if (!name) {
-            return null;
-          }
-
-          const order = parseExpectedToolOrder(entry);
-          return {
-            name,
-            order: order != null ? order : index + 1,
-            sourceOrder: index,
-            stepId: referencesKnownStep ? reference : '',
-          };
-        })
-        .filter(Boolean);
-
-      return {
-        specs,
-        unresolvedStepIds: [...unresolvedStepIds],
-      };
-    }
-
-    return {
-      specs: orderedExpectedTools
-        .filter((entry: any) => entry && entry.hasSequenceExpectation)
-        .map((entry: any) => ({
-          name: entry.name,
-          order: entry.order != null ? entry.order : null,
-          sourceOrder: entry.sourceOrder != null ? entry.sourceOrder : null,
-          stepId: '',
-        }))
-        .filter((entry: any) => entry && entry.name),
-      unresolvedStepIds: [],
-    };
-  }
-
-  function buildExpectedSequenceSpecs(testCase: any, expectedTools: any[]) {
-    return buildExpectedSequenceSpecsWithDiagnostics(testCase, expectedTools).specs;
-  }
-
-  function buildExpectedSequenceNames(testCase: any, expectedTools: any[]) {
-    return buildExpectedSequenceSpecs(testCase, expectedTools)
-      .slice()
-      .sort((left: any, right: any) => {
-        const orderDelta = Number(left.order || 0) - Number(right.order || 0);
-        return orderDelta || Number(left.sourceOrder || 0) - Number(right.sourceOrder || 0);
-      })
-      .map((entry: any) => entry.name)
-      .filter(Boolean);
-  }
-
-  function buildCriticalSequenceEvidenceIssues(testCase: any, expectedSequenceSpecs: any[], unresolvedStepIds: string[] = []) {
-    if (!testCase || String(testCase.loadingMode || '').trim().toLowerCase() !== 'full') {
-      return [];
-    }
-    const rubric = sanitizeEvaluationRubric(testCase && testCase.evaluationRubric);
-    const criticalDimensions = Array.isArray(rubric.criticalDimensions)
-      ? rubric.criticalDimensions.map((entry: any) => String(entry || '').trim())
-      : [];
-    if (!criticalDimensions.includes('sequenceAdherence')) {
-      return [];
-    }
-
-    const normalizedUnresolved = Array.isArray(unresolvedStepIds)
-      ? unresolvedStepIds.map((entry: any) => String(entry || '').trim()).filter(Boolean)
-      : [];
-    if (normalizedUnresolved.length > 0) {
-      return [
-        buildValidationIssue(
-          'critical_sequence_evidence_unavailable',
-          'needs-review',
-          'evaluationRubric.criticalDimensions',
-          `sequenceAdherence is critical, but no verifiable sequence evidence mapping exists for steps: ${normalizedUnresolved.join(', ')}`
-        ),
-      ];
-    }
-    if (!Array.isArray(expectedSequenceSpecs) || expectedSequenceSpecs.length === 0) {
-      return [
-        buildValidationIssue(
-          'critical_sequence_evidence_unavailable',
-          'needs-review',
-          'evaluationRubric.criticalDimensions',
-          'sequenceAdherence is critical, but no verifiable sequence evidence could be constructed'
-        ),
-      ];
-    }
-    return [];
-  }
-
-  function readThresholdNumber(value: any, fallback: number | null) {
-    if (value == null || value === '') {
-      return fallback;
-    }
-    const parsed = Number(value);
-    if (!Number.isFinite(parsed)) {
-      return fallback;
-    }
-    if (parsed < 0 || parsed > 1) {
-      return fallback;
-    }
-    return parsed;
-  }
-
-  function getFullModeThresholds(testCase: any, hasSequenceConstraint: boolean) {
-    const rubric = sanitizeEvaluationRubric(testCase && testCase.evaluationRubric);
-    const passThresholds = isPlainObject(rubric.passThresholds)
-      ? rubric.passThresholds
-      : isPlainObject(rubric.thresholds)
-        ? rubric.thresholds
-        : {};
-    const hardFailThresholds = isPlainObject(rubric.hardFailThresholds) ? rubric.hardFailThresholds : {};
-    return {
-      pass: {
-        goalAchievement: readThresholdNumber(passThresholds.goalAchievement, 0.7),
-        instructionAdherence: readThresholdNumber(passThresholds.instructionAdherence, 0.7),
-        sequenceAdherence: hasSequenceConstraint ? readThresholdNumber(passThresholds.sequenceAdherence, 0.7) : null,
-      },
-      hardFail: {
-        goalAchievement: readThresholdNumber(hardFailThresholds.goalAchievement, 0.5),
-        instructionAdherence: readThresholdNumber(hardFailThresholds.instructionAdherence, 0.5),
-        sequenceAdherence: hasSequenceConstraint ? readThresholdNumber(hardFailThresholds.sequenceAdherence, 0.4) : null,
-      },
-      supporting: {
-        requiredToolCoverage: readThresholdNumber(passThresholds.requiredToolCoverage, 1),
-        toolCallSuccessRate: readThresholdNumber(passThresholds.toolCallSuccessRate, 0.8),
-        toolErrorRate: readThresholdNumber(passThresholds.toolErrorRate, 0.2),
-      },
-    };
-  }
-
-  function getSequenceConstraintStepIds(testCase: any) {
-    const expectedSteps = Array.isArray(testCase && testCase.expectedSteps) ? testCase.expectedSteps : [];
-    const knownStepIds = new Set(expectedSteps.map((entry: any) => String(entry && entry.id || '').trim()).filter(Boolean));
-    const explicitSequence = Array.isArray(testCase && testCase.sequenceStepIds)
-      ? testCase.sequenceStepIds.map((entry: any) => String(entry || '').trim()).filter(Boolean)
-      : [];
-    if (explicitSequence.length > 0) {
-      return explicitSequence.filter((stepId: string) => knownStepIds.has(stepId));
-    }
-    return expectedSteps
-      .filter((entry: any) => normalizePositiveInteger(entry && entry.order) != null)
-      .slice()
-      .sort((left: any, right: any) => Number(left.order || 0) - Number(right.order || 0))
-      .map((entry: any) => String(entry && entry.id || '').trim())
-      .filter(Boolean);
-  }
-
-  function buildTimelineOrderLookup(timelineIds: any) {
-    const ids = Array.isArray(timelineIds)
-      ? timelineIds.map((entry: any) => String(entry || '').trim()).filter(Boolean)
-      : [];
-    const lookup = new Map<string, number>();
-    ids.forEach((id, index) => lookup.set(id, index));
-    return lookup;
-  }
-
-  function buildJudgeStepLookup(aiJudge: any) {
-    const stepLookup = new Map<string, any>();
-    const judgeSteps = Array.isArray(aiJudge && aiJudge.steps) ? aiJudge.steps : [];
-    for (const step of judgeSteps) {
-      const stepId = String(step && step.stepId || '').trim();
-      if (!stepId || stepLookup.has(stepId)) {
-        continue;
-      }
-      stepLookup.set(stepId, step);
-    }
-    return stepLookup;
-  }
-
-  function resolveStepEvidenceOrder(stepResult: any, timelineOrderLookup: Map<string, number>) {
-    if (!stepResult || !Array.isArray(stepResult.evidenceIds) || timelineOrderLookup.size === 0) {
-      return null;
-    }
-    let minOrder: number | null = null;
-    for (const evidenceId of stepResult.evidenceIds) {
-      const id = String(evidenceId || '').trim();
-      if (!id || !timelineOrderLookup.has(id)) {
-        continue;
-      }
-      const order = Number(timelineOrderLookup.get(id));
-      if (minOrder == null || order < minOrder) {
-        minOrder = order;
-      }
-    }
-    return minOrder;
-  }
-
-  function calculateSequenceAdherenceFromEvidence(sequenceStepIds: string[], stepLookup: Map<string, any>, timelineOrderLookup: Map<string, number>) {
-    if (!Array.isArray(sequenceStepIds) || sequenceStepIds.length === 0) {
-      return {
-        score: null,
-        comparableStepCount: 0,
-        matchedComparableCount: 0,
-        unresolvedStepIds: [],
-        reason: '未配置关键顺序。',
-      };
-    }
-
-    const resolved: Array<{ stepId: string; order: number }> = [];
-    const unresolvedStepIds: string[] = [];
-
-    for (const stepId of sequenceStepIds) {
-      const normalizedStepId = String(stepId || '').trim();
-      if (!normalizedStepId) {
-        continue;
-      }
-      const stepResult = stepLookup.get(normalizedStepId);
-      const order = resolveStepEvidenceOrder(stepResult, timelineOrderLookup);
-      if (order == null) {
-        unresolvedStepIds.push(normalizedStepId);
-        continue;
-      }
-      resolved.push({ stepId: normalizedStepId, order });
-    }
-
-    if (resolved.length < 2) {
-      return {
-        score: null,
-        comparableStepCount: resolved.length,
-        matchedComparableCount: 0,
-        unresolvedStepIds,
-        reason: `顺序证据不足，无法计算顺序分数（已解析 ${resolved.length} / ${sequenceStepIds.length} 个步骤证据）。`,
-      };
-    }
-
-    let matchedComparableCount = 1;
-    for (let index = 1; index < resolved.length; index += 1) {
-      if (resolved[index].order > resolved[index - 1].order) {
-        matchedComparableCount += 1;
-      }
-    }
-
-    return {
-      score: matchedComparableCount / resolved.length,
-      comparableStepCount: resolved.length,
-      matchedComparableCount,
-      unresolvedStepIds,
-      reason: `顺序证据匹配 ${matchedComparableCount} / ${resolved.length}`,
-    };
-  }
-
-  function calculateStepCompletionMetrics(testCase: any, stepLookup: Map<string, any>) {
-    const expectedSteps = Array.isArray(testCase && testCase.expectedSteps) ? testCase.expectedSteps : [];
-    const requiredSteps = expectedSteps.filter((entry: any) => Boolean(entry && entry.required));
-    const completedSteps = expectedSteps.filter((entry: any) => {
-      const stepId = String(entry && entry.id || '').trim();
-      const stepResult = stepLookup.get(stepId);
-      return Boolean(stepResult && stepResult.completed === true);
-    });
-    const completedRequiredSteps = requiredSteps.filter((entry: any) => {
-      const stepId = String(entry && entry.id || '').trim();
-      const stepResult = stepLookup.get(stepId);
-      return Boolean(stepResult && stepResult.completed === true);
-    });
-
-    const missingRequiredSteps = requiredSteps
-      .map((entry: any) => String(entry && entry.id || '').trim())
-      .filter((stepId: string) => {
-        const stepResult = stepLookup.get(stepId);
-        return !stepResult || stepResult.completed !== true;
-      });
-
-    const missingNonRequiredSteps = expectedSteps
-      .filter((entry: any) => !entry || !entry.required)
-      .map((entry: any) => String(entry && entry.id || '').trim())
-      .filter(Boolean)
-      .filter((stepId: string) => {
-        const stepResult = stepLookup.get(stepId);
-        return !stepResult || stepResult.completed !== true;
-      });
-
-    return {
-      requiredStepCompletionRate: requiredSteps.length > 0 ? completedRequiredSteps.length / requiredSteps.length : null,
-      stepCompletionRate: expectedSteps.length > 0 ? completedSteps.length / expectedSteps.length : null,
-      requiredCompletedCount: completedRequiredSteps.length,
-      requiredTotalCount: requiredSteps.length,
-      completedCount: completedSteps.length,
-      totalCount: expectedSteps.length,
-      missingRequiredSteps,
-      missingNonRequiredSteps,
-    };
-  }
-
-  function hasWeakStepEvidence(testCase: any, stepLookup: Map<string, any>) {
-    const expectedSteps = Array.isArray(testCase && testCase.expectedSteps) ? testCase.expectedSteps : [];
-    for (const step of expectedSteps) {
-      if (!step || step.required !== true) {
-        continue;
-      }
-      const stepId = String(step.id || '').trim();
-      const stepResult = stepLookup.get(stepId);
-      if (!stepResult || stepResult.completed !== true) {
-        continue;
-      }
-      if (!Array.isArray(stepResult.evidenceIds) || stepResult.evidenceIds.length === 0) {
-        return true;
-      }
-      const confidence = Number(stepResult.confidence);
-      if (Number.isFinite(confidence) && confidence < 0.5) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  function buildConstraintCheckLookup(aiJudge: any) {
-    const lookup = new Map<string, any>();
-    const checks = Array.isArray(aiJudge && aiJudge.constraintChecks) ? aiJudge.constraintChecks : [];
-    for (const check of checks) {
-      const constraintId = String(check && check.constraintId || '').trim();
-      if (!constraintId || lookup.has(constraintId)) {
-        continue;
-      }
-      lookup.set(constraintId, check);
-    }
-    return lookup;
-  }
-
-  function violatesCriticalConstraint(constraintLookup: Map<string, any>, rubric: any) {
-    const constraints = Array.isArray(rubric && rubric.criticalConstraints) ? rubric.criticalConstraints : [];
-    for (const constraint of constraints) {
-      const constraintId = String(constraint && constraint.id || '').trim();
-      if (!constraintId) {
-        continue;
-      }
-      const check = constraintLookup.get(constraintId);
-      if (!check || check.satisfied !== false) {
-        continue;
-      }
-      if (Array.isArray(check.evidenceIds) && check.evidenceIds.length > 0) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  function hasUnknownCriticalConstraintCheck(constraintLookup: Map<string, any>, rubric: any) {
-    const constraints = Array.isArray(rubric && rubric.criticalConstraints) ? rubric.criticalConstraints : [];
-    for (const constraint of constraints) {
-      const constraintId = String(constraint && constraint.id || '').trim();
-      if (!constraintId) {
-        continue;
-      }
-      const check = constraintLookup.get(constraintId);
-      if (!check || check.satisfied == null) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  function hasSupportingMetricWeakness(metrics: any, thresholds: any) {
-    const requiredToolCoverageWeak = metrics.requiredToolCoverage != null
-      && thresholds.requiredToolCoverage != null
-      && metrics.requiredToolCoverage < thresholds.requiredToolCoverage;
-    const toolSuccessWeak = metrics.toolCallSuccessRate != null
-      && thresholds.toolCallSuccessRate != null
-      && metrics.toolCallSuccessRate < thresholds.toolCallSuccessRate;
-    const toolErrorWeak = metrics.toolErrorRate != null
-      && thresholds.toolErrorRate != null
-      && metrics.toolErrorRate > thresholds.toolErrorRate;
-    return requiredToolCoverageWeak || toolSuccessWeak || toolErrorWeak;
-  }
-
-  function judgeFailIsBackedByObservableEvidence(aiJudge: any, context: any) {
-    if (!aiJudge || aiJudge.status !== 'succeeded' || aiJudge.verdictSuggestion !== 'fail') {
-      return false;
-    }
-    if (Array.isArray(context && context.hardFailReasons) && context.hardFailReasons.length > 0) {
-      return true;
-    }
-    if (context && context.missingRequiredStep) {
-      return true;
-    }
-    if (context && context.criticalConstraintViolated) {
-      return true;
-    }
-    if (context && context.goalHardFail) {
-      return true;
-    }
-    if (context && context.instructionHardFail) {
-      return true;
-    }
-    const steps = Array.isArray(aiJudge.steps) ? aiJudge.steps : [];
-    return steps.some((step: any) => step && step.completed === false && Array.isArray(step.evidenceIds) && step.evidenceIds.length > 0);
-  }
-
-  function aggregateFullVerdict(testCase: any, aiJudge: any, metrics: any, context: any) {
-    const sequenceStepIds = Array.isArray(context && context.sequenceStepIds) ? context.sequenceStepIds : [];
-    const hasSequenceConstraint = sequenceStepIds.length > 0;
-    const rubric = sanitizeEvaluationRubric(testCase && testCase.evaluationRubric);
-    const criticalDimensions = Array.isArray(rubric.criticalDimensions)
-      ? rubric.criticalDimensions.map((entry: any) => String(entry || '').trim())
-      : [];
-    const sequenceIsCritical = hasSequenceConstraint && criticalDimensions.includes('sequenceAdherence');
-    const hardFailReasons: string[] = [];
-    const borderlineReasons: string[] = [];
-    const supportingWarnings: string[] = [];
-
-    const missingRequiredStep = Boolean(aiJudge && aiJudge.status === 'succeeded')
-      && metrics.requiredStepCompletionRate != null
-      && metrics.requiredStepCompletionRate < 1;
-    const goalHardFail = metrics.goalAchievement != null
-      && context.thresholds.hardFail.goalAchievement != null
-      && metrics.goalAchievement < context.thresholds.hardFail.goalAchievement;
-    const instructionHardFail = metrics.instructionAdherence != null
-      && context.thresholds.hardFail.instructionAdherence != null
-      && metrics.instructionAdherence < context.thresholds.hardFail.instructionAdherence;
-    const sequenceHardFail = sequenceIsCritical
-      && metrics.sequenceAdherence != null
-      && context.thresholds.hardFail.sequenceAdherence != null
-      && metrics.sequenceAdherence < context.thresholds.hardFail.sequenceAdherence;
-
-    if (missingRequiredStep) {
-      hardFailReasons.push('missing-required-step');
-    }
-    if (goalHardFail) {
-      hardFailReasons.push('goal-hard-fail');
-    }
-    if (instructionHardFail) {
-      hardFailReasons.push('instruction-hard-fail');
-    }
-    if (sequenceHardFail) {
-      hardFailReasons.push('critical-sequence-hard-fail');
-    }
-    if (context.criticalConstraintViolated) {
-      hardFailReasons.push('critical-constraint');
-    }
-
-    const judgeFailBacked = judgeFailIsBackedByObservableEvidence(aiJudge, {
-      hardFailReasons,
-      missingRequiredStep,
-      criticalConstraintViolated: context.criticalConstraintViolated,
-      goalHardFail,
-      instructionHardFail,
-    });
-    if (judgeFailBacked) {
-      hardFailReasons.push('judge-backed-hard-fail');
-    }
-
-    if (hardFailReasons.length > 0) {
-      return {
-        verdict: 'fail',
-        hardFailReasons: [...new Set(hardFailReasons)],
-        borderlineReasons,
-        supportingWarnings,
-      };
-    }
-
-    if (!aiJudge || aiJudge.status !== 'succeeded') {
-      borderlineReasons.push('judge-needs-review');
-    }
-    if (context.unknownCriticalConstraintCheck) {
-      borderlineReasons.push('critical-constraint-needs-review');
-    }
-    if (sequenceIsCritical && metrics.sequenceAdherence == null) {
-      borderlineReasons.push('critical-sequence-needs-review');
-    }
-
-    const primaryNeedsReview = Boolean(
-      (metrics.goalAchievement != null
-        && context.thresholds.pass.goalAchievement != null
-        && metrics.goalAchievement < context.thresholds.pass.goalAchievement)
-      || (metrics.instructionAdherence != null
-        && context.thresholds.pass.instructionAdherence != null
-        && metrics.instructionAdherence < context.thresholds.pass.instructionAdherence)
-      || (hasSequenceConstraint
-        && metrics.sequenceAdherence != null
-        && context.thresholds.pass.sequenceAdherence != null
-        && metrics.sequenceAdherence < context.thresholds.pass.sequenceAdherence)
-    );
-    if (primaryNeedsReview) {
-      borderlineReasons.push('primary-dimension-below-pass-threshold');
-    }
-
-    const supportingWeak = hasSupportingMetricWeakness(metrics, context.thresholds.supporting);
-    const hasBorderlineSignals = Boolean(
-      context.missingNonRequiredStep
-      || context.weakEvidence
-      || supportingWeak
-      || (aiJudge && aiJudge.verdictSuggestion === 'borderline')
-      || (aiJudge && aiJudge.verdictSuggestion === 'fail' && !judgeFailBacked)
-    );
-    if (hasBorderlineSignals) {
-      borderlineReasons.push('needs-human-review-or-supporting-signals-weak');
-    }
-    if (supportingWeak) {
-      supportingWarnings.push('supporting-metrics-weak');
-    }
-
-    if (borderlineReasons.length > 0) {
-      return {
-        verdict: 'borderline',
-        hardFailReasons,
-        borderlineReasons: [...new Set(borderlineReasons)],
-        supportingWarnings: [...new Set(supportingWarnings)],
-      };
-    }
-
-    supportingWarnings.push('primary-dimensions-met');
-    return {
-      verdict: 'pass',
-      hardFailReasons,
-      borderlineReasons,
-      supportingWarnings: [...new Set(supportingWarnings)],
-    };
-  }
-
-  async function buildFullModeExecutionEvaluation(skill: any, testCase: any, expectedTools: any[], observedToolCalls: any[], toolCallEvents: any[], _toolChecks: any[], _sequenceCheck: any, evidenceText: string, runtime: any = {}) {
-    const toolChecks = Array.isArray(_toolChecks) && _toolChecks.length === expectedTools.length
-      ? _toolChecks
-      : expectedTools.map((entry: any) => evaluateExpectedToolCall(entry, observedToolCalls));
-    const matchedToolChecks = toolChecks.filter((entry: any) => entry && entry.matched);
-    const requiredToolCoverage = expectedTools.length > 0 ? matchedToolChecks.length / expectedTools.length : null;
-    const successfulMatchedCount = matchedToolChecks.filter((entry: any) => String(entry.actualStatus || '').trim().toLowerCase() !== 'failed').length;
-    const toolCallSuccessRate = matchedToolChecks.length > 0 ? successfulMatchedCount / matchedToolChecks.length : null;
-    const failedEventCalls = toolCallEvents.filter((entry: any) => String(entry && entry.status || '').trim().toLowerCase() === 'failed');
-    const totalObservedCount = toolCallEvents.length > 0 ? toolCallEvents.length : observedToolCalls.length;
-    const toolErrorRate = totalObservedCount > 0 ? failedEventCalls.length / totalObservedCount : null;
-    const missingTools = toolChecks.filter((entry: any) => !entry.matched).map((entry: any) => entry.name);
-    const expectedToolNames = [...new Set(expectedTools.map((entry: any) => entry.name).filter(Boolean))];
-    const unexpectedTools = [...new Set(observedToolCalls.map((entry: any) => entry.toolName).filter(Boolean))]
-      .filter((toolName) => !expectedToolNames.some((expectedName) => toolNamesMatch(expectedName, toolName)));
-    const failedCalls = failedEventCalls.map((entry: any) => ({
-      tool: String(entry && entry.tool || '').trim() || 'unknown',
-      reason: String(entry && entry.error && entry.error.message || 'tool call failed').trim(),
-    }));
-
-    const sequenceDiagnostics = isPlainObject(runtime && runtime.sequenceDiagnostics)
-      ? runtime.sequenceDiagnostics
-      : buildExpectedSequenceSpecsWithDiagnostics(testCase, expectedTools);
-    const sequenceEvidenceIssues = buildCriticalSequenceEvidenceIssues(
-      testCase,
-      Array.isArray(sequenceDiagnostics && sequenceDiagnostics.specs) ? sequenceDiagnostics.specs : [],
-      Array.isArray(sequenceDiagnostics && sequenceDiagnostics.unresolvedStepIds)
-        ? sequenceDiagnostics.unresolvedStepIds
-        : []
-    );
-
-    const rawAiJudge = await runFullModeExecutionAiJudge(
-      skill,
-      testCase,
-      [...new Set(observedToolCalls.map((entry: any) => entry.toolName).filter(Boolean))],
-      failedCalls,
-      evidenceText,
-      runtime
-    );
-    const validatedJudge = validateJudgeOutput(rawAiJudge, testCase, runtime && runtime.timelineIds);
-    const aiJudge = validatedJudge && validatedJudge.judge ? validatedJudge.judge : rawAiJudge;
-
-    const timelineOrderLookup = buildTimelineOrderLookup(runtime && runtime.timelineIds);
-    const sequenceStepIds = getSequenceConstraintStepIds(testCase);
-    const stepLookup = buildJudgeStepLookup(aiJudge);
-    const rawStepMetrics = calculateStepCompletionMetrics(testCase, stepLookup);
-    const stepMetrics = aiJudge && aiJudge.status === 'succeeded'
-      ? rawStepMetrics
-      : {
-        ...rawStepMetrics,
-        requiredStepCompletionRate: null,
-        stepCompletionRate: null,
-        missingRequiredSteps: [],
-        missingNonRequiredSteps: [],
-      };
-    const sequenceMetrics = calculateSequenceAdherenceFromEvidence(sequenceStepIds, stepLookup, timelineOrderLookup);
-    const sequenceAdherence = sequenceMetrics.score;
-
-    const goalAchievement = aiJudge && aiJudge.goalAchievement && aiJudge.goalAchievement.score != null
-      ? Number(aiJudge.goalAchievement.score)
-      : null;
-    const instructionAdherence = aiJudge && aiJudge.instructionAdherence && aiJudge.instructionAdherence.score != null
-      ? Number(aiJudge.instructionAdherence.score)
-      : null;
-
-    const thresholds = getFullModeThresholds(testCase, sequenceStepIds.length > 0);
-    const rubric = sanitizeEvaluationRubric(testCase && testCase.evaluationRubric);
-    const constraintLookup = buildConstraintCheckLookup(aiJudge);
-    const criticalConstraintViolated = violatesCriticalConstraint(constraintLookup, rubric);
-    const unknownCriticalConstraintCheck = hasUnknownCriticalConstraintCheck(constraintLookup, rubric);
-    const weakEvidence = hasWeakStepEvidence(testCase, stepLookup)
-      || mergeValidationIssues(validatedJudge && validatedJudge.issues).some((issue: any) =>
-        issue && (issue.code === 'judge_unknown_evidence_id' || issue.code === 'judge_unknown_signal_id'));
-    const missingNonRequiredStep = Array.isArray(stepMetrics.missingNonRequiredSteps) && stepMetrics.missingNonRequiredSteps.length > 0;
-    const runtimeSequenceIssues = sequenceStepIds.length > 0
-      && sequenceAdherence == null
-      && Array.isArray(rubric.criticalDimensions)
-      && rubric.criticalDimensions.map((entry: any) => String(entry || '').trim()).includes('sequenceAdherence')
-      ? [
-        buildValidationIssue(
-          'critical_sequence_evidence_unavailable',
-          'needs-review',
-          'evaluation.sequenceAdherence',
-          'sequenceAdherence is critical, but evidenceIds were insufficient to compute sequence order'
-        ),
-      ]
-      : [];
-
-    const judgeValidationIssues = mergeValidationIssues(
-      getExecutionJudgeValidationIssues(aiJudge),
-      validatedJudge && validatedJudge.issues ? validatedJudge.issues : [],
-      sequenceEvidenceIssues,
-      runtimeSequenceIssues
-    );
-
-    const aggregated = aggregateFullVerdict(testCase, aiJudge, {
-      requiredStepCompletionRate: stepMetrics.requiredStepCompletionRate,
-      stepCompletionRate: stepMetrics.stepCompletionRate,
-      sequenceAdherence,
-      goalAchievement,
-      instructionAdherence,
-      requiredToolCoverage,
-      toolCallSuccessRate,
-      toolErrorRate,
-    }, {
-      thresholds,
-      sequenceStepIds,
-      criticalConstraintViolated,
-      unknownCriticalConstraintCheck,
-      weakEvidence,
-      missingNonRequiredStep,
-    });
-
-    return {
-      verdict: aggregated.verdict,
-      summary: String(aiJudge && aiJudge.summary || '').trim()
-        || (aggregated.verdict === 'pass' ? '本次 full mode 执行整体达标。' : '本次 full mode 执行存在需要人工复核的偏差。'),
-      dimensions: {
-        requiredStepCompletionRate: {
-          score: roundMetric(stepMetrics.requiredStepCompletionRate),
-          reason: stepMetrics.requiredTotalCount > 0
-            ? `required 步骤完成 ${stepMetrics.requiredCompletedCount} / ${stepMetrics.requiredTotalCount}`
-            : '未配置 required 步骤。',
-        },
-        stepCompletionRate: {
-          score: roundMetric(stepMetrics.stepCompletionRate),
-          reason: stepMetrics.totalCount > 0
-            ? `步骤完成 ${stepMetrics.completedCount} / ${stepMetrics.totalCount}`
-            : '未配置 expectedSteps。',
-        },
-        requiredToolCoverage: {
-          score: roundMetric(requiredToolCoverage),
-          reason: missingTools.length > 0 ? `缺少工具：${missingTools.join(' / ')}` : '必需工具槽位已覆盖。',
-        },
-        toolCallSuccessRate: {
-          score: roundMetric(toolCallSuccessRate),
-          reason: matchedToolChecks.length > 0 ? `成功 ${successfulMatchedCount} / ${matchedToolChecks.length}` : '没有命中任何必需工具槽位。',
-        },
-        toolErrorRate: {
-          score: roundMetric(toolErrorRate),
-          reason: totalObservedCount > 0 ? `失败调用 ${failedEventCalls.length} / ${totalObservedCount}` : '没有工具调用。',
-        },
-        sequenceAdherence: {
-          score: roundMetric(sequenceAdherence),
-          reason: sequenceMetrics.reason,
-        },
-        goalAchievement: {
-          score: roundMetric(goalAchievement),
-          reason: aiJudge && aiJudge.goalAchievement && aiJudge.goalAchievement.reason
-            ? aiJudge.goalAchievement.reason
-            : 'AI judge 未提供目标达成说明。',
-        },
-        instructionAdherence: {
-          score: roundMetric(instructionAdherence),
-          reason: aiJudge && aiJudge.instructionAdherence && aiJudge.instructionAdherence.reason
-            ? aiJudge.instructionAdherence.reason
-            : 'AI judge 未提供行为符合度说明。',
-        },
-      },
-      aggregation: {
-        hardFailReasons: aggregated.hardFailReasons,
-        borderlineReasons: aggregated.borderlineReasons,
-        supportingWarnings: aggregated.supportingWarnings,
-      },
-      aiJudge,
-      steps: Array.isArray(aiJudge && aiJudge.steps) ? aiJudge.steps : [],
-      constraintChecks: Array.isArray(aiJudge && aiJudge.constraintChecks) ? aiJudge.constraintChecks : [],
-      missingSteps: {
-        required: stepMetrics.missingRequiredSteps,
-        nonRequired: stepMetrics.missingNonRequiredSteps,
-      },
-      missingTools,
-      unexpectedTools,
-      failedCalls,
-      validation: {
-        issues: judgeValidationIssues,
-      },
-    };
-  }
-
-  function getArgumentPathState(value: any, pathExpression: string) {
-    const segments = String(pathExpression || '').split('.').map((segment) => segment.trim()).filter(Boolean);
-    if (segments.length === 0) {
-      return { found: false, value: undefined };
-    }
-
-    let current = value;
-    for (const segment of segments) {
-      if (Array.isArray(current) && /^\d+$/.test(segment)) {
-        current = current[Number(segment)];
-      } else if (current != null && (typeof current === 'object' || Array.isArray(current))) {
-        current = current[segment as keyof typeof current];
-      } else {
-        return { found: false, value: undefined };
-      }
-
-      if (current === undefined) {
-        return { found: false, value: undefined };
-      }
-    }
-
-    return { found: true, value: current };
-  }
-
-  function matchesArgumentPattern(expected: any, actual: any): boolean {
-    if (typeof expected === 'string') {
-      const expectedText = expected.trim();
-      const normalized = expectedText.toLowerCase();
-      if (normalized === '<any>') {
-        return actual !== undefined;
-      }
-      if (normalized === '<string>') {
-        return typeof actual === 'string' && actual.trim().length > 0;
-      }
-      if (normalized === '<number>') {
-        return typeof actual === 'number' && Number.isFinite(actual);
-      }
-      if (normalized === '<boolean>') {
-        return typeof actual === 'boolean';
-      }
-      if (normalized === '<array>') {
-        return Array.isArray(actual);
-      }
-      if (normalized === '<object>') {
-        return isPlainObject(actual);
-      }
-      if (normalized.startsWith('<contains:') && normalized.endsWith('>')) {
-        if (typeof actual !== 'string') {
-          return false;
-        }
-        const needle = expectedText.slice('<contains:'.length, -1).trim().toLowerCase();
-        const normalizedNeedle = normalizeContainsComparableText(expectedText.slice('<contains:'.length, -1));
-        return (needle.length > 0 && actual.toLowerCase().includes(needle))
-          || (normalizedNeedle.length > 0 && normalizeContainsComparableText(actual).includes(normalizedNeedle));
-      }
-      return actual === expectedText;
-    }
-
-    if (Array.isArray(expected)) {
-      if (!Array.isArray(actual) || actual.length < expected.length) {
-        return false;
-      }
-      return expected.every((item, index) => matchesArgumentPattern(item, actual[index]));
-    }
-
-    if (isPlainObject(expected)) {
-      if (!isPlainObject(actual)) {
-        return false;
-      }
-      return Object.entries(expected).every(([key, value]) => matchesArgumentPattern(value, actual[key]));
-    }
-
-    return Object.is(expected, actual);
-  }
-
-  function evaluateExpectedToolCall(spec: any, observedToolCalls: any[]) {
-    const matchingCalls = observedToolCalls.filter((entry) => toolNamesMatch(spec && spec.name, entry && entry.toolName));
-    const hasParameterExpectation = Boolean(spec && spec.hasParameterExpectation);
-    const fallbackCall = matchingCalls.length > 0 ? matchingCalls[0] : null;
-    const fallbackArguments = fallbackCall ? fallbackCall.arguments : null;
-    const baseResult: any = {
-      name: spec.name,
-      order: spec.order != null ? spec.order : null,
-      matched: false,
-      matchedByName: matchingCalls.length > 0,
-      callCount: matchingCalls.length,
-      hasParameterExpectation,
-      requiredParams: spec.requiredParams || [],
-      expectedArguments: spec.hasArgumentShape ? spec.arguments : null,
-      missingParams: [],
-      argumentShapePassed: spec.hasArgumentShape ? false : null,
-      parameterPassed: hasParameterExpectation ? false : null,
-      actualArguments: fallbackArguments,
-      matchedCallIndex: fallbackCall && fallbackCall.orderIndex != null ? fallbackCall.orderIndex : null,
-      matchedSource: fallbackCall && fallbackCall.source ? fallbackCall.source : '',
-      actualStatus: fallbackCall && fallbackCall.status ? String(fallbackCall.status) : '',
-    };
-
-    if (matchingCalls.length === 0) {
-      return baseResult;
-    }
-
-    if (!hasParameterExpectation) {
-      return {
-        ...baseResult,
-        matched: true,
-        parameterPassed: null,
-      };
-    }
-
-    for (const call of matchingCalls) {
-      const actualArguments = call && hasOwn(call, 'arguments') ? call.arguments : undefined;
-      const missingParams = (spec.requiredParams || []).filter((pathValue: string) => {
-        const state = getArgumentPathState(actualArguments, pathValue);
-        return !state.found;
-      });
-      const argumentShapePassed = spec.hasArgumentShape
-        ? matchesArgumentPattern(spec.arguments, actualArguments)
-        : true;
-
-      if (missingParams.length === 0 && argumentShapePassed) {
-        return {
-          ...baseResult,
-          matched: true,
-          parameterPassed: true,
-          missingParams: [],
-          argumentShapePassed,
-          actualArguments,
-          matchedCallIndex: call && call.orderIndex != null ? call.orderIndex : null,
-          matchedSource: call && call.source ? call.source : '',
-          actualStatus: call && call.status ? String(call.status) : '',
-        };
-      }
-
-      if (!baseResult.matched) {
-        baseResult.missingParams = missingParams;
-        baseResult.argumentShapePassed = spec.hasArgumentShape ? argumentShapePassed : null;
-        baseResult.actualArguments = actualArguments;
-        baseResult.matchedCallIndex = call && call.orderIndex != null ? call.orderIndex : null;
-        baseResult.matchedSource = call && call.source ? call.source : '';
-        baseResult.actualStatus = call && call.status ? String(call.status) : '';
-      }
-    }
-
-    return baseResult;
-  }
-
-  const INFERRED_SESSION_TOOL_SEQUENCE_NAMES = [
-    'send-public',
-    'send-private',
-    'read-context',
-    'list-participants',
-    'trellis-init',
-    'trellis-write',
-  ];
-
-  function inferSequenceToolNameFromSessionCall(toolCall: any) {
-    const toolName = String(toolCall && toolCall.toolName || '').trim();
-    if (!toolName) {
-      return '';
-    }
-
-    if (toolName !== 'bash') {
-      return '';
-    }
-
-    const command = String(toolCall && toolCall.arguments && toolCall.arguments.command || '').trim().toLowerCase();
-    if (!command) {
-      return '';
-    }
-
-    for (const candidate of INFERRED_SESSION_TOOL_SEQUENCE_NAMES) {
-      if (command.includes(candidate)) {
-        return candidate;
-      }
-    }
-
-    return '';
-  }
-
-  function buildObservedSequenceCalls(toolCallEvents: any[], sessionToolCalls: any[]) {
-    const buildSequenceCalls = (entries: any[], sourceBuilder: (entry: any) => any[]) => {
-      const sequenceCalls: any[] = [];
-      const pushSequenceCall = (toolName: any, source: string) => {
-        const normalizedToolName = String(toolName || '').trim();
-        if (!normalizedToolName) {
-          return;
-        }
-        sequenceCalls.push({
-          toolName: normalizedToolName,
-          source,
-          orderIndex: sequenceCalls.length,
-        });
-      };
-
-      for (const entry of entries) {
-        for (const item of sourceBuilder(entry)) {
-          pushSequenceCall(item.toolName, item.source);
-        }
-      }
-
-      return sequenceCalls;
-    };
-
-    const sessionSequenceCalls = buildSequenceCalls(sessionToolCalls, (toolCall) => {
-      const calls: any[] = [];
-      const actualToolName = String(toolCall && toolCall.toolName || '').trim();
-      if (actualToolName) {
-        calls.push({ toolName: actualToolName, source: 'session' });
-      }
-      const inferredToolName = inferSequenceToolNameFromSessionCall(toolCall);
-      if (inferredToolName && inferredToolName !== actualToolName) {
-        calls.push({ toolName: inferredToolName, source: 'session-inferred' });
-      }
-      return calls;
-    });
-
-    if (sessionSequenceCalls.length > 0) {
-      return sessionSequenceCalls;
-    }
-
-    return buildSequenceCalls(toolCallEvents, (event) => [
-      { toolName: event && event.tool, source: 'event' },
-    ]);
-  }
-
-  function evaluateToolSequence(expectedSequenceSpecs: any[], observedSequenceCalls: any[]) {
-    const orderedSpecs = Array.isArray(expectedSequenceSpecs)
-      ? expectedSequenceSpecs
-        .filter((entry: any) => entry && entry.name)
-        .slice()
-        .sort((a: any, b: any) => {
-          const orderDelta = Number(a.order || 0) - Number(b.order || 0);
-          return orderDelta || Number(a.sourceOrder || 0) - Number(b.sourceOrder || 0);
-        })
-      : [];
-
-    if (orderedSpecs.length === 0) {
-      return {
-        enabled: false,
-        orderedExpectedCount: 0,
-        matchedCount: 0,
-        passed: null,
-        skipped: false,
-        observedTools: observedSequenceCalls.map((entry: any) => entry.toolName),
-        steps: [],
-      };
-    }
-
-    let cursor = 0;
-    let matchedCount = 0;
-    const steps: any[] = [];
-
-    for (const spec of orderedSpecs) {
-      const expectedAfterIndex = cursor;
-      let matchedCallIndex = -1;
-      let observedCallCount = 0;
-      let firstObservedIndex = -1;
-
-      for (let index = 0; index < observedSequenceCalls.length; index += 1) {
-        const call = observedSequenceCalls[index];
-        if (!call || !toolNamesMatch(spec.name, call.toolName)) {
-          continue;
-        }
-        observedCallCount += 1;
-        if (firstObservedIndex === -1) {
-          firstObservedIndex = index;
-        }
-        if (matchedCallIndex === -1 && index >= cursor) {
-          matchedCallIndex = index;
-        }
-      }
-
-      const matched = matchedCallIndex >= 0;
-      if (matched) {
-        matchedCount += 1;
-        cursor = matchedCallIndex + 1;
-      }
-
-      steps.push({
-        name: spec.name,
-        order: spec.order != null ? spec.order : null,
-        matched,
-        outOfOrder: !matched && firstObservedIndex !== -1 && firstObservedIndex < expectedAfterIndex,
-        matchedCallIndex: matched ? matchedCallIndex : null,
-        observedCallCount,
-        source: matched ? observedSequenceCalls[matchedCallIndex].source : '',
-      });
-    }
-
-    return {
-      enabled: true,
-      orderedExpectedCount: orderedSpecs.length,
-      matchedCount,
-      passed: matchedCount === orderedSpecs.length,
-      skipped: false,
-      observedTools: observedSequenceCalls.map((entry: any) => entry.toolName),
-      steps,
-    };
-  }
+  const runEvaluationHelpers = createSkillTestRunEvaluationHelpers({
+    store,
+    startRunImpl,
+    buildProviderAuthEnv,
+  });
+  const {
+    buildExpectedSequenceSpecsWithDiagnostics,
+    normalizeSequenceEntryName,
+    buildObservedSequenceCalls,
+    evaluateExpectedToolCall,
+    evaluateFullModeTrigger,
+    evaluateToolSequence,
+    buildFullModeExecutionEvaluation,
+  } = runEvaluationHelpers;
 
   async function evaluateRun(taskId: string, testCase: any, runtime: any = {}) {
     const runtimeRunStore = runtime && runtime.runStore ? runtime.runStore : null;
@@ -6423,909 +2320,44 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     };
   }
 
-  async function executeRun(testCase: any, runOptions: any = {}) {
-    ensureSchema();
-
-    if (!agentToolBridge) {
-      throw createHttpError(501, 'Agent tool bridge is not configured');
-    }
-
-    const preflight = normalizeCaseForRunOrThrow(testCase);
-    testCase = { ...testCase, ...preflight.normalizedCase, derivedFromLegacy: preflight.derivedFromLegacy };
-
-    const prompt = getCanonicalCasePrompt(testCase);
-    if (!prompt) {
-      throw createHttpError(400, 'Test case has no trigger prompt');
-    }
-
-    const liveSkill = skillRegistry ? skillRegistry.getSkill(testCase.skillId) : null;
-    const agentId = String(runOptions.agentId || 'skill-test-agent').trim();
-    const agentName = String(runOptions.agentName || 'Skill Test Agent').trim();
-    const provider = String(runOptions.provider || '').trim();
-    const model = String(runOptions.model || '').trim();
-    const promptVersion = String(runOptions.promptVersion || '').trim() || 'skill-test-v1';
-    const effectiveProvider = resolveSetting(provider, process.env.PI_PROVIDER, DEFAULT_PROVIDER);
-    const effectiveModel = resolveSetting(model, process.env.PI_MODEL, DEFAULT_MODEL);
-    const loadingMode = String(testCase.loadingMode || 'dynamic').trim().toLowerCase() || 'dynamic';
-    const testType = String(testCase.testType || '').trim().toLowerCase();
-    const conversationId = `skill-test-${testCase.skillId}`;
-    const turnId = `skill-test-turn-${testCase.id}`;
-    const shouldEarlyStopOnSkillLoad = loadingMode === 'dynamic' && testType !== 'execution';
-    const timestamp = nowIso();
-    const taskId = `skill-test-run-${randomUUID()}`;
-    const liveMessageId = `skill-test-trace-${taskId}`;
-    const promptUserMessage = {
-      id: 'skill-test-user',
-      turnId,
-      role: 'user',
-      senderName: 'TestUser',
-      content: prompt,
-      status: 'completed',
-      createdAt: timestamp,
-    };
-    const agent = { id: agentId, name: agentName };
-    const liveProjectDir = getProjectDir ? String(getProjectDir() || '').trim() : '';
-
-    let evalCaseId = testCase.evalCaseId;
-
-    if (!evalCaseId) {
-      evalCaseId = randomUUID();
-
-      store.db
-        .prepare(
-          `INSERT INTO eval_cases (
-            id, conversation_id, turn_id, message_id, stage_task_id,
-            agent_id, agent_name, provider, model, thinking,
-            prompt_version, expectations_json,
-            prompt_a, output_a, note,
-            created_at, updated_at
-          ) VALUES (
-            @id, @conversationId, @turnId, @messageId, @stageTaskId,
-            @agentId, @agentName, @provider, @model, @thinking,
-            @promptVersion, @expectationsJson,
-            @promptA, @outputA, @note,
-            @createdAt, @updatedAt
-          )`
-        )
-        .run({
-          id: evalCaseId,
-          conversationId,
-          turnId,
-          messageId: '',
-          stageTaskId: '',
-          agentId,
-          agentName,
-          provider: effectiveProvider || null,
-          model: effectiveModel || null,
-          thinking: null,
-          promptVersion,
-          expectationsJson: JSON.stringify({
-            source: 'skill_test',
-            skillId: testCase.skillId,
-            expectedTools: testCase.expectedTools || [],
-          }),
-          promptA: prompt,
-          outputA: '',
-          note: `Skill test: ${testCase.skillId} (${testCase.testType})`,
-          createdAt: timestamp,
-          updatedAt: timestamp,
-        });
-
-      store.db
-        .prepare('UPDATE skill_test_cases SET eval_case_id = @evalCaseId, updated_at = @updatedAt WHERE id = @id')
-        .run({ id: testCase.id, evalCaseId, updatedAt: timestamp });
-    }
-
-    const isolationContext = await Promise.resolve(
-      skillTestIsolationDriver.createCaseContext({
-        caseId: testCase.id,
-        runId: taskId,
-        isolation: runOptions.isolation,
-        agent,
-        agentId,
-        agentName,
-        conversationId,
-        turnId,
-        promptUserMessage,
-        liveStore: store,
-        liveAgentDir: store.agentDir,
-        liveDatabasePath: store.databasePath,
-        liveProjectDir,
-        skill: liveSkill,
-      })
-    );
-    const runtimeSkill = isolationContext && isolationContext.skill ? isolationContext.skill : liveSkill;
-    const sandbox = isolationContext && isolationContext.sandbox ? isolationContext.sandbox : ensureAgentSandbox(store.agentDir, agent);
-    const projectDir = isolationContext && isolationContext.projectDir ? String(isolationContext.projectDir).trim() : liveProjectDir;
-    const runtimeAgentDir = isolationContext && isolationContext.agentDir ? String(isolationContext.agentDir).trim() : store.agentDir;
-    const runtimeSqlitePath = isolationContext && isolationContext.sqlitePath ? String(isolationContext.sqlitePath).trim() : store.databasePath;
-    const telemetryStore = isolationContext && isolationContext.store && isolationContext.store.db
-      ? isolationContext.store
-      : store;
-    const runStore = createSqliteRunStore({
-      agentDir: runtimeAgentDir,
-      sqlitePath: telemetryStore && telemetryStore.databasePath ? telemetryStore.databasePath : runtimeSqlitePath,
-      databasePath: telemetryStore && telemetryStore.databasePath ? telemetryStore.databasePath : runtimeSqlitePath,
-      db: telemetryStore && telemetryStore.db ? telemetryStore.db : store.db,
-    });
-    const stage = {
-      taskId,
-      status: 'queued',
-      runId: null as any,
-      currentToolName: '',
-      currentToolKind: '',
-      currentToolStepId: '',
-      currentToolStartedAt: null as any,
-      currentToolInferred: false,
-    };
-    const sessionName = `skill-test-${testCase.id}-${Date.now()}`;
-
-    let toolInvocation: any = null;
-    let isolationEvidence: any = null;
-    let isolationFinalized = false;
-
-    try {
-      toolInvocation = agentToolBridge.registerInvocation(
-        agentToolBridge.createInvocationContext({
-          conversationId,
-          turnId,
-          projectDir,
-          agentId,
-          agentName,
-          assistantMessageId: liveMessageId,
-          userMessageId: promptUserMessage.id,
-          promptUserMessage,
-          conversationAgents: [agent],
-          authScope: 'skill-test',
-          caseId: testCase.id,
-          runId: taskId,
-          taskId,
-          tokenTtlSec: skillTestBridgeTokenTtlSec,
-          requireAuthScope: true,
-          store: isolationContext && isolationContext.store ? isolationContext.store : null,
-          toolPolicy: isolationContext && isolationContext.toolPolicy ? isolationContext.toolPolicy : null,
-          sandboxToolAdapter: isolationContext && isolationContext.sandboxToolAdapter ? isolationContext.sandboxToolAdapter : null,
-          runStore,
-          stage,
-          turnState: null,
-          enqueueAgent: null,
-          allowHandoffs: false,
-          dryRun: true,
-        })
-      );
-
-      const agentToolScriptPath = path.resolve(ROOT_DIR, 'lib', 'agent-chat-tools.js');
-      const agentToolRelativePath = resolveToolRelativePath(agentToolScriptPath);
-      const skillTestSandboxExtensionPath = path.resolve(ROOT_DIR, 'lib', 'pi-skill-test-sandbox-extension.mjs');
-      const isolationExecution = isolationContext && isolationContext.execution && typeof isolationContext.execution === 'object'
-        ? isolationContext.execution
-        : null;
-      const visiblePathRoots = collectSkillTestVisiblePathRoots(
-        isolationContext && isolationContext.extraEnv ? isolationContext.extraEnv : null,
-        isolationExecution
-      );
-      const resolvedEnvironment = resolveEnvironmentRunConfig(testCase, runOptions.environment, runtimeSkill);
-      const environmentConfigIssues = Array.isArray(resolvedEnvironment.issues) ? resolvedEnvironment.issues : [];
-
-      runStore.createTask({
-        taskId,
-        kind: 'skill_test_run',
-        title: `Skill test: ${testCase.skillId}`,
-        status: 'queued',
-        assignedAgent: 'pi',
-        assignedRole: agentName,
-        provider: effectiveProvider || null,
-        model: effectiveModel || null,
-        requestedSession: sessionName,
-        sessionPath: null,
-        inputText: prompt,
-        metadata: {
-          testCaseId: testCase.id,
-          skillId: testCase.skillId,
-          evalCaseId,
-          source: 'skill_test',
-          toolBridgeEnabled: true,
-          toolBridgeDryRun: true,
-          isolationMode: isolationContext && isolationContext.isolation ? isolationContext.isolation.mode : 'legacy-local',
-          trellisMode: isolationContext && isolationContext.isolation ? isolationContext.isolation.trellisMode : 'none',
-          isolationExecution: isolationExecution
-            ? {
-                loopRuntime: isolationExecution.loopRuntime || 'host',
-                toolRuntime: isolationExecution.toolRuntime || 'host',
-                pathSemantics: isolationExecution.pathSemantics || 'host',
-              }
-            : null,
-          visiblePathRoots,
-        },
-        startedAt: timestamp,
-      });
-
-      let result: any = null;
-      let outputText = '';
-      let liveOutputText = '';
-      let status = 'succeeded';
-      let errorMessage = '';
-      let runId: any = null;
-      let sessionPath = '';
-      let dynamicSkillLoadConfirmed = false;
-      let runFailureDebug: any = null;
-      let environmentResult: any = resolvedEnvironment.enabled
-        ? createSkippedEnvironmentResult('environment chain pending')
-        : createSkippedEnvironmentResult('environment chain not requested');
-      let startedEventSent = false;
-      let lastLiveSessionToolStepId = '';
-      let lastLiveSessionToolSignature = '';
-      const liveSessionAnonymousToolTracker = {
-        nextIndex: 0,
-        activeStepId: '',
-        activeFingerprint: '',
-        activeToolName: '',
-        activeToolKind: '',
-      };
-      const liveUsesSandboxTools = isolationExecution && isolationExecution.toolRuntime === 'sandbox';
-      let liveExecutionRuntime = isolationExecution && isolationExecution.loopRuntime === 'sandbox' ? 'sandbox' : 'host';
-      let liveProgressLabel = liveExecutionRuntime === 'sandbox'
-        ? '正在准备 sandbox runner…'
-        : liveUsesSandboxTools
-          ? 'host loop 正在等待 sandbox 工具调用…'
-          : '正在等待工具调用…';
-
-      try {
-        const providerAuthEnv = buildProviderAuthEnv(effectiveProvider);
-        const environmentCommandEnv = {
-          ...providerAuthEnv,
-          ...(isolationContext && isolationContext.extraEnv ? isolationContext.extraEnv : {}),
-        };
-        const runtimeExtraEnv = {
-          ...providerAuthEnv,
-          PI_AGENT_ID: agentId,
-          PI_AGENT_NAME: agentName,
-          PI_AGENT_SANDBOX_DIR: sandbox.sandboxDir,
-          PI_AGENT_PRIVATE_DIR: sandbox.privateDir,
-          CAFF_CHAT_API_URL: skillTestChatApiUrl,
-          CAFF_CHAT_INVOCATION_ID: toolInvocation.invocationId,
-          CAFF_CHAT_CALLBACK_TOKEN: toolInvocation.callbackToken,
-          CAFF_CHAT_TOOLS_PATH: toPortableShellPath(agentToolScriptPath),
-          CAFF_CHAT_TOOLS_RELATIVE_PATH: agentToolRelativePath,
-          CAFF_CHAT_CONVERSATION_ID: conversationId,
-          CAFF_CHAT_TURN_ID: turnId,
-          CAFF_SKILL_TEST_RUN_ID: taskId,
-          CAFF_SKILL_TEST_CASE_ID: testCase.id,
-          CAFF_SKILL_LOADING_MODE: testCase.loadingMode || 'dynamic',
-          ...(isolationContext && isolationContext.sandboxToolAdapter ? { CAFF_SKILL_TEST_SANDBOX_TOOL_BRIDGE: '1' } : {}),
-          ...(isolationContext && isolationContext.extraEnv ? isolationContext.extraEnv : {}),
-        };
-        const emitEnvironmentProgress = (phase: string, label: string) => {
-          liveProgressLabel = label;
-          const eventPhase = startedEventSent ? 'progress' : 'started';
-          broadcastSkillTestRunEvent(eventPhase, {
-            caseId: testCase.id,
-            skillId: testCase.skillId,
-            loadingMode,
-            testType,
-            conversationId,
-            turnId,
-            taskId,
-            messageId: liveMessageId,
-            runId: stage.runId || null,
-            provider: effectiveProvider || '',
-            model: effectiveModel || '',
-            promptVersion,
-            status: 'running',
-            executionRuntime: liveExecutionRuntime,
-            progressLabel: label,
-            environmentPhase: phase,
-            createdAt: timestamp,
-            updatedAt: nowIso(),
-            ...(startedEventSent ? {} : { trace: buildSkillTestLiveTrace(liveMessageId, taskId, 'streaming', stage.runId || null, timestamp, sessionPath, { runStore }) }),
-          });
-          startedEventSent = true;
-        };
-
-        if (resolvedEnvironment.enabled && resolvedEnvironment.config) {
-          stage.status = 'running';
-          runStore.updateTask(taskId, {
-            status: 'running',
-            requestedSession: sessionName,
-          });
-          const environmentRuntime = createSkillTestEnvironmentRuntime({
-            sandboxToolAdapter: isolationContext && isolationContext.sandboxToolAdapter ? isolationContext.sandboxToolAdapter : null,
-            toolRuntime: isolationExecution && isolationExecution.toolRuntime ? isolationExecution.toolRuntime : 'host',
-            execution: isolationExecution || null,
-            isolation: isolationContext && isolationContext.isolation ? isolationContext.isolation : null,
-            driver: isolationContext && isolationContext.driver ? isolationContext.driver : null,
-            projectDir,
-            outputDir: isolationContext && isolationContext.outputDir ? isolationContext.outputDir : '',
-            privateDir: sandbox.privateDir,
-            skillId: testCase.skillId,
-            environmentCacheRootDir,
-            commandEnv: environmentCommandEnv,
-            availableEnv: {
-              ...process.env,
-              ...environmentCommandEnv,
-            },
-          });
-          environmentResult = await executeEnvironmentWorkflow(resolvedEnvironment.config, environmentRuntime, {
-            allowBootstrap: resolvedEnvironment.allowBootstrap,
-            persistAdvice: resolvedEnvironment.persistAdvice,
-            source: resolvedEnvironment.source,
-            onPhase: (phase: string, label: string) => {
-              runStore.appendTaskEvent(taskId, 'skill_test_environment_phase', {
-                phase,
-                label,
-                createdAt: nowIso(),
-              });
-              emitEnvironmentProgress(phase, label);
-            },
-            onCommandResult: (phase: string, commandResult: any) => {
-              runStore.appendTaskEvent(taskId, 'skill_test_environment_command', {
-                phase,
-                ...commandResult,
-                createdAt: nowIso(),
-              });
-            },
-          });
-
-          if (resolvedEnvironment.source && typeof resolvedEnvironment.source === 'object') {
-            environmentResult.source = resolvedEnvironment.source;
-          }
-
-          if (environmentResult.status !== 'passed' && environmentResult.status !== 'skipped') {
-            status = 'failed';
-            errorMessage = createEnvironmentFailureMessage(environmentResult);
-          }
-        }
-
-        if (status === 'succeeded') {
-          const handle = await Promise.resolve(startRunImpl(effectiveProvider, effectiveModel, prompt, {
-            thinking: '',
-            agentDir: runtimeAgentDir,
-            sqlitePath: runtimeSqlitePath,
-            cwd: projectDir || undefined,
-            extensionPaths: isolationContext && isolationContext.sandboxToolAdapter ? [skillTestSandboxExtensionPath] : undefined,
-            streamOutput: false,
-            session: sessionName,
-            taskId,
-            taskKind: 'skill_test_run',
-            taskRole: agentName,
-            metadata: {
-              testCaseId: testCase.id,
-              skillId: testCase.skillId,
-              evalCaseId,
-              source: 'skill_test',
-            },
-            extraEnv: runtimeExtraEnv,
-          }));
-
-          stage.runId = handle.runId || null;
-          stage.status = 'running';
-          sessionPath = handle.sessionPath || '';
-
-          runStore.updateTask(taskId, {
-            status: 'running',
-            runId: normalizeRunStoreRunId(handle.runId),
-            requestedSession: sessionName,
-            sessionPath: handle.sessionPath || null,
-          });
-
-          liveExecutionRuntime = isolationExecution && isolationExecution.loopRuntime === 'sandbox' ? 'sandbox' : 'host';
-          liveProgressLabel = liveExecutionRuntime === 'sandbox'
-            ? '正在准备 sandbox runner…'
-            : liveUsesSandboxTools
-              ? 'host loop 正在等待 sandbox 工具调用…'
-              : '正在等待工具调用…';
-
-          broadcastSkillTestRunEvent(startedEventSent ? 'progress' : 'started', {
-            caseId: testCase.id,
-            skillId: testCase.skillId,
-            loadingMode,
-            testType,
-            conversationId,
-            turnId,
-            taskId,
-            messageId: liveMessageId,
-            runId: handle.runId || null,
-            provider: effectiveProvider || '',
-            model: effectiveModel || '',
-            promptVersion,
-            status: 'running',
-            executionRuntime: liveExecutionRuntime,
-            progressLabel: liveProgressLabel,
-            createdAt: timestamp,
-            updatedAt: nowIso(),
-            trace: buildSkillTestLiveTrace(liveMessageId, taskId, 'streaming', handle.runId || null, timestamp, sessionPath, { runStore }),
-          });
-          startedEventSent = true;
-
-          const broadcastLiveRunnerProgress = (event: any, fallbackLabel = '正在 sandbox 内执行…') => {
-          const eventPayload = event && typeof event === 'object' ? event : {};
-          const nextLabel = String(eventPayload.label || fallbackLabel || '').trim();
-          if (!nextLabel) {
-            return;
-          }
-          liveProgressLabel = nextLabel;
-          broadcastSkillTestRunEvent('progress', {
-            caseId: testCase.id,
-            skillId: testCase.skillId,
-            loadingMode,
-            testType,
-            conversationId,
-            turnId,
-            taskId,
-            messageId: liveMessageId,
-            runId: stage.runId || null,
-            provider: effectiveProvider || '',
-            model: effectiveModel || '',
-            promptVersion,
-            status: 'running',
-            executionRuntime: liveExecutionRuntime,
-            progressLabel: liveProgressLabel,
-            runnerStage: eventPayload.stage ? String(eventPayload.stage).trim() : '',
-            runnerPid: eventPayload.pid !== undefined && eventPayload.pid !== null ? eventPayload.pid : null,
-            runnerSessionPath: eventPayload.sessionPath ? String(eventPayload.sessionPath).trim() : '',
-            createdAt: timestamp,
-            updatedAt: nowIso(),
-          });
-        };
-
-        if (handle && typeof handle.on === 'function') {
-          handle.on('run_started', (event: any) => {
-            const eventPayload = event && typeof event === 'object' ? event : {};
-            broadcastLiveRunnerProgress({
-              ...eventPayload,
-              stage: eventPayload.stage || 'run_started',
-              label: eventPayload.label || 'sandbox runner 已启动，等待工具或输出…',
-            }, 'sandbox runner 已启动，等待工具或输出…');
-          });
-
-          handle.on('runner_status', (event: any) => {
-            broadcastLiveRunnerProgress(event, '正在 sandbox 内执行…');
-          });
-
-          handle.on('pi_event', (event: any) => {
-            const piEvent = event && event.piEvent ? event.piEvent : null;
-            const liveTool = extractLiveSessionToolFromPiEvent(piEvent, {
-              agentDir: runtimeAgentDir,
-              createdAt: nowIso(),
-              currentToolName: stage.currentToolName,
-              currentToolKind: stage.currentToolKind,
-              currentToolStepId: stage.currentToolStepId,
-              anonymousTracker: liveSessionAnonymousToolTracker,
-            });
-
-            if (liveTool && liveTool.currentTool) {
-              const nextTool = liveTool.currentTool;
-              stage.currentToolName = nextTool.toolName || '';
-              stage.currentToolKind = nextTool.toolKind || '';
-              stage.currentToolStepId = nextTool.toolStepId || '';
-              stage.currentToolInferred = Boolean(nextTool.inferred);
-              stage.currentToolStartedAt = nowIso();
-            }
-
-            const step = liveTool && liveTool.step ? liveTool.step : null;
-            const stepId = step && step.stepId ? String(step.stepId).trim() : '';
-            const stepSignature = liveSessionToolStepSignature(step);
-            const changed = Boolean(stepId && stepId !== lastLiveSessionToolStepId);
-            const detailChanged = Boolean(
-              step &&
-                stepId &&
-                stepSignature &&
-                stepId === lastLiveSessionToolStepId &&
-                stepSignature !== lastLiveSessionToolSignature
-            );
-
-            if (stepId && stepSignature) {
-              lastLiveSessionToolStepId = stepId;
-              lastLiveSessionToolSignature = stepSignature;
-            } else if (changed) {
-              lastLiveSessionToolStepId = '';
-              lastLiveSessionToolSignature = '';
-            }
-
-            if (step && (changed || detailChanged)) {
-              broadcastSkillTestToolEvent({
-                conversationId,
-                turnId,
-                taskId,
-                agentId,
-                agentName,
-                assistantMessageId: liveMessageId,
-                messageId: liveMessageId,
-                phase: changed ? 'started' : 'updated',
-                step,
-              });
-            }
-
-            const matchedSkillLoadCall = shouldEarlyStopOnSkillLoad && !dynamicSkillLoadConfirmed
-              ? extractPiToolCalls(piEvent).find((toolCall: any) => (
-                isTargetSkillReadToolCall(toolCall.toolName, toolCall.arguments, testCase.skillId, runtimeSkill && runtimeSkill.path)
-              ))
-              : null;
-            if (matchedSkillLoadCall) {
-              dynamicSkillLoadConfirmed = true;
-              runStore.appendTaskEvent(taskId, 'skill_test_dynamic_load_confirmed', {
-                caseId: testCase.id,
-                skillId: testCase.skillId,
-                path: getReadToolPath(matchedSkillLoadCall.arguments),
-                toolCallId: matchedSkillLoadCall.toolCallId || '',
-              });
-              stopSkillTestRunHandle(handle, 'Dynamic skill load confirmed');
-            }
-          });
-
-          handle.on('assistant_text_delta', (event: any) => {
-            const delta = event && event.delta !== undefined ? String(event.delta || '') : '';
-            if (!delta) {
-              return;
-            }
-            liveOutputText += delta;
-            liveProgressLabel = event && event.isFallback ? '正在同步模型输出…' : '模型正在输出…';
-            broadcastSkillTestRunEvent('output_delta', {
-              caseId: testCase.id,
-              skillId: testCase.skillId,
-              loadingMode,
-              testType,
-              conversationId,
-              turnId,
-              taskId,
-              messageId: liveMessageId,
-              runId: stage.runId || null,
-              provider: effectiveProvider || '',
-              model: effectiveModel || '',
-              promptVersion,
-              status: 'running',
-              executionRuntime: liveExecutionRuntime,
-              progressLabel: liveProgressLabel,
-              delta,
-              outputText: liveOutputText,
-              isFallback: Boolean(event && event.isFallback),
-              messageKey: event && event.messageKey ? String(event.messageKey) : '',
-              createdAt: timestamp,
-              updatedAt: nowIso(),
-            });
-          });
-
-          handle.on('run_terminating', (event: any) => {
-            broadcastSkillTestRunEvent('terminating', {
-              caseId: testCase.id,
-              skillId: testCase.skillId,
-              loadingMode,
-              testType,
-              conversationId,
-              turnId,
-              taskId,
-              messageId: liveMessageId,
-              runId: stage.runId || null,
-              status: 'terminating',
-              executionRuntime: liveExecutionRuntime,
-              progressLabel: '正在收尾…',
-              reason: event && event.reason ? event.reason : null,
-            });
-          });
-        }
-
-        result = await handle.resultPromise;
-        runId = result && result.runId ? result.runId : handle.runId || null;
-        sessionPath = (result && result.sessionPath) || sessionPath;
-        outputText = String(result && result.reply !== undefined ? result.reply : liveOutputText || '');
-        if (!outputText && liveOutputText) {
-          outputText = liveOutputText;
-        }
-        status = 'succeeded';
-        }
-      } catch (error) {
-        const err: any = error;
-        if (shouldEarlyStopOnSkillLoad && dynamicSkillLoadConfirmed) {
-          runId = err && err.runId ? err.runId : stage.runId || null;
-          sessionPath = (err && err.sessionPath) || sessionPath;
-          outputText = String(err && err.reply ? err.reply : liveOutputText || '');
-          result = {
-            reply: outputText,
-            runId,
-            sessionPath,
-          };
-          status = 'succeeded';
-          errorMessage = '';
-        } else {
-          status = 'failed';
-          outputText = String(err && err.reply ? err.reply : liveOutputText || '');
-          errorMessage = err && err.message ? String(err.message) : String(err || 'Unknown error');
-          runFailureDebug = buildSkillTestFailureDebugPayload(err, {
-            runId: stage.runId || runId,
-            sessionPath: (err && err.sessionPath) || sessionPath,
-          });
-        }
-      } finally {
-        stage.status = status === 'succeeded' ? 'completed' : 'failed';
-        if (toolInvocation) {
-          const closedInvocation = agentToolBridge.unregisterInvocation(toolInvocation.invocationId);
-          if (closedInvocation && typeof closedInvocation === 'object') {
-            toolInvocation = closedInvocation;
-          }
-        }
-      }
-
-      // Evaluate results
-      const evaluation = status === 'succeeded'
-        ? await Promise.resolve(
-          evaluateRunImpl
-            ? evaluateRunImpl(taskId, testCase, {
-              outputText,
-              sessionPath,
-              status,
-              provider: effectiveProvider,
-              model: effectiveModel,
-              promptVersion,
-              agentId,
-              agentName,
-              taskId,
-              prompt,
-              sandbox,
-              projectDir,
-              agentDir: runtimeAgentDir,
-              sqlitePath: runtimeSqlitePath,
-              extraEnv: isolationContext && isolationContext.extraEnv ? isolationContext.extraEnv : {},
-              skill: runtimeSkill,
-              runStore,
-            })
-            : evaluateRun(taskId, testCase, {
-              outputText,
-              sessionPath,
-              status,
-              provider: effectiveProvider,
-              model: effectiveModel,
-              promptVersion,
-              agentId,
-              agentName,
-              taskId,
-              prompt,
-              sandbox,
-              projectDir,
-              agentDir: runtimeAgentDir,
-              sqlitePath: runtimeSqlitePath,
-              extraEnv: isolationContext && isolationContext.extraEnv ? isolationContext.extraEnv : {},
-              skill: runtimeSkill,
-              runStore,
-            })
-        )
-        : {
-          triggerPassed: null,
-          executionPassed: null,
-          toolAccuracy: null,
-          actualToolsJson: '[]',
-          triggerEvaluation: null,
-          executionEvaluation: null,
-          requiredStepCompletionRate: null,
-          stepCompletionRate: null,
-          requiredToolCoverage: null,
-          toolCallSuccessRate: null,
-          toolErrorRate: null,
-          sequenceAdherence: null,
-          goalAchievement: null,
-          instructionAdherence: null,
-          verdict: '',
-          evaluation: null,
-          validationIssues: [],
-        };
-
-      const finishedAt = nowIso();
-      const completedTrace = buildSkillTestLiveTrace(
-        liveMessageId,
-        taskId,
-        status === 'succeeded' ? 'completed' : 'failed',
-        runId,
-        timestamp,
-        sessionPath,
-        { runStore }
-      );
-      const debugSnapshot = buildSkillTestRunDebugSnapshot(taskId, outputText || '', sessionPath, { runStore });
-
-      runStore.updateTask(taskId, {
-        status: status === 'succeeded' ? 'succeeded' : 'failed',
-        runId: normalizeRunStoreRunId(runId),
-        sessionPath: sessionPath || null,
-        outputText: outputText || '',
-        errorMessage: errorMessage || '',
-        endedAt: finishedAt,
-      });
-
-      isolationEvidence = isolationContext ? await Promise.resolve(isolationContext.finalize()) : null;
-      isolationFinalized = true;
-      if (isolationEvidence && typeof isolationEvidence === 'object') {
-        isolationEvidence.chatBridge = buildSkillTestChatBridgeEvidence(toolInvocation, {
-          agentToolBridge,
-          toolBaseUrl: skillTestChatApiUrl,
-          caseId: testCase.id,
-          runId: taskId,
-        });
-      }
-      const isolationIssues = buildSkillTestIsolationIssues(isolationEvidence);
-      if (isolationEvidence && isolationEvidence.unsafe) {
-        status = 'failed';
-        errorMessage = errorMessage || getSkillTestIsolationFailureMessage(isolationEvidence);
-      }
-      const finalTraceStatus = status === 'succeeded' ? 'completed' : 'failed';
-      if (completedTrace && typeof completedTrace === 'object') {
-        if (completedTrace.message && typeof completedTrace.message === 'object') {
-          completedTrace.message.status = finalTraceStatus;
-        }
-        if (completedTrace.task && typeof completedTrace.task === 'object') {
-          completedTrace.task.status = status;
-        }
-      }
-      const finalVerdict = isolationEvidence && isolationEvidence.unsafe
-        ? 'fail'
-        : status === 'failed'
-          ? 'fail'
-          : evaluation.verdict || '';
-      const runValidation = {
-        caseSchemaStatus: preflight.caseSchemaStatus,
-        derivedFromLegacy: preflight.derivedFromLegacy,
-        issues: mergeValidationIssues(evaluation.validationIssues, preflight.issues, environmentConfigIssues, isolationIssues),
-      };
-      const evaluationJsonPayload = isPlainObject(evaluation.evaluation)
-        ? { ...evaluation.evaluation, environment: environmentResult, validation: runValidation, isolation: isolationEvidence }
-        : { environment: environmentResult, validation: runValidation, isolation: isolationEvidence };
-
-      broadcastSkillTestRunEvent(status === 'succeeded' ? 'completed' : 'failed', {
-        caseId: testCase.id,
-        skillId: testCase.skillId,
-        loadingMode,
-        testType,
-        conversationId,
-        turnId,
-        taskId,
-        messageId: liveMessageId,
-        runId,
-        provider: effectiveProvider || '',
-        model: effectiveModel || '',
-        promptVersion,
-        status,
-        executionRuntime: liveExecutionRuntime,
-        progressLabel: '',
-        errorMessage: errorMessage || '',
-        outputText: outputText || '',
-        createdAt: timestamp,
-        finishedAt,
-        trace: completedTrace,
-      });
-
-      // Create eval_case_run
-      const evalCaseRunId = randomUUID();
-      const mergedRunDebug = mergeSkillTestRunDebugPayload(
-        debugSnapshot,
-        runFailureDebug ? { failure: runFailureDebug } : null
-      );
-      const runResult = {
-        status,
-        promptVersion,
-        triggerPassed: evaluation.triggerPassed,
-        executionPassed: evaluation.executionPassed,
-        toolAccuracy: evaluation.toolAccuracy,
-        actualTools: safeJsonParse(evaluation.actualToolsJson) || [],
-        triggerEvaluation: evaluation.triggerEvaluation || null,
-        executionEvaluation: evaluation.executionEvaluation || null,
-        evaluation: evaluationJsonPayload,
-        validation: runValidation,
-        isolation: isolationEvidence,
-        verdict: finalVerdict,
-        trace: completedTrace,
-        ...(mergedRunDebug ? { debug: mergedRunDebug } : {}),
-        source: 'skill_test',
-      };
-
-      store.db
-        .prepare(
-          `INSERT INTO eval_case_runs (
-            id, case_id, variant, provider, model, prompt_version, thinking,
-            prompt, run_id, task_id, status, error_message,
-            output_text, result_json, session_path, created_at
-          ) VALUES (
-            @id, @caseId, @variant, @provider, @model, @promptVersion, @thinking,
-            @prompt, @runId, @taskId, @status, @errorMessage,
-            @outputText, @resultJson, @sessionPath, @createdAt
-          )`
-        )
-        .run({
-          id: evalCaseRunId,
-          caseId: evalCaseId,
-          variant: 'B',
-          provider: effectiveProvider || null,
-          model: effectiveModel || null,
-          promptVersion,
-          thinking: null,
-          prompt,
-          runId,
-          taskId,
-          status,
-          errorMessage: errorMessage || null,
-          outputText: outputText || null,
-          resultJson: JSON.stringify(runResult),
-          sessionPath: sessionPath || null,
-          createdAt: finishedAt,
-        });
-
-      // Create skill_test_run
-      const testRunId = randomUUID();
-      store.db
-        .prepare(
-          `INSERT INTO skill_test_runs (
-            id, test_case_id, eval_case_run_id, status,
-            actual_tools_json, tool_accuracy, trigger_passed, execution_passed,
-            required_step_completion_rate, step_completion_rate,
-            required_tool_coverage, tool_call_success_rate, tool_error_rate,
-            sequence_adherence, goal_achievement, instruction_adherence,
-            environment_status, environment_phase,
-            verdict, evaluation_json, error_message, created_at
-          ) VALUES (
-            @id, @testCaseId, @evalCaseRunId, @status,
-            @actualToolsJson, @toolAccuracy, @triggerPassed, @executionPassed,
-            @requiredStepCompletionRate, @stepCompletionRate,
-            @requiredToolCoverage, @toolCallSuccessRate, @toolErrorRate,
-            @sequenceAdherence, @goalAchievement, @instructionAdherence,
-            @environmentStatus, @environmentPhase,
-            @verdict, @evaluationJson, @errorMessage, @createdAt
-          )`
-        )
-        .run({
-          id: testRunId,
-          testCaseId: testCase.id,
-          evalCaseRunId,
-          status,
-          actualToolsJson: evaluation.actualToolsJson,
-          toolAccuracy: evaluation.toolAccuracy,
-          triggerPassed: evaluation.triggerPassed,
-          executionPassed: evaluation.executionPassed,
-          requiredStepCompletionRate: evaluation.requiredStepCompletionRate,
-          stepCompletionRate: evaluation.stepCompletionRate,
-          requiredToolCoverage: evaluation.requiredToolCoverage,
-          toolCallSuccessRate: evaluation.toolCallSuccessRate,
-          toolErrorRate: evaluation.toolErrorRate,
-          sequenceAdherence: evaluation.sequenceAdherence,
-          goalAchievement: evaluation.goalAchievement,
-          instructionAdherence: evaluation.instructionAdherence,
-          environmentStatus: String(environmentResult && environmentResult.status || '').trim(),
-          environmentPhase: String(environmentResult && environmentResult.phase || '').trim(),
-          verdict: finalVerdict,
-          evaluationJson: JSON.stringify(evaluationJsonPayload),
-          errorMessage: errorMessage || '',
-          createdAt: finishedAt,
-        });
-
-      store.db
-        .prepare(
-          'UPDATE skill_test_cases SET validity_status = @validityStatus, updated_at = @updatedAt WHERE id = @id'
-        )
-        .run({ id: testCase.id, validityStatus: getCaseValidityAfterEvaluation(testCase, { ...evaluation, verdict: finalVerdict }), updatedAt: finishedAt });
-
-      const runRow = store.db
-        .prepare(
-          `SELECT
-             r.*, 
-             e.provider AS provider,
-             e.model AS model,
-             e.prompt_version AS prompt_version
-           FROM skill_test_runs r
-           LEFT JOIN eval_case_runs e ON e.id = r.eval_case_run_id
-           WHERE r.id = @id`
-        )
-        .get({ id: testRunId });
-      return {
-        testCase: getTestCase(testCase.id),
-        run: normalizeTestRunRow(runRow),
-        issues: runValidation.issues,
-        caseSchemaStatus: runValidation.caseSchemaStatus,
-        derivedFromLegacy: runValidation.derivedFromLegacy,
-      };
-    } finally {
-      if (!isolationFinalized && isolationContext && typeof isolationContext.finalize === 'function') {
-        try {
-          await Promise.resolve(isolationContext.finalize());
-        } catch {}
-      }
-      runStore.close();
-    }
-  }
+  const skillTestRunExecutor = createSkillTestRunExecutor({
+    store,
+    agentToolBridge,
+    skillRegistry,
+    getProjectDir,
+    startRunImpl,
+    evaluateRunImpl,
+    evaluateRun,
+    skillTestIsolationDriver,
+    buildProviderAuthEnv,
+    buildSkillTestChainStepPrompt,
+    buildSkillTestLiveTrace,
+    broadcastSkillTestRunEvent,
+    broadcastSkillTestToolEvent,
+    collectSkillTestVisiblePathRoots,
+    persistSkillTestRunSessionExport,
+    buildSkillTestRunDebugSnapshot,
+    mergeSkillTestRunDebugPayload,
+    buildSkillTestChatBridgeEvidence,
+    buildSkillTestFailureDebugPayload,
+    normalizeCaseForRunOrThrow,
+    getTestCase,
+    normalizeTestRunRow,
+    getCaseValidityAfterEvaluation,
+    ensureSchema,
+    normalizeRunStoreRunId,
+    applySharedEnvironmentAssetDefault,
+    upsertSkillEnvironmentAsset,
+    updateTestCaseSourceMetadata,
+    environmentCacheRootDir,
+    environmentManifestRootDir,
+    environmentImageBuilder: environmentImageBuilderImpl,
+    skillTestBridgeTokenTtlSec,
+    skillTestExecutionBridgeTokenTtlSec,
+    skillTestChatApiUrl,
+    nowIso,
+  });
+  const { executeRun } = skillTestRunExecutor;
 
   function getSkillTestSummary() {
     ensureSchema();
@@ -7407,10 +2439,34 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     return Object.values(summary);
   }
 
+  const skillTestChainRunner = createSkillTestChainRunner({
+    store,
+    ensureSchema,
+    skillRegistry,
+    getProjectDir,
+    environmentCacheRootDir,
+    skillTestIsolationDriver,
+    buildProviderAuthEnv,
+    resolveEffectiveProvider: (provider: any) => resolveSetting(provider, process.env.PI_PROVIDER, DEFAULT_PROVIDER),
+    broadcastSkillTestChainRunEvent,
+    getCanonicalCasePrompt,
+    normalizeTestCaseRow,
+    getTestCase,
+    normalizeCaseForRunOrThrow,
+    executeRun,
+    readSkillTestIsolationInput,
+    readSkillTestEnvironmentInput,
+  });
+  const {
+    buildSkillTestChainRunResponse,
+    executeSkillTestChainRun,
+    listSkillTestChainRunSummaries,
+  } = skillTestChainRunner;
+
   return async function handleSkillTestRequest(context) {
     const { req, res, pathname, requestUrl } = context;
 
-    const skillTestDesignMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/skill-test-design(?:\/(import-matrix|confirm-matrix|export-drafts))?$/);
+    const skillTestDesignMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/skill-test-design(?:\/(import-matrix|confirm-matrix|export-drafts|preview-testing-doc-draft|apply-testing-doc-draft|refresh-environment-contract))?$/);
     if (skillTestDesignMatch) {
       ensureSchema();
       const conversationId = decodeURIComponent(skillTestDesignMatch[1]);
@@ -7418,9 +2474,192 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
       const { conversation, designState } = requireSkillTestDesignConversation(conversationId);
 
       if (req.method === 'GET' && !action) {
+        const prepared = ensureAutomaticTestingDocPreview(conversation, designState);
         sendJson(res, 200, {
-          conversation,
-          state: summarizeSkillTestDesignConversation(conversation, designState),
+          conversation: prepared.conversation,
+          state: summarizeSkillTestDesignConversation(prepared.conversation, prepared.designState),
+        });
+        return true;
+      }
+
+      if (req.method === 'POST' && action === 'preview-testing-doc-draft') {
+        const body = await readRequestJson(req);
+        const requestedMessageId = String(body && (body.messageId || body.sourceMessageId) || '').trim();
+        const sourceMessage = requestedMessageId
+          ? findConversationMessage(conversation, requestedMessageId)
+          : findLatestConversationMessage(conversation);
+        if (requestedMessageId && !sourceMessage) {
+          throw createValidationHttpError(
+            buildValidationIssue('testing_doc_source_message_invalid', 'error', 'messageId', 'messageId 必须指向当前会话中的消息')
+          );
+        }
+        if (!sourceMessage) {
+          throw createValidationHttpError(
+            buildValidationIssue('testing_doc_source_message_required', 'error', 'messageId', '起草 TESTING.md 需要关联当前会话中的一条用户或 assistant 消息')
+          );
+        }
+
+        const target = resolveSkillTestingDocTarget(skillRegistry, designState.skillId, {
+          projectDir: getProjectDir ? getProjectDir() : '',
+        });
+        const fileInfo = readTestingDocFileInfo(target);
+        let draft: any;
+        try {
+          draft = buildTestingDocDraftFromSkillContext(target.skill, {
+            skillId: designState.skillId,
+            conversationId: conversation.id,
+            messageId: String(sourceMessage.id || '').trim(),
+            agentRole: sourceMessage.agentId
+              ? String(designState.participantRoles && designState.participantRoles[sourceMessage.agentId] || '').trim() || 'scribe'
+              : String(body && body.agentRole || sourceMessage.role || 'user').trim() || 'user',
+            createdBy: String(body && body.requestedBy || 'user').trim() || 'user',
+            fileExistsAtPreview: fileInfo.exists,
+            fileHashAtPreview: fileInfo.hash,
+            fileSizeAtPreview: fileInfo.size,
+            sections: Array.isArray(body && body.sections) ? body.sections : undefined,
+            draft: body && body.draft && typeof body.draft === 'object' ? body.draft : undefined,
+          });
+        } catch (error: any) {
+          if (error && Number.isInteger(error.statusCode) && Array.isArray(error.issues)) {
+            throw error;
+          }
+          throw createValidationHttpError(
+            buildValidationIssue('testing_doc_draft_invalid', 'error', 'testingDocDraft', String(error && error.message || 'TESTING.md 草稿不合法'))
+          );
+        }
+
+        const environmentContract = buildTestingDocContractSummary(target.skill);
+        const nextConversation = updateSkillTestDesignConversationState(conversation, {
+          ...designState,
+          testingDocDraft: draft,
+          environmentContract,
+        });
+        const nextState = getSkillTestDesignState(nextConversation);
+        sendJson(res, 200, {
+          conversation: nextConversation,
+          state: summarizeSkillTestDesignConversation(nextConversation, nextState),
+          draft,
+          environmentContract,
+        });
+        return true;
+      }
+
+      if (req.method === 'POST' && action === 'apply-testing-doc-draft') {
+        const body = await readRequestJson(req);
+        const draftId = String(body && body.draftId || '').trim();
+        const currentDraft = designState.testingDocDraft && typeof designState.testingDocDraft === 'object'
+          ? designState.testingDocDraft
+          : null;
+        if (!currentDraft || !currentDraft.draftId) {
+          throw createValidationHttpError(
+            buildValidationIssue('testing_doc_draft_missing', 'error', 'testingDocDraft', '当前没有可写入的 TESTING.md 草稿')
+          );
+        }
+        if (!draftId || draftId !== String(currentDraft.draftId || '').trim()) {
+          throw createValidationHttpError(
+            buildValidationIssue('testing_doc_draft_id_mismatch', 'error', 'draftId', 'draftId 与当前 TESTING.md 草稿不一致')
+          );
+        }
+        const draftStatus = String(currentDraft.status || '').trim();
+        if (draftStatus === 'applied' || draftStatus === 'rejected' || draftStatus === 'superseded') {
+          throw createValidationHttpError(
+            buildValidationIssue('testing_doc_draft_not_applyable', 'error', 'testingDocDraft.status', '当前 TESTING.md 草稿状态不可写入')
+          );
+        }
+
+        const target = resolveSkillTestingDocTarget(skillRegistry, designState.skillId, {
+          projectDir: getProjectDir ? getProjectDir() : '',
+        });
+        const fileInfo = readTestingDocFileInfo(target);
+        const expectedExists = Boolean(currentDraft.file && currentDraft.file.existsAtPreview);
+        const expectedHash = String(currentDraft.file && currentDraft.file.hashAtPreview || '').trim();
+        if (fileInfo.exists !== expectedExists || (fileInfo.exists && expectedHash && fileInfo.hash !== expectedHash)) {
+          const supersededDraft = {
+            ...currentDraft,
+            status: 'superseded',
+            supersededAt: nowIso(),
+            supersededReason: 'target_file_changed',
+          };
+          updateSkillTestDesignConversationState(conversation, {
+            ...designState,
+            testingDocDraft: supersededDraft,
+          });
+          throw createValidationHttpError(
+            buildValidationIssue('testing_doc_draft_superseded', 'error', 'testingDocDraft', '目标 TESTING.md 已在预览后变化，请重新生成预览再写入')
+          );
+        }
+        if (fileInfo.exists && body && body.confirmOverwrite !== true) {
+          throw createValidationHttpError(
+            buildValidationIssue('testing_doc_overwrite_confirmation_required', 'error', 'confirmOverwrite', '目标 TESTING.md 已存在，必须基于完整覆盖预览显式确认后才能覆盖')
+          );
+        }
+
+        assertCanWriteTestingDocTarget(target);
+        const content = String(currentDraft.content || '').trim();
+        if (!content) {
+          throw createValidationHttpError(
+            buildValidationIssue('testing_doc_content_required', 'error', 'testingDocDraft.content', 'TESTING.md 草稿内容不能为空')
+          );
+        }
+        fs.writeFileSync(target.fullPath, `${content}\n`, 'utf8');
+        const appliedAt = nowIso();
+        const appliedContentHash = hashTestingDocContent(`${content}\n`);
+        const appliedDraft = {
+          ...currentDraft,
+          status: 'applied',
+          file: {
+            ...(currentDraft.file && typeof currentDraft.file === 'object' ? currentDraft.file : {}),
+            targetPath: SKILL_TESTING_DOC_TARGET_PATH,
+            appliedHash: appliedContentHash,
+            appliedAt,
+          },
+          audit: {
+            ...(currentDraft.audit && typeof currentDraft.audit === 'object' ? currentDraft.audit : {}),
+            appliedBy: String(body && body.appliedBy || 'user').trim() || 'user',
+            appliedAt,
+          },
+        };
+        const environmentContract = buildTestingDocContractSummary(target.skill);
+        const nextConversation = updateSkillTestDesignConversationState(conversation, {
+          ...designState,
+          phase: designState.matrix && designState.matrix.matrixId ? SKILL_TEST_DESIGN_PHASES.AWAITING_CONFIRMATION : designState.phase,
+          confirmation: null,
+          export: null,
+          testingDocDraft: appliedDraft,
+          environmentContract: {
+            ...environmentContract,
+            refreshedAt: appliedAt,
+            requiresMatrixReconfirmation: Boolean(designState.matrix && designState.matrix.matrixId),
+          },
+        });
+        const nextState = getSkillTestDesignState(nextConversation);
+        sendJson(res, 200, {
+          conversation: nextConversation,
+          state: summarizeSkillTestDesignConversation(nextConversation, nextState),
+          draft: appliedDraft,
+          environmentContract,
+          requiresMatrixReconfirmation: Boolean(designState.matrix && designState.matrix.matrixId),
+        });
+        return true;
+      }
+
+      if (req.method === 'POST' && action === 'refresh-environment-contract') {
+        const target = resolveSkillTestingDocTarget(skillRegistry, designState.skillId, {
+          projectDir: getProjectDir ? getProjectDir() : '',
+        });
+        const environmentContract = {
+          ...buildTestingDocContractSummary(target.skill),
+          refreshedAt: nowIso(),
+        };
+        const nextConversation = updateSkillTestDesignConversationState(conversation, {
+          ...designState,
+          environmentContract,
+        });
+        const nextState = getSkillTestDesignState(nextConversation);
+        sendJson(res, 200, {
+          conversation: nextConversation,
+          state: summarizeSkillTestDesignConversation(nextConversation, nextState),
+          environmentContract,
         });
         return true;
       }
@@ -7587,6 +2826,25 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
     // ---- Global summary ----
     if (req.method === 'GET' && pathname === '/api/skill-test-summary') {
       sendJson(res, 200, { summary: getSkillTestSummary() });
+      return true;
+    }
+
+    const environmentAssetsMatch = pathname.match(/^\/api\/skills\/([^/]+)\/environment-assets(?:\/([^/]+))?$/);
+    if (environmentAssetsMatch && req.method === 'GET') {
+      const skillId = decodeURIComponent(environmentAssetsMatch[1]);
+      const envProfile = environmentAssetsMatch[2] ? decodeURIComponent(environmentAssetsMatch[2]) : '';
+      if (envProfile) {
+        const asset = getSkillEnvironmentAsset(skillId, envProfile);
+        if (!asset) {
+          throw createHttpError(404, 'Environment asset not found');
+        }
+        sendJson(res, 200, { skillId, asset });
+        return true;
+      }
+      sendJson(res, 200, {
+        skillId,
+        assets: listSkillEnvironmentAssets(skillId),
+      });
       return true;
     }
 
@@ -7768,6 +3026,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
               agentName: body.agentName,
               isolation: readSkillTestIsolationInput(body),
               environment: readSkillTestEnvironmentInput(body),
+              environmentBuild: readSkillTestEnvironmentBuildInput(body),
             });
             results.push(result);
           } catch (error: any) {
@@ -7806,7 +3065,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
           const rows = store.db
             .prepare(
               `SELECT
-                 r.*, 
+                 r.*,
                  e.provider AS provider,
                  e.model AS model,
                  e.prompt_version AS prompt_version
@@ -7844,6 +3103,7 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
             agentName: body.agentName,
             isolation: readSkillTestIsolationInput(body),
             environment: readSkillTestEnvironmentInput(body),
+            environmentBuild: readSkillTestEnvironmentBuildInput(body),
           });
           sendJson(res, 200, result);
           return true;
@@ -7893,6 +3153,36 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
       }
     }
 
+    const testChainsRunMatch = pathname.match(/^\/api\/skills\/([^/]+)\/test-chains\/run$/);
+    if (testChainsRunMatch && req.method === 'POST') {
+      const skillId = decodeURIComponent(testChainsRunMatch[1]);
+      const body = await readRequestJson(req);
+      const result = await executeSkillTestChainRun(skillId, body || {});
+      sendJson(res, 200, result);
+      return true;
+    }
+
+    const testChainsByExportMatch = pathname.match(/^\/api\/skills\/([^/]+)\/test-chains\/by-export\/([^/]+)\/runs$/);
+    if (testChainsByExportMatch && req.method === 'GET') {
+      const skillId = decodeURIComponent(testChainsByExportMatch[1]);
+      const exportChainId = decodeURIComponent(testChainsByExportMatch[2]);
+      const limit = Number.parseInt(requestUrl.searchParams.get('limit') || '', 10);
+      sendJson(res, 200, {
+        skillId,
+        exportChainId,
+        runs: listSkillTestChainRunSummaries(skillId, exportChainId, limit),
+      });
+      return true;
+    }
+
+    const testChainsDetailMatch = pathname.match(/^\/api\/skills\/([^/]+)\/test-chains\/([^/]+)$/);
+    if (testChainsDetailMatch && req.method === 'GET') {
+      const skillId = decodeURIComponent(testChainsDetailMatch[1]);
+      const chainRunId = decodeURIComponent(testChainsDetailMatch[2]);
+      sendJson(res, 200, buildSkillTestChainRunResponse(skillId, chainRunId));
+      return true;
+    }
+
     const skillRegressionMatch = pathname.match(/^\/api\/skills\/([^/]+)\/regression$/);
     if (skillRegressionMatch && req.method === 'GET') {
       const skillId = decodeURIComponent(skillRegressionMatch[1]);
@@ -7912,31 +3202,22 @@ export function createSkillTestController(options: any = {}): RouteHandler<ApiCo
       return true;
     }
 
+    const runSessionExportMatch = pathname.match(/^\/api\/skill-test-runs\/([^/]+)\/session-export$/);
+    if (runSessionExportMatch && req.method === 'GET') {
+      const runId = decodeURIComponent(runSessionExportMatch[1]);
+      const runDetail = getSkillTestRunDetailPayload(runId);
+      const sessionPath = resolveSkillTestRunSessionExportPath(runDetail);
+      const sessionContent = fs.readFileSync(sessionPath, 'utf8');
+      sendTextDownload(res, sessionContent, `skill-test-run-${runDetail.run.id}-session.jsonl`, 'application/x-ndjson; charset=utf-8');
+      return true;
+    }
+
     // ---- Single run detail: /api/skill-test-runs/:runId ----
     const runDetailMatch = pathname.match(/^\/api\/skill-test-runs\/([^/]+)$/);
     if (runDetailMatch && req.method === 'GET') {
-      ensureSchema();
       const runId = decodeURIComponent(runDetailMatch[1]);
-      const row = store.db
-        .prepare(
-          `SELECT
-             r.*, 
-             e.provider AS provider,
-             e.model AS model,
-             e.prompt_version AS prompt_version,
-             e.result_json AS result_json
-           FROM skill_test_runs r
-           LEFT JOIN eval_case_runs e ON e.id = r.eval_case_run_id
-           WHERE r.id = @id`
-        )
-        .get({ id: runId });
-      const run = normalizeTestRunRow(row);
-      if (!run) {
-        throw createHttpError(404, 'Test run not found');
-      }
-      const result = safeJsonParse(row && row.result_json);
-      const debug = mergeSkillTestRunDebugPayload(getSkillTestRunDebug(run), result && result.debug);
-      sendJson(res, 200, { run, debug, result });
+      const runDetail = getSkillTestRunDetailPayload(runId);
+      sendJson(res, 200, { run: runDetail.run, debug: runDetail.debug, result: runDetail.result, trace: runDetail.trace });
       return true;
     }
 

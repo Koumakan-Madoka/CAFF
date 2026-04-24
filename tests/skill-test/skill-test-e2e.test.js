@@ -234,6 +234,66 @@ function createCaptureResponse() {
   };
 }
 
+function insertLifecycleChainExecutionCase(db, options = {}) {
+  const now = options.createdAt || new Date().toISOString();
+  const sourceMetadata = {
+    source: 'skill_test_chat_workbench',
+    conversationId: options.conversationId || 'conv-chain-runner',
+    messageId: options.messageId || 'msg-chain-runner',
+    matrixId: options.matrixId || 'matrix-chain-runner',
+    matrixRowId: options.matrixRowId || options.id,
+    agentRole: 'scribe',
+    exportedBy: 'user',
+    exportedAt: now,
+    skillTestDesign: {
+      environmentSource: options.environmentSource || 'skill_contract',
+      environmentContractRef: options.environmentContractRef || 'TESTING.md#Bootstrap',
+      chainPlanning: {
+        exportChainId: options.exportChainId || 'demo-chain',
+        chainId: options.chainId || 'demo-chain',
+        sequenceIndex: Number(options.sequenceIndex || 1),
+        dependsOnCaseIds: Array.isArray(options.dependsOnCaseIds) ? options.dependsOnCaseIds : [],
+        inheritance: Array.isArray(options.inheritance) ? options.inheritance : ['filesystem'],
+      },
+    },
+  };
+
+  db.prepare(
+    `INSERT INTO skill_test_cases (
+      id, skill_id, test_type, loading_mode, trigger_prompt,
+      expected_tools_json, expected_behavior, validity_status, case_status,
+      expected_goal, expected_steps_json, expected_sequence_json, evaluation_rubric_json,
+      environment_config_json, source_metadata_json, note, created_at, updated_at
+    ) VALUES (
+      @id, @skillId, 'execution', 'full', @triggerPrompt,
+      '[]', @expectedBehavior, 'pending', 'draft',
+      @expectedGoal, @expectedStepsJson, '[]', '{}',
+      '{}', @sourceMetadataJson, @note, @createdAt, @updatedAt
+    )`
+  ).run({
+    id: options.id,
+    skillId: options.skillId || 'demo-skill',
+    triggerPrompt: options.triggerPrompt || `run ${options.id}`,
+    expectedBehavior: options.expectedBehavior || `complete ${options.id}`,
+    expectedGoal: options.expectedGoal || `goal ${options.id}`,
+    expectedStepsJson: JSON.stringify([
+      {
+        id: 'step-1',
+        title: 'perform the step',
+        expectedBehavior: 'complete the step',
+        required: true,
+        order: 1,
+        failureIfMissing: 'step missing',
+        strongSignals: [],
+      },
+    ]),
+    sourceMetadataJson: JSON.stringify(sourceMetadata),
+    note: options.note || `chain case ${options.id}`,
+    createdAt: now,
+    updatedAt: now,
+  });
+}
+
 test('generate creates AI draft cases without smoke validation and uses selected model', async () => {
   const db = createTestDb();
   const store = createInMemoryStore(db);
@@ -2894,6 +2954,234 @@ test('list test cases includes latestRun metadata for UI state', async () => {
   }
 });
 
+test('skill test run session-export downloads the raw session jsonl', async () => {
+  const harness = createTempHarness();
+  const agentDir = path.join(harness.tempDir, 'agent');
+  const sessionPath = path.join(agentDir, 'named-sessions', 'session-export.jsonl');
+  const sessionContent = `${JSON.stringify({
+    type: 'message',
+    message: {
+      role: 'assistant',
+      content: [
+        { type: 'text', text: '我先看一下技能说明。' },
+        { type: 'toolCall', name: 'read', id: 'tool-session-export-1', arguments: { path: '/skills/werewolf/SKILL.md' } },
+      ],
+    },
+  })}\n`;
+
+  try {
+    fs.mkdirSync(path.dirname(sessionPath), { recursive: true });
+
+    const store = createInMemoryStore(harness.db, {
+      agentDir,
+      databasePath: harness.databasePath,
+    });
+
+    const controller = createSkillTestController({
+      store,
+      agentToolBridge: createFakeAgentToolBridge(),
+      skillRegistry: createFakeSkillRegistry(['werewolf']),
+      getProjectDir: () => harness.tempDir,
+      toolBaseUrl: 'http://127.0.0.1:3100',
+      startRunImpl: () => {
+        fs.writeFileSync(sessionPath, sessionContent, 'utf8');
+        return {
+          runId: 'run-session-export',
+          sessionPath,
+          resultPromise: Promise.resolve({
+            reply: '我先看一下技能说明。',
+            runId: 'run-session-export',
+            sessionPath,
+          }),
+        };
+      },
+      evaluateRunImpl: () => ({
+        triggerPassed: 1,
+        executionPassed: null,
+        toolAccuracy: null,
+        actualToolsJson: JSON.stringify(['read']),
+      }),
+    });
+
+    const createReq = createJsonRequest('POST', '/api/skills/werewolf/test-cases', {
+      testType: 'trigger',
+      loadingMode: 'dynamic',
+      triggerPrompt: '我们来玩狼人杀吧',
+      expectedBehavior: '应该读取目标 skill。',
+    });
+    const createRes = createCaptureResponse();
+    await controller({
+      req: createReq,
+      res: createRes,
+      pathname: '/api/skills/werewolf/test-cases',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases'),
+    });
+
+    const caseId = createRes.json.testCase.id;
+    const runRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('POST', `/api/skills/werewolf/test-cases/${caseId}/run`, {}),
+      res: runRes,
+      pathname: `/api/skills/werewolf/test-cases/${caseId}/run`,
+      requestUrl: new URL(`http://localhost/api/skills/werewolf/test-cases/${caseId}/run`),
+    });
+
+    assert.equal(runRes.statusCode, 200);
+
+    const detailRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('GET', `/api/skill-test-runs/${runRes.json.run.id}`, undefined),
+      res: detailRes,
+      pathname: `/api/skill-test-runs/${runRes.json.run.id}`,
+      requestUrl: new URL(`http://localhost/api/skill-test-runs/${runRes.json.run.id}`),
+    });
+
+    assert.equal(detailRes.statusCode, 200);
+    assert.equal(detailRes.json.trace.summary.totalSteps, 1);
+    assert.equal(detailRes.json.trace.steps[0].toolName, 'read');
+
+    const exportRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('GET', `/api/skill-test-runs/${runRes.json.run.id}/session-export`, undefined),
+      res: exportRes,
+      pathname: `/api/skill-test-runs/${runRes.json.run.id}/session-export`,
+      requestUrl: new URL(`http://localhost/api/skill-test-runs/${runRes.json.run.id}/session-export`),
+    });
+
+    assert.equal(exportRes.statusCode, 200);
+    assert.match(String(exportRes.headers['content-type'] || ''), /application\/x-ndjson/i);
+    assert.match(String(exportRes.headers['content-disposition'] || ''), new RegExp(`skill-test-run-${runRes.json.run.id}-session\\.jsonl`));
+    assert.equal(exportRes.bodyText, sessionContent);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('isolated run detail reuses persisted trace and session export after cleanup', async () => {
+  const harness = createTempHarness();
+  const liveProjectDir = path.join(harness.tempDir, 'live-project');
+  const skillDir = path.join(harness.tempDir, 'live-skills', 'werewolf');
+  const liveAgentDir = path.join(harness.tempDir, 'agent-root');
+  const sessionContent = `${JSON.stringify({
+    type: 'message',
+    message: {
+      role: 'assistant',
+      content: [
+        { type: 'text', text: '我先读一下技能说明。' },
+        { type: 'toolCall', name: 'read', id: 'tool-isolated-trace-1', arguments: { path: '/skills/werewolf/SKILL.md' } },
+      ],
+    },
+  })}\n`;
+  let isolatedSessionPath = '';
+  let persistedSessionExportPath = '';
+
+  try {
+    fs.mkdirSync(liveProjectDir, { recursive: true });
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '# Werewolf\n\nFixture skill body.\n', 'utf8');
+
+    const controller = createSkillTestController({
+      store: createInMemoryStore(harness.db, {
+        agentDir: liveAgentDir,
+        databasePath: harness.databasePath,
+      }),
+      agentToolBridge: createFakeAgentToolBridge(),
+      skillRegistry: createFakeSkillRegistry([
+        {
+          id: 'werewolf',
+          name: 'Werewolf',
+          description: 'Fixture skill',
+          body: 'Read the target skill before responding.',
+          path: skillDir,
+        },
+      ]),
+      getProjectDir: () => liveProjectDir,
+      toolBaseUrl: 'http://127.0.0.1:3100',
+      openSandboxFactory: ({ caseId }) => ({
+        driverName: 'opensandbox',
+        driverVersion: 'persisted-trace-test',
+        sandboxId: `sandbox-${caseId}`,
+      }),
+      startRunImpl: (_provider, _model, _prompt, runOptions = {}) => {
+        isolatedSessionPath = path.join(runOptions.agentDir, 'named-sessions', `${runOptions.session}.jsonl`);
+        fs.mkdirSync(path.dirname(isolatedSessionPath), { recursive: true });
+        fs.writeFileSync(isolatedSessionPath, sessionContent, 'utf8');
+        return {
+          runId: 'isolated-trace-run',
+          sessionPath: isolatedSessionPath,
+          resultPromise: Promise.resolve({
+            reply: '我先读一下技能说明。',
+            runId: 'isolated-trace-run',
+            sessionPath: isolatedSessionPath,
+          }),
+        };
+      },
+      evaluateRunImpl: () => ({
+        triggerPassed: 1,
+        executionPassed: null,
+        toolAccuracy: null,
+        actualToolsJson: JSON.stringify(['read']),
+      }),
+    });
+
+    const createRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('POST', '/api/skills/werewolf/test-cases', {
+        testType: 'trigger',
+        loadingMode: 'dynamic',
+        triggerPrompt: '我们来玩狼人杀吧',
+        expectedBehavior: '应该读取目标 skill。',
+      }),
+      res: createRes,
+      pathname: '/api/skills/werewolf/test-cases',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases'),
+    });
+
+    const caseId = createRes.json.testCase.id;
+    const runRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('POST', `/api/skills/werewolf/test-cases/${caseId}/run`, {
+        isolation: { mode: 'isolated', trellisMode: 'fixture' },
+      }),
+      res: runRes,
+      pathname: `/api/skills/werewolf/test-cases/${caseId}/run`,
+      requestUrl: new URL(`http://localhost/api/skills/werewolf/test-cases/${caseId}/run`),
+    });
+
+    assert.equal(runRes.statusCode, 200);
+    assert.ok(isolatedSessionPath);
+    assert.equal(fs.existsSync(isolatedSessionPath), false);
+
+    const detailRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('GET', `/api/skill-test-runs/${runRes.json.run.id}`, undefined),
+      res: detailRes,
+      pathname: `/api/skill-test-runs/${runRes.json.run.id}`,
+      requestUrl: new URL(`http://localhost/api/skill-test-runs/${runRes.json.run.id}`),
+    });
+
+    assert.equal(detailRes.statusCode, 200);
+    assert.equal(detailRes.json.trace.summary.totalSteps, 1);
+    assert.equal(detailRes.json.trace.steps[0].toolName, 'read');
+    persistedSessionExportPath = String(detailRes.json.debug.sessionExportPath || '').trim();
+    assert.ok(persistedSessionExportPath);
+    assert.equal(fs.existsSync(persistedSessionExportPath), true);
+
+    const exportRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('GET', `/api/skill-test-runs/${runRes.json.run.id}/session-export`, undefined),
+      res: exportRes,
+      pathname: `/api/skill-test-runs/${runRes.json.run.id}/session-export`,
+      requestUrl: new URL(`http://localhost/api/skill-test-runs/${runRes.json.run.id}/session-export`),
+    });
+
+    assert.equal(exportRes.statusCode, 200);
+    assert.equal(exportRes.bodyText, sessionContent);
+  } finally {
+    harness.cleanup();
+  }
+});
+
 test('dynamic trigger detection matches real skill markdown path outside /skills/ roots', async () => {
   const harness = createTempHarness();
   const externalSkillDir = path.join(harness.tempDir, 'external-skill-root', 'werewolf');
@@ -4414,6 +4702,26 @@ test('run can source environment bootstrap config from skill TESTING.md', async 
     fs.writeFileSync(path.join(skillDir, 'TESTING.md'), [
       '# Testing Environment',
       '',
+      '## Machine Contract',
+      '```skill-test-environment',
+      '{',
+      '  "enabled": true,',
+      '  "requirements": [',
+      '    {',
+      '      "kind": "command",',
+      '      "name": "fakecli",',
+      '      "probeCommand": "command -v \'fakecli\'"',
+      '    }',
+      '  ],',
+      '  "bootstrap": {',
+      '    "commands": ["install fakecli"]',
+      '  },',
+      '  "verify": {',
+      '    "commands": ["fakecli --version"]',
+      '  }',
+      '}',
+      '```',
+      '',
       '## Prerequisites',
       '- fakecli',
       '',
@@ -4544,6 +4852,642 @@ test('run can source environment bootstrap config from skill TESTING.md', async 
     assert.ok(seenCommands.some((entry) => entry.includes("command -v 'fakecli'")));
     assert.ok(seenCommands.includes('install fakecli'));
     assert.ok(seenCommands.includes('fakecli --version'));
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('dynamic trigger run skips TESTING.md environment contract unless explicitly enabled', async () => {
+  const harness = createTempHarness();
+
+  try {
+    const liveProjectDir = path.join(harness.tempDir, 'live-project');
+    const skillDir = path.join(harness.tempDir, 'live-skills', 'werewolf');
+    fs.mkdirSync(liveProjectDir, { recursive: true });
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '# Werewolf\n\nFixture skill body.\n', 'utf8');
+    fs.writeFileSync(path.join(skillDir, 'TESTING.md'), [
+      '# Testing Environment',
+      '',
+      '```skill-test-environment',
+      '{',
+      '  "enabled": true,',
+      '  "requirements": [{ "kind": "command", "name": "heavycli" }],',
+      '  "bootstrap": { "commands": ["install heavycli"] },',
+      '  "verify": { "commands": ["heavycli --version"] }',
+      '}',
+      '```',
+      '',
+    ].join('\n'), 'utf8');
+
+    const seenCommands = [];
+    let startRunCalls = 0;
+    const controller = createSkillTestController({
+      store: createInMemoryStore(harness.db, {
+        agentDir: path.join(harness.tempDir, 'agent-root'),
+        databasePath: harness.databasePath,
+      }),
+      agentToolBridge: createFakeAgentToolBridge(),
+      skillRegistry: createFakeSkillRegistry([
+        {
+          id: 'werewolf',
+          name: 'Werewolf',
+          description: 'Fixture skill',
+          path: skillDir,
+        },
+      ]),
+      getProjectDir: () => liveProjectDir,
+      toolBaseUrl: 'http://127.0.0.1:3100',
+      openSandboxFactory: ({ caseId }) => ({
+        driverName: 'opensandbox',
+        driverVersion: 'dynamic-skip-env',
+        sandboxId: `sandbox-${caseId}`,
+        toolAdapter: {
+          async access() {},
+          async readFile() {
+            return Buffer.from('# sandbox skill\n', 'utf8');
+          },
+          async writeFile() {},
+          async mkdir() {},
+          async runCommand(command) {
+            seenCommands.push(String(command));
+            return { stdout: '', stderr: 'environment should not run', exitCode: 1 };
+          },
+        },
+        cleanup: async () => {},
+      }),
+      startRunImpl: () => {
+        startRunCalls += 1;
+        return {
+          runId: 'dynamic-trigger-no-env-run',
+          sessionPath: path.join(harness.tempDir, 'dynamic-trigger-no-env-run.jsonl'),
+          resultPromise: Promise.resolve({
+            reply: 'ok',
+            runId: 'dynamic-trigger-no-env-run',
+            sessionPath: path.join(harness.tempDir, 'dynamic-trigger-no-env-run.jsonl'),
+          }),
+        };
+      },
+      evaluateRunImpl: () => ({
+        triggerPassed: 1,
+        executionPassed: null,
+        toolAccuracy: null,
+        actualToolsJson: '[]',
+        triggerEvaluation: { mode: 'dynamic', loaded: true, loadEvidence: [] },
+        executionEvaluation: null,
+        requiredStepCompletionRate: null,
+        stepCompletionRate: null,
+        requiredToolCoverage: null,
+        toolCallSuccessRate: null,
+        toolErrorRate: null,
+        sequenceAdherence: null,
+        goalAchievement: null,
+        instructionAdherence: null,
+        verdict: 'pass',
+        evaluation: { verdict: 'pass', dimensions: {} },
+        validationIssues: [],
+      }),
+    });
+
+    const createRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('POST', '/api/skills/werewolf/test-cases', {
+        userPrompt: '请读取狼人杀 skill 文档，确认动态加载即可。',
+        loadingMode: 'dynamic',
+        testType: 'trigger',
+        expectedBehavior: 'dynamic trigger 只验证 skill 加载。',
+        caseStatus: 'ready',
+      }),
+      res: createRes,
+      pathname: '/api/skills/werewolf/test-cases',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases'),
+    });
+
+    const caseId = createRes.json.testCase.id;
+    const runRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('POST', `/api/skills/werewolf/test-cases/${caseId}/run`, {
+        isolation: { mode: 'isolated', trellisMode: 'fixture' },
+      }),
+      res: runRes,
+      pathname: `/api/skills/werewolf/test-cases/${caseId}/run`,
+      requestUrl: new URL(`http://localhost/api/skills/werewolf/test-cases/${caseId}/run`),
+    });
+
+    assert.equal(runRes.statusCode, 200);
+    assert.equal(runRes.json.run.status, 'succeeded');
+    assert.equal(runRes.json.run.environmentStatus, 'skipped');
+    assert.equal(runRes.json.run.evaluation.environment.status, 'skipped');
+    assert.equal(runRes.json.run.evaluation.environment.reason, 'environment chain not requested');
+    assert.equal(startRunCalls, 1);
+    assert.deepEqual(seenCommands, []);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('execution run with environment asset binds reusable image and skips bootstrap workflow', async () => {
+  const harness = createTempHarness();
+
+  try {
+    const liveProjectDir = path.join(harness.tempDir, 'live-project');
+    const skillDir = path.join(harness.tempDir, 'live-skills', 'werewolf');
+    fs.mkdirSync(liveProjectDir, { recursive: true });
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '# Werewolf\n\nFixture skill body.\n', 'utf8');
+
+    const seenCommands = [];
+    let startRunCalls = 0;
+    let sandboxImage = '';
+    let sandboxEnvProfile = '';
+    const controller = createSkillTestController({
+      store: createInMemoryStore(harness.db, {
+        agentDir: path.join(harness.tempDir, 'agent-root'),
+        databasePath: harness.databasePath,
+      }),
+      agentToolBridge: createFakeAgentToolBridge(),
+      skillRegistry: createFakeSkillRegistry([
+        {
+          id: 'werewolf',
+          name: 'Werewolf',
+          description: 'Fixture skill',
+          path: skillDir,
+        },
+      ]),
+      getProjectDir: () => liveProjectDir,
+      toolBaseUrl: 'http://127.0.0.1:3100',
+      openSandboxFactory: (factoryInput) => {
+        sandboxImage = String(factoryInput && factoryInput.image || '');
+        sandboxEnvProfile = String(factoryInput && factoryInput.environmentImage && factoryInput.environmentImage.envProfile || '');
+        return {
+          driverName: 'opensandbox',
+          driverVersion: 'asset-image',
+          sandboxId: `sandbox-${factoryInput.caseId}`,
+          toolAdapter: {
+            async access() {},
+            async readFile() {
+              return Buffer.from('# sandbox skill\n', 'utf8');
+            },
+            async writeFile() {},
+            async mkdir() {},
+            async runCommand(command) {
+              seenCommands.push(String(command));
+              return { stdout: '', stderr: '', exitCode: 0 };
+            },
+          },
+          cleanup: async () => {},
+        };
+      },
+      startRunImpl: () => {
+        startRunCalls += 1;
+        return {
+          runId: 'asset-env-run',
+          sessionPath: path.join(harness.tempDir, 'asset-env-run.jsonl'),
+          resultPromise: Promise.resolve({
+            reply: 'ok',
+            runId: 'asset-env-run',
+            sessionPath: path.join(harness.tempDir, 'asset-env-run.jsonl'),
+          }),
+        };
+      },
+      evaluateRunImpl: () => ({
+        triggerPassed: null,
+        executionPassed: 1,
+        toolAccuracy: null,
+        actualToolsJson: '[]',
+        triggerEvaluation: null,
+        executionEvaluation: { verdict: 'pass' },
+        requiredStepCompletionRate: 1,
+        stepCompletionRate: 1,
+        requiredToolCoverage: null,
+        toolCallSuccessRate: null,
+        toolErrorRate: null,
+        sequenceAdherence: null,
+        goalAchievement: 1,
+        instructionAdherence: 1,
+        verdict: 'pass',
+        evaluation: { verdict: 'pass', dimensions: {} },
+        validationIssues: [],
+      }),
+    });
+
+    const createRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('POST', '/api/skills/werewolf/test-cases', {
+        userPrompt: '请完整执行狼人杀 skill 的环境资产运行用例。',
+        loadingMode: 'full',
+        testType: 'execution',
+        expectedGoal: '完成 full execution 行为。',
+        expectedSteps: [
+          {
+            id: 'step-1',
+            title: '执行目标行为',
+            expectedBehavior: '完成目标行为。',
+            required: true,
+          },
+        ],
+        evaluationRubric: {},
+        caseStatus: 'ready',
+        environmentConfig: {
+          enabled: true,
+          asset: {
+            envProfile: 'full',
+            image: 'caff-skill-env-werewolf:full-123456789abc',
+            imageDigest: 'sha256:image123',
+            baseImageDigest: 'sha256:base123',
+            manifestHash: 'sha256:manifest123',
+            buildCaseId: 'build-case-1',
+          },
+        },
+      }),
+      res: createRes,
+      pathname: '/api/skills/werewolf/test-cases',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases'),
+    });
+
+    const caseId = createRes.json.testCase.id;
+    const runRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('POST', `/api/skills/werewolf/test-cases/${caseId}/run`, {
+        isolation: { mode: 'isolated', trellisMode: 'fixture' },
+      }),
+      res: runRes,
+      pathname: `/api/skills/werewolf/test-cases/${caseId}/run`,
+      requestUrl: new URL(`http://localhost/api/skills/werewolf/test-cases/${caseId}/run`),
+    });
+
+    assert.equal(runRes.statusCode, 200);
+    assert.equal(runRes.json.run.status, 'succeeded');
+    assert.equal(runRes.json.run.environmentStatus, 'passed');
+    assert.equal(runRes.json.run.environmentPhase, 'asset-check');
+    assert.equal(runRes.json.run.evaluation.environment.asset.envProfile, 'full');
+    assert.equal(runRes.json.run.evaluation.environment.asset.image, 'caff-skill-env-werewolf:full-123456789abc');
+    assert.equal(sandboxImage, 'caff-skill-env-werewolf:full-123456789abc');
+    assert.equal(sandboxEnvProfile, 'full');
+    assert.equal(startRunCalls, 1);
+    assert.deepEqual(seenCommands, []);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('environment-build case writes manifest and image asset metadata without starting model run', async () => {
+  const harness = createTempHarness();
+
+  try {
+    const liveProjectDir = path.join(harness.tempDir, 'live-project');
+    const manifestRootDir = path.join(harness.tempDir, 'environment-manifests');
+    const skillDir = path.join(harness.tempDir, 'live-skills', 'docx');
+    fs.mkdirSync(liveProjectDir, { recursive: true });
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '# Docx\n\nFixture skill body.\n', 'utf8');
+
+    let installed = false;
+    let startRunCalls = 0;
+    const seenCommands = [];
+    const builderCalls = [];
+    const controller = createSkillTestController({
+      store: createInMemoryStore(harness.db, {
+        agentDir: path.join(harness.tempDir, 'agent-root'),
+        databasePath: harness.databasePath,
+      }),
+      agentToolBridge: createFakeAgentToolBridge(),
+      skillRegistry: createFakeSkillRegistry([
+        {
+          id: 'docx',
+          name: 'Docx',
+          description: 'Fixture skill',
+          path: skillDir,
+        },
+      ]),
+      getProjectDir: () => liveProjectDir,
+      toolBaseUrl: 'http://127.0.0.1:3100',
+      environmentManifestRootDir: manifestRootDir,
+      environmentImageBuilder: (manifestPath, buildInput = {}) => {
+        builderCalls.push({ manifestPath, buildInput });
+        return {
+          image: 'caff-skill-env-docx:full-test',
+          imageDigest: 'sha256:image123',
+          baseImageDigest: 'sha256:base123',
+          logs: 'built clean image',
+        };
+      },
+      openSandboxFactory: ({ caseId }) => ({
+        driverName: 'opensandbox',
+        driverVersion: 'environment-build',
+        sandboxId: `sandbox-${caseId}`,
+        toolAdapter: {
+          async access() {},
+          async readFile() {
+            return Buffer.from('# sandbox skill\n', 'utf8');
+          },
+          async writeFile() {},
+          async mkdir() {},
+          async runCommand(command) {
+            const normalizedCommand = String(command || '').trim();
+            seenCommands.push(normalizedCommand);
+            if (normalizedCommand.includes("command -v 'pandoc'")) {
+              return installed
+                ? { stdout: '/usr/bin/pandoc\n', stderr: '', exitCode: 0 }
+                : { stdout: '', stderr: 'not found', exitCode: 1 };
+            }
+            if (normalizedCommand === 'install pandoc') {
+              installed = true;
+              return { stdout: 'installed\n', stderr: '', exitCode: 0 };
+            }
+            if (normalizedCommand === 'pandoc --version') {
+              return installed
+                ? { stdout: 'pandoc 3.1\n', stderr: '', exitCode: 0 }
+                : { stdout: '', stderr: 'not found', exitCode: 1 };
+            }
+            return { stdout: '', stderr: '', exitCode: 0 };
+          },
+        },
+        cleanup: async () => {},
+      }),
+      startRunImpl: () => {
+        startRunCalls += 1;
+        throw new Error('environment-build should not start model run');
+      },
+    });
+
+    const createRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('POST', '/api/skills/docx/test-cases', {
+        userPrompt: '请生成 docx skill 的 full 环境 manifest。',
+        loadingMode: 'dynamic',
+        testType: 'environment-build',
+        expectedBehavior: '运行环境安装验证链并生成 manifest。',
+        caseStatus: 'ready',
+        environmentConfig: {
+          enabled: true,
+          requirements: [{ kind: 'command', name: 'pandoc' }],
+          bootstrap: { commands: ['install pandoc'] },
+          verify: { commands: ['pandoc --version'] },
+        },
+      }),
+      res: createRes,
+      pathname: '/api/skills/docx/test-cases',
+      requestUrl: new URL('http://localhost/api/skills/docx/test-cases'),
+    });
+
+    assert.equal(createRes.statusCode, 201);
+    assert.equal(createRes.json.testCase.testType, 'environment-build');
+
+    const caseId = createRes.json.testCase.id;
+    const runRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('POST', `/api/skills/docx/test-cases/${caseId}/run`, {
+        isolation: { mode: 'isolated', trellisMode: 'fixture' },
+        environmentBuild: {
+          buildImage: true,
+          envProfile: 'full',
+          baseImage: 'caff-skill-test-caff:local',
+        },
+      }),
+      res: runRes,
+      pathname: `/api/skills/docx/test-cases/${caseId}/run`,
+      requestUrl: new URL(`http://localhost/api/skills/docx/test-cases/${caseId}/run`),
+    });
+
+    assert.equal(runRes.statusCode, 200);
+    assert.equal(runRes.json.run.status, 'succeeded');
+    assert.equal(runRes.json.run.environmentStatus, 'passed');
+    assert.equal(runRes.json.run.evaluation.environmentBuild.status, 'image_built');
+    assert.equal(runRes.json.run.evaluation.environmentBuild.asset.image, 'caff-skill-env-docx:full-test');
+    assert.equal(runRes.json.run.evaluation.environmentBuild.asset.envProfile, 'full');
+    assert.equal(runRes.json.testCase.sourceMetadata.environmentBuild.asset.imageDigest, 'sha256:image123');
+    assert.equal(startRunCalls, 0);
+    assert.equal(builderCalls.length, 1);
+    assert.ok(seenCommands.some((entry) => entry.includes("command -v 'pandoc'")));
+    assert.ok(seenCommands.includes('install pandoc'));
+    assert.ok(seenCommands.includes('pandoc --version'));
+
+    const manifestPath = runRes.json.run.evaluation.environmentBuild.manifestPath;
+    assert.ok(fs.existsSync(manifestPath));
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    assert.equal(manifest.skillId, 'docx');
+    assert.equal(manifest.envProfile, 'full');
+    assert.equal(manifest.installSteps[0].command, 'install pandoc');
+    assert.equal(manifest.verifyCommands[0], 'pandoc --version');
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('environment-build registers a shared skill/profile asset and execution inherits it by envProfile', async () => {
+  const harness = createTempHarness();
+
+  try {
+    const liveProjectDir = path.join(harness.tempDir, 'live-project');
+    const manifestRootDir = path.join(harness.tempDir, 'environment-manifests');
+    const skillDir = path.join(harness.tempDir, 'live-skills', 'docx');
+    fs.mkdirSync(liveProjectDir, { recursive: true });
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '# Docx\n\nFixture skill body.\n', 'utf8');
+
+    let installed = false;
+    let startRunCalls = 0;
+    let sandboxImage = '';
+    let sandboxEnvProfile = '';
+    const seenCommands = [];
+    const controller = createSkillTestController({
+      store: createInMemoryStore(harness.db, {
+        agentDir: path.join(harness.tempDir, 'agent-root'),
+        databasePath: harness.databasePath,
+      }),
+      agentToolBridge: createFakeAgentToolBridge(),
+      skillRegistry: createFakeSkillRegistry([
+        {
+          id: 'docx',
+          name: 'Docx',
+          description: 'Fixture skill',
+          path: skillDir,
+        },
+      ]),
+      getProjectDir: () => liveProjectDir,
+      toolBaseUrl: 'http://127.0.0.1:3100',
+      environmentManifestRootDir: manifestRootDir,
+      environmentImageBuilder: () => ({
+        image: 'caff-skill-env-docx:full-test',
+        imageDigest: 'sha256:image123',
+        baseImageDigest: 'sha256:base123',
+        logs: 'built clean image',
+      }),
+      openSandboxFactory: (factoryInput) => {
+        sandboxImage = String(factoryInput && factoryInput.image || '');
+        sandboxEnvProfile = String(factoryInput && factoryInput.environmentImage && factoryInput.environmentImage.envProfile || '');
+        return {
+          driverName: 'opensandbox',
+          driverVersion: 'shared-environment-asset',
+          sandboxId: `sandbox-${factoryInput.caseId}`,
+          toolAdapter: {
+            async access() {},
+            async readFile() {
+              return Buffer.from('# sandbox skill\n', 'utf8');
+            },
+            async writeFile() {},
+            async mkdir() {},
+            async runCommand(command) {
+              const normalizedCommand = String(command || '').trim();
+              seenCommands.push(normalizedCommand);
+              if (normalizedCommand.includes("command -v 'pandoc'")) {
+                return installed
+                  ? { stdout: '/usr/bin/pandoc\n', stderr: '', exitCode: 0 }
+                  : { stdout: '', stderr: 'not found', exitCode: 1 };
+              }
+              if (normalizedCommand === 'install pandoc') {
+                installed = true;
+                return { stdout: 'installed\n', stderr: '', exitCode: 0 };
+              }
+              if (normalizedCommand === 'pandoc --version') {
+                return installed
+                  ? { stdout: 'pandoc 3.1\n', stderr: '', exitCode: 0 }
+                  : { stdout: '', stderr: 'not found', exitCode: 1 };
+              }
+              return { stdout: '', stderr: '', exitCode: 0 };
+            },
+          },
+          cleanup: async () => {},
+        };
+      },
+      startRunImpl: () => {
+        startRunCalls += 1;
+        return {
+          runId: `shared-asset-run-${startRunCalls}`,
+          sessionPath: path.join(harness.tempDir, `shared-asset-run-${startRunCalls}.jsonl`),
+          resultPromise: Promise.resolve({
+            reply: 'ok',
+            runId: `shared-asset-run-${startRunCalls}`,
+            sessionPath: path.join(harness.tempDir, `shared-asset-run-${startRunCalls}.jsonl`),
+          }),
+        };
+      },
+      evaluateRunImpl: () => ({
+        triggerPassed: null,
+        executionPassed: 1,
+        toolAccuracy: null,
+        actualToolsJson: '[]',
+        triggerEvaluation: null,
+        executionEvaluation: { verdict: 'pass' },
+        requiredStepCompletionRate: 1,
+        stepCompletionRate: 1,
+        requiredToolCoverage: null,
+        toolCallSuccessRate: null,
+        toolErrorRate: null,
+        sequenceAdherence: null,
+        goalAchievement: 1,
+        instructionAdherence: 1,
+        verdict: 'pass',
+        evaluation: { verdict: 'pass', dimensions: {} },
+        validationIssues: [],
+      }),
+    });
+
+    const buildCreateRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('POST', '/api/skills/docx/test-cases', {
+        userPrompt: '请生成 docx skill 的 full 环境 manifest。',
+        loadingMode: 'dynamic',
+        testType: 'environment-build',
+        expectedBehavior: '运行环境安装验证链并生成 manifest。',
+        caseStatus: 'ready',
+        environmentConfig: {
+          enabled: true,
+          requirements: [{ kind: 'command', name: 'pandoc' }],
+          bootstrap: { commands: ['install pandoc'] },
+          verify: { commands: ['pandoc --version'] },
+        },
+      }),
+      res: buildCreateRes,
+      pathname: '/api/skills/docx/test-cases',
+      requestUrl: new URL('http://localhost/api/skills/docx/test-cases'),
+    });
+
+    const buildCaseId = buildCreateRes.json.testCase.id;
+    const buildRunRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('POST', `/api/skills/docx/test-cases/${buildCaseId}/run`, {
+        isolation: { mode: 'isolated', trellisMode: 'fixture' },
+        environmentBuild: {
+          buildImage: true,
+          envProfile: 'full',
+          baseImage: 'caff-skill-test-caff:local',
+        },
+      }),
+      res: buildRunRes,
+      pathname: `/api/skills/docx/test-cases/${buildCaseId}/run`,
+      requestUrl: new URL(`http://localhost/api/skills/docx/test-cases/${buildCaseId}/run`),
+    });
+
+    assert.equal(buildRunRes.statusCode, 200);
+    assert.equal(buildRunRes.json.run.evaluation.environmentBuild.status, 'image_built');
+    assert.equal(startRunCalls, 0);
+    const commandCountAfterBuild = seenCommands.length;
+
+    const assetsRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('GET', '/api/skills/docx/environment-assets', null),
+      res: assetsRes,
+      pathname: '/api/skills/docx/environment-assets',
+      requestUrl: new URL('http://localhost/api/skills/docx/environment-assets'),
+    });
+
+    assert.equal(assetsRes.statusCode, 200);
+    assert.equal(assetsRes.json.assets.length, 1);
+    assert.equal(assetsRes.json.assets[0].envProfile, 'full');
+    assert.equal(assetsRes.json.assets[0].asset.image, 'caff-skill-env-docx:full-test');
+
+    const execCreateRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('POST', '/api/skills/docx/test-cases', {
+        userPrompt: '请完整执行 docx skill。',
+        loadingMode: 'full',
+        testType: 'execution',
+        expectedGoal: '完成 full execution 行为。',
+        expectedSteps: [
+          {
+            id: 'step-1',
+            title: '执行目标行为',
+            expectedBehavior: '完成目标行为。',
+            required: true,
+          },
+        ],
+        evaluationRubric: {},
+        caseStatus: 'ready',
+        environmentConfig: {
+          enabled: true,
+          asset: {
+            envProfile: 'full',
+          },
+        },
+      }),
+      res: execCreateRes,
+      pathname: '/api/skills/docx/test-cases',
+      requestUrl: new URL('http://localhost/api/skills/docx/test-cases'),
+    });
+
+    const execCaseId = execCreateRes.json.testCase.id;
+    const execRunRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('POST', `/api/skills/docx/test-cases/${execCaseId}/run`, {
+        isolation: { mode: 'isolated', trellisMode: 'fixture' },
+      }),
+      res: execRunRes,
+      pathname: `/api/skills/docx/test-cases/${execCaseId}/run`,
+      requestUrl: new URL(`http://localhost/api/skills/docx/test-cases/${execCaseId}/run`),
+    });
+
+    assert.equal(execRunRes.statusCode, 200);
+    assert.equal(execRunRes.json.run.status, 'succeeded');
+    assert.equal(execRunRes.json.run.environmentStatus, 'passed');
+    assert.equal(execRunRes.json.run.environmentPhase, 'asset-check');
+    assert.equal(execRunRes.json.run.evaluation.environment.asset.image, 'caff-skill-env-docx:full-test');
+    assert.equal(execRunRes.json.run.evaluation.environment.asset.source, 'skill_profile_default');
+    assert.equal(sandboxImage, 'caff-skill-env-docx:full-test');
+    assert.equal(sandboxEnvProfile, 'full');
+    assert.equal(startRunCalls, 1);
+    assert.equal(seenCommands.length, commandCountAfterBuild);
   } finally {
     harness.cleanup();
   }
@@ -5413,6 +6357,137 @@ test('full mode run marks critical sequence evidence gaps as borderline needs-re
   }
 });
 
+test('full mode execution run prompt includes expected goal, expected steps, and full TESTING.md content', async () => {
+  const harness = createTempHarness();
+
+  try {
+    const store = createInMemoryStore(harness.db, {
+      agentDir: path.join(harness.tempDir, 'agent'),
+      databasePath: harness.databasePath,
+    });
+    const skillDir = path.join(harness.tempDir, 'skills', 'docx');
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '# DOCX\n\nFixture skill body.\n', 'utf8');
+    fs.writeFileSync(path.join(skillDir, 'TESTING.md'), [
+      '# Testing Environment',
+      '',
+      '## Machine Contract',
+      '```skill-test-environment',
+      '{',
+      '  "enabled": true,',
+      '  "requirements": [',
+      '    { "kind": "command", "name": "pandoc", "probeCommand": "command -v pandoc" }',
+      '  ],',
+      '  "verify": {',
+      '    "commands": ["command -v pandoc"]',
+      '  }',
+      '}',
+      '```',
+      '',
+      '## Notes',
+      'Use pandoc before attempting tracked-change work.',
+      '',
+    ].join('\n'), 'utf8');
+
+    let capturedPrompt = '';
+    const controller = createSkillTestController({
+      store,
+      agentToolBridge: createFakeAgentToolBridge(),
+      skillRegistry: createFakeSkillRegistry([
+        {
+          id: 'docx',
+          name: 'DOCX Skill',
+          description: 'Tracked changes skill',
+          body: 'Use OOXML workflows.',
+          path: skillDir,
+        },
+      ]),
+      getProjectDir: () => harness.tempDir,
+      toolBaseUrl: 'http://127.0.0.1:3100',
+      startRunImpl: (_provider, _model, prompt) => {
+        capturedPrompt = String(prompt || '');
+        return {
+          runId: 'full-prompt-run',
+          sessionPath: path.join(harness.tempDir, 'full-prompt-run.jsonl'),
+          resultPromise: Promise.resolve({
+            reply: 'done',
+            runId: 'full-prompt-run',
+            sessionPath: path.join(harness.tempDir, 'full-prompt-run.jsonl'),
+          }),
+        };
+      },
+      evaluateRunImpl: () => ({
+        triggerPassed: null,
+        executionPassed: 1,
+        toolAccuracy: null,
+        actualToolsJson: '[]',
+        triggerEvaluation: null,
+        executionEvaluation: { verdict: 'pass', summary: 'ok', dimensions: {} },
+        requiredStepCompletionRate: 1,
+        stepCompletionRate: 1,
+        requiredToolCoverage: 1,
+        toolCallSuccessRate: 1,
+        toolErrorRate: 0,
+        sequenceAdherence: 1,
+        goalAchievement: 1,
+        instructionAdherence: 1,
+        verdict: 'pass',
+        evaluation: { verdict: 'pass', summary: 'ok', dimensions: {} },
+        validationIssues: [],
+      }),
+    });
+
+    const createRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('POST', '/api/skills/docx/test-cases', {
+        testType: 'execution',
+        loadingMode: 'full',
+        userPrompt: 'Review the complex document with multiple tracked-change batches organized by section or change type.',
+        expectedBehavior: 'Apply tracked changes instead of only producing a report.',
+        expectedGoal: 'Apply multiple precise tracked-change batches to the inherited complex document.',
+        expectedSteps: [
+          {
+            id: 'step-1',
+            title: 'Read TESTING.md and prepare environment assumptions',
+            expectedBehavior: 'Use the testing contract before editing.',
+            required: true,
+            order: 1,
+            failureIfMissing: 'Skipped environment contract.',
+            strongSignals: [],
+          },
+        ],
+        evaluationRubric: {},
+        caseStatus: 'ready',
+      }),
+      res: createRes,
+      pathname: '/api/skills/docx/test-cases',
+      requestUrl: new URL('http://localhost/api/skills/docx/test-cases'),
+    });
+
+    const caseId = createRes.json.testCase.id;
+    const runRes = createCaptureResponse();
+    await controller({
+      req: createJsonRequest('POST', `/api/skills/docx/test-cases/${caseId}/run`, {
+        environment: { enabled: false },
+      }),
+      res: runRes,
+      pathname: `/api/skills/docx/test-cases/${caseId}/run`,
+      requestUrl: new URL(`http://localhost/api/skills/docx/test-cases/${caseId}/run`),
+    });
+
+    assert.equal(runRes.statusCode, 200);
+    assert.match(capturedPrompt, /\[Skill Test Run Contract\]/, JSON.stringify(runRes.json));
+    assert.match(capturedPrompt, /Expected Goal:\nApply multiple precise tracked-change batches to the inherited complex document\./);
+    assert.match(capturedPrompt, /Expected Steps:/);
+    assert.match(capturedPrompt, /Target skill TESTING\.md \(full content\):/);
+    assert.match(capturedPrompt, /Use pandoc before attempting tracked-change work\./);
+    assert.match(capturedPrompt, /\[User Task\]/);
+    assert.match(capturedPrompt, /Review the complex document with multiple tracked-change batches organized by section or change type\./);
+  } finally {
+    harness.cleanup();
+  }
+});
+
 test('full mode run surfaces judge_parse_failed issues in response and run detail', async () => {
   const harness = createTempHarness();
 
@@ -6272,6 +7347,151 @@ test('isolated run records skill-test chat bridge auth evidence and scoped env',
   }
 });
 
+test('isolated full execution run extends skill-test chat bridge auth ttl', async () => {
+  const harness = createTempHarness();
+
+  try {
+    const liveProjectDir = path.join(harness.tempDir, 'live-project');
+    const skillDir = path.join(harness.tempDir, 'live-skills', 'werewolf');
+    fs.mkdirSync(liveProjectDir, { recursive: true });
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '# Werewolf\n\nFixture skill body.\n', 'utf8');
+
+    const now = new Date().toISOString();
+    harness.db.prepare(`
+      INSERT INTO skill_test_cases (
+        id, skill_id, test_type, loading_mode, trigger_prompt,
+        expected_tools_json, expected_behavior, validity_status, case_status,
+        expected_goal, expected_steps_json, expected_sequence_json, evaluation_rubric_json,
+        note, created_at, updated_at
+      ) VALUES (
+        'chat-bridge-full-case', 'werewolf', 'execution', 'full', 'complete the full execution workflow',
+        '[]', 'complete the workflow', 'pending', 'ready',
+        'Complete the full execution workflow', @expectedStepsJson, '[]', '{}',
+        '', @createdAt, @updatedAt
+      )
+    `).run({
+      expectedStepsJson: JSON.stringify([
+        {
+          id: 'step-1',
+          title: 'Complete workflow',
+          expectedBehavior: 'Complete the workflow inside the sandbox.',
+          required: true,
+          order: 1,
+          strongSignals: [],
+        },
+      ]),
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    let invocationContext = null;
+    const controller = createSkillTestController({
+      store: createInMemoryStore(harness.db, {
+        agentDir: path.join(harness.tempDir, 'agent-root'),
+        databasePath: harness.databasePath,
+      }),
+      agentToolBridge: {
+        createInvocationContext(ctx) {
+          return {
+            ...ctx,
+            invocationId: 'inv-chat-bridge-full',
+            callbackToken: 'token-chat-bridge-full',
+            auth: {
+              scope: ctx.authScope,
+              caseId: ctx.caseId,
+              runId: ctx.runId,
+              taskId: ctx.taskId,
+              tokenTtlSec: ctx.tokenTtlSec,
+              expiresAt: '2026-04-13T10:00:00.000Z',
+              validated: false,
+              validatedCount: 0,
+              lastValidatedAt: '',
+              rejects: [],
+            },
+          };
+        },
+        registerInvocation(ctx) {
+          invocationContext = ctx;
+          return ctx;
+        },
+        unregisterInvocation() {
+          return invocationContext;
+        },
+        summarizeInvocationAuth(ctx) {
+          return ctx && ctx.auth ? ctx.auth : null;
+        },
+      },
+      skillRegistry: createFakeSkillRegistry([
+        {
+          id: 'werewolf',
+          name: 'Werewolf',
+          description: 'Fixture skill',
+          path: skillDir,
+        },
+      ]),
+      getProjectDir: () => liveProjectDir,
+      toolBaseUrl: 'http://127.0.0.1:3100',
+      skillTestChatApiUrl: 'https://bridge.example.test',
+      openSandboxFactory: ({ caseId }) => ({
+        driverName: 'opensandbox',
+        driverVersion: 'chat-bridge-test',
+        sandboxId: `sandbox-${caseId}`,
+      }),
+      startRunImpl: () => {
+        const sessionPath = path.join(harness.tempDir, 'chat-bridge-full-run.jsonl');
+        return {
+          runId: 'chat-bridge-full-run',
+          sessionPath,
+          resultPromise: Promise.resolve({
+            reply: 'full-execution-ok',
+            runId: 'chat-bridge-full-run',
+            sessionPath,
+          }),
+        };
+      },
+      evaluateRunImpl: () => ({
+        triggerPassed: 1,
+        executionPassed: 1,
+        toolAccuracy: 1,
+        actualToolsJson: JSON.stringify([]),
+        verdict: 'pass',
+        evaluation: {
+          verdict: 'pass',
+          summary: 'full execution completed',
+          dimensions: {
+            requiredToolCoverage: { score: 1, reason: 'No required tools.' },
+            toolCallSuccessRate: { score: 1, reason: 'No tool failures.' },
+            toolErrorRate: { score: 0, reason: 'No tool errors.' },
+            sequenceAdherence: { score: 1, reason: 'Single step.' },
+            goalAchievement: { score: 1, reason: 'Goal achieved.' },
+            instructionAdherence: { score: 1, reason: 'Instructions followed.' },
+          },
+          validation: { issues: [] },
+        },
+        validationIssues: [],
+      }),
+    });
+
+    const res = createCaptureResponse();
+    const handled = await controller({
+      req: createJsonRequest('POST', '/api/skills/werewolf/test-cases/chat-bridge-full-case/run', {
+        isolation: { mode: 'isolated', trellisMode: 'fixture' },
+      }),
+      res,
+      pathname: '/api/skills/werewolf/test-cases/chat-bridge-full-case/run',
+      requestUrl: new URL('http://localhost/api/skills/werewolf/test-cases/chat-bridge-full-case/run'),
+    });
+
+    assert.equal(handled, true);
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.json.run.isolation.chatBridge.auth.caseId, 'chat-bridge-full-case');
+    assert.equal(res.json.run.isolation.chatBridge.auth.tokenTtlSec, 3600);
+  } finally {
+    harness.cleanup();
+  }
+});
+
 test('isolated full-mode judges reuse the case-scoped runtime store', async () => {
   const harness = createTempHarness();
   const originalProvider = process.env.PI_PROVIDER;
@@ -6961,6 +8181,513 @@ test('skill test design import-matrix can read project-local matrix artifact', a
   }
 });
 
+test('skill test design summary auto-previews TESTING.md draft when document is missing', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-skill-test-testing-doc-auto-preview-'));
+  try {
+    const skillDir = path.join(tempDir, 'demo-skill');
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), [
+      '# Demo Skill',
+      '',
+      '## Setup',
+      '- npm install demo-cli',
+      '- demo-cli bootstrap',
+      '',
+      '## Verification',
+      '- demo-cli --version',
+      '',
+    ].join('\n'), 'utf8');
+
+    const db = createTestDb();
+    let conversation = {
+      id: 'design-conv-testing-doc-auto-preview',
+      title: 'Skill Test Design',
+      type: 'skill_test_design',
+      metadata: {
+        skillTestDesign: {
+          version: 1,
+          skillId: 'demo-skill',
+          skillName: 'Demo Skill',
+          phase: 'collecting_context',
+          participantRoles: { 'agent-builder': 'scribe' },
+          matrix: null,
+          confirmation: null,
+          export: null,
+          testingDocDraft: null,
+          environmentContract: null,
+          createdAt: '2026-04-22T00:00:00.000Z',
+          updatedAt: '2026-04-22T00:00:00.000Z',
+        },
+      },
+      messages: [],
+    };
+    const store = {
+      db,
+      getConversation(id) {
+        return id === conversation.id ? conversation : null;
+      },
+      updateConversation(id, updates) {
+        if (id !== conversation.id) {
+          return null;
+        }
+        conversation = { ...conversation, ...updates };
+        return conversation;
+      },
+    };
+    const controller = createSkillTestController({
+      store,
+      agentToolBridge: createFakeAgentToolBridge(),
+      skillRegistry: createFakeSkillRegistry([{ id: 'demo-skill', path: skillDir, body: fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf8') }]),
+      getProjectDir: () => tempDir,
+    });
+
+    const res = createCaptureResponse();
+    const handled = await controller({
+      req: createJsonRequest('GET', '/api/conversations/design-conv-testing-doc-auto-preview/skill-test-design', null),
+      res,
+      pathname: '/api/conversations/design-conv-testing-doc-auto-preview/skill-test-design',
+      requestUrl: new URL('http://localhost/api/conversations/design-conv-testing-doc-auto-preview/skill-test-design'),
+    });
+
+    assert.equal(handled, true);
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.json.state.testingDocDraft.targetPath, 'TESTING.md');
+    assert.equal(res.json.state.testingDocDraft.status, 'proposed');
+    assert.equal(res.json.state.testingDocDraft.audit.messageId, 'auto-testing-doc-preview');
+    assert.equal(res.json.state.testingDocDraft.audit.createdBy, 'system');
+    assert.equal(res.json.state.testingDocDraft.sections.find((section) => section.heading === 'Setup').sourceKind, 'skill_md');
+    assert.equal(res.json.conversation.metadata.skillTestDesign.testingDocDraft.draftId, res.json.state.testingDocDraft.draftId);
+    assert.equal(fs.existsSync(path.join(skillDir, 'TESTING.md')), false);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('skill test design preview-testing-doc-draft creates a structured draft without writing files', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-skill-test-testing-doc-preview-'));
+  try {
+    const skillDir = path.join(tempDir, 'demo-skill');
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), [
+      '# Demo Skill',
+      '',
+      '## Setup',
+      '- npm install demo-cli',
+      '- demo-cli bootstrap',
+      '',
+      '## Verification',
+      '- demo-cli --version',
+      '',
+    ].join('\n'), 'utf8');
+
+    const db = createTestDb();
+    let conversation = {
+      id: 'design-conv-testing-doc-preview',
+      title: 'Skill Test Design',
+      type: 'skill_test_design',
+      metadata: {
+        skillTestDesign: {
+          version: 1,
+          skillId: 'demo-skill',
+          skillName: 'Demo Skill',
+          phase: 'collecting_context',
+          participantRoles: { 'agent-builder': 'scribe' },
+          matrix: null,
+          confirmation: null,
+          export: null,
+          testingDocDraft: null,
+          createdAt: '2026-04-22T00:00:00.000Z',
+          updatedAt: '2026-04-22T00:00:00.000Z',
+        },
+      },
+      messages: [
+        {
+          id: 'user-msg-testing-doc-preview',
+          role: 'user',
+          content: '这个 skill 环境很重，先帮我起草 TESTING.md。',
+        },
+      ],
+    };
+    const store = {
+      db,
+      getConversation(id) {
+        return id === conversation.id ? conversation : null;
+      },
+      updateConversation(id, updates) {
+        if (id !== conversation.id) {
+          return null;
+        }
+        conversation = { ...conversation, ...updates };
+        return conversation;
+      },
+    };
+    const controller = createSkillTestController({
+      store,
+      agentToolBridge: createFakeAgentToolBridge(),
+      skillRegistry: createFakeSkillRegistry([{ id: 'demo-skill', path: skillDir, body: fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf8') }]),
+      getProjectDir: () => tempDir,
+    });
+
+    await assert.rejects(
+      controller({
+        req: createJsonRequest('POST', '/api/conversations/design-conv-testing-doc-preview/skill-test-design/preview-testing-doc-draft', {
+          messageId: 'user-msg-testing-doc-preview',
+          requestedBy: 'user',
+          sections: [
+            {
+              heading: 'Random Notes',
+              content: '- not an approved TESTING.md section',
+              sourceKind: 'user_supplied',
+            },
+          ],
+        }),
+        res: createCaptureResponse(),
+        pathname: '/api/conversations/design-conv-testing-doc-preview/skill-test-design/preview-testing-doc-draft',
+        requestUrl: new URL('http://localhost/api/conversations/design-conv-testing-doc-preview/skill-test-design/preview-testing-doc-draft'),
+      }),
+      (error) => {
+        assert.equal(error.statusCode, 400);
+        assert.ok(error.issues.some((issue) => issue.code === 'testing_doc_section_heading_invalid'));
+        return true;
+      }
+    );
+
+    const res = createCaptureResponse();
+    const handled = await controller({
+      req: createJsonRequest('POST', '/api/conversations/design-conv-testing-doc-preview/skill-test-design/preview-testing-doc-draft', {
+        messageId: 'user-msg-testing-doc-preview',
+        requestedBy: 'user',
+      }),
+      res,
+      pathname: '/api/conversations/design-conv-testing-doc-preview/skill-test-design/preview-testing-doc-draft',
+      requestUrl: new URL('http://localhost/api/conversations/design-conv-testing-doc-preview/skill-test-design/preview-testing-doc-draft'),
+    });
+
+    assert.equal(handled, true);
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.json.draft.targetPath, 'TESTING.md');
+    assert.equal(res.json.draft.status, 'proposed');
+    assert.equal(res.json.draft.sections.length, 5);
+    assert.equal(res.json.draft.sections.find((section) => section.heading === 'Setup').sourceKind, 'skill_md');
+    assert.equal(res.json.draft.sections.find((section) => section.heading === 'Prerequisites').sourceKind, 'missing');
+    assert.equal(res.json.draft.file.existsAtPreview, false);
+    assert.equal(fs.existsSync(path.join(skillDir, 'TESTING.md')), false);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('skill test design apply-testing-doc-draft writes TESTING.md and requires matrix reconfirmation', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-skill-test-testing-doc-apply-'));
+  try {
+    const skillDir = path.join(tempDir, 'demo-skill');
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), [
+      '# Demo Skill',
+      '',
+      '## Setup',
+      '- npm install demo-cli',
+      '',
+      '## Verification',
+      '- demo-cli --version',
+      '',
+    ].join('\n'), 'utf8');
+
+    const db = createTestDb();
+    let conversation = {
+      id: 'design-conv-testing-doc-apply',
+      title: 'Skill Test Design',
+      type: 'skill_test_design',
+      metadata: {
+        skillTestDesign: {
+          version: 1,
+          skillId: 'demo-skill',
+          skillName: 'Demo Skill',
+          phase: 'generating_drafts',
+          participantRoles: { 'agent-builder': 'scribe' },
+          matrix: {
+            kind: 'skill_test_matrix',
+            matrixId: 'matrix-testing-doc-apply-1',
+            skillId: 'demo-skill',
+            phase: 'awaiting_confirmation',
+            sourceMessageId: 'assistant-msg-testing-doc-apply',
+            rows: [
+              {
+                rowId: 'row-1',
+                scenario: 'bootstrap the demo skill environment',
+                priority: 'P0',
+                coverageReason: 'matrix should require re-confirm after TESTING.md apply',
+                testType: 'trigger',
+                loadingMode: 'dynamic',
+                includeInMvp: true,
+                riskPoints: ['environment drift'],
+                keyAssertions: ['matrix confirmation is invalidated after apply'],
+                draftingHints: {
+                  triggerPrompt: 'bootstrap the demo skill',
+                },
+              },
+            ],
+          },
+          confirmation: {
+            matrixId: 'matrix-testing-doc-apply-1',
+            messageId: 'assistant-msg-testing-doc-apply',
+            agentRole: 'scribe',
+            confirmedAt: '2026-04-22T00:00:00.000Z',
+          },
+          export: null,
+          testingDocDraft: null,
+          createdAt: '2026-04-22T00:00:00.000Z',
+          updatedAt: '2026-04-22T00:00:00.000Z',
+        },
+      },
+      messages: [
+        {
+          id: 'assistant-msg-testing-doc-apply',
+          role: 'assistant',
+          agentId: 'agent-builder',
+          content: '先起草 TESTING.md 再继续。',
+        },
+      ],
+    };
+    const store = {
+      db,
+      getConversation(id) {
+        return id === conversation.id ? conversation : null;
+      },
+      updateConversation(id, updates) {
+        if (id !== conversation.id) {
+          return null;
+        }
+        conversation = { ...conversation, ...updates };
+        return conversation;
+      },
+    };
+    const controller = createSkillTestController({
+      store,
+      agentToolBridge: createFakeAgentToolBridge(),
+      skillRegistry: createFakeSkillRegistry([{ id: 'demo-skill', path: skillDir, body: fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf8') }]),
+      getProjectDir: () => tempDir,
+    });
+
+    const previewRes = createCaptureResponse();
+    const previewHandled = await controller({
+      req: createJsonRequest('POST', '/api/conversations/design-conv-testing-doc-apply/skill-test-design/preview-testing-doc-draft', {
+        messageId: 'assistant-msg-testing-doc-apply',
+        requestedBy: 'user',
+      }),
+      res: previewRes,
+      pathname: '/api/conversations/design-conv-testing-doc-apply/skill-test-design/preview-testing-doc-draft',
+      requestUrl: new URL('http://localhost/api/conversations/design-conv-testing-doc-apply/skill-test-design/preview-testing-doc-draft'),
+    });
+    assert.equal(previewHandled, true);
+
+    const applyRes = createCaptureResponse();
+    const applyHandled = await controller({
+      req: createJsonRequest('POST', '/api/conversations/design-conv-testing-doc-apply/skill-test-design/apply-testing-doc-draft', {
+        draftId: previewRes.json.draft.draftId,
+        appliedBy: 'user',
+      }),
+      res: applyRes,
+      pathname: '/api/conversations/design-conv-testing-doc-apply/skill-test-design/apply-testing-doc-draft',
+      requestUrl: new URL('http://localhost/api/conversations/design-conv-testing-doc-apply/skill-test-design/apply-testing-doc-draft'),
+    });
+
+    assert.equal(applyHandled, true);
+    assert.equal(applyRes.statusCode, 200);
+    assert.equal(applyRes.json.draft.status, 'applied');
+    assert.equal(applyRes.json.requiresMatrixReconfirmation, true);
+    assert.equal(conversation.metadata.skillTestDesign.confirmation, null);
+    assert.equal(conversation.metadata.skillTestDesign.phase, 'awaiting_confirmation');
+    assert.equal(fs.existsSync(path.join(skillDir, 'TESTING.md')), true);
+    assert.match(fs.readFileSync(path.join(skillDir, 'TESTING.md'), 'utf8'), /# Testing Environment/);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('skill test design apply-testing-doc-draft fails when preview becomes superseded', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-skill-test-testing-doc-superseded-'));
+  try {
+    const skillDir = path.join(tempDir, 'demo-skill');
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '# Demo Skill\n', 'utf8');
+    fs.writeFileSync(path.join(skillDir, 'TESTING.md'), '# Testing Environment\n\n## Prerequisites\n- existing\n', 'utf8');
+
+    const db = createTestDb();
+    let conversation = {
+      id: 'design-conv-testing-doc-superseded',
+      title: 'Skill Test Design',
+      type: 'skill_test_design',
+      metadata: {
+        skillTestDesign: {
+          version: 1,
+          skillId: 'demo-skill',
+          skillName: 'Demo Skill',
+          phase: 'collecting_context',
+          participantRoles: { 'agent-builder': 'scribe' },
+          matrix: null,
+          confirmation: null,
+          export: null,
+          testingDocDraft: null,
+          createdAt: '2026-04-22T00:00:00.000Z',
+          updatedAt: '2026-04-22T00:00:00.000Z',
+        },
+      },
+      messages: [
+        {
+          id: 'user-msg-testing-doc-superseded',
+          role: 'user',
+          content: '起草一下 TESTING.md。',
+        },
+      ],
+    };
+    const store = {
+      db,
+      getConversation(id) {
+        return id === conversation.id ? conversation : null;
+      },
+      updateConversation(id, updates) {
+        if (id !== conversation.id) {
+          return null;
+        }
+        conversation = { ...conversation, ...updates };
+        return conversation;
+      },
+    };
+    const controller = createSkillTestController({
+      store,
+      agentToolBridge: createFakeAgentToolBridge(),
+      skillRegistry: createFakeSkillRegistry([{ id: 'demo-skill', path: skillDir, body: '# Demo Skill\n' }]),
+      getProjectDir: () => tempDir,
+    });
+
+    const previewRes = createCaptureResponse();
+    const previewHandled = await controller({
+      req: createJsonRequest('POST', '/api/conversations/design-conv-testing-doc-superseded/skill-test-design/preview-testing-doc-draft', {
+        messageId: 'user-msg-testing-doc-superseded',
+      }),
+      res: previewRes,
+      pathname: '/api/conversations/design-conv-testing-doc-superseded/skill-test-design/preview-testing-doc-draft',
+      requestUrl: new URL('http://localhost/api/conversations/design-conv-testing-doc-superseded/skill-test-design/preview-testing-doc-draft'),
+    });
+    assert.equal(previewHandled, true);
+
+    fs.writeFileSync(path.join(skillDir, 'TESTING.md'), '# Testing Environment\n\n## Prerequisites\n- changed after preview\n', 'utf8');
+
+    await assert.rejects(
+      controller({
+        req: createJsonRequest('POST', '/api/conversations/design-conv-testing-doc-superseded/skill-test-design/apply-testing-doc-draft', {
+          draftId: previewRes.json.draft.draftId,
+          confirmOverwrite: true,
+          appliedBy: 'user',
+        }),
+        res: createCaptureResponse(),
+        pathname: '/api/conversations/design-conv-testing-doc-superseded/skill-test-design/apply-testing-doc-draft',
+        requestUrl: new URL('http://localhost/api/conversations/design-conv-testing-doc-superseded/skill-test-design/apply-testing-doc-draft'),
+      }),
+      (err) => {
+        assert.equal(err.statusCode, 400);
+        assert.ok(err.issues.some((issue) => issue.code === 'testing_doc_draft_superseded'));
+        return true;
+      }
+    );
+
+    assert.equal(conversation.metadata.skillTestDesign.testingDocDraft.status, 'superseded');
+    assert.match(fs.readFileSync(path.join(skillDir, 'TESTING.md'), 'utf8'), /changed after preview/);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('skill test design summary treats prose-only TESTING.md as reference-only until a machine contract exists', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'caff-skill-test-testing-doc-summary-'));
+  try {
+    const skillDir = path.join(tempDir, 'demo-skill');
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '# Demo Skill\n', 'utf8');
+    fs.writeFileSync(path.join(skillDir, 'TESTING.md'), [
+      '# Testing Environment',
+      '',
+      '## Prerequisites',
+      '',
+      '| Tool | Install |',
+      '| --- | --- |',
+      '| demo-cli | npm install -g demo-cli |',
+      '',
+      '## Setup (per-test)',
+      '',
+      '1. Prepare the demo fixture.',
+      '2. Run `demo-cli bootstrap`.',
+      '',
+      '## Verification',
+      '',
+      '1. Run `demo-cli --version`.',
+      '',
+    ].join('\n'), 'utf8');
+
+    let conversation = {
+      id: 'design-conv-testing-doc-summary',
+      title: 'Skill Test Design',
+      type: 'skill_test_design',
+      metadata: {
+        skillTestDesign: {
+          version: 1,
+          skillId: 'demo-skill',
+          skillName: 'Demo Skill',
+          phase: 'collecting_context',
+          participantRoles: { 'agent-builder': 'planner' },
+          matrix: null,
+          confirmation: null,
+          export: null,
+          testingDocDraft: null,
+          createdAt: '2026-04-22T00:00:00.000Z',
+          updatedAt: '2026-04-22T00:00:00.000Z',
+        },
+      },
+      messages: [],
+    };
+    const store = {
+      db: createTestDb(),
+      getConversation(id) {
+        return id === conversation.id ? conversation : null;
+      },
+      updateConversation(id, updates) {
+        if (id !== conversation.id) {
+          return null;
+        }
+        conversation = { ...conversation, ...updates };
+        return conversation;
+      },
+    };
+    const controller = createSkillTestController({
+      store,
+      agentToolBridge: createFakeAgentToolBridge(),
+      skillRegistry: createFakeSkillRegistry([{ id: 'demo-skill', path: skillDir, body: '# Demo Skill\n' }]),
+      getProjectDir: () => tempDir,
+    });
+
+    const res = createCaptureResponse();
+    const handled = await controller({
+      req: createJsonRequest('GET', '/api/conversations/design-conv-testing-doc-summary/skill-test-design', undefined),
+      res,
+      pathname: '/api/conversations/design-conv-testing-doc-summary/skill-test-design',
+      requestUrl: new URL('http://localhost/api/conversations/design-conv-testing-doc-summary/skill-test-design'),
+    });
+
+    assert.equal(handled, true);
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.json.state.environmentContract.status, 'insufficient');
+    assert.equal(res.json.state.environmentContract.source, 'testing_doc_reference_only');
+    assert.equal(res.json.state.environmentContract.contractBlockFound, false);
+    assert.equal(res.json.state.environmentContract.contractBlockParsed, false);
+    assert.deepEqual(res.json.state.environmentContract.candidates, []);
+    assert.ok(Array.isArray(res.json.state.environmentContract.warnings));
+    assert.ok(res.json.state.environmentContract.warnings.some((warning) => String(warning).includes('skill-test-environment 合同块')));
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test('skill test design export-drafts rolls back partial draft creation on validation failure', async () => {
   const db = createTestDb();
   let conversation = {
@@ -7073,7 +8800,7 @@ test('skill test design export-drafts rolls back partial draft creation on valid
   assert.equal(storedCases.count, 0);
 });
 
-test('skill test design export-drafts records duplicate and skipped row summary in conversation export state', async () => {
+test('skill test design export-drafts records duplicate summary while exporting full execution drafts', async () => {
   const db = createTestDb();
   let conversation = {
     id: 'design-conv-export-summary',
@@ -7111,20 +8838,40 @@ test('skill test design export-drafts records duplicate and skipped row summary 
               },
             },
             {
-              rowId: 'row-full-skipped',
-              scenario: 'cover full execution row skipped by phase one export',
+              rowId: 'row-full-exported',
+              scenario: 'cover full execution row exported through chat workbench draft export',
               priority: 'P1',
-              coverageReason: 'Phase 1 should keep full execution rows out of dynamic trigger export',
+              coverageReason: 'export should persist full execution rows once canonical full draft fields are present',
               testType: 'execution',
               loadingMode: 'full',
               environmentSource: 'skill_contract',
               environmentContractRef: 'TESTING.md#Bootstrap',
-              riskPoints: ['phase scope'],
-              keyAssertions: ['skipped row is summarized'],
+              riskPoints: ['full draft validation'],
+              keyAssertions: ['full execution row is exported instead of skipped'],
               includeInMvp: true,
               draftingHints: {
                 triggerPrompt: 'please execute the full demo skill scenario',
-                expectedBehavior: 'full execution remains out of Phase 1 export',
+                expectedGoal: 'complete the full demo skill execution path',
+                expectedBehavior: 'executes the full demo skill scenario using the declared contract',
+                expectedSteps: [
+                  {
+                    title: 'Execute the main full flow',
+                    expectedBehavior: 'Run the declared full demo skill scenario from start to finish.',
+                    required: true,
+                    failureIfMissing: 'Missing the main full flow means the execution draft should fail.',
+                    strongSignals: [
+                      {
+                        type: 'text',
+                        text: 'demo skill scenario',
+                      },
+                    ],
+                  },
+                ],
+                evaluationRubric: {
+                  thresholds: {
+                    goalAchievement: 0.8,
+                  },
+                },
               },
             },
           ],
@@ -7195,20 +8942,166 @@ test('skill test design export-drafts records duplicate and skipped row summary 
 
   assert.equal(handled, true);
   assert.equal(res.statusCode, 200);
-  assert.equal(res.json.exportedCount, 1);
-  assert.equal(res.json.cases.length, 1);
+  assert.equal(res.json.exportedCount, 2);
+  assert.equal(res.json.cases.length, 2);
   assert.equal(res.json.duplicateWarnings.length, 1);
   assert.equal(res.json.duplicateWarnings[0].rowId, 'row-duplicate');
-  assert.equal(res.json.skippedRows.length, 1);
-  assert.equal(res.json.skippedRows[0].rowId, 'row-full-skipped');
-  assert.match(res.json.skippedRows[0].nextAction, /后续 Phase/);
-  assert.equal(res.json.state.export.exportedCount, 1);
+  assert.equal(res.json.skippedRows.length, 0);
+  assert.equal(res.json.state.export.exportedCount, 2);
   assert.equal(res.json.state.export.duplicateWarningCount, 1);
-  assert.equal(res.json.state.export.skippedRowCount, 1);
-  assert.deepEqual(res.json.state.export.exportedCaseIds, [res.json.cases[0].id]);
+  assert.equal(res.json.state.export.skippedRowCount, 0);
+  assert.deepEqual(res.json.state.export.exportedCaseIds, res.json.cases.map((testCase) => testCase.id));
   assert.equal(conversation.metadata.skillTestDesign.export.duplicateWarningCount, 1);
-  assert.equal(conversation.metadata.skillTestDesign.export.skippedRows[0].rowId, 'row-full-skipped');
-  assert.match(conversation.metadata.skillTestDesign.export.skippedRows[0].nextAction, /后续 Phase/);
+  assert.equal(conversation.metadata.skillTestDesign.export.skippedRows.length, 0);
+
+  const byRowId = new Map(res.json.cases.map((testCase) => [testCase.sourceMetadata.matrixRowId, testCase]));
+  const fullCase = byRowId.get('row-full-exported');
+  assert.ok(fullCase);
+  assert.equal(fullCase.loadingMode, 'full');
+  assert.equal(fullCase.testType, 'execution');
+  assert.equal(fullCase.expectedGoal, 'complete the full demo skill execution path');
+  assert.equal(fullCase.expectedSteps.length, 1);
+  assert.equal(fullCase.expectedSteps[0].title, 'Execute the main full flow');
+  assert.equal(fullCase.evaluationRubric.thresholds.goalAchievement, 0.8);
+  assert.equal(fullCase.sourceMetadata.skillTestDesign.environmentContractRef, 'TESTING.md#Bootstrap');
+  assert.equal(fullCase.sourceMetadata.skillTestDesign.environmentSource, 'skill_contract');
+});
+
+test('skill test design export-drafts can create environment-build drafts', async () => {
+  const db = createTestDb();
+  const existingEnvBuildAt = '2026-04-21T00:00:00.000Z';
+  db.prepare(`
+    INSERT INTO skill_test_cases (
+      id, skill_id, test_type, loading_mode, trigger_prompt,
+      environment_config_json, source_metadata_json, case_status, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    'tc-existing-envbuild-default',
+    'demo-skill',
+    'environment-build',
+    'dynamic',
+    'build demo skill default environment',
+    JSON.stringify({ enabled: true }),
+    JSON.stringify({
+      source: 'skill_test_chat_workbench',
+      skillTestDesign: {
+        environmentSource: 'skill_contract',
+        environmentContractRef: 'TESTING.md#skill-test-environment',
+      },
+    }),
+    'draft',
+    existingEnvBuildAt,
+    existingEnvBuildAt
+  );
+  let conversation = {
+    id: 'design-conv-env-build-export',
+    title: 'Skill Test Design',
+    type: 'skill_test_design',
+    metadata: {
+      skillTestDesign: {
+        version: 1,
+        skillId: 'demo-skill',
+        skillName: 'Demo Skill',
+        phase: 'awaiting_confirmation',
+        participantRoles: { 'agent-builder': 'scribe' },
+        matrix: {
+          kind: 'skill_test_matrix',
+          matrixId: 'matrix-env-build-export-1',
+          skillId: 'demo-skill',
+          phase: 'awaiting_confirmation',
+          sourceMessageId: 'assistant-msg-env-build-export',
+          agentRole: 'scribe',
+          importedAt: '2026-04-21T00:00:00.000Z',
+          rows: [
+            {
+              rowId: 'row-env-build-exported',
+              scenario: 'build reusable environment asset for demo skill execution cases',
+              priority: 'P0',
+              coverageReason: 'environment-build rows should export through the chat workbench once TESTING.md contract source is confirmed',
+              testType: 'environment-build',
+              loadingMode: 'full',
+              environmentSource: 'skill_contract',
+              environmentContractRef: 'TESTING.md#skill-test-environment',
+              riskPoints: ['manifest drift'],
+              keyAssertions: ['environment manifest can be produced'],
+              includeInMvp: true,
+              draftingHints: {
+                expectedBehavior: 'produces environment-manifest.json and optional image asset metadata',
+                environmentConfig: {
+                  enabled: true,
+                  requirements: [{ kind: 'command', name: 'pandoc' }],
+                  bootstrap: { commands: ['apt-get update && apt-get install -y pandoc'] },
+                  verify: { commands: ['pandoc --version'] },
+                },
+              },
+            },
+          ],
+        },
+        confirmation: null,
+        export: null,
+        createdAt: '2026-04-21T00:00:00.000Z',
+        updatedAt: '2026-04-21T00:00:00.000Z',
+      },
+    },
+    messages: [
+      {
+        id: 'assistant-msg-env-build-export',
+        role: 'assistant',
+        agentId: 'agent-builder',
+        content: '```json\n{"kind":"skill_test_matrix"}\n```',
+      },
+    ],
+  };
+  const store = {
+    db,
+    getConversation(id) {
+      return id === conversation.id ? conversation : null;
+    },
+    updateConversation(id, updates) {
+      if (id !== conversation.id) {
+        return null;
+      }
+      conversation = { ...conversation, ...updates };
+      return conversation;
+    },
+  };
+  const controller = createSkillTestController({
+    store,
+    agentToolBridge: createFakeAgentToolBridge(),
+    skillRegistry: createFakeSkillRegistry(['demo-skill']),
+  });
+
+  const res = createCaptureResponse();
+  const handled = await controller({
+    req: createJsonRequest('POST', '/api/conversations/design-conv-env-build-export/skill-test-design/export-drafts', {
+      matrixId: 'matrix-env-build-export-1',
+      confirmMatrix: true,
+      confirmationMessageId: 'assistant-msg-env-build-export',
+      exportedBy: 'user',
+    }),
+    res,
+    pathname: '/api/conversations/design-conv-env-build-export/skill-test-design/export-drafts',
+    requestUrl: new URL('http://localhost/api/conversations/design-conv-env-build-export/skill-test-design/export-drafts'),
+  });
+
+  assert.equal(handled, true);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.json.exportedCount, 1);
+  assert.equal(res.json.duplicateWarnings.length, 1);
+  assert.equal(res.json.duplicateWarnings[0].rowId, 'row-env-build-exported');
+  assert.equal(res.json.duplicateWarnings[0].duplicates[0].id, 'tc-existing-envbuild-default');
+  assert.equal(res.json.duplicateWarnings[0].duplicates[0].envProfile, 'default');
+  assert.equal(res.json.skippedRows.length, 0);
+  const exportedCase = res.json.cases[0];
+  assert.equal(exportedCase.testType, 'environment-build');
+  assert.equal(exportedCase.loadingMode, 'full');
+  assert.ok(exportedCase.triggerPrompt.includes('demo-skill'));
+  assert.equal(exportedCase.environmentConfig.requirements[0].name, 'pandoc');
+  assert.equal(exportedCase.sourceMetadata.matrixRowId, 'row-env-build-exported');
+  assert.equal(exportedCase.sourceMetadata.skillTestDesign.environmentSource, 'skill_contract');
+  assert.equal(exportedCase.sourceMetadata.skillTestDesign.environmentContractRef, 'TESTING.md#skill-test-environment');
+  assert.equal(res.json.state.export.exportedCount, 1);
+  assert.deepEqual(res.json.state.export.exportedCaseIds, [exportedCase.id]);
 });
 
 test('skill test design confirm-matrix rejects unresolved chain dependencies before export', async () => {
@@ -7549,4 +9442,555 @@ test('skill test design export-drafts preserves chain planning metadata and depe
   assert.equal(storedCases.length, 2);
   const storedById = new Map(storedCases.map((row) => [row.id, JSON.parse(row.source_metadata_json)]));
   assert.deepEqual(storedById.get(verifyCase.id).skillTestDesign.chainPlanning.dependsOnCaseIds, [bootstrapCase.id]);
+});
+
+test('chain runner executes full execution cases in order and stops after a failed step', async () => {
+  const harness = createTempHarness();
+  const capturedPrompts = [];
+  const broadcastEvents = [];
+
+  try {
+    insertLifecycleChainExecutionCase(harness.db, {
+      id: 'chain-step-1',
+      skillId: 'demo-skill',
+      sequenceIndex: 1,
+      dependsOnCaseIds: [],
+      expectedGoal: 'bootstrap goal',
+      triggerPrompt: 'bootstrap the flow',
+    });
+    insertLifecycleChainExecutionCase(harness.db, {
+      id: 'chain-step-2',
+      skillId: 'demo-skill',
+      sequenceIndex: 2,
+      dependsOnCaseIds: ['chain-step-1'],
+      expectedGoal: 'execute goal',
+      triggerPrompt: 'execute the flow',
+    });
+    insertLifecycleChainExecutionCase(harness.db, {
+      id: 'chain-step-3',
+      skillId: 'demo-skill',
+      sequenceIndex: 3,
+      dependsOnCaseIds: ['chain-step-2'],
+      expectedGoal: 'cleanup goal',
+      triggerPrompt: 'cleanup the flow',
+    });
+
+    const store = createInMemoryStore(harness.db, {
+      agentDir: path.join(harness.tempDir, 'agent'),
+      databasePath: harness.databasePath,
+    });
+    const controller = createSkillTestController({
+      store,
+      agentToolBridge: createFakeAgentToolBridge(),
+      skillRegistry: createFakeSkillRegistry(['demo-skill']),
+      getProjectDir: () => harness.tempDir,
+      toolBaseUrl: 'http://127.0.0.1:3100',
+      broadcastEvent(eventName, payload) {
+        broadcastEvents.push({ eventName, payload });
+      },
+      startRunImpl: (_provider, _model, prompt, runOptions = {}) => {
+        const sessionPath = path.join(harness.tempDir, `chain-session-${capturedPrompts.length + 1}.jsonl`);
+        capturedPrompts.push({
+          caseId: runOptions && runOptions.metadata ? runOptions.metadata.testCaseId : '',
+          prompt,
+          cwd: runOptions.cwd || '',
+        });
+        fs.writeFileSync(
+          sessionPath,
+          `${JSON.stringify({
+            type: 'message',
+            message: {
+              role: 'assistant',
+              content: [{ type: 'text', text: 'ok' }],
+            },
+          })}\n`,
+          'utf8'
+        );
+        return {
+          runId: `chain-run-${capturedPrompts.length}`,
+          sessionPath,
+          resultPromise: Promise.resolve({
+            reply: 'ok',
+            runId: `chain-run-${capturedPrompts.length}`,
+            sessionPath,
+          }),
+        };
+      },
+      evaluateRunImpl: (_taskId, testCase) => {
+        const passed = testCase.id !== 'chain-step-2';
+        const summary = testCase.id === 'chain-step-1'
+          ? 'step-1 pass summary'
+          : testCase.id === 'chain-step-2'
+            ? 'step-2 fail summary'
+            : 'step-3 pass summary';
+        return {
+          triggerPassed: 1,
+          executionPassed: passed ? 1 : 0,
+          toolAccuracy: passed ? 1 : 0.4,
+          actualToolsJson: JSON.stringify(['read']),
+          verdict: passed ? 'pass' : 'fail',
+          evaluation: {
+            verdict: passed ? 'pass' : 'fail',
+            summary,
+          },
+        };
+      },
+    });
+
+    const runRes = createCaptureResponse();
+    const handled = await controller({
+      req: createJsonRequest('POST', '/api/skills/demo-skill/test-chains/run', {
+        exportChainId: 'demo-chain',
+      }),
+      res: runRes,
+      pathname: '/api/skills/demo-skill/test-chains/run',
+      requestUrl: new URL('http://localhost/api/skills/demo-skill/test-chains/run'),
+    });
+
+    assert.equal(handled, true);
+    assert.equal(runRes.statusCode, 200);
+    assert.equal(runRes.json.chainRun.status, 'failed');
+    assert.equal(runRes.json.chainRun.exportChainId, 'demo-chain');
+    assert.equal(runRes.json.chainRun.totalSteps, 3);
+    assert.equal(runRes.json.chainRun.failedStepIndex, 2);
+
+    const chainEvents = broadcastEvents.filter((entry) => entry.eventName === 'skill_test_chain_run_event');
+    const chainStartedEvent = chainEvents.find((entry) => entry.payload && entry.payload.phase === 'started');
+    const stepStartedEvents = chainEvents.filter((entry) => entry.payload && entry.payload.phase === 'step_started');
+    const stepCompletedEvent = chainEvents.find((entry) => entry.payload && entry.payload.phase === 'step_completed');
+    const stepFailedEvent = chainEvents.find((entry) => entry.payload && entry.payload.phase === 'step_failed');
+    const chainFailedEvent = chainEvents.find((entry) => entry.payload && entry.payload.phase === 'failed');
+
+    assert.ok(chainStartedEvent, 'expected chain started SSE event');
+    assert.equal(chainStartedEvent.payload.chainRunId, runRes.json.chainRun.id);
+    assert.equal(chainStartedEvent.payload.chainRun.exportChainId, 'demo-chain');
+    assert.equal(stepStartedEvents.length, 2);
+    assert.equal(stepStartedEvents[0].payload.currentStepIndex, 1);
+    assert.equal(stepStartedEvents[1].payload.currentStepIndex, 2);
+    assert.ok(stepCompletedEvent, 'expected chain step_completed SSE event');
+    assert.equal(stepCompletedEvent.payload.currentTestCaseId, 'chain-step-1');
+    assert.ok(stepFailedEvent, 'expected chain step_failed SSE event');
+    assert.equal(stepFailedEvent.payload.currentTestCaseId, 'chain-step-2');
+    assert.ok(chainFailedEvent, 'expected terminal chain failed SSE event');
+    assert.equal(chainFailedEvent.payload.chainRun.failedStepIndex, 2);
+    assert.equal(chainFailedEvent.payload.steps[2].status, 'skipped');
+    assert.equal(runRes.json.steps.length, 3);
+    assert.equal(runRes.json.steps[0].status, 'passed');
+    assert.equal(runRes.json.steps[0].summary, 'step-1 pass summary');
+    assert.equal(runRes.json.steps[1].status, 'failed');
+    assert.equal(runRes.json.steps[1].summary, 'step-2 fail summary');
+    assert.equal(runRes.json.steps[2].status, 'skipped');
+    assert.equal(capturedPrompts.length, 2);
+    assert.equal(capturedPrompts[0].caseId, 'chain-step-1');
+    assert.equal(capturedPrompts[1].caseId, 'chain-step-2');
+    assert.match(capturedPrompts[1].prompt, /Previous step summary:/);
+    assert.match(capturedPrompts[1].prompt, /step-1 pass summary/);
+    assert.equal(capturedPrompts[0].cwd, capturedPrompts[1].cwd);
+
+    const detailRes = createCaptureResponse();
+    const detailHandled = await controller({
+      req: createJsonRequest('GET', `/api/skills/demo-skill/test-chains/${runRes.json.chainRun.id}`),
+      res: detailRes,
+      pathname: `/api/skills/demo-skill/test-chains/${runRes.json.chainRun.id}`,
+      requestUrl: new URL(`http://localhost/api/skills/demo-skill/test-chains/${runRes.json.chainRun.id}`),
+    });
+    assert.equal(detailHandled, true);
+    assert.equal(detailRes.statusCode, 200);
+    assert.equal(detailRes.json.chainRun.status, 'failed');
+    assert.equal(detailRes.json.steps[2].status, 'skipped');
+
+    const stepSessionRes = createCaptureResponse();
+    const stepSessionHandled = await controller({
+      req: createJsonRequest('GET', `/api/skill-test-runs/${detailRes.json.steps[0].skillTestRunId}/session-export`, undefined),
+      res: stepSessionRes,
+      pathname: `/api/skill-test-runs/${detailRes.json.steps[0].skillTestRunId}/session-export`,
+      requestUrl: new URL(`http://localhost/api/skill-test-runs/${detailRes.json.steps[0].skillTestRunId}/session-export`),
+    });
+    assert.equal(stepSessionHandled, true);
+    assert.equal(stepSessionRes.statusCode, 200);
+    assert.match(stepSessionRes.bodyText, /"role":"assistant"/);
+
+    const listRes = createCaptureResponse();
+    const listHandled = await controller({
+      req: createJsonRequest('GET', '/api/skills/demo-skill/test-chains/by-export/demo-chain/runs'),
+      res: listRes,
+      pathname: '/api/skills/demo-skill/test-chains/by-export/demo-chain/runs',
+      requestUrl: new URL('http://localhost/api/skills/demo-skill/test-chains/by-export/demo-chain/runs?limit=10'),
+    });
+    assert.equal(listHandled, true);
+    assert.equal(listRes.statusCode, 200);
+    assert.equal(listRes.json.runs.length, 1);
+    assert.equal(listRes.json.runs[0].status, 'failed');
+    assert.equal(listRes.json.runs[0].failedStepIndex, 2);
+    assert.equal(listRes.json.runs[0].steps.length, 3);
+    assert.deepEqual(listRes.json.runs[0].steps.map((step) => step.status), ['passed', 'failed', 'skipped']);
+    assert.equal(listRes.json.runs[0].steps[0].skillTestRunId, detailRes.json.steps[0].skillTestRunId);
+
+    const chainRunRow = harness.db
+      .prepare('SELECT status, export_chain_id, bootstrap_status, teardown_status FROM skill_test_chain_runs WHERE id = ?')
+      .get(runRes.json.chainRun.id);
+    assert.equal(chainRunRow.status, 'failed');
+    assert.equal(chainRunRow.export_chain_id, 'demo-chain');
+    assert.equal(chainRunRow.bootstrap_status, 'skipped');
+    assert.equal(chainRunRow.teardown_status, 'passed');
+
+    const stepRows = harness.db
+      .prepare('SELECT sequence_index, status, skill_test_run_id FROM skill_test_chain_run_steps WHERE chain_run_id = ? ORDER BY sequence_index ASC')
+      .all(runRes.json.chainRun.id);
+    assert.deepEqual(stepRows.map((row) => row.status), ['passed', 'failed', 'skipped']);
+    assert.ok(stepRows[0].skill_test_run_id);
+    assert.ok(stepRows[1].skill_test_run_id);
+    assert.equal(stepRows[2].skill_test_run_id, '');
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('chain runner surfaces shared isolation pollution changes in chain detail', async () => {
+  const harness = createTempHarness();
+
+  try {
+    const liveProjectDir = path.join(harness.tempDir, 'live-project');
+    const liveTrellisDir = path.join(liveProjectDir, '.trellis');
+    const skillDir = path.join(harness.tempDir, 'live-skills', 'demo-skill');
+    fs.mkdirSync(liveTrellisDir, { recursive: true });
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(liveTrellisDir, 'workflow.md'), '# Workflow\n', 'utf8');
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '# Demo Skill\n\nFixture skill body.\n', 'utf8');
+
+    insertLifecycleChainExecutionCase(harness.db, {
+      id: 'chain-pollution-step-1',
+      skillId: 'demo-skill',
+      exportChainId: 'pollution-chain',
+      sequenceIndex: 1,
+      dependsOnCaseIds: [],
+      expectedGoal: 'complete the pollution visibility chain',
+      triggerPrompt: 'complete the pollution visibility chain',
+    });
+
+    const controller = createSkillTestController({
+      store: createInMemoryStore(harness.db, {
+        agentDir: path.join(harness.tempDir, 'agent-root'),
+        databasePath: harness.databasePath,
+      }),
+      agentToolBridge: createFakeAgentToolBridge(),
+      skillRegistry: createFakeSkillRegistry([
+        {
+          id: 'demo-skill',
+          name: 'Demo Skill',
+          description: 'Fixture skill',
+          path: skillDir,
+        },
+      ]),
+      getProjectDir: () => liveProjectDir,
+      toolBaseUrl: 'http://127.0.0.1:3100',
+      openSandboxFactory: ({ caseId }) => ({
+        driverName: 'opensandbox',
+        driverVersion: 'test',
+        sandboxId: `sandbox-${caseId}`,
+      }),
+      startRunImpl: () => {
+        fs.writeFileSync(path.join(liveTrellisDir, 'workflow.md'), '# polluted\n', 'utf8');
+        const sessionPath = path.join(harness.tempDir, 'chain-pollution-session.jsonl');
+        fs.writeFileSync(
+          sessionPath,
+          `${JSON.stringify({
+            type: 'message',
+            message: {
+              role: 'assistant',
+              content: [{ type: 'text', text: 'ok' }],
+            },
+          })}\n`,
+          'utf8'
+        );
+        return {
+          runId: 'chain-pollution-run',
+          sessionPath,
+          resultPromise: Promise.resolve({
+            reply: 'ok',
+            runId: 'chain-pollution-run',
+            sessionPath,
+          }),
+        };
+      },
+      evaluateRunImpl: () => ({
+        triggerPassed: 1,
+        executionPassed: 1,
+        toolAccuracy: 1,
+        actualToolsJson: JSON.stringify(['read']),
+        verdict: 'pass',
+        evaluation: {
+          verdict: 'pass',
+          summary: 'step passed before teardown pollution check failed',
+        },
+      }),
+    });
+
+    const runRes = createCaptureResponse();
+    const handled = await controller({
+      req: createJsonRequest('POST', '/api/skills/demo-skill/test-chains/run', {
+        exportChainId: 'pollution-chain',
+        isolation: { mode: 'isolated', trellisMode: 'readonlySnapshot' },
+      }),
+      res: runRes,
+      pathname: '/api/skills/demo-skill/test-chains/run',
+      requestUrl: new URL('http://localhost/api/skills/demo-skill/test-chains/run'),
+    });
+
+    assert.equal(handled, true);
+    assert.equal(runRes.statusCode, 200);
+    assert.equal(runRes.json.chainRun.status, 'partial');
+    assert.equal(runRes.json.chainRun.teardownStatus, 'failed');
+    assert.match(runRes.json.chainRun.errorMessage, /live-state pollution/);
+    assert.equal(runRes.json.chainRun.pollutionCheck.ok, false);
+    assert.ok(Array.isArray(runRes.json.chainRun.pollutionCheck.changes));
+    assert.ok(runRes.json.chainRun.pollutionCheck.changes.some((change) => String(change && change.label || '') === 'live-trellis'));
+    assert.equal(runRes.json.chainRun.isolation.pollutionCheck.ok, false);
+
+    const detailRes = createCaptureResponse();
+    const detailHandled = await controller({
+      req: createJsonRequest('GET', `/api/skills/demo-skill/test-chains/${runRes.json.chainRun.id}`),
+      res: detailRes,
+      pathname: `/api/skills/demo-skill/test-chains/${runRes.json.chainRun.id}`,
+      requestUrl: new URL(`http://localhost/api/skills/demo-skill/test-chains/${runRes.json.chainRun.id}`),
+    });
+    assert.equal(detailHandled, true);
+    assert.equal(detailRes.statusCode, 200);
+    assert.equal(detailRes.json.chainRun.pollutionCheck.ok, false);
+    assert.ok(detailRes.json.chainRun.pollutionCheck.changes.some((change) => String(change && change.label || '') === 'live-trellis'));
+
+    const chainRunRow = harness.db
+      .prepare('SELECT teardown_evidence_json FROM skill_test_chain_runs WHERE id = ?')
+      .get(runRes.json.chainRun.id);
+    const teardownEvidence = JSON.parse(chainRunRow.teardown_evidence_json);
+    assert.equal(teardownEvidence.pollutionCheck.ok, false);
+    assert.ok(teardownEvidence.pollutionCheck.changes.some((change) => String(change && change.label || '') === 'live-trellis'));
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('chain runner continues borderline steps when goal-threshold stop policy is selected', async () => {
+  const harness = createTempHarness();
+  const capturedPrompts = [];
+
+  function buildFullEvaluation(verdict, summary, goalAchievement) {
+    return {
+      verdict,
+      summary,
+      dimensions: {
+        requiredStepCompletionRate: { score: 1, reason: 'required steps complete' },
+        stepCompletionRate: { score: 1, reason: 'all steps complete' },
+        requiredToolCoverage: { score: 1, reason: 'required tools covered' },
+        toolCallSuccessRate: { score: 1, reason: 'matched tools succeeded' },
+        toolErrorRate: { score: 0, reason: 'no tool errors' },
+        sequenceAdherence: { score: 1, reason: 'sequence acceptable' },
+        goalAchievement: { score: goalAchievement, reason: 'goal threshold signal' },
+        instructionAdherence: { score: 0.82, reason: 'instructions mostly followed' },
+      },
+      aggregation: {
+        hardFailReasons: [],
+        borderlineReasons: verdict === 'borderline' ? ['needs-human-review-or-supporting-signals-weak'] : [],
+        supportingWarnings: verdict === 'borderline' ? ['supporting-metrics-weak'] : ['primary-dimensions-met'],
+      },
+    };
+  }
+
+  try {
+    insertLifecycleChainExecutionCase(harness.db, {
+      id: 'chain-threshold-step-1',
+      skillId: 'demo-skill',
+      sequenceIndex: 1,
+      dependsOnCaseIds: [],
+      expectedGoal: 'prepare threshold chain',
+      triggerPrompt: 'prepare the threshold chain',
+    });
+    insertLifecycleChainExecutionCase(harness.db, {
+      id: 'chain-threshold-step-2',
+      skillId: 'demo-skill',
+      sequenceIndex: 2,
+      dependsOnCaseIds: ['chain-threshold-step-1'],
+      expectedGoal: 'complete enough to unblock downstream work',
+      triggerPrompt: 'complete the middle threshold step',
+    });
+    insertLifecycleChainExecutionCase(harness.db, {
+      id: 'chain-threshold-step-3',
+      skillId: 'demo-skill',
+      sequenceIndex: 3,
+      dependsOnCaseIds: ['chain-threshold-step-2'],
+      expectedGoal: 'finish threshold chain',
+      triggerPrompt: 'finish the threshold chain',
+    });
+
+    const store = createInMemoryStore(harness.db, {
+      agentDir: path.join(harness.tempDir, 'agent'),
+      databasePath: harness.databasePath,
+    });
+    const controller = createSkillTestController({
+      store,
+      agentToolBridge: createFakeAgentToolBridge(),
+      skillRegistry: createFakeSkillRegistry(['demo-skill']),
+      getProjectDir: () => harness.tempDir,
+      toolBaseUrl: 'http://127.0.0.1:3100',
+      startRunImpl: (_provider, _model, prompt, runOptions = {}) => {
+        const sessionPath = path.join(harness.tempDir, `chain-threshold-session-${capturedPrompts.length + 1}.jsonl`);
+        capturedPrompts.push({
+          caseId: runOptions && runOptions.metadata ? runOptions.metadata.testCaseId : '',
+          prompt,
+        });
+        fs.writeFileSync(
+          sessionPath,
+          `${JSON.stringify({
+            type: 'message',
+            message: {
+              role: 'assistant',
+              content: [{ type: 'text', text: 'ok' }],
+            },
+          })}\n`,
+          'utf8'
+        );
+        return {
+          runId: `chain-threshold-run-${capturedPrompts.length}`,
+          sessionPath,
+          resultPromise: Promise.resolve({
+            reply: 'ok',
+            runId: `chain-threshold-run-${capturedPrompts.length}`,
+            sessionPath,
+          }),
+        };
+      },
+      evaluateRunImpl: (_taskId, testCase) => {
+        const isBorderline = testCase.id === 'chain-threshold-step-2';
+        const verdict = isBorderline ? 'borderline' : 'pass';
+        const goalAchievement = isBorderline ? 0.84 : 1;
+        const summary = isBorderline ? 'step-2 borderline but usable summary' : `${testCase.id} pass summary`;
+        return {
+          triggerPassed: 1,
+          executionPassed: isBorderline ? 0 : 1,
+          toolAccuracy: isBorderline ? 0.7 : 1,
+          actualToolsJson: JSON.stringify(['read']),
+          verdict,
+          requiredStepCompletionRate: 1,
+          stepCompletionRate: 1,
+          requiredToolCoverage: 1,
+          toolCallSuccessRate: 1,
+          toolErrorRate: 0,
+          sequenceAdherence: 1,
+          goalAchievement,
+          instructionAdherence: 0.82,
+          evaluation: buildFullEvaluation(verdict, summary, goalAchievement),
+        };
+      },
+    });
+
+    const runRes = createCaptureResponse();
+    const handled = await controller({
+      req: createJsonRequest('POST', '/api/skills/demo-skill/test-chains/run', {
+        exportChainId: 'demo-chain',
+        stopPolicy: 'stop_on_failure_goal_threshold',
+      }),
+      res: runRes,
+      pathname: '/api/skills/demo-skill/test-chains/run',
+      requestUrl: new URL('http://localhost/api/skills/demo-skill/test-chains/run'),
+    });
+
+    assert.equal(handled, true);
+    assert.equal(runRes.statusCode, 200);
+    assert.equal(runRes.json.chainRun.status, 'passed');
+    assert.equal(runRes.json.chainRun.stopPolicy, 'stop_on_failure_goal_threshold');
+    assert.deepEqual(runRes.json.steps.map((step) => step.status), ['passed', 'continued', 'passed']);
+    assert.equal(capturedPrompts.length, 3);
+    assert.match(capturedPrompts[2].prompt, /step-2 borderline but usable summary/);
+    assert.ok(runRes.json.warnings.some((warning) => warning.code === 'chain_run_goal_threshold_continued'));
+
+    const chainRunRow = harness.db
+      .prepare('SELECT status, stop_policy, warning_flags_json FROM skill_test_chain_runs WHERE id = ?')
+      .get(runRes.json.chainRun.id);
+    assert.equal(chainRunRow.status, 'passed');
+    assert.equal(chainRunRow.stop_policy, 'stop_on_failure_goal_threshold');
+    assert.ok(JSON.parse(chainRunRow.warning_flags_json).includes('chain_run_goal_threshold_continued'));
+
+    const stepRows = harness.db
+      .prepare('SELECT sequence_index, status, error_code, skill_test_run_id FROM skill_test_chain_run_steps WHERE chain_run_id = ? ORDER BY sequence_index ASC')
+      .all(runRes.json.chainRun.id);
+    assert.deepEqual(stepRows.map((row) => row.status), ['passed', 'continued', 'passed']);
+    assert.equal(stepRows[1].error_code, 'chain_run_goal_threshold_continued');
+    assert.ok(stepRows.every((row) => row.skill_test_run_id));
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test('chain runner rejects unsupported stop policy values', async () => {
+  const db = createTestDb();
+  const store = createInMemoryStore(db);
+  insertLifecycleChainExecutionCase(db, {
+    id: 'chain-invalid-stop-policy',
+    skillId: 'demo-skill',
+    sequenceIndex: 1,
+    dependsOnCaseIds: [],
+  });
+
+  const controller = createSkillTestController({
+    store,
+    agentToolBridge: createFakeAgentToolBridge(),
+    skillRegistry: createFakeSkillRegistry(['demo-skill']),
+  });
+
+  await assert.rejects(
+    () => controller({
+      req: createJsonRequest('POST', '/api/skills/demo-skill/test-chains/run', {
+        exportChainId: 'demo-chain',
+        stopPolicy: 'continue_anyway',
+      }),
+      res: createCaptureResponse(),
+      pathname: '/api/skills/demo-skill/test-chains/run',
+      requestUrl: new URL('http://localhost/api/skills/demo-skill/test-chains/run'),
+    }),
+    (err) => {
+      assert.equal(err.statusCode, 400);
+      assert.ok(Array.isArray(err.issues));
+      assert.ok(err.issues.some((issue) => issue.code === 'chain_run_stop_policy_invalid'));
+      return true;
+    }
+  );
+
+  db.close();
+});
+
+test('chain runner blocks execution chains that still have missing environment source', async () => {
+  const db = createTestDb();
+  const store = createInMemoryStore(db);
+  insertLifecycleChainExecutionCase(db, {
+    id: 'chain-env-missing',
+    skillId: 'demo-skill',
+    environmentSource: 'missing',
+    sequenceIndex: 1,
+    dependsOnCaseIds: [],
+  });
+
+  const controller = createSkillTestController({
+    store,
+    agentToolBridge: createFakeAgentToolBridge(),
+    skillRegistry: createFakeSkillRegistry(['demo-skill']),
+  });
+
+  await assert.rejects(
+    () => controller({
+      req: createJsonRequest('POST', '/api/skills/demo-skill/test-chains/run', {
+        exportChainId: 'demo-chain',
+      }),
+      res: createCaptureResponse(),
+      pathname: '/api/skills/demo-skill/test-chains/run',
+      requestUrl: new URL('http://localhost/api/skills/demo-skill/test-chains/run'),
+    }),
+    (err) => {
+      assert.equal(err.statusCode, 400);
+      assert.ok(Array.isArray(err.issues));
+      assert.ok(err.issues.some((issue) => issue.code === 'chain_run_environment_missing'));
+      return true;
+    }
+  );
+
+  db.close();
 });

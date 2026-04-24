@@ -12,6 +12,93 @@
     toast.show(message);
   }
 
+  function triggerBrowserDownload(blob, fileName) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  function downloadJsonFile(payload, fileName) {
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    triggerBrowserDownload(blob, fileName);
+  }
+
+  function parseDownloadFileName(headerValue, fallbackFileName) {
+    const raw = String(headerValue || '').trim();
+    if (!raw) {
+      return fallbackFileName;
+    }
+
+    const utf8Match = raw.match(/filename\*=UTF-8''([^;]+)/i);
+    if (utf8Match && utf8Match[1]) {
+      try {
+        return decodeURIComponent(utf8Match[1]);
+      } catch {
+      }
+    }
+
+    const plainMatch = raw.match(/filename="?([^";]+)"?/i);
+    return plainMatch && plainMatch[1] ? plainMatch[1] : fallbackFileName;
+  }
+
+  async function downloadResponseFile(url, fallbackFileName) {
+    const response = await fetch(url, { credentials: 'same-origin' });
+    if (!response.ok) {
+      let message = `HTTP ${response.status}`;
+      try {
+        const errorPayload = await response.json();
+        if (errorPayload && errorPayload.error) {
+          message = String(errorPayload.error);
+        }
+      } catch {
+        try {
+          const errorText = await response.text();
+          if (errorText) {
+            message = errorText;
+          }
+        } catch {
+        }
+      }
+      throw new Error(message);
+    }
+
+    const blob = await response.blob();
+    const fileName = parseDownloadFileName(response.headers.get('content-disposition'), fallbackFileName);
+    triggerBrowserDownload(blob, fileName);
+  }
+
+  async function exportSkillTestRunSession(runId) {
+    const normalizedRunId = String(runId || '').trim();
+    if (!normalizedRunId) {
+      showToast('导出失败: 缺少 run id');
+      return;
+    }
+
+    try {
+      await downloadResponseFile(
+        `/api/skill-test-runs/${encodeURIComponent(normalizedRunId)}/session-export`,
+        `skill-test-run-${normalizedRunId}-session.jsonl`
+      );
+      showToast('已导出 Session');
+    } catch (err) {
+      showToast('导出失败: ' + (err.message || err));
+    }
+  }
+
+  function bindRunSessionExportButtons(container) {
+    if (!container || typeof container.querySelectorAll !== 'function') return;
+    container.querySelectorAll('[data-run-session-export-id]').forEach((button) => {
+      button.addEventListener('click', () => {
+        exportSkillTestRunSession(button.getAttribute('data-run-session-export-id'));
+      });
+    });
+  }
+
   const dom = {
     tabButtons: /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('.tab-button[data-tab]')),
     tabPanels: /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('.tab-panel')),
@@ -25,7 +112,11 @@
     trellisModeSelect: /** @type {HTMLSelectElement | null} */ (document.getElementById('st-trellis-mode')),
     trellisModeHelp: /** @type {HTMLElement | null} */ (document.getElementById('st-trellis-mode-help')),
     egressModeSelect: /** @type {HTMLSelectElement | null} */ (document.getElementById('st-egress-mode')),
+    chainStopPolicySelect: /** @type {HTMLSelectElement | null} */ (document.getElementById('st-chain-stop-policy')),
     publishGateInput: /** @type {HTMLInputElement | null} */ (document.getElementById('st-publish-gate')),
+    environmentBuildImageField: /** @type {HTMLElement | null} */ (document.getElementById('st-environment-build-image-field')),
+    environmentBuildImageInput: /** @type {HTMLInputElement | null} */ (document.getElementById('st-environment-build-image')),
+    environmentBuildImageHelp: /** @type {HTMLElement | null} */ (document.getElementById('st-environment-build-image-help')),
     runSettingsHint: /** @type {HTMLElement | null} */ (document.getElementById('st-run-settings-hint')),
     generateButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('st-generate-btn')),
     generateCount: /** @type {HTMLInputElement | null} */ (document.getElementById('st-generate-count')),
@@ -67,6 +158,7 @@
     detailSaveButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('st-detail-save-btn')),
     detailToggleStatusButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('st-detail-toggle-status-btn')),
     detailRunButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('st-detail-run-btn')),
+    detailRunChainButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('st-detail-run-chain-btn')),
     detailDownloadButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('st-detail-download-btn')),
     detailDeleteButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('st-detail-delete-btn')),
     detailRegression: /** @type {HTMLElement | null} */ (document.getElementById('st-detail-regression')),
@@ -83,6 +175,7 @@
     createForm: /** @type {HTMLFormElement | null} */ (document.getElementById('st-create-form')),
     createPrompt: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('st-create-prompt')),
     createLoadingMode: /** @type {HTMLSelectElement | null} */ (document.getElementById('st-create-loading-mode')),
+    createTestType: /** @type {HTMLSelectElement | null} */ (document.getElementById('st-create-test-type')),
     createTools: /** @type {HTMLInputElement | null} */ (document.getElementById('st-create-tools')),
     createToolSpecs: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('st-create-tool-specs')),
     createGoal: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('st-create-goal')),
@@ -111,12 +204,17 @@
     casesLoading: false,
     casesLoadError: '',
     casesLastLoadedAt: '',
+    environmentAssets: [],
+    environmentAssetsLoadError: '',
+    environmentAssetsLastLoadedAt: '',
     summaryLoading: false,
     summaryLoadError: '',
     summaryLastLoadedAt: '',
     skillTestEventSource: null,
     liveSkillRunsByCaseId: new Map(),
     liveSkillRunCaseIdByMessageId: new Map(),
+    liveSkillChainRunsByChainRunId: new Map(),
+    liveSkillChainRunIdByExportChainId: new Map(),
   };
 
   function readInitialSkillTestDeepLink() {
@@ -271,6 +369,78 @@
       };
     }
     return nextTrace;
+  }
+
+  function buildRunDetailTraceFromDebug(debug, run) {
+    const debugPayload = debug && typeof debug === 'object' ? debug : {};
+    const session = debugPayload.session && typeof debugPayload.session === 'object' ? debugPayload.session : {};
+    const toolEvents = Array.isArray(debugPayload.toolCalls) ? debugPayload.toolCalls : [];
+    const sessionToolCalls = Array.isArray(session.toolCalls) ? session.toolCalls : [];
+    if (toolEvents.length === 0 && sessionToolCalls.length === 0) {
+      return null;
+    }
+
+    const steps = [];
+    for (let index = 0; index < sessionToolCalls.length; index += 1) {
+      const toolCall = sessionToolCalls[index] && typeof sessionToolCalls[index] === 'object' ? sessionToolCalls[index] : {};
+      const toolCallId = String(toolCall.toolCallId || '').trim();
+      steps.push({
+        stepId: toolCallId ? `session-${toolCallId}` : `debug-session-${index + 1}`,
+        kind: 'session',
+        toolCallId,
+        toolName: String(toolCall.toolName || '').trim() || 'tool',
+        status: 'observed',
+        requestSummary: toolCall.arguments !== undefined ? toolCall.arguments : null,
+      });
+    }
+
+    for (let index = 0; index < toolEvents.length; index += 1) {
+      const eventEntry = toolEvents[index] && typeof toolEvents[index] === 'object' ? toolEvents[index] : {};
+      const payload = eventEntry.payload && typeof eventEntry.payload === 'object' ? eventEntry.payload : {};
+      steps.push({
+        stepId: String(payload.toolCallId || eventEntry.createdAt || `debug-bridge-${index + 1}`).trim(),
+        kind: 'bridge',
+        toolCallId: String(payload.toolCallId || '').trim(),
+        toolName: String(payload.tool || payload.toolName || '').trim() || 'tool',
+        status: normalizeToolTraceStepStatus(payload.status),
+        createdAt: String(eventEntry.createdAt || '').trim(),
+        durationMs: Number.isFinite(Number(payload.durationMs)) ? Number(payload.durationMs) : null,
+        requestSummary: payload.request !== undefined ? payload.request : null,
+        resultSummary: payload.result !== undefined ? payload.result : null,
+        errorSummary: payload.error !== undefined ? payload.error : null,
+      });
+    }
+
+    const failureText = String(run && run.errorMessage || '').trim();
+    return rebuildLiveRunTrace({
+      message: null,
+      task: null,
+      session: null,
+      sessionToolCalls: [],
+      bridgeToolEvents: [],
+      steps,
+      summary: emptyTraceSummary(),
+      activity: emptyTraceActivity(),
+      failureContext: failureText
+        ? {
+            hasFailure: true,
+            source: 'message',
+            stepId: '',
+            toolName: '',
+            text: failureText,
+          }
+        : null,
+    });
+  }
+
+  function buildRunDetailTrace(tracePayload, debug, run) {
+    const storedTrace = tracePayload && typeof tracePayload === 'object'
+      ? rebuildLiveRunTrace(tracePayload)
+      : null;
+    if (storedTrace && ((storedTrace.summary && storedTrace.summary.totalSteps > 0) || (storedTrace.failureContext && storedTrace.failureContext.text))) {
+      return storedTrace;
+    }
+    return buildRunDetailTraceFromDebug(debug, run) || storedTrace;
   }
 
   function resolveLiveRunOutputText(payload, existingOutputText, phase) {
@@ -435,6 +605,201 @@
     renderLiveSkillRun();
   }
 
+  function getSelectedLiveSkillChainRun() {
+    if (!state.selectedCaseId) {
+      return null;
+    }
+    const selectedCase = state.testCases.find((testCase) => testCase && testCase.id === state.selectedCaseId) || null;
+    const chainRunRequest = getCaseChainRunRequest(selectedCase);
+    const exportChainId = chainRunRequest && chainRunRequest.exportChainId ? String(chainRunRequest.exportChainId).trim() : '';
+    if (!exportChainId) {
+      return null;
+    }
+    const chainRunId = state.liveSkillChainRunIdByExportChainId.get(exportChainId);
+    return chainRunId ? state.liveSkillChainRunsByChainRunId.get(chainRunId) || null : null;
+  }
+
+  function normalizeLiveSkillChainRunPayload(payload) {
+    const chainRun = payload && payload.chainRun && typeof payload.chainRun === 'object' ? payload.chainRun : {};
+    const chainRunId = String(payload && (payload.chainRunId || payload.id) || chainRun.id || '').trim();
+    const exportChainId = String(payload && payload.exportChainId || chainRun.exportChainId || '').trim();
+    const phase = String(payload && payload.phase || '').trim().toLowerCase();
+    const status = String(payload && payload.status || chainRun.status || (phase === 'failed' ? 'failed' : 'running')).trim() || 'running';
+    return {
+      chainRunId,
+      exportChainId,
+      skillId: String(payload && payload.skillId || chainRun.skillId || '').trim(),
+      phase,
+      status,
+      progressLabel: String(payload && payload.progressLabel || '').trim(),
+      runnerStage: String(payload && payload.runnerStage || '').trim(),
+      chainRun: {
+        ...chainRun,
+        id: chainRunId || chainRun.id || '',
+        exportChainId,
+        status,
+      },
+      steps: Array.isArray(payload && payload.steps) ? payload.steps : null,
+      warnings: Array.isArray(payload && payload.warnings) ? payload.warnings : null,
+      issues: Array.isArray(payload && payload.issues) ? payload.issues : null,
+      pollUrl: String(payload && payload.pollUrl || '').trim(),
+      currentStepId: String(payload && payload.currentStepId || '').trim(),
+      currentStepIndex: Number(payload && payload.currentStepIndex || chainRun.currentStepIndex || 0) || 0,
+      currentTestCaseId: String(payload && payload.currentTestCaseId || '').trim(),
+      updatedAt: String(payload && payload.updatedAt || new Date().toISOString()).trim(),
+    };
+  }
+
+  function applyLiveSkillChainRunPayload(payload) {
+    if (!payload || typeof payload !== 'object') {
+      return;
+    }
+    const normalized = normalizeLiveSkillChainRunPayload(payload);
+    if (!normalized.chainRunId || !normalized.exportChainId) {
+      return;
+    }
+    if (normalized.skillId && state.selectedSkillId && normalized.skillId !== state.selectedSkillId) {
+      return;
+    }
+
+    const existing = state.liveSkillChainRunsByChainRunId.get(normalized.chainRunId) || null;
+    const existingChainRun = existing && existing.chainRun && typeof existing.chainRun === 'object' ? existing.chainRun : {};
+    const next = {
+      ...(existing || {}),
+      ...normalized,
+      chainRun: {
+        ...existingChainRun,
+        ...normalized.chainRun,
+      },
+      steps: normalized.steps || (existing && Array.isArray(existing.steps) ? existing.steps : []),
+      warnings: normalized.warnings || (existing && Array.isArray(existing.warnings) ? existing.warnings : []),
+      issues: normalized.issues || (existing && Array.isArray(existing.issues) ? existing.issues : []),
+    };
+
+    state.liveSkillChainRunsByChainRunId.set(normalized.chainRunId, next);
+    state.liveSkillChainRunIdByExportChainId.set(normalized.exportChainId, normalized.chainRunId);
+    renderLiveSkillRun();
+  }
+
+  function reconcileLiveSkillChainRunFromFinalResult(exportChainId, result) {
+    const payload = result && typeof result === 'object' ? result : {};
+    const chainRun = payload.chainRun && typeof payload.chainRun === 'object' ? payload.chainRun : null;
+    if (!chainRun) {
+      return;
+    }
+    const status = String(chainRun.status || '').trim().toLowerCase();
+    applyLiveSkillChainRunPayload({
+      ...payload,
+      chainRun,
+      exportChainId: exportChainId || chainRun.exportChainId || '',
+      chainRunId: chainRun.id || '',
+      phase: status === 'passed' || status === 'partial' ? 'completed' : status === 'running' ? 'progress' : 'failed',
+      status: status || 'completed',
+      progressLabel: status === 'passed'
+        ? '链运行完成。'
+        : status === 'partial'
+          ? '链运行部分完成。'
+          : status === 'failed' || status === 'aborted'
+            ? (chainRun.errorMessage || '链运行失败。')
+            : '',
+    });
+  }
+
+  function liveChainRunTone(status) {
+    const normalized = String(status || '').trim().toLowerCase();
+    if (normalized === 'failed' || normalized === 'aborted') return 'failed';
+    if (normalized === 'passed') return 'success';
+    if (normalized === 'partial') return 'running';
+    if (normalized === 'running' || normalized === 'pending') return 'running';
+    return 'neutral';
+  }
+
+  function liveChainRunStatusLabel(status) {
+    const normalized = String(status || '').trim().toLowerCase();
+    if (normalized === 'passed') return '链运行通过';
+    if (normalized === 'failed') return '链运行失败';
+    if (normalized === 'partial') return '链运行部分完成';
+    if (normalized === 'aborted') return '链运行中止';
+    if (normalized === 'running') return '链运行中';
+    return '链运行待定';
+  }
+
+  function buildLiveSkillChainRunHtml(liveChainRun) {
+    const chainRun = liveChainRun && liveChainRun.chainRun && typeof liveChainRun.chainRun === 'object' ? liveChainRun.chainRun : {};
+    const steps = Array.isArray(liveChainRun && liveChainRun.steps) ? liveChainRun.steps : [];
+    const warnings = Array.isArray(liveChainRun && liveChainRun.warnings) ? liveChainRun.warnings : [];
+    const status = String(liveChainRun && liveChainRun.status || chainRun.status || '').trim() || 'running';
+    const tone = liveChainRunTone(status);
+    const currentStepIndex = Number(liveChainRun && liveChainRun.currentStepIndex || chainRun.currentStepIndex || 0) || 0;
+    const progressLabel = String(liveChainRun && liveChainRun.progressLabel || '').trim();
+    const stepCards = steps.length > 0
+      ? steps.map((step) => {
+          const stepStatus = String(step && step.status || '').trim().toLowerCase() || 'pending';
+          const stepTone = stepStatus === 'failed' || stepStatus === 'aborted'
+            ? 'failed'
+            : stepStatus === 'running'
+              ? 'running'
+              : stepStatus === 'passed'
+                ? 'success'
+                : 'neutral';
+          const sequenceIndex = Number(step && step.sequenceIndex || 0) || 0;
+          const title = String(step && (step.title || step.testCaseId) || 'chain step').trim();
+          const summary = String(step && (step.summary || step.errorMessage) || '').trim();
+          const isCurrent = currentStepIndex > 0 && sequenceIndex === currentStepIndex && status === 'running';
+          return `<article class="message-tool-trace-step ${stepTone}${isCurrent ? ' last' : ''}" data-step-id="chain-step-${escapeHtml(String(step && step.id || sequenceIndex || ''))}">
+            <div class="message-tool-trace-step-rail"><div class="message-tool-trace-step-index">${escapeHtml(String(sequenceIndex || '—'))}</div><div class="message-tool-trace-step-line"></div></div>
+            <div class="message-tool-trace-step-main">
+              <div class="message-tool-trace-step-header">
+                <div class="message-tool-trace-step-title-wrap">
+                  <div class="message-tool-trace-step-eyebrow">chain step</div>
+                  <div class="message-tool-trace-step-title">${escapeHtml(title)}</div>
+                </div>
+                <div class="message-tool-trace-step-meta"><span class="message-tool-trace-pill ${stepTone}">${escapeHtml(stepStatus)}</span></div>
+              </div>
+              ${summary ? `<div class="message-tool-trace-note${stepStatus === 'failed' ? ' failed' : ''}">${escapeHtml(summary)}</div>` : ''}
+            </div>
+          </article>`;
+        }).join('')
+      : `<div class="message-tool-trace-note">${escapeHtml(progressLabel || '等待链步骤事件…')}</div>`;
+    const warningText = warnings.length > 0
+      ? `<div class="message-tool-trace-note">提醒：${escapeHtml(String(warnings.length))} 条；请在链详情中查看。</div>`
+      : '';
+    const errorText = chainRun.errorMessage
+      ? `<div class="message-tool-trace-note failed">错误：${escapeHtml(String(chainRun.errorMessage || ''))}</div>`
+      : '';
+
+    return `
+      <div class="run-detail-section">
+        <div class="section-label">Live Chain</div>
+        <div class="agent-meta">${escapeHtml(chainRun.startedAt ? new Date(chainRun.startedAt).toLocaleString() : '')}${chainRun.exportChainId ? ` · ${escapeHtml(String(chainRun.exportChainId))}` : ''}</div>
+      </div>
+      <section class="message-tool-trace open">
+        <div class="message-tool-trace-header">
+          <div class="message-tool-trace-summary">
+            <span class="message-tool-trace-pill ${tone}">${escapeHtml(liveChainRunStatusLabel(status))}</span>
+            <span class="message-tool-trace-pill time">steps ${escapeHtml(String(chainRun.lastCompletedStepIndex || 0))}/${escapeHtml(String(chainRun.totalSteps || steps.length || 0))}</span>
+            ${chainRun.bootstrapStatus ? `<span class="message-tool-trace-pill duration">bootstrap ${escapeHtml(String(chainRun.bootstrapStatus))}</span>` : ''}
+            ${chainRun.teardownStatus ? `<span class="message-tool-trace-pill duration">teardown ${escapeHtml(String(chainRun.teardownStatus))}</span>` : ''}
+          </div>
+        </div>
+        <div class="message-tool-trace-details">
+          ${progressLabel ? `<div class="message-tool-trace-note">${escapeHtml(progressLabel)}</div>` : ''}
+          ${warningText}
+          ${errorText}
+          <section class="message-tool-trace-section">
+            <div class="message-tool-trace-section-header">
+              <div class="message-tool-trace-section-title">链步骤</div>
+              <div class="message-tool-trace-section-meta"></div>
+            </div>
+            <div class="message-tool-trace-steps-viewport scrollable">
+              <div class="message-tool-trace-section-steps">${stepCards}</div>
+            </div>
+          </section>
+        </div>
+      </section>
+    `;
+  }
+
   function liveRunTone(status) {
     const normalized = String(status || '').trim().toLowerCase();
     if (normalized === 'failed') return 'failed';
@@ -485,6 +850,43 @@
     } catch {
       return String(value);
     }
+  }
+
+  function buildToolTraceStepsHtml(trace, emptyLabel) {
+    const normalizedTrace = rebuildLiveRunTrace(trace);
+    return Array.isArray(normalizedTrace.steps) && normalizedTrace.steps.length > 0
+      ? normalizedTrace.steps.map((step, index, arr) => {
+          const stepTone = normalizeToolTraceStepStatus(step && step.status) === 'failed'
+            ? 'failed'
+            : normalizeToolTraceStepStatus(step && step.status) === 'running'
+              ? 'running'
+              : 'success';
+          const requestText = formatTracePayloadText(step && step.requestSummary !== undefined ? step.requestSummary : null);
+          const resultText = formatTracePayloadText(
+            step && step.errorSummary !== undefined && step.errorSummary !== null && step.errorSummary !== ''
+              ? step.errorSummary
+              : step && step.resultSummary !== undefined
+                ? step.resultSummary
+                : step && step.partialJson
+                  ? step.partialJson
+                  : ''
+          );
+          return `<article class="message-tool-trace-step ${stepTone}${index === arr.length - 1 ? ' last' : ''}" data-step-id="${escapeHtml(step && step.stepId ? String(step.stepId) : `tool-step-${index + 1}`)}">
+            <div class="message-tool-trace-step-rail"><div class="message-tool-trace-step-index">${index + 1}</div><div class="message-tool-trace-step-line"></div></div>
+            <div class="message-tool-trace-step-main">
+              <div class="message-tool-trace-step-header">
+                <div class="message-tool-trace-step-title-wrap">
+                  <div class="message-tool-trace-step-eyebrow">${escapeHtml(step && step.kind ? String(step.kind) : 'tool')}</div>
+                  <div class="message-tool-trace-step-title">${escapeHtml(step && step.toolName ? String(step.toolName) : 'tool')}</div>
+                </div>
+                <div class="message-tool-trace-step-meta"><span class="message-tool-trace-pill ${stepTone}">${escapeHtml(normalizeToolTraceStepStatus(step && step.status))}</span></div>
+              </div>
+              ${requestText ? `<div class="message-tool-trace-payload-wrap"><div class="message-tool-trace-payload-label">输入</div><pre class="message-tool-trace-payload">${escapeHtml(requestText)}</pre></div>` : ''}
+              ${resultText ? `<div class="message-tool-trace-payload-wrap"><div class="message-tool-trace-payload-label">输出</div><pre class="message-tool-trace-payload${stepTone === 'failed' ? ' failed' : ''}">${escapeHtml(resultText)}</pre></div>` : ''}
+            </div>
+          </article>`;
+        }).join('')
+      : `<div class="message-tool-trace-note">${escapeHtml(emptyLabel || '本次没有持久化工具时间线。')}</div>`;
   }
 
   function captureElementScrollState(element) {
@@ -588,9 +990,18 @@
     const preservedContainerScroll = captureElementScrollState(container);
     const preservedViewport = captureLiveTraceViewportState(container);
     const liveRun = state.selectedCaseId ? state.liveSkillRunsByCaseId.get(state.selectedCaseId) || null : null;
-    if (!liveRun) {
+    const liveChainRun = getSelectedLiveSkillChainRun();
+    if (!liveRun && !liveChainRun) {
       container.innerHTML = '';
       container.classList.add('hidden');
+      return;
+    }
+    const chainHtml = liveChainRun ? buildLiveSkillChainRunHtml(liveChainRun) : '';
+    if (!liveRun) {
+      container.classList.remove('hidden');
+      container.innerHTML = chainHtml;
+      restoreElementScrollState(container, preservedContainerScroll);
+      restoreLiveTraceViewportState(container, preservedViewport);
       return;
     }
     const trace = rebuildLiveRunTrace(liveRun.trace);
@@ -609,39 +1020,7 @@
         : '',
     ].filter(Boolean).join(' ');
 
-    const stepsHtml = Array.isArray(trace.steps) && trace.steps.length > 0
-      ? trace.steps.map((step, index, arr) => {
-          const stepTone = normalizeToolTraceStepStatus(step && step.status) === 'failed'
-            ? 'failed'
-            : normalizeToolTraceStepStatus(step && step.status) === 'running'
-              ? 'running'
-              : 'success';
-          const requestText = formatTracePayloadText(step && step.requestSummary !== undefined ? step.requestSummary : null);
-          const resultText = formatTracePayloadText(
-            step && step.errorSummary !== undefined && step.errorSummary !== null && step.errorSummary !== ''
-              ? step.errorSummary
-              : step && step.resultSummary !== undefined
-                ? step.resultSummary
-                : step && step.partialJson
-                  ? step.partialJson
-                  : ''
-          );
-          return `<article class="message-tool-trace-step ${stepTone}${index === arr.length - 1 ? ' last' : ''}" data-step-id="${escapeHtml(step && step.stepId ? String(step.stepId) : `tool-step-${index + 1}`)}">
-            <div class="message-tool-trace-step-rail"><div class="message-tool-trace-step-index">${index + 1}</div><div class="message-tool-trace-step-line"></div></div>
-            <div class="message-tool-trace-step-main">
-              <div class="message-tool-trace-step-header">
-                <div class="message-tool-trace-step-title-wrap">
-                  <div class="message-tool-trace-step-eyebrow">${escapeHtml(step && step.kind ? String(step.kind) : 'tool')}</div>
-                  <div class="message-tool-trace-step-title">${escapeHtml(step && step.toolName ? String(step.toolName) : 'tool')}</div>
-                </div>
-                <div class="message-tool-trace-step-meta"><span class="message-tool-trace-pill ${stepTone}">${escapeHtml(normalizeToolTraceStepStatus(step && step.status))}</span></div>
-              </div>
-              ${requestText ? `<div class="message-tool-trace-payload-wrap"><div class="message-tool-trace-payload-label">输入</div><pre class="message-tool-trace-payload">${escapeHtml(requestText)}</pre></div>` : ''}
-              ${resultText ? `<div class="message-tool-trace-payload-wrap"><div class="message-tool-trace-payload-label">输出</div><pre class="message-tool-trace-payload${stepTone === 'failed' ? ' failed' : ''}">${escapeHtml(resultText)}</pre></div>` : ''}
-            </div>
-          </article>`;
-        }).join('')
-      : `<div class="message-tool-trace-note">${escapeHtml(liveRunPendingLabel(liveRun))}</div>`;
+    const stepsHtml = buildToolTraceStepsHtml(trace, liveRunPendingLabel(liveRun));
 
     const outputText = liveRun.outputText
       ? `<div class="message-tool-trace-note">模型输出：${escapeHtml(clipText(liveRun.outputText, 800))}</div>`
@@ -651,7 +1030,7 @@
       : '';
 
     container.classList.remove('hidden');
-    container.innerHTML = `
+    container.innerHTML = `${chainHtml}
       <div class="run-detail-section">
         <div class="section-label">Live Trace</div>
         <div class="agent-meta">${escapeHtml(liveRun.createdAt ? new Date(liveRun.createdAt).toLocaleString() : '')}${liveRun.promptVersion ? ` · ${escapeHtml(liveRun.promptVersion)}` : ''}</div>
@@ -688,6 +1067,11 @@
     source.addEventListener('skill_test_run_event', (event) => {
       try {
         applyLiveSkillRunPayload(JSON.parse(event.data));
+      } catch {}
+    });
+    source.addEventListener('skill_test_chain_run_event', (event) => {
+      try {
+        applyLiveSkillChainRunPayload(JSON.parse(event.data));
       } catch {}
     });
     source.addEventListener('conversation_tool_event', (event) => {
@@ -990,6 +1374,62 @@
     return { label: `Cache ${normalized}`, className: 'tag' };
   }
 
+  function getEnvironmentBuildStatusMeta(status) {
+    const normalized = String(status || '').trim().toLowerCase();
+    if (!normalized) {
+      return null;
+    }
+    if (normalized === 'image_built') {
+      return { label: '镜像已构建', className: 'tag-success' };
+    }
+    if (normalized === 'manifest_ready') {
+      return { label: 'manifest 已生成', className: 'tag-pending' };
+    }
+    if (normalized === 'image_build_failed') {
+      return { label: '镜像构建失败', className: 'tag-error' };
+    }
+    return { label: `环境资产 ${normalized}`, className: 'tag' };
+  }
+
+  function readEnvironmentBuildResultFromEvaluation(evaluation) {
+    const payload = evaluation && typeof evaluation === 'object' ? evaluation : null;
+    return payload && payload.environmentBuild && typeof payload.environmentBuild === 'object'
+      ? payload.environmentBuild
+      : null;
+  }
+
+  function getEnvironmentBuildResultSummary(buildResult) {
+    if (!buildResult || typeof buildResult !== 'object') {
+      return '';
+    }
+    const status = String(buildResult.status || '').trim().toLowerCase();
+    const asset = buildResult.asset && typeof buildResult.asset === 'object' ? buildResult.asset : {};
+    const image = String(buildResult.image || asset.image || '').trim();
+    const suggestedImage = String(buildResult.suggestedImage || buildResult.suggested_image || '').trim();
+    const manifestPath = String(buildResult.manifestPath || buildResult.manifest_path || asset.manifestPath || '').trim();
+    const error = clipText(String(buildResult.error || '').trim(), 140);
+    if (status === 'image_built') {
+      return image ? `镜像已构建：${image}` : '镜像已构建';
+    }
+    if (status === 'image_build_failed') {
+      return error ? `镜像构建失败：${error}` : '镜像构建失败';
+    }
+    if (status === 'manifest_ready') {
+      const suffix = suggestedImage ? `；建议镜像 ${suggestedImage}` : (manifestPath ? `：${manifestPath}` : '');
+      return `manifest 已生成${suffix}`;
+    }
+    const statusMeta = getEnvironmentBuildStatusMeta(status);
+    if (statusMeta) {
+      return statusMeta.label;
+    }
+    return manifestPath ? `manifest：${manifestPath}` : '';
+  }
+
+  function getEnvironmentBuildRunOutcomeSummary(run) {
+    const buildResult = readEnvironmentBuildResultFromEvaluation(run && run.evaluation);
+    return getEnvironmentBuildResultSummary(buildResult);
+  }
+
   function formatEnvironmentRequirementLabel(entry) {
     if (!entry || typeof entry !== 'object') {
       return '';
@@ -1162,6 +1602,80 @@
     }
     if (restoredFiles || restoredDirectories || restoredSymlinks || ignoredEntries) {
       html += `<div class="agent-meta">恢复文件 ${escapeHtml(String(restoredFiles))}，目录 ${escapeHtml(String(restoredDirectories))}，软链 ${escapeHtml(String(restoredSymlinks))}，忽略 ${escapeHtml(String(ignoredEntries))}</div>`;
+    }
+    html += '</div>';
+    return html;
+  }
+
+  function buildEnvironmentBuildDetailsHtml(buildResult) {
+    if (!buildResult || typeof buildResult !== 'object') {
+      return '';
+    }
+    const statusMeta = getEnvironmentBuildStatusMeta(buildResult.status);
+    const asset = buildResult.asset && typeof buildResult.asset === 'object' ? buildResult.asset : {};
+    const envProfile = String(buildResult.envProfile || buildResult.env_profile || asset.envProfile || asset.env_profile || '').trim();
+    const image = String(buildResult.image || asset.image || '').trim();
+    const suggestedImage = String(buildResult.suggestedImage || buildResult.suggested_image || '').trim();
+    const imageDigest = String(buildResult.imageDigest || buildResult.image_digest || asset.imageDigest || asset.image_digest || '').trim();
+    const manifestPath = String(buildResult.manifestPath || buildResult.manifest_path || asset.manifestPath || asset.manifest_path || '').trim();
+    const manifestHash = String(buildResult.manifestHash || buildResult.manifest_hash || asset.manifestHash || asset.manifest_hash || '').trim();
+    const baseImage = String(buildResult.baseImage || buildResult.base_image || '').trim();
+    const baseImageDigest = String(buildResult.baseImageDigest || buildResult.base_image_digest || asset.baseImageDigest || asset.base_image_digest || '').trim();
+    const testingMdHash = String(buildResult.testingMdHash || buildResult.testing_md_hash || asset.testingMdHash || asset.testing_md_hash || '').trim();
+    const buildCommand = String(buildResult.buildCommand || buildResult.build_command || '').trim();
+    const error = String(buildResult.error || '').trim();
+    const logs = String(buildResult.logs || '').trim();
+    const summary = getEnvironmentBuildResultSummary(buildResult);
+
+    if (!statusMeta && !summary && !error && !manifestPath && !manifestHash && !image && !suggestedImage && !envProfile) {
+      return '';
+    }
+
+    let html = '<div class="run-detail-section">';
+    html += '<div class="section-label">环境资产构建</div>';
+    if (statusMeta) {
+      html += `<span class="tag ${statusMeta.className}">${escapeHtml(statusMeta.label)}</span>`;
+    }
+    if (envProfile) {
+      html += ` <span class="tag">profile ${escapeHtml(envProfile)}</span>`;
+    }
+    if (summary) {
+      html += `<div class="agent-meta">${escapeHtml(summary)}</div>`;
+    }
+    if (error) {
+      html += `<div class="run-detail-diag">${escapeHtml(error)}</div>`;
+    }
+    if (manifestPath) {
+      html += `<div class="agent-meta">manifest：${escapeHtml(manifestPath)}</div>`;
+    }
+    if (manifestHash) {
+      html += `<div class="agent-meta">manifestHash：${escapeHtml(manifestHash)}</div>`;
+    }
+    if (image) {
+      html += `<div class="agent-meta">image：${escapeHtml(image)}</div>`;
+    } else if (suggestedImage) {
+      html += `<div class="agent-meta">建议 image：${escapeHtml(suggestedImage)}</div>`;
+    }
+    if (imageDigest) {
+      html += `<div class="agent-meta">imageDigest：${escapeHtml(imageDigest)}</div>`;
+    }
+    if (baseImage) {
+      html += `<div class="agent-meta">baseImage：${escapeHtml(baseImage)}</div>`;
+    }
+    if (baseImageDigest) {
+      html += `<div class="agent-meta">baseImageDigest：${escapeHtml(baseImageDigest)}</div>`;
+    }
+    if (testingMdHash) {
+      html += `<div class="agent-meta">TESTING.md hash：${escapeHtml(testingMdHash)}</div>`;
+    }
+    if (buildCommand) {
+      html += `<div class="agent-meta">build 命令</div><pre class="run-detail-pre">${escapeHtml(buildCommand)}</pre>`;
+    }
+    if (logs) {
+      html += '<details class="run-detail-collapse">';
+      html += '<summary class="agent-meta">查看 image build 日志</summary>';
+      html += `<pre class="run-detail-pre">${escapeHtml(logs)}</pre>`;
+      html += '</details>';
     }
     html += '</div>';
     return html;
@@ -1656,10 +2170,13 @@
   const LS_KEY_ISOLATION_MODE = 'caff_skill_test_isolation_mode';
   const LS_KEY_TRELLIS_MODE = 'caff_skill_test_trellis_mode';
   const LS_KEY_EGRESS_MODE = 'caff_skill_test_egress_mode';
+  const LS_KEY_CHAIN_STOP_POLICY = 'caff_skill_test_chain_stop_policy';
   const LS_KEY_PUBLISH_GATE = 'caff_skill_test_publish_gate';
+  const LS_KEY_ENVIRONMENT_BUILD_IMAGE = 'caff_skill_test_environment_build_image';
   const DEFAULT_UI_ISOLATION_MODE = 'isolated';
   const DEFAULT_UI_TRELLIS_MODE = 'none';
   const DEFAULT_UI_EGRESS_MODE = 'deny';
+  const DEFAULT_UI_CHAIN_STOP_POLICY = 'stop_on_failure';
 
   function normalizeUiIsolationMode(value) {
     return String(value || '').trim().toLowerCase() === 'legacy-local' ? 'legacy-local' : DEFAULT_UI_ISOLATION_MODE;
@@ -1676,6 +2193,14 @@
     return String(value || '').trim().toLowerCase() === 'allow' ? 'allow' : DEFAULT_UI_EGRESS_MODE;
   }
 
+  function normalizeUiChainStopPolicy(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (normalized === 'stop_on_failure_goal_threshold' || normalized === 'goal_threshold') {
+      return 'stop_on_failure_goal_threshold';
+    }
+    return DEFAULT_UI_CHAIN_STOP_POLICY;
+  }
+
   function getIsolationModeLabel(mode) {
     return normalizeUiIsolationMode(mode) === 'legacy-local' ? 'legacy-local（本地调试）' : 'isolated（隔离）';
   }
@@ -1689,6 +2214,12 @@
 
   function getEgressModeLabel(mode) {
     return normalizeUiEgressMode(mode) === 'allow' ? 'allow（允许外连）' : 'deny（禁止外连）';
+  }
+
+  function getChainStopPolicyLabel(policy) {
+    return normalizeUiChainStopPolicy(policy) === 'stop_on_failure_goal_threshold'
+      ? 'goal threshold（goalAchievement ≥ 0.8 时继续）'
+      : 'strict（只有 verdict=pass 才继续）';
   }
 
   function getTrellisModeHelpText(isolationMode, trellisMode) {
@@ -1716,6 +2247,63 @@
     };
   }
 
+  function readRunChainSettings() {
+    return {
+      stopPolicy: normalizeUiChainStopPolicy(dom.chainStopPolicySelect ? dom.chainStopPolicySelect.value : DEFAULT_UI_CHAIN_STOP_POLICY),
+    };
+  }
+
+  function getSelectedTestCase() {
+    return state.testCases.find((tc) => tc && tc.id === state.selectedCaseId) || null;
+  }
+
+  function isEnvironmentBuildCase(testCase) {
+    return String(testCase && testCase.testType || '').trim() === 'environment-build';
+  }
+
+  function readEnvironmentBuildUiSettings(testCase) {
+    if (!isEnvironmentBuildCase(testCase)) {
+      return null;
+    }
+    return {
+      enabled: true,
+      buildImage: Boolean(dom.environmentBuildImageInput && dom.environmentBuildImageInput.checked),
+    };
+  }
+
+  function getRunButtonLabel(testCase) {
+    if (!isEnvironmentBuildCase(testCase)) {
+      return isFailingRun(testCase && testCase.latestRun) ? '重试运行' : '运行测试';
+    }
+    const buildImage = Boolean(dom.environmentBuildImageInput && dom.environmentBuildImageInput.checked);
+    if (buildImage) {
+      return isFailingRun(testCase && testCase.latestRun) ? '重试构建镜像' : '运行并构建镜像';
+    }
+    return isFailingRun(testCase && testCase.latestRun) ? '重试生成 manifest' : '生成 manifest';
+  }
+
+  function syncEnvironmentBuildRunUi(testCase = null) {
+    const active = isEnvironmentBuildCase(testCase);
+    const buildImage = Boolean(dom.environmentBuildImageInput && dom.environmentBuildImageInput.checked);
+    if (dom.environmentBuildImageField) {
+      dom.environmentBuildImageField.classList.toggle('hidden', !active);
+    }
+    if (dom.environmentBuildImageInput) {
+      dom.environmentBuildImageInput.disabled = !active;
+    }
+    if (dom.environmentBuildImageHelp) {
+      dom.environmentBuildImageHelp.textContent = active
+        ? (buildImage ? '本次运行会先生成 manifest，再自动从 manifest 构建干净环境镜像。' : '本次运行只生成 manifest；后续普通 execution 绑定前还需要构建镜像。')
+        : '仅 environment-build 用例生效；关闭时只生成 manifest。';
+    }
+    if (dom.detailRunButton && testCase) {
+      dom.detailRunButton.textContent = getRunButtonLabel(testCase);
+      dom.detailRunButton.title = active
+        ? (buildImage ? '运行环境构建用例，并在 verify 通过后自动 build image。' : '运行环境构建用例，只写出 environment-manifest.json。')
+        : '';
+    }
+  }
+
   function syncRunSettingsUi() {
     const settings = readRunIsolationSettings();
     const isolated = settings.isolationMode === 'isolated';
@@ -1736,16 +2324,18 @@
       dom.trellisModeHelp.textContent = getTrellisModeHelpText(settings.isolationMode, settings.trellisMode);
     }
     if (dom.runSettingsHint) {
+      const chainPolicyLabel = getChainStopPolicyLabel(readRunChainSettings().stopPolicy);
       if (!isolated) {
-        dom.runSettingsHint.textContent = '当前运行默认：legacy-local（仅本地调试）。它不会 materialize Trellis fixture，也不能作为 publish gate 的隔离证据。';
+        dom.runSettingsHint.textContent = `当前运行默认：legacy-local（仅本地调试）；链继续策略 ${chainPolicyLabel}。它不会 materialize Trellis fixture，也不能作为 publish gate 的隔离证据。`;
       } else if (settings.trellisMode === 'fixture') {
-        dom.runSettingsHint.textContent = `当前运行默认：${getIsolationModeLabel(settings.isolationMode)} / ${getTrellisModeLabel(settings.trellisMode)} / ${getEgressModeLabel(settings.egressMode)}。适合 before-dev、trellis-write 这类要最小 .trellis 的稳定测试${settings.publishGate ? '；Publish Gate 已开启。' : '。'}`;
+        dom.runSettingsHint.textContent = `当前运行默认：${getIsolationModeLabel(settings.isolationMode)} / ${getTrellisModeLabel(settings.trellisMode)} / ${getEgressModeLabel(settings.egressMode)} / ${chainPolicyLabel}。适合 before-dev、trellis-write 这类要最小 .trellis 的稳定测试${settings.publishGate ? '；Publish Gate 已开启。' : '。'}`;
       } else if (settings.trellisMode === 'readonlySnapshot') {
-        dom.runSettingsHint.textContent = `当前运行默认：${getIsolationModeLabel(settings.isolationMode)} / ${getTrellisModeLabel(settings.trellisMode)} / ${getEgressModeLabel(settings.egressMode)}。适合贴近真实 .trellis/spec 的回归，写操作只会留在 case 世界${settings.publishGate ? '；Publish Gate 已开启。' : '。'}`;
+        dom.runSettingsHint.textContent = `当前运行默认：${getIsolationModeLabel(settings.isolationMode)} / ${getTrellisModeLabel(settings.trellisMode)} / ${getEgressModeLabel(settings.egressMode)} / ${chainPolicyLabel}。适合贴近真实 .trellis/spec 的回归，写操作只会留在 case 世界${settings.publishGate ? '；Publish Gate 已开启。' : '。'}`;
       } else {
-        dom.runSettingsHint.textContent = `当前运行默认：${getIsolationModeLabel(settings.isolationMode)} / ${getTrellisModeLabel(settings.trellisMode)} / ${getEgressModeLabel(settings.egressMode)}。普通 skill 建议保持 none；Trellis 类 skill 可切到 fixture 或 readonlySnapshot${settings.publishGate ? '；Publish Gate 已开启。' : '。'}`;
+        dom.runSettingsHint.textContent = `当前运行默认：${getIsolationModeLabel(settings.isolationMode)} / ${getTrellisModeLabel(settings.trellisMode)} / ${getEgressModeLabel(settings.egressMode)} / ${chainPolicyLabel}。普通 skill 建议保持 none；Trellis 类 skill 可切到 fixture 或 readonlySnapshot${settings.publishGate ? '；Publish Gate 已开启。' : '。'}`;
       }
     }
+    syncEnvironmentBuildRunUi(getSelectedTestCase());
     scheduleSkillTestStickyOffsetSync();
   }
 
@@ -1758,7 +2348,9 @@
       if (dom.isolationModeSelect) localStorage.setItem(LS_KEY_ISOLATION_MODE, normalizeUiIsolationMode(dom.isolationModeSelect.value));
       if (dom.trellisModeSelect) localStorage.setItem(LS_KEY_TRELLIS_MODE, normalizeUiTrellisMode(dom.trellisModeSelect.value));
       if (dom.egressModeSelect) localStorage.setItem(LS_KEY_EGRESS_MODE, normalizeUiEgressMode(dom.egressModeSelect.value));
+      if (dom.chainStopPolicySelect) localStorage.setItem(LS_KEY_CHAIN_STOP_POLICY, normalizeUiChainStopPolicy(dom.chainStopPolicySelect.value));
       if (dom.publishGateInput) localStorage.setItem(LS_KEY_PUBLISH_GATE, dom.publishGateInput.checked ? 'true' : 'false');
+      if (dom.environmentBuildImageInput) localStorage.setItem(LS_KEY_ENVIRONMENT_BUILD_IMAGE, dom.environmentBuildImageInput.checked ? 'true' : 'false');
     } catch { /* ignore */ }
   }
 
@@ -1770,14 +2362,18 @@
       const savedIsolationMode = localStorage.getItem(LS_KEY_ISOLATION_MODE);
       const savedTrellisMode = localStorage.getItem(LS_KEY_TRELLIS_MODE);
       const savedEgressMode = localStorage.getItem(LS_KEY_EGRESS_MODE);
+      const savedChainStopPolicy = localStorage.getItem(LS_KEY_CHAIN_STOP_POLICY);
       const savedPublishGate = localStorage.getItem(LS_KEY_PUBLISH_GATE);
+      const savedEnvironmentBuildImage = localStorage.getItem(LS_KEY_ENVIRONMENT_BUILD_IMAGE);
       if (savedAgent != null && dom.agentSelect) dom.agentSelect.value = savedAgent;
       if (savedModel != null && dom.modelSelect) dom.modelSelect.value = savedModel;
       if (savedPromptVersion != null && dom.promptVersionInput) dom.promptVersionInput.value = savedPromptVersion;
       if (savedIsolationMode != null && dom.isolationModeSelect) dom.isolationModeSelect.value = normalizeUiIsolationMode(savedIsolationMode);
       if (savedTrellisMode != null && dom.trellisModeSelect) dom.trellisModeSelect.value = normalizeUiTrellisMode(savedTrellisMode);
       if (savedEgressMode != null && dom.egressModeSelect) dom.egressModeSelect.value = normalizeUiEgressMode(savedEgressMode);
+      if (savedChainStopPolicy != null && dom.chainStopPolicySelect) dom.chainStopPolicySelect.value = normalizeUiChainStopPolicy(savedChainStopPolicy);
       if (savedPublishGate != null && dom.publishGateInput) dom.publishGateInput.checked = savedPublishGate === 'true';
+      if (savedEnvironmentBuildImage != null && dom.environmentBuildImageInput) dom.environmentBuildImageInput.checked = savedEnvironmentBuildImage === 'true';
     } catch { /* ignore */ }
     syncRunSettingsUi();
   }
@@ -1852,9 +2448,11 @@
   if (dom.isolationModeSelect) dom.isolationModeSelect.addEventListener('change', handleRunSettingChange);
   if (dom.trellisModeSelect) dom.trellisModeSelect.addEventListener('change', handleRunSettingChange);
   if (dom.egressModeSelect) dom.egressModeSelect.addEventListener('change', handleRunSettingChange);
+  if (dom.chainStopPolicySelect) dom.chainStopPolicySelect.addEventListener('change', handleRunSettingChange);
   if (dom.publishGateInput) dom.publishGateInput.addEventListener('change', handleRunSettingChange);
+  if (dom.environmentBuildImageInput) dom.environmentBuildImageInput.addEventListener('change', handleRunSettingChange);
 
-  function getRunOptions() {
+  function getRunOptions(context = {}) {
     const agentId = dom.agentSelect ? dom.agentSelect.value.trim() : '';
     const modelKey = dom.modelSelect ? dom.modelSelect.value.trim() : '';
     let provider = '';
@@ -1893,6 +2491,13 @@
       if (isolationSettings.publishGate) {
         opts.publishGate = true;
       }
+    }
+    const chainSettings = readRunChainSettings();
+    opts.stopPolicy = chainSettings.stopPolicy;
+    const targetCase = context && context.testCase ? context.testCase : null;
+    const environmentBuildSettings = readEnvironmentBuildUiSettings(targetCase);
+    if (environmentBuildSettings) {
+      opts.environmentBuild = environmentBuildSettings;
     }
     return opts;
   }
@@ -1999,10 +2604,13 @@
   async function loadTestCases() {
     if (!state.selectedSkillId) {
       state.testCases = [];
+      state.environmentAssets = [];
       state.selectedCaseId = '';
       state.casesLoading = false;
       state.casesLoadError = '';
       state.casesLastLoadedAt = '';
+      state.environmentAssetsLoadError = '';
+      state.environmentAssetsLastLoadedAt = '';
       renderSelectedSkillOverview();
       renderCaseList();
       hideDetail();
@@ -2016,11 +2624,23 @@
     renderCaseList();
 
     try {
-      const data = await fetchJson(`/api/skills/${encodeURIComponent(requestedSkillId)}/test-cases`);
+      const [data, environmentAssetData] = await Promise.all([
+        fetchJson(`/api/skills/${encodeURIComponent(requestedSkillId)}/test-cases`),
+        fetchJson(`/api/skills/${encodeURIComponent(requestedSkillId)}/environment-assets`).catch((error) => ({ __error: error })),
+      ]);
       if (state.selectedSkillId !== requestedSkillId) {
         return;
       }
       state.testCases = Array.isArray(data.cases) ? data.cases : [];
+      if (environmentAssetData && environmentAssetData.__error) {
+        state.environmentAssets = [];
+        state.environmentAssetsLoadError = '共享环境资产刷新失败';
+        state.environmentAssetsLastLoadedAt = '';
+      } else {
+        state.environmentAssets = Array.isArray(environmentAssetData && environmentAssetData.assets) ? environmentAssetData.assets : [];
+        state.environmentAssetsLoadError = '';
+        state.environmentAssetsLastLoadedAt = new Date().toISOString();
+      }
       if (state.selectedCaseId && !state.testCases.some((tc) => tc.id === state.selectedCaseId)) {
         state.selectedCaseId = '';
       }
@@ -2095,9 +2715,10 @@
     }
 
     try {
+      const selectedCase = state.testCases.find((tc) => tc && tc.id === caseId) || null;
       const runResult = await fetchJson(
         `/api/skills/${encodeURIComponent(state.selectedSkillId)}/test-cases/${encodeURIComponent(caseId)}/run`,
-        { method: 'POST', body: getRunOptions() }
+        { method: 'POST', body: getRunOptions({ testCase: selectedCase }) }
       );
       reconcileLiveSkillRunFromFinalResult(caseId, runResult);
       const runValidation = readRunValidation(runResult);
@@ -2120,6 +2741,69 @@
       renderIssuePanel(dom.detailIssues, issues, '运行失败校验提示');
       const issueMessage = buildIssueToastMessage('运行失败，', issues);
       showToast(issueMessage || ('运行失败: ' + (err.message || err)));
+      return false;
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.textContent = idleLabel;
+      }
+    }
+  }
+
+  async function runTestChain(testCase, options = {}) {
+    const chainRunRequest = getCaseChainRunRequest(testCase);
+    if (!state.selectedSkillId || !testCase || !chainRunRequest || !chainRunRequest.exportChainId) {
+      showToast('当前用例没有可运行的链');
+      return false;
+    }
+    if (!chainRunRequest.eligible) {
+      showToast('当前链还不是可运行的 full + execution 集合');
+      return false;
+    }
+
+    const button = options.button || null;
+    const idleLabel = options.idleLabel || (button ? button.textContent : '按链运行');
+    const busyLabel = options.busyLabel || '链运行中...';
+
+    if (options.detailTab) {
+      switchDetailTab(options.detailTab);
+    }
+    renderCaseList();
+    syncDetailPanel();
+
+    if (button) {
+      button.disabled = true;
+      button.textContent = busyLabel;
+    }
+
+    try {
+      const result = await fetchJson(
+        `/api/skills/${encodeURIComponent(state.selectedSkillId)}/test-chains/run`,
+        {
+          method: 'POST',
+          body: {
+            exportChainId: chainRunRequest.exportChainId,
+            caseIds: chainRunRequest.caseIds,
+            ...getRunOptions(),
+          },
+        }
+      );
+      reconcileLiveSkillChainRunFromFinalResult(chainRunRequest.exportChainId, result);
+      const chainStatus = result && result.chainRun && result.chainRun.status
+        ? String(result.chainRun.status)
+        : 'completed';
+      const warnings = Array.isArray(result && result.warnings) ? result.warnings : [];
+      showToast(`链运行完成：${chainStatus}${warnings.length > 0 ? `（${warnings.length} 条提醒）` : ''}`);
+      await Promise.all([loadTestCases(), loadSummary()]);
+      if (state.selectedCaseId) {
+        await loadCaseRuns(state.selectedCaseId);
+      }
+      return true;
+    } catch (err) {
+      const issues = extractIssuesFromError(err);
+      renderIssuePanel(dom.detailIssues, issues, '链运行失败校验提示');
+      const issueMessage = buildIssueToastMessage('链运行失败，', issues);
+      showToast(issueMessage || ('链运行失败: ' + (err.message || err)));
       return false;
     } finally {
       if (button) {
@@ -2188,8 +2872,12 @@
     const executionRate = selectedSummary && selectedSummary.executionRate != null
       ? `${Math.round(selectedSummary.executionRate * 100)}%`
       : '—';
+    const environmentAssets = Array.isArray(state.environmentAssets) ? state.environmentAssets : [];
+    const readyEnvironmentAssets = environmentAssets.filter((entry) => entry && entry.asset && entry.asset.image).length;
+    const manifestOnlyEnvironmentAssets = environmentAssets.filter((entry) => entry && (!entry.asset || !entry.asset.image)).length;
     const casesRefreshLabel = formatRefreshTime(state.casesLastLoadedAt);
     const summaryRefreshLabel = formatRefreshTime(state.summaryLastLoadedAt);
+    const environmentAssetsRefreshLabel = formatRefreshTime(state.environmentAssetsLastLoadedAt);
     const listRefreshTag = state.casesLoading
       ? '<span class="tag tag-pending">列表刷新中...</span>'
       : (state.casesLoadError ? '<span class="tag tag-error">列表刷新失败</span>' : '');
@@ -2204,6 +2892,10 @@
       runSettings.isolationMode === 'isolated' ? `<span class="tag">${escapeHtml(egressModeLabel)}</span>` : '',
       runSettings.publishGate ? '<span class="tag tag-success">Publish Gate</span>' : '',
       `<span class="tag">可批量运行 ${readyCount}</span>`,
+      readyEnvironmentAssets > 0 ? `<span class="tag tag-success">环境资产 ${readyEnvironmentAssets}</span>` : '',
+      manifestOnlyEnvironmentAssets > 0 ? `<span class="tag tag-pending">待 build 资产 ${manifestOnlyEnvironmentAssets}</span>` : '',
+      state.environmentAssetsLoadError ? '<span class="tag tag-error">环境资产刷新失败</span>' : '',
+      environmentAssetsRefreshLabel ? `<span class="tag">环境资产更新 ${escapeHtml(environmentAssetsRefreshLabel)}</span>` : '',
       `<span class="tag">最近失败 ${recentFailing}</span>`,
       neverRunCount > 0 ? `<span class="tag">未运行 ${neverRunCount}</span>` : '',
       invalidCount > 0 ? `<span class="tag tag-error">结构异常 ${invalidCount}</span>` : '',
@@ -2221,6 +2913,11 @@
       ? `最近一次列表刷新失败，当前仍显示${casesRefreshLabel ? `${casesRefreshLabel} 的` : '上一次成功加载的'}结果；`
       : (casesRefreshLabel ? `列表最近一次成功刷新在 ${casesRefreshLabel}；` : '');
     const summaryHint = summaryRefreshLabel ? `全局概览更新在 ${summaryRefreshLabel}；` : '';
+    const environmentAssetsHint = state.environmentAssetsLoadError
+      ? '共享环境资产刷新失败；'
+      : environmentAssets.length > 0
+        ? `共享环境资产 ${readyEnvironmentAssets} 个可直接复用${manifestOnlyEnvironmentAssets > 0 ? `，${manifestOnlyEnvironmentAssets} 个还只有 manifest` : ''}；`
+        : '';
     const runDefaultsHint = runSettings.isolationMode === 'isolated'
       ? `当前运行默认 ${runModeLabel} / ${trellisModeLabel} / ${egressModeLabel}${runSettings.publishGate ? ' / Publish Gate' : ''}；`
       : '当前运行默认 legacy-local，仅适合本地调试，不能作为隔离证据；';
@@ -2235,7 +2932,7 @@
             : neverRunCount > 0
               ? `下一步：还有 ${neverRunCount} 条没跑过的 case，可以先单条跑一轮。`
               : '下一步：可以继续批量运行 Ready 用例，或者切到回归对比看模型差异。';
-    dom.selectedSummary.textContent = `${runDefaultsHint}${refreshHint}${summaryHint}${filterHint}当前 Skill 的加载成功率 ${triggerRate}，执行通过率 ${executionRate}。${nextStep}`;
+    dom.selectedSummary.textContent = `${runDefaultsHint}${refreshHint}${summaryHint}${environmentAssetsHint}${filterHint}当前 Skill 的加载成功率 ${triggerRate}，执行通过率 ${executionRate}。${nextStep}`;
 
     let overviewCallout = null;
     if (totalCases === 0) {
@@ -2510,6 +3207,74 @@
     }
   }
 
+  function getSkillTestChainPlanningMeta(testCase) {
+    const sourceMetadata = testCase && testCase.sourceMetadata && typeof testCase.sourceMetadata === 'object'
+      ? testCase.sourceMetadata
+      : null;
+    const designMetadata = sourceMetadata && sourceMetadata.skillTestDesign && typeof sourceMetadata.skillTestDesign === 'object'
+      ? sourceMetadata.skillTestDesign
+      : null;
+    const chainPlanning = designMetadata && designMetadata.chainPlanning && typeof designMetadata.chainPlanning === 'object'
+      ? designMetadata.chainPlanning
+      : null;
+    const exportChainId = String(chainPlanning && chainPlanning.exportChainId || '').trim();
+    const sequenceIndex = Number(chainPlanning && chainPlanning.sequenceIndex);
+    const dependsOnCaseIds = Array.isArray(chainPlanning && chainPlanning.dependsOnCaseIds)
+      ? chainPlanning.dependsOnCaseIds.map((entry) => String(entry || '').trim()).filter(Boolean)
+      : [];
+    return {
+      exportChainId,
+      chainId: String(chainPlanning && (chainPlanning.chainId || chainPlanning.exportChainId) || '').trim(),
+      sequenceIndex: Number.isInteger(sequenceIndex) && sequenceIndex > 0 ? sequenceIndex : null,
+      dependsOnCaseIds,
+      loadingMode: String(testCase && testCase.loadingMode || '').trim().toLowerCase(),
+      testType: String(testCase && testCase.testType || '').trim().toLowerCase(),
+    };
+  }
+
+  function getChainCasesForExportChain(exportChainId) {
+    const normalizedExportChainId = String(exportChainId || '').trim();
+    if (!normalizedExportChainId) {
+      return [];
+    }
+    return state.testCases
+      .filter((testCase) => getSkillTestChainPlanningMeta(testCase).exportChainId === normalizedExportChainId)
+      .slice()
+      .sort((left, right) => {
+        const leftSequence = getSkillTestChainPlanningMeta(left).sequenceIndex || 0;
+        const rightSequence = getSkillTestChainPlanningMeta(right).sequenceIndex || 0;
+        return leftSequence - rightSequence;
+      });
+  }
+
+  function getCaseChainRunRequest(testCase) {
+    if (!testCase) {
+      return null;
+    }
+    const chainMeta = getSkillTestChainPlanningMeta(testCase);
+    if (!chainMeta.exportChainId) {
+      return null;
+    }
+    const chainCases = getChainCasesForExportChain(chainMeta.exportChainId);
+    if (chainCases.length === 0) {
+      return null;
+    }
+    const eligible = chainCases.every((entry) => {
+      const entryMeta = getSkillTestChainPlanningMeta(entry);
+      return entryMeta.exportChainId === chainMeta.exportChainId
+        && entryMeta.sequenceIndex != null
+        && entryMeta.loadingMode === 'full'
+        && entryMeta.testType === 'execution';
+    });
+    return {
+      exportChainId: chainMeta.exportChainId,
+      chainId: chainMeta.chainId || chainMeta.exportChainId,
+      caseIds: chainCases.map((entry) => entry.id),
+      chainCases,
+      eligible,
+    };
+  }
+
   function buildSkillTestDesignSourceTags(tc) {
     const sourceMetadata = tc && tc.sourceMetadata && typeof tc.sourceMetadata === 'object' ? tc.sourceMetadata : null;
     if (!sourceMetadata || sourceMetadata.source !== 'skill_test_chat_workbench') {
@@ -2605,8 +3370,24 @@
         ? '改回 Draft'
         : (caseValidation.caseSchemaStatus === 'invalid' ? '修好后再 Ready' : '标记 Ready');
     }
-    if (dom.detailRunButton) {
-      dom.detailRunButton.textContent = isFailingRun(tc.latestRun) ? '重试运行' : '运行测试';
+    syncEnvironmentBuildRunUi(tc);
+    if (dom.detailRunChainButton) {
+      const chainRunRequest = getCaseChainRunRequest(tc);
+      if (chainRunRequest && chainRunRequest.exportChainId) {
+        dom.detailRunChainButton.classList.remove('hidden');
+        dom.detailRunChainButton.disabled = !chainRunRequest.eligible;
+        dom.detailRunChainButton.textContent = chainRunRequest.chainCases.length > 1
+          ? `按链运行 (${chainRunRequest.chainCases.length})`
+          : '按链运行';
+        dom.detailRunChainButton.title = chainRunRequest.eligible
+          ? `当前链继续策略：${getChainStopPolicyLabel(readRunChainSettings().stopPolicy)}`
+          : '只有 metadata 完整的 full + execution 链才支持按链运行';
+      } else {
+        dom.detailRunChainButton.classList.add('hidden');
+        dom.detailRunChainButton.disabled = true;
+        dom.detailRunChainButton.textContent = '按链运行';
+        dom.detailRunChainButton.title = '';
+      }
     }
 
     renderIssuePanel(dom.detailIssues, caseValidation.issues, '用例校验提示');
@@ -2643,6 +3424,14 @@
     renderIssuePanel(dom.detailIssues, []);
     if (dom.detailRunButton) {
       dom.detailRunButton.textContent = '运行测试';
+      dom.detailRunButton.title = '';
+    }
+    syncEnvironmentBuildRunUi(null);
+    if (dom.detailRunChainButton) {
+      dom.detailRunChainButton.classList.add('hidden');
+      dom.detailRunChainButton.disabled = true;
+      dom.detailRunChainButton.textContent = '按链运行';
+      dom.detailRunChainButton.title = '';
     }
     if (dom.detailEnvironmentJson) {
       dom.detailEnvironmentJson.value = '';
@@ -2788,13 +3577,28 @@
     if (!skillId) return;
 
     dom.detailRuns.innerHTML = '<p class="section-hint">加载运行记录中...</p>';
+    const selectedCase = state.testCases.find((tc) => tc.id === caseId) || null;
+    const chainRunRequest = getCaseChainRunRequest(selectedCase);
+    let chainRuns = [];
+
+    if (chainRunRequest && chainRunRequest.exportChainId) {
+      try {
+        const chainData = await fetchJson(
+          `/api/skills/${encodeURIComponent(skillId)}/test-chains/by-export/${encodeURIComponent(chainRunRequest.exportChainId)}/runs?limit=20`
+        );
+        chainRuns = Array.isArray(chainData.runs) ? chainData.runs : [];
+      } catch {
+        chainRuns = [];
+      }
+    }
+
     try {
       const data = await fetchJson(
         `/api/skills/${encodeURIComponent(skillId)}/test-cases/${encodeURIComponent(caseId)}/runs?limit=50`
       );
       if (state.selectedCaseId !== caseId) return;
       const runs = Array.isArray(data.runs) ? data.runs : [];
-      renderCaseRuns(runs);
+      renderCaseRuns(runs, { chainRuns, chainRunRequest });
     } catch {
       if (state.selectedCaseId !== caseId) return;
       renderRetryState(dom.detailRuns, '加载运行记录失败，请重试。', () => {
@@ -2862,18 +3666,266 @@
     dom.detailRegression.innerHTML = html;
   }
 
-  function renderCaseRuns(runs) {
+  function buildChainRunStatusTag(status) {
+    const normalized = String(status || '').trim().toLowerCase();
+    if (normalized === 'passed') return '<span class="tag tag-success">链运行通过</span>';
+    if (normalized === 'failed') return '<span class="tag tag-error">链运行失败</span>';
+    if (normalized === 'partial') return '<span class="tag tag-pending">链运行部分完成</span>';
+    if (normalized === 'aborted') return '<span class="tag tag-error">链运行中止</span>';
+    if (normalized === 'running') return '<span class="tag tag-pending">链运行中</span>';
+    return '<span class="tag tag-pending">链运行待定</span>';
+  }
+
+  function buildChainStepStatusTag(status) {
+    const normalized = String(status || '').trim().toLowerCase();
+    if (normalized === 'passed') return '<span class="tag tag-success">passed</span>';
+    if (normalized === 'continued') return '<span class="tag tag-pending">continued</span>';
+    if (normalized === 'failed') return '<span class="tag tag-error">failed</span>';
+    if (normalized === 'skipped') return '<span class="tag tag-pending">skipped</span>';
+    if (normalized === 'running') return '<span class="tag tag-pending">running</span>';
+    if (normalized === 'aborted') return '<span class="tag tag-error">aborted</span>';
+    return `<span class="tag tag-pending">${escapeHtml(normalized || 'pending')}</span>`;
+  }
+
+  function renderChainRunStepsHtml(steps) {
+    if (!Array.isArray(steps) || steps.length === 0) {
+      return '<p class="section-hint">这次链运行还没有 step 审计。</p>';
+    }
+
+    let html = '';
+    for (const step of steps) {
+      const runId = String(step && step.skillTestRunId || '').trim();
+      const artifactCount = Array.isArray(step && step.artifactRefs) ? step.artifactRefs.length : 0;
+      html += '<div class="run-detail-card">';
+      html += '<div class="run-detail-tag-row">';
+      html += `${buildChainStepStatusTag(step && step.status)} <span class="tag">#${escapeHtml(String(step && step.sequenceIndex || 0))}</span> <span class="tag">${escapeHtml(step && (step.title || step.testCaseId) || 'chain step')}</span>`;
+      if (runId) {
+        html += ` <span class="agent-meta">run ${escapeHtml(runId)}</span>`;
+      }
+      if (artifactCount > 0) {
+        html += ` <span class="tag">artifacts ${escapeHtml(String(artifactCount))}</span>`;
+      }
+      html += '</div>';
+      if (step && step.summary) {
+        html += `<div class="agent-meta">${escapeHtml(step.summary)}</div>`;
+      }
+      if (step && step.errorMessage) {
+        html += `<div class="agent-meta" style="color:#e53e3e">${escapeHtml(step.errorMessage)}</div>`;
+      }
+      if (runId) {
+        html += '<div class="run-item-actions" style="margin-top:0.4rem">';
+        html += `<button type="button" class="mini-action" data-chain-step-run-detail-id="${escapeHtml(runId)}">查看调用步骤</button>`;
+        html += `<button type="button" class="mini-action" style="margin-left:6px" data-run-session-export-id="${escapeHtml(runId)}">导出 Session</button>`;
+        html += '</div>';
+      }
+      html += '</div>';
+    }
+    return html;
+  }
+
+  function bindChainRunStepActions(container) {
+    if (!container || typeof container.querySelectorAll !== 'function') return;
+    container.querySelectorAll('[data-chain-step-run-detail-id]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const runId = button.getAttribute('data-chain-step-run-detail-id');
+        const card = button.closest('.run-detail-card') || container;
+        toggleRunDetail(card, runId);
+      });
+    });
+    bindRunSessionExportButtons(container);
+  }
+
+  function summarizeChainPollutionChange(change) {
+    if (typeof change === 'string') {
+      return change;
+    }
+    if (!change || typeof change !== 'object') {
+      return '';
+    }
+    const parts = [];
+    if (change.kind) parts.push(String(change.kind));
+    if (change.label) parts.push(String(change.label));
+    if (change.table) parts.push(`table=${String(change.table)}`);
+    if (change.path) parts.push(String(change.path));
+    if (change.message) parts.push(String(change.message));
+    return parts.join(' · ');
+  }
+
+  function renderChainPollutionCheckHtml(pollutionCheck) {
+    if (!pollutionCheck || typeof pollutionCheck !== 'object' || !pollutionCheck.checked) {
+      return '';
+    }
+    const changes = Array.isArray(pollutionCheck.changes) ? pollutionCheck.changes : [];
+    const tagClass = pollutionCheck.ok ? 'tag-success' : 'tag-error';
+    let html = '<div class="run-detail-section">';
+    html += '<div class="section-label">隔离污染检查</div>';
+    html += `<span class="tag ${tagClass}">${pollutionCheck.ok ? 'clean' : 'polluted'}</span> `;
+    html += `<span class="tag">changes ${escapeHtml(String(pollutionCheck.changeCount || changes.length || 0))}</span>`;
+    if (changes.length > 0) {
+      html += '<ul class="run-detail-list">';
+      for (const change of changes.slice(0, 12)) {
+        const summary = summarizeChainPollutionChange(change) || JSON.stringify(change);
+        html += `<li>${escapeHtml(summary)}</li>`;
+      }
+      if (changes.length > 12) {
+        html += `<li>${escapeHtml(`另有 ${changes.length - 12} 条变化，下载 JSON 查看完整内容`)}</li>`;
+      }
+      html += '</ul>';
+    }
+    html += '</div>';
+    return html;
+  }
+
+  async function toggleChainRunDetail(rowEl, chainRunId) {
+    const existing = rowEl.querySelector('.run-detail-panel');
+    if (existing) {
+      existing.remove();
+      return;
+    }
+
+    const panel = document.createElement('div');
+    panel.className = 'run-detail-panel';
+    panel.innerHTML = '<p class="section-hint">加载中...</p>';
+    rowEl.appendChild(panel);
+
+    try {
+      const data = await fetchJson(`/api/skills/${encodeURIComponent(state.selectedSkillId)}/test-chains/${encodeURIComponent(chainRunId)}`);
+      renderChainRunDetailPanel(panel, data);
+    } catch (err) {
+      panel.innerHTML = `<p class="section-hint" style="color:#e53e3e">加载失败: ${escapeHtml(String(err.message || err))}</p>`;
+    }
+  }
+
+  function renderChainRunDetailPanel(panel, data) {
+    const payload = data && typeof data === 'object' ? data : {};
+    const chainRun = payload.chainRun && typeof payload.chainRun === 'object' ? payload.chainRun : {};
+    const steps = Array.isArray(payload.steps) ? payload.steps : [];
+    const warnings = Array.isArray(payload.warnings) ? payload.warnings : [];
+
+    let html = '<div class="run-detail-section">';
+    html += '<div class="section-label">链运行摘要</div>';
+    html += `${buildChainRunStatusTag(chainRun.status)} `;
+    html += `<span class="tag">steps ${escapeHtml(String(chainRun.lastCompletedStepIndex || 0))}/${escapeHtml(String(chainRun.totalSteps || 0))}</span>`;
+    if (chainRun.bootstrapStatus) {
+      html += ` <span class="tag">bootstrap ${escapeHtml(String(chainRun.bootstrapStatus))}</span>`;
+    }
+    if (chainRun.teardownStatus) {
+      html += ` <span class="tag">teardown ${escapeHtml(String(chainRun.teardownStatus))}</span>`;
+    }
+    if (chainRun.errorMessage) {
+      html += `<div class="agent-meta" style="color:#e53e3e">${escapeHtml(String(chainRun.errorMessage || ''))}</div>`;
+    }
+    html += '</div>';
+
+    html += renderChainPollutionCheckHtml(chainRun.pollutionCheck);
+
+    if (warnings.length > 0) {
+      html += '<div class="run-detail-section">';
+      html += '<div class="section-label">提醒</div>';
+      html += '<ul class="run-detail-list">';
+      for (const warning of warnings) {
+        html += `<li><span class="tag">${escapeHtml(String(warning.code || 'warning'))}</span> ${escapeHtml(String(warning.message || ''))}</li>`;
+      }
+      html += '</ul></div>';
+    }
+
+    html += '<div class="run-detail-section">';
+    html += '<div class="section-label">步骤</div>';
+    html += renderChainRunStepsHtml(steps);
+    html += '</div>';
+
+    panel.innerHTML = html;
+    bindChainRunStepActions(panel);
+  }
+
+  function renderCaseRuns(runs, options = {}) {
     if (!dom.detailRuns) return;
-    if (runs.length === 0) {
+    const chainRuns = Array.isArray(options.chainRuns) ? options.chainRuns : [];
+    const chainRunRequest = options.chainRunRequest && typeof options.chainRunRequest === 'object'
+      ? options.chainRunRequest
+      : null;
+    if (runs.length === 0 && chainRuns.length === 0) {
       dom.detailRuns.innerHTML = `
         <div class="empty-state compact-empty-state">
-          <p class="section-hint">这条用例还没有运行记录；点上方“运行测试”就能在这里看到失败原因和诊断信息。</p>
+          <p class="section-hint">这条用例还没有运行记录；点上方“运行测试”或“按链运行”就能在这里看到失败原因和诊断信息。</p>
         </div>
       `;
       return;
     }
 
     dom.detailRuns.innerHTML = '';
+
+    if (chainRuns.length > 0) {
+      const heading = document.createElement('p');
+      heading.className = 'section-hint';
+      heading.textContent = `链运行历史 · ${chainRunRequest && chainRunRequest.chainId ? chainRunRequest.chainId : '未命名链'}`;
+      dom.detailRuns.appendChild(heading);
+
+      for (const chainRun of chainRuns) {
+        const row = document.createElement('div');
+        row.className = 'run-item';
+        const warningTag = Array.isArray(chainRun.warningFlags) && chainRun.warningFlags.length > 0
+          ? `<span class="tag tag-pending">${chainRun.warningFlags.length} 条提醒</span>`
+          : '';
+        const failedStepText = chainRun.failedStepIndex ? ` · 失败于 #${chainRun.failedStepIndex}` : '';
+        row.innerHTML = `
+          <div class="run-item-header">
+            ${buildChainRunStatusTag(chainRun.status)}
+            <span class="tag">steps ${escapeHtml(String(chainRun.lastCompletedStepIndex || 0))}/${escapeHtml(String(chainRun.totalSteps || 0))}</span>
+            <span class="tag">bootstrap ${escapeHtml(String(chainRun.bootstrapStatus || 'pending'))}</span>
+            <span class="tag">teardown ${escapeHtml(String(chainRun.teardownStatus || 'pending'))}</span>
+            ${warningTag}
+            <span class="agent-meta">${chainRun.startedAt ? new Date(chainRun.startedAt).toLocaleString() : ''}${failedStepText}</span>
+          </div>
+          ${chainRun.errorMessage ? `<div class="agent-meta" style="color:#e53e3e">${escapeHtml(chainRun.errorMessage)}</div>` : ''}
+        `;
+
+        const actionsBar = document.createElement('div');
+        actionsBar.className = 'run-item-actions';
+        actionsBar.style.marginTop = '0.4rem';
+
+        const detailBtn = document.createElement('button');
+        detailBtn.className = 'mini-action';
+        detailBtn.textContent = '查看链详情';
+        detailBtn.addEventListener('click', () => toggleChainRunDetail(row, chainRun.id));
+
+        const downloadBtn = document.createElement('button');
+        downloadBtn.className = 'mini-action';
+        downloadBtn.textContent = '下载 JSON';
+        downloadBtn.addEventListener('click', async () => {
+          try {
+            const detail = await fetchJson(`/api/skills/${encodeURIComponent(state.selectedSkillId)}/test-chains/${encodeURIComponent(chainRun.id)}`);
+            downloadJsonFile(detail, `skill-test-chain-run-${chainRun.id}.json`);
+            showToast('已下载');
+          } catch (err) {
+            showToast('下载失败: ' + (err.message || err));
+          }
+        });
+
+        actionsBar.appendChild(detailBtn);
+        actionsBar.appendChild(downloadBtn);
+        row.appendChild(actionsBar);
+
+        const inlineSteps = Array.isArray(chainRun.steps) ? chainRun.steps : [];
+        if (inlineSteps.length > 0) {
+          const stepsPanel = document.createElement('div');
+          stepsPanel.className = 'run-detail-section';
+          stepsPanel.innerHTML = `<div class="section-label">步骤明细</div>${renderChainRunStepsHtml(inlineSteps)}`;
+          row.appendChild(stepsPanel);
+          bindChainRunStepActions(stepsPanel);
+        }
+
+        dom.detailRuns.appendChild(row);
+      }
+    }
+
+    if (runs.length > 0 && chainRuns.length > 0) {
+      const secondaryHeading = document.createElement('p');
+      secondaryHeading.className = 'section-hint';
+      secondaryHeading.textContent = '单用例运行历史';
+      dom.detailRuns.appendChild(secondaryHeading);
+    }
+
     for (const run of runs) {
       const row = document.createElement('div');
       row.className = 'run-item';
@@ -2906,6 +3958,11 @@
       const environmentTag = environmentTagMeta
         ? `<span class="tag ${environmentTagMeta.className}">${escapeHtml(environmentTagMeta.label)}</span>`
         : '';
+      const environmentBuildResult = readEnvironmentBuildResultFromEvaluation(run.evaluation);
+      const environmentBuildTagMeta = getEnvironmentBuildStatusMeta(environmentBuildResult && environmentBuildResult.status);
+      const environmentBuildTag = environmentBuildTagMeta
+        ? `<span class="tag ${environmentBuildTagMeta.className}">${escapeHtml(environmentBuildTagMeta.label)}</span>`
+        : '';
 
       const tools =
         Array.isArray(run.actualTools) && run.actualTools.length > 0
@@ -2934,30 +3991,32 @@
       downloadBtn.addEventListener('click', async () => {
         try {
           const detail = await fetchJson(`/api/skill-test-runs/${encodeURIComponent(run.id)}`);
-          const blob = new Blob([JSON.stringify(detail, null, 2)], { type: 'application/json' });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = `skill-test-run-${run.id}.json`;
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-          URL.revokeObjectURL(url);
+          downloadJsonFile(detail, `skill-test-run-${run.id}.json`);
           showToast('已下载');
         } catch (err) {
           showToast('下载失败: ' + (err.message || err));
         }
       });
 
+      const sessionBtn = document.createElement('button');
+      sessionBtn.className = 'mini-action';
+      sessionBtn.textContent = '导出 Session';
+      sessionBtn.style.marginLeft = '6px';
+      sessionBtn.title = '导出本次 run 的原始 session JSONL，便于查看 agent 在沙盒内的具体行为';
+      sessionBtn.addEventListener('click', () => {
+        exportSkillTestRunSession(run.id);
+      });
+
       actionsBar.appendChild(detailBtn);
       actionsBar.appendChild(downloadBtn);
+      actionsBar.appendChild(sessionBtn);
 
       const runModelMeta = [run.provider, run.model].filter(Boolean).join(' / ');
       const runPromptVersion = run.promptVersion ? ` · ${run.promptVersion}` : '';
 
       row.innerHTML = `
         <div class="run-item-header">
-          ${triggerTag} ${execTag} ${environmentTag} ${accuracy}
+          ${triggerTag} ${execTag} ${environmentTag} ${environmentBuildTag} ${accuracy}
           <span class="agent-meta">${run.createdAt ? new Date(run.createdAt).toLocaleString() : ''}${runModelMeta ? ` · ${escapeHtml(runModelMeta)}` : ''}${runPromptVersion ? escapeHtml(runPromptVersion) : ''}</span>
         </div>
         ${tools}
@@ -3013,6 +4072,7 @@
     const environmentEvaluation = evaluationPayload && evaluationPayload.environment && typeof evaluationPayload.environment === 'object'
       ? evaluationPayload.environment
       : null;
+    const environmentBuildResult = readEnvironmentBuildResultFromEvaluation(evaluationPayload);
     const triggerEvaluation = result.triggerEvaluation || null;
     const aiJudge = fullEvaluation && fullEvaluation.aiJudge
       ? fullEvaluation.aiJudge
@@ -3027,6 +4087,7 @@
     const session = debug.session || {};
     const toolEvents = Array.isArray(debug.toolCalls) ? debug.toolCalls : [];
     const sessionToolCalls = Array.isArray(session.toolCalls) ? session.toolCalls : [];
+    const trace = buildRunDetailTrace(payload.trace, debug, run);
     const runValidation = readRunValidation(data);
 
     let html = '';
@@ -3117,6 +4178,46 @@
         html += '</details>';
       }
       html += '</div>';
+    }
+
+    html += buildEnvironmentBuildDetailsHtml(environmentBuildResult);
+
+    if (trace && ((trace.summary && trace.summary.totalSteps > 0) || (trace.failureContext && trace.failureContext.text))) {
+      const traceStatus = String(trace.summary && trace.summary.status || run.status || '').trim();
+      const traceTone = liveRunTone(traceStatus);
+      const tracePills = [
+        `<span class="message-tool-trace-pill ${traceTone}">${escapeHtml(liveRunStatusLabel(traceStatus || run.status || 'completed'))}</span>`,
+        trace.summary && trace.summary.totalSteps > 0
+          ? `<span class="message-tool-trace-pill time">步骤 ${escapeHtml(String(trace.summary.totalSteps))}</span>`
+          : '',
+        trace.summary && trace.summary.sessionToolCount > 0
+          ? `<span class="message-tool-trace-pill duration">session ${escapeHtml(String(trace.summary.sessionToolCount))}</span>`
+          : '',
+        trace.summary && trace.summary.bridgeToolCount > 0
+          ? `<span class="message-tool-trace-pill duration">bridge ${escapeHtml(String(trace.summary.bridgeToolCount))}</span>`
+          : '',
+      ].filter(Boolean).join(' ');
+      html += '<div class="run-detail-section">';
+      html += '<div class="section-label">工具时间线</div>';
+      html += '<div class="agent-meta">这里显示的是 agent 在这一步 run 里的具体调用顺序。</div>';
+      html += '</div>';
+      html += '<section class="message-tool-trace open">';
+      html += `<div class="message-tool-trace-header"><div class="message-tool-trace-summary">${tracePills}</div></div>`;
+      html += '<div class="message-tool-trace-details">';
+      if (trace.failureContext && trace.failureContext.text) {
+        html += `<div class="message-tool-trace-note failed">${escapeHtml(trace.failureContext.text)}</div>`;
+      }
+      html += '<section class="message-tool-trace-section">';
+      html += '<div class="message-tool-trace-section-header">';
+      html += '<div class="message-tool-trace-section-title">调用步骤</div>';
+      html += '<div class="message-tool-trace-section-meta"></div>';
+      html += '</div>';
+      html += '<div class="message-tool-trace-steps-viewport scrollable">';
+      html += `<div class="message-tool-trace-section-steps">${buildToolTraceStepsHtml(trace, '本次 run 没有持久化到工具时间线。')}</div>`;
+      html += '</div>';
+      html += '</section>';
+      html += '</div>';
+      html += '</section>';
     }
 
     // ---- Output text ----
@@ -3579,6 +4680,20 @@
     });
   }
 
+  if (dom.detailRunChainButton) {
+    dom.detailRunChainButton.addEventListener('click', async () => {
+      if (!state.selectedCaseId) return;
+      const selectedCase = state.testCases.find((tc) => tc.id === state.selectedCaseId);
+      if (!selectedCase) return;
+      await runTestChain(selectedCase, {
+        button: dom.detailRunChainButton,
+        idleLabel: dom.detailRunChainButton.textContent || '按链运行',
+        busyLabel: '链运行中...',
+        detailTab: 'runs',
+      });
+    });
+  }
+
   // ---- Run all (with progress tracking) ----
   if (dom.runAllButton) {
     dom.runAllButton.addEventListener('click', async () => {
@@ -3726,15 +4841,7 @@
             enriched.push({ run });
           }
         }
-        const blob = new Blob([JSON.stringify({ testCaseId: state.selectedCaseId, runs: enriched }, null, 2)], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `skill-test-case-${state.selectedCaseId}-runs.json`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
+        downloadJsonFile({ testCaseId: state.selectedCaseId, runs: enriched }, `skill-test-case-${state.selectedCaseId}-runs.json`);
         showToast('已下载');
       } catch (err) {
         showToast('下载失败: ' + (err.message || err));
@@ -3824,10 +4931,15 @@
       }
       try {
         const loadingMode = dom.createLoadingMode ? dom.createLoadingMode.value : 'dynamic';
+        const selectedTestType = dom.createTestType ? dom.createTestType.value : 'auto';
+        const testType = selectedTestType && selectedTestType !== 'auto'
+          ? selectedTestType
+          : (loadingMode === 'full' ? 'execution' : 'trigger');
         const createBody = {
           userPrompt: prompt,
           triggerPrompt: prompt,
           loadingMode,
+          testType,
           expectedTools: [...expectedTools, ...(structuredTools || [])],
           expectedBehavior,
           expectedGoal,
@@ -3858,6 +4970,7 @@
           renderIssuePanel(dom.createIssues, []);
         }
         if (dom.createPrompt) dom.createPrompt.value = '';
+        if (dom.createTestType) dom.createTestType.value = 'auto';
         if (dom.createToolSpecs) dom.createToolSpecs.value = '';
         if (dom.createGoal) dom.createGoal.value = '';
         if (dom.createSteps) dom.createSteps.value = '';
@@ -4013,6 +5126,7 @@
 
   // ---- Utilities ----
   function getTestTypeLabel(testType) {
+    if (testType === 'environment-build') return '环境构建';
     return testType === 'execution' ? '执行侧重点' : '触发侧重点';
   }
 
@@ -4166,7 +5280,12 @@
 
   function getLastOutcomeSummary(run) {
     if (!run) return '还没有运行记录';
+    const environmentBuildSummary = getEnvironmentBuildRunOutcomeSummary(run);
+    const environmentBuildResult = readEnvironmentBuildResultFromEvaluation(run && run.evaluation);
+    const environmentBuildStatus = String(environmentBuildResult && environmentBuildResult.status || '').trim().toLowerCase();
+    if (environmentBuildSummary && environmentBuildStatus === 'image_build_failed') return `最近失败：${environmentBuildSummary}`;
     if (run.errorMessage) return `最近失败：${run.errorMessage}`;
+    if (environmentBuildSummary) return `最近运行：${environmentBuildSummary}`;
     const environmentSummary = getEnvironmentRunOutcomeSummary(run);
     const environmentStatus = String(run.environmentStatus || '').trim().toLowerCase();
     if (environmentSummary && environmentStatus && environmentStatus !== 'passed' && environmentStatus !== 'skipped') {

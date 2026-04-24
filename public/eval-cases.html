@@ -97,6 +97,14 @@
                   <option value="allow">allow</option>
                 </select>
               </label>
+              <label class="skill-tests-toolbar-field skill-tests-toolbar-field-wide">
+                <span>链继续策略</span>
+                <select id="st-chain-stop-policy">
+                  <option value="stop_on_failure">strict（只有 verdict=pass 才继续）</option>
+                  <option value="stop_on_failure_goal_threshold">goal threshold（goalAchievement ≥ 0.8 时继续）</option>
+                </select>
+                <p class="section-hint">仅“按链运行”生效；不会改写单条 case 的最终 verdict。</p>
+              </label>
               <div class="skill-tests-toolbar-field skill-tests-toolbar-field-wide">
                 <span>Publish Gate</span>
                 <label>
@@ -104,6 +112,14 @@
                   <span>将本次运行作为 publish gate 证据</span>
                 </label>
                 <p class="section-hint">仅真正 sandbox 隔离结果可作为 gate；legacy-local 不算。</p>
+              </div>
+              <div id="st-environment-build-image-field" class="skill-tests-toolbar-field skill-tests-toolbar-field-wide skill-tests-environment-build-field hidden">
+                <span>环境镜像</span>
+                <label class="skill-tests-checkbox-row">
+                  <input id="st-environment-build-image" type="checkbox" />
+                  <span>环境构建通过后自动 build image</span>
+                </label>
+                <p id="st-environment-build-image-help" class="section-hint">仅 environment-build 用例生效；关闭时只生成 manifest。</p>
               </div>
               <label class="skill-tests-toolbar-field">
                 <span>数量</span>
@@ -203,6 +219,7 @@
                     <button id="st-detail-save-btn" class="ghost-button" type="button">保存草稿</button>
                     <button id="st-detail-toggle-status-btn" class="ghost-button" type="button">标记 Ready</button>
                     <button id="st-detail-run-btn" class="ghost-button" type="button">运行测试</button>
+                    <button id="st-detail-run-chain-btn" class="ghost-button hidden" type="button">按链运行</button>
                     <button id="st-detail-download-btn" class="ghost-button" type="button">下载 JSON</button>
                     <button id="st-detail-delete-btn" class="ghost-button danger" type="button">删除</button>
                   </div>
@@ -353,6 +370,15 @@
                     <select id="st-create-loading-mode">
                       <option value="dynamic">Dynamic（只测加载）</option>
                       <option value="full">Full（只测执行）</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>用例类型</span>
+                    <select id="st-create-test-type">
+                      <option value="auto">按加载方式自动</option>
+                      <option value="trigger">Trigger</option>
+                      <option value="execution">Execution</option>
+                      <option value="environment-build">Environment Build（生成环境 manifest）</option>
                     </select>
                   </label>
                 </div>

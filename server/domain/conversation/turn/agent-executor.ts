@@ -26,7 +26,10 @@ const {
   SKILL_TEST_DESIGN_CONVERSATION_TYPE,
   buildSkillTestDesignCaseSummary,
   getSkillTestDesignState,
+  setSkillTestDesignStateMetadata,
 } = require('../../skill-test/chat-workbench-mode');
+const { readSkillTestingDocument } = require('../../skill-test/environment-chain');
+const { buildAutomaticTestingDocPreviewState } = require('../../skill-test/testing-doc-auto-preview');
 const { clipText, getTurnStage, nowIso, syncCurrentTurnAgent } = require('./turn-state');
 const { registerTurnHandle, unregisterTurnHandle } = require('./turn-stop');
 
@@ -91,19 +94,42 @@ function buildModePromptContext(conversation: any, currentAgentId: any, skillReg
     return null;
   }
 
-  const state = getSkillTestDesignState(conversation);
+  let state = getSkillTestDesignState(conversation);
   if (!state || !state.skillId) {
     return null;
   }
 
-  const participantRoles = state.participantRoles && typeof state.participantRoles === 'object' ? state.participantRoles : {};
-  const currentAgentRole = String(participantRoles[currentAgentId] || '').trim() || 'planner';
   const skill = skillRegistry && typeof skillRegistry.getSkill === 'function'
     ? skillRegistry.getSkill(state.skillId, { extraSkillDirs: options.extraSkillDirs })
     : null;
+  if (skill && store && typeof store.updateConversation === 'function') {
+    const preview = buildAutomaticTestingDocPreviewState(skill, state, {
+      conversationId: conversation && conversation.id,
+      createdBy: 'system',
+      agentRole: 'system',
+      createdAt: nowIso(),
+    });
+    if (preview.created) {
+      const metadata = setSkillTestDesignStateMetadata(conversation.metadata, preview.nextState);
+      const nextConversation = store.updateConversation(conversation.id, {
+        title: conversation.title,
+        metadata,
+      });
+      if (nextConversation) {
+        conversation = nextConversation;
+        state = getSkillTestDesignState(nextConversation) || preview.nextState;
+      } else {
+        state = preview.nextState;
+      }
+    }
+  }
+
+  const participantRoles = state.participantRoles && typeof state.participantRoles === 'object' ? state.participantRoles : {};
+  const currentAgentRole = String(participantRoles[currentAgentId] || '').trim() || 'planner';
   const skillPath = skill ? String(skill.path || '').trim() : '';
   const testingDocPath = skillPath ? path.join(skillPath, 'TESTING.md') : '';
   const testingDocExists = testingDocPath ? fs.existsSync(testingDocPath) : false;
+  const testingDocument = skill ? readSkillTestingDocument(skill) : { content: '', readError: false };
   const caseSummary = buildSkillTestDesignCaseSummary(store && store.db, state.skillId);
 
   return {
@@ -117,6 +143,9 @@ function buildModePromptContext(conversation: any, currentAgentId: any, skillReg
           path: skillPath,
           testingDocPath,
           testingDocExists,
+          testingDocContent: testingDocument && testingDocument.exists && !testingDocument.readError
+            ? String(testingDocument.content || '')
+            : '',
         }
       : {
           id: state.skillId,
@@ -125,6 +154,7 @@ function buildModePromptContext(conversation: any, currentAgentId: any, skillReg
           path: '',
           testingDocPath: '',
           testingDocExists: false,
+          testingDocContent: '',
         },
     state,
     caseSummary,

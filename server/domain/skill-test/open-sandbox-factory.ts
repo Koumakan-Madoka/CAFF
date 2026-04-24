@@ -1703,7 +1703,11 @@ function createSandboxToolAdapter(adapterInput = {}): SkillTestSandboxToolAdapte
 }
 
 async function createOpenSandboxAdapter(factoryInput = {}, options = {}): Promise<SkillTestOpenSandboxAdapter> {
-  const normalizedOptions = normalizeOpenSandboxFactoryOptions(options);
+  const optionOverrides = {
+    ...options,
+    ...(factoryInput && factoryInput.image ? { image: factoryInput.image } : {}),
+  };
+  const normalizedOptions = normalizeOpenSandboxFactoryOptions(optionOverrides);
   const openSandboxModule = await loadOpenSandboxModule(normalizedOptions.loadModule, normalizedOptions);
 
   const metadata = {
@@ -1713,6 +1717,8 @@ async function createOpenSandboxAdapter(factoryInput = {}, options = {}): Promis
     isolationMode: normalizeText(factoryInput.isolation && factoryInput.isolation.mode),
     trellisMode: normalizeText(factoryInput.isolation && factoryInput.isolation.trellisMode),
     egressMode: normalizeText(factoryInput.isolation && factoryInput.isolation.egressMode),
+    envImage: normalizeText(factoryInput.image),
+    envProfile: normalizeText(factoryInput.environmentImage && factoryInput.environmentImage.envProfile),
   };
 
   let sandbox = null;
@@ -1824,6 +1830,8 @@ async function createOpenSandboxAdapter(factoryInput = {}, options = {}): Promis
       remoteSkillPath: layout.remoteSkillPath,
       remoteRuntimeDir: layout.remoteRuntimeDir,
       remoteRuntimeAssetDir: layout.remoteRuntimeAssetDir,
+      environmentImage: normalizedOptions.image,
+      environmentProfile: normalizeText(factoryInput.environmentImage && factoryInput.environmentImage.envProfile),
       remoteRunnerEventDir: layout.remoteRunnerEventDir,
       remoteRunnerControlDir: layout.remoteRunnerControlDir,
       remoteRunnerPath: layout.remoteRunnerPath,

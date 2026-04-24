@@ -213,6 +213,78 @@ test('buildAgentTurnPrompt can full-mount selected conversation skills while kee
   }
 });
 
+test('buildAgentTurnPrompt skill test design mode states sandbox as the default runtime baseline', () => {
+  const tempDir = withTempDir('caff-skill-test-design-baseline-');
+  const { store, agent, conversation } = createPromptFixture(tempDir);
+
+  try {
+    const { buildAgentTurnPrompt } = loadPromptModule();
+    const prompt = buildAgentTurnPrompt({
+      conversation,
+      agent,
+      agentConfig: { profileName: 'Default', personaPrompt: 'Reply briefly.' },
+      resolvedPersonaSkills: [],
+      resolvedConversationSkills: [],
+      sandbox: { sandboxDir: '/sandbox', privateDir: '/sandbox/private' },
+      projectDir: '',
+      agents: [agent],
+      messages: [],
+      privateMessages: [],
+      trigger: { triggerType: 'user', enqueueReason: 'user_mentions' },
+      remainingSlots: 5,
+      routingMode: 'serial',
+      allowHandoffs: true,
+      agentToolRelativePath: 'build/lib/agent-chat-tools.js',
+      modeContext: {
+        kind: 'skill_test_design',
+        currentAgentRole: 'planner',
+        targetSkill: {
+          id: 'target-skill',
+          name: 'Target Skill',
+          path: '/skills/target-skill',
+          testingDocPath: '/skills/target-skill/TESTING.md',
+          testingDocExists: false,
+        },
+        state: {
+          phase: 'collecting_context',
+          skillId: 'target-skill',
+          environmentContract: {
+            status: 'missing',
+            candidates: [],
+          },
+        },
+      },
+    });
+
+    assert.ok(
+      prompt.includes('Skill Test runtime baseline: runs default to an isolated sandbox case world (`host-loop + sandbox-tools`).'),
+      'Skill test design prompt should describe the sandbox baseline'
+    );
+    assert.ok(
+      prompt.includes('Do not ask the user to confirm whether sandboxing is used; only ask about extra skill-specific dependencies'),
+      'Skill test design prompt should steer follow-up questions toward extra skill-specific needs only'
+    );
+    assert.ok(
+      prompt.includes('Skill Test design default: build complete `full + execution` draft cases for the target skill.'),
+      'Skill test design prompt should default the workbench to full execution planning'
+    );
+    assert.ok(
+      prompt.includes('When the target TESTING.md is missing, the UI/API should auto-create a guarded preview draft; do not ask permission before preview'),
+      'Skill test design prompt should describe automatic TESTING.md preview drafting for missing files'
+    );
+    assert.ok(
+      prompt.includes('For tracked-change or redline execution scenarios, keep the task phrased as apply/edit work.'),
+      'Skill test design prompt should keep tracked-change scenarios aligned to apply/edit outcomes'
+    );
+    assert.ok(
+      !prompt.includes('Dynamic skill loading: when conversation skills are listed as descriptors without full instructions'),
+      'Skill test design prompt should not show generic dynamic skill-loading guidance when the mode has no descriptor-only skills'
+    );
+  } finally {
+    try { store.close(); } catch {}
+  }
+});
+
 test('agent tools controller no longer handles removed read-skill route', async () => {
   const controller = createAgentToolsController({
     agentToolBridge: {

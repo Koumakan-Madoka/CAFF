@@ -192,6 +192,18 @@
               </div>
             </section>
 
+            <section id="skill-test-design-testing-doc-section" class="conversation-agent-section hidden">
+              <div class="section-row">
+                <span class="section-label">环境契约</span>
+                <span id="skill-test-design-testing-doc-status" class="section-hint">未检测</span>
+              </div>
+              <div id="skill-test-design-testing-doc-draft" class="skill-test-testing-doc-draft"></div>
+              <div id="skill-test-design-testing-doc-actions" class="button-row compact-button-row hidden">
+                <button id="skill-test-preview-testing-doc-button" class="ghost-button" type="button">起草 TESTING.md</button>
+                <button id="skill-test-apply-testing-doc-button" type="button">确认写入 TESTING.md</button>
+              </div>
+            </section>
+
             <section id="skill-test-design-matrix-section" class="conversation-agent-section hidden">
               <div class="section-row">
                 <span class="section-label">测试矩阵</span>
@@ -213,7 +225,7 @@
               <div id="skill-test-design-export-summary" class="muted"></div>
             </div>
 
-            <p class="muted">在聊天中让 agent 讨论并生成测试矩阵；检测到有效矩阵后会自动同步，你只需要确认并导出草稿。</p>
+            <p class="muted">Skill Test 默认运行在隔离沙盒（host-loop + sandbox-tools）里；这里主要补充目标 skill 的额外依赖、凭据、外部服务或 TESTING.md 契约，而不是再次确认“是不是沙盒”。检测到有效矩阵后会自动同步，你只需要确认并导出草稿。</p>
           </section>
 
           <section id="werewolf-game-card" class="stack-card hidden">
