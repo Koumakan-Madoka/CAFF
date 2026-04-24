@@ -461,3 +461,58 @@ Committed the skill-test sandbox environment bootstrap and typing-hardening stac
 ### Next Steps
 
 - None - task complete
+
+
+## Session 11: Close out skill-test chat workbench mode
+
+**Date**: 2026-04-24
+**Task**: Close out skill-test chat workbench mode
+**Branch**: `feat/skill-test-chat-workbench-mode`
+
+### Summary
+
+(Add summary)
+
+### Main Changes
+
+| Area | Description |
+|------|-------------|
+| Planning + contracts | Completed the chat workbench mode task stack, including lifecycle chain planning, TESTING.md workflow contracts, chain runner wiring, and trace UI refactor closeout. |
+| Export dedupe | Reused existing conversation drafts during repeated export flows and covered same-row / same-prompt reuse cases in skill-test coverage. |
+| Delete semantics | Fixed case deletion to remove dependent `skill_test_chain_run_steps` before deleting the case record, eliminating the foreign-key failure for chain-referenced cases. |
+| Trace observability | Added live trace entry points for running chain nodes, plus auto-refresh in the runs panel so in-flight runs and chain history appear without reselecting the case. |
+| Code hygiene | Tightened draft lookup typing in `design-service.ts`, added `destroy()` cleanup for case-detail data view timers, unified live action labels, and replaced bare `catch {}` sites with explicit ignore handling. |
+| Task closeout | Marked the main task and four child tasks complete, archived them under `.trellis/tasks/archive/2026-04/`, and synced archived PRD acceptance checklists. |
+
+**Validation**
+- `npm run build`
+- `npm run typecheck:public`
+- `npm run check`
+- `node tests/skill-test/skill-test-e2e.test.js`
+- `node --check public/skill-tests.js`
+- `node --check public/skill-tests/case-detail-data-view.js`
+- `node --check public/skill-tests/case-runs-view.js`
+- Human browser acceptance confirmed the current end-to-end Skill Tests flow before final archive/record closeout.
+
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `d45f871` | (see git log) |
+| `92fbf53` | (see git log) |
+| `31f56c3` | (see git log) |
+| `a90522f` | (see git log) |
+| `9fc3212` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
