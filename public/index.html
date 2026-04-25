@@ -17,6 +17,7 @@
     <script defer src="/chat/conversation-settings.js"></script>
     <script defer src="/chat/undercover-panel.js"></script>
     <script defer src="/chat/werewolf-panel.js"></script>
+    <script defer src="/chat/skill-test-design-panel.js"></script>
     <script defer src="/chat/mention-menu.js"></script>
     <script defer src="/chat/conversation-pane.js"></script>
     <script defer src="/app.js"></script>
@@ -162,6 +163,69 @@
             </form>
 
             <p class="muted">点击开始后，后端会自动完成发言、投票、结算与身份揭晓。</p>
+          </section>
+
+          <section id="skill-test-design-card" class="stack-card hidden">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Skill Test 设计</p>
+                <h2>测试矩阵工作台</h2>
+              </div>
+            </div>
+
+            <div class="skill-test-design-status-card">
+              <div id="skill-test-design-status" class="muted">选择 Skill Test 设计房间后，这里会显示测试矩阵的状态和操作按钮。</div>
+            </div>
+
+            <section class="conversation-agent-section">
+              <div class="section-row">
+                <span class="section-label">目标 Skill</span>
+                <span id="skill-test-design-skill-name" class="section-hint">-</span>
+              </div>
+              <div class="section-row">
+                <span class="section-label">当前阶段</span>
+                <span id="skill-test-design-phase" class="section-hint">-</span>
+              </div>
+              <div class="section-row">
+                <span class="section-label">已有用例</span>
+                <span id="skill-test-design-case-summary" class="section-hint">-</span>
+              </div>
+            </section>
+
+            <section id="skill-test-design-testing-doc-section" class="conversation-agent-section hidden">
+              <div class="section-row">
+                <span class="section-label">环境契约</span>
+                <span id="skill-test-design-testing-doc-status" class="section-hint">未检测</span>
+              </div>
+              <div id="skill-test-design-testing-doc-draft" class="skill-test-testing-doc-draft"></div>
+              <div id="skill-test-design-testing-doc-actions" class="button-row compact-button-row hidden">
+                <button id="skill-test-preview-testing-doc-button" class="ghost-button" type="button">起草 TESTING.md</button>
+                <button id="skill-test-apply-testing-doc-button" type="button">确认写入 TESTING.md</button>
+              </div>
+            </section>
+
+            <section id="skill-test-design-matrix-section" class="conversation-agent-section hidden">
+              <div class="section-row">
+                <span class="section-label">测试矩阵</span>
+                <span id="skill-test-design-matrix-status" class="section-hint">未导入</span>
+              </div>
+              <div id="skill-test-design-matrix-rows" class="skill-test-matrix-rows"></div>
+            </section>
+
+            <div id="skill-test-design-actions" class="button-row compact-button-row hidden">
+              <button id="skill-test-import-matrix-button" class="ghost-button hidden" type="button">重试同步矩阵</button>
+              <button id="skill-test-confirm-matrix-button" class="ghost-button hidden" type="button">确认矩阵</button>
+              <button id="skill-test-export-drafts-button" type="button">确认并导出草稿</button>
+            </div>
+
+            <div id="skill-test-design-export-result" class="hidden">
+              <div class="section-row">
+                <span class="section-label">导出结果</span>
+              </div>
+              <div id="skill-test-design-export-summary" class="muted"></div>
+            </div>
+
+            <p class="muted">Skill Test 默认运行在隔离沙盒（host-loop + sandbox-tools）里；这里主要补充目标 skill 的额外依赖、凭据、外部服务或 TESTING.md 契约，而不是再次确认“是不是沙盒”。检测到有效矩阵后会自动同步，你只需要确认并导出草稿。</p>
           </section>
 
           <section id="werewolf-game-card" class="stack-card hidden">

@@ -1124,6 +1124,7 @@ function createSkillTestIsolationDriver(options = {}): SkillTestIsolationDriver 
       });
       const isolatedSkill = snapshotSkillIntoAgentDir(input.skill, caseAgentDir) || input.skill || null;
       const trellisMaterialization = materializeTrellisMode(caseProjectDir, input.liveProjectDir, isolation.trellisMode);
+      const environmentImage = isPlainObject(input.environmentImage) ? input.environmentImage : null;
       const adapter = await Promise.resolve(openSandboxFactory({
         driverName: DEFAULT_DRIVER_NAME,
         isolation,
@@ -1137,6 +1138,8 @@ function createSkillTestIsolationDriver(options = {}): SkillTestIsolationDriver 
         sqlitePath: caseSqlitePath,
         outputDir: caseOutputsDir,
         skillPath: isolatedSkill && isolatedSkill.path ? isolatedSkill.path : '',
+        environmentImage,
+        image: environmentImage && environmentImage.image ? String(environmentImage.image).trim() : '',
       })) || {};
       const driverName = String(adapter.driverName || DEFAULT_DRIVER_NAME).trim() || DEFAULT_DRIVER_NAME;
       const driverVersion = String(adapter.driverVersion || '').trim();
@@ -1184,6 +1187,8 @@ function createSkillTestIsolationDriver(options = {}): SkillTestIsolationDriver 
           CAFF_SKILL_TEST_ISOLATION_MODE: isolation.mode,
           CAFF_SKILL_TEST_TRELLIS_MODE: isolation.trellisMode,
           CAFF_SKILL_TEST_EGRESS_MODE: isolation.egressMode,
+          ...(environmentImage && environmentImage.image ? { CAFF_SKILL_TEST_ENV_IMAGE: String(environmentImage.image).trim() } : {}),
+          ...(environmentImage && environmentImage.envProfile ? { CAFF_SKILL_TEST_ENV_PROFILE: String(environmentImage.envProfile).trim() } : {}),
           ...(isolatedSkill && isolatedSkill.path ? { CAFF_SKILL_TEST_SKILL_PATH: normalizePathForJson(path.join(isolatedSkill.path, 'SKILL.md')) } : {}),
           ...(hasSandboxToolAdapter ? {
             CAFF_SKILL_TEST_VISIBLE_PROJECT_DIR: normalizePathForJson(caseProjectDir),

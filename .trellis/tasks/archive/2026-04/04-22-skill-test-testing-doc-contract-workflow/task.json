@@ -1,0 +1,64 @@
+{
+  "id": "skill-test-testing-doc-contract-workflow",
+  "name": "skill-test-testing-doc-contract-workflow",
+  "title": "Skill Test TESTING.md contract draft and apply workflow",
+  "description": "Add a guarded chat-workbench workflow for explicitly previewing, confirming, applying, and refreshing a skill TESTING.md environment contract when heavy-environment skills lack a stable contract.",
+  "status": "completed",
+  "dev_type": "fullstack",
+  "scope": ".agents/skills/skill-test-design-workbench/SKILL.md, lib/skill-registry.ts, public/chat/skill-test-design-panel.js, server/api/skill-test-controller.ts, server/domain/skill-test/*, server/domain/conversation/turn/*, tests/skill-test/*, .trellis/spec/skills/skill-testing.md",
+  "package": null,
+  "priority": "P2",
+  "creator": "菲比啾比",
+  "assignee": "菲比啾比",
+  "createdAt": "2026-04-22",
+  "completedAt": "2026-04-24",
+  "branch": null,
+  "base_branch": "feat/skill-test-chat-workbench-mode",
+  "worktree_path": null,
+  "current_phase": 3,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "check"
+    },
+    {
+      "phase": 3,
+      "action": "finish"
+    },
+    {
+      "phase": 4,
+      "action": "create-pr"
+    }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "04-21-skill-test-chat-workbench-mode",
+  "relatedFiles": [
+    ".agents/skills/skill-test-design-workbench/SKILL.md",
+    "lib/skill-registry.ts",
+    "public/chat/skill-test-design-panel.js",
+    "server/api/skill-test-controller.ts",
+    "server/domain/skill-test/chat-workbench-mode.ts",
+    "server/domain/skill-test/environment-chain.ts",
+    "tests/skill-test/skill-test-e2e.test.js",
+    ".trellis/spec/skills/skill-testing.md"
+  ],
+  "notes": "Closed after the guarded TESTING.md preview/apply workflow and machine-contract sourcing landed under the umbrella task; this child PRD remains the focused design record while implementation, validation, and acceptance are tracked by the umbrella task logs.",
+  "meta": {
+    "kind": "follow-up-design",
+    "contractFile": "TESTING.md",
+    "requiresHumanConfirmation": true,
+    "previewMode": "overwrite-preview",
+    "keyRisks": [
+      "sourceKind provenance must stay separate from canonical environmentSource",
+      "safe fixed-path TESTING.md write with explicit overwrite preview",
+      "matrix environment-source refresh requires explicit re-confirmation after apply"
+    ]
+  }
+}

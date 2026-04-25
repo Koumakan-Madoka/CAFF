@@ -9,6 +9,7 @@ export const AGENT_PROMPT_VERSION =
 const MAX_HISTORY_MESSAGES = 24;
 const MAX_PARALLEL_MENTION_BATCH_SIZE = 5;
 const MAX_PRIVATE_CONTEXT_MESSAGES = 16;
+const MAX_SKILL_TESTING_DOC_PROMPT_LENGTH = 12000;
 const PROMPT_MENTION_RE = /(^|[\s([{"'<])@([\p{L}\p{N}._-]+)/gu;
 
 export function sanitizePromptMentions(text: any) {
@@ -48,6 +49,43 @@ function formatSkillDescriptorPath(skill: any) {
   return /\/skill\.md$/i.test(normalizedPath) ? normalizedPath : `${normalizedPath}/SKILL.md`;
 }
 
+function normalizeForceFullSkillIds(value: any) {
+  const ids = new Set<string>();
+
+  for (const item of Array.isArray(value) ? value : []) {
+    const skillId = String(item || '').trim();
+    if (skillId) {
+      ids.add(skillId);
+    }
+  }
+
+  return ids;
+}
+
+function formatSkillDescriptor(skill: any) {
+  const skillPath = formatSkillDescriptorPath(skill);
+  return [
+    `- ${skill.name} (${skill.id})`,
+    skill.description ? `  Description: ${skill.description}` : '',
+    skillPath ? `  Path: ${skillPath}` : '',
+    skillPath ? '  Load with: Use the `read` tool on the `Path` above when you need the full instructions' : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+function formatFullSkillDocument(skill: any) {
+  const skillPath = formatSkillDescriptorPath(skill);
+  return [
+    `- ${skill.name} (${skill.id})`,
+    skill.description ? `  Description: ${skill.description}` : '',
+    skillPath ? `  Path: ${skillPath}` : '',
+    skill.body ? `  Instructions:\n${String(skill.body).split('\n').map((line: any) => `    ${line}`).join('\n')}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
 function formatSkillDescriptors(skills: any) {
   const normalizedSkills = (Array.isArray(skills) ? skills : []).filter(Boolean);
 
@@ -55,19 +93,7 @@ function formatSkillDescriptors(skills: any) {
     return '- none';
   }
 
-  return normalizedSkills
-    .map((skill: any) => {
-      const skillPath = formatSkillDescriptorPath(skill);
-      return [
-        `- ${skill.name} (${skill.id})`,
-        skill.description ? `  Description: ${skill.description}` : '',
-        skillPath ? `  Path: ${skillPath}` : '',
-        skillPath ? '  Load with: Use the `read` tool on the `Path` above when you need the full instructions' : '',
-      ]
-        .filter(Boolean)
-        .join('\n');
-    })
-    .join('\n\n');
+  return normalizedSkills.map(formatSkillDescriptor).join('\n\n');
 }
 
 function formatSkillDocuments(skills: any, options: any = {}) {
@@ -77,30 +103,39 @@ function formatSkillDocuments(skills: any, options: any = {}) {
     return '- none';
   }
 
-  // Persona skills always get full injection regardless of mode
-  // Conversation skills use the mode-level loading strategy when set;
-  // otherwise fall back to the global CAFF_SKILL_LOADING_MODE.
+  const forceFullSkillIds = normalizeForceFullSkillIds(options.forceFullSkillIds);
   const hasModeStrategy = options.modeLoadingStrategy === 'full' || options.modeLoadingStrategy === 'dynamic';
-  const effectiveForceFull = options.forceFull
-    || (hasModeStrategy ? options.modeLoadingStrategy === 'full' : getSkillLoadingMode() !== 'dynamic');
+  const modeForcesFull = hasModeStrategy ? options.modeLoadingStrategy === 'full' : getSkillLoadingMode() !== 'dynamic';
+  const forceAllFull = Boolean(options.forceFull) || modeForcesFull;
 
-  if (effectiveForceFull) {
-    return normalizedSkills
-      .map((skill: any) => {
-        const skillPath = formatSkillDescriptorPath(skill);
-        return [
-          `- ${skill.name} (${skill.id})`,
-          skill.description ? `  Description: ${skill.description}` : '',
-          skillPath ? `  Path: ${skillPath}` : '',
-          skill.body ? `  Instructions:\n${String(skill.body).split('\n').map((line: any) => `    ${line}`).join('\n')}` : '',
-        ]
-          .filter(Boolean)
-          .join('\n');
-      })
-      .join('\n\n');
+  return normalizedSkills
+    .map((skill: any) => {
+      const skillId = String(skill && skill.id || '').trim();
+      return forceAllFull || forceFullSkillIds.has(skillId)
+        ? formatFullSkillDocument(skill)
+        : formatSkillDescriptor(skill);
+    })
+    .join('\n\n');
+}
+
+function hasDynamicSkillDescriptors(skills: any, options: any = {}) {
+  const normalizedSkills = (Array.isArray(skills) ? skills : []).filter(Boolean);
+  if (normalizedSkills.length === 0) {
+    return false;
   }
 
-  return formatSkillDescriptors(skills);
+  const forceFullSkillIds = normalizeForceFullSkillIds(options.forceFullSkillIds);
+  const hasModeStrategy = options.modeLoadingStrategy === 'full' || options.modeLoadingStrategy === 'dynamic';
+  const modeForcesFull = hasModeStrategy ? options.modeLoadingStrategy === 'full' : getSkillLoadingMode() !== 'dynamic';
+  const forceAllFull = Boolean(options.forceFull) || modeForcesFull;
+  if (forceAllFull) {
+    return false;
+  }
+
+  return normalizedSkills.some((skill: any) => {
+    const skillId = String(skill && skill.id || '').trim();
+    return !forceFullSkillIds.has(skillId);
+  });
 }
 
 function describeTurnTrigger(trigger: any, agents: any) {
@@ -224,7 +259,7 @@ function formatMemoryCards(memoryCards: any) {
     .join('\n');
 }
 
-function buildAgentToolInstructions(agentToolRelativePath: string) {
+function buildAgentToolInstructions(agentToolRelativePath: string, options: any = {}) {
   const relativeCommandPrefix = `node ${agentToolRelativePath}`;
   const envCommandPrefix = 'node "$CAFF_CHAT_TOOLS_PATH"';
 
@@ -245,7 +280,7 @@ function buildAgentToolInstructions(agentToolRelativePath: string) {
     `- Soft-forget a mistaken durable memory only when the user explicitly asks: ${relativeCommandPrefix} forget-memory --title "temporary preference" --reason "User said this should not persist" --expected-updated-at "2026-04-13T00:00:00.000Z"`,
     '- Save only durable facts/preferences/agreements. Never save secrets, raw logs, TODOs, transient status updates, or silently rewrite durable memory without a clear user correction/removal.',
     `- List the visible room participants: ${relativeCommandPrefix} list-participants`,
-    ...(getSkillLoadingMode() === 'dynamic'
+    ...(options.includeDynamicSkillLoadingGuidance
       ? [
           '- Dynamic skill loading: when conversation skills are listed as descriptors without full instructions, use the `read` tool on the listed `Path` to load the full `SKILL.md` on demand.',
           '- Each descriptor `Path` already points at the skill `SKILL.md`; read that file directly instead of using a dedicated skill-loading tool.',
@@ -354,6 +389,70 @@ function buildWerewolfPromptSection(conversation: any, agent: any) {
   ].join('\n');
 }
 
+function clipSkillTestTestingDocPrompt(value: any, maxLength = MAX_SKILL_TESTING_DOC_PROMPT_LENGTH) {
+  const text = String(value || '').trim();
+  if (!text) {
+    return '';
+  }
+  if (text.length <= maxLength) {
+    return text;
+  }
+  return `${text.slice(0, Math.max(1, maxLength - 16)).trimEnd()}\n...[truncated]`;
+}
+
+function buildSkillTestDesignPromptSection(modeContext: any, agent: any, agents: any) {
+  if (!modeContext || modeContext.kind !== 'skill_test_design') {
+    return '';
+  }
+
+  const designState = modeContext.state && typeof modeContext.state === 'object' ? modeContext.state : {};
+  const targetSkill = modeContext.targetSkill && typeof modeContext.targetSkill === 'object' ? modeContext.targetSkill : {};
+  const caseSummary = modeContext.caseSummary && typeof modeContext.caseSummary === 'object' ? modeContext.caseSummary : {};
+  const participantRoles = designState.participantRoles && typeof designState.participantRoles === 'object'
+    ? designState.participantRoles
+    : {};
+  const roleEntries = (Array.isArray(agents) ? agents : [])
+    .map((item: any) => {
+      const role = String(participantRoles[item && item.id ? item.id : ''] || '').trim();
+      return role ? `- ${item.name}: ${role}` : '';
+    })
+    .filter(Boolean);
+  const matrix = designState.matrix && typeof designState.matrix === 'object' ? designState.matrix : null;
+  const confirmation = designState.confirmation && typeof designState.confirmation === 'object' ? designState.confirmation : null;
+  const testingDocDraft = designState.testingDocDraft && typeof designState.testingDocDraft === 'object' ? designState.testingDocDraft : null;
+  const environmentContract = designState.environmentContract && typeof designState.environmentContract === 'object' ? designState.environmentContract : null;
+  const testingDocContent = clipSkillTestTestingDocPrompt(targetSkill.testingDocContent);
+  const currentRole = String(modeContext.currentAgentRole || '').trim() || 'planner';
+  const recentPrompts = Array.isArray(caseSummary.recentPrompts) ? caseSummary.recentPrompts.slice(0, 3) : [];
+  const phase = String(designState.phase || '').trim() || 'collecting_context';
+
+  return [
+    'Skill Test design mode state:',
+    '- The full-mounted `skill-test-design-workbench` skill defines the workflow, role duties, matrix schema, and export guardrails.',
+    `- Current phase: ${phase}`,
+    `- Current agent role: ${currentRole}`,
+    `- Target skill: ${String(targetSkill.name || targetSkill.id || designState.skillId || 'unknown').trim()} (${String(targetSkill.id || designState.skillId || 'unknown').trim()})`,
+    targetSkill.description ? `- Target skill description: ${targetSkill.description}` : '',
+    targetSkill.path ? `- Target skill path: ${targetSkill.path}` : '',
+    targetSkill.testingDocPath ? `- Target skill TESTING.md path: ${targetSkill.testingDocPath}${targetSkill.testingDocExists ? '' : ' (not found yet)'}` : '',
+    testingDocContent ? `- Target skill TESTING.md content:\n${testingDocContent}` : '',
+    environmentContract ? `- Environment contract status: ${String(environmentContract.status || 'unknown').trim()}, refs=${Array.isArray(environmentContract.candidates) ? environmentContract.candidates.map((entry: any) => String(entry && entry.environmentContractRef || '').trim()).filter(Boolean).join(', ') || 'none' : 'none'}` : '',
+    testingDocDraft ? `- TESTING.md draft: draftId=${String(testingDocDraft.draftId || '').trim() || 'unknown'}, status=${String(testingDocDraft.status || '').trim() || 'unknown'}, executionBlocked=${testingDocDraft.readiness && testingDocDraft.readiness.executionBlocked ? 'yes' : 'no'}` : '- TESTING.md draft: none. When the target TESTING.md is missing, the UI/API should auto-create a guarded preview draft; do not ask permission before preview, and do not paste a large TESTING.md body into chat.',
+    '- Skill Test runtime baseline: runs default to an isolated sandbox case world (`host-loop + sandbox-tools`). Do not ask the user to confirm whether sandboxing is used; only ask about extra skill-specific dependencies, credentials, external services, egress, GUI, persistence, or setup/teardown needs beyond that baseline.',
+    '- Skill Test design default: build complete `full + execution` draft cases for the target skill. Do not ask the user to choose a loading mode; use load/trigger-only coverage only when the user explicitly requests it.',
+    '- Do not frame scope as a minimum viable subset in user-facing replies. The matrix inclusion flag means current export scope; call it 导出范围 / coverage scope.',
+    '- Environment contract lookup order: TESTING.md -> SKILL.md -> stable spec; if none is actionable, mark environmentSource=missing instead of inventing setup steps.',
+    '- For tracked-change or redline execution scenarios, keep the task phrased as apply/edit work. Do not quietly downgrade those rows into review-only, analysis-only, diff-only, or report-only prompts unless the user explicitly wants a read-only review.',
+    `- Existing cases: total ${Number(caseSummary.totalCases || 0)}, draft ${Number(caseSummary.draftCases || 0)}, ready ${Number(caseSummary.readyCases || 0)}, archived ${Number(caseSummary.archivedCases || 0)}`,
+    recentPrompts.length > 0 ? `- Recent case prompts: ${recentPrompts.join(' | ')}` : '- Recent case prompts: none',
+    roleEntries.length > 0 ? 'Fixed agent roles:' : '',
+    ...roleEntries,
+    matrix
+      ? `- Latest matrix status: matrixId=${String(matrix.matrixId || '').trim() || 'unknown'}, rows=${Array.isArray(matrix.rows) ? matrix.rows.length : 0}, confirmed=${confirmation && confirmation.matrixId === matrix.matrixId ? 'yes' : 'no'}`
+      : '- Latest matrix status: no imported matrix yet.',
+  ].filter(Boolean).join('\n');
+}
+
 export function buildAgentTurnPrompt({
   conversation,
   agent,
@@ -372,6 +471,8 @@ export function buildAgentTurnPrompt({
   allowHandoffs = true,
   agentToolRelativePath,
   modeLoadingStrategy,
+  modeContext,
+  forceFullConversationSkillIds,
 }: any) {
   const normalizedProjectDir = String(projectDir || '').trim();
   const conversationType = String(conversation && conversation.type ? conversation.type : '').trim();
@@ -431,7 +532,13 @@ export function buildAgentTurnPrompt({
       ];
   const undercoverSection = buildUndercoverPromptSection(conversation, agent);
   const werewolfSection = buildWerewolfPromptSection(conversation, agent);
+  const skillTestDesignSection = buildSkillTestDesignPromptSection(modeContext, agent, agents);
   const gameplaySections = [undercoverSection, werewolfSection].filter(Boolean);
+  const includeDynamicSkillLoadingGuidance = hasDynamicSkillDescriptors(resolvedConversationSkills, {
+    forceFull: false,
+    modeLoadingStrategy,
+    forceFullSkillIds: forceFullConversationSkillIds,
+  });
 
   return [
     'You are participating in a shared local multi-agent conversation workspace.',
@@ -447,7 +554,11 @@ export function buildAgentTurnPrompt({
     formatSkillDocuments(resolvedPersonaSkills, { forceFull: true }),
     '',
     'Conversation-only skills for this room:',
-    formatSkillDocuments(resolvedConversationSkills, { forceFull: false, modeLoadingStrategy }),
+    formatSkillDocuments(resolvedConversationSkills, {
+      forceFull: false,
+      modeLoadingStrategy,
+      forceFullSkillIds: forceFullConversationSkillIds,
+    }),
     '',
     ...(trellisPromptContext ? ['Trellis project context:', trellisPromptContext, ''] : []),
     'Local sandbox:',
@@ -465,9 +576,10 @@ export function buildAgentTurnPrompt({
     'Other visible participants:',
     participants || '- none',
     '',
-    buildAgentToolInstructions(agentToolRelativePath),
+    buildAgentToolInstructions(agentToolRelativePath, { includeDynamicSkillLoadingGuidance }),
     '',
     ...(gameplaySections.length > 0 ? ['Gameplay mode:', gameplaySections.join('\n\n'), ''] : []),
+    ...(skillTestDesignSection ? ['Mode state context:', skillTestDesignSection, ''] : []),
     'Why you are replying now:',
     describeTurnTrigger(trigger, agents),
     `Turn routing mode: ${routingMode === 'mention_parallel' ? 'parallel first round' : 'serial handoff queue'}`,

@@ -17,6 +17,8 @@ const ALLOWED_ENVIRONMENT_CACHE_ROOTS = new Set(['project', 'private']);
 const DEFAULT_ENVIRONMENT_BOOTSTRAP_TIMEOUT_SEC = 900;
 const DEFAULT_ENVIRONMENT_VERIFY_TIMEOUT_SEC = 120;
 const DEFAULT_ENVIRONMENT_CACHE_ROOT_DIR = path.join(ROOT_DIR, '.pi-sandbox', 'skill-test-environment-cache');
+const DEFAULT_ENVIRONMENT_MANIFEST_ROOT_DIR = path.join(ROOT_DIR, '.pi-sandbox', 'skill-test-environment-manifests');
+const TESTING_DOCUMENT_ENVIRONMENT_BLOCK_TOKEN = 'skill-test-environment';
 const UNSUPPORTED_ENVIRONMENT_CAPABILITIES = new Set([
   'gui',
   'browser',
@@ -209,6 +211,47 @@ function normalizeEnvironmentCacheRelativePath(value: any) {
     return '';
   }
   return normalized;
+}
+
+function normalizeEnvironmentAssetRef(input: any) {
+  if (input == null || input === '') {
+    return { asset: null, issues: [] };
+  }
+  if (!isPlainObject(input)) {
+    return {
+      asset: null,
+      issues: [buildValidationIssue('environment_asset_invalid', 'error', 'environmentConfig.asset', 'asset must be an object')],
+    };
+  }
+
+  const envProfile = String(input.envProfile || input.env_profile || input.profile || 'default').trim() || 'default';
+  const image = String(input.image || input.imageRef || input.image_ref || '').trim();
+  const manifestPath = normalizePathForJson(input.manifestPath || input.manifest_path || '');
+  const imageDigest = String(input.imageDigest || input.image_digest || '').trim();
+  const baseImageDigest = String(input.baseImageDigest || input.base_image_digest || '').trim();
+  const testingMdHash = String(input.testingMdHash || input.testing_md_hash || '').trim();
+  const manifestHash = String(input.manifestHash || input.manifest_hash || '').trim();
+  const buildCaseId = String(input.buildCaseId || input.build_case_id || '').trim();
+  const issues: any[] = [];
+
+  if (!envProfile) {
+    issues.push(buildValidationIssue('environment_asset_profile_required', 'error', 'environmentConfig.asset.envProfile', 'asset envProfile is required'));
+  }
+
+  return {
+    asset: {
+      enabled: hasOwn(input, 'enabled') ? normalizeBooleanFlag(input.enabled, true) : true,
+      envProfile,
+      image,
+      imageDigest,
+      baseImageDigest,
+      testingMdHash,
+      manifestHash,
+      manifestPath,
+      buildCaseId,
+    },
+    issues,
+  };
 }
 
 function normalizeEnvironmentCachePathEntry(input: any, index: number) {
@@ -502,6 +545,19 @@ function normalizeEnvironmentConfigInput(input: any, options: { partial?: boolea
     };
   }
 
+  if (hasOwn(input, 'asset') || hasOwn(input, 'environmentAsset') || hasOwn(input, 'environment_asset')) {
+    const assetSource = hasOwn(input, 'asset')
+      ? input.asset
+      : hasOwn(input, 'environmentAsset')
+        ? input.environmentAsset
+        : input.environment_asset;
+    const assetResult = normalizeEnvironmentAssetRef(assetSource);
+    issues.push(...assetResult.issues);
+    if (assetResult.asset) {
+      normalized.asset = assetResult.asset;
+    }
+  }
+
   if (issues.some((issue) => issue && issue.severity === 'error')) {
     return { config: null, issues };
   }
@@ -537,6 +593,7 @@ function normalizeEnvironmentConfigInput(input: any, options: { partial?: boolea
         mode: 'suggest-patch',
         target: 'TESTING.md',
       },
+      asset: normalized.asset || null,
     },
     issues,
   };
@@ -578,6 +635,16 @@ function mergeEnvironmentConfig(baseConfig: any, overrideConfig: any) {
       ...(isPlainObject(override.docs) ? override.docs : {}),
     };
   }
+  if (base.asset || override.asset || base.environmentAsset || override.environmentAsset || base.environment_asset || override.environment_asset) {
+    merged.asset = {
+      ...(isPlainObject(base.asset) ? base.asset : {}),
+      ...(isPlainObject(base.environmentAsset) ? base.environmentAsset : {}),
+      ...(isPlainObject(base.environment_asset) ? base.environment_asset : {}),
+      ...(isPlainObject(override.asset) ? override.asset : {}),
+      ...(isPlainObject(override.environmentAsset) ? override.environmentAsset : {}),
+      ...(isPlainObject(override.environment_asset) ? override.environment_asset : {}),
+    };
+  }
   if (Array.isArray(override.requirements)) {
     merged.requirements = override.requirements;
   } else if (!Array.isArray(merged.requirements)) {
@@ -600,6 +667,7 @@ function normalizeEnvironmentRunInput(input: any) {
   if (input == null) {
     return {
       enabled: undefined,
+      explicitEnabled: false,
       mode: 'case-default',
       allowBootstrap: true,
       persistAdvice: true,
@@ -630,6 +698,7 @@ function normalizeEnvironmentRunInput(input: any) {
 
   return {
     enabled: hasOwn(input, 'enabled') ? normalizeBooleanFlag(input.enabled, true) : undefined,
+    explicitEnabled: hasOwn(input, 'enabled'),
     mode,
     allowBootstrap: hasOwn(input, 'allowBootstrap') ? normalizeBooleanFlag(input.allowBootstrap, true) : true,
     persistAdvice: hasOwn(input, 'persistAdvice') ? normalizeBooleanFlag(input.persistAdvice, true) : true,
@@ -638,79 +707,82 @@ function normalizeEnvironmentRunInput(input: any) {
   };
 }
 
-function normalizeTestingDocumentSectionName(value: any) {
-  return String(value || '').trim().toLowerCase().replace(/[：:]+$/u, '');
+export function readSkillTestingDocument(skill: any) {
+  if (!skill || !skill.path) {
+    return { path: '', exists: false, content: '', contentHash: '', readError: false };
+  }
+
+  const skillDir = path.resolve(String(skill.path || '').trim() || '.');
+  const testingDocPath = path.join(skillDir, 'TESTING.md');
+  if (!fs.existsSync(testingDocPath)) {
+    return { path: testingDocPath, exists: false, content: '', contentHash: '', readError: false };
+  }
+
+  try {
+    const content = fs.readFileSync(testingDocPath, 'utf8');
+    return {
+      path: testingDocPath,
+      exists: true,
+      content,
+      contentHash: hashSkillTestValue(content),
+      readError: false,
+    };
+  } catch {
+    return { path: testingDocPath, exists: true, content: '', contentHash: '', readError: true };
+  }
 }
 
-function collectTestingDocumentSections(markdown: any) {
-  const sections: Record<string, string[]> = {};
-  let currentSection = '';
-  const lines = String(markdown || '').replace(/\r\n/g, '\n').split('\n');
+function extractTestingDocumentEnvironmentBlock(markdown: any) {
+  const normalized = String(markdown || '').replace(/\r\n/g, '\n');
+  const fencePattern = /(^|\n)(```+|~~~+)([^\n]*)\n([\s\S]*?)\n\2(?=\n|$)/g;
+  let match = null as RegExpExecArray | null;
 
-  for (const rawLine of lines) {
-    const headingMatch = rawLine.match(/^#{1,6}\s+(.*)$/);
-    if (headingMatch) {
-      currentSection = normalizeTestingDocumentSectionName(headingMatch[1]);
-      if (currentSection && !sections[currentSection]) {
-        sections[currentSection] = [];
-      }
+  while ((match = fencePattern.exec(normalized))) {
+    const infoTokens = String(match[3] || '').trim().toLowerCase().split(/\s+/).filter(Boolean);
+    if (!infoTokens.includes(TESTING_DOCUMENT_ENVIRONMENT_BLOCK_TOKEN)) {
       continue;
     }
 
-    if (!currentSection) {
-      continue;
+    const rawContent = String(match[4] || '').trim();
+    if (!rawContent) {
+      return {
+        found: true,
+        config: null,
+        issues: [
+          buildValidationIssue(
+            'testing_doc_contract_invalid',
+            'warning',
+            'TESTING.md#skill-test-environment',
+            'TESTING.md 中的 skill-test-environment 合同块不能为空 JSON 对象'
+          ),
+        ],
+      };
     }
 
-    const bulletMatch = rawLine.match(/^\s*[-*]\s+(.*)$/);
-    if (!bulletMatch) {
-      continue;
+    const parsed = safeJsonParse(rawContent);
+    if (!isPlainObject(parsed)) {
+      return {
+        found: true,
+        config: null,
+        issues: [
+          buildValidationIssue(
+            'testing_doc_contract_invalid',
+            'warning',
+            'TESTING.md#skill-test-environment',
+            'TESTING.md 中的 skill-test-environment 合同块必须是合法 JSON 对象'
+          ),
+        ],
+      };
     }
 
-    const text = String(bulletMatch[1] || '').trim();
-    if (!text || /^no\b/i.test(text)) {
-      continue;
-    }
-
-    sections[currentSection].push(text);
+    return {
+      found: true,
+      config: parsed,
+      issues: [],
+    };
   }
 
-  return sections;
-}
-
-function parseTestingDocumentRequirement(text: any) {
-  let normalized = String(text || '').trim();
-  if (!normalized) {
-    return null;
-  }
-
-  let kind = 'command';
-  const prefixedKindMatch = normalized.match(/^\[([^\]]+)\]\s*(.+)$/);
-  if (prefixedKindMatch) {
-    const nextKind = String(prefixedKindMatch[1] || '').trim().toLowerCase();
-    if (ALLOWED_ENVIRONMENT_REQUIREMENT_KINDS.has(nextKind)) {
-      kind = nextKind;
-    }
-    normalized = String(prefixedKindMatch[2] || '').trim();
-  }
-
-  let versionHint = '';
-  const versionMatch = normalized.match(/^(.*?)(?:\s*\(([^()]+)\))$/);
-  if (versionMatch) {
-    normalized = String(versionMatch[1] || '').trim();
-    versionHint = String(versionMatch[2] || '').trim();
-  }
-
-  if (!normalized) {
-    return null;
-  }
-
-  return {
-    kind,
-    name: normalized,
-    versionHint,
-    required: true,
-    installable: false,
-  };
+  return { found: false, config: null, issues: [] };
 }
 
 function formatEnvironmentRequirementDocLine(entry: any) {
@@ -729,56 +801,91 @@ function formatEnvironmentRequirementDocLine(entry: any) {
   return kind && kind !== 'command' ? `[${kind}] ${label}` : label;
 }
 
-function loadSkillTestingDocumentEnvironmentConfig(skill: any) {
-  if (!skill || !skill.path) {
-    return { config: null, issues: [], path: '', used: false, contentHash: '' };
+export function loadSkillTestingDocumentEnvironmentConfig(skill: any) {
+  const testingDocument = readSkillTestingDocument(skill);
+  if (!testingDocument.path) {
+    return {
+      config: null,
+      issues: [],
+      path: '',
+      used: false,
+      contentHash: '',
+      content: '',
+      contractBlockFound: false,
+      contractBlockParsed: false,
+    };
+  }
+  if (!testingDocument.exists || testingDocument.readError) {
+    return {
+      config: null,
+      issues: [],
+      path: testingDocument.path,
+      used: false,
+      contentHash: testingDocument.contentHash,
+      content: testingDocument.content,
+      contractBlockFound: false,
+      contractBlockParsed: false,
+    };
   }
 
-  const skillDir = path.resolve(String(skill.path || '').trim() || '.');
-  const testingDocPath = path.join(skillDir, 'TESTING.md');
-  if (!fs.existsSync(testingDocPath)) {
-    return { config: null, issues: [], path: testingDocPath, used: false, contentHash: '' };
+  const contractBlock = extractTestingDocumentEnvironmentBlock(testingDocument.content);
+  if (!contractBlock.found) {
+    return {
+      config: null,
+      issues: [],
+      path: testingDocument.path,
+      used: false,
+      contentHash: testingDocument.contentHash,
+      content: testingDocument.content,
+      contractBlockFound: false,
+      contractBlockParsed: false,
+    };
   }
 
-  let markdown = '';
-  try {
-    markdown = fs.readFileSync(testingDocPath, 'utf8');
-  } catch {
-    return { config: null, issues: [], path: testingDocPath, used: false, contentHash: '' };
-  }
-
-  const sections = collectTestingDocumentSections(markdown);
-  const requirements = (sections.prerequisites || [])
-    .map((entry) => parseTestingDocumentRequirement(entry))
-    .filter(Boolean);
-  const bootstrapCommands = (sections.bootstrap || []).map((entry) => String(entry || '').trim()).filter(Boolean);
-  const verifyCommands = (sections.verification || []).map((entry) => String(entry || '').trim()).filter(Boolean);
-
-  if (requirements.length === 0 && bootstrapCommands.length === 0 && verifyCommands.length === 0) {
-    return { config: null, issues: [], path: testingDocPath, used: false, contentHash: hashSkillTestValue(markdown) };
+  const contractSource = isPlainObject(contractBlock.config) ? contractBlock.config : null;
+  if (!contractSource) {
+    return {
+      config: null,
+      issues: Array.isArray(contractBlock.issues) ? contractBlock.issues : [],
+      path: testingDocument.path,
+      used: false,
+      contentHash: testingDocument.contentHash,
+      content: testingDocument.content,
+      contractBlockFound: true,
+      contractBlockParsed: false,
+    };
   }
 
   const normalized = normalizeEnvironmentConfigInput({
-    enabled: true,
-    requirements,
-    bootstrap: { commands: bootstrapCommands },
-    verify: { commands: verifyCommands },
-    docs: { mode: 'suggest-patch', target: 'TESTING.md' },
+    ...contractSource,
+    enabled: hasOwn(contractSource, 'enabled') ? contractSource.enabled : true,
+    docs: {
+      ...(isPlainObject(contractSource.docs) ? contractSource.docs : {}),
+      mode: isPlainObject(contractSource.docs) && contractSource.docs.mode ? contractSource.docs.mode : 'suggest-patch',
+      target: 'TESTING.md',
+    },
   });
 
   return {
     config: normalized.config,
-    issues: normalized.issues,
-    path: testingDocPath,
+    issues: mergeValidationIssues(contractBlock.issues, normalized.issues),
+    path: testingDocument.path,
     used: Boolean(normalized.config),
-    contentHash: hashSkillTestValue(markdown),
+    contentHash: testingDocument.contentHash,
+    content: testingDocument.content,
+    contractBlockFound: true,
+    contractBlockParsed: Boolean(normalized.config),
   };
 }
 
-function resolveEnvironmentRunConfig(testCase: any, runEnvironment: any, skill: any = null) {
+function resolveEnvironmentRunConfig(testCase: any, runEnvironment: any, skill: any = null, options: any = {}) {
   const request = normalizeEnvironmentRunInput(runEnvironment);
   const caseConfig = isPlainObject(testCase && testCase.environmentConfig) ? testCase.environmentConfig : null;
-  const testingDocument = !caseConfig && request.mode !== 'override-only'
+  const allowTestingDocumentDefault = options && options.allowTestingDocumentDefault !== false;
+  const shouldLoadTestingDocument = !caseConfig
+    && request.mode !== 'override-only'
+    && (allowTestingDocumentDefault || request.explicitEnabled === true || Boolean(request.override));
+  const testingDocument = shouldLoadTestingDocument
     ? loadSkillTestingDocumentEnvironmentConfig(skill)
     : { config: null, issues: [], path: '', used: false, contentHash: '' };
   const baseConfig = request.mode === 'override-only'
@@ -1704,6 +1811,141 @@ function createEnvironmentFailureMessage(environment: any) {
   return reason ? `${prefix}: ${reason}` : prefix;
 }
 
+function sanitizeEnvironmentManifestSegment(value: any, fallback = 'env') {
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_.-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80);
+  return normalized || fallback;
+}
+
+function normalizeEnvironmentBuildInstallSteps(config: any) {
+  const commands = Array.isArray(config && config.bootstrap && config.bootstrap.commands)
+    ? config.bootstrap.commands.map((entry: any) => String(entry || '').trim()).filter(Boolean)
+    : [];
+  return commands.map((command: string) => ({ type: 'command', command }));
+}
+
+function normalizeEnvironmentBuildVerifyCommands(config: any) {
+  return Array.isArray(config && config.verify && config.verify.commands)
+    ? config.verify.commands.map((entry: any) => String(entry || '').trim()).filter(Boolean)
+    : [];
+}
+
+function normalizeEnvironmentBuildRequirements(config: any) {
+  return Array.isArray(config && config.requirements)
+    ? config.requirements.map((entry: any) => ({
+        id: String(entry && entry.id || '').trim(),
+        kind: String(entry && entry.kind || 'command').trim() || 'command',
+        name: String(entry && entry.name || '').trim(),
+        versionHint: String(entry && entry.versionHint || '').trim(),
+        required: entry && entry.required !== false,
+        installable: entry && entry.installable === true,
+        probeCommand: String(entry && entry.probeCommand || '').trim(),
+      })).filter((entry: any) => entry.name)
+    : [];
+}
+
+function resolveEnvironmentBuildProfile(config: any, input: any = {}) {
+  const asset = config && isPlainObject(config.asset) ? config.asset : null;
+  return String(
+    input.envProfile || input.env_profile || input.profile ||
+    asset && (asset.envProfile || asset.env_profile || asset.profile) ||
+    'default'
+  ).trim() || 'default';
+}
+
+function resolveEnvironmentBuildImageTag(skillId: string, envProfile: string, manifestHash: string, explicitImage = '') {
+  const image = String(explicitImage || '').trim();
+  if (image) {
+    return image;
+  }
+  const safeSkillId = sanitizeEnvironmentManifestSegment(skillId, 'skill');
+  const safeProfile = sanitizeEnvironmentManifestSegment(envProfile, 'default');
+  return `caff-skill-env-${safeSkillId}:${safeProfile}-${String(manifestHash || '').slice(0, 12)}`;
+}
+
+function buildEnvironmentBuildManifest(config: any, environmentResult: any, context: any = {}) {
+  const buildInput = isPlainObject(context.buildInput) ? context.buildInput : {};
+  const skillId = String(context.skillId || '').trim() || 'skill';
+  const envProfile = resolveEnvironmentBuildProfile(config, buildInput);
+  const generatedAt = String(context.generatedAt || '').trim() || nowIso();
+  const testingDocument = context.testingDocument && typeof context.testingDocument === 'object'
+    ? context.testingDocument
+    : null;
+  const testingMdHash = String(
+    buildInput.testingMdHash || buildInput.testing_md_hash ||
+    context.testingMdHash ||
+    testingDocument && testingDocument.contentHash ||
+    ''
+  ).trim();
+  const baseImage = String(
+    buildInput.baseImage || buildInput.base_image || buildInput.baseImageRef || buildInput.base_image_ref ||
+    context.baseImage ||
+    'caff-skill-test-caff:local'
+  ).trim() || 'caff-skill-test-caff:local';
+  const baseImageDigest = String(buildInput.baseImageDigest || buildInput.base_image_digest || context.baseImageDigest || '').trim();
+  const buildCaseId = String(buildInput.buildCaseId || buildInput.build_case_id || context.buildCaseId || context.caseId || '').trim();
+  const installSteps = normalizeEnvironmentBuildInstallSteps(config);
+  const verifyCommands = normalizeEnvironmentBuildVerifyCommands(config);
+  const requirements = normalizeEnvironmentBuildRequirements(config);
+  const coreManifest: any = {
+    kind: 'skill_test_environment_manifest',
+    version: 1,
+    skillId,
+    envProfile,
+    baseImage,
+    baseImageDigest,
+    testingMdHash,
+    buildCaseId,
+    runId: String(context.runId || '').trim(),
+    generatedAt,
+    installSteps,
+    verifyCommands,
+    requirements,
+    source: {
+      testingDocPath: normalizePathForJson(context.testingDocPath || testingDocument && testingDocument.path || ''),
+      testingDocHash: testingMdHash,
+      testingDocUsed: Boolean(context.testingDocUsed),
+      environmentConfigSource: String(context.environmentConfigSource || '').trim(),
+    },
+    verifyEvidence: {
+      status: String(environmentResult && environmentResult.status || '').trim(),
+      phase: String(environmentResult && environmentResult.phase || '').trim(),
+      requirements: environmentResult && environmentResult.requirements ? environmentResult.requirements : null,
+      bootstrap: environmentResult && environmentResult.bootstrap ? environmentResult.bootstrap : null,
+      verify: environmentResult && environmentResult.verify ? environmentResult.verify : null,
+    },
+  };
+  const manifestHash = hashSkillTestValue(stableStringify(coreManifest));
+  const image = resolveEnvironmentBuildImageTag(skillId, envProfile, manifestHash, buildInput.image || buildInput.imageRef || buildInput.image_ref);
+  return {
+    ...coreManifest,
+    manifestHash,
+    image,
+  };
+}
+
+function persistEnvironmentBuildManifest(manifest: any, rootDir = DEFAULT_ENVIRONMENT_MANIFEST_ROOT_DIR) {
+  if (!manifest || typeof manifest !== 'object') {
+    throw new Error('environment manifest must be an object');
+  }
+  const skillId = sanitizeEnvironmentManifestSegment(manifest.skillId, 'skill');
+  const envProfile = sanitizeEnvironmentManifestSegment(manifest.envProfile, 'default');
+  const manifestHash = sanitizeEnvironmentManifestSegment(manifest.manifestHash, hashSkillTestValue(stableStringify(manifest)).slice(0, 16));
+  const manifestDir = path.join(String(rootDir || DEFAULT_ENVIRONMENT_MANIFEST_ROOT_DIR).trim() || DEFAULT_ENVIRONMENT_MANIFEST_ROOT_DIR, skillId, envProfile, manifestHash);
+  fs.mkdirSync(manifestDir, { recursive: true });
+  const manifestPath = path.join(manifestDir, 'environment-manifest.json');
+  fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+  return {
+    manifestPath: normalizePathForJson(manifestPath),
+    manifestDir: normalizePathForJson(manifestDir),
+  };
+}
+
 async function runEnvironmentCommand(command: string, runtime: SkillTestEnvironmentRuntime | null = null, input: any = {}) {
   const adapter = runtime && runtime.sandboxToolAdapter ? runtime.sandboxToolAdapter : null;
   if (!adapter || typeof adapter.runCommand !== 'function') {
@@ -1962,9 +2204,12 @@ async function executeEnvironmentWorkflow(config: any, runtime: SkillTestEnviron
 
 export {
   DEFAULT_ENVIRONMENT_CACHE_ROOT_DIR,
+  DEFAULT_ENVIRONMENT_MANIFEST_ROOT_DIR,
+  buildEnvironmentBuildManifest,
   createEnvironmentFailureMessage,
   createSkippedEnvironmentResult,
   executeEnvironmentWorkflow,
   normalizeEnvironmentConfigInput,
+  persistEnvironmentBuildManifest,
   resolveEnvironmentRunConfig,
 };

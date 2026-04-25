@@ -72,6 +72,7 @@ function normalizeModeName(value: any) {
 
 const LEGACY_FEISHU_CODING_MODE_ID = 'coding';
 const CODING_MODE_NAME = 'coding';
+export const SKILL_TEST_DESIGN_WORKBENCH_SKILL_ID = 'skill-test-design-workbench';
 
 function modeHasSkillBindings(mode: any) {
   return Array.isArray(mode && mode.skillIds) && mode.skillIds.length > 0;
@@ -111,6 +112,14 @@ const BUILTIN_MODES = [
     description: '标准对话模式，不自动注入额外 skill',
     builtin: true,
     skillIds: [],
+    loadingStrategy: 'dynamic',
+  },
+  {
+    id: 'skill_test_design',
+    name: 'Skill Test 设计',
+    description: '围绕单个 skill 进行追问、测试矩阵规划与草稿导出的专用模式',
+    builtin: true,
+    skillIds: [SKILL_TEST_DESIGN_WORKBENCH_SKILL_ID],
     loadingStrategy: 'dynamic',
   },
   {
@@ -249,7 +258,31 @@ export class ModeStore {
 
   seedBuiltinModes() {
     for (const mode of BUILTIN_MODES) {
-      if (this.getStatement.get(mode.id)) {
+      const existingRow = this.getStatement.get(mode.id);
+
+      if (existingRow) {
+        if (Array.isArray(mode.skillIds) && mode.skillIds.length > 0) {
+          const existingMode: any = normalizeModeRow(existingRow);
+          if (!existingMode) {
+            continue;
+          }
+
+          const existingSkillIds = Array.isArray(existingMode.skillIds) ? existingMode.skillIds : [];
+          const mergedSkillIds = mergeSkillIds(existingSkillIds, mode.skillIds);
+          const shouldUpdateSkillIds = JSON.stringify(mergedSkillIds) !== JSON.stringify(existingSkillIds);
+          const shouldUpdateLoadingStrategy = existingMode.loadingStrategy !== mode.loadingStrategy;
+
+          if (shouldUpdateSkillIds || shouldUpdateLoadingStrategy) {
+            this.updateStatement.run(
+              existingMode.name || mode.name,
+              existingMode.description || mode.description,
+              serializeJson(mergedSkillIds),
+              mode.loadingStrategy,
+              nowIso(),
+              mode.id,
+            );
+          }
+        }
         continue;
       }
 

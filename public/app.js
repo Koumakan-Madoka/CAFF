@@ -355,6 +355,7 @@ let messageTimelineRenderer = noopRenderer;
 let conversationSettingsController = noopConversationSettingsController;
 let undercoverPanelRenderer = noopRenderer;
 let werewolfPanelRenderer = noopRenderer;
+let skillTestDesignPanelRenderer = noopRenderer;
 let conversationPaneRenderer = noopRenderer;
 
 function setupChatModules() {
@@ -459,6 +460,17 @@ function setupChatModules() {
         })
       : noopRenderer;
 
+  skillTestDesignPanelRenderer =
+    typeof chatModules.createSkillTestDesignPanelRenderer === 'function'
+      ? chatModules.createSkillTestDesignPanelRenderer({
+          state,
+          dom,
+          helpers: {
+            activeTurnForConversation,
+          },
+        })
+      : noopRenderer;
+
   conversationPaneRenderer =
     typeof chatModules.createConversationPaneRenderer === 'function'
       ? chatModules.createConversationPaneRenderer({
@@ -485,6 +497,7 @@ function setupChatModules() {
             renderParticipantList,
             renderUndercoverGameCard,
             renderWerewolfGameCard,
+            renderSkillTestDesignCard,
             scheduleConversationPaneRender,
             timelineMessagesForConversation,
             undercoverGameState,
@@ -1602,6 +1615,10 @@ function renderWerewolfGameCard() {
   werewolfPanelRenderer.render();
 }
 
+function renderSkillTestDesignCard() {
+  skillTestDesignPanelRenderer.render();
+}
+
 function renderConversationPane() {
   conversationPaneRenderer.render();
 }
@@ -2382,6 +2399,7 @@ function renderAll() {
   renderConversationPane();
   renderUndercoverGameCard();
   renderWerewolfGameCard();
+  renderSkillTestDesignCard();
   renderCompactConversationPersonaSettings();
 }
 
@@ -2426,6 +2444,28 @@ function populateModeSelect() {
   } else if (state.modes.length > 0) {
     select.value = state.modes[0].id;
   }
+
+  toggleSkillTestDesignSkillSelect(select.value);
+}
+
+function toggleSkillTestDesignSkillSelect(selectedType) {
+  let skillSelect = document.getElementById('new-conversation-skill-select');
+  if (selectedType !== 'skill_test_design') {
+    if (skillSelect) skillSelect.remove();
+    return;
+  }
+  if (skillSelect) return; // Already present
+
+  skillSelect = document.createElement('select');
+  skillSelect.id = 'new-conversation-skill-select';
+  skillSelect.innerHTML = '<option value="">-- 选择目标 Skill --</option>';
+  for (const skill of state.skills) {
+    const opt = document.createElement('option');
+    opt.value = skill.id;
+    opt.textContent = skill.name || skill.id;
+    skillSelect.appendChild(opt);
+  }
+  dom.newConversationType.parentNode.insertBefore(skillSelect, dom.newConversationType.nextSibling);
 }
 
 async function refreshAll(preferredConversationId) {
@@ -2830,20 +2870,46 @@ function bindEvents() {
     }
   });
 
+  if (dom.newConversationType) {
+    dom.newConversationType.addEventListener('change', (event) => {
+      const target = /** @type {HTMLSelectElement | null} */ (event.target instanceof HTMLSelectElement ? event.target : null);
+      toggleSkillTestDesignSkillSelect(target ? target.value : 'standard');
+    });
+  }
+
   dom.newConversationForm.addEventListener('submit', async (event) => {
     event.preventDefault();
 
     try {
+      const conversationType = dom.newConversationType ? dom.newConversationType.value : 'standard';
+      const body = {
+        title: dom.newConversationTitle.value.trim(),
+        type: conversationType,
+      };
+
+      // For skill_test_design mode, require a skill selection
+      if (conversationType === 'skill_test_design') {
+        const skillSelect = /** @type {HTMLSelectElement | null} */ (document.getElementById('new-conversation-skill-select'));
+        if (!skillSelect || !skillSelect.value) {
+          showToast('Skill Test 设计模式需要选择一个目标 Skill');
+          return;
+        }
+        body.skillId = skillSelect.value;
+        body.metadata = {
+          skillTestDesign: {
+            skillId: skillSelect.value,
+          },
+        };
+      }
+
       const result = await fetchJson('/api/conversations', {
         method: 'POST',
-        body: {
-          title: dom.newConversationTitle.value.trim(),
-          type: dom.newConversationType ? dom.newConversationType.value : 'standard',
-        },
+        body,
       });
       dom.newConversationTitle.value = '';
       if (dom.newConversationType) {
         dom.newConversationType.value = 'standard';
+        toggleSkillTestDesignSkillSelect(dom.newConversationType.value);
       }
       state.conversations = result.conversations;
       state.selectedConversationId = result.conversation.id;

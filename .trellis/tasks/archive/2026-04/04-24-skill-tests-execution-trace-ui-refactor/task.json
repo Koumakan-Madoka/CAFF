@@ -1,0 +1,63 @@
+{
+  "id": "skill-tests-execution-trace-ui-refactor",
+  "name": "skill-tests-execution-trace-ui-refactor",
+  "title": "Skill Tests execution trace UI refactor",
+  "description": "Remove Publish Gate from the Skill Tests frontend, redesign execution trace presentation around normalized run traces, and modularize the page without changing backend runner semantics.",
+  "status": "completed",
+  "dev_type": "frontend",
+  "scope": "public/eval-cases.html, public/skill-tests.js, public/skill-tests/*, tests/skill-test/*, .trellis/spec/frontend/ui-structure.md, .trellis/spec/skills/skill-testing.md",
+  "package": "public",
+  "priority": "P2",
+  "creator": "菲比啾比",
+  "assignee": "菲比啾比",
+  "createdAt": "2026-04-24",
+  "completedAt": "2026-04-24",
+  "branch": null,
+  "base_branch": "feat/skill-test-chat-workbench-mode",
+  "worktree_path": null,
+  "current_phase": 3,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "check"
+    },
+    {
+      "phase": 3,
+      "action": "finish"
+    },
+    {
+      "phase": 4,
+      "action": "create-pr"
+    }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "04-21-skill-test-chat-workbench-mode",
+  "relatedFiles": [
+    "public/eval-cases.html",
+    "public/skill-tests.js",
+    ".trellis/spec/frontend/ui-structure.md",
+    ".trellis/spec/skills/skill-testing.md"
+  ],
+  "notes": "Closed after the planned frontend modularization, chain-rail/run-summary refresh, and live-runs observability follow-ups landed; human browser acceptance confirmed the current list/detail chain rail and runs-tab behavior.",
+  "meta": {
+    "kind": "follow-up-frontend-refactor",
+    "traceSource": "rebuildLiveRunTrace",
+    "stagedPlan": [
+      "remove-publish-gate",
+      "unify-trace-presentation",
+      "split-skill-tests-modules"
+    ],
+    "nonGoals": [
+      "backend-runner-semantics",
+      "evaluation-logic-changes",
+      "cross-page-visual-redesign"
+    ]
+  }
+}

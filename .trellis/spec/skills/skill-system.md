@@ -156,6 +156,40 @@ CAFF_SKILL_LOADING_MODE=dynamic|full  # Default: dynamic
 PI_AGENT_SANDBOX_DIR=/path/to/.pi-sandbox  # Used to locate skills/
 ```
 
+## Project Skill Roots
+
+Runtime skill resolution is not limited to `.pi-sandbox/skills/`.
+
+When CAFF has an active project, `SkillRegistry.resolveSkills(...)` also reads the project-scoped external roots passed from runtime wiring:
+
+- `<activeProject>/.agents/skills/`
+- `<activeProject>/.codex/skills/`
+
+Contract:
+
+- local agent sandbox skills still win first when the same `skillId` exists in multiple roots
+- project-scoped skills are the tracked/shared place for repo-owned helper skills that should not live only in ignored local sandbox state
+- prompt assembly, mode skill binding, and runtime resolution must use the same extra roots so a mode-bound skill id resolves identically in bootstrap, execution, and tests
+
+## Builtin Mode Helper Skills
+
+Builtin conversation modes may require fixed helper skills in addition to user-selected or participant-bound skills.
+
+Example contract: `skill_test_design`
+
+- `lib/mode-store.ts` seeds the builtin mode with `skillIds = ["skill-test-design-workbench"]`
+- `lib/mode-store.ts` repairs older builtin rows by merging the required helper skill id while keeping builtin `loadingStrategy = "dynamic"`
+- the helper skill body lives at `.agents/skills/skill-test-design-workbench/SKILL.md`
+- `server/domain/conversation/turn/agent-executor.ts` forces full injection for the helper skill and the selected target skill only, so unrelated conversation skills can stay descriptor-only in dynamic mode
+- `server/domain/conversation/turn/agent-prompt.ts` keeps reusable workflow rules inside that helper skill and limits inline mode text to runtime state (`phase`, `role`, target skill, matrix status, case summary)
+- the helper skill tells the scribe to place large official matrices in `.tmp/skill-test-design/<skillId>/<matrixId>.json` and send only a short `MATRIX_ARTIFACT:` pointer in chat
+
+Why:
+
+- mode-specific prompt policy becomes reusable and reviewable as a normal skill asset
+- prompt/state separation stays cleaner: static rules in the skill, dynamic facts in mode context
+- fresh installs and existing databases both converge to the same mode contract without manual repair
+
 ## Development Guidelines
 
 ### Adding a New Skill

@@ -107,6 +107,22 @@ export function sendText(
   res.end(body);
 }
 
+export function sendTextDownload(
+  res: ServerResponse,
+  body: string,
+  fileName: string,
+  contentType = 'text/plain; charset=utf-8'
+) {
+  const safeFileName = sanitizeDownloadFileName(fileName, 'download.txt');
+  res.writeHead(200, {
+    'Content-Type': contentType,
+    'Cache-Control': 'no-store',
+    'Content-Length': Buffer.byteLength(body),
+    'Content-Disposition': `attachment; filename="${safeFileName}"; filename*=UTF-8''${encodeURIComponent(safeFileName)}`,
+  });
+  res.end(body);
+}
+
 function sanitizeDownloadFileName(value: string, fallback = 'session.jsonl') {
   const normalized = String(value || '')
     .trim()

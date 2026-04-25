@@ -36,6 +36,7 @@ CREATE TABLE skill_test_cases (
   generation_provider TEXT NOT NULL DEFAULT '',
   generation_model TEXT NOT NULL DEFAULT '',
   generation_created_at TEXT NOT NULL DEFAULT '',
+  source_metadata_json TEXT NOT NULL DEFAULT '{}',
   note TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -109,11 +110,13 @@ Case-scoped isolation payload is stored under `evaluation_json.isolation` and su
 - host-loop isolated runs may expose `CAFF_SKILL_TEST_VISIBLE_*` envs (project, sandbox, private, skill, root, output, sqlite) so runtime extensions and trace mapping can prefer sandbox-visible paths without changing the host loop's real filesystem cwd
 - `egress.{mode,enforced,scope,reason}` so record-only network policy requests stay explicit in evidence
 - `chatBridge.{mode,configured,configuredUrl,reachable,auth,rejects}` so sandbox direct-HTTP bridge POCs show whether case-scoped credentials were validated; the auth payload must include run/case/task binding and TTL metadata but never the callback token
+- Skill-test chat bridge credentials default to 600s for short trigger/dynamic runs and 3600s for `full + execution` / chain steps; `CAFF_SKILL_TEST_BRIDGE_TOKEN_TTL_SEC` overrides the short-run default, while `CAFF_SKILL_TEST_EXECUTION_BRIDGE_TOKEN_TTL_SEC` overrides long execution runs explicitly
 - `toolPolicy.allowedTools[]` and `toolPolicy.rejects[]`
 - `resources` such as case project root, sandbox/private dir, isolated SQLite path, skill snapshot path, and adapter-specific remote/container resource paths when available
 - `pollutionCheck` compares live `.trellis`, shared skills, and live private dirs before/after the run; shared SQLite detection must use case-scoped logical markers (skill-test task ids, case ids, conversation ids, and agent ids) within the run window instead of hashing the entire live database / `-wal` files, so unrelated room traffic does not look like isolation pollution
 - isolated-mode telemetry (`a2a_tasks` / `a2a_task_events`) must write to the case-scoped run store during execution; final shared eval/result persistence happens outside the pollution-check window and stores a debug/trace snapshot for later run detail views
 - OpenSandbox may use pre-baked runtime assets and a pre-baked CAFF source template, but the source template must be copied into the case-scoped project directory before execution; runner `cwd` and `CAFF_TRELLIS_PROJECT_DIR` must continue to point at the isolated case project, and case-level `.trellis` materialization must be overlaid there
+- Pre-baked OpenSandbox images built by `scripts/opensandbox/build-runtime-image.js` must include Node.js plus the Python bootstrap toolchain (`python`/`python3`, `pip`, and `python3-venv`) so `TESTING.md` bootstrap commands can install Python packages inside the isolated container. Plain `node:20-bookworm` is treated as a Node-only fallback and should not be relied on for Python package bootstrap.
 - full-mode trigger/execution AI judges must reuse the same case-scoped `agentDir` + SQLite path and the same effective runtime `provider/model` as the isolated run; judge helper runs must not fall back to the live shared store or unresolved default provider selection inside the pollution-check window
 - `cleanup.ok|error`; cleanup is idempotent, so an OpenSandbox `not found`/404 during cleanup means the sandbox is already gone and should not be reported as `skill_test_cleanup_failed`
 - OpenSandbox Docker cleanup errors that say `removal of container ... is already in progress` are also idempotent cleanup success: the auto-expiration path already owns deletion, so CAFF must not report `skill_test_cleanup_failed` for that cleanup race
@@ -136,12 +139,33 @@ Isolation failures must surface canonical validation issues such as:
 
 ## Environment Readiness Chain
 
-Skill-test can optionally run an environment workflow before the main pi execution starts.
+Skill-test can optionally run an environment workflow before the main pi execution starts. New assetized environment work should prefer `environmentConfig.asset` (`envProfile`, `image`, `imageDigest`, `baseImageDigest`, `testingMdHash`, `manifestHash`, `buildCaseId`) over per-run bootstrap for ordinary execution cases.
+
+`skill_test_environment_assets` is the shared skill/profile registry for those reusable assets:
+
+- rows are keyed by `skillId + envProfile`
+- `environment-build` writes or refreshes the shared entry after a successful manifest/image result
+- ordinary execution cases should reference a profile (`environmentConfig.asset.envProfile`) rather than a build case id
+- case-level `environmentConfig.asset.image*` remains an explicit override / pin for debugging or reproducibility
+
+`test_type = environment-build` is the minimal environment-asset producer path:
+
+- it reuses the sandbox-side `preflight -> bootstrap -> verify` workflow instead of starting a normal model run
+- a passing run persists `.pi-sandbox/skill-test-environment-manifests/<skillId>/<envProfile>/<manifestHash>/environment-manifest.json`
+- the persisted manifest keeps `skillId`, `envProfile`, `baseImage`, `testingMdHash`, `installSteps[]`, `verifyCommands[]`, `buildCaseId`, and verification evidence
+- the run response and `skill_test_cases.source_metadata_json.environmentBuild` keep the bindable asset summary (`envProfile`, `manifestPath`, `manifestHash`, optional built `image`, `imageDigest`, `baseImageDigest`)
+- a successful `environment-build` also updates the shared `skill_test_environment_assets` row for the same `skillId + envProfile`; image-less manifest results may seed an empty shared row only when no runnable image exists yet, but they must not silently overwrite an existing runnable image entry
+- when the caller explicitly requests image build, the controller may invoke the clean-image builder from that manifest; if image build is skipped, ordinary execution cases that inherit that profile still fail closed with `env_not_built` until an image is actually built
+- the Skill Tests UI exposes a `buildImage` toggle only for the selected `environment-build` case; single-case runs send `environmentBuild.buildImage=true` when checked, and run detail surfaces manifest, image, digest, and bindable asset metadata
 
 ### Config Sources & Preconditions
 
-- `server/domain/skill-test/environment-chain.ts` owns environment config normalization, `TESTING.md` fallback parsing, and `preflight -> bootstrap -> verify -> cache` orchestration; `server/api/skill-test-controller.ts` only wires request/runtime inputs, live events, and persistence.
-- Run-request `environment.override` wins over stored case `environmentConfig`; when a case has no explicit environment config, the controller may derive one from the skill's `TESTING.md` sections `Prerequisites`, `Bootstrap`, and `Verification`.
+- `server/domain/skill-test/environment-chain.ts` owns environment config normalization, explicit `TESTING.md` machine-contract parsing, and `preflight -> bootstrap -> verify -> cache` orchestration; `server/domain/skill-test/environment-assets.ts` owns shared skill/profile asset registry, environment-build manifest finalization, and async clean-image builder invocation; `server/domain/skill-test/case-schema.ts` owns canonical case validation, tool/sequence normalization, judge-output validation, and schema envelopes; `server/domain/skill-test/run-evaluation.ts` owns full-mode AI judge prompts/runs, sequence evidence scoring, tool-call matching, and full-mode verdict aggregation; `server/domain/skill-test/run-executor.ts` owns single-case run orchestration, live run/tool events, environment-build short-circuiting, eval/skill-test persistence, and isolation finalization; `server/domain/skill-test/design-service.ts` owns Skill Test workbench conversation state, matrix confirmation/export validation, duplicate warnings, and draft source-metadata patching; `server/domain/skill-test/testing-doc-draft.ts` owns TESTING.md draft section normalization, machine-contract block rendering, and draft validation errors; `server/api/skill-test-controller.ts` stays as the thin HTTP/composition layer.
+- Run-request `environment.override` wins over stored case `environmentConfig`; when a case has no explicit environment config, the controller may derive one only from an explicit `skill-test-environment` JSON fenced block inside `TESTING.md` instead of guessing from prose/table/bullet formatting.
+- `server/domain/skill-test/run-prompt.ts` assembles skill-test run prompts. Prompts inject the full `TESTING.md` content as human-readable reference context when present; `full + execution` prompts must also surface `expectedGoal` and `expectedSteps` as authoritative completion targets so a short `userPrompt` cannot silently downscope the case into a lighter review-only task.
+- `dynamic + trigger` runs do not auto-derive heavy `TESTING.md` environment contracts by default; they only run that chain when the request explicitly enables environment handling or the case itself stores an environment config.
+- When `environmentConfig.asset` is present and enabled, the single-case runner performs an `asset-check` phase before the agent run. Missing image bindings return `env_not_built`; a `testingMdHash` mismatch against the current target skill `TESTING.md` returns `env_stale`; a passing asset check skips the legacy per-run bootstrap workflow and passes the bound image/profile to the isolation layer.
+- If a case only declares `environmentConfig.asset.envProfile` (or has no case-local asset block but the resolved config implies a profile), the single-case runner may hydrate the asset from shared `skill_test_environment_assets` for that `skillId + envProfile`. That shared hydration should show up as `asset.source = skill_profile_default` in evaluation detail.
 - When the environment chain is disabled, skill-test keeps the existing default flow and starts the run without extra preflight/bootstrap/verify work.
 - Environment probes, bootstrap commands, and verify commands are only allowed when isolated execution uses `host-loop + sandbox-tools` and `evaluation_json.isolation.execution.toolRuntime = 'sandbox'`; otherwise the run must return `runtime_unsupported`.
 - `probeCommand`, `bootstrap.commands[]`, and `verify.commands[]` always execute through the sandbox tool adapter inside the case world. They must never fall back to host-side command execution.
@@ -162,8 +186,8 @@ Skill-test can optionally run an environment workflow before the main pi executi
 
 ```json
 {
-  "status": "passed | env_missing | env_install_failed | env_verify_failed | runtime_unsupported | skipped",
-  "phase": "preflight | bootstrap | verify | completed | skipped",
+  "status": "passed | env_not_built | env_stale | env_missing | env_install_failed | env_verify_failed | runtime_unsupported | skipped",
+  "phase": "asset-check | preflight | bootstrap | verify | completed | skipped",
   "requirements": {
     "satisfied": [],
     "missing": [],
@@ -284,7 +308,7 @@ Full execution judge must return structured JSON:
 }
 ```
 
-Validation rules (`validateJudgeOutput`):
+Validation rules (`server/domain/skill-test/case-schema.ts` / `validateJudgeOutput`):
 
 - `status` enum: `succeeded | parse_failed | runtime_failed | skipped`
 - `confidence` / `score` must be in `0..1`
@@ -414,11 +438,289 @@ Generated rows persist as drafts by default:
   - `generationModel`
   - `generationCreatedAt`
 
+Chat workbench draft export keeps the same draft-first rule and adds stricter audit guarantees:
+
+- matrix import/confirmation/export must reference an assistant `messageId`; missing source message fails closed
+- large official matrices may be written by the scribe to project-local `.tmp/skill-test-design/<skillId>/<matrixId>.json` artifacts instead of pasted into chat
+- artifact import accepts only paths mentioned by the source assistant message, only within `.tmp/skill-test-design/`, only `.json`, and only up to 1MB before normal matrix validation
+- exported rows persist `source_metadata_json` with at least `conversationId`, `messageId`, `matrixId`, `matrixRowId`, `agentRole`, `exportedBy`, and `exportedAt`; artifact-backed imports may also persist `matrixArtifactPath`
+- repeated export from the same chat workbench conversation should reuse the latest matching chat-export draft (`conversationId + matrixRowId`, then same normalized prompt / environment-build identity) while the case is still `draft`, updating the existing row instead of creating another duplicate draft
+- conversation `skillTestDesign.export` persists the user-facing export summary: `exportedCaseIds[]`, `exportedCount`, `duplicateWarningCount`, `skippedRowCount`, and `skippedRows[]` so refreshes still show duplicate/skipped context without re-running export
+- the chat panel deep-link into Skill Tests uses `/eval-cases.html?tab=panel-skill-tests&skillId=<skillId>&caseId=<first-exported-case-id>&matrixId=<matrixId>`; `public/skill-tests.js` reads this query once, opens the Skill Tests tab, selects the target skill/case, and then falls back to normal localStorage selection
+- Skill Tests case detail renders chat-export tags from `sourceMetadata.source = skill_test_chat_workbench`, including matrix/row ids, environment source, and lifecycle chain id when present
+- batch export must be atomic for a single request; if any candidate row fails validation, no partial `skill_test_cases` rows may remain from that export attempt
+
+## Scenario: Skill-Test Design Matrix Contract
+
+### 1. Scope / Trigger
+
+- Trigger: a `skill_test_design` conversation imports a matrix, confirms scope, or exports draft cases.
+- Cross-layer path: `server/domain/skill-test/chat-workbench-mode.ts` + `server/domain/skill-test/design-service.ts` -> `server/api/skill-test-controller.ts` -> `public/chat/skill-test-design-panel.js` -> `skill_test_cases.source_metadata_json`.
+- Phase boundary: current implementation enforces assistant-source audit, confirm-before-export, duplicate warnings, atomic draft export, environment-contract gating, `environment-build` draft export, and lifecycle-chain metadata for matrix rows.
+
+### 2. Signatures
+
+- Conversation type: `skill_test_design`
+- Conversation phases: `collecting_context | planning_matrix | awaiting_confirmation | generating_drafts | exported`
+- HTTP routes:
+
+```text
+GET  /api/conversations/:conversationId/skill-test-design
+POST /api/conversations/:conversationId/skill-test-design/import-matrix
+POST /api/conversations/:conversationId/skill-test-design/confirm-matrix
+POST /api/conversations/:conversationId/skill-test-design/export-drafts
+```
+
+- Baseline matrix shape:
+
+```ts
+type SkillTestMatrix = {
+  kind?: 'skill_test_matrix';
+  matrixId: string;
+  skillId: string;
+  phase: 'collecting_context' | 'planning_matrix' | 'awaiting_confirmation' | 'generating_drafts' | 'exported';
+  rows: SkillTestMatrixRow[];
+};
+
+type SkillTestMatrixRow = {
+  rowId: string;
+  scenario: string;
+  priority: 'P0' | 'P1' | 'P2';
+  coverageReason: string;
+  testType: 'trigger' | 'execution' | 'environment-build';
+  loadingMode: 'dynamic' | 'full';
+  riskPoints: string[];
+  keyAssertions: string[];
+  includeInMvp: boolean; // normalized storage field; imports may use includeInExport alias and UI should call this the current export scope
+  draftingHints?: Record<string, unknown>;
+  environmentContractRef?: string;
+  environmentSource?: 'skill_contract' | 'user_supplied' | 'missing';
+  scenarioKind?: 'single' | 'chain_step';
+  chainId?: string;
+  chainName?: string;
+  sequenceIndex?: number;
+  dependsOnRowIds?: string[];
+  inheritance?: Array<'filesystem' | 'artifacts' | 'conversation' | 'externalState'>;
+};
+```
+
+- `environmentContractRef` format: `<relative-path>#<heading-or-contract-id>`, relative to the target skill root, for example `TESTING.md#Bootstrap`.
+- `environmentSource` semantics:
+  - `skill_contract`: the row references an existing contract from `TESTING.md`, `SKILL.md`, or stable spec.
+  - `user_supplied`: the user supplied temporary setup information in chat; it is not yet a skill-owned contract.
+  - `missing`: no trustworthy environment contract could be located.
+- Exported draft metadata must keep the baseline audit envelope:
+
+```json
+{
+  "source": "skill_test_chat_workbench",
+  "conversationId": "conv-123",
+  "messageId": "msg-456",
+  "matrixId": "matrix-789",
+  "matrixRowId": "row-1",
+  "matrixArtifactPath": ".tmp/skill-test-design/demo-skill/matrix-789.json",
+  "agentRole": "scribe",
+  "exportedBy": "user",
+  "exportedAt": "2026-04-21T00:00:00.000Z"
+}
+```
+
+- When matrix rows carry environment or lifecycle-chain fields, export metadata should additionally preserve them under `source_metadata_json.skillTestDesign`, rather than flattening setup knowledge into free-text `note` fields.
+- Duplicate warnings for trigger/execution drafts use normalized `triggerPrompt`; `environment-build` has no meaningful trigger prompt, so duplicate hints use the shared asset key (`skillId + envProfile`, defaulting to `default`) and matching `environmentContractRef` when present.
+
+### 3. Contracts
+
+- Context assembly for planning should prefer the target skill's environment contract in this order: `TESTING.md` -> `SKILL.md` -> stable spec. `TESTING.md` full text may still be injected to the model as human-readable reference, but if none of those sources provide actionable setup information the row must be marked `environmentSource = missing`.
+- Runtime-readable `TESTING.md` contract status only comes from an explicit `skill-test-environment` fenced JSON block; prose/table/bullet sections remain reference context for the model and draft workflow, not executable gate truth.
+- User-supplied environment instructions are temporary planning input. They must remain `environmentSource = user_supplied` until a human actually writes them back into `TESTING.md` or another stable spec.
+- Skill Test design prompt policy defaults normal planning to complete `full + execution` coverage. The assistant should not ask the user to choose loading mode unless they explicitly want trigger/load-only coverage.
+- Matrix normalization defaults omitted `testType` / `loadingMode` to `execution` / `full` for chat-workbench planning rows, and accepts `includeInExport` as an import alias for the normalized `includeInMvp` flag.
+- Planning rows for `execution`, `environment-build`, or any row that explicitly depends on real external environment, credentials, or sandbox capabilities must fail closed at formal generate/export time when `environmentSource = missing`.
+- Trigger-only planning rows may continue with warning metadata when `environmentSource = missing`, but the gap must remain visible in the matrix and export metadata.
+- `inheritance` only describes reuse intent between chain steps. It must never be used to smuggle install/bootstrap/teardown instructions.
+- Lifecycle-chain fields still originate from planning/export metadata, but exported `full + execution` cases with complete `chainPlanning.exportChainId / sequenceIndex / dependsOnCaseIds` metadata can now opt into the chain runner via `test-chains`; non-eligible rows remain independent-case execution.
+- Confirm/export requests must keep assistant-source audit intact: `messageId` must point to an assistant message in the same conversation, `matrixId` must match the currently imported matrix, and export stays atomic for the whole batch.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior | Status / signal |
+|-----------|-------------------|-----------------|
+| `import-matrix` without `messageId` | Reject request | `matrix_source_message_required` |
+| `messageId` does not point to an assistant message in the same conversation | Reject request | `matrix_source_message_invalid` |
+| Matrix artifact path is not mentioned by the source assistant message | Reject request | `matrix_artifact_source_mismatch` |
+| Request omits both inline `matrix` and `matrixPath` | Reject request | `matrix_missing` |
+| Matrix shape is invalid after normalization | Reject request | `matrix_invalid` |
+| `confirm-matrix` or `export-drafts` references a different `matrixId` | Reject request | `matrix_id_mismatch` |
+| Export runs before confirmation | Reject request | `matrix_not_confirmed` |
+| Confirmed matrix contains no rows in the current export scope | Reject request | `matrix_rows_empty` |
+| Candidate draft validation fails during batch export | Reject whole batch and leave no partial `skill_test_cases` rows | atomic 400 failure |
+| Matrix row uses a supported canonical combo (`dynamic/full` × `trigger/execution/environment-build`) | Build canonical draft input and validate atomically; do not silently coerce type | export via normal validation |
+| Planned: `execution`, `environment-build`, or real-env row has `environmentSource = missing` | Reject formal generate/export; do not downcast to trigger | fail closed |
+| Planned: chain row has cycle, cross-chain dependency, missing `sequenceIndex`, or unresolved `dependsOnRowIds` | Block confirmation/export and return structured validation errors | fail closed |
+
+### 5. Good / Base / Bad Cases
+
+- Good: the skill exposes `TESTING.md#Bootstrap`, a matrix row references `environmentContractRef = "TESTING.md#Bootstrap"`, `environmentSource = skill_contract`, and export metadata preserves both audit fields and the contract reference; for `environment-build`, the raw chat draft omits the `triggerPrompt` alias, stores a descriptive canonical prompt, remains `draft`, and relies on the contract or user-supplied `environmentConfig`.
+- Base: the skill has no durable contract, the user supplies temporary setup steps in chat, the row is marked `environmentSource = user_supplied`, and trigger-only draft export is allowed with advice to write the setup back into `TESTING.md`.
+- Bad: an execution row depends on external setup but leaves `environmentSource = missing`; formal generate/export must stop instead of guessing commands.
+- Bad: a chain step puts bootstrap logic in `inheritance` or a free-text `note`; setup knowledge must stay in `environmentContractRef` / `environmentSource` and chain metadata must describe only dependency intent.
+
+### 6. Tests Required
+
+- `tests/skill-test/skill-test-e2e.test.js`: import requires assistant `messageId` and rejects non-assistant or mismatched artifact sources.
+- `tests/skill-test/skill-test-e2e.test.js`: export remains atomic when one candidate row fails validation.
+- `tests/skill-test/skill-test-schema.test.js`: `skill_test_cases` includes `source_metadata_json`, nested `skillTestDesign` metadata survives persistence, draft builders keep environment/chain metadata out of free-text `note`, and matrix normalization defaults chat-workbench rows to `full + execution` while accepting `includeInExport` input.
+- `tests/skill-test/skill-test-e2e.test.js`: `environmentSource = missing` blocks execution / environment-build / real-env export without silently rewriting the row.
+- `tests/skill-test/skill-test-e2e.test.js`: chat workbench export can persist `environment-build` drafts when a skill contract or user-supplied environment source is present and can warn on existing `skillId + envProfile` / `environmentContractRef` duplicates.
+- `tests/skill-test/skill-test-e2e.test.js`: repeated export from the same conversation reuses existing draft rows by `matrixRowId` or normalized prompt instead of multiplying duplicate drafts.
+- `tests/skill-test/skill-test-e2e.test.js`: chain topology issues such as cycles, cross-chain dependencies, missing middle steps, and unresolved `dependsOnRowIds` are blocked before export.
+- Future UI test coverage: explicit user-facing messaging that chain grouping is planning-only and does not imply shared execution in Phase 1.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```json
+{
+  "rowId": "row-cleanup",
+  "scenario": "reuse prepared environment and then clean up",
+  "testType": "execution",
+  "loadingMode": "full",
+  "inheritance": ["filesystem", "sudo apt install ffmpeg && ./bootstrap.sh"]
+}
+```
+
+- Problems:
+  - mixes dependency installation into `inheritance`
+  - has no traceable environment contract source
+  - cannot be safely exported or reviewed
+
+#### Correct
+
+```json
+{
+  "rowId": "row-cleanup",
+  "scenario": "reuse prepared environment and then clean up",
+  "testType": "execution",
+  "loadingMode": "full",
+  "environmentContractRef": "TESTING.md#Bootstrap",
+  "environmentSource": "skill_contract",
+  "scenarioKind": "chain_step",
+  "chainId": "env-lifecycle",
+  "sequenceIndex": 3,
+  "dependsOnRowIds": ["row-bootstrap", "row-run"],
+  "inheritance": ["filesystem", "artifacts"]
+}
+```
+
+- Why this is correct:
+  - environment setup is traceable to a skill-owned contract
+  - chain fields only describe dependency intent
+  - review/export logic can block or warn using structured fields instead of parsing prose
+
+## Scenario: Skill-Test Design TESTING.md Draft Workflow
+
+### 1. Scope / Trigger
+
+- Trigger: a `skill_test_design` conversation detects missing `TESTING.md`, or detects insufficient environment contract coverage and the user explicitly asks to refresh the draft.
+- Cross-layer path: `public/chat/skill-test-design-panel.js` -> `server/api/skill-test-controller.ts` -> `server/domain/skill-test/testing-doc-auto-preview.ts` + `server/domain/skill-test/testing-doc-draft.ts` + `server/domain/skill-test/testing-doc-target.ts` -> target skill `TESTING.md`.
+- Purpose: keep `user_supplied` setup information as preview-only until a human confirms a fixed-path write, then require matrix refresh / re-confirmation before any export can treat the new document as a durable `skill_contract`.
+
+### 2. Signatures
+
+- Conversation state fields:
+  - `metadata.skillTestDesign.testingDocDraft`
+  - `metadata.skillTestDesign.environmentContract`
+- HTTP routes:
+
+```text
+GET  /api/conversations/:conversationId/skill-test-design
+POST /api/conversations/:conversationId/skill-test-design/preview-testing-doc-draft
+POST /api/conversations/:conversationId/skill-test-design/apply-testing-doc-draft
+POST /api/conversations/:conversationId/skill-test-design/refresh-environment-contract
+```
+
+- Draft shape:
+
+```ts
+type TestingDocDraft = {
+  draftId: string;
+  skillId: string;
+  targetPath: 'TESTING.md';
+  status: 'proposed' | 'needs_user_input' | 'confirmed' | 'applied' | 'rejected' | 'superseded';
+  sections: Array<{
+    heading: 'Prerequisites' | 'Setup' | 'Verification' | 'Teardown' | 'Open Questions';
+    content: string;
+    sourceKind: 'skill_md' | 'stable_spec' | 'user_supplied' | 'missing';
+    sourceRefs: string[];
+    openQuestions: string[];
+  }>;
+  content: string;
+  readiness: {
+    executionBlocked: boolean;
+    missingCriticalSections: string[];
+    openQuestions: string[];
+    warnings: string[];
+  };
+  file: {
+    existsAtPreview: boolean;
+    hashAtPreview: string;
+    sizeAtPreview: number;
+    targetPath: 'TESTING.md';
+    overwritePreview: boolean;
+  };
+  audit: {
+    conversationId: string;
+    messageId: string;
+    agentRole: string;
+    createdBy: string;
+    createdAt: string;
+    sourceKinds: string[];
+    appliedBy?: string;
+    appliedAt?: string;
+  };
+};
+```
+
+### 3. Contracts
+
+- Missing `TESTING.md` auto-preview: summary/prompt context preparation may create and persist a guarded `testingDocDraft` preview with `audit.messageId = auto-testing-doc-preview`, `createdBy = system`, and no file write.
+- Existing-file refresh remains explicit: when `TESTING.md` exists but is insufficient, the user must request a new preview before overwrite-capable apply is possible.
+- `sourceKind` is a closed preview-only provenance enum and must not extend canonical case/export `environmentSource`.
+- Apply is fixed-path and fail-closed: only the target skill root `TESTING.md` may be written; symlink escape, path traversal, and silent overwrite are rejected.
+- If `TESTING.md` changed after preview, apply must reject with a superseded draft error and require a new preview.
+- Applying a draft never silently mutates old matrix rows to `skill_contract`; it clears matrix confirmation/export state and requires user re-confirmation.
+- `Prerequisites` / `Setup` remain critical execution gates; `Verification` / `Teardown` may degrade to warnings in MVP.
+- Draft content should include a `skill-test-environment` JSON fenced block when source sections contain actionable setup or verification lines, so applying the draft creates a runtime-readable contract instead of prose-only documentation.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior | Status / signal |
+|-----------|-------------------|-----------------|
+| Manual preview has no source message | Reject request | `testing_doc_source_message_required` |
+| Manual preview message id is not in the conversation | Reject request | `testing_doc_source_message_invalid` |
+| Missing `TESTING.md` summary preparation has no chat source message | Create preview with system audit id and do not write the file | `auto-testing-doc-preview` |
+| Draft target path is not exactly `TESTING.md` | Reject request | `testing_doc_target_invalid` |
+| Draft section heading is outside the approved fixed set | Reject preview/apply normalization | `testing_doc_section_heading_invalid` |
+| Existing file would be overwritten without explicit confirmation | Reject apply | `testing_doc_overwrite_confirmation_required` |
+| Target file changed after preview | Reject apply and mark draft superseded | `testing_doc_draft_superseded` |
+| Skill root is read-only / unmanaged for writing | Reject apply | `testing_doc_target_read_only` |
+
+### 5. Tests Required
+
+- `tests/skill-test/skill-test-schema.test.js`: preview draft builder normalizes required sections and preserves preview-only source kinds.
+- `tests/skill-test/skill-test-e2e.test.js`: summary auto-preview creates a draft for missing `TESTING.md` without writing files.
+- `tests/skill-test/skill-test-e2e.test.js`: manual preview creates a draft without writing files and preserves structured validation errors for invalid section headings.
+- `tests/skill-test/skill-test-e2e.test.js`: apply writes fixed-path `TESTING.md` and invalidates matrix confirmation.
+- `tests/skill-test/skill-test-e2e.test.js`: superseded previews fail closed when the target file changes between preview and apply.
+
 ## API Endpoints
 
 ### Test Case Management
 
 ```
+GET    /api/skills/:skillId/environment-assets
+GET    /api/skills/:skillId/environment-assets/:envProfile
 GET    /api/skills/:skillId/test-cases
 POST   /api/skills/:skillId/test-cases
 POST   /api/skills/:skillId/test-cases/generate
@@ -434,12 +736,16 @@ DELETE /api/skills/:skillId/test-cases/:caseId
 ```
 POST /api/skills/:skillId/test-cases/:caseId/run
 POST /api/skills/:skillId/test-cases/run-all
+POST /api/skills/:skillId/test-chains/run
+GET  /api/skills/:skillId/test-chains/:chainRunId
+GET  /api/skills/:skillId/test-chains/by-export/:exportChainId/runs
 ```
 
 Notes:
 
 - `run-all` runs only effective `ready` cases.
 - `POST /generate`, `POST /run-all`, and `POST /:caseId/run` parse JSON bodies strictly; malformed bodies must surface `400 Invalid JSON body` instead of silently falling back to default options.
+- `DELETE /api/skills/:skillId/test-cases/:caseId` must remove dependent `skill_test_runs` and `skill_test_chain_run_steps` rows in the same transaction before deleting the case row, so previously executed chain history does not trip a raw SQLite foreign-key failure.
 - legacy rows (`validity_status`) are mapped to effective status for compatibility.
 
 ### Results and Reports
@@ -450,8 +756,24 @@ GET /api/skills/:skillId/test-cases/:caseId/regression
 GET /api/skills/:skillId/test-runs
 GET /api/skills/:skillId/regression
 GET /api/skill-test-runs/:runId
+GET /api/skill-test-runs/:runId/session-export
 GET /api/skill-test-summary
 ```
+
+- `GET /api/skill-test-runs/:runId/session-export` downloads the raw session JSONL captured for that run so humans can inspect the agent's exact tool/message behavior inside the skill-test sandbox baseline; isolated runs must persist a shared export copy before case cleanup so the download still works after the case world is removed, and the route returns `404` only when no persisted session evidence exists.
+
+## Lifecycle Chain Runner (MVP)
+
+- Persistence adds `skill_test_chain_runs` and `skill_test_chain_run_steps` so a chain run can keep chain-level status plus per-step audit without fabricating skipped `skill_test_runs` rows.
+- `POST /api/skills/:skillId/test-chains/run` validates that all candidate cases belong to one `exportChainId`, are `full + execution`, have complete chain metadata, and do not leave `environmentSource = missing` unresolved.
+- `server/domain/skill-test/chain-runner.ts` owns chain candidate validation, audit persistence, live snapshots, shared isolation/context lifecycle, and chain continuation policy; the controller only exposes the chain HTTP routes.
+- The runner creates one shared isolation/context handle for the chain, runs environment bootstrap at chain scope, then calls existing single-case execution with step-scoped prompt carry-forward (`previousStepSummary`, explicit `artifactRefs[]`, `sharedEnvironmentHandle`).
+- Chain continuation uses `skill_test_chain_runs.stop_policy`. The default `stop_on_failure` is strict: the first non-passing step marks later pending steps as `skipped`, while already executed steps keep their normal `skill_test_runs` / `eval_case_runs` evidence.
+- `stop_on_failure_goal_threshold` is an explicit relaxed chain continuation policy. It allows the chain to continue when a step run has `status = succeeded`, no `critical-constraint` hard-fail reason, and `goalAchievement >= 0.8`; that chain step audit is stored as `continued`, and the underlying `skill_test_runs.verdict` remains unchanged for regression and review.
+- `GET /api/skills/:skillId/test-chains/:chainRunId` returns chain summary plus ordered step audit; `GET /api/skills/:skillId/test-chains/by-export/:exportChainId/runs` returns recent chain summaries with ordered `steps[]` previews so the Skill Tests UI can show every step directly in chain history.
+- Chain teardown evidence is persisted in `skill_test_chain_runs.teardown_evidence_json`. Chain detail responses include full isolation teardown evidence, including `pollutionCheck.changes`; summary/list responses only expose compact pollution status/count metadata.
+- Chain history step cards surface each executed step's `skillTestRunId`, normal run detail, and session export action; skipped steps stay visible even though they intentionally have no `skill_test_runs` row.
+- Running chain steps do not have a persisted `skill_test_runs` row until the single-case executor finishes, so chain history / detail UI must still expose a live-observability action that jumps to the step case's realtime trace instead of waiting for the final run-detail button to appear.
 
 ## Execution Flow
 
@@ -513,7 +835,13 @@ Regression/summary execution metrics are full-mode only: `executionPassedCount` 
 
 ## UI Contract (Workstream D)
 
-Frontend (`public/skill-tests.js`) consumes structured validation/evaluation:
+Frontend keeps `public/skill-tests.js` as the Skill Tests page entry and pushes
+focused rendering / data helpers into `public/skill-tests/*.js`.
+`public/eval-cases.html` must load those helper scripts before
+`public/skill-tests.js`; each helper registers a
+`window.CaffSkillTests.create*Helpers()` factory, while the page entry remains
+responsible for state, SSE wiring, fetch orchestration, and cross-panel
+coordination.
 
 - unified issues panels:
   - detail panel: `st-detail-issues`
@@ -525,7 +853,13 @@ Frontend (`public/skill-tests.js`) consumes structured validation/evaluation:
   - `aggregation` reasons
   - `aiJudge` status, `verdictSuggestion`, `missedExpectations`
 - run detail reads `result.evaluation` first and falls back to `run.evaluation`
+- run detail prefers the finalized persisted `result.trace` snapshot for completed runs, then only falls back to rebuilding from live DB/session evidence for older rows that lack stored trace data
+- run detail and run history keep a stable `运行摘要 -> 工具时间线 -> 环境/评估细节` reading order so live and finalized runs do not drift into separate layouts
 - live run panel renders the active tool trace while a run is in progress and keeps the finalized trace visible after terminal events land
+- live chain panels and chain step cards should expose a running-step jump action (`查看实时调用` or equivalent) that selects the active case and reuses the existing live trace panel, because final run detail/session-export actions depend on persisted run rows that do not exist mid-run
+- when the detail `runs` tab is active, relevant live run / live chain events should trigger a debounced refresh and a short polling fallback while the selected case still has in-flight activity, so newly persisted run rows and chain history cards appear without forcing humans to reselect the case; background refreshes should preserve the current panel content instead of flashing the loading state on every tick
+- live runs use `status` as the explicit placeholder when no final verdict exists; finalized runs may add `verdict`, environment status, and step counts, but the UI must not invent `pass/fail` before persisted evidence exists
+- run history actions keep both `下载 JSON` (normalized detail payload) and `导出 Session` (raw session JSONL evidence) so sandbox-side behavior can be inspected without guessing from summary cards
 
 ### Live Run SSE Contract
 
@@ -536,6 +870,10 @@ Frontend (`public/skill-tests.js`) consumes structured validation/evaluation:
   - includes `caseId`, `skillId`, `taskId`, synthetic `messageId`, provider/model metadata, status, and final `trace` on terminal phases
   - `progress` includes `executionRuntime`, `progressLabel`, optional `runnerStage`, `runnerPid`, and `runnerSessionPath` so OpenSandbox runner preparation/startup is visible before the first tool or text event
   - `output_delta` includes `delta`, accumulated `outputText`, `isFallback`, optional `messageKey`, `executionRuntime`, and `progressLabel`; the browser updates the live output preview without waiting for terminal `trace`
+- `skill_test_chain_run_event`
+  - `phase`: `started | progress | step_started | step_completed | step_failed | completed | failed`
+  - includes `skillId`, `chainRunId`, `exportChainId`, chain status, current step ids/index, `progressLabel`, `runnerStage`, and the same `chainRun` / ordered `steps[]` / `warnings[]` envelope returned by `GET /test-chains/:chainRunId`
+  - terminal phases keep skipped-step audit visible so the UI can update the chain live panel before the blocking `POST /test-chains/run` response resolves
 - `conversation_tool_event`
   - skill-test runs reuse the same live tool-step payload shape as chat workbench traces
   - payload is keyed by the synthetic skill-test `messageId` so the frontend can merge session + bridge steps with the existing step schema and CSS patterns
@@ -543,10 +881,11 @@ Frontend (`public/skill-tests.js`) consumes structured validation/evaluation:
 ### Skill Tests Workspace Layout
 
 - `public/eval-cases.html` keeps the Skill Tests workspace in a single-column-first flow: sticky top toolbar → overview → case list → detail → create → summary, with wide-screen enhancement only at larger breakpoints.
-- The sticky toolbar is the only always-pinned control surface for high-frequency actions (`skill`, `agent`, `model`, `promptVersion`, run isolation defaults such as `isolationMode` / `trellisMode` / `egressMode` / `publishGate`, plus generate / manual create / run-all); page-level horizontal scrolling should be avoided outside local table overflow.
+- The sticky toolbar is the only always-pinned control surface for high-frequency actions (`skill`, `agent`, `model`, `promptVersion`, run isolation defaults such as `isolationMode` / `trellisMode` / `egressMode`, plus `chainStopPolicy`, generate / manual-create / run-all actions, and the conditional environment-build image toggle); page-level horizontal scrolling should be avoided outside local table overflow.
 - The detail area stays tabbed (`overview`, `details`, `runs`, `regression`) so long histories and regression output do not crowd the editor surface.
-- The detail header keeps case status, last-outcome summary, and primary actions visible at the top of the detail card, but it intentionally remains in normal document flow (`position: static`) instead of becoming sticky, because zoomed desktop layouts made a sticky header float above the workspace and obscure nearby content.
-- Case list cards should expose short case id, status, recent run context, and direct run/detail actions, plus lightweight search/filter by `case id` or prompt keywords.
+- The detail header keeps case status, last-outcome summary, chain-summary rail, and primary actions visible at the top of the detail card, but it intentionally remains in normal document flow (`position: static`) instead of becoming sticky, because zoomed desktop layouts made a sticky header float above the workspace and obscure nearby content.
+- Case list stays single-list-first, adds lightweight `全部 / 链式 / 普通` filtering, and cards should expose short case id, status, recent run context, and direct run/detail actions.
+- Chain cases must be derived from `getSkillTestChainPlanningMeta(testCase)` and rendered with a compact rail in the card header; long chains collapse to `first / gap / current / last` or `first / +N / last` instead of stretching the whole card.
 - Empty, loading, and failure states should point to the next action (`generate`, `manual create`, `retry`, `clear filter`) instead of leaving the workspace blank.
 
 ## Implementation Files
@@ -555,13 +894,27 @@ Frontend (`public/skill-tests.js`) consumes structured validation/evaluation:
 
 - `lib/skill-test-generator.ts`
 - `server/api/skill-test-controller.ts`
+- `server/domain/skill-test/chain-runner.ts`
 - `server/domain/skill-test/environment-chain.ts`
+- `server/domain/skill-test/run-executor.ts`
 - `storage/sqlite/migrations.ts`
 - `tests/skill-test/skill-test-generator.test.js`
 - `tests/skill-test/skill-test-schema.test.js`
 - `tests/skill-test/skill-test-e2e.test.js`
 - `tests/storage/run-store.test.js`
+- `public/eval-cases.html`
 - `public/skill-tests.js`
+- `public/skill-tests/panel-state-view.js`
+- `public/skill-tests/summary-view.js`
+- `public/skill-tests/selected-skill-overview-view.js`
+- `public/skill-tests/chain-rail-view.js`
+- `public/skill-tests/run-detail-view.js`
+- `public/skill-tests/environment-view.js`
+- `public/skill-tests/case-list-view.js`
+- `public/skill-tests/case-runs-view.js`
+- `public/skill-tests/case-detail-view.js`
+- `public/skill-tests/case-detail-data-view.js`
+- `public/skill-tests/case-form-view.js`
 
 ### Integration Points
 

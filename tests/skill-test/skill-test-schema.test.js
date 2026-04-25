@@ -16,6 +16,14 @@ const {
   getSkillTestIsolationFailureMessage,
   normalizeSkillTestIsolationOptions,
 } = require('../../build/server/domain/skill-test/isolation');
+const {
+  buildSkillTestDraftInputFromMatrixRow,
+  normalizeSkillTestMatrix,
+} = require('../../build/server/domain/skill-test/chat-workbench-mode');
+const {
+  buildTestingDocDraftFromSkillContext,
+  normalizeTestingDocDraft,
+} = require('../../build/server/domain/skill-test/testing-doc-draft');
 
 function createTestDb() {
   const db = new Database(':memory:');
@@ -37,6 +45,9 @@ test('migrateSkillTestSchema creates tables without error', () => {
 
   assert.ok(tables.includes('skill_test_cases'), 'skill_test_cases table should exist');
   assert.ok(tables.includes('skill_test_runs'), 'skill_test_runs table should exist');
+  assert.ok(tables.includes('skill_test_environment_assets'), 'skill_test_environment_assets table should exist');
+  assert.ok(tables.includes('skill_test_chain_runs'), 'skill_test_chain_runs table should exist');
+  assert.ok(tables.includes('skill_test_chain_run_steps'), 'skill_test_chain_run_steps table should exist');
 
   const caseColumns = db.prepare('PRAGMA table_info(skill_test_cases)').all().map((row) => row.name);
   assert.ok(caseColumns.includes('expected_steps_json'));
@@ -44,10 +55,31 @@ test('migrateSkillTestSchema creates tables without error', () => {
   assert.ok(caseColumns.includes('generation_provider'));
   assert.ok(caseColumns.includes('generation_model'));
   assert.ok(caseColumns.includes('generation_created_at'));
+  assert.ok(caseColumns.includes('source_metadata_json'));
 
   const runColumns = db.prepare('PRAGMA table_info(skill_test_runs)').all().map((row) => row.name);
   assert.ok(runColumns.includes('environment_status'));
   assert.ok(runColumns.includes('environment_phase'));
+
+  const environmentAssetColumns = db.prepare('PRAGMA table_info(skill_test_environment_assets)').all().map((row) => row.name);
+  assert.ok(environmentAssetColumns.includes('skill_id'));
+  assert.ok(environmentAssetColumns.includes('env_profile'));
+  assert.ok(environmentAssetColumns.includes('image'));
+  assert.ok(environmentAssetColumns.includes('manifest_hash'));
+  assert.ok(environmentAssetColumns.includes('source_metadata_json'));
+
+  const chainRunColumns = db.prepare('PRAGMA table_info(skill_test_chain_runs)').all().map((row) => row.name);
+  assert.ok(chainRunColumns.includes('export_chain_id'));
+  assert.ok(chainRunColumns.includes('bootstrap_status'));
+  assert.ok(chainRunColumns.includes('teardown_status'));
+  assert.ok(chainRunColumns.includes('warning_flags_json'));
+  assert.ok(chainRunColumns.includes('teardown_evidence_json'));
+
+  const chainStepColumns = db.prepare('PRAGMA table_info(skill_test_chain_run_steps)').all().map((row) => row.name);
+  assert.ok(chainStepColumns.includes('depends_on_step_ids_json'));
+  assert.ok(chainStepColumns.includes('skill_test_run_id'));
+  assert.ok(chainStepColumns.includes('carry_forward_json'));
+  assert.ok(chainStepColumns.includes('artifact_refs_json'));
 
   db.close();
 });
@@ -57,6 +89,194 @@ test('migrateSkillTestSchema is idempotent', () => {
   // Run migration again — should not throw
   assert.doesNotThrow(() => migrateSkillTestSchema(db));
   db.close();
+});
+
+test('source_metadata_json preserves skill test design audit metadata', () => {
+  const db = createTestDb();
+  const now = new Date().toISOString();
+  const sourceMetadata = {
+    source: 'skill_test_chat_workbench',
+    conversationId: 'conv-1',
+    messageId: 'msg-1',
+    matrixId: 'matrix-1',
+    matrixRowId: 'row-1',
+    agentRole: 'scribe',
+    exportedBy: 'user',
+    exportedAt: now,
+    skillTestDesign: {
+      environmentContractRef: 'TESTING.md#Bootstrap',
+      environmentSource: 'skill_contract',
+      chainPlanning: {
+        chainId: 'chain-1',
+        dependsOnRowIds: ['row-0'],
+        dependsOnCaseIds: ['tc-000'],
+        exportedCaseId: 'tc-006',
+      },
+    },
+  };
+
+  db.prepare(`
+    INSERT INTO skill_test_cases (
+      id, skill_id, test_type, loading_mode, trigger_prompt,
+      source_metadata_json, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    'tc-006', 'demo-skill', 'trigger', 'dynamic', 'load the demo skill',
+    JSON.stringify(sourceMetadata), now, now
+  );
+
+  const row = db.prepare('SELECT source_metadata_json FROM skill_test_cases WHERE id = ?').get('tc-006');
+  const parsed = JSON.parse(row.source_metadata_json);
+  assert.equal(parsed.source, 'skill_test_chat_workbench');
+  assert.equal(parsed.conversationId, 'conv-1');
+  assert.equal(parsed.messageId, 'msg-1');
+  assert.equal(parsed.matrixId, 'matrix-1');
+  assert.equal(parsed.matrixRowId, 'row-1');
+  assert.equal(parsed.skillTestDesign.environmentContractRef, 'TESTING.md#Bootstrap');
+  assert.equal(parsed.skillTestDesign.environmentSource, 'skill_contract');
+  assert.deepEqual(parsed.skillTestDesign.chainPlanning.dependsOnCaseIds, ['tc-000']);
+  assert.equal(parsed.skillTestDesign.chainPlanning.exportedCaseId, 'tc-006');
+
+  db.close();
+});
+
+test('skill test design draft builder keeps environment and chain metadata out of note', () => {
+  const draft = buildSkillTestDraftInputFromMatrixRow(
+    'demo-skill',
+    { matrixId: 'matrix-structured-note' },
+    {
+      rowId: 'row-verify',
+      scenario: 'verify the skill after bootstrap',
+      priority: 'P1',
+      coverageReason: 'covers the follow-up verification step',
+      testType: 'trigger',
+      loadingMode: 'dynamic',
+      environmentSource: 'skill_contract',
+      environmentContractRef: 'TESTING.md#Verification',
+      scenarioKind: 'chain_step',
+      chainId: 'chain-1',
+      chainName: 'Demo Chain',
+      sequenceIndex: 2,
+      dependsOnRowIds: ['row-bootstrap'],
+      inheritance: ['filesystem'],
+      riskPoints: ['metadata drift'],
+      keyAssertions: ['metadata is structured'],
+      includeInMvp: true,
+      draftingHints: {
+        triggerPrompt: 'verify the demo skill after bootstrap',
+        note: 'human readable note',
+      },
+    },
+    {
+      conversationId: 'conv-structured-note',
+      messageId: 'msg-structured-note',
+      agentRole: 'scribe',
+      exportedBy: 'user',
+    }
+  );
+
+  assert.match(draft.note, /场景：verify the skill after bootstrap/);
+  assert.match(draft.note, /human readable note/);
+  assert.doesNotMatch(draft.note, /environmentSource=/);
+  assert.doesNotMatch(draft.note, /environmentContractRef=/);
+  assert.doesNotMatch(draft.note, /chain=/);
+  assert.equal(draft.sourceMetadata.source, 'skill_test_chat_workbench');
+  assert.equal(draft.sourceMetadata.conversationId, 'conv-structured-note');
+  assert.equal(draft.sourceMetadata.messageId, 'msg-structured-note');
+  assert.equal(draft.sourceMetadata.matrixId, 'matrix-structured-note');
+  assert.equal(draft.sourceMetadata.matrixRowId, 'row-verify');
+  assert.equal(draft.sourceMetadata.skillTestDesign.environmentContractRef, 'TESTING.md#Verification');
+  assert.equal(draft.sourceMetadata.skillTestDesign.environmentSource, 'skill_contract');
+  assert.equal(draft.sourceMetadata.skillTestDesign.chainPlanning.chainId, 'chain-1');
+  assert.deepEqual(draft.sourceMetadata.skillTestDesign.chainPlanning.dependsOnRowIds, ['row-bootstrap']);
+  assert.deepEqual(draft.sourceMetadata.skillTestDesign.chainPlanning.inheritance, ['filesystem']);
+});
+
+test('normalizeSkillTestMatrix defaults chat workbench rows to full execution and accepts includeInExport alias', () => {
+  const matrix = normalizeSkillTestMatrix({
+    kind: 'skill_test_matrix',
+    matrixId: 'matrix-default-full-execution',
+    skillId: 'demo-skill',
+    phase: 'planning_matrix',
+    rows: [
+      {
+        rowId: 'row-1',
+        scenario: 'apply tracked changes to the target document',
+        priority: 'P0',
+        coverageReason: 'default chat-workbench planning should target a complete execution case',
+        riskPoints: ['tracked-change fidelity'],
+        keyAssertions: ['writes the requested edits'],
+        includeInExport: true,
+      },
+    ],
+  }, { skillId: 'demo-skill' });
+
+  assert.equal(matrix.rows[0].testType, 'execution');
+  assert.equal(matrix.rows[0].loadingMode, 'full');
+  assert.equal(matrix.rows[0].includeInMvp, true);
+});
+
+test('TESTING.md draft builder creates structured sections and source kinds from skill context', () => {
+  const draft = buildTestingDocDraftFromSkillContext(
+    {
+      id: 'demo-skill',
+      body: [
+        '# Demo Skill',
+        '',
+        '## Setup',
+        '- npm install demo-cli',
+        '- demo-cli bootstrap',
+        '',
+        '## Verification',
+        '- demo-cli --version',
+        '',
+      ].join('\n'),
+    },
+    {
+      skillId: 'demo-skill',
+      conversationId: 'conv-testing-doc',
+      messageId: 'msg-testing-doc',
+      agentRole: 'scribe',
+      createdBy: 'user',
+      fileExistsAtPreview: false,
+    }
+  );
+
+  assert.equal(draft.skillId, 'demo-skill');
+  assert.equal(draft.targetPath, 'TESTING.md');
+  assert.equal(draft.status, 'proposed');
+  assert.equal(draft.sections.length, 5);
+  assert.equal(draft.sections.find((section) => section.heading === 'Setup').sourceKind, 'skill_md');
+  assert.equal(draft.sections.find((section) => section.heading === 'Verification').sourceKind, 'skill_md');
+  assert.equal(draft.sections.find((section) => section.heading === 'Prerequisites').sourceKind, 'missing');
+  assert.equal(draft.readiness.executionBlocked, true);
+  assert.match(draft.content, /# Testing Environment/);
+  assert.match(draft.content, /## Machine Contract/);
+  assert.match(draft.content, /```skill-test-environment/);
+  assert.match(draft.content, /npm install demo-cli/);
+  assert.doesNotMatch(draft.content, /"installable"/);
+  assert.match(draft.content, /## Setup/);
+  assert.match(draft.content, /## Open Questions/);
+});
+
+test('TESTING.md draft builder rejects unsupported section headings as validation errors', () => {
+  assert.throws(
+    () => normalizeTestingDocDraft({
+      skillId: 'demo-skill',
+      sections: [
+        {
+          heading: 'Random Notes',
+          content: '- should not become a stable TESTING.md section',
+          sourceKind: 'user_supplied',
+        },
+      ],
+    }),
+    (error) => {
+      assert.equal(error.statusCode, 400);
+      assert.ok(error.issues.some((issue) => issue.code === 'testing_doc_section_heading_invalid'));
+      return true;
+    }
+  );
 });
 
 // ---- skill_test_cases CRUD ----
@@ -186,6 +406,7 @@ test('indexes are created correctly', () => {
 
   assert.ok(indexes.includes('idx_skill_test_cases_skill_id'));
   assert.ok(indexes.includes('idx_skill_test_cases_validity'));
+  assert.ok(indexes.includes('idx_skill_test_environment_assets_skill_profile'));
   assert.ok(indexes.includes('idx_skill_test_runs_case_id'));
 
   db.close();
@@ -311,6 +532,26 @@ test('validateAndNormalizeCaseInput preserves canonical expectedSteps with warni
   assert.ok(normalized.issues.some((issue) => issue.code === 'legacy_expected_tools_present'));
 });
 
+test('validateAndNormalizeCaseInput accepts environment-build case type', () => {
+  const normalized = validateAndNormalizeCaseInput({
+    skillId: 'docx',
+    loadingMode: 'dynamic',
+    testType: 'environment-build',
+    userPrompt: '请构建 docx skill 的完整测试环境。',
+    expectedBehavior: '只产出环境 manifest，不执行普通 skill 行为。',
+    environmentConfig: {
+      enabled: true,
+      requirements: [{ kind: 'command', name: 'pandoc' }],
+      bootstrap: { commands: ['apt-get update && apt-get install -y pandoc'] },
+      verify: { commands: ['pandoc --version'] },
+    },
+  });
+
+  assert.equal(normalized.testType, 'environment-build');
+  assert.equal(normalized.loadingMode, 'dynamic');
+  assert.equal(normalized.environmentConfig.bootstrap.commands[0], 'apt-get update && apt-get install -y pandoc');
+});
+
 test('validateAndNormalizeCaseInput accepts environmentConfig', () => {
   const normalized = validateAndNormalizeCaseInput({
     skillId: 'werewolf',
@@ -344,6 +585,15 @@ test('validateAndNormalizeCaseInput accepts environmentConfig', () => {
         mode: 'suggest-patch',
         target: 'TESTING.md',
       },
+      asset: {
+        envProfile: 'full',
+        image: 'caff-skill-env-werewolf:full-123456789abc',
+        imageDigest: 'sha256:image123',
+        baseImageDigest: 'sha256:base123',
+        testingMdHash: 'sha256:testing123',
+        manifestHash: 'sha256:manifest123',
+        buildCaseId: 'build-case-1',
+      },
     },
   });
 
@@ -353,6 +603,9 @@ test('validateAndNormalizeCaseInput accepts environmentConfig', () => {
   assert.equal(normalized.environmentConfig.bootstrap.commands[0], 'python --version');
   assert.equal(normalized.environmentConfig.cache.enabled, true);
   assert.equal(normalized.environmentConfig.cache.paths[0].path, '.venv');
+  assert.equal(normalized.environmentConfig.asset.envProfile, 'full');
+  assert.equal(normalized.environmentConfig.asset.image, 'caff-skill-env-werewolf:full-123456789abc');
+  assert.equal(normalized.environmentConfig.asset.manifestHash, 'sha256:manifest123');
 });
 
 test('normalizeCaseForRun keeps legacy full-mode fields as-is without step derivation', () => {
@@ -925,4 +1178,80 @@ test('validateJudgeOutput strips unknown step and constraint ids and backfills r
   assert.equal(result.judge.steps[0].stepId, 'step-1');
   assert.equal(result.judge.constraintChecks.length, 1);
   assert.equal(result.judge.constraintChecks[0].constraintId, 'confirm-before-action');
+});
+
+test('buildSkillTestDraftInputFromMatrixRow produces environment-build draft without trigger prompt', () => {
+  const draft = buildSkillTestDraftInputFromMatrixRow(
+    'docx',
+    { matrixId: 'matrix-envbuild-1' },
+    {
+      rowId: 'row-envbuild',
+      scenario: 'build test environment for docx skill',
+      priority: 'P0',
+      coverageReason: 'environment-build produces manifest and optional image for docx execution cases',
+      testType: 'environment-build',
+      loadingMode: 'full',
+      environmentSource: 'skill_contract',
+      environmentContractRef: 'TESTING.md#skill-test-environment',
+      riskPoints: ['pandoc not available in base image'],
+      keyAssertions: ['environment-manifest.json is produced'],
+      includeInMvp: true,
+      draftingHints: {
+        environmentConfig: {
+          enabled: true,
+          requirements: [{ kind: 'command', name: 'pandoc' }],
+          bootstrap: { commands: ['apt-get update && apt-get install -y pandoc'] },
+          verify: { commands: ['pandoc --version'] },
+        },
+      },
+    },
+    {
+      conversationId: 'conv-envbuild',
+      messageId: 'msg-envbuild',
+      agentRole: 'scribe',
+      exportedBy: 'user',
+    }
+  );
+
+  assert.equal(draft.skillId, 'docx');
+  assert.equal(draft.testType, 'environment-build');
+  assert.equal(draft.loadingMode, 'full');
+  assert.equal(Object.prototype.hasOwnProperty.call(draft, 'triggerPrompt'), false);
+  assert.ok(draft.userPrompt.includes('docx'));
+  assert.equal(draft.expectedTools.length, 0);
+  assert.equal(draft.caseStatus, 'draft');
+  assert.deepEqual(draft.environmentConfig.requirements[0], { kind: 'command', name: 'pandoc' });
+  assert.equal(draft.sourceMetadata.source, 'skill_test_chat_workbench');
+  assert.equal(draft.sourceMetadata.matrixId, 'matrix-envbuild-1');
+  assert.equal(draft.sourceMetadata.matrixRowId, 'row-envbuild');
+  assert.equal(draft.sourceMetadata.skillTestDesign.environmentSource, 'skill_contract');
+  assert.equal(draft.sourceMetadata.skillTestDesign.environmentContractRef, 'TESTING.md#skill-test-environment');
+});
+
+test('buildSkillTestDraftInputFromMatrixRow environment-build with empty environmentConfig still exports', () => {
+  const draft = buildSkillTestDraftInputFromMatrixRow(
+    'docx',
+    { matrixId: 'matrix-envbuild-2' },
+    {
+      rowId: 'row-envbuild-noconfig',
+      scenario: 'build docx environment without explicit config',
+      priority: 'P1',
+      coverageReason: 'contract-driven, reads from TESTING.md',
+      testType: 'environment-build',
+      loadingMode: 'full',
+      environmentSource: 'skill_contract',
+      environmentContractRef: 'TESTING.md#skill-test-environment',
+      keyAssertions: ['reads contract from TESTING.md'],
+      includeInMvp: true,
+    },
+    {
+      conversationId: 'conv-envbuild-2',
+      messageId: 'msg-envbuild-2',
+    }
+  );
+
+  assert.equal(draft.testType, 'environment-build');
+  assert.equal(Object.prototype.hasOwnProperty.call(draft, 'triggerPrompt'), false);
+  assert.deepEqual(draft.environmentConfig, {});
+  assert.equal(draft.sourceMetadata.skillTestDesign.environmentContractRef, 'TESTING.md#skill-test-environment');
 });
