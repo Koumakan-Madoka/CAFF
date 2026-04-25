@@ -1,0 +1,7 @@
+{"file": ".agents/skills/finish-work/SKILL.md", "reason": "Finish work checklist"}
+{"file": ".agents/skills/check/SKILL.md", "reason": "Code quality check spec"}
+{"file": ".trellis/spec/backend/controller-patterns.md", "reason": "Check controller validation and errors"}
+{"file": ".trellis/spec/backend/feishu-integration.md", "reason": "Check Feishu binding behavior"}
+{"file": ".trellis/spec/frontend/ui-structure.md", "reason": "Check UI structure"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Check cross-layer contract"}
+{"at":"2026-04-21T20:57:43+08:00","status_update":"Final finish-work validation completed after PR #39 merge; task metadata and PRD acceptance criteria updated for archival.","completed":["Ran npm run typecheck","Ran npm test","Confirmed PR #39 merged to origin/main at 299d713"],"remaining":[]}

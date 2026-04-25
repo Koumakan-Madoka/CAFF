@@ -1,0 +1,52 @@
+{
+  "id": "feishu-bind-current-conversation",
+  "name": "feishu-bind-current-conversation",
+  "title": "Bind Current Conversation To Feishu Chat",
+  "description": "",
+  "status": "completed",
+  "dev_type": "fullstack",
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "菲比啾比",
+  "assignee": "菲比啾比",
+  "createdAt": "2026-04-21",
+  "completedAt": "2026-04-21",
+  "branch": "feat/feishu-conversation-binding",
+  "base_branch": "main",
+  "worktree_path": null,
+  "current_phase": 4,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "check"
+    },
+    {
+      "phase": 3,
+      "action": "finish"
+    },
+    {
+      "phase": 4,
+      "action": "create-pr"
+    }
+  ],
+  "commit": "7036ad8",
+  "pr_url": "https://github.com/Koumakan-Madoka/CAFF/pull/39",
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "server/api/conversations-controller.ts",
+    "public/index.html",
+    "public/app.js",
+    "public/chat/conversation-settings.js",
+    "tests/smoke/server-smoke.test.js",
+    ".trellis/spec/backend/feishu-integration.md"
+  ],
+  "notes": "Implemented and merged the MVP manual Feishu conversation binding flow via PR #39; final typecheck and full test suite passed before archival.",
+  "meta": {}
+}

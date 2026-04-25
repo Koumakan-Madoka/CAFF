@@ -9,7 +9,7 @@
     helpers,
     showToast,
   }) {
-    const { buildAgentAvatarElement, normalizedSkillIds } = helpers;
+    const { buildAgentAvatarElement, formatDateTime, isConversationBusy, normalizedSkillIds } = helpers;
 
     function skillById(skillId) {
       return state.skills.find((skill) => skill.id === skillId) || null;
@@ -44,6 +44,73 @@
       });
 
       dom.bulkSkillSelect.value = selectedSkillId && state.skills.some((skill) => skill.id === selectedSkillId) ? selectedSkillId : '';
+    }
+
+    function knownFeishuChats() {
+      return Array.isArray(state.knownFeishuChats) ? state.knownFeishuChats.filter((chat) => chat && chat.chatId) : [];
+    }
+
+    function currentFeishuBinding(conversation) {
+      if (!conversation) {
+        return null;
+      }
+
+      return knownFeishuChats().find((chat) => chat.conversationId === conversation.id) || null;
+    }
+
+    function feishuChatKind(chat) {
+      const chatType = String(chat && chat.chatType ? chat.chatType : '').trim().toLowerCase();
+      return chatType === 'p2p' ? '私聊' : '群聊';
+    }
+
+    function feishuChatSuffix(chatId) {
+      const value = String(chatId || '').trim();
+      return value ? value.slice(-8) : 'unknown';
+    }
+
+    function feishuChatLabel(chat) {
+      const chatId = String(chat && chat.chatId ? chat.chatId : '').trim();
+      const parts = [`飞书${feishuChatKind(chat)} ${feishuChatSuffix(chatId)}`];
+      const conversationTitle = String(chat && chat.conversationTitle ? chat.conversationTitle : '').trim();
+      const lastActivityAt = String(chat && chat.lastActivityAt ? chat.lastActivityAt : '').trim();
+
+      if (conversationTitle) {
+        parts.push(`当前绑定：${conversationTitle}`);
+      }
+
+      if (lastActivityAt && typeof formatDateTime === 'function') {
+        parts.push(`最近活动：${formatDateTime(lastActivityAt)}`);
+      }
+
+      return parts.join(' · ');
+    }
+
+    function fillFeishuChatSelect(selectedChatId = '') {
+      if (!dom.feishuChatSelect) {
+        return;
+      }
+
+      const chats = knownFeishuChats();
+      dom.feishuChatSelect.innerHTML = '';
+
+      const defaultOption = document.createElement('option');
+      defaultOption.value = '';
+      defaultOption.textContent = state.loadingFeishuChats
+        ? '正在加载已知飞书聊天...'
+        : chats.length > 0
+          ? '从已知飞书聊天里选一个...'
+          : '暂无已知飞书聊天';
+      dom.feishuChatSelect.appendChild(defaultOption);
+
+      chats.forEach((chat) => {
+        const option = document.createElement('option');
+        option.value = chat.chatId;
+        option.textContent = feishuChatLabel(chat);
+        option.title = chat.chatId;
+        dom.feishuChatSelect.appendChild(option);
+      });
+
+      dom.feishuChatSelect.value = selectedChatId && chats.some((chat) => chat.chatId === selectedChatId) ? selectedChatId : '';
     }
 
     function renderSkillChecklist(container, inputName, selectedSkillIds, disabled) {
@@ -356,13 +423,22 @@
     function render() {
       const conversation = state.currentConversation;
       const disabled = !conversation || state.sending;
+      const conversationBusy = Boolean(conversation && typeof isConversationBusy === 'function' && isConversationBusy(conversation.id));
+      const conversationFeishuBinding = currentFeishuBinding(conversation);
       const disableSkillControls = disabled || state.agents.length === 0 || state.skills.length === 0;
+      const disableFeishuBinding = disabled || conversationBusy || Boolean(state.bindingFeishuChat) || Boolean(conversationFeishuBinding);
+      const disableFeishuChatSelection = disableFeishuBinding || Boolean(state.loadingFeishuChats);
 
       if (dom.saveConversationButton) {
         dom.saveConversationButton.disabled = disabled;
       }
 
       fillBulkSkillSelect(dom.bulkSkillSelect ? dom.bulkSkillSelect.value : '');
+      fillFeishuChatSelect(
+        conversationFeishuBinding
+          ? conversationFeishuBinding.chatId
+          : (dom.feishuChatIdInput && dom.feishuChatIdInput.value.trim()) || (dom.feishuChatSelect && dom.feishuChatSelect.value.trim()) || ''
+      );
 
       if (dom.bulkSkillSelect) {
         dom.bulkSkillSelect.disabled = disableSkillControls;
@@ -374,6 +450,43 @@
 
       if (dom.clearBulkSkillButton) {
         dom.clearBulkSkillButton.disabled = disabled;
+      }
+
+      if (dom.feishuChatSelect) {
+        dom.feishuChatSelect.disabled = disableFeishuChatSelection;
+      }
+
+      if (dom.feishuChatIdInput) {
+        dom.feishuChatIdInput.disabled = disabled || conversationBusy || Boolean(state.bindingFeishuChat);
+        dom.feishuChatIdInput.readOnly = Boolean(conversationFeishuBinding);
+        if (conversationFeishuBinding) {
+          dom.feishuChatIdInput.value = conversationFeishuBinding.chatId;
+        }
+      }
+
+      if (dom.bindFeishuChatButton) {
+        dom.bindFeishuChatButton.disabled = disableFeishuBinding;
+        dom.bindFeishuChatButton.textContent = state.bindingFeishuChat ? '绑定中...' : '绑定到当前会话';
+      }
+
+      if (dom.feishuBindingStatus) {
+        const notice =
+          conversation && state.feishuBindingNoticeConversationId === conversation.id
+            ? String(state.feishuBindingNotice || '').trim()
+            : '';
+        dom.feishuBindingStatus.textContent = notice || (
+          !conversation
+            ? '选中一个会话后，再选择或输入飞书 chat_id。'
+            : conversationBusy
+              ? '当前会话正在处理消息，结束后才能切换飞书绑定。'
+              : conversationFeishuBinding
+                ? `当前会话已绑定：${feishuChatLabel(conversationFeishuBinding)}。如需换绑，后续再做确认流程。`
+                : state.loadingFeishuChats
+                  ? '正在加载已知飞书聊天...'
+                  : knownFeishuChats().length === 0
+                    ? '还没有已知飞书聊天；先让飞书那边给机器人发过消息，或手动输入 chat_id。'
+                    : '可从已知飞书聊天里选择，也可手动输入 chat_id。'
+        );
       }
 
       dom.conversationAgentOptions.innerHTML = '';
