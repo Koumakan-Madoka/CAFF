@@ -690,7 +690,7 @@ export function createSkillTestDesignService(options: any = {}) {
           AND test_type = ?
         ORDER BY updated_at DESC, created_at DESC
         LIMIT 100
-      `).all(skillId, 'environment-build');
+      `).all(skillId, 'environment-build') as SkillTestStoredDraftRow[];
 
       return rows
         .map((row: SkillTestStoredDraftRow) => buildSkillTestDraftMatch(row))
@@ -716,7 +716,7 @@ export function createSkillTestDesignService(options: any = {}) {
         AND test_type = ?
       ORDER BY updated_at DESC, created_at DESC
       LIMIT 100
-    `).all(skillId, draftInput.loadingMode || 'dynamic', draftInput.testType || 'trigger');
+    `).all(skillId, draftInput.loadingMode || 'dynamic', draftInput.testType || 'trigger') as SkillTestStoredDraftRow[];
 
     return rows
       .map((row: SkillTestStoredDraftRow) => buildSkillTestDraftMatch(row))
@@ -755,9 +755,9 @@ export function createSkillTestDesignService(options: any = {}) {
       WHERE skill_id = ?
       ORDER BY updated_at DESC, created_at DESC
       LIMIT 200
-    `).all(skillId);
+    `).all(skillId) as SkillTestStoredDraftRow[];
 
-    const candidates = rows
+    const candidates: SkillTestConversationDraftCandidate[] = rows
       .map((storedRow: SkillTestStoredDraftRow) => buildSkillTestConversationDraftCandidate(storedRow))
       .filter((candidate) => candidate.id && !excludedCaseIds.has(candidate.id))
       .filter((candidate) => candidate.caseStatus === 'draft')
