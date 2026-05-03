@@ -130,6 +130,131 @@ test('agent tool bridge rejects stale invocations after a turn stops or complete
   );
 });
 
+test('agent tool bridge creates pending session goal proposals without mutating the goal', (t) => {
+  const tempDir = withTempDir('caff-agent-tool-goal-proposal-');
+  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const broadcastEvents = [];
+  const summaryEvents = [];
+  const bridge = createAgentToolBridge({
+    store,
+    broadcastEvent(eventName, payload) {
+      broadcastEvents.push({ eventName, payload });
+    },
+    broadcastConversationSummary(conversationId) {
+      summaryEvents.push(conversationId);
+    },
+  });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const fixture = createPublicInvocationFixture(store, 'goal-proposal');
+  store.updateConversation(fixture.conversation.id, {
+    metadata: {
+      sessionGoal: {
+        objective: 'Finish a long task',
+        status: 'active',
+        createdAt: '2026-05-03T00:00:00.000Z',
+        updatedAt: '2026-05-03T00:00:00.000Z',
+      },
+    },
+  });
+  const context = bridge.registerInvocation(
+    bridge.createInvocationContext({
+      conversationId: fixture.conversation.id,
+      turnId: fixture.assistantMessage.turnId,
+      agentId: fixture.agent.id,
+      agentName: fixture.agent.name,
+      assistantMessageId: fixture.assistantMessage.id,
+      conversationAgents: fixture.conversation.agents,
+      stage: fixture.stage,
+      turnState: fixture.turnState,
+    })
+  );
+
+  const result = bridge.handleSuggestGoal({
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    action: 'complete',
+    reason: 'All requested work appears done',
+  });
+
+  const updatedConversation = store.getConversation(fixture.conversation.id);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.goal.status, 'active');
+  assert.equal(result.proposal.action, 'complete');
+  assert.equal(result.proposal.reason, 'All requested work appears done');
+  assert.equal(updatedConversation.metadata.sessionGoal.status, 'active');
+  assert.equal(updatedConversation.metadata.sessionGoalProposal.action, 'complete');
+  assert.ok(broadcastEvents.some((event) => event.eventName === 'conversation_goal_proposal_updated'));
+  assert.deepEqual(summaryEvents, [fixture.conversation.id]);
+});
+
+test('agent tool bridge updates session goal checklist progress', (t) => {
+  const tempDir = withTempDir('caff-agent-tool-goal-checklist-');
+  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const broadcastEvents = [];
+  const bridge = createAgentToolBridge({
+    store,
+    broadcastEvent(eventName, payload) {
+      broadcastEvents.push({ eventName, payload });
+    },
+  });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const fixture = createPublicInvocationFixture(store, 'goal-checklist');
+  store.updateConversation(fixture.conversation.id, {
+    metadata: {
+      sessionGoal: {
+        objective: 'Finish a long task',
+        status: 'active',
+        createdAt: '2026-05-03T00:00:00.000Z',
+        updatedAt: '2026-05-03T00:00:00.000Z',
+      },
+    },
+  });
+  const context = bridge.registerInvocation(
+    bridge.createInvocationContext({
+      conversationId: fixture.conversation.id,
+      turnId: fixture.assistantMessage.turnId,
+      agentId: fixture.agent.id,
+      agentName: fixture.agent.name,
+      assistantMessageId: fixture.assistantMessage.id,
+      conversationAgents: fixture.conversation.agents,
+      stage: fixture.stage,
+      turnState: fixture.turnState,
+    })
+  );
+
+  const result = bridge.handleUpdateGoalChecklist({
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    checklistText: '[x] Plan\n[~] Implement\n[ ] Validate',
+  });
+
+  const updatedGoal = store.getConversation(fixture.conversation.id).metadata.sessionGoal;
+
+  assert.equal(result.ok, true);
+  assert.equal(result.checklist.length, 3);
+  assert.equal(updatedGoal.status, 'active');
+  assert.equal(updatedGoal.checklist[0].status, 'done');
+  assert.equal(updatedGoal.checklist[1].status, 'in_progress');
+  assert.ok(broadcastEvents.some((event) => event.eventName === 'conversation_goal_updated'));
+});
+
 test('agent tool bridge enforces skill-test run and case auth scope', (t) => {
   const tempDir = withTempDir('caff-agent-tool-bridge-skill-test-auth-');
   const sqlitePath = path.join(tempDir, 'bridge.sqlite');

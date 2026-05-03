@@ -4,6 +4,7 @@ const path = require('node:path');
 const { createHttpError } = require('../../http/http-errors');
 const { pickConversationSummary, serializeConversationPrivateMessageForUi } = require('../conversation/conversation-view');
 const { buildAgentMentionLookup, formatAgentMention, resolveMentionValues } = require('../conversation/mention-routing');
+const { applySessionGoalAction, proposeSessionGoalAction } = require('../conversation/session-goal');
 const { createLiveBridgeToolStep } = require('./message-tool-trace');
 
 const MAX_HISTORY_MESSAGES = 24;
@@ -1415,6 +1416,279 @@ export function createAgentToolBridge(options: any = {}) {
         agentId: context.agentId,
         agentName: context.agentName,
         assistantMessageId: context.assistantMessageId,
+        error: {
+          statusCode: Number.isInteger(errorValue && errorValue.statusCode) ? errorValue.statusCode : null,
+          message: clipText(errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Unknown error')),
+        },
+      });
+
+      throw error;
+    } finally {
+      setContextCurrentTool(context, null);
+    }
+  }
+
+  function handleSuggestGoal(body: any = {}) {
+    const startedAt = Date.now();
+    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
+    const activeStore = resolveContextStore(context);
+    const action = String(body.action || '').trim().toLowerCase();
+    const objective = String(body.objective || '').trim();
+    const reason = String(body.reason || '').trim();
+    const toolCallId = randomUUID();
+
+    setContextCurrentTool(context, {
+      toolName: 'suggest-goal',
+      toolKind: 'bridge',
+      toolStepId: toolCallId,
+      inferred: false,
+      request: {
+        action,
+        objectiveLength: objective.length,
+        reasonPreview: clipText(reason, 120),
+      },
+    });
+
+    try {
+      ensureToolAllowed(context, 'suggest-goal', { action });
+
+      if (context.dryRun) {
+        const response = {
+          ok: true,
+          dryRun: true,
+          proposal: {
+            action,
+            status: 'pending',
+            ...(objective ? { objective } : {}),
+            ...(reason ? { reason: clipText(reason, 1000) } : {}),
+            proposedBy: {
+              agentId: context.agentId,
+              agentName: context.agentName,
+            },
+            createdAt: nowIso(),
+          },
+        };
+
+        tryAppendInvocationEvent(context, 'agent_tool_call', {
+          schemaVersion: 1,
+          toolCallId,
+          tool: 'suggest-goal',
+          status: 'succeeded',
+          durationMs: Date.now() - startedAt,
+          invocationId: context.invocationId,
+          conversationId: context.conversationId,
+          turnId: context.turnId,
+          agentId: context.agentId,
+          agentName: context.agentName,
+          assistantMessageId: context.assistantMessageId,
+          request: {
+            action,
+            objectiveLength: objective.length,
+            reasonPreview: clipText(reason, 120),
+          },
+          result: {
+            dryRun: true,
+            proposalAction: action,
+          },
+        });
+
+        return response;
+      }
+
+      if (!activeStore || typeof activeStore.getConversation !== 'function') {
+        throw createHttpError(501, 'Session goal proposals are not available');
+      }
+
+      const result = proposeSessionGoalAction(
+        activeStore,
+        context.conversationId,
+        { action, objective, reason },
+        { agentId: context.agentId, agentName: context.agentName }
+      );
+      const summary = pickConversationSummary(result.conversation);
+
+      broadcastEvent('conversation_goal_proposal_updated', {
+        conversationId: context.conversationId,
+        goal: result.goal,
+        proposal: result.proposal,
+        conversation: result.conversation,
+        summary,
+      });
+      broadcastConversationSummary(context.conversationId);
+
+      const response = {
+        ok: true,
+        conversation: summary,
+        goal: result.goal,
+        proposal: result.proposal,
+      };
+
+      tryAppendInvocationEvent(context, 'agent_tool_call', {
+        schemaVersion: 1,
+        toolCallId,
+        tool: 'suggest-goal',
+        status: 'succeeded',
+        durationMs: Date.now() - startedAt,
+        invocationId: context.invocationId,
+        conversationId: context.conversationId,
+        turnId: context.turnId,
+        agentId: context.agentId,
+        agentName: context.agentName,
+        assistantMessageId: context.assistantMessageId,
+        request: {
+          action,
+          objectiveLength: objective.length,
+          reasonPreview: clipText(reason, 120),
+        },
+        result: {
+          proposalAction: result.proposal ? result.proposal.action : '',
+          goalStatus: result.goal ? result.goal.status : '',
+        },
+      });
+
+      return response;
+    } catch (error) {
+      const errorValue = error as any;
+      tryAppendInvocationEvent(context, 'agent_tool_call', {
+        schemaVersion: 1,
+        toolCallId,
+        tool: 'suggest-goal',
+        status: 'failed',
+        durationMs: Date.now() - startedAt,
+        invocationId: context.invocationId,
+        conversationId: context.conversationId,
+        turnId: context.turnId,
+        agentId: context.agentId,
+        agentName: context.agentName,
+        assistantMessageId: context.assistantMessageId,
+        request: {
+          action,
+          objectiveLength: objective.length,
+          reasonPreview: clipText(reason, 120),
+        },
+        error: {
+          statusCode: Number.isInteger(errorValue && errorValue.statusCode) ? errorValue.statusCode : null,
+          message: clipText(errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Unknown error')),
+        },
+      });
+
+      throw error;
+    } finally {
+      setContextCurrentTool(context, null);
+    }
+  }
+
+  function handleUpdateGoalChecklist(body: any = {}) {
+    const startedAt = Date.now();
+    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
+    const activeStore = resolveContextStore(context);
+    const checklistText = String(body.checklistText || body.checklist_text || body.content || '').trim();
+    const toolCallId = randomUUID();
+
+    setContextCurrentTool(context, {
+      toolName: 'update-goal-checklist',
+      toolKind: 'bridge',
+      toolStepId: toolCallId,
+      inferred: false,
+      request: {
+        checklistLength: checklistText.length,
+      },
+    });
+
+    try {
+      ensureToolAllowed(context, 'update-goal-checklist');
+
+      if (context.dryRun) {
+        const response = {
+          ok: true,
+          dryRun: true,
+          checklistLength: checklistText.length,
+        };
+
+        tryAppendInvocationEvent(context, 'agent_tool_call', {
+          schemaVersion: 1,
+          toolCallId,
+          tool: 'update-goal-checklist',
+          status: 'succeeded',
+          durationMs: Date.now() - startedAt,
+          invocationId: context.invocationId,
+          conversationId: context.conversationId,
+          turnId: context.turnId,
+          agentId: context.agentId,
+          agentName: context.agentName,
+          assistantMessageId: context.assistantMessageId,
+          request: { checklistLength: checklistText.length },
+          result: { dryRun: true },
+        });
+
+        return response;
+      }
+
+      if (!activeStore || typeof activeStore.getConversation !== 'function') {
+        throw createHttpError(501, 'Session goal checklist updates are not available');
+      }
+
+      const result = applySessionGoalAction(activeStore, context.conversationId, {
+        action: 'update-checklist',
+        checklistText,
+      });
+      const summary = pickConversationSummary(result.conversation);
+
+      broadcastEvent('conversation_goal_updated', {
+        conversationId: context.conversationId,
+        goal: result.goal,
+        proposal: result.proposal,
+        conversation: result.conversation,
+        summary,
+      });
+      broadcastEvent('conversation_summary_updated', {
+        conversationId: context.conversationId,
+        summary,
+      });
+      broadcastConversationSummary(context.conversationId);
+
+      const response = {
+        ok: true,
+        conversation: summary,
+        goal: result.goal,
+        checklist: result.goal && Array.isArray(result.goal.checklist) ? result.goal.checklist : [],
+      };
+
+      tryAppendInvocationEvent(context, 'agent_tool_call', {
+        schemaVersion: 1,
+        toolCallId,
+        tool: 'update-goal-checklist',
+        status: 'succeeded',
+        durationMs: Date.now() - startedAt,
+        invocationId: context.invocationId,
+        conversationId: context.conversationId,
+        turnId: context.turnId,
+        agentId: context.agentId,
+        agentName: context.agentName,
+        assistantMessageId: context.assistantMessageId,
+        request: { checklistLength: checklistText.length },
+        result: {
+          checklistCount: response.checklist.length,
+          goalStatus: result.goal ? result.goal.status : '',
+        },
+      });
+
+      return response;
+    } catch (error) {
+      const errorValue = error as any;
+      tryAppendInvocationEvent(context, 'agent_tool_call', {
+        schemaVersion: 1,
+        toolCallId,
+        tool: 'update-goal-checklist',
+        status: 'failed',
+        durationMs: Date.now() - startedAt,
+        invocationId: context.invocationId,
+        conversationId: context.conversationId,
+        turnId: context.turnId,
+        agentId: context.agentId,
+        agentName: context.agentName,
+        assistantMessageId: context.assistantMessageId,
+        request: { checklistLength: checklistText.length },
         error: {
           statusCode: Number.isInteger(errorValue && errorValue.statusCode) ? errorValue.statusCode : null,
           message: clipText(errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Unknown error')),
@@ -2892,6 +3166,8 @@ export function createAgentToolBridge(options: any = {}) {
     handleSandboxWrite,
     handleSaveMemory,
     handleSearchMessages,
+    handleSuggestGoal,
+    handleUpdateGoalChecklist,
     handleTrellisInit,
     handleTrellisWrite,
     handleUpdateMemory,

@@ -168,6 +168,7 @@ function createConversationsControllerHarness(t, options = {}) {
     activeTurns: [],
     activeAgentSlots: [],
   };
+  const broadcastEvents = [];
   const handler = createConversationsController({
     store,
     turnOrchestrator: {
@@ -181,6 +182,9 @@ function createConversationsControllerHarness(t, options = {}) {
     buildBootstrapPayload() {
       return { conversations: store.listConversations(), agents: [], runtime: runtimePayload };
     },
+    broadcastEvent(eventName, payload) {
+      broadcastEvents.push({ eventName, payload });
+    },
     modeStore: { get() { return null; } },
   });
 
@@ -191,8 +195,281 @@ function createConversationsControllerHarness(t, options = {}) {
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  return { handler, store };
+  return { handler, store, broadcastEvents };
 }
+
+test('conversations controller manages session goal lifecycle in metadata', async (t) => {
+  const { handler, store, broadcastEvents } = createConversationsControllerHarness(t);
+  const conversation = store.createConversation({
+    id: 'goal-conversation',
+    title: 'Goal Conversation',
+  });
+
+  const setResult = await invokeConversationsController(handler, {
+    method: 'POST',
+    pathname: `/api/conversations/${conversation.id}/goal`,
+    body: {
+      action: 'set',
+      objective: 'Ship a CAFF session goal MVP',
+      checklistText: '[x] Add goal API\n[~] Build goal panel\n[ ] Run validation',
+    },
+  });
+
+  assert.equal(setResult.handled, true);
+  assert.equal(setResult.statusCode, 200);
+  assert.equal(setResult.json.goal.objective, 'Ship a CAFF session goal MVP');
+  assert.equal(setResult.json.goal.status, 'active');
+  assert.equal(setResult.json.conversation.metadata.sessionGoal.objective, 'Ship a CAFF session goal MVP');
+  assert.equal(setResult.json.summary.metadata.sessionGoal.status, 'active');
+  assert.equal(setResult.json.goal.checklist.length, 3);
+  assert.equal(setResult.json.goal.checklist[0].status, 'done');
+  assert.equal(setResult.json.goal.checklist[1].status, 'in_progress');
+
+  const checklistResult = await invokeConversationsController(handler, {
+    method: 'POST',
+    pathname: `/api/conversations/${conversation.id}/goal`,
+    body: {
+      action: 'update-checklist',
+      checklistText: '[x] Add goal API\n[x] Build goal panel\n[ ] Run validation',
+    },
+  });
+
+  assert.equal(checklistResult.json.goal.status, 'active');
+  assert.equal(checklistResult.json.goal.checklist[1].status, 'done');
+  assert.equal(checklistResult.json.autoContinuation, null);
+
+  const pauseResult = await invokeConversationsController(handler, {
+    method: 'POST',
+    pathname: `/api/conversations/${conversation.id}/goal`,
+    body: { action: 'pause' },
+  });
+
+  assert.equal(pauseResult.json.goal.status, 'paused');
+  assert.equal(store.getConversation(conversation.id).metadata.sessionGoal.status, 'paused');
+
+  const resumeResult = await invokeConversationsController(handler, {
+    method: 'POST',
+    pathname: `/api/conversations/${conversation.id}/goal`,
+    body: { action: 'resume' },
+  });
+
+  assert.equal(resumeResult.json.goal.status, 'active');
+
+  const completeResult = await invokeConversationsController(handler, {
+    method: 'POST',
+    pathname: `/api/conversations/${conversation.id}/goal`,
+    body: { action: 'complete' },
+  });
+
+  assert.equal(completeResult.json.goal.status, 'complete');
+  assert.ok(completeResult.json.goal.completedAt);
+
+  const resumeCompleteResult = await invokeConversationsController(handler, {
+    method: 'POST',
+    pathname: `/api/conversations/${conversation.id}/goal`,
+    body: { action: 'resume' },
+  });
+
+  assert.equal(resumeCompleteResult.json.goal.status, 'active');
+  assert.equal(resumeCompleteResult.json.goal.completedAt, undefined);
+
+  const clearResult = await invokeConversationsController(handler, {
+    method: 'POST',
+    pathname: `/api/conversations/${conversation.id}/goal`,
+    body: { action: 'clear' },
+  });
+
+  assert.equal(clearResult.json.goal, null);
+  assert.equal(clearResult.json.cleared, true);
+  assert.equal(store.getConversation(conversation.id).metadata.sessionGoal, undefined);
+  assert.ok(broadcastEvents.some((event) => event.eventName === 'conversation_goal_updated'));
+  assert.ok(broadcastEvents.some((event) => event.eventName === 'conversation_goal_cleared'));
+});
+
+test('conversations controller creates and deletes conversation digests in metadata', async (t) => {
+  const { handler, store, broadcastEvents } = createConversationsControllerHarness(t);
+  const conversation = store.createConversation({
+    id: 'digest-conversation',
+    title: 'Digest Conversation',
+  });
+
+  store.createMessage({
+    id: 'digest-message-1',
+    conversationId: conversation.id,
+    turnId: 'digest-turn-1',
+    role: 'user',
+    senderName: 'User',
+    content: '我们决定先做 Conversation Digest MVP，并需要添加右侧摘要面板。',
+  });
+  store.createMessage({
+    id: 'digest-message-2',
+    conversationId: conversation.id,
+    turnId: 'digest-turn-2',
+    role: 'assistant',
+    senderName: 'Builder',
+    content: '下一步实现 server/domain/conversation/conversation-digest.ts，然后补 tests/runtime/turn-orchestrator.test.js。',
+  });
+
+  const createResult = await invokeConversationsController(handler, {
+    method: 'POST',
+    pathname: `/api/conversations/${conversation.id}/digest`,
+    body: { action: 'create' },
+  });
+
+  assert.equal(createResult.handled, true);
+  assert.equal(createResult.statusCode, 200);
+  assert.equal(createResult.json.digests.length, 1);
+  assert.equal(createResult.json.digest.messageRange.messageCount, 2);
+  assert.equal(createResult.json.conversation.metadata.conversationDigests.length, 1);
+  assert.equal(createResult.json.summary.metadata.conversationDigests.length, 1);
+  assert.ok(createResult.json.digest.decisions.some((item) => item.includes('决定')));
+  assert.ok(createResult.json.digest.nextActions.some((item) => item.includes('下一步')));
+  assert.ok(broadcastEvents.some((event) => event.eventName === 'conversation_digest_updated'));
+  assert.ok(broadcastEvents.some((event) => event.eventName === 'conversation_summary_updated'));
+
+  const deleteResult = await invokeConversationsController(handler, {
+    method: 'POST',
+    pathname: `/api/conversations/${conversation.id}/digest`,
+    body: { action: 'delete', digestId: createResult.json.digest.id },
+  });
+
+  assert.equal(deleteResult.statusCode, 200);
+  assert.equal(deleteResult.json.deleted, true);
+  assert.equal(deleteResult.json.digests.length, 0);
+  assert.equal(store.getConversation(conversation.id).metadata.conversationDigests, undefined);
+  assert.ok(broadcastEvents.some((event) => event.eventName === 'conversation_digest_deleted'));
+});
+
+test('conversations controller handles empty session goal clear', async (t) => {
+  const { handler, store } = createConversationsControllerHarness(t);
+  const conversation = store.createConversation({
+    id: 'goal-empty-clear-conversation',
+    title: 'Goal Empty Clear Conversation',
+  });
+
+  const clearResult = await invokeConversationsController(handler, {
+    method: 'POST',
+    pathname: `/api/conversations/${conversation.id}/goal`,
+    body: { action: 'clear' },
+  });
+
+  assert.equal(clearResult.statusCode, 200);
+  assert.equal(clearResult.json.goal, null);
+  assert.equal(clearResult.json.cleared, true);
+  assert.equal(store.getConversation(conversation.id).metadata.sessionGoal, undefined);
+});
+
+test('conversations controller accepts and dismisses session goal proposals', async (t) => {
+  const { handler, store, broadcastEvents } = createConversationsControllerHarness(t);
+  const conversation = store.createConversation({
+    id: 'goal-proposal-conversation',
+    title: 'Goal Proposal Conversation',
+    metadata: {
+      sessionGoal: {
+        objective: 'Finish long-running work',
+        status: 'active',
+        createdAt: '2026-05-03T00:00:00.000Z',
+        updatedAt: '2026-05-03T00:00:00.000Z',
+      },
+      sessionGoalProposal: {
+        action: 'complete',
+        status: 'pending',
+        reason: 'All acceptance checks passed',
+        proposedBy: {
+          agentId: 'agent-builder',
+          agentName: 'Builder',
+        },
+        createdAt: '2026-05-03T00:10:00.000Z',
+        updatedAt: '2026-05-03T00:10:00.000Z',
+      },
+    },
+  });
+
+  const acceptResult = await invokeConversationsController(handler, {
+    method: 'POST',
+    pathname: `/api/conversations/${conversation.id}/goal`,
+    body: { action: 'accept-proposal' },
+  });
+
+  assert.equal(acceptResult.statusCode, 200);
+  assert.equal(acceptResult.json.goal.status, 'complete');
+  assert.equal(acceptResult.json.proposal, null);
+  assert.equal(store.getConversation(conversation.id).metadata.sessionGoalProposal, undefined);
+  assert.ok(broadcastEvents.some((event) => event.eventName === 'conversation_goal_updated'));
+  assert.ok(broadcastEvents.some((event) => event.eventName === 'conversation_goal_proposal_cleared'));
+
+  store.updateConversation(conversation.id, {
+    metadata: {
+      ...store.getConversation(conversation.id).metadata,
+      sessionGoalProposal: {
+        action: 'clear',
+        status: 'pending',
+        reason: 'No longer needed',
+        proposedBy: {
+          agentId: 'agent-builder',
+          agentName: 'Builder',
+        },
+        createdAt: '2026-05-03T00:20:00.000Z',
+        updatedAt: '2026-05-03T00:20:00.000Z',
+      },
+    },
+  });
+
+  const dismissResult = await invokeConversationsController(handler, {
+    method: 'POST',
+    pathname: `/api/conversations/${conversation.id}/goal`,
+    body: { action: 'dismiss-proposal' },
+  });
+
+  assert.equal(dismissResult.statusCode, 200);
+  assert.equal(dismissResult.json.goal.status, 'complete');
+  assert.equal(dismissResult.json.proposal, null);
+  assert.equal(store.getConversation(conversation.id).metadata.sessionGoalProposal, undefined);
+});
+
+test('conversations controller rejects invalid session goal commands', async (t) => {
+  const { handler, store } = createConversationsControllerHarness(t);
+  const conversation = store.createConversation({
+    id: 'goal-invalid-conversation',
+    title: 'Goal Invalid Conversation',
+  });
+
+  await assert.rejects(
+    () => invokeConversationsController(handler, {
+      method: 'POST',
+      pathname: `/api/conversations/${conversation.id}/goal`,
+      body: { action: 'set', objective: '' },
+    }),
+    /Goal objective is required/u
+  );
+
+  await assert.rejects(
+    () => invokeConversationsController(handler, {
+      method: 'POST',
+      pathname: `/api/conversations/${conversation.id}/goal`,
+      body: { action: 'set', objective: 'x'.repeat(2001) },
+    }),
+    /Goal objective must be 2000 characters or fewer/u
+  );
+
+  await assert.rejects(
+    () => invokeConversationsController(handler, {
+      method: 'POST',
+      pathname: `/api/conversations/${conversation.id}/goal`,
+      body: { action: 'pause' },
+    }),
+    /No session goal is set/u
+  );
+
+  await assert.rejects(
+    () => invokeConversationsController(handler, {
+      method: 'POST',
+      pathname: `/api/conversations/${conversation.id}/goal`,
+      body: { action: 'unknown' },
+    }),
+    /Unsupported goal action/u
+  );
+});
 
 test('conversations controller lists known Feishu chats by recent activity', async (t) => {
   const { handler, store } = createConversationsControllerHarness(t);

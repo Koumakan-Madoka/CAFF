@@ -7,6 +7,8 @@ const {
   resolveMessageContent,
   searchMessages,
   shouldEchoContent,
+  suggestGoal,
+  updateGoalChecklist,
   updateMemory,
   withSkillTestScope,
 } = require('../../build/lib/agent-chat-tools');
@@ -176,6 +178,89 @@ test('search-messages forwards speaker filters without requiring a query', async
     limit: 3,
     skillTestRunId: 'run-search-scope',
     skillTestCaseId: 'case-search-scope',
+  });
+});
+
+test('suggest-goal forwards a pending goal proposal payload', async (t) => {
+  let requestUrl = '';
+  let requestOptions = null;
+
+  t.mock.method(global, 'fetch', async (url, options) => {
+    requestUrl = String(url);
+    requestOptions = options;
+
+    return {
+      ok: true,
+      async text() {
+        return JSON.stringify({ ok: true, proposal: { action: 'complete' } });
+      },
+    };
+  });
+
+  await suggestGoal(
+    {
+      apiUrl: 'http://127.0.0.1:3100',
+      invocationId: 'inv-goal-proposal',
+      callbackToken: 'token-goal-proposal',
+      skillTestRunId: 'run-goal-scope',
+      skillTestCaseId: 'case-goal-scope',
+    },
+    {
+      action: 'complete',
+      reason: 'All checks passed',
+    }
+  );
+
+  assert.equal(requestUrl, 'http://127.0.0.1:3100/api/agent-tools/goal/suggest');
+  assert.equal(requestOptions.method, 'POST');
+  assert.deepEqual(JSON.parse(String(requestOptions.body)), {
+    invocationId: 'inv-goal-proposal',
+    callbackToken: 'token-goal-proposal',
+    action: 'complete',
+    reason: 'All checks passed',
+    skillTestRunId: 'run-goal-scope',
+    skillTestCaseId: 'case-goal-scope',
+  });
+});
+
+test('update-goal-checklist forwards checklist progress payload from stdin', async (t) => {
+  let requestUrl = '';
+  let requestOptions = null;
+  const stream = new PassThrough();
+  stream.end('[x] Add API\n[~] Wire UI\n[ ] Validate');
+
+  t.mock.method(global, 'fetch', async (url, options) => {
+    requestUrl = String(url);
+    requestOptions = options;
+
+    return {
+      ok: true,
+      async text() {
+        return JSON.stringify({ ok: true, checklist: [] });
+      },
+    };
+  });
+
+  await updateGoalChecklist(
+    {
+      apiUrl: 'http://127.0.0.1:3100',
+      invocationId: 'inv-goal-checklist',
+      callbackToken: 'token-goal-checklist',
+      skillTestRunId: 'run-goal-checklist',
+      skillTestCaseId: 'case-goal-checklist',
+    },
+    { 'content-stdin': true },
+    { stream }
+  );
+
+  assert.equal(requestUrl, 'http://127.0.0.1:3100/api/agent-tools/goal/checklist');
+  assert.equal(requestOptions.method, 'POST');
+  assert.deepEqual(JSON.parse(String(requestOptions.body)), {
+    invocationId: 'inv-goal-checklist',
+    callbackToken: 'token-goal-checklist',
+    checklistText: '[x] Add API\n[~] Wire UI\n[ ] Validate',
+    skillTestRunId: 'run-goal-checklist',
+    skillTestCaseId: 'case-goal-checklist',
   });
 });
 

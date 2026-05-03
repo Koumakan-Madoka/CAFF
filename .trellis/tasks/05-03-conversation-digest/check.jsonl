@@ -1,0 +1,8 @@
+{"file": ".agents/skills/finish-work/SKILL.md", "reason": "Finish work checklist"}
+{"file": ".agents/skills/check/SKILL.md", "reason": "Code quality check spec"}
+{"file": ".trellis/spec/backend/architecture.md", "reason": "Check backend layer boundaries"}
+{"file": ".trellis/spec/backend/controller-patterns.md", "reason": "Check thin controller behavior"}
+{"file": ".trellis/spec/runtime/agent-runtime.md", "reason": "Check prompt/runtime contract"}
+{"file": ".trellis/spec/frontend/ui-structure.md", "reason": "Check UI module structure"}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Check regression test style"}
+{"file": ".trellis/spec/backend/conversation-digest.md", "reason": "Verify digest API/metadata/prompt/UI contract"}

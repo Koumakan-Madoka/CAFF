@@ -430,6 +430,44 @@ async function listParticipants(config: any) {
   return requestJson(`${config.apiUrl}/api/agent-tools/participants?${query.toString()}`);
 }
 
+async function suggestGoal(config: any, flags: any) {
+  const action = String(flags.action || flags.status || '').trim().toLowerCase();
+  const objective = String(flags.objective || flags.goal || flags.content || '').trim();
+  const reason = String(flags.reason || '').trim();
+
+  if (!action) {
+    throw new Error('suggest-goal requires --action set|pause|resume|complete|clear.');
+  }
+
+  return requestJson(`${config.apiUrl}/api/agent-tools/goal/suggest`, {
+    method: 'POST',
+    body: withSkillTestScope(config, {
+      invocationId: config.invocationId,
+      callbackToken: config.callbackToken,
+      action,
+      ...(objective ? { objective } : {}),
+      ...(reason ? { reason } : {}),
+    }),
+  });
+}
+
+async function updateGoalChecklist(config: any, flags: any, options: any = {}) {
+  const checklistText = await resolveFileContent(flags, options);
+
+  if (!checklistText.trim()) {
+    throw new Error('update-goal-checklist requires --content or --content-stdin with checklist lines.');
+  }
+
+  return requestJson(`${config.apiUrl}/api/agent-tools/goal/checklist`, {
+    method: 'POST',
+    body: withSkillTestScope(config, {
+      invocationId: config.invocationId,
+      callbackToken: config.callbackToken,
+      checklistText,
+    }),
+  });
+}
+
 function isFlagEnabled(value: any) {
   if (value === true) {
     return true;
@@ -527,13 +565,17 @@ async function main() {
     result = await forgetMemory(config, flags);
   } else if (command === 'list-participants') {
     result = await listParticipants(config);
+  } else if (command === 'suggest-goal') {
+    result = await suggestGoal(config, flags);
+  } else if (command === 'update-goal-checklist') {
+    result = await updateGoalChecklist(config, flags);
   } else if (command === 'trellis-init') {
     result = await trellisInit(config, flags);
   } else if (command === 'trellis-write') {
     result = await trellisWrite(config, flags);
   } else {
     throw new Error(
-      'Unknown command. Use one of: send-public, send-private, read-context, search-messages, list-memories, save-memory, update-memory, forget-memory, list-participants, trellis-init, trellis-write.'
+      'Unknown command. Use one of: send-public, send-private, read-context, search-messages, list-memories, save-memory, update-memory, forget-memory, list-participants, suggest-goal, update-goal-checklist, trellis-init, trellis-write.'
     );
   }
 
@@ -563,6 +605,8 @@ export {
   resolveFileContent,
   sendPrivate,
   sendPublic,
+  suggestGoal,
+  updateGoalChecklist,
   forgetMemory,
   listMemories,
   saveMemory,

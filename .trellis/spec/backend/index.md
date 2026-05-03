@@ -7,8 +7,10 @@ backend domain services.
 
 - HTTP route handlers and request parsing
 - App bootstrapping and server wiring
-- Domain services that support chat, games, metrics, or projects
+- Domain services that support chat, session goals, games, metrics, or projects
 - Backend changes that may affect prompt assembly or active project resolution
+- Session goal API and metadata contracts (`session-goal.md`)
+- Conversation digest API, metadata, prompt, and UI contracts (`conversation-digest.md`)
 - Skill testing framework (skill-test-controller.ts)
 - Skill management and configuration (skills-controller.ts)
 
@@ -31,4 +33,6 @@ backend domain services.
 - `controller-patterns.md`: handler conventions, error flow, and response shape
 - `feishu-integration.md`: Feishu webhook/long-connection contracts, env keys,
   event normalization, dedup expectations, and test points
+- `session-goal.md`: `/goal` API, metadata, prompt, SSE, and frontend slash command contracts
+- `conversation-digest.md`: `/digest` API, metadata, prompt, SSE, and frontend panel contracts
 - See `../skills/` for skill-related backend patterns (skill-test-controller.ts, skills-controller.ts)

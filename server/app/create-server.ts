@@ -290,6 +290,7 @@ export function createServerApp(options: any = {}) {
       werewolfService,
       buildBootstrapPayload,
       modeStore,
+      broadcastEvent,
     }),
     createSkillTestController({
       store,

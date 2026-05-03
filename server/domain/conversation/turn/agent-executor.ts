@@ -444,6 +444,8 @@ const LIVE_TOOL_BRIDGE_HINTS = [
   { token: 'read-context', toolName: 'read-context' },
   { token: 'search-messages', toolName: 'search-messages' },
   { token: 'list-memories', toolName: 'list-memories' },
+  { token: 'suggest-goal', toolName: 'suggest-goal' },
+  { token: 'update-goal-checklist', toolName: 'update-goal-checklist' },
   { token: 'save-memory', toolName: 'save-memory' },
   { token: 'update-memory', toolName: 'update-memory' },
   { token: 'forget-memory', toolName: 'forget-memory' },

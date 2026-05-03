@@ -1,0 +1,70 @@
+{
+  "id": "session-goal",
+  "name": "session-goal",
+  "title": "Port /goal session target to CAFF",
+  "description": "Port Codex-style /goal into CAFF with lifecycle controls, user-confirmed agent proposals, bounded auto-continuation, and checklist progress UI.",
+  "status": "completed",
+  "dev_type": "fullstack",
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "菲比啾比",
+  "assignee": "菲比啾比",
+  "createdAt": "2026-05-03",
+  "completedAt": "2026-05-03",
+  "branch": "feature/session-goal",
+  "base_branch": "main",
+  "worktree_path": null,
+  "current_phase": 3,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "check"
+    },
+    {
+      "phase": 3,
+      "action": "finish"
+    },
+    {
+      "phase": 4,
+      "action": "create-pr"
+    }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "server/domain/conversation/session-goal.ts",
+    "server/api/conversations-controller.ts",
+    "server/domain/conversation/turn-orchestrator.ts",
+    "server/domain/conversation/turn/agent-prompt.ts",
+    "server/domain/runtime/agent-tool-bridge.ts",
+    "lib/agent-chat-tools.ts",
+    "public/app.js",
+    "public/chat/session-goal-panel.js",
+    "public/shared/session-goal.js",
+    "public/index.html",
+    "public/styles.css",
+    "tests/runtime/agent-chat-tools.test.js",
+    "tests/runtime/agent-tool-bridge.test.js",
+    "tests/runtime/turn-orchestrator.test.js",
+    "tests/smoke/server-smoke.test.js",
+    ".trellis/spec/backend/session-goal.md"
+  ],
+  "notes": "All PRD acceptance criteria are implemented and verified. Final validation passed npm run check, npm run typecheck, npm run build, and focused runtime/smoke regression tests. Commit/PR remain for the user to perform.",
+  "meta": {
+    "finalValidation": "passed",
+    "autoContinuationDefaultTurns": 20,
+    "goalMetadataKeys": [
+      "sessionGoal",
+      "sessionGoalProposal",
+      "sessionGoalRunner"
+    ]
+  }
+}

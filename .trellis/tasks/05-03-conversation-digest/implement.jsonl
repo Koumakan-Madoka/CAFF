@@ -1,0 +1,13 @@
+{"file": ".trellis/workflow.md", "reason": "Project workflow and conventions"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend development guide"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend development guide"}
+{"file": ".trellis/spec/backend/architecture.md", "reason": "Backend domain/controller boundary for digest metadata"}
+{"file": ".trellis/spec/backend/controller-patterns.md", "reason": "Thin HTTP route and response conventions"}
+{"file": ".trellis/spec/backend/session-goal.md", "reason": "Closest metadata-backed slash command/panel contract"}
+{"file": ".trellis/spec/runtime/agent-runtime.md", "reason": "Prompt injection and bridge/runtime contracts"}
+{"file": ".trellis/spec/frontend/ui-structure.md", "reason": "Chat UI module structure"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Digest crosses API/domain/prompt/UI"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Reuse goal patterns and shared helpers"}
+{"file": "tests/smoke/server-smoke.test.js", "reason": "API lifecycle test pattern"}
+{"file": "tests/runtime/turn-orchestrator.test.js", "reason": "Prompt injection test pattern"}
+{"file": ".trellis/spec/backend/conversation-digest.md", "reason": "New executable contract for digest MVP"}

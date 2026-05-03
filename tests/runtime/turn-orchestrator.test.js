@@ -120,6 +120,306 @@ test('buildAgentTurnPrompt avoids raw @mention tokens from room context', () => 
   assert.doesNotMatch(prompt, /@agent-mecha-engineer/u);
 });
 
+test('buildAgentTurnPrompt includes conversation digest memory before recent history', () => {
+  const agent = {
+    id: 'agent-digest-prompt',
+    name: 'Builder',
+    description: 'Keeps long context aligned.',
+    personaPrompt: 'Stay focused.',
+  };
+  const conversation = {
+    id: 'conversation-digest-prompt',
+    title: 'Digest Prompt Conversation',
+    type: 'standard',
+    metadata: {
+      conversationDigests: [
+        {
+          id: 'digest-1',
+          createdAt: '2026-05-03T00:00:00.000Z',
+          updatedAt: '2026-05-03T00:00:00.000Z',
+          createdBy: 'user',
+          messageRange: {
+            fromMessageId: 'message-old-1',
+            toMessageId: 'message-old-2',
+            messageCount: 2,
+          },
+          summary: 'The team chose a manual Conversation Digest MVP.',
+          decisions: ['Use conversation metadata for the MVP.'],
+          facts: ['Digest content is historical context.'],
+          openQuestions: ['Should search include digest later?'],
+          nextActions: ['Build a right-side timeline panel.'],
+          artifacts: ['server/domain/conversation/conversation-digest.ts'],
+        },
+      ],
+    },
+    agents: [agent],
+  };
+
+  const prompt = buildAgentTurnPrompt({
+    conversation,
+    agent,
+    agentConfig: {
+      profileName: 'Default',
+      personaPrompt: agent.personaPrompt,
+    },
+    resolvedPersonaSkills: [],
+    resolvedConversationSkills: [],
+    sandbox: {
+      sandboxDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-digest-prompt',
+      privateDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-digest-prompt/private',
+    },
+    agents: [agent],
+    messages: [
+      {
+        id: 'message-recent-1',
+        role: 'user',
+        senderName: 'User',
+        content: 'Recent raw message overrides stale digest details.',
+        status: 'completed',
+        metadata: null,
+      },
+    ],
+    privateMessages: [],
+    trigger: {
+      triggerType: 'user',
+      enqueueReason: 'user_mentions',
+    },
+    remainingSlots: 7,
+    routingMode: 'mention_queue',
+    allowHandoffs: true,
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+  });
+
+  assert.match(prompt, /Conversation digest memory:/u);
+  assert.match(prompt, /manual Conversation Digest MVP/u);
+  assert.match(prompt, /recent raw conversation messages override digest content/u);
+  assert.match(prompt, /server\/domain\/conversation\/conversation-digest\.ts/u);
+  assert.ok(prompt.indexOf('Conversation digest memory:') < prompt.indexOf('Conversation history:'));
+});
+
+test('buildAgentTurnPrompt includes active session goal guidance', () => {
+  const agent = {
+    id: 'agent-goal-prompt',
+    name: 'Builder',
+    description: 'Keeps work aligned.',
+    personaPrompt: 'Stay focused.',
+  };
+  const conversation = {
+    id: 'conversation-goal-prompt',
+    title: 'Goal Prompt',
+    type: 'standard',
+    metadata: {
+      sessionGoal: {
+        objective: 'Port /goal to CAFF',
+        status: 'active',
+        createdAt: '2026-05-03T00:00:00.000Z',
+        updatedAt: '2026-05-03T00:00:00.000Z',
+        checklist: [
+          {
+            id: 'item-1',
+            text: 'Add API lifecycle',
+            status: 'done',
+            createdAt: '2026-05-03T00:00:00.000Z',
+            updatedAt: '2026-05-03T00:00:00.000Z',
+            completedAt: '2026-05-03T00:00:00.000Z',
+          },
+          {
+            id: 'item-2',
+            text: 'Wire progress UI',
+            status: 'in_progress',
+            createdAt: '2026-05-03T00:00:00.000Z',
+            updatedAt: '2026-05-03T00:00:00.000Z',
+          },
+        ],
+      },
+    },
+    agents: [agent],
+  };
+  const prompt = buildAgentTurnPrompt({
+    conversation,
+    agent,
+    agentConfig: {
+      profileName: 'Default',
+      personaPrompt: agent.personaPrompt,
+    },
+    resolvedPersonaSkills: [],
+    resolvedConversationSkills: [],
+    sandbox: {
+      sandboxDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-goal-prompt',
+      privateDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-goal-prompt/private',
+    },
+    agents: [agent],
+    messages: [],
+    privateMessages: [],
+    trigger: {
+      triggerType: 'user',
+      enqueueReason: 'default_first_agent',
+    },
+    remainingSlots: 7,
+    routingMode: 'mention_queue',
+    allowHandoffs: true,
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+  });
+
+  assert.match(prompt, /Session goal:/u);
+  assert.match(prompt, /Status: active/u);
+  assert.match(prompt, /Objective: Port \/goal to CAFF/u);
+  assert.match(prompt, /Checklist progress: 1\/2 complete/u);
+  assert.match(prompt, /\[x\] Add API lifecycle/u);
+  assert.match(prompt, /\[~\] Wire progress UI/u);
+  assert.match(prompt, /update-goal-checklist/u);
+  assert.match(prompt, /current completion target/u);
+  assert.match(prompt, /suggest-goal --action complete/u);
+});
+
+test('buildAgentTurnPrompt includes paused session goal guidance', () => {
+  const agent = {
+    id: 'agent-goal-paused-prompt',
+    name: 'Builder',
+    description: 'Keeps work aligned.',
+    personaPrompt: 'Stay focused.',
+  };
+  const conversation = {
+    id: 'conversation-goal-paused-prompt',
+    title: 'Goal Prompt',
+    type: 'standard',
+    metadata: {
+      sessionGoal: {
+        objective: 'Port /goal to CAFF',
+        status: 'paused',
+        createdAt: '2026-05-03T00:00:00.000Z',
+        updatedAt: '2026-05-03T00:00:00.000Z',
+      },
+    },
+    agents: [agent],
+  };
+  const prompt = buildAgentTurnPrompt({
+    conversation,
+    agent,
+    agentConfig: {
+      profileName: 'Default',
+      personaPrompt: agent.personaPrompt,
+    },
+    resolvedPersonaSkills: [],
+    resolvedConversationSkills: [],
+    sandbox: {
+      sandboxDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-goal-paused-prompt',
+      privateDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-goal-paused-prompt/private',
+    },
+    agents: [agent],
+    messages: [],
+    privateMessages: [],
+    trigger: {
+      triggerType: 'user',
+      enqueueReason: 'default_first_agent',
+    },
+    remainingSlots: 7,
+    routingMode: 'mention_queue',
+    allowHandoffs: true,
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+  });
+
+  assert.match(prompt, /Session goal:/u);
+  assert.match(prompt, /Status: paused/u);
+  assert.match(prompt, /do not actively drive new work/u);
+});
+
+test('buildAgentTurnPrompt includes complete session goal as completed context', () => {
+  const agent = {
+    id: 'agent-goal-complete-prompt',
+    name: 'Builder',
+    description: 'Keeps work aligned.',
+    personaPrompt: 'Stay focused.',
+  };
+  const conversation = {
+    id: 'conversation-goal-complete-prompt',
+    title: 'Goal Prompt',
+    type: 'standard',
+    metadata: {
+      sessionGoal: {
+        objective: 'Port /goal to CAFF',
+        status: 'complete',
+        createdAt: '2026-05-03T00:00:00.000Z',
+        updatedAt: '2026-05-03T00:00:00.000Z',
+        completedAt: '2026-05-03T00:10:00.000Z',
+      },
+    },
+    agents: [agent],
+  };
+  const prompt = buildAgentTurnPrompt({
+    conversation,
+    agent,
+    agentConfig: {
+      profileName: 'Default',
+      personaPrompt: agent.personaPrompt,
+    },
+    resolvedPersonaSkills: [],
+    resolvedConversationSkills: [],
+    sandbox: {
+      sandboxDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-goal-complete-prompt',
+      privateDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-goal-complete-prompt/private',
+    },
+    agents: [agent],
+    messages: [],
+    privateMessages: [],
+    trigger: {
+      triggerType: 'user',
+      enqueueReason: 'default_first_agent',
+    },
+    remainingSlots: 7,
+    routingMode: 'mention_queue',
+    allowHandoffs: true,
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+  });
+
+  assert.match(prompt, /Session goal:/u);
+  assert.match(prompt, /Status: complete/u);
+  assert.match(prompt, /completed context/u);
+});
+
+test('buildAgentTurnPrompt omits cleared session goal guidance', () => {
+  const agent = {
+    id: 'agent-goal-cleared-prompt',
+    name: 'Builder',
+    description: 'Keeps work aligned.',
+    personaPrompt: 'Stay focused.',
+  };
+  const conversation = {
+    id: 'conversation-goal-cleared-prompt',
+    title: 'Goal Prompt',
+    type: 'standard',
+    metadata: {},
+    agents: [agent],
+  };
+  const prompt = buildAgentTurnPrompt({
+    conversation,
+    agent,
+    agentConfig: {
+      profileName: 'Default',
+      personaPrompt: agent.personaPrompt,
+    },
+    resolvedPersonaSkills: [],
+    resolvedConversationSkills: [],
+    sandbox: {
+      sandboxDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-goal-cleared-prompt',
+      privateDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-goal-cleared-prompt/private',
+    },
+    agents: [agent],
+    messages: [],
+    privateMessages: [],
+    trigger: {
+      triggerType: 'user',
+      enqueueReason: 'default_first_agent',
+    },
+    remainingSlots: 7,
+    routingMode: 'mention_queue',
+    allowHandoffs: true,
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+  });
+
+  assert.doesNotMatch(prompt, /Session goal:/u);
+});
+
 test('buildAgentTurnPrompt gives bash-only multiline chat bridge guidance', () => {
   const agent = {
     id: 'agent-builder',
@@ -958,6 +1258,121 @@ test('turn orchestrator queues user messages behind the active run and drains th
   assert.ok(seenBatches[0].promptMessages.some((content) => content.includes('First queued message')));
   assert.ok(seenBatches[0].promptMessages.every((content) => !content.includes('Second queued message')));
   assert.ok(seenBatches[1].promptMessages.some((content) => content.includes('Second queued message')));
+});
+
+test('turn orchestrator auto-continues active session goals until safety budget', { concurrency: false }, async (t) => {
+  const tempDir = withTempDir('caff-session-goal-runner-');
+  const sqlitePath = path.join(tempDir, 'goal-runner.sqlite');
+  const conversation = {
+    id: 'conversation-goal-runner',
+    title: 'Goal Runner',
+    type: 'standard',
+    metadata: {
+      sessionGoal: {
+        objective: 'Finish the autonomous goal loop',
+        status: 'active',
+        createdAt: '2026-05-03T00:00:00.000Z',
+        updatedAt: '2026-05-03T00:00:00.000Z',
+      },
+    },
+    agents: [{ id: 'agent-a', name: 'Alpha' }],
+    messages: [],
+  };
+  let messageCounter = 0;
+  const seenPrompts = [];
+  const broadcastEvents = [];
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const store = {
+    databasePath: sqlitePath,
+    getConversation(conversationId) {
+      return conversationId === conversation.id ? conversation : null;
+    },
+    listConversations() {
+      const lastMessage = conversation.messages[conversation.messages.length - 1] || null;
+      return [
+        {
+          id: conversation.id,
+          title: conversation.title,
+          type: conversation.type,
+          metadata: conversation.metadata || {},
+          createdAt: '2026-05-03T00:00:00.000Z',
+          updatedAt: lastMessage ? lastMessage.createdAt : '2026-05-03T00:00:00.000Z',
+          lastMessageAt: lastMessage ? lastMessage.createdAt : null,
+          messageCount: conversation.messages.length,
+          agentCount: conversation.agents.length,
+          lastMessagePreview: lastMessage ? lastMessage.content : '',
+        },
+      ];
+    },
+    updateConversation(conversationId, updates) {
+      assert.equal(conversationId, conversation.id);
+      conversation.metadata = updates && updates.metadata && typeof updates.metadata === 'object' ? updates.metadata : conversation.metadata;
+      return conversation;
+    },
+    createMessage(input) {
+      messageCounter += 1;
+      const message = {
+        id: input.id || `goal-runner-message-${messageCounter}`,
+        errorMessage: '',
+        taskId: null,
+        runId: null,
+        metadata: null,
+        createdAt: input.createdAt || `2026-05-03T00:00:${String(messageCounter).padStart(2, '0')}.000Z`,
+        ...input,
+      };
+      conversation.messages.push(message);
+      return message;
+    },
+  };
+
+  const orchestrator = createTurnOrchestrator({
+    store,
+    skillRegistry: { listSkills() { return []; }, resolveSkills() { return []; } },
+    modeStore: { get() { return null; } },
+    agentToolBridge: {},
+    host: '127.0.0.1',
+    port: 0,
+    agentDir: tempDir,
+    sqlitePath,
+    toolBaseUrl: 'http://127.0.0.1:0',
+    agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
+    sessionGoalAutoContinueMaxTurns: 2,
+    broadcastEvent(eventName, payload) {
+      broadcastEvents.push({ eventName, payload });
+    },
+    executeConversationAgent: async ({ promptUserMessage, completedReplies, agent }) => {
+      seenPrompts.push(promptUserMessage.content);
+      completedReplies.push({
+        agentId: agent.id,
+        senderName: agent.name,
+        content: 'continuing',
+        status: 'completed',
+      });
+      return { stopTurn: false };
+    },
+  });
+
+  const scheduled = orchestrator.scheduleGoalContinuation(conversation.id);
+
+  assert.equal(scheduled.scheduled, true);
+  assert.equal(scheduled.dispatch, 'started');
+
+  await waitForCondition(() => conversation.metadata.sessionGoalProposal);
+
+  const autoMessages = conversation.messages.filter((message) => message.metadata && message.metadata.goalAutoContinue);
+  assert.equal(autoMessages.length, 2);
+  assert.equal(seenPrompts.length, 2);
+  assert.ok(seenPrompts.every((content) => content.includes('Finish the autonomous goal loop')));
+  assert.equal(conversation.metadata.sessionGoal.status, 'active');
+  assert.equal(conversation.metadata.sessionGoalRunner.status, 'budget_limited');
+  assert.equal(conversation.metadata.sessionGoalRunner.iteration, 2);
+  assert.equal(conversation.metadata.sessionGoalProposal.action, 'pause');
+  assert.equal(conversation.metadata.sessionGoalProposal.proposedBy.agentName, 'Goal Runner');
+  assert.ok(broadcastEvents.some((event) => event.eventName === 'conversation_goal_proposal_updated'));
 });
 
 test('turn orchestrator continues with the next queued batch after a stop request', { concurrency: false }, async (t) => {

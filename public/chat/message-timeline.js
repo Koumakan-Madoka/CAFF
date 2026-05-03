@@ -1034,8 +1034,13 @@
       }
 
       const senderLabel = document.createElement('span');
+      const metadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
       senderLabel.className = 'message-sender-label';
-      senderLabel.textContent = message.role === 'user' ? 'You' : message.senderName;
+      senderLabel.textContent = message.role === 'user'
+        ? metadata && metadata.goalAutoContinue
+          ? message.senderName || 'Goal Runner'
+          : 'You'
+        : message.senderName;
       sender.appendChild(senderLabel);
 
       if (isPrivateTimelineMessage(message)) {

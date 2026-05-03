@@ -34,6 +34,16 @@ const fetchJson = shared.fetchJson;
 const avatarUtils = shared.avatar || {};
 const modelOptionUtils = shared.modelOptions || {};
 const copyTextToClipboard = shared.copyTextToClipboard;
+const sessionGoalUtils = shared.sessionGoal;
+const conversationDigestUtils = shared.conversationDigest;
+
+if (!sessionGoalUtils) {
+  throw new Error('CaffShared.sessionGoal helper is required');
+}
+
+if (!conversationDigestUtils) {
+  throw new Error('CaffShared.conversationDigest helper is required');
+}
 
 const dom = {
   runtimePill: /** @type {HTMLSpanElement | null} */ (document.getElementById('runtime-pill')),
@@ -45,7 +55,36 @@ const dom = {
   conversationTitleDisplay: /** @type {HTMLElement | null} */ (document.getElementById('conversation-title-display')),
   conversationModeBadge: /** @type {HTMLElement | null} */ (document.getElementById('conversation-mode-badge')),
   conversationMeta: /** @type {HTMLElement | null} */ (document.getElementById('conversation-meta')),
+  conversationDigestToggleButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('conversation-digest-toggle-button')),
+  sessionGoalToggleButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('session-goal-toggle-button')),
+  sessionGoalEdgeButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('session-goal-edge-button')),
   deleteConversationButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('delete-conversation-button')),
+  sessionGoalDrawer: /** @type {HTMLElement | null} */ (document.getElementById('session-goal-drawer')),
+  sessionGoalCloseButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('session-goal-close-button')),
+  sessionGoalDrawerStatus: /** @type {HTMLElement | null} */ (document.getElementById('session-goal-drawer-status')),
+  sessionGoalDetails: /** @type {HTMLElement | null} */ (document.getElementById('session-goal-details')),
+  sessionGoalProgressCard: /** @type {HTMLElement | null} */ (document.getElementById('session-goal-progress-card')),
+  sessionGoalProgressSummary: /** @type {HTMLElement | null} */ (document.getElementById('session-goal-progress-summary')),
+  sessionGoalProgressFill: /** @type {HTMLElement | null} */ (document.getElementById('session-goal-progress-fill')),
+  sessionGoalChecklistPreview: /** @type {HTMLElement | null} */ (document.getElementById('session-goal-checklist-preview')),
+  sessionGoalProposalCard: /** @type {HTMLElement | null} */ (document.getElementById('session-goal-proposal-card')),
+  sessionGoalProposalStatus: /** @type {HTMLElement | null} */ (document.getElementById('session-goal-proposal-status')),
+  sessionGoalProposalDetails: /** @type {HTMLElement | null} */ (document.getElementById('session-goal-proposal-details')),
+  sessionGoalAcceptProposalButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('session-goal-accept-proposal-button')),
+  sessionGoalDismissProposalButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('session-goal-dismiss-proposal-button')),
+  sessionGoalForm: /** @type {HTMLFormElement | null} */ (document.getElementById('session-goal-form')),
+  sessionGoalObjective: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('session-goal-objective')),
+  sessionGoalChecklist: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('session-goal-checklist')),
+  sessionGoalSaveButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('session-goal-save-button')),
+  sessionGoalPauseButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('session-goal-pause-button')),
+  sessionGoalResumeButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('session-goal-resume-button')),
+  sessionGoalCompleteButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('session-goal-complete-button')),
+  sessionGoalClearButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('session-goal-clear-button')),
+  conversationDigestDrawer: /** @type {HTMLElement | null} */ (document.getElementById('conversation-digest-drawer')),
+  conversationDigestCloseButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('conversation-digest-close-button')),
+  conversationDigestStatus: /** @type {HTMLElement | null} */ (document.getElementById('conversation-digest-status')),
+  conversationDigestCreateButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('conversation-digest-create-button')),
+  conversationDigestList: /** @type {HTMLElement | null} */ (document.getElementById('conversation-digest-list')),
   participantList: /** @type {HTMLDivElement | null} */ (document.getElementById('participant-list')),
   messageList: /** @type {HTMLDivElement | null} */ (document.getElementById('message-list')),
   composerForm: /** @type {HTMLFormElement | null} */ (document.getElementById('composer-form')),
@@ -131,6 +170,52 @@ function applyConversationResponse(result) {
     state.currentConversation = result.conversation;
     state.selectedConversationId = result.conversation.id;
   }
+}
+
+async function submitDigestCommand(conversationId, command) {
+  if (!command || command.action === 'get') {
+    showToast(conversationDigestUtils.formatDigestStatus(state.currentConversation));
+    renderConversationPane();
+    return null;
+  }
+
+  const result = await fetchJson(`/api/conversations/${encodeURIComponent(conversationId)}/digest`, {
+    method: 'POST',
+    body: command,
+  });
+
+  applyConversationResponse(result);
+  if (result.summary) {
+    mergeConversationSummary(result.summary);
+  }
+
+  renderAll();
+  showToast(result.deleted ? '会话摘要已删除' : conversationDigestUtils.formatDigestStatus(result.conversation));
+  return result;
+}
+
+async function submitGoalCommand(conversationId, command) {
+  if (!command || command.action === 'get') {
+    showToast(sessionGoalUtils.formatConversationStatus(state.currentConversation));
+    renderConversationPane();
+    return null;
+  }
+
+  const result = await fetchJson(`/api/conversations/${encodeURIComponent(conversationId)}/goal`, {
+    method: 'POST',
+    body: command,
+  });
+
+  applyConversationResponse(result);
+  if (result.summary) {
+    mergeConversationSummary(result.summary);
+  }
+
+  renderAll();
+  const statusText = sessionGoalUtils.formatConversationStatus(result.conversation);
+  const continuationText = result.autoContinuation && result.autoContinuation.scheduled ? ' · 已启动自动续跑' : '';
+  showToast(`${statusText}${continuationText}`);
+  return result;
 }
 
 async function triggerUndercoverAction(action, body = {}) {
@@ -240,6 +325,66 @@ function canChatInWerewolfConversation(conversation) {
   return game.phase === 'finished' || game.status === 'completed' || game.status === 'revealed';
 }
 
+function parseGoalCommand(content) {
+  const text = String(content || '').trim();
+
+  if (text !== '/goal' && !text.startsWith('/goal ')) {
+    return null;
+  }
+
+  const rest = text.slice('/goal'.length).trim();
+
+  if (!rest) {
+    return { action: 'get' };
+  }
+
+  const normalized = rest.toLowerCase();
+  if (['pause', 'resume', 'complete', 'clear'].includes(normalized)) {
+    return { action: normalized };
+  }
+
+  if (['accept', 'accept-proposal', 'accept_proposal'].includes(normalized)) {
+    return { action: 'accept-proposal' };
+  }
+
+  if (['dismiss', 'dismiss-proposal', 'dismiss_proposal'].includes(normalized)) {
+    return { action: 'dismiss-proposal' };
+  }
+
+  return {
+    action: 'set',
+    objective: rest,
+  };
+}
+
+function parseDigestCommand(content) {
+  const text = String(content || '').trim();
+
+  if (text !== '/digest' && !text.startsWith('/digest ')) {
+    return null;
+  }
+
+  const rest = text.slice('/digest'.length).trim();
+
+  if (!rest) {
+    return { action: 'create' };
+  }
+
+  const normalized = rest.toLowerCase();
+  if (normalized === 'status' || normalized === 'list' || normalized === 'get') {
+    return { action: 'get' };
+  }
+
+  if (normalized === 'clear') {
+    return { action: 'clear' };
+  }
+
+  return {
+    action: 'create',
+    summary: rest,
+  };
+}
+
 function undercoverPlayerEntries(conversation) {
   const game = undercoverGameState(conversation);
   return Array.isArray(game && game.players) ? game.players : [];
@@ -321,6 +466,7 @@ function readAvatarFileAsDataUrl(file) {
 }
 
 const noopRenderer = {
+  bindEvents(..._args) {},
   render(..._args) {},
 };
 
@@ -356,6 +502,8 @@ let conversationSettingsController = noopConversationSettingsController;
 let undercoverPanelRenderer = noopRenderer;
 let werewolfPanelRenderer = noopRenderer;
 let skillTestDesignPanelRenderer = noopRenderer;
+let sessionGoalPanelController = noopRenderer;
+let conversationDigestPanelController = noopRenderer;
 let conversationPaneRenderer = noopRenderer;
 
 function setupChatModules() {
@@ -468,6 +616,32 @@ function setupChatModules() {
           helpers: {
             activeTurnForConversation,
           },
+        })
+      : noopRenderer;
+
+  sessionGoalPanelController =
+    typeof chatModules.createSessionGoalPanelController === 'function'
+      ? chatModules.createSessionGoalPanelController({
+          state,
+          dom,
+          helpers: {
+            formatDateTime,
+            submitGoalCommand,
+          },
+          showToast,
+        })
+      : noopRenderer;
+
+  conversationDigestPanelController =
+    typeof chatModules.createConversationDigestPanelController === 'function'
+      ? chatModules.createConversationDigestPanelController({
+          state,
+          dom,
+          helpers: {
+            formatDateTime,
+            submitDigestCommand,
+          },
+          showToast,
         })
       : noopRenderer;
 
@@ -1621,6 +1795,16 @@ function renderSkillTestDesignCard() {
 
 function renderConversationPane() {
   conversationPaneRenderer.render();
+  renderSessionGoalPanel();
+  renderConversationDigestPanel();
+}
+
+function renderSessionGoalPanel() {
+  sessionGoalPanelController.render();
+}
+
+function renderConversationDigestPanel() {
+  conversationDigestPanelController.render();
 }
 
 function selectedConversationParticipants() {
@@ -2635,6 +2819,54 @@ function connectEventStream() {
     scheduleConversationRefresh(payload.conversationId);
   });
 
+  source.addEventListener('conversation_goal_updated', (event) => {
+    const payload = JSON.parse(event.data);
+    if (payload.summary) {
+      mergeConversationSummary(payload.summary);
+    }
+    scheduleConversationRefresh(payload.conversationId);
+  });
+
+  source.addEventListener('conversation_goal_cleared', (event) => {
+    const payload = JSON.parse(event.data);
+    if (payload.summary) {
+      mergeConversationSummary(payload.summary);
+    }
+    scheduleConversationRefresh(payload.conversationId);
+  });
+
+  source.addEventListener('conversation_goal_proposal_updated', (event) => {
+    const payload = JSON.parse(event.data);
+    if (payload.summary) {
+      mergeConversationSummary(payload.summary);
+    }
+    scheduleConversationRefresh(payload.conversationId);
+  });
+
+  source.addEventListener('conversation_goal_proposal_cleared', (event) => {
+    const payload = JSON.parse(event.data);
+    if (payload.summary) {
+      mergeConversationSummary(payload.summary);
+    }
+    scheduleConversationRefresh(payload.conversationId);
+  });
+
+  source.addEventListener('conversation_digest_updated', (event) => {
+    const payload = JSON.parse(event.data);
+    if (payload.summary) {
+      mergeConversationSummary(payload.summary);
+    }
+    scheduleConversationRefresh(payload.conversationId);
+  });
+
+  source.addEventListener('conversation_digest_deleted', (event) => {
+    const payload = JSON.parse(event.data);
+    if (payload.summary) {
+      mergeConversationSummary(payload.summary);
+    }
+    scheduleConversationRefresh(payload.conversationId);
+  });
+
   source.addEventListener('conversation_tool_event', (event) => {
     const payload = JSON.parse(event.data);
     applyConversationToolEvent(payload);
@@ -3156,6 +3388,32 @@ function bindEvents() {
       return;
     }
 
+    const goalCommand = parseGoalCommand(content);
+    if (goalCommand) {
+      try {
+        await submitGoalCommand(conversationId, goalCommand);
+        dom.composerInput.value = '';
+        closeMentionMenu();
+      } catch (error) {
+        showToast(error.message);
+        renderConversationPane();
+      }
+      return;
+    }
+
+    const digestCommand = parseDigestCommand(content);
+    if (digestCommand) {
+      try {
+        await submitDigestCommand(conversationId, digestCommand);
+        dom.composerInput.value = '';
+        closeMentionMenu();
+      } catch (error) {
+        showToast(error.message);
+        renderConversationPane();
+      }
+      return;
+    }
+
     const clientRequestId = createClientRequestId();
     const shouldStickToBottom = isMessageListNearBottom();
     dom.composerInput.value = '';
@@ -3564,6 +3822,8 @@ async function init() {
   setupChatModules();
   mentionMenuController.bindEvents();
   conversationSettingsController.bindEvents();
+  sessionGoalPanelController.bindEvents();
+  conversationDigestPanelController.bindEvents();
   bindEvents();
   connectEventStream();
 

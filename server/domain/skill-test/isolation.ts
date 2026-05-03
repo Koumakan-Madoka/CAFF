@@ -32,6 +32,8 @@ const DEFAULT_ALLOWED_BRIDGE_TOOLS = [
   'send-private',
   'read-context',
   'list-participants',
+  'suggest-goal',
+  'update-goal-checklist',
   'search-messages',
   'list-memories',
   'save-memory',

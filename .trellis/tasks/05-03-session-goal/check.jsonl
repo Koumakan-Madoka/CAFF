@@ -1,0 +1,13 @@
+{"file": ".agents/skills/finish-work/SKILL.md", "reason": "Finish work checklist"}
+{"file": ".agents/skills/check/SKILL.md", "reason": "Code quality check spec"}
+{"file": ".trellis/spec/backend/architecture.md", "reason": "Verify backend domain/controller boundaries"}
+{"file": ".trellis/spec/backend/controller-patterns.md", "reason": "Verify route parsing and response shapes"}
+{"file": ".trellis/spec/runtime/agent-runtime.md", "reason": "Verify prompt injection contract"}
+{"file": ".trellis/spec/frontend/ui-structure.md", "reason": "Verify plain JS chat UI conventions"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Verify cross-layer payload consistency"}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Verify regression tests align with runtime patterns"}
+{"file": ".trellis/spec/backend/session-goal.md", "reason": "Verify session goal API, metadata, prompt, and UI behavior"}
+{"command":"npm run check && npm run typecheck && npm run build","status":"passed","reason":"Validated browser syntax including new goal panel, public TypeScript checks, and production build"}
+{"command":"node tests/runtime/turn-orchestrator.test.js && node tests/smoke/server-smoke.test.js","status":"passed","reason":"Re-ran session goal prompt/API regression coverage after UI management panel wiring"}
+{"command":"npm run check && npm run typecheck && npm run build && node tests/runtime/agent-chat-tools.test.js && node tests/runtime/agent-tool-bridge.test.js && node tests/runtime/turn-orchestrator.test.js && node tests/smoke/server-smoke.test.js","status":"passed","reason":"Final pre-close validation after registering update-goal-checklist in skill-test allowlists and bridge hints"}
+{"command":"git diff --check","status":"passed","reason":"Final whitespace check after Trellis closeout edits"}

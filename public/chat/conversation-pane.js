@@ -3,6 +3,13 @@
 (function registerConversationPaneModule() {
   const chat = window.CaffChat || (window.CaffChat = {});
 
+  const shared = window.CaffShared || {};
+  const sessionGoalUtils = shared.sessionGoal;
+
+  if (!sessionGoalUtils) {
+    throw new Error('CaffShared.sessionGoal helper is required');
+  }
+
   chat.createConversationPaneRenderer = function createConversationPaneRenderer({ state, dom, helpers }) {
     const {
       activeTurnForConversation,
@@ -72,24 +79,29 @@
 
       const privateCount = Array.isArray(conversation.privateMessages) ? conversation.privateMessages.length : 0;
       const totalMessageCount = timelineMessagesForConversation(conversation).length;
-      dom.conversationMeta.textContent =
-        privateCount > 0
-          ? `${conversation.agents.length} 名人格 / ${totalMessageCount} 条消息（含 ${privateCount} 条私密消息）`
-          : `${conversation.agents.length} 名人格 / ${totalMessageCount} 条消息`;
+      let conversationMetaText = privateCount > 0
+        ? `${conversation.agents.length} 名人格 / ${totalMessageCount} 条消息（含 ${privateCount} 条私密消息）`
+        : `${conversation.agents.length} 名人格 / ${totalMessageCount} 条消息`;
 
       if (isUndercoverConversation(conversation)) {
         const game = undercoverGameState(conversation);
         const phase = game && game.phase ? game.phase : 'setup';
         const roundNumber = Number.isInteger(game && game.roundNumber) ? game.roundNumber : 1;
-        dom.conversationMeta.textContent = `${conversation.agents.length} 名玩家 / ${totalMessageCount} 条消息 / 第 ${roundNumber} 轮 / ${phase}`;
+        conversationMetaText = `${conversation.agents.length} 名玩家 / ${totalMessageCount} 条消息 / 第 ${roundNumber} 轮 / ${phase}`;
       }
 
       if (isWerewolfConversation(conversation)) {
         const game = werewolfGameState(conversation);
         const phase = game && game.phase ? game.phase : 'setup';
         const roundNumber = Number.isInteger(game && game.roundNumber) ? game.roundNumber : 1;
-        dom.conversationMeta.textContent = `${conversation.agents.length} 名玩家 / ${totalMessageCount} 条消息 / 第 ${roundNumber} 轮 / ${phase}`;
+        conversationMetaText = `${conversation.agents.length} 名玩家 / ${totalMessageCount} 条消息 / 第 ${roundNumber} 轮 / ${phase}`;
       }
+
+      const sessionGoalMeta = sessionGoalUtils.formatInlineStatus(
+        sessionGoalUtils.goalForConversation(conversation),
+        sessionGoalUtils.proposalForConversation(conversation)
+      );
+      dom.conversationMeta.textContent = [conversationMetaText, sessionGoalMeta].filter(Boolean).join(' / ');
 
       const hasAgents = conversation.agents.length > 0;
       const stopRequestInFlight = state.stopRequestConversationIds.has(conversation.id);
@@ -121,7 +133,7 @@
           ? '停止中...'
           : '停止';
       dom.sendButton.disabled = !hasAgents || undercoverChatLocked || werewolfChatLocked;
-      dom.composerInput.placeholder = '输入 @Agent 可将当前消息路由给指定人格。';
+      dom.composerInput.placeholder = '输入 @Agent 可将当前消息路由给指定人格；输入 /goal 设置会话目标。';
 
       if (isUndercoverConversation(conversation)) {
         dom.composerInput.placeholder = canChatInUndercoverConversation(conversation)
@@ -206,7 +218,13 @@
       } else if (!hasAgents) {
         dom.composerStatus.textContent = '先在右侧为本次对话选择至少一个人格。';
       } else {
-        dom.composerStatus.textContent = '可以通过 @Agent 把回合交给指定人格。';
+        const goalStatus = sessionGoalUtils.formatComposerStatus(
+          sessionGoalUtils.goalForConversation(conversation),
+          sessionGoalUtils.proposalForConversation(conversation)
+        );
+        dom.composerStatus.textContent = goalStatus
+          ? `可以通过 @Agent 把回合交给指定人格。${goalStatus}`
+          : '可以通过 @Agent 把回合交给指定人格。';
       }
 
       if (isUndercoverConversation(conversation) && !activeTurn && !state.sending && hasAgents) {

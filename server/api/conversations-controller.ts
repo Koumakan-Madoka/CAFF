@@ -9,6 +9,8 @@ import { readRequestJson } from '../http/request-body';
 import { sendFileDownload, sendJson } from '../http/response';
 
 import { pickConversationSummary, withConversationPrivateMessages } from '../domain/conversation/conversation-view';
+import { applyConversationDigestAction } from '../domain/conversation/conversation-digest';
+import { applySessionGoalAction } from '../domain/conversation/session-goal';
 import { buildAssistantMessageToolTrace } from '../domain/runtime/message-tool-trace';
 import {
   SKILL_TEST_DESIGN_CONVERSATION_TYPE,
@@ -187,6 +189,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
   const werewolfService = options.werewolfService;
   const buildBootstrapPayload = options.buildBootstrapPayload;
   const modeStore = options.modeStore;
+  const broadcastEvent = typeof options.broadcastEvent === 'function' ? options.broadcastEvent : () => {};
 
   return async function handleConversationsRequest(context) {
     const { req, res, pathname, requestUrl } = context;
@@ -380,6 +383,118 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         binding,
         moved: Boolean(previousConversationId && previousConversationId !== conversationId),
         previousConversationId,
+      });
+      return true;
+    }
+
+    const conversationDigestMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/digest$/);
+
+    if (conversationDigestMatch && (req.method === 'GET' || req.method === 'POST')) {
+      const conversationId = decodeURIComponent(conversationDigestMatch[1]);
+      const body = req.method === 'POST' ? await readRequestJson(req) : { action: 'get' };
+      const result = applyConversationDigestAction(store, conversationId, body || {});
+
+      if (req.method === 'POST' && result.digestChanged) {
+        const summary = pickConversationSummary(result.conversation);
+        broadcastEvent(result.deleted ? 'conversation_digest_deleted' : 'conversation_digest_updated', {
+          conversationId,
+          digest: result.digest,
+          digests: result.digests,
+          deleted: result.deleted,
+          conversation: result.conversation,
+          summary,
+        });
+        broadcastEvent('conversation_summary_updated', {
+          conversationId,
+          summary,
+        });
+      }
+
+      const latestConversation = store.getConversation(conversationId) || result.conversation;
+      sendJson(res, 200, {
+        conversation: latestConversation,
+        digests: result.digests,
+        digest: result.digest,
+        deleted: result.deleted,
+        summary: pickConversationSummary(latestConversation),
+        conversations: store.listConversations(),
+      });
+      return true;
+    }
+
+    const conversationGoalMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/goal$/);
+
+    if (conversationGoalMatch && (req.method === 'GET' || req.method === 'POST')) {
+      const conversationId = decodeURIComponent(conversationGoalMatch[1]);
+      const body = req.method === 'POST' ? await readRequestJson(req) : { action: 'get' };
+      const result = applySessionGoalAction(store, conversationId, body || {});
+      let autoContinuation = null;
+
+      if (req.method === 'POST') {
+        const summary = pickConversationSummary(result.conversation);
+
+        if (result.goalChanged || result.cleared) {
+          broadcastEvent(result.cleared ? 'conversation_goal_cleared' : 'conversation_goal_updated', {
+            conversationId,
+            goal: result.goal,
+            proposal: result.proposal,
+            conversation: result.conversation,
+            summary,
+          });
+        }
+
+        if (result.proposalChanged) {
+          broadcastEvent(result.proposalCleared ? 'conversation_goal_proposal_cleared' : 'conversation_goal_proposal_updated', {
+            conversationId,
+            goal: result.goal,
+            proposal: result.proposal,
+            conversation: result.conversation,
+            summary,
+          });
+        }
+
+        broadcastEvent('conversation_summary_updated', {
+          conversationId,
+          summary,
+        });
+
+        if (
+          result.goalChanged &&
+          result.autoContinue !== false &&
+          result.goal &&
+          result.goal.status === 'active' &&
+          !result.proposal &&
+          turnOrchestrator &&
+          typeof turnOrchestrator.scheduleGoalContinuation === 'function'
+        ) {
+          try {
+            autoContinuation = turnOrchestrator.scheduleGoalContinuation(conversationId, {
+              reason: 'goal_action',
+            });
+          } catch (error) {
+            const errorValue = error as any;
+            console.warn(
+              `[conversations-controller] Failed to schedule goal continuation for ${conversationId}: ${
+                errorValue && errorValue.stack ? errorValue.stack : errorValue
+              }`
+            );
+            autoContinuation = {
+              scheduled: false,
+              reason: 'schedule_failed',
+            };
+          }
+        }
+      }
+
+      const latestConversation = store.getConversation(conversationId) || result.conversation;
+      sendJson(res, 200, {
+        conversation: latestConversation,
+        goal: result.goal,
+        proposal: result.proposal,
+        cleared: result.cleared,
+        autoContinuation,
+        summary: pickConversationSummary(latestConversation),
+        conversations: store.listConversations(),
       });
       return true;
     }

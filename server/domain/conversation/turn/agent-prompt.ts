@@ -1,6 +1,8 @@
 const { getAgentById } = require('../mention-routing');
 const { UNDERCOVER_CONVERSATION_TYPE } = require('../../../../lib/who-is-undercover-game');
 const { WEREWOLF_CONVERSATION_TYPE } = require('../../../../lib/werewolf-game');
+const { formatConversationDigestsForPrompt } = require('../conversation-digest');
+const { formatSessionGoalForPrompt } = require('../session-goal');
 const { buildTrellisPromptContext } = require('./trellis-context');
 
 export const AGENT_PROMPT_VERSION =
@@ -280,6 +282,8 @@ function buildAgentToolInstructions(agentToolRelativePath: string, options: any 
     `- Soft-forget a mistaken durable memory only when the user explicitly asks: ${relativeCommandPrefix} forget-memory --title "temporary preference" --reason "User said this should not persist" --expected-updated-at "2026-04-13T00:00:00.000Z"`,
     '- Save only durable facts/preferences/agreements. Never save secrets, raw logs, TODOs, transient status updates, or silently rewrite durable memory without a clear user correction/removal.',
     `- List the visible room participants: ${relativeCommandPrefix} list-participants`,
+    `- If the current session goal appears finished, blocked, paused/resumed-worthy, or should be replaced, create a pending user-confirmation proposal instead of changing it directly: ${relativeCommandPrefix} suggest-goal --action complete --reason "work appears done" (or --action set --objective "new target" --reason "scope changed").`,
+    `- Keep session-goal checklist progress current when a checklist exists or when you break the goal into subtasks: ${relativeCommandPrefix} update-goal-checklist --content-stdin using lines like [ ] todo, [~] doing, [x] done.`,
     ...(options.includeDynamicSkillLoadingGuidance
       ? [
           '- Dynamic skill loading: when conversation skills are listed as descriptors without full instructions, use the `read` tool on the listed `Path` to load the full `SKILL.md` on demand.',
@@ -533,6 +537,8 @@ export function buildAgentTurnPrompt({
   const undercoverSection = buildUndercoverPromptSection(conversation, agent);
   const werewolfSection = buildWerewolfPromptSection(conversation, agent);
   const skillTestDesignSection = buildSkillTestDesignPromptSection(modeContext, agent, agents);
+  const conversationDigestSection = formatConversationDigestsForPrompt(conversation);
+  const sessionGoalSection = formatSessionGoalForPrompt(conversation);
   const gameplaySections = [undercoverSection, werewolfSection].filter(Boolean);
   const includeDynamicSkillLoadingGuidance = hasDynamicSkillDescriptors(resolvedConversationSkills, {
     forceFull: false,
@@ -561,6 +567,8 @@ export function buildAgentTurnPrompt({
     }),
     '',
     ...(trellisPromptContext ? ['Trellis project context:', trellisPromptContext, ''] : []),
+    ...(conversationDigestSection ? [conversationDigestSection, ''] : []),
+    ...(sessionGoalSection ? ['Session goal:', sessionGoalSection, ''] : []),
     'Local sandbox:',
     `- PI_AGENT_SANDBOX_DIR points to your dedicated sandbox: ${sandbox && sandbox.sandboxDir ? sandbox.sandboxDir : '[unavailable]'}`,
     `- PI_AGENT_PRIVATE_DIR points to your private storage directory: ${sandbox && sandbox.privateDir ? sandbox.privateDir : '[unavailable]'}`,
