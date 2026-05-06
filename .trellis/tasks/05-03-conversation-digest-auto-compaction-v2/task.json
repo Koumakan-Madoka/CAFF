@@ -1,0 +1,64 @@
+{
+  "id": "conversation-digest-auto-compaction-v2",
+  "name": "conversation-digest-auto-compaction-v2",
+  "title": "Conversation Digest Auto-Compaction v2 + Summary Memory",
+  "description": "Upgrade CAFF conversation digest with automatic creation, bounded compaction, searchable summary-memory segments, prompt recall, health checks, and legacy digest backfill diagnostics.",
+  "status": "review",
+  "dev_type": "fullstack",
+  "scope": "memory",
+  "package": null,
+  "priority": "P2",
+  "creator": "菲比啾比",
+  "assignee": "菲比啾比",
+  "createdAt": "2026-05-03",
+  "completedAt": null,
+  "branch": "feature/session-goal",
+  "base_branch": "main",
+  "worktree_path": null,
+  "current_phase": 3,
+  "next_action": [
+    {
+      "phase": 3,
+      "action": "finish"
+    },
+    {
+      "phase": 4,
+      "action": "create-pr"
+    }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "server/domain/conversation/conversation-digest.ts",
+    "server/api/conversations-controller.ts",
+    "server/app/create-server.ts",
+    "public/chat/conversation-digest-panel.js",
+    "server/api/memory-controller.ts",
+    "lib/chat-app-store.ts",
+    "storage/chat/summary-segment.repository.ts",
+    "server/domain/conversation/turn/agent-executor.ts",
+    "server/domain/conversation/turn/agent-prompt.ts",
+    "lib/summary-memory-query.ts",
+    "public/chat/summary-memory-panel.js",
+    "tests/smoke/server-smoke.test.js",
+    "tests/runtime/turn-orchestrator.test.js",
+    ".trellis/spec/backend/conversation-digest.md",
+    ".trellis/spec/backend/summary-memory.md",
+    ".trellis/spec/runtime/agent-runtime.md"
+  ],
+  "notes": "Implementation and runtime health/backfill verification have passed in-session. Keep this task active in review until the uncommitted memory changes are committed or intentionally split into follow-up tasks.",
+  "meta": {
+    "maintenance": {
+      "lastReviewedAt": "2026-05-04T14:10:00.000Z",
+      "activeTaskListCleaned": true,
+      "archivedCompletedTasks": [
+        "05-03-conversation-digest",
+        "05-03-session-goal"
+      ],
+      "runtimeMemoryVerification": "passed"
+    }
+  }
+}
