@@ -9,6 +9,9 @@
     <script defer src="/shared/model-options.js"></script>
     <script defer src="/shared/avatar.js"></script>
     <script defer src="/shared/toast.js"></script>
+    <script defer src="/shared/session-goal.js"></script>
+    <script defer src="/shared/conversation-digest.js"></script>
+    <script defer src="/shared/summary-memory.js"></script>
     <script defer src="/shared/clipboard.js"></script>
     <script defer src="/shared/safe-markdown.js"></script>
     <script defer src="/chat/conversation-list.js"></script>
@@ -19,6 +22,9 @@
     <script defer src="/chat/werewolf-panel.js"></script>
     <script defer src="/chat/skill-test-design-panel.js"></script>
     <script defer src="/chat/mention-menu.js"></script>
+    <script defer src="/chat/session-goal-panel.js"></script>
+    <script defer src="/chat/conversation-digest-panel.js"></script>
+    <script defer src="/chat/summary-memory-panel.js"></script>
     <script defer src="/chat/conversation-pane.js"></script>
     <script defer src="/app.js"></script>
   </head>
@@ -74,7 +80,30 @@
               <p id="conversation-mode-badge" class="mode-pill hidden"></p>
               <p id="conversation-meta" class="muted">请稍候</p>
             </div>
-            <button id="delete-conversation-button" class="ghost-button danger" type="button">删除对话</button>
+            <div class="chat-header-actions">
+              <button
+                id="conversation-digest-toggle-button"
+                class="ghost-button goal-toggle-button"
+                type="button"
+                aria-expanded="false"
+                aria-controls="conversation-digest-drawer"
+              >摘要 ▸</button>
+              <button
+                id="summary-memory-toggle-button"
+                class="ghost-button goal-toggle-button"
+                type="button"
+                aria-expanded="false"
+                aria-controls="summary-memory-drawer"
+              >记忆 ▸</button>
+              <button
+                id="session-goal-toggle-button"
+                class="ghost-button goal-toggle-button"
+                type="button"
+                aria-expanded="false"
+                aria-controls="session-goal-drawer"
+              >目标 ▸</button>
+              <button id="delete-conversation-button" class="ghost-button danger" type="button">删除对话</button>
+            </div>
           </header>
 
           <div class="participant-section">
@@ -336,6 +365,176 @@
         </aside>
       </main>
     </div>
+
+    <button
+      id="session-goal-edge-button"
+      class="session-goal-edge-button"
+      type="button"
+      aria-expanded="false"
+      aria-controls="session-goal-drawer"
+      title="管理会话目标"
+    >目标 ▸</button>
+
+    <aside id="session-goal-drawer" class="session-goal-drawer hidden" aria-hidden="true">
+      <section class="session-goal-drawer-panel" role="dialog" aria-labelledby="session-goal-drawer-title">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">Session Goal</p>
+            <h2 id="session-goal-drawer-title">会话目标</h2>
+          </div>
+          <button id="session-goal-close-button" class="ghost-button" type="button">收起</button>
+        </div>
+
+        <p id="session-goal-drawer-status" class="session-goal-status-badge active">当前没有会话目标</p>
+        <div id="session-goal-details" class="session-goal-detail-list"></div>
+
+        <div id="session-goal-progress-card" class="session-goal-progress-card hidden">
+          <div class="section-row">
+            <span class="section-label">进度</span>
+            <span id="session-goal-progress-summary" class="section-hint">0/0</span>
+          </div>
+          <div class="session-goal-progress-track" aria-hidden="true">
+            <span id="session-goal-progress-fill" class="session-goal-progress-fill"></span>
+          </div>
+          <ul id="session-goal-checklist-preview" class="session-goal-checklist-preview"></ul>
+        </div>
+
+        <div id="session-goal-proposal-card" class="session-goal-proposal-card hidden">
+          <div class="section-row">
+            <span class="section-label">Agent 提议</span>
+            <span class="section-hint">需要用户确认才会生效</span>
+          </div>
+          <p id="session-goal-proposal-status" class="session-goal-proposal-status"></p>
+          <div id="session-goal-proposal-details" class="session-goal-detail-list compact-detail-list"></div>
+          <div class="button-row compact-button-row">
+            <button id="session-goal-accept-proposal-button" type="button">确认提议</button>
+            <button id="session-goal-dismiss-proposal-button" class="ghost-button" type="button">忽略</button>
+          </div>
+        </div>
+
+        <form id="session-goal-form" class="settings-form compact-settings-form">
+          <label>
+            <span>目标内容</span>
+            <textarea
+              id="session-goal-objective"
+              rows="5"
+              maxlength="2000"
+              placeholder="例如：完成 /goal 管理面板并通过检查"
+            ></textarea>
+          </label>
+          <label>
+            <span>子任务 checklist</span>
+            <textarea
+              id="session-goal-checklist"
+              rows="6"
+              maxlength="4000"
+              placeholder="每行一项；支持 [ ] 待办、[~] 进行中、[x] 完成"
+            ></textarea>
+          </label>
+          <div class="button-row compact-button-row">
+            <button id="session-goal-save-button" type="submit">创建目标</button>
+          </div>
+        </form>
+
+        <div class="session-goal-action-card">
+          <div class="section-row">
+            <span class="section-label">生命周期</span>
+            <span class="section-hint">也可以继续使用 /goal 快捷命令</span>
+          </div>
+          <div class="button-row compact-button-row">
+            <button id="session-goal-pause-button" class="ghost-button" type="button">暂停</button>
+            <button id="session-goal-resume-button" class="ghost-button" type="button">恢复</button>
+            <button id="session-goal-complete-button" class="ghost-button" type="button">完成</button>
+            <button id="session-goal-clear-button" class="ghost-button danger" type="button">清除</button>
+          </div>
+        </div>
+      </section>
+    </aside>
+
+    <aside id="conversation-digest-drawer" class="session-goal-drawer conversation-digest-drawer hidden" aria-hidden="true">
+      <section class="session-goal-drawer-panel" role="dialog" aria-labelledby="conversation-digest-drawer-title">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">Conversation Digest</p>
+            <h2 id="conversation-digest-drawer-title">会话摘要</h2>
+          </div>
+          <button id="conversation-digest-close-button" class="ghost-button" type="button">收起</button>
+        </div>
+
+        <p id="conversation-digest-status" class="session-goal-status-badge active">当前没有会话摘要</p>
+        <div class="session-goal-action-card">
+          <div class="section-row">
+            <span class="section-label">长期记忆</span>
+            <span class="section-hint">摘要低于近期原文优先级</span>
+          </div>
+          <div class="button-row compact-button-row">
+            <button id="conversation-digest-create-button" type="button">生成摘要</button>
+            <button id="conversation-digest-compact-button" class="secondary-button" type="button">压缩旧摘要</button>
+          </div>
+        </div>
+        <div id="conversation-digest-list" class="conversation-digest-list"></div>
+      </section>
+    </aside>
+
+    <aside id="summary-memory-drawer" class="session-goal-drawer summary-memory-drawer hidden" aria-hidden="true">
+      <section class="session-goal-drawer-panel" role="dialog" aria-labelledby="summary-memory-drawer-title">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">Summary Memory</p>
+            <h2 id="summary-memory-drawer-title">长期经验搜索</h2>
+          </div>
+          <button id="summary-memory-close-button" class="ghost-button" type="button">收起</button>
+        </div>
+
+        <p id="summary-memory-status" class="session-goal-status-badge active">输入关键词搜索跨会话 / 跨任务摘要段</p>
+        <form id="summary-memory-form" class="settings-form compact-settings-form summary-memory-form">
+          <label>
+            <span>关键词</span>
+            <input id="summary-memory-query" type="search" maxlength="240" placeholder="例如：digest compaction、测试被环境变量绊倒" />
+          </label>
+          <label>
+            <span>任务筛选（可选）</span>
+            <input id="summary-memory-task" type="search" maxlength="120" placeholder="例如：05-03-conversation-digest" />
+          </label>
+          <label class="summary-memory-checkbox-row">
+            <input id="summary-memory-current-task" type="checkbox" />
+            <span>仅当前 Trellis 任务</span>
+          </label>
+          <label>
+            <span>会话标题筛选（可选）</span>
+            <input id="summary-memory-conversation-title" type="search" maxlength="120" placeholder="例如：记忆系统调研、BetterGI 部署" />
+          </label>
+          <div class="summary-memory-date-row">
+            <label>
+              <span>开始日期（可选）</span>
+              <input id="summary-memory-updated-after" type="date" />
+            </label>
+            <label>
+              <span>结束日期（可选）</span>
+              <input id="summary-memory-updated-before" type="date" />
+            </label>
+          </div>
+          <label>
+            <span>摘要类型</span>
+            <select id="summary-memory-kind">
+              <option value="">全部</option>
+              <option value="entry">详细摘要</option>
+              <option value="rollup">压缩摘要</option>
+            </select>
+          </label>
+          <label class="summary-memory-checkbox-row">
+            <input id="summary-memory-include-current" type="checkbox" />
+            <span>包含当前会话</span>
+          </label>
+          <div class="button-row compact-button-row">
+            <button id="summary-memory-search-button" type="submit">搜索记忆</button>
+            <button id="summary-memory-recent-button" class="ghost-button" type="button" title="显示最近同步的长期经验摘要段">最新记忆</button>
+            <button id="summary-memory-backfill-button" class="ghost-button" type="button" title="把所有会话里的旧 metadata 摘要同步进长期经验搜索">回填全部旧摘要</button>
+          </div>
+        </form>
+        <div id="summary-memory-results" class="conversation-digest-list summary-memory-results"></div>
+      </section>
+    </aside>
 
     <div id="toast" class="toast hidden"></div>
   </body>

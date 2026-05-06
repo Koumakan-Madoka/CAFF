@@ -55,6 +55,8 @@ const KNOWN_TOOL_NAMES = new Set([
   'send-private',
   'read-context',
   'list-participants',
+  'suggest-goal',
+  'update-goal-checklist',
   'trellis-init',
   'trellis-write',
 ]);

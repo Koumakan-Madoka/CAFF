@@ -891,3 +891,259 @@ test('chat store persists external channel bindings and idempotency records', (t
   assert.equal(persistedEvent.conversation_id, conversation.id);
   assert.equal(persistedEvent.message_id, message.id);
 });
+
+test('chat store indexes digest summary segments for cross-conversation search', (t) => {
+  const tempDir = withTempDir('caff-chat-summary-segments-');
+  const sqlitePath = path.join(tempDir, 'chat.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const conversation = store.createConversation({
+    id: 'summary-source-conversation',
+    title: 'BetterGI Deployment Notes',
+  });
+  store.createConversation({
+    id: 'summary-active-conversation',
+    title: 'Active Conversation',
+  });
+
+  const segment = store.saveSummarySegmentFromDigest(conversation.id, {
+    id: 'digest-summary-segment-1',
+    kind: 'entry',
+    createdAt: '2026-05-04T00:00:00.000Z',
+    updatedAt: '2026-05-04T00:00:00.000Z',
+    createdBy: 'model:deepseek/test',
+    triggerReason: 'manual',
+    messageRange: {
+      fromMessageId: 'm1',
+      toMessageId: 'm2',
+      messageCount: 2,
+    },
+    summary: 'BetterGI one-dragon launch should use scheduled tasks and verify logs.',
+    facts: ['Scheduled task avoids UAC bypass assumptions.'],
+    decisions: ['Use log and process status checks after launch.'],
+    openQuestions: [],
+    nextActions: ['Document launch verification checklist.'],
+    artifacts: ['.pi-sandbox/skills/bettergi-one-dragon/SKILL.md'],
+  });
+
+  assert.equal(segment.sourceDigestId, 'digest-summary-segment-1');
+  assert.equal(segment.conversationTitle, 'BetterGI Deployment Notes');
+
+  const searchResult = store.searchSummarySegments({
+    query: 'BetterGI scheduled task logs',
+    excludeConversationId: 'summary-active-conversation',
+  });
+
+  assert.equal(searchResult.scope, 'summary-segments');
+  assert.equal(searchResult.resultCount, 1);
+  assert.equal(searchResult.results[0].sourceDigestId, 'digest-summary-segment-1');
+  assert.equal(searchResult.results[0].decisions[0], 'Use log and process status checks after launch.');
+
+  const provenanceSearch = store.searchSummarySegments({
+    query: 'manual deepseek',
+    excludeConversationId: 'summary-active-conversation',
+  });
+
+  assert.equal(provenanceSearch.resultCount, 1);
+  assert.equal(provenanceSearch.results[0].sourceDigestId, 'digest-summary-segment-1');
+  assert.deepEqual(provenanceSearch.results[0].matchedTerms, ['manual', 'deepseek']);
+});
+
+test('chat store filters summary memory by task and source kind', (t) => {
+  const tempDir = withTempDir('caff-chat-summary-segment-filters-');
+  const sqlitePath = path.join(tempDir, 'chat.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const conversation = store.createConversation({
+    id: 'summary-filter-conversation',
+    title: 'Digest Filter Notes',
+  });
+  const otherConversation = store.createConversation({
+    id: 'summary-filter-other-conversation',
+    title: 'Other Memory Notes',
+  });
+
+  store.saveSummarySegmentFromDigest(conversation.id, {
+    id: 'digest-filter-entry',
+    kind: 'entry',
+    summary: 'digest filter keyword detailed entry for the first task.',
+    createdAt: '2026-05-04T00:00:00.000Z',
+    updatedAt: '2026-05-04T00:00:00.000Z',
+  }, { taskName: 'digest-v1' });
+  store.saveSummarySegmentFromDigest(conversation.id, {
+    id: 'digest-filter-rollup',
+    kind: 'rollup',
+    summary: 'digest filter keyword compact rollup for the second task.',
+    createdAt: '2026-05-04T00:01:00.000Z',
+    updatedAt: '2026-05-04T00:01:00.000Z',
+  }, { taskName: 'digest-v2' });
+  store.saveSummarySegmentFromDigest(otherConversation.id, {
+    id: 'digest-filter-other-rollup',
+    kind: 'rollup',
+    summary: 'digest filter keyword compact rollup for a similarly tagged conversation.',
+    createdAt: '2026-05-04T00:02:00.000Z',
+    updatedAt: '2026-05-04T00:02:00.000Z',
+  }, { taskName: 'digest-v2' });
+  store.saveSummarySegmentFromDigest(conversation.id, {
+    id: 'digest-filter-rollup-newer-out-of-range',
+    kind: 'rollup',
+    summary: 'digest filter keyword compact rollup outside the selected date window.',
+    createdAt: '2026-05-06T00:00:00.000Z',
+    updatedAt: '2026-05-06T00:00:00.000Z',
+  }, { taskName: 'digest-v2' });
+
+  const filtered = store.searchSummarySegments({
+    query: 'digest filter keyword',
+    taskName: 'digest-v2',
+    sourceKind: 'rollup',
+    conversationTitle: 'Digest Filter',
+    updatedAfter: '2026-05-04T00:00:00.000Z',
+    updatedBefore: '2026-05-04T23:59:59.999Z',
+  });
+
+  assert.deepEqual(filtered.filters, {
+    taskName: 'digest-v2',
+    sourceKind: 'rollup',
+    conversationTitle: 'Digest Filter',
+    updatedAfter: '2026-05-04T00:00:00.000Z',
+    updatedBefore: '2026-05-04T23:59:59.999Z',
+  });
+  assert.equal(filtered.resultCount, 1);
+  assert.equal(filtered.results[0].sourceDigestId, 'digest-filter-rollup');
+});
+
+test('chat store searches Chinese summary memory with word-segmented query terms', (t) => {
+  const tempDir = withTempDir('caff-chat-summary-segment-cjk-');
+  const sqlitePath = path.join(tempDir, 'chat.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const conversation = store.createConversation({
+    id: 'summary-cjk-conversation',
+    title: '中文长期记忆复盘',
+  });
+
+  store.saveSummarySegmentFromDigest(conversation.id, {
+    id: 'digest-cjk-memory',
+    kind: 'entry',
+    summary: '长期经验记忆层的回归验证需要覆盖召回测试。',
+    facts: ['中文查询不应该被整句关键词卡住。'],
+    createdAt: '2026-05-04T00:00:00.000Z',
+    updatedAt: '2026-05-04T00:00:00.000Z',
+  }, { taskName: '跨会话长期经验记忆层' });
+
+  const searchResult = store.searchSummarySegments({
+    query: '长期记忆回归测试',
+  });
+
+  assert.equal(searchResult.resultCount, 1);
+  assert.equal(searchResult.results[0].sourceDigestId, 'digest-cjk-memory');
+  assert.deepEqual(searchResult.results[0].matchedTerms, ['长期', '记忆', '回归', '测试']);
+});
+
+test('chat store ranks summary memory by matched term coverage', (t) => {
+  const tempDir = withTempDir('caff-chat-summary-segment-ranking-');
+  const sqlitePath = path.join(tempDir, 'chat.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const conversation = store.createConversation({
+    id: 'summary-ranking-conversation',
+    title: 'Digest Ranking Notes',
+  });
+
+  store.saveSummarySegmentFromDigest(conversation.id, {
+    id: 'digest-ranking-partial-newer',
+    kind: 'entry',
+    summary: 'Digest tests use environment overrides for auto-create settings.',
+    createdAt: '2026-05-04T00:02:00.000Z',
+    updatedAt: '2026-05-04T00:02:00.000Z',
+  });
+  store.saveSummarySegmentFromDigest(conversation.id, {
+    id: 'digest-ranking-full-older',
+    kind: 'entry',
+    summary: 'Digest environment variable tests should pin idle and cooldown gates.',
+    facts: ['Idle and cooldown env settings can block automatic summaries.'],
+    createdAt: '2026-05-04T00:01:00.000Z',
+    updatedAt: '2026-05-04T00:01:00.000Z',
+  });
+
+  const searchResult = store.searchSummarySegments({
+    query: 'digest environment cooldown',
+    limit: 2,
+  });
+
+  assert.equal(searchResult.searchMode, 'like_scored_or');
+  assert.equal(searchResult.resultCount, 2);
+  assert.equal(searchResult.results[0].sourceDigestId, 'digest-ranking-full-older');
+  assert.equal(searchResult.results[0].score, 3);
+  assert.deepEqual(searchResult.results[0].matchedTerms, ['digest', 'environment', 'cooldown']);
+  assert.equal(searchResult.results[1].sourceDigestId, 'digest-ranking-partial-newer');
+  assert.equal(searchResult.results[1].score, 2);
+  assert.deepEqual(searchResult.results[1].matchedTerms, ['digest', 'environment']);
+});
+
+test('chat store returns enough summary memory candidates for automatic recall diversity', (t) => {
+  const tempDir = withTempDir('caff-chat-summary-segment-candidate-limit-');
+  const sqlitePath = path.join(tempDir, 'chat.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const conversation = store.createConversation({
+    id: 'summary-candidate-limit-conversation',
+    title: 'Digest Candidate Notes',
+  });
+
+  for (let index = 0; index < 16; index += 1) {
+    const minute = String(index).padStart(2, '0');
+
+    store.saveSummarySegmentFromDigest(conversation.id, {
+      id: `digest-candidate-limit-${index}`,
+      kind: 'entry',
+      summary: `candidate budget digest memory ${index}`,
+      createdAt: `2026-05-04T00:${minute}:00.000Z`,
+      updatedAt: `2026-05-04T00:${minute}:00.000Z`,
+    });
+  }
+
+  const searchResult = store.searchSummarySegments({
+    query: 'candidate budget digest memory',
+    limit: 15,
+  });
+
+  assert.equal(searchResult.resultCount, 15);
+  assert.equal(searchResult.results[0].sourceDigestId, 'digest-candidate-limit-15');
+  assert.equal(searchResult.results[14].sourceDigestId, 'digest-candidate-limit-1');
+});

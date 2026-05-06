@@ -4,13 +4,18 @@ const path = require('node:path');
 const { createHttpError } = require('../../http/http-errors');
 const { pickConversationSummary, serializeConversationPrivateMessageForUi } = require('../conversation/conversation-view');
 const { buildAgentMentionLookup, formatAgentMention, resolveMentionValues } = require('../conversation/mention-routing');
+const { applySessionGoalAction, proposeSessionGoalAction } = require('../conversation/session-goal');
 const { createLiveBridgeToolStep } = require('./message-tool-trace');
+const { resolveCurrentTrellisTaskName } = require('../conversation/turn/trellis-context');
 
 const MAX_HISTORY_MESSAGES = 24;
 const MAX_PRIVATE_CONTEXT_MESSAGES = 16;
 const MAX_MESSAGE_SEARCH_LIMIT = 5;
 const MAX_MESSAGE_SEARCH_QUERY_LENGTH = 120;
 const MAX_MESSAGE_SEARCH_FILTER_LENGTH = 80;
+const MAX_SUMMARY_MEMORY_SEARCH_LIMIT = 5;
+const MAX_SUMMARY_MEMORY_SEARCH_QUERY_LENGTH = 240;
+const MAX_SUMMARY_MEMORY_FILTER_LENGTH = 120;
 const MAX_MEMORY_CARD_LIMIT = 6;
 const MAX_MEMORY_CARD_TITLE_LENGTH = 64;
 const MAX_MEMORY_CARD_CONTENT_LENGTH = 280;
@@ -51,6 +56,66 @@ function normalizeMemoryField(value: any, maxLength: number, fieldName: string) 
   }
 
   return normalized;
+}
+
+function normalizeOptionalSummaryMemoryFilter(value: any, fieldName: string) {
+  const normalized = String(value || '').trim().replace(/\s+/g, ' ');
+
+  if (normalized.length > MAX_SUMMARY_MEMORY_FILTER_LENGTH) {
+    throw createHttpError(400, `${fieldName} must be at most ${MAX_SUMMARY_MEMORY_FILTER_LENGTH} characters`);
+  }
+
+  return normalized;
+}
+
+function normalizeOptionalSummaryMemoryKind(value: any) {
+  const normalized = String(value || '').trim();
+
+  if (!normalized) {
+    return '';
+  }
+
+  if (normalized !== 'entry' && normalized !== 'rollup') {
+    throw createHttpError(400, 'sourceKind must be entry or rollup');
+  }
+
+  return normalized;
+}
+
+function normalizeOptionalSummaryMemoryDate(value: any, fieldName: string, endOfDay = false) {
+  const normalized = String(value || '').trim();
+
+  if (!normalized) {
+    return '';
+  }
+
+  if (normalized.length > 80) {
+    throw createHttpError(400, `${fieldName} must be at most 80 characters`);
+  }
+
+  const date = /^\d{4}-\d{2}-\d{2}$/u.test(normalized)
+    ? new Date(`${normalized}T${endOfDay ? '23:59:59.999' : '00:00:00.000'}Z`)
+    : new Date(normalized);
+
+  if (Number.isNaN(date.getTime())) {
+    throw createHttpError(400, `${fieldName} must be a valid ISO date or datetime`);
+  }
+
+  return date.toISOString();
+}
+
+function resolveCurrentSummaryMemoryTaskName(context: any) {
+  const projectDir = String(context && context.projectDir || '').trim();
+
+  if (!projectDir) {
+    return '';
+  }
+
+  try {
+    return clipText(resolveCurrentTrellisTaskName({ startDir: projectDir }), MAX_SUMMARY_MEMORY_FILTER_LENGTH);
+  } catch {
+    return '';
+  }
 }
 
 function normalizeMemoryTtlDays(value: any) {
@@ -183,6 +248,27 @@ function normalizePositiveInteger(value: any, fallback = 0) {
   }
 
   return parsed;
+}
+
+function normalizeBooleanFlag(value: any, fallback = false) {
+  if (value === undefined || value === null || value === '') {
+    return fallback;
+  }
+
+  if (value === true || value === false) {
+    return value;
+  }
+
+  const normalized = String(value || '').trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) {
+    return true;
+  }
+
+  if (['0', 'false', 'no', 'off'].includes(normalized)) {
+    return false;
+  }
+
+  return fallback;
 }
 
 function resolveSkillTestAuthValue(input: any, key: string) {
@@ -1427,6 +1513,279 @@ export function createAgentToolBridge(options: any = {}) {
     }
   }
 
+  function handleSuggestGoal(body: any = {}) {
+    const startedAt = Date.now();
+    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
+    const activeStore = resolveContextStore(context);
+    const action = String(body.action || '').trim().toLowerCase();
+    const objective = String(body.objective || '').trim();
+    const reason = String(body.reason || '').trim();
+    const toolCallId = randomUUID();
+
+    setContextCurrentTool(context, {
+      toolName: 'suggest-goal',
+      toolKind: 'bridge',
+      toolStepId: toolCallId,
+      inferred: false,
+      request: {
+        action,
+        objectiveLength: objective.length,
+        reasonPreview: clipText(reason, 120),
+      },
+    });
+
+    try {
+      ensureToolAllowed(context, 'suggest-goal', { action });
+
+      if (context.dryRun) {
+        const response = {
+          ok: true,
+          dryRun: true,
+          proposal: {
+            action,
+            status: 'pending',
+            ...(objective ? { objective } : {}),
+            ...(reason ? { reason: clipText(reason, 1000) } : {}),
+            proposedBy: {
+              agentId: context.agentId,
+              agentName: context.agentName,
+            },
+            createdAt: nowIso(),
+          },
+        };
+
+        tryAppendInvocationEvent(context, 'agent_tool_call', {
+          schemaVersion: 1,
+          toolCallId,
+          tool: 'suggest-goal',
+          status: 'succeeded',
+          durationMs: Date.now() - startedAt,
+          invocationId: context.invocationId,
+          conversationId: context.conversationId,
+          turnId: context.turnId,
+          agentId: context.agentId,
+          agentName: context.agentName,
+          assistantMessageId: context.assistantMessageId,
+          request: {
+            action,
+            objectiveLength: objective.length,
+            reasonPreview: clipText(reason, 120),
+          },
+          result: {
+            dryRun: true,
+            proposalAction: action,
+          },
+        });
+
+        return response;
+      }
+
+      if (!activeStore || typeof activeStore.getConversation !== 'function') {
+        throw createHttpError(501, 'Session goal proposals are not available');
+      }
+
+      const result = proposeSessionGoalAction(
+        activeStore,
+        context.conversationId,
+        { action, objective, reason },
+        { agentId: context.agentId, agentName: context.agentName }
+      );
+      const summary = pickConversationSummary(result.conversation);
+
+      broadcastEvent('conversation_goal_proposal_updated', {
+        conversationId: context.conversationId,
+        goal: result.goal,
+        proposal: result.proposal,
+        conversation: result.conversation,
+        summary,
+      });
+      broadcastConversationSummary(context.conversationId);
+
+      const response = {
+        ok: true,
+        conversation: summary,
+        goal: result.goal,
+        proposal: result.proposal,
+      };
+
+      tryAppendInvocationEvent(context, 'agent_tool_call', {
+        schemaVersion: 1,
+        toolCallId,
+        tool: 'suggest-goal',
+        status: 'succeeded',
+        durationMs: Date.now() - startedAt,
+        invocationId: context.invocationId,
+        conversationId: context.conversationId,
+        turnId: context.turnId,
+        agentId: context.agentId,
+        agentName: context.agentName,
+        assistantMessageId: context.assistantMessageId,
+        request: {
+          action,
+          objectiveLength: objective.length,
+          reasonPreview: clipText(reason, 120),
+        },
+        result: {
+          proposalAction: result.proposal ? result.proposal.action : '',
+          goalStatus: result.goal ? result.goal.status : '',
+        },
+      });
+
+      return response;
+    } catch (error) {
+      const errorValue = error as any;
+      tryAppendInvocationEvent(context, 'agent_tool_call', {
+        schemaVersion: 1,
+        toolCallId,
+        tool: 'suggest-goal',
+        status: 'failed',
+        durationMs: Date.now() - startedAt,
+        invocationId: context.invocationId,
+        conversationId: context.conversationId,
+        turnId: context.turnId,
+        agentId: context.agentId,
+        agentName: context.agentName,
+        assistantMessageId: context.assistantMessageId,
+        request: {
+          action,
+          objectiveLength: objective.length,
+          reasonPreview: clipText(reason, 120),
+        },
+        error: {
+          statusCode: Number.isInteger(errorValue && errorValue.statusCode) ? errorValue.statusCode : null,
+          message: clipText(errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Unknown error')),
+        },
+      });
+
+      throw error;
+    } finally {
+      setContextCurrentTool(context, null);
+    }
+  }
+
+  function handleUpdateGoalChecklist(body: any = {}) {
+    const startedAt = Date.now();
+    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
+    const activeStore = resolveContextStore(context);
+    const checklistText = String(body.checklistText || body.checklist_text || body.content || '').trim();
+    const toolCallId = randomUUID();
+
+    setContextCurrentTool(context, {
+      toolName: 'update-goal-checklist',
+      toolKind: 'bridge',
+      toolStepId: toolCallId,
+      inferred: false,
+      request: {
+        checklistLength: checklistText.length,
+      },
+    });
+
+    try {
+      ensureToolAllowed(context, 'update-goal-checklist');
+
+      if (context.dryRun) {
+        const response = {
+          ok: true,
+          dryRun: true,
+          checklistLength: checklistText.length,
+        };
+
+        tryAppendInvocationEvent(context, 'agent_tool_call', {
+          schemaVersion: 1,
+          toolCallId,
+          tool: 'update-goal-checklist',
+          status: 'succeeded',
+          durationMs: Date.now() - startedAt,
+          invocationId: context.invocationId,
+          conversationId: context.conversationId,
+          turnId: context.turnId,
+          agentId: context.agentId,
+          agentName: context.agentName,
+          assistantMessageId: context.assistantMessageId,
+          request: { checklistLength: checklistText.length },
+          result: { dryRun: true },
+        });
+
+        return response;
+      }
+
+      if (!activeStore || typeof activeStore.getConversation !== 'function') {
+        throw createHttpError(501, 'Session goal checklist updates are not available');
+      }
+
+      const result = applySessionGoalAction(activeStore, context.conversationId, {
+        action: 'update-checklist',
+        checklistText,
+      });
+      const summary = pickConversationSummary(result.conversation);
+
+      broadcastEvent('conversation_goal_updated', {
+        conversationId: context.conversationId,
+        goal: result.goal,
+        proposal: result.proposal,
+        conversation: result.conversation,
+        summary,
+      });
+      broadcastEvent('conversation_summary_updated', {
+        conversationId: context.conversationId,
+        summary,
+      });
+      broadcastConversationSummary(context.conversationId);
+
+      const response = {
+        ok: true,
+        conversation: summary,
+        goal: result.goal,
+        checklist: result.goal && Array.isArray(result.goal.checklist) ? result.goal.checklist : [],
+      };
+
+      tryAppendInvocationEvent(context, 'agent_tool_call', {
+        schemaVersion: 1,
+        toolCallId,
+        tool: 'update-goal-checklist',
+        status: 'succeeded',
+        durationMs: Date.now() - startedAt,
+        invocationId: context.invocationId,
+        conversationId: context.conversationId,
+        turnId: context.turnId,
+        agentId: context.agentId,
+        agentName: context.agentName,
+        assistantMessageId: context.assistantMessageId,
+        request: { checklistLength: checklistText.length },
+        result: {
+          checklistCount: response.checklist.length,
+          goalStatus: result.goal ? result.goal.status : '',
+        },
+      });
+
+      return response;
+    } catch (error) {
+      const errorValue = error as any;
+      tryAppendInvocationEvent(context, 'agent_tool_call', {
+        schemaVersion: 1,
+        toolCallId,
+        tool: 'update-goal-checklist',
+        status: 'failed',
+        durationMs: Date.now() - startedAt,
+        invocationId: context.invocationId,
+        conversationId: context.conversationId,
+        turnId: context.turnId,
+        agentId: context.agentId,
+        agentName: context.agentName,
+        assistantMessageId: context.assistantMessageId,
+        request: { checklistLength: checklistText.length },
+        error: {
+          statusCode: Number.isInteger(errorValue && errorValue.statusCode) ? errorValue.statusCode : null,
+          message: clipText(errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Unknown error')),
+        },
+      });
+
+      throw error;
+    } finally {
+      setContextCurrentTool(context, null);
+    }
+  }
+
   function handleSearchMessages(body: any = {}) {
     const startedAt = Date.now();
     const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
@@ -1543,6 +1902,144 @@ export function createAgentToolBridge(options: any = {}) {
           limit,
           filters,
         },
+        error: {
+          statusCode: Number.isInteger(errorValue && errorValue.statusCode) ? errorValue.statusCode : null,
+          message: clipText(errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Unknown error')),
+        },
+      });
+
+      throw error;
+    } finally {
+      setContextCurrentTool(context, null);
+    }
+  }
+
+  function handleSearchMemory(body: any = {}) {
+    const startedAt = Date.now();
+    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
+    const activeStore = resolveContextStore(context);
+    const query = String(body.query || body.q || '').trim().replace(/\s+/g, ' ');
+    const latest = normalizeBooleanFlag(body.latest || body.recent, false);
+    const requestedLimit = Number.parseInt(String(body.limit || ''), 10);
+    const limit = Number.isFinite(requestedLimit)
+      ? Math.max(1, Math.min(MAX_SUMMARY_MEMORY_SEARCH_LIMIT, requestedLimit))
+      : MAX_SUMMARY_MEMORY_SEARCH_LIMIT;
+    const includeCurrentConversation = normalizeBooleanFlag(body.includeCurrentConversation, false);
+    const excludeCurrentConversation = includeCurrentConversation
+      ? false
+      : normalizeBooleanFlag(body.excludeCurrentConversation, true);
+    const explicitTaskName = normalizeOptionalSummaryMemoryFilter(body.taskName || body.task, 'taskName');
+    const useCurrentTask = normalizeBooleanFlag(body.useCurrentTask || body.currentTask, false);
+    let taskName = explicitTaskName;
+
+    if (!taskName && useCurrentTask) {
+      taskName = resolveCurrentSummaryMemoryTaskName(context);
+
+      if (!taskName) {
+        throw createHttpError(400, 'Unable to resolve the current Trellis task for search-memory');
+      }
+    }
+
+    const sourceKind = normalizeOptionalSummaryMemoryKind(body.sourceKind || body.kind);
+    const conversationTitle = normalizeOptionalSummaryMemoryFilter(body.conversationTitle || body.title || body.conversation, 'conversationTitle');
+    const updatedAfter = normalizeOptionalSummaryMemoryDate(body.updatedAfter || body.since || body.from || body.fromDate, 'updatedAfter');
+    const updatedBefore = normalizeOptionalSummaryMemoryDate(body.updatedBefore || body.until || body.to || body.toDate, 'updatedBefore', true);
+    const requestSummary = {
+      scope: 'summary-segments',
+      queryPreview: clipText(query, MAX_SUMMARY_MEMORY_SEARCH_QUERY_LENGTH),
+      limit,
+      excludeCurrentConversation,
+      ...(latest ? { latest: true } : {}),
+      ...(useCurrentTask ? { useCurrentTask: true } : {}),
+      ...(taskName ? { taskName } : {}),
+      ...(sourceKind ? { sourceKind } : {}),
+      ...(conversationTitle ? { conversationTitle } : {}),
+      ...(updatedAfter ? { updatedAfter } : {}),
+      ...(updatedBefore ? { updatedBefore } : {}),
+    };
+    const toolCallId = randomUUID();
+
+    setContextCurrentTool(context, {
+      toolName: 'search-memory',
+      toolKind: 'bridge',
+      toolStepId: toolCallId,
+      inferred: false,
+      request: requestSummary,
+    });
+
+    try {
+      if (!query && !latest) {
+        throw createHttpError(400, 'query is required unless latest is requested');
+      }
+
+      if (query && query.length < 2) {
+        throw createHttpError(400, 'query must be at least 2 characters');
+      }
+
+      if (query.length > MAX_SUMMARY_MEMORY_SEARCH_QUERY_LENGTH) {
+        throw createHttpError(400, `query must be at most ${MAX_SUMMARY_MEMORY_SEARCH_QUERY_LENGTH} characters`);
+      }
+
+      ensureToolAllowed(context, 'search-memory', {
+        scope: 'summary-segments',
+      });
+
+      if (!activeStore || typeof activeStore.searchSummarySegments !== 'function') {
+        throw createHttpError(501, 'Summary memory search is not available');
+      }
+
+      const response = {
+        ok: true,
+        activeConversationExcluded: excludeCurrentConversation,
+        ...activeStore.searchSummarySegments({
+          query,
+          limit,
+          excludeConversationId: excludeCurrentConversation ? context.conversationId : undefined,
+          taskName,
+          sourceKind,
+          conversationTitle,
+          updatedAfter,
+          updatedBefore,
+        }),
+      };
+
+      tryAppendInvocationEvent(context, 'agent_tool_call', {
+        schemaVersion: 1,
+        toolCallId,
+        tool: 'search-memory',
+        status: 'succeeded',
+        durationMs: Date.now() - startedAt,
+        invocationId: context.invocationId,
+        conversationId: context.conversationId,
+        turnId: context.turnId,
+        agentId: context.agentId,
+        agentName: context.agentName,
+        assistantMessageId: context.assistantMessageId,
+        request: requestSummary,
+        result: {
+          searchMode: response.searchMode,
+          resultCount: Array.isArray(response.results) ? response.results.length : 0,
+          diagnosticCount: Array.isArray(response.diagnostics) ? response.diagnostics.length : 0,
+          activeConversationExcluded: response.activeConversationExcluded,
+        },
+      });
+
+      return response;
+    } catch (error) {
+      const errorValue = error as any;
+      tryAppendInvocationEvent(context, 'agent_tool_call', {
+        schemaVersion: 1,
+        toolCallId,
+        tool: 'search-memory',
+        status: 'failed',
+        durationMs: Date.now() - startedAt,
+        invocationId: context.invocationId,
+        conversationId: context.conversationId,
+        turnId: context.turnId,
+        agentId: context.agentId,
+        agentName: context.agentName,
+        assistantMessageId: context.assistantMessageId,
+        request: requestSummary,
         error: {
           statusCode: Number.isInteger(errorValue && errorValue.statusCode) ? errorValue.statusCode : null,
           message: clipText(errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Unknown error')),
@@ -2891,7 +3388,10 @@ export function createAgentToolBridge(options: any = {}) {
     handleSandboxRead,
     handleSandboxWrite,
     handleSaveMemory,
+    handleSearchMemory,
     handleSearchMessages,
+    handleSuggestGoal,
+    handleUpdateGoalChecklist,
     handleTrellisInit,
     handleTrellisWrite,
     handleUpdateMemory,

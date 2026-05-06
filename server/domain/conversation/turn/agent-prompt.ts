@@ -1,6 +1,8 @@
 const { getAgentById } = require('../mention-routing');
 const { UNDERCOVER_CONVERSATION_TYPE } = require('../../../../lib/who-is-undercover-game');
 const { WEREWOLF_CONVERSATION_TYPE } = require('../../../../lib/werewolf-game');
+const { formatConversationDigestsForPrompt } = require('../conversation-digest');
+const { formatSessionGoalForPrompt } = require('../session-goal');
 const { buildTrellisPromptContext } = require('./trellis-context');
 
 export const AGENT_PROMPT_VERSION =
@@ -259,6 +261,84 @@ function formatMemoryCards(memoryCards: any) {
     .join('\n');
 }
 
+function formatSummarySegmentItems(label: string, items: any) {
+  const normalizedItems = (Array.isArray(items) ? items : [])
+    .map((item: any) => sanitizePromptMentions(String(item || '').trim()))
+    .filter(Boolean)
+    .slice(0, 4);
+
+  if (normalizedItems.length === 0) {
+    return '';
+  }
+
+  return `${label}: ${normalizedItems.join(' / ')}`;
+}
+
+function formatRetrievedMemorySegments(segments: any) {
+  const normalizedSegments = (Array.isArray(segments) ? segments : []).filter(Boolean).slice(0, 5);
+
+  if (normalizedSegments.length === 0) {
+    return '';
+  }
+
+  const lines = [
+    'Retrieved long-term experience memory:',
+    'These are cross-conversation/cross-task summary segments recalled by keyword search. Recent raw conversation messages and current task/spec context override retrieved memory if there is any conflict.',
+  ];
+
+  for (const segment of normalizedSegments) {
+    const title = sanitizePromptMentions(segment.conversationTitle || 'conversation');
+    const sourceKind = segment.sourceKind === 'rollup' ? 'rollup' : 'entry';
+    const updatedAt = sanitizePromptMentions(segment.segmentUpdatedAt || segment.updatedAt || 'unknown time');
+    const taskName = sanitizePromptMentions(String(segment.taskName || '').trim());
+    const summary = sanitizePromptMentions(segment.summary || '');
+    const messageRange = segment.messageRange && typeof segment.messageRange === 'object' ? segment.messageRange : {};
+    const messageCount = Number.parseInt(String(messageRange.messageCount || '0'), 10) || 0;
+    const triggerReason = sanitizePromptMentions(String(segment.triggerReason || '').trim());
+    const createdBy = sanitizePromptMentions(String(segment.createdBy || '').trim());
+    const matchedTerms = (Array.isArray(segment.matchedTerms) ? segment.matchedTerms : [])
+      .map((term: any) => sanitizePromptMentions(String(term || '').trim()))
+      .filter(Boolean)
+      .slice(0, 8);
+    const recallReason = sanitizePromptMentions(String(segment.recallReason || '').trim());
+    const provenanceParts = [
+      sourceKind,
+      title,
+      taskName ? `task: ${taskName}` : '',
+      messageCount > 0 ? `${messageCount} public messages` : '',
+      triggerReason ? `trigger: ${triggerReason}` : '',
+      createdBy ? `source: ${createdBy}` : '',
+      updatedAt,
+    ].filter(Boolean);
+    lines.push(
+      '',
+      `Memory ${segment.sourceDigestId || segment.id} · ${provenanceParts.join(' · ')}`,
+      `Summary: ${summary}`
+    );
+
+    if (matchedTerms.length > 0) {
+      lines.push(`Matched query terms: ${matchedTerms.join(' / ')}`);
+    }
+
+    if (recallReason) {
+      lines.push(`Recall reason: ${recallReason}`);
+    }
+
+    for (const section of [
+      formatSummarySegmentItems('Decisions', segment.decisions),
+      formatSummarySegmentItems('Facts', segment.facts),
+      formatSummarySegmentItems('Next actions', segment.nextActions),
+      formatSummarySegmentItems('Artifacts', segment.artifacts),
+    ]) {
+      if (section) {
+        lines.push(section);
+      }
+    }
+  }
+
+  return lines.join('\n');
+}
+
 function buildAgentToolInstructions(agentToolRelativePath: string, options: any = {}) {
   const relativeCommandPrefix = `node ${agentToolRelativePath}`;
   const envCommandPrefix = 'node "$CAFF_CHAT_TOOLS_PATH"';
@@ -273,6 +353,7 @@ function buildAgentToolInstructions(agentToolRelativePath: string, options: any 
     `- Optional silent direct note without wake-up: ${relativeCommandPrefix} send-private --to "AgentName" --no-handoff --content-stdin`,
     `- Read the latest public room context plus your private mailbox: ${relativeCommandPrefix} read-context`,
     `- Need older public conversation context beyond the injected history? Search this conversation only with: ${relativeCommandPrefix} search-messages --query "topic keywords" --limit 5 (optionally add --speaker "AgentName" or --agent-id "agent-id")`,
+    `- Need cross-conversation/task digest memory? Search long-term summary segments with: ${relativeCommandPrefix} search-memory --query "topic keywords" --limit 5, or use --latest without a query to inspect recent summary memory (excludes the current conversation by default; add --include-current to include it; optionally add --current-task, --task "task-name", --conversation "title", --kind entry|rollup, --since YYYY-MM-DD, or --until YYYY-MM-DD)`,
     `- Review your saved durable memory cards for this agent in this local workspace: ${relativeCommandPrefix} list-memories`,
     '- Memory titles are matched exactly after trimming; case matters, so reuse the title exactly as shown by list-memories when updating or forgetting.',
     `- Save one tiny stable fact, preference, or agreement for this agent across conversations in this local workspace with: ${relativeCommandPrefix} save-memory --title "preference" --content "User prefers retrieval-first POCs" --ttl-days 30`,
@@ -280,6 +361,8 @@ function buildAgentToolInstructions(agentToolRelativePath: string, options: any 
     `- Soft-forget a mistaken durable memory only when the user explicitly asks: ${relativeCommandPrefix} forget-memory --title "temporary preference" --reason "User said this should not persist" --expected-updated-at "2026-04-13T00:00:00.000Z"`,
     '- Save only durable facts/preferences/agreements. Never save secrets, raw logs, TODOs, transient status updates, or silently rewrite durable memory without a clear user correction/removal.',
     `- List the visible room participants: ${relativeCommandPrefix} list-participants`,
+    `- If the current session goal appears finished, blocked, paused/resumed-worthy, or should be replaced, create a pending user-confirmation proposal instead of changing it directly: ${relativeCommandPrefix} suggest-goal --action complete --reason "work appears done" (or --action set --objective "new target" --reason "scope changed").`,
+    `- Keep session-goal checklist progress current when a checklist exists or when you break the goal into subtasks: ${relativeCommandPrefix} update-goal-checklist --content-stdin using lines like [ ] todo, [~] doing, [x] done.`,
     ...(options.includeDynamicSkillLoadingGuidance
       ? [
           '- Dynamic skill loading: when conversation skills are listed as descriptors without full instructions, use the `read` tool on the listed `Path` to load the full `SKILL.md` on demand.',
@@ -465,6 +548,7 @@ export function buildAgentTurnPrompt({
   messages,
   privateMessages,
   memoryCards,
+  relatedMemorySegments,
   trigger,
   remainingSlots,
   routingMode,
@@ -533,6 +617,9 @@ export function buildAgentTurnPrompt({
   const undercoverSection = buildUndercoverPromptSection(conversation, agent);
   const werewolfSection = buildWerewolfPromptSection(conversation, agent);
   const skillTestDesignSection = buildSkillTestDesignPromptSection(modeContext, agent, agents);
+  const conversationDigestSection = formatConversationDigestsForPrompt(conversation);
+  const retrievedMemorySection = formatRetrievedMemorySegments(relatedMemorySegments);
+  const sessionGoalSection = formatSessionGoalForPrompt(conversation);
   const gameplaySections = [undercoverSection, werewolfSection].filter(Boolean);
   const includeDynamicSkillLoadingGuidance = hasDynamicSkillDescriptors(resolvedConversationSkills, {
     forceFull: false,
@@ -561,6 +648,9 @@ export function buildAgentTurnPrompt({
     }),
     '',
     ...(trellisPromptContext ? ['Trellis project context:', trellisPromptContext, ''] : []),
+    ...(conversationDigestSection ? [conversationDigestSection, ''] : []),
+    ...(retrievedMemorySection ? [retrievedMemorySection, ''] : []),
+    ...(sessionGoalSection ? ['Session goal:', sessionGoalSection, ''] : []),
     'Local sandbox:',
     `- PI_AGENT_SANDBOX_DIR points to your dedicated sandbox: ${sandbox && sandbox.sandboxDir ? sandbox.sandboxDir : '[unavailable]'}`,
     `- PI_AGENT_PRIVATE_DIR points to your private storage directory: ${sandbox && sandbox.privateDir ? sandbox.privateDir : '[unavailable]'}`,
@@ -580,19 +670,19 @@ export function buildAgentTurnPrompt({
     '',
     ...(gameplaySections.length > 0 ? ['Gameplay mode:', gameplaySections.join('\n\n'), ''] : []),
     ...(skillTestDesignSection ? ['Mode state context:', skillTestDesignSection, ''] : []),
-    'Why you are replying now:',
-    describeTurnTrigger(trigger, agents),
-    `Turn routing mode: ${routingMode === 'mention_parallel' ? 'parallel first round' : 'serial handoff queue'}`,
-    `Remaining speaker slots after you: ${Math.max(0, remainingSlots)}`,
-    '',
-    'Conversation history:',
-    formatHistory(messages, agents),
-    '',
     'Private mailbox visible only to you:',
     formatPrivateMailbox(privateMessages, agents),
     '',
     'Curated memory cards for you (conversation overlay + local durable):',
     formatMemoryCards(memoryCards),
+    '',
+    'Conversation history:',
+    formatHistory(messages, agents),
+    '',
+    'Why you are replying now:',
+    describeTurnTrigger(trigger, agents),
+    `Turn routing mode: ${routingMode === 'mention_parallel' ? 'parallel first round' : 'serial handoff queue'}`,
+    `Remaining speaker slots after you: ${Math.max(0, remainingSlots)}`,
     '',
     'Write your reply now.',
   ].join('\n');

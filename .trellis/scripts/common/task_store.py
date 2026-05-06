@@ -286,9 +286,10 @@ def cmd_archive(args: argparse.Namespace) -> int:
                                 child_data["parent"] = None
                                 write_json(child_json, child_data)
 
-    # Clear if current task
+    # Clear only when archiving the exact current task.
     current = get_current_task(repo_root)
-    if current and dir_name in current:
+    current_dir_name = current.replace("\\", "/").rstrip("/").split("/")[-1] if current else None
+    if current_dir_name == dir_name:
         clear_current_task(repo_root)
 
     # Archive

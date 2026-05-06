@@ -505,6 +505,48 @@ function jsonlHasUsableEntries(projectDir: any, jsonlPath: any) {
   return false;
 }
 
+function readTaskMetadata(taskDir: any, fallbackTitle: string) {
+  const taskJsonPath = path.join(taskDir, 'task.json');
+  let taskTitle = fallbackTitle;
+  let taskStatus = 'unknown';
+
+  if (fs.existsSync(taskJsonPath)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(taskJsonPath, 'utf8'));
+      if (parsed && typeof parsed === 'object') {
+        taskTitle = parsed.title || parsed.name || taskTitle;
+        taskStatus = parsed.status || taskStatus;
+      }
+    } catch {}
+  }
+
+  return { taskTitle, taskStatus };
+}
+
+export function resolveCurrentTrellisTaskName(options: any = {}) {
+  const projectDir = findTrellisProjectRoot(options.startDir || process.cwd());
+
+  if (!projectDir) {
+    return '';
+  }
+
+  const trellisDir = path.join(projectDir, '.trellis');
+  const currentTaskPath = path.join(trellisDir, '.current-task');
+  const currentTaskRef = readTextFile(currentTaskPath, 4096).trim();
+
+  if (!currentTaskRef) {
+    return '';
+  }
+
+  const taskDir = resolveTaskDir(projectDir, trellisDir, currentTaskRef);
+
+  if (!taskDir || !fs.existsSync(taskDir) || !safeStat(taskDir)?.isDirectory()) {
+    return normalizeTaskRef(currentTaskRef);
+  }
+
+  return readTaskMetadata(taskDir, normalizeTaskRef(currentTaskRef)).taskTitle;
+}
+
 function buildTaskStatus(projectDir: any, trellisDir: any) {
   const currentTaskPath = path.join(trellisDir, '.current-task');
   const currentTaskRef = readTextFile(currentTaskPath, 4096).trim();
@@ -527,19 +569,7 @@ function buildTaskStatus(projectDir: any, trellisDir: any) {
     };
   }
 
-  const taskJsonPath = path.join(taskDir, 'task.json');
-  let taskTitle = normalizeTaskRef(currentTaskRef);
-  let taskStatus = 'unknown';
-
-  if (fs.existsSync(taskJsonPath)) {
-    try {
-      const parsed = JSON.parse(fs.readFileSync(taskJsonPath, 'utf8'));
-      if (parsed && typeof parsed === 'object') {
-        taskTitle = parsed.title || parsed.name || taskTitle;
-        taskStatus = parsed.status || taskStatus;
-      }
-    } catch {}
-  }
+  const { taskTitle, taskStatus } = readTaskMetadata(taskDir, normalizeTaskRef(currentTaskRef));
 
   if (taskStatus === 'completed') {
     return {

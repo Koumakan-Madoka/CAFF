@@ -3,6 +3,13 @@ const path = require('node:path');
 
 const { createSqliteRunStore } = require('../../../lib/sqlite-store');
 const { createHttpError } = require('../../http/http-errors');
+const { pickConversationSummary } = require('./conversation-view');
+const {
+  claimSessionGoalAutoContinue,
+  createSessionGoalBudgetProposal,
+  getSessionGoal,
+  getSessionGoalProposal,
+} = require('./session-goal');
 
 const { getAgentById, extractMentionedAgentIds, resolveTurnExecutionMode } = require('./mention-routing');
 const { buildAgentTurnPrompt, sanitizePromptMentions } = require('./turn/agent-prompt');
@@ -71,6 +78,13 @@ export function createTurnOrchestrator(options: any = {}) {
   const toolBaseUrl = String(options.toolBaseUrl || '').trim();
   const agentToolScriptPath = path.resolve(String(options.agentToolScriptPath || '').trim());
   const agentToolRelativePath = String(options.agentToolRelativePath || './lib/agent-chat-tools.js').trim() || './lib/agent-chat-tools.js';
+  const sessionGoalAutoContinueMaxTurns = Math.max(
+    1,
+    Number.parseInt(
+      String(options.sessionGoalAutoContinueMaxTurns || process.env.CAFF_SESSION_GOAL_AUTO_CONTINUE_MAX_TURNS || '20'),
+      10
+    ) || 20
+  );
 
   const activeConversationIds = new Set();
   const activeTurns = new Map();
@@ -620,6 +634,144 @@ export function createTurnOrchestrator(options: any = {}) {
     return queueDepth;
   }
 
+  function buildGoalContinuationContent(goal: any, runner: any) {
+    const iteration = Math.max(1, Number(runner && runner.iteration ? runner.iteration : 1));
+    const maxIterations = Math.max(iteration, Number(runner && runner.maxIterations ? runner.maxIterations : sessionGoalAutoContinueMaxTurns));
+
+    return [
+      `Automatic session-goal continuation (${iteration}/${maxIterations}).`,
+      `Objective: ${goal.objective}`,
+      'Continue with the next concrete step toward this objective.',
+      'If the objective is finished or blocked, use suggest-goal to create a pending complete or pause proposal instead of continuing indefinitely.',
+    ].join('\n');
+  }
+
+  function broadcastGoalProposalResult(conversationId: any, result: any) {
+    const conversation = result && result.conversation ? result.conversation : store.getConversation(conversationId);
+    const summary = pickConversationSummary(conversation);
+
+    broadcastEvent(result && result.proposalCleared ? 'conversation_goal_proposal_cleared' : 'conversation_goal_proposal_updated', {
+      conversationId,
+      goal: result && result.goal ? result.goal : getSessionGoal(conversation),
+      proposal: result && result.proposal ? result.proposal : getSessionGoalProposal(conversation),
+      conversation,
+      summary,
+    });
+    broadcastEvent('conversation_summary_updated', {
+      conversationId,
+      summary,
+    });
+    broadcastConversationSummary(conversationId);
+  }
+
+  function maybeCreateGoalBudgetProposal(conversationId: any, claim: any) {
+    if (!claim || claim.reason !== 'budget_limited') {
+      return null;
+    }
+
+    const conversation = store.getConversation(conversationId);
+
+    if (!conversation || getSessionGoalProposal(conversation)) {
+      return null;
+    }
+
+    const result = createSessionGoalBudgetProposal(store, conversationId, {
+      reason: `Automatic goal continuation reached its ${sessionGoalAutoContinueMaxTurns}-turn safety budget. Confirm whether to pause, replace, or continue the goal.`,
+    });
+    broadcastGoalProposalResult(conversationId, result);
+    return result;
+  }
+
+  function enqueueGoalContinuationMessage(conversationId: any, options: any = {}) {
+    const normalizedConversationId = String(conversationId || '').trim();
+    const allowDispatching = Boolean(options.allowDispatching);
+
+    if (
+      !normalizedConversationId ||
+      activeConversationIds.has(normalizedConversationId) ||
+      hasActiveAgentSlots(normalizedConversationId) ||
+      (!allowDispatching && dispatchingConversationIds.has(normalizedConversationId))
+    ) {
+      return { scheduled: false, reason: 'busy' };
+    }
+
+    const conversation = store.getConversation(normalizedConversationId);
+
+    if (!conversation || !Array.isArray(conversation.agents) || conversation.agents.length === 0) {
+      return { scheduled: false, reason: 'missing_conversation_or_agents' };
+    }
+
+    const goal = getSessionGoal(conversation);
+
+    if (!goal || goal.status !== 'active') {
+      return { scheduled: false, reason: 'inactive_goal' };
+    }
+
+    if (getSessionGoalProposal(conversation)) {
+      return { scheduled: false, reason: 'pending_proposal' };
+    }
+
+    const queueState = ensureQueueState(normalizedConversationId);
+
+    if (listPendingUserMessages(normalizedConversationId, queueState.lastConsumedUserMessageId).length > 0) {
+      return { scheduled: false, reason: 'pending_user_messages' };
+    }
+
+    const claim = claimSessionGoalAutoContinue(store, normalizedConversationId, {
+      maxIterations: sessionGoalAutoContinueMaxTurns,
+    });
+
+    if (!claim || !claim.claimed) {
+      maybeCreateGoalBudgetProposal(normalizedConversationId, claim);
+      return { scheduled: false, reason: claim && claim.reason ? claim.reason : 'not_claimed' };
+    }
+
+    const acceptedMessage = store.createMessage(
+      createAcceptedMessagePayload(normalizedConversationId, {
+        role: 'user',
+        senderName: 'Goal Runner',
+        content: buildGoalContinuationContent(claim.goal, claim.runner),
+        metadata: {
+          source: 'goal-runner',
+          goalAutoContinue: true,
+          goalIteration: claim.runner.iteration,
+          goalMaxIterations: claim.runner.maxIterations,
+          goalObjective: claim.goal.objective,
+        },
+      })
+    );
+
+    broadcastEvent('conversation_message_created', {
+      conversationId: normalizedConversationId,
+      message: acceptedMessage,
+    });
+    broadcastConversationSummary(normalizedConversationId);
+    syncConversationQueueProgress(normalizedConversationId);
+
+    return {
+      scheduled: true,
+      reason: 'scheduled',
+      message: acceptedMessage,
+      goal: claim.goal,
+      runner: claim.runner,
+    };
+  }
+
+  function scheduleGoalContinuation(conversationId: any, options: any = {}) {
+    const scheduled = enqueueGoalContinuationMessage(conversationId, options);
+
+    if (!scheduled.scheduled) {
+      return scheduled;
+    }
+
+    const started = drainConversationQueue(conversationId);
+    return {
+      ...scheduled,
+      dispatch: started ? 'started' : 'queued',
+      runtime: buildRuntimePayload(),
+    };
+  }
+
   function drainConversationQueue(conversationId: any) {
     const normalizedConversationId = String(conversationId || '').trim();
 
@@ -645,6 +797,14 @@ export function createTurnOrchestrator(options: any = {}) {
           const batchMessages = listPendingUserMessages(normalizedConversationId, queueState.lastConsumedUserMessageId);
 
           if (batchMessages.length === 0) {
+            const continuation = enqueueGoalContinuationMessage(normalizedConversationId, {
+              allowDispatching: true,
+            });
+
+            if (continuation.scheduled) {
+              continue;
+            }
+
             break;
           }
 
@@ -1262,6 +1422,7 @@ export function createTurnOrchestrator(options: any = {}) {
     requestStopConversationTurn: requestStopMainTurn,
     resolveAssistantMessageSessionPath: sessionExporter.resolveAssistantMessageSessionPath,
     runConversationTurn,
+    scheduleGoalContinuation,
     submitConversationMessage,
     summarizeTurnState,
     syncCurrentTurnAgent,

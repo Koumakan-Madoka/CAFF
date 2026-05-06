@@ -1,0 +1,25 @@
+{"file": ".trellis/workflow.md", "reason": "Project workflow and conventions"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend development guide"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend development guide"}
+{"file": ".trellis/spec/backend/architecture.md", "reason": "Conversation goal API and metadata live in backend domain/controller layers"}
+{"file": ".trellis/spec/backend/controller-patterns.md", "reason": "New goal HTTP route should stay thin and delegate state logic"}
+{"file": ".trellis/spec/runtime/agent-runtime.md", "reason": "Session goal must be injected into agent prompt context"}
+{"file": ".trellis/spec/frontend/ui-structure.md", "reason": "Composer slash handling and chat status live in public app modules"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Goal data crosses API, metadata storage, prompt, and UI"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Reuse existing metadata and fetch patterns instead of duplicating flows"}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Add regression coverage for prompt/API metadata contracts"}
+{"file": ".trellis/spec/backend/session-goal.md", "reason": "Session goal API and cross-layer contract created during implementation"}
+{"file":"public/chat/session-goal-panel.js","reason":"Added right-side session goal management panel using shared goal helpers and existing goal API actions"}
+{"file":"public/index.html","reason":"Added chat-header goal toggle and drawer markup for goal CRUD lifecycle controls"}
+{"file":"public/app.js","reason":"Wired goal panel controller into app state, rendering, and existing submitGoalCommand path"}
+{"file":"public/shared/session-goal.js","reason":"Exposed shared status/objective helpers for consistent composer, metadata, and drawer labels"}
+{"file":"public/styles.css","reason":"Styled goal drawer, status badge, action area, and header toggle"}
+{"file":".trellis/tasks/05-03-session-goal/prd.md","reason":"Recorded UI management panel acceptance criteria"}
+{"file":".trellis/spec/backend/session-goal.md","reason":"Documented goal drawer as a frontend consumer of the existing goal API contract"}
+{"file":"package.json","reason":"Added public/chat/session-goal-panel.js to npm run check so the new browser module is syntax-checked"}
+{"file":"server/domain/conversation/session-goal.ts","reason":"Added sessionGoalRunner metadata helpers and bounded auto-continue budget proposal support"}
+{"file":"server/domain/conversation/turn-orchestrator.ts","reason":"Added Goal Runner scheduling that creates bounded automatic continuation turns for active goals"}
+{"file":"server/api/conversations-controller.ts","reason":"Starts goal auto-continuation after active goal mutations and returns autoContinuation feedback"}
+{"file":"public/chat/session-goal-panel.js","reason":"Displays auto-continuation iteration and budget-limited state in the goal drawer"}
+{"file":"tests/runtime/turn-orchestrator.test.js","reason":"Covers automatic goal continuation through safety budget and pending pause proposal"}
+{"file":"server/domain/skill-test/isolation.ts","reason":"Registered update-goal-checklist in skill-test tool allowlists and bridge hints so the checklist bridge remains available in isolated runs"}

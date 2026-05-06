@@ -7,6 +7,7 @@ const { createChatParticipantRepository } = require('../storage/chat/participant
 const { createChatMessageRepository } = require('../storage/chat/message.repository');
 const { createChatPrivateMessageRepository } = require('../storage/chat/private-message.repository');
 const { createChatMemoryCardRepository } = require('../storage/chat/memory-card.repository');
+const { createChatSummarySegmentRepository } = require('../storage/chat/summary-segment.repository');
 const { createChatChannelBindingRepository } = require('../storage/chat/channel-binding.repository');
 const { createChatExternalEventRepository } = require('../storage/chat/external-event.repository');
 
@@ -14,6 +15,12 @@ const MAX_AVATAR_DATA_URL_LENGTH = 2 * 1024 * 1024;
 const MAX_AGENT_SANDBOX_NAME_LENGTH = 80;
 const MAX_MEMORY_CARD_TITLE_LENGTH = 64;
 const MAX_MEMORY_CARD_CONTENT_LENGTH = 280;
+const MAX_SUMMARY_SEGMENT_TEXT_LENGTH = 800;
+const MAX_SUMMARY_SEGMENT_ITEM_LENGTH = 240;
+const MAX_SUMMARY_SEGMENT_ITEMS = 8;
+const MAX_SUMMARY_SEGMENT_SEARCH_TEXT_LENGTH = 4000;
+const MAX_SUMMARY_SEGMENT_SEARCH_LIMIT = 15;
+const MAX_SUMMARY_MEMORY_HEALTH_DETAILS = 10;
 const MAX_MEMORY_CARDS_PER_SCOPE = 6;
 const DEFAULT_MEMORY_CARD_TTL_DAYS = 30;
 const MAX_MEMORY_CARD_TTL_DAYS = 90;
@@ -444,6 +451,120 @@ function normalizePrivateMessageRow(row: any) {
   };
 }
 
+function normalizeSummarySegmentItems(value: any) {
+  const rawItems = Array.isArray(value)
+    ? value
+    : typeof value === 'string'
+      ? value.split(/\r?\n/u)
+      : [];
+
+  return rawItems
+    .map((item: any) => clipSearchSnippet(item, MAX_SUMMARY_SEGMENT_ITEM_LENGTH))
+    .filter(Boolean)
+    .slice(0, MAX_SUMMARY_SEGMENT_ITEMS);
+}
+
+function normalizeSummarySegmentRow(row: any) {
+  if (!row) {
+    return null;
+  }
+
+  const matchedTerms = Array.isArray(row.matchedTerms)
+    ? row.matchedTerms.map((term: any) => String(term || '').trim()).filter(Boolean).slice(0, 8)
+    : [];
+
+  return {
+    id: row.id,
+    conversationId: row.conversation_id,
+    sourceDigestId: row.source_digest_id,
+    sourceKind: row.source_kind || 'entry',
+    conversationTitle: row.conversation_title || '',
+    taskName: row.task_name || '',
+    summary: row.summary || '',
+    facts: normalizeSummarySegmentItems(parseJson(row.facts_json)),
+    decisions: normalizeSummarySegmentItems(parseJson(row.decisions_json)),
+    openQuestions: normalizeSummarySegmentItems(parseJson(row.open_questions_json)),
+    nextActions: normalizeSummarySegmentItems(parseJson(row.next_actions_json)),
+    artifacts: normalizeSummarySegmentItems(parseJson(row.artifacts_json)),
+    triggerReason: row.trigger_reason || '',
+    messageRange: {
+      fromMessageId: row.from_message_id || '',
+      toMessageId: row.to_message_id || '',
+      messageCount: Number.isInteger(row.message_count) ? row.message_count : Number(row.message_count || 0),
+    },
+    createdBy: row.created_by || '',
+    segmentCreatedAt: row.segment_created_at,
+    segmentUpdatedAt: row.segment_updated_at,
+    metadata: parseJson(row.metadata_json) || {},
+    score: Number.isFinite(row.score) ? Number(row.score) : undefined,
+    matchedTerms,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function normalizeConversationDigestList(conversation: any) {
+  const metadata = conversation && conversation.metadata && typeof conversation.metadata === 'object'
+    ? conversation.metadata
+    : {};
+  const digests = Array.isArray(metadata.conversationDigests) ? metadata.conversationDigests : [];
+
+  return digests
+    .filter((digest: any) => digest && typeof digest === 'object')
+    .filter((digest: any) => String(digest.id || '').trim());
+}
+
+function buildSummarySegmentSearchText(parts: any[]) {
+  return clipSearchSnippet(
+    (Array.isArray(parts) ? parts : [])
+      .flatMap((part) => Array.isArray(part) ? part : [part])
+      .map((part) => String(part || '').trim())
+      .filter(Boolean)
+      .join('\n'),
+    MAX_SUMMARY_SEGMENT_SEARCH_TEXT_LENGTH
+  );
+}
+
+function resolveSummarySegmentMatchedTerms(segment: any, terms: any) {
+  const normalizedTerms = (Array.isArray(terms) ? terms : [])
+    .map((term: any) => String(term || '').trim())
+    .filter(Boolean)
+    .slice(0, 8);
+
+  if (!segment || normalizedTerms.length === 0) {
+    return [];
+  }
+
+  const searchText = buildSummarySegmentSearchText([
+    segment.conversationTitle,
+    segment.taskName,
+    segment.sourceKind,
+    segment.triggerReason,
+    segment.createdBy,
+    segment.summary,
+    segment.facts,
+    segment.decisions,
+    segment.openQuestions,
+    segment.nextActions,
+    segment.artifacts,
+  ]).toLocaleLowerCase();
+  const seen = new Set();
+  const matchedTerms = [];
+
+  for (const term of normalizedTerms) {
+    const normalizedTerm = term.toLocaleLowerCase();
+
+    if (!normalizedTerm || seen.has(normalizedTerm) || !searchText.includes(normalizedTerm)) {
+      continue;
+    }
+
+    seen.add(normalizedTerm);
+    matchedTerms.push(term);
+  }
+
+  return matchedTerms;
+}
+
 function normalizeMemoryCardRow(row: any) {
   if (!row) {
     return null;
@@ -697,6 +818,7 @@ export class ChatAppStore {
       this.messageRepository = createChatMessageRepository(this.db);
       this.privateMessageRepository = createChatPrivateMessageRepository(this.db);
       this.memoryCardRepository = createChatMemoryCardRepository(this.db);
+      this.summarySegmentRepository = createChatSummarySegmentRepository(this.db);
       this.channelBindingRepository = createChatChannelBindingRepository(this.db);
       this.externalEventRepository = createChatExternalEventRepository(this.db);
 
@@ -1709,6 +1831,276 @@ export class ChatAppStore {
       results: (Array.isArray(result && result.rows) ? result.rows : [])
         .map(normalizeMessageSearchResultRow)
         .filter(Boolean),
+      diagnostics: Array.isArray(result && result.diagnostics) ? result.diagnostics : [],
+    };
+  }
+
+  saveSummarySegmentFromDigest(conversationId: any, digest: any, options: any = {}) {
+    const normalizedConversationId = String(conversationId || '').trim();
+    const conversation = this.getConversation(normalizedConversationId);
+
+    if (!conversation) {
+      throw new Error('Conversation not found');
+    }
+
+    const sourceDigestId = String(digest && digest.id || '').trim();
+    const summary = clipSearchSnippet(digest && digest.summary, MAX_SUMMARY_SEGMENT_TEXT_LENGTH);
+
+    if (!sourceDigestId) {
+      throw new Error('sourceDigestId is required');
+    }
+
+    if (!summary) {
+      throw new Error('summary is required');
+    }
+
+    const timestamp = String(options.updatedAt || '').trim() || nowIso();
+    const facts = normalizeSummarySegmentItems(digest && digest.facts);
+    const decisions = normalizeSummarySegmentItems(digest && digest.decisions);
+    const openQuestions = normalizeSummarySegmentItems(digest && digest.openQuestions);
+    const nextActions = normalizeSummarySegmentItems(digest && digest.nextActions);
+    const artifacts = normalizeSummarySegmentItems(digest && digest.artifacts);
+    const metadata = options.metadata && typeof options.metadata === 'object' ? options.metadata : {};
+    const messageRange = digest && digest.messageRange && typeof digest.messageRange === 'object' ? digest.messageRange : {};
+    const segment = this.summarySegmentRepository.upsert({
+      id: String(options.id || `segment-${sourceDigestId}`).trim(),
+      conversationId: normalizedConversationId,
+      sourceDigestId,
+      sourceKind: String(digest && digest.kind || 'entry').trim() || 'entry',
+      conversationTitle: clipSearchSnippet(conversation.title, MAX_SUMMARY_SEGMENT_ITEM_LENGTH),
+      taskName: clipSearchSnippet(options.taskName, MAX_SUMMARY_SEGMENT_ITEM_LENGTH),
+      summary,
+      factsJson: serializeJson(facts),
+      decisionsJson: serializeJson(decisions),
+      openQuestionsJson: serializeJson(openQuestions),
+      nextActionsJson: serializeJson(nextActions),
+      artifactsJson: serializeJson(artifacts),
+      triggerReason: String(digest && digest.triggerReason || '').trim(),
+      messageCount: Number.parseInt(String(messageRange.messageCount || '0'), 10) || 0,
+      fromMessageId: String(messageRange.fromMessageId || '').trim(),
+      toMessageId: String(messageRange.toMessageId || '').trim(),
+      createdBy: String(digest && digest.createdBy || '').trim(),
+      segmentCreatedAt: String(digest && digest.createdAt || '').trim() || timestamp,
+      segmentUpdatedAt: String(digest && digest.updatedAt || '').trim() || timestamp,
+      metadataJson: serializeJson(metadata),
+      searchText: buildSummarySegmentSearchText([
+        conversation.title,
+        options.taskName,
+        digest && digest.kind,
+        digest && digest.triggerReason,
+        digest && digest.createdBy,
+        summary,
+        facts,
+        decisions,
+        openQuestions,
+        nextActions,
+        artifacts,
+      ]),
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+
+    return normalizeSummarySegmentRow(segment);
+  }
+
+  deleteSummarySegmentBySourceDigestId(sourceDigestId: any) {
+    const normalizedSourceDigestId = String(sourceDigestId || '').trim();
+
+    if (!normalizedSourceDigestId) {
+      return;
+    }
+
+    this.summarySegmentRepository.deleteBySourceDigestId(normalizedSourceDigestId);
+  }
+
+  deleteSummarySegmentsByConversationId(conversationId: any) {
+    const normalizedConversationId = String(conversationId || '').trim();
+
+    if (!normalizedConversationId) {
+      return;
+    }
+
+    this.summarySegmentRepository.deleteByConversationId(normalizedConversationId);
+  }
+
+  getSummaryMemoryHealth(options: any = {}) {
+    const normalizedConversationId = String(options.conversationId || options.id || '').trim();
+    const diagnostics = [] as any[];
+    let ledger = {
+      tableExists: false,
+      segmentCount: 0,
+      latestSegmentUpdatedAt: '',
+      latestSegment: null,
+    } as any;
+    let searchAvailable = false;
+    let searchMode = 'unavailable';
+    let searchError = '';
+
+    try {
+      if (!this.summarySegmentRepository || typeof this.summarySegmentRepository.getHealthSnapshot !== 'function') {
+        throw new Error('Summary segment repository is not available');
+      }
+
+      ledger = this.summarySegmentRepository.getHealthSnapshot();
+      const selfTest = this.searchSummarySegments({ query: '', limit: 1 });
+      searchAvailable = true;
+      searchMode = selfTest && selfTest.searchMode ? selfTest.searchMode : 'like_latest';
+    } catch (error) {
+      const errorValue = error as any;
+      searchError = errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Unknown memory health error');
+      diagnostics.push({ code: 'summary_memory_unavailable', message: searchError });
+    }
+
+    const conversations = [] as any[];
+
+    if (normalizedConversationId) {
+      const conversation = this.getConversation(normalizedConversationId);
+
+      if (conversation) {
+        conversations.push(conversation);
+      } else {
+        diagnostics.push({ code: 'conversation_not_found', message: 'Conversation not found' });
+      }
+    } else if (typeof this.listConversations === 'function') {
+      for (const header of this.listConversations()) {
+        const conversationId = String(header && header.id || '').trim();
+        const conversation = conversationId ? this.getConversation(conversationId) : null;
+
+        if (conversation) {
+          conversations.push(conversation);
+        }
+      }
+    }
+
+    let digestConversationCount = 0;
+    let digestCount = 0;
+    let unsyncedDigestCount = 0;
+    const unsyncedDigests = [] as any[];
+
+    for (const conversation of conversations) {
+      const digests = normalizeConversationDigestList(conversation);
+
+      if (digests.length > 0) {
+        digestConversationCount += 1;
+      }
+
+      for (const digest of digests) {
+        digestCount += 1;
+        const sourceDigestId = String(digest && digest.id || '').trim();
+
+        try {
+          const existing = sourceDigestId && this.summarySegmentRepository && typeof this.summarySegmentRepository.getBySourceDigestId === 'function'
+            ? this.summarySegmentRepository.getBySourceDigestId(sourceDigestId)
+            : null;
+
+          if (!existing) {
+            unsyncedDigestCount += 1;
+
+            if (unsyncedDigests.length < MAX_SUMMARY_MEMORY_HEALTH_DETAILS) {
+              unsyncedDigests.push({
+                conversationId: String(conversation && conversation.id || '').trim(),
+                conversationTitle: String(conversation && conversation.title || '').trim(),
+                digestId: sourceDigestId,
+                kind: String(digest && digest.kind || 'entry').trim() || 'entry',
+                reason: 'missing_segment',
+              });
+            }
+          }
+        } catch (error) {
+          const errorValue = error as any;
+          unsyncedDigestCount += 1;
+
+          if (unsyncedDigests.length < MAX_SUMMARY_MEMORY_HEALTH_DETAILS) {
+            unsyncedDigests.push({
+              conversationId: String(conversation && conversation.id || '').trim(),
+              conversationTitle: String(conversation && conversation.title || '').trim(),
+              digestId: sourceDigestId,
+              kind: String(digest && digest.kind || 'entry').trim() || 'entry',
+              reason: 'lookup_failed',
+              message: errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Unknown summary segment lookup error'),
+            });
+          }
+        }
+      }
+    }
+
+    const status = !ledger.tableExists || !searchAvailable
+      ? 'unavailable'
+      : unsyncedDigestCount > 0
+        ? 'needs_backfill'
+        : 'ok';
+
+    return {
+      ok: status !== 'unavailable',
+      status,
+      table: {
+        name: 'chat_summary_segments',
+        exists: Boolean(ledger.tableExists),
+      },
+      segments: {
+        count: Number(ledger.segmentCount || 0),
+        latestUpdatedAt: ledger.latestSegmentUpdatedAt || '',
+        latest: normalizeSummarySegmentRow(ledger.latestSegment),
+      },
+      search: {
+        available: searchAvailable,
+        mode: searchMode,
+        error: searchError,
+      },
+      backfill: {
+        available: Boolean(this.summarySegmentRepository && typeof this.summarySegmentRepository.getBySourceDigestId === 'function' && typeof this.saveSummarySegmentFromDigest === 'function'),
+        conversationCount: digestConversationCount,
+        digestCount,
+        unsyncedDigestCount,
+        unsyncedDigests,
+      },
+      diagnostics,
+    };
+  }
+
+  searchSummarySegments(options: any = {}) {
+    const query = String(options.query || '').trim().replace(/\s+/g, ' ');
+    const requestedLimit = Number.parseInt(String(options.limit || ''), 10);
+    const limit = Number.isFinite(requestedLimit) && requestedLimit > 0
+      ? Math.min(requestedLimit, MAX_SUMMARY_SEGMENT_SEARCH_LIMIT)
+      : 5;
+    const taskName = String(options.taskName || options.task || '').trim().replace(/\s+/g, ' ');
+    const sourceKind = String(options.sourceKind || options.kind || '').trim();
+    const conversationTitle = String(options.conversationTitle || options.title || options.conversation || '').trim().replace(/\s+/g, ' ');
+    const updatedAfter = String(options.updatedAfter || options.since || options.from || options.fromDate || '').trim();
+    const updatedBefore = String(options.updatedBefore || options.until || options.to || options.toDate || '').trim();
+    const excludeConversationId = String(options.excludeConversationId || '').trim();
+    const result = this.summarySegmentRepository.search({
+      query,
+      limit,
+      excludeConversationId,
+      taskName,
+      sourceKind,
+      conversationTitle,
+      updatedAfter,
+      updatedBefore,
+    });
+
+    return {
+      query,
+      scope: 'summary-segments',
+      filters: {
+        ...(excludeConversationId ? { excludeConversationId } : {}),
+        ...(taskName ? { taskName } : {}),
+        ...(sourceKind ? { sourceKind } : {}),
+        ...(conversationTitle ? { conversationTitle } : {}),
+        ...(updatedAfter ? { updatedAfter } : {}),
+        ...(updatedBefore ? { updatedBefore } : {}),
+      },
+      searchMode: result && result.searchMode ? result.searchMode : 'unavailable',
+      resultCount: Array.isArray(result && result.rows) ? result.rows.length : 0,
+      results: (Array.isArray(result && result.rows) ? result.rows : [])
+        .map(normalizeSummarySegmentRow)
+        .filter(Boolean)
+        .map((segment: any) => ({
+          ...segment,
+          matchedTerms: resolveSummarySegmentMatchedTerms(segment, result && result.terms),
+        })),
       diagnostics: Array.isArray(result && result.diagnostics) ? result.diagnostics : [],
     };
   }

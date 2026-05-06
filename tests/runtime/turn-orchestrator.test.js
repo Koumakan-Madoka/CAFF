@@ -9,14 +9,18 @@ const {
 } = require('../../build/server/domain/conversation/turn-orchestrator');
 const { createRoutingExecutor } = require('../../build/server/domain/conversation/turn/routing-executor');
 const {
+  buildRelatedMemorySearchQuery,
   createAgentExecutor,
   extractLiveSessionToolFromPiEvent,
+  resolveRelatedMemorySegments,
 } = require('../../build/server/domain/conversation/turn/agent-executor');
 const { ensureAgentSandbox } = require('../../build/server/domain/conversation/turn/agent-sandbox');
 const { createSessionExporter } = require('../../build/server/domain/conversation/turn/session-export');
 const { createTurnState, resetTurnStage, summarizeTurnState } = require('../../build/server/domain/conversation/turn/turn-state');
 const { createTurnStopper, registerTurnHandle } = require('../../build/server/domain/conversation/turn/turn-stop');
 const { createAgentSlotRegistry } = require('../../build/server/domain/conversation/turn/agent-slot-registry');
+const { resolveCurrentTrellisTaskName } = require('../../build/server/domain/conversation/turn/trellis-context');
+const { extractSummaryMemorySearchTerms } = require('../../build/lib/summary-memory-query');
 
 const { withTempDir } = require('../helpers/temp-dir');
 
@@ -120,6 +124,330 @@ test('buildAgentTurnPrompt avoids raw @mention tokens from room context', () => 
   assert.doesNotMatch(prompt, /@agent-mecha-engineer/u);
 });
 
+test('buildAgentTurnPrompt includes conversation digest memory before recent history', () => {
+  const agent = {
+    id: 'agent-digest-prompt',
+    name: 'Builder',
+    description: 'Keeps long context aligned.',
+    personaPrompt: 'Stay focused.',
+  };
+  const conversation = {
+    id: 'conversation-digest-prompt',
+    title: 'Digest Prompt Conversation',
+    type: 'standard',
+    metadata: {
+      conversationDigests: [
+        {
+          id: 'rollup-1',
+          kind: 'rollup',
+          createdAt: '2026-05-02T23:00:00.000Z',
+          updatedAt: '2026-05-03T00:00:00.000Z',
+          compactedAt: '2026-05-03T00:00:00.000Z',
+          createdBy: 'system:auto-compaction',
+          sourceDigestIds: ['digest-old-1', 'digest-old-2'],
+          messageRange: {
+            fromMessageId: 'message-old-1',
+            toMessageId: 'message-old-2',
+            messageCount: 2,
+          },
+          summary: 'Older digest entries were auto-compacted into a stable rollup.',
+          decisions: ['Use conversation metadata for the MVP.'],
+          facts: ['Digest content is historical context.'],
+          openQuestions: ['Should search include digest later?'],
+          nextActions: ['Build a right-side timeline panel.'],
+          artifacts: ['server/domain/conversation/conversation-digest.ts'],
+        },
+        {
+          id: 'digest-1',
+          kind: 'entry',
+          createdAt: '2026-05-03T00:00:00.000Z',
+          updatedAt: '2026-05-03T00:00:00.000Z',
+          createdBy: 'user',
+          messageRange: {
+            fromMessageId: 'message-new-1',
+            toMessageId: 'message-new-2',
+            messageCount: 2,
+          },
+          summary: 'The team chose a manual Conversation Digest MVP.',
+          decisions: ['Keep recent entries detailed after rollup.'],
+          facts: ['Recent digest entries remain visible after compaction.'],
+          openQuestions: [],
+          nextActions: [],
+          artifacts: [],
+        },
+      ],
+    },
+    agents: [agent],
+  };
+
+  const prompt = buildAgentTurnPrompt({
+    conversation,
+    agent,
+    agentConfig: {
+      profileName: 'Default',
+      personaPrompt: agent.personaPrompt,
+    },
+    resolvedPersonaSkills: [],
+    resolvedConversationSkills: [],
+    sandbox: {
+      sandboxDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-digest-prompt',
+      privateDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-digest-prompt/private',
+    },
+    agents: [agent],
+    messages: [
+      {
+        id: 'message-recent-1',
+        role: 'user',
+        senderName: 'User',
+        content: 'Recent raw message overrides stale digest details.',
+        status: 'completed',
+        metadata: null,
+      },
+    ],
+    privateMessages: [],
+    trigger: {
+      triggerType: 'user',
+      enqueueReason: 'user_mentions',
+    },
+    remainingSlots: 7,
+    routingMode: 'mention_queue',
+    allowHandoffs: true,
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+  });
+
+  assert.match(prompt, /Conversation digest memory:/u);
+  assert.match(prompt, /auto-compacted into a stable rollup/u);
+  assert.match(prompt, /manual Conversation Digest MVP/u);
+  assert.match(prompt, /Rollups are auto-compacted from older digest entries/u);
+  assert.match(prompt, /recent raw conversation messages override digest content/u);
+  assert.match(prompt, /server\/domain\/conversation\/conversation-digest\.ts/u);
+  assert.ok(prompt.indexOf('Conversation digest memory:') < prompt.indexOf('Conversation history:'));
+  assert.ok(prompt.indexOf('Rollup digest rollup-1') < prompt.indexOf('Digest digest-1'));
+});
+
+test('buildAgentTurnPrompt includes active session goal guidance', () => {
+  const agent = {
+    id: 'agent-goal-prompt',
+    name: 'Builder',
+    description: 'Keeps work aligned.',
+    personaPrompt: 'Stay focused.',
+  };
+  const conversation = {
+    id: 'conversation-goal-prompt',
+    title: 'Goal Prompt',
+    type: 'standard',
+    metadata: {
+      sessionGoal: {
+        objective: 'Port /goal to CAFF',
+        status: 'active',
+        createdAt: '2026-05-03T00:00:00.000Z',
+        updatedAt: '2026-05-03T00:00:00.000Z',
+        checklist: [
+          {
+            id: 'item-1',
+            text: 'Add API lifecycle',
+            status: 'done',
+            createdAt: '2026-05-03T00:00:00.000Z',
+            updatedAt: '2026-05-03T00:00:00.000Z',
+            completedAt: '2026-05-03T00:00:00.000Z',
+          },
+          {
+            id: 'item-2',
+            text: 'Wire progress UI',
+            status: 'in_progress',
+            createdAt: '2026-05-03T00:00:00.000Z',
+            updatedAt: '2026-05-03T00:00:00.000Z',
+          },
+        ],
+      },
+    },
+    agents: [agent],
+  };
+  const prompt = buildAgentTurnPrompt({
+    conversation,
+    agent,
+    agentConfig: {
+      profileName: 'Default',
+      personaPrompt: agent.personaPrompt,
+    },
+    resolvedPersonaSkills: [],
+    resolvedConversationSkills: [],
+    sandbox: {
+      sandboxDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-goal-prompt',
+      privateDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-goal-prompt/private',
+    },
+    agents: [agent],
+    messages: [],
+    privateMessages: [],
+    trigger: {
+      triggerType: 'user',
+      enqueueReason: 'default_first_agent',
+    },
+    remainingSlots: 7,
+    routingMode: 'mention_queue',
+    allowHandoffs: true,
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+  });
+
+  assert.match(prompt, /Session goal:/u);
+  assert.match(prompt, /Status: active/u);
+  assert.match(prompt, /Objective: Port \/goal to CAFF/u);
+  assert.match(prompt, /Checklist progress: 1\/2 complete/u);
+  assert.match(prompt, /\[x\] Add API lifecycle/u);
+  assert.match(prompt, /\[~\] Wire progress UI/u);
+  assert.match(prompt, /update-goal-checklist/u);
+  assert.match(prompt, /current completion target/u);
+  assert.match(prompt, /suggest-goal --action complete/u);
+});
+
+test('buildAgentTurnPrompt includes paused session goal guidance', () => {
+  const agent = {
+    id: 'agent-goal-paused-prompt',
+    name: 'Builder',
+    description: 'Keeps work aligned.',
+    personaPrompt: 'Stay focused.',
+  };
+  const conversation = {
+    id: 'conversation-goal-paused-prompt',
+    title: 'Goal Prompt',
+    type: 'standard',
+    metadata: {
+      sessionGoal: {
+        objective: 'Port /goal to CAFF',
+        status: 'paused',
+        createdAt: '2026-05-03T00:00:00.000Z',
+        updatedAt: '2026-05-03T00:00:00.000Z',
+      },
+    },
+    agents: [agent],
+  };
+  const prompt = buildAgentTurnPrompt({
+    conversation,
+    agent,
+    agentConfig: {
+      profileName: 'Default',
+      personaPrompt: agent.personaPrompt,
+    },
+    resolvedPersonaSkills: [],
+    resolvedConversationSkills: [],
+    sandbox: {
+      sandboxDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-goal-paused-prompt',
+      privateDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-goal-paused-prompt/private',
+    },
+    agents: [agent],
+    messages: [],
+    privateMessages: [],
+    trigger: {
+      triggerType: 'user',
+      enqueueReason: 'default_first_agent',
+    },
+    remainingSlots: 7,
+    routingMode: 'mention_queue',
+    allowHandoffs: true,
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+  });
+
+  assert.match(prompt, /Session goal:/u);
+  assert.match(prompt, /Status: paused/u);
+  assert.match(prompt, /do not actively drive new work/u);
+});
+
+test('buildAgentTurnPrompt includes complete session goal as completed context', () => {
+  const agent = {
+    id: 'agent-goal-complete-prompt',
+    name: 'Builder',
+    description: 'Keeps work aligned.',
+    personaPrompt: 'Stay focused.',
+  };
+  const conversation = {
+    id: 'conversation-goal-complete-prompt',
+    title: 'Goal Prompt',
+    type: 'standard',
+    metadata: {
+      sessionGoal: {
+        objective: 'Port /goal to CAFF',
+        status: 'complete',
+        createdAt: '2026-05-03T00:00:00.000Z',
+        updatedAt: '2026-05-03T00:00:00.000Z',
+        completedAt: '2026-05-03T00:10:00.000Z',
+      },
+    },
+    agents: [agent],
+  };
+  const prompt = buildAgentTurnPrompt({
+    conversation,
+    agent,
+    agentConfig: {
+      profileName: 'Default',
+      personaPrompt: agent.personaPrompt,
+    },
+    resolvedPersonaSkills: [],
+    resolvedConversationSkills: [],
+    sandbox: {
+      sandboxDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-goal-complete-prompt',
+      privateDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-goal-complete-prompt/private',
+    },
+    agents: [agent],
+    messages: [],
+    privateMessages: [],
+    trigger: {
+      triggerType: 'user',
+      enqueueReason: 'default_first_agent',
+    },
+    remainingSlots: 7,
+    routingMode: 'mention_queue',
+    allowHandoffs: true,
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+  });
+
+  assert.match(prompt, /Session goal:/u);
+  assert.match(prompt, /Status: complete/u);
+  assert.match(prompt, /completed context/u);
+});
+
+test('buildAgentTurnPrompt omits cleared session goal guidance', () => {
+  const agent = {
+    id: 'agent-goal-cleared-prompt',
+    name: 'Builder',
+    description: 'Keeps work aligned.',
+    personaPrompt: 'Stay focused.',
+  };
+  const conversation = {
+    id: 'conversation-goal-cleared-prompt',
+    title: 'Goal Prompt',
+    type: 'standard',
+    metadata: {},
+    agents: [agent],
+  };
+  const prompt = buildAgentTurnPrompt({
+    conversation,
+    agent,
+    agentConfig: {
+      profileName: 'Default',
+      personaPrompt: agent.personaPrompt,
+    },
+    resolvedPersonaSkills: [],
+    resolvedConversationSkills: [],
+    sandbox: {
+      sandboxDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-goal-cleared-prompt',
+      privateDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-goal-cleared-prompt/private',
+    },
+    agents: [agent],
+    messages: [],
+    privateMessages: [],
+    trigger: {
+      triggerType: 'user',
+      enqueueReason: 'default_first_agent',
+    },
+    remainingSlots: 7,
+    routingMode: 'mention_queue',
+    allowHandoffs: true,
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+  });
+
+  assert.doesNotMatch(prompt, /Session goal:/u);
+});
+
 test('buildAgentTurnPrompt gives bash-only multiline chat bridge guidance', () => {
   const agent = {
     id: 'agent-builder',
@@ -167,6 +495,9 @@ test('buildAgentTurnPrompt gives bash-only multiline chat bridge guidance', () =
   );
   assert.match(prompt, /search-messages --query "topic keywords" --limit 5/u);
   assert.match(prompt, /--speaker "AgentName" or --agent-id "agent-id"/u);
+  assert.match(prompt, /search-memory --query "topic keywords" --limit 5/u);
+  assert.match(prompt, /--include-current to include it; optionally add --current-task, --task "task-name", --conversation "title", --kind entry\|rollup, --since YYYY-MM-DD, or --until YYYY-MM-DD/u);
+  assert.match(prompt, /excludes the current conversation by default/u);
   assert.match(prompt, /list-memories/u);
   assert.match(prompt, /Memory titles are matched exactly after trimming; case matters/u);
   assert.match(prompt, /save-memory --title "preference" --content "User prefers retrieval-first POCs" --ttl-days 30/u);
@@ -227,6 +558,72 @@ test('buildAgentTurnPrompt includes scoped curated memory cards', () => {
   assert.match(prompt, /- \[local-user\] preference: User prefers retrieval-first rollouts\. \(expires 2026-05-01T00:00:00\.000Z\)/u);
 });
 
+test('buildAgentTurnPrompt places volatile public history near tail after private and memory context', () => {
+  const agent = {
+    id: 'agent-history-cache-prompt',
+    name: 'Builder',
+    description: 'Explains implementation details clearly.',
+    personaPrompt: 'Stay calm and practical.',
+  };
+  const conversation = {
+    id: 'conversation-history-cache-prompt',
+    title: 'History Cache Prompt',
+    type: 'standard',
+    agents: [agent],
+  };
+  const prompt = buildAgentTurnPrompt({
+    conversation,
+    agent,
+    agentConfig: {
+      profileName: 'Default',
+      personaPrompt: agent.personaPrompt,
+    },
+    resolvedPersonaSkills: [],
+    resolvedConversationSkills: [],
+    sandbox: {
+      sandboxDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-history-cache-prompt',
+      privateDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-history-cache-prompt/private',
+    },
+    agents: [agent],
+    messages: [
+      {
+        id: 'message-history-cache-prompt',
+        role: 'user',
+        senderName: 'User',
+        content: 'Most volatile public chat line.',
+        status: 'completed',
+        metadata: null,
+      },
+    ],
+    privateMessages: [
+      {
+        senderName: 'System',
+        content: 'Private note before history.',
+      },
+    ],
+    memoryCards: [
+      {
+        scope: 'local-user-agent',
+        title: 'preference',
+        content: 'Stable memory before history.',
+      },
+    ],
+    trigger: {
+      triggerType: 'user',
+      enqueueReason: 'default_first_agent',
+    },
+    remainingSlots: 7,
+    routingMode: 'mention_queue',
+    allowHandoffs: true,
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+  });
+
+  assert.ok(prompt.indexOf('Private mailbox visible only to you:') < prompt.indexOf('Conversation history:'));
+  assert.ok(prompt.indexOf('Curated memory cards for you') < prompt.indexOf('Conversation history:'));
+  assert.ok(prompt.indexOf('Conversation history:') < prompt.indexOf('Why you are replying now:'));
+  assert.ok(prompt.indexOf('Why you are replying now:') < prompt.indexOf('Write your reply now.'));
+});
+
 test('buildAgentTurnPrompt keeps case-distinct curated memory titles separate', () => {
   const agent = {
     id: 'agent-memory-case-prompt',
@@ -280,6 +677,745 @@ test('buildAgentTurnPrompt keeps case-distinct curated memory titles separate', 
 
   assert.match(prompt, /- \[conversation\] preference: Conversation lowercase preference\./u);
   assert.match(prompt, /- \[local-user\] Preference: Durable uppercase preference\./u);
+});
+
+test('buildAgentTurnPrompt explains matched terms for retrieved summary memory', () => {
+  const agent = {
+    id: 'agent-summary-memory-prompt',
+    name: 'Builder',
+    description: 'Explains implementation details clearly.',
+    personaPrompt: 'Stay calm and practical.',
+  };
+  const conversation = {
+    id: 'conversation-summary-memory-prompt',
+    title: 'New Conversation',
+    type: 'standard',
+    agents: [agent],
+  };
+  const prompt = buildAgentTurnPrompt({
+    conversation,
+    agent,
+    agentConfig: {
+      profileName: 'Default',
+      personaPrompt: agent.personaPrompt,
+    },
+    resolvedPersonaSkills: [],
+    resolvedConversationSkills: [],
+    sandbox: {
+      sandboxDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-summary-memory-prompt',
+      privateDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-summary-memory-prompt/private',
+    },
+    agents: [agent],
+    messages: [],
+    privateMessages: [],
+    relatedMemorySegments: [
+      {
+        id: 'segment-digest-summary-memory-prompt',
+        sourceDigestId: 'digest-summary-memory-prompt',
+        sourceKind: 'entry',
+        conversationTitle: 'Historical Digest Work',
+        taskName: 'Conversation Digest Auto-Compaction v2',
+        segmentUpdatedAt: '2026-05-04T00:00:00.000Z',
+        summary: 'Digest environment tests should pin idle and cooldown gates.',
+        decisions: ['Use explicit environment overrides in digest tests.'],
+        triggerReason: 'auto_message_budget',
+        createdBy: 'model:deepseek-v4-flash',
+        messageRange: {
+          messageCount: 12,
+        },
+        facts: [],
+        nextActions: [],
+        artifacts: ['tests/smoke/server-smoke.test.js'],
+        matchedTerms: ['digest', 'cooldown'],
+        recallReason: 'keyword search matched digest tests',
+      },
+    ],
+    trigger: {
+      triggerType: 'user',
+      enqueueReason: 'default_first_agent',
+    },
+    remainingSlots: 7,
+    routingMode: 'mention_queue',
+    allowHandoffs: true,
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+  });
+
+  assert.match(prompt, /Retrieved long-term experience memory:/u);
+  assert.match(prompt, /Historical Digest Work · task: Conversation Digest Auto-Compaction v2/u);
+  assert.match(prompt, /12 public messages · trigger: auto_message_budget · source: model:deepseek-v4-flash/u);
+  assert.match(prompt, /Matched query terms: digest \/ cooldown/u);
+  assert.match(prompt, /Recall reason: keyword search matched digest tests/u);
+  assert.match(prompt, /current task\/spec context override retrieved memory/u);
+});
+
+test('related memory recall diversifies automatic prompt segments by source conversation', () => {
+  const calls = [];
+  const store = {
+    searchSummarySegments(options) {
+      calls.push(options);
+
+      return {
+        results: [
+          { conversationId: 'conversation-a', sourceDigestId: 'digest-a-0', summary: 'High ranking memory A0.' },
+          { conversationId: 'conversation-a', sourceDigestId: 'digest-a-1', summary: 'High ranking memory A1.' },
+          { conversationId: 'conversation-a', sourceDigestId: 'digest-a-2', summary: 'High ranking memory A2.' },
+          { conversationId: 'conversation-a', sourceDigestId: 'digest-a-3', summary: 'High ranking memory A3.' },
+          { conversationId: 'conversation-b', sourceDigestId: 'digest-b-0', summary: 'Lower ranking memory B0.' },
+          { conversationId: 'conversation-b', sourceDigestId: 'digest-b-1', summary: 'Lower ranking memory B1.' },
+        ],
+      };
+    },
+  };
+
+  const results = resolveRelatedMemorySegments(
+    store,
+    'current-conversation',
+    { title: 'Fresh Conversation', metadata: {} },
+    [{ content: 'Find digest retrieval lessons.' }]
+  );
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].limit, 15);
+  assert.deepEqual(results.map((segment) => segment.sourceDigestId), [
+    'digest-a-0',
+    'digest-a-1',
+    'digest-b-0',
+    'digest-b-1',
+    'digest-a-2',
+  ]);
+});
+
+test('related memory recall prioritizes active-task keyword hits before cross-task hits', () => {
+  const store = {
+    searchSummarySegments() {
+      return {
+        results: [
+          {
+            conversationId: 'conversation-old-task',
+            sourceDigestId: 'digest-old-task',
+            taskName: 'Older Retrieval Task',
+            summary: 'Older task memory matched shared digest terms.',
+            score: 3,
+            matchedTerms: ['digest', 'memory', 'recall'],
+          },
+          {
+            conversationId: 'conversation-current-task',
+            sourceDigestId: 'digest-current-task',
+            taskName: 'Summary Memory Retrieval Followup',
+            summary: 'Current task memory should be considered first when it also matched keywords.',
+            score: 2,
+            matchedTerms: ['digest', 'memory'],
+          },
+        ],
+      };
+    },
+  };
+
+  const results = resolveRelatedMemorySegments(
+    store,
+    'current-conversation',
+    { title: 'Fresh Conversation', metadata: {} },
+    [{ content: 'Find digest memory recall lessons.' }],
+    { activeTaskName: 'Summary Memory Retrieval Followup' }
+  );
+
+  assert.deepEqual(results.map((segment) => segment.sourceDigestId), [
+    'digest-current-task',
+    'digest-old-task',
+  ]);
+});
+
+test('related memory recall prioritizes active-task slug aliases', () => {
+  const store = {
+    searchSummarySegments() {
+      return {
+        results: [
+          {
+            conversationId: 'conversation-old-task',
+            sourceDigestId: 'digest-old-task',
+            taskName: 'Older Retrieval Task',
+            summary: 'Older task memory matched shared digest terms.',
+            score: 3,
+            matchedTerms: ['digest', 'memory', 'recall'],
+          },
+          {
+            conversationId: 'conversation-current-task-slug',
+            sourceDigestId: 'digest-current-task-slug',
+            taskName: '05-03-summary-memory-retrieval-followup',
+            summary: 'Current task slug memory should still receive active-task affinity.',
+            score: 2,
+            matchedTerms: ['digest', 'memory'],
+          },
+        ],
+      };
+    },
+  };
+
+  const results = resolveRelatedMemorySegments(
+    store,
+    'current-conversation',
+    { title: 'Fresh Conversation', metadata: {} },
+    [{ content: 'Find digest memory recall lessons.' }],
+    { activeTaskName: 'Summary Memory Retrieval Followup' }
+  );
+
+  assert.deepEqual(results.map((segment) => segment.sourceDigestId), [
+    'digest-current-task-slug',
+    'digest-old-task',
+  ]);
+});
+
+test('related memory recall falls back to latest current-task summary segments', () => {
+  const calls = [];
+  const store = {
+    searchSummarySegments(options) {
+      calls.push(options);
+
+      if (options.query) {
+        return { results: [] };
+      }
+
+      return {
+        results: [
+          {
+            id: 'segment-current-task-latest',
+            sourceDigestId: 'digest-current-task-latest',
+            sourceKind: 'entry',
+            conversationTitle: 'Older Task Conversation',
+            taskName: 'Summary Memory Retrieval Followup',
+            summary: 'Latest task memory should be available even when keyword recall misses.',
+          },
+        ],
+      };
+    },
+  };
+
+  const results = resolveRelatedMemorySegments(
+    store,
+    'current-conversation',
+    {
+      title: 'Fresh Conversation',
+      metadata: {
+        sessionGoal: {
+          objective: 'Continue retrieval followup.',
+        },
+      },
+    },
+    [{ content: 'Use a brand new phrase that will not match history.' }],
+    { activeTaskName: 'Summary Memory Retrieval Followup' }
+  );
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].query.includes('Summary Memory Retrieval Followup'), true);
+  assert.equal(calls[0].excludeConversationId, 'current-conversation');
+  assert.equal(calls[1].query, '');
+  assert.equal(calls[1].taskName, 'Summary Memory Retrieval Followup');
+  assert.equal(calls[1].excludeConversationId, 'current-conversation');
+  assert.equal(results.length, 1);
+  assert.equal(results[0].sourceDigestId, 'digest-current-task-latest');
+  assert.equal(results[0].recallReason, 'latest summary for current task: Summary Memory Retrieval Followup');
+});
+
+test('related memory recall falls back to latest current-task slug aliases', () => {
+  const calls = [];
+  const store = {
+    searchSummarySegments(options) {
+      calls.push(options);
+
+      if (options.query || options.taskName) {
+        return { results: [] };
+      }
+
+      return {
+        results: [
+          {
+            id: 'segment-current-task-slug-latest',
+            sourceDigestId: 'digest-current-task-slug-latest',
+            conversationId: 'conversation-current-task-slug-latest',
+            sourceKind: 'entry',
+            conversationTitle: 'Slug Task Conversation',
+            taskName: '05-03-summary-memory-retrieval-followup',
+            summary: 'Latest slug task memory should fill unused prompt slots.',
+          },
+          {
+            id: 'segment-other-task-latest',
+            sourceDigestId: 'digest-other-task-latest',
+            conversationId: 'conversation-other-task-latest',
+            sourceKind: 'entry',
+            conversationTitle: 'Other Task Conversation',
+            taskName: 'Unrelated Task',
+            summary: 'Unrelated latest memory should not fill current-task slots.',
+          },
+        ],
+      };
+    },
+  };
+
+  const results = resolveRelatedMemorySegments(
+    store,
+    'current-conversation',
+    {
+      title: 'Fresh Conversation',
+      metadata: {
+        sessionGoal: {
+          objective: 'Continue retrieval followup.',
+        },
+      },
+    },
+    [{ content: 'Use a brand new phrase that will not match history.' }],
+    { activeTaskName: 'Summary Memory Retrieval Followup' }
+  );
+
+  assert.equal(calls.length, 3);
+  assert.equal(calls[1].query, '');
+  assert.equal(calls[1].taskName, 'Summary Memory Retrieval Followup');
+  assert.equal(calls[2].query, '');
+  assert.equal(calls[2].taskName, undefined);
+  assert.deepEqual(results.map((segment) => segment.sourceDigestId), ['digest-current-task-slug-latest']);
+  assert.equal(results[0].recallReason, 'latest summary for current task: Summary Memory Retrieval Followup');
+});
+
+test('related memory recall fills partial keyword matches with latest current-task memory', () => {
+  const calls = [];
+  const store = {
+    searchSummarySegments(options) {
+      calls.push(options);
+
+      if (options.query) {
+        return {
+          results: [
+            {
+              id: 'segment-keyword-hit',
+              sourceDigestId: 'digest-keyword-hit',
+              conversationId: 'conversation-keyword',
+              sourceKind: 'entry',
+              conversationTitle: 'Keyword Hit Conversation',
+              taskName: 'Summary Memory Retrieval Followup',
+              summary: 'Keyword recall found a direct digest lesson.',
+            },
+          ],
+        };
+      }
+
+      return {
+        results: [
+          {
+            id: 'segment-keyword-hit',
+            sourceDigestId: 'digest-keyword-hit',
+            conversationId: 'conversation-keyword',
+            summary: 'Duplicate latest memory should not be injected twice.',
+          },
+          {
+            id: 'segment-current-task-latest-a',
+            sourceDigestId: 'digest-current-task-latest-a',
+            conversationId: 'conversation-latest-a',
+            sourceKind: 'entry',
+            conversationTitle: 'Latest Task Conversation A',
+            taskName: 'Summary Memory Retrieval Followup',
+            summary: 'Latest task memory A should fill unused prompt slots.',
+          },
+          {
+            id: 'segment-current-task-latest-b',
+            sourceDigestId: 'digest-current-task-latest-b',
+            conversationId: 'conversation-latest-b',
+            sourceKind: 'entry',
+            conversationTitle: 'Latest Task Conversation B',
+            taskName: 'Summary Memory Retrieval Followup',
+            summary: 'Latest task memory B should also fill unused prompt slots.',
+          },
+        ],
+      };
+    },
+  };
+
+  const results = resolveRelatedMemorySegments(
+    store,
+    'current-conversation',
+    {
+      title: 'Fresh Conversation',
+      metadata: {
+        sessionGoal: {
+          objective: 'Continue retrieval followup.',
+        },
+      },
+    },
+    [{ content: 'Find one direct digest lesson, then add current task context.' }],
+    { activeTaskName: 'Summary Memory Retrieval Followup' }
+  );
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].query, '');
+  assert.equal(calls[1].taskName, 'Summary Memory Retrieval Followup');
+  assert.deepEqual(results.map((segment) => segment.sourceDigestId), [
+    'digest-keyword-hit',
+    'digest-current-task-latest-a',
+    'digest-current-task-latest-b',
+  ]);
+  assert.equal(results[0].recallReason, undefined);
+  assert.equal(results[1].recallReason, 'latest summary for current task: Summary Memory Retrieval Followup');
+  assert.equal(results[2].recallReason, 'latest summary for current task: Summary Memory Retrieval Followup');
+});
+
+test('related memory recall drops low-signal single-term keyword matches', () => {
+  const calls = [];
+  const store = {
+    searchSummarySegments(options) {
+      calls.push(options);
+
+      if (options.query) {
+        return {
+          results: [
+            {
+              id: 'segment-low-signal-hit',
+              sourceDigestId: 'digest-low-signal-hit',
+              conversationId: 'conversation-low-signal',
+              summary: 'A noisy memory matched only one broad query term.',
+              score: 1,
+              matchedTerms: ['memory'],
+            },
+            {
+              id: 'segment-strong-hit',
+              sourceDigestId: 'digest-strong-hit',
+              conversationId: 'conversation-strong',
+              summary: 'A stronger memory matched digest and cooldown lessons.',
+              score: 2,
+              matchedTerms: ['digest', 'cooldown'],
+            },
+          ],
+        };
+      }
+
+      return {
+        results: [
+          {
+            id: 'segment-current-task-latest',
+            sourceDigestId: 'digest-current-task-latest',
+            conversationId: 'conversation-latest',
+            summary: 'Latest current-task memory fills the unused slot.',
+          },
+        ],
+      };
+    },
+  };
+
+  const results = resolveRelatedMemorySegments(
+    store,
+    'current-conversation',
+    {
+      title: 'Fresh Conversation',
+      metadata: {
+        sessionGoal: {
+          objective: 'Improve summary memory recall precision.',
+        },
+      },
+    },
+    [{ content: 'Find digest cooldown memory without noisy one-word matches.' }],
+    { activeTaskName: 'Summary Memory Retrieval Followup' }
+  );
+
+  assert.equal(calls.length, 2);
+  assert.deepEqual(results.map((segment) => segment.sourceDigestId), [
+    'digest-strong-hit',
+    'digest-current-task-latest',
+  ]);
+  assert.equal(results[1].recallReason, 'latest summary for current task: Summary Memory Retrieval Followup');
+});
+
+test('related memory search query includes active Trellis task title', (t) => {
+  const tempDir = withTempDir('caff-related-memory-task-query-');
+  const trellisDir = path.join(tempDir, '.trellis');
+  const taskDir = path.join(trellisDir, 'tasks', 'summary-memory-task');
+
+  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+
+  fs.mkdirSync(taskDir, { recursive: true });
+  fs.writeFileSync(path.join(trellisDir, '.current-task'), 'summary-memory-task\n');
+  fs.writeFileSync(path.join(taskDir, 'task.json'), JSON.stringify({ title: 'Summary Memory Retrieval Followup', status: 'dev' }));
+
+  const query = buildRelatedMemorySearchQuery(
+    {
+      title: 'New Conversation',
+      metadata: {
+        sessionGoal: {
+          objective: 'Improve cross-session memory recall.',
+        },
+      },
+    },
+    [{ content: 'Need digest environment regression lessons.' }],
+    { projectDir: tempDir }
+  );
+
+  assert.match(query, /Summary Memory Retrieval Followup/u);
+  assert.match(query, /Improve cross-session memory recall/u);
+  assert.match(query, /Need digest environment regression lessons/u);
+  assert.doesNotMatch(query, /New Conversation/u);
+});
+
+test('related memory search query preserves meaningful conversation titles', () => {
+  const query = buildRelatedMemorySearchQuery(
+    {
+      title: 'Digest Regression Review',
+      metadata: {},
+    },
+    [{ content: 'Need cooldown memory lessons.' }],
+    { activeTaskName: 'Summary Memory Retrieval Followup' }
+  );
+
+  assert.match(query, /Summary Memory Retrieval Followup/u);
+  assert.match(query, /Need cooldown memory lessons/u);
+  assert.match(query, /Digest Regression Review/u);
+});
+
+test('related memory search query protects recent message intent before long session goals', () => {
+  const query = buildRelatedMemorySearchQuery(
+    {
+      title: 'Digest Regression Review',
+      metadata: {
+        sessionGoal: {
+          objective: 'This very long objective mentions archive planning and broad architecture followups that should not hide the live turn intent.',
+        },
+      },
+    },
+    [{ content: 'Need cooldown regression lessons now.' }],
+    { activeTaskName: 'Summary Memory Retrieval Followup' }
+  );
+
+  assert.ok(query.indexOf('Need cooldown regression lessons now.') < query.indexOf('This very long objective'));
+});
+
+test('related memory search query seeds bounded terms from task and recent intent', () => {
+  const query = buildRelatedMemorySearchQuery(
+    {
+      title: 'Digest Regression Review',
+      metadata: {
+        sessionGoal: {
+          objective: 'Improve summary memory retrieval precision.',
+        },
+      },
+    },
+    [{ content: 'Need cooldown regression fixture lessons now.' }],
+    { activeTaskName: 'Alpha Beta Gamma Delta Epsilon Zeta' }
+  );
+  const firstSearchTerms = query.match(/[\p{L}\p{N}_-]+/gu).slice(0, 8);
+
+  assert.deepEqual(firstSearchTerms, [
+    'Alpha',
+    'Beta',
+    'Gamma',
+    'cooldown',
+    'regression',
+    'fixture',
+    'lessons',
+    'Improve',
+  ]);
+  assert.match(query, /Alpha Beta Gamma Delta Epsilon Zeta/u);
+  assert.match(query, /Need cooldown regression fixture lessons now\./u);
+});
+
+test('related memory search query seeds newest recent message intent first', () => {
+  const query = buildRelatedMemorySearchQuery(
+    {
+      title: 'Digest Regression Review',
+      metadata: {
+        sessionGoal: {
+          objective: 'Improve summary memory retrieval precision.',
+        },
+      },
+    },
+    [
+      { content: 'Older nearby context mentions archive planning docs architecture.' },
+      { content: 'Need cooldown regression fixture lessons now.' },
+    ],
+    { activeTaskName: 'Alpha Beta Gamma Delta Epsilon Zeta' }
+  );
+  const firstSearchTerms = query.match(/[\p{L}\p{N}_-]+/gu).slice(0, 8);
+
+  assert.deepEqual(firstSearchTerms, [
+    'Alpha',
+    'Beta',
+    'Gamma',
+    'cooldown',
+    'regression',
+    'fixture',
+    'lessons',
+    'Improve',
+  ]);
+  assert.ok(query.indexOf('Older nearby context') < query.indexOf('Need cooldown regression fixture'));
+});
+
+test('related memory search query bounds each recent message before global clipping', () => {
+  const query = buildRelatedMemorySearchQuery(
+    {
+      title: 'Digest Regression Review',
+      metadata: {
+        sessionGoal: {
+          objective: 'Improve summary memory retrieval precision.',
+        },
+      },
+    },
+    [
+      { content: `Older nearby context ${'archive planning docs architecture '.repeat(40)}` },
+      { content: 'Newest cooldown regression fixture signal should survive full body.' },
+    ],
+    { activeTaskName: 'Alpha Beta Gamma Delta Epsilon Zeta' }
+  );
+
+  assert.match(query, /Older nearby context/u);
+  assert.match(query, /Newest cooldown regression fixture signal should survive full body\./u);
+  assert.ok(query.indexOf('Older nearby context') < query.indexOf('signal should survive full body'));
+});
+
+test('related memory search query seeds Chinese task and recent intent terms', () => {
+  const query = buildRelatedMemorySearchQuery(
+    {
+      title: '中文长期记忆复盘',
+      metadata: {
+        sessionGoal: {
+          objective: '摘要记忆召回精度优化',
+        },
+      },
+    },
+    [{ content: '需要长期记忆回归测试现在。' }],
+    { activeTaskName: '跨会话长期经验记忆层' }
+  );
+  const firstSearchTerms = query.match(/[\p{L}\p{N}_-]+/gu).slice(0, 8);
+
+  assert.deepEqual(firstSearchTerms, [
+    '会话',
+    '长期',
+    '经验',
+    '记忆',
+    '回归',
+    '测试',
+    '摘要',
+    '中文',
+  ]);
+  assert.match(query, /跨会话长期经验记忆层/u);
+  assert.match(query, /需要长期记忆回归测试现在。/u);
+});
+
+test('summary memory search terms use CJK fallback segmentation without Intl', () => {
+  const terms = extractSummaryMemorySearchTerms('需要长期记忆回归测试现在', {
+    disableCjkSegmenter: true,
+    maxTerms: 8,
+    minTermLength: 2,
+    stopTerms: new Set(['需要', '现在']),
+  });
+
+  assert.equal(terms.includes('长期'), true);
+  assert.equal(terms.includes('记忆'), true);
+  assert.equal(terms.includes('回归'), true);
+  assert.equal(terms.includes('测试'), true);
+  assert.equal(terms.includes('需要'), false);
+  assert.equal(terms.includes('现在'), false);
+});
+
+test('related memory search query skips automatic session-goal continuation boilerplate', () => {
+  const query = buildRelatedMemorySearchQuery(
+    {
+      title: 'New Conversation',
+      metadata: {
+        sessionGoal: {
+          objective: 'Implement searchable long-term experience memory.',
+        },
+      },
+    },
+    [
+      {
+        content: [
+          'Automatic session-goal continuation (10/20).',
+          'Objective: Implement searchable long-term experience memory.',
+          'Continue with the next concrete step toward this objective.',
+          'If the objective is finished or blocked, use suggest-goal to create a pending complete or pause proposal instead of continuing indefinitely.',
+        ].join('\n'),
+      },
+      { content: 'Need cooldown regression lessons now.' },
+    ],
+    { activeTaskName: 'Summary Memory Retrieval Followup' }
+  );
+
+  assert.match(query, /Need cooldown regression lessons now\./u);
+  assert.match(query, /Implement searchable long-term experience memory\./u);
+  assert.doesNotMatch(query, /Automatic session-goal continuation/u);
+  assert.doesNotMatch(query, /Continue with the next concrete step/u);
+  assert.doesNotMatch(query, /suggest-goal/u);
+});
+
+test('related memory search query skips automatic continuation completion reports', () => {
+  const query = buildRelatedMemorySearchQuery(
+    {
+      title: 'New Conversation',
+      metadata: {
+        sessionGoal: {
+          objective: 'Implement searchable long-term experience memory.',
+        },
+      },
+    },
+    [
+      {
+        content: [
+          '咕咕嘎嘎，第 10/20 根续线接好了：这次补的是 自动长期记忆召回的续跑提示降噪。',
+          '关键位置：',
+          '- server/domain/conversation/turn/agent-executor.ts:46',
+          '验证已过：',
+          '- npm run build',
+        ].join('\n'),
+      },
+      {
+        content: [
+          'Automatic session-goal continuation (11/20).',
+          'Objective: Implement searchable long-term experience memory.',
+          'Continue with the next concrete step toward this objective.',
+        ].join('\n'),
+      },
+      { content: 'Need source diversity regression lessons now.' },
+    ],
+    { activeTaskName: 'Summary Memory Retrieval Followup' }
+  );
+
+  assert.match(query, /Need source diversity regression lessons now\./u);
+  assert.match(query, /Implement searchable long-term experience memory\./u);
+  assert.doesNotMatch(query, /根续线接好了/u);
+  assert.doesNotMatch(query, /关键位置/u);
+  assert.doesNotMatch(query, /npm run build/u);
+  assert.doesNotMatch(query, /Automatic session-goal continuation/u);
+});
+
+test('related memory search query skips private-only recent messages', () => {
+  const query = buildRelatedMemorySearchQuery(
+    {
+      title: 'Digest Regression Review',
+      metadata: {
+        sessionGoal: {
+          objective: 'Improve cross-session memory recall.',
+        },
+      },
+    },
+    [
+      { content: 'Secret wolf target should not seed memory recall.', metadata: { privateOnly: true } },
+      { content: 'Private mailbox note should stay out.', metadata: { visibility: 'private' } },
+      { content: 'Need public cooldown regression lessons now.' },
+    ],
+    { activeTaskName: 'Summary Memory Retrieval Followup' }
+  );
+
+  assert.match(query, /Need public cooldown regression lessons now\./u);
+  assert.doesNotMatch(query, /Secret wolf target/u);
+  assert.doesNotMatch(query, /Private mailbox note/u);
+});
+
+test('resolveCurrentTrellisTaskName reads active task titles', (t) => {
+  const tempDir = withTempDir('caff-trellis-task-name-');
+  const trellisDir = path.join(tempDir, '.trellis');
+  const taskDir = path.join(trellisDir, 'tasks', 'memory-task');
+
+  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+
+  fs.mkdirSync(taskDir, { recursive: true });
+  fs.writeFileSync(path.join(trellisDir, '.current-task'), '.trellis/tasks/memory-task\n', 'utf8');
+  fs.writeFileSync(path.join(taskDir, 'task.json'), JSON.stringify({ title: 'Cross Task Memory Layer' }), 'utf8');
+
+  assert.equal(resolveCurrentTrellisTaskName({ startDir: tempDir }), 'Cross Task Memory Layer');
 });
 
 test('buildAgentTurnPrompt skips Trellis context when projectDir is empty', (t) => {
@@ -958,6 +2094,121 @@ test('turn orchestrator queues user messages behind the active run and drains th
   assert.ok(seenBatches[0].promptMessages.some((content) => content.includes('First queued message')));
   assert.ok(seenBatches[0].promptMessages.every((content) => !content.includes('Second queued message')));
   assert.ok(seenBatches[1].promptMessages.some((content) => content.includes('Second queued message')));
+});
+
+test('turn orchestrator auto-continues active session goals until safety budget', { concurrency: false }, async (t) => {
+  const tempDir = withTempDir('caff-session-goal-runner-');
+  const sqlitePath = path.join(tempDir, 'goal-runner.sqlite');
+  const conversation = {
+    id: 'conversation-goal-runner',
+    title: 'Goal Runner',
+    type: 'standard',
+    metadata: {
+      sessionGoal: {
+        objective: 'Finish the autonomous goal loop',
+        status: 'active',
+        createdAt: '2026-05-03T00:00:00.000Z',
+        updatedAt: '2026-05-03T00:00:00.000Z',
+      },
+    },
+    agents: [{ id: 'agent-a', name: 'Alpha' }],
+    messages: [],
+  };
+  let messageCounter = 0;
+  const seenPrompts = [];
+  const broadcastEvents = [];
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const store = {
+    databasePath: sqlitePath,
+    getConversation(conversationId) {
+      return conversationId === conversation.id ? conversation : null;
+    },
+    listConversations() {
+      const lastMessage = conversation.messages[conversation.messages.length - 1] || null;
+      return [
+        {
+          id: conversation.id,
+          title: conversation.title,
+          type: conversation.type,
+          metadata: conversation.metadata || {},
+          createdAt: '2026-05-03T00:00:00.000Z',
+          updatedAt: lastMessage ? lastMessage.createdAt : '2026-05-03T00:00:00.000Z',
+          lastMessageAt: lastMessage ? lastMessage.createdAt : null,
+          messageCount: conversation.messages.length,
+          agentCount: conversation.agents.length,
+          lastMessagePreview: lastMessage ? lastMessage.content : '',
+        },
+      ];
+    },
+    updateConversation(conversationId, updates) {
+      assert.equal(conversationId, conversation.id);
+      conversation.metadata = updates && updates.metadata && typeof updates.metadata === 'object' ? updates.metadata : conversation.metadata;
+      return conversation;
+    },
+    createMessage(input) {
+      messageCounter += 1;
+      const message = {
+        id: input.id || `goal-runner-message-${messageCounter}`,
+        errorMessage: '',
+        taskId: null,
+        runId: null,
+        metadata: null,
+        createdAt: input.createdAt || `2026-05-03T00:00:${String(messageCounter).padStart(2, '0')}.000Z`,
+        ...input,
+      };
+      conversation.messages.push(message);
+      return message;
+    },
+  };
+
+  const orchestrator = createTurnOrchestrator({
+    store,
+    skillRegistry: { listSkills() { return []; }, resolveSkills() { return []; } },
+    modeStore: { get() { return null; } },
+    agentToolBridge: {},
+    host: '127.0.0.1',
+    port: 0,
+    agentDir: tempDir,
+    sqlitePath,
+    toolBaseUrl: 'http://127.0.0.1:0',
+    agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
+    sessionGoalAutoContinueMaxTurns: 2,
+    broadcastEvent(eventName, payload) {
+      broadcastEvents.push({ eventName, payload });
+    },
+    executeConversationAgent: async ({ promptUserMessage, completedReplies, agent }) => {
+      seenPrompts.push(promptUserMessage.content);
+      completedReplies.push({
+        agentId: agent.id,
+        senderName: agent.name,
+        content: 'continuing',
+        status: 'completed',
+      });
+      return { stopTurn: false };
+    },
+  });
+
+  const scheduled = orchestrator.scheduleGoalContinuation(conversation.id);
+
+  assert.equal(scheduled.scheduled, true);
+  assert.equal(scheduled.dispatch, 'started');
+
+  await waitForCondition(() => conversation.metadata.sessionGoalProposal);
+
+  const autoMessages = conversation.messages.filter((message) => message.metadata && message.metadata.goalAutoContinue);
+  assert.equal(autoMessages.length, 2);
+  assert.equal(seenPrompts.length, 2);
+  assert.ok(seenPrompts.every((content) => content.includes('Finish the autonomous goal loop')));
+  assert.equal(conversation.metadata.sessionGoal.status, 'active');
+  assert.equal(conversation.metadata.sessionGoalRunner.status, 'budget_limited');
+  assert.equal(conversation.metadata.sessionGoalRunner.iteration, 2);
+  assert.equal(conversation.metadata.sessionGoalProposal.action, 'pause');
+  assert.equal(conversation.metadata.sessionGoalProposal.proposedBy.agentName, 'Goal Runner');
+  assert.ok(broadcastEvents.some((event) => event.eventName === 'conversation_goal_proposal_updated'));
 });
 
 test('turn orchestrator continues with the next queued batch after a stop request', { concurrency: false }, async (t) => {

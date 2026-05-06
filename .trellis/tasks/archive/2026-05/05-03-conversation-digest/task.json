@@ -1,0 +1,45 @@
+{
+  "id": "conversation-digest",
+  "name": "conversation-digest",
+  "title": "Conversation Digest long-term memory MVP",
+  "description": "Design and implement a lightweight conversation digest system for CAFF long-term memory MVP.",
+  "status": "completed",
+  "dev_type": "fullstack",
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "菲比啾比",
+  "assignee": "菲比啾比",
+  "createdAt": "2026-05-03",
+  "completedAt": "2026-05-04",
+  "branch": null,
+  "base_branch": "feature/session-goal",
+  "worktree_path": null,
+  "current_phase": 0,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "check"
+    },
+    {
+      "phase": 3,
+      "action": "finish"
+    },
+    {
+      "phase": 4,
+      "action": "create-pr"
+    }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}
