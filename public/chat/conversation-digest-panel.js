@@ -63,11 +63,14 @@
       const titleWrap = document.createElement('div');
       const eyebrow = document.createElement('p');
       eyebrow.className = 'eyebrow';
-      eyebrow.textContent = formatDateTime(digest.createdAt) || 'Digest';
+      const kindLabel = digest.kind === 'rollup' ? '压缩摘要' : '摘要条目';
+      eyebrow.textContent = `${kindLabel} · ${formatDateTime(digest.createdAt) || 'Digest'}`;
 
       const range = document.createElement('p');
       range.className = 'muted';
-      range.textContent = digestUtils.messageRangeText(digest) || digest.id;
+      const sourceCount = digest.kind === 'rollup' && Array.isArray(digest.sourceDigestIds) ? digest.sourceDigestIds.length : 0;
+      const sourceText = sourceCount > 0 ? ` · 来自 ${sourceCount} 条摘要` : '';
+      range.textContent = `${digestUtils.messageRangeText(digest) || digest.id}${sourceText}`;
 
       titleWrap.append(eyebrow, range);
 
@@ -140,6 +143,12 @@
         dom.conversationDigestCreateButton.textContent = isSaving ? '生成中...' : '生成摘要';
       }
 
+      if (dom.conversationDigestCompactButton) {
+        const digestCount = digestUtils.digestCount(state.currentConversation);
+        dom.conversationDigestCompactButton.disabled = !hasConversation || isSaving || digestCount < 2;
+        dom.conversationDigestCompactButton.textContent = isSaving ? '处理中...' : '压缩旧摘要';
+      }
+
       renderTimeline();
     }
 
@@ -174,6 +183,10 @@
 
       if (dom.conversationDigestCreateButton) {
         dom.conversationDigestCreateButton.addEventListener('click', () => submitAction({ action: 'create' }));
+      }
+
+      if (dom.conversationDigestCompactButton) {
+        dom.conversationDigestCompactButton.addEventListener('click', () => submitAction({ action: 'compact' }));
       }
 
       document.addEventListener('keydown', (event) => {
