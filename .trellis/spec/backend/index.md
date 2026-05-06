@@ -11,6 +11,7 @@ backend domain services.
 - Backend changes that may affect prompt assembly or active project resolution
 - Session goal API and metadata contracts (`session-goal.md`)
 - Conversation digest API, metadata, prompt, and UI contracts (`conversation-digest.md`)
+- Cross-conversation summary segment memory search (`summary-memory.md`)
 - Skill testing framework (skill-test-controller.ts)
 - Skill management and configuration (skills-controller.ts)
 
@@ -35,4 +36,5 @@ backend domain services.
   event normalization, dedup expectations, and test points
 - `session-goal.md`: `/goal` API, metadata, prompt, SSE, and frontend slash command contracts
 - `conversation-digest.md`: `/digest` API, metadata, prompt, SSE, and frontend panel contracts
+- `summary-memory.md`: searchable digest segment ledger and `/api/memory/search` contracts
 - See `../skills/` for skill-related backend patterns (skill-test-controller.ts, skills-controller.ts)

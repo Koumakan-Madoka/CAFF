@@ -6,12 +6,16 @@ const { pickConversationSummary, serializeConversationPrivateMessageForUi } = re
 const { buildAgentMentionLookup, formatAgentMention, resolveMentionValues } = require('../conversation/mention-routing');
 const { applySessionGoalAction, proposeSessionGoalAction } = require('../conversation/session-goal');
 const { createLiveBridgeToolStep } = require('./message-tool-trace');
+const { resolveCurrentTrellisTaskName } = require('../conversation/turn/trellis-context');
 
 const MAX_HISTORY_MESSAGES = 24;
 const MAX_PRIVATE_CONTEXT_MESSAGES = 16;
 const MAX_MESSAGE_SEARCH_LIMIT = 5;
 const MAX_MESSAGE_SEARCH_QUERY_LENGTH = 120;
 const MAX_MESSAGE_SEARCH_FILTER_LENGTH = 80;
+const MAX_SUMMARY_MEMORY_SEARCH_LIMIT = 5;
+const MAX_SUMMARY_MEMORY_SEARCH_QUERY_LENGTH = 240;
+const MAX_SUMMARY_MEMORY_FILTER_LENGTH = 120;
 const MAX_MEMORY_CARD_LIMIT = 6;
 const MAX_MEMORY_CARD_TITLE_LENGTH = 64;
 const MAX_MEMORY_CARD_CONTENT_LENGTH = 280;
@@ -52,6 +56,66 @@ function normalizeMemoryField(value: any, maxLength: number, fieldName: string) 
   }
 
   return normalized;
+}
+
+function normalizeOptionalSummaryMemoryFilter(value: any, fieldName: string) {
+  const normalized = String(value || '').trim().replace(/\s+/g, ' ');
+
+  if (normalized.length > MAX_SUMMARY_MEMORY_FILTER_LENGTH) {
+    throw createHttpError(400, `${fieldName} must be at most ${MAX_SUMMARY_MEMORY_FILTER_LENGTH} characters`);
+  }
+
+  return normalized;
+}
+
+function normalizeOptionalSummaryMemoryKind(value: any) {
+  const normalized = String(value || '').trim();
+
+  if (!normalized) {
+    return '';
+  }
+
+  if (normalized !== 'entry' && normalized !== 'rollup') {
+    throw createHttpError(400, 'sourceKind must be entry or rollup');
+  }
+
+  return normalized;
+}
+
+function normalizeOptionalSummaryMemoryDate(value: any, fieldName: string, endOfDay = false) {
+  const normalized = String(value || '').trim();
+
+  if (!normalized) {
+    return '';
+  }
+
+  if (normalized.length > 80) {
+    throw createHttpError(400, `${fieldName} must be at most 80 characters`);
+  }
+
+  const date = /^\d{4}-\d{2}-\d{2}$/u.test(normalized)
+    ? new Date(`${normalized}T${endOfDay ? '23:59:59.999' : '00:00:00.000'}Z`)
+    : new Date(normalized);
+
+  if (Number.isNaN(date.getTime())) {
+    throw createHttpError(400, `${fieldName} must be a valid ISO date or datetime`);
+  }
+
+  return date.toISOString();
+}
+
+function resolveCurrentSummaryMemoryTaskName(context: any) {
+  const projectDir = String(context && context.projectDir || '').trim();
+
+  if (!projectDir) {
+    return '';
+  }
+
+  try {
+    return clipText(resolveCurrentTrellisTaskName({ startDir: projectDir }), MAX_SUMMARY_MEMORY_FILTER_LENGTH);
+  } catch {
+    return '';
+  }
 }
 
 function normalizeMemoryTtlDays(value: any) {
@@ -184,6 +248,27 @@ function normalizePositiveInteger(value: any, fallback = 0) {
   }
 
   return parsed;
+}
+
+function normalizeBooleanFlag(value: any, fallback = false) {
+  if (value === undefined || value === null || value === '') {
+    return fallback;
+  }
+
+  if (value === true || value === false) {
+    return value;
+  }
+
+  const normalized = String(value || '').trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) {
+    return true;
+  }
+
+  if (['0', 'false', 'no', 'off'].includes(normalized)) {
+    return false;
+  }
+
+  return fallback;
 }
 
 function resolveSkillTestAuthValue(input: any, key: string) {
@@ -1829,6 +1914,144 @@ export function createAgentToolBridge(options: any = {}) {
     }
   }
 
+  function handleSearchMemory(body: any = {}) {
+    const startedAt = Date.now();
+    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
+    const activeStore = resolveContextStore(context);
+    const query = String(body.query || body.q || '').trim().replace(/\s+/g, ' ');
+    const latest = normalizeBooleanFlag(body.latest || body.recent, false);
+    const requestedLimit = Number.parseInt(String(body.limit || ''), 10);
+    const limit = Number.isFinite(requestedLimit)
+      ? Math.max(1, Math.min(MAX_SUMMARY_MEMORY_SEARCH_LIMIT, requestedLimit))
+      : MAX_SUMMARY_MEMORY_SEARCH_LIMIT;
+    const includeCurrentConversation = normalizeBooleanFlag(body.includeCurrentConversation, false);
+    const excludeCurrentConversation = includeCurrentConversation
+      ? false
+      : normalizeBooleanFlag(body.excludeCurrentConversation, true);
+    const explicitTaskName = normalizeOptionalSummaryMemoryFilter(body.taskName || body.task, 'taskName');
+    const useCurrentTask = normalizeBooleanFlag(body.useCurrentTask || body.currentTask, false);
+    let taskName = explicitTaskName;
+
+    if (!taskName && useCurrentTask) {
+      taskName = resolveCurrentSummaryMemoryTaskName(context);
+
+      if (!taskName) {
+        throw createHttpError(400, 'Unable to resolve the current Trellis task for search-memory');
+      }
+    }
+
+    const sourceKind = normalizeOptionalSummaryMemoryKind(body.sourceKind || body.kind);
+    const conversationTitle = normalizeOptionalSummaryMemoryFilter(body.conversationTitle || body.title || body.conversation, 'conversationTitle');
+    const updatedAfter = normalizeOptionalSummaryMemoryDate(body.updatedAfter || body.since || body.from || body.fromDate, 'updatedAfter');
+    const updatedBefore = normalizeOptionalSummaryMemoryDate(body.updatedBefore || body.until || body.to || body.toDate, 'updatedBefore', true);
+    const requestSummary = {
+      scope: 'summary-segments',
+      queryPreview: clipText(query, MAX_SUMMARY_MEMORY_SEARCH_QUERY_LENGTH),
+      limit,
+      excludeCurrentConversation,
+      ...(latest ? { latest: true } : {}),
+      ...(useCurrentTask ? { useCurrentTask: true } : {}),
+      ...(taskName ? { taskName } : {}),
+      ...(sourceKind ? { sourceKind } : {}),
+      ...(conversationTitle ? { conversationTitle } : {}),
+      ...(updatedAfter ? { updatedAfter } : {}),
+      ...(updatedBefore ? { updatedBefore } : {}),
+    };
+    const toolCallId = randomUUID();
+
+    setContextCurrentTool(context, {
+      toolName: 'search-memory',
+      toolKind: 'bridge',
+      toolStepId: toolCallId,
+      inferred: false,
+      request: requestSummary,
+    });
+
+    try {
+      if (!query && !latest) {
+        throw createHttpError(400, 'query is required unless latest is requested');
+      }
+
+      if (query && query.length < 2) {
+        throw createHttpError(400, 'query must be at least 2 characters');
+      }
+
+      if (query.length > MAX_SUMMARY_MEMORY_SEARCH_QUERY_LENGTH) {
+        throw createHttpError(400, `query must be at most ${MAX_SUMMARY_MEMORY_SEARCH_QUERY_LENGTH} characters`);
+      }
+
+      ensureToolAllowed(context, 'search-memory', {
+        scope: 'summary-segments',
+      });
+
+      if (!activeStore || typeof activeStore.searchSummarySegments !== 'function') {
+        throw createHttpError(501, 'Summary memory search is not available');
+      }
+
+      const response = {
+        ok: true,
+        activeConversationExcluded: excludeCurrentConversation,
+        ...activeStore.searchSummarySegments({
+          query,
+          limit,
+          excludeConversationId: excludeCurrentConversation ? context.conversationId : undefined,
+          taskName,
+          sourceKind,
+          conversationTitle,
+          updatedAfter,
+          updatedBefore,
+        }),
+      };
+
+      tryAppendInvocationEvent(context, 'agent_tool_call', {
+        schemaVersion: 1,
+        toolCallId,
+        tool: 'search-memory',
+        status: 'succeeded',
+        durationMs: Date.now() - startedAt,
+        invocationId: context.invocationId,
+        conversationId: context.conversationId,
+        turnId: context.turnId,
+        agentId: context.agentId,
+        agentName: context.agentName,
+        assistantMessageId: context.assistantMessageId,
+        request: requestSummary,
+        result: {
+          searchMode: response.searchMode,
+          resultCount: Array.isArray(response.results) ? response.results.length : 0,
+          diagnosticCount: Array.isArray(response.diagnostics) ? response.diagnostics.length : 0,
+          activeConversationExcluded: response.activeConversationExcluded,
+        },
+      });
+
+      return response;
+    } catch (error) {
+      const errorValue = error as any;
+      tryAppendInvocationEvent(context, 'agent_tool_call', {
+        schemaVersion: 1,
+        toolCallId,
+        tool: 'search-memory',
+        status: 'failed',
+        durationMs: Date.now() - startedAt,
+        invocationId: context.invocationId,
+        conversationId: context.conversationId,
+        turnId: context.turnId,
+        agentId: context.agentId,
+        agentName: context.agentName,
+        assistantMessageId: context.assistantMessageId,
+        request: requestSummary,
+        error: {
+          statusCode: Number.isInteger(errorValue && errorValue.statusCode) ? errorValue.statusCode : null,
+          message: clipText(errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Unknown error')),
+        },
+      });
+
+      throw error;
+    } finally {
+      setContextCurrentTool(context, null);
+    }
+  }
+
   function handleListMemories(requestUrl: any) {
     const startedAt = Date.now();
     const context = getInvocation(
@@ -3165,6 +3388,7 @@ export function createAgentToolBridge(options: any = {}) {
     handleSandboxRead,
     handleSandboxWrite,
     handleSaveMemory,
+    handleSearchMemory,
     handleSearchMessages,
     handleSuggestGoal,
     handleUpdateGoalChecklist,

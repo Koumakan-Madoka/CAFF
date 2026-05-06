@@ -16,6 +16,7 @@ const { createConversationsController } = require('../api/conversations-controll
 const { createEvalCasesController } = require('../api/eval-cases-controller');
 const { createFeishuController } = require('../api/feishu-controller');
 const { createMetricsController } = require('../api/metrics-controller');
+const { createMemoryController } = require('../api/memory-controller');
 const { createProjectsController } = require('../api/projects-controller');
 const { createModesController } = require('../api/modes-controller');
 const { createSkillsController } = require('../api/skills-controller');
@@ -25,6 +26,8 @@ const { createSkillTestController } = require('../api/skill-test-controller');
 const { resolveToolRelativePath } = require('../http/path-utils');
 const { HOST, PORT, ROOT_DIR, SKILL_TEST_OPENSANDBOX_CHAT_API_URL } = require('./config');
 const { createTurnOrchestrator } = require('../domain/conversation/turn-orchestrator');
+const { resolveCurrentTrellisTaskName } = require('../domain/conversation/turn/trellis-context');
+const { maybeAutoCreateConversationDigest } = require('../domain/conversation/conversation-digest');
 const { pickConversationSummary } = require('../domain/conversation/conversation-view');
 const { createUndercoverService } = require('../domain/undercover/undercover-service');
 const { createWerewolfService } = require('../domain/werewolf/werewolf-service');
@@ -157,6 +160,98 @@ export function createServerApp(options: any = {}) {
     broadcastEvent('runtime_state', turnOrchestrator.buildRuntimePayload());
   }
 
+  const digestOptions = {
+    ...(options.digestOptions || {}),
+    digestModelRunner: options.digestModelRunner,
+    agentDir,
+    sqlitePath,
+    resolveSummaryMemoryTaskName:
+      options.digestOptions && typeof options.digestOptions.resolveSummaryMemoryTaskName === 'function'
+        ? options.digestOptions.resolveSummaryMemoryTaskName
+        : () => resolveCurrentTrellisTaskName({ startDir: activeProjectDir }),
+  };
+  const autoDigestInFlightConversationIds = new Set();
+  const autoDigestScheduledTimers = new Map();
+
+  function clearScheduledAutoDigest(conversationId: any) {
+    const existingTimer = autoDigestScheduledTimers.get(conversationId);
+
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      autoDigestScheduledTimers.delete(conversationId);
+    }
+  }
+
+  function scheduleAutoDigestRetry(conversationId: any, delayMs: any) {
+    clearScheduledAutoDigest(conversationId);
+
+    const normalizedDelayMs = Math.max(0, Number.parseInt(String(delayMs || '0'), 10) || 0);
+    const timer = setTimeout(() => {
+      autoDigestScheduledTimers.delete(conversationId);
+      void runMaybeAutoCreateDigest(conversationId);
+    }, normalizedDelayMs);
+
+    if (typeof timer.unref === 'function') {
+      timer.unref();
+    }
+
+    autoDigestScheduledTimers.set(conversationId, timer);
+  }
+
+  async function runMaybeAutoCreateDigest(conversationId: any) {
+    if (!conversationId || autoDigestInFlightConversationIds.has(conversationId)) {
+      return;
+    }
+
+    autoDigestInFlightConversationIds.add(conversationId);
+
+    try {
+      const result = await maybeAutoCreateConversationDigest(store, conversationId, digestOptions);
+
+      if (result && !result.digestChanged && (result.reason === 'idle_wait' || result.reason === 'cooldown') && result.retryAfterMs > 0) {
+        scheduleAutoDigestRetry(conversationId, result.retryAfterMs);
+      }
+
+      if (!result || (!result.digestChanged && !result.stateChanged)) {
+        return;
+      }
+
+      const latestConversation = store.getConversation(conversationId) || result.conversation;
+      const summary = pickConversationSummary(latestConversation);
+
+      broadcastEvent('conversation_digest_updated', {
+        conversationId,
+        digest: result.digest,
+        rollup: result.rollup,
+        digests: result.digests,
+        compacted: result.compacted,
+        autoCreated: Boolean(result.autoCreated),
+        reason: result.reason,
+        pendingMessageCount: result.pendingMessageCount,
+        messageBudget: result.messageBudget,
+        triggerReason: result.triggerReason,
+        conversation: latestConversation,
+        summary,
+      });
+      broadcastEvent('conversation_summary_updated', {
+        conversationId,
+        summary,
+      });
+    } catch (error) {
+      const errorValue = error as any;
+      console.warn(`[conversation-digest] Auto-create failed for ${conversationId}: ${errorValue && errorValue.stack ? errorValue.stack : errorValue}`);
+    } finally {
+      autoDigestInFlightConversationIds.delete(conversationId);
+    }
+  }
+
+  async function maybeAutoCreateDigestAfterAssistantMessage(message: any) {
+    const conversationId = String(message && message.conversationId || '').trim();
+
+    clearScheduledAutoDigest(conversationId);
+    await runMaybeAutoCreateDigest(conversationId);
+  }
+
   const agentToolBridge = createAgentToolBridge({
     store,
     agentDir,
@@ -194,6 +289,8 @@ export function createServerApp(options: any = {}) {
     agentToolScriptPath,
     agentToolRelativePath,
     onAssistantMessageCompleted(message: any) {
+      void maybeAutoCreateDigestAfterAssistantMessage(message);
+
       if (!feishuIntegration) {
         return;
       }
@@ -248,6 +345,10 @@ export function createServerApp(options: any = {}) {
     createMetricsController({
       store,
     }),
+    createMemoryController({
+      store,
+      resolveCurrentTaskName: () => resolveCurrentTrellisTaskName({ startDir: activeProjectDir }),
+    }),
     createEvalCasesController({
       store,
       agentToolBridge,
@@ -291,6 +392,10 @@ export function createServerApp(options: any = {}) {
       buildBootstrapPayload,
       modeStore,
       broadcastEvent,
+      agentDir,
+      sqlitePath,
+      digestOptions,
+      digestModelRunner: options.digestModelRunner,
     }),
     createSkillTestController({
       store,
@@ -353,6 +458,11 @@ export function createServerApp(options: any = {}) {
 
   function close(callback: any) {
     sseBus.closeAll();
+
+    for (const timer of autoDigestScheduledTimers.values()) {
+      clearTimeout(timer);
+    }
+    autoDigestScheduledTimers.clear();
 
     if (feishuLongConnection) {
       feishuLongConnection.stop();

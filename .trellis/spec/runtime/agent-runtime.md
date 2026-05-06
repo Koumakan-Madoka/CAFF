@@ -21,6 +21,12 @@
   handlers together.
 - Prefer bounded reads for prompt context. This code intentionally clips file
   content and limits context fan-out.
+- Keep high-churn public conversation history near the tail of the assembled
+  prompt so stable persona, Trellis, digest, retrieved-memory, private mailbox,
+  and curated-memory sections can share a longer KV-cacheable prefix. Per-turn
+  trigger details (`Why you are replying now`, routing mode, remaining slots)
+  should sit after conversation history and immediately before the final reply
+  instruction because they change on every invocation.
 - Preserve symlink and path traversal guards when touching `.trellis` file IO.
 - Preserve supported SQLite `file:` URI semantics when opening runtime stores:
   on-disk URIs keep `mode=ro` / `mode=rw` intent through explicit open options,
@@ -35,7 +41,7 @@
   `lib/agent-chat-tools.ts` <-> `server/api/agent-tools-controller.ts` <->
   `server/domain/runtime/agent-tool-bridge.ts`
 - Conversation memory tool API:
-  `lib/chat-app-store.ts` (`searchConversationMessages`,
+  `lib/chat-app-store.ts` (`searchConversationMessages`, `searchSummarySegments`,
   `listVisibleMemoryCards`, `saveLocalUserMemoryCard`,
   `listConversationMemoryCards`, `saveConversationMemoryCard`) <->
   `server/domain/runtime/agent-tool-bridge.ts` <->
@@ -73,6 +79,14 @@ CAFF uses a descriptor + on-demand loading model for conversation skills:
 - `search-messages` is retrieval-only and must stay scoped to the current
   conversation's public messages. Runtime derives the conversation from the
   active invocation; agents do not choose a wider scope.
+- `search-memory` is retrieval-only and searches bounded digest-derived
+  `summary-segments`; it defaults to excluding the active conversation so agents
+  pull cross-conversation/cross-task experience unless they explicitly opt into
+  `includeCurrentConversation`. It may request newest bounded segments without a
+  query via `--latest` / `--recent`, and may narrow recall with `--current-task`
+  resolving the active Trellis task into bounded `taskName`, bounded explicit
+  `taskName`, bounded `conversationTitle`, exact `sourceKind` (`entry` or
+  `rollup`), and `--since` / `--until` date-window filters.
 - `search-messages` may optionally accept bounded speaker filters such as
   `speaker` or `agentId`, but those filters only narrow the active
   conversation-public scope and never widen it.
@@ -103,9 +117,44 @@ CAFF uses a descriptor + on-demand loading model for conversation skills:
   storage, visible layering, `update-memory`, and `forget-memory` so
   case-distinct titles remain separately addressable.
 - Prompt assembly may inject only bounded active visible memory cards using the
-  same overlay order. Episodic recall results are not auto-injected; the prompt
-  only teaches the agent when to call `search-messages`, `list-memories`,
-  `save-memory`, `update-memory`, and `forget-memory`.
+  same overlay order. Current-conversation message recall results are not
+  auto-injected; the prompt only teaches the agent when to call
+  `search-messages`, `list-memories`, `save-memory`, `update-memory`, and
+  `forget-memory`.
+- Cross-conversation summary segment recall may auto-inject up to 5 bounded
+  digest-derived experience memories before live conversation history. Its
+  automatic search query should include the active Trellis task title when
+  available, recent public message text, session goal objective, and meaningful
+  conversation titles so task-attributed historical segments can be recalled
+  without an exact filter while live-turn intent is protected from long goal text;
+  the generated query starts with a bounded keyword seed that reserves terms for
+  both the active task and newest recent live intent before the summary store
+  extracts its limited LIKE terms, word-segments CJK seed text when supported or
+  falls back to bounded CJK bigrams, and skips obvious filler terms, while each
+  recent message is clipped before the globally bounded recent-message body stays
+  chronological for readability.
+  Backend-generated automatic session-goal continuation boilerplate and generic
+  default titles such as `New Conversation` and agent completion reports for
+  those automatic continuations do not consume the bounded keyword budget.
+  Automatic recall can fetch up to 15
+  bounded candidates, drop score-1 / single-matched-term hits when the
+  generated query has multiple terms, skip private-only or private-visibility
+  messages from the generated recent-message query text, give keyword hits from
+  the active Trellis task light priority over cross-task hits using exact or
+  bounded normalized title/slug task-name affinity, and diversify selected memories by
+  source conversation before filling remaining prompt slots, so one historical
+  conversation does not monopolize the prompt. If keyword recall returns fewer
+  than five results and an active Trellis task is available, it may fill unused
+  slots with latest bounded summary segments filtered to the current task while
+  still excluding the active conversation and deduplicating already selected
+  segments by digest/segment id. If the exact latest current-task filter finds
+  nothing, automatic recall may inspect a bounded latest candidate pool and
+  apply the same normalized title/slug task-name alias locally so slug-stamped
+  task memory can still fill unused slots. The prompt must state that current
+  raw messages and current task/spec context override retrieved historical memory, include
+  source task attribution, message count, trigger reason, and created-by/model
+  provenance when available, and include matched query terms or recall reason
+  when available so agents can judge why each memory was recalled.
 - Memory cards are intentionally small and durable: active-card budget is 6 per
   scope, default TTL is 30 days, max TTL is 90 days, and expired or non-active
   cards stay out of the prompt.

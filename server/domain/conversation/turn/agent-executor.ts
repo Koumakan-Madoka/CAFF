@@ -19,6 +19,7 @@ const {
 } = require('../mention-routing');
 const { SKILL_TEST_DESIGN_WORKBENCH_SKILL_ID } = require('../../../../lib/mode-store');
 const { buildAgentTurnPrompt, AGENT_PROMPT_VERSION } = require('./agent-prompt');
+const { extractSummaryMemorySearchTerms } = require('../../../../lib/summary-memory-query');
 const { ensureAgentSandbox, toPortableShellPath } = require('./agent-sandbox');
 const { extractChatBridgeReplaysFromText, pickChatBridgeReplay } = require('./chat-bridge-replay');
 const { createLiveSessionToolStep } = require('../../runtime/message-tool-trace');
@@ -30,13 +31,60 @@ const {
 } = require('../../skill-test/chat-workbench-mode');
 const { readSkillTestingDocument } = require('../../skill-test/environment-chain');
 const { buildAutomaticTestingDocPreviewState } = require('../../skill-test/testing-doc-auto-preview');
+const { resolveCurrentTrellisTaskName } = require('./trellis-context');
 const { clipText, getTurnStage, nowIso, syncCurrentTurnAgent } = require('./turn-state');
 const { registerTurnHandle, unregisterTurnHandle } = require('./turn-stop');
 
 const HEARTBEAT_EVENT_REASON_LIMIT = 200;
 const TURN_PREVIEW_LENGTH = 180;
 const MAX_PRIVATE_CONTEXT_MESSAGES = 16;
+const MAX_RELATED_MEMORY_SEGMENTS = 5;
+const MAX_RELATED_MEMORY_CANDIDATE_SEGMENTS = 15;
+const MAX_RELATED_MEMORY_SEGMENTS_PER_CONVERSATION = 2;
+const MAX_RELATED_MEMORY_QUERY_MESSAGES = 6;
+const MAX_RELATED_MEMORY_QUERY_MESSAGE_LENGTH = 160;
+const MAX_RELATED_MEMORY_QUERY_LENGTH = 480;
+const MAX_RELATED_MEMORY_SEED_TERMS = 8;
+const MAX_RELATED_MEMORY_SEED_TERM_LENGTH = 48;
+const MIN_RELATED_MEMORY_TASK_ALIAS_LENGTH = 8;
 const PROMPT_MENTION_PLACEHOLDER_RE = /<mention:([\p{L}\p{N}._-]+)>/gu;
+const AUTO_SESSION_GOAL_CONTINUATION_RE = /^Automatic session-goal continuation\s*\(\d+\/\d+\)\./iu;
+const AUTO_SESSION_GOAL_COMPLETION_REPORT_RE = /^.{0,80}第\s*\d+\/\d+\s*根?续线接好了[：:]/u;
+const RELATED_MEMORY_QUERY_STOP_TERMS = new Set([
+  'a',
+  'an',
+  'and',
+  'are',
+  'be',
+  'for',
+  'from',
+  'find',
+  'in',
+  'is',
+  'need',
+  'now',
+  'of',
+  'or',
+  'the',
+  'then',
+  'this',
+  'that',
+  'these',
+  'those',
+  'to',
+  'use',
+  'with',
+  'without',
+  '一下',
+  '什么',
+  '怎么',
+  '现在',
+  '这个',
+  '那个',
+  '这些',
+  '那些',
+  '需要',
+]);
 
 function createTaskId(prefix = 'task') {
   return `${prefix}-${randomUUID()}`;
@@ -48,6 +96,359 @@ function sanitizeReason(reason: any) {
 
 function normalizePromptMentionPlaceholders(text: any) {
   return String(text || '').replace(PROMPT_MENTION_PLACEHOLDER_RE, (match: any, token: any) => `@${token}`);
+}
+
+function resolveRelatedMemoryTaskName(options: any = {}) {
+  const explicitTaskName = String(options.taskName || options.activeTaskName || '').trim();
+
+  if (explicitTaskName) {
+    return clipText(explicitTaskName, 160);
+  }
+
+  const projectDir = String(options.projectDir || '').trim();
+
+  if (!projectDir) {
+    return '';
+  }
+
+  try {
+    return clipText(resolveCurrentTrellisTaskName({ startDir: projectDir }), 160);
+  } catch {
+    return '';
+  }
+}
+
+const GENERIC_RELATED_MEMORY_TITLES = new Set([
+  'new conversation',
+  'new chat',
+  'untitled',
+  'untitled conversation',
+  '新协作会话',
+]);
+
+function resolveRelatedMemoryConversationTitle(conversation: any) {
+  const title = String(conversation && conversation.title || '').trim().replace(/\s+/g, ' ');
+
+  if (!title || GENERIC_RELATED_MEMORY_TITLES.has(title.toLocaleLowerCase())) {
+    return '';
+  }
+
+  return title;
+}
+
+function isPrivateRelatedMemoryMessage(message: any) {
+  const metadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
+  const role = String(message && message.role || '').trim().toLocaleLowerCase();
+  const visibility = String(
+    message && message.visibility || metadata && metadata.visibility || ''
+  ).trim().toLocaleLowerCase();
+
+  return Boolean(metadata && metadata.privateOnly) || role === 'private' || visibility === 'private';
+}
+
+function normalizeRelatedMemoryMessageText(message: any) {
+  if (isPrivateRelatedMemoryMessage(message)) {
+    return '';
+  }
+
+  const text = String(message && (message.content || message.errorMessage) || '').trim();
+
+  if (
+    !text ||
+    AUTO_SESSION_GOAL_CONTINUATION_RE.test(text) ||
+    AUTO_SESSION_GOAL_COMPLETION_REPORT_RE.test(text)
+  ) {
+    return '';
+  }
+
+  return clipText(text, MAX_RELATED_MEMORY_QUERY_MESSAGE_LENGTH);
+}
+
+function appendRelatedMemorySeedTerms(seedTerms: string[], seenTerms: Set<string>, value: any, maxTerms: number) {
+  if (seedTerms.length >= MAX_RELATED_MEMORY_SEED_TERMS || maxTerms <= 0) {
+    return;
+  }
+
+  const terms = extractSummaryMemorySearchTerms(value, {
+    maxTerms: 32,
+    minTermLength: 2,
+    stopTerms: RELATED_MEMORY_QUERY_STOP_TERMS,
+  });
+  let addedTerms = 0;
+
+  for (const termValue of terms) {
+    const term = String(termValue || '').trim();
+    const normalizedTerm = term.toLocaleLowerCase();
+
+    if (!term || seenTerms.has(normalizedTerm)) {
+      continue;
+    }
+
+    seenTerms.add(normalizedTerm);
+    seedTerms.push(clipText(term, MAX_RELATED_MEMORY_SEED_TERM_LENGTH));
+    addedTerms += 1;
+
+    if (addedTerms >= maxTerms || seedTerms.length >= MAX_RELATED_MEMORY_SEED_TERMS) {
+      return;
+    }
+  }
+}
+
+function buildRelatedMemorySearchSeed(parts: any = {}) {
+  const seedTerms = [] as string[];
+  const seenTerms = new Set<string>();
+
+  appendRelatedMemorySeedTerms(seedTerms, seenTerms, parts.activeTaskName, 3);
+  appendRelatedMemorySeedTerms(seedTerms, seenTerms, parts.recentMessageText, 4);
+  appendRelatedMemorySeedTerms(seedTerms, seenTerms, parts.sessionGoalObjective, 1);
+  appendRelatedMemorySeedTerms(seedTerms, seenTerms, parts.conversationTitle, 1);
+
+  return seedTerms.join(' ');
+}
+
+export function buildRelatedMemorySearchQuery(conversation: any, messages: any, options: any = {}) {
+  const metadata = conversation && conversation.metadata && typeof conversation.metadata === 'object' ? conversation.metadata : {};
+  const sessionGoal = metadata.sessionGoal && typeof metadata.sessionGoal === 'object' ? metadata.sessionGoal : null;
+  const activeTaskName = resolveRelatedMemoryTaskName(options);
+  const recentMessages = (Array.isArray(messages) ? messages : [])
+    .slice(-MAX_RELATED_MEMORY_QUERY_MESSAGES)
+    .map(normalizeRelatedMemoryMessageText)
+    .filter(Boolean);
+  const recentMessageText = recentMessages.join('\n');
+  const recentMessageSeedText = [...recentMessages].reverse().join('\n');
+  const sessionGoalObjective = sessionGoal && sessionGoal.objective;
+  const conversationTitle = resolveRelatedMemoryConversationTitle(conversation);
+  const searchSeed = buildRelatedMemorySearchSeed({
+    activeTaskName,
+    recentMessageText: recentMessageSeedText,
+    sessionGoalObjective,
+    conversationTitle,
+  });
+
+  return clipText([
+    searchSeed,
+    activeTaskName,
+    recentMessageText,
+    sessionGoalObjective,
+    conversationTitle,
+  ].filter(Boolean).join('\n'), MAX_RELATED_MEMORY_QUERY_LENGTH);
+}
+
+function normalizeRelatedMemoryResults(result: any) {
+  return Array.isArray(result && result.results) ? result.results.filter(Boolean) : [];
+}
+
+function getRelatedMemoryConversationKey(segment: any, index: number) {
+  return String(segment && segment.conversationId || '').trim() || `segment-${index}`;
+}
+
+function getRelatedMemorySegmentKey(segment: any) {
+  return String(segment && (segment.sourceDigestId || segment.id) || '').trim();
+}
+
+function countRelatedMemoryQueryTerms(query: any) {
+  return extractSummaryMemorySearchTerms(query, { maxTerms: MAX_RELATED_MEMORY_SEED_TERMS }).length;
+}
+
+function getRelatedMemoryMatchScore(segment: any) {
+  const score = Number.parseInt(String(segment && segment.score || ''), 10);
+
+  if (Number.isFinite(score) && score > 0) {
+    return score;
+  }
+
+  if (Array.isArray(segment && segment.matchedTerms) && segment.matchedTerms.length > 0) {
+    return segment.matchedTerms.length;
+  }
+
+  return null;
+}
+
+function filterLowSignalRelatedMemorySegments(segments: any, query: any) {
+  const candidates = (Array.isArray(segments) ? segments : []).filter(Boolean);
+
+  if (countRelatedMemoryQueryTerms(query) <= 1) {
+    return candidates;
+  }
+
+  return candidates.filter((segment: any) => {
+    const matchScore = getRelatedMemoryMatchScore(segment);
+
+    return matchScore === null || matchScore >= 2;
+  });
+}
+
+function normalizeRelatedMemoryTaskAlias(value: any) {
+  return String(value || '').trim().toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+}
+
+function isRelatedMemoryTaskNameMatch(segmentTaskName: any, activeTaskName: any) {
+  const normalizedSegmentTaskName = String(segmentTaskName || '').trim().toLocaleLowerCase();
+  const normalizedActiveTaskName = String(activeTaskName || '').trim().toLocaleLowerCase();
+
+  if (!normalizedSegmentTaskName || !normalizedActiveTaskName) {
+    return false;
+  }
+
+  if (normalizedSegmentTaskName === normalizedActiveTaskName) {
+    return true;
+  }
+
+  const segmentAlias = normalizeRelatedMemoryTaskAlias(normalizedSegmentTaskName);
+  const activeAlias = normalizeRelatedMemoryTaskAlias(normalizedActiveTaskName);
+
+  if (segmentAlias.length < MIN_RELATED_MEMORY_TASK_ALIAS_LENGTH || activeAlias.length < MIN_RELATED_MEMORY_TASK_ALIAS_LENGTH) {
+    return false;
+  }
+
+  return segmentAlias.includes(activeAlias) || activeAlias.includes(segmentAlias);
+}
+
+function prioritizeRelatedMemorySegmentsByTask(segments: any, activeTaskName: any) {
+  const candidates = (Array.isArray(segments) ? segments : []).filter(Boolean);
+
+  if (!String(activeTaskName || '').trim()) {
+    return candidates;
+  }
+
+  const currentTaskSegments = [] as any[];
+  const otherSegments = [] as any[];
+
+  for (const segment of candidates) {
+    if (isRelatedMemoryTaskNameMatch(segment && segment.taskName, activeTaskName)) {
+      currentTaskSegments.push(segment);
+    } else {
+      otherSegments.push(segment);
+    }
+  }
+
+  return currentTaskSegments.concat(otherSegments);
+}
+
+function selectDiverseRelatedMemorySegments(segments: any) {
+  const candidates = (Array.isArray(segments) ? segments : []).filter(Boolean);
+  const selected = [] as any[];
+  const overflow = [] as any[];
+  const selectedByConversation = new Map();
+
+  candidates.forEach((segment: any, index: number) => {
+    const conversationKey = getRelatedMemoryConversationKey(segment, index);
+    const selectedCount = selectedByConversation.get(conversationKey) || 0;
+
+    if (selectedCount < MAX_RELATED_MEMORY_SEGMENTS_PER_CONVERSATION) {
+      selectedByConversation.set(conversationKey, selectedCount + 1);
+      selected.push(segment);
+      return;
+    }
+
+    overflow.push(segment);
+  });
+
+  return selected.concat(overflow).slice(0, MAX_RELATED_MEMORY_SEGMENTS);
+}
+
+function resolveLatestCurrentTaskRelatedMemorySegments(store: any, conversationId: any, activeTaskName: string) {
+  const fallbackResult = store.searchSummarySegments({
+    query: '',
+    limit: MAX_RELATED_MEMORY_CANDIDATE_SEGMENTS,
+    excludeConversationId: conversationId,
+    taskName: activeTaskName,
+  });
+  const exactSegments = normalizeRelatedMemoryResults(fallbackResult);
+
+  if (exactSegments.length > 0) {
+    return exactSegments;
+  }
+
+  const aliasFallbackResult = store.searchSummarySegments({
+    query: '',
+    limit: MAX_RELATED_MEMORY_CANDIDATE_SEGMENTS,
+    excludeConversationId: conversationId,
+  });
+
+  return normalizeRelatedMemoryResults(aliasFallbackResult)
+    .filter((segment: any) => isRelatedMemoryTaskNameMatch(segment && segment.taskName, activeTaskName));
+}
+
+function mergeRelatedMemorySegments(primarySegments: any, fallbackSegments: any, activeTaskName: string) {
+  const merged = [] as any[];
+  const seenKeys = new Set();
+
+  for (const segment of Array.isArray(primarySegments) ? primarySegments : []) {
+    if (!segment) {
+      continue;
+    }
+
+    const segmentKey = getRelatedMemorySegmentKey(segment);
+    if (segmentKey) {
+      seenKeys.add(segmentKey);
+    }
+
+    merged.push(segment);
+  }
+
+  for (const segment of Array.isArray(fallbackSegments) ? fallbackSegments : []) {
+    if (!segment) {
+      continue;
+    }
+
+    const segmentKey = getRelatedMemorySegmentKey(segment);
+    if (segmentKey && seenKeys.has(segmentKey)) {
+      continue;
+    }
+
+    if (segmentKey) {
+      seenKeys.add(segmentKey);
+    }
+
+    merged.push({
+      ...segment,
+      recallReason: `latest summary for current task: ${activeTaskName}`,
+    });
+  }
+
+  return selectDiverseRelatedMemorySegments(merged);
+}
+
+export function resolveRelatedMemorySegments(store: any, conversationId: any, conversation: any, messages: any, options: any = {}) {
+  if (!store || typeof store.searchSummarySegments !== 'function') {
+    return [];
+  }
+
+  const activeTaskName = resolveRelatedMemoryTaskName(options);
+  const query = buildRelatedMemorySearchQuery(conversation, messages, {
+    ...options,
+    activeTaskName,
+  });
+
+  if (!query || query.length < 2) {
+    return [];
+  }
+
+  try {
+    const result = store.searchSummarySegments({
+      query,
+      limit: MAX_RELATED_MEMORY_CANDIDATE_SEGMENTS,
+      excludeConversationId: conversationId,
+    });
+    const keywordCandidates = prioritizeRelatedMemorySegmentsByTask(
+      filterLowSignalRelatedMemorySegments(normalizeRelatedMemoryResults(result), query),
+      activeTaskName
+    );
+    const results = selectDiverseRelatedMemorySegments(keywordCandidates);
+
+    if (results.length >= MAX_RELATED_MEMORY_SEGMENTS || !activeTaskName) {
+      return results;
+    }
+
+    const fallbackSegments = resolveLatestCurrentTaskRelatedMemorySegments(store, conversationId, activeTaskName);
+
+    return mergeRelatedMemorySegments(results, fallbackSegments, activeTaskName);
+  } catch (error) {
+    const errorValue = error as any;
+    console.warn(`[summary-memory] Retrieval failed for conversation ${conversationId}: ${errorValue && errorValue.stack ? errorValue.stack : errorValue}`);
+    return [];
+  }
 }
 
 function resolveConversationAgentConfig(agent: any) {
@@ -874,6 +1275,9 @@ export function createAgentExecutor(options: any = {}) {
         : store && typeof store.listConversationMemoryCards === 'function'
           ? store.listConversationMemoryCards(conversationId, agent.id)
           : [];
+    const relatedMemorySegments = resolveRelatedMemorySegments(store, conversationId, conversation, promptMessages, {
+      projectDir: resolvedProjectDir,
+    });
     const prompt = buildAgentTurnPrompt({
       conversation,
       agent,
@@ -886,6 +1290,7 @@ export function createAgentExecutor(options: any = {}) {
       messages: promptMessages,
       privateMessages,
       memoryCards,
+      relatedMemorySegments,
       trigger: queueItem,
       remainingSlots,
       routingMode,

@@ -1234,6 +1234,189 @@ test('agent tool search-messages returns scoped public recall results', (t) => {
   assert.equal(agentFilteredResult.results[0].messageId, 'bridge-search-hit-other-agent');
 });
 
+test('agent tool bridge searches cross-conversation summary memory by default', (t) => {
+  const tempDir = withTempDir('caff-agent-tool-summary-memory-');
+  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const bridge = createAgentToolBridge({ store });
+  const trellisTaskDir = path.join(tempDir, '.trellis', 'tasks', 'bridge-current-task');
+  fs.mkdirSync(trellisTaskDir, { recursive: true });
+  fs.writeFileSync(path.join(tempDir, '.trellis', '.current-task'), '.trellis/tasks/bridge-current-task\n');
+  fs.writeFileSync(path.join(trellisTaskDir, 'task.json'), JSON.stringify({ title: 'Bridge Current Task' }));
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const fixture = createPublicInvocationFixture(store, 'summary-memory');
+  const otherConversation = store.createConversation({
+    id: 'bridge-summary-memory-other-conversation',
+    title: 'Historical Digest Memory Conversation',
+    participants: [fixture.agent.id],
+  });
+
+  store.saveSummarySegmentFromDigest(fixture.conversation.id, {
+    id: 'digest-current-summary-memory',
+    kind: 'entry',
+    summary: 'bridge-memory-keyword current conversation digest should be excluded by default.',
+    facts: ['Current conversation bridge-memory-keyword fact.'],
+    decisions: [],
+    openQuestions: [],
+    nextActions: [],
+    artifacts: [],
+    createdAt: '2026-04-01T00:00:00.000Z',
+    updatedAt: '2026-04-01T00:00:00.000Z',
+    messageRange: { messageCount: 2 },
+  });
+  store.saveSummarySegmentFromDigest(otherConversation.id, {
+    id: 'digest-other-summary-memory',
+    kind: 'entry',
+    summary: 'bridge-memory-keyword historical digest should be searchable by agents.',
+    facts: ['Other conversation bridge-memory-keyword fact.'],
+    decisions: ['Agents can retrieve historical digest memory on demand.'],
+    openQuestions: [],
+    nextActions: [],
+    artifacts: ['chat_summary_segments'],
+    createdAt: '2026-04-02T00:00:00.000Z',
+    updatedAt: '2026-04-02T00:00:00.000Z',
+    messageRange: { messageCount: 3 },
+  }, { taskName: 'bridge-memory-task' });
+  store.saveSummarySegmentFromDigest(otherConversation.id, {
+    id: 'digest-other-summary-memory-rollup',
+    kind: 'rollup',
+    summary: 'bridge-filter-keyword historical rollup should be searchable by filter.',
+    facts: ['Bridge summary memory filters can target rollups.'],
+    decisions: [],
+    openQuestions: [],
+    nextActions: [],
+    artifacts: [],
+    createdAt: '2026-04-02T00:02:00.000Z',
+    updatedAt: '2026-04-02T00:02:00.000Z',
+    messageRange: { messageCount: 4 },
+  }, { taskName: 'bridge-filter-task' });
+  store.saveSummarySegmentFromDigest(otherConversation.id, {
+    id: 'digest-current-task-summary-memory',
+    kind: 'entry',
+    summary: 'bridge-current-task-keyword historical digest belongs to the active Trellis task.',
+    facts: ['Current-task shortcut resolves the active Trellis task name.'],
+    decisions: [],
+    openQuestions: [],
+    nextActions: [],
+    artifacts: [],
+    createdAt: '2026-04-02T00:03:00.000Z',
+    updatedAt: '2026-04-02T00:03:00.000Z',
+    messageRange: { messageCount: 5 },
+  }, { taskName: 'Bridge Current Task' });
+  store.saveSummarySegmentFromDigest(otherConversation.id, {
+    id: 'digest-current-task-summary-memory-other-task',
+    kind: 'entry',
+    summary: 'bridge-current-task-keyword historical digest belongs to another task.',
+    facts: ['This should be filtered out by the current-task shortcut.'],
+    decisions: [],
+    openQuestions: [],
+    nextActions: [],
+    artifacts: [],
+    createdAt: '2026-04-02T00:04:00.000Z',
+    updatedAt: '2026-04-02T00:04:00.000Z',
+    messageRange: { messageCount: 6 },
+  }, { taskName: 'Other Bridge Task' });
+
+  const context = bridge.registerInvocation(
+    bridge.createInvocationContext({
+      conversationId: fixture.conversation.id,
+      turnId: fixture.assistantMessage.turnId,
+      projectDir: tempDir,
+      agentId: fixture.agent.id,
+      agentName: fixture.agent.name,
+      assistantMessageId: fixture.assistantMessage.id,
+      conversationAgents: fixture.conversation.agents,
+      stage: fixture.stage,
+      turnState: fixture.turnState,
+    })
+  );
+
+  const result = bridge.handleSearchMemory({
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    query: 'bridge-memory-keyword',
+    limit: 5,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.scope, 'summary-segments');
+  assert.equal(result.activeConversationExcluded, true);
+  assert.equal(result.resultCount, 1);
+  assert.equal(result.results[0].conversationId, otherConversation.id);
+  assert.equal(result.results[0].sourceDigestId, 'digest-other-summary-memory');
+  assert.deepEqual(result.results[0].matchedTerms, ['bridge-memory-keyword']);
+
+  const included = bridge.handleSearchMemory({
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    query: 'bridge-memory-keyword',
+    includeCurrentConversation: true,
+    limit: 5,
+  });
+
+  assert.equal(included.activeConversationExcluded, false);
+  assert.equal(included.resultCount, 2);
+  assert.equal(included.results.some((entry) => entry.conversationId === fixture.conversation.id), true);
+  assert.equal(included.results.some((entry) => entry.conversationId === otherConversation.id), true);
+
+  const filtered = bridge.handleSearchMemory({
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    query: 'bridge-filter-keyword',
+    taskName: 'bridge-filter-task',
+    kind: 'rollup',
+    conversationTitle: 'Historical Digest',
+    since: '2026-04-02',
+    until: '2026-04-03',
+    limit: 5,
+  });
+
+  assert.equal(filtered.activeConversationExcluded, true);
+  assert.deepEqual(filtered.filters, {
+    excludeConversationId: fixture.conversation.id,
+    taskName: 'bridge-filter-task',
+    sourceKind: 'rollup',
+    conversationTitle: 'Historical Digest',
+    updatedAfter: '2026-04-02T00:00:00.000Z',
+    updatedBefore: '2026-04-03T23:59:59.999Z',
+  });
+  assert.equal(filtered.resultCount, 1);
+  assert.equal(filtered.results[0].sourceDigestId, 'digest-other-summary-memory-rollup');
+
+  const currentTaskFiltered = bridge.handleSearchMemory({
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    query: 'bridge-current-task-keyword',
+    currentTask: true,
+    limit: 5,
+  });
+
+  assert.equal(currentTaskFiltered.ok, true);
+  assert.equal(currentTaskFiltered.filters.taskName, 'Bridge Current Task');
+  assert.equal(currentTaskFiltered.resultCount, 1);
+  assert.equal(currentTaskFiltered.results[0].sourceDigestId, 'digest-current-task-summary-memory');
+
+  const latest = bridge.handleSearchMemory({
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    latest: true,
+    limit: 2,
+  });
+
+  assert.equal(latest.ok, true);
+  assert.equal(latest.searchMode, 'like_latest');
+  assert.equal(latest.activeConversationExcluded, true);
+  assert.equal(latest.resultCount, 2);
+  assert.equal(latest.results.some((entry) => entry.conversationId === fixture.conversation.id), false);
+});
+
 test('agent tool memory cards save durable local-user scope and stay agent-scoped', (t) => {
   const tempDir = withTempDir('caff-agent-tool-memory-');
   const sqlitePath = path.join(tempDir, 'bridge.sqlite');

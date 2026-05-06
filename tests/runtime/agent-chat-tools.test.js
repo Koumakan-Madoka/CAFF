@@ -5,6 +5,7 @@ const {
   forgetMemory,
   formatCommandResult,
   resolveMessageContent,
+  searchMemory,
   searchMessages,
   shouldEchoContent,
   suggestGoal,
@@ -135,6 +136,100 @@ test('agent-chat-tools attaches skill-test run and case scope when present', () 
       skillTestCaseId: 'case-1',
     }
   );
+});
+
+test('search-memory forwards bounded long-term memory search payload', async (t) => {
+  let requestUrl = '';
+  let requestOptions = null;
+
+  t.mock.method(global, 'fetch', async (url, options) => {
+    requestUrl = String(url);
+    requestOptions = options;
+
+    return {
+      ok: true,
+      async text() {
+        return JSON.stringify({ ok: true, scope: 'summary-segments', results: [] });
+      },
+    };
+  });
+
+  await searchMemory(
+    {
+      apiUrl: 'http://127.0.0.1:3100',
+      invocationId: 'inv-search-memory',
+      callbackToken: 'token-search-memory',
+      skillTestRunId: 'run-search-memory',
+      skillTestCaseId: 'case-search-memory',
+    },
+    {
+      query: 'conversation digest regression',
+      limit: 4,
+      'include-current': true,
+      'current-task': true,
+      task: 'digest-v2',
+      kind: 'rollup',
+      conversation: 'Digest Planning Notes',
+      since: '2026-05-01',
+      until: '2026-05-04',
+    }
+  );
+
+  assert.equal(requestUrl, 'http://127.0.0.1:3100/api/agent-tools/search-memory');
+  assert.equal(requestOptions.method, 'POST');
+  assert.deepEqual(JSON.parse(String(requestOptions.body)), {
+    invocationId: 'inv-search-memory',
+    callbackToken: 'token-search-memory',
+    query: 'conversation digest regression',
+    limit: 4,
+    includeCurrentConversation: true,
+    useCurrentTask: true,
+    taskName: 'digest-v2',
+    sourceKind: 'rollup',
+    conversationTitle: 'Digest Planning Notes',
+    updatedAfter: '2026-05-01',
+    updatedBefore: '2026-05-04',
+    skillTestRunId: 'run-search-memory',
+    skillTestCaseId: 'case-search-memory',
+  });
+});
+
+test('search-memory forwards latest lookup without requiring a query', async (t) => {
+  let requestUrl = '';
+  let requestOptions = null;
+
+  t.mock.method(global, 'fetch', async (url, options) => {
+    requestUrl = String(url);
+    requestOptions = options;
+
+    return {
+      ok: true,
+      async text() {
+        return JSON.stringify({ ok: true, scope: 'summary-segments', searchMode: 'like_latest', results: [] });
+      },
+    };
+  });
+
+  await searchMemory(
+    {
+      apiUrl: 'http://127.0.0.1:3100',
+      invocationId: 'inv-search-memory-latest',
+      callbackToken: 'token-search-memory-latest',
+    },
+    {
+      latest: true,
+      limit: 2,
+    }
+  );
+
+  assert.equal(requestUrl, 'http://127.0.0.1:3100/api/agent-tools/search-memory');
+  assert.equal(requestOptions.method, 'POST');
+  assert.deepEqual(JSON.parse(String(requestOptions.body)), {
+    invocationId: 'inv-search-memory-latest',
+    callbackToken: 'token-search-memory-latest',
+    latest: true,
+    limit: 2,
+  });
 });
 
 test('search-messages forwards speaker filters without requiring a query', async (t) => {

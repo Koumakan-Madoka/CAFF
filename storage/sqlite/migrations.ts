@@ -333,6 +333,34 @@ CREATE TABLE IF NOT EXISTS chat_memory_cards (
   FOREIGN KEY (agent_id) REFERENCES chat_agents(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS chat_summary_segments (
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL,
+  source_digest_id TEXT NOT NULL,
+  source_kind TEXT NOT NULL DEFAULT 'entry',
+  conversation_title TEXT NOT NULL DEFAULT '',
+  task_name TEXT NOT NULL DEFAULT '',
+  summary TEXT NOT NULL,
+  facts_json TEXT NOT NULL DEFAULT '[]',
+  decisions_json TEXT NOT NULL DEFAULT '[]',
+  open_questions_json TEXT NOT NULL DEFAULT '[]',
+  next_actions_json TEXT NOT NULL DEFAULT '[]',
+  artifacts_json TEXT NOT NULL DEFAULT '[]',
+  trigger_reason TEXT,
+  message_count INTEGER NOT NULL DEFAULT 0,
+  from_message_id TEXT,
+  to_message_id TEXT,
+  created_by TEXT,
+  segment_created_at TEXT NOT NULL,
+  segment_updated_at TEXT NOT NULL,
+  metadata_json TEXT,
+  search_text TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(source_digest_id),
+  FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS chat_channel_bindings (
   platform TEXT NOT NULL,
   external_chat_id TEXT NOT NULL,
@@ -413,6 +441,8 @@ CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation_id ON chat_messages (c
 CREATE INDEX IF NOT EXISTS idx_chat_messages_turn_id ON chat_messages (turn_id, created_at ASC, id ASC);
 CREATE INDEX IF NOT EXISTS idx_chat_private_messages_conversation_id ON chat_private_messages (conversation_id, created_at ASC, id ASC);
 CREATE INDEX IF NOT EXISTS idx_chat_private_messages_sender_agent_id ON chat_private_messages (sender_agent_id, created_at ASC, id ASC);
+CREATE INDEX IF NOT EXISTS idx_chat_summary_segments_conversation_id ON chat_summary_segments (conversation_id, segment_updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_chat_summary_segments_updated_at ON chat_summary_segments (segment_updated_at DESC, id DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_channel_bindings_platform_conversation_id ON chat_channel_bindings (platform, conversation_id);
 CREATE INDEX IF NOT EXISTS idx_chat_channel_bindings_conversation_id ON chat_channel_bindings (conversation_id);
 CREATE INDEX IF NOT EXISTS idx_chat_external_events_conversation_id ON chat_external_events (conversation_id, created_at ASC, id ASC);

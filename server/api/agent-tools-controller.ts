@@ -35,6 +35,12 @@ export function createAgentToolsController(options: any = {}): RouteHandler<ApiC
       return true;
     }
 
+    if (pathname === '/api/agent-tools/search-memory' && req.method === 'POST') {
+      const body = await readRequestJson(req);
+      sendJson(res, 200, agentToolBridge.handleSearchMemory(body));
+      return true;
+    }
+
     if (pathname === '/api/agent-tools/goal/suggest' && req.method === 'POST') {
       const body = await readRequestJson(req);
       sendJson(res, 200, agentToolBridge.handleSuggestGoal(body));

@@ -190,6 +190,15 @@ export function createConversationsController(options: any = {}): RouteHandler<A
   const buildBootstrapPayload = options.buildBootstrapPayload;
   const modeStore = options.modeStore;
   const broadcastEvent = typeof options.broadcastEvent === 'function' ? options.broadcastEvent : () => {};
+  const digestOptions = {
+    ...(options.digestOptions || {}),
+    digestModelRunner: options.digestModelRunner,
+    provider: options.digestProvider,
+    model: options.digestModel,
+    thinking: options.digestThinking,
+    agentDir: options.agentDir,
+    sqlitePath: options.sqlitePath,
+  };
 
   return async function handleConversationsRequest(context) {
     const { req, res, pathname, requestUrl } = context;
@@ -392,15 +401,17 @@ export function createConversationsController(options: any = {}): RouteHandler<A
     if (conversationDigestMatch && (req.method === 'GET' || req.method === 'POST')) {
       const conversationId = decodeURIComponent(conversationDigestMatch[1]);
       const body = req.method === 'POST' ? await readRequestJson(req) : { action: 'get' };
-      const result = applyConversationDigestAction(store, conversationId, body || {});
+      const result = await applyConversationDigestAction(store, conversationId, body || {}, digestOptions);
 
       if (req.method === 'POST' && result.digestChanged) {
         const summary = pickConversationSummary(result.conversation);
         broadcastEvent(result.deleted ? 'conversation_digest_deleted' : 'conversation_digest_updated', {
           conversationId,
           digest: result.digest,
+          rollup: result.rollup,
           digests: result.digests,
           deleted: result.deleted,
+          compacted: result.compacted,
           conversation: result.conversation,
           summary,
         });
@@ -415,7 +426,9 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         conversation: latestConversation,
         digests: result.digests,
         digest: result.digest,
+        rollup: result.rollup,
         deleted: result.deleted,
+        compacted: result.compacted,
         summary: pickConversationSummary(latestConversation),
         conversations: store.listConversations(),
       });

@@ -269,6 +269,63 @@ async function searchMessages(config: any, flags: any) {
   });
 }
 
+async function searchMemory(config: any, flags: any) {
+  const query = String(flags.query || flags.q || '').trim();
+  const latest = isFlagEnabled(flags.latest) || isFlagEnabled(flags.recent);
+
+  if (!query && !latest) {
+    throw new Error('search-memory requires --query "topic keywords" or --latest.');
+  }
+
+  const body: any = withSkillTestScope(config, {
+    invocationId: config.invocationId,
+    callbackToken: config.callbackToken,
+    ...(query ? { query } : {}),
+    ...(latest ? { latest: true } : {}),
+  });
+
+  if (flags.limit !== undefined) {
+    body.limit = flags.limit;
+  }
+
+  if (flags['include-current'] === true || flags.includeCurrent === true || flags.includeCurrentConversation === true) {
+    body.includeCurrentConversation = true;
+  }
+
+  if (flags['current-task'] === true || flags.currentTask === true || flags.useCurrentTask === true) {
+    body.useCurrentTask = true;
+  }
+
+  if (flags['exclude-current'] !== undefined || flags.excludeCurrent !== undefined || flags.excludeCurrentConversation !== undefined) {
+    body.excludeCurrentConversation = flags['exclude-current'] ?? flags.excludeCurrent ?? flags.excludeCurrentConversation;
+  }
+
+  if (flags.task !== undefined || flags.taskName !== undefined || flags['task-name'] !== undefined) {
+    body.taskName = flags.task ?? flags.taskName ?? flags['task-name'];
+  }
+
+  if (flags.kind !== undefined || flags.sourceKind !== undefined || flags['source-kind'] !== undefined) {
+    body.sourceKind = flags.kind ?? flags.sourceKind ?? flags['source-kind'];
+  }
+
+  if (flags.conversation !== undefined || flags.conversationTitle !== undefined || flags['conversation-title'] !== undefined || flags.title !== undefined) {
+    body.conversationTitle = flags.conversation ?? flags.conversationTitle ?? flags['conversation-title'] ?? flags.title;
+  }
+
+  if (flags.since !== undefined || flags.updatedAfter !== undefined || flags['updated-after'] !== undefined || flags.from !== undefined) {
+    body.updatedAfter = flags.since ?? flags.updatedAfter ?? flags['updated-after'] ?? flags.from;
+  }
+
+  if (flags.until !== undefined || flags.updatedBefore !== undefined || flags['updated-before'] !== undefined || flags.to !== undefined) {
+    body.updatedBefore = flags.until ?? flags.updatedBefore ?? flags['updated-before'] ?? flags.to;
+  }
+
+  return requestJson(`${config.apiUrl}/api/agent-tools/search-memory`, {
+    method: 'POST',
+    body,
+  });
+}
+
 async function listMemories(config: any, flags: any) {
   const query = new URLSearchParams({
     invocationId: config.invocationId,
@@ -555,6 +612,8 @@ async function main() {
     result = await readContext(config, flags);
   } else if (command === 'search-messages') {
     result = await searchMessages(config, flags);
+  } else if (command === 'search-memory') {
+    result = await searchMemory(config, flags);
   } else if (command === 'list-memories') {
     result = await listMemories(config, flags);
   } else if (command === 'save-memory') {
@@ -575,7 +634,7 @@ async function main() {
     result = await trellisWrite(config, flags);
   } else {
     throw new Error(
-      'Unknown command. Use one of: send-public, send-private, read-context, search-messages, list-memories, save-memory, update-memory, forget-memory, list-participants, suggest-goal, update-goal-checklist, trellis-init, trellis-write.'
+      'Unknown command. Use one of: send-public, send-private, read-context, search-messages, search-memory, list-memories, save-memory, update-memory, forget-memory, list-participants, suggest-goal, update-goal-checklist, trellis-init, trellis-write.'
     );
   }
 
@@ -610,6 +669,7 @@ export {
   forgetMemory,
   listMemories,
   saveMemory,
+  searchMemory,
   searchMessages,
   shouldEchoContent,
   updateMemory,
