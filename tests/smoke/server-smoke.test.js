@@ -768,6 +768,7 @@ test('conversation digest auto-creates model summaries after the message budget'
   });
 
   assert.equal(repeatedResult.digestChanged, false);
+  assert.equal(repeatedResult.stateChanged, false);
   assert.equal(repeatedResult.pendingMessageCount, 0);
 });
 
@@ -1094,6 +1095,90 @@ test('conversations controller creates model-generated conversation digests when
   assert.equal(createResult.json.digest.summary, '模型总结：已经确认用便宜模型生成会话摘要。');
   assert.equal(createResult.json.digest.createdBy, 'model:cheap-provider/cheap-model');
   assert.ok(createResult.json.digest.decisions.some((item) => item.includes('保留规则摘要')));
+});
+
+test('conversations controller falls back to extractive digests when model summaries fail', async (t) => {
+  const originalWarn = console.warn;
+  const warnings = [];
+  console.warn = (...args) => warnings.push(args.join(' '));
+  t.after(() => {
+    console.warn = originalWarn;
+  });
+
+  const throwingModelCalls = [];
+  const throwingHarness = createConversationsControllerHarness(t, {
+    digestModelRunner: async (context) => {
+      throwingModelCalls.push(context);
+      throw new Error('simulated digest model failure');
+    },
+  });
+  const throwingConversation = throwingHarness.store.createConversation({
+    id: 'digest-model-throw-fallback-conversation',
+    title: 'Digest Model Throw Fallback Conversation',
+  });
+  throwingHarness.store.createMessage({
+    id: 'digest-model-throw-fallback-message-1',
+    conversationId: throwingConversation.id,
+    turnId: 'digest-model-throw-fallback-turn-1',
+    role: 'user',
+    senderName: 'User',
+    content: '决定让模型摘要失败时继续用规则摘要兜底。',
+  });
+
+  const throwingResult = await invokeConversationsController(throwingHarness.handler, {
+    method: 'POST',
+    pathname: `/api/conversations/${throwingConversation.id}/digest`,
+    body: {
+      action: 'create',
+      summaryMode: 'model',
+      provider: 'cheap-provider',
+      model: 'cheap-model',
+    },
+  });
+
+  assert.equal(throwingResult.statusCode, 200);
+  assert.equal(throwingModelCalls.length, 1);
+  assert.equal(throwingResult.json.digest.createdBy, 'user');
+  assert.match(throwingResult.json.digest.summary, /^Extractive digest of 1 public messages\./u);
+  assert.ok(throwingResult.json.digest.decisions.some((item) => item.includes('规则摘要兜底')));
+
+  const invalidModelCalls = [];
+  const invalidHarness = createConversationsControllerHarness(t, {
+    digestModelRunner: async (context) => {
+      invalidModelCalls.push(context);
+      return 'not valid digest JSON';
+    },
+  });
+  const invalidConversation = invalidHarness.store.createConversation({
+    id: 'digest-model-invalid-fallback-conversation',
+    title: 'Digest Model Invalid Fallback Conversation',
+  });
+  invalidHarness.store.createMessage({
+    id: 'digest-model-invalid-fallback-message-1',
+    conversationId: invalidConversation.id,
+    turnId: 'digest-model-invalid-fallback-turn-1',
+    role: 'assistant',
+    senderName: 'Builder',
+    content: '下一步验证模型返回坏格式时也不能中断 /digest。',
+  });
+
+  const invalidResult = await invokeConversationsController(invalidHarness.handler, {
+    method: 'POST',
+    pathname: `/api/conversations/${invalidConversation.id}/digest`,
+    body: {
+      action: 'create',
+      summaryMode: 'model',
+      provider: 'cheap-provider',
+      model: 'cheap-model',
+    },
+  });
+
+  assert.equal(invalidResult.statusCode, 200);
+  assert.equal(invalidModelCalls.length, 1);
+  assert.equal(invalidResult.json.digest.createdBy, 'user');
+  assert.match(invalidResult.json.digest.summary, /^Extractive digest of 1 public messages\./u);
+  assert.ok(invalidResult.json.digest.nextActions.some((item) => item.includes('坏格式')));
+  assert.ok(warnings.some((warning) => warning.includes('Model digest failed')));
 });
 
 test('conversations controller auto-compacts old conversation digests into a rollup', async (t) => {

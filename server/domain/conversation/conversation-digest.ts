@@ -1116,6 +1116,32 @@ function buildDigestStateSnapshot(conversation: any, sourceMessages: any[], time
   };
 }
 
+function digestStateChanged(previousState: any, nextState: any) {
+  const previous = normalizeDigestState(previousState);
+  const next = normalizeDigestState(nextState);
+  const keys = [
+    'lastDigestMessageId',
+    'lastDigestAt',
+    'lastAutoDigestAt',
+    'pendingPublicMessageCount',
+    'pendingTokenEstimate',
+    'messageBudget',
+    'highValueMinMessages',
+    'lastTriggerReason',
+    'lastFailure',
+  ];
+
+  for (const key of keys) {
+    if ((previous as Record<string, any>)[key] !== (next as Record<string, any>)[key]) {
+      return true;
+    }
+  }
+
+  return previous.signalFlags.decision !== next.signalFlags.decision
+    || previous.signalFlags.code !== next.signalFlags.code
+    || previous.signalFlags.errorFix !== next.signalFlags.errorFix;
+}
+
 function updateDigestStateMetadata(store: any, conversation: any, state: any) {
   return updateConversationMetadata(store, conversation, buildMetadataWithDigestState(conversation, state));
 }
@@ -1182,11 +1208,13 @@ export async function maybeAutoCreateConversationDigest(store: any, conversation
   const sourceMessages = messagesSinceLatestDigest(messages, conversation);
   const messageBudget = digestAutoCreateMessageBudget(options);
   const highValueMinMessages = digestAutoHighValueMinMessages(options, messageBudget);
+  const previousState = getConversationDigestState(conversation);
   const state = buildDigestStateSnapshot(conversation, sourceMessages, timestamp, {
     messageBudget,
     highValueMinMessages,
   });
-  const stateConversation = updateDigestStateMetadata(store, conversation, state);
+  const stateChanged = digestStateChanged(previousState, state);
+  const stateConversation = stateChanged ? updateDigestStateMetadata(store, conversation, state) : conversation;
   const highValueTriggered = digestAutoHighValueEnabled(options)
     && sourceMessages.length >= highValueMinMessages
     && anySignalFlag(state.signalFlags);
@@ -1197,7 +1225,7 @@ export async function maybeAutoCreateConversationDigest(store: any, conversation
     return responseForConversation(stateConversation, {
       autoCreated: false,
       reason: 'below_budget',
-      stateChanged: true,
+      stateChanged,
       pendingMessageCount: sourceMessages.length,
       pendingTokenEstimate: state.pendingTokenEstimate,
       signalFlags: state.signalFlags,
@@ -1213,7 +1241,7 @@ export async function maybeAutoCreateConversationDigest(store: any, conversation
     return responseForConversation(stateConversation, {
       autoCreated: false,
       reason: 'cooldown',
-      stateChanged: true,
+      stateChanged,
       pendingMessageCount: sourceMessages.length,
       pendingTokenEstimate: state.pendingTokenEstimate,
       signalFlags: state.signalFlags,
@@ -1230,7 +1258,7 @@ export async function maybeAutoCreateConversationDigest(store: any, conversation
     return responseForConversation(stateConversation, {
       autoCreated: false,
       reason: 'idle_wait',
-      stateChanged: true,
+      stateChanged,
       pendingMessageCount: sourceMessages.length,
       pendingTokenEstimate: state.pendingTokenEstimate,
       signalFlags: state.signalFlags,

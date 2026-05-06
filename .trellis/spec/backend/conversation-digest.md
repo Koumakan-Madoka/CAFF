@@ -37,7 +37,7 @@
 - Store digest entries under `conversation.metadata.conversationDigests`; do not add a dedicated table until search or cross-conversation merge requires it.
 - Keep controllers thin: route parsing belongs in `server/api/conversations-controller.ts`; normalization, bounded retention, creation, compaction, deletion, and prompt formatting belong in `server/domain/conversation/conversation-digest.ts`.
 - `create` reads public messages from `store.listMessages(conversationId)` and creates one structured digest `entry`; model mode asks the configured cheap model for JSON, while extractive mode uses the deterministic classifier.
-- Auto-create runs from `createServerApp` after completed assistant messages, counts only public messages after the latest digest `messageRange.toMessageId`, falls back to the digest timestamp if that covered message id is no longer present, updates `conversationDigestState`, and does nothing until the configured message budget is reached or enabled high-value signals reach their minimum message count.
+- Auto-create runs from `createServerApp` after completed assistant messages, counts only public messages after the latest digest `messageRange.toMessageId`, falls back to the digest timestamp if that covered message id is no longer present, updates `conversationDigestState` only when the lightweight waterline state materially changes, and does nothing until the configured message budget is reached or enabled high-value signals reach their minimum message count.
 - After manual `create` or auto-create, the domain automatically compacts old detailed entries when the recent-entry budget is exceeded.
 - Compaction keeps at most one `rollup` plus the bounded recent `entry` set; existing rollups are merged forward instead of accumulating multiple rollups.
 - Model mode also applies to rollup creation, so `/digest compact model` can merge older summaries semantically; model failure logs a warning and falls back to deterministic rollup.
@@ -48,7 +48,7 @@
 - Prompt text must explicitly state that recent raw messages override digest content.
 - Frontend slash handling must intercept `/digest...` before optimistic user-message rendering so slash commands do not pollute history.
 - The panel and slash command must call the same `/digest` API path; do not introduce a second local-only persistence path.
-- `POST` mutations should broadcast `conversation_digest_updated` or `conversation_digest_deleted` plus `conversation_summary_updated` so other clients refresh; auto-create state-only updates can also broadcast `conversation_digest_updated` with `digest: null` so panels refresh pending status.
+- `POST` mutations should broadcast `conversation_digest_updated` or `conversation_digest_deleted` plus `conversation_summary_updated` so other clients refresh; auto-create state-only updates can broadcast `conversation_digest_updated` with `digest: null` only when `stateChanged` is true, so updatedAt-only checks and retry polls do not refresh panels unnecessarily.
 - Keep retention and text bounded: one rollup, default 3 recent entries, prompt latest 3 entries plus rollup, auto-create default 24 new public messages, model prompt latest 80 public messages, and section item/summary clipping in the domain helper.
 - Keep `conversationDigestState` lightweight: store only waterline metadata, counts, token estimates, trigger flags, timestamps, and short failure strings; never store raw message content in the state object.
 - Model configuration uses `CAFF_DIGEST_SUMMARY_MODE=model|extractive|auto`, `CAFF_DIGEST_PROVIDER`, `CAFF_DIGEST_MODEL`, `CAFF_DIGEST_THINKING`, and `CAFF_DIGEST_MODEL_TIMEOUT_MS`; without digest-specific provider/model or explicit `summaryMode: 'model'`, default behavior remains extractive.
@@ -63,9 +63,9 @@
 | `POST /digest create` | `summaryMode: 'model'` with model JSON output | `200`, stores model-generated summary/sections and `createdBy: model:<provider>/<model>` |
 | `POST /digest create` | model call fails or returns invalid JSON | `200`, logs warning and stores extractive fallback digest |
 | Auto-create helper | `CAFF_DIGEST_AUTO_CREATE` disabled | no mutation, `autoCreated: false`, `reason: disabled` |
-| Auto-create helper | enabled but new public messages below budget and no high-value trigger | updates `conversationDigestState`, `autoCreated: false`, `reason: below_budget` |
-| Auto-create helper | enabled and budget/high-value trigger is reached but idle window has not elapsed | updates `conversationDigestState`, `autoCreated: false`, `reason: idle_wait`, `retryAfterMs > 0` |
-| Auto-create helper | enabled and trigger is reached but cooldown has not elapsed since the last auto digest | updates `conversationDigestState`, `autoCreated: false`, `reason: cooldown`, `retryAfterMs > 0` |
+| Auto-create helper | enabled but new public messages below budget and no high-value trigger | updates `conversationDigestState` when counts/signals/config changed, `autoCreated: false`, `reason: below_budget` |
+| Auto-create helper | enabled and budget/high-value trigger is reached but idle window has not elapsed | updates `conversationDigestState` when counts/signals/config changed, `autoCreated: false`, `reason: idle_wait`, `retryAfterMs > 0` |
+| Auto-create helper | enabled and trigger is reached but cooldown has not elapsed since the last auto digest | updates `conversationDigestState` when counts/signals/config changed, `autoCreated: false`, `reason: cooldown`, `retryAfterMs > 0` |
 | Auto-create helper | enabled and new public messages reach budget or high-value trigger | stores one `entry`, `autoCreated: true`, then applies normal compaction |
 | `POST /digest create` | detailed entries exceed recent-entry budget | `200`, stores one `rollup` plus recent `entry` digests, `compacted: true` |
 | `POST /digest compact` | fewer than two detailed entries | `200`, no mutation, `compacted: false` |
@@ -94,7 +94,8 @@
 - `tests/smoke/server-smoke.test.js`
   - Create a digest from public messages and assert metadata, summary metadata, sections, and broadcast events.
   - Create a model-mode digest with an injected fake model runner and assert provider/model config, model sections, and `createdBy`.
-  - Auto-create a model-mode digest after the message budget and assert it does not retrigger until more public messages arrive.
+  - Auto-create a model-mode digest after the message budget and assert it does not retrigger or mark `stateChanged` until more public messages or state fields change.
+  - Create a model-mode digest with a runner that throws or returns invalid JSON and assert the request succeeds with extractive fallback metadata.
   - Assert auto-create idle windows, cooldowns, and high-value signal gates update `conversationDigestState` and trigger only when eligible.
   - Assert auto-create falls back to digest timestamps instead of re-summarizing all messages when the latest covered message id is missing.
   - Auto-create enough digests to trigger automatic rollup and assert one `rollup` plus recent `entry` digests.
