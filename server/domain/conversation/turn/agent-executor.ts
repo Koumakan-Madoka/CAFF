@@ -21,6 +21,7 @@ const { SKILL_TEST_DESIGN_WORKBENCH_SKILL_ID } = require('../../../../lib/mode-s
 const { buildAgentTurnPrompt, AGENT_PROMPT_VERSION } = require('./agent-prompt');
 const { extractSummaryMemorySearchTerms } = require('../../../../lib/summary-memory-query');
 const { ensureAgentSandbox, toPortableShellPath } = require('./agent-sandbox');
+const { createBrowserCliSessionName, resolveBrowserCliPath } = require('./browser-cli');
 const { extractChatBridgeReplaysFromText, pickChatBridgeReplay } = require('./chat-bridge-replay');
 const { createLiveSessionToolStep } = require('../../runtime/message-tool-trace');
 const {
@@ -1197,6 +1198,7 @@ export function createAgentExecutor(options: any = {}) {
   const toolBaseUrl = String(options.toolBaseUrl || '').trim();
   const agentToolScriptPath = options.agentToolScriptPath;
   const agentToolRelativePath = String(options.agentToolRelativePath || './lib/agent-chat-tools.js').trim() || './lib/agent-chat-tools.js';
+  const browserCliPath = String(options.browserCliPath || '').trim() || resolveBrowserCliPath({ rootDir: process.cwd() });
   const onAssistantMessageCompleted =
     typeof options.onAssistantMessageCompleted === 'function' ? options.onAssistantMessageCompleted : null;
 
@@ -1299,6 +1301,7 @@ export function createAgentExecutor(options: any = {}) {
       modeLoadingStrategy,
       modeContext,
       forceFullConversationSkillIds,
+      browserCliPath,
     });
     const provider = resolveSetting(agentConfig.provider, process.env.PI_PROVIDER, DEFAULT_PROVIDER);
     const model = resolveSetting(agentConfig.model, process.env.PI_MODEL, DEFAULT_MODEL);
@@ -1493,6 +1496,12 @@ export function createAgentExecutor(options: any = {}) {
         CAFF_CHAT_TOOLS_RELATIVE_PATH: agentToolRelativePath,
         CAFF_CHAT_CONVERSATION_ID: conversationId,
         CAFF_CHAT_TURN_ID: turnId,
+        ...(browserCliPath
+          ? {
+              CAFF_BROWSER_CLI_PATH: toPortableShellPath(browserCliPath),
+              PLAYWRIGHT_CLI_SESSION: createBrowserCliSessionName(conversationId, agent.id),
+            }
+          : {}),
       },
       session: sessionName,
       streamOutput: false,

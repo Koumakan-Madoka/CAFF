@@ -6,6 +6,7 @@ build/
 
 # Local caches
 .npm-cache/
+.playwright-cli/
 
 # Runtime data
 .pi/

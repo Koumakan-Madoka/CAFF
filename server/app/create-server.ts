@@ -26,6 +26,7 @@ const { createSkillTestController } = require('../api/skill-test-controller');
 const { resolveToolRelativePath } = require('../http/path-utils');
 const { HOST, PORT, ROOT_DIR, SKILL_TEST_OPENSANDBOX_CHAT_API_URL } = require('./config');
 const { createTurnOrchestrator } = require('../domain/conversation/turn-orchestrator');
+const { resolveBrowserCliPath } = require('../domain/conversation/turn/browser-cli');
 const { resolveCurrentTrellisTaskName } = require('../domain/conversation/turn/trellis-context');
 const { maybeAutoCreateConversationDigest } = require('../domain/conversation/conversation-digest');
 const { pickConversationSummary } = require('../domain/conversation/conversation-view');
@@ -271,6 +272,7 @@ export function createServerApp(options: any = {}) {
   let feishuIntegration: any = null;
   const agentToolScriptPath = path.resolve(ROOT_DIR, 'lib', 'agent-chat-tools.js');
   const agentToolRelativePath = resolveToolRelativePath(agentToolScriptPath);
+  const browserCliPath = resolveBrowserCliPath({ rootDir: ROOT_DIR });
 
   turnOrchestrator = createTurnOrchestrator({
     store,
@@ -288,6 +290,7 @@ export function createServerApp(options: any = {}) {
     toolBaseUrl,
     agentToolScriptPath,
     agentToolRelativePath,
+    browserCliPath,
     onAssistantMessageCompleted(message: any) {
       void maybeAutoCreateDigestAfterAssistantMessage(message);
 
