@@ -204,6 +204,17 @@ globalThis.__testExports = {
   const window = {
     CaffShared: {
       fetchJson: typeof options.fetchJson === 'function' ? options.fetchJson : async () => ({}),
+      sessionGoal: {
+        formatConversationStatus() {
+          return '会话目标未设置';
+        },
+      },
+      conversationDigest: {
+        formatDigestStatus() {
+          return '会话摘要未生成';
+        },
+      },
+      summaryMemory: {},
     },
     CaffChat: {},
     document,
