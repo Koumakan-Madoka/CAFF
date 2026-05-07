@@ -290,6 +290,28 @@ test('conversations controller manages session goal lifecycle in metadata', asyn
   assert.ok(broadcastEvents.some((event) => event.eventName === 'conversation_goal_cleared'));
 });
 
+test('conversations controller applies default Trellis checklist when setting goal without checklist', async (t) => {
+  const { handler, store } = createConversationsControllerHarness(t);
+  const conversation = store.createConversation({
+    id: 'goal-default-checklist-conversation',
+    title: 'Goal Default Checklist Conversation',
+  });
+
+  const setResult = await invokeConversationsController(handler, {
+    method: 'POST',
+    pathname: `/api/conversations/${conversation.id}/goal`,
+    body: {
+      action: 'set',
+      objective: 'Ship a Trellis-backed long task',
+    },
+  });
+
+  assert.equal(setResult.statusCode, 200);
+  assert.equal(setResult.json.goal.checklist.length, 10);
+  assert.equal(setResult.json.goal.checklist[0].text, '和其他 agent 一起头脑风暴，收敛目标、范围和风险');
+  assert.equal(setResult.json.goal.checklist[9].text, '人工验收后记录会话并归档 Trellis 任务');
+});
+
 test('conversations controller creates and deletes conversation digests in metadata', async (t) => {
   const { handler, store, broadcastEvents } = createConversationsControllerHarness(t, {
     digestOptions: {

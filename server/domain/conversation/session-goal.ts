@@ -11,6 +11,18 @@ const MAX_SESSION_GOAL_OBJECTIVE_LENGTH = 2000;
 const MAX_SESSION_GOAL_PROPOSAL_REASON_LENGTH = 1000;
 const MAX_SESSION_GOAL_CHECKLIST_ITEMS = 20;
 const MAX_SESSION_GOAL_CHECKLIST_ITEM_LENGTH = 200;
+const DEFAULT_SESSION_GOAL_CHECKLIST_TEXTS = [
+  '和其他 agent 一起头脑风暴，收敛目标、范围和风险',
+  '结论收敛后创建或更新 Trellis 任务与 PRD',
+  'Agent 校验 Trellis 任务、PRD、spec 上下文是否齐全',
+  '使用 before-dev 读取相关开发规范与思考指南',
+  '按 checklist 实现核心功能，并持续更新事实进度',
+  '补充或更新回归测试，覆盖关键行为和边界',
+  '运行 check、typecheck、build 和相关测试完成质量验证',
+  '使用 update-spec 同步规格、契约和关键决策',
+  '使用 finish-work 完成提交前收尾检查',
+  '人工验收后记录会话并归档 Trellis 任务',
+];
 
 function nowIso() {
   return new Date().toISOString();
@@ -95,6 +107,10 @@ function parseChecklistTextLine(value: any) {
     text: normalizeText(match[2]),
     status: marker === 'x' ? 'done' : marker === '~' || marker === '>' || marker === '-' ? 'in_progress' : 'todo',
   };
+}
+
+export function defaultSessionGoalChecklistText() {
+  return DEFAULT_SESSION_GOAL_CHECKLIST_TEXTS.map((text) => `[ ] ${text}`).join('\n');
 }
 
 function normalizeChecklistItems(value: any, timestamp = nowIso()) {
@@ -395,7 +411,9 @@ export function claimSessionGoalAutoContinue(store: any, conversationId: any, in
 
 function goalFromMutation(action: string, existingGoal: any, input: any, timestamp: string) {
   if (action === 'set') {
-    const checklist = hasChecklistInput(input) ? normalizeChecklistItems(checklistInputValue(input), timestamp) : [];
+    const checklist = hasChecklistInput(input)
+      ? normalizeChecklistItems(checklistInputValue(input), timestamp)
+      : normalizeChecklistItems(defaultSessionGoalChecklistText(), timestamp);
     return {
       objective: normalizeObjective(input && input.objective),
       status: 'active',

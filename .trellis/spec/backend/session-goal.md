@@ -27,7 +27,7 @@
   - `/goal pause|resume|complete|clear` sends the matching action.
 - Browser goal management panel:
   - `public/chat/session-goal-panel.js` renders the selected conversation goal, checklist progress, and pending proposal from metadata.
-  - Save sends `{ action: 'set', objective, checklistText }`.
+  - Save sends `{ action: 'set', objective, checklistText }`; empty new-goal forms prefill the Trellis long-task checklist and expose a one-click preset restore button.
   - Pause/resume/complete/clear buttons send the same lifecycle actions as slash commands.
   - Confirm/ignore proposal buttons send `{ action: 'accept-proposal' }` or `{ action: 'dismiss-proposal' }`.
 
@@ -35,6 +35,7 @@
 - Store the goal under `conversation.metadata.sessionGoal`; do not add a dedicated table unless the feature grows beyond one current goal per conversation.
 - Keep controllers thin: route parsing belongs in `server/api/conversations-controller.ts`; lifecycle rules belong in `server/domain/conversation/session-goal.ts`.
 - `set` must trim and validate `objective`, create an `active` goal, preserve `createdAt` when replacing an existing goal, refresh `updatedAt`, remove stale `completedAt`, and normalize optional checklist lines/items.
+- `set` without explicit checklist input must seed a Trellis long-task checklist covering multi-agent brainstorm, Trellis task/PRD creation, Trellis/spec validation, `before-dev`, implementation, tests, quality checks, `update-spec`, `finish-work`, and Trellis archive/session recording.
 - `pause`, `resume`, and `complete` require an existing goal; `complete` adds `completedAt`, while `pause`/`resume` remove stale `completedAt`.
 - `clear` removes `sessionGoal`, stale `sessionGoalProposal`, and stale `sessionGoalRunner` from metadata instead of leaving empty objects.
 - Setting or resuming an active goal may schedule bounded automatic continuation through transparent `Goal Runner` user messages.
@@ -56,6 +57,7 @@
 | `GET /goal` | conversation exists without goal | `200`, `goal: null`, `cleared: false` |
 | `POST /goal set` | objective is empty after trim | `400 Goal objective is required` |
 | `POST /goal set` | objective is longer than 2000 chars | `400 Goal objective must be 2000 characters or fewer` |
+| `POST /goal set` | checklist is omitted | `200`, goal stores the default Trellis long-task checklist |
 | `POST /goal pause` | no existing goal | `404 No session goal is set` |
 | `POST /goal resume` | existing paused/complete goal | `200`, goal status becomes `active`, stale `completedAt` is removed |
 | `POST /goal complete` | existing goal | `200`, goal status becomes `complete`, `completedAt` is set |
@@ -69,7 +71,7 @@
 | auto continuation | max runner iterations reached | creates pending `pause` proposal by `Goal Runner`, goal remains active until user confirms |
 
 ### 5. Good / Base / Bad Cases
-- Good: `/goal Implement X` updates conversation metadata, summary metadata, and future prompts include `Session goal` with `Status: active`.
+- Good: `/goal Implement X` updates conversation metadata, summary metadata, and future prompts include `Session goal` with `Status: active` plus the default Trellis long-task checklist.
 - Good: `/goal pause` keeps the objective visible but prompt guidance says not to actively drive new work until resumed.
 - Good: `/goal clear` removes the metadata key and future prompts omit the entire session goal section.
 - Base: `/goal` with no argument reads local selected-conversation metadata and shows a toast/status without creating a message.

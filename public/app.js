@@ -81,6 +81,7 @@ const dom = {
   sessionGoalForm: /** @type {HTMLFormElement | null} */ (document.getElementById('session-goal-form')),
   sessionGoalObjective: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('session-goal-objective')),
   sessionGoalChecklist: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('session-goal-checklist')),
+  sessionGoalChecklistPresetButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('session-goal-checklist-preset-button')),
   sessionGoalSaveButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('session-goal-save-button')),
   sessionGoalPauseButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('session-goal-pause-button')),
   sessionGoalResumeButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('session-goal-resume-button')),
