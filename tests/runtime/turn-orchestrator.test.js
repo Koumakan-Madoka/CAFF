@@ -226,6 +226,142 @@ test('buildAgentTurnPrompt includes conversation digest memory before recent his
   assert.ok(prompt.indexOf('Rollup digest rollup-1') < prompt.indexOf('Digest digest-1'));
 });
 
+test('buildAgentTurnPrompt includes same-agent recalled evidence cache before recent history', () => {
+  const agent = {
+    id: 'agent-recall-cache-prompt',
+    name: 'Recall Builder',
+    description: 'Uses remembered evidence carefully.',
+    personaPrompt: 'Stay evidence-grounded.',
+  };
+  const otherAgent = {
+    id: 'agent-other-recall-cache',
+    name: 'Other Recall Agent',
+    description: 'Should not leak traces into this prompt.',
+    personaPrompt: 'Stay scoped.',
+  };
+  const conversation = {
+    id: 'conversation-recall-cache-prompt',
+    title: 'Recall Cache Prompt',
+    type: 'standard',
+    metadata: {
+      conversationRetrievalTraces: [
+        {
+          id: 'trace-other-agent',
+          kind: 'summary_memory_search',
+          tool: 'search-memory',
+          createdAt: '2026-05-07T00:00:00.000Z',
+          agentId: otherAgent.id,
+          agentName: otherAgent.name,
+          queryPreview: 'other private lookup',
+          resultCount: 1,
+          results: [
+            {
+              sourceDigestId: 'digest-other-agent',
+              sourceKind: 'entry',
+              conversationTitle: 'Other Trace',
+              summary: 'This trace belongs to a different agent.',
+            },
+          ],
+        },
+        {
+          id: 'trace-same-agent',
+          kind: 'summary_memory_search',
+          tool: 'search-memory',
+          createdAt: '2026-05-07T00:01:00.000Z',
+          agentId: agent.id,
+          agentName: agent.name,
+          queryPreview: 'tool evaporation fix',
+          status: 'used',
+          resultCount: 1,
+          results: [
+            {
+              sourceDigestId: 'digest-tool-evaporation',
+              sourceKind: 'entry',
+              conversationTitle: 'Historical Tool Recall',
+              taskName: 'Conversation Digest Auto-Compaction v2',
+              summary: 'Memory search returned the full 100-point context before the assistant only summarized half of it.',
+              facts: ['Tool results need a bounded trace cache.'],
+              decisions: ['Inject same-agent recalled evidence before raw history.'],
+              nextActions: ['Use source digest ids to drill down.'],
+              artifacts: ['server/domain/conversation/retrieval-trace.ts'],
+              matchedTerms: ['tool', 'evaporation'],
+              score: 2,
+              status: 'used',
+              usedAt: '2026-05-07T00:02:00.000Z',
+              usageScore: 6,
+            },
+            {
+              sourceDigestId: 'digest-seen-only',
+              sourceKind: 'entry',
+              conversationTitle: 'Seen Only Trace',
+              summary: 'This was retrieved but not confirmed by a prior answer.',
+              facts: ['Seen-only details should stay compact.'],
+              status: 'seen',
+            },
+            {
+              sourceDigestId: 'digest-expired-evidence',
+              sourceKind: 'entry',
+              conversationTitle: 'Expired Evidence',
+              summary: 'Expired evidence should not be injected.',
+              status: 'expired',
+            },
+          ],
+        },
+      ],
+    },
+    agents: [agent, otherAgent],
+  };
+
+  const prompt = buildAgentTurnPrompt({
+    conversation,
+    agent,
+    agentConfig: {
+      profileName: 'Default',
+      personaPrompt: agent.personaPrompt,
+    },
+    resolvedPersonaSkills: [],
+    resolvedConversationSkills: [],
+    sandbox: {
+      sandboxDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-recall-cache-prompt',
+      privateDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-recall-cache-prompt/private',
+    },
+    agents: [agent, otherAgent],
+    messages: [
+      {
+        id: 'message-recall-cache-recent',
+        role: 'user',
+        senderName: 'User',
+        content: 'Recent raw message still wins if it conflicts.',
+        status: 'completed',
+        metadata: null,
+      },
+    ],
+    privateMessages: [],
+    trigger: {
+      triggerType: 'user',
+      enqueueReason: 'user_mentions',
+    },
+    remainingSlots: 7,
+    routingMode: 'mention_queue',
+    allowHandoffs: true,
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+  });
+
+  assert.match(prompt, /Last recalled evidence cache:/u);
+  assert.match(prompt, /tool evaporation fix/u);
+  assert.match(prompt, /digest-tool-evaporation/u);
+  assert.match(prompt, /status: used/u);
+  assert.match(prompt, /Memory search returned the full 100-point context/u);
+  assert.match(prompt, /Tool results need a bounded trace cache/u);
+  assert.match(prompt, /status: seen/u);
+  assert.match(prompt, /Seen candidate: This was retrieved but not confirmed by a prior answer/u);
+  assert.doesNotMatch(prompt, /Seen-only details should stay compact/u);
+  assert.doesNotMatch(prompt, /digest-expired-evidence/u);
+  assert.match(prompt, /current task\/spec context and recent raw messages override them/u);
+  assert.doesNotMatch(prompt, /digest-other-agent/u);
+  assert.ok(prompt.indexOf('Last recalled evidence cache:') < prompt.indexOf('Conversation history:'));
+});
+
 test('buildAgentTurnPrompt includes active session goal guidance', () => {
   const agent = {
     id: 'agent-goal-prompt',

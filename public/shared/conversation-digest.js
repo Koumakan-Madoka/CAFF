@@ -30,6 +30,8 @@
           summary,
           createdAt,
           updatedAt: String((digest && digest.updatedAt) || createdAt).trim(),
+          createdBy: String((digest && digest.createdBy) || '').trim(),
+          triggerReason: String((digest && digest.triggerReason) || '').trim(),
           compactedAt: String((digest && digest.compactedAt) || '').trim(),
           sourceDigestIds: Array.isArray(digest && digest.sourceDigestIds) ? digest.sourceDigestIds : [],
           messageRange: digest && digest.messageRange && typeof digest.messageRange === 'object' ? digest.messageRange : {},
@@ -70,6 +72,8 @@
       signalFlags: {
         decision: Boolean(signalFlags.decision),
         code: Boolean(signalFlags.code),
+        codeChange: Boolean(signalFlags.codeChange),
+        fileArtifact: Boolean(signalFlags.fileArtifact),
         errorFix: Boolean(signalFlags.errorFix),
       },
     };
@@ -83,8 +87,10 @@
       labels.push('决策');
     }
 
-    if (flags.code) {
-      labels.push('代码');
+    if (flags.codeChange || flags.code) {
+      labels.push('代码变更');
+    } else if (flags.fileArtifact) {
+      labels.push('代码线索');
     }
 
     if (flags.errorFix) {

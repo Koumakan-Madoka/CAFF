@@ -1016,7 +1016,40 @@ test('conversation digest auto-create respects idle, cooldown, and high-value ga
   assert.equal(highValueResult.digest.messageRange.messageCount, 6);
   assert.equal(highValueResult.signalFlags.decision, true);
   assert.equal(highValueResult.signalFlags.code, true);
+  assert.equal(highValueResult.signalFlags.codeChange, true);
+  assert.equal(highValueResult.signalFlags.fileArtifact, true);
   assert.equal(highValueResult.signalFlags.errorFix, true);
+
+  const weakSignalConversation = store.createConversation({
+    id: 'digest-auto-create-weak-signal-conversation',
+    title: 'Digest Auto Create Weak Signal Conversation',
+  });
+
+  for (let index = 1; index <= 6; index += 1) {
+    store.createMessage({
+      id: `digest-auto-create-weak-signal-message-${index}`,
+      conversationId: weakSignalConversation.id,
+      turnId: 'digest-auto-create-weak-signal-turn',
+      role: index % 2 === 0 ? 'assistant' : 'user',
+      senderName: index % 2 === 0 ? 'Builder' : 'User',
+      content: `弱信号自动摘要消息 ${index}：只是提到 server/domain/file.ts、配置和测试名。`,
+      createdAt: oldTimestamp,
+    });
+  }
+
+  const weakSignalResult = await maybeAutoCreateConversationDigest(store, weakSignalConversation.id, {
+    autoCreate: true,
+    autoCreateMessageBudget: 24,
+    autoCreateHighValue: true,
+    autoCreateHighValueMinMessages: 6,
+    summaryMode: 'extractive',
+  });
+
+  assert.equal(weakSignalResult.autoCreated, false);
+  assert.equal(weakSignalResult.reason, 'below_budget');
+  assert.equal(weakSignalResult.signalFlags.fileArtifact, true);
+  assert.equal(weakSignalResult.signalFlags.codeChange, false);
+  assert.equal(weakSignalResult.signalFlags.code, false);
 });
 
 test('conversation digest auto-create feeds existing auto-compaction', async (t) => {
@@ -1067,6 +1100,52 @@ test('conversation digest auto-create feeds existing auto-compaction', async (t)
   assert.equal(lastResult.digests.length, 4);
   assert.equal(lastResult.digests[0].kind, 'rollup');
   assert.deepEqual(lastResult.digests.slice(1).map((digest) => digest.kind), ['entry', 'entry', 'entry']);
+});
+
+test('conversations controller keeps extractive digest facts conservative', async (t) => {
+  const { handler, store } = createConversationsControllerHarness(t);
+  const conversation = store.createConversation({
+    id: 'digest-extractive-conservative-conversation',
+    title: 'Digest Conservative Conversation',
+  });
+
+  store.createMessage({
+    id: 'digest-conservative-user-message',
+    conversationId: conversation.id,
+    turnId: 'digest-conservative-turn',
+    role: 'user',
+    senderName: 'User',
+    content: '用户确认事实：CAFF 需要摘要层记住已确认上下文。',
+  });
+  store.createMessage({
+    id: 'digest-conservative-assistant-message',
+    conversationId: conversation.id,
+    turnId: 'digest-conservative-turn',
+    role: 'assistant',
+    senderName: 'Builder',
+    content: '我觉得可能要先改 server/domain/conversation/conversation-digest.ts，这只是建议。',
+  });
+  store.createMessage({
+    id: 'digest-conservative-verified-message',
+    conversationId: conversation.id,
+    turnId: 'digest-conservative-turn',
+    role: 'assistant',
+    senderName: 'Builder',
+    content: '已验证：测试通过，保守摘要分类已经落地。',
+  });
+
+  const createResult = await invokeConversationsController(handler, {
+    method: 'POST',
+    pathname: `/api/conversations/${conversation.id}/digest`,
+    body: { action: 'create' },
+  });
+
+  assert.equal(createResult.statusCode, 200);
+  assert.ok(createResult.json.digest.facts.some((item) => item.includes('用户确认事实')));
+  assert.ok(createResult.json.digest.facts.some((item) => item.includes('已验证')));
+  assert.ok(!createResult.json.digest.facts.some((item) => item.includes('这只是建议')));
+  assert.ok(createResult.json.digest.openQuestions.some((item) => item.includes('这只是建议')));
+  assert.ok(createResult.json.digest.artifacts.includes('server/domain/conversation/conversation-digest.ts'));
 });
 
 test('conversations controller creates model-generated conversation digests when requested', async (t) => {
@@ -1226,7 +1305,7 @@ test('conversations controller auto-compacts old conversation digests into a rol
       pathname: `/api/conversations/${conversation.id}/digest`,
       body: {
         action: 'create',
-        summary: `Digest entry ${index}`,
+        summary: `Digest entry ${index} AutoCompactUnique${index}`,
         facts: [`Fact ${index}`],
       },
     });
@@ -1240,6 +1319,8 @@ test('conversations controller auto-compacts old conversation digests into a rol
   assert.deepEqual(lastResult.json.digests.slice(1).map((digest) => digest.kind), ['entry', 'entry', 'entry']);
   assert.equal(lastResult.json.digests[0].sourceDigestIds.length, 1);
   assert.equal(store.getConversation(conversation.id).metadata.conversationDigests[0].kind, 'rollup');
+  assert.equal(store.searchSummarySegments({ query: 'AutoCompactUnique1', sourceKind: 'entry' }).resultCount, 0);
+  assert.equal(store.searchSummarySegments({ query: 'AutoCompactUnique1', sourceKind: 'rollup' }).resultCount, 1);
 });
 
 test('conversations controller manually compacts digest entries', async (t) => {
@@ -1264,10 +1345,12 @@ test('conversations controller manually compacts digest entries', async (t) => {
       pathname: `/api/conversations/${conversation.id}/digest`,
       body: {
         action: 'create',
-        summary: `Manual compact digest ${index}`,
+        summary: `Manual compact digest ${index} ManualCompactUnique${index}`,
       },
     });
   }
+
+  assert.equal(store.searchSummarySegments({ query: 'ManualCompactUnique1', sourceKind: 'entry' }).resultCount, 1);
 
   const compactResult = await invokeConversationsController(handler, {
     method: 'POST',
@@ -1281,6 +1364,9 @@ test('conversations controller manually compacts digest entries', async (t) => {
   assert.equal(compactResult.json.digests[0].kind, 'rollup');
   assert.equal(compactResult.json.digests[1].kind, 'entry');
   assert.equal(compactResult.json.rollup.sourceDigestIds.length, 1);
+  assert.equal(store.searchSummarySegments({ query: 'ManualCompactUnique1', sourceKind: 'entry' }).resultCount, 0);
+  assert.equal(store.searchSummarySegments({ query: 'ManualCompactUnique1', sourceKind: 'rollup' }).resultCount, 1);
+  assert.equal(store.searchSummarySegments({ query: 'ManualCompactUnique2', sourceKind: 'entry' }).resultCount, 1);
 });
 
 test('conversations controller uses model-generated rollups when manual compact requests model mode', async (t) => {

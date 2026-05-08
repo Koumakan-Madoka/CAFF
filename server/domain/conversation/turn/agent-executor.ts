@@ -19,6 +19,7 @@ const {
 } = require('../mention-routing');
 const { SKILL_TEST_DESIGN_WORKBENCH_SKILL_ID } = require('../../../../lib/mode-store');
 const { buildAgentTurnPrompt, AGENT_PROMPT_VERSION } = require('./agent-prompt');
+const { markConversationRetrievalTraceUsage } = require('../retrieval-trace');
 const { extractSummaryMemorySearchTerms } = require('../../../../lib/summary-memory-query');
 const { ensureAgentSandbox, toPortableShellPath } = require('./agent-sandbox');
 const { createBrowserCliSessionName, resolveBrowserCliPath } = require('./browser-cli');
@@ -93,6 +94,68 @@ function createTaskId(prefix = 'task') {
 
 function sanitizeReason(reason: any) {
   return clipText(reason || '', HEARTBEAT_EVENT_REASON_LIMIT);
+}
+
+function normalizeTokenCount(value: any) {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+
+  const count = Number(value);
+
+  if (!Number.isFinite(count) || count < 0) {
+    return null;
+  }
+
+  return Math.round(count);
+}
+
+function pickTokenCount(usage: any, keys: string[]) {
+  if (!usage || typeof usage !== 'object') {
+    return null;
+  }
+
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(usage, key)) {
+      const count = normalizeTokenCount(usage[key]);
+
+      if (count !== null) {
+        return count;
+      }
+    }
+  }
+
+  return null;
+}
+
+function summarizeTokenUsage(usage: any) {
+  const rawUsage = usage && typeof usage === 'object' && !Array.isArray(usage) ? usage : null;
+
+  if (!rawUsage) {
+    return null;
+  }
+
+  const inputTokens = pickTokenCount(rawUsage, ['inputTokens', 'input_tokens', 'promptTokens', 'prompt_tokens', 'prompt', 'input']);
+  const outputTokens = pickTokenCount(rawUsage, [
+    'outputTokens',
+    'output_tokens',
+    'completionTokens',
+    'completion_tokens',
+    'completion',
+    'output',
+  ]);
+  const explicitTotalTokens = pickTokenCount(rawUsage, ['totalTokens', 'total_tokens', 'total']);
+  const totalTokens = explicitTotalTokens !== null ? explicitTotalTokens : inputTokens !== null || outputTokens !== null ? (inputTokens || 0) + (outputTokens || 0) : null;
+
+  if (inputTokens === null && outputTokens === null && totalTokens === null) {
+    return null;
+  }
+
+  return {
+    inputTokens,
+    outputTokens,
+    totalTokens,
+  };
 }
 
 function normalizePromptMentionPlaceholders(text: any) {
@@ -1764,6 +1827,7 @@ export function createAgentExecutor(options: any = {}) {
       const privateHandoffCount = toolInvocation.privateHandoffCount || 0;
       const continuedByPrivateHandoff = allowHandoffs && privateHandoffCount > 0;
       const effectiveFinal = allowHandoffs ? decision.final && !continuedByPrivateHandoff : true;
+      const tokenUsage = summarizeTokenUsage(result.usage);
       const finalMetadata = {
         provider,
         model,
@@ -1797,6 +1861,8 @@ export function createAgentExecutor(options: any = {}) {
         triggeredByAgentName: queueItem.triggeredByAgentName || '',
         triggeredByMessageId: queueItem.triggeredByMessageId || null,
         triggerType: queueItem.triggerType || 'user',
+        usage: result.usage && typeof result.usage === 'object' && !Array.isArray(result.usage) ? result.usage : null,
+        tokenUsage,
       };
       const assistantMessageDone = store.updateMessage(assistantMessage.id, {
         content: publicReply,
@@ -1805,6 +1871,12 @@ export function createAgentExecutor(options: any = {}) {
         runId: result.runId || handle.runId || null,
         errorMessage: '',
         metadata: finalMetadata,
+      });
+
+      markConversationRetrievalTraceUsage(store, conversationId, {
+        assistantMessageId: assistantMessageDone.id,
+        agentId: agent.id,
+        replyText: publicReply,
       });
 
       completedReplies.push(assistantMessageDone);

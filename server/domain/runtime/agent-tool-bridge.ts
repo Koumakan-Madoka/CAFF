@@ -5,6 +5,7 @@ const { createHttpError } = require('../../http/http-errors');
 const { pickConversationSummary, serializeConversationPrivateMessageForUi } = require('../conversation/conversation-view');
 const { buildAgentMentionLookup, formatAgentMention, resolveMentionValues } = require('../conversation/mention-routing');
 const { applySessionGoalAction, proposeSessionGoalAction } = require('../conversation/session-goal');
+const { recordConversationRetrievalTrace } = require('../conversation/retrieval-trace');
 const { createLiveBridgeToolStep } = require('./message-tool-trace');
 const { resolveCurrentTrellisTaskName } = require('../conversation/turn/trellis-context');
 
@@ -2002,6 +2003,25 @@ export function createAgentToolBridge(options: any = {}) {
           updatedBefore,
         }),
       };
+      const recallTrace = recordConversationRetrievalTrace(activeStore, context.conversationId, {
+        turnId: context.turnId,
+        agentId: context.agentId,
+        agentName: context.agentName,
+        assistantMessageId: context.assistantMessageId,
+        queryPreview: query,
+        latest,
+        filters: response.filters || {},
+        resultCount: Number.isFinite(response.resultCount) ? Number(response.resultCount) : Array.isArray(response.results) ? response.results.length : 0,
+        results: response.results,
+      });
+
+      if (recallTrace) {
+        (response as any).recallTrace = {
+          id: recallTrace.id,
+          resultCount: recallTrace.resultCount,
+          storedResultCount: Array.isArray(recallTrace.results) ? recallTrace.results.length : 0,
+        };
+      }
 
       tryAppendInvocationEvent(context, 'agent_tool_call', {
         schemaVersion: 1,

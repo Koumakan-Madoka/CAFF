@@ -392,6 +392,16 @@ function createInvokeError(message: any, details: any = {}) {
   return error;
 }
 
+function extractAssistantUsage(message: any) {
+  const usage = message && message.usage && typeof message.usage === 'object' ? message.usage : null;
+
+  if (!usage || Array.isArray(usage)) {
+    return null;
+  }
+
+  return usage;
+}
+
 function startRun(provider: any, model: any, prompt: any, options: any = {}) {
   if (!prompt || !String(prompt).trim()) {
     throw new Error('Prompt is required');
@@ -472,6 +482,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
       printedFallbackMessages: new Set(),
       printedAssistantErrors: new Set(),
       heartbeatCount: 0,
+      assistantUsage: null as any,
     };
     const childState = { code: null as any, signal: null as any };
     const processHandlers: Array<[any, any]> = [];
@@ -674,6 +685,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
         stderrTail: error.stderrTail ?? state.stderrTail,
         parseErrors: typeof error.parseErrors === 'number' ? error.parseErrors : state.parseErrors,
         assistantErrors: Array.isArray(error.assistantErrors) ? error.assistantErrors : state.assistantErrors,
+        usage: error.usage !== undefined ? error.usage : state.assistantUsage,
       });
 
       emit('run_failed', { error, runId: runRecord ? runRecord.runId : null });
@@ -706,6 +718,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
         stderrTail: result.stderrTail,
         parseErrors: result.parseErrors,
         assistantErrors: result.assistantErrors,
+        usage: result.usage !== undefined ? result.usage : state.assistantUsage,
       });
 
       emit('run_succeeded', { result, runId: result.runId || null });
@@ -845,6 +858,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
       }
 
       if (event.type === 'message_end' && event.message && event.message.role === 'assistant') {
+        state.assistantUsage = extractAssistantUsage(event.message) || state.assistantUsage;
         emit('assistant_message', { messageKey: getAssistantMessageKey(event.message) || null, message: event.message, text: extractAssistantText(event.message) });
         appendAssistantFallback(event.message);
         emitAssistantError(event.message);
@@ -855,6 +869,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
       if (event.type === 'agent_end' && Array.isArray(event.messages)) {
         for (const message of event.messages) {
           if (message && message.role === 'assistant') {
+            state.assistantUsage = extractAssistantUsage(message) || state.assistantUsage;
             emit('assistant_message', { messageKey: getAssistantMessageKey(message) || null, message, text: extractAssistantText(message) });
             appendAssistantFallback(message);
             emitAssistantError(message);
@@ -948,6 +963,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
         parseErrors: state.parseErrors,
         stdoutLines: [...state.stdoutLines],
         heartbeatCount: state.heartbeatCount,
+        usage: state.assistantUsage,
       };
 
       if (terminationReason && terminationReason.type === 'expected_completion') {

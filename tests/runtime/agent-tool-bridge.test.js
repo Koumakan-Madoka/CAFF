@@ -5,6 +5,7 @@ const test = require('node:test');
 const { createChatAppStore } = require('../../build/lib/chat-app-store');
 const { createSqliteRunStore } = require('../../build/lib/sqlite-store');
 const { createAgentToolBridge } = require('../../build/server/domain/runtime/agent-tool-bridge');
+const { markConversationRetrievalTraceUsage } = require('../../build/server/domain/conversation/retrieval-trace');
 
 const { withTempDir } = require('../helpers/temp-dir');
 
@@ -1352,6 +1353,34 @@ test('agent tool bridge searches cross-conversation summary memory by default', 
   assert.equal(result.results[0].conversationId, otherConversation.id);
   assert.equal(result.results[0].sourceDigestId, 'digest-other-summary-memory');
   assert.deepEqual(result.results[0].matchedTerms, ['bridge-memory-keyword']);
+  assert.equal(result.recallTrace.resultCount, 1);
+  assert.equal(result.recallTrace.storedResultCount, 1);
+
+  const tracedConversation = store.getConversation(fixture.conversation.id);
+  const retrievalTraces = tracedConversation.metadata.conversationRetrievalTraces;
+  assert.equal(Array.isArray(retrievalTraces), true);
+  assert.equal(retrievalTraces.length, 1);
+  assert.equal(retrievalTraces[0].tool, 'search-memory');
+  assert.equal(retrievalTraces[0].status, 'seen');
+  assert.equal(retrievalTraces[0].agentId, fixture.agent.id);
+  assert.equal(retrievalTraces[0].queryPreview, 'bridge-memory-keyword');
+  assert.equal(retrievalTraces[0].results[0].status, 'seen');
+  assert.equal(retrievalTraces[0].results[0].sourceDigestId, 'digest-other-summary-memory');
+  assert.equal(retrievalTraces[0].results[0].summary, 'bridge-memory-keyword historical digest should be searchable by agents.');
+
+  const usage = markConversationRetrievalTraceUsage(store, fixture.conversation.id, {
+    assistantMessageId: fixture.assistantMessage.id,
+    agentId: fixture.agent.id,
+    replyText: 'The bridge-memory-keyword historical digest is the evidence I used.',
+  });
+  assert.equal(usage.updatedTraceCount, 1);
+  assert.equal(usage.usedResultCount, 1);
+
+  const usedTrace = store.getConversation(fixture.conversation.id).metadata.conversationRetrievalTraces[0];
+  assert.equal(usedTrace.status, 'used');
+  assert.equal(usedTrace.results[0].status, 'used');
+  assert.ok(usedTrace.results[0].usedAt);
+  assert.ok(usedTrace.results[0].usageScore >= 3);
 
   const included = bridge.handleSearchMemory({
     invocationId: context.invocationId,

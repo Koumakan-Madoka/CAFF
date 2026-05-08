@@ -96,16 +96,19 @@ function currentMetadata(conversation: any) {
 
 function normalizeSignalFlags(value: any = {}) {
   const flags = isPlainObject(value) ? value : {};
+  const codeChange = Boolean(flags.codeChange);
   return {
     decision: Boolean(flags.decision),
-    code: Boolean(flags.code),
+    code: Boolean(flags.code || codeChange),
+    codeChange,
+    fileArtifact: Boolean(flags.fileArtifact),
     errorFix: Boolean(flags.errorFix),
   };
 }
 
 function anySignalFlag(signalFlags: any) {
   const flags = normalizeSignalFlags(signalFlags);
-  return Boolean(flags.decision || flags.code || flags.errorFix);
+  return Boolean(flags.decision || flags.codeChange || flags.errorFix);
 }
 
 function normalizeDigestState(value: any) {
@@ -332,16 +335,48 @@ function updateConversationMetadata(store: any, conversation: any, metadata: any
   });
 }
 
+function isUserDigestMessage(item: any) {
+  return normalizeText(item && item.role).toLowerCase() === 'user';
+}
+
+function isQuestionLikeDigestText(lower: string) {
+  return /[?？]|问题|待确认|不确定|open question|question/u.test(lower);
+}
+
+function isSpeculativeDigestText(lower: string) {
+  return /可能|也许|猜测|推测|我觉得|我认为|建议|应该|可以考虑|may\b|might\b|maybe\b|guess|speculat|suggest|recommend|should\b|could\b|would\b/u.test(lower);
+}
+
+function isVerifiedDigestText(lower: string) {
+  return /已完成|已实现|已修复|已验证|已通过|测试通过|构建通过|提交|合并|落地|verified|implemented|fixed|passed|created|updated|committed|merged/u.test(lower);
+}
+
+function shouldRecordAsDigestFact(item: any, lower: string) {
+  if (isQuestionLikeDigestText(lower) || isSpeculativeDigestText(lower)) {
+    return false;
+  }
+
+  if (isUserDigestMessage(item)) {
+    return true;
+  }
+
+  return isVerifiedDigestText(lower);
+}
+
 function classifyDigestItem(bucket: Record<string, string[]>, item: any) {
   const text = item.content;
   const lower = text.toLowerCase();
   const line = `${item.speaker}: ${text}`;
+  const isQuestion = isQuestionLikeDigestText(lower);
+  const isSpeculative = isSpeculativeDigestText(lower);
+  const isVerified = isVerifiedDigestText(lower);
+  const isUser = isUserDigestMessage(item);
 
-  if (/决定|结论|确认|采用|decision|decided|agreed/u.test(lower)) {
+  if (/决定|结论|确认|采用|同意|decision|decided|agreed|confirmed/u.test(lower) && (isUser || isVerified) && !isQuestion) {
     bucket.decisions.push(line);
   }
 
-  if (/[?？]|问题|待确认|不确定|open question|question/u.test(lower)) {
+  if (isQuestion || (!isUser && isSpeculative && !isVerified)) {
     bucket.openQuestions.push(line);
   }
 
@@ -354,7 +389,9 @@ function classifyDigestItem(bucket: Record<string, string[]>, item: any) {
     bucket.artifacts.push(artifact);
   }
 
-  bucket.facts.push(line);
+  if (shouldRecordAsDigestFact(item, lower)) {
+    bucket.facts.push(line);
+  }
 }
 
 function uniqueSectionItems(items: string[]) {
@@ -525,7 +562,8 @@ function buildModelDigestPrompt(normalizedMessages: any[]) {
   return [
     'You are CAFF conversation digest writer.',
     'Summarize the provided public chat messages into bounded long-term memory for future agents.',
-    'Do not invent facts. Prefer concrete decisions, facts, unresolved questions, next actions, and artifacts mentioned by the messages.',
+    'Do not invent facts. Facts must be user-stated facts, explicit tool/results evidence, or verified code/test outcomes; never promote agent speculation into facts.',
+    'Decisions must be user-confirmed or already implemented. Put unconfirmed agent proposals in openQuestions or nextActions, not facts.',
     'Return ONLY valid compact JSON with this exact shape:',
     '{"summary":"string","facts":["string"],"decisions":["string"],"openQuestions":["string"],"nextActions":["string"],"artifacts":["string"]}',
     'Limits: summary <= 800 characters; each array <= 8 items; each item <= 240 characters.',
@@ -552,7 +590,8 @@ function buildModelRollupPrompt(sources: any[]) {
   return [
     'You are CAFF conversation digest rollup writer.',
     'Merge older digest entries into one bounded historical rollup for future agents.',
-    'Keep stable history and unresolved work. Remove duplicates. Do not invent facts.',
+    'Keep stable history and unresolved work. Remove duplicates. Do not invent facts or promote unconfirmed agent speculation.',
+    'If source digests conflict, keep the conflict in openQuestions instead of choosing a winner.',
     'Return ONLY valid compact JSON with this exact shape:',
     '{"summary":"string","facts":["string"],"decisions":["string"],"openQuestions":["string"],"nextActions":["string"],"artifacts":["string"]}',
     'Limits: summary <= 800 characters; each array <= 8 items; each item <= 240 characters.',
@@ -785,6 +824,7 @@ async function compactDigestEntries(digests: any[], timestamp: string, options: 
       digests: normalizedDigests,
       compacted: false,
       rollup: rollups.length > 0 ? rollups[rollups.length - 1] : null,
+      obsoleteDigestIds: [],
     };
   }
 
@@ -792,11 +832,19 @@ async function compactDigestEntries(digests: any[], timestamp: string, options: 
   const recentEntries = entries.slice(-recentEntryBudget);
   const sources = [...rollups, ...entriesToCompact];
   const rollup = await buildRollupDigest(sources, timestamp, options.input || {}, options);
+  const nextDigests = [rollup, ...recentEntries];
+  const retainedDigestIds = new Set(nextDigests.map((digest: any) => digest.id).filter(Boolean));
+  const obsoleteDigestIds = normalizeSourceDigestIds(
+    normalizedDigests
+      .map((digest: any) => digest.id)
+      .filter((digestId: string) => digestId && !retainedDigestIds.has(digestId))
+  );
 
   return {
-    digests: [rollup, ...recentEntries],
+    digests: nextDigests,
     compacted: true,
     rollup,
+    obsoleteDigestIds,
   };
 }
 
@@ -875,6 +923,12 @@ function deleteSummarySegmentForDigest(store: any, digestId: string) {
   } catch (error) {
     const errorValue = error as any;
     console.warn(`[conversation-digest] Failed to delete summary segment for digest ${digestId}: ${errorValue && errorValue.stack ? errorValue.stack : errorValue}`);
+  }
+}
+
+function deleteSummarySegmentsForDigests(store: any, digestIds: any[]) {
+  for (const digestId of normalizeSourceDigestIds(digestIds)) {
+    deleteSummarySegmentForDigest(store, digestId);
   }
 }
 
@@ -1084,10 +1138,14 @@ function detectDigestSignalFlags(messages: any[]) {
     .map((message: any) => normalizeText(message && (message.content || message.errorMessage)))
     .join('\n')
     .toLowerCase();
+  const fileArtifact = /(?:[\w.-]+\/)+[\w.-]+|[\w.-]+\.(?:ts|js|json|md|css|html|py|sqlite|yaml|yml)|配置|接口|测试|构建|typecheck|build/u.test(combinedText);
+  const codeChange = /\bpr\b|pull request|commit|merge|diff|提交|合并|补丁|已实现|实现完成|已修复|测试通过|构建通过|typecheck passed|build passed/u.test(combinedText);
 
   return {
     decision: /决定|结论|确认|采用|同意|decision|decided|agreed|confirmed/u.test(combinedText),
-    code: /\.ts|\.js|\.json|\.md|\.css|\.html|\.py|pr\b|commit|merge|diff|配置|接口|测试|构建|typecheck|build/u.test(combinedText),
+    code: codeChange,
+    codeChange,
+    fileArtifact,
     errorFix: /修复|报错|错误|异常|失败|bug|fix|error|failed|failure/u.test(combinedText),
   };
 }
@@ -1139,6 +1197,8 @@ function digestStateChanged(previousState: any, nextState: any) {
 
   return previous.signalFlags.decision !== next.signalFlags.decision
     || previous.signalFlags.code !== next.signalFlags.code
+    || previous.signalFlags.codeChange !== next.signalFlags.codeChange
+    || previous.signalFlags.fileArtifact !== next.signalFlags.fileArtifact
     || previous.signalFlags.errorFix !== next.signalFlags.errorFix;
 }
 
@@ -1292,6 +1352,7 @@ export async function maybeAutoCreateConversationDigest(store: any, conversation
   );
   syncSummarySegmentFromDigest(store, nextConversation, digest, timestamp, { trigger: 'auto-create' }, options);
   syncSummarySegmentFromDigest(store, nextConversation, compactResult.rollup, timestamp, { trigger: 'auto-compaction' }, options);
+  deleteSummarySegmentsForDigests(store, compactResult.obsoleteDigestIds);
 
   return responseForConversation(nextConversation, {
     digest,
@@ -1370,8 +1431,10 @@ export async function applyConversationDigestAction(store: any, conversationId: 
       });
     }
 
+    const compactedAt = nowIso();
     const nextConversation = updateConversationMetadata(store, conversation, buildMetadataWithDigests(conversation, compactResult.digests));
-    syncSummarySegmentFromDigest(store, nextConversation, compactResult.rollup, nowIso(), { trigger: 'manual-compaction' }, options);
+    syncSummarySegmentFromDigest(store, nextConversation, compactResult.rollup, compactedAt, { trigger: 'manual-compaction' }, options);
+    deleteSummarySegmentsForDigests(store, compactResult.obsoleteDigestIds);
     return responseForConversation(nextConversation, {
       rollup: compactResult.rollup,
       compacted: true,
@@ -1401,6 +1464,7 @@ export async function applyConversationDigestAction(store: any, conversationId: 
   );
   syncSummarySegmentFromDigest(store, nextConversation, digest, timestamp, { trigger: 'manual-create' }, options);
   syncSummarySegmentFromDigest(store, nextConversation, compactResult.rollup, timestamp, { trigger: 'auto-compaction' }, options);
+  deleteSummarySegmentsForDigests(store, compactResult.obsoleteDigestIds);
 
   return responseForConversation(nextConversation, {
     digest,

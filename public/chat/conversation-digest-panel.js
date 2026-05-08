@@ -72,7 +72,21 @@
       const sourceText = sourceCount > 0 ? ` · 来自 ${sourceCount} 条摘要` : '';
       range.textContent = `${digestUtils.messageRangeText(digest) || digest.id}${sourceText}`;
 
+      const provenance = document.createElement('p');
+      provenance.className = 'muted tiny-meta';
+      const provenanceParts = [];
+      if (digest.triggerReason) {
+        provenanceParts.push(`触发：${digest.triggerReason}`);
+      }
+      if (digest.createdBy) {
+        provenanceParts.push(`来源：${digest.createdBy}`);
+      }
+      provenance.textContent = provenanceParts.join(' · ');
+
       titleWrap.append(eyebrow, range);
+      if (provenanceParts.length > 0) {
+        titleWrap.appendChild(provenance);
+      }
 
       const deleteButton = document.createElement('button');
       deleteButton.className = 'ghost-button danger compact-icon-button';

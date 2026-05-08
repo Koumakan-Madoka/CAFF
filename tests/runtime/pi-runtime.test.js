@@ -32,6 +32,7 @@ function createFakePiShimWithCli(baseDir) {
       "      content: [{ type: 'text', text: data }],",
       "      stopReason: 'stop',",
       "      timestamp: Date.now(),",
+      "      usage: { input_tokens: 1234, output_tokens: 56, total_tokens: 1290 },",
       "    },",
       "  };",
       "  process.stdout.write(`${JSON.stringify(message)}\\n`);",
@@ -303,6 +304,7 @@ test('pi runtime bypasses PowerShell shims so unicode stdin prompts stay intact 
   const result = await Promise.race([handle.resultPromise, timeoutPromise]);
 
   assert.equal(result.reply, prompt);
+  assert.deepEqual(result.usage, { input_tokens: 1234, output_tokens: 56, total_tokens: 1290 });
   assert.match(result.reply, /中文内容 "保留后文"/u);
   assert.match(result.reply, /继续看乱码/u);
 });

@@ -2,6 +2,7 @@ const { getAgentById } = require('../mention-routing');
 const { UNDERCOVER_CONVERSATION_TYPE } = require('../../../../lib/who-is-undercover-game');
 const { WEREWOLF_CONVERSATION_TYPE } = require('../../../../lib/werewolf-game');
 const { formatConversationDigestsForPrompt } = require('../conversation-digest');
+const { formatConversationRetrievalTracesForPrompt } = require('../retrieval-trace');
 const { formatSessionGoalForPrompt } = require('../session-goal');
 const { buildTrellisPromptContext } = require('./trellis-context');
 
@@ -640,6 +641,7 @@ export function buildAgentTurnPrompt({
   const skillTestDesignSection = buildSkillTestDesignPromptSection(modeContext, agent, agents);
   const conversationDigestSection = formatConversationDigestsForPrompt(conversation);
   const retrievedMemorySection = formatRetrievedMemorySegments(relatedMemorySegments);
+  const retrievalTraceSection = formatConversationRetrievalTracesForPrompt(conversation, agent);
   const sessionGoalSection = formatSessionGoalForPrompt(conversation);
   const gameplaySections = [undercoverSection, werewolfSection].filter(Boolean);
   const includeDynamicSkillLoadingGuidance = hasDynamicSkillDescriptors(resolvedConversationSkills, {
@@ -671,6 +673,7 @@ export function buildAgentTurnPrompt({
     ...(trellisPromptContext ? ['Trellis project context:', trellisPromptContext, ''] : []),
     ...(conversationDigestSection ? [conversationDigestSection, ''] : []),
     ...(retrievedMemorySection ? [retrievedMemorySection, ''] : []),
+    ...(retrievalTraceSection ? [retrievalTraceSection, ''] : []),
     ...(sessionGoalSection ? ['Session goal:', sessionGoalSection, ''] : []),
     'Local sandbox:',
     `- PI_AGENT_SANDBOX_DIR points to your dedicated sandbox: ${sandbox && sandbox.sandboxDir ? sandbox.sandboxDir : '[unavailable]'}`,

@@ -41,6 +41,7 @@
   `lib/agent-chat-tools.ts` <-> `server/api/agent-tools-controller.ts` <->
   `server/domain/runtime/agent-tool-bridge.ts`
 - Conversation memory tool API:
+  `server/domain/conversation/retrieval-trace.ts` <->
   `lib/chat-app-store.ts` (`searchConversationMessages`, `searchSummarySegments`,
   `listVisibleMemoryCards`, `saveLocalUserMemoryCard`,
   `listConversationMemoryCards`, `saveConversationMemoryCard`) <->
@@ -57,6 +58,47 @@
 - Project selection and skill loading:
   `lib/project-manager.ts` <-> `server/app/create-server.ts` <->
   `server/domain/conversation/turn/agent-prompt.ts` (`getSkillLoadingMode`, `formatSkillDocuments`, `formatSkillDescriptors`)
+
+## Conversation Reply Token Usage
+
+### 1. Scope / Trigger
+- Trigger: showing per-assistant-reply token consumption in the chat timeline.
+- Applies to `lib/pi-runtime.ts`, `server/domain/conversation/turn/agent-executor.ts`, and `public/chat/message-timeline.js`.
+
+### 2. Signatures
+- pi JSON assistant message may include `usage: object` from the provider/runtime.
+- `startRun(...).resultPromise` resolves with `usage` copied from the latest assistant `message_end` or `agent_end` assistant message when present.
+- Completed chat assistant message metadata stores:
+  - `usage`: raw provider usage object, or `null`.
+  - `tokenUsage`: normalized `{ inputTokens, outputTokens, totalTokens }`, values are non-negative integers or `null`.
+
+### 3. Contracts
+- Runtime preserves raw usage without inventing provider fields.
+- Normalization accepts common provider key variants: `input_tokens` / `inputTokens` / `prompt_tokens` / `promptTokens`, `output_tokens` / `outputTokens` / `completion_tokens` / `completionTokens`, and `total_tokens` / `totalTokens`.
+- If total is absent but input or output exists, total is computed as `(input || 0) + (output || 0)`.
+- UI displays the token badge only for assistant messages with normalized or raw usage; older messages without usage render unchanged.
+- The badge label uses total tokens when available and keeps input/output/total details in the element title.
+
+### 4. Validation & Error Matrix
+| Case | Expected behavior |
+| --- | --- |
+| Assistant message has `usage.total_tokens` | Store raw `usage`, normalize `totalTokens`, display a token badge. |
+| Assistant message has only input/output counts | Compute total from available counts and display it. |
+| Usage missing or malformed | Store `null` normalization and hide the badge. |
+| Existing historical messages | Render without token badge and without layout errors. |
+
+### 5. Tests Required
+- `tests/runtime/pi-runtime.test.js` asserts assistant `usage` survives `startRun` completion.
+- `npm run check`, `npm run build`, and `npm run typecheck` must pass after UI/runtime changes.
+
+### 6. Wrong vs Correct
+#### Wrong
+- Re-read session JSONL in the browser for every rendered message just to discover token counts.
+- Assume only one provider key naming scheme such as `total_tokens`.
+
+#### Correct
+- Capture usage once in `lib/pi-runtime.ts`, persist it into assistant message metadata when the reply completes, and let the timeline render from the normal conversation payload.
+- Normalize multiple provider key variants while preserving raw `metadata.usage` for diagnostics.
 
 ## Browser CLI Tooling
 
@@ -128,7 +170,15 @@ CAFF uses a descriptor + on-demand loading model for conversation skills:
   query via `--latest` / `--recent`, and may narrow recall with `--current-task`
   resolving the active Trellis task into bounded `taskName`, bounded explicit
   `taskName`, bounded `conversationTitle`, exact `sourceKind` (`entry` or
-  `rollup`), and `--since` / `--until` date-window filters.
+  `rollup`), and `--since` / `--until` date-window filters. Successful
+  result-bearing `search-memory` calls also write a bounded same-conversation
+  `conversationRetrievalTraces` metadata entry with `status: 'seen'` so the next
+  prompt for the same agent can recover evidence the tool returned even if the
+  assistant only paraphrased part of it publicly. When the assistant reply
+  completes, the runtime weakly matches the public reply against same-turn trace
+  snippets and promotes overlapping evidence to `used`; `pinned` is reserved for
+  future explicit keep actions, and `expired` is retained only for audit/omitted
+  from prompt injection.
 - `search-messages` may optionally accept bounded speaker filters such as
   `speaker` or `agentId`, but those filters only narrow the active
   conversation-public scope and never widen it.
@@ -163,6 +213,15 @@ CAFF uses a descriptor + on-demand loading model for conversation skills:
   auto-injected; the prompt only teaches the agent when to call
   `search-messages`, `list-memories`, `save-memory`, `update-memory`, and
   `forget-memory`.
+- Prompt assembly may inject same-agent `conversationRetrievalTraces` as `Last
+  recalled evidence cache` before live conversation history. It must filter by
+  current `agent.id`, label traces as recall evidence rather than instructions,
+  and state that current task/spec context plus recent raw messages override the
+  cache. Prompt selection prioritizes `pinned`, then `used`, then `seen` traces;
+  `used`/`pinned` evidence includes detailed sections, `seen` evidence stays
+  compact, and `expired` evidence is omitted. The cache stores only bounded
+  summary-segment snippets and source digest ids, not raw messages or full tool
+  transcripts.
 - Cross-conversation summary segment recall may auto-inject up to 5 bounded
   digest-derived experience memories before live conversation history. Its
   automatic search query should include the active Trellis task title when
@@ -248,7 +307,8 @@ CAFF uses a descriptor + on-demand loading model for conversation skills:
 ## Test Expectations
 
 - Runtime changes should usually be covered by `tests/runtime/agent-tool-bridge.test.js`
-  or `tests/runtime/turn-orchestrator.test.js`
+  or `tests/runtime/turn-orchestrator.test.js`; `search-memory` recall-cache
+  changes must assert bridge metadata persistence, usage promotion, and prompt injection
 - Conversation memory changes should also keep `tests/storage/chat-store.test.js`
   and `tests/runtime/agent-chat-tools.test.js` in sync with the bridge/prompt
   contract.

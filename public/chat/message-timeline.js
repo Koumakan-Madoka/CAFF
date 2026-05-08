@@ -37,6 +37,124 @@
       return `${(value / 1000).toFixed(value >= 10000 ? 0 : 1)}s`;
     }
 
+    function normalizeTokenCount(value) {
+      if (value === null || value === undefined || value === '') {
+        return null;
+      }
+
+      const count = Number(value);
+
+      if (!Number.isFinite(count) || count < 0) {
+        return null;
+      }
+
+      return Math.round(count);
+    }
+
+    function pickTokenCount(usage, keys) {
+      if (!usage || typeof usage !== 'object') {
+        return null;
+      }
+
+      for (const key of keys) {
+        if (Object.prototype.hasOwnProperty.call(usage, key)) {
+          const count = normalizeTokenCount(usage[key]);
+
+          if (count !== null) {
+            return count;
+          }
+        }
+      }
+
+      return null;
+    }
+
+    function messageTokenUsage(message) {
+      if (!message || message.role !== 'assistant') {
+        return null;
+      }
+
+      const metadata = message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
+      const usage = metadata && metadata.tokenUsage && typeof metadata.tokenUsage === 'object'
+        ? metadata.tokenUsage
+        : metadata && metadata.usage && typeof metadata.usage === 'object'
+          ? metadata.usage
+          : null;
+
+      if (!usage || Array.isArray(usage)) {
+        return null;
+      }
+
+      const inputTokens = pickTokenCount(usage, ['inputTokens', 'input_tokens', 'promptTokens', 'prompt_tokens', 'prompt', 'input']);
+      const outputTokens = pickTokenCount(usage, [
+        'outputTokens',
+        'output_tokens',
+        'completionTokens',
+        'completion_tokens',
+        'completion',
+        'output',
+      ]);
+      const explicitTotalTokens = pickTokenCount(usage, ['totalTokens', 'total_tokens', 'total']);
+      const totalTokens = explicitTotalTokens !== null ? explicitTotalTokens : inputTokens !== null || outputTokens !== null ? (inputTokens || 0) + (outputTokens || 0) : null;
+
+      if (inputTokens === null && outputTokens === null && totalTokens === null) {
+        return null;
+      }
+
+      return { inputTokens, outputTokens, totalTokens };
+    }
+
+    function formatTokenCount(count) {
+      const value = Number(count || 0);
+
+      if (!Number.isFinite(value) || value < 0) {
+        return '';
+      }
+
+      if (value < 1000) {
+        return String(Math.round(value));
+      }
+
+      if (value < 1000000) {
+        return `${(value / 1000).toFixed(value >= 10000 ? 0 : 1)}k`;
+      }
+
+      return `${(value / 1000000).toFixed(value >= 10000000 ? 0 : 1)}m`;
+    }
+
+    function formatTokenUsageLabel(usage) {
+      if (!usage) {
+        return '';
+      }
+
+      const primary = usage.totalTokens !== null ? usage.totalTokens : usage.outputTokens !== null ? usage.outputTokens : usage.inputTokens;
+      const formatted = formatTokenCount(primary);
+
+      return formatted ? `消耗 ${formatted} token` : '';
+    }
+
+    function formatTokenUsageTitle(usage) {
+      if (!usage) {
+        return '';
+      }
+
+      const parts = [];
+
+      if (usage.inputTokens !== null) {
+        parts.push(`输入 ${formatTokenCount(usage.inputTokens)}`);
+      }
+
+      if (usage.outputTokens !== null) {
+        parts.push(`输出 ${formatTokenCount(usage.outputTokens)}`);
+      }
+
+      if (usage.totalTokens !== null) {
+        parts.push(`总计 ${formatTokenCount(usage.totalTokens)}`);
+      }
+
+      return parts.length > 0 ? `${parts.join(' · ')} token` : '';
+    }
+
     function appendLiveToolRotor(container, label) {
       const rotor = document.createElement('span');
       const text = document.createElement('span');
@@ -948,6 +1066,8 @@
       const liveLabel = liveStageLabel(liveStage);
       const bodyText = displayedMessageBody(message, liveStage);
       const sessionInfo = messageSessionInfo(message);
+      const tokenUsage = messageTokenUsage(message);
+      const tokenUsageLabel = formatTokenUsageLabel(tokenUsage);
       const recipients = privateRecipientNames(message);
       const privacyLabel =
         isPrivateTimelineMessage(message) && recipients.length > 0 ? `Private -> ${recipients.join(', ')}` : 'Private';
@@ -973,6 +1093,10 @@
         sessionInfo.sessionPath,
         sessionInfo.sessionName,
         sessionInfo.canExport ? 'exportable' : 'locked',
+        tokenUsageLabel,
+        tokenUsage && tokenUsage.inputTokens !== null ? tokenUsage.inputTokens : '',
+        tokenUsage && tokenUsage.outputTokens !== null ? tokenUsage.outputTokens : '',
+        tokenUsage && tokenUsage.totalTokens !== null ? tokenUsage.totalTokens : '',
         traceSignature,
       ].join('\u001f');
 
@@ -1050,7 +1174,20 @@
         sender.appendChild(privacyBadge);
       }
 
-      time.textContent = formatDateTime(message.createdAt);
+      time.textContent = '';
+
+      const timestampLabel = document.createElement('span');
+      timestampLabel.textContent = formatDateTime(message.createdAt);
+      time.appendChild(timestampLabel);
+
+      if (tokenUsageLabel) {
+        const tokenBadge = document.createElement('span');
+        tokenBadge.className = 'message-token-usage';
+        tokenBadge.textContent = tokenUsageLabel;
+        tokenBadge.title = formatTokenUsageTitle(tokenUsage);
+        time.appendChild(tokenBadge);
+      }
+
       renderMessageBody(body, bodyText, agents);
       syncToolTraceSection(toolTrace, message, liveStage);
 

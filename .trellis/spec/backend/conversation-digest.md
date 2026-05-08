@@ -20,6 +20,7 @@
 - Conversation metadata fields:
   - `conversation.metadata.conversationDigests?: ConversationDigestEntry[]`
   - `conversation.metadata.conversationDigestState?: { lastDigestMessageId?, lastDigestAt?, lastAutoDigestAt?, pendingPublicMessageCount, pendingTokenEstimate, messageBudget?, highValueMinMessages?, signalFlags, lastTriggerReason?, lastFailure?, updatedAt }`
+  - `signalFlags`: `{ decision, code, codeChange, fileArtifact, errorFix }`; `codeChange` is a strong high-value trigger, while `fileArtifact` is a weak diagnostic signal. `code` is retained as a compatibility alias for strong code-change signals.
   - Entry shape: `{ id, kind, createdAt, updatedAt, createdBy, messageRange, summary, facts, decisions, openQuestions, nextActions, artifacts, triggerReason? }`
   - `kind`: `'entry' | 'rollup'`; missing legacy values normalize to `'entry'`.
   - `messageRange`: `{ fromMessageId?, toMessageId?, messageCount }`
@@ -37,9 +38,12 @@
 - Store digest entries under `conversation.metadata.conversationDigests`; do not add a dedicated table until search or cross-conversation merge requires it.
 - Keep controllers thin: route parsing belongs in `server/api/conversations-controller.ts`; normalization, bounded retention, creation, compaction, deletion, and prompt formatting belong in `server/domain/conversation/conversation-digest.ts`.
 - `create` reads public messages from `store.listMessages(conversationId)` and creates one structured digest `entry`; model mode asks the configured cheap model for JSON, while extractive mode uses the deterministic classifier.
-- Auto-create runs from `createServerApp` after completed assistant messages, counts only public messages after the latest digest `messageRange.toMessageId`, falls back to the digest timestamp if that covered message id is no longer present, updates `conversationDigestState` only when the lightweight waterline state materially changes, and does nothing until the configured message budget is reached or enabled high-value signals reach their minimum message count.
+- Auto-create runs from `createServerApp` after completed assistant messages, counts only public messages after the latest digest `messageRange.toMessageId`, falls back to the digest timestamp if that covered message id is no longer present, updates `conversationDigestState` only when the lightweight waterline state materially changes, and does nothing until the configured message budget is reached or enabled strong high-value signals reach their minimum message count.
+- High-value triggering is conservative: `decision`, `codeChange`, or `errorFix` may bypass the message budget when enabled; weak `fileArtifact` matches such as file paths, extensions, `配置`, or `测试` update state/UI only and must not trigger auto-create by themselves.
+- Deterministic extractive digests must not classify all assistant text as facts. `facts` are limited to user-stated facts and verified implementation/test/result statements; unconfirmed assistant speculation/proposals go to `openQuestions` or `nextActions` instead.
 - After manual `create` or auto-create, the domain automatically compacts old detailed entries when the recent-entry budget is exceeded.
 - Compaction keeps at most one `rollup` plus the bounded recent `entry` set; existing rollups are merged forward instead of accumulating multiple rollups.
+- When compaction removes old metadata entries, their searchable summary-memory segments are deleted so cross-conversation memory search sees the retained rollup plus recent entries, not stale compacted entries.
 - Model mode also applies to rollup creation, so `/digest compact model` can merge older summaries semantically; model failure logs a warning and falls back to deterministic rollup.
 - `compact` manually compacts older detailed entries while preserving the latest detailed entry for recency.
 - `delete` removes exactly one digest by id; deleting a rollup is allowed and does not delete recent entries.
@@ -66,10 +70,11 @@
 | Auto-create helper | enabled but new public messages below budget and no high-value trigger | updates `conversationDigestState` when counts/signals/config changed, `autoCreated: false`, `reason: below_budget` |
 | Auto-create helper | enabled and budget/high-value trigger is reached but idle window has not elapsed | updates `conversationDigestState` when counts/signals/config changed, `autoCreated: false`, `reason: idle_wait`, `retryAfterMs > 0` |
 | Auto-create helper | enabled and trigger is reached but cooldown has not elapsed since the last auto digest | updates `conversationDigestState` when counts/signals/config changed, `autoCreated: false`, `reason: cooldown`, `retryAfterMs > 0` |
-| Auto-create helper | enabled and new public messages reach budget or high-value trigger | stores one `entry`, `autoCreated: true`, then applies normal compaction |
-| `POST /digest create` | detailed entries exceed recent-entry budget | `200`, stores one `rollup` plus recent `entry` digests, `compacted: true` |
+| Auto-create helper | enabled and new public messages reach budget or strong high-value trigger | stores one `entry`, `autoCreated: true`, then applies normal compaction |
+| Auto-create helper | enabled high-value gate sees only weak file/artifact mentions below budget | updates `conversationDigestState.signalFlags.fileArtifact`, returns `autoCreated: false`, `reason: below_budget` |
+| `POST /digest create` | detailed entries exceed recent-entry budget | `200`, stores one `rollup` plus recent `entry` digests, deletes obsolete entry summary-memory segments, `compacted: true` |
 | `POST /digest compact` | fewer than two detailed entries | `200`, no mutation, `compacted: false` |
-| `POST /digest compact` | two or more detailed entries | `200`, stores a `rollup` plus latest `entry`, `compacted: true` |
+| `POST /digest compact` | two or more detailed entries | `200`, stores a `rollup` plus latest `entry`, deletes obsolete entry summary-memory segments, `compacted: true` |
 | `POST /digest delete` | missing `digestId` | `400 Digest id is required` |
 | `POST /digest delete` | id not found | `404 Conversation digest not found` |
 | `POST /digest delete` | last digest removed | `200`, removes `metadata.conversationDigests` key |
@@ -79,7 +84,7 @@
 ### 5. Good / Base / Bad Cases
 - Good: `/digest` creates a structured entry and refreshes conversation summaries without creating a visible user message.
 - Good: `/digest model` or `POST { action: 'create', summaryMode: 'model' }` uses the configured model to write the structured digest JSON.
-- Good: with auto-create enabled, completed assistant replies create a digest only after enough new public messages accumulate, or after enough high-value messages appear when high-value triggering is enabled.
+- Good: with auto-create enabled, completed assistant replies create a digest only after enough new public messages accumulate, or after enough strong high-value messages appear when high-value triggering is enabled.
 - Good: creating enough detailed entries automatically produces a rollup instead of dropping old digest memory.
 - Good: `/digest compact` and the panel compact button use the same API action and show a compacted status.
 - Good: prompt includes rollup historical context before recent digest entries and explicitly prioritizes raw recent messages for conflicts.
@@ -87,6 +92,8 @@
 - Base: digest generation supports model mode but remains bounded and extractive-fallback safe behind the same domain/API contract.
 - Base: deterministic rollup remains the safety fallback; model rollup improves semantic merge but is not evidence search.
 - Bad: auto-generating digests on every turn, because low-quality summaries can silently pollute future prompts and create unnecessary model calls.
+- Bad: treating an assistant suggestion like `I think maybe we should edit file.ts` as a durable `facts` item.
+- Bad: letting weak file-path/config/test mentions alone bypass the message budget through `high_value_signal`.
 - Bad: mixing digest results into `search-messages` before provenance and ranking are designed.
 - Bad: persisting `/digest` as a normal chat message, because it pollutes source messages and can trigger agents.
 
@@ -96,10 +103,11 @@
   - Create a model-mode digest with an injected fake model runner and assert provider/model config, model sections, and `createdBy`.
   - Auto-create a model-mode digest after the message budget and assert it does not retrigger or mark `stateChanged` until more public messages or state fields change.
   - Create a model-mode digest with a runner that throws or returns invalid JSON and assert the request succeeds with extractive fallback metadata.
-  - Assert auto-create idle windows, cooldowns, and high-value signal gates update `conversationDigestState` and trigger only when eligible.
+  - Assert auto-create idle windows, cooldowns, and high-value signal gates update `conversationDigestState` and trigger only when eligible, including weak `fileArtifact` signals that do not auto-create below budget.
+  - Assert deterministic extractive digests keep assistant speculation out of `facts` while preserving user facts, verified results, artifacts, and unresolved proposals.
   - Assert auto-create falls back to digest timestamps instead of re-summarizing all messages when the latest covered message id is missing.
-  - Auto-create enough digests to trigger automatic rollup and assert one `rollup` plus recent `entry` digests.
-  - Manually compact with `{ action: 'compact' }` and assert rollup metadata.
+  - Auto-create enough digests to trigger automatic rollup and assert one `rollup` plus recent `entry` digests, with compacted entry segments removed from summary-memory search.
+  - Manually compact with `{ action: 'compact' }` and assert rollup metadata plus stale entry segment cleanup.
   - Manually compact with `{ action: 'compact', summaryMode: 'model' }` and assert model rollup metadata with fake model runner.
   - Delete a digest and assert metadata key cleanup plus delete broadcast.
   - Reject unsupported actions and missing ids when coverage expands.
