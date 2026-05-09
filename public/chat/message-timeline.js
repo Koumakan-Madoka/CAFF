@@ -9,6 +9,7 @@
       buildAgentAvatarElement,
       canInspectToolTrace,
       displayedMessageBody,
+      digestStatusForConversation,
       formatDateTime,
       isPrivateTimelineMessage,
       liveStageForMessage,
@@ -1057,13 +1058,15 @@
     }
 
     function syncMessageCard(card, message, conversationId, agents, activeTurn, activeAgentSlots) {
+      const metadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
+      const isDigestStatusMessage = Boolean(metadata && metadata.digestStatus);
       const agent = message.agentId
         ? (Array.isArray(agents) ? agents.find((item) => item.id === message.agentId) : null) || agentById(message.agentId)
         : null;
-      const liveStage = isPrivateTimelineMessage(message)
+      const liveStage = isPrivateTimelineMessage(message) || isDigestStatusMessage
         ? null
         : liveStageForMessage(conversationId || (message && message.conversationId) || '', activeTurn, activeAgentSlots, message.id);
-      const liveLabel = liveStageLabel(liveStage);
+      const liveLabel = isDigestStatusMessage ? '摘要整理中' : liveStageLabel(liveStage);
       const bodyText = displayedMessageBody(message, liveStage);
       const sessionInfo = messageSessionInfo(message);
       const tokenUsage = messageTokenUsage(message);
@@ -1108,6 +1111,7 @@
       card.dataset.renderSignature = signature;
       card.className = `message-card ${message.role}`;
       card.classList.toggle('failed', message.status === 'failed');
+      card.classList.toggle('digest-status', isDigestStatusMessage);
 
       if (agent && agent.accentColor) {
         card.style.setProperty('--agent-color', agent.accentColor);
@@ -1158,7 +1162,6 @@
       }
 
       const senderLabel = document.createElement('span');
-      const metadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
       senderLabel.className = 'message-sender-label';
       senderLabel.textContent = message.role === 'user'
         ? metadata && metadata.goalAutoContinue
@@ -1211,8 +1214,77 @@
       card.classList.toggle('terminating', liveStage ? liveStage.status === 'terminating' : false);
     }
 
+    function clipDigestStatusPreview(value, maxLength = 900) {
+      const text = String(value || '').trim();
+
+      if (text.length <= maxLength) {
+        return text;
+      }
+
+      return `${text.slice(0, Math.max(1, maxLength - 1)).trimEnd()}…`;
+    }
+
+    function digestStatusTimelineContent(status) {
+      const pendingCount = Math.max(0, Number(status.pendingExperienceDraftCount || 0));
+      const countSuffix = pendingCount > 0 ? `（${pendingCount} 条经验草稿）` : '';
+      const lines = [`${status.message || '正在整理本轮经验，并写入会话摘要…'}${countSuffix}`];
+      const model = status.model && typeof status.model === 'object' ? status.model : null;
+      const modelTrace = status.modelTrace && typeof status.modelTrace === 'object' ? status.modelTrace : null;
+
+      if (model) {
+        const label = model.label || [model.provider, model.model].filter(Boolean).join('/');
+        const modelBits = [label, model.thinking ? `thinking=${model.thinking}` : ''].filter(Boolean);
+        if (modelBits.length > 0) {
+          lines.push('', `模型：${modelBits.join(' · ')}`);
+        }
+      }
+
+      if (modelTrace) {
+        const eventCount = Math.max(0, Number(modelTrace.eventCount || 0));
+        if (eventCount > 0) {
+          lines.push(`事件：${eventCount} 个模型事件`);
+        }
+
+        const thinkingPreview = clipDigestStatusPreview(modelTrace.thinkingPreview, 700);
+        if (thinkingPreview) {
+          lines.push('', '思考预览：', thinkingPreview);
+        }
+
+        const outputPreview = clipDigestStatusPreview(modelTrace.outputPreview, 900);
+        if (outputPreview) {
+          lines.push('', '输出预览：', outputPreview);
+        }
+      }
+
+      return lines.join('\n');
+    }
+
+    function digestStatusTimelineMessage(conversation) {
+      const status = conversation && typeof digestStatusForConversation === 'function'
+        ? digestStatusForConversation(conversation.id)
+        : null;
+
+      if (!status || status.status !== 'running') {
+        return null;
+      }
+
+      return {
+        id: `digest-status:${conversation.id}`,
+        role: 'system',
+        senderName: '会话摘要',
+        content: digestStatusTimelineContent(status),
+        status: 'streaming',
+        createdAt: status.updatedAt || new Date().toISOString(),
+        metadata: {
+          digestStatus: true,
+        },
+      };
+    }
+
     function render(conversation, activeTurn, activeAgentSlots = []) {
-      const messages = timelineMessagesForConversation(conversation);
+      const baseMessages = timelineMessagesForConversation(conversation);
+      const digestStatusMessage = digestStatusTimelineMessage(conversation);
+      const messages = digestStatusMessage ? baseMessages.concat(digestStatusMessage) : baseMessages;
       const hasMessages = messages.length > 0;
 
       if (!hasMessages) {

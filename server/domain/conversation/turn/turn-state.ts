@@ -49,6 +49,7 @@ export function summarizeTurnState(turnState: any) {
       heartbeatCount: agent.heartbeatCount || 0,
       replyLength: agent.replyLength || 0,
       preview: agent.preview || '',
+      finalContent: agent.status === 'completed' && agent.finalContent ? String(agent.finalContent) : '',
       errorMessage: agent.errorMessage || '',
       triggeredByAgentId: agent.triggeredByAgentId || null,
       triggeredByAgentName: agent.triggeredByAgentName || '',
@@ -87,6 +88,7 @@ export function summarizeAgentSlotState(turnState: any) {
     heartbeatCount: stage && stage.heartbeatCount ? stage.heartbeatCount : 0,
     replyLength: stage && stage.replyLength ? stage.replyLength : 0,
     preview: stage && stage.preview ? stage.preview : '',
+    finalContent: stage && stage.status === 'completed' && stage.finalContent ? String(stage.finalContent) : '',
     errorMessage: stage && stage.errorMessage ? stage.errorMessage : '',
     lastTextDeltaAt: stage && stage.lastTextDeltaAt ? stage.lastTextDeltaAt : null,
     currentToolName: stage && stage.currentToolName ? stage.currentToolName : '',
@@ -140,6 +142,7 @@ export function createTurnState(conversation: any, turnId: any) {
       heartbeatCount: 0,
       replyLength: 0,
       preview: '',
+      finalContent: '',
       errorMessage: '',
       triggeredByAgentId: null as string | null,
       triggeredByAgentName: '',
@@ -199,6 +202,7 @@ export function resetTurnStage(stage: any, status = 'idle') {
   stage.heartbeatCount = 0;
   stage.replyLength = 0;
   stage.preview = '';
+  stage.finalContent = '';
   stage.errorMessage = '';
   stage.triggeredByAgentId = null;
   stage.triggeredByAgentName = '';

@@ -116,6 +116,52 @@
     return `${pendingText}${signalText}${triggerText}`;
   }
 
+  function skillDraftsForConversation(conversation) {
+    const metadata = metadataForConversation(conversation);
+    const drafts = metadata && Array.isArray(metadata.skillDrafts) ? metadata.skillDrafts : [];
+
+    return drafts
+      .map((draft) => {
+        const id = String((draft && draft.id) || '').trim();
+        const skill = draft && draft.skill && typeof draft.skill === 'object' ? draft.skill : null;
+        const skillId = String((skill && skill.id) || '').trim();
+        const name = String((skill && skill.name) || '').trim();
+        const description = String((skill && skill.description) || '').trim();
+        const body = String((skill && skill.body) || '').trim();
+
+        if (!id || !skillId || !name || !description || !body) {
+          return null;
+        }
+
+        const source = draft && draft.source && typeof draft.source === 'object' ? draft.source : {};
+
+        return {
+          ...draft,
+          id,
+          status: String((draft && draft.status) || 'pending').trim() || 'pending',
+          createdAt: String((draft && draft.createdAt) || '').trim(),
+          updatedAt: String((draft && draft.updatedAt) || '').trim(),
+          source: {
+            ...source,
+            type: String((source && source.type) || 'digest').trim() || 'digest',
+            digestId: String((source && source.digestId) || '').trim(),
+            digestKind: String((source && source.digestKind) || 'entry').trim() || 'entry',
+            trigger: String((source && (source.trigger || source.triggerReason)) || '').trim(),
+            createdBy: String((source && source.createdBy) || '').trim(),
+            autoCreated: Boolean(source && source.autoCreated),
+          },
+          skill: {
+            ...skill,
+            id: skillId,
+            name,
+            description,
+            body,
+          },
+        };
+      })
+      .filter(Boolean);
+  }
+
   function latestDigest(conversation) {
     const digests = digestsForConversation(conversation);
     return digests.length > 0 ? digests[digests.length - 1] : null;
@@ -154,5 +200,6 @@
     formatAutoDigestStatus,
     messageRangeText,
     sectionItems,
+    skillDraftsForConversation,
   };
 })();

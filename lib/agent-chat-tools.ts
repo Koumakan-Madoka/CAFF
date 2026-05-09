@@ -157,7 +157,21 @@ async function requestJson(url: string, options: any = {}) {
   const data = text ? JSON.parse(text) : {};
 
   if (!response.ok) {
-    throw new Error(data && data.error ? data.error : `Request failed with status ${response.status}`);
+    const baseMessage = data && data.error ? data.error : `Request failed with status ${response.status}`;
+    const issueMessages = Array.isArray(data && data.issues)
+      ? data.issues
+        .map((issue: any) => String((issue && issue.message) || issue || '').trim())
+        .filter(Boolean)
+      : [];
+    const missingIssueMessages = issueMessages.filter((message: string) => !baseMessage.includes(message));
+    const error: any = new Error(missingIssueMessages.length > 0 ? `${baseMessage}: ${missingIssueMessages.join('; ')}` : baseMessage);
+    error.statusCode = response.status;
+
+    if (Array.isArray(data && data.issues)) {
+      error.issues = data.issues;
+    }
+
+    throw error;
   }
 
   return data;
@@ -269,6 +283,18 @@ async function searchMessages(config: any, flags: any) {
   });
 }
 
+function normalizeListFlag(value: any) {
+  if (value === undefined || value === null || value === false) {
+    return [];
+  }
+
+  const values = Array.isArray(value) ? value : [value];
+  return values
+    .flatMap((item) => String(item || '').split(/\r?\n|[|;]/u))
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 async function searchMemory(config: any, flags: any) {
   const query = String(flags.query || flags.q || '').trim();
   const latest = isFlagEnabled(flags.latest) || isFlagEnabled(flags.recent);
@@ -321,6 +347,61 @@ async function searchMemory(config: any, flags: any) {
   }
 
   return requestJson(`${config.apiUrl}/api/agent-tools/search-memory`, {
+    method: 'POST',
+    body,
+  });
+}
+
+async function writeExperience(config: any, flags: any, options: any = {}) {
+  const stdinContent = flags['content-stdin'] === true || flags.stdin === true
+    ? String(await readTextStream(options.stream || process.stdin) || '').trim()
+    : '';
+  let stdinPayload: any = {};
+
+  if (stdinContent) {
+    try {
+      stdinPayload = JSON.parse(stdinContent);
+    } catch {
+      stdinPayload = { scenario: stdinContent };
+    }
+  }
+
+  const body: any = withSkillTestScope(config, {
+    invocationId: config.invocationId,
+    callbackToken: config.callbackToken,
+    ...(stdinPayload && typeof stdinPayload === 'object' ? stdinPayload : {}),
+  });
+
+  for (const [flagName, fieldName] of [
+    ['title', 'title'],
+    ['category', 'category'],
+    ['scenario', 'scenario'],
+    ['context', 'scenario'],
+    ['confidence', 'confidence'],
+  ] as any[]) {
+    if (flags[flagName] !== undefined && flags[flagName] !== true) {
+      body[fieldName] = flags[flagName];
+    }
+  }
+
+  for (const [flagName, fieldName] of [
+    ['step', 'steps'],
+    ['steps', 'steps'],
+    ['pitfall', 'pitfalls'],
+    ['pitfalls', 'pitfalls'],
+    ['limitation', 'pitfalls'],
+    ['limitations', 'pitfalls'],
+    ['validation', 'validation'],
+    ['artifact', 'artifacts'],
+    ['artifacts', 'artifacts'],
+  ] as any[]) {
+    const items = normalizeListFlag(flags[flagName]);
+    if (items.length > 0) {
+      body[fieldName] = [...(Array.isArray(body[fieldName]) ? body[fieldName] : []), ...items];
+    }
+  }
+
+  return requestJson(`${config.apiUrl}/api/agent-tools/experience/write`, {
     method: 'POST',
     body,
   });
@@ -614,6 +695,8 @@ async function main() {
     result = await searchMessages(config, flags);
   } else if (command === 'search-memory') {
     result = await searchMemory(config, flags);
+  } else if (command === 'write-experience') {
+    result = await writeExperience(config, flags);
   } else if (command === 'list-memories') {
     result = await listMemories(config, flags);
   } else if (command === 'save-memory') {
@@ -634,7 +717,7 @@ async function main() {
     result = await trellisWrite(config, flags);
   } else {
     throw new Error(
-      'Unknown command. Use one of: send-public, send-private, read-context, search-messages, search-memory, list-memories, save-memory, update-memory, forget-memory, list-participants, suggest-goal, update-goal-checklist, trellis-init, trellis-write.'
+      'Unknown command. Use one of: send-public, send-private, read-context, search-messages, search-memory, write-experience, list-memories, save-memory, update-memory, forget-memory, list-participants, suggest-goal, update-goal-checklist, trellis-init, trellis-write.'
     );
   }
 
@@ -671,6 +754,7 @@ export {
   saveMemory,
   searchMemory,
   searchMessages,
+  writeExperience,
   shouldEchoContent,
   updateMemory,
   withSkillTestScope,

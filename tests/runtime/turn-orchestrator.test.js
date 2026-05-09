@@ -639,6 +639,8 @@ test('buildAgentTurnPrompt gives bash-only multiline chat bridge guidance', () =
   assert.doesNotMatch(prompt, /Browser tool:/u);
   assert.match(prompt, /Memory titles are matched exactly after trimming; case matters/u);
   assert.match(prompt, /save-memory --title "preference" --content "User prefers retrieval-first POCs" --ttl-days 30/u);
+  assert.match(prompt, /write-experience --title "lesson title" --category bug_fix/u);
+  assert.match(prompt, /Use write-experience sparingly/u);
   assert.match(prompt, /update-memory --title "preference" --content "User now prefers answer-first replies" --reason/u);
   assert.match(prompt, /forget-memory --title "temporary preference" --reason "User said this should not persist" --expected-updated-at/u);
   assert.match(prompt, /Never put raw message text on a new shell line by itself/u);
@@ -3790,8 +3792,16 @@ test('turn state summary exposes live current tool fields and reset clears them'
   assert.equal(summary.agents[0].currentToolStartedAt, '2026-04-10T00:00:00.000Z');
   assert.equal(summary.agents[0].currentToolInferred, true);
 
+  stage.status = 'completed';
+  stage.finalContent = 'Full completed reply that is intentionally longer than the preview.';
+
+  const completedSummary = summarizeTurnState(turnState);
+
+  assert.equal(completedSummary.agents[0].finalContent, 'Full completed reply that is intentionally longer than the preview.');
+
   resetTurnStage(stage);
 
+  assert.equal(stage.finalContent, '');
   assert.equal(stage.currentToolName, '');
   assert.equal(stage.currentToolKind, '');
   assert.equal(stage.currentToolStepId, '');

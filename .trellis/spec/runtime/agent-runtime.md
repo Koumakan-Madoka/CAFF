@@ -270,6 +270,75 @@ CAFF uses a descriptor + on-demand loading model for conversation skills:
   count, memory title, reason tag, and rejection reason without echoing full
   memory bodies or secret-like payloads.
 
+## Experience Write Tool
+
+### 1. Scope / Trigger
+- Trigger: adding or changing the agent-facing `write-experience` command or the pending experience draft metadata it writes.
+- Applies to `lib/agent-chat-tools.ts`, `server/api/agent-tools-controller.ts`, `server/domain/runtime/agent-tool-bridge.ts`, `server/domain/conversation/experience-draft.ts`, digest generation, and Skill draft extraction.
+- Goal: let agents voluntarily save one bounded reusable lesson discovered during tool use without storing raw tool transcripts or directly writing Skill files.
+
+### 2. Signatures
+- CLI: `node "$CAFF_CHAT_TOOLS_PATH" write-experience --title "lesson title" --category bug_fix --scenario "when this applies" --step "short step" --validation "npm run check passed" --artifact "path/to/file.ts" --confidence high`
+- CLI JSON stdin: `write-experience --content-stdin` accepts a JSON object with the same fields; non-JSON stdin is treated as `scenario` text.
+- HTTP: `POST /api/agent-tools/experience/write`
+  - Request: `{ invocationId, callbackToken, title, category?, scenario?, context?, steps?, pitfalls?, validation?, artifacts?, confidence?, skillTestRunId?, skillTestCaseId? }`
+  - Response: `{ ok: true, draft, experienceDrafts }`
+- Metadata: `conversation.metadata.experienceDrafts?: ExperienceDraft[]`.
+
+### 3. Contracts
+- The bridge authenticates the invocation exactly like other chat tools, derives `conversationId`, `agentId`, `agentName`, `turnId`, and `assistantMessageId` from the invocation context, and ignores/splices out any model-supplied source ids.
+- `ExperienceDraft`: `{ id, status: 'pending'|'absorbed'|'rejected', title, category, scenario, steps, pitfalls, validation, artifacts, confidence, source, createdAt, updatedAt, absorbedAt?, absorbedDigestId?, rejectedAt?, reason? }`.
+- Allowed categories: `bug_fix`, `pattern`, `decision`, `anti_pattern`, `tool_usage`, `other`; confidence: `low`, `medium`, `high`.
+- The domain stores at most 8 bounded drafts per conversation. Each agent turn may write at most one draft.
+- The tool is for reusable, validated, or carefully caveated lessons. It is not for simple Q&A, raw logs, full transcripts, secrets, private messages, transient TODOs, or unverified guesses.
+- Digest creation projects pending drafts into `digest.experience` and then marks the projected drafts `absorbed`; pending drafts are not searchable cross-conversation before digest/Skill review. When digest auto-create is enabled, a pending draft plus at least one new public source message may trigger the next digest below the normal message budget, bypass idle/cooldown gates for that pending-experience absorption, broadcast a compact `conversation_digest_status` UI hint while the hook runs, and complete through the awaited assistant-message hook after the final completed message is already broadcast but before same-turn routing continues. The awaited assistant-completion hook has no application timeout; the visible timeline digest status is the user-facing progress indicator.
+- Skill draft generation consumes `digest.experience` first, preserves experience confidence in rule-generated draft bodies, then falls back to digest facts/decisions/actions/artifacts.
+
+### 4. Validation & Error Matrix
+| Case | Expected behavior |
+| --- | --- |
+| Missing/invalid invocation auth | Same stale/unauthorized rejection as other bridge tools |
+| Empty or generic title/content | `400` with field-level `issues` diagnostics such as `title is required` or `scenario, steps, pitfalls, or validation is required` |
+| Secret-like content | `400 Do not save secrets...` and no metadata mutation |
+| Raw transcript/full log markers | `400 Do not save raw tool transcripts...` and no metadata mutation |
+| Same turn writes twice | `409 Only one experience draft can be written per agent turn` |
+| Valid draft | Stores one pending bounded draft, broadcasts `conversation_experience_draft_updated`, and emits `agent_tool_call` telemetry |
+| Later digest create | Copies bounded experience into `digest.experience` and marks source draft `absorbed` |
+
+### 5. Good / Base / Bad Cases
+- Good: after fixing a non-obvious bug and validating tests, the agent writes one high-confidence draft with file artifacts and validation command names.
+- Good: a failed approach is captured as `pitfalls`, not as a required step.
+- Base: the agent does not write experience for ordinary explanations or simple status updates.
+- Bad: saving a complete Bash/read transcript, stack dump, token, password, private note, or speculative proposal as experience.
+- Bad: relying on `write-experience` to create an enabled Skill; it only creates pending metadata for digest/Skill review.
+
+### 6. Tests Required
+- `tests/runtime/agent-chat-tools.test.js`: CLI forwards the bounded payload and skill-test scope to `/api/agent-tools/experience/write`, supports pitfalls/limitations aliases, and surfaces field-level error issues.
+- `tests/runtime/agent-tool-bridge.test.js`: bridge writes system-owned source metadata, broadcasts updates, rejects duplicate same-turn writes, and rejects secrets.
+- `tests/smoke/server-smoke.test.js`: digest absorbs pending drafts into `digest.experience`, marks drafts `absorbed`, and extracted Skill drafts include `Reusable Experience`.
+- `tests/runtime/turn-orchestrator.test.js`: prompt guidance includes `write-experience` and the sparse-use warning.
+- `tests/runtime/agent-executor-hook.test.js`: assistant completion hooks broadcast the final completed message first, then await digest/side-effect completion before same-turn routing continues.
+
+### 7. Wrong vs Correct
+#### Wrong
+```bash
+node "$CAFF_CHAT_TOOLS_PATH" write-experience --title "Full log" --scenario "$(cat huge-tool-output.log)"
+```
+- This stores raw tool output and can leak secrets or prompt-injection text.
+
+#### Correct
+```bash
+node "$CAFF_CHAT_TOOLS_PATH" write-experience \
+  --title "Keep test harnesses on rule generation by default" \
+  --category pattern \
+  --scenario "When tests run with local model env vars configured" \
+  --step "Pass explicit rule-mode options in the test harness" \
+  --validation "npm run typecheck passed" \
+  --artifact "tests/smoke/server-smoke.test.js" \
+  --confidence high
+```
+- This stores a bounded reusable lesson with validation and artifacts, while leaving Skill installation to human-confirmed draft flow.
+
 ## Tool Trace Event Contract
 
 - Assistant tool visibility currently has two live sources:

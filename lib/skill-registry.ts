@@ -111,7 +111,7 @@ function parseFrontmatter(frontmatter: any) {
   return result;
 }
 
-function buildSkillMarkdown({ name, description, body }: any) {
+export function buildSkillMarkdown({ name, description, body }: any) {
   return [
     '---',
     `name: ${quoteYamlString(name)}`,

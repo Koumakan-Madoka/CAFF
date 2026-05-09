@@ -64,5 +64,11 @@
   failed, show that failure state in composer status and require an explicit
   confirmation before force-deleting the conversation and dropping the pending
   queued messages. Queued side-slot work is not part of that force-delete path.
+- Blocking post-reply work should surface in both the composer status area and
+  the chat timeline rather than silently delaying routing. Pending-experience
+  digest absorption and model-mode digest generation use `conversation_digest_status`
+  to show that the assistant is organizing experience or generating a summary
+  after the completed message is visible, including bounded model thinking/output
+  previews when the provider exposes them.
 - Trellis-related UI affordances usually depend on backend prompt/runtime state,
   so verify both sides when changing labels, status handling, or tool exposure.

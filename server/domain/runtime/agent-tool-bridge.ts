@@ -5,6 +5,7 @@ const { createHttpError } = require('../../http/http-errors');
 const { pickConversationSummary, serializeConversationPrivateMessageForUi } = require('../conversation/conversation-view');
 const { buildAgentMentionLookup, formatAgentMention, resolveMentionValues } = require('../conversation/mention-routing');
 const { applySessionGoalAction, proposeSessionGoalAction } = require('../conversation/session-goal');
+const { createConversationExperienceDraft } = require('../conversation/experience-draft');
 const { recordConversationRetrievalTrace } = require('../conversation/retrieval-trace');
 const { createLiveBridgeToolStep } = require('./message-tool-trace');
 const { resolveCurrentTrellisTaskName } = require('../conversation/turn/trellis-context');
@@ -2280,6 +2281,108 @@ export function createAgentToolBridge(options: any = {}) {
     }
   }
 
+  function handleWriteExperience(body: any = {}) {
+    const startedAt = Date.now();
+    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
+    const activeStore = resolveContextStore(context);
+    const toolCallId = randomUUID();
+    const title = clipText(body.title, 100);
+    const category = clipText(body.category || 'other', 80);
+
+    setContextCurrentTool(context, {
+      toolName: 'write-experience',
+      toolKind: 'bridge',
+      toolStepId: toolCallId,
+      inferred: false,
+      request: {
+        title,
+        category,
+      },
+    });
+
+    try {
+      ensureToolAllowed(context, 'write-experience', {
+        title,
+        category,
+      });
+
+      const result = createConversationExperienceDraft(activeStore, context.conversationId, body, {
+        agentId: context.agentId,
+        agentName: context.agentName,
+        turnId: context.turnId,
+        assistantMessageId: context.assistantMessageId,
+      });
+      const response = {
+        ok: true,
+        draft: result.draft,
+        experienceDrafts: result.experienceDrafts,
+      };
+
+      broadcastEvent('conversation_experience_draft_updated', {
+        conversationId: context.conversationId,
+        draft: result.draft,
+        experienceDrafts: result.experienceDrafts,
+      });
+      broadcastConversationSummary(context.conversationId);
+
+      tryAppendInvocationEvent(context, 'agent_tool_call', {
+        schemaVersion: 1,
+        toolCallId,
+        tool: 'write-experience',
+        status: 'succeeded',
+        durationMs: Date.now() - startedAt,
+        invocationId: context.invocationId,
+        conversationId: context.conversationId,
+        turnId: context.turnId,
+        agentId: context.agentId,
+        agentName: context.agentName,
+        assistantMessageId: context.assistantMessageId,
+        request: {
+          title,
+          category,
+        },
+        result: {
+          draftId: result.draft && result.draft.id ? result.draft.id : null,
+          draftCount: Array.isArray(result.experienceDrafts) ? result.experienceDrafts.length : 0,
+        },
+      });
+
+      return response;
+    } catch (error) {
+      const errorValue = error as any;
+      tryAppendInvocationEvent(context, 'agent_tool_call', {
+        schemaVersion: 1,
+        toolCallId,
+        tool: 'write-experience',
+        status: 'failed',
+        durationMs: Date.now() - startedAt,
+        invocationId: context.invocationId,
+        conversationId: context.conversationId,
+        turnId: context.turnId,
+        agentId: context.agentId,
+        agentName: context.agentName,
+        assistantMessageId: context.assistantMessageId,
+        request: {
+          title,
+          category,
+        },
+        error: {
+          statusCode: Number.isInteger(errorValue && errorValue.statusCode) ? errorValue.statusCode : null,
+          message: clipText(errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Unknown error')),
+          ...(Array.isArray(errorValue && errorValue.issues) ? { issues: errorValue.issues.slice(0, 5) } : {}),
+        },
+      });
+
+      if (errorValue && errorValue.statusCode) {
+        throw error;
+      }
+
+      throw createHttpError(400, errorValue && errorValue.message ? String(errorValue.message) : 'Failed to write experience draft');
+    } finally {
+      setContextCurrentTool(context, null);
+    }
+  }
+
   function handleUpdateMemory(body: any = {}) {
     const startedAt = Date.now();
     const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
@@ -3409,6 +3512,7 @@ export function createAgentToolBridge(options: any = {}) {
     handleSandboxWrite,
     handleSaveMemory,
     handleSearchMemory,
+    handleWriteExperience,
     handleSearchMessages,
     handleSuggestGoal,
     handleUpdateGoalChecklist,

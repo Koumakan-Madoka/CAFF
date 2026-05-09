@@ -1,0 +1,5 @@
+{"file":".trellis/spec/runtime/agent-runtime.md","reason":"Documented write-experience CLI/tool guidance, safety limits, and prompt contract"}
+{"file":".trellis/spec/backend/conversation-digest.md","reason":"Documented digest experience absorption, source draft lifecycle, and JSON repair retry behavior"}
+{"file":".trellis/spec/runtime/skill-extraction.md","reason":"Documented source-backed Skill draft generation and create/update target confirmation contract"}
+{"file":".trellis/spec/backend/index.md","reason":"Indexed backend conversation digest contract"}
+{"file":".trellis/spec/runtime/index.md","reason":"Indexed runtime Skill extraction contract"}

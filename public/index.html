@@ -114,6 +114,14 @@
             <div id="participant-list" class="participant-list"></div>
           </div>
 
+          <div id="skill-draft-alert" class="skill-draft-alert hidden" role="status" aria-live="polite">
+            <div>
+              <p class="eyebrow">经验复用</p>
+              <p id="skill-draft-alert-text">有 Skill 草稿待确认。</p>
+            </div>
+            <button id="skill-draft-alert-button" class="secondary-button" type="button">查看草稿</button>
+          </div>
+
           <div id="message-list" class="message-list"></div>
 
           <form id="composer-form" class="composer">
@@ -454,6 +462,14 @@
       </section>
     </aside>
 
+    <button
+      id="skill-draft-toggle-button"
+      class="secondary-button skill-draft-floating-button hidden"
+      type="button"
+      aria-expanded="false"
+      aria-controls="skill-draft-drawer"
+    >Skill 草稿</button>
+
     <aside id="conversation-digest-drawer" class="session-goal-drawer conversation-digest-drawer hidden" aria-hidden="true">
       <section class="session-goal-drawer-panel" role="dialog" aria-labelledby="conversation-digest-drawer-title">
         <div class="panel-header">
@@ -476,6 +492,28 @@
           </div>
         </div>
         <div id="conversation-digest-list" class="conversation-digest-list"></div>
+      </section>
+    </aside>
+
+    <aside id="skill-draft-drawer" class="session-goal-drawer skill-draft-drawer hidden" aria-hidden="true">
+      <section class="session-goal-drawer-panel" role="dialog" aria-labelledby="skill-draft-drawer-title">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">Skill Drafts</p>
+            <h2 id="skill-draft-drawer-title">Skill 草稿</h2>
+          </div>
+          <button id="skill-draft-close-button" class="ghost-button" type="button">收起</button>
+        </div>
+
+        <p id="skill-draft-status" class="session-goal-status-badge active">当前没有待确认草稿</p>
+        <div class="session-goal-action-card">
+          <div class="section-row">
+            <span class="section-label">经验复用审批</span>
+            <span class="section-hint">保存后才会写入项目技能库</span>
+          </div>
+          <p class="muted small-note">自动或手动提炼出的经验会先停在这里，确认无误后再保存为项目 Skill。</p>
+        </div>
+        <div id="skill-draft-list" class="conversation-digest-list"></div>
       </section>
     </aside>
 

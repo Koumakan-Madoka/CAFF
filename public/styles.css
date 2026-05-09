@@ -643,6 +643,42 @@ textarea {
   gap: 0.75rem;
 }
 
+.skill-draft-alert {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.85rem;
+  padding: 0.85rem 0.95rem;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(91, 141, 239, 0.26);
+  background: linear-gradient(135deg, rgba(91, 141, 239, 0.14), rgba(255, 255, 255, 0.82));
+  box-shadow: 0 10px 26px rgba(91, 141, 239, 0.08);
+}
+
+.skill-draft-alert p {
+  margin: 0;
+}
+
+.skill-draft-alert button {
+  flex: 0 0 auto;
+}
+
+.skill-draft-floating-button {
+  position: fixed;
+  left: 1.25rem;
+  bottom: 1.25rem;
+  z-index: 8;
+  min-width: 9.2rem;
+  padding: 0.9rem 1.15rem;
+  border: 1px solid rgba(91, 141, 239, 0.28);
+  background: linear-gradient(135deg, #5b8def, #2a9d8f);
+  box-shadow: 0 18px 46px rgba(91, 141, 239, 0.28);
+}
+
+.skill-draft-floating-button:hover:not(:disabled) {
+  transform: translateY(-2px);
+}
+
 .participant-list {
   display: flex;
   flex-wrap: wrap;
@@ -840,6 +876,15 @@ textarea {
 .message-card.failed {
   border-color: rgba(176, 68, 68, 0.26);
   background: linear-gradient(135deg, rgba(176, 68, 68, 0.08), rgba(255, 252, 246, 0.92));
+}
+
+.message-card.digest-status {
+  border-color: rgba(42, 157, 143, 0.22);
+  background: linear-gradient(135deg, rgba(42, 157, 143, 0.08), rgba(255, 252, 246, 0.94));
+}
+
+.message-card.digest-status::before {
+  background: rgba(42, 157, 143, 0.42);
 }
 
 .message-card.live-preview {
@@ -2386,6 +2431,50 @@ textarea {
   gap: 0.8rem;
 }
 
+.conversation-digest-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.45rem;
+}
+
+.conversation-digest-subsection {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.skill-draft-card {
+  border-color: rgba(91, 141, 239, 0.22);
+  background: rgba(91, 141, 239, 0.08);
+}
+
+.skill-draft-drawer .session-goal-drawer-panel {
+  border-color: rgba(91, 141, 239, 0.34);
+}
+
+.skill-draft-preview {
+  color: var(--text);
+}
+
+.skill-draft-preview summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.skill-draft-preview pre {
+  max-height: 260px;
+  overflow: auto;
+  margin: 0.65rem 0 0;
+  padding: 0.75rem;
+  border-radius: var(--radius-sm);
+  background: rgba(34, 49, 63, 0.08);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
 .conversation-digest-summary {
   margin: 0;
   color: var(--text);
@@ -2704,6 +2793,13 @@ textarea {
   .two-column-grid,
   .three-column-grid {
     grid-template-columns: 1fr;
+  }
+
+  .skill-draft-floating-button {
+    left: 0.8rem;
+    bottom: 0.8rem;
+    min-width: 0;
+    padding: 0.8rem 1rem;
   }
 }
 

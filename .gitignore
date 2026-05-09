@@ -13,6 +13,7 @@ build/
 .pi-sandbox/
 .tmp/
 .tmp-clowder-ai/
+.trellis/workspace/*.json
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal

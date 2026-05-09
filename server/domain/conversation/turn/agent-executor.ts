@@ -912,6 +912,7 @@ const LIVE_TOOL_BRIDGE_HINTS = [
   { token: 'suggest-goal', toolName: 'suggest-goal' },
   { token: 'update-goal-checklist', toolName: 'update-goal-checklist' },
   { token: 'save-memory', toolName: 'save-memory' },
+  { token: 'write-experience', toolName: 'write-experience' },
   { token: 'update-memory', toolName: 'update-memory' },
   { token: 'forget-memory', toolName: 'forget-memory' },
   { token: 'list-participants', toolName: 'participants' },
@@ -1246,6 +1247,10 @@ function updateStageCurrentTool(stage: any, turnState: any, emitTurnProgress: an
   return true;
 }
 
+async function waitForAssistantMessageCompleted(callback: any, message: any) {
+  await Promise.resolve().then(() => callback(message));
+}
+
 export function createAgentExecutor(options: any = {}) {
   const store = options.store;
   const skillRegistry = options.skillRegistry;
@@ -1519,6 +1524,7 @@ export function createAgentExecutor(options: any = {}) {
         'search-messages': 'optional',
         'list-memories': 'optional',
         'save-memory': 'optional',
+        'write-experience': 'optional',
         'update-memory': 'optional',
         'forget-memory': 'optional',
         participants: 'optional',
@@ -1617,6 +1623,7 @@ export function createAgentExecutor(options: any = {}) {
     stage.heartbeatCount = 0;
     stage.replyLength = 0;
     stage.preview = '';
+    stage.finalContent = '';
     stage.errorMessage = '';
     stage.lastTextDeltaAt = null;
     applyStageCurrentTool(stage, null);
@@ -1885,6 +1892,7 @@ export function createAgentExecutor(options: any = {}) {
       stage.heartbeatCount = result.heartbeatCount || 0;
       stage.replyLength = publicReply.length;
       stage.preview = clipText(publicReply, TURN_PREVIEW_LENGTH);
+      stage.finalContent = publicReply;
       stage.errorMessage = '';
       stage.lastTextDeltaAt = stage.lastTextDeltaAt || null;
       stage.endedAt = nowIso();
@@ -1943,15 +1951,18 @@ export function createAgentExecutor(options: any = {}) {
         privateHandoffCount,
       });
 
+      emitTurnProgress(turnState);
       broadcastEvent('conversation_message_updated', { conversationId, message: assistantMessageDone });
       broadcastConversationSummary(conversationId);
-      emitTurnProgress(turnState);
 
       if (onAssistantMessageCompleted) {
-        void Promise.resolve(onAssistantMessageCompleted(assistantMessageDone)).catch((error: any) => {
-          const errorMessage = error && error.message ? error.message : String(error || 'Unknown error');
+        try {
+          await waitForAssistantMessageCompleted(onAssistantMessageCompleted, assistantMessageDone);
+        } catch (error) {
+          const errorValue = error as any;
+          const errorMessage = errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Unknown error');
           console.error('[assistant-message-hook] Failed to handle completed assistant message:', errorMessage);
-        });
+        }
       }
 
       if (!allowHandoffs) {

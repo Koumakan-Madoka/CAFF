@@ -19,6 +19,7 @@ const state = {
   messageToolTraceById: new Map(),
   messageToolTraceTimers: new Map(),
   optimisticMessagesByConversation: new Map(),
+  digestStatusByConversation: new Map(),
   bindingFeishuChat: false,
   feishuBindingNotice: '',
   feishuBindingNoticeConversationId: null,
@@ -60,6 +61,7 @@ const dom = {
   conversationTitleDisplay: /** @type {HTMLElement | null} */ (document.getElementById('conversation-title-display')),
   conversationModeBadge: /** @type {HTMLElement | null} */ (document.getElementById('conversation-mode-badge')),
   conversationMeta: /** @type {HTMLElement | null} */ (document.getElementById('conversation-meta')),
+  skillDraftToggleButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('skill-draft-toggle-button')),
   conversationDigestToggleButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('conversation-digest-toggle-button')),
   summaryMemoryToggleButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('summary-memory-toggle-button')),
   sessionGoalToggleButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('session-goal-toggle-button')),
@@ -93,6 +95,10 @@ const dom = {
   conversationDigestCreateButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('conversation-digest-create-button')),
   conversationDigestCompactButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('conversation-digest-compact-button')),
   conversationDigestList: /** @type {HTMLElement | null} */ (document.getElementById('conversation-digest-list')),
+  skillDraftDrawer: /** @type {HTMLElement | null} */ (document.getElementById('skill-draft-drawer')),
+  skillDraftCloseButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('skill-draft-close-button')),
+  skillDraftStatus: /** @type {HTMLElement | null} */ (document.getElementById('skill-draft-status')),
+  skillDraftList: /** @type {HTMLElement | null} */ (document.getElementById('skill-draft-list')),
   summaryMemoryDrawer: /** @type {HTMLElement | null} */ (document.getElementById('summary-memory-drawer')),
   summaryMemoryCloseButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('summary-memory-close-button')),
   summaryMemoryStatus: /** @type {HTMLElement | null} */ (document.getElementById('summary-memory-status')),
@@ -110,6 +116,9 @@ const dom = {
   summaryMemoryBackfillButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('summary-memory-backfill-button')),
   summaryMemoryResults: /** @type {HTMLElement | null} */ (document.getElementById('summary-memory-results')),
   participantList: /** @type {HTMLDivElement | null} */ (document.getElementById('participant-list')),
+  skillDraftAlert: /** @type {HTMLElement | null} */ (document.getElementById('skill-draft-alert')),
+  skillDraftAlertText: /** @type {HTMLElement | null} */ (document.getElementById('skill-draft-alert-text')),
+  skillDraftAlertButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('skill-draft-alert-button')),
   messageList: /** @type {HTMLDivElement | null} */ (document.getElementById('message-list')),
   composerForm: /** @type {HTMLFormElement | null} */ (document.getElementById('composer-form')),
   composerInput: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('composer-input')),
@@ -214,12 +223,40 @@ async function submitDigestCommand(conversationId, command) {
   }
 
   renderAll();
-  if (result.deleted) {
+  if (command.action === 'extract-skill' && result.draft && result.draft.skill) {
+    showToast(`已生成 Skill 草稿：${result.draft.skill.name}`);
+  } else if (result.deleted) {
     showToast('会话摘要已删除');
   } else if (result.compacted) {
     showToast(`会话摘要已压缩 · ${conversationDigestUtils.formatDigestStatus(result.conversation)}`);
   } else {
     showToast(conversationDigestUtils.formatDigestStatus(result.conversation));
+  }
+  return result;
+}
+
+async function submitSkillDraftCommand(conversationId, draftId, action, body = {}) {
+  const normalizedAction = String(action || '').trim();
+  const result = await fetchJson(
+    `/api/conversations/${encodeURIComponent(conversationId)}/skill-drafts/${encodeURIComponent(draftId)}/${encodeURIComponent(normalizedAction)}`,
+    {
+      method: 'POST',
+      body,
+    }
+  );
+
+  applyConversationResponse(result);
+  if (result.summary) {
+    mergeConversationSummary(result.summary);
+  }
+
+  renderAll();
+  if (normalizedAction === 'confirm' && result.skill) {
+    showToast(`Skill 已保存：${result.skill.id}`);
+  } else if (normalizedAction === 'reject') {
+    showToast('Skill 草稿已移除');
+  } else {
+    showToast('Skill 草稿已更新');
   }
   return result;
 }
@@ -712,6 +749,7 @@ function setupChatModules() {
             buildAgentAvatarElement,
             canInspectToolTrace,
             displayedMessageBody,
+            digestStatusForConversation,
             formatDateTime,
             isPrivateTimelineMessage,
             liveStageForMessage,
@@ -788,6 +826,7 @@ function setupChatModules() {
           helpers: {
             formatDateTime,
             submitDigestCommand,
+            submitSkillDraftCommand,
           },
           showToast,
         })
@@ -824,6 +863,7 @@ function setupChatModules() {
             closeMentionMenu,
             conversationTypeLabel,
             isConversationBusy,
+            digestStatusForConversation,
             isUndercoverConversation,
             isWerewolfConversation,
             liveDraftIdleMs: LIVE_DRAFT_IDLE_MS,
@@ -1976,6 +2016,17 @@ function renderSummaryMemoryPanel() {
   summaryMemoryPanelController.render();
 }
 
+function openSkillDraftPanel() {
+  if (typeof conversationDigestPanelController.openSkillDrafts === 'function') {
+    conversationDigestPanelController.openSkillDrafts();
+    return;
+  }
+
+  if (dom.conversationDigestToggleButton) {
+    dom.conversationDigestToggleButton.click();
+  }
+}
+
 function selectedConversationParticipants() {
   return conversationSettingsController.selectedParticipants();
 }
@@ -2074,6 +2125,62 @@ function queueFailureForConversation(conversationId) {
     lastFailureAt: String(failure.lastFailureAt || ''),
     lastFailureMessage: String(failure.lastFailureMessage || ''),
   };
+}
+
+function digestStatusForConversation(conversationId) {
+  const normalizedConversationId = String(conversationId || '').trim();
+
+  if (!normalizedConversationId || !state.digestStatusByConversation) {
+    return null;
+  }
+
+  return state.digestStatusByConversation.get(normalizedConversationId) || null;
+}
+
+function applyConversationDigestStatus(payload) {
+  const conversationId = String(payload && payload.conversationId || '').trim();
+
+  if (!conversationId) {
+    return;
+  }
+
+  const status = String(payload && payload.status || '').trim();
+
+  if (status === 'running') {
+    const model = payload && payload.model && typeof payload.model === 'object' ? payload.model : null;
+    const modelTrace = payload && payload.modelTrace && typeof payload.modelTrace === 'object' ? payload.modelTrace : null;
+    state.digestStatusByConversation.set(conversationId, {
+      status,
+      reason: String(payload && payload.reason || ''),
+      phase: String(payload && payload.phase || ''),
+      message: String(payload && payload.message || '正在整理本轮经验，并写入会话摘要…'),
+      pendingExperienceDraftCount: Math.max(0, Number(payload && payload.pendingExperienceDraftCount || 0)),
+      model: model
+        ? {
+          provider: String(model.provider || ''),
+          model: String(model.model || ''),
+          thinking: String(model.thinking || ''),
+          label: String(model.label || ''),
+        }
+        : null,
+      modelTrace: modelTrace
+        ? {
+          eventCount: Math.max(0, Number(modelTrace.eventCount || 0)),
+          outputPreview: String(modelTrace.outputPreview || ''),
+          thinkingPreview: String(modelTrace.thinkingPreview || ''),
+          runId: String(modelTrace.runId || ''),
+          updatedAt: String(modelTrace.updatedAt || ''),
+        }
+        : null,
+      updatedAt: new Date().toISOString(),
+    });
+  } else {
+    state.digestStatusByConversation.delete(conversationId);
+  }
+
+  if (state.selectedConversationId === conversationId) {
+    renderConversationPane();
+  }
 }
 
 function mergeRuntimePayload(payload) {
@@ -2321,6 +2428,7 @@ function turnProgressSignature(turn) {
           messageId: agent.messageId || null,
           replyLength: agent.replyLength || 0,
           preview: agent.preview || '',
+          finalContent: agent.finalContent || '',
           errorMessage: agent.errorMessage || '',
           hop: agent.hop || 0,
           lastTextDeltaAt: agent.lastTextDeltaAt || null,
@@ -2349,6 +2457,7 @@ function agentSlotProgressSignature(slot) {
     runId: slot.runId || null,
     replyLength: slot.replyLength || 0,
     preview: slot.preview || '',
+    finalContent: slot.finalContent || '',
     errorMessage: slot.errorMessage || '',
     lastTextDeltaAt: slot.lastTextDeltaAt || null,
     currentToolName: slot.currentToolName || '',
@@ -2594,13 +2703,23 @@ async function exportMessageSession(conversationId, message) {
   }, 0);
 }
 
+function isActiveLiveStage(stage) {
+  return Boolean(stage && (stage.status === 'queued' || stage.status === 'running' || stage.status === 'terminating'));
+}
+
+function isFinalizingStageWithContent(stage) {
+  return Boolean(stage && stage.status === 'completed' && typeof stage.finalContent === 'string' && stage.finalContent);
+}
+
 function liveStageForMessage(conversationId, activeTurn, activeAgentSlots, messageId) {
   if (!messageId) {
     return null;
   }
 
   if (activeTurn && Array.isArray(activeTurn.agents)) {
-    const activeTurnStage = activeTurn.agents.find((agent) => agent.messageId === messageId) || null;
+    const activeTurnStage = activeTurn.agents.find(
+      (agent) => agent.messageId === messageId && (isActiveLiveStage(agent) || isFinalizingStageWithContent(agent))
+    ) || null;
 
     if (activeTurnStage) {
       return activeTurnStage;
@@ -2613,7 +2732,9 @@ function liveStageForMessage(conversationId, activeTurn, activeAgentSlots, messa
       ? activeAgentSlotsForConversation(conversationId)
       : [];
 
-  return slotStages.find((slot) => slot && slot.assistantMessageId === messageId) || null;
+  return slotStages.find(
+    (slot) => slot && slot.assistantMessageId === messageId && (isActiveLiveStage(slot) || isFinalizingStageWithContent(slot))
+  ) || null;
 }
 
 function liveStageLabel(stage) {
@@ -2657,8 +2778,22 @@ function liveStageLabel(stage) {
   return '';
 }
 
+function hasMeaningfulMessageContent(message) {
+  const content = normalizeEscapedMessageText(message && message.content ? message.content : '').trim();
+
+  return Boolean(content && content !== 'Thinking...');
+}
+
 function displayedMessageBody(message, stage) {
+  if (isFinalizingStageWithContent(stage)) {
+    return normalizeEscapedMessageText(stage.finalContent);
+  }
+
   if (!stage || message.status === 'completed' || message.status === 'failed') {
+    return messageDisplayText(message);
+  }
+
+  if (hasMeaningfulMessageContent(message)) {
     return messageDisplayText(message);
   }
 
@@ -3020,8 +3155,16 @@ function connectEventStream() {
     scheduleConversationRefresh(payload.conversationId);
   });
 
+  source.addEventListener('conversation_digest_status', (event) => {
+    const payload = JSON.parse(event.data);
+    applyConversationDigestStatus(payload);
+  });
+
   source.addEventListener('conversation_digest_updated', (event) => {
     const payload = JSON.parse(event.data);
+    if (payload.conversationId) {
+      state.digestStatusByConversation.delete(payload.conversationId);
+    }
     if (payload.summary) {
       mergeConversationSummary(payload.summary);
     }
@@ -3029,6 +3172,14 @@ function connectEventStream() {
   });
 
   source.addEventListener('conversation_digest_deleted', (event) => {
+    const payload = JSON.parse(event.data);
+    if (payload.summary) {
+      mergeConversationSummary(payload.summary);
+    }
+    scheduleConversationRefresh(payload.conversationId);
+  });
+
+  source.addEventListener('conversation_skill_draft_updated', (event) => {
     const payload = JSON.parse(event.data);
     if (payload.summary) {
       mergeConversationSummary(payload.summary);
@@ -3374,6 +3525,10 @@ function bindEvents() {
     dom.werewolfResetButton.addEventListener('click', async () => {
       await handleWerewolfAction('reset', {}, '对局已重置');
     });
+  }
+
+  if (dom.skillDraftAlertButton) {
+    dom.skillDraftAlertButton.addEventListener('click', openSkillDraftPanel);
   }
 
   dom.conversationList.addEventListener('click', async (event) => {
