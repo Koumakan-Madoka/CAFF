@@ -1,0 +1,52 @@
+{
+  "id": "experience-write-tool",
+  "name": "experience-write-tool",
+  "title": "Experience Write Tool",
+  "description": "Add a controlled agent tool for writing pending reusable experience drafts, then let conversation digests and Skill draft generation prioritize those drafts.",
+  "status": "completed",
+  "dev_type": "fullstack",
+  "scope": "memory",
+  "package": null,
+  "priority": "P2",
+  "creator": "咕咕嘎嘎",
+  "assignee": "咕咕嘎嘎",
+  "createdAt": "2026-05-08",
+  "completedAt": "2026-05-09",
+  "branch": "feat/browser-cli-tool",
+  "base_branch": "main",
+  "worktree_path": null,
+  "current_phase": 1,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "test"
+    },
+    {
+      "phase": 3,
+      "action": "update-spec"
+    }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "server/domain/conversation/conversation-digest.ts",
+    "server/domain/conversation/skill-draft.ts",
+    "server/domain/runtime/agent-tool-bridge.ts",
+    "server/domain/conversation/turn/agent-prompt.ts",
+    "server/api/conversations-controller.ts",
+    "public/chat/conversation-digest-panel.js",
+    "tests/smoke/server-smoke.test.js",
+    "tests/runtime/agent-tool-bridge.test.js",
+    ".trellis/spec/backend/conversation-digest.md",
+    ".trellis/spec/runtime/skill-extraction.md",
+    ".trellis/spec/runtime/agent-runtime.md"
+  ],
+  "notes": "MVP intentionally avoids automatic per-turn evidence extraction. Agents may write bounded pending experience drafts; humans still approve Skill files before persistence."
+}

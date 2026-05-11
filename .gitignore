@@ -6,12 +6,14 @@ build/
 
 # Local caches
 .npm-cache/
+.playwright-cli/
 
 # Runtime data
 .pi/
 .pi-sandbox/
 .tmp/
 .tmp-clowder-ai/
+.trellis/workspace/*.json
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal

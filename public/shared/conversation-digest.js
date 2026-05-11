@@ -30,6 +30,8 @@
           summary,
           createdAt,
           updatedAt: String((digest && digest.updatedAt) || createdAt).trim(),
+          createdBy: String((digest && digest.createdBy) || '').trim(),
+          triggerReason: String((digest && digest.triggerReason) || '').trim(),
           compactedAt: String((digest && digest.compactedAt) || '').trim(),
           sourceDigestIds: Array.isArray(digest && digest.sourceDigestIds) ? digest.sourceDigestIds : [],
           messageRange: digest && digest.messageRange && typeof digest.messageRange === 'object' ? digest.messageRange : {},
@@ -70,6 +72,8 @@
       signalFlags: {
         decision: Boolean(signalFlags.decision),
         code: Boolean(signalFlags.code),
+        codeChange: Boolean(signalFlags.codeChange),
+        fileArtifact: Boolean(signalFlags.fileArtifact),
         errorFix: Boolean(signalFlags.errorFix),
       },
     };
@@ -83,8 +87,10 @@
       labels.push('决策');
     }
 
-    if (flags.code) {
-      labels.push('代码');
+    if (flags.codeChange || flags.code) {
+      labels.push('代码变更');
+    } else if (flags.fileArtifact) {
+      labels.push('代码线索');
     }
 
     if (flags.errorFix) {
@@ -108,6 +114,52 @@
     const triggerText = state.lastTriggerReason ? `，上次触发：${state.lastTriggerReason}` : '';
 
     return `${pendingText}${signalText}${triggerText}`;
+  }
+
+  function skillDraftsForConversation(conversation) {
+    const metadata = metadataForConversation(conversation);
+    const drafts = metadata && Array.isArray(metadata.skillDrafts) ? metadata.skillDrafts : [];
+
+    return drafts
+      .map((draft) => {
+        const id = String((draft && draft.id) || '').trim();
+        const skill = draft && draft.skill && typeof draft.skill === 'object' ? draft.skill : null;
+        const skillId = String((skill && skill.id) || '').trim();
+        const name = String((skill && skill.name) || '').trim();
+        const description = String((skill && skill.description) || '').trim();
+        const body = String((skill && skill.body) || '').trim();
+
+        if (!id || !skillId || !name || !description || !body) {
+          return null;
+        }
+
+        const source = draft && draft.source && typeof draft.source === 'object' ? draft.source : {};
+
+        return {
+          ...draft,
+          id,
+          status: String((draft && draft.status) || 'pending').trim() || 'pending',
+          createdAt: String((draft && draft.createdAt) || '').trim(),
+          updatedAt: String((draft && draft.updatedAt) || '').trim(),
+          source: {
+            ...source,
+            type: String((source && source.type) || 'digest').trim() || 'digest',
+            digestId: String((source && source.digestId) || '').trim(),
+            digestKind: String((source && source.digestKind) || 'entry').trim() || 'entry',
+            trigger: String((source && (source.trigger || source.triggerReason)) || '').trim(),
+            createdBy: String((source && source.createdBy) || '').trim(),
+            autoCreated: Boolean(source && source.autoCreated),
+          },
+          skill: {
+            ...skill,
+            id: skillId,
+            name,
+            description,
+            body,
+          },
+        };
+      })
+      .filter(Boolean);
   }
 
   function latestDigest(conversation) {
@@ -148,5 +200,6 @@
     formatAutoDigestStatus,
     messageRangeText,
     sectionItems,
+    skillDraftsForConversation,
   };
 })();

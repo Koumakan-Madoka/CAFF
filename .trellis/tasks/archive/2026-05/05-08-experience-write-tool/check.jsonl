@@ -1,0 +1,11 @@
+{"file":".agents/skills/finish-work/SKILL.md","reason":"Pre-commit quality checklist for code, specs, tests, and cross-layer validation"}
+{"file":".agents/skills/check/SKILL.md","reason":"Project quality verification workflow"}
+{"file":".trellis/spec/backend/conversation-digest.md","reason":"Verify digest model JSON repair, experience absorption, and source-backed Skill draft trigger contract"}
+{"file":".trellis/spec/runtime/agent-runtime.md","reason":"Verify agent tool guidance, bridge command contract, and prompt safety rules"}
+{"file":".trellis/spec/runtime/skill-extraction.md","reason":"Verify Skill draft priority, create/update target handling, and human confirmation gate"}
+{"file":".trellis/spec/frontend/ui-structure.md","reason":"Verify browser panel changes follow UI module conventions"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Verify API/domain/runtime/UI data flow consistency"}
+{"file":"tests/runtime/agent-chat-tools.test.js","reason":"Targeted CLI regression tests for write-experience"}
+{"file":"tests/runtime/agent-tool-bridge.test.js","reason":"Targeted bridge regression tests for write-experience bounds and safety rejection"}
+{"file":"tests/runtime/turn-orchestrator.test.js","reason":"Targeted prompt/orchestration regression tests"}
+{"file":"tests/smoke/server-smoke.test.js","reason":"Smoke regression tests for digest absorption, Skill draft gating, target update, and JSON repair"}

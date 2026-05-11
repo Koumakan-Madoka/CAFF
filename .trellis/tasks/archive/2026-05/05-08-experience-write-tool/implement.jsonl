@@ -1,0 +1,17 @@
+{"file":".trellis/tasks/05-08-experience-write-tool/prd.md","reason":"Experience Write Tool product contract and acceptance criteria"}
+{"file":"server/domain/conversation/experience-draft.ts","reason":"Core bounded experience draft schema, validation, lifecycle, and metadata persistence"}
+{"file":"server/domain/conversation/conversation-digest.ts","reason":"Digest experience absorption, sourceDraftId handling, model JSON repair diagnostics, and auto Skill draft trigger path"}
+{"file":"server/domain/conversation/skill-draft.ts","reason":"Skill draft generation priority, source-backed auto-create gate, and create/update target selection"}
+{"file":"server/domain/runtime/agent-tool-bridge.ts","reason":"Agent write-experience bridge command validation and response contract"}
+{"file":"server/api/agent-tools-controller.ts","reason":"HTTP entry point for agent tool commands"}
+{"file":"server/api/conversations-controller.ts","reason":"Conversation digest and Skill draft API endpoints"}
+{"file":"server/app/create-server.ts","reason":"Assistant-message completion hooks for digest and source-backed Skill draft creation"}
+{"file":"server/domain/conversation/turn/agent-prompt.ts","reason":"Prompt guidance for when agents should write reusable experience"}
+{"file":"server/domain/conversation/turn/agent-executor.ts","reason":"Agent turn plumbing for tool metadata and source context"}
+{"file":"lib/agent-chat-tools.ts","reason":"CLI write-experience command exposed to agents"}
+{"file":"public/chat/conversation-digest-panel.js","reason":"Digest and Skill draft UI controls, target display, and confirmation flow"}
+{"file":"public/shared/conversation-digest.js","reason":"Shared browser helpers for digest and Skill draft API calls"}
+{"file":"tests/smoke/server-smoke.test.js","reason":"End-to-end regression coverage for digest absorption, auto Skill draft gating, update target flow, and JSON repair"}
+{"file":"tests/runtime/agent-tool-bridge.test.js","reason":"Runtime tool validation and persistence regression coverage"}
+{"file":"tests/runtime/agent-chat-tools.test.js","reason":"CLI write-experience command regression coverage"}
+{"file":"tests/runtime/turn-orchestrator.test.js","reason":"Prompt and turn orchestration regression coverage"}

@@ -128,3 +128,36 @@ Create detailed flow docs when:
 - Multiple teams are involved
 - Data format is complex
 - Feature has caused bugs before
+
+## Completed-Stage Display During Blocking Post-Reply Work
+
+**Pattern**: When a completed stage (main turn or side slot) is waiting on blocking post-reply work (e.g., digest generation), the UI must not fall back to a clipped `preview`, and the completed message should be broadcast before the post-reply hook blocks routing.
+
+### Why This Is a Cross-Layer Bug
+- **Backend** defines the completed stage and knows the full final reply.
+- **SSE contract** has `turn_progress`/`agent_slot_progress` with `preview` (clipped) and `finalContent` (full) fields.
+- **Frontend** must choose the correct field depending on completion state.
+- If either side assumes the wrong field at the wrong time, the user sees a truncated message.
+
+### Fixed Contract (applies to any completed stage in blocking post-reply work)
+1. Backend stores the full reply as `finalContent` on the in-memory completed stage.
+2. Backend exposes `finalContent` in `turn_progress` / `agent_slot_progress` only for completed finalizing stages.
+3. Frontend uses `finalContent` for completed stages during digest wait, then already-populated non-placeholder message content, falling back to clipped `preview` only when no full content is available.
+4. Frontend shows `conversation_digest_status` as a temporary timeline card so users can see digest work while routing waits, including bounded model thinking/output previews when model-mode digest events expose them.
+
+### Root Cause Category
+**C. Change Propagation Failure** — `finalContent` existed on the runtime payload but was not plumbed through the UI display path for the digest-wait window. Also **E. Implicit Assumption** — assumed `preview` was sufficient for all stages, but completions waiting on post-reply hooks and bridge-updated messages need the full text.
+
+### Prevention
+| Priority | Mechanism | Specific Action |
+|----------|-----------|-----------------|
+| P0 | Spec | Document the `finalContent` contract in `conversation-turn-queue.md` §3 |
+| P0 | Architecture | Only expose `finalContent` for completed finalizing stages; never for streaming |
+| P1 | Test | Verify UI behavior during digest-blocking window in integration tests |
+
+### Checklist
+- [ ] Backend: store full reply as `finalContent` on completed stage
+- [ ] Backend: expose `finalContent` only in completed-stage progress summaries
+- [ ] Frontend: read `finalContent` for completed stages; prefer populated message content; fall back to `preview` otherwise
+- [ ] Frontend: render running digest status as a temporary timeline card, not only composer text
+- [ ] Spec: sync the payload contract in `conversation-turn-queue.md`

@@ -5,9 +5,14 @@
 
   const shared = window.CaffShared || {};
   const sessionGoalUtils = shared.sessionGoal;
+  const digestUtils = shared.conversationDigest;
 
   if (!sessionGoalUtils) {
     throw new Error('CaffShared.sessionGoal helper is required');
+  }
+
+  if (!digestUtils) {
+    throw new Error('CaffShared.conversationDigest helper is required');
   }
 
   chat.createConversationPaneRenderer = function createConversationPaneRenderer({ state, dom, helpers }) {
@@ -21,6 +26,7 @@
       closeMentionMenu,
       conversationTypeLabel,
       isConversationBusy,
+      digestStatusForConversation,
       isUndercoverConversation,
       isWerewolfConversation,
       liveDraftIdleMs,
@@ -39,6 +45,26 @@
       werewolfGameState,
     } = helpers;
 
+    function renderSkillDraftAlert(conversation) {
+      if (!dom.skillDraftAlert) {
+        return;
+      }
+
+      const drafts = digestUtils.skillDraftsForConversation(conversation);
+      const hasDrafts = drafts.length > 0;
+      dom.skillDraftAlert.classList.toggle('hidden', !hasDrafts);
+
+      if (dom.skillDraftAlertText) {
+        dom.skillDraftAlertText.textContent = hasDrafts
+          ? `有 ${drafts.length} 个 Skill 草稿待确认，保存后会写入当前项目技能库。`
+          : '没有待确认的 Skill 草稿。';
+      }
+
+      if (dom.skillDraftAlertButton) {
+        dom.skillDraftAlertButton.disabled = !hasDrafts;
+      }
+    }
+
     function render() {
       const conversation = state.currentConversation;
       const activeTurn = conversation ? activeTurnForConversation(conversation.id) : null;
@@ -56,6 +82,7 @@
         dom.conversationMeta.textContent = '选择一个房间后，这里会显示参与人格和消息记录。';
         dom.deleteConversationButton.disabled = true;
         renderParticipantList(null);
+        renderSkillDraftAlert(null);
         renderMessages(null, null, []);
         dom.composerInput.disabled = true;
         dom.stopButton.disabled = true;
@@ -119,6 +146,7 @@
         queuedAgentSlotCount > 0;
 
       renderParticipantList(conversation);
+      renderSkillDraftAlert(conversation);
       renderMessages(conversation, activeTurn, activeAgentSlots);
 
       const canStopTurn = Boolean(activeTurn) || activeAgentSlots.length > 0;
@@ -159,8 +187,11 @@
             : []
         );
       const activeSlotStopRequested = activeAgentSlots.some((slot) => slot.stopRequested);
+      const digestStatus = typeof digestStatusForConversation === 'function' ? digestStatusForConversation(conversation.id) : null;
 
-      if ((activeTurn && activeTurn.stopRequested) || activeSlotStopRequested) {
+      if (digestStatus && digestStatus.status === 'running') {
+        dom.composerStatus.textContent = digestStatus.message || '正在整理本轮经验，并写入会话摘要…';
+      } else if ((activeTurn && activeTurn.stopRequested) || activeSlotStopRequested) {
         const stoppingCount = activeStages.filter((agent) => agent.status === 'running' || agent.status === 'terminating').length;
         dom.composerStatus.textContent =
           stoppingCount > 1

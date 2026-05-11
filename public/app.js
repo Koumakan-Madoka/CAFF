@@ -19,11 +19,20 @@ const state = {
   messageToolTraceById: new Map(),
   messageToolTraceTimers: new Map(),
   optimisticMessagesByConversation: new Map(),
+  digestStatusByConversation: new Map(),
   bindingFeishuChat: false,
   feishuBindingNotice: '',
   feishuBindingNoticeConversationId: null,
   knownFeishuChats: [],
   loadingFeishuChats: false,
+  contextInspector: {
+    open: false,
+    loading: false,
+    errorMessage: '',
+    conversationId: '',
+    messageId: '',
+    snapshot: null,
+  },
 };
 
 const UNDERCOVER_TYPE = 'who_is_undercover';
@@ -60,6 +69,7 @@ const dom = {
   conversationTitleDisplay: /** @type {HTMLElement | null} */ (document.getElementById('conversation-title-display')),
   conversationModeBadge: /** @type {HTMLElement | null} */ (document.getElementById('conversation-mode-badge')),
   conversationMeta: /** @type {HTMLElement | null} */ (document.getElementById('conversation-meta')),
+  skillDraftToggleButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('skill-draft-toggle-button')),
   conversationDigestToggleButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('conversation-digest-toggle-button')),
   summaryMemoryToggleButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('summary-memory-toggle-button')),
   sessionGoalToggleButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('session-goal-toggle-button')),
@@ -81,6 +91,7 @@ const dom = {
   sessionGoalForm: /** @type {HTMLFormElement | null} */ (document.getElementById('session-goal-form')),
   sessionGoalObjective: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('session-goal-objective')),
   sessionGoalChecklist: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('session-goal-checklist')),
+  sessionGoalChecklistPresetButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('session-goal-checklist-preset-button')),
   sessionGoalSaveButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('session-goal-save-button')),
   sessionGoalPauseButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('session-goal-pause-button')),
   sessionGoalResumeButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('session-goal-resume-button')),
@@ -92,6 +103,10 @@ const dom = {
   conversationDigestCreateButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('conversation-digest-create-button')),
   conversationDigestCompactButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('conversation-digest-compact-button')),
   conversationDigestList: /** @type {HTMLElement | null} */ (document.getElementById('conversation-digest-list')),
+  skillDraftDrawer: /** @type {HTMLElement | null} */ (document.getElementById('skill-draft-drawer')),
+  skillDraftCloseButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('skill-draft-close-button')),
+  skillDraftStatus: /** @type {HTMLElement | null} */ (document.getElementById('skill-draft-status')),
+  skillDraftList: /** @type {HTMLElement | null} */ (document.getElementById('skill-draft-list')),
   summaryMemoryDrawer: /** @type {HTMLElement | null} */ (document.getElementById('summary-memory-drawer')),
   summaryMemoryCloseButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('summary-memory-close-button')),
   summaryMemoryStatus: /** @type {HTMLElement | null} */ (document.getElementById('summary-memory-status')),
@@ -108,7 +123,16 @@ const dom = {
   summaryMemoryRecentButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('summary-memory-recent-button')),
   summaryMemoryBackfillButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('summary-memory-backfill-button')),
   summaryMemoryResults: /** @type {HTMLElement | null} */ (document.getElementById('summary-memory-results')),
+  agentContextDrawer: /** @type {HTMLElement | null} */ (document.getElementById('agent-context-drawer')),
+  agentContextCloseButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('agent-context-close-button')),
+  agentContextStatus: /** @type {HTMLElement | null} */ (document.getElementById('agent-context-status')),
+  agentContextSummary: /** @type {HTMLElement | null} */ (document.getElementById('agent-context-summary')),
+  agentContextExportButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('agent-context-export-button')),
+  agentContextSectionList: /** @type {HTMLElement | null} */ (document.getElementById('agent-context-section-list')),
   participantList: /** @type {HTMLDivElement | null} */ (document.getElementById('participant-list')),
+  skillDraftAlert: /** @type {HTMLElement | null} */ (document.getElementById('skill-draft-alert')),
+  skillDraftAlertText: /** @type {HTMLElement | null} */ (document.getElementById('skill-draft-alert-text')),
+  skillDraftAlertButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('skill-draft-alert-button')),
   messageList: /** @type {HTMLDivElement | null} */ (document.getElementById('message-list')),
   composerForm: /** @type {HTMLFormElement | null} */ (document.getElementById('composer-form')),
   composerInput: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('composer-input')),
@@ -213,12 +237,40 @@ async function submitDigestCommand(conversationId, command) {
   }
 
   renderAll();
-  if (result.deleted) {
+  if (command.action === 'extract-skill' && result.draft && result.draft.skill) {
+    showToast(`已生成 Skill 草稿：${result.draft.skill.name}`);
+  } else if (result.deleted) {
     showToast('会话摘要已删除');
   } else if (result.compacted) {
     showToast(`会话摘要已压缩 · ${conversationDigestUtils.formatDigestStatus(result.conversation)}`);
   } else {
     showToast(conversationDigestUtils.formatDigestStatus(result.conversation));
+  }
+  return result;
+}
+
+async function submitSkillDraftCommand(conversationId, draftId, action, body = {}) {
+  const normalizedAction = String(action || '').trim();
+  const result = await fetchJson(
+    `/api/conversations/${encodeURIComponent(conversationId)}/skill-drafts/${encodeURIComponent(draftId)}/${encodeURIComponent(normalizedAction)}`,
+    {
+      method: 'POST',
+      body,
+    }
+  );
+
+  applyConversationResponse(result);
+  if (result.summary) {
+    mergeConversationSummary(result.summary);
+  }
+
+  renderAll();
+  if (normalizedAction === 'confirm' && result.skill) {
+    showToast(`Skill 已保存：${result.skill.id}`);
+  } else if (normalizedAction === 'reject') {
+    showToast('Skill 草稿已移除');
+  } else {
+    showToast('Skill 草稿已更新');
   }
   return result;
 }
@@ -711,6 +763,7 @@ function setupChatModules() {
             buildAgentAvatarElement,
             canInspectToolTrace,
             displayedMessageBody,
+            digestStatusForConversation,
             formatDateTime,
             isPrivateTimelineMessage,
             liveStageForMessage,
@@ -787,6 +840,7 @@ function setupChatModules() {
           helpers: {
             formatDateTime,
             submitDigestCommand,
+            submitSkillDraftCommand,
           },
           showToast,
         })
@@ -823,6 +877,7 @@ function setupChatModules() {
             closeMentionMenu,
             conversationTypeLabel,
             isConversationBusy,
+            digestStatusForConversation,
             isUndercoverConversation,
             isWerewolfConversation,
             liveDraftIdleMs: LIVE_DRAFT_IDLE_MS,
@@ -1975,6 +2030,17 @@ function renderSummaryMemoryPanel() {
   summaryMemoryPanelController.render();
 }
 
+function openSkillDraftPanel() {
+  if (typeof conversationDigestPanelController.openSkillDrafts === 'function') {
+    conversationDigestPanelController.openSkillDrafts();
+    return;
+  }
+
+  if (dom.conversationDigestToggleButton) {
+    dom.conversationDigestToggleButton.click();
+  }
+}
+
 function selectedConversationParticipants() {
   return conversationSettingsController.selectedParticipants();
 }
@@ -2073,6 +2139,62 @@ function queueFailureForConversation(conversationId) {
     lastFailureAt: String(failure.lastFailureAt || ''),
     lastFailureMessage: String(failure.lastFailureMessage || ''),
   };
+}
+
+function digestStatusForConversation(conversationId) {
+  const normalizedConversationId = String(conversationId || '').trim();
+
+  if (!normalizedConversationId || !state.digestStatusByConversation) {
+    return null;
+  }
+
+  return state.digestStatusByConversation.get(normalizedConversationId) || null;
+}
+
+function applyConversationDigestStatus(payload) {
+  const conversationId = String(payload && payload.conversationId || '').trim();
+
+  if (!conversationId) {
+    return;
+  }
+
+  const status = String(payload && payload.status || '').trim();
+
+  if (status === 'running') {
+    const model = payload && payload.model && typeof payload.model === 'object' ? payload.model : null;
+    const modelTrace = payload && payload.modelTrace && typeof payload.modelTrace === 'object' ? payload.modelTrace : null;
+    state.digestStatusByConversation.set(conversationId, {
+      status,
+      reason: String(payload && payload.reason || ''),
+      phase: String(payload && payload.phase || ''),
+      message: String(payload && payload.message || '正在整理本轮经验，并写入会话摘要…'),
+      pendingExperienceDraftCount: Math.max(0, Number(payload && payload.pendingExperienceDraftCount || 0)),
+      model: model
+        ? {
+          provider: String(model.provider || ''),
+          model: String(model.model || ''),
+          thinking: String(model.thinking || ''),
+          label: String(model.label || ''),
+        }
+        : null,
+      modelTrace: modelTrace
+        ? {
+          eventCount: Math.max(0, Number(modelTrace.eventCount || 0)),
+          outputPreview: String(modelTrace.outputPreview || ''),
+          thinkingPreview: String(modelTrace.thinkingPreview || ''),
+          runId: String(modelTrace.runId || ''),
+          updatedAt: String(modelTrace.updatedAt || ''),
+        }
+        : null,
+      updatedAt: new Date().toISOString(),
+    });
+  } else {
+    state.digestStatusByConversation.delete(conversationId);
+  }
+
+  if (state.selectedConversationId === conversationId) {
+    renderConversationPane();
+  }
 }
 
 function mergeRuntimePayload(payload) {
@@ -2320,6 +2442,7 @@ function turnProgressSignature(turn) {
           messageId: agent.messageId || null,
           replyLength: agent.replyLength || 0,
           preview: agent.preview || '',
+          finalContent: agent.finalContent || '',
           errorMessage: agent.errorMessage || '',
           hop: agent.hop || 0,
           lastTextDeltaAt: agent.lastTextDeltaAt || null,
@@ -2348,6 +2471,7 @@ function agentSlotProgressSignature(slot) {
     runId: slot.runId || null,
     replyLength: slot.replyLength || 0,
     preview: slot.preview || '',
+    finalContent: slot.finalContent || '',
     errorMessage: slot.errorMessage || '',
     lastTextDeltaAt: slot.lastTextDeltaAt || null,
     currentToolName: slot.currentToolName || '',
@@ -2593,13 +2717,217 @@ async function exportMessageSession(conversationId, message) {
   }, 0);
 }
 
+function messageContextSnapshotUrl(conversationId, messageId, exportMode = false) {
+  const suffix = exportMode ? 'context-snapshot-export' : 'context-snapshot';
+  return `/api/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/${suffix}`;
+}
+
+function setAgentContextDrawerOpen(open) {
+  state.contextInspector.open = Boolean(open);
+  if (dom.agentContextDrawer) {
+    dom.agentContextDrawer.classList.toggle('hidden', !state.contextInspector.open);
+    dom.agentContextDrawer.setAttribute('aria-hidden', state.contextInspector.open ? 'false' : 'true');
+  }
+  renderAgentContextInspector();
+}
+
+function formatInspectorNumber(value) {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number)) {
+    return '0';
+  }
+  return Math.round(number).toLocaleString('zh-CN');
+}
+
+function visibilityLabel(value) {
+  if (value === 'full') return '完整';
+  if (value === 'summary') return '摘要';
+  return '受保护';
+}
+
+function visibilityClass(value) {
+  if (value === 'full') return 'full';
+  if (value === 'summary') return 'summary';
+  return 'presence';
+}
+
+function contextSectionDisplayTitle(section) {
+  return section && (section.displayTitle || section.title || section.sectionKey) ? section.displayTitle || section.title || section.sectionKey : '分区';
+}
+
+function renderAgentContextInspector() {
+  const inspector = state.contextInspector;
+  const snapshot = inspector.snapshot;
+
+  if (dom.agentContextStatus) {
+    dom.agentContextStatus.textContent = inspector.loading
+      ? '正在加载上下文快照…'
+      : inspector.errorMessage
+        ? inspector.errorMessage
+        : snapshot
+          ? `${snapshot.agentName || snapshot.agentId || 'Agent'} · 回合 ${snapshot.turnId || '-'} · 约 ${formatInspectorNumber(snapshot.totalApproxTokens)} tokens`
+          : '选择一条 AI 消息查看上下文快照';
+    dom.agentContextStatus.classList.toggle('paused', Boolean(inspector.errorMessage));
+  }
+
+  if (dom.agentContextExportButton) {
+    dom.agentContextExportButton.disabled = !snapshot || inspector.loading;
+  }
+
+  if (dom.agentContextSummary) {
+    dom.agentContextSummary.textContent = '';
+    if (snapshot) {
+      const totalTokens = Math.max(1, Number(snapshot.totalApproxTokens || 0));
+      const meta = document.createElement('div');
+      meta.className = 'agent-context-meta-grid';
+      const metaItems = [
+        ['智能体', snapshot.agentName || snapshot.agentId || '-'],
+        ['捕获时间', snapshot.capturedAt || '-'],
+        ['系统提示词 tokens 总数', formatInspectorNumber(snapshot.totalApproxTokens)],
+        ['总字节数', formatInspectorNumber(snapshot.totalByteSize)],
+      ];
+      for (const item of metaItems) {
+        const cell = document.createElement('div');
+        const label = document.createElement('span');
+        const value = document.createElement('strong');
+        label.textContent = item[0];
+        value.textContent = item[1];
+        cell.append(label, value);
+        meta.appendChild(cell);
+      }
+
+      const bar = document.createElement('div');
+      bar.className = 'agent-context-token-bar';
+      for (const section of Array.isArray(snapshot.sections) ? snapshot.sections : []) {
+        const piece = document.createElement('span');
+        piece.className = `agent-context-token-piece ${visibilityClass(section.visibility)}`;
+        piece.style.width = `${Math.max(2, Math.round((Number(section.approxTokens || 0) / totalTokens) * 100))}%`;
+        piece.title = `${contextSectionDisplayTitle(section)}：${formatInspectorNumber(section.approxTokens)} tokens`;
+        bar.appendChild(piece);
+      }
+
+      dom.agentContextSummary.append(meta, bar);
+    }
+  }
+
+  if (!dom.agentContextSectionList) {
+    return;
+  }
+
+  dom.agentContextSectionList.textContent = '';
+
+  if (inspector.loading) {
+    const loading = document.createElement('p');
+    loading.className = 'muted small-note';
+    loading.textContent = '咕咕嘎嘎，正在啄上下文分区…';
+    dom.agentContextSectionList.appendChild(loading);
+    return;
+  }
+
+  if (!snapshot) {
+    const empty = document.createElement('p');
+    empty.className = 'muted small-note';
+    empty.textContent = '点击 AI 消息旁边的“上下文”按钮查看快照。';
+    dom.agentContextSectionList.appendChild(empty);
+    return;
+  }
+
+  for (const section of Array.isArray(snapshot.sections) ? snapshot.sections : []) {
+    const details = document.createElement('details');
+    details.className = `agent-context-section-card ${visibilityClass(section.visibility)}`;
+    const summary = document.createElement('summary');
+    const title = document.createElement('span');
+    const badges = document.createElement('span');
+    title.textContent = contextSectionDisplayTitle(section);
+    badges.className = 'agent-context-section-badges';
+    badges.textContent = `${visibilityLabel(section.visibility)} · ${formatInspectorNumber(section.approxTokens)} tokens · ${formatInspectorNumber(section.byteSize)} 字节`;
+    summary.append(title, badges);
+
+    const meta = document.createElement('div');
+    meta.className = 'agent-context-section-meta';
+    meta.textContent = `来源=${section.source || 'prompt'} · 哈希=${String(section.contentHash || '').slice(0, 16)} · 截断=${section.truncated ? '是' : '否'}${section.redacted ? ' · 已脱敏' : ''}`;
+
+    const policy = document.createElement('p');
+    policy.className = 'agent-context-policy-note';
+    policy.textContent = section.policyNote || '';
+
+    const body = document.createElement('pre');
+    body.className = 'agent-context-section-content';
+    body.textContent = section.displayContent || section.contentPreview || '[empty]';
+
+    details.append(summary, meta, policy, body);
+    dom.agentContextSectionList.appendChild(details);
+  }
+}
+
+async function openAgentContextInspector(conversationId, message) {
+  state.contextInspector.open = true;
+  state.contextInspector.loading = true;
+  state.contextInspector.errorMessage = '';
+  state.contextInspector.conversationId = conversationId;
+  state.contextInspector.messageId = message && message.id ? message.id : '';
+  state.contextInspector.snapshot = null;
+  setAgentContextDrawerOpen(true);
+
+  try {
+    const result = await fetchJson(messageContextSnapshotUrl(conversationId, message.id));
+    state.contextInspector.snapshot = result && result.snapshot ? result.snapshot : null;
+    if (!state.contextInspector.snapshot) {
+      state.contextInspector.errorMessage = '这条消息没有可展示的上下文快照';
+    }
+  } catch (error) {
+    state.contextInspector.errorMessage = error && error.message ? error.message : '上下文快照加载失败';
+  } finally {
+    state.contextInspector.loading = false;
+    renderAgentContextInspector();
+  }
+}
+
+async function exportAgentContextSnapshot() {
+  const inspector = state.contextInspector;
+  if (!inspector.conversationId || !inspector.messageId || !inspector.snapshot) {
+    showToast('暂无可导出的上下文快照');
+    return;
+  }
+
+  const response = await fetch(messageContextSnapshotUrl(inspector.conversationId, inspector.messageId, true), {
+    headers: { Accept: 'text/markdown' },
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `导出失败，状态码 ${response.status}`);
+  }
+
+  const blob = await response.blob();
+  const fileName = downloadFileNameFromResponse(response, `agent-context-${inspector.messageId}.md`);
+  const objectUrl = window.URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = objectUrl;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => window.URL.revokeObjectURL(objectUrl), 0);
+}
+
+function isActiveLiveStage(stage) {
+  return Boolean(stage && (stage.status === 'queued' || stage.status === 'running' || stage.status === 'terminating'));
+}
+
+function isFinalizingStageWithContent(stage) {
+  return Boolean(stage && stage.status === 'completed' && typeof stage.finalContent === 'string' && stage.finalContent);
+}
+
 function liveStageForMessage(conversationId, activeTurn, activeAgentSlots, messageId) {
   if (!messageId) {
     return null;
   }
 
   if (activeTurn && Array.isArray(activeTurn.agents)) {
-    const activeTurnStage = activeTurn.agents.find((agent) => agent.messageId === messageId) || null;
+    const activeTurnStage = activeTurn.agents.find(
+      (agent) => agent.messageId === messageId && (isActiveLiveStage(agent) || isFinalizingStageWithContent(agent))
+    ) || null;
 
     if (activeTurnStage) {
       return activeTurnStage;
@@ -2612,7 +2940,9 @@ function liveStageForMessage(conversationId, activeTurn, activeAgentSlots, messa
       ? activeAgentSlotsForConversation(conversationId)
       : [];
 
-  return slotStages.find((slot) => slot && slot.assistantMessageId === messageId) || null;
+  return slotStages.find(
+    (slot) => slot && slot.assistantMessageId === messageId && (isActiveLiveStage(slot) || isFinalizingStageWithContent(slot))
+  ) || null;
 }
 
 function liveStageLabel(stage) {
@@ -2656,8 +2986,22 @@ function liveStageLabel(stage) {
   return '';
 }
 
+function hasMeaningfulMessageContent(message) {
+  const content = normalizeEscapedMessageText(message && message.content ? message.content : '').trim();
+
+  return Boolean(content && content !== 'Thinking...');
+}
+
 function displayedMessageBody(message, stage) {
+  if (isFinalizingStageWithContent(stage)) {
+    return normalizeEscapedMessageText(stage.finalContent);
+  }
+
   if (!stage || message.status === 'completed' || message.status === 'failed') {
+    return messageDisplayText(message);
+  }
+
+  if (hasMeaningfulMessageContent(message)) {
     return messageDisplayText(message);
   }
 
@@ -3019,8 +3363,16 @@ function connectEventStream() {
     scheduleConversationRefresh(payload.conversationId);
   });
 
+  source.addEventListener('conversation_digest_status', (event) => {
+    const payload = JSON.parse(event.data);
+    applyConversationDigestStatus(payload);
+  });
+
   source.addEventListener('conversation_digest_updated', (event) => {
     const payload = JSON.parse(event.data);
+    if (payload.conversationId) {
+      state.digestStatusByConversation.delete(payload.conversationId);
+    }
     if (payload.summary) {
       mergeConversationSummary(payload.summary);
     }
@@ -3028,6 +3380,14 @@ function connectEventStream() {
   });
 
   source.addEventListener('conversation_digest_deleted', (event) => {
+    const payload = JSON.parse(event.data);
+    if (payload.summary) {
+      mergeConversationSummary(payload.summary);
+    }
+    scheduleConversationRefresh(payload.conversationId);
+  });
+
+  source.addEventListener('conversation_skill_draft_updated', (event) => {
     const payload = JSON.parse(event.data);
     if (payload.summary) {
       mergeConversationSummary(payload.summary);
@@ -3375,6 +3735,31 @@ function bindEvents() {
     });
   }
 
+  if (dom.skillDraftAlertButton) {
+    dom.skillDraftAlertButton.addEventListener('click', openSkillDraftPanel);
+  }
+
+  if (dom.agentContextCloseButton) {
+    dom.agentContextCloseButton.addEventListener('click', () => setAgentContextDrawerOpen(false));
+  }
+
+  if (dom.agentContextExportButton) {
+    dom.agentContextExportButton.addEventListener('click', async () => {
+      const previousText = dom.agentContextExportButton.textContent;
+      dom.agentContextExportButton.disabled = true;
+      dom.agentContextExportButton.textContent = '导出中';
+      try {
+        await exportAgentContextSnapshot();
+        showToast('上下文 Markdown 已导出');
+      } catch (error) {
+        showToast(error && error.message ? error.message : '导出失败');
+      } finally {
+        dom.agentContextExportButton.textContent = previousText;
+        renderAgentContextInspector();
+      }
+    });
+  }
+
   dom.conversationList.addEventListener('click', async (event) => {
     const item =
       event.target instanceof Element ? /** @type {HTMLElement | null} */ (event.target.closest('.conversation-item')) : null;
@@ -3496,6 +3881,27 @@ function bindEvents() {
         recordButton.textContent = previousText;
       }
 
+      return;
+    }
+
+    const contextButton =
+      event.target instanceof Element
+        ? /** @type {HTMLButtonElement | null} */ (event.target.closest('.message-context-button'))
+        : null;
+
+    if (contextButton) {
+      const messageId = contextButton.dataset.messageId || '';
+      const message =
+        state.currentConversation && Array.isArray(state.currentConversation.messages)
+          ? state.currentConversation.messages.find((item) => item.id === messageId) || null
+          : null;
+
+      if (!message) {
+        showToast('找不到要查看上下文的消息');
+        return;
+      }
+
+      await openAgentContextInspector(state.currentConversation.id, message);
       return;
     }
 

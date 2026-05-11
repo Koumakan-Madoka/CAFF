@@ -166,7 +166,9 @@
 
       const conversationId = state.currentConversation ? state.currentConversation.id : '';
       const objective = sessionGoalUtils.objectiveText(goal);
-      const checklistText = sessionGoalUtils.checklistTextForGoal(goal);
+      const checklistText = goal
+        ? sessionGoalUtils.checklistTextForGoal(goal)
+        : sessionGoalUtils.defaultChecklistText();
       const shouldSync = !isOpen || conversationId !== lastConversationId || objective !== lastSyncedObjective || checklistText !== lastSyncedChecklist;
 
       if (shouldSync) {
@@ -182,6 +184,16 @@
       }
     }
 
+    function applyPresetChecklist() {
+      if (!dom.sessionGoalChecklist) {
+        return;
+      }
+
+      dom.sessionGoalChecklist.value = sessionGoalUtils.defaultChecklistText();
+      lastSyncedChecklist = dom.sessionGoalChecklist.value;
+      showToast('已填入 Trellis 长任务预设 checklist');
+    }
+
     function setActionDisabled(goal, proposal) {
       const hasConversation = Boolean(state.currentConversation);
       const status = sessionGoalUtils.statusValue(goal);
@@ -192,6 +204,10 @@
       if (dom.sessionGoalSaveButton) {
         dom.sessionGoalSaveButton.disabled = disabled;
         dom.sessionGoalSaveButton.textContent = isSaving ? '保存中...' : hasGoal ? '保存并替换目标' : '创建目标';
+      }
+
+      if (dom.sessionGoalChecklistPresetButton) {
+        dom.sessionGoalChecklistPresetButton.disabled = disabled || !dom.sessionGoalChecklist;
       }
 
       if (dom.sessionGoalPauseButton) {
@@ -310,6 +326,10 @@
             checklistText: dom.sessionGoalChecklist ? dom.sessionGoalChecklist.value : '',
           });
         });
+      }
+
+      if (dom.sessionGoalChecklistPresetButton) {
+        dom.sessionGoalChecklistPresetButton.addEventListener('click', applyPresetChecklist);
       }
 
       if (dom.sessionGoalPauseButton) {

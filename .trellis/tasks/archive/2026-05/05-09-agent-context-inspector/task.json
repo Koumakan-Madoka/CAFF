@@ -1,0 +1,33 @@
+{
+  "title": "Agent Context Inspector",
+  "status": "completed",
+  "createdAt": "2026-05-09",
+  "id": "05-09-agent-context-inspector",
+  "name": "05-09-agent-context-inspector",
+  "completedAt": "2026-05-11",
+  "branch": "feat/browser-cli-tool",
+  "base_branch": "main",
+  "current_phase": 3,
+  "next_action": [],
+  "relatedFiles": [
+    "server/domain/conversation/turn/context-snapshot.ts",
+    "server/domain/conversation/turn/agent-prompt.ts",
+    "server/domain/conversation/turn/agent-executor.ts",
+    "server/api/conversations-controller.ts",
+    "public/app.js",
+    "public/chat/message-timeline.js",
+    "public/index.html",
+    "public/styles.css",
+    "tests/runtime/context-snapshot.test.js",
+    "tests/runtime/turn-orchestrator.test.js",
+    "tests/runtime/skill-loading.test.js",
+    ".trellis/spec/runtime/agent-context-inspector.md",
+    ".trellis/spec/runtime/agent-runtime.md"
+  ],
+  "notes": "Agent Context Inspector, prompt ordering, Chat bridge tools split, and Inspector token summary updates are implemented, spec-synced, validated, and human-accepted.",
+  "meta": {
+    "finalValidation": "passed",
+    "humanAcceptance": "passed",
+    "closedAt": "2026-05-11T06:17:33.266150+00:00"
+  }
+}

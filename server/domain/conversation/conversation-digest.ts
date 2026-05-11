@@ -1,5 +1,6 @@
 import { createHttpError } from '../../http/http-errors';
-import { DEFAULT_AGENT_DIR, DEFAULT_MODEL, DEFAULT_PROVIDER, DEFAULT_THINKING, invoke, resolveIntegerSetting, resolveSetting, resolveThinkingSetting } from '../../../lib/minimal-pi';
+import { DEFAULT_AGENT_DIR, DEFAULT_MODEL, DEFAULT_PROVIDER, DEFAULT_THINKING, resolveIntegerSetting, resolveSetting, resolveThinkingSetting, startRun } from '../../../lib/minimal-pi';
+import { absorbExperienceDraftsInMetadata, experienceDraftsForDigest, getPendingConversationExperienceDrafts } from './experience-draft';
 
 const CONVERSATION_DIGEST_METADATA_KEY = 'conversationDigests';
 const CONVERSATION_DIGEST_STATE_METADATA_KEY = 'conversationDigestState';
@@ -8,11 +9,17 @@ const MAX_RECENT_DIGEST_ENTRIES = 3;
 const MAX_DIGEST_METADATA_ITEMS = 12;
 const MAX_PROMPT_DIGEST_ENTRIES = 3;
 const MAX_DIGEST_SECTION_ITEMS = 8;
+const MAX_DIGEST_EXPERIENCE_ITEMS = 5;
+const MAX_DIGEST_EXPERIENCE_STEPS = 5;
 const MAX_DIGEST_ITEM_LENGTH = 240;
 const MAX_DIGEST_SUMMARY_LENGTH = 800;
 const MAX_DIGEST_SOURCE_IDS = 24;
 const MAX_DIGEST_MODEL_MESSAGES = 80;
 const MAX_DIGEST_MODEL_MESSAGE_LENGTH = 1000;
+const MAX_DIGEST_MODEL_TRACE_TEXT_LENGTH = 1200;
+const MAX_DIGEST_MODEL_INVALID_OUTPUT_PREVIEW_LENGTH = 4000;
+const MAX_DIGEST_MODEL_REPAIR_OUTPUT_LENGTH = 4000;
+const DIGEST_MODEL_PROGRESS_MIN_INTERVAL_MS = 500;
 const DEFAULT_DIGEST_MODEL_TIMEOUT_MS = 90 * 1000;
 const DEFAULT_DIGEST_AUTO_CREATE_MESSAGE_BUDGET = 24;
 const DEFAULT_DIGEST_AUTO_IDLE_MS = 0;
@@ -77,6 +84,54 @@ function clipText(value: any, maxLength: number) {
   return `${text.slice(0, Math.max(1, maxLength - 1)).trimEnd()}…`;
 }
 
+function stringifyDigestModelOutput(value: any) {
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  if (value === null || value === undefined) {
+    return '';
+  }
+
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function clipRawText(value: string, maxLength: number) {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  return `${value.slice(0, Math.max(1, maxLength - 1))}…`;
+}
+
+function shouldLogRawDigestModelOutput(options: any = {}) {
+  return normalizeBooleanSetting(
+    options.logRawModelOutput,
+    normalizeBooleanSetting(process.env.CAFF_DIGEST_LOG_RAW_OUTPUT, false)
+  );
+}
+
+function warnInvalidModelDigestOutput(output: any, config: any, options: any = {}) {
+  const outputText = stringifyDigestModelOutput(output);
+  const rawOutputEnabled = shouldLogRawDigestModelOutput(options);
+  const renderedOutput = rawOutputEnabled
+    ? outputText
+    : clipRawText(outputText, MAX_DIGEST_MODEL_INVALID_OUTPUT_PREVIEW_LENGTH);
+  const outputLabel = rawOutputEnabled
+    ? 'raw output'
+    : `output preview first ${MAX_DIGEST_MODEL_INVALID_OUTPUT_PREVIEW_LENGTH} chars; set CAFF_DIGEST_LOG_RAW_OUTPUT=true for full raw output`;
+  const purpose = normalizeText(options.purpose) || 'summary';
+  const modelLabel = `${normalizeText(config && config.provider) || 'unknown'}/${normalizeText(config && config.model) || 'unknown'}`;
+  const diagnostic = clipText(options.diagnostic, 800);
+  const diagnosticText = diagnostic ? `\nDiagnostic: ${diagnostic}` : '';
+
+  console.warn(`[conversation-digest] Invalid model digest JSON (${purpose}, ${modelLabel}); ${outputLabel}:\n${renderedOutput || '[empty]'}${diagnosticText}`);
+}
+
 function normalizeSectionItems(value: any) {
   const rawItems = Array.isArray(value)
     ? value
@@ -90,22 +145,71 @@ function normalizeSectionItems(value: any) {
     .slice(0, MAX_DIGEST_SECTION_ITEMS);
 }
 
+function normalizeDigestExperienceItems(value: any) {
+  const rawItems = Array.isArray(value) ? value : [];
+  const result = [] as any[];
+  const seen = new Set<string>();
+
+  for (const rawItem of rawItems) {
+    const item = isPlainObject(rawItem) ? rawItem : { title: rawItem };
+    const title = clipText(item.title, MAX_DIGEST_ITEM_LENGTH);
+    const scenario = clipText(item.scenario || item.context || item.whenToUse, MAX_DIGEST_ITEM_LENGTH);
+    const sourceDraftId = clipText(item.sourceDraftId || item.draftId || item.id, 120);
+
+    if (!title && !scenario) {
+      continue;
+    }
+
+    const key = `${sourceDraftId}:${title}:${scenario}`.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    const normalized: Record<string, any> = {
+      title: title || scenario,
+      category: clipText(item.category || 'other', 80),
+      scenario,
+      steps: normalizeSectionItems(item.steps).slice(0, MAX_DIGEST_EXPERIENCE_STEPS),
+      pitfalls: normalizeSectionItems(item.pitfalls || item.limitations).slice(0, MAX_DIGEST_EXPERIENCE_STEPS),
+      validation: normalizeSectionItems(item.validation).slice(0, MAX_DIGEST_EXPERIENCE_STEPS),
+      artifacts: normalizeSectionItems(item.artifacts).slice(0, MAX_DIGEST_EXPERIENCE_STEPS),
+      confidence: clipText(item.confidence || 'medium', 40),
+    };
+
+    if (sourceDraftId) {
+      normalized.sourceDraftId = sourceDraftId;
+    }
+
+    result.push(normalized);
+
+    if (result.length >= MAX_DIGEST_EXPERIENCE_ITEMS) {
+      break;
+    }
+  }
+
+  return result;
+}
+
 function currentMetadata(conversation: any) {
   return conversation && isPlainObject(conversation.metadata) ? conversation.metadata : {};
 }
 
 function normalizeSignalFlags(value: any = {}) {
   const flags = isPlainObject(value) ? value : {};
+  const codeChange = Boolean(flags.codeChange);
   return {
     decision: Boolean(flags.decision),
-    code: Boolean(flags.code),
+    code: Boolean(flags.code || codeChange),
+    codeChange,
+    fileArtifact: Boolean(flags.fileArtifact),
     errorFix: Boolean(flags.errorFix),
   };
 }
 
 function anySignalFlag(signalFlags: any) {
   const flags = normalizeSignalFlags(signalFlags);
-  return Boolean(flags.decision || flags.code || flags.errorFix);
+  return Boolean(flags.decision || flags.codeChange || flags.errorFix);
 }
 
 function normalizeDigestState(value: any) {
@@ -269,6 +373,11 @@ function normalizeDigestEntry(value: any) {
     normalized[key] = items;
   }
 
+  const experience = normalizeDigestExperienceItems(value.experience);
+  if (experience.length > 0) {
+    normalized.experience = experience;
+  }
+
   return normalized;
 }
 
@@ -332,16 +441,48 @@ function updateConversationMetadata(store: any, conversation: any, metadata: any
   });
 }
 
+function isUserDigestMessage(item: any) {
+  return normalizeText(item && item.role).toLowerCase() === 'user';
+}
+
+function isQuestionLikeDigestText(lower: string) {
+  return /[?？]|问题|待确认|不确定|open question|question/u.test(lower);
+}
+
+function isSpeculativeDigestText(lower: string) {
+  return /可能|也许|猜测|推测|我觉得|我认为|建议|应该|可以考虑|may\b|might\b|maybe\b|guess|speculat|suggest|recommend|should\b|could\b|would\b/u.test(lower);
+}
+
+function isVerifiedDigestText(lower: string) {
+  return /已完成|已实现|已修复|已验证|已通过|测试通过|构建通过|提交|合并|落地|verified|implemented|fixed|passed|created|updated|committed|merged/u.test(lower);
+}
+
+function shouldRecordAsDigestFact(item: any, lower: string) {
+  if (isQuestionLikeDigestText(lower) || isSpeculativeDigestText(lower)) {
+    return false;
+  }
+
+  if (isUserDigestMessage(item)) {
+    return true;
+  }
+
+  return isVerifiedDigestText(lower);
+}
+
 function classifyDigestItem(bucket: Record<string, string[]>, item: any) {
   const text = item.content;
   const lower = text.toLowerCase();
   const line = `${item.speaker}: ${text}`;
+  const isQuestion = isQuestionLikeDigestText(lower);
+  const isSpeculative = isSpeculativeDigestText(lower);
+  const isVerified = isVerifiedDigestText(lower);
+  const isUser = isUserDigestMessage(item);
 
-  if (/决定|结论|确认|采用|decision|decided|agreed/u.test(lower)) {
+  if (/决定|结论|确认|采用|同意|decision|decided|agreed|confirmed/u.test(lower) && (isUser || isVerified) && !isQuestion) {
     bucket.decisions.push(line);
   }
 
-  if (/[?？]|问题|待确认|不确定|open question|question/u.test(lower)) {
+  if (isQuestion || (!isUser && isSpeculative && !isVerified)) {
     bucket.openQuestions.push(line);
   }
 
@@ -354,7 +495,9 @@ function classifyDigestItem(bucket: Record<string, string[]>, item: any) {
     bucket.artifacts.push(artifact);
   }
 
-  bucket.facts.push(line);
+  if (shouldRecordAsDigestFact(item, lower)) {
+    bucket.facts.push(line);
+  }
 }
 
 function uniqueSectionItems(items: string[]) {
@@ -423,6 +566,11 @@ function buildExtractiveDigestFromMessages(normalizedMessages: any[], input: any
       ? normalizeSectionItems(input[key])
       : [];
     entry[key] = overrideItems.length > 0 ? overrideItems : uniqueSectionItems(bucket[key]);
+  }
+
+  const experience = normalizeDigestExperienceItems(input && input.experience);
+  if (experience.length > 0) {
+    entry.experience = experience;
   }
 
   return normalizeDigestEntry(entry);
@@ -512,7 +660,23 @@ function resolveDigestModelConfig(input: any, options: any = {}) {
   };
 }
 
-function buildModelDigestPrompt(normalizedMessages: any[]) {
+const MODEL_DIGEST_JSON_SHAPE = '{"summary":"string","facts":["string"],"decisions":["string"],"openQuestions":["string"],"nextActions":["string"],"artifacts":["string"],"experience":[{"title":"string","category":"string","scenario":"string","steps":["string"],"pitfalls":["string"],"validation":["string"],"artifacts":["string"],"confidence":"low|medium|high"}]}';
+
+function modelDigestJsonInstructionLines() {
+  return [
+    'Return exactly one valid compact JSON object. Do not wrap it in markdown, code fences, XML, prose, comments, or multiple JSON objects.',
+    'The JSON object must include every top-level key from this exact shape, even when a value is empty:',
+    MODEL_DIGEST_JSON_SHAPE,
+    'Use double-quoted JSON strings only. Escape newlines inside strings as \\n and literal double quotes inside strings as \\\". Prefer rephrasing quoted terms without quote marks when possible. Do not use trailing commas, comments, undefined, NaN, Infinity, or placeholder text.',
+    'Write a concise summary only from supported evidence; when section evidence is missing or uncertain, use empty arrays instead of inventing filler items.',
+    'Few-shot example input: [{"role":"user","speaker":"User","content":"决定保留规则摘要兜底。"},{"role":"assistant","speaker":"Agent","content":"已验证 npm run check 通过，修改 server/domain/conversation/conversation-digest.ts。"}]',
+    'Few-shot valid output: {"summary":"用户确认保留规则摘要兜底，且实现已通过检查。","facts":["npm run check 通过。"],"decisions":["保留规则摘要作为模型摘要失败时的兜底。"],"openQuestions":[],"nextActions":[],"artifacts":["server/domain/conversation/conversation-digest.ts"],"experience":[]}',
+    'Do not copy the few-shot example; summarize only the source data below.',
+    'Limits: summary <= 800 characters; each array <= 8 items; each item <= 240 characters; experience <= 5 items and each nested array <= 5 items.',
+  ];
+}
+
+function buildModelDigestPrompt(normalizedMessages: any[], experience: any[] = []) {
   const sourceMessages = normalizedMessages.slice(-MAX_DIGEST_MODEL_MESSAGES).map((message: any, index: number) => ({
     index: index + 1,
     id: message.id,
@@ -521,14 +685,18 @@ function buildModelDigestPrompt(normalizedMessages: any[]) {
     createdAt: message.createdAt,
     content: message.content,
   }));
+  const sourceExperience = normalizeDigestExperienceItems(experience);
 
   return [
     'You are CAFF conversation digest writer.',
     'Summarize the provided public chat messages into bounded long-term memory for future agents.',
-    'Do not invent facts. Prefer concrete decisions, facts, unresolved questions, next actions, and artifacts mentioned by the messages.',
-    'Return ONLY valid compact JSON with this exact shape:',
-    '{"summary":"string","facts":["string"],"decisions":["string"],"openQuestions":["string"],"nextActions":["string"],"artifacts":["string"]}',
-    'Limits: summary <= 800 characters; each array <= 8 items; each item <= 240 characters.',
+    'Do not invent facts. Facts must be user-stated facts, explicit tool/results evidence, or verified code/test outcomes; never promote agent speculation into facts.',
+    'Decisions must be user-confirmed or already implemented. Put unconfirmed agent proposals in openQuestions or nextActions, not facts.',
+    'If source experience drafts are provided, preserve them as reusable experience candidates and keep their caveats bounded.',
+    ...modelDigestJsonInstructionLines(),
+    '',
+    'Source experience drafts JSON:',
+    JSON.stringify(sourceExperience, null, 2),
     '',
     'Public messages JSON:',
     JSON.stringify(sourceMessages, null, 2),
@@ -547,23 +715,28 @@ function buildModelRollupPrompt(sources: any[]) {
     openQuestions: normalizeSectionItems(digest.openQuestions),
     nextActions: normalizeSectionItems(digest.nextActions),
     artifacts: normalizeSectionItems(digest.artifacts),
+    experience: normalizeDigestExperienceItems(digest.experience),
   }));
 
   return [
     'You are CAFF conversation digest rollup writer.',
     'Merge older digest entries into one bounded historical rollup for future agents.',
-    'Keep stable history and unresolved work. Remove duplicates. Do not invent facts.',
-    'Return ONLY valid compact JSON with this exact shape:',
-    '{"summary":"string","facts":["string"],"decisions":["string"],"openQuestions":["string"],"nextActions":["string"],"artifacts":["string"]}',
-    'Limits: summary <= 800 characters; each array <= 8 items; each item <= 240 characters.',
+    'Keep stable history and unresolved work. Remove duplicates. Do not invent facts or promote unconfirmed agent speculation.',
+    'If source digests conflict, keep the conflict in openQuestions instead of choosing a winner.',
+    'Preserve reusable experience candidates only when they remain supported by the source digests.',
+    ...modelDigestJsonInstructionLines(),
     '',
     'Source digest entries JSON:',
     JSON.stringify(sourceDigests, null, 2),
   ].join('\n');
 }
 
+function normalizeJsonObjectText(value: any) {
+  return normalizeText(value).replace(/^```(?:json)?\s*/iu, '').replace(/```$/u, '').trim();
+}
+
 function parseJsonObjectFromText(value: any) {
-  const text = normalizeText(value).replace(/^```(?:json)?\s*/iu, '').replace(/```$/u, '').trim();
+  const text = normalizeJsonObjectText(value);
 
   if (!text) {
     return null;
@@ -589,6 +762,106 @@ function parseJsonObjectFromText(value: any) {
   }
 }
 
+function jsonParseErrorPosition(error: any) {
+  const match = String(error && error.message ? error.message : '').match(/position\s+(\d+)/iu);
+  return match ? Number.parseInt(match[1], 10) : -1;
+}
+
+function previousNonWhitespaceIndex(text: string, startIndex: number) {
+  for (let index = Math.min(startIndex, text.length - 1); index >= 0; index -= 1) {
+    if (!/\s/u.test(text[index])) {
+      return index;
+    }
+  }
+
+  return -1;
+}
+
+function snippetAroundPosition(text: string, position: number, radius = 80) {
+  const boundedPosition = Math.max(0, Math.min(position, text.length));
+  const startIndex = Math.max(0, boundedPosition - radius);
+  const endIndex = Math.min(text.length, boundedPosition + radius);
+  const prefix = startIndex > 0 ? '…' : '';
+  const suffix = endIndex < text.length ? '…' : '';
+  return `${prefix}${text.slice(startIndex, endIndex)}${suffix}`.replace(/\s+/gu, ' ');
+}
+
+function parseJsonCandidateFailure(value: any) {
+  const text = normalizeJsonObjectText(value);
+
+  if (!text) {
+    return null;
+  }
+
+  try {
+    JSON.parse(text);
+    return null;
+  } catch (error) {
+    const startIndex = text.indexOf('{');
+    const endIndex = text.lastIndexOf('}');
+
+    if (startIndex !== -1 && endIndex > startIndex) {
+      const candidate = text.slice(startIndex, endIndex + 1);
+      try {
+        JSON.parse(candidate);
+        return null;
+      } catch (candidateError) {
+        return { candidate, error: candidateError };
+      }
+    }
+
+    return { candidate: text, error };
+  }
+}
+
+function diagnoseMissingEscapedQuoteJsonFailure(value: any) {
+  const failure = parseJsonCandidateFailure(value);
+
+  if (!failure) {
+    return '';
+  }
+
+  const position = jsonParseErrorPosition(failure.error);
+  if (!Number.isFinite(position) || position < 0) {
+    return '';
+  }
+
+  const failureError = failure.error as any;
+  const message = String(failureError && failureError.message ? failureError.message : '');
+  const expectsValueDelimiter = /Expected ',' or '[}\]]' after (?:array element|property value)/iu.test(message);
+  const previousIndex = previousNonWhitespaceIndex(failure.candidate, position - 1);
+  const currentChar = failure.candidate[position] || '';
+
+  if (!expectsValueDelimiter || previousIndex < 0 || failure.candidate[previousIndex] !== '"' || !currentChar || /[,}\]\s]/u.test(currentChar)) {
+    return '';
+  }
+
+  return clipText(
+    `Likely missing escape for an inner double quote in a JSON string near position ${position}. `
+      + `JSON.parse reported: ${message}. `
+      + `Nearby text: ${snippetAroundPosition(failure.candidate, position)}. `
+      + 'Escape literal quote characters inside string values as \\" or rewrite the phrase without quote marks.',
+    800
+  );
+}
+
+function buildModelDigestJsonRepairPrompt(originalPrompt: string, invalidOutput: any, diagnostic: string) {
+  return [
+    'You are CAFF conversation digest JSON repairer.',
+    'The previous digest response failed strict JSON.parse validation.',
+    'Return exactly one valid compact JSON object using the original digest schema. Do not add markdown, prose, comments, or multiple JSON objects.',
+    `Validation diagnostic: ${diagnostic}`,
+    'Repair rule: escape literal double quote characters inside JSON string values as \\" or rewrite the phrase without quote marks. If a field cannot be safely repaired, omit that item or use an empty array.',
+    'Use only information supported by the original instructions and source data. Do not invent facts while repairing syntax.',
+    '',
+    'Original digest instructions and source data:',
+    originalPrompt,
+    '',
+    'Invalid model output to repair, bounded:',
+    clipRawText(stringifyDigestModelOutput(invalidOutput), MAX_DIGEST_MODEL_REPAIR_OUTPUT_LENGTH),
+  ].join('\n');
+}
+
 function normalizeModelDigestPayload(value: any) {
   const payload = isPlainObject(value) ? value : parseJsonObjectFromText(value);
 
@@ -604,6 +877,11 @@ function normalizeModelDigestPayload(value: any) {
     normalized[key] = normalizeSectionItems(payload[key]);
   }
 
+  const experience = normalizeDigestExperienceItems(payload.experience);
+  if (experience.length > 0) {
+    normalized.experience = experience;
+  }
+
   if (!normalized.summary) {
     const firstItems = DIGEST_SECTION_KEYS.flatMap((key) => normalized[key]).slice(0, 3);
     normalized.summary = clipText(firstItems.join(' / '), MAX_DIGEST_SUMMARY_LENGTH);
@@ -612,14 +890,154 @@ function normalizeModelDigestPayload(value: any) {
   return normalized.summary ? normalized : null;
 }
 
+function appendTraceText(currentValue: string, nextValue: any) {
+  const nextText = normalizeText(nextValue);
+
+  if (!nextText) {
+    return currentValue;
+  }
+
+  return clipText(`${currentValue}${nextText}`, MAX_DIGEST_MODEL_TRACE_TEXT_LENGTH);
+}
+
+function normalizeDigestModelContentType(value: any) {
+  return normalizeText(value).replace(/[_-]/gu, '').toLowerCase();
+}
+
+function extractDigestModelMessageParts(message: any) {
+  const content = Array.isArray(message && message.content) ? message.content : [];
+  const thinkingParts = [] as string[];
+  const textParts = [] as string[];
+
+  for (const item of content) {
+    const type = normalizeDigestModelContentType(item && item.type);
+
+    if (type === 'thinking' || type === 'reasoning') {
+      const thinkingText = normalizeText(item && (item.thinking || item.text));
+      if (thinkingText) {
+        thinkingParts.push(thinkingText);
+      }
+
+      const summaries = Array.isArray(item && item.summary) ? item.summary : [];
+      for (const summary of summaries) {
+        const summaryText = normalizeText(summary && (summary.text || summary.summary));
+        if (summaryText) {
+          thinkingParts.push(summaryText);
+        }
+      }
+      continue;
+    }
+
+    if (type === 'text') {
+      const text = normalizeText(item && item.text);
+      if (text) {
+        textParts.push(text);
+      }
+    }
+  }
+
+  return {
+    thinking: thinkingParts.join('\n\n'),
+    text: textParts.join(''),
+  };
+}
+
+function createDigestModelProgressReporter(config: any, options: any = {}) {
+  const onModelProgress = typeof options.onModelProgress === 'function' ? options.onModelProgress : null;
+  const purpose = normalizeText(options.purpose) || 'summary';
+  const conversationId = normalizeText(options.conversationId);
+  const modelLabel = `${config.provider}/${config.model}`;
+  const message = purpose === 'rollup'
+    ? '会话摘要模型正在压缩历史摘要…'
+    : '会话摘要模型正在生成 JSON…';
+  let outputPreview = '';
+  let thinkingPreview = '';
+  let eventCount = 0;
+  let runId = '';
+  let lastEmittedAt = 0;
+
+  function emit(force = false) {
+    if (!onModelProgress || !conversationId) {
+      return;
+    }
+
+    const now = Date.now();
+    if (!force && lastEmittedAt > 0 && now - lastEmittedAt < DIGEST_MODEL_PROGRESS_MIN_INTERVAL_MS) {
+      return;
+    }
+
+    lastEmittedAt = now;
+    onModelProgress({
+      conversationId,
+      status: 'running',
+      reason: 'model_digest',
+      phase: purpose,
+      message,
+      model: {
+        provider: config.provider,
+        model: config.model,
+        thinking: config.thinking,
+        label: modelLabel,
+      },
+      modelTrace: {
+        eventCount,
+        outputPreview,
+        thinkingPreview,
+        runId,
+        updatedAt: new Date().toISOString(),
+      },
+    });
+  }
+
+  return {
+    runStarted(event: any) {
+      runId = normalizeText(event && event.runId);
+      eventCount += 1;
+      emit(true);
+    },
+    piEvent() {
+      eventCount += 1;
+      emit(false);
+    },
+    textDelta(delta: any) {
+      eventCount += 1;
+      outputPreview = appendTraceText(outputPreview, delta);
+      emit(false);
+    },
+    assistantMessage(messageEvent: any) {
+      eventCount += 1;
+      const parts = extractDigestModelMessageParts(messageEvent && messageEvent.message);
+      outputPreview = appendTraceText('', parts.text || outputPreview);
+      thinkingPreview = appendTraceText('', parts.thinking || thinkingPreview);
+      emit(true);
+    },
+    failed(error: any) {
+      eventCount += 1;
+      outputPreview = appendTraceText(outputPreview, `\n[failed] ${error && error.message ? error.message : String(error || 'Unknown error')}`);
+      emit(true);
+    },
+    finished(reply: any) {
+      eventCount += 1;
+      outputPreview = appendTraceText('', reply || outputPreview);
+      emit(true);
+    },
+  };
+}
+
 async function runDigestModelPrompt(prompt: string, config: any, options: any = {}) {
   const runner = typeof options.digestModelRunner === 'function' ? options.digestModelRunner : null;
 
   if (runner) {
-    return runner({ prompt, config, purpose: options.purpose });
+    return runner({
+      prompt,
+      config,
+      purpose: options.purpose,
+      conversationId: normalizeText(options.conversationId),
+      onModelProgress: options.onModelProgress,
+    });
   }
 
-  const result = await invoke(config.provider, config.model, prompt, {
+  const handle = startRun(config.provider, config.model, prompt, {
     thinking: config.thinking,
     agentDir: config.agentDir,
     sqlitePath: config.sqlitePath,
@@ -630,19 +1048,50 @@ async function runDigestModelPrompt(prompt: string, config: any, options: any = 
     metadata: {
       source: 'conversation_digest',
       purpose: options.purpose || 'summary',
+      conversationId: normalizeText(options.conversationId),
     },
   });
+  const progress = createDigestModelProgressReporter(config, options);
 
-  return result && result.reply ? result.reply : '';
+  handle.on('run_started', (event: any) => progress.runStarted(event));
+  handle.on('pi_event', () => progress.piEvent());
+  handle.on('assistant_text_delta', (event: any) => progress.textDelta(event && event.delta));
+  handle.on('assistant_message', (event: any) => progress.assistantMessage(event));
+
+  try {
+    const result = await handle.resultPromise;
+    progress.finished(result && result.reply ? result.reply : '');
+    return result && result.reply ? result.reply : '';
+  } catch (error) {
+    progress.failed(error);
+    throw error;
+  }
 }
 
 async function generateModelDigestPayload(prompt: string, input: any, options: any = {}) {
   const config = resolveDigestModelConfig(input, options);
   const output = await runDigestModelPrompt(prompt, config, options);
-  const normalized = normalizeModelDigestPayload(output);
+  let normalized = normalizeModelDigestPayload(output);
 
   if (!normalized) {
-    throw new Error('Digest model did not return valid JSON');
+    const diagnostic = diagnoseMissingEscapedQuoteJsonFailure(output);
+
+    if (diagnostic) {
+      warnInvalidModelDigestOutput(output, config, { ...options, diagnostic });
+      const repairOutput = await runDigestModelPrompt(buildModelDigestJsonRepairPrompt(prompt, output, diagnostic), config, {
+        ...options,
+        retryReason: 'missing_escaped_quote',
+      });
+      normalized = normalizeModelDigestPayload(repairOutput);
+
+      if (!normalized) {
+        warnInvalidModelDigestOutput(repairOutput, config, options);
+        throw new Error('Digest model did not return valid JSON');
+      }
+    } else {
+      warnInvalidModelDigestOutput(output, config, options);
+      throw new Error('Digest model did not return valid JSON');
+    }
   }
 
   return {
@@ -669,7 +1118,7 @@ async function buildDigestFromMessages(messages: any[], input: any, timestamp: s
     .filter(Boolean) as any[];
 
   try {
-    const modelPayload = await generateModelDigestPayload(buildModelDigestPrompt(modelMessages), input, {
+    const modelPayload = await generateModelDigestPayload(buildModelDigestPrompt(modelMessages, input && input.experience), input, {
       ...options,
       purpose: 'entry',
     });
@@ -746,6 +1195,11 @@ function buildExtractiveRollupDigest(sources: any[], timestamp: string) {
     rollup[key] = uniqueSectionItems(sources.flatMap((source: any) => normalizeSectionItems(source[key])));
   }
 
+  const experience = normalizeDigestExperienceItems(sources.flatMap((source: any) => normalizeDigestExperienceItems(source.experience)));
+  if (experience.length > 0) {
+    rollup.experience = experience;
+  }
+
   return normalizeDigestEntry(rollup);
 }
 
@@ -785,6 +1239,7 @@ async function compactDigestEntries(digests: any[], timestamp: string, options: 
       digests: normalizedDigests,
       compacted: false,
       rollup: rollups.length > 0 ? rollups[rollups.length - 1] : null,
+      obsoleteDigestIds: [],
     };
   }
 
@@ -792,11 +1247,19 @@ async function compactDigestEntries(digests: any[], timestamp: string, options: 
   const recentEntries = entries.slice(-recentEntryBudget);
   const sources = [...rollups, ...entriesToCompact];
   const rollup = await buildRollupDigest(sources, timestamp, options.input || {}, options);
+  const nextDigests = [rollup, ...recentEntries];
+  const retainedDigestIds = new Set(nextDigests.map((digest: any) => digest.id).filter(Boolean));
+  const obsoleteDigestIds = normalizeSourceDigestIds(
+    normalizedDigests
+      .map((digest: any) => digest.id)
+      .filter((digestId: string) => digestId && !retainedDigestIds.has(digestId))
+  );
 
   return {
-    digests: [rollup, ...recentEntries],
+    digests: nextDigests,
     compacted: true,
     rollup,
+    obsoleteDigestIds,
   };
 }
 
@@ -875,6 +1338,12 @@ function deleteSummarySegmentForDigest(store: any, digestId: string) {
   } catch (error) {
     const errorValue = error as any;
     console.warn(`[conversation-digest] Failed to delete summary segment for digest ${digestId}: ${errorValue && errorValue.stack ? errorValue.stack : errorValue}`);
+  }
+}
+
+function deleteSummarySegmentsForDigests(store: any, digestIds: any[]) {
+  for (const digestId of normalizeSourceDigestIds(digestIds)) {
+    deleteSummarySegmentForDigest(store, digestId);
   }
 }
 
@@ -1084,10 +1553,14 @@ function detectDigestSignalFlags(messages: any[]) {
     .map((message: any) => normalizeText(message && (message.content || message.errorMessage)))
     .join('\n')
     .toLowerCase();
+  const fileArtifact = /(?:[\w.-]+\/)+[\w.-]+|[\w.-]+\.(?:ts|js|json|md|css|html|py|sqlite|yaml|yml)|配置|接口|测试|构建|typecheck|build/u.test(combinedText);
+  const codeChange = /\bpr\b|pull request|commit|merge|diff|提交|合并|补丁|已实现|实现完成|已修复|测试通过|构建通过|typecheck passed|build passed/u.test(combinedText);
 
   return {
     decision: /决定|结论|确认|采用|同意|decision|decided|agreed|confirmed/u.test(combinedText),
-    code: /\.ts|\.js|\.json|\.md|\.css|\.html|\.py|pr\b|commit|merge|diff|配置|接口|测试|构建|typecheck|build/u.test(combinedText),
+    code: codeChange,
+    codeChange,
+    fileArtifact,
     errorFix: /修复|报错|错误|异常|失败|bug|fix|error|failed|failure/u.test(combinedText),
   };
 }
@@ -1139,6 +1612,8 @@ function digestStateChanged(previousState: any, nextState: any) {
 
   return previous.signalFlags.decision !== next.signalFlags.decision
     || previous.signalFlags.code !== next.signalFlags.code
+    || previous.signalFlags.codeChange !== next.signalFlags.codeChange
+    || previous.signalFlags.fileArtifact !== next.signalFlags.fileArtifact
     || previous.signalFlags.errorFix !== next.signalFlags.errorFix;
 }
 
@@ -1215,13 +1690,19 @@ export async function maybeAutoCreateConversationDigest(store: any, conversation
   });
   const stateChanged = digestStateChanged(previousState, state);
   const stateConversation = stateChanged ? updateDigestStateMetadata(store, conversation, state) : conversation;
+  const pendingExperienceDrafts = getPendingConversationExperienceDrafts(stateConversation);
+  const pendingExperienceTriggered = pendingExperienceDrafts.length > 0 && sourceMessages.length > 0;
   const highValueTriggered = digestAutoHighValueEnabled(options)
     && sourceMessages.length >= highValueMinMessages
     && anySignalFlag(state.signalFlags);
   const budgetReached = sourceMessages.length >= messageBudget;
-  const triggerReason = highValueTriggered && !budgetReached ? 'high_value_signal' : 'message_budget';
+  const triggerReason = pendingExperienceTriggered && !budgetReached
+    ? 'pending_experience'
+    : highValueTriggered && !budgetReached
+      ? 'high_value_signal'
+      : 'message_budget';
 
-  if (!budgetReached && !highValueTriggered) {
+  if (!budgetReached && !highValueTriggered && !pendingExperienceTriggered) {
     return responseForConversation(stateConversation, {
       autoCreated: false,
       reason: 'below_budget',
@@ -1235,7 +1716,7 @@ export async function maybeAutoCreateConversationDigest(store: any, conversation
   }
 
   const cooldownMs = digestAutoCooldownMs(options);
-  const cooldownRemainingMs = autoDigestCooldownRemainingMs(state, timestamp, cooldownMs);
+  const cooldownRemainingMs = pendingExperienceTriggered ? 0 : autoDigestCooldownRemainingMs(state, timestamp, cooldownMs);
 
   if (cooldownRemainingMs > 0) {
     return responseForConversation(stateConversation, {
@@ -1252,7 +1733,7 @@ export async function maybeAutoCreateConversationDigest(store: any, conversation
   }
 
   const idleMs = digestAutoIdleMs(options);
-  const idleRemainingMs = autoDigestIdleRemainingMs(sourceMessages, timestamp, idleMs);
+  const idleRemainingMs = pendingExperienceTriggered ? 0 : autoDigestIdleRemainingMs(sourceMessages, timestamp, idleMs);
 
   if (idleRemainingMs > 0) {
     return responseForConversation(stateConversation, {
@@ -1268,16 +1749,26 @@ export async function maybeAutoCreateConversationDigest(store: any, conversation
     });
   }
 
+  const digestExperience = experienceDraftsForDigest(pendingExperienceDrafts);
   const input = {
     action: 'create',
     ...(isPlainObject(options.autoCreateInput) ? options.autoCreateInput : {}),
+    ...(digestExperience.length > 0 ? { experience: digestExperience } : {}),
     autoCreated: true,
     triggerReason,
   };
-  const digest = await buildDigestFromMessages(sourceMessages, input, timestamp, options);
+  const digestOptions = {
+    ...options,
+    conversationId: normalizedConversationId,
+  };
+  const digest = await buildDigestFromMessages(sourceMessages, input, timestamp, digestOptions);
+  if (!digest) {
+    throw createHttpError(400, 'Conversation digest could not be generated');
+  }
+
   const latestConversation = store.getConversation(normalizedConversationId) || stateConversation;
   const compactResult = await compactDigestEntries([...getConversationDigests(latestConversation), digest], timestamp, {
-    ...options,
+    ...digestOptions,
     input,
   });
   const stateAfterCreate = clearDigestStateAfterCreate(latestConversation, digest, timestamp, {
@@ -1285,13 +1776,20 @@ export async function maybeAutoCreateConversationDigest(store: any, conversation
     lastTriggerReason: triggerReason,
   });
   const metadataWithDigests = buildMetadataWithDigests(latestConversation, compactResult.digests);
+  const absorbedMetadata = absorbExperienceDraftsInMetadata(
+    { ...latestConversation, metadata: metadataWithDigests },
+    digestExperience.map((item: any) => item.sourceDraftId),
+    digest.id,
+    timestamp
+  );
   const nextConversation = updateConversationMetadata(
     store,
     latestConversation,
-    buildMetadataWithDigestState({ ...latestConversation, metadata: metadataWithDigests }, stateAfterCreate)
+    buildMetadataWithDigestState({ ...latestConversation, metadata: absorbedMetadata }, stateAfterCreate)
   );
   syncSummarySegmentFromDigest(store, nextConversation, digest, timestamp, { trigger: 'auto-create' }, options);
   syncSummarySegmentFromDigest(store, nextConversation, compactResult.rollup, timestamp, { trigger: 'auto-compaction' }, options);
+  deleteSummarySegmentsForDigests(store, compactResult.obsoleteDigestIds);
 
   return responseForConversation(nextConversation, {
     digest,
@@ -1360,6 +1858,7 @@ export async function applyConversationDigestAction(store: any, conversationId: 
   if (action === 'compact') {
     const compactResult = await compactDigestEntries(getConversationDigests(conversation), nowIso(), {
       ...options,
+      conversationId: normalizedConversationId,
       input,
       recentEntryBudget: 1,
     });
@@ -1370,8 +1869,10 @@ export async function applyConversationDigestAction(store: any, conversationId: 
       });
     }
 
+    const compactedAt = nowIso();
     const nextConversation = updateConversationMetadata(store, conversation, buildMetadataWithDigests(conversation, compactResult.digests));
-    syncSummarySegmentFromDigest(store, nextConversation, compactResult.rollup, nowIso(), { trigger: 'manual-compaction' }, options);
+    syncSummarySegmentFromDigest(store, nextConversation, compactResult.rollup, compactedAt, { trigger: 'manual-compaction' }, options);
+    deleteSummarySegmentsForDigests(store, compactResult.obsoleteDigestIds);
     return responseForConversation(nextConversation, {
       rollup: compactResult.rollup,
       compacted: true,
@@ -1381,26 +1882,44 @@ export async function applyConversationDigestAction(store: any, conversationId: 
 
   const timestamp = nowIso();
   const messages = typeof store.listMessages === 'function' ? store.listMessages(normalizedConversationId) : [];
+  const pendingExperienceDrafts = getPendingConversationExperienceDrafts(conversation);
+  const digestExperience = experienceDraftsForDigest(pendingExperienceDrafts);
   const digestInput = {
     ...input,
+    ...(digestExperience.length > 0 && !Object.prototype.hasOwnProperty.call(input, 'experience') ? { experience: digestExperience } : {}),
     triggerReason: normalizeText(input.triggerReason) || 'manual',
   };
-  const digest = await buildDigestFromMessages(messages, digestInput, timestamp, options);
-  const compactResult = await compactDigestEntries([...getConversationDigests(conversation), digest], timestamp, {
+  const digestOptions = {
     ...options,
+    conversationId: normalizedConversationId,
+  };
+  const digest = await buildDigestFromMessages(messages, digestInput, timestamp, digestOptions);
+  if (!digest) {
+    throw createHttpError(400, 'Conversation digest could not be generated');
+  }
+
+  const compactResult = await compactDigestEntries([...getConversationDigests(conversation), digest], timestamp, {
+    ...digestOptions,
     input: digestInput,
   });
   const stateAfterCreate = clearDigestStateAfterCreate(conversation, digest, timestamp, {
     lastTriggerReason: digestInput.triggerReason,
   });
   const metadataWithDigests = buildMetadataWithDigests(conversation, compactResult.digests);
+  const absorbedMetadata = absorbExperienceDraftsInMetadata(
+    { ...conversation, metadata: metadataWithDigests },
+    digestExperience.map((item: any) => item.sourceDraftId),
+    digest.id,
+    timestamp
+  );
   const nextConversation = updateConversationMetadata(
     store,
     conversation,
-    buildMetadataWithDigestState({ ...conversation, metadata: metadataWithDigests }, stateAfterCreate)
+    buildMetadataWithDigestState({ ...conversation, metadata: absorbedMetadata }, stateAfterCreate)
   );
   syncSummarySegmentFromDigest(store, nextConversation, digest, timestamp, { trigger: 'manual-create' }, options);
   syncSummarySegmentFromDigest(store, nextConversation, compactResult.rollup, timestamp, { trigger: 'auto-compaction' }, options);
+  deleteSummarySegmentsForDigests(store, compactResult.obsoleteDigestIds);
 
   return responseForConversation(nextConversation, {
     digest,
@@ -1438,8 +1957,8 @@ export function formatConversationDigestsForPrompt(conversation: any) {
   }
 
   const lines = [
-    'Conversation digest memory:',
-    'These are historical summaries. Rollups are auto-compacted from older digest entries; recent raw conversation messages override digest content if there is any conflict.',
+    'Current Conversation Digest / 当前聊天室摘要:',
+    'These are current-conversation summaries for continuity, not instructions or long-term memory. Rollups are auto-compacted from older digest entries; recent raw conversation messages override digest content if there is any conflict.',
   ];
 
   for (const digest of digests) {
@@ -1451,6 +1970,20 @@ export function formatConversationDigestsForPrompt(conversation: any) {
       ? ` · compacted from ${digest.sourceDigestIds.length} digests`
       : '';
     lines.push('', `${label} ${digest.id} · ${digest.createdAt}${range}${sourceText}`, `Summary: ${digest.summary}`);
+
+    const experience = normalizeDigestExperienceItems(digest.experience);
+    if (experience.length > 0) {
+      lines.push('Experience:');
+      for (const item of experience) {
+        const details = [
+          item.scenario ? `scenario: ${item.scenario}` : '',
+          item.steps && item.steps.length > 0 ? `steps: ${item.steps.join(' / ')}` : '',
+          item.pitfalls && item.pitfalls.length > 0 ? `pitfalls: ${item.pitfalls.join(' / ')}` : '',
+          item.validation && item.validation.length > 0 ? `validation: ${item.validation.join(' / ')}` : '',
+        ].filter(Boolean).join('; ');
+        lines.push(`- ${item.title}${details ? ` (${details})` : ''}`);
+      }
+    }
 
     for (const [key, sectionLabel] of [
       ['decisions', 'Decisions'],

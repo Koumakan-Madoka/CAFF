@@ -105,6 +105,11 @@ npm run start:dev
 | `CAFF_SKILL_TEST_OPENSANDBOX_PREBAKED_PROJECT_DIR` | — | 可选：使用预烘焙 CAFF 源码模板目录（容器内路径）；开启后每个 case 会先复制模板到隔离项目目录，再覆盖 case 级 `.trellis` |
 | `CAFF_SKILL_TEST_OPENSANDBOX_TIMEOUT_SEC` | `300` | OpenSandbox sandbox TTL 秒数；本地 Full 模式上传/执行较慢时建议调大，例如 `3600` |
 | `CAFF_SKILL_TEST_OPENSANDBOX_USE_SERVER_PROXY` | `true` | 是否通过 lifecycle server proxy 访问 sandbox execd |
+| `CAFF_SKILL_DRAFT_AUTO_CREATE` | `false` | 自动摘要创建后是否后台提炼 pending skill draft；仍需人工确认才会写入 `.agents/skills` |
+| `CAFF_SKILL_DRAFT_GENERATION_MODE` | `rules` | Skill 草稿生成模式：`rules` 保守模板，`model` 强制模型 JSON，`auto` 在配置专用模型时使用模型 |
+| `CAFF_SKILL_DRAFT_PROVIDER` / `CAFF_SKILL_DRAFT_MODEL` | — | Skill 草稿模型配置；未设置时模型模式回退到 `PI_PROVIDER` / `PI_MODEL` |
+| `CAFF_SKILL_DRAFT_THINKING` | — | Skill 草稿模型 thinking / reasoning 配置 |
+| `CAFF_SKILL_DRAFT_MODEL_TIMEOUT_MS` | `90000` | Skill 草稿模型调用超时毫秒数 |
 | `PI_CODING_AGENT_DIR` | auto-detected | pi 运行目录（默认 `.pi-sandbox/`） |
 | `PI_SQLITE_PATH` | auto-detected | SQLite 数据文件路径 |
 | `PI_PROVIDER` | — | 默认模型提供商 |

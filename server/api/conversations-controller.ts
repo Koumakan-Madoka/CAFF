@@ -6,11 +6,17 @@ import type { URL } from 'node:url';
 import type { RouteHandler } from '../http/router';
 import { createHttpError } from '../http/http-errors';
 import { readRequestJson } from '../http/request-body';
-import { sendFileDownload, sendJson } from '../http/response';
+import { sendFileDownload, sendJson, sendTextDownload } from '../http/response';
 
 import { pickConversationSummary, withConversationPrivateMessages } from '../domain/conversation/conversation-view';
 import { applyConversationDigestAction } from '../domain/conversation/conversation-digest';
+import { applyConversationSkillDraftAction } from '../domain/conversation/skill-draft';
 import { applySessionGoalAction } from '../domain/conversation/session-goal';
+import {
+  exportAgentContextSnapshotMarkdown,
+  materializeAgentContextSnapshot,
+  summarizeAgentContextSnapshot,
+} from '../domain/conversation/turn/context-snapshot';
 import { buildAssistantMessageToolTrace } from '../domain/runtime/message-tool-trace';
 import {
   SKILL_TEST_DESIGN_CONVERSATION_TYPE,
@@ -99,6 +105,20 @@ function timestampValue(value: any) {
   return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
+function contextSnapshotFromMessage(message: any) {
+  const metadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
+  return metadata && metadata.agentContextSnapshot && typeof metadata.agentContextSnapshot === 'object'
+    ? metadata.agentContextSnapshot
+    : null;
+}
+
+function defaultContextSnapshotFileName(message: any) {
+  const metadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
+  const agentName = String(message && message.senderName || metadata && metadata.agentName || 'agent').trim().replace(/[\s/\\?%*:|"<>]+/g, '-');
+  const turnId = String(message && message.turnId || 'turn').trim().replace(/[\s/\\?%*:|"<>]+/g, '-');
+  return `agent-context-${agentName || 'agent'}-${turnId || 'turn'}.md`;
+}
+
 function listKnownFeishuChats(store: any) {
   const conversationsById = new Map<string, any>(
     store.listConversations().map((conversation: any) => [conversation.id, conversation] as [string, any])
@@ -184,6 +204,7 @@ function buildSkillTestDesignConversationInput(body: any, skillRegistry: any) {
 export function createConversationsController(options: any = {}): RouteHandler<ApiContext> {
   const store = options.store;
   const skillRegistry = options.skillRegistry;
+  const projectManager = options.projectManager;
   const turnOrchestrator = options.turnOrchestrator;
   const undercoverService = options.undercoverService;
   const werewolfService = options.werewolfService;
@@ -198,6 +219,26 @@ export function createConversationsController(options: any = {}): RouteHandler<A
     thinking: options.digestThinking,
     agentDir: options.agentDir,
     sqlitePath: options.sqlitePath,
+  };
+  const rawSkillDraftOptions = options.skillDraftOptions || {};
+  const skillDraftOptions = {
+    ...rawSkillDraftOptions,
+    skillDraftModelRunner: options.skillDraftModelRunner || rawSkillDraftOptions.skillDraftModelRunner,
+    provider: options.skillDraftProvider !== undefined ? options.skillDraftProvider : rawSkillDraftOptions.provider,
+    model: options.skillDraftModel !== undefined ? options.skillDraftModel : rawSkillDraftOptions.model,
+    thinking: options.skillDraftThinking !== undefined ? options.skillDraftThinking : rawSkillDraftOptions.thinking,
+    agentDir: options.agentDir !== undefined ? options.agentDir : rawSkillDraftOptions.agentDir,
+    sqlitePath: options.sqlitePath !== undefined ? options.sqlitePath : rawSkillDraftOptions.sqlitePath,
+    getProjectDir() {
+      if (typeof rawSkillDraftOptions.getProjectDir === 'function') {
+        return String(rawSkillDraftOptions.getProjectDir() || '').trim();
+      }
+
+      const activeProject = projectManager && typeof projectManager.getActiveProject === 'function'
+        ? projectManager.getActiveProject()
+        : null;
+      return String(activeProject && activeProject.path || options.projectDir || '').trim();
+    },
   };
 
   return async function handleConversationsRequest(context) {
@@ -401,7 +442,69 @@ export function createConversationsController(options: any = {}): RouteHandler<A
     if (conversationDigestMatch && (req.method === 'GET' || req.method === 'POST')) {
       const conversationId = decodeURIComponent(conversationDigestMatch[1]);
       const body = req.method === 'POST' ? await readRequestJson(req) : { action: 'get' };
-      const result = await applyConversationDigestAction(store, conversationId, body || {}, digestOptions);
+      const action = String(body && body.action || '').trim().toLowerCase();
+
+      if (req.method === 'POST' && action === 'extract-skill') {
+        const result = await applyConversationSkillDraftAction(store, conversationId, {
+          ...body,
+          action: 'extract',
+        }, skillDraftOptions);
+        const latestConversation = store.getConversation(conversationId) || result.conversation;
+        const summary = pickConversationSummary(latestConversation);
+
+        if (result.changed) {
+          broadcastEvent('conversation_skill_draft_updated', {
+            conversationId,
+            draft: result.draft,
+            skillDrafts: result.skillDrafts,
+            conversation: latestConversation,
+            summary,
+          });
+          broadcastEvent('conversation_summary_updated', {
+            conversationId,
+            summary,
+          });
+        }
+
+        sendJson(res, 200, {
+          conversation: latestConversation,
+          skillDrafts: result.skillDrafts,
+          draft: result.draft,
+          summary,
+          conversations: store.listConversations(),
+        });
+        return true;
+      }
+
+      let shouldClearDigestStatus = false;
+      let result: any;
+
+      try {
+        result = await applyConversationDigestAction(store, conversationId, body || {}, {
+          ...digestOptions,
+          onModelProgress(progress: any) {
+            shouldClearDigestStatus = true;
+            broadcastEvent('conversation_digest_status', {
+              conversationId,
+              status: 'running',
+              reason: progress && progress.reason ? progress.reason : 'model_digest',
+              phase: progress && progress.phase ? progress.phase : '',
+              message: progress && progress.message ? progress.message : '会话摘要模型正在生成…',
+              pendingExperienceDraftCount: 0,
+              model: progress && progress.model ? progress.model : null,
+              modelTrace: progress && progress.modelTrace ? progress.modelTrace : null,
+            });
+          },
+        });
+      } finally {
+        if (shouldClearDigestStatus) {
+          broadcastEvent('conversation_digest_status', {
+            conversationId,
+            status: 'idle',
+            reason: 'model_digest',
+          });
+        }
+      }
 
       if (req.method === 'POST' && result.digestChanged) {
         const summary = pickConversationSummary(result.conversation);
@@ -430,6 +533,48 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         deleted: result.deleted,
         compacted: result.compacted,
         summary: pickConversationSummary(latestConversation),
+        conversations: store.listConversations(),
+      });
+      return true;
+    }
+
+    const skillDraftsMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/skill-drafts(?:\/([^/]+)\/(confirm|reject))?$/);
+
+    if (skillDraftsMatch && (req.method === 'GET' || req.method === 'POST')) {
+      const conversationId = decodeURIComponent(skillDraftsMatch[1]);
+      const draftId = skillDraftsMatch[2] ? decodeURIComponent(skillDraftsMatch[2]) : '';
+      const routeAction = skillDraftsMatch[3] ? String(skillDraftsMatch[3]).trim().toLowerCase() : '';
+      const body = req.method === 'POST' ? await readRequestJson(req) : {};
+      const action = req.method === 'GET' ? 'list' : routeAction || String(body && body.action || 'list').trim().toLowerCase();
+      const result = await applyConversationSkillDraftAction(store, conversationId, {
+        ...(body || {}),
+        action,
+        draftId: draftId || body && body.draftId,
+      }, skillDraftOptions);
+      const latestConversation = store.getConversation(conversationId) || result.conversation;
+      const summary = pickConversationSummary(latestConversation);
+
+      if (req.method === 'POST' && result.changed) {
+        broadcastEvent('conversation_skill_draft_updated', {
+          conversationId,
+          draft: result.draft,
+          skill: result.skill,
+          skillDrafts: result.skillDrafts,
+          conversation: latestConversation,
+          summary,
+        });
+        broadcastEvent('conversation_summary_updated', {
+          conversationId,
+          summary,
+        });
+      }
+
+      sendJson(res, 200, {
+        conversation: latestConversation,
+        skillDrafts: result.skillDrafts,
+        draft: result.draft,
+        skill: result.skill,
+        summary,
         conversations: store.listConversations(),
       });
       return true;
@@ -632,6 +777,67 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         });
         return true;
       }
+    }
+
+    const contextSnapshotListMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/context-snapshots$/);
+
+    if (contextSnapshotListMatch && req.method === 'GET') {
+      const conversationId = decodeURIComponent(contextSnapshotListMatch[1]);
+      const conversation = store.getConversation(conversationId);
+
+      if (!conversation) {
+        throw createHttpError(404, 'Conversation not found');
+      }
+
+      const snapshots = (Array.isArray(conversation.messages) ? conversation.messages : [])
+        .filter((message: any) => message && message.role === 'assistant')
+        .map((message: any) => summarizeAgentContextSnapshot(contextSnapshotFromMessage(message)))
+        .filter(Boolean);
+
+      sendJson(res, 200, { conversationId, snapshots });
+      return true;
+    }
+
+    const messageContextSnapshotMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/messages\/([^/]+)\/context-snapshot(?:-(export))?$/);
+
+    if (messageContextSnapshotMatch && req.method === 'GET') {
+      const conversationId = decodeURIComponent(messageContextSnapshotMatch[1]);
+      const messageId = decodeURIComponent(messageContextSnapshotMatch[2]);
+      const exportMode = messageContextSnapshotMatch[3] === 'export';
+      const conversation = store.getConversation(conversationId);
+
+      if (!conversation) {
+        throw createHttpError(404, 'Conversation not found');
+      }
+
+      const message = store.getMessage(messageId);
+
+      if (!message || message.conversationId !== conversationId) {
+        throw createHttpError(404, 'Message not found');
+      }
+
+      if (message.role !== 'assistant') {
+        throw createHttpError(400, 'Only assistant messages can inspect context snapshots');
+      }
+
+      const snapshot = contextSnapshotFromMessage(message);
+
+      if (!snapshot) {
+        throw createHttpError(404, 'No context snapshot is available for this message');
+      }
+
+      if (exportMode) {
+        sendTextDownload(
+          res,
+          exportAgentContextSnapshotMarkdown(snapshot),
+          defaultContextSnapshotFileName(message),
+          'text/markdown; charset=utf-8'
+        );
+        return true;
+      }
+
+      sendJson(res, 200, { snapshot: materializeAgentContextSnapshot(snapshot) });
+      return true;
     }
 
     const messageSessionMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/messages\/([^/]+)\/session-export$/);

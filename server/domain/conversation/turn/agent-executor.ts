@@ -18,9 +18,12 @@ const {
   getAgentById,
 } = require('../mention-routing');
 const { SKILL_TEST_DESIGN_WORKBENCH_SKILL_ID } = require('../../../../lib/mode-store');
-const { buildAgentTurnPrompt, AGENT_PROMPT_VERSION } = require('./agent-prompt');
+const { buildAgentTurnPromptSections, formatAgentTurnPromptSections, AGENT_PROMPT_VERSION } = require('./agent-prompt');
+const { createAgentContextSnapshot } = require('./context-snapshot');
+const { markConversationRetrievalTraceUsage } = require('../retrieval-trace');
 const { extractSummaryMemorySearchTerms } = require('../../../../lib/summary-memory-query');
 const { ensureAgentSandbox, toPortableShellPath } = require('./agent-sandbox');
+const { createBrowserCliSessionName, resolveBrowserCliPath } = require('./browser-cli');
 const { extractChatBridgeReplaysFromText, pickChatBridgeReplay } = require('./chat-bridge-replay');
 const { createLiveSessionToolStep } = require('../../runtime/message-tool-trace');
 const {
@@ -92,6 +95,68 @@ function createTaskId(prefix = 'task') {
 
 function sanitizeReason(reason: any) {
   return clipText(reason || '', HEARTBEAT_EVENT_REASON_LIMIT);
+}
+
+function normalizeTokenCount(value: any) {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+
+  const count = Number(value);
+
+  if (!Number.isFinite(count) || count < 0) {
+    return null;
+  }
+
+  return Math.round(count);
+}
+
+function pickTokenCount(usage: any, keys: string[]) {
+  if (!usage || typeof usage !== 'object') {
+    return null;
+  }
+
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(usage, key)) {
+      const count = normalizeTokenCount(usage[key]);
+
+      if (count !== null) {
+        return count;
+      }
+    }
+  }
+
+  return null;
+}
+
+function summarizeTokenUsage(usage: any) {
+  const rawUsage = usage && typeof usage === 'object' && !Array.isArray(usage) ? usage : null;
+
+  if (!rawUsage) {
+    return null;
+  }
+
+  const inputTokens = pickTokenCount(rawUsage, ['inputTokens', 'input_tokens', 'promptTokens', 'prompt_tokens', 'prompt', 'input']);
+  const outputTokens = pickTokenCount(rawUsage, [
+    'outputTokens',
+    'output_tokens',
+    'completionTokens',
+    'completion_tokens',
+    'completion',
+    'output',
+  ]);
+  const explicitTotalTokens = pickTokenCount(rawUsage, ['totalTokens', 'total_tokens', 'total']);
+  const totalTokens = explicitTotalTokens !== null ? explicitTotalTokens : inputTokens !== null || outputTokens !== null ? (inputTokens || 0) + (outputTokens || 0) : null;
+
+  if (inputTokens === null && outputTokens === null && totalTokens === null) {
+    return null;
+  }
+
+  return {
+    inputTokens,
+    outputTokens,
+    totalTokens,
+  };
 }
 
 function normalizePromptMentionPlaceholders(text: any) {
@@ -848,6 +913,7 @@ const LIVE_TOOL_BRIDGE_HINTS = [
   { token: 'suggest-goal', toolName: 'suggest-goal' },
   { token: 'update-goal-checklist', toolName: 'update-goal-checklist' },
   { token: 'save-memory', toolName: 'save-memory' },
+  { token: 'write-experience', toolName: 'write-experience' },
   { token: 'update-memory', toolName: 'update-memory' },
   { token: 'forget-memory', toolName: 'forget-memory' },
   { token: 'list-participants', toolName: 'participants' },
@@ -1182,6 +1248,10 @@ function updateStageCurrentTool(stage: any, turnState: any, emitTurnProgress: an
   return true;
 }
 
+async function waitForAssistantMessageCompleted(callback: any, message: any) {
+  await Promise.resolve().then(() => callback(message));
+}
+
 export function createAgentExecutor(options: any = {}) {
   const store = options.store;
   const skillRegistry = options.skillRegistry;
@@ -1197,8 +1267,10 @@ export function createAgentExecutor(options: any = {}) {
   const toolBaseUrl = String(options.toolBaseUrl || '').trim();
   const agentToolScriptPath = options.agentToolScriptPath;
   const agentToolRelativePath = String(options.agentToolRelativePath || './lib/agent-chat-tools.js').trim() || './lib/agent-chat-tools.js';
+  const browserCliPath = String(options.browserCliPath || '').trim() || resolveBrowserCliPath({ rootDir: process.cwd() });
   const onAssistantMessageCompleted =
     typeof options.onAssistantMessageCompleted === 'function' ? options.onAssistantMessageCompleted : null;
+  const enableAutomaticRelatedMemory = options.enableAutomaticRelatedMemory === true;
 
   async function executeConversationAgent({
     runStore,
@@ -1269,16 +1341,12 @@ export function createAgentExecutor(options: any = {}) {
     const privateMessages = store.listPrivateMessagesForAgent(conversationId, agent.id, {
       limit: MAX_PRIVATE_CONTEXT_MESSAGES,
     });
-    const memoryCards =
-      store && typeof store.listVisibleMemoryCards === 'function'
-        ? store.listVisibleMemoryCards(conversationId, agent.id)
-        : store && typeof store.listConversationMemoryCards === 'function'
-          ? store.listConversationMemoryCards(conversationId, agent.id)
-          : [];
-    const relatedMemorySegments = resolveRelatedMemorySegments(store, conversationId, conversation, promptMessages, {
-      projectDir: resolvedProjectDir,
-    });
-    const prompt = buildAgentTurnPrompt({
+    const relatedMemorySegments = enableAutomaticRelatedMemory
+      ? resolveRelatedMemorySegments(store, conversationId, conversation, promptMessages, {
+          projectDir: resolvedProjectDir,
+        })
+      : [];
+    const promptInput = {
       conversation,
       agent,
       agentConfig,
@@ -1289,7 +1357,6 @@ export function createAgentExecutor(options: any = {}) {
       agents: conversation.agents,
       messages: promptMessages,
       privateMessages,
-      memoryCards,
       relatedMemorySegments,
       trigger: queueItem,
       remainingSlots,
@@ -1299,7 +1366,10 @@ export function createAgentExecutor(options: any = {}) {
       modeLoadingStrategy,
       modeContext,
       forceFullConversationSkillIds,
-    });
+      browserCliPath,
+    };
+    const promptSections = buildAgentTurnPromptSections(promptInput);
+    const prompt = formatAgentTurnPromptSections(promptSections);
     const provider = resolveSetting(agentConfig.provider, process.env.PI_PROVIDER, DEFAULT_PROVIDER);
     const model = resolveSetting(agentConfig.model, process.env.PI_MODEL, DEFAULT_MODEL);
     const thinking = resolveThinkingSetting(provider, agentConfig.thinking, process.env.PI_THINKING, DEFAULT_THINKING);
@@ -1317,6 +1387,17 @@ export function createAgentExecutor(options: any = {}) {
       sanitizeSessionName(
         `chat-${conversationId}-${turnId}-${agent.id}-${agentConfig.profileId || 'default'}-${String(stageTaskId).slice(-12)}`
       ) || `chat-${conversationId}-${turnId}`;
+    const assistantMessageId = randomUUID();
+    const contextSnapshot = createAgentContextSnapshot({
+      conversationId,
+      turnId,
+      messageId: assistantMessageId,
+      agentId: agent.id,
+      agentName: agent.name,
+      promptVersion: AGENT_PROMPT_VERSION,
+      sections: promptSections,
+    });
+
     const queuedMetadata = {
       provider,
       model,
@@ -1339,9 +1420,11 @@ export function createAgentExecutor(options: any = {}) {
       triggeredByAgentName: queueItem.triggeredByAgentName || '',
       triggeredByMessageId: queueItem.triggeredByMessageId || null,
       triggerType: queueItem.triggerType || 'user',
+      agentContextSnapshot: contextSnapshot,
     };
 
     const assistantMessage = store.createMessage({
+      id: assistantMessageId,
       conversationId,
       turnId,
       role: 'assistant',
@@ -1451,10 +1534,7 @@ export function createAgentExecutor(options: any = {}) {
         'send-private': queuedMetadata.privateOnly ? 'required' : 'optional',
         'read-context': 'optional',
         'search-messages': 'optional',
-        'list-memories': 'optional',
-        'save-memory': 'optional',
-        'update-memory': 'optional',
-        'forget-memory': 'optional',
+        'write-experience': 'optional',
         participants: 'optional',
         'trellis-init': 'optional',
         'trellis-write': 'optional',
@@ -1493,6 +1573,12 @@ export function createAgentExecutor(options: any = {}) {
         CAFF_CHAT_TOOLS_RELATIVE_PATH: agentToolRelativePath,
         CAFF_CHAT_CONVERSATION_ID: conversationId,
         CAFF_CHAT_TURN_ID: turnId,
+        ...(browserCliPath
+          ? {
+              CAFF_BROWSER_CLI_PATH: toPortableShellPath(browserCliPath),
+              PLAYWRIGHT_CLI_SESSION: createBrowserCliSessionName(conversationId, agent.id),
+            }
+          : {}),
       },
       session: sessionName,
       streamOutput: false,
@@ -1545,6 +1631,7 @@ export function createAgentExecutor(options: any = {}) {
     stage.heartbeatCount = 0;
     stage.replyLength = 0;
     stage.preview = '';
+    stage.finalContent = '';
     stage.errorMessage = '';
     stage.lastTextDeltaAt = null;
     applyStageCurrentTool(stage, null);
@@ -1755,6 +1842,7 @@ export function createAgentExecutor(options: any = {}) {
       const privateHandoffCount = toolInvocation.privateHandoffCount || 0;
       const continuedByPrivateHandoff = allowHandoffs && privateHandoffCount > 0;
       const effectiveFinal = allowHandoffs ? decision.final && !continuedByPrivateHandoff : true;
+      const tokenUsage = summarizeTokenUsage(result.usage);
       const finalMetadata = {
         provider,
         model,
@@ -1788,6 +1876,9 @@ export function createAgentExecutor(options: any = {}) {
         triggeredByAgentName: queueItem.triggeredByAgentName || '',
         triggeredByMessageId: queueItem.triggeredByMessageId || null,
         triggerType: queueItem.triggerType || 'user',
+        usage: result.usage && typeof result.usage === 'object' && !Array.isArray(result.usage) ? result.usage : null,
+        tokenUsage,
+        agentContextSnapshot: contextSnapshot,
       };
       const assistantMessageDone = store.updateMessage(assistantMessage.id, {
         content: publicReply,
@@ -1798,12 +1889,19 @@ export function createAgentExecutor(options: any = {}) {
         metadata: finalMetadata,
       });
 
+      markConversationRetrievalTraceUsage(store, conversationId, {
+        assistantMessageId: assistantMessageDone.id,
+        agentId: agent.id,
+        replyText: publicReply,
+      });
+
       completedReplies.push(assistantMessageDone);
       stage.status = 'completed';
       stage.runId = result.runId || handle.runId || null;
       stage.heartbeatCount = result.heartbeatCount || 0;
       stage.replyLength = publicReply.length;
       stage.preview = clipText(publicReply, TURN_PREVIEW_LENGTH);
+      stage.finalContent = publicReply;
       stage.errorMessage = '';
       stage.lastTextDeltaAt = stage.lastTextDeltaAt || null;
       stage.endedAt = nowIso();
@@ -1862,15 +1960,18 @@ export function createAgentExecutor(options: any = {}) {
         privateHandoffCount,
       });
 
+      emitTurnProgress(turnState);
       broadcastEvent('conversation_message_updated', { conversationId, message: assistantMessageDone });
       broadcastConversationSummary(conversationId);
-      emitTurnProgress(turnState);
 
       if (onAssistantMessageCompleted) {
-        void Promise.resolve(onAssistantMessageCompleted(assistantMessageDone)).catch((error: any) => {
-          const errorMessage = error && error.message ? error.message : String(error || 'Unknown error');
+        try {
+          await waitForAssistantMessageCompleted(onAssistantMessageCompleted, assistantMessageDone);
+        } catch (error) {
+          const errorValue = error as any;
+          const errorMessage = errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Unknown error');
           console.error('[assistant-message-hook] Failed to handle completed assistant message:', errorMessage);
-        });
+        }
       }
 
       if (!allowHandoffs) {
@@ -1966,6 +2067,7 @@ export function createAgentExecutor(options: any = {}) {
           triggeredByAgentName: queueItem.triggeredByAgentName || '',
           triggeredByMessageId: queueItem.triggeredByMessageId || null,
           triggerType: queueItem.triggerType || 'user',
+          agentContextSnapshot: contextSnapshot,
         },
       });
 

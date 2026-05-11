@@ -26,8 +26,11 @@ const { createSkillTestController } = require('../api/skill-test-controller');
 const { resolveToolRelativePath } = require('../http/path-utils');
 const { HOST, PORT, ROOT_DIR, SKILL_TEST_OPENSANDBOX_CHAT_API_URL } = require('./config');
 const { createTurnOrchestrator } = require('../domain/conversation/turn-orchestrator');
+const { resolveBrowserCliPath } = require('../domain/conversation/turn/browser-cli');
 const { resolveCurrentTrellisTaskName } = require('../domain/conversation/turn/trellis-context');
 const { maybeAutoCreateConversationDigest } = require('../domain/conversation/conversation-digest');
+const { getPendingConversationExperienceDrafts } = require('../domain/conversation/experience-draft');
+const { maybeAutoCreateConversationSkillDraft } = require('../domain/conversation/skill-draft');
 const { pickConversationSummary } = require('../domain/conversation/conversation-view');
 const { createUndercoverService } = require('../domain/undercover/undercover-service');
 const { createWerewolfService } = require('../domain/werewolf/werewolf-service');
@@ -137,6 +140,10 @@ export function createServerApp(options: any = {}) {
 
   function broadcastEvent(eventName: any, payload: any) {
     sseBus.broadcast(eventName, payload);
+
+    if (typeof options.onBroadcastEvent === 'function') {
+      options.onBroadcastEvent(eventName, payload);
+    }
   }
 
   function broadcastConversationSummary(conversationId: any) {
@@ -169,6 +176,17 @@ export function createServerApp(options: any = {}) {
       options.digestOptions && typeof options.digestOptions.resolveSummaryMemoryTaskName === 'function'
         ? options.digestOptions.resolveSummaryMemoryTaskName
         : () => resolveCurrentTrellisTaskName({ startDir: activeProjectDir }),
+  };
+  const rawSkillDraftOptions = options.skillDraftOptions || {};
+  const skillDraftOptions = {
+    ...rawSkillDraftOptions,
+    skillDraftModelRunner: options.skillDraftModelRunner || rawSkillDraftOptions.skillDraftModelRunner,
+    provider: options.skillDraftProvider !== undefined ? options.skillDraftProvider : rawSkillDraftOptions.provider,
+    model: options.skillDraftModel !== undefined ? options.skillDraftModel : rawSkillDraftOptions.model,
+    thinking: options.skillDraftThinking !== undefined ? options.skillDraftThinking : rawSkillDraftOptions.thinking,
+    agentDir,
+    sqlitePath,
+    getProjectDir: () => activeProjectDir,
   };
   const autoDigestInFlightConversationIds = new Set();
   const autoDigestScheduledTimers = new Map();
@@ -203,21 +221,72 @@ export function createServerApp(options: any = {}) {
       return;
     }
 
+    const conversationBeforeDigest = store.getConversation(conversationId);
+    const pendingExperienceDraftCount = getPendingConversationExperienceDrafts(conversationBeforeDigest).length;
+    const shouldAnnounceExperienceDigest = pendingExperienceDraftCount > 0;
+    let shouldClearDigestStatus = shouldAnnounceExperienceDigest;
+
     autoDigestInFlightConversationIds.add(conversationId);
 
+    if (shouldAnnounceExperienceDigest) {
+      broadcastEvent('conversation_digest_status', {
+        conversationId,
+        status: 'running',
+        reason: 'pending_experience',
+        pendingExperienceDraftCount,
+        message: '正在整理本轮经验，并写入会话摘要…',
+      });
+    }
+
     try {
-      const result = await maybeAutoCreateConversationDigest(store, conversationId, digestOptions);
+      const result = await maybeAutoCreateConversationDigest(store, conversationId, {
+        ...digestOptions,
+        onModelProgress(progress: any) {
+          shouldClearDigestStatus = true;
+          broadcastEvent('conversation_digest_status', {
+            conversationId,
+            status: 'running',
+            reason: progress && progress.reason ? progress.reason : 'model_digest',
+            phase: progress && progress.phase ? progress.phase : '',
+            message: progress && progress.message ? progress.message : '会话摘要模型正在生成…',
+            pendingExperienceDraftCount,
+            model: progress && progress.model ? progress.model : null,
+            modelTrace: progress && progress.modelTrace ? progress.modelTrace : null,
+          });
+        },
+      });
 
       if (result && !result.digestChanged && (result.reason === 'idle_wait' || result.reason === 'cooldown') && result.retryAfterMs > 0) {
         scheduleAutoDigestRetry(conversationId, result.retryAfterMs);
       }
 
       if (!result || (!result.digestChanged && !result.stateChanged)) {
-        return;
+        return result;
       }
 
-      const latestConversation = store.getConversation(conversationId) || result.conversation;
-      const summary = pickConversationSummary(latestConversation);
+      let latestConversation = store.getConversation(conversationId) || result.conversation;
+      let summary = pickConversationSummary(latestConversation);
+
+      if (result.autoCreated && result.digest && result.digest.id) {
+        const draftResult = await maybeAutoCreateConversationSkillDraft(store, conversationId, {
+          digestId: result.digest.id,
+          trigger: result.triggerReason || 'auto-digest',
+        }, skillDraftOptions);
+
+        if (draftResult && draftResult.changed) {
+          latestConversation = store.getConversation(conversationId) || draftResult.conversation || latestConversation;
+          summary = pickConversationSummary(latestConversation);
+          broadcastEvent('conversation_skill_draft_updated', {
+            conversationId,
+            draft: draftResult.draft,
+            skillDrafts: draftResult.skillDrafts,
+            autoCreated: Boolean(draftResult.autoCreated),
+            reason: draftResult.reason,
+            conversation: latestConversation,
+            summary,
+          });
+        }
+      }
 
       broadcastEvent('conversation_digest_updated', {
         conversationId,
@@ -237,10 +306,25 @@ export function createServerApp(options: any = {}) {
         conversationId,
         summary,
       });
+
+      return result;
     } catch (error) {
       const errorValue = error as any;
       console.warn(`[conversation-digest] Auto-create failed for ${conversationId}: ${errorValue && errorValue.stack ? errorValue.stack : errorValue}`);
+      return {
+        autoCreated: false,
+        reason: 'failed',
+        error: errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Unknown error'),
+      };
     } finally {
+      if (shouldClearDigestStatus) {
+        broadcastEvent('conversation_digest_status', {
+          conversationId,
+          status: 'idle',
+          reason: shouldAnnounceExperienceDigest ? 'pending_experience' : 'model_digest',
+        });
+      }
+
       autoDigestInFlightConversationIds.delete(conversationId);
     }
   }
@@ -271,6 +355,7 @@ export function createServerApp(options: any = {}) {
   let feishuIntegration: any = null;
   const agentToolScriptPath = path.resolve(ROOT_DIR, 'lib', 'agent-chat-tools.js');
   const agentToolRelativePath = resolveToolRelativePath(agentToolScriptPath);
+  const browserCliPath = resolveBrowserCliPath({ rootDir: ROOT_DIR });
 
   turnOrchestrator = createTurnOrchestrator({
     store,
@@ -288,8 +373,9 @@ export function createServerApp(options: any = {}) {
     toolBaseUrl,
     agentToolScriptPath,
     agentToolRelativePath,
-    onAssistantMessageCompleted(message: any) {
-      void maybeAutoCreateDigestAfterAssistantMessage(message);
+    browserCliPath,
+    async onAssistantMessageCompleted(message: any) {
+      await maybeAutoCreateDigestAfterAssistantMessage(message);
 
       if (!feishuIntegration) {
         return;
@@ -395,6 +481,7 @@ export function createServerApp(options: any = {}) {
       agentDir,
       sqlitePath,
       digestOptions,
+      skillDraftOptions,
       digestModelRunner: options.digestModelRunner,
     }),
     createSkillTestController({
@@ -481,6 +568,7 @@ export function createServerApp(options: any = {}) {
     close,
     host,
     port,
+    runMaybeAutoCreateDigest,
     server,
     start,
     store,

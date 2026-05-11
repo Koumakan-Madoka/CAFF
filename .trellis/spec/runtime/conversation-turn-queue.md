@@ -45,7 +45,7 @@
   - `conversationQueueFailures: Record<string, { failedBatchCount: number, lastFailureAt: string, lastFailureMessage: string }>`
   - `agentSlotQueueDepths: Record<string, Record<string, number>>`
   - `activeTurns[]` with `batchStartMessageId`, `batchEndMessageId`, `consumedUpToMessageId`, `inputMessageCount`, and `queueDepth`
-  - `activeAgentSlots[]` with `slotId`, `conversationId`, `turnId`, `sourceMessageId`, `agentId`, `agentName`, `status`, `turnStatus`, `assistantMessageId`, `taskId`, `runId`, `replyLength`, `preview`, `errorMessage`, `currentTool*`, and stop fields
+  - `activeAgentSlots[]` with `slotId`, `conversationId`, `turnId`, `sourceMessageId`, `agentId`, `agentName`, `status`, `turnStatus`, `assistantMessageId`, `taskId`, `runId`, `replyLength`, `preview`, `finalContent`, `errorMessage`, `currentTool*`, and stop fields
 
 ### 3. Contracts
 - `POST /messages` must not wait for the full agent turn to finish. It acknowledges accepted work immediately and relies on SSE/runtime updates for the long-running state.
@@ -87,6 +87,10 @@
   - `state.sending` only means the browser is waiting for the `POST /messages` HTTP response
   - busy / stop / delete / live-stage UI must combine `activeTurns`, `dispatchingConversationIds`, `conversationQueueDepths`, `conversationQueueFailures`, `activeAgentSlots`, and `agentSlotQueueDepths`
   - live message stages may come from either the main turn or an active side slot; timeline rendering must follow both
+  - completed stages that are still waiting on blocking post-reply work may carry `finalContent` so the UI shows the full reply instead of clipped `preview` until the normal message refresh arrives
+  - final completed message broadcasts should happen before awaited digest/side-effect hooks; same-turn handoff routing may still wait for those hooks so reusable experience is absorbed before the next agent runs
+  - live-stage display must prefer `finalContent`, then already-populated non-placeholder message content, and only then clipped `preview`; bridge-updated assistant messages can contain full content while their stage is still marked running/finalizing
+  - pending-experience and model-mode digest status should also appear as a temporary timeline card so users can see why routing is still waiting; model progress may include bounded `modelTrace.thinkingPreview` and `modelTrace.outputPreview` diagnostics from provider/pi events
   - `turn_finished` and `agent_slot_finished` UI handlers must pass the final `payload.turn` / `payload.slot` into tool-trace synchronization before removing active runtime state; passing `null` drops failed terminal status and can finalize a running bridge step as succeeded/observed
 - Game exception:
   - who-is-undercover / werewolf automatic-host phases still reject manual chat sends with `409`

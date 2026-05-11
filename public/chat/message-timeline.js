@@ -9,6 +9,7 @@
       buildAgentAvatarElement,
       canInspectToolTrace,
       displayedMessageBody,
+      digestStatusForConversation,
       formatDateTime,
       isPrivateTimelineMessage,
       liveStageForMessage,
@@ -35,6 +36,124 @@
       }
 
       return `${(value / 1000).toFixed(value >= 10000 ? 0 : 1)}s`;
+    }
+
+    function normalizeTokenCount(value) {
+      if (value === null || value === undefined || value === '') {
+        return null;
+      }
+
+      const count = Number(value);
+
+      if (!Number.isFinite(count) || count < 0) {
+        return null;
+      }
+
+      return Math.round(count);
+    }
+
+    function pickTokenCount(usage, keys) {
+      if (!usage || typeof usage !== 'object') {
+        return null;
+      }
+
+      for (const key of keys) {
+        if (Object.prototype.hasOwnProperty.call(usage, key)) {
+          const count = normalizeTokenCount(usage[key]);
+
+          if (count !== null) {
+            return count;
+          }
+        }
+      }
+
+      return null;
+    }
+
+    function messageTokenUsage(message) {
+      if (!message || message.role !== 'assistant') {
+        return null;
+      }
+
+      const metadata = message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
+      const usage = metadata && metadata.tokenUsage && typeof metadata.tokenUsage === 'object'
+        ? metadata.tokenUsage
+        : metadata && metadata.usage && typeof metadata.usage === 'object'
+          ? metadata.usage
+          : null;
+
+      if (!usage || Array.isArray(usage)) {
+        return null;
+      }
+
+      const inputTokens = pickTokenCount(usage, ['inputTokens', 'input_tokens', 'promptTokens', 'prompt_tokens', 'prompt', 'input']);
+      const outputTokens = pickTokenCount(usage, [
+        'outputTokens',
+        'output_tokens',
+        'completionTokens',
+        'completion_tokens',
+        'completion',
+        'output',
+      ]);
+      const explicitTotalTokens = pickTokenCount(usage, ['totalTokens', 'total_tokens', 'total']);
+      const totalTokens = explicitTotalTokens !== null ? explicitTotalTokens : inputTokens !== null || outputTokens !== null ? (inputTokens || 0) + (outputTokens || 0) : null;
+
+      if (inputTokens === null && outputTokens === null && totalTokens === null) {
+        return null;
+      }
+
+      return { inputTokens, outputTokens, totalTokens };
+    }
+
+    function formatTokenCount(count) {
+      const value = Number(count || 0);
+
+      if (!Number.isFinite(value) || value < 0) {
+        return '';
+      }
+
+      if (value < 1000) {
+        return String(Math.round(value));
+      }
+
+      if (value < 1000000) {
+        return `${(value / 1000).toFixed(value >= 10000 ? 0 : 1)}k`;
+      }
+
+      return `${(value / 1000000).toFixed(value >= 10000000 ? 0 : 1)}m`;
+    }
+
+    function formatTokenUsageLabel(usage) {
+      if (!usage) {
+        return '';
+      }
+
+      const primary = usage.totalTokens !== null ? usage.totalTokens : usage.outputTokens !== null ? usage.outputTokens : usage.inputTokens;
+      const formatted = formatTokenCount(primary);
+
+      return formatted ? `消耗 ${formatted} token` : '';
+    }
+
+    function formatTokenUsageTitle(usage) {
+      if (!usage) {
+        return '';
+      }
+
+      const parts = [];
+
+      if (usage.inputTokens !== null) {
+        parts.push(`输入 ${formatTokenCount(usage.inputTokens)}`);
+      }
+
+      if (usage.outputTokens !== null) {
+        parts.push(`输出 ${formatTokenCount(usage.outputTokens)}`);
+      }
+
+      if (usage.totalTokens !== null) {
+        parts.push(`总计 ${formatTokenCount(usage.totalTokens)}`);
+      }
+
+      return parts.length > 0 ? `${parts.join(' · ')} token` : '';
     }
 
     function appendLiveToolRotor(container, label) {
@@ -939,15 +1058,22 @@
     }
 
     function syncMessageCard(card, message, conversationId, agents, activeTurn, activeAgentSlots) {
+      const metadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
+      const isDigestStatusMessage = Boolean(metadata && metadata.digestStatus);
       const agent = message.agentId
         ? (Array.isArray(agents) ? agents.find((item) => item.id === message.agentId) : null) || agentById(message.agentId)
         : null;
-      const liveStage = isPrivateTimelineMessage(message)
+      const liveStage = isPrivateTimelineMessage(message) || isDigestStatusMessage
         ? null
         : liveStageForMessage(conversationId || (message && message.conversationId) || '', activeTurn, activeAgentSlots, message.id);
-      const liveLabel = liveStageLabel(liveStage);
+      const liveLabel = isDigestStatusMessage ? '摘要整理中' : liveStageLabel(liveStage);
       const bodyText = displayedMessageBody(message, liveStage);
       const sessionInfo = messageSessionInfo(message);
+      const contextSnapshot = metadata && metadata.agentContextSnapshot && typeof metadata.agentContextSnapshot === 'object'
+        ? metadata.agentContextSnapshot
+        : null;
+      const tokenUsage = messageTokenUsage(message);
+      const tokenUsageLabel = formatTokenUsageLabel(tokenUsage);
       const recipients = privateRecipientNames(message);
       const privacyLabel =
         isPrivateTimelineMessage(message) && recipients.length > 0 ? `Private -> ${recipients.join(', ')}` : 'Private';
@@ -973,6 +1099,11 @@
         sessionInfo.sessionPath,
         sessionInfo.sessionName,
         sessionInfo.canExport ? 'exportable' : 'locked',
+        contextSnapshot && contextSnapshot.snapshotId ? contextSnapshot.snapshotId : '',
+        tokenUsageLabel,
+        tokenUsage && tokenUsage.inputTokens !== null ? tokenUsage.inputTokens : '',
+        tokenUsage && tokenUsage.outputTokens !== null ? tokenUsage.outputTokens : '',
+        tokenUsage && tokenUsage.totalTokens !== null ? tokenUsage.totalTokens : '',
         traceSignature,
       ].join('\u001f');
 
@@ -984,6 +1115,7 @@
       card.dataset.renderSignature = signature;
       card.className = `message-card ${message.role}`;
       card.classList.toggle('failed', message.status === 'failed');
+      card.classList.toggle('digest-status', isDigestStatusMessage);
 
       if (agent && agent.accentColor) {
         card.style.setProperty('--agent-color', agent.accentColor);
@@ -1030,11 +1162,21 @@
               '\u8be5\u6761 AI \u6d88\u606f\u8fd8\u672a\u5b8c\u6210\uff0c\u8bf7\u7b49\u5f85\u5b8c\u6210\u540e\u518d\u8bb0\u5f55';
           }
           sender.appendChild(recordButton);
+
+          const contextButton = document.createElement('button');
+          contextButton.type = 'button';
+          contextButton.className = 'message-context-button ghost-button';
+          contextButton.dataset.messageId = message.id;
+          contextButton.disabled = !contextSnapshot;
+          contextButton.textContent = '\u4e0a\u4e0b\u6587';
+          contextButton.title = contextSnapshot
+            ? '\u67e5\u770b\u8fd9\u4e2a Agent turn \u5b9e\u9645\u6ce8\u5165\u7684\u4e0a\u4e0b\u6587\u5206\u533a'
+            : '\u8fd9\u6761\u6d88\u606f\u6682\u65e0\u4e0a\u4e0b\u6587\u5feb\u7167';
+          sender.appendChild(contextButton);
         }
       }
 
       const senderLabel = document.createElement('span');
-      const metadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
       senderLabel.className = 'message-sender-label';
       senderLabel.textContent = message.role === 'user'
         ? metadata && metadata.goalAutoContinue
@@ -1050,7 +1192,20 @@
         sender.appendChild(privacyBadge);
       }
 
-      time.textContent = formatDateTime(message.createdAt);
+      time.textContent = '';
+
+      const timestampLabel = document.createElement('span');
+      timestampLabel.textContent = formatDateTime(message.createdAt);
+      time.appendChild(timestampLabel);
+
+      if (tokenUsageLabel) {
+        const tokenBadge = document.createElement('span');
+        tokenBadge.className = 'message-token-usage';
+        tokenBadge.textContent = tokenUsageLabel;
+        tokenBadge.title = formatTokenUsageTitle(tokenUsage);
+        time.appendChild(tokenBadge);
+      }
+
       renderMessageBody(body, bodyText, agents);
       syncToolTraceSection(toolTrace, message, liveStage);
 
@@ -1074,8 +1229,77 @@
       card.classList.toggle('terminating', liveStage ? liveStage.status === 'terminating' : false);
     }
 
+    function clipDigestStatusPreview(value, maxLength = 900) {
+      const text = String(value || '').trim();
+
+      if (text.length <= maxLength) {
+        return text;
+      }
+
+      return `${text.slice(0, Math.max(1, maxLength - 1)).trimEnd()}…`;
+    }
+
+    function digestStatusTimelineContent(status) {
+      const pendingCount = Math.max(0, Number(status.pendingExperienceDraftCount || 0));
+      const countSuffix = pendingCount > 0 ? `（${pendingCount} 条经验草稿）` : '';
+      const lines = [`${status.message || '正在整理本轮经验，并写入会话摘要…'}${countSuffix}`];
+      const model = status.model && typeof status.model === 'object' ? status.model : null;
+      const modelTrace = status.modelTrace && typeof status.modelTrace === 'object' ? status.modelTrace : null;
+
+      if (model) {
+        const label = model.label || [model.provider, model.model].filter(Boolean).join('/');
+        const modelBits = [label, model.thinking ? `thinking=${model.thinking}` : ''].filter(Boolean);
+        if (modelBits.length > 0) {
+          lines.push('', `模型：${modelBits.join(' · ')}`);
+        }
+      }
+
+      if (modelTrace) {
+        const eventCount = Math.max(0, Number(modelTrace.eventCount || 0));
+        if (eventCount > 0) {
+          lines.push(`事件：${eventCount} 个模型事件`);
+        }
+
+        const thinkingPreview = clipDigestStatusPreview(modelTrace.thinkingPreview, 700);
+        if (thinkingPreview) {
+          lines.push('', '思考预览：', thinkingPreview);
+        }
+
+        const outputPreview = clipDigestStatusPreview(modelTrace.outputPreview, 900);
+        if (outputPreview) {
+          lines.push('', '输出预览：', outputPreview);
+        }
+      }
+
+      return lines.join('\n');
+    }
+
+    function digestStatusTimelineMessage(conversation) {
+      const status = conversation && typeof digestStatusForConversation === 'function'
+        ? digestStatusForConversation(conversation.id)
+        : null;
+
+      if (!status || status.status !== 'running') {
+        return null;
+      }
+
+      return {
+        id: `digest-status:${conversation.id}`,
+        role: 'system',
+        senderName: '会话摘要',
+        content: digestStatusTimelineContent(status),
+        status: 'streaming',
+        createdAt: status.updatedAt || new Date().toISOString(),
+        metadata: {
+          digestStatus: true,
+        },
+      };
+    }
+
     function render(conversation, activeTurn, activeAgentSlots = []) {
-      const messages = timelineMessagesForConversation(conversation);
+      const baseMessages = timelineMessagesForConversation(conversation);
+      const digestStatusMessage = digestStatusTimelineMessage(conversation);
+      const messages = digestStatusMessage ? baseMessages.concat(digestStatusMessage) : baseMessages;
       const hasMessages = messages.length > 0;
 
       if (!hasMessages) {
