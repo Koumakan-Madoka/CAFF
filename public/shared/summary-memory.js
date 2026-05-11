@@ -70,7 +70,7 @@
   }
 
   function kindLabel(result) {
-    return result.sourceKind === 'rollup' ? '压缩摘要' : '摘要段';
+    return result.sourceKind === 'rollup' ? '压缩总摘要' : '摘要段';
   }
 
   function messageRangeText(result) {

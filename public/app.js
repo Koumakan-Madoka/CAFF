@@ -219,6 +219,32 @@ function applyConversationResponse(result) {
   }
 }
 
+function digestToDisplayFromResult(result, command) {
+  if (!result || result.deleted || !command || command.action === 'clear' || command.action === 'delete' || command.action === 'extract-skill') {
+    return null;
+  }
+
+  if (command.action === 'compact') {
+    return result.compacted ? result.rollup || null : null;
+  }
+
+  if (result.compacted && result.rollup) {
+    return result.rollup;
+  }
+
+  return result.digest || result.rollup || null;
+}
+
+function focusDigestResult(result, command) {
+  const digest = digestToDisplayFromResult(result, command);
+
+  if (!digest || !digest.id || typeof conversationDigestPanelController.openDigest !== 'function') {
+    return;
+  }
+
+  conversationDigestPanelController.openDigest(digest.id);
+}
+
 async function submitDigestCommand(conversationId, command) {
   if (!command || command.action === 'get') {
     showToast(conversationDigestUtils.formatDigestStatus(state.currentConversation));
@@ -237,12 +263,15 @@ async function submitDigestCommand(conversationId, command) {
   }
 
   renderAll();
+  focusDigestResult(result, command);
   if (command.action === 'extract-skill' && result.draft && result.draft.skill) {
     showToast(`已生成 Skill 草稿：${result.draft.skill.name}`);
   } else if (result.deleted) {
     showToast('会话摘要已删除');
   } else if (result.compacted) {
     showToast(`会话摘要已压缩 · ${conversationDigestUtils.formatDigestStatus(result.conversation)}`);
+  } else if (command.action === 'compact') {
+    showToast(`没有可压缩的摘要 · ${conversationDigestUtils.formatDigestStatus(result.conversation)}`);
   } else {
     showToast(conversationDigestUtils.formatDigestStatus(result.conversation));
   }
@@ -775,6 +804,7 @@ function setupChatModules() {
             toolTraceSignatureForMessage,
             toolTraceStateForMessage,
           },
+          showToast,
         })
       : noopRenderer;
 

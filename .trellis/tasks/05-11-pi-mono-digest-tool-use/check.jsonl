@@ -1,0 +1,5 @@
+{"file":".trellis/tasks/05-11-pi-mono-digest-tool-use/prd.md","reason":"Acceptance criteria to verify."}
+{"command":"npm run build && npm run typecheck && node tests/smoke/server-smoke.test.js","result":"passed","reason":"Validated build, strict typecheck, and conversation digest smoke regressions."}
+{"command":"npm run check","result":"passed","reason":"Validated public JavaScript syntax checks after backend/runtime changes."}
+{"command":"npm test","result":"passed","reason":"finish-work full test suite completed successfully after structured digest runner changes."}
+{"timestamp":"2026-05-11T09:22:25.692Z","agent":"咕咕嘎嘎","action":"validation","summary":"Validated JSON Mode digest implementation.","commands":["npm run build","node --test tests/smoke/server-smoke.test.js","npm run typecheck","npm run check"],"result":"passed"}

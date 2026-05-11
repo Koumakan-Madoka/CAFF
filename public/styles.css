@@ -878,13 +878,33 @@ textarea {
   background: linear-gradient(135deg, rgba(176, 68, 68, 0.08), rgba(255, 252, 246, 0.92));
 }
 
-.message-card.digest-status {
+.message-card.digest-status,
+.message-card.digest-result {
   border-color: rgba(42, 157, 143, 0.22);
   background: linear-gradient(135deg, rgba(42, 157, 143, 0.08), rgba(255, 252, 246, 0.94));
 }
 
-.message-card.digest-status::before {
+.message-card.digest-status::before,
+.message-card.digest-result::before {
   background: rgba(42, 157, 143, 0.42);
+}
+
+.message-card.digest-result .message-body {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.timeline-digest-card {
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.message-card.digest-source-target {
+  border-color: rgba(245, 158, 11, 0.58);
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.18), 0 18px 38px rgba(245, 158, 11, 0.12);
+}
+
+.message-card.digest-source-target::before {
+  background: rgba(245, 158, 11, 0.82);
 }
 
 .message-card.live-preview {
@@ -2483,6 +2503,22 @@ textarea {
   gap: 0.85rem;
 }
 
+.conversation-digest-help {
+  margin: -0.25rem 0 0.75rem;
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.55;
+  padding-left: 1.2em;
+}
+
+.conversation-digest-help li {
+  margin-bottom: 0.25rem;
+}
+
+.conversation-digest-help li strong {
+  color: var(--text);
+}
+
 .summary-memory-form {
   gap: 0.8rem;
 }
@@ -2529,6 +2565,12 @@ textarea {
   border-radius: var(--radius-md);
   border: 1px solid rgba(34, 49, 63, 0.08);
   background: rgba(255, 255, 255, 0.58);
+}
+
+.conversation-digest-card.focused {
+  border-color: rgba(42, 157, 143, 0.4);
+  background: linear-gradient(135deg, rgba(42, 157, 143, 0.1), rgba(255, 255, 255, 0.68));
+  box-shadow: inset 0 0 0 1px rgba(42, 157, 143, 0.12);
 }
 
 .conversation-digest-card-header {

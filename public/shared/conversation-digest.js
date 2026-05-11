@@ -167,22 +167,42 @@
     return digests.length > 0 ? digests[digests.length - 1] : null;
   }
 
+  function digestKindLabel(digest) {
+    const kind = typeof digest === 'string' ? digest : digest && digest.kind;
+    return String(kind || '').trim().toLowerCase() === 'rollup' ? '压缩总摘要' : '详细摘要';
+  }
+
+  function digestKindHelp(digest) {
+    return digestKindLabel(digest) === '压缩总摘要'
+      ? '压缩总摘要是由 /digest compact 生成的——把多条旧详细摘要合并成一条长期概览，减少上下文占用。'
+      : '详细摘要是由 /digest 生成的——直接总结一段近期原始聊天内容，保留关键信息。';
+  }
+
+  function digestCounts(conversation) {
+    const digests = digestsForConversation(conversation);
+    const rollupCount = digests.filter((digest) => digest.kind === 'rollup').length;
+    return {
+      total: digests.length,
+      entryCount: Math.max(0, digests.length - rollupCount),
+      rollupCount,
+    };
+  }
+
   function digestCount(conversation) {
-    return digestsForConversation(conversation).length;
+    return digestCounts(conversation).total;
   }
 
   function formatDigestStatus(conversation) {
-    const count = digestCount(conversation);
+    const counts = digestCounts(conversation);
 
-    if (count === 0) {
-      return '当前没有会话摘要。使用 /digest 生成一条。';
+    if (counts.total === 0) {
+      return '当前没有会话摘要。使用 /digest 生成一条详细摘要。';
     }
 
-    const rollupCount = digestsForConversation(conversation).filter((digest) => digest.kind === 'rollup').length;
-    const rollupText = rollupCount > 0 ? `，含 ${rollupCount} 条压缩摘要` : '';
+    const rollupText = counts.rollupCount > 0 ? `，${counts.rollupCount} 条压缩总摘要` : '';
     const autoStatus = formatAutoDigestStatus(conversation);
     const autoText = autoStatus ? `。${autoStatus}` : '';
-    return `会话摘要：${count} 条长期记忆条目${rollupText}${autoText}`;
+    return `会话摘要：${counts.total} 条长期记忆（${counts.entryCount} 条详细摘要${rollupText}）${autoText}`;
   }
 
   function messageRangeText(digest) {
@@ -191,15 +211,71 @@
     return count > 0 ? `${count} 条公开消息` : '';
   }
 
+  function createDigestSourceLocator({ dom, showToast }) {
+    function findMessageCard(messageId) {
+      const normalizedMessageId = String(messageId || '').trim();
+
+      if (!normalizedMessageId || !dom || !dom.messageList) {
+        return null;
+      }
+
+      return Array.from(dom.messageList.querySelectorAll('.message-card'))
+        .find((card) => card.dataset.messageId === normalizedMessageId) || null;
+    }
+
+    function clearTargetHighlights() {
+      if (!dom || !dom.messageList) {
+        return;
+      }
+
+      dom.messageList.querySelectorAll('.message-card.digest-source-target')
+        .forEach((card) => card.classList.remove('digest-source-target'));
+    }
+
+    function notify(message) {
+      if (typeof showToast === 'function') {
+        showToast(message);
+      }
+    }
+
+    function focusSourceMessage(digest) {
+      const messageId = String(digest && digest.messageRange && digest.messageRange.fromMessageId || '').trim();
+
+      if (!messageId) {
+        notify('这条摘要暂时没有可定位的首条消息。');
+        return;
+      }
+
+      const card = findMessageCard(messageId);
+      if (!card) {
+        notify('首条消息当前不在时间线中，可能已被过滤或尚未加载。');
+        return;
+      }
+
+      clearTargetHighlights();
+      card.classList.add('digest-source-target');
+      card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      window.setTimeout(() => card.classList.remove('digest-source-target'), 2200);
+    }
+
+    return {
+      focusSourceMessage,
+    };
+  }
+
   shared.conversationDigest = {
     digestsForConversation,
     digestStateForConversation,
     latestDigest,
+    digestKindLabel,
+    digestKindHelp,
+    digestCounts,
     digestCount,
     formatDigestStatus,
     formatAutoDigestStatus,
     messageRangeText,
     sectionItems,
     skillDraftsForConversation,
+    createDigestSourceLocator,
   };
 })();

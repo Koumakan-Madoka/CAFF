@@ -34,6 +34,9 @@
 - Browser digest panel:
   - `public/chat/conversation-digest-panel.js` renders retained metadata entries as a right-side timeline.
   - Generate sends `{ action: 'create' }`; compact sends `{ action: 'compact' }`; delete sends `{ action: 'delete', digestId }`.
+  - Manual create and successful compact responses should open the digest panel and focus the newly created digest or compacted rollup so users can inspect the stored summary immediately. A no-op compact response (`compacted: false`) should not open/focus an old rollup because no model/extractive compaction actually ran.
+  - After a digest run settles, the chat timeline should replace the temporary running status with a persisted UI-only summary card for the latest updated digest or rollup; this card reads from retained digest metadata, is sorted by its digest timestamp in the message timeline, and is not stored as a chat message.
+  - Digest cards may use `messageRange.fromMessageId` to offer a UI-only "locate first message" action; missing or no-longer-rendered source messages should show a toast instead of mutating digest metadata.
 - SSE status event:
   - `conversation_digest_status` payload: `{ conversationId, status: 'running' | 'idle', reason?: string, phase?: string, pendingExperienceDraftCount?: number, message?: string, model?: { provider?: string, model?: string, thinking?: string, label?: string }, modelTrace?: { eventCount?: number, outputPreview?: string, thinkingPreview?: string, runId?: string, updatedAt?: string } }`.
 
@@ -63,7 +66,13 @@
 - Keep retention and text bounded: one rollup, default 3 recent entries, prompt latest 3 entries plus rollup, auto-create default 24 new public messages, model prompt latest 80 public messages, and section item/summary clipping in the domain helper.
 - Keep `conversationDigestState` lightweight: store only waterline metadata, counts, token estimates, trigger flags, timestamps, and short failure strings; never store raw message content in the state object.
 - Model digest and rollup prompts must include hard JSON-only output rules plus a minimal few-shot example: exactly one object, no markdown/code fences/prose/comments/multiple objects, all top-level keys present, double-quoted JSON, escaped newlines, escaped literal double quotes inside string values, no trailing commas or placeholders, and empty arrays when evidence is missing.
-- If model JSON parsing fails with a likely missing escape for an inner double quote in a JSON string, the backend may run one bounded repair retry that returns the diagnostic, original digest prompt, and bounded invalid output to the same digest model. A successful repair still stores `createdBy: model:<provider>/<model>`; a failed repair falls back normally.
+- When CAFF calls pi-mono directly for model digest generation, use OpenAI-compatible JSON Mode by sending `response_format: { type: 'json_object' }` through the direct `pi-ai` payload hook. Do not register digest-only virtual tools or force `toolChoice` for this path. Direct JSON Mode runs must emit an initial `conversation_digest_status` running update via the shared model progress reporter so manual `/digest model` and `/digest compact model` requests show a temporary timeline card before the model returns its final JSON.
+- Direct JSON Mode output must still pass local schema validation before storage: `summary` is a non-empty string, `facts`, `decisions`, `openQuestions`, `nextActions`, and `artifacts` are present string arrays, and optional `experience` is an array when present.
+- Direct JSON Mode parsing must extract visible text/output text blocks from pi-ai assistant messages and ignore `thinking`/`reasoning` blocks; an assistant response that contains only hidden reasoning is invalid and must fall back instead of treating the message wrapper as a digest object.
+- If a direct DeepSeek digest model such as `provider: 'deepseek'`, `model: 'deepseek-v4-flash'` is not present in the pi-ai registry, the digest runner may construct a bounded OpenAI-compatible model object from `.pi-sandbox/models.json`, including `baseUrl`, model compat, and API key, then call it with the same JSON Mode and local schema-validation contract.
+- DeepSeek JSON Mode payloads should disable provider thinking when supported, while still omitting digest-only tools and `toolChoice`, so reasoning tokens do not consume the whole bounded output before the digest JSON appears.
+- If JSON Mode output is missing, malformed, or fails validation, log the bounded raw assistant output through the existing invalid-output warning path and fall back to the deterministic extractive digest without storing the bad model output.
+- If model JSON parsing fails with a likely missing escape for an inner double quote in a JSON string, the backend may run one bounded repair retry that returns the diagnostic, original digest prompt, and bounded invalid output to the same digest model. A successful repair still stores `createdBy: model:<provider>/<model>`; a failed repair falls back normally. This text JSON repair path remains for injected/non-structured model runners and non-migrated providers.
 - If model JSON parsing fails, backend warning logs include a bounded raw-output preview for diagnosis plus any detected syntax diagnostic. Setting `CAFF_DIGEST_LOG_RAW_OUTPUT=true` logs the full raw model output to the local server console only; it must not be persisted into conversation metadata or digest memory.
 - Model configuration uses `CAFF_DIGEST_SUMMARY_MODE=model|extractive|auto`, `CAFF_DIGEST_PROVIDER`, `CAFF_DIGEST_MODEL`, `CAFF_DIGEST_THINKING`, `CAFF_DIGEST_MODEL_TIMEOUT_MS`, and optional diagnostic `CAFF_DIGEST_LOG_RAW_OUTPUT=true|false`; without digest-specific provider/model or explicit `summaryMode: 'model'`, default behavior remains extractive.
 - Auto-create configuration uses `CAFF_DIGEST_AUTO_CREATE=true|false`, `CAFF_DIGEST_AUTO_CREATE_MESSAGE_BUDGET`, `CAFF_DIGEST_AUTO_IDLE_MS`, `CAFF_DIGEST_AUTO_COOLDOWN_MS`, `CAFF_DIGEST_AUTO_HIGH_VALUE=true|false`, and `CAFF_DIGEST_AUTO_HIGH_VALUE_MIN_MESSAGES`; auto-create remains disabled unless explicitly enabled.
@@ -76,6 +85,10 @@
 | `POST /digest create` | public messages exist below compaction budget | `200`, appends one `entry` under `metadata.conversationDigests`, `compacted: false` |
 | `POST /digest create` | pending experience drafts exist | `200`, stores bounded `digest.experience`, marks source drafts `absorbed`, and records `absorbedDigestId` |
 | `POST /digest create` | `summaryMode: 'model'` with model JSON output | `200`, stores model-generated summary/sections and `createdBy: model:<provider>/<model>` |
+| `POST /digest create` | direct pi-mono JSON Mode digest returns valid schema JSON | `200`, stores normalized model digest and `createdBy: model:<provider>/<model>` |
+| `POST /digest create` | direct pi-mono JSON Mode digest omits a required field or returns a malformed section | `200`, logs invalid structured output and stores extractive fallback digest |
+| `POST /digest create` | direct pi-mono JSON Mode output is not a JSON object | `200`, logs invalid structured output and stores extractive fallback digest |
+| `POST /digest create` | DeepSeek direct digest model is constructed from `.pi-sandbox/models.json` and returns valid JSON Mode output | `200`, stores normalized model digest and `createdBy: model:deepseek/<model>` |
 | `POST /digest create` | model output likely misses an escape before an inner `"` in a string and repair retry returns valid JSON | `200`, stores repaired model digest and logs the missing-escape diagnostic |
 | `POST /digest create` | model call fails, returns invalid JSON without a repairable missing-escape diagnostic, or repair retry is still invalid | `200`, logs warning and stores extractive fallback digest |
 | Auto-create helper | `CAFF_DIGEST_AUTO_CREATE` disabled | no mutation, `autoCreated: false`, `reason: disabled` |
@@ -99,7 +112,7 @@
 - Good: `/digest model` or `POST { action: 'create', summaryMode: 'model' }` uses the configured model to write the structured digest JSON.
 - Good: with auto-create enabled, completed assistant replies broadcast their full final message first, then synchronously create a digest before handoff routing after enough new public messages accumulate, after enough strong high-value messages appear when high-value triggering is enabled, or after a pending experience draft exists with new public source material.
 - Good: creating enough detailed entries automatically produces a rollup instead of dropping old digest memory.
-- Good: `/digest compact` and the panel compact button use the same API action and show a compacted status.
+- Good: `/digest compact` and the panel compact button use the same API action; successful compaction shows a compacted status, while no-op compaction tells the user there are no older entries to compact.
 - Good: prompt includes rollup historical context before recent digest entries and explicitly prioritizes raw recent messages for conflicts.
 - Good: deleting the final digest removes `metadata.conversationDigests` instead of leaving an empty sentinel.
 - Base: digest generation supports model mode but remains bounded and extractive-fallback safe behind the same domain/API contract.
@@ -115,6 +128,10 @@
 - `tests/smoke/server-smoke.test.js`
   - Create a digest from public messages and assert metadata, summary metadata, sections, and broadcast events.
   - Create a model-mode digest with an injected fake model runner and assert provider/model config, model sections, JSON-only prompt rules, few-shot guidance, and `createdBy`.
+  - Create a direct pi-mono JSON Mode model digest with a fake pi-ai module and assert it sends `response_format: { type: 'json_object' }`, does not send tools or `toolChoice`, validates schema JSON, and stores `createdBy`.
+  - Create direct pi-mono JSON Mode model digests where required fields are missing, the output is not a JSON object, or the assistant message contains only thinking blocks, and assert each case logs warnings and stores extractive fallback digests.
+  - Create a direct JSON Mode digest whose assistant message contains both thinking and text/output text blocks, and assert only the visible JSON text is parsed.
+  - Create a DeepSeek model-mode digest with a fake pi-ai module whose registry lacks the requested model, and assert the runner constructs an OpenAI-compatible DeepSeek model, passes the configured API key, sends JSON Mode, disables provider thinking when supported, and does not send `toolChoice`.
   - Auto-create a model-mode digest after the message budget and assert it does not retrigger or mark `stateChanged` until more public messages or state fields change.
   - Create a model-mode digest where the first runner response has an unescaped inner double quote, assert a second prompt includes the missing-escape diagnostic and bounded invalid output, and assert valid repair output stores a model-created digest.
   - Create a model-mode digest with a runner that throws or returns invalid JSON and assert the request succeeds with extractive fallback metadata and invalid-output diagnostics.
@@ -132,8 +149,8 @@
   - Prompt places digest memory before `Conversation history`.
   - Prompt places rollup digest before recent digest entries.
 - Manual browser validation:
-  - Send `/digest`; verify no `/digest` user message appears, toast reports digest count, and the right-side digest panel updates.
-  - Send `/digest compact`; verify the panel shows a compressed summary plus recent entries.
+  - Send `/digest`; verify no `/digest` user message appears, toast reports digest count, the right-side digest panel opens with the new digest focused, and the timeline keeps a completed digest summary card after the running status disappears.
+  - Send `/digest compact`; verify the panel and completed timeline card show the compressed rollup summary, focus that rollup, and their "定位首条" action scrolls to `messageRange.fromMessageId` when the message is rendered.
   - Generate, compact, and delete from the panel; verify another open client receives SSE refresh.
 - Validation commands:
   - `npm run check`

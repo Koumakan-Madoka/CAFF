@@ -1,0 +1,3 @@
+{"file":".trellis/spec/index.md","reason":"Shared spec fallback."}
+{"file":".trellis/spec/backend/conversation-digest.md","reason":"Documented save_conversation_digest structured tool contract, validation/fallback matrix, and regression test requirements."}
+{"timestamp":"2026-05-11T09:22:25.692Z","agent":"咕咕嘎嘎","action":"spec-update","summary":"Updated conversation digest spec to document direct JSON Mode contract and removal of digest virtual tool/toolChoice path.","files":[".trellis/spec/backend/conversation-digest.md"]}

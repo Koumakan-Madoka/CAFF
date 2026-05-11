@@ -2,8 +2,10 @@
 
 (function registerMessageTimelineModule() {
   const chat = window.CaffChat || (window.CaffChat = {});
+  const shared = window.CaffShared || {};
+  const digestUtils = shared.conversationDigest;
 
-  chat.createMessageTimelineRenderer = function createMessageTimelineRenderer({ dom, helpers }) {
+  chat.createMessageTimelineRenderer = function createMessageTimelineRenderer({ dom, helpers, showToast }) {
     const {
       agentById,
       buildAgentAvatarElement,
@@ -1034,6 +1036,109 @@
       restoreTraceViewportState(container, preservedViewport);
     }
 
+    function digestSectionItems(value) {
+      return digestUtils && typeof digestUtils.sectionItems === 'function' ? digestUtils.sectionItems(value) : [];
+    }
+
+    function digestMessageRangeText(digest) {
+      return digestUtils && typeof digestUtils.messageRangeText === 'function' ? digestUtils.messageRangeText(digest) : '';
+    }
+
+    const digestSourceLocator = digestUtils.createDigestSourceLocator({ dom, showToast });
+
+    function appendDigestResultSection(container, label, items) {
+      const normalizedItems = digestSectionItems(items);
+
+      if (normalizedItems.length === 0) {
+        return;
+      }
+
+      const title = document.createElement('h3');
+      title.className = 'conversation-digest-section-title';
+      title.textContent = label;
+
+      const list = document.createElement('ul');
+      list.className = 'conversation-digest-section-list';
+
+      for (const item of normalizedItems) {
+        const row = document.createElement('li');
+        row.textContent = item;
+        list.appendChild(row);
+      }
+
+      container.append(title, list);
+    }
+
+    function syncDigestResultBody(container, digest) {
+      container.textContent = '';
+      container.classList.remove('plain-text');
+
+      const card = document.createElement('article');
+      const header = document.createElement('div');
+      const titleWrap = document.createElement('div');
+      const eyebrow = document.createElement('p');
+      const range = document.createElement('p');
+      const kindHelp = document.createElement('p');
+      const provenance = document.createElement('p');
+      const actions = document.createElement('div');
+      const locateButton = document.createElement('button');
+      const summary = document.createElement('p');
+      const kindLabel = digestUtils.digestKindLabel(digest);
+      const sourceCount = digest && digest.kind === 'rollup' && Array.isArray(digest.sourceDigestIds) ? digest.sourceDigestIds.length : 0;
+      const sourceText = sourceCount > 0 ? ` · 来自 ${sourceCount} 条详细摘要` : '';
+      const provenanceParts = [];
+
+      card.className = 'conversation-digest-card timeline-digest-card';
+      header.className = 'conversation-digest-card-header';
+      eyebrow.className = 'eyebrow';
+      range.className = 'muted';
+      kindHelp.className = 'muted tiny-meta';
+      provenance.className = 'muted tiny-meta';
+      actions.className = 'conversation-digest-card-actions';
+      locateButton.className = 'secondary-button compact-icon-button';
+      locateButton.type = 'button';
+      locateButton.textContent = '定位首条';
+      locateButton.disabled = !String(digest && digest.messageRange && digest.messageRange.fromMessageId || '').trim();
+      locateButton.title = locateButton.disabled
+        ? '这条摘要暂时没有可定位的首条消息'
+        : '滚动到这条摘要覆盖范围的第一条消息';
+      locateButton.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        digestSourceLocator.focusSourceMessage(digest);
+      });
+
+      eyebrow.textContent = `${kindLabel}完成`;
+      kindHelp.textContent = digestUtils.digestKindHelp(digest);
+      range.textContent = `${digestMessageRangeText(digest) || (digest && digest.id) || 'Digest'}${sourceText}`;
+
+      if (digest && digest.triggerReason) {
+        provenanceParts.push(`触发：${digest.triggerReason}`);
+      }
+      if (digest && digest.createdBy) {
+        provenanceParts.push(`来源：${digest.createdBy}`);
+      }
+      provenance.textContent = provenanceParts.join(' · ');
+
+      titleWrap.append(eyebrow, range, kindHelp);
+      if (provenanceParts.length > 0) {
+        titleWrap.appendChild(provenance);
+      }
+      actions.appendChild(locateButton);
+      header.append(titleWrap, actions);
+
+      summary.className = 'conversation-digest-summary';
+      summary.textContent = String(digest && digest.summary || '').trim();
+
+      card.append(header, summary);
+      appendDigestResultSection(card, '决策', digest && digest.decisions);
+      appendDigestResultSection(card, '事实', digest && digest.facts);
+      appendDigestResultSection(card, '未解决问题', digest && digest.openQuestions);
+      appendDigestResultSection(card, '下一步', digest && digest.nextActions);
+      appendDigestResultSection(card, '产物', digest && digest.artifacts);
+      container.appendChild(card);
+    }
+
     function createMessageCard(message, conversationId, agents, activeTurn, activeAgentSlots) {
       const card = document.createElement('article');
       const meta = document.createElement('div');
@@ -1059,11 +1164,13 @@
 
     function syncMessageCard(card, message, conversationId, agents, activeTurn, activeAgentSlots) {
       const metadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
+      const digestResult = metadata && metadata.digestResult && typeof metadata.digestResult === 'object' ? metadata.digestResult : null;
       const isDigestStatusMessage = Boolean(metadata && metadata.digestStatus);
+      const isDigestResultMessage = Boolean(digestResult);
       const agent = message.agentId
         ? (Array.isArray(agents) ? agents.find((item) => item.id === message.agentId) : null) || agentById(message.agentId)
         : null;
-      const liveStage = isPrivateTimelineMessage(message) || isDigestStatusMessage
+      const liveStage = isPrivateTimelineMessage(message) || isDigestStatusMessage || isDigestResultMessage
         ? null
         : liveStageForMessage(conversationId || (message && message.conversationId) || '', activeTurn, activeAgentSlots, message.id);
       const liveLabel = isDigestStatusMessage ? '摘要整理中' : liveStageLabel(liveStage);
@@ -1104,6 +1211,7 @@
         tokenUsage && tokenUsage.inputTokens !== null ? tokenUsage.inputTokens : '',
         tokenUsage && tokenUsage.outputTokens !== null ? tokenUsage.outputTokens : '',
         tokenUsage && tokenUsage.totalTokens !== null ? tokenUsage.totalTokens : '',
+        digestResult ? JSON.stringify(digestResult) : '',
         traceSignature,
       ].join('\u001f');
 
@@ -1116,6 +1224,7 @@
       card.className = `message-card ${message.role}`;
       card.classList.toggle('failed', message.status === 'failed');
       card.classList.toggle('digest-status', isDigestStatusMessage);
+      card.classList.toggle('digest-result', isDigestResultMessage);
 
       if (agent && agent.accentColor) {
         card.style.setProperty('--agent-color', agent.accentColor);
@@ -1206,7 +1315,12 @@
         time.appendChild(tokenBadge);
       }
 
-      renderMessageBody(body, bodyText, agents);
+      body.classList.toggle('digest-result-body', isDigestResultMessage);
+      if (isDigestResultMessage) {
+        syncDigestResultBody(body, digestResult);
+      } else {
+        renderMessageBody(body, bodyText, agents);
+      }
       syncToolTraceSection(toolTrace, message, liveStage);
 
       if (liveHint) {
@@ -1257,7 +1371,7 @@
       if (modelTrace) {
         const eventCount = Math.max(0, Number(modelTrace.eventCount || 0));
         if (eventCount > 0) {
-          lines.push(`事件：${eventCount} 个模型事件`);
+          lines.push(`模型更新：${eventCount} 次`);
         }
 
         const thinkingPreview = clipDigestStatusPreview(modelTrace.thinkingPreview, 700);
@@ -1296,10 +1410,83 @@
       };
     }
 
+    function digestTimestamp(digest) {
+      const timestamp = Date.parse(String(digest && (digest.updatedAt || digest.compactedAt || digest.createdAt) || ''));
+      return Number.isFinite(timestamp) ? timestamp : 0;
+    }
+
+    function latestUpdatedDigestForConversation(conversation) {
+      const digests = digestUtils && typeof digestUtils.digestsForConversation === 'function'
+        ? digestUtils.digestsForConversation(conversation)
+        : [];
+
+      if (digests.length === 0) {
+        return null;
+      }
+
+      return digests.reduce((latest, digest) => {
+        if (!latest) {
+          return digest;
+        }
+
+        return digestTimestamp(digest) >= digestTimestamp(latest) ? digest : latest;
+      }, null);
+    }
+
+    function digestResultTimelineMessage(conversation) {
+      const digest = latestUpdatedDigestForConversation(conversation);
+
+      if (!digest || !digest.id) {
+        return null;
+      }
+
+      const kindLabel = digestUtils.digestKindLabel(digest);
+
+      return {
+        id: `digest-result:${digest.id}`,
+        role: 'system',
+        senderName: '会话摘要',
+        content: digest.summary,
+        status: 'completed',
+        createdAt: digest.updatedAt || digest.compactedAt || digest.createdAt,
+        metadata: {
+          digestResult: digest,
+          digestResultKindLabel: kindLabel,
+        },
+      };
+    }
+
+    function timelineMessageTimestamp(message) {
+      const timestamp = Date.parse(String(message && message.createdAt || ''));
+      return Number.isFinite(timestamp) ? timestamp : 0;
+    }
+
+    function compareTimelineMessages(left, right) {
+      const leftTime = timelineMessageTimestamp(left);
+      const rightTime = timelineMessageTimestamp(right);
+
+      if (leftTime !== rightTime) {
+        return leftTime - rightTime;
+      }
+
+      const leftId = left && left.id ? String(left.id) : '';
+      const rightId = right && right.id ? String(right.id) : '';
+      return leftId.localeCompare(rightId);
+    }
+
+    function mergeDigestTimelineMessage(baseMessages, digestMessage) {
+      if (!digestMessage) {
+        return baseMessages;
+      }
+
+      return baseMessages.concat(digestMessage).sort(compareTimelineMessages);
+    }
+
     function render(conversation, activeTurn, activeAgentSlots = []) {
       const baseMessages = timelineMessagesForConversation(conversation);
       const digestStatusMessage = digestStatusTimelineMessage(conversation);
-      const messages = digestStatusMessage ? baseMessages.concat(digestStatusMessage) : baseMessages;
+      const digestResultMessage = digestStatusMessage ? null : digestResultTimelineMessage(conversation);
+      const messages = mergeDigestTimelineMessage(baseMessages, digestStatusMessage || digestResultMessage);
       const hasMessages = messages.length > 0;
 
       if (!hasMessages) {
