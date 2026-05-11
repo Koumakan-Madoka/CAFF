@@ -80,7 +80,7 @@ test('buildAgentTurnPrompt defaults to dynamic mode and points skills at SKILL.m
     assert.ok(prompt.includes('Conversation-only skills for this room:'), 'Should include conversation skill section');
     assert.ok(prompt.includes(`Path: ${expectedSkillFile}`), 'Dynamic descriptors should point at SKILL.md');
     assert.ok(prompt.includes('Load with: Use the `read` tool on the `Path` above when you need the full instructions'), 'Dynamic descriptors should teach read-path loading');
-    assert.ok(prompt.includes('Dynamic skill loading: when conversation skills are listed as descriptors without full instructions, use the `read` tool on the listed `Path` to load the full `SKILL.md` on demand.'), 'Prompt should explain dynamic read loading');
+    assert.ok(prompt.includes('Dynamic skill loading: when a skill only shows a descriptor, use the `read` tool on its listed `Path`; that `Path` already points directly to `SKILL.md`, so no dedicated skill-loading tool is needed.'), 'Prompt should explain dynamic read loading');
     assert.ok(!prompt.includes('read-skill'), 'Prompt should not mention removed read-skill tool');
     assert.ok(!prompt.includes('Conversation Instructions'), 'Dynamic mode should still avoid full conversation skill body injection');
   } finally {
@@ -277,7 +277,7 @@ test('buildAgentTurnPrompt skill test design mode states sandbox as the default 
       'Skill test design prompt should keep tracked-change scenarios aligned to apply/edit outcomes'
     );
     assert.ok(
-      !prompt.includes('Dynamic skill loading: when conversation skills are listed as descriptors without full instructions'),
+      !prompt.includes('Dynamic skill loading: when a skill only shows a descriptor'),
       'Skill test design prompt should not show generic dynamic skill-loading guidance when the mode has no descriptor-only skills'
     );
   } finally {

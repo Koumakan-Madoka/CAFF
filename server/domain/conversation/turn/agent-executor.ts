@@ -18,7 +18,8 @@ const {
   getAgentById,
 } = require('../mention-routing');
 const { SKILL_TEST_DESIGN_WORKBENCH_SKILL_ID } = require('../../../../lib/mode-store');
-const { buildAgentTurnPrompt, AGENT_PROMPT_VERSION } = require('./agent-prompt');
+const { buildAgentTurnPromptSections, formatAgentTurnPromptSections, AGENT_PROMPT_VERSION } = require('./agent-prompt');
+const { createAgentContextSnapshot } = require('./context-snapshot');
 const { markConversationRetrievalTraceUsage } = require('../retrieval-trace');
 const { extractSummaryMemorySearchTerms } = require('../../../../lib/summary-memory-query');
 const { ensureAgentSandbox, toPortableShellPath } = require('./agent-sandbox');
@@ -1269,6 +1270,7 @@ export function createAgentExecutor(options: any = {}) {
   const browserCliPath = String(options.browserCliPath || '').trim() || resolveBrowserCliPath({ rootDir: process.cwd() });
   const onAssistantMessageCompleted =
     typeof options.onAssistantMessageCompleted === 'function' ? options.onAssistantMessageCompleted : null;
+  const enableAutomaticRelatedMemory = options.enableAutomaticRelatedMemory === true;
 
   async function executeConversationAgent({
     runStore,
@@ -1339,16 +1341,12 @@ export function createAgentExecutor(options: any = {}) {
     const privateMessages = store.listPrivateMessagesForAgent(conversationId, agent.id, {
       limit: MAX_PRIVATE_CONTEXT_MESSAGES,
     });
-    const memoryCards =
-      store && typeof store.listVisibleMemoryCards === 'function'
-        ? store.listVisibleMemoryCards(conversationId, agent.id)
-        : store && typeof store.listConversationMemoryCards === 'function'
-          ? store.listConversationMemoryCards(conversationId, agent.id)
-          : [];
-    const relatedMemorySegments = resolveRelatedMemorySegments(store, conversationId, conversation, promptMessages, {
-      projectDir: resolvedProjectDir,
-    });
-    const prompt = buildAgentTurnPrompt({
+    const relatedMemorySegments = enableAutomaticRelatedMemory
+      ? resolveRelatedMemorySegments(store, conversationId, conversation, promptMessages, {
+          projectDir: resolvedProjectDir,
+        })
+      : [];
+    const promptInput = {
       conversation,
       agent,
       agentConfig,
@@ -1359,7 +1357,6 @@ export function createAgentExecutor(options: any = {}) {
       agents: conversation.agents,
       messages: promptMessages,
       privateMessages,
-      memoryCards,
       relatedMemorySegments,
       trigger: queueItem,
       remainingSlots,
@@ -1370,7 +1367,9 @@ export function createAgentExecutor(options: any = {}) {
       modeContext,
       forceFullConversationSkillIds,
       browserCliPath,
-    });
+    };
+    const promptSections = buildAgentTurnPromptSections(promptInput);
+    const prompt = formatAgentTurnPromptSections(promptSections);
     const provider = resolveSetting(agentConfig.provider, process.env.PI_PROVIDER, DEFAULT_PROVIDER);
     const model = resolveSetting(agentConfig.model, process.env.PI_MODEL, DEFAULT_MODEL);
     const thinking = resolveThinkingSetting(provider, agentConfig.thinking, process.env.PI_THINKING, DEFAULT_THINKING);
@@ -1388,6 +1387,17 @@ export function createAgentExecutor(options: any = {}) {
       sanitizeSessionName(
         `chat-${conversationId}-${turnId}-${agent.id}-${agentConfig.profileId || 'default'}-${String(stageTaskId).slice(-12)}`
       ) || `chat-${conversationId}-${turnId}`;
+    const assistantMessageId = randomUUID();
+    const contextSnapshot = createAgentContextSnapshot({
+      conversationId,
+      turnId,
+      messageId: assistantMessageId,
+      agentId: agent.id,
+      agentName: agent.name,
+      promptVersion: AGENT_PROMPT_VERSION,
+      sections: promptSections,
+    });
+
     const queuedMetadata = {
       provider,
       model,
@@ -1410,9 +1420,11 @@ export function createAgentExecutor(options: any = {}) {
       triggeredByAgentName: queueItem.triggeredByAgentName || '',
       triggeredByMessageId: queueItem.triggeredByMessageId || null,
       triggerType: queueItem.triggerType || 'user',
+      agentContextSnapshot: contextSnapshot,
     };
 
     const assistantMessage = store.createMessage({
+      id: assistantMessageId,
       conversationId,
       turnId,
       role: 'assistant',
@@ -1522,11 +1534,7 @@ export function createAgentExecutor(options: any = {}) {
         'send-private': queuedMetadata.privateOnly ? 'required' : 'optional',
         'read-context': 'optional',
         'search-messages': 'optional',
-        'list-memories': 'optional',
-        'save-memory': 'optional',
         'write-experience': 'optional',
-        'update-memory': 'optional',
-        'forget-memory': 'optional',
         participants: 'optional',
         'trellis-init': 'optional',
         'trellis-write': 'optional',
@@ -1870,6 +1878,7 @@ export function createAgentExecutor(options: any = {}) {
         triggerType: queueItem.triggerType || 'user',
         usage: result.usage && typeof result.usage === 'object' && !Array.isArray(result.usage) ? result.usage : null,
         tokenUsage,
+        agentContextSnapshot: contextSnapshot,
       };
       const assistantMessageDone = store.updateMessage(assistantMessage.id, {
         content: publicReply,
@@ -2058,6 +2067,7 @@ export function createAgentExecutor(options: any = {}) {
           triggeredByAgentName: queueItem.triggeredByAgentName || '',
           triggeredByMessageId: queueItem.triggeredByMessageId || null,
           triggerType: queueItem.triggerType || 'user',
+          agentContextSnapshot: contextSnapshot,
         },
       });
 

@@ -21,12 +21,31 @@
   handlers together.
 - Prefer bounded reads for prompt context. This code intentionally clips file
   content and limits context fan-out.
-- Keep high-churn public conversation history near the tail of the assembled
-  prompt so stable persona, Trellis, digest, retrieved-memory, private mailbox,
-  and curated-memory sections can share a longer KV-cacheable prefix. Per-turn
-  trigger details (`Why you are replying now`, routing mode, remaining slots)
-  should sit after conversation history and immediately before the final reply
-  instruction because they change on every invocation.
+- Keep prompt sections ordered from stable policy/capability context to volatile
+  per-turn context: `workspace_header`, optional `private_persona`, `rules`,
+  `routing_instructions`, `command_format_rules`, `local_sandbox`, optional
+  skills, optional `dynamic_skill_loading`, `tool_instructions`, optional
+  `browser_tool_instructions`, optional `participants`, optional mode sections,
+  `trellis_context`, `session_goal`, `conversation_digest`, explicit recall
+  sections, `private_mailbox`, `conversation_history`, `turn_trigger`, and
+  `final_instruction`. This keeps high-churn public conversation history near
+  the tail, lets current session goals beat stale digest next actions, and keeps
+  recent raw messages after digest/recall context so they win conflicts. Omit the
+  default first-speaker trigger section because it adds no material context; when
+  a non-default host, mention, private, or handoff trigger exists, keep the
+  concise `Turn routing state` section after conversation history and
+  immediately before the final reply instruction. This section should explain
+  only the material trigger (host/user mention/private/handoff) and must not
+  expose internal queue mode or remaining slot counters.
+- The `Other visible participants` prompt section must list only agents other
+  than the current speaker. Filter by `agent.id` when available and fall back to
+  exact `agent.name` matching only when an id is missing, so handoff guidance
+  cannot invite an agent to mention itself.
+- Optional prompt sections with no material body should be omitted rather than
+  represented as `- none` or `No ...` placeholders. This applies to persona
+  skills, conversation skills, other participants, private mailbox, legacy
+  curated memory cards, and conversation history; the Inspector snapshot must reflect
+  the same omitted section list because it is built from the same prompt sections.
 - Preserve symlink and path traversal guards when touching `.trellis` file IO.
 - Preserve supported SQLite `file:` URI semantics when opening runtime stores:
   on-disk URIs keep `mode=ro` / `mode=rw` intent through explicit open options,
@@ -158,6 +177,64 @@ CAFF uses a descriptor + on-demand loading model for conversation skills:
 - **Prompt instructions** for dynamic loading only appear when mode is `dynamic`;
   in `full` mode they are omitted to reduce noise.
 
+## Agent Chat Bridge Prompt Guidance
+
+### 1. Scope / Trigger
+- Trigger: changing the `Chat bridge tools` prompt block in `server/domain/conversation/turn/agent-prompt.ts`.
+- Goal: keep per-turn tool instructions compact while preserving operational safety, routing behavior, and command signatures that agents need to act correctly.
+
+### 2. Signatures
+- Public send: `node <agentToolRelativePath> send-public --content-stdin`.
+- Private send: `node <agentToolRelativePath> send-private [--to "AgentName[,AgentB]"] [--no-handoff] --content-stdin`.
+- Context recall: `read-context`, `search-messages --query "..." --limit 5`, and `search-memory --query "..." --limit 5` or `--latest`.
+- Governance: `list-participants`, `suggest-goal --action complete|pause|set --reason "..."`, and `update-goal-checklist --content-stdin` with `[ ]`, `[~]`, `[x]` rows.
+- Trellis writes: `trellis-init --task "my-task" [--confirm] [--force]` and `trellis-write --path ".trellis/..." --content-stdin [--confirm] [--force]`.
+- Experience: `write-experience --title ... --category ... --scenario ... --step ... --validation ... --artifact ... --confidence high|medium|low`.
+
+### 3. Contracts
+- Keep one shared `command_format_rules` section instead of repeating bash/heredoc/stdin/Windows-path rules under each tool.
+- Preserve exact public and private heredoc templates using `node "$CAFF_CHAT_TOOLS_PATH"` because they are the safest multiline examples and are covered by prompt tests.
+- Keep safety rules explicit in `command_format_rules`: never print tokens/secrets, check public content before `send-public`, put private roles/reasoning/scratch/game identity in private notes, and mark `--force` as dangerous.
+- Keep routing rules explicit in `rules` / `routing_instructions`: actionable mentions trigger only at line start or in a final pure mention block; inline mentions do not trigger; private messages wake recipients unless `--no-handoff`; no actionable mention stops the turn; up to 5 agents run at once.
+- Keep `tool_instructions` focused on compact command signatures and group low-frequency tools into capability lines rather than listing preview/apply/overwrite examples separately.
+- Dynamic skill loading stays a single conditional `dynamic_skill_loading` section: descriptor-only skills are loaded by reading the listed `Path`, which already points to `SKILL.md`.
+- Do not advertise deprecated memory card bridge commands in `Chat bridge tools`.
+
+### 4. Validation & Error Matrix
+| Case | Expected behavior |
+| --- | --- |
+| Prompt includes chat bridge guidance | Contains public/private heredoc templates in `command_format_rules`, bash-only guidance, safety rules, and compact tool signatures in `tool_instructions`. |
+| Dynamic skill descriptors are present | Includes the one-line dynamic `read`/`Path` guidance as `dynamic_skill_loading`. |
+| No descriptor-only skills are present | Omits the dynamic skill-loading guidance. |
+| Search-memory guidance is present | States that long-term memory is not automatic and lists only core commands plus compact optional filters. |
+| Trellis write guidance is present | States preview-by-default, `--confirm` to write, and `--force` dangerous without separate overwrite examples. |
+| Deprecated memory cards exist | Prompt still omits `list-memories`, `save-memory`, `update-memory`, `forget-memory`, and curated memory card sections. |
+
+### 5. Good/Base/Bad Cases
+- Good: shared format/safety rules appear once in `command_format_rules`, routing appears in `rules` / `routing_instructions`, and grouped send, retrieval, governance, write, and experience lines stay in `tool_instructions`.
+- Base: a new bridge command adds one compact signature plus any unique safety rule, not a repeated heredoc tutorial.
+- Bad: removing `search-memory` trigger wording, hiding `--force` danger, or reintroducing deprecated memory card commands to save a few tokens.
+
+### 6. Tests Required
+- `tests/runtime/turn-orchestrator.test.js` should assert bash/heredoc guidance, compact search-memory filters, write-experience sparse-use warning, and absence of deprecated memory commands.
+- `tests/runtime/skill-loading.test.js` should assert the exact one-line dynamic skill-loading guidance in dynamic mode and its absence when no descriptor-only skills are injected.
+- `npm run build`, targeted runtime tests, `npm run check`, and `npm run typecheck` should pass after prompt guidance changes.
+
+### 7. Wrong vs Correct
+#### Wrong
+```typescript
+`- Preview ... trellis-init --task "my-task"`,
+`- Apply ... trellis-init --task "my-task" --confirm`,
+`- Overwrite ... trellis-init --task "my-task" --confirm --force`,
+```
+- This repeats the same command shape and hides the safety model in three lines.
+
+#### Correct
+```typescript
+`- Trellis writes default to preview: ${relativeCommandPrefix} trellis-init --task "my-task" [--confirm] [--force] ... Add --confirm to write; --force is dangerous.`,
+```
+- This preserves behavior while making the write/overwrite boundary more visible and token-efficient.
+
 ## Conversation Memory Contract
 
 - `search-messages` is retrieval-only and must stay scoped to the current
@@ -190,29 +267,18 @@ CAFF uses a descriptor + on-demand loading model for conversation skills:
   tokenizer gap such as CJK text, diagnostics must say so before the
   implementation falls back to the bounded LIKE path. Do not silently widen the
   scan beyond the active conversation.
-- `save-memory` writes durable cards for the current `local-user + agent`
-  scope; scope still comes from bridge invocation context, not from
-  agent-provided ids.
-- `update-memory` only mutates an existing durable card in the current
-  `local-user + agent` scope; it requires `title`, full replacement `content`,
-  a non-empty `reason`, and may use `expectedUpdatedAt` for optimistic
-  concurrency.
-- `forget-memory` only tombstones an existing durable card in the current
-  `local-user + agent` scope; it requires `title`, a non-empty `reason`, and
-  may use `expectedUpdatedAt` for optimistic concurrency. Tombstoned cards stay
-  out of visible-memory lists and prompt injection, but remain auditable in
-  storage.
-- `list-memories` returns bounded visible cards for the current agent by
-  layering current `conversation + agent` overlay cards ahead of the same
-  `local-user + agent` durable cards.
-- Memory title matching stays exact after trimming (case-sensitive) across
-  storage, visible layering, `update-memory`, and `forget-memory` so
-  case-distinct titles remain separately addressable.
-- Prompt assembly may inject only bounded active visible memory cards using the
-  same overlay order. Current-conversation message recall results are not
-  auto-injected; the prompt only teaches the agent when to call
-  `search-messages`, `list-memories`, `save-memory`, `update-memory`, and
-  `forget-memory`.
+- Memory card bridge commands (`list-memories`, `save-memory`,
+  `update-memory`, `forget-memory`) are deprecated for agent-facing prompts.
+  Keep their bridge/storage behavior and existing data for compatibility and
+  future migration, but do not advertise them in `Chat bridge tools` and do not
+  query or inject `Curated memory cards` during prompt assembly.
+- Existing memory card storage keeps its current isolation and safety contracts:
+  durable writes are scoped to `local-user + agent`, update/forget require exact
+  case-sensitive title matches and reasons, tombstoned cards stay auditable, and
+  secret/transient-content rejection remains enforced for compatibility callers.
+- Current-conversation message recall results are not auto-injected; prompt
+  guidance only teaches `search-messages` for current conversation recall and
+  `search-memory` for explicit digest-summary recall.
 - Prompt assembly may inject same-agent `conversationRetrievalTraces` as `Last
   recalled evidence cache` before live conversation history. It must filter by
   current `agent.id`, label traces as recall evidence rather than instructions,
@@ -222,50 +288,18 @@ CAFF uses a descriptor + on-demand loading model for conversation skills:
   compact, and `expired` evidence is omitted. The cache stores only bounded
   summary-segment snippets and source digest ids, not raw messages or full tool
   transcripts.
-- Cross-conversation summary segment recall may auto-inject up to 5 bounded
-  digest-derived experience memories before live conversation history. Its
-  automatic search query should include the active Trellis task title when
-  available, recent public message text, session goal objective, and meaningful
-  conversation titles so task-attributed historical segments can be recalled
-  without an exact filter while live-turn intent is protected from long goal text;
-  the generated query starts with a bounded keyword seed that reserves terms for
-  both the active task and newest recent live intent before the summary store
-  extracts its limited LIKE terms, word-segments CJK seed text when supported or
-  falls back to bounded CJK bigrams, and skips obvious filler terms, while each
-  recent message is clipped before the globally bounded recent-message body stays
-  chronological for readability.
-  Backend-generated automatic session-goal continuation boilerplate and generic
-  default titles such as `New Conversation` and agent completion reports for
-  those automatic continuations do not consume the bounded keyword budget.
-  Automatic recall can fetch up to 15
-  bounded candidates, drop score-1 / single-matched-term hits when the
-  generated query has multiple terms, skip private-only or private-visibility
-  messages from the generated recent-message query text, give keyword hits from
-  the active Trellis task light priority over cross-task hits using exact or
-  bounded normalized title/slug task-name affinity, and diversify selected memories by
-  source conversation before filling remaining prompt slots, so one historical
-  conversation does not monopolize the prompt. If keyword recall returns fewer
-  than five results and an active Trellis task is available, it may fill unused
-  slots with latest bounded summary segments filtered to the current task while
-  still excluding the active conversation and deduplicating already selected
-  segments by digest/segment id. If the exact latest current-task filter finds
-  nothing, automatic recall may inspect a bounded latest candidate pool and
-  apply the same normalized title/slug task-name alias locally so slug-stamped
-  task memory can still fill unused slots. The prompt must state that current
-  raw messages and current task/spec context override retrieved historical memory, include
-  source task attribution, message count, trigger reason, and created-by/model
-  provenance when available, and include matched query terms or recall reason
-  when available so agents can judge why each memory was recalled.
-- Memory cards are intentionally small and durable: active-card budget is 6 per
-  scope, default TTL is 30 days, max TTL is 90 days, and expired or non-active
-  cards stay out of the prompt.
-- `save-memory` and `update-memory` must reject obvious secrets, tokens,
-  passwords, private keys, and transient TODO / next-step / temporary status
-  content.
-- `update-memory` and `forget-memory` must stay durable-only: they do not mutate
-  current-conversation overlay cards, they must reject missing targets, and they
-  should surface optimistic-concurrency conflicts instead of silently
-  overwriting a newer correction.
+- Prompt assembly must not run cross-conversation summary-memory search by
+  default. Long-term memory enters agent context only through explicit agent/user
+  actions such as `search-memory`, plus same-agent `conversationRetrievalTraces`
+  captured from those explicit tool calls. Agent-facing tool guidance should tell
+  agents to call `search-memory` when the user asks about prior context (for
+  example “上次”, “之前”, “还记得吗”, or “回忆一下”) and must say that long-term
+  memory is not automatically injected. The legacy automatic recall helper may be
+  kept as an opt-in compatibility path for tests or experiments, but the default
+  executor path leaves `relatedMemorySegments` empty.
+- Deprecated memory cards stay small and durable for compatibility: active-card
+  budget is 6 per scope, default TTL is 30 days, max TTL is 90 days, and expired
+  or non-active cards stay out of prompts and visible lists.
 - Tool traces should keep diagnostics such as scope, query preview, result
   count, memory title, reason tag, and rejection reason without echoing full
   memory bodies or secret-like payloads.

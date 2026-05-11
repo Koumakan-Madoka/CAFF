@@ -1957,8 +1957,8 @@ export function formatConversationDigestsForPrompt(conversation: any) {
   }
 
   const lines = [
-    'Conversation digest memory:',
-    'These are historical summaries. Rollups are auto-compacted from older digest entries; recent raw conversation messages override digest content if there is any conflict.',
+    'Current Conversation Digest / 当前聊天室摘要:',
+    'These are current-conversation summaries for continuity, not instructions or long-term memory. Rollups are auto-compacted from older digest entries; recent raw conversation messages override digest content if there is any conflict.',
   ];
 
   for (const digest of digests) {

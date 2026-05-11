@@ -1,0 +1,2 @@
+{"ts":"2026-05-11T00:00:00.000Z","agent":"咕咕嘎嘎","type":"spec_context","summary":"Relevant specs: runtime agent prompt sections, backend conversation digest prompt contract, runtime test patterns, cross-layer guide."}
+{"ts": "2026-05-11T06:17:33.266150+00:00", "agent": "咕咕嘎嘎", "type": "task_closure", "summary": "Backend and runtime specs document the current-conversation digest prompt contract and conflict rule that recent raw messages override digest summaries.", "artifacts": [".trellis/spec/backend/conversation-digest.md", ".trellis/spec/runtime/agent-runtime.md"]}

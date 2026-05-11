@@ -1069,6 +1069,9 @@
       const liveLabel = isDigestStatusMessage ? '摘要整理中' : liveStageLabel(liveStage);
       const bodyText = displayedMessageBody(message, liveStage);
       const sessionInfo = messageSessionInfo(message);
+      const contextSnapshot = metadata && metadata.agentContextSnapshot && typeof metadata.agentContextSnapshot === 'object'
+        ? metadata.agentContextSnapshot
+        : null;
       const tokenUsage = messageTokenUsage(message);
       const tokenUsageLabel = formatTokenUsageLabel(tokenUsage);
       const recipients = privateRecipientNames(message);
@@ -1096,6 +1099,7 @@
         sessionInfo.sessionPath,
         sessionInfo.sessionName,
         sessionInfo.canExport ? 'exportable' : 'locked',
+        contextSnapshot && contextSnapshot.snapshotId ? contextSnapshot.snapshotId : '',
         tokenUsageLabel,
         tokenUsage && tokenUsage.inputTokens !== null ? tokenUsage.inputTokens : '',
         tokenUsage && tokenUsage.outputTokens !== null ? tokenUsage.outputTokens : '',
@@ -1158,6 +1162,17 @@
               '\u8be5\u6761 AI \u6d88\u606f\u8fd8\u672a\u5b8c\u6210\uff0c\u8bf7\u7b49\u5f85\u5b8c\u6210\u540e\u518d\u8bb0\u5f55';
           }
           sender.appendChild(recordButton);
+
+          const contextButton = document.createElement('button');
+          contextButton.type = 'button';
+          contextButton.className = 'message-context-button ghost-button';
+          contextButton.dataset.messageId = message.id;
+          contextButton.disabled = !contextSnapshot;
+          contextButton.textContent = '\u4e0a\u4e0b\u6587';
+          contextButton.title = contextSnapshot
+            ? '\u67e5\u770b\u8fd9\u4e2a Agent turn \u5b9e\u9645\u6ce8\u5165\u7684\u4e0a\u4e0b\u6587\u5206\u533a'
+            : '\u8fd9\u6761\u6d88\u606f\u6682\u65e0\u4e0a\u4e0b\u6587\u5feb\u7167';
+          sender.appendChild(contextButton);
         }
       }
 

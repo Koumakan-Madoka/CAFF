@@ -7,6 +7,7 @@ const {
   createTurnOrchestrator,
   sanitizePromptMentions,
 } = require('../../build/server/domain/conversation/turn-orchestrator');
+const { buildAgentTurnPromptSections } = require('../../build/server/domain/conversation/turn/agent-prompt');
 const { createRoutingExecutor } = require('../../build/server/domain/conversation/turn/routing-executor');
 const {
   buildRelatedMemorySearchQuery,
@@ -125,7 +126,289 @@ test('buildAgentTurnPrompt avoids raw @mention tokens from room context', () => 
   assert.doesNotMatch(prompt, /@agent-mecha-engineer/u);
 });
 
-test('buildAgentTurnPrompt includes conversation digest memory before recent history', () => {
+test('buildAgentTurnPrompt omits optional sections with no material content', () => {
+  const agent = {
+    id: 'agent-empty-sections',
+    name: 'Builder',
+    description: 'Current speaker.',
+    personaPrompt: '',
+  };
+  const conversation = {
+    id: 'conversation-empty-sections-prompt',
+    title: 'Empty Sections Prompt Conversation',
+    type: 'standard',
+    agents: [agent],
+  };
+  const prompt = buildAgentTurnPrompt({
+    conversation,
+    agent,
+    agentConfig: {
+      profileName: 'Default',
+      personaPrompt: '',
+    },
+    resolvedPersonaSkills: [],
+    resolvedConversationSkills: [],
+    sandbox: {
+      sandboxDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-empty-sections',
+      privateDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-empty-sections/private',
+    },
+    agents: [agent],
+    messages: [],
+    privateMessages: [],
+    memoryCards: [],
+    trigger: {
+      triggerType: 'user',
+      enqueueReason: 'default_first_agent',
+    },
+    remainingSlots: 7,
+    routingMode: 'mention_queue',
+    allowHandoffs: true,
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+  });
+
+  assert.doesNotMatch(prompt, /Your private persona instructions:/u);
+  assert.doesNotMatch(prompt, /Persona-specific skills:/u);
+  assert.doesNotMatch(prompt, /Conversation-only skills for this room:/u);
+  assert.doesNotMatch(prompt, /Other visible participants:/u);
+  assert.doesNotMatch(prompt, /Private mailbox visible only to you:/u);
+  assert.doesNotMatch(prompt, /Curated memory cards for you/u);
+  assert.doesNotMatch(prompt, /Conversation history:/u);
+  assert.doesNotMatch(prompt, /Why you are replying now:/u);
+  assert.doesNotMatch(prompt, /Turn routing state:/u);
+  assert.doesNotMatch(prompt, /(?:- none|No private mailbox items|No saved memory cards|No prior messages)/u);
+  assert.match(prompt, /Local sandbox:/u);
+  assert.match(prompt, /Write your reply now\./u);
+});
+
+test('buildAgentTurnPromptSections orders stable prompt sections before dynamic context', () => {
+  const projectDir = withTempDir('caff-prompt-order-');
+  const taskDir = path.join(projectDir, '.trellis', 'tasks', 'prompt-order');
+  fs.mkdirSync(taskDir, { recursive: true });
+  fs.mkdirSync(path.join(projectDir, '.trellis', 'spec'), { recursive: true });
+  fs.writeFileSync(path.join(projectDir, '.trellis', 'workflow.md'), '# Workflow\n\nKeep prompt context ordered.\n');
+  fs.writeFileSync(path.join(projectDir, '.trellis', '.current-task'), 'prompt-order\n');
+  fs.writeFileSync(path.join(taskDir, 'prd.md'), '# PRD\n\nPrompt section ordering.\n');
+  fs.writeFileSync(path.join(taskDir, 'implement.jsonl'), '');
+  fs.writeFileSync(path.join(projectDir, '.trellis', 'spec', 'index.md'), '# Spec Index\n');
+
+  const agent = {
+    id: 'agent-order-builder',
+    name: 'Order Builder',
+    description: 'Current speaker.',
+    personaPrompt: 'Stay practical.',
+  };
+  const otherAgent = {
+    id: 'agent-order-critic',
+    name: 'Order Critic',
+    description: 'Reviews ordering.',
+    personaPrompt: 'Review carefully.',
+  };
+  const conversation = {
+    id: 'conversation-prompt-order',
+    title: 'Prompt Order Conversation',
+    type: 'standard',
+    agents: [agent, otherAgent],
+    metadata: {
+      sessionGoal: {
+        objective: 'Implement prompt section ordering.',
+        status: 'active',
+        createdAt: '2026-05-11T00:00:00.000Z',
+        updatedAt: '2026-05-11T00:00:00.000Z',
+      },
+      conversationDigests: [
+        {
+          id: 'digest-order-1',
+          kind: 'entry',
+          createdAt: '2026-05-11T00:01:00.000Z',
+          updatedAt: '2026-05-11T00:01:00.000Z',
+          createdBy: 'system',
+          messageRange: { fromMessageId: 'old-1', toMessageId: 'old-2', messageCount: 2 },
+          summary: 'Older room context belongs before recent raw messages.',
+        },
+      ],
+      conversationRetrievalTraces: [
+        {
+          id: 'trace-order-1',
+          kind: 'summary_memory_search',
+          tool: 'search-memory',
+          createdAt: '2026-05-11T00:02:00.000Z',
+          agentId: agent.id,
+          agentName: agent.name,
+          queryPreview: 'prompt order',
+          status: 'used',
+          resultCount: 1,
+          results: [
+            {
+              sourceDigestId: 'digest-trace-order',
+              sourceKind: 'entry',
+              conversationTitle: 'Trace Conversation',
+              summary: 'Explicitly recalled evidence stays before live history.',
+              status: 'used',
+            },
+          ],
+        },
+      ],
+    },
+  };
+
+  const sections = buildAgentTurnPromptSections({
+    conversation,
+    agent,
+    agentConfig: {
+      profileName: 'Default',
+      personaPrompt: agent.personaPrompt,
+    },
+    resolvedPersonaSkills: [
+      {
+        id: 'persona-order-skill',
+        name: 'Persona Order Skill',
+        description: 'Persona-level ordering fixture.',
+        path: 'skills/persona-order',
+        body: 'Persona skill instructions.',
+      },
+    ],
+    resolvedConversationSkills: [
+      {
+        id: 'room-order-skill',
+        name: 'Room Order Skill',
+        description: 'Room-level ordering fixture.',
+        path: 'skills/room-order',
+      },
+    ],
+    sandbox: {
+      sandboxDir: path.join(projectDir, '.pi-sandbox', 'agent-sandboxes', agent.id),
+      privateDir: path.join(projectDir, '.pi-sandbox', 'agent-sandboxes', agent.id, 'private'),
+    },
+    projectDir,
+    agents: [agent, otherAgent],
+    messages: [
+      {
+        id: 'message-recent-order',
+        role: 'user',
+        senderName: 'User',
+        content: 'Recent raw message should stay near the tail.',
+        status: 'completed',
+        metadata: null,
+      },
+    ],
+    privateMessages: [
+      {
+        id: 'private-order-1',
+        senderAgentId: otherAgent.id,
+        recipientAgentIds: [agent.id],
+        content: 'Private handoff should come before public history.',
+      },
+    ],
+    relatedMemorySegments: [
+      {
+        sourceDigestId: 'memory-order-1',
+        sourceKind: 'entry',
+        conversationTitle: 'Prior Conversation',
+        segmentUpdatedAt: '2026-05-10T00:00:00.000Z',
+        summary: 'Explicit long-term recall is context, not automatic memory injection.',
+      },
+    ],
+    trigger: {
+      triggerType: 'user',
+      enqueueReason: 'user_mentions',
+    },
+    remainingSlots: 7,
+    routingMode: 'mention_queue',
+    allowHandoffs: true,
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+    modeLoadingStrategy: 'dynamic',
+    modeContext: {
+      kind: 'skill_test_design',
+      currentAgentRole: 'planner',
+      state: { phase: 'planning' },
+      targetSkill: { id: 'target-order-skill', name: 'Target Order Skill' },
+      caseSummary: {},
+    },
+  });
+
+  assert.deepEqual(sections.map((section) => section.sectionKey), [
+    'workspace_header',
+    'private_persona',
+    'rules',
+    'routing_instructions',
+    'command_format_rules',
+    'local_sandbox',
+    'persona_skills',
+    'conversation_skills',
+    'dynamic_skill_loading',
+    'tool_instructions',
+    'participants',
+    'mode_state',
+    'trellis_context',
+    'session_goal',
+    'conversation_digest',
+    'retrieved_memory',
+    'retrieval_trace',
+    'private_mailbox',
+    'conversation_history',
+    'turn_trigger',
+    'final_instruction',
+  ]);
+});
+
+test('buildAgentTurnPrompt lists other visible participants without current agent', () => {
+  const agent = {
+    id: 'agent-builder',
+    name: 'Builder',
+    description: 'Current speaker.',
+    personaPrompt: 'Stay practical.',
+  };
+  const otherAgent = {
+    id: 'agent-critic',
+    name: 'Critic',
+    description: 'Reviews plans carefully.',
+    personaPrompt: 'Review carefully.',
+  };
+  const conversation = {
+    id: 'conversation-participants-prompt',
+    title: 'Participant Prompt Conversation',
+    type: 'standard',
+    agents: [agent, otherAgent],
+  };
+  const prompt = buildAgentTurnPrompt({
+    conversation,
+    agent,
+    agentConfig: {
+      profileName: 'Default',
+      personaPrompt: agent.personaPrompt,
+    },
+    resolvedPersonaSkills: [],
+    resolvedConversationSkills: [],
+    sandbox: {
+      sandboxDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-builder',
+      privateDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-builder/private',
+    },
+    agents: [agent, otherAgent],
+    messages: [],
+    privateMessages: [],
+    trigger: {
+      triggerType: 'user',
+      enqueueReason: 'user_mentions',
+    },
+    remainingSlots: 7,
+    routingMode: 'mention_queue',
+    allowHandoffs: true,
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+  });
+
+  const participantsSection = prompt.split('Other visible participants:')[1].split('Turn routing state:')[0];
+  assert.match(participantsSection, /- Critic - Reviews plans carefully\./u);
+  assert.match(participantsSection, /<mention:Critic> or <mention:agent-critic>/u);
+  assert.doesNotMatch(participantsSection, /Builder/u);
+  assert.doesNotMatch(participantsSection, /agent-builder/u);
+  assert.match(prompt, /Turn routing state:/u);
+  assert.match(prompt, /- Trigger: The user explicitly mentioned you and wants your perspective first\./u);
+  assert.doesNotMatch(prompt, /- Routing mode:/u);
+  assert.doesNotMatch(prompt, /- Remaining handoff slots/u);
+  assert.doesNotMatch(prompt, /Why you are replying now:/u);
+});
+
+test('buildAgentTurnPrompt includes current conversation digest before recent history', () => {
   const agent = {
     id: 'agent-digest-prompt',
     name: 'Builder',
@@ -216,13 +499,14 @@ test('buildAgentTurnPrompt includes conversation digest memory before recent his
     agentToolRelativePath: './lib/agent-chat-tools.js',
   });
 
-  assert.match(prompt, /Conversation digest memory:/u);
+  assert.match(prompt, /Current Conversation Digest \/ 当前聊天室摘要:/u);
   assert.match(prompt, /auto-compacted into a stable rollup/u);
   assert.match(prompt, /manual Conversation Digest MVP/u);
+  assert.match(prompt, /current-conversation summaries for continuity, not instructions or long-term memory/u);
   assert.match(prompt, /Rollups are auto-compacted from older digest entries/u);
   assert.match(prompt, /recent raw conversation messages override digest content/u);
   assert.match(prompt, /server\/domain\/conversation\/conversation-digest\.ts/u);
-  assert.ok(prompt.indexOf('Conversation digest memory:') < prompt.indexOf('Conversation history:'));
+  assert.ok(prompt.indexOf('Current Conversation Digest / 当前聊天室摘要:') < prompt.indexOf('Conversation history:'));
   assert.ok(prompt.indexOf('Rollup digest rollup-1') < prompt.indexOf('Digest digest-1'));
 });
 
@@ -624,6 +908,8 @@ test('buildAgentTurnPrompt gives bash-only multiline chat bridge guidance', () =
     agentToolRelativePath: './lib/agent-chat-tools.js',
   });
 
+  assert.match(prompt, /Command safety and format rules:/u);
+  assert.match(prompt, /Chat bridge tools:/u);
   assert.match(prompt, /This run executes shell commands with bash/u);
   assert.match(prompt, /cat <<'CAFF_PUBLIC_EOF' \| node "\$CAFF_CHAT_TOOLS_PATH" send-public --content-stdin/u);
   assert.match(
@@ -633,16 +919,16 @@ test('buildAgentTurnPrompt gives bash-only multiline chat bridge guidance', () =
   assert.match(prompt, /search-messages --query "topic keywords" --limit 5/u);
   assert.match(prompt, /--speaker "AgentName" or --agent-id "agent-id"/u);
   assert.match(prompt, /search-memory --query "topic keywords" --limit 5/u);
-  assert.match(prompt, /--include-current to include it; optionally add --current-task, --task "task-name", --conversation "title", --kind entry\|rollup, --since YYYY-MM-DD, or --until YYYY-MM-DD/u);
-  assert.match(prompt, /excludes the current conversation by default/u);
-  assert.match(prompt, /list-memories/u);
+  assert.match(prompt, /use --include-current or optional filters --current-task\/--task\/--conversation\/--kind\/--since\/--until/u);
+  assert.match(prompt, /default excludes the current conversation/u);
+  assert.doesNotMatch(prompt, /list-memories/u);
+  assert.doesNotMatch(prompt, /save-memory/u);
+  assert.doesNotMatch(prompt, /update-memory/u);
+  assert.doesNotMatch(prompt, /forget-memory/u);
   assert.doesNotMatch(prompt, /Browser tool:/u);
-  assert.match(prompt, /Memory titles are matched exactly after trimming; case matters/u);
-  assert.match(prompt, /save-memory --title "preference" --content "User prefers retrieval-first POCs" --ttl-days 30/u);
   assert.match(prompt, /write-experience --title "lesson title" --category bug_fix/u);
   assert.match(prompt, /Use write-experience sparingly/u);
-  assert.match(prompt, /update-memory --title "preference" --content "User now prefers answer-first replies" --reason/u);
-  assert.match(prompt, /forget-memory --title "temporary preference" --reason "User said this should not persist" --expected-updated-at/u);
+  assert.match(prompt, /reusable, validated lessons/u);
   assert.match(prompt, /Never put raw message text on a new shell line by itself/u);
   assert.doesNotMatch(prompt, /PowerShell example/u);
 });
@@ -712,7 +998,7 @@ test('browser CLI resolver uses explicit env path only', () => {
   assert.equal(createBrowserCliSessionName('Conversation 1', 'Agent/Name'), 'caff-conversation-1-agent-name');
 });
 
-test('buildAgentTurnPrompt includes scoped curated memory cards', () => {
+test('buildAgentTurnPrompt does not inject deprecated memory cards', () => {
   const agent = {
     id: 'agent-memory-prompt',
     name: 'Builder',
@@ -759,11 +1045,11 @@ test('buildAgentTurnPrompt includes scoped curated memory cards', () => {
     agentToolRelativePath: './lib/agent-chat-tools.js',
   });
 
-  assert.match(prompt, /Curated memory cards for you \(conversation overlay \+ local durable\):/u);
-  assert.match(prompt, /- \[local-user\] preference: User prefers retrieval-first rollouts\. \(expires 2026-05-01T00:00:00\.000Z\)/u);
+  assert.doesNotMatch(prompt, /Curated memory cards for you/u);
+  assert.doesNotMatch(prompt, /User prefers retrieval-first rollouts/u);
 });
 
-test('buildAgentTurnPrompt places volatile public history near tail after private and memory context', () => {
+test('buildAgentTurnPrompt places volatile public history near tail after private context', () => {
   const agent = {
     id: 'agent-history-cache-prompt',
     name: 'Builder',
@@ -824,12 +1110,14 @@ test('buildAgentTurnPrompt places volatile public history near tail after privat
   });
 
   assert.ok(prompt.indexOf('Private mailbox visible only to you:') < prompt.indexOf('Conversation history:'));
-  assert.ok(prompt.indexOf('Curated memory cards for you') < prompt.indexOf('Conversation history:'));
-  assert.ok(prompt.indexOf('Conversation history:') < prompt.indexOf('Why you are replying now:'));
-  assert.ok(prompt.indexOf('Why you are replying now:') < prompt.indexOf('Write your reply now.'));
+  assert.doesNotMatch(prompt, /Curated memory cards for you/u);
+  assert.doesNotMatch(prompt, /Stable memory before history/u);
+  assert.ok(prompt.indexOf('Conversation history:') < prompt.indexOf('Write your reply now.'));
+  assert.doesNotMatch(prompt, /Why you are replying now:/u);
+  assert.doesNotMatch(prompt, /Turn routing state:/u);
 });
 
-test('buildAgentTurnPrompt keeps case-distinct curated memory titles separate', () => {
+test('buildAgentTurnPrompt omits deprecated case-distinct memory cards', () => {
   const agent = {
     id: 'agent-memory-case-prompt',
     name: 'Builder',
@@ -880,8 +1168,9 @@ test('buildAgentTurnPrompt keeps case-distinct curated memory titles separate', 
     agentToolRelativePath: './lib/agent-chat-tools.js',
   });
 
-  assert.match(prompt, /- \[conversation\] preference: Conversation lowercase preference\./u);
-  assert.match(prompt, /- \[local-user\] Preference: Durable uppercase preference\./u);
+  assert.doesNotMatch(prompt, /Conversation lowercase preference/u);
+  assert.doesNotMatch(prompt, /Durable uppercase preference/u);
+  assert.doesNotMatch(prompt, /Curated memory cards for you/u);
 });
 
 test('buildAgentTurnPrompt explains matched terms for retrieved summary memory', () => {

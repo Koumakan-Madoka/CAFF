@@ -2351,6 +2351,113 @@ textarea {
   background: rgba(196, 93, 59, 0.08);
 }
 
+.agent-context-drawer .session-goal-drawer-panel {
+  width: min(560px, calc(100vw - 2rem));
+}
+
+.agent-context-summary,
+.agent-context-section-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.agent-context-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.agent-context-meta-grid > div {
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.7rem;
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.58);
+  border: 1px solid rgba(34, 49, 63, 0.08);
+}
+
+.agent-context-meta-grid span,
+.agent-context-section-meta,
+.agent-context-policy-note {
+  color: var(--muted);
+  font-size: 0.86rem;
+  line-height: 1.45;
+}
+
+.agent-context-token-bar {
+  display: flex;
+  overflow: hidden;
+  height: 0.7rem;
+  border-radius: 999px;
+  background: rgba(34, 49, 63, 0.08);
+}
+
+.agent-context-token-piece.full {
+  background: #2a9d8f;
+}
+
+.agent-context-token-piece.summary {
+  background: #d9a441;
+}
+
+.agent-context-token-piece.presence {
+  background: #d45d5d;
+}
+
+.agent-context-section-card {
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(34, 49, 63, 0.1);
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.agent-context-section-card.presence {
+  border-color: rgba(212, 93, 93, 0.42);
+  background: rgba(212, 93, 93, 0.1);
+}
+
+.agent-context-section-card.summary {
+  border-color: rgba(217, 164, 65, 0.32);
+  background: rgba(217, 164, 65, 0.1);
+}
+
+.agent-context-section-card summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  cursor: pointer;
+  padding: 0.85rem 0.95rem;
+  font-size: 0.96rem;
+  font-weight: 800;
+}
+
+.agent-context-section-badges {
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.agent-context-section-meta,
+.agent-context-policy-note {
+  margin: 0;
+  padding: 0 0.95rem 0.6rem;
+}
+
+.agent-context-section-content {
+  max-height: 360px;
+  overflow: auto;
+  margin: 0.15rem 0.95rem 0.95rem;
+  padding: 0.85rem;
+  border-radius: var(--radius-sm);
+  background: rgba(34, 49, 63, 0.06);
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.9rem;
+  line-height: 1.55;
+}
+
 .session-goal-proposal-status {
   margin: 0;
   font-weight: 700;

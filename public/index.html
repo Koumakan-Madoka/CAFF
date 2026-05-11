@@ -577,6 +577,25 @@
       </section>
     </aside>
 
+    <aside id="agent-context-drawer" class="session-goal-drawer agent-context-drawer hidden" aria-hidden="true">
+      <section class="session-goal-drawer-panel" role="dialog" aria-labelledby="agent-context-drawer-title">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">Agent Context Inspector</p>
+            <h2 id="agent-context-drawer-title">Agent 上下文</h2>
+          </div>
+          <button id="agent-context-close-button" class="ghost-button" type="button">收起</button>
+        </div>
+
+        <p id="agent-context-status" class="session-goal-status-badge active">选择一条 AI 消息查看上下文快照</p>
+        <div id="agent-context-summary" class="agent-context-summary"></div>
+        <div class="button-row compact-button-row">
+          <button id="agent-context-export-button" class="secondary-button" type="button">导出 Markdown</button>
+        </div>
+        <div id="agent-context-section-list" class="agent-context-section-list"></div>
+      </section>
+    </aside>
+
     <div id="toast" class="toast hidden"></div>
   </body>
 </html>

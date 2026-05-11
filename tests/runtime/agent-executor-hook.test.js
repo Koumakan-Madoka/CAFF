@@ -91,6 +91,93 @@ function createFakeAgentToolBridge() {
   };
 }
 
+test('agent executor does not auto-inject long-term memory by default', async (t) => {
+  const tempDir = withTempDir('caff-agent-executor-no-auto-memory-');
+  const minimalPiPath = require.resolve('../../build/lib/minimal-pi');
+  const agentExecutorPath = require.resolve('../../build/server/domain/conversation/turn/agent-executor');
+  const turnStatePath = require.resolve('../../build/server/domain/conversation/turn/turn-state');
+  const minimalPi = require(minimalPiPath);
+  const originalStartRun = minimalPi.startRun;
+  let capturedPrompt = '';
+
+  minimalPi.startRun = (_provider, _model, prompt) => {
+    capturedPrompt = String(prompt || '');
+    return createRunHandle('Done.');
+  };
+  delete require.cache[agentExecutorPath];
+
+  t.after(() => {
+    minimalPi.startRun = originalStartRun;
+    delete require.cache[agentExecutorPath];
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const { createAgentExecutor } = require(agentExecutorPath);
+  const { createTurnState } = require(turnStatePath);
+  const agent = {
+    id: 'agent-no-auto-memory',
+    name: 'No Auto Memory',
+    description: 'Tests prompt memory defaults.',
+    personaPrompt: 'Be brief.',
+  };
+  const conversation = {
+    id: 'conversation-no-auto-memory',
+    title: 'Long-Term Memory Review',
+    type: 'standard',
+    agents: [agent],
+    metadata: {
+      sessionGoal: {
+        objective: 'Review whether long-term memory should be auto-injected.',
+      },
+    },
+  };
+  const store = createFakeStore(conversation);
+  let searchCallCount = 0;
+  store.searchSummarySegments = () => {
+    searchCallCount += 1;
+    throw new Error('automatic summary memory search should stay disabled by default');
+  };
+  const executor = createAgentExecutor({
+    store,
+    skillRegistry: { resolveSkills: () => [] },
+    modeStore: { get: () => null },
+    agentToolBridge: createFakeAgentToolBridge(),
+    agentDir: tempDir,
+    sqlitePath: path.join(tempDir, 'chat.sqlite'),
+    toolBaseUrl: 'http://127.0.0.1:3100',
+    agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+  });
+  const turnState = createTurnState(conversation, 'turn-no-auto-memory');
+
+  await executor.executeConversationAgent({
+    runStore: createFakeRunStore(),
+    conversationId: conversation.id,
+    turnId: turnState.turnId,
+    rootTaskId: 'root-task-no-auto-memory',
+    conversation,
+    promptMessages: [{ role: 'user', content: 'Why did retrieved long-term memory appear here?' }],
+    promptUserMessage: { id: 'user-message-no-auto-memory', role: 'user', content: 'hello' },
+    queueItem: { triggerType: 'user', enqueueReason: 'user_mentions' },
+    agent,
+    turnState,
+    completedReplies: [],
+    failedReplies: [],
+    routingMode: 'mention_queue',
+    hop: 1,
+    remainingSlots: 1,
+    enqueueAgent() {},
+    allowHandoffs: true,
+    finalStopsTurn: true,
+    projectDir: tempDir,
+  });
+
+  assert.equal(searchCallCount, 0);
+  assert.doesNotMatch(capturedPrompt, /Retrieved Long-Term Memory|Retrieved long-term experience memory/u);
+  assert.match(capturedPrompt, /Do not assume long-term memory is automatically injected/u);
+  assert.match(capturedPrompt, /上次.*之前.*还记得吗.*回忆一下/u);
+});
+
 test('assistant completion hook broadcasts final message before blocking routing', async (t) => {
   const tempDir = withTempDir('caff-agent-executor-hook-');
   const minimalPiPath = require.resolve('../../build/lib/minimal-pi');

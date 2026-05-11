@@ -1,0 +1,27 @@
+{
+  "title": "Current Conversation Digest",
+  "status": "completed",
+  "createdAt": "2026-05-11",
+  "id": "05-11-current-conversation-digest",
+  "name": "05-11-current-conversation-digest",
+  "completedAt": "2026-05-11",
+  "branch": "feat/browser-cli-tool",
+  "base_branch": "main",
+  "current_phase": 3,
+  "next_action": [],
+  "relatedFiles": [
+    "server/domain/conversation/conversation-digest.ts",
+    "server/domain/conversation/turn/agent-prompt.ts",
+    "server/domain/conversation/turn/context-snapshot.ts",
+    "tests/runtime/context-snapshot.test.js",
+    "tests/runtime/turn-orchestrator.test.js",
+    ".trellis/spec/backend/conversation-digest.md",
+    ".trellis/spec/runtime/agent-runtime.md"
+  ],
+  "notes": "Current Conversation Digest prompt layer is explicit, current-room scoped, ordered before recent raw history, Inspector-visible, spec-synced, validated, and human-accepted.",
+  "meta": {
+    "finalValidation": "passed",
+    "humanAcceptance": "passed",
+    "closedAt": "2026-05-11T06:17:33.266150+00:00"
+  }
+}

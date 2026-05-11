@@ -6,12 +6,17 @@ import type { URL } from 'node:url';
 import type { RouteHandler } from '../http/router';
 import { createHttpError } from '../http/http-errors';
 import { readRequestJson } from '../http/request-body';
-import { sendFileDownload, sendJson } from '../http/response';
+import { sendFileDownload, sendJson, sendTextDownload } from '../http/response';
 
 import { pickConversationSummary, withConversationPrivateMessages } from '../domain/conversation/conversation-view';
 import { applyConversationDigestAction } from '../domain/conversation/conversation-digest';
 import { applyConversationSkillDraftAction } from '../domain/conversation/skill-draft';
 import { applySessionGoalAction } from '../domain/conversation/session-goal';
+import {
+  exportAgentContextSnapshotMarkdown,
+  materializeAgentContextSnapshot,
+  summarizeAgentContextSnapshot,
+} from '../domain/conversation/turn/context-snapshot';
 import { buildAssistantMessageToolTrace } from '../domain/runtime/message-tool-trace';
 import {
   SKILL_TEST_DESIGN_CONVERSATION_TYPE,
@@ -98,6 +103,20 @@ function mergeFeishuBindingMetadata(existingBinding: any) {
 function timestampValue(value: any) {
   const timestamp = Date.parse(String(value || ''));
   return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function contextSnapshotFromMessage(message: any) {
+  const metadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
+  return metadata && metadata.agentContextSnapshot && typeof metadata.agentContextSnapshot === 'object'
+    ? metadata.agentContextSnapshot
+    : null;
+}
+
+function defaultContextSnapshotFileName(message: any) {
+  const metadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
+  const agentName = String(message && message.senderName || metadata && metadata.agentName || 'agent').trim().replace(/[\s/\\?%*:|"<>]+/g, '-');
+  const turnId = String(message && message.turnId || 'turn').trim().replace(/[\s/\\?%*:|"<>]+/g, '-');
+  return `agent-context-${agentName || 'agent'}-${turnId || 'turn'}.md`;
 }
 
 function listKnownFeishuChats(store: any) {
@@ -758,6 +777,67 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         });
         return true;
       }
+    }
+
+    const contextSnapshotListMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/context-snapshots$/);
+
+    if (contextSnapshotListMatch && req.method === 'GET') {
+      const conversationId = decodeURIComponent(contextSnapshotListMatch[1]);
+      const conversation = store.getConversation(conversationId);
+
+      if (!conversation) {
+        throw createHttpError(404, 'Conversation not found');
+      }
+
+      const snapshots = (Array.isArray(conversation.messages) ? conversation.messages : [])
+        .filter((message: any) => message && message.role === 'assistant')
+        .map((message: any) => summarizeAgentContextSnapshot(contextSnapshotFromMessage(message)))
+        .filter(Boolean);
+
+      sendJson(res, 200, { conversationId, snapshots });
+      return true;
+    }
+
+    const messageContextSnapshotMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/messages\/([^/]+)\/context-snapshot(?:-(export))?$/);
+
+    if (messageContextSnapshotMatch && req.method === 'GET') {
+      const conversationId = decodeURIComponent(messageContextSnapshotMatch[1]);
+      const messageId = decodeURIComponent(messageContextSnapshotMatch[2]);
+      const exportMode = messageContextSnapshotMatch[3] === 'export';
+      const conversation = store.getConversation(conversationId);
+
+      if (!conversation) {
+        throw createHttpError(404, 'Conversation not found');
+      }
+
+      const message = store.getMessage(messageId);
+
+      if (!message || message.conversationId !== conversationId) {
+        throw createHttpError(404, 'Message not found');
+      }
+
+      if (message.role !== 'assistant') {
+        throw createHttpError(400, 'Only assistant messages can inspect context snapshots');
+      }
+
+      const snapshot = contextSnapshotFromMessage(message);
+
+      if (!snapshot) {
+        throw createHttpError(404, 'No context snapshot is available for this message');
+      }
+
+      if (exportMode) {
+        sendTextDownload(
+          res,
+          exportAgentContextSnapshotMarkdown(snapshot),
+          defaultContextSnapshotFileName(message),
+          'text/markdown; charset=utf-8'
+        );
+        return true;
+      }
+
+      sendJson(res, 200, { snapshot: materializeAgentContextSnapshot(snapshot) });
+      return true;
     }
 
     const messageSessionMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/messages\/([^/]+)\/session-export$/);

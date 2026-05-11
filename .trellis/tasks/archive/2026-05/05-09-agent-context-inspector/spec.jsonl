@@ -1,0 +1,5 @@
+{"file":".trellis/spec/index.md","reason":"Shared spec fallback."}
+{"file":".trellis/spec/runtime/agent-context-inspector.md","reason":"Documented Agent Context Inspector prompt section, snapshot, visibility, API, export, validation, and test contracts."}
+{"file":".trellis/spec/runtime/index.md","reason":"Linked the Agent Context Inspector runtime spec."}
+{"ts":"2026-05-09T11:31:50.796Z","agent":"咕咕嘎嘎","type":"spec","summary":"Documented Memory Cards as deprecated for prompt injection/tool guidance while retaining bridge/storage contracts for compatibility and future migration.","artifacts":[".trellis/spec/runtime/agent-runtime.md",".trellis/spec/runtime/agent-context-inspector.md"]}
+{"ts": "2026-05-11T06:17:33.266150+00:00", "agent": "咕咕嘎嘎", "type": "task_closure", "summary": "Runtime specs document context snapshot visibility, prompt section ordering, Chat bridge tools split, and Agent Context Inspector contracts.", "artifacts": [".trellis/spec/runtime/agent-context-inspector.md", ".trellis/spec/runtime/agent-runtime.md"]}

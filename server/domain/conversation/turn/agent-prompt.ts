@@ -143,7 +143,7 @@ function hasDynamicSkillDescriptors(skills: any, options: any = {}) {
 
 function describeTurnTrigger(trigger: any, agents: any) {
   if (!trigger) {
-    return 'You are the first speaker for this user turn.';
+    return '';
   }
 
   if (trigger.triggerType === 'user') {
@@ -156,7 +156,7 @@ function describeTurnTrigger(trigger: any, agents: any) {
 
     return trigger.enqueueReason === 'user_mentions'
       ? 'The user explicitly mentioned you and wants your perspective first.'
-      : 'You are the room entry speaker for this turn.';
+      : '';
   }
 
   const triggeringAgent =
@@ -184,6 +184,18 @@ function describeTurnTrigger(trigger: any, agents: any) {
   }
 
   return 'Another visible participant invited you to continue the turn.';
+}
+
+function formatTurnRoutingState(trigger: any, agents: any) {
+  const triggerDescription = describeTurnTrigger(trigger, agents);
+  if (!triggerDescription) {
+    return '';
+  }
+
+  return [
+    'Turn routing state:',
+    `- Trigger: ${triggerDescription}`,
+  ].join('\n');
 }
 
 function formatHistory(messages: any, agents: any) {
@@ -242,24 +254,6 @@ function formatPrivateMailbox(messages: any, agents: any) {
       return `${sender}${recipientSuffix}: ${sanitizePromptMentions(message.content)}`;
     })
     .join('\n\n');
-}
-
-function formatMemoryCards(memoryCards: any) {
-  const cards = (Array.isArray(memoryCards) ? memoryCards : []).filter(Boolean);
-
-  if (cards.length === 0) {
-    return 'No saved memory cards.';
-  }
-
-  return cards
-    .map((card: any) => {
-      const title = sanitizePromptMentions(card.title || 'memory');
-      const content = sanitizePromptMentions(card.content || '');
-      const expiresSuffix = card.expiresAt ? ` (expires ${card.expiresAt})` : '';
-      const scopePrefix = card.scope === 'local-user-agent' ? '[local-user] ' : card.scope === 'conversation-agent' ? '[conversation] ' : '';
-      return `- ${scopePrefix}${title}: ${content}${expiresSuffix}`;
-    })
-    .join('\n');
 }
 
 function formatSummarySegmentItems(label: string, items: any) {
@@ -359,67 +353,44 @@ function buildBrowserCliInstructions(options: any = {}) {
   ];
 }
 
-function buildAgentToolInstructions(agentToolRelativePath: string, options: any = {}) {
+function buildCommandFormatRules(agentToolRelativePath: string) {
   const relativeCommandPrefix = `node ${agentToolRelativePath}`;
   const envCommandPrefix = 'node "$CAFF_CHAT_TOOLS_PATH"';
 
   return [
-    ...buildBrowserCliInstructions(options),
-    'Chat bridge tools:',
-    '- Your final raw reply is private bookkeeping by default. Prefer using the chat bridge for anything the room should actually see.',
-    `- Safest public command in this repo: ${relativeCommandPrefix} send-public --content-stdin`,
-    `- Safest private note to yourself: ${relativeCommandPrefix} send-private --content-stdin`,
-    `- Safest private wake-up for one recipient: ${relativeCommandPrefix} send-private --to "AgentName" --content-stdin`,
-    `- Safest private wake-up for multiple recipients: ${relativeCommandPrefix} send-private --to "AgentA,AgentB" --content-stdin`,
-    `- Optional silent direct note without wake-up: ${relativeCommandPrefix} send-private --to "AgentName" --no-handoff --content-stdin`,
-    `- Read the latest public room context plus your private mailbox: ${relativeCommandPrefix} read-context`,
-    `- Need older public conversation context beyond the injected history? Search this conversation only with: ${relativeCommandPrefix} search-messages --query "topic keywords" --limit 5 (optionally add --speaker "AgentName" or --agent-id "agent-id")`,
-    `- Need cross-conversation/task digest memory? Search long-term summary segments with: ${relativeCommandPrefix} search-memory --query "topic keywords" --limit 5, or use --latest without a query to inspect recent summary memory (excludes the current conversation by default; add --include-current to include it; optionally add --current-task, --task "task-name", --conversation "title", --kind entry|rollup, --since YYYY-MM-DD, or --until YYYY-MM-DD)`,
-    `- Review your saved durable memory cards for this agent in this local workspace: ${relativeCommandPrefix} list-memories`,
-    '- Memory titles are matched exactly after trimming; case matters, so reuse the title exactly as shown by list-memories when updating or forgetting.',
-    `- Save one tiny stable fact, preference, or agreement for this agent across conversations in this local workspace with: ${relativeCommandPrefix} save-memory --title "preference" --content "User prefers retrieval-first POCs" --ttl-days 30`,
-    `- When you discover a reusable, validated project lesson during tool use, write one pending experience draft before your final reply: ${relativeCommandPrefix} write-experience --title "lesson title" --category bug_fix --scenario "when this applies" --step "short reusable step" --validation "npm run check passed" --artifact "path/to/file.ts" --confidence high`,
-    '- Use write-experience sparingly: good for non-obvious bug fixes, reusable workflow patterns, user-approved design decisions, failed attempts/pitfalls, or validated project rules; do not use it for simple Q&A, unverified guesses, open questions, raw logs, secrets, private content, or transient TODOs.',
-    `- Update an existing durable memory only when the user clearly corrects it: ${relativeCommandPrefix} update-memory --title "preference" --content "User now prefers answer-first replies" --reason "User corrected this durable preference" --expected-updated-at "2026-04-13T00:00:00.000Z"`,
-    `- Soft-forget a mistaken durable memory only when the user explicitly asks: ${relativeCommandPrefix} forget-memory --title "temporary preference" --reason "User said this should not persist" --expected-updated-at "2026-04-13T00:00:00.000Z"`,
-    '- Save only durable facts/preferences/agreements. Never save secrets, raw logs, TODOs, transient status updates, or silently rewrite durable memory without a clear user correction/removal.',
-    `- List the visible room participants: ${relativeCommandPrefix} list-participants`,
-    `- If the current session goal appears finished, blocked, paused/resumed-worthy, or should be replaced, create a pending user-confirmation proposal instead of changing it directly: ${relativeCommandPrefix} suggest-goal --action complete --reason "work appears done" (or --action set --objective "new target" --reason "scope changed").`,
-    `- Keep session-goal checklist progress current when a checklist exists or when you break the goal into subtasks: ${relativeCommandPrefix} update-goal-checklist --content-stdin using lines like [ ] todo, [~] doing, [x] done.`,
-    ...(options.includeDynamicSkillLoadingGuidance
-      ? [
-          '- Dynamic skill loading: when conversation skills are listed as descriptors without full instructions, use the `read` tool on the listed `Path` to load the full `SKILL.md` on demand.',
-          '- Each descriptor `Path` already points at the skill `SKILL.md`; read that file directly instead of using a dedicated skill-loading tool.',
-        ]
-      : []),
-    `- Preview writing a minimal .trellis scaffold in the active project (no writes): ${relativeCommandPrefix} trellis-init --task "my-task"`,
-    `- Apply the .trellis scaffold (writes files; requires explicit confirm): ${relativeCommandPrefix} trellis-init --task "my-task" --confirm`,
-    `- Overwrite existing scaffold files (dangerous): ${relativeCommandPrefix} trellis-init --task "my-task" --confirm --force`,
-    `- Preview writing a single .trellis file (no writes): ${relativeCommandPrefix} trellis-write --path ".trellis/tasks/my-task/prd.md" --content-stdin`,
-    `- Apply the .trellis file write (requires explicit confirm): ${relativeCommandPrefix} trellis-write --path ".trellis/tasks/my-task/prd.md" --content-stdin --confirm`,
-    `- Overwrite an existing .trellis file (dangerous): ${relativeCommandPrefix} trellis-write --path ".trellis/tasks/my-task/prd.md" --content-stdin --confirm --force`,
-    `- If your shell is not in the repo root, use the env path instead: ${envCommandPrefix} ...`,
-    "- This run executes shell commands with bash. Do not use PowerShell here-string syntax like @'... '@.",
-    '- IMPORTANT: Do not print ```bash``` code blocks as your answer. Code fences are plain text and will NOT execute; use the bash tool invocation instead.',
-    '- For quoted or multi-line public content, use this exact bash heredoc shape:',
+    'Command safety and format rules:',
+    '- Public room output should go through the chat bridge; your final raw reply is private bookkeeping. After send-public/send-private succeeds, prefer a tiny control reply like {"action":"final"} unless the bridge failed.',
+    '- Safety: never print tokens or secrets. Confirm content is public before send-public. Put secret roles, hidden reasoning, scratch notes, and game identity in private notes. `--force` overwrites files and is dangerous.',
+    `- Command format: This run executes shell commands with bash. Multi-line or quoted content must use a quoted heredoc piped to --content-stdin; short safe one-liners may use --content. Do not print \`\`\`bash\`\`\` code blocks as answers, and Never put raw message text on a new shell line by itself; always pair it with --content or a pipe. Do not use PowerShell here-string syntax like @'... '@.`,
+    `- Paths: use ${relativeCommandPrefix} from repo root; elsewhere use ${envCommandPrefix}. CAFF_CHAT_TOOLS_PATH is already bash-safe; on Windows bash avoid raw E:\\foo\\bar paths and use ${agentToolRelativePath} or "$CAFF_CHAT_TOOLS_PATH".`,
+    '- Public heredoc template:',
     `  cat <<'CAFF_PUBLIC_EOF' | ${envCommandPrefix} send-public --content-stdin`,
     '  your text here',
     '  CAFF_PUBLIC_EOF',
-    '- For quoted or multi-line private content, use this exact bash heredoc shape:',
+    '- Private heredoc template:',
     `  cat <<'CAFF_PRIVATE_EOF' | ${envCommandPrefix} send-private --to "AgentName" --content-stdin`,
     '  your text here',
     '  CAFF_PRIVATE_EOF',
-    '- Never put raw message text on a new shell line by itself. Always pair the text with --content or pipe it into --content-stdin.',
-    '- Use --content-stdin whenever the message may contain quotes, apostrophes, or newlines. Plain --content "..." is only safe for short one-line text without embedded quotes.',
-    '- CAFF_CHAT_TOOLS_PATH already contains a bash-safe portable path for this run.',
-    `- If you are using bash on Windows, avoid raw backslash paths like E:\\foo\\bar in the command line for this tool. Use ${agentToolRelativePath} or "$CAFF_CHAT_TOOLS_PATH" instead.`,
-    '- Put secret roles, hidden reasoning, scratch notes, and game identity into private notes instead of public chat.',
-    '- Public handoff works when a line starts with an at-mention, or when the final line ends with a pure at-mention block containing only mentions.',
-    '- Inline at-mentions inside a sentence remain visible in chat but do not trigger routing unless they are part of that final trailing mention block.',
-    '- Private messages sent to other visible participants wake them in this same turn; add --no-handoff only when you explicitly want a mailbox-only note.',
-    '- Keep your final raw reply brief. Do not repeat your public room message there unless the chat bridge failed.',
-    '- After send-public or send-private succeeds, prefer a tiny control reply like {"action":"final"} instead of repeating the same chat text again.',
     '- The required auth environment variables are already injected for this run. Never print tokens or secrets.',
+  ].join('\n');
+}
+
+function buildDynamicSkillLoadingInstructions() {
+  return 'Dynamic skill loading: when a skill only shows a descriptor, use the `read` tool on its listed `Path`; that `Path` already points directly to `SKILL.md`, so no dedicated skill-loading tool is needed.';
+}
+
+function buildAgentToolInstructions(agentToolRelativePath: string) {
+  const relativeCommandPrefix = `node ${agentToolRelativePath}`;
+
+  return [
+    'Chat bridge tools:',
+    `- Speak publicly: ${relativeCommandPrefix} send-public --content-stdin`,
+    `- Private messages: ${relativeCommandPrefix} send-private [--to "AgentName[,AgentB]"] [--no-handoff] --content-stdin (omit --to for a note to yourself).`,
+    `- Context retrieval: ${relativeCommandPrefix} read-context for latest public context plus your private mailbox; ${relativeCommandPrefix} search-messages --query "topic keywords" --limit 5 for older public messages in this conversation (optional --speaker "AgentName" or --agent-id "agent-id").`,
+    `- Long-term recall: when the user explicitly asks about prior context ("上次", "之前", "还记得吗", "回忆一下"), call ${relativeCommandPrefix} search-memory --query "topic keywords" --limit 5 or --latest. Do not assume long-term memory is automatically injected; default excludes the current conversation, use --include-current or optional filters --current-task/--task/--conversation/--kind/--since/--until when needed.`,
+    `- Goal and participant governance: ${relativeCommandPrefix} list-participants refreshes visible participants; ${relativeCommandPrefix} suggest-goal --action complete|pause|set --reason "..." proposes user-confirmed goal changes only (set also needs --objective "..."); ${relativeCommandPrefix} update-goal-checklist --content-stdin uses [ ] todo, [~] doing, [x] done lines.`,
+    `- Trellis writes default to preview: ${relativeCommandPrefix} trellis-init --task "my-task" [--confirm] [--force] creates a .trellis scaffold; ${relativeCommandPrefix} trellis-write --path ".trellis/tasks/my-task/prd.md" --content-stdin [--confirm] [--force] writes one .trellis file. Add --confirm to write; --force is dangerous.`,
+    `- Use write-experience sparingly for reusable, validated lessons: ${relativeCommandPrefix} write-experience --title "lesson title" --category bug_fix --scenario "when this applies" --step "short reusable step" --validation "npm run check passed" --artifact "path/to/file.ts" --confidence high|medium|low. Good for non-obvious bug fixes, reusable workflows, user-approved decisions, failed-attempt pitfalls, or validated rules; do not save simple Q&A, guesses, open questions, logs, secrets, private content, or transient TODOs.`,
   ].join('\n');
 }
 
@@ -559,7 +530,50 @@ function buildSkillTestDesignPromptSection(modeContext: any, agent: any, agents:
   ].filter(Boolean).join('\n');
 }
 
-export function buildAgentTurnPrompt({
+function promptSection(sectionKey: string, title: string, source: string, content: any, visibility?: 'full' | 'summary' | 'presence') {
+  return {
+    sectionKey,
+    title,
+    source,
+    visibility,
+    content: String(content || ''),
+  };
+}
+
+function hasPromptItems(items: any) {
+  return (Array.isArray(items) ? items : []).filter(Boolean).length > 0;
+}
+
+function hasPrivateMailboxItems(messages: any) {
+  return (Array.isArray(messages) ? messages : []).some((message: any) => String(message && message.content || '').trim());
+}
+
+function hasConversationHistoryItems(messages: any) {
+  return (Array.isArray(messages) ? messages : []).some((message: any) => {
+    return String(message && (message.content || message.errorMessage) || '').trim();
+  });
+}
+
+function isSamePromptAgent(candidate: any, currentAgent: any) {
+  const candidateId = String(candidate && candidate.id || '').trim();
+  const currentId = String(currentAgent && currentAgent.id || '').trim();
+  if (candidateId && currentId) {
+    return candidateId === currentId;
+  }
+
+  const candidateName = String(candidate && candidate.name || '').trim();
+  const currentName = String(currentAgent && currentAgent.name || '').trim();
+  return Boolean(candidateName && currentName && candidateName === currentName);
+}
+
+export function formatAgentTurnPromptSections(sections: any) {
+  return (Array.isArray(sections) ? sections : [])
+    .map((section: any) => String(section && section.content || '').trim())
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+export function buildAgentTurnPromptSections({
   conversation,
   agent,
   agentConfig,
@@ -570,7 +584,6 @@ export function buildAgentTurnPrompt({
   agents,
   messages,
   privateMessages,
-  memoryCards,
   relatedMemorySegments,
   trigger,
   remainingSlots,
@@ -588,7 +601,8 @@ export function buildAgentTurnPrompt({
     conversationType === UNDERCOVER_CONVERSATION_TYPE || conversationType === WEREWOLF_CONVERSATION_TYPE;
   const trellisPromptContext =
     normalizedProjectDir && !isGameplayConversation ? buildTrellisPromptContext({ startDir: normalizedProjectDir }) : '';
-  const participants = agents
+  const participants = (Array.isArray(agents) ? agents : [])
+    .filter((item: any) => !isSamePromptAgent(item, agent))
     .map((item: any) => {
       const description = item.description ? ` - ${item.description}` : '';
       return `- ${item.name}${description} | public handoff token: ${formatPromptMentionGuidance(item)}`;
@@ -610,6 +624,17 @@ export function buildAgentTurnPrompt({
         '- Finish your own answer in one reply and do not hand off to another participant in this message.',
         '- In this prompt, mention tokens are shown as <mention:Token>; if you ever need to reference one in visible chat, convert that placeholder to ASCII @ immediately followed by the token.',
       ];
+
+  const personaPrompt = String(agentConfig && agentConfig.personaPrompt ? agentConfig.personaPrompt : agent.personaPrompt || '').trim();
+  const personaSkillDocuments = formatSkillDocuments(resolvedPersonaSkills, { forceFull: true });
+  const conversationSkillDocuments = formatSkillDocuments(resolvedConversationSkills, {
+    forceFull: false,
+    modeLoadingStrategy,
+    forceFullSkillIds: forceFullConversationSkillIds,
+  });
+  const privateMailboxSection = hasPrivateMailboxItems(privateMessages) ? formatPrivateMailbox(privateMessages, agents) : '';
+  const conversationHistorySection = hasConversationHistoryItems(messages) ? formatHistory(messages, agents) : '';
+  const turnRoutingStateSection = formatTurnRoutingState(trigger, agents);
 
   const routingRules = allowHandoffs
     ? [
@@ -651,65 +676,141 @@ export function buildAgentTurnPrompt({
     modeLoadingStrategy,
     forceFullSkillIds: forceFullConversationSkillIds,
   });
+  const browserCliInstructions = buildBrowserCliInstructions({ browserCliPath });
 
-  return [
-    'You are participating in a shared local multi-agent conversation workspace.',
-    `Conversation title: ${conversation.title}`,
-    `Your visible agent name: ${agent.name}`,
-    `Your public role: ${agent.description || 'General collaborator.'}`,
-    `Your active persona profile: ${agentConfig && agentConfig.profileName ? agentConfig.profileName : 'Default'}`,
-    '',
-    'Your private persona instructions:',
-    agentConfig && agentConfig.personaPrompt ? agentConfig.personaPrompt : agent.personaPrompt,
-    '',
-    'Persona-specific skills:',
-    formatSkillDocuments(resolvedPersonaSkills, { forceFull: true }),
-    '',
-    'Conversation-only skills for this room:',
-    formatSkillDocuments(resolvedConversationSkills, {
-      forceFull: false,
-      modeLoadingStrategy,
-      forceFullSkillIds: forceFullConversationSkillIds,
-    }),
-    '',
-    ...(trellisPromptContext ? ['Trellis project context:', trellisPromptContext, ''] : []),
-    ...(conversationDigestSection ? [conversationDigestSection, ''] : []),
-    ...(retrievedMemorySection ? [retrievedMemorySection, ''] : []),
-    ...(retrievalTraceSection ? [retrievalTraceSection, ''] : []),
-    ...(sessionGoalSection ? ['Session goal:', sessionGoalSection, ''] : []),
-    'Local sandbox:',
-    `- PI_AGENT_SANDBOX_DIR points to your dedicated sandbox: ${sandbox && sandbox.sandboxDir ? sandbox.sandboxDir : '[unavailable]'}`,
-    `- PI_AGENT_PRIVATE_DIR points to your private storage directory: ${sandbox && sandbox.privateDir ? sandbox.privateDir : '[unavailable]'}`,
-    '- Use your private directory for secrets, local state, scratch notes, and per-agent caches you do not want mixed into the shared workspace.',
-    "- Do not inspect or modify another agent's sandbox unless the user explicitly asks.",
-    '',
-    'Routing instructions:',
-    ...routingInstructions,
-    '',
-    'Rules:',
-    ...routingRules,
-    '',
-    'Other visible participants:',
-    participants || '- none',
-    '',
-    buildAgentToolInstructions(agentToolRelativePath, { includeDynamicSkillLoadingGuidance, browserCliPath }),
-    '',
-    ...(gameplaySections.length > 0 ? ['Gameplay mode:', gameplaySections.join('\n\n'), ''] : []),
-    ...(skillTestDesignSection ? ['Mode state context:', skillTestDesignSection, ''] : []),
-    'Private mailbox visible only to you:',
-    formatPrivateMailbox(privateMessages, agents),
-    '',
-    'Curated memory cards for you (conversation overlay + local durable):',
-    formatMemoryCards(memoryCards),
-    '',
-    'Conversation history:',
-    formatHistory(messages, agents),
-    '',
-    'Why you are replying now:',
-    describeTurnTrigger(trigger, agents),
-    `Turn routing mode: ${routingMode === 'mention_parallel' ? 'parallel first round' : 'serial handoff queue'}`,
-    `Remaining speaker slots after you: ${Math.max(0, remainingSlots)}`,
-    '',
-    'Write your reply now.',
-  ].join('\n');
+  const sections = [
+    promptSection(
+      'workspace_header',
+      'Workspace Identity',
+      'conversation/runtime',
+      [
+        'You are participating in a shared local multi-agent conversation workspace.',
+        `Conversation title: ${conversation.title}`,
+        `Your visible agent name: ${agent.name}`,
+        `Your public role: ${agent.description || 'General collaborator.'}`,
+        `Your active persona profile: ${agentConfig && agentConfig.profileName ? agentConfig.profileName : 'Default'}`,
+      ].join('\n'),
+      'full'
+    ),
+    personaPrompt
+      ? promptSection(
+          'private_persona',
+          'Private Persona Instructions',
+          'agent/persona',
+          ['Your private persona instructions:', personaPrompt].join('\n'),
+          'full'
+        )
+      : null,
+    promptSection('rules', 'Rules', 'runtime/routing', ['Rules:', ...routingRules].join('\n'), 'full'),
+    promptSection('routing_instructions', 'Routing Instructions', 'runtime/routing', ['Routing instructions:', ...routingInstructions].join('\n'), 'full'),
+    promptSection(
+      'command_format_rules',
+      'Command Safety And Format',
+      'runtime/tools',
+      buildCommandFormatRules(agentToolRelativePath),
+      'full'
+    ),
+    promptSection(
+      'local_sandbox',
+      'Local Sandbox',
+      'runtime/sandbox',
+      [
+        'Local sandbox:',
+        `- PI_AGENT_SANDBOX_DIR points to your dedicated sandbox: ${sandbox && sandbox.sandboxDir ? sandbox.sandboxDir : '[unavailable]'}`,
+        `- PI_AGENT_PRIVATE_DIR points to your private storage directory: ${sandbox && sandbox.privateDir ? sandbox.privateDir : '[unavailable]'}`,
+        '- Use your private directory for secrets, local state, scratch notes, and per-agent caches you do not want mixed into the shared workspace.',
+        "- Do not inspect or modify another agent's sandbox unless the user explicitly asks.",
+      ].join('\n'),
+      'full'
+    ),
+    hasPromptItems(resolvedPersonaSkills)
+      ? promptSection(
+          'persona_skills',
+          'Persona-Specific Skills',
+          'skill-registry/persona',
+          ['Persona-specific skills:', personaSkillDocuments].join('\n'),
+          'full'
+        )
+      : null,
+    hasPromptItems(resolvedConversationSkills)
+      ? promptSection(
+          'conversation_skills',
+          'Conversation-Only Skills',
+          'skill-registry/conversation',
+          ['Conversation-only skills for this room:', conversationSkillDocuments].join('\n'),
+          'full'
+        )
+      : null,
+    includeDynamicSkillLoadingGuidance
+      ? promptSection(
+          'dynamic_skill_loading',
+          'Dynamic Skill Loading',
+          'skill-registry/dynamic-loading',
+          buildDynamicSkillLoadingInstructions(),
+          'full'
+        )
+      : null,
+    promptSection(
+      'tool_instructions',
+      'Chat Bridge Tools',
+      'runtime/tools',
+      buildAgentToolInstructions(agentToolRelativePath),
+      'full'
+    ),
+    browserCliInstructions.length > 0
+      ? promptSection(
+          'browser_tool_instructions',
+          'Browser Tool',
+          'runtime/tools/browser-cli',
+          browserCliInstructions.join('\n'),
+          'full'
+        )
+      : null,
+    participants
+      ? promptSection('participants', 'Other Visible Participants', 'conversation/participants', ['Other visible participants:', participants].join('\n'), 'full')
+      : null,
+    gameplaySections.length > 0
+      ? promptSection('gameplay_mode', 'Gameplay Mode', 'conversation/mode', ['Gameplay mode:', gameplaySections.join('\n\n')].join('\n'), 'full')
+      : null,
+    skillTestDesignSection
+      ? promptSection('mode_state', 'Mode State Context', 'conversation/mode', ['Mode state context:', skillTestDesignSection].join('\n'), 'full')
+      : null,
+    trellisPromptContext
+      ? promptSection('trellis_context', 'Trellis Project Context', 'trellis/project', ['Trellis project context:', trellisPromptContext].join('\n'), 'full')
+      : null,
+    sessionGoalSection
+      ? promptSection('session_goal', 'Session Goal', 'conversation/session-goal', ['Session goal:', sessionGoalSection].join('\n'), 'full')
+      : null,
+    conversationDigestSection
+      ? promptSection('conversation_digest', 'Current Conversation Digest', 'conversation/metadata', conversationDigestSection, 'full')
+      : null,
+    retrievedMemorySection
+      ? promptSection('retrieved_memory', 'Retrieved Long-Term Memory', 'summary-memory/search', retrievedMemorySection, 'full')
+      : null,
+    retrievalTraceSection
+      ? promptSection('retrieval_trace', 'Last Recalled Evidence Cache', 'conversation/retrieval-trace', retrievalTraceSection, 'full')
+      : null,
+    privateMailboxSection
+      ? promptSection(
+          'private_mailbox',
+          'Private Mailbox Visible Only To You',
+          'conversation/private-messages',
+          ['Private mailbox visible only to you:', privateMailboxSection].join('\n'),
+          'full'
+        )
+      : null,
+    conversationHistorySection
+      ? promptSection('conversation_history', 'Conversation History', 'conversation/messages', ['Conversation history:', conversationHistorySection].join('\n'), 'full')
+      : null,
+    turnRoutingStateSection
+      ? promptSection('turn_trigger', 'Turn Routing State', 'runtime/routing', turnRoutingStateSection, 'full')
+      : null,
+    promptSection('final_instruction', 'Final Reply Instruction', 'runtime/prompt', 'Write your reply now.', 'full'),
+  ].filter(Boolean);
+
+  return sections;
+}
+
+export function buildAgentTurnPrompt(input: any) {
+  return formatAgentTurnPromptSections(buildAgentTurnPromptSections(input));
 }

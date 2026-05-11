@@ -53,7 +53,7 @@
 - `compact` manually compacts older detailed entries while preserving the latest detailed entry for recency.
 - `delete` removes exactly one digest by id; deleting a rollup is allowed and does not delete recent entries.
 - `clear` removes the whole metadata key when no digests remain.
-- Prompt assembly injects a `Conversation digest memory:` section before recent raw conversation history, with rollup first and recent entries after it.
+- Prompt assembly injects a `Current Conversation Digest / 当前聊天室摘要:` section before recent raw conversation history, with rollup first and recent entries after it. The section is current-conversation continuity context, not instructions or long-term memory.
 - Prompt formatting shows `Experience:` before normal digest sections so reusable lessons are visible while preserving raw recent messages as the conflict winner.
 - Prompt text must explicitly state that recent raw messages override digest content.
 - Frontend slash handling must intercept `/digest...` before optimistic user-message rendering so slash commands do not pollute history.
@@ -128,7 +128,7 @@
   - Delete a digest and assert metadata key cleanup plus delete broadcast.
   - Reject unsupported actions and missing ids when coverage expands.
 - `tests/runtime/turn-orchestrator.test.js`
-  - Prompt includes `Conversation digest memory`, summary, structured sections, artifacts, and conflict guidance.
+  - Prompt includes `Current Conversation Digest / 当前聊天室摘要`, summary, structured sections, artifacts, current-conversation provenance wording, and conflict guidance.
   - Prompt places digest memory before `Conversation history`.
   - Prompt places rollup digest before recent digest entries.
 - Manual browser validation:
