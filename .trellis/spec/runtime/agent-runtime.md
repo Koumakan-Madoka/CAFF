@@ -89,20 +89,21 @@
 - `startRun(...).resultPromise` resolves with `usage` copied from the latest assistant `message_end` or `agent_end` assistant message when present.
 - Completed chat assistant message metadata stores:
   - `usage`: raw provider usage object, or `null`.
-  - `tokenUsage`: normalized `{ inputTokens, outputTokens, totalTokens }`, values are non-negative integers or `null`.
+  - `tokenUsage`: normalized `{ inputTokens, outputTokens, totalTokens, cacheReadTokens, cacheWriteTokens }`, values are non-negative integers or `null`.
 
 ### 3. Contracts
 - Runtime preserves raw usage without inventing provider fields.
-- Normalization accepts common provider key variants: `input_tokens` / `inputTokens` / `prompt_tokens` / `promptTokens`, `output_tokens` / `outputTokens` / `completion_tokens` / `completionTokens`, and `total_tokens` / `totalTokens`.
-- If total is absent but input or output exists, total is computed as `(input || 0) + (output || 0)`.
+- Normalization accepts common provider key variants: `input_tokens` / `inputTokens` / `prompt_tokens` / `promptTokens`, `output_tokens` / `outputTokens` / `completion_tokens` / `completionTokens`, `cacheRead` / `cache_read` / `cacheReadTokens` / `cache_read_tokens`, `cacheWrite` / `cache_write` / `cacheWriteTokens` / `cache_write_tokens`, and `total_tokens` / `totalTokens`.
+- If total is absent but token fields exist, total is computed as `(input || 0) + (output || 0) + (cacheRead || 0) + (cacheWrite || 0)`.
 - UI displays the token badge only for assistant messages with normalized or raw usage; older messages without usage render unchanged.
-- The badge label uses total tokens when available and keeps input/output/total details in the element title.
+- The badge label uses total tokens when available, appends `cacheRead / totalTokens` as a cache-hit percentage when `cacheRead` exists, and keeps input/output/total/cache details in the element title.
 
 ### 4. Validation & Error Matrix
 | Case | Expected behavior |
 | --- | --- |
 | Assistant message has `usage.total_tokens` | Store raw `usage`, normalize `totalTokens`, display a token badge. |
 | Assistant message has only input/output counts | Compute total from available counts and display it. |
+| Assistant message has `cacheRead`/`cacheWrite` counts | Normalize cache counts, include them in inferred totals when needed, and display `cacheRead / totalTokens` on the badge. |
 | Usage missing or malformed | Store `null` normalization and hide the badge. |
 | Existing historical messages | Render without token badge and without layout errors. |
 

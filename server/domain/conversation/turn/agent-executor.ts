@@ -145,10 +145,24 @@ function summarizeTokenUsage(usage: any) {
     'completion',
     'output',
   ]);
+  const cacheReadTokens = pickTokenCount(rawUsage, ['cacheReadTokens', 'cache_read_tokens', 'cacheRead', 'cache_read', 'cachedTokens', 'cached_tokens']);
+  const cacheWriteTokens = pickTokenCount(rawUsage, [
+    'cacheWriteTokens',
+    'cache_write_tokens',
+    'cacheWrite',
+    'cache_write',
+    'cacheCreationTokens',
+    'cache_creation_tokens',
+    'cache_creation_input_tokens',
+  ]);
   const explicitTotalTokens = pickTokenCount(rawUsage, ['totalTokens', 'total_tokens', 'total']);
-  const totalTokens = explicitTotalTokens !== null ? explicitTotalTokens : inputTokens !== null || outputTokens !== null ? (inputTokens || 0) + (outputTokens || 0) : null;
+  const totalTokens = explicitTotalTokens !== null
+    ? explicitTotalTokens
+    : inputTokens !== null || outputTokens !== null || cacheReadTokens !== null || cacheWriteTokens !== null
+      ? (inputTokens || 0) + (outputTokens || 0) + (cacheReadTokens || 0) + (cacheWriteTokens || 0)
+      : null;
 
-  if (inputTokens === null && outputTokens === null && totalTokens === null) {
+  if (inputTokens === null && outputTokens === null && totalTokens === null && cacheReadTokens === null && cacheWriteTokens === null) {
     return null;
   }
 
@@ -156,6 +170,8 @@ function summarizeTokenUsage(usage: any) {
     inputTokens,
     outputTokens,
     totalTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
   };
 }
 

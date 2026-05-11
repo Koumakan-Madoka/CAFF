@@ -97,14 +97,28 @@
         'completion',
         'output',
       ]);
+      const cacheReadTokens = pickTokenCount(usage, ['cacheReadTokens', 'cache_read_tokens', 'cacheRead', 'cache_read', 'cachedTokens', 'cached_tokens']);
+      const cacheWriteTokens = pickTokenCount(usage, [
+        'cacheWriteTokens',
+        'cache_write_tokens',
+        'cacheWrite',
+        'cache_write',
+        'cacheCreationTokens',
+        'cache_creation_tokens',
+        'cache_creation_input_tokens',
+      ]);
       const explicitTotalTokens = pickTokenCount(usage, ['totalTokens', 'total_tokens', 'total']);
-      const totalTokens = explicitTotalTokens !== null ? explicitTotalTokens : inputTokens !== null || outputTokens !== null ? (inputTokens || 0) + (outputTokens || 0) : null;
+      const totalTokens = explicitTotalTokens !== null
+        ? explicitTotalTokens
+        : inputTokens !== null || outputTokens !== null || cacheReadTokens !== null || cacheWriteTokens !== null
+          ? (inputTokens || 0) + (outputTokens || 0) + (cacheReadTokens || 0) + (cacheWriteTokens || 0)
+          : null;
 
-      if (inputTokens === null && outputTokens === null && totalTokens === null) {
+      if (inputTokens === null && outputTokens === null && totalTokens === null && cacheReadTokens === null && cacheWriteTokens === null) {
         return null;
       }
 
-      return { inputTokens, outputTokens, totalTokens };
+      return { inputTokens, outputTokens, totalTokens, cacheReadTokens, cacheWriteTokens };
     }
 
     function formatTokenCount(count) {
@@ -125,6 +139,14 @@
       return `${(value / 1000000).toFixed(value >= 10000000 ? 0 : 1)}m`;
     }
 
+    function formatTokenUsageRatio(numerator, denominator) {
+      if (numerator === null || denominator === null || denominator <= 0) {
+        return '';
+      }
+
+      return `${Math.round((numerator / denominator) * 100)}%`;
+    }
+
     function formatTokenUsageLabel(usage) {
       if (!usage) {
         return '';
@@ -133,7 +155,17 @@
       const primary = usage.totalTokens !== null ? usage.totalTokens : usage.outputTokens !== null ? usage.outputTokens : usage.inputTokens;
       const formatted = formatTokenCount(primary);
 
-      return formatted ? `消耗 ${formatted} token` : '';
+      if (!formatted) {
+        return '';
+      }
+
+      if (usage.cacheReadTokens !== null) {
+        const cacheRead = formatTokenCount(usage.cacheReadTokens) || '0';
+        const ratio = formatTokenUsageRatio(usage.cacheReadTokens, usage.totalTokens);
+        return ratio ? `消耗 ${formatted} token · 命中 ${cacheRead} (${ratio})` : `消耗 ${formatted} token · 命中 ${cacheRead}`;
+      }
+
+      return `消耗 ${formatted} token`;
     }
 
     function formatTokenUsageTitle(usage) {
@@ -153,6 +185,15 @@
 
       if (usage.totalTokens !== null) {
         parts.push(`总计 ${formatTokenCount(usage.totalTokens)}`);
+      }
+
+      if (usage.cacheReadTokens !== null) {
+        const ratio = formatTokenUsageRatio(usage.cacheReadTokens, usage.totalTokens);
+        parts.push(`缓存命中 ${formatTokenCount(usage.cacheReadTokens)}${ratio ? ` (${ratio})` : ''}`);
+      }
+
+      if (usage.cacheWriteTokens !== null) {
+        parts.push(`缓存写入 ${formatTokenCount(usage.cacheWriteTokens)}`);
       }
 
       return parts.length > 0 ? `${parts.join(' · ')} token` : '';
@@ -1211,6 +1252,8 @@
         tokenUsage && tokenUsage.inputTokens !== null ? tokenUsage.inputTokens : '',
         tokenUsage && tokenUsage.outputTokens !== null ? tokenUsage.outputTokens : '',
         tokenUsage && tokenUsage.totalTokens !== null ? tokenUsage.totalTokens : '',
+        tokenUsage && tokenUsage.cacheReadTokens !== null ? tokenUsage.cacheReadTokens : '',
+        tokenUsage && tokenUsage.cacheWriteTokens !== null ? tokenUsage.cacheWriteTokens : '',
         digestResult ? JSON.stringify(digestResult) : '',
         traceSignature,
       ].join('\u001f');
