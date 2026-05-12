@@ -111,6 +111,20 @@ function normalizeTokenCount(value: any) {
   return Math.round(count);
 }
 
+function normalizeCostAmount(value: any) {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+
+  const amount = Number(value);
+
+  if (!Number.isFinite(amount) || amount < 0) {
+    return null;
+  }
+
+  return amount;
+}
+
 function pickTokenCount(usage: any, keys: string[]) {
   if (!usage || typeof usage !== 'object') {
     return null;
@@ -129,6 +143,24 @@ function pickTokenCount(usage: any, keys: string[]) {
   return null;
 }
 
+function pickCostAmount(cost: any, keys: string[]) {
+  if (!cost || typeof cost !== 'object') {
+    return null;
+  }
+
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(cost, key)) {
+      const amount = normalizeCostAmount(cost[key]);
+
+      if (amount !== null) {
+        return amount;
+      }
+    }
+  }
+
+  return null;
+}
+
 function summarizeTokenUsage(usage: any) {
   const rawUsage = usage && typeof usage === 'object' && !Array.isArray(usage) ? usage : null;
 
@@ -136,7 +168,16 @@ function summarizeTokenUsage(usage: any) {
     return null;
   }
 
-  const inputTokens = pickTokenCount(rawUsage, ['inputTokens', 'input_tokens', 'promptTokens', 'prompt_tokens', 'prompt', 'input']);
+  const uncachedInputTokens = pickTokenCount(rawUsage, [
+    'uncachedInputTokens',
+    'uncached_input_tokens',
+    'inputTokens',
+    'input_tokens',
+    'promptTokens',
+    'prompt_tokens',
+    'prompt',
+    'input',
+  ]);
   const outputTokens = pickTokenCount(rawUsage, [
     'outputTokens',
     'output_tokens',
@@ -155,23 +196,43 @@ function summarizeTokenUsage(usage: any) {
     'cache_creation_tokens',
     'cache_creation_input_tokens',
   ]);
+  const inputTokens = uncachedInputTokens !== null
+    ? uncachedInputTokens + (cacheReadTokens || 0) + (cacheWriteTokens || 0)
+    : null;
   const explicitTotalTokens = pickTokenCount(rawUsage, ['totalTokens', 'total_tokens', 'total']);
   const totalTokens = explicitTotalTokens !== null
     ? explicitTotalTokens
-    : inputTokens !== null || outputTokens !== null || cacheReadTokens !== null || cacheWriteTokens !== null
-      ? (inputTokens || 0) + (outputTokens || 0) + (cacheReadTokens || 0) + (cacheWriteTokens || 0)
+    : inputTokens !== null || outputTokens !== null
+      ? (inputTokens || 0) + (outputTokens || 0)
+      : null;
+  const rawCost = rawUsage.cost && typeof rawUsage.cost === 'object' && !Array.isArray(rawUsage.cost) ? rawUsage.cost : null;
+  const inputCostUsd = pickCostAmount(rawCost, ['inputUsd', 'inputUSD', 'inputCostUsd', 'input_cost_usd', 'inputCost', 'input_cost', 'input']);
+  const outputCostUsd = pickCostAmount(rawCost, ['outputUsd', 'outputUSD', 'outputCostUsd', 'output_cost_usd', 'outputCost', 'output_cost', 'output']);
+  const cacheReadCostUsd = pickCostAmount(rawCost, ['cacheReadUsd', 'cacheReadUSD', 'cacheReadCostUsd', 'cache_read_cost_usd', 'cacheReadCost', 'cache_read_cost', 'cacheRead', 'cache_read']);
+  const cacheWriteCostUsd = pickCostAmount(rawCost, ['cacheWriteUsd', 'cacheWriteUSD', 'cacheWriteCostUsd', 'cache_write_cost_usd', 'cacheWriteCost', 'cache_write_cost', 'cacheWrite', 'cache_write']);
+  const explicitTotalCostUsd = pickCostAmount(rawCost, ['totalUsd', 'totalUSD', 'totalCostUsd', 'total_cost_usd', 'totalCost', 'total_cost', 'total']);
+  const totalCostUsd = explicitTotalCostUsd !== null
+    ? explicitTotalCostUsd
+    : inputCostUsd !== null || outputCostUsd !== null || cacheReadCostUsd !== null || cacheWriteCostUsd !== null
+      ? (inputCostUsd || 0) + (outputCostUsd || 0) + (cacheReadCostUsd || 0) + (cacheWriteCostUsd || 0)
       : null;
 
-  if (inputTokens === null && outputTokens === null && totalTokens === null && cacheReadTokens === null && cacheWriteTokens === null) {
+  if (inputTokens === null && outputTokens === null && totalTokens === null && cacheReadTokens === null && cacheWriteTokens === null && totalCostUsd === null) {
     return null;
   }
 
   return {
     inputTokens,
+    uncachedInputTokens,
     outputTokens,
     totalTokens,
     cacheReadTokens,
     cacheWriteTokens,
+    inputCostUsd,
+    outputCostUsd,
+    cacheReadCostUsd,
+    cacheWriteCostUsd,
+    totalCostUsd,
   };
 }
 

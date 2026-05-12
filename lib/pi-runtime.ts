@@ -402,6 +402,42 @@ function extractAssistantUsage(message: any) {
   return usage;
 }
 
+function aggregateAssistantUsage(usages: any[]) {
+  const totals: any = {};
+  let hasUsage = false;
+
+  for (const usage of usages) {
+    if (!usage || typeof usage !== 'object' || Array.isArray(usage)) {
+      continue;
+    }
+
+    for (const [key, value] of Object.entries(usage)) {
+      if (key === 'cost' || typeof value !== 'number' || !Number.isFinite(value)) {
+        continue;
+      }
+
+      totals[key] = (totals[key] || 0) + value;
+      hasUsage = true;
+    }
+
+    const cost = usage.cost && typeof usage.cost === 'object' && !Array.isArray(usage.cost) ? usage.cost : null;
+
+    if (cost) {
+      for (const [key, value] of Object.entries(cost)) {
+        if (typeof value !== 'number' || !Number.isFinite(value)) {
+          continue;
+        }
+
+        totals.cost = totals.cost || {};
+        totals.cost[key] = (totals.cost[key] || 0) + value;
+        hasUsage = true;
+      }
+    }
+  }
+
+  return hasUsage ? totals : null;
+}
+
 function startRun(provider: any, model: any, prompt: any, options: any = {}) {
   if (!prompt || !String(prompt).trim()) {
     throw new Error('Prompt is required');
@@ -483,6 +519,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
       printedAssistantErrors: new Set(),
       heartbeatCount: 0,
       assistantUsage: null as any,
+      assistantUsageByKey: new Map(),
     };
     const childState = { code: null as any, signal: null as any };
     const processHandlers: Array<[any, any]> = [];
@@ -493,6 +530,18 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
     let terminationReason: any = null;
     let stderrBuffer = '';
     let ignoreFurtherAssistantOutput = false;
+
+    function recordAssistantUsage(message: any) {
+      const usage = extractAssistantUsage(message);
+
+      if (!usage) {
+        return;
+      }
+
+      const key = getAssistantMessageKey(message) || `assistant:${state.assistantUsageByKey.size}`;
+      state.assistantUsageByKey.set(key, usage);
+      state.assistantUsage = aggregateAssistantUsage(Array.from(state.assistantUsageByKey.values()));
+    }
 
     function emitStorageWarning(error: any) {
       if (!error) {
@@ -858,7 +907,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
       }
 
       if (event.type === 'message_end' && event.message && event.message.role === 'assistant') {
-        state.assistantUsage = extractAssistantUsage(event.message) || state.assistantUsage;
+        recordAssistantUsage(event.message);
         emit('assistant_message', { messageKey: getAssistantMessageKey(event.message) || null, message: event.message, text: extractAssistantText(event.message) });
         appendAssistantFallback(event.message);
         emitAssistantError(event.message);
@@ -869,7 +918,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
       if (event.type === 'agent_end' && Array.isArray(event.messages)) {
         for (const message of event.messages) {
           if (message && message.role === 'assistant') {
-            state.assistantUsage = extractAssistantUsage(message) || state.assistantUsage;
+            recordAssistantUsage(message);
             emit('assistant_message', { messageKey: getAssistantMessageKey(message) || null, message, text: extractAssistantText(message) });
             appendAssistantFallback(message);
             emitAssistantError(message);
