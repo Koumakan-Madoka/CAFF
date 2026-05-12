@@ -97,7 +97,7 @@
 - Provider `input` counts may mean non-cached input only. Normalized `inputTokens` represents effective prompt/context input, computed as `uncachedInputTokens + cacheReadTokens + cacheWriteTokens` when cache fields exist; `uncachedInputTokens` preserves the raw non-cached provider input.
 - If total is absent but token fields exist, total is computed as `(inputTokens || 0) + (outputTokens || 0)`, where `inputTokens` already includes cache read/write tokens.
 - UI displays the token badge only for assistant messages with normalized or raw usage; older messages without usage render unchanged.
-- The badge label uses total tokens when available, appends normalized USD cost when `usage.cost.total` or cost components exist, appends `cacheRead / totalTokens` as a cache-hit percentage when `cacheRead` exists, and keeps effective input/output/total/cache/cost plus non-cached input details in the element title.
+- The badge label uses total tokens when available, appends normalized USD cost when `usage.cost.total` or cost components exist, appends `cacheRead / totalTokens` as a cache-hit percentage when `cacheRead` exists, and keeps effective input/output/total/cache plus non-cached input and complete input/output/cache-read/cache-write cost details in the element title.
 
 ### 4. Validation & Error Matrix
 | Case | Expected behavior |
@@ -105,7 +105,7 @@
 | Assistant message has `usage.total_tokens` | Store raw `usage`, normalize `totalTokens`, display a token badge. |
 | Assistant message has only input/output counts | Compute total from available counts and display it. |
 | Assistant message has `cacheRead`/`cacheWrite` counts | Normalize cache counts, show effective input including cache tokens, preserve raw provider input as non-cached input, and display `cacheRead / totalTokens` on the badge. |
-| `usage.cost` contains pi-ai USD components | Normalize input/output/cache/total costs, display the total USD cost on the badge, and show component costs in the tooltip. |
+| `usage.cost` contains pi-ai USD components | Normalize input/output/cache/total costs, display the total USD cost on the badge, and show input/output/cache-read/cache-write component costs in the tooltip fee detail. |
 | Usage missing or malformed | Store `null` normalization and hide the badge. |
 | Existing historical messages | Render without token badge and without layout errors. |
 

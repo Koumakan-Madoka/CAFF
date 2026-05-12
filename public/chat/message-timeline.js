@@ -307,16 +307,14 @@
 
       if (usage.cacheReadTokens !== null) {
         const ratio = formatTokenUsageRatio(usage.cacheReadTokens, usage.totalTokens);
-        const cacheReadCost = formatUsdCost(usage.cacheReadCostUsd);
-        parts.push(`缓存命中 ${formatTokenCount(usage.cacheReadTokens)}${ratio ? ` (${ratio})` : ''}${cacheReadCost ? ` / ${cacheReadCost}` : ''}`);
+        parts.push(`缓存命中 ${formatTokenCount(usage.cacheReadTokens)}${ratio ? ` (${ratio})` : ''}`);
       }
 
       if (usage.cacheWriteTokens !== null) {
-        const cacheWriteCost = formatUsdCost(usage.cacheWriteCostUsd);
-        parts.push(`缓存写入 ${formatTokenCount(usage.cacheWriteTokens)}${cacheWriteCost ? ` / ${cacheWriteCost}` : ''}`);
+        parts.push(`缓存写入 ${formatTokenCount(usage.cacheWriteTokens)}`);
       }
 
-      if (usage.inputCostUsd !== null || usage.outputCostUsd !== null) {
+      if (usage.inputCostUsd !== null || usage.outputCostUsd !== null || usage.cacheReadCostUsd !== null || usage.cacheWriteCostUsd !== null) {
         const costParts = [];
 
         if (usage.inputCostUsd !== null) {
@@ -325,6 +323,14 @@
 
         if (usage.outputCostUsd !== null) {
           costParts.push(`输出 ${formatUsdCost(usage.outputCostUsd) || '$0.0000'}`);
+        }
+
+        if (usage.cacheReadCostUsd !== null) {
+          costParts.push(`缓存读取 ${formatUsdCost(usage.cacheReadCostUsd) || '$0.0000'}`);
+        }
+
+        if (usage.cacheWriteCostUsd !== null) {
+          costParts.push(`缓存写入 ${formatUsdCost(usage.cacheWriteCostUsd) || '$0.0000'}`);
         }
 
         if (costParts.length > 0) {
