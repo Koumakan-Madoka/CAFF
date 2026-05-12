@@ -90,6 +90,7 @@
 - Completed chat assistant message metadata stores:
   - `usage`: aggregated provider usage object for the run, or `null`.
   - `tokenUsage`: normalized `{ inputTokens, uncachedInputTokens, outputTokens, totalTokens, cacheReadTokens, cacheWriteTokens, inputCostUsd, outputCostUsd, cacheReadCostUsd, cacheWriteCostUsd, totalCostUsd }`; token values are non-negative integers or `null`, cost values are non-negative USD numbers or `null`.
+  - `modelUsage`: normalized per-run model-call summary `{ modelCallCount, coldStartModelCallCount, postColdModelCallCount, providerMissCount, calls[] }`, where each call has a 1-based `sequence`, canonical `isColdStart` (`coldStart` remains a legacy alias), `providerMiss`, and normalized `tokenUsage`; `providerMiss` means a non-cold-start call has `cacheReadTokens === 0` and positive uncached input.
 
 ### 3. Contracts
 - Runtime preserves raw usage field names and sums numeric usage/cost fields across unique assistant model calls in the run.
@@ -97,7 +98,10 @@
 - Provider `input` counts may mean non-cached input only. Normalized `inputTokens` represents effective prompt/context input, computed as `uncachedInputTokens + cacheReadTokens + cacheWriteTokens` when cache fields exist; `uncachedInputTokens` preserves the raw non-cached provider input.
 - If total is absent but token fields exist, total is computed as `(inputTokens || 0) + (outputTokens || 0)`, where `inputTokens` already includes cache read/write tokens.
 - UI displays the token badge only for assistant messages with normalized or raw usage; older messages without usage render unchanged.
-- The badge label uses total tokens when available, appends normalized USD cost when `usage.cost.total` or cost components exist, appends `cacheRead / totalTokens` as a cache-hit percentage when `cacheRead` exists, and keeps effective input/output/total/cache plus non-cached input and complete input/output/cache-read/cache-write cost details in the element title.
+- The badge label uses model-call language first when per-call data exists (for example `3 次模型调用 · 消耗 42.1k token · $0.0312 · 命中 28.0k (66%) · provider miss 1/2 次模型调用`), appends normalized USD cost when `usage.cost.total` or cost components exist, appends `cacheRead / totalTokens` as a cache-hit percentage when `cacheRead` exists, and keeps effective input/output/total/cache plus non-cached input, model-call count, cold-start count, provider miss count, and complete input/output/cache-read/cache-write cost details in the element title.
+- Tool trace summaries must keep model calls and tool executions separate: `summary.modelCallCount` counts asks to the model, `summary.toolExecutionCount` / `summary.totalSteps` count tool executions, and provider miss denominators always use `postColdModelCallCount`, never tool execution count.
+- Tool trace details expose top-level `modelUsageSummary` as the canonical model-call summary and a single `timelineEvents[]` list when model-call data is available. Each event has `eventType: 'model_call' | 'tool_execution'`; model-call rows carry `modelCallSequence`, cache/cost token usage, cold-start, and provider-miss flags, while tool-execution rows preserve existing command/status/result previews and may carry `modelCallSequence` for the model call that triggered them.
+- UI should render `timelineEvents[]` as the unified assistant-turn observability timeline instead of showing a separate model-usage table beside a tool-centric trace. The first model call is labeled cold start, and later calls with zero cache read plus uncached input are labeled `provider miss`.
 
 ### 4. Validation & Error Matrix
 | Case | Expected behavior |
@@ -106,6 +110,7 @@
 | Assistant message has only input/output counts | Compute total from available counts and display it. |
 | Assistant message has `cacheRead`/`cacheWrite` counts | Normalize cache counts, show effective input including cache tokens, preserve raw provider input as non-cached input, and display `cacheRead / totalTokens` on the badge. |
 | `usage.cost` contains pi-ai USD components | Normalize input/output/cache/total costs, display the total USD cost on the badge, and show input/output/cache-read/cache-write component costs in the tooltip fee detail. |
+| A non-cold model call reports `cacheRead: 0` with uncached input | Count it as `providerMiss`, show `provider miss N/M 次模型调用` on the badge and trace summary, and mark that call in trace details. |
 | Usage missing or malformed | Store `null` normalization and hide the badge. |
 | Existing historical messages | Render without token badge and without layout errors. |
 
@@ -121,6 +126,7 @@
 #### Correct
 - Capture usage once in `lib/pi-runtime.ts`, persist it into assistant message metadata when the reply completes, and let the timeline render from the normal conversation payload.
 - Normalize multiple provider key variants while preserving raw `metadata.usage` for diagnostics.
+- Use `模型调用` / `toolExecutionCount` wording for observability; do not use tool step counts as a proxy for model-call denominators.
 - Keep model price metadata in `models.json` as pi-ai per-million-token USD rates: `{ input, output, cacheRead, cacheWrite }`; if a provider only publishes cached-read pricing, set `cacheWrite` to the normal input rate unless the provider documents a distinct write rate.
 
 ## Browser CLI Tooling

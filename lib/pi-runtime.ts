@@ -438,6 +438,21 @@ function aggregateAssistantUsage(usages: any[]) {
   return hasUsage ? totals : null;
 }
 
+function assistantUsageCallsFromState(state: any) {
+  if (!state || !state.assistantUsageByKey || typeof state.assistantUsageByKey.values !== 'function') {
+    return [];
+  }
+
+  return Array.from(state.assistantUsageByKey.values()).map((entry: any, index) => ({
+    index,
+    key: String(entry && entry.key ? entry.key : '').trim(),
+    responseId: String(entry && entry.responseId ? entry.responseId : '').trim(),
+    stopReason: String(entry && entry.stopReason ? entry.stopReason : '').trim(),
+    timestamp: entry && entry.timestamp !== undefined ? entry.timestamp : null,
+    usage: entry && entry.usage && typeof entry.usage === 'object' && !Array.isArray(entry.usage) ? entry.usage : null,
+  })).filter((entry: any) => entry.usage);
+}
+
 function startRun(provider: any, model: any, prompt: any, options: any = {}) {
   if (!prompt || !String(prompt).trim()) {
     throw new Error('Prompt is required');
@@ -539,8 +554,16 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
       }
 
       const key = getAssistantMessageKey(message) || `assistant:${state.assistantUsageByKey.size}`;
-      state.assistantUsageByKey.set(key, usage);
-      state.assistantUsage = aggregateAssistantUsage(Array.from(state.assistantUsageByKey.values()));
+      state.assistantUsageByKey.set(key, {
+        key,
+        responseId: message && message.responseId ? String(message.responseId) : '',
+        stopReason: message && message.stopReason ? String(message.stopReason) : '',
+        timestamp: message && message.timestamp !== undefined ? message.timestamp : null,
+        usage,
+      });
+      state.assistantUsage = aggregateAssistantUsage(
+        Array.from(state.assistantUsageByKey.values()).map((entry: any) => entry && entry.usage)
+      );
     }
 
     function emitStorageWarning(error: any) {
@@ -735,6 +758,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
         parseErrors: typeof error.parseErrors === 'number' ? error.parseErrors : state.parseErrors,
         assistantErrors: Array.isArray(error.assistantErrors) ? error.assistantErrors : state.assistantErrors,
         usage: error.usage !== undefined ? error.usage : state.assistantUsage,
+        usageCalls: error.usageCalls !== undefined ? error.usageCalls : assistantUsageCallsFromState(state),
       });
 
       emit('run_failed', { error, runId: runRecord ? runRecord.runId : null });
@@ -768,6 +792,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
         parseErrors: result.parseErrors,
         assistantErrors: result.assistantErrors,
         usage: result.usage !== undefined ? result.usage : state.assistantUsage,
+        usageCalls: result.usageCalls !== undefined ? result.usageCalls : assistantUsageCallsFromState(state),
       });
 
       emit('run_succeeded', { result, runId: result.runId || null });
@@ -1013,6 +1038,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
         stdoutLines: [...state.stdoutLines],
         heartbeatCount: state.heartbeatCount,
         usage: state.assistantUsage,
+        usageCalls: assistantUsageCallsFromState(state),
       };
 
       if (terminationReason && terminationReason.type === 'expected_completion') {

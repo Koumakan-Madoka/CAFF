@@ -540,6 +540,148 @@ test('assistant message tool trace summarizes session calls and redacts sensitiv
   assert.equal(serializedFailureContext.includes('super-secret-token'), false);
 });
 
+test('assistant message tool trace exposes model usage calls and provider miss summary', (t) => {
+  const tempDir = withTempDir('caff-message-tool-trace-model-usage-');
+  const sqlitePath = path.join(tempDir, 'trace.sqlite');
+  const sessionsDir = path.join(tempDir, 'named-sessions');
+  const sessionPath = path.join(sessionsDir, 'trace-session.jsonl');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const runStore = createSqliteRunStore({ agentDir: tempDir, sqlitePath });
+
+  fs.mkdirSync(sessionsDir, { recursive: true });
+
+  t.after(() => {
+    try {
+      runStore.close();
+    } catch {}
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const agent = store.saveAgent({
+    id: 'trace-agent-model-usage',
+    name: 'Trace Agent',
+    personaPrompt: 'Reply briefly.',
+  });
+  const conversation = store.createConversation({
+    id: 'trace-conversation-model-usage',
+    title: 'Trace Conversation',
+    participants: [agent.id],
+  });
+
+  const taskId = 'trace-task-model-usage-1';
+  const assistantMessage = store.createMessage({
+    id: 'trace-message-model-usage-1',
+    conversationId: conversation.id,
+    turnId: 'trace-turn-model-usage-1',
+    role: 'assistant',
+    agentId: agent.id,
+    senderName: agent.name,
+    content: 'Done',
+    status: 'completed',
+    taskId,
+    metadata: {
+      sessionPath,
+      sessionName: 'trace-session-model-usage',
+    },
+  });
+
+  fs.writeFileSync(
+    sessionPath,
+    [
+      JSON.stringify({
+        type: 'message',
+        message: {
+          role: 'assistant',
+          responseId: 'cold-start-response',
+          provider: 'demo-provider',
+          model: 'demo-model',
+          stopReason: 'tool_use',
+          timestamp: 1,
+          usage: { input: 1000, output: 40, cacheRead: 0, cost: { input: 0.001, output: 0.002, total: 0.003 } },
+          content: [{ type: 'toolCall', name: 'read', id: 'session-tool-read', arguments: { path: 'README.md' } }],
+        },
+      }),
+      JSON.stringify({
+        type: 'message',
+        message: {
+          role: 'assistant',
+          responseId: 'cached-response',
+          provider: 'demo-provider',
+          model: 'demo-model',
+          stopReason: 'tool_use',
+          timestamp: 2,
+          usage: { input: 120, output: 30, cacheRead: 900, cost: { input: 0.00012, output: 0.0015, cacheRead: 0.00009, total: 0.00171 } },
+          content: [{ type: 'toolCall', name: 'bash', id: 'session-tool-bash', arguments: { command: 'echo ok' } }],
+        },
+      }),
+      JSON.stringify({
+        type: 'message',
+        message: {
+          role: 'assistant',
+          responseId: 'provider-miss-response',
+          provider: 'demo-provider',
+          model: 'demo-model',
+          stopReason: 'stop',
+          timestamp: 3,
+          usage: { input: 1500, output: 80, cacheRead: 0, cost: { input: 0.0015, output: 0.004, total: 0.0055 } },
+          content: [{ type: 'text', text: 'done' }],
+        },
+      }),
+      '',
+    ].join('\n'),
+    'utf8'
+  );
+
+  runStore.createTask({
+    taskId,
+    kind: 'conversation_agent_reply',
+    title: 'Trace Task',
+    status: 'completed',
+    sessionPath,
+    metadata: { sessionPath },
+  });
+
+  const trace = buildAssistantMessageToolTrace({
+    db: store.db,
+    agentDir: tempDir,
+    message: assistantMessage,
+    resolvedSessionPath: sessionPath,
+  });
+
+  assert.equal(trace.summary.toolExecutionCount, 2);
+  assert.equal(trace.summary.modelCallCount, 3);
+  assert.equal(trace.summary.coldStartModelCallCount, 1);
+  assert.equal(trace.summary.postColdModelCallCount, 2);
+  assert.equal(trace.summary.providerMissCount, 1);
+  assert.equal(trace.modelUsageSummary.modelCallCount, 3);
+  assert.equal(trace.modelUsageSummary.coldStartModelCallCount, 1);
+  assert.equal(trace.modelUsageSummary.providerMissCount, 1);
+  assert.equal(trace.modelUsageCalls.length, 3);
+  assert.equal(trace.modelUsageCalls[0].coldStart, true);
+  assert.equal(trace.modelUsageCalls[0].isColdStart, true);
+  assert.equal(trace.modelUsageCalls[0].providerMiss, false);
+  assert.equal(trace.modelUsageCalls[1].providerMiss, false);
+  assert.equal(trace.modelUsageCalls[1].tokenUsage.cacheReadTokens, 900);
+  assert.equal(trace.modelUsageCalls[2].providerMiss, true);
+  assert.equal(trace.modelUsageCalls[2].tokenUsage.outputTokens, 80);
+  assert.equal(trace.session.modelUsageSummary.providerMissCount, 1);
+  assert.equal(trace.timelineEvents.length, 5);
+  assert.deepEqual(
+    trace.timelineEvents.map((event) => event.eventType),
+    ['model_call', 'tool_execution', 'model_call', 'tool_execution', 'model_call']
+  );
+  assert.equal(trace.timelineEvents[0].modelCallSequence, 1);
+  assert.equal(trace.timelineEvents[1].toolName, 'read');
+  assert.equal(trace.timelineEvents[1].modelCallSequence, 1);
+  assert.equal(trace.timelineEvents[2].modelCallSequence, 2);
+  assert.equal(trace.timelineEvents[3].toolName, 'bash');
+  assert.equal(trace.timelineEvents[3].modelCallSequence, 2);
+  assert.equal(trace.timelineEvents[4].providerMiss, true);
+});
+
 test('assistant message tool trace builds one merged timeline for session and bridge steps', (t) => {
   const tempDir = withTempDir('caff-message-tool-trace-merged-');
   const sqlitePath = path.join(tempDir, 'trace.sqlite');

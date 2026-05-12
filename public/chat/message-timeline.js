@@ -185,7 +185,39 @@
         return null;
       }
 
-      return { inputTokens, uncachedInputTokens, outputTokens, totalTokens, cacheReadTokens, cacheWriteTokens, inputCostUsd, outputCostUsd, cacheReadCostUsd, cacheWriteCostUsd, totalCostUsd };
+      const modelUsageSummary = metadata && metadata.modelUsage && metadata.modelUsage.modelCallCount !== undefined
+        ? metadata.modelUsage
+        : null;
+      const modelCallCount = modelUsageSummary && Number.isFinite(Number(modelUsageSummary.modelCallCount))
+        ? Number(modelUsageSummary.modelCallCount)
+        : null;
+      const coldStartModelCallCount = modelUsageSummary && Number.isFinite(Number(modelUsageSummary.coldStartModelCallCount))
+        ? Number(modelUsageSummary.coldStartModelCallCount)
+        : null;
+      const postColdModelCallCount = modelUsageSummary && Number.isFinite(Number(modelUsageSummary.postColdModelCallCount))
+        ? Number(modelUsageSummary.postColdModelCallCount)
+        : null;
+      const providerMissCount = modelUsageSummary && Number.isFinite(Number(modelUsageSummary.providerMissCount))
+        ? Number(modelUsageSummary.providerMissCount)
+        : null;
+
+      return {
+        inputTokens,
+        uncachedInputTokens,
+        outputTokens,
+        totalTokens,
+        cacheReadTokens,
+        cacheWriteTokens,
+        inputCostUsd,
+        outputCostUsd,
+        cacheReadCostUsd,
+        cacheWriteCostUsd,
+        totalCostUsd,
+        modelCallCount,
+        coldStartModelCallCount,
+        postColdModelCallCount,
+        providerMissCount,
+      };
     }
 
     function pickTokenCountFromSources(sources, keys) {
@@ -261,7 +293,17 @@
         return '';
       }
 
-      const parts = formatted ? [`消耗 ${formatted} token`] : ['花费'];
+      const parts = [];
+
+      if (usage.modelCallCount !== null) {
+        parts.push(`${usage.modelCallCount} 次模型调用`);
+      }
+
+      if (formatted) {
+        parts.push(`消耗 ${formatted} token`);
+      } else if (cost) {
+        parts.push('花费');
+      }
 
       if (cost) {
         parts.push(cost);
@@ -271,6 +313,10 @@
         const cacheRead = formatTokenCount(usage.cacheReadTokens) || '0';
         const ratio = formatTokenUsageRatio(usage.cacheReadTokens, usage.totalTokens);
         parts.push(ratio ? `命中 ${cacheRead} (${ratio})` : `命中 ${cacheRead}`);
+      }
+
+      if (usage.providerMissCount !== null && usage.postColdModelCallCount !== null) {
+        parts.push(`provider miss ${usage.providerMissCount}/${usage.postColdModelCallCount} 次模型调用`);
       }
 
       return parts.join(' · ');
@@ -312,6 +358,11 @@
 
       if (usage.cacheWriteTokens !== null) {
         parts.push(`缓存写入 ${formatTokenCount(usage.cacheWriteTokens)}`);
+      }
+
+      if (usage.modelCallCount !== null && usage.providerMissCount !== null) {
+        const coldStartCount = usage.coldStartModelCallCount !== null ? usage.coldStartModelCallCount : Math.max(usage.modelCallCount - (usage.postColdModelCallCount || 0), 0);
+        parts.push(`模型调用 ${usage.modelCallCount} 次，冷启动 ${coldStartCount} 次，冷启动外 ${usage.postColdModelCallCount || 0} 次，provider miss ${usage.providerMissCount}`);
       }
 
       if (usage.inputCostUsd !== null || usage.outputCostUsd !== null || usage.cacheReadCostUsd !== null || usage.cacheWriteCostUsd !== null) {
@@ -743,6 +794,12 @@
     }
 
     function traceStepCount(trace) {
+      const timelineEvents = trace && Array.isArray(trace.timelineEvents) ? trace.timelineEvents : [];
+
+      if (timelineEvents.length > 0) {
+        return timelineEvents.length;
+      }
+
       const traceSteps = trace && Array.isArray(trace.steps) ? trace.steps : [];
 
       if (traceSteps.length > 0) {
@@ -762,7 +819,7 @@
       button.className = prominent ? 'message-tool-trace-toggle message-tool-trace-toggle-prominent' : 'message-tool-trace-toggle ghost-button';
       button.dataset.messageId = messageId;
       button.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
-      button.textContent = prominent ? (isOpen ? '收起工具链路' : '展开完整工具链路') : isOpen ? '收起工具链路' : '查看工具链路';
+      button.textContent = prominent ? (isOpen ? '收起观测时间线' : '展开观测时间线') : isOpen ? '收起观测时间线' : '查看观测时间线';
       return button;
     }
 
@@ -848,6 +905,273 @@
       return note;
     }
 
+    function modelUsageCallsForTrace(trace) {
+      return trace && Array.isArray(trace.modelUsageCalls)
+        ? trace.modelUsageCalls.filter((call) => call && call.tokenUsage && typeof call.tokenUsage === 'object')
+        : [];
+    }
+
+    function modelUsageSummaryForTrace(trace) {
+      const calls = modelUsageCallsForTrace(trace);
+      const primarySummary = trace && trace.modelUsageSummary && typeof trace.modelUsageSummary === 'object'
+        ? trace.modelUsageSummary
+        : null;
+      const summaryFallback = trace && trace.summary && typeof trace.summary === 'object'
+        ? trace.summary
+        : null;
+      const summaryFallbackHasCounts = summaryFallback && (
+        Number(summaryFallback.modelCallCount) > 0 ||
+        Number(summaryFallback.coldStartModelCallCount) > 0 ||
+        Number(summaryFallback.postColdModelCallCount) > 0 ||
+        Number(summaryFallback.providerMissCount) > 0
+      );
+      const explicitSummary = primarySummary || (summaryFallback && (summaryFallbackHasCounts || calls.length === 0) ? summaryFallback : null);
+
+      if (explicitSummary) {
+        const modelCallCount = Number(explicitSummary.modelCallCount);
+        const coldStartModelCallCount = Number(explicitSummary.coldStartModelCallCount);
+        const postColdModelCallCount = Number(explicitSummary.postColdModelCallCount);
+        const providerMissCount = Number(explicitSummary.providerMissCount);
+
+        return {
+          modelCallCount: Number.isFinite(modelCallCount) ? modelCallCount : 0,
+          coldStartModelCallCount: Number.isFinite(coldStartModelCallCount) ? coldStartModelCallCount : 0,
+          postColdModelCallCount: Number.isFinite(postColdModelCallCount) ? postColdModelCallCount : 0,
+          providerMissCount: Number.isFinite(providerMissCount) ? providerMissCount : 0,
+        };
+      }
+
+      const coldStartModelCallCount = calls.filter((call) => call.isColdStart || call.coldStart).length;
+      const postColdModelCallCount = calls.filter((call) => !(call.isColdStart || call.coldStart)).length;
+      const providerMissCount = calls.filter((call) => call.providerMiss).length;
+
+      return {
+        modelCallCount: calls.length,
+        coldStartModelCallCount,
+        postColdModelCallCount,
+        providerMissCount,
+      };
+    }
+
+    function formatModelUsageCallBits(call) {
+      const tokenUsage = call && call.tokenUsage ? call.tokenUsage : {};
+      const bits = [];
+      const inputTokens = normalizeTokenCount(tokenUsage.inputTokens);
+      const uncachedInputTokens = normalizeTokenCount(tokenUsage.uncachedInputTokens);
+      const outputTokens = normalizeTokenCount(tokenUsage.outputTokens);
+      const totalTokens = normalizeTokenCount(tokenUsage.totalTokens);
+      const cacheReadTokens = normalizeTokenCount(tokenUsage.cacheReadTokens);
+      const cacheWriteTokens = normalizeTokenCount(tokenUsage.cacheWriteTokens);
+      const totalCostUsd = normalizeCostAmount(tokenUsage.totalCostUsd);
+      const hitRatio = cacheReadTokens !== null ? formatTokenUsageRatio(cacheReadTokens, totalTokens) : '';
+
+      if (inputTokens !== null) {
+        bits.push(`输入 ${formatTokenCount(inputTokens)}`);
+      }
+
+      if (uncachedInputTokens !== null) {
+        bits.push(`非缓存 ${formatTokenCount(uncachedInputTokens)}`);
+      }
+
+      if (outputTokens !== null) {
+        bits.push(`输出 ${formatTokenCount(outputTokens)}`);
+      }
+
+      if (cacheReadTokens !== null) {
+        bits.push(`缓存读 ${formatTokenCount(cacheReadTokens)}${hitRatio ? ` / 命中率 ${hitRatio}` : ''}`);
+      }
+
+      if (cacheWriteTokens !== null && cacheWriteTokens > 0) {
+        bits.push(`缓存写 ${formatTokenCount(cacheWriteTokens)}`);
+      }
+
+      if (totalCostUsd !== null) {
+        bits.push(`花费 ${formatUsdCost(totalCostUsd) || '$0.0000'}`);
+      }
+
+      return bits;
+    }
+
+    function traceTimelineEventsForTrace(trace) {
+      const explicitEvents = trace && Array.isArray(trace.timelineEvents)
+        ? trace.timelineEvents.filter((event) => event && typeof event === 'object')
+        : [];
+
+      if (explicitEvents.length > 0) {
+        return explicitEvents;
+      }
+
+      const normalizeSequence = (value) => {
+        const sequence = Number(value);
+        return Number.isFinite(sequence) && sequence > 0 ? Math.round(sequence) : null;
+      };
+      const traceSteps = trace && Array.isArray(trace.steps) ? trace.steps : [];
+      const sessionSteps = trace && Array.isArray(trace.sessionToolCalls) ? trace.sessionToolCalls : [];
+      const bridgeSteps = trace && Array.isArray(trace.bridgeToolEvents) ? trace.bridgeToolEvents : [];
+      const toolSteps = traceSteps.length > 0 ? traceSteps : sessionSteps.concat(bridgeSteps);
+      const toolEvents = toolSteps.map((step, index) => ({
+        ...step,
+        eventType: 'tool_execution',
+        toolExecutionSequence: index + 1,
+      }));
+      const modelEvents = modelUsageCallsForTrace(trace).map((call, index) => {
+        const sequence = normalizeSequence(call && call.sequence) || index + 1;
+        return {
+          ...call,
+          eventType: 'model_call',
+          stepId: `model-call-${sequence}`,
+          modelCallSequence: sequence,
+        };
+      });
+
+      if (modelEvents.length === 0) {
+        return toolEvents.map((event, index) => ({ ...event, timelineIndex: index }));
+      }
+
+      const timelineEvents = [];
+      const usedToolIndexes = new Set();
+
+      modelEvents.forEach((modelEvent) => {
+        const sequence = normalizeSequence(modelEvent.modelCallSequence);
+        timelineEvents.push(modelEvent);
+        toolEvents.forEach((toolEvent, index) => {
+          if (usedToolIndexes.has(index) || normalizeSequence(toolEvent.modelCallSequence) !== sequence) {
+            return;
+          }
+
+          usedToolIndexes.add(index);
+          timelineEvents.push(toolEvent);
+        });
+      });
+
+      toolEvents.forEach((toolEvent, index) => {
+        if (!usedToolIndexes.has(index)) {
+          timelineEvents.push(toolEvent);
+        }
+      });
+
+      return timelineEvents.map((event, index) => ({ ...event, timelineIndex: index }));
+    }
+
+    function buildModelCallTraceStep(call, index, isLastStep) {
+      const article = document.createElement('article');
+      const rail = document.createElement('div');
+      const indexBadge = document.createElement('span');
+      const line = document.createElement('span');
+      const content = document.createElement('div');
+      const callHeader = document.createElement('div');
+      const titleWrap = document.createElement('div');
+      const eyebrow = document.createElement('div');
+      const callTitle = document.createElement('div');
+      const callMeta = document.createElement('div');
+      const detail = document.createElement('div');
+      const sequence = Number.isFinite(Number(call && call.sequence))
+        ? Number(call.sequence)
+        : Number.isFinite(Number(call && call.modelCallSequence))
+          ? Number(call.modelCallSequence)
+          : index + 1;
+      const tokenUsage = call && call.tokenUsage ? call.tokenUsage : {};
+      const isColdStart = Boolean(call && (call.coldStart || call.isColdStart));
+      const tone = call && call.providerMiss ? 'failed' : isColdStart ? 'neutral' : 'success';
+      const statusText = call && call.providerMiss ? 'provider miss' : isColdStart ? '冷启动' : '缓存命中';
+      const stopReason = call && call.stopReason ? String(call.stopReason) : '';
+      const bits = formatModelUsageCallBits(call);
+      const outputTokens = normalizeTokenCount(tokenUsage.outputTokens);
+      const cacheReadTokens = normalizeTokenCount(tokenUsage.cacheReadTokens);
+      const totalCostUsd = normalizeCostAmount(tokenUsage.totalCostUsd);
+
+      article.className = `message-tool-trace-step ${tone} model-call${isLastStep ? ' last' : ''}`;
+      article.dataset.stepId = call && call.stepId ? String(call.stepId) : `model-call-${sequence}`;
+      rail.className = 'message-tool-trace-step-rail';
+      indexBadge.className = 'message-tool-trace-step-index';
+      line.className = 'message-tool-trace-step-line';
+      content.className = 'message-tool-trace-step-main';
+      callHeader.className = 'message-tool-trace-step-header';
+      titleWrap.className = 'message-tool-trace-step-title-wrap';
+      eyebrow.className = 'message-tool-trace-step-eyebrow';
+      callTitle.className = 'message-tool-trace-step-title';
+      callMeta.className = 'message-tool-trace-step-meta';
+      detail.className = 'message-tool-trace-note';
+
+      indexBadge.textContent = String(index + 1);
+      eyebrow.textContent = [`模型调用 #${sequence}`, stopReason ? `stop=${stopReason}` : ''].filter(Boolean).join(' · ');
+      callTitle.textContent = statusText;
+      callMeta.appendChild(createTracePill(statusText, tone));
+
+      if (outputTokens !== null) {
+        callMeta.appendChild(createTracePill(`输出 ${formatTokenCount(outputTokens)}`, 'neutral'));
+      }
+
+      if (cacheReadTokens !== null) {
+        const ratio = formatTokenUsageRatio(cacheReadTokens, normalizeTokenCount(tokenUsage.totalTokens));
+        callMeta.appendChild(createTracePill(`缓存读 ${formatTokenCount(cacheReadTokens)}${ratio ? ` (${ratio})` : ''}`, cacheReadTokens > 0 ? 'success' : 'failed'));
+      }
+
+      if (totalCostUsd !== null) {
+        callMeta.appendChild(createTracePill(formatUsdCost(totalCostUsd) || '$0.0000', 'duration'));
+      }
+
+      detail.textContent = bits.length > 0 ? bits.join(' · ') : '该次模型调用没有可展示的 token 用量。';
+      titleWrap.append(eyebrow, callTitle);
+      callHeader.append(titleWrap, callMeta);
+      rail.append(indexBadge, line);
+      content.append(callHeader, detail);
+      article.append(rail, content);
+      return article;
+    }
+
+    function buildTraceTimelineSection(trace, events) {
+      const section = document.createElement('section');
+      const header = document.createElement('div');
+      const title = document.createElement('div');
+      const meta = document.createElement('div');
+      const timeline = document.createElement('div');
+      const summary = trace && trace.summary ? trace.summary : null;
+      const modelSummary = modelUsageSummaryForTrace(trace);
+      const toolExecutionCount = summary && Number.isFinite(Number(summary.toolExecutionCount))
+        ? Number(summary.toolExecutionCount)
+        : events.filter((event) => event && event.eventType !== 'model_call').length;
+      const failedCount = events.filter((event) => event && event.eventType !== 'model_call' && event.status === 'failed').length;
+      const hasRunning = events.some((event) => event && event.eventType !== 'model_call' && (event.status === 'running' || event.status === 'queued'));
+      const missCount = Number(modelSummary.providerMissCount || 0);
+
+      section.className = 'message-tool-trace-section';
+      header.className = 'message-tool-trace-section-header';
+      title.className = 'message-tool-trace-section-title';
+      meta.className = 'message-tool-trace-section-meta';
+      timeline.className = 'message-tool-trace-section-steps';
+      title.textContent = '本次回复观测时间线';
+
+      if (modelSummary.modelCallCount > 0) {
+        meta.appendChild(createTracePill(`${modelSummary.modelCallCount} 次模型调用`, 'neutral'));
+      }
+
+      meta.appendChild(createTracePill(`${toolExecutionCount} 次工具执行`, 'neutral'));
+
+      if (modelSummary.postColdModelCallCount > 0) {
+        meta.appendChild(createTracePill(`provider miss ${missCount}/${modelSummary.postColdModelCallCount} 次模型调用`, missCount > 0 ? 'failed' : 'success'));
+      }
+
+      if (failedCount > 0) {
+        meta.appendChild(createTracePill(`${failedCount} 工具失败`, 'failed'));
+      } else if (hasRunning) {
+        meta.appendChild(createTracePill('工具进行中', 'running', { live: true }));
+      }
+
+      events.forEach((event, eventIndex) => {
+        if (event && event.eventType === 'model_call') {
+          timeline.appendChild(buildModelCallTraceStep(event, eventIndex, eventIndex === events.length - 1));
+          return;
+        }
+
+        timeline.appendChild(buildTraceStep(event, eventIndex, eventIndex === events.length - 1));
+      });
+
+      header.append(title, meta);
+      section.append(header, timeline);
+      return section;
+    }
+
     function buildTraceStep(step, index, isLastStep) {
       const article = document.createElement('article');
       const rail = document.createElement('div');
@@ -863,7 +1187,9 @@
       const status = step && step.status ? String(step.status) : 'observed';
       const tone = traceToneForStatus(status);
       const duration = formatDuration(step && step.durationMs);
-      const stepLeadParts = [traceSourceLabel(step)];
+      const toolExecutionSequence = Number.isFinite(Number(step && step.toolExecutionSequence)) ? Number(step.toolExecutionSequence) : null;
+      const modelCallSequence = Number.isFinite(Number(step && step.modelCallSequence)) ? Number(step.modelCallSequence) : null;
+      const stepLeadParts = [toolExecutionSequence ? `工具执行 #${toolExecutionSequence}` : '', traceSourceLabel(step)].filter(Boolean);
       const failureText =
         status === 'failed'
           ? formatInlineTraceText(
@@ -914,6 +1240,10 @@
 
       if (step && step.kind === 'bridge' && step.linkedFromStepId) {
         meta.appendChild(createTracePill('桥接确认', 'neutral'));
+      }
+
+      if (modelCallSequence) {
+        meta.appendChild(createTracePill(`由模型调用 #${modelCallSequence} 触发`, 'neutral'));
       }
 
       titleWrap.append(eyebrow, title);
@@ -1065,9 +1395,7 @@
       const preservedViewport = captureTraceViewportState(container);
       const trace = traceState && traceState.data ? traceState.data : null;
       const summary = trace && trace.summary ? trace.summary : null;
-      const traceSteps = trace && Array.isArray(trace.steps) ? trace.steps : [];
-      const sessionSteps = trace && Array.isArray(trace.sessionToolCalls) ? trace.sessionToolCalls : [];
-      const bridgeSteps = trace && Array.isArray(trace.bridgeToolEvents) ? trace.bridgeToolEvents : [];
+      const traceTimelineEvents = traceTimelineEventsForTrace(trace);
       const header = document.createElement('div');
       const summaryWrap = document.createElement('div');
       const children = [];
@@ -1082,7 +1410,11 @@
 
       if (summary) {
         const summaryTone = summary.status === 'failed' ? 'failed' : summary.status === 'running' ? 'running' : 'success';
-        summaryWrap.appendChild(createTracePill(`${summary.totalSteps} 步`, 'neutral'));
+        if (summary.modelCallCount > 0) {
+          summaryWrap.appendChild(createTracePill(`模型调用 ${summary.modelCallCount} 次`, 'neutral'));
+        }
+
+        summaryWrap.appendChild(createTracePill(`工具执行 ${summary.toolExecutionCount || summary.totalSteps || 0} 次`, 'neutral'));
         summaryWrap.appendChild(createTracePill(summary.status === 'failed' ? '有失败' : summary.status === 'running' ? '进行中' : '已完成', summaryTone));
 
         if (!shouldShowLiveSpotlight && activity && activity.hasCurrentTool && activity.currentToolName) {
@@ -1108,14 +1440,19 @@
         if (summary.hasRetries) {
           summaryWrap.appendChild(createTracePill(`${summary.retryCount} 重试`, 'running'));
         }
+
+        if (summary.postColdModelCallCount > 0) {
+          const missCount = Number(summary.providerMissCount || 0);
+          summaryWrap.appendChild(createTracePill(`provider miss ${missCount}/${summary.postColdModelCallCount} 次模型调用`, missCount > 0 ? 'failed' : 'success'));
+        }
       } else if (traceState.status === 'loading') {
-        summaryWrap.appendChild(createTracePill('载入工具链路中', 'running'));
+        summaryWrap.appendChild(createTracePill('载入观测时间线中', 'running'));
       } else if (traceState.status === 'error') {
-        summaryWrap.appendChild(createTracePill(traceState.errorMessage || '工具链路加载失败', 'failed'));
+        summaryWrap.appendChild(createTracePill(traceState.errorMessage || '观测时间线加载失败', 'failed'));
       } else if (message.status === 'queued' || message.status === 'streaming') {
-        summaryWrap.appendChild(createTracePill('等待工具链路', 'running'));
+        summaryWrap.appendChild(createTracePill('等待观测时间线', 'running'));
       } else {
-        summaryWrap.appendChild(createTracePill('暂无工具记录', 'neutral'));
+        summaryWrap.appendChild(createTracePill('暂无观测记录', 'neutral'));
       }
 
       if (!summary && !shouldShowLiveSpotlight && liveActivity && liveActivity.hasCurrentTool && liveActivity.currentToolName) {
@@ -1140,13 +1477,13 @@
         if (traceState.status === 'loading' && !trace) {
           const loading = document.createElement('div');
           loading.className = 'message-tool-trace-note';
-          loading.textContent = '正在整理这条回复背后的工具步骤…';
+          loading.textContent = '正在整理这条回复背后的观测时间线…';
           details.appendChild(loading);
         } else if (traceState.status === 'error' && !trace) {
           const error = document.createElement('div');
           const errorRow = document.createElement('div');
           error.className = 'message-tool-trace-note failed';
-          error.textContent = traceState.errorMessage || '工具链路加载失败';
+          error.textContent = traceState.errorMessage || '观测时间线加载失败';
           errorRow.className = 'message-tool-trace-note-row';
           errorRow.append(error, buildTraceCopyButton(message.id));
           details.appendChild(errorRow);
@@ -1155,7 +1492,6 @@
           const failureNote = buildTraceFailureNote(trace);
           const stepsViewport = document.createElement('div');
           const shouldScrollSteps = traceStepCount(trace) > TRACE_SCROLL_STEP_LIMIT;
-          let stepIndex = 0;
 
           stepsViewport.className = 'message-tool-trace-steps-viewport';
           if (shouldScrollSteps) {
@@ -1186,22 +1522,11 @@
             details.appendChild(failureRow);
           }
 
-          if (traceSteps.length > 0) {
-            stepsViewport.appendChild(buildTraceSection('完整时间线', traceSteps, stepIndex));
-            stepIndex += traceSteps.length;
-          } else {
-            if (sessionSteps.length > 0) {
-              stepsViewport.appendChild(buildTraceSection('pi-mono 工具', sessionSteps, stepIndex));
-              stepIndex += sessionSteps.length;
-            }
-
-            if (bridgeSteps.length > 0) {
-              stepsViewport.appendChild(buildTraceSection('聊天桥工具', bridgeSteps, stepIndex));
-              stepIndex += bridgeSteps.length;
-            }
+          if (traceTimelineEvents.length > 0) {
+            stepsViewport.appendChild(buildTraceTimelineSection(trace, traceTimelineEvents));
           }
 
-          if (traceSteps.length === 0 && sessionSteps.length === 0 && bridgeSteps.length === 0) {
+          if (traceTimelineEvents.length === 0) {
             const empty = document.createElement('div');
             empty.className = 'message-tool-trace-note';
             empty.textContent = '这条消息目前还没有结构化工具事件。';
