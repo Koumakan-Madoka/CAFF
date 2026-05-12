@@ -591,6 +591,9 @@ export function createAgentToolBridge(options: any = {}) {
       turnState: input.turnState || null,
       enqueueAgent: typeof input.enqueueAgent === 'function' ? input.enqueueAgent : null,
       allowHandoffs: input.allowHandoffs !== false,
+      autoCompleteOnPublicPost: input.autoCompleteOnPublicPost === true,
+      onPublicPostCompleted: typeof input.onPublicPostCompleted === 'function' ? input.onPublicPostCompleted : null,
+      publicPostCompletionRequested: false,
       publicToolUsed: false,
       publicPostCount: 0,
       privatePostCount: 0,
@@ -933,6 +936,24 @@ export function createAgentToolBridge(options: any = {}) {
     return updatedMessage;
   }
 
+  function requestPublicPostCompletion(context: any, payload: any = {}) {
+    if (
+      !context ||
+      context.autoCompleteOnPublicPost !== true ||
+      context.publicPostCompletionRequested ||
+      typeof context.onPublicPostCompleted !== 'function'
+    ) {
+      return;
+    }
+
+    context.publicPostCompletionRequested = true;
+    setImmediate(() => {
+      try {
+        context.onPublicPostCompleted(payload);
+      } catch {}
+    });
+  }
+
   function handlePostMessage(body: any = {}) {
     const startedAt = Date.now();
     const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
@@ -1044,6 +1065,13 @@ export function createAgentToolBridge(options: any = {}) {
               publicPostedAt: serialized.publicPostedAt,
             },
           });
+          requestPublicPostCompletion(context, {
+            messageId: serialized.id,
+            publicPostCount: serialized.publicPostCount,
+            publicPostMode: serialized.publicPostMode,
+            publicPostedAt: serialized.publicPostedAt,
+            toolCallId,
+          });
 
           return {
             ok: true,
@@ -1077,6 +1105,13 @@ export function createAgentToolBridge(options: any = {}) {
             publicPostMode: serialized.publicPostMode,
             publicPostedAt: serialized.publicPostedAt,
           },
+        });
+        requestPublicPostCompletion(context, {
+          messageId: serialized.id,
+          publicPostCount: serialized.publicPostCount,
+          publicPostMode: serialized.publicPostMode,
+          publicPostedAt: serialized.publicPostedAt,
+          toolCallId,
         });
         return {
           ok: true,

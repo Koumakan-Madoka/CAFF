@@ -20,6 +20,29 @@ function createRunHandle(reply) {
   return handle;
 }
 
+function createCompletableRunHandle() {
+  const handle = new EventEmitter();
+  handle.runId = 'run-bridge-auto-final';
+  handle.sessionPath = '';
+  handle.completeCalled = false;
+  handle.completeReason = '';
+  handle.resultPromise = new Promise((resolve) => {
+    handle.complete = (reason) => {
+      handle.completeCalled = true;
+      handle.completeReason = String(reason || '').trim();
+      resolve({
+        reply: '',
+        runId: handle.runId,
+        usage: null,
+        heartbeatCount: 0,
+        sessionPath: '',
+      });
+      return handle;
+    };
+  });
+  return handle;
+}
+
 function createFakeStore(conversation) {
   let nextMessageIndex = 1;
   const messages = [];
@@ -176,6 +199,110 @@ test('agent executor does not auto-inject long-term memory by default', async (t
   assert.doesNotMatch(capturedPrompt, /Retrieved Long-Term Memory|Retrieved long-term experience memory/u);
   assert.match(capturedPrompt, /Do not assume long-term memory is automatically injected/u);
   assert.match(capturedPrompt, /上次.*之前.*还记得吗.*回忆一下/u);
+});
+
+test('agent executor completes the run after a successful public bridge post', async (t) => {
+  const tempDir = withTempDir('caff-agent-executor-bridge-auto-final-');
+  const minimalPiPath = require.resolve('../../build/lib/minimal-pi');
+  const agentExecutorPath = require.resolve('../../build/server/domain/conversation/turn/agent-executor');
+  const turnStatePath = require.resolve('../../build/server/domain/conversation/turn/turn-state');
+  const minimalPi = require(minimalPiPath);
+  const originalStartRun = minimalPi.startRun;
+  const runHandle = createCompletableRunHandle();
+  let registeredContext = null;
+
+  minimalPi.startRun = () => runHandle;
+  delete require.cache[agentExecutorPath];
+
+  t.after(() => {
+    minimalPi.startRun = originalStartRun;
+    delete require.cache[agentExecutorPath];
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const { createAgentExecutor } = require(agentExecutorPath);
+  const { createTurnState } = require(turnStatePath);
+  const agent = {
+    id: 'agent-bridge-auto-final',
+    name: 'Bridge Auto Final',
+    description: 'Tests bridge auto completion.',
+    personaPrompt: 'Be brief.',
+  };
+  const conversation = {
+    id: 'conversation-bridge-auto-final',
+    title: 'Bridge Auto Final',
+    type: 'standard',
+    agents: [agent],
+    metadata: {},
+  };
+  const store = createFakeStore(conversation);
+  const bridge = {
+    createInvocationContext(input) {
+      return input;
+    },
+    registerInvocation(context) {
+      registeredContext = {
+        ...context,
+        invocationId: 'invocation-bridge-auto-final',
+        callbackToken: 'callback-bridge-auto-final',
+        publicToolUsed: false,
+        publicPostCount: 0,
+        privatePostCount: 0,
+        privateHandoffCount: 0,
+        lastPublicContent: '',
+      };
+      process.nextTick(() => {
+        registeredContext.publicToolUsed = true;
+        registeredContext.publicPostCount = 1;
+        registeredContext.lastPublicContent = 'Sent through bridge.';
+        registeredContext.onPublicPostCompleted({ publicPostCount: 1, publicPostMode: 'replace' });
+      });
+      return registeredContext;
+    },
+    unregisterInvocation() {},
+  };
+  const executor = createAgentExecutor({
+    store,
+    skillRegistry: { resolveSkills: () => [] },
+    modeStore: { get: () => null },
+    agentToolBridge: bridge,
+    agentDir: tempDir,
+    sqlitePath: path.join(tempDir, 'chat.sqlite'),
+    toolBaseUrl: 'http://127.0.0.1:3100',
+    agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+  });
+  const turnState = createTurnState(conversation, 'turn-bridge-auto-final');
+  const completedReplies = [];
+
+  const result = await executor.executeConversationAgent({
+    runStore: createFakeRunStore(),
+    conversationId: conversation.id,
+    turnId: turnState.turnId,
+    rootTaskId: 'root-task-bridge-auto-final',
+    conversation,
+    promptMessages: [{ role: 'user', content: 'Use the bridge.' }],
+    promptUserMessage: { id: 'user-message-bridge-auto-final', role: 'user', content: 'hello' },
+    queueItem: { triggerType: 'user', enqueueReason: 'user_mentions' },
+    agent,
+    turnState,
+    completedReplies,
+    failedReplies: [],
+    routingMode: 'mention_queue',
+    hop: 1,
+    remainingSlots: 1,
+    enqueueAgent() {},
+    allowHandoffs: true,
+    finalStopsTurn: true,
+    projectDir: tempDir,
+  });
+
+  assert.equal(runHandle.completeCalled, true);
+  assert.match(runHandle.completeReason, /Chat bridge public reply posted/u);
+  assert.equal(registeredContext.autoCompleteOnPublicPost, true);
+  assert.equal(completedReplies[0].content, 'Sent through bridge.');
+  assert.equal(completedReplies[0].metadata.publicToolUsed, true);
+  assert.equal(result.stopTurn, true);
 });
 
 test('assistant completion hook broadcasts final message before blocking routing', async (t) => {

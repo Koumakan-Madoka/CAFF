@@ -1533,6 +1533,8 @@ export function createAgentExecutor(options: any = {}) {
     broadcastConversationSummary(conversationId);
     emitTurnProgress(turnState);
 
+    let activeRunHandle: any = null;
+    let bridgePublicCompletionRequested = false;
     const toolInvocation = agentToolBridge.registerInvocation(
       agentToolBridge.createInvocationContext({
         conversationId,
@@ -1549,6 +1551,24 @@ export function createAgentExecutor(options: any = {}) {
         turnState,
         enqueueAgent,
         allowHandoffs,
+        autoCompleteOnPublicPost: true,
+        onPublicPostCompleted(event: any = {}) {
+          if (bridgePublicCompletionRequested || !activeRunHandle || typeof activeRunHandle.complete !== 'function') {
+            return;
+          }
+
+          bridgePublicCompletionRequested = true;
+          runStore.appendTaskEvent(stageTaskId, 'agent_reply_bridge_auto_completed', {
+            conversationId,
+            turnId,
+            agentId: agent.id,
+            agentName: agent.name,
+            messageId: assistantMessage.id,
+            publicPostCount: event.publicPostCount || toolInvocation.publicPostCount || 0,
+            publicPostMode: event.publicPostMode || '',
+          });
+          activeRunHandle.complete('Chat bridge public reply posted; completing turn without raw final reply.');
+        },
       })
     );
 
@@ -1681,6 +1701,7 @@ export function createAgentExecutor(options: any = {}) {
         toolBridgeEnabled: true,
       },
     });
+    activeRunHandle = handle;
     registerTurnHandle(turnState, handle);
 
     const startedAt = nowIso();
