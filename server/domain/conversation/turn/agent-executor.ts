@@ -111,6 +111,20 @@ function normalizeTokenCount(value: any) {
   return Math.round(count);
 }
 
+function normalizeCostAmount(value: any) {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+
+  const amount = Number(value);
+
+  if (!Number.isFinite(amount) || amount < 0) {
+    return null;
+  }
+
+  return amount;
+}
+
 function pickTokenCount(usage: any, keys: string[]) {
   if (!usage || typeof usage !== 'object') {
     return null;
@@ -122,6 +136,24 @@ function pickTokenCount(usage: any, keys: string[]) {
 
       if (count !== null) {
         return count;
+      }
+    }
+  }
+
+  return null;
+}
+
+function pickCostAmount(cost: any, keys: string[]) {
+  if (!cost || typeof cost !== 'object') {
+    return null;
+  }
+
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(cost, key)) {
+      const amount = normalizeCostAmount(cost[key]);
+
+      if (amount !== null) {
+        return amount;
       }
     }
   }
@@ -173,8 +205,19 @@ function summarizeTokenUsage(usage: any) {
     : inputTokens !== null || outputTokens !== null
       ? (inputTokens || 0) + (outputTokens || 0)
       : null;
+  const rawCost = rawUsage.cost && typeof rawUsage.cost === 'object' && !Array.isArray(rawUsage.cost) ? rawUsage.cost : null;
+  const inputCostUsd = pickCostAmount(rawCost, ['inputUsd', 'inputUSD', 'inputCostUsd', 'input_cost_usd', 'inputCost', 'input_cost', 'input']);
+  const outputCostUsd = pickCostAmount(rawCost, ['outputUsd', 'outputUSD', 'outputCostUsd', 'output_cost_usd', 'outputCost', 'output_cost', 'output']);
+  const cacheReadCostUsd = pickCostAmount(rawCost, ['cacheReadUsd', 'cacheReadUSD', 'cacheReadCostUsd', 'cache_read_cost_usd', 'cacheReadCost', 'cache_read_cost', 'cacheRead', 'cache_read']);
+  const cacheWriteCostUsd = pickCostAmount(rawCost, ['cacheWriteUsd', 'cacheWriteUSD', 'cacheWriteCostUsd', 'cache_write_cost_usd', 'cacheWriteCost', 'cache_write_cost', 'cacheWrite', 'cache_write']);
+  const explicitTotalCostUsd = pickCostAmount(rawCost, ['totalUsd', 'totalUSD', 'totalCostUsd', 'total_cost_usd', 'totalCost', 'total_cost', 'total']);
+  const totalCostUsd = explicitTotalCostUsd !== null
+    ? explicitTotalCostUsd
+    : inputCostUsd !== null || outputCostUsd !== null || cacheReadCostUsd !== null || cacheWriteCostUsd !== null
+      ? (inputCostUsd || 0) + (outputCostUsd || 0) + (cacheReadCostUsd || 0) + (cacheWriteCostUsd || 0)
+      : null;
 
-  if (inputTokens === null && outputTokens === null && totalTokens === null && cacheReadTokens === null && cacheWriteTokens === null) {
+  if (inputTokens === null && outputTokens === null && totalTokens === null && cacheReadTokens === null && cacheWriteTokens === null && totalCostUsd === null) {
     return null;
   }
 
@@ -185,6 +228,11 @@ function summarizeTokenUsage(usage: any) {
     totalTokens,
     cacheReadTokens,
     cacheWriteTokens,
+    inputCostUsd,
+    outputCostUsd,
+    cacheReadCostUsd,
+    cacheWriteCostUsd,
+    totalCostUsd,
   };
 }
 

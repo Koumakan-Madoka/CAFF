@@ -54,6 +54,20 @@
       return Math.round(count);
     }
 
+    function normalizeCostAmount(value) {
+      if (value === null || value === undefined || value === '') {
+        return null;
+      }
+
+      const amount = Number(value);
+
+      if (!Number.isFinite(amount) || amount < 0) {
+        return null;
+      }
+
+      return amount;
+    }
+
     function pickTokenCount(usage, keys) {
       if (!usage || typeof usage !== 'object') {
         return null;
@@ -65,6 +79,24 @@
 
           if (count !== null) {
             return count;
+          }
+        }
+      }
+
+      return null;
+    }
+
+    function pickCostAmount(cost, keys) {
+      if (!cost || typeof cost !== 'object') {
+        return null;
+      }
+
+      for (const key of keys) {
+        if (Object.prototype.hasOwnProperty.call(cost, key)) {
+          const amount = normalizeCostAmount(cost[key]);
+
+          if (amount !== null) {
+            return amount;
           }
         }
       }
@@ -137,12 +169,23 @@
         : inputTokens !== null || outputTokens !== null
           ? (inputTokens || 0) + (outputTokens || 0)
           : null;
+      const costSources = [normalizedUsage, rawUsage && rawUsage.cost].filter(Boolean);
+      const inputCostUsd = pickCostAmountFromSources(costSources, ['inputUsd', 'inputUSD', 'inputCostUsd', 'input_cost_usd', 'inputCost', 'input_cost', 'input']);
+      const outputCostUsd = pickCostAmountFromSources(costSources, ['outputUsd', 'outputUSD', 'outputCostUsd', 'output_cost_usd', 'outputCost', 'output_cost', 'output']);
+      const cacheReadCostUsd = pickCostAmountFromSources(costSources, ['cacheReadUsd', 'cacheReadUSD', 'cacheReadCostUsd', 'cache_read_cost_usd', 'cacheReadCost', 'cache_read_cost', 'cacheRead', 'cache_read']);
+      const cacheWriteCostUsd = pickCostAmountFromSources(costSources, ['cacheWriteUsd', 'cacheWriteUSD', 'cacheWriteCostUsd', 'cache_write_cost_usd', 'cacheWriteCost', 'cache_write_cost', 'cacheWrite', 'cache_write']);
+      const explicitTotalCostUsd = pickCostAmountFromSources(costSources, ['totalUsd', 'totalUSD', 'totalCostUsd', 'total_cost_usd', 'totalCost', 'total_cost', 'total']);
+      const totalCostUsd = explicitTotalCostUsd !== null
+        ? explicitTotalCostUsd
+        : inputCostUsd !== null || outputCostUsd !== null || cacheReadCostUsd !== null || cacheWriteCostUsd !== null
+          ? (inputCostUsd || 0) + (outputCostUsd || 0) + (cacheReadCostUsd || 0) + (cacheWriteCostUsd || 0)
+          : null;
 
-      if (inputTokens === null && outputTokens === null && totalTokens === null && cacheReadTokens === null && cacheWriteTokens === null) {
+      if (inputTokens === null && outputTokens === null && totalTokens === null && cacheReadTokens === null && cacheWriteTokens === null && totalCostUsd === null) {
         return null;
       }
 
-      return { inputTokens, uncachedInputTokens, outputTokens, totalTokens, cacheReadTokens, cacheWriteTokens };
+      return { inputTokens, uncachedInputTokens, outputTokens, totalTokens, cacheReadTokens, cacheWriteTokens, inputCostUsd, outputCostUsd, cacheReadCostUsd, cacheWriteCostUsd, totalCostUsd };
     }
 
     function pickTokenCountFromSources(sources, keys) {
@@ -151,6 +194,18 @@
 
         if (count !== null) {
           return count;
+        }
+      }
+
+      return null;
+    }
+
+    function pickCostAmountFromSources(sources, keys) {
+      for (const source of sources) {
+        const amount = pickCostAmount(source, keys);
+
+        if (amount !== null) {
+          return amount;
         }
       }
 
@@ -175,6 +230,16 @@
       return `${(value / 1000000).toFixed(value >= 10000000 ? 0 : 1)}m`;
     }
 
+    function formatUsdCost(amount) {
+      const value = Number(amount || 0);
+
+      if (!Number.isFinite(value) || value <= 0) {
+        return '';
+      }
+
+      return `$${value < 0.0001 ? value.toFixed(6) : value.toFixed(4)}`;
+    }
+
     function formatTokenUsageRatio(numerator, denominator) {
       if (numerator === null || denominator === null || denominator <= 0) {
         return '';
@@ -190,18 +255,25 @@
 
       const primary = usage.totalTokens !== null ? usage.totalTokens : usage.outputTokens !== null ? usage.outputTokens : usage.inputTokens;
       const formatted = formatTokenCount(primary);
+      const cost = formatUsdCost(usage.totalCostUsd);
 
-      if (!formatted) {
+      if (!formatted && !cost) {
         return '';
+      }
+
+      const parts = formatted ? [`消耗 ${formatted} token`] : ['花费'];
+
+      if (cost) {
+        parts.push(cost);
       }
 
       if (usage.cacheReadTokens !== null) {
         const cacheRead = formatTokenCount(usage.cacheReadTokens) || '0';
         const ratio = formatTokenUsageRatio(usage.cacheReadTokens, usage.totalTokens);
-        return ratio ? `消耗 ${formatted} token · 命中 ${cacheRead} (${ratio})` : `消耗 ${formatted} token · 命中 ${cacheRead}`;
+        parts.push(ratio ? `命中 ${cacheRead} (${ratio})` : `命中 ${cacheRead}`);
       }
 
-      return `消耗 ${formatted} token`;
+      return parts.join(' · ');
     }
 
     function formatTokenUsageTitle(usage) {
@@ -227,16 +299,40 @@
         parts.push(`总计 ${formatTokenCount(usage.totalTokens)}`);
       }
 
+      const totalCost = formatUsdCost(usage.totalCostUsd);
+
+      if (totalCost) {
+        parts.push(`花费 ${totalCost}`);
+      }
+
       if (usage.cacheReadTokens !== null) {
         const ratio = formatTokenUsageRatio(usage.cacheReadTokens, usage.totalTokens);
-        parts.push(`缓存命中 ${formatTokenCount(usage.cacheReadTokens)}${ratio ? ` (${ratio})` : ''}`);
+        const cacheReadCost = formatUsdCost(usage.cacheReadCostUsd);
+        parts.push(`缓存命中 ${formatTokenCount(usage.cacheReadTokens)}${ratio ? ` (${ratio})` : ''}${cacheReadCost ? ` / ${cacheReadCost}` : ''}`);
       }
 
       if (usage.cacheWriteTokens !== null) {
-        parts.push(`缓存写入 ${formatTokenCount(usage.cacheWriteTokens)}`);
+        const cacheWriteCost = formatUsdCost(usage.cacheWriteCostUsd);
+        parts.push(`缓存写入 ${formatTokenCount(usage.cacheWriteTokens)}${cacheWriteCost ? ` / ${cacheWriteCost}` : ''}`);
       }
 
-      return parts.length > 0 ? `${parts.join(' · ')} token` : '';
+      if (usage.inputCostUsd !== null || usage.outputCostUsd !== null) {
+        const costParts = [];
+
+        if (usage.inputCostUsd !== null) {
+          costParts.push(`输入 ${formatUsdCost(usage.inputCostUsd) || '$0.0000'}`);
+        }
+
+        if (usage.outputCostUsd !== null) {
+          costParts.push(`输出 ${formatUsdCost(usage.outputCostUsd) || '$0.0000'}`);
+        }
+
+        if (costParts.length > 0) {
+          parts.push(`费用明细 ${costParts.join(' / ')}`);
+        }
+      }
+
+      return parts.length > 0 ? parts.join(' · ') : '';
     }
 
     function appendLiveToolRotor(container, label) {
@@ -1295,6 +1391,11 @@
         tokenUsage && tokenUsage.totalTokens !== null ? tokenUsage.totalTokens : '',
         tokenUsage && tokenUsage.cacheReadTokens !== null ? tokenUsage.cacheReadTokens : '',
         tokenUsage && tokenUsage.cacheWriteTokens !== null ? tokenUsage.cacheWriteTokens : '',
+        tokenUsage && tokenUsage.totalCostUsd !== null ? tokenUsage.totalCostUsd : '',
+        tokenUsage && tokenUsage.inputCostUsd !== null ? tokenUsage.inputCostUsd : '',
+        tokenUsage && tokenUsage.outputCostUsd !== null ? tokenUsage.outputCostUsd : '',
+        tokenUsage && tokenUsage.cacheReadCostUsd !== null ? tokenUsage.cacheReadCostUsd : '',
+        tokenUsage && tokenUsage.cacheWriteCostUsd !== null ? tokenUsage.cacheWriteCostUsd : '',
         digestResult ? JSON.stringify(digestResult) : '',
         traceSignature,
       ].join('\u001f');
