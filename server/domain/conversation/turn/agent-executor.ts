@@ -136,7 +136,16 @@ function summarizeTokenUsage(usage: any) {
     return null;
   }
 
-  const inputTokens = pickTokenCount(rawUsage, ['inputTokens', 'input_tokens', 'promptTokens', 'prompt_tokens', 'prompt', 'input']);
+  const uncachedInputTokens = pickTokenCount(rawUsage, [
+    'uncachedInputTokens',
+    'uncached_input_tokens',
+    'inputTokens',
+    'input_tokens',
+    'promptTokens',
+    'prompt_tokens',
+    'prompt',
+    'input',
+  ]);
   const outputTokens = pickTokenCount(rawUsage, [
     'outputTokens',
     'output_tokens',
@@ -155,11 +164,14 @@ function summarizeTokenUsage(usage: any) {
     'cache_creation_tokens',
     'cache_creation_input_tokens',
   ]);
+  const inputTokens = uncachedInputTokens !== null
+    ? uncachedInputTokens + (cacheReadTokens || 0) + (cacheWriteTokens || 0)
+    : null;
   const explicitTotalTokens = pickTokenCount(rawUsage, ['totalTokens', 'total_tokens', 'total']);
   const totalTokens = explicitTotalTokens !== null
     ? explicitTotalTokens
-    : inputTokens !== null || outputTokens !== null || cacheReadTokens !== null || cacheWriteTokens !== null
-      ? (inputTokens || 0) + (outputTokens || 0) + (cacheReadTokens || 0) + (cacheWriteTokens || 0)
+    : inputTokens !== null || outputTokens !== null
+      ? (inputTokens || 0) + (outputTokens || 0)
       : null;
 
   if (inputTokens === null && outputTokens === null && totalTokens === null && cacheReadTokens === null && cacheWriteTokens === null) {
@@ -168,6 +180,7 @@ function summarizeTokenUsage(usage: any) {
 
   return {
     inputTokens,
+    uncachedInputTokens,
     outputTokens,
     totalTokens,
     cacheReadTokens,

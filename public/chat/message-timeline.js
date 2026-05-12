@@ -78,18 +78,20 @@
       }
 
       const metadata = message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
-      const usage = metadata && metadata.tokenUsage && typeof metadata.tokenUsage === 'object'
+      const normalizedUsage = metadata && metadata.tokenUsage && typeof metadata.tokenUsage === 'object' && !Array.isArray(metadata.tokenUsage)
         ? metadata.tokenUsage
-        : metadata && metadata.usage && typeof metadata.usage === 'object'
-          ? metadata.usage
-          : null;
+        : null;
+      const rawUsage = metadata && metadata.usage && typeof metadata.usage === 'object' && !Array.isArray(metadata.usage)
+        ? metadata.usage
+        : null;
 
-      if (!usage || Array.isArray(usage)) {
+      if (!normalizedUsage && !rawUsage) {
         return null;
       }
 
-      const inputTokens = pickTokenCount(usage, ['inputTokens', 'input_tokens', 'promptTokens', 'prompt_tokens', 'prompt', 'input']);
-      const outputTokens = pickTokenCount(usage, [
+      const usageSources = [normalizedUsage, rawUsage].filter(Boolean);
+      const rawOnlySources = [rawUsage].filter(Boolean);
+      const outputTokens = pickTokenCountFromSources(usageSources, [
         'outputTokens',
         'output_tokens',
         'completionTokens',
@@ -97,8 +99,15 @@
         'completion',
         'output',
       ]);
-      const cacheReadTokens = pickTokenCount(usage, ['cacheReadTokens', 'cache_read_tokens', 'cacheRead', 'cache_read', 'cachedTokens', 'cached_tokens']);
-      const cacheWriteTokens = pickTokenCount(usage, [
+      const cacheReadTokens = pickTokenCountFromSources(usageSources, [
+        'cacheReadTokens',
+        'cache_read_tokens',
+        'cacheRead',
+        'cache_read',
+        'cachedTokens',
+        'cached_tokens',
+      ]);
+      const cacheWriteTokens = pickTokenCountFromSources(usageSources, [
         'cacheWriteTokens',
         'cache_write_tokens',
         'cacheWrite',
@@ -107,18 +116,45 @@
         'cache_creation_tokens',
         'cache_creation_input_tokens',
       ]);
-      const explicitTotalTokens = pickTokenCount(usage, ['totalTokens', 'total_tokens', 'total']);
+      const normalizedInputTokens = pickTokenCountFromSources([normalizedUsage].filter(Boolean), ['inputTokens', 'input_tokens']);
+      const uncachedInputTokens = pickTokenCountFromSources(usageSources, [
+        'uncachedInputTokens',
+        'uncached_input_tokens',
+      ]) ?? pickTokenCountFromSources(rawOnlySources, [
+        'inputTokens',
+        'input_tokens',
+        'promptTokens',
+        'prompt_tokens',
+        'prompt',
+        'input',
+      ]) ?? (cacheReadTokens === null && cacheWriteTokens === null ? normalizedInputTokens : null);
+      const inputTokens = uncachedInputTokens !== null
+        ? uncachedInputTokens + (cacheReadTokens || 0) + (cacheWriteTokens || 0)
+        : normalizedInputTokens;
+      const explicitTotalTokens = pickTokenCountFromSources(usageSources, ['totalTokens', 'total_tokens', 'total']);
       const totalTokens = explicitTotalTokens !== null
         ? explicitTotalTokens
-        : inputTokens !== null || outputTokens !== null || cacheReadTokens !== null || cacheWriteTokens !== null
-          ? (inputTokens || 0) + (outputTokens || 0) + (cacheReadTokens || 0) + (cacheWriteTokens || 0)
+        : inputTokens !== null || outputTokens !== null
+          ? (inputTokens || 0) + (outputTokens || 0)
           : null;
 
       if (inputTokens === null && outputTokens === null && totalTokens === null && cacheReadTokens === null && cacheWriteTokens === null) {
         return null;
       }
 
-      return { inputTokens, outputTokens, totalTokens, cacheReadTokens, cacheWriteTokens };
+      return { inputTokens, uncachedInputTokens, outputTokens, totalTokens, cacheReadTokens, cacheWriteTokens };
+    }
+
+    function pickTokenCountFromSources(sources, keys) {
+      for (const source of sources) {
+        const count = pickTokenCount(source, keys);
+
+        if (count !== null) {
+          return count;
+        }
+      }
+
+      return null;
     }
 
     function formatTokenCount(count) {
@@ -177,6 +213,10 @@
 
       if (usage.inputTokens !== null) {
         parts.push(`输入 ${formatTokenCount(usage.inputTokens)}`);
+      }
+
+      if (usage.uncachedInputTokens !== null && usage.cacheReadTokens !== null) {
+        parts.push(`非缓存输入 ${formatTokenCount(usage.uncachedInputTokens)}`);
       }
 
       if (usage.outputTokens !== null) {
@@ -1250,6 +1290,7 @@
         contextSnapshot && contextSnapshot.snapshotId ? contextSnapshot.snapshotId : '',
         tokenUsageLabel,
         tokenUsage && tokenUsage.inputTokens !== null ? tokenUsage.inputTokens : '',
+        tokenUsage && tokenUsage.uncachedInputTokens !== null ? tokenUsage.uncachedInputTokens : '',
         tokenUsage && tokenUsage.outputTokens !== null ? tokenUsage.outputTokens : '',
         tokenUsage && tokenUsage.totalTokens !== null ? tokenUsage.totalTokens : '',
         tokenUsage && tokenUsage.cacheReadTokens !== null ? tokenUsage.cacheReadTokens : '',

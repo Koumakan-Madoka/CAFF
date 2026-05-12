@@ -45,6 +45,32 @@ function createFakePiShimWithCli(baseDir) {
   return shimPath;
 }
 
+function createFakePiShimWithMultipleAssistantUsages(baseDir) {
+  const shimDir = path.join(baseDir, 'fake-pi-shim-multiple-usage');
+  const cliDir = path.join(shimDir, 'node_modules', '@mariozechner', 'pi-coding-agent', 'dist');
+  const shimPath = path.join(shimDir, 'pi.ps1');
+  const cliPath = path.join(cliDir, 'cli.js');
+
+  fs.mkdirSync(cliDir, { recursive: true });
+  fs.writeFileSync(shimPath, '# intentionally unused shim', 'utf8');
+  fs.writeFileSync(
+    cliPath,
+    [
+      'const assistantMessages = [',
+      '  { role: "assistant", responseId: "tool-step", content: [{ type: "toolCall", name: "bash", arguments: {} }], stopReason: "toolUse", timestamp: 1, usage: { input: 100, output: 40, cacheRead: 900, cacheWrite: 10, totalTokens: 1050, cost: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, total: 10 } } },',
+      '  { role: "assistant", responseId: "final-step", content: [{ type: "text", text: "{\\\"action\\\":\\\"final\\\"}" }], stopReason: "stop", timestamp: 2, usage: { input: 5, output: 9, cacheRead: 1000, cacheWrite: 0, totalTokens: 1014, cost: { input: 5, output: 6, cacheRead: 7, cacheWrite: 8, total: 26 } } },',
+      '];',
+      'for (const message of assistantMessages) {',
+      '  process.stdout.write(`${JSON.stringify({ type: "message_end", message })}\\n`);',
+      '}',
+      'process.stdout.write(`${JSON.stringify({ type: "agent_end", messages: assistantMessages })}\\n`);',
+    ].join('\n'),
+    'utf8'
+  );
+
+  return shimPath;
+}
+
 function createFakePiShimCapturingRuntimeInfo(baseDir) {
   const shimDir = path.join(baseDir, 'fake-pi-shim-capture');
   const cliDir = path.join(shimDir, 'node_modules', '@mariozechner', 'pi-coding-agent', 'dist');
@@ -307,6 +333,58 @@ test('pi runtime bypasses PowerShell shims so unicode stdin prompts stay intact 
   assert.deepEqual(result.usage, { input_tokens: 1234, output_tokens: 56, total_tokens: 1290 });
   assert.match(result.reply, /中文内容 "保留后文"/u);
   assert.match(result.reply, /继续看乱码/u);
+});
+
+test('pi runtime aggregates usage across assistant model calls', async (t) => {
+  if (process.platform !== 'win32') {
+    t.skip('PI_COMMAND_PATH override fixture is currently exercised on Windows only');
+    return;
+  }
+
+  if (!requireSpawn(t)) {
+    return;
+  }
+
+  const tempDir = withTempDir('caff-pi-runtime-multiple-usage-');
+  const sqlitePath = path.join(tempDir, 'pi-runtime-multiple-usage.sqlite');
+  const fakeShimPath = createFakePiShimWithMultipleAssistantUsages(tempDir);
+  const { runtime, restore } = loadRuntimeWithCommandPath(fakeShimPath);
+  let handle = null;
+
+  t.after(() => {
+    try {
+      handle && handle.cancel('test cleanup');
+    } catch {}
+
+    restore();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  handle = runtime.startRun('test-provider', 'test-model', 'Say hello', {
+    agentDir: tempDir,
+    sqlitePath,
+    heartbeatIntervalMs: 50,
+    heartbeatTimeoutMs: 10000,
+    terminateGraceMs: 100,
+    streamOutput: false,
+  });
+
+  const timeoutPromise = new Promise((_, reject) => {
+    setTimeout(() => {
+      reject(new Error('Timed out waiting for multiple usage completion'));
+    }, 2000);
+  });
+
+  const result = await Promise.race([handle.resultPromise, timeoutPromise]);
+
+  assert.deepEqual(result.usage, {
+    input: 105,
+    output: 49,
+    cacheRead: 1900,
+    cacheWrite: 10,
+    totalTokens: 2064,
+    cost: { input: 6, output: 8, cacheRead: 10, cacheWrite: 12, total: 36 },
+  });
 });
 
 test('pi runtime respects explicit cwd and forwards extra extensions', async (t) => {
