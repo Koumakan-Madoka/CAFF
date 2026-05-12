@@ -219,6 +219,32 @@ function applyConversationResponse(result) {
   }
 }
 
+function digestToDisplayFromResult(result, command) {
+  if (!result || result.deleted || !command || command.action === 'clear' || command.action === 'delete' || command.action === 'extract-skill') {
+    return null;
+  }
+
+  if (command.action === 'compact') {
+    return result.compacted ? result.rollup || null : null;
+  }
+
+  if (result.compacted && result.rollup) {
+    return result.rollup;
+  }
+
+  return result.digest || result.rollup || null;
+}
+
+function focusDigestResult(result, command) {
+  const digest = digestToDisplayFromResult(result, command);
+
+  if (!digest || !digest.id || typeof conversationDigestPanelController.openDigest !== 'function') {
+    return;
+  }
+
+  conversationDigestPanelController.openDigest(digest.id);
+}
+
 async function submitDigestCommand(conversationId, command) {
   if (!command || command.action === 'get') {
     showToast(conversationDigestUtils.formatDigestStatus(state.currentConversation));
@@ -237,12 +263,15 @@ async function submitDigestCommand(conversationId, command) {
   }
 
   renderAll();
+  focusDigestResult(result, command);
   if (command.action === 'extract-skill' && result.draft && result.draft.skill) {
     showToast(`已生成 Skill 草稿：${result.draft.skill.name}`);
   } else if (result.deleted) {
     showToast('会话摘要已删除');
   } else if (result.compacted) {
     showToast(`会话摘要已压缩 · ${conversationDigestUtils.formatDigestStatus(result.conversation)}`);
+  } else if (command.action === 'compact') {
+    showToast(`没有可压缩的摘要 · ${conversationDigestUtils.formatDigestStatus(result.conversation)}`);
   } else {
     showToast(conversationDigestUtils.formatDigestStatus(result.conversation));
   }
@@ -775,6 +804,7 @@ function setupChatModules() {
             toolTraceSignatureForMessage,
             toolTraceStateForMessage,
           },
+          showToast,
         })
       : noopRenderer;
 
@@ -975,6 +1005,7 @@ function getMessageToolTraceState(messageId) {
 function emptyToolTraceSummary() {
   return {
     totalSteps: 0,
+    toolExecutionCount: 0,
     sessionToolCount: 0,
     bridgeToolCount: 0,
     failedSteps: 0,
@@ -982,6 +1013,10 @@ function emptyToolTraceSummary() {
     totalDurationMs: 0,
     retryCount: 0,
     hasRetries: false,
+    modelCallCount: 0,
+    coldStartModelCallCount: 0,
+    postColdModelCallCount: 0,
+    providerMissCount: 0,
     status: 'idle',
   };
 }
@@ -1021,6 +1056,9 @@ function createEmptyToolTraceData(messageId = '') {
       : null,
     task: null,
     session: null,
+    modelUsageSummary: null,
+    modelUsageCalls: [],
+    timelineEvents: [],
     sessionToolCalls: [],
     bridgeToolEvents: [],
     steps: [],
@@ -1099,7 +1137,51 @@ function mergeToolTraceStep(existingStep, incomingStep) {
   return nextStep;
 }
 
-function computeToolTraceSummary(message, task, steps) {
+function computeTraceModelUsageSummary(trace) {
+  const calls = trace && Array.isArray(trace.modelUsageCalls) ? trace.modelUsageCalls.filter(Boolean) : [];
+  const primarySummary = trace && trace.modelUsageSummary && typeof trace.modelUsageSummary === 'object'
+    ? trace.modelUsageSummary
+    : trace && trace.session && trace.session.modelUsageSummary && typeof trace.session.modelUsageSummary === 'object'
+      ? trace.session.modelUsageSummary
+      : null;
+  const summaryFallback = trace && trace.summary && typeof trace.summary === 'object'
+    ? trace.summary
+    : null;
+  const summaryFallbackHasCounts = summaryFallback && (
+    Number(summaryFallback.modelCallCount) > 0 ||
+    Number(summaryFallback.coldStartModelCallCount) > 0 ||
+    Number(summaryFallback.postColdModelCallCount) > 0 ||
+    Number(summaryFallback.providerMissCount) > 0
+  );
+  const explicitSummary = primarySummary || (summaryFallback && (summaryFallbackHasCounts || calls.length === 0) ? summaryFallback : null);
+
+  if (explicitSummary) {
+    const modelCallCount = Number(explicitSummary.modelCallCount);
+    const coldStartModelCallCount = Number(explicitSummary.coldStartModelCallCount);
+    const postColdModelCallCount = Number(explicitSummary.postColdModelCallCount);
+    const providerMissCount = Number(explicitSummary.providerMissCount);
+
+    return {
+      modelCallCount: Number.isFinite(modelCallCount) ? modelCallCount : 0,
+      coldStartModelCallCount: Number.isFinite(coldStartModelCallCount) ? coldStartModelCallCount : 0,
+      postColdModelCallCount: Number.isFinite(postColdModelCallCount) ? postColdModelCallCount : 0,
+      providerMissCount: Number.isFinite(providerMissCount) ? providerMissCount : 0,
+    };
+  }
+
+  const coldStartModelCallCount = calls.filter((call) => call.isColdStart || call.coldStart).length;
+  const postColdModelCallCount = calls.filter((call) => !(call.isColdStart || call.coldStart)).length;
+  const providerMissCount = calls.filter((call) => call.providerMiss).length;
+
+  return {
+    modelCallCount: calls.length,
+    coldStartModelCallCount,
+    postColdModelCallCount,
+    providerMissCount,
+  };
+}
+
+function computeToolTraceSummary(message, task, steps, trace) {
   const normalizedSteps = Array.isArray(steps) ? steps.filter(Boolean) : [];
   const bridgeSteps = normalizedSteps.filter((step) => step && step.kind === 'bridge');
   const sessionSteps = normalizedSteps.filter((step) => step && step.kind === 'session');
@@ -1137,8 +1219,11 @@ function computeToolTraceSummary(message, task, steps) {
     hasRunningStep;
   const failed = failedSteps.length > 0 || messageStatus === 'failed' || taskStatus === 'failed';
 
+  const modelUsageSummary = computeTraceModelUsageSummary(trace);
+
   return {
     totalSteps: normalizedSteps.length,
+    toolExecutionCount: normalizedSteps.length,
     sessionToolCount: sessionSteps.length,
     bridgeToolCount: bridgeSteps.length,
     failedSteps: failedSteps.length,
@@ -1146,6 +1231,10 @@ function computeToolTraceSummary(message, task, steps) {
     totalDurationMs,
     retryCount,
     hasRetries: retryCount > 0,
+    modelCallCount: modelUsageSummary.modelCallCount,
+    coldStartModelCallCount: modelUsageSummary.coldStartModelCallCount,
+    postColdModelCallCount: modelUsageSummary.postColdModelCallCount,
+    providerMissCount: modelUsageSummary.providerMissCount,
     status: failed ? 'failed' : running ? 'running' : normalizedSteps.length > 0 ? 'succeeded' : 'idle',
   };
 }
@@ -1281,7 +1370,9 @@ function rebuildMessageToolTraceData(trace, message) {
   }));
   nextTrace.sessionToolCalls = nextTrace.steps.filter((step) => step && step.kind === 'session');
   nextTrace.bridgeToolEvents = nextTrace.steps.filter((step) => step && step.kind === 'bridge');
-  nextTrace.summary = computeToolTraceSummary(normalizedMessage, nextTrace.task, nextTrace.steps);
+  nextTrace.modelUsageCalls = Array.isArray(nextTrace.modelUsageCalls) ? nextTrace.modelUsageCalls.filter(Boolean) : [];
+  nextTrace.modelUsageSummary = computeTraceModelUsageSummary(nextTrace);
+  nextTrace.summary = computeToolTraceSummary(normalizedMessage, nextTrace.task, nextTrace.steps, nextTrace);
   nextTrace.activity = computeToolTraceActivity(nextTrace.summary, nextTrace.steps);
   nextTrace.failureContext = buildFallbackFailureContext(nextTrace, normalizedMessage);
 

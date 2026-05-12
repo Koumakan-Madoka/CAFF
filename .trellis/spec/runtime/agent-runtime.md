@@ -86,28 +86,36 @@
 
 ### 2. Signatures
 - pi JSON assistant message may include `usage: object` from the provider/runtime.
-- `startRun(...).resultPromise` resolves with `usage` copied from the latest assistant `message_end` or `agent_end` assistant message when present.
+- `startRun(...).resultPromise` resolves with `usage` aggregated across unique assistant model-call messages from `message_end` / `agent_end` events when present.
 - Completed chat assistant message metadata stores:
-  - `usage`: raw provider usage object, or `null`.
-  - `tokenUsage`: normalized `{ inputTokens, outputTokens, totalTokens }`, values are non-negative integers or `null`.
+  - `usage`: aggregated provider usage object for the run, or `null`.
+  - `tokenUsage`: normalized `{ inputTokens, uncachedInputTokens, outputTokens, totalTokens, cacheReadTokens, cacheWriteTokens, inputCostUsd, outputCostUsd, cacheReadCostUsd, cacheWriteCostUsd, totalCostUsd }`; token values are non-negative integers or `null`, cost values are non-negative USD numbers or `null`.
+  - `modelUsage`: normalized per-run model-call summary `{ modelCallCount, coldStartModelCallCount, postColdModelCallCount, providerMissCount, calls[] }`, where each call has a 1-based `sequence`, canonical `isColdStart` (`coldStart` remains a legacy alias), `providerMiss`, and normalized `tokenUsage`; `providerMiss` means a non-cold-start call has `cacheReadTokens === 0` and positive uncached input.
 
 ### 3. Contracts
-- Runtime preserves raw usage without inventing provider fields.
-- Normalization accepts common provider key variants: `input_tokens` / `inputTokens` / `prompt_tokens` / `promptTokens`, `output_tokens` / `outputTokens` / `completion_tokens` / `completionTokens`, and `total_tokens` / `totalTokens`.
-- If total is absent but input or output exists, total is computed as `(input || 0) + (output || 0)`.
+- Runtime preserves raw usage field names and sums numeric usage/cost fields across unique assistant model calls in the run.
+- Normalization accepts common provider key variants: `input_tokens` / `inputTokens` / `prompt_tokens` / `promptTokens`, `output_tokens` / `outputTokens` / `completion_tokens` / `completionTokens`, `cacheRead` / `cache_read` / `cacheReadTokens` / `cache_read_tokens`, `cacheWrite` / `cache_write` / `cacheWriteTokens` / `cache_write_tokens`, and `total_tokens` / `totalTokens`.
+- Provider `input` counts may mean non-cached input only. Normalized `inputTokens` represents effective prompt/context input, computed as `uncachedInputTokens + cacheReadTokens + cacheWriteTokens` when cache fields exist; `uncachedInputTokens` preserves the raw non-cached provider input.
+- If total is absent but token fields exist, total is computed as `(inputTokens || 0) + (outputTokens || 0)`, where `inputTokens` already includes cache read/write tokens.
 - UI displays the token badge only for assistant messages with normalized or raw usage; older messages without usage render unchanged.
-- The badge label uses total tokens when available and keeps input/output/total details in the element title.
+- The badge label uses model-call language first when per-call data exists (for example `3 次模型调用 · 消耗 42.1k token · $0.0312 · 命中 28.0k (66%) · provider miss 1/2 次模型调用`), appends normalized USD cost when `usage.cost.total` or cost components exist, appends `cacheRead / totalTokens` as a cache-hit percentage when `cacheRead` exists, and keeps effective input/output/total/cache plus non-cached input, model-call count, cold-start count, provider miss count, and complete input/output/cache-read/cache-write cost details in the element title.
+- Tool trace summaries must keep model calls and tool executions separate: `summary.modelCallCount` counts asks to the model, `summary.toolExecutionCount` / `summary.totalSteps` count tool executions, and provider miss denominators always use `postColdModelCallCount`, never tool execution count.
+- Tool trace details expose top-level `modelUsageSummary` as the canonical model-call summary and a single `timelineEvents[]` list when model-call data is available. Each event has `eventType: 'model_call' | 'tool_execution'`; model-call rows carry `modelCallSequence`, cache/cost token usage, cold-start, and provider-miss flags, while tool-execution rows preserve existing command/status/result previews and may carry `modelCallSequence` for the model call that triggered them.
+- UI should render `timelineEvents[]` as the unified assistant-turn observability timeline instead of showing a separate model-usage table beside a tool-centric trace. The first model call is labeled cold start, and later calls with zero cache read plus uncached input are labeled `provider miss`.
 
 ### 4. Validation & Error Matrix
 | Case | Expected behavior |
 | --- | --- |
 | Assistant message has `usage.total_tokens` | Store raw `usage`, normalize `totalTokens`, display a token badge. |
 | Assistant message has only input/output counts | Compute total from available counts and display it. |
+| Assistant message has `cacheRead`/`cacheWrite` counts | Normalize cache counts, show effective input including cache tokens, preserve raw provider input as non-cached input, and display `cacheRead / totalTokens` on the badge. |
+| `usage.cost` contains pi-ai USD components | Normalize input/output/cache/total costs, display the total USD cost on the badge, and show input/output/cache-read/cache-write component costs in the tooltip fee detail. |
+| A non-cold model call reports `cacheRead: 0` with uncached input | Count it as `providerMiss`, show `provider miss N/M 次模型调用` on the badge and trace summary, and mark that call in trace details. |
 | Usage missing or malformed | Store `null` normalization and hide the badge. |
 | Existing historical messages | Render without token badge and without layout errors. |
 
 ### 5. Tests Required
-- `tests/runtime/pi-runtime.test.js` asserts assistant `usage` survives `startRun` completion.
+- `tests/runtime/pi-runtime.test.js` asserts assistant `usage` survives `startRun` completion and multiple assistant model-call usage objects aggregate without double-counting `agent_end` duplicates.
 - `npm run check`, `npm run build`, and `npm run typecheck` must pass after UI/runtime changes.
 
 ### 6. Wrong vs Correct
@@ -118,6 +126,8 @@
 #### Correct
 - Capture usage once in `lib/pi-runtime.ts`, persist it into assistant message metadata when the reply completes, and let the timeline render from the normal conversation payload.
 - Normalize multiple provider key variants while preserving raw `metadata.usage` for diagnostics.
+- Use `模型调用` / `toolExecutionCount` wording for observability; do not use tool step counts as a proxy for model-call denominators.
+- Keep model price metadata in `models.json` as pi-ai per-million-token USD rates: `{ input, output, cacheRead, cacheWrite }`; if a provider only publishes cached-read pricing, set `cacheWrite` to the normal input rate unless the provider documents a distinct write rate.
 
 ## Browser CLI Tooling
 
@@ -196,6 +206,7 @@ CAFF uses a descriptor + on-demand loading model for conversation skills:
 - Preserve exact public and private heredoc templates using `node "$CAFF_CHAT_TOOLS_PATH"` because they are the safest multiline examples and are covered by prompt tests.
 - Keep safety rules explicit in `command_format_rules`: never print tokens/secrets, check public content before `send-public`, put private roles/reasoning/scratch/game identity in private notes, and mark `--force` as dangerous.
 - Keep routing rules explicit in `rules` / `routing_instructions`: actionable mentions trigger only at line start or in a final pure mention block; inline mentions do not trigger; private messages wake recipients unless `--no-handoff`; no actionable mention stops the turn; up to 5 agents run at once.
+- Successful `send-public` bridge calls in normal conversation turns must request runtime completion through the active run handle so the model does not need a second full-context call just to emit `{ "action": "final" }`; the final stored reply remains the last public bridge content.
 - Keep `tool_instructions` focused on compact command signatures and group low-frequency tools into capability lines rather than listing preview/apply/overwrite examples separately.
 - Dynamic skill loading stays a single conditional `dynamic_skill_loading` section: descriptor-only skills are loaded by reading the listed `Path`, which already points to `SKILL.md`.
 - Do not advertise deprecated memory card bridge commands in `Chat bridge tools`.

@@ -1,3 +1,6 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+
 import { createHttpError } from '../../http/http-errors';
 import { DEFAULT_AGENT_DIR, DEFAULT_MODEL, DEFAULT_PROVIDER, DEFAULT_THINKING, resolveIntegerSetting, resolveSetting, resolveThinkingSetting, startRun } from '../../../lib/minimal-pi';
 import { absorbExperienceDraftsInMetadata, experienceDraftsForDigest, getPendingConversationExperienceDrafts } from './experience-draft';
@@ -21,6 +24,7 @@ const MAX_DIGEST_MODEL_INVALID_OUTPUT_PREVIEW_LENGTH = 4000;
 const MAX_DIGEST_MODEL_REPAIR_OUTPUT_LENGTH = 4000;
 const DIGEST_MODEL_PROGRESS_MIN_INTERVAL_MS = 500;
 const DEFAULT_DIGEST_MODEL_TIMEOUT_MS = 90 * 1000;
+const DEFAULT_DIGEST_JSON_MODE_MAX_TOKENS = 4096;
 const DEFAULT_DIGEST_AUTO_CREATE_MESSAGE_BUDGET = 24;
 const DEFAULT_DIGEST_AUTO_IDLE_MS = 0;
 const DEFAULT_DIGEST_AUTO_COOLDOWN_MS = 0;
@@ -28,6 +32,7 @@ const DEFAULT_DIGEST_AUTO_HIGH_VALUE = false;
 const DEFAULT_DIGEST_AUTO_HIGH_VALUE_MIN_MESSAGES = 12;
 const MAX_BACKFILL_DIAGNOSTIC_ITEMS = 10;
 const DIGEST_SECTION_KEYS = ['facts', 'decisions', 'openQuestions', 'nextActions', 'artifacts'];
+const DIGEST_MODEL_REQUIRED_KEYS = ['summary', ...DIGEST_SECTION_KEYS];
 
 function nowIso() {
   return new Date().toISOString();
@@ -890,6 +895,438 @@ function normalizeModelDigestPayload(value: any) {
   return normalized.summary ? normalized : null;
 }
 
+function validateJsonModeDigestPayload(value: any) {
+  const payload = isPlainObject(value) ? value : parseJsonObjectFromText(value);
+
+  if (!isPlainObject(payload)) {
+    return { ok: false, reason: 'digest JSON must be an object' };
+  }
+
+  for (const key of DIGEST_MODEL_REQUIRED_KEYS) {
+    if (!Object.prototype.hasOwnProperty.call(payload, key)) {
+      return { ok: false, reason: `missing required field: ${key}` };
+    }
+  }
+
+  if (typeof payload.summary !== 'string' || !normalizeText(payload.summary)) {
+    return { ok: false, reason: 'summary must be a non-empty string' };
+  }
+
+  for (const key of DIGEST_SECTION_KEYS) {
+    if (!Array.isArray(payload[key])) {
+      return { ok: false, reason: `${key} must be an array` };
+    }
+
+    if (!payload[key].every((item: any) => typeof item === 'string')) {
+      return { ok: false, reason: `${key} must contain only strings` };
+    }
+  }
+
+  if (payload.experience !== undefined && !Array.isArray(payload.experience)) {
+    return { ok: false, reason: 'experience must be an array when present' };
+  }
+
+  const normalized = normalizeModelDigestPayload(payload);
+  return normalized
+    ? { ok: true, payload: normalized }
+    : { ok: false, reason: 'digest JSON did not normalize to a valid digest' };
+}
+
+function extractDigestModelTextPart(item: any) {
+  if (typeof item === 'string') {
+    return normalizeText(item);
+  }
+
+  if (!item || typeof item !== 'object') {
+    return '';
+  }
+
+  const type = normalizeDigestModelContentType(item.type);
+  if (type === 'thinking' || type === 'reasoning' || type === 'redactedthinking') {
+    return '';
+  }
+
+  return normalizeText(item.text || item.content || item.output_text || item.refusal);
+}
+
+function extractDigestModelText(output: any) {
+  if (typeof output === 'string') {
+    return output;
+  }
+
+  const message = output && (output.message || output.assistantMessage || output);
+  if (typeof (message && message.content) === 'string') {
+    return normalizeText(message.content);
+  }
+
+  const content = Array.isArray(message && message.content) ? message.content : [];
+  return content
+    .map((item: any) => extractDigestModelTextPart(item))
+    .filter(Boolean)
+    .join('\n');
+}
+
+function buildJsonModeDigestModelContext(prompt: string) {
+  return {
+    systemPrompt: [
+      'You are CAFF structured conversation digest writer.',
+      'Return exactly one valid compact JSON object matching the requested digest schema.',
+      'Do not add hidden reasoning, markdown, code fences, XML, prose, comments, or multiple JSON objects.',
+    ].join('\n'),
+    messages: [
+      {
+        role: 'user',
+        content: [{ type: 'text', text: prompt }],
+      },
+    ],
+  };
+}
+
+function resolveDigestJsonModeMaxTokens(options: any = {}) {
+  return Math.max(256, resolveIntegerSetting(
+    options.digestJsonModeMaxTokens,
+    process.env.CAFF_DIGEST_JSON_MODE_MAX_TOKENS,
+    DEFAULT_DIGEST_JSON_MODE_MAX_TOKENS,
+    'digest JSON mode max tokens'
+  ));
+}
+
+function buildJsonModeDigestPayload(payload: any, model: any) {
+  const nextPayload = {
+    ...payload,
+    response_format: { type: 'json_object' },
+  } as Record<string, any>;
+  const provider = normalizeText(model && model.provider).toLowerCase();
+  const thinkingFormat = normalizeText(model && model.compat && model.compat.thinkingFormat).toLowerCase();
+
+  delete nextPayload.reasoning;
+  delete nextPayload.reasoning_effort;
+  delete nextPayload.reasoningEffort;
+
+  if (provider === 'deepseek' || thinkingFormat === 'deepseek') {
+    nextPayload.thinking = { type: 'disabled' };
+  }
+
+  return nextPayload;
+}
+
+async function completeDigestModel(complete: any, model: any, context: any, completeOptions: any, options: any = {}, config: any = {}) {
+  if (completeOptions && completeOptions.signal) {
+    return complete(model, context, completeOptions);
+  }
+
+  const timeoutMs = Math.max(1000, resolveIntegerSetting(
+    options.digestModelTimeoutMs || config.heartbeatTimeoutMs,
+    process.env.CAFF_DIGEST_MODEL_TIMEOUT_MS,
+    DEFAULT_DIGEST_MODEL_TIMEOUT_MS,
+    'digestModelTimeoutMs'
+  ));
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+
+  try {
+    return await complete(model, context, {
+      ...completeOptions,
+      ...(controller ? { signal: controller.signal } : {}),
+    });
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
+const PI_AI_MODULE_CACHE = new Map();
+
+async function importPiAiModule(specifier = '@mariozechner/pi-ai') {
+  if (!PI_AI_MODULE_CACHE.has(specifier)) {
+    PI_AI_MODULE_CACHE.set(specifier, Function('specifier', 'return import(specifier)')(specifier));
+  }
+
+  return PI_AI_MODULE_CACHE.get(specifier);
+}
+
+function findDigestRepoRoot(startDir: string, maxDepth = 8) {
+  let currentDir = path.resolve(String(startDir || ''));
+
+  for (let depth = 0; depth <= maxDepth; depth += 1) {
+    if (fs.existsSync(path.join(currentDir, 'package.json'))) {
+      return currentDir;
+    }
+
+    const parentDir = path.dirname(currentDir);
+
+    if (parentDir === currentDir) {
+      break;
+    }
+
+    currentDir = parentDir;
+  }
+
+  return '';
+}
+
+function resolveDigestModelsJsonPaths() {
+  const configuredAgentDir = resolveSetting('', process.env.PI_CODING_AGENT_DIR, DEFAULT_AGENT_DIR);
+  const repoRoot = findDigestRepoRoot(process.cwd()) || process.cwd();
+  const candidates = [
+    path.resolve(configuredAgentDir, 'models.json'),
+    path.resolve(repoRoot, '.pi-sandbox', 'models.json'),
+  ];
+  const seen = new Set<string>();
+
+  return candidates.filter((candidatePath) => {
+    const normalizedPath = path.resolve(candidatePath);
+
+    if (seen.has(normalizedPath)) {
+      return false;
+    }
+
+    seen.add(normalizedPath);
+    return true;
+  });
+}
+
+function readDigestModelsJsonProviders() {
+  for (const candidatePath of resolveDigestModelsJsonPaths()) {
+    if (!fs.existsSync(candidatePath)) {
+      continue;
+    }
+
+    try {
+      const parsed = JSON.parse(fs.readFileSync(candidatePath, 'utf8'));
+      return parsed && typeof parsed.providers === 'object' ? parsed.providers : {};
+    } catch {
+      return {};
+    }
+  }
+
+  return {};
+}
+
+function normalizeDigestModelCost(value: any) {
+  return {
+    input: Number.isFinite(Number(value && value.input)) ? Number(value.input) : 0,
+    output: Number.isFinite(Number(value && value.output)) ? Number(value.output) : 0,
+    cacheRead: Number.isFinite(Number(value && value.cacheRead)) ? Number(value.cacheRead) : 0,
+    cacheWrite: Number.isFinite(Number(value && value.cacheWrite)) ? Number(value.cacheWrite) : 0,
+  };
+}
+
+function normalizeDigestModelPositiveInteger(value: any, fallback: number) {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function normalizeDigestConfiguredSecret(value: any) {
+  const text = normalizeText(value);
+
+  if (!text || text.startsWith('!')) {
+    return '';
+  }
+
+  if (/^[A-Z][A-Z0-9_]*$/u.test(text)) {
+    return normalizeText(process.env[text]);
+  }
+
+  return text;
+}
+
+function resolveConfiguredDigestModel(config: any) {
+  const requestedProvider = normalizeText(config.provider);
+  const requestedModel = normalizeText(config.model);
+
+  if (!requestedProvider || !requestedModel) {
+    return null;
+  }
+
+  const requestedProviderLower = requestedProvider.toLowerCase();
+  const requestedModelWithoutProvider = requestedModel.toLowerCase().startsWith(`${requestedProviderLower}/`)
+    ? requestedModel.slice(requestedProvider.length + 1)
+    : requestedModel;
+  const providers = readDigestModelsJsonProviders();
+
+  for (const [providerName, providerConfig] of Object.entries(providers)) {
+    if (normalizeText(providerName).toLowerCase() !== requestedProviderLower || !isPlainObject(providerConfig)) {
+      continue;
+    }
+
+    const models = Array.isArray((providerConfig as any).models) ? (providerConfig as any).models : [];
+    const modelConfig = models.find((candidate: any) => {
+      const candidateId = normalizeText(candidate && candidate.id);
+      const candidateName = normalizeText(candidate && candidate.name);
+      return candidateId === requestedModel || candidateId === requestedModelWithoutProvider || candidateName === requestedModel || candidateName === requestedModelWithoutProvider;
+    });
+
+    if (!modelConfig) {
+      continue;
+    }
+
+    const mergedCompat = {
+      ...(isPlainObject((providerConfig as any).compat) ? (providerConfig as any).compat : {}),
+      ...(isPlainObject(modelConfig.compat) ? modelConfig.compat : {}),
+    };
+    const modelHeaders = isPlainObject((providerConfig as any).headers) || isPlainObject(modelConfig.headers)
+      ? {
+        ...(isPlainObject((providerConfig as any).headers) ? (providerConfig as any).headers : {}),
+        ...(isPlainObject(modelConfig.headers) ? modelConfig.headers : {}),
+      }
+      : undefined;
+
+    return {
+      model: {
+        id: normalizeText(modelConfig.id) || requestedModelWithoutProvider,
+        name: normalizeText(modelConfig.name) || normalizeText(modelConfig.id) || requestedModelWithoutProvider,
+        api: normalizeText(modelConfig.api) || normalizeText((providerConfig as any).api) || 'openai-completions',
+        provider: normalizeText(providerName),
+        baseUrl: normalizeText(modelConfig.baseUrl) || normalizeText((providerConfig as any).baseUrl),
+        reasoning: Boolean(modelConfig.reasoning),
+        input: Array.isArray(modelConfig.input) ? modelConfig.input : ['text'],
+        cost: normalizeDigestModelCost(modelConfig.cost),
+        contextWindow: normalizeDigestModelPositiveInteger(modelConfig.contextWindow || (providerConfig as any).contextWindow, 128000),
+        maxTokens: normalizeDigestModelPositiveInteger(modelConfig.maxTokens || (providerConfig as any).maxTokens, 16384),
+        ...(Object.keys(mergedCompat).length > 0 ? { compat: mergedCompat } : {}),
+        ...(modelHeaders ? { headers: modelHeaders } : {}),
+      },
+      apiKey: normalizeDigestConfiguredSecret(modelConfig.apiKey) || normalizeDigestConfiguredSecret((providerConfig as any).apiKey),
+    };
+  }
+
+  return null;
+}
+
+function createDeepSeekDigestPiModel(config: any) {
+  const provider = normalizeText(config.provider).toLowerCase();
+  const configuredModel = normalizeText(config.model);
+
+  if (provider !== 'deepseek' || !configuredModel) {
+    return null;
+  }
+
+  const modelId = configuredModel.startsWith('deepseek/')
+    ? configuredModel.slice('deepseek/'.length)
+    : configuredModel;
+
+  return {
+    model: {
+      id: modelId,
+      name: modelId,
+      api: 'openai-completions',
+      provider: 'deepseek',
+      baseUrl: 'https://api.deepseek.com',
+      reasoning: false,
+      input: ['text'],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 128000,
+      maxTokens: 8192,
+      compat: {
+        maxTokensField: 'max_tokens',
+        supportsReasoningEffort: false,
+        supportsStrictMode: false,
+      },
+    },
+    apiKey: normalizeText(process.env.DEEPSEEK_API_KEY),
+  };
+}
+
+function resolveDigestPiModel(piAi: any, config: any) {
+  const getModel = typeof piAi.getModel === 'function' ? piAi.getModel : null;
+  const getModels = typeof piAi.getModels === 'function' ? piAi.getModels : null;
+
+  if (!getModel) {
+    throw new Error('pi-ai module does not expose getModel()');
+  }
+
+  let model = getModel(config.provider, config.model);
+
+  if (!model && getModels) {
+    const providerModels = getModels(config.provider) || [];
+    model = providerModels.find((candidate: any) => candidate && candidate.id === config.model);
+  }
+
+  if (model) {
+    const configuredModel = resolveConfiguredDigestModel(config);
+    return {
+      model,
+      apiKey: configuredModel && configuredModel.apiKey ? configuredModel.apiKey : '',
+    };
+  }
+
+  const configuredModel = resolveConfiguredDigestModel(config) || createDeepSeekDigestPiModel(config);
+
+  if (!configuredModel) {
+    throw new Error(`Unknown digest model for pi-ai: ${config.provider}/${config.model}`);
+  }
+
+  return configuredModel;
+}
+
+function createModelDigestError(message: string, output: any) {
+  const error = new Error(message) as any;
+  error.digestModelOutput = output;
+  return error;
+}
+
+async function runJsonModeDigestModelPrompt(prompt: string, config: any, options: any = {}) {
+  const piAi = await importPiAiModule(normalizeText(options.piAiModuleSpecifier || process.env.CAFF_PI_AI_MODULE) || '@mariozechner/pi-ai');
+  const complete = typeof piAi.complete === 'function' ? piAi.complete : null;
+
+  if (!complete) {
+    throw new Error('pi-ai module does not expose complete()');
+  }
+
+  const resolvedModel = resolveDigestPiModel(piAi, config);
+  const model = resolvedModel.model;
+  const jsonModeModel = {
+    ...model,
+    reasoning: false,
+    compat: {
+      ...(isPlainObject(model && model.compat) ? model.compat : {}),
+      maxTokensField: 'max_tokens',
+      supportsReasoningEffort: false,
+      supportsStrictMode: false,
+    },
+  };
+  const progress = createDigestModelProgressReporter(config, options);
+  progress.started();
+
+  let output: any;
+  let outputText = '';
+
+  try {
+    output = await completeDigestModel(complete, jsonModeModel, buildJsonModeDigestModelContext(prompt), {
+      ...(resolvedModel.apiKey ? { apiKey: resolvedModel.apiKey } : {}),
+      maxTokens: resolveDigestJsonModeMaxTokens(options),
+      onPayload(payload: any) {
+        return buildJsonModeDigestPayload(payload, jsonModeModel);
+      },
+      metadata: {
+        source: 'conversation_digest',
+        purpose: options.purpose || 'summary',
+        conversationId: normalizeText(options.conversationId),
+        structuredOutput: 'json_mode',
+      },
+    }, options, config);
+    outputText = extractDigestModelText(output);
+    progress.finished(outputText);
+  } catch (error) {
+    progress.failed(error);
+    throw error;
+  }
+
+  const validation = outputText
+    ? validateJsonModeDigestPayload(outputText)
+    : { ok: false, reason: 'digest JSON text was missing from assistant response' };
+
+  if (!validation.ok) {
+    const error = createModelDigestError(`Invalid JSON mode digest payload: ${validation.reason}`, output);
+    progress.failed(error);
+    throw error;
+  }
+
+  return validation.payload;
+}
+
 function appendTraceText(currentValue: string, nextValue: any) {
   const nextText = normalizeText(nextValue);
 
@@ -990,6 +1427,10 @@ function createDigestModelProgressReporter(config: any, options: any = {}) {
   }
 
   return {
+    started() {
+      eventCount += 1;
+      emit(true);
+    },
     runStarted(event: any) {
       runId = normalizeText(event && event.runId);
       eventCount += 1;
@@ -1070,6 +1511,27 @@ async function runDigestModelPrompt(prompt: string, config: any, options: any = 
 
 async function generateModelDigestPayload(prompt: string, input: any, options: any = {}) {
   const config = resolveDigestModelConfig(input, options);
+  const shouldUseDirectJsonMode = !options.disableDirectJsonModeDigest
+    && !options.disableStructuredDigestTool
+    && !options.digestModelRunner;
+
+  if (shouldUseDirectJsonMode) {
+    try {
+      const jsonModePayload = await runJsonModeDigestModelPrompt(prompt, config, options);
+      return {
+        ...jsonModePayload,
+        createdBy: `model:${config.provider}/${config.model}`,
+      };
+    } catch (error) {
+      const errorValue = error as any;
+      warnInvalidModelDigestOutput(errorValue && errorValue.digestModelOutput !== undefined ? errorValue.digestModelOutput : errorValue, config, {
+        ...options,
+        diagnostic: errorValue && errorValue.message ? errorValue.message : String(errorValue || 'JSON mode digest failure'),
+      });
+      throw error;
+    }
+  }
+
   const output = await runDigestModelPrompt(prompt, config, options);
   let normalized = normalizeModelDigestPayload(output);
 

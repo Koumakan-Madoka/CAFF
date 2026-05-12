@@ -1,0 +1,2 @@
+{"file":".trellis/spec/index.md","reason":"Shared spec fallback."}
+{"timestamp": "2026-05-12T08:46:33Z", "kind": "spec_update", "summary": "Documented model-call-first observability contract, separate toolExecutionCount, cold-start exclusion for provider miss denominators, and frontend wording rules.", "files": [".trellis/spec/runtime/agent-runtime.md", ".trellis/spec/frontend/ui-structure.md"]}

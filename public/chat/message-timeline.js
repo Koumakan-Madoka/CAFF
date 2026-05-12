@@ -2,8 +2,10 @@
 
 (function registerMessageTimelineModule() {
   const chat = window.CaffChat || (window.CaffChat = {});
+  const shared = window.CaffShared || {};
+  const digestUtils = shared.conversationDigest;
 
-  chat.createMessageTimelineRenderer = function createMessageTimelineRenderer({ dom, helpers }) {
+  chat.createMessageTimelineRenderer = function createMessageTimelineRenderer({ dom, helpers, showToast }) {
     const {
       agentById,
       buildAgentAvatarElement,
@@ -52,6 +54,20 @@
       return Math.round(count);
     }
 
+    function normalizeCostAmount(value) {
+      if (value === null || value === undefined || value === '') {
+        return null;
+      }
+
+      const amount = Number(value);
+
+      if (!Number.isFinite(amount) || amount < 0) {
+        return null;
+      }
+
+      return amount;
+    }
+
     function pickTokenCount(usage, keys) {
       if (!usage || typeof usage !== 'object') {
         return null;
@@ -70,24 +86,44 @@
       return null;
     }
 
+    function pickCostAmount(cost, keys) {
+      if (!cost || typeof cost !== 'object') {
+        return null;
+      }
+
+      for (const key of keys) {
+        if (Object.prototype.hasOwnProperty.call(cost, key)) {
+          const amount = normalizeCostAmount(cost[key]);
+
+          if (amount !== null) {
+            return amount;
+          }
+        }
+      }
+
+      return null;
+    }
+
     function messageTokenUsage(message) {
       if (!message || message.role !== 'assistant') {
         return null;
       }
 
       const metadata = message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
-      const usage = metadata && metadata.tokenUsage && typeof metadata.tokenUsage === 'object'
+      const normalizedUsage = metadata && metadata.tokenUsage && typeof metadata.tokenUsage === 'object' && !Array.isArray(metadata.tokenUsage)
         ? metadata.tokenUsage
-        : metadata && metadata.usage && typeof metadata.usage === 'object'
-          ? metadata.usage
-          : null;
+        : null;
+      const rawUsage = metadata && metadata.usage && typeof metadata.usage === 'object' && !Array.isArray(metadata.usage)
+        ? metadata.usage
+        : null;
 
-      if (!usage || Array.isArray(usage)) {
+      if (!normalizedUsage && !rawUsage) {
         return null;
       }
 
-      const inputTokens = pickTokenCount(usage, ['inputTokens', 'input_tokens', 'promptTokens', 'prompt_tokens', 'prompt', 'input']);
-      const outputTokens = pickTokenCount(usage, [
+      const usageSources = [normalizedUsage, rawUsage].filter(Boolean);
+      const rawOnlySources = [rawUsage].filter(Boolean);
+      const outputTokens = pickTokenCountFromSources(usageSources, [
         'outputTokens',
         'output_tokens',
         'completionTokens',
@@ -95,14 +131,117 @@
         'completion',
         'output',
       ]);
-      const explicitTotalTokens = pickTokenCount(usage, ['totalTokens', 'total_tokens', 'total']);
-      const totalTokens = explicitTotalTokens !== null ? explicitTotalTokens : inputTokens !== null || outputTokens !== null ? (inputTokens || 0) + (outputTokens || 0) : null;
+      const cacheReadTokens = pickTokenCountFromSources(usageSources, [
+        'cacheReadTokens',
+        'cache_read_tokens',
+        'cacheRead',
+        'cache_read',
+        'cachedTokens',
+        'cached_tokens',
+      ]);
+      const cacheWriteTokens = pickTokenCountFromSources(usageSources, [
+        'cacheWriteTokens',
+        'cache_write_tokens',
+        'cacheWrite',
+        'cache_write',
+        'cacheCreationTokens',
+        'cache_creation_tokens',
+        'cache_creation_input_tokens',
+      ]);
+      const normalizedInputTokens = pickTokenCountFromSources([normalizedUsage].filter(Boolean), ['inputTokens', 'input_tokens']);
+      const uncachedInputTokens = pickTokenCountFromSources(usageSources, [
+        'uncachedInputTokens',
+        'uncached_input_tokens',
+      ]) ?? pickTokenCountFromSources(rawOnlySources, [
+        'inputTokens',
+        'input_tokens',
+        'promptTokens',
+        'prompt_tokens',
+        'prompt',
+        'input',
+      ]) ?? (cacheReadTokens === null && cacheWriteTokens === null ? normalizedInputTokens : null);
+      const inputTokens = uncachedInputTokens !== null
+        ? uncachedInputTokens + (cacheReadTokens || 0) + (cacheWriteTokens || 0)
+        : normalizedInputTokens;
+      const explicitTotalTokens = pickTokenCountFromSources(usageSources, ['totalTokens', 'total_tokens', 'total']);
+      const totalTokens = explicitTotalTokens !== null
+        ? explicitTotalTokens
+        : inputTokens !== null || outputTokens !== null
+          ? (inputTokens || 0) + (outputTokens || 0)
+          : null;
+      const costSources = [normalizedUsage, rawUsage && rawUsage.cost].filter(Boolean);
+      const inputCostUsd = pickCostAmountFromSources(costSources, ['inputUsd', 'inputUSD', 'inputCostUsd', 'input_cost_usd', 'inputCost', 'input_cost', 'input']);
+      const outputCostUsd = pickCostAmountFromSources(costSources, ['outputUsd', 'outputUSD', 'outputCostUsd', 'output_cost_usd', 'outputCost', 'output_cost', 'output']);
+      const cacheReadCostUsd = pickCostAmountFromSources(costSources, ['cacheReadUsd', 'cacheReadUSD', 'cacheReadCostUsd', 'cache_read_cost_usd', 'cacheReadCost', 'cache_read_cost', 'cacheRead', 'cache_read']);
+      const cacheWriteCostUsd = pickCostAmountFromSources(costSources, ['cacheWriteUsd', 'cacheWriteUSD', 'cacheWriteCostUsd', 'cache_write_cost_usd', 'cacheWriteCost', 'cache_write_cost', 'cacheWrite', 'cache_write']);
+      const explicitTotalCostUsd = pickCostAmountFromSources(costSources, ['totalUsd', 'totalUSD', 'totalCostUsd', 'total_cost_usd', 'totalCost', 'total_cost', 'total']);
+      const totalCostUsd = explicitTotalCostUsd !== null
+        ? explicitTotalCostUsd
+        : inputCostUsd !== null || outputCostUsd !== null || cacheReadCostUsd !== null || cacheWriteCostUsd !== null
+          ? (inputCostUsd || 0) + (outputCostUsd || 0) + (cacheReadCostUsd || 0) + (cacheWriteCostUsd || 0)
+          : null;
 
-      if (inputTokens === null && outputTokens === null && totalTokens === null) {
+      if (inputTokens === null && outputTokens === null && totalTokens === null && cacheReadTokens === null && cacheWriteTokens === null && totalCostUsd === null) {
         return null;
       }
 
-      return { inputTokens, outputTokens, totalTokens };
+      const modelUsageSummary = metadata && metadata.modelUsage && metadata.modelUsage.modelCallCount !== undefined
+        ? metadata.modelUsage
+        : null;
+      const modelCallCount = modelUsageSummary && Number.isFinite(Number(modelUsageSummary.modelCallCount))
+        ? Number(modelUsageSummary.modelCallCount)
+        : null;
+      const coldStartModelCallCount = modelUsageSummary && Number.isFinite(Number(modelUsageSummary.coldStartModelCallCount))
+        ? Number(modelUsageSummary.coldStartModelCallCount)
+        : null;
+      const postColdModelCallCount = modelUsageSummary && Number.isFinite(Number(modelUsageSummary.postColdModelCallCount))
+        ? Number(modelUsageSummary.postColdModelCallCount)
+        : null;
+      const providerMissCount = modelUsageSummary && Number.isFinite(Number(modelUsageSummary.providerMissCount))
+        ? Number(modelUsageSummary.providerMissCount)
+        : null;
+
+      return {
+        inputTokens,
+        uncachedInputTokens,
+        outputTokens,
+        totalTokens,
+        cacheReadTokens,
+        cacheWriteTokens,
+        inputCostUsd,
+        outputCostUsd,
+        cacheReadCostUsd,
+        cacheWriteCostUsd,
+        totalCostUsd,
+        modelCallCount,
+        coldStartModelCallCount,
+        postColdModelCallCount,
+        providerMissCount,
+      };
+    }
+
+    function pickTokenCountFromSources(sources, keys) {
+      for (const source of sources) {
+        const count = pickTokenCount(source, keys);
+
+        if (count !== null) {
+          return count;
+        }
+      }
+
+      return null;
+    }
+
+    function pickCostAmountFromSources(sources, keys) {
+      for (const source of sources) {
+        const amount = pickCostAmount(source, keys);
+
+        if (amount !== null) {
+          return amount;
+        }
+      }
+
+      return null;
     }
 
     function formatTokenCount(count) {
@@ -123,6 +262,24 @@
       return `${(value / 1000000).toFixed(value >= 10000000 ? 0 : 1)}m`;
     }
 
+    function formatUsdCost(amount) {
+      const value = Number(amount || 0);
+
+      if (!Number.isFinite(value) || value <= 0) {
+        return '';
+      }
+
+      return `$${value < 0.0001 ? value.toFixed(6) : value.toFixed(4)}`;
+    }
+
+    function formatTokenUsageRatio(numerator, denominator) {
+      if (numerator === null || denominator === null || denominator <= 0) {
+        return '';
+      }
+
+      return `${Math.round((numerator / denominator) * 100)}%`;
+    }
+
     function formatTokenUsageLabel(usage) {
       if (!usage) {
         return '';
@@ -130,8 +287,39 @@
 
       const primary = usage.totalTokens !== null ? usage.totalTokens : usage.outputTokens !== null ? usage.outputTokens : usage.inputTokens;
       const formatted = formatTokenCount(primary);
+      const cost = formatUsdCost(usage.totalCostUsd);
 
-      return formatted ? `消耗 ${formatted} token` : '';
+      if (!formatted && !cost) {
+        return '';
+      }
+
+      const parts = [];
+
+      if (usage.modelCallCount !== null) {
+        parts.push(`${usage.modelCallCount} 次模型调用`);
+      }
+
+      if (formatted) {
+        parts.push(`消耗 ${formatted} token`);
+      } else if (cost) {
+        parts.push('花费');
+      }
+
+      if (cost) {
+        parts.push(cost);
+      }
+
+      if (usage.cacheReadTokens !== null) {
+        const cacheRead = formatTokenCount(usage.cacheReadTokens) || '0';
+        const ratio = formatTokenUsageRatio(usage.cacheReadTokens, usage.totalTokens);
+        parts.push(ratio ? `命中 ${cacheRead} (${ratio})` : `命中 ${cacheRead}`);
+      }
+
+      if (usage.providerMissCount !== null && usage.postColdModelCallCount !== null) {
+        parts.push(`provider miss ${usage.providerMissCount}/${usage.postColdModelCallCount} 次模型调用`);
+      }
+
+      return parts.join(' · ');
     }
 
     function formatTokenUsageTitle(usage) {
@@ -145,6 +333,10 @@
         parts.push(`输入 ${formatTokenCount(usage.inputTokens)}`);
       }
 
+      if (usage.uncachedInputTokens !== null && usage.cacheReadTokens !== null) {
+        parts.push(`非缓存输入 ${formatTokenCount(usage.uncachedInputTokens)}`);
+      }
+
       if (usage.outputTokens !== null) {
         parts.push(`输出 ${formatTokenCount(usage.outputTokens)}`);
       }
@@ -153,7 +345,51 @@
         parts.push(`总计 ${formatTokenCount(usage.totalTokens)}`);
       }
 
-      return parts.length > 0 ? `${parts.join(' · ')} token` : '';
+      const totalCost = formatUsdCost(usage.totalCostUsd);
+
+      if (totalCost) {
+        parts.push(`花费 ${totalCost}`);
+      }
+
+      if (usage.cacheReadTokens !== null) {
+        const ratio = formatTokenUsageRatio(usage.cacheReadTokens, usage.totalTokens);
+        parts.push(`缓存命中 ${formatTokenCount(usage.cacheReadTokens)}${ratio ? ` (${ratio})` : ''}`);
+      }
+
+      if (usage.cacheWriteTokens !== null) {
+        parts.push(`缓存写入 ${formatTokenCount(usage.cacheWriteTokens)}`);
+      }
+
+      if (usage.modelCallCount !== null && usage.providerMissCount !== null) {
+        const coldStartCount = usage.coldStartModelCallCount !== null ? usage.coldStartModelCallCount : Math.max(usage.modelCallCount - (usage.postColdModelCallCount || 0), 0);
+        parts.push(`模型调用 ${usage.modelCallCount} 次，冷启动 ${coldStartCount} 次，冷启动外 ${usage.postColdModelCallCount || 0} 次，provider miss ${usage.providerMissCount}`);
+      }
+
+      if (usage.inputCostUsd !== null || usage.outputCostUsd !== null || usage.cacheReadCostUsd !== null || usage.cacheWriteCostUsd !== null) {
+        const costParts = [];
+
+        if (usage.inputCostUsd !== null) {
+          costParts.push(`输入 ${formatUsdCost(usage.inputCostUsd) || '$0.0000'}`);
+        }
+
+        if (usage.outputCostUsd !== null) {
+          costParts.push(`输出 ${formatUsdCost(usage.outputCostUsd) || '$0.0000'}`);
+        }
+
+        if (usage.cacheReadCostUsd !== null) {
+          costParts.push(`缓存读取 ${formatUsdCost(usage.cacheReadCostUsd) || '$0.0000'}`);
+        }
+
+        if (usage.cacheWriteCostUsd !== null) {
+          costParts.push(`缓存写入 ${formatUsdCost(usage.cacheWriteCostUsd) || '$0.0000'}`);
+        }
+
+        if (costParts.length > 0) {
+          parts.push(`费用明细 ${costParts.join(' / ')}`);
+        }
+      }
+
+      return parts.length > 0 ? parts.join(' · ') : '';
     }
 
     function appendLiveToolRotor(container, label) {
@@ -558,6 +794,12 @@
     }
 
     function traceStepCount(trace) {
+      const timelineEvents = trace && Array.isArray(trace.timelineEvents) ? trace.timelineEvents : [];
+
+      if (timelineEvents.length > 0) {
+        return timelineEvents.length;
+      }
+
       const traceSteps = trace && Array.isArray(trace.steps) ? trace.steps : [];
 
       if (traceSteps.length > 0) {
@@ -577,7 +819,7 @@
       button.className = prominent ? 'message-tool-trace-toggle message-tool-trace-toggle-prominent' : 'message-tool-trace-toggle ghost-button';
       button.dataset.messageId = messageId;
       button.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
-      button.textContent = prominent ? (isOpen ? '收起工具链路' : '展开完整工具链路') : isOpen ? '收起工具链路' : '查看工具链路';
+      button.textContent = prominent ? (isOpen ? '收起观测时间线' : '展开观测时间线') : isOpen ? '收起观测时间线' : '查看观测时间线';
       return button;
     }
 
@@ -663,6 +905,273 @@
       return note;
     }
 
+    function modelUsageCallsForTrace(trace) {
+      return trace && Array.isArray(trace.modelUsageCalls)
+        ? trace.modelUsageCalls.filter((call) => call && call.tokenUsage && typeof call.tokenUsage === 'object')
+        : [];
+    }
+
+    function modelUsageSummaryForTrace(trace) {
+      const calls = modelUsageCallsForTrace(trace);
+      const primarySummary = trace && trace.modelUsageSummary && typeof trace.modelUsageSummary === 'object'
+        ? trace.modelUsageSummary
+        : null;
+      const summaryFallback = trace && trace.summary && typeof trace.summary === 'object'
+        ? trace.summary
+        : null;
+      const summaryFallbackHasCounts = summaryFallback && (
+        Number(summaryFallback.modelCallCount) > 0 ||
+        Number(summaryFallback.coldStartModelCallCount) > 0 ||
+        Number(summaryFallback.postColdModelCallCount) > 0 ||
+        Number(summaryFallback.providerMissCount) > 0
+      );
+      const explicitSummary = primarySummary || (summaryFallback && (summaryFallbackHasCounts || calls.length === 0) ? summaryFallback : null);
+
+      if (explicitSummary) {
+        const modelCallCount = Number(explicitSummary.modelCallCount);
+        const coldStartModelCallCount = Number(explicitSummary.coldStartModelCallCount);
+        const postColdModelCallCount = Number(explicitSummary.postColdModelCallCount);
+        const providerMissCount = Number(explicitSummary.providerMissCount);
+
+        return {
+          modelCallCount: Number.isFinite(modelCallCount) ? modelCallCount : 0,
+          coldStartModelCallCount: Number.isFinite(coldStartModelCallCount) ? coldStartModelCallCount : 0,
+          postColdModelCallCount: Number.isFinite(postColdModelCallCount) ? postColdModelCallCount : 0,
+          providerMissCount: Number.isFinite(providerMissCount) ? providerMissCount : 0,
+        };
+      }
+
+      const coldStartModelCallCount = calls.filter((call) => call.isColdStart || call.coldStart).length;
+      const postColdModelCallCount = calls.filter((call) => !(call.isColdStart || call.coldStart)).length;
+      const providerMissCount = calls.filter((call) => call.providerMiss).length;
+
+      return {
+        modelCallCount: calls.length,
+        coldStartModelCallCount,
+        postColdModelCallCount,
+        providerMissCount,
+      };
+    }
+
+    function formatModelUsageCallBits(call) {
+      const tokenUsage = call && call.tokenUsage ? call.tokenUsage : {};
+      const bits = [];
+      const inputTokens = normalizeTokenCount(tokenUsage.inputTokens);
+      const uncachedInputTokens = normalizeTokenCount(tokenUsage.uncachedInputTokens);
+      const outputTokens = normalizeTokenCount(tokenUsage.outputTokens);
+      const totalTokens = normalizeTokenCount(tokenUsage.totalTokens);
+      const cacheReadTokens = normalizeTokenCount(tokenUsage.cacheReadTokens);
+      const cacheWriteTokens = normalizeTokenCount(tokenUsage.cacheWriteTokens);
+      const totalCostUsd = normalizeCostAmount(tokenUsage.totalCostUsd);
+      const hitRatio = cacheReadTokens !== null ? formatTokenUsageRatio(cacheReadTokens, totalTokens) : '';
+
+      if (inputTokens !== null) {
+        bits.push(`输入 ${formatTokenCount(inputTokens)}`);
+      }
+
+      if (uncachedInputTokens !== null) {
+        bits.push(`非缓存 ${formatTokenCount(uncachedInputTokens)}`);
+      }
+
+      if (outputTokens !== null) {
+        bits.push(`输出 ${formatTokenCount(outputTokens)}`);
+      }
+
+      if (cacheReadTokens !== null) {
+        bits.push(`缓存读 ${formatTokenCount(cacheReadTokens)}${hitRatio ? ` / 命中率 ${hitRatio}` : ''}`);
+      }
+
+      if (cacheWriteTokens !== null && cacheWriteTokens > 0) {
+        bits.push(`缓存写 ${formatTokenCount(cacheWriteTokens)}`);
+      }
+
+      if (totalCostUsd !== null) {
+        bits.push(`花费 ${formatUsdCost(totalCostUsd) || '$0.0000'}`);
+      }
+
+      return bits;
+    }
+
+    function traceTimelineEventsForTrace(trace) {
+      const explicitEvents = trace && Array.isArray(trace.timelineEvents)
+        ? trace.timelineEvents.filter((event) => event && typeof event === 'object')
+        : [];
+
+      if (explicitEvents.length > 0) {
+        return explicitEvents;
+      }
+
+      const normalizeSequence = (value) => {
+        const sequence = Number(value);
+        return Number.isFinite(sequence) && sequence > 0 ? Math.round(sequence) : null;
+      };
+      const traceSteps = trace && Array.isArray(trace.steps) ? trace.steps : [];
+      const sessionSteps = trace && Array.isArray(trace.sessionToolCalls) ? trace.sessionToolCalls : [];
+      const bridgeSteps = trace && Array.isArray(trace.bridgeToolEvents) ? trace.bridgeToolEvents : [];
+      const toolSteps = traceSteps.length > 0 ? traceSteps : sessionSteps.concat(bridgeSteps);
+      const toolEvents = toolSteps.map((step, index) => ({
+        ...step,
+        eventType: 'tool_execution',
+        toolExecutionSequence: index + 1,
+      }));
+      const modelEvents = modelUsageCallsForTrace(trace).map((call, index) => {
+        const sequence = normalizeSequence(call && call.sequence) || index + 1;
+        return {
+          ...call,
+          eventType: 'model_call',
+          stepId: `model-call-${sequence}`,
+          modelCallSequence: sequence,
+        };
+      });
+
+      if (modelEvents.length === 0) {
+        return toolEvents.map((event, index) => ({ ...event, timelineIndex: index }));
+      }
+
+      const timelineEvents = [];
+      const usedToolIndexes = new Set();
+
+      modelEvents.forEach((modelEvent) => {
+        const sequence = normalizeSequence(modelEvent.modelCallSequence);
+        timelineEvents.push(modelEvent);
+        toolEvents.forEach((toolEvent, index) => {
+          if (usedToolIndexes.has(index) || normalizeSequence(toolEvent.modelCallSequence) !== sequence) {
+            return;
+          }
+
+          usedToolIndexes.add(index);
+          timelineEvents.push(toolEvent);
+        });
+      });
+
+      toolEvents.forEach((toolEvent, index) => {
+        if (!usedToolIndexes.has(index)) {
+          timelineEvents.push(toolEvent);
+        }
+      });
+
+      return timelineEvents.map((event, index) => ({ ...event, timelineIndex: index }));
+    }
+
+    function buildModelCallTraceStep(call, index, isLastStep) {
+      const article = document.createElement('article');
+      const rail = document.createElement('div');
+      const indexBadge = document.createElement('span');
+      const line = document.createElement('span');
+      const content = document.createElement('div');
+      const callHeader = document.createElement('div');
+      const titleWrap = document.createElement('div');
+      const eyebrow = document.createElement('div');
+      const callTitle = document.createElement('div');
+      const callMeta = document.createElement('div');
+      const detail = document.createElement('div');
+      const sequence = Number.isFinite(Number(call && call.sequence))
+        ? Number(call.sequence)
+        : Number.isFinite(Number(call && call.modelCallSequence))
+          ? Number(call.modelCallSequence)
+          : index + 1;
+      const tokenUsage = call && call.tokenUsage ? call.tokenUsage : {};
+      const isColdStart = Boolean(call && (call.coldStart || call.isColdStart));
+      const tone = call && call.providerMiss ? 'failed' : isColdStart ? 'neutral' : 'success';
+      const statusText = call && call.providerMiss ? 'provider miss' : isColdStart ? '冷启动' : '缓存命中';
+      const stopReason = call && call.stopReason ? String(call.stopReason) : '';
+      const bits = formatModelUsageCallBits(call);
+      const outputTokens = normalizeTokenCount(tokenUsage.outputTokens);
+      const cacheReadTokens = normalizeTokenCount(tokenUsage.cacheReadTokens);
+      const totalCostUsd = normalizeCostAmount(tokenUsage.totalCostUsd);
+
+      article.className = `message-tool-trace-step ${tone} model-call${isLastStep ? ' last' : ''}`;
+      article.dataset.stepId = call && call.stepId ? String(call.stepId) : `model-call-${sequence}`;
+      rail.className = 'message-tool-trace-step-rail';
+      indexBadge.className = 'message-tool-trace-step-index';
+      line.className = 'message-tool-trace-step-line';
+      content.className = 'message-tool-trace-step-main';
+      callHeader.className = 'message-tool-trace-step-header';
+      titleWrap.className = 'message-tool-trace-step-title-wrap';
+      eyebrow.className = 'message-tool-trace-step-eyebrow';
+      callTitle.className = 'message-tool-trace-step-title';
+      callMeta.className = 'message-tool-trace-step-meta';
+      detail.className = 'message-tool-trace-note';
+
+      indexBadge.textContent = String(index + 1);
+      eyebrow.textContent = [`模型调用 #${sequence}`, stopReason ? `stop=${stopReason}` : ''].filter(Boolean).join(' · ');
+      callTitle.textContent = statusText;
+      callMeta.appendChild(createTracePill(statusText, tone));
+
+      if (outputTokens !== null) {
+        callMeta.appendChild(createTracePill(`输出 ${formatTokenCount(outputTokens)}`, 'neutral'));
+      }
+
+      if (cacheReadTokens !== null) {
+        const ratio = formatTokenUsageRatio(cacheReadTokens, normalizeTokenCount(tokenUsage.totalTokens));
+        callMeta.appendChild(createTracePill(`缓存读 ${formatTokenCount(cacheReadTokens)}${ratio ? ` (${ratio})` : ''}`, cacheReadTokens > 0 ? 'success' : 'failed'));
+      }
+
+      if (totalCostUsd !== null) {
+        callMeta.appendChild(createTracePill(formatUsdCost(totalCostUsd) || '$0.0000', 'duration'));
+      }
+
+      detail.textContent = bits.length > 0 ? bits.join(' · ') : '该次模型调用没有可展示的 token 用量。';
+      titleWrap.append(eyebrow, callTitle);
+      callHeader.append(titleWrap, callMeta);
+      rail.append(indexBadge, line);
+      content.append(callHeader, detail);
+      article.append(rail, content);
+      return article;
+    }
+
+    function buildTraceTimelineSection(trace, events) {
+      const section = document.createElement('section');
+      const header = document.createElement('div');
+      const title = document.createElement('div');
+      const meta = document.createElement('div');
+      const timeline = document.createElement('div');
+      const summary = trace && trace.summary ? trace.summary : null;
+      const modelSummary = modelUsageSummaryForTrace(trace);
+      const toolExecutionCount = summary && Number.isFinite(Number(summary.toolExecutionCount))
+        ? Number(summary.toolExecutionCount)
+        : events.filter((event) => event && event.eventType !== 'model_call').length;
+      const failedCount = events.filter((event) => event && event.eventType !== 'model_call' && event.status === 'failed').length;
+      const hasRunning = events.some((event) => event && event.eventType !== 'model_call' && (event.status === 'running' || event.status === 'queued'));
+      const missCount = Number(modelSummary.providerMissCount || 0);
+
+      section.className = 'message-tool-trace-section';
+      header.className = 'message-tool-trace-section-header';
+      title.className = 'message-tool-trace-section-title';
+      meta.className = 'message-tool-trace-section-meta';
+      timeline.className = 'message-tool-trace-section-steps';
+      title.textContent = '本次回复观测时间线';
+
+      if (modelSummary.modelCallCount > 0) {
+        meta.appendChild(createTracePill(`${modelSummary.modelCallCount} 次模型调用`, 'neutral'));
+      }
+
+      meta.appendChild(createTracePill(`${toolExecutionCount} 次工具执行`, 'neutral'));
+
+      if (modelSummary.postColdModelCallCount > 0) {
+        meta.appendChild(createTracePill(`provider miss ${missCount}/${modelSummary.postColdModelCallCount} 次模型调用`, missCount > 0 ? 'failed' : 'success'));
+      }
+
+      if (failedCount > 0) {
+        meta.appendChild(createTracePill(`${failedCount} 工具失败`, 'failed'));
+      } else if (hasRunning) {
+        meta.appendChild(createTracePill('工具进行中', 'running', { live: true }));
+      }
+
+      events.forEach((event, eventIndex) => {
+        if (event && event.eventType === 'model_call') {
+          timeline.appendChild(buildModelCallTraceStep(event, eventIndex, eventIndex === events.length - 1));
+          return;
+        }
+
+        timeline.appendChild(buildTraceStep(event, eventIndex, eventIndex === events.length - 1));
+      });
+
+      header.append(title, meta);
+      section.append(header, timeline);
+      return section;
+    }
+
     function buildTraceStep(step, index, isLastStep) {
       const article = document.createElement('article');
       const rail = document.createElement('div');
@@ -678,7 +1187,9 @@
       const status = step && step.status ? String(step.status) : 'observed';
       const tone = traceToneForStatus(status);
       const duration = formatDuration(step && step.durationMs);
-      const stepLeadParts = [traceSourceLabel(step)];
+      const toolExecutionSequence = Number.isFinite(Number(step && step.toolExecutionSequence)) ? Number(step.toolExecutionSequence) : null;
+      const modelCallSequence = Number.isFinite(Number(step && step.modelCallSequence)) ? Number(step.modelCallSequence) : null;
+      const stepLeadParts = [toolExecutionSequence ? `工具执行 #${toolExecutionSequence}` : '', traceSourceLabel(step)].filter(Boolean);
       const failureText =
         status === 'failed'
           ? formatInlineTraceText(
@@ -729,6 +1240,10 @@
 
       if (step && step.kind === 'bridge' && step.linkedFromStepId) {
         meta.appendChild(createTracePill('桥接确认', 'neutral'));
+      }
+
+      if (modelCallSequence) {
+        meta.appendChild(createTracePill(`由模型调用 #${modelCallSequence} 触发`, 'neutral'));
       }
 
       titleWrap.append(eyebrow, title);
@@ -880,9 +1395,7 @@
       const preservedViewport = captureTraceViewportState(container);
       const trace = traceState && traceState.data ? traceState.data : null;
       const summary = trace && trace.summary ? trace.summary : null;
-      const traceSteps = trace && Array.isArray(trace.steps) ? trace.steps : [];
-      const sessionSteps = trace && Array.isArray(trace.sessionToolCalls) ? trace.sessionToolCalls : [];
-      const bridgeSteps = trace && Array.isArray(trace.bridgeToolEvents) ? trace.bridgeToolEvents : [];
+      const traceTimelineEvents = traceTimelineEventsForTrace(trace);
       const header = document.createElement('div');
       const summaryWrap = document.createElement('div');
       const children = [];
@@ -897,7 +1410,11 @@
 
       if (summary) {
         const summaryTone = summary.status === 'failed' ? 'failed' : summary.status === 'running' ? 'running' : 'success';
-        summaryWrap.appendChild(createTracePill(`${summary.totalSteps} 步`, 'neutral'));
+        if (summary.modelCallCount > 0) {
+          summaryWrap.appendChild(createTracePill(`模型调用 ${summary.modelCallCount} 次`, 'neutral'));
+        }
+
+        summaryWrap.appendChild(createTracePill(`工具执行 ${summary.toolExecutionCount || summary.totalSteps || 0} 次`, 'neutral'));
         summaryWrap.appendChild(createTracePill(summary.status === 'failed' ? '有失败' : summary.status === 'running' ? '进行中' : '已完成', summaryTone));
 
         if (!shouldShowLiveSpotlight && activity && activity.hasCurrentTool && activity.currentToolName) {
@@ -923,14 +1440,19 @@
         if (summary.hasRetries) {
           summaryWrap.appendChild(createTracePill(`${summary.retryCount} 重试`, 'running'));
         }
+
+        if (summary.postColdModelCallCount > 0) {
+          const missCount = Number(summary.providerMissCount || 0);
+          summaryWrap.appendChild(createTracePill(`provider miss ${missCount}/${summary.postColdModelCallCount} 次模型调用`, missCount > 0 ? 'failed' : 'success'));
+        }
       } else if (traceState.status === 'loading') {
-        summaryWrap.appendChild(createTracePill('载入工具链路中', 'running'));
+        summaryWrap.appendChild(createTracePill('载入观测时间线中', 'running'));
       } else if (traceState.status === 'error') {
-        summaryWrap.appendChild(createTracePill(traceState.errorMessage || '工具链路加载失败', 'failed'));
+        summaryWrap.appendChild(createTracePill(traceState.errorMessage || '观测时间线加载失败', 'failed'));
       } else if (message.status === 'queued' || message.status === 'streaming') {
-        summaryWrap.appendChild(createTracePill('等待工具链路', 'running'));
+        summaryWrap.appendChild(createTracePill('等待观测时间线', 'running'));
       } else {
-        summaryWrap.appendChild(createTracePill('暂无工具记录', 'neutral'));
+        summaryWrap.appendChild(createTracePill('暂无观测记录', 'neutral'));
       }
 
       if (!summary && !shouldShowLiveSpotlight && liveActivity && liveActivity.hasCurrentTool && liveActivity.currentToolName) {
@@ -955,13 +1477,13 @@
         if (traceState.status === 'loading' && !trace) {
           const loading = document.createElement('div');
           loading.className = 'message-tool-trace-note';
-          loading.textContent = '正在整理这条回复背后的工具步骤…';
+          loading.textContent = '正在整理这条回复背后的观测时间线…';
           details.appendChild(loading);
         } else if (traceState.status === 'error' && !trace) {
           const error = document.createElement('div');
           const errorRow = document.createElement('div');
           error.className = 'message-tool-trace-note failed';
-          error.textContent = traceState.errorMessage || '工具链路加载失败';
+          error.textContent = traceState.errorMessage || '观测时间线加载失败';
           errorRow.className = 'message-tool-trace-note-row';
           errorRow.append(error, buildTraceCopyButton(message.id));
           details.appendChild(errorRow);
@@ -970,7 +1492,6 @@
           const failureNote = buildTraceFailureNote(trace);
           const stepsViewport = document.createElement('div');
           const shouldScrollSteps = traceStepCount(trace) > TRACE_SCROLL_STEP_LIMIT;
-          let stepIndex = 0;
 
           stepsViewport.className = 'message-tool-trace-steps-viewport';
           if (shouldScrollSteps) {
@@ -1001,22 +1522,11 @@
             details.appendChild(failureRow);
           }
 
-          if (traceSteps.length > 0) {
-            stepsViewport.appendChild(buildTraceSection('完整时间线', traceSteps, stepIndex));
-            stepIndex += traceSteps.length;
-          } else {
-            if (sessionSteps.length > 0) {
-              stepsViewport.appendChild(buildTraceSection('pi-mono 工具', sessionSteps, stepIndex));
-              stepIndex += sessionSteps.length;
-            }
-
-            if (bridgeSteps.length > 0) {
-              stepsViewport.appendChild(buildTraceSection('聊天桥工具', bridgeSteps, stepIndex));
-              stepIndex += bridgeSteps.length;
-            }
+          if (traceTimelineEvents.length > 0) {
+            stepsViewport.appendChild(buildTraceTimelineSection(trace, traceTimelineEvents));
           }
 
-          if (traceSteps.length === 0 && sessionSteps.length === 0 && bridgeSteps.length === 0) {
+          if (traceTimelineEvents.length === 0) {
             const empty = document.createElement('div');
             empty.className = 'message-tool-trace-note';
             empty.textContent = '这条消息目前还没有结构化工具事件。';
@@ -1032,6 +1542,109 @@
       container.replaceChildren(...children);
       container.classList.toggle('hidden', false);
       restoreTraceViewportState(container, preservedViewport);
+    }
+
+    function digestSectionItems(value) {
+      return digestUtils && typeof digestUtils.sectionItems === 'function' ? digestUtils.sectionItems(value) : [];
+    }
+
+    function digestMessageRangeText(digest) {
+      return digestUtils && typeof digestUtils.messageRangeText === 'function' ? digestUtils.messageRangeText(digest) : '';
+    }
+
+    const digestSourceLocator = digestUtils.createDigestSourceLocator({ dom, showToast });
+
+    function appendDigestResultSection(container, label, items) {
+      const normalizedItems = digestSectionItems(items);
+
+      if (normalizedItems.length === 0) {
+        return;
+      }
+
+      const title = document.createElement('h3');
+      title.className = 'conversation-digest-section-title';
+      title.textContent = label;
+
+      const list = document.createElement('ul');
+      list.className = 'conversation-digest-section-list';
+
+      for (const item of normalizedItems) {
+        const row = document.createElement('li');
+        row.textContent = item;
+        list.appendChild(row);
+      }
+
+      container.append(title, list);
+    }
+
+    function syncDigestResultBody(container, digest) {
+      container.textContent = '';
+      container.classList.remove('plain-text');
+
+      const card = document.createElement('article');
+      const header = document.createElement('div');
+      const titleWrap = document.createElement('div');
+      const eyebrow = document.createElement('p');
+      const range = document.createElement('p');
+      const kindHelp = document.createElement('p');
+      const provenance = document.createElement('p');
+      const actions = document.createElement('div');
+      const locateButton = document.createElement('button');
+      const summary = document.createElement('p');
+      const kindLabel = digestUtils.digestKindLabel(digest);
+      const sourceCount = digest && digest.kind === 'rollup' && Array.isArray(digest.sourceDigestIds) ? digest.sourceDigestIds.length : 0;
+      const sourceText = sourceCount > 0 ? ` · 来自 ${sourceCount} 条详细摘要` : '';
+      const provenanceParts = [];
+
+      card.className = 'conversation-digest-card timeline-digest-card';
+      header.className = 'conversation-digest-card-header';
+      eyebrow.className = 'eyebrow';
+      range.className = 'muted';
+      kindHelp.className = 'muted tiny-meta';
+      provenance.className = 'muted tiny-meta';
+      actions.className = 'conversation-digest-card-actions';
+      locateButton.className = 'secondary-button compact-icon-button';
+      locateButton.type = 'button';
+      locateButton.textContent = '定位首条';
+      locateButton.disabled = !String(digest && digest.messageRange && digest.messageRange.fromMessageId || '').trim();
+      locateButton.title = locateButton.disabled
+        ? '这条摘要暂时没有可定位的首条消息'
+        : '滚动到这条摘要覆盖范围的第一条消息';
+      locateButton.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        digestSourceLocator.focusSourceMessage(digest);
+      });
+
+      eyebrow.textContent = `${kindLabel}完成`;
+      kindHelp.textContent = digestUtils.digestKindHelp(digest);
+      range.textContent = `${digestMessageRangeText(digest) || (digest && digest.id) || 'Digest'}${sourceText}`;
+
+      if (digest && digest.triggerReason) {
+        provenanceParts.push(`触发：${digest.triggerReason}`);
+      }
+      if (digest && digest.createdBy) {
+        provenanceParts.push(`来源：${digest.createdBy}`);
+      }
+      provenance.textContent = provenanceParts.join(' · ');
+
+      titleWrap.append(eyebrow, range, kindHelp);
+      if (provenanceParts.length > 0) {
+        titleWrap.appendChild(provenance);
+      }
+      actions.appendChild(locateButton);
+      header.append(titleWrap, actions);
+
+      summary.className = 'conversation-digest-summary';
+      summary.textContent = String(digest && digest.summary || '').trim();
+
+      card.append(header, summary);
+      appendDigestResultSection(card, '决策', digest && digest.decisions);
+      appendDigestResultSection(card, '事实', digest && digest.facts);
+      appendDigestResultSection(card, '未解决问题', digest && digest.openQuestions);
+      appendDigestResultSection(card, '下一步', digest && digest.nextActions);
+      appendDigestResultSection(card, '产物', digest && digest.artifacts);
+      container.appendChild(card);
     }
 
     function createMessageCard(message, conversationId, agents, activeTurn, activeAgentSlots) {
@@ -1059,11 +1672,13 @@
 
     function syncMessageCard(card, message, conversationId, agents, activeTurn, activeAgentSlots) {
       const metadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
+      const digestResult = metadata && metadata.digestResult && typeof metadata.digestResult === 'object' ? metadata.digestResult : null;
       const isDigestStatusMessage = Boolean(metadata && metadata.digestStatus);
+      const isDigestResultMessage = Boolean(digestResult);
       const agent = message.agentId
         ? (Array.isArray(agents) ? agents.find((item) => item.id === message.agentId) : null) || agentById(message.agentId)
         : null;
-      const liveStage = isPrivateTimelineMessage(message) || isDigestStatusMessage
+      const liveStage = isPrivateTimelineMessage(message) || isDigestStatusMessage || isDigestResultMessage
         ? null
         : liveStageForMessage(conversationId || (message && message.conversationId) || '', activeTurn, activeAgentSlots, message.id);
       const liveLabel = isDigestStatusMessage ? '摘要整理中' : liveStageLabel(liveStage);
@@ -1102,8 +1717,17 @@
         contextSnapshot && contextSnapshot.snapshotId ? contextSnapshot.snapshotId : '',
         tokenUsageLabel,
         tokenUsage && tokenUsage.inputTokens !== null ? tokenUsage.inputTokens : '',
+        tokenUsage && tokenUsage.uncachedInputTokens !== null ? tokenUsage.uncachedInputTokens : '',
         tokenUsage && tokenUsage.outputTokens !== null ? tokenUsage.outputTokens : '',
         tokenUsage && tokenUsage.totalTokens !== null ? tokenUsage.totalTokens : '',
+        tokenUsage && tokenUsage.cacheReadTokens !== null ? tokenUsage.cacheReadTokens : '',
+        tokenUsage && tokenUsage.cacheWriteTokens !== null ? tokenUsage.cacheWriteTokens : '',
+        tokenUsage && tokenUsage.totalCostUsd !== null ? tokenUsage.totalCostUsd : '',
+        tokenUsage && tokenUsage.inputCostUsd !== null ? tokenUsage.inputCostUsd : '',
+        tokenUsage && tokenUsage.outputCostUsd !== null ? tokenUsage.outputCostUsd : '',
+        tokenUsage && tokenUsage.cacheReadCostUsd !== null ? tokenUsage.cacheReadCostUsd : '',
+        tokenUsage && tokenUsage.cacheWriteCostUsd !== null ? tokenUsage.cacheWriteCostUsd : '',
+        digestResult ? JSON.stringify(digestResult) : '',
         traceSignature,
       ].join('\u001f');
 
@@ -1116,6 +1740,7 @@
       card.className = `message-card ${message.role}`;
       card.classList.toggle('failed', message.status === 'failed');
       card.classList.toggle('digest-status', isDigestStatusMessage);
+      card.classList.toggle('digest-result', isDigestResultMessage);
 
       if (agent && agent.accentColor) {
         card.style.setProperty('--agent-color', agent.accentColor);
@@ -1206,7 +1831,12 @@
         time.appendChild(tokenBadge);
       }
 
-      renderMessageBody(body, bodyText, agents);
+      body.classList.toggle('digest-result-body', isDigestResultMessage);
+      if (isDigestResultMessage) {
+        syncDigestResultBody(body, digestResult);
+      } else {
+        renderMessageBody(body, bodyText, agents);
+      }
       syncToolTraceSection(toolTrace, message, liveStage);
 
       if (liveHint) {
@@ -1257,7 +1887,7 @@
       if (modelTrace) {
         const eventCount = Math.max(0, Number(modelTrace.eventCount || 0));
         if (eventCount > 0) {
-          lines.push(`事件：${eventCount} 个模型事件`);
+          lines.push(`模型更新：${eventCount} 次`);
         }
 
         const thinkingPreview = clipDigestStatusPreview(modelTrace.thinkingPreview, 700);
@@ -1296,10 +1926,83 @@
       };
     }
 
+    function digestTimestamp(digest) {
+      const timestamp = Date.parse(String(digest && (digest.updatedAt || digest.compactedAt || digest.createdAt) || ''));
+      return Number.isFinite(timestamp) ? timestamp : 0;
+    }
+
+    function latestUpdatedDigestForConversation(conversation) {
+      const digests = digestUtils && typeof digestUtils.digestsForConversation === 'function'
+        ? digestUtils.digestsForConversation(conversation)
+        : [];
+
+      if (digests.length === 0) {
+        return null;
+      }
+
+      return digests.reduce((latest, digest) => {
+        if (!latest) {
+          return digest;
+        }
+
+        return digestTimestamp(digest) >= digestTimestamp(latest) ? digest : latest;
+      }, null);
+    }
+
+    function digestResultTimelineMessage(conversation) {
+      const digest = latestUpdatedDigestForConversation(conversation);
+
+      if (!digest || !digest.id) {
+        return null;
+      }
+
+      const kindLabel = digestUtils.digestKindLabel(digest);
+
+      return {
+        id: `digest-result:${digest.id}`,
+        role: 'system',
+        senderName: '会话摘要',
+        content: digest.summary,
+        status: 'completed',
+        createdAt: digest.updatedAt || digest.compactedAt || digest.createdAt,
+        metadata: {
+          digestResult: digest,
+          digestResultKindLabel: kindLabel,
+        },
+      };
+    }
+
+    function timelineMessageTimestamp(message) {
+      const timestamp = Date.parse(String(message && message.createdAt || ''));
+      return Number.isFinite(timestamp) ? timestamp : 0;
+    }
+
+    function compareTimelineMessages(left, right) {
+      const leftTime = timelineMessageTimestamp(left);
+      const rightTime = timelineMessageTimestamp(right);
+
+      if (leftTime !== rightTime) {
+        return leftTime - rightTime;
+      }
+
+      const leftId = left && left.id ? String(left.id) : '';
+      const rightId = right && right.id ? String(right.id) : '';
+      return leftId.localeCompare(rightId);
+    }
+
+    function mergeDigestTimelineMessage(baseMessages, digestMessage) {
+      if (!digestMessage) {
+        return baseMessages;
+      }
+
+      return baseMessages.concat(digestMessage).sort(compareTimelineMessages);
+    }
+
     function render(conversation, activeTurn, activeAgentSlots = []) {
       const baseMessages = timelineMessagesForConversation(conversation);
       const digestStatusMessage = digestStatusTimelineMessage(conversation);
-      const messages = digestStatusMessage ? baseMessages.concat(digestStatusMessage) : baseMessages;
+      const digestResultMessage = digestStatusMessage ? null : digestResultTimelineMessage(conversation);
+      const messages = mergeDigestTimelineMessage(baseMessages, digestStatusMessage || digestResultMessage);
       const hasMessages = messages.length > 0;
 
       if (!hasMessages) {

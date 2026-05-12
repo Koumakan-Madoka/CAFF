@@ -45,6 +45,45 @@
   and restore scroll/anchor state for expanded tool timelines instead of
   snapping the viewport back to the top.
 
+## Chat Model Observability UI
+
+### 1. Scope / Trigger
+- Trigger: rendering assistant message usage badges and expanded tool trace details in `public/chat/message-timeline.js`.
+
+### 2. Signatures
+- Message metadata may include `tokenUsage` and `modelUsage` from the backend.
+- Tool trace payload may include `summary.modelCallCount`, `summary.toolExecutionCount`, `summary.postColdModelCallCount`, `summary.providerMissCount`, top-level canonical `modelUsageSummary`, `modelUsageCalls[]`, and `timelineEvents[]`.
+
+### 3. Contracts
+- Use `模型调用` for asks to the model and `工具执行` for tool steps; do not call both "rounds" or use one count as the other.
+- Provider miss labels use `providerMissCount / postColdModelCallCount` so cold start is visible but excluded from the miss denominator.
+- The expanded trace should use `timelineEvents[]` as the single rendering source when present, with first-class typed rows for `model_call` and `tool_execution`, while preserving existing tool execution previews and statuses. Frontend fallback derivation exists only for legacy payloads that lack backend-normalized summary/timeline fields.
+- Historical messages without `modelUsage` keep aggregate token badges and must not throw.
+
+### 4. Validation & Error Matrix
+| Case | Expected behavior |
+| --- | --- |
+| `modelUsage` present | Badge starts with model-call count and trace shows per-call cold-start/cache-hit/provider-miss state. |
+| Tool trace has tool steps and model calls | Summary shows `模型调用 M 次` and `工具执行 N 次`, and expansion renders one `本次回复观测时间线` rather than separate model/tool sections. |
+| Only aggregate `tokenUsage` exists | Badge shows aggregate token/cost/cache details without model-call pills. |
+| Missing usage | No usage badge; timeline layout remains unchanged. |
+
+### 5. Good/Base/Bad Cases
+- Good: `3 次模型调用 · 消耗 42.1k token · provider miss 1/2 次模型调用`.
+- Base: aggregate-only historical messages display total token and cost information.
+- Bad: `模型 3 轮` next to `2 步` when the denominator actually means tool executions.
+
+### 6. Tests Required
+- Runtime trace tests should assert separate model-call and tool-execution counts.
+- `npm run check` must cover browser syntax for `public/chat/message-timeline.js`.
+
+### 7. Wrong vs Correct
+#### Wrong
+`provider miss 1/2` where `2` is the number of tool steps.
+
+#### Correct
+`provider miss 1/2 次模型调用` where `2` is the number of non-cold model calls.
+
 ## Cross-Layer Watch Points
 
 - UI payload expectations must stay aligned with controller and domain output.

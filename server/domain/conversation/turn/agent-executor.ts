@@ -26,6 +26,7 @@ const { ensureAgentSandbox, toPortableShellPath } = require('./agent-sandbox');
 const { createBrowserCliSessionName, resolveBrowserCliPath } = require('./browser-cli');
 const { extractChatBridgeReplaysFromText, pickChatBridgeReplay } = require('./chat-bridge-replay');
 const { createLiveSessionToolStep } = require('../../runtime/message-tool-trace');
+const { summarizeModelUsageCalls, summarizeTokenUsage } = require('../../runtime/token-usage');
 const {
   SKILL_TEST_DESIGN_CONVERSATION_TYPE,
   buildSkillTestDesignCaseSummary,
@@ -95,68 +96,6 @@ function createTaskId(prefix = 'task') {
 
 function sanitizeReason(reason: any) {
   return clipText(reason || '', HEARTBEAT_EVENT_REASON_LIMIT);
-}
-
-function normalizeTokenCount(value: any) {
-  if (value === null || value === undefined || value === '') {
-    return null;
-  }
-
-  const count = Number(value);
-
-  if (!Number.isFinite(count) || count < 0) {
-    return null;
-  }
-
-  return Math.round(count);
-}
-
-function pickTokenCount(usage: any, keys: string[]) {
-  if (!usage || typeof usage !== 'object') {
-    return null;
-  }
-
-  for (const key of keys) {
-    if (Object.prototype.hasOwnProperty.call(usage, key)) {
-      const count = normalizeTokenCount(usage[key]);
-
-      if (count !== null) {
-        return count;
-      }
-    }
-  }
-
-  return null;
-}
-
-function summarizeTokenUsage(usage: any) {
-  const rawUsage = usage && typeof usage === 'object' && !Array.isArray(usage) ? usage : null;
-
-  if (!rawUsage) {
-    return null;
-  }
-
-  const inputTokens = pickTokenCount(rawUsage, ['inputTokens', 'input_tokens', 'promptTokens', 'prompt_tokens', 'prompt', 'input']);
-  const outputTokens = pickTokenCount(rawUsage, [
-    'outputTokens',
-    'output_tokens',
-    'completionTokens',
-    'completion_tokens',
-    'completion',
-    'output',
-  ]);
-  const explicitTotalTokens = pickTokenCount(rawUsage, ['totalTokens', 'total_tokens', 'total']);
-  const totalTokens = explicitTotalTokens !== null ? explicitTotalTokens : inputTokens !== null || outputTokens !== null ? (inputTokens || 0) + (outputTokens || 0) : null;
-
-  if (inputTokens === null && outputTokens === null && totalTokens === null) {
-    return null;
-  }
-
-  return {
-    inputTokens,
-    outputTokens,
-    totalTokens,
-  };
 }
 
 function normalizePromptMentionPlaceholders(text: any) {
@@ -1456,6 +1395,8 @@ export function createAgentExecutor(options: any = {}) {
     broadcastConversationSummary(conversationId);
     emitTurnProgress(turnState);
 
+    let activeRunHandle: any = null;
+    let bridgePublicCompletionRequested = false;
     const toolInvocation = agentToolBridge.registerInvocation(
       agentToolBridge.createInvocationContext({
         conversationId,
@@ -1472,6 +1413,24 @@ export function createAgentExecutor(options: any = {}) {
         turnState,
         enqueueAgent,
         allowHandoffs,
+        autoCompleteOnPublicPost: true,
+        onPublicPostCompleted(event: any = {}) {
+          if (bridgePublicCompletionRequested || !activeRunHandle || typeof activeRunHandle.complete !== 'function') {
+            return;
+          }
+
+          bridgePublicCompletionRequested = true;
+          runStore.appendTaskEvent(stageTaskId, 'agent_reply_bridge_auto_completed', {
+            conversationId,
+            turnId,
+            agentId: agent.id,
+            agentName: agent.name,
+            messageId: assistantMessage.id,
+            publicPostCount: event.publicPostCount || toolInvocation.publicPostCount || 0,
+            publicPostMode: event.publicPostMode || '',
+          });
+          activeRunHandle.complete('Chat bridge public reply posted; completing turn without raw final reply.');
+        },
       })
     );
 
@@ -1604,6 +1563,7 @@ export function createAgentExecutor(options: any = {}) {
         toolBridgeEnabled: true,
       },
     });
+    activeRunHandle = handle;
     registerTurnHandle(turnState, handle);
 
     const startedAt = nowIso();
@@ -1843,6 +1803,7 @@ export function createAgentExecutor(options: any = {}) {
       const continuedByPrivateHandoff = allowHandoffs && privateHandoffCount > 0;
       const effectiveFinal = allowHandoffs ? decision.final && !continuedByPrivateHandoff : true;
       const tokenUsage = summarizeTokenUsage(result.usage);
+      const modelUsage = summarizeModelUsageCalls(result.usageCalls);
       const finalMetadata = {
         provider,
         model,
@@ -1878,6 +1839,7 @@ export function createAgentExecutor(options: any = {}) {
         triggerType: queueItem.triggerType || 'user',
         usage: result.usage && typeof result.usage === 'object' && !Array.isArray(result.usage) ? result.usage : null,
         tokenUsage,
+        modelUsage,
         agentContextSnapshot: contextSnapshot,
       };
       const assistantMessageDone = store.updateMessage(assistantMessage.id, {
@@ -2038,6 +2000,9 @@ export function createAgentExecutor(options: any = {}) {
       const errorValue = error as any;
       const errorMessage = errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Unknown error');
       const stopRequested = Boolean(turnState.stopRequested);
+      const errorUsage = errorValue && errorValue.usage && typeof errorValue.usage === 'object' && !Array.isArray(errorValue.usage) ? errorValue.usage : null;
+      const errorTokenUsage = summarizeTokenUsage(errorUsage);
+      const errorModelUsage = summarizeModelUsageCalls(errorValue && errorValue.usageCalls);
       const existingMessage = store.getMessage(assistantMessage.id);
       const assistantMessageFailed = store.updateMessage(assistantMessage.id, {
         content: existingMessage && existingMessage.content !== 'Thinking...' ? existingMessage.content : '',
@@ -2067,6 +2032,9 @@ export function createAgentExecutor(options: any = {}) {
           triggeredByAgentName: queueItem.triggeredByAgentName || '',
           triggeredByMessageId: queueItem.triggeredByMessageId || null,
           triggerType: queueItem.triggerType || 'user',
+          usage: errorUsage,
+          tokenUsage: errorTokenUsage,
+          modelUsage: errorModelUsage,
           agentContextSnapshot: contextSnapshot,
         },
       });

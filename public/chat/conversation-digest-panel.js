@@ -11,9 +11,11 @@
 
   chat.createConversationDigestPanelController = function createConversationDigestPanelController({ state, dom, helpers, showToast }) {
     const { formatDateTime, submitDigestCommand, submitSkillDraftCommand } = helpers;
+    const digestSourceLocator = digestUtils.createDigestSourceLocator({ dom, showToast });
     let isDigestOpen = false;
     let isSkillDraftOpen = false;
     let isSaving = false;
+    let focusedDigestId = '';
 
     function setDigestOpen(nextOpen) {
       isDigestOpen = Boolean(nextOpen);
@@ -56,6 +58,23 @@
       button.title = '查看并确认待保存的 Skill 草稿';
     }
 
+    function focusDigestCard(digestId) {
+      const normalizedDigestId = String(digestId || '').trim();
+
+      if (!normalizedDigestId || !dom.conversationDigestList) {
+        return;
+      }
+
+      const card = Array.from(dom.conversationDigestList.querySelectorAll('.conversation-digest-card'))
+        .find((candidate) => candidate.dataset.digestId === normalizedDigestId);
+
+      if (!card) {
+        return;
+      }
+
+      card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
     function appendSection(card, label, items) {
       const normalizedItems = digestUtils.sectionItems(items);
 
@@ -82,6 +101,8 @@
     function renderDigestCard(digest) {
       const card = document.createElement('article');
       card.className = 'conversation-digest-card';
+      card.dataset.digestId = digest.id;
+      card.classList.toggle('focused', Boolean(focusedDigestId && digest.id === focusedDigestId));
 
       const header = document.createElement('div');
       header.className = 'conversation-digest-card-header';
@@ -89,14 +110,22 @@
       const titleWrap = document.createElement('div');
       const eyebrow = document.createElement('p');
       eyebrow.className = 'eyebrow';
-      const kindLabel = digest.kind === 'rollup' ? '压缩摘要' : '摘要条目';
-      eyebrow.textContent = `${kindLabel} · ${formatDateTime(digest.createdAt) || 'Digest'}`;
+      const kindLabel = digestUtils.digestKindLabel(digest);
+      const kindIcon = digest.kind === 'rollup' ? '📦' : '📝';
+      eyebrow.textContent = `${kindIcon} ${kindLabel} · ${formatDateTime(digest.createdAt) || 'Digest'}`;
 
       const range = document.createElement('p');
       range.className = 'muted';
       const sourceCount = digest.kind === 'rollup' && Array.isArray(digest.sourceDigestIds) ? digest.sourceDigestIds.length : 0;
-      const sourceText = sourceCount > 0 ? ` · 来自 ${sourceCount} 条摘要` : '';
-      range.textContent = `${digestUtils.messageRangeText(digest) || digest.id}${sourceText}`;
+      const sourceText = sourceCount > 0 ? ` · 来自 ${sourceCount} 条详细摘要` : '';
+      const rangeText = digestUtils.messageRangeText(digest);
+      range.textContent = digest.kind === 'rollup'
+        ? `${rangeText || digest.id}${sourceText}`
+        : `${rangeText ? `覆盖 ${rangeText}` : digest.id}`;
+
+      const kindHelp = document.createElement('p');
+      kindHelp.className = 'muted tiny-meta';
+      kindHelp.textContent = digestUtils.digestKindHelp(digest);
 
       const provenance = document.createElement('p');
       provenance.className = 'muted tiny-meta';
@@ -109,13 +138,23 @@
       }
       provenance.textContent = provenanceParts.join(' · ');
 
-      titleWrap.append(eyebrow, range);
+      titleWrap.append(eyebrow, range, kindHelp);
       if (provenanceParts.length > 0) {
         titleWrap.appendChild(provenance);
       }
 
       const actions = document.createElement('div');
       actions.className = 'conversation-digest-card-actions';
+
+      const locateButton = document.createElement('button');
+      locateButton.className = 'secondary-button compact-icon-button';
+      locateButton.type = 'button';
+      locateButton.textContent = '定位首条';
+      locateButton.disabled = isSaving || !String(digest.messageRange && digest.messageRange.fromMessageId || '').trim();
+      locateButton.title = locateButton.disabled
+        ? '这条摘要暂时没有可定位的首条消息'
+        : '滚动到这条摘要覆盖范围的第一条消息';
+      locateButton.addEventListener('click', () => digestSourceLocator.focusSourceMessage(digest));
 
       const extractButton = document.createElement('button');
       extractButton.className = 'secondary-button compact-icon-button';
@@ -136,7 +175,7 @@
         }
       });
 
-      actions.append(extractButton, deleteButton);
+      actions.append(locateButton, extractButton, deleteButton);
       header.append(titleWrap, actions);
 
       const summary = document.createElement('p');
@@ -257,7 +296,7 @@
       if (digests.length === 0) {
         const empty = document.createElement('div');
         empty.className = 'empty-state compact-empty-state';
-        empty.textContent = '还没有摘要。点击“生成摘要”或在输入框发送 /digest。';
+        empty.textContent = '还没有摘要。点击“生成摘要”或发送 /digest，会创建一条“详细摘要”。';
         dom.conversationDigestList.appendChild(empty);
         return;
       }
@@ -315,13 +354,19 @@
 
       if (dom.conversationDigestCreateButton) {
         dom.conversationDigestCreateButton.disabled = !hasConversation || isSaving;
-        dom.conversationDigestCreateButton.textContent = isSaving ? '生成中...' : '生成摘要';
+        dom.conversationDigestCreateButton.textContent = isSaving ? '生成中...' : '生成详细摘要';
       }
 
       if (dom.conversationDigestCompactButton) {
         const digestCount = digestUtils.digestCount(state.currentConversation);
+        const digestCounts = typeof digestUtils.digestCounts === 'function'
+          ? digestUtils.digestCounts(state.currentConversation)
+          : { entryCount: digestCount };
         dom.conversationDigestCompactButton.disabled = !hasConversation || isSaving || digestCount < 2;
-        dom.conversationDigestCompactButton.textContent = isSaving ? '处理中...' : '压缩旧摘要';
+        dom.conversationDigestCompactButton.textContent = isSaving ? '处理中...' : '压缩旧详细摘要';
+        dom.conversationDigestCompactButton.title = digestCounts.entryCount > 1
+          ? '把旧详细摘要合并为一条压缩总摘要；近期详细摘要会保留。'
+          : '需要先生成更多详细摘要，才可能压缩成压缩总摘要。';
       }
 
       renderDigestList();
@@ -402,6 +447,18 @@
       });
     }
 
+    function openDigest(digestId) {
+      if (!state.currentConversation) {
+        return;
+      }
+
+      focusedDigestId = String(digestId || '').trim();
+      isDigestOpen = true;
+      isSkillDraftOpen = false;
+      render();
+      window.requestAnimationFrame(() => focusDigestCard(focusedDigestId));
+    }
+
     function openSkillDrafts() {
       if (!state.currentConversation) {
         return;
@@ -412,6 +469,7 @@
 
     return {
       bindEvents,
+      openDigest,
       openSkillDrafts,
       render,
     };

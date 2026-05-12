@@ -481,14 +481,18 @@
         </div>
 
         <p id="conversation-digest-status" class="session-goal-status-badge active">当前没有会话摘要</p>
+        <ul class="conversation-digest-help">
+          <li><strong>详细摘要</strong>：/digest 生成，直接总结一段近期原始聊天内容。</li>
+          <li><strong>压缩总摘要</strong>：/digest compact 生成，把多条旧详细摘要合并成一条长期概览。近期原文仍优先。</li>
+        </ul>
         <div class="session-goal-action-card">
           <div class="section-row">
-            <span class="section-label">长期记忆</span>
-            <span class="section-hint">摘要低于近期原文优先级</span>
+            <span class="section-label">摘要记忆</span>
+            <span class="section-hint">详细摘要记录近期，压缩总摘要保留历史</span>
           </div>
           <div class="button-row compact-button-row">
-            <button id="conversation-digest-create-button" type="button">生成摘要</button>
-            <button id="conversation-digest-compact-button" class="secondary-button" type="button">压缩旧摘要</button>
+            <button id="conversation-digest-create-button" type="button">生成详细摘要</button>
+            <button id="conversation-digest-compact-button" class="secondary-button" type="button">压缩旧详细摘要</button>
           </div>
         </div>
         <div id="conversation-digest-list" class="conversation-digest-list"></div>
@@ -560,7 +564,7 @@
             <select id="summary-memory-kind">
               <option value="">全部</option>
               <option value="entry">详细摘要</option>
-              <option value="rollup">压缩摘要</option>
+              <option value="rollup">压缩总摘要</option>
             </select>
           </label>
           <label class="summary-memory-checkbox-row">
