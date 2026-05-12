@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { isPathWithin } from '../conversation/turn/session-export';
+import { summarizeModelUsageCalls } from './token-usage';
 
 const MAX_TOOL_EVENT_COUNT = 200;
 const MAX_PREVIEW_LENGTH = 240;
@@ -339,6 +340,7 @@ export function readSessionAssistantSnapshot(sessionPath: any, agentDir: any) {
   const thinkingParts: string[] = [];
   const textParts: string[] = [];
   const toolCalls: any[] = [];
+  const modelCalls: any[] = [];
   const assistantErrors: string[] = [];
   let assistantMessageTotal = 0;
   let lastAssistant: any = null;
@@ -359,6 +361,19 @@ export function readSessionAssistantSnapshot(sessionPath: any, agentDir: any) {
     const message = entry.message;
     assistantMessageTotal += 1;
     lastAssistant = message;
+
+    let modelCallSequence: number | null = null;
+
+    if (message.usage && typeof message.usage === 'object' && !Array.isArray(message.usage)) {
+      modelCallSequence = modelCalls.length + 1;
+      modelCalls.push({
+        key: message.responseId ? String(message.responseId) : `assistant:${assistantMessageTotal}`,
+        responseId: message.responseId ? String(message.responseId) : '',
+        stopReason: message.stopReason ? String(message.stopReason) : '',
+        timestamp: message.timestamp !== undefined ? message.timestamp : null,
+        usage: message.usage,
+      });
+    }
 
     if (message.stopReason === 'error' && message.errorMessage) {
       assistantErrors.push(String(message.errorMessage));
@@ -396,6 +411,8 @@ export function readSessionAssistantSnapshot(sessionPath: any, agentDir: any) {
           toolName: item && item.name ? String(item.name) : '',
           arguments: item && item.arguments !== undefined ? item.arguments : null,
           partialJson: item && item.partialJson ? String(item.partialJson) : '',
+          assistantMessageIndex: assistantMessageTotal,
+          modelCallSequence,
         });
       }
     }
@@ -415,6 +432,7 @@ export function readSessionAssistantSnapshot(sessionPath: any, agentDir: any) {
     thinking: thinkingParts.filter(Boolean).join('\n\n---\n\n'),
     text: textParts.filter(Boolean).join(''),
     toolCalls,
+    modelCalls,
     assistantErrors,
   };
 }
@@ -531,6 +549,12 @@ function normalizeSessionToolCall(toolCall: any, index: number, options: any = {
     partialJson:
       toolCall && toolCall.partialJson ? clipText(redactString(toolCall.partialJson, options), 360) : '',
     bridgeToolHint,
+    modelCallSequence: Number.isFinite(Number(toolCall && toolCall.modelCallSequence))
+      ? Number(toolCall.modelCallSequence)
+      : null,
+    assistantMessageIndex: Number.isFinite(Number(toolCall && toolCall.assistantMessageIndex))
+      ? Number(toolCall.assistantMessageIndex)
+      : null,
   };
 }
 
@@ -636,6 +660,8 @@ function buildMergedTimelineSteps(sessionToolCalls: any[], bridgeToolEvents: any
       ...matchedBridgeStep,
       linkedFromStepId: normalizedSessionStep.stepId,
       linkedFromToolName: normalizedSessionStep.toolName,
+      modelCallSequence: normalizedSessionStep.modelCallSequence || null,
+      assistantMessageIndex: normalizedSessionStep.assistantMessageIndex || null,
     });
   }
 
@@ -655,7 +681,84 @@ function buildMergedTimelineSteps(sessionToolCalls: any[], bridgeToolEvents: any
   }));
 }
 
-function buildTraceSummary(task: any, message: any, sessionToolCalls: any[], bridgeToolEvents: any[]) {
+function normalizePositiveSequence(value: any) {
+  const sequence = Number(value);
+
+  if (!Number.isFinite(sequence) || sequence <= 0) {
+    return null;
+  }
+
+  return Math.round(sequence);
+}
+
+function buildTraceTimelineEvents(modelUsage: any, steps: any[]) {
+  const normalizedSteps = Array.isArray(steps) ? steps.filter(Boolean) : [];
+  const modelCalls = modelUsage && Array.isArray(modelUsage.calls) ? modelUsage.calls : [];
+  const timelineEvents: any[] = [];
+  const usedToolIndexes = new Set<number>();
+
+  for (const call of modelCalls) {
+    const sequence = normalizePositiveSequence(call && call.sequence);
+
+    if (!sequence) {
+      continue;
+    }
+
+    timelineEvents.push({
+      eventType: 'model_call',
+      stepId: `model-call-${sequence}`,
+      modelCallSequence: sequence,
+      sequence,
+      index: call.index,
+      key: call.key,
+      responseId: call.responseId,
+      stopReason: call.stopReason,
+      timestamp: call.timestamp,
+      coldStart: call.coldStart,
+      isColdStart: call.isColdStart,
+      providerMiss: call.providerMiss,
+      tokenUsage: call.tokenUsage,
+    });
+
+    normalizedSteps.forEach((step, index) => {
+      if (usedToolIndexes.has(index)) {
+        return;
+      }
+
+      if (normalizePositiveSequence(step && step.modelCallSequence) !== sequence) {
+        return;
+      }
+
+      usedToolIndexes.add(index);
+      timelineEvents.push({
+        ...step,
+        eventType: 'tool_execution',
+        toolExecutionSequence: index + 1,
+      });
+    });
+  }
+
+  // Defensive fallback for legacy or partially written traces: unmatched tools
+  // remain visible at the end rather than disappearing from the timeline.
+  normalizedSteps.forEach((step, index) => {
+    if (usedToolIndexes.has(index)) {
+      return;
+    }
+
+    timelineEvents.push({
+      ...step,
+      eventType: 'tool_execution',
+      toolExecutionSequence: index + 1,
+    });
+  });
+
+  return timelineEvents.map((event, index) => ({
+    ...event,
+    timelineIndex: index,
+  }));
+}
+
+function buildTraceSummary(task: any, message: any, sessionToolCalls: any[], bridgeToolEvents: any[], modelUsage: any = null) {
   const failedBridgeSteps = bridgeToolEvents.filter((event) => event && event.status === 'failed');
   const succeededBridgeSteps = bridgeToolEvents.filter((event) => event && event.status === 'succeeded');
   const totalDurationMs = bridgeToolEvents.reduce((sum, event) => {
@@ -689,7 +792,9 @@ function buildTraceSummary(task: any, message: any, sessionToolCalls: any[], bri
   const totalSteps = sessionToolCalls.length + bridgeToolEvents.length;
 
   return {
+    // Legacy alias for toolExecutionCount; keep for existing API consumers.
     totalSteps,
+    toolExecutionCount: totalSteps,
     sessionToolCount: sessionToolCalls.length,
     bridgeToolCount: bridgeToolEvents.length,
     failedSteps: failedBridgeSteps.length,
@@ -697,6 +802,10 @@ function buildTraceSummary(task: any, message: any, sessionToolCalls: any[], bri
     totalDurationMs,
     retryCount,
     hasRetries: retryCount > 0,
+    modelCallCount: modelUsage && Number.isFinite(modelUsage.modelCallCount) ? Number(modelUsage.modelCallCount) : 0,
+    coldStartModelCallCount: modelUsage && Number.isFinite(modelUsage.coldStartModelCallCount) ? Number(modelUsage.coldStartModelCallCount) : 0,
+    postColdModelCallCount: modelUsage && Number.isFinite(modelUsage.postColdModelCallCount) ? Number(modelUsage.postColdModelCallCount) : 0,
+    providerMissCount: modelUsage && Number.isFinite(modelUsage.providerMissCount) ? Number(modelUsage.providerMissCount) : 0,
     status: failed ? 'failed' : running ? 'running' : totalSteps > 0 ? 'succeeded' : 'idle',
   };
 }
@@ -955,6 +1064,7 @@ export function buildAssistantMessageToolTrace(options: any = {}) {
   const taskSessionPath = taskRow && taskRow.session_path ? String(taskRow.session_path).trim() : '';
   const sessionSnapshot = readSessionAssistantSnapshot(taskSessionPath || resolvedSessionPath, agentDir);
   const sessionToolSource = sessionSnapshot && Array.isArray(sessionSnapshot.toolCalls) ? sessionSnapshot.toolCalls : [];
+  const modelUsage = summarizeModelUsageCalls(sessionSnapshot && Array.isArray(sessionSnapshot.modelCalls) ? sessionSnapshot.modelCalls : []);
   const visiblePathRoots = taskMetadata && Array.isArray(taskMetadata.visiblePathRoots)
     ? taskMetadata.visiblePathRoots
     : [];
@@ -971,6 +1081,7 @@ export function buildAssistantMessageToolTrace(options: any = {}) {
     .map((row: any) => normalizeBridgeToolEvent(row, traceOptions))
     .filter(Boolean);
   const steps = buildMergedTimelineSteps(sessionToolCalls, bridgeToolEvents);
+  const timelineEvents = buildTraceTimelineEvents(modelUsage, steps);
 
   const task = taskRow
     ? {
@@ -1001,11 +1112,21 @@ export function buildAssistantMessageToolTrace(options: any = {}) {
         model: sessionSnapshot.model,
         api: sessionSnapshot.api,
         usage: summarizeValue(sessionSnapshot.usage, traceOptions),
+        // Compatibility/session diagnostics copy. The top-level
+        // modelUsageSummary is the canonical trace summary for UI consumers.
+        modelUsageSummary: modelUsage
+          ? {
+              modelCallCount: modelUsage.modelCallCount,
+              coldStartModelCallCount: modelUsage.coldStartModelCallCount,
+              postColdModelCallCount: modelUsage.postColdModelCallCount,
+              providerMissCount: modelUsage.providerMissCount,
+            }
+          : null,
         assistantErrors: summarizeValue(sessionSnapshot.assistantErrors, traceOptions),
       }
     : null;
 
-  const summary = buildTraceSummary(task, message, sessionToolCalls, bridgeToolEvents);
+  const summary = buildTraceSummary(task, message, sessionToolCalls, bridgeToolEvents, modelUsage);
   const activity = buildTraceActivity(summary, steps);
   const failureContext = buildTraceFailureContext({
     message: message
@@ -1034,9 +1155,19 @@ export function buildAssistantMessageToolTrace(options: any = {}) {
       : null,
     task,
     session,
+    modelUsageSummary: modelUsage
+      ? {
+          modelCallCount: modelUsage.modelCallCount,
+          coldStartModelCallCount: modelUsage.coldStartModelCallCount,
+          postColdModelCallCount: modelUsage.postColdModelCallCount,
+          providerMissCount: modelUsage.providerMissCount,
+        }
+      : null,
+    modelUsageCalls: modelUsage ? modelUsage.calls : [],
     sessionToolCalls,
     bridgeToolEvents,
     steps,
+    timelineEvents,
     summary,
     activity,
     failureContext,
