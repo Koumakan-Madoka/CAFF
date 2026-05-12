@@ -930,6 +930,9 @@ test('buildAgentTurnPrompt gives bash-only multiline chat bridge guidance', () =
   assert.match(prompt, /Use write-experience sparingly/u);
   assert.match(prompt, /reusable, validated lessons/u);
   assert.match(prompt, /Never put raw message text on a new shell line by itself/u);
+  assert.match(prompt, /successful send-public call completes the turn automatically/u);
+  assert.match(prompt, /if send-private succeeds without a public reply, use a tiny control reply/u);
+  assert.doesNotMatch(prompt, /After send-public\/send-private succeeds/u);
   assert.doesNotMatch(prompt, /PowerShell example/u);
 });
 

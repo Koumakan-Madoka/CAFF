@@ -200,6 +200,7 @@ CAFF uses a descriptor + on-demand loading model for conversation skills:
 - Preserve exact public and private heredoc templates using `node "$CAFF_CHAT_TOOLS_PATH"` because they are the safest multiline examples and are covered by prompt tests.
 - Keep safety rules explicit in `command_format_rules`: never print tokens/secrets, check public content before `send-public`, put private roles/reasoning/scratch/game identity in private notes, and mark `--force` as dangerous.
 - Keep routing rules explicit in `rules` / `routing_instructions`: actionable mentions trigger only at line start or in a final pure mention block; inline mentions do not trigger; private messages wake recipients unless `--no-handoff`; no actionable mention stops the turn; up to 5 agents run at once.
+- Successful `send-public` bridge calls in normal conversation turns must request runtime completion through the active run handle so the model does not need a second full-context call just to emit `{ "action": "final" }`; the final stored reply remains the last public bridge content.
 - Keep `tool_instructions` focused on compact command signatures and group low-frequency tools into capability lines rather than listing preview/apply/overwrite examples separately.
 - Dynamic skill loading stays a single conditional `dynamic_skill_loading` section: descriptor-only skills are loaded by reading the listed `Path`, which already points to `SKILL.md`.
 - Do not advertise deprecated memory card bridge commands in `Chat bridge tools`.
