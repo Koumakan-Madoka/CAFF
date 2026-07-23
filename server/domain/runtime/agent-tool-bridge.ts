@@ -358,22 +358,17 @@ export function createAgentToolBridge(options: any = {}) {
   }
 
   function resolveContextStore(context: any) {
-    return context && context.store ? context.store : store;
+    return store;
   }
 
   function recordPolicyReject(context: any, toolName: string, reason: string, details: any = {}) {
     const normalizedToolName = normalizePolicyToolName(toolName);
-    const policy = context && context.toolPolicy && typeof context.toolPolicy === 'object' ? context.toolPolicy : null;
     const rejectEntry = {
       toolName: normalizedToolName,
       reason: clipText(reason, 240),
       details: details && typeof details === 'object' ? details : {},
       createdAt: nowIso(),
     };
-
-    if (policy && Array.isArray(policy.rejects)) {
-      policy.rejects.push(rejectEntry);
-    }
 
     if (context) {
       if (!Array.isArray(context.policyRejects)) {
@@ -396,19 +391,7 @@ export function createAgentToolBridge(options: any = {}) {
   }
 
   function ensureToolAllowed(context: any, toolName: string, details: any = {}) {
-    const policy = context && context.toolPolicy && typeof context.toolPolicy === 'object' ? context.toolPolicy : null;
-    if (!policy || !Array.isArray(policy.allowedTools) || policy.allowedTools.length === 0) {
-      return;
-    }
-
-    const normalizedToolName = normalizePolicyToolName(toolName);
-    const allowed = policy.allowedTools.some((entry: any) => normalizePolicyToolName(entry) === normalizedToolName);
-    if (allowed) {
-      return;
-    }
-
-    recordPolicyReject(context, normalizedToolName, `${normalizedToolName} is blocked by tool policy`, details);
-    throw createHttpError(403, `${normalizedToolName} is blocked by tool policy`);
+    return;
   }
 
   function resolveStageTaskId(context: any) {
@@ -539,12 +522,6 @@ export function createAgentToolBridge(options: any = {}) {
       userMessageId: String(input.userMessageId || (promptUserMessage && promptUserMessage.id) || '').trim(),
       promptUserMessage,
       conversationAgents: Array.isArray(input.conversationAgents) ? input.conversationAgents.slice() : [],
-      dryRun: input.dryRun === true,
-      dryRunPublicPosts: [] as any[],
-      dryRunPrivatePosts: [] as any[],
-      store: input.store || null,
-      toolPolicy: input.toolPolicy || null,
-      sandboxToolAdapter: input.sandboxToolAdapter || null,
       policyRejects: [],
       runStore: input.runStore || null,
       stage: input.stage || null,
@@ -923,91 +900,6 @@ export function createAgentToolBridge(options: any = {}) {
       }
 
       if (visibility === 'public') {
-        if (context.dryRun) {
-          const timestamp = nowIso();
-          const normalizedMode = String(mode || 'replace').trim().toLowerCase() || 'replace';
-          const nextContent =
-            normalizedMode === 'append' && String(context.lastPublicContent || '').trim()
-              ? `${context.lastPublicContent}${content}`
-              : content;
-          const messageId = `dryrun-${randomUUID()}`;
-
-          context.publicToolUsed = true;
-          context.publicPostCount = (context.publicPostCount || 0) + 1;
-          context.lastPublicContent = nextContent;
-          context.lastPublicPostedAt = timestamp;
-          context.dryRunPublicPosts.push({
-            id: messageId,
-            content: nextContent,
-            mode: normalizedMode,
-            createdAt: timestamp,
-          });
-
-          if (context.stage) {
-            context.stage.status = 'running';
-            context.stage.replyLength = nextContent.length;
-            context.stage.preview = clipText(nextContent, TURN_PREVIEW_LENGTH);
-            context.stage.lastTextDeltaAt = timestamp;
-          }
-
-          if (context.turnState) {
-            context.turnState.updatedAt = timestamp;
-            onTurnUpdated(context.turnState);
-          }
-
-          const serialized = {
-            id: messageId,
-            role: 'assistant',
-            agentId: context.agentId || null,
-            senderName: context.agentName,
-            content: nextContent,
-            status: 'completed',
-            createdAt: timestamp,
-            publicPostedAt: timestamp,
-            publicPostCount: context.publicPostCount || 0,
-            publicPostMode: normalizedMode,
-            mentions: [],
-          };
-
-          tryAppendInvocationEvent(context, 'agent_tool_call', {
-            schemaVersion: 1,
-            toolCallId,
-            tool: 'send-public',
-            status: 'succeeded',
-            durationMs: Date.now() - startedAt,
-            invocationId: context.invocationId,
-            conversationId: context.conversationId,
-            turnId: context.turnId,
-            agentId: context.agentId,
-            agentName: context.agentName,
-            assistantMessageId: context.assistantMessageId,
-            request: {
-              visibility: 'public',
-              mode: normalizedMode,
-              contentLength: content.length,
-            },
-            result: {
-              messageId: serialized.id,
-              publicPostCount: serialized.publicPostCount,
-              publicPostMode: serialized.publicPostMode,
-              publicPostedAt: serialized.publicPostedAt,
-            },
-          });
-          requestPublicPostCompletion(context, {
-            messageId: serialized.id,
-            publicPostCount: serialized.publicPostCount,
-            publicPostMode: serialized.publicPostMode,
-            publicPostedAt: serialized.publicPostedAt,
-            toolCallId,
-          });
-
-          return {
-            ok: true,
-            visibility: 'public',
-            message: serialized,
-          };
-        }
-
         const message = applyAgentToolPublicUpdate(context, content, mode);
         const serialized = serializeAgentToolPublicMessage(message);
         tryAppendInvocationEvent(context, 'agent_tool_call', {
@@ -1049,71 +941,6 @@ export function createAgentToolBridge(options: any = {}) {
       }
 
       if (visibility === 'private') {
-        if (context.dryRun) {
-          const timestamp = nowIso();
-          const recipientAgentIds = resolveAgentToolRecipientIds(
-            body.recipientAgentIds !== undefined ? body.recipientAgentIds : body.recipients,
-            context.conversationAgents
-          );
-          const resolvedRecipientAgentIds = recipientAgentIds.length > 0 ? recipientAgentIds : [context.agentId];
-          const handoffAgentIds = resolvedRecipientAgentIds.filter((agentId: any) => agentId && agentId !== context.agentId);
-          const explicitHandoff = body.handoff === true || body.triggerReply === true;
-          const explicitNoHandoff = body.handoff === false || body.triggerReply === false || body.noHandoff === true;
-          const handoffRequested =
-            context.allowHandoffs && !explicitNoHandoff && (explicitHandoff || handoffAgentIds.length > 0);
-          const messageId = `dryrun-${randomUUID()}`;
-
-          const privateMessage = {
-            id: messageId,
-            turnId: context.turnId || 'eval',
-            senderAgentId: context.agentId || null,
-            senderName: context.agentName,
-            recipientAgentIds: resolvedRecipientAgentIds,
-            content,
-            createdAt: timestamp,
-          };
-
-          context.privatePostCount = (context.privatePostCount || 0) + 1;
-          context.dryRunPrivatePosts.push({
-            ...privateMessage,
-            handoffRequested,
-          });
-
-          const response = {
-            ok: true,
-            visibility: 'private',
-            message: serializeAgentToolPrivateMessage(privateMessage),
-            handoffRequested,
-            enqueuedAgentIds: [],
-          };
-
-          tryAppendInvocationEvent(context, 'agent_tool_call', {
-            schemaVersion: 1,
-            toolCallId,
-            tool: 'send-private',
-            status: 'succeeded',
-            durationMs: Date.now() - startedAt,
-            invocationId: context.invocationId,
-            conversationId: context.conversationId,
-            turnId: context.turnId,
-            agentId: context.agentId,
-            agentName: context.agentName,
-            assistantMessageId: context.assistantMessageId,
-            request: {
-              visibility: 'private',
-              contentLength: content.length,
-              recipientCount: resolvedRecipientAgentIds.length,
-              handoffRequested,
-            },
-            result: {
-              messageId: response.message.id,
-              recipientCount: response.message.recipientAgentIds.length,
-              enqueuedCount: 0,
-            },
-          });
-
-          return response;
-        }
 
         const conversation = activeStore.getConversation(context.conversationId);
 
@@ -1278,64 +1105,6 @@ export function createAgentToolBridge(options: any = {}) {
     try {
       ensureToolAllowed(context, 'read-context');
 
-      if (context.dryRun) {
-        let payload: any = null;
-
-        try {
-          payload = buildAgentToolContextPayload(context, {
-            publicLimit: Number.isFinite(publicLimit) ? publicLimit : undefined,
-            privateLimit: Number.isFinite(privateLimit) ? privateLimit : undefined,
-          });
-        } catch {
-          payload = null;
-        }
-
-        const response =
-          payload && typeof payload === 'object'
-            ? {
-                ok: true,
-                ...payload,
-              }
-            : {
-                ok: true,
-                conversation: null,
-                agent: {
-                  id: context.agentId,
-                  name: context.agentName,
-                },
-                participants: serializeAgentToolParticipants(context.conversationAgents),
-                latestUserMessage: context.promptUserMessage
-                  ? serializeAgentToolPublicMessage(context.promptUserMessage)
-                  : null,
-                publicMessages: [],
-                privateMessages: [],
-              };
-
-        tryAppendInvocationEvent(context, 'agent_tool_call', {
-          schemaVersion: 1,
-          toolCallId,
-          tool: 'read-context',
-          status: 'succeeded',
-          durationMs: Date.now() - startedAt,
-          invocationId: context.invocationId,
-          conversationId: context.conversationId,
-          turnId: context.turnId,
-          agentId: context.agentId,
-          agentName: context.agentName,
-          assistantMessageId: context.assistantMessageId,
-          request: {
-            publicLimit: Number.isFinite(publicLimit) ? publicLimit : null,
-            privateLimit: Number.isFinite(privateLimit) ? privateLimit : null,
-          },
-          result: {
-            publicMessageCount: Array.isArray(response.publicMessages) ? response.publicMessages.length : 0,
-            privateMessageCount: Array.isArray(response.privateMessages) ? response.privateMessages.length : 0,
-            participantCount: Array.isArray(response.participants) ? response.participants.length : 0,
-          },
-        });
-
-        return response;
-      }
 
       const payload = buildAgentToolContextPayload(context, {
         publicLimit: Number.isFinite(publicLimit) ? publicLimit : undefined,
@@ -1408,7 +1177,7 @@ export function createAgentToolBridge(options: any = {}) {
       {}
     );
     const activeStore = resolveContextStore(context);
-    const conversation = context.dryRun ? null : activeStore.getConversation(context.conversationId);
+    const conversation = activeStore.getConversation(context.conversationId);
     const toolCallId = randomUUID();
 
     setContextCurrentTool(context, {
@@ -1427,9 +1196,7 @@ export function createAgentToolBridge(options: any = {}) {
       const response = {
         ok: true,
         conversation: conversation ? pickConversationSummary(conversation) : null,
-        participants: context.dryRun
-          ? serializeAgentToolParticipants(context.conversationAgents)
-          : conversation
+        participants: conversation
             ? serializeAgentToolParticipants(conversation.agents)
             : [],
       };
@@ -1501,49 +1268,6 @@ export function createAgentToolBridge(options: any = {}) {
 
     try {
       ensureToolAllowed(context, 'suggest-goal', { action });
-
-      if (context.dryRun) {
-        const response = {
-          ok: true,
-          dryRun: true,
-          proposal: {
-            action,
-            status: 'pending',
-            ...(objective ? { objective } : {}),
-            ...(reason ? { reason: clipText(reason, 1000) } : {}),
-            proposedBy: {
-              agentId: context.agentId,
-              agentName: context.agentName,
-            },
-            createdAt: nowIso(),
-          },
-        };
-
-        tryAppendInvocationEvent(context, 'agent_tool_call', {
-          schemaVersion: 1,
-          toolCallId,
-          tool: 'suggest-goal',
-          status: 'succeeded',
-          durationMs: Date.now() - startedAt,
-          invocationId: context.invocationId,
-          conversationId: context.conversationId,
-          turnId: context.turnId,
-          agentId: context.agentId,
-          agentName: context.agentName,
-          assistantMessageId: context.assistantMessageId,
-          request: {
-            action,
-            objectiveLength: objective.length,
-            reasonPreview: clipText(reason, 120),
-          },
-          result: {
-            dryRun: true,
-            proposalAction: action,
-          },
-        });
-
-        return response;
-      }
 
       if (!activeStore || typeof activeStore.getConversation !== 'function') {
         throw createHttpError(501, 'Session goal proposals are not available');
@@ -1648,31 +1372,6 @@ export function createAgentToolBridge(options: any = {}) {
     try {
       ensureToolAllowed(context, 'update-goal-checklist');
 
-      if (context.dryRun) {
-        const response = {
-          ok: true,
-          dryRun: true,
-          checklistLength: checklistText.length,
-        };
-
-        tryAppendInvocationEvent(context, 'agent_tool_call', {
-          schemaVersion: 1,
-          toolCallId,
-          tool: 'update-goal-checklist',
-          status: 'succeeded',
-          durationMs: Date.now() - startedAt,
-          invocationId: context.invocationId,
-          conversationId: context.conversationId,
-          turnId: context.turnId,
-          agentId: context.agentId,
-          agentName: context.agentName,
-          assistantMessageId: context.assistantMessageId,
-          request: { checklistLength: checklistText.length },
-          result: { dryRun: true },
-        });
-
-        return response;
-      }
 
       if (!activeStore || typeof activeStore.getConversation !== 'function') {
         throw createHttpError(501, 'Session goal checklist updates are not available');
@@ -3348,119 +3047,6 @@ export function createAgentToolBridge(options: any = {}) {
     }
   }
 
-  async function handleSandboxAccess(body: any = {}) {
-    const context = getInvocation(body.invocationId, body.callbackToken, {});
-    const adapter = context && context.sandboxToolAdapter ? context.sandboxToolAdapter : null;
-    const absolutePath = String(body.absolutePath || body.path || '').trim();
-
-    if (!adapter || typeof adapter.access !== 'function') {
-      throw createHttpError(503, 'Sandbox tool adapter is unavailable for this invocation');
-    }
-
-    if (!absolutePath) {
-      throw createHttpError(400, 'absolutePath is required');
-    }
-
-    await Promise.resolve(adapter.access(absolutePath));
-    return { ok: true };
-  }
-
-  async function handleSandboxRead(body: any = {}) {
-    const context = getInvocation(body.invocationId, body.callbackToken, {});
-    const adapter = context && context.sandboxToolAdapter ? context.sandboxToolAdapter : null;
-    const absolutePath = String(body.absolutePath || body.path || '').trim();
-
-    if (!adapter || typeof adapter.readFile !== 'function') {
-      throw createHttpError(503, 'Sandbox tool adapter is unavailable for this invocation');
-    }
-
-    if (!absolutePath) {
-      throw createHttpError(400, 'absolutePath is required');
-    }
-
-    const value = await Promise.resolve(adapter.readFile(absolutePath));
-    const buffer = Buffer.isBuffer(value)
-      ? value
-      : value instanceof Uint8Array
-        ? Buffer.from(value)
-        : ArrayBuffer.isView(value)
-          ? Buffer.from(value.buffer, value.byteOffset, value.byteLength)
-          : value instanceof ArrayBuffer
-            ? Buffer.from(value)
-            : Buffer.from(String(value || ''), 'utf8');
-    return {
-      ok: true,
-      base64: buffer.toString('base64'),
-    };
-  }
-
-  async function handleSandboxWrite(body: any = {}) {
-    const context = getInvocation(body.invocationId, body.callbackToken, {});
-    const adapter = context && context.sandboxToolAdapter ? context.sandboxToolAdapter : null;
-    const absolutePath = String(body.absolutePath || body.path || '').trim();
-    const content = body.content !== undefined && body.content !== null ? String(body.content) : '';
-
-    if (!adapter || typeof adapter.writeFile !== 'function') {
-      throw createHttpError(503, 'Sandbox tool adapter is unavailable for this invocation');
-    }
-
-    if (!absolutePath) {
-      throw createHttpError(400, 'absolutePath is required');
-    }
-
-    await Promise.resolve(adapter.writeFile(absolutePath, content));
-    return { ok: true };
-  }
-
-  async function handleSandboxMkdir(body: any = {}) {
-    const context = getInvocation(body.invocationId, body.callbackToken, {});
-    const adapter = context && context.sandboxToolAdapter ? context.sandboxToolAdapter : null;
-    const absolutePath = String(body.absolutePath || body.path || '').trim();
-
-    if (!adapter || typeof adapter.mkdir !== 'function') {
-      throw createHttpError(503, 'Sandbox tool adapter is unavailable for this invocation');
-    }
-
-    if (!absolutePath) {
-      throw createHttpError(400, 'absolutePath is required');
-    }
-
-    await Promise.resolve(adapter.mkdir(absolutePath));
-    return { ok: true };
-  }
-
-  async function handleSandboxBash(body: any = {}) {
-    const context = getInvocation(body.invocationId, body.callbackToken, {});
-    const adapter = context && context.sandboxToolAdapter ? context.sandboxToolAdapter : null;
-    const command = String(body.command || '').trim();
-    const cwd = String(body.cwd || '').trim();
-    const timeout = body.timeout !== undefined && body.timeout !== null && body.timeout !== ''
-      ? Number(body.timeout)
-      : undefined;
-    const env = body.env && typeof body.env === 'object' ? body.env : {};
-
-    if (!adapter || typeof adapter.runCommand !== 'function') {
-      throw createHttpError(503, 'Sandbox tool adapter is unavailable for this invocation');
-    }
-
-    if (!command) {
-      throw createHttpError(400, 'command is required');
-    }
-
-    const result = await Promise.resolve(adapter.runCommand(command, {
-      cwd: cwd || undefined,
-      timeout,
-      env,
-    }));
-
-    return {
-      ok: true,
-      stdout: String(result && result.stdout ? result.stdout : ''),
-      stderr: String(result && result.stderr ? result.stderr : ''),
-      exitCode: Number.isInteger(result && result.exitCode) ? result.exitCode : null,
-    };
-  }
-
   return {
     createInvocationContext,
     handleForgetMemory,
@@ -3468,11 +3054,6 @@ export function createAgentToolBridge(options: any = {}) {
     handleListParticipants,
     handlePostMessage,
     handleReadContext,
-    handleSandboxAccess,
-    handleSandboxBash,
-    handleSandboxMkdir,
-    handleSandboxRead,
-    handleSandboxWrite,
     handleSaveMemory,
     handleSearchMemory,
     handleWriteExperience,

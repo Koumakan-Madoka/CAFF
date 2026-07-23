@@ -156,7 +156,6 @@ while ($true) {
     Start-WslKeepalive -Distro $WslDistro -LogPath $supervisorLog
     Start-Sleep -Seconds 3
   }
-  }
 
   if (-not (Test-HttpOk -Url $caffHealthUrl)) {
     if ((New-TimeSpan -Start $lastCaffStart -End (Get-Date)).TotalSeconds -ge 30) {

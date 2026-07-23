@@ -421,7 +421,6 @@ test('pi runtime aggregates usage across assistant model calls', async (t) => {
     cost: { input: 6, output: 8, cacheRead: 10, cacheWrite: 12, total: 36 },
   });
 });
-
 test('pi runtime respects explicit cwd and forwards session, resume, and extensions through IPC', async (t) => {
   if (!requireSpawn(t)) {
     return;
@@ -719,9 +718,6 @@ test('package.json pins pi-coding-agent version without caret', () => {
 test('runtime execution surfaces use one pi-coding-agent package family', () => {
   const runtimeFiles = [
     'lib/pi-sdk-host.mjs',
-    'lib/pi-skill-test-sandbox-extension.mjs',
-    'scripts/opensandbox/build-runtime-image.js',
-    'server/domain/skill-test/open-sandbox-factory.ts',
   ];
 
   for (const relativePath of runtimeFiles) {
