@@ -74,31 +74,12 @@ function Test-HttpOk {
   }
 }
 
-function Get-OpenSandboxHealthUrl {
-  param([string]$BaseUrl)
-
-  $trimmed = (Unwrap-QuotedValue -Value $BaseUrl).TrimEnd('/')
-  if ([string]::IsNullOrWhiteSpace($trimmed)) {
-    $trimmed = 'http://localhost:8080'
-  }
-  if ($trimmed.EndsWith('/health')) {
-    return $trimmed
-  }
-  if ($trimmed -match '/api(?:/v[0-9]+)?$') {
-    $trimmed = $trimmed -replace '/api(?:/v[0-9]+)?$', ''
-  } elseif ($trimmed -match '/v[0-9]+$') {
-    $trimmed = $trimmed -replace '/v[0-9]+$', ''
-  }
-  return "$trimmed/health"
-}
-
 function Get-WslKeepaliveProcess {
   param([string]$Distro)
 
   Get-CimInstance Win32_Process -Filter "Name='wsl.exe'" |
     Where-Object {
       $_.CommandLine -like "* -d $Distro *" -and
-      $_.CommandLine -like '*opensandbox-local*' -and
       $_.CommandLine -like '*sleep infinity*'
     } |
     Select-Object -First 1
@@ -118,30 +99,10 @@ function Start-WslKeepalive {
     '-e',
     'sh',
     '-lc',
-    'systemctl restart docker opensandbox-local; exec sleep infinity'
+    'systemctl restart docker; exec sleep infinity'
   )
   Start-Process -FilePath 'wsl.exe' -ArgumentList $arguments -WindowStyle Hidden | Out-Null
   Write-Log -Path $LogPath -Message "Started WSL keepalive for distro '$Distro'."
-}
-
-function Repair-OpenSandbox {
-  param(
-    [string]$Distro,
-    [string]$LogPath
-  )
-
-  $arguments = @(
-    '-d',
-    $Distro,
-    '-u',
-    'root',
-    '-e',
-    'sh',
-    '-lc',
-    'systemctl restart docker opensandbox-local'
-  )
-  Start-Process -FilePath 'wsl.exe' -ArgumentList $arguments -WindowStyle Hidden -Wait | Out-Null
-  Write-Log -Path $LogPath -Message "Restarted docker and opensandbox-local inside '$Distro'."
 }
 
 function Resolve-NpmCommand {
@@ -184,30 +145,17 @@ $chatPort = Get-DotEnvValue -Path $envLocalPath -Name 'CHAT_APP_PORT'
 if ([string]::IsNullOrWhiteSpace($chatPort)) {
   $chatPort = '3100'
 }
-$openSandboxBaseUrl = Get-DotEnvValue -Path $envLocalPath -Name 'CAFF_SKILL_TEST_OPENSANDBOX_API_URL'
-if ([string]::IsNullOrWhiteSpace($openSandboxBaseUrl)) {
-  $openSandboxBaseUrl = 'http://localhost:8080'
-}
-$openSandboxHealthUrl = Get-OpenSandboxHealthUrl -BaseUrl $openSandboxBaseUrl
 $caffHealthUrl = "http://localhost:$chatPort/"
 $npmCommand = Resolve-NpmCommand
-$lastOpenSandboxRepair = [datetime]::MinValue
 $lastCaffStart = [datetime]::MinValue
 
-Write-Log -Path $supervisorLog -Message "Supervisor booted. repo='$resolvedRepoRoot' distro='$WslDistro' caff='$caffHealthUrl' opensandbox='$openSandboxHealthUrl'."
+Write-Log -Path $supervisorLog -Message "Supervisor booted. repo='$resolvedRepoRoot' distro='$WslDistro' caff='$caffHealthUrl'."
 
 while ($true) {
   if (-not (Get-WslKeepaliveProcess -Distro $WslDistro)) {
     Start-WslKeepalive -Distro $WslDistro -LogPath $supervisorLog
     Start-Sleep -Seconds 3
   }
-
-  if (-not (Test-HttpOk -Url $openSandboxHealthUrl)) {
-    if ((New-TimeSpan -Start $lastOpenSandboxRepair -End (Get-Date)).TotalSeconds -ge 30) {
-      Repair-OpenSandbox -Distro $WslDistro -LogPath $supervisorLog
-      $lastOpenSandboxRepair = Get-Date
-      Start-Sleep -Seconds 5
-    }
   }
 
   if (-not (Test-HttpOk -Url $caffHealthUrl)) {

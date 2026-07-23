@@ -6,32 +6,12 @@ function getConfig() {
   const apiUrl = String(process.env.CAFF_CHAT_API_URL || DEFAULT_API_URL).trim();
   const invocationId = String(process.env.CAFF_CHAT_INVOCATION_ID || '').trim();
   const callbackToken = String(process.env.CAFF_CHAT_CALLBACK_TOKEN || '').trim();
-  const skillTestRunId = String(process.env.CAFF_SKILL_TEST_RUN_ID || '').trim();
-  const skillTestCaseId = String(process.env.CAFF_SKILL_TEST_CASE_ID || '').trim();
 
   if (!invocationId || !callbackToken) {
     throw new Error('Missing CAFF_CHAT_INVOCATION_ID or CAFF_CHAT_CALLBACK_TOKEN.');
   }
 
-  return { apiUrl, invocationId, callbackToken, skillTestRunId, skillTestCaseId };
-}
-
-function withSkillTestScope(config: any, body: any = {}) {
-  return {
-    ...body,
-    ...(config && config.skillTestRunId ? { skillTestRunId: config.skillTestRunId } : {}),
-    ...(config && config.skillTestCaseId ? { skillTestCaseId: config.skillTestCaseId } : {}),
-  };
-}
-
-function appendSkillTestScopeQuery(config: any, query: any) {
-  if (config && config.skillTestRunId) {
-    query.set('skillTestRunId', config.skillTestRunId);
-  }
-  if (config && config.skillTestCaseId) {
-    query.set('skillTestCaseId', config.skillTestCaseId);
-  }
-  return query;
+  return { apiUrl, invocationId, callbackToken };
 }
 
 function parseArgs(argv: any) {
@@ -186,15 +166,21 @@ async function sendPublic(config: any, flags: any, options: any = {}) {
     );
   }
 
+  const body: any = {
+    invocationId: config.invocationId,
+    callbackToken: config.callbackToken,
+    visibility: 'public',
+    content,
+    mode: String(flags.mode || 'replace').trim() || 'replace',
+  };
+
+  if (flags['no-finalize'] === true || flags['no-finalise'] === true) {
+    body.noFinalize = true;
+  }
+
   return requestJson(`${config.apiUrl}/api/agent-tools/post-message`, {
     method: 'POST',
-    body: withSkillTestScope(config, {
-      invocationId: config.invocationId,
-      callbackToken: config.callbackToken,
-      visibility: 'public',
-      content,
-      mode: String(flags.mode || 'replace').trim() || 'replace',
-    }),
+    body,
   });
 }
 
@@ -207,13 +193,13 @@ async function sendPrivate(config: any, flags: any, options: any = {}) {
     );
   }
 
-  const body: any = withSkillTestScope(config, {
+  const body: any = {
     invocationId: config.invocationId,
     callbackToken: config.callbackToken,
     visibility: 'private',
     content,
     recipientAgentIds: normalizeRecipients(flags.to),
-  });
+  };
 
   if (flags.handoff === true || flags['trigger-reply'] === true) {
     body.handoff = true;
@@ -242,7 +228,6 @@ async function readContext(config: any, flags: any) {
   if (flags['private-limit']) {
     query.set('privateLimit', String(flags['private-limit']));
   }
-  appendSkillTestScopeQuery(config, query);
 
   return requestJson(`${config.apiUrl}/api/agent-tools/context?${query.toString()}`);
 }
@@ -256,10 +241,10 @@ async function searchMessages(config: any, flags: any) {
     throw new Error('search-messages requires --query "keywords" or a speaker filter like --speaker "AgentName".');
   }
 
-  const body: any = withSkillTestScope(config, {
+  const body: any = {
     invocationId: config.invocationId,
     callbackToken: config.callbackToken,
-  });
+  };
 
   if (query) {
     body.query = query;
@@ -303,12 +288,12 @@ async function searchMemory(config: any, flags: any) {
     throw new Error('search-memory requires --query "topic keywords" or --latest.');
   }
 
-  const body: any = withSkillTestScope(config, {
+  const body: any = {
     invocationId: config.invocationId,
     callbackToken: config.callbackToken,
     ...(query ? { query } : {}),
     ...(latest ? { latest: true } : {}),
-  });
+  };
 
   if (flags.limit !== undefined) {
     body.limit = flags.limit;
@@ -366,11 +351,11 @@ async function writeExperience(config: any, flags: any, options: any = {}) {
     }
   }
 
-  const body: any = withSkillTestScope(config, {
+  const body: any = {
     invocationId: config.invocationId,
     callbackToken: config.callbackToken,
     ...(stdinPayload && typeof stdinPayload === 'object' ? stdinPayload : {}),
-  });
+  };
 
   for (const [flagName, fieldName] of [
     ['title', 'title'],
@@ -416,7 +401,6 @@ async function listMemories(config: any, flags: any) {
   if (flags.limit !== undefined) {
     query.set('limit', String(flags.limit));
   }
-  appendSkillTestScopeQuery(config, query);
 
   return requestJson(`${config.apiUrl}/api/agent-tools/memories?${query.toString()}`);
 }
@@ -433,12 +417,12 @@ async function saveMemory(config: any, flags: any) {
     throw new Error('save-memory requires --content "durable fact".');
   }
 
-  const body: any = withSkillTestScope(config, {
+  const body: any = {
     invocationId: config.invocationId,
     callbackToken: config.callbackToken,
     title,
     content,
-  });
+  };
 
   if (flags['ttl-days'] !== undefined) {
     body.ttlDays = flags['ttl-days'];
@@ -470,13 +454,13 @@ async function updateMemory(config: any, flags: any) {
     throw new Error('update-memory requires --reason "why this durable memory changed".');
   }
 
-  const body: any = withSkillTestScope(config, {
+  const body: any = {
     invocationId: config.invocationId,
     callbackToken: config.callbackToken,
     title,
     content,
     reason,
-  });
+  };
 
   if (expectedUpdatedAt) {
     body.expectedUpdatedAt = expectedUpdatedAt;
@@ -501,12 +485,12 @@ async function forgetMemory(config: any, flags: any) {
     throw new Error('forget-memory requires --reason "why this durable memory should be removed".');
   }
 
-  const body: any = withSkillTestScope(config, {
+  const body: any = {
     invocationId: config.invocationId,
     callbackToken: config.callbackToken,
     title,
     reason,
-  });
+  };
 
   if (expectedUpdatedAt) {
     body.expectedUpdatedAt = expectedUpdatedAt;
@@ -523,14 +507,14 @@ async function trellisInit(config: any, flags: any) {
 
   return requestJson(`${config.apiUrl}/api/agent-tools/trellis/init`, {
     method: 'POST',
-    body: withSkillTestScope(config, {
+    body: {
       invocationId: config.invocationId,
       callbackToken: config.callbackToken,
       taskName,
       confirm: flags.confirm === true,
       force: flags.force === true,
       includeContent: flags['include-content'] === true,
-    }),
+    },
   });
 }
 
@@ -545,7 +529,7 @@ async function trellisWrite(config: any, flags: any) {
 
   return requestJson(`${config.apiUrl}/api/agent-tools/trellis/write`, {
     method: 'POST',
-    body: withSkillTestScope(config, {
+    body: {
       invocationId: config.invocationId,
       callbackToken: config.callbackToken,
       relativePath,
@@ -553,7 +537,7 @@ async function trellisWrite(config: any, flags: any) {
       confirm: flags.confirm === true,
       force: flags.force === true,
       includeContent: flags['include-content'] === true,
-    }),
+    },
   });
 }
 
@@ -563,15 +547,19 @@ async function listParticipants(config: any) {
     callbackToken: config.callbackToken,
   });
 
-  appendSkillTestScopeQuery(config, query);
 
   return requestJson(`${config.apiUrl}/api/agent-tools/participants?${query.toString()}`);
 }
 
-async function suggestGoal(config: any, flags: any) {
+async function suggestGoal(config: any, flags: any, options: any = {}) {
   const action = String(flags.action || flags.status || '').trim().toLowerCase();
   const objective = String(flags.objective || flags.goal || flags.content || '').trim();
   const reason = String(flags.reason || '').trim();
+  let checklistText = String(flags.checklist || flags.checklistText || flags['checklist-text'] || '').trim();
+
+  if (!checklistText && (flags['checklist-stdin'] === true || flags['content-stdin'] === true || flags.stdin === true)) {
+    checklistText = String(await readTextStream(options.stream || process.stdin) || '').trim();
+  }
 
   if (!action) {
     throw new Error('suggest-goal requires --action set|pause|resume|complete|clear.');
@@ -579,13 +567,14 @@ async function suggestGoal(config: any, flags: any) {
 
   return requestJson(`${config.apiUrl}/api/agent-tools/goal/suggest`, {
     method: 'POST',
-    body: withSkillTestScope(config, {
+    body: {
       invocationId: config.invocationId,
       callbackToken: config.callbackToken,
       action,
       ...(objective ? { objective } : {}),
       ...(reason ? { reason } : {}),
-    }),
+      ...(checklistText ? { checklistText } : {}),
+    },
   });
 }
 
@@ -598,11 +587,11 @@ async function updateGoalChecklist(config: any, flags: any, options: any = {}) {
 
   return requestJson(`${config.apiUrl}/api/agent-tools/goal/checklist`, {
     method: 'POST',
-    body: withSkillTestScope(config, {
+    body: {
       invocationId: config.invocationId,
       callbackToken: config.callbackToken,
       checklistText,
-    }),
+    },
   });
 }
 
@@ -735,7 +724,6 @@ if (require.main === module) {
 export {
   compactSendPrivateResult,
   compactSendPublicResult,
-  appendSkillTestScopeQuery,
   formatCommandResult,
   getConfig,
   isFlagEnabled,
@@ -757,5 +745,4 @@ export {
   writeExperience,
   shouldEchoContent,
   updateMemory,
-  withSkillTestScope,
 };

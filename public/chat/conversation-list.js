@@ -65,8 +65,7 @@
 
         const typeBadge = document.createElement('span');
         const isGameRoom = isUndercoverConversation(conversation) || isWerewolfConversation(conversation);
-        const isSkillTestDesign = String(conversation.type || '') === 'skill_test_design';
-        typeBadge.className = `conversation-type-badge${isGameRoom ? ' game' : ''}${isSkillTestDesign ? ' skill-test-design' : ''}`;
+        typeBadge.className = `conversation-type-badge${isGameRoom ? ' game' : ''}`;
         typeBadge.textContent = conversationTypeLabel(conversation);
 
         const badge = document.createElement('span');

@@ -389,80 +389,6 @@ test('agent tool bridge updates session goal checklist progress', (t) => {
   assert.ok(broadcastEvents.some((event) => event.eventName === 'conversation_goal_updated'));
 });
 
-test('agent tool bridge enforces skill-test run and case auth scope', (t) => {
-  const tempDir = withTempDir('caff-agent-tool-bridge-skill-test-auth-');
-  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
-  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
-  const bridge = createAgentToolBridge({ store });
-
-  t.after(() => {
-    try {
-      store.close();
-    } catch {}
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  const fixture = createPublicInvocationFixture(store, 'skill-test-auth');
-  const context = bridge.registerInvocation(
-    bridge.createInvocationContext({
-      conversationId: fixture.conversation.id,
-      turnId: fixture.assistantMessage.turnId,
-      agentId: fixture.agent.id,
-      agentName: fixture.agent.name,
-      assistantMessageId: fixture.assistantMessage.id,
-      conversationAgents: fixture.conversation.agents,
-      stage: fixture.stage,
-      turnState: fixture.turnState,
-      authScope: 'skill-test',
-      caseId: 'case-1',
-      runId: 'run-1',
-      tokenTtlSec: 60,
-      dryRun: true,
-    })
-  );
-
-  assert.throws(
-    () =>
-      bridge.handlePostMessage({
-        invocationId: context.invocationId,
-        callbackToken: context.callbackToken,
-        visibility: 'public',
-        content: 'missing scope',
-      }),
-    (error) => error && error.statusCode === 403
-  );
-
-  assert.throws(
-    () =>
-      bridge.handlePostMessage({
-        invocationId: context.invocationId,
-        callbackToken: context.callbackToken,
-        skillTestRunId: 'run-1',
-        skillTestCaseId: 'case-2',
-        visibility: 'public',
-        content: 'wrong case',
-      }),
-    (error) => error && error.statusCode === 403
-  );
-
-  const okPost = bridge.handlePostMessage({
-    invocationId: context.invocationId,
-    callbackToken: context.callbackToken,
-    skillTestRunId: 'run-1',
-    skillTestCaseId: 'case-1',
-    visibility: 'public',
-    content: 'scoped ok',
-  });
-
-  assert.equal(okPost.ok, true);
-  assert.equal(context.auth.validated, true);
-  assert.equal(context.auth.validatedCount, 1);
-  assert.deepEqual(
-    context.auth.rejects.map((entry) => entry.reason),
-    ['missing_case_binding', 'case_binding_mismatch']
-  );
-});
-
 test('agent tool bridge expires invocation auth tokens', (t) => {
   const tempDir = withTempDir('caff-agent-tool-bridge-auth-expiry-');
   const sqlitePath = path.join(tempDir, 'bridge.sqlite');
@@ -487,11 +413,7 @@ test('agent tool bridge expires invocation auth tokens', (t) => {
       conversationAgents: fixture.conversation.agents,
       stage: fixture.stage,
       turnState: fixture.turnState,
-      authScope: 'skill-test',
-      caseId: 'case-expired',
-      runId: 'run-expired',
       expiresAt: '2000-01-01T00:00:00.000Z',
-      dryRun: true,
     })
   );
 
@@ -500,8 +422,6 @@ test('agent tool bridge expires invocation auth tokens', (t) => {
       bridge.handlePostMessage({
         invocationId: context.invocationId,
         callbackToken: context.callbackToken,
-        skillTestRunId: 'run-expired',
-        skillTestCaseId: 'case-expired',
         visibility: 'public',
         content: 'too late',
       }),

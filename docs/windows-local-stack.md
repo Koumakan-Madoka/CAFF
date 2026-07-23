@@ -73,6 +73,5 @@ Unregister-ScheduledTask -TaskName 'CAFF Local Stack' -Confirm:$false
 ## 备注
 
 - 这套脚本默认使用 `localhost:8080`，在 Windows + WSL 端口转发环境里通常比 `127.0.0.1:8080` 更稳
-- 本地 Full 模式 skill-test 可能超过 OpenSandbox 默认 5 分钟 TTL；在 `.env.local` 设置 `CAFF_SKILL_TEST_OPENSANDBOX_TIMEOUT_SEC=3600` 后重启 CAFF 可避免中途自动删容器
 - 计划任务按“当前登录用户”注册；如果机器重启后没人登录，任务不会提前启动
 - `run-caff-stack.ps1` 会持续运行并负责拉起子进程，所以计划任务保持 `Running` 状态是正常的

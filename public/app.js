@@ -764,7 +764,6 @@ let messageTimelineRenderer = noopRenderer;
 let conversationSettingsController = noopConversationSettingsController;
 let undercoverPanelRenderer = noopRenderer;
 let werewolfPanelRenderer = noopRenderer;
-let skillTestDesignPanelRenderer = noopRenderer;
 let sessionGoalPanelController = noopRenderer;
 let conversationDigestPanelController = noopRenderer;
 let summaryMemoryPanelController = noopRenderer;
@@ -874,17 +873,6 @@ function setupChatModules() {
         })
       : noopRenderer;
 
-  skillTestDesignPanelRenderer =
-    typeof chatModules.createSkillTestDesignPanelRenderer === 'function'
-      ? chatModules.createSkillTestDesignPanelRenderer({
-          state,
-          dom,
-          helpers: {
-            activeTurnForConversation,
-          },
-        })
-      : noopRenderer;
-
   sessionGoalPanelController =
     typeof chatModules.createSessionGoalPanelController === 'function'
       ? chatModules.createSessionGoalPanelController({
@@ -955,7 +943,6 @@ function setupChatModules() {
             renderParticipantList,
             renderUndercoverGameCard,
             renderWerewolfGameCard,
-            renderSkillTestDesignCard,
             scheduleConversationPaneRender,
             timelineMessagesForConversation,
             undercoverGameState,
@@ -2139,10 +2126,6 @@ function renderWerewolfGameCard() {
   werewolfPanelRenderer.render();
 }
 
-function renderSkillTestDesignCard() {
-  skillTestDesignPanelRenderer.render();
-}
-
 function renderConversationPane() {
   conversationPaneRenderer.render();
   renderSessionGoalPanel();
@@ -3214,7 +3197,6 @@ function renderAll() {
   renderConversationPane();
   renderUndercoverGameCard();
   renderWerewolfGameCard();
-  renderSkillTestDesignCard();
   renderCompactConversationPersonaSettings();
 }
 
@@ -3320,28 +3302,6 @@ function populateModeSelect() {
   } else if (state.modes.length > 0) {
     select.value = state.modes[0].id;
   }
-
-  toggleSkillTestDesignSkillSelect(select.value);
-}
-
-function toggleSkillTestDesignSkillSelect(selectedType) {
-  let skillSelect = document.getElementById('new-conversation-skill-select');
-  if (selectedType !== 'skill_test_design') {
-    if (skillSelect) skillSelect.remove();
-    return;
-  }
-  if (skillSelect) return; // Already present
-
-  skillSelect = document.createElement('select');
-  skillSelect.id = 'new-conversation-skill-select';
-  skillSelect.innerHTML = '<option value="">-- 选择目标 Skill --</option>';
-  for (const skill of state.skills) {
-    const opt = document.createElement('option');
-    opt.value = skill.id;
-    opt.textContent = skill.name || skill.id;
-    skillSelect.appendChild(opt);
-  }
-  dom.newConversationType.parentNode.insertBefore(skillSelect, dom.newConversationType.nextSibling);
 }
 
 async function refreshAll(preferredConversationId) {
@@ -3832,13 +3792,6 @@ function bindEvents() {
     }
   });
 
-  if (dom.newConversationType) {
-    dom.newConversationType.addEventListener('change', (event) => {
-      const target = /** @type {HTMLSelectElement | null} */ (event.target instanceof HTMLSelectElement ? event.target : null);
-      toggleSkillTestDesignSkillSelect(target ? target.value : 'standard');
-    });
-  }
-
   dom.newConversationForm.addEventListener('submit', async (event) => {
     event.preventDefault();
 
@@ -3849,21 +3802,6 @@ function bindEvents() {
         type: conversationType,
       };
 
-      // For skill_test_design mode, require a skill selection
-      if (conversationType === 'skill_test_design') {
-        const skillSelect = /** @type {HTMLSelectElement | null} */ (document.getElementById('new-conversation-skill-select'));
-        if (!skillSelect || !skillSelect.value) {
-          showToast('Skill Test 设计模式需要选择一个目标 Skill');
-          return;
-        }
-        body.skillId = skillSelect.value;
-        body.metadata = {
-          skillTestDesign: {
-            skillId: skillSelect.value,
-          },
-        };
-      }
-
       const result = await fetchJson('/api/conversations', {
         method: 'POST',
         body,
@@ -3871,7 +3809,6 @@ function bindEvents() {
       dom.newConversationTitle.value = '';
       if (dom.newConversationType) {
         dom.newConversationType.value = 'standard';
-        toggleSkillTestDesignSkillSelect(dom.newConversationType.value);
       }
       state.conversations = result.conversations;
       state.selectedConversationId = result.conversation.id;
@@ -4039,56 +3976,6 @@ function bindEvents() {
       } finally {
         toolTraceCopyButton.disabled = false;
         toolTraceCopyButton.textContent = previousText;
-      }
-
-      return;
-    }
-
-    const recordButton =
-      event.target instanceof Element
-        ? /** @type {HTMLButtonElement | null} */ (event.target.closest('.message-record-button'))
-        : null;
-
-    if (recordButton) {
-      const messageId = recordButton.dataset.messageId || '';
-      const message =
-        state.currentConversation && Array.isArray(state.currentConversation.messages)
-          ? state.currentConversation.messages.find((item) => item.id === messageId) || null
-          : null;
-
-      if (!message) {
-        showToast('找不到要记录的消息');
-        return;
-      }
-
-      if (!message.taskId) {
-        showToast('这条消息暂时没有 taskId，无法记录');
-        return;
-      }
-
-      const previousText = recordButton.textContent;
-      recordButton.disabled = true;
-      recordButton.textContent = '记录中';
-
-      try {
-        const result = await fetchJson('/api/eval-cases', {
-          method: 'POST',
-          body: {
-            conversationId: state.currentConversation.id,
-            messageId: message.id,
-          },
-        });
-
-        if (result && result.case && result.case.id) {
-          showToast('已记录到错题本，可在「错题本」页面做 A/B 测试');
-        } else {
-          showToast('已记录到错题本');
-        }
-      } catch (error) {
-        showToast(error.message);
-      } finally {
-        recordButton.disabled = !message.taskId;
-        recordButton.textContent = previousText;
       }
 
       return;

@@ -29,7 +29,6 @@ const MEMORY_MUTATION_REASON_TAG = 'explicit-user-request';
 const TURN_PREVIEW_LENGTH = 180;
 const MEMORY_SECRET_RE = /\b(password|passwd|secret|token|api[_ -]?key|private[_ -]?key|ssh[_ -]?key|cookie|session)\b|密码|口令|令牌|密钥|私钥/iu;
 const MEMORY_TRANSIENT_RE = /\b(todo|fixme|later|temporary|temp|today|tomorrow|next step|pending|wip)\b|待办|临时|今天|明天|稍后|下一步|本轮|这次/iu;
-const DEFAULT_SKILL_TEST_TOKEN_TTL_SECONDS = 600;
 const MAX_AUTH_REJECTS = 20;
 
 function nowIso() {
@@ -273,16 +272,6 @@ function normalizeBooleanFlag(value: any, fallback = false) {
   return fallback;
 }
 
-function resolveSkillTestAuthValue(input: any, key: string) {
-  const auth = input && input.auth && typeof input.auth === 'object' ? input.auth : null;
-  return String(
-    (auth && auth[key] !== undefined ? auth[key] : undefined) ||
-      input[`skillTest${key.charAt(0).toUpperCase()}${key.slice(1)}`] ||
-      input[key] ||
-      ''
-  ).trim();
-}
-
 function normalizeIsoTimestamp(value: any) {
   const normalized = String(value || '').trim();
   if (!normalized) {
@@ -296,19 +285,14 @@ function normalizeIsoTimestamp(value: any) {
 function createInvocationAuth(input: any = {}) {
   const auth = input && input.auth && typeof input.auth === 'object' ? input.auth : null;
   const scope = String((auth && auth.scope) || input.authScope || input.scope || 'conversation').trim() || 'conversation';
-  const isSkillTest = scope === 'skill-test';
   const requestedTtlSec = normalizePositiveInteger((auth && auth.tokenTtlSec) || input.tokenTtlSec || input.ttlSec, 0);
-  const tokenTtlSec = requestedTtlSec || (isSkillTest ? DEFAULT_SKILL_TEST_TOKEN_TTL_SECONDS : 0);
+  const tokenTtlSec = requestedTtlSec;
   const createdAt = nowIso();
   const explicitExpiresAt = normalizeIsoTimestamp((auth && auth.expiresAt) || input.expiresAt);
   const expiresAt = explicitExpiresAt || (tokenTtlSec > 0 ? new Date(Date.now() + tokenTtlSec * 1000).toISOString() : '');
 
   return {
     scope,
-    caseId: resolveSkillTestAuthValue(input, 'caseId'),
-    runId: resolveSkillTestAuthValue(input, 'runId'),
-    taskId: resolveSkillTestAuthValue(input, 'taskId'),
-    requireScope: (auth && auth.requireScope === true) || input.requireAuthScope === true || isSkillTest,
     tokenTtlSec,
     createdAt,
     expiresAt,
@@ -317,27 +301,6 @@ function createInvocationAuth(input: any = {}) {
     lastValidatedAt: '',
     rejects: [] as any[],
   };
-}
-
-function buildRequestAuthScope(source: any = {}) {
-  return {
-    caseId: String(source.skillTestCaseId || source.caseId || '').trim(),
-    runId: String(source.skillTestRunId || source.runId || '').trim(),
-  };
-}
-
-function buildUrlRequestAuthScope(requestUrl: any) {
-  const params = requestUrl && requestUrl.searchParams ? requestUrl.searchParams : null;
-  if (!params) {
-    return {};
-  }
-
-  return buildRequestAuthScope({
-    caseId: params.get('caseId'),
-    runId: params.get('runId'),
-    skillTestCaseId: params.get('skillTestCaseId'),
-    skillTestRunId: params.get('skillTestRunId'),
-  });
 }
 
 function recordAuthReject(context: any, reason: string, details: any = {}) {
@@ -370,9 +333,6 @@ function summarizeInvocationAuth(context: any) {
 
   return {
     scope: String(auth.scope || '').trim(),
-    caseId: String(auth.caseId || '').trim(),
-    runId: String(auth.runId || '').trim(),
-    taskId: String(auth.taskId || '').trim(),
     tokenTtlSec: Number.isInteger(auth.tokenTtlSec) ? auth.tokenTtlSec : 0,
     createdAt: String(auth.createdAt || '').trim(),
     expiresAt: String(auth.expiresAt || '').trim(),
@@ -615,10 +575,9 @@ export function createAgentToolBridge(options: any = {}) {
     return context;
   }
 
-  function getInvocation(invocationId: any, callbackToken: any, requestAuthScope: any = {}) {
+  function getInvocation(invocationId: any, callbackToken: any, _requestAuthScope: any = {}) {
     const normalizedInvocationId = String(invocationId || '').trim();
     const normalizedCallbackToken = String(callbackToken || '').trim();
-    const normalizedRequestScope = buildRequestAuthScope(requestAuthScope);
     const context = activeInvocations.get(normalizedInvocationId);
     const stageStatus = String(context && context.stage && context.stage.status ? context.stage.status : '')
       .trim()
@@ -628,8 +587,6 @@ export function createAgentToolBridge(options: any = {}) {
       recordAuthReject(context, 'invalid_or_expired_credentials', {
         hasInvocation: Boolean(context),
         hasCallbackToken: Boolean(normalizedCallbackToken),
-        caseId: normalizedRequestScope.caseId,
-        runId: normalizedRequestScope.runId,
       });
       throw createHttpError(401, 'Invalid or expired agent tool credentials');
     }
@@ -639,38 +596,9 @@ export function createAgentToolBridge(options: any = {}) {
     if (Number.isFinite(expiresAtMs) && expiresAtMs <= Date.now()) {
       recordAuthReject(context, 'token_expired', {
         expiresAt: auth.expiresAt,
-        caseId: normalizedRequestScope.caseId,
-        runId: normalizedRequestScope.runId,
       });
       activeInvocations.delete(normalizedInvocationId);
       throw createHttpError(401, 'Invalid or expired agent tool credentials');
-    }
-
-    if (auth && auth.requireScope) {
-      if (auth.caseId && !normalizedRequestScope.caseId) {
-        recordAuthReject(context, 'missing_case_binding', { expectedCaseId: auth.caseId });
-        throw createHttpError(403, 'Agent tool credentials are missing skill-test case binding');
-      }
-      if (auth.runId && !normalizedRequestScope.runId) {
-        recordAuthReject(context, 'missing_run_binding', { expectedRunId: auth.runId });
-        throw createHttpError(403, 'Agent tool credentials are missing skill-test run binding');
-      }
-    }
-
-    if (auth && auth.caseId && normalizedRequestScope.caseId && normalizedRequestScope.caseId !== auth.caseId) {
-      recordAuthReject(context, 'case_binding_mismatch', {
-        expectedCaseId: auth.caseId,
-        requestCaseId: normalizedRequestScope.caseId,
-      });
-      throw createHttpError(403, 'Agent tool credentials do not match the active skill-test case');
-    }
-
-    if (auth && auth.runId && normalizedRequestScope.runId && normalizedRequestScope.runId !== auth.runId) {
-      recordAuthReject(context, 'run_binding_mismatch', {
-        expectedRunId: auth.runId,
-        requestRunId: normalizedRequestScope.runId,
-      });
-      throw createHttpError(403, 'Agent tool credentials do not match the active skill-test run');
     }
 
     if (
@@ -956,7 +884,7 @@ export function createAgentToolBridge(options: any = {}) {
 
   function handlePostMessage(body: any = {}) {
     const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
+    const context = getInvocation(body.invocationId, body.callbackToken, {});
     const activeStore = resolveContextStore(context);
     const content = String(body.content || '').trim();
     const visibility = String(body.visibility || 'public').trim().toLowerCase();
@@ -1330,7 +1258,7 @@ export function createAgentToolBridge(options: any = {}) {
     const context = getInvocation(
       requestUrl.searchParams.get('invocationId'),
       requestUrl.searchParams.get('callbackToken'),
-      buildUrlRequestAuthScope(requestUrl)
+      {}
     );
     const publicLimit = Number.parseInt(requestUrl.searchParams.get('publicLimit') || '', 10);
     const privateLimit = Number.parseInt(requestUrl.searchParams.get('privateLimit') || '', 10);
@@ -1477,7 +1405,7 @@ export function createAgentToolBridge(options: any = {}) {
     const context = getInvocation(
       requestUrl.searchParams.get('invocationId'),
       requestUrl.searchParams.get('callbackToken'),
-      buildUrlRequestAuthScope(requestUrl)
+      {}
     );
     const activeStore = resolveContextStore(context);
     const conversation = context.dryRun ? null : activeStore.getConversation(context.conversationId);
@@ -1552,7 +1480,7 @@ export function createAgentToolBridge(options: any = {}) {
 
   function handleSuggestGoal(body: any = {}) {
     const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
+    const context = getInvocation(body.invocationId, body.callbackToken, {});
     const activeStore = resolveContextStore(context);
     const action = String(body.action || '').trim().toLowerCase();
     const objective = String(body.objective || '').trim();
@@ -1702,7 +1630,7 @@ export function createAgentToolBridge(options: any = {}) {
 
   function handleUpdateGoalChecklist(body: any = {}) {
     const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
+    const context = getInvocation(body.invocationId, body.callbackToken, {});
     const activeStore = resolveContextStore(context);
     const checklistText = String(body.checklistText || body.checklist_text || body.content || '').trim();
     const toolCallId = randomUUID();
@@ -1825,7 +1753,7 @@ export function createAgentToolBridge(options: any = {}) {
 
   function handleSearchMessages(body: any = {}) {
     const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
+    const context = getInvocation(body.invocationId, body.callbackToken, {});
     const activeStore = resolveContextStore(context);
     const query = String(body.query || '').trim().replace(/\s+/g, ' ');
     const speaker = String(body.speaker || body.senderName || body.sender || '').trim().replace(/\s+/g, ' ');
@@ -1953,7 +1881,7 @@ export function createAgentToolBridge(options: any = {}) {
 
   function handleSearchMemory(body: any = {}) {
     const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
+    const context = getInvocation(body.invocationId, body.callbackToken, {});
     const activeStore = resolveContextStore(context);
     const query = String(body.query || body.q || '').trim().replace(/\s+/g, ' ');
     const latest = normalizeBooleanFlag(body.latest || body.recent, false);
@@ -2113,7 +2041,7 @@ export function createAgentToolBridge(options: any = {}) {
     const context = getInvocation(
       requestUrl.searchParams.get('invocationId'),
       requestUrl.searchParams.get('callbackToken'),
-      buildUrlRequestAuthScope(requestUrl)
+      {}
     );
     const activeStore = resolveContextStore(context);
     const limit = normalizeMemoryListLimit(requestUrl.searchParams.get('limit'));
@@ -2207,7 +2135,7 @@ export function createAgentToolBridge(options: any = {}) {
 
   function handleSaveMemory(body: any = {}) {
     const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
+    const context = getInvocation(body.invocationId, body.callbackToken, {});
     const activeStore = resolveContextStore(context);
     const title = normalizeMemoryField(body.title, MAX_MEMORY_CARD_TITLE_LENGTH, 'title');
     const content = normalizeMemoryField(body.content, MAX_MEMORY_CARD_CONTENT_LENGTH, 'content');
@@ -2318,7 +2246,7 @@ export function createAgentToolBridge(options: any = {}) {
 
   function handleWriteExperience(body: any = {}) {
     const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
+    const context = getInvocation(body.invocationId, body.callbackToken, {});
     const activeStore = resolveContextStore(context);
     const toolCallId = randomUUID();
     const title = clipText(body.title, 100);
@@ -2420,7 +2348,7 @@ export function createAgentToolBridge(options: any = {}) {
 
   function handleUpdateMemory(body: any = {}) {
     const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
+    const context = getInvocation(body.invocationId, body.callbackToken, {});
     const activeStore = resolveContextStore(context);
     const title = normalizeMemoryField(body.title, MAX_MEMORY_CARD_TITLE_LENGTH, 'title');
     const content = normalizeMemoryField(body.content, MAX_MEMORY_CARD_CONTENT_LENGTH, 'content');
@@ -2541,7 +2469,7 @@ export function createAgentToolBridge(options: any = {}) {
 
   function handleForgetMemory(body: any = {}) {
     const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
+    const context = getInvocation(body.invocationId, body.callbackToken, {});
     const activeStore = resolveContextStore(context);
     const title = normalizeMemoryField(body.title, MAX_MEMORY_CARD_TITLE_LENGTH, 'title');
     const reason = normalizeMemoryReason(body.reason);
@@ -2894,7 +2822,7 @@ export function createAgentToolBridge(options: any = {}) {
 
   function handleTrellisInit(body: any = {}) {
     const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
+    const context = getInvocation(body.invocationId, body.callbackToken, {});
     const includeContent = body.includeContent === true;
     const confirm = body.confirm === true;
     const force = body.force === true;
@@ -3138,7 +3066,7 @@ export function createAgentToolBridge(options: any = {}) {
 
   function handleTrellisWrite(body: any = {}) {
     const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
+    const context = getInvocation(body.invocationId, body.callbackToken, {});
     const includeContent = body.includeContent === true;
     const confirm = body.confirm === true;
     const force = body.force === true;
@@ -3421,7 +3349,7 @@ export function createAgentToolBridge(options: any = {}) {
   }
 
   async function handleSandboxAccess(body: any = {}) {
-    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
+    const context = getInvocation(body.invocationId, body.callbackToken, {});
     const adapter = context && context.sandboxToolAdapter ? context.sandboxToolAdapter : null;
     const absolutePath = String(body.absolutePath || body.path || '').trim();
 
@@ -3438,7 +3366,7 @@ export function createAgentToolBridge(options: any = {}) {
   }
 
   async function handleSandboxRead(body: any = {}) {
-    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
+    const context = getInvocation(body.invocationId, body.callbackToken, {});
     const adapter = context && context.sandboxToolAdapter ? context.sandboxToolAdapter : null;
     const absolutePath = String(body.absolutePath || body.path || '').trim();
 
@@ -3467,7 +3395,7 @@ export function createAgentToolBridge(options: any = {}) {
   }
 
   async function handleSandboxWrite(body: any = {}) {
-    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
+    const context = getInvocation(body.invocationId, body.callbackToken, {});
     const adapter = context && context.sandboxToolAdapter ? context.sandboxToolAdapter : null;
     const absolutePath = String(body.absolutePath || body.path || '').trim();
     const content = body.content !== undefined && body.content !== null ? String(body.content) : '';
@@ -3485,7 +3413,7 @@ export function createAgentToolBridge(options: any = {}) {
   }
 
   async function handleSandboxMkdir(body: any = {}) {
-    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
+    const context = getInvocation(body.invocationId, body.callbackToken, {});
     const adapter = context && context.sandboxToolAdapter ? context.sandboxToolAdapter : null;
     const absolutePath = String(body.absolutePath || body.path || '').trim();
 
@@ -3502,7 +3430,7 @@ export function createAgentToolBridge(options: any = {}) {
   }
 
   async function handleSandboxBash(body: any = {}) {
-    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
+    const context = getInvocation(body.invocationId, body.callbackToken, {});
     const adapter = context && context.sandboxToolAdapter ? context.sandboxToolAdapter : null;
     const command = String(body.command || '').trim();
     const cwd = String(body.cwd || '').trim();

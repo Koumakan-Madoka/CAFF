@@ -338,7 +338,6 @@ test('buildAgentTurnPromptSections orders stable prompt sections before dynamic 
     'dynamic_skill_loading',
     'tool_instructions',
     'participants',
-    'mode_state',
     'trellis_context',
     'session_goal',
     'conversation_digest',

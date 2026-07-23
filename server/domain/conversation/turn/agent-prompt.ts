@@ -12,7 +12,6 @@ export const AGENT_PROMPT_VERSION =
 const MAX_HISTORY_MESSAGES = 24;
 const MAX_PARALLEL_MENTION_BATCH_SIZE = 5;
 const MAX_PRIVATE_CONTEXT_MESSAGES = 16;
-const MAX_SKILL_TESTING_DOC_PROMPT_LENGTH = 12000;
 const PROMPT_MENTION_RE = /(^|[\s([{"'<])@([\p{L}\p{N}._-]+)/gu;
 
 export function sanitizePromptMentions(text: any) {
@@ -466,70 +465,6 @@ function buildWerewolfPromptSection(conversation: any, agent: any) {
   ].join('\n');
 }
 
-function clipSkillTestTestingDocPrompt(value: any, maxLength = MAX_SKILL_TESTING_DOC_PROMPT_LENGTH) {
-  const text = String(value || '').trim();
-  if (!text) {
-    return '';
-  }
-  if (text.length <= maxLength) {
-    return text;
-  }
-  return `${text.slice(0, Math.max(1, maxLength - 16)).trimEnd()}\n...[truncated]`;
-}
-
-function buildSkillTestDesignPromptSection(modeContext: any, agent: any, agents: any) {
-  if (!modeContext || modeContext.kind !== 'skill_test_design') {
-    return '';
-  }
-
-  const designState = modeContext.state && typeof modeContext.state === 'object' ? modeContext.state : {};
-  const targetSkill = modeContext.targetSkill && typeof modeContext.targetSkill === 'object' ? modeContext.targetSkill : {};
-  const caseSummary = modeContext.caseSummary && typeof modeContext.caseSummary === 'object' ? modeContext.caseSummary : {};
-  const participantRoles = designState.participantRoles && typeof designState.participantRoles === 'object'
-    ? designState.participantRoles
-    : {};
-  const roleEntries = (Array.isArray(agents) ? agents : [])
-    .map((item: any) => {
-      const role = String(participantRoles[item && item.id ? item.id : ''] || '').trim();
-      return role ? `- ${item.name}: ${role}` : '';
-    })
-    .filter(Boolean);
-  const matrix = designState.matrix && typeof designState.matrix === 'object' ? designState.matrix : null;
-  const confirmation = designState.confirmation && typeof designState.confirmation === 'object' ? designState.confirmation : null;
-  const testingDocDraft = designState.testingDocDraft && typeof designState.testingDocDraft === 'object' ? designState.testingDocDraft : null;
-  const environmentContract = designState.environmentContract && typeof designState.environmentContract === 'object' ? designState.environmentContract : null;
-  const testingDocContent = clipSkillTestTestingDocPrompt(targetSkill.testingDocContent);
-  const currentRole = String(modeContext.currentAgentRole || '').trim() || 'planner';
-  const recentPrompts = Array.isArray(caseSummary.recentPrompts) ? caseSummary.recentPrompts.slice(0, 3) : [];
-  const phase = String(designState.phase || '').trim() || 'collecting_context';
-
-  return [
-    'Skill Test design mode state:',
-    '- The full-mounted `skill-test-design-workbench` skill defines the workflow, role duties, matrix schema, and export guardrails.',
-    `- Current phase: ${phase}`,
-    `- Current agent role: ${currentRole}`,
-    `- Target skill: ${String(targetSkill.name || targetSkill.id || designState.skillId || 'unknown').trim()} (${String(targetSkill.id || designState.skillId || 'unknown').trim()})`,
-    targetSkill.description ? `- Target skill description: ${targetSkill.description}` : '',
-    targetSkill.path ? `- Target skill path: ${targetSkill.path}` : '',
-    targetSkill.testingDocPath ? `- Target skill TESTING.md path: ${targetSkill.testingDocPath}${targetSkill.testingDocExists ? '' : ' (not found yet)'}` : '',
-    testingDocContent ? `- Target skill TESTING.md content:\n${testingDocContent}` : '',
-    environmentContract ? `- Environment contract status: ${String(environmentContract.status || 'unknown').trim()}, refs=${Array.isArray(environmentContract.candidates) ? environmentContract.candidates.map((entry: any) => String(entry && entry.environmentContractRef || '').trim()).filter(Boolean).join(', ') || 'none' : 'none'}` : '',
-    testingDocDraft ? `- TESTING.md draft: draftId=${String(testingDocDraft.draftId || '').trim() || 'unknown'}, status=${String(testingDocDraft.status || '').trim() || 'unknown'}, executionBlocked=${testingDocDraft.readiness && testingDocDraft.readiness.executionBlocked ? 'yes' : 'no'}` : '- TESTING.md draft: none. When the target TESTING.md is missing, the UI/API should auto-create a guarded preview draft; do not ask permission before preview, and do not paste a large TESTING.md body into chat.',
-    '- Skill Test runtime baseline: runs default to an isolated sandbox case world (`host-loop + sandbox-tools`). Do not ask the user to confirm whether sandboxing is used; only ask about extra skill-specific dependencies, credentials, external services, egress, GUI, persistence, or setup/teardown needs beyond that baseline.',
-    '- Skill Test design default: build complete `full + execution` draft cases for the target skill. Do not ask the user to choose a loading mode; use load/trigger-only coverage only when the user explicitly requests it.',
-    '- Do not frame scope as a minimum viable subset in user-facing replies. The matrix inclusion flag means current export scope; call it 导出范围 / coverage scope.',
-    '- Environment contract lookup order: TESTING.md -> SKILL.md -> stable spec; if none is actionable, mark environmentSource=missing instead of inventing setup steps.',
-    '- For tracked-change or redline execution scenarios, keep the task phrased as apply/edit work. Do not quietly downgrade those rows into review-only, analysis-only, diff-only, or report-only prompts unless the user explicitly wants a read-only review.',
-    `- Existing cases: total ${Number(caseSummary.totalCases || 0)}, draft ${Number(caseSummary.draftCases || 0)}, ready ${Number(caseSummary.readyCases || 0)}, archived ${Number(caseSummary.archivedCases || 0)}`,
-    recentPrompts.length > 0 ? `- Recent case prompts: ${recentPrompts.join(' | ')}` : '- Recent case prompts: none',
-    roleEntries.length > 0 ? 'Fixed agent roles:' : '',
-    ...roleEntries,
-    matrix
-      ? `- Latest matrix status: matrixId=${String(matrix.matrixId || '').trim() || 'unknown'}, rows=${Array.isArray(matrix.rows) ? matrix.rows.length : 0}, confirmed=${confirmation && confirmation.matrixId === matrix.matrixId ? 'yes' : 'no'}`
-      : '- Latest matrix status: no imported matrix yet.',
-  ].filter(Boolean).join('\n');
-}
-
 function promptSection(sectionKey: string, title: string, source: string, content: any, visibility?: 'full' | 'summary' | 'presence') {
   return {
     sectionKey,
@@ -665,7 +600,6 @@ export function buildAgentTurnPromptSections({
       ];
   const undercoverSection = buildUndercoverPromptSection(conversation, agent);
   const werewolfSection = buildWerewolfPromptSection(conversation, agent);
-  const skillTestDesignSection = buildSkillTestDesignPromptSection(modeContext, agent, agents);
   const conversationDigestSection = formatConversationDigestsForPrompt(conversation);
   const retrievedMemorySection = formatRetrievedMemorySegments(relatedMemorySegments);
   const retrievalTraceSection = formatConversationRetrievalTracesForPrompt(conversation, agent);
@@ -771,9 +705,6 @@ export function buildAgentTurnPromptSections({
       : null,
     gameplaySections.length > 0
       ? promptSection('gameplay_mode', 'Gameplay Mode', 'conversation/mode', ['Gameplay mode:', gameplaySections.join('\n\n')].join('\n'), 'full')
-      : null,
-    skillTestDesignSection
-      ? promptSection('mode_state', 'Mode State Context', 'conversation/mode', ['Mode state context:', skillTestDesignSection].join('\n'), 'full')
       : null,
     trellisPromptContext
       ? promptSection('trellis_context', 'Trellis Project Context', 'trellis/project', ['Trellis project context:', trellisPromptContext].join('\n'), 'full')

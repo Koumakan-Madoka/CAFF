@@ -17,7 +17,7 @@ const {
   extractMentionedAgentIds,
   getAgentById,
 } = require('../mention-routing');
-const { SKILL_TEST_DESIGN_WORKBENCH_SKILL_ID } = require('../../../../lib/mode-store');
+const { ALWAYS_DYNAMIC_MODE_SKILL_IDS } = require('../../../../lib/mode-store');
 const { buildAgentTurnPromptSections, formatAgentTurnPromptSections, AGENT_PROMPT_VERSION } = require('./agent-prompt');
 const { createAgentContextSnapshot } = require('./context-snapshot');
 const { markConversationRetrievalTraceUsage } = require('../retrieval-trace');
@@ -27,14 +27,6 @@ const { createBrowserCliSessionName, resolveBrowserCliPath } = require('./browse
 const { extractChatBridgeReplaysFromText, pickChatBridgeReplay } = require('./chat-bridge-replay');
 const { createLiveSessionToolStep } = require('../../runtime/message-tool-trace');
 const { summarizeModelUsageCalls, summarizeTokenUsage } = require('../../runtime/token-usage');
-const {
-  SKILL_TEST_DESIGN_CONVERSATION_TYPE,
-  buildSkillTestDesignCaseSummary,
-  getSkillTestDesignState,
-  setSkillTestDesignStateMetadata,
-} = require('../../skill-test/chat-workbench-mode');
-const { readSkillTestingDocument } = require('../../skill-test/environment-chain');
-const { buildAutomaticTestingDocPreviewState } = require('../../skill-test/testing-doc-auto-preview');
 const { resolveCurrentTrellisTaskName } = require('./trellis-context');
 const { clipText, getTurnStage, nowIso, syncCurrentTurnAgent } = require('./turn-state');
 const { registerTurnHandle, unregisterTurnHandle } = require('./turn-stop');
@@ -491,79 +483,6 @@ function mergeSkillIds(...groups: any[]) {
   }
 
   return mergedSkillIds;
-}
-
-function buildModePromptContext(conversation: any, currentAgentId: any, skillRegistry: any, store: any, options: any = {}) {
-  const conversationType = conversation && conversation.type ? String(conversation.type).trim() : 'standard';
-  if (conversationType !== SKILL_TEST_DESIGN_CONVERSATION_TYPE) {
-    return null;
-  }
-
-  let state = getSkillTestDesignState(conversation);
-  if (!state || !state.skillId) {
-    return null;
-  }
-
-  const skill = skillRegistry && typeof skillRegistry.getSkill === 'function'
-    ? skillRegistry.getSkill(state.skillId, { extraSkillDirs: options.extraSkillDirs })
-    : null;
-  if (skill && store && typeof store.updateConversation === 'function') {
-    const preview = buildAutomaticTestingDocPreviewState(skill, state, {
-      conversationId: conversation && conversation.id,
-      createdBy: 'system',
-      agentRole: 'system',
-      createdAt: nowIso(),
-    });
-    if (preview.created) {
-      const metadata = setSkillTestDesignStateMetadata(conversation.metadata, preview.nextState);
-      const nextConversation = store.updateConversation(conversation.id, {
-        title: conversation.title,
-        metadata,
-      });
-      if (nextConversation) {
-        conversation = nextConversation;
-        state = getSkillTestDesignState(nextConversation) || preview.nextState;
-      } else {
-        state = preview.nextState;
-      }
-    }
-  }
-
-  const participantRoles = state.participantRoles && typeof state.participantRoles === 'object' ? state.participantRoles : {};
-  const currentAgentRole = String(participantRoles[currentAgentId] || '').trim() || 'planner';
-  const skillPath = skill ? String(skill.path || '').trim() : '';
-  const testingDocPath = skillPath ? path.join(skillPath, 'TESTING.md') : '';
-  const testingDocExists = testingDocPath ? fs.existsSync(testingDocPath) : false;
-  const testingDocument = skill ? readSkillTestingDocument(skill) : { content: '', readError: false };
-  const caseSummary = buildSkillTestDesignCaseSummary(store && store.db, state.skillId);
-
-  return {
-    kind: 'skill_test_design',
-    currentAgentRole,
-    targetSkill: skill
-      ? {
-          id: String(skill.id || '').trim(),
-          name: String(skill.name || '').trim(),
-          description: String(skill.description || '').trim(),
-          path: skillPath,
-          testingDocPath,
-          testingDocExists,
-          testingDocContent: testingDocument && testingDocument.exists && !testingDocument.readError
-            ? String(testingDocument.content || '')
-            : '',
-        }
-      : {
-          id: state.skillId,
-          name: state.skillName || state.skillId,
-          description: '',
-          path: '',
-          testingDocPath: '',
-          testingDocExists: false,
-          testingDocContent: '',
-        },
-    state,
-    caseSummary,
-  };
 }
 
 function extractJsonCandidate(text: any) {
@@ -1270,13 +1189,8 @@ export function createAgentExecutor(options: any = {}) {
       : [];
     const resolvedPersonaSkills = skillRegistry.resolveSkills(agentConfig.skillIds, { extraSkillDirs });
     const resolvedConversationSkills = skillRegistry.resolveSkills(agentConfig.conversationSkillIds, { extraSkillDirs });
-    const modeContext = buildModePromptContext(conversation, agent.id, skillRegistry, store, { extraSkillDirs });
-    const forceFullConversationSkillIds = conversationType === SKILL_TEST_DESIGN_CONVERSATION_TYPE
-      ? mergeSkillIds([
-          SKILL_TEST_DESIGN_WORKBENCH_SKILL_ID,
-          modeContext && modeContext.state ? modeContext.state.skillId : '',
-        ])
-      : [];
+    const modeContext = null;
+    const forceFullConversationSkillIds: any[] = [];
     const privateMessages = store.listPrivateMessagesForAgent(conversationId, agent.id, {
       limit: MAX_PRIVATE_CONTEXT_MESSAGES,
     });
@@ -1305,6 +1219,7 @@ export function createAgentExecutor(options: any = {}) {
       modeLoadingStrategy,
       modeContext,
       forceFullConversationSkillIds,
+      forceDynamicConversationSkillIds: ALWAYS_DYNAMIC_MODE_SKILL_IDS,
       browserCliPath,
     };
     const promptSections = buildAgentTurnPromptSections(promptInput);

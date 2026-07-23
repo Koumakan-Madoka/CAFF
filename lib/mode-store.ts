@@ -72,10 +72,19 @@ function normalizeModeName(value: any) {
 
 const LEGACY_FEISHU_CODING_MODE_ID = 'coding';
 const CODING_MODE_NAME = 'coding';
-export const SKILL_TEST_DESIGN_WORKBENCH_SKILL_ID = 'skill-test-design-workbench';
+export const SKILL_CREATOR_SKILL_ID = 'skill-creator';
+export const ALWAYS_DYNAMIC_MODE_SKILL_IDS = [SKILL_CREATOR_SKILL_ID];
+
+const REQUIRED_MODE_SKILL_IDS = [SKILL_CREATOR_SKILL_ID];
+const REQUIRED_MODE_SKILL_ID_SET = new Set(REQUIRED_MODE_SKILL_IDS);
+
+function withRequiredModeSkillIds(skillIds: any) {
+  return mergeSkillIds(skillIds, REQUIRED_MODE_SKILL_IDS);
+}
 
 function modeHasSkillBindings(mode: any) {
-  return Array.isArray(mode && mode.skillIds) && mode.skillIds.length > 0;
+  const skillIds = normalizeSkillIds(mode && mode.skillIds);
+  return skillIds.some((skillId: string) => !REQUIRED_MODE_SKILL_ID_SET.has(skillId));
 }
 
 function normalizeLoadingStrategy(value: any) {
@@ -98,7 +107,7 @@ function normalizeModeRow(row: any) {
     name: row.name,
     description: row.description || '',
     builtin: Boolean(row.builtin),
-    skillIds: normalizeSkillIds(row.skill_ids_json),
+    skillIds: withRequiredModeSkillIds(row.skill_ids_json),
     loadingStrategy: normalizeLoadingStrategy(row.loading_strategy),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -111,15 +120,7 @@ const BUILTIN_MODES = [
     name: '普通对话',
     description: '标准对话模式，不自动注入额外 skill',
     builtin: true,
-    skillIds: [],
-    loadingStrategy: 'dynamic',
-  },
-  {
-    id: 'skill_test_design',
-    name: 'Skill Test 设计',
-    description: '围绕单个 skill 进行追问、测试矩阵规划与草稿导出的专用模式',
-    builtin: true,
-    skillIds: [SKILL_TEST_DESIGN_WORKBENCH_SKILL_ID],
+    skillIds: withRequiredModeSkillIds([]),
     loadingStrategy: 'dynamic',
   },
   {
@@ -127,7 +128,7 @@ const BUILTIN_MODES = [
     name: '狼人杀',
     description: '后端全自动主持的狼人杀游戏模式',
     builtin: true,
-    skillIds: [],
+    skillIds: withRequiredModeSkillIds([]),
     loadingStrategy: 'full',
   },
   {
@@ -135,7 +136,7 @@ const BUILTIN_MODES = [
     name: '谁是卧底',
     description: '后端全自动主持的谁是卧底游戏模式',
     builtin: true,
-    skillIds: [],
+    skillIds: withRequiredModeSkillIds([]),
     loadingStrategy: 'full',
   },
 ];
@@ -179,6 +180,7 @@ export class ModeStore {
 
     this.seedBuiltinModes();
     this.migrateLegacyFeishuCodingMode();
+    this.retireSkillTestDesignMode();
   }
 
   resolveCodingMode() {
@@ -256,6 +258,45 @@ export class ModeStore {
     migrateLegacyMode();
   }
 
+  retireSkillTestDesignMode() {
+    const existingMode = this.getStatement.get('skill_test_design');
+    if (!existingMode || !existingMode.builtin) {
+      return;
+    }
+
+    const listParticipants = this.db.prepare(`
+      SELECT conversation_id, agent_id, conversation_skills_json
+      FROM chat_conversation_agents
+      WHERE conversation_id IN (SELECT id FROM chat_conversations WHERE type = 'skill_test_design')
+    `);
+    const updateParticipant = this.db.prepare(`
+      UPDATE chat_conversation_agents
+      SET conversation_skills_json = ?
+      WHERE conversation_id = ? AND agent_id = ?
+    `);
+
+    const retire = this.db.transaction(() => {
+      const participants = listParticipants.all();
+
+      for (const participant of participants) {
+        const existingSkillIds = normalizeSkillIds(participant.conversation_skills_json);
+        const filtered = existingSkillIds.filter((id: string) => id !== 'skill-test-design-workbench');
+
+        if (filtered.length !== existingSkillIds.length) {
+          updateParticipant.run(
+            serializeJson(filtered),
+            participant.conversation_id,
+            participant.agent_id,
+          );
+        }
+      }
+
+      this.deleteStatement.run('skill_test_design');
+    });
+
+    retire();
+  }
+
   seedBuiltinModes() {
     for (const mode of BUILTIN_MODES) {
       const existingRow = this.getStatement.get(mode.id);
@@ -267,9 +308,10 @@ export class ModeStore {
             continue;
           }
 
-          const existingSkillIds = Array.isArray(existingMode.skillIds) ? existingMode.skillIds : [];
+          const existingSkillIds = normalizeSkillIds(existingRow.skill_ids_json);
           const mergedSkillIds = mergeSkillIds(existingSkillIds, mode.skillIds);
-          const shouldUpdateSkillIds = JSON.stringify(mergedSkillIds) !== JSON.stringify(existingSkillIds);
+          const existingEffectiveSkillIds = withRequiredModeSkillIds(existingRow.skill_ids_json);
+          const shouldUpdateSkillIds = JSON.stringify(mergedSkillIds) !== JSON.stringify(existingEffectiveSkillIds);
           const shouldUpdateLoadingStrategy = existingMode.loadingStrategy !== mode.loadingStrategy;
 
           if (shouldUpdateSkillIds || shouldUpdateLoadingStrategy) {
@@ -317,7 +359,7 @@ export class ModeStore {
       throw new Error('Mode name is required');
     }
 
-    const skillIds = normalizeSkillIds(input.skillIds);
+    const skillIds = withRequiredModeSkillIds(input.skillIds);
     const loadingStrategy = normalizeLoadingStrategy(input.loadingStrategy);
     const timestamp = nowIso();
 

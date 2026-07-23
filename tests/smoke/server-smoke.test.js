@@ -4334,10 +4334,6 @@ test('server smoke: bootstrap, static files, projects, skills, agents, and conve
   assert.equal(sharedResponse.status, 200);
   assert.match(sharedResponse.headers.get('content-type') || '', /javascript/);
 
-  const casebookResponse = await fetch(`${baseUrl}/eval-cases.html`);
-  assert.equal(casebookResponse.status, 200);
-  assert.match(casebookResponse.headers.get('content-type') || '', /text\/html/);
-
   const bootstrap = await fetchJson(baseUrl, '/api/bootstrap');
   assert.ok(Array.isArray(bootstrap.conversations), `Expected conversations to be an array, got ${typeof bootstrap.conversations}`);
   assert.ok(Array.isArray(bootstrap.agents), `Expected agents to be an array, got ${typeof bootstrap.agents}`);
@@ -4346,9 +4342,6 @@ test('server smoke: bootstrap, static files, projects, skills, agents, and conve
   const metrics = await fetchJson(baseUrl, '/api/metrics/agent');
   assert.ok(Array.isArray(metrics.agents), `Expected metrics.agents to be an array, got ${typeof metrics.agents}`);
   assert.ok(Array.isArray(metrics.tools), `Expected metrics.tools to be an array, got ${typeof metrics.tools}`);
-
-  const evalCases = await fetchJson(baseUrl, '/api/eval-cases');
-  assert.ok(Array.isArray(evalCases.cases), `Expected evalCases.cases to be an array, got ${typeof evalCases.cases}`);
 
   const projects = await fetchJson(baseUrl, '/api/projects');
   assert.ok(Array.isArray(projects.projects));
