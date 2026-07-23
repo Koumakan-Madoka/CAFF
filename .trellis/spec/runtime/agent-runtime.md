@@ -51,8 +51,6 @@
   on-disk URIs keep `mode=ro` / `mode=rw` intent through explicit open options,
   parent directory creation uses the decoded underlying filesystem path, and
   unsupported URI query parameters fail fast instead of being silently ignored.
-- Skill-test isolated runs now default to `host-loop + sandbox-tools`: if you change runtime `cwd`, extension injection, or tool routing for skill-test runs, keep `server/api/skill-test-controller.ts`, `lib/pi-runtime.ts`, `lib/pi-skill-test-sandbox-extension.mjs`, `server/domain/runtime/agent-tool-bridge.ts`, and `server/domain/skill-test/isolation.ts` aligned.
-- Sandbox-visible path semantics for host-loop skill-test runs flow through `CAFF_SKILL_TEST_VISIBLE_*` envs. Prefer those visible paths for tool `cwd`, trace redaction, and agent-facing path echoes instead of mutating the host process working directory.
 
 ## Mirrored Update Paths
 
@@ -69,8 +67,7 @@
   `server/domain/conversation/turn/agent-prompt.ts`
 - Skill dynamic loading (descriptor path + `read`):
   `lib/skill-registry.ts` (`skill.path`) <->
-  `server/domain/conversation/turn/agent-prompt.ts` (descriptor `Path` + `read` guidance) <->
-  `server/api/skill-test-controller.ts` (dynamic trigger detection via `read` path)
+  `server/domain/conversation/turn/agent-prompt.ts` (descriptor `Path` + `read` guidance)
 - Prompt guidance:
   `server/domain/conversation/turn/agent-prompt.ts` <->
   `server/domain/conversation/turn/trellis-context.ts`
@@ -408,15 +405,6 @@ node "$CAFF_CHAT_TOOLS_PATH" write-experience \
 - `GET /api/conversations/:conversationId/messages/:messageId/tool-trace`
   remains assistant-only and should return a merged trace built from session
   snapshot data plus stored bridge events.
-- Skill-test runs reuse the same `conversation_tool_event.step` shape for live
-  tool rows, with `server/api/skill-test-controller.ts` emitting companion
-  `skill_test_run_event` lifecycle payloads that carry the synthetic trace
-  `messageId` and terminal merged `trace` snapshot.
-- Dynamic skill-test trigger runs may also persist a
-  `skill_test_dynamic_load_confirmed` task event when a live pi event proves the
-  target `read .../SKILL.md` before session JSONL or `agent_tool_call`
-  persistence catches up; evaluation treats that task event as authoritative
-  load evidence for the target skill.
 
 ## Test Expectations
 

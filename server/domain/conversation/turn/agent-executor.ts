@@ -1189,8 +1189,6 @@ export function createAgentExecutor(options: any = {}) {
       : [];
     const resolvedPersonaSkills = skillRegistry.resolveSkills(agentConfig.skillIds, { extraSkillDirs });
     const resolvedConversationSkills = skillRegistry.resolveSkills(agentConfig.conversationSkillIds, { extraSkillDirs });
-    const modeContext = null;
-    const forceFullConversationSkillIds: any[] = [];
     const privateMessages = store.listPrivateMessagesForAgent(conversationId, agent.id, {
       limit: MAX_PRIVATE_CONTEXT_MESSAGES,
     });
@@ -1217,8 +1215,6 @@ export function createAgentExecutor(options: any = {}) {
       allowHandoffs,
       agentToolRelativePath,
       modeLoadingStrategy,
-      modeContext,
-      forceFullConversationSkillIds,
       forceDynamicConversationSkillIds: ALWAYS_DYNAMIC_MODE_SKILL_IDS,
       browserCliPath,
     };

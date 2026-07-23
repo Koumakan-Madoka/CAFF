@@ -114,7 +114,7 @@ npm run start:dev
 
 CAFF 在 `npm run start` / `npm run start:dev` 时会自动读取 `./.env.local`。如果变量已经存在于当前进程环境中，则进程环境优先。
 
-如果你希望 Windows 登录后自动恢复整条本地链路（`WSL Debian` + `docker` + `opensandbox-local` + `CAFF`），仓库附带了 `scripts/windows/run-caff-stack.ps1` 和 `scripts/windows/register-caff-stack-task.ps1`。详细步骤见 `docs/windows-local-stack.md`。
+如果你希望 Windows 登录后自动恢复整条本地链路（`WSL Debian` + `docker` + `CAFF`），仓库附带了 `scripts/windows/run-caff-stack.ps1` 和 `scripts/windows/register-caff-stack-task.ps1`。详细步骤见 `docs/windows-local-stack.md`。
 
 ## 🧭 Web 工作台
 

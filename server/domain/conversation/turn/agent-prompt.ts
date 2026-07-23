@@ -106,6 +106,7 @@ function formatSkillDocuments(skills: any, options: any = {}) {
   }
 
   const forceFullSkillIds = normalizeForceFullSkillIds(options.forceFullSkillIds);
+  const forceDynamicSkillIds = normalizeForceFullSkillIds(options.forceDynamicSkillIds);
   const hasModeStrategy = options.modeLoadingStrategy === 'full' || options.modeLoadingStrategy === 'dynamic';
   const modeForcesFull = hasModeStrategy ? options.modeLoadingStrategy === 'full' : getSkillLoadingMode() !== 'dynamic';
   const forceAllFull = Boolean(options.forceFull) || modeForcesFull;
@@ -113,9 +114,8 @@ function formatSkillDocuments(skills: any, options: any = {}) {
   return normalizedSkills
     .map((skill: any) => {
       const skillId = String(skill && skill.id || '').trim();
-      return forceAllFull || forceFullSkillIds.has(skillId)
-        ? formatFullSkillDocument(skill)
-        : formatSkillDescriptor(skill);
+      const shouldInlineFullBody = !forceDynamicSkillIds.has(skillId) && (forceAllFull || forceFullSkillIds.has(skillId));
+      return shouldInlineFullBody ? formatFullSkillDocument(skill) : formatSkillDescriptor(skill);
     })
     .join('\n\n');
 }
@@ -127,16 +127,17 @@ function hasDynamicSkillDescriptors(skills: any, options: any = {}) {
   }
 
   const forceFullSkillIds = normalizeForceFullSkillIds(options.forceFullSkillIds);
+  const forceDynamicSkillIds = normalizeForceFullSkillIds(options.forceDynamicSkillIds);
   const hasModeStrategy = options.modeLoadingStrategy === 'full' || options.modeLoadingStrategy === 'dynamic';
   const modeForcesFull = hasModeStrategy ? options.modeLoadingStrategy === 'full' : getSkillLoadingMode() !== 'dynamic';
   const forceAllFull = Boolean(options.forceFull) || modeForcesFull;
-  if (forceAllFull) {
-    return false;
-  }
 
   return normalizedSkills.some((skill: any) => {
     const skillId = String(skill && skill.id || '').trim();
-    return !forceFullSkillIds.has(skillId);
+    if (forceDynamicSkillIds.has(skillId)) {
+      return true;
+    }
+    return !forceAllFull && !forceFullSkillIds.has(skillId);
   });
 }
 
@@ -526,8 +527,7 @@ export function buildAgentTurnPromptSections({
   allowHandoffs = true,
   agentToolRelativePath,
   modeLoadingStrategy,
-  modeContext,
-  forceFullConversationSkillIds,
+  forceDynamicConversationSkillIds,
   browserCliPath,
 }: any) {
   const normalizedProjectDir = String(projectDir || '').trim();
@@ -565,7 +565,7 @@ export function buildAgentTurnPromptSections({
   const conversationSkillDocuments = formatSkillDocuments(resolvedConversationSkills, {
     forceFull: false,
     modeLoadingStrategy,
-    forceFullSkillIds: forceFullConversationSkillIds,
+    forceDynamicSkillIds: forceDynamicConversationSkillIds,
   });
   const privateMailboxSection = hasPrivateMailboxItems(privateMessages) ? formatPrivateMailbox(privateMessages, agents) : '';
   const conversationHistorySection = hasConversationHistoryItems(messages) ? formatHistory(messages, agents) : '';
@@ -608,7 +608,7 @@ export function buildAgentTurnPromptSections({
   const includeDynamicSkillLoadingGuidance = hasDynamicSkillDescriptors(resolvedConversationSkills, {
     forceFull: false,
     modeLoadingStrategy,
-    forceFullSkillIds: forceFullConversationSkillIds,
+    forceDynamicSkillIds: forceDynamicConversationSkillIds,
   });
   const browserCliInstructions = buildBrowserCliInstructions({ browserCliPath });
 

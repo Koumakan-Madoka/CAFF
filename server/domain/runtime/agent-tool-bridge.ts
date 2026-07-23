@@ -352,48 +352,6 @@ export function createAgentToolBridge(options: any = {}) {
   const onTurnUpdated = typeof options.onTurnUpdated === 'function' ? options.onTurnUpdated : () => {};
   const activeInvocations = new Map();
 
-  function normalizePolicyToolName(value: any) {
-    const normalized = String(value || '').trim().toLowerCase();
-    return normalized === 'participants' ? 'list-participants' : normalized;
-  }
-
-  function resolveContextStore(context: any) {
-    return store;
-  }
-
-  function recordPolicyReject(context: any, toolName: string, reason: string, details: any = {}) {
-    const normalizedToolName = normalizePolicyToolName(toolName);
-    const rejectEntry = {
-      toolName: normalizedToolName,
-      reason: clipText(reason, 240),
-      details: details && typeof details === 'object' ? details : {},
-      createdAt: nowIso(),
-    };
-
-    if (context) {
-      if (!Array.isArray(context.policyRejects)) {
-        context.policyRejects = [];
-      }
-      context.policyRejects.push(rejectEntry);
-    }
-
-    tryAppendInvocationEvent(context, 'agent_tool_policy_reject', {
-      schemaVersion: 1,
-      tool: normalizedToolName,
-      invocationId: context && context.invocationId ? context.invocationId : '',
-      conversationId: context && context.conversationId ? context.conversationId : '',
-      turnId: context && context.turnId ? context.turnId : '',
-      agentId: context && context.agentId ? context.agentId : '',
-      agentName: context && context.agentName ? context.agentName : '',
-      assistantMessageId: context && context.assistantMessageId ? context.assistantMessageId : '',
-      reject: rejectEntry,
-    });
-  }
-
-  function ensureToolAllowed(context: any, toolName: string, details: any = {}) {
-    return;
-  }
-
   function resolveStageTaskId(context: any) {
     const taskId = context && context.stage && context.stage.taskId ? String(context.stage.taskId).trim() : '';
     return taskId || null;
@@ -522,7 +480,6 @@ export function createAgentToolBridge(options: any = {}) {
       userMessageId: String(input.userMessageId || (promptUserMessage && promptUserMessage.id) || '').trim(),
       promptUserMessage,
       conversationAgents: Array.isArray(input.conversationAgents) ? input.conversationAgents.slice() : [],
-      policyRejects: [],
       runStore: input.runStore || null,
       stage: input.stage || null,
       turnState: input.turnState || null,
@@ -718,7 +675,7 @@ export function createAgentToolBridge(options: any = {}) {
   }
 
   function buildAgentToolContextPayload(context: any, options: any = {}) {
-    const activeStore = resolveContextStore(context);
+    const activeStore = store;
     const publicLimit = Number.isInteger(options.publicLimit) && options.publicLimit > 0 ? options.publicLimit : MAX_HISTORY_MESSAGES;
     const privateLimit =
       Number.isInteger(options.privateLimit) && options.privateLimit > 0 ? options.privateLimit : MAX_PRIVATE_CONTEXT_MESSAGES;
@@ -789,7 +746,7 @@ export function createAgentToolBridge(options: any = {}) {
   }
 
   function applyAgentToolPublicUpdate(context: any, content: any, mode = 'replace') {
-    const activeStore = resolveContextStore(context);
+    const activeStore = store;
     const existingMessage = activeStore.getMessage(context.assistantMessageId);
 
     if (!existingMessage) {
@@ -862,7 +819,7 @@ export function createAgentToolBridge(options: any = {}) {
   function handlePostMessage(body: any = {}) {
     const startedAt = Date.now();
     const context = getInvocation(body.invocationId, body.callbackToken, {});
-    const activeStore = resolveContextStore(context);
+    const activeStore = store;
     const content = String(body.content || '').trim();
     const visibility = String(body.visibility || 'public').trim().toLowerCase();
     const mode = String(body.mode || 'replace').trim().toLowerCase() || 'replace';
@@ -891,10 +848,6 @@ export function createAgentToolBridge(options: any = {}) {
     });
 
     try {
-      ensureToolAllowed(context, toolName, {
-        visibility,
-      });
-
       if (!content) {
         throw createHttpError(400, 'Message content is required');
       }
@@ -1103,9 +1056,6 @@ export function createAgentToolBridge(options: any = {}) {
     });
 
     try {
-      ensureToolAllowed(context, 'read-context');
-
-
       const payload = buildAgentToolContextPayload(context, {
         publicLimit: Number.isFinite(publicLimit) ? publicLimit : undefined,
         privateLimit: Number.isFinite(privateLimit) ? privateLimit : undefined,
@@ -1176,7 +1126,7 @@ export function createAgentToolBridge(options: any = {}) {
       requestUrl.searchParams.get('callbackToken'),
       {}
     );
-    const activeStore = resolveContextStore(context);
+    const activeStore = store;
     const conversation = activeStore.getConversation(context.conversationId);
     const toolCallId = randomUUID();
 
@@ -1191,8 +1141,6 @@ export function createAgentToolBridge(options: any = {}) {
     });
 
     try {
-      ensureToolAllowed(context, 'list-participants');
-
       const response = {
         ok: true,
         conversation: conversation ? pickConversationSummary(conversation) : null,
@@ -1248,7 +1196,7 @@ export function createAgentToolBridge(options: any = {}) {
   function handleSuggestGoal(body: any = {}) {
     const startedAt = Date.now();
     const context = getInvocation(body.invocationId, body.callbackToken, {});
-    const activeStore = resolveContextStore(context);
+    const activeStore = store;
     const action = String(body.action || '').trim().toLowerCase();
     const objective = String(body.objective || '').trim();
     const reason = String(body.reason || '').trim();
@@ -1267,8 +1215,6 @@ export function createAgentToolBridge(options: any = {}) {
     });
 
     try {
-      ensureToolAllowed(context, 'suggest-goal', { action });
-
       if (!activeStore || typeof activeStore.getConversation !== 'function') {
         throw createHttpError(501, 'Session goal proposals are not available');
       }
@@ -1355,7 +1301,7 @@ export function createAgentToolBridge(options: any = {}) {
   function handleUpdateGoalChecklist(body: any = {}) {
     const startedAt = Date.now();
     const context = getInvocation(body.invocationId, body.callbackToken, {});
-    const activeStore = resolveContextStore(context);
+    const activeStore = store;
     const checklistText = String(body.checklistText || body.checklist_text || body.content || '').trim();
     const toolCallId = randomUUID();
 
@@ -1370,9 +1316,6 @@ export function createAgentToolBridge(options: any = {}) {
     });
 
     try {
-      ensureToolAllowed(context, 'update-goal-checklist');
-
-
       if (!activeStore || typeof activeStore.getConversation !== 'function') {
         throw createHttpError(501, 'Session goal checklist updates are not available');
       }
@@ -1453,7 +1396,7 @@ export function createAgentToolBridge(options: any = {}) {
   function handleSearchMessages(body: any = {}) {
     const startedAt = Date.now();
     const context = getInvocation(body.invocationId, body.callbackToken, {});
-    const activeStore = resolveContextStore(context);
+    const activeStore = store;
     const query = String(body.query || '').trim().replace(/\s+/g, ' ');
     const speaker = String(body.speaker || body.senderName || body.sender || '').trim().replace(/\s+/g, ' ');
     const agentId = String(body.agentId || body.agentID || '').trim().replace(/\s+/g, ' ');
@@ -1500,11 +1443,6 @@ export function createAgentToolBridge(options: any = {}) {
       if (agentId.length > MAX_MESSAGE_SEARCH_FILTER_LENGTH) {
         throw createHttpError(400, `agentId must be at most ${MAX_MESSAGE_SEARCH_FILTER_LENGTH} characters`);
       }
-
-      ensureToolAllowed(context, 'search-messages', {
-        scope: 'conversation-public',
-      });
-
       if (!activeStore || typeof activeStore.searchConversationMessages !== 'function') {
         throw createHttpError(501, 'Message search is not available');
       }
@@ -1581,7 +1519,7 @@ export function createAgentToolBridge(options: any = {}) {
   function handleSearchMemory(body: any = {}) {
     const startedAt = Date.now();
     const context = getInvocation(body.invocationId, body.callbackToken, {});
-    const activeStore = resolveContextStore(context);
+    const activeStore = store;
     const query = String(body.query || body.q || '').trim().replace(/\s+/g, ' ');
     const latest = normalizeBooleanFlag(body.latest || body.recent, false);
     const requestedLimit = Number.parseInt(String(body.limit || ''), 10);
@@ -1643,11 +1581,6 @@ export function createAgentToolBridge(options: any = {}) {
       if (query.length > MAX_SUMMARY_MEMORY_SEARCH_QUERY_LENGTH) {
         throw createHttpError(400, `query must be at most ${MAX_SUMMARY_MEMORY_SEARCH_QUERY_LENGTH} characters`);
       }
-
-      ensureToolAllowed(context, 'search-memory', {
-        scope: 'summary-segments',
-      });
-
       if (!activeStore || typeof activeStore.searchSummarySegments !== 'function') {
         throw createHttpError(501, 'Summary memory search is not available');
       }
@@ -1742,7 +1675,7 @@ export function createAgentToolBridge(options: any = {}) {
       requestUrl.searchParams.get('callbackToken'),
       {}
     );
-    const activeStore = resolveContextStore(context);
+    const activeStore = store;
     const limit = normalizeMemoryListLimit(requestUrl.searchParams.get('limit'));
     const toolCallId = randomUUID();
 
@@ -1758,10 +1691,6 @@ export function createAgentToolBridge(options: any = {}) {
     });
 
     try {
-      ensureToolAllowed(context, 'list-memories', {
-        scope: 'agent-visible',
-      });
-
       if (!activeStore || typeof activeStore.listVisibleMemoryCards !== 'function') {
         throw createHttpError(501, 'Memory cards are not available');
       }
@@ -1835,7 +1764,7 @@ export function createAgentToolBridge(options: any = {}) {
   function handleSaveMemory(body: any = {}) {
     const startedAt = Date.now();
     const context = getInvocation(body.invocationId, body.callbackToken, {});
-    const activeStore = resolveContextStore(context);
+    const activeStore = store;
     const title = normalizeMemoryField(body.title, MAX_MEMORY_CARD_TITLE_LENGTH, 'title');
     const content = normalizeMemoryField(body.content, MAX_MEMORY_CARD_CONTENT_LENGTH, 'content');
     const ttlDays = normalizeMemoryTtlDays(body.ttlDays);
@@ -1855,11 +1784,6 @@ export function createAgentToolBridge(options: any = {}) {
 
     try {
       validateMemoryCardCandidate(title, content);
-      ensureToolAllowed(context, 'save-memory', {
-        scope: 'local-user-agent',
-        title,
-      });
-
       if (!activeStore || typeof activeStore.saveLocalUserMemoryCard !== 'function') {
         throw createHttpError(501, 'Memory cards are not available');
       }
@@ -1946,7 +1870,7 @@ export function createAgentToolBridge(options: any = {}) {
   function handleWriteExperience(body: any = {}) {
     const startedAt = Date.now();
     const context = getInvocation(body.invocationId, body.callbackToken, {});
-    const activeStore = resolveContextStore(context);
+    const activeStore = store;
     const toolCallId = randomUUID();
     const title = clipText(body.title, 100);
     const category = clipText(body.category || 'other', 80);
@@ -1963,11 +1887,6 @@ export function createAgentToolBridge(options: any = {}) {
     });
 
     try {
-      ensureToolAllowed(context, 'write-experience', {
-        title,
-        category,
-      });
-
       const result = createConversationExperienceDraft(activeStore, context.conversationId, body, {
         agentId: context.agentId,
         agentName: context.agentName,
@@ -2048,7 +1967,7 @@ export function createAgentToolBridge(options: any = {}) {
   function handleUpdateMemory(body: any = {}) {
     const startedAt = Date.now();
     const context = getInvocation(body.invocationId, body.callbackToken, {});
-    const activeStore = resolveContextStore(context);
+    const activeStore = store;
     const title = normalizeMemoryField(body.title, MAX_MEMORY_CARD_TITLE_LENGTH, 'title');
     const content = normalizeMemoryField(body.content, MAX_MEMORY_CARD_CONTENT_LENGTH, 'content');
     const reason = normalizeMemoryReason(body.reason);
@@ -2071,11 +1990,6 @@ export function createAgentToolBridge(options: any = {}) {
 
     try {
       validateMemoryCardCandidate(title, content);
-      ensureToolAllowed(context, 'update-memory', {
-        scope: 'local-user-agent',
-        title,
-      });
-
       if (!activeStore || typeof activeStore.updateLocalUserMemoryCard !== 'function') {
         throw createHttpError(501, 'Memory cards are not available');
       }
@@ -2169,7 +2083,7 @@ export function createAgentToolBridge(options: any = {}) {
   function handleForgetMemory(body: any = {}) {
     const startedAt = Date.now();
     const context = getInvocation(body.invocationId, body.callbackToken, {});
-    const activeStore = resolveContextStore(context);
+    const activeStore = store;
     const title = normalizeMemoryField(body.title, MAX_MEMORY_CARD_TITLE_LENGTH, 'title');
     const reason = normalizeMemoryReason(body.reason);
     const expectedUpdatedAt = normalizeExpectedUpdatedAt(body.expectedUpdatedAt || body['expected-updated-at']);
@@ -2190,11 +2104,6 @@ export function createAgentToolBridge(options: any = {}) {
     });
 
     try {
-      ensureToolAllowed(context, 'forget-memory', {
-        scope: 'local-user-agent',
-        title,
-      });
-
       if (!activeStore || typeof activeStore.forgetLocalUserMemoryCard !== 'function') {
         throw createHttpError(501, 'Memory cards are not available');
       }
@@ -2543,8 +2452,6 @@ export function createAgentToolBridge(options: any = {}) {
     });
 
     try {
-      ensureToolAllowed(context, 'trellis-init');
-
       if (!taskName) {
         throw createHttpError(400, 'taskName must be a simple directory name (letters/numbers/._-)');
       }
@@ -2788,7 +2695,6 @@ export function createAgentToolBridge(options: any = {}) {
     let pathsSample: string[] = [];
 
     try {
-      ensureToolAllowed(context, 'trellis-write');
       const filesPayload = Array.isArray(body.files) ? body.files : null;
       const files = filesPayload
         ? filesPayload
