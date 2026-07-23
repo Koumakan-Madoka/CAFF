@@ -323,7 +323,7 @@ CAFF uses a descriptor + on-demand loading model for conversation skills:
 - CLI: `node "$CAFF_CHAT_TOOLS_PATH" write-experience --title "lesson title" --category bug_fix --scenario "when this applies" --step "short step" --validation "npm run check passed" --artifact "path/to/file.ts" --confidence high`
 - CLI JSON stdin: `write-experience --content-stdin` accepts a JSON object with the same fields; non-JSON stdin is treated as `scenario` text.
 - HTTP: `POST /api/agent-tools/experience/write`
-  - Request: `{ invocationId, callbackToken, title, category?, scenario?, context?, steps?, pitfalls?, validation?, artifacts?, confidence?, skillTestRunId?, skillTestCaseId? }`
+  - Request: `{ invocationId, callbackToken, title, category?, scenario?, context?, steps?, pitfalls?, validation?, artifacts?, confidence? }`
   - Response: `{ ok: true, draft, experienceDrafts }`
 - Metadata: `conversation.metadata.experienceDrafts?: ExperienceDraft[]`.
 
@@ -355,7 +355,7 @@ CAFF uses a descriptor + on-demand loading model for conversation skills:
 - Bad: relying on `write-experience` to create an enabled Skill; it only creates pending metadata for digest/Skill review.
 
 ### 6. Tests Required
-- `tests/runtime/agent-chat-tools.test.js`: CLI forwards the bounded payload and skill-test scope to `/api/agent-tools/experience/write`, supports pitfalls/limitations aliases, and surfaces field-level error issues.
+- `tests/runtime/agent-chat-tools.test.js`: CLI forwards the bounded payload to `/api/agent-tools/experience/write`, supports pitfalls/limitations aliases, and surfaces field-level error issues.
 - `tests/runtime/agent-tool-bridge.test.js`: bridge writes system-owned source metadata, broadcasts updates, rejects duplicate same-turn writes, and rejects secrets.
 - `tests/smoke/server-smoke.test.js`: digest absorbs pending drafts into `digest.experience`, marks drafts `absorbed`, and extracted Skill drafts include `Reusable Experience`.
 - `tests/runtime/turn-orchestrator.test.js`: prompt guidance includes `write-experience` and the sparse-use warning.

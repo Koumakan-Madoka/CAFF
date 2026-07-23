@@ -509,7 +509,7 @@ export function createAgentToolBridge(options: any = {}) {
     return context;
   }
 
-  function getInvocation(invocationId: any, callbackToken: any, _requestAuthScope: any = {}) {
+  function getInvocation(invocationId: any, callbackToken: any) {
     const normalizedInvocationId = String(invocationId || '').trim();
     const normalizedCallbackToken = String(callbackToken || '').trim();
     const context = activeInvocations.get(normalizedInvocationId);
@@ -818,7 +818,7 @@ export function createAgentToolBridge(options: any = {}) {
 
   function handlePostMessage(body: any = {}) {
     const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken, {});
+    const context = getInvocation(body.invocationId, body.callbackToken);
     const activeStore = store;
     const content = String(body.content || '').trim();
     const visibility = String(body.visibility || 'public').trim().toLowerCase();
@@ -1037,8 +1037,7 @@ export function createAgentToolBridge(options: any = {}) {
     const startedAt = Date.now();
     const context = getInvocation(
       requestUrl.searchParams.get('invocationId'),
-      requestUrl.searchParams.get('callbackToken'),
-      {}
+      requestUrl.searchParams.get('callbackToken')
     );
     const publicLimit = Number.parseInt(requestUrl.searchParams.get('publicLimit') || '', 10);
     const privateLimit = Number.parseInt(requestUrl.searchParams.get('privateLimit') || '', 10);
@@ -1123,8 +1122,7 @@ export function createAgentToolBridge(options: any = {}) {
     const startedAt = Date.now();
     const context = getInvocation(
       requestUrl.searchParams.get('invocationId'),
-      requestUrl.searchParams.get('callbackToken'),
-      {}
+      requestUrl.searchParams.get('callbackToken')
     );
     const activeStore = store;
     const conversation = activeStore.getConversation(context.conversationId);
@@ -1195,7 +1193,7 @@ export function createAgentToolBridge(options: any = {}) {
 
   function handleSuggestGoal(body: any = {}) {
     const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken, {});
+    const context = getInvocation(body.invocationId, body.callbackToken);
     const activeStore = store;
     const action = String(body.action || '').trim().toLowerCase();
     const objective = String(body.objective || '').trim();
@@ -1300,7 +1298,7 @@ export function createAgentToolBridge(options: any = {}) {
 
   function handleUpdateGoalChecklist(body: any = {}) {
     const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken, {});
+    const context = getInvocation(body.invocationId, body.callbackToken);
     const activeStore = store;
     const checklistText = String(body.checklistText || body.checklist_text || body.content || '').trim();
     const toolCallId = randomUUID();
@@ -1395,7 +1393,7 @@ export function createAgentToolBridge(options: any = {}) {
 
   function handleSearchMessages(body: any = {}) {
     const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken, {});
+    const context = getInvocation(body.invocationId, body.callbackToken);
     const activeStore = store;
     const query = String(body.query || '').trim().replace(/\s+/g, ' ');
     const speaker = String(body.speaker || body.senderName || body.sender || '').trim().replace(/\s+/g, ' ');
@@ -1518,7 +1516,7 @@ export function createAgentToolBridge(options: any = {}) {
 
   function handleSearchMemory(body: any = {}) {
     const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken, {});
+    const context = getInvocation(body.invocationId, body.callbackToken);
     const activeStore = store;
     const query = String(body.query || body.q || '').trim().replace(/\s+/g, ' ');
     const latest = normalizeBooleanFlag(body.latest || body.recent, false);
@@ -1672,8 +1670,7 @@ export function createAgentToolBridge(options: any = {}) {
     const startedAt = Date.now();
     const context = getInvocation(
       requestUrl.searchParams.get('invocationId'),
-      requestUrl.searchParams.get('callbackToken'),
-      {}
+      requestUrl.searchParams.get('callbackToken')
     );
     const activeStore = store;
     const limit = normalizeMemoryListLimit(requestUrl.searchParams.get('limit'));
@@ -1763,7 +1760,7 @@ export function createAgentToolBridge(options: any = {}) {
 
   function handleSaveMemory(body: any = {}) {
     const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken, {});
+    const context = getInvocation(body.invocationId, body.callbackToken);
     const activeStore = store;
     const title = normalizeMemoryField(body.title, MAX_MEMORY_CARD_TITLE_LENGTH, 'title');
     const content = normalizeMemoryField(body.content, MAX_MEMORY_CARD_CONTENT_LENGTH, 'content');
@@ -1869,7 +1866,7 @@ export function createAgentToolBridge(options: any = {}) {
 
   function handleWriteExperience(body: any = {}) {
     const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken, {});
+    const context = getInvocation(body.invocationId, body.callbackToken);
     const activeStore = store;
     const toolCallId = randomUUID();
     const title = clipText(body.title, 100);
@@ -1966,7 +1963,7 @@ export function createAgentToolBridge(options: any = {}) {
 
   function handleUpdateMemory(body: any = {}) {
     const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken, {});
+    const context = getInvocation(body.invocationId, body.callbackToken);
     const activeStore = store;
     const title = normalizeMemoryField(body.title, MAX_MEMORY_CARD_TITLE_LENGTH, 'title');
     const content = normalizeMemoryField(body.content, MAX_MEMORY_CARD_CONTENT_LENGTH, 'content');
@@ -2082,7 +2079,7 @@ export function createAgentToolBridge(options: any = {}) {
 
   function handleForgetMemory(body: any = {}) {
     const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken, {});
+    const context = getInvocation(body.invocationId, body.callbackToken);
     const activeStore = store;
     const title = normalizeMemoryField(body.title, MAX_MEMORY_CARD_TITLE_LENGTH, 'title');
     const reason = normalizeMemoryReason(body.reason);
@@ -2430,7 +2427,7 @@ export function createAgentToolBridge(options: any = {}) {
 
   function handleTrellisInit(body: any = {}) {
     const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken, {});
+    const context = getInvocation(body.invocationId, body.callbackToken);
     const includeContent = body.includeContent === true;
     const confirm = body.confirm === true;
     const force = body.force === true;
@@ -2672,7 +2669,7 @@ export function createAgentToolBridge(options: any = {}) {
 
   function handleTrellisWrite(body: any = {}) {
     const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken, {});
+    const context = getInvocation(body.invocationId, body.callbackToken);
     const includeContent = body.includeContent === true;
     const confirm = body.confirm === true;
     const force = body.force === true;

@@ -259,21 +259,18 @@ export class ModeStore {
   }
 
   retireSkillTestDesignMode() {
-    const existingMode = this.getStatement.get('skill_test_design');
-    if (!existingMode || !existingMode.builtin) {
-      return;
-    }
-
     const listParticipants = this.db.prepare(`
       SELECT conversation_id, agent_id, conversation_skills_json
       FROM chat_conversation_agents
-      WHERE conversation_id IN (SELECT id FROM chat_conversations WHERE type = 'skill_test_design')
+      WHERE conversation_skills_json LIKE '%skill-test-design-workbench%'
     `);
     const updateParticipant = this.db.prepare(`
       UPDATE chat_conversation_agents
       SET conversation_skills_json = ?
       WHERE conversation_id = ? AND agent_id = ?
     `);
+
+    const existingMode = this.getStatement.get('skill_test_design');
 
     const retire = this.db.transaction(() => {
       const participants = listParticipants.all();
@@ -291,7 +288,9 @@ export class ModeStore {
         }
       }
 
-      this.deleteStatement.run('skill_test_design');
+      if (existingMode && existingMode.builtin) {
+        this.deleteStatement.run('skill_test_design');
+      }
     });
 
     retire();

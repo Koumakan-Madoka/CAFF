@@ -7,7 +7,7 @@ pi-mono based project.
 
 - `server/`: Node/TypeScript backend, HTTP controllers, domain services
 - `public/`: browser-side JavaScript pages and shared UI modules
-- `lib/`: pi-mono runtime helpers, chat bridge tooling, skill registry, and skill test generator
+- `lib/`: pi-mono runtime helpers, chat bridge tooling, skill registry
 - `tests/`: node:test suites, with runtime tests using built artifacts
 - `.trellis/`: task, PRD, spec, and workflow context injected into agent prompts
 - `.pi-sandbox/`: pi sandbox runtime state, skills directory, agent sandboxes, and game state
@@ -18,7 +18,7 @@ pi-mono based project.
 - `frontend/`: browser UI modules under `public/`
 - `runtime/`: pi-mono runtime, prompt construction, agent tool bridge
 - `unit-test/`: test patterns and regression expectations
-- `skills/`: skill system, dynamic loading, and skill testing framework
+- `skills/`: skill system and dynamic loading
 - `guides/`: shared thinking guides to read on cross-layer or platform-sensitive work
 
 ## Which Index To Read
@@ -32,7 +32,7 @@ pi-mono based project.
   read `frontend/index.md`
 - Adding or changing tests in `tests/`:
   read `unit-test/index.md`
-- Working with skills (lib/skill-registry.ts, lib/skill-test-generator.ts, server/api/skill-test-controller.ts):
+- Working with skills (lib/skill-registry.ts):
   read `skills/index.md`
 - Spanning multiple layers:
   read all relevant indexes plus `guides/index.md`

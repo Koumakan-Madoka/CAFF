@@ -128,10 +128,9 @@ CAFF 在 `npm run start` / `npm run start:dev` 时会自动读取 `./.env.local`
 
 ## 🎛 Built-in Modes
 
-当前内置 4 种会话模式：
+当前内置 3 种会话模式：
 
 - `standard`：普通对话，不自动注入额外 skill。
-- `coding`：面向编码协作的默认会话模式。
 - `werewolf`：狼人杀，全自动后端主持，默认 `full` 注入。
 - `who_is_undercover`：谁是卧底，全自动后端主持，默认 `full` 注入。
 

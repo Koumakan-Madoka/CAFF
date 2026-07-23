@@ -126,6 +126,44 @@ function insertLegacySkillTestDesignData(db) {
   `).run('st-msg-2', 'st-conv-1', 'st-turn-1', 'assistant', 'st-agent-1', 'Test Agent', 'Hi there', 'completed', ts);
 }
 
+function insertNormalConversationWithWorkbenchBinding(db) {
+  const ts = '2026-01-01T00:00:00.000Z';
+
+  db.prepare(`
+    INSERT INTO chat_agents (id, name, persona_prompt, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?)
+  `).run('normal-agent-1', 'Normal Agent', 'Normal persona', ts, ts);
+
+  db.prepare(`
+    INSERT INTO chat_conversations (id, title, type, metadata_json, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run('normal-conv-1', 'Normal Chat', 'standard', '{"key":"val"}', ts, ts);
+
+  db.prepare(`
+    INSERT INTO chat_conversation_agents (conversation_id, agent_id, conversation_skills_json, sort_order, created_at)
+    VALUES (?, ?, ?, ?, ?)
+  `).run('normal-conv-1', 'normal-agent-1', JSON.stringify(['skill-test-design-workbench', 'start', 'other-skill']), 0, ts);
+}
+
+function insertLegacySkillTestTables(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS eval_cases (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS skill_test_cases (
+      id TEXT PRIMARY KEY,
+      skill_id TEXT NOT NULL,
+      eval_case_id TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+
+  db.prepare('INSERT INTO eval_cases (id, title) VALUES (?, ?)').run('ec-1', 'Legacy eval case');
+  db.prepare('INSERT INTO skill_test_cases (id, skill_id, eval_case_id) VALUES (?, ?, ?)').run('stc-1', 'test-skill', 'ec-1');
+}
+
 test('fresh DB does not create skill_test or eval_case tables (real SQLite)', () => {
   const db = createTestDb();
   try {
@@ -178,6 +216,47 @@ test('retireSkillTestDesignMode preserves legacy conversation data (real SQLite)
   db.close();
 });
 
+test('retireSkillTestDesignMode removes workbench binding from normal conversations (real SQLite)', () => {
+  const db = createTestDb();
+
+  insertLegacySkillTestDesignData(db);
+  insertNormalConversationWithWorkbenchBinding(db);
+
+  const { ModeStore } = require('../../build/lib/mode-store');
+  new ModeStore(db);
+
+  const participant = db.prepare(`
+    SELECT conversation_skills_json
+    FROM chat_conversation_agents
+    WHERE conversation_id = ? AND agent_id = ?
+  `).get('normal-conv-1', 'normal-agent-1');
+  const skills = JSON.parse(participant.conversation_skills_json);
+  assert.ok(!skills.includes('skill-test-design-workbench'), 'workbench skill must be removed from normal conversation participants');
+  assert.ok(skills.includes('start'), 'non-workbench skills must be preserved in normal conversations');
+  assert.ok(skills.includes('other-skill'), 'other skills must be preserved');
+
+  db.close();
+});
+
+test('retireSkillTestDesignMode cleans ghost bindings even when builtin mode row is absent (real SQLite)', () => {
+  const db = createTestDb();
+
+  insertNormalConversationWithWorkbenchBinding(db);
+
+  const { ModeStore } = require('../../build/lib/mode-store');
+  new ModeStore(db);
+
+  const participant = db.prepare(`
+    SELECT conversation_skills_json
+    FROM chat_conversation_agents
+    WHERE conversation_id = ? AND agent_id = ?
+  `).get('normal-conv-1', 'normal-agent-1');
+  const skills = JSON.parse(participant.conversation_skills_json);
+  assert.ok(!skills.includes('skill-test-design-workbench'), 'ghost binding must be removed even without builtin mode row');
+
+  db.close();
+});
+
 test('retireSkillTestDesignMode is idempotent (real SQLite)', () => {
   const db = createTestDb();
 
@@ -206,7 +285,7 @@ test('retireSkillTestDesignMode is idempotent (real SQLite)', () => {
   db.close();
 });
 
-test('retireSkillTestDesignMode preserves user-created custom mode with same id (real SQLite)', () => {
+test('retireSkillTestDesignMode preserves user-created custom mode with same id across reconstruction (real SQLite)', () => {
   const db = createTestDb();
 
   const { ModeStore } = require('../../build/lib/mode-store');
@@ -214,12 +293,33 @@ test('retireSkillTestDesignMode preserves user-created custom mode with same id 
 
   store.save({ id: 'skill_test_design', name: 'User Custom ST', skillIds: ['start'] });
 
-  assert.doesNotThrow(() => store.retireSkillTestDesignMode(), 'retirement must not throw on custom mode');
+  const store2 = new ModeStore(db);
 
-  const mode = store.get('skill_test_design');
-  assert.ok(mode, 'user-created custom mode with id=skill_test_design must survive retirement');
+  const mode = store2.get('skill_test_design');
+  assert.ok(mode, 'user-created custom mode with id=skill_test_design must survive reconstruction');
   assert.equal(mode.builtin, false, 'surviving mode must be the user-created custom, not builtin');
   assert.equal(mode.name, 'User Custom ST');
+
+  db.close();
+});
+
+test('legacy eval_cases and skill_test_cases tables and rows are preserved after migration (real SQLite)', () => {
+  const db = createTestDb();
+
+  insertLegacySkillTestTables(db);
+
+  const { migrateChatSchema } = require('../../build/storage/sqlite/migrations');
+  migrateChatSchema(db);
+
+  const evalCases = db.prepare('SELECT * FROM eval_cases').all();
+  assert.equal(evalCases.length, 1, 'legacy eval_cases rows must be preserved');
+  assert.equal(evalCases[0].id, 'ec-1');
+  assert.equal(evalCases[0].title, 'Legacy eval case');
+
+  const skillTestCases = db.prepare('SELECT * FROM skill_test_cases').all();
+  assert.equal(skillTestCases.length, 1, 'legacy skill_test_cases rows must be preserved');
+  assert.equal(skillTestCases[0].id, 'stc-1');
+  assert.equal(skillTestCases[0].skill_id, 'test-skill');
 
   db.close();
 });
@@ -299,9 +399,13 @@ test('removed API routes return 404 via real HTTP', async (t) => {
 
   const retiredRoutes = [
     { path: '/api/eval-cases', method: 'GET' },
-    { path: '/api/skill-test', method: 'GET' },
     { path: '/api/skill-test-summary', method: 'GET' },
-    { path: '/api/agent-tools/sandbox/file', method: 'POST' },
+    { path: '/api/skill-test-runs/test-run-1', method: 'GET' },
+    { path: '/api/skills/test-skill/test-cases', method: 'GET' },
+    { path: '/api/agent-tools/sandbox/access', method: 'POST' },
+    { path: '/api/agent-tools/sandbox/read', method: 'POST' },
+    { path: '/api/agent-tools/sandbox/write', method: 'POST' },
+    { path: '/api/agent-tools/sandbox/mkdir', method: 'POST' },
     { path: '/api/agent-tools/sandbox/bash', method: 'POST' },
   ];
 
