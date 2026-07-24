@@ -23,7 +23,7 @@
     let lastHealth = null;
     let lastHealthError = '';
 
-    function setOpen(nextOpen) {
+    function setOpen(nextOpen, options = {}) {
       isOpen = Boolean(nextOpen);
 
       if (isOpen && dom.summaryMemoryQuery && !dom.summaryMemoryQuery.value.trim() && state.currentConversation) {
@@ -31,6 +31,14 @@
       }
 
       render();
+
+      if (!options.fromShell && window.caffShell) {
+        if (isOpen) {
+          window.caffShell.openTab('summary-memory-drawer');
+        } else {
+          window.caffShell.releaseTab('summary-memory-drawer');
+        }
+      }
 
       if (isOpen) {
         void refreshHealth();
@@ -267,7 +275,7 @@
     }
 
     function render() {
-      if (!dom.summaryMemoryDrawer || !dom.summaryMemoryToggleButton) {
+      if (!dom.summaryMemoryDrawer) {
         return;
       }
 
@@ -278,8 +286,6 @@
       }
 
       renderToggleButton(dom.summaryMemoryToggleButton, hasConversation);
-      dom.summaryMemoryDrawer.classList.toggle('hidden', !isOpen);
-      dom.summaryMemoryDrawer.setAttribute('aria-hidden', isOpen ? 'false' : 'true');
 
       const isBusy = isSearching || isBackfilling;
 
@@ -452,11 +458,13 @@
     }
 
     function bindEvents() {
-      if (!dom.summaryMemoryDrawer || !dom.summaryMemoryToggleButton) {
+      if (!dom.summaryMemoryDrawer) {
         return;
       }
 
-      dom.summaryMemoryToggleButton.addEventListener('click', () => setOpen(!isOpen));
+      if (dom.summaryMemoryToggleButton) {
+        dom.summaryMemoryToggleButton.addEventListener('click', () => setOpen(!isOpen));
+      }
 
       if (dom.summaryMemoryCloseButton) {
         dom.summaryMemoryCloseButton.addEventListener('click', () => setOpen(false));
@@ -483,6 +491,15 @@
           setOpen(false);
         }
       });
+
+      if (window.caffShell && typeof window.caffShell.onChange === 'function') {
+        window.caffShell.onChange(({ open, tab }) => {
+          const shouldBeOpen = open && tab === 'summary-memory-drawer';
+          if (shouldBeOpen !== isOpen) {
+            setOpen(shouldBeOpen, { fromShell: true });
+          }
+        });
+      }
     }
 
     return {

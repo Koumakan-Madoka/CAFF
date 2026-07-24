@@ -89,8 +89,29 @@ declare global {
     };
   };
 
+  type CaffShellChangePayload = {
+    open: boolean;
+    tab: string;
+  };
+
+  type CaffAppShell = {
+    openTab: (panelId: string) => void;
+    releaseTab: (panelId: string) => void;
+    closeDrawer: () => void;
+    isDrawerOpen: () => boolean;
+    activeTab: () => string;
+    onChange: (cb: (payload: CaffShellChangePayload) => void) => () => void;
+    setTabVisible: (panelId: string, visible: boolean, options?: { count?: number }) => void;
+    scrollToBottom: (smooth?: boolean) => void;
+  };
+
   interface Window {
     CaffChat?: any;
     CaffShared?: any;
+    caffShell?: CaffAppShell;
+  }
+
+  interface HTMLElement {
+    inert: boolean;
   }
 }

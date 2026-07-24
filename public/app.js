@@ -2824,11 +2824,14 @@ function messageContextSnapshotUrl(conversationId, messageId, exportMode = false
   return `/api/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/${suffix}`;
 }
 
-function setAgentContextDrawerOpen(open) {
+function setAgentContextDrawerOpen(open, options = {}) {
   state.contextInspector.open = Boolean(open);
-  if (dom.agentContextDrawer) {
-    dom.agentContextDrawer.classList.toggle('hidden', !state.contextInspector.open);
-    dom.agentContextDrawer.setAttribute('aria-hidden', state.contextInspector.open ? 'false' : 'true');
+  if (!options.fromShell && window.caffShell) {
+    if (state.contextInspector.open) {
+      window.caffShell.openTab('agent-context-drawer');
+    } else {
+      window.caffShell.releaseTab('agent-context-drawer');
+    }
   }
   renderAgentContextInspector();
 }
@@ -3888,6 +3891,15 @@ function bindEvents() {
 
   if (dom.agentContextCloseButton) {
     dom.agentContextCloseButton.addEventListener('click', () => setAgentContextDrawerOpen(false));
+  }
+
+  if (window.caffShell && typeof window.caffShell.onChange === 'function') {
+    window.caffShell.onChange(({ open, tab }) => {
+      const shouldBeOpen = open && tab === 'agent-context-drawer';
+      if (state.contextInspector && Boolean(state.contextInspector.open) !== shouldBeOpen) {
+        setAgentContextDrawerOpen(shouldBeOpen, { fromShell: true });
+      }
+    });
   }
 
   if (dom.agentContextExportButton) {
