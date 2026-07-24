@@ -14,6 +14,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { verifyManagementPages } from './ui/verify-management-pages.mjs';
+
 let chromium;
 try {
   ({ chromium } = await import('playwright-core'));
@@ -26,6 +28,7 @@ const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const RUN_ID = randomUUID().slice(0, 8);
 const TITLE_PREFIX = `UI-VERIFY-${RUN_ID}`;
 const OUT = process.env.CAFF_VERIFY_OUT || path.join(os.tmpdir(), 'caff-ui-verify', RUN_ID);
+const MANAGEMENT_SCREENSHOT = 'ui-v2-1440-management.png';
 fs.mkdirSync(OUT, { recursive: true });
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 
@@ -858,6 +861,14 @@ const realConsoleErrors = page.consoleErrors.filter((e) => !e.includes('favicon'
 ok('J3 no console error', realConsoleErrors.length === 0, JSON.stringify({ errors: realConsoleErrors.slice(0, 5), bad: page.badResponses.slice(0, 8) }).slice(0, 500));
 ok('J4 404 resource identified (expect favicon only)', page.notFound.every((u) => u.includes('favicon')), JSON.stringify(page.notFound));
 
+await verifyManagementPages({
+  browser,
+  baseUrl: APP,
+  ok,
+  outputDir: OUT,
+  screenshotName: MANAGEMENT_SCREENSHOT,
+});
+
 // evidence screenshots
 await page.setViewportSize({ width: 1440, height: 900 });
 await page.waitForTimeout(400);
@@ -867,12 +878,6 @@ if (await page.evaluate(() => document.body.dataset.sidebar !== 'open')) {
   await page.waitForTimeout(350);
 }
 await page.screenshot({ path: path.join(OUT, 'ui-v2-1440-long.png') });
-await page.click('#drawerToggle');
-await page.waitForTimeout(350);
-await page.click('#tab-goal');
-await page.waitForTimeout(200);
-await page.screenshot({ path: path.join(OUT, 'ui-v2-1440-drawer-goal.png') });
-await page.keyboard.press('Escape');
 await page.click('#sidebarClose');
 await page.waitForTimeout(350);
 await page.setViewportSize({ width: 375, height: 800 });

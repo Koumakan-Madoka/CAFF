@@ -113,7 +113,9 @@ test('shared management list primitive creates a native selectable list item', {
   window.eval(fs.readFileSync(MANAGEMENT_HELPER, 'utf8'));
 
   const createItem = window.CaffShared && window.CaffShared.createManagementListItem;
+  const createEmptyState = window.CaffShared && window.CaffShared.createManagementListEmptyState;
   assert.equal(typeof createItem, 'function');
+  assert.equal(typeof createEmptyState, 'function');
   const { row, button } = createItem({ id: 'item-1', active: true, compact: true });
 
   assert.equal(row.tagName, 'LI');
@@ -132,6 +134,11 @@ test('shared management list primitive creates a native selectable list item', {
   });
   button.click();
   assert.equal(clicked, true);
+
+  const empty = createEmptyState('暂无内容');
+  assert.equal(empty.tagName, 'LI');
+  assert.equal(empty.classList.contains('empty-state'), true);
+  assert.equal(empty.textContent, '暂无内容');
 });
 
 test('management CSS owns viewport, bounded panes, mobile rail, and touch targets', () => {

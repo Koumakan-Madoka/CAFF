@@ -7,42 +7,41 @@
     <link rel="stylesheet" href="/styles.css" />
     <script defer src="/shared/api-client.js"></script>
     <script defer src="/shared/toast.js"></script>
+    <script defer src="/shared/management-list.js"></script>
     <script defer src="/projects.js"></script>
   </head>
-  <body>
-    <div class="ambient ambient-a"></div>
-    <div class="ambient ambient-b"></div>
-    <div class="shell">
-      <header class="topbar">
-        <div>
+  <body class="management-app" data-page="projects">
+    <div class="management-shell">
+      <nav class="rail" aria-label="主导航">
+        <a class="rail-link" href="/" title="聊天工作台" aria-label="聊天工作台">💬</a>
+        <a class="rail-link" href="/personas.html" title="人格管理" aria-label="人格管理">🎭</a>
+        <a class="rail-link" href="/skills.html" title="Skill 管理" aria-label="Skill 管理">🛠️</a>
+        <a class="rail-link" aria-current="page" href="/projects.html" title="项目管理" aria-label="项目管理">📁</a>
+        <a class="rail-link" href="/metrics.html" title="评测报表" aria-label="评测报表">📊</a>
+      </nav>
+
+      <div class="management-main">
+        <header class="management-header">
+          <div class="management-title">
           <p class="eyebrow">CAFF Project Manager</p>
           <h1>项目管理</h1>
           <p class="subtitle">管理当前 CAFF 实例的项目列表，并选择激活的工作目录（影响 Trellis 上下文与外部技能目录）。</p>
-        </div>
-        <div class="topbar-actions">
-          <nav class="topbar-nav" aria-label="Primary">
-            <a class="topbar-link" href="/">聊天工作台</a>
-            <a class="topbar-link" href="/personas.html">人格管理</a>
-            <a class="topbar-link" href="/skills.html">Skill 管理</a>
-            <a class="topbar-link active" href="/projects.html">项目管理</a>
-            <a class="topbar-link" href="/metrics.html">评测报表</a>
-          </nav>
-          <button id="refresh-button" class="ghost-button" type="button">刷新</button>
-        </div>
-      </header>
+          </div>
+          <button id="refresh-button" class="management-icon-button" type="button" title="刷新" aria-label="刷新">⟳</button>
+        </header>
 
-      <main class="layout persona-layout">
-        <aside class="panel panel-conversations">
+        <main class="management-content">
+        <aside class="management-pane management-index">
           <div class="panel-header">
             <div>
               <p class="eyebrow">Projects</p>
               <h2>项目列表</h2>
             </div>
           </div>
-          <div id="project-list" class="agent-list"></div>
+          <ul id="project-list" class="agent-list" aria-label="项目列表"></ul>
         </aside>
 
-        <section class="panel panel-studio">
+        <section class="management-pane management-detail">
           <div class="panel-header">
             <div>
               <p class="eyebrow">Editor</p>
@@ -83,7 +82,8 @@
             </div>
           </div>
         </section>
-      </main>
+        </main>
+      </div>
     </div>
 
     <div id="toast" class="toast hidden"></div>

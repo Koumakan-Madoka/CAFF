@@ -9,32 +9,31 @@
     <script defer src="/shared/model-options.js"></script>
     <script defer src="/shared/avatar.js"></script>
     <script defer src="/shared/toast.js"></script>
+    <script defer src="/shared/management-list.js"></script>
     <script defer src="/personas.js"></script>
   </head>
-  <body>
-    <div class="ambient ambient-a"></div>
-    <div class="ambient ambient-b"></div>
-    <div class="shell">
-      <header class="topbar">
-        <div>
+  <body class="management-app" data-page="personas">
+    <div class="management-shell">
+      <nav class="rail" aria-label="主导航">
+        <a class="rail-link" href="/" title="聊天工作台" aria-label="聊天工作台">💬</a>
+        <a class="rail-link" aria-current="page" href="/personas.html" title="人格管理" aria-label="人格管理">🎭</a>
+        <a class="rail-link" href="/skills.html" title="Skill 管理" aria-label="Skill 管理">🛠️</a>
+        <a class="rail-link" href="/projects.html" title="项目管理" aria-label="项目管理">📁</a>
+        <a class="rail-link" href="/metrics.html" title="评测报表" aria-label="评测报表">📊</a>
+      </nav>
+
+      <div class="management-main">
+        <header class="management-header">
+          <div class="management-title">
           <p class="eyebrow">CAFF Persona Manager</p>
           <h1>人格管理中心</h1>
           <p class="subtitle">集中维护 Agent 的基础人格，以及按不同模型拆分的专属人格配置。</p>
-        </div>
-        <div class="topbar-actions">
-          <nav class="topbar-nav" aria-label="Primary">
-            <a class="topbar-link" href="/">聊天工作台</a>
-            <a class="topbar-link active" href="/personas.html">人格管理</a>
-            <a class="topbar-link" href="/skills.html">Skill 管理</a>
-            <a class="topbar-link" href="/projects.html">项目管理</a>
-            <a class="topbar-link" href="/metrics.html">评测报表</a>
-          </nav>
-          <button id="refresh-button" class="ghost-button" type="button">刷新</button>
-        </div>
-      </header>
+          </div>
+          <button id="refresh-button" class="management-icon-button" type="button" title="刷新" aria-label="刷新">⟳</button>
+        </header>
 
-      <main class="layout persona-layout">
-        <aside class="panel panel-conversations">
+        <main class="management-content">
+        <aside class="management-pane management-index">
           <div class="panel-header">
             <div>
               <p class="eyebrow">Persona List</p>
@@ -42,10 +41,10 @@
             </div>
             <button id="new-agent-button" type="button">新建人格</button>
           </div>
-          <div id="agent-list" class="agent-list"></div>
+          <ul id="agent-list" class="agent-list" aria-label="人格列表"></ul>
         </aside>
 
-        <section class="panel panel-studio">
+        <section class="management-pane management-detail">
           <div class="panel-header">
             <div>
               <p class="eyebrow">Editor</p>
@@ -157,7 +156,8 @@
             </div>
           </form>
         </section>
-      </main>
+        </main>
+      </div>
     </div>
 
     <div id="toast" class="toast hidden"></div>

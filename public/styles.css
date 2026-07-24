@@ -3063,7 +3063,7 @@ textarea {
 /* ══════════════════════════════════════════════════════════════
    聊天工作台 AppShell 重设计（方向 A · 固定视口）
    设计真相源：designs/mock-app-shell-a.html v4 冻结
-   作用域：body.chat-app（仅 index.html），其他管理页沿用旧 chrome
+   作用域：body.chat-app；管理页在文件末尾复用 token/rail primitive，滚动 owner 独立
    ══════════════════════════════════════════════════════════════ */
 
 :root {
@@ -3600,5 +3600,358 @@ body.chat-app .drawer-panel {
 
   body.chat-app .message-list {
     scroll-behavior: auto;
+  }
+}
+
+/* Management AppShell: shared chrome with bounded index/detail work areas. */
+body.management-app {
+  height: 100%;
+  overflow: hidden;
+  background: var(--caff-canvas);
+  color: var(--caff-ink);
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+body.management-app :focus-visible {
+  outline: 3px solid rgba(239, 125, 87, 0.55);
+  outline-offset: 2px;
+}
+
+body.management-app .management-shell {
+  display: grid;
+  grid-template-columns: var(--rail-w) minmax(0, 1fr);
+  height: 100dvh;
+  overflow: hidden;
+}
+
+body.management-app .rail {
+  width: var(--rail-w);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--caff-space-2);
+  padding: var(--caff-space-3) 0;
+  background: var(--caff-surface-sunk);
+  border-right: 1px solid var(--caff-line);
+  z-index: 20;
+}
+
+body.management-app .rail-link {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 44px;
+  border-radius: var(--caff-radius-md);
+  background: transparent;
+  color: var(--caff-ink-soft);
+  font-size: 20px;
+  line-height: 1;
+  text-decoration: none;
+}
+
+body.management-app .rail-link:hover {
+  background: var(--caff-surface);
+}
+
+body.management-app .rail-link[aria-current="page"] {
+  background: var(--caff-surface);
+  color: var(--caff-accent-deep);
+  box-shadow: inset 0 0 0 1px var(--caff-line);
+}
+
+body.management-app .management-main {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+body.management-app .management-header {
+  min-height: 72px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--caff-space-4);
+  padding: var(--caff-space-2) var(--caff-space-5);
+  background: var(--caff-surface);
+  border-bottom: 1px solid var(--caff-line);
+}
+
+body.management-app .management-title {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+
+body.management-app .management-title .eyebrow {
+  margin: 0;
+  color: var(--caff-accent-deep);
+  font-size: 11px;
+  letter-spacing: 0;
+}
+
+body.management-app .management-title h1 {
+  margin: 0;
+  overflow: hidden;
+  color: var(--caff-ink);
+  font-family: var(--font-body);
+  font-size: 19px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body.management-app .management-title .subtitle {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--caff-ink-soft);
+  font-size: 12.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body.management-app .management-icon-button {
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+  min-height: 44px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--caff-line);
+  border-radius: var(--caff-radius-md);
+  background: var(--caff-surface);
+  box-shadow: none;
+  color: var(--caff-ink-soft);
+  font-size: 21px;
+}
+
+body.management-app .management-icon-button:hover:not(:disabled) {
+  transform: none;
+  border-color: var(--caff-accent);
+}
+
+body.management-app .management-content {
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
+  overflow: hidden;
+}
+
+body.management-app .management-pane {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--caff-space-5);
+  scrollbar-gutter: stable;
+}
+
+body.management-app .management-index {
+  background: var(--caff-surface);
+  border-right: 1px solid var(--caff-line);
+}
+
+body.management-app .management-detail {
+  grid-column: 2;
+  background: var(--caff-canvas);
+}
+
+body.management-app .management-pane > .panel-header:first-child {
+  margin-bottom: var(--caff-space-4);
+}
+
+body.management-app .management-pane .panel-header h2,
+body.management-app .management-pane .panel-header h3 {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.35;
+}
+
+body.management-app .management-pane .eyebrow {
+  margin-bottom: 2px;
+  color: var(--caff-accent-deep);
+  font-size: 11px;
+  letter-spacing: 0;
+}
+
+body.management-app .agent-list {
+  align-content: start;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow: visible;
+}
+
+body.management-app .management-list-row {
+  min-width: 0;
+}
+
+body.management-app .agent-list-item {
+  width: 100%;
+  min-height: 44px;
+  padding: var(--caff-space-3);
+  border: 1px solid var(--caff-line);
+  border-radius: 8px;
+  background: var(--caff-surface);
+  box-shadow: none;
+  color: var(--caff-ink);
+  text-align: left;
+}
+
+body.management-app .agent-list-item:hover:not(:disabled) {
+  transform: none;
+  border-color: rgba(239, 125, 87, 0.48);
+}
+
+body.management-app .agent-list-item.active {
+  border-color: rgba(42, 157, 143, 0.48);
+  background: rgba(42, 157, 143, 0.1);
+}
+
+body.management-app .management-list-empty {
+  list-style: none;
+}
+
+body.management-app .settings-form {
+  max-width: 960px;
+  margin: 0;
+}
+
+body.management-app .stack-card {
+  border: 1px solid var(--caff-line);
+  border-radius: 8px;
+  background: var(--caff-surface);
+  box-shadow: none;
+  backdrop-filter: none;
+  animation: none;
+}
+
+body.management-app button,
+body.management-app a.link-button,
+body.management-app input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]),
+body.management-app select {
+  min-height: 44px;
+}
+
+body.management-app button {
+  border-radius: 8px;
+}
+
+body.management-app .tab-button {
+  min-height: 44px;
+  padding: 0 var(--caff-space-3);
+  box-shadow: none;
+}
+
+body.management-app .tab-button:hover:not(:disabled) {
+  transform: none;
+}
+
+body.management-app .option-card label {
+  min-height: 44px;
+  align-items: center;
+}
+
+body.management-app .toast {
+  z-index: 60;
+}
+
+@media (max-width: 1023px) {
+  body.management-app .management-content {
+    grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
+  }
+
+  body.management-app .management-pane {
+    padding: var(--caff-space-4);
+  }
+
+  body.management-app .skill-file-workspace {
+    grid-template-columns: minmax(180px, 0.75fr) minmax(0, 1.25fr);
+  }
+}
+
+@media (max-width: 767px) {
+  body.management-app .management-shell {
+    display: block;
+  }
+
+  body.management-app .rail {
+    position: fixed;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    height: 56px;
+    flex-direction: row;
+    justify-content: space-around;
+    gap: 0;
+    padding: 0 var(--caff-space-2);
+    border-top: 1px solid var(--caff-line);
+    border-right: 0;
+  }
+
+  body.management-app .management-main {
+    height: calc(100dvh - 56px);
+  }
+
+  body.management-app .management-header {
+    min-height: 64px;
+    padding: var(--caff-space-2) var(--caff-space-3);
+  }
+
+  body.management-app .management-title .subtitle {
+    display: none;
+  }
+
+  body.management-app .management-content {
+    display: grid;
+    grid-template-columns: 1fr;
+    align-content: start;
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
+
+  body.management-app .management-pane {
+    overflow: visible;
+    padding: var(--caff-space-4);
+    scrollbar-gutter: auto;
+  }
+
+  body.management-app .management-index {
+    border-right: 0;
+    border-bottom: 1px solid var(--caff-line);
+  }
+
+  body.management-app .management-detail {
+    grid-column: 1;
+  }
+
+  body.management-app .field-grid,
+  body.management-app .skill-file-workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  body.management-app .panel-header,
+  body.management-app .section-row,
+  body.management-app .button-row {
+    align-items: flex-start;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body.management-app *,
+  body.management-app *::before,
+  body.management-app *::after {
+    animation: none !important;
+    transition: none !important;
   }
 }

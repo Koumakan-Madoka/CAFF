@@ -4,12 +4,12 @@ feature_ids: [TBD-caff-ui-redesign]
 topics: [ui-redesign, ia, workbench, scroll-model, design-tokens]
 created: 2026-07-23
 author: 烁烁 (k3)
-status: v5 frozen · implementation review
+status: v5 frozen · implementation review complete · v6 Milestone 2 implementation
 ---
 
 # CAFF 整体 UI 重设计 · Phase 1 设计简报
 
-> 原设计阶段范围：现状审计 + IA + 高保真 fixture；当前 v5 已冻结，方向 A 的 Milestone 1 实现处于跨个体 review。
+> 原设计阶段范围：现状审计 + IA + 高保真 fixture；v5 聊天 AppShell 已冻结并落地，v6 延伸同一套 IA 到四个管理页。
 > 基线证据：`designs/baseline-desktop-1440.png`、`designs/baseline-narrow-820.png`
 
 ---
@@ -198,7 +198,7 @@ Clowder 验证过的生产型布局，适合 CAFF 高频的会话切换/人格�
 |---|---|
 | `designs/mock-app-shell-a.html` | 高保真 mock，响应式 + 全部关键状态可切换（演示工具栏；`#clean` 隐藏） |
 | `${TMPDIR}/caff-ui-verify/<run-id>/ui-v2-1440-long.png` | 实现证据：桌面长对话 |
-| `${TMPDIR}/caff-ui-verify/<run-id>/ui-v2-1440-drawer-goal.png` | 实现证据：桌面上下文抽屉 |
+| `${TMPDIR}/caff-ui-verify/<run-id>/ui-v2-1440-management.png` | 实现证据：桌面管理 AppShell |
 | `${TMPDIR}/caff-ui-verify/<run-id>/ui-v2-375.png` | 实现证据：手机单栏 |
 | `${TMPDIR}/caff-ui-verify/<run-id>/ui-v2-walkthrough.webm` | 实现证据：约 15 秒桌面→抽屉→手机 walkthrough |
 
@@ -328,4 +328,41 @@ modal 不变量覆盖「响应式模式切换」第四条边：断点重入 = �
 
 ## 9. Gate #2 与实现状态
 
-**Gate #2 APPROVED**：方向 A、v4 焦点/滚动状态机与 §8.8 v5 IA delta 均已冻结。实现 worktree 以 `4560d3e` 为祖先落地 Milestone 1；当前阶段是实现跨个体 review，而不是再次打开设计方向。Pencil 可用时仍可把 active HTML fixture 转录为 `.pen`，但不阻塞本轮实现验收。
+**Gate #2 APPROVED**：方向 A、v4 焦点/滚动状态机与 §8.8 v5 IA delta 均已冻结。Milestone 1 已经跨个体 review，并在本地 `main@df33ea65` 落地；Milestone 2 沿用该方向迁移管理页，不再次打开设计方向。Pencil 可用时仍可把 active HTML fixture 转录为 `.pen`，但不阻塞本轮实现验收。
+
+---
+
+## 10. Milestone 2 · Management AppShell
+
+### 10.1 迁移决策
+
+| 项 | 决策 |
+|---|---|
+| Source Behavior | `personas.html`、`skills.html`、`projects.html`、`metrics.html` 各自维护一套大 topbar；document 可增长；五个可选集合使用非语义 div click target。 |
+| Must Preserve | 四条页面路由、全部现有 CRUD/filter API、表单行为、关键 DOM id、Skill/模式切换及项目/指标读写语义。 |
+| Decision | 四页统一为 `body.management-app`：56px 全局 rail + 固定 management header + 有界 index/detail 工作区；不换框架，不改后端，不新增持久 UI state。 |
+| Proof | `tests/ui/management-shell.test.js` 9/9；`npm run test:ui` 61/61，覆盖四页、1440/820/375、键盘选择、项目空态、全量可见目标 ≥44px、零 document overflow 与零浏览器错误。 |
+
+### 10.2 最终结构
+
+- rail 路由固定为聊天、人格、Skill、项目、评测；每页恰有一个 `aria-current="page"`。
+- 标题与刷新操作不随内容滚走。桌面和平板由 `.management-index` / `.management-detail` 各自持有 `overflow:auto`；document 永不滚动。
+- 人格、Skill、模式、项目、指标五个集合统一为原生 `ul > li > button`。`public/shared/management-list.js` 只负责无状态 DOM 投影，不接管页面 state 或 API。
+- `body.chat-app` 与 `body.management-app` 共用 CAFF token 和 rail 视觉 primitive；聊天页的唯一长滚动区是 message list，管理页的滚动 owner 是 index/detail pane，两者不可混用。
+- 原玻璃卡片降级：管理工作区为实底面，局部分组只保留 1px 边界与 ≤8px 圆角，避免 page section 继续堆叠为浮卡。
+
+### 10.3 响应式终态
+
+| 断点 | rail | 内容与滚动 |
+|---|---|---|
+| ≥1024px | 左侧固定 56px | index 240–300px + detail；两个 pane 独立滚动 |
+| 768–1023px | 左侧固定 56px | index 220–260px + detail；仍保持双栏和有界滚动 |
+| <768px | 底部固定 56px | header 上方稳定；index/detail 单栏排列，`.management-content` 成为唯一内部滚动区，pane 自身 `overflow:visible` |
+
+### 10.4 状态与验收边界
+
+- empty：项目空集合渲染语义 `<li>` 空态，选中态操作 disabled；不伪造一条可选记录。
+- keyboard：原生 button 的 Enter 触发既有委托 click 路径并更新 active/editor，不新增自制键盘模拟。
+- touch：所有可见 button/link/text control 与 checkbox/radio label hit area 均 ≥44px。
+- containment：1440/820/375 均要求 `document.scrollWidth/Height` 不超过 viewport；375 header 文本不得覆盖刷新按钮。
+- verifier：`scripts/ui/verify-management-pages.mjs` 复用主 runner 的 browser、动态端口、临时 SQLite 与 evidence 目录，不自行启动第二个 app；整个证据包仍限制为 3 PNG + 1 WebM。

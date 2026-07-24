@@ -195,6 +195,116 @@ observer.observe(messageList, { childList: true });
 window.caffShell.setComposerValue(restoredText);
 ```
 
+## Management AppShell
+
+### 1. Scope / Trigger
+
+- Trigger: changing the outer frame, navigation, list selection semantics,
+  responsive layout, or scroll ownership of `personas.html`, `skills.html`,
+  `projects.html`, or `metrics.html`.
+- Applies to those four HTML/page-entry pairs, the `body.management-app`
+  section of `public/styles.css`, and `public/shared/management-list.js`.
+- Existing CRUD/filter APIs and form ids are compatibility boundaries. This
+  shell migration does not authorize backend contract changes.
+
+### 2. Signatures
+
+- Page root: `body.management-app[data-page]` containing `.management-shell`,
+  `nav.rail`, `.management-main`, `.management-header`, and
+  `main.management-content`.
+- Content panes: `.management-index.management-pane` and
+  `.management-detail.management-pane`.
+- Shared stateless DOM helpers:
+  - `CaffShared.createManagementListItem({ id, active?, compact? })`
+  - `CaffShared.createManagementListEmptyState(message)`
+- Navigation routes, in order: `/`, `/personas.html`, `/skills.html`,
+  `/projects.html`, `/metrics.html`.
+
+### 3. Contracts
+
+- `body.management-app` owns a fixed `100dvh` viewport and never lets the
+  document become a content scroll container.
+- At widths >=768px, index and detail panes are bounded sibling scroll owners.
+  At widths <768px, the rail moves to a 56px bottom bar and
+  `.management-content` becomes the single internal scroll owner while both
+  panes use `overflow:visible`.
+- Exactly one rail destination has `aria-current="page"`, matching the current
+  route. Do not restore per-page topbar navigation.
+- Personas, skills, modes, projects, and metric agents render as
+  `ul > li > button.agent-list-item`. Keep native button keyboard behavior and
+  the existing delegated click paths; do not add keydown simulation.
+- Page entries fail fast if either management list helper is unavailable. The
+  helper owns no collection state, selection state, API calls, or persistence.
+- Preserve all existing page ids, forms, CRUD/filter requests, and Skill/mode
+  switching behavior during shell edits.
+- All visible interactive targets are at least 44px high. Checkbox/radio inputs
+  may keep their visual control size only when their clickable label is >=44px.
+- `body.chat-app` and `body.management-app` share CAFF tokens and rail visual
+  primitives, but their scroll owners are deliberately different: chat uses
+  the message list; management uses bounded panes or the mobile content region.
+
+### 4. Validation & Error Matrix
+
+| Case | Expected behavior |
+| --- | --- |
+| Desktop 1440 | Left rail, fixed header, side-by-side index/detail panes, no document overflow. |
+| Tablet 820 | Left rail and two bounded panes remain usable; no horizontal overflow. |
+| Mobile 375 | Bottom rail is 56px; panes stack; content is the only internal scroll region; header text does not overlap refresh. |
+| Native list keyboard selection | Focusing a collection button and pressing Enter updates active selection and detail content. |
+| Empty projects payload | A semantic `li` empty state appears and unavailable selected-project actions are disabled. |
+| Missing shared helper | Page entry throws an explicit missing-module error instead of rendering a partial screen. |
+| Browser/runtime failure | UI verification reports console, page, and non-favicon HTTP errors as failed checks. |
+
+### 5. Tests Required
+
+- `tests/ui/management-shell.test.js` is part of `test:fast` and locks the four
+  shell landmarks, legacy chrome removal, route/current-page mapping, critical
+  ids, semantic lists, helper behavior, scoped CSS, and runner integration.
+- `scripts/ui/verify-management-pages.mjs` is called by
+  `scripts/verify-ui.mjs`. It reuses the runner-owned browser, loopback app,
+  temporary SQLite, and output directory; it must not start a second service.
+- Browser proof covers all four routes at 1440 plus responsive 820/375,
+  keyboard selection, an intercepted empty projects payload, visible 44px
+  targets, document containment, and clean page/console/HTTP diagnostics.
+- The combined UI evidence stays bounded to three PNG files and one walkthrough
+  WebM. One PNG is `ui-v2-1440-management.png`.
+- `npm run check` includes `public/shared/management-list.js` and all four page
+  entries.
+
+### 6. Good / Base / Bad Cases
+
+- Good: the user scrolls a long persona editor while the rail and management
+  header stay reachable and the index pane retains its own position.
+- Base: an empty collection renders an inert semantic empty row without
+  changing existing API or form behavior.
+- Bad: a management page restores `.topbar`, uses a clickable div for a list
+  item, or makes `body` the mobile content scroll owner.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```html
+<body>
+  <div class="topbar">...</div>
+  <div class="agent-list"><div class="agent-list-item">...</div></div>
+</body>
+```
+
+#### Correct
+
+```html
+<body class="management-app" data-page="personas">
+  <nav class="rail" aria-label="主导航">...</nav>
+  <main class="management-content">
+    <aside class="management-index management-pane">
+      <ul class="agent-list"><li><button type="button">...</button></li></ul>
+    </aside>
+    <section class="management-detail management-pane">...</section>
+  </main>
+</body>
+```
+
 ## Cross-Layer Watch Points
 
 - UI payload expectations must stay aligned with controller and domain output.

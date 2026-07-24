@@ -11,11 +11,17 @@ const shared = window.CaffShared || {};
 const fetchJson = shared.fetchJson;
 const avatarUtils = shared.avatar || {};
 const modelOptionUtils = shared.modelOptions || {};
+const createManagementListItem = shared.createManagementListItem;
+const createManagementListEmptyState = shared.createManagementListEmptyState;
+
+if (typeof createManagementListItem !== 'function' || typeof createManagementListEmptyState !== 'function') {
+  throw new Error('Management list primitives are required');
+}
 
 const dom = {
   refreshButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('refresh-button')),
   newAgentButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('new-agent-button')),
-  agentList: /** @type {HTMLDivElement | null} */ (document.getElementById('agent-list')),
+  agentList: /** @type {HTMLUListElement | null} */ (document.getElementById('agent-list')),
   editorTitle: /** @type {HTMLElement | null} */ (document.getElementById('editor-title')),
   agentForm: /** @type {HTMLFormElement | null} */ (document.getElementById('agent-form')),
   agentId: /** @type {HTMLInputElement | null} */ (document.getElementById('agent-id')),
@@ -332,21 +338,15 @@ function renderAgentList() {
   dom.agentList.innerHTML = '';
 
   if (state.agents.length === 0) {
-    const empty = document.createElement('div');
-    empty.className = 'empty-state';
-    empty.textContent = '还没有人格，先创建一个。';
-    dom.agentList.appendChild(empty);
+    dom.agentList.appendChild(createManagementListEmptyState('还没有人格，先创建一个。'));
     return;
   }
 
   state.agents.forEach((agent) => {
-    const item = document.createElement('div');
-    item.className = 'agent-list-item';
-    item.dataset.id = agent.id;
-
-    if (agent.id === state.selectedAgentId) {
-      item.classList.add('active');
-    }
+    const { row, button: item } = createManagementListItem({
+      id: agent.id,
+      active: agent.id === state.selectedAgentId,
+    });
 
     const nameWrap = document.createElement('div');
     const name = document.createElement('strong');
@@ -361,7 +361,7 @@ function renderAgentList() {
     const avatar = buildAgentAvatarElement(agent, 'small');
 
     item.append(nameWrap, avatar);
-    dom.agentList.appendChild(item);
+    dom.agentList.appendChild(row);
   });
 }
 

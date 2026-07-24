@@ -7,32 +7,31 @@
     <link rel="stylesheet" href="/styles.css" />
     <script defer src="/shared/api-client.js"></script>
     <script defer src="/shared/toast.js"></script>
+    <script defer src="/shared/management-list.js"></script>
     <script defer src="/metrics.js"></script>
   </head>
-  <body>
-    <div class="ambient ambient-a"></div>
-    <div class="ambient ambient-b"></div>
-    <div class="shell">
-      <header class="topbar">
-        <div>
+  <body class="management-app" data-page="metrics">
+    <div class="management-shell">
+      <nav class="rail" aria-label="主导航">
+        <a class="rail-link" href="/" title="聊天工作台" aria-label="聊天工作台">💬</a>
+        <a class="rail-link" href="/personas.html" title="人格管理" aria-label="人格管理">🎭</a>
+        <a class="rail-link" href="/skills.html" title="Skill 管理" aria-label="Skill 管理">🛠️</a>
+        <a class="rail-link" href="/projects.html" title="项目管理" aria-label="项目管理">📁</a>
+        <a class="rail-link" aria-current="page" href="/metrics.html" title="评测报表" aria-label="评测报表">📊</a>
+      </nav>
+
+      <div class="management-main">
+        <header class="management-header">
+          <div class="management-title">
           <p class="eyebrow">CAFF Metrics</p>
           <h1>Agent 评测报表</h1>
           <p class="subtitle">从本地 SQLite 状态库汇总每个 Agent 的工具调用、工具聊天率与提示词回归指标。</p>
-        </div>
-        <div class="topbar-actions">
-          <nav class="topbar-nav" aria-label="Primary">
-            <a class="topbar-link" href="/">聊天工作台</a>
-            <a class="topbar-link" href="/personas.html">人格管理</a>
-            <a class="topbar-link" href="/skills.html">Skill 管理</a>
-            <a class="topbar-link" href="/projects.html">项目管理</a>
-            <a class="topbar-link active" href="/metrics.html">评测报表</a>
-          </nav>
-          <button id="refresh-button" class="ghost-button" type="button">刷新</button>
-        </div>
-      </header>
+          </div>
+          <button id="refresh-button" class="management-icon-button" type="button" title="刷新" aria-label="刷新">⟳</button>
+        </header>
 
-      <main class="layout persona-layout">
-        <aside class="panel panel-conversations">
+        <main class="management-content">
+        <aside class="management-pane management-index">
           <div class="panel-header">
             <div>
               <p class="eyebrow">Filters</p>
@@ -63,11 +62,11 @@
               <span class="section-label">Agent 列表</span>
               <span id="agent-count" class="section-hint">加载中...</span>
             </div>
-            <div id="agent-list" class="agent-list"></div>
+            <ul id="agent-list" class="agent-list" aria-label="Agent 指标列表"></ul>
           </section>
         </aside>
 
-        <section class="panel panel-studio">
+        <section class="management-pane management-detail">
           <div class="panel-header">
             <div>
               <p class="eyebrow">Report</p>
@@ -108,7 +107,8 @@
             </ul>
           </section>
         </section>
-      </main>
+        </main>
+      </div>
     </div>
 
     <div id="toast" class="toast hidden"></div>

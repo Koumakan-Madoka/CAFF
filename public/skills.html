@@ -7,32 +7,31 @@
     <link rel="stylesheet" href="/styles.css" />
     <script defer src="/shared/api-client.js"></script>
     <script defer src="/shared/toast.js"></script>
+    <script defer src="/shared/management-list.js"></script>
     <script defer src="/skills.js"></script>
   </head>
-  <body>
-    <div class="ambient ambient-a"></div>
-    <div class="ambient ambient-b"></div>
-    <div class="shell">
-      <header class="topbar">
-        <div>
+  <body class="management-app" data-page="skills">
+    <div class="management-shell">
+      <nav class="rail" aria-label="主导航">
+        <a class="rail-link" href="/" title="聊天工作台" aria-label="聊天工作台">💬</a>
+        <a class="rail-link" href="/personas.html" title="人格管理" aria-label="人格管理">🎭</a>
+        <a class="rail-link" aria-current="page" href="/skills.html" title="Skill 管理" aria-label="Skill 管理">🛠️</a>
+        <a class="rail-link" href="/projects.html" title="项目管理" aria-label="项目管理">📁</a>
+        <a class="rail-link" href="/metrics.html" title="评测报表" aria-label="评测报表">📊</a>
+      </nav>
+
+      <div class="management-main">
+        <header class="management-header">
+          <div class="management-title">
           <p class="eyebrow">CAFF Skill Manager</p>
           <h1>Skill 管理中心</h1>
           <p class="subtitle">管理 `.pi-sandbox/skills` 下的真实 skill 文件夹，供人格和会话按引用复用。管理会话模式的常驻 skill 绑定。</p>
-        </div>
-        <div class="topbar-actions">
-          <nav class="topbar-nav" aria-label="Primary">
-            <a class="topbar-link" href="/">聊天工作台</a>
-            <a class="topbar-link" href="/personas.html">人格管理</a>
-            <a class="topbar-link active" href="/skills.html">Skill 管理</a>
-            <a class="topbar-link" href="/projects.html">项目管理</a>
-            <a class="topbar-link" href="/metrics.html">评测报表</a>
-          </nav>
-          <button id="refresh-button" class="ghost-button" type="button">刷新</button>
-        </div>
-      </header>
+          </div>
+          <button id="refresh-button" class="management-icon-button" type="button" title="刷新" aria-label="刷新">⟳</button>
+        </header>
 
-      <main class="layout persona-layout">
-        <aside class="panel panel-conversations">
+        <main class="management-content">
+        <aside class="management-pane management-index">
           <div class="panel-header">
             <div class="tab-bar">
               <button id="tab-skills" class="tab-button active" type="button">Skill 仓库</button>
@@ -41,11 +40,11 @@
             <button id="new-skill-button" type="button">新建 Skill</button>
             <button id="new-mode-button" type="button" class="ghost-button" style="display:none">新建模式</button>
           </div>
-          <div id="skill-list" class="agent-list"></div>
-          <div id="mode-list" class="agent-list" style="display:none"></div>
+          <ul id="skill-list" class="agent-list" aria-label="Skill 列表"></ul>
+          <ul id="mode-list" class="agent-list" aria-label="模式列表" style="display:none"></ul>
         </aside>
 
-        <section id="skill-panel" class="panel panel-studio">
+        <section id="skill-panel" class="management-pane management-detail">
           <div class="panel-header">
             <div>
               <p class="eyebrow">Editor</p>
@@ -144,7 +143,7 @@
           </form>
         </section>
 
-        <section id="mode-panel" class="panel panel-studio" style="display:none">
+        <section id="mode-panel" class="management-pane management-detail" style="display:none">
           <div class="panel-header">
             <div>
               <p class="eyebrow">Mode Editor</p>
@@ -189,7 +188,8 @@
             </div>
           </form>
         </section>
-      </main>
+        </main>
+      </div>
     </div>
 
     <div id="toast" class="toast hidden"></div>

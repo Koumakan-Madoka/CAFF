@@ -8,10 +8,16 @@ const state = {
 
 const shared = window.CaffShared || {};
 const fetchJson = shared.fetchJson;
+const createManagementListItem = shared.createManagementListItem;
+const createManagementListEmptyState = shared.createManagementListEmptyState;
+
+if (typeof createManagementListItem !== 'function' || typeof createManagementListEmptyState !== 'function') {
+  throw new Error('Management list primitives are required');
+}
 
 const dom = {
   refreshButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('refresh-button')),
-  projectList: /** @type {HTMLDivElement | null} */ (document.getElementById('project-list')),
+  projectList: /** @type {HTMLUListElement | null} */ (document.getElementById('project-list')),
   newProjectForm: /** @type {HTMLFormElement | null} */ (document.getElementById('new-project-form')),
   projectName: /** @type {HTMLInputElement | null} */ (document.getElementById('project-name')),
   projectPath: /** @type {HTMLInputElement | null} */ (document.getElementById('project-path')),
@@ -56,16 +62,16 @@ function renderProjectList() {
   dom.projectList.innerHTML = '';
 
   if (!Array.isArray(state.projects) || state.projects.length === 0) {
-    const empty = document.createElement('div');
-    empty.className = 'empty-state';
-    empty.textContent = '还没有添加项目。';
-    dom.projectList.appendChild(empty);
+    dom.projectList.appendChild(createManagementListEmptyState('还没有添加项目。'));
     return;
   }
 
   state.projects.forEach((project) => {
-    const item = document.createElement('div');
-    item.className = `agent-list-item compact${project.id === state.selectedProjectId ? ' active' : ''}`;
+    const { row, button: item } = createManagementListItem({
+      id: project.id,
+      active: project.id === state.selectedProjectId,
+      compact: true,
+    });
 
     const left = document.createElement('div');
     left.style.display = 'grid';
@@ -91,7 +97,7 @@ function renderProjectList() {
       renderAll();
     });
 
-    dom.projectList.appendChild(item);
+    dom.projectList.appendChild(row);
   });
 }
 
@@ -219,4 +225,3 @@ if (dom.deleteProjectButton) {
 }
 
 bootstrap();
-
