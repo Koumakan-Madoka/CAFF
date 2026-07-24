@@ -72,7 +72,7 @@ const dom = {
   newConversationForm: /** @type {HTMLFormElement | null} */ (document.getElementById('new-conversation-form')),
   newConversationTitle: /** @type {HTMLInputElement | null} */ (document.getElementById('new-conversation-title')),
   newConversationType: /** @type {HTMLSelectElement | null} */ (document.getElementById('new-conversation-type')),
-  conversationList: /** @type {HTMLDivElement | null} */ (document.getElementById('conversation-list')),
+  conversationList: /** @type {HTMLUListElement | null} */ (document.getElementById('conversation-list')),
   conversationTitleDisplay: /** @type {HTMLElement | null} */ (document.getElementById('conversation-title-display')),
   conversationModeBadge: /** @type {HTMLElement | null} */ (document.getElementById('conversation-mode-badge')),
   conversationMeta: /** @type {HTMLElement | null} */ (document.getElementById('conversation-meta')),

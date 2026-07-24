@@ -55,7 +55,7 @@
           <button type="submit">新建</button>
         </form>
 
-        <div id="conversation-list" class="conversation-list sidebar-list"></div>
+        <ul id="conversation-list" class="conversation-list sidebar-list"></ul>
       </aside>
 
       <main class="main">
@@ -284,24 +284,6 @@
           </div>
 
           <form id="conversation-settings-form" class="settings-form compact-settings-form">
-            <section class="bulk-skill-card conversation-project-card">
-              <div class="section-row">
-                <span class="section-label">会话项目</span>
-                <span class="section-hint">仅覆盖当前会话，不影响全局激活项目</span>
-              </div>
-              <label>
-                <span>项目</span>
-                <select id="conversation-project-select">
-                  <option value="">跟随全局默认项目</option>
-                </select>
-              </label>
-              <p id="conversation-project-status" class="section-hint">未绑定时会使用全局激活项目。</p>
-              <div class="button-row compact-button-row">
-                <button id="bind-conversation-project-button" class="ghost-button" type="button">绑定到当前会话</button>
-                <button id="clear-conversation-project-button" class="ghost-button" type="button">清除绑定</button>
-              </div>
-            </section>
-
             <section class="bulk-skill-card">
               <div class="section-row">
                 <span class="section-label">批量 Skill</span>

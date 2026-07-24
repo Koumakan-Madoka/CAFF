@@ -1,0 +1,720 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>CAFF 重设计 · 方向A 工作台 AppShell · 高保真 mock v2</title>
+<!-- v2 freeze: Gate #2 审查修正（砚砚 BLOCK 6 findings 全修） -->
+<style>
+:root {
+  --caff-canvas: #f7f2ea;
+  --caff-surface: #fffdf9;
+  --caff-surface-sunk: #f3ece1;
+  --caff-ink: #22313f;
+  --caff-ink-soft: #5d6b78;
+  --caff-line: #e3d9c8;
+  --caff-accent: #ef7d57;
+  --caff-accent-deep: #c45d3b;
+  --caff-teal: #2a9d8f;
+  --caff-danger: #c0392b;
+  --caff-radius-md: 12px;
+  --caff-radius-lg: 16px;
+  --caff-radius-xl: 22px;
+  --caff-space-1: 4px;
+  --caff-space-2: 8px;
+  --caff-space-3: 12px;
+  --caff-space-4: 16px;
+  --caff-space-5: 24px;
+  --caff-space-6: 32px;
+  --caff-font-body: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --rail-w: 56px;
+  --sidebar-w: 280px;
+  --drawer-w: 360px;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  overflow: hidden;
+  background: var(--caff-canvas);
+  color: var(--caff-ink);
+  font-family: var(--caff-font-body);
+  font-size: 15px;
+  line-height: 1.6;
+}
+button { font: inherit; cursor: pointer; }
+:focus-visible {
+  outline: 3px solid rgba(239, 125, 87, 0.55);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+.app-shell { display: flex; height: 100dvh; overflow: hidden; }
+
+/* ── Rail ─────────────────────────────── */
+.rail {
+  width: var(--rail-w);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--caff-space-2);
+  padding: var(--caff-space-3) 0;
+  background: var(--caff-surface-sunk);
+  border-right: 1px solid var(--caff-line);
+}
+.rail button {
+  width: 44px; height: 44px;
+  display: grid; place-items: center;
+  border: 0; border-radius: var(--caff-radius-md);
+  background: transparent; font-size: 20px;
+  color: var(--caff-ink-soft);
+}
+.rail button[aria-current="page"] { background: var(--caff-surface); color: var(--caff-accent-deep); box-shadow: inset 0 0 0 1px var(--caff-line); }
+.rail button:hover { background: var(--caff-surface); }
+.rail .spacer { flex: 1; }
+
+/* ── Sidebar ──────────────────────────── */
+.sidebar {
+  width: var(--sidebar-w);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--caff-surface);
+  border-right: 1px solid var(--caff-line);
+  transition: width 220ms ease;
+  overflow: hidden;
+}
+.sidebar > * { min-width: var(--sidebar-w); }
+.sidebar-head {
+  flex-shrink: 0;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: var(--caff-space-4);
+  border-bottom: 1px solid var(--caff-line);
+}
+.sidebar-head h1 { margin: 0; font-size: 15px; letter-spacing: 0.02em; }
+.sidebar-list { flex: 1; min-height: 0; overflow-y: auto; padding: var(--caff-space-2); list-style: none; margin: 0; }
+.sidebar-list li { margin: 0; }
+.conv-item {
+  display: flex; align-items: center; gap: var(--caff-space-3);
+  width: 100%; min-height: 44px;
+  padding: var(--caff-space-3);
+  border: 0; border-radius: var(--caff-radius-md);
+  background: transparent; text-align: left;
+}
+.conv-item:hover { background: var(--caff-surface-sunk); }
+.conv-item[aria-current="true"] { background: rgba(239, 125, 87, 0.12); box-shadow: inset 0 0 0 1px rgba(239, 125, 87, 0.35); }
+.conv-item .dot { width: 8px; height: 8px; border-radius: 50%; background: #b7ac9c; flex-shrink: 0; }
+.conv-item .dot.live { background: var(--caff-teal); box-shadow: 0 0 0 3px rgba(42, 157, 143, 0.2); }
+.conv-item .meta { min-width: 0; }
+.conv-item .name { display: block; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.conv-item .sub { display: block; font-size: 12px; color: var(--caff-ink-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sidebar-foot { flex-shrink: 0; padding: var(--caff-space-3); border-top: 1px solid var(--caff-line); }
+.btn-primary {
+  width: 100%; min-height: 44px;
+  border: 0; border-radius: 999px;
+  background: linear-gradient(135deg, var(--caff-accent), var(--caff-accent-deep));
+  color: #fff9f5; font-weight: 600;
+}
+
+/* ── Main ─────────────────────────────── */
+.main { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+.chat-header {
+  flex-shrink: 0;
+  display: flex; align-items: center; gap: var(--caff-space-3);
+  padding: var(--caff-space-3) var(--caff-space-4);
+  background: var(--caff-surface);
+  border-bottom: 1px solid var(--caff-line);
+}
+.chat-header .titles { min-width: 0; flex: 1; }
+.chat-header h2 { margin: 0; font-size: 17px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-header .status { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--caff-ink-soft); }
+.chat-header .status .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--caff-teal); }
+.mode-pill {
+  flex-shrink: 0;
+  font-size: 12px; font-weight: 700;
+  padding: 3px 10px; border-radius: 999px;
+  background: rgba(42, 157, 143, 0.14); color: var(--caff-teal);
+}
+.icon-btn {
+  min-width: 44px; min-height: 44px;
+  display: inline-grid; place-items: center;
+  border: 1px solid var(--caff-line); border-radius: var(--caff-radius-md);
+  background: var(--caff-surface); color: var(--caff-ink-soft);
+  padding: 0 var(--caff-space-3);
+}
+.icon-btn[aria-expanded="true"] { color: var(--caff-accent-deep); border-color: var(--caff-accent); }
+
+.message-list {
+  flex: 1; min-height: 0; overflow-y: auto;
+  padding: var(--caff-space-5) var(--caff-space-4);
+  scroll-behavior: smooth;
+}
+.msg-flow { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: var(--caff-space-4); }
+.msg { display: flex; gap: var(--caff-space-3); }
+.msg .avatar {
+  width: 36px; height: 36px; flex-shrink: 0;
+  border-radius: 50%;
+  display: grid; place-items: center;
+  font-size: 16px; background: var(--caff-surface);
+  border: 1px solid var(--caff-line);
+}
+.msg .bubble {
+  min-width: 0;
+  max-width: min(78%, 640px);
+  overflow-wrap: break-word;
+  background: var(--caff-surface);
+  border: 1px solid var(--caff-line);
+  border-radius: var(--caff-radius-lg);
+  padding: var(--caff-space-3) var(--caff-space-4);
+}
+.msg .who { font-size: 12.5px; font-weight: 700; color: var(--caff-accent-deep); margin-bottom: 2px; }
+.msg.user { flex-direction: row-reverse; }
+.msg.user .bubble { background: rgba(239, 125, 87, 0.1); border-color: rgba(239, 125, 87, 0.3); }
+.msg p { margin: 0 0 6px; }
+.msg p:last-child { margin-bottom: 0; }
+
+.tool-trace {
+  margin-top: var(--caff-space-2);
+  border-top: 1px dashed var(--caff-line);
+  padding-top: var(--caff-space-2);
+}
+.tool-trace summary {
+  cursor: pointer; font-size: 12.5px; color: var(--caff-ink-soft);
+  min-height: 44px; display: flex; align-items: center; gap: 6px;
+}
+.tool-trace .step {
+  display: flex; gap: var(--caff-space-2); align-items: baseline;
+  font-size: 12.5px; color: var(--caff-ink-soft);
+  padding: 4px 0 4px 14px; border-left: 2px solid var(--caff-line);
+}
+.tool-trace .step b { color: var(--caff-ink); font-weight: 600; }
+
+.cursor {
+  display: inline-block; width: 9px; height: 1.1em;
+  vertical-align: text-bottom;
+  background: var(--caff-accent);
+  animation: blink 1s steps(2) infinite;
+}
+@keyframes blink { 50% { opacity: 0; } }
+
+.error-card {
+  display: flex; align-items: center; gap: var(--caff-space-3);
+  background: #fdf1ec; border: 1px solid #efc5b4;
+  border-radius: var(--caff-radius-lg);
+  padding: var(--caff-space-3) var(--caff-space-4);
+  font-size: 14px;
+}
+.error-card button {
+  min-height: 44px; padding: 0 var(--caff-space-4);
+  border: 0; border-radius: 999px;
+  background: var(--caff-danger); color: #fff; font-size: 13px;
+}
+
+.skeleton { display: flex; flex-direction: column; gap: var(--caff-space-3); }
+.skeleton .line {
+  height: 14px; border-radius: 7px;
+  background: linear-gradient(90deg, var(--caff-surface-sunk) 25%, #faf5ec 50%, var(--caff-surface-sunk) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s linear infinite;
+}
+@keyframes shimmer { to { background-position: -200% 0; } }
+
+.empty-card {
+  margin: 12vh auto 0;
+  max-width: 520px; text-align: center;
+  background: var(--caff-surface);
+  border: 1px solid var(--caff-line);
+  border-radius: var(--caff-radius-xl);
+  padding: var(--caff-space-6);
+}
+.empty-card h3 { margin: 0 0 var(--caff-space-2); }
+.empty-card .hints { display: flex; flex-wrap: wrap; gap: var(--caff-space-2); justify-content: center; margin-top: var(--caff-space-4); }
+.empty-card .hints button {
+  min-height: 44px; padding: 0 var(--caff-space-4);
+  border: 1px solid var(--caff-line); border-radius: 999px;
+  background: var(--caff-canvas); color: var(--caff-ink);
+}
+
+.new-msg-pill {
+  position: sticky; bottom: var(--caff-space-3);
+  margin: 0 auto; width: max-content;
+  display: inline-flex; align-items: center;
+  min-height: 44px; padding: 0 20px;
+  border: 0; border-radius: 999px;
+  background: var(--caff-ink); color: #fff;
+  font-size: 13px;
+  box-shadow: 0 6px 18px rgba(34, 49, 63, 0.25);
+}
+
+.composer {
+  flex-shrink: 0;
+  background: var(--caff-surface);
+  border-top: 1px solid var(--caff-line);
+  padding: var(--caff-space-3) var(--caff-space-4);
+}
+.composer-inner {
+  max-width: 760px; margin: 0 auto;
+  display: flex; gap: var(--caff-space-3); align-items: flex-end;
+}
+.composer textarea {
+  flex: 1; resize: none;
+  max-height: 160px; min-height: 44px;
+  border: 1px solid var(--caff-line); border-radius: var(--caff-radius-lg);
+  background: var(--caff-canvas);
+  padding: 10px 14px; font: inherit; color: var(--caff-ink);
+}
+.composer textarea:focus { outline: none; border-color: var(--caff-accent); box-shadow: 0 0 0 3px rgba(239, 125, 87, 0.15); }
+.composer .send { min-width: 44px; min-height: 44px; width: auto; padding: 0 20px; }
+
+/* ── Context drawer ───────────────────── */
+.drawer-overlay {
+  position: fixed; inset: 0;
+  background: rgba(34, 49, 63, 0.28);
+  opacity: 0; pointer-events: none;
+  transition: opacity 180ms ease;
+  z-index: 40;
+}
+.context-drawer {
+  position: fixed; top: 0; right: 0; bottom: 0;
+  width: min(var(--drawer-w), 92vw);
+  display: flex; flex-direction: column;
+  background: rgba(255, 253, 249, 0.92);
+  backdrop-filter: blur(14px);
+  border-left: 1px solid var(--caff-line);
+  transform: translateX(100%);
+  transition: transform 220ms ease;
+  z-index: 41;
+}
+body[data-drawer="open"] .context-drawer { transform: translateX(0); }
+body[data-drawer="open"] .drawer-overlay { opacity: 1; pointer-events: auto; }
+.drawer-head {
+  flex-shrink: 0;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: var(--caff-space-4);
+  border-bottom: 1px solid var(--caff-line);
+}
+.drawer-head h2 { margin: 0; font-size: 16px; }
+.drawer-tabs { flex-shrink: 0; display: flex; gap: 4px; padding: var(--caff-space-2) var(--caff-space-3); border-bottom: 1px solid var(--caff-line); overflow-x: auto; }
+.drawer-tabs button {
+  min-height: 44px; padding: 0 var(--caff-space-3);
+  border: 0; border-radius: 999px;
+  background: transparent; color: var(--caff-ink-soft);
+  font-size: 13px; white-space: nowrap;
+}
+.drawer-tabs button[aria-selected="true"] { background: rgba(239, 125, 87, 0.14); color: var(--caff-accent-deep); font-weight: 700; }
+.drawer-body { flex: 1; min-height: 0; overflow-y: auto; padding: var(--caff-space-4); }
+.participant-row { display: flex; align-items: center; gap: var(--caff-space-3); padding: var(--caff-space-2) 0; min-height: 44px; }
+.participant-row .avatar { width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; background: var(--caff-surface-sunk); }
+.participant-row .badge { margin-left: auto; font-size: 12px; color: var(--caff-teal); }
+.panel-note { color: var(--caff-ink-soft); font-size: 13px; }
+.goal-item, .memory-item {
+  border: 1px solid var(--caff-line); border-radius: var(--caff-radius-md);
+  background: var(--caff-canvas);
+  padding: var(--caff-space-3); margin-bottom: var(--caff-space-2);
+  font-size: 13.5px;
+}
+.setting-row { display: flex; align-items: center; justify-content: space-between; min-height: 44px; padding: var(--caff-space-2) 0; font-size: 14px; }
+.setting-row button { min-width: 44px; min-height: 44px; border: 1px solid var(--caff-line); border-radius: 999px; background: var(--caff-surface); padding: 0 var(--caff-space-4); }
+.setting-row button[aria-pressed="true"] { background: rgba(42,157,143,0.15); color: var(--caff-teal); border-color: var(--caff-teal); font-weight: 700; }
+
+/* ── Dev toolbar (演示用，非产品设计) ── */
+.dev-toolbar {
+  position: fixed; left: 8px; bottom: 8px; z-index: 99;
+  display: flex; flex-wrap: wrap; gap: 4px; max-width: 60vw;
+  background: rgba(34, 49, 63, 0.85); color: #fff;
+  padding: 6px; border-radius: 10px; font-size: 12px;
+}
+.dev-toolbar button { border: 1px solid rgba(255,255,255,0.3); background: transparent; color: #fff; border-radius: 6px; padding: 4px 8px; min-height: 28px; }
+.dev-toolbar button[aria-pressed="true"] { background: var(--caff-accent); }
+
+/* ── States visibility ────────────────── */
+.state { display: none; }
+body[data-state="empty"] .state-empty,
+body[data-state="loading"] .state-loading,
+body[data-state="streaming"] .state-streaming,
+body[data-state="error"] .state-error,
+body[data-state="long"] .state-long { display: flex; flex-direction: column; gap: var(--caff-space-4); }
+
+/* ── Responsive ───────────────────────── */
+@media (max-width: 1279px) {
+  .sidebar {
+    position: fixed; top: 0; bottom: 0; left: var(--rail-w); z-index: 30;
+    transform: translateX(calc(-100% - var(--rail-w)));
+    transition: transform 220ms ease;
+    box-shadow: 8px 0 24px rgba(34,49,63,0.12);
+  }
+  body[data-sidebar="open"] .sidebar { transform: translateX(0); }
+}
+@media (min-width: 1280px) {
+  body[data-sidebar="closed"] .sidebar { width: 0; border-right-width: 0; }
+}
+@media (max-width: 767px) {
+  .app-shell { flex-direction: column; }
+  .rail {
+    order: 2; width: 100%; height: 56px;
+    flex-direction: row; justify-content: space-around;
+    border-right: 0; border-top: 1px solid var(--caff-line);
+    padding: 0 var(--caff-space-2);
+  }
+  .rail .spacer { display: none; }
+  .sidebar { left: 0; width: min(320px, 88vw); }
+  .context-drawer { width: 100vw; }
+  .msg-flow { max-width: none; }
+}
+
+@media (max-width: 480px) {
+  .mode-pill { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+  .message-list { scroll-behavior: auto; }
+}
+</style>
+</head>
+<body data-state="long" data-drawer="closed" data-sidebar="closed">
+<div class="app-shell" id="appShell">
+
+  <nav class="rail" aria-label="主导航">
+    <button aria-current="page" title="聊天工作台" aria-label="聊天工作台">💬</button>
+    <button title="人格管理" aria-label="人格管理">🎭</button>
+    <button title="Skill 管理" aria-label="Skill 管理">🛠️</button>
+    <button title="项目管理" aria-label="项目管理">📁</button>
+    <button title="评测报表" aria-label="评测报表">📊</button>
+    <span class="spacer"></span>
+    <button title="设置" aria-label="设置">⚙️</button>
+  </nav>
+
+  <aside class="sidebar" id="sidebar" aria-label="会话列表" aria-hidden="true" inert>
+    <div class="sidebar-head">
+      <h1>会话</h1>
+      <button class="icon-btn" id="sidebarClose" aria-label="收起会话栏">✕</button>
+    </div>
+    <ul class="sidebar-list">
+      <li><button class="conv-item" aria-current="true">
+        <span class="dot live" aria-hidden="true"></span>
+        <span class="meta"><span class="name">狼人杀之夜</span><span class="sub">3 位人格在线 · 进行中</span></span>
+      </button></li>
+      <li><button class="conv-item">
+        <span class="dot" aria-hidden="true"></span>
+        <span class="meta"><span class="name">产品讨论</span><span class="sub">昨天 · 42 条消息</span></span>
+      </button></li>
+      <li><button class="conv-item">
+        <span class="dot" aria-hidden="true"></span>
+        <span class="meta"><span class="name">谁是卧底 · 周末局</span><span class="sub">周一 · 已结束</span></span>
+      </button></li>
+    </ul>
+    <div class="sidebar-foot">
+      <button class="btn-primary">＋ 新建会话</button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="chat-header">
+      <button class="icon-btn" id="sidebarToggle" aria-label="打开会话栏" aria-expanded="false">☰</button>
+      <div class="titles">
+        <h2>狼人杀之夜</h2>
+        <span class="status"><span class="dot" aria-hidden="true"></span>本地服务已连接 · 3 位人格在线</span>
+      </div>
+      <span class="mode-pill">狼人杀</span>
+      <button class="icon-btn" id="drawerToggle" aria-expanded="false" aria-controls="contextDrawer">面板 ▾</button>
+    </header>
+
+    <div class="message-list" id="messageList" role="log" tabindex="0" aria-live="polite" aria-label="消息列表">
+      <div class="msg-flow">
+
+        <div class="state state-empty">
+          <div class="empty-card">
+            <h3>开始一场多人格对话</h3>
+            <p class="sub" style="color:var(--caff-ink-soft)">@提及人格来路由消息，或让后端主持开局。</p>
+            <div class="hints">
+              <button>💡 示例：今晚谁是卧底？</button>
+              <button>🎭 管理人格</button>
+              <button>🐺 开一局狼人杀</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="state state-loading">
+          <div class="skeleton" aria-label="加载中">
+            <div class="line" style="width:60%"></div>
+            <div class="line" style="width:85%"></div>
+            <div class="line" style="width:40%"></div>
+            <div class="line" style="width:72%"></div>
+          </div>
+        </div>
+
+        <div class="state state-streaming">
+          <div class="msg user"><span class="avatar">🧑</span><div class="bubble"><span class="who">我</span><p>@逻辑担当 分析一下昨晚的刀口。</p></div></div>
+          <div class="msg"><span class="avatar">🦉</span><div class="bubble"><span class="who">逻辑担当</span><p>从刀口位置看，狼人大概率在 3、5、7 之间。5 号昨晚的发言有一个明显矛盾<span class="cursor" aria-hidden="true"></span></p></div></div>
+        </div>
+
+        <div class="state state-error">
+          <div class="msg user"><span class="avatar">🧑</span><div class="bubble"><span class="who">我</span><p>@逻辑担当 继续。</p></div></div>
+          <div class="error-card" role="alert">
+            <span aria-hidden="true">⚠️</span>
+            <span style="flex:1">「逻辑担当」生成中断：模型连接超时。消息未送达其他人格。</span>
+            <button>重试</button>
+          </div>
+        </div>
+
+        <div class="state state-long" id="longFlow">
+          <div class="msg"><span class="avatar">🎙️</span><div class="bubble"><span class="who">主持人</span><p>天黑请闭眼。狼人请睁眼，请选择今晚的目标。</p></div></div>
+          <div class="msg"><span class="avatar">🦉</span><div class="bubble"><span class="who">逻辑担当</span>
+            <p>我先用 tool 查一下目前的票型统计，再给出推理。</p>
+            <details class="tool-trace">
+              <summary>▸ 2 次工具调用</summary>
+              <div class="step"><b>vote_stats</b> · 查询当前票型 · 成功 · 120ms</div>
+              <div class="step"><b>night_log</b> · 读取昨夜行动记录 · 成功 · 86ms</div>
+            </details>
+          </div></div>
+          <div class="msg user"><span class="avatar">🧑</span><div class="bubble"><span class="who">我</span><p>我投 5 号，理由跟上轮一致。</p></div></div>
+          <div class="msg"><span class="avatar">🃏</span><div class="bubble"><span class="who">气氛担当</span><p>5 号刚才那个沉默太可疑了，我跟一票。</p></div></div>
+          <div class="msg"><span class="avatar">🎙️</span><div class="bubble"><span class="who">主持人</span><p>投票统计中……当前 5 号 2 票，3 号 1 票。</p></div></div>
+          <div class="msg"><span class="avatar">🦉</span><div class="bubble"><span class="who">逻辑担当</span><p>补充一点：3 号昨晚的守卫跳法和我们之前讨论过的版型不一致，我建议今晚重点听 3 号发言。</p></div></div>
+          <div class="msg user"><span class="avatar">🧑</span><div class="bubble"><span class="who">我</span><p>同意，3 号的跳法确实急了点。</p></div></div>
+          <div class="msg"><span class="avatar">🃏</span><div class="bubble"><span class="who">气氛担当</span><p>哈哈，3 号现在手心出汗了吧。不过笑归笑，票型上我们还是落后，别分心。</p></div></div>
+          <div class="msg"><span class="avatar">🎙️</span><div class="bubble"><span class="who">主持人</span><p>第二轮发言开始。请 1 号玩家陈述。</p></div></div>
+          <div class="msg"><span class="avatar">🦉</span><div class="bubble"><span class="who">逻辑担当</span><p>1 号发言。我的身份是平民，昨晚没有信息。从票型看，狼队在冲 5 号，我们要守住票差。</p></div></div>
+          <div class="msg"><span class="avatar">🃏</span><div class="bubble"><span class="who">气氛担当</span><p>2 号发言。我觉得 7 号一直在划水，划水也是狼的一种打法，大家注意。</p></div></div>
+          <div class="msg"><span class="avatar">🎙️</span><div class="bubble"><span class="who">主持人</span><p>发言继续。请 3 号玩家陈述。</p></div></div>
+          <div class="msg"><span class="avatar">🦉</span><div class="bubble"><span class="who">逻辑担当</span><p>3 号这个解释还是圆不上前一天的矛盾。我维持原判：3、5、7 出两狼。</p></div></div>
+          <div class="msg user"><span class="avatar">🧑</span><div class="bubble"><span class="who">我</span><p>我补充一个细节：5 号第一轮把票挂给了没有嫌疑的 2 号，像是在分散票型。</p></div></div>
+          <div class="msg"><span class="avatar">🃏</span><div class="bubble"><span class="who">气氛担当</span><p>这个细节关键！5 号那票确实很飘，记账上了。</p></div></div>
+          <div class="msg"><span class="avatar">🎙️</span><div class="bubble"><span class="who">主持人</span><p>自由讨论时间还剩 60 秒，请抓紧时间。</p></div></div>
+          <div class="msg"><span class="avatar">🦉</span><div class="bubble"><span class="who">逻辑担当</span><p>总结当前信息：票型、发言矛盾、挂票行为三条线都指向 5 号，建议本轮出 5。</p></div></div>
+          <div class="msg user"><span class="avatar">🧑</span><div class="bubble"><span class="who">我</span><p>好，本轮我跟出 5 号。</p></div></div>
+          <div class="msg"><span class="avatar">🎙️</span><div class="bubble"><span class="who">主持人</span><p>讨论结束，请开始投票。</p></div></div>
+        </div>
+
+      </div>
+    </div>
+
+    <form class="composer" onsubmit="return false">
+      <div class="composer-inner">
+        <textarea id="composerInput" rows="1" placeholder="发送给当前房间，@提及人格…" aria-label="消息输入框"></textarea>
+        <button class="btn-primary send" type="submit">发送</button>
+      </div>
+    </form>
+  </main>
+</div>
+
+<div class="drawer-overlay" id="drawerOverlay"></div>
+<aside class="context-drawer" id="contextDrawer" role="dialog" aria-modal="true" aria-label="上下文面板" aria-hidden="true" inert>
+    <div class="drawer-head">
+      <h2>上下文面板</h2>
+      <button class="icon-btn" id="drawerClose" aria-label="关闭面板">✕</button>
+    </div>
+    <div class="drawer-tabs" role="tablist" aria-label="面板分类">
+      <button role="tab" id="tab-participants" aria-controls="panel-participants" aria-selected="true" tabindex="0">参与者</button>
+      <button role="tab" id="tab-goal" aria-controls="panel-goal" aria-selected="false" tabindex="-1">目标</button>
+      <button role="tab" id="tab-memory" aria-controls="panel-memory" aria-selected="false" tabindex="-1">记忆</button>
+      <button role="tab" id="tab-summary" aria-controls="panel-summary" aria-selected="false" tabindex="-1">摘要</button>
+      <button role="tab" id="tab-settings" aria-controls="panel-settings" aria-selected="false" tabindex="-1">设置</button>
+    </div>
+    <div class="drawer-body">
+      <div role="tabpanel" id="panel-participants" aria-labelledby="tab-participants">
+        <div class="participant-row"><span class="avatar">🦉</span><span>逻辑担当</span><span class="badge">● 在线</span></div>
+        <div class="participant-row"><span class="avatar">🃏</span><span>气氛担当</span><span class="badge">● 在线</span></div>
+        <div class="participant-row"><span class="avatar">🎙️</span><span>主持人（后端）</span><span class="badge">● 在线</span></div>
+      </div>
+      <div role="tabpanel" id="panel-goal" aria-labelledby="tab-goal" hidden>
+        <div class="goal-item">🎯 本轮目标：找出两狼并守住票差</div>
+        <div class="goal-item">🎯 长期目标：打完一局完整的 9 人局</div>
+        <p class="panel-note">目标由主持人写入，所有人格只读。</p>
+      </div>
+      <div role="tabpanel" id="panel-memory" aria-labelledby="tab-memory" hidden>
+        <div class="memory-item">5 号第一轮挂票给无嫌疑的 2 号</div>
+        <div class="memory-item">3 号守卫跳法与版型不一致</div>
+        <p class="panel-note">记忆条目跨轮次保留，供人格推理引用。</p>
+      </div>
+      <div role="tabpanel" id="panel-summary" aria-labelledby="tab-summary" hidden>
+        <p class="panel-note">第 2 轮进行中。票型：5 号 2 票、3 号 1 票。逻辑担当主张出 5，气氛担当跟票。</p>
+      </div>
+      <div role="tabpanel" id="panel-settings" aria-labelledby="tab-settings" hidden>
+        <div class="setting-row"><span>新消息提示音</span><button aria-pressed="true">开</button></div>
+        <div class="setting-row"><span>自动滚动到底</span><button aria-pressed="true">开</button></div>
+        <div class="setting-row"><span>人格发言间隔</span><button aria-pressed="false">3s</button></div>
+      </div>
+    </div>
+  </aside>
+
+<div class="dev-toolbar">
+  <span style="align-self:center;padding:0 4px">演示:</span>
+  <button data-s="empty">空态</button>
+  <button data-s="loading">加载</button>
+  <button data-s="streaming">streaming</button>
+  <button data-s="error">失败</button>
+  <button data-s="long" aria-pressed="true">长对话</button>
+  <button id="devDrawer">抽屉</button>
+  <button id="devAppend">＋追加消息</button>
+</div>
+
+<script>
+const body = document.body;
+const list = document.getElementById('messageList');
+const drawer = document.getElementById('contextDrawer');
+const drawerToggle = document.getElementById('drawerToggle');
+const sidebarToggle = document.getElementById('sidebarToggle');
+const sidebar = document.getElementById('sidebar');
+const appShell = document.getElementById('appShell');
+const devToolbar = document.querySelector('.dev-toolbar');
+
+document.querySelectorAll('.dev-toolbar [data-s]').forEach(b => {
+  b.addEventListener('click', () => {
+    body.dataset.state = b.dataset.s;
+    document.querySelectorAll('.dev-toolbar [data-s]').forEach(x => x.setAttribute('aria-pressed', x === b));
+    scrollToBottom(false);
+  });
+});
+
+let lastFocus = null;
+function setDrawer(open) {
+  body.dataset.drawer = open ? 'open' : 'closed';
+  drawer.inert = !open;
+  drawer.setAttribute('aria-hidden', String(!open));
+  appShell.inert = open;
+  if (devToolbar) devToolbar.inert = open;
+  drawerToggle.setAttribute('aria-expanded', String(open));
+  if (open) { lastFocus = document.activeElement; document.getElementById('drawerClose').focus(); }
+  else if (lastFocus) { lastFocus.focus(); lastFocus = null; }
+  if (!open) setSidebar(body.dataset.sidebar === 'open');
+}
+drawerToggle.addEventListener('click', () => setDrawer(body.dataset.drawer !== 'open'));
+document.getElementById('drawerClose').addEventListener('click', () => setDrawer(false));
+document.getElementById('drawerOverlay').addEventListener('click', () => setDrawer(false));
+document.getElementById('devDrawer').addEventListener('click', () => setDrawer(body.dataset.drawer !== 'open'));
+
+function visibleFocusables(root) {
+  return Array.from(root.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'))
+    .filter(el => !el.disabled && el.tabIndex >= 0 && el.getClientRects().length > 0);
+}
+function trapTab(root, e) {
+  const f = visibleFocusables(root);
+  if (!f.length) return;
+  const first = f[0], last = f[f.length - 1];
+  if (e.shiftKey && document.activeElement === first) { last.focus(); e.preventDefault(); }
+  else if (!e.shiftKey && document.activeElement === last) { first.focus(); e.preventDefault(); }
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    if (body.dataset.drawer === 'open') setDrawer(false);
+    else if (body.dataset.sidebar === 'open' && !mqDesktop.matches) setSidebar(false, { user: true });
+  }
+  if (e.key === 'Tab') {
+    if (body.dataset.drawer === 'open') trapTab(drawer, e);
+    else if (body.dataset.sidebar === 'open' && !mqDesktop.matches) trapTab(sidebar, e);
+  }
+});
+
+const mqDesktop = matchMedia('(min-width: 1280px)');
+let sidebarUserChoice = null;
+const rail = document.querySelector('.rail');
+const main = document.querySelector('.main');
+let lastSidebarFocus = null;
+function setSidebar(open, { user = false } = {}) {
+  if (user) sidebarUserChoice = open ? 'open' : 'closed';
+  const wasOpen = body.dataset.sidebar === 'open';
+  const prevFocus = document.activeElement;
+  const prevWasAlreadyInert = !!(prevFocus && prevFocus.closest && prevFocus.closest('[inert]'));
+  const focusOutsideSidebar = !prevFocus || !sidebar.contains(prevFocus);
+  const safeRestoreTarget =
+    prevFocus && prevFocus !== document.body && !prevWasAlreadyInert
+      ? prevFocus
+      : sidebarToggle;
+  body.dataset.sidebar = open ? 'open' : 'closed';
+  sidebarToggle.setAttribute('aria-expanded', String(open));
+  sidebarToggle.setAttribute('aria-label', open ? '收起会话栏' : '打开会话栏');
+  sidebar.inert = !open;
+  sidebar.setAttribute('aria-hidden', String(!open));
+  if (!mqDesktop.matches) {
+    rail.inert = open;
+    main.inert = open;
+    if (devToolbar) devToolbar.inert = open;
+    if (body.dataset.drawer !== 'open') {
+      if (open && (!wasOpen || focusOutsideSidebar)) { lastSidebarFocus = safeRestoreTarget; document.getElementById('sidebarClose').focus(); }
+      else if (!open && wasOpen) { (lastSidebarFocus || sidebarToggle).focus(); lastSidebarFocus = null; }
+    }
+  } else {
+    rail.inert = false;
+    main.inert = false;
+    if (devToolbar) devToolbar.inert = body.dataset.drawer === 'open';
+    if (!open && sidebar.contains(document.activeElement)) sidebarToggle.focus();
+  }
+}
+sidebarToggle.addEventListener('click', () => setSidebar(body.dataset.sidebar !== 'open', { user: true }));
+document.getElementById('sidebarClose').addEventListener('click', () => setSidebar(false, { user: true }));
+function syncSidebarMedia() {
+  if (sidebarUserChoice) { setSidebar(sidebarUserChoice === 'open'); return; }
+  setSidebar(mqDesktop.matches);
+}
+mqDesktop.addEventListener('change', syncSidebarMedia);
+
+const tabs = Array.from(document.querySelectorAll('.drawer-tabs [role="tab"]'));
+function activateTab(tab, { focus = true } = {}) {
+  tabs.forEach(t => {
+    const on = t === tab;
+    t.setAttribute('aria-selected', String(on));
+    t.tabIndex = on ? 0 : -1;
+    document.getElementById(t.getAttribute('aria-controls')).hidden = !on;
+  });
+  if (focus) tab.focus();
+}
+tabs.forEach(t => t.addEventListener('click', () => activateTab(t, { focus: false })));
+document.querySelector('.drawer-tabs').addEventListener('keydown', (e) => {
+  const i = tabs.indexOf(document.activeElement);
+  if (i < 0) return;
+  let j = null;
+  if (e.key === 'ArrowRight') j = (i + 1) % tabs.length;
+  else if (e.key === 'ArrowLeft') j = (i - 1 + tabs.length) % tabs.length;
+  else if (e.key === 'Home') j = 0;
+  else if (e.key === 'End') j = tabs.length - 1;
+  if (j !== null) { e.preventDefault(); activateTab(tabs[j]); }
+});
+
+function scrollToBottom(smooth = true) {
+  list.scrollTo({ top: list.scrollHeight, behavior: smooth ? 'smooth' : 'auto' });
+}
+
+let pill = null;
+function clearPill() { if (pill) { pill.remove(); pill = null; } }
+list.addEventListener('scroll', () => {
+  if (pill && list.scrollTop + list.clientHeight >= list.scrollHeight - 60) clearPill();
+});
+document.getElementById('devAppend').addEventListener('click', () => {
+  const nearBottom = list.scrollTop + list.clientHeight >= list.scrollHeight - 60;
+  const flow = document.getElementById('longFlow');
+  const el = document.createElement('div');
+  el.className = 'msg';
+  el.innerHTML = '<span class="avatar">🃏</span><div class="bubble"><span class="who">气氛担当</span><p>新消息 ' + new Date().toLocaleTimeString() + ' —— 滚动锚定演示。</p></div>';
+  flow.appendChild(el);
+  if (nearBottom) scrollToBottom();
+  else if (!pill) {
+    pill = document.createElement('button');
+    pill.className = 'new-msg-pill';
+    pill.textContent = '↓ 新消息';
+    pill.addEventListener('click', () => { scrollToBottom(); clearPill(); });
+    list.appendChild(pill);
+  }
+});
+
+const ta = document.getElementById('composerInput');
+ta.addEventListener('input', () => { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 160) + 'px'; });
+
+const flags = location.hash;
+if (flags.includes('clean')) devToolbar.remove();
+if (flags.includes('sidebar=closed')) { sidebarUserChoice = 'closed'; setSidebar(false); }
+if (flags.includes('drawer=open')) setDrawer(true);
+if (flags.includes('state=')) {
+  const s = flags.match(/state=(\w+)/)[1];
+  body.dataset.state = s;
+}
+
+syncSidebarMedia();
+scrollToBottom(false);
+</script>
+</body>
+</html>

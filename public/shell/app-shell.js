@@ -380,14 +380,19 @@
       if (!tab) {
         return;
       }
+      const panel = document.getElementById(panelId);
+      // 先快照焦点位置：hidden 写入会让浏览器立即把焦点掉到 BODY
+      const focusInside =
+        document.activeElement === tab ||
+        Boolean(panel && panel.contains(document.activeElement));
       tab.hidden = !visible;
       const baseLabel = tab.dataset.baseLabel || tab.textContent.replace(/\s*\d+$/, '');
       tab.dataset.baseLabel = baseLabel;
       tab.textContent = count > 1 ? `${baseLabel} ${count}` : baseLabel;
       if (!visible && currentTab === tab) {
         const fallback = visibleTabs()[0] || null;
-        if (fallback && body.dataset.drawer === 'open') {
-          activateTab(fallback, { focus: false });
+        if (fallback) {
+          activateTab(fallback, { focus: body.dataset.drawer === 'open' && focusInside });
         }
       }
     },

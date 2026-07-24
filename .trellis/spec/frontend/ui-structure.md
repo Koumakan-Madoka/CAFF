@@ -78,6 +78,66 @@
 #### Correct
 `provider miss 1/2 次模型调用` where `2` is the number of non-cold model calls.
 
+## Chat AppShell（`public/shell/app-shell.js`）
+
+### 1. Scope / Trigger
+- Trigger: changing the chat workbench frame — fixed viewport, sidebar, unified
+  context drawer, drawer tabs, scroll anchoring, or any focus/inert behavior in
+  `public/shell/app-shell.js`, `public/index.html`, or the `body.chat-app`
+  sections of `public/styles.css`.
+- Design truth: `designs/caff-ui-redesign-brief.md` (§8.3 contract table, §8.7
+  v4 freeze, §8.8 v5 conditional-tab delta) + `designs/mock-app-shell-a.html`.
+
+### 2. Signatures
+- `window.caffShell` bus: `openTab(panelId)`, `releaseTab(panelId)`,
+  `closeDrawer()`, `isDrawerOpen()`, `activeTab()`, `onChange(cb)`,
+  `setTabVisible(panelId, visible, {count})`, `scrollToBottom()`.
+- Drawer tabs: 6 always-visible (participants/goal/memory/summary/settings/
+  context) + 2 conditional (game/drafts) driven by feature visibility.
+- Panel modules sync open-state via `caffShell.onChange`; shell-driven changes
+  arrive with `{ fromShell: true }` semantics.
+
+### 3. Contracts
+- Scroll skeleton: `body.chat-app` overflow hidden, `.app-shell` = 100dvh,
+  message-list is the only long scroll region; header/composer never scroll out.
+- Focus ownership: the shell owns tab/drawer focus (APG roving tabindex).
+  Panel modules must never write focus when opened `fromShell`; they may only
+  focus their own inputs on direct user action.
+- Conditional tab disappearance: snapshot focus BEFORE writing `hidden` (the
+  browser drops focus to BODY the moment the attribute lands); fallback to the
+  first visible tab in BOTH drawer-open and drawer-closed states; migrate focus
+  to the fallback tab only when the drawer is open and focus was inside the
+  hidden tab/panel.
+- Closed-state exit: closed drawer/sidebar write `inert` + `aria-hidden`
+  together; narrow-sidebar open is modal with inert background.
+- Panel controller startup must depend only on its own panel DOM, never on
+  legacy chrome (old header buttons/floating balls) removed by the AppShell.
+- Conversation list renders `ul > li > button.conversation-item`; do not
+  reintroduce non-focusable div items.
+- Touch targets: ALL interactive elements ≥44px (full sweep, not sampling):
+  rail, header buttons, tabs, tool-trace toggle, timeline retry, settings
+  checkbox labels, send/stop, new-message pill.
+- ≤480px header: `.runtime-pill`/`#conversation-meta` must be shrinkable
+  (`min-width:0` + ellipsis) and `#conversation-meta` is hidden; status text
+  overlapping header buttons by >1px is a regression.
+
+### 4. Validation & Error Matrix
+| Case | Expected behavior |
+| --- | --- |
+| Goal tab opened from shell | Form/events bound, no focus steal into objective |
+| Active conditional tab hidden while drawer open | Focus lands on fallback tab, panel hidden |
+| Current conditional tab hidden while drawer closed | Reopen shows exactly one visible selected tab, no hidden active panel |
+| 375/320px header with long runtime text | No rect intersection with refresh/drawer buttons |
+| Keyboard-only session switch | Tab reaches `button.conversation-item`, Enter loads room |
+
+### 5. Tests Required
+- `tests/ui/app-shell.test.js` (jsdom, part of `test:fast`) locks controller
+  startup, focus ownership, list semantics, and both conditional-tab states.
+- `scripts/verify-ui.mjs` (`npm run test:ui`, Playwright/Edge against a running
+  dev server) locks layout-level contracts: full 44px sweep, 375/320 header
+  overlap, real-browser focus migration, keyboard room switching.
+- `npm run check` includes `public/shell/app-shell.js`.
+
 ## Cross-Layer Watch Points
 
 - UI payload expectations must stay aligned with controller and domain output.

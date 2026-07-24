@@ -43,7 +43,7 @@
       dom.conversationList.innerHTML = '';
 
       if (state.conversations.length === 0) {
-        const empty = document.createElement('div');
+        const empty = document.createElement('li');
         empty.className = 'empty-state';
         empty.textContent = '还没有会话，先创建一个。';
         dom.conversationList.appendChild(empty);
@@ -51,7 +51,11 @@
       }
 
       state.conversations.forEach((conversation) => {
-        const item = document.createElement('div');
+        const row = document.createElement('li');
+        row.className = 'conversation-list-row';
+
+        const item = document.createElement('button');
+        item.type = 'button';
         item.className = 'conversation-item';
         item.dataset.id = conversation.id;
         item.classList.toggle('active', conversation.id === state.selectedConversationId);
@@ -96,7 +100,8 @@
 
         footer.append(updated, participants);
         item.append(titleLine, preview, footer);
-        dom.conversationList.appendChild(item);
+        row.appendChild(item);
+        dom.conversationList.appendChild(row);
       });
 
       dom.conversationList.scrollTop = previousScrollTop;

@@ -526,6 +526,12 @@ textarea {
   gap: 0.75rem;
 }
 
+.conversation-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
 .conversation-list,
 .agent-list,
 .message-list,
@@ -568,15 +574,25 @@ textarea {
 }
 
 .conversation-item {
+  display: block;
+  width: 100%;
   padding: 0.95rem 1rem;
   border-radius: var(--radius-md);
   background: rgba(255, 255, 255, 0.56);
   border: 1px solid rgba(34, 49, 63, 0.08);
   cursor: pointer;
+  font: inherit;
+  color: inherit;
+  text-align: left;
   transition:
     transform 160ms ease,
     border-color 160ms ease,
     background 160ms ease;
+}
+
+.conversation-item:focus-visible {
+  outline: 2px solid rgba(239, 125, 87, 0.65);
+  outline-offset: 2px;
 }
 
 .conversation-item:hover {
@@ -1204,6 +1220,10 @@ textarea {
 .message-tool-trace-toggle {
   flex: 0 0 auto;
   align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
   padding: 0.32rem 0.8rem;
   border-radius: 999px;
   font-size: 0.76rem;
@@ -1905,6 +1925,7 @@ textarea {
   display: flex;
   align-items: flex-start;
   gap: 0.7rem;
+  min-height: 44px;
   cursor: pointer;
   font-weight: 600;
 }
@@ -2682,6 +2703,8 @@ textarea {
 }
 
 .compact-icon-button {
+  min-width: 44px;
+  min-height: 44px;
   padding: 0.45rem 0.65rem;
   font-size: 0.8rem;
 }
@@ -3236,16 +3259,24 @@ body.chat-app .chat-header .status-line {
   align-items: center;
   gap: var(--caff-space-2);
   min-width: 0;
+  flex: 1;
+  overflow: hidden;
   font-size: 12.5px;
 }
 
 body.chat-app .chat-header .runtime-pill {
+  min-width: 0;
+  flex-shrink: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
   padding: 0.15rem 0.6rem;
   font-size: 12px;
   white-space: nowrap;
 }
 
 body.chat-app .chat-header #conversation-meta {
+  min-width: 0;
+  flex: 1;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3542,6 +3573,10 @@ body.chat-app .drawer-panel {
 
 @media (max-width: 480px) {
   body.chat-app .chat-header .mode-pill {
+    display: none;
+  }
+
+  body.chat-app .chat-header #conversation-meta {
     display: none;
   }
 }

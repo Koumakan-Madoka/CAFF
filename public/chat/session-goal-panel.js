@@ -41,7 +41,7 @@
         }
       }
 
-      if (isOpen && dom.sessionGoalObjective) {
+      if (isOpen && !options.fromShell && dom.sessionGoalObjective) {
         window.setTimeout(() => dom.sessionGoalObjective && dom.sessionGoalObjective.focus(), 0);
       }
     }
@@ -255,7 +255,7 @@
     }
 
     function render() {
-      if (!dom.sessionGoalDrawer || (!dom.sessionGoalToggleButton && !dom.sessionGoalEdgeButton)) {
+      if (!dom.sessionGoalDrawer) {
         return;
       }
 
@@ -302,7 +302,7 @@
     }
 
     function bindEvents() {
-      if (!dom.sessionGoalDrawer || (!dom.sessionGoalToggleButton && !dom.sessionGoalEdgeButton)) {
+      if (!dom.sessionGoalDrawer) {
         return;
       }
 
