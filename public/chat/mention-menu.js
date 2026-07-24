@@ -185,7 +185,10 @@
       const nextValue = `${currentValue.slice(0, context.start)}${mentionText}${currentValue.slice(context.end)}`;
       const nextCursor = context.start + mentionText.length;
 
-      dom.composerInput.value = nextValue;
+      if (!window.caffShell || typeof window.caffShell.setComposerValue !== 'function') {
+        throw new Error('caffShell.setComposerValue helper is required');
+      }
+      window.caffShell.setComposerValue(nextValue);
       dom.composerInput.focus();
       dom.composerInput.setSelectionRange(nextCursor, nextCursor);
       closeMenu();

@@ -81,14 +81,17 @@
           <button id="skill-draft-alert-button" class="secondary-button" type="button">查看草稿</button>
         </div>
 
-        <div id="message-list" class="message-list" role="log" tabindex="0" aria-live="polite" aria-label="消息列表">
-          <div id="message-history-control" class="message-history-control hidden">
-            <button id="message-history-button" class="ghost-button message-history-button" type="button">
-              加载更早消息
-            </button>
-            <span id="message-history-status" class="muted" role="status" aria-live="polite"></span>
+        <div class="message-viewport">
+          <div id="message-list" class="message-list" role="log" tabindex="0" aria-live="polite" aria-label="消息列表">
+            <div id="message-history-control" class="message-history-control hidden">
+              <button id="message-history-button" class="ghost-button message-history-button" type="button">
+                加载更早消息
+              </button>
+              <span id="message-history-status" class="muted" role="status" aria-live="polite"></span>
+            </div>
+            <div id="message-timeline" class="message-timeline"></div>
           </div>
-          <div id="message-timeline" class="message-timeline"></div>
+          <button id="new-message-pill" class="new-msg-pill" type="button" aria-label="跳到最新消息" hidden>↓ 新消息</button>
         </div>
 
         <form id="composer-form" class="composer">

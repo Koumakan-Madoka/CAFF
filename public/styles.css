@@ -3312,12 +3312,20 @@ body.chat-app .skill-draft-alert {
 }
 
 /* ── Message list（唯一长滚动区） ── */
+body.chat-app .message-viewport {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
 body.chat-app .message-list {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   display: grid;
   grid-template-columns: minmax(0, 780px);
+  grid-auto-rows: max-content;
   justify-content: center;
   align-content: start;
   gap: var(--caff-space-4);
@@ -3326,9 +3334,10 @@ body.chat-app .message-list {
 }
 
 body.chat-app .new-msg-pill {
-  position: sticky;
+  position: absolute;
+  left: 50%;
   bottom: var(--caff-space-3);
-  margin: 0 auto;
+  transform: translateX(-50%);
   width: max-content;
   display: inline-flex;
   align-items: center;

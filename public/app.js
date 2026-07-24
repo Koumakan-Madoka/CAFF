@@ -208,6 +208,13 @@ const dom = {
 
 const toast = typeof shared.createToastController === 'function' ? shared.createToastController(dom.toast) : { show() {} };
 
+function setComposerValue(value) {
+  if (!window.caffShell || typeof window.caffShell.setComposerValue !== 'function') {
+    throw new Error('caffShell.setComposerValue helper is required');
+  }
+  window.caffShell.setComposerValue(value);
+}
+
 let pendingConversationRefreshId = null;
 let pendingConversationRefreshTimer = null;
 let conversationPaneRenderPending = false;
@@ -4081,7 +4088,7 @@ function bindEvents() {
     if (goalCommand) {
       try {
         await submitGoalCommand(conversationId, goalCommand);
-        dom.composerInput.value = '';
+        setComposerValue('');
         closeMentionMenu();
       } catch (error) {
         showToast(error.message);
@@ -4094,7 +4101,7 @@ function bindEvents() {
     if (digestCommand) {
       try {
         await submitDigestCommand(conversationId, digestCommand);
-        dom.composerInput.value = '';
+        setComposerValue('');
         closeMentionMenu();
       } catch (error) {
         showToast(error.message);
@@ -4107,7 +4114,7 @@ function bindEvents() {
     if (summaryMemoryCommand) {
       try {
         await submitSummaryMemoryCommand(summaryMemoryCommand);
-        dom.composerInput.value = '';
+        setComposerValue('');
         closeMentionMenu();
       } catch (error) {
         showToast(error.message);
@@ -4118,7 +4125,7 @@ function bindEvents() {
 
     const clientRequestId = createClientRequestId();
     const shouldStickToBottom = isMessageListNearBottom();
-    dom.composerInput.value = '';
+    setComposerValue('');
     closeMentionMenu();
     applyOptimisticUserMessage(conversationId, content, clientRequestId);
     renderConversationPane();
@@ -4172,7 +4179,7 @@ function bindEvents() {
       clearOptimisticUserMessage(conversationId, clientRequestId);
 
       if (state.selectedConversationId === conversationId && !dom.composerInput.value.trim()) {
-        dom.composerInput.value = content;
+        setComposerValue(content);
       }
 
       showToast(error.message);

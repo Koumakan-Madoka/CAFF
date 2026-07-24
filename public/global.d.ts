@@ -103,6 +103,8 @@ declare global {
     onChange: (cb: (payload: CaffShellChangePayload) => void) => () => void;
     setTabVisible: (panelId: string, visible: boolean, options?: { count?: number }) => void;
     scrollToBottom: (smooth?: boolean) => void;
+    syncComposerHeight: () => void;
+    setComposerValue: (value: unknown) => void;
   };
 
   interface Window {

@@ -4,6 +4,9 @@
 // - shell owns tab/drawer focus; panel modules never grab focus when fromShell
 // - conversation list renders ul > li > button (keyboard operable)
 // - conditional tab disappearance closes the state machine in both drawer states
+// - shell-owned new-message affordance survives renderer replacement and ignores trace-only mutations
+// - programmatic composer changes share one height-synchronizing setter
+// - active mock truth matches the v5 6-permanent + 2-conditional tab IA
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -14,6 +17,8 @@ const { JSDOM } = require('jsdom');
 
 const ROOT = path.join(__dirname, '..', '..');
 const INDEX_HTML = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
+const MOCK_HTML = fs.readFileSync(path.join(ROOT, 'designs', 'mock-app-shell-a.html'), 'utf8');
+const BRIEF_MD = fs.readFileSync(path.join(ROOT, 'designs', 'caff-ui-redesign-brief.md'), 'utf8');
 
 function readPublic(rel) {
   return fs.readFileSync(path.join(ROOT, 'public', rel), 'utf8');
@@ -61,6 +66,30 @@ function bootShell() {
   installPolyfills(window);
   window.eval(readPublic('shell/app-shell.js'));
   return { dom, window, document: window.document };
+}
+
+function setScrollBox(window, list, { scrollTop = 0, clientHeight = 200, scrollHeight = 1000 } = {}) {
+  Object.defineProperty(list, 'clientHeight', { configurable: true, value: clientHeight });
+  Object.defineProperty(list, 'scrollHeight', { configurable: true, value: scrollHeight });
+  list.scrollTop = scrollTop;
+  list.dispatchEvent(new window.Event('scroll'));
+}
+
+function messageCard(document, id) {
+  const card = document.createElement('article');
+  card.className = 'message-card assistant';
+  card.dataset.messageId = id;
+  card.innerHTML = '<div class="message-body"><p>message</p><div class="message-tool-trace"></div></div>';
+  return card;
+}
+
+function pillIsVisible(document) {
+  const pill = document.querySelector('.new-msg-pill');
+  return Boolean(pill && !pill.hidden);
+}
+
+async function flushMutations() {
+  await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 function sessionGoalUtilsStub() {
@@ -228,4 +257,135 @@ test('conditional tab hidden while drawer closed: reopen leaves no hidden active
   const visibleSelected = Array.from(document.querySelectorAll('.drawer-tabs [role="tab"]'))
     .filter((tab) => !tab.hidden && tab.getAttribute('aria-selected') === 'true');
   assert.equal(visibleSelected.length, 1, 'exactly one visible tab must be selected');
+});
+
+test('new-message pill stays outside renderer ownership and survives consecutive replacements', async () => {
+  const { window, document } = bootShell();
+  const list = document.getElementById('message-list');
+  setScrollBox(window, list, { scrollTop: 0 });
+
+  list.appendChild(messageCard(document, 'm-1'));
+  await flushMutations();
+
+  const pill = document.querySelector('.new-msg-pill');
+  assert.equal(pillIsVisible(document), true, 'first new message while off-bottom must show the pill');
+  assert.equal(list.contains(pill), false, 'shell-owned pill must live outside the renderer-owned message list');
+
+  list.replaceChildren(messageCard(document, 'm-1'));
+  await flushMutations();
+  Object.defineProperty(list, 'scrollHeight', { configurable: true, value: 200 });
+  list.dispatchEvent(new window.Event('scroll'));
+  assert.equal(pillIsVisible(document), true, 'renderer replacement must not delete the shell-owned pill');
+
+  setScrollBox(window, list, { scrollTop: 800, scrollHeight: 1000 });
+  assert.equal(pillIsVisible(document), false, 'returning to the bottom clears the pill');
+
+  setScrollBox(window, list, { scrollTop: 0 });
+  list.replaceChildren(messageCard(document, 'm-1'), messageCard(document, 'm-2'));
+  await flushMutations();
+  assert.equal(pillIsVisible(document), true, 'a later message id must show the pill after replacement');
+});
+
+test('tool-trace subtree mutations do not masquerade as new messages', async () => {
+  const { window, document } = bootShell();
+  const list = document.getElementById('message-list');
+  const card = messageCard(document, 'm-1');
+  list.appendChild(card);
+  await flushMutations();
+
+  setScrollBox(window, list, { scrollTop: 0 });
+  const trace = card.querySelector('.message-tool-trace');
+  trace.appendChild(document.createElement('button'));
+  await flushMutations();
+
+  assert.equal(pillIsVisible(document), false, 'trace-only DOM changes must not create a new-message signal');
+});
+
+test('programmatic composer clear and restore both recalculate height through the shell setter', () => {
+  const { window, document } = bootShell();
+  const input = document.getElementById('composer-input');
+  Object.defineProperty(input, 'scrollHeight', {
+    configurable: true,
+    get() {
+      return input.value.length > 100 ? 240 : 44;
+    },
+  });
+
+  assert.equal(typeof window.caffShell.setComposerValue, 'function', 'shell must expose the shared programmatic setter');
+  window.caffShell.setComposerValue('x'.repeat(200));
+  assert.equal(input.style.height, '160px');
+  window.caffShell.setComposerValue('');
+  assert.equal(input.style.height, '44px', 'successful clear must collapse the composer');
+  window.caffShell.setComposerValue('y'.repeat(200));
+  assert.equal(input.style.height, '160px', 'failure restore must expand the composer again');
+});
+
+test('app and mention-menu composer writes use the shell setter', () => {
+  const appSource = readPublic('app.js');
+  const mentionSource = readPublic('chat/mention-menu.js');
+
+  assert.doesNotMatch(appSource, /dom\.composerInput\.value\s*=/, 'app.js must not bypass the shared setter');
+  assert.doesNotMatch(mentionSource, /dom\.composerInput\.value\s*=/, 'mention-menu must not bypass the shared setter');
+  assert.match(appSource, /setComposerValue\(/, 'app.js must route programmatic writes through one helper');
+  assert.match(mentionSource, /caffShell\.setComposerValue\(/, 'mention insertion must resync composer height');
+});
+
+test('v5 mock exposes six permanent and two conditional drawer tabs', () => {
+  const dom = new JSDOM(MOCK_HTML);
+  const { document } = dom.window;
+  const tabs = Array.from(document.querySelectorAll('.drawer-tabs [role="tab"]'));
+  assert.deepEqual(
+    tabs.map((tab) => tab.textContent.trim()),
+    ['参与者', '目标', '记忆', '摘要', '设置', '游戏', '草稿', '上下文'],
+  );
+
+  const conditionalIds = tabs
+    .filter((tab) => tab.dataset.visibility === 'conditional')
+    .map((tab) => tab.id);
+  assert.deepEqual(conditionalIds, ['tab-game', 'tab-drafts']);
+  tabs.forEach((tab) => {
+    assert.ok(document.getElementById(tab.getAttribute('aria-controls')), `${tab.id} must own a real panel`);
+  });
+});
+
+test('test:ui is repository-owned and starts an isolated app by default', () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+  const runner = fs.readFileSync(path.join(ROOT, 'scripts', 'verify-ui.mjs'), 'utf8');
+
+  assert.ok(pkg.devDependencies && pkg.devDependencies['playwright-core'], 'playwright-core must be a declared devDependency');
+  assert.match(pkg.scripts['test:ui'], /npm run build/, 'clean checkout test:ui must build before launching');
+  assert.match(runner, /CAFF_DISABLE_ENV_LOCAL:\s*'1'/);
+  assert.match(runner, /PI_SQLITE_PATH/);
+  assert.match(runner, /CHAT_APP_PORT/);
+  assert.match(runner, /windowsHide:\s*true/);
+  assert.doesNotMatch(runner, /localhost:3210/, 'default test gate must not target a mutable fixed-port service');
+});
+
+test('test:ui evidence stays bounded and includes a browser walkthrough video', () => {
+  const runner = fs.readFileSync(path.join(ROOT, 'scripts', 'verify-ui.mjs'), 'utf8');
+  const screenshotNames = new Set(runner.match(/ui-v2-[\w-]+\.png/g) || []);
+
+  assert.ok(screenshotNames.size > 0 && screenshotNames.size <= 3, 'quality-gate evidence must contain at most three screenshots');
+  assert.match(runner, /recordVideo\s*:/, 'browser walkthrough must use Playwright video capture');
+  assert.match(runner, /ui-v2-walkthrough\.webm/, 'walkthrough video must have a stable evidence filename');
+  assert.match(runner, /renderEvidenceConversation\(/, 'screenshots must render a deterministic long-conversation state');
+  assert.match(runner, /toast\.classList\.add\('hidden'\)/, 'expected-failure toast must be cleared before screenshots');
+});
+
+test('test:ui rejects non-loopback mutation targets and surfaces emergency cleanup failures', () => {
+  const runner = fs.readFileSync(path.join(ROOT, 'scripts', 'verify-ui.mjs'), 'utf8');
+
+  assert.match(runner, /assertLoopbackTarget\(/, 'explicit app overrides must remain local-only');
+  assert.match(runner, /emergencyCleanupRun\(/, 'aborted runs must clean all run-owned conversations');
+  assert.doesNotMatch(
+    runner,
+    /deleteVerificationConversation\(APP, baselineConversationId\)\.catch\(\(\) => \{\}\)/,
+    'verification conversation cleanup must never fail open',
+  );
+});
+
+test('active design brief records the frozen v5 implementation-review state', () => {
+  assert.doesNotMatch(BRIEF_MD, /^status:.*待 Gate #2.*$/m);
+  assert.match(BRIEF_MD, /^status:.*v5.*implementation review.*$/m);
+  assert.match(BRIEF_MD, /Gate #2 APPROVED/);
 });

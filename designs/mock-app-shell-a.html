@@ -513,6 +513,9 @@ body[data-state="long"] .state-long { display: flex; flex-direction: column; gap
       <button role="tab" id="tab-memory" aria-controls="panel-memory" aria-selected="false" tabindex="-1">记忆</button>
       <button role="tab" id="tab-summary" aria-controls="panel-summary" aria-selected="false" tabindex="-1">摘要</button>
       <button role="tab" id="tab-settings" aria-controls="panel-settings" aria-selected="false" tabindex="-1">设置</button>
+      <button role="tab" id="tab-game" aria-controls="panel-game" aria-selected="false" tabindex="-1" data-visibility="conditional">游戏</button>
+      <button role="tab" id="tab-drafts" aria-controls="panel-drafts" aria-selected="false" tabindex="-1" data-visibility="conditional" hidden>草稿</button>
+      <button role="tab" id="tab-context" aria-controls="panel-context" aria-selected="false" tabindex="-1">上下文</button>
     </div>
     <div class="drawer-body">
       <div role="tabpanel" id="panel-participants" aria-labelledby="tab-participants">
@@ -537,6 +540,18 @@ body[data-state="long"] .state-long { display: flex; flex-direction: column; gap
         <div class="setting-row"><span>新消息提示音</span><button aria-pressed="true">开</button></div>
         <div class="setting-row"><span>自动滚动到底</span><button aria-pressed="true">开</button></div>
         <div class="setting-row"><span>人格发言间隔</span><button aria-pressed="false">3s</button></div>
+      </div>
+      <div role="tabpanel" id="panel-game" aria-labelledby="tab-game" hidden>
+        <div class="goal-item">🐺 狼人杀 · 第 2 轮白天讨论</div>
+        <p class="panel-note">游戏 tab 仅在卧底/狼人杀房间出现，承载主持状态与局内操作。</p>
+      </div>
+      <div role="tabpanel" id="panel-drafts" aria-labelledby="tab-drafts" hidden>
+        <div class="memory-item">有待确认 Skill 草稿时显示此 tab。</div>
+        <p class="panel-note">没有草稿时，tab 与 panel 一起退出顺序焦点和可见 IA。</p>
+      </div>
+      <div role="tabpanel" id="panel-context" aria-labelledby="tab-context" hidden>
+        <div class="memory-item">当前消息的 agent context 快照与导出入口。</div>
+        <p class="panel-note">上下文是常显 tab；未选择 AI 消息时展示引导空态。</p>
       </div>
     </div>
   </aside>
@@ -654,7 +669,9 @@ function syncSidebarMedia() {
 mqDesktop.addEventListener('change', syncSidebarMedia);
 
 const tabs = Array.from(document.querySelectorAll('.drawer-tabs [role="tab"]'));
+const visibleTabs = () => tabs.filter(tab => !tab.hidden);
 function activateTab(tab, { focus = true } = {}) {
+  if (!tab || tab.hidden) return;
   tabs.forEach(t => {
     const on = t === tab;
     t.setAttribute('aria-selected', String(on));
@@ -665,14 +682,15 @@ function activateTab(tab, { focus = true } = {}) {
 }
 tabs.forEach(t => t.addEventListener('click', () => activateTab(t, { focus: false })));
 document.querySelector('.drawer-tabs').addEventListener('keydown', (e) => {
-  const i = tabs.indexOf(document.activeElement);
+  const available = visibleTabs();
+  const i = available.indexOf(document.activeElement);
   if (i < 0) return;
   let j = null;
-  if (e.key === 'ArrowRight') j = (i + 1) % tabs.length;
-  else if (e.key === 'ArrowLeft') j = (i - 1 + tabs.length) % tabs.length;
+  if (e.key === 'ArrowRight') j = (i + 1) % available.length;
+  else if (e.key === 'ArrowLeft') j = (i - 1 + available.length) % available.length;
   else if (e.key === 'Home') j = 0;
-  else if (e.key === 'End') j = tabs.length - 1;
-  if (j !== null) { e.preventDefault(); activateTab(tabs[j]); }
+  else if (e.key === 'End') j = available.length - 1;
+  if (j !== null) { e.preventDefault(); activateTab(available[j]); }
 });
 
 function scrollToBottom(smooth = true) {

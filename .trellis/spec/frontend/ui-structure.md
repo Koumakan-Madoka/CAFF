@@ -91,7 +91,8 @@
 ### 2. Signatures
 - `window.caffShell` bus: `openTab(panelId)`, `releaseTab(panelId)`,
   `closeDrawer()`, `isDrawerOpen()`, `activeTab()`, `onChange(cb)`,
-  `setTabVisible(panelId, visible, {count})`, `scrollToBottom()`.
+  `setTabVisible(panelId, visible, {count})`, `scrollToBottom()`,
+  `syncComposerHeight()`, `setComposerValue(value)`.
 - Drawer tabs: 6 always-visible (participants/goal/memory/summary/settings/
   context) + 2 conditional (game/drafts) driven by feature visibility.
 - Panel modules sync open-state via `caffShell.onChange`; shell-driven changes
@@ -100,6 +101,8 @@
 ### 3. Contracts
 - Scroll skeleton: `body.chat-app` overflow hidden, `.app-shell` = 100dvh,
   message-list is the only long scroll region; header/composer never scroll out.
+- Message rows keep intrinsic height (`grid-auto-rows: max-content`); a fixed
+  viewport must create overflow, never compress card tracks and clip bodies.
 - Focus ownership: the shell owns tab/drawer focus (APG roving tabindex).
   Panel modules must never write focus when opened `fromShell`; they may only
   focus their own inputs on direct user action.
@@ -117,6 +120,18 @@
 - Touch targets: ALL interactive elements ≥44px (full sweep, not sampling):
   rail, header buttons, tabs, tool-trace toggle, timeline retry, settings
   checkbox labels, send/stop, new-message pill.
+- Renderer ownership: `#message-list` contains renderer-owned message/empty-state
+  nodes only. The shell-owned new-message pill is a sibling overlay in
+  `.message-viewport`; never append shell chrome inside `#message-list`.
+- New-message semantics come from direct-child `.message-card[data-message-id]`
+  set differences. Do not use `subtree:true` DOM mutation as a proxy for a new
+  message: tool-trace expansion and streaming card internals are not messages.
+- A visible new-message pill means the reader is explicitly unpinned. Renderer
+  replacement/layout scroll events must not clear it; clear only when the reader
+  moves down to the bottom or activates the pill.
+- Programmatic composer clear/restore/insertion must call
+  `caffShell.setComposerValue(value)`. Direct `.value =` writes in `app.js` or
+  mention-menu bypass height synchronization and are forbidden.
 - ≤480px header: `.runtime-pill`/`#conversation-meta` must be shrinkable
   (`min-width:0` + ellipsis) and `#conversation-meta` is hidden; status text
   overlapping header buttons by >1px is a regression.
@@ -129,14 +144,56 @@
 | Current conditional tab hidden while drawer closed | Reopen shows exactly one visible selected tab, no hidden active panel |
 | 375/320px header with long runtime text | No rect intersection with refresh/drawer buttons |
 | Keyboard-only session switch | Tab reaches `button.conversation-item`, Enter loads room |
+| Renderer replaces all message cards while pill is visible | Pill remains visible outside `#message-list`; a later unseen message id can show it again |
+| Long conversation exceeds the viewport | Message bodies stay inside their cards while the list gains scroll overflow |
+| Tool trace expands inside an existing card | No new-message pill is created |
+| Composer succeeds after a tall command | Value clears and height returns to the one-row baseline |
+| Failed send restores a tall message | Original value and tall height are both restored |
+| `npm run test:ui` in a development checkout | Builds assets, starts a unique localhost port with temporary SQLite and `.env.local` disabled, then deletes all run-owned conversations |
+| `CAFF_VERIFY_APP` override | Rejects non-loopback targets before creating or deleting conversations |
+| Browser evidence bundle | At most 3 screenshots plus one approximately 15-second walkthrough video, all under the temporary run directory |
 
 ### 5. Tests Required
 - `tests/ui/app-shell.test.js` (jsdom, part of `test:fast`) locks controller
-  startup, focus ownership, list semantics, and both conditional-tab states.
-- `scripts/verify-ui.mjs` (`npm run test:ui`, Playwright/Edge against a running
-  dev server) locks layout-level contracts: full 44px sweep, 375/320 header
-  overlap, real-browser focus migration, keyboard room switching.
+  startup, focus ownership, list semantics, both conditional-tab states,
+  renderer replacement, trace-only mutations, composer synchronization, v5
+  mock IA, and the self-contained runner contract.
+- `scripts/verify-ui.mjs` (`npm run test:ui`, repo-owned Playwright/Edge) starts
+  its own dynamic-port app with `CAFF_DISABLE_ENV_LOCAL=1`, a temporary
+  `PI_SQLITE_PATH`, and a unique run id. It locks layout/focus behavior, full
+  44px sweep, 375/320 header overlap, keyboard room switching, composer
+  clear/restore, renderer replacement, DELETE success, and zero run residue.
+  Explicit targets are loopback-only; emergency cleanup reports failures rather
+  than swallowing them. The same run writes no more than three screenshots and
+  one walkthrough video to its temporary evidence directory.
 - `npm run check` includes `public/shell/app-shell.js`.
+
+### 6. Good / Base / Bad Cases
+
+- Good: renderer replaces the complete card list while the reader is off-bottom;
+  the sibling pill stays visible and tool-trace expansion does nothing to it.
+- Base: new direct-child message id arrives while pinned; the list follows the
+  bottom without showing a pill.
+- Bad: shell chrome is inserted into `#message-list`, or any subtree addition is
+  interpreted as a message.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```js
+messageList.appendChild(pill);
+observer.observe(messageList, { childList: true, subtree: true });
+composerInput.value = restoredText;
+```
+
+#### Correct
+
+```js
+messageViewport.appendChild(pill); // sibling of renderer-owned list
+observer.observe(messageList, { childList: true });
+window.caffShell.setComposerValue(restoredText);
+```
 
 ## Cross-Layer Watch Points
 

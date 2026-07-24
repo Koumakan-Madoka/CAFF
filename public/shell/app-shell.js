@@ -1,6 +1,6 @@
 // @ts-check
 // CAFF 工作台 AppShell 控制器：固定视口 + 会话侧栏 + 统一上下文抽屉。
-// 交互契约锚定 designs/mock-app-shell-a.html (v4 冻结, SHA256 25447836…F3356F)。
+// 交互契约锚定 designs/mock-app-shell-a.html 与 brief §8.8（v5）。
 
 (function registerAppShell() {
   const body = document.body;
@@ -19,8 +19,9 @@
   const drawerClose = document.getElementById('drawerClose');
   const drawerOverlay = document.getElementById('drawerOverlay');
   const list = document.getElementById('message-list');
+  const pill = /** @type {HTMLButtonElement | null} */ (document.getElementById('new-message-pill'));
 
-  if (!appShell || !sidebar || !sidebarToggle || !drawer || !drawerToggle || !list) {
+  if (!appShell || !sidebar || !sidebarToggle || !drawer || !drawerToggle || !list || !pill) {
     return;
   }
 
@@ -255,8 +256,15 @@
   mqDesktop.addEventListener('change', syncSidebarMedia);
 
   // ── 滚动锚定 + 新消息 pill（mock v4 契约） ───────────────────
-  let pill = null;
   let pinnedToBottom = true;
+  let lastScrollTop = list.scrollTop;
+  let renderedMessageIds = new Set(messageIds());
+
+  function messageIds() {
+    return Array.from(list.children)
+      .map((node) => node instanceof HTMLElement ? String(node.dataset.messageId || '').trim() : '')
+      .filter(Boolean);
+  }
 
   function nearBottom() {
     return list.scrollTop + list.clientHeight >= list.scrollHeight - 60;
@@ -269,60 +277,73 @@
   }
 
   function clearPill() {
-    if (pill) {
-      pill.remove();
-      pill = null;
-    }
+    pill.hidden = true;
   }
 
   function showPill() {
-    if (pill) {
-      return;
-    }
-    pill = document.createElement('button');
-    pill.type = 'button';
-    pill.className = 'new-msg-pill';
-    pill.textContent = '↓ 新消息';
-    pill.addEventListener('click', () => {
-      scrollToBottom();
-      clearPill();
-    });
-    list.appendChild(pill);
+    pill.hidden = false;
   }
 
-  list.addEventListener('scroll', () => {
-    pinnedToBottom = nearBottom();
-    if (pill && pinnedToBottom) {
-      clearPill();
-    }
+  pill.addEventListener('click', () => {
+    scrollToBottom();
+    clearPill();
   });
 
-  const mutationObserver = new MutationObserver((mutations) => {
-    const addedNodes = mutations.some((m) => m.addedNodes.length > 0);
-    if (!addedNodes) {
+  list.addEventListener('scroll', () => {
+    const nextScrollTop = list.scrollTop;
+    const atBottom = nearBottom();
+    const movedTowardBottom = nextScrollTop > lastScrollTop;
+    if (!pill.hidden) {
+      if (atBottom && movedTowardBottom) {
+        clearPill();
+        pinnedToBottom = true;
+      } else {
+        // Renderer replacement may transiently shrink the scroll range without
+        // user intent. A visible pill keeps the reader explicitly unpinned.
+        pinnedToBottom = false;
+      }
+    } else {
+      pinnedToBottom = atBottom;
+    }
+    lastScrollTop = nextScrollTop;
+  });
+
+  const mutationObserver = new MutationObserver(() => {
+    const nextMessageIds = new Set(messageIds());
+    const addedMessageIds = Array.from(nextMessageIds).filter((id) => !renderedMessageIds.has(id));
+    renderedMessageIds = nextMessageIds;
+    if (addedMessageIds.length === 0) {
       return;
     }
     if (pinnedToBottom) {
       scrollToBottom(false);
-    } else if (pill === null || !list.contains(pill)) {
-      // 忽略 pill 自身插入引起的 mutation
-      const onlyPill = mutations.every((m) =>
-        Array.from(m.addedNodes).every((node) => node === pill)
-      );
-      if (!onlyPill) {
-        showPill();
-      }
+    } else {
+      showPill();
     }
   });
-  mutationObserver.observe(list, { childList: true, subtree: true });
+  mutationObserver.observe(list, { childList: true });
 
   // ── Composer 自动增高（max 160px，mock 契约） ────────────────
-  const composerInput = document.getElementById('composer-input');
+  const composerInput = /** @type {HTMLTextAreaElement | null} */ (document.getElementById('composer-input'));
+  function syncComposerHeight() {
+    if (!composerInput) {
+      return;
+    }
+    composerInput.style.height = 'auto';
+    composerInput.style.height = Math.min(composerInput.scrollHeight, 160) + 'px';
+  }
+
+  function setComposerValue(value) {
+    if (!composerInput) {
+      return;
+    }
+    composerInput.value = String(value ?? '');
+    syncComposerHeight();
+  }
+
   if (composerInput) {
-    composerInput.addEventListener('input', () => {
-      composerInput.style.height = 'auto';
-      composerInput.style.height = Math.min(composerInput.scrollHeight, 160) + 'px';
-    });
+    composerInput.addEventListener('input', syncComposerHeight);
+    syncComposerHeight();
   }
 
   // ── Rail 设置入口 ────────────────────────────────────────────
@@ -397,6 +418,8 @@
       }
     },
     scrollToBottom,
+    syncComposerHeight,
+    setComposerValue,
   };
   window.caffShell = shellApi;
 

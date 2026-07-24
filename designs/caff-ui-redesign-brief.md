@@ -4,12 +4,12 @@ feature_ids: [TBD-caff-ui-redesign]
 topics: [ui-redesign, ia, workbench, scroll-model, design-tokens]
 created: 2026-07-23
 author: 烁烁 (k3)
-status: phase-2-hifi · 待 Gate #2 审查（砚砚：可访问性+滚动边界）
+status: v5 frozen · implementation review
 ---
 
 # CAFF 整体 UI 重设计 · Phase 1 设计简报
 
-> 范围：现状审计 + IA 方向 + 低保真 wireframe。不写实现代码，不动 `public/`。
+> 原设计阶段范围：现状审计 + IA + 高保真 fixture；当前 v5 已冻结，方向 A 的 Milestone 1 实现处于跨个体 review。
 > 基线证据：`designs/baseline-desktop-1440.png`、`designs/baseline-narrow-820.png`
 
 ---
@@ -197,12 +197,10 @@ Clowder 验证过的生产型布局，适合 CAFF 高频的会话切换/人格�
 | 文件 | 说明 |
 |---|---|
 | `designs/mock-app-shell-a.html` | 高保真 mock，响应式 + 全部关键状态可切换（演示工具栏；`#clean` 隐藏） |
-| `designs/mock-final-1440-long.png` | 桌面长对话（tool trace 内联折叠） |
-| `designs/mock-final-1440-drawer.png` | 桌面 + 上下文抽屉（5 tab，focus 入抽屉） |
-| `designs/mock-final-1440-error.png` | 失败恢复（消息级错误卡 + 重试） |
-| `designs/mock-final-1440-empty.png` | 空态引导卡 |
-| `designs/mock-final-375.png` | 手机（rail 沉底、单栏、气泡 78% 限宽） |
-| `designs/_frame-375.html` | 375 视口模拟 iframe 壳（截图用，非设计产物） |
+| `${TMPDIR}/caff-ui-verify/<run-id>/ui-v2-1440-long.png` | 实现证据：桌面长对话 |
+| `${TMPDIR}/caff-ui-verify/<run-id>/ui-v2-1440-drawer-goal.png` | 实现证据：桌面上下文抽屉 |
+| `${TMPDIR}/caff-ui-verify/<run-id>/ui-v2-375.png` | 实现证据：手机单栏 |
+| `${TMPDIR}/caff-ui-verify/<run-id>/ui-v2-walkthrough.webm` | 实现证据：约 15 秒桌面→抽屉→手机 walkthrough |
 
 ### 8.2 现场可感知性自检（必产出字段）
 
@@ -283,6 +281,8 @@ modal 不变量覆盖「响应式模式切换」第四条边：断点重入 = �
 两个设计盲区写死为契约：
 
 **最终 IA（定稿）**：抽屉 tab = 6 常显（参与者/目标/记忆/摘要/设置/上下文）+ 2 条件（游戏/草稿）。
+- `designs/mock-app-shell-a.html` 已同步为 v5 active fixture：狼人杀场景显示「游戏」，「草稿」保留条件态，
+  「上下文」常显；APG 方向键只遍历可见 tab。mock 的冻结 SHA256 记录在本节末尾 provenance 行。
 - 「上下文」是既有 agent-context-drawer 功能的常显映射——v4 基线漏列，本轮补认为常显 tab；
 - 「游戏」由 undercover/werewolf 卡片可见性驱动；「草稿」由待确认 Skill 草稿存在性驱动。
 
@@ -305,14 +305,18 @@ modal 不变量覆盖「响应式模式切换」第四条边：断点重入 = �
 
 **持久回归（本轮起入仓，不再仓外 temp）**：
 - `tests/ui/app-shell.test.js`（jsdom，入 `test:fast`）：goal controller 启动、fromShell 焦点所有权、
-  会话列表 ul>li>button、条件 tab 开/关两态消失，5 例；
-- `scripts/verify-ui.mjs`（Playwright/Edge，`npm run test:ui`）：41 项含全量 44px、375/320 header
-  overlap、条件 tab 真实焦点迁移、会话列表键盘切换；
+  会话列表 ul>li>button、条件 tab 开/关两态、pill renderer ownership、composer 同步、v5 mock/runner truth，11 例；
+- `scripts/verify-ui.mjs`（Playwright/Edge，`npm run test:ui`）：默认自起动态端口 + 临时 SQLite，49 项含全量
+  44px、375/320 header overlap、条件 tab 真实焦点迁移、会话列表键盘切换、renderer replacement、
+  长会话正文不被 grid 行压缩裁切、composer clear/restore、DELETE 成功与零残留；显式目标只允许 loopback，异常退场也会清理并报告失败；
+- 同一 runner 生成 3 张实现截图 + 约 15 秒 walkthrough，全部写入临时证据目录，不污染仓库；
 - `npm run check` 已纳入 `public/shell/app-shell.js`；active spec 见 `.trellis/spec/frontend/ui-structure.md` AppShell 节。
 
 **设计铁律（本轮 audit 沉淀）**：先快照后写入不仅用于 inert/焦点恢复目标，同样适用于
 **hidden 写入**——任何让元素退出渲染树的操作都可能瞬间清空焦点，快照必须先于写入；
 契约回归必须仓内可持续，temp 脚本随 session 封印丢失 = 契约无守卫。
+
+**v5 mock provenance**：`C64B57CEC4968B167BEC724B63D46F333786CAE167C3C119265BF067896476DD`
 
 ### 8.4 响应式三档（已实现于 mock）
 
@@ -322,6 +326,6 @@ modal 不变量覆盖「响应式模式切换」第四条边：断点重入 = �
 
 ---
 
-## 9. Gate #2 复审（v5 已冻结）
+## 9. Gate #2 与实现状态
 
-@砚砚 做可访问性 + 滚动边界复审（§8.3 契约为检查单，§8.7 为 v4 证据包，§8.8 为 v5 delta：条件 tab IA/消失状态机/全量 44px/窄档 header）。通过后：Pencil 可用时转录 .pen → operator 保存 commit → 实现 worktree（等 P0 基线冻结）。
+**Gate #2 APPROVED**：方向 A、v4 焦点/滚动状态机与 §8.8 v5 IA delta 均已冻结。实现 worktree 以 `4560d3e` 为祖先落地 Milestone 1；当前阶段是实现跨个体 review，而不是再次打开设计方向。Pencil 可用时仍可把 active HTML fixture 转录为 `.pen`，但不阻塞本轮实现验收。
