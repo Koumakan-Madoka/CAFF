@@ -384,8 +384,9 @@ test('test:ui rejects non-loopback mutation targets and surfaces emergency clean
   );
 });
 
-test('active design brief records the frozen v5 implementation-review state', () => {
+test('active design brief preserves v5 approval and records the v7 M3 review state', () => {
   assert.doesNotMatch(BRIEF_MD, /^status:.*待 Gate #2.*$/m);
-  assert.match(BRIEF_MD, /^status:.*v5.*implementation review.*$/m);
+  assert.match(BRIEF_MD, /^status:.*v7.*Milestone 3.*implementation review.*$/m);
+  assert.match(BRIEF_MD, /v5 聊天 AppShell.*已落地/);
   assert.match(BRIEF_MD, /Gate #2 APPROVED/);
 });

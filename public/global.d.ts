@@ -107,9 +107,23 @@ declare global {
     setComposerValue: (value: unknown) => void;
   };
 
+  type CaffThemeController = {
+    getTheme: () => 'light' | 'dark';
+    hasExplicitPreference: () => boolean;
+    setTheme: (theme: 'light' | 'dark') => 'light' | 'dark';
+    toggle: () => 'light' | 'dark';
+    syncControls: () => void;
+  };
+
+  type CaffIconController = {
+    create: (name: string, options?: { className?: string }) => SVGSVGElement;
+  };
+
   interface Window {
     CaffChat?: any;
     CaffShared?: any;
+    CaffTheme?: CaffThemeController;
+    CaffIcons?: CaffIconController;
     caffShell?: CaffAppShell;
   }
 

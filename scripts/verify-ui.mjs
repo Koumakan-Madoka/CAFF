@@ -15,6 +15,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { verifyManagementPages } from './ui/verify-management-pages.mjs';
+import { verifyThemeIcons } from './ui/verify-theme-icons.mjs';
 
 let chromium;
 try {
@@ -583,7 +584,7 @@ if (sidebarNow === 'open') {
 }
 const tabSeq = [];
 await page.evaluate(() => { document.body.focus(); });
-for (let i = 0; i < 14; i += 1) {
+for (let i = 0; i < 20; i += 1) {
   await page.keyboard.press('Tab');
   const info = await page.evaluate(() => {
     const el = document.activeElement;
@@ -595,7 +596,7 @@ const normalized = [...tabSeq];
 const railIdx = normalized.findIndex((s) => s === 'rail-link');
 const rotated = railIdx > 0 ? [...normalized.slice(railIdx), ...normalized.slice(0, railIdx)] : normalized;
 const rotStr = rotated.join(' > ');
-const order = ['rail-link', 'rail-settings-button', 'sidebarToggle', 'refresh-button', 'drawerToggle', 'message-list', 'composer-input'];
+const order = ['rail-link', 'theme-toggle', 'rail-settings-button', 'sidebarToggle', 'refresh-button', 'drawerToggle', 'message-list', 'composer-input'];
 let cursor = -1;
 let seqOk = true;
 for (const token of order) {
@@ -603,7 +604,7 @@ for (const token of order) {
   if (idx < 0) { seqOk = false; break; }
   cursor = idx;
 }
-ok('D1 focus order rail->sidebarToggle->drawerToggle->messageList->composer (cyclic)', seqOk, rotStr);
+ok('D1 focus order rail->theme->sidebarToggle->drawerToggle->messageList->composer (cyclic)', seqOk, rotStr);
 
 // E. 全量触控目标 >=44px（含注入的 tool-trace toggle / compact-icon-button）
 await page.evaluate(() => {
@@ -869,8 +870,15 @@ await verifyManagementPages({
   screenshotName: MANAGEMENT_SCREENSHOT,
 });
 
+await verifyThemeIcons({
+  browser,
+  baseUrl: APP,
+  ok,
+});
+
 // evidence screenshots
 await page.setViewportSize({ width: 1440, height: 900 });
+await page.evaluate(() => window.CaffTheme?.setTheme('light'));
 await page.waitForTimeout(400);
 await renderEvidenceConversation(page);
 if (await page.evaluate(() => document.body.dataset.sidebar !== 'open')) {
@@ -881,6 +889,7 @@ await page.screenshot({ path: path.join(OUT, 'ui-v2-1440-long.png') });
 await page.click('#sidebarClose');
 await page.waitForTimeout(350);
 await page.setViewportSize({ width: 375, height: 800 });
+await page.evaluate(() => window.CaffTheme?.setTheme('dark'));
 await page.waitForTimeout(400);
 await page.screenshot({ path: path.join(OUT, 'ui-v2-375.png') });
 await captureWalkthroughVideo();

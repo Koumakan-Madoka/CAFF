@@ -4,7 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>CAFF Agent Metrics</title>
+    <script src="/shared/theme.js"></script>
     <link rel="stylesheet" href="/styles.css" />
+    <script defer src="/shared/icons.js"></script>
     <script defer src="/shared/api-client.js"></script>
     <script defer src="/shared/toast.js"></script>
     <script defer src="/shared/management-list.js"></script>
@@ -13,11 +15,15 @@
   <body class="management-app" data-page="metrics">
     <div class="management-shell">
       <nav class="rail" aria-label="主导航">
-        <a class="rail-link" href="/" title="聊天工作台" aria-label="聊天工作台">💬</a>
-        <a class="rail-link" href="/personas.html" title="人格管理" aria-label="人格管理">🎭</a>
-        <a class="rail-link" href="/skills.html" title="Skill 管理" aria-label="Skill 管理">🛠️</a>
-        <a class="rail-link" href="/projects.html" title="项目管理" aria-label="项目管理">📁</a>
-        <a class="rail-link" aria-current="page" href="/metrics.html" title="评测报表" aria-label="评测报表">📊</a>
+        <a class="rail-link" href="/" title="聊天工作台" aria-label="聊天工作台"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-chat"></use></svg></a>
+        <a class="rail-link" href="/personas.html" title="人格管理" aria-label="人格管理"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-users"></use></svg></a>
+        <a class="rail-link" href="/skills.html" title="Skill 管理" aria-label="Skill 管理"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-puzzle"></use></svg></a>
+        <a class="rail-link" href="/projects.html" title="项目管理" aria-label="项目管理"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-folder"></use></svg></a>
+        <a class="rail-link" aria-current="page" href="/metrics.html" title="评测报表" aria-label="评测报表"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-bar-chart"></use></svg></a>
+        <span class="spacer"></span>
+        <button class="rail-button theme-toggle" type="button" data-theme-toggle aria-pressed="false" aria-label="切换为深色主题" title="切换为深色主题">
+          <svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-moon"></use></svg>
+        </button>
       </nav>
 
       <div class="management-main">
@@ -27,7 +33,7 @@
           <h1>Agent 评测报表</h1>
           <p class="subtitle">从本地 SQLite 状态库汇总每个 Agent 的工具调用、工具聊天率与提示词回归指标。</p>
           </div>
-          <button id="refresh-button" class="management-icon-button" type="button" title="刷新" aria-label="刷新">⟳</button>
+          <button id="refresh-button" class="management-icon-button" type="button" title="刷新" aria-label="刷新"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-refresh"></use></svg></button>
         </header>
 
         <main class="management-content">

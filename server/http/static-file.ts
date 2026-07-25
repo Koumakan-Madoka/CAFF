@@ -30,6 +30,10 @@ function resolveContentType(filePath: string) {
     return 'application/javascript; charset=utf-8';
   }
 
+  if (ext === '.svg') {
+    return 'image/svg+xml';
+  }
+
   return 'application/octet-stream';
 }
 

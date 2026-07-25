@@ -4,8 +4,8 @@
 
 - `public/*.js`: page-level entry files and screen composition
 - `public/chat/*.js`: chat room UI modules
-- `public/shared/*.js`: shared browser helpers like API access, avatars, and
-  toasts
+- `public/shared/*.js`: shared browser helpers like API access, avatars,
+  themes, repository-owned icons, and toasts
 - `public/styles.css`: shared styling
 
 ## Conventions
@@ -303,6 +303,144 @@ window.caffShell.setComposerValue(restoredText);
     <section class="management-detail management-pane">...</section>
   </main>
 </body>
+```
+
+## Theme and Repository-Owned Icon System
+
+### 1. Scope / Trigger
+
+- Trigger: changing application colors, surface hierarchy, radii, shadows,
+  theme persistence, the rail/header/drawer icon language, or how `.svg` files
+  are served.
+- Applies to all five routes (`index.html`, `personas.html`, `skills.html`,
+  `projects.html`, `metrics.html`), `public/shared/theme.js`,
+  `public/shared/icons.js`, `public/assets/icons.svg`, the Milestone 3 section
+  of `public/styles.css`, and `server/http/static-file.ts`.
+- The theme layer may change presentation only. It must preserve AppShell focus,
+  inert, scroll-owner, CRUD/filter, element-id, and API contracts.
+
+### 2. Signatures
+
+- Persistent key: `caff:theme` with the only valid stored values `light` and
+  `dark`.
+- `window.CaffTheme`:
+  - `getTheme(): 'light' | 'dark'`
+  - `hasExplicitPreference(): boolean`
+  - `setTheme(theme: 'light' | 'dark'): 'light' | 'dark'`
+  - `toggle(): 'light' | 'dark'`
+  - `syncControls(): void`
+- `window.CaffIcons.create(name, { className? }): SVGSVGElement` is a stateless
+  DOM factory. It creates `<svg><use href="/assets/icons.svg#icon-NAME">` and
+  throws for unknown names.
+- Every page contains exactly one `button[data-theme-toggle]` and loads the
+  synchronous `/shared/theme.js` before `/styles.css`.
+
+### 3. Contracts
+
+- `public/shared/theme.js` is the only ThemePreference lifecycle owner. Page
+  entries and renderers must not read/write `caff:theme` or
+  `document.documentElement.dataset.theme` directly.
+- A valid stored preference wins over `prefers-color-scheme`. Without a valid
+  stored value, system color scheme is a live, non-persisted projection.
+- Apply `html[data-theme]` and `color-scheme` synchronously before stylesheet
+  parsing. Local-storage read/write failures must degrade to in-memory state
+  without blocking page boot or clicks.
+- `storage` events with `light|dark` synchronize an explicit preference across
+  tabs. Removing the key returns to live system projection; invalid values are
+  ignored.
+- Theme toggle `aria-label`, `title`, `aria-pressed`, and sun/moon `<use>` must
+  describe the current state and the next action. Its visible hit area is at
+  least 44px on every route and breakpoint.
+- `public/assets/icons.svg` is the only product icon path registry. Static HTML
+  uses `<use>` directly; dynamic renderers use `CaffIcons.create`. Do not copy
+  path data into page modules or introduce an icon runtime dependency.
+- Application chrome uses repository-owned `currentColor`, `fill:none`,
+  approximately 1.75px-stroke SVGs. User messages, persona avatars, and game
+  content may still contain semantic emoji; the ban applies to product chrome.
+- The static server must return `.svg` as `image/svg+xml`. Returning
+  `application/octet-stream` leaves external `<use>` nodes present but visually
+  blank in Edge.
+- Light and dark share identical layout density. Application chrome uses flat
+  canvas/surface/sunk layers, no decorative gradient or backdrop blur, 6/8/10/
+  12px geometry, and restrained shadows. `999px` is semantic-only (avatar,
+  status badge, progress track), not a default button/card radius.
+- Normal body/input/primary-button text contrast is at least 4.5:1 in both
+  themes. Focus and semantic status colors must remain visible without relying
+  on color alone.
+
+### 4. Validation & Error Matrix
+
+| Case | Expected behavior |
+| --- | --- |
+| First visit, system dark | First painted document is dark; no `caff:theme` value is written. |
+| Stored `light` while system dark | Light wins on every route and ignores later system changes. |
+| Stored `sepia` or corrupted text | Ignore it and project the current system theme; never write the invalid value into `data-theme`. |
+| localStorage throws `SecurityError` | Page boots, current-tab toggle still works, persistence is best-effort only. |
+| Toggle on chat then navigate to personas | New route applies the explicit theme before CSS and exposes the matching label/icon. |
+| Cross-tab valid storage event | Current document and all toggle controls synchronize atomically. |
+| Cross-tab key removal | Explicit state clears and future system-theme changes are observed again. |
+| `/assets/icons.svg` has wrong MIME or fails | Browser gate reports a bad response/MIME and visible line-icon contract fails. |
+| 1440/820/375 in either theme | No horizontal document overflow; existing fixed-shell and scroll-owner contracts remain intact. |
+| New dynamic product icon | Must be added to the sprite allowlist and rendered through `CaffIcons.create`; unknown names fail fast. |
+
+### 5. Good / Base / Bad Cases
+
+- Good: the user chooses Dark in chat, opens Skills, and receives the same
+  theme before first paint; rail and action icons remain crisp via
+  `currentColor`, while cards use borders rather than glow/blur.
+- Base: no preference exists, so each tab follows the OS and updates when the
+  OS changes.
+- Bad: a page waits for `DOMContentLoaded` before adding Dark, stores `system`,
+  embeds an emoji gear in a header, duplicates an SVG path in a renderer, or
+  adds a black overlay on top of hard-coded white-alpha cards.
+
+### 6. Tests Required
+
+- `tests/ui/theme-icons.test.js` is part of `test:fast` and locks script-before-
+  CSS ordering, the ThemePreference state machine, storage failure, cross-tab
+  events, sprite completeness, helper fail-fast behavior, SVG MIME, chrome
+  emoji removal, semantic theme tokens, and verifier wiring.
+- `scripts/ui/verify-theme-icons.mjs` is called by `scripts/verify-ui.mjs` and
+  reuses its Edge instance, loopback-only app, temporary SQLite, diagnostics,
+  and zero-residue cleanup. It must not start a second service.
+- Browser proof loads all five routes in Light and Dark, checks the toggle and
+  sprite response, reads computed gradients/blur/radii and 4.5:1 contrast, and
+  reruns chat/personas at 820 and 375. The combined runner currently has 93
+  checks and all must pass.
+- `npm run check` covers both shared helpers; `npm run typecheck:public` covers
+  their public types. A visual review must include at least Light chat, Dark
+  chat, and Dark management screenshots.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```html
+<link rel="stylesheet" href="/styles.css" />
+<button class="rail-button">⚙️</button>
+```
+
+```js
+document.documentElement.dataset.theme = localStorage.getItem('theme');
+title.textContent = '📦 Rollup';
+```
+
+#### Correct
+
+```html
+<script src="/shared/theme.js"></script>
+<link rel="stylesheet" href="/styles.css" />
+<button class="rail-button" data-theme-toggle aria-pressed="false">
+  <svg class="app-icon" aria-hidden="true">
+    <use href="/assets/icons.svg#icon-moon"></use>
+  </svg>
+</button>
+```
+
+```js
+const icon = window.CaffIcons.create('archive', {
+  className: 'app-icon digest-kind-icon',
+});
 ```
 
 ## Cross-Layer Watch Points

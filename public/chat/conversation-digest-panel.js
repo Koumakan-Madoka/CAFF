@@ -128,8 +128,10 @@
       const eyebrow = document.createElement('p');
       eyebrow.className = 'eyebrow';
       const kindLabel = digestUtils.digestKindLabel(digest);
-      const kindIcon = digest.kind === 'rollup' ? '📦' : '📝';
-      eyebrow.textContent = `${kindIcon} ${kindLabel} · ${formatDateTime(digest.createdAt) || 'Digest'}`;
+      const kindIcon = window.CaffIcons.create(digest.kind === 'rollup' ? 'archive' : 'file-text', {
+        className: 'app-icon digest-kind-icon',
+      });
+      eyebrow.append(kindIcon, document.createTextNode(`${kindLabel} · ${formatDateTime(digest.createdAt) || 'Digest'}`));
 
       const range = document.createElement('p');
       range.className = 'muted';

@@ -3955,3 +3955,636 @@ body.management-app .toast {
     transition: none !important;
   }
 }
+
+/* ══════════════════════════════════════════════════════════════
+   CAFF UI Milestone 3 · restrained light/dark chrome
+   Product chrome is flat, token-driven, and shared by chat + management.
+   ══════════════════════════════════════════════════════════════ */
+
+:root,
+[data-theme="light"] {
+  color-scheme: light;
+  --caff-canvas: #f5f4f0;
+  --caff-surface-sunk: #ecebe6;
+  --caff-surface: #fbfaf7;
+  --caff-surface-elevated: #ffffff;
+  --caff-surface-hover: #f0efea;
+  --caff-text: #262826;
+  --caff-text-soft: #686c67;
+  --caff-border: #d8d6cf;
+  --caff-border-strong: #c4c2ba;
+  --caff-accent: #b4512f;
+  --caff-accent-hover: #9f4327;
+  --caff-accent-text: #93401f;
+  --caff-accent-soft: #f4e2d9;
+  --caff-on-accent: #fffaf7;
+  --caff-success: #34796e;
+  --caff-success-soft: #e1efeb;
+  --caff-warning: #986b24;
+  --caff-warning-soft: #f5ead4;
+  --caff-danger: #b44740;
+  --caff-danger-soft: #f5dfdd;
+  --caff-info: #4a6f8f;
+  --caff-info-soft: #e2ebf2;
+  --caff-focus: rgba(200, 97, 58, 0.28);
+  --caff-overlay: rgba(24, 27, 25, 0.32);
+  --caff-shadow-sm: 0 1px 2px rgba(30, 33, 30, 0.08);
+  --caff-shadow-md: 0 4px 12px rgba(30, 33, 30, 0.1);
+  --caff-radius-sm: 6px;
+  --caff-radius-md: 8px;
+  --caff-radius-lg: 10px;
+  --caff-radius-xl: 12px;
+
+  /* Legacy aliases remain migration-only; components consume semantic tokens. */
+  --bg: var(--caff-canvas);
+  --bg-strong: var(--caff-surface-sunk);
+  --paper: var(--caff-surface);
+  --paper-strong: var(--caff-surface-elevated);
+  --ink: var(--caff-text);
+  --muted: var(--caff-text-soft);
+  --line: var(--caff-border);
+  --accent: var(--caff-accent);
+  --accent-deep: var(--caff-accent-text);
+  --teal: var(--caff-success);
+  --danger: var(--caff-danger);
+  --shadow: var(--caff-shadow-md);
+  --radius-sm: var(--caff-radius-md);
+  --radius-md: var(--caff-radius-lg);
+  --radius-lg: var(--caff-radius-xl);
+  --radius-xl: var(--caff-radius-xl);
+  --caff-ink: var(--caff-text);
+  --caff-ink-soft: var(--caff-text-soft);
+  --caff-line: var(--caff-border);
+  --caff-accent-deep: var(--caff-accent-text);
+  --caff-teal: var(--caff-success);
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --caff-canvas: #171918;
+  --caff-surface-sunk: #111312;
+  --caff-surface: #1e211f;
+  --caff-surface-elevated: #252825;
+  --caff-surface-hover: #2b2e2b;
+  --caff-text: #f0f1ed;
+  --caff-text-soft: #a9ada7;
+  --caff-border: #363b37;
+  --caff-border-strong: #4a504b;
+  --caff-accent: #df7952;
+  --caff-accent-hover: #eb8d68;
+  --caff-accent-text: #f09a75;
+  --caff-accent-soft: #3a2922;
+  --caff-on-accent: #1b120e;
+  --caff-success: #69b6a8;
+  --caff-success-soft: #203632;
+  --caff-warning: #d5a65b;
+  --caff-warning-soft: #3a3020;
+  --caff-danger: #e17a73;
+  --caff-danger-soft: #3d2625;
+  --caff-info: #83a9c8;
+  --caff-info-soft: #243440;
+  --caff-focus: rgba(223, 121, 82, 0.34);
+  --caff-overlay: rgba(0, 0, 0, 0.55);
+  --caff-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --caff-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.28);
+
+  --bg: var(--caff-canvas);
+  --bg-strong: var(--caff-surface-sunk);
+  --paper: var(--caff-surface);
+  --paper-strong: var(--caff-surface-elevated);
+  --ink: var(--caff-text);
+  --muted: var(--caff-text-soft);
+  --line: var(--caff-border);
+  --accent: var(--caff-accent);
+  --accent-deep: var(--caff-accent-text);
+  --teal: var(--caff-success);
+  --danger: var(--caff-danger);
+  --shadow: var(--caff-shadow-md);
+  --caff-ink: var(--caff-text);
+  --caff-ink-soft: var(--caff-text-soft);
+  --caff-line: var(--caff-border);
+  --caff-accent-deep: var(--caff-accent-text);
+  --caff-teal: var(--caff-success);
+}
+
+body.chat-app,
+body.management-app {
+  background: var(--caff-canvas);
+  background-image: none;
+  color: var(--caff-text);
+  font-family: "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, sans-serif;
+  scrollbar-color: var(--caff-border-strong) transparent;
+}
+
+body.chat-app *,
+body.management-app * {
+  border-color: var(--caff-border);
+}
+
+body.chat-app :focus-visible,
+body.management-app :focus-visible {
+  outline: 2px solid var(--caff-accent);
+  outline-offset: 2px;
+}
+
+body.chat-app .app-icon,
+body.management-app .app-icon {
+  width: 20px;
+  height: 20px;
+  display: block;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+body.chat-app .icon-label-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--caff-space-2);
+}
+
+body.chat-app button,
+body.management-app button,
+body.management-app a.link-button {
+  border-radius: var(--caff-radius-md);
+  background: var(--caff-accent);
+  background-image: none;
+  color: var(--caff-on-accent);
+  box-shadow: none;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+
+body.chat-app button:hover:not(:disabled),
+body.management-app button:hover:not(:disabled),
+body.management-app a.link-button:hover {
+  transform: none;
+  background: var(--caff-accent-hover);
+}
+
+body.chat-app :is(.ghost-button, .secondary-button, .mini-action, .message-export-button),
+body.management-app :is(.ghost-button, .secondary-button, a.link-button) {
+  border: 1px solid var(--caff-border);
+  background: var(--caff-surface-elevated);
+  color: var(--caff-text);
+  box-shadow: none;
+}
+
+body.chat-app :is(.ghost-button, .secondary-button, .mini-action, .message-export-button):hover:not(:disabled),
+body.management-app :is(.ghost-button, .secondary-button, a.link-button):hover:not(:disabled) {
+  border-color: var(--caff-border-strong);
+  background: var(--caff-surface-hover);
+  color: var(--caff-text);
+}
+
+body.chat-app .danger,
+body.management-app .danger {
+  color: var(--caff-danger);
+}
+
+body.chat-app :is(input, textarea, select),
+body.management-app :is(input, textarea, select) {
+  border: 1px solid var(--caff-border);
+  border-radius: var(--caff-radius-md);
+  background: var(--caff-surface-elevated);
+  color: var(--caff-text);
+  box-shadow: none;
+}
+
+body.chat-app :is(input, textarea, select)::placeholder,
+body.management-app :is(input, textarea, select)::placeholder {
+  color: var(--caff-text-soft);
+  opacity: 0.78;
+}
+
+body.chat-app :is(input, textarea, select):focus,
+body.management-app :is(input, textarea, select):focus {
+  border-color: var(--caff-accent);
+  background: var(--caff-surface-elevated);
+  box-shadow: 0 0 0 3px var(--caff-focus);
+}
+
+body.chat-app :is(.muted, .section-hint),
+body.management-app :is(.muted, .section-hint, .subtitle) {
+  color: var(--caff-text-soft);
+}
+
+body.chat-app .eyebrow,
+body.management-app .eyebrow {
+  color: var(--caff-accent-text);
+  letter-spacing: 0.06em;
+}
+
+body.chat-app .rail,
+body.management-app .rail {
+  background: var(--caff-surface-sunk);
+  border-color: var(--caff-border);
+}
+
+body.management-app .rail-link,
+body.management-app .rail-button,
+body.chat-app .rail-link,
+body.chat-app .rail-button {
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 44px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--caff-radius-md);
+  background: transparent;
+  color: var(--caff-text-soft);
+  box-shadow: none;
+}
+
+body.management-app .rail-link:hover,
+body.management-app .rail-button:hover:not(:disabled),
+body.chat-app .rail-link:hover,
+body.chat-app .rail-button:hover:not(:disabled) {
+  background: var(--caff-surface-hover);
+  color: var(--caff-text);
+}
+
+body.management-app .rail-link[aria-current="page"],
+body.chat-app .rail-link[aria-current="page"] {
+  background: var(--caff-accent-soft);
+  color: var(--caff-accent-text);
+  box-shadow: inset 0 0 0 1px var(--caff-border);
+}
+
+body.chat-app :is(.sidebar, .chat-header, .composer, .context-drawer),
+body.management-app :is(.management-header, .management-index) {
+  background: var(--caff-surface);
+  background-image: none;
+}
+
+body.chat-app .composer,
+body.chat-app .composer:focus-within {
+  background: var(--caff-surface);
+  background-image: none;
+  box-shadow: none;
+}
+
+body.chat-app .composer textarea,
+body.chat-app .composer textarea:focus {
+  border-radius: var(--caff-radius-lg);
+  background: var(--caff-surface-elevated);
+}
+
+body.chat-app .icon-btn,
+body.management-app .management-icon-button {
+  border: 1px solid var(--caff-border);
+  border-radius: var(--caff-radius-md);
+  background: var(--caff-surface);
+  color: var(--caff-text-soft);
+  box-shadow: none;
+}
+
+body.chat-app .icon-btn:hover:not(:disabled),
+body.management-app .management-icon-button:hover:not(:disabled) {
+  border-color: var(--caff-border-strong);
+  background: var(--caff-surface-hover);
+  color: var(--caff-text);
+}
+
+body.chat-app .icon-btn[aria-expanded="true"] {
+  border-color: var(--caff-accent);
+  background: var(--caff-accent-soft);
+  color: var(--caff-accent-text);
+}
+
+body.chat-app .new-msg-pill {
+  gap: var(--caff-space-2);
+  border: 1px solid var(--caff-border-strong);
+  border-radius: var(--caff-radius-lg);
+  background: var(--caff-surface-elevated);
+  color: var(--caff-text);
+  box-shadow: var(--caff-shadow-md);
+}
+
+body.chat-app .new-msg-pill:hover:not(:disabled) {
+  background: var(--caff-surface-hover);
+}
+
+body.chat-app .drawer-overlay {
+  background: var(--caff-overlay);
+}
+
+body.chat-app .context-drawer {
+  background: var(--caff-surface);
+  backdrop-filter: none;
+  box-shadow: -4px 0 12px rgba(0, 0, 0, 0.12);
+}
+
+body.chat-app .drawer-tabs button {
+  border-radius: var(--caff-radius-md);
+  background: transparent;
+  color: var(--caff-text-soft);
+}
+
+body.chat-app .drawer-tabs button:hover:not(:disabled) {
+  background: var(--caff-surface-hover);
+}
+
+body.chat-app .drawer-tabs button[aria-selected="true"] {
+  background: var(--caff-accent-soft);
+  color: var(--caff-accent-text);
+}
+
+body.chat-app .participant-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--caff-space-2);
+}
+
+body.chat-app .agent-chip {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  width: 100%;
+  padding: var(--caff-space-3);
+  border: 1px solid var(--caff-border);
+  border-radius: var(--caff-radius-lg);
+  background: var(--caff-surface-elevated);
+  color: var(--caff-text);
+}
+
+body.chat-app .agent-chip > div {
+  min-width: 0;
+}
+
+body.chat-app .agent-chip .muted {
+  color: var(--caff-text-soft);
+}
+
+body.chat-app .agent-chip .agent-avatar {
+  background: color-mix(in srgb, var(--agent-color, var(--caff-accent)) 16%, var(--caff-surface-elevated));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--agent-color, var(--caff-accent)) 32%, var(--caff-border));
+  color: color-mix(in srgb, var(--agent-color, var(--caff-accent-text)) 70%, var(--caff-text));
+}
+
+body.chat-app :is(
+  .panel,
+  .stack-card,
+  .stack-card.stack-card-inner,
+  .conversation-item,
+  .empty-state,
+  .option-card,
+  .bulk-skill-card,
+  .profile-editor,
+  .profile-dropdown-trigger,
+  .profile-choice-chip,
+  .profile-dropdown-menu,
+  .skill-file-item,
+  .session-goal-drawer-panel,
+  .session-goal-detail-list,
+  .session-goal-action-card,
+  .session-goal-progress-card,
+  .session-goal-proposal-card,
+  .agent-context-meta-grid > div,
+  .agent-context-section-card,
+  .conversation-digest-card,
+  .timeline-digest-card,
+  .undercover-player-chip,
+  .werewolf-player-chip,
+  .mention-menu
+) {
+  border-color: var(--caff-border);
+  border-radius: var(--caff-radius-lg);
+  background: var(--caff-surface);
+  background-image: none;
+  color: var(--caff-text);
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+body.chat-app :is(.conversation-item, .skill-file-item, .profile-dropdown-trigger, .profile-choice-chip):hover {
+  border-color: var(--caff-border-strong);
+  background: var(--caff-surface-hover);
+}
+
+body.chat-app :is(.conversation-item.active, .skill-file-item.active, .profile-choice-chip.active, .compact-option-card.is-selected) {
+  border-color: var(--caff-accent);
+  background: var(--caff-accent-soft);
+  background-image: none;
+  color: var(--caff-text);
+}
+
+body.chat-app .profile-choice-group.is-open .profile-dropdown-trigger {
+  border-color: var(--caff-accent);
+  background: var(--caff-surface-elevated);
+}
+
+body.chat-app .profile-dropdown-caret {
+  width: 18px;
+  height: 18px;
+  transition: transform 140ms ease;
+}
+
+body.chat-app .profile-choice-group.is-open .profile-dropdown-caret {
+  transform: rotate(180deg);
+}
+
+body.chat-app .digest-kind-icon {
+  width: 16px;
+  height: 16px;
+  display: inline-block;
+  margin-right: 6px;
+  vertical-align: -3px;
+}
+
+body.chat-app .file-chip {
+  border-radius: var(--caff-radius-md);
+  background: var(--caff-surface-elevated);
+  color: var(--caff-text);
+}
+
+body.chat-app .message-card {
+  border: 1px solid var(--caff-border);
+  border-radius: var(--caff-radius-lg);
+  background: var(--caff-surface);
+  background-image: none;
+  color: var(--caff-text);
+  box-shadow: none;
+}
+
+body.chat-app .message-card:hover {
+  box-shadow: var(--caff-shadow-sm);
+}
+
+body.chat-app .message-card.assistant::after {
+  display: none;
+}
+
+body.chat-app .message-card.user {
+  border-color: color-mix(in srgb, var(--caff-accent) 34%, var(--caff-border));
+  background: var(--caff-accent-soft);
+  color: var(--caff-text);
+}
+
+body.chat-app .message-card.private {
+  border-color: color-mix(in srgb, var(--caff-info) 36%, var(--caff-border));
+  background: var(--caff-info-soft);
+  color: var(--caff-text);
+}
+
+body.chat-app .message-card.failed {
+  border-color: color-mix(in srgb, var(--caff-danger) 46%, var(--caff-border));
+  background: var(--caff-danger-soft);
+  color: var(--caff-text);
+}
+
+body.chat-app :is(.message-card.digest-status, .message-card.digest-result, .message-card.queue-recovery) {
+  border-color: color-mix(in srgb, var(--caff-success) 38%, var(--caff-border));
+  background: var(--caff-success-soft);
+  background-image: none;
+  color: var(--caff-text);
+}
+
+body.chat-app :is(.message-card.user, .message-card.private)::before,
+body.chat-app :is(.message-card.digest-status, .message-card.digest-result)::before {
+  background: currentColor;
+  opacity: 0.18;
+}
+
+body.chat-app :is(
+  .message-tool-trace,
+  .message-tool-trace-live-panel,
+  .message-tool-trace-live-command-body,
+  .message-tool-trace-step,
+  .message-tool-trace-payload,
+  .trace-details,
+  .trace-details-inner,
+  .markdown-table-wrap,
+  .message-body pre,
+  .message-body :not(pre) > code
+) {
+  border-color: var(--caff-border);
+  background: var(--caff-surface-elevated);
+  background-image: none;
+  color: var(--caff-text);
+  box-shadow: none;
+}
+
+body.chat-app :is(.message-card.user, .message-card.private) :is(
+  .message-tool-trace,
+  .message-tool-trace-live-command-body,
+  .message-tool-trace-step,
+  .message-tool-trace-payload,
+  .markdown-table-wrap,
+  .message-body pre,
+  .message-body :not(pre) > code
+) {
+  border-color: var(--caff-border);
+  background: color-mix(in srgb, var(--caff-surface-elevated) 82%, transparent);
+  color: var(--caff-text);
+}
+
+body.chat-app :is(.message-tool-trace-toggle-prominent, .skill-draft-alert, .skill-draft-floating-button) {
+  background: var(--caff-surface-elevated);
+  background-image: none;
+  color: var(--caff-text);
+  box-shadow: none;
+}
+
+body.chat-app :is(.message-tool-trace-pill, .message-tool-trace-toggle, .message-tool-trace-copy-button, .message-export-button) {
+  border-radius: var(--caff-radius-sm);
+}
+
+body.chat-app .mention-option {
+  border-radius: var(--caff-radius-md);
+  background: transparent;
+  color: var(--caff-text);
+}
+
+body.chat-app :is(.mention-option:hover, .mention-option.active) {
+  background: var(--caff-accent-soft);
+  background-image: none;
+}
+
+body.chat-app .toast,
+body.management-app .toast {
+  border: 1px solid var(--caff-border-strong);
+  border-radius: var(--caff-radius-lg);
+  background: var(--caff-surface-elevated);
+  color: var(--caff-text);
+  box-shadow: var(--caff-shadow-md);
+}
+
+body.management-app .management-detail {
+  background: var(--caff-canvas);
+}
+
+body.management-app :is(.management-pane, .management-header, .management-index, .management-detail) {
+  border-color: var(--caff-border);
+}
+
+body.management-app :is(
+  .stack-card,
+  .option-card,
+  .bulk-skill-card,
+  .profile-editor,
+  .profile-dropdown-trigger,
+  .profile-choice-chip,
+  .profile-dropdown-menu,
+  .skill-file-item,
+  .empty-state
+) {
+  border-color: var(--caff-border);
+  border-radius: var(--caff-radius-lg);
+  background: var(--caff-surface);
+  background-image: none;
+  color: var(--caff-text);
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+body.management-app .agent-list-item {
+  border-color: var(--caff-border);
+  border-radius: var(--caff-radius-md);
+  background: var(--caff-surface);
+  color: var(--caff-text);
+}
+
+body.management-app .agent-list-item:hover:not(:disabled) {
+  border-color: var(--caff-border-strong);
+  background: var(--caff-surface-hover);
+}
+
+body.management-app :is(.agent-list-item.active, .skill-file-item.active, .profile-choice-chip.active, .compact-option-card.is-selected, .tab-button.active) {
+  border-color: var(--caff-accent);
+  background: var(--caff-accent-soft);
+  background-image: none;
+  color: var(--caff-accent-text);
+  box-shadow: none;
+}
+
+body.management-app .tab-button {
+  border: 1px solid transparent;
+  border-radius: var(--caff-radius-md);
+  background: transparent;
+  color: var(--caff-text-soft);
+}
+
+body.management-app .tab-button:hover:not(:disabled) {
+  background: var(--caff-surface-hover);
+  color: var(--caff-text);
+}
+
+body.management-app .file-chip {
+  border-radius: var(--caff-radius-md);
+  background: var(--caff-surface-elevated);
+  color: var(--caff-text);
+}
+
+@media (max-width: 1279px) {
+  body.chat-app .sidebar {
+    box-shadow: 4px 0 12px rgba(0, 0, 0, 0.14);
+  }
+}

@@ -381,9 +381,9 @@
 
       triggerCopy.append(triggerTitle, triggerMeta);
 
-      const caret = document.createElement('span');
-      caret.className = 'profile-dropdown-caret';
-      caret.textContent = '▾';
+      const caret = window.CaffIcons.create('chevron-down', {
+        className: 'app-icon profile-dropdown-caret',
+      });
 
       trigger.append(triggerCopy, caret);
       profileGroup.appendChild(trigger);

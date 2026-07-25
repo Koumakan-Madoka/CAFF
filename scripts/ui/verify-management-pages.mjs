@@ -239,6 +239,7 @@ export async function verifyManagementPages({ browser, baseUrl, ok, outputDir, s
 
     await keyboard.setViewportSize({ width: 1440, height: 900 });
     await keyboard.evaluate(() => { document.querySelector('.management-content').scrollTop = 0; });
+    await keyboard.evaluate(() => window.CaffTheme?.setTheme('dark'));
     await keyboard.waitForTimeout(200);
     fs.mkdirSync(outputDir, { recursive: true });
     await keyboard.screenshot({ path: path.join(outputDir, screenshotName) });

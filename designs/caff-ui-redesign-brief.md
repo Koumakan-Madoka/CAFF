@@ -1,15 +1,15 @@
 ---
 doc_kind: design-brief
 feature_ids: [TBD-caff-ui-redesign]
-topics: [ui-redesign, ia, workbench, scroll-model, design-tokens]
+topics: [ui-redesign, ia, workbench, scroll-model, design-tokens, dark-mode, svg-icons]
 created: 2026-07-23
 author: 烁烁 (k3)
-status: v5 frozen · implementation review complete · v6 Milestone 2 implementation
+status: v7 frozen · Milestone 3 theme/icon implementation review
 ---
 
 # CAFF 整体 UI 重设计 · Phase 1 设计简报
 
-> 原设计阶段范围：现状审计 + IA + 高保真 fixture；v5 聊天 AppShell 已冻结并落地，v6 延伸同一套 IA 到四个管理页。
+> 原设计阶段范围：现状审计 + IA + 高保真 fixture；v5 聊天 AppShell 与 v6 管理页 AppShell 已落地，v7 在不重开 IA 的前提下统一 Light/Dark、线性 SVG 图标和克制的平面视觉语言。
 > 基线证据：`designs/baseline-desktop-1440.png`、`designs/baseline-narrow-820.png`
 
 ---
@@ -328,7 +328,7 @@ modal 不变量覆盖「响应式模式切换」第四条边：断点重入 = �
 
 ## 9. Gate #2 与实现状态
 
-**Gate #2 APPROVED**：方向 A、v4 焦点/滚动状态机与 §8.8 v5 IA delta 均已冻结。Milestone 1 已经跨个体 review，并在本地 `main@df33ea65` 落地；Milestone 2 沿用该方向迁移管理页，不再次打开设计方向。Pencil 可用时仍可把 active HTML fixture 转录为 `.pen`，但不阻塞本轮实现验收。
+**Gate #2 APPROVED**：方向 A、v4 焦点/滚动状态机与 §8.8 v5 IA delta 均已冻结。Milestone 1 已经跨个体 review，并在本地 `main@df33ea65` 落地；Milestone 2 延伸管理页并落地于 `3087ef8`。Milestone 3 只收敛表现层，不重开 IA、滚动 owner 或业务契约。Pencil 当前不可用，v7 使用 active HTML fixture、Clowder 源码、真实浏览器截图和 computed-style verifier 共同锁定设计真相。
 
 ---
 
@@ -366,3 +366,44 @@ modal 不变量覆盖「响应式模式切换」第四条边：断点重入 = �
 - touch：所有可见 button/link/text control 与 checkbox/radio label hit area 均 ≥44px。
 - containment：1440/820/375 均要求 `document.scrollWidth/Height` 不超过 viewport；375 header 文本不得覆盖刷新按钮。
 - verifier：`scripts/ui/verify-management-pages.mjs` 复用主 runner 的 browser、动态端口、临时 SQLite 与 evidence 目录，不自行启动第二个 app；整个证据包仍限制为 3 PNG + 1 WebM。
+
+---
+
+## 11. Milestone 3 · Light/Dark 与线性图标
+
+### 11.1 反馈转译
+
+| operator 原话 | 终态约束 |
+|---|---|
+| “AI 味道还是有点重” | 删除应用 chrome 的装饰渐变、毛玻璃、大面积阴影、超大圆角和无语义胶囊；改用实底层级、细边框、系统无衬线字体与少量强调色。 |
+| “支持 dark 和 light” | 五条 route 在 CSS 解析前获得 `html[data-theme="light|dark"]`；首次跟随系统，显式选择后跨 route 持久化。 |
+| “图标不要 emoji，类似 Clowder” | rail、刷新、菜单、关闭、抽屉、新消息、digest 类型等产品 chrome 全部使用仓库自有、`currentColor`、1.75px stroke 的 SVG sprite。 |
+
+用户消息、人格头像和狼人杀等内容语义里的 emoji 不属于产品 chrome，不做批量清除。
+
+### 11.2 v7 视觉终态
+
+- Light：暖中性 `#f5f4f0` canvas，近白 surface，炭黑正文，低饱和焦橙只用于 active/primary/focus。
+- Dark：`#171918` canvas，`#1e211f` surface，边界靠可见的中性灰而非白色 alpha 亮斑；强调色提亮但降低覆盖面积。
+- 几何：控制 6/8px、卡片 10px、大容器 12px；`999px` 仅留给 avatar、状态 badge、进度轨等语义圆形/胶囊。
+- 深度：常规控件无阴影，弹出层最多 `0 4px 12px`；drawer 为实底且 `backdrop-filter:none`。
+- 字体：应用 chrome 和标题统一系统无衬线，不再用 Georgia 式展示字体制造“模板感”。
+
+### 11.3 ThemePreference 状态机
+
+- lifecycle owner：`public/shared/theme.js`；持久 key：`caff:theme`；合法值只有 `light|dark`。
+- 无合法显式值时，`prefers-color-scheme` 是实时投影且不写入 storage；用户点击后显式值优先。
+- storage 访问失败或非法值不得阻断首屏；跨 tab `storage` 事件同步主题，删除 key 回到系统投影。
+- 每页恰有一个 44px `[data-theme-toggle]`，名称、`title`、`aria-pressed` 与 sun/moon 图标同步。
+
+### 11.4 图标与资源边界
+
+- `public/assets/icons.svg` 是 path 数据的唯一真相源；静态 HTML 使用 `<svg><use>`，动态 renderer 只通过无状态 `public/shared/icons.js` 创建同一 sprite 引用。
+- 静态服务器必须以 `image/svg+xml` 返回 `.svg`；`application/octet-stream` 会让浏览器留下空白图标，已纳入回归测试。
+- 不引入 Lucide/React/Tailwind 等运行时依赖；图标默认 20px、`fill:none`、`stroke:currentColor`。
+
+### 11.5 验收
+
+- `tests/ui/theme-icons.test.js` 锁定首帧 bootstrap、持久化/系统状态机、storage failure、sprite 完整性、MIME、chrome 无 emoji、双主题 token 和 verifier 接线。
+- `scripts/ui/verify-theme-icons.mjs` 在 Edge 中对 chat/personas/skills/projects/metrics 的 Light/Dark 各跑一遍，并覆盖 820/375、44px、零横向溢出、无 gradient/blur、圆角上限和正文/输入/主按钮对比度。
+- 主浏览器门禁现为 `93/93 PASS`，其中 M3 增加 32 项；仍复用动态 loopback 端口、临时 SQLite 和零 residue 清理。

@@ -4,7 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>CAFF 本地 Agent 工作台</title>
+    <script src="/shared/theme.js"></script>
     <link rel="stylesheet" href="/styles.css" />
+    <script defer src="/shared/icons.js"></script>
     <script defer src="/shared/api-client.js"></script>
     <script defer src="/shared/model-options.js"></script>
     <script defer src="/shared/avatar.js"></script>
@@ -32,19 +34,22 @@
   <body class="chat-app" data-drawer="closed" data-sidebar="closed">
     <div class="app-shell" id="appShell">
       <nav class="rail" aria-label="主导航">
-        <a class="rail-link" aria-current="page" href="/" title="聊天工作台" aria-label="聊天工作台">💬</a>
-        <a class="rail-link" href="/personas.html" title="人格管理" aria-label="人格管理">🎭</a>
-        <a class="rail-link" href="/skills.html" title="Skill 管理" aria-label="Skill 管理">🛠️</a>
-        <a class="rail-link" href="/projects.html" title="项目管理" aria-label="项目管理">📁</a>
-        <a class="rail-link" href="/metrics.html" title="评测报表" aria-label="评测报表">📊</a>
+        <a class="rail-link" aria-current="page" href="/" title="聊天工作台" aria-label="聊天工作台"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-chat"></use></svg></a>
+        <a class="rail-link" href="/personas.html" title="人格管理" aria-label="人格管理"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-users"></use></svg></a>
+        <a class="rail-link" href="/skills.html" title="Skill 管理" aria-label="Skill 管理"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-puzzle"></use></svg></a>
+        <a class="rail-link" href="/projects.html" title="项目管理" aria-label="项目管理"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-folder"></use></svg></a>
+        <a class="rail-link" href="/metrics.html" title="评测报表" aria-label="评测报表"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-bar-chart"></use></svg></a>
         <span class="spacer"></span>
-        <button class="rail-button" id="rail-settings-button" type="button" title="会话设置" aria-label="会话设置">⚙️</button>
+        <button class="rail-button theme-toggle" type="button" data-theme-toggle aria-pressed="false" aria-label="切换为深色主题" title="切换为深色主题">
+          <svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-moon"></use></svg>
+        </button>
+        <button class="rail-button" id="rail-settings-button" type="button" title="会话设置" aria-label="会话设置"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-settings"></use></svg></button>
       </nav>
 
       <aside class="sidebar" id="sidebar" aria-label="会话列表" aria-hidden="true" inert>
         <div class="sidebar-head">
           <h1>会话</h1>
-          <button class="icon-btn" id="sidebarClose" type="button" aria-label="收起会话栏">✕</button>
+          <button class="icon-btn" id="sidebarClose" type="button" aria-label="收起会话栏"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-x"></use></svg></button>
         </div>
 
         <form id="new-conversation-form" class="inline-form sidebar-new-form">
@@ -60,7 +65,7 @@
 
       <main class="main">
         <header class="chat-header">
-          <button class="icon-btn" id="sidebarToggle" type="button" aria-label="打开会话栏" aria-expanded="false">☰</button>
+          <button class="icon-btn" id="sidebarToggle" type="button" aria-label="打开会话栏" aria-expanded="false"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-menu"></use></svg></button>
           <div class="titles">
             <h2 id="conversation-title-display">正在加载...</h2>
             <span class="status-line">
@@ -69,8 +74,8 @@
             </span>
           </div>
           <p id="conversation-mode-badge" class="mode-pill hidden"></p>
-          <button id="refresh-button" class="icon-btn" type="button" aria-label="刷新" title="刷新">⟳</button>
-          <button class="icon-btn" id="drawerToggle" type="button" aria-expanded="false" aria-controls="contextDrawer">面板 ▾</button>
+          <button id="refresh-button" class="icon-btn" type="button" aria-label="刷新" title="刷新"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-refresh"></use></svg></button>
+          <button class="icon-btn icon-label-button" id="drawerToggle" type="button" aria-expanded="false" aria-controls="contextDrawer"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-panel-right"></use></svg><span>面板</span></button>
         </header>
 
         <div id="skill-draft-alert" class="skill-draft-alert hidden" role="status" aria-live="polite">
@@ -91,7 +96,7 @@
             </div>
             <div id="message-timeline" class="message-timeline"></div>
           </div>
-          <button id="new-message-pill" class="new-msg-pill" type="button" aria-label="跳到最新消息" hidden>↓ 新消息</button>
+          <button id="new-message-pill" class="new-msg-pill" type="button" aria-label="跳到最新消息" hidden><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-arrow-down"></use></svg><span>新消息</span></button>
         </div>
 
         <form id="composer-form" class="composer">
@@ -119,7 +124,7 @@
     <aside class="context-drawer" id="contextDrawer" role="dialog" aria-modal="true" aria-label="上下文面板" aria-hidden="true" inert>
       <div class="drawer-head">
         <h2>上下文面板</h2>
-        <button class="icon-btn" id="drawerClose" type="button" aria-label="关闭面板">✕</button>
+        <button class="icon-btn" id="drawerClose" type="button" aria-label="关闭面板"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-x"></use></svg></button>
       </div>
       <div class="drawer-tabs" role="tablist" aria-label="面板分类">
         <button role="tab" id="tab-participants" aria-controls="panel-participants" aria-selected="true" tabindex="0">参与者</button>

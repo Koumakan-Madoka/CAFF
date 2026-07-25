@@ -1,25 +1,29 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="light">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>CAFF 重设计 · 方向A 工作台 AppShell · 高保真 mock v2</title>
-<!-- v2 freeze: Gate #2 审查修正（砚砚 BLOCK 6 findings 全修） -->
+<title>CAFF 重设计 · 工作台 AppShell · Light/Dark mock v7</title>
+<!-- v7 freeze: Milestone 3 restrained themes + repository-owned line icons. -->
 <style>
-:root {
-  --caff-canvas: #f7f2ea;
-  --caff-surface: #fffdf9;
-  --caff-surface-sunk: #f3ece1;
-  --caff-ink: #22313f;
-  --caff-ink-soft: #5d6b78;
-  --caff-line: #e3d9c8;
-  --caff-accent: #ef7d57;
-  --caff-accent-deep: #c45d3b;
-  --caff-teal: #2a9d8f;
-  --caff-danger: #c0392b;
-  --caff-radius-md: 12px;
-  --caff-radius-lg: 16px;
-  --caff-radius-xl: 22px;
+:root,
+[data-theme="light"] {
+  color-scheme: light;
+  --caff-canvas: #f5f4f0;
+  --caff-surface: #fbfaf7;
+  --caff-surface-sunk: #ecebe6;
+  --caff-surface-elevated: #fff;
+  --caff-ink: #262826;
+  --caff-ink-soft: #686c67;
+  --caff-line: #d8d6cf;
+  --caff-accent: #b4512f;
+  --caff-accent-deep: #8f3d21;
+  --caff-accent-soft: #f4e2d9;
+  --caff-teal: #34796e;
+  --caff-danger: #b44740;
+  --caff-radius-md: 8px;
+  --caff-radius-lg: 10px;
+  --caff-radius-xl: 12px;
   --caff-space-1: 4px;
   --caff-space-2: 8px;
   --caff-space-3: 12px;
@@ -30,6 +34,21 @@
   --rail-w: 56px;
   --sidebar-w: 280px;
   --drawer-w: 360px;
+}
+[data-theme="dark"] {
+  color-scheme: dark;
+  --caff-canvas: #171918;
+  --caff-surface: #1e211f;
+  --caff-surface-sunk: #111312;
+  --caff-surface-elevated: #252825;
+  --caff-ink: #f0f1ed;
+  --caff-ink-soft: #a9ada7;
+  --caff-line: #363b37;
+  --caff-accent: #df7952;
+  --caff-accent-deep: #f09a75;
+  --caff-accent-soft: #3a2922;
+  --caff-teal: #69b6a8;
+  --caff-danger: #e17a73;
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; }
@@ -44,9 +63,14 @@ body {
 }
 button { font: inherit; cursor: pointer; }
 :focus-visible {
-  outline: 3px solid rgba(239, 125, 87, 0.55);
+  outline: 2px solid var(--caff-accent);
   outline-offset: 2px;
   border-radius: 6px;
+}
+.app-icon {
+  width: 20px; height: 20px; display: block; flex: 0 0 auto;
+  fill: none; stroke: currentColor; stroke-width: 1.75;
+  stroke-linecap: round; stroke-linejoin: round;
 }
 
 .app-shell { display: flex; height: 100dvh; overflow: hidden; }
@@ -113,8 +137,8 @@ button { font: inherit; cursor: pointer; }
 .sidebar-foot { flex-shrink: 0; padding: var(--caff-space-3); border-top: 1px solid var(--caff-line); }
 .btn-primary {
   width: 100%; min-height: 44px;
-  border: 0; border-radius: 999px;
-  background: linear-gradient(135deg, var(--caff-accent), var(--caff-accent-deep));
+  border: 0; border-radius: var(--caff-radius-md);
+  background: var(--caff-accent);
   color: #fff9f5; font-weight: 600;
 }
 
@@ -208,18 +232,17 @@ button { font: inherit; cursor: pointer; }
 }
 .error-card button {
   min-height: 44px; padding: 0 var(--caff-space-4);
-  border: 0; border-radius: 999px;
+  border: 0; border-radius: var(--caff-radius-md);
   background: var(--caff-danger); color: #fff; font-size: 13px;
 }
 
 .skeleton { display: flex; flex-direction: column; gap: var(--caff-space-3); }
 .skeleton .line {
   height: 14px; border-radius: 7px;
-  background: linear-gradient(90deg, var(--caff-surface-sunk) 25%, #faf5ec 50%, var(--caff-surface-sunk) 75%);
-  background-size: 200% 100%;
-  animation: shimmer 1.4s linear infinite;
+  background: var(--caff-surface-sunk);
+  animation: skeletonPulse 1.4s ease-in-out infinite alternate;
 }
-@keyframes shimmer { to { background-position: -200% 0; } }
+@keyframes skeletonPulse { to { opacity: 0.5; } }
 
 .empty-card {
   margin: 12vh auto 0;
@@ -233,7 +256,7 @@ button { font: inherit; cursor: pointer; }
 .empty-card .hints { display: flex; flex-wrap: wrap; gap: var(--caff-space-2); justify-content: center; margin-top: var(--caff-space-4); }
 .empty-card .hints button {
   min-height: 44px; padding: 0 var(--caff-space-4);
-  border: 1px solid var(--caff-line); border-radius: 999px;
+  border: 1px solid var(--caff-line); border-radius: var(--caff-radius-md);
   background: var(--caff-canvas); color: var(--caff-ink);
 }
 
@@ -242,8 +265,9 @@ button { font: inherit; cursor: pointer; }
   margin: 0 auto; width: max-content;
   display: inline-flex; align-items: center;
   min-height: 44px; padding: 0 20px;
-  border: 0; border-radius: 999px;
-  background: var(--caff-ink); color: #fff;
+  gap: var(--caff-space-2);
+  border: 1px solid var(--caff-line); border-radius: var(--caff-radius-lg);
+  background: var(--caff-surface-elevated); color: var(--caff-ink);
   font-size: 13px;
   box-shadow: 0 6px 18px rgba(34, 49, 63, 0.25);
 }
@@ -280,8 +304,8 @@ button { font: inherit; cursor: pointer; }
   position: fixed; top: 0; right: 0; bottom: 0;
   width: min(var(--drawer-w), 92vw);
   display: flex; flex-direction: column;
-  background: rgba(255, 253, 249, 0.92);
-  backdrop-filter: blur(14px);
+  background: var(--caff-surface);
+  backdrop-filter: none;
   border-left: 1px solid var(--caff-line);
   transform: translateX(100%);
   transition: transform 220ms ease;
@@ -299,7 +323,7 @@ body[data-drawer="open"] .drawer-overlay { opacity: 1; pointer-events: auto; }
 .drawer-tabs { flex-shrink: 0; display: flex; gap: 4px; padding: var(--caff-space-2) var(--caff-space-3); border-bottom: 1px solid var(--caff-line); overflow-x: auto; }
 .drawer-tabs button {
   min-height: 44px; padding: 0 var(--caff-space-3);
-  border: 0; border-radius: 999px;
+  border: 0; border-radius: var(--caff-radius-md);
   background: transparent; color: var(--caff-ink-soft);
   font-size: 13px; white-space: nowrap;
 }
@@ -316,7 +340,7 @@ body[data-drawer="open"] .drawer-overlay { opacity: 1; pointer-events: auto; }
   font-size: 13.5px;
 }
 .setting-row { display: flex; align-items: center; justify-content: space-between; min-height: 44px; padding: var(--caff-space-2) 0; font-size: 14px; }
-.setting-row button { min-width: 44px; min-height: 44px; border: 1px solid var(--caff-line); border-radius: 999px; background: var(--caff-surface); padding: 0 var(--caff-space-4); }
+.setting-row button { min-width: 44px; min-height: 44px; border: 1px solid var(--caff-line); border-radius: var(--caff-radius-md); background: var(--caff-surface); padding: 0 var(--caff-space-4); }
 .setting-row button[aria-pressed="true"] { background: rgba(42,157,143,0.15); color: var(--caff-teal); border-color: var(--caff-teal); font-weight: 700; }
 
 /* ── Dev toolbar (演示用，非产品设计) ── */
@@ -378,19 +402,20 @@ body[data-state="long"] .state-long { display: flex; flex-direction: column; gap
 <div class="app-shell" id="appShell">
 
   <nav class="rail" aria-label="主导航">
-    <button aria-current="page" title="聊天工作台" aria-label="聊天工作台">💬</button>
-    <button title="人格管理" aria-label="人格管理">🎭</button>
-    <button title="Skill 管理" aria-label="Skill 管理">🛠️</button>
-    <button title="项目管理" aria-label="项目管理">📁</button>
-    <button title="评测报表" aria-label="评测报表">📊</button>
+    <button aria-current="page" title="聊天工作台" aria-label="聊天工作台"><svg class="app-icon" aria-hidden="true"><use href="../public/assets/icons.svg#icon-chat"></use></svg></button>
+    <button title="人格管理" aria-label="人格管理"><svg class="app-icon" aria-hidden="true"><use href="../public/assets/icons.svg#icon-users"></use></svg></button>
+    <button title="Skill 管理" aria-label="Skill 管理"><svg class="app-icon" aria-hidden="true"><use href="../public/assets/icons.svg#icon-puzzle"></use></svg></button>
+    <button title="项目管理" aria-label="项目管理"><svg class="app-icon" aria-hidden="true"><use href="../public/assets/icons.svg#icon-folder"></use></svg></button>
+    <button title="评测报表" aria-label="评测报表"><svg class="app-icon" aria-hidden="true"><use href="../public/assets/icons.svg#icon-bar-chart"></use></svg></button>
     <span class="spacer"></span>
-    <button title="设置" aria-label="设置">⚙️</button>
+    <button id="themeToggle" title="切换为深色主题" aria-label="切换为深色主题"><svg class="app-icon" aria-hidden="true"><use href="../public/assets/icons.svg#icon-moon"></use></svg></button>
+    <button title="设置" aria-label="设置"><svg class="app-icon" aria-hidden="true"><use href="../public/assets/icons.svg#icon-settings"></use></svg></button>
   </nav>
 
   <aside class="sidebar" id="sidebar" aria-label="会话列表" aria-hidden="true" inert>
     <div class="sidebar-head">
       <h1>会话</h1>
-      <button class="icon-btn" id="sidebarClose" aria-label="收起会话栏">✕</button>
+      <button class="icon-btn" id="sidebarClose" aria-label="收起会话栏"><svg class="app-icon" aria-hidden="true"><use href="../public/assets/icons.svg#icon-x"></use></svg></button>
     </div>
     <ul class="sidebar-list">
       <li><button class="conv-item" aria-current="true">
@@ -407,19 +432,19 @@ body[data-state="long"] .state-long { display: flex; flex-direction: column; gap
       </button></li>
     </ul>
     <div class="sidebar-foot">
-      <button class="btn-primary">＋ 新建会话</button>
+      <button class="btn-primary">新建会话</button>
     </div>
   </aside>
 
   <main class="main">
     <header class="chat-header">
-      <button class="icon-btn" id="sidebarToggle" aria-label="打开会话栏" aria-expanded="false">☰</button>
+      <button class="icon-btn" id="sidebarToggle" aria-label="打开会话栏" aria-expanded="false"><svg class="app-icon" aria-hidden="true"><use href="../public/assets/icons.svg#icon-menu"></use></svg></button>
       <div class="titles">
         <h2>狼人杀之夜</h2>
         <span class="status"><span class="dot" aria-hidden="true"></span>本地服务已连接 · 3 位人格在线</span>
       </div>
       <span class="mode-pill">狼人杀</span>
-      <button class="icon-btn" id="drawerToggle" aria-expanded="false" aria-controls="contextDrawer">面板 ▾</button>
+      <button class="icon-btn" id="drawerToggle" aria-expanded="false" aria-controls="contextDrawer"><svg class="app-icon" aria-hidden="true"><use href="../public/assets/icons.svg#icon-panel-right"></use></svg> 面板</button>
     </header>
 
     <div class="message-list" id="messageList" role="log" tabindex="0" aria-live="polite" aria-label="消息列表">
@@ -430,9 +455,9 @@ body[data-state="long"] .state-long { display: flex; flex-direction: column; gap
             <h3>开始一场多人格对话</h3>
             <p class="sub" style="color:var(--caff-ink-soft)">@提及人格来路由消息，或让后端主持开局。</p>
             <div class="hints">
-              <button>💡 示例：今晚谁是卧底？</button>
-              <button>🎭 管理人格</button>
-              <button>🐺 开一局狼人杀</button>
+              <button>示例：今晚谁是卧底？</button>
+              <button>管理人格</button>
+              <button>开一局狼人杀</button>
             </div>
           </div>
         </div>
@@ -505,7 +530,7 @@ body[data-state="long"] .state-long { display: flex; flex-direction: column; gap
 <aside class="context-drawer" id="contextDrawer" role="dialog" aria-modal="true" aria-label="上下文面板" aria-hidden="true" inert>
     <div class="drawer-head">
       <h2>上下文面板</h2>
-      <button class="icon-btn" id="drawerClose" aria-label="关闭面板">✕</button>
+      <button class="icon-btn" id="drawerClose" aria-label="关闭面板"><svg class="app-icon" aria-hidden="true"><use href="../public/assets/icons.svg#icon-x"></use></svg></button>
     </div>
     <div class="drawer-tabs" role="tablist" aria-label="面板分类">
       <button role="tab" id="tab-participants" aria-controls="panel-participants" aria-selected="true" tabindex="0">参与者</button>
@@ -576,6 +601,17 @@ const sidebarToggle = document.getElementById('sidebarToggle');
 const sidebar = document.getElementById('sidebar');
 const appShell = document.getElementById('appShell');
 const devToolbar = document.querySelector('.dev-toolbar');
+const themeToggle = document.getElementById('themeToggle');
+
+function setTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  const dark = theme === 'dark';
+  const nextLabel = dark ? '切换为浅色主题' : '切换为深色主题';
+  themeToggle.setAttribute('aria-label', nextLabel);
+  themeToggle.setAttribute('title', nextLabel);
+  themeToggle.querySelector('use').setAttribute('href', `../public/assets/icons.svg#icon-${dark ? 'sun' : 'moon'}`);
+}
+themeToggle.addEventListener('click', () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
 
 document.querySelectorAll('.dev-toolbar [data-s]').forEach(b => {
   b.addEventListener('click', () => {
@@ -713,7 +749,7 @@ document.getElementById('devAppend').addEventListener('click', () => {
   else if (!pill) {
     pill = document.createElement('button');
     pill.className = 'new-msg-pill';
-    pill.textContent = '↓ 新消息';
+    pill.innerHTML = '<svg class="app-icon" aria-hidden="true"><use href="../public/assets/icons.svg#icon-arrow-down"></use></svg><span>新消息</span>';
     pill.addEventListener('click', () => { scrollToBottom(); clearPill(); });
     list.appendChild(pill);
   }
