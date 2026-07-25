@@ -3,9 +3,14 @@ feature_ids: [CAFF-UI-M3]
 topics: [frontend, ui, design-system, dark-mode, svg-icons, accessibility]
 doc_kind: plan
 created: 2026-07-25
+status: done
+completed: 2026-07-25
 ---
 
 # CAFF UI Theme and Line Icons Implementation Plan
+
+**Status:** done · **Completed:** 2026-07-25 · **Accepted product head:** `a26a2a7400fb38a94004b5cfdb2e00047f6fd1e3`
+**Completion artifacts:** [Close Gate Report](../review-notes/2026-07-25-caff-ui-theme-icons-close-gate.md) · [Reflection Capsule](../project-reflections/2026-07-25-caff-ui-theme-icons-capsule.md) · [Harness Feedback](../docs/harness-feedback/2026-07-25-caff-ui-m3-theme-icons.md)
 
 **Feature:** CAFF UI Redesign Milestone 3 — `designs/caff-ui-redesign-brief.md`
 **Goal:** 在不改变 M1/M2 信息架构、滚动所有权与业务契约的前提下，把 CAFF 的视觉语言收敛为克制的 light/dark 双主题，并以仓库自有线性 SVG 图标替换应用 chrome 中的 emoji。
@@ -237,3 +242,10 @@ window.CaffIcons.create('archive', { className: 'app-icon digest-icon' });
 4. commit body 写 Why、身份签名与 thread provenance。
 5. 使用 `request-review` 请求跨个体 reviewer；作者不自审，remote 继续不动。
 
+## Completion Record
+
+- Code review: **APPROVE** — `0001784954231371-001784-392e4b17`；R1 exact-44px continuity review: **APPROVE** — `0001784956043604-001804-18463a62`。
+- Vision guardian: **VISION APPROVE** at final product SHA `a26a2a7` — `0001784956529839-001825-fac1b550`。
+- Final acceptance: `npm run test:ui` 93/93；desktop/820/375 toggle 44px；N1/N2 zero residue。证据与逐条 AC 处置见 [Close Gate Report](../review-notes/2026-07-25-caff-ui-theme-icons-close-gate.md)。
+- Reflection/harness checkpoint: [Reflection Capsule](../project-reflections/2026-07-25-caff-ui-theme-icons-capsule.md) · [Harness Feedback](../docs/harness-feedback/2026-07-25-caff-ui-m3-theme-icons.md)。
+- Remote boundary remains frozen: no push and no PR; completion advances local `main` only.
