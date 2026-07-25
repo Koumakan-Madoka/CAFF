@@ -263,6 +263,15 @@ test('the browser gate includes the two-theme route verifier', () => {
   assert.match(verifier, /assets\/icons\.svg/);
 });
 
+test('the browser verifier enforces the exact 44px theme target contract', () => {
+  const verifier = read('scripts/ui/verify-theme-icons.mjs');
+
+  assert.doesNotMatch(verifier, />=\s*43\.5/);
+  assert.match(verifier, /snapshot\.toggle\.width\s*>=\s*44/);
+  assert.match(verifier, /snapshot\.toggle\.height\s*>=\s*44/);
+  assert.match(verifier, /state\.toggleSize\s*>=\s*44/);
+});
+
 test('package gates include the new shared helpers and M3 contract suite', () => {
   const pkg = JSON.parse(read('package.json'));
   assert.match(pkg.scripts.check, /public\/shared\/theme\.js/);

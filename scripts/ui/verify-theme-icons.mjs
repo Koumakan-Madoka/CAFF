@@ -188,8 +188,8 @@ export async function verifyThemeIcons({ browser, baseUrl, ok }) {
             && snapshot.colorScheme === theme
             && snapshot.explicit
             && snapshot.toggle.count === 1
-            && snapshot.toggle.width >= 43.5
-            && snapshot.toggle.height >= 43.5
+            && snapshot.toggle.width >= 44
+            && snapshot.toggle.height >= 44
             && snapshot.toggle.pressed === String(theme === 'dark')
             && snapshot.toggle.label === expectedLabel
             && snapshot.toggle.icon.endsWith(`#icon-${expectedIcon}`)
@@ -293,7 +293,7 @@ export async function verifyThemeIcons({ browser, baseUrl, ok }) {
             && state.widthContained
             && state.heightContained
             && state.railVisible
-            && state.toggleSize >= 43.5
+            && state.toggleSize >= 44
             && state.icons >= 7
             && diagnosticsAreClean(opened.diagnostics),
           JSON.stringify({ state, diagnostics: opened.diagnostics }),
