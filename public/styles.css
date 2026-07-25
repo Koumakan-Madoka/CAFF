@@ -3157,7 +3157,8 @@ body.chat-app .rail-button:hover {
   transform: none;
 }
 
-body.chat-app .rail .spacer {
+body.chat-app .rail .spacer,
+body.management-app .rail .spacer {
   flex: 1;
 }
 
@@ -3551,13 +3552,14 @@ body.chat-app .drawer-panel {
     width: 100%;
     height: 56px;
     flex-direction: row;
-    justify-content: space-around;
+    justify-content: space-between;
     border-right: 0;
     border-top: 1px solid var(--caff-line);
     padding: 0 var(--caff-space-2);
   }
 
-  body.chat-app .rail .spacer {
+  body.chat-app .rail .spacer,
+  body.management-app .rail .spacer {
     display: none;
   }
 
@@ -3892,7 +3894,7 @@ body.management-app .toast {
     width: 100%;
     height: 56px;
     flex-direction: row;
-    justify-content: space-around;
+    justify-content: space-between;
     gap: 0;
     padding: 0 var(--caff-space-2);
     border-top: 1px solid var(--caff-line);

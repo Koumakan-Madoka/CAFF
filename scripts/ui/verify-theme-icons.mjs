@@ -65,7 +65,9 @@ async function readThemeSnapshot(page, definition) {
   return page.evaluate(async ({ primarySelector }) => {
     const visible = (element) => Boolean(element && element.getClientRects().length > 0 && getComputedStyle(element).display !== 'none');
     const styleOf = (element) => element ? getComputedStyle(element) : null;
+    const rail = document.querySelector('.rail');
     const toggle = document.querySelector('button[data-theme-toggle]');
+    const railRect = rail ? rail.getBoundingClientRect() : null;
     const toggleRect = toggle ? toggle.getBoundingClientRect() : null;
     const input = Array.from(document.querySelectorAll('input:not([type="hidden"]), textarea, select')).find(visible);
     const primary = document.querySelector(primarySelector);
@@ -120,8 +122,11 @@ async function readThemeSnapshot(page, definition) {
       explicit: Boolean(window.CaffTheme && window.CaffTheme.hasExplicitPreference()),
       toggle: {
         count: document.querySelectorAll('button[data-theme-toggle]').length,
+        x: toggleRect ? toggleRect.x : -1,
+        y: toggleRect ? toggleRect.y : -1,
         width: toggleRect ? toggleRect.width : 0,
         height: toggleRect ? toggleRect.height : 0,
+        bottomGap: railRect && toggleRect ? railRect.bottom - toggleRect.bottom : -1,
         pressed: toggle ? toggle.getAttribute('aria-pressed') : '',
         label: toggle ? toggle.getAttribute('aria-label') : '',
         icon: toggle ? toggle.querySelector('use')?.getAttribute('href') || '' : '',
@@ -166,8 +171,17 @@ async function readResponsiveState(page) {
       heightContained: document.documentElement.scrollHeight <= innerHeight + 1,
       railVisible: Boolean(railRect && railRect.width > 0 && railRect.height > 0),
       toggleSize: toggleRect ? Math.min(toggleRect.width, toggleRect.height) : 0,
+      toggleBottomGap: railRect && toggleRect ? railRect.bottom - toggleRect.bottom : -1,
+      toggleRightGap: railRect && toggleRect ? railRect.right - toggleRect.right : -1,
       icons: document.querySelectorAll('svg.app-icon use').length,
     };
+  });
+}
+
+async function readTogglePosition(page) {
+  return page.evaluate(() => {
+    const rect = document.querySelector('button[data-theme-toggle]')?.getBoundingClientRect();
+    return rect ? { x: rect.x, y: rect.y } : null;
   });
 }
 
@@ -190,6 +204,7 @@ export async function verifyThemeIcons({ browser, baseUrl, ok }) {
             && snapshot.toggle.count === 1
             && snapshot.toggle.width >= 44
             && snapshot.toggle.height >= 44
+            && Math.abs(snapshot.toggle.bottomGap - 12) <= 1
             && snapshot.toggle.pressed === String(theme === 'dark')
             && snapshot.toggle.label === expectedLabel
             && snapshot.toggle.icon.endsWith(`#icon-${expectedIcon}`)
@@ -217,6 +232,20 @@ export async function verifyThemeIcons({ browser, baseUrl, ok }) {
             && contrast.input >= 4.5
             && contrast.primary >= 4.5,
           JSON.stringify({ containment: snapshot.containment, maxRadius: snapshot.maxRadius, contrast, backgrounds: snapshot.chromeBackgroundImages, backdrops: snapshot.chromeBackdropFilters }),
+        );
+
+        const before = await readTogglePosition(opened.page);
+        const toggledTheme = theme === 'dark' ? 'light' : 'dark';
+        await opened.page.click('button[data-theme-toggle]');
+        await opened.page.waitForFunction((expected) => document.documentElement.dataset.theme === expected, toggledTheme);
+        const after = await readTogglePosition(opened.page);
+        ok(
+          `Q-${definition.key}-${theme} switch keeps theme toggle fixed`,
+          Boolean(before && after)
+            && Math.abs(after.x - before.x) <= 0.5
+            && Math.abs(after.y - before.y) <= 0.5
+            && diagnosticsAreClean(opened.diagnostics),
+          JSON.stringify({ before, after, diagnostics: opened.diagnostics }),
         );
       } finally {
         await opened.context.close();
@@ -282,7 +311,7 @@ export async function verifyThemeIcons({ browser, baseUrl, ok }) {
     await invalidContext.close();
   }
 
-  for (const definition of ROUTES.filter(({ key }) => key === 'chat' || key === 'personas')) {
+  for (const definition of ROUTES) {
     for (const width of [820, 375]) {
       const opened = await openPage(browser, baseUrl, definition, 'dark', { width, height: 800 });
       try {
@@ -294,6 +323,9 @@ export async function verifyThemeIcons({ browser, baseUrl, ok }) {
             && state.heightContained
             && state.railVisible
             && state.toggleSize >= 44
+            && (width <= 767
+              ? Math.abs(state.toggleRightGap - 8) <= 1
+              : Math.abs(state.toggleBottomGap - 12) <= 1)
             && state.icons >= 7
             && diagnosticsAreClean(opened.diagnostics),
           JSON.stringify({ state, diagnostics: opened.diagnostics }),

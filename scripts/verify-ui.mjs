@@ -596,7 +596,7 @@ const normalized = [...tabSeq];
 const railIdx = normalized.findIndex((s) => s === 'rail-link');
 const rotated = railIdx > 0 ? [...normalized.slice(railIdx), ...normalized.slice(0, railIdx)] : normalized;
 const rotStr = rotated.join(' > ');
-const order = ['rail-link', 'theme-toggle', 'rail-settings-button', 'sidebarToggle', 'refresh-button', 'drawerToggle', 'message-list', 'composer-input'];
+const order = ['rail-link', 'rail-settings-button', 'theme-toggle', 'sidebarToggle', 'refresh-button', 'drawerToggle', 'message-list', 'composer-input'];
 let cursor = -1;
 let seqOk = true;
 for (const token of order) {
@@ -604,7 +604,7 @@ for (const token of order) {
   if (idx < 0) { seqOk = false; break; }
   cursor = idx;
 }
-ok('D1 focus order rail->theme->sidebarToggle->drawerToggle->messageList->composer (cyclic)', seqOk, rotStr);
+ok('D1 focus order rail->settings->theme->sidebarToggle->drawerToggle->messageList->composer (cyclic)', seqOk, rotStr);
 
 // E. 全量触控目标 >=44px（含注入的 tool-trace toggle / compact-icon-button）
 await page.evaluate(() => {

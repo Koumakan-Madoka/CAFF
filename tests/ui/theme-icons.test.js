@@ -111,6 +111,62 @@ test('all five routes bootstrap theme before CSS and expose one accessible toggl
   }
 });
 
+test('theme toggle occupies the terminal interactive rail slot on every route', () => {
+  for (const pageName of PAGE_FILES) {
+    const dom = new JSDOM(readPage(pageName));
+    const { document } = dom.window;
+    const rail = document.querySelector('.rail');
+    const toggle = rail?.querySelector('button[data-theme-toggle]');
+    const controls = [...(rail?.children || [])].filter((node) => node.matches('a, button'));
+
+    assert.ok(toggle, `${pageName} must expose its theme toggle inside the rail`);
+    assert.equal(
+      controls.at(-1),
+      toggle,
+      `${pageName} theme toggle must remain the final interactive rail control`,
+    );
+  }
+});
+
+test('chat and management rails share stable desktop and mobile terminal layout rules', () => {
+  const css = read('public/styles.css');
+
+  assert.match(
+    css,
+    /body\.chat-app \.rail \.spacer,\s*body\.management-app \.rail \.spacer\s*\{\s*flex:\s*1;\s*\}/,
+    'desktop rails must share the same flexible spacer',
+  );
+  assert.match(
+    css,
+    /body\.chat-app \.rail \.spacer,\s*body\.management-app \.rail \.spacer\s*\{\s*display:\s*none;\s*\}/,
+    'mobile rails must hide both spacers',
+  );
+  assert.match(
+    css,
+    /body\.chat-app \.rail\s*\{[^}]*justify-content:\s*space-between;/,
+    'the chat mobile rail must anchor its first and last controls',
+  );
+  assert.match(
+    css,
+    /body\.management-app \.rail\s*\{[^}]*justify-content:\s*space-between;/,
+    'management mobile rails must anchor their first and last controls',
+  );
+  assert.doesNotMatch(
+    css,
+    /body\.(?:chat|management)-app \.rail\s*\{[^}]*justify-content:\s*space-around;/,
+    'rail positions must not depend on route-specific child counts',
+  );
+});
+
+test('browser verifier locks theme toggle terminal offsets and switch stability', () => {
+  const verifier = read('scripts/ui/verify-theme-icons.mjs');
+
+  assert.match(verifier, /Math\.abs\(snapshot\.toggle\.bottomGap\s*-\s*12\)\s*<=\s*1/);
+  assert.match(verifier, /Math\.abs\(state\.toggleRightGap\s*-\s*8\)\s*<=\s*1/);
+  assert.match(verifier, /Math\.abs\(after\.x\s*-\s*before\.x\)\s*<=\s*0\.5/);
+  assert.match(verifier, /Math\.abs\(after\.y\s*-\s*before\.y\)\s*<=\s*0\.5/);
+});
+
 test('theme bootstrap honors explicit preference and valid values only', () => {
   const explicit = bootTheme({ stored: 'dark', systemDark: false });
   assert.equal(explicit.document.documentElement.dataset.theme, 'dark');
