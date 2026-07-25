@@ -178,4 +178,3 @@ window.CaffShared.createManagementListItem({
 3. 使用 `quality-gate` 对照原需求与本计划。
 4. commit body 写 Why、身份签名与 thread provenance。
 5. 使用 `request-review` 请求跨个体 reviewer，作者不自审。
-
