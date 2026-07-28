@@ -20,6 +20,7 @@ Worktree: `E:\pythonproject\caff-pi-sdk-host`
 | --- | --- | --- |
 | Default production runs must not depend on PATH, a global npm shim, or guessed package paths | AC-A1, AC-A7 | `lib/pi-runtime.ts` forks the built `pi-sdk-host.mjs`; the old CLI spawn, prompt transport, and heartbeat extension were deleted. Runtime-source scans find no legacy coding-agent package reference. |
 | CAFF must use one precisely pinned coding-agent package family | AC-A7 | `package.json` pins `@earendil-works/pi-coding-agent` to `0.80.10`; `npm ls --depth=0` resolves exactly `0.80.10`. Skill-test and OpenSandbox surfaces use the same package family. |
+| Every supported runtime must satisfy the pinned SDK engine | AC-A7 | `package.json.engines.node` and host preflight require `>=22.19.0`; README and OpenSandbox defaults use Node 22. Node 20.19.4 import failure is preserved as root-cause evidence. |
 | Pi/extension failures must remain isolated from the CAFF API process | AC-A5, AC-A6 | The ESM SDK loads in a forked Node host with a structured IPC channel. Crash, disconnect, cancel, timeout, and late-session shutdown paths are covered. |
 | Existing `startRun()` callers and event/result contracts must remain valid | AC-A1 through AC-A6 | Runtime tests cover prompt transport, unicode, assistant events, usage, sessions, extensions, cancellation, timeout, malformed protocol input, and host crash diagnostics. Full server smoke exercises the chat/turn/tool path. |
 | Runtime switching must never occur after prompt acceptance or tool execution | AC-A5, AC-A7 | There is no automatic CLI fallback. Termination uses an IPC abort request, then a bounded force-kill fallback only for the same host process. |
@@ -34,11 +35,11 @@ missing product scope.
 | --- | --- | --- |
 | AC-A1 event/caller contract | Pass | `tests/runtime/pi-runtime.test.js`; malformed IPC still emits compatible `stdout_parse_error` with `source: ipc`, and unused host stdout cannot backpressure-block IPC completion. |
 | AC-A2 session/resume | Pass | Runtime config forwarding plus `tests/runtime/pi-sdk-host.test.js` coverage for explicit, continue-recent, and fresh session managers. |
-| AC-A3 cwd/extensions/tool lifecycle | Pass | SDK host uses `DefaultResourceLoader.additionalExtensionPaths`; full server smoke reaches `trellis-init` and `trellis-write` through the chat tool bridge. |
+| AC-A3 cwd/extensions/tool lifecycle | Pass | SDK host creates an `AgentSessionRuntime`, binds extensions before prompt, provides official print-mode command actions, and disposes the runtime for `session_shutdown`. Real dogfood records `start:startup` and `shutdown:quit`. |
 | AC-A4 usage aggregation | Pass | Multi-call usage regression and real pinned-SDK dogfood report input 12, output 5, total 17. |
-| AC-A5 abort/timeout | Pass | IPC abort-before-force-kill tests; host abort-before-dispose test; late-created session shutdown race regression. |
+| AC-A5 abort/timeout | Pass | IPC abort-before-force-kill tests; host abort-before-runtime-dispose test; late-created runtime shutdown race regression. |
 | AC-A6 host crash | Pass | Non-zero fake host exit preserves exit code and stderr tail and rejects the run. |
-| AC-A7 version/package truth | Pass | Exact dependency `0.80.10`; single-family source scan; old runtime files removed; OpenSandbox default version comes from package.json. |
+| AC-A7 version/package truth | Pass | Exact dependency `0.80.10`; single-family source scan; old runtime files removed; Node engine/preflight is `>=22.19.0`; OpenSandbox defaults to `node:22-bookworm` and its SDK version comes from package.json. |
 | AC-A8 full gates | Pass | `npm run check`, `npm run typecheck`, `npm run build`, `npm test`, and `git diff --check` all exit 0. |
 
 ## Dogfood-Your-Slice
@@ -57,7 +58,7 @@ End-to-end path:
 build/lib/pi-runtime.startRun
   -> child_process.fork(build/lib/pi-sdk-host.mjs)
   -> import @earendil-works/pi-coding-agent@0.80.10
-  -> ModelRuntime + SessionManager + createAgentSession
+  -> AgentSessionRuntime + SessionManager + bindExtensions
   -> local mock model stream
   -> typed AgentEvent over Node IPC
   -> existing CAFF result/usage aggregation
@@ -73,6 +74,13 @@ Observed result:
   "parseErrors": 0,
   "usage": { "input": 12, "output": 5, "totalTokens": 17 }
 }
+```
+
+The same dogfood run loaded a temporary extension and observed:
+
+```text
+start:startup
+shutdown:quit
 ```
 
 Timing observation: the first cold-cache run took about 17.4 seconds; a second new-host run
@@ -91,6 +99,11 @@ Bug found and fixed during quality-gate: the smoke still injected the removed `P
 CLI fixture, so it accidentally started the real SDK without isolated credentials and timed out.
 The fixture is now cross-platform Node IPC, and the PowerShell CLI fixture was deleted. See
 `docs/bug-report/pi-sdk-host-smoke-fixture/bug-report.md`.
+
+Fresh-context review then found two P1 issues before formal peer approval: unsupported Node 20
+remained in the public/default sandbox contract, and the host skipped the SDK mode-level extension
+lifecycle. Both were independently reproduced, fixed Red→Green, and documented in
+`docs/bug-report/pi-sdk-host-fresh-context-findings/bug-report.md`.
 
 ## Design And Architecture
 
@@ -112,6 +125,8 @@ SDK host. It does not add a parallel store, queue, router, dispatcher, or API ow
 | CLI signal termination becomes IPC `abort` then force-kill | cancel, external completion, expected completion, heartbeat timeout, parent signals, host disconnect | All paths share one termination classifier; late-created sessions are aborted and disposed. |
 | Session selection moves to SDK `SessionManager` | named conversation sessions, resume, fresh runs, cwd-derived session directory | Explicit/open, continue-recent, and create mappings covered against the pinned SDK shape. |
 | Runtime package discovery becomes a pinned project dependency | main runtime, skill-test extension, OpenSandbox image, local package resolver | Earendil package family is the single runtime truth; only OpenSandbox's explicit compatibility input may still name a command path. |
+| Pinned SDK raises the Node runtime floor | package metadata, host startup, README, `.env.example`, OpenSandbox factory/build image | All surfaces require Node >=22.19; Node 20 fails early with an actionable host error instead of an `undici` initialization crash. |
+| CLI print mode lifecycle becomes SDK-host lifecycle | extension discovery, command context, session startup/shutdown, abort | Host mirrors `runPrintMode`: bind before prompt, rebind after session replacement, and dispose through `AgentSessionRuntime`. |
 
 ## Process Guards
 
@@ -145,11 +160,13 @@ npm test                                                     -> exit 0
 node --test tests/runtime/pi-runtime.test.js
   tests/runtime/pi-sdk-host.test.js
   tests/runtime/pi-skill-test-sandbox-extension.test.js
-  tests/runtime/open-sandbox-factory.test.js                  -> 34/34 pass
+  tests/runtime/open-sandbox-factory.test.js                  -> 36/36 pass
 git diff --check                                             -> exit 0
 npm ls @earendil-works/pi-coding-agent --depth=0              -> 0.80.10
 runtime package-family scan                                  -> no legacy coding-agent reference
+Node 20 runtime contract scan                                -> no stale Node 20 support/default text
+real pinned-SDK extension lifecycle                          -> start:startup, shutdown:quit
 ```
 
-Quality Gate verdict: **pass, ready for fresh-context review**. Formal approval is still required
+Quality Gate verdict: **pass, ready for formal peer review**. Formal approval is still required
 from a different individual; this report is not self-review authority.

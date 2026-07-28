@@ -44,6 +44,8 @@ CAFF 的主 Agent runtime 当前通过 spawn 全局 `pi` CLI（`pi --mode json -
 - `@earendil-works/pi-coding-agent@0.80.10` 是 ESM-only（`"type": "module"`），
   CAFF 是 CommonJS（`"type": "commonjs"`）→ 不能直接 `require()`，需要
   独立 Node 进程用 dynamic `import()` 加载。
+- 该 SDK 声明 `node >=22.19.0`；Node 20.19.4 实测在依赖 `undici` 初始化时
+  因 `webidl.util.markAsUncloneable` 缺失而无法导入。
 - SDK 导出 `AgentSession`（`subscribe`/`prompt`/`abort`/`getSessionStats`）、
   `AgentSessionRuntime`、`SessionManager`、`createAgentSession()`、
   `runPrintMode(runtime, { mode: "json" })`。
@@ -55,9 +57,10 @@ CAFF 的主 Agent runtime 当前通过 spawn 全局 `pi` CLI（`pi --mode json -
 
 把 `lib/pi-runtime.ts` 的 spawn 目标从全局 `pi` CLI 改为 CAFF 自管的
 Node SDK host 进程（`lib/pi-sdk-host.mjs`）。SDK host 用 ESM `import()` 加载
-精确锁定的 `@earendil-works/pi-coding-agent`，通过 `createAgentSession()`
-创建会话，`session.subscribe()` 监听 typed event 并用 Node IPC 直接发送结构化
-对象，`session.prompt()` 执行 prompt，`session.abort()` 做干净终止。CAFF
+精确锁定的 `@earendil-works/pi-coding-agent`，通过 `createAgentSessionRuntime()`
+创建 runtime，在 prompt 前调用 `session.bindExtensions()`，用 `session.subscribe()`
+监听 typed event 并经 Node IPC 发送结构化对象。终止时先 `session.abort()`，再由
+`AgentSessionRuntime.dispose()` 发出 `session_shutdown` 并释放会话。CAFF
 主进程的 `pi-runtime.ts` 保持现有 `startRun()` 签名、事件契约和结果对象不变。
 
 ## User Journey
@@ -71,6 +74,7 @@ Node SDK host 进程（`lib/pi-sdk-host.mjs`）。SDK host 用 ESM `import()` �
 - [x] CAFF 与 host 之间使用 Node IPC 结构化对象，不解析 JSONL stdout。
 - [x] `startRun()` 调用方契约保持不变。
 - [x] session/resume、extensions、usage、abort/timeout、crash 均有回归测试。
+- [x] 项目、host preflight 与 OpenSandbox 默认镜像统一要求 Node >=22.19。
 - [x] 运行中不自动 fallback 到 CLI。
 - [ ] 完整质量门禁、跨个体 review 与合入证据齐全。
 
@@ -87,17 +91,20 @@ Node SDK host 进程（`lib/pi-sdk-host.mjs`）。SDK host 用 ESM `import()` �
 
 ### AC-A2: Session/Resume 保持
 `options.session`（named session path）和 `options.resume`（continue
-latest session）行为不变。SDK host 通过 `SessionManager` 或
-`createAgentSession({ sessionManager })` 映射到 SDK 的 session 机制。
+latest session）行为不变。SDK host 通过 `SessionManager` 与
+`createAgentSessionRuntime({ sessionManager })` 映射到 SDK 的 session 机制。
 **验证**：`tests/runtime/pi-runtime.test.js` 覆盖 IPC 配置传输，
 `tests/runtime/pi-sdk-host.test.js` 覆盖 named session、continue recent 与 fresh session。
 
 ### AC-A3: Tool lifecycle 保持
 `options.extensionPaths` / `options.extensions` 传递到 SDK host，
-SDK host 通过 SDK 的 extension 机制加载。`options.cwd` 作为 SDK host
-的 `createAgentSession({ cwd })`。
-**验证**：runtime 测试覆盖 cwd + extensions 的 IPC 传递，host 测试覆盖
-`DefaultResourceLoader.additionalExtensionPaths` 的实际 SDK 映射。
+SDK host 通过 `createAgentSessionServices()` 加载资源，并在 prompt 前执行
+`session.bindExtensions()`。正常完成与 abort 都由 `AgentSessionRuntime.dispose()`
+触发 `session_shutdown`；extension command context 具备 wait/new/fork/navigate/switch/reload
+动作。`options.cwd` 作为 runtime 的有效 cwd。
+**验证**：runtime 测试覆盖 cwd + extensions 的 IPC 传递；host 测试覆盖
+services/runtime 映射、bind-before-prompt 与 abort-before-runtime-dispose；真实 pinned SDK
+dogfood 记录 `start:startup` 和 `shutdown:quit`。
 
 ### AC-A4: Usage 聚合保持
 `result.usage` 和 `result.usageCalls` 的聚合逻辑不变——多个 assistant
@@ -106,7 +113,8 @@ model call 的 usage 不重复计算 `agent_end` 的 messages。
 
 ### AC-A5: Abort/Timeout 保持
 `handle.cancel(reason)` 和 `handle.complete(reason)` 先通过 IPC 请求 host 调用
-`session.abort()`，grace period 后才强制终止进程树。Heartbeat timeout 走同一
+`session.abort()`，随后 `AgentSessionRuntime.dispose()`；grace period 后才强制终止
+进程树。Heartbeat timeout 走同一
 abort 协议；Windows `taskkill /T` 保留为兜底。
 **验证**：terminal completion、external completion、explicit cancel 与 heartbeat
 timeout 测试通过；host 单测证明 `abort()` 先于 `dispose()`。
@@ -121,8 +129,10 @@ SDK host 进程崩溃（非零退出/信号）时，`pi-runtime.ts` emit
 `package.json` 精确锁定 `@earendil-works/pi-coding-agent` 版本（无 `^`）。
 不再依赖 `@mariozechner/pi-coding-agent` 路径；旧 `pi-cli-spawn.ts`、
 `pi-prompt-transport.ts` 与 `pi-heartbeat-extension.mjs` 删除。
+`package.json.engines.node` 与 host preflight 均要求 `>=22.19.0`；OpenSandbox 默认镜像
+与文档统一为 `node:22-bookworm`。
 **验证**：grep 确认主 runtime 无 CLI/shim/prompt-stdin/JSONL parser 路径，
-package.json 版本无 `^`。
+package.json 版本无 `^`，Node 20 残留扫描为空。
 
 ### AC-A8: 全量测试通过
 `npm run build` + `npm run typecheck` + `tests/runtime/pi-runtime.test.js`
@@ -137,8 +147,10 @@ package.json 版本无 `^`。
 从 origin/main 开工。基线测试 7/7 通过。
 
 ### OQ2: AgentSessionRuntime/SessionManager 与 CAFF 映射
-- `createAgentSession({ cwd, agentDir, model, thinkingLevel, sessionManager })`
-  替代 CLI `--provider/--model/--thinking/--session/--continue` 参数。
+- `createAgentSessionRuntime(createRuntime, { cwd, agentDir, sessionManager })` 持有 runtime；
+  factory 内通过 `createAgentSessionServices()`、model resolution 与
+  `createAgentSessionFromServices()` 替代 CLI
+  `--provider/--model/--thinking/--session/--continue` 参数。
 - `SessionManager` 管理 session 文件路径和 resume。
 - CAFF 现有 `resolveSessionPath(session, agentDir)` 逻辑可以传递给 SDK host，
   SDK host 用 `SessionManager` 或直接用 session 文件路径。
@@ -169,10 +181,22 @@ SDK `AgentEvent` 与 CLI JSONL 同源：
   仅允许上层在确认干净 abort 后显式重试。
 
 ### OQ5: ESM-only SDK 在 CommonJS 构建中的加载边界
-SDK 是 ESM-only，CAFF 是 CommonJS。解决方案：spawn 独立 Node 进程
+SDK 是 ESM-only，且要求 Node >=22.19；CAFF 是 CommonJS。解决方案：项目 engines、
+host preflight 与 sandbox 默认镜像统一该最低版本，并 spawn 独立 Node 进程
 （`lib/pi-sdk-host.mjs`，`.mjs` 扩展名强制 ESM），进程内用 `import()` 加载
 SDK。CAFF 主进程不直接加载 SDK，通过 `fork()` 创建的 Node IPC channel
 通信。这保持了故障隔离，且不需要改变 CAFF 的模块系统。
+
+## Fresh-Context Finding Resolution
+
+- **FC-1 Node runtime contract**：Node 20.19.4 真实导入失败。通过 `engines.node`、host
+  preflight、README、`.env.example`、OpenSandbox factory/build image 全面统一到
+  Node >=22.19；Red→Green 覆盖 package contract 与默认镜像。
+- **FC-2 extension lifecycle**：原实现只创建 `AgentSession`，遗漏 mode 层负责的
+  `bindExtensions`/`session_shutdown`。改为 `AgentSessionRuntime` + 官方 print-mode 等价
+  bindings/dispose；真实 extension dogfood 观察到 startup/quit 生命周期。
+- 根因与回归证据见
+  `docs/bug-report/pi-sdk-host-fresh-context-findings/bug-report.md`。
 
 ## Architecture
 

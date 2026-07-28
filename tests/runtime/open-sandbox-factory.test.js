@@ -17,6 +17,25 @@ test('open sandbox factory stays disabled by default', () => {
   assert.equal(factory, null);
 });
 
+test('open sandbox factory defaults to a Node version supported by the pinned Pi SDK', () => {
+  const {
+    normalizeOpenSandboxFactoryOptions,
+  } = require('../../build/server/domain/skill-test/open-sandbox-factory');
+  const previousImage = process.env.CAFF_SKILL_TEST_OPENSANDBOX_IMAGE;
+
+  delete process.env.CAFF_SKILL_TEST_OPENSANDBOX_IMAGE;
+  try {
+    const options = normalizeOpenSandboxFactoryOptions({});
+    assert.equal(options.image, 'node:22-bookworm');
+  } finally {
+    if (previousImage === undefined) {
+      delete process.env.CAFF_SKILL_TEST_OPENSANDBOX_IMAGE;
+    } else {
+      process.env.CAFF_SKILL_TEST_OPENSANDBOX_IMAGE = previousImage;
+    }
+  }
+});
+
 test('open sandbox factory falls back to compatibility REST client when sdk create fails', async () => {
   const {
     createConfiguredOpenSandboxFactory,

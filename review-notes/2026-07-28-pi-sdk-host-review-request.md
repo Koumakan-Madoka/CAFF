@@ -11,7 +11,9 @@ Review-Target-ID: `feat-pi-sdk-host`
 
 Branch: `feat/pi-sdk-host`
 
-Review SHA: `595ac5c`
+Review scope: `origin/main...HEAD`
+
+Original migration core SHA: `595ac5c`
 
 ## What
 
@@ -20,6 +22,10 @@ Review SHA: `595ac5c`
 - Pin `@earendil-works/pi-coding-agent` to `0.80.10` and use that package family across the
   main runtime, skill-test extension, and OpenSandbox runtime image/resolver.
 - Preserve the public `startRun()` handle, event, usage, session, completion, and error contracts.
+- Enforce the pinned SDK's Node `>=22.19.0` requirement across package metadata, host preflight,
+  documentation, and OpenSandbox defaults.
+- Mirror the SDK print-mode extension lifecycle with `AgentSessionRuntime`, `bindExtensions`, and
+  runtime disposal.
 - Delete the obsolete CLI spawn, stdin prompt transport, heartbeat extension, and PowerShell
   smoke fixture.
 
@@ -82,15 +88,24 @@ None. The operator already selected the forked SDK-host direction.
 
 ## Fresh-Context Findings
 
-An independent fresh-context worker was triggered as a finding generator. No usable finding list
-was available when this formal request was prepared. Separately, author self-check found and
-fixed one issue before review: an unread stdout pipe could backpressure a noisy SDK/extension;
-commit `595ac5c` changes stdout to `ignore` and adds a red→green regression. This is not counted
-as independent review evidence.
+Fresh-context review found two P1 issues after the initial request was prepared:
+
+1. Node 20.19.4 cannot import the pinned SDK (`webidl.util.markAsUncloneable` failure), while CAFF
+   and the default OpenSandbox image still advertised Node 20 support.
+2. The host created an `AgentSession` directly but skipped `bindExtensions()` and
+   `AgentSessionRuntime.dispose()`, so startup/resource/shutdown lifecycle hooks were absent.
+
+Both were independently reproduced and fixed Red→Green. The Node contract is now `>=22.19.0`
+across package/host/docs/sandbox; the host now mirrors the official print-mode lifecycle. Real
+pinned-SDK dogfood observed `start:startup` and `shutdown:quit`.
+
+Earlier author self-check also fixed an unread stdout pipe that could backpressure a noisy
+SDK/extension; commit `595ac5c` changes stdout to `ignore` and adds a regression. None of these
+findings count as formal cross-individual approval.
 
 ## Next Action
 
-Please perform an independent code review of the exact review SHA and return an explicit
+Please perform an independent code review of the current branch HEAD and return an explicit
 `APPROVE` or `REQUEST-CHANGES` verdict with P0/P1/P2/P3 findings and independent validation
 evidence. The author must not self-approve.
 
@@ -119,6 +134,7 @@ node --test `
 - Quality gate: `project-evidence/F002-quality-gate.md`
 - Feature truth: `docs/features/F002-pi-sdk-host-migration.md`
 - Smoke regression root cause: `docs/bug-report/pi-sdk-host-smoke-fixture/bug-report.md`
+- Fresh-context P1 root cause: `docs/bug-report/pi-sdk-host-fresh-context-findings/bug-report.md`
 - No `.pen` or UI changes; root media/design artifact scan is empty.
 
 ### Fresh validation
@@ -128,13 +144,14 @@ npm run check       -> exit 0
 npm run typecheck   -> exit 0
 npm run build       -> exit 0
 npm test            -> exit 0; server smoke 60/60
-focused migration   -> 34/34 pass
+focused migration   -> 36/36 pass
 git diff --check    -> exit 0
 npm ls pinned SDK   -> @earendil-works/pi-coding-agent@0.80.10
 ```
 
 Real pinned-SDK dogfood used only a temporary agent directory and an ephemeral local mock model
-endpoint; result was `hello from pinned sdk host`, parseErrors 0, usage 12 input / 5 output.
+endpoint; result was `hello from pinned sdk host`, parseErrors 0, usage 12 input / 5 output. A
+temporary extension observed `start:startup` and `shutdown:quit`.
 
 ### Worktree placement
 

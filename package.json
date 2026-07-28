@@ -24,6 +24,9 @@
   "author": "Koumakan-Madoka",
   "license": "MIT",
   "type": "commonjs",
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "0.80.10",
     "@larksuiteoapi/node-sdk": "^1.60.0",
