@@ -47,7 +47,7 @@ Opening or refreshing a conversation currently reads and returns every public me
 - [x] AC-4: Empty conversations, boundary limits, deleted cursor rows, and messages appended after a cursor is issued have deterministic behavior covered by tests.
 - [x] AC-5: `EXPLAIN QUERY PLAN` shows both latest and before-cursor queries use `idx_chat_messages_conversation_id`; no synonymous index is added.
 - [x] AC-6: An isolated 50,000-message conversation returns only one bounded page and records query-plan/performance evidence.
-- [ ] AC-7: Desktop and 375px browser verification proves initial bottom position, older-page prepend anchoring, no duplicate rendering, and correct live-message order.
+- [x] AC-7: Desktop and 375px browser verification proves initial bottom position, older-page prepend anchoring, no duplicate rendering, and correct live-message order.
 - [x] AC-8: Runtime prompt, digest, undercover, werewolf, tool trace, export, diagnostics, and recovery paths retain full-history behavior or targeted lookup behavior, with the call-site audit recorded.
 - [x] AC-9: `npm run test:fast`, `npm run test:smoke`, type checks, and focused long-history tests pass against isolated SQLite fixtures.
 

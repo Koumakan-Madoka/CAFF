@@ -21,7 +21,7 @@ Worktree: `E:\pythonproject\caff-long-conversation-pagination`
 | Complete stable traversal, including equal timestamps | AC-2, AC-4 | Tuple keyset `(created_at,id)`, repository traversal tests, deleted cursor row and append-after-cursor tests. |
 | Strict bounded public API | AC-3 | Default 50, maximum 100, opaque conversation-bound cursor, invalid shape/timestamp/limit tests. |
 | Reuse the existing SQLite index | AC-5, AC-6 | Both prepared-statement query plans use `idx_chat_messages_conversation_id`; 50,000-row page is bounded to 50. |
-| Older history remains reachable without scroll jumps | AC-7 | UI state owns the older cursor, deduplicates by id, prepends pages, and restores `scrollTop` by the `scrollHeight` delta. Hub Preview opened the isolated app on port 3110. |
+| Older history remains reachable without scroll jumps | AC-7 | Real Chromium at 1280x900 and 375x812 proves initial latest positioning, two anchored prepends with at most about 1px drift, 120/120 unique traversal, and responsive rendering. |
 | Runtime, digest, games, trace, export, diagnostics, and recovery keep their semantics | AC-8 | Full-history call-site audit in `project-evidence/F001-long-conversation-pagination.md`; fast and smoke suites pass. |
 | Release gates pass | AC-9 | Typecheck, fast, and smoke passed after implementation. |
 
@@ -63,7 +63,15 @@ Real three-page traversal:
 
 Bug found and fixed during dogfood/self-check: a failed switch could leave the selected conversation and message-history owner out of sync, allowing an old SSE refresh to issue two requests under the new owner's generation. The regression now proves zero requests when the owner differs.
 
-Visual evidence limitation: the available typed Hub Preview surface exposes `preview_open` but not viewport resize or screenshot capture. The page is live in the Hub panel; the 375px-specific automated proof is the fixed-width-free control layout plus public typecheck and state/DOM integration tests. This is a review focus rather than an unreported claim.
+The first review correctly carried a 375px screenshot gap. Follow-up verification used an already-installed local Playwright/Chromium runtime without adding a project dependency. That run found a real document-scroll ownership defect, fixed it Red→Green, and captured desktop and 375px screenshots under `project-evidence/F001-browser/`.
+
+Browser anchor metrics after the fix:
+
+```text
+1280x900: first prepend -0.203px, second prepend +1.016px
+375x812: first prepend -0.531px, second prepend +1.000px
+both: initial 50 unique; final 120 rows / 120 unique; history control hidden at end
+```
 
 ## Design And Architecture
 
@@ -103,4 +111,4 @@ latest plan: SEARCH chat_messages USING INDEX idx_chat_messages_conversation_id 
 before plan: SEARCH chat_messages USING INDEX idx_chat_messages_conversation_id (conversation_id=? AND (created_at,id)<(?,?))
 ```
 
-Quality Gate verdict: pass with one explicit visual-evidence warning for the unavailable typed 375px screenshot surface. Formal non-author review must assess the responsive control CSS and UI state integration.
+Quality Gate verdict: pass. The earlier visual-evidence warning is closed by real 1280px/375px Chromium interaction and screenshots. Because the browser run caused a behavior fix after the first peer review, the new SHA requires scoped non-author continuity approval before merge.

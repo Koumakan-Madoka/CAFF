@@ -2621,12 +2621,11 @@ function showToast(message) {
 }
 
 function scrollMessageListToBottom() {
-  dom.messageList.scrollTop = dom.messageList.scrollHeight;
+  messageHistory.scrollToBottom(dom.messageList);
 }
 
 function isMessageListNearBottom() {
-  const distanceFromBottom = dom.messageList.scrollHeight - dom.messageList.scrollTop - dom.messageList.clientHeight;
-  return distanceFromBottom < 72;
+  return messageHistory.isNearBottom(dom.messageList);
 }
 
 function scheduleConversationPaneRender(delayMs = 0) {

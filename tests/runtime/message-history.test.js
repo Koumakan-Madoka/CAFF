@@ -96,6 +96,55 @@ test('message history restores the viewport after older rows increase scroll hei
   assert.equal(scroller.scrollTop, 960);
 });
 
+test('message history anchors the document when the message list is not independently scrollable', () => {
+  const history = loadMessageHistory();
+  const documentScroller = {
+    clientHeight: 812,
+    scrollHeight: 19895,
+    scrollTop: 1265,
+  };
+  const messageList = {
+    clientHeight: 12538,
+    ownerDocument: {
+      scrollingElement: documentScroller,
+    },
+    scrollHeight: 12538,
+    scrollTop: 0,
+  };
+  const anchor = history.captureScrollAnchor(messageList);
+  documentScroller.scrollHeight += 12271;
+
+  history.restoreScrollAnchor(messageList, anchor);
+
+  assert.equal(documentScroller.scrollTop, 13536);
+  assert.equal(messageList.scrollTop, 0);
+});
+
+test('message history scrolls the document viewport to the latest message when the list expands with the page', () => {
+  const history = loadMessageHistory();
+  const documentScroller = {
+    clientHeight: 812,
+    scrollHeight: 19895,
+    scrollTop: 0,
+  };
+  const messageList = {
+    clientHeight: 12538,
+    getBoundingClientRect() {
+      return { bottom: 14181 };
+    },
+    ownerDocument: {
+      defaultView: { innerHeight: 812 },
+      scrollingElement: documentScroller,
+    },
+    scrollHeight: 12538,
+    scrollTop: 0,
+  };
+
+  history.scrollToBottom(messageList);
+
+  assert.equal(documentScroller.scrollTop, 13369);
+});
+
 test('message history exposes hidden, partial, loading, and retry control states', () => {
   const history = loadMessageHistory();
   const state = history.createState();

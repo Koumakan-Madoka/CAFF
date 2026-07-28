@@ -125,20 +125,105 @@
     state.error = error && error.message ? String(error.message) : 'Unable to load earlier messages';
   }
 
+  function scrollTarget(scroller) {
+    if (!scroller) {
+      return null;
+    }
+
+    const scrollHeight = Number(scroller.scrollHeight || 0);
+    const clientHeight = Number(scroller.clientHeight);
+
+    if (!Number.isFinite(clientHeight) || clientHeight <= 0 || scrollHeight > clientHeight + 1) {
+      return scroller;
+    }
+
+    const ownerDocument = scroller.ownerDocument;
+    return ownerDocument && (ownerDocument.scrollingElement || ownerDocument.documentElement) || scroller;
+  }
+
+  function setScrollTopInstantly(scroller, value) {
+    if (!scroller) {
+      return;
+    }
+
+    const inlineStyle = scroller.style;
+    const previousScrollBehavior = inlineStyle && inlineStyle.scrollBehavior;
+
+    if (inlineStyle) {
+      inlineStyle.scrollBehavior = 'auto';
+    }
+
+    scroller.scrollTop = Math.max(0, Number(value || 0));
+
+    if (inlineStyle) {
+      inlineStyle.scrollBehavior = previousScrollBehavior;
+    }
+  }
+
   function captureScrollAnchor(scroller) {
+    const target = scrollTarget(scroller);
     return {
-      scrollHeight: Number(scroller && scroller.scrollHeight || 0),
-      scrollTop: Number(scroller && scroller.scrollTop || 0),
+      scrollHeight: Number(target && target.scrollHeight || 0),
+      scrollTop: Number(target && target.scrollTop || 0),
     };
   }
 
   function restoreScrollAnchor(scroller, anchor) {
-    if (!scroller || !anchor) {
+    const target = scrollTarget(scroller);
+
+    if (!target || !anchor) {
       return;
     }
 
-    const nextScrollHeight = Number(scroller.scrollHeight || 0);
-    scroller.scrollTop = anchor.scrollTop + Math.max(0, nextScrollHeight - anchor.scrollHeight);
+    const nextScrollHeight = Number(target.scrollHeight || 0);
+    setScrollTopInstantly(target, anchor.scrollTop + Math.max(0, nextScrollHeight - anchor.scrollHeight));
+  }
+
+  function scrollToBottom(scroller) {
+    const target = scrollTarget(scroller);
+
+    if (!target) {
+      return;
+    }
+
+    if (target === scroller) {
+      setScrollTopInstantly(target, Number(target.scrollHeight || 0));
+      return;
+    }
+
+    const ownerDocument = scroller.ownerDocument;
+    const viewportHeight = Number(
+      ownerDocument && ownerDocument.defaultView && ownerDocument.defaultView.innerHeight || target.clientHeight || 0
+    );
+    const bounds = typeof scroller.getBoundingClientRect === 'function'
+      ? scroller.getBoundingClientRect()
+      : null;
+    const bottom = Number(bounds && bounds.bottom || 0);
+    setScrollTopInstantly(target, Number(target.scrollTop || 0) + bottom - viewportHeight);
+  }
+
+  function isNearBottom(scroller, threshold = 72) {
+    const target = scrollTarget(scroller);
+
+    if (!target) {
+      return false;
+    }
+
+    if (target === scroller) {
+      const distanceFromBottom = Number(target.scrollHeight || 0) -
+        Number(target.scrollTop || 0) -
+        Number(target.clientHeight || 0);
+      return distanceFromBottom < threshold;
+    }
+
+    const ownerDocument = scroller.ownerDocument;
+    const viewportHeight = Number(
+      ownerDocument && ownerDocument.defaultView && ownerDocument.defaultView.innerHeight || target.clientHeight || 0
+    );
+    const bounds = typeof scroller.getBoundingClientRect === 'function'
+      ? scroller.getBoundingClientRect()
+      : null;
+    return Number(bounds && bounds.bottom || 0) - viewportHeight < threshold;
   }
 
   function controlView(state) {
@@ -188,9 +273,11 @@
     createState,
     failOlderRequest,
     isLatestRequestCurrent,
+    isNearBottom,
     isRequestCurrent,
     mergeMessages,
     reset,
     restoreScrollAnchor,
+    scrollToBottom,
   };
 })();

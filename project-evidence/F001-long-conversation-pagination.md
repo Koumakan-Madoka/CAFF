@@ -70,6 +70,36 @@ The browser loads the latest page separately, prepends older pages with a scroll
 - Browser state logic: stable merge/update, older cursor ownership, stale response guards, scroll-anchor restoration, loading/error/full control states, and prevention of send-response history rehydration.
 - `npm run typecheck:public`: pass.
 - `tests/runtime/message-history.test.js`: 5/5 pass.
-- `tests/runtime/message-tool-trace.test.js`: 12/12 pass.
+- `tests/runtime/message-tool-trace.test.js`: 13/13 pass.
 
-Browser screenshots and final fast/smoke gate results are appended after verification.
+## Real Browser Evidence
+
+The first review exposed a screenshot gap. A follow-up real Chromium run then found and reproduced an actual defect that the synthetic scroller test had hidden: responsive layouts allowed `#message-list` to expand with the page, so `document.scrollingElement` owned the scroll position while the implementation restored only `messageList.scrollTop`.
+
+Before the fix at 375x812, clicking `加载更早消息` moved `browser-message-070` from approximately `469px` to `12741px` in the viewport, a `12,271px` jump.
+
+After the Red→Green fix:
+
+| Viewport | Initial page | Initial latest message | First prepend anchor drift | Second prepend anchor drift | Complete traversal |
+| --- | --- | --- | ---: | ---: | --- |
+| 1280x900 | 50 unique rows | `browser-message-119` bottom at `881px` in a 900px viewport | `-0.203px` | `+1.016px` | 120 rows, 120 unique, control hidden |
+| 375x812 | 50 unique rows | `browser-message-119` bottom at `793px` in an 812px viewport | `-0.531px` | `+1.000px` | 120 rows, 120 unique, control hidden |
+
+Screenshots:
+
+- [Desktop initial latest page](F001-browser/desktop-1280-latest.png)
+- [Desktop after older-page prepend](F001-browser/desktop-1280-prepend-after.png)
+- [375px initial latest page](F001-browser/mobile-375-latest.png)
+- [375px after older-page prepend](F001-browser/mobile-375-prepend-after.png)
+- [375px complete 120-message traversal](F001-browser/mobile-375-complete.png)
+
+The cards have no horizontal overflow or duplicate rendering at 375px. The fixed right-edge goal tab is existing application chrome and does not cover message text or the history control.
+
+## Final Gate Results
+
+```text
+npm run typecheck  -> exit 0
+npm run test:fast  -> exit 0
+npm run test:smoke -> 60/60 pass
+git diff --check   -> exit 0
+```
