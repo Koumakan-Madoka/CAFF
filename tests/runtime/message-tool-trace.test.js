@@ -142,6 +142,9 @@ globalThis.__testExports = {
   dom,
   bindEvents,
   connectEventStream,
+  loadConversation,
+  loadEarlierMessages: typeof loadEarlierMessages === 'function' ? loadEarlierMessages : null,
+  refreshConversationFromEvent,
   mergeConversationFromSendResponse,
   applyOptimisticUserMessage,
   clearOptimisticUserMessage,
@@ -257,6 +260,8 @@ globalThis.__testExports = {
   context.global = context;
   context.self = window;
 
+  const messageHistoryPath = path.join(__dirname, '../../public/chat/message-history.js');
+  vm.runInNewContext(fs.readFileSync(messageHistoryPath, 'utf8'), context, { filename: messageHistoryPath });
   vm.runInNewContext(instrumented, context, { filename: sourcePath });
 
   const app = context.__testExports;
@@ -280,6 +285,148 @@ function createDeferred() {
 
   return { promise, resolve, reject };
 }
+
+test('conversation UI loads bounded pages, prepends older messages, and merges live latest rows', async () => {
+  const calls = [];
+  let latestRequestCount = 0;
+  const projection = {
+    id: 'conversation-page-ui',
+    title: 'Paged UI',
+    type: 'standard',
+    metadata: {},
+    agents: [],
+    messages: [],
+    privateMessages: [],
+    messageCount: 4,
+  };
+  const { app } = loadPublicAppHarness({
+    fetchJson: async (url) => {
+      calls.push(url);
+      if (url === '/api/conversations/conversation-page-ui?includePrivateMessages=1') {
+        return { conversation: projection };
+      }
+      if (url === '/api/conversations/conversation-page-ui/messages') {
+        latestRequestCount += 1;
+        return latestRequestCount === 1
+          ? {
+              items: [
+                { id: 'message-c', createdAt: '2026-07-28T00:02:00.000Z', content: 'c' },
+                { id: 'message-d', createdAt: '2026-07-28T00:03:00.000Z', content: 'd' },
+              ],
+              nextCursor: 'cursor-c',
+              hasMore: true,
+            }
+          : {
+              items: [
+                { id: 'message-d', createdAt: '2026-07-28T00:03:00.000Z', content: 'updated-d' },
+                { id: 'message-e', createdAt: '2026-07-28T00:04:00.000Z', content: 'e' },
+              ],
+              nextCursor: 'latest-cursor-must-not-win',
+              hasMore: true,
+            };
+      }
+      if (url === '/api/conversations/conversation-page-ui/messages?limit=50&before=cursor-c') {
+        return {
+          items: [
+            { id: 'message-a', createdAt: '2026-07-28T00:00:00.000Z', content: 'a' },
+            { id: 'message-b', createdAt: '2026-07-28T00:01:00.000Z', content: 'b' },
+          ],
+          nextCursor: null,
+          hasMore: false,
+        };
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    },
+  });
+
+  app.dom.messageList.scrollHeight = 1000;
+  app.dom.messageList.scrollTop = 400;
+  app.setOverrides({
+    renderConversationPane() {
+      if (app.state.currentConversation && app.state.currentConversation.messages.length === 4) {
+        app.dom.messageList.scrollHeight = 1400;
+      }
+    },
+  });
+
+  await app.loadConversation('conversation-page-ui');
+  assert.deepEqual(Array.from(app.state.currentConversation.messages, (item) => item.id), ['message-c', 'message-d']);
+  assert.equal(app.state.messageHistory.nextCursor, 'cursor-c');
+  assert.deepEqual(new Set(calls.slice(0, 2)), new Set([
+    '/api/conversations/conversation-page-ui?includePrivateMessages=1',
+    '/api/conversations/conversation-page-ui/messages',
+  ]));
+
+  app.dom.messageList.scrollHeight = 1000;
+  app.dom.messageList.scrollTop = 400;
+  await app.loadEarlierMessages();
+  assert.deepEqual(Array.from(app.state.currentConversation.messages, (item) => item.id), [
+    'message-a',
+    'message-b',
+    'message-c',
+    'message-d',
+  ]);
+  assert.equal(app.dom.messageList.scrollTop, 800);
+  assert.equal(app.state.messageHistory.hasMore, false);
+
+  await app.refreshConversationFromEvent('conversation-page-ui');
+  assert.deepEqual(Array.from(app.state.currentConversation.messages, (item) => item.id), [
+    'message-a',
+    'message-b',
+    'message-c',
+    'message-d',
+    'message-e',
+  ]);
+  assert.equal(app.state.currentConversation.messages[3].content, 'updated-d');
+  assert.equal(app.state.messageHistory.nextCursor, null);
+});
+
+test('send response cannot rehydrate unrequested historical messages into the paged UI', () => {
+  const { app } = loadPublicAppHarness();
+  const loaded = { id: 'loaded-message', createdAt: '2026-07-28T00:10:00.000Z', content: 'loaded' };
+  const accepted = { id: 'accepted-message', createdAt: '2026-07-28T00:11:00.000Z', content: 'accepted' };
+  const unrequested = { id: 'unrequested-history', createdAt: '2026-07-28T00:00:00.000Z', content: 'old' };
+  app.state.currentConversation = {
+    id: 'conversation-send-page',
+    messages: [loaded],
+    privateMessages: [],
+  };
+  app.state.selectedConversationId = 'conversation-send-page';
+
+  app.mergeConversationFromSendResponse(
+    'conversation-send-page',
+    {
+      id: 'conversation-send-page',
+      title: 'Updated title',
+      messages: [unrequested, loaded, accepted],
+      privateMessages: [],
+    },
+    accepted
+  );
+
+  assert.deepEqual(Array.from(app.state.currentConversation.messages, (item) => item.id), [
+    'loaded-message',
+    'accepted-message',
+  ]);
+  assert.equal(app.state.currentConversation.title, 'Updated title');
+});
+
+test('live refresh ignores a conversation that no longer owns the message-history state', async () => {
+  let fetchCount = 0;
+  const { app } = loadPublicAppHarness({
+    fetchJson: async () => {
+      fetchCount += 1;
+      return {};
+    },
+  });
+  app.state.selectedConversationId = 'conversation-old';
+  app.state.currentConversation = { id: 'conversation-old', messages: [] };
+  app.state.messageHistory.conversationId = 'conversation-new';
+
+  await app.refreshConversationFromEvent('conversation-old');
+
+  assert.equal(fetchCount, 0);
+});
 
 test('composer submit shows optimistic user message before the POST resolves', async () => {
   const request = createDeferred();

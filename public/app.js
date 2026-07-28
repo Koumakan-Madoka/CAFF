@@ -1,5 +1,11 @@
 // @ts-check
 
+const messageHistory = window.CaffChat && window.CaffChat.messageHistory;
+
+if (!messageHistory) {
+  throw new Error('CaffChat.messageHistory helper is required');
+}
+
 const state = {
   runtime: null,
   modelOptions: [],
@@ -9,6 +15,7 @@ const state = {
   conversations: [],
   selectedConversationId: null,
   currentConversation: null,
+  messageHistory: messageHistory.createState(),
   selectedAgentId: null,
   sending: false,
   stopRequestConversationIds: new Set(),
@@ -134,6 +141,10 @@ const dom = {
   skillDraftAlertText: /** @type {HTMLElement | null} */ (document.getElementById('skill-draft-alert-text')),
   skillDraftAlertButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('skill-draft-alert-button')),
   messageList: /** @type {HTMLDivElement | null} */ (document.getElementById('message-list')),
+  messageTimeline: /** @type {HTMLDivElement | null} */ (document.getElementById('message-timeline')),
+  messageHistoryControl: /** @type {HTMLDivElement | null} */ (document.getElementById('message-history-control')),
+  messageHistoryButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('message-history-button')),
+  messageHistoryStatus: /** @type {HTMLElement | null} */ (document.getElementById('message-history-status')),
   composerForm: /** @type {HTMLFormElement | null} */ (document.getElementById('composer-form')),
   composerInput: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('composer-input')),
   composerMentionMenu: /** @type {HTMLDivElement | null} */ (document.getElementById('composer-mention-menu')),
@@ -214,8 +225,31 @@ function applyConversationResponse(result) {
   }
 
   if (result.conversation) {
-    state.currentConversation = result.conversation;
-    state.selectedConversationId = result.conversation.id;
+    const incomingConversation = result.conversation;
+    const currentConversation = state.currentConversation;
+
+    if (currentConversation && currentConversation.id === incomingConversation.id) {
+      const projection = { ...incomingConversation };
+      delete projection.messages;
+      state.currentConversation = {
+        ...currentConversation,
+        ...projection,
+        messages: currentConversation.messages,
+      };
+    } else {
+      messageHistory.reset(state.messageHistory, incomingConversation.id);
+      const initialMessages = messageHistory.applyInitialPage(state.messageHistory, {
+        items: Array.isArray(incomingConversation.messages) ? incomingConversation.messages.slice(-50) : [],
+        nextCursor: null,
+        hasMore: false,
+      });
+      state.currentConversation = {
+        ...incomingConversation,
+        messages: initialMessages,
+      };
+    }
+
+    state.selectedConversationId = incomingConversation.id;
   }
 }
 
@@ -421,6 +455,7 @@ async function triggerUndercoverAction(action, body = {}) {
   });
   applyConversationResponse(result);
   renderAll();
+  await refreshConversationFromEvent(state.currentConversation.id);
   scrollMessageListToBottom();
   return result;
 }
@@ -436,6 +471,7 @@ async function triggerWerewolfAction(action, body = {}) {
   });
   applyConversationResponse(result);
   renderAll();
+  await refreshConversationFromEvent(state.currentConversation.id);
   scrollMessageListToBottom();
   return result;
 }
@@ -2084,6 +2120,11 @@ function renderParticipantList(conversation) {
 
 function renderMessages(conversation, activeTurn, activeAgentSlots = []) {
   messageTimelineRenderer.render(conversation, activeTurn, activeAgentSlots);
+  const view = messageHistory.controlView(state.messageHistory);
+  dom.messageHistoryControl.classList.toggle('hidden', view.hidden);
+  dom.messageHistoryButton.disabled = view.disabled;
+  dom.messageHistoryButton.textContent = view.label;
+  dom.messageHistoryStatus.textContent = view.status;
 }
 
 function renderCompactConversationPersonaSettings() {
@@ -2428,30 +2469,18 @@ function mergeConversationFromSendResponse(conversationId, payloadConversation, 
     return;
   }
 
-  const mergedMessages = [];
-  const seenMessageIds = new Set();
   const currentMessages = Array.isArray(state.currentConversation.messages) ? state.currentConversation.messages : [];
-  const payloadMessages = Array.isArray(payloadConversation && payloadConversation.messages) ? payloadConversation.messages : [];
-
-  currentMessages.concat(payloadMessages).forEach((message) => {
-    if (!message || !message.id || seenMessageIds.has(message.id)) {
-      return;
-    }
-
-    seenMessageIds.add(message.id);
-    mergedMessages.push(message);
-  });
-
-  if (acceptedMessage && acceptedMessage.id && !seenMessageIds.has(acceptedMessage.id)) {
-    mergedMessages.push(acceptedMessage);
-  }
-
-  mergedMessages.sort(compareMessageOrder);
+  const mergedMessages = messageHistory.mergeMessages(
+    currentMessages,
+    acceptedMessage && acceptedMessage.id ? [acceptedMessage] : []
+  );
+  const projection = payloadConversation && typeof payloadConversation === 'object' ? { ...payloadConversation } : {};
+  delete projection.messages;
   pruneOptimisticMessagesForConversation(conversationId, mergedMessages);
 
   state.currentConversation = {
     ...state.currentConversation,
-    ...(payloadConversation || {}),
+    ...projection,
     messages: mergedMessages,
     privateMessages:
       payloadConversation && Array.isArray(payloadConversation.privateMessages)
@@ -2592,12 +2621,11 @@ function showToast(message) {
 }
 
 function scrollMessageListToBottom() {
-  dom.messageList.scrollTop = dom.messageList.scrollHeight;
+  messageHistory.scrollToBottom(dom.messageList);
 }
 
 function isMessageListNearBottom() {
-  const distanceFromBottom = dom.messageList.scrollHeight - dom.messageList.scrollTop - dom.messageList.clientHeight;
-  return distanceFromBottom < 72;
+  return messageHistory.isNearBottom(dom.messageList);
 }
 
 function scheduleConversationPaneRender(delayMs = 0) {
@@ -3194,21 +3222,82 @@ async function loadConversation(conversationId) {
   clearAllMessageToolTraceTimers();
 
   if (!conversationId) {
+    messageHistory.reset(state.messageHistory, '');
     state.currentConversation = null;
     closeMentionMenu();
     renderAll();
     return;
   }
 
-  const data = await fetchJson(`/api/conversations/${conversationId}?includePrivateMessages=1`);
-  state.selectedConversationId = conversationId;
-  state.currentConversation = data.conversation;
-  pruneOptimisticMessagesForConversation(conversationId, data.conversation && data.conversation.messages);
+  const normalizedConversationId = String(conversationId).trim();
+  const generation = messageHistory.reset(state.messageHistory, normalizedConversationId);
+  const request = { conversationId: normalizedConversationId, generation };
+  const encodedConversationId = encodeURIComponent(normalizedConversationId);
+  const [data, page] = await Promise.all([
+    fetchJson(`/api/conversations/${encodedConversationId}?includePrivateMessages=1`),
+    fetchJson(`/api/conversations/${encodedConversationId}/messages`),
+  ]);
+
+  if (!messageHistory.isRequestCurrent(state.messageHistory, request)) {
+    return;
+  }
+
+  const messages = messageHistory.applyInitialPage(state.messageHistory, page);
+  state.selectedConversationId = normalizedConversationId;
+  state.currentConversation = {
+    ...data.conversation,
+    messages,
+  };
+  pruneOptimisticMessagesForConversation(normalizedConversationId, messages);
   closeMentionMenu();
   renderAll();
   warmConversationToolTraces(state.currentConversation);
   syncToolTraceStatesWithConversation(state.currentConversation);
   scrollMessageListToBottom();
+}
+
+async function loadEarlierMessages() {
+  const request = messageHistory.beginOlderRequest(state.messageHistory);
+
+  if (!request || !state.currentConversation || state.currentConversation.id !== request.conversationId) {
+    return;
+  }
+
+  const scrollAnchor = messageHistory.captureScrollAnchor(dom.messageList);
+  renderConversationPane();
+
+  try {
+    const page = await fetchJson(
+      `/api/conversations/${encodeURIComponent(request.conversationId)}/messages?limit=50&before=${encodeURIComponent(request.before)}`
+    );
+
+    if (
+      !messageHistory.isRequestCurrent(state.messageHistory, request) ||
+      !state.currentConversation ||
+      state.currentConversation.id !== request.conversationId
+    ) {
+      return;
+    }
+
+    state.currentConversation = {
+      ...state.currentConversation,
+      messages: messageHistory.applyOlderPage(
+        state.messageHistory,
+        state.currentConversation.messages,
+        page
+      ),
+    };
+    renderConversationPane();
+    warmConversationToolTraces(state.currentConversation);
+    syncToolTraceStatesWithConversation(state.currentConversation);
+    messageHistory.restoreScrollAnchor(dom.messageList, scrollAnchor);
+  } catch (error) {
+    if (messageHistory.isRequestCurrent(state.messageHistory, request)) {
+      messageHistory.failOlderRequest(state.messageHistory, error);
+      renderConversationPane();
+      showToast(error && error.message ? error.message : '更早的消息加载失败');
+    }
+  }
 }
 
 function populateModeSelect() {
@@ -3305,21 +3394,43 @@ function mergeConversationSummary(summary) {
 }
 
 async function refreshConversationFromEvent(conversationId) {
-  if (!conversationId || state.selectedConversationId !== conversationId) {
+  if (
+    !conversationId ||
+    state.selectedConversationId !== conversationId ||
+    state.messageHistory.conversationId !== conversationId
+  ) {
     return;
   }
 
   const shouldStickToBottom = isMessageListNearBottom();
+  const request = messageHistory.beginLatestRequest(state.messageHistory);
 
   try {
-    const data = await fetchJson(`/api/conversations/${conversationId}?includePrivateMessages=1`);
+    const encodedConversationId = encodeURIComponent(conversationId);
+    const [data, page] = await Promise.all([
+      fetchJson(`/api/conversations/${encodedConversationId}?includePrivateMessages=1`),
+      fetchJson(`/api/conversations/${encodedConversationId}/messages`),
+    ]);
 
-    if (state.selectedConversationId !== conversationId) {
+    if (
+      state.selectedConversationId !== conversationId ||
+      !messageHistory.isLatestRequestCurrent(state.messageHistory, request) ||
+      !state.currentConversation ||
+      state.currentConversation.id !== conversationId
+    ) {
       return;
     }
 
-    state.currentConversation = data.conversation;
-    pruneOptimisticMessagesForConversation(conversationId, data.conversation && data.conversation.messages);
+    state.currentConversation = {
+      ...state.currentConversation,
+      ...data.conversation,
+      messages: messageHistory.applyLatestPage(
+        state.messageHistory,
+        state.currentConversation.messages,
+        page
+      ),
+    };
+    pruneOptimisticMessagesForConversation(conversationId, page && page.items);
     renderConversationPane();
     renderUndercoverGameCard();
     warmConversationToolTraces(state.currentConversation);
@@ -3764,7 +3875,15 @@ function bindEvents() {
       }
       state.conversations = result.conversations;
       state.selectedConversationId = result.conversation.id;
-      state.currentConversation = result.conversation;
+      messageHistory.reset(state.messageHistory, result.conversation.id);
+      state.currentConversation = {
+        ...result.conversation,
+        messages: messageHistory.applyInitialPage(state.messageHistory, {
+          items: Array.isArray(result.conversation.messages) ? result.conversation.messages.slice(-50) : [],
+          nextCursor: null,
+          hasMore: false,
+        }),
+      };
       renderAll();
       syncToolTraceStatesWithConversation(state.currentConversation);
       showToast('新会话已创建');
@@ -4037,6 +4156,12 @@ function bindEvents() {
       exportButton.textContent = previousText;
     }
   });
+
+  if (dom.messageHistoryButton) {
+    dom.messageHistoryButton.addEventListener('click', () => {
+      void loadEarlierMessages();
+    });
+  }
 
   dom.composerForm.addEventListener('submit', async (event) => {
     event.preventDefault();

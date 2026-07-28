@@ -322,6 +322,189 @@ test('chat store persists repository-backed writes for conversations and message
   assert.deepEqual(privateMessages[0].metadata, { visibility: 'private' });
 });
 
+test('chat store pages public messages by stable created-at and id cursors', (t) => {
+  const tempDir = withTempDir('caff-chat-message-page-');
+  const sqlitePath = path.join(tempDir, 'chat.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const conversation = store.createConversation({
+    id: 'message-page-conversation',
+    title: 'Message Page Conversation',
+  });
+  const otherConversation = store.createConversation({
+    id: 'message-page-other-conversation',
+    title: 'Other Message Page Conversation',
+  });
+  const fixtures = [
+    ['a', '2026-07-28T00:00:00.000Z'],
+    ['b', '2026-07-28T00:00:00.000Z'],
+    ['c', '2026-07-28T00:00:00.000Z'],
+    ['d', '2026-07-28T00:01:00.000Z'],
+    ['e', '2026-07-28T00:01:00.000Z'],
+    ['f', '2026-07-28T00:02:00.000Z'],
+    ['g', '2026-07-28T00:03:00.000Z'],
+    ['h', '2026-07-28T00:03:00.000Z'],
+    ['i', '2026-07-28T00:04:00.000Z'],
+    ['j', '2026-07-28T00:05:00.000Z'],
+  ];
+
+  for (const [id, createdAt] of fixtures) {
+    store.createMessage({
+      id,
+      conversationId: conversation.id,
+      turnId: `turn-${id}`,
+      role: 'user',
+      senderName: 'User',
+      content: `message-${id}`,
+      createdAt,
+    });
+  }
+
+  store.createMessage({
+    id: 'other-message',
+    conversationId: otherConversation.id,
+    turnId: 'other-turn',
+    role: 'user',
+    senderName: 'Other User',
+    content: 'must stay scoped out',
+    createdAt: '2026-07-28T00:06:00.000Z',
+  });
+
+  const latest = store.listMessagePage(conversation.id, { limit: 3 });
+  assert.deepEqual(latest.items.map((message) => message.id), ['h', 'i', 'j']);
+  assert.equal(latest.hasMore, true);
+  assert.deepEqual(latest.nextBefore, {
+    createdAt: '2026-07-28T00:03:00.000Z',
+    id: 'h',
+  });
+
+  store.db.prepare('DELETE FROM chat_messages WHERE id = ?').run('h');
+  store.createMessage({
+    id: 'k',
+    conversationId: conversation.id,
+    turnId: 'turn-k',
+    role: 'user',
+    senderName: 'User',
+    content: 'message-k',
+    createdAt: '2026-07-28T00:06:00.000Z',
+  });
+
+  const pageBeforeDeletedCursor = store.listMessagePage(conversation.id, {
+    limit: 3,
+    before: latest.nextBefore,
+  });
+  assert.deepEqual(pageBeforeDeletedCursor.items.map((message) => message.id), ['e', 'f', 'g']);
+  assert.equal(pageBeforeDeletedCursor.hasMore, true);
+
+  const visitedIds = [];
+  let before = null;
+
+  do {
+    const page = store.listMessagePage(conversation.id, { limit: 3, before });
+    visitedIds.unshift(...page.items.map((message) => message.id));
+    before = page.nextBefore;
+  } while (before);
+
+  assert.deepEqual(visitedIds, ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'i', 'j', 'k']);
+  assert.equal(new Set(visitedIds).size, visitedIds.length);
+  assert.equal(store.getConversation(conversation.id).messages.length, 10);
+  assert.throws(() => store.listMessagePage(conversation.id, { limit: 0 }), /limit/i);
+  assert.throws(() => store.listMessagePage(conversation.id, { limit: 101 }), /limit/i);
+
+  const emptyConversation = store.createConversation({
+    id: 'message-page-empty-conversation',
+    title: 'Empty Message Page Conversation',
+  });
+  assert.deepEqual(store.listMessagePage(emptyConversation.id, { limit: 1 }), {
+    items: [],
+    nextBefore: null,
+    hasMore: false,
+  });
+});
+
+test('chat store page queries reuse the composite index for a 50,000-message conversation', (t) => {
+  const tempDir = withTempDir('caff-chat-message-page-long-');
+  const sqlitePath = path.join(tempDir, 'chat.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const conversation = store.createConversation({
+    id: 'message-page-long-conversation',
+    title: 'Long Message Page Conversation',
+  });
+  const insertMessage = store.db.prepare(`
+    INSERT INTO chat_messages (
+      id,
+      conversation_id,
+      turn_id,
+      role,
+      sender_name,
+      content,
+      status,
+      metadata_json,
+      created_at
+    ) VALUES (?, ?, ?, 'user', 'User', ?, 'completed', '{}', ?)
+  `);
+  const insertFixtures = store.db.transaction(() => {
+    for (let index = 0; index < 50_000; index += 1) {
+      const suffix = String(index).padStart(5, '0');
+      insertMessage.run(
+        `long-message-${suffix}`,
+        conversation.id,
+        `long-turn-${suffix}`,
+        `message-${suffix}`,
+        `2026-07-28T00:${String(Math.floor(index / 1000)).padStart(2, '0')}:00.000Z`
+      );
+    }
+  });
+  insertFixtures();
+
+  const repository = store.messageRepository;
+  const latestSql = repository.pageByConversationStatement.source;
+  const beforeSql = repository.pageBeforeConversationStatement.source;
+  const latestPlan = store.db
+    .prepare(`EXPLAIN QUERY PLAN ${latestSql}`)
+    .all(conversation.id, 51);
+  const beforePlan = store.db
+    .prepare(`EXPLAIN QUERY PLAN ${beforeSql}`)
+    .all(conversation.id, '2026-07-28T00:40:00.000Z', 'long-message-40000', 51);
+
+  for (const plan of [latestPlan, beforePlan]) {
+    const detail = plan.map((row) => String(row.detail || '')).join('\n');
+    assert.match(detail, /USING INDEX idx_chat_messages_conversation_id/u);
+    assert.doesNotMatch(detail, /USE TEMP B-TREE/u);
+  }
+
+  const startedAt = performance.now();
+  const page = store.listMessagePage(conversation.id, { limit: 50 });
+  const elapsedMs = performance.now() - startedAt;
+
+  assert.equal(page.items.length, 50);
+  assert.equal(page.items[0].id, 'long-message-49950');
+  assert.equal(page.items[49].id, 'long-message-49999');
+  assert.equal(page.hasMore, true);
+  assert.deepEqual(page.nextBefore, {
+    createdAt: '2026-07-28T00:49:00.000Z',
+    id: 'long-message-49950',
+  });
+  t.diagnostic(`50,000-message latest page: ${elapsedMs.toFixed(3)}ms`);
+  t.diagnostic(`latest plan: ${latestPlan.map((row) => row.detail).join(' | ')}`);
+  t.diagnostic(`before plan: ${beforePlan.map((row) => row.detail).join(' | ')}`);
+});
+
 test('chat store searches conversation public messages with scoped capped results', (t) => {
   const tempDir = withTempDir('caff-chat-search-store-');
   const sqlitePath = path.join(tempDir, 'chat.sqlite');

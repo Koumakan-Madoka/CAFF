@@ -133,8 +133,8 @@ async function fetchJson(baseUrl, pathname, options = {}) {
 async function invokeConversationsController(handler, options = {}) {
   const req = new PassThrough();
   req.method = options.method || 'GET';
-  const pathname = options.pathname || '/api/conversations';
-  const requestUrl = new URL(`http://127.0.0.1${pathname}`);
+  const requestTarget = options.pathname || '/api/conversations';
+  const requestUrl = new URL(`http://127.0.0.1${requestTarget}`);
   const responseState = {
     statusCode: 0,
     headers: null,
@@ -150,7 +150,7 @@ async function invokeConversationsController(handler, options = {}) {
     },
   };
 
-  const handledPromise = handler({ req, res, pathname, requestUrl });
+  const handledPromise = handler({ req, res, pathname: requestUrl.pathname, requestUrl });
   req.end(options.body ? JSON.stringify(options.body) : '');
   const handled = await handledPromise;
 
@@ -208,6 +208,120 @@ function createConversationsControllerHarness(t, options = {}) {
 
   return { handler, store, broadcastEvents };
 }
+
+test('conversations controller exposes bounded cursor pages without hydrating public messages in the conversation projection', async (t) => {
+  const { handler, store } = createConversationsControllerHarness(t);
+  const conversation = store.createConversation({
+    id: 'message-page-api-conversation',
+    title: 'Message Page API Conversation',
+  });
+  const otherConversation = store.createConversation({
+    id: 'message-page-api-other',
+    title: 'Other Message Page API Conversation',
+  });
+
+  for (let index = 0; index < 55; index += 1) {
+    const suffix = String(index).padStart(2, '0');
+    store.createMessage({
+      id: `api-message-${suffix}`,
+      conversationId: conversation.id,
+      turnId: `api-turn-${suffix}`,
+      role: 'user',
+      senderName: 'User',
+      content: `message-${suffix}`,
+      createdAt: index < 3 ? '2026-07-28T00:00:00.000Z' : `2026-07-28T00:${suffix}:00.000Z`,
+    });
+  }
+
+  const conversationResult = await invokeConversationsController(handler, {
+    pathname: `/api/conversations/${conversation.id}`,
+  });
+  assert.equal(conversationResult.handled, true);
+  assert.equal(conversationResult.statusCode, 200);
+  assert.equal(conversationResult.json.conversation.messageCount, 55);
+  assert.deepEqual(conversationResult.json.conversation.messages, []);
+
+  const defaultPage = await invokeConversationsController(handler, {
+    pathname: `/api/conversations/${conversation.id}/messages`,
+  });
+  assert.equal(defaultPage.handled, true);
+  assert.equal(defaultPage.statusCode, 200);
+  assert.equal(defaultPage.json.items.length, 50);
+  assert.equal(defaultPage.json.items[0].id, 'api-message-05');
+  assert.equal(defaultPage.json.items[49].id, 'api-message-54');
+  assert.equal(defaultPage.json.hasMore, true);
+  assert.equal(typeof defaultPage.json.nextCursor, 'string');
+  assert.ok(defaultPage.json.nextCursor.length > 0);
+
+  const olderPage = await invokeConversationsController(handler, {
+    pathname: `/api/conversations/${conversation.id}/messages?limit=3&before=${encodeURIComponent(defaultPage.json.nextCursor)}`,
+  });
+  assert.deepEqual(olderPage.json.items.map((message) => message.id), [
+    'api-message-02',
+    'api-message-03',
+    'api-message-04',
+  ]);
+  assert.equal(olderPage.json.hasMore, true);
+
+  const singleItemPage = await invokeConversationsController(handler, {
+    pathname: `/api/conversations/${conversation.id}/messages?limit=1`,
+  });
+  assert.deepEqual(singleItemPage.json.items.map((message) => message.id), ['api-message-54']);
+  assert.equal(singleItemPage.json.hasMore, true);
+
+  const maximumPage = await invokeConversationsController(handler, {
+    pathname: `/api/conversations/${conversation.id}/messages?limit=100`,
+  });
+  assert.equal(maximumPage.json.items.length, 55);
+  assert.equal(maximumPage.json.hasMore, false);
+  assert.equal(maximumPage.json.nextCursor, null);
+
+  const emptyPage = await invokeConversationsController(handler, {
+    pathname: `/api/conversations/${otherConversation.id}/messages`,
+  });
+  assert.deepEqual(emptyPage.json, { items: [], nextCursor: null, hasMore: false });
+
+  await assert.rejects(
+    () => invokeConversationsController(handler, {
+      pathname: '/api/conversations/missing-message-page-conversation/messages',
+    }),
+    (error) => error && error.statusCode === 404
+  );
+
+  await assert.rejects(
+    () => invokeConversationsController(handler, {
+      pathname: `/api/conversations/${otherConversation.id}/messages?before=${encodeURIComponent(defaultPage.json.nextCursor)}`,
+    }),
+    (error) => error && error.statusCode === 400 && /cursor/i.test(error.message)
+  );
+  await assert.rejects(
+    () => invokeConversationsController(handler, {
+      pathname: `/api/conversations/${conversation.id}/messages?before=not-a-cursor`,
+    }),
+    (error) => error && error.statusCode === 400 && /cursor/i.test(error.message)
+  );
+  const invalidTimestampCursor = Buffer.from(JSON.stringify({
+    v: 1,
+    conversationId: conversation.id,
+    createdAt: 'not-a-timestamp',
+    id: 'api-message-10',
+  })).toString('base64url');
+  await assert.rejects(
+    () => invokeConversationsController(handler, {
+      pathname: `/api/conversations/${conversation.id}/messages?before=${invalidTimestampCursor}`,
+    }),
+    (error) => error && error.statusCode === 400 && /cursor/i.test(error.message)
+  );
+
+  for (const invalidLimit of ['0', '1.5', '101', 'abc']) {
+    await assert.rejects(
+      () => invokeConversationsController(handler, {
+        pathname: `/api/conversations/${conversation.id}/messages?limit=${invalidLimit}`,
+      }),
+      (error) => error && error.statusCode === 400 && /limit/i.test(error.message)
+    );
+  }
+});
 
 test('conversations controller manages session goal lifecycle in metadata', async (t) => {
   const { handler, store, broadcastEvents } = createConversationsControllerHarness(t);
@@ -4377,15 +4491,18 @@ test('server smoke: pi-mono agent can initialize and write Trellis files for the
       return null;
     }
 
-    const conversationPayload = await fetchJson(
-      baseUrl,
-      `/api/conversations/${encodeURIComponent(conversationResult.conversation.id)}?includePrivateMessages=1`
-    );
-    const assistantReplies = Array.isArray(conversationPayload.conversation && conversationPayload.conversation.messages)
-      ? conversationPayload.conversation.messages.filter((message) => message && message.role === 'assistant')
+    const encodedConversationId = encodeURIComponent(conversationResult.conversation.id);
+    const [conversationPayload, messagePage] = await Promise.all([
+      fetchJson(baseUrl, `/api/conversations/${encodedConversationId}?includePrivateMessages=1`),
+      fetchJson(baseUrl, `/api/conversations/${encodedConversationId}/messages?limit=100`),
+    ]);
+    const assistantReplies = Array.isArray(messagePage.items)
+      ? messagePage.items.filter((message) => message && message.role === 'assistant')
       : [];
 
-    return assistantReplies.some((message) => message.status === 'completed') ? conversationPayload.conversation : null;
+    return assistantReplies.some((message) => message.status === 'completed')
+      ? { ...conversationPayload.conversation, messages: messagePage.items }
+      : null;
   });
 
   const assistantReplies = completedConversation.messages.filter((message) => message && message.role === 'assistant');

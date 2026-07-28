@@ -781,6 +781,34 @@ textarea {
   scrollbar-gutter: stable;
 }
 
+.message-timeline {
+  display: grid;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.message-history-control {
+  display: grid;
+  justify-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+  padding: 0.1rem 0;
+}
+
+.message-history-control.hidden {
+  display: none;
+}
+
+.message-history-button {
+  max-width: 100%;
+  min-height: 2.25rem;
+}
+
+.message-history-control .muted {
+  min-height: 1.2em;
+  text-align: center;
+}
+
 .message-list::-webkit-scrollbar,
 .conversation-list::-webkit-scrollbar,
 .agent-list::-webkit-scrollbar,

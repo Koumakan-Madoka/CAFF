@@ -10,6 +10,7 @@ import { sendFileDownload, sendJson, sendTextDownload } from '../http/response';
 
 import { pickConversationSummary, withConversationPrivateMessages } from '../domain/conversation/conversation-view';
 import { applyConversationDigestAction } from '../domain/conversation/conversation-digest';
+import { buildConversationMessagePage } from '../domain/conversation/message-pagination';
 import { applyConversationSkillDraftAction } from '../domain/conversation/skill-draft';
 import { applySessionGoalAction } from '../domain/conversation/session-goal';
 import {
@@ -357,7 +358,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         });
       }
 
-      const conversation = store.getConversation(conversationId);
+      const conversation = store.getConversationWithoutMessages(conversationId);
 
       if (!conversation) {
         throw createHttpError(404, 'Conversation not found');
@@ -663,7 +664,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
       const conversationId = decodeURIComponent(conversationMatch[1]);
 
       if (req.method === 'GET') {
-        const conversation = store.getConversation(conversationId);
+        const conversation = store.getConversationWithoutMessages(conversationId);
 
         if (!conversation) {
           throw createHttpError(404, 'Conversation not found');
@@ -681,7 +682,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
 
       if (req.method === 'PUT') {
         const body = await readRequestJson(req);
-        const existingConversation = store.getConversation(conversationId);
+        const existingConversation = store.getConversationWithoutMessages(conversationId);
 
         if (existingConversation && isSkillTestDesignConversation(existingConversation) && Array.isArray(body.participants)) {
           throw createHttpError(409, 'Skill Test 设计模式使用固定参与者，当前不支持修改参与人格');
@@ -804,7 +805,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
       const conversationId = decodeURIComponent(messageContextSnapshotMatch[1]);
       const messageId = decodeURIComponent(messageContextSnapshotMatch[2]);
       const exportMode = messageContextSnapshotMatch[3] === 'export';
-      const conversation = store.getConversation(conversationId);
+      const conversation = store.getConversationWithoutMessages(conversationId);
 
       if (!conversation) {
         throw createHttpError(404, 'Conversation not found');
@@ -845,7 +846,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
     if (messageSessionMatch && req.method === 'GET') {
       const conversationId = decodeURIComponent(messageSessionMatch[1]);
       const messageId = decodeURIComponent(messageSessionMatch[2]);
-      const conversation = store.getConversation(conversationId);
+      const conversation = store.getConversationWithoutMessages(conversationId);
 
       if (!conversation) {
         throw createHttpError(404, 'Conversation not found');
@@ -867,7 +868,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
     if (messageToolTraceMatch && req.method === 'GET') {
       const conversationId = decodeURIComponent(messageToolTraceMatch[1]);
       const messageId = decodeURIComponent(messageToolTraceMatch[2]);
-      const conversation = store.getConversation(conversationId);
+      const conversation = store.getConversationWithoutMessages(conversationId);
 
       if (!conversation) {
         throw createHttpError(404, 'Conversation not found');
@@ -904,10 +905,22 @@ export function createConversationsController(options: any = {}): RouteHandler<A
 
     const messageMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/messages$/);
 
+    if (messageMatch && req.method === 'GET') {
+      const conversationId = decodeURIComponent(messageMatch[1]);
+      const conversation = store.getConversationWithoutMessages(conversationId);
+
+      if (!conversation) {
+        throw createHttpError(404, 'Conversation not found');
+      }
+
+      sendJson(res, 200, buildConversationMessagePage(store, conversationId, requestUrl.searchParams));
+      return true;
+    }
+
     if (messageMatch && req.method === 'POST') {
       const conversationId = decodeURIComponent(messageMatch[1]);
       const body = await readRequestJson(req);
-      const conversation = store.getConversation(conversationId);
+      const conversation = store.getConversationWithoutMessages(conversationId);
 
       if (!conversation) {
         throw createHttpError(404, '会话不存在');

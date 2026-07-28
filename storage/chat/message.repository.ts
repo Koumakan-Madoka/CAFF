@@ -58,10 +58,40 @@ function hasMessageSearchFilters(filters: any = {}) {
   return Boolean((filters && filters.speaker) || (filters && filters.agentId));
 }
 
+const DEFAULT_MESSAGE_PAGE_LIMIT = 50;
+const MAX_MESSAGE_PAGE_LIMIT = 100;
+
+function normalizeMessagePageLimit(value: any) {
+  const limit = value === undefined ? DEFAULT_MESSAGE_PAGE_LIMIT : value;
+
+  if (!Number.isInteger(limit) || limit < 1 || limit > MAX_MESSAGE_PAGE_LIMIT) {
+    throw new RangeError(`Message page limit must be an integer between 1 and ${MAX_MESSAGE_PAGE_LIMIT}`);
+  }
+
+  return limit;
+}
+
+function normalizeMessagePageCursor(value: any) {
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  const createdAt = value && typeof value.createdAt === 'string' ? value.createdAt.trim() : '';
+  const id = value && typeof value.id === 'string' ? value.id.trim() : '';
+
+  if (!createdAt || !id) {
+    throw new TypeError('Message page before cursor must include createdAt and id');
+  }
+
+  return { createdAt, id };
+}
+
 export class ChatMessageRepository {
   db: any;
   insertStatement: any;
   listByConversationStatement: any;
+  pageByConversationStatement: any;
+  pageBeforeConversationStatement: any;
   getStatement: any;
   updateStatement: any;
   appendTextStatement: any;
@@ -93,6 +123,21 @@ export class ChatMessageRepository {
       FROM chat_messages
       WHERE conversation_id = ?
       ORDER BY created_at ASC, id ASC
+    `);
+    this.pageByConversationStatement = db.prepare(`
+      SELECT *
+      FROM chat_messages
+      WHERE conversation_id = ?
+      ORDER BY created_at DESC, id DESC
+      LIMIT ?
+    `);
+    this.pageBeforeConversationStatement = db.prepare(`
+      SELECT *
+      FROM chat_messages
+      WHERE conversation_id = ?
+        AND (created_at, id) < (?, ?)
+      ORDER BY created_at DESC, id DESC
+      LIMIT ?
     `);
     this.getStatement = db.prepare(`
       SELECT *
@@ -143,6 +188,28 @@ export class ChatMessageRepository {
 
   listByConversationId(conversationId: string) {
     return this.listByConversationStatement.all(conversationId);
+  }
+
+  listPageByConversationId(conversationId: string, options: any = {}) {
+    const limit = normalizeMessagePageLimit(options.limit);
+    const before = normalizeMessagePageCursor(options.before);
+    const rows = before
+      ? this.pageBeforeConversationStatement.all(conversationId, before.createdAt, before.id, limit + 1)
+      : this.pageByConversationStatement.all(conversationId, limit + 1);
+    const hasMore = rows.length > limit;
+    const items = rows.slice(0, limit).reverse();
+    const oldest = items[0] || null;
+
+    return {
+      items,
+      nextBefore: hasMore && oldest
+        ? {
+            createdAt: oldest.created_at,
+            id: oldest.id,
+          }
+        : null,
+      hasMore,
+    };
   }
 
   get(messageId: string) {
