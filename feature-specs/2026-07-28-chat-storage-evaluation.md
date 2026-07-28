@@ -3,6 +3,7 @@ feature_ids: [CAFF-EVAL-CHAT-STORAGE]
 topics: [storage, sqlite, redis, benchmark, durability, chat]
 doc_kind: plan
 created: 2026-07-28
+status: review_ready
 ---
 
 # Chat Storage Evaluation Implementation Plan
@@ -172,8 +173,18 @@ npm run test:fast
 npm run test:smoke
 ```
 
-## Open Questions
+## Completed Evidence
 
-- **Technical OQ:** Redis executable discovery differs by platform. Resolve with `REDIS_SERVER_PATH` first, then `PATH`; skip explicitly when absent.
-- **Technical OQ:** Host power loss cannot be safely automated in a repository test. Keep it outside the verdict evidence and document the gap.
-- **Value OQ:** None. The operator explicitly authorized completing the evaluation; no production migration is authorized by this work item.
+- Harness source: `cab7d39391ec07e1d2958e797c7bd95337a90e37`
+- Raw standard results: `docs/evaluations/chat-storage/2026-07-28-results.json`
+- CAFF-specific verdict: `docs/evaluations/chat-storage/2026-07-28-verdict.md`
+- Standard workload: 50,000 messages, 25,000-message hot thread, 500 operation samples, balanced and strict durability profiles.
+- Process-crash probe: each backend recovered 2,000 of 2,000 acknowledged messages in both durability profiles; host power loss was not tested.
+- Verification: harness tests, result contract validation, `npm run check`, `npm run typecheck`, `npm run test:fast`, and `npm run test:smoke` passed on 2026-07-28.
+- Safety: all runs used deterministic synthetic messages, disposable temp directories, loopback-only child Redis processes, and dynamic ports excluding 6398/6399.
+
+## Resolved Questions
+
+- **Redis discovery:** Resolved with `REDIS_SERVER_PATH` first, then a `redis-server --version` PATH probe; absent Redis produces a skipped, non-verdict result.
+- **Power-loss scope:** Resolved by limiting automated evidence to process termination and stating the host-power-loss gap in both raw results and verdict.
+- **Migration authority:** No production migration is authorized by this work item; the outcome is an evaluation and recommendation only.
