@@ -147,7 +147,7 @@ export function createServerApp(options: any = {}) {
   }
 
   function broadcastConversationSummary(conversationId: any) {
-    const summary = pickConversationSummary(store.getConversation(conversationId));
+    const summary = pickConversationSummary(store.getConversationWithoutMessages(conversationId));
 
     if (!summary) {
       return;

@@ -16,6 +16,7 @@
     <script defer src="/shared/safe-markdown.js"></script>
     <script defer src="/chat/conversation-list.js"></script>
     <script defer src="/chat/participant-pane.js"></script>
+    <script defer src="/chat/message-history.js"></script>
     <script defer src="/chat/message-timeline.js"></script>
     <script defer src="/chat/conversation-settings.js"></script>
     <script defer src="/chat/undercover-panel.js"></script>
@@ -122,7 +123,15 @@
             <button id="skill-draft-alert-button" class="secondary-button" type="button">查看草稿</button>
           </div>
 
-          <div id="message-list" class="message-list"></div>
+          <div id="message-list" class="message-list">
+            <div id="message-history-control" class="message-history-control hidden">
+              <button id="message-history-button" class="ghost-button message-history-button" type="button">
+                加载更早消息
+              </button>
+              <span id="message-history-status" class="muted" role="status" aria-live="polite"></span>
+            </div>
+            <div id="message-timeline" class="message-timeline"></div>
+          </div>
 
           <form id="composer-form" class="composer">
             <label class="composer-label" for="composer-input">发送给当前房间</label>

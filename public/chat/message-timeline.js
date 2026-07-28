@@ -1999,6 +1999,7 @@
     }
 
     function render(conversation, activeTurn, activeAgentSlots = []) {
+      const messageContainer = dom.messageTimeline || dom.messageList;
       const baseMessages = timelineMessagesForConversation(conversation);
       const digestStatusMessage = digestStatusTimelineMessage(conversation);
       const digestResultMessage = digestStatusMessage ? null : digestResultTimelineMessage(conversation);
@@ -2006,7 +2007,7 @@
       const hasMessages = messages.length > 0;
 
       if (!hasMessages) {
-        if (dom.messageList.childElementCount === 1 && dom.messageList.firstElementChild.classList.contains('empty-state')) {
+        if (messageContainer.childElementCount === 1 && messageContainer.firstElementChild.classList.contains('empty-state')) {
           return;
         }
 
@@ -2016,12 +2017,12 @@
           conversation && (conversation.type === 'who_is_undercover' || conversation.type === 'werewolf')
             ? '\u5f00\u59cb\u65b0\u4e00\u5c40\u540e\uff0c\u540e\u7aef\u4f1a\u81ea\u52a8\u63a8\u8fdb\u6574\u5c40\u5bf9\u8bdd\u3002'
             : '\u53d1\u9001\u4e00\u6761\u6d88\u606f\uff0c\u5f00\u59cb\u591a\u4eba\u683c\u8ba8\u8bba\u3002';
-        dom.messageList.replaceChildren(empty);
+        messageContainer.replaceChildren(empty);
         return;
       }
 
-      const existingCards = Array.from(dom.messageList.querySelectorAll('.message-card'));
-      const hasOnlyMessageCards = existingCards.length === dom.messageList.childElementCount;
+      const existingCards = Array.from(messageContainer.querySelectorAll('.message-card'));
+      const hasOnlyMessageCards = existingCards.length === messageContainer.childElementCount;
       const matchesExistingPrefix =
         hasOnlyMessageCards &&
         existingCards.every((card, index) => card.dataset.messageId === (messages[index] ? messages[index].id : undefined));
@@ -2039,7 +2040,7 @@
         });
 
         messages.slice(existingCards.length).forEach((message) => {
-          dom.messageList.appendChild(createMessageCard(message, conversation.id, conversation.agents, activeTurn, activeAgentSlots));
+          messageContainer.appendChild(createMessageCard(message, conversation.id, conversation.agents, activeTurn, activeAgentSlots));
         });
         return;
       }
@@ -2048,7 +2049,7 @@
       messages.forEach((message) => {
         fragment.appendChild(createMessageCard(message, conversation.id, conversation.agents, activeTurn, activeAgentSlots));
       });
-      dom.messageList.replaceChildren(fragment);
+      messageContainer.replaceChildren(fragment);
     }
 
     return {

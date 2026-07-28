@@ -1261,6 +1261,16 @@ export class ChatAppStore {
     );
   }
 
+  getConversationWithoutMessages(conversationId: any) {
+    const row = this.conversationRepository.get(conversationId);
+
+    if (!row) {
+      return null;
+    }
+
+    return normalizeConversation(row, this.listConversationAgents(conversationId), []);
+  }
+
   getConversationChannelBinding(platform: any, externalChatId: any) {
     return normalizeConversationChannelBindingRow(
       this.channelBindingRepository.getByExternalChatId(String(platform || '').trim(), String(externalChatId || '').trim())
@@ -1408,7 +1418,7 @@ export class ChatAppStore {
   }
 
   updateConversation(conversationId: any, updates: any = {}) {
-    const existing = this.getConversation(conversationId);
+    const existing = this.getConversationWithoutMessages(conversationId);
 
     if (!existing) {
       return null;
@@ -1446,6 +1456,16 @@ export class ChatAppStore {
 
   listMessages(conversationId: any) {
     return this.messageRepository.listByConversationId(conversationId).map(normalizeMessageRow);
+  }
+
+  listMessagePage(conversationId: any, options: any = {}) {
+    const page = this.messageRepository.listPageByConversationId(conversationId, options);
+
+    return {
+      items: page.items.map(normalizeMessageRow),
+      nextBefore: page.nextBefore,
+      hasMore: page.hasMore,
+    };
   }
 
   listPrivateMessages(conversationId: any) {
@@ -1705,7 +1725,7 @@ export class ChatAppStore {
   }
 
   createMessage(payload: any = {}) {
-    const conversation = this.getConversation(payload.conversationId);
+    const conversation = this.getConversationWithoutMessages(payload.conversationId);
 
     if (!conversation) {
       throw new Error('Conversation not found');
@@ -1733,7 +1753,7 @@ export class ChatAppStore {
   }
 
   createPrivateMessage(payload: any = {}) {
-    const conversation = this.getConversation(payload.conversationId);
+    const conversation = this.getConversationWithoutMessages(payload.conversationId);
 
     if (!conversation) {
       throw new Error('Conversation not found');
