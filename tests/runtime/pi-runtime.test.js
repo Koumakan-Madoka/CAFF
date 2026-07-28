@@ -6,122 +6,150 @@ const test = require('node:test');
 const { requireSpawn } = require('../helpers/spawn');
 const { withTempDir } = require('../helpers/temp-dir');
 
-const ROOT_DIR = path.resolve(__dirname, '..', '..');
-const FAKE_PI_PATH = path.join(ROOT_DIR, 'tests', 'fixtures', 'fake-pi-complete-then-hang.ps1');
-const FAKE_PI_ECHO_STDIN_PATH = path.join(ROOT_DIR, 'tests', 'fixtures', 'fake-pi-echo-stdin.ps1');
-
-function createFakePiShimWithCli(baseDir) {
-  const shimDir = path.join(baseDir, 'fake-pi-shim');
-  const cliDir = path.join(shimDir, 'node_modules', '@mariozechner', 'pi-coding-agent', 'dist');
-  const shimPath = path.join(shimDir, 'pi.ps1');
-  const cliPath = path.join(cliDir, 'cli.js');
-
-  fs.mkdirSync(cliDir, { recursive: true });
-  fs.writeFileSync(shimPath, '# intentionally unused shim', 'utf8');
-  fs.writeFileSync(
-    cliPath,
-    [
-      "let data = '';",
-      "process.stdin.setEncoding('utf8');",
-      "process.stdin.on('data', (chunk) => { data += chunk; });",
-      "process.stdin.on('end', () => {",
-      "  const message = {",
-      "    type: 'message_end',",
-      "    message: {",
-      "      role: 'assistant',",
-      "      content: [{ type: 'text', text: data }],",
-      "      stopReason: 'stop',",
-      "      timestamp: Date.now(),",
-      "      usage: { input_tokens: 1234, output_tokens: 56, total_tokens: 1290 },",
-      "    },",
-      "  };",
-      "  process.stdout.write(`${JSON.stringify(message)}\\n`);",
-      '});',
-      'process.stdin.resume();',
-    ].join('\n'),
-    'utf8'
-  );
-
-  return shimPath;
+function createFakeSdkHost(baseDir, scriptLines) {
+  const hostPath = path.join(baseDir, 'fake-sdk-host.mjs');
+  fs.writeFileSync(hostPath, scriptLines.join('\n'), 'utf8');
+  return hostPath;
 }
 
-function createFakePiShimWithMultipleAssistantUsages(baseDir) {
-  const shimDir = path.join(baseDir, 'fake-pi-shim-multiple-usage');
-  const cliDir = path.join(shimDir, 'node_modules', '@mariozechner', 'pi-coding-agent', 'dist');
-  const shimPath = path.join(shimDir, 'pi.ps1');
-  const cliPath = path.join(cliDir, 'cli.js');
-
-  fs.mkdirSync(cliDir, { recursive: true });
-  fs.writeFileSync(shimPath, '# intentionally unused shim', 'utf8');
-  fs.writeFileSync(
-    cliPath,
-    [
-      'const assistantMessages = [',
-      '  { role: "assistant", responseId: "tool-step", content: [{ type: "toolCall", name: "bash", arguments: {} }], stopReason: "toolUse", timestamp: 1, usage: { input: 100, output: 40, cacheRead: 900, cacheWrite: 10, totalTokens: 1050, cost: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, total: 10 } } },',
-      '  { role: "assistant", responseId: "final-step", content: [{ type: "text", text: "{\\\"action\\\":\\\"final\\\"}" }], stopReason: "stop", timestamp: 2, usage: { input: 5, output: 9, cacheRead: 1000, cacheWrite: 0, totalTokens: 1014, cost: { input: 5, output: 6, cacheRead: 7, cacheWrite: 8, total: 26 } } },',
-      '];',
-      'for (const message of assistantMessages) {',
-      '  process.stdout.write(`${JSON.stringify({ type: "message_end", message })}\\n`);',
-      '}',
-      'process.stdout.write(`${JSON.stringify({ type: "agent_end", messages: assistantMessages })}\\n`);',
-    ].join('\n'),
-    'utf8'
-  );
-
-  return shimPath;
+function createFakeSdkHostEchoPrompt(baseDir, usage = null) {
+  return createFakeSdkHost(baseDir, [
+    "process.on('message', (command) => {",
+    "  if (command?.type === 'start') {",
+    "    const message = {",
+    "      role: 'assistant',",
+    "      content: [{ type: 'text', text: command.prompt }],",
+    "      stopReason: 'stop',",
+    "      timestamp: Date.now(),",
+    usage ? `      usage: ${JSON.stringify(usage)},` : '',
+    "    };",
+    "    process.send({ type: 'pi_event', event: { type: 'message_end', message } });",
+    "    return;",
+    "  }",
+    "  if (command?.type === 'abort') process.exit(0);",
+    "});",
+  ]);
 }
 
-function createFakePiShimCapturingRuntimeInfo(baseDir) {
-  const shimDir = path.join(baseDir, 'fake-pi-shim-capture');
-  const cliDir = path.join(shimDir, 'node_modules', '@mariozechner', 'pi-coding-agent', 'dist');
-  const shimPath = path.join(shimDir, 'pi.ps1');
-  const cliPath = path.join(cliDir, 'cli.js');
-
-  fs.mkdirSync(cliDir, { recursive: true });
-  fs.writeFileSync(shimPath, '# intentionally unused shim', 'utf8');
-  fs.writeFileSync(
-    cliPath,
-    [
-      'const fs = require("node:fs");',
-      'const payload = { cwd: process.cwd(), argv: process.argv.slice(2) };',
-      'if (process.env.TEST_CAPTURE_PATH) {',
-      '  fs.writeFileSync(process.env.TEST_CAPTURE_PATH, JSON.stringify(payload), "utf8");',
-      '}',
-      'const message = {',
-      '  type: "message_end",',
-      '  message: {',
-      '    role: "assistant",',
-      '    content: [{ type: "text", text: JSON.stringify(payload) }],',
-      '    stopReason: "stop",',
-      '    timestamp: Date.now(),',
-      '  },',
-      '};',
-      'process.stdout.write(`${JSON.stringify(message)}\\n`);',
-    ].join('\n'),
-    'utf8'
-  );
-
-  return shimPath;
+function createFakeSdkHostCompleteThenHang(baseDir) {
+  return createFakeSdkHost(baseDir, [
+    "process.on('message', (command) => {",
+    "  if (command?.type === 'start') {",
+    "    const message = {",
+    "      role: 'assistant',",
+    "      content: [{ type: 'text', text: 'terminal reply' }],",
+    "      stopReason: 'stop',",
+    "      timestamp: Date.now(),",
+    "    };",
+    "    process.send({ type: 'pi_event', event: { type: 'message_end', message } });",
+    "    return;",
+    "  }",
+    "  if (command?.type === 'abort') process.exit(0);",
+    "});",
+    "setInterval(() => {}, 1000).unref();",
+  ]);
 }
 
-function loadRuntimeWithCommandPath(commandPath) {
+function createFakeSdkHostWaitingForAbort(baseDir, capturePath = '') {
+  return createFakeSdkHost(baseDir, [
+    "import { writeFileSync } from 'node:fs';",
+    "process.on('message', (command) => {",
+    "  if (command?.type === 'start') return;",
+    "  if (command?.type === 'abort') {",
+    capturePath ? `    writeFileSync(${JSON.stringify(capturePath)}, JSON.stringify(command), 'utf8');` : '',
+    "    process.exit(0);",
+    "  }",
+    "});",
+    "setInterval(() => {}, 1000).unref();",
+  ]);
+}
+
+function createFakeSdkHostMultipleUsages(baseDir) {
+  return createFakeSdkHost(baseDir, [
+    "const assistantMessages = [",
+    "  { role: 'assistant', responseId: 'tool-step', content: [{ type: 'toolCall', name: 'bash', arguments: {} }], stopReason: 'toolUse', timestamp: 1, usage: { input: 100, output: 40, cacheRead: 900, cacheWrite: 10, totalTokens: 1050, cost: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, total: 10 } } },",
+    "  { role: 'assistant', responseId: 'final-step', content: [{ type: 'text', text: '{\\\"action\\\":\\\"final\\\"}' }], stopReason: 'stop', timestamp: 2, usage: { input: 5, output: 9, cacheRead: 1000, cacheWrite: 0, totalTokens: 1014, cost: { input: 5, output: 6, cacheRead: 7, cacheWrite: 8, total: 26 } } },",
+    "];",
+    "process.on('message', (command) => {",
+    "  if (command?.type === 'start') {",
+    "    for (const message of assistantMessages) {",
+    "      process.send({ type: 'pi_event', event: { type: 'message_end', message } });",
+    "    }",
+    "    process.send({ type: 'pi_event', event: { type: 'agent_end', messages: assistantMessages } });",
+    "    return;",
+    "  }",
+    "  if (command?.type === 'abort') process.exit(0);",
+    "});",
+  ]);
+}
+
+function createFakeSdkHostCapturingInfo(baseDir) {
+  return createFakeSdkHost(baseDir, [
+    "import { writeFileSync } from 'node:fs';",
+    "process.on('message', (command) => {",
+    "  if (command?.type === 'start') {",
+    "    const payload = { cwd: process.cwd(), command };",
+    "    if (process.env.TEST_CAPTURE_PATH) {",
+    "      writeFileSync(process.env.TEST_CAPTURE_PATH, JSON.stringify(payload), 'utf8');",
+    "    }",
+    "    const message = {",
+    "      role: 'assistant',",
+    "      content: [{ type: 'text', text: JSON.stringify(payload) }],",
+    "      stopReason: 'stop',",
+    "      timestamp: Date.now(),",
+    "    };",
+    "    process.send({ type: 'pi_event', event: { type: 'message_end', message } });",
+    "    return;",
+    "  }",
+    "  if (command?.type === 'abort') process.exit(0);",
+    "});",
+  ]);
+}
+
+function createFakeSdkHostCrash(baseDir) {
+  return createFakeSdkHost(baseDir, [
+    "process.on('message', (command) => {",
+    "  if (command?.type !== 'start') return;",
+    "  process.stderr.write('sdk host exploded\\n');",
+    "  process.exit(7);",
+    "});",
+  ]);
+}
+
+function createFakeSdkHostMalformedThenComplete(baseDir) {
+  return createFakeSdkHost(baseDir, [
+    "process.on('message', (command) => {",
+    "  if (command?.type !== 'start') return;",
+    "  process.send('malformed-ipc-message');",
+    "  const message = {",
+    "    role: 'assistant',",
+    "    content: [{ type: 'text', text: 'recovered reply' }],",
+    "    stopReason: 'stop',",
+    "    timestamp: Date.now(),",
+    "  };",
+    "  process.send({ type: 'pi_event', event: { type: 'message_end', message } });",
+    "});",
+  ]);
+}
+
+function loadRuntimeWithSdkHost(sdkHostPath) {
   const runtimeModulePath = require.resolve('../../build/lib/pi-runtime');
-  const previousCommandPath = process.env.PI_COMMAND_PATH;
+  const previousOverride = process.env.PI_SDK_HOST_OVERRIDE;
 
   delete require.cache[runtimeModulePath];
-  process.env.PI_COMMAND_PATH = commandPath;
+  process.env.PI_SDK_HOST_OVERRIDE = sdkHostPath;
 
   return {
     runtime: require('../../build/lib/pi-runtime'),
     restore() {
       delete require.cache[runtimeModulePath];
 
-      if (previousCommandPath === undefined) {
-        delete process.env.PI_COMMAND_PATH;
+      if (previousOverride === undefined) {
+        delete process.env.PI_SDK_HOST_OVERRIDE;
         return;
       }
 
-      process.env.PI_COMMAND_PATH = previousCommandPath;
+      process.env.PI_SDK_HOST_OVERRIDE = previousOverride;
     },
   };
 }
@@ -138,18 +166,14 @@ test('pi runtime resolves provider-specific default thinking without overriding 
 });
 
 test('pi runtime treats a terminal assistant message as successful completion even if the child keeps running', async (t) => {
-  if (process.platform !== 'win32') {
-    t.skip('PI_COMMAND_PATH override fixture is currently exercised on Windows only');
-    return;
-  }
-
   if (!requireSpawn(t)) {
     return;
   }
 
   const tempDir = withTempDir('caff-pi-runtime-');
   const sqlitePath = path.join(tempDir, 'pi-runtime.sqlite');
-  const { runtime, restore } = loadRuntimeWithCommandPath(FAKE_PI_PATH);
+  const fakeHostPath = createFakeSdkHostCompleteThenHang(tempDir);
+  const { runtime, restore } = loadRuntimeWithSdkHost(fakeHostPath);
   const terminatingReasons = [];
   let handle = null;
 
@@ -191,18 +215,14 @@ test('pi runtime treats a terminal assistant message as successful completion ev
 });
 
 test('pi runtime allows callers to mark a run complete early', async (t) => {
-  if (process.platform !== 'win32') {
-    t.skip('PI_COMMAND_PATH override fixture is currently exercised on Windows only');
-    return;
-  }
-
   if (!requireSpawn(t)) {
     return;
   }
 
   const tempDir = withTempDir('caff-pi-runtime-complete-');
   const sqlitePath = path.join(tempDir, 'pi-runtime-complete.sqlite');
-  const { runtime, restore } = loadRuntimeWithCommandPath(FAKE_PI_ECHO_STDIN_PATH);
+  const fakeHostPath = createFakeSdkHostWaitingForAbort(tempDir);
+  const { runtime, restore } = loadRuntimeWithSdkHost(fakeHostPath);
   let handle = null;
 
   t.after(() => {
@@ -238,19 +258,15 @@ test('pi runtime allows callers to mark a run complete early', async (t) => {
   assert.equal(result.completionStopReason, null);
 });
 
-test('pi runtime pipes the full prompt through stdin so quoted history is preserved', async (t) => {
-  if (process.platform !== 'win32') {
-    t.skip('PI_COMMAND_PATH override fixture is currently exercised on Windows only');
-    return;
-  }
-
+test('pi runtime sends the full prompt through structured IPC so quoted history is preserved', async (t) => {
   if (!requireSpawn(t)) {
     return;
   }
 
   const tempDir = withTempDir('caff-pi-runtime-stdin-');
   const sqlitePath = path.join(tempDir, 'pi-runtime-stdin.sqlite');
-  const { runtime, restore } = loadRuntimeWithCommandPath(FAKE_PI_ECHO_STDIN_PATH);
+  const fakeHostPath = createFakeSdkHostEchoPrompt(tempDir);
+  const { runtime, restore } = loadRuntimeWithSdkHost(fakeHostPath);
   const prompt =
     'Conversation history:\nUser: before "quoted" after\n\nLatest user message:\nKeep "this segment" and the trailing text';
   let handle = null;
@@ -275,7 +291,7 @@ test('pi runtime pipes the full prompt through stdin so quoted history is preser
 
   const timeoutPromise = new Promise((_, reject) => {
     setTimeout(() => {
-      reject(new Error('Timed out waiting for stdin echo completion'));
+      reject(new Error('Timed out waiting for IPC prompt echo completion'));
     }, 2000);
   });
 
@@ -286,20 +302,19 @@ test('pi runtime pipes the full prompt through stdin so quoted history is preser
   assert.match(result.reply, /Keep "this segment" and the trailing text/u);
 });
 
-test('pi runtime bypasses PowerShell shims so unicode stdin prompts stay intact on Windows', async (t) => {
-  if (process.platform !== 'win32') {
-    t.skip('PI_COMMAND_PATH override fixture is currently exercised on Windows only');
-    return;
-  }
-
+test('pi runtime preserves unicode IPC prompts through the SDK host', async (t) => {
   if (!requireSpawn(t)) {
     return;
   }
 
   const tempDir = withTempDir('caff-pi-runtime-unicode-');
   const sqlitePath = path.join(tempDir, 'pi-runtime-unicode.sqlite');
-  const fakeShimPath = createFakePiShimWithCli(tempDir);
-  const { runtime, restore } = loadRuntimeWithCommandPath(fakeShimPath);
+  const fakeHostPath = createFakeSdkHostEchoPrompt(tempDir, {
+    input_tokens: 1234,
+    output_tokens: 56,
+    total_tokens: 1290,
+  });
+  const { runtime, restore } = loadRuntimeWithSdkHost(fakeHostPath);
   const prompt = 'Conversation history:\nUser: 中文内容 "保留后文"\nLatest user message:\n继续看乱码';
   let handle = null;
 
@@ -323,7 +338,7 @@ test('pi runtime bypasses PowerShell shims so unicode stdin prompts stay intact 
 
   const timeoutPromise = new Promise((_, reject) => {
     setTimeout(() => {
-      reject(new Error('Timed out waiting for unicode shim completion'));
+      reject(new Error('Timed out waiting for unicode completion'));
     }, 2000);
   });
 
@@ -336,19 +351,14 @@ test('pi runtime bypasses PowerShell shims so unicode stdin prompts stay intact 
 });
 
 test('pi runtime aggregates usage across assistant model calls', async (t) => {
-  if (process.platform !== 'win32') {
-    t.skip('PI_COMMAND_PATH override fixture is currently exercised on Windows only');
-    return;
-  }
-
   if (!requireSpawn(t)) {
     return;
   }
 
   const tempDir = withTempDir('caff-pi-runtime-multiple-usage-');
   const sqlitePath = path.join(tempDir, 'pi-runtime-multiple-usage.sqlite');
-  const fakeShimPath = createFakePiShimWithMultipleAssistantUsages(tempDir);
-  const { runtime, restore } = loadRuntimeWithCommandPath(fakeShimPath);
+  const fakeHostPath = createFakeSdkHostMultipleUsages(tempDir);
+  const { runtime, restore } = loadRuntimeWithSdkHost(fakeHostPath);
   let handle = null;
 
   t.after(() => {
@@ -387,12 +397,7 @@ test('pi runtime aggregates usage across assistant model calls', async (t) => {
   });
 });
 
-test('pi runtime respects explicit cwd and forwards extra extensions', async (t) => {
-  if (process.platform !== 'win32') {
-    t.skip('PI_COMMAND_PATH override fixture is currently exercised on Windows only');
-    return;
-  }
-
+test('pi runtime respects explicit cwd and forwards session, resume, and extensions through IPC', async (t) => {
   if (!requireSpawn(t)) {
     return;
   }
@@ -402,8 +407,8 @@ test('pi runtime respects explicit cwd and forwards extra extensions', async (t)
   const sqlitePath = path.join(tempDir, 'pi-runtime-cwd.sqlite');
   const capturePath = path.join(tempDir, 'capture.json');
   const extraExtensionPath = path.join(tempDir, 'extra-extension.mjs');
-  const fakeShimPath = createFakePiShimCapturingRuntimeInfo(tempDir);
-  const { runtime, restore } = loadRuntimeWithCommandPath(fakeShimPath);
+  const fakeHostPath = createFakeSdkHostCapturingInfo(tempDir);
+  const { runtime, restore } = loadRuntimeWithSdkHost(fakeHostPath);
   let handle = null;
 
   fs.mkdirSync(projectDir, { recursive: true });
@@ -423,6 +428,8 @@ test('pi runtime respects explicit cwd and forwards extra extensions', async (t)
     sqlitePath,
     cwd: projectDir,
     extensionPaths: [extraExtensionPath],
+    session: 'named-session',
+    resume: true,
     heartbeatIntervalMs: 50,
     heartbeatTimeoutMs: 10000,
     terminateGraceMs: 100,
@@ -441,14 +448,229 @@ test('pi runtime respects explicit cwd and forwards extra extensions', async (t)
   await Promise.race([handle.resultPromise, timeoutPromise]);
 
   const captured = JSON.parse(fs.readFileSync(capturePath, 'utf8'));
-  const extensionArgs = [];
-
-  for (let i = 0; i < captured.argv.length; i += 1) {
-    if (captured.argv[i] === '--extension' && captured.argv[i + 1]) {
-      extensionArgs.push(captured.argv[i + 1]);
-    }
-  }
+  const command = captured.command;
 
   assert.equal(captured.cwd, projectDir);
-  assert.ok(extensionArgs.includes(path.resolve(extraExtensionPath)));
+  assert.equal(command.type, 'start');
+  assert.equal(command.prompt, 'check cwd');
+  assert.equal(command.config.cwd, projectDir);
+  assert.equal(command.config.resume, true);
+  assert.equal(command.config.sessionPath, path.join(tempDir, 'named-sessions', 'named-session.jsonl'));
+  assert.deepEqual(command.config.extensionPaths, [path.resolve(extraExtensionPath)]);
+});
+
+test('pi runtime sends an IPC abort command before forcing process termination', async (t) => {
+  if (!requireSpawn(t)) {
+    return;
+  }
+
+  const tempDir = withTempDir('caff-pi-runtime-abort-');
+  const sqlitePath = path.join(tempDir, 'pi-runtime-abort.sqlite');
+  const capturePath = path.join(tempDir, 'abort.json');
+  const fakeHostPath = createFakeSdkHostWaitingForAbort(tempDir, capturePath);
+  const { runtime, restore } = loadRuntimeWithSdkHost(fakeHostPath);
+  let handle = null;
+
+  t.after(() => {
+    try {
+      handle && handle.cancel('test cleanup');
+    } catch {}
+
+    restore();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  handle = runtime.startRun('test-provider', 'test-model', 'wait for cancel', {
+    agentDir: tempDir,
+    sqlitePath,
+    heartbeatIntervalMs: 0,
+    heartbeatTimeoutMs: 10000,
+    terminateGraceMs: 500,
+    streamOutput: false,
+  });
+
+  handle.cancel('operator cancelled');
+
+  await assert.rejects(handle.resultPromise, (error) => {
+    assert.equal(error.terminationReason.type, 'cancelled');
+    return true;
+  });
+
+  const captured = JSON.parse(fs.readFileSync(capturePath, 'utf8'));
+  assert.equal(captured.type, 'abort');
+  assert.equal(captured.reason.type, 'cancelled');
+  assert.equal(captured.reason.message, 'operator cancelled');
+});
+
+test('pi runtime rejects with host crash diagnostics', async (t) => {
+  if (!requireSpawn(t)) {
+    return;
+  }
+
+  const tempDir = withTempDir('caff-pi-runtime-crash-');
+  const fakeHostPath = createFakeSdkHostCrash(tempDir);
+  const { runtime, restore } = loadRuntimeWithSdkHost(fakeHostPath);
+  let handle = null;
+
+  t.after(() => {
+    try {
+      handle && handle.cancel('test cleanup');
+    } catch {}
+
+    restore();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  handle = runtime.startRun('test-provider', 'test-model', 'crash', {
+    agentDir: tempDir,
+    sqlitePath: path.join(tempDir, 'pi-runtime-crash.sqlite'),
+    heartbeatIntervalMs: 0,
+    heartbeatTimeoutMs: 10000,
+    terminateGraceMs: 100,
+    streamOutput: false,
+  });
+
+  await assert.rejects(handle.resultPromise, (error) => {
+    assert.equal(error.exitCode, 7);
+    assert.match(error.stderrTail, /sdk host exploded/u);
+    assert.equal(error.reply, '');
+    return true;
+  });
+});
+
+test('pi runtime preserves stdout_parse_error compatibility for malformed IPC messages', async (t) => {
+  if (!requireSpawn(t)) {
+    return;
+  }
+
+  const tempDir = withTempDir('caff-pi-runtime-malformed-ipc-');
+  const fakeHostPath = createFakeSdkHostMalformedThenComplete(tempDir);
+  const { runtime, restore } = loadRuntimeWithSdkHost(fakeHostPath);
+  const protocolErrors = [];
+  let handle = null;
+
+  t.after(() => {
+    try {
+      handle && handle.cancel('test cleanup');
+    } catch {}
+
+    restore();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  handle = runtime.startRun('test-provider', 'test-model', 'recover from malformed IPC', {
+    agentDir: tempDir,
+    sqlitePath: path.join(tempDir, 'pi-runtime-malformed-ipc.sqlite'),
+    heartbeatIntervalMs: 0,
+    heartbeatTimeoutMs: 10000,
+    terminateGraceMs: 100,
+    streamOutput: false,
+  });
+  handle.on('stdout_parse_error', (event) => protocolErrors.push(event));
+
+  const result = await handle.resultPromise;
+
+  assert.equal(result.reply, 'recovered reply');
+  assert.equal(result.parseErrors, 1);
+  assert.equal(protocolErrors.length, 1);
+  assert.equal(protocolErrors[0].type, 'stdout_parse_error');
+  assert.equal(protocolErrors[0].line, '"malformed-ipc-message"');
+  assert.equal(protocolErrors[0].parseErrors, 1);
+  assert.equal(protocolErrors[0].source, 'ipc');
+  assert.ok(protocolErrors[0].timestamp);
+});
+
+test('pi runtime aborts a silent host after heartbeat timeout', async (t) => {
+  if (!requireSpawn(t)) {
+    return;
+  }
+
+  const tempDir = withTempDir('caff-pi-runtime-heartbeat-timeout-');
+  const capturePath = path.join(tempDir, 'heartbeat-abort.json');
+  const fakeHostPath = createFakeSdkHostWaitingForAbort(tempDir, capturePath);
+  const { runtime, restore } = loadRuntimeWithSdkHost(fakeHostPath);
+  let handle = null;
+
+  t.after(() => {
+    try {
+      handle && handle.cancel('test cleanup');
+    } catch {}
+
+    restore();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  handle = runtime.startRun('test-provider', 'test-model', 'wait for timeout', {
+    agentDir: tempDir,
+    sqlitePath: path.join(tempDir, 'pi-runtime-heartbeat-timeout.sqlite'),
+    heartbeatIntervalMs: 0,
+    heartbeatTimeoutMs: 50,
+    terminateGraceMs: 500,
+    streamOutput: false,
+  });
+
+  await assert.rejects(handle.resultPromise, (error) => {
+    assert.equal(error.terminationReason.type, 'heartbeat_timeout');
+    return true;
+  });
+
+  const captured = JSON.parse(fs.readFileSync(capturePath, 'utf8'));
+  assert.equal(captured.type, 'abort');
+  assert.equal(captured.reason.type, 'heartbeat_timeout');
+});
+
+test('pi runtime does not import pi-cli-spawn', () => {
+  const runtimeSource = fs.readFileSync(
+    path.resolve(__dirname, '..', '..', 'lib', 'pi-runtime.ts'),
+    'utf8'
+  );
+
+  assert.ok(!runtimeSource.includes('pi-cli-spawn'), 'pi-runtime.ts must not import pi-cli-spawn');
+  assert.ok(!runtimeSource.includes('tryCreateDirectPiNodeSpawnSpec'), 'pi-runtime.ts must not use tryCreateDirectPiNodeSpawnSpec');
+});
+
+test('pi runtime forks the SDK host with a structured IPC channel', () => {
+  const runtimeSource = fs.readFileSync(
+    path.resolve(__dirname, '..', '..', 'lib', 'pi-runtime.ts'),
+    'utf8'
+  );
+
+  assert.ok(runtimeSource.includes('SDK_HOST_PATH'), 'pi-runtime.ts must reference SDK_HOST_PATH');
+  assert.ok(runtimeSource.includes("require('node:child_process')"), 'pi-runtime.ts must use node child_process');
+  assert.ok(runtimeSource.includes("child.on('message'"), 'pi-runtime.ts must consume structured IPC messages');
+  assert.ok(!runtimeSource.includes("require('node:readline')"), 'pi-runtime.ts must not parse JSONL stdout');
+  assert.ok(!runtimeSource.includes('writePiPromptToStdin'), 'pi-runtime.ts must not pipe prompts through stdin');
+  assert.ok(!runtimeSource.includes('findPiScriptPath'), 'pi-runtime.ts must not use findPiScriptPath');
+});
+
+test('package.json pins pi-coding-agent version without caret', () => {
+  const pkg = JSON.parse(
+    fs.readFileSync(
+      path.resolve(__dirname, '..', '..', 'package.json'),
+      'utf8'
+    )
+  );
+
+  const version = pkg.dependencies['@earendil-works/pi-coding-agent'];
+  assert.ok(version, 'package.json must depend on @earendil-works/pi-coding-agent');
+  assert.ok(!version.startsWith('^'), 'version must be pinned without caret');
+  assert.ok(!version.startsWith('~'), 'version must be pinned without tilde');
+});
+
+test('runtime execution surfaces use one pi-coding-agent package family', () => {
+  const runtimeFiles = [
+    'lib/pi-sdk-host.mjs',
+    'lib/pi-skill-test-sandbox-extension.mjs',
+    'scripts/opensandbox/build-runtime-image.js',
+    'server/domain/skill-test/open-sandbox-factory.ts',
+  ];
+
+  for (const relativePath of runtimeFiles) {
+    const source = fs.readFileSync(path.resolve(__dirname, '..', '..', relativePath), 'utf8');
+    assert.doesNotMatch(
+      source,
+      /@mariozechner\/pi-coding-agent/u,
+      `${relativePath} must not reference the legacy coding-agent package family`
+    );
+  }
 });

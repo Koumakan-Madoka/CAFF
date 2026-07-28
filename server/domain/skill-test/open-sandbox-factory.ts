@@ -1186,26 +1186,14 @@ function derivePiPackageDirFromCommandPath(commandPath) {
   if (!resolvedCommandPath) {
     return '';
   }
-  const packageDir = path.join(path.dirname(resolvedCommandPath), 'node_modules', '@mariozechner', 'pi-coding-agent');
+  const packageDir = path.join(path.dirname(resolvedCommandPath), 'node_modules', '@earendil-works', 'pi-coding-agent');
   return isValidPiPackageDir(packageDir);
 }
 
-function findCommandOnPath(commandName) {
-  const executable = process.platform === 'win32' ? 'where.exe' : 'which';
-  try {
-    const result = spawnSync(executable, [commandName], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      windowsHide: true,
-    });
-    if (result.status !== 0 || !result.stdout) {
-      return '';
-    }
-    const candidates = String(result.stdout || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-    return resolveExistingFilePath(candidates);
-  } catch {
-    return '';
-  }
+function resolvePinnedPiPackageDir() {
+  return isValidPiPackageDir(path.resolve(process.cwd(), 'node_modules', '@earendil-works', 'pi-coding-agent')) ||
+    isValidPiPackageDir(path.resolve(__dirname, '..', '..', '..', 'node_modules', '@earendil-works', 'pi-coding-agent')) ||
+    isValidPiPackageDir(path.resolve(__dirname, '..', '..', '..', '..', 'node_modules', '@earendil-works', 'pi-coding-agent'));
 }
 
 function resolveLocalPiPackageDir(options = {}) {
@@ -1214,14 +1202,14 @@ function resolveLocalPiPackageDir(options = {}) {
     return configuredDir;
   }
 
+  const pinnedPackageDir = resolvePinnedPiPackageDir();
+  if (pinnedPackageDir) {
+    return pinnedPackageDir;
+  }
+
   const configuredFromCommand = derivePiPackageDirFromCommandPath(options.piCommandPath);
   if (configuredFromCommand) {
     return configuredFromCommand;
-  }
-
-  const discoveredCommand = findCommandOnPath('pi');
-  if (discoveredCommand) {
-    return derivePiPackageDirFromCommandPath(discoveredCommand);
   }
 
   return '';

@@ -18,7 +18,12 @@ const { requireSpawn } = require('../helpers/spawn');
 const { withTempDir } = require('../helpers/temp-dir');
 
 const ROOT_DIR = path.resolve(__dirname, '..', '..');
-const FAKE_PI_TRELLIS_TOOLS_PATH = path.join(ROOT_DIR, 'tests', 'fixtures', 'fake-pi-trellis-tools.ps1');
+const FAKE_PI_SDK_HOST_TRELLIS_TOOLS_PATH = path.join(
+  ROOT_DIR,
+  'tests',
+  'fixtures',
+  'fake-pi-sdk-host-trellis-tools.mjs'
+);
 
 function findFreePort() {
   return new Promise((resolve, reject) => {
@@ -4396,11 +4401,6 @@ test('server smoke: bootstrap, static files, projects, skills, agents, and conve
 });
 
 test('server smoke: pi-mono agent can initialize and write Trellis files for the active project', async (t) => {
-  if (process.platform !== 'win32') {
-    t.skip('PI_COMMAND_PATH override fixture is currently exercised on Windows only');
-    return;
-  }
-
   if (!requireSpawn(t)) {
     return;
   }
@@ -4419,7 +4419,7 @@ test('server smoke: pi-mono agent can initialize and write Trellis files for the
       CHAT_APP_PORT: String(port),
       PI_CODING_AGENT_DIR: tempDir,
       PI_SQLITE_PATH: sqlitePath,
-      PI_COMMAND_PATH: FAKE_PI_TRELLIS_TOOLS_PATH,
+      PI_SDK_HOST_OVERRIDE: FAKE_PI_SDK_HOST_TRELLIS_TOOLS_PATH,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
