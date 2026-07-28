@@ -8,13 +8,13 @@ created: 2026-07-28
 
 # F001: Long Conversation Cursor Pagination
 
-> Status: review | Owner: @cat-ir4rwo6b
+> Status: in-progress | Owner: @cat-ir4rwo6b
 
 ## Why
 
 Opening or refreshing a conversation currently reads and returns every public message, so latency, memory use, JSON size, and DOM work grow linearly with the total history even when the user only needs the latest context.
 
-## Current State
+## Baseline State
 
 - `storage/chat/message.repository.ts` lists a conversation with no `LIMIT`.
 - `lib/chat-app-store.ts#getConversation()` always hydrates `messages` through that unbounded list.
@@ -28,6 +28,12 @@ Opening or refreshing a conversation currently reads and returns every public me
 - Add a bounded read-only `GET /api/conversations/:id/messages` contract while preserving `POST` behavior.
 - Make the public chat UI load the latest page first, prepend older pages without scroll jumps, and merge live latest-page refreshes without losing the older-page cursor.
 - Keep runtime prompts, digest generation, games, trace inspection, exports, recovery, and diagnostics on their current full-history semantics unless a call site is explicitly a UI projection.
+
+## Delivered State
+
+- PR #48 is merged into `main` at `241a42e`.
+- Public conversation reads are bounded and cursor-paged; internal full-history consumers retain their audited semantics.
+- Desktop and 375px browser evidence, SQLite query plans, the 50,000-message fixture, and complete gate output are recorded under `project-evidence/`.
 
 ## User Journey
 
@@ -74,3 +80,9 @@ Opening or refreshing a conversation currently reads and returns every public me
 
 - [Design Gate](../../feature-specs/2026-07-28-long-conversation-pagination-design.md)
 - [Implementation Plan](../../feature-specs/2026-07-28-long-conversation-pagination-implementation-plan.md)
+
+## Timeline
+
+| Date | Event |
+| --- | --- |
+| 2026-07-28 | Implementation merged in PR #48 (`241a42e`) |
