@@ -316,3 +316,33 @@ test('evaluation report keeps process-crash evidence distinct from host power lo
   assert.match(report, /does not simulate host power loss/i);
   assert.doesNotMatch(report, /power-loss tested/i);
 });
+
+test('evaluation report refuses a verdict when either backend was skipped', () => {
+  const suite = {
+    schemaVersion: 1,
+    generatedAt: '2026-07-28T00:00:00.000Z',
+    environment: { platform: 'test', node: 'test' },
+    configuration: { profile: 'quick' },
+    runs: [
+      {
+        configuration: { durability: 'balanced' },
+        backends: {
+          sqlite: {
+            status: 'completed',
+            operations: {
+              append: { throughputPerSecond: 100, p95Ms: 1 },
+              latest: { throughputPerSecond: 200, p95Ms: 2 },
+            },
+            storage: { bytes: 1_000 },
+            recovery: { acknowledged: 10, recovered: 10, lost: 0, restartRecoveryMs: 5 },
+          },
+          redis: { status: 'skipped', reason: 'redis-server is unavailable' },
+        },
+      },
+    ],
+    limitations: [],
+  };
+  const report = renderEvaluationReport(suite);
+  assert.match(report, /No verdict/i);
+  assert.doesNotMatch(report, /SQLite remains CAFF's durable source of truth/);
+});

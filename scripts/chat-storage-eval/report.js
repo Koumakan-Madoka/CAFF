@@ -57,7 +57,23 @@ function renderRecoveryRows(suite) {
 }
 
 function renderEvaluationReport(suite) {
+  const complete = suite.runs.every(
+    (run) => run.backends.sqlite?.status === 'completed' && run.backends.redis?.status === 'completed'
+  );
   const limitations = [...new Set([...(suite.limitations || []), ...suite.runs.flatMap((run) => run.limitations || [])])];
+  const verdict = complete
+    ? `**SQLite remains CAFF's durable source of truth for chat messages.** Redis is justified only as an optional coordination, fan-out, presence, queue, or disposable cache layer if CAFF later becomes a multi-process or multi-host service. It should not replace SQLite as the only durable message store for the current local-first architecture.
+
+A long thread does not require loading the whole database. Indexed cursor queries read a bounded page from either engine. CAFF's current full-conversation \`.all()\` call is a repository query issue to fix with pagination, not a reason to move durable chat history to Redis.`
+    : '**No verdict:** at least one backend was skipped. The partial measurements below are diagnostic only; rerun with both SQLite and Redis available before making a storage decision.';
+  const decision = complete
+    ? `For CAFF now:
+
+1. Keep normalized SQLite as the authoritative store for threads, messages, tasks, summaries, and other user-visible recoverable state.
+2. Replace full-history reads with bounded latest-page and after-cursor queries.
+3. Add Redis only when a measured distributed coordination requirement appears, and keep it reconstructible from SQLite where possible.
+4. Never apply an implicit TTL to chat history; retention must be an explicit user choice.`
+    : 'No architecture decision is issued from incomplete evidence.';
   return `---
 feature_ids: [CAFF-EVAL-CHAT-STORAGE]
 topics: [storage, sqlite, redis, benchmark, durability, chat]
@@ -69,13 +85,13 @@ created: 2026-07-28
 
 ## Verdict
 
-**SQLite remains CAFF's durable source of truth for chat messages.** Redis is justified only as an optional coordination, fan-out, presence, queue, or disposable cache layer if CAFF later becomes a multi-process or multi-host service. It should not replace SQLite as the only durable message store for the current local-first architecture.
-
-A long thread does not require loading the whole database. Indexed cursor queries read a bounded page from either engine. CAFF's current full-conversation \`.all()\` call is a repository query issue to fix with pagination, not a reason to move durable chat history to Redis.
+${verdict}
 
 ## Measured Results
 
 Profile: \`${suite.configuration.profile}\`; seed: \`${suite.configuration.seed ?? 'n/a'}\`; generated: \`${suite.generatedAt}\`.
+
+Machine: \`${suite.environment.cpuModel || 'unknown'}\` (${suite.environment.cpuCount || 'n/a'} logical CPUs), \`${suite.environment.platform}/${suite.environment.arch || 'unknown'}\`, Node \`${suite.environment.node}\`, better-sqlite3 \`${suite.environment.betterSqlite3 || 'n/a'}\`, Redis \`${suite.environment.redisServer || 'unavailable'}\`. Harness source: \`${suite.environment.sourceCommit || 'unknown'}\`.
 
 | Durability | Backend | Append throughput | Latest-page p95 | Durable files | Startup |
 |---|---|---:|---:|---:|---:|
@@ -94,17 +110,12 @@ The recovery probe terminates the storage process abruptly after acknowledgement
 ## Repository Evidence
 
 - CAFF already uses SQLite WAL with \`synchronous=NORMAL\` and has a cursor-compatible message index. Its current conversation read path still calls an unbounded \`.all()\`; pagination should use that index.
-- Clowder introduced Redis first for sessions (\`19f158c96\`), then for message persistence after a capped in-memory store lost history on restart (\`b1dd04cf8\`). That history establishes why Redis replaced memory, not that Redis beat SQLite.
+- Clowder introduced Redis first for sessions (\`19f158c96\`). The later message-store commit (\`b1dd04cf8\`) added a Redis-backed factory alongside an in-memory implementation capped at 2,000 messages. That history shows Redis replacing bounded process memory, not Redis winning a SQLite comparison.
 - Clowder later experienced an RDB snapshot-window loss (\`40ecac509\`) and a default 30-day TTL deleting a thread (\`4e57a38e7\`). Durable user-visible chat therefore requires permanent retention and an explicitly tested persistence policy regardless of engine.
 
 ## Decision
 
-For CAFF now:
-
-1. Keep normalized SQLite as the authoritative store for threads, messages, tasks, summaries, and other user-visible recoverable state.
-2. Replace full-history reads with bounded latest-page and after-cursor queries.
-3. Add Redis only when a measured distributed coordination requirement appears, and keep it reconstructible from SQLite where possible.
-4. Never apply an implicit TTL to chat history; retention must be an explicit user choice.
+${decision}
 
 ## Limitations
 

@@ -309,6 +309,7 @@ const LIMITATIONS = [
   'Synthetic deterministic message content does not reproduce every production access pattern.',
   'Process termination does not simulate host power loss or storage-device failure.',
   'SQLite RSS is measured inside the shared Node harness process and is not directly comparable to Redis process RSS.',
+  'Synthetic payloads use repeated characters and are highly compressible; Redis RDB/AOF-base compression makes measured disk bytes unsuitable for generalizing real-chat storage ratios.',
   'Performance runs use alternating backend order by durability, but OS cache and background activity can still affect results.',
 ];
 

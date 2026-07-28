@@ -10,9 +10,10 @@ const { RespClient } = require('./resp-client');
 
 function findRedisServer(explicitPath) {
   const configured = explicitPath || process.env.REDIS_SERVER_PATH;
-  if (configured) return fs.existsSync(configured) ? path.resolve(configured) : null;
-  const probe = spawnSync('redis-server', ['--version'], { encoding: 'utf8', windowsHide: true });
-  return probe.status === 0 ? 'redis-server' : null;
+  if (configured && fs.existsSync(configured)) return path.resolve(configured);
+  const command = configured || 'redis-server';
+  const probe = spawnSync(command, ['--version'], { encoding: 'utf8', windowsHide: true });
+  return probe.status === 0 ? command : null;
 }
 
 function allocateLoopbackPort() {
