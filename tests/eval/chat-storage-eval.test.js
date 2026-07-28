@@ -209,6 +209,7 @@ test(
         appendonly: 'yes',
         appendfsync: 'everysec',
         rdbSchedule: '60 1',
+        autoAofRewritePercentage: '0',
       });
       assert.notEqual(backend.port, 6398);
       assert.notEqual(backend.port, 6399);

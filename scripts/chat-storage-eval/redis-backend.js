@@ -1,5 +1,7 @@
 'use strict';
 
+const { performance } = require('node:perf_hooks');
+
 const { RedisProcessManager } = require('./redis-process');
 const { RespClient, RespReplyError } = require('./resp-client');
 
@@ -57,6 +59,10 @@ function parseInfo(reply) {
   return result;
 }
 
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
 class RedisChatBackend {
   constructor({ directory, durability = 'balanced', port, redisServerPath }) {
     this.process = new RedisProcessManager({ directory, durability, port, redisServerPath });
@@ -72,19 +78,28 @@ class RedisChatBackend {
     try {
       await this.client.connect();
       const config = configReplyToObject(
-        await this.client.sendCommand(['CONFIG', 'GET', 'appendonly', 'appendfsync', 'save'])
+        await this.client.sendCommand([
+          'CONFIG', 'GET', 'appendonly', 'appendfsync', 'save', 'auto-aof-rewrite-percentage',
+        ])
       );
       const expectedFsync = this.durability === 'strict' ? 'always' : 'everysec';
-      if (config.appendonly !== 'yes' || config.appendfsync !== expectedFsync || config.save !== '60 1') {
+      if (
+        config.appendonly !== 'yes' ||
+        config.appendfsync !== expectedFsync ||
+        config.save !== '60 1' ||
+        config['auto-aof-rewrite-percentage'] !== '0'
+      ) {
         throw new Error(
           `Redis durability configuration mismatch: appendonly=${config.appendonly}, ` +
-            `appendfsync=${config.appendfsync}, save=${config.save}`
+            `appendfsync=${config.appendfsync}, save=${config.save}, ` +
+            `auto-aof-rewrite-percentage=${config['auto-aof-rewrite-percentage']}`
         );
       }
       this.durabilitySettings = {
         appendonly: config.appendonly,
         appendfsync: config.appendfsync,
         rdbSchedule: config.save,
+        autoAofRewritePercentage: config['auto-aof-rewrite-percentage'],
       };
     } catch (error) {
       this.client.close();
@@ -168,6 +183,24 @@ class RedisChatBackend {
       rssBytes: Number(info.used_memory_rss),
       comparableAcrossBackends: true,
     };
+  }
+
+  async prepareStorageMeasurement() {
+    this.requireOpen();
+    const started = performance.now();
+    await this.client.sendCommand(['BGREWRITEAOF']);
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline) {
+      const info = parseInfo(await this.client.sendCommand(['INFO', 'PERSISTENCE']));
+      if (info.aof_rewrite_in_progress === '0' && info.aof_last_bgrewrite_status === 'ok') {
+        return {
+          kind: 'explicit-bgrewriteaof',
+          elapsedMs: performance.now() - started,
+        };
+      }
+      await delay(25);
+    }
+    throw new Error('Timed out waiting for Redis BGREWRITEAOF before storage measurement');
   }
 
   async close({ graceful = true } = {}) {

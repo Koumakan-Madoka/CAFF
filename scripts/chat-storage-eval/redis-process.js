@@ -71,6 +71,7 @@ class RedisProcessManager {
       '--appendonly', 'yes',
       '--appendfilename', 'appendonly.aof',
       '--appendfsync', appendfsync,
+      '--auto-aof-rewrite-percentage', '0',
       '--save', '60 1',
       '--databases', '1',
       '--logfile', 'redis.log',

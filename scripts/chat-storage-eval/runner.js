@@ -159,6 +159,9 @@ async function runBackendPerformance(backend, directory, config) {
     const count = await measureRepeated(config.operationSamples, async () => {
       assert.equal(await backend.count('thread-hot'), config.hotThreadMessageCount);
     });
+    const storagePreparation = backend.prepareStorageMeasurement
+      ? await backend.prepareStorageMeasurement()
+      : { kind: 'graceful-sqlite-close' };
     const memory = await backend.getMemoryStats();
 
     await backend.close({ graceful: true });
@@ -168,7 +171,7 @@ async function runBackendPerformance(backend, directory, config) {
       startupMs,
       durabilitySettings,
       operations: { append, latest, after, pointRead, statusUpdate, count },
-      storage: directoryStorage(directory),
+      storage: { ...directoryStorage(directory), preparation: storagePreparation },
       memory,
     };
   } finally {
