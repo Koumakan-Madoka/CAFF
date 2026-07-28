@@ -815,7 +815,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
         ...normalizeExtraEnv(options.extraEnv),
       },
       execPath: process.execPath,
-      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+      stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
       windowsHide: true,
     });
     emit('run_started', { runId: runRecord ? runRecord.runId : null, pid: child.pid || null, sessionPath: sessionPath || null });

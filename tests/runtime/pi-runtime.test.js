@@ -132,6 +132,31 @@ function createFakeSdkHostMalformedThenComplete(baseDir) {
   ]);
 }
 
+function createFakeSdkHostWithNoisyStdout(baseDir) {
+  return createFakeSdkHost(baseDir, [
+    "function complete() {",
+    "  const message = {",
+    "    role: 'assistant',",
+    "    content: [{ type: 'text', text: 'stdout did not block IPC' }],",
+    "    stopReason: 'stop',",
+    "    timestamp: Date.now(),",
+    "  };",
+    "  process.send({ type: 'pi_event', event: { type: 'message_end', message } });",
+    "}",
+    "process.on('message', (command) => {",
+    "  if (command?.type !== 'start') return;",
+    "  const chunk = 'x'.repeat(64 * 1024);",
+    "  for (let index = 0; index < 512; index += 1) {",
+    "    if (!process.stdout.write(chunk)) {",
+    "      process.stdout.once('drain', complete);",
+    "      return;",
+    "    }",
+    "  }",
+    "  complete();",
+    "});",
+  ]);
+}
+
 function loadRuntimeWithSdkHost(sdkHostPath) {
   const runtimeModulePath = require.resolve('../../build/lib/pi-runtime');
   const previousOverride = process.env.PI_SDK_HOST_OVERRIDE;
@@ -578,6 +603,40 @@ test('pi runtime preserves stdout_parse_error compatibility for malformed IPC me
   assert.equal(protocolErrors[0].parseErrors, 1);
   assert.equal(protocolErrors[0].source, 'ipc');
   assert.ok(protocolErrors[0].timestamp);
+});
+
+test('pi runtime does not let unused SDK host stdout backpressure block IPC completion', async (t) => {
+  if (!requireSpawn(t)) {
+    return;
+  }
+
+  const tempDir = withTempDir('caff-pi-runtime-noisy-stdout-');
+  const fakeHostPath = createFakeSdkHostWithNoisyStdout(tempDir);
+  const { runtime, restore } = loadRuntimeWithSdkHost(fakeHostPath);
+  let handle = null;
+
+  t.after(() => {
+    try {
+      handle && handle.cancel('test cleanup');
+    } catch {}
+
+    restore();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  handle = runtime.startRun('test-provider', 'test-model', 'ignore noisy stdout', {
+    agentDir: tempDir,
+    sqlitePath: path.join(tempDir, 'pi-runtime-noisy-stdout.sqlite'),
+    heartbeatIntervalMs: 0,
+    heartbeatTimeoutMs: 300,
+    terminateGraceMs: 100,
+    streamOutput: false,
+  });
+
+  const result = await handle.resultPromise;
+
+  assert.equal(result.reply, 'stdout did not block IPC');
+  assert.equal(result.parseErrors, 0);
 });
 
 test('pi runtime aborts a silent host after heartbeat timeout', async (t) => {

@@ -32,7 +32,7 @@ missing product scope.
 
 | AC | Result | Evidence |
 | --- | --- | --- |
-| AC-A1 event/caller contract | Pass | `tests/runtime/pi-runtime.test.js`; malformed IPC still emits compatible `stdout_parse_error` with `source: ipc`. |
+| AC-A1 event/caller contract | Pass | `tests/runtime/pi-runtime.test.js`; malformed IPC still emits compatible `stdout_parse_error` with `source: ipc`, and unused host stdout cannot backpressure-block IPC completion. |
 | AC-A2 session/resume | Pass | Runtime config forwarding plus `tests/runtime/pi-sdk-host.test.js` coverage for explicit, continue-recent, and fresh session managers. |
 | AC-A3 cwd/extensions/tool lifecycle | Pass | SDK host uses `DefaultResourceLoader.additionalExtensionPaths`; full server smoke reaches `trellis-init` and `trellis-write` through the chat tool bridge. |
 | AC-A4 usage aggregation | Pass | Multi-call usage regression and real pinned-SDK dogfood report input 12, output 5, total 17. |
@@ -145,7 +145,7 @@ npm test                                                     -> exit 0
 node --test tests/runtime/pi-runtime.test.js
   tests/runtime/pi-sdk-host.test.js
   tests/runtime/pi-skill-test-sandbox-extension.test.js
-  tests/runtime/open-sandbox-factory.test.js                  -> 33/33 pass
+  tests/runtime/open-sandbox-factory.test.js                  -> 34/34 pass
 git diff --check                                             -> exit 0
 npm ls @earendil-works/pi-coding-agent --depth=0              -> 0.80.10
 runtime package-family scan                                  -> no legacy coding-agent reference
