@@ -47,6 +47,16 @@ function configReplyToObject(reply) {
   return result;
 }
 
+function parseInfo(reply) {
+  const result = {};
+  for (const line of String(reply).split(/\r?\n/)) {
+    if (!line || line.startsWith('#')) continue;
+    const separator = line.indexOf(':');
+    if (separator > 0) result[line.slice(0, separator)] = line.slice(separator + 1);
+  }
+  return result;
+}
+
 class RedisChatBackend {
   constructor({ directory, durability = 'balanced', port, redisServerPath }) {
     this.process = new RedisProcessManager({ directory, durability, port, redisServerPath });
@@ -147,6 +157,17 @@ class RedisChatBackend {
   getDurabilitySettings() {
     this.requireOpen();
     return { ...this.durabilitySettings };
+  }
+
+  async getMemoryStats() {
+    this.requireOpen();
+    const info = parseInfo(await this.client.sendCommand(['INFO', 'MEMORY']));
+    return {
+      scope: 'redis-process',
+      usedMemoryBytes: Number(info.used_memory),
+      rssBytes: Number(info.used_memory_rss),
+      comparableAcrossBackends: true,
+    };
   }
 
   async close({ graceful = true } = {}) {

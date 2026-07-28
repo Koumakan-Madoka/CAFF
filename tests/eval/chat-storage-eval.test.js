@@ -8,7 +8,9 @@ const { assertSafeRedisPort, resolveBenchmarkConfig } = require('../../scripts/c
 const { calculateOperationMetrics, validateCompletedResult } = require('../../scripts/chat-storage-eval/metrics');
 const { RedisChatBackend } = require('../../scripts/chat-storage-eval/redis-backend');
 const { findRedisServer, RedisProcessManager } = require('../../scripts/chat-storage-eval/redis-process');
+const { renderEvaluationReport } = require('../../scripts/chat-storage-eval/report');
 const { RespParser } = require('../../scripts/chat-storage-eval/resp-client');
+const { computeRecovery, parseArgs, writeJsonAtomic } = require('../../scripts/chat-storage-eval/runner');
 const { SqliteChatBackend } = require('../../scripts/chat-storage-eval/sqlite-backend');
 const { createMessage, createSampleIndexes } = require('../../scripts/chat-storage-eval/workload');
 
@@ -252,3 +254,65 @@ test(
     }
   }
 );
+
+test('runner CLI accepts explicit bounded modes and rejects ambiguous input', () => {
+  assert.deepEqual(
+    parseArgs(['--profile', 'quick', '--durability', 'strict', '--output', 'result.json']),
+    { profile: 'quick', durability: 'strict', output: 'result.json' }
+  );
+  assert.throws(() => parseArgs(['--durability', 'eventual']), /durability/);
+  assert.throws(() => parseArgs(['--unknown', 'value']), /Unknown argument/);
+});
+
+test('atomic result writer leaves a complete JSON file without a staging artifact', () => {
+  const directory = createTempDirectory('atomic-result');
+  const output = path.join(directory, 'nested', 'result.json');
+  try {
+    writeJsonAtomic(output, { schemaVersion: 1, value: 'complete' });
+    assert.deepEqual(JSON.parse(fs.readFileSync(output, 'utf8')), { schemaVersion: 1, value: 'complete' });
+    assert.equal(fs.existsSync(`${output}.tmp`), false);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('recovery accounting uses acknowledged IDs and exposes exact losses', () => {
+  assert.deepEqual(computeRecovery(['m1', 'm2', 'm3'], ['m3', 'm1'], 12.5), {
+    acknowledged: 3,
+    recovered: 2,
+    lost: 1,
+    lostIds: ['m2'],
+    restartRecoveryMs: 12.5,
+    evidenceKind: 'process-crash',
+  });
+});
+
+test('evaluation report keeps process-crash evidence distinct from host power loss', () => {
+  const backendResult = {
+    status: 'completed',
+    operations: {
+      append: { throughputPerSecond: 100, p95Ms: 1 },
+      latest: { throughputPerSecond: 200, p95Ms: 2 },
+    },
+    storage: { bytes: 1_000 },
+    recovery: { acknowledged: 10, recovered: 10, lost: 0, restartRecoveryMs: 5 },
+  };
+  const suite = {
+    schemaVersion: 1,
+    generatedAt: '2026-07-28T00:00:00.000Z',
+    environment: { platform: 'test', node: 'test' },
+    configuration: { profile: 'quick' },
+    runs: [
+      {
+        configuration: { durability: 'balanced' },
+        backends: { sqlite: backendResult, redis: backendResult },
+      },
+    ],
+    limitations: ['Process termination does not simulate host power loss.'],
+  };
+  const report = renderEvaluationReport(suite);
+  assert.match(report, /SQLite remains CAFF's durable source of truth/);
+  assert.match(report, /process-crash/i);
+  assert.match(report, /does not simulate host power loss/i);
+  assert.doesNotMatch(report, /power-loss tested/i);
+});

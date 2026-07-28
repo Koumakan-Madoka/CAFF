@@ -163,6 +163,15 @@ class SqliteChatBackend {
     return { ...this.durabilitySettings };
   }
 
+  async getMemoryStats() {
+    this.requireOpen();
+    return {
+      scope: 'shared-node-process',
+      rssBytes: process.memoryUsage().rss,
+      comparableAcrossBackends: false,
+    };
+  }
+
   async close() {
     if (!this.db) return;
     this.db.close();
