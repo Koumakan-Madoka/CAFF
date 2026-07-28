@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const { pathToFileURL } = require('node:url');
@@ -68,4 +69,14 @@ test('skill-test sandbox extension only forwards allowlisted bash env keys', asy
     PI_AGENT_PRIVATE_DIR: '/case/agent/agent-sandboxes/agent/private',
     PI_SQLITE_PATH: '/case/output/chat.sqlite',
   });
+});
+
+test('skill-test sandbox extension uses the pinned Earendil coding-agent tools', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', '..', 'lib', 'pi-skill-test-sandbox-extension.mjs'),
+    'utf8'
+  );
+
+  assert.match(source, /@earendil-works\/pi-coding-agent/u);
+  assert.doesNotMatch(source, /@mariozechner\/pi-coding-agent/u);
 });

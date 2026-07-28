@@ -5,7 +5,10 @@ const { createHash } = require('node:crypto');
 const { spawnSync } = require('node:child_process');
 
 const ROOT_DIR = process.cwd();
-const DEFAULT_BASE_IMAGE = 'node:20-bookworm';
+const PACKAGE_JSON_PATH = path.resolve(__dirname, '..', '..', 'package.json');
+const PACKAGE_JSON = JSON.parse(fs.readFileSync(PACKAGE_JSON_PATH, 'utf8'));
+const PINNED_PI_CODING_AGENT_VERSION = PACKAGE_JSON.dependencies['@earendil-works/pi-coding-agent'];
+const DEFAULT_BASE_IMAGE = 'node:22-bookworm';
 const DEFAULT_RUNTIME_DIR = '/opt/caff-skill-test/runtime';
 const DEFAULT_PROJECT_DIR = '/opt/caff-skill-test/project';
 const DEFAULT_RUNTIME_IMAGE_TAG = 'caff-skill-test-runtime:local';
@@ -300,7 +303,7 @@ function writeRuntimeDockerfile(dockerfilePath, config) {
     'FROM ${BASE_IMAGE}',
     `ARG PREBAKED_RUNTIME_DIR=${DEFAULT_RUNTIME_DIR}`,
     `ARG PREBAKED_PROJECT_DIR=${DEFAULT_PROJECT_DIR}`,
-    'ARG PI_CODING_AGENT_VERSION=latest',
+    `ARG PI_CODING_AGENT_VERSION=${PINNED_PI_CODING_AGENT_VERSION}`,
     'ENV PIP_BREAK_SYSTEM_PACKAGES=1 \\',
     '    PIP_DISABLE_PIP_VERSION_CHECK=1',
     'RUN apt-get update \\',
@@ -311,8 +314,8 @@ function writeRuntimeDockerfile(dockerfilePath, config) {
     'RUN mkdir -p "${PREBAKED_RUNTIME_DIR}"',
     'COPY open-sandbox-runner.js "${PREBAKED_RUNTIME_DIR}/open-sandbox-runner.js"',
     'COPY agent-chat-tools.js "${PREBAKED_RUNTIME_DIR}/agent-chat-tools.js"',
-    'RUN npm --prefix "${PREBAKED_RUNTIME_DIR}" install --omit=dev --no-audit --no-fund "@mariozechner/pi-coding-agent@${PI_CODING_AGENT_VERSION}" \\',
-    '  && ln -s "${PREBAKED_RUNTIME_DIR}/node_modules/@mariozechner/pi-coding-agent" "${PREBAKED_RUNTIME_DIR}/pi-coding-agent"',
+    'RUN npm --prefix "${PREBAKED_RUNTIME_DIR}" install --omit=dev --no-audit --no-fund "@earendil-works/pi-coding-agent@${PI_CODING_AGENT_VERSION}" \\',
+    '  && ln -s "${PREBAKED_RUNTIME_DIR}/node_modules/@earendil-works/pi-coding-agent" "${PREBAKED_RUNTIME_DIR}/pi-coding-agent"',
   ];
 
   if (config.includeProject) {
@@ -542,7 +545,7 @@ const tag = normalizeText(flags.tag, includeProject ? DEFAULT_CAFF_IMAGE_TAG : D
 const baseImage = normalizeText(flags['base-image'], DEFAULT_BASE_IMAGE);
 const runtimeDir = normalizeText(flags['runtime-dir'], DEFAULT_RUNTIME_DIR);
 const projectDir = normalizeText(flags['project-dir'], DEFAULT_PROJECT_DIR);
-const piVersion = normalizeText(flags['pi-version'], 'latest');
+const piVersion = normalizeText(flags['pi-version'], PINNED_PI_CODING_AGENT_VERSION);
 const includeGitMetadata = includeProject
   ? normalizeBoolean(flags['include-git'], true)
   : normalizeBoolean(flags['include-git'], false);

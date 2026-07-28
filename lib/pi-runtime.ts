@@ -1,11 +1,8 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
-const { spawn, spawnSync } = require('node:child_process');
-const readline = require('node:readline');
+const { fork, spawn, spawnSync } = require('node:child_process');
 const { createSqliteRunStore } = require('./sqlite-store');
-const { tryCreateDirectPiNodeSpawnSpec } = require('./pi-cli-spawn');
-const { getPiPromptStdio, writePiPromptToStdin } = require('./pi-prompt-transport');
 
 const DEFAULT_PROVIDER = 'kimi-coding';
 const DEFAULT_MODEL = 'k2p5';
@@ -15,8 +12,7 @@ const DEFAULT_HEARTBEAT_TIMEOUT_MS = 60 * 1000;
 const DEFAULT_TERMINATE_GRACE_MS = 5 * 1000;
 const MAX_STDERR_TAIL_LENGTH = 4000;
 const MAX_DEBUG_LINES = 10;
-const HEARTBEAT_PREFIX = '__PI_HEARTBEAT__';
-const HEARTBEAT_EXTENSION_PATH = path.resolve(__dirname, 'pi-heartbeat-extension.mjs');
+const SDK_HOST_PATH = process.env.PI_SDK_HOST_OVERRIDE || path.resolve(__dirname, 'pi-sdk-host.mjs');
 const DEFAULT_AGENT_DIR = resolveDefaultAgentDir();
 
 function resolveSetting(cliValue: any, envValue: any, fallbackValue: any) {
@@ -161,111 +157,6 @@ function normalizeExtensionPaths(value: any) {
   }
 
   return normalized;
-}
-
-function getHeartbeatPayload(line: string) {
-  if (!line.startsWith(HEARTBEAT_PREFIX)) {
-    return null;
-  }
-
-  const payloadText = line.slice(HEARTBEAT_PREFIX.length).trim();
-
-  if (!payloadText) {
-    return {};
-  }
-
-  try {
-    return JSON.parse(payloadText);
-  } catch {
-    return { raw: payloadText };
-  }
-}
-
-function findGitBash() {
-  const candidates = [
-    process.env.GIT_BASH_PATH,
-    'C:\\Environment\\Git\\bin\\bash.exe',
-    'C:\\Program Files\\Git\\bin\\bash.exe',
-    'C:\\Program Files\\Git\\usr\\bin\\bash.exe',
-    'bash',
-  ].filter(Boolean);
-
-  for (const candidate of candidates) {
-    if (candidate === 'bash' || fs.existsSync(candidate)) {
-      return candidate;
-    }
-  }
-
-  return 'bash';
-}
-
-const bashPath = findGitBash();
-
-function findPiScriptPath() {
-  const override = process.env.PI_COMMAND_PATH;
-
-  if (override && fs.existsSync(override)) {
-    return override;
-  }
-
-  if (process.platform !== 'win32') {
-    return 'pi';
-  }
-
-  try {
-    const result = spawnSync('where.exe', ['pi.cmd'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      windowsHide: true,
-    });
-
-    if (result.status === 0 && result.stdout) {
-      const lines = result.stdout
-        .split(/\r?\n/)
-        .map((line: any) => String(line || '').trim())
-        .filter(Boolean);
-
-      if (lines.length > 0) {
-        const piCmdPath = lines[0];
-        const piPs1Path = piCmdPath.replace(/\.cmd$/i, '.ps1');
-
-        if (fs.existsSync(piPs1Path)) {
-          return piPs1Path;
-        }
-      }
-    }
-  } catch {}
-
-  return 'pi';
-}
-
-const piScriptPath = findPiScriptPath();
-
-function createPiSpawnSpec(piArgs: any) {
-  const directNodeSpawnSpec = tryCreateDirectPiNodeSpawnSpec(piScriptPath, piArgs);
-
-  if (directNodeSpawnSpec) {
-    return directNodeSpawnSpec;
-  }
-
-  if (process.platform === 'win32' && piScriptPath.toLowerCase().endsWith('.ps1')) {
-    return {
-      command: process.env.POWERSHELL_PATH || 'powershell.exe',
-      args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', piScriptPath, ...piArgs],
-    };
-  }
-
-  if (process.platform === 'win32') {
-    return {
-      command: piScriptPath,
-      args: piArgs,
-    };
-  }
-
-  return {
-    command: bashPath,
-    args: ['-lc', 'pi "$@"', 'bash', ...piArgs],
-  };
 }
 
 function getAssistantMessageKey(message: any) {
@@ -520,9 +411,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
   }
 
   const resultPromise = new Promise((resolve, reject) => {
-    const piArgs: any[] = [];
     let store: any = null;
-    let rl: any = null;
     const state = {
       reply: '',
       assistantErrors: [] as any[],
@@ -646,10 +535,6 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
         store = null;
       }
 
-      if (rl) {
-        rl.close();
-        rl = null;
-      }
     }
 
     function persistRun(result: any) {
@@ -678,7 +563,24 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
       }
 
       emit('run_terminating', { reason });
-      terminateProcessTree(child, false);
+      let abortRequested = false;
+
+      if (child && child.connected && typeof child.send === 'function') {
+        try {
+          child.send({ type: 'abort', reason }, (error: any) => {
+            if (error && !settled) {
+              terminateProcessTree(child, false);
+            }
+          });
+          abortRequested = true;
+        } catch {
+          abortRequested = false;
+        }
+      }
+
+      if (!abortRequested) {
+        terminateProcessTree(child, false);
+      }
 
       if (terminateGraceMs > 0) {
         forceKillTimeout = setTimeout(() => {
@@ -801,30 +703,8 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
       resolve(result);
     }
 
-    if (provider) {
-      piArgs.push('--provider', provider);
-    }
-
-    if (model) {
-      piArgs.push('--model', model);
-    }
-
-    if (thinking) {
-      piArgs.push('--thinking', thinking);
-    }
-
-    piArgs.push('--mode', 'json', '--print');
-    piArgs.push('--extension', HEARTBEAT_EXTENSION_PATH);
-
-    for (const extensionPath of extensionPaths) {
-      piArgs.push('--extension', extensionPath);
-    }
-
     if (sessionPath) {
       fs.mkdirSync(path.dirname(sessionPath), { recursive: true });
-      piArgs.push('--session', sessionPath);
-    } else if (resume) {
-      piArgs.push('--continue');
     }
 
     try {
@@ -860,51 +740,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
       store = null;
     }
 
-    const piSpawnSpec = createPiSpawnSpec(piArgs);
-    child = spawn(piSpawnSpec.command, piSpawnSpec.args, {
-      cwd,
-      env: {
-        ...process.env,
-        PI_CODING_AGENT_DIR: agentDir,
-        PI_HEARTBEAT_INTERVAL_MS: String(heartbeatIntervalMs),
-        PI_HEARTBEAT_PREFIX: HEARTBEAT_PREFIX,
-        ...normalizeExtraEnv(options.extraEnv),
-      },
-      stdio: getPiPromptStdio(),
-      windowsHide: true,
-    });
-
-    writePiPromptToStdin(child, prompt);
-
-    rl = readline.createInterface({ input: child.stdout, crlfDelay: Infinity });
-    emit('run_started', { runId: runRecord ? runRecord.runId : null, pid: child.pid || null, sessionPath: sessionPath || null });
-    refreshHeartbeatTimeout();
-
-    addProcessHandler('SIGINT', () => beginTermination({ type: 'parent_signal', signal: 'SIGINT', message: 'Parent process received SIGINT' }));
-    addProcessHandler('SIGTERM', () => beginTermination({ type: 'parent_signal', signal: 'SIGTERM', message: 'Parent process received SIGTERM' }));
-
-    if (process.platform === 'win32') {
-      addProcessHandler('SIGBREAK', () => beginTermination({ type: 'parent_signal', signal: 'SIGBREAK', message: 'Parent process received SIGBREAK' }));
-    }
-
-    addProcessHandler('exit', () => terminateProcessTree(child, true, true));
-
-    rl.on('line', (line: any) => {
-      if (!line.trim()) {
-        return;
-      }
-
-      let event;
-
-      try {
-        event = JSON.parse(line);
-      } catch {
-        state.parseErrors += 1;
-        pushRecentLine(state.stdoutLines, line, MAX_DEBUG_LINES);
-        emit('stdout_parse_error', { line, parseErrors: state.parseErrors });
-        return;
-      }
-
+    function handlePiEvent(event: any) {
       emit('pi_event', { piEvent: event });
 
       if (ignoreFurtherAssistantOutput && (event.type === 'message_update' || event.type === 'message_end' || event.type === 'agent_end')) {
@@ -955,6 +791,76 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
           }
         }
       }
+    }
+
+    function recordProtocolError(message: any) {
+      let line;
+
+      try {
+        line = JSON.stringify(message);
+      } catch {
+        line = String(message);
+      }
+
+      state.parseErrors += 1;
+      pushRecentLine(state.stdoutLines, line, MAX_DEBUG_LINES);
+      emit('stdout_parse_error', { line, parseErrors: state.parseErrors, source: 'ipc' });
+    }
+
+    child = fork(SDK_HOST_PATH, [], {
+      cwd,
+      env: {
+        ...process.env,
+        PI_CODING_AGENT_DIR: agentDir,
+        ...normalizeExtraEnv(options.extraEnv),
+      },
+      execPath: process.execPath,
+      stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
+      windowsHide: true,
+    });
+    emit('run_started', { runId: runRecord ? runRecord.runId : null, pid: child.pid || null, sessionPath: sessionPath || null });
+    refreshHeartbeatTimeout();
+
+    addProcessHandler('SIGINT', () => beginTermination({ type: 'parent_signal', signal: 'SIGINT', message: 'Parent process received SIGINT' }));
+    addProcessHandler('SIGTERM', () => beginTermination({ type: 'parent_signal', signal: 'SIGTERM', message: 'Parent process received SIGTERM' }));
+
+    if (process.platform === 'win32') {
+      addProcessHandler('SIGBREAK', () => beginTermination({ type: 'parent_signal', signal: 'SIGBREAK', message: 'Parent process received SIGBREAK' }));
+    }
+
+    addProcessHandler('exit', () => terminateProcessTree(child, true, true));
+
+    child.on('message', (message: any) => {
+      if (!message || typeof message !== 'object') {
+        recordProtocolError(message);
+        return;
+      }
+
+      if (message.type === 'heartbeat') {
+        state.heartbeatCount += 1;
+        emit('heartbeat', {
+          count: state.heartbeatCount,
+          payload: { timestamp: message.timestamp ?? null },
+        });
+        refreshHeartbeatTimeout();
+        return;
+      }
+
+      if (message.type === 'ready') {
+        refreshHeartbeatTimeout();
+        return;
+      }
+
+      if (message.type === 'pi_event' && message.event && typeof message.event === 'object') {
+        handlePiEvent(message.event);
+        return;
+      }
+
+      if (message.type === 'host_error') {
+        return;
+      }
+
+      recordProtocolError(message);
     });
 
     child.on('exit', (code: any, signal: any) => {
@@ -976,15 +882,6 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
         const rawLine = stderrBuffer.slice(0, newlineIndex);
         stderrBuffer = stderrBuffer.slice(newlineIndex + 1);
         const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
-        const heartbeatPayload = getHeartbeatPayload(line);
-
-        if (heartbeatPayload !== null) {
-          state.heartbeatCount += 1;
-          emit('heartbeat', { count: state.heartbeatCount, payload: heartbeatPayload });
-          refreshHeartbeatTimeout();
-          continue;
-        }
-
         const forwardedLine = `${line}\n`;
         state.stderrTail = appendTailText(state.stderrTail, forwardedLine, MAX_STDERR_TAIL_LENGTH);
         emit('stderr', { text: line });
@@ -1009,16 +906,9 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
 
       if (stderrBuffer) {
         const line = stderrBuffer.endsWith('\r') ? stderrBuffer.slice(0, -1) : stderrBuffer;
-        const heartbeatPayload = getHeartbeatPayload(line);
-
-        if (heartbeatPayload !== null) {
-          state.heartbeatCount += 1;
-          emit('heartbeat', { count: state.heartbeatCount, payload: heartbeatPayload });
-        } else {
-          state.stderrTail = appendTailText(state.stderrTail, line, MAX_STDERR_TAIL_LENGTH);
-          emit('stderr', { text: line });
-          writeStderr(line);
-        }
+        state.stderrTail = appendTailText(state.stderrTail, line, MAX_STDERR_TAIL_LENGTH);
+        emit('stderr', { text: line });
+        writeStderr(line);
 
         stderrBuffer = '';
       }
@@ -1073,6 +963,46 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
 
       finishWithResult(result);
     });
+
+    try {
+      child.send({
+        type: 'start',
+        prompt: String(prompt),
+        config: {
+          provider: provider || '',
+          model: model || '',
+          thinking: thinking || '',
+          agentDir,
+          sessionPath: sessionPath || '',
+          resume,
+          cwd,
+          heartbeatIntervalMs,
+          extensionPaths,
+        },
+      }, (error: any) => {
+        if (!error) {
+          return;
+        }
+
+        finishWithError(createInvokeError(`Failed to send SDK host start command: ${error.message}`, {
+          cause: error,
+          reply: state.reply,
+          sessionPath: sessionPath || null,
+          stderrTail: state.stderrTail,
+          stdoutLines: [...state.stdoutLines],
+          parseErrors: state.parseErrors,
+        }));
+      });
+    } catch (error: any) {
+      finishWithError(createInvokeError(`Failed to send SDK host start command: ${error.message}`, {
+        cause: error,
+        reply: state.reply,
+        sessionPath: sessionPath || null,
+        stderrTail: state.stderrTail,
+        stdoutLines: [...state.stdoutLines],
+        parseErrors: state.parseErrors,
+      }));
+    }
   });
 
   const handle = {
