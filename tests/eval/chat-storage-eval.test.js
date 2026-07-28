@@ -1,9 +1,17 @@
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const test = require('node:test');
 
 const { assertSafeRedisPort, resolveBenchmarkConfig } = require('../../scripts/chat-storage-eval/config');
 const { calculateOperationMetrics, validateCompletedResult } = require('../../scripts/chat-storage-eval/metrics');
+const { SqliteChatBackend } = require('../../scripts/chat-storage-eval/sqlite-backend');
 const { createMessage, createSampleIndexes } = require('../../scripts/chat-storage-eval/workload');
+
+function createTempDirectory(name) {
+  return fs.mkdtempSync(path.join(os.tmpdir(), `caff-${name}-`));
+}
 
 test('benchmark config exposes bounded deterministic profiles', () => {
   const first = resolveBenchmarkConfig({ profile: 'quick', seed: 41 });
@@ -97,4 +105,59 @@ test('completed result validation rejects partial or fabricated evidence', () =>
     () => validateCompletedResult({ ...result, backends: { ...result.backends, redis: { status: 'completed' } } }),
     /redis\.operations/
   );
+});
+
+test('SQLite backend implements the message contract and survives a graceful restart', async () => {
+  const directory = createTempDirectory('sqlite-contract');
+  const config = resolveBenchmarkConfig({ profile: 'quick', seed: 23 });
+  const messages = Array.from({ length: 5 }, (_, index) => createMessage(index, config));
+
+  try {
+    const backend = new SqliteChatBackend({ directory, durability: 'balanced' });
+    await backend.open();
+    assert.deepEqual(backend.getDurabilitySettings(), {
+      journalMode: 'wal',
+      synchronous: 'NORMAL',
+    });
+
+    await backend.append(messages[0]);
+    await backend.appendBatch(messages.slice(1));
+
+    assert.deepEqual(
+      (await backend.latest('thread-hot', 3)).map((message) => message.id),
+      messages.slice(2).map((message) => message.id)
+    );
+    assert.deepEqual(
+      (await backend.after('thread-hot', messages[1].sequence, 2)).map((message) => message.id),
+      messages.slice(2, 4).map((message) => message.id)
+    );
+    assert.deepEqual(await backend.getById(messages[1].id), messages[1]);
+    assert.equal((await backend.updateStatus(messages[1].id, 'failed')).status, 'failed');
+    assert.equal(await backend.count('thread-hot'), 5);
+    await backend.close({ graceful: true });
+
+    const reopened = new SqliteChatBackend({ directory, durability: 'balanced' });
+    await reopened.open();
+    assert.equal(await reopened.count('thread-hot'), 5);
+    assert.equal((await reopened.getById(messages[1].id)).status, 'failed');
+    await reopened.close({ graceful: true });
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('SQLite strict durability applies FULL synchronous mode', async () => {
+  const directory = createTempDirectory('sqlite-strict');
+  const backend = new SqliteChatBackend({ directory, durability: 'strict' });
+
+  try {
+    await backend.open();
+    assert.deepEqual(backend.getDurabilitySettings(), {
+      journalMode: 'wal',
+      synchronous: 'FULL',
+    });
+  } finally {
+    await backend.close({ graceful: true });
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 });
