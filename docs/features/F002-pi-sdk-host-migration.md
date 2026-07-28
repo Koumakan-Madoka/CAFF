@@ -76,7 +76,7 @@ Node SDK host 进程（`lib/pi-sdk-host.mjs`）。SDK host 用 ESM `import()` �
 - [x] session/resume、extensions、usage、abort/timeout、crash 均有回归测试。
 - [x] 项目、host preflight 与 OpenSandbox 默认镜像统一要求 Node >=22.19。
 - [x] 运行中不自动 fallback 到 CLI。
-- [ ] 完整质量门禁、跨个体 review 与合入证据齐全。
+- [x] 完整质量门禁、跨个体 review 与合入证据齐全。
 
 ## Acceptance Criteria
 
@@ -197,6 +197,12 @@ SDK。CAFF 主进程不直接加载 SDK，通过 `fork()` 创建的 Node IPC cha
   bindings/dispose；真实 extension dogfood 观察到 startup/quit 生命周期。
 - 根因与回归证据见
   `docs/bug-report/pi-sdk-host-fresh-context-findings/bug-report.md`。
+
+## Timeline
+
+| Date | Event |
+| --- | --- |
+| 2026-07-28 | Implementation merged via PR #49 (`6e6af44`); feature HEAD `533f0e1` passed independent peer review, cloud review, CI, and the full local quality gate. |
 
 ## Architecture
 
