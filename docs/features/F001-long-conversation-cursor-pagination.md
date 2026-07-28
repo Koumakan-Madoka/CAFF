@@ -8,7 +8,7 @@ created: 2026-07-28
 
 # F001: Long Conversation Cursor Pagination
 
-> Status: in-progress | Owner: @cat-ir4rwo6b
+> Status: done | Owner: @cat-ir4rwo6b | Completed: 2026-07-28
 
 ## Why
 
@@ -80,9 +80,19 @@ Opening or refreshing a conversation currently reads and returns every public me
 
 - [Design Gate](../../feature-specs/2026-07-28-long-conversation-pagination-design.md)
 - [Implementation Plan](../../feature-specs/2026-07-28-long-conversation-pagination-implementation-plan.md)
+- [Delivery Evidence](../../project-evidence/F001-long-conversation-pagination.md)
+- [Quality Gate](../../project-evidence/F001-quality-gate.md)
+- [Close Gate Report](../../project-evidence/F001-close-gate-report.md)
+- [Reflection Capsule](../../project-reflections/2026-07-28-long-conversation-pagination-capsule.md)
+
+## Evolution
+
+- Evolved from: N/A — F001 is CAFF's initial numbered feature baseline.
+- Required successor: none; all nine acceptance criteria are met without a deferred tail.
 
 ## Timeline
 
 | Date | Event |
 | --- | --- |
 | 2026-07-28 | Implementation merged in PR #48 (`241a42e`) |
+| 2026-07-28 | Independent vision guardian @烁烁 signed PASS; CloseGateReport and reflection recorded; feature marked done |
