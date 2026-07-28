@@ -6,6 +6,9 @@ const test = require('node:test');
 
 const { assertSafeRedisPort, resolveBenchmarkConfig } = require('../../scripts/chat-storage-eval/config');
 const { calculateOperationMetrics, validateCompletedResult } = require('../../scripts/chat-storage-eval/metrics');
+const { RedisChatBackend } = require('../../scripts/chat-storage-eval/redis-backend');
+const { findRedisServer, RedisProcessManager } = require('../../scripts/chat-storage-eval/redis-process');
+const { RespParser } = require('../../scripts/chat-storage-eval/resp-client');
 const { SqliteChatBackend } = require('../../scripts/chat-storage-eval/sqlite-backend');
 const { createMessage, createSampleIndexes } = require('../../scripts/chat-storage-eval/workload');
 
@@ -161,3 +164,91 @@ test('SQLite strict durability applies FULL synchronous mode', async () => {
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('RESP2 parser handles partial scalar and nested replies', () => {
+  const parser = new RespParser();
+  assert.deepEqual(parser.push(Buffer.from('+OK\r\n:4\r\n$5\r\nhe')), ['OK', 4]);
+  const replies = parser.push(Buffer.from('llo\r\n*-1\r\n*3\r\n$3\r\nfoo\r\n$-1\r\n:9\r\n-ERR no\r\n'));
+
+  assert.deepEqual(replies.slice(0, 3), ['hello', null, ['foo', null, 9]]);
+  assert.match(replies[3].message, /ERR no/);
+});
+
+test('Redis process manager rejects a pre-existing data directory before spawning', async () => {
+  const directory = createTempDirectory('redis-nonempty');
+  fs.writeFileSync(path.join(directory, 'unexpected.aof'), 'not benchmark data');
+  const manager = new RedisProcessManager({
+    directory,
+    durability: 'balanced',
+    redisServerPath: 'unused-redis-server',
+  });
+
+  try {
+    await assert.rejects(() => manager.start(), /empty data directory/);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+const redisServerPath = findRedisServer();
+
+test(
+  'Redis backend implements the message contract and restores its owned data after restart',
+  { skip: redisServerPath ? false : 'redis-server is unavailable' },
+  async () => {
+    const directory = createTempDirectory('redis-contract');
+    const config = resolveBenchmarkConfig({ profile: 'quick', seed: 29 });
+    const messages = Array.from({ length: 5 }, (_, index) => createMessage(index, config));
+    const backend = new RedisChatBackend({ directory, durability: 'balanced', redisServerPath });
+
+    try {
+      await backend.open();
+      assert.deepEqual(backend.getDurabilitySettings(), {
+        appendonly: 'yes',
+        appendfsync: 'everysec',
+        rdbSchedule: '60 1',
+      });
+      assert.notEqual(backend.port, 6398);
+      assert.notEqual(backend.port, 6399);
+
+      await backend.append(messages[0]);
+      await backend.appendBatch(messages.slice(1));
+      assert.deepEqual(
+        (await backend.latest('thread-hot', 3)).map((message) => message.id),
+        messages.slice(2).map((message) => message.id)
+      );
+      assert.deepEqual(
+        (await backend.after('thread-hot', messages[1].sequence, 2)).map((message) => message.id),
+        messages.slice(2, 4).map((message) => message.id)
+      );
+      assert.deepEqual(await backend.getById(messages[1].id), messages[1]);
+      assert.equal((await backend.updateStatus(messages[1].id, 'failed')).status, 'failed');
+      assert.equal(await backend.count('thread-hot'), 5);
+
+      await backend.close({ graceful: true });
+      await backend.open();
+      assert.equal(await backend.count('thread-hot'), 5);
+      assert.equal((await backend.getById(messages[1].id)).status, 'failed');
+    } finally {
+      await backend.close({ graceful: true });
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  }
+);
+
+test(
+  'Redis strict durability applies appendfsync always',
+  { skip: redisServerPath ? false : 'redis-server is unavailable' },
+  async () => {
+    const directory = createTempDirectory('redis-strict');
+    const backend = new RedisChatBackend({ directory, durability: 'strict', redisServerPath });
+
+    try {
+      await backend.open();
+      assert.equal(backend.getDurabilitySettings().appendfsync, 'always');
+    } finally {
+      await backend.close({ graceful: true });
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  }
+);
