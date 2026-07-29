@@ -195,7 +195,7 @@ function createConversationsControllerHarness(t, options = {}) {
     broadcastEvent(eventName, payload) {
       broadcastEvents.push({ eventName, payload });
     },
-    modeStore: { get() { return null; } },
+    modeStore: options.modeStore || { get() { return null; } },
     projectManager: options.projectManager,
     projectDir: options.projectDir,
     digestOptions: { summaryMode: 'extractive', ...(options.digestOptions || {}) },
@@ -213,6 +213,37 @@ function createConversationsControllerHarness(t, options = {}) {
 
   return { handler, store, broadcastEvents };
 }
+
+test('conversations controller preserves string participant ids when mode skills are merged', async (t) => {
+  const { handler, store } = createConversationsControllerHarness(t, {
+    modeStore: {
+      get(modeId) {
+        return modeId === 'standard'
+          ? { id: 'standard', skillIds: ['skill-creator'] }
+          : null;
+      },
+    },
+  });
+  const agent = store.saveAgent({
+    id: 'string-participant-agent',
+    name: 'String Participant Agent',
+    description: 'Exercises the legacy string participant API contract.',
+    personaPrompt: 'Reply briefly.',
+  });
+
+  const result = await invokeConversationsController(handler, {
+    method: 'POST',
+    pathname: '/api/conversations',
+    body: {
+      title: 'String Participant Conversation',
+      participants: [agent.id],
+    },
+  });
+
+  assert.equal(result.statusCode, 201);
+  assert.deepEqual(result.json.conversation.agents.map((participant) => participant.id), [agent.id]);
+  assert.deepEqual(result.json.conversation.agents[0].conversationSkillIds, ['skill-creator']);
+});
 
 test('conversations controller exposes bounded cursor pages without hydrating public messages in the conversation projection', async (t) => {
   const { handler, store } = createConversationsControllerHarness(t);

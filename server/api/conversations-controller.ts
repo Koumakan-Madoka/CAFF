@@ -154,13 +154,18 @@ function mergeModeSkillIdsIntoParticipants(input: any, mode: any) {
   const participants = Array.isArray(input.participants) ? input.participants : [];
 
   const merged = participants.map((participant: any) => {
-    const existing = Array.isArray(participant.conversationSkillIds || participant.conversationSkills)
-      ? (participant.conversationSkillIds || participant.conversationSkills)
+    const normalizedParticipant = typeof participant === 'string'
+      ? { agentId: participant }
+      : participant && typeof participant === 'object'
+        ? participant
+        : {};
+    const existing = Array.isArray(normalizedParticipant.conversationSkillIds || normalizedParticipant.conversationSkills)
+      ? (normalizedParticipant.conversationSkillIds || normalizedParticipant.conversationSkills)
       : [];
     const mergedSkills = new Set([...existing.map((id: any) => String(id || '').trim()).filter(Boolean), ...modeSkillIds]);
 
     return {
-      ...participant,
+      ...normalizedParticipant,
       conversationSkillIds: Array.from(mergedSkills),
     };
   });
