@@ -2,7 +2,7 @@
 feature_ids: [CAFF-UI-M4]
 doc_kind: design
 created: 2026-07-29
-status: approved-direction
+status: implemented-awaiting-operator-review
 ---
 
 # CAFF-UI-M4 V3 Design Gate · 结构性消息布局重做
@@ -54,3 +54,34 @@ status: approved-direction
 
 - assistant transcript 行的归属标识：左色条 vs meta 行彩点——实现时以 screenshot A/B 决定。
 - tool trace 在 transcript 行内的呈现（缩进/折叠）保持现有 DOM，仅跟随行宽。
+
+## 实施结果（2026-07-29，待 operator 验收）
+
+量测脚本：`scripts/ui/measure-structure.mjs`（同 V2 隔离 app + 真实浏览器；12 条确定性证据消息：assistant 短/中/长 + user 短/中 + failed）。before = V2（`before-measurements.json` + `before/ui-*.png`），after = V3（`after-measurements.json` + `after/ui-*.png`），同会话同内容同 viewport 同滚动到底。
+
+### 桌面 1440×820（列宽 1080px）
+
+| 指标 | V2 before | V3 after |
+|---|---|---|
+| assistant 中消息行宽 | 832.9px（77.1%，fit-content 卡片） | 1065px（98.6%，transcript 全宽行） |
+| assistant 行卡片壳 | bg `rgb(251,250,247)` + radius 10px + padding 24×14.4px | bg 透明 + radius 0 + padding 0（仅左 2px 归属色条，padding-left 9.6px） |
+| user 中消息 | 837.2px 右对齐气泡 | 798.8px 右对齐气泡（≤75% 列宽 ≈810px，> V1 实效 405px） |
+| failed | 居中窄条 281px | 居中窄条 281px（语义保留） |
+| 单屏可见消息 | 9 | 10 |
+
+### 移动 375×800（列宽 351px）
+
+assistant 行宽 336px（95.7%）；user 上限 75%；单屏可见 6（≥ V2 基线 6）。
+
+### 契约核对
+
+`after-measurements.json.contract` 16/16 绿：行宽 ≥95% 列宽、无卡片壳（computed bg/radius/padding 断言）、user 右缘对齐全宽行右缘（≤2px）、user ≤75% 列宽且 >405px、密度 ≥ 基线。肉眼 A/B：1440 与 375 两档 before/after 第一眼即可区分（卡片堆 → 文档流宽行）。
+
+### Open Question 收敛
+
+- 归属标识采用**左色条**（2px `--agent-color` 45% 透明混合）：截图 A/B 中比 meta 彩点更能在滚动时持续标示归属，且不增加 meta 行元素。
+- tool trace 保持现有 DOM，仅跟随 transcript 行宽。
+
+### 回归
+
+`npm run test:fast` 全绿（含更新后的 `tests/ui/chat-experience-m4.test.js` V3 结构契约：transcript 行全宽/无壳/归属色条、user 右气泡 fit-content ≤75%）。

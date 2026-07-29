@@ -1,14 +1,19 @@
 // CAFF-UI-M4 chat experience regression tests (jsdom + source contracts).
-// V2 density contract (2026-07-29, operator rejected V1 for oversized chrome,
-// excessive gaps and artificially narrowed bubbles; baseline evidence in
-// feature-discussions/2026-07-29-caff-ui-m4-design/v2-density/before-measurements.json):
-// - directional bubbles keep alignment but are NOT artificially narrowed
-//   (no 75%/85%/88% caps; content takes its natural width up to the full column)
-// - content column cap widened beyond the V1 780px so the chat area fills the
-//   measured available width (~1104px at 1440 with sidebar open)
-// - message-list gap compressed to <=8px; list/card padding tightened
+// V3 structural contract (2026-07-29, operator rejected V2 because typical
+// message geometry barely moved; design gate in
+// feature-discussions/2026-07-29-caff-ui-m4-design/v3-structure/README.md):
+// - assistant/system messages render as full-width transcript rows: no card
+//   shell (no background block, no big radius, no card padding), only a thin
+//   --agent-color attribution bar and a compact meta row above the content
+// - user messages render as right-aligned fit-content bubbles with a light
+//   accent fill, capped at 75% of the column (Clowder MessageBubble parity;
+//   75% of the 1080px column is ~810px, far above the V1 405px effective cap)
+// - content column cap stays at 1080px so the chat area fills the measured
+//   available width (~1104px at 1440 with sidebar open)
+// - message-list gap compressed to <=8px; list padding tightened
 // - composer input column tracks the widened chat column
 // - failed messages render as a centered narrow banner, not a full-width card
+// - digest status/result messages keep a centered card treatment
 // - sidebar conversation list = two-line density (title + meta line)
 // - new-conversation form collapsed behind a + toggle
 // - chat header slimmed: runtime/meta pills live in drawer settings tab,
@@ -121,14 +126,24 @@ test('M4: sidebar new-conversation form is collapsed behind a + toggle', () => {
   assert.match(APP_JS, /new-conversation-toggle/, 'app.js must wire the + toggle');
 });
 
-test('M4: message bubbles keep direction but are not artificially narrowed', () => {
-  const userBlock = cssBlock('body.chat-app .message-card.user {');
-  assert.match(userBlock, /justify-self:\s*end/, 'user bubble must right-align within the message column');
-  assert.doesNotMatch(userBlock, /max-width:\s*75%/, 'user bubble must not be capped at 75% (V1 rejection point)');
+test('M4: assistant/system messages are full-width transcript rows without card chrome', () => {
+  const cardBlock = cssBlock('body.chat-app .message-card {');
+  assert.match(cardBlock, /width:\s*100%/, 'transcript row must span the full column');
+  assert.match(cardBlock, /background:\s*(transparent|none)/, 'transcript row must not paint a card background');
+  assert.match(cardBlock, /border-radius:\s*0/, 'transcript row must drop the card radius');
+  assert.match(cardBlock, /border-left:[^;}]*--agent-color/, 'transcript row keeps a thin --agent-color attribution bar');
+  assert.doesNotMatch(cardBlock, /padding:\s*0\.65rem 0\.9rem/, 'transcript row must not keep V1 card padding');
 
   const assistantBlock = cssBlock('body.chat-app .message-card.assistant {');
-  assert.match(assistantBlock, /justify-self:\s*start/, 'assistant bubble must left-align within the message column');
-  assert.doesNotMatch(assistantBlock, /max-width:\s*85%/, 'assistant bubble must not be capped at 85% (V1 rejection point)');
+  assert.doesNotMatch(assistantBlock, /max-width:\s*85%/, 'assistant row must not be capped at 85% (V1 rejection point)');
+});
+
+test('M4: user messages are right-aligned bubbles capped at 75% of the column', () => {
+  const userBlock = cssBlock('body.chat-app .message-card.user {');
+  assert.match(userBlock, /justify-self:\s*end/, 'user bubble must right-align within the message column');
+  assert.match(userBlock, /width:\s*fit-content/, 'user bubble keeps natural content width');
+  assert.match(userBlock, /max-width:\s*75%/, 'user bubble caps at 75% of the column (Clowder parity; ~810px at 1080 column)');
+  assert.match(userBlock, /background:\s*var\(--caff-accent-soft\)/, 'user bubble keeps a light accent fill');
 
   const mobileStart = M4_STYLES.indexOf('@media (max-width: 767px)');
   assert.notEqual(mobileStart, -1, 'mobile media query missing in M4 section');

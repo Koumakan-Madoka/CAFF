@@ -4685,19 +4685,25 @@ body.chat-app .conversation-meta-line .mini-badge {
   font-size: 0.7rem;
 }
 
-/* ── 消息流：方向气泡（G1/G3）+ V2 密度（宽列/窄缝/紧 padding） ── */
+/* ── 消息流：V3 结构分化 — transcript 行（assistant/system）+ user 右气泡 ── */
 body.chat-app .message-list {
   grid-template-columns: minmax(0, 1080px);
   gap: var(--caff-space-2);
   padding: var(--caff-space-3);
 }
 
+/* transcript 行：全列宽、无卡片壳（无背景块/大圆角/卡片 padding），左细条标归属 */
 body.chat-app .message-card {
-  width: fit-content;
+  justify-self: stretch;
+  width: 100%;
   min-width: 0;
-  padding: 0.45rem 0.75rem;
-  gap: 0.3rem;
+  padding: 0 0 0 0.6rem;
+  gap: 0.25rem;
   border: 0;
+  border-left: 2px solid color-mix(in srgb, var(--agent-color, var(--caff-accent)) 45%, transparent);
+  border-radius: 0;
+  background: transparent;
+  background-image: none;
   box-shadow: none;
 }
 
@@ -4712,16 +4718,35 @@ body.chat-app .message-card.assistant::after {
 }
 
 body.chat-app .message-card.assistant {
-  justify-self: start;
+  justify-self: stretch;
   max-width: 100%;
-  border-bottom-left-radius: 6px;
 }
 
+/* user 右气泡：fit-content 自然宽、轻 accent 底、上限 75% 列宽（1080 列 ≈ 810px） */
 body.chat-app .message-card.user {
   justify-self: end;
-  max-width: 100%;
+  width: fit-content;
+  max-width: 75%;
   margin-left: 0;
-  border-bottom-right-radius: 6px;
+  padding: 0.4rem 0.75rem;
+  gap: 0.3rem;
+  border-left: 0;
+  border-radius: var(--caff-radius-lg) var(--caff-radius-lg) 6px var(--caff-radius-lg);
+  background: var(--caff-accent-soft);
+  background-image: none;
+  color: var(--caff-text);
+}
+
+/* private 语义保留：轻 info 底色卡，不跟随 transcript 去壳 */
+body.chat-app .message-card.private {
+  width: fit-content;
+  max-width: 85%;
+  padding: 0.4rem 0.75rem;
+  border-left: 0;
+  border-radius: var(--caff-radius-lg);
+  background: var(--caff-info-soft);
+  background-image: none;
+  color: var(--caff-text);
 }
 
 /* ── Composer 输入列跟随加宽后的聊天列（V2） ── */
@@ -4733,12 +4758,17 @@ body.chat-app .composer-footer {
   max-width: 1080px;
 }
 
+/* digest 状态/结果卡保留居中卡形态（transcript 去壳不影响语义卡） */
 body.chat-app .message-card.digest-status,
 body.chat-app .message-card.digest-result {
   justify-self: center;
-  width: auto;
+  width: fit-content;
   max-width: 92%;
+  padding: 0.6rem 0.9rem;
   border: 1px solid color-mix(in srgb, var(--caff-success) 38%, var(--caff-border));
+  border-radius: var(--caff-radius-lg);
+  background: var(--caff-success-soft);
+  background-image: none;
 }
 
 body.chat-app .message-card.digest-source-target {
@@ -4774,8 +4804,11 @@ body.chat-app .message-card:focus-within :is(.message-export-button, .message-co
 /* ── 失败：居中窄条（G5） ── */
 body.chat-app .message-card.failed {
   justify-self: center;
+  width: fit-content;
   max-width: 60%;
+  padding: 0.45rem 0.75rem;
   border: 1px solid color-mix(in srgb, var(--caff-danger) 46%, var(--caff-border));
+  border-radius: var(--caff-radius-lg);
   background: var(--caff-danger-soft);
   background-image: none;
   text-align: center;
