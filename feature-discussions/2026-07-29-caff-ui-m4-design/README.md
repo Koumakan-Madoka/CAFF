@@ -2,8 +2,10 @@
 feature_ids: [CAFF-UI-M4]
 doc_kind: design
 created: 2026-07-29
-status: implemented
+status: rejected-by-operator
 ---
+
+> **V1 已被 operator 人工验收退回（2026-07-29，msg 0001785317360519-003134-65230324）**："UI本身占用的空间太大了，卡片间的空隙太多，把聊天气泡宽度变小是个错误的决定"——本设计把"参考 Clowder"误译为收窄气泡+扩大留白，方向被否决。V2 见同目录 `v2-density/`（待建）。本文件保留为退回前对照基准。
 
 # CAFF-UI-M4 Design Gate · 聊天 UI Clowder 风格体验优化
 

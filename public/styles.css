@@ -4685,15 +4685,17 @@ body.chat-app .conversation-meta-line .mini-badge {
   font-size: 0.7rem;
 }
 
-/* ── 消息流：方向气泡（G1/G3） ── */
+/* ── 消息流：方向气泡（G1/G3）+ V2 密度（宽列/窄缝/紧 padding） ── */
 body.chat-app .message-list {
-  gap: var(--caff-space-3);
+  grid-template-columns: minmax(0, 1080px);
+  gap: var(--caff-space-2);
+  padding: var(--caff-space-3);
 }
 
 body.chat-app .message-card {
   width: fit-content;
   min-width: 0;
-  padding: 0.65rem 0.9rem;
+  padding: 0.45rem 0.75rem;
   gap: 0.3rem;
   border: 0;
   box-shadow: none;
@@ -4711,15 +4713,24 @@ body.chat-app .message-card.assistant::after {
 
 body.chat-app .message-card.assistant {
   justify-self: start;
-  max-width: 85%;
+  max-width: 100%;
   border-bottom-left-radius: 6px;
 }
 
 body.chat-app .message-card.user {
   justify-self: end;
-  max-width: 75%;
+  max-width: 100%;
   margin-left: 0;
   border-bottom-right-radius: 6px;
+}
+
+/* ── Composer 输入列跟随加宽后的聊天列（V2） ── */
+body.chat-app .composer-inner {
+  max-width: 1080px;
+}
+
+body.chat-app .composer-footer {
+  max-width: 1080px;
 }
 
 body.chat-app .message-card.digest-status,
@@ -4782,11 +4793,6 @@ body.chat-app .new-msg-pill {
 }
 
 @media (max-width: 767px) {
-  body.chat-app .message-card.assistant,
-  body.chat-app .message-card.user {
-    max-width: 88%;
-  }
-
   body.chat-app .message-card.failed {
     max-width: 92%;
   }

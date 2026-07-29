@@ -1,7 +1,13 @@
 // CAFF-UI-M4 chat experience regression tests (jsdom + source contracts).
-// Locks the Clowder-parity directions approved at Design Gate (2026-07-29):
-// - directional message bubbles: user right (75%), assistant left (85%)
-// - compact meta row; message-level actions hover-reveal only
+// V2 density contract (2026-07-29, operator rejected V1 for oversized chrome,
+// excessive gaps and artificially narrowed bubbles; baseline evidence in
+// feature-discussions/2026-07-29-caff-ui-m4-design/v2-density/before-measurements.json):
+// - directional bubbles keep alignment but are NOT artificially narrowed
+//   (no 75%/85%/88% caps; content takes its natural width up to the full column)
+// - content column cap widened beyond the V1 780px so the chat area fills the
+//   measured available width (~1104px at 1440 with sidebar open)
+// - message-list gap compressed to <=8px; list/card padding tightened
+// - composer input column tracks the widened chat column
 // - failed messages render as a centered narrow banner, not a full-width card
 // - sidebar conversation list = two-line density (title + meta line)
 // - new-conversation form collapsed behind a + toggle
@@ -115,14 +121,34 @@ test('M4: sidebar new-conversation form is collapsed behind a + toggle', () => {
   assert.match(APP_JS, /new-conversation-toggle/, 'app.js must wire the + toggle');
 });
 
-test('M4: message bubbles are directional (user right 75% / assistant left 85%)', () => {
+test('M4: message bubbles keep direction but are not artificially narrowed', () => {
   const userBlock = cssBlock('body.chat-app .message-card.user {');
   assert.match(userBlock, /justify-self:\s*end/, 'user bubble must right-align within the message column');
-  assert.match(userBlock, /max-width:\s*75%/, 'user bubble max-width 75%');
+  assert.doesNotMatch(userBlock, /max-width:\s*75%/, 'user bubble must not be capped at 75% (V1 rejection point)');
 
   const assistantBlock = cssBlock('body.chat-app .message-card.assistant {');
   assert.match(assistantBlock, /justify-self:\s*start/, 'assistant bubble must left-align within the message column');
-  assert.match(assistantBlock, /max-width:\s*85%/, 'assistant bubble max-width 85%');
+  assert.doesNotMatch(assistantBlock, /max-width:\s*85%/, 'assistant bubble must not be capped at 85% (V1 rejection point)');
+
+  const mobileStart = M4_STYLES.indexOf('@media (max-width: 767px)');
+  assert.notEqual(mobileStart, -1, 'mobile media query missing in M4 section');
+  const mobileCss = M4_STYLES.slice(mobileStart);
+  assert.doesNotMatch(mobileCss, /max-width:\s*88%/, 'mobile bubbles must not be capped at 88% either');
+});
+
+test('M4: V2 density contract - wide column, compressed gap, tight padding', () => {
+  const listBlock = cssBlock('body.chat-app .message-list {');
+  assert.match(listBlock, /grid-template-columns:\s*minmax\(0,\s*(9[6-9][0-9]|1[0-9]{3})px\)/,
+    'content column cap must widen beyond V1 780px (measured available width 1104px at 1440)');
+  assert.match(listBlock, /gap:\s*var\(--caff-space-[12]\)/, 'message-list gap must compress to <=8px (space-1/space-2)');
+  assert.doesNotMatch(listBlock, /padding:\s*var\(--caff-space-5\)/, 'list vertical padding must shrink below space-5 (V1 measured 48px total)');
+
+  const cardBlock = cssBlock('body.chat-app .message-card {');
+  assert.doesNotMatch(cardBlock, /padding:\s*0\.65rem 0\.9rem/, 'card padding must tighten below V1 0.65rem/0.9rem (measured 28.8x20.8px)');
+
+  const composerBlock = cssBlock('body.chat-app .composer-inner {');
+  assert.match(composerBlock, /max-width:\s*(9[6-9][0-9]|1[0-9]{3})px/,
+    'composer input column must track the widened chat column, not stay at 780px');
 });
 
 test('M4: meta row is compact (no full-width sender/time split)', () => {
