@@ -26,6 +26,7 @@ const INDEX_HTML = readPublic('index.html');
 const STYLES = readPublic('styles.css');
 const APP_JS = readPublic('app.js');
 const CONVERSATION_LIST_JS = readPublic('chat/conversation-list.js');
+const CONNECTION_STATUS_JS = readPublic('chat/connection-status.js');
 
 const M4_SECTION_START = STYLES.indexOf('CAFF-UI-M4 · Clowder-parity chat experience');
 const M4_STYLES = M4_SECTION_START > -1 ? STYLES.slice(M4_SECTION_START) : '';
@@ -56,6 +57,49 @@ test('M4: runtime/meta pills live inside drawer settings tab, header keeps conne
 
 test('M4: app.js keeps connection dot in sync with runtime status', () => {
   assert.match(APP_JS, /connection-dot/, 'app.js must reference #connection-dot');
+});
+
+test('M4: SSE transport failure overrides busy/ok dot until the stream reopens', () => {
+  const dom = new JSDOM('', { url: 'http://localhost/', runScripts: 'outside-only' });
+  const { window } = dom;
+  window.eval(CONNECTION_STATUS_JS);
+
+  assert.equal(typeof window.CaffChat.createConnectionStatus, 'function', 'connection status module must register on CaffChat');
+  const status = window.CaffChat.createConnectionStatus();
+
+  status.markOpen();
+  assert.equal(
+    status.resolveDot({ busy: true, runtimeLabel: 'h:1 · 9 Agent · 1 个房间处理中', connectingLabel: 'c' }).status,
+    'busy',
+    'open stream + busy rooms must show busy'
+  );
+  assert.equal(status.resolveDot({ busy: false, runtimeLabel: 'x', connectingLabel: 'c' }).status, 'ok', 'open stream + idle must show ok');
+
+  status.markFailed();
+  const failed = status.resolveDot({ busy: true, runtimeLabel: 'x', connectingLabel: 'c' });
+  assert.equal(failed.status, 'failed', 'dropped stream must override busy with failed');
+  assert.match(failed.label, /断开|重连/, 'failed label must explain the disconnect');
+
+  status.markOpen();
+  assert.equal(
+    status.resolveDot({ busy: false, runtimeLabel: 'x', connectingLabel: 'c' }).status,
+    'ok',
+    'reopened stream must restore runtime-derived status'
+  );
+});
+
+test('M4: app.js wires SSE error/open paths to the transport state', () => {
+  const errorStart = APP_JS.indexOf("source.addEventListener('error'");
+  assert.notEqual(errorStart, -1, 'EventSource error listener missing');
+  const errorBlock = APP_JS.slice(errorStart, APP_JS.indexOf('});', errorStart) + 3);
+  assert.match(errorBlock, /markFailed\(\)/, 'SSE error path must mark the transport as failed');
+  assert.match(errorBlock, /renderRuntime\(\)/, 'SSE error path must re-render so the dot reflects the failure');
+
+  const openStart = APP_JS.indexOf("source.addEventListener('open'");
+  assert.notEqual(openStart, -1, 'EventSource open listener missing');
+  const openBlock = APP_JS.slice(openStart, APP_JS.indexOf('});', openStart) + 3);
+  assert.match(openBlock, /markOpen\(\)/, 'SSE open path must clear the transport failure');
+  assert.match(openBlock, /renderRuntime\(\)/, 'SSE open path must re-render the restored status');
 });
 
 test('M4: sidebar new-conversation form is collapsed behind a + toggle', () => {

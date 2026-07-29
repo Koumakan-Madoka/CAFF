@@ -46,6 +46,7 @@ const UNDERCOVER_TYPE = 'who_is_undercover';
 const WEREWOLF_TYPE = 'werewolf';
 const shared = window.CaffShared || {};
 const chatModules = window.CaffChat || {};
+const connectionStatus = chatModules.createConnectionStatus ? chatModules.createConnectionStatus() : null;
 const fetchJson = shared.fetchJson;
 const avatarUtils = shared.avatar || {};
 const modelOptionUtils = shared.modelOptions || {};
@@ -2676,7 +2677,10 @@ function syncConnectionDot(status, label) {
 function renderRuntime() {
   if (!state.runtime) {
     dom.runtimePill.textContent = '正在连接本地服务...';
-    syncConnectionDot('connecting', '正在连接本地服务...');
+    const dot = connectionStatus
+      ? connectionStatus.resolveDot({ busy: false, runtimeLabel: '', connectingLabel: '正在连接本地服务...' })
+      : { status: 'connecting', label: '正在连接本地服务...' };
+    syncConnectionDot(dot.status, dot.label);
     return;
   }
 
@@ -2689,7 +2693,14 @@ function renderRuntime() {
   );
   const statusText = `${state.runtime.host}:${state.runtime.port} · ${state.agents.length} Agent · ${busyConversationIds.size} 个房间处理中`;
   dom.runtimePill.textContent = statusText;
-  syncConnectionDot(busyConversationIds.size > 0 ? 'busy' : 'ok', statusText);
+  const dot = connectionStatus
+    ? connectionStatus.resolveDot({
+        busy: busyConversationIds.size > 0,
+        runtimeLabel: statusText,
+        connectingLabel: '正在连接事件通道…',
+      })
+    : { status: busyConversationIds.size > 0 ? 'busy' : 'ok', label: statusText };
+  syncConnectionDot(dot.status, dot.label);
 }
 
 function messageDisplayText(message) {
@@ -3470,6 +3481,18 @@ function connectEventStream() {
   const source = new EventSource('/api/events');
   state.eventSource = source;
 
+  source.addEventListener('open', () => {
+    if (state.eventSource !== source) {
+      return;
+    }
+
+    if (connectionStatus) {
+      connectionStatus.markOpen();
+    }
+
+    renderRuntime();
+  });
+
   source.addEventListener('runtime_state', (event) => {
     const payload = JSON.parse(event.data);
     state.runtime = payload;
@@ -3717,6 +3740,13 @@ function connectEventStream() {
     } catch {}
 
     state.eventSource = null;
+
+    if (connectionStatus) {
+      connectionStatus.markFailed();
+    }
+
+    renderRuntime();
+
     window.setTimeout(() => {
       if (!state.eventSource) {
         connectEventStream();
