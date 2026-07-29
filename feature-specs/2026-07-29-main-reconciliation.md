@@ -3,7 +3,7 @@ feature_ids: [CAFF-MAIN-RECONCILIATION]
 topics: [git, integration, main, ui, skill-tests, evaluation]
 doc_kind: plan
 created: 2026-07-29
-status: in_progress
+status: review_ready
 ---
 
 # CAFF Main Reconciliation Implementation Plan
