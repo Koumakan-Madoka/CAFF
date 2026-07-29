@@ -2,7 +2,7 @@
 feature_ids: [CAFF-UI-M4]
 doc_kind: design
 created: 2026-07-29
-status: design_gate_pending
+status: implemented
 ---
 
 # CAFF-UI-M4 Design Gate · 聊天 UI Clowder 风格体验优化

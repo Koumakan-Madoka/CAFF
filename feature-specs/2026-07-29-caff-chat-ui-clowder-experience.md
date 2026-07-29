@@ -3,12 +3,12 @@ feature_ids: [CAFF-UI-M4]
 topics: [frontend, ui, chat, message-list, composer, design-system, clowder-parity]
 doc_kind: plan
 created: 2026-07-29
-status: design_gate_pending
+status: review_ready
 ---
 
 # CAFF Chat UI — Clowder 风格体验优化（Milestone 4）
 
-**Status:** design_gate_pending
+**Status:** review_ready
 **Feature:** CAFF UI Redesign Milestone 4 — `designs/caff-ui-redesign-brief.md` 的演进阶段
 **Evolved from:** CAFF-UI-M1（AppShell）→ CAFF-UI-M2（management pages）→ CAFF-UI-M3（theme/icons），以及 F001 长会话分页。
 

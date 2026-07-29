@@ -68,8 +68,10 @@ if (!summaryMemoryUtils) {
 
 const dom = {
   runtimePill: /** @type {HTMLSpanElement | null} */ (document.getElementById('runtime-pill')),
+  connectionDot: /** @type {HTMLSpanElement | null} */ (document.getElementById('connection-dot')),
   refreshButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('refresh-button')),
   newConversationForm: /** @type {HTMLFormElement | null} */ (document.getElementById('new-conversation-form')),
+  newConversationToggle: /** @type {HTMLButtonElement | null} */ (document.getElementById('new-conversation-toggle')),
   newConversationTitle: /** @type {HTMLInputElement | null} */ (document.getElementById('new-conversation-title')),
   newConversationType: /** @type {HTMLSelectElement | null} */ (document.getElementById('new-conversation-type')),
   conversationList: /** @type {HTMLUListElement | null} */ (document.getElementById('conversation-list')),
@@ -2661,9 +2663,20 @@ function isConversationBusy(conversationId) {
   return runtimeBusyIds.includes(conversationId) || dispatchingIds.includes(conversationId) || activeTurnBusy || activeSlotBusy;
 }
 
+function syncConnectionDot(status, label) {
+  if (!dom.connectionDot) {
+    return;
+  }
+
+  dom.connectionDot.dataset.status = status;
+  dom.connectionDot.title = label;
+  dom.connectionDot.setAttribute('aria-label', `连接状态：${label}`);
+}
+
 function renderRuntime() {
   if (!state.runtime) {
     dom.runtimePill.textContent = '正在连接本地服务...';
+    syncConnectionDot('connecting', '正在连接本地服务...');
     return;
   }
 
@@ -2674,7 +2687,9 @@ function renderRuntime() {
       .concat(Array.isArray(state.runtime.activeAgentSlots) ? state.runtime.activeAgentSlots.map((slot) => slot.conversationId) : [])
       .filter(Boolean)
   );
-  dom.runtimePill.textContent = `${state.runtime.host}:${state.runtime.port} · ${state.agents.length} Agent · ${busyConversationIds.size} 个房间处理中`;
+  const statusText = `${state.runtime.host}:${state.runtime.port} · ${state.agents.length} Agent · ${busyConversationIds.size} 个房间处理中`;
+  dom.runtimePill.textContent = statusText;
+  syncConnectionDot(busyConversationIds.size > 0 ? 'busy' : 'ok', statusText);
 }
 
 function messageDisplayText(message) {
@@ -3802,6 +3817,17 @@ function bindEvents() {
     }
   });
 
+  if (dom.newConversationToggle && dom.newConversationForm) {
+    dom.newConversationToggle.addEventListener('click', () => {
+      const willShow = dom.newConversationForm.hidden;
+      dom.newConversationForm.hidden = !willShow;
+      dom.newConversationToggle.setAttribute('aria-expanded', String(willShow));
+      if (willShow && dom.newConversationTitle) {
+        dom.newConversationTitle.focus();
+      }
+    });
+  }
+
   dom.newConversationForm.addEventListener('submit', async (event) => {
     event.preventDefault();
 
@@ -4541,6 +4567,7 @@ async function init() {
     await refreshAll();
   } catch (error) {
     dom.runtimePill.textContent = '服务连接失败';
+    syncConnectionDot('failed', '服务连接失败');
     showToast(error.message);
   }
 }

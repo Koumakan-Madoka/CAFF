@@ -751,6 +751,14 @@ try {
     await page.waitForTimeout(300);
   }
   for (const title of [`${caseTitlePrefix}-A`, `${caseTitlePrefix}-B`]) {
+    const formHidden = await page.evaluate(() => {
+      const form = document.getElementById('new-conversation-form');
+      return form ? form.hidden : false;
+    });
+    if (formHidden) {
+      await page.click('#new-conversation-toggle');
+      await page.waitForTimeout(200);
+    }
     await page.fill('#new-conversation-title', title);
     await page.click('#new-conversation-form button[type="submit"]');
     await page.waitForTimeout(700);

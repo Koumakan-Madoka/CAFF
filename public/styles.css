@@ -4590,3 +4590,235 @@ body.management-app .file-chip {
     box-shadow: 4px 0 12px rgba(0, 0, 0, 0.14);
   }
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   CAFF-UI-M4 · Clowder-parity chat experience (owner: this section)
+   方向气泡 / 紧凑 meta / hover 操作 / 失败窄条 / 侧栏两行密度 /
+   header 瘦身(连接点) / 新建表单收起 / 移动档修复
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── 连接状态点（header，无事不占屏） ── */
+body.chat-app .connection-dot {
+  flex-shrink: 0;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--caff-ink-soft);
+  opacity: 0.55;
+}
+
+body.chat-app .connection-dot[data-status="ok"] {
+  background: var(--caff-teal);
+  opacity: 1;
+}
+
+body.chat-app .connection-dot[data-status="busy"] {
+  background: var(--caff-accent);
+  opacity: 1;
+}
+
+body.chat-app .connection-dot[data-status="failed"] {
+  background: var(--caff-danger);
+  opacity: 1;
+}
+
+/* ── 抽屉设置 tab：运行状态行 ── */
+body.chat-app .runtime-status-line {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+
+/* ── 侧栏：新建表单收起 ── */
+body.chat-app .sidebar-new-form[hidden] {
+  display: none;
+}
+
+body.chat-app .sidebar-head #new-conversation-toggle[aria-expanded="true"] {
+  color: var(--caff-accent-deep);
+  border-color: var(--caff-accent);
+}
+
+/* ── 侧栏会话列表：两行高密度 ── */
+body.chat-app .sidebar-list .conversation-item {
+  display: grid;
+  gap: 2px;
+  padding: 0.55rem 0.75rem;
+  min-height: 44px;
+}
+
+body.chat-app .sidebar-list .conversation-title-line {
+  justify-content: flex-start;
+}
+
+body.chat-app .sidebar-list .conversation-title-line strong {
+  font-weight: 600;
+  font-size: 0.92rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+body.chat-app .conversation-meta-line {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  font-size: 0.76rem;
+  color: var(--caff-ink-soft);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+body.chat-app .conversation-meta-line .conversation-type-badge {
+  margin-left: 0;
+  padding: 0.1rem 0.45rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
+body.chat-app .conversation-meta-line .mini-badge {
+  padding: 0.1rem 0.45rem;
+  font-size: 0.7rem;
+}
+
+/* ── 消息流：方向气泡（G1/G3） ── */
+body.chat-app .message-list {
+  gap: var(--caff-space-3);
+}
+
+body.chat-app .message-card {
+  width: fit-content;
+  min-width: 0;
+  padding: 0.65rem 0.9rem;
+  gap: 0.3rem;
+  border: 0;
+  box-shadow: none;
+}
+
+body.chat-app .message-card:hover {
+  transform: none;
+  box-shadow: none;
+}
+
+body.chat-app .message-card::before,
+body.chat-app .message-card.assistant::after {
+  display: none;
+}
+
+body.chat-app .message-card.assistant {
+  justify-self: start;
+  max-width: 85%;
+  border-bottom-left-radius: 6px;
+}
+
+body.chat-app .message-card.user {
+  justify-self: end;
+  max-width: 75%;
+  margin-left: 0;
+  border-bottom-right-radius: 6px;
+}
+
+body.chat-app .message-card.digest-status,
+body.chat-app .message-card.digest-result {
+  justify-self: center;
+  width: auto;
+  max-width: 92%;
+  border: 1px solid color-mix(in srgb, var(--caff-success) 38%, var(--caff-border));
+}
+
+body.chat-app .message-card.digest-source-target {
+  border: 1px solid rgba(245, 158, 11, 0.58);
+}
+
+/* ── meta 行：紧凑贴气泡（G2） ── */
+body.chat-app .message-card .message-meta {
+  justify-content: flex-start;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+}
+
+body.chat-app .message-card .message-time {
+  justify-content: flex-start;
+}
+
+body.chat-app .message-card.user .message-time {
+  order: -1;
+}
+
+/* ── 消息级操作：hover/focus 才露（G4） ── */
+body.chat-app .message-card :is(.message-export-button, .message-context-button) {
+  opacity: 0;
+  transition: opacity 140ms ease;
+}
+
+body.chat-app .message-card:hover :is(.message-export-button, .message-context-button),
+body.chat-app .message-card:focus-within :is(.message-export-button, .message-context-button) {
+  opacity: 1;
+}
+
+/* ── 失败：居中窄条（G5） ── */
+body.chat-app .message-card.failed {
+  justify-self: center;
+  max-width: 60%;
+  border: 1px solid color-mix(in srgb, var(--caff-danger) 46%, var(--caff-border));
+  background: var(--caff-danger-soft);
+  background-image: none;
+  text-align: center;
+}
+
+body.chat-app .message-card.failed .message-meta {
+  justify-content: center;
+}
+
+/* ── 移动档（G6） ── */
+body.chat-app .new-msg-pill {
+  left: auto;
+  right: var(--caff-space-4);
+  transform: none;
+}
+
+@media (max-width: 767px) {
+  body.chat-app .message-card.assistant,
+  body.chat-app .message-card.user {
+    max-width: 88%;
+  }
+
+  body.chat-app .message-card.failed {
+    max-width: 92%;
+  }
+
+  body.chat-app .new-msg-pill {
+    left: auto;
+    right: var(--caff-space-3);
+    transform: none;
+    bottom: var(--caff-space-3);
+    width: 44px;
+    height: 44px;
+    min-height: 44px;
+    padding: 0;
+  }
+
+  body.chat-app .new-msg-pill span {
+    display: none;
+  }
+
+  body.chat-app .composer-inner {
+    gap: 8px;
+  }
+
+  body.chat-app .composer textarea {
+    min-width: 0;
+  }
+
+  body.chat-app .composer #stop-button {
+    padding: 0 12px;
+  }
+
+  body.chat-app .composer .send {
+    padding: 0 14px;
+  }
+}

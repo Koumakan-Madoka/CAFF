@@ -49,10 +49,11 @@
       <aside class="sidebar" id="sidebar" aria-label="会话列表" aria-hidden="true" inert>
         <div class="sidebar-head">
           <h1>会话</h1>
+          <button class="icon-btn" id="new-conversation-toggle" type="button" aria-label="新建会话" aria-expanded="false" aria-controls="new-conversation-form"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-plus"></use></svg></button>
           <button class="icon-btn" id="sidebarClose" type="button" aria-label="收起会话栏"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-x"></use></svg></button>
         </div>
 
-        <form id="new-conversation-form" class="inline-form sidebar-new-form">
+        <form id="new-conversation-form" class="inline-form sidebar-new-form" hidden>
           <input id="new-conversation-title" name="title" type="text" maxlength="80" placeholder="新房间标题" />
           <select id="new-conversation-type" name="type">
             <!-- dynamically populated from /api/modes -->
@@ -68,11 +69,8 @@
           <button class="icon-btn" id="sidebarToggle" type="button" aria-label="打开会话栏" aria-expanded="false"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-menu"></use></svg></button>
           <div class="titles">
             <h2 id="conversation-title-display">正在加载...</h2>
-            <span class="status-line">
-              <span id="runtime-pill" class="runtime-pill">正在连接本地服务...</span>
-              <span id="conversation-meta" class="muted">请稍候</span>
-            </span>
           </div>
+          <span id="connection-dot" class="connection-dot" data-status="connecting" role="status" aria-label="连接状态" title="正在连接本地服务..."></span>
           <p id="conversation-mode-badge" class="mode-pill hidden"></p>
           <button id="refresh-button" class="icon-btn" type="button" aria-label="刷新" title="刷新"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-refresh"></use></svg></button>
           <button class="icon-btn icon-label-button" id="drawerToggle" type="button" aria-expanded="false" aria-controls="contextDrawer"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-panel-right"></use></svg><span>面板</span></button>
@@ -286,6 +284,14 @@
         </div>
 
         <div role="tabpanel" id="panel-settings" class="drawer-panel" aria-labelledby="tab-settings" hidden>
+          <div class="section-row">
+            <span class="section-label">运行状态</span>
+          </div>
+          <p class="runtime-status-line">
+            <span id="runtime-pill" class="runtime-pill">正在连接本地服务...</span>
+            <span id="conversation-meta" class="muted">请稍候</span>
+          </p>
+
           <div class="section-row">
             <span class="section-label">本次人格</span>
             <a class="ghost-button link-button" href="/personas.html">管理页</a>
