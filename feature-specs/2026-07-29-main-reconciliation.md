@@ -117,4 +117,3 @@ Also run targeted F001 pagination/scroll-anchor tests, F002 SDK-host tests, and 
 3. Address findings with Red→Green evidence and refresh review if SHA changes.
 4. Enter merge-gate only after approval; create a PR to GitHub main and verify remote checks.
 5. After merge and isolated acceptance, clean only worktrees/branches proven merged or obsolete; preserve excluded runtime history until separately adjudicated.
-
