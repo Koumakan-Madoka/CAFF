@@ -2,8 +2,11 @@
 feature_ids: [CAFF-UI-M4]
 doc_kind: evidence
 created: 2026-07-29
-status: complete
+status: rejected-by-operator
 ---
+
+> **V2 再次被 operator 人工验收退回（2026-07-29，T0 msg 0001785323300156-003167-82755333）："不是，怎么感觉没什么区别啊"。**
+> 根因：验收坐标系错了——V2 优化了"最大可用容量"与 CSS token，典型消息实际布局几乎没变（同内容 assistant 554→549.2px、user 405.1→400.3px）。机器指标双绿 ≠ 肉眼可感知。本目录保留为失败实验证据，V3 见 `../v3-structure/`。
 
 # CAFF-UI-M4 V2 密度量测（before → after）
 

@@ -8,7 +8,7 @@ status: implementing
 
 # CAFF Chat UI — Clowder 风格体验优化（Milestone 4）
 
-**Status:** implemented-pending-acceptance（V2 密度版完成，待 operator 人工验收）
+**Status:** implementing（V2 再退回 → V3 结构性重做，design gate 见 feature-discussions/2026-07-29-caff-ui-m4-design/v3-structure/）
 **Feature:** CAFF UI Redesign Milestone 4 — `designs/caff-ui-redesign-brief.md` 的演进阶段
 **Evolved from:** CAFF-UI-M1（AppShell）→ CAFF-UI-M2（management pages）→ CAFF-UI-M3（theme/icons），以及 F001 长会话分页。
 
