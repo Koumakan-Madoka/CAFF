@@ -1,7 +1,7 @@
 {
-  "runId": "e28fe7f9",
+  "runId": "7b681faa",
   "tag": "before",
-  "measuredAt": "2026-07-29T11:22:34.857Z",
+  "measuredAt": "2026-07-29T12:16:05.649Z",
   "scenarios": [
     {
       "viewport": "desktop-1440x820",
@@ -89,6 +89,22 @@
         "paddingY": 14.4,
         "widthRatio": 0.7752
       },
+      "userLong": {
+        "kind": "long",
+        "role": "user",
+        "width": 1065,
+        "height": 89.5,
+        "left": 348,
+        "right": 1413,
+        "backgroundColor": "rgb(244, 226, 217)",
+        "backgroundImage": "none",
+        "borderRadius": "10px 10px 6px",
+        "borderLeftWidth": "0px",
+        "padding": "7.2px 12px 7.2px 12px",
+        "paddingX": 24,
+        "paddingY": 14.4,
+        "widthRatio": 0.9861
+      },
       "failedCard": {
         "kind": "failed",
         "role": "assistant",
@@ -106,7 +122,7 @@
         "widthRatio": 0.2602
       },
       "visibleMessageCards": 9,
-      "totalMessageCards": 12
+      "totalMessageCards": 13
     },
     {
       "viewport": "mobile-375x800",
@@ -194,6 +210,22 @@
         "paddingY": 14.4,
         "widthRatio": 0.9572999999999999
       },
+      "userLong": {
+        "kind": "long",
+        "role": "user",
+        "width": 336,
+        "height": 215.5,
+        "left": 12,
+        "right": 348,
+        "backgroundColor": "rgb(244, 226, 217)",
+        "backgroundImage": "none",
+        "borderRadius": "10px 10px 6px",
+        "borderLeftWidth": "0px",
+        "padding": "7.2px 12px 7.2px 12px",
+        "paddingX": 24,
+        "paddingY": 14.4,
+        "widthRatio": 0.9572999999999999
+      },
       "failedCard": {
         "kind": "failed",
         "role": "assistant",
@@ -211,7 +243,7 @@
         "widthRatio": 0.8006
       },
       "visibleMessageCards": 6,
-      "totalMessageCards": 12
+      "totalMessageCards": 13
     }
   ],
   "contract": [
@@ -241,9 +273,9 @@
       "detail": "user 短消息右缘距全宽行右缘 0.0px（契约 ≤2px）"
     },
     {
-      "id": "desktop-1440x820:user-short-cap",
+      "id": "desktop-1440x820:user-long-width",
       "ok": true,
-      "detail": "user 短消息宽占比 14.7%（契约 ≤75%）"
+      "detail": "user 长消息行宽占比 98.6%（契约 ≥95%，禁止固定百分比收窄）"
     },
     {
       "id": "desktop-1440x820:user-medium-width",
@@ -281,9 +313,9 @@
       "detail": "user 短消息右缘距全宽行右缘 0.0px（契约 ≤2px）"
     },
     {
-      "id": "mobile-375x800:user-short-cap",
+      "id": "mobile-375x800:user-long-width",
       "ok": true,
-      "detail": "user 短消息宽占比 45.3%（契约 ≤75%）"
+      "detail": "user 长消息行宽占比 95.7%（契约 ≥95%，禁止固定百分比收窄）"
     },
     {
       "id": "mobile-375x800:density",

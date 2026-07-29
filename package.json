@@ -17,7 +17,8 @@
     "typecheck": "tsc -p tsconfig.typecheck.json && tsc -p tsconfig.public.json",
     "typecheck:public": "tsc -p tsconfig.public.json",
     "test:fast": "npm run check && npm run build && node tests/runtime/agent-tool-bridge.test.js && node tests/runtime/agent-eval-report.test.js && node tests/runtime/chat-bridge-replay.test.js && node tests/runtime/turn-orchestrator.test.js && node tests/runtime/agent-chat-tools.test.js && node tests/runtime/skill-tests-removal-guards.test.js && node tests/runtime/message-history.test.js && node tests/runtime/message-tool-trace.test.js && node tests/runtime/context-snapshot.test.js && node tests/runtime/werewolf-game.test.js && node tests/runtime/skill-loading.test.js && node tests/runtime/env-local-loader.test.js && node tests/runtime/ensure-build.test.js && node tests/runtime/feishu-delivery.test.js && node tests/runtime/feishu-long-connection.test.js && node tests/http/request-body.test.js && node tests/http/feishu-controller.test.js && node tests/storage/chat-store.test.js && node tests/storage/run-store.test.js && node tests/runtime/pi-runtime.test.js && node tests/ui/app-shell.test.js && node tests/ui/management-shell.test.js && node tests/ui/theme-icons.test.js && node tests/ui/chat-experience-m4.test.js",
-    "test:ui": "npm run build && node scripts/verify-ui.mjs",
+    "test:ui": "npm run build && node scripts/verify-ui.mjs && node scripts/ui/measure-structure.mjs --tag gate --out .tmp/ui-structure/gate-measurements.json --shots .tmp/ui-structure/shots",
+    "test:ui:structure": "npm run build && node scripts/ui/measure-structure.mjs --tag gate --out .tmp/ui-structure/gate-measurements.json --shots .tmp/ui-structure/shots",
     "test:smoke": "npm run build && node tests/smoke/server-smoke.test.js && node tests/smoke/mode-store.test.js",
     "test": "npm run test:fast && npm run test:smoke",
     "web": "npm run start:dev"

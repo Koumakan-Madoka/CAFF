@@ -26,7 +26,7 @@ status: implemented-awaiting-operator-review
 | 形态 | 适用 | 布局 | chrome |
 |---|---|---|---|
 | **transcript 行** | assistant / 系统常规消息 | 全列宽行（w-full，占满 1080 列），内容按文档流排布 | 无气泡壳：无背景块、无大圆角、无卡片 padding；仅紧凑 meta 行（sender · time · hover 操作）贴内容上方，左侧可用 `--agent-color` 细条/点标识归属 |
-| **user 气泡** | user | 右对齐、fit-content 自然宽、轻 accent 底色气泡 | 保留气泡形态作方向区分；上限对齐 Clowder `max-w-[75%]`（以 1080 列计 ≈810px，远大于 V1 的 405px 实效） |
+| **user 气泡** | user | 右对齐、fit-content 自然宽、轻 accent 底色气泡 | 保留气泡形态作方向区分；**不设固定百分比上限**（operator 否决 75% 收窄），长消息自然用满整列 |
 
 ### 保留语义（不动）
 
@@ -46,7 +46,7 @@ status: implemented-awaiting-operator-review
 2. Red→Green 契约必须读**真实 computed geometry**（Playwright），不只匹配 CSS 字符串；覆盖短/中/长三类典型消息：
    - assistant 中/长消息行宽 ≥ 列宽 ~95%（transcript 形态）；
    - assistant 行无卡片壳（computed background/radius/padding 断言）；
-   - user 短消息右对齐、宽度 ≤ 75% 列宽且 > V1 实效（405px @1440）；
+   - user 短消息右缘对齐全宽行右缘（≤2px）、user 长消息行宽 ≥95% 列宽（禁止固定百分比收窄）、user 中消息 > V1 实效（405px @1440）；
    - 单屏可见消息数 ≥ V2 的 9。
 3. 实现后先自做肉眼 A/B：第一眼分不出 → 不得回报完成。
 
@@ -57,7 +57,7 @@ status: implemented-awaiting-operator-review
 
 ## 实施结果（2026-07-29，待 operator 验收）
 
-量测脚本：`scripts/ui/measure-structure.mjs`（同 V2 隔离 app + 真实浏览器；12 条确定性证据消息：assistant 短/中/长 + user 短/中 + failed）。before = V2（`before-measurements.json` + `before/ui-*.png`），after = V3（`after-measurements.json` + `after/ui-*.png`），同会话同内容同 viewport 同滚动到底。
+量测脚本：`scripts/ui/measure-structure.mjs`（同 V2 隔离 app + 真实浏览器；13 条确定性证据消息：assistant 短/中/长 + user 短/中/长 + failed）。before = V2（`before-measurements.json` + `before/ui-*.png`），after = V3（`after-measurements.json` + `after/ui-*.png`），同会话同内容同 viewport 同滚动到底。**脚本已接入仓库门禁**：任一契约 `ok:false` 退出非零，`npm run test:ui` 末尾以 `--tag gate` 运行（输出落 gitignored `.tmp/ui-structure/`）。
 
 ### 桌面 1440×820（列宽 1080px）
 
@@ -65,17 +65,18 @@ status: implemented-awaiting-operator-review
 |---|---|---|
 | assistant 中消息行宽 | 832.9px（77.1%，fit-content 卡片） | 1065px（98.6%，transcript 全宽行） |
 | assistant 行卡片壳 | bg `rgb(251,250,247)` + radius 10px + padding 24×14.4px | bg 透明 + radius 0 + padding 0（仅左 2px 归属色条，padding-left 9.6px） |
-| user 中消息 | 837.2px 右对齐气泡 | 798.8px 右对齐气泡（≤75% 列宽 ≈810px，> V1 实效 405px） |
+| user 中消息 | 837.2px 右对齐气泡 | 837.2px 右对齐气泡（无固定上限，自然宽 > V1 实效 405px） |
+| user 长消息 | 1065px（V2 卡片行，卡片壳） | 1065px（98.6%，自然用满整列，无百分比收窄） |
 | failed | 居中窄条 281px | 居中窄条 281px（语义保留） |
 | 单屏可见消息 | 9 | 10 |
 
 ### 移动 375×800（列宽 351px）
 
-assistant 行宽 336px（95.7%）；user 上限 75%；单屏可见 6（≥ V2 基线 6）。
+assistant 行宽 336px（95.7%）；user 中/长消息自然宽 336px（95.7%，无 75% 收窄）；单屏可见 6（≥ V2 基线 6）。
 
 ### 契约核对
 
-`after-measurements.json.contract` 16/16 绿：行宽 ≥95% 列宽、无卡片壳（computed bg/radius/padding 断言）、user 右缘对齐全宽行右缘（≤2px）、user ≤75% 列宽且 >405px、密度 ≥ 基线。肉眼 A/B：1440 与 375 两档 before/after 第一眼即可区分（卡片堆 → 文档流宽行）。
+`after-measurements.json.contract` 15/15 绿：行宽 ≥95% 列宽、无卡片壳（computed bg/radius/padding 断言）、user 右缘对齐全宽行右缘（≤2px）、user 长消息 ≥95% 列宽且中消息 >405px、密度 ≥ 基线。同一脚本对 before（V2）跑出 5/15 红并非零退出，证明门禁是真红灯。肉眼 A/B：1440 与 375 两档 before/after 第一眼即可区分（卡片堆 → 文档流宽行）。
 
 ### Open Question 收敛
 
@@ -84,4 +85,4 @@ assistant 行宽 336px（95.7%）；user 上限 75%；单屏可见 6（≥ V2 �
 
 ### 回归
 
-`npm run test:fast` 全绿（含更新后的 `tests/ui/chat-experience-m4.test.js` V3 结构契约：transcript 行全宽/无壳/归属色条、user 右气泡 fit-content ≤75%）。
+`npm run test:fast` 全绿（含更新后的 `tests/ui/chat-experience-m4.test.js` V3 结构契约：transcript 行全宽/无壳/归属色条、user 右气泡 fit-content 无固定百分比上限）。

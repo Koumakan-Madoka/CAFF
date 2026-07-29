@@ -138,17 +138,21 @@ test('M4: assistant/system messages are full-width transcript rows without card 
   assert.doesNotMatch(assistantBlock, /max-width:\s*85%/, 'assistant row must not be capped at 85% (V1 rejection point)');
 });
 
-test('M4: user messages are right-aligned bubbles capped at 75% of the column', () => {
+test('M4: user messages are right-aligned fit-content bubbles without a fixed percentage cap', () => {
   const userBlock = cssBlock('body.chat-app .message-card.user {');
   assert.match(userBlock, /justify-self:\s*end/, 'user bubble must right-align within the message column');
   assert.match(userBlock, /width:\s*fit-content/, 'user bubble keeps natural content width');
-  assert.match(userBlock, /max-width:\s*75%/, 'user bubble caps at 75% of the column (Clowder parity; ~810px at 1080 column)');
+  assert.doesNotMatch(userBlock, /max-width:\s*(?!100%)[0-9]+%/, 'user bubble must not reintroduce a fixed percentage cap (operator rejected the 75% narrowing)');
   assert.match(userBlock, /background:\s*var\(--caff-accent-soft\)/, 'user bubble keeps a light accent fill');
 
   const mobileStart = M4_STYLES.indexOf('@media (max-width: 767px)');
   assert.notEqual(mobileStart, -1, 'mobile media query missing in M4 section');
   const mobileCss = M4_STYLES.slice(mobileStart);
-  assert.doesNotMatch(mobileCss, /max-width:\s*88%/, 'mobile bubbles must not be capped at 88% either');
+  const mobileUserStart = mobileCss.indexOf('.message-card.user');
+  if (mobileUserStart !== -1) {
+    const mobileUserBlock = mobileCss.slice(mobileUserStart, mobileCss.indexOf('}', mobileUserStart));
+    assert.doesNotMatch(mobileUserBlock, /max-width:\s*(?!100%)[0-9]+%/, 'mobile user bubble must not be capped below full column either');
+  }
 });
 
 test('M4: V2 density contract - wide column, compressed gap, tight padding', () => {

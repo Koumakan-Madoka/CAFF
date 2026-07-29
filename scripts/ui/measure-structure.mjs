@@ -4,8 +4,9 @@
 //   1. assistant medium/long rows span >= ~95% of the column (transcript form)
 //   2. assistant rows have no card shell (transparent background, no radius,
 //      no card padding beyond the agent-color attribution bar)
-//   3. user messages are right-aligned bubbles, width <= 75% of the column,
-//      and a medium user message is wider than the V1 effective cap (405px @1440)
+//   3. user messages are right-aligned fit-content bubbles with no fixed
+//      percentage cap: a long user message uses ~the full column, and a
+//      medium user message is wider than the V1 effective cap (405px @1440)
 //   4. visible message cards per screen >= the V2 baseline (9 @1440x820)
 // Usage:
 //   node scripts/ui/measure-structure.mjs --tag before --out <json> --shots <dir>
@@ -145,7 +146,7 @@ async function deleteConversation(baseUrl, conversationId) {
   await fetch(`${baseUrl}api/conversations/${encodeURIComponent(conversationId)}`, { method: 'DELETE' }).catch(() => {});
 }
 
-// Deterministic evidence set: assistant short/medium/long + user short/medium,
+// Deterministic evidence set: assistant short/medium/long + user short/medium/long,
 // same conversation, same content, same order for before/after runs.
 const EVIDENCE_MESSAGES = [
   { role: 'assistant', kind: 'medium', text: '这条是中等长度的回复：消息区独立滚动，标题、主要操作与 composer 始终留在视口内，用来检验典型消息的实际几何。' },
@@ -155,6 +156,7 @@ const EVIDENCE_MESSAGES = [
   { role: 'user', kind: 'medium', text: '把这条用户消息写得稍长一些，用来确认右对齐气泡在自然内容下不会被人工收窄，宽度应当超过旧版 405px 的实效上限。' },
   { role: 'assistant', kind: 'medium', text: '第二条中等回复：核对 meta 行是否紧凑贴在内容上方，hover 才露出导出与上下文操作。' },
   { role: 'assistant', kind: 'failed', text: '这条回复失败了：网络超时，请重试。' },
+  { role: 'user', kind: 'long', text: '这是一条足够长的用户消息，用来证明右对齐气泡不再受任何固定百分比上限约束：当内容本身足够长时，气泡应当自然地用满整个内容列，而不是被人工收窄到某个比例后反复折行。operator 已经明确否决过把用户气泡变窄的方向，所以这里的契约是长消息行宽接近列宽。' },
   { role: 'user', kind: 'short', text: '再试一次。' },
   { role: 'assistant', kind: 'medium', text: '第三条中等回复：单屏消息密度应当不低于 V2 基线，同内容下第一眼更宽更紧凑。' },
   { role: 'assistant', kind: 'long', text: '又一条长回复，重复确认长文本在 transcript 形态下的行宽。视觉上它应当像一段文档而不是一张卡片：没有背景块、没有大圆角、没有沉重的 padding，只有一条细细的归属色条和紧凑的 meta 行。这样 operator 在 1440 桌面上扫一眼，就能明确说出新旧结构的差别，而不是靠量测脚本才发现 token 变了。' },
@@ -257,6 +259,7 @@ async function measureViewport(page, viewport, label) {
       assistantShort: pick('assistant', 'short'),
       userShort: pick('user', 'short'),
       userMedium: pick('user', 'medium'),
+      userLong: pick('user', 'long'),
       failedCard: pick('assistant', 'failed'),
       visibleMessageCards: visible,
       totalMessageCards: cards.length,
@@ -291,7 +294,9 @@ function evaluateContract(measurements) {
     if (scenario.userShort) {
       const rightGap = Math.abs(scenario.userShort.right - columnRight);
       push(`${tag}:user-short-align`, rightGap <= 2, `user 短消息右缘距全宽行右缘 ${rightGap.toFixed(1)}px（契约 ≤2px）`);
-      push(`${tag}:user-short-cap`, scenario.userShort.widthRatio <= 0.75, `user 短消息宽占比 ${(scenario.userShort.widthRatio * 100).toFixed(1)}%（契约 ≤75%）`);
+    }
+    if (scenario.userLong) {
+      push(`${tag}:user-long-width`, scenario.userLong.widthRatio >= 0.95, `user 长消息行宽占比 ${(scenario.userLong.widthRatio * 100).toFixed(1)}%（契约 ≥95%，禁止固定百分比收窄）`);
     }
     if (tag.startsWith('desktop') && scenario.userMedium) {
       push(`${tag}:user-medium-width`, scenario.userMedium.width > 405, `user 中消息宽 ${scenario.userMedium.width}px（契约 > V1 实效 405px）`);
@@ -345,7 +350,17 @@ try {
   console.log(JSON.stringify(measurements, null, 2));
   console.log(`\nwrote ${OUT_PATH}`);
   console.log(`screenshots in ${SHOTS_DIR}`);
-  exitCode = 0;
+  const failures = measurements.contract.filter((check) => !check.ok);
+  if (failures.length > 0) {
+    console.error(`\nCONTRACT FAILED (${failures.length}/${measurements.contract.length}):`);
+    for (const failure of failures) {
+      console.error(`  ✗ ${failure.id}: ${failure.detail}`);
+    }
+    exitCode = 1;
+  } else {
+    console.log(`\ncontract ${measurements.contract.length}/${measurements.contract.length} green`);
+    exitCode = 0;
+  }
 } catch (error) {
   console.error(error && error.stack ? error.stack : error);
   if (managedApp) {
