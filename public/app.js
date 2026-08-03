@@ -826,6 +826,8 @@ function setupChatModules() {
             formatDateTime,
             isConversationBusy,
             normalizedSkillIds,
+            isRoleAvailable: modelOptionUtils.isRoleAvailable,
+            roleAvailabilityLabel: modelOptionUtils.roleAvailabilityLabel,
           },
           showToast,
         })
@@ -3227,7 +3229,7 @@ function renderAgentStudio() {
       name.textContent = agent.name;
       const description = document.createElement('div');
       description.className = 'muted';
-      description.textContent = `${agent.description || '未填写角色说明'} · ${Array.isArray(agent.modelProfiles) ? agent.modelProfiles.length : 0} 套模型人格`;
+      description.textContent = `${agent.description || '未填写角色说明'} · ${Array.isArray(agent.modelProfiles) ? agent.modelProfiles.length : 0} 套模型配置`;
       nameWrap.append(name, description);
 
       const avatar = buildAgentAvatarElement(agent, 'small');
@@ -4526,12 +4528,12 @@ function bindEvents() {
     const payload = serializeAgentForm();
 
     if (!payload.name) {
-      showToast('人格名称不能为空');
+      showToast('角色名称不能为空');
       return;
     }
 
     if (!payload.personaPrompt) {
-      showToast('人格 Prompt 不能为空');
+      showToast('Persona Prompt 不能为空');
       return;
     }
 
@@ -4544,7 +4546,7 @@ function bindEvents() {
       await refreshAll(state.selectedConversationId);
       state.selectedAgentId = result.agent.id;
       renderAll();
-      showToast(payload.id ? '人格已更新' : '新人格已创建');
+      showToast(payload.id ? '角色已更新' : '新角色已创建');
     } catch (error) {
       showToast(error.message);
     }

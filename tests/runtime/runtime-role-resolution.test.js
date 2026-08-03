@@ -23,6 +23,13 @@ function createService(roles, getOptions) {
       listAgents() {
         return structuredClone(roles);
       },
+      normalizeConversationParticipantsInput(input) {
+        return input.participants.map((participant) => ({
+          agentId: participant.agentId,
+          modelProfileId: participant.modelProfileId || null,
+          conversationSkills: participant.conversationSkillIds || [],
+        }));
+      },
     },
     modelCatalog: { getOptions },
     resolveRuntimeDefaults() {
@@ -213,4 +220,45 @@ test('runtime role resolution aggregates reclassified models, changed thinking c
       return true;
     }
   );
+});
+
+test('runtime role resolution lets an existing participant recover through a valid selected profile', () => {
+  const roles = [{
+    id: 'role-family-gpt',
+    name: 'GPT',
+    roleKind: 'model_family',
+    modelFamily: 'gpt',
+    provider: 'openai',
+    model: 'gpt-base-missing',
+    thinking: 'low',
+    modelProfiles: [{
+      id: 'recovery',
+      name: 'Recovery',
+      provider: 'openai',
+      model: 'gpt-recovery',
+      thinking: 'high',
+    }],
+  }];
+  const options = [modelOption('openai', 'gpt-recovery', 'gpt')];
+  const service = createService(roles, () => options);
+
+  assert.equal(service.getDirectory().agents[0].availability.status, 'default_model_missing');
+  assert.throws(
+    () => service.validateConversationParticipants({
+      participants: [{ agentId: 'role-family-gpt', modelProfileId: 'recovery' }],
+    }),
+    (error) => error && error.statusCode === 422 && error.issues[0].code === 'participant_role_unavailable'
+  );
+
+  const validated = service.validateConversationParticipants({
+    participants: [{ agentId: 'role-family-gpt', modelProfileId: 'recovery' }],
+  }, { recoverableRoleIds: new Set(['role-family-gpt']) });
+  assert.equal(validated[0].modelProfileId, 'recovery');
+
+  const resolved = service.resolveRuntimeParticipants([{
+    id: 'role-family-gpt',
+    selectedModelProfileId: 'recovery',
+  }]);
+  assert.equal(resolved[0].runtimeConfig.model, 'gpt-recovery');
+  assert.equal(resolved[0].runtimeConfig.profileId, 'recovery');
 });

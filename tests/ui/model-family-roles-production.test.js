@@ -20,6 +20,18 @@ const projectRoot = path.resolve(__dirname, '..', '..');
 const publicDir = path.join(projectRoot, 'public');
 const modelKey = (provider, model) => `${provider}\u001f${model}`;
 
+function publicScriptAndHtmlFiles(directory) {
+  return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const target = path.join(directory, entry.name);
+    if (entry.isDirectory()) return publicScriptAndHtmlFiles(target);
+    return /\.(?:html|js)$/u.test(entry.name) ? [target] : [];
+  });
+}
+
+for (const file of publicScriptAndHtmlFiles(publicDir)) {
+  assert.doesNotMatch(fs.readFileSync(file, 'utf8'), /人格/u, `${path.relative(projectRoot, file)} still exposes legacy 人格 terminology`);
+}
+
 function createRoleFixture() {
   const modelOptions = [
     {
@@ -68,11 +80,11 @@ function createRoleFixture() {
     },
     {
       id: 'custom-reviewer', name: '架构评审', description: '自定义角色', sandboxName: 'reviewer', avatarDataUrl: '',
-      personaPrompt: '从系统边界与失败路径审查。', provider: 'anthropic', model: 'claude-opus-4.1', thinking: 'high', accentColor: '#277d75',
+      personaPrompt: '从系统边界与失败路径审查。', provider: 'anthropic', model: 'claude-opus-4.1', thinking: 'max', accentColor: '#277d75',
       skillIds: ['source-audit'], roleKind: 'custom', modelFamily: null, isDefaultChatRole: true, systemManaged: false,
       availability: { status: 'available', familyModelCount: 0 },
       editableFields: ['name', 'description', 'sandboxName', 'avatarDataUrl', 'personaPrompt', 'provider', 'model', 'thinking', 'accentColor', 'skillIds', 'modelProfiles', 'isDefaultChatRole'],
-      modelProfiles: [{ id: 'deep', name: '深度评审', description: '高风险审查', provider: 'anthropic', model: 'claude-opus-4.1', thinking: 'high', personaPrompt: '优先找不可逆风险。' }],
+      modelProfiles: [{ id: 'deep', name: '深度评审', description: '高风险审查', provider: 'anthropic', model: 'claude-opus-4.1', thinking: 'max', personaPrompt: '优先找不可逆风险。' }],
     },
   ];
   return { agents, modelOptions, skills: [{ id: 'source-audit', name: 'source-audit', description: '核验信源' }, { id: 'quality-gate', name: 'quality-gate', description: '交付门禁' }] };
@@ -196,7 +208,7 @@ async function serveProductionUi() {
     await cdp.send('Runtime.enable');
     await cdp.send('Page.enable');
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
-    await waitFor(cdp, `document.body.dataset.managementReady === 'true'`);
+    await waitFor(cdp, `Boolean(document.body && document.body.dataset.managementReady === 'true')`);
 
     const family = await evaluate(cdp, `(() => ({
       roleView: !document.getElementById('role-management-view').classList.contains('hidden'),
@@ -207,6 +219,8 @@ async function serveProductionUi() {
       thinkingOptions: Array.from(document.getElementById('role-default-thinking').options).map((option) => option.value),
       personaVisible: Boolean(document.getElementById('role-persona-prompt')),
       profilePersonaVisible: Boolean(document.querySelector('[data-runtime-profile] [data-profile-persona]')),
+      defaultToggleLabel: document.getElementById('default-toggle').getAttribute('aria-label'),
+      nextProfileId: window.CaffPersonas.managementUtils.nextProfileId([{ id: 'profile-1' }, { id: 'profile-3' }]),
     }))()`);
     assert.equal(family.roleView, true);
     assert.equal(family.providerView, true);
@@ -216,6 +230,8 @@ async function serveProductionUi() {
     assert.deepEqual(family.thinkingOptions, ['', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh']);
     assert.equal(family.personaVisible, false);
     assert.equal(family.profilePersonaVisible, false);
+    assert.equal(family.defaultToggleLabel, '新建普通聊天时默认预选 GPT');
+    assert.equal(family.nextProfileId, 'profile-2');
 
     const profileFocus = await evaluate(cdp, `(() => {
       document.getElementById('add-runtime-profile').click();
@@ -242,6 +258,13 @@ async function serveProductionUi() {
     assert.match(custom.profilePersona, /不可逆/u);
     assert.equal(custom.modelOptions.includes(modelKey('openai', 'gpt-5.4')), true);
     assert.equal(custom.modelOptions.includes(modelKey('anthropic', 'claude-opus-4.1')), true);
+
+    await evaluate(cdp, `document.getElementById('save-role').click()`);
+    await waitFor(cdp, `document.getElementById('toast').textContent.includes('已保存')`);
+    const customSave = fixture.requests.find((request) => request.url === '/api/agents/custom-reviewer');
+    assert.ok(customSave);
+    assert.equal(customSave.body.thinking, '');
+    assert.equal(customSave.body.modelProfiles[0].thinking, '');
 
     await evaluate(cdp, `document.querySelector('[data-role-id="role-family-gpt"]').click()`);
     const thinkingReset = await evaluate(cdp, `(() => {
@@ -359,10 +382,18 @@ async function serveProductionUi() {
     await evaluate(cdp, `document.querySelector('[data-provider-id="anthropic"]').click()`);
     const external = await evaluate(cdp, `(() => ({
       mode: document.getElementById('provider-auth-mode').value,
+      modes: Array.from(document.getElementById('provider-auth-mode').options, (option) => option.value),
       clearDisabled: document.getElementById('clear-provider-secret').disabled,
       secretValue: document.getElementById('provider-api-key').value,
+      note: document.getElementById('provider-external-auth-note').textContent,
     }))()`);
-    assert.deepEqual(external, { mode: 'external', clearDisabled: true, secretValue: '' });
+    assert.deepEqual(external, {
+      mode: 'none',
+      modes: ['none', 'literal', 'env', 'command'],
+      clearDisabled: true,
+      secretValue: '',
+      note: 'auth.json / CLI 外部认证只读；本页不会写入、替换或清除它。',
+    });
 
     const providerModelFocus = await evaluate(cdp, `(() => {
       document.getElementById('add-provider-model').click();
@@ -380,6 +411,10 @@ async function serveProductionUi() {
     await evaluate(cdp, `document.getElementById('validate-provider').click()`);
     await waitFor(cdp, `document.getElementById('toast').textContent.includes('连接验证完成')`);
     assert.ok(fixture.requests.find((request) => request.url === '/api/model-providers/anthropic/validate' && request.method === 'POST'));
+    assert.match(
+      await evaluate(cdp, `document.querySelector('[data-provider-id="anthropic"]').textContent`),
+      /最近验证通过/u
+    );
 
     const removalConfirmation = await evaluate(cdp, `(() => {
       document.getElementById('remove-provider').click();
@@ -423,7 +458,7 @@ async function serveProductionUi() {
 
     fixture.bootstrap.localAdmin.modelProviders.enabled = false;
     await cdp.send('Page.reload', { ignoreCache: true });
-    await waitFor(cdp, `document.body.dataset.managementReady === 'true'`);
+    await waitFor(cdp, `Boolean(document.body && document.body.dataset.managementReady === 'true')`);
     await evaluate(cdp, `document.getElementById('show-provider-management').click()`);
     const locked = await evaluate(cdp, `(() => ({
       banner: document.getElementById('provider-local-admin-banner').textContent,

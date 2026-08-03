@@ -5,9 +5,11 @@ const test = require('node:test');
 const vm = require('node:vm');
 
 function loadDialogModule() {
+  const modelOptionsPath = path.join(__dirname, '../../public/shared/model-options.js');
   const sourcePath = path.join(__dirname, '../../public/chat/new-conversation-dialog.js');
   const source = fs.readFileSync(sourcePath, 'utf8');
-  const context = { window: { CaffChat: {} } };
+  const context = { window: { CaffChat: {}, CaffShared: {} } };
+  vm.runInNewContext(fs.readFileSync(modelOptionsPath, 'utf8'), context, { filename: modelOptionsPath });
   vm.runInNewContext(source, context, { filename: sourcePath });
   return context.window.CaffChat.newConversationDialog;
 }

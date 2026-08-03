@@ -2,6 +2,8 @@
 
 (function registerManagementUtils() {
   const namespace = window.CaffPersonas || (window.CaffPersonas = {});
+  const modelOptionUtils = window.CaffShared && window.CaffShared.modelOptions;
+  if (!modelOptionUtils) throw new Error('CaffShared.modelOptions helper is required');
   const FAMILY_LABELS = {
     gpt: 'GPT', claude: 'Claude', gemini: 'Gemini', deepseek: 'DeepSeek',
     qwen: 'Qwen', glm: 'GLM', kimi: 'Kimi',
@@ -73,6 +75,18 @@
     return option && Array.isArray(option.supportedThinkingLevels) ? option.supportedThinkingLevels : [];
   }
 
+  function normalizeThinkingLevel(modelOptions, provider, model, current) {
+    const value = String(current || '').trim();
+    return supportedThinkingLevels(modelOptions, provider, model).includes(value) ? value : '';
+  }
+
+  function nextProfileId(profiles) {
+    const used = new Set((Array.isArray(profiles) ? profiles : []).map((profile) => String(profile && profile.id || '').trim()).filter(Boolean));
+    let index = 1;
+    while (used.has(`profile-${index}`)) index += 1;
+    return `profile-${index}`;
+  }
+
   function fillThinkingSelect(select, modelOptions, provider, model, current) {
     const levels = supportedThinkingLevels(modelOptions, provider, model);
     select.innerHTML = '';
@@ -86,13 +100,7 @@
   }
 
   function availabilityCopy(availability) {
-    const status = String(availability && availability.status || 'available');
-    const copies = {
-      available: '可运行', no_family_models: '尚无同族模型', default_model_missing: '默认模型不可用',
-      default_model_out_of_family: '默认模型跨族', profile_model_missing: 'Profile 模型不可用',
-      profile_model_out_of_family: 'Profile 模型跨族', thinking_level_unsupported: '思考强度不受支持',
-    };
-    return copies[status] || '当前不可运行';
+    return modelOptionUtils.roleAvailabilityLabel(availability);
   }
 
   function familyLabel(family) {
@@ -112,7 +120,7 @@
       description: profile.description || '',
       provider: profile.provider || '',
       model: profile.model || '',
-      thinking: profile.thinking || '',
+      thinking: normalizeThinkingLevel(modelOptions, profile.provider, profile.model, profile.thinking),
       ...(family ? {} : { personaPrompt: profile.personaPrompt || '' }),
     }));
     if (family) {
@@ -121,7 +129,7 @@
         Object.assign(payload, {
           provider: role.provider || '',
           model: role.model || '',
-          thinking: role.thinking || '',
+          thinking: normalizeThinkingLevel(modelOptions, role.provider, role.model, role.thinking),
           modelProfiles: profiles,
         });
       }
@@ -136,7 +144,7 @@
       personaPrompt: role.personaPrompt || '',
       provider: role.provider || '',
       model: role.model || '',
-      thinking: role.thinking || '',
+      thinking: normalizeThinkingLevel(modelOptions, role.provider, role.model, role.thinking),
       accentColor: role.accentColor || '#3d405b',
       skillIds: Array.isArray(role.skillIds) ? role.skillIds : [],
       modelProfiles: profiles,
@@ -156,6 +164,8 @@
     fillThinkingSelect,
     findModelOption,
     modelOptionKey,
+    nextProfileId,
+    normalizeThinkingLevel,
     requestIssueMessage,
     roleModelOptions,
     supportedThinkingLevels,

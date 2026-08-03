@@ -2751,6 +2751,20 @@ textarea {
   background: linear-gradient(135deg, rgba(42, 157, 143, 0.08), rgba(255, 255, 255, 0.82));
 }
 
+.compact-option-card.is-unavailable {
+  border-color: rgba(217, 164, 65, 0.28);
+}
+
+.conversation-role-availability {
+  margin: 0.2rem 0 0.35rem 1.7rem;
+  padding: 0.55rem 0.65rem;
+  border-radius: var(--radius-sm);
+  background: rgba(217, 164, 65, 0.12);
+  color: #7a5818;
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
 .persona-option-content {
   display: grid;
   gap: 0.45rem;

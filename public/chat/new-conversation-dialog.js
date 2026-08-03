@@ -2,6 +2,8 @@
 
 (function registerNewConversationDialogModule() {
   const chat = window.CaffChat || (window.CaffChat = {});
+  const modelOptionUtils = window.CaffShared && window.CaffShared.modelOptions;
+  if (!modelOptionUtils) throw new Error('CaffShared.modelOptions helper is required');
   const GAME_TYPES = new Set(['who_is_undercover', 'werewolf']);
 
   function normalizeText(value) {
@@ -9,18 +11,7 @@
   }
 
   function availabilityReason(availability) {
-    const status = normalizeText(availability && availability.status);
-    const reasons = {
-      base_model_missing: '没有可用模型，请先到模型供应商或角色管理完成配置',
-      base_model_unknown: '默认模型已不在当前模型目录中',
-      base_model_out_of_family: '默认模型不属于该模型族',
-      thinking_level_unsupported: '当前思考强度不受所选模型支持',
-      profile_model_missing: '运行 Profile 缺少模型',
-      profile_model_unknown: '运行 Profile 引用了失效模型',
-      profile_model_out_of_family: '运行 Profile 使用了跨族模型',
-      role_missing: '角色配置不存在',
-    };
-    return reasons[status] || (status && status !== 'available' ? `当前不可用：${status}` : '当前不可用');
+    return modelOptionUtils.roleAvailabilityReason(availability) || '当前不可用';
   }
 
   function snapshotRoles(agents) {
@@ -30,7 +21,7 @@
         const availability = agent.availability && typeof agent.availability === 'object'
           ? { ...agent.availability }
           : { status: 'available' };
-        const available = normalizeText(availability.status) === 'available';
+        const available = modelOptionUtils.isRoleAvailable(availability);
         return Object.freeze({
           id: normalizeText(agent.id),
           name: normalizeText(agent.name) || normalizeText(agent.id),

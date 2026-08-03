@@ -257,9 +257,9 @@ export function createConversationsController(options: any = {}): RouteHandler<A
     },
   };
 
-  function validateConversationParticipants(input: any) {
+  function validateConversationParticipants(input: any, validationOptions: any = {}) {
     if (roleService && typeof roleService.validateConversationParticipants === 'function') {
-      return roleService.validateConversationParticipants(input);
+      return roleService.validateConversationParticipants(input, validationOptions);
     }
     if (store && typeof store.normalizeConversationParticipantsInput === 'function') {
       return store.normalizeConversationParticipantsInput(input);
@@ -719,8 +719,13 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         // Omitting both roster fields means "leave participants unchanged".
         // Callers that intend to replace or clear the roster must send an explicit array;
         // the participant validator then rejects an empty final roster.
+        const recoverableRoleIds = new Set(
+          Array.isArray(existingConversation && existingConversation.agents)
+            ? existingConversation.agents.map((agent: any) => String(agent && agent.id || '').trim()).filter(Boolean)
+            : []
+        );
         const validatedBody = (Array.isArray(body.participants) || Array.isArray(body.agentIds))
-          ? { ...body, participants: validateConversationParticipants(body) }
+          ? { ...body, participants: validateConversationParticipants(body, { recoverableRoleIds }) }
           : body;
         let conversation = store.updateConversation(conversationId, validatedBody);
 

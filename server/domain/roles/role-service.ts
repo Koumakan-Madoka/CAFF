@@ -180,6 +180,7 @@ function normalizeProfiles(
   expectedFamily: string | null
 ) {
   const normalizedProfiles = [];
+  const profileIds = new Set<string>();
 
   for (const [index, profile] of (Array.isArray(profiles) ? profiles : []).entries()) {
     if (!profile || typeof profile !== 'object') {
@@ -206,6 +207,16 @@ function normalizeProfiles(
       `modelProfiles[${index}].thinking`
     );
     const id = normalize(profile.id) || `profile-${index + 1}`;
+    if (profileIds.has(id)) {
+      throw createRoleError(
+        422,
+        'profile_id_duplicate',
+        'Model profile IDs must be unique within a role',
+        `modelProfiles[${index}].id`,
+        { profileId: id }
+      );
+    }
+    profileIds.add(id);
     const name = normalize(profile.name) || option.model || `Profile ${index + 1}`;
     normalizedProfiles.push({
       id,
@@ -330,6 +341,17 @@ function runtimeParticipantIssue(index: number, role: any, availability: any, pr
   };
 }
 
+function runtimeAvailabilityStatus(issueCode: any, selectedProfileId = '') {
+  const code = normalize(issueCode);
+  if (code === 'thinking_level_unsupported') {
+    return code;
+  }
+  if (selectedProfileId) {
+    return code === 'model_out_of_family' ? 'profile_model_out_of_family' : 'profile_model_missing';
+  }
+  return code === 'model_out_of_family' ? 'default_model_out_of_family' : 'default_model_missing';
+}
+
 function createRuntimeParticipantsError(issues: any[]) {
   const error: any = new Error('Conversation participants are not currently runnable');
   error.statusCode = 409;
@@ -364,16 +386,36 @@ export function createRoleService(options: any = {}) {
     };
   }
 
-  function validateConversationParticipants(input: any = {}) {
+  function validateConversationParticipants(input: any = {}, validationOptions: any = {}) {
     const normalizedParticipants = Array.isArray(input)
       ? store.normalizeConversationParticipants(input)
       : store.normalizeConversationParticipantsInput(input);
     const directory = getDirectory();
     const rolesById = new Map(directory.agents.map((role: any) => [role.id, role]));
+    const recoverableRoleIds = validationOptions.recoverableRoleIds instanceof Set
+      ? validationOptions.recoverableRoleIds
+      : new Set(Array.isArray(validationOptions.recoverableRoleIds) ? validationOptions.recoverableRoleIds : []);
 
     for (const [index, participant] of normalizedParticipants.entries()) {
       const role: any = rolesById.get(participant.agentId);
       if (!role || role.availability?.status !== 'available') {
+        if (role && recoverableRoleIds.has(participant.agentId)) {
+          try {
+            resolveRuntimeParticipants([participant]);
+            continue;
+          } catch (error) {
+            const runtimeIssue = Array.isArray((error as any)?.issues) ? (error as any).issues[0] : null;
+            if (runtimeIssue) {
+              throw createRoleError(
+                422,
+                runtimeIssue.code || 'participant_role_unavailable',
+                runtimeIssue.message || 'Conversation participant role is not currently runnable',
+                runtimeIssue.path || `participants[${index}].agentId`,
+                runtimeIssue
+              );
+            }
+          }
+        }
         throw createRoleError(
           422,
           'participant_role_unavailable',
@@ -427,7 +469,7 @@ export function createRoleService(options: any = {}) {
         continue;
       }
 
-      if (role.availability?.status !== 'available') {
+      if (role.availability?.status === 'no_family_models') {
         blockers.push(runtimeParticipantIssue(index, role, role.availability, selectedProfileId));
         continue;
       }
@@ -489,7 +531,7 @@ export function createRoleService(options: any = {}) {
         const errorValue = error as any;
         const issue = Array.isArray(errorValue?.issues) ? errorValue.issues[0] : null;
         const availability = {
-          status: normalize(issue?.code) || 'default_model_missing',
+          status: runtimeAvailabilityStatus(issue?.code, selectedProfileId),
           ...(issue && issue.modelKey ? { modelKey: issue.modelKey } : {}),
           ...(selectedProfileId ? { profileId: selectedProfileId } : {}),
         };

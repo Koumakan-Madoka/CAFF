@@ -93,7 +93,7 @@
         </label>`).join('');
       return `
         <section class="management-card">
-          <div class="management-card-title"><div><h3>Persona 与 Skills</h3><p>人格化能力只属于自定义角色。</p></div></div>
+          <div class="management-card-title"><div><h3>Persona 与 Skills</h3><p>Persona 能力只属于自定义角色。</p></div></div>
           <label><span>默认 Persona Prompt</span><textarea id="role-persona-prompt" rows="6">${utils.escapeHtml(draft.personaPrompt || '')}</textarea></label>
           <div class="skill-options">${skillOptions || '<div class="empty-state">还没有可选 Skill。</div>'}</div>
         </section>`;
@@ -130,7 +130,7 @@
           <div class="runtime-profiles">${profiles.length ? profiles.map(profileMarkup).join('') : '<div class="empty-state">还没有运行 Profile。</div>'}</div>
         </section>
         ${customPersonaMarkup()}
-        <section class="management-card"><div class="toggle-row"><div><h3>新建普通聊天时默认预选</h3><p>只影响未来打开的新建聊天表单，不追写已有会话。</p></div><button id="default-toggle" class="toggle" type="button" aria-pressed="${Boolean(draft.isDefaultChatRole)}" ${available ? '' : 'disabled'}></button></div></section>
+        <section class="management-card"><div class="toggle-row"><div><h3>新建普通聊天时默认预选</h3><p>只影响未来打开的新建聊天表单，不追写已有会话。</p></div><button id="default-toggle" class="toggle" type="button" aria-label="新建普通聊天时默认预选 ${utils.escapeHtml(draft.name || '当前角色')}" aria-pressed="${Boolean(draft.isDefaultChatRole)}" ${available ? '' : 'disabled'}></button></div></section>
         <div class="management-actions"><button id="save-role" type="button">${draft.id ? '保存角色' : '创建自定义角色'}</button>${!isFamily() && draft.id ? '<button id="delete-role" class="ghost-button danger" type="button">删除角色</button>' : ''}</div>
         <p id="role-error" class="management-error hidden" role="alert"></p>`;
 
@@ -161,7 +161,7 @@
         const first = utils.findModelOption(options.getModelOptions(), draft.provider, draft.model) || choices[0] || null;
         const index = (draft.modelProfiles || []).length;
         draft.modelProfiles = Array.isArray(draft.modelProfiles) ? draft.modelProfiles : [];
-        draft.modelProfiles.push({ id: '', name: '', description: '', provider: first ? first.provider : '', model: first ? first.model : '', thinking: '', personaPrompt: '' });
+        draft.modelProfiles.push({ id: utils.nextProfileId(draft.modelProfiles), name: '', description: '', provider: first ? first.provider : '', model: first ? first.model : '', thinking: '', personaPrompt: '' });
         render();
         root.querySelector(`[data-profile-index="${index}"] [data-field="name"]`).focus();
       });

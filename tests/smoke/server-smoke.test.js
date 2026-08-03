@@ -4646,6 +4646,21 @@ test('role API protects model-family roles and shares one availability projectio
   assert.equal(unsupportedProfileThinking.json.issues[0].code, 'thinking_level_unsupported');
   assert.equal(unsupportedProfileThinking.json.issues[0].path, 'modelProfiles[0].thinking');
 
+  const duplicateProfileIds = await fetchJsonResponse(baseUrl, '/api/agents/role-family-gpt', {
+    method: 'PUT',
+    body: {
+      provider: 'openai',
+      model: 'gpt-test',
+      modelProfiles: [
+        { id: 'profile-2', name: 'Existing', provider: 'openai', model: 'gpt-test' },
+        { id: '', name: 'Generated collision', provider: 'openai', model: 'gpt-test' },
+      ],
+    },
+  });
+  assert.equal(duplicateProfileIds.status, 422);
+  assert.equal(duplicateProfileIds.json.issues[0].code, 'profile_id_duplicate');
+  assert.equal(duplicateProfileIds.json.issues[0].path, 'modelProfiles[1].id');
+
   const unavailableDefault = await fetchJsonResponse(baseUrl, '/api/agents/role-family-qwen', {
     method: 'PUT',
     body: { isDefaultChatRole: true },
@@ -5103,6 +5118,15 @@ test('conversation create validates the explicit roster and only merges mode ski
       supportedThinkingLevels: ['off', 'low', 'high'],
     },
     {
+      key: 'openai\u001fgpt-participant-recovery',
+      provider: 'openai',
+      model: 'gpt-participant-recovery',
+      label: 'GPT Participant Recovery',
+      family: 'gpt',
+      familySource: 'provider_alias',
+      supportedThinkingLevels: ['off', 'low', 'high'],
+    },
+    {
       key: 'anthropic\u001fclaude-participant-test',
       provider: 'anthropic',
       model: 'claude-participant-test',
@@ -5134,7 +5158,7 @@ test('conversation create validates the explicit roster and only merges mode ski
       id: 'high-effort',
       name: 'High effort',
       provider: 'openai',
-      model: 'gpt-participant-test',
+      model: 'gpt-participant-recovery',
       thinking: 'high',
     }],
   });
@@ -5216,6 +5240,36 @@ test('conversation create validates the explicit roster and only merges mode ski
   assert.equal(modeConversation.json.conversation.agents[0].selectedModelProfileId, 'high-effort');
   assert.deepEqual(modeConversation.json.conversation.agents[0].conversationSkillIds, ['mode-skill']);
 
+  const recoveryConversation = await invokeConversationsController(controller, {
+    method: 'POST',
+    pathname: '/api/conversations',
+    body: {
+      title: 'Recovery roster',
+      participants: [{ agentId: 'role-family-gpt' }],
+    },
+  });
+  assert.equal(recoveryConversation.statusCode, 201);
+
+  const removedBaseOption = modelOptions.splice(
+    modelOptions.findIndex((option) => option.model === 'gpt-participant-test'),
+    1
+  )[0];
+  const recoveredConversation = await invokeConversationsController(controller, {
+    method: 'PUT',
+    pathname: `/api/conversations/${recoveryConversation.json.conversation.id}`,
+    body: {
+      participants: [{ agentId: 'role-family-gpt', modelProfileId: 'high-effort' }],
+    },
+  });
+  assert.equal(recoveredConversation.statusCode, 200);
+  assert.equal(recoveredConversation.json.conversation.agents[0].selectedModelProfileId, 'high-effort');
+
+  await assertCreateError({
+    title: 'Unavailable new role with valid profile',
+    participants: [{ agentId: 'role-family-gpt', modelProfileId: 'high-effort' }],
+  }, 422, 'participant_role_unavailable');
+  modelOptions.push(removedBaseOption);
+
   const gameConversation = await invokeConversationsController(controller, {
     method: 'POST',
     pathname: '/api/conversations',
@@ -5258,5 +5312,5 @@ test('conversation create validates the explicit roster and only merges mode ski
     title: 'Unavailable role',
     participants: ['role-family-gpt'],
   }, 422, 'participant_role_unavailable');
-  assert.equal(store.listConversations().length, 3);
+  assert.equal(store.listConversations().length, 4);
 });

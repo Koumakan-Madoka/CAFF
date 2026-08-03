@@ -7,18 +7,21 @@
     const list = options.list;
     let providers = [];
     let selectedProviderId = '';
+    const validationByProviderId = new Map();
     const editor = namespace.createProviderEditor({
       root: options.detail,
       isEnabled: options.isEnabled,
       onSave: async (providerId, payload) => {
         if (!providerId) throw new Error('Provider ID 不能为空');
         const result = await mutate(`/api/model-providers/${encodeURIComponent(providerId)}`, 'PUT', payload);
+        validationByProviderId.delete(providerId);
         setProviders(result.providers, providerId);
         options.showToast('供应商已保存；空密钥保持原值');
         await options.onProvidersChanged();
       },
       onClear: async (providerId) => {
         const result = await mutate(`/api/model-providers/${encodeURIComponent(providerId)}/secret`, 'DELETE', {});
+        validationByProviderId.delete(providerId);
         setProviders(result.providers, providerId);
         options.showToast('已保存密钥已清除');
         await options.onProvidersChanged();
@@ -30,13 +33,26 @@
           return;
         }
         const result = await mutate(`/api/model-providers/${encodeURIComponent(providerId)}`, 'DELETE', {});
+        validationByProviderId.delete(providerId);
         setProviders(result.providers);
         options.showToast('供应商已移除；历史与角色身份保持不变');
         await options.onProvidersChanged();
       },
       onValidate: async (providerId) => {
-        const result = await mutate(`/api/model-providers/${encodeURIComponent(providerId)}/validate`, 'POST', {});
-        options.showToast(`连接验证完成 · ${result.validation && result.validation.modelCount || 0} 个模型`);
+        try {
+          const result = await mutate(`/api/model-providers/${encodeURIComponent(providerId)}/validate`, 'POST', {});
+          const validation = result.validation || {};
+          validationByProviderId.set(providerId, {
+            status: validation.status === 'ok' ? 'ok' : 'completed',
+            modelCount: Number(validation.modelCount || 0),
+          });
+          renderList();
+          options.showToast(`连接验证完成 · ${validation.modelCount || 0} 个模型`);
+        } catch (error) {
+          validationByProviderId.set(providerId, { status: 'error' });
+          renderList();
+          throw error;
+        }
       },
     });
 
@@ -65,11 +81,19 @@
       const name = document.createElement('strong');
       name.textContent = draft ? '新供应商' : provider.name || provider.id || '未命名供应商';
       const meta = document.createElement('small');
-      meta.textContent = draft ? '尚未保存' : `${provider.api || '协议未设置'} · ${(provider.models || []).length} 个模型`;
+      const validation = validationByProviderId.get(provider.id);
+      const validationLabel = !validation
+        ? '待验证'
+        : validation.status === 'ok'
+          ? `最近验证通过 · ${validation.modelCount} 个模型`
+          : validation.status === 'error'
+            ? '最近验证失败'
+            : '最近验证已完成';
+      meta.textContent = draft ? '尚未保存' : `${provider.api || '协议未设置'} · ${(provider.models || []).length} 个模型 · ${validationLabel}`;
       copy.append(name, meta);
       const status = document.createElement('span');
-      status.className = `status-dot${provider.hasApiKey || provider.hasExternalAuth ? ' default' : ' warning'}`;
-      status.title = draft ? '未保存草稿' : provider.hasApiKey || provider.hasExternalAuth ? '认证已配置' : '认证未配置';
+      status.className = `status-dot${validation && validation.status === 'ok' ? ' default' : ' warning'}`;
+      status.title = draft ? '未保存草稿' : validationLabel;
       button.append(mark, copy, status);
       button.addEventListener('click', () => selectProvider(provider.id));
       item.appendChild(button);

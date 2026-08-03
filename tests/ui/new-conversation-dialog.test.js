@@ -75,7 +75,17 @@ async function serveProductionUi() {
       description: 'Qwen 模型族',
       modelFamily: 'qwen',
       accentColor: '#6d55bd',
-      availability: { status: 'base_model_missing', familyModelCount: 0 },
+      provider: 'qwen',
+      model: 'qwen-missing',
+      modelProfiles: [{
+        id: 'qwen-recovery',
+        name: '恢复配置',
+        description: '使用仍可用的同族模型',
+        provider: 'qwen',
+        model: 'qwen-live',
+        thinking: 'high',
+      }],
+      availability: { status: 'default_model_missing', familyModelCount: 1 },
     }),
     role({
       id: 'custom-reviewer',
@@ -87,6 +97,21 @@ async function serveProductionUi() {
       isDefaultChatRole: false,
     }),
   ];
+  const timestamp = '2026-08-03T00:00:00.000Z';
+  const recoveryConversation = {
+    id: 'conversation-recovery',
+    title: '需要恢复的会话',
+    type: 'standard',
+    agents: [
+      { ...agents[0], selectedModelProfileId: null, conversationSkillIds: [] },
+      { ...agents[3], selectedModelProfileId: null, conversationSkillIds: [] },
+    ],
+    messages: [],
+    metadata: {},
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+  const conversationUpdates = [];
   const bootstrap = {
     localAdmin: { modelProviders: { enabled: true, csrfToken: 'test-token' } },
     runtime: {
@@ -98,7 +123,14 @@ async function serveProductionUi() {
       activeTurns: [],
       activeAgentSlots: [],
     },
-    modelOptions: [],
+    modelOptions: [{
+      key: 'qwen\u001fqwen-live',
+      provider: 'qwen',
+      model: 'qwen-live',
+      label: 'Qwen / qwen-live',
+      family: 'qwen',
+      supportedThinkingLevels: ['off', 'low', 'high'],
+    }],
     skills: [{ id: 'tdd', name: 'TDD' }],
     modes: [
       { id: 'standard', name: '普通对话' },
@@ -107,8 +139,8 @@ async function serveProductionUi() {
       { id: 'who_is_undercover', name: '谁是卧底' },
     ],
     agents,
-    conversations: [],
-    selectedConversationId: null,
+    conversations: [recoveryConversation],
+    selectedConversationId: recoveryConversation.id,
   };
 
   const mimeTypes = {
@@ -117,6 +149,7 @@ async function serveProductionUi() {
     '.js': 'text/javascript; charset=utf-8',
   };
   const server = http.createServer((request, response) => {
+    const requestUrl = new URL(request.url, 'http://127.0.0.1');
     if (request.url === '/api/events') {
       response.writeHead(200, {
         'content-type': 'text/event-stream',
@@ -138,6 +171,16 @@ async function serveProductionUi() {
       response.end(JSON.stringify({ chats: [] }));
       return;
     }
+    if (requestUrl.pathname === '/api/conversations/conversation-recovery' && request.method === 'GET') {
+      response.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+      response.end(JSON.stringify({ conversation: recoveryConversation }));
+      return;
+    }
+    if (requestUrl.pathname === '/api/conversations/conversation-recovery/messages' && request.method === 'GET') {
+      response.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+      response.end(JSON.stringify({ items: [], hasMore: false, nextCursor: null }));
+      return;
+    }
     if (request.url === '/api/conversations' && request.method === 'POST') {
       let body = '';
       request.setEncoding('utf8');
@@ -145,7 +188,6 @@ async function serveProductionUi() {
       request.on('end', () => {
         const parsed = JSON.parse(body || '{}');
         requests.push(parsed);
-        const timestamp = '2026-08-03T00:00:00.000Z';
         const selectedAgents = parsed.participants.map((participant) => {
           const selectedRole = agents.find((agent) => agent.id === participant.agentId);
           return {
@@ -169,8 +211,25 @@ async function serveProductionUi() {
       });
       return;
     }
+    if (request.url === '/api/conversations/conversation-recovery' && request.method === 'PUT') {
+      let body = '';
+      request.setEncoding('utf8');
+      request.on('data', (chunk) => { body += chunk; });
+      request.on('end', () => {
+        const parsed = JSON.parse(body || '{}');
+        conversationUpdates.push(parsed);
+        recoveryConversation.agents = parsed.participants.map((participant) => ({
+          ...agents.find((agent) => agent.id === participant.agentId),
+          selectedModelProfileId: participant.modelProfileId || null,
+          conversationSkillIds: participant.conversationSkillIds || [],
+        }));
+        response.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+        response.end(JSON.stringify({ conversation: recoveryConversation, conversations: [recoveryConversation] }));
+      });
+      return;
+    }
 
-    const pathname = new URL(request.url, 'http://127.0.0.1').pathname;
+    const pathname = requestUrl.pathname;
     const relativePath = pathname === '/' ? 'index.html' : pathname.replace(/^\//u, '');
     const filePath = path.resolve(publicDir, relativePath);
     if (!filePath.startsWith(`${publicDir}${path.sep}`) || !fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
@@ -189,6 +248,7 @@ async function serveProductionUi() {
   return {
     port: server.address().port,
     requests,
+    conversationUpdates,
     close: async () => {
       eventStreams.forEach((stream) => stream.end());
       await new Promise((resolve) => server.close(resolve));
@@ -293,13 +353,41 @@ async function captureScreenshot(cdp, fileName) {
     await waitFor(cdp, `Boolean(document.getElementById('open-new-conversation-button'))`);
     await waitFor(cdp, `document.getElementById('runtime-pill').textContent !== '正在连接本地服务...'`);
 
+    const recoverySettings = await evaluate(cdp, `(() => {
+      const card = document.querySelector('[data-agent-id="role-family-qwen"]');
+      return {
+        checked: card.querySelector('input[name="conversation-agent"]').checked,
+        checkboxDisabled: card.querySelector('input[name="conversation-agent"]').disabled,
+        profileDisabled: card.querySelector('.profile-dropdown-trigger').disabled,
+        warning: card.querySelector('[data-role-availability]').textContent,
+      };
+    })()`);
+    assert.equal(recoverySettings.checked, true);
+    assert.equal(recoverySettings.checkboxDisabled, false);
+    assert.equal(recoverySettings.profileDisabled, false);
+    assert.match(recoverySettings.warning, /默认模型不可用/u);
+    assert.match(recoverySettings.warning, /改选有效运行 Profile/u);
+
+    await evaluate(cdp, `(() => {
+      const card = document.querySelector('[data-agent-id="role-family-qwen"]');
+      card.querySelector('.profile-dropdown-trigger').click();
+      card.querySelector('[data-profile-id="qwen-recovery"]').click();
+      document.getElementById('conversation-settings-form').requestSubmit();
+    })()`);
+    for (let attempt = 0; attempt < 50 && fixture.conversationUpdates.length === 0; attempt += 1) await delay(100);
+    assert.equal(fixture.conversationUpdates.length, 1);
+    assert.equal(
+      fixture.conversationUpdates[0].participants.find((participant) => participant.agentId === 'role-family-qwen').modelProfileId,
+      'qwen-recovery'
+    );
+
     await evaluate(cdp, `document.getElementById('open-new-conversation-button').click()`);
     await waitFor(cdp, `document.activeElement && document.activeElement.id === 'new-conversation-title'`);
     const opened = await evaluate(cdp, `(() => ({
       inert: document.getElementById('app-shell').inert,
       checked: Array.from(document.querySelectorAll('input[name="new-conversation-participants"]:checked')).map((item) => item.value),
-      qwenDisabled: document.querySelector('input[value="role-family-qwen"]').disabled,
-      qwenText: document.querySelector('input[value="role-family-qwen"]').closest('label').textContent,
+      qwenDisabled: document.querySelector('input[name="new-conversation-participants"][value="role-family-qwen"]').disabled,
+      qwenText: document.querySelector('input[name="new-conversation-participants"][value="role-family-qwen"]').closest('label').textContent,
       activeId: document.activeElement.id,
     }))()`);
     assert.equal(opened.inert, true);
@@ -350,7 +438,7 @@ async function captureScreenshot(cdp, fileName) {
     assert.equal(gameState.title, '选择玩家');
 
     await evaluate(cdp, `(() => {
-      const input = document.querySelector('input[value="role-family-gpt"]');
+      const input = document.querySelector('input[name="new-conversation-participants"][value="role-family-gpt"]');
       input.checked = true;
       input.dispatchEvent(new Event('change', { bubbles: true }));
       document.getElementById('new-conversation-title').value = '明确玩家';

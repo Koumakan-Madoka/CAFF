@@ -46,6 +46,7 @@
       const providerId = String(draft.id || '').trim();
       const canSave = Boolean(providerId) && !locked && (!isDraft || !providerId.startsWith('__draft-'));
       const models = Array.isArray(draft.models) ? draft.models : [];
+      const writableAuthMode = draft.apiKeyMode === 'external' ? 'none' : draft.apiKeyMode || 'none';
       root.innerHTML = `
         <div class="management-detail-top">
           <div><p class="eyebrow">Model Provider</p><h2>${utils.escapeHtml(draft.name || draft.id || '新供应商')}</h2><p>${isDraft ? '填写连接与模型目录后保存。' : `${models.length} 个模型条目 · ${authCopy()}`}</p></div>
@@ -63,8 +64,9 @@
             <label><span>Base URL</span><input id="provider-base-url" value="${utils.escapeHtml(draft.baseUrl || '')}" inputmode="url" /></label>
             <label><span>API 协议</span><input id="provider-api-protocol" value="${utils.escapeHtml(draft.api || '')}" placeholder="openai-responses" /></label>
             <label><span>Authorization Header</span><select id="provider-auth-header"><option value="false" ${draft.authHeader ? '' : 'selected'}>由协议处理</option><option value="true" ${draft.authHeader ? 'selected' : ''}>启用 Bearer</option></select></label>
-            <label><span>认证模式</span><select id="provider-auth-mode">${['none', 'literal', 'env', 'command', 'external'].map((mode) => `<option value="${mode}" ${mode === (draft.apiKeyMode || 'none') ? 'selected' : ''}>${mode}</option>`).join('')}</select></label>
+            <label><span>models.json 认证模式</span><select id="provider-auth-mode">${['none', 'literal', 'env', 'command'].map((mode) => `<option value="${mode}" ${mode === writableAuthMode ? 'selected' : ''}>${mode}</option>`).join('')}</select></label>
           </div>
+          ${draft.hasExternalAuth ? '<p id="provider-external-auth-note" class="management-note">auth.json / CLI 外部认证只读；本页不会写入、替换或清除它。</p>' : ''}
         </section>
         <section class="management-card">
           <div class="management-card-title"><div><h3>API Key</h3><p>读取接口只返回状态与模式，输入框永远为空。</p></div><span class="status-badge ${draft.hasApiKey || draft.hasExternalAuth ? '' : 'warning'}">${authCopy()}</span></div>

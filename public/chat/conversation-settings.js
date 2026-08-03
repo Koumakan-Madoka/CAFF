@@ -9,7 +9,14 @@
     helpers,
     showToast,
   }) {
-    const { buildAgentAvatarElement, formatDateTime, isConversationBusy, normalizedSkillIds } = helpers;
+    const {
+      buildAgentAvatarElement,
+      formatDateTime,
+      isConversationBusy,
+      isRoleAvailable = (availability) => String(availability && availability.status || 'available') === 'available',
+      normalizedSkillIds,
+      roleAvailabilityLabel = (availability) => String(availability && availability.status || '当前不可运行'),
+    } = helpers;
 
     function skillById(skillId) {
       return state.skills.find((skill) => skill.id === skillId) || null;
@@ -216,7 +223,7 @@
 
     function profileChoiceMeta(profile) {
       if (!profile) {
-        return '使用基础人格';
+        return '使用基础配置';
       }
 
       if (profile.description) {
@@ -234,7 +241,7 @@
       }
 
       if (!profile.id) {
-        return parts.length > 0 ? parts.join(' / ') : '使用基础人格';
+        return parts.length > 0 ? parts.join(' / ') : '使用基础配置';
       }
 
       return parts.length > 0 ? parts.join(' / ') : '模型专属配置';
@@ -345,7 +352,7 @@
       }
     }
 
-    function createConversationProfileSelector(agent, selectedProfileId, disabled, labelText = '人格配置') {
+    function createConversationProfileSelector(agent, selectedProfileId, disabled, labelText = '运行配置') {
       const profileRow = document.createElement('div');
       profileRow.className = 'profile-select-row persona-option-config';
 
@@ -494,7 +501,7 @@
       if (!conversation) {
         const empty = document.createElement('div');
         empty.className = 'empty-state';
-        empty.textContent = '选中一个对话后，再来设置参与人格。';
+        empty.textContent = '选中一个对话后，再来设置参与角色。';
         dom.conversationAgentOptions.appendChild(empty);
         return;
       }
@@ -509,6 +516,7 @@
 
       state.agents.forEach((agent) => {
         const selectedConversationAgent = conversation.agents.find((item) => item.id === agent.id) || null;
+        const available = isRoleAvailable(agent.availability);
         const selectedProfileId = selectedConversationAgent ? selectedConversationAgent.selectedModelProfileId || '' : '';
         const selectedConversationSkillIds = selectedConversationAgent
           ? normalizedSkillIds(selectedConversationAgent.conversationSkillIds || selectedConversationAgent.conversationSkills)
@@ -517,14 +525,16 @@
         const wrapper = document.createElement('div');
         wrapper.className = 'option-card compact-option-card';
         wrapper.dataset.agentId = agent.id;
+        wrapper.dataset.roleAvailable = available ? 'true' : 'false';
         wrapper.classList.toggle('is-selected', Boolean(selectedConversationAgent));
+        wrapper.classList.toggle('is-unavailable', !available);
 
         const label = document.createElement('label');
         const checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
         checkbox.name = 'conversation-agent';
         checkbox.value = agent.id;
-        checkbox.disabled = disabled;
+        checkbox.disabled = disabled || (!selectedConversationAgent && !available);
         checkbox.checked = Boolean(selectedConversationAgent);
 
         const content = document.createElement('div');
@@ -553,17 +563,30 @@
           agent,
           selectedProfileId,
           disabled || !selectedConversationAgent,
-          '人格配置'
+          '运行配置'
         );
         profileRow.classList.toggle('hidden', !selectedConversationAgent);
 
         content.append(titleLine);
         label.append(checkbox, content);
-        wrapper.append(label, profileRow);
+        wrapper.appendChild(label);
+
+        if (!available) {
+          const availabilityNotice = document.createElement('div');
+          availabilityNotice.className = 'conversation-role-availability';
+          availabilityNotice.dataset.roleAvailability = '';
+          availabilityNotice.setAttribute('role', 'status');
+          availabilityNotice.textContent = selectedConversationAgent
+            ? `当前配置不可运行：${roleAvailabilityLabel(agent.availability)}。可改选有效运行 Profile、修复角色与模型配置，或取消勾选移除此参与者。`
+            : `当前不可加入：${roleAvailabilityLabel(agent.availability)}。请先到角色与模型管理页修复。`;
+          wrapper.appendChild(availabilityNotice);
+        }
+
+        wrapper.appendChild(profileRow);
 
         const baseSkillSummary = document.createElement('div');
         baseSkillSummary.className = 'muted persona-skill-summary';
-        baseSkillSummary.textContent = `人格常驻 Skill：${skillNames(agent.skillIds || agent.skills, '无')}`;
+        baseSkillSummary.textContent = `角色常驻 Skill：${skillNames(agent.skillIds || agent.skills, '无')}`;
         wrapper.appendChild(baseSkillSummary);
 
         const conversationSkillPanel = document.createElement('div');
@@ -721,7 +744,7 @@
             });
 
             if (selectedCards.length === 0) {
-              showToast('请先至少勾选一个参与人格。');
+              showToast('请先至少勾选一个参与角色。');
               return;
             }
 
@@ -736,7 +759,7 @@
               }
             });
 
-            showToast(`已将 ${skillId} 批量分配给 ${selectedCards.length} 个已选人格。`);
+            showToast(`已将 ${skillId} 批量分配给 ${selectedCards.length} 个已选角色。`);
           },
           true
         );

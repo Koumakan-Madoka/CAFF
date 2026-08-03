@@ -7,6 +7,53 @@
     return Array.isArray(modelOptions) ? modelOptions : [];
   }
 
+  const ROLE_AVAILABILITY_LABELS = {
+    available: '可运行',
+    no_family_models: '尚无同族模型',
+    base_model_missing: '默认模型不可用',
+    base_model_unknown: '默认模型不可用',
+    default_model_missing: '默认模型不可用',
+    base_model_out_of_family: '默认模型跨族',
+    default_model_out_of_family: '默认模型跨族',
+    profile_model_missing: 'Profile 模型不可用',
+    profile_model_unknown: 'Profile 模型不可用',
+    profile_model_out_of_family: 'Profile 模型跨族',
+    thinking_level_unsupported: '思考强度不受支持',
+    role_missing: '角色配置不存在',
+  };
+
+  const ROLE_AVAILABILITY_REASONS = {
+    no_family_models: '没有可用的同族模型，请先到模型供应商完成配置',
+    base_model_missing: '没有可用模型：默认模型已不在当前模型目录中',
+    base_model_unknown: '没有可用模型：默认模型已不在当前模型目录中',
+    default_model_missing: '没有可用模型：默认模型已不在当前模型目录中',
+    base_model_out_of_family: '默认模型不属于该模型族',
+    default_model_out_of_family: '默认模型不属于该模型族',
+    thinking_level_unsupported: '当前思考强度不受所选模型支持',
+    profile_model_missing: '运行 Profile 引用了失效模型',
+    profile_model_unknown: '运行 Profile 引用了失效模型',
+    profile_model_out_of_family: '运行 Profile 使用了跨族模型',
+    role_missing: '角色配置不存在',
+  };
+
+  function roleAvailabilityStatus(availability) {
+    return String(availability && availability.status || 'available').trim() || 'available';
+  }
+
+  function roleAvailabilityLabel(availability) {
+    const status = roleAvailabilityStatus(availability);
+    return ROLE_AVAILABILITY_LABELS[status] || (status === 'available' ? '可运行' : '当前不可运行');
+  }
+
+  function roleAvailabilityReason(availability) {
+    const status = roleAvailabilityStatus(availability);
+    return ROLE_AVAILABILITY_REASONS[status] || (status === 'available' ? '' : `当前不可用：${status}`);
+  }
+
+  function isRoleAvailable(availability) {
+    return roleAvailabilityStatus(availability) === 'available';
+  }
+
   function modelOptionKey(provider, model) {
     return `${String(provider || '').trim()}\u001f${String(model || '').trim()}`;
   }
@@ -91,6 +138,9 @@
     buildModelOptionLabel,
     fillModelSelect,
     modelOptionKey,
+    isRoleAvailable,
+    roleAvailabilityLabel,
+    roleAvailabilityReason,
     selectedModelOption,
     syncProviderFromModelSelect,
   };

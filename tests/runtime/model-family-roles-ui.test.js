@@ -7,8 +7,10 @@ const vm = require('node:vm');
 const projectRoot = path.resolve(__dirname, '..', '..');
 
 function loadManagementUtils() {
+  const modelOptionsPath = path.join(projectRoot, 'public/shared/model-options.js');
   const sourcePath = path.join(projectRoot, 'public/personas/management-utils.js');
-  const context = { structuredClone, window: { CaffPersonas: {} } };
+  const context = { structuredClone, window: { CaffPersonas: {}, CaffShared: {} } };
+  vm.runInNewContext(fs.readFileSync(modelOptionsPath, 'utf8'), context, { filename: modelOptionsPath });
   vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), context, { filename: sourcePath });
   return context.window.CaffPersonas.managementUtils;
 }
@@ -36,7 +38,10 @@ test('role UI payload keeps family fields credential-free and preserves complete
     id: 'role-family-gpt', roleKind: 'model_family', provider: 'openai', model: 'gpt-5.4', thinking: 'high',
     personaPrompt: 'must not leak', skillIds: ['must-not-submit'], isDefaultChatRole: true,
     modelProfiles: [{ id: 'deep', name: 'Deep', provider: 'openai', model: 'gpt-5.4', thinking: 'high', personaPrompt: 'must not leak' }],
-  }, [{ key: 'openai\u001fgpt-5.4', provider: 'openai', model: 'gpt-5.4', family: 'gpt' }]);
+  }, [{
+    key: 'openai\u001fgpt-5.4', provider: 'openai', model: 'gpt-5.4', family: 'gpt',
+    supportedThinkingLevels: ['off', 'low', 'high'],
+  }]);
   assert.deepEqual(JSON.parse(JSON.stringify(family)), {
     provider: 'openai', model: 'gpt-5.4', thinking: 'high',
     modelProfiles: [{ id: 'deep', name: 'Deep', description: '', provider: 'openai', model: 'gpt-5.4', thinking: 'high' }],
@@ -48,7 +53,10 @@ test('role UI payload keeps family fields credential-free and preserves complete
     avatarDataUrl: '', personaPrompt: 'Review carefully', provider: 'anthropic', model: 'claude-opus', thinking: 'high',
     accentColor: '#123456', skillIds: ['source-audit'], isDefaultChatRole: false,
     modelProfiles: [{ id: 'deep', name: 'Deep', provider: 'openai', model: 'gpt-5.4', thinking: 'high', personaPrompt: 'Profile persona' }],
-  }, []);
+  }, [
+    { key: 'anthropic\u001fclaude-opus', provider: 'anthropic', model: 'claude-opus', supportedThinkingLevels: ['off', 'low', 'high'] },
+    { key: 'openai\u001fgpt-5.4', provider: 'openai', model: 'gpt-5.4', supportedThinkingLevels: ['off', 'low', 'high'] },
+  ]);
   assert.equal(custom.personaPrompt, 'Review carefully');
   assert.deepEqual(Array.from(custom.skillIds), ['source-audit']);
   assert.equal(custom.modelProfiles[0].personaPrompt, 'Profile persona');
