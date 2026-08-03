@@ -1,0 +1,1500 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CAFF Model-family Roles · UI Design Gate</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --canvas: #f5f4f0;
+        --surface-sunk: #ecebe6;
+        --surface: #fbfaf7;
+        --surface-elevated: #ffffff;
+        --surface-hover: #f0efea;
+        --text: #252a27;
+        --text-soft: #68706b;
+        --border: #d9d8d2;
+        --border-strong: #aaa9a2;
+        --accent: #b4512f;
+        --accent-hover: #9f4327;
+        --accent-text: #93401f;
+        --accent-soft: #f4e2d9;
+        --success: #27786c;
+        --success-soft: #e1f0ec;
+        --warning: #8a6819;
+        --warning-soft: #f4ecd4;
+        --danger: #a94444;
+        --danger-soft: #f7e4e2;
+        --info: #426f9f;
+        --info-soft: #e4edf6;
+        --shadow: 0 10px 30px rgba(28, 32, 29, 0.14);
+        --rail-w: 56px;
+        --radius-sm: 6px;
+        --radius-md: 8px;
+        --radius-lg: 10px;
+        --space-1: 4px;
+        --space-2: 8px;
+        --space-3: 12px;
+        --space-4: 16px;
+        --space-5: 24px;
+        --font: "Aptos", "Segoe UI", system-ui, sans-serif;
+      }
+
+      html[data-theme="dark"] {
+        color-scheme: dark;
+        --canvas: #171918;
+        --surface-sunk: #111312;
+        --surface: #1e211f;
+        --surface-elevated: #252825;
+        --surface-hover: #2b2e2b;
+        --text: #f1f2ef;
+        --text-soft: #aeb5b0;
+        --border: #383c39;
+        --border-strong: #5c625e;
+        --accent: #df7952;
+        --accent-hover: #eb8d68;
+        --accent-text: #f09a75;
+        --accent-soft: #3a2922;
+        --success: #75c8ba;
+        --success-soft: #183b35;
+        --warning: #e4c36a;
+        --warning-soft: #3c331c;
+        --danger: #ef9999;
+        --danger-soft: #472827;
+        --info: #9ac2eb;
+        --info-soft: #203448;
+        --shadow: 0 14px 34px rgba(0, 0, 0, 0.34);
+      }
+
+      * { box-sizing: border-box; }
+      html, body { margin: 0; min-height: 100%; }
+      body {
+        min-height: 100dvh;
+        overflow: hidden;
+        background: var(--canvas);
+        color: var(--text);
+        font-family: var(--font);
+        font-size: 15px;
+        line-height: 1.5;
+      }
+      button, input, select, textarea { font: inherit; }
+      button, a, input, select { min-height: 44px; }
+      button { cursor: pointer; }
+      button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+        outline: 3px solid color-mix(in srgb, var(--accent) 58%, transparent);
+        outline-offset: 2px;
+      }
+      button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: not-allowed; opacity: 0.56; }
+      .hidden { display: none !important; }
+      .muted { color: var(--text-soft); }
+
+      .demo-bar {
+        position: fixed;
+        z-index: 80;
+        top: 12px;
+        left: 50%;
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        transform: translateX(-50%);
+        padding: 6px;
+        border: 1px solid var(--border-strong);
+        border-radius: 12px;
+        background: var(--surface-elevated);
+        box-shadow: var(--shadow);
+      }
+      .demo-bar span { padding: 0 8px; color: var(--text-soft); font-size: 12px; white-space: nowrap; }
+      .demo-bar button {
+        min-height: 34px;
+        flex: 0 0 auto;
+        padding: 0 10px;
+        border: 1px solid transparent;
+        border-radius: 8px;
+        background: transparent;
+        color: var(--text-soft);
+        white-space: nowrap;
+      }
+      .demo-bar button.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-text); }
+      html.clean .demo-bar { display: none; }
+
+      .app-shell {
+        display: grid;
+        grid-template-columns: var(--rail-w) minmax(0, 1fr);
+        height: 100dvh;
+        overflow: hidden;
+      }
+      .rail {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 8px;
+        padding: 12px 0;
+        border-right: 1px solid var(--border);
+        background: var(--surface-sunk);
+      }
+      .rail button {
+        width: 44px;
+        height: 44px;
+        display: grid;
+        place-items: center;
+        padding: 0;
+        border: 1px solid transparent;
+        border-radius: 8px;
+        background: transparent;
+        color: var(--text-soft);
+      }
+      .rail button:hover { background: var(--surface-hover); color: var(--text); }
+      .rail button.active { border-color: var(--border); background: var(--accent-soft); color: var(--accent-text); }
+      .rail svg { width: 21px; height: 21px; fill: none; stroke: currentColor; stroke-width: 1.8; }
+      .rail .spacer { flex: 1; }
+
+      .workspace {
+        min-width: 0;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      .management-view {
+        min-width: 0;
+        min-height: 0;
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      .page-header {
+        min-height: 76px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 12px 24px;
+        border-bottom: 1px solid var(--border);
+        background: var(--surface);
+      }
+      .page-title { min-width: 0; flex: 1; }
+      .page-title p, .page-title h1 { margin: 0; }
+      .page-title .eyebrow { color: var(--accent-text); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+      .page-title h1 { margin-top: 2px; font-size: 20px; line-height: 1.25; }
+      .page-title .subtitle { margin-top: 2px; color: var(--text-soft); font-size: 13px; }
+      .header-actions { flex: 0 0 auto; display: flex; gap: 8px; align-items: center; }
+
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        padding: 0 14px;
+        border: 1px solid var(--accent);
+        border-radius: 8px;
+        background: var(--accent);
+        color: white;
+        text-decoration: none;
+      }
+      .button:hover { border-color: var(--accent-hover); background: var(--accent-hover); }
+      .button.secondary { border-color: var(--border); background: var(--surface-elevated); color: var(--text); }
+      .button.secondary:hover { border-color: var(--border-strong); background: var(--surface-hover); }
+      .button.ghost { border-color: transparent; background: transparent; color: var(--text-soft); }
+      .button.danger { border-color: var(--danger); background: var(--danger-soft); color: var(--danger); }
+      .button svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.9; }
+
+      .management-content {
+        min-width: 0;
+        min-height: 0;
+        flex: 1;
+        display: grid;
+        grid-template-columns: minmax(280px, 320px) minmax(0, 1fr);
+        overflow: hidden;
+      }
+      .role-index, .role-detail { min-width: 0; min-height: 0; overflow: auto; scrollbar-gutter: stable; }
+      .role-index { padding: 20px; border-right: 1px solid var(--border); background: var(--surface); }
+      .role-detail { padding: 24px; background: var(--canvas); }
+      .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 10px; }
+      .section-heading h2 { margin: 0; font-size: 13px; }
+      .section-heading span { color: var(--text-soft); font-size: 12px; }
+      .role-group + .role-group { margin-top: 22px; }
+      .role-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+      .role-row {
+        width: 100%;
+        min-height: 64px;
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 10px;
+        padding: 10px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--surface);
+        color: var(--text);
+        text-align: left;
+      }
+      .role-row:hover { border-color: var(--border-strong); background: var(--surface-hover); }
+      .role-row.active { border-color: var(--accent); background: var(--accent-soft); }
+      .role-row.unavailable { background: color-mix(in srgb, var(--warning-soft) 48%, var(--surface)); }
+      .role-avatar {
+        width: 38px;
+        height: 38px;
+        display: grid;
+        place-items: center;
+        border: 1px solid color-mix(in srgb, var(--role-color, var(--accent)) 40%, var(--border));
+        border-radius: 50%;
+        background: color-mix(in srgb, var(--role-color, var(--accent)) 13%, var(--surface-elevated));
+        color: var(--role-color, var(--accent-text));
+        font-weight: 800;
+        letter-spacing: -.04em;
+      }
+      .role-copy { min-width: 0; }
+      .role-name-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+      .role-name { overflow: hidden; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+      .role-meta { margin-top: 2px; overflow: hidden; color: var(--text-soft); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+      .default-dot { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: var(--accent); }
+      .status-badge {
+        display: inline-flex;
+        align-items: center;
+        min-height: 24px;
+        padding: 2px 7px;
+        border-radius: 999px;
+        background: var(--success-soft);
+        color: var(--success);
+        font-size: 11px;
+        font-weight: 700;
+        white-space: nowrap;
+      }
+      .status-badge.warning { background: var(--warning-soft); color: var(--warning); }
+      .status-badge.system { background: var(--info-soft); color: var(--info); }
+      .status-badge.neutral { background: var(--surface-hover); color: var(--text-soft); }
+      .status-badge.danger { background: var(--danger-soft); color: var(--danger); }
+
+      .provider-mark {
+        width: 38px;
+        height: 38px;
+        display: grid;
+        place-items: center;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--surface-elevated);
+        color: var(--accent-text);
+        font-size: 12px;
+        font-weight: 800;
+      }
+      .provider-source-note {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 14px;
+        padding: 12px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--info-soft);
+        color: var(--info);
+      }
+      .provider-source-note p { margin: 0; font-size: 13px; }
+      .provider-source-note strong { color: var(--text); }
+      .provider-source-note .button { flex: 0 0 auto; }
+
+      .detail-shell { max-width: 940px; margin: 0 auto; }
+      .detail-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 18px; }
+      .detail-identity { display: flex; gap: 14px; align-items: center; min-width: 0; }
+      .detail-identity .role-avatar { width: 54px; height: 54px; font-size: 18px; }
+      .detail-identity h2, .detail-identity p { margin: 0; }
+      .detail-identity h2 { font-size: 20px; }
+      .detail-identity p { margin-top: 3px; color: var(--text-soft); }
+      .detail-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
+
+      .settings-card {
+        padding: 18px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--surface);
+      }
+      .settings-card + .settings-card { margin-top: 14px; }
+      .card-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
+      .card-title h3, .card-title p { margin: 0; }
+      .card-title h3 { font-size: 15px; }
+      .card-title p { margin-top: 3px; color: var(--text-soft); font-size: 13px; }
+      .field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+      label.field { display: grid; gap: 6px; min-width: 0; color: var(--text-soft); font-size: 12px; font-weight: 700; }
+      input, select, textarea {
+        width: 100%;
+        padding: 0 12px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--surface-elevated);
+        color: var(--text);
+      }
+      textarea { min-height: 104px; padding-top: 10px; padding-bottom: 10px; resize: vertical; }
+      input[readonly], select:disabled, textarea[readonly] { background: var(--surface-sunk); color: var(--text-soft); }
+      .lock-note { display: flex; align-items: center; gap: 7px; margin: 12px 0 0; color: var(--text-soft); font-size: 12px; }
+      .lock-note svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.9; }
+
+      .runtime-profiles { display: grid; gap: 10px; }
+      .runtime-profile {
+        padding: 14px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--surface-elevated);
+      }
+      .runtime-profile-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+      .runtime-profile-head strong { font-size: 13px; }
+      .runtime-profile-head .button { min-height: 36px; padding: 0 10px; }
+      .runtime-profile .field-grid + .field-grid { margin-top: 12px; }
+      .thinking-note { margin: 8px 0 0; color: var(--text-soft); font-size: 12px; }
+      .skill-options { display: flex; flex-wrap: wrap; gap: 8px; }
+      .skill-option {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 44px;
+        padding: 8px 10px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--surface-elevated);
+        color: var(--text);
+        font-size: 13px;
+      }
+      .skill-option input { width: 18px; min-height: 18px; height: 18px; margin: 0; accent-color: var(--accent); }
+
+      .toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+      .toggle-copy h3, .toggle-copy p { margin: 0; }
+      .toggle-copy h3 { font-size: 15px; }
+      .toggle-copy p { margin-top: 3px; color: var(--text-soft); font-size: 13px; }
+      .toggle {
+        position: relative;
+        width: 48px;
+        min-width: 48px;
+        height: 28px;
+        min-height: 28px;
+        padding: 0;
+        border: 1px solid var(--border-strong);
+        border-radius: 999px;
+        background: var(--surface-sunk);
+      }
+      .toggle::after {
+        content: "";
+        position: absolute;
+        top: 3px;
+        left: 3px;
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        background: var(--surface-elevated);
+        box-shadow: 0 1px 3px rgba(0, 0, 0, .25);
+        transition: transform 140ms ease;
+      }
+      .toggle[aria-pressed="true"] { border-color: var(--accent); background: var(--accent); }
+      .toggle[aria-pressed="true"]::after { transform: translateX(20px); }
+      .unavailable-panel { padding: 12px; border: 1px solid color-mix(in srgb, var(--warning) 40%, var(--border)); border-radius: 8px; background: var(--warning-soft); color: var(--warning); }
+      .unavailable-panel strong, .unavailable-panel p { margin: 0; }
+      .unavailable-panel p { margin-top: 3px; font-size: 13px; }
+
+      .secret-shell {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: end;
+      }
+      .secret-state {
+        margin-bottom: 8px;
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 8px;
+        color: var(--text-soft);
+        font-size: 12px;
+      }
+      .advanced-auth {
+        margin-top: 12px;
+        border-top: 1px solid var(--border);
+        padding-top: 12px;
+      }
+      .advanced-auth summary { cursor: pointer; color: var(--text); font-weight: 700; }
+      .advanced-auth .field-grid { margin-top: 12px; }
+      .clear-confirmation {
+        margin-top: 12px;
+        padding: 12px;
+        border: 1px solid color-mix(in srgb, var(--danger) 40%, var(--border));
+        border-radius: 8px;
+        background: var(--danger-soft);
+      }
+      .clear-confirmation p { margin: 0; color: var(--danger); font-size: 13px; }
+      .clear-confirmation-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+
+      .model-editor { overflow: hidden; border: 1px solid var(--border); border-radius: 8px; }
+      .model-row {
+        min-width: 0;
+        display: grid;
+        grid-template-columns: minmax(140px, 1.1fr) minmax(130px, 1fr) minmax(145px, .9fr) auto;
+        gap: 10px;
+        align-items: center;
+        padding: 10px 12px;
+        background: var(--surface-elevated);
+      }
+      .model-row + .model-row { border-top: 1px solid var(--border); }
+      .model-row.header { min-height: 38px; background: var(--surface-sunk); color: var(--text-soft); font-size: 11px; font-weight: 700; }
+      .model-row label { min-width: 0; }
+      .model-row label > span { display: none; }
+      .model-row input, .model-row select { min-width: 0; }
+      .empty-model-state { padding: 22px 14px; background: var(--surface-elevated); color: var(--text-soft); text-align: center; }
+      .provider-actions {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 14px;
+      }
+      .provider-actions > div { display: flex; flex-wrap: wrap; gap: 8px; }
+      .config-safety-note { margin: 12px 0 0; color: var(--text-soft); font-size: 12px; }
+
+      .modal-backdrop {
+        position: fixed;
+        z-index: 90;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        background: rgba(15, 18, 16, .48);
+      }
+      .new-chat-dialog {
+        min-width: 0;
+        width: min(880px, 100%);
+        max-width: 100vw;
+        max-height: min(760px, calc(100dvh - 48px));
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        border: 1px solid var(--border-strong);
+        border-radius: 12px;
+        background: var(--surface);
+        box-shadow: var(--shadow);
+      }
+      .dialog-header, .dialog-footer { min-width: 0; flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 20px; }
+      .dialog-header { border-bottom: 1px solid var(--border); }
+      .dialog-header > div { min-width: 0; flex: 1; }
+      .dialog-header h2, .dialog-header p { margin: 0; }
+      .dialog-header h2 { font-size: 18px; }
+      .dialog-header p { margin-top: 2px; color: var(--text-soft); font-size: 12px; }
+      .icon-button { width: 44px; height: 44px; display: grid; place-items: center; padding: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text-soft); }
+      .icon-button:hover { border-color: var(--border-strong); background: var(--surface-hover); color: var(--text); }
+      .icon-button svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.9; }
+      .dialog-body { min-width: 0; min-height: 0; display: grid; grid-template-columns: minmax(230px, 280px) minmax(0, 1fr); overflow: hidden; }
+      .conversation-basics, .participant-picker { min-width: 0; min-height: 0; overflow: auto; padding: 20px; }
+      .conversation-basics { border-right: 1px solid var(--border); background: var(--surface-sunk); }
+      .conversation-basics .field + .field { margin-top: 14px; }
+      .snapshot-note { margin-top: 16px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text-soft); font-size: 12px; overflow-wrap: anywhere; }
+      .participant-picker { background: var(--surface); }
+      .picker-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+      .picker-heading h3, .picker-heading p { margin: 0; }
+      .picker-heading h3 { font-size: 15px; }
+      .picker-heading p { margin-top: 2px; color: var(--text-soft); font-size: 12px; }
+      .participant-group + .participant-group { margin-top: 18px; }
+      .participant-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+      .participant-card {
+        position: relative;
+        min-width: 0;
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        gap: 10px;
+        align-items: center;
+        min-height: 70px;
+        padding: 10px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--surface-elevated);
+      }
+      .participant-card:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+      .participant-card:has(input:disabled) { background: var(--surface-sunk); }
+      .participant-card input { width: 20px; height: 20px; min-height: 20px; margin: 0; accent-color: var(--accent); }
+      .participant-copy { min-width: 0; }
+      .participant-name-line { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; }
+      .participant-name { font-weight: 700; }
+      .participant-meta { margin-top: 2px; color: var(--text-soft); font-size: 11px; overflow-wrap: anywhere; }
+      .default-label { padding: 1px 5px; border-radius: 999px; background: var(--surface); color: var(--accent-text); font-size: 10px; font-weight: 700; }
+      .dialog-error { display: none; margin: 0 20px 12px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--danger) 42%, var(--border)); border-radius: 8px; background: var(--danger-soft); color: var(--danger); font-size: 13px; }
+      .dialog-error.visible { display: block; }
+      .dialog-footer { border-top: 1px solid var(--border); }
+      .selection-summary { color: var(--text-soft); font-size: 13px; }
+      .selection-summary strong { color: var(--text); }
+      .dialog-actions { min-width: 0; display: flex; gap: 8px; }
+      .toast {
+        position: fixed;
+        z-index: 100;
+        right: 20px;
+        bottom: 20px;
+        padding: 12px 14px;
+        border: 1px solid var(--border-strong);
+        border-radius: 10px;
+        background: var(--surface-elevated);
+        box-shadow: var(--shadow);
+      }
+
+      @media (max-width: 1023px) {
+        .management-content { grid-template-columns: minmax(230px, 270px) minmax(0, 1fr); }
+        .role-index, .role-detail { padding: 16px; }
+        .field-grid { grid-template-columns: 1fr; }
+        .model-row { grid-template-columns: minmax(0, 1fr) minmax(130px, .8fr); }
+        .model-row.header { display: none; }
+        .model-row label > span { display: block; margin-bottom: 4px; color: var(--text-soft); font-size: 10px; font-weight: 700; }
+      }
+
+      @media (max-width: 860px) {
+        .participant-grid { grid-template-columns: 1fr; }
+      }
+
+      @media (max-width: 700px) {
+        body { overflow: hidden; }
+        .demo-bar { top: auto; right: 8px; bottom: 64px; left: 8px; max-width: none; transform: none; overflow-x: auto; }
+        .demo-bar span { display: none; }
+        .app-shell { display: block; }
+        .rail {
+          position: fixed;
+          z-index: 40;
+          right: 0;
+          bottom: 0;
+          left: 0;
+          width: 100%;
+          height: 56px;
+          flex-direction: row;
+          justify-content: space-around;
+          padding: 0 6px;
+          border-top: 1px solid var(--border);
+          border-right: 0;
+        }
+        .rail .spacer, .rail button:nth-of-type(4), .rail button:nth-of-type(5), .rail button:nth-of-type(6) { display: none; }
+        .workspace { height: calc(100dvh - 56px); }
+        .page-header { min-height: 68px; display: grid; grid-template-columns: minmax(0, 1fr) auto; padding: 10px 12px; }
+        .page-title .eyebrow, .page-title .subtitle { display: none; }
+        .page-title h1 { font-size: 17px; }
+        .header-actions .button.secondary { display: none; }
+        .header-actions .button:not(.secondary) { width: 44px; padding: 0; font-size: 0; }
+        .header-actions .button:not(.secondary) svg { width: 20px; height: 20px; }
+        .management-content { display: block; overflow-y: auto; overflow-x: hidden; }
+        .role-index, .role-detail { overflow: visible; padding: 14px; }
+        .role-index { border-right: 0; border-bottom: 1px solid var(--border); }
+        .role-detail { padding-bottom: 28px; }
+        .detail-top { flex-direction: column; }
+        .detail-shell { max-width: none; }
+        .provider-source-note, .secret-shell { grid-template-columns: 1fr; flex-direction: column; }
+        .provider-source-note .button, .secret-shell .button { width: 100%; }
+        .model-row { grid-template-columns: 1fr; }
+        .provider-actions { align-items: stretch; flex-direction: column; }
+        .provider-actions > div { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+        .provider-actions .button { min-width: 0; width: 100%; padding: 0 8px; }
+        .modal-backdrop { place-items: stretch; padding: 0; }
+        .new-chat-dialog { width: 100%; max-height: 100dvh; height: 100dvh; border: 0; border-radius: 0; }
+        .dialog-header { padding-top: 56px; }
+        .dialog-body { display: block; overflow-y: auto; }
+        .conversation-basics, .participant-picker { overflow: visible; padding: 16px; }
+        .conversation-basics { border-right: 0; border-bottom: 1px solid var(--border); }
+        .participant-grid { grid-template-columns: 1fr; }
+        .dialog-footer { align-items: stretch; flex-direction: column; }
+        .dialog-actions { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+        .dialog-actions .button { min-width: 0; width: 100%; padding: 0 8px; }
+        .toast { right: 12px; bottom: 68px; left: 12px; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="demo-bar" aria-label="Design fixture controls">
+      <span>Design Gate fixture · no data writes</span>
+      <button class="active" type="button" data-demo="roles">角色管理</button>
+      <button type="button" data-demo="providers">模型供应商</button>
+      <button type="button" data-demo="new-chat">新建聊天</button>
+      <button type="button" data-demo="unavailable">无可用模型</button>
+      <button type="button" data-demo="empty">空选择错误</button>
+      <button type="button" id="theme-toggle">深色</button>
+    </div>
+
+    <div class="app-shell" id="app-shell">
+      <nav class="rail" aria-label="主导航">
+        <button type="button" aria-label="聊天工作台" title="聊天工作台">
+          <svg viewBox="0 0 24 24"><path d="M4 5.5h16v10H9l-5 3v-13Z"/></svg>
+        </button>
+        <button class="active" type="button" id="nav-roles" aria-label="角色管理" title="角色管理">
+          <svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><circle cx="17" cy="9" r="2.5"/><path d="M3.5 19c.4-3.4 2.3-5.2 5.5-5.2s5.1 1.8 5.5 5.2M14 14.8c2.8-.2 4.6 1.2 5 4.2"/></svg>
+        </button>
+        <button type="button" id="nav-providers" aria-label="模型供应商" title="模型供应商">
+          <svg viewBox="0 0 24 24"><path d="M7 7h10v10H7zM9 2v5m6-5v5M9 17v5m6-5v5M2 9h5m10 0h5M2 15h5m10 0h5"/></svg>
+        </button>
+        <button type="button" aria-label="Skill 管理" title="Skill 管理">
+          <svg viewBox="0 0 24 24"><path d="M8 4h8l1 4 3 1v6l-3 1-1 4H8l-1-4-3-1V9l3-1 1-4Z"/><circle cx="12" cy="12" r="2.5"/></svg>
+        </button>
+        <button type="button" aria-label="项目管理" title="项目管理">
+          <svg viewBox="0 0 24 24"><path d="M3 6h7l2 2h9v10H3V6Z"/></svg>
+        </button>
+        <button type="button" aria-label="评测报表" title="评测报表">
+          <svg viewBox="0 0 24 24"><path d="M5 20V10m7 10V4m7 16v-7"/></svg>
+        </button>
+        <span class="spacer"></span>
+        <button type="button" id="rail-theme" aria-label="切换主题" title="切换主题">
+          <svg viewBox="0 0 24 24"><path d="M19 15.5A8 8 0 1 1 8.5 5 6.5 6.5 0 0 0 19 15.5Z"/></svg>
+        </button>
+      </nav>
+
+      <div class="workspace">
+        <section class="management-view" id="role-management-view">
+          <header class="page-header">
+          <div class="page-title">
+            <p class="eyebrow">CAFF Role Manager</p>
+            <h1>角色管理</h1>
+            <p class="subtitle">系统模型族保持边界清晰；自定义角色继续承载 Persona 与高级能力。</p>
+          </div>
+          <div class="header-actions">
+            <button class="button secondary" type="button">刷新</button>
+            <button class="button" type="button" id="open-new-chat">
+              <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+              新建聊天
+            </button>
+          </div>
+          </header>
+
+          <main class="management-content">
+          <aside class="role-index" aria-label="角色目录">
+            <section class="role-group">
+              <div class="section-heading"><h2>系统模型族</h2><span>7 个固定身份</span></div>
+              <ul class="role-list" id="family-role-list"></ul>
+            </section>
+            <section class="role-group">
+              <div class="section-heading"><h2>自定义角色</h2><span>模型不受族限制</span></div>
+              <button class="button secondary" type="button" style="width:100%; margin-bottom:8px">新建自定义角色</button>
+              <ul class="role-list" id="custom-role-list"></ul>
+            </section>
+          </aside>
+
+          <section class="role-detail" aria-live="polite">
+            <div class="detail-shell" id="role-detail"></div>
+          </section>
+          </main>
+        </section>
+
+        <section class="management-view hidden" id="provider-management-view">
+          <header class="page-header">
+            <div class="page-title">
+              <p class="eyebrow">CAFF Model Catalog</p>
+              <h1>模型供应商</h1>
+              <p class="subtitle">这里维护 models.json 连接；角色使用聚合 runtime/env/config 后的已归类模型目录。</p>
+            </div>
+            <div class="header-actions">
+              <button class="button secondary" type="button" id="refresh-providers">刷新状态</button>
+              <button class="button" type="button" id="add-provider">
+                <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+                添加供应商
+              </button>
+            </div>
+          </header>
+
+          <main class="management-content provider-content">
+            <aside class="role-index provider-index" aria-label="模型供应商目录">
+              <section class="role-group">
+                <div class="section-heading"><h2>已配置供应商</h2><span id="provider-count">3 个连接</span></div>
+                <ul class="role-list" id="provider-list"></ul>
+              </section>
+              <p class="snapshot-note"><strong>配置归属</strong><br />保存目标只取当前 runtime 解析到的 agentDir <code>models.json</code>，不会把其他读取候选误当写入位置。runtime registry 与 PI_PROVIDER/PI_MODEL 仍会作为只读来源进入聚合目录。</p>
+            </aside>
+
+            <section class="role-detail provider-detail" aria-live="polite">
+              <div class="detail-shell" id="provider-detail"></div>
+            </section>
+          </main>
+        </section>
+      </div>
+    </div>
+
+    <div class="modal-backdrop hidden" id="new-chat-backdrop" aria-hidden="true">
+      <section class="new-chat-dialog" role="dialog" aria-modal="true" aria-labelledby="new-chat-title">
+        <header class="dialog-header">
+          <div>
+            <h2 id="new-chat-title">新建聊天</h2>
+            <p>默认角色只是这次表单的预勾选；创建后才写入最终参与者。</p>
+          </div>
+          <button class="icon-button" type="button" id="close-dialog" aria-label="关闭">
+            <svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg>
+          </button>
+        </header>
+        <div class="dialog-body">
+          <section class="conversation-basics">
+            <label class="field">房间标题<input id="conversation-title" value="模型族协作讨论" maxlength="80" /></label>
+            <label class="field">会话类型
+              <select id="conversation-type">
+                <option value="standard">普通聊天</option>
+                <option value="undercover">谁是卧底</option>
+                <option value="werewolf">狼人杀</option>
+              </select>
+            </label>
+            <div class="snapshot-note">
+              <strong>创建快照</strong><br />
+              打开表单时读取一次 defaults。此后即使管理页改了默认，本表单也不会悄悄改变勾选。<br /><br />
+              <strong>入口说明</strong><br />
+              当前角色管理页按钮只用于设计预览；生产入口位于聊天侧栏，并替换原来的标题/类型快速表单。
+            </div>
+          </section>
+          <section class="participant-picker">
+            <div class="picker-heading">
+              <div><h3>确认参与角色</h3><p>可增删预勾选；不可用角色不能选择。</p></div>
+              <button class="button ghost" type="button" id="clear-selection">清空</button>
+            </div>
+            <section class="participant-group">
+              <div class="section-heading"><h2>系统模型族</h2><span>同族模型运行</span></div>
+              <div class="participant-grid" id="family-participants"></div>
+            </section>
+            <section class="participant-group">
+              <div class="section-heading"><h2>自定义角色</h2><span>保留 Persona / Skills</span></div>
+              <div class="participant-grid" id="custom-participants"></div>
+            </section>
+          </section>
+        </div>
+        <p class="dialog-error" id="dialog-error">至少选择一位可用角色后才能创建普通聊天。</p>
+        <footer class="dialog-footer">
+          <div class="selection-summary">
+            <span id="standard-selection-summary">已选择 <strong id="selection-count">0</strong> 位角色</span>
+            <span id="game-selection-summary" class="hidden">游戏模式使用自己的玩家配置流程</span>
+          </div>
+          <div class="dialog-actions">
+            <button class="button secondary" type="button" id="cancel-dialog">取消</button>
+            <button class="button" type="button" id="create-conversation">创建聊天</button>
+          </div>
+        </footer>
+      </section>
+    </div>
+
+    <div class="toast hidden" id="toast" role="status"></div>
+
+    <script>
+      const roles = [
+        {
+          id: 'role-family-gpt', name: 'GPT', kind: 'model_family', family: 'gpt', avatar: 'G', color: '#3975c6',
+          models: ['openai/gpt-5.4', 'openai/gpt-5-mini'], selectedModel: 'openai/gpt-5.4', thinking: 'medium', defaultRole: true,
+          description: 'OpenAI GPT 模型族',
+          profiles: [{ id: 'quick', name: '快速处理', description: '轻量任务与日常问答', model: 'openai/gpt-5-mini', thinking: 'low' }],
+        },
+        {
+          id: 'role-family-claude', name: 'Claude', kind: 'model_family', family: 'claude', avatar: 'C', color: '#a35f3f',
+          models: ['anthropic/claude-sonnet-4.5', 'anthropic/claude-opus-4.1'], selectedModel: 'anthropic/claude-sonnet-4.5', thinking: 'high', defaultRole: true,
+          description: 'Anthropic Claude 模型族', profiles: [],
+        },
+        {
+          id: 'role-family-gemini', name: 'Gemini', kind: 'model_family', family: 'gemini', avatar: 'Ge', color: '#5e6fc9',
+          models: ['google/gemini-2.5-pro'], selectedModel: 'google/gemini-2.5-pro', thinking: 'high', defaultRole: false,
+          description: 'Google Gemini 模型族', profiles: [],
+        },
+        {
+          id: 'role-family-deepseek', name: 'DeepSeek', kind: 'model_family', family: 'deepseek', avatar: 'D', color: '#4d68bb',
+          models: ['deepseek/deepseek-v3.2'], selectedModel: 'deepseek/deepseek-v3.2', thinking: 'high', defaultRole: false,
+          description: 'DeepSeek 模型族', profiles: [],
+        },
+        {
+          id: 'role-family-qwen', name: 'Qwen', kind: 'model_family', family: 'qwen', avatar: 'Q', color: '#6d55bd',
+          models: [], selectedModel: '', thinking: '', defaultRole: false, description: 'Qwen 模型族', profiles: [],
+          unavailableReason: '尚未配置可归类为 Qwen 的模型',
+        },
+        {
+          id: 'role-family-glm', name: 'GLM', kind: 'model_family', family: 'glm', avatar: 'GL', color: '#277d75',
+          models: ['zhipu/glm-5'], selectedModel: 'zhipu/glm-5', thinking: 'high', defaultRole: false,
+          description: '智谱 GLM 模型族', profiles: [],
+        },
+        {
+          id: 'role-family-kimi', name: 'Kimi', kind: 'model_family', family: 'kimi', avatar: 'K', color: '#7d5f9e',
+          models: ['moonshot/kimi-k2.5'], selectedModel: 'moonshot/kimi-k2.5', thinking: 'high', defaultRole: false,
+          description: 'Moonshot Kimi 模型族', profiles: [],
+        },
+        {
+          id: 'custom-architecture-reviewer', name: '架构评审', kind: 'custom', avatar: '架', color: '#b4512f',
+          models: ['anthropic/claude-opus-4.1', 'openai/gpt-5.4', 'moonshot/kimi-k2.5'], selectedModel: 'anthropic/claude-opus-4.1', thinking: 'high', defaultRole: true,
+          description: '带 Persona、Skills 与多模型 Profiles 的自定义角色',
+          personaPrompt: '从系统边界、失败路径与可验证性三个角度审查方案。', skills: ['source-audit', 'quality-gate'],
+          profiles: [{ id: 'deep-review', name: '深度评审', description: '高风险架构与安全边界', model: 'anthropic/claude-opus-4.1', thinking: 'high', personaPrompt: '优先寻找不可逆风险与状态机缺边。' }],
+        },
+        {
+          id: 'custom-translation', name: '翻译助手', kind: 'custom', avatar: '译', color: '#2f766a',
+          models: ['google/gemini-2.5-pro'], selectedModel: 'google/gemini-2.5-pro', thinking: 'low', defaultRole: false,
+          description: '用户维护的自定义角色', personaPrompt: '保持术语一致并保留原文语气。', skills: [], profiles: [],
+        },
+      ];
+
+      const thinkingLabels = {
+        '': '跟随运行时默认', off: '关闭', minimal: '最少', low: '低', medium: '中', high: '高', xhigh: '超高', max: '最大',
+      };
+      const thinkingLevelsByModel = {
+        'openai/gpt-5.4': ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'],
+        'openai/gpt-5-mini': ['minimal', 'low', 'medium', 'high'],
+        'anthropic/claude-sonnet-4.5': ['off', 'minimal', 'low', 'medium', 'high'],
+        'anthropic/claude-opus-4.1': ['off', 'minimal', 'low', 'medium', 'high'],
+        'google/gemini-2.5-pro': ['off', 'minimal', 'low', 'medium', 'high'],
+        'deepseek/deepseek-v3.2': ['off', 'minimal', 'low', 'medium', 'high'],
+        'zhipu/glm-5': ['off', 'minimal', 'low', 'medium', 'high'],
+        'moonshot/kimi-k2.5': ['off', 'minimal', 'low', 'medium', 'high'],
+      };
+
+      const providers = [
+        {
+          id: 'openai', name: 'OpenAI', mark: 'OA', baseUrl: 'https://api.openai.com/v1', protocol: 'openai-responses',
+          hasApiKey: true, hasExternalAuth: false, authMode: 'literal', authHeader: false, status: 'verified',
+          models: [
+            { id: 'gpt-5.4', name: 'GPT-5.4', family: 'gpt', status: 'valid' },
+            { id: 'gpt-5-mini', name: 'GPT-5 mini', family: 'gpt', status: 'valid' },
+          ],
+        },
+        {
+          id: 'anthropic', name: 'Anthropic', mark: 'AN', baseUrl: 'https://api.anthropic.com', protocol: 'anthropic-messages',
+          hasApiKey: false, hasExternalAuth: true, authMode: 'external', authHeader: false, status: 'verified',
+          models: [
+            { id: 'claude-sonnet-4.5', name: 'Claude Sonnet 4.5', family: 'claude', status: 'valid' },
+            { id: 'claude-opus-4.1', name: 'Claude Opus 4.1', family: 'claude', status: 'valid' },
+          ],
+        },
+        {
+          id: 'team-gateway', name: '兼容网关', mark: 'GW', baseUrl: 'https://gateway.example.invalid/v1', protocol: 'openai-completions',
+          hasApiKey: true, hasExternalAuth: false, authMode: 'env', authHeader: true, status: 'needs_validation',
+          models: [
+            { id: 'reasoner-x', name: 'Reasoner X', family: '', status: 'valid' },
+          ],
+        },
+      ];
+
+      let selectedRoleId = 'role-family-gpt';
+      let selectedProviderId = 'openai';
+      const familyList = document.getElementById('family-role-list');
+      const customList = document.getElementById('custom-role-list');
+      const detail = document.getElementById('role-detail');
+      const providerList = document.getElementById('provider-list');
+      const providerDetail = document.getElementById('provider-detail');
+      const roleManagementView = document.getElementById('role-management-view');
+      const providerManagementView = document.getElementById('provider-management-view');
+      const rolesNav = document.getElementById('nav-roles');
+      const providersNav = document.getElementById('nav-providers');
+      const backdrop = document.getElementById('new-chat-backdrop');
+      const dialogError = document.getElementById('dialog-error');
+      const selectionCount = document.getElementById('selection-count');
+      const familyParticipants = document.getElementById('family-participants');
+      const customParticipants = document.getElementById('custom-participants');
+      const appShell = document.getElementById('app-shell');
+      const standardSelectionSummary = document.getElementById('standard-selection-summary');
+      const gameSelectionSummary = document.getElementById('game-selection-summary');
+      const demoBar = document.querySelector('.demo-bar');
+      let dialogReturnFocus = null;
+
+      const escapeHtml = (value) => String(value).replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char]);
+      const selectedRole = () => roles.find((role) => role.id === selectedRoleId) || roles[0];
+      const providerKey = (provider) => provider.key || provider.id;
+      const selectedProvider = () => providers.find((provider) => providerKey(provider) === selectedProviderId) || providers[0];
+      const available = (role) => role.kind === 'custom' || role.models.length > 0;
+      const families = ['gpt', 'claude', 'gemini', 'deepseek', 'qwen', 'glm', 'kimi'];
+
+      function supportedThinkingLevels(model) {
+        return thinkingLevelsByModel[model] || ['off'];
+      }
+
+      function modelOptions(role, selectedModel) {
+        return role.models.length
+          ? role.models.map((model) => `<option value="${escapeHtml(model)}" ${model === selectedModel ? 'selected' : ''}>${escapeHtml(model)}</option>`).join('')
+          : '<option value="">没有可用模型</option>';
+      }
+
+      function thinkingOptions(model, selectedThinking) {
+        return ['', ...supportedThinkingLevels(model)]
+          .map((level) => `<option value="${level}" ${level === selectedThinking ? 'selected' : ''}>${escapeHtml(thinkingLabels[level] || level)}${level ? ` · ${level}` : ''}</option>`)
+          .join('');
+      }
+
+      function runtimeProfileEditor(role, profile, index, isFamily) {
+        const profileModel = profile.model || role.selectedModel || role.models[0] || '';
+        return `
+          <article class="runtime-profile" data-runtime-profile data-profile-index="${index}">
+            <div class="runtime-profile-head">
+              <strong>运行 Profile ${index + 1}</strong>
+              <button class="button ghost" type="button" data-remove-runtime-profile="${index}">移除</button>
+            </div>
+            <div class="field-grid">
+              <label class="field">名称<input id="runtime-profile-name-${index}" value="${escapeHtml(profile.name || '')}" placeholder="例如：深度推理" /></label>
+              <label class="field">说明<input value="${escapeHtml(profile.description || '')}" placeholder="这套配置适合什么任务" /></label>
+            </div>
+            <div class="field-grid">
+              <label class="field">模型<select id="runtime-profile-model-${index}">${modelOptions(role, profileModel)}</select></label>
+              <label class="field">思考强度<select id="runtime-profile-thinking-${index}">${thinkingOptions(profileModel, profile.thinking || '')}</select></label>
+            </div>
+            ${isFamily ? '' : `<label class="field" data-profile-persona style="margin-top:12px">Profile Persona Prompt<textarea>${escapeHtml(profile.personaPrompt || '')}</textarea></label>`}
+          </article>`;
+      }
+
+      function roleRow(role) {
+        const li = document.createElement('li');
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = `role-row${role.id === selectedRoleId ? ' active' : ''}${available(role) ? '' : ' unavailable'}`;
+        button.dataset.roleId = role.id;
+        button.innerHTML = `
+          <span class="role-avatar" style="--role-color:${role.color}">${escapeHtml(role.avatar)}</span>
+          <span class="role-copy">
+            <span class="role-name-line"><span class="role-name">${escapeHtml(role.name)}</span>${role.defaultRole ? '<span class="default-dot" title="聊天默认角色"></span>' : ''}</span>
+            <span class="role-meta">${available(role) ? (role.kind === 'model_family' ? `${role.models.length} 个可用模型` : role.description) : '未配置可用模型'}</span>
+          </span>
+          <span class="status-badge ${available(role) ? '' : 'warning'}">${available(role) ? '可用' : '不可用'}</span>`;
+        button.addEventListener('click', () => {
+          selectedRoleId = role.id;
+          renderRoles();
+          if (window.matchMedia('(max-width: 700px)').matches) {
+            document.querySelector('.role-detail').scrollIntoView({ block: 'start' });
+          }
+        });
+        li.appendChild(button);
+        return li;
+      }
+
+      function renderRoles() {
+        familyList.replaceChildren(...roles.filter((role) => role.kind === 'model_family').map(roleRow));
+        customList.replaceChildren(...roles.filter((role) => role.kind === 'custom').map(roleRow));
+        renderDetail();
+      }
+
+      function switchManagementView(view, { syncDemo = true } = {}) {
+        const showProviders = view === 'providers';
+        const providerConfigLocked = location.hash.slice(1).split(',').includes('provider-locked');
+        roleManagementView.classList.toggle('hidden', showProviders);
+        providerManagementView.classList.toggle('hidden', !showProviders);
+        rolesNav.classList.toggle('active', !showProviders);
+        providersNav.classList.toggle('active', showProviders);
+        rolesNav.setAttribute('aria-current', showProviders ? 'false' : 'page');
+        providersNav.setAttribute('aria-current', showProviders ? 'page' : 'false');
+        document.getElementById('add-provider').disabled = providerConfigLocked;
+        if (syncDemo) {
+          document.querySelectorAll('[data-demo]').forEach((item) => item.classList.remove('active'));
+          document.querySelector(`[data-demo="${showProviders ? 'providers' : 'roles'}"]`).classList.add('active');
+        }
+        if (showProviders) renderProviders();
+      }
+
+      function providerRow(provider) {
+        const li = document.createElement('li');
+        const button = document.createElement('button');
+        const verified = provider.status === 'verified';
+        const draft = provider.status === 'draft';
+        button.type = 'button';
+        button.className = `role-row${providerKey(provider) === selectedProviderId ? ' active' : ''}`;
+        button.dataset.providerId = providerKey(provider);
+        button.innerHTML = `
+          <span class="provider-mark">${escapeHtml(provider.mark)}</span>
+          <span class="role-copy">
+            <span class="role-name-line"><span class="role-name">${escapeHtml(provider.name)}</span></span>
+            <span class="role-meta">${draft ? '尚未保存' : `${escapeHtml(provider.protocol)} · ${provider.models.length} 个模型`}</span>
+          </span>
+          <span class="status-badge ${verified ? '' : 'warning'}">${verified ? '正常' : (draft ? '草稿' : '待验证')}</span>`;
+        button.addEventListener('click', () => {
+          selectedProviderId = providerKey(provider);
+          renderProviders();
+          if (window.matchMedia('(max-width: 700px)').matches) {
+            document.querySelector('.provider-detail').scrollIntoView({ block: 'start' });
+          }
+        });
+        li.appendChild(button);
+        return li;
+      }
+
+      function familyOptions(selected) {
+        return ['<option value="">未归类（仅自定义角色可用）</option>']
+          .concat(families.map((family) => `<option value="${family}" ${family === selected ? 'selected' : ''}>${family}</option>`))
+          .join('');
+      }
+
+      function renderProviders() {
+        providerList.replaceChildren(...providers.map(providerRow));
+        const configuredCount = providers.filter((provider) => provider.status !== 'draft').length;
+        const draftCount = providers.length - configuredCount;
+        document.getElementById('provider-count').textContent = `${configuredCount} 个连接${draftCount ? ` + ${draftCount} 个草稿` : ''}`;
+        renderProviderDetail();
+      }
+
+      function openProviderDraft() {
+        let draft = providers.find((provider) => provider.status === 'draft');
+        if (!draft) {
+          draft = {
+            key: 'provider-draft', id: '', name: '新供应商', mark: '+', baseUrl: '', protocol: 'openai-completions',
+            hasApiKey: false, hasExternalAuth: false, authMode: 'none', authHeader: false, status: 'draft', models: [],
+          };
+          providers.push(draft);
+        }
+        selectedProviderId = providerKey(draft);
+        switchManagementView('providers');
+        renderProviders();
+        document.getElementById('provider-id').focus();
+      }
+
+      function renderProviderDetail() {
+        const provider = selectedProvider();
+        const verified = provider.status === 'verified';
+        const draft = provider.status === 'draft';
+        const providerConfigLocked = location.hash.slice(1).split(',').includes('provider-locked');
+        const authConfigured = provider.hasApiKey || provider.hasExternalAuth;
+        const authModeLabels = { none: '未配置', literal: '直接密钥', env: '环境变量引用', command: '命令引用', external: '外部认证（auth.json / CLI）' };
+        const providerValid = Boolean(provider.id && provider.baseUrl && provider.models.length && provider.models.every((model) => model.id));
+        const authBadge = provider.hasExternalAuth ? '外部认证' : (provider.hasApiKey ? '已保存' : '未配置');
+        const impactedRoleNames = provider.id
+          ? roles.filter((role) => role.models.some((model) => model.startsWith(`${provider.id}/`))).map((role) => role.name)
+          : [];
+        providerDetail.innerHTML = `
+          <div class="detail-top">
+            <div class="detail-identity">
+              <span class="provider-mark">${escapeHtml(provider.mark)}</span>
+              <div>
+                <h2>${escapeHtml(provider.name)}</h2>
+                <p>${escapeHtml(provider.baseUrl || '填写连接地址后可验证')}</p>
+                <div class="detail-badges">
+                  <span class="status-badge system">${escapeHtml(provider.protocol)}</span>
+                  <span class="status-badge ${verified ? '' : 'warning'}">${verified ? '连接正常' : (draft ? '未保存草稿' : '配置待验证')}</span>
+                  <span class="status-badge neutral">${provider.models.length} 个模型</span>
+                </div>
+              </div>
+            </div>
+            <button class="button danger" type="button" id="remove-provider" aria-controls="remove-provider-confirmation" aria-expanded="false">${draft ? '放弃草稿' : '移除供应商'}</button>
+          </div>
+
+          <div class="clear-confirmation hidden" id="remove-provider-confirmation" role="alert">
+            <p><strong>${draft ? '确认放弃草稿？' : `确认移除 ${escapeHtml(provider.name)}？`}</strong> ${draft ? '这个未保存草稿将从列表移除，不会写入配置。' : `移除后 ${provider.models.length} 个模型会退出此 models.json 连接；可能受影响的角色：${escapeHtml(impactedRoleNames.join('、') || '无当前引用')}。历史聊天、角色身份和 auth.json / CLI 外部认证都不会删除。`}</p>
+            <div class="clear-confirmation-actions">
+              <button class="button secondary" type="button" id="cancel-remove-provider">取消</button>
+              <button class="button danger" type="button" id="confirm-remove-provider">${draft ? '放弃草稿' : '确认移除'}</button>
+            </div>
+          </div>
+
+          ${providerConfigLocked ? '<div class="unavailable-panel"><strong>当前部署只读</strong><p>Provider 配置首版只允许 loopback local-admin。聊天与脱敏模型目录仍可使用；写入、清除和连接验证已禁用。</p></div>' : ''}
+
+          <section class="settings-card">
+            <div class="card-title"><div><h3>连接设置</h3><p>Provider ID 决定模型引用前缀；修改连接不会直接改写角色。</p></div></div>
+            <div class="field-grid">
+              <label class="field">Provider ID<input id="provider-id" value="${escapeHtml(provider.id)}" ${draft ? 'placeholder="例如 openai-compatible"' : 'readonly'} /></label>
+              <label class="field">显示名称<input value="${escapeHtml(provider.name)}" /></label>
+              <label class="field">Base URL<input value="${escapeHtml(provider.baseUrl)}" inputmode="url" /></label>
+              <label class="field">API 协议
+                <select id="provider-api-protocol">
+                  ${['openai-completions', 'openai-responses', 'anthropic-messages', 'google-generative-ai'].map((protocol) => `<option ${protocol === provider.protocol ? 'selected' : ''}>${protocol}</option>`).join('')}
+                </select>
+              </label>
+              <label class="field">Authorization Header
+                <select><option ${provider.authHeader ? 'selected' : ''}>启用 Bearer</option><option ${provider.authHeader ? '' : 'selected'}>由协议处理</option></select>
+              </label>
+              <label class="field">认证模式
+                <select id="provider-auth-mode">
+                  ${Object.entries(authModeLabels).map(([value, label]) => `<option value="${value}" ${provider.authMode === value ? 'selected' : ''}>${label}</option>`).join('')}
+                </select>
+              </label>
+            </div>
+          </section>
+
+          <section class="settings-card">
+            <div class="card-title"><div><h3>API Key</h3><p>读取接口只返回保存状态与模式；已有值和原始 reference 都不会进入浏览器。</p></div><span class="status-badge ${authConfigured ? '' : 'warning'}">${authBadge}</span></div>
+            <div class="secret-state"><strong>${authConfigured ? '认证已配置' : '尚无认证'}</strong><span>${escapeHtml(authModeLabels[provider.authMode])}${provider.hasExternalAuth ? ' · 由外部工具管理' : ' · 留空保存不会清除'}</span></div>
+            <div class="secret-shell">
+              <label class="field">输入新密钥
+                <input id="provider-api-key" type="password" value="" autocomplete="new-password" placeholder="留空以保留已保存密钥" data-has-api-key="${provider.hasApiKey}" />
+              </label>
+              <button class="button danger" type="button" id="clear-provider-secret" aria-controls="clear-secret-confirmation" aria-expanded="false" ${provider.hasApiKey ? '' : 'disabled'}>清除已保存密钥</button>
+            </div>
+            <details class="advanced-auth" ${provider.authMode === 'literal' ? '' : 'open'}>
+              <summary>高级认证：环境变量 / 命令引用</summary>
+              <div class="field-grid">
+                <label class="field">输入新引用<input id="provider-auth-reference" type="password" value="" autocomplete="new-password" placeholder="$PROVIDER_API_KEY 或 !credential-helper" /></label>
+                <label class="field">解析位置<input value="仅服务端请求时解析" readonly /></label>
+              </div>
+              <p class="config-safety-note">已有 reference 不回显；留空保留。命令引用只在实际模型运行时执行，连接验证不会执行；设置或替换 command 必须再次确认。</p>
+            </details>
+            <div class="clear-confirmation hidden" id="clear-secret-confirmation" role="alert">
+              <p><strong>确认清除？</strong> 这会删除当前 provider 的认证引用，相关模型将变为不可用。普通“保存更改”不会执行此操作。</p>
+              <div class="clear-confirmation-actions">
+                <button class="button secondary" type="button" id="cancel-clear-secret">取消</button>
+                <button class="button danger" type="button" id="confirm-clear-secret">确认清除</button>
+              </div>
+            </div>
+          </section>
+
+          <section class="settings-card">
+            <div class="card-title"><div><h3>模型目录</h3><p>显式归类决定模型族角色可见性；未归类模型仍可供自定义角色使用。</p></div><button class="button secondary" type="button" id="add-provider-model">添加模型</button></div>
+            <div class="model-editor">
+              <div class="model-row header"><span>模型 ID</span><span>显示名称</span><span>模型族归类</span><span>状态</span></div>
+              ${provider.models.length ? provider.models.map((model, index) => `
+                <div class="model-row">
+                  <label><span>模型 ID</span><input id="provider-model-id-${index}" value="${escapeHtml(model.id)}" /></label>
+                  <label><span>显示名称</span><input value="${escapeHtml(model.name)}" /></label>
+                  <label><span>模型族归类</span><select ${index === 0 ? 'id="provider-model-family"' : ''}>${familyOptions(model.family)}</select></label>
+                  <span class="status-badge ${model.family ? '' : 'warning'}">${model.family ? '显式归类' : '未归类'}</span>
+                </div>`).join('') : '<div class="empty-model-state" id="provider-empty-models">尚未添加模型。先添加一行，再填写模型 ID 与族归类。</div>'}
+            </div>
+            <p class="config-safety-note">未展开的 cost、compat、contextWindow 等现有字段保存时原样保留，不做破坏性重写。</p>
+          </section>
+
+          <div class="provider-actions">
+            <span class="muted">验证失败不会覆盖当前有效配置。</span>
+            <div>
+              <button class="button secondary" type="button" id="validate-provider" ${providerValid ? '' : 'disabled'}>验证连接与模型</button>
+              <button class="button" type="button" id="save-provider" ${providerValid ? '' : 'disabled'}>保存更改</button>
+            </div>
+          </div>
+          <p class="config-safety-note">生产保存：完整校验 → 旧配置受限备份 → 同目录临时文件 → 原子替换；fixture 不写数据。</p>
+        `;
+
+        document.getElementById('clear-provider-secret').addEventListener('click', () => {
+          document.getElementById('clear-provider-secret').setAttribute('aria-expanded', 'true');
+          document.getElementById('clear-secret-confirmation').classList.remove('hidden');
+          document.getElementById('confirm-clear-secret').focus();
+        });
+        document.getElementById('cancel-clear-secret').addEventListener('click', () => {
+          document.getElementById('clear-secret-confirmation').classList.add('hidden');
+          document.getElementById('clear-provider-secret').setAttribute('aria-expanded', 'false');
+          document.getElementById('clear-provider-secret').focus();
+        });
+        document.getElementById('confirm-clear-secret').addEventListener('click', () => {
+          document.getElementById('clear-secret-confirmation').classList.add('hidden');
+          document.getElementById('clear-provider-secret').setAttribute('aria-expanded', 'false');
+          document.getElementById('clear-provider-secret').focus();
+          showToast('Design fixture：已演示显式清除确认（未写入配置）');
+        });
+        document.getElementById('remove-provider').addEventListener('click', () => {
+          document.getElementById('remove-provider').setAttribute('aria-expanded', 'true');
+          document.getElementById('remove-provider-confirmation').classList.remove('hidden');
+          document.getElementById('confirm-remove-provider').focus();
+        });
+        document.getElementById('cancel-remove-provider').addEventListener('click', () => {
+          document.getElementById('remove-provider-confirmation').classList.add('hidden');
+          document.getElementById('remove-provider').setAttribute('aria-expanded', 'false');
+          document.getElementById('remove-provider').focus();
+        });
+        document.getElementById('confirm-remove-provider').addEventListener('click', () => {
+          if (draft) {
+            providers.splice(providers.indexOf(provider), 1);
+            selectedProviderId = providerKey(providers[0]);
+            renderProviders();
+            showToast('Design fixture：已放弃未保存的 provider 草稿');
+            return;
+          }
+          document.getElementById('remove-provider-confirmation').classList.add('hidden');
+          document.getElementById('remove-provider').setAttribute('aria-expanded', 'false');
+          document.getElementById('remove-provider').focus();
+          showToast('Design fixture：已演示移除 provider 确认（未写入配置）');
+        });
+        document.getElementById('validate-provider').addEventListener('click', () => {
+          showToast(`Design fixture：${provider.name} 连接与 ${provider.models.length} 个模型验证通过`);
+        });
+        document.getElementById('save-provider').addEventListener('click', () => {
+          showToast('Design fixture：保存会保留空密钥与未展开字段（未写入配置）');
+        });
+        document.getElementById('add-provider-model').addEventListener('click', () => {
+          provider.models.push({ id: '', name: '', family: '', status: 'draft' });
+          renderProviders();
+          document.getElementById(`provider-model-id-${provider.models.length - 1}`).focus();
+        });
+        if (providerConfigLocked) {
+          providerDetail.querySelectorAll('input, select, button').forEach((control) => { control.disabled = true; });
+        }
+      }
+
+      function renderDetail() {
+        const role = selectedRole();
+        const isFamily = role.kind === 'model_family';
+        const roleAvailable = available(role);
+        detail.innerHTML = `
+          <div class="detail-top">
+            <div class="detail-identity">
+              <span class="role-avatar" style="--role-color:${role.color}">${escapeHtml(role.avatar)}</span>
+              <div>
+                <h2>${escapeHtml(role.name)}</h2>
+                <p>${escapeHtml(role.description)}</p>
+                <div class="detail-badges">
+                  <span class="status-badge ${isFamily ? 'system' : 'neutral'}">${isFamily ? '系统模型族' : '自定义角色'}</span>
+                  <span class="status-badge ${roleAvailable ? '' : 'warning'}">${roleAvailable ? '可运行' : '不可运行'}</span>
+                  ${role.defaultRole ? '<span class="status-badge warning">聊天默认</span>' : ''}
+                </div>
+              </div>
+            </div>
+            ${isFamily ? '' : '<button class="button danger" type="button">删除角色</button>'}
+          </div>
+
+          <div class="provider-source-note">
+            <p><strong>可用模型来自聚合模型目录</strong><br />${isFamily ? '这里只显示 catalog 归类为本模型族的条目；models.json 连接在“模型供应商”维护，runtime/env 来源保持只读。' : '自定义角色可选择 catalog 中任意已配置模型。'}</p>
+            <button class="button secondary" type="button" id="manage-providers-from-role">管理模型供应商</button>
+          </div>
+
+          ${!roleAvailable ? `<div class="unavailable-panel"><strong>暂不可用于聊天</strong><p>${escapeHtml(role.unavailableReason || '当前模型配置无法满足运行条件')}。补齐模型配置后，本角色会自动恢复可选状态。</p></div>` : ''}
+
+          <section class="settings-card">
+            <div class="card-title"><div><h3>${isFamily ? '系统身份' : '角色身份'}</h3><p>${isFamily ? '模型族边界与展示身份由 CAFF 维护。' : '自定义角色继续由用户完整维护。'}</p></div>${isFamily ? '<span class="status-badge system">系统维护</span>' : ''}</div>
+            <div class="field-grid">
+              <label class="field">名称<input value="${escapeHtml(role.name)}" ${isFamily ? 'readonly' : ''} /></label>
+              <label class="field">稳定 ID<input value="${escapeHtml(role.id)}" readonly /></label>
+              <label class="field">角色类型<input value="${isFamily ? 'model_family' : 'custom'}" readonly /></label>
+              <label class="field">模型族<input value="${isFamily ? escapeHtml(role.family) : '不限制'}" readonly /></label>
+            </div>
+            ${isFamily ? '<p class="lock-note"><svg viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>名称、图标、颜色、稳定 ID、角色类型和族归属不可通过普通保存 API 覆盖。</p>' : ''}
+          </section>
+
+          <section class="settings-card">
+            <div class="card-title"><div><h3>默认运行配置</h3><p>${isFamily ? '模型只来自同族 catalog；思考强度按所选模型能力给出真实选项。' : '自定义角色可跨模型族；Provider 由模型选项自动带出。'}</p></div></div>
+            <div class="field-grid">
+              <label class="field">默认模型<select id="role-default-model" ${roleAvailable ? '' : 'disabled'}>${modelOptions(role, role.selectedModel)}</select></label>
+              <label class="field">默认思考强度<select id="role-default-thinking" ${roleAvailable ? '' : 'disabled'}>${thinkingOptions(role.selectedModel, role.thinking || '')}</select></label>
+            </div>
+            <p class="thinking-note">“跟随运行时默认”保存为空值；其余值使用 Pi 的 off / minimal / low / medium / high / xhigh / max 契约，并按模型的 supportedThinkingLevels 过滤。</p>
+          </section>
+
+          <section class="settings-card">
+            <div class="card-title">
+              <div><h3>运行 Profiles</h3><p>${isFamily ? '为同一模型族保存快速、均衡或深度推理等会话预设，不携带人格。' : '每套 Profile 可覆盖模型、思考强度与 Persona Prompt。'}</p></div>
+              <button class="button secondary" type="button" id="add-runtime-profile" ${roleAvailable ? '' : 'disabled'}>添加 Profile</button>
+            </div>
+            <div class="runtime-profiles">
+              ${(role.profiles || []).length
+                ? role.profiles.map((profile, index) => runtimeProfileEditor(role, profile, index, isFamily)).join('')
+                : '<div class="empty-model-state">还没有运行 Profile。默认配置仍可直接用于聊天。</div>'}
+            </div>
+            ${isFamily ? '<p class="lock-note">模型族 Profile 只开放名称、说明、同族模型和思考强度；Persona Prompt 与 Persona Skills 在 API 边界也会拒绝。</p>' : ''}
+          </section>
+
+          ${isFamily ? '' : `
+            <section class="settings-card">
+              <div class="card-title"><div><h3>Persona 与 Skills</h3><p>这些人格化能力只属于自定义角色，不进入系统模型族。</p></div></div>
+              <label class="field">默认 Persona Prompt<textarea id="role-persona-prompt">${escapeHtml(role.personaPrompt || '')}</textarea></label>
+              <div style="margin-top:14px">
+                <label class="field" style="margin-bottom:6px">长期绑定 Skills</label>
+                <div class="skill-options" id="role-skill-options">
+                  ${['source-audit', 'quality-gate', 'browser-automation'].map((skill) => `<label class="skill-option"><input type="checkbox" ${Array.isArray(role.skills) && role.skills.includes(skill) ? 'checked' : ''} />${escapeHtml(skill)}</label>`).join('')}
+                </div>
+              </div>
+            </section>`}
+
+          <section class="settings-card">
+            <div class="toggle-row">
+              <div class="toggle-copy"><h3>新建普通聊天时默认预选</h3><p>${roleAvailable ? '只影响之后打开的新建聊天表单，不追写已有会话。' : '没有可用模型时不能设为默认。'}</p></div>
+              <button class="toggle" type="button" id="default-toggle" aria-label="切换聊天默认角色" aria-pressed="${role.defaultRole}" ${roleAvailable ? '' : 'disabled'}></button>
+            </div>
+          </section>
+        `;
+        document.getElementById('role-default-model').addEventListener('change', (event) => {
+          role.selectedModel = event.target.value;
+          let resetThinking = false;
+          if (role.thinking && !supportedThinkingLevels(role.selectedModel).includes(role.thinking)) {
+            role.thinking = '';
+            resetThinking = true;
+          }
+          renderDetail();
+          document.getElementById('role-default-model').focus();
+          if (resetThinking) showToast('原思考强度不受新模型支持，已改为跟随运行时默认');
+        });
+        document.getElementById('role-default-thinking').addEventListener('change', (event) => {
+          role.thinking = event.target.value;
+        });
+        document.getElementById('add-runtime-profile').addEventListener('click', () => {
+          const nextIndex = (role.profiles || []).length;
+          role.profiles = Array.isArray(role.profiles) ? role.profiles : [];
+          role.profiles.push({
+            id: `profile-${nextIndex + 1}`,
+            name: '',
+            description: '',
+            model: role.selectedModel || role.models[0] || '',
+            thinking: '',
+            personaPrompt: '',
+          });
+          renderDetail();
+          document.getElementById(`runtime-profile-name-${nextIndex}`).focus();
+        });
+        document.querySelectorAll('[data-remove-runtime-profile]').forEach((button) => {
+          button.addEventListener('click', () => {
+            role.profiles.splice(Number(button.dataset.removeRuntimeProfile), 1);
+            renderDetail();
+            document.getElementById('add-runtime-profile').focus();
+          });
+        });
+        (role.profiles || []).forEach((profile, index) => {
+          const modelSelect = document.getElementById(`runtime-profile-model-${index}`);
+          const thinkingSelect = document.getElementById(`runtime-profile-thinking-${index}`);
+          modelSelect.addEventListener('change', () => {
+            profile.model = modelSelect.value;
+            let resetThinking = false;
+            if (profile.thinking && !supportedThinkingLevels(profile.model).includes(profile.thinking)) {
+              profile.thinking = '';
+              resetThinking = true;
+            }
+            renderDetail();
+            document.getElementById(`runtime-profile-model-${index}`).focus();
+            if (resetThinking) showToast('Profile 原思考强度不受新模型支持，已改为跟随运行时默认');
+          });
+          thinkingSelect.addEventListener('change', () => {
+            profile.thinking = thinkingSelect.value;
+          });
+        });
+        const toggle = document.getElementById('default-toggle');
+        if (toggle) toggle.addEventListener('click', () => { role.defaultRole = !role.defaultRole; renderRoles(); });
+        document.getElementById('manage-providers-from-role').addEventListener('click', () => {
+          switchManagementView('providers');
+          providersNav.focus();
+        });
+      }
+
+      function participantCard(role) {
+        const label = document.createElement('label');
+        label.className = 'participant-card';
+        const checked = role.defaultRole && available(role);
+        label.innerHTML = `
+          <input type="checkbox" name="participants" value="${escapeHtml(role.id)}" ${checked ? 'checked' : ''} ${available(role) ? '' : 'disabled'} />
+          <span class="participant-copy">
+            <span class="participant-name-line"><span class="participant-name">${escapeHtml(role.name)}</span>${role.defaultRole ? '<span class="default-label">默认</span>' : ''}${available(role) ? '' : '<span class="status-badge warning">不可用</span>'}</span>
+            <span class="participant-meta">${available(role) ? (role.kind === 'model_family' ? escapeHtml(role.selectedModel) : '自定义角色 · Persona/Skills') : escapeHtml(role.unavailableReason || '没有可用模型')}</span>
+          </span>`;
+        label.querySelector('input').addEventListener('change', updateSelection);
+        return label;
+      }
+
+      function renderParticipants() {
+        familyParticipants.replaceChildren(...roles.filter((role) => role.kind === 'model_family').map(participantCard));
+        customParticipants.replaceChildren(...roles.filter((role) => role.kind === 'custom').map(participantCard));
+        updateSelection();
+      }
+
+      function updateSelection() {
+        const count = document.querySelectorAll('input[name="participants"]:checked').length;
+        selectionCount.textContent = String(count);
+        document.getElementById('create-conversation').disabled = count === 0;
+        if (count > 0) dialogError.classList.remove('visible');
+      }
+
+      function dialogFocusables() {
+        return Array.from(
+          document.querySelector('.new-chat-dialog').querySelectorAll(
+            'button:not([disabled]), input:not([disabled]), select:not([disabled]), [href], [tabindex]:not([tabindex="-1"])'
+          )
+        ).filter((element) => !element.closest('.hidden') && element.getClientRects().length > 0);
+      }
+
+      function openDialog({ empty = false } = {}) {
+        dialogReturnFocus = document.activeElement instanceof HTMLElement && document.activeElement !== document.body
+          ? document.activeElement
+          : document.getElementById('open-new-chat');
+        renderParticipants();
+        appShell.inert = true;
+        demoBar.inert = true;
+        backdrop.classList.remove('hidden');
+        backdrop.setAttribute('aria-hidden', 'false');
+        if (empty) {
+          document.querySelectorAll('input[name="participants"]:checked').forEach((input) => { input.checked = false; });
+          updateSelection();
+          dialogError.classList.add('visible');
+        }
+        document.getElementById('conversation-title').focus();
+      }
+
+      function closeDialog() {
+        if (backdrop.classList.contains('hidden')) return;
+        backdrop.classList.add('hidden');
+        backdrop.setAttribute('aria-hidden', 'true');
+        appShell.inert = false;
+        demoBar.inert = false;
+        dialogError.classList.remove('visible');
+        const restoreTarget = dialogReturnFocus && dialogReturnFocus.isConnected
+          ? dialogReturnFocus
+          : document.getElementById('open-new-chat');
+        dialogReturnFocus = null;
+        restoreTarget.focus();
+      }
+      function showToast(message) {
+        const toast = document.getElementById('toast');
+        toast.textContent = message;
+        toast.classList.remove('hidden');
+        window.clearTimeout(showToast.timer);
+        showToast.timer = window.setTimeout(() => toast.classList.add('hidden'), 2400);
+      }
+      function toggleTheme() {
+        const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+        document.documentElement.dataset.theme = next;
+        document.getElementById('theme-toggle').textContent = next === 'dark' ? '浅色' : '深色';
+      }
+
+      document.getElementById('open-new-chat').addEventListener('click', () => openDialog());
+      document.getElementById('close-dialog').addEventListener('click', closeDialog);
+      document.getElementById('cancel-dialog').addEventListener('click', closeDialog);
+      document.getElementById('clear-selection').addEventListener('click', () => {
+        document.querySelectorAll('input[name="participants"]:checked').forEach((input) => { input.checked = false; });
+        updateSelection();
+        dialogError.classList.add('visible');
+      });
+      document.getElementById('create-conversation').addEventListener('click', () => {
+        const count = document.querySelectorAll('input[name="participants"]:checked').length;
+        if (!count) { dialogError.classList.add('visible'); return; }
+        closeDialog();
+        showToast(`Design fixture：将创建包含 ${count} 位角色的普通聊天（未写入数据）`);
+      });
+      document.getElementById('conversation-type').addEventListener('change', (event) => {
+        const isStandard = event.target.value === 'standard';
+        dialogError.classList.remove('visible');
+        document.querySelector('.participant-picker').classList.toggle('hidden', !isStandard);
+        standardSelectionSummary.classList.toggle('hidden', !isStandard);
+        gameSelectionSummary.classList.toggle('hidden', isStandard);
+        if (isStandard) {
+          updateSelection();
+        } else {
+          document.getElementById('create-conversation').disabled = false;
+        }
+      });
+      document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
+      document.getElementById('rail-theme').addEventListener('click', toggleTheme);
+      rolesNav.addEventListener('click', () => switchManagementView('roles'));
+      providersNav.addEventListener('click', () => switchManagementView('providers'));
+      document.getElementById('refresh-providers').addEventListener('click', () => {
+        showToast('Design fixture：已刷新 provider 状态（未发起网络请求）');
+      });
+      document.getElementById('add-provider').addEventListener('click', () => {
+        openProviderDraft();
+      });
+      backdrop.addEventListener('click', (event) => { if (event.target === backdrop) closeDialog(); });
+      document.addEventListener('keydown', (event) => {
+        if (backdrop.classList.contains('hidden')) return;
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          closeDialog();
+          return;
+        }
+        if (event.key !== 'Tab') return;
+        const focusables = dialogFocusables();
+        if (focusables.length === 0) return;
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        } else if (!backdrop.contains(document.activeElement)) {
+          event.preventDefault();
+          first.focus();
+        }
+      });
+
+      document.querySelectorAll('[data-demo]').forEach((button) => {
+        button.addEventListener('click', () => {
+          document.querySelectorAll('[data-demo]').forEach((item) => item.classList.remove('active'));
+          button.classList.add('active');
+          const demo = button.dataset.demo;
+          if (demo === 'roles') { closeDialog(); switchManagementView('roles'); }
+          if (demo === 'providers') { closeDialog(); switchManagementView('providers'); }
+          if (demo === 'new-chat') { switchManagementView('roles', { syncDemo: false }); openDialog(); }
+          if (demo === 'empty') { switchManagementView('roles', { syncDemo: false }); openDialog({ empty: true }); }
+          if (demo === 'unavailable') { closeDialog(); switchManagementView('roles', { syncDemo: false }); selectedRoleId = 'role-family-qwen'; renderRoles(); }
+        });
+      });
+
+      renderRoles();
+      renderProviders();
+      const fixtureModes = new Set(location.hash.slice(1).split(',').filter(Boolean));
+      if (fixtureModes.has('clean')) document.documentElement.classList.add('clean');
+      if (fixtureModes.has('provider-locked')) switchManagementView('providers');
+      else if (fixtureModes.has('provider-new')) openProviderDraft();
+      else if (fixtureModes.has('providers')) switchManagementView('providers');
+      if (fixtureModes.has('unavailable')) { selectedRoleId = 'role-family-qwen'; renderRoles(); }
+      if (fixtureModes.has('new-chat')) openDialog();
+      if (fixtureModes.has('empty')) openDialog({ empty: true });
+      requestAnimationFrame(() => {
+        document.documentElement.dataset.viewport = `${window.innerWidth}x${window.innerHeight}`;
+        document.documentElement.dataset.scrollWidth = String(document.documentElement.scrollWidth);
+      });
+    </script>
+  </body>
+</html>
