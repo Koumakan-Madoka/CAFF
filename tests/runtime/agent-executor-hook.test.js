@@ -201,6 +201,97 @@ test('agent executor does not auto-inject long-term memory by default', async (t
   assert.match(capturedPrompt, /上次.*之前.*还记得吗.*回忆一下/u);
 });
 
+test('agent executor sends the prevalidated runtime config without env fallback or family Persona leakage', async (t) => {
+  const tempDir = withTempDir('caff-agent-executor-runtime-config-');
+  const minimalPiPath = require.resolve('../../build/lib/minimal-pi');
+  const agentExecutorPath = require.resolve('../../build/server/domain/conversation/turn/agent-executor');
+  const turnStatePath = require.resolve('../../build/server/domain/conversation/turn/turn-state');
+  const minimalPi = require(minimalPiPath);
+  const originalStartRun = minimalPi.startRun;
+  let captured = null;
+
+  minimalPi.startRun = (provider, model, prompt, options) => {
+    captured = { provider, model, prompt, options };
+    return createRunHandle('Done.');
+  };
+  delete require.cache[agentExecutorPath];
+
+  t.after(() => {
+    minimalPi.startRun = originalStartRun;
+    delete require.cache[agentExecutorPath];
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const { createAgentExecutor } = require(agentExecutorPath);
+  const { createTurnState } = require(turnStatePath);
+  const agent = {
+    id: 'role-family-gpt',
+    name: 'GPT',
+    description: 'GPT model-family collaborator.',
+    roleKind: 'model_family',
+    modelFamily: 'gpt',
+    personaPrompt: 'Contaminated family Persona.',
+    skillIds: ['contaminated-family-skill'],
+    runtimeConfig: {
+      profileId: 'max-effort',
+      profileName: 'Max effort',
+      provider: 'openai-runtime',
+      model: 'gpt-runtime',
+      thinking: 'max',
+      personaPrompt: '',
+      skillIds: [],
+    },
+  };
+  const conversation = {
+    id: 'conversation-runtime-config',
+    title: 'Runtime Config',
+    type: 'standard',
+    agents: [agent],
+    metadata: {},
+  };
+  const store = createFakeStore(conversation);
+  const executor = createAgentExecutor({
+    store,
+    skillRegistry: { resolveSkills: () => [] },
+    modeStore: { get: () => null },
+    agentToolBridge: createFakeAgentToolBridge(),
+    agentDir: tempDir,
+    sqlitePath: path.join(tempDir, 'chat.sqlite'),
+    toolBaseUrl: 'http://127.0.0.1:3100',
+    agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+  });
+  const turnState = createTurnState(conversation, 'turn-runtime-config');
+
+  await executor.executeConversationAgent({
+    runStore: createFakeRunStore(),
+    conversationId: conversation.id,
+    turnId: turnState.turnId,
+    rootTaskId: 'root-task-runtime-config',
+    conversation,
+    promptMessages: [{ role: 'user', content: 'Use the exact runtime configuration.' }],
+    promptUserMessage: { id: 'user-message-runtime-config', role: 'user', content: 'hello' },
+    queueItem: { triggerType: 'user', enqueueReason: 'user_mentions' },
+    agent,
+    turnState,
+    completedReplies: [],
+    failedReplies: [],
+    routingMode: 'mention_queue',
+    hop: 1,
+    remainingSlots: 0,
+    enqueueAgent() {},
+    allowHandoffs: true,
+    finalStopsTurn: true,
+    projectDir: tempDir,
+  });
+
+  assert.equal(captured.provider, 'openai-runtime');
+  assert.equal(captured.model, 'gpt-runtime');
+  assert.equal(captured.options.thinking, 'max');
+  assert.doesNotMatch(captured.prompt, /Contaminated family Persona|contaminated-family-skill/u);
+  assert.match(captured.prompt, /This is a model-family identity, not a fictional persona\./u);
+});
+
 test('agent executor completes the run after a successful public bridge post', async (t) => {
   const tempDir = withTempDir('caff-agent-executor-bridge-auto-final-');
   const minimalPiPath = require.resolve('../../build/lib/minimal-pi');

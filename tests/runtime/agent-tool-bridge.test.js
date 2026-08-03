@@ -10,7 +10,7 @@ const { markConversationRetrievalTraceUsage } = require('../../build/server/doma
 const { withTempDir } = require('../helpers/temp-dir');
 
 function createPublicInvocationFixture(store, suffix) {
-  const agent = store.saveAgent({
+  const agent = store.saveCustomRoleConfig({
     id: `bridge-agent-${suffix}`,
     name: `Bridge Agent ${suffix}`,
     personaPrompt: 'Reply briefly.',
@@ -1284,7 +1284,7 @@ test('agent tool search-messages returns scoped public recall results', (t) => {
   });
 
   const fixture = createPublicInvocationFixture(store, 'search');
-  const otherAgent = store.saveAgent({
+  const otherAgent = store.saveCustomRoleConfig({
     id: 'bridge-search-other-agent',
     name: 'Bridge Search Other Agent',
     personaPrompt: 'Reply briefly too.',
@@ -1645,7 +1645,7 @@ test('agent tool memory cards save durable local-user scope and stay agent-scope
   });
 
   const fixture = createPublicInvocationFixture(store, 'memory');
-  const otherAgent = store.saveAgent({
+  const otherAgent = store.saveCustomRoleConfig({
     id: 'bridge-memory-other-agent',
     name: 'Other Memory Agent',
     personaPrompt: 'Stay scoped.',
@@ -1913,7 +1913,7 @@ test('agent tool bridge routes memory writes to invocation store overrides', (t)
   });
 
   const fixture = createPublicInvocationFixture(liveStore, 'store-override');
-  isolatedStore.saveAgent({
+  isolatedStore.saveCustomRoleConfig({
     id: fixture.agent.id,
     name: fixture.agent.name,
     personaPrompt: 'Reply briefly.',

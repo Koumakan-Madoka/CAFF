@@ -9,10 +9,12 @@ const test = require('node:test');
 const { createChatAppStore } = require('../../build/lib/chat-app-store');
 const { createSkillRegistry } = require('../../build/lib/skill-registry');
 const { createServerApp } = require('../../build/server/app/create-server');
+const { createBootstrapPayloadBuilder } = require('../../build/server/api/bootstrap-payload');
 const { createConversationsController } = require('../../build/server/api/conversations-controller');
 const { createMemoryController } = require('../../build/server/api/memory-controller');
 const { maybeAutoCreateConversationDigest } = require('../../build/server/domain/conversation/conversation-digest');
 const { maybeAutoCreateConversationSkillDraft } = require('../../build/server/domain/conversation/skill-draft');
+const { createRoleService } = require('../../build/server/domain/roles/role-service');
 
 const { requireSpawn } = require('../helpers/spawn');
 const { withTempDir } = require('../helpers/temp-dir');
@@ -135,6 +137,30 @@ async function fetchJson(baseUrl, pathname, options = {}) {
   return data;
 }
 
+async function fetchJsonResponse(baseUrl, pathname, options = {}) {
+  const response = await fetch(`${baseUrl}${pathname}`, {
+    method: options.method || 'GET',
+    headers: {
+      Accept: 'application/json',
+      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+    },
+    body: options.body ? JSON.stringify(options.body) : undefined,
+  });
+  const text = await response.text();
+
+  return {
+    status: response.status,
+    json: text ? JSON.parse(text) : {},
+  };
+}
+
+function createSmokeConversation(store, input = {}) {
+  const hasExplicitParticipants = Array.isArray(input.participants) || Array.isArray(input.agentIds);
+  return store.createConversation(hasExplicitParticipants
+    ? input
+    : { ...input, participants: ['role-family-gpt'] });
+}
+
 async function invokeConversationsController(handler, options = {}) {
   const req = new PassThrough();
   req.method = options.method || 'GET';
@@ -214,13 +240,87 @@ function createConversationsControllerHarness(t, options = {}) {
   return { handler, store, broadcastEvents };
 }
 
+test('create server wires loopback model-provider administration with bootstrap CSRF', async (t) => {
+  const tempDir = withTempDir('caff-model-providers-server-');
+  const sqlitePath = path.join(tempDir, 'chat.sqlite');
+  const port = await findFreePort();
+  const baseUrl = `http://127.0.0.1:${port}`;
+  fs.writeFileSync(path.join(tempDir, 'models.json'), JSON.stringify({
+    providers: {
+      moonshotai: {
+        models: [{ id: 'kimi-k2.5', family: 'kimi' }],
+      },
+    },
+  }), 'utf8');
+  fs.writeFileSync(path.join(tempDir, 'auth.json'), JSON.stringify({
+    moonshotai: { type: 'api_key', key: 'external-auth-smoke-secret' },
+  }), 'utf8');
+  const app = createServerApp({
+    host: '127.0.0.1',
+    port,
+    agentDir: tempDir,
+    sqlitePath,
+    projectDir: tempDir,
+  });
+  let closed = false;
+
+  t.after(async () => {
+    if (!closed) {
+      await new Promise((resolve) => app.close(resolve));
+    }
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  await new Promise((resolve) => app.start(resolve));
+  const bootstrapResponse = await fetch(`${baseUrl}/api/bootstrap`);
+  const bootstrap = await bootstrapResponse.json();
+  const csrfToken = bootstrap.localAdmin.modelProviders.csrfToken;
+  assert.equal(bootstrap.localAdmin.modelProviders.enabled, true);
+  assert.ok(typeof csrfToken === 'string' && csrfToken.length >= 32);
+
+  const getResponse = await fetch(`${baseUrl}/api/model-providers`);
+  assert.equal(getResponse.status, 200);
+  const providers = await getResponse.json();
+  assert.equal(providers.providers[0].apiKeyMode, 'external');
+  assert.equal(providers.providers[0].hasExternalAuth, true);
+  assert.equal(JSON.stringify(providers).includes('external-auth-smoke-secret'), false);
+
+  const putResponse = await fetch(`${baseUrl}/api/model-providers/moonshotai`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      Origin: baseUrl,
+      'X-CAFF-CSRF-Token': csrfToken,
+    },
+    body: JSON.stringify({
+      name: 'Moonshot',
+      apiKeyMode: 'env',
+      apiKey: '',
+      models: [{ id: 'kimi-k2.5', name: 'Kimi Configured', family: 'kimi' }],
+    }),
+  });
+  assert.equal(putResponse.status, 200);
+  const updated = await putResponse.json();
+  assert.equal(updated.providers[0].name, 'Moonshot');
+  assert.equal(JSON.stringify(updated).includes('external-auth-smoke-secret'), false);
+
+  const refreshedBootstrap = await (await fetch(`${baseUrl}/api/bootstrap`)).json();
+  assert.equal(
+    refreshedBootstrap.modelOptions.find((option) => option.key === 'moonshotai\u001fkimi-k2.5').label,
+    'Kimi Configured'
+  );
+
+  await new Promise((resolve) => app.close(resolve));
+  closed = true;
+});
+
 test('conversations controller exposes bounded cursor pages without hydrating public messages in the conversation projection', async (t) => {
   const { handler, store } = createConversationsControllerHarness(t);
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'message-page-api-conversation',
     title: 'Message Page API Conversation',
   });
-  const otherConversation = store.createConversation({
+  const otherConversation = createSmokeConversation(store, {
     id: 'message-page-api-other',
     title: 'Other Message Page API Conversation',
   });
@@ -330,7 +430,7 @@ test('conversations controller exposes bounded cursor pages without hydrating pu
 
 test('conversations controller manages session goal lifecycle in metadata', async (t) => {
   const { handler, store, broadcastEvents } = createConversationsControllerHarness(t);
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'goal-conversation',
     title: 'Goal Conversation',
   });
@@ -418,7 +518,7 @@ test('conversations controller manages session goal lifecycle in metadata', asyn
 
 test('conversations controller applies default Trellis checklist when setting goal without checklist', async (t) => {
   const { handler, store } = createConversationsControllerHarness(t);
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'goal-default-checklist-conversation',
     title: 'Goal Default Checklist Conversation',
   });
@@ -444,7 +544,7 @@ test('conversations controller creates and deletes conversation digests in metad
       resolveSummaryMemoryTaskName: () => 'Conversation Digest Auto-Compaction v2',
     },
   });
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'digest-conversation',
     title: 'Digest Conversation',
   });
@@ -508,15 +608,15 @@ test('conversations controller creates and deletes conversation digests in metad
 
 test('memory controller searches summary segments and can exclude the active conversation', async (t) => {
   const { store } = createConversationsControllerHarness(t);
-  const currentConversation = store.createConversation({
+  const currentConversation = createSmokeConversation(store, {
     id: 'memory-search-current-conversation',
     title: 'Current Memory Conversation',
   });
-  const historicalConversation = store.createConversation({
+  const historicalConversation = createSmokeConversation(store, {
     id: 'memory-search-historical-conversation',
     title: 'Historical Memory Conversation',
   });
-  const otherHistoricalConversation = store.createConversation({
+  const otherHistoricalConversation = createSmokeConversation(store, {
     id: 'memory-search-other-historical-conversation',
     title: 'Other Historical Conversation',
   });
@@ -635,7 +735,7 @@ test('memory controller searches summary segments and can exclude the active con
 
 test('memory controller reports summary memory health and pending digest backfill', async (t) => {
   const { store } = createConversationsControllerHarness(t);
-  const legacyConversation = store.createConversation({
+  const legacyConversation = createSmokeConversation(store, {
     id: 'memory-health-legacy-conversation',
     title: 'Memory Health Legacy Conversation',
     metadata: {
@@ -707,7 +807,7 @@ test('memory controller reports summary memory health and pending digest backfil
 
 test('memory controller backfills legacy metadata digests into summary segments', async (t) => {
   const { store } = createConversationsControllerHarness(t);
-  const legacyConversation = store.createConversation({
+  const legacyConversation = createSmokeConversation(store, {
     id: 'memory-backfill-legacy-conversation',
     title: 'Legacy Digest Conversation',
     metadata: {
@@ -764,7 +864,7 @@ test('memory controller backfills legacy metadata digests into summary segments'
 
 test('memory controller reports backfill failures with digest reasons', async (t) => {
   const { store } = createConversationsControllerHarness(t);
-  const legacyConversation = store.createConversation({
+  const legacyConversation = createSmokeConversation(store, {
     id: 'memory-backfill-failure-conversation',
     title: 'Legacy Digest Failure Conversation',
     metadata: {
@@ -826,7 +926,7 @@ test('conversation digest auto-creates model summaries after the message budget'
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'digest-auto-create-conversation',
     title: 'Digest Auto Create Conversation',
   });
@@ -932,7 +1032,7 @@ test('auto skill draft model review can reject and records a stable skip', async
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'auto-skill-draft-review-reject-conversation',
     title: 'Auto Skill Draft Review Reject Conversation',
     metadata: {
@@ -1056,7 +1156,7 @@ test('auto skill draft model review skips missing decisions instead of approving
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'auto-skill-draft-review-missing-decision-conversation',
     title: 'Auto Skill Draft Review Missing Decision Conversation',
     metadata: {
@@ -1154,7 +1254,7 @@ test('auto skill draft model review creates drafts only after approval', async (
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'auto-skill-draft-review-create-conversation',
     title: 'Auto Skill Draft Review Create Conversation',
     metadata: {
@@ -1254,7 +1354,7 @@ test('auto skill draft rules skip weak reusable signals without model approval',
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'auto-skill-draft-weak-rules-conversation',
     title: 'Auto Skill Draft Weak Rules Conversation',
     metadata: {
@@ -1304,7 +1404,7 @@ test('auto skill draft model review skips digests without source-backed experien
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'auto-skill-draft-no-source-experience-conversation',
     title: 'Auto Skill Draft No Source Experience Conversation',
     metadata: {
@@ -1371,7 +1471,7 @@ test('auto skill draft review creates pending drafts from auto-created digests',
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'auto-skill-draft-conversation',
     title: 'Auto Skill Draft Conversation',
     metadata: {
@@ -1510,7 +1610,7 @@ test('create server auto-digest status announces pending experience absorption',
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const conversation = app.store.createConversation({
+  const conversation = createSmokeConversation(app.store, {
     id: 'auto-digest-status-conversation',
     title: 'Auto Digest Status Conversation',
     metadata: {
@@ -1621,7 +1721,7 @@ test('create server auto-digest status exposes model progress trace', async (t) 
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const conversation = app.store.createConversation({
+  const conversation = createSmokeConversation(app.store, {
     id: 'auto-digest-model-progress-conversation',
     title: 'Auto Digest Model Progress Conversation',
   });
@@ -1711,7 +1811,7 @@ test('create server auto-digest hook broadcasts auto skill draft updates', async
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const conversation = app.store.createConversation({
+  const conversation = createSmokeConversation(app.store, {
     id: 'auto-skill-draft-hook-conversation',
     title: 'Auto Skill Draft Hook Conversation',
     metadata: {
@@ -1775,7 +1875,7 @@ test('conversation digest auto-create falls back to digest timestamps when cover
   });
 
   const digestTimestamp = '2026-05-03T10:00:00.000Z';
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'digest-auto-create-missing-boundary-conversation',
     title: 'Digest Auto Create Missing Boundary Conversation',
     metadata: {
@@ -1872,7 +1972,7 @@ test('conversation digest auto-create respects idle, cooldown, and high-value ga
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const idleConversation = store.createConversation({
+  const idleConversation = createSmokeConversation(store, {
     id: 'digest-auto-create-idle-conversation',
     title: 'Digest Auto Create Idle Conversation',
   });
@@ -1904,7 +2004,7 @@ test('conversation digest auto-create respects idle, cooldown, and high-value ga
   assert.ok(idleResult.retryAfterMs > 0);
   assert.equal(store.getConversation(idleConversation.id).metadata.conversationDigestState.pendingPublicMessageCount, 4);
 
-  const gatedConversation = store.createConversation({
+  const gatedConversation = createSmokeConversation(store, {
     id: 'digest-auto-create-gated-conversation',
     title: 'Digest Auto Create Gated Conversation',
   });
@@ -1954,7 +2054,7 @@ test('conversation digest auto-create respects idle, cooldown, and high-value ga
   assert.equal(cooldownResult.pendingMessageCount, 4);
   assert.ok(cooldownResult.retryAfterMs > 0);
 
-  const highValueConversation = store.createConversation({
+  const highValueConversation = createSmokeConversation(store, {
     id: 'digest-auto-create-high-value-conversation',
     title: 'Digest Auto Create High Value Conversation',
   });
@@ -1988,7 +2088,7 @@ test('conversation digest auto-create respects idle, cooldown, and high-value ga
   assert.equal(highValueResult.signalFlags.fileArtifact, true);
   assert.equal(highValueResult.signalFlags.errorFix, true);
 
-  const weakSignalConversation = store.createConversation({
+  const weakSignalConversation = createSmokeConversation(store, {
     id: 'digest-auto-create-weak-signal-conversation',
     title: 'Digest Auto Create Weak Signal Conversation',
   });
@@ -2019,7 +2119,7 @@ test('conversation digest auto-create respects idle, cooldown, and high-value ga
   assert.equal(weakSignalResult.signalFlags.codeChange, false);
   assert.equal(weakSignalResult.signalFlags.code, false);
 
-  const experienceConversation = store.createConversation({
+  const experienceConversation = createSmokeConversation(store, {
     id: 'digest-auto-create-pending-experience-conversation',
     title: 'Digest Auto Create Pending Experience Conversation',
     metadata: {
@@ -2089,7 +2189,7 @@ test('conversation digest auto-create feeds existing auto-compaction', async (t)
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'digest-auto-create-compact-conversation',
     title: 'Digest Auto Create Compact Conversation',
   });
@@ -2129,7 +2229,7 @@ test('conversation digest auto-create feeds existing auto-compaction', async (t)
 
 test('conversations controller keeps extractive digest facts conservative', async (t) => {
   const { handler, store } = createConversationsControllerHarness(t);
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'digest-extractive-conservative-conversation',
     title: 'Digest Conservative Conversation',
   });
@@ -2188,7 +2288,7 @@ test('conversations controller creates model-generated conversation digests when
       };
     },
   });
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'digest-model-conversation',
     title: 'Digest Model Conversation',
   });
@@ -2271,7 +2371,7 @@ test('conversations controller accepts direct JSON mode digest output', async (t
       piAiModuleSpecifier: `data:text/javascript,${encodeURIComponent(moduleSource)}`,
     },
   });
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'digest-json-mode-conversation',
     title: 'Digest JSON Mode Conversation',
   });
@@ -2348,7 +2448,7 @@ test('conversations controller extracts JSON mode text when response includes th
       piAiModuleSpecifier: `data:text/javascript,${encodeURIComponent(moduleSource)}`,
     },
   });
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'digest-json-mode-thinking-text-conversation',
     title: 'Digest JSON Mode Thinking Text Conversation',
   });
@@ -2421,7 +2521,7 @@ test('conversations controller falls back when JSON mode digest output is missin
       piAiModuleSpecifier: `data:text/javascript,${encodeURIComponent(moduleSource)}`,
     },
   });
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'digest-json-mode-malformed-conversation',
     title: 'Digest JSON Mode Malformed Conversation',
   });
@@ -2486,7 +2586,7 @@ test('conversations controller falls back when JSON mode digest output is not an
       piAiModuleSpecifier: `data:text/javascript,${encodeURIComponent(moduleSource)}`,
     },
   });
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'digest-json-mode-bad-output-conversation',
     title: 'Digest JSON Mode Bad Output Conversation',
   });
@@ -2562,7 +2662,7 @@ test('conversations controller falls back when JSON mode assistant response has 
       piAiModuleSpecifier: `data:text/javascript,${encodeURIComponent(moduleSource)}`,
     },
   });
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'digest-json-mode-thinking-only-conversation',
     title: 'Digest JSON Mode Thinking Only Conversation',
   });
@@ -2636,7 +2736,7 @@ test('conversations controller falls back when JSON mode pi-ai module import fai
       piAiModuleSpecifier: 'caff-missing-pi-ai-module-for-test',
     },
   });
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'digest-json-mode-import-failure-conversation',
     title: 'Digest JSON Mode Import Failure Conversation',
   });
@@ -2742,7 +2842,7 @@ test('conversations controller builds a direct DeepSeek digest model from models
       piAiModuleSpecifier: `data:text/javascript,${encodeURIComponent(moduleSource)}`,
     },
   });
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'digest-json-mode-deepseek-fallback-conversation',
     title: 'Digest JSON Mode DeepSeek Fallback Conversation',
   });
@@ -2814,7 +2914,7 @@ test('conversations controller retries model digests with missing-escape diagnos
       });
     },
   });
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'digest-model-repair-conversation',
     title: 'Digest Model Repair Conversation',
   });
@@ -2864,7 +2964,7 @@ test('conversations controller falls back to extractive digests when model summa
       throw new Error('simulated digest model failure');
     },
   });
-  const throwingConversation = throwingHarness.store.createConversation({
+  const throwingConversation = createSmokeConversation(throwingHarness.store, {
     id: 'digest-model-throw-fallback-conversation',
     title: 'Digest Model Throw Fallback Conversation',
   });
@@ -2903,7 +3003,7 @@ test('conversations controller falls back to extractive digests when model summa
       return invalidRawOutput;
     },
   });
-  const invalidConversation = invalidHarness.store.createConversation({
+  const invalidConversation = createSmokeConversation(invalidHarness.store, {
     id: 'digest-model-invalid-fallback-conversation',
     title: 'Digest Model Invalid Fallback Conversation',
   });
@@ -2939,7 +3039,7 @@ test('conversations controller falls back to extractive digests when model summa
 
 test('conversations controller auto-compacts old conversation digests into a rollup', async (t) => {
   const { handler, store } = createConversationsControllerHarness(t);
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'digest-auto-compact-conversation',
     title: 'Digest Auto Compact Conversation',
   });
@@ -2980,7 +3080,7 @@ test('conversations controller auto-compacts old conversation digests into a rol
 
 test('conversations controller manually compacts digest entries', async (t) => {
   const { handler, store } = createConversationsControllerHarness(t);
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'digest-manual-compact-conversation',
     title: 'Digest Manual Compact Conversation',
   });
@@ -3039,7 +3139,7 @@ test('conversations controller uses model-generated rollups when manual compact 
       };
     },
   });
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'digest-model-rollup-conversation',
     title: 'Digest Model Rollup Conversation',
   });
@@ -3082,7 +3182,7 @@ test('conversations controller uses model-generated rollups when manual compact 
 test('conversations controller absorbs experience drafts into digest and skill drafts', async (t) => {
   const { handler, store } = createConversationsControllerHarness(t);
   const timestamp = new Date().toISOString();
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'experience-digest-conversation',
     title: 'Experience Digest Conversation',
     metadata: {
@@ -3164,7 +3264,7 @@ test('conversations controller absorbs experience drafts into digest and skill d
 
 test('conversations controller extracts and rejects skill drafts from digests', async (t) => {
   const { handler, store } = createConversationsControllerHarness(t);
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'skill-draft-extract-conversation',
     title: 'Skill Draft Extract Conversation',
     metadata: {
@@ -3248,7 +3348,7 @@ test('conversations controller creates model-generated skill drafts from digest 
       };
     },
   });
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'skill-draft-model-conversation',
     title: 'Skill Draft Model Conversation',
     metadata: {
@@ -3336,7 +3436,7 @@ test('conversations controller merges model skill drafts into existing project s
     fs.rmSync(projectDir, { recursive: true, force: true });
   });
 
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'skill-draft-merge-conversation',
     title: 'Skill Draft Merge Conversation',
     metadata: {
@@ -3408,7 +3508,7 @@ test('conversations controller falls back to rule skill drafts when model genera
       throw new Error('simulated skill draft model failure');
     },
   });
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'skill-draft-model-fallback-conversation',
     title: 'Skill Draft Model Fallback Conversation',
     metadata: {
@@ -3446,7 +3546,7 @@ test('conversations controller falls back to rule skill drafts when model genera
 
 test('conversations controller rejects skill extraction without reusable digest signals', async (t) => {
   const { handler, store } = createConversationsControllerHarness(t);
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'skill-draft-empty-digest-conversation',
     title: 'Skill Draft Empty Digest Conversation',
     metadata: {
@@ -3484,7 +3584,7 @@ test('conversations controller rejects skill extraction without reusable digest 
 
 test('conversations controller keeps skill draft metadata bounded', async (t) => {
   const { handler, store } = createConversationsControllerHarness(t);
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'skill-draft-bounded-conversation',
     title: 'Skill Draft Bounded Conversation',
     metadata: {
@@ -3554,7 +3654,7 @@ test('conversations controller rejects existing project skill files without over
     fs.rmSync(projectDir, { recursive: true, force: true });
   });
 
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'skill-draft-conflict-conversation',
     title: 'Skill Draft Conflict Conversation',
     metadata: {
@@ -3620,7 +3720,7 @@ test('conversations controller confirms skill drafts into active project skills'
     fs.rmSync(registryAgentDir, { recursive: true, force: true });
   });
 
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'skill-draft-confirm-conversation',
     title: 'Skill Draft Confirm Conversation',
     metadata: {
@@ -3679,7 +3779,7 @@ test('conversations controller confirms skill drafts into active project skills'
 
 test('conversations controller handles empty session goal clear', async (t) => {
   const { handler, store } = createConversationsControllerHarness(t);
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'goal-empty-clear-conversation',
     title: 'Goal Empty Clear Conversation',
   });
@@ -3698,7 +3798,7 @@ test('conversations controller handles empty session goal clear', async (t) => {
 
 test('conversations controller accepts and dismisses session goal proposals', async (t) => {
   const { handler, store, broadcastEvents } = createConversationsControllerHarness(t);
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'goal-proposal-conversation',
     title: 'Goal Proposal Conversation',
     metadata: {
@@ -3766,7 +3866,7 @@ test('conversations controller accepts and dismisses session goal proposals', as
 
 test('conversations controller rejects invalid session goal commands', async (t) => {
   const { handler, store } = createConversationsControllerHarness(t);
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'goal-invalid-conversation',
     title: 'Goal Invalid Conversation',
   });
@@ -3810,11 +3910,11 @@ test('conversations controller rejects invalid session goal commands', async (t)
 
 test('conversations controller lists known Feishu chats by recent activity', async (t) => {
   const { handler, store } = createConversationsControllerHarness(t);
-  const olderConversation = store.createConversation({
+  const olderConversation = createSmokeConversation(store, {
     id: 'feishu-known-chat-older',
     title: 'Older Feishu Chat',
   });
-  const newerConversation = store.createConversation({
+  const newerConversation = createSmokeConversation(store, {
     id: 'feishu-known-chat-newer',
     title: 'Newer Feishu Chat',
   });
@@ -3851,11 +3951,11 @@ test('conversations controller lists known Feishu chats by recent activity', asy
 
 test('conversations controller binds an existing Feishu chat to the selected conversation', async (t) => {
   const { handler, store } = createConversationsControllerHarness(t);
-  const firstConversation = store.createConversation({
+  const firstConversation = createSmokeConversation(store, {
     id: 'feishu-binding-source-conversation',
     title: 'Feishu Binding Source',
   });
-  const targetConversation = store.createConversation({
+  const targetConversation = createSmokeConversation(store, {
     id: 'feishu-binding-target-conversation',
     title: 'Feishu Binding Target',
   });
@@ -3888,7 +3988,7 @@ test('conversations controller binds an existing Feishu chat to the selected con
 
 test('conversations controller rejects Feishu binding without chatId', async (t) => {
   const { handler, store } = createConversationsControllerHarness(t);
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'feishu-binding-missing-chat-id',
     title: 'Feishu Binding Missing Chat Id',
   });
@@ -3936,7 +4036,7 @@ test('conversations controller rejects Feishu binding while conversation has act
       activeAgentSlots: [],
     },
   });
-  store.createConversation({
+  createSmokeConversation(store, {
     id: conversationId,
     title: 'Feishu Binding Busy',
   });
@@ -3974,7 +4074,7 @@ test('conversations controller rejects Feishu binding while conversation has an 
       activeAgentSlots: [],
     },
   });
-  store.createConversation({
+  createSmokeConversation(store, {
     id: conversationId,
     title: 'Feishu Binding Active Turn',
   });
@@ -3998,11 +4098,11 @@ test('conversations controller rejects Feishu binding while conversation has an 
 
 test('conversations controller rejects Feishu binding when target conversation is already bound elsewhere', async (t) => {
   const { handler, store } = createConversationsControllerHarness(t);
-  const sourceConversation = store.createConversation({
+  const sourceConversation = createSmokeConversation(store, {
     id: 'feishu-binding-conflict-source',
     title: 'Feishu Binding Conflict Source',
   });
-  const targetConversation = store.createConversation({
+  const targetConversation = createSmokeConversation(store, {
     id: 'feishu-binding-conflict-target',
     title: 'Feishu Binding Conflict Target',
   });
@@ -4400,6 +4500,459 @@ test('server smoke: bootstrap, static files, projects, skills, agents, and conve
   assert.equal(stderrText.trim(), '');
 });
 
+test('role API protects model-family roles and shares one availability projection', async (t) => {
+  const tempDir = withTempDir('caff-role-service-smoke-');
+  const sqlitePath = path.join(tempDir, 'roles.sqlite');
+  const port = await findFreePort();
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const modelOptions = [
+    {
+      key: 'openai\u001fgpt-test',
+      provider: 'openai',
+      model: 'gpt-test',
+      label: 'GPT Test',
+      source: 'runtime_registry',
+      sourceLabel: 'runtime registry',
+      family: 'gpt',
+      familySource: 'provider_alias',
+      supportedThinkingLevels: ['off', 'low', 'high', 'max'],
+    },
+    {
+      key: 'anthropic\u001fclaude-test',
+      provider: 'anthropic',
+      model: 'claude-test',
+      label: 'Claude Test',
+      source: 'runtime_registry',
+      sourceLabel: 'runtime registry',
+      family: 'claude',
+      familySource: 'provider_alias',
+      supportedThinkingLevels: ['off', 'low', 'high'],
+    },
+    {
+      key: 'moonshot\u001fkimi-k2.5',
+      provider: 'moonshot',
+      model: 'kimi-k2.5',
+      label: 'Kimi K2.5',
+      source: 'runtime_registry',
+      sourceLabel: 'runtime registry',
+      family: 'kimi',
+      familySource: 'provider_alias',
+      supportedThinkingLevels: ['off', 'minimal', 'low', 'medium', 'high'],
+    },
+  ];
+  const modelCatalog = {
+    getOptions() {
+      return structuredClone(modelOptions);
+    },
+    invalidate() {},
+  };
+  const app = createServerApp({
+    host: '127.0.0.1',
+    port,
+    agentDir: tempDir,
+    sqlitePath,
+    projectDir: tempDir,
+    modelCatalog,
+  });
+  let closed = false;
+
+  t.after(async () => {
+    if (!closed) {
+      await new Promise((resolve) => app.close(resolve));
+    }
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  await new Promise((resolve) => app.start(resolve));
+
+  const bootstrap = await fetchJson(baseUrl, '/api/bootstrap');
+  const directory = await fetchJson(baseUrl, '/api/agents');
+  assert.deepEqual(directory.modelOptions, bootstrap.modelOptions);
+  assert.deepEqual(directory.agents, bootstrap.agents);
+  assert.equal(directory.agents.length, 7);
+
+  const initialGpt = directory.agents.find((agent) => agent.id === 'role-family-gpt');
+  const initialQwen = directory.agents.find((agent) => agent.id === 'role-family-qwen');
+  assert.equal(initialGpt.systemManaged, true);
+  assert.deepEqual(initialGpt.editableFields, ['provider', 'model', 'thinking', 'modelProfiles', 'isDefaultChatRole']);
+  assert.deepEqual(initialGpt.availability, { status: 'default_model_missing', familyModelCount: 1 });
+  assert.deepEqual(initialQwen.availability, { status: 'no_family_models', familyModelCount: 0 });
+
+  const lockedUpdate = await fetchJsonResponse(baseUrl, '/api/agents/role-family-gpt', {
+    method: 'PUT',
+    body: { name: 'Not GPT' },
+  });
+  assert.equal(lockedUpdate.status, 422);
+  assert.equal(lockedUpdate.json.issues[0].code, 'role_locked_field');
+
+  for (const body of [
+    { personaPrompt: 'Pretend to be someone.' },
+    { skillIds: ['persona-skill'] },
+    {
+      modelProfiles: [{
+        id: 'persona-profile',
+        name: 'Persona profile',
+        provider: 'openai',
+        model: 'gpt-test',
+        personaPrompt: 'Override persona.',
+      }],
+    },
+  ]) {
+    const response = await fetchJsonResponse(baseUrl, '/api/agents/role-family-gpt', {
+      method: 'PUT',
+      body,
+    });
+    assert.equal(response.status, 422);
+    assert.match(response.json.issues[0].code, /^family_(?:persona|skills)_not_allowed$/u);
+  }
+
+  const providerMismatch = await fetchJsonResponse(baseUrl, '/api/agents/role-family-gpt', {
+    method: 'PUT',
+    body: { provider: 'anthropic', model: 'gpt-test' },
+  });
+  assert.equal(providerMismatch.status, 422);
+  assert.equal(providerMismatch.json.issues[0].code, 'provider_model_mismatch');
+
+  const crossFamily = await fetchJsonResponse(baseUrl, '/api/agents/role-family-gpt', {
+    method: 'PUT',
+    body: { provider: 'anthropic', model: 'claude-test' },
+  });
+  assert.equal(crossFamily.status, 422);
+  assert.equal(crossFamily.json.issues[0].code, 'model_out_of_family');
+
+  const unsupportedThinking = await fetchJsonResponse(baseUrl, '/api/agents/role-family-gpt', {
+    method: 'PUT',
+    body: { provider: 'openai', model: 'gpt-test', thinking: 'medium' },
+  });
+  assert.equal(unsupportedThinking.status, 422);
+  assert.equal(unsupportedThinking.json.issues[0].code, 'thinking_level_unsupported');
+  assert.equal(unsupportedThinking.json.issues[0].path, 'thinking');
+
+  const unsupportedProfileThinking = await fetchJsonResponse(baseUrl, '/api/agents/role-family-gpt', {
+    method: 'PUT',
+    body: {
+      provider: 'openai',
+      model: 'gpt-test',
+      modelProfiles: [{
+        id: 'bad-thinking',
+        name: 'Bad thinking',
+        provider: 'openai',
+        model: 'gpt-test',
+        thinking: 'medium',
+      }],
+    },
+  });
+  assert.equal(unsupportedProfileThinking.status, 422);
+  assert.equal(unsupportedProfileThinking.json.issues[0].code, 'thinking_level_unsupported');
+  assert.equal(unsupportedProfileThinking.json.issues[0].path, 'modelProfiles[0].thinking');
+
+  const duplicateProfileIds = await fetchJsonResponse(baseUrl, '/api/agents/role-family-gpt', {
+    method: 'PUT',
+    body: {
+      provider: 'openai',
+      model: 'gpt-test',
+      modelProfiles: [
+        { id: 'profile-2', name: 'Existing', provider: 'openai', model: 'gpt-test' },
+        { id: '', name: 'Generated collision', provider: 'openai', model: 'gpt-test' },
+      ],
+    },
+  });
+  assert.equal(duplicateProfileIds.status, 422);
+  assert.equal(duplicateProfileIds.json.issues[0].code, 'profile_id_duplicate');
+  assert.equal(duplicateProfileIds.json.issues[0].path, 'modelProfiles[1].id');
+
+  const unavailableDefault = await fetchJsonResponse(baseUrl, '/api/agents/role-family-qwen', {
+    method: 'PUT',
+    body: { isDefaultChatRole: true },
+  });
+  assert.equal(unavailableDefault.status, 422);
+  assert.equal(unavailableDefault.json.issues[0].code, 'role_default_unavailable');
+
+  const savedGpt = await fetchJson(baseUrl, '/api/agents/role-family-gpt', {
+    method: 'PUT',
+    body: {
+      provider: 'openai',
+      model: 'gpt-test',
+      thinking: 'high',
+      isDefaultChatRole: true,
+      modelProfiles: [{
+        id: 'gpt-max',
+        name: 'Max',
+        description: 'Maximum supported effort',
+        provider: 'openai',
+        model: 'gpt-test',
+        thinking: 'max',
+      }],
+    },
+  });
+  assert.equal(savedGpt.agent.provider, 'openai');
+  assert.equal(savedGpt.agent.model, 'gpt-test');
+  assert.equal(savedGpt.agent.isDefaultChatRole, true);
+  assert.deepEqual(savedGpt.agent.availability, { status: 'available', familyModelCount: 1 });
+
+  const savedClaude = await fetchJson(baseUrl, '/api/agents/role-family-claude', {
+    method: 'PUT',
+    body: {
+      provider: 'anthropic',
+      model: 'claude-test',
+      thinking: 'high',
+      isDefaultChatRole: true,
+    },
+  });
+  assert.equal(savedClaude.agent.isDefaultChatRole, true);
+  assert.equal(savedClaude.agents.filter((agent) => agent.isDefaultChatRole).length, 2);
+
+  const countRuntimeRows = (tableName) => {
+    const exists = app.store.db.prepare(
+      'SELECT 1 AS found FROM sqlite_master WHERE type = ? AND name = ? LIMIT 1'
+    ).get('table', tableName);
+    return exists ? app.store.db.prepare(`SELECT COUNT(*) AS count FROM ${tableName}`).get().count : 0;
+  };
+
+  const runtimeConversation = await fetchJson(baseUrl, '/api/conversations', {
+    method: 'POST',
+    body: {
+      title: 'Runtime role validation',
+      participants: ['role-family-gpt', 'role-family-claude'],
+    },
+  });
+  const runtimeGptOption = modelOptions.find((option) => option.key === 'openai\u001fgpt-test');
+  const runtimeClaudeOption = modelOptions.find((option) => option.key === 'anthropic\u001fclaude-test');
+  const originalRuntimeGptFamily = runtimeGptOption.family;
+  const originalRuntimeClaudeThinking = runtimeClaudeOption.supportedThinkingLevels;
+  const beforeRuntimeBlockCounts = {
+    messages: app.store.db.prepare('SELECT COUNT(*) AS count FROM chat_messages').get().count,
+    tasks: countRuntimeRows('a2a_tasks'),
+    runs: countRuntimeRows('runs'),
+  };
+
+  runtimeGptOption.family = 'claude';
+  runtimeClaudeOption.supportedThinkingLevels = ['off'];
+  const runtimeBlocked = await fetchJsonResponse(
+    baseUrl,
+    `/api/conversations/${encodeURIComponent(runtimeConversation.conversation.id)}/messages`,
+    {
+      method: 'POST',
+      body: { content: 'This turn must fail before creating artifacts.' },
+    }
+  );
+  assert.equal(runtimeBlocked.status, 409);
+  assert.deepEqual(
+    runtimeBlocked.json.issues.map((issue) => [issue.roleId, issue.availability.status]),
+    [
+      ['role-family-gpt', 'no_family_models'],
+      ['role-family-claude', 'thinking_level_unsupported'],
+    ]
+  );
+  assert.equal(app.store.db.prepare('SELECT COUNT(*) AS count FROM chat_messages').get().count, beforeRuntimeBlockCounts.messages);
+  assert.equal(countRuntimeRows('a2a_tasks'), beforeRuntimeBlockCounts.tasks);
+  assert.equal(countRuntimeRows('runs'), beforeRuntimeBlockCounts.runs);
+  runtimeGptOption.family = originalRuntimeGptFamily;
+  runtimeClaudeOption.supportedThinkingLevels = originalRuntimeClaudeThinking;
+
+  const staleProfileConversation = await fetchJson(baseUrl, '/api/conversations', {
+    method: 'POST',
+    body: {
+      title: 'Stale selected profile',
+      participants: [{ agentId: 'role-family-gpt', modelProfileId: 'gpt-max' }],
+    },
+  });
+  app.store.db.prepare('UPDATE chat_agents SET model_profiles_json = ? WHERE id = ?').run(
+    JSON.stringify([]),
+    'role-family-gpt'
+  );
+  assert.equal(
+    app.store.getConversation(staleProfileConversation.conversation.id).agents[0].selectedModelProfileId,
+    'gpt-max'
+  );
+  const beforeStaleProfileCounts = {
+    messages: app.store.db.prepare('SELECT COUNT(*) AS count FROM chat_messages').get().count,
+    tasks: countRuntimeRows('a2a_tasks'),
+    runs: countRuntimeRows('runs'),
+  };
+  const staleProfileBlocked = await fetchJsonResponse(
+    baseUrl,
+    `/api/conversations/${encodeURIComponent(staleProfileConversation.conversation.id)}/messages`,
+    {
+      method: 'POST',
+      body: { content: 'Do not silently fall back to the base model.' },
+    }
+  );
+  assert.equal(staleProfileBlocked.status, 409);
+  assert.equal(staleProfileBlocked.json.issues[0].code, 'participant_profile_invalid');
+  assert.equal(staleProfileBlocked.json.issues[0].availability.status, 'profile_missing');
+  assert.equal(app.store.db.prepare('SELECT COUNT(*) AS count FROM chat_messages').get().count, beforeStaleProfileCounts.messages);
+  assert.equal(countRuntimeRows('a2a_tasks'), beforeStaleProfileCounts.tasks);
+  assert.equal(countRuntimeRows('runs'), beforeStaleProfileCounts.runs);
+  app.store.db.prepare('UPDATE chat_agents SET model_profiles_json = ? WHERE id = ?').run(
+    JSON.stringify(savedGpt.agent.modelProfiles),
+    'role-family-gpt'
+  );
+
+  const familyPost = await fetchJsonResponse(baseUrl, '/api/agents', {
+    method: 'POST',
+    body: {
+      roleKind: 'model_family',
+      name: 'Injected family',
+    },
+  });
+  assert.equal(familyPost.status, 422);
+  assert.equal(familyPost.json.issues[0].code, 'custom_role_only');
+
+  const reservedIdPost = await fetchJsonResponse(baseUrl, '/api/agents', {
+    method: 'POST',
+    body: {
+      id: 'role-family-gpt',
+      name: 'Reserved ID',
+      personaPrompt: 'Should fail.',
+    },
+  });
+  assert.equal(reservedIdPost.status, 422);
+  assert.equal(reservedIdPost.json.issues[0].code, 'role_identity_not_reusable');
+
+  const custom = await fetchJson(baseUrl, '/api/agents', {
+    method: 'POST',
+    body: {
+      name: 'Cross-family custom role',
+      description: 'Keeps the existing custom-role surface.',
+      personaPrompt: 'Reply with a custom persona.',
+      provider: 'openai',
+      model: 'gpt-test',
+      thinking: 'low',
+      skillIds: ['custom-skill'],
+      isDefaultChatRole: true,
+      modelProfiles: [{
+        id: 'claude-profile',
+        name: 'Claude profile',
+        provider: 'anthropic',
+        model: 'claude-test',
+        thinking: 'high',
+        personaPrompt: 'Use the Claude-specific persona.',
+      }],
+    },
+  });
+  assert.equal(custom.agent.roleKind, 'custom');
+  assert.equal(custom.agent.systemManaged, false);
+  assert.deepEqual(custom.agent.skillIds, ['custom-skill']);
+  assert.equal(custom.agent.modelProfiles[0].personaPrompt, 'Use the Claude-specific persona.');
+  assert.equal(custom.agents.filter((agent) => agent.isDefaultChatRole).length, 3);
+
+  const customConversation = createSmokeConversation(app.store, {
+    id: 'custom-retirement-conversation',
+    title: 'Custom retirement',
+    participants: [custom.agent.id],
+  });
+  app.store.saveConversationMemoryCard(customConversation.id, custom.agent.id, {
+    title: 'Persistent memory',
+    content: 'Must survive custom role retirement.',
+  });
+
+  const retired = await fetchJson(baseUrl, `/api/agents/${encodeURIComponent(custom.agent.id)}`, {
+    method: 'DELETE',
+  });
+  assert.equal(retired.deletedId, custom.agent.id);
+  assert.equal(retired.agents.some((agent) => agent.id === custom.agent.id), false);
+  assert.equal(app.store.db.prepare('SELECT COUNT(*) AS count FROM chat_memory_cards WHERE agent_id = ?').get(custom.agent.id).count, 1);
+  assert.equal(app.store.db.prepare('SELECT lifecycle_state FROM chat_role_identities WHERE role_id = ?').get(custom.agent.id).lifecycle_state, 'retired');
+  assert.equal(app.store.db.prepare('SELECT COUNT(*) AS count FROM chat_conversation_agent_history WHERE role_id = ?').get(custom.agent.id).count, 1);
+
+  const gptOption = modelOptions.find((option) => option.key === 'openai\u001fgpt-test');
+  const alternateGptOption = {
+    ...gptOption,
+    key: 'openai\u001fgpt-alternate',
+    model: 'gpt-alternate',
+    label: 'GPT Alternate',
+    supportedThinkingLevels: ['off'],
+  };
+  modelOptions.push(alternateGptOption);
+  const readGptAvailability = async () => {
+    const payload = await fetchJson(baseUrl, '/api/agents');
+    return payload.agents.find((agent) => agent.id === 'role-family-gpt').availability;
+  };
+
+  modelOptions.splice(modelOptions.indexOf(gptOption), 1);
+  assert.deepEqual(await readGptAvailability(), {
+    status: 'default_model_missing',
+    familyModelCount: 1,
+  });
+  modelOptions.push(gptOption);
+
+  gptOption.family = 'claude';
+  assert.deepEqual(await readGptAvailability(), {
+    status: 'default_model_out_of_family',
+    familyModelCount: 1,
+    modelKey: 'openai\u001fgpt-test',
+  });
+  gptOption.family = 'gpt';
+
+  const originalGptThinkingLevels = gptOption.supportedThinkingLevels;
+  gptOption.supportedThinkingLevels = ['off'];
+  assert.deepEqual(await readGptAvailability(), {
+    status: 'thinking_level_unsupported',
+    familyModelCount: 2,
+    modelKey: 'openai\u001fgpt-test',
+  });
+  gptOption.supportedThinkingLevels = originalGptThinkingLevels;
+
+  const driftedProfile = {
+    id: 'drifted-profile',
+    name: 'Drifted profile',
+    description: '',
+    provider: 'openai',
+    model: 'gpt-profile',
+    thinking: 'high',
+    personaPrompt: '',
+  };
+  app.store.db.prepare('UPDATE chat_agents SET model_profiles_json = ? WHERE id = ?').run(
+    JSON.stringify([driftedProfile]),
+    'role-family-gpt'
+  );
+  assert.deepEqual(await readGptAvailability(), {
+    status: 'profile_model_missing',
+    familyModelCount: 2,
+    profileId: 'drifted-profile',
+  });
+
+  const driftedProfileOption = {
+    ...gptOption,
+    key: 'openai\u001fgpt-profile',
+    model: 'gpt-profile',
+    label: 'GPT Profile',
+    family: 'claude',
+  };
+  modelOptions.push(driftedProfileOption);
+  assert.deepEqual(await readGptAvailability(), {
+    status: 'profile_model_out_of_family',
+    familyModelCount: 2,
+    profileId: 'drifted-profile',
+  });
+
+  driftedProfileOption.family = 'gpt';
+  driftedProfileOption.supportedThinkingLevels = ['off'];
+  assert.deepEqual(await readGptAvailability(), {
+    status: 'thinking_level_unsupported',
+    familyModelCount: 3,
+    modelKey: 'openai\u001fgpt-profile',
+    profileId: 'drifted-profile',
+  });
+
+  app.store.db.prepare('UPDATE chat_agents SET model_profiles_json = ? WHERE id = ?').run(
+    JSON.stringify(savedGpt.agent.modelProfiles),
+    'role-family-gpt'
+  );
+  modelOptions.splice(modelOptions.indexOf(alternateGptOption), 1);
+  modelOptions.splice(modelOptions.indexOf(driftedProfileOption), 1);
+
+  const familyDelete = await fetchJsonResponse(baseUrl, '/api/agents/role-family-gpt', {
+    method: 'DELETE',
+  });
+  assert.equal(familyDelete.status, 409);
+  assert.equal(familyDelete.json.issues[0].code, 'system_role_delete_forbidden');
+
+  await new Promise((resolve) => app.close(resolve));
+  closed = true;
+});
+
 test('server smoke: pi-mono agent can initialize and write Trellis files for the active project', async (t) => {
   if (!requireSpawn(t)) {
     return;
@@ -4516,4 +5069,248 @@ test('server smoke: pi-mono agent can initialize and write Trellis files for the
   assert.equal(fs.readFileSync(currentTaskPath, 'utf8').trim(), '.trellis/tasks/pi-tool-smoke');
   assert.match(fs.readFileSync(prdPath, 'utf8'), /Verify that a pi-mono agent can call trellis-init and trellis-write/u);
   assert.equal(stderrText.trim(), '');
+});
+
+test('bootstrap leaves an empty conversation database untouched', (t) => {
+  const tempDir = withTempDir('caff-bootstrap-read-only-');
+  const sqlitePath = path.join(tempDir, 'chat.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const builder = createBootstrapPayloadBuilder({
+    store,
+    skillRegistry: { listSkills() { return []; } },
+    turnOrchestrator: { buildRuntimePayload() { return {}; } },
+    modeStore: { list() { return []; } },
+    modelCatalog: { getOptions() { return []; } },
+    roleService: {
+      getDirectory() {
+        return { agents: [], modelOptions: [] };
+      },
+    },
+  });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const payload = builder.buildBootstrapPayload();
+
+  assert.deepEqual(payload.conversations, []);
+  assert.equal(payload.selectedConversationId, null);
+  assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM chat_conversations').get().count, 0);
+  assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM chat_conversation_agents').get().count, 0);
+});
+
+test('conversation create validates the explicit roster and only merges mode skills into supplied participants', async (t) => {
+  const tempDir = withTempDir('caff-conversation-participant-policy-');
+  const sqlitePath = path.join(tempDir, 'chat.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const modelOptions = [
+    {
+      key: 'openai\u001fgpt-participant-test',
+      provider: 'openai',
+      model: 'gpt-participant-test',
+      label: 'GPT Participant Test',
+      family: 'gpt',
+      familySource: 'provider_alias',
+      supportedThinkingLevels: ['off', 'low', 'high'],
+    },
+    {
+      key: 'openai\u001fgpt-participant-recovery',
+      provider: 'openai',
+      model: 'gpt-participant-recovery',
+      label: 'GPT Participant Recovery',
+      family: 'gpt',
+      familySource: 'provider_alias',
+      supportedThinkingLevels: ['off', 'low', 'high'],
+    },
+    {
+      key: 'anthropic\u001fclaude-participant-test',
+      provider: 'anthropic',
+      model: 'claude-participant-test',
+      label: 'Claude Participant Test',
+      family: 'claude',
+      familySource: 'provider_alias',
+      supportedThinkingLevels: ['off', 'low', 'high'],
+    },
+    {
+      key: 'google\u001fgemini-participant-test',
+      provider: 'google',
+      model: 'gemini-participant-test',
+      label: 'Gemini Participant Test',
+      family: 'gemini',
+      familySource: 'provider_alias',
+      supportedThinkingLevels: ['off', 'low', 'high'],
+    },
+  ];
+  const modelCatalog = {
+    getOptions() {
+      return structuredClone(modelOptions);
+    },
+  };
+  const roleService = createRoleService({ store, modelCatalog });
+  roleService.updateRole('role-family-gpt', {
+    provider: 'openai',
+    model: 'gpt-participant-test',
+    modelProfiles: [{
+      id: 'high-effort',
+      name: 'High effort',
+      provider: 'openai',
+      model: 'gpt-participant-recovery',
+      thinking: 'high',
+    }],
+  });
+  roleService.updateRole('role-family-claude', {
+    provider: 'anthropic',
+    model: 'claude-participant-test',
+  });
+  roleService.updateRole('role-family-gemini', {
+    provider: 'google',
+    model: 'gemini-participant-test',
+  });
+  const controller = createConversationsController({
+    store,
+    roleService,
+    turnOrchestrator: {
+      buildRuntimePayload() { return {}; },
+      clearConversationState() {},
+    },
+    undercoverHost: { buildPublicState() { return null; } },
+    werewolfHost: { buildPublicState() { return null; } },
+    undercoverService: { prepareConversation(id) { return store.getConversation(id); }, deleteConversationState() {} },
+    werewolfService: { prepareConversation(id) { return store.getConversation(id); }, deleteConversationState() {} },
+    skillRegistry: {
+      getSkill(id) {
+        return id === 'tdd' ? { id: 'tdd', name: 'TDD' } : null;
+      },
+    },
+    modeStore: {
+      get(id) {
+        if (id === 'coding') return { id: 'coding', name: 'Coding', skillIds: ['mode-skill'] };
+        if (id === 'skill_test_design') return { id, name: 'Skill Test 设计', skillIds: ['skill-test-design-workbench'] };
+        return null;
+      },
+    },
+    broadcastEvent() {},
+  });
+  const assertCreateError = async (body, statusCode, code) => {
+    await assert.rejects(
+      () => invokeConversationsController(controller, {
+        method: 'POST',
+        pathname: '/api/conversations',
+        body,
+      }),
+      (error) => {
+        assert.equal(error.statusCode, statusCode);
+        assert.equal(error.issues[0].code, code);
+        return true;
+      }
+    );
+  };
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  await assertCreateError({ title: 'Missing roster' }, 400, 'participants_required');
+  await assertCreateError({ title: 'Empty roster', participants: [] }, 400, 'participants_required');
+  await assertCreateError({ title: 'Unknown roster', participants: ['missing-role'] }, 422, 'participant_role_unknown');
+  await assertCreateError({
+    title: 'Invalid profile',
+    participants: [{ agentId: 'role-family-gpt', modelProfileId: 'missing-profile' }],
+  }, 422, 'participant_profile_invalid');
+
+  const modeConversation = await invokeConversationsController(controller, {
+    method: 'POST',
+    pathname: '/api/conversations',
+    body: {
+      title: 'Explicit coding roster',
+      type: 'coding',
+      participants: [{ agentId: 'role-family-gpt', modelProfileId: 'high-effort' }],
+    },
+  });
+  assert.equal(modeConversation.statusCode, 201);
+  assert.equal(modeConversation.json.conversation.agents.length, 1);
+  assert.equal(modeConversation.json.conversation.agents[0].id, 'role-family-gpt');
+  assert.equal(modeConversation.json.conversation.agents[0].selectedModelProfileId, 'high-effort');
+  assert.deepEqual(modeConversation.json.conversation.agents[0].conversationSkillIds, ['mode-skill']);
+
+  const recoveryConversation = await invokeConversationsController(controller, {
+    method: 'POST',
+    pathname: '/api/conversations',
+    body: {
+      title: 'Recovery roster',
+      participants: [{ agentId: 'role-family-gpt' }],
+    },
+  });
+  assert.equal(recoveryConversation.statusCode, 201);
+
+  const removedBaseOption = modelOptions.splice(
+    modelOptions.findIndex((option) => option.model === 'gpt-participant-test'),
+    1
+  )[0];
+  const recoveredConversation = await invokeConversationsController(controller, {
+    method: 'PUT',
+    pathname: `/api/conversations/${recoveryConversation.json.conversation.id}`,
+    body: {
+      participants: [{ agentId: 'role-family-gpt', modelProfileId: 'high-effort' }],
+    },
+  });
+  assert.equal(recoveredConversation.statusCode, 200);
+  assert.equal(recoveredConversation.json.conversation.agents[0].selectedModelProfileId, 'high-effort');
+
+  await assertCreateError({
+    title: 'Unavailable new role with valid profile',
+    participants: [{ agentId: 'role-family-gpt', modelProfileId: 'high-effort' }],
+  }, 422, 'participant_role_unavailable');
+  modelOptions.push(removedBaseOption);
+
+  const gameConversation = await invokeConversationsController(controller, {
+    method: 'POST',
+    pathname: '/api/conversations',
+    body: {
+      title: 'Explicit game roster',
+      type: 'werewolf',
+      participants: ['role-family-gpt', 'role-family-gemini'],
+    },
+  });
+  assert.equal(gameConversation.statusCode, 201);
+  assert.deepEqual(gameConversation.json.conversation.agents.map((agent) => agent.id), [
+    'role-family-gpt',
+    'role-family-gemini',
+  ]);
+
+  const skillTestConversation = await invokeConversationsController(controller, {
+    method: 'POST',
+    pathname: '/api/conversations',
+    body: {
+      type: 'skill_test_design',
+      skillId: 'tdd',
+      participants: ['role-family-gpt', 'role-family-claude', 'role-family-gemini'],
+    },
+  });
+  assert.equal(skillTestConversation.statusCode, 201);
+  assert.deepEqual(skillTestConversation.json.conversation.agents.map((agent) => agent.id), [
+    'role-family-gpt',
+    'role-family-claude',
+    'role-family-gemini',
+  ]);
+  assert.deepEqual(skillTestConversation.json.conversation.metadata.skillTestDesign.participantRoles, {
+    'role-family-gpt': 'planner',
+    'role-family-claude': 'critic',
+    'role-family-gemini': 'scribe',
+  });
+  assert.equal(JSON.stringify(skillTestConversation.json.conversation).includes('agent-strategist'), false);
+
+  modelOptions.splice(0, modelOptions.length);
+  await assertCreateError({
+    title: 'Unavailable role',
+    participants: ['role-family-gpt'],
+  }, 422, 'participant_role_unavailable');
+  assert.equal(store.listConversations().length, 4);
 });

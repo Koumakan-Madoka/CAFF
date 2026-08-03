@@ -126,6 +126,69 @@ test('buildAgentTurnPrompt avoids raw @mention tokens from room context', () => 
   assert.doesNotMatch(prompt, /@agent-mecha-engineer/u);
 });
 
+test('model-family prompts omit Persona content and keep conversation skills', () => {
+  const agent = {
+    id: 'role-family-gpt',
+    name: 'GPT',
+    description: 'GPT model-family collaborator.',
+    roleKind: 'model_family',
+    modelFamily: 'gpt',
+    personaPrompt: 'This contaminated Persona must not be injected.',
+  };
+  const conversation = {
+    id: 'conversation-family-prompt',
+    title: 'Family Prompt',
+    type: 'standard',
+    agents: [agent],
+  };
+  const prompt = buildAgentTurnPrompt({
+    conversation,
+    agent,
+    agentConfig: {
+      profileName: 'Deep',
+      personaPrompt: 'This contaminated profile Persona must not be injected.',
+    },
+    resolvedPersonaSkills: [
+      {
+        id: 'family-persona-skill',
+        name: 'Forbidden Persona Skill',
+        description: 'Must not appear.',
+        body: 'FORBIDDEN FAMILY PERSONA SKILL BODY',
+        path: '/skills/family-persona-skill',
+      },
+    ],
+    resolvedConversationSkills: [
+      {
+        id: 'room-skill',
+        name: 'Room Skill',
+        description: 'Allowed conversation guidance.',
+        body: 'ALLOWED ROOM SKILL BODY',
+        path: '/skills/room-skill',
+      },
+    ],
+    sandbox: { sandboxDir: '/sandbox', privateDir: '/sandbox/private' },
+    agents: [agent],
+    messages: [],
+    privateMessages: [],
+    trigger: { triggerType: 'user', enqueueReason: 'default_first_agent' },
+    remainingSlots: 0,
+    routingMode: 'mention_queue',
+    allowHandoffs: true,
+    modeLoadingStrategy: 'full',
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+  });
+
+  assert.match(prompt, /This is a model-family identity, not a fictional persona\./u);
+  assert.match(prompt, /Your active runtime profile: Deep/u);
+  assert.match(prompt, /Stay consistent with this role's configured identity and instructions\./u);
+  assert.match(prompt, /ALLOWED ROOM SKILL BODY/u);
+  assert.doesNotMatch(prompt, /Your active persona profile:/u);
+  assert.doesNotMatch(prompt, /Private Persona Instructions/u);
+  assert.doesNotMatch(prompt, /Persona-Specific Skills/u);
+  assert.doesNotMatch(prompt, /contaminated Persona/u);
+  assert.doesNotMatch(prompt, /FORBIDDEN FAMILY PERSONA SKILL BODY/u);
+});
+
 test('buildAgentTurnPrompt omits optional sections with no material content', () => {
   const agent = {
     id: 'agent-empty-sections',
@@ -2591,6 +2654,92 @@ test('turn orchestrator queues user messages behind the active run and drains th
   assert.ok(seenBatches[0].promptMessages.some((content) => content.includes('First queued message')));
   assert.ok(seenBatches[0].promptMessages.every((content) => !content.includes('Second queued message')));
   assert.ok(seenBatches[1].promptMessages.some((content) => content.includes('Second queued message')));
+});
+
+test('turn orchestrator rejects runtime blockers before persisting messages, placeholders, or run tasks', { concurrency: false }, (t) => {
+  const tempDir = withTempDir('caff-runtime-role-blockers-');
+  const sqlitePath = path.join(tempDir, 'runtime-role-blockers.sqlite');
+  const conversation = {
+    id: 'conversation-runtime-role-blockers',
+    title: 'Blocked Conversation',
+    type: 'standard',
+    agents: [
+      { id: 'role-family-gpt', name: 'GPT', roleKind: 'model_family', modelFamily: 'gpt' },
+      { id: 'role-family-qwen', name: 'Qwen', roleKind: 'model_family', modelFamily: 'qwen' },
+    ],
+    messages: [],
+  };
+  let executeCount = 0;
+  let validationCount = 0;
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const store = {
+    databasePath: sqlitePath,
+    getConversation(conversationId) {
+      return conversationId === conversation.id ? conversation : null;
+    },
+    listConversations() {
+      return [];
+    },
+    createMessage(input) {
+      const message = { id: input.id || `message-${conversation.messages.length + 1}`, ...input };
+      conversation.messages.push(message);
+      return message;
+    },
+  };
+  const orchestrator = createTurnOrchestrator({
+    store,
+    skillRegistry: { listSkills() { return []; }, resolveSkills() { return []; } },
+    modeStore: { get() { return null; } },
+    agentToolBridge: {},
+    host: '127.0.0.1',
+    port: 0,
+    agentDir: tempDir,
+    sqlitePath,
+    toolBaseUrl: 'http://127.0.0.1:0',
+    agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
+    resolveRuntimeParticipants() {
+      validationCount += 1;
+      const error = new Error('Conversation participants are not currently runnable');
+      error.statusCode = 409;
+      error.code = 'conversation_participants_unavailable';
+      error.issues = [
+        {
+          code: 'participant_role_unavailable',
+          roleId: 'role-family-gpt',
+          availability: { status: 'default_model_missing' },
+        },
+        {
+          code: 'participant_role_unavailable',
+          roleId: 'role-family-qwen',
+          availability: { status: 'thinking_level_unsupported' },
+        },
+      ];
+      throw error;
+    },
+    executeConversationAgent: async () => {
+      executeCount += 1;
+      return { stopTurn: false };
+    },
+  });
+
+  assert.throws(
+    () => orchestrator.submitConversationMessage(conversation.id, { content: 'Do not partially start this turn' }),
+    (error) => {
+      assert.equal(error.statusCode, 409);
+      assert.equal(error.code, 'conversation_participants_unavailable');
+      assert.equal(error.issues.length, 2);
+      return true;
+    }
+  );
+  assert.equal(validationCount, 1);
+  assert.equal(executeCount, 0);
+  assert.equal(conversation.messages.length, 0);
+  assert.equal(fs.existsSync(sqlitePath), false);
+  assert.deepEqual(orchestrator.buildRuntimePayload().activeTurns, []);
 });
 
 test('turn orchestrator auto-continues active session goals until safety budget', { concurrency: false }, async (t) => {

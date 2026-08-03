@@ -174,7 +174,7 @@ export interface SkillTestStoreRef {
   databasePath?: string;
   close?(): void;
   getAgent(agentId: string): unknown;
-  saveAgent(agent: Record<string, unknown>): unknown;
+  saveCustomRoleConfig(agent: Record<string, unknown>): unknown;
   getConversation(conversationId: string): unknown;
   createConversation(conversation: Record<string, unknown>): unknown;
   getMessage(messageId: string): unknown;

@@ -12,11 +12,7 @@ export const SKILL_TEST_DESIGN_PHASES = {
   EXPORTED: 'exported',
 } as const;
 
-export const SKILL_TEST_DESIGN_FIXED_PARTICIPANTS = [
-  { agentId: 'agent-strategist', role: 'planner' },
-  { agentId: 'agent-critic', role: 'critic' },
-  { agentId: 'agent-builder', role: 'scribe' },
-] as const;
+export const SKILL_TEST_DESIGN_PARTICIPANT_ROLES = ['planner', 'critic', 'scribe'] as const;
 
 const VALID_PHASES = new Set(Object.values(SKILL_TEST_DESIGN_PHASES));
 const VALID_PRIORITIES = new Set(['P0', 'P1', 'P2']);
@@ -231,17 +227,14 @@ export function isSkillTestDesignConversation(value: any) {
   return Boolean(value && normalizeText(value.type) === SKILL_TEST_DESIGN_CONVERSATION_TYPE);
 }
 
-export function buildSkillTestDesignParticipantRoles() {
-  return Object.fromEntries(SKILL_TEST_DESIGN_FIXED_PARTICIPANTS.map((entry) => [entry.agentId, entry.role]));
-}
-
-export function buildSkillTestDesignParticipants(skillId: any) {
-  const normalizedSkillId = normalizeText(skillId);
-  return SKILL_TEST_DESIGN_FIXED_PARTICIPANTS.map((entry) => ({
-    agentId: entry.agentId,
-    modelProfileId: null,
-    conversationSkillIds: normalizedSkillId ? [normalizedSkillId] : [],
-  }));
+export function buildSkillTestDesignParticipantRoles(participants: any[] = []) {
+  const normalizedParticipants = Array.isArray(participants) ? participants : [];
+  return Object.fromEntries(
+    normalizedParticipants.slice(0, SKILL_TEST_DESIGN_PARTICIPANT_ROLES.length).map((participant, index) => [
+      normalizeText(participant && (participant.agentId || participant.id)),
+      SKILL_TEST_DESIGN_PARTICIPANT_ROLES[index],
+    ]).filter(([agentId]) => Boolean(agentId))
+  );
 }
 
 export function createSkillTestDesignMetadata(skill: any, overrides: any = {}) {
@@ -249,7 +242,7 @@ export function createSkillTestDesignMetadata(skill: any, overrides: any = {}) {
   const skillId = normalizeText(overrides.skillId || skill && skill.id);
   const skillName = normalizeText(overrides.skillName || skill && skill.name);
   const phase = normalizePhase(overrides.phase, SKILL_TEST_DESIGN_PHASES.COLLECTING_CONTEXT);
-  const participantRoles = buildSkillTestDesignParticipantRoles();
+  const participantRoles = buildSkillTestDesignParticipantRoles(overrides.participants);
 
   return {
     skillTestDesign: {
@@ -283,7 +276,7 @@ export function getSkillTestDesignState(conversation: any) {
 
   const participantRoles = rawState.participantRoles && typeof rawState.participantRoles === 'object'
     ? rawState.participantRoles
-    : buildSkillTestDesignParticipantRoles();
+    : buildSkillTestDesignParticipantRoles(Array.isArray(conversation && conversation.agents) ? conversation.agents : []);
 
   return {
     version: Number.isInteger(rawState.version) ? rawState.version : 1,

@@ -79,7 +79,7 @@
           dom.conversationModeBadge.textContent = '';
         }
 
-        dom.conversationMeta.textContent = '选择一个房间后，这里会显示参与人格和消息记录。';
+        dom.conversationMeta.textContent = '选择一个房间后，这里会显示参与角色和消息记录。';
         dom.deleteConversationButton.disabled = true;
         renderParticipantList(null);
         renderSkillDraftAlert(null);
@@ -107,8 +107,8 @@
       const privateCount = Array.isArray(conversation.privateMessages) ? conversation.privateMessages.length : 0;
       const totalMessageCount = timelineMessagesForConversation(conversation).length;
       let conversationMetaText = privateCount > 0
-        ? `${conversation.agents.length} 名人格 / ${totalMessageCount} 条消息（含 ${privateCount} 条私密消息）`
-        : `${conversation.agents.length} 名人格 / ${totalMessageCount} 条消息`;
+        ? `${conversation.agents.length} 名角色 / ${totalMessageCount} 条消息（含 ${privateCount} 条私密消息）`
+        : `${conversation.agents.length} 名角色 / ${totalMessageCount} 条消息`;
 
       if (isUndercoverConversation(conversation)) {
         const game = undercoverGameState(conversation);
@@ -161,7 +161,7 @@
           ? '停止中...'
           : '停止';
       dom.sendButton.disabled = !hasAgents || undercoverChatLocked || werewolfChatLocked;
-      dom.composerInput.placeholder = '输入 @Agent 可将当前消息路由给指定人格；输入 /goal 设置会话目标。';
+      dom.composerInput.placeholder = '输入 @Agent 可将当前消息路由给指定角色；输入 /goal 设置会话目标。';
 
       if (isUndercoverConversation(conversation)) {
         dom.composerInput.placeholder = canChatInUndercoverConversation(conversation)
@@ -195,12 +195,12 @@
         const stoppingCount = activeStages.filter((agent) => agent.status === 'running' || agent.status === 'terminating').length;
         dom.composerStatus.textContent =
           stoppingCount > 1
-            ? `正在停止 ${stoppingCount} 个活跃人格。${queuedUserCount > 0 ? ` 稍后会继续处理 ${queuedUserCount} 条补充消息。` : ''}`
+            ? `正在停止 ${stoppingCount} 个活跃角色。${queuedUserCount > 0 ? ` 稍后会继续处理 ${queuedUserCount} 条补充消息。` : ''}`
             : stoppingCount === 1
-              ? `正在安全停止当前人格。${queuedUserCount > 0 ? ` 稍后会继续处理 ${queuedUserCount} 条补充消息。` : ''}`
+              ? `正在安全停止当前角色。${queuedUserCount > 0 ? ` 稍后会继续处理 ${queuedUserCount} 条补充消息。` : ''}`
               : `正在安全停止当前回合。${queuedUserCount > 0 ? ` 稍后会继续处理 ${queuedUserCount} 条补充消息。` : ''}`;
       } else if (activeStages.length > 1) {
-        dom.composerStatus.textContent = `${activeStages.length} 名人格正在并行回复。${queuedUserSuffix}`;
+        dom.composerStatus.textContent = `${activeStages.length} 名角色正在并行回复。${queuedUserSuffix}`;
       } else if ((activeTurn && activeTurn.currentAgentId) || activeAgentSlots[0]) {
         const singleActiveSlot = activeAgentSlots[0] || null;
         const activeAgentId = activeTurn && activeTurn.currentAgentId ? activeTurn.currentAgentId : singleActiveSlot && singleActiveSlot.agentId;
@@ -247,15 +247,15 @@
       } else if (state.sending) {
         dom.composerStatus.textContent = '当前房间正在路由这一轮消息...';
       } else if (!hasAgents) {
-        dom.composerStatus.textContent = '先在右侧为本次对话选择至少一个人格。';
+        dom.composerStatus.textContent = '先在右侧为本次对话选择至少一个角色。';
       } else {
         const goalStatus = sessionGoalUtils.formatComposerStatus(
           sessionGoalUtils.goalForConversation(conversation),
           sessionGoalUtils.proposalForConversation(conversation)
         );
         dom.composerStatus.textContent = goalStatus
-          ? `可以通过 @Agent 把回合交给指定人格。${goalStatus}`
-          : '可以通过 @Agent 把回合交给指定人格。';
+          ? `可以通过 @Agent 把回合交给指定角色。${goalStatus}`
+          : '可以通过 @Agent 把回合交给指定角色。';
       }
 
       if (isUndercoverConversation(conversation) && !activeTurn && !state.sending && hasAgents) {

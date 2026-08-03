@@ -7,6 +7,7 @@ const { createChatAppStore } = require('../../build/lib/chat-app-store');
 const { ModeStore } = require('../../build/lib/mode-store');
 const { createFeishuLongConnectionSource } = require('../../build/server/domain/integrations/feishu/feishu-long-connection');
 const { createFeishuIntegrationService } = require('../../build/server/domain/integrations/feishu/feishu-service');
+const { createRoleService } = require('../../build/server/domain/roles/role-service');
 const { withTempDir } = require('../helpers/temp-dir');
 
 function createSilentLogger() {
@@ -136,6 +137,15 @@ test('feishu service processes long connection events without webhook token veri
   const tempDir = withTempDir('caff-feishu-long-connection-');
   const sqlitePath = path.join(tempDir, 'chat.sqlite');
   const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const defaultRole = store.saveCustomRoleConfig({
+    id: 'feishu-long-default-role',
+    name: 'Feishu Long Default Role',
+    personaPrompt: 'Handle long-connection messages.',
+  });
+  const roleService = createRoleService({
+    store,
+    modelCatalog: { getOptions() { return []; } },
+  });
   const calls = [];
   const client = {
     initialize() {
@@ -176,6 +186,8 @@ test('feishu service processes long connection events without webhook token veri
     store,
     turnOrchestrator,
     client,
+    defaultRoleIds: [defaultRole.id],
+    roleService,
     verificationToken: 'webhook-only-token',
     logger: createSilentLogger(),
   });
@@ -228,6 +240,15 @@ test('feishu service uses the configured Trellis Coding mode for new chats', asy
   const tempDir = withTempDir('caff-feishu-coding-mode-');
   const sqlitePath = path.join(tempDir, 'chat.sqlite');
   const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const defaultRole = store.saveCustomRoleConfig({
+    id: 'feishu-coding-default-role',
+    name: 'Feishu Coding Default Role',
+    personaPrompt: 'Handle Coding mode messages.',
+  });
+  const roleService = createRoleService({
+    store,
+    modelCatalog: { getOptions() { return []; } },
+  });
   const modeStore = new ModeStore(store.db);
   const codingMode = modeStore.save({
     id: 'custom-coding',
@@ -274,7 +295,9 @@ test('feishu service uses the configured Trellis Coding mode for new chats', asy
     store,
     turnOrchestrator,
     client,
+    defaultRoleIds: [defaultRole.id],
     modeStore,
+    roleService,
     verificationToken: 'webhook-only-token',
     logger: createSilentLogger(),
   });

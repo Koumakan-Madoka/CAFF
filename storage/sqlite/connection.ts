@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
 import Database = require('better-sqlite3');
@@ -143,16 +144,83 @@ export type OpenSqliteDatabaseOptions = {
   agentDir?: string;
   sqlitePath?: string;
   timeout?: number;
+  prepareChatSchemaMigration?: boolean;
+  chatSchemaBackupScriptPath?: string;
 };
 
 export type OpenSqliteDatabaseResult = {
   agentDir: string;
   databasePath: string;
   db: any;
+  chatSchemaBackupPath: string;
 };
 
+function hasLegacyChatAgentSchema(db: any) {
+  const table = db.prepare(`
+    SELECT name
+    FROM sqlite_master
+    WHERE type = 'table' AND name = 'chat_agents'
+    LIMIT 1
+  `).get();
+  if (!table) {
+    return false;
+  }
+  return !db.prepare('PRAGMA table_info(chat_agents)').all()
+    .some((column: any) => String(column.name) === 'role_kind');
+}
+
+function buildChatSchemaBackupPath(databaseFilePath: string) {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const basePath = `${databaseFilePath}.pre-model-family-roles.${timestamp}`;
+  let candidatePath = `${basePath}.bak`;
+  let suffix = 1;
+  while (fs.existsSync(candidatePath)) {
+    candidatePath = `${basePath}.${suffix}.bak`;
+    suffix += 1;
+  }
+  return candidatePath;
+}
+
+function createChatSchemaBackupSync(databaseFilePath: string, backupScriptPath?: string) {
+  const resolvedScriptPath = path.resolve(
+    String(backupScriptPath || '').trim()
+      || path.resolve(__dirname, '..', '..', 'scripts', 'chat-schema-backup.mjs')
+  );
+  const backupPath = buildChatSchemaBackupPath(databaseFilePath);
+  const result = spawnSync(process.execPath, [
+    resolvedScriptPath,
+    '--source',
+    databaseFilePath,
+    '--target',
+    backupPath,
+  ], {
+    encoding: 'utf8',
+    windowsHide: true,
+  });
+  if (result.status !== 0 || !fs.existsSync(backupPath)) {
+    const error: any = new Error('Chat schema backup failed');
+    error.code = 'chat_schema_backup_failed';
+    throw error;
+  }
+  return backupPath;
+}
+
+function configureDatabase(db: any) {
+  if (!db.readonly) {
+    db.pragma('journal_mode = WAL');
+    db.pragma('synchronous = NORMAL');
+  }
+  db.pragma('foreign_keys = ON');
+}
+
 export function openSqliteDatabase(options: OpenSqliteDatabaseOptions = {}): OpenSqliteDatabaseResult {
-  const { agentDir, sqlitePath, timeout = 5000 } = options;
+  const {
+    agentDir,
+    sqlitePath,
+    timeout = 5000,
+    prepareChatSchemaMigration = false,
+    chatSchemaBackupScriptPath,
+  } = options;
   const resolvedAgentDir = path.resolve(agentDir || process.cwd());
   const databasePath = resolveSqlitePath(resolvedAgentDir, sqlitePath);
   const openOptions = { timeout, ...resolveSqliteOpenOptions(sqlitePath || databasePath) };
@@ -164,21 +232,30 @@ export function openSqliteDatabase(options: OpenSqliteDatabaseOptions = {}): Ope
   }
 
   let db;
+  let chatSchemaBackupPath = '';
 
   try {
     db = new Database(openPath, openOptions);
+    configureDatabase(db);
 
-    if (!db.readonly) {
-      db.pragma('journal_mode = WAL');
-      db.pragma('synchronous = NORMAL');
+    if (
+      prepareChatSchemaMigration
+      && !db.readonly
+      && !isSpecialSqlitePath(databasePath)
+      && hasLegacyChatAgentSchema(db)
+    ) {
+      db.close();
+      db = null;
+      chatSchemaBackupPath = createChatSchemaBackupSync(openPath, chatSchemaBackupScriptPath);
+      db = new Database(openPath, openOptions);
+      configureDatabase(db);
     }
-
-    db.pragma('foreign_keys = ON');
 
     return {
       agentDir: resolvedAgentDir,
       databasePath,
       db,
+      chatSchemaBackupPath,
     };
   } catch (error) {
     try {

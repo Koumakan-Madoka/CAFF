@@ -562,7 +562,7 @@ test('assistant message tool trace summarizes session calls and redacts sensitiv
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const agent = store.saveAgent({
+  const agent = store.saveCustomRoleConfig({
     id: 'trace-agent',
     name: 'Trace Agent',
     personaPrompt: 'Reply briefly.',
@@ -707,7 +707,7 @@ test('assistant message tool trace exposes model usage calls and provider miss s
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const agent = store.saveAgent({
+  const agent = store.saveCustomRoleConfig({
     id: 'trace-agent-model-usage',
     name: 'Trace Agent',
     personaPrompt: 'Reply briefly.',
@@ -849,7 +849,7 @@ test('assistant message tool trace builds one merged timeline for session and br
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const agent = store.saveAgent({
+  const agent = store.saveCustomRoleConfig({
     id: 'trace-agent-merged',
     name: 'Trace Agent',
     personaPrompt: 'Reply briefly.',
@@ -982,7 +982,7 @@ test('assistant message tool trace infers the current tool while a task is still
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const agent = store.saveAgent({
+  const agent = store.saveCustomRoleConfig({
     id: 'trace-agent-running',
     name: 'Trace Agent',
     personaPrompt: 'Reply briefly.',
@@ -1182,7 +1182,7 @@ test('assistant message tool trace exposes failure context when task fails witho
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const agent = store.saveAgent({
+  const agent = store.saveCustomRoleConfig({
     id: 'trace-agent-task-failure',
     name: 'Trace Agent',
     personaPrompt: 'Reply briefly.',
@@ -1250,7 +1250,7 @@ test('assistant message tool trace keeps the newest bridge events when the task 
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const agent = store.saveAgent({
+  const agent = store.saveCustomRoleConfig({
     id: 'trace-agent-bridge-limit',
     name: 'Trace Agent',
     personaPrompt: 'Reply briefly.',

@@ -7,6 +7,7 @@ const test = require('node:test');
 const { createChatAppStore } = require('../../build/lib/chat-app-store');
 const { createFeishuController } = require('../../build/server/api/feishu-controller');
 const { createFeishuIntegrationService } = require('../../build/server/domain/integrations/feishu/feishu-service');
+const { createRoleService } = require('../../build/server/domain/roles/role-service');
 const { withTempDir } = require('../helpers/temp-dir');
 
 function createSilentLogger() {
@@ -20,6 +21,18 @@ function createFeishuTestHarness(t, options = {}) {
   const tempDir = withTempDir('caff-feishu-http-');
   const sqlitePath = path.join(tempDir, 'chat.sqlite');
   const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const defaultRole = store.saveCustomRoleConfig({
+    id: 'feishu-default-role',
+    name: 'Feishu Default Role',
+    personaPrompt: 'Handle explicitly configured Feishu conversations.',
+  });
+  const defaultRoleIds = Object.prototype.hasOwnProperty.call(options, 'defaultRoleIds')
+    ? options.defaultRoleIds
+    : [defaultRole.id];
+  const roleService = createRoleService({
+    store,
+    modelCatalog: { getOptions() { return []; } },
+  });
   const sentMessages = [];
   const calls = [];
   const client = {
@@ -67,6 +80,9 @@ function createFeishuTestHarness(t, options = {}) {
     store,
     turnOrchestrator,
     client,
+    defaultRoleIds,
+    modeStore: options.modeStore,
+    roleService,
     verificationToken: 'test-feishu-token',
     logger: createSilentLogger(),
   });
@@ -82,6 +98,7 @@ function createFeishuTestHarness(t, options = {}) {
   return {
     calls,
     controller,
+    defaultRole,
     sentMessages,
     store,
   };
@@ -436,4 +453,161 @@ test('feishu controller ignores bot self messages', async (t) => {
   assert.equal(selfResponse.statusCode, 200);
   assert.equal(selfResponse.json.ignored, 'self_message');
   assert.equal(calls.length, 0);
+});
+
+test('feishu new rooms use only configured default roles and merge mode skills into that explicit roster', async (t) => {
+  const modeStore = {
+    resolveCodingMode() {
+      return { id: 'coding', name: 'Coding', skillIds: ['feishu-mode-skill'] };
+    },
+  };
+  const { controller, defaultRole, store } = createFeishuTestHarness(t, { modeStore });
+  const response = await invokeWebhook(controller, {
+    header: {
+      token: 'test-feishu-token',
+      event_id: 'evt-feishu-policy-1',
+      event_type: 'im.message.receive_v1',
+    },
+    event: {
+      sender: {
+        sender_id: { open_id: 'ou-policy-user' },
+        sender_type: 'user',
+      },
+      message: {
+        message_id: 'om-policy-1',
+        chat_id: 'oc-policy-1',
+        chat_type: 'group',
+        message_type: 'text',
+        content: JSON.stringify({ text: 'hello explicit policy' }),
+      },
+    },
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.json.processed, true);
+  const binding = store.getConversationChannelBinding('feishu', 'oc-policy-1');
+  const conversation = store.getConversation(binding.conversationId);
+  assert.equal(conversation.type, 'coding');
+  assert.deepEqual(conversation.agents.map((agent) => agent.id), [defaultRole.id]);
+  assert.deepEqual(conversation.agents[0].conversationSkillIds, ['feishu-mode-skill']);
+});
+
+test('feishu new rooms return setup_required and write no conversation when default roles are missing or invalid', async (t) => {
+  const missingPolicy = createFeishuTestHarness(t, { defaultRoleIds: [] });
+  const missingResponse = await invokeWebhook(missingPolicy.controller, {
+    header: {
+      token: 'test-feishu-token',
+      event_id: 'evt-feishu-policy-missing',
+      event_type: 'im.message.receive_v1',
+    },
+    event: {
+      sender: {
+        sender_id: { open_id: 'ou-policy-missing' },
+        sender_type: 'user',
+      },
+      message: {
+        message_id: 'om-policy-missing',
+        chat_id: 'oc-policy-missing',
+        chat_type: 'p2p',
+        message_type: 'text',
+        content: JSON.stringify({ text: 'needs setup' }),
+      },
+    },
+  });
+
+  assert.equal(missingResponse.statusCode, 200);
+  assert.equal(missingResponse.json.status, 'setup_required');
+  assert.equal(missingResponse.json.reason, 'feishu_default_roles_required');
+  assert.equal(missingPolicy.calls.length, 0);
+  assert.equal(missingPolicy.store.listConversations().length, 0);
+  assert.equal(missingPolicy.store.listConversationChannelBindings('feishu').length, 0);
+
+  const invalidPolicy = createFeishuTestHarness(t, { defaultRoleIds: ['missing-role'] });
+  const invalidResponse = await invokeWebhook(invalidPolicy.controller, {
+    header: {
+      token: 'test-feishu-token',
+      event_id: 'evt-feishu-policy-invalid',
+      event_type: 'im.message.receive_v1',
+    },
+    event: {
+      sender: {
+        sender_id: { open_id: 'ou-policy-invalid' },
+        sender_type: 'user',
+      },
+      message: {
+        message_id: 'om-policy-invalid',
+        chat_id: 'oc-policy-invalid',
+        chat_type: 'p2p',
+        message_type: 'text',
+        content: JSON.stringify({ text: 'invalid setup' }),
+      },
+    },
+  });
+
+  assert.equal(invalidResponse.statusCode, 200);
+  assert.equal(invalidResponse.json.status, 'setup_required');
+  assert.equal(invalidResponse.json.reason, 'feishu_default_roles_invalid');
+  assert.equal(invalidResponse.json.issues[0].code, 'participant_role_unknown');
+  assert.equal(invalidPolicy.calls.length, 0);
+  assert.equal(invalidPolicy.store.listConversations().length, 0);
+  assert.equal(invalidPolicy.store.listConversationChannelBindings('feishu').length, 0);
+});
+
+test('feishu existing bindings keep their roster without defaults while slash-new requires setup', async (t) => {
+  const { controller, calls, defaultRole, store } = createFeishuTestHarness(t, { defaultRoleIds: [] });
+  const existingConversation = store.createConversation({
+    id: 'feishu-existing-roster',
+    title: 'Existing Feishu roster',
+    participants: [defaultRole.id],
+  });
+  store.createConversationChannelBinding({
+    platform: 'feishu',
+    externalChatId: 'oc-existing-roster',
+    conversationId: existingConversation.id,
+    metadata: { chatType: 'p2p' },
+  });
+  const buildPayload = (eventId, messageId, text) => ({
+    header: {
+      token: 'test-feishu-token',
+      event_id: eventId,
+      event_type: 'im.message.receive_v1',
+    },
+    event: {
+      sender: {
+        sender_id: { open_id: 'ou-existing-roster' },
+        sender_type: 'user',
+      },
+      message: {
+        message_id: messageId,
+        chat_id: 'oc-existing-roster',
+        chat_type: 'p2p',
+        message_type: 'text',
+        content: JSON.stringify({ text }),
+      },
+    },
+  });
+
+  const messageResponse = await invokeWebhook(controller, buildPayload(
+    'evt-existing-roster-message',
+    'om-existing-roster-message',
+    'continue existing room'
+  ));
+  assert.equal(messageResponse.json.processed, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].conversationId, existingConversation.id);
+  assert.deepEqual(store.getConversation(existingConversation.id).agents.map((agent) => agent.id), [defaultRole.id]);
+
+  const conversationCountBeforeNew = store.listConversations().length;
+  const newResponse = await invokeWebhook(controller, buildPayload(
+    'evt-existing-roster-new',
+    'om-existing-roster-new',
+    '/new'
+  ));
+  assert.equal(newResponse.json.status, 'setup_required');
+  assert.equal(newResponse.json.reason, 'feishu_default_roles_required');
+  assert.equal(store.listConversations().length, conversationCountBeforeNew);
+  assert.equal(
+    store.getConversationChannelBinding('feishu', 'oc-existing-roster').conversationId,
+    existingConversation.id
+  );
 });

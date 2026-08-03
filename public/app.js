@@ -67,11 +67,28 @@ if (!summaryMemoryUtils) {
 }
 
 const dom = {
+  appShell: /** @type {HTMLElement | null} */ (document.getElementById('app-shell')),
   runtimePill: /** @type {HTMLSpanElement | null} */ (document.getElementById('runtime-pill')),
   refreshButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('refresh-button')),
+  newConversationButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('open-new-conversation-button')),
+  newConversationBackdrop: /** @type {HTMLElement | null} */ (document.getElementById('new-conversation-backdrop')),
+  newConversationDialog: /** @type {HTMLElement | null} */ (document.getElementById('new-conversation-dialog')),
   newConversationForm: /** @type {HTMLFormElement | null} */ (document.getElementById('new-conversation-form')),
   newConversationTitle: /** @type {HTMLInputElement | null} */ (document.getElementById('new-conversation-title')),
   newConversationType: /** @type {HTMLSelectElement | null} */ (document.getElementById('new-conversation-type')),
+  newConversationSkillField: /** @type {HTMLElement | null} */ (document.getElementById('new-conversation-skill-field')),
+  newConversationSkill: /** @type {HTMLSelectElement | null} */ (document.getElementById('new-conversation-skill')),
+  newConversationClose: /** @type {HTMLButtonElement | null} */ (document.getElementById('new-conversation-close')),
+  newConversationCancel: /** @type {HTMLButtonElement | null} */ (document.getElementById('new-conversation-cancel')),
+  newConversationSubmit: /** @type {HTMLButtonElement | null} */ (document.getElementById('new-conversation-submit')),
+  newConversationClearSelection: /** @type {HTMLButtonElement | null} */ (document.getElementById('new-conversation-clear-selection')),
+  newConversationPolicyNote: /** @type {HTMLElement | null} */ (document.getElementById('new-conversation-policy-note')),
+  newConversationParticipantsTitle: /** @type {HTMLElement | null} */ (document.getElementById('new-conversation-participants-title')),
+  newConversationFamilyParticipants: /** @type {HTMLElement | null} */ (document.getElementById('new-conversation-family-participants')),
+  newConversationCustomParticipants: /** @type {HTMLElement | null} */ (document.getElementById('new-conversation-custom-participants')),
+  newConversationCustomGroup: /** @type {HTMLElement | null} */ (document.getElementById('new-conversation-custom-group')),
+  newConversationSelectionCount: /** @type {HTMLElement | null} */ (document.getElementById('new-conversation-selection-count')),
+  newConversationError: /** @type {HTMLElement | null} */ (document.getElementById('new-conversation-error')),
   conversationList: /** @type {HTMLDivElement | null} */ (document.getElementById('conversation-list')),
   conversationTitleDisplay: /** @type {HTMLElement | null} */ (document.getElementById('conversation-title-display')),
   conversationModeBadge: /** @type {HTMLElement | null} */ (document.getElementById('conversation-mode-badge')),
@@ -757,6 +774,13 @@ const noopConversationSettingsController = {
   toggleProfileSelector(..._args) {},
 };
 
+const noopNewConversationDialogController = {
+  bindEvents() {},
+  close() {},
+  open() {},
+  syncOptions() {},
+};
+
 let mentionMenuController = noopMentionMenuController;
 let conversationListRenderer = noopRenderer;
 let participantPaneRenderer = noopRenderer;
@@ -769,8 +793,24 @@ let sessionGoalPanelController = noopRenderer;
 let conversationDigestPanelController = noopRenderer;
 let summaryMemoryPanelController = noopRenderer;
 let conversationPaneRenderer = noopRenderer;
+let newConversationDialogController = noopNewConversationDialogController;
 
 function setupChatModules() {
+  newConversationDialogController =
+    typeof chatModules.createNewConversationDialogController === 'function'
+      ? chatModules.createNewConversationDialogController({
+          state,
+          dom,
+          helpers: {
+            createConversation(body) {
+              return fetchJson('/api/conversations', { method: 'POST', body });
+            },
+            onCreated: applyNewConversationResult,
+          },
+          showToast,
+        })
+      : noopNewConversationDialogController;
+
   mentionMenuController =
     typeof chatModules.createMentionMenuController === 'function'
       ? chatModules.createMentionMenuController({ state, dom })
@@ -786,6 +826,8 @@ function setupChatModules() {
             formatDateTime,
             isConversationBusy,
             normalizedSkillIds,
+            isRoleAvailable: modelOptionUtils.isRoleAvailable,
+            roleAvailabilityLabel: modelOptionUtils.roleAvailabilityLabel,
           },
           showToast,
         })
@@ -3187,7 +3229,7 @@ function renderAgentStudio() {
       name.textContent = agent.name;
       const description = document.createElement('div');
       description.className = 'muted';
-      description.textContent = `${agent.description || '未填写角色说明'} · ${Array.isArray(agent.modelProfiles) ? agent.modelProfiles.length : 0} 套模型人格`;
+      description.textContent = `${agent.description || '未填写角色说明'} · ${Array.isArray(agent.modelProfiles) ? agent.modelProfiles.length : 0} 套模型配置`;
       nameWrap.append(name, description);
 
       const avatar = buildAgentAvatarElement(agent, 'small');
@@ -3300,50 +3342,6 @@ async function loadEarlierMessages() {
   }
 }
 
-function populateModeSelect() {
-  const select = dom.newConversationType;
-  if (!select) return;
-
-  const currentValue = select.value;
-  select.innerHTML = '';
-
-  for (const mode of state.modes) {
-    const option = document.createElement('option');
-    option.value = mode.id;
-    option.textContent = mode.name;
-    select.appendChild(option);
-  }
-
-  // Restore previous selection if still valid
-  if (currentValue && state.modes.some((m) => m.id === currentValue)) {
-    select.value = currentValue;
-  } else if (state.modes.length > 0) {
-    select.value = state.modes[0].id;
-  }
-
-  toggleSkillTestDesignSkillSelect(select.value);
-}
-
-function toggleSkillTestDesignSkillSelect(selectedType) {
-  let skillSelect = document.getElementById('new-conversation-skill-select');
-  if (selectedType !== 'skill_test_design') {
-    if (skillSelect) skillSelect.remove();
-    return;
-  }
-  if (skillSelect) return; // Already present
-
-  skillSelect = document.createElement('select');
-  skillSelect.id = 'new-conversation-skill-select';
-  skillSelect.innerHTML = '<option value="">-- 选择目标 Skill --</option>';
-  for (const skill of state.skills) {
-    const opt = document.createElement('option');
-    opt.value = skill.id;
-    opt.textContent = skill.name || skill.id;
-    skillSelect.appendChild(opt);
-  }
-  dom.newConversationType.parentNode.insertBefore(skillSelect, dom.newConversationType.nextSibling);
-}
-
 async function refreshAll(preferredConversationId) {
   const data = await fetchJson('/api/bootstrap');
   state.runtime = data.runtime;
@@ -3354,7 +3352,7 @@ async function refreshAll(preferredConversationId) {
   state.conversations = data.conversations;
   await refreshKnownFeishuChats({ render: false });
 
-  populateModeSelect();
+  newConversationDialogController.syncOptions();
 
   const desiredConversationId =
     preferredConversationId && state.conversations.some((item) => item.id === preferredConversationId)
@@ -3391,6 +3389,25 @@ function mergeConversationSummary(summary) {
       ...summary,
     };
   }
+}
+
+function applyNewConversationResult(result) {
+  if (!result || !result.conversation) {
+    return;
+  }
+  state.conversations = Array.isArray(result.conversations) ? result.conversations : state.conversations;
+  state.selectedConversationId = result.conversation.id;
+  messageHistory.reset(state.messageHistory, result.conversation.id);
+  state.currentConversation = {
+    ...result.conversation,
+    messages: messageHistory.applyInitialPage(state.messageHistory, {
+      items: Array.isArray(result.conversation.messages) ? result.conversation.messages.slice(-50) : [],
+      nextCursor: null,
+      hasMore: false,
+    }),
+  };
+  renderAll();
+  syncToolTraceStatesWithConversation(state.currentConversation);
 }
 
 async function refreshConversationFromEvent(conversationId) {
@@ -3827,66 +3844,6 @@ function bindEvents() {
     try {
       await refreshAll(state.selectedConversationId);
       showToast('已刷新本地状态');
-    } catch (error) {
-      showToast(error.message);
-    }
-  });
-
-  if (dom.newConversationType) {
-    dom.newConversationType.addEventListener('change', (event) => {
-      const target = /** @type {HTMLSelectElement | null} */ (event.target instanceof HTMLSelectElement ? event.target : null);
-      toggleSkillTestDesignSkillSelect(target ? target.value : 'standard');
-    });
-  }
-
-  dom.newConversationForm.addEventListener('submit', async (event) => {
-    event.preventDefault();
-
-    try {
-      const conversationType = dom.newConversationType ? dom.newConversationType.value : 'standard';
-      const body = {
-        title: dom.newConversationTitle.value.trim(),
-        type: conversationType,
-      };
-
-      // For skill_test_design mode, require a skill selection
-      if (conversationType === 'skill_test_design') {
-        const skillSelect = /** @type {HTMLSelectElement | null} */ (document.getElementById('new-conversation-skill-select'));
-        if (!skillSelect || !skillSelect.value) {
-          showToast('Skill Test 设计模式需要选择一个目标 Skill');
-          return;
-        }
-        body.skillId = skillSelect.value;
-        body.metadata = {
-          skillTestDesign: {
-            skillId: skillSelect.value,
-          },
-        };
-      }
-
-      const result = await fetchJson('/api/conversations', {
-        method: 'POST',
-        body,
-      });
-      dom.newConversationTitle.value = '';
-      if (dom.newConversationType) {
-        dom.newConversationType.value = 'standard';
-        toggleSkillTestDesignSkillSelect(dom.newConversationType.value);
-      }
-      state.conversations = result.conversations;
-      state.selectedConversationId = result.conversation.id;
-      messageHistory.reset(state.messageHistory, result.conversation.id);
-      state.currentConversation = {
-        ...result.conversation,
-        messages: messageHistory.applyInitialPage(state.messageHistory, {
-          items: Array.isArray(result.conversation.messages) ? result.conversation.messages.slice(-50) : [],
-          nextCursor: null,
-          hasMore: false,
-        }),
-      };
-      renderAll();
-      syncToolTraceStatesWithConversation(state.currentConversation);
-      showToast('新会话已创建');
     } catch (error) {
       showToast(error.message);
     }
@@ -4571,12 +4528,12 @@ function bindEvents() {
     const payload = serializeAgentForm();
 
     if (!payload.name) {
-      showToast('人格名称不能为空');
+      showToast('角色名称不能为空');
       return;
     }
 
     if (!payload.personaPrompt) {
-      showToast('人格 Prompt 不能为空');
+      showToast('Persona Prompt 不能为空');
       return;
     }
 
@@ -4589,7 +4546,7 @@ function bindEvents() {
       await refreshAll(state.selectedConversationId);
       state.selectedAgentId = result.agent.id;
       renderAll();
-      showToast(payload.id ? '人格已更新' : '新人格已创建');
+      showToast(payload.id ? '角色已更新' : '新角色已创建');
     } catch (error) {
       showToast(error.message);
     }
@@ -4623,6 +4580,7 @@ function bindEvents() {
 
 async function init() {
   setupChatModules();
+  newConversationDialogController.bindEvents();
   mentionMenuController.bindEvents();
   conversationSettingsController.bindEvents();
   sessionGoalPanelController.bindEvents();

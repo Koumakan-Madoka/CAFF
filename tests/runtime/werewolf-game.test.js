@@ -451,7 +451,7 @@ test('werewolf vote parsing tolerates tool-call wrappers and ignores narrative f
   ];
 
   for (const agent of agents) {
-    store.saveAgent({
+    store.saveCustomRoleConfig({
       id: agent.id,
       name: agent.name,
       personaPrompt: 'Reply tersely.',
@@ -521,7 +521,7 @@ test('werewolf vote parsing does not fall back to @mentions when directives are 
   ];
 
   for (const agent of agents) {
-    store.saveAgent({
+    store.saveCustomRoleConfig({
       id: agent.id,
       name: agent.name,
       personaPrompt: 'Reply tersely.',
@@ -592,7 +592,7 @@ test('werewolf vote parsing supports emoji-prefixed names', async (t) => {
   ];
 
   for (const agent of agents) {
-    store.saveAgent({
+    store.saveCustomRoleConfig({
       id: agent.id,
       name: agent.name,
       personaPrompt: 'Reply tersely.',
@@ -658,7 +658,7 @@ test('werewolf vote mention fallback respects the last mention beyond 8 candidat
   }
 
   for (const agent of agents) {
-    store.saveAgent({
+    store.saveCustomRoleConfig({
       id: agent.id,
       name: agent.name,
       personaPrompt: 'Reply tersely.',

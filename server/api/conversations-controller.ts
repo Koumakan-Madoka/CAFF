@@ -21,7 +21,6 @@ import {
 import { buildAssistantMessageToolTrace } from '../domain/runtime/message-tool-trace';
 import {
   SKILL_TEST_DESIGN_CONVERSATION_TYPE,
-  buildSkillTestDesignParticipants,
   createSkillTestDesignMetadata,
   isSkillTestDesignConversation,
 } from '../domain/skill-test/chat-workbench-mode';
@@ -197,13 +196,29 @@ function buildSkillTestDesignConversationInput(body: any, skillRegistry: any) {
   const title = String(body && body.title || '').trim() || `Skill Test · ${String(skill.name || skill.id).trim() || skill.id}`;
   return {
     title,
-    participants: buildSkillTestDesignParticipants(skill.id),
-    metadata: createSkillTestDesignMetadata(skill),
+    skill,
   };
+}
+
+function assertSkillTestDesignParticipantCount(participants: any[]) {
+  if (participants.length === 3) {
+    return;
+  }
+  throw createHttpError(400, 'Skill Test 设计模式需要恰好选择 3 位角色', {
+    code: 'skill_test_participant_count_invalid',
+    issues: [{
+      code: 'skill_test_participant_count_invalid',
+      message: 'Skill Test 设计模式需要恰好选择 3 位角色，依次承担规划、评审和记录职责',
+      path: 'participants',
+      expectedCount: 3,
+      actualCount: participants.length,
+    }],
+  });
 }
 
 export function createConversationsController(options: any = {}): RouteHandler<ApiContext> {
   const store = options.store;
+  const roleService = options.roleService;
   const skillRegistry = options.skillRegistry;
   const projectManager = options.projectManager;
   const turnOrchestrator = options.turnOrchestrator;
@@ -242,6 +257,16 @@ export function createConversationsController(options: any = {}): RouteHandler<A
     },
   };
 
+  function validateConversationParticipants(input: any, validationOptions: any = {}) {
+    if (roleService && typeof roleService.validateConversationParticipants === 'function') {
+      return roleService.validateConversationParticipants(input, validationOptions);
+    }
+    if (store && typeof store.normalizeConversationParticipantsInput === 'function') {
+      return store.normalizeConversationParticipantsInput(input);
+    }
+    throw createHttpError(500, 'Conversation participant validation is unavailable');
+  }
+
   return async function handleConversationsRequest(context) {
     const { req, res, pathname, requestUrl } = context;
 
@@ -264,6 +289,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
 
       let metadata = body && body.metadata && typeof body.metadata === 'object' ? body.metadata : {};
       let conversationInput = body || {};
+      let skillTestSkill = null;
       if (conversationType === UNDERCOVER_CONVERSATION_TYPE) {
         metadata = {
           ...metadata,
@@ -276,15 +302,26 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         };
       } else if (conversationType === SKILL_TEST_DESIGN_CONVERSATION_TYPE) {
         const skillTestConversation = buildSkillTestDesignConversationInput(body, skillRegistry);
+        skillTestSkill = skillTestConversation.skill;
         conversationInput = {
           ...body,
           title: skillTestConversation.title,
-          participants: skillTestConversation.participants,
         };
-        metadata = skillTestConversation.metadata;
       }
 
-      // Merge mode skill bindings into participants
+      conversationInput = {
+        ...conversationInput,
+        participants: validateConversationParticipants(conversationInput),
+      };
+
+      if (conversationType === SKILL_TEST_DESIGN_CONVERSATION_TYPE) {
+        assertSkillTestDesignParticipantCount(conversationInput.participants);
+        metadata = createSkillTestDesignMetadata(skillTestSkill, {
+          participants: conversationInput.participants,
+        });
+      }
+
+      // Merge mode skill bindings only into the explicit participant roster.
       const mode = modeStore ? modeStore.get(conversationType) : null;
       const enrichedBody = mergeModeSkillIdsIntoParticipants(conversationInput, mode);
 
@@ -293,33 +330,6 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         type: conversationType,
         metadata,
       });
-
-      // If mode has skills but the request did not include participants,
-      // the default participants were created without mode skills.
-      // Inject mode skills into the newly created conversation's participants.
-      if (
-        mode
-        && Array.isArray(mode.skillIds) && mode.skillIds.length > 0
-        && !Array.isArray(conversationInput.participants)
-      ) {
-        const currentAgents = store.listConversationAgents(conversation.id);
-        const updatedParticipants = currentAgents.map((agent: any) => {
-          const existing = Array.isArray(agent.conversationSkillIds || agent.conversationSkills)
-            ? (agent.conversationSkillIds || agent.conversationSkills)
-            : [];
-          const merged = new Set([
-            ...existing.map((id: any) => String(id || '').trim()).filter(Boolean),
-            ...mode.skillIds,
-          ]);
-          return {
-            agentId: agent.id,
-            conversationSkillIds: Array.from(merged),
-          };
-        });
-        conversation = store.updateConversation(conversation.id, {
-          participants: updatedParticipants,
-        });
-      }
 
       if (conversation.type === UNDERCOVER_CONVERSATION_TYPE) {
         conversation = undercoverService.prepareConversation(conversation.id);
@@ -706,7 +716,20 @@ export function createConversationsController(options: any = {}): RouteHandler<A
           throw createHttpError(409, '请先重置当前狼人杀对局，再修改参与者');
         }
 
-        let conversation = store.updateConversation(conversationId, body);
+        // Omitting both roster fields means "leave participants unchanged".
+        // Callers that intend to replace or clear the roster must send an explicit array;
+        // the participant validator then rejects an empty final roster.
+        // Profile-based recovery is intentionally limited to IDs already persisted in this roster;
+        // request payloads cannot use this exception to add a new unavailable participant.
+        const recoverableRoleIds = new Set(
+          Array.isArray(existingConversation && existingConversation.agents)
+            ? existingConversation.agents.map((agent: any) => String(agent && agent.id || '').trim()).filter(Boolean)
+            : []
+        );
+        const validatedBody = (Array.isArray(body.participants) || Array.isArray(body.agentIds))
+          ? { ...body, participants: validateConversationParticipants(body, { recoverableRoleIds }) }
+          : body;
+        let conversation = store.updateConversation(conversationId, validatedBody);
 
         if (!conversation) {
           throw createHttpError(404, '会话不存在');

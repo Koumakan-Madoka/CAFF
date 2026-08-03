@@ -17,6 +17,29 @@ function asObject(value: any) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
 
+function hasOwn(value: any, key: string) {
+  return Boolean(value) && Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function normalizeRoleIds(value: any) {
+  const values = Array.isArray(value)
+    ? value
+    : String(value || '').split(',');
+  const seen = new Set<string>();
+  const roleIds = [] as string[];
+
+  for (const entry of values) {
+    const roleId = trimString(entry);
+    if (!roleId || seen.has(roleId)) {
+      continue;
+    }
+    seen.add(roleId);
+    roleIds.push(roleId);
+  }
+
+  return roleIds;
+}
+
 function safeParseJson(value: any) {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     return value;
@@ -189,6 +212,10 @@ export function createFeishuIntegrationService(options: any = {}) {
   const turnOrchestrator = options.turnOrchestrator;
   const client = options.client;
   const modeStore = options.modeStore;
+  const roleService = options.roleService;
+  const defaultRoleIds = normalizeRoleIds(
+    hasOwn(options, 'defaultRoleIds') ? options.defaultRoleIds : process.env.FEISHU_DEFAULT_ROLE_IDS
+  );
   const verificationToken = trimString(options.verificationToken || process.env.FEISHU_VERIFICATION_TOKEN);
   const logger = options.logger || console;
 
@@ -318,13 +345,68 @@ export function createFeishuIntegrationService(options: any = {}) {
     };
   }
 
-  function buildFeishuConversationInput(acceptedInbound: any) {
-    const mode = resolveFeishuConversationMode();
+  function resolveFeishuParticipantPolicy(mode: any) {
+    if (defaultRoleIds.length === 0) {
+      return {
+        ok: false,
+        reason: 'feishu_default_roles_required',
+        issues: [{
+          code: 'participants_required',
+          message: 'Configure at least one Feishu default role before creating external conversations',
+          path: 'defaultRoleIds',
+        }],
+      };
+    }
+    if (!roleService || typeof roleService.validateConversationParticipants !== 'function') {
+      return {
+        ok: false,
+        reason: 'feishu_default_roles_invalid',
+        issues: [{
+          code: 'participant_policy_unavailable',
+          message: 'Feishu participant policy validation is unavailable',
+          path: 'defaultRoleIds',
+        }],
+      };
+    }
 
+    try {
+      const participants = roleService.validateConversationParticipants({
+        participants: defaultRoleIds.map((agentId) => ({ agentId })),
+      });
+      const modeSkillIds = Array.isArray(mode?.skillIds)
+        ? mode.skillIds.map(trimString).filter(Boolean)
+        : [];
+      return {
+        ok: true,
+        participants: participants.map((participant: any) => ({
+          ...participant,
+          conversationSkillIds: Array.from(new Set([
+            ...(Array.isArray(participant.conversationSkills) ? participant.conversationSkills : []),
+            ...modeSkillIds,
+          ])),
+        })),
+      };
+    } catch (error) {
+      const errorValue = error as any;
+      return {
+        ok: false,
+        reason: 'feishu_default_roles_invalid',
+        issues: Array.isArray(errorValue?.issues) && errorValue.issues.length > 0
+          ? errorValue.issues
+          : [{
+              code: errorValue?.code || 'participant_policy_invalid',
+              message: getErrorMessage(errorValue),
+              path: 'defaultRoleIds',
+            }],
+      };
+    }
+  }
+
+  function buildFeishuConversationInput(acceptedInbound: any, mode: any, participants: any[]) {
     return {
       title: buildConversationTitle(String(acceptedInbound.chatType || ''), String(acceptedInbound.chatId || '')),
       type: trimString(mode && mode.id) || FEISHU_FALLBACK_CONVERSATION_TYPE,
-      defaultConversationSkillIds: Array.isArray(mode && mode.skillIds) ? mode.skillIds : [],
+      participants,
       metadata: {
         source: FEISHU_PLATFORM,
         feishu: {
@@ -335,8 +417,39 @@ export function createFeishuIntegrationService(options: any = {}) {
     };
   }
 
-  function bindNewConversationToFeishuChat(acceptedInbound: any, bindingMetadata: any = {}) {
-    const conversation = store.createConversation(buildFeishuConversationInput(acceptedInbound));
+  function markSetupRequired(reservedEvent: any, acceptedInbound: any, policy: any, command = '') {
+    store.updateExternalEvent(reservedEvent.id, {
+      metadata: {
+        chatId: acceptedInbound.chatId,
+        chatType: acceptedInbound.chatType,
+        ...(command ? { command } : {}),
+        eventType: acceptedInbound.eventType,
+        issues: policy.issues,
+        reason: policy.reason,
+        senderOpenId: acceptedInbound.senderOpenId || null,
+        status: 'setup_required',
+      },
+    });
+    return {
+      statusCode: 200,
+      payload: {
+        ok: true,
+        processed: false,
+        setupRequired: true,
+        status: 'setup_required',
+        reason: policy.reason,
+        issues: policy.issues,
+      },
+    };
+  }
+
+  function bindNewConversationToFeishuChat(
+    acceptedInbound: any,
+    mode: any,
+    participants: any[],
+    bindingMetadata: any = {}
+  ) {
+    const conversation = store.createConversation(buildFeishuConversationInput(acceptedInbound, mode, participants));
     const metadata = {
       chatType: acceptedInbound.chatType,
       ...bindingMetadata,
@@ -379,10 +492,24 @@ export function createFeishuIntegrationService(options: any = {}) {
   }
 
   async function handleNewConversationCommand(acceptedInbound: any, reservedEvent: any) {
+    const mode = resolveFeishuConversationMode();
+    const policy = resolveFeishuParticipantPolicy(mode);
+    if (!policy.ok) {
+      return markSetupRequired(
+        reservedEvent,
+        acceptedInbound,
+        policy,
+        FEISHU_NEW_CONVERSATION_COMMAND
+      );
+    }
+
     try {
-      const ensured = bindNewConversationToFeishuChat(acceptedInbound, {
-        command: FEISHU_NEW_CONVERSATION_COMMAND,
-      });
+      const ensured = bindNewConversationToFeishuChat(
+        acceptedInbound,
+        mode,
+        policy.participants,
+        { command: FEISHU_NEW_CONVERSATION_COMMAND }
+      );
       let confirmation = null as any;
 
       try {
@@ -484,14 +611,27 @@ export function createFeishuIntegrationService(options: any = {}) {
     let ensured = null as any;
 
     try {
-      ensured = store.getOrCreateExternalConversation({
-        platform: FEISHU_PLATFORM,
-        externalChatId: acceptedInbound.chatId,
-        ...buildFeishuConversationInput(acceptedInbound),
-        bindingMetadata: {
-          chatType: acceptedInbound.chatType,
-        },
-      });
+      const existingBinding = store.getConversationChannelBinding(FEISHU_PLATFORM, acceptedInbound.chatId);
+      if (existingBinding) {
+        ensured = {
+          binding: existingBinding,
+          conversation: store.getConversation(existingBinding.conversationId),
+        };
+      } else {
+        const mode = resolveFeishuConversationMode();
+        const policy = resolveFeishuParticipantPolicy(mode);
+        if (!policy.ok) {
+          return markSetupRequired(reservedEvent, acceptedInbound, policy);
+        }
+        ensured = store.getOrCreateExternalConversation({
+          platform: FEISHU_PLATFORM,
+          externalChatId: acceptedInbound.chatId,
+          ...buildFeishuConversationInput(acceptedInbound, mode, policy.participants),
+          bindingMetadata: {
+            chatType: acceptedInbound.chatType,
+          },
+        });
+      }
 
       const submission = turnOrchestrator.submitConversationMessage(ensured.conversation.id, {
         content: acceptedInbound.cleanedText,
