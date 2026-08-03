@@ -1,5 +1,6 @@
 const http = require('node:http');
 const path = require('node:path');
+const { randomBytes } = require('node:crypto');
 const { URL } = require('node:url');
 const { DEFAULT_AGENT_DIR, resolveSetting } = require('../../lib/minimal-pi');
 const { createChatAppStore } = require('../../lib/chat-app-store');
@@ -17,6 +18,7 @@ const { createEvalCasesController } = require('../api/eval-cases-controller');
 const { createFeishuController } = require('../api/feishu-controller');
 const { createMetricsController } = require('../api/metrics-controller');
 const { createMemoryController } = require('../api/memory-controller');
+const { createModelProvidersController } = require('../api/model-providers-controller');
 const { createProjectsController } = require('../api/projects-controller');
 const { createModesController } = require('../api/modes-controller');
 const { createSkillsController } = require('../api/skills-controller');
@@ -39,11 +41,13 @@ const { createConfiguredOpenSandboxFactory } = require('../domain/skill-test/ope
 const { createFeishuClient } = require('../domain/integrations/feishu/feishu-client');
 const { createFeishuIntegrationService } = require('../domain/integrations/feishu/feishu-service');
 const { createFeishuLongConnectionSource } = require('../domain/integrations/feishu/feishu-long-connection');
+const { readExternalAuthProviderIds } = require('../domain/models/external-provider-auth');
 const { createRouter } = require('../http/router');
 const { createSseBus } = require('../http/sse-bus');
 const { buildErrorJsonPayload, sendJson } = require('../http/response');
 const { serveStaticFile } = require('../http/static-file');
 const { createHttpError } = require('../http/http-errors');
+const { isLoopbackAddress } = require('../http/local-admin-guard');
 
 // resolveToolRelativePath is now imported from ../http/path-utils
 
@@ -82,6 +86,9 @@ export function createServerApp(options: any = {}) {
   const portValue = Number.isInteger(options.port) ? options.port : Number.parseInt(String(options.port || PORT), 10);
   const port = Number.isFinite(portValue) ? portValue : PORT;
   const toolBaseUrl = buildToolBaseUrl(host, port);
+  const providerConfigCsrfToken = String(options.providerConfigCsrfToken || '').trim()
+    || randomBytes(32).toString('base64url');
+  const providerConfigLocalEnabled = isLoopbackAddress(host);
   const agentDir = String(options.agentDir || '').trim() || resolveSetting('', process.env.PI_CODING_AGENT_DIR, DEFAULT_AGENT_DIR);
   const sqlitePath = String(options.sqlitePath || '').trim() || resolveSetting('', process.env.PI_SQLITE_PATH, '');
   const initialProjectDir = path.resolve(String(options.projectDir || '').trim() || process.cwd());
@@ -413,11 +420,18 @@ export function createServerApp(options: any = {}) {
     broadcastConversationSummary,
     agentDir,
   });
+  let server: any = null;
   const { buildBootstrapPayload, buildConfiguredModelOptions } = createBootstrapPayloadBuilder({
     store,
     skillRegistry,
     turnOrchestrator,
     modeStore,
+    localAdmin: () => ({
+      modelProviders: {
+        enabled: providerConfigLocalEnabled,
+        csrfToken: providerConfigLocalEnabled ? providerConfigCsrfToken : '',
+      },
+    }),
   });
   const router = createRouter([
     createBootstrapController({
@@ -434,6 +448,21 @@ export function createServerApp(options: any = {}) {
     createMemoryController({
       store,
       resolveCurrentTaskName: () => resolveCurrentTrellisTaskName({ startDir: activeProjectDir }),
+    }),
+    createModelProvidersController({
+      agentDir,
+      host,
+      port,
+      csrfToken: providerConfigCsrfToken,
+      getAuthority() {
+        const address = server && server.address();
+        const actualPort = address && typeof address === 'object' ? address.port : port;
+        return new URL(buildToolBaseUrl(host, actualPort)).host;
+      },
+      externalAuthProviderIds: options.externalAuthProviderIds !== undefined
+        ? options.externalAuthProviderIds
+        : () => readExternalAuthProviderIds(agentDir),
+      validateProvider: options.validateProvider,
     }),
     createEvalCasesController({
       store,
@@ -500,7 +529,7 @@ export function createServerApp(options: any = {}) {
     }),
   ]);
 
-  const server = http.createServer(async (req: any, res: any) => {
+  server = http.createServer(async (req: any, res: any) => {
     const requestUrl = new URL(req.url, `http://${req.headers.host || `${host}:${port}`}`);
 
     try {

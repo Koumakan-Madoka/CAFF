@@ -10,8 +10,10 @@ const MODEL_FAMILIES = new Set([
 
 const WRITABLE_SECRET_MODES = new Set(['literal', 'env', 'command']);
 const KNOWN_SECRET_MODES = new Set(['literal', 'env', 'command', 'external', 'none']);
-const ENV_REFERENCE_PATTERN = /^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})$/u;
 const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/u;
+const RESERVED_PROVIDER_IDS = new Set(['__proto__', 'constructor', 'prototype']);
+const UNSAFE_PROVIDER_ID_PATTERN = /[\u0000-\u001f\u007f/\\]/u;
+const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f]/u;
 
 type ApiKeyMode = 'literal' | 'env' | 'command' | 'external' | 'none';
 type JsonObject = Record<string, any>;
@@ -49,6 +51,27 @@ function hasCustomHeaders(value: any) {
   return isPlainObject(value) && Object.keys(value).length > 0;
 }
 
+function validateProviderId(providerId: string) {
+  if (
+    !providerId ||
+    providerId !== providerId.trim() ||
+    RESERVED_PROVIDER_IDS.has(providerId) ||
+    UNSAFE_PROVIDER_ID_PATTERN.test(providerId)
+  ) {
+    throw new ModelProviderConfigError('provider_id_invalid', `providers.${providerId}`);
+  }
+}
+
+function validateProtocol(value: any, path: string) {
+  if (
+    typeof value !== 'string' ||
+    !value.trim() ||
+    CONTROL_CHARACTER_PATTERN.test(value)
+  ) {
+    throw new ModelProviderConfigError('provider_protocol_invalid', path);
+  }
+}
+
 function requireProvider(document: JsonObject, providerId: string) {
   const provider = document.providers && document.providers[providerId];
 
@@ -59,8 +82,37 @@ function requireProvider(document: JsonObject, providerId: string) {
   return provider;
 }
 
+function hasEnvInterpolation(value: string) {
+  for (let index = 0; index < value.length; index += 1) {
+    if (value[index] !== '$') {
+      continue;
+    }
+
+    const next = value[index + 1];
+    if (next === '$' || next === '!') {
+      index += 1;
+      continue;
+    }
+
+    if (next === '{') {
+      const end = value.indexOf('}', index + 2);
+      if (end !== -1 && ENV_NAME_PATTERN.test(value.slice(index + 2, end))) {
+        return true;
+      }
+      continue;
+    }
+
+    if (/[A-Za-z_]/u.test(next || '')) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function normalizeEnvReference(value: string, path: string) {
-  let name = value.trim();
+  const text = value.trim();
+  let name = text;
 
   if (name.startsWith('${') && name.endsWith('}')) {
     name = name.slice(2, -1);
@@ -68,11 +120,15 @@ function normalizeEnvReference(value: string, path: string) {
     name = name.slice(1);
   }
 
-  if (!ENV_NAME_PATTERN.test(name)) {
-    throw new ModelProviderConfigError('provider_secret_env_invalid', path);
+  if (ENV_NAME_PATTERN.test(name)) {
+    return `$${name}`;
   }
 
-  return `$${name}`;
+  if (!text.startsWith('!') && hasEnvInterpolation(text)) {
+    return text;
+  }
+
+  throw new ModelProviderConfigError('provider_secret_env_invalid', path);
 }
 
 function normalizeCommandReference(value: string, path: string) {
@@ -118,7 +174,12 @@ function mergeModelEntries(existingModels: any[], incomingModels: any[]) {
 
     for (const field of ['id', 'name', 'api', 'baseUrl'] as const) {
       if (Object.hasOwn(input, field)) {
-        next[field] = normalizeText(input[field]);
+        const value = normalizeText(input[field]);
+        if (value) {
+          next[field] = value;
+        } else {
+          delete next[field];
+        }
       }
     }
 
@@ -146,7 +207,7 @@ export function detectApiKeyMode(value: any): Exclude<ApiKeyMode, 'external'> {
     return 'none';
   }
 
-  if (ENV_REFERENCE_PATTERN.test(text)) {
+  if (hasEnvInterpolation(text)) {
     return 'env';
   }
 
@@ -169,8 +230,14 @@ export function validateModelProviderDocument(document: any) {
   for (const [providerId, provider] of Object.entries(document.providers)) {
     const providerPath = `providers.${providerId}`;
 
-    if (!providerId || !isPlainObject(provider)) {
+    validateProviderId(providerId);
+
+    if (!isPlainObject(provider)) {
       throw new ModelProviderConfigError('provider_invalid', providerPath);
+    }
+
+    if (Object.hasOwn(provider, 'api')) {
+      validateProtocol(provider.api, `${providerPath}.api`);
     }
 
     const models = Object.hasOwn(provider, 'models') ? provider.models : [];
@@ -202,6 +269,10 @@ export function validateModelProviderDocument(document: any) {
         if (!MODEL_FAMILIES.has(family)) {
           throw new ModelProviderConfigError('model_family_invalid', `${modelPath}.family`);
         }
+      }
+
+      if (Object.hasOwn(model, 'api')) {
+        validateProtocol(model.api, `${modelPath}.api`);
       }
     }
   }
@@ -259,6 +330,7 @@ export function patchModelProvider(document: any, rawProviderId: any, patch: any
   if (!providerId) {
     throw new ModelProviderConfigError('provider_id_required', 'providerId');
   }
+  validateProviderId(providerId);
 
   if (!isPlainObject(patch)) {
     throw new ModelProviderConfigError('provider_patch_invalid', `providers.${providerId}`);
@@ -270,7 +342,12 @@ export function patchModelProvider(document: any, rawProviderId: any, patch: any
 
   for (const field of ['name', 'baseUrl', 'api'] as const) {
     if (Object.hasOwn(patch, field)) {
-      provider[field] = normalizeText(patch[field]);
+      const value = normalizeText(patch[field]);
+      if (value) {
+        provider[field] = value;
+      } else {
+        delete provider[field];
+      }
     }
   }
 

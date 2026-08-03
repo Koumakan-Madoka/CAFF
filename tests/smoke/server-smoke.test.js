@@ -214,6 +214,74 @@ function createConversationsControllerHarness(t, options = {}) {
   return { handler, store, broadcastEvents };
 }
 
+test('create server wires loopback model-provider administration with bootstrap CSRF', async (t) => {
+  const tempDir = withTempDir('caff-model-providers-server-');
+  const sqlitePath = path.join(tempDir, 'chat.sqlite');
+  const port = await findFreePort();
+  const baseUrl = `http://127.0.0.1:${port}`;
+  fs.writeFileSync(path.join(tempDir, 'models.json'), JSON.stringify({
+    providers: {
+      moonshot: {
+        models: [{ id: 'kimi-k2.5', family: 'kimi' }],
+      },
+    },
+  }), 'utf8');
+  fs.writeFileSync(path.join(tempDir, 'auth.json'), JSON.stringify({
+    moonshot: { type: 'api_key', key: 'external-auth-smoke-secret' },
+  }), 'utf8');
+  const app = createServerApp({
+    host: '127.0.0.1',
+    port,
+    agentDir: tempDir,
+    sqlitePath,
+    projectDir: tempDir,
+  });
+  let closed = false;
+
+  t.after(async () => {
+    if (!closed) {
+      await new Promise((resolve) => app.close(resolve));
+    }
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  await new Promise((resolve) => app.start(resolve));
+  const bootstrapResponse = await fetch(`${baseUrl}/api/bootstrap`);
+  const bootstrap = await bootstrapResponse.json();
+  const csrfToken = bootstrap.localAdmin.modelProviders.csrfToken;
+  assert.equal(bootstrap.localAdmin.modelProviders.enabled, true);
+  assert.ok(typeof csrfToken === 'string' && csrfToken.length >= 32);
+
+  const getResponse = await fetch(`${baseUrl}/api/model-providers`);
+  assert.equal(getResponse.status, 200);
+  const providers = await getResponse.json();
+  assert.equal(providers.providers[0].apiKeyMode, 'external');
+  assert.equal(providers.providers[0].hasExternalAuth, true);
+  assert.equal(JSON.stringify(providers).includes('external-auth-smoke-secret'), false);
+
+  const putResponse = await fetch(`${baseUrl}/api/model-providers/moonshot`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      Origin: baseUrl,
+      'X-CAFF-CSRF-Token': csrfToken,
+    },
+    body: JSON.stringify({
+      name: 'Moonshot',
+      apiKeyMode: 'env',
+      apiKey: '',
+      models: [{ id: 'kimi-k2.5', family: 'kimi' }],
+    }),
+  });
+  assert.equal(putResponse.status, 200);
+  const updated = await putResponse.json();
+  assert.equal(updated.providers[0].name, 'Moonshot');
+  assert.equal(JSON.stringify(updated).includes('external-auth-smoke-secret'), false);
+
+  await new Promise((resolve) => app.close(resolve));
+  closed = true;
+});
+
 test('conversations controller exposes bounded cursor pages without hydrating public messages in the conversation projection', async (t) => {
   const { handler, store } = createConversationsControllerHarness(t);
   const conversation = store.createConversation({

@@ -41,7 +41,7 @@ function resolveRepoRoot() {
   return findRepoRoot(process.cwd()) || findRepoRoot(String(config.ROOT_DIR || '')) || process.cwd();
 }
 
-export function createBootstrapPayloadBuilder({ store, skillRegistry, turnOrchestrator, modeStore }: any) {
+export function createBootstrapPayloadBuilder({ store, skillRegistry, turnOrchestrator, modeStore, localAdmin }: any) {
   const repoRoot = resolveRepoRoot();
 
   function readConfiguredModelsFile() {
@@ -145,6 +145,7 @@ export function createBootstrapPayloadBuilder({ store, skillRegistry, turnOrches
     const selectedConversationId = starterConversation ? starterConversation.id : conversations[0] ? conversations[0].id : null;
 
     return {
+      localAdmin: typeof localAdmin === 'function' ? localAdmin() : localAdmin || {},
       runtime: turnOrchestrator.buildRuntimePayload(),
       modelOptions: buildConfiguredModelOptions(),
       agents: store.listAgents(),

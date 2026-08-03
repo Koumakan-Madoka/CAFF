@@ -54,6 +54,10 @@ test('detectApiKeyMode distinguishes literal, env, command, and none without exp
   assert.equal(detectApiKeyMode('literal-secret'), 'literal');
   assert.equal(detectApiKeyMode('$DEEPSEEK_API_KEY'), 'env');
   assert.equal(detectApiKeyMode('${DEEPSEEK_API_KEY}'), 'env');
+  assert.equal(detectApiKeyMode('${KEY_PREFIX}_${KEY_SUFFIX}'), 'env');
+  assert.equal(detectApiKeyMode('Bearer $DEEPSEEK_API_KEY'), 'env');
+  assert.equal(detectApiKeyMode('$$literal-dollar-prefix'), 'literal');
+  assert.equal(detectApiKeyMode('$!literal-bang-prefix'), 'literal');
   assert.equal(detectApiKeyMode('!secret-tool --token embedded-value'), 'command');
 });
 
@@ -178,7 +182,14 @@ test('provider patch requires a new secret when changing auth mode and normalize
   });
   assert.equal(envDocument.providers.zhipu.apiKey, '$ZHIPU_API_KEY');
 
-  const commandDocument = patchModelProvider(envDocument, 'zhipu', {
+  const interpolatedEnvDocument = patchModelProvider(envDocument, 'zhipu', {
+    apiKeyMode: 'env',
+    apiKey: '${KEY_PREFIX}_${KEY_SUFFIX}',
+    models: [{ id: 'glm-5', family: 'glm' }],
+  });
+  assert.equal(interpolatedEnvDocument.providers.zhipu.apiKey, '${KEY_PREFIX}_${KEY_SUFFIX}');
+
+  const commandDocument = patchModelProvider(interpolatedEnvDocument, 'zhipu', {
     apiKeyMode: 'command',
     apiKey: 'resolve-zhipu-key',
     models: [{ id: 'glm-5', family: 'glm' }],
@@ -231,4 +242,84 @@ test('document validation rejects duplicate model ids and invalid explicit famil
       error.code === 'model_family_invalid' &&
       error.path === 'providers.moonshot.models[0].family'
   );
+});
+
+test('provider ids preserve Pi case semantics but reject reserved, routed, and control-bearing keys', () => {
+  assert.doesNotThrow(() => validateModelProviderDocument({
+    providers: {
+      CustomProvider: { models: [{ id: 'model-a' }] },
+      customprovider: { models: [{ id: 'model-b' }] },
+    },
+  }));
+
+  for (const providerId of ['__proto__', 'constructor', 'prototype', 'bad/provider', 'bad\\provider', 'bad\u001fprovider']) {
+    const providers = Object.create(null);
+    providers[providerId] = { models: [] };
+    const document = { providers };
+    assert.throws(
+      () => validateModelProviderDocument(document),
+      (error) =>
+        error instanceof ModelProviderConfigError &&
+        error.code === 'provider_id_invalid' &&
+        error.path === `providers.${providerId}`
+    );
+  }
+});
+
+test('provider and model protocols allow extension APIs but reject malformed strings', () => {
+  assert.doesNotThrow(() => validateModelProviderDocument({
+    providers: {
+      extension: {
+        api: 'custom-stream-v2',
+        models: [{ id: 'extension-model', api: 'custom-model-api' }],
+      },
+    },
+  }));
+
+  for (const [document, expectedPath] of [
+    [{ providers: { extension: { api: 'bad\u0000api', models: [] } } }, 'providers.extension.api'],
+    [{ providers: { extension: { api: 42, models: [] } } }, 'providers.extension.api'],
+    [{ providers: { extension: { models: [{ id: 'extension-model', api: '\t' }] } } }, 'providers.extension.models[0].api'],
+  ]) {
+    assert.throws(
+      () => validateModelProviderDocument(document),
+      (error) =>
+        error instanceof ModelProviderConfigError &&
+        error.code === 'provider_protocol_invalid' &&
+        error.path === expectedPath
+    );
+  }
+});
+
+test('provider patch removes blank optional Pi fields instead of persisting schema-invalid empty strings', () => {
+  const next = patchModelProvider({
+    providers: {
+      custom: {
+        name: 'Custom',
+        baseUrl: 'https://custom.example/v1',
+        api: 'custom-api',
+        models: [{
+          id: 'custom-model',
+          name: 'Custom model',
+          baseUrl: 'https://model.example/v1',
+          api: 'custom-model-api',
+        }],
+      },
+    },
+  }, 'custom', {
+    name: '',
+    baseUrl: '',
+    api: '',
+    models: [{
+      id: 'custom-model',
+      name: '',
+      baseUrl: '',
+      api: '',
+    }],
+  });
+
+  for (const field of ['name', 'baseUrl', 'api']) {
+    assert.equal(Object.hasOwn(next.providers.custom, field), false);
+    assert.equal(Object.hasOwn(next.providers.custom.models[0], field), false);
+  }
 });
