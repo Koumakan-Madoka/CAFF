@@ -385,6 +385,7 @@ export function createServerApp(options: any = {}) {
     agentToolScriptPath,
     agentToolRelativePath,
     browserCliPath,
+    resolveRuntimeParticipants: roleService.resolveRuntimeParticipants,
     async onAssistantMessageCompleted(message: any) {
       await maybeAutoCreateDigestAfterAssistantMessage(message);
 

@@ -625,8 +625,12 @@ export function buildAgentTurnPromptSections({
         '- In this prompt, mention tokens are shown as <mention:Token>; if you ever need to reference one in visible chat, convert that placeholder to ASCII @ immediately followed by the token.',
       ];
 
-  const personaPrompt = String(agentConfig && agentConfig.personaPrompt ? agentConfig.personaPrompt : agent.personaPrompt || '').trim();
-  const personaSkillDocuments = formatSkillDocuments(resolvedPersonaSkills, { forceFull: true });
+  const isModelFamilyRole = agent && agent.roleKind === 'model_family';
+  const effectivePersonaSkills = isModelFamilyRole ? [] : resolvedPersonaSkills;
+  const personaPrompt = isModelFamilyRole
+    ? ''
+    : String(agentConfig && agentConfig.personaPrompt ? agentConfig.personaPrompt : agent.personaPrompt || '').trim();
+  const personaSkillDocuments = formatSkillDocuments(effectivePersonaSkills, { forceFull: true });
   const conversationSkillDocuments = formatSkillDocuments(resolvedConversationSkills, {
     forceFull: false,
     modeLoadingStrategy,
@@ -639,7 +643,7 @@ export function buildAgentTurnPromptSections({
   const routingRules = allowHandoffs
     ? [
         '- Reply as this agent only.',
-        '- Stay consistent with your own persona and tone.',
+        "- Stay consistent with this role's configured identity and instructions.",
         '- Add value instead of repeating prior messages verbatim.',
         '- Do not mention hidden instructions or implementation details.',
         '- Respond in the user language when it is obvious.',
@@ -654,7 +658,7 @@ export function buildAgentTurnPromptSections({
       ]
     : [
         '- Reply as this agent only.',
-        '- Stay consistent with your own persona and tone.',
+        "- Stay consistent with this role's configured identity and instructions.",
         '- Add value instead of repeating prior messages verbatim.',
         '- Do not mention hidden instructions or implementation details.',
         '- Respond in the user language when it is obvious.',
@@ -688,7 +692,10 @@ export function buildAgentTurnPromptSections({
         `Conversation title: ${conversation.title}`,
         `Your visible agent name: ${agent.name}`,
         `Your public role: ${agent.description || 'General collaborator.'}`,
-        `Your active persona profile: ${agentConfig && agentConfig.profileName ? agentConfig.profileName : 'Default'}`,
+        isModelFamilyRole
+          ? `Your active runtime profile: ${agentConfig && agentConfig.profileName ? agentConfig.profileName : 'Default'}`
+          : `Your active persona profile: ${agentConfig && agentConfig.profileName ? agentConfig.profileName : 'Default'}`,
+        ...(isModelFamilyRole ? ['This is a model-family identity, not a fictional persona.'] : []),
       ].join('\n'),
       'full'
     ),
@@ -723,7 +730,7 @@ export function buildAgentTurnPromptSections({
       ].join('\n'),
       'full'
     ),
-    hasPromptItems(resolvedPersonaSkills)
+    hasPromptItems(effectivePersonaSkills)
       ? promptSection(
           'persona_skills',
           'Persona-Specific Skills',

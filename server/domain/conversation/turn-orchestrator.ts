@@ -79,6 +79,9 @@ export function createTurnOrchestrator(options: any = {}) {
   const agentToolScriptPath = path.resolve(String(options.agentToolScriptPath || '').trim());
   const agentToolRelativePath = String(options.agentToolRelativePath || './lib/agent-chat-tools.js').trim() || './lib/agent-chat-tools.js';
   const browserCliPath = String(options.browserCliPath || '').trim();
+  const resolveRuntimeParticipants = typeof options.resolveRuntimeParticipants === 'function'
+    ? options.resolveRuntimeParticipants
+    : (participants: any) => participants;
   const sessionGoalAutoContinueMaxTurns = Math.max(
     1,
     Number.parseInt(
@@ -597,6 +600,7 @@ export function createTurnOrchestrator(options: any = {}) {
   const baseRunConversationTurn = createRoutingExecutor({
     store,
     executeConversationAgent: executeConversationAgentWithSlot,
+    resolveRuntimeParticipants,
     getProjectDir,
     broadcastEvent,
     broadcastConversationSummary,
@@ -893,13 +897,19 @@ export function createTurnOrchestrator(options: any = {}) {
   }
 
   async function runSideDispatch(entry: any, grant: any) {
-    const conversation = store.getConversation(entry.conversationId);
-    const agent = conversation ? getAgentById(conversation.agents, entry.targetAgentId) : null;
+    let conversation = null as any;
+    let agent = null as any;
     let slotState = null as any;
     let runStore = null as any;
     let rootTaskId = '';
 
     try {
+      const storedConversation = store.getConversation(entry.conversationId);
+      conversation = storedConversation
+        ? { ...storedConversation, agents: resolveRuntimeParticipants(storedConversation.agents) }
+        : null;
+      agent = conversation ? getAgentById(conversation.agents, entry.targetAgentId) : null;
+
       if (!conversation || !agent) {
         throw createHttpError(404, 'Conversation or target agent not found for side dispatch');
       }
@@ -1243,21 +1253,26 @@ export function createTurnOrchestrator(options: any = {}) {
   }
 
   function submitConversationMessage(conversationId: any, input: any) {
-    const conversation = store.getConversation(conversationId);
+    const storedConversation = store.getConversation(conversationId);
 
-    if (!conversation) {
+    if (!storedConversation) {
       throw createHttpError(404, 'Conversation not found');
     }
 
-    const turnInput = normalizeConversationTurnInput(input, conversation);
+    const turnInput = normalizeConversationTurnInput(input, storedConversation);
 
     if (!turnInput.content) {
       throw createHttpError(400, 'Message content is required');
     }
 
-    if (!Array.isArray(conversation.agents) || conversation.agents.length === 0) {
+    if (!Array.isArray(storedConversation.agents) || storedConversation.agents.length === 0) {
       throw createHttpError(400, 'Add at least one agent to the conversation first');
     }
+
+    const conversation = {
+      ...storedConversation,
+      agents: resolveRuntimeParticipants(storedConversation.agents),
+    };
 
     ensureQueueState(conversationId);
 

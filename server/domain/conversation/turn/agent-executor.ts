@@ -456,6 +456,23 @@ export function resolveRelatedMemorySegments(store: any, conversationId: any, co
 }
 
 function resolveConversationAgentConfig(agent: any) {
+  const runtimeConfig = agent && agent.runtimeConfig && typeof agent.runtimeConfig === 'object'
+    ? agent.runtimeConfig
+    : null;
+  if (runtimeConfig) {
+    return {
+      profileId: runtimeConfig.profileId || null,
+      profileName: runtimeConfig.profileName || 'Default',
+      provider: String(runtimeConfig.provider || '').trim(),
+      model: String(runtimeConfig.model || '').trim(),
+      thinking: String(runtimeConfig.thinking || '').trim(),
+      personaPrompt: String(runtimeConfig.personaPrompt || '').trim(),
+      skillIds: Array.isArray(runtimeConfig.skillIds) ? runtimeConfig.skillIds : [],
+      conversationSkillIds: Array.isArray(agent && (agent.conversationSkillIds || agent.conversationSkills))
+        ? agent.conversationSkillIds || agent.conversationSkills
+        : [],
+    };
+  }
   const selectedModelProfile =
     agent && agent.selectedModelProfile && typeof agent.selectedModelProfile === 'object' ? agent.selectedModelProfile : null;
 
@@ -1309,9 +1326,16 @@ export function createAgentExecutor(options: any = {}) {
     };
     const promptSections = buildAgentTurnPromptSections(promptInput);
     const prompt = formatAgentTurnPromptSections(promptSections);
-    const provider = resolveSetting(agentConfig.provider, process.env.PI_PROVIDER, DEFAULT_PROVIDER);
-    const model = resolveSetting(agentConfig.model, process.env.PI_MODEL, DEFAULT_MODEL);
-    const thinking = resolveThinkingSetting(provider, agentConfig.thinking, process.env.PI_THINKING, DEFAULT_THINKING);
+    const runtimeConfigResolved = Boolean(agent && agent.runtimeConfig && typeof agent.runtimeConfig === 'object');
+    const provider = runtimeConfigResolved
+      ? agentConfig.provider
+      : resolveSetting(agentConfig.provider, process.env.PI_PROVIDER, DEFAULT_PROVIDER);
+    const model = runtimeConfigResolved
+      ? agentConfig.model
+      : resolveSetting(agentConfig.model, process.env.PI_MODEL, DEFAULT_MODEL);
+    const thinking = runtimeConfigResolved
+      ? agentConfig.thinking
+      : resolveThinkingSetting(provider, agentConfig.thinking, process.env.PI_THINKING, DEFAULT_THINKING);
     const heartbeatIntervalMs = resolveIntegerSettingCandidates([process.env.PI_HEARTBEAT_INTERVAL_MS, 5000], 'heartbeatIntervalMs');
     const heartbeatTimeoutMs = resolveIntegerSettingCandidates(
       [process.env.PI_HEARTBEAT_TIMEOUT_MS, process.env.PI_IDLE_TIMEOUT_MS, 60000],

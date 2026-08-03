@@ -217,7 +217,7 @@ function normalizeAgentRow(row: any) {
     roleKind: row.role_kind || 'custom',
     modelFamily: row.model_family || null,
     isDefaultChatRole: Boolean(row.is_default_chat_role),
-    selectedModelProfileId: selectedModelProfile ? selectedModelProfile.id : null,
+    selectedModelProfileId: selectedModelProfileId || null,
     selectedModelProfile,
     conversationSkillIds: parseSkillRefs(row.conversation_skills_json),
     conversationSkills: parseSkillRefs(row.conversation_skills_json),

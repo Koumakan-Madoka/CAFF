@@ -135,9 +135,12 @@ export function createRoutingExecutor(options: any = {}) {
   const sqlitePath = options.sqlitePath;
   const activeConversationIds = options.activeConversationIds;
   const activeTurns = options.activeTurns;
+  const resolveRuntimeParticipants = typeof options.resolveRuntimeParticipants === 'function'
+    ? options.resolveRuntimeParticipants
+    : (participants: any) => participants;
 
   async function runConversationTurn(conversationId: any, userContent: any) {
-    const conversation = store.getConversation(conversationId);
+    let conversation = store.getConversation(conversationId);
 
     if (!conversation) {
       throw createHttpError(404, 'Conversation not found');
@@ -195,6 +198,12 @@ export function createRoutingExecutor(options: any = {}) {
     if (!Array.isArray(conversation.agents) || conversation.agents.length === 0) {
       throw createHttpError(400, 'Add at least one agent to the conversation first');
     }
+
+    const resolvedRuntimeAgents = resolveRuntimeParticipants(conversation.agents);
+    conversation = {
+      ...conversation,
+      agents: resolvedRuntimeAgents,
+    };
 
     const projectDirSnapshot = getProjectDir ? getProjectDir(conversation) : '';
     const runStore = createSqliteRunStore({ agentDir, sqlitePath });
@@ -564,7 +573,10 @@ export function createRoutingExecutor(options: any = {}) {
           turnState.updatedAt = nowIso();
           syncCurrentTurnAgent(turnState);
 
-          const refreshedConversation = store.getConversation(conversationId);
+          const refreshedConversationSnapshot = store.getConversation(conversationId);
+          const refreshedConversation = refreshedConversationSnapshot
+            ? { ...refreshedConversationSnapshot, agents: resolvedRuntimeAgents }
+            : conversation;
           const remainingCapacity = maxReplies - (turnState.hopCount || 0);
 
           if (remainingCapacity <= 0) {

@@ -4680,12 +4680,99 @@ test('role API protects model-family roles and shares one availability projectio
     body: {
       provider: 'anthropic',
       model: 'claude-test',
-      thinking: '',
+      thinking: 'high',
       isDefaultChatRole: true,
     },
   });
   assert.equal(savedClaude.agent.isDefaultChatRole, true);
   assert.equal(savedClaude.agents.filter((agent) => agent.isDefaultChatRole).length, 2);
+
+  const countRuntimeRows = (tableName) => {
+    const exists = app.store.db.prepare(
+      'SELECT 1 AS found FROM sqlite_master WHERE type = ? AND name = ? LIMIT 1'
+    ).get('table', tableName);
+    return exists ? app.store.db.prepare(`SELECT COUNT(*) AS count FROM ${tableName}`).get().count : 0;
+  };
+
+  const runtimeConversation = await fetchJson(baseUrl, '/api/conversations', {
+    method: 'POST',
+    body: {
+      title: 'Runtime role validation',
+      participants: ['role-family-gpt', 'role-family-claude'],
+    },
+  });
+  const runtimeGptOption = modelOptions.find((option) => option.key === 'openai\u001fgpt-test');
+  const runtimeClaudeOption = modelOptions.find((option) => option.key === 'anthropic\u001fclaude-test');
+  const originalRuntimeGptFamily = runtimeGptOption.family;
+  const originalRuntimeClaudeThinking = runtimeClaudeOption.supportedThinkingLevels;
+  const beforeRuntimeBlockCounts = {
+    messages: app.store.db.prepare('SELECT COUNT(*) AS count FROM chat_messages').get().count,
+    tasks: countRuntimeRows('a2a_tasks'),
+    runs: countRuntimeRows('runs'),
+  };
+
+  runtimeGptOption.family = 'claude';
+  runtimeClaudeOption.supportedThinkingLevels = ['off'];
+  const runtimeBlocked = await fetchJsonResponse(
+    baseUrl,
+    `/api/conversations/${encodeURIComponent(runtimeConversation.conversation.id)}/messages`,
+    {
+      method: 'POST',
+      body: { content: 'This turn must fail before creating artifacts.' },
+    }
+  );
+  assert.equal(runtimeBlocked.status, 409);
+  assert.deepEqual(
+    runtimeBlocked.json.issues.map((issue) => [issue.roleId, issue.availability.status]),
+    [
+      ['role-family-gpt', 'no_family_models'],
+      ['role-family-claude', 'thinking_level_unsupported'],
+    ]
+  );
+  assert.equal(app.store.db.prepare('SELECT COUNT(*) AS count FROM chat_messages').get().count, beforeRuntimeBlockCounts.messages);
+  assert.equal(countRuntimeRows('a2a_tasks'), beforeRuntimeBlockCounts.tasks);
+  assert.equal(countRuntimeRows('runs'), beforeRuntimeBlockCounts.runs);
+  runtimeGptOption.family = originalRuntimeGptFamily;
+  runtimeClaudeOption.supportedThinkingLevels = originalRuntimeClaudeThinking;
+
+  const staleProfileConversation = await fetchJson(baseUrl, '/api/conversations', {
+    method: 'POST',
+    body: {
+      title: 'Stale selected profile',
+      participants: [{ agentId: 'role-family-gpt', modelProfileId: 'gpt-max' }],
+    },
+  });
+  app.store.db.prepare('UPDATE chat_agents SET model_profiles_json = ? WHERE id = ?').run(
+    JSON.stringify([]),
+    'role-family-gpt'
+  );
+  assert.equal(
+    app.store.getConversation(staleProfileConversation.conversation.id).agents[0].selectedModelProfileId,
+    'gpt-max'
+  );
+  const beforeStaleProfileCounts = {
+    messages: app.store.db.prepare('SELECT COUNT(*) AS count FROM chat_messages').get().count,
+    tasks: countRuntimeRows('a2a_tasks'),
+    runs: countRuntimeRows('runs'),
+  };
+  const staleProfileBlocked = await fetchJsonResponse(
+    baseUrl,
+    `/api/conversations/${encodeURIComponent(staleProfileConversation.conversation.id)}/messages`,
+    {
+      method: 'POST',
+      body: { content: 'Do not silently fall back to the base model.' },
+    }
+  );
+  assert.equal(staleProfileBlocked.status, 409);
+  assert.equal(staleProfileBlocked.json.issues[0].code, 'participant_profile_invalid');
+  assert.equal(staleProfileBlocked.json.issues[0].availability.status, 'profile_missing');
+  assert.equal(app.store.db.prepare('SELECT COUNT(*) AS count FROM chat_messages').get().count, beforeStaleProfileCounts.messages);
+  assert.equal(countRuntimeRows('a2a_tasks'), beforeStaleProfileCounts.tasks);
+  assert.equal(countRuntimeRows('runs'), beforeStaleProfileCounts.runs);
+  app.store.db.prepare('UPDATE chat_agents SET model_profiles_json = ? WHERE id = ?').run(
+    JSON.stringify(savedGpt.agent.modelProfiles),
+    'role-family-gpt'
+  );
 
   const familyPost = await fetchJsonResponse(baseUrl, '/api/agents', {
     method: 'POST',

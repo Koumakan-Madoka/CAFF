@@ -1,5 +1,10 @@
 import { buildConfiguredModelKey } from '../models/configured-model-catalog';
 import {
+  DEFAULT_MODEL,
+  DEFAULT_PROVIDER,
+  resolveSetting,
+} from '../../../lib/minimal-pi';
+import {
   LEGACY_SYSTEM_ROLE_IDS,
   SYSTEM_MODEL_FAMILY_ROLE_IDS,
 } from './system-role-catalog';
@@ -293,6 +298,46 @@ function projectRole(role: any, modelOptions: any[], catalog: any) {
   };
 }
 
+function runtimeRecoveryActions(availability: any) {
+  const status = normalize(availability?.status);
+
+  if (status === 'profile_missing' || status.startsWith('profile_')) {
+    return ['select_valid_profile', 'repair_role_profiles', 'remove_participant'];
+  }
+  if (status === 'thinking_level_unsupported') {
+    return ['repair_role_thinking', 'select_valid_profile', 'remove_participant'];
+  }
+  return ['repair_role_model', 'repair_provider_configuration', 'remove_participant'];
+}
+
+function runtimeParticipantIssue(index: number, role: any, availability: any, profileId = '') {
+  const normalizedProfileId = normalize(profileId);
+  const profileMissing = availability?.status === 'profile_missing';
+
+  return {
+    code: profileMissing ? 'participant_profile_invalid' : 'participant_role_unavailable',
+    message: profileMissing
+      ? 'Selected model profile no longer exists for this role'
+      : 'Conversation participant role is not currently runnable',
+    path: profileMissing
+      ? `participants[${index}].modelProfileId`
+      : `participants[${index}].agentId`,
+    roleId: normalize(role?.id),
+    roleName: normalize(role?.name),
+    ...(normalizedProfileId ? { profileId: normalizedProfileId } : {}),
+    availability,
+    recoveryActions: runtimeRecoveryActions(availability),
+  };
+}
+
+function createRuntimeParticipantsError(issues: any[]) {
+  const error: any = new Error('Conversation participants are not currently runnable');
+  error.statusCode = 409;
+  error.code = 'conversation_participants_unavailable';
+  error.issues = issues;
+  return error;
+}
+
 export function createRoleService(options: any = {}) {
   const store = options.store;
   const modelCatalog = options.modelCatalog;
@@ -303,6 +348,12 @@ export function createRoleService(options: any = {}) {
   if (!modelCatalog || typeof modelCatalog.getOptions !== 'function') {
     throw new Error('RoleService requires a configured model catalog');
   }
+  const resolveRuntimeDefaults = typeof options.resolveRuntimeDefaults === 'function'
+    ? options.resolveRuntimeDefaults
+    : () => ({
+        provider: resolveSetting('', process.env.PI_PROVIDER, DEFAULT_PROVIDER),
+        model: resolveSetting('', process.env.PI_MODEL, DEFAULT_MODEL),
+      });
 
   function getDirectory() {
     const modelOptions = modelCatalog.getOptions();
@@ -338,6 +389,119 @@ export function createRoleService(options: any = {}) {
     }
 
     return normalizedParticipants;
+  }
+
+  function resolveRuntimeParticipants(participants: any) {
+    const requestedParticipants = Array.isArray(participants) ? participants : [];
+    const directory = getDirectory();
+    const rolesById = new Map(directory.agents.map((role: any) => [role.id, role]));
+    const catalog = buildCatalogIndex(directory.modelOptions);
+    const blockers = [] as any[];
+    const resolved = [] as any[];
+    const runtimeDefaults = resolveRuntimeDefaults() || {};
+
+    for (const [index, participant] of requestedParticipants.entries()) {
+      const roleId = normalize(participant?.id || participant?.agentId);
+      const role: any = rolesById.get(roleId);
+      if (!role) {
+        blockers.push(runtimeParticipantIssue(index, { id: roleId, name: normalize(participant?.name) }, {
+          status: 'role_missing',
+        }));
+        continue;
+      }
+
+      const selectedProfileId = normalize(
+        participant?.selectedModelProfileId || participant?.modelProfileId || participant?.selectedModelProfile?.id
+      );
+      const selectedProfile = selectedProfileId
+        ? (Array.isArray(role.modelProfiles) ? role.modelProfiles : []).find(
+            (profile: any) => normalize(profile?.id) === selectedProfileId
+          ) || null
+        : null;
+
+      if (selectedProfileId && !selectedProfile) {
+        blockers.push(runtimeParticipantIssue(index, role, {
+          status: 'profile_missing',
+          profileId: selectedProfileId,
+        }, selectedProfileId));
+        continue;
+      }
+
+      if (role.availability?.status !== 'available') {
+        blockers.push(runtimeParticipantIssue(index, role, role.availability, selectedProfileId));
+        continue;
+      }
+
+      const roleKind = role.roleKind === 'model_family' ? 'model_family' : 'custom';
+      const effectiveSource = selectedProfile || role;
+      let provider = normalize(effectiveSource?.provider);
+      let model = normalize(effectiveSource?.model);
+      const thinking = normalize(effectiveSource?.thinking);
+
+      if (roleKind === 'custom' && !model) {
+        provider = normalize(runtimeDefaults.provider);
+        model = normalize(runtimeDefaults.model);
+      }
+
+      try {
+        const option = resolveConfiguredModel(
+          catalog,
+          provider,
+          model,
+          selectedProfileId ? `participants[${index}].modelProfileId` : `participants[${index}].agentId`,
+          roleKind === 'model_family' ? normalize(role.modelFamily) : null
+        );
+        const canonicalThinking = assertThinkingSupported(
+          option,
+          thinking,
+          selectedProfileId ? `participants[${index}].modelProfileId` : `participants[${index}].agentId`
+        );
+        const participantConversationSkillIds = Array.isArray(
+          participant?.conversationSkillIds || participant?.conversationSkills
+        )
+          ? participant.conversationSkillIds || participant.conversationSkills
+          : [];
+
+        resolved.push({
+          ...participant,
+          ...role,
+          id: role.id,
+          name: role.name,
+          selectedModelProfileId: selectedProfileId || null,
+          selectedModelProfile: selectedProfile,
+          conversationSkillIds: [...participantConversationSkillIds],
+          conversationSkills: [...participantConversationSkillIds],
+          runtimeConfig: {
+            profileId: selectedProfileId || null,
+            profileName: selectedProfile ? normalize(selectedProfile.name) || 'Profile' : 'Default',
+            provider: option.provider,
+            model: option.model,
+            thinking: canonicalThinking,
+            personaPrompt: roleKind === 'model_family'
+              ? ''
+              : normalize(selectedProfile ? selectedProfile.personaPrompt : role.personaPrompt),
+            skillIds: roleKind === 'model_family'
+              ? []
+              : [...(Array.isArray(role.skillIds || role.skills) ? role.skillIds || role.skills : [])],
+          },
+        });
+      } catch (error) {
+        const errorValue = error as any;
+        const issue = Array.isArray(errorValue?.issues) ? errorValue.issues[0] : null;
+        const availability = {
+          status: normalize(issue?.code) || 'default_model_missing',
+          ...(issue && issue.modelKey ? { modelKey: issue.modelKey } : {}),
+          ...(selectedProfileId ? { profileId: selectedProfileId } : {}),
+        };
+        blockers.push(runtimeParticipantIssue(index, role, availability, selectedProfileId));
+      }
+    }
+
+    if (blockers.length > 0) {
+      throw createRuntimeParticipantsError(blockers);
+    }
+
+    return resolved;
   }
 
   function mutationResult(roleId: string) {
@@ -568,6 +732,7 @@ export function createRoleService(options: any = {}) {
     createCustomRole,
     getDirectory,
     retireRole,
+    resolveRuntimeParticipants,
     updateRole,
     validateConversationParticipants,
   };
