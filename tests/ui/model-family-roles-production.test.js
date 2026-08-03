@@ -311,6 +311,7 @@ async function serveProductionUi() {
 
     await evaluate(cdp, `document.getElementById('save-provider').click()`);
     await waitFor(cdp, `document.getElementById('toast').textContent.includes('供应商已保存')`);
+    await waitFor(cdp, `!document.getElementById('add-provider').disabled && !document.getElementById('provider-detail').hasAttribute('aria-busy')`);
     const providerSave = fixture.requests.find((request) => request.url === '/api/model-providers/openai' && request.method === 'PUT');
     assert.ok(providerSave);
     assert.equal(providerSave.body.apiKey, '');
