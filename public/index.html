@@ -22,6 +22,7 @@
     <script defer src="/chat/undercover-panel.js"></script>
     <script defer src="/chat/werewolf-panel.js"></script>
     <script defer src="/chat/skill-test-design-panel.js"></script>
+    <script defer src="/chat/new-conversation-dialog.js"></script>
     <script defer src="/chat/mention-menu.js"></script>
     <script defer src="/chat/session-goal-panel.js"></script>
     <script defer src="/chat/conversation-digest-panel.js"></script>
@@ -32,7 +33,7 @@
   <body>
     <div class="ambient ambient-a"></div>
     <div class="ambient ambient-b"></div>
-    <div class="shell">
+    <div class="shell" id="app-shell">
       <header class="topbar">
         <div>
           <p class="eyebrow">CAFF 本地工作台</p>
@@ -62,13 +63,7 @@
             </div>
           </div>
 
-          <form id="new-conversation-form" class="inline-form">
-            <input id="new-conversation-title" name="title" type="text" maxlength="80" placeholder="新房间标题" />
-            <select id="new-conversation-type" name="type">
-              <!-- dynamically populated from /api/modes -->
-            </select>
-            <button type="submit">新建</button>
-          </form>
+          <button id="open-new-conversation-button" class="new-conversation-trigger" type="button">＋ 新建聊天</button>
 
           <div id="conversation-list" class="conversation-list"></div>
         </aside>
@@ -608,6 +603,86 @@
         <div id="agent-context-section-list" class="agent-context-section-list"></div>
       </section>
     </aside>
+
+    <div id="new-conversation-backdrop" class="new-conversation-backdrop hidden" aria-hidden="true">
+      <section
+        id="new-conversation-dialog"
+        class="new-conversation-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="new-conversation-dialog-title"
+      >
+        <form id="new-conversation-form" class="new-conversation-form">
+          <header class="new-conversation-header">
+            <div>
+              <p class="eyebrow">Conversation setup</p>
+              <h2 id="new-conversation-dialog-title">新建聊天</h2>
+              <p class="muted">确认后才会创建会话并写入最终参与者。</p>
+            </div>
+            <button id="new-conversation-close" class="new-conversation-close ghost-button" type="button" aria-label="关闭新建聊天">×</button>
+          </header>
+
+          <div class="new-conversation-body">
+            <section class="new-conversation-basics" aria-labelledby="new-conversation-basics-title">
+              <div>
+                <p class="eyebrow">基本信息</p>
+                <h3 id="new-conversation-basics-title">房间设置</h3>
+              </div>
+              <label>
+                <span>房间标题</span>
+                <input id="new-conversation-title" name="title" type="text" maxlength="80" placeholder="例如：模型族协作讨论" />
+              </label>
+              <label>
+                <span>会话类型</span>
+                <select id="new-conversation-type" name="type">
+                  <!-- dynamically populated from /api/bootstrap -->
+                </select>
+              </label>
+              <label id="new-conversation-skill-field" class="hidden">
+                <span>目标 Skill</span>
+                <select id="new-conversation-skill" name="skillId">
+                  <option value="">-- 选择目标 Skill --</option>
+                </select>
+              </label>
+              <div class="new-conversation-snapshot-note">
+                <strong>创建快照</strong>
+                <p>打开时只读取一次当前角色状态。之后即使默认设置发生变化，本表单也不会悄悄改选。</p>
+              </div>
+            </section>
+
+            <section class="new-conversation-participants" aria-labelledby="new-conversation-participants-title">
+              <div class="new-conversation-participants-heading">
+                <div>
+                  <p class="eyebrow">Roster</p>
+                  <h3 id="new-conversation-participants-title">选择参与者</h3>
+                </div>
+                <button id="new-conversation-clear-selection" class="ghost-button" type="button">清空选择</button>
+              </div>
+              <p id="new-conversation-policy-note" class="new-conversation-policy-note"></p>
+
+              <section class="new-conversation-role-group" aria-labelledby="new-conversation-family-title">
+                <h4 id="new-conversation-family-title">系统模型族</h4>
+                <div id="new-conversation-family-participants" class="new-conversation-role-grid"></div>
+              </section>
+
+              <section id="new-conversation-custom-group" class="new-conversation-role-group" aria-labelledby="new-conversation-custom-title">
+                <h4 id="new-conversation-custom-title">自定义角色</h4>
+                <div id="new-conversation-custom-participants" class="new-conversation-role-grid"></div>
+              </section>
+            </section>
+          </div>
+
+          <p id="new-conversation-error" class="new-conversation-error hidden" role="status" aria-live="polite"></p>
+          <footer class="new-conversation-footer">
+            <p class="new-conversation-selection-summary">已选择 <strong id="new-conversation-selection-count">0</strong> 位</p>
+            <div class="new-conversation-actions">
+              <button id="new-conversation-cancel" class="ghost-button" type="button">取消</button>
+              <button id="new-conversation-submit" type="submit">创建聊天</button>
+            </div>
+          </footer>
+        </form>
+      </section>
+    </div>
 
     <div id="toast" class="toast hidden"></div>
   </body>

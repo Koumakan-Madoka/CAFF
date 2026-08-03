@@ -7,6 +7,8 @@ const { createChatAppStore } = require('../../build/lib/chat-app-store');
 const { migrateChatSchema } = require('../../build/storage/sqlite/migrations');
 const { withTempDir } = require('../helpers/temp-dir');
 
+const TEST_CONVERSATION_PARTICIPANTS = ['role-family-gpt'];
+
 test('migrateChatSchema emits debug warning when FTS setup fails and debug logging is enabled', (t) => {
   const originalWarn = console.warn;
   const originalFlag = process.env.CAFF_DEBUG_SQLITE_MIGRATIONS;
@@ -452,10 +454,12 @@ test('chat store pages public messages by stable created-at and id cursors', (t)
   const conversation = store.createConversation({
     id: 'message-page-conversation',
     title: 'Message Page Conversation',
+    participants: TEST_CONVERSATION_PARTICIPANTS,
   });
   const otherConversation = store.createConversation({
     id: 'message-page-other-conversation',
     title: 'Other Message Page Conversation',
+    participants: TEST_CONVERSATION_PARTICIPANTS,
   });
   const fixtures = [
     ['a', '2026-07-28T00:00:00.000Z'],
@@ -536,6 +540,7 @@ test('chat store pages public messages by stable created-at and id cursors', (t)
   const emptyConversation = store.createConversation({
     id: 'message-page-empty-conversation',
     title: 'Empty Message Page Conversation',
+    participants: TEST_CONVERSATION_PARTICIPANTS,
   });
   assert.deepEqual(store.listMessagePage(emptyConversation.id, { limit: 1 }), {
     items: [],
@@ -559,6 +564,7 @@ test('chat store page queries reuse the composite index for a 50,000-message con
   const conversation = store.createConversation({
     id: 'message-page-long-conversation',
     title: 'Long Message Page Conversation',
+    participants: TEST_CONVERSATION_PARTICIPANTS,
   });
   const insertMessage = store.db.prepare(`
     INSERT INTO chat_messages (
@@ -1123,6 +1129,7 @@ test('chat store persists external channel bindings and idempotency records', (t
   const conversation = store.createConversation({
     id: 'feishu-store-conversation',
     title: 'Feishu Store Conversation',
+    participants: TEST_CONVERSATION_PARTICIPANTS,
   });
   const message = store.createMessage({
     id: 'feishu-store-message',
@@ -1142,6 +1149,7 @@ test('chat store persists external channel bindings and idempotency records', (t
   const nextConversation = store.createConversation({
     id: 'feishu-store-conversation-next',
     title: 'Feishu Store Conversation Next',
+    participants: TEST_CONVERSATION_PARTICIPANTS,
   });
   const updatedBinding = store.updateConversationChannelBinding({
     platform: 'feishu',
@@ -1205,10 +1213,12 @@ test('chat store indexes digest summary segments for cross-conversation search',
   const conversation = store.createConversation({
     id: 'summary-source-conversation',
     title: 'BetterGI Deployment Notes',
+    participants: TEST_CONVERSATION_PARTICIPANTS,
   });
   store.createConversation({
     id: 'summary-active-conversation',
     title: 'Active Conversation',
+    participants: TEST_CONVERSATION_PARTICIPANTS,
   });
 
   const segment = store.saveSummarySegmentFromDigest(conversation.id, {
@@ -1269,10 +1279,12 @@ test('chat store filters summary memory by task and source kind', (t) => {
   const conversation = store.createConversation({
     id: 'summary-filter-conversation',
     title: 'Digest Filter Notes',
+    participants: TEST_CONVERSATION_PARTICIPANTS,
   });
   const otherConversation = store.createConversation({
     id: 'summary-filter-other-conversation',
     title: 'Other Memory Notes',
+    participants: TEST_CONVERSATION_PARTICIPANTS,
   });
 
   store.saveSummarySegmentFromDigest(conversation.id, {
@@ -1338,6 +1350,7 @@ test('chat store searches Chinese summary memory with word-segmented query terms
 
   const conversation = store.createConversation({
     id: 'summary-cjk-conversation',
+    participants: TEST_CONVERSATION_PARTICIPANTS,
     title: '中文长期记忆复盘',
   });
 
@@ -1374,6 +1387,7 @@ test('chat store ranks summary memory by matched term coverage', (t) => {
   const conversation = store.createConversation({
     id: 'summary-ranking-conversation',
     title: 'Digest Ranking Notes',
+    participants: TEST_CONVERSATION_PARTICIPANTS,
   });
 
   store.saveSummarySegmentFromDigest(conversation.id, {
@@ -1422,6 +1436,7 @@ test('chat store returns enough summary memory candidates for automatic recall d
   const conversation = store.createConversation({
     id: 'summary-candidate-limit-conversation',
     title: 'Digest Candidate Notes',
+    participants: TEST_CONVERSATION_PARTICIPANTS,
   });
 
   for (let index = 0; index < 16; index += 1) {
@@ -1444,4 +1459,72 @@ test('chat store returns enough summary memory candidates for automatic recall d
   assert.equal(searchResult.resultCount, 15);
   assert.equal(searchResult.results[0].sourceDigestId, 'digest-candidate-limit-15');
   assert.equal(searchResult.results[14].sourceDigestId, 'digest-candidate-limit-1');
+});
+
+test('chat store rejects missing, empty, unknown, duplicate, and invalid-profile participant rosters before writing', (t) => {
+  const tempDir = withTempDir('caff-chat-explicit-participants-');
+  const sqlitePath = path.join(tempDir, 'chat.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const role = store.saveCustomRoleConfig({
+    id: 'explicit-participant-role',
+    name: 'Explicit Participant Role',
+    personaPrompt: 'Use only explicitly confirmed conversation rosters.',
+    modelProfiles: [{ id: 'fast', name: 'Fast', model: 'test-model' }],
+  });
+  const assertRosterError = (create, code) => {
+    assert.throws(create, (error) => {
+      assert.equal(error.code, code);
+      assert.equal(error.issues[0].code, code);
+      return true;
+    });
+    assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM chat_conversations').get().count, 0);
+  };
+
+  assertRosterError(
+    () => store.createConversation({ id: 'missing-roster' }),
+    'participants_required'
+  );
+  assertRosterError(
+    () => store.createConversation({ id: 'empty-roster', participants: [] }),
+    'participants_required'
+  );
+  assertRosterError(
+    () => store.createConversation({
+      id: 'unknown-roster',
+      participants: [{ agentId: 'missing-role' }],
+    }),
+    'participant_role_unknown'
+  );
+  assertRosterError(
+    () => store.createConversation({
+      id: 'duplicate-roster',
+      participants: [{ agentId: role.id }, { agentId: role.id }],
+    }),
+    'participant_duplicate'
+  );
+  assertRosterError(
+    () => store.createConversation({
+      id: 'invalid-profile-roster',
+      participants: [{ agentId: role.id, modelProfileId: 'missing-profile' }],
+    }),
+    'participant_profile_invalid'
+  );
+  assertRosterError(
+    () => store.getOrCreateExternalConversation({
+      platform: 'feishu',
+      externalChatId: 'oc-explicit-participants',
+      participants: [],
+    }),
+    'participants_required'
+  );
+
+  assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM chat_channel_bindings').get().count, 0);
 });

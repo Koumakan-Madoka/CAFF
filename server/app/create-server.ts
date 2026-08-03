@@ -401,6 +401,10 @@ export function createServerApp(options: any = {}) {
     turnOrchestrator,
     client: feishuClient,
     modeStore,
+    roleService,
+    ...(Object.prototype.hasOwnProperty.call(options, 'feishuDefaultRoleIds')
+      ? { defaultRoleIds: options.feishuDefaultRoleIds }
+      : {}),
   });
   const feishuLongConnection = createFeishuLongConnectionSource({
     feishuService: feishuIntegration,
@@ -504,6 +508,7 @@ export function createServerApp(options: any = {}) {
     }),
     createConversationsController({
       store,
+      roleService,
       skillRegistry,
       projectManager,
       undercoverHost,

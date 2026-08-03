@@ -611,30 +611,23 @@ function normalizeConversation(row: any, agents: any, messages: any) {
   };
 }
 
-function pickDefaultParticipants(agents: any, requestedParticipants: any, defaultConversationSkillIds: any = []) {
-  if (Array.isArray(requestedParticipants) && requestedParticipants.length > 0) {
-    return requestedParticipants;
-  }
-
-  const conversationSkills = [] as any[];
-  const seenSkillIds = new Set();
-
-  for (const skill of Array.isArray(defaultConversationSkillIds) ? defaultConversationSkillIds : []) {
-    const skillId = normalizeSkillRef(skill);
-
-    if (!skillId || seenSkillIds.has(skillId)) {
-      continue;
-    }
-
-    seenSkillIds.add(skillId);
-    conversationSkills.push(skillId);
-  }
-
-  return (Array.isArray(agents) ? agents : []).slice(0, 3).map((agent) => ({
-    agentId: agent && agent.id ? agent.id : null,
-    modelProfileId: null as null,
-    conversationSkills,
-  }));
+function createParticipantRosterError(
+  statusCode: number,
+  code: string,
+  message: string,
+  path = '',
+  details: Record<string, unknown> = {}
+) {
+  const error: any = new Error(message);
+  error.statusCode = statusCode;
+  error.code = code;
+  error.issues = [{
+    code,
+    message,
+    ...(path ? { path } : {}),
+    ...details,
+  }];
+  return error;
 }
 
 function normalizeRecipientAgentIds(recipientAgentIds: any) {
@@ -793,6 +786,15 @@ export class ChatAppStore {
 
       this.createConversationTransaction = this.db.transaction((payload: any) => {
         const timestamp = nowIso();
+
+        if (!Array.isArray(payload.participants) || payload.participants.length === 0) {
+          throw createParticipantRosterError(
+            400,
+            'participants_required',
+            'At least one explicit conversation participant is required',
+            'participants'
+          );
+        }
 
         this.conversationRepository.create({
           id: payload.id,
@@ -1063,7 +1065,7 @@ export class ChatAppStore {
         });
         this.replaceConversationParticipants(
           conversationId,
-          pickDefaultParticipants(this.listAgents(), participants, payload.defaultConversationSkillIds)
+          participants
         );
 
         const binding = normalizeConversationChannelBindingRow(
@@ -1305,7 +1307,6 @@ export class ChatAppStore {
       type: normalizeConversationType(input.type),
       metadata: input.metadata && typeof input.metadata === 'object' ? input.metadata : {},
       bindingMetadata: input.bindingMetadata && typeof input.bindingMetadata === 'object' ? input.bindingMetadata : {},
-      defaultConversationSkillIds: this.normalizeSkillRefs(input.defaultConversationSkillIds || input.defaultConversationSkills),
     });
   }
 
@@ -1363,11 +1364,7 @@ export class ChatAppStore {
       title,
       type: normalizeConversationType(input.type),
       metadata: input.metadata && typeof input.metadata === 'object' ? input.metadata : {},
-      participants: pickDefaultParticipants(
-        this.listAgents(),
-        participants,
-        this.normalizeSkillRefs(input.defaultConversationSkillIds || input.defaultConversationSkills)
-      ),
+      participants,
     });
   }
 
@@ -2081,20 +2078,7 @@ export class ChatAppStore {
 
   ensureStarterConversation() {
     const conversations = this.listConversations();
-
-    if (conversations.length > 0) {
-      return conversations[0];
-    }
-
-    const agents = this.listAgents();
-    return this.createConversation({
-      title: '新协作会话',
-      participants: (Array.isArray(agents) ? agents : []).slice(0, 3).map((agent: any) => ({
-        agentId: agent && agent.id ? agent.id : null,
-        modelProfileId: null as null,
-        conversationSkills: [] as any[],
-      })),
-    });
+    return conversations[0] || null;
   }
 
   normalizeSkillRefs(skills: any) {
@@ -2158,7 +2142,16 @@ export class ChatAppStore {
 
     const agentProfileIds =
       input.agentProfileIds && typeof input.agentProfileIds === 'object' ? input.agentProfileIds : {};
-    const legacyParticipants = Array.isArray(input.agentIds)
+    if (!Array.isArray(input.agentIds)) {
+      throw createParticipantRosterError(
+        400,
+        'participants_required',
+        'At least one explicit conversation participant is required',
+        'participants'
+      );
+    }
+
+    const legacyParticipants = input.agentIds
       ? input.agentIds.map((agentId: any) => ({
           agentId,
           modelProfileId: agentProfileIds[agentId] || null,
@@ -2170,32 +2163,71 @@ export class ChatAppStore {
   }
 
   normalizeConversationParticipants(participants: any) {
+    if (!Array.isArray(participants) || participants.length === 0) {
+      throw createParticipantRosterError(
+        400,
+        'participants_required',
+        'At least one explicit conversation participant is required',
+        'participants'
+      );
+    }
     const knownAgents = new Map(this.listAgents().map((agent: any) => [agent.id, agent]));
     const deduped = [];
     const seenAgentIds = new Set();
 
-    for (const participant of Array.isArray(participants) ? participants : []) {
+    for (const [index, participant] of participants.entries()) {
       const agentId =
         typeof participant === 'string'
           ? String(participant || '').trim()
           : String((participant && (participant.agentId || participant.id)) || '').trim();
 
-      if (!agentId || seenAgentIds.has(agentId) || !knownAgents.has(agentId)) {
-        continue;
+      if (!agentId) {
+        throw createParticipantRosterError(
+          422,
+          'participant_role_required',
+          'Conversation participant role ID is required',
+          `participants[${index}].agentId`
+        );
+      }
+      if (seenAgentIds.has(agentId)) {
+        throw createParticipantRosterError(
+          422,
+          'participant_duplicate',
+          'Conversation participant roles must be unique',
+          `participants[${index}].agentId`,
+          { roleId: agentId }
+        );
+      }
+      if (!knownAgents.has(agentId)) {
+        throw createParticipantRosterError(
+          422,
+          'participant_role_unknown',
+          'Conversation participant role does not exist',
+          `participants[${index}].agentId`,
+          { roleId: agentId }
+        );
       }
 
       const agent: any = knownAgents.get(agentId);
-
-      if (!agent) {
-        continue;
-      }
       const requestedProfileId =
         typeof participant === 'string'
           ? ''
           : String(
               (participant && (participant.modelProfileId || participant.selectedModelProfileId || '')) || ''
             ).trim();
-      const modelProfileId = findModelProfile(agent.modelProfiles, requestedProfileId) ? requestedProfileId : null;
+      const selectedProfile = requestedProfileId
+        ? findModelProfile(agent.modelProfiles, requestedProfileId)
+        : null;
+      if (requestedProfileId && !selectedProfile) {
+        throw createParticipantRosterError(
+          422,
+          'participant_profile_invalid',
+          'Selected model profile does not exist for this role',
+          `participants[${index}].modelProfileId`,
+          { roleId: agentId, profileId: requestedProfileId }
+        );
+      }
+      const modelProfileId = selectedProfile ? requestedProfileId : null;
       const conversationSkillIds =
         typeof participant === 'string'
           ? []
@@ -2211,6 +2243,15 @@ export class ChatAppStore {
         modelProfileId,
         conversationSkills: conversationSkillIds,
       });
+    }
+
+    if (deduped.length === 0) {
+      throw createParticipantRosterError(
+        400,
+        'participants_required',
+        'At least one explicit conversation participant is required',
+        'participants'
+      );
     }
 
     return deduped;

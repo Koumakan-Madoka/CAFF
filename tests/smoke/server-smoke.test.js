@@ -9,10 +9,12 @@ const test = require('node:test');
 const { createChatAppStore } = require('../../build/lib/chat-app-store');
 const { createSkillRegistry } = require('../../build/lib/skill-registry');
 const { createServerApp } = require('../../build/server/app/create-server');
+const { createBootstrapPayloadBuilder } = require('../../build/server/api/bootstrap-payload');
 const { createConversationsController } = require('../../build/server/api/conversations-controller');
 const { createMemoryController } = require('../../build/server/api/memory-controller');
 const { maybeAutoCreateConversationDigest } = require('../../build/server/domain/conversation/conversation-digest');
 const { maybeAutoCreateConversationSkillDraft } = require('../../build/server/domain/conversation/skill-draft');
+const { createRoleService } = require('../../build/server/domain/roles/role-service');
 
 const { requireSpawn } = require('../helpers/spawn');
 const { withTempDir } = require('../helpers/temp-dir');
@@ -150,6 +152,13 @@ async function fetchJsonResponse(baseUrl, pathname, options = {}) {
     status: response.status,
     json: text ? JSON.parse(text) : {},
   };
+}
+
+function createSmokeConversation(store, input = {}) {
+  const hasExplicitParticipants = Array.isArray(input.participants) || Array.isArray(input.agentIds);
+  return store.createConversation(hasExplicitParticipants
+    ? input
+    : { ...input, participants: ['role-family-gpt'] });
 }
 
 async function invokeConversationsController(handler, options = {}) {
@@ -307,11 +316,11 @@ test('create server wires loopback model-provider administration with bootstrap 
 
 test('conversations controller exposes bounded cursor pages without hydrating public messages in the conversation projection', async (t) => {
   const { handler, store } = createConversationsControllerHarness(t);
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'message-page-api-conversation',
     title: 'Message Page API Conversation',
   });
-  const otherConversation = store.createConversation({
+  const otherConversation = createSmokeConversation(store, {
     id: 'message-page-api-other',
     title: 'Other Message Page API Conversation',
   });
@@ -421,7 +430,7 @@ test('conversations controller exposes bounded cursor pages without hydrating pu
 
 test('conversations controller manages session goal lifecycle in metadata', async (t) => {
   const { handler, store, broadcastEvents } = createConversationsControllerHarness(t);
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'goal-conversation',
     title: 'Goal Conversation',
   });
@@ -509,7 +518,7 @@ test('conversations controller manages session goal lifecycle in metadata', asyn
 
 test('conversations controller applies default Trellis checklist when setting goal without checklist', async (t) => {
   const { handler, store } = createConversationsControllerHarness(t);
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'goal-default-checklist-conversation',
     title: 'Goal Default Checklist Conversation',
   });
@@ -535,7 +544,7 @@ test('conversations controller creates and deletes conversation digests in metad
       resolveSummaryMemoryTaskName: () => 'Conversation Digest Auto-Compaction v2',
     },
   });
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'digest-conversation',
     title: 'Digest Conversation',
   });
@@ -599,15 +608,15 @@ test('conversations controller creates and deletes conversation digests in metad
 
 test('memory controller searches summary segments and can exclude the active conversation', async (t) => {
   const { store } = createConversationsControllerHarness(t);
-  const currentConversation = store.createConversation({
+  const currentConversation = createSmokeConversation(store, {
     id: 'memory-search-current-conversation',
     title: 'Current Memory Conversation',
   });
-  const historicalConversation = store.createConversation({
+  const historicalConversation = createSmokeConversation(store, {
     id: 'memory-search-historical-conversation',
     title: 'Historical Memory Conversation',
   });
-  const otherHistoricalConversation = store.createConversation({
+  const otherHistoricalConversation = createSmokeConversation(store, {
     id: 'memory-search-other-historical-conversation',
     title: 'Other Historical Conversation',
   });
@@ -726,7 +735,7 @@ test('memory controller searches summary segments and can exclude the active con
 
 test('memory controller reports summary memory health and pending digest backfill', async (t) => {
   const { store } = createConversationsControllerHarness(t);
-  const legacyConversation = store.createConversation({
+  const legacyConversation = createSmokeConversation(store, {
     id: 'memory-health-legacy-conversation',
     title: 'Memory Health Legacy Conversation',
     metadata: {
@@ -798,7 +807,7 @@ test('memory controller reports summary memory health and pending digest backfil
 
 test('memory controller backfills legacy metadata digests into summary segments', async (t) => {
   const { store } = createConversationsControllerHarness(t);
-  const legacyConversation = store.createConversation({
+  const legacyConversation = createSmokeConversation(store, {
     id: 'memory-backfill-legacy-conversation',
     title: 'Legacy Digest Conversation',
     metadata: {
@@ -855,7 +864,7 @@ test('memory controller backfills legacy metadata digests into summary segments'
 
 test('memory controller reports backfill failures with digest reasons', async (t) => {
   const { store } = createConversationsControllerHarness(t);
-  const legacyConversation = store.createConversation({
+  const legacyConversation = createSmokeConversation(store, {
     id: 'memory-backfill-failure-conversation',
     title: 'Legacy Digest Failure Conversation',
     metadata: {
@@ -917,7 +926,7 @@ test('conversation digest auto-creates model summaries after the message budget'
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'digest-auto-create-conversation',
     title: 'Digest Auto Create Conversation',
   });
@@ -1023,7 +1032,7 @@ test('auto skill draft model review can reject and records a stable skip', async
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'auto-skill-draft-review-reject-conversation',
     title: 'Auto Skill Draft Review Reject Conversation',
     metadata: {
@@ -1147,7 +1156,7 @@ test('auto skill draft model review skips missing decisions instead of approving
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'auto-skill-draft-review-missing-decision-conversation',
     title: 'Auto Skill Draft Review Missing Decision Conversation',
     metadata: {
@@ -1245,7 +1254,7 @@ test('auto skill draft model review creates drafts only after approval', async (
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'auto-skill-draft-review-create-conversation',
     title: 'Auto Skill Draft Review Create Conversation',
     metadata: {
@@ -1345,7 +1354,7 @@ test('auto skill draft rules skip weak reusable signals without model approval',
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'auto-skill-draft-weak-rules-conversation',
     title: 'Auto Skill Draft Weak Rules Conversation',
     metadata: {
@@ -1395,7 +1404,7 @@ test('auto skill draft model review skips digests without source-backed experien
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'auto-skill-draft-no-source-experience-conversation',
     title: 'Auto Skill Draft No Source Experience Conversation',
     metadata: {
@@ -1462,7 +1471,7 @@ test('auto skill draft review creates pending drafts from auto-created digests',
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'auto-skill-draft-conversation',
     title: 'Auto Skill Draft Conversation',
     metadata: {
@@ -1601,7 +1610,7 @@ test('create server auto-digest status announces pending experience absorption',
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const conversation = app.store.createConversation({
+  const conversation = createSmokeConversation(app.store, {
     id: 'auto-digest-status-conversation',
     title: 'Auto Digest Status Conversation',
     metadata: {
@@ -1712,7 +1721,7 @@ test('create server auto-digest status exposes model progress trace', async (t) 
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const conversation = app.store.createConversation({
+  const conversation = createSmokeConversation(app.store, {
     id: 'auto-digest-model-progress-conversation',
     title: 'Auto Digest Model Progress Conversation',
   });
@@ -1802,7 +1811,7 @@ test('create server auto-digest hook broadcasts auto skill draft updates', async
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const conversation = app.store.createConversation({
+  const conversation = createSmokeConversation(app.store, {
     id: 'auto-skill-draft-hook-conversation',
     title: 'Auto Skill Draft Hook Conversation',
     metadata: {
@@ -1866,7 +1875,7 @@ test('conversation digest auto-create falls back to digest timestamps when cover
   });
 
   const digestTimestamp = '2026-05-03T10:00:00.000Z';
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'digest-auto-create-missing-boundary-conversation',
     title: 'Digest Auto Create Missing Boundary Conversation',
     metadata: {
@@ -1963,7 +1972,7 @@ test('conversation digest auto-create respects idle, cooldown, and high-value ga
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const idleConversation = store.createConversation({
+  const idleConversation = createSmokeConversation(store, {
     id: 'digest-auto-create-idle-conversation',
     title: 'Digest Auto Create Idle Conversation',
   });
@@ -1995,7 +2004,7 @@ test('conversation digest auto-create respects idle, cooldown, and high-value ga
   assert.ok(idleResult.retryAfterMs > 0);
   assert.equal(store.getConversation(idleConversation.id).metadata.conversationDigestState.pendingPublicMessageCount, 4);
 
-  const gatedConversation = store.createConversation({
+  const gatedConversation = createSmokeConversation(store, {
     id: 'digest-auto-create-gated-conversation',
     title: 'Digest Auto Create Gated Conversation',
   });
@@ -2045,7 +2054,7 @@ test('conversation digest auto-create respects idle, cooldown, and high-value ga
   assert.equal(cooldownResult.pendingMessageCount, 4);
   assert.ok(cooldownResult.retryAfterMs > 0);
 
-  const highValueConversation = store.createConversation({
+  const highValueConversation = createSmokeConversation(store, {
     id: 'digest-auto-create-high-value-conversation',
     title: 'Digest Auto Create High Value Conversation',
   });
@@ -2079,7 +2088,7 @@ test('conversation digest auto-create respects idle, cooldown, and high-value ga
   assert.equal(highValueResult.signalFlags.fileArtifact, true);
   assert.equal(highValueResult.signalFlags.errorFix, true);
 
-  const weakSignalConversation = store.createConversation({
+  const weakSignalConversation = createSmokeConversation(store, {
     id: 'digest-auto-create-weak-signal-conversation',
     title: 'Digest Auto Create Weak Signal Conversation',
   });
@@ -2110,7 +2119,7 @@ test('conversation digest auto-create respects idle, cooldown, and high-value ga
   assert.equal(weakSignalResult.signalFlags.codeChange, false);
   assert.equal(weakSignalResult.signalFlags.code, false);
 
-  const experienceConversation = store.createConversation({
+  const experienceConversation = createSmokeConversation(store, {
     id: 'digest-auto-create-pending-experience-conversation',
     title: 'Digest Auto Create Pending Experience Conversation',
     metadata: {
@@ -2180,7 +2189,7 @@ test('conversation digest auto-create feeds existing auto-compaction', async (t)
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'digest-auto-create-compact-conversation',
     title: 'Digest Auto Create Compact Conversation',
   });
@@ -2220,7 +2229,7 @@ test('conversation digest auto-create feeds existing auto-compaction', async (t)
 
 test('conversations controller keeps extractive digest facts conservative', async (t) => {
   const { handler, store } = createConversationsControllerHarness(t);
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'digest-extractive-conservative-conversation',
     title: 'Digest Conservative Conversation',
   });
@@ -2279,7 +2288,7 @@ test('conversations controller creates model-generated conversation digests when
       };
     },
   });
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'digest-model-conversation',
     title: 'Digest Model Conversation',
   });
@@ -2362,7 +2371,7 @@ test('conversations controller accepts direct JSON mode digest output', async (t
       piAiModuleSpecifier: `data:text/javascript,${encodeURIComponent(moduleSource)}`,
     },
   });
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'digest-json-mode-conversation',
     title: 'Digest JSON Mode Conversation',
   });
@@ -2439,7 +2448,7 @@ test('conversations controller extracts JSON mode text when response includes th
       piAiModuleSpecifier: `data:text/javascript,${encodeURIComponent(moduleSource)}`,
     },
   });
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'digest-json-mode-thinking-text-conversation',
     title: 'Digest JSON Mode Thinking Text Conversation',
   });
@@ -2512,7 +2521,7 @@ test('conversations controller falls back when JSON mode digest output is missin
       piAiModuleSpecifier: `data:text/javascript,${encodeURIComponent(moduleSource)}`,
     },
   });
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'digest-json-mode-malformed-conversation',
     title: 'Digest JSON Mode Malformed Conversation',
   });
@@ -2577,7 +2586,7 @@ test('conversations controller falls back when JSON mode digest output is not an
       piAiModuleSpecifier: `data:text/javascript,${encodeURIComponent(moduleSource)}`,
     },
   });
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'digest-json-mode-bad-output-conversation',
     title: 'Digest JSON Mode Bad Output Conversation',
   });
@@ -2653,7 +2662,7 @@ test('conversations controller falls back when JSON mode assistant response has 
       piAiModuleSpecifier: `data:text/javascript,${encodeURIComponent(moduleSource)}`,
     },
   });
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'digest-json-mode-thinking-only-conversation',
     title: 'Digest JSON Mode Thinking Only Conversation',
   });
@@ -2727,7 +2736,7 @@ test('conversations controller falls back when JSON mode pi-ai module import fai
       piAiModuleSpecifier: 'caff-missing-pi-ai-module-for-test',
     },
   });
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'digest-json-mode-import-failure-conversation',
     title: 'Digest JSON Mode Import Failure Conversation',
   });
@@ -2833,7 +2842,7 @@ test('conversations controller builds a direct DeepSeek digest model from models
       piAiModuleSpecifier: `data:text/javascript,${encodeURIComponent(moduleSource)}`,
     },
   });
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'digest-json-mode-deepseek-fallback-conversation',
     title: 'Digest JSON Mode DeepSeek Fallback Conversation',
   });
@@ -2905,7 +2914,7 @@ test('conversations controller retries model digests with missing-escape diagnos
       });
     },
   });
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'digest-model-repair-conversation',
     title: 'Digest Model Repair Conversation',
   });
@@ -2955,7 +2964,7 @@ test('conversations controller falls back to extractive digests when model summa
       throw new Error('simulated digest model failure');
     },
   });
-  const throwingConversation = throwingHarness.store.createConversation({
+  const throwingConversation = createSmokeConversation(throwingHarness.store, {
     id: 'digest-model-throw-fallback-conversation',
     title: 'Digest Model Throw Fallback Conversation',
   });
@@ -2994,7 +3003,7 @@ test('conversations controller falls back to extractive digests when model summa
       return invalidRawOutput;
     },
   });
-  const invalidConversation = invalidHarness.store.createConversation({
+  const invalidConversation = createSmokeConversation(invalidHarness.store, {
     id: 'digest-model-invalid-fallback-conversation',
     title: 'Digest Model Invalid Fallback Conversation',
   });
@@ -3030,7 +3039,7 @@ test('conversations controller falls back to extractive digests when model summa
 
 test('conversations controller auto-compacts old conversation digests into a rollup', async (t) => {
   const { handler, store } = createConversationsControllerHarness(t);
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'digest-auto-compact-conversation',
     title: 'Digest Auto Compact Conversation',
   });
@@ -3071,7 +3080,7 @@ test('conversations controller auto-compacts old conversation digests into a rol
 
 test('conversations controller manually compacts digest entries', async (t) => {
   const { handler, store } = createConversationsControllerHarness(t);
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'digest-manual-compact-conversation',
     title: 'Digest Manual Compact Conversation',
   });
@@ -3130,7 +3139,7 @@ test('conversations controller uses model-generated rollups when manual compact 
       };
     },
   });
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'digest-model-rollup-conversation',
     title: 'Digest Model Rollup Conversation',
   });
@@ -3173,7 +3182,7 @@ test('conversations controller uses model-generated rollups when manual compact 
 test('conversations controller absorbs experience drafts into digest and skill drafts', async (t) => {
   const { handler, store } = createConversationsControllerHarness(t);
   const timestamp = new Date().toISOString();
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'experience-digest-conversation',
     title: 'Experience Digest Conversation',
     metadata: {
@@ -3255,7 +3264,7 @@ test('conversations controller absorbs experience drafts into digest and skill d
 
 test('conversations controller extracts and rejects skill drafts from digests', async (t) => {
   const { handler, store } = createConversationsControllerHarness(t);
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'skill-draft-extract-conversation',
     title: 'Skill Draft Extract Conversation',
     metadata: {
@@ -3339,7 +3348,7 @@ test('conversations controller creates model-generated skill drafts from digest 
       };
     },
   });
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'skill-draft-model-conversation',
     title: 'Skill Draft Model Conversation',
     metadata: {
@@ -3427,7 +3436,7 @@ test('conversations controller merges model skill drafts into existing project s
     fs.rmSync(projectDir, { recursive: true, force: true });
   });
 
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'skill-draft-merge-conversation',
     title: 'Skill Draft Merge Conversation',
     metadata: {
@@ -3499,7 +3508,7 @@ test('conversations controller falls back to rule skill drafts when model genera
       throw new Error('simulated skill draft model failure');
     },
   });
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'skill-draft-model-fallback-conversation',
     title: 'Skill Draft Model Fallback Conversation',
     metadata: {
@@ -3537,7 +3546,7 @@ test('conversations controller falls back to rule skill drafts when model genera
 
 test('conversations controller rejects skill extraction without reusable digest signals', async (t) => {
   const { handler, store } = createConversationsControllerHarness(t);
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'skill-draft-empty-digest-conversation',
     title: 'Skill Draft Empty Digest Conversation',
     metadata: {
@@ -3575,7 +3584,7 @@ test('conversations controller rejects skill extraction without reusable digest 
 
 test('conversations controller keeps skill draft metadata bounded', async (t) => {
   const { handler, store } = createConversationsControllerHarness(t);
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'skill-draft-bounded-conversation',
     title: 'Skill Draft Bounded Conversation',
     metadata: {
@@ -3645,7 +3654,7 @@ test('conversations controller rejects existing project skill files without over
     fs.rmSync(projectDir, { recursive: true, force: true });
   });
 
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'skill-draft-conflict-conversation',
     title: 'Skill Draft Conflict Conversation',
     metadata: {
@@ -3711,7 +3720,7 @@ test('conversations controller confirms skill drafts into active project skills'
     fs.rmSync(registryAgentDir, { recursive: true, force: true });
   });
 
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'skill-draft-confirm-conversation',
     title: 'Skill Draft Confirm Conversation',
     metadata: {
@@ -3770,7 +3779,7 @@ test('conversations controller confirms skill drafts into active project skills'
 
 test('conversations controller handles empty session goal clear', async (t) => {
   const { handler, store } = createConversationsControllerHarness(t);
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'goal-empty-clear-conversation',
     title: 'Goal Empty Clear Conversation',
   });
@@ -3789,7 +3798,7 @@ test('conversations controller handles empty session goal clear', async (t) => {
 
 test('conversations controller accepts and dismisses session goal proposals', async (t) => {
   const { handler, store, broadcastEvents } = createConversationsControllerHarness(t);
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'goal-proposal-conversation',
     title: 'Goal Proposal Conversation',
     metadata: {
@@ -3857,7 +3866,7 @@ test('conversations controller accepts and dismisses session goal proposals', as
 
 test('conversations controller rejects invalid session goal commands', async (t) => {
   const { handler, store } = createConversationsControllerHarness(t);
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'goal-invalid-conversation',
     title: 'Goal Invalid Conversation',
   });
@@ -3901,11 +3910,11 @@ test('conversations controller rejects invalid session goal commands', async (t)
 
 test('conversations controller lists known Feishu chats by recent activity', async (t) => {
   const { handler, store } = createConversationsControllerHarness(t);
-  const olderConversation = store.createConversation({
+  const olderConversation = createSmokeConversation(store, {
     id: 'feishu-known-chat-older',
     title: 'Older Feishu Chat',
   });
-  const newerConversation = store.createConversation({
+  const newerConversation = createSmokeConversation(store, {
     id: 'feishu-known-chat-newer',
     title: 'Newer Feishu Chat',
   });
@@ -3942,11 +3951,11 @@ test('conversations controller lists known Feishu chats by recent activity', asy
 
 test('conversations controller binds an existing Feishu chat to the selected conversation', async (t) => {
   const { handler, store } = createConversationsControllerHarness(t);
-  const firstConversation = store.createConversation({
+  const firstConversation = createSmokeConversation(store, {
     id: 'feishu-binding-source-conversation',
     title: 'Feishu Binding Source',
   });
-  const targetConversation = store.createConversation({
+  const targetConversation = createSmokeConversation(store, {
     id: 'feishu-binding-target-conversation',
     title: 'Feishu Binding Target',
   });
@@ -3979,7 +3988,7 @@ test('conversations controller binds an existing Feishu chat to the selected con
 
 test('conversations controller rejects Feishu binding without chatId', async (t) => {
   const { handler, store } = createConversationsControllerHarness(t);
-  const conversation = store.createConversation({
+  const conversation = createSmokeConversation(store, {
     id: 'feishu-binding-missing-chat-id',
     title: 'Feishu Binding Missing Chat Id',
   });
@@ -4027,7 +4036,7 @@ test('conversations controller rejects Feishu binding while conversation has act
       activeAgentSlots: [],
     },
   });
-  store.createConversation({
+  createSmokeConversation(store, {
     id: conversationId,
     title: 'Feishu Binding Busy',
   });
@@ -4065,7 +4074,7 @@ test('conversations controller rejects Feishu binding while conversation has an 
       activeAgentSlots: [],
     },
   });
-  store.createConversation({
+  createSmokeConversation(store, {
     id: conversationId,
     title: 'Feishu Binding Active Turn',
   });
@@ -4089,11 +4098,11 @@ test('conversations controller rejects Feishu binding while conversation has an 
 
 test('conversations controller rejects Feishu binding when target conversation is already bound elsewhere', async (t) => {
   const { handler, store } = createConversationsControllerHarness(t);
-  const sourceConversation = store.createConversation({
+  const sourceConversation = createSmokeConversation(store, {
     id: 'feishu-binding-conflict-source',
     title: 'Feishu Binding Conflict Source',
   });
-  const targetConversation = store.createConversation({
+  const targetConversation = createSmokeConversation(store, {
     id: 'feishu-binding-conflict-target',
     title: 'Feishu Binding Conflict Target',
   });
@@ -4726,7 +4735,7 @@ test('role API protects model-family roles and shares one availability projectio
   assert.equal(custom.agent.modelProfiles[0].personaPrompt, 'Use the Claude-specific persona.');
   assert.equal(custom.agents.filter((agent) => agent.isDefaultChatRole).length, 3);
 
-  const customConversation = app.store.createConversation({
+  const customConversation = createSmokeConversation(app.store, {
     id: 'custom-retirement-conversation',
     title: 'Custom retirement',
     participants: [custom.agent.id],
@@ -4958,4 +4967,209 @@ test('server smoke: pi-mono agent can initialize and write Trellis files for the
   assert.equal(fs.readFileSync(currentTaskPath, 'utf8').trim(), '.trellis/tasks/pi-tool-smoke');
   assert.match(fs.readFileSync(prdPath, 'utf8'), /Verify that a pi-mono agent can call trellis-init and trellis-write/u);
   assert.equal(stderrText.trim(), '');
+});
+
+test('bootstrap leaves an empty conversation database untouched', (t) => {
+  const tempDir = withTempDir('caff-bootstrap-read-only-');
+  const sqlitePath = path.join(tempDir, 'chat.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const builder = createBootstrapPayloadBuilder({
+    store,
+    skillRegistry: { listSkills() { return []; } },
+    turnOrchestrator: { buildRuntimePayload() { return {}; } },
+    modeStore: { list() { return []; } },
+    modelCatalog: { getOptions() { return []; } },
+    roleService: {
+      getDirectory() {
+        return { agents: [], modelOptions: [] };
+      },
+    },
+  });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const payload = builder.buildBootstrapPayload();
+
+  assert.deepEqual(payload.conversations, []);
+  assert.equal(payload.selectedConversationId, null);
+  assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM chat_conversations').get().count, 0);
+  assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM chat_conversation_agents').get().count, 0);
+});
+
+test('conversation create validates the explicit roster and only merges mode skills into supplied participants', async (t) => {
+  const tempDir = withTempDir('caff-conversation-participant-policy-');
+  const sqlitePath = path.join(tempDir, 'chat.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const modelOptions = [
+    {
+      key: 'openai\u001fgpt-participant-test',
+      provider: 'openai',
+      model: 'gpt-participant-test',
+      label: 'GPT Participant Test',
+      family: 'gpt',
+      familySource: 'provider_alias',
+      supportedThinkingLevels: ['off', 'low', 'high'],
+    },
+    {
+      key: 'anthropic\u001fclaude-participant-test',
+      provider: 'anthropic',
+      model: 'claude-participant-test',
+      label: 'Claude Participant Test',
+      family: 'claude',
+      familySource: 'provider_alias',
+      supportedThinkingLevels: ['off', 'low', 'high'],
+    },
+    {
+      key: 'google\u001fgemini-participant-test',
+      provider: 'google',
+      model: 'gemini-participant-test',
+      label: 'Gemini Participant Test',
+      family: 'gemini',
+      familySource: 'provider_alias',
+      supportedThinkingLevels: ['off', 'low', 'high'],
+    },
+  ];
+  const modelCatalog = {
+    getOptions() {
+      return structuredClone(modelOptions);
+    },
+  };
+  const roleService = createRoleService({ store, modelCatalog });
+  roleService.updateRole('role-family-gpt', {
+    provider: 'openai',
+    model: 'gpt-participant-test',
+    modelProfiles: [{
+      id: 'high-effort',
+      name: 'High effort',
+      provider: 'openai',
+      model: 'gpt-participant-test',
+      thinking: 'high',
+    }],
+  });
+  roleService.updateRole('role-family-claude', {
+    provider: 'anthropic',
+    model: 'claude-participant-test',
+  });
+  roleService.updateRole('role-family-gemini', {
+    provider: 'google',
+    model: 'gemini-participant-test',
+  });
+  const controller = createConversationsController({
+    store,
+    roleService,
+    turnOrchestrator: {
+      buildRuntimePayload() { return {}; },
+      clearConversationState() {},
+    },
+    undercoverHost: { buildPublicState() { return null; } },
+    werewolfHost: { buildPublicState() { return null; } },
+    undercoverService: { prepareConversation(id) { return store.getConversation(id); }, deleteConversationState() {} },
+    werewolfService: { prepareConversation(id) { return store.getConversation(id); }, deleteConversationState() {} },
+    skillRegistry: {
+      getSkill(id) {
+        return id === 'tdd' ? { id: 'tdd', name: 'TDD' } : null;
+      },
+    },
+    modeStore: {
+      get(id) {
+        if (id === 'coding') return { id: 'coding', name: 'Coding', skillIds: ['mode-skill'] };
+        if (id === 'skill_test_design') return { id, name: 'Skill Test 设计', skillIds: ['skill-test-design-workbench'] };
+        return null;
+      },
+    },
+    broadcastEvent() {},
+  });
+  const assertCreateError = async (body, statusCode, code) => {
+    await assert.rejects(
+      () => invokeConversationsController(controller, {
+        method: 'POST',
+        pathname: '/api/conversations',
+        body,
+      }),
+      (error) => {
+        assert.equal(error.statusCode, statusCode);
+        assert.equal(error.issues[0].code, code);
+        return true;
+      }
+    );
+  };
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  await assertCreateError({ title: 'Missing roster' }, 400, 'participants_required');
+  await assertCreateError({ title: 'Empty roster', participants: [] }, 400, 'participants_required');
+  await assertCreateError({ title: 'Unknown roster', participants: ['missing-role'] }, 422, 'participant_role_unknown');
+  await assertCreateError({
+    title: 'Invalid profile',
+    participants: [{ agentId: 'role-family-gpt', modelProfileId: 'missing-profile' }],
+  }, 422, 'participant_profile_invalid');
+
+  const modeConversation = await invokeConversationsController(controller, {
+    method: 'POST',
+    pathname: '/api/conversations',
+    body: {
+      title: 'Explicit coding roster',
+      type: 'coding',
+      participants: [{ agentId: 'role-family-gpt', modelProfileId: 'high-effort' }],
+    },
+  });
+  assert.equal(modeConversation.statusCode, 201);
+  assert.equal(modeConversation.json.conversation.agents.length, 1);
+  assert.equal(modeConversation.json.conversation.agents[0].id, 'role-family-gpt');
+  assert.equal(modeConversation.json.conversation.agents[0].selectedModelProfileId, 'high-effort');
+  assert.deepEqual(modeConversation.json.conversation.agents[0].conversationSkillIds, ['mode-skill']);
+
+  const gameConversation = await invokeConversationsController(controller, {
+    method: 'POST',
+    pathname: '/api/conversations',
+    body: {
+      title: 'Explicit game roster',
+      type: 'werewolf',
+      participants: ['role-family-gpt', 'role-family-gemini'],
+    },
+  });
+  assert.equal(gameConversation.statusCode, 201);
+  assert.deepEqual(gameConversation.json.conversation.agents.map((agent) => agent.id), [
+    'role-family-gpt',
+    'role-family-gemini',
+  ]);
+
+  const skillTestConversation = await invokeConversationsController(controller, {
+    method: 'POST',
+    pathname: '/api/conversations',
+    body: {
+      type: 'skill_test_design',
+      skillId: 'tdd',
+      participants: ['role-family-gpt', 'role-family-claude', 'role-family-gemini'],
+    },
+  });
+  assert.equal(skillTestConversation.statusCode, 201);
+  assert.deepEqual(skillTestConversation.json.conversation.agents.map((agent) => agent.id), [
+    'role-family-gpt',
+    'role-family-claude',
+    'role-family-gemini',
+  ]);
+  assert.deepEqual(skillTestConversation.json.conversation.metadata.skillTestDesign.participantRoles, {
+    'role-family-gpt': 'planner',
+    'role-family-claude': 'critic',
+    'role-family-gemini': 'scribe',
+  });
+  assert.equal(JSON.stringify(skillTestConversation.json.conversation).includes('agent-strategist'), false);
+
+  modelOptions.splice(0, modelOptions.length);
+  await assertCreateError({
+    title: 'Unavailable role',
+    participants: ['role-family-gpt'],
+  }, 422, 'participant_role_unavailable');
+  assert.equal(store.listConversations().length, 3);
 });

@@ -51,6 +51,7 @@ test('feishu delivery service sends completed assistant replies once per bound c
 
   const conversation = store.createConversation({
     title: 'Bound Feishu Conversation',
+    participants: ['role-family-gpt'],
   });
   const binding = store.createConversationChannelBinding({
     platform: 'feishu',

@@ -313,6 +313,33 @@ export function createRoleService(options: any = {}) {
     };
   }
 
+  function validateConversationParticipants(input: any = {}) {
+    const normalizedParticipants = Array.isArray(input)
+      ? store.normalizeConversationParticipants(input)
+      : store.normalizeConversationParticipantsInput(input);
+    const directory = getDirectory();
+    const rolesById = new Map(directory.agents.map((role: any) => [role.id, role]));
+
+    for (const [index, participant] of normalizedParticipants.entries()) {
+      const role: any = rolesById.get(participant.agentId);
+      if (!role || role.availability?.status !== 'available') {
+        throw createRoleError(
+          422,
+          'participant_role_unavailable',
+          'Conversation participant role is not currently runnable',
+          `participants[${index}].agentId`,
+          {
+            roleId: participant.agentId,
+            roleName: normalize(role?.name),
+            availability: role?.availability || { status: 'role_missing' },
+          }
+        );
+      }
+    }
+
+    return normalizedParticipants;
+  }
+
   function mutationResult(roleId: string) {
     const directory = getDirectory();
     const agent = directory.agents.find((role: any) => role.id === roleId);
@@ -542,5 +569,6 @@ export function createRoleService(options: any = {}) {
     getDirectory,
     retireRole,
     updateRole,
+    validateConversationParticipants,
   };
 }
