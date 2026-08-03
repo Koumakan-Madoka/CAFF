@@ -3,7 +3,8 @@ feature_ids: [CAFF-MODEL-FAMILY-ROLES]
 topics: [roles, model-family, providers, credentials, persona, defaults, design-gate]
 doc_kind: discussion
 created: 2026-08-02
-status: merged
+status: done
+completed: 2026-08-03
 ---
 
 # CAFF Model-family Roles — Kickoff and Design Gate
@@ -12,7 +13,7 @@ status: merged
 
 原角色方向已收敛；operator 认可首版 UI 后新增“在前端配置具体 provider”的范围，并在 provider-inclusive 复验时要求补齐思考强度等常用运行字段。`e7bbd71` 中错误的 Kimi capability fixture 已按仓库锁定的 `@earendil-works/pi-coding-agent@0.80.10` nested `@earendil-works/pi-ai` 真值修正，并对全部手写 capability snapshot 做同类 sweep；`547e8fe` 已获精确 delta APPROVE。
 
-实现已从 canonical `origin/main@b9f3ddfa88b3e8942d0dd095f1dcaeb4c979d451` 创建独立 worktree并完成 Tasks 0–8。云端 Codex 因 code-review quota 耗尽未产生 verdict；布偶猫在隔离 sandbox 对完整 104-file PR 与 exact HEAD `bec42b856c8e11fde690478097a4cb639d0c7424` 独立复验后明确 APPROVE，无 P0/P1/新增 P2。最终本地全量门禁与 GitHub CI 全绿，PR #50 已于 2026-08-03 squash merge 至 `origin/main`（merge commit `4bbc260bd572fe5073c06daee588f87e9915f46d`）。当前进入 Feature completion 愿景守护阶段。
+实现已从 canonical `origin/main@b9f3ddfa88b3e8942d0dd095f1dcaeb4c979d451` 创建独立 worktree并完成 Tasks 0–8。云端 Codex 因 code-review quota 耗尽未产生 verdict；布偶猫在隔离 sandbox 对完整 104-file PR 与 exact HEAD `bec42b856c8e11fde690478097a4cb639d0c7424` 独立复验后明确 APPROVE，无 P0/P1/新增 P2。最终本地全量门禁与 GitHub CI 全绿，PR #50 于 2026-08-03 squash merge 至 `origin/main`（merge commit `4bbc260bd572fe5073c06daee588f87e9915f46d`）。烁烁随后作为非作者、非 reviewer 的第三独立个体，在 merged main 上逐步复验 operator experience、Primary Journey 与 Migration Journey，结论 APPROVE、无用户可见 mismatch；CloseGateReport 与 reflection 已落盘，Feature lifecycle 完成。
 
 ## Product Direction
 
@@ -100,6 +101,10 @@ Design Gate 已由 operator 验收，生产 UI 按同一契约落地并经独立
 9. **Thinking drift:** 当前自由文本可持久化模型不支持的强度，Pi 后置 clamp 会让 UI 配置与真实执行不一致；catalog/save/runtime 必须共享 capability contract。
 10. **Baseline drift:** `455898c` 尚未进入 canonical main，代码位置与契约可能在实现前变化。
 
-## Next Action
+## Completion
 
-实现计划见 [2026-08-03-model-family-roles-implementation-plan.md](../../feature-specs/2026-08-03-model-family-roles-implementation-plan.md)。下一步为最终 HEAD continuity 放行、创建 PR、触发 remote Codex review；CI 与 cloud findings 清零后 squash merge，并在 main 上记录本 Feature 已合入状态。
+- Delivery: [PR #50](https://github.com/Koumakan-Madoka/CAFF/pull/50), squash `4bbc260bd572fe5073c06daee588f87e9915f46d`.
+- Final review: [APPROVE on exact HEAD `bec42b8`](https://github.com/Koumakan-Madoka/CAFF/pull/50#issuecomment-5165873252).
+- Vision guard: [request](../../review-notes/2026-08-03-model-family-roles-vision-guard-request.md) / [independent APPROVE](../../review-notes/2026-08-03-model-family-roles-vision-guard-verdict-shuoshuo.md).
+- Lifecycle evidence: [Close Gate Report](../../project-evidence/CAFF-model-family-roles-close-gate-report.md) / [reflection](../../project-reflections/2026-08-03-model-family-roles-capsule.md) / [browser evidence](../../project-evidence/CAFF-model-family-roles-browser/).
+- Required successor: none; all acceptance work closed within this Feature.

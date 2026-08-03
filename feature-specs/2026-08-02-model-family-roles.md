@@ -3,7 +3,8 @@ feature_ids: [CAFF-MODEL-FAMILY-ROLES]
 topics: [agents, roles, model-family, providers, credentials, personas, chat-defaults, migration]
 doc_kind: feature_spec
 created: 2026-08-02
-status: merged
+status: done
+completed: 2026-08-03
 ---
 
 # CAFF Model-family Roles Feature Spec
@@ -15,13 +16,14 @@ status: merged
 
 ## Implementation Status
 
-实现已从 exact canonical `origin/main@b9f3ddfa88b3e8942d0dd095f1dcaeb4c979d451` 独立落地。Provider persistence/local-admin security、Pi catalog/family registry、历史身份迁移、RoleService/API、显式参与者政策、runtime/prompt enforcement、生产 Provider/Role UI 与隔离 acceptance 均已完成。PR #50 的 final packet-inclusive HEAD `bec42b856c8e11fde690478097a4cb639d0c7424` 已获跨家族完整 PR review APPROVE，无 P0/P1/新增 P2，并于 2026-08-03 squash merge 至 `origin/main`（merge commit `4bbc260bd572fe5073c06daee588f87e9915f46d`）。当前代码已进入 main，Feature completion 仍等待非作者、非 reviewer 的愿景守护验收。
+实现已从 exact canonical `origin/main@b9f3ddfa88b3e8942d0dd095f1dcaeb4c979d451` 独立落地。Provider persistence/local-admin security、Pi catalog/family registry、历史身份迁移、RoleService/API、显式参与者政策、runtime/prompt enforcement、生产 Provider/Role UI 与隔离 acceptance 均已完成。PR #50 的 final packet-inclusive HEAD `bec42b856c8e11fde690478097a4cb639d0c7424` 获跨家族完整 PR review APPROVE，无 P0/P1/新增 P2，并于 2026-08-03 squash merge 至 `origin/main`（merge commit `4bbc260bd572fe5073c06daee588f87e9915f46d`）。第三独立个体烁烁随后在 merged main 上完成 Provider→catalog→role→new-chat→runtime recovery 与 migration 两条 User Journey，明确 APPROVE、无用户可见 mismatch；AC 1–16 全部关闭，Feature lifecycle 已完成。
 
 ## Timeline
 
 | Date | Event |
 |---|---|
 | 2026-08-03 | Tasks 0–8、隔离 acceptance、final-HEAD review 与最终 merge gate 完成；PR #50 squash merged as `4bbc260`。 |
+| 2026-08-03 | Independent vision guardian @烁烁 approved merged main; reflection、CloseGateReport 与 browser evidence 落盘；Feature marked done。 |
 
 ## Acceptance Criteria
 
@@ -307,3 +309,17 @@ Architecture Gate 已给出数据流、迁移回滚方案、失败模式与测�
 ## Finish Line
 
 operator 可以先在前端安全配置 provider 与具体模型，再看到这些模型经过显式 family 归类后驱动七个模型族角色的 availability。默认 CAFF 角色不再是预设人格；需要人格化协作时仍可创建自定义角色。新建普通聊天明确展示默认预选并允许最终确认，模型族永远不会跨族运行。旧预设消失，但用户历史、现有 provider 配置与自建角色不会随迁移丢失。
+
+## Completion Evidence
+
+- Delivery PR: [#50](https://github.com/Koumakan-Madoka/CAFF/pull/50), squash `4bbc260bd572fe5073c06daee588f87e9915f46d`.
+- Final reviewed feature HEAD: `bec42b856c8e11fde690478097a4cb639d0c7424`; [cross-family APPROVE](https://github.com/Koumakan-Madoka/CAFF/pull/50#issuecomment-5165873252).
+- [Vision guard request](../review-notes/2026-08-03-model-family-roles-vision-guard-request.md) and [independent APPROVE verdict](../review-notes/2026-08-03-model-family-roles-vision-guard-verdict-shuoshuo.md).
+- [Close Gate Report](../project-evidence/CAFF-model-family-roles-close-gate-report.md) covering AC 1–16.
+- [Reflection capsule](../project-reflections/2026-08-03-model-family-roles-capsule.md).
+- [Representative screenshots and 15-second merged-main journey](../project-evidence/CAFF-model-family-roles-browser/).
+
+## Evolution
+
+- Evolved from: CAFF's legacy Agent/Persona default roster and backend-only `models.json` administration.
+- Required successor: none. Every acceptance criterion is closed within this Feature.
