@@ -3,7 +3,7 @@ feature_ids: [CAFF-MODEL-FAMILY-ROLES]
 topics: [agents, roles, model-family, providers, credentials, personas, chat-defaults, migration]
 doc_kind: feature_spec
 created: 2026-08-02
-status: implementation_authorized
+status: merge_ready
 ---
 
 # CAFF Model-family Roles Feature Spec
@@ -12,6 +12,10 @@ status: implementation_authorized
 **Goal:** 削弱 CAFF 默认体验中的角色扮演属性，把 GPT、Claude、Gemini、DeepSeek、Qwen、GLM、Kimi 建模为受模型边界约束的系统角色；保留现有自定义角色能力，让任意可用角色可以成为新建普通聊天的预选默认角色，并让 operator 能在前端安全维护决定模型可用性的 provider 连接与模型目录。
 **Source:** `thread_mrxfv8tub5r1uvww` 中 operator 于 2026-08-01 的连续决策，见本文“Operator Decision Ledger”。
 **Baseline:** kickoff 基于 `chore/main-reconcile@455898c`。该 SHA 尚未进入 `origin/main`；实现开始前必须重新同步最终 canonical main，并重新核对本文 Current State。
+
+## Implementation Status
+
+实现已从 exact canonical `origin/main@b9f3ddfa88b3e8942d0dd095f1dcaeb4c979d451` 独立落地。Provider persistence/local-admin security、Pi catalog/family registry、历史身份迁移、RoleService/API、显式参与者政策、runtime/prompt enforcement、生产 Provider/Role UI 与隔离 acceptance 均已完成；生产代码冻结于 `6e3573b`，跨家族 reviewer 已明确 APPROVE 且无剩余 P1/P2。当前处于 merge-gate，尚未声称已进入 main。
 
 ## Acceptance Criteria
 
@@ -220,9 +224,9 @@ Design Gate 通过只代表产品交互方向冻结，不代表实现可合入�
 
 ## Architecture Gate
 
-**Status:** 原 contract 于 2026-08-02 冻结；operator 新增前端 provider 配置后已重新打开并形成 provider-inclusive revision。Canonical design: [Architecture Gate](../feature-discussions/2026-08-02-model-family-roles/architecture-gate.md)。修订 architecture/security peer review、UI Design Gate operator 验收与最终 canonical-main freshness check 均在实现前阻塞。
+**Status:** 原 contract 于 2026-08-02 冻结；operator 新增前端 provider 配置后重新打开并形成 provider-inclusive revision。Canonical design: [Architecture Gate](../feature-discussions/2026-08-02-model-family-roles/architecture-gate.md)。修订 architecture/security peer review、UI Design Gate operator 验收与 canonical-main freshness check 均已完成，冻结决策已由生产实现与测试覆盖。
 
-实现前必须冻结以下中间层决策：
+实现所依据的冻结中间层决策：
 
 1. canonical model-family registry 的归属模块、provider/model alias 数据源及未知模型行为；
 2. 系统字段写保护与自定义字段边界，尤其是模型族角色是否允许用户配置 Skills、thinking 或默认模型；
@@ -231,7 +235,7 @@ Design Gate 通过只代表产品交互方向冻结，不代表实现可合入�
 5. family role unavailable 后已有会话的阻断、换模与恢复 UX；
 6. API 是否继续沿用 `/api/agents` 命名，或在兼容层上逐步投影为 role contract。
 
-Architecture Gate 必须给出数据流、迁移回滚方案、失败模式与测试矩阵。未冻结前不得修改生产 schema 或 seed 逻辑。
+Architecture Gate 已给出数据流、迁移回滚方案、失败模式与测试矩阵；生产 schema 与 seed 改造在 Gate APPROVE 后才开始。
 
 ## Stateful Object Census
 

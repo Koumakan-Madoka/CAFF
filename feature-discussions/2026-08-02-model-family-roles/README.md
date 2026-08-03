@@ -3,16 +3,16 @@ feature_ids: [CAFF-MODEL-FAMILY-ROLES]
 topics: [roles, model-family, providers, credentials, persona, defaults, design-gate]
 doc_kind: discussion
 created: 2026-08-02
-status: implementation_authorized
+status: merge_ready
 ---
 
 # CAFF Model-family Roles — Kickoff and Design Gate
 
 ## Status
 
-原角色方向已收敛；operator 认可首版 UI 后新增“在前端配置具体 provider”的范围，并在 provider-inclusive 复验时要求补齐思考强度等常用运行字段。`e7bbd71` 中错误的 Kimi capability fixture 已按仓库锁定的 `@earendil-works/pi-coding-agent@0.80.10` nested `@earendil-works/pi-ai` 真值修正，并对全部手写 capability snapshot 做同类 sweep；`547e8fe` 已获精确 delta APPROVE。operator 已授权开始落地；截至本计划冻结点仍未修改 schema、seed、API、prompt 或生产 UI 代码。
+原角色方向已收敛；operator 认可首版 UI 后新增“在前端配置具体 provider”的范围，并在 provider-inclusive 复验时要求补齐思考强度等常用运行字段。`e7bbd71` 中错误的 Kimi capability fixture 已按仓库锁定的 `@earendil-works/pi-coding-agent@0.80.10` nested `@earendil-works/pi-ai` 真值修正，并对全部手写 capability snapshot 做同类 sweep；`547e8fe` 已获精确 delta APPROVE。
 
-Kickoff baseline: `chore/main-reconcile@455898c`。该 baseline 是 review candidate，不是 canonical main；实现前必须从最终 `origin/main` 创建新实现 worktree，并重做现状核验。
+实现已从 canonical `origin/main@b9f3ddfa88b3e8942d0dd095f1dcaeb4c979d451` 创建独立 worktree，Tasks 0–8 已完成。生产代码冻结于 `6e3573b`；布偶猫在隔离 sandbox 独立复验后对该 SHA 明确 APPROVE（消息 `0001785753359598-000476-d051d94b`，delta verdict `fa459a4`），无剩余 P1/P2。最新 main 原生全量门禁 `npm run check`、`npm run typecheck`、`npm test`、`git diff --check` 已通过，当前进入 PR / remote review merge-gate。
 
 ## Product Direction
 
@@ -57,7 +57,7 @@ CAFF 保留统一角色概念，但默认角色不再是 Strategist、Builder �
 
 ## Gate A — Architecture
 
-原 Architecture Gate 于 `60234bc` 冻结；provider 新范围使其重新打开。provider-inclusive 修订见 [architecture-gate.md](architecture-gate.md)，等待跨个体 architecture/security review。核心结论：
+原 Architecture Gate 于 `60234bc` 冻结；provider 新范围使其重新打开。provider-inclusive 修订见 [architecture-gate.md](architecture-gate.md)，已完成跨个体 architecture/security review，并作为本次实现的冻结契约。核心结论：
 
 - 永久 RoleIdentity 与活动 RoleConfig 分离，旧 seed 删除不再级联吞历史；
 - configured model catalog 与 family registry 单点归类，unknown/conflict fail closed；
@@ -69,7 +69,7 @@ CAFF 保留统一角色概念，但默认角色不再是 Strategist、Builder �
 
 ## Gate B — UI
 
-必须提供真实视口中的角色管理与新建聊天流程，并由 operator 验收：
+Design Gate 已由 operator 验收，生产 UI 按同一契约落地并经独立 review：
 
 - 系统模型族 / 自定义角色分组；
 - 角色管理 / 模型供应商两个同 shell surface；
@@ -85,7 +85,9 @@ CAFF 保留统一角色概念，但默认角色不再是 Strategist、Builder �
 - [UI Design Gate](ui-design-gate.md)
 - [交互 fixture](../../designs/model-family-roles-ui-gate.html)
 
-## Blocking Risks
+## Closed Risk Checklist
+
+下列风险均已在实现中用 fail-closed 契约、迁移/恢复测试和跨猫 review 闭合；保留清单作为回归审计入口：
 
 1. **P0 data loss:** 当前 `chat_agents` 删除会级联删除参与者与记忆；不能把“删 seed”实现成裸 `DELETE`。
 2. **Model boundary bypass:** Profile 覆盖可以绕过基础 provider/model，family 必须在 runtime 再校验。
@@ -100,4 +102,4 @@ CAFF 保留统一角色概念，但默认角色不再是 Strategist、Builder �
 
 ## Next Action
 
-Architecture/Security 与 capability fixture delta 已在 `547e8fe` 获跨个体 APPROVE；operator 已明确授权开始落地。实现计划见 [2026-08-03-model-family-roles-implementation-plan.md](../../feature-specs/2026-08-03-model-family-roles-implementation-plan.md)。下一步从 exact `origin/main@b9f3ddfa88b3e8942d0dd095f1dcaeb4c979d451` 创建独立实现 worktree，只转移冻结产物，按 Provider Config + Registry/Catalog → Migration → Role/API → Participant Policy → Runtime/Prompt → UI 的顺序逐段 TDD。
+实现计划见 [2026-08-03-model-family-roles-implementation-plan.md](../../feature-specs/2026-08-03-model-family-roles-implementation-plan.md)。下一步为最终 HEAD continuity 放行、创建 PR、触发 remote Codex review；CI 与 cloud findings 清零后 squash merge，并在 main 上记录本 Feature 已合入状态。
