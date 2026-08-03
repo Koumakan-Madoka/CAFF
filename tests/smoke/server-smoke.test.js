@@ -221,13 +221,13 @@ test('create server wires loopback model-provider administration with bootstrap 
   const baseUrl = `http://127.0.0.1:${port}`;
   fs.writeFileSync(path.join(tempDir, 'models.json'), JSON.stringify({
     providers: {
-      moonshot: {
+      moonshotai: {
         models: [{ id: 'kimi-k2.5', family: 'kimi' }],
       },
     },
   }), 'utf8');
   fs.writeFileSync(path.join(tempDir, 'auth.json'), JSON.stringify({
-    moonshot: { type: 'api_key', key: 'external-auth-smoke-secret' },
+    moonshotai: { type: 'api_key', key: 'external-auth-smoke-secret' },
   }), 'utf8');
   const app = createServerApp({
     host: '127.0.0.1',
@@ -259,7 +259,7 @@ test('create server wires loopback model-provider administration with bootstrap 
   assert.equal(providers.providers[0].hasExternalAuth, true);
   assert.equal(JSON.stringify(providers).includes('external-auth-smoke-secret'), false);
 
-  const putResponse = await fetch(`${baseUrl}/api/model-providers/moonshot`, {
+  const putResponse = await fetch(`${baseUrl}/api/model-providers/moonshotai`, {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',
@@ -270,13 +270,19 @@ test('create server wires loopback model-provider administration with bootstrap 
       name: 'Moonshot',
       apiKeyMode: 'env',
       apiKey: '',
-      models: [{ id: 'kimi-k2.5', family: 'kimi' }],
+      models: [{ id: 'kimi-k2.5', name: 'Kimi Configured', family: 'kimi' }],
     }),
   });
   assert.equal(putResponse.status, 200);
   const updated = await putResponse.json();
   assert.equal(updated.providers[0].name, 'Moonshot');
   assert.equal(JSON.stringify(updated).includes('external-auth-smoke-secret'), false);
+
+  const refreshedBootstrap = await (await fetch(`${baseUrl}/api/bootstrap`)).json();
+  assert.equal(
+    refreshedBootstrap.modelOptions.find((option) => option.key === 'moonshotai\u001fkimi-k2.5').label,
+    'Kimi Configured'
+  );
 
   await new Promise((resolve) => app.close(resolve));
   closed = true;

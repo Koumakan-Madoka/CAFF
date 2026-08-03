@@ -78,6 +78,7 @@ export function createModelProvidersController(options: any = {}): RouteHandler<
   const validateProvider = typeof options.validateProvider === 'function'
     ? options.validateProvider
     : validateModelProviderConnection;
+  const onCommitted = typeof options.onCommitted === 'function' ? options.onCommitted : () => {};
   const guard = createLocalAdminGuard({
     host: options.host,
     port: options.port,
@@ -137,6 +138,7 @@ export function createModelProvidersController(options: any = {}): RouteHandler<
         const result = await updateModelProviderDocument(agentDir, (document: any) => (
           patchModelProvider(document, providerId, body)
         ));
+        onCommitted();
         sendJson(res, 200, buildWriteResponse(result));
         return true;
       }
@@ -145,6 +147,7 @@ export function createModelProvidersController(options: any = {}): RouteHandler<
         const result = await updateModelProviderDocument(agentDir, (document: any) => (
           clearModelProviderSecret(document, providerId)
         ));
+        onCommitted();
         sendJson(res, 200, buildWriteResponse(result));
         return true;
       }
@@ -153,6 +156,7 @@ export function createModelProvidersController(options: any = {}): RouteHandler<
         const result = await updateModelProviderDocument(agentDir, (document: any) => (
           removeModelProvider(document, providerId)
         ));
+        onCommitted();
         sendJson(res, 200, buildWriteResponse(result));
         return true;
       }

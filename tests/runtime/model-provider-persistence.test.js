@@ -61,7 +61,7 @@ test('provider persistence creates a restricted non-overwriting backup before re
   };
   const replacement = {
     providers: {
-      moonshot: {
+      moonshotai: {
         models: [{ id: 'kimi-k2.5', family: 'kimi' }],
       },
     },
@@ -139,12 +139,12 @@ test('provider persistence serializes read-modify-write updates per models.json 
       ...document,
       providers: {
         ...document.providers,
-        moonshot: { models: [{ id: 'kimi-k2.5', family: 'kimi' }] },
+        moonshotai: { models: [{ id: 'kimi-k2.5', family: 'kimi' }] },
       },
     })),
   ]);
 
-  assert.deepEqual(Object.keys(readModelProviderDocument(agentDir).providers).sort(), ['moonshot', 'openai']);
+  assert.deepEqual(Object.keys(readModelProviderDocument(agentDir).providers).sort(), ['moonshotai', 'openai']);
 });
 
 test('provider persistence validates the complete document before creating files', async (t) => {
@@ -176,6 +176,25 @@ test('provider persistence rejects Pi-invalid nested schema before creating file
         custom: {
           api: 'openai-completions',
           headers: { Authorization: 42 },
+          models: [{ id: 'custom-model' }],
+        },
+      },
+    }),
+    (error) => error && error.code === 'provider_document_schema_invalid'
+  );
+
+  assert.equal(fs.existsSync(path.join(agentDir, 'models.json')), false);
+  assert.equal(fs.existsSync(agentDir), false);
+});
+
+test('provider persistence rejects Pi-invalid provider composition before creating files', async (t) => {
+  const tempDir = registerTempDir(t, 'caff-provider-pi-composition-invalid-');
+  const agentDir = path.join(tempDir, 'agent');
+
+  await assert.rejects(
+    () => atomicReplaceModelProviderDocument(agentDir, {
+      providers: {
+        custom: {
           models: [{ id: 'custom-model' }],
         },
       },

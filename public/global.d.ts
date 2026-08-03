@@ -16,7 +16,11 @@ declare global {
     provider: string;
     model: string;
     label: string;
+    source?: 'runtime' | 'models_json' | 'runtime_registry';
     sourceLabel?: string;
+    family?: 'gpt' | 'claude' | 'gemini' | 'deepseek' | 'qwen' | 'glm' | 'kimi' | null;
+    familySource?: 'explicit' | 'provider_alias' | 'model_alias' | 'unknown' | 'conflict';
+    supportedThinkingLevels?: Array<'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'>;
   };
 
   type CaffModelOptionUtils = {

@@ -41,6 +41,7 @@ const { createConfiguredOpenSandboxFactory } = require('../domain/skill-test/ope
 const { createFeishuClient } = require('../domain/integrations/feishu/feishu-client');
 const { createFeishuIntegrationService } = require('../domain/integrations/feishu/feishu-service');
 const { createFeishuLongConnectionSource } = require('../domain/integrations/feishu/feishu-long-connection');
+const { createConfiguredModelCatalog } = require('../domain/models/configured-model-catalog');
 const { readExternalAuthProviderIds } = require('../domain/models/external-provider-auth');
 const { createRouter } = require('../http/router');
 const { createSseBus } = require('../http/sse-bus');
@@ -90,6 +91,7 @@ export function createServerApp(options: any = {}) {
     || randomBytes(32).toString('base64url');
   const providerConfigLocalEnabled = isLoopbackAddress(host);
   const agentDir = String(options.agentDir || '').trim() || resolveSetting('', process.env.PI_CODING_AGENT_DIR, DEFAULT_AGENT_DIR);
+  const modelCatalog = options.modelCatalog || createConfiguredModelCatalog({ agentDir });
   const sqlitePath = String(options.sqlitePath || '').trim() || resolveSetting('', process.env.PI_SQLITE_PATH, '');
   const initialProjectDir = path.resolve(String(options.projectDir || '').trim() || process.cwd());
   const projectManager = createProjectManager({ agentDir, initialProjectDir });
@@ -426,6 +428,7 @@ export function createServerApp(options: any = {}) {
     skillRegistry,
     turnOrchestrator,
     modeStore,
+    modelCatalog,
     localAdmin: () => ({
       modelProviders: {
         enabled: providerConfigLocalEnabled,
@@ -462,6 +465,7 @@ export function createServerApp(options: any = {}) {
       externalAuthProviderIds: options.externalAuthProviderIds !== undefined
         ? options.externalAuthProviderIds
         : () => readExternalAuthProviderIds(agentDir),
+      onCommitted: () => modelCatalog.invalidate(),
       validateProvider: options.validateProvider,
     }),
     createEvalCasesController({
