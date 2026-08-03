@@ -95,6 +95,7 @@ declare global {
 
   interface Window {
     CaffChat?: any;
+    CaffPersonas?: any;
     CaffShared?: any;
     CaffSkillTests?: any;
   }

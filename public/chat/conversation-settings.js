@@ -502,7 +502,7 @@
       if (state.agents.length === 0) {
         const empty = document.createElement('div');
         empty.className = 'empty-state';
-        empty.textContent = '还没有人格，请先去人格管理页创建。';
+        empty.textContent = '还没有自定义角色，请先去角色与模型管理页创建。';
         dom.conversationAgentOptions.appendChild(empty);
         return;
       }
