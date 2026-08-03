@@ -17,6 +17,10 @@ test('migrateChatSchema emits debug warning when FTS setup fails and debug loggi
         all() {
           return [];
         },
+        get() {
+          return null;
+        },
+        run() {},
       };
     },
     exec(sql) {

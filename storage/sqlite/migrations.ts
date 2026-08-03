@@ -1,3 +1,8 @@
+import {
+  migrateLegacyModelFamilyRoles,
+  reconcileSystemModelFamilyRoles,
+} from './model-family-role-migration';
+
 function listTableInfo(db: any, tableName: string) {
   return db.prepare(`PRAGMA table_info(${tableName})`).all();
 }
@@ -187,7 +192,7 @@ CREATE TABLE chat_memory_cards_migrated (
   updated_at TEXT NOT NULL,
   UNIQUE(scope, owner_key, agent_id, title),
   FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE,
-  FOREIGN KEY (agent_id) REFERENCES chat_agents(id) ON DELETE CASCADE
+  FOREIGN KEY (agent_id) REFERENCES chat_role_identities(role_id) ON DELETE RESTRICT
 );
 
 INSERT INTO chat_memory_cards_migrated (
@@ -240,23 +245,45 @@ CREATE INDEX IF NOT EXISTS idx_chat_memory_cards_expires_at
 `);
 }
 
-export function migrateChatSchema(db: any) {
+export function migrateChatSchema(db: any, options: any = {}) {
+  migrateLegacyModelFamilyRoles(db, { backupPath: options.backupPath });
   db.exec(`
+CREATE TABLE IF NOT EXISTS chat_role_identities (
+  role_id TEXT PRIMARY KEY,
+  display_name_snapshot TEXT NOT NULL,
+  avatar_data_url_snapshot TEXT,
+  accent_color_snapshot TEXT,
+  origin_kind TEXT NOT NULL CHECK (origin_kind IN ('model_family', 'custom', 'legacy_system')),
+  model_family_snapshot TEXT,
+  lifecycle_state TEXT NOT NULL CHECK (lifecycle_state IN ('active', 'retired')),
+  retired_reason TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS chat_agents (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   sandbox_name TEXT,
   description TEXT,
   avatar_data_url TEXT,
-  persona_prompt TEXT NOT NULL,
+  persona_prompt TEXT NOT NULL DEFAULT '',
   provider TEXT,
   model TEXT,
   thinking TEXT,
   accent_color TEXT,
   skills_json TEXT,
   model_profiles_json TEXT,
+  role_kind TEXT NOT NULL CHECK (role_kind IN ('model_family', 'custom')),
+  model_family TEXT,
+  is_default_chat_role INTEGER NOT NULL DEFAULT 0 CHECK (is_default_chat_role IN (0, 1)),
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  CHECK (
+    (role_kind = 'model_family' AND model_family IS NOT NULL AND persona_prompt = '')
+    OR (role_kind = 'custom' AND model_family IS NULL)
+  ),
+  FOREIGN KEY (id) REFERENCES chat_role_identities(role_id) ON DELETE RESTRICT
 );
 
 CREATE TABLE IF NOT EXISTS chat_conversations (
@@ -281,6 +308,23 @@ CREATE TABLE IF NOT EXISTS chat_conversation_agents (
   FOREIGN KEY (agent_id) REFERENCES chat_agents(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS chat_conversation_agent_history (
+  conversation_id TEXT NOT NULL,
+  role_id TEXT NOT NULL,
+  display_name_snapshot TEXT NOT NULL,
+  role_kind_snapshot TEXT NOT NULL,
+  model_family_snapshot TEXT,
+  model_profile_id_snapshot TEXT,
+  conversation_skills_json TEXT,
+  sort_order INTEGER NOT NULL,
+  joined_at TEXT,
+  retired_at TEXT NOT NULL,
+  retired_reason TEXT NOT NULL,
+  PRIMARY KEY (conversation_id, role_id, retired_at),
+  FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE,
+  FOREIGN KEY (role_id) REFERENCES chat_role_identities(role_id) ON DELETE RESTRICT
+);
+
 CREATE TABLE IF NOT EXISTS chat_messages (
   id TEXT PRIMARY KEY,
   conversation_id TEXT NOT NULL,
@@ -296,7 +340,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   metadata_json TEXT,
   created_at TEXT NOT NULL,
   FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE,
-  FOREIGN KEY (agent_id) REFERENCES chat_agents(id) ON DELETE SET NULL
+  FOREIGN KEY (agent_id) REFERENCES chat_role_identities(role_id) ON DELETE RESTRICT
 );
 
 CREATE TABLE IF NOT EXISTS chat_private_messages (
@@ -310,7 +354,7 @@ CREATE TABLE IF NOT EXISTS chat_private_messages (
   metadata_json TEXT,
   created_at TEXT NOT NULL,
   FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE,
-  FOREIGN KEY (sender_agent_id) REFERENCES chat_agents(id) ON DELETE SET NULL
+  FOREIGN KEY (sender_agent_id) REFERENCES chat_role_identities(role_id) ON DELETE RESTRICT
 );
 
 CREATE TABLE IF NOT EXISTS chat_memory_cards (
@@ -330,7 +374,7 @@ CREATE TABLE IF NOT EXISTS chat_memory_cards (
   updated_at TEXT NOT NULL,
   UNIQUE(scope, owner_key, agent_id, title),
   FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE,
-  FOREIGN KEY (agent_id) REFERENCES chat_agents(id) ON DELETE CASCADE
+  FOREIGN KEY (agent_id) REFERENCES chat_role_identities(role_id) ON DELETE RESTRICT
 );
 
 CREATE TABLE IF NOT EXISTS chat_summary_segments (
@@ -434,6 +478,17 @@ CREATE TABLE IF NOT EXISTS eval_case_runs (
   FOREIGN KEY (case_id) REFERENCES eval_cases(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS chat_schema_migrations (
+  migration_id TEXT PRIMARY KEY,
+  status TEXT NOT NULL CHECK (status IN ('pending', 'completed', 'failed')),
+  backup_path TEXT,
+  pre_counts_json TEXT NOT NULL,
+  audit_json TEXT,
+  error_message TEXT,
+  started_at TEXT NOT NULL,
+  completed_at TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_chat_conversations_updated_at ON chat_conversations (updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_chat_conversations_last_message_at ON chat_conversations (last_message_at DESC);
 CREATE INDEX IF NOT EXISTS idx_chat_conversation_agents_agent_id ON chat_conversation_agents (agent_id, sort_order ASC);
@@ -478,6 +533,7 @@ CREATE INDEX IF NOT EXISTS idx_eval_case_runs_task_id ON eval_case_runs (task_id
 
   ensureChatMessageSearchSchema(db);
   ensureChatMemoryCardSchema(db);
+  reconcileSystemModelFamilyRoles(db);
 
   db.exec(`
 CREATE TABLE IF NOT EXISTS modes (

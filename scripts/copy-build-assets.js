@@ -28,6 +28,7 @@ function copyFile(sourcePath, targetPath) {
 }
 
 copyDir(path.join(ROOT_DIR, 'public'), path.join(BUILD_DIR, 'public'));
+copyFile(path.join(ROOT_DIR, 'scripts', 'chat-schema-backup.mjs'), path.join(BUILD_DIR, 'scripts', 'chat-schema-backup.mjs'));
 copyFile(path.join(ROOT_DIR, 'lib', 'pi-sdk-host.mjs'), path.join(BUILD_DIR, 'lib', 'pi-sdk-host.mjs'));
 copyFile(path.join(ROOT_DIR, 'lib', 'pi-model-config-validator.mjs'), path.join(BUILD_DIR, 'lib', 'pi-model-config-validator.mjs'));
 copyFile(path.join(ROOT_DIR, 'lib', 'pi-model-catalog-host.mjs'), path.join(BUILD_DIR, 'lib', 'pi-model-catalog-host.mjs'));

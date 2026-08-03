@@ -31,9 +31,12 @@ export class ChatAgentRepository {
         accent_color,
         skills_json,
         model_profiles_json,
+        role_kind,
+        model_family,
+        is_default_chat_role,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     this.updateStatement = db.prepare(`
       UPDATE chat_agents
@@ -49,6 +52,9 @@ export class ChatAgentRepository {
         accent_color = ?,
         skills_json = ?,
         model_profiles_json = ?,
+        role_kind = ?,
+        model_family = ?,
+        is_default_chat_role = ?,
         updated_at = ?
       WHERE id = ?
     `);
@@ -79,6 +85,9 @@ export class ChatAgentRepository {
         payload.accentColor,
         payload.skillsJson,
         payload.modelProfilesJson,
+        payload.roleKind,
+        payload.modelFamily,
+        payload.isDefaultChatRole ? 1 : 0,
         payload.updatedAt,
         payload.id
       );
@@ -96,6 +105,9 @@ export class ChatAgentRepository {
         payload.accentColor,
         payload.skillsJson,
         payload.modelProfilesJson,
+        payload.roleKind,
+        payload.modelFamily,
+        payload.isDefaultChatRole ? 1 : 0,
         payload.createdAt,
         payload.updatedAt
       );

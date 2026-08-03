@@ -2,6 +2,8 @@ const { randomUUID } = require('node:crypto');
 const { openSqliteDatabase } = require('../storage/sqlite/connection');
 const { migrateChatSchema } = require('../storage/sqlite/migrations');
 const { createChatAgentRepository } = require('../storage/chat/agent.repository');
+const { createChatRoleIdentityRepository } = require('../storage/chat/role-identity.repository');
+const { createChatConversationAgentHistoryRepository } = require('../storage/chat/conversation-agent-history.repository');
 const { createChatConversationRepository } = require('../storage/chat/conversation.repository');
 const { createChatParticipantRepository } = require('../storage/chat/participant.repository');
 const { createChatMessageRepository } = require('../storage/chat/message.repository');
@@ -362,6 +364,9 @@ function normalizeAgentRow(row: any) {
     skillIds,
     skills: skillIds,
     modelProfiles,
+    roleKind: row.role_kind || 'custom',
+    modelFamily: row.model_family || null,
+    isDefaultChatRole: Boolean(row.is_default_chat_role),
     selectedModelProfileId: selectedModelProfile ? selectedModelProfile.id : null,
     selectedModelProfile,
     conversationSkillIds: parseSkillRefs(row.conversation_skills_json),
@@ -802,17 +807,24 @@ function normalizeRecipientAgentIds(recipientAgentIds: any) {
 
 export class ChatAppStore {
   [key: string]: any;
-  constructor({ agentDir, sqlitePath }: any) {
-    const connection = openSqliteDatabase({ agentDir, sqlitePath });
+  constructor({ agentDir, sqlitePath, chatSchemaBackupScriptPath }: any) {
+    const connection = openSqliteDatabase({
+      agentDir,
+      sqlitePath,
+      prepareChatSchemaMigration: true,
+      chatSchemaBackupScriptPath,
+    });
 
     try {
       this.agentDir = connection.agentDir;
       this.databasePath = connection.databasePath;
       this.db = connection.db;
 
-      migrateChatSchema(this.db);
+      migrateChatSchema(this.db, { backupPath: connection.chatSchemaBackupPath });
 
+      this.roleIdentityRepository = createChatRoleIdentityRepository(this.db);
       this.agentRepository = createChatAgentRepository(this.db);
+      this.conversationAgentHistoryRepository = createChatConversationAgentHistoryRepository(this.db);
       this.conversationRepository = createChatConversationRepository(this.db);
       this.participantRepository = createChatParticipantRepository(this.db);
       this.messageRepository = createChatMessageRepository(this.db);
@@ -838,11 +850,20 @@ export class ChatAppStore {
       this.saveAgentTransaction = this.db.transaction((payload: any) => {
         const timestamp = nowIso();
 
+        this.roleIdentityRepository.saveActiveCustom({
+          ...payload,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        });
+
         return normalizeAgentRow(
           this.agentRepository.save({
             ...payload,
             skillsJson: serializeJson(payload.skills),
             modelProfilesJson: serializeJson(payload.modelProfiles),
+            roleKind: payload.roleKind || 'custom',
+            modelFamily: payload.modelFamily || null,
+            isDefaultChatRole: Boolean(payload.isDefaultChatRole),
             createdAt: timestamp,
             updatedAt: timestamp,
           })
@@ -1180,22 +1201,11 @@ export class ChatAppStore {
         this.externalEventRepository.delete(eventRecordId);
       });
 
-      this.seedDefaultAgents();
     } catch (error) {
       try {
         connection.db.close();
       } catch {}
       throw error;
-    }
-  }
-
-  seedDefaultAgents() {
-    for (const seed of DEFAULT_AGENT_SEEDS) {
-      if (this.agentRepository.get(seed.id)) {
-        continue;
-      }
-
-      this.saveAgent(seed);
     }
   }
 
@@ -1236,6 +1246,9 @@ export class ChatAppStore {
       accentColor: String(input.accentColor || '#3d405b').trim() || '#3d405b',
       skills: this.normalizeSkillRefs(input.skillIds || input.skills),
       modelProfiles: this.normalizeModelProfiles(input.modelProfiles),
+      roleKind: 'custom',
+      modelFamily: null,
+      isDefaultChatRole: Boolean(input.isDefaultChatRole),
     });
   }
 
