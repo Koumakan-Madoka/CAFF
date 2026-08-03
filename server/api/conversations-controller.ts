@@ -719,6 +719,8 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         // Omitting both roster fields means "leave participants unchanged".
         // Callers that intend to replace or clear the roster must send an explicit array;
         // the participant validator then rejects an empty final roster.
+        // Profile-based recovery is intentionally limited to IDs already persisted in this roster;
+        // request payloads cannot use this exception to add a new unavailable participant.
         const recoverableRoleIds = new Set(
           Array.isArray(existingConversation && existingConversation.agents)
             ? existingConversation.agents.map((agent: any) => String(agent && agent.id || '').trim()).filter(Boolean)

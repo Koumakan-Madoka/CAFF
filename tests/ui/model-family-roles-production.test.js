@@ -110,6 +110,8 @@ async function serveProductionUi() {
       models: [{ id: 'claude-opus-4.1', name: 'Claude Opus 4.1', api: '', baseUrl: '', family: 'claude', reasoning: true, hasCustomHeaders: false }],
     },
   ];
+  let holdNextProviderSave = false;
+  let releaseProviderSave = null;
 
   function sendJson(response, status, payload) {
     response.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
@@ -146,6 +148,11 @@ async function serveProductionUi() {
       const body = request.method === 'PUT' || request.method === 'POST' ? await readBody(request) : {};
       requests.push({ url: requestUrl.pathname, method: request.method, headers: request.headers, body });
       if (request.method === 'PUT' && !action) {
+        if (holdNextProviderSave) {
+          holdNextProviderSave = false;
+          await new Promise((resolve) => { releaseProviderSave = resolve; });
+          releaseProviderSave = null;
+        }
         const existingIndex = providers.findIndex((provider) => provider.id === id);
         const previous = providers[existingIndex] || { id, hasApiKey: false, hasExternalAuth: false, hasCustomHeaders: false };
         const next = {
@@ -188,7 +195,13 @@ async function serveProductionUi() {
     bootstrap,
     port: server.address().port,
     requests,
-    close: async () => await new Promise((resolve) => server.close(resolve)),
+    holdProviderSave() { holdNextProviderSave = true; },
+    isProviderSaveBlocked() { return Boolean(releaseProviderSave); },
+    releaseProviderSave() { if (releaseProviderSave) releaseProviderSave(); },
+    close: async () => {
+      if (releaseProviderSave) releaseProviderSave();
+      await new Promise((resolve) => server.close(resolve));
+    },
   };
 }
 
@@ -351,9 +364,22 @@ async function serveProductionUi() {
       };
     })()`);
     assert.deepEqual(removalKeepsDraft, { name: 'Team Gateway Updated', apiKey: 'draft-only-secret' });
+    fixture.holdProviderSave();
     await evaluate(cdp, `document.getElementById('save-provider').click()`);
-    for (let attempt = 0; attempt < 50 && !fixture.requests.some((request) => request.url === '/api/model-providers/team-gateway'); attempt += 1) await delay(100);
+    for (let attempt = 0; attempt < 50 && !fixture.isProviderSaveBlocked(); attempt += 1) await delay(100);
     assert.ok(fixture.requests.find((request) => request.url === '/api/model-providers/team-gateway' && request.method === 'PUT'));
+    const providerSavePending = await evaluate(cdp, `(() => ({
+      addDisabled: document.getElementById('add-provider').disabled,
+      refreshDisabled: document.getElementById('refresh-providers').disabled,
+      listInert: document.getElementById('provider-list').inert,
+      detailInert: document.getElementById('provider-detail').inert,
+      detailBusy: document.getElementById('provider-detail').getAttribute('aria-busy'),
+    }))()`);
+    fixture.releaseProviderSave();
+    await waitFor(cdp, `Boolean(document.querySelector('[data-provider-id="team-gateway"]')) && !document.getElementById('provider-detail').inert`);
+    assert.deepEqual(providerSavePending, {
+      addDisabled: true, refreshDisabled: true, listInert: true, detailInert: true, detailBusy: 'true',
+    });
     const abandonedDraft = await evaluate(cdp, `(() => {
       const before = document.querySelectorAll('#provider-list [data-provider-id]').length;
       document.getElementById('add-provider').click();

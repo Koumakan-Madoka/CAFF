@@ -7,24 +7,29 @@
     const list = options.list;
     let providers = [];
     let selectedProviderId = '';
+    let mutationPending = false;
     const validationByProviderId = new Map();
     const editor = namespace.createProviderEditor({
       root: options.detail,
       isEnabled: options.isEnabled,
       onSave: async (providerId, payload) => {
         if (!providerId) throw new Error('Provider ID 不能为空');
-        const result = await mutate(`/api/model-providers/${encodeURIComponent(providerId)}`, 'PUT', payload);
-        validationByProviderId.delete(providerId);
-        setProviders(result.providers, providerId);
-        options.showToast('供应商已保存；空密钥保持原值');
-        await options.onProvidersChanged();
+        await runMutation(async () => {
+          const result = await mutate(`/api/model-providers/${encodeURIComponent(providerId)}`, 'PUT', payload);
+          validationByProviderId.delete(providerId);
+          setProviders(result.providers, providerId);
+          options.showToast('供应商已保存；空密钥保持原值');
+          await options.onProvidersChanged();
+        });
       },
       onClear: async (providerId) => {
-        const result = await mutate(`/api/model-providers/${encodeURIComponent(providerId)}/secret`, 'DELETE', {});
-        validationByProviderId.delete(providerId);
-        setProviders(result.providers, providerId);
-        options.showToast('已保存密钥已清除');
-        await options.onProvidersChanged();
+        await runMutation(async () => {
+          const result = await mutate(`/api/model-providers/${encodeURIComponent(providerId)}/secret`, 'DELETE', {});
+          validationByProviderId.delete(providerId);
+          setProviders(result.providers, providerId);
+          options.showToast('已保存密钥已清除');
+          await options.onProvidersChanged();
+        });
       },
       onRemove: async (providerId, draft) => {
         if (draft) {
@@ -32,29 +37,53 @@
           options.showToast('已放弃未保存的供应商草稿');
           return;
         }
-        const result = await mutate(`/api/model-providers/${encodeURIComponent(providerId)}`, 'DELETE', {});
-        validationByProviderId.delete(providerId);
-        setProviders(result.providers);
-        options.showToast('供应商已移除；历史与角色身份保持不变');
-        await options.onProvidersChanged();
+        await runMutation(async () => {
+          const result = await mutate(`/api/model-providers/${encodeURIComponent(providerId)}`, 'DELETE', {});
+          validationByProviderId.delete(providerId);
+          setProviders(result.providers);
+          options.showToast('供应商已移除；历史与角色身份保持不变');
+          await options.onProvidersChanged();
+        });
       },
       onValidate: async (providerId) => {
-        try {
-          const result = await mutate(`/api/model-providers/${encodeURIComponent(providerId)}/validate`, 'POST', {});
-          const validation = result.validation || {};
-          validationByProviderId.set(providerId, {
-            status: validation.status === 'ok' ? 'ok' : 'completed',
-            modelCount: Number(validation.modelCount || 0),
-          });
-          renderList();
-          options.showToast(`连接验证完成 · ${validation.modelCount || 0} 个模型`);
-        } catch (error) {
-          validationByProviderId.set(providerId, { status: 'error' });
-          renderList();
-          throw error;
-        }
+        await runMutation(async () => {
+          try {
+            const result = await mutate(`/api/model-providers/${encodeURIComponent(providerId)}/validate`, 'POST', {});
+            const validation = result.validation || {};
+            validationByProviderId.set(providerId, {
+              status: validation.status === 'ok' ? 'ok' : 'completed',
+              modelCount: Number(validation.modelCount || 0),
+            });
+            renderList();
+            options.showToast(`连接验证完成 · ${validation.modelCount || 0} 个模型`);
+          } catch (error) {
+            validationByProviderId.set(providerId, { status: 'error' });
+            renderList();
+            throw error;
+          }
+        });
       },
     });
+
+    function setMutationPending(pending) {
+      mutationPending = pending;
+      options.addButton.disabled = pending || !options.isEnabled();
+      options.refreshButton.disabled = pending || !options.isEnabled();
+      list.inert = pending;
+      options.detail.inert = pending;
+      if (pending) options.detail.setAttribute('aria-busy', 'true');
+      else options.detail.removeAttribute('aria-busy');
+    }
+
+    async function runMutation(operation) {
+      if (mutationPending) throw new Error('供应商操作正在进行，请稍候');
+      setMutationPending(true);
+      try {
+        return await operation();
+      } finally {
+        setMutationPending(false);
+      }
+    }
 
     function adminHeaders() {
       const token = options.getCsrfToken();

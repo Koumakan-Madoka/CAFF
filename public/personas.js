@@ -50,6 +50,7 @@ const providerManagement = personas.createProviderManagement({
   detail: document.getElementById('provider-detail'),
   count: document.getElementById('provider-count'),
   addButton: document.getElementById('add-provider'),
+  refreshButton: document.getElementById('refresh-providers'),
   fetchJson,
   showToast,
   isEnabled: () => adminState.enabled,
