@@ -716,6 +716,9 @@ export function createConversationsController(options: any = {}): RouteHandler<A
           throw createHttpError(409, '请先重置当前狼人杀对局，再修改参与者');
         }
 
+        // Omitting both roster fields means "leave participants unchanged".
+        // Callers that intend to replace or clear the roster must send an explicit array;
+        // the participant validator then rejects an empty final roster.
         const validatedBody = (Array.isArray(body.participants) || Array.isArray(body.agentIds))
           ? { ...body, participants: validateConversationParticipants(body) }
           : body;

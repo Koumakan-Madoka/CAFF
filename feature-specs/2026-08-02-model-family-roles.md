@@ -157,6 +157,7 @@ Provider 连接是角色 availability 的上游，必须作为独立“模型供
 - 没有任何默认角色时不再隐式选择列表前 3 个，界面以空选择开始。
 - 修改 defaults 不追写已有会话，也不改变正在打开的新建表单快照。
 - 游戏模式不读取这组 defaults；其玩家选择、技能注入和主持流程维持原契约。
+- Feishu 已绑定房间的普通消息继续使用既有 roster；`/new` 始终按新房间的 adapter `defaultRoleIds` 政策创建，不读取既有 roster 或 interactive defaults，缺少有效政策时返回 `setup_required`。
 
 ### 5. Model enforcement
 

@@ -202,6 +202,7 @@ Invariants:
 - INV-25: There is no first-three fallback in store, controller, mode, game, bootstrap, or external channel paths.
 - INV-26: Mode skills merge into supplied participants without creating participants.
 - INV-27: Existing external bindings keep their roster; zero runnable participants block dispatch with setup guidance.
+- INV-27a: Feishu `/new` always uses the adapter's explicit new-room `defaultRoleIds` policy, even from an already bound room; it never copies that room's current roster or interactive defaults.
 
 Adversarial tests: omitted/empty array; all IDs unknown; duplicate IDs; unavailable family role; invalid selected profile; standard/mode/game paths; Feishu `/new` without policy; existing bound room after retirement; bootstrap on empty DB writes zero rows.
 
