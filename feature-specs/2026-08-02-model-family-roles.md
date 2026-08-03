@@ -86,6 +86,25 @@ status: merged
 | Stable identity fan-out | `agent_id` 被会话参与者、消息、私信、记忆等表引用，删除行为包含 `CASCADE` 与 `SET NULL`。 | `storage/sqlite/migrations.ts:270-333` |
 | Persona management | 管理页把 Persona Prompt 作为必填项，并允许任意 Provider/Model/Profile。 | `public/personas.html:65-166`, `public/personas.js:250-337`, `500-537` |
 
+## User Journey
+
+**Scope unit:** 一个 CAFF 本地实例及其隔离的 agentDir / SQLite 数据库。
+
+### Primary Journey — 配置模型族角色并创建聊天
+
+1. operator 打开“模型供应商”，新增或编辑 Provider 与模型条目；密钥只写入、不回显，模型显式归类为七个 family 之一。
+2. configured catalog 刷新后，对应的 GPT / Claude / Gemini / DeepSeek / Qwen / GLM / Kimi 系统角色显示真实 availability；没有有效同族 base model 的角色保持不可用并给出原因。
+3. operator 打开角色详情，选择同族 base model、能力支持的 thinking level 与多个运行 Profile；family role 不显示 Persona/Skills，custom role 继续保留 Persona、Skills 与跨族 Profile 能力。
+4. operator 可把任意 runnable role 设为新聊天默认值。打开新建聊天时 defaults 只做预勾选；operator 在 dialog / mobile sheet 中增删并确认最终参与者后，系统才创建会话。
+5. 每轮运行前，CAFF 重新验证 effective model、family、Profile 与 thinking。配置漂移时不静默换模、不 clamp、不创建 assistant placeholder，而是返回结构化 blocker。
+6. 已有会话中的 participant 若因模型失效变为 unavailable，设置页显示原因，并允许 operator 修复全局 base model、选择有效同族 Profile，或显式移除该 participant；历史消息与身份不被改写。
+
+### Migration Journey — 保留旧身份与用户状态
+
+1. 旧数据库启动迁移前创建不覆盖的可恢复备份；迁移在单一 transaction 内重建 identity/config/history 边界。
+2. 旧九个系统 seed 从活动目录退出且重启不复活；自定义角色、消息、私信、记忆、摘要、外部事件与历史参与身份逐项审计保持。
+3. 任一 backup、foreign-key 或 count/hash audit 失败都会 fail closed / rollback，不以部分迁移继续启动。
+
 ## Terminal Product Contract
 
 ### 1. One role concept, two role kinds
