@@ -7,9 +7,9 @@ created: 2026-08-03
 
 # Review Request: Model-family Production UI and Recovery Boundaries
 
-Review-Target-ID: feat-model-family-roles-implementation  
-Branch: `feat/model-family-roles-implementation`  
-Exact code SHA: `fcae97faa2b7f48e8ec6c425ce4aac9ef5a5b0dc`  
+Review-Target-ID: feat-model-family-roles-implementation
+Branch: `feat/model-family-roles-implementation`
+Exact code SHA: `fcae97faa2b7f48e8ec6c425ce4aac9ef5a5b0dc`
 Diff: `cca018f..fcae97f`
 
 ## What
@@ -41,8 +41,8 @@ Operator experience: configure a Provider/model in the browser, see the correspo
 
 ## Architecture Ownership
 
-Architecture cell: CAFF role configuration + Provider management + conversation participant policy  
-Map delta: none  
+Architecture cell: CAFF role configuration + Provider management + conversation participant policy
+Map delta: none
 Why: this diff extends the existing `RoleService`, agents/provider APIs and existing browser surfaces. It does not add a parallel Store, Queue, Router, Adapter, Dispatcher, Binding or catalog source.
 
 Repository note: this checkout does not provide `scripts/check-hotfix-pattern.mjs`, `scripts/check-fallback-layers.mjs`, `pnpm check:architecture-ownership` or `pnpm check:capability-tips`; the Quality Gate records them as unavailable rather than claiming fabricated passes.

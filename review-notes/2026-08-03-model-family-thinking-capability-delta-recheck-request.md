@@ -75,4 +75,3 @@ Value OQ: none.
 ## Next Action
 
 [BLOCKING] Please recheck only `3235911..547e8fe` against the narrowed P2/P3 criteria already accepted: preserve global `max`, verify Kimi/model-specific sets, confirm the complete handwritten-fixture sweep, and confirm package/source provenance.
-
