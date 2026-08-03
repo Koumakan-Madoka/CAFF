@@ -3,7 +3,7 @@ feature_ids: [CAFF-MODEL-FAMILY-ROLES]
 topics: [roles, model-family, providers, credentials, persona, defaults, design-gate]
 doc_kind: discussion
 created: 2026-08-02
-status: merge_ready
+status: merged
 ---
 
 # CAFF Model-family Roles — Kickoff and Design Gate
@@ -12,7 +12,7 @@ status: merge_ready
 
 原角色方向已收敛；operator 认可首版 UI 后新增“在前端配置具体 provider”的范围，并在 provider-inclusive 复验时要求补齐思考强度等常用运行字段。`e7bbd71` 中错误的 Kimi capability fixture 已按仓库锁定的 `@earendil-works/pi-coding-agent@0.80.10` nested `@earendil-works/pi-ai` 真值修正，并对全部手写 capability snapshot 做同类 sweep；`547e8fe` 已获精确 delta APPROVE。
 
-实现已从 canonical `origin/main@b9f3ddfa88b3e8942d0dd095f1dcaeb4c979d451` 创建独立 worktree，Tasks 0–8 已完成。生产代码冻结于 `6e3573b`；布偶猫在隔离 sandbox 独立复验后对该 SHA 明确 APPROVE（消息 `0001785753359598-000476-d051d94b`，delta verdict `fa459a4`），无剩余 P1/P2。最新 main 原生全量门禁 `npm run check`、`npm run typecheck`、`npm test`、`git diff --check` 已通过，当前进入 PR / remote review merge-gate。
+实现已从 canonical `origin/main@b9f3ddfa88b3e8942d0dd095f1dcaeb4c979d451` 创建独立 worktree并完成 Tasks 0–8。云端 Codex 因 code-review quota 耗尽未产生 verdict；布偶猫在隔离 sandbox 对完整 104-file PR 与 exact HEAD `bec42b856c8e11fde690478097a4cb639d0c7424` 独立复验后明确 APPROVE，无 P0/P1/新增 P2。最终本地全量门禁与 GitHub CI 全绿，PR #50 已于 2026-08-03 squash merge 至 `origin/main`（merge commit `4bbc260bd572fe5073c06daee588f87e9915f46d`）。当前进入 Feature completion 愿景守护阶段。
 
 ## Product Direction
 

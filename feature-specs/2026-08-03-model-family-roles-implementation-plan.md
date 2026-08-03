@@ -3,14 +3,14 @@ feature_ids: [CAFF-MODEL-FAMILY-ROLES]
 topics: [roles, model-family, providers, credentials, migration, participants, runtime, ui, plan]
 doc_kind: plan
 created: 2026-08-03
-status: merge_ready
+status: merged
 ---
 
 # CAFF Model-family Roles Implementation Plan
 
 ## Completion Status
 
-Tasks 0–8 已按本计划完成：生产代码冻结于 `6e3573b`，隔离 acceptance、全量回归、fresh-context 扫描和跨家族 review 均已执行。布偶猫 delta recheck 明确 APPROVE（消息 `0001785753359598-000476-d051d94b`），无剩余 P1/P2；当前只剩 final HEAD continuity、PR remote review、CI 与 squash merge，尚未声称已进入 main。
+Tasks 0–8、隔离 acceptance、全量回归、fresh-context 扫描、跨家族完整 PR review 与 merge gate 均已完成。布偶猫对 final packet-inclusive HEAD `bec42b856c8e11fde690478097a4cb639d0c7424` 明确 APPROVE，无 P0/P1/新增 P2；GitHub 两个 unit CI 与最终本地 `check`、`typecheck`、`npm test`（smoke 64/64）、生产 UI 契约、`git diff --check` 全绿。PR #50 已于 2026-08-03 squash merge 至 `origin/main`（merge commit `4bbc260bd572fe5073c06daee588f87e9915f46d`）。当前等待 Feature completion 愿景守护，不提前声称 lifecycle 已关闭。
 
 **Feature:** CAFF-MODEL-FAMILY-ROLES — 模型族作为系统默认角色，同时保留用户自定义角色
 **Goal:** 在不牺牲历史身份、用户状态与 custom Persona/Skills 的前提下，把 GPT、Claude、Gemini、DeepSeek、Qwen、GLM、Kimi 落成能力感知、可配置、运行时 fail-closed 的系统角色，并提供 credential-blind 的本地 Provider 管理。

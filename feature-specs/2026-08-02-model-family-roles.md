@@ -3,7 +3,7 @@ feature_ids: [CAFF-MODEL-FAMILY-ROLES]
 topics: [agents, roles, model-family, providers, credentials, personas, chat-defaults, migration]
 doc_kind: feature_spec
 created: 2026-08-02
-status: merge_ready
+status: merged
 ---
 
 # CAFF Model-family Roles Feature Spec
@@ -15,7 +15,13 @@ status: merge_ready
 
 ## Implementation Status
 
-实现已从 exact canonical `origin/main@b9f3ddfa88b3e8942d0dd095f1dcaeb4c979d451` 独立落地。Provider persistence/local-admin security、Pi catalog/family registry、历史身份迁移、RoleService/API、显式参与者政策、runtime/prompt enforcement、生产 Provider/Role UI 与隔离 acceptance 均已完成；生产代码冻结于 `6e3573b`，跨家族 reviewer 已明确 APPROVE 且无剩余 P1/P2。当前处于 merge-gate，尚未声称已进入 main。
+实现已从 exact canonical `origin/main@b9f3ddfa88b3e8942d0dd095f1dcaeb4c979d451` 独立落地。Provider persistence/local-admin security、Pi catalog/family registry、历史身份迁移、RoleService/API、显式参与者政策、runtime/prompt enforcement、生产 Provider/Role UI 与隔离 acceptance 均已完成。PR #50 的 final packet-inclusive HEAD `bec42b856c8e11fde690478097a4cb639d0c7424` 已获跨家族完整 PR review APPROVE，无 P0/P1/新增 P2，并于 2026-08-03 squash merge 至 `origin/main`（merge commit `4bbc260bd572fe5073c06daee588f87e9915f46d`）。当前代码已进入 main，Feature completion 仍等待非作者、非 reviewer 的愿景守护验收。
+
+## Timeline
+
+| Date | Event |
+|---|---|
+| 2026-08-03 | Tasks 0–8、隔离 acceptance、final-HEAD review 与最终 merge gate 完成；PR #50 squash merged as `4bbc260`。 |
 
 ## Acceptance Criteria
 
