@@ -15,29 +15,26 @@ type ApiContext = {
 export function createAgentsController(options: any = {}): RouteHandler<ApiContext> {
   const store = options.store;
   const skillRegistry = options.skillRegistry;
-  const buildConfiguredModelOptions = options.buildConfiguredModelOptions;
+  const roleService = options.roleService;
+
+  function withSkills(payload: any) {
+    return {
+      ...payload,
+      skills: skillRegistry.listSkills(),
+    };
+  }
 
   return async function handleAgentsRequest(context) {
     const { req, res, pathname } = context;
 
     if (req.method === 'GET' && pathname === '/api/agents') {
-      sendJson(res, 200, {
-        agents: store.listAgents(),
-        modelOptions: buildConfiguredModelOptions(),
-        skills: skillRegistry.listSkills(),
-      });
+      sendJson(res, 200, withSkills(roleService.getDirectory()));
       return true;
     }
 
     if (req.method === 'POST' && pathname === '/api/agents') {
       const body = await readRequestJson(req);
-      const agent = store.saveAgent(body);
-      sendJson(res, 201, {
-        agent,
-        agents: store.listAgents(),
-        modelOptions: buildConfiguredModelOptions(),
-        skills: skillRegistry.listSkills(),
-      });
+      sendJson(res, 201, withSkills(roleService.createCustomRole(body)));
       return true;
     }
 
@@ -51,22 +48,14 @@ export function createAgentsController(options: any = {}): RouteHandler<ApiConte
 
     if (req.method === 'PUT') {
       const body = await readRequestJson(req);
-      const agent = store.saveAgent({ ...body, id: agentId });
-      sendJson(res, 200, {
-        agent,
-        agents: store.listAgents(),
-        modelOptions: buildConfiguredModelOptions(),
-        skills: skillRegistry.listSkills(),
-      });
+      sendJson(res, 200, withSkills(roleService.updateRole(agentId, body)));
       return true;
     }
 
     if (req.method === 'DELETE') {
-      store.deleteAgent(agentId);
+      const result = roleService.retireRole(agentId);
       sendJson(res, 200, {
-        deletedId: agentId,
-        agents: store.listAgents(),
-        modelOptions: buildConfiguredModelOptions(),
+        ...result,
         skills: skillRegistry.listSkills(),
         conversations: store.listConversations(),
       });

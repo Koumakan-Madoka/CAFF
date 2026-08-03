@@ -5,6 +5,7 @@ const LEGACY_SYSTEM_ROLE_ID_SET = new Set(LEGACY_SYSTEM_ROLE_IDS);
 export class ChatRoleIdentityRepository {
   getStatement: any;
   saveCustomStatement: any;
+  retireCustomStatement: any;
 
   constructor(db: any) {
     this.getStatement = db.prepare(`
@@ -34,6 +35,16 @@ export class ChatRoleIdentityRepository {
       WHERE chat_role_identities.origin_kind = 'custom'
         AND chat_role_identities.lifecycle_state = 'active'
     `);
+    this.retireCustomStatement = db.prepare(`
+      UPDATE chat_role_identities
+      SET
+        lifecycle_state = 'retired',
+        retired_reason = ?,
+        updated_at = ?
+      WHERE role_id = ?
+        AND origin_kind = 'custom'
+        AND lifecycle_state = 'active'
+    `);
   }
 
   get(roleId: string) {
@@ -61,6 +72,11 @@ export class ChatRoleIdentityRepository {
       payload.updatedAt
     );
     return this.get(payload.id);
+  }
+
+  retireActiveCustom(roleId: string, reason: string, updatedAt: string) {
+    const result = this.retireCustomStatement.run(reason, updatedAt, roleId);
+    return Number(result.changes || 0) > 0 ? this.get(roleId) : null;
   }
 }
 

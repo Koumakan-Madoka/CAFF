@@ -135,6 +135,23 @@ async function fetchJson(baseUrl, pathname, options = {}) {
   return data;
 }
 
+async function fetchJsonResponse(baseUrl, pathname, options = {}) {
+  const response = await fetch(`${baseUrl}${pathname}`, {
+    method: options.method || 'GET',
+    headers: {
+      Accept: 'application/json',
+      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+    },
+    body: options.body ? JSON.stringify(options.body) : undefined,
+  });
+  const text = await response.text();
+
+  return {
+    status: response.status,
+    json: text ? JSON.parse(text) : {},
+  };
+}
+
 async function invokeConversationsController(handler, options = {}) {
   const req = new PassThrough();
   req.method = options.method || 'GET';
@@ -4472,6 +4489,357 @@ test('server smoke: bootstrap, static files, projects, skills, agents, and conve
   assert.equal(conversationResult.conversation.agents[0].id, agentResult.agent.id);
 
   assert.equal(stderrText.trim(), '');
+});
+
+test('role API protects model-family roles and shares one availability projection', async (t) => {
+  const tempDir = withTempDir('caff-role-service-smoke-');
+  const sqlitePath = path.join(tempDir, 'roles.sqlite');
+  const port = await findFreePort();
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const modelOptions = [
+    {
+      key: 'openai\u001fgpt-test',
+      provider: 'openai',
+      model: 'gpt-test',
+      label: 'GPT Test',
+      source: 'runtime_registry',
+      sourceLabel: 'runtime registry',
+      family: 'gpt',
+      familySource: 'provider_alias',
+      supportedThinkingLevels: ['off', 'low', 'high', 'max'],
+    },
+    {
+      key: 'anthropic\u001fclaude-test',
+      provider: 'anthropic',
+      model: 'claude-test',
+      label: 'Claude Test',
+      source: 'runtime_registry',
+      sourceLabel: 'runtime registry',
+      family: 'claude',
+      familySource: 'provider_alias',
+      supportedThinkingLevels: ['off', 'low', 'high'],
+    },
+    {
+      key: 'moonshot\u001fkimi-k2.5',
+      provider: 'moonshot',
+      model: 'kimi-k2.5',
+      label: 'Kimi K2.5',
+      source: 'runtime_registry',
+      sourceLabel: 'runtime registry',
+      family: 'kimi',
+      familySource: 'provider_alias',
+      supportedThinkingLevels: ['off', 'minimal', 'low', 'medium', 'high'],
+    },
+  ];
+  const modelCatalog = {
+    getOptions() {
+      return structuredClone(modelOptions);
+    },
+    invalidate() {},
+  };
+  const app = createServerApp({
+    host: '127.0.0.1',
+    port,
+    agentDir: tempDir,
+    sqlitePath,
+    projectDir: tempDir,
+    modelCatalog,
+  });
+  let closed = false;
+
+  t.after(async () => {
+    if (!closed) {
+      await new Promise((resolve) => app.close(resolve));
+    }
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  await new Promise((resolve) => app.start(resolve));
+
+  const bootstrap = await fetchJson(baseUrl, '/api/bootstrap');
+  const directory = await fetchJson(baseUrl, '/api/agents');
+  assert.deepEqual(directory.modelOptions, bootstrap.modelOptions);
+  assert.deepEqual(directory.agents, bootstrap.agents);
+  assert.equal(directory.agents.length, 7);
+
+  const initialGpt = directory.agents.find((agent) => agent.id === 'role-family-gpt');
+  const initialQwen = directory.agents.find((agent) => agent.id === 'role-family-qwen');
+  assert.equal(initialGpt.systemManaged, true);
+  assert.deepEqual(initialGpt.editableFields, ['provider', 'model', 'thinking', 'modelProfiles', 'isDefaultChatRole']);
+  assert.deepEqual(initialGpt.availability, { status: 'default_model_missing', familyModelCount: 1 });
+  assert.deepEqual(initialQwen.availability, { status: 'no_family_models', familyModelCount: 0 });
+
+  const lockedUpdate = await fetchJsonResponse(baseUrl, '/api/agents/role-family-gpt', {
+    method: 'PUT',
+    body: { name: 'Not GPT' },
+  });
+  assert.equal(lockedUpdate.status, 422);
+  assert.equal(lockedUpdate.json.issues[0].code, 'role_locked_field');
+
+  for (const body of [
+    { personaPrompt: 'Pretend to be someone.' },
+    { skillIds: ['persona-skill'] },
+    {
+      modelProfiles: [{
+        id: 'persona-profile',
+        name: 'Persona profile',
+        provider: 'openai',
+        model: 'gpt-test',
+        personaPrompt: 'Override persona.',
+      }],
+    },
+  ]) {
+    const response = await fetchJsonResponse(baseUrl, '/api/agents/role-family-gpt', {
+      method: 'PUT',
+      body,
+    });
+    assert.equal(response.status, 422);
+    assert.match(response.json.issues[0].code, /^family_(?:persona|skills)_not_allowed$/u);
+  }
+
+  const providerMismatch = await fetchJsonResponse(baseUrl, '/api/agents/role-family-gpt', {
+    method: 'PUT',
+    body: { provider: 'anthropic', model: 'gpt-test' },
+  });
+  assert.equal(providerMismatch.status, 422);
+  assert.equal(providerMismatch.json.issues[0].code, 'provider_model_mismatch');
+
+  const crossFamily = await fetchJsonResponse(baseUrl, '/api/agents/role-family-gpt', {
+    method: 'PUT',
+    body: { provider: 'anthropic', model: 'claude-test' },
+  });
+  assert.equal(crossFamily.status, 422);
+  assert.equal(crossFamily.json.issues[0].code, 'model_out_of_family');
+
+  const unsupportedThinking = await fetchJsonResponse(baseUrl, '/api/agents/role-family-gpt', {
+    method: 'PUT',
+    body: { provider: 'openai', model: 'gpt-test', thinking: 'medium' },
+  });
+  assert.equal(unsupportedThinking.status, 422);
+  assert.equal(unsupportedThinking.json.issues[0].code, 'thinking_level_unsupported');
+  assert.equal(unsupportedThinking.json.issues[0].path, 'thinking');
+
+  const unsupportedProfileThinking = await fetchJsonResponse(baseUrl, '/api/agents/role-family-gpt', {
+    method: 'PUT',
+    body: {
+      provider: 'openai',
+      model: 'gpt-test',
+      modelProfiles: [{
+        id: 'bad-thinking',
+        name: 'Bad thinking',
+        provider: 'openai',
+        model: 'gpt-test',
+        thinking: 'medium',
+      }],
+    },
+  });
+  assert.equal(unsupportedProfileThinking.status, 422);
+  assert.equal(unsupportedProfileThinking.json.issues[0].code, 'thinking_level_unsupported');
+  assert.equal(unsupportedProfileThinking.json.issues[0].path, 'modelProfiles[0].thinking');
+
+  const unavailableDefault = await fetchJsonResponse(baseUrl, '/api/agents/role-family-qwen', {
+    method: 'PUT',
+    body: { isDefaultChatRole: true },
+  });
+  assert.equal(unavailableDefault.status, 422);
+  assert.equal(unavailableDefault.json.issues[0].code, 'role_default_unavailable');
+
+  const savedGpt = await fetchJson(baseUrl, '/api/agents/role-family-gpt', {
+    method: 'PUT',
+    body: {
+      provider: 'openai',
+      model: 'gpt-test',
+      thinking: 'high',
+      isDefaultChatRole: true,
+      modelProfiles: [{
+        id: 'gpt-max',
+        name: 'Max',
+        description: 'Maximum supported effort',
+        provider: 'openai',
+        model: 'gpt-test',
+        thinking: 'max',
+      }],
+    },
+  });
+  assert.equal(savedGpt.agent.provider, 'openai');
+  assert.equal(savedGpt.agent.model, 'gpt-test');
+  assert.equal(savedGpt.agent.isDefaultChatRole, true);
+  assert.deepEqual(savedGpt.agent.availability, { status: 'available', familyModelCount: 1 });
+
+  const savedClaude = await fetchJson(baseUrl, '/api/agents/role-family-claude', {
+    method: 'PUT',
+    body: {
+      provider: 'anthropic',
+      model: 'claude-test',
+      thinking: '',
+      isDefaultChatRole: true,
+    },
+  });
+  assert.equal(savedClaude.agent.isDefaultChatRole, true);
+  assert.equal(savedClaude.agents.filter((agent) => agent.isDefaultChatRole).length, 2);
+
+  const familyPost = await fetchJsonResponse(baseUrl, '/api/agents', {
+    method: 'POST',
+    body: {
+      roleKind: 'model_family',
+      name: 'Injected family',
+    },
+  });
+  assert.equal(familyPost.status, 422);
+  assert.equal(familyPost.json.issues[0].code, 'custom_role_only');
+
+  const reservedIdPost = await fetchJsonResponse(baseUrl, '/api/agents', {
+    method: 'POST',
+    body: {
+      id: 'role-family-gpt',
+      name: 'Reserved ID',
+      personaPrompt: 'Should fail.',
+    },
+  });
+  assert.equal(reservedIdPost.status, 422);
+  assert.equal(reservedIdPost.json.issues[0].code, 'role_identity_not_reusable');
+
+  const custom = await fetchJson(baseUrl, '/api/agents', {
+    method: 'POST',
+    body: {
+      name: 'Cross-family custom role',
+      description: 'Keeps the existing custom-role surface.',
+      personaPrompt: 'Reply with a custom persona.',
+      provider: 'openai',
+      model: 'gpt-test',
+      thinking: 'low',
+      skillIds: ['custom-skill'],
+      isDefaultChatRole: true,
+      modelProfiles: [{
+        id: 'claude-profile',
+        name: 'Claude profile',
+        provider: 'anthropic',
+        model: 'claude-test',
+        thinking: 'high',
+        personaPrompt: 'Use the Claude-specific persona.',
+      }],
+    },
+  });
+  assert.equal(custom.agent.roleKind, 'custom');
+  assert.equal(custom.agent.systemManaged, false);
+  assert.deepEqual(custom.agent.skillIds, ['custom-skill']);
+  assert.equal(custom.agent.modelProfiles[0].personaPrompt, 'Use the Claude-specific persona.');
+  assert.equal(custom.agents.filter((agent) => agent.isDefaultChatRole).length, 3);
+
+  const customConversation = app.store.createConversation({
+    id: 'custom-retirement-conversation',
+    title: 'Custom retirement',
+    participants: [custom.agent.id],
+  });
+  app.store.saveConversationMemoryCard(customConversation.id, custom.agent.id, {
+    title: 'Persistent memory',
+    content: 'Must survive custom role retirement.',
+  });
+
+  const retired = await fetchJson(baseUrl, `/api/agents/${encodeURIComponent(custom.agent.id)}`, {
+    method: 'DELETE',
+  });
+  assert.equal(retired.deletedId, custom.agent.id);
+  assert.equal(retired.agents.some((agent) => agent.id === custom.agent.id), false);
+  assert.equal(app.store.db.prepare('SELECT COUNT(*) AS count FROM chat_memory_cards WHERE agent_id = ?').get(custom.agent.id).count, 1);
+  assert.equal(app.store.db.prepare('SELECT lifecycle_state FROM chat_role_identities WHERE role_id = ?').get(custom.agent.id).lifecycle_state, 'retired');
+  assert.equal(app.store.db.prepare('SELECT COUNT(*) AS count FROM chat_conversation_agent_history WHERE role_id = ?').get(custom.agent.id).count, 1);
+
+  const gptOption = modelOptions.find((option) => option.key === 'openai\u001fgpt-test');
+  const alternateGptOption = {
+    ...gptOption,
+    key: 'openai\u001fgpt-alternate',
+    model: 'gpt-alternate',
+    label: 'GPT Alternate',
+    supportedThinkingLevels: ['off'],
+  };
+  modelOptions.push(alternateGptOption);
+  const readGptAvailability = async () => {
+    const payload = await fetchJson(baseUrl, '/api/agents');
+    return payload.agents.find((agent) => agent.id === 'role-family-gpt').availability;
+  };
+
+  modelOptions.splice(modelOptions.indexOf(gptOption), 1);
+  assert.deepEqual(await readGptAvailability(), {
+    status: 'default_model_missing',
+    familyModelCount: 1,
+  });
+  modelOptions.push(gptOption);
+
+  gptOption.family = 'claude';
+  assert.deepEqual(await readGptAvailability(), {
+    status: 'default_model_out_of_family',
+    familyModelCount: 1,
+    modelKey: 'openai\u001fgpt-test',
+  });
+  gptOption.family = 'gpt';
+
+  const originalGptThinkingLevels = gptOption.supportedThinkingLevels;
+  gptOption.supportedThinkingLevels = ['off'];
+  assert.deepEqual(await readGptAvailability(), {
+    status: 'thinking_level_unsupported',
+    familyModelCount: 2,
+    modelKey: 'openai\u001fgpt-test',
+  });
+  gptOption.supportedThinkingLevels = originalGptThinkingLevels;
+
+  const driftedProfile = {
+    id: 'drifted-profile',
+    name: 'Drifted profile',
+    description: '',
+    provider: 'openai',
+    model: 'gpt-profile',
+    thinking: 'high',
+    personaPrompt: '',
+  };
+  app.store.db.prepare('UPDATE chat_agents SET model_profiles_json = ? WHERE id = ?').run(
+    JSON.stringify([driftedProfile]),
+    'role-family-gpt'
+  );
+  assert.deepEqual(await readGptAvailability(), {
+    status: 'profile_model_missing',
+    familyModelCount: 2,
+    profileId: 'drifted-profile',
+  });
+
+  const driftedProfileOption = {
+    ...gptOption,
+    key: 'openai\u001fgpt-profile',
+    model: 'gpt-profile',
+    label: 'GPT Profile',
+    family: 'claude',
+  };
+  modelOptions.push(driftedProfileOption);
+  assert.deepEqual(await readGptAvailability(), {
+    status: 'profile_model_out_of_family',
+    familyModelCount: 2,
+    profileId: 'drifted-profile',
+  });
+
+  driftedProfileOption.family = 'gpt';
+  driftedProfileOption.supportedThinkingLevels = ['off'];
+  assert.deepEqual(await readGptAvailability(), {
+    status: 'thinking_level_unsupported',
+    familyModelCount: 3,
+    modelKey: 'openai\u001fgpt-profile',
+    profileId: 'drifted-profile',
+  });
+
+  app.store.db.prepare('UPDATE chat_agents SET model_profiles_json = ? WHERE id = ?').run(
+    JSON.stringify(savedGpt.agent.modelProfiles),
+    'role-family-gpt'
+  );
+  modelOptions.splice(modelOptions.indexOf(alternateGptOption), 1);
+  modelOptions.splice(modelOptions.indexOf(driftedProfileOption), 1);
+
+  const familyDelete = await fetchJsonResponse(baseUrl, '/api/agents/role-family-gpt', {
+    method: 'DELETE',
+  });
+  assert.equal(familyDelete.status, 409);
+  assert.equal(familyDelete.json.issues[0].code, 'system_role_delete_forbidden');
+
+  await new Promise((resolve) => app.close(resolve));
+  closed = true;
 });
 
 test('server smoke: pi-mono agent can initialize and write Trellis files for the active project', async (t) => {

@@ -9,7 +9,7 @@ const { withTempDir } = require('../helpers/temp-dir');
 function createPromptFixture(tempDir) {
   const sqlitePath = path.join(tempDir, 'bridge.sqlite');
   const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
-  const agent = store.saveAgent({
+  const agent = store.saveCustomRoleConfig({
     id: 'prompt-agent',
     name: 'Prompt Agent',
     personaPrompt: 'Reply briefly.',

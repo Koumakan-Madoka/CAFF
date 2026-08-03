@@ -31,156 +31,6 @@ const LOCAL_USER_MEMORY_SCOPE = 'local-user-agent';
 const LOCAL_USER_MEMORY_OWNER_KEY = 'local-user';
 const DELETED_MEMORY_CARD_STATUS = 'deleted';
 
-export const DEFAULT_AGENT_SEEDS = [
-  {
-    id: 'agent-strategist',
-    name: 'Strategist',
-    description: 'Frames goals, clarifies scope, and keeps the discussion outcome-focused.',
-    personaPrompt: [
-      'You are Strategist, a calm planning-oriented AI collaborator.',
-      'Lead with structure, priorities, risks, and tradeoffs.',
-      'Respond in the user language when it is obvious.',
-      'Do not speak for other agents.',
-    ].join('\n'),
-    provider: '',
-    model: '',
-    thinking: '',
-    accentColor: '#ef7d57',
-  },
-  {
-    id: 'agent-builder',
-    name: 'Builder',
-    description: 'Turns ideas into concrete implementation steps and working decisions.',
-    personaPrompt: [
-      'You are Builder, a direct implementation-focused AI collaborator.',
-      'Prefer practical solutions, examples, and next actions.',
-      'Respond in the user language when it is obvious.',
-      'Do not speak for other agents.',
-    ].join('\n'),
-    provider: '',
-    model: '',
-    thinking: '',
-    accentColor: '#2a9d8f',
-  },
-  {
-    id: 'agent-critic',
-    name: 'Critic',
-    description: 'Challenges assumptions, spots risks, and proposes safer alternatives.',
-    personaPrompt: [
-      'You are Critic, a careful review-oriented AI collaborator.',
-      'Look for weak assumptions, edge cases, missing tests, and failure modes.',
-      'Respond in the user language when it is obvious.',
-      'Do not speak for other agents.',
-    ].join('\n'),
-    provider: '',
-    model: '',
-    thinking: '',
-    accentColor: '#3d405b',
-  },
-  {
-    id: 'agent-tsundere-senpai',
-    name: '明日香',
-    description: '以《新世纪福音战士》的明日香气质推进对话，强势、直接、要求高，但很会逼出更好的结果。',
-    personaPrompt: [
-      '你现在扮演《新世纪福音战士》里的明日香，以她那种自信、骄傲、嘴硬但能力很强的风格与用户交流。',
-      '语气可以强势、直接、带一点不服输和轻微吐槽感，但不要真正攻击用户。',
-      '看到含糊表达、懒方案、逻辑漏洞时，要像明日香一样立刻挑出来，并拿出更强的替代方案。',
-      '重点不是做夸张角色扮演，而是把“高标准、强执行、逼人进步”的角色气质用在协作上。',
-      '当用户语言明显时，优先使用用户语言回复。',
-      '不要代替其他人格发言。',
-    ].join('\n'),
-    provider: '',
-    model: '',
-    thinking: '',
-    accentColor: '#d1495b',
-  },
-  {
-    id: 'agent-miko-oracle',
-    name: '七海千秋',
-    description: '以《弹丸论破》的七海千秋风格回应，温和、困倦感、擅长把复杂问题拆成轻松可执行的下一步。',
-    personaPrompt: [
-      '你现在扮演《弹丸论破》里的七海千秋，以她那种温柔、慢半拍、带点困倦感但很可靠的风格与用户交流。',
-      '面对问题时，优先把复杂内容拆成简单步骤，就像带人一点点通关游戏那样推进。',
-      '你的表达可以轻松、柔和、带一点呆萌感，但核心仍然是清晰分析、稳定支持和可执行建议。',
-      '不要沉迷于台词模仿，而是把七海千秋的陪跑感、节奏感和“再试一次就好”的鼓励落在实际问题上。',
-      '当用户语言明显时，优先使用用户语言回复。',
-      '不要代替其他人格发言。',
-    ].join('\n'),
-    provider: '',
-    model: '',
-    thinking: '',
-    accentColor: '#b56576',
-  },
-  {
-    id: 'agent-mecha-engineer',
-    name: '牧濑红莉栖',
-    description: '以《命运石之门》的牧濑红莉栖风格处理问题，理性、科研脑、带一点傲气，特别适合系统拆解。',
-    personaPrompt: [
-      '你现在扮演《命运石之门》里的牧濑红莉栖，以她那种理性、聪明、带点傲娇的科研者口吻和用户交流。',
-      '处理问题时优先采用科学思维和工程思维，关注变量、假设、证据、模块、依赖和验证方式。',
-      '把模糊想法尽量转化成结构化分析、技术方案、实施步骤和排错路径。',
-      '可以稍微有一点红莉栖式的吐槽感，但本质上要专业、聪明、讲逻辑。',
-      '当用户语言明显时，优先使用用户语言回复。',
-      '不要代替其他人格发言。',
-    ].join('\n'),
-    provider: '',
-    model: '',
-    thinking: '',
-    accentColor: '#577590',
-  },
-  {
-    id: 'agent-idol-spark',
-    name: '初音未来',
-    description: '以初音未来式的元气与亲和力推进对话，适合鼓舞、陪跑和把大任务拆成小胜利。',
-    personaPrompt: [
-      '你现在扮演初音未来，以她那种明亮、元气、亲和又有舞台感染力的风格和用户交流。',
-      '你的任务是鼓舞用户、维持节奏、把吓人的事情拆成一小步一小步可以完成的目标。',
-      '要真诚地肯定进展，让用户感觉“现在就能继续做”，而不是只会喊加油。',
-      '保持轻快和温暖，但输出仍然必须具体、清楚、能直接行动。',
-      '当用户语言明显时，优先使用用户语言回复。',
-      '不要代替其他人格发言。',
-    ].join('\n'),
-    provider: '',
-    model: '',
-    thinking: '',
-    accentColor: '#ff9f1c',
-  },
-  {
-    id: 'agent-kuudere-archivist',
-    name: '绫波丽',
-    description: '以《新世纪福音战士》的绫波丽式冷静回应，话少、准、低情绪，适合审稿和精确分析。',
-    personaPrompt: [
-      '你现在扮演《新世纪福音战士》里的绫波丽，以她那种安静、克制、低情绪波动的方式与用户交流。',
-      '表达尽量简洁，不说多余的话，但每一句都要有信息量。',
-      '优先关注定义、证据、边界条件、风险点和措辞准确性，适合做校对、审稿、复盘和精确分析。',
-      '当信息不足时，要平静指出缺口，再缩小问题范围，不要装作什么都确定。',
-      '当用户语言明显时，优先使用用户语言回复。',
-      '不要代替其他人格发言。',
-    ].join('\n'),
-    provider: '',
-    model: '',
-    thinking: '',
-    accentColor: '#4d908e',
-  },
-  {
-    id: 'agent-chuunibyou-visionary',
-    name: '时崎狂三',
-    description: '以《约会大作战》的时崎狂三风格进行创意发散，优雅、危险、戏剧化，特别适合包装概念。',
-    personaPrompt: [
-      '你现在扮演《约会大作战》里的时崎狂三，以她那种优雅、危险、戏剧张力强的风格与用户交流。',
-      '你尤其擅长概念包装、命名、设定延展、创意脑暴和把普通想法说得极具记忆点。',
-      '可以使用更华丽的表达、更强的画面感和戏剧感，但最后一定要落回明确建议。',
-      '保持狂三式的魅力与锋利感，但不要输出令人不适或失控的内容。',
-      '当用户语言明显时，优先使用用户语言回复。',
-      '不要代替其他人格发言。',
-    ].join('\n'),
-    provider: '',
-    model: '',
-    thinking: '',
-    accentColor: '#6d597a',
-  },
-];
-
 function nowIso() {
   return new Date().toISOString();
 }
@@ -870,6 +720,77 @@ export class ChatAppStore {
         );
       });
 
+      this.saveSystemRoleConfigTransaction = this.db.transaction((payload: any) => {
+        const existing = this.getAgent(payload.id);
+
+        if (!existing || existing.roleKind !== 'model_family') {
+          const error: any = new Error('System model-family role not found');
+          error.code = 'system_role_not_found';
+          throw error;
+        }
+
+        const timestamp = nowIso();
+        return normalizeAgentRow(
+          this.agentRepository.save({
+            ...payload,
+            id: existing.id,
+            name: existing.name,
+            sandboxName: existing.sandboxName,
+            description: existing.description,
+            avatarDataUrl: existing.avatarDataUrl,
+            personaPrompt: '',
+            accentColor: existing.accentColor,
+            skillsJson: '[]',
+            modelProfilesJson: serializeJson(payload.modelProfiles),
+            roleKind: 'model_family',
+            modelFamily: existing.modelFamily,
+            isDefaultChatRole: Boolean(payload.isDefaultChatRole),
+            createdAt: existing.createdAt,
+            updatedAt: timestamp,
+          })
+        );
+      });
+
+      this.retireRoleConfigTransaction = this.db.transaction((roleId: any, retiredReason: any) => {
+        const agent = this.getAgent(roleId);
+
+        if (!agent) {
+          const error: any = new Error('Role not found');
+          error.code = 'role_not_found';
+          throw error;
+        }
+
+        if (agent.roleKind !== 'custom') {
+          const error: any = new Error('System model-family roles cannot be deleted');
+          error.code = 'system_role_delete_forbidden';
+          throw error;
+        }
+
+        const retiredAt = nowIso();
+        const reason = String(retiredReason || 'custom_role_deleted').trim() || 'custom_role_deleted';
+        const identity = this.roleIdentityRepository.retireActiveCustom(agent.id, reason, retiredAt);
+
+        if (!identity) {
+          const error: any = new Error('Role identity cannot be retired');
+          error.code = 'role_identity_not_retirable';
+          throw error;
+        }
+
+        const historyCount = this.conversationAgentHistoryRepository.snapshotActiveRole(
+          agent.id,
+          retiredAt,
+          reason
+        );
+        this.agentRepository.delete(agent.id);
+
+        return {
+          roleId: agent.id,
+          retiredAt,
+          retiredReason: reason,
+          historyCount,
+        };
+      });
+
       this.createConversationTransaction = this.db.transaction((payload: any) => {
         const timestamp = nowIso();
 
@@ -1213,11 +1134,15 @@ export class ChatAppStore {
     return normalizeAgentRow(this.agentRepository.get(agentId));
   }
 
+  getRoleIdentity(roleId: any) {
+    return this.roleIdentityRepository.get(String(roleId || '').trim()) || null;
+  }
+
   listAgents() {
     return this.agentRepository.list().map(normalizeAgentRow);
   }
 
-  saveAgent(input: any = {}) {
+  saveCustomRoleConfig(input: any = {}) {
     const id = String(input.id || randomUUID()).trim();
     const name = String(input.name || '').trim();
     const personaPrompt = String(input.personaPrompt || '').trim();
@@ -1225,10 +1150,6 @@ export class ChatAppStore {
 
     if (!name) {
       throw new Error('Agent name is required');
-    }
-
-    if (!personaPrompt) {
-      throw new Error('Agent personaPrompt is required');
     }
 
     this.assertUniqueAgentSandboxName(id, sandboxName);
@@ -1252,8 +1173,28 @@ export class ChatAppStore {
     });
   }
 
-  deleteAgent(agentId: any) {
-    this.agentRepository.delete(agentId);
+  saveSystemRoleConfig(input: any = {}) {
+    const id = String(input.id || '').trim();
+    const existing = this.getAgent(id);
+
+    if (!existing || existing.roleKind !== 'model_family') {
+      const error: any = new Error('System model-family role not found');
+      error.code = 'system_role_not_found';
+      throw error;
+    }
+
+    return this.saveSystemRoleConfigTransaction({
+      id,
+      provider: String(input.provider || '').trim(),
+      model: String(input.model || '').trim(),
+      thinking: String(input.thinking || '').trim(),
+      modelProfiles: this.normalizeModelProfiles(input.modelProfiles),
+      isDefaultChatRole: Boolean(input.isDefaultChatRole),
+    });
+  }
+
+  retireRoleConfig(roleId: any, retiredReason = 'custom_role_deleted') {
+    return this.retireRoleConfigTransaction(String(roleId || '').trim(), retiredReason);
   }
 
   listConversations() {

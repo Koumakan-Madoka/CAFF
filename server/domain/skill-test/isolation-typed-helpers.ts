@@ -255,7 +255,7 @@ export function seedIsolatedConversationStore(
     : null;
 
   if (!store.getAgent(agentId)) {
-    store.saveAgent({
+    store.saveCustomRoleConfig({
       id: agentId,
       name: agentName,
       personaPrompt: 'Skill test isolated agent.',

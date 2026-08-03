@@ -146,7 +146,7 @@ CREATE TABLE IF NOT EXISTS chat_schema_migrations (
 
 export function reconcileSystemModelFamilyRoles(db: any, timestamp = new Date().toISOString()) {
   const insertIdentity = db.prepare(`
-    INSERT OR IGNORE INTO chat_role_identities (
+    INSERT INTO chat_role_identities (
       role_id,
       display_name_snapshot,
       avatar_data_url_snapshot,
@@ -158,9 +158,25 @@ export function reconcileSystemModelFamilyRoles(db: any, timestamp = new Date().
       created_at,
       updated_at
     ) VALUES (?, ?, ?, ?, 'model_family', ?, 'active', NULL, ?, ?)
+    ON CONFLICT(role_id) DO UPDATE SET
+      display_name_snapshot = excluded.display_name_snapshot,
+      avatar_data_url_snapshot = excluded.avatar_data_url_snapshot,
+      accent_color_snapshot = excluded.accent_color_snapshot,
+      origin_kind = 'model_family',
+      model_family_snapshot = excluded.model_family_snapshot,
+      lifecycle_state = 'active',
+      retired_reason = NULL,
+      updated_at = excluded.updated_at
+    WHERE chat_role_identities.display_name_snapshot IS NOT excluded.display_name_snapshot
+      OR chat_role_identities.avatar_data_url_snapshot IS NOT excluded.avatar_data_url_snapshot
+      OR chat_role_identities.accent_color_snapshot IS NOT excluded.accent_color_snapshot
+      OR chat_role_identities.origin_kind IS NOT 'model_family'
+      OR chat_role_identities.model_family_snapshot IS NOT excluded.model_family_snapshot
+      OR chat_role_identities.lifecycle_state IS NOT 'active'
+      OR chat_role_identities.retired_reason IS NOT NULL
   `);
   const insertConfig = db.prepare(`
-    INSERT OR IGNORE INTO chat_agents (
+    INSERT INTO chat_agents (
       id,
       name,
       sandbox_name,
@@ -179,6 +195,26 @@ export function reconcileSystemModelFamilyRoles(db: any, timestamp = new Date().
       created_at,
       updated_at
     ) VALUES (?, ?, ?, ?, NULL, '', '', '', '', ?, '[]', '[]', 'model_family', ?, 0, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      name = excluded.name,
+      sandbox_name = excluded.sandbox_name,
+      description = excluded.description,
+      avatar_data_url = NULL,
+      persona_prompt = '',
+      accent_color = excluded.accent_color,
+      skills_json = '[]',
+      role_kind = 'model_family',
+      model_family = excluded.model_family,
+      updated_at = excluded.updated_at
+    WHERE chat_agents.name IS NOT excluded.name
+      OR chat_agents.sandbox_name IS NOT excluded.sandbox_name
+      OR chat_agents.description IS NOT excluded.description
+      OR chat_agents.avatar_data_url IS NOT NULL
+      OR chat_agents.persona_prompt IS NOT ''
+      OR chat_agents.accent_color IS NOT excluded.accent_color
+      OR chat_agents.skills_json IS NOT '[]'
+      OR chat_agents.role_kind IS NOT 'model_family'
+      OR chat_agents.model_family IS NOT excluded.model_family
   `);
 
   for (const role of SYSTEM_MODEL_FAMILY_ROLES) {

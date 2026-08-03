@@ -43,6 +43,7 @@ const { createFeishuIntegrationService } = require('../domain/integrations/feish
 const { createFeishuLongConnectionSource } = require('../domain/integrations/feishu/feishu-long-connection');
 const { createConfiguredModelCatalog } = require('../domain/models/configured-model-catalog');
 const { readExternalAuthProviderIds } = require('../domain/models/external-provider-auth');
+const { createRoleService } = require('../domain/roles/role-service');
 const { createRouter } = require('../http/router');
 const { createSseBus } = require('../http/sse-bus');
 const { buildErrorJsonPayload, sendJson } = require('../http/response');
@@ -122,6 +123,7 @@ export function createServerApp(options: any = {}) {
   }
 
   const store = createChatAppStore({ agentDir, sqlitePath });
+  const roleService = createRoleService({ store, modelCatalog });
   const modeStore = createModeStore(store.db);
   const skillRegistry = createSkillRegistry({ agentDir, extraSkillDirs: [] });
   const undercoverHost = createWhoIsUndercoverHost({ agentDir });
@@ -429,6 +431,7 @@ export function createServerApp(options: any = {}) {
     turnOrchestrator,
     modeStore,
     modelCatalog,
+    roleService,
     localAdmin: () => ({
       modelProviders: {
         enabled: providerConfigLocalEnabled,
@@ -491,7 +494,7 @@ export function createServerApp(options: any = {}) {
     createAgentsController({
       store,
       skillRegistry,
-      buildConfiguredModelOptions,
+      roleService,
     }),
     createUndercoverController({
       undercoverService,

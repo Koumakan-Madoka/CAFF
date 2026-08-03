@@ -266,7 +266,7 @@ test('chat store persists repository-backed writes for conversations and message
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const agent = store.saveAgent({
+  const agent = store.saveCustomRoleConfig({
     id: 'repo-agent',
     name: 'Repository Agent',
     personaPrompt: 'Stay concise.',
@@ -324,6 +324,117 @@ test('chat store persists repository-backed writes for conversations and message
   assert.equal(privateMessages.length, 1);
   assert.deepEqual(privateMessages[0].recipientAgentIds, [agent.id]);
   assert.deepEqual(privateMessages[0].metadata, { visibility: 'private' });
+});
+
+test('chat store reconciles locked family fields without overwriting runtime configuration', (t) => {
+  const tempDir = withTempDir('caff-family-reconcile-');
+  const sqlitePath = path.join(tempDir, 'roles.sqlite');
+  let store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  assert.equal(store.listAgents().filter((agent) => agent.roleKind === 'model_family').length, 7);
+  const cleanQwenUpdatedAt = store.getAgent('role-family-qwen').updatedAt;
+  store.close();
+  store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  assert.equal(store.getAgent('role-family-qwen').updatedAt, cleanQwenUpdatedAt);
+
+  store.db.prepare(`
+    UPDATE chat_agents
+    SET
+      name = 'Mutated GPT',
+      sandbox_name = 'mutated-sandbox',
+      description = 'Mutated description',
+      avatar_data_url = 'data:image/png;base64,AAAA',
+      provider = 'openai',
+      model = 'gpt-test',
+      thinking = 'high',
+      accent_color = '#000000',
+      skills_json = '["forbidden-skill"]',
+      model_profiles_json = '[{"id":"max","name":"Max","provider":"openai","model":"gpt-test","thinking":"max"}]',
+      is_default_chat_role = 1
+    WHERE id = 'role-family-gpt'
+  `).run();
+  store.db.prepare(`
+    UPDATE chat_role_identities
+    SET display_name_snapshot = 'Mutated GPT', accent_color_snapshot = '#000000'
+    WHERE role_id = 'role-family-gpt'
+  `).run();
+
+  store.close();
+  store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+
+  const gpt = store.getAgent('role-family-gpt');
+  const identity = store.db.prepare('SELECT * FROM chat_role_identities WHERE role_id = ?').get('role-family-gpt');
+  assert.equal(gpt.name, 'GPT');
+  assert.equal(gpt.sandboxName, 'role-family-gpt');
+  assert.notEqual(gpt.description, 'Mutated description');
+  assert.equal(gpt.avatarDataUrl, '');
+  assert.equal(gpt.accentColor, '#3975c6');
+  assert.deepEqual(gpt.skillIds, []);
+  assert.equal(gpt.provider, 'openai');
+  assert.equal(gpt.model, 'gpt-test');
+  assert.equal(gpt.thinking, 'high');
+  assert.equal(gpt.isDefaultChatRole, true);
+  assert.equal(gpt.modelProfiles[0].id, 'max');
+  assert.equal(identity.display_name_snapshot, 'GPT');
+  assert.equal(identity.accent_color_snapshot, '#3975c6');
+  assert.equal(identity.origin_kind, 'model_family');
+  assert.equal(identity.lifecycle_state, 'active');
+});
+
+test('chat store retires custom role config after snapshotting active rosters', (t) => {
+  const tempDir = withTempDir('caff-custom-retire-');
+  const sqlitePath = path.join(tempDir, 'roles.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const agent = store.saveCustomRoleConfig({
+    id: 'custom-retire-role',
+    name: 'Custom retire role',
+    personaPrompt: 'Preserve my identity and memory.',
+  });
+  const conversation = store.createConversation({
+    id: 'custom-retire-conversation',
+    title: 'Custom retirement',
+    participants: [{
+      agentId: agent.id,
+      modelProfileId: null,
+      conversationSkillIds: ['conversation-skill'],
+    }],
+  });
+  store.saveConversationMemoryCard(conversation.id, agent.id, {
+    title: 'Retained memory',
+    content: 'This memory remains after active config retirement.',
+  });
+
+  store.retireRoleConfig(agent.id, 'custom_role_deleted');
+
+  assert.equal(store.getAgent(agent.id), null);
+  assert.equal(store.getConversation(conversation.id).agents.length, 0);
+  assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM chat_memory_cards WHERE agent_id = ?').get(agent.id).count, 1);
+
+  const identity = store.db.prepare('SELECT * FROM chat_role_identities WHERE role_id = ?').get(agent.id);
+  assert.equal(identity.lifecycle_state, 'retired');
+  assert.equal(identity.retired_reason, 'custom_role_deleted');
+
+  const history = store.db.prepare('SELECT * FROM chat_conversation_agent_history WHERE role_id = ?').all(agent.id);
+  assert.equal(history.length, 1);
+  assert.equal(history[0].conversation_id, conversation.id);
+  assert.equal(history[0].display_name_snapshot, agent.name);
+  assert.equal(history[0].role_kind_snapshot, 'custom');
+  assert.deepEqual(JSON.parse(history[0].conversation_skills_json), ['conversation-skill']);
 });
 
 test('chat store pages public messages by stable created-at and id cursors', (t) => {
@@ -521,12 +632,12 @@ test('chat store searches conversation public messages with scoped capped result
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const agent = store.saveAgent({
+  const agent = store.saveCustomRoleConfig({
     id: 'search-agent',
     name: 'Search Agent',
     personaPrompt: 'Search carefully.',
   });
-  const otherAgent = store.saveAgent({
+  const otherAgent = store.saveCustomRoleConfig({
     id: 'search-agent-other',
     name: 'Other Search Agent',
     personaPrompt: 'Search carefully too.',
@@ -665,12 +776,12 @@ test('chat store saves conversation overlay memory cards with ttl and budget', (
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const agent = store.saveAgent({
+  const agent = store.saveCustomRoleConfig({
     id: 'memory-agent',
     name: 'Memory Agent',
     personaPrompt: 'Remember durable things only.',
   });
-  const otherAgent = store.saveAgent({
+  const otherAgent = store.saveCustomRoleConfig({
     id: 'memory-agent-other',
     name: 'Other Memory Agent',
     personaPrompt: 'Do not leak memories.',
@@ -742,12 +853,12 @@ test('chat store lists local-user durable memory cards across conversations with
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const agent = store.saveAgent({
+  const agent = store.saveCustomRoleConfig({
     id: 'memory-durable-agent',
     name: 'Durable Agent',
     personaPrompt: 'Remember stable things across conversations.',
   });
-  const otherAgent = store.saveAgent({
+  const otherAgent = store.saveCustomRoleConfig({
     id: 'memory-durable-other-agent',
     name: 'Other Durable Agent',
     personaPrompt: 'Do not read another agent memory.',
@@ -813,7 +924,7 @@ test('chat store keeps case-distinct memory titles visible across overlay layeri
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const agent = store.saveAgent({
+  const agent = store.saveCustomRoleConfig({
     id: 'memory-case-visible-agent',
     name: 'Case Visible Agent',
     personaPrompt: 'Keep case-distinct memory titles separate.',
@@ -858,12 +969,12 @@ test('chat store updates and forgets durable memory cards with optimistic concur
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const agent = store.saveAgent({
+  const agent = store.saveCustomRoleConfig({
     id: 'memory-mutation-agent',
     name: 'Mutation Agent',
     personaPrompt: 'Update durable memory carefully.',
   });
-  const otherAgent = store.saveAgent({
+  const otherAgent = store.saveCustomRoleConfig({
     id: 'memory-mutation-other-agent',
     name: 'Other Mutation Agent',
     personaPrompt: 'Stay isolated.',
@@ -958,7 +1069,7 @@ test('chat store enforces memory card budget when reviving forgotten durable car
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  const agent = store.saveAgent({
+  const agent = store.saveCustomRoleConfig({
     id: 'memory-revive-budget-agent',
     name: 'Revive Budget Agent',
     personaPrompt: 'Respect memory budgets even when reviving forgotten cards.',

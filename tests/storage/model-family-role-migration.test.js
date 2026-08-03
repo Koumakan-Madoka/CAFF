@@ -467,7 +467,7 @@ test('fresh schema creates only family configs and permanently reserves legacy s
   )));
 
   assert.throws(
-    () => store.saveAgent({
+    () => store.saveCustomRoleConfig({
       id: 'agent-strategist',
       name: 'Do not resurrect',
       personaPrompt: 'This id is permanently retired.',
