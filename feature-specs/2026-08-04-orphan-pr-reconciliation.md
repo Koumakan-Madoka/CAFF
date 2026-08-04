@@ -177,7 +177,12 @@ Feishu status is derived only from local env/configuration and lazy SDK availabi
    - `revert-28-feat/04-12-caff-feishu-integration` at `6795df64f59d055286f0ffa77d69416e10d01f00`
 3. Remove the integration worktree only after merge and confirm no open PR remains.
 
+## Completion Truth
+
+- PR #52 was squash-merged into `main` as `0231d0ca188959567ea7f5f7ec07758fb72866fb` on 2026-08-04 after both CI `unit` jobs passed and the frozen `88eec961983da9b8a1742d2a92bc9eca3644600e` received cross-family approval. Cloud review was unavailable because the connector explicitly reported exhausted review quota; the PR records the downgrade provenance.
+- The four classified stale remote branches were deleted only after their tips were re-read from GitHub and matched the frozen SHAs recorded above. Those full SHAs remain the recovery anchors.
+- After deletion and `fetch --prune`, GitHub reported zero open PRs and Git reported zero remote branches outside the `origin/main` ancestry. Local branches and unrelated worktrees were intentionally left untouched.
+
 ## Open Questions
 
-- **Technical:** Exact long-connection SDK availability detection will use an injected resolver for deterministic tests and `require.resolve` at runtime; implementation may refine the field name but must preserve INV-1/INV-2.
-- **Value:** None. The user explicitly requested reconciling all remote PR leftovers, and the selective path avoids reviving retired product scope.
+None. The implementation uses an injected resolver for deterministic tests and `require.resolve` at runtime, while the selective reconciliation keeps retired product scope excluded.
