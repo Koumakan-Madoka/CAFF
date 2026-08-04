@@ -101,9 +101,14 @@ function insertLegacySkillTestDesignData(db) {
   `).run('skill_test_design', 'Skill Test Design', 'Legacy builtin mode', 1, '["skill-test-design-workbench"]', 'full', ts, ts);
 
   db.prepare(`
-    INSERT INTO chat_agents (id, name, persona_prompt, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?)
-  `).run('st-agent-1', 'Test Agent', 'Test persona', ts, ts);
+    INSERT INTO chat_role_identities (role_id, display_name_snapshot, origin_kind, lifecycle_state, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run('st-agent-1', 'Test Agent', 'custom', 'active', ts, ts);
+
+  db.prepare(`
+    INSERT INTO chat_agents (id, name, persona_prompt, role_kind, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run('st-agent-1', 'Test Agent', 'Test persona', 'custom', ts, ts);
 
   db.prepare(`
     INSERT INTO chat_conversations (id, title, type, metadata_json, created_at, updated_at)
@@ -130,9 +135,14 @@ function insertNormalConversationWithWorkbenchBinding(db) {
   const ts = '2026-01-01T00:00:00.000Z';
 
   db.prepare(`
-    INSERT INTO chat_agents (id, name, persona_prompt, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?)
-  `).run('normal-agent-1', 'Normal Agent', 'Normal persona', ts, ts);
+    INSERT INTO chat_role_identities (role_id, display_name_snapshot, origin_kind, lifecycle_state, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run('normal-agent-1', 'Normal Agent', 'custom', 'active', ts, ts);
+
+  db.prepare(`
+    INSERT INTO chat_agents (id, name, persona_prompt, role_kind, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run('normal-agent-1', 'Normal Agent', 'Normal persona', 'custom', ts, ts);
 
   db.prepare(`
     INSERT INTO chat_conversations (id, title, type, metadata_json, created_at, updated_at)

@@ -175,22 +175,6 @@ function mergeModeSkillIdsIntoParticipants(input: any, mode: any) {
 
 
 
-function assertSkillTestDesignParticipantCount(participants: any[]) {
-  if (participants.length === 3) {
-    return;
-  }
-  throw createHttpError(400, 'Skill Test 设计模式需要恰好选择 3 位角色', {
-    code: 'skill_test_participant_count_invalid',
-    issues: [{
-      code: 'skill_test_participant_count_invalid',
-      message: 'Skill Test 设计模式需要恰好选择 3 位角色，依次承担规划、评审和记录职责',
-      path: 'participants',
-      expectedCount: 3,
-      actualCount: participants.length,
-    }],
-  });
-}
-
 export function createConversationsController(options: any = {}): RouteHandler<ApiContext> {
   const store = options.store;
   const roleService = options.roleService;
@@ -264,7 +248,6 @@ export function createConversationsController(options: any = {}): RouteHandler<A
 
       let metadata = body && body.metadata && typeof body.metadata === 'object' ? body.metadata : {};
       let conversationInput = body || {};
-      let skillTestSkill = null;
       if (conversationType === UNDERCOVER_CONVERSATION_TYPE) {
         metadata = {
           ...metadata,
@@ -281,13 +264,6 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         ...conversationInput,
         participants: validateConversationParticipants(conversationInput),
       };
-
-      if (conversationType === SKILL_TEST_DESIGN_CONVERSATION_TYPE) {
-        assertSkillTestDesignParticipantCount(conversationInput.participants);
-        metadata = createSkillTestDesignMetadata(skillTestSkill, {
-          participants: conversationInput.participants,
-        });
-      }
 
       // Merge mode skill bindings only into the explicit participant roster.
       const mode = modeStore ? modeStore.get(conversationType) : null;

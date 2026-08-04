@@ -10,7 +10,7 @@ const { markConversationRetrievalTraceUsage } = require('../../build/server/doma
 const { withTempDir } = require('../helpers/temp-dir');
 
 function createPublicInvocationFixture(store, suffix) {
-  const agent = store.saveAgent({
+  const agent = store.saveCustomRoleConfig({
     id: `bridge-agent-${suffix}`,
     name: `Bridge Agent ${suffix}`,
     personaPrompt: 'Reply briefly.',
@@ -413,7 +413,11 @@ test('agent tool bridge expires invocation auth tokens', (t) => {
       conversationAgents: fixture.conversation.agents,
       stage: fixture.stage,
       turnState: fixture.turnState,
+      authScope: 'skill-test',
+      caseId: 'case-expired',
+      runId: 'run-expired',
       expiresAt: '2000-01-01T00:00:00.000Z',
+      dryRun: true,
     })
   );
 
@@ -422,6 +426,8 @@ test('agent tool bridge expires invocation auth tokens', (t) => {
       bridge.handlePostMessage({
         invocationId: context.invocationId,
         callbackToken: context.callbackToken,
+        skillTestRunId: 'run-expired',
+        skillTestCaseId: 'case-expired',
         visibility: 'public',
         content: 'too late',
       }),
@@ -1204,7 +1210,7 @@ test('agent tool search-messages returns scoped public recall results', (t) => {
   });
 
   const fixture = createPublicInvocationFixture(store, 'search');
-  const otherAgent = store.saveAgent({
+  const otherAgent = store.saveCustomRoleConfig({
     id: 'bridge-search-other-agent',
     name: 'Bridge Search Other Agent',
     personaPrompt: 'Reply briefly too.',
@@ -1565,7 +1571,7 @@ test('agent tool memory cards save durable local-user scope and stay agent-scope
   });
 
   const fixture = createPublicInvocationFixture(store, 'memory');
-  const otherAgent = store.saveAgent({
+  const otherAgent = store.saveCustomRoleConfig({
     id: 'bridge-memory-other-agent',
     name: 'Other Memory Agent',
     personaPrompt: 'Stay scoped.',
@@ -1813,3 +1819,4 @@ test('agent tool memory cards update and forget durable local-user scope safely'
   const listedAfterForget = bridge.handleListMemories(listUrl);
   assert.equal(listedAfterForget.cardCount, 0);
 });
+
