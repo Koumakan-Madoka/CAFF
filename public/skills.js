@@ -13,11 +13,17 @@ const state = {
 
 const shared = window.CaffShared || {};
 const fetchJson = shared.fetchJson;
+const createManagementListItem = shared.createManagementListItem;
+const createManagementListEmptyState = shared.createManagementListEmptyState;
+
+if (typeof createManagementListItem !== 'function' || typeof createManagementListEmptyState !== 'function') {
+  throw new Error('Management list primitives are required');
+}
 
 const dom = {
   refreshButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('refresh-button')),
   newSkillButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('new-skill-button')),
-  skillList: /** @type {HTMLDivElement | null} */ (document.getElementById('skill-list')),
+  skillList: /** @type {HTMLUListElement | null} */ (document.getElementById('skill-list')),
   editorTitle: /** @type {HTMLElement | null} */ (document.getElementById('editor-title')),
   skillForm: /** @type {HTMLFormElement | null} */ (document.getElementById('skill-form')),
   skillId: /** @type {HTMLInputElement | null} */ (document.getElementById('skill-id')),
@@ -43,7 +49,7 @@ const dom = {
   newModeButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('new-mode-button')),
   skillPanel: /** @type {HTMLElement | null} */ (document.getElementById('skill-panel')),
   modePanel: /** @type {HTMLElement | null} */ (document.getElementById('mode-panel')),
-  modeList: /** @type {HTMLDivElement | null} */ (document.getElementById('mode-list')),
+  modeList: /** @type {HTMLUListElement | null} */ (document.getElementById('mode-list')),
 
   // Mode form elements
   modeForm: /** @type {HTMLFormElement | null} */ (document.getElementById('mode-form')),
@@ -249,21 +255,15 @@ function renderSkillList() {
   dom.skillList.innerHTML = '';
 
   if (state.skills.length === 0) {
-    const empty = document.createElement('div');
-    empty.className = 'empty-state';
-    empty.textContent = 'No skills yet. Create one first.';
-    dom.skillList.appendChild(empty);
+    dom.skillList.appendChild(createManagementListEmptyState('No skills yet. Create one first.'));
     return;
   }
 
   state.skills.forEach((skill) => {
-    const item = document.createElement('div');
-    item.className = 'agent-list-item';
-    item.dataset.id = skill.id;
-
-    if (skill.id === state.selectedSkillId) {
-      item.classList.add('active');
-    }
+    const { row, button: item } = createManagementListItem({
+      id: skill.id,
+      active: skill.id === state.selectedSkillId,
+    });
 
     const content = document.createElement('div');
     const name = document.createElement('strong');
@@ -275,7 +275,7 @@ function renderSkillList() {
 
     content.append(name, description);
     item.appendChild(content);
-    dom.skillList.appendChild(item);
+    dom.skillList.appendChild(row);
   });
 }
 
@@ -480,21 +480,15 @@ function renderModeList() {
   dom.modeList.innerHTML = '';
 
   if (state.modes.length === 0) {
-    const empty = document.createElement('div');
-    empty.className = 'empty-state';
-    empty.textContent = '暂无模式，点击「新建模式」创建。';
-    dom.modeList.appendChild(empty);
+    dom.modeList.appendChild(createManagementListEmptyState('暂无模式，点击「新建模式」创建。'));
     return;
   }
 
   state.modes.forEach((mode) => {
-    const item = document.createElement('div');
-    item.className = 'agent-list-item';
-    item.dataset.id = mode.id;
-
-    if (mode.id === state.selectedModeId) {
-      item.classList.add('active');
-    }
+    const { row, button: item } = createManagementListItem({
+      id: mode.id,
+      active: mode.id === state.selectedModeId,
+    });
 
     const content = document.createElement('div');
 
@@ -518,7 +512,7 @@ function renderModeList() {
 
     content.append(header, description);
     item.appendChild(content);
-    dom.modeList.appendChild(item);
+    dom.modeList.appendChild(row);
   });
 }
 

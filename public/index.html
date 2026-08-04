@@ -4,7 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>CAFF 本地 Agent 工作台</title>
+    <script src="/shared/theme.js"></script>
     <link rel="stylesheet" href="/styles.css" />
+    <script defer src="/shared/icons.js"></script>
     <script defer src="/shared/api-client.js"></script>
     <script defer src="/shared/model-options.js"></script>
     <script defer src="/shared/avatar.js"></script>
@@ -14,14 +16,15 @@
     <script defer src="/shared/summary-memory.js"></script>
     <script defer src="/shared/clipboard.js"></script>
     <script defer src="/shared/safe-markdown.js"></script>
+    <script defer src="/shell/app-shell.js"></script>
     <script defer src="/chat/conversation-list.js"></script>
+    <script defer src="/chat/connection-status.js"></script>
     <script defer src="/chat/participant-pane.js"></script>
     <script defer src="/chat/message-history.js"></script>
     <script defer src="/chat/message-timeline.js"></script>
     <script defer src="/chat/conversation-settings.js"></script>
     <script defer src="/chat/undercover-panel.js"></script>
     <script defer src="/chat/werewolf-panel.js"></script>
-    <script defer src="/chat/skill-test-design-panel.js"></script>
     <script defer src="/chat/new-conversation-dialog.js"></script>
     <script defer src="/chat/mention-menu.js"></script>
     <script defer src="/chat/session-goal-panel.js"></script>
@@ -30,95 +33,54 @@
     <script defer src="/chat/conversation-pane.js"></script>
     <script defer src="/app.js"></script>
   </head>
-  <body>
-    <div class="ambient ambient-a"></div>
-    <div class="ambient ambient-b"></div>
-    <div class="shell" id="app-shell">
-      <header class="topbar">
-        <div>
-          <p class="eyebrow">CAFF 本地工作台</p>
-          <h1>多人 Agent 对话台</h1>
-          <p class="subtitle">本地运行的多角色协作聊天台，支持普通对话与后端主持的“谁是卧底 / 狼人杀”玩法。</p>
+  <body class="chat-app" data-drawer="closed" data-sidebar="closed">
+    <div class="app-shell" id="appShell">
+      <nav class="rail" aria-label="主导航">
+        <a class="rail-link" aria-current="page" href="/" title="聊天工作台" aria-label="聊天工作台"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-chat"></use></svg></a>
+        <a class="rail-link" href="/personas.html" title="人格管理" aria-label="人格管理"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-users"></use></svg></a>
+        <a class="rail-link" href="/skills.html" title="Skill 管理" aria-label="Skill 管理"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-puzzle"></use></svg></a>
+        <a class="rail-link" href="/projects.html" title="项目管理" aria-label="项目管理"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-folder"></use></svg></a>
+        <a class="rail-link" href="/metrics.html" title="评测报表" aria-label="评测报表"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-bar-chart"></use></svg></a>
+        <span class="spacer"></span>
+        <button class="rail-button" id="rail-settings-button" type="button" title="会话设置" aria-label="会话设置"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-settings"></use></svg></button>
+        <button class="rail-button theme-toggle" type="button" data-theme-toggle aria-pressed="false" aria-label="切换为深色主题" title="切换为深色主题">
+          <svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-moon"></use></svg>
+        </button>
+      </nav>
+
+      <aside class="sidebar" id="sidebar" aria-label="会话列表" aria-hidden="true" inert>
+        <div class="sidebar-head">
+          <h1>会话</h1>
+          <button class="icon-btn" id="open-new-conversation-button" type="button" aria-label="新建会话"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-plus"></use></svg></button>
+          <button class="icon-btn" id="sidebarClose" type="button" aria-label="收起会话栏"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-x"></use></svg></button>
         </div>
-        <div class="topbar-actions">
-          <nav class="topbar-nav" aria-label="主导航">
-            <a class="topbar-link active" href="/">聊天工作台</a>
-            <a class="topbar-link" href="/personas.html">角色与模型</a>
-            <a class="topbar-link" href="/skills.html">Skill 管理</a>
-            <a class="topbar-link" href="/projects.html">项目管理</a>
-            <a class="topbar-link" href="/metrics.html">评测报表</a>
-            <a class="topbar-link" href="/eval-cases.html">错题本</a>
-          </nav>
-          <span id="runtime-pill" class="runtime-pill">正在连接本地服务...</span>
-          <button id="refresh-button" class="ghost-button" type="button">刷新</button>
+
+
+        <ul id="conversation-list" class="conversation-list sidebar-list"></ul>
+      </aside>
+
+      <main class="main">
+        <header class="chat-header">
+          <button class="icon-btn" id="sidebarToggle" type="button" aria-label="打开会话栏" aria-expanded="false"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-menu"></use></svg></button>
+          <div class="titles">
+            <h2 id="conversation-title-display">正在加载...</h2>
+          </div>
+          <span id="connection-dot" class="connection-dot" data-status="connecting" role="status" aria-label="连接状态" title="正在连接本地服务..."></span>
+          <p id="conversation-mode-badge" class="mode-pill hidden"></p>
+          <button id="refresh-button" class="icon-btn" type="button" aria-label="刷新" title="刷新"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-refresh"></use></svg></button>
+          <button class="icon-btn icon-label-button" id="drawerToggle" type="button" aria-expanded="false" aria-controls="contextDrawer"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-panel-right"></use></svg><span>面板</span></button>
+        </header>
+
+        <div id="skill-draft-alert" class="skill-draft-alert hidden" role="status" aria-live="polite">
+          <div>
+            <p class="eyebrow">经验复用</p>
+            <p id="skill-draft-alert-text">有 Skill 草稿待确认。</p>
+          </div>
+          <button id="skill-draft-alert-button" class="secondary-button" type="button">查看草稿</button>
         </div>
-      </header>
 
-      <main class="layout">
-        <aside class="panel panel-conversations">
-          <div class="panel-header">
-            <div>
-              <p class="eyebrow">会话</p>
-              <h2>会话管理</h2>
-            </div>
-          </div>
-
-          <button id="open-new-conversation-button" class="new-conversation-trigger" type="button">＋ 新建聊天</button>
-
-          <div id="conversation-list" class="conversation-list"></div>
-        </aside>
-
-        <section class="panel panel-chat">
-          <header class="chat-header">
-            <div>
-              <p class="eyebrow">共享房间</p>
-              <h2 id="conversation-title-display">正在加载...</h2>
-              <p id="conversation-mode-badge" class="mode-pill hidden"></p>
-              <p id="conversation-meta" class="muted">请稍候</p>
-            </div>
-            <div class="chat-header-actions">
-              <button
-                id="conversation-digest-toggle-button"
-                class="ghost-button goal-toggle-button"
-                type="button"
-                aria-expanded="false"
-                aria-controls="conversation-digest-drawer"
-              >摘要 ▸</button>
-              <button
-                id="summary-memory-toggle-button"
-                class="ghost-button goal-toggle-button"
-                type="button"
-                aria-expanded="false"
-                aria-controls="summary-memory-drawer"
-              >记忆 ▸</button>
-              <button
-                id="session-goal-toggle-button"
-                class="ghost-button goal-toggle-button"
-                type="button"
-                aria-expanded="false"
-                aria-controls="session-goal-drawer"
-              >目标 ▸</button>
-              <button id="delete-conversation-button" class="ghost-button danger" type="button">删除对话</button>
-            </div>
-          </header>
-
-          <div class="participant-section">
-            <div class="section-row">
-              <span class="section-label">当前参与角色</span>
-              <span class="section-hint">普通房间按提及路由，谁是卧底 / 狼人杀房间由后端主持统一调度。</span>
-            </div>
-            <div id="participant-list" class="participant-list"></div>
-          </div>
-
-          <div id="skill-draft-alert" class="skill-draft-alert hidden" role="status" aria-live="polite">
-            <div>
-              <p class="eyebrow">经验复用</p>
-              <p id="skill-draft-alert-text">有 Skill 草稿待确认。</p>
-            </div>
-            <button id="skill-draft-alert-button" class="secondary-button" type="button">查看草稿</button>
-          </div>
-
-          <div id="message-list" class="message-list">
+        <div class="message-viewport">
+          <div id="message-list" class="message-list" role="log" tabindex="0" aria-live="polite" aria-label="消息列表">
             <div id="message-history-control" class="message-history-control hidden">
               <button id="message-history-button" class="ghost-button message-history-button" type="button">
                 加载更早消息
@@ -127,28 +89,269 @@
             </div>
             <div id="message-timeline" class="message-timeline"></div>
           </div>
+          <button id="new-message-pill" class="new-msg-pill" type="button" aria-label="跳到最新消息" hidden><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-arrow-down"></use></svg><span>新消息</span></button>
+        </div>
 
-          <form id="composer-form" class="composer">
-            <label class="composer-label" for="composer-input">发送给当前房间</label>
+        <form id="composer-form" class="composer">
+          <div class="composer-inner">
             <textarea
               id="composer-input"
               name="content"
-              rows="4"
+              rows="1"
               maxlength="6000"
-              placeholder="输入一条消息，当前会话里的多个 Agent 会从各自角色视角回复。"
+              placeholder="发送给当前房间，@提及人格…"
+              aria-label="消息输入框"
             ></textarea>
             <div id="composer-mention-menu" class="mention-menu hidden"></div>
-            <div class="composer-footer">
-              <span id="composer-status" class="muted">就绪</span>
-              <div class="composer-actions">
-                <button id="stop-button" class="ghost-button danger" type="button">停止</button>
-                <button id="send-button" type="submit">发送给房间</button>
+            <button id="stop-button" class="ghost-button danger" type="button">停止</button>
+            <button id="send-button" class="send" type="submit">发送</button>
+          </div>
+          <div class="composer-footer">
+            <span id="composer-status" class="muted">就绪</span>
+          </div>
+        </form>
+      </main>
+    </div>
+
+    <div class="drawer-overlay" id="drawerOverlay"></div>
+    <aside class="context-drawer" id="contextDrawer" role="dialog" aria-modal="true" aria-label="上下文面板" aria-hidden="true" inert>
+      <div class="drawer-head">
+        <h2>上下文面板</h2>
+        <button class="icon-btn" id="drawerClose" type="button" aria-label="关闭面板"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-x"></use></svg></button>
+      </div>
+      <div class="drawer-tabs" role="tablist" aria-label="面板分类">
+        <button role="tab" id="tab-participants" aria-controls="panel-participants" aria-selected="true" tabindex="0">参与者</button>
+        <button role="tab" id="tab-goal" aria-controls="session-goal-drawer" aria-selected="false" tabindex="-1">目标</button>
+        <button role="tab" id="tab-memory" aria-controls="summary-memory-drawer" aria-selected="false" tabindex="-1">记忆</button>
+        <button role="tab" id="tab-summary" aria-controls="conversation-digest-drawer" aria-selected="false" tabindex="-1">摘要</button>
+        <button role="tab" id="tab-settings" aria-controls="panel-settings" aria-selected="false" tabindex="-1">设置</button>
+        <button role="tab" id="tab-game" aria-controls="panel-game" aria-selected="false" tabindex="-1" hidden>游戏</button>
+        <button role="tab" id="tab-drafts" aria-controls="skill-draft-drawer" aria-selected="false" tabindex="-1" hidden>草稿</button>
+        <button role="tab" id="tab-context" aria-controls="agent-context-drawer" aria-selected="false" tabindex="-1">上下文</button>
+      </div>
+      <div class="drawer-body">
+        <div role="tabpanel" id="panel-participants" class="drawer-panel" aria-labelledby="tab-participants">
+          <div class="participant-section">
+            <div class="section-row">
+              <span class="section-label">当前参与人格</span>
+              <span class="section-hint">普通房间按提及路由，谁是卧底 / 狼人杀房间由后端主持统一调度。</span>
+            </div>
+            <div id="participant-list" class="participant-list"></div>
+          </div>
+        </div>
+
+        <div role="tabpanel" id="session-goal-drawer" class="drawer-panel" aria-labelledby="tab-goal" hidden>
+          <p id="session-goal-drawer-status" class="session-goal-status-badge active">当前没有会话目标</p>
+          <div id="session-goal-details" class="session-goal-detail-list"></div>
+
+          <div id="session-goal-progress-card" class="session-goal-progress-card hidden">
+            <div class="section-row">
+              <span class="section-label">进度</span>
+              <span id="session-goal-progress-summary" class="section-hint">0/0</span>
+            </div>
+            <div class="session-goal-progress-track" aria-hidden="true">
+              <span id="session-goal-progress-fill" class="session-goal-progress-fill"></span>
+            </div>
+            <ul id="session-goal-checklist-preview" class="session-goal-checklist-preview"></ul>
+          </div>
+
+          <div id="session-goal-proposal-card" class="session-goal-proposal-card hidden">
+            <div class="section-row">
+              <span class="section-label">Agent 提议</span>
+              <span class="section-hint">需要用户确认才会生效</span>
+            </div>
+            <p id="session-goal-proposal-status" class="session-goal-proposal-status"></p>
+            <div id="session-goal-proposal-details" class="session-goal-detail-list compact-detail-list"></div>
+            <div class="button-row compact-button-row">
+              <button id="session-goal-accept-proposal-button" type="button">确认提议</button>
+              <button id="session-goal-dismiss-proposal-button" class="ghost-button" type="button">忽略</button>
+            </div>
+          </div>
+
+          <form id="session-goal-form" class="settings-form compact-settings-form">
+            <label>
+              <span>目标内容</span>
+              <textarea
+                id="session-goal-objective"
+                rows="5"
+                maxlength="2000"
+                placeholder="例如：完成 /goal 管理面板并通过检查"
+              ></textarea>
+            </label>
+            <label>
+              <span>子任务 checklist</span>
+              <div class="button-row compact-button-row">
+                <button id="session-goal-checklist-preset-button" class="ghost-button" type="button">填入 Trellis 长任务预设</button>
               </div>
+              <textarea
+                id="session-goal-checklist"
+                rows="6"
+                maxlength="4000"
+                placeholder="每行一项；支持 [ ] 待办、[~] 进行中、[x] 完成"
+              ></textarea>
+            </label>
+            <div class="button-row compact-button-row">
+              <button id="session-goal-save-button" type="submit">创建目标</button>
             </div>
           </form>
-        </section>
 
-        <aside class="panel panel-studio">
+          <div class="session-goal-action-card">
+            <div class="section-row">
+              <span class="section-label">生命周期</span>
+              <span class="section-hint">也可以继续使用 /goal 快捷命令</span>
+            </div>
+            <div class="button-row compact-button-row">
+              <button id="session-goal-pause-button" class="ghost-button" type="button">暂停</button>
+              <button id="session-goal-resume-button" class="ghost-button" type="button">恢复</button>
+              <button id="session-goal-complete-button" class="ghost-button" type="button">完成</button>
+              <button id="session-goal-clear-button" class="ghost-button danger" type="button">清除</button>
+            </div>
+          </div>
+        </div>
+
+        <div role="tabpanel" id="summary-memory-drawer" class="drawer-panel" aria-labelledby="tab-memory" hidden>
+          <p id="summary-memory-status" class="session-goal-status-badge active">输入关键词搜索跨会话 / 跨任务摘要段</p>
+          <form id="summary-memory-form" class="settings-form compact-settings-form summary-memory-form">
+            <label>
+              <span>关键词</span>
+              <input id="summary-memory-query" type="search" maxlength="240" placeholder="例如：digest compaction、测试被环境变量绊倒" />
+            </label>
+            <label>
+              <span>任务筛选（可选）</span>
+              <input id="summary-memory-task" type="search" maxlength="120" placeholder="例如：05-03-conversation-digest" />
+            </label>
+            <label class="summary-memory-checkbox-row">
+              <input id="summary-memory-current-task" type="checkbox" />
+              <span>仅当前 Trellis 任务</span>
+            </label>
+            <label>
+              <span>会话标题筛选（可选）</span>
+              <input id="summary-memory-conversation-title" type="search" maxlength="120" placeholder="例如：记忆系统调研、BetterGI 部署" />
+            </label>
+            <div class="summary-memory-date-row">
+              <label>
+                <span>开始日期（可选）</span>
+                <input id="summary-memory-updated-after" type="date" />
+              </label>
+              <label>
+                <span>结束日期（可选）</span>
+                <input id="summary-memory-updated-before" type="date" />
+              </label>
+            </div>
+            <label>
+              <span>摘要类型</span>
+              <select id="summary-memory-kind">
+                <option value="">全部</option>
+                <option value="entry">详细摘要</option>
+                <option value="rollup">压缩总摘要</option>
+              </select>
+            </label>
+            <label class="summary-memory-checkbox-row">
+              <input id="summary-memory-include-current" type="checkbox" />
+              <span>包含当前会话</span>
+            </label>
+            <div class="button-row compact-button-row">
+              <button id="summary-memory-search-button" type="submit">搜索记忆</button>
+              <button id="summary-memory-recent-button" class="ghost-button" type="button" title="显示最近同步的长期经验摘要段">最新记忆</button>
+              <button id="summary-memory-backfill-button" class="ghost-button" type="button" title="把所有会话里的旧 metadata 摘要同步进长期经验搜索">回填全部旧摘要</button>
+            </div>
+          </form>
+          <div id="summary-memory-results" class="conversation-digest-list summary-memory-results"></div>
+        </div>
+
+        <div role="tabpanel" id="conversation-digest-drawer" class="drawer-panel" aria-labelledby="tab-summary" hidden>
+          <p id="conversation-digest-status" class="session-goal-status-badge active">当前没有会话摘要</p>
+          <ul class="conversation-digest-help">
+            <li><strong>详细摘要</strong>：/digest 生成，直接总结一段近期原始聊天内容。</li>
+            <li><strong>压缩总摘要</strong>：/digest compact 生成，把多条旧详细摘要合并成一条长期概览。近期原文仍优先。</li>
+          </ul>
+          <div class="session-goal-action-card">
+            <div class="section-row">
+              <span class="section-label">摘要记忆</span>
+              <span class="section-hint">详细摘要记录近期，压缩总摘要保留历史</span>
+            </div>
+            <div class="button-row compact-button-row">
+              <button id="conversation-digest-create-button" type="button">生成详细摘要</button>
+              <button id="conversation-digest-compact-button" class="secondary-button" type="button">压缩旧详细摘要</button>
+            </div>
+          </div>
+          <div id="conversation-digest-list" class="conversation-digest-list"></div>
+        </div>
+
+        <div role="tabpanel" id="panel-settings" class="drawer-panel" aria-labelledby="tab-settings" hidden>
+          <div class="section-row">
+            <span class="section-label">运行状态</span>
+          </div>
+          <p class="runtime-status-line">
+            <span id="runtime-pill" class="runtime-pill">正在连接本地服务...</span>
+            <span id="conversation-meta" class="muted">请稍候</span>
+          </p>
+
+          <div class="section-row">
+            <span class="section-label">本次人格</span>
+            <a class="ghost-button link-button" href="/personas.html">管理页</a>
+          </div>
+
+          <form id="conversation-settings-form" class="settings-form compact-settings-form">
+            <section class="bulk-skill-card">
+              <div class="section-row">
+                <span class="section-label">批量 Skill</span>
+                <span class="section-hint">把同一个 skill 批量分配给当前勾选的人格</span>
+              </div>
+              <label>
+                <span>选择 Skill</span>
+                <select id="bulk-skill-select"></select>
+              </label>
+              <div class="button-row compact-button-row">
+                <button id="apply-bulk-skill-button" class="ghost-button" type="button">批量分配给已选人格</button>
+                <button id="clear-bulk-skill-button" class="ghost-button" type="button">清空选择</button>
+              </div>
+            </section>
+
+            <section class="bulk-skill-card feishu-binding-card">
+              <div class="section-row">
+                <span class="section-label">飞书接入</span>
+                <span class="section-hint">从已知飞书聊天里选择并绑定</span>
+              </div>
+              <label>
+                <span>已知飞书聊天</span>
+                <select id="feishu-chat-select">
+                  <option value="">正在加载...</option>
+                </select>
+              </label>
+              <label>
+                <span>手动输入 chat_id</span>
+                <input id="feishu-chat-id-input" type="text" autocomplete="off" placeholder="选不到时再手动输入，例如 oc_xxx" />
+              </label>
+              <p id="feishu-binding-status" class="section-hint">可从已知飞书聊天里选择，也可手动输入 chat_id。</p>
+              <div class="button-row compact-button-row">
+                <button id="bind-feishu-chat-button" class="ghost-button" type="button">绑定到当前会话</button>
+              </div>
+            </section>
+
+            <div class="conversation-agent-section">
+              <div class="section-row">
+                <span class="section-label">参与人格</span>
+                <span class="section-hint">至少 1 个</span>
+              </div>
+              <div id="conversation-agent-options" class="option-list"></div>
+            </div>
+
+            <button id="save-conversation-button" type="submit">保存选择</button>
+          </form>
+
+          <div class="session-goal-action-card">
+            <div class="section-row">
+              <span class="section-label">危险操作</span>
+              <span class="section-hint">删除后不可恢复</span>
+            </div>
+            <div class="button-row compact-button-row">
+              <button id="delete-conversation-button" class="ghost-button danger" type="button">删除对话</button>
+            </div>
+          </div>
+        </div>
+
+        <div role="tabpanel" id="panel-game" class="drawer-panel" aria-labelledby="tab-game" hidden>
           <section id="undercover-game-card" class="stack-card hidden">
             <div class="panel-header">
               <div>
@@ -206,69 +409,6 @@
             <p class="muted">点击开始后，后端会自动完成发言、投票、结算与身份揭晓。</p>
           </section>
 
-          <section id="skill-test-design-card" class="stack-card hidden">
-            <div class="panel-header">
-              <div>
-                <p class="eyebrow">Skill Test 设计</p>
-                <h2>测试矩阵工作台</h2>
-              </div>
-            </div>
-
-            <div class="skill-test-design-status-card">
-              <div id="skill-test-design-status" class="muted">选择 Skill Test 设计房间后，这里会显示测试矩阵的状态和操作按钮。</div>
-            </div>
-
-            <section class="conversation-agent-section">
-              <div class="section-row">
-                <span class="section-label">目标 Skill</span>
-                <span id="skill-test-design-skill-name" class="section-hint">-</span>
-              </div>
-              <div class="section-row">
-                <span class="section-label">当前阶段</span>
-                <span id="skill-test-design-phase" class="section-hint">-</span>
-              </div>
-              <div class="section-row">
-                <span class="section-label">已有用例</span>
-                <span id="skill-test-design-case-summary" class="section-hint">-</span>
-              </div>
-            </section>
-
-            <section id="skill-test-design-testing-doc-section" class="conversation-agent-section hidden">
-              <div class="section-row">
-                <span class="section-label">环境契约</span>
-                <span id="skill-test-design-testing-doc-status" class="section-hint">未检测</span>
-              </div>
-              <div id="skill-test-design-testing-doc-draft" class="skill-test-testing-doc-draft"></div>
-              <div id="skill-test-design-testing-doc-actions" class="button-row compact-button-row hidden">
-                <button id="skill-test-preview-testing-doc-button" class="ghost-button" type="button">起草 TESTING.md</button>
-                <button id="skill-test-apply-testing-doc-button" type="button">确认写入 TESTING.md</button>
-              </div>
-            </section>
-
-            <section id="skill-test-design-matrix-section" class="conversation-agent-section hidden">
-              <div class="section-row">
-                <span class="section-label">测试矩阵</span>
-                <span id="skill-test-design-matrix-status" class="section-hint">未导入</span>
-              </div>
-              <div id="skill-test-design-matrix-rows" class="skill-test-matrix-rows"></div>
-            </section>
-
-            <div id="skill-test-design-actions" class="button-row compact-button-row hidden">
-              <button id="skill-test-import-matrix-button" class="ghost-button hidden" type="button">重试同步矩阵</button>
-              <button id="skill-test-confirm-matrix-button" class="ghost-button hidden" type="button">确认矩阵</button>
-              <button id="skill-test-export-drafts-button" type="button">确认并导出草稿</button>
-            </div>
-
-            <div id="skill-test-design-export-result" class="hidden">
-              <div class="section-row">
-                <span class="section-label">导出结果</span>
-              </div>
-              <div id="skill-test-design-export-summary" class="muted"></div>
-            </div>
-
-            <p class="muted">Skill Test 默认运行在隔离沙盒（host-loop + sandbox-tools）里；这里主要补充目标 skill 的额外依赖、凭据、外部服务或 TESTING.md 契约，而不是再次确认“是不是沙盒”。检测到有效矩阵后会自动同步，你只需要确认并导出草稿。</p>
-          </section>
-
           <section id="werewolf-game-card" class="stack-card hidden">
             <div class="panel-header">
               <div>
@@ -316,374 +456,104 @@
 
             <p class="muted">点击开始后，后端会自动推进夜晚、白天讨论、投票、结算与身份揭晓。</p>
           </section>
+        </div>
 
-          <section class="stack-card">
-            <div class="panel-header">
-              <div>
-                <p class="eyebrow">角色配置</p>
-                <h2>本次角色</h2>
-              </div>
-              <a class="ghost-button link-button" href="/personas.html">管理页</a>
+        <div role="tabpanel" id="skill-draft-drawer" class="drawer-panel" aria-labelledby="tab-drafts" hidden>
+          <p id="skill-draft-status" class="session-goal-status-badge active">当前没有待确认草稿</p>
+          <div class="session-goal-action-card">
+            <div class="section-row">
+              <span class="section-label">经验复用审批</span>
+              <span class="section-hint">保存后才会写入项目技能库</span>
             </div>
-
-            <form id="conversation-settings-form" class="settings-form compact-settings-form">
-              <section class="bulk-skill-card">
-                <div class="section-row">
-                  <span class="section-label">批量 Skill</span>
-                  <span class="section-hint">把同一个 skill 批量分配给当前勾选的角色</span>
-                </div>
-                <label>
-                  <span>选择 Skill</span>
-                  <select id="bulk-skill-select"></select>
-                </label>
-                <div class="button-row compact-button-row">
-                  <button id="apply-bulk-skill-button" class="ghost-button" type="button">批量分配给已选角色</button>
-                  <button id="clear-bulk-skill-button" class="ghost-button" type="button">清空选择</button>
-                </div>
-              </section>
-
-              <section class="bulk-skill-card feishu-binding-card">
-                <div class="section-row">
-                  <span class="section-label">飞书接入</span>
-                  <span class="section-hint">从已知飞书聊天里选择并绑定</span>
-                </div>
-                <label>
-                  <span>已知飞书聊天</span>
-                  <select id="feishu-chat-select">
-                    <option value="">正在加载...</option>
-                  </select>
-                </label>
-                <label>
-                  <span>手动输入 chat_id</span>
-                  <input id="feishu-chat-id-input" type="text" autocomplete="off" placeholder="选不到时再手动输入，例如 oc_xxx" />
-                </label>
-                <p id="feishu-binding-status" class="section-hint">可从已知飞书聊天里选择，也可手动输入 chat_id。</p>
-                <div class="button-row compact-button-row">
-                  <button id="bind-feishu-chat-button" class="ghost-button" type="button">绑定到当前会话</button>
-                </div>
-              </section>
-
-              <div class="conversation-agent-section">
-                <div class="section-row">
-                  <span class="section-label">参与角色</span>
-                  <span class="section-hint">至少 1 个</span>
-                </div>
-                <div id="conversation-agent-options" class="option-list"></div>
-              </div>
-
-              <button id="save-conversation-button" type="submit">保存选择</button>
-            </form>
-          </section>
-        </aside>
-      </main>
-    </div>
-
-    <button
-      id="session-goal-edge-button"
-      class="session-goal-edge-button"
-      type="button"
-      aria-expanded="false"
-      aria-controls="session-goal-drawer"
-      title="管理会话目标"
-    >目标 ▸</button>
-
-    <aside id="session-goal-drawer" class="session-goal-drawer hidden" aria-hidden="true">
-      <section class="session-goal-drawer-panel" role="dialog" aria-labelledby="session-goal-drawer-title">
-        <div class="panel-header">
-          <div>
-            <p class="eyebrow">Session Goal</p>
-            <h2 id="session-goal-drawer-title">会话目标</h2>
+            <p class="muted small-note">自动或手动提炼出的经验会先停在这里，确认无误后再保存为项目 Skill。</p>
           </div>
-          <button id="session-goal-close-button" class="ghost-button" type="button">收起</button>
+          <div id="skill-draft-list" class="conversation-digest-list"></div>
         </div>
 
-        <p id="session-goal-drawer-status" class="session-goal-status-badge active">当前没有会话目标</p>
-        <div id="session-goal-details" class="session-goal-detail-list"></div>
-
-        <div id="session-goal-progress-card" class="session-goal-progress-card hidden">
-          <div class="section-row">
-            <span class="section-label">进度</span>
-            <span id="session-goal-progress-summary" class="section-hint">0/0</span>
-          </div>
-          <div class="session-goal-progress-track" aria-hidden="true">
-            <span id="session-goal-progress-fill" class="session-goal-progress-fill"></span>
-          </div>
-          <ul id="session-goal-checklist-preview" class="session-goal-checklist-preview"></ul>
-        </div>
-
-        <div id="session-goal-proposal-card" class="session-goal-proposal-card hidden">
-          <div class="section-row">
-            <span class="section-label">Agent 提议</span>
-            <span class="section-hint">需要用户确认才会生效</span>
-          </div>
-          <p id="session-goal-proposal-status" class="session-goal-proposal-status"></p>
-          <div id="session-goal-proposal-details" class="session-goal-detail-list compact-detail-list"></div>
+        <div role="tabpanel" id="agent-context-drawer" class="drawer-panel" aria-labelledby="tab-context" hidden>
+          <p id="agent-context-status" class="session-goal-status-badge active">选择一条 AI 消息查看上下文快照</p>
+          <div id="agent-context-summary" class="agent-context-summary"></div>
           <div class="button-row compact-button-row">
-            <button id="session-goal-accept-proposal-button" type="button">确认提议</button>
-            <button id="session-goal-dismiss-proposal-button" class="ghost-button" type="button">忽略</button>
+            <button id="agent-context-export-button" class="secondary-button" type="button">导出 Markdown</button>
           </div>
+          <div id="agent-context-section-list" class="agent-context-section-list"></div>
         </div>
-
-        <form id="session-goal-form" class="settings-form compact-settings-form">
-          <label>
-            <span>目标内容</span>
-            <textarea
-              id="session-goal-objective"
-              rows="5"
-              maxlength="2000"
-              placeholder="例如：完成 /goal 管理面板并通过检查"
-            ></textarea>
-          </label>
-          <label>
-            <span>子任务 checklist</span>
-            <div class="button-row compact-button-row">
-              <button id="session-goal-checklist-preset-button" class="ghost-button" type="button">填入 Trellis 长任务预设</button>
-            </div>
-            <textarea
-              id="session-goal-checklist"
-              rows="6"
-              maxlength="4000"
-              placeholder="每行一项；支持 [ ] 待办、[~] 进行中、[x] 完成"
-            ></textarea>
-          </label>
-          <div class="button-row compact-button-row">
-            <button id="session-goal-save-button" type="submit">创建目标</button>
-          </div>
-        </form>
-
-        <div class="session-goal-action-card">
-          <div class="section-row">
-            <span class="section-label">生命周期</span>
-            <span class="section-hint">也可以继续使用 /goal 快捷命令</span>
-          </div>
-          <div class="button-row compact-button-row">
-            <button id="session-goal-pause-button" class="ghost-button" type="button">暂停</button>
-            <button id="session-goal-resume-button" class="ghost-button" type="button">恢复</button>
-            <button id="session-goal-complete-button" class="ghost-button" type="button">完成</button>
-            <button id="session-goal-clear-button" class="ghost-button danger" type="button">清除</button>
-          </div>
-        </div>
-      </section>
+      </div>
     </aside>
-
-    <button
-      id="skill-draft-toggle-button"
-      class="secondary-button skill-draft-floating-button hidden"
-      type="button"
-      aria-expanded="false"
-      aria-controls="skill-draft-drawer"
-    >Skill 草稿</button>
-
-    <aside id="conversation-digest-drawer" class="session-goal-drawer conversation-digest-drawer hidden" aria-hidden="true">
-      <section class="session-goal-drawer-panel" role="dialog" aria-labelledby="conversation-digest-drawer-title">
-        <div class="panel-header">
-          <div>
-            <p class="eyebrow">Conversation Digest</p>
-            <h2 id="conversation-digest-drawer-title">会话摘要</h2>
-          </div>
-          <button id="conversation-digest-close-button" class="ghost-button" type="button">收起</button>
-        </div>
-
-        <p id="conversation-digest-status" class="session-goal-status-badge active">当前没有会话摘要</p>
-        <ul class="conversation-digest-help">
-          <li><strong>详细摘要</strong>：/digest 生成，直接总结一段近期原始聊天内容。</li>
-          <li><strong>压缩总摘要</strong>：/digest compact 生成，把多条旧详细摘要合并成一条长期概览。近期原文仍优先。</li>
-        </ul>
-        <div class="session-goal-action-card">
-          <div class="section-row">
-            <span class="section-label">摘要记忆</span>
-            <span class="section-hint">详细摘要记录近期，压缩总摘要保留历史</span>
-          </div>
-          <div class="button-row compact-button-row">
-            <button id="conversation-digest-create-button" type="button">生成详细摘要</button>
-            <button id="conversation-digest-compact-button" class="secondary-button" type="button">压缩旧详细摘要</button>
-          </div>
-        </div>
-        <div id="conversation-digest-list" class="conversation-digest-list"></div>
-      </section>
-    </aside>
-
-    <aside id="skill-draft-drawer" class="session-goal-drawer skill-draft-drawer hidden" aria-hidden="true">
-      <section class="session-goal-drawer-panel" role="dialog" aria-labelledby="skill-draft-drawer-title">
-        <div class="panel-header">
-          <div>
-            <p class="eyebrow">Skill Drafts</p>
-            <h2 id="skill-draft-drawer-title">Skill 草稿</h2>
-          </div>
-          <button id="skill-draft-close-button" class="ghost-button" type="button">收起</button>
-        </div>
-
-        <p id="skill-draft-status" class="session-goal-status-badge active">当前没有待确认草稿</p>
-        <div class="session-goal-action-card">
-          <div class="section-row">
-            <span class="section-label">经验复用审批</span>
-            <span class="section-hint">保存后才会写入项目技能库</span>
-          </div>
-          <p class="muted small-note">自动或手动提炼出的经验会先停在这里，确认无误后再保存为项目 Skill。</p>
-        </div>
-        <div id="skill-draft-list" class="conversation-digest-list"></div>
-      </section>
-    </aside>
-
-    <aside id="summary-memory-drawer" class="session-goal-drawer summary-memory-drawer hidden" aria-hidden="true">
-      <section class="session-goal-drawer-panel" role="dialog" aria-labelledby="summary-memory-drawer-title">
-        <div class="panel-header">
-          <div>
-            <p class="eyebrow">Summary Memory</p>
-            <h2 id="summary-memory-drawer-title">长期经验搜索</h2>
-          </div>
-          <button id="summary-memory-close-button" class="ghost-button" type="button">收起</button>
-        </div>
-
-        <p id="summary-memory-status" class="session-goal-status-badge active">输入关键词搜索跨会话 / 跨任务摘要段</p>
-        <form id="summary-memory-form" class="settings-form compact-settings-form summary-memory-form">
-          <label>
-            <span>关键词</span>
-            <input id="summary-memory-query" type="search" maxlength="240" placeholder="例如：digest compaction、测试被环境变量绊倒" />
-          </label>
-          <label>
-            <span>任务筛选（可选）</span>
-            <input id="summary-memory-task" type="search" maxlength="120" placeholder="例如：05-03-conversation-digest" />
-          </label>
-          <label class="summary-memory-checkbox-row">
-            <input id="summary-memory-current-task" type="checkbox" />
-            <span>仅当前 Trellis 任务</span>
-          </label>
-          <label>
-            <span>会话标题筛选（可选）</span>
-            <input id="summary-memory-conversation-title" type="search" maxlength="120" placeholder="例如：记忆系统调研、BetterGI 部署" />
-          </label>
-          <div class="summary-memory-date-row">
-            <label>
-              <span>开始日期（可选）</span>
-              <input id="summary-memory-updated-after" type="date" />
-            </label>
-            <label>
-              <span>结束日期（可选）</span>
-              <input id="summary-memory-updated-before" type="date" />
-            </label>
-          </div>
-          <label>
-            <span>摘要类型</span>
-            <select id="summary-memory-kind">
-              <option value="">全部</option>
-              <option value="entry">详细摘要</option>
-              <option value="rollup">压缩总摘要</option>
-            </select>
-          </label>
-          <label class="summary-memory-checkbox-row">
-            <input id="summary-memory-include-current" type="checkbox" />
-            <span>包含当前会话</span>
-          </label>
-          <div class="button-row compact-button-row">
-            <button id="summary-memory-search-button" type="submit">搜索记忆</button>
-            <button id="summary-memory-recent-button" class="ghost-button" type="button" title="显示最近同步的长期经验摘要段">最新记忆</button>
-            <button id="summary-memory-backfill-button" class="ghost-button" type="button" title="把所有会话里的旧 metadata 摘要同步进长期经验搜索">回填全部旧摘要</button>
-          </div>
-        </form>
-        <div id="summary-memory-results" class="conversation-digest-list summary-memory-results"></div>
-      </section>
-    </aside>
-
-    <aside id="agent-context-drawer" class="session-goal-drawer agent-context-drawer hidden" aria-hidden="true">
-      <section class="session-goal-drawer-panel" role="dialog" aria-labelledby="agent-context-drawer-title">
-        <div class="panel-header">
-          <div>
-            <p class="eyebrow">Agent Context Inspector</p>
-            <h2 id="agent-context-drawer-title">Agent 上下文</h2>
-          </div>
-          <button id="agent-context-close-button" class="ghost-button" type="button">收起</button>
-        </div>
-
-        <p id="agent-context-status" class="session-goal-status-badge active">选择一条 AI 消息查看上下文快照</p>
-        <div id="agent-context-summary" class="agent-context-summary"></div>
-        <div class="button-row compact-button-row">
-          <button id="agent-context-export-button" class="secondary-button" type="button">导出 Markdown</button>
-        </div>
-        <div id="agent-context-section-list" class="agent-context-section-list"></div>
-      </section>
-    </aside>
-
-    <div id="new-conversation-backdrop" class="new-conversation-backdrop hidden" aria-hidden="true">
-      <section
-        id="new-conversation-dialog"
-        class="new-conversation-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="new-conversation-dialog-title"
-      >
-        <form id="new-conversation-form" class="new-conversation-form">
-          <header class="new-conversation-header">
-            <div>
-              <p class="eyebrow">Conversation setup</p>
-              <h2 id="new-conversation-dialog-title">新建聊天</h2>
-              <p class="muted">确认后才会创建会话并写入最终参与者。</p>
-            </div>
-            <button id="new-conversation-close" class="new-conversation-close ghost-button" type="button" aria-label="关闭新建聊天">×</button>
-          </header>
-
-          <div class="new-conversation-body">
-            <section class="new-conversation-basics" aria-labelledby="new-conversation-basics-title">
-              <div>
-                <p class="eyebrow">基本信息</p>
-                <h3 id="new-conversation-basics-title">房间设置</h3>
-              </div>
-              <label>
-                <span>房间标题</span>
-                <input id="new-conversation-title" name="title" type="text" maxlength="80" placeholder="例如：模型族协作讨论" />
-              </label>
-              <label>
-                <span>会话类型</span>
-                <select id="new-conversation-type" name="type">
-                  <!-- dynamically populated from /api/bootstrap -->
-                </select>
-              </label>
-              <label id="new-conversation-skill-field" class="hidden">
-                <span>目标 Skill</span>
-                <select id="new-conversation-skill" name="skillId">
-                  <option value="">-- 选择目标 Skill --</option>
-                </select>
-              </label>
-              <div class="new-conversation-snapshot-note">
-                <strong>创建快照</strong>
-                <p>打开时只读取一次当前角色状态。之后即使默认设置发生变化，本表单也不会悄悄改选。</p>
-              </div>
-            </section>
-
-            <section class="new-conversation-participants" aria-labelledby="new-conversation-participants-title">
-              <div class="new-conversation-participants-heading">
-                <div>
-                  <p class="eyebrow">Roster</p>
-                  <h3 id="new-conversation-participants-title">选择参与者</h3>
-                </div>
-                <button id="new-conversation-clear-selection" class="ghost-button" type="button">清空选择</button>
-              </div>
-              <p id="new-conversation-policy-note" class="new-conversation-policy-note"></p>
-
-              <section class="new-conversation-role-group" aria-labelledby="new-conversation-family-title">
-                <h4 id="new-conversation-family-title">系统模型族</h4>
-                <div id="new-conversation-family-participants" class="new-conversation-role-grid"></div>
-              </section>
-
-              <section id="new-conversation-custom-group" class="new-conversation-role-group" aria-labelledby="new-conversation-custom-title">
-                <h4 id="new-conversation-custom-title">自定义角色</h4>
-                <div id="new-conversation-custom-participants" class="new-conversation-role-grid"></div>
-              </section>
-            </section>
-          </div>
-
-          <p id="new-conversation-error" class="new-conversation-error hidden" role="status" aria-live="polite"></p>
-          <footer class="new-conversation-footer">
-            <p class="new-conversation-selection-summary">已选择 <strong id="new-conversation-selection-count">0</strong> 位</p>
-            <div class="new-conversation-actions">
-              <button id="new-conversation-cancel" class="ghost-button" type="button">取消</button>
-              <button id="new-conversation-submit" type="submit">创建聊天</button>
-            </div>
-          </footer>
-        </form>
-      </section>
-    </div>
 
     <div id="toast" class="toast hidden"></div>
+      <div id="new-conversation-backdrop" class="new-conversation-backdrop hidden" aria-hidden="true">
+          <section
+            id="new-conversation-dialog"
+            class="new-conversation-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="new-conversation-dialog-title"
+          >
+            <form id="new-conversation-form" class="new-conversation-form">
+              <header class="new-conversation-header">
+                <div>
+                  <p class="eyebrow">Conversation setup</p>
+                  <h2 id="new-conversation-dialog-title">新建聊天</h2>
+                  <p class="muted">确认后才会创建会话并写入最终参与者。</p>
+                </div>
+                <button id="new-conversation-close" class="new-conversation-close ghost-button" type="button" aria-label="关闭新建聊天">×</button>
+              </header>
+
+              <div class="new-conversation-body">
+                <section class="new-conversation-basics" aria-labelledby="new-conversation-basics-title">
+                  <div>
+                    <p class="eyebrow">基本信息</p>
+                    <h3 id="new-conversation-basics-title">房间设置</h3>
+                  </div>
+                  <label>
+                    <span>房间标题</span>
+                    <input id="new-conversation-title" name="title" type="text" maxlength="80" placeholder="例如：模型族协作讨论" />
+                  </label>
+                  <label>
+                    <span>会话类型</span>
+                    <select id="new-conversation-type" name="type">
+                      <!-- dynamically populated from /api/bootstrap -->
+                    </select>
+                  </label>
+                  <div class="new-conversation-snapshot-note">
+                    <strong>创建快照</strong>
+                    <p>打开时只读取一次当前角色状态。之后即使默认设置发生变化，本表单也不会悄悄改选。</p>
+                  </div>
+                </section>
+
+                <section class="new-conversation-participants" aria-labelledby="new-conversation-participants-title">
+                  <div class="new-conversation-participants-heading">
+                    <div>
+                      <p class="eyebrow">Roster</p>
+                      <h3 id="new-conversation-participants-title">选择参与者</h3>
+                    </div>
+                    <button id="new-conversation-clear-selection" class="ghost-button" type="button">清空选择</button>
+                  </div>
+                  <p id="new-conversation-policy-note" class="new-conversation-policy-note"></p>
+
+                  <section class="new-conversation-role-group" aria-labelledby="new-conversation-family-title">
+                    <h4 id="new-conversation-family-title">系统模型族</h4>
+                    <div id="new-conversation-family-participants" class="new-conversation-role-grid"></div>
+                  </section>
+
+                  <section id="new-conversation-custom-group" class="new-conversation-role-group" aria-labelledby="new-conversation-custom-title">
+                    <h4 id="new-conversation-custom-title">自定义角色</h4>
+                    <div id="new-conversation-custom-participants" class="new-conversation-role-grid"></div>
+                  </section>
+                </section>
+              </div>
+
+              <p id="new-conversation-error" class="new-conversation-error hidden" role="status" aria-live="polite"></p>
+              <footer class="new-conversation-footer">
+                <p class="new-conversation-selection-summary">已选择 <strong id="new-conversation-selection-count">0</strong> 位</p>
+                <div class="new-conversation-actions">
+                  <button id="new-conversation-cancel" class="ghost-button" type="button">取消</button>
+                  <button id="new-conversation-submit" type="submit">创建聊天</button>
+                </div>
+              </footer>
+            </form>
+          </section>
+        </div>
   </body>
 </html>

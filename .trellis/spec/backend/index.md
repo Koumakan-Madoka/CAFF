@@ -13,7 +13,6 @@ backend domain services.
 - Conversation digest API, metadata, prompt, and UI contracts (`conversation-digest.md`)
 - Digest-to-skill draft extraction and confirmation (`../runtime/skill-extraction.md`)
 - Cross-conversation summary segment memory search (`summary-memory.md`)
-- Skill testing framework (skill-test-controller.ts)
 - Skill management and configuration (skills-controller.ts)
 
 ## Pre-Development Checklist
@@ -27,7 +26,7 @@ backend domain services.
       prompt context, sandbox env vars, or tool bridge behavior
 - [ ] Read `../guides/cross-layer-thinking-guide.md` when data crosses backend,
       runtime, and UI boundaries
-- [ ] Read `../skills/index.md` if working with skill testing, skill management, or skill loading
+- [ ] Read `../skills/index.md` if working with skill management or skill loading
 
 ## Documents
 
@@ -39,4 +38,4 @@ backend domain services.
 - `conversation-digest.md`: `/digest` API, metadata, prompt, SSE, and frontend panel contracts
 - `../runtime/skill-extraction.md`: `/digest extract-skill` and `/skill-drafts` contracts
 - `summary-memory.md`: searchable digest segment ledger and `/api/memory/search` contracts
-- See `../skills/` for skill-related backend patterns (skill-test-controller.ts, skills-controller.ts)
+- See `../skills/` for skill-related backend patterns (skills-controller.ts)

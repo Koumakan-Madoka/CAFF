@@ -7,11 +7,11 @@ const {
   resolveMessageContent,
   searchMemory,
   searchMessages,
+  sendPublic,
   shouldEchoContent,
   suggestGoal,
   updateGoalChecklist,
   updateMemory,
-  withSkillTestScope,
   writeExperience,
 } = require('../../build/lib/agent-chat-tools');
 
@@ -41,6 +41,47 @@ test('send-public tool results are compact by default', () => {
     },
   });
   assert.equal('content' in result.message, false);
+});
+
+test('send-public forwards no-finalize when requested', async (t) => {
+  let requestUrl = '';
+  let requestOptions = null;
+
+  t.mock.method(global, 'fetch', async (url, options) => {
+    requestUrl = String(url);
+    requestOptions = options;
+
+    return {
+      ok: true,
+      async text() {
+        return JSON.stringify({ ok: true, visibility: 'public', message: { id: 'message-public-no-finalize' } });
+      },
+    };
+  });
+
+  await sendPublic(
+    {
+      apiUrl: 'http://127.0.0.1:3100',
+      invocationId: 'inv-public-no-finalize',
+      callbackToken: 'token-public-no-finalize',
+    },
+    {
+      content: 'Progress update before continuing work',
+      mode: 'append',
+      'no-finalize': true,
+    }
+  );
+
+  assert.equal(requestUrl, 'http://127.0.0.1:3100/api/agent-tools/post-message');
+  assert.equal(requestOptions.method, 'POST');
+  assert.deepEqual(JSON.parse(String(requestOptions.body)), {
+    invocationId: 'inv-public-no-finalize',
+    callbackToken: 'token-public-no-finalize',
+    visibility: 'public',
+    content: 'Progress update before continuing work',
+    mode: 'append',
+    noFinalize: true,
+  });
 });
 
 test('send-private tool results are compact by default', () => {
@@ -118,27 +159,6 @@ test('memory tool results stay fully visible by default', () => {
   assert.equal(result, original);
 });
 
-test('agent-chat-tools attaches skill-test run and case scope when present', () => {
-  assert.deepEqual(
-    withSkillTestScope(
-      {
-        skillTestRunId: 'run-1',
-        skillTestCaseId: 'case-1',
-      },
-      {
-        invocationId: 'inv-1',
-        callbackToken: 'token-1',
-      }
-    ),
-    {
-      invocationId: 'inv-1',
-      callbackToken: 'token-1',
-      skillTestRunId: 'run-1',
-      skillTestCaseId: 'case-1',
-    }
-  );
-});
-
 test('search-memory forwards bounded long-term memory search payload', async (t) => {
   let requestUrl = '';
   let requestOptions = null;
@@ -160,8 +180,6 @@ test('search-memory forwards bounded long-term memory search payload', async (t)
       apiUrl: 'http://127.0.0.1:3100',
       invocationId: 'inv-search-memory',
       callbackToken: 'token-search-memory',
-      skillTestRunId: 'run-search-memory',
-      skillTestCaseId: 'case-search-memory',
     },
     {
       query: 'conversation digest regression',
@@ -190,8 +208,6 @@ test('search-memory forwards bounded long-term memory search payload', async (t)
     conversationTitle: 'Digest Planning Notes',
     updatedAfter: '2026-05-01',
     updatedBefore: '2026-05-04',
-    skillTestRunId: 'run-search-memory',
-    skillTestCaseId: 'case-search-memory',
   });
 });
 
@@ -254,8 +270,6 @@ test('write-experience forwards bounded draft payload', async (t) => {
       apiUrl: 'http://127.0.0.1:3100',
       invocationId: 'inv-experience',
       callbackToken: 'token-experience',
-      skillTestRunId: 'run-experience',
-      skillTestCaseId: 'case-experience',
     },
     {
       title: 'Record digest experience safely',
@@ -275,8 +289,6 @@ test('write-experience forwards bounded draft payload', async (t) => {
   assert.deepEqual(JSON.parse(String(requestOptions.body)), {
     invocationId: 'inv-experience',
     callbackToken: 'token-experience',
-    skillTestRunId: 'run-experience',
-    skillTestCaseId: 'case-experience',
     title: 'Record digest experience safely',
     category: 'pattern',
     scenario: 'When a reusable lesson appears during tool use.',
@@ -341,8 +353,6 @@ test('search-messages forwards speaker filters without requiring a query', async
       apiUrl: 'http://127.0.0.1:3100',
       invocationId: 'inv-search-filters',
       callbackToken: 'token-search-filters',
-      skillTestRunId: 'run-search-scope',
-      skillTestCaseId: 'case-search-scope',
     },
     {
       speaker: 'doro',
@@ -359,8 +369,6 @@ test('search-messages forwards speaker filters without requiring a query', async
     speaker: 'doro',
     agentId: 'agent-critic',
     limit: 3,
-    skillTestRunId: 'run-search-scope',
-    skillTestCaseId: 'case-search-scope',
   });
 });
 
@@ -385,8 +393,6 @@ test('suggest-goal forwards a pending goal proposal payload', async (t) => {
       apiUrl: 'http://127.0.0.1:3100',
       invocationId: 'inv-goal-proposal',
       callbackToken: 'token-goal-proposal',
-      skillTestRunId: 'run-goal-scope',
-      skillTestCaseId: 'case-goal-scope',
     },
     {
       action: 'complete',
@@ -401,8 +407,6 @@ test('suggest-goal forwards a pending goal proposal payload', async (t) => {
     callbackToken: 'token-goal-proposal',
     action: 'complete',
     reason: 'All checks passed',
-    skillTestRunId: 'run-goal-scope',
-    skillTestCaseId: 'case-goal-scope',
   });
 });
 
@@ -429,8 +433,6 @@ test('update-goal-checklist forwards checklist progress payload from stdin', asy
       apiUrl: 'http://127.0.0.1:3100',
       invocationId: 'inv-goal-checklist',
       callbackToken: 'token-goal-checklist',
-      skillTestRunId: 'run-goal-checklist',
-      skillTestCaseId: 'case-goal-checklist',
     },
     { 'content-stdin': true },
     { stream }
@@ -442,8 +444,6 @@ test('update-goal-checklist forwards checklist progress payload from stdin', asy
     invocationId: 'inv-goal-checklist',
     callbackToken: 'token-goal-checklist',
     checklistText: '[x] Add API\n[~] Wire UI\n[ ] Validate',
-    skillTestRunId: 'run-goal-checklist',
-    skillTestCaseId: 'case-goal-checklist',
   });
 });
 

@@ -130,41 +130,22 @@ test('custom modes and games require their own explicit player selection', () =>
   ]);
 });
 
-test('skill test design keeps selected current roles and adds only skill metadata', () => {
+test('retired skill_test_design id behaves like any custom mode with no special-casing', () => {
   const dialog = loadDialogModule();
   const snapshot = dialog.snapshotRoles([
     role({ id: 'role-family-gpt', name: 'GPT' }),
     role({ id: 'role-family-claude', name: 'Claude', modelFamily: 'claude' }),
-    role({ id: 'custom-reviewer', name: '架构评审', roleKind: 'custom', modelFamily: null }),
   ]);
-
-  assert.throws(
-    () => dialog.buildConversationRequest({
-      title: '',
-      type: 'skill_test_design',
-      skillId: 'tdd',
-      snapshot,
-      selectedRoleIds: new Set(['role-family-gpt', 'role-family-claude']),
-    }),
-    (error) => error && error.code === 'skill_test_participant_count_invalid'
-  );
 
   const request = dialog.buildConversationRequest({
-    title: '',
+    title: '自定义同名模式',
     type: 'skill_test_design',
-    skillId: 'tdd',
     snapshot,
-    selectedRoleIds: new Set(['role-family-gpt', 'role-family-claude', 'custom-reviewer']),
+    selectedRoleIds: new Set(['role-family-gpt']),
   });
 
-  assert.deepEqual(Array.from(request.participants, (item) => item.agentId), [
-    'role-family-gpt',
-    'role-family-claude',
-    'custom-reviewer',
-  ]);
-  assert.equal(request.skillId, 'tdd');
-  assert.equal(request.metadata.skillTestDesign.skillId, 'tdd');
-  assert.equal(JSON.stringify(request).includes('agent-strategist'), false);
-  assert.equal(JSON.stringify(request).includes('agent-critic'), false);
-  assert.equal(JSON.stringify(request).includes('agent-builder'), false);
+  assert.deepEqual(Array.from(request.participants, (item) => item.agentId), ['role-family-gpt']);
+  assert.equal(request.skillId, undefined);
+  assert.equal(request.metadata, undefined);
+  assert.equal(JSON.stringify(request).includes('skillTestDesign'), false);
 });

@@ -4,11 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>CAFF 角色与模型管理</title>
+    <script src="/shared/theme.js"></script>
     <link rel="stylesheet" href="/styles.css" />
+    <script defer src="/shared/icons.js"></script>
     <script defer src="/shared/api-client.js"></script>
     <script defer src="/shared/model-options.js"></script>
     <script defer src="/shared/avatar.js"></script>
     <script defer src="/shared/toast.js"></script>
+    <script defer src="/shared/management-list.js"></script>
     <script defer src="/personas/management-utils.js"></script>
     <script defer src="/personas/role-editor.js"></script>
     <script defer src="/personas/role-management.js"></script>
@@ -16,61 +19,69 @@
     <script defer src="/personas/provider-management.js"></script>
     <script defer src="/personas.js"></script>
   </head>
-  <body class="role-management-page">
-    <div class="ambient ambient-a"></div>
-    <div class="ambient ambient-b"></div>
-    <div class="shell management-shell">
-      <header class="topbar management-topbar">
-        <div>
-          <p class="eyebrow">CAFF Role &amp; Model Manager</p>
-          <h1>角色与模型管理</h1>
-          <p class="subtitle">模型供应商维护连接目录；角色只消费能力感知的已配置模型。</p>
-        </div>
-        <div class="topbar-actions">
-          <nav class="topbar-nav" aria-label="Primary">
-            <a class="topbar-link" href="/">聊天工作台</a>
-            <a class="topbar-link active" href="/personas.html">角色与模型</a>
-            <a class="topbar-link" href="/skills.html">Skill 管理</a>
-            <a class="topbar-link" href="/projects.html">项目管理</a>
-            <a class="topbar-link" href="/metrics.html">评测报表</a>
-            <a class="topbar-link" href="/eval-cases.html">错题本</a>
-          </nav>
-        </div>
-      </header>
+  <body class="management-app" data-page="personas">
+    <div class="management-shell">
+      <nav class="rail" aria-label="主导航">
+        <a class="rail-link" href="/" title="聊天工作台" aria-label="聊天工作台"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-chat"></use></svg></a>
+        <a class="rail-link" aria-current="page" href="/personas.html" title="人格管理" aria-label="人格管理"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-users"></use></svg></a>
+        <a class="rail-link" href="/skills.html" title="Skill 管理" aria-label="Skill 管理"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-puzzle"></use></svg></a>
+        <a class="rail-link" href="/projects.html" title="项目管理" aria-label="项目管理"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-folder"></use></svg></a>
+        <a class="rail-link" href="/metrics.html" title="评测报表" aria-label="评测报表"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-bar-chart"></use></svg></a>
+        <span class="spacer"></span>
+        <button class="rail-button theme-toggle" type="button" data-theme-toggle aria-pressed="false" aria-label="切换为深色主题" title="切换为深色主题">
+          <svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-moon"></use></svg>
+        </button>
+      </nav>
 
-      <div class="management-view-switch" role="tablist" aria-label="管理范围">
-        <button id="show-role-management" type="button" role="tab" aria-controls="role-management-view" aria-selected="true">角色管理</button>
-        <button id="show-provider-management" class="ghost-button" type="button" role="tab" aria-controls="provider-management-view" aria-selected="false">模型供应商</button>
+      <div class="management-main">
+        <header class="management-header">
+          <div class="management-title">
+            <p class="eyebrow">CAFF Role &amp; Model Manager</p>
+            <h1>角色与模型管理</h1>
+            <p class="subtitle">模型供应商维护连接目录；角色只消费能力感知的已配置模型。</p>
+          </div>
+          <div class="management-view-switch" role="tablist" aria-label="管理范围">
+            <button id="show-role-management" type="button" role="tab" aria-controls="role-management-view" aria-selected="true">角色管理</button>
+            <button id="show-provider-management" class="ghost-button" type="button" role="tab" aria-controls="provider-management-view" aria-selected="false">模型供应商</button>
+          </div>
+          <button id="refresh-button" class="management-icon-button" type="button" title="刷新" aria-label="刷新"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-refresh"></use></svg></button>
+        </header>
+
+        <main class="management-content">
+          <section id="role-management-view" class="management-view" role="tabpanel">
+            <aside class="management-pane management-index" aria-label="角色目录">
+              <div class="panel-header">
+                <div>
+                  <p class="eyebrow">Role Directory</p>
+                  <h2>角色目录</h2>
+                  <p>family 角色锁定系统身份；custom 继续保留 Persona、Skills 与跨族 Profiles。</p>
+                </div>
+                <button id="refresh-roles" class="ghost-button" type="button">刷新角色</button>
+              </div>
+              <section class="management-group"><div class="management-group-title"><h3>系统模型族</h3><span id="family-role-count">7 个固定身份</span></div><ul id="family-role-list" class="management-list"></ul></section>
+              <section class="management-group"><div class="management-group-title"><h3>自定义角色</h3><span id="custom-role-count">0 个自定义角色</span></div><button id="new-custom-role" class="management-wide-action" type="button">新建自定义角色</button><ul id="custom-role-list" class="management-list"></ul></section>
+            </aside>
+            <section class="management-pane management-detail" aria-live="polite"><div id="role-detail"></div></section>
+          </section>
+
+          <section id="provider-management-view" class="management-view hidden" role="tabpanel">
+            <aside class="management-pane management-index" aria-label="模型供应商目录">
+              <div class="panel-header">
+                <div>
+                  <p class="eyebrow">Configured Model Catalog</p>
+                  <h2>模型供应商</h2>
+                  <p>凭据只显示配置状态；已有密钥和 env/command reference 永不回传浏览器。</p>
+                </div>
+                <div class="button-row"><button id="refresh-providers" class="ghost-button" type="button">刷新状态</button><button id="add-provider" type="button">添加供应商</button></div>
+              </div>
+              <div id="provider-local-admin-banner" class="management-warning hidden"><strong>当前部署只读</strong><p>Provider 管理首版只允许本机 loopback local-admin。聊天与角色目录仍可使用。</p></div>
+              <section class="management-group"><div class="management-group-title"><h3>已配置供应商</h3><span id="provider-count">0 个连接</span></div><ul id="provider-list" class="management-list"></ul></section>
+              <p class="management-note"><strong>写入边界</strong><br />只修改 runtime 解析到的 agentDir/models.json；runtime registry 与环境默认保持只读。</p>
+            </aside>
+            <section class="management-pane management-detail" aria-live="polite"><div id="provider-detail"></div></section>
+          </section>
+        </main>
       </div>
-
-      <section id="role-management-view" class="management-view" role="tabpanel">
-        <div class="management-page-header">
-          <div><p class="eyebrow">Role Directory</p><h2>系统模型族与自定义角色</h2><p>family 角色锁定系统身份；custom 继续保留 Persona、Skills 与跨族 Profiles。</p></div>
-          <button id="refresh-roles" class="ghost-button" type="button">刷新角色</button>
-        </div>
-        <main class="management-layout">
-          <aside class="panel management-index" aria-label="角色目录">
-            <section class="management-group"><div class="management-group-title"><h3>系统模型族</h3><span id="family-role-count">7 个固定身份</span></div><ul id="family-role-list" class="management-list"></ul></section>
-            <section class="management-group"><div class="management-group-title"><h3>自定义角色</h3><span id="custom-role-count">0 个自定义角色</span></div><button id="new-custom-role" class="ghost-button management-wide-action" type="button">新建自定义角色</button><ul id="custom-role-list" class="management-list"></ul></section>
-          </aside>
-          <section class="panel management-detail" aria-live="polite"><div id="role-detail"></div></section>
-        </main>
-      </section>
-
-      <section id="provider-management-view" class="management-view hidden" role="tabpanel">
-        <div class="management-page-header">
-          <div><p class="eyebrow">Configured Model Catalog</p><h2>模型供应商</h2><p>凭据只显示配置状态；已有密钥和 env/command reference 永不回传浏览器。</p></div>
-          <div class="button-row"><button id="refresh-providers" class="ghost-button" type="button">刷新状态</button><button id="add-provider" type="button">添加供应商</button></div>
-        </div>
-        <div id="provider-local-admin-banner" class="management-warning hidden"><strong>当前部署只读</strong><p>Provider 管理首版只允许本机 loopback local-admin。聊天与角色目录仍可使用。</p></div>
-        <main class="management-layout">
-          <aside class="panel management-index" aria-label="模型供应商目录">
-            <section class="management-group"><div class="management-group-title"><h3>已配置供应商</h3><span id="provider-count">0 个连接</span></div><ul id="provider-list" class="management-list"></ul></section>
-            <p class="management-note"><strong>写入边界</strong><br />只修改 runtime 解析到的 agentDir/models.json；runtime registry 与环境默认保持只读。</p>
-          </aside>
-          <section class="panel management-detail" aria-live="polite"><div id="provider-detail"></div></section>
-        </main>
-      </section>
     </div>
     <div id="toast" class="toast hidden" role="status"></div>
   </body>

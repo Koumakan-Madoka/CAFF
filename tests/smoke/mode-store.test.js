@@ -18,19 +18,25 @@ function createTestDb() {
 
 // ─── CRUD ────────────────────────────────────────────────────
 
-test('ModeStore: seeds 4 builtin modes on construction', () => {
+test('ModeStore: seeds 3 builtin modes on construction', () => {
   const db = createTestDb();
   const store = new ModeStore(db);
 
   const modes = store.list();
-  assert.equal(modes.length, 4);
+  assert.equal(modes.length, 3);
 
   const ids = modes.map((mode) => mode.id).sort();
-  assert.deepEqual(ids, ['skill_test_design', 'standard', 'werewolf', 'who_is_undercover']);
+  assert.deepEqual(ids, ['standard', 'werewolf', 'who_is_undercover']);
 
-  const skillTestDesignMode = store.get('skill_test_design');
-  assert.deepEqual(skillTestDesignMode.skillIds, ['skill-test-design-workbench']);
-  assert.equal(skillTestDesignMode.loadingStrategy, 'dynamic');
+  assert.ok(modes.every((mode) => mode.skillIds.includes('skill-creator')));
+
+  const standardMode = store.get('standard');
+  assert.deepEqual(standardMode.skillIds, ['skill-creator']);
+  assert.equal(standardMode.loadingStrategy, 'dynamic');
+
+  const werewolfMode = store.get('werewolf');
+  assert.deepEqual(werewolfMode.skillIds, ['skill-creator']);
+  assert.equal(werewolfMode.loadingStrategy, 'full');
   assert.ok(modes.every((mode) => mode.builtin === true));
 });
 
@@ -69,7 +75,7 @@ test('ModeStore: save creates a new custom mode', () => {
   assert.equal(created.name, 'Coding');
   assert.equal(created.description, 'Coding assistant mode');
   assert.equal(created.builtin, false);
-  assert.deepEqual(created.skillIds, ['check', 'before-dev']);
+  assert.deepEqual(created.skillIds, ['check', 'before-dev', 'skill-creator']);
   assert.equal(created.loadingStrategy, 'dynamic');
 
   // Persisted
@@ -100,8 +106,8 @@ test('ModeStore: save updates an existing mode', () => {
   assert.equal(updated.name, 'Updated');
   assert.equal(updated.description, 'Now with desc');
 
-  // Only one extra custom mode (total 5)
-  assert.equal(store.list().length, 5);
+  // Only one extra custom mode (total 4)
+  assert.equal(store.list().length, 4);
 });
 
 test('ModeStore: save throws if name is empty', () => {
@@ -116,11 +122,11 @@ test('ModeStore: delete removes a custom mode', () => {
   const store = new ModeStore(db);
 
   const created = store.save({ name: 'ToDelete' });
-  assert.equal(store.list().length, 5);
+  assert.equal(store.list().length, 4);
 
   store.delete(created.id);
   assert.equal(store.get(created.id), null);
-  assert.equal(store.list().length, 4);
+  assert.equal(store.list().length, 3);
 });
 
 // ─── Builtin protection ──────────────────────────────────────
@@ -129,7 +135,7 @@ test('ModeStore: cannot delete builtin modes', () => {
   const db = createTestDb();
   const store = new ModeStore(db);
 
-  for (const id of ['standard', 'skill_test_design', 'werewolf', 'who_is_undercover']) {
+  for (const id of ['standard', 'werewolf', 'who_is_undercover']) {
     assert.throws(() => store.delete(id), /cannot delete builtin/i);
   }
 });
@@ -146,7 +152,7 @@ test('ModeStore: can update builtin mode name and skillIds', () => {
   });
 
   assert.equal(updated.name, '大灰狼');
-  assert.deepEqual(updated.skillIds, ['werewolf-skill']);
+  assert.deepEqual(updated.skillIds, ['werewolf-skill', 'skill-creator']);
   assert.equal(updated.builtin, true);
   assert.equal(updated.loadingStrategy, 'full');
 });
@@ -162,7 +168,7 @@ test('ModeStore: save deduplicates skillIds', () => {
     skillIds: ['alpha', 'beta', 'alpha', 'gamma', 'beta'],
   });
 
-  assert.deepEqual(created.skillIds, ['alpha', 'beta', 'gamma']);
+  assert.deepEqual(created.skillIds, ['alpha', 'beta', 'gamma', 'skill-creator']);
 });
 
 test('ModeStore: save filters out empty and whitespace-only skillIds', () => {
@@ -174,15 +180,15 @@ test('ModeStore: save filters out empty and whitespace-only skillIds', () => {
     skillIds: ['valid', '', '  ', 'also-valid'],
   });
 
-  assert.deepEqual(created.skillIds, ['valid', 'also-valid']);
+  assert.deepEqual(created.skillIds, ['valid', 'also-valid', 'skill-creator']);
 });
 
-test('ModeStore: save with no skillIds defaults to empty array', () => {
+test('ModeStore: save with no skillIds defaults to the required skill set', () => {
   const db = createTestDb();
   const store = new ModeStore(db);
 
   const created = store.save({ name: 'Empty' });
-  assert.deepEqual(created.skillIds, []);
+  assert.deepEqual(created.skillIds, ['skill-creator']);
 });
 
 // ─── normalizeLoadingStrategy ────────────────────────────────
@@ -217,29 +223,11 @@ test('ModeStore: seedBuiltinModes is idempotent (constructing twice does not dup
   const db = createTestDb();
 
   const store1 = new ModeStore(db);
-  assert.equal(store1.list().length, 4);
+  assert.equal(store1.list().length, 3);
 
   // Construct again on the same db — should not add duplicates
   const store2 = new ModeStore(db);
-  assert.equal(store2.list().length, 4);
-});
-
-test('ModeStore: upgrades existing Skill Test design builtin with required workbench skill', () => {
-  const db = createTestDb();
-  const timestamp = '2026-04-21T00:00:00.000Z';
-
-  db.prepare(`
-    INSERT INTO modes (id, name, description, builtin, skill_ids_json, loading_strategy, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run('skill_test_design', 'Custom Skill Test 设计', 'Existing empty mode', 1, '[]', 'dynamic', timestamp, timestamp);
-
-  const store = new ModeStore(db);
-  const mode = store.get('skill_test_design');
-
-  assert.equal(mode.name, 'Custom Skill Test 设计');
-  assert.equal(mode.description, 'Existing empty mode');
-  assert.deepEqual(mode.skillIds, ['skill-test-design-workbench']);
-  assert.equal(mode.loadingStrategy, 'dynamic');
+  assert.equal(store2.list().length, 3);
 });
 
 test('ModeStore: migrates legacy empty Feishu coding mode to custom Coding mode', () => {
@@ -255,9 +243,13 @@ test('ModeStore: migrates legacy empty Feishu coding mode to custom Coding mode'
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `).run('custom-coding', 'Coding', 'User Trellis Coding mode', 0, JSON.stringify(['before-dev', 'check']), 'dynamic', timestamp, timestamp);
   db.prepare(`
-    INSERT INTO chat_agents (id, name, persona_prompt, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?)
-  `).run('agent-1', 'Agent 1', 'Test persona', timestamp, timestamp);
+    INSERT INTO chat_role_identities (role_id, display_name_snapshot, origin_kind, lifecycle_state, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run('agent-1', 'Agent 1', 'custom', 'active', timestamp, timestamp);
+  db.prepare(`
+    INSERT INTO chat_agents (id, name, persona_prompt, role_kind, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run('agent-1', 'Agent 1', 'Test persona', 'custom', timestamp, timestamp);
   db.prepare(`
     INSERT INTO chat_conversations (id, title, type, metadata_json, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?)
@@ -279,7 +271,7 @@ test('ModeStore: migrates legacy empty Feishu coding mode to custom Coding mode'
   assert.equal(store.get('coding'), null);
   assert.equal(modes.some((mode) => mode.id === 'coding'), false);
   assert.equal(conversation.type, 'custom-coding');
-  assert.deepEqual(JSON.parse(participant.conversation_skills_json), ['start', 'before-dev', 'check']);
+  assert.deepEqual(JSON.parse(participant.conversation_skills_json), ['start', 'before-dev', 'check', 'skill-creator']);
 });
 
 // ─── list ordering ──────────────────────────────────────────
@@ -292,16 +284,31 @@ test('ModeStore: list returns builtin modes first, then custom by created_at', (
   store.save({ name: 'Alpha Mode' });
 
   const modes = store.list();
-  // 4 builtin + 2 custom = 6
-  assert.equal(modes.length, 6);
+  // 3 builtin + 2 custom = 5
+  assert.equal(modes.length, 5);
 
-  // First 4 are builtin
+  // First 3 are builtin
   assert.ok(modes[0].builtin);
   assert.ok(modes[1].builtin);
   assert.ok(modes[2].builtin);
-  assert.ok(modes[3].builtin);
 
   // Last 2 are custom (order depends on created_at resolution)
-  const customNames = [modes[4].name, modes[5].name].sort();
+  const customNames = [modes[3].name, modes[4].name].sort();
   assert.deepEqual(customNames, ['Alpha Mode', 'Zebra Mode']);
+});
+
+// ─── P0 regression: custom mode with same id must survive retirement ───
+
+test('ModeStore: retireSkillTestDesignMode preserves user-created custom mode with same id', () => {
+  const db = createTestDb();
+  const store = new ModeStore(db);
+
+  store.save({ id: 'skill_test_design', name: 'User Custom ST', skillIds: ['start'] });
+
+  store.retireSkillTestDesignMode();
+
+  const mode = store.get('skill_test_design');
+  assert.ok(mode, 'user-created mode with id=skill_test_design must survive retireSkillTestDesignMode');
+  assert.equal(mode.builtin, false);
+  assert.equal(mode.name, 'User Custom ST');
 });

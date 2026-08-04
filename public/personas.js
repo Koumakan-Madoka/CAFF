@@ -66,6 +66,13 @@ document.getElementById('refresh-roles').addEventListener('click', async () => {
 document.getElementById('refresh-providers').addEventListener('click', async () => {
   try { await providerManagement.refresh(); showToast('供应商状态已刷新'); } catch (error) { showToast(error.message); }
 });
+document.getElementById('refresh-button').addEventListener('click', async () => {
+  try {
+    await roleManagement.refresh();
+    await providerManagement.refresh();
+    showToast('已刷新');
+  } catch (error) { showToast(error.message); }
+});
 
 async function init() {
   try {

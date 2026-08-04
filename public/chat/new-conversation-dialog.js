@@ -71,28 +71,12 @@
     if (participants.length === 0) {
       throw createRequestError('participants_required', '至少选择一位当前可用的角色');
     }
-    if (type === 'skill_test_design' && participants.length !== 3) {
-      throw createRequestError('skill_test_participant_count_invalid', 'Skill Test 设计模式需要恰好选择 3 位角色');
-    }
 
-    const request = {
+    return {
       title: normalizeText(input && input.title),
       type,
       participants,
     };
-
-    if (type === 'skill_test_design') {
-      const skillId = normalizeText(input && input.skillId);
-      if (!skillId) {
-        throw createRequestError('skill_required', 'Skill Test 设计模式需要选择一个目标 Skill');
-      }
-      request.skillId = skillId;
-      request.metadata = {
-        skillTestDesign: { skillId },
-      };
-    }
-
-    return request;
   }
 
   function isGameType(type) {
@@ -155,7 +139,6 @@
 
     function syncOptions() {
       fillSelect(dom.newConversationType, Array.isArray(state.modes) ? state.modes : [], '');
-      fillSelect(dom.newConversationSkill, Array.isArray(state.skills) ? state.skills : [], '-- 选择目标 Skill --');
       renderModeState();
     }
 
@@ -225,12 +208,6 @@
           ? '至少选择一位当前可用的玩家后才能创建游戏房间。'
           : '至少选择一位当前可用的角色后才能创建聊天。';
       }
-      if (type === 'skill_test_design' && currentSelection().size !== 3) {
-        return 'Skill Test 设计模式需要恰好选择 3 位角色，依次承担规划、评审和记录职责。';
-      }
-      if (type === 'skill_test_design' && !(dom.newConversationSkill && dom.newConversationSkill.value)) {
-        return 'Skill Test 设计模式需要选择一个目标 Skill。';
-      }
       return '';
     }
 
@@ -247,8 +224,6 @@
 
     function renderModeState() {
       const type = selectedMode();
-      const skillMode = type === 'skill_test_design';
-      if (dom.newConversationSkillField) dom.newConversationSkillField.classList.toggle('hidden', !skillMode);
       if (dom.newConversationPolicyNote) dom.newConversationPolicyNote.textContent = modePolicyLabel(type);
       if (dom.newConversationParticipantsTitle) {
         dom.newConversationParticipantsTitle.textContent = isGameType(type) ? '选择玩家' : '选择参与者';
@@ -281,7 +256,6 @@
       const type = selectedMode();
       selectionByMode.set(type, initialSelectedRoleIds(snapshot, type));
       dom.newConversationTitle.value = '';
-      if (dom.newConversationSkill) dom.newConversationSkill.value = '';
       if (dom.appShell) dom.appShell.inert = true;
       dom.newConversationBackdrop.classList.remove('hidden');
       dom.newConversationBackdrop.setAttribute('aria-hidden', 'false');
@@ -336,7 +310,6 @@
         request = buildConversationRequest({
           title: dom.newConversationTitle && dom.newConversationTitle.value,
           type: selectedMode(),
-          skillId: dom.newConversationSkill && dom.newConversationSkill.value,
           snapshot,
           selectedRoleIds: currentSelection(),
         });
@@ -365,7 +338,6 @@
       if (dom.newConversationClose) dom.newConversationClose.addEventListener('click', closeDialog);
       if (dom.newConversationCancel) dom.newConversationCancel.addEventListener('click', closeDialog);
       if (dom.newConversationType) dom.newConversationType.addEventListener('change', renderModeState);
-      if (dom.newConversationSkill) dom.newConversationSkill.addEventListener('change', updateValidation);
       if (dom.newConversationClearSelection) {
         dom.newConversationClearSelection.addEventListener('click', () => {
           currentSelection().clear();

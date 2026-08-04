@@ -840,6 +840,12 @@ textarea {
   gap: 0.75rem;
 }
 
+.conversation-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
 .conversation-list,
 .agent-list,
 .message-list,
@@ -882,15 +888,25 @@ textarea {
 }
 
 .conversation-item {
+  display: block;
+  width: 100%;
   padding: 0.95rem 1rem;
   border-radius: var(--radius-md);
   background: rgba(255, 255, 255, 0.56);
   border: 1px solid rgba(34, 49, 63, 0.08);
   cursor: pointer;
+  font: inherit;
+  color: inherit;
+  text-align: left;
   transition:
     transform 160ms ease,
     border-color 160ms ease,
     background 160ms ease;
+}
+
+.conversation-item:focus-visible {
+  outline: 2px solid rgba(239, 125, 87, 0.65);
+  outline-offset: 2px;
 }
 
 .conversation-item:hover {
@@ -1518,6 +1534,10 @@ textarea {
 .message-tool-trace-toggle {
   flex: 0 0 auto;
   align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
   padding: 0.32rem 0.8rem;
   border-radius: 999px;
   font-size: 0.76rem;
@@ -2718,6 +2738,7 @@ textarea {
   display: flex;
   align-items: flex-start;
   gap: 0.7rem;
+  min-height: 44px;
   cursor: pointer;
   font-weight: 600;
 }
@@ -3509,6 +3530,8 @@ textarea {
 }
 
 .compact-icon-button {
+  min-width: 44px;
+  min-height: 44px;
   padding: 0.45rem 0.65rem;
   font-size: 0.8rem;
 }
@@ -3667,11 +3690,6 @@ textarea {
   color: #8d6411;
 }
 
-.conversation-type-badge.skill-test-design {
-  background: rgba(46, 170, 220, 0.16);
-  color: #2eaadc;
-}
-
 .conversation-title-line {
   flex-wrap: wrap;
 }
@@ -3695,42 +3713,6 @@ textarea {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.7rem;
-}
-
-/* ---- Skill Test Design Panel ---- */
-.skill-test-matrix-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.85rem;
-  margin-top: 0.4rem;
-}
-
-.skill-test-matrix-table th,
-.skill-test-matrix-table td {
-  text-align: left;
-  padding: 0.35rem 0.5rem;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 120px;
-}
-
-.skill-test-matrix-table th {
-  font-weight: 600;
-  opacity: 0.7;
-}
-
-.skill-test-matrix-rows {
-  margin-top: 0.5rem;
-}
-
-.skill-test-testing-doc-draft {
-  margin-top: 0.5rem;
-}
-
-.skill-test-design-status-card {
-  padding: 0.5rem 0;
 }
 
 .undercover-player-chip,
@@ -3905,928 +3887,1830 @@ textarea {
   accent-color: #2a9d8f;
 }
 
-/* ---- Skill Test Tags ---- */
-.tag-success {
-  background: rgba(42, 157, 143, 0.14);
-  color: #2a9d8f;
+/* ══════════════════════════════════════════════════════════════
+   聊天工作台 AppShell 重设计（方向 A · 固定视口）
+   设计真相源：designs/mock-app-shell-a.html v4 冻结
+   作用域：body.chat-app；管理页在文件末尾复用 token/rail primitive，滚动 owner 独立
+   ══════════════════════════════════════════════════════════════ */
+
+:root {
+  --caff-canvas: #f7f2ea;
+  --caff-surface: #fffdf9;
+  --caff-surface-sunk: #f3ece1;
+  --caff-ink: #22313f;
+  --caff-ink-soft: #5d6b78;
+  --caff-line: #e3d9c8;
+  --caff-accent: #ef7d57;
+  --caff-accent-deep: #c45d3b;
+  --caff-teal: #2a9d8f;
+  --caff-danger: #c0392b;
+  --caff-radius-md: 12px;
+  --caff-radius-lg: 16px;
+  --caff-radius-xl: 22px;
+  --caff-space-1: 4px;
+  --caff-space-2: 8px;
+  --caff-space-3: 12px;
+  --caff-space-4: 16px;
+  --caff-space-5: 24px;
+  --caff-space-6: 32px;
+  --rail-w: 56px;
+  --sidebar-w: 280px;
+  --drawer-w: 360px;
 }
 
-.tag-error {
-  background: rgba(229, 62, 62, 0.12);
-  color: #e53e3e;
+html {
+  height: 100%;
 }
 
-.tag-pending {
-  background: rgba(217, 164, 65, 0.14);
-  color: #8d6411;
+body.chat-app {
+  height: 100%;
+  overflow: hidden;
+  background: var(--caff-canvas);
+  font-size: 15px;
+  line-height: 1.6;
 }
 
-.tag {
-  display: inline-block;
-  padding: 2px 10px;
-  border-radius: 10px;
-  font-size: 0.72rem;
-  font-weight: 600;
-  letter-spacing: 0.02em;
+body.chat-app :focus-visible {
+  outline: 3px solid rgba(239, 125, 87, 0.55);
+  outline-offset: 2px;
+  border-radius: 6px;
 }
 
-/* ---- Skill Test Run Item ---- */
-.run-item {
-  padding: 0.6rem 0.8rem;
-  border-radius: var(--radius-sm);
-  background: rgba(255, 255, 255, 0.5);
-  border: 1px solid rgba(34, 49, 63, 0.06);
-  margin-bottom: 0.5rem;
-}
-
-.run-item-header {
+body.chat-app .app-shell {
   display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-}
-
-/* ---- Skill Test Summary Table ---- */
-.summary-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.85rem;
-}
-
-.summary-table th,
-.summary-table td {
-  text-align: left;
-  padding: 0.5rem 0.8rem;
-  border-bottom: 1px solid rgba(34, 49, 63, 0.08);
-}
-
-.summary-table th {
-  font-weight: 600;
-  color: var(--muted);
-  font-size: 0.78rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.summary-table tr:hover td {
-  background: rgba(255, 255, 255, 0.4);
-}
-
-/* ---- Agent card selected state ---- */
-.agent-card-selected {
-  border-color: rgba(42, 157, 143, 0.4) !important;
-  background: rgba(42, 157, 143, 0.08) !important;
-}
-
-/* ---- Run detail expandable panel ---- */
-.run-detail-panel {
-  margin-top: 0.5rem;
-  padding: 0.6rem 0.8rem;
-  border-radius: var(--radius-sm);
-  background: rgba(34, 49, 63, 0.04);
-  border: 1px solid rgba(34, 49, 63, 0.08);
-  max-height: 400px;
-  overflow-y: auto;
-}
-
-#st-live-run {
-  margin-bottom: 0.8rem;
-  max-height: none;
-  overflow: visible;
-}
-
-.run-detail-section {
-  margin-bottom: 0.6rem;
-}
-
-.run-detail-section .section-label {
-  font-size: 0.78rem;
-  font-weight: 600;
-  color: var(--muted);
-  margin-bottom: 0.3rem;
-}
-
-.run-detail-pre {
-  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
-  font-size: 0.75rem;
-  line-height: 1.4;
-  background: rgba(255, 255, 255, 0.6);
-  border: 1px solid rgba(34, 49, 63, 0.06);
-  border-radius: var(--radius-sm);
-  padding: 0.4rem 0.6rem;
-  white-space: pre-wrap;
-  word-break: break-all;
-  max-height: 150px;
-  overflow-y: auto;
-  margin: 0.2rem 0;
-}
-
-.run-detail-thinking {
-  color: #6b7280;
-  font-style: italic;
-}
-
-.run-detail-tool {
-  margin-bottom: 0.3rem;
-  padding: 0.3rem 0;
-}
-
-.run-detail-tag-row {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.35rem;
-}
-
-.run-detail-subsection {
-  margin-top: 0.28rem;
-}
-
-.run-detail-list {
-  margin: 0.2rem 0 0 1rem;
-  padding: 0;
-  display: grid;
-  gap: 0.18rem;
-  font-size: 0.8rem;
-  color: var(--muted);
-}
-
-.run-detail-card {
-  margin-top: 0.35rem;
-  padding: 0.45rem 0.55rem;
-  border-radius: var(--radius-sm);
-  border: 1px solid rgba(34, 49, 63, 0.08);
-  background: rgba(255, 255, 255, 0.65);
-}
-
-.run-detail-collapse {
-  margin-top: 0.35rem;
-}
-
-.run-detail-collapse summary {
-  cursor: pointer;
-}
-
-.run-detail-diag {
-  font-size: 0.82rem;
-  color: #8d6411;
-  padding: 0.3rem 0;
-}
-
-.run-item-warning {
-  font-size: 0.78rem;
-  color: #e53e3e;
-  padding: 0.2rem 0;
-  font-weight: 500;
-}
-
-.run-item-actions {
-  display: flex;
-  align-items: center;
-  gap: 0.3rem;
-}
-
-/* ---- Batch run progress bar ---- */
-.run-progress-container {
-  margin-top: 0.6rem;
-}
-
-.run-progress-bar {
-  height: 6px;
-  background: rgba(34, 49, 63, 0.08);
-  border-radius: 3px;
+  height: 100dvh;
   overflow: hidden;
 }
 
-.run-progress-fill {
-  height: 100%;
-  background: #2a9d8f;
-  border-radius: 3px;
-  transition: width 0.3s ease;
-}
-
-.run-progress-text {
-  font-size: 0.75rem;
-  color: var(--muted);
-  margin-top: 0.25rem;
-}
-
-/* ---- Skill Tests UI refactor ---- */
-.skill-tests-layout {
-  display: grid;
-  gap: 1rem;
-  align-items: start;
-}
-
-.skill-tests-toolbar-panel,
-.skill-tests-overview-panel,
-.skill-tests-list-panel,
-.skill-tests-detail-panel,
-.skill-tests-create-panel,
-.skill-tests-summary-panel {
-  display: grid;
-  gap: 1rem;
-  align-content: start;
-  overflow: visible;
-  max-height: none;
-}
-
-.skill-tests-toolbar-panel {
-  position: sticky;
-  top: 0.75rem;
-  z-index: 6;
-  gap: 0.8rem;
-  padding: 0.95rem 1rem;
-}
-
-.skill-tests-toolbar-head {
+/* ── Rail ── */
+body.chat-app .rail {
+  width: var(--rail-w);
+  flex-shrink: 0;
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 0.7rem;
-  flex-wrap: wrap;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--caff-space-2);
+  padding: var(--caff-space-3) 0;
+  background: var(--caff-surface-sunk);
+  border-right: 1px solid var(--caff-line);
 }
 
-.skill-tests-toolbar-copy {
+body.chat-app .rail-link,
+body.chat-app .rail-button {
+  width: 44px;
+  height: 44px;
   display: grid;
-  gap: 0.18rem;
+  place-items: center;
+  border: 0;
+  border-radius: var(--caff-radius-md);
+  background: transparent;
+  box-shadow: none;
+  font-size: 20px;
+  line-height: 1;
+  color: var(--caff-ink-soft);
+  text-decoration: none;
+  padding: 0;
 }
 
-.skill-tests-toolbar-title-row {
+body.chat-app .rail-link[aria-current="page"] {
+  background: var(--caff-surface);
+  color: var(--caff-accent-deep);
+  box-shadow: inset 0 0 0 1px var(--caff-line);
+}
+
+body.chat-app .rail-link:hover,
+body.chat-app .rail-button:hover {
+  background: var(--caff-surface);
+  transform: none;
+}
+
+body.chat-app .rail .spacer,
+body.management-app .rail .spacer {
+  flex: 1;
+}
+
+/* ── Sidebar ── */
+body.chat-app .sidebar {
+  width: var(--sidebar-w);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--caff-surface);
+  border-right: 1px solid var(--caff-line);
+  transition: width 220ms ease;
+  overflow: hidden;
+}
+
+body.chat-app .sidebar > * {
+  min-width: var(--sidebar-w);
+}
+
+body.chat-app .sidebar-head {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--caff-space-3) var(--caff-space-4);
+  border-bottom: 1px solid var(--caff-line);
+}
+
+body.chat-app .sidebar-head h1 {
+  margin: 0;
+  font-size: 15px;
+  letter-spacing: 0.02em;
+}
+
+body.chat-app .sidebar-new-form {
+  flex-shrink: 0;
+  display: grid;
+  gap: var(--caff-space-2);
+  padding: var(--caff-space-3);
+  border-bottom: 1px solid var(--caff-line);
+}
+
+body.chat-app .sidebar-new-form button {
+  min-height: 44px;
+}
+
+body.chat-app .sidebar-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--caff-space-2);
+  align-content: start;
+}
+
+body.chat-app .sidebar-list .conversation-item {
+  min-height: 44px;
+}
+
+/* ── Main column ── */
+body.chat-app .main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+body.chat-app .chat-header {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--caff-space-3);
+  flex-wrap: nowrap;
+  padding: var(--caff-space-2) var(--caff-space-4);
+  background: var(--caff-surface);
+  border-bottom: 1px solid var(--caff-line);
+}
+
+body.chat-app .chat-header .titles {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  gap: 1px;
+}
+
+body.chat-app .chat-header h2 {
+  margin: 0;
+  font-size: 17px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+body.chat-app .chat-header .status-line {
+  display: flex;
+  align-items: center;
+  gap: var(--caff-space-2);
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  font-size: 12.5px;
+}
+
+body.chat-app .chat-header .runtime-pill {
+  min-width: 0;
+  flex-shrink: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0.15rem 0.6rem;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+body.chat-app .chat-header #conversation-meta {
+  min-width: 0;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+body.chat-app .icon-btn {
+  min-width: 44px;
+  min-height: 44px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid var(--caff-line);
+  border-radius: var(--caff-radius-md);
+  background: var(--caff-surface);
+  box-shadow: none;
+  color: var(--caff-ink-soft);
+  padding: 0 var(--caff-space-3);
+  font-size: 14px;
+}
+
+body.chat-app .icon-btn:hover:not(:disabled) {
+  transform: none;
+  border-color: var(--caff-accent);
+}
+
+body.chat-app .icon-btn[aria-expanded="true"] {
+  color: var(--caff-accent-deep);
+  border-color: var(--caff-accent);
+}
+
+body.chat-app .skill-draft-alert {
+  flex-shrink: 0;
+  margin: var(--caff-space-2) var(--caff-space-4) 0;
+}
+
+/* ── Message list（唯一长滚动区） ── */
+body.chat-app .message-viewport {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+body.chat-app .message-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: minmax(0, 780px);
+  grid-auto-rows: max-content;
+  justify-content: center;
+  align-content: start;
+  gap: var(--caff-space-4);
+  padding: var(--caff-space-5) var(--caff-space-4);
+  scroll-behavior: smooth;
+}
+
+body.chat-app .new-msg-pill {
+  position: absolute;
+  left: 50%;
+  bottom: var(--caff-space-3);
+  transform: translateX(-50%);
+  width: max-content;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 0 20px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--caff-ink);
+  color: #fff;
+  font-size: 13px;
+  box-shadow: 0 6px 18px rgba(34, 49, 63, 0.25);
+  z-index: 2;
+}
+
+/* ── Composer ── */
+body.chat-app .composer {
+  position: relative;
+  flex-shrink: 0;
+  display: block;
+  padding: var(--caff-space-3) var(--caff-space-4);
+  border: 0;
+  border-top: 1px solid var(--caff-line);
+  border-radius: 0;
+  background: var(--caff-surface);
+  box-shadow: none;
+}
+
+body.chat-app .composer:focus-within {
+  border-color: var(--caff-line);
+  background: var(--caff-surface);
+  box-shadow: none;
+}
+
+body.chat-app .composer-inner {
+  max-width: 780px;
+  margin: 0 auto;
+  display: flex;
+  gap: var(--caff-space-3);
+  align-items: flex-end;
+}
+
+body.chat-app .composer textarea {
+  flex: 1;
+  resize: none;
+  min-height: 44px;
+  max-height: 160px;
+  border: 1px solid var(--caff-line);
+  border-radius: var(--caff-radius-lg);
+  background: var(--caff-canvas);
+  padding: 10px 14px;
+}
+
+body.chat-app .composer textarea:focus {
+  outline: none;
+  border-color: var(--caff-accent);
+  box-shadow: 0 0 0 3px rgba(239, 125, 87, 0.15);
+}
+
+body.chat-app .composer .send {
+  min-width: 44px;
+  min-height: 44px;
+  width: auto;
+  padding: 0 20px;
+}
+
+body.chat-app .composer #stop-button {
+  min-height: 44px;
+}
+
+body.chat-app .composer-footer {
+  max-width: 780px;
+  margin: 6px auto 0;
+  padding-top: 0;
+  justify-content: flex-start;
+  font-size: 12.5px;
+}
+
+/* ── 统一上下文抽屉 ── */
+body.chat-app .drawer-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(34, 49, 63, 0.28);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 180ms ease;
+  z-index: 40;
+}
+
+body.chat-app .context-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(var(--drawer-w), 92vw);
+  display: flex;
+  flex-direction: column;
+  background: rgba(255, 253, 249, 0.92);
+  backdrop-filter: blur(14px);
+  border-left: 1px solid var(--caff-line);
+  transform: translateX(100%);
+  transition: transform 220ms ease;
+  z-index: 41;
+}
+
+body.chat-app[data-drawer="open"] .context-drawer {
+  transform: translateX(0);
+}
+
+body.chat-app[data-drawer="open"] .drawer-overlay {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+body.chat-app .drawer-head {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--caff-space-3) var(--caff-space-4);
+  border-bottom: 1px solid var(--caff-line);
+}
+
+body.chat-app .drawer-head h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+body.chat-app .drawer-tabs {
+  flex-shrink: 0;
+  display: flex;
+  gap: 4px;
+  padding: var(--caff-space-2) var(--caff-space-3);
+  border-bottom: 1px solid var(--caff-line);
+  overflow-x: auto;
+}
+
+body.chat-app .drawer-tabs button {
+  min-height: 44px;
+  padding: 0 var(--caff-space-3);
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--caff-ink-soft);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+body.chat-app .drawer-tabs button:hover:not(:disabled) {
+  transform: none;
+  background: rgba(34, 49, 63, 0.05);
+}
+
+body.chat-app .drawer-tabs button[aria-selected="true"] {
+  background: rgba(239, 125, 87, 0.14);
+  color: var(--caff-accent-deep);
+  font-weight: 700;
+}
+
+body.chat-app .drawer-tabs button[hidden],
+body.chat-app .drawer-panel[hidden] {
+  display: none;
+}
+
+body.chat-app .drawer-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--caff-space-4);
+}
+
+body.chat-app .drawer-panel {
+  display: grid;
+  gap: var(--caff-space-3);
+  align-content: start;
+}
+
+/* ── 响应式三档（brief §8.4 / mock v4） ── */
+@media (max-width: 1279px) {
+  body.chat-app .sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: var(--rail-w);
+    z-index: 30;
+    transform: translateX(calc(-100% - var(--rail-w)));
+    transition: transform 220ms ease;
+    box-shadow: 8px 0 24px rgba(34, 49, 63, 0.12);
+  }
+
+  body.chat-app[data-sidebar="open"] .sidebar {
+    transform: translateX(0);
+  }
+}
+
+@media (min-width: 1280px) {
+  body.chat-app[data-sidebar="closed"] .sidebar {
+    width: 0;
+    border-right-width: 0;
+  }
+}
+
+@media (max-width: 767px) {
+  body.chat-app .app-shell {
+    flex-direction: column;
+  }
+
+  body.chat-app .rail {
+    order: 2;
+    width: 100%;
+    height: 56px;
+    flex-direction: row;
+    justify-content: space-between;
+    border-right: 0;
+    border-top: 1px solid var(--caff-line);
+    padding: 0 var(--caff-space-2);
+  }
+
+  body.chat-app .rail .spacer,
+  body.management-app .rail .spacer {
+    display: none;
+  }
+
+  body.chat-app .sidebar {
+    left: 0;
+    width: min(320px, 88vw);
+  }
+
+  body.chat-app .context-drawer {
+    width: 100vw;
+  }
+
+  body.chat-app .message-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  body.chat-app .chat-header {
+    flex-direction: row;
+    align-items: center;
+  }
+}
+
+@media (max-width: 480px) {
+  body.chat-app .chat-header .mode-pill {
+    display: none;
+  }
+
+  body.chat-app .chat-header #conversation-meta {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body.chat-app *,
+  body.chat-app *::before,
+  body.chat-app *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+
+  body.chat-app .message-list {
+    scroll-behavior: auto;
+  }
+}
+
+/* Management AppShell: shared chrome with bounded index/detail work areas. */
+body.management-app {
+  height: 100%;
+  overflow: hidden;
+  background: var(--caff-canvas);
+  color: var(--caff-ink);
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+body.management-app :focus-visible {
+  outline: 3px solid rgba(239, 125, 87, 0.55);
+  outline-offset: 2px;
+}
+
+body.management-app .management-shell {
+  display: grid;
+  grid-template-columns: var(--rail-w) minmax(0, 1fr);
+  height: 100dvh;
+  overflow: hidden;
+}
+
+body.management-app .rail {
+  width: var(--rail-w);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--caff-space-2);
+  padding: var(--caff-space-3) 0;
+  background: var(--caff-surface-sunk);
+  border-right: 1px solid var(--caff-line);
+  z-index: 20;
+}
+
+body.management-app .rail-link {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 44px;
+  border-radius: var(--caff-radius-md);
+  background: transparent;
+  color: var(--caff-ink-soft);
+  font-size: 20px;
+  line-height: 1;
+  text-decoration: none;
+}
+
+body.management-app .rail-link:hover {
+  background: var(--caff-surface);
+}
+
+body.management-app .rail-link[aria-current="page"] {
+  background: var(--caff-surface);
+  color: var(--caff-accent-deep);
+  box-shadow: inset 0 0 0 1px var(--caff-line);
+}
+
+body.management-app .management-main {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+body.management-app .management-header {
+  min-height: 72px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--caff-space-4);
+  padding: var(--caff-space-2) var(--caff-space-5);
+  background: var(--caff-surface);
+  border-bottom: 1px solid var(--caff-line);
+}
+
+body.management-app .management-title {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+
+body.management-app .management-title .eyebrow {
+  margin: 0;
+  color: var(--caff-accent-deep);
+  font-size: 11px;
+  letter-spacing: 0;
+}
+
+body.management-app .management-title h1 {
+  margin: 0;
+  overflow: hidden;
+  color: var(--caff-ink);
+  font-family: var(--font-body);
+  font-size: 19px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body.management-app .management-title .subtitle {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--caff-ink-soft);
+  font-size: 12.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body.management-app .management-icon-button {
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+  min-height: 44px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--caff-line);
+  border-radius: var(--caff-radius-md);
+  background: var(--caff-surface);
+  box-shadow: none;
+  color: var(--caff-ink-soft);
+  font-size: 21px;
+}
+
+body.management-app .management-icon-button:hover:not(:disabled) {
+  transform: none;
+  border-color: var(--caff-accent);
+}
+
+body.management-app .management-content {
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
+  overflow: hidden;
+}
+
+body.management-app .management-pane {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--caff-space-5);
+  scrollbar-gutter: stable;
+}
+
+body.management-app .management-index {
+  background: var(--caff-surface);
+  border-right: 1px solid var(--caff-line);
+}
+
+body.management-app .management-detail {
+  grid-column: 2;
+  background: var(--caff-canvas);
+}
+
+body.management-app .management-content > .management-view {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+body.management-app .management-content > .management-view.hidden {
+  display: none;
+}
+
+body.management-app .management-view > .management-index,
+body.management-app .management-view > .management-detail {
+  max-height: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+body.management-app .management-pane > .panel-header:first-child {
+  margin-bottom: var(--caff-space-4);
+}
+
+body.management-app .management-pane .panel-header h2,
+body.management-app .management-pane .panel-header h3 {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.35;
+}
+
+body.management-app .management-pane .eyebrow {
+  margin-bottom: 2px;
+  color: var(--caff-accent-deep);
+  font-size: 11px;
+  letter-spacing: 0;
+}
+
+body.management-app .agent-list {
+  align-content: start;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow: visible;
+}
+
+body.management-app .management-list-row {
+  min-width: 0;
+}
+
+body.management-app .agent-list-item {
+  width: 100%;
+  min-height: 44px;
+  padding: var(--caff-space-3);
+  border: 1px solid var(--caff-line);
+  border-radius: 8px;
+  background: var(--caff-surface);
+  box-shadow: none;
+  color: var(--caff-ink);
+  text-align: left;
+}
+
+body.management-app .agent-list-item:hover:not(:disabled) {
+  transform: none;
+  border-color: rgba(239, 125, 87, 0.48);
+}
+
+body.management-app .agent-list-item.active {
+  border-color: rgba(42, 157, 143, 0.48);
+  background: rgba(42, 157, 143, 0.1);
+}
+
+body.management-app .management-list-empty {
+  list-style: none;
+}
+
+body.management-app .settings-form {
+  max-width: 960px;
+  margin: 0;
+}
+
+body.management-app .stack-card {
+  border: 1px solid var(--caff-line);
+  border-radius: 8px;
+  background: var(--caff-surface);
+  box-shadow: none;
+  backdrop-filter: none;
+  animation: none;
+}
+
+body.management-app button,
+body.management-app a.link-button,
+body.management-app input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]),
+body.management-app select {
+  min-height: 44px;
+}
+
+body.management-app button {
+  border-radius: 8px;
+}
+
+body.management-app .tab-button {
+  min-height: 44px;
+  padding: 0 var(--caff-space-3);
+  box-shadow: none;
+}
+
+body.management-app .tab-button:hover:not(:disabled) {
+  transform: none;
+}
+
+body.management-app .option-card label {
+  min-height: 44px;
+  align-items: center;
+}
+
+body.management-app .toast {
+  z-index: 60;
+}
+
+@media (max-width: 1023px) {
+  body.management-app .management-content {
+    grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
+  }
+
+  body.management-app .management-pane {
+    padding: var(--caff-space-4);
+  }
+
+  body.management-app .skill-file-workspace {
+    grid-template-columns: minmax(180px, 0.75fr) minmax(0, 1.25fr);
+  }
+}
+
+@media (max-width: 767px) {
+  body.management-app .management-shell {
+    display: block;
+  }
+
+  body.management-app .rail {
+    position: fixed;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    height: 56px;
+    flex-direction: row;
+    justify-content: space-between;
+    gap: 0;
+    padding: 0 var(--caff-space-2);
+    border-top: 1px solid var(--caff-line);
+    border-right: 0;
+  }
+
+  body.management-app .management-main {
+    height: calc(100dvh - 56px);
+  }
+
+  body.management-app .management-header {
+    min-height: 64px;
+    padding: var(--caff-space-2) var(--caff-space-3);
+  }
+
+  body.management-app .management-title .subtitle {
+    display: none;
+  }
+
+  body.management-app .management-content {
+    display: grid;
+    grid-template-columns: 1fr;
+    align-content: start;
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
+
+  body.management-app .management-pane {
+    overflow: visible;
+    padding: var(--caff-space-4);
+    scrollbar-gutter: auto;
+  }
+
+  body.management-app .management-index {
+    border-right: 0;
+    border-bottom: 1px solid var(--caff-line);
+  }
+
+  body.management-app .management-detail {
+    grid-column: 1;
+  }
+
+  body.management-app .management-content > .management-view {
+    grid-template-columns: 1fr;
+    overflow: visible;
+  }
+
+  body.management-app .field-grid,
+  body.management-app .skill-file-workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  body.management-app .panel-header,
+  body.management-app .section-row,
+  body.management-app .button-row {
+    align-items: flex-start;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body.management-app *,
+  body.management-app *::before,
+  body.management-app *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════
+   CAFF UI Milestone 3 · restrained light/dark chrome
+   Product chrome is flat, token-driven, and shared by chat + management.
+   ══════════════════════════════════════════════════════════════ */
+
+:root,
+[data-theme="light"] {
+  color-scheme: light;
+  --caff-canvas: #f5f4f0;
+  --caff-surface-sunk: #ecebe6;
+  --caff-surface: #fbfaf7;
+  --caff-surface-elevated: #ffffff;
+  --caff-surface-hover: #f0efea;
+  --caff-text: #262826;
+  --caff-text-soft: #686c67;
+  --caff-border: #d8d6cf;
+  --caff-border-strong: #c4c2ba;
+  --caff-accent: #b4512f;
+  --caff-accent-hover: #9f4327;
+  --caff-accent-text: #93401f;
+  --caff-accent-soft: #f4e2d9;
+  --caff-on-accent: #fffaf7;
+  --caff-success: #34796e;
+  --caff-success-soft: #e1efeb;
+  --caff-warning: #986b24;
+  --caff-warning-soft: #f5ead4;
+  --caff-danger: #b44740;
+  --caff-danger-soft: #f5dfdd;
+  --caff-info: #4a6f8f;
+  --caff-info-soft: #e2ebf2;
+  --caff-focus: rgba(200, 97, 58, 0.28);
+  --caff-overlay: rgba(24, 27, 25, 0.32);
+  --caff-shadow-sm: 0 1px 2px rgba(30, 33, 30, 0.08);
+  --caff-shadow-md: 0 4px 12px rgba(30, 33, 30, 0.1);
+  --caff-radius-sm: 6px;
+  --caff-radius-md: 8px;
+  --caff-radius-lg: 10px;
+  --caff-radius-xl: 12px;
+
+  /* Legacy aliases remain migration-only; components consume semantic tokens. */
+  --bg: var(--caff-canvas);
+  --bg-strong: var(--caff-surface-sunk);
+  --paper: var(--caff-surface);
+  --paper-strong: var(--caff-surface-elevated);
+  --ink: var(--caff-text);
+  --muted: var(--caff-text-soft);
+  --line: var(--caff-border);
+  --accent: var(--caff-accent);
+  --accent-deep: var(--caff-accent-text);
+  --teal: var(--caff-success);
+  --danger: var(--caff-danger);
+  --shadow: var(--caff-shadow-md);
+  --radius-sm: var(--caff-radius-md);
+  --radius-md: var(--caff-radius-lg);
+  --radius-lg: var(--caff-radius-xl);
+  --radius-xl: var(--caff-radius-xl);
+  --caff-ink: var(--caff-text);
+  --caff-ink-soft: var(--caff-text-soft);
+  --caff-line: var(--caff-border);
+  --caff-accent-deep: var(--caff-accent-text);
+  --caff-teal: var(--caff-success);
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --caff-canvas: #171918;
+  --caff-surface-sunk: #111312;
+  --caff-surface: #1e211f;
+  --caff-surface-elevated: #252825;
+  --caff-surface-hover: #2b2e2b;
+  --caff-text: #f0f1ed;
+  --caff-text-soft: #a9ada7;
+  --caff-border: #363b37;
+  --caff-border-strong: #4a504b;
+  --caff-accent: #df7952;
+  --caff-accent-hover: #eb8d68;
+  --caff-accent-text: #f09a75;
+  --caff-accent-soft: #3a2922;
+  --caff-on-accent: #1b120e;
+  --caff-success: #69b6a8;
+  --caff-success-soft: #203632;
+  --caff-warning: #d5a65b;
+  --caff-warning-soft: #3a3020;
+  --caff-danger: #e17a73;
+  --caff-danger-soft: #3d2625;
+  --caff-info: #83a9c8;
+  --caff-info-soft: #243440;
+  --caff-focus: rgba(223, 121, 82, 0.34);
+  --caff-overlay: rgba(0, 0, 0, 0.55);
+  --caff-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --caff-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.28);
+
+  --bg: var(--caff-canvas);
+  --bg-strong: var(--caff-surface-sunk);
+  --paper: var(--caff-surface);
+  --paper-strong: var(--caff-surface-elevated);
+  --ink: var(--caff-text);
+  --muted: var(--caff-text-soft);
+  --line: var(--caff-border);
+  --accent: var(--caff-accent);
+  --accent-deep: var(--caff-accent-text);
+  --teal: var(--caff-success);
+  --danger: var(--caff-danger);
+  --shadow: var(--caff-shadow-md);
+  --caff-ink: var(--caff-text);
+  --caff-ink-soft: var(--caff-text-soft);
+  --caff-line: var(--caff-border);
+  --caff-accent-deep: var(--caff-accent-text);
+  --caff-teal: var(--caff-success);
+}
+
+body.chat-app,
+body.management-app {
+  background: var(--caff-canvas);
+  background-image: none;
+  color: var(--caff-text);
+  font-family: "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, sans-serif;
+  scrollbar-color: var(--caff-border-strong) transparent;
+}
+
+body.chat-app *,
+body.management-app * {
+  border-color: var(--caff-border);
+}
+
+body.chat-app :focus-visible,
+body.management-app :focus-visible {
+  outline: 2px solid var(--caff-accent);
+  outline-offset: 2px;
+}
+
+body.chat-app .app-icon,
+body.management-app .app-icon {
+  width: 20px;
+  height: 20px;
+  display: block;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+body.chat-app .icon-label-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--caff-space-2);
+}
+
+body.chat-app button,
+body.management-app button,
+body.management-app a.link-button {
+  border-radius: var(--caff-radius-md);
+  background: var(--caff-accent);
+  background-image: none;
+  color: var(--caff-on-accent);
+  box-shadow: none;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+
+body.chat-app button:hover:not(:disabled),
+body.management-app button:hover:not(:disabled),
+body.management-app a.link-button:hover {
+  transform: none;
+  background: var(--caff-accent-hover);
+}
+
+body.chat-app :is(.ghost-button, .secondary-button, .mini-action, .message-export-button),
+body.management-app :is(.ghost-button, .secondary-button, a.link-button) {
+  border: 1px solid var(--caff-border);
+  background: var(--caff-surface-elevated);
+  color: var(--caff-text);
+  box-shadow: none;
+}
+
+body.chat-app :is(.ghost-button, .secondary-button, .mini-action, .message-export-button):hover:not(:disabled),
+body.management-app :is(.ghost-button, .secondary-button, a.link-button):hover:not(:disabled) {
+  border-color: var(--caff-border-strong);
+  background: var(--caff-surface-hover);
+  color: var(--caff-text);
+}
+
+body.chat-app .danger,
+body.management-app .danger {
+  color: var(--caff-danger);
+}
+
+body.chat-app :is(input, textarea, select),
+body.management-app :is(input, textarea, select) {
+  border: 1px solid var(--caff-border);
+  border-radius: var(--caff-radius-md);
+  background: var(--caff-surface-elevated);
+  color: var(--caff-text);
+  box-shadow: none;
+}
+
+body.chat-app :is(input, textarea, select)::placeholder,
+body.management-app :is(input, textarea, select)::placeholder {
+  color: var(--caff-text-soft);
+  opacity: 0.78;
+}
+
+body.chat-app :is(input, textarea, select):focus,
+body.management-app :is(input, textarea, select):focus {
+  border-color: var(--caff-accent);
+  background: var(--caff-surface-elevated);
+  box-shadow: 0 0 0 3px var(--caff-focus);
+}
+
+body.chat-app :is(.muted, .section-hint),
+body.management-app :is(.muted, .section-hint, .subtitle) {
+  color: var(--caff-text-soft);
+}
+
+body.chat-app .eyebrow,
+body.management-app .eyebrow {
+  color: var(--caff-accent-text);
+  letter-spacing: 0.06em;
+}
+
+body.chat-app .rail,
+body.management-app .rail {
+  background: var(--caff-surface-sunk);
+  border-color: var(--caff-border);
+}
+
+body.management-app .rail-link,
+body.management-app .rail-button,
+body.chat-app .rail-link,
+body.chat-app .rail-button {
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 44px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--caff-radius-md);
+  background: transparent;
+  color: var(--caff-text-soft);
+  box-shadow: none;
+}
+
+body.management-app .rail-link:hover,
+body.management-app .rail-button:hover:not(:disabled),
+body.chat-app .rail-link:hover,
+body.chat-app .rail-button:hover:not(:disabled) {
+  background: var(--caff-surface-hover);
+  color: var(--caff-text);
+}
+
+body.management-app .rail-link[aria-current="page"],
+body.chat-app .rail-link[aria-current="page"] {
+  background: var(--caff-accent-soft);
+  color: var(--caff-accent-text);
+  box-shadow: inset 0 0 0 1px var(--caff-border);
+}
+
+body.chat-app :is(.sidebar, .chat-header, .composer, .context-drawer),
+body.management-app :is(.management-header, .management-index) {
+  background: var(--caff-surface);
+  background-image: none;
+}
+
+body.chat-app .composer,
+body.chat-app .composer:focus-within {
+  background: var(--caff-surface);
+  background-image: none;
+  box-shadow: none;
+}
+
+body.chat-app .composer textarea,
+body.chat-app .composer textarea:focus {
+  border-radius: var(--caff-radius-lg);
+  background: var(--caff-surface-elevated);
+}
+
+body.chat-app .icon-btn,
+body.management-app .management-icon-button {
+  border: 1px solid var(--caff-border);
+  border-radius: var(--caff-radius-md);
+  background: var(--caff-surface);
+  color: var(--caff-text-soft);
+  box-shadow: none;
+}
+
+body.chat-app .icon-btn:hover:not(:disabled),
+body.management-app .management-icon-button:hover:not(:disabled) {
+  border-color: var(--caff-border-strong);
+  background: var(--caff-surface-hover);
+  color: var(--caff-text);
+}
+
+body.chat-app .icon-btn[aria-expanded="true"] {
+  border-color: var(--caff-accent);
+  background: var(--caff-accent-soft);
+  color: var(--caff-accent-text);
+}
+
+body.chat-app .new-msg-pill {
+  gap: var(--caff-space-2);
+  border: 1px solid var(--caff-border-strong);
+  border-radius: var(--caff-radius-lg);
+  background: var(--caff-surface-elevated);
+  color: var(--caff-text);
+  box-shadow: var(--caff-shadow-md);
+}
+
+body.chat-app .new-msg-pill:hover:not(:disabled) {
+  background: var(--caff-surface-hover);
+}
+
+body.chat-app .drawer-overlay {
+  background: var(--caff-overlay);
+}
+
+body.chat-app .context-drawer {
+  background: var(--caff-surface);
+  backdrop-filter: none;
+  box-shadow: -4px 0 12px rgba(0, 0, 0, 0.12);
+}
+
+body.chat-app .drawer-tabs button {
+  border-radius: var(--caff-radius-md);
+  background: transparent;
+  color: var(--caff-text-soft);
+}
+
+body.chat-app .drawer-tabs button:hover:not(:disabled) {
+  background: var(--caff-surface-hover);
+}
+
+body.chat-app .drawer-tabs button[aria-selected="true"] {
+  background: var(--caff-accent-soft);
+  color: var(--caff-accent-text);
+}
+
+body.chat-app .participant-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--caff-space-2);
+}
+
+body.chat-app .agent-chip {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  width: 100%;
+  padding: var(--caff-space-3);
+  border: 1px solid var(--caff-border);
+  border-radius: var(--caff-radius-lg);
+  background: var(--caff-surface-elevated);
+  color: var(--caff-text);
+}
+
+body.chat-app .agent-chip > div {
+  min-width: 0;
+}
+
+body.chat-app .agent-chip .muted {
+  color: var(--caff-text-soft);
+}
+
+body.chat-app .agent-chip .agent-avatar {
+  background: color-mix(in srgb, var(--agent-color, var(--caff-accent)) 16%, var(--caff-surface-elevated));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--agent-color, var(--caff-accent)) 32%, var(--caff-border));
+  color: color-mix(in srgb, var(--agent-color, var(--caff-accent-text)) 70%, var(--caff-text));
+}
+
+body.chat-app :is(
+  .panel,
+  .stack-card,
+  .stack-card.stack-card-inner,
+  .conversation-item,
+  .empty-state,
+  .option-card,
+  .bulk-skill-card,
+  .profile-editor,
+  .profile-dropdown-trigger,
+  .profile-choice-chip,
+  .profile-dropdown-menu,
+  .skill-file-item,
+  .session-goal-drawer-panel,
+  .session-goal-detail-list,
+  .session-goal-action-card,
+  .session-goal-progress-card,
+  .session-goal-proposal-card,
+  .agent-context-meta-grid > div,
+  .agent-context-section-card,
+  .conversation-digest-card,
+  .timeline-digest-card,
+  .undercover-player-chip,
+  .werewolf-player-chip,
+  .mention-menu
+) {
+  border-color: var(--caff-border);
+  border-radius: var(--caff-radius-lg);
+  background: var(--caff-surface);
+  background-image: none;
+  color: var(--caff-text);
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+body.chat-app :is(.conversation-item, .skill-file-item, .profile-dropdown-trigger, .profile-choice-chip):hover {
+  border-color: var(--caff-border-strong);
+  background: var(--caff-surface-hover);
+}
+
+body.chat-app :is(.conversation-item.active, .skill-file-item.active, .profile-choice-chip.active, .compact-option-card.is-selected) {
+  border-color: var(--caff-accent);
+  background: var(--caff-accent-soft);
+  background-image: none;
+  color: var(--caff-text);
+}
+
+body.chat-app .profile-choice-group.is-open .profile-dropdown-trigger {
+  border-color: var(--caff-accent);
+  background: var(--caff-surface-elevated);
+}
+
+body.chat-app .profile-dropdown-caret {
+  width: 18px;
+  height: 18px;
+  transition: transform 140ms ease;
+}
+
+body.chat-app .profile-choice-group.is-open .profile-dropdown-caret {
+  transform: rotate(180deg);
+}
+
+body.chat-app .digest-kind-icon {
+  width: 16px;
+  height: 16px;
+  display: inline-block;
+  margin-right: 6px;
+  vertical-align: -3px;
+}
+
+body.chat-app .file-chip {
+  border-radius: var(--caff-radius-md);
+  background: var(--caff-surface-elevated);
+  color: var(--caff-text);
+}
+
+body.chat-app .message-card {
+  border: 1px solid var(--caff-border);
+  border-radius: var(--caff-radius-lg);
+  background: var(--caff-surface);
+  background-image: none;
+  color: var(--caff-text);
+  box-shadow: none;
+}
+
+body.chat-app .message-card:hover {
+  box-shadow: var(--caff-shadow-sm);
+}
+
+body.chat-app .message-card.assistant::after {
+  display: none;
+}
+
+body.chat-app .message-card.user {
+  border-color: color-mix(in srgb, var(--caff-accent) 34%, var(--caff-border));
+  background: var(--caff-accent-soft);
+  color: var(--caff-text);
+}
+
+body.chat-app .message-card.private {
+  border-color: color-mix(in srgb, var(--caff-info) 36%, var(--caff-border));
+  background: var(--caff-info-soft);
+  color: var(--caff-text);
+}
+
+body.chat-app .message-card.failed {
+  border-color: color-mix(in srgb, var(--caff-danger) 46%, var(--caff-border));
+  background: var(--caff-danger-soft);
+  color: var(--caff-text);
+}
+
+body.chat-app :is(.message-card.digest-status, .message-card.digest-result, .message-card.queue-recovery) {
+  border-color: color-mix(in srgb, var(--caff-success) 38%, var(--caff-border));
+  background: var(--caff-success-soft);
+  background-image: none;
+  color: var(--caff-text);
+}
+
+body.chat-app :is(.message-card.user, .message-card.private)::before,
+body.chat-app :is(.message-card.digest-status, .message-card.digest-result)::before {
+  background: currentColor;
+  opacity: 0.18;
+}
+
+body.chat-app :is(
+  .message-tool-trace,
+  .message-tool-trace-live-panel,
+  .message-tool-trace-live-command-body,
+  .message-tool-trace-step,
+  .message-tool-trace-payload,
+  .trace-details,
+  .trace-details-inner,
+  .markdown-table-wrap,
+  .message-body pre,
+  .message-body :not(pre) > code
+) {
+  border-color: var(--caff-border);
+  background: var(--caff-surface-elevated);
+  background-image: none;
+  color: var(--caff-text);
+  box-shadow: none;
+}
+
+body.chat-app :is(.message-card.user, .message-card.private) :is(
+  .message-tool-trace,
+  .message-tool-trace-live-command-body,
+  .message-tool-trace-step,
+  .message-tool-trace-payload,
+  .markdown-table-wrap,
+  .message-body pre,
+  .message-body :not(pre) > code
+) {
+  border-color: var(--caff-border);
+  background: color-mix(in srgb, var(--caff-surface-elevated) 82%, transparent);
+  color: var(--caff-text);
+}
+
+body.chat-app :is(.message-tool-trace-toggle-prominent, .skill-draft-alert, .skill-draft-floating-button) {
+  background: var(--caff-surface-elevated);
+  background-image: none;
+  color: var(--caff-text);
+  box-shadow: none;
+}
+
+body.chat-app :is(.message-tool-trace-pill, .message-tool-trace-toggle, .message-tool-trace-copy-button, .message-export-button) {
+  border-radius: var(--caff-radius-sm);
+}
+
+body.chat-app .mention-option {
+  border-radius: var(--caff-radius-md);
+  background: transparent;
+  color: var(--caff-text);
+}
+
+body.chat-app :is(.mention-option:hover, .mention-option.active) {
+  background: var(--caff-accent-soft);
+  background-image: none;
+}
+
+body.chat-app .toast,
+body.management-app .toast {
+  border: 1px solid var(--caff-border-strong);
+  border-radius: var(--caff-radius-lg);
+  background: var(--caff-surface-elevated);
+  color: var(--caff-text);
+  box-shadow: var(--caff-shadow-md);
+}
+
+body.management-app .management-detail {
+  background: var(--caff-canvas);
+}
+
+body.management-app :is(.management-pane, .management-header, .management-index, .management-detail) {
+  border-color: var(--caff-border);
+}
+
+body.management-app :is(
+  .stack-card,
+  .option-card,
+  .bulk-skill-card,
+  .profile-editor,
+  .profile-dropdown-trigger,
+  .profile-choice-chip,
+  .profile-dropdown-menu,
+  .skill-file-item,
+  .empty-state
+) {
+  border-color: var(--caff-border);
+  border-radius: var(--caff-radius-lg);
+  background: var(--caff-surface);
+  background-image: none;
+  color: var(--caff-text);
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+body.management-app .agent-list-item {
+  border-color: var(--caff-border);
+  border-radius: var(--caff-radius-md);
+  background: var(--caff-surface);
+  color: var(--caff-text);
+}
+
+body.management-app .agent-list-item:hover:not(:disabled) {
+  border-color: var(--caff-border-strong);
+  background: var(--caff-surface-hover);
+}
+
+body.management-app :is(.agent-list-item.active, .skill-file-item.active, .profile-choice-chip.active, .compact-option-card.is-selected, .tab-button.active) {
+  border-color: var(--caff-accent);
+  background: var(--caff-accent-soft);
+  background-image: none;
+  color: var(--caff-accent-text);
+  box-shadow: none;
+}
+
+body.management-app .tab-button {
+  border: 1px solid transparent;
+  border-radius: var(--caff-radius-md);
+  background: transparent;
+  color: var(--caff-text-soft);
+}
+
+body.management-app .tab-button:hover:not(:disabled) {
+  background: var(--caff-surface-hover);
+  color: var(--caff-text);
+}
+
+body.management-app .file-chip {
+  border-radius: var(--caff-radius-md);
+  background: var(--caff-surface-elevated);
+  color: var(--caff-text);
+}
+
+@media (max-width: 1279px) {
+  body.chat-app .sidebar {
+    box-shadow: 4px 0 12px rgba(0, 0, 0, 0.14);
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   CAFF-UI-M4 · Clowder-parity chat experience (owner: this section)
+   方向气泡 / 紧凑 meta / hover 操作 / 失败窄条 / 侧栏两行密度 /
+   header 瘦身(连接点) / 新建表单收起 / 移动档修复
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── 连接状态点（header，无事不占屏） ── */
+body.chat-app .connection-dot {
+  flex-shrink: 0;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--caff-ink-soft);
+  opacity: 0.55;
+}
+
+body.chat-app .connection-dot[data-status="ok"] {
+  background: var(--caff-teal);
+  opacity: 1;
+}
+
+body.chat-app .connection-dot[data-status="busy"] {
+  background: var(--caff-accent);
+  opacity: 1;
+}
+
+body.chat-app .connection-dot[data-status="failed"] {
+  background: var(--caff-danger);
+  opacity: 1;
+}
+
+/* ── 抽屉设置 tab：运行状态行 ── */
+body.chat-app .runtime-status-line {
+  margin: 0;
   display: flex;
   align-items: center;
   gap: 0.6rem;
   flex-wrap: wrap;
+  font-size: 13px;
 }
 
-.skill-tests-toolbar-title-row h2 {
-  font-size: clamp(1.18rem, 1.4vw, 1.46rem);
+/* ── 侧栏：新建表单收起 ── */
+body.chat-app .sidebar-new-form[hidden] {
+  display: none;
 }
 
-.skill-tests-toolbar-lead,
-.skill-tests-toolbar-footnote {
-  margin: 0;
-  font-size: 0.84rem;
-  line-height: 1.45;
+body.chat-app .sidebar-head #new-conversation-toggle[aria-expanded="true"] {
+  color: var(--caff-accent-deep);
+  border-color: var(--caff-accent);
 }
 
-.skill-tests-toolbar-grid {
+/* ── 侧栏会话列表：两行高密度 ── */
+body.chat-app .sidebar-list .conversation-item {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 0.7rem;
-  align-items: start;
+  gap: 2px;
+  padding: 0.55rem 0.75rem;
+  min-height: 44px;
 }
 
-.skill-tests-toolbar-field {
-  min-width: 0;
-  display: grid;
-  gap: 0.3rem;
+body.chat-app .sidebar-list .conversation-title-line {
+  justify-content: flex-start;
 }
 
-.skill-tests-toolbar-field .section-hint {
-  margin: 0;
-}
-
-label.skill-tests-toolbar-field,
-.skill-tests-toolbar-field > label {
-  display: grid;
-  gap: 0.3rem;
+body.chat-app .sidebar-list .conversation-title-line strong {
   font-weight: 600;
-  min-width: 0;
-}
-
-.skill-tests-toolbar-field > span {
-  font-weight: 600;
-}
-
-.skill-tests-toolbar-field > label.skill-tests-checkbox-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.45rem;
-  font-weight: 500;
-  line-height: 1.35;
-}
-
-.skill-tests-checkbox-row input[type="checkbox"] {
-  flex: 0 0 auto;
-  margin-top: 0.1rem;
-}
-
-.skill-tests-toolbar-field-inline {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 0.55rem;
-  align-items: end;
-}
-
-.skill-tests-toolbar-field-wide {
-  grid-column: span 2;
-}
-
-.skill-tests-toolbar-panel input,
-.skill-tests-toolbar-panel select {
-  padding: 0.7rem 0.85rem;
-}
-
-.skill-tests-toolbar-panel .skill-tests-checkbox-row input[type="checkbox"] {
-  width: auto;
-  padding: 0;
-}
-
-.skill-tests-toolbar-panel button {
-  padding: 0.65rem 0.95rem;
-}
-
-.skill-tests-toolbar-actions {
-  display: flex;
-  align-items: center;
-  gap: 0.55rem;
-  flex-wrap: wrap;
-}
-
-.skill-tests-toolbar-actions > button {
-  flex: 0 1 auto;
-}
-
-.skill-tests-main {
-  display: grid;
-  gap: 1rem;
-}
-
-.skill-tests-main-primary,
-.skill-tests-main-detail-column {
-  display: grid;
-  gap: 1rem;
-  align-content: start;
-  min-width: 0;
-}
-
-.skill-test-case-list {
-  display: grid;
-  gap: 0.75rem;
-}
-
-.skill-test-case-card {
-  display: grid;
-  gap: 0.55rem;
-  padding: 0.95rem;
-  border-radius: var(--radius-md);
-  border: 1px solid rgba(34, 49, 63, 0.08);
-  background: rgba(255, 255, 255, 0.56);
-  cursor: pointer;
-  transition:
-    transform 160ms ease,
-    border-color 160ms ease,
-    background 160ms ease;
-}
-
-.skill-test-case-card:hover {
-  transform: translateY(-1px);
-  border-color: rgba(239, 125, 87, 0.28);
-  background: rgba(255, 255, 255, 0.72);
-}
-
-.skill-test-case-card-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 0.75rem;
-}
-
-.skill-test-case-card-chain {
-  border-color: rgba(76, 110, 245, 0.16);
-  background: linear-gradient(180deg, rgba(243, 246, 255, 0.92), rgba(255, 255, 255, 0.72));
-}
-
-.skill-test-case-card-head-chain {
-  align-items: stretch;
-}
-
-.skill-test-case-card-head-main {
-  display: grid;
-  gap: 0.45rem;
-  min-width: 0;
-  flex: 1 1 auto;
-}
-
-.skill-test-case-chain-visual {
-  display: grid;
-  gap: 0.45rem;
-  min-width: 0;
-}
-
-.skill-test-case-chain-summary {
-  display: flex;
-  align-items: center;
-  gap: 0.45rem;
-  flex-wrap: wrap;
-}
-
-.skill-test-case-chain-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0.08rem 0.48rem;
-  border-radius: 999px;
-  background: rgba(76, 110, 245, 0.12);
-  color: #3656d4;
-  font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0.03em;
-}
-
-.skill-test-case-chain-summary-text {
-  color: var(--muted);
-  font-size: 0.82rem;
-  line-height: 1.4;
-}
-
-.skill-test-case-chain-rail {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  min-width: 0;
-}
-
-.skill-test-case-chain-node,
-.skill-test-case-chain-gap {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 2.05rem;
-  height: 2rem;
-  padding: 0 0.5rem;
-  border-radius: 999px;
-  border: 1px solid rgba(148, 163, 184, 0.28);
-  background: rgba(255, 255, 255, 0.92);
-  color: var(--muted);
-  font-size: 0.75rem;
-  font-weight: 700;
-  line-height: 1;
+  font-size: 0.92rem;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.skill-test-case-chain-node.is-current {
-  border-color: rgba(239, 125, 87, 0.42);
-  box-shadow: 0 0 0 2px rgba(239, 125, 87, 0.12);
-  color: var(--ink);
-}
-
-.skill-test-case-chain-node.is-passed {
-  border-color: rgba(42, 157, 143, 0.24);
-  background: rgba(241, 255, 251, 0.96);
-  color: #1f7a6f;
-}
-
-.skill-test-case-chain-node.is-failed {
-  border-color: rgba(229, 62, 62, 0.24);
-  background: rgba(255, 244, 244, 0.96);
-  color: #c53030;
-}
-
-.skill-test-case-chain-node.is-running {
-  border-color: rgba(76, 110, 245, 0.26);
-  background: rgba(243, 246, 255, 0.98);
-  color: #3656d4;
-}
-
-.skill-test-case-chain-node.is-review {
-  border-color: rgba(217, 164, 65, 0.28);
-  background: rgba(255, 249, 238, 0.96);
-  color: #8d6411;
-}
-
-.skill-test-case-chain-line {
-  flex: 0 0 1rem;
-  min-width: 1rem;
-  height: 2px;
-  border-radius: 999px;
-  background: rgba(148, 163, 184, 0.35);
-}
-
-.skill-test-case-card-tags {
+body.chat-app .conversation-meta-line {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
-  gap: 0.35rem;
-  flex-wrap: wrap;
-}
-
-.skill-test-case-card-id {
-  font-size: 0.88rem;
-  font-weight: 700;
-  color: var(--ink);
-}
-
-.skill-test-case-card-prompt {
-  margin: 0;
-  color: var(--ink);
-  font-weight: 600;
-  line-height: 1.45;
-}
-
-.skill-test-case-card-meta {
-  color: var(--muted);
-  font-size: 0.84rem;
-  line-height: 1.5;
-  word-break: break-word;
-}
-
-.skill-test-case-card-actions {
-  display: flex;
-  align-items: center;
-  gap: 0.45rem;
-  flex-wrap: wrap;
-  padding-top: 0.1rem;
-}
-
-.skill-test-detail-chain {
-  margin-top: 0.55rem;
-  padding: 0.75rem 0.8rem;
-  border-radius: var(--radius-sm);
-  border: 1px solid rgba(76, 110, 245, 0.14);
-  background: rgba(243, 246, 255, 0.8);
-}
-
-.skill-test-detail-chain .skill-test-case-chain-visual {
-  gap: 0.55rem;
-}
-
-.skill-test-detail-chain .skill-test-case-chain-rail {
-  flex-wrap: wrap;
-  row-gap: 0.45rem;
-}
-
-.skill-test-empty-actions {
-  margin-top: 0.2rem;
-}
-
-.skill-test-empty-title {
-  margin-top: 0;
-  margin-bottom: 0.35rem;
-}
-
-.skill-test-status-callout,
-.skill-test-inline-banner {
-  margin-top: 0.55rem;
-  padding: 0.7rem 0.8rem;
-  border-radius: var(--radius-sm);
-  border: 1px solid rgba(34, 49, 63, 0.12);
-  background: rgba(248, 250, 252, 0.96);
-}
-
-.skill-test-status-callout-label {
-  font-size: 0.78rem;
-  font-weight: 700;
-  letter-spacing: 0.01em;
-  color: var(--ink);
-}
-
-.skill-test-status-callout .section-hint,
-.skill-test-inline-banner .section-hint {
-  margin: 0.18rem 0 0;
-}
-
-.skill-test-status-callout-warning,
-.skill-test-inline-banner-pending {
-  border-color: rgba(217, 164, 65, 0.24);
-  background: rgba(255, 249, 238, 0.95);
-}
-
-.skill-test-status-callout-warning .skill-test-status-callout-label,
-.skill-test-inline-banner-pending .section-hint {
-  color: #8d6411;
-}
-
-.skill-test-status-callout-pending {
-  border-color: rgba(76, 110, 245, 0.18);
-  background: rgba(243, 246, 255, 0.95);
-}
-
-.skill-test-status-callout-pending .skill-test-status-callout-label {
-  color: #3656d4;
-}
-
-.skill-test-status-callout-error,
-.skill-test-inline-banner-error {
-  border-color: rgba(229, 62, 62, 0.24);
-  background: rgba(255, 244, 244, 0.95);
-}
-
-.skill-test-status-callout-error .skill-test-status-callout-label,
-.skill-test-inline-banner-error .section-hint {
-  color: #c53030;
-}
-
-.skill-test-status-callout-success {
-  border-color: rgba(42, 157, 143, 0.24);
-  background: rgba(241, 255, 251, 0.95);
-}
-
-.skill-test-status-callout-success .skill-test-status-callout-label {
-  color: #1f7a6f;
-}
-
-.skill-test-case-callout {
-  margin-top: 0.1rem;
-}
-
-.skill-test-inline-banner {
-  display: grid;
-  gap: 0.45rem;
-}
-
-.skill-test-inline-banner .panel-actions {
-  margin-top: 0;
-}
-
-.skill-test-issues {
-  margin-top: 0.55rem;
-  padding: 0.65rem 0.75rem;
-  border-radius: var(--radius-sm);
-  border: 1px solid rgba(217, 164, 65, 0.22);
-  background: rgba(255, 249, 238, 0.92);
-}
-
-.skill-test-issues.skill-test-issues-error {
-  border-color: rgba(229, 62, 62, 0.22);
-  background: rgba(255, 244, 244, 0.92);
-}
-
-.skill-test-issues.skill-test-issues-needs-review {
-  border-color: rgba(76, 110, 245, 0.22);
-  background: rgba(243, 246, 255, 0.94);
-}
-
-.skill-test-issues.skill-test-issues-warning {
-  border-color: rgba(217, 164, 65, 0.24);
-  background: rgba(255, 249, 238, 0.94);
-}
-
-.skill-test-issues-inline {
-  margin-top: 0.45rem;
-}
-
-.skill-test-issues-heading {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
   gap: 0.5rem;
-  flex-wrap: wrap;
-}
-
-.skill-test-issues-summary {
-  margin: 0;
-  color: #7c6123;
-}
-
-.skill-test-issues.skill-test-issues-error .skill-test-issues-summary {
-  color: #8f3d3d;
-}
-
-.skill-test-issues.skill-test-issues-needs-review .skill-test-issues-summary {
-  color: #3656d4;
-}
-
-.skill-test-issue-badges {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  flex-wrap: wrap;
-}
-
-.skill-test-issue-chip {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.08rem 0.48rem;
-  border-radius: 999px;
-  font-size: 0.72rem;
-  font-weight: 600;
-  line-height: 1.45;
-}
-
-.skill-test-issue-chip-error {
-  background: rgba(229, 62, 62, 0.12);
-  color: #c53030;
-}
-
-.skill-test-issue-chip-warning {
-  background: rgba(217, 164, 65, 0.14);
-  color: #8d6411;
-}
-
-.skill-test-issue-chip-needs-review {
-  background: rgba(76, 110, 245, 0.12);
-  color: #3656d4;
-}
-
-.skill-test-issue-list {
-  margin: 0.35rem 0 0;
-  padding-left: 1.05rem;
-  display: grid;
-  gap: 0.32rem;
-}
-
-.skill-test-issue-item {
-  color: #7c6123;
-}
-
-.skill-test-issue-item-error {
-  color: #8f3d3d;
-}
-
-.skill-test-issue-item-needs-review {
-  color: #3656d4;
-}
-
-.skill-test-issue-severity {
-  display: inline-flex;
-  align-items: center;
-  font-weight: 600;
-  margin-right: 0.35rem;
-  padding: 0 0.35rem;
-  border-radius: 999px;
-  font-size: 0.72rem;
-  line-height: 1.45;
-}
-
-.skill-test-issue-severity-error {
-  background: rgba(229, 62, 62, 0.12);
-  color: #c53030;
-}
-
-.skill-test-issue-severity-warning {
-  background: rgba(217, 164, 65, 0.14);
-  color: #8d6411;
-}
-
-.skill-test-issue-severity-needs-review {
-  background: rgba(76, 110, 245, 0.12);
-  color: #3656d4;
-}
-
-.skill-test-issue-code {
-  margin-right: 0.35rem;
-  padding: 0 0.3rem;
-  border-radius: 999px;
-  background: rgba(34, 49, 63, 0.08);
-  color: var(--muted);
-  font-family: var(--mono-font);
-  font-size: 0.74rem;
-}
-
-.skill-test-issue-item-error .skill-test-issue-code {
-  background: rgba(229, 62, 62, 0.12);
-  color: #c53030;
-}
-
-.skill-test-issue-item-needs-review .skill-test-issue-code {
-  background: rgba(76, 110, 245, 0.12);
-  color: #3656d4;
-}
-
-.skill-test-issue-message {
-  word-break: break-word;
-}
-
-.skill-test-issue-path {
-  margin-left: 0.45rem;
-  color: var(--muted);
-  font-family: var(--mono-font);
-  font-size: 0.8rem;
-}
-
-.skill-test-detail-shell {
-  display: grid;
-  gap: 1rem;
-}
-
-.skill-test-detail-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1rem;
-  flex-wrap: wrap;
-  padding-bottom: 0.2rem;
-  border-bottom: 1px solid rgba(34, 49, 63, 0.08);
-}
-
-.skill-test-detail-header .skill-test-status-callout,
-.skill-test-detail-header .skill-test-issues {
-  flex: 1 1 100%;
-}
-
-@media (min-width: 760px) {
-  .skill-test-detail-header {
-    position: static;
-    top: auto;
-    z-index: auto;
-    background: transparent;
-    box-shadow: none;
-  }
-}
-
-.skill-test-detail-title-row {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-}
-
-.skill-test-detail-title-row h2 {
-  margin: 0;
-}
-
-.skill-test-detail-tabs {
-  flex-wrap: wrap;
-}
-
-.skill-test-detail-content,
-.skill-test-detail-panel {
-  display: grid;
-  gap: 1rem;
   min-width: 0;
+  font-size: 0.76rem;
+  color: var(--caff-ink-soft);
+  white-space: nowrap;
+  overflow: hidden;
 }
 
-.skill-test-detail-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 1rem;
+body.chat-app .conversation-meta-line .conversation-type-badge {
+  margin-left: 0;
+  padding: 0.1rem 0.45rem;
+  font-size: 0.7rem;
+  font-weight: 600;
 }
 
-.skill-test-detail-span-full {
-  grid-column: 1 / -1;
+body.chat-app .conversation-meta-line .mini-badge {
+  padding: 0.1rem 0.45rem;
+  font-size: 0.7rem;
 }
 
-.table-scroll {
+/* ── 消息流：V3 结构分化 — transcript 行（assistant/system）+ user 右气泡 ── */
+body.chat-app .message-list {
+  grid-template-columns: minmax(0, 1080px);
+  gap: var(--caff-space-2);
+  padding: var(--caff-space-3);
+}
+
+/* transcript 行：全列宽、无卡片壳（无背景块/大圆角/卡片 padding），左细条标归属 */
+body.chat-app .message-card {
+  justify-self: stretch;
   width: 100%;
-  overflow-x: auto;
-  border-radius: var(--radius-md);
+  min-width: 0;
+  padding: 0 0 0 0.6rem;
+  gap: 0.25rem;
+  border: 0;
+  border-left: 2px solid color-mix(in srgb, var(--agent-color, var(--caff-accent)) 45%, transparent);
+  border-radius: 0;
+  background: transparent;
+  background-image: none;
+  box-shadow: none;
 }
 
-.table-scroll .summary-table {
-  min-width: 680px;
+body.chat-app .message-card:hover {
+  transform: none;
+  box-shadow: none;
 }
 
-@media (min-width: 1280px) {
-  .skill-tests-main {
-    grid-template-columns: minmax(0, 1.02fr) minmax(360px, 0.98fr);
-    align-items: start;
-  }
-
-  .skill-tests-main-primary {
-    grid-column: 1;
-  }
-
-  .skill-tests-main-detail-column {
-    grid-column: 2;
-  }
-
-  .skill-tests-create-panel {
-    grid-column: 1;
-  }
-
-  .skill-tests-summary-panel {
-    grid-column: 2;
-  }
+body.chat-app .message-card::before,
+body.chat-app .message-card.assistant::after {
+  display: none;
 }
 
-@media (max-width: 1240px) {
-  .skill-tests-toolbar-grid {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
+body.chat-app .message-card.assistant {
+  justify-self: stretch;
+  max-width: 100%;
 }
 
-@media (max-width: 1180px) {
-  .skill-tests-toolbar-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .skill-test-detail-grid {
-    grid-template-columns: 1fr;
-  }
+/* user 右气泡：fit-content 自然宽、轻 accent 底、不设固定百分比上限（operator 否决收窄），长消息自然用满整列 */
+body.chat-app .message-card.user {
+  justify-self: end;
+  width: fit-content;
+  max-width: 100%;
+  margin-left: 0;
+  padding: 0.4rem 0.75rem;
+  gap: 0.3rem;
+  border-left: 0;
+  border-radius: var(--caff-radius-lg) var(--caff-radius-lg) 6px var(--caff-radius-lg);
+  background: var(--caff-accent-soft);
+  background-image: none;
+  color: var(--caff-text);
 }
 
-@media (max-width: 760px) {
-  .skill-tests-toolbar-grid {
-    grid-template-columns: 1fr;
+/* private 语义保留：轻 info 底色卡，不跟随 transcript 去壳 */
+body.chat-app .message-card.private {
+  width: fit-content;
+  max-width: 85%;
+  padding: 0.4rem 0.75rem;
+  border-left: 0;
+  border-radius: var(--caff-radius-lg);
+  background: var(--caff-info-soft);
+  background-image: none;
+  color: var(--caff-text);
+}
+
+/* ── Composer 输入列跟随加宽后的聊天列（V2） ── */
+body.chat-app .composer-inner {
+  max-width: 1080px;
+}
+
+body.chat-app .composer-footer {
+  max-width: 1080px;
+}
+
+/* digest 状态/结果卡保留居中卡形态（transcript 去壳不影响语义卡） */
+body.chat-app .message-card.digest-status,
+body.chat-app .message-card.digest-result {
+  justify-self: center;
+  width: fit-content;
+  max-width: 92%;
+  padding: 0.6rem 0.9rem;
+  border: 1px solid color-mix(in srgb, var(--caff-success) 38%, var(--caff-border));
+  border-radius: var(--caff-radius-lg);
+  background: var(--caff-success-soft);
+  background-image: none;
+}
+
+body.chat-app .message-card.digest-source-target {
+  border: 1px solid rgba(245, 158, 11, 0.58);
+}
+
+/* ── meta 行：紧凑贴气泡（G2） ── */
+body.chat-app .message-card .message-meta {
+  justify-content: flex-start;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+}
+
+body.chat-app .message-card .message-time {
+  justify-content: flex-start;
+}
+
+body.chat-app .message-card.user .message-time {
+  order: -1;
+}
+
+/* ── 消息级操作：hover/focus 才露（G4） ── */
+body.chat-app .message-card :is(.message-export-button, .message-context-button) {
+  opacity: 0;
+  transition: opacity 140ms ease;
+}
+
+body.chat-app .message-card:hover :is(.message-export-button, .message-context-button),
+body.chat-app .message-card:focus-within :is(.message-export-button, .message-context-button) {
+  opacity: 1;
+}
+
+/* ── 失败：居中窄条（G5） ── */
+body.chat-app .message-card.failed {
+  justify-self: center;
+  width: fit-content;
+  max-width: 60%;
+  padding: 0.45rem 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--caff-danger) 46%, var(--caff-border));
+  border-radius: var(--caff-radius-lg);
+  background: var(--caff-danger-soft);
+  background-image: none;
+  text-align: center;
+}
+
+body.chat-app .message-card.failed .message-meta {
+  justify-content: center;
+}
+
+/* ── 移动档（G6） ── */
+body.chat-app .new-msg-pill {
+  left: auto;
+  right: var(--caff-space-4);
+  transform: none;
+}
+
+@media (max-width: 767px) {
+  body.chat-app .message-card.failed {
+    max-width: 92%;
   }
 
-  .skill-tests-toolbar-field-wide {
-    grid-column: auto;
+  body.chat-app .new-msg-pill {
+    left: auto;
+    right: var(--caff-space-3);
+    transform: none;
+    bottom: var(--caff-space-3);
+    width: 44px;
+    height: 44px;
+    min-height: 44px;
+    padding: 0;
   }
 
-  .skill-tests-toolbar-field-inline {
-    grid-template-columns: 1fr;
+  body.chat-app .new-msg-pill span {
+    display: none;
   }
 
-  .skill-tests-toolbar-actions > button {
-    flex: 1 1 100%;
+  body.chat-app .composer-inner {
+    gap: 8px;
   }
 
-  .skill-test-case-card-head,
-  .skill-test-detail-header {
-    flex-direction: column;
-    align-items: stretch;
+  body.chat-app .composer textarea {
+    min-width: 0;
+  }
+
+  body.chat-app .composer #stop-button {
+    padding: 0 12px;
+  }
+
+  body.chat-app .composer .send {
+    padding: 0 14px;
   }
 }

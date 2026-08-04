@@ -2,6 +2,7 @@
 
 (function registerProviderManagement() {
   const namespace = window.CaffPersonas || (window.CaffPersonas = {});
+  const shared = window.CaffShared || (window.CaffShared = {});
 
   namespace.createProviderManagement = function createProviderManagement(options) {
     const list = options.list;
@@ -96,12 +97,13 @@
     }
 
     function listRow(provider) {
-      const item = document.createElement('li');
-      const button = document.createElement('button');
       const draft = Boolean(provider.__draft);
-      button.type = 'button';
+      const { row: item, button } = shared.createManagementListItem({
+        id: provider.id,
+        active: provider.id === selectedProviderId,
+      });
+      button.classList.add('management-list-row');
       button.dataset.providerId = provider.id;
-      button.className = `management-list-row${provider.id === selectedProviderId ? ' active' : ''}`;
       const mark = document.createElement('span');
       mark.className = 'provider-mark';
       mark.textContent = String(provider.name || provider.id || 'P').slice(0, 2).toUpperCase();
@@ -125,7 +127,6 @@
       status.title = draft ? '未保存草稿' : validationLabel;
       button.append(mark, copy, status);
       button.addEventListener('click', () => selectProvider(provider.id));
-      item.appendChild(button);
       return item;
     }
 

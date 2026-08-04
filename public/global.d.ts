@@ -93,10 +93,46 @@ declare global {
     };
   };
 
+  type CaffShellChangePayload = {
+    open: boolean;
+    tab: string;
+  };
+
+  type CaffAppShell = {
+    openTab: (panelId: string) => void;
+    releaseTab: (panelId: string) => void;
+    closeDrawer: () => void;
+    isDrawerOpen: () => boolean;
+    activeTab: () => string;
+    onChange: (cb: (payload: CaffShellChangePayload) => void) => () => void;
+    setTabVisible: (panelId: string, visible: boolean, options?: { count?: number }) => void;
+    scrollToBottom: (smooth?: boolean) => void;
+    syncComposerHeight: () => void;
+    setComposerValue: (value: unknown) => void;
+  };
+
+  type CaffThemeController = {
+    getTheme: () => 'light' | 'dark';
+    hasExplicitPreference: () => boolean;
+    setTheme: (theme: 'light' | 'dark') => 'light' | 'dark';
+    toggle: () => 'light' | 'dark';
+    syncControls: () => void;
+  };
+
+  type CaffIconController = {
+    create: (name: string, options?: { className?: string }) => SVGSVGElement;
+  };
+
   interface Window {
     CaffChat?: any;
     CaffPersonas?: any;
     CaffShared?: any;
-    CaffSkillTests?: any;
+    CaffTheme?: CaffThemeController;
+    CaffIcons?: CaffIconController;
+    caffShell?: CaffAppShell;
+  }
+
+  interface HTMLElement {
+    inert: boolean;
   }
 }

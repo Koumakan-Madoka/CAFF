@@ -2,6 +2,7 @@
 
 (function registerRoleManagement() {
   const namespace = window.CaffPersonas || (window.CaffPersonas = {});
+  const shared = window.CaffShared || (window.CaffShared = {});
 
   namespace.createRoleManagement = function createRoleManagement(options) {
     const utils = namespace.managementUtils;
@@ -41,11 +42,13 @@
     });
 
     function listRow(role) {
-      const item = document.createElement('li');
-      const button = document.createElement('button');
       const available = role.availability && role.availability.status === 'available';
-      button.type = 'button';
-      button.className = `management-list-row${role.id === selectedRoleId ? ' active' : ''}${available ? '' : ' unavailable'}`;
+      const { row: item, button } = shared.createManagementListItem({
+        id: role.id,
+        active: role.id === selectedRoleId,
+      });
+      button.classList.add('management-list-row');
+      if (!available) button.classList.add('unavailable');
       button.dataset.roleId = role.id;
       const avatar = options.avatarUtils.buildAgentAvatarElement(role, 'small');
       const copy = document.createElement('span');
@@ -62,7 +65,6 @@
       status.title = role.isDefaultChatRole ? '新建聊天默认预选' : utils.availabilityCopy(role.availability);
       button.append(avatar, copy, status);
       button.addEventListener('click', () => selectRole(role.id));
-      item.appendChild(button);
       return item;
     }
 

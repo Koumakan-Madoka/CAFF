@@ -4,10 +4,8 @@
 
 - `public/*.js`: page-level entry files and screen composition
 - `public/chat/*.js`: chat room UI modules
-- `public/skill-tests/*.js`: Skill Tests-only helper modules loaded by
-  `public/eval-cases.html`
-- `public/shared/*.js`: shared browser helpers like API access, avatars, and
-  toasts
+- `public/shared/*.js`: shared browser helpers like API access, avatars,
+  themes, repository-owned icons, and toasts
 - `public/styles.css`: shared styling
 
 ## Conventions
@@ -17,10 +15,6 @@
 - For a larger page without a bundler, keep the main entry in `public/<page>.js`
   and move focused view/data helpers into `public/<page>/` instead of growing
   another monolith.
-- Skill Tests follows the plain-script registration pattern: each helper file is
-  an IIFE that registers a `create*Helpers()` factory on `window.CaffSkillTests`,
-  `public/eval-cases.html` loads those helpers before `public/skill-tests.js`,
-  and `public/skill-tests.js` passes explicit dependencies into the factories.
 - Put reusable browser helpers in `public/shared/` instead of copying fetch or
   DOM utility logic across pages.
 - When a chat feature grows beyond one screen concern, split it into
@@ -83,6 +77,371 @@
 
 #### Correct
 `provider miss 1/2 次模型调用` where `2` is the number of non-cold model calls.
+
+## Chat AppShell（`public/shell/app-shell.js`）
+
+### 1. Scope / Trigger
+- Trigger: changing the chat workbench frame — fixed viewport, sidebar, unified
+  context drawer, drawer tabs, scroll anchoring, or any focus/inert behavior in
+  `public/shell/app-shell.js`, `public/index.html`, or the `body.chat-app`
+  sections of `public/styles.css`.
+- Design truth: `designs/caff-ui-redesign-brief.md` (§8.3 contract table, §8.7
+  v4 freeze, §8.8 v5 conditional-tab delta) + `designs/mock-app-shell-a.html`.
+
+### 2. Signatures
+- `window.caffShell` bus: `openTab(panelId)`, `releaseTab(panelId)`,
+  `closeDrawer()`, `isDrawerOpen()`, `activeTab()`, `onChange(cb)`,
+  `setTabVisible(panelId, visible, {count})`, `scrollToBottom()`,
+  `syncComposerHeight()`, `setComposerValue(value)`.
+- Drawer tabs: 6 always-visible (participants/goal/memory/summary/settings/
+  context) + 2 conditional (game/drafts) driven by feature visibility.
+- Panel modules sync open-state via `caffShell.onChange`; shell-driven changes
+  arrive with `{ fromShell: true }` semantics.
+
+### 3. Contracts
+- Scroll skeleton: `body.chat-app` overflow hidden, `.app-shell` = 100dvh,
+  message-list is the only long scroll region; header/composer never scroll out.
+- Message rows keep intrinsic height (`grid-auto-rows: max-content`); a fixed
+  viewport must create overflow, never compress card tracks and clip bodies.
+- Focus ownership: the shell owns tab/drawer focus (APG roving tabindex).
+  Panel modules must never write focus when opened `fromShell`; they may only
+  focus their own inputs on direct user action.
+- Conditional tab disappearance: snapshot focus BEFORE writing `hidden` (the
+  browser drops focus to BODY the moment the attribute lands); fallback to the
+  first visible tab in BOTH drawer-open and drawer-closed states; migrate focus
+  to the fallback tab only when the drawer is open and focus was inside the
+  hidden tab/panel.
+- Closed-state exit: closed drawer/sidebar write `inert` + `aria-hidden`
+  together; narrow-sidebar open is modal with inert background.
+- Panel controller startup must depend only on its own panel DOM, never on
+  legacy chrome (old header buttons/floating balls) removed by the AppShell.
+- Conversation list renders `ul > li > button.conversation-item`; do not
+  reintroduce non-focusable div items.
+- Touch targets: ALL interactive elements ≥44px (full sweep, not sampling):
+  rail, header buttons, tabs, tool-trace toggle, timeline retry, settings
+  checkbox labels, send/stop, new-message pill.
+- Renderer ownership: `#message-list` contains renderer-owned message/empty-state
+  nodes only. The shell-owned new-message pill is a sibling overlay in
+  `.message-viewport`; never append shell chrome inside `#message-list`.
+- New-message semantics come from direct-child `.message-card[data-message-id]`
+  set differences. Do not use `subtree:true` DOM mutation as a proxy for a new
+  message: tool-trace expansion and streaming card internals are not messages.
+- A visible new-message pill means the reader is explicitly unpinned. Renderer
+  replacement/layout scroll events must not clear it; clear only when the reader
+  moves down to the bottom or activates the pill.
+- Programmatic composer clear/restore/insertion must call
+  `caffShell.setComposerValue(value)`. Direct `.value =` writes in `app.js` or
+  mention-menu bypass height synchronization and are forbidden.
+- ≤480px header: `.runtime-pill`/`#conversation-meta` must be shrinkable
+  (`min-width:0` + ellipsis) and `#conversation-meta` is hidden; status text
+  overlapping header buttons by >1px is a regression.
+
+### 4. Validation & Error Matrix
+| Case | Expected behavior |
+| --- | --- |
+| Goal tab opened from shell | Form/events bound, no focus steal into objective |
+| Active conditional tab hidden while drawer open | Focus lands on fallback tab, panel hidden |
+| Current conditional tab hidden while drawer closed | Reopen shows exactly one visible selected tab, no hidden active panel |
+| 375/320px header with long runtime text | No rect intersection with refresh/drawer buttons |
+| Keyboard-only session switch | Tab reaches `button.conversation-item`, Enter loads room |
+| Renderer replaces all message cards while pill is visible | Pill remains visible outside `#message-list`; a later unseen message id can show it again |
+| Long conversation exceeds the viewport | Message bodies stay inside their cards while the list gains scroll overflow |
+| Tool trace expands inside an existing card | No new-message pill is created |
+| Composer succeeds after a tall command | Value clears and height returns to the one-row baseline |
+| Failed send restores a tall message | Original value and tall height are both restored |
+| `npm run test:ui` in a development checkout | Builds assets, starts a unique localhost port with temporary SQLite and `.env.local` disabled, then deletes all run-owned conversations |
+| `CAFF_VERIFY_APP` override | Rejects non-loopback targets before creating or deleting conversations |
+| Browser evidence bundle | At most 3 screenshots plus one approximately 15-second walkthrough video, all under the temporary run directory |
+
+### 5. Tests Required
+- `tests/ui/app-shell.test.js` (jsdom, part of `test:fast`) locks controller
+  startup, focus ownership, list semantics, both conditional-tab states,
+  renderer replacement, trace-only mutations, composer synchronization, v5
+  mock IA, and the self-contained runner contract.
+- `scripts/verify-ui.mjs` (`npm run test:ui`, repo-owned Playwright/Edge) starts
+  its own dynamic-port app with `CAFF_DISABLE_ENV_LOCAL=1`, a temporary
+  `PI_SQLITE_PATH`, and a unique run id. It locks layout/focus behavior, full
+  44px sweep, 375/320 header overlap, keyboard room switching, composer
+  clear/restore, renderer replacement, DELETE success, and zero run residue.
+  Explicit targets are loopback-only; emergency cleanup reports failures rather
+  than swallowing them. The same run writes no more than three screenshots and
+  one walkthrough video to its temporary evidence directory.
+- `npm run check` includes `public/shell/app-shell.js`.
+
+### 6. Good / Base / Bad Cases
+
+- Good: renderer replaces the complete card list while the reader is off-bottom;
+  the sibling pill stays visible and tool-trace expansion does nothing to it.
+- Base: new direct-child message id arrives while pinned; the list follows the
+  bottom without showing a pill.
+- Bad: shell chrome is inserted into `#message-list`, or any subtree addition is
+  interpreted as a message.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```js
+messageList.appendChild(pill);
+observer.observe(messageList, { childList: true, subtree: true });
+composerInput.value = restoredText;
+```
+
+#### Correct
+
+```js
+messageViewport.appendChild(pill); // sibling of renderer-owned list
+observer.observe(messageList, { childList: true });
+window.caffShell.setComposerValue(restoredText);
+```
+
+## Management AppShell
+
+### 1. Scope / Trigger
+
+- Trigger: changing the outer frame, navigation, list selection semantics,
+  responsive layout, or scroll ownership of `personas.html`, `skills.html`,
+  `projects.html`, or `metrics.html`.
+- Applies to those four HTML/page-entry pairs, the `body.management-app`
+  section of `public/styles.css`, and `public/shared/management-list.js`.
+- Existing CRUD/filter APIs and form ids are compatibility boundaries. This
+  shell migration does not authorize backend contract changes.
+
+### 2. Signatures
+
+- Page root: `body.management-app[data-page]` containing `.management-shell`,
+  `nav.rail`, `.management-main`, `.management-header`, and
+  `main.management-content`.
+- Content panes: `.management-index.management-pane` and
+  `.management-detail.management-pane`.
+- Shared stateless DOM helpers:
+  - `CaffShared.createManagementListItem({ id, active?, compact? })`
+  - `CaffShared.createManagementListEmptyState(message)`
+- Navigation routes, in order: `/`, `/personas.html`, `/skills.html`,
+  `/projects.html`, `/metrics.html`.
+
+### 3. Contracts
+
+- `body.management-app` owns a fixed `100dvh` viewport and never lets the
+  document become a content scroll container.
+- At widths >=768px, index and detail panes are bounded sibling scroll owners.
+  At widths <768px, the rail moves to a 56px bottom bar and
+  `.management-content` becomes the single internal scroll owner while both
+  panes use `overflow:visible`.
+- Exactly one rail destination has `aria-current="page"`, matching the current
+  route. Do not restore per-page topbar navigation.
+- Personas, skills, modes, projects, and metric agents render as
+  `ul > li > button.agent-list-item`. Keep native button keyboard behavior and
+  the existing delegated click paths; do not add keydown simulation.
+- Page entries fail fast if either management list helper is unavailable. The
+  helper owns no collection state, selection state, API calls, or persistence.
+- Preserve all existing page ids, forms, CRUD/filter requests, and Skill/mode
+  switching behavior during shell edits.
+- All visible interactive targets are at least 44px high. Checkbox/radio inputs
+  may keep their visual control size only when their clickable label is >=44px.
+- `body.chat-app` and `body.management-app` share CAFF tokens and rail visual
+  primitives, but their scroll owners are deliberately different: chat uses
+  the message list; management uses bounded panes or the mobile content region.
+
+### 4. Validation & Error Matrix
+
+| Case | Expected behavior |
+| --- | --- |
+| Desktop 1440 | Left rail, fixed header, side-by-side index/detail panes, no document overflow. |
+| Tablet 820 | Left rail and two bounded panes remain usable; no horizontal overflow. |
+| Mobile 375 | Bottom rail is 56px; panes stack; content is the only internal scroll region; header text does not overlap refresh. |
+| Native list keyboard selection | Focusing a collection button and pressing Enter updates active selection and detail content. |
+| Empty projects payload | A semantic `li` empty state appears and unavailable selected-project actions are disabled. |
+| Missing shared helper | Page entry throws an explicit missing-module error instead of rendering a partial screen. |
+| Browser/runtime failure | UI verification reports console, page, and non-favicon HTTP errors as failed checks. |
+
+### 5. Tests Required
+
+- `tests/ui/management-shell.test.js` is part of `test:fast` and locks the four
+  shell landmarks, legacy chrome removal, route/current-page mapping, critical
+  ids, semantic lists, helper behavior, scoped CSS, and runner integration.
+- `scripts/ui/verify-management-pages.mjs` is called by
+  `scripts/verify-ui.mjs`. It reuses the runner-owned browser, loopback app,
+  temporary SQLite, and output directory; it must not start a second service.
+- Browser proof covers all four routes at 1440 plus responsive 820/375,
+  keyboard selection, an intercepted empty projects payload, visible 44px
+  targets, document containment, and clean page/console/HTTP diagnostics.
+- The combined UI evidence stays bounded to three PNG files and one walkthrough
+  WebM. One PNG is `ui-v2-1440-management.png`.
+- `npm run check` includes `public/shared/management-list.js` and all four page
+  entries.
+
+### 6. Good / Base / Bad Cases
+
+- Good: the user scrolls a long persona editor while the rail and management
+  header stay reachable and the index pane retains its own position.
+- Base: an empty collection renders an inert semantic empty row without
+  changing existing API or form behavior.
+- Bad: a management page restores `.topbar`, uses a clickable div for a list
+  item, or makes `body` the mobile content scroll owner.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```html
+<body>
+  <div class="topbar">...</div>
+  <div class="agent-list"><div class="agent-list-item">...</div></div>
+</body>
+```
+
+#### Correct
+
+```html
+<body class="management-app" data-page="personas">
+  <nav class="rail" aria-label="主导航">...</nav>
+  <main class="management-content">
+    <aside class="management-index management-pane">
+      <ul class="agent-list"><li><button type="button">...</button></li></ul>
+    </aside>
+    <section class="management-detail management-pane">...</section>
+  </main>
+</body>
+```
+
+## Theme and Repository-Owned Icon System
+
+### 1. Scope / Trigger
+
+- Trigger: changing application colors, surface hierarchy, radii, shadows,
+  theme persistence, the rail/header/drawer icon language, or how `.svg` files
+  are served.
+- Applies to all five routes (`index.html`, `personas.html`, `skills.html`,
+  `projects.html`, `metrics.html`), `public/shared/theme.js`,
+  `public/shared/icons.js`, `public/assets/icons.svg`, the Milestone 3 section
+  of `public/styles.css`, and `server/http/static-file.ts`.
+- The theme layer may change presentation only. It must preserve AppShell focus,
+  inert, scroll-owner, CRUD/filter, element-id, and API contracts.
+
+### 2. Signatures
+
+- Persistent key: `caff:theme` with the only valid stored values `light` and
+  `dark`.
+- `window.CaffTheme`:
+  - `getTheme(): 'light' | 'dark'`
+  - `hasExplicitPreference(): boolean`
+  - `setTheme(theme: 'light' | 'dark'): 'light' | 'dark'`
+  - `toggle(): 'light' | 'dark'`
+  - `syncControls(): void`
+- `window.CaffIcons.create(name, { className? }): SVGSVGElement` is a stateless
+  DOM factory. It creates `<svg><use href="/assets/icons.svg#icon-NAME">` and
+  throws for unknown names.
+- Every page contains exactly one `button[data-theme-toggle]` and loads the
+  synchronous `/shared/theme.js` before `/styles.css`.
+
+### 3. Contracts
+
+- `public/shared/theme.js` is the only ThemePreference lifecycle owner. Page
+  entries and renderers must not read/write `caff:theme` or
+  `document.documentElement.dataset.theme` directly.
+- A valid stored preference wins over `prefers-color-scheme`. Without a valid
+  stored value, system color scheme is a live, non-persisted projection.
+- Apply `html[data-theme]` and `color-scheme` synchronously before stylesheet
+  parsing. Local-storage read/write failures must degrade to in-memory state
+  without blocking page boot or clicks.
+- `storage` events with `light|dark` synchronize an explicit preference across
+  tabs. Removing the key returns to live system projection; invalid values are
+  ignored.
+- Theme toggle `aria-label`, `title`, `aria-pressed`, and sun/moon `<use>` must
+  describe the current state and the next action. Its visible hit area is at
+  least 44px on every route and breakpoint.
+- `public/assets/icons.svg` is the only product icon path registry. Static HTML
+  uses `<use>` directly; dynamic renderers use `CaffIcons.create`. Do not copy
+  path data into page modules or introduce an icon runtime dependency.
+- Application chrome uses repository-owned `currentColor`, `fill:none`,
+  approximately 1.75px-stroke SVGs. User messages, persona avatars, and game
+  content may still contain semantic emoji; the ban applies to product chrome.
+- The static server must return `.svg` as `image/svg+xml`. Returning
+  `application/octet-stream` leaves external `<use>` nodes present but visually
+  blank in Edge.
+- Light and dark share identical layout density. Application chrome uses flat
+  canvas/surface/sunk layers, no decorative gradient or backdrop blur, 6/8/10/
+  12px geometry, and restrained shadows. `999px` is semantic-only (avatar,
+  status badge, progress track), not a default button/card radius.
+- Normal body/input/primary-button text contrast is at least 4.5:1 in both
+  themes. Focus and semantic status colors must remain visible without relying
+  on color alone.
+
+### 4. Validation & Error Matrix
+
+| Case | Expected behavior |
+| --- | --- |
+| First visit, system dark | First painted document is dark; no `caff:theme` value is written. |
+| Stored `light` while system dark | Light wins on every route and ignores later system changes. |
+| Stored `sepia` or corrupted text | Ignore it and project the current system theme; never write the invalid value into `data-theme`. |
+| localStorage throws `SecurityError` | Page boots, current-tab toggle still works, persistence is best-effort only. |
+| Toggle on chat then navigate to personas | New route applies the explicit theme before CSS and exposes the matching label/icon. |
+| Cross-tab valid storage event | Current document and all toggle controls synchronize atomically. |
+| Cross-tab key removal | Explicit state clears and future system-theme changes are observed again. |
+| `/assets/icons.svg` has wrong MIME or fails | Browser gate reports a bad response/MIME and visible line-icon contract fails. |
+| 1440/820/375 in either theme | No horizontal document overflow; existing fixed-shell and scroll-owner contracts remain intact. |
+| New dynamic product icon | Must be added to the sprite allowlist and rendered through `CaffIcons.create`; unknown names fail fast. |
+
+### 5. Good / Base / Bad Cases
+
+- Good: the user chooses Dark in chat, opens Skills, and receives the same
+  theme before first paint; rail and action icons remain crisp via
+  `currentColor`, while cards use borders rather than glow/blur.
+- Base: no preference exists, so each tab follows the OS and updates when the
+  OS changes.
+- Bad: a page waits for `DOMContentLoaded` before adding Dark, stores `system`,
+  embeds an emoji gear in a header, duplicates an SVG path in a renderer, or
+  adds a black overlay on top of hard-coded white-alpha cards.
+
+### 6. Tests Required
+
+- `tests/ui/theme-icons.test.js` is part of `test:fast` and locks script-before-
+  CSS ordering, the ThemePreference state machine, storage failure, cross-tab
+  events, sprite completeness, helper fail-fast behavior, SVG MIME, chrome
+  emoji removal, semantic theme tokens, and verifier wiring.
+- `scripts/ui/verify-theme-icons.mjs` is called by `scripts/verify-ui.mjs` and
+  reuses its Edge instance, loopback-only app, temporary SQLite, diagnostics,
+  and zero-residue cleanup. It must not start a second service.
+- Browser proof loads all five routes in Light and Dark, checks the toggle and
+  sprite response, reads computed gradients/blur/radii and 4.5:1 contrast, and
+  reruns chat/personas at 820 and 375. The combined runner currently has 93
+  checks and all must pass.
+- `npm run check` covers both shared helpers; `npm run typecheck:public` covers
+  their public types. A visual review must include at least Light chat, Dark
+  chat, and Dark management screenshots.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```html
+<link rel="stylesheet" href="/styles.css" />
+<button class="rail-button">⚙️</button>
+```
+
+```js
+document.documentElement.dataset.theme = localStorage.getItem('theme');
+title.textContent = '📦 Rollup';
+```
+
+#### Correct
+
+```html
+<script src="/shared/theme.js"></script>
+<link rel="stylesheet" href="/styles.css" />
+<button class="rail-button" data-theme-toggle aria-pressed="false">
+  <svg class="app-icon" aria-hidden="true">
+    <use href="/assets/icons.svg#icon-moon"></use>
+  </svg>
+</button>
+```
+
+```js
+const icon = window.CaffIcons.create('archive', {
+  className: 'app-icon digest-kind-icon',
+});
+```
 
 ## Cross-Layer Watch Points
 

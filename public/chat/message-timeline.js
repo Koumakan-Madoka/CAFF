@@ -1771,23 +1771,6 @@
             : '\u8fd9\u6761\u6d88\u606f\u7684\u4f1a\u8bdd\u8f68\u8ff9\u6682\u65f6\u4e0d\u53ef\u5bfc\u51fa';
           sender.appendChild(exportButton);
 
-          const recordButton = document.createElement('button');
-          recordButton.type = 'button';
-          recordButton.className = 'message-export-button ghost-button message-record-button';
-          recordButton.dataset.messageId = message.id;
-          const terminalStatus = !message.status || message.status === 'completed' || message.status === 'failed';
-          const canRecord = Boolean(message.taskId) && terminalStatus;
-          recordButton.disabled = !canRecord;
-          recordButton.textContent = '\u8bb0\u5f55';
-          recordButton.title = message.taskId
-            ? '\u8bb0\u5f55\u8fd9\u6761 AI \u56de\u590d\u7684\u8f93\u5165 prompt/\u4e0a\u4e0b\u6587\uff0c\u7528\u4e8e\u9519\u9898\u672c A/B \u6d4b\u8bd5'
-            : '\u8fd9\u6761\u6d88\u606f\u6682\u65f6\u6ca1\u6709 taskId\uff0c\u65e0\u6cd5\u8bb0\u5f55';
-          if (message.taskId && !terminalStatus) {
-            recordButton.title =
-              '\u8be5\u6761 AI \u6d88\u606f\u8fd8\u672a\u5b8c\u6210\uff0c\u8bf7\u7b49\u5f85\u5b8c\u6210\u540e\u518d\u8bb0\u5f55';
-          }
-          sender.appendChild(recordButton);
-
           const contextButton = document.createElement('button');
           contextButton.type = 'button';
           contextButton.className = 'message-context-button ghost-button';

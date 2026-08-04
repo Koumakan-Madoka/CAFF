@@ -221,7 +221,7 @@ function createConversationsControllerHarness(t, options = {}) {
     broadcastEvent(eventName, payload) {
       broadcastEvents.push({ eventName, payload });
     },
-    modeStore: { get() { return null; } },
+    modeStore: options.modeStore || { get() { return null; } },
     projectManager: options.projectManager,
     projectDir: options.projectDir,
     digestOptions: { summaryMode: 'extractive', ...(options.digestOptions || {}) },
@@ -312,6 +312,37 @@ test('create server wires loopback model-provider administration with bootstrap 
 
   await new Promise((resolve) => app.close(resolve));
   closed = true;
+});
+
+test('conversations controller preserves string participant ids when mode skills are merged', async (t) => {
+  const { handler, store } = createConversationsControllerHarness(t, {
+    modeStore: {
+      get(modeId) {
+        return modeId === 'standard'
+          ? { id: 'standard', skillIds: ['skill-creator'] }
+          : null;
+      },
+    },
+  });
+  const agent = store.saveCustomRoleConfig({
+    id: 'string-participant-agent',
+    name: 'String Participant Agent',
+    description: 'Exercises the legacy string participant API contract.',
+    personaPrompt: 'Reply briefly.',
+  });
+
+  const result = await invokeConversationsController(handler, {
+    method: 'POST',
+    pathname: '/api/conversations',
+    body: {
+      title: 'String Participant Conversation',
+      participants: [agent.id],
+    },
+  });
+
+  assert.equal(result.statusCode, 201);
+  assert.deepEqual(result.json.conversation.agents.map((participant) => participant.id), [agent.id]);
+  assert.deepEqual(result.json.conversation.agents[0].conversationSkillIds, ['skill-creator']);
 });
 
 test('conversations controller exposes bounded cursor pages without hydrating public messages in the conversation projection', async (t) => {
@@ -4434,10 +4465,6 @@ test('server smoke: bootstrap, static files, projects, skills, agents, and conve
   assert.equal(sharedResponse.status, 200);
   assert.match(sharedResponse.headers.get('content-type') || '', /javascript/);
 
-  const casebookResponse = await fetch(`${baseUrl}/eval-cases.html`);
-  assert.equal(casebookResponse.status, 200);
-  assert.match(casebookResponse.headers.get('content-type') || '', /text\/html/);
-
   const bootstrap = await fetchJson(baseUrl, '/api/bootstrap');
   assert.ok(Array.isArray(bootstrap.conversations), `Expected conversations to be an array, got ${typeof bootstrap.conversations}`);
   assert.ok(Array.isArray(bootstrap.agents), `Expected agents to be an array, got ${typeof bootstrap.agents}`);
@@ -4446,9 +4473,6 @@ test('server smoke: bootstrap, static files, projects, skills, agents, and conve
   const metrics = await fetchJson(baseUrl, '/api/metrics/agent');
   assert.ok(Array.isArray(metrics.agents), `Expected metrics.agents to be an array, got ${typeof metrics.agents}`);
   assert.ok(Array.isArray(metrics.tools), `Expected metrics.tools to be an array, got ${typeof metrics.tools}`);
-
-  const evalCases = await fetchJson(baseUrl, '/api/eval-cases');
-  assert.ok(Array.isArray(evalCases.cases), `Expected evalCases.cases to be an array, got ${typeof evalCases.cases}`);
 
   const projects = await fetchJson(baseUrl, '/api/projects');
   assert.ok(Array.isArray(projects.projects));
@@ -5189,7 +5213,6 @@ test('conversation create validates the explicit roster and only merges mode ski
     modeStore: {
       get(id) {
         if (id === 'coding') return { id: 'coding', name: 'Coding', skillIds: ['mode-skill'] };
-        if (id === 'skill_test_design') return { id, name: 'Skill Test 设计', skillIds: ['skill-test-design-workbench'] };
         return null;
       },
     },
@@ -5285,32 +5308,23 @@ test('conversation create validates the explicit roster and only merges mode ski
     'role-family-gemini',
   ]);
 
-  const skillTestConversation = await invokeConversationsController(controller, {
+  const skillTestModeRemoved = await invokeConversationsController(controller, {
     method: 'POST',
     pathname: '/api/conversations',
     body: {
+      title: 'Retired skill-test mode roster',
       type: 'skill_test_design',
       skillId: 'tdd',
-      participants: ['role-family-gpt', 'role-family-claude', 'role-family-gemini'],
+      participants: ['role-family-gpt'],
     },
   });
-  assert.equal(skillTestConversation.statusCode, 201);
-  assert.deepEqual(skillTestConversation.json.conversation.agents.map((agent) => agent.id), [
-    'role-family-gpt',
-    'role-family-claude',
-    'role-family-gemini',
-  ]);
-  assert.deepEqual(skillTestConversation.json.conversation.metadata.skillTestDesign.participantRoles, {
-    'role-family-gpt': 'planner',
-    'role-family-claude': 'critic',
-    'role-family-gemini': 'scribe',
-  });
-  assert.equal(JSON.stringify(skillTestConversation.json.conversation).includes('agent-strategist'), false);
+  assert.equal(JSON.stringify(skillTestModeRemoved.json.conversation || {}).includes('skillTestDesign'), false);
+  assert.equal(JSON.stringify(skillTestModeRemoved.json).includes('agent-strategist'), false);
 
   modelOptions.splice(0, modelOptions.length);
   await assertCreateError({
     title: 'Unavailable role',
-    participants: ['role-family-gpt'],
+    participants: [{ agentId: 'role-family-gpt' }],
   }, 422, 'participant_role_unavailable');
   assert.equal(store.listConversations().length, 4);
 });
