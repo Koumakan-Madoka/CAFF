@@ -8,7 +8,7 @@
    */
   shared.createManagementListItem = function createManagementListItem(options) {
     const row = document.createElement('li');
-    row.className = 'management-list-row';
+    row.className = 'management-list-item';
 
     const button = document.createElement('button');
     button.type = 'button';
