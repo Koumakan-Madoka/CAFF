@@ -50,7 +50,7 @@
     for (const option of Array.isArray(options) ? options : []) {
       const element = document.createElement('option');
       element.value = option.key;
-      element.textContent = option.label || `${option.provider} / ${option.model}`;
+      element.textContent = modelOptionUtils.buildModelOptionLabel(option);
       select.appendChild(element);
     }
     const selectedKey = model ? modelOptionKey(provider, model) : '';

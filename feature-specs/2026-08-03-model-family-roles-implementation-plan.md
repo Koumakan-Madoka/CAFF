@@ -35,7 +35,7 @@ Tasks 0–8、隔离 acceptance、全量回归、fresh-context 扫描、跨家�
 
 ## Finish Line
 
-Provider 配置可从浏览器安全维护且不读回凭据；catalog 只由 Pi runtime、runtime default 与当前 `models.json` 产生；七个 family role 永久存在并受同族模型/能力约束；custom role 保留 Persona、Skills 与跨族 Profile；旧九个系统 seed 退出活动目录但历史、记忆与发送者身份完整；新建会话必须显式确认参与者；运行前对模型、family、Profile 和 thinking 再验证，任何不可用角色都会在创建 placeholder/run 之前结构化阻断。
+Provider 配置可从浏览器安全维护且不读回凭据；catalog 的可见选项只由当前 `models.json` 与精确 runtime default 产生，Pi runtime registry 仅补齐可见项的标签与能力；七个 family role 永久存在并受同族模型/能力约束；custom role 保留 Persona、Skills 与跨族 Profile；旧九个系统 seed 退出活动目录但历史、记忆与发送者身份完整；新建会话必须显式确认参与者；运行前对模型、family、Profile 和 thinking 再验证，任何不可用角色都会在创建 placeholder/run 之前结构化阻断。
 
 不建设：F241 Agent runtime/provider plugin、模型市场、计费、OAuth broker、远程 Provider 管理、旧角色归档页、自动跨族 fallback、第二套 provider 配置格式。
 
@@ -64,7 +64,7 @@ type ConfiguredModelOption = {
   provider: string;
   model: string;
   label: string;
-  source: 'runtime' | 'models_json' | 'runtime_registry';
+  source: 'runtime' | 'models_json';
   family: ModelFamily | null;
   familySource: 'explicit' | 'provider_alias' | 'model_alias' | 'unknown' | 'conflict';
   supportedThinkingLevels: ThinkingLevel[];
@@ -138,7 +138,7 @@ Lifecycle owner: `server/domain/models/configured-model-catalog.ts`; Pi model en
 
 | State | Event | Next | Rule |
 |---|---|---|---|
-| cold | bootstrap/API/runtime read | ready/error | Build from runtime registry + runtime default + valid `models.json`, never Agent/Profile rows. |
+| cold | bootstrap/API/runtime read | ready/error | Expose valid `models.json` entries plus the exact runtime default; use runtime registry only as metadata/capability lookup, never as a wholesale picker source and never read Agent/Profile rows. |
 | ready | provider mutation | invalidated | Next read rebuilds from the newly committed file. |
 | ready | role save | ready | Role references do not add options. |
 | ready | runtime validation | ready/refreshed | Use current snapshot; a missing key is a blocker, not an env fallback. |
@@ -146,7 +146,7 @@ Lifecycle owner: `server/domain/models/configured-model-catalog.ts`; Pi model en
 
 Invariants:
 
-- INV-11: `(provider,model)` is unique and source precedence is deterministic: explicit `models.json` metadata augments the Pi model; runtime default only adds a missing exact key.
+- INV-11: `(provider,model)` is unique and source precedence is deterministic: explicit `models.json` entries are visible and augment matching Pi metadata; runtime default only adds a missing exact key; registry-only keys stay internal.
 - INV-12: Family classification exists only in `model-family-registry.ts`; generic providers do not imply a family.
 - INV-13: `supportedThinkingLevels` comes from Pi `getSupportedThinkingLevels(model)`, loaded relative to the actual `@earendil-works/pi-coding-agent` module; CAFF stores no model capability table.
 - INV-14: Unknown/conflict options remain custom-selectable but are absent from every family-role selector.

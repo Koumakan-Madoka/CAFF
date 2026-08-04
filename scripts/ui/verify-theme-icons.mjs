@@ -57,6 +57,9 @@ async function openPage(browser, baseUrl, definition, theme, viewport) {
   const diagnostics = trackPage(page);
   await page.goto(new URL(definition.route, baseUrl).href, { waitUntil: 'load' });
   await page.waitForSelector('button[data-theme-toggle]');
+  if (definition.key === 'personas') {
+    await page.waitForSelector('.management-card');
+  }
   await page.waitForTimeout(250);
   return { context, page, diagnostics };
 }
@@ -105,6 +108,20 @@ async function readThemeSnapshot(page, definition) {
       '.management-index',
       '.management-detail',
     ].join(','))).filter(visible);
+    const managementSurfaceBackgrounds = Array.from(new Set(
+      Array.from(document.querySelectorAll([
+        '.management-list-row',
+        '.provider-source-note',
+        '.management-card',
+        '.runtime-profile',
+        '.skill-option',
+        '.provider-model-row',
+        '.management-warning',
+        '.danger-confirmation',
+      ].join(',')))
+        .filter(visible)
+        .map((element) => getComputedStyle(element).backgroundColor),
+    ));
     const spriteResponse = await fetch('/assets/icons.svg');
     const spriteType = spriteResponse.headers.get('content-type') || '';
     await spriteResponse.arrayBuffer();
@@ -155,6 +172,7 @@ async function readThemeSnapshot(page, definition) {
         text: participantStyle.color,
         borderRadius: Number.parseFloat(participantStyle.borderTopLeftRadius) || 0,
       } : null,
+      managementSurfaceBackgrounds,
     };
   }, { primarySelector: definition.primary });
 }
@@ -267,8 +285,21 @@ export async function verifyThemeIcons({ browser, baseUrl, ok }) {
           && dark.participant.borderRadius <= 12.1
           && relativeLuminance(parseRgb(dark.participant.background)) < relativeLuminance(parseRgb(light.participant.background))
           && contrastRatio(dark.participant.text, dark.participant.background) >= 4.5
+        ))
+        && (definition.key !== 'personas' || (
+          light.managementSurfaceBackgrounds.length > 0
+          && dark.managementSurfaceBackgrounds.length > 0
+          && light.managementSurfaceBackgrounds.every((value) => relativeLuminance(parseRgb(value)) > 0.65)
+          && dark.managementSurfaceBackgrounds.every((value) => relativeLuminance(parseRgb(value)) < 0.12)
         )),
-      JSON.stringify({ light: light?.colors, dark: dark?.colors, lightParticipant: light?.participant, darkParticipant: dark?.participant }),
+      JSON.stringify({
+        light: light?.colors,
+        dark: dark?.colors,
+        lightParticipant: light?.participant,
+        darkParticipant: dark?.participant,
+        lightManagementSurfaces: light?.managementSurfaceBackgrounds,
+        darkManagementSurfaces: dark?.managementSurfaceBackgrounds,
+      }),
     );
   }
 

@@ -61,7 +61,7 @@ Provider 是模型目录的上游，不塞进某个角色详情，也不伪装�
 - 模型表每行显示 model ID、名称、显式“模型族归类”与有效性；family 是七族 enum 或未归类，不通过角色名倒推。
 - “验证连接”与“保存更改”分开：operator 能先校验 endpoint/auth/model，不把一次网络失败等同于覆盖配置。
 - “移除供应商”是详情页独立 danger action：确认态显示模型数量与 role availability 影响，并明确历史聊天、角色身份和外部认证不删除；未保存 provider 使用“放弃草稿”。
-- 此 surface 只维护 `models.json` provider；runtime registry 与 `PI_PROVIDER/PI_MODEL` 作为聚合 catalog 的只读来源。角色页只消费聚合结果，并提供“管理模型供应商”入口。
+- 此 surface 只维护 `models.json` provider；`PI_PROVIDER/PI_MODEL` 的精确默认模型作为只读可见来源，runtime registry 只为可见键补标签与能力，不整库暴露。角色页只消费降噪后的 catalog，并提供“管理模型供应商”入口。
 
 ### 2. 角色管理：保留 index/detail，按角色类型分组
 

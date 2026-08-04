@@ -305,6 +305,29 @@ test('participant cards consume theme tokens and avoid legacy pill geometry', ()
   assert.doesNotMatch(rule, /999px|rgba\(255\s*,\s*255\s*,\s*255/);
 });
 
+test('model-family management surfaces consume semantic light and dark theme tokens', () => {
+  const css = read('public/styles.css');
+  const start = css.indexOf('/* ---- Model-family role and provider management ---- */');
+  const end = css.indexOf('@media (max-width: 1023px)', start);
+  assert.ok(start >= 0 && end > start, 'model-family management CSS region must exist');
+  const region = css.slice(start, end);
+
+  assert.match(region, /\.management-list-row\s*\{[\s\S]*?background:\s*var\(--caff-surface-elevated\)/);
+  assert.match(region, /\.provider-source-note,[\s\S]*?\.management-card,[\s\S]*?background:\s*var\(--caff-surface\)/);
+  assert.match(region, /\.runtime-profile\s*\{[\s\S]*?background:\s*var\(--caff-surface-sunk\)/);
+  assert.match(region, /\.skill-option\s*\{[\s\S]*?background:\s*var\(--caff-surface-sunk\)/);
+  assert.match(region, /\.provider-model-row\s*\{[\s\S]*?background:\s*var\(--caff-surface-sunk\)/);
+  assert.doesNotMatch(
+    region,
+    /background:\s*(?:#fff(?:fff)?\b|#fff9ee\b|#fff6f5\b|rgba\(243\s*,\s*237\s*,\s*227)/,
+    'management surfaces must not bypass theme tokens with light-only backgrounds',
+  );
+
+  const verifier = read('scripts/ui/verify-theme-icons.mjs');
+  assert.match(verifier, /managementSurfaceBackgrounds/);
+  assert.match(verifier, /dark\.managementSurfaceBackgrounds\.every/);
+});
+
 test('the browser gate includes the two-theme route verifier', () => {
   const runner = read('scripts/verify-ui.mjs');
   const verifier = requireFile(

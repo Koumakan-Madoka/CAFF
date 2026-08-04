@@ -15,6 +15,8 @@ completed: 2026-08-03
 
 实现已从 canonical `origin/main@b9f3ddfa88b3e8942d0dd095f1dcaeb4c979d451` 创建独立 worktree并完成 Tasks 0–8。云端 Codex 因 code-review quota 耗尽未产生 verdict；布偶猫在隔离 sandbox 对完整 104-file PR 与 exact HEAD `bec42b856c8e11fde690478097a4cb639d0c7424` 独立复验后明确 APPROVE，无 P0/P1/新增 P2。最终本地全量门禁与 GitHub CI 全绿，PR #50 于 2026-08-03 squash merge 至 `origin/main`（merge commit `4bbc260bd572fe5073c06daee588f87e9915f46d`）。烁烁随后作为非作者、非 reviewer 的第三独立个体，在 merged main 上逐步复验 operator experience、Primary Journey 与 Migration Journey，结论 APPROVE、无用户可见 mismatch；CloseGateReport 与 reflection 已落盘，Feature lifecycle 完成。
 
+2026-08-04 post-merge acceptance 发现两处实现偏差：角色 selector 把 Pi runtime registry 的 1079 个内建路由整库暴露且隐藏 provider，Dark 主题下新增角色/供应商卡片仍使用白色硬编码。修正后的终态是：selector 只显示 `models.json` 明确模型与精确 runtime default，Pi registry 仅补元数据；每项显示 provider/source；所有新增管理 surface 使用 Light/Dark 语义 token。
+
 ## Product Direction
 
 CAFF 保留统一角色概念，但默认角色不再是 Strategist、Builder 或动漫人格，而是七个系统模型族角色：GPT、Claude、Gemini、DeepSeek、Qwen、GLM、Kimi。

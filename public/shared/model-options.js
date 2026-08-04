@@ -58,13 +58,20 @@
     return `${String(provider || '').trim()}\u001f${String(model || '').trim()}`;
   }
 
+  const MODEL_SOURCE_LABELS = {
+    models_json: '已配置',
+    runtime: '运行时默认',
+  };
+
   function buildModelOptionLabel(option) {
     if (!option) {
       return '系统默认模型';
     }
 
-    const detail = option.sourceLabel ? ` 路 ${option.sourceLabel}` : '';
-    return `${option.label}${detail}`;
+    const label = String(option.label || option.model || '').trim();
+    const provider = String(option.provider || '').trim();
+    const source = MODEL_SOURCE_LABELS[option.source] || String(option.sourceLabel || '').trim();
+    return [label, provider, source].filter(Boolean).join(' · ');
   }
 
   function fillModelSelect(select, modelOptions, currentProvider = '', currentModel = '') {

@@ -16,7 +16,7 @@ declare global {
     provider: string;
     model: string;
     label: string;
-    source?: 'runtime' | 'models_json' | 'runtime_registry';
+    source?: 'runtime' | 'models_json';
     sourceLabel?: string;
     family?: 'gpt' | 'claude' | 'gemini' | 'deepseek' | 'qwen' | 'glm' | 'kimi' | null;
     familySource?: 'explicit' | 'provider_alias' | 'model_alias' | 'unknown' | 'conflict';

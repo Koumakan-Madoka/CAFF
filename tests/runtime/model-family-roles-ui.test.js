@@ -3,16 +3,30 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
+const { JSDOM } = require('jsdom');
 
 const projectRoot = path.resolve(__dirname, '..', '..');
 
-function loadManagementUtils() {
+function loadManagementModules() {
   const modelOptionsPath = path.join(projectRoot, 'public/shared/model-options.js');
   const sourcePath = path.join(projectRoot, 'public/personas/management-utils.js');
-  const context = { structuredClone, window: { CaffPersonas: {}, CaffShared: {} } };
+  const dom = new JSDOM('<select id="shared"></select><select id="management"></select>');
+  const context = {
+    document: dom.window.document,
+    structuredClone,
+    window: { CaffPersonas: {}, CaffShared: {} },
+  };
   vm.runInNewContext(fs.readFileSync(modelOptionsPath, 'utf8'), context, { filename: modelOptionsPath });
   vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), context, { filename: sourcePath });
-  return context.window.CaffPersonas.managementUtils;
+  return {
+    managementUtils: context.window.CaffPersonas.managementUtils,
+    modelOptionUtils: context.window.CaffShared.modelOptions,
+    document: context.document,
+  };
+}
+
+function loadManagementUtils() {
+  return loadManagementModules().managementUtils;
 }
 
 test('production management page loads focused modules before the entry and preserves the compatibility route', () => {
@@ -60,6 +74,26 @@ test('role UI payload keeps family fields credential-free and preserves complete
   assert.equal(custom.personaPrompt, 'Review carefully');
   assert.deepEqual(Array.from(custom.skillIds), ['source-audit']);
   assert.equal(custom.modelProfiles[0].personaPrompt, 'Profile persona');
+});
+
+test('all model selectors identify provider and catalog source for same-name models', () => {
+  const { managementUtils, modelOptionUtils, document } = loadManagementModules();
+  const options = [
+    { key: 'moonshot\u001fkimi-code', provider: 'moonshot', model: 'kimi-code', label: 'Kimi Code', source: 'models_json', sourceLabel: 'models.json' },
+    { key: 'together\u001fkimi-code', provider: 'together', model: 'kimi-code', label: 'Kimi Code', source: 'runtime', sourceLabel: 'runtime default' },
+  ];
+
+  const sharedSelect = document.getElementById('shared');
+  modelOptionUtils.fillModelSelect(sharedSelect, options);
+  const managementSelect = document.getElementById('management');
+  managementUtils.fillModelSelect(managementSelect, options, '', '');
+
+  const expected = [
+    'Kimi Code · moonshot · 已配置',
+    'Kimi Code · together · 运行时默认',
+  ];
+  assert.deepEqual(Array.from(sharedSelect.options).slice(1).map((option) => option.textContent), expected);
+  assert.deepEqual(Array.from(managementSelect.options).map((option) => option.textContent), expected);
 });
 
 test('shared fetch client merges CSRF headers without changing the JSON contract', async () => {
