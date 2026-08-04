@@ -17,20 +17,34 @@
     let isSaving = false;
     let focusedDigestId = '';
 
-    function setDigestOpen(nextOpen) {
+    function setDigestOpen(nextOpen, options = {}) {
       isDigestOpen = Boolean(nextOpen);
       if (isDigestOpen) {
         isSkillDraftOpen = false;
       }
       render();
+      if (!options.fromShell && window.caffShell) {
+        if (isDigestOpen) {
+          window.caffShell.openTab('conversation-digest-drawer');
+        } else {
+          window.caffShell.releaseTab('conversation-digest-drawer');
+        }
+      }
     }
 
-    function setSkillDraftOpen(nextOpen) {
+    function setSkillDraftOpen(nextOpen, options = {}) {
       isSkillDraftOpen = Boolean(nextOpen);
       if (isSkillDraftOpen) {
         isDigestOpen = false;
       }
       render();
+      if (!options.fromShell && window.caffShell) {
+        if (isSkillDraftOpen) {
+          window.caffShell.openTab('skill-draft-drawer');
+        } else {
+          window.caffShell.releaseTab('skill-draft-drawer');
+        }
+      }
     }
 
     function renderToggleButton(button, hasConversation) {
@@ -45,12 +59,15 @@
     }
 
     function renderSkillDraftShortcut(button, hasConversation, drafts) {
+      const draftCount = Array.isArray(drafts) ? drafts.length : 0;
+      const hasDrafts = hasConversation && draftCount > 0;
+      if (window.caffShell && typeof window.caffShell.setTabVisible === 'function') {
+        window.caffShell.setTabVisible('skill-draft-drawer', hasDrafts, { count: draftCount });
+      }
       if (!button) {
         return;
       }
 
-      const draftCount = Array.isArray(drafts) ? drafts.length : 0;
-      const hasDrafts = hasConversation && draftCount > 0;
       button.classList.toggle('hidden', !hasDrafts);
       button.disabled = !hasDrafts || isSaving;
       button.textContent = draftCount > 1 ? `Skill 草稿 ${draftCount}` : 'Skill 草稿 1';
@@ -111,8 +128,10 @@
       const eyebrow = document.createElement('p');
       eyebrow.className = 'eyebrow';
       const kindLabel = digestUtils.digestKindLabel(digest);
-      const kindIcon = digest.kind === 'rollup' ? '📦' : '📝';
-      eyebrow.textContent = `${kindIcon} ${kindLabel} · ${formatDateTime(digest.createdAt) || 'Digest'}`;
+      const kindIcon = window.CaffIcons.create(digest.kind === 'rollup' ? 'archive' : 'file-text', {
+        className: 'app-icon digest-kind-icon',
+      });
+      eyebrow.append(kindIcon, document.createTextNode(`${kindLabel} · ${formatDateTime(digest.createdAt) || 'Digest'}`));
 
       const range = document.createElement('p');
       range.className = 'muted';
@@ -342,16 +361,6 @@
       renderToggleButton(dom.conversationDigestToggleButton, hasConversation);
       renderSkillDraftShortcut(dom.skillDraftToggleButton, hasConversation, drafts);
 
-      if (dom.conversationDigestDrawer) {
-        dom.conversationDigestDrawer.classList.toggle('hidden', !isDigestOpen);
-        dom.conversationDigestDrawer.setAttribute('aria-hidden', isDigestOpen ? 'false' : 'true');
-      }
-
-      if (dom.skillDraftDrawer) {
-        dom.skillDraftDrawer.classList.toggle('hidden', !isSkillDraftOpen);
-        dom.skillDraftDrawer.setAttribute('aria-hidden', isSkillDraftOpen ? 'false' : 'true');
-      }
-
       if (dom.conversationDigestCreateButton) {
         dom.conversationDigestCreateButton.disabled = !hasConversation || isSaving;
         dom.conversationDigestCreateButton.textContent = isSaving ? '生成中...' : '生成详细摘要';
@@ -384,8 +393,7 @@
       try {
         const result = await submitDigestCommand(state.currentConversation.id, command);
         if (command && command.action === 'extract-skill' && result && result.draft) {
-          isDigestOpen = false;
-          isSkillDraftOpen = true;
+          setSkillDraftOpen(true);
         }
       } catch (error) {
         showToast(error.message);
@@ -445,6 +453,18 @@
           render();
         }
       });
+
+      if (window.caffShell && typeof window.caffShell.onChange === 'function') {
+        window.caffShell.onChange(({ open, tab }) => {
+          const digestShouldBeOpen = open && tab === 'conversation-digest-drawer';
+          const draftShouldBeOpen = open && tab === 'skill-draft-drawer';
+          if (digestShouldBeOpen !== isDigestOpen || draftShouldBeOpen !== isSkillDraftOpen) {
+            isDigestOpen = digestShouldBeOpen;
+            isSkillDraftOpen = draftShouldBeOpen;
+            render();
+          }
+        });
+      }
     }
 
     function openDigest(digestId) {
@@ -453,9 +473,7 @@
       }
 
       focusedDigestId = String(digestId || '').trim();
-      isDigestOpen = true;
-      isSkillDraftOpen = false;
-      render();
+      setDigestOpen(true);
       window.requestAnimationFrame(() => focusDigestCard(focusedDigestId));
     }
 

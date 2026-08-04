@@ -380,13 +380,6 @@ test('buildAgentTurnPromptSections orders stable prompt sections before dynamic 
     allowHandoffs: true,
     agentToolRelativePath: './lib/agent-chat-tools.js',
     modeLoadingStrategy: 'dynamic',
-    modeContext: {
-      kind: 'skill_test_design',
-      currentAgentRole: 'planner',
-      state: { phase: 'planning' },
-      targetSkill: { id: 'target-order-skill', name: 'Target Order Skill' },
-      caseSummary: {},
-    },
   });
 
   assert.deepEqual(sections.map((section) => section.sectionKey), [
@@ -401,7 +394,6 @@ test('buildAgentTurnPromptSections orders stable prompt sections before dynamic 
     'dynamic_skill_loading',
     'tool_instructions',
     'participants',
-    'mode_state',
     'trellis_context',
     'session_goal',
     'conversation_digest',

@@ -220,6 +220,12 @@ globalThis.__testExports = {
       summaryMemory: {},
     },
     CaffChat: {},
+    caffShell: {
+      setComposerValue(value) {
+        document.getElementById('composer-input').value = String(value ?? '');
+      },
+      syncComposerHeight() {},
+    },
     document,
     EventSource: FakeEventSource,
     navigator: { clipboard: null },

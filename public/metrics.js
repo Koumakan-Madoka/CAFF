@@ -7,6 +7,12 @@ const state = {
 
 const shared = window.CaffShared || {};
 const fetchJson = shared.fetchJson;
+const createManagementListItem = shared.createManagementListItem;
+const createManagementListEmptyState = shared.createManagementListEmptyState;
+
+if (typeof createManagementListItem !== 'function' || typeof createManagementListEmptyState !== 'function') {
+  throw new Error('Management list primitives are required');
+}
 
 const dom = {
   refreshButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('refresh-button')),
@@ -15,7 +21,7 @@ const dom = {
   untilInput: /** @type {HTMLInputElement | null} */ (document.getElementById('until-input')),
   clearFilterButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('clear-filter-button')),
   agentCount: /** @type {HTMLElement | null} */ (document.getElementById('agent-count')),
-  agentList: /** @type {HTMLDivElement | null} */ (document.getElementById('agent-list')),
+  agentList: /** @type {HTMLUListElement | null} */ (document.getElementById('agent-list')),
   reportMeta: /** @type {HTMLElement | null} */ (document.getElementById('report-meta')),
   selectedAgentMeta: /** @type {HTMLElement | null} */ (document.getElementById('selected-agent-meta')),
   agentReport: /** @type {HTMLElement | null} */ (document.getElementById('agent-report')),
@@ -139,21 +145,18 @@ function renderAgentList() {
   dom.agentList.innerHTML = '';
 
   if (agents.length === 0) {
-    const empty = document.createElement('div');
-    empty.className = 'empty-state compact-empty-state';
-    empty.textContent = '暂无数据。先在聊天工作台跑几轮 Agent 对话后再来看。';
+    const empty = createManagementListEmptyState('暂无数据。先在聊天工作台跑几轮 Agent 对话后再来看。');
+    empty.classList.add('compact-empty-state');
     dom.agentList.appendChild(empty);
     return;
   }
 
   agents.forEach((agent) => {
-    const item = document.createElement('div');
-    item.className = 'agent-list-item compact';
-    item.dataset.id = agent.agentId;
-
-    if (agent.agentId === state.selectedAgentId) {
-      item.classList.add('active');
-    }
+    const { row, button: item } = createManagementListItem({
+      id: agent.agentId,
+      active: agent.agentId === state.selectedAgentId,
+      compact: true,
+    });
 
     const left = document.createElement('div');
     left.style.display = 'grid';
@@ -179,7 +182,7 @@ function renderAgentList() {
       renderAll();
     });
 
-    dom.agentList.appendChild(item);
+    dom.agentList.appendChild(row);
   });
 }
 

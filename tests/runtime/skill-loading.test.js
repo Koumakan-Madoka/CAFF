@@ -144,17 +144,16 @@ test('buildAgentTurnPrompt full mode includes full skill bodies without dynamic 
   }
 });
 
-test('buildAgentTurnPrompt can full-mount selected conversation skills while keeping others dynamic', () => {
-  const tempDir = withTempDir('caff-skill-path-mixed-');
+test('buildAgentTurnPrompt can force selected skills dynamic inside a full-loading mode', () => {
+  const tempDir = withTempDir('caff-skill-path-force-dynamic-');
   const { store, agent, conversation } = createPromptFixture(tempDir);
   const originalMode = process.env.CAFF_SKILL_LOADING_MODE;
-  delete process.env.CAFF_SKILL_LOADING_MODE;
+  process.env.CAFF_SKILL_LOADING_MODE = 'full';
 
   try {
     const { buildAgentTurnPrompt } = loadPromptModule();
-    const helperPath = path.join(tempDir, 'skills', 'skill-test-design-workbench');
-    const targetPath = path.join(tempDir, 'skills', 'target-skill');
-    const extraPath = path.join(tempDir, 'skills', 'extra-skill');
+    const fullSkillPath = path.join(tempDir, 'skills', 'game-skill');
+    const dynamicSkillPath = path.join(tempDir, 'skills', 'skill-creator');
     const prompt = buildAgentTurnPrompt({
       conversation,
       agent,
@@ -162,25 +161,18 @@ test('buildAgentTurnPrompt can full-mount selected conversation skills while kee
       resolvedPersonaSkills: [],
       resolvedConversationSkills: [
         {
-          id: 'skill-test-design-workbench',
-          name: 'Workbench Helper',
-          description: 'Mode workflow helper',
-          body: '# Helper Instructions\n\nKeep the workflow aligned.',
-          path: helperPath,
+          id: 'game-skill',
+          name: 'Game Skill',
+          description: 'Needs full mode behavior',
+          body: '# Game Instructions\n\nInline me.',
+          path: fullSkillPath,
         },
         {
-          id: 'target-skill',
-          name: 'Target Skill',
-          description: 'Target skill body',
-          body: '# Target Instructions\n\nRead me up front.',
-          path: targetPath,
-        },
-        {
-          id: 'extra-skill',
-          name: 'Extra Skill',
-          description: 'Should stay dynamic',
-          body: '# Extra Instructions\n\nDo not inline me.',
-          path: extraPath,
+          id: 'skill-creator',
+          name: 'skill-creator',
+          description: 'Create and improve skills',
+          body: '# Skill Creator\n\nDo not inline me.',
+          path: dynamicSkillPath,
         },
       ],
       sandbox: { sandboxDir: '/sandbox', privateDir: '/sandbox/private' },
@@ -193,94 +185,22 @@ test('buildAgentTurnPrompt can full-mount selected conversation skills while kee
       routingMode: 'serial',
       allowHandoffs: true,
       agentToolRelativePath: 'build/lib/agent-chat-tools.js',
-      modeLoadingStrategy: 'dynamic',
-      forceFullConversationSkillIds: ['skill-test-design-workbench', 'target-skill'],
+      modeLoadingStrategy: 'full',
+      forceDynamicConversationSkillIds: ['skill-creator'],
     });
 
-    const extraSkillFile = `${extraPath.replace(/\\/g, '/')}/SKILL.md`;
-    assert.ok(prompt.includes('Helper Instructions'), 'Forced-full helper skill should inject full body');
-    assert.ok(prompt.includes('Target Instructions'), 'Forced-full target skill should inject full body');
-    assert.ok(prompt.includes(`Path: ${extraSkillFile}`), 'Dynamic skill should still point at SKILL.md');
-    assert.ok(prompt.includes('Load with: Use the `read` tool on the `Path` above when you need the full instructions'), 'Dynamic skill should keep read guidance');
-    assert.ok(!prompt.includes('Extra Instructions'), 'Dynamic skill should not inline its full body');
+    const expectedDynamicSkillFile = `${dynamicSkillPath.replace(/\\/g, '/')}/SKILL.md`;
+    assert.ok(prompt.includes('Game Instructions'), 'Non-forced skill should still use full mode injection');
+    assert.ok(prompt.includes(`Path: ${expectedDynamicSkillFile}`), 'Forced dynamic skill should show SKILL.md path');
+    assert.ok(prompt.includes('Load with: Use the `read` tool on the `Path` above when you need the full instructions'), 'Forced dynamic skill should show read guidance');
+    assert.ok(prompt.includes('Dynamic skill loading:'), 'Prompt should include dynamic guidance for mixed full/dynamic mode');
+    assert.ok(!prompt.includes('Do not inline me.'), 'Forced dynamic skill should not inline full body');
   } finally {
     if (originalMode !== undefined) {
       process.env.CAFF_SKILL_LOADING_MODE = originalMode;
     } else {
       delete process.env.CAFF_SKILL_LOADING_MODE;
     }
-    try { store.close(); } catch {}
-  }
-});
-
-test('buildAgentTurnPrompt skill test design mode states sandbox as the default runtime baseline', () => {
-  const tempDir = withTempDir('caff-skill-test-design-baseline-');
-  const { store, agent, conversation } = createPromptFixture(tempDir);
-
-  try {
-    const { buildAgentTurnPrompt } = loadPromptModule();
-    const prompt = buildAgentTurnPrompt({
-      conversation,
-      agent,
-      agentConfig: { profileName: 'Default', personaPrompt: 'Reply briefly.' },
-      resolvedPersonaSkills: [],
-      resolvedConversationSkills: [],
-      sandbox: { sandboxDir: '/sandbox', privateDir: '/sandbox/private' },
-      projectDir: '',
-      agents: [agent],
-      messages: [],
-      privateMessages: [],
-      trigger: { triggerType: 'user', enqueueReason: 'user_mentions' },
-      remainingSlots: 5,
-      routingMode: 'serial',
-      allowHandoffs: true,
-      agentToolRelativePath: 'build/lib/agent-chat-tools.js',
-      modeContext: {
-        kind: 'skill_test_design',
-        currentAgentRole: 'planner',
-        targetSkill: {
-          id: 'target-skill',
-          name: 'Target Skill',
-          path: '/skills/target-skill',
-          testingDocPath: '/skills/target-skill/TESTING.md',
-          testingDocExists: false,
-        },
-        state: {
-          phase: 'collecting_context',
-          skillId: 'target-skill',
-          environmentContract: {
-            status: 'missing',
-            candidates: [],
-          },
-        },
-      },
-    });
-
-    assert.ok(
-      prompt.includes('Skill Test runtime baseline: runs default to an isolated sandbox case world (`host-loop + sandbox-tools`).'),
-      'Skill test design prompt should describe the sandbox baseline'
-    );
-    assert.ok(
-      prompt.includes('Do not ask the user to confirm whether sandboxing is used; only ask about extra skill-specific dependencies'),
-      'Skill test design prompt should steer follow-up questions toward extra skill-specific needs only'
-    );
-    assert.ok(
-      prompt.includes('Skill Test design default: build complete `full + execution` draft cases for the target skill.'),
-      'Skill test design prompt should default the workbench to full execution planning'
-    );
-    assert.ok(
-      prompt.includes('When the target TESTING.md is missing, the UI/API should auto-create a guarded preview draft; do not ask permission before preview'),
-      'Skill test design prompt should describe automatic TESTING.md preview drafting for missing files'
-    );
-    assert.ok(
-      prompt.includes('For tracked-change or redline execution scenarios, keep the task phrased as apply/edit work.'),
-      'Skill test design prompt should keep tracked-change scenarios aligned to apply/edit outcomes'
-    );
-    assert.ok(
-      !prompt.includes('Dynamic skill loading: when a skill only shows a descriptor'),
-      'Skill test design prompt should not show generic dynamic skill-loading guidance when the mode has no descriptor-only skills'
-    );
-  } finally {
     try { store.close(); } catch {}
   }
 });

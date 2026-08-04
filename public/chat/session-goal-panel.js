@@ -29,11 +29,19 @@
       return sessionGoalUtils.runnerForConversation(state.currentConversation);
     }
 
-    function setOpen(nextOpen) {
+    function setOpen(nextOpen, options = {}) {
       isOpen = Boolean(nextOpen);
       render();
 
-      if (isOpen && dom.sessionGoalObjective) {
+      if (!options.fromShell && window.caffShell) {
+        if (isOpen) {
+          window.caffShell.openTab('session-goal-drawer');
+        } else {
+          window.caffShell.releaseTab('session-goal-drawer');
+        }
+      }
+
+      if (isOpen && !options.fromShell && dom.sessionGoalObjective) {
         window.setTimeout(() => dom.sessionGoalObjective && dom.sessionGoalObjective.focus(), 0);
       }
     }
@@ -247,7 +255,7 @@
     }
 
     function render() {
-      if (!dom.sessionGoalDrawer || (!dom.sessionGoalToggleButton && !dom.sessionGoalEdgeButton)) {
+      if (!dom.sessionGoalDrawer) {
         return;
       }
 
@@ -263,9 +271,6 @@
 
       renderToggleButton(dom.sessionGoalToggleButton, goal, hasConversation);
       renderToggleButton(dom.sessionGoalEdgeButton, goal, hasConversation);
-
-      dom.sessionGoalDrawer.classList.toggle('hidden', !isOpen);
-      dom.sessionGoalDrawer.setAttribute('aria-hidden', isOpen ? 'false' : 'true');
 
       syncObjectiveInput(goal);
       setStatusBadge(goal);
@@ -297,7 +302,7 @@
     }
 
     function bindEvents() {
-      if (!dom.sessionGoalDrawer || (!dom.sessionGoalToggleButton && !dom.sessionGoalEdgeButton)) {
+      if (!dom.sessionGoalDrawer) {
         return;
       }
 
@@ -365,6 +370,15 @@
           setOpen(false);
         }
       });
+
+      if (window.caffShell && typeof window.caffShell.onChange === 'function') {
+        window.caffShell.onChange(({ open, tab }) => {
+          const shouldBeOpen = open && tab === 'session-goal-drawer';
+          if (shouldBeOpen !== isOpen) {
+            setOpen(shouldBeOpen, { fromShell: true });
+          }
+        });
+      }
     }
 
     return {

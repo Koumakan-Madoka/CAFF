@@ -1,8 +1,3 @@
-import {
-  migrateLegacyModelFamilyRoles,
-  reconcileSystemModelFamilyRoles,
-} from './model-family-role-migration';
-
 function listTableInfo(db: any, tableName: string) {
   return db.prepare(`PRAGMA table_info(${tableName})`).all();
 }
@@ -192,7 +187,7 @@ CREATE TABLE chat_memory_cards_migrated (
   updated_at TEXT NOT NULL,
   UNIQUE(scope, owner_key, agent_id, title),
   FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE,
-  FOREIGN KEY (agent_id) REFERENCES chat_role_identities(role_id) ON DELETE RESTRICT
+  FOREIGN KEY (agent_id) REFERENCES chat_agents(id) ON DELETE CASCADE
 );
 
 INSERT INTO chat_memory_cards_migrated (
@@ -245,45 +240,23 @@ CREATE INDEX IF NOT EXISTS idx_chat_memory_cards_expires_at
 `);
 }
 
-export function migrateChatSchema(db: any, options: any = {}) {
-  migrateLegacyModelFamilyRoles(db, { backupPath: options.backupPath });
+export function migrateChatSchema(db: any) {
   db.exec(`
-CREATE TABLE IF NOT EXISTS chat_role_identities (
-  role_id TEXT PRIMARY KEY,
-  display_name_snapshot TEXT NOT NULL,
-  avatar_data_url_snapshot TEXT,
-  accent_color_snapshot TEXT,
-  origin_kind TEXT NOT NULL CHECK (origin_kind IN ('model_family', 'custom', 'legacy_system')),
-  model_family_snapshot TEXT,
-  lifecycle_state TEXT NOT NULL CHECK (lifecycle_state IN ('active', 'retired')),
-  retired_reason TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS chat_agents (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   sandbox_name TEXT,
   description TEXT,
   avatar_data_url TEXT,
-  persona_prompt TEXT NOT NULL DEFAULT '',
+  persona_prompt TEXT NOT NULL,
   provider TEXT,
   model TEXT,
   thinking TEXT,
   accent_color TEXT,
   skills_json TEXT,
   model_profiles_json TEXT,
-  role_kind TEXT NOT NULL CHECK (role_kind IN ('model_family', 'custom')),
-  model_family TEXT,
-  is_default_chat_role INTEGER NOT NULL DEFAULT 0 CHECK (is_default_chat_role IN (0, 1)),
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  CHECK (
-    (role_kind = 'model_family' AND model_family IS NOT NULL AND persona_prompt = '')
-    OR (role_kind = 'custom' AND model_family IS NULL)
-  ),
-  FOREIGN KEY (id) REFERENCES chat_role_identities(role_id) ON DELETE RESTRICT
+  updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS chat_conversations (
@@ -308,23 +281,6 @@ CREATE TABLE IF NOT EXISTS chat_conversation_agents (
   FOREIGN KEY (agent_id) REFERENCES chat_agents(id) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS chat_conversation_agent_history (
-  conversation_id TEXT NOT NULL,
-  role_id TEXT NOT NULL,
-  display_name_snapshot TEXT NOT NULL,
-  role_kind_snapshot TEXT NOT NULL,
-  model_family_snapshot TEXT,
-  model_profile_id_snapshot TEXT,
-  conversation_skills_json TEXT,
-  sort_order INTEGER NOT NULL,
-  joined_at TEXT,
-  retired_at TEXT NOT NULL,
-  retired_reason TEXT NOT NULL,
-  PRIMARY KEY (conversation_id, role_id, retired_at),
-  FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE,
-  FOREIGN KEY (role_id) REFERENCES chat_role_identities(role_id) ON DELETE RESTRICT
-);
-
 CREATE TABLE IF NOT EXISTS chat_messages (
   id TEXT PRIMARY KEY,
   conversation_id TEXT NOT NULL,
@@ -340,7 +296,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   metadata_json TEXT,
   created_at TEXT NOT NULL,
   FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE,
-  FOREIGN KEY (agent_id) REFERENCES chat_role_identities(role_id) ON DELETE RESTRICT
+  FOREIGN KEY (agent_id) REFERENCES chat_agents(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS chat_private_messages (
@@ -354,7 +310,7 @@ CREATE TABLE IF NOT EXISTS chat_private_messages (
   metadata_json TEXT,
   created_at TEXT NOT NULL,
   FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE,
-  FOREIGN KEY (sender_agent_id) REFERENCES chat_role_identities(role_id) ON DELETE RESTRICT
+  FOREIGN KEY (sender_agent_id) REFERENCES chat_agents(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS chat_memory_cards (
@@ -374,7 +330,7 @@ CREATE TABLE IF NOT EXISTS chat_memory_cards (
   updated_at TEXT NOT NULL,
   UNIQUE(scope, owner_key, agent_id, title),
   FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE,
-  FOREIGN KEY (agent_id) REFERENCES chat_role_identities(role_id) ON DELETE RESTRICT
+  FOREIGN KEY (agent_id) REFERENCES chat_agents(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS chat_summary_segments (
@@ -430,65 +386,6 @@ CREATE TABLE IF NOT EXISTS chat_external_events (
   FOREIGN KEY (message_id) REFERENCES chat_messages(id) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS eval_cases (
-  id TEXT PRIMARY KEY,
-  conversation_id TEXT,
-  turn_id TEXT,
-  message_id TEXT,
-  stage_task_id TEXT,
-  agent_id TEXT,
-  agent_name TEXT,
-  provider TEXT,
-  model TEXT,
-  thinking TEXT,
-  prompt_version TEXT,
-  model_profile_id TEXT,
-  expectations_json TEXT,
-  prompt_a TEXT NOT NULL,
-  output_a TEXT NOT NULL,
-  prompt_b TEXT,
-  output_b TEXT,
-  b_run_id INTEGER,
-  b_task_id TEXT,
-  b_status TEXT,
-  b_error_message TEXT,
-  b_result_json TEXT,
-  note TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS eval_case_runs (
-  id TEXT PRIMARY KEY,
-  case_id TEXT NOT NULL,
-  variant TEXT NOT NULL,
-  provider TEXT,
-  model TEXT,
-  prompt_version TEXT,
-  thinking TEXT,
-  prompt TEXT NOT NULL,
-  run_id INTEGER,
-  task_id TEXT,
-  status TEXT,
-  error_message TEXT,
-  output_text TEXT,
-  result_json TEXT,
-  session_path TEXT,
-  created_at TEXT NOT NULL,
-  FOREIGN KEY (case_id) REFERENCES eval_cases(id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS chat_schema_migrations (
-  migration_id TEXT PRIMARY KEY,
-  status TEXT NOT NULL CHECK (status IN ('pending', 'completed', 'failed')),
-  backup_path TEXT,
-  pre_counts_json TEXT NOT NULL,
-  audit_json TEXT,
-  error_message TEXT,
-  started_at TEXT NOT NULL,
-  completed_at TEXT
-);
-
 CREATE INDEX IF NOT EXISTS idx_chat_conversations_updated_at ON chat_conversations (updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_chat_conversations_last_message_at ON chat_conversations (last_message_at DESC);
 CREATE INDEX IF NOT EXISTS idx_chat_conversation_agents_agent_id ON chat_conversation_agents (agent_id, sort_order ASC);
@@ -510,10 +407,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_external_events_platform_direction_ex
 CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_external_events_platform_direction_message_id
   ON chat_external_events (platform, direction, message_id)
   WHERE message_id IS NOT NULL AND message_id <> '';
-CREATE INDEX IF NOT EXISTS idx_eval_cases_created_at ON eval_cases (created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_eval_cases_message_id ON eval_cases (message_id);
-CREATE INDEX IF NOT EXISTS idx_eval_case_runs_case_id ON eval_case_runs (case_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_eval_case_runs_task_id ON eval_case_runs (task_id);
+
   `);
 
   ensureColumn(db, 'chat_agents', 'model_profiles_json', 'model_profiles_json TEXT');
@@ -529,11 +423,10 @@ CREATE INDEX IF NOT EXISTS idx_eval_case_runs_task_id ON eval_case_runs (task_id
     'conversation_skills_json',
     'conversation_skills_json TEXT'
   );
-  ensureColumn(db, 'eval_case_runs', 'prompt_version', 'prompt_version TEXT');
+
 
   ensureChatMessageSearchSchema(db);
   ensureChatMemoryCardSchema(db);
-  reconcileSystemModelFamilyRoles(db);
 
   db.exec(`
 CREATE TABLE IF NOT EXISTS modes (
@@ -675,187 +568,4 @@ CREATE INDEX IF NOT EXISTS idx_a2a_tasks_updated_at ON a2a_tasks (updated_at DES
 CREATE INDEX IF NOT EXISTS idx_a2a_task_events_task_id ON a2a_task_events (task_id, created_at ASC);
 CREATE INDEX IF NOT EXISTS idx_a2a_artifacts_task_id ON a2a_artifacts (task_id, created_at ASC);
   `);
-}
-
-export function migrateSkillTestSchema(db: any) {
-  db.exec(`
-CREATE TABLE IF NOT EXISTS skill_test_cases (
-  id TEXT PRIMARY KEY,
-  skill_id TEXT NOT NULL,
-  eval_case_id TEXT,
-  test_type TEXT NOT NULL DEFAULT 'trigger',
-  loading_mode TEXT NOT NULL DEFAULT 'dynamic',
-  trigger_prompt TEXT NOT NULL,
-  expected_tools_json TEXT NOT NULL DEFAULT '[]',
-  expected_behavior TEXT NOT NULL DEFAULT '',
-  validity_status TEXT NOT NULL DEFAULT 'pending',
-  case_status TEXT NOT NULL DEFAULT 'draft',
-  expected_goal TEXT NOT NULL DEFAULT '',
-  expected_steps_json TEXT NOT NULL DEFAULT '[]',
-  expected_sequence_json TEXT NOT NULL DEFAULT '[]',
-  evaluation_rubric_json TEXT NOT NULL DEFAULT '{}',
-  environment_config_json TEXT NOT NULL DEFAULT '{}',
-  generation_provider TEXT NOT NULL DEFAULT '',
-  generation_model TEXT NOT NULL DEFAULT '',
-  generation_created_at TEXT NOT NULL DEFAULT '',
-  note TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS skill_test_runs (
-  id TEXT PRIMARY KEY,
-  test_case_id TEXT NOT NULL,
-  eval_case_run_id TEXT,
-  status TEXT NOT NULL DEFAULT 'pending',
-  actual_tools_json TEXT NOT NULL DEFAULT '[]',
-  tool_accuracy REAL,
-  trigger_passed INTEGER,
-  execution_passed INTEGER,
-  required_step_completion_rate REAL,
-  step_completion_rate REAL,
-  required_tool_coverage REAL,
-  tool_call_success_rate REAL,
-  tool_error_rate REAL,
-  sequence_adherence REAL,
-  goal_achievement REAL,
-  instruction_adherence REAL,
-  environment_status TEXT NOT NULL DEFAULT '',
-  environment_phase TEXT NOT NULL DEFAULT '',
-  verdict TEXT DEFAULT '',
-  evaluation_json TEXT NOT NULL DEFAULT '{}',
-  error_message TEXT DEFAULT '',
-  created_at TEXT NOT NULL,
-  FOREIGN KEY (test_case_id) REFERENCES skill_test_cases(id)
-);
-
-CREATE TABLE IF NOT EXISTS skill_test_environment_assets (
-  id TEXT PRIMARY KEY,
-  skill_id TEXT NOT NULL,
-  env_profile TEXT NOT NULL DEFAULT 'default',
-  status TEXT NOT NULL DEFAULT 'manifest_ready',
-  image TEXT NOT NULL DEFAULT '',
-  image_digest TEXT NOT NULL DEFAULT '',
-  base_image TEXT NOT NULL DEFAULT '',
-  base_image_digest TEXT NOT NULL DEFAULT '',
-  testing_md_hash TEXT NOT NULL DEFAULT '',
-  manifest_hash TEXT NOT NULL DEFAULT '',
-  manifest_path TEXT NOT NULL DEFAULT '',
-  build_case_id TEXT NOT NULL DEFAULT '',
-  build_run_id TEXT NOT NULL DEFAULT '',
-  source_metadata_json TEXT NOT NULL DEFAULT '{}',
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  UNIQUE(skill_id, env_profile)
-);
-
-CREATE TABLE IF NOT EXISTS skill_test_chain_runs (
-  id TEXT PRIMARY KEY,
-  skill_id TEXT NOT NULL,
-  export_chain_id TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'pending',
-  stop_policy TEXT NOT NULL DEFAULT 'stop_on_failure',
-  shared_environment_policy TEXT NOT NULL DEFAULT 'single_chain_environment',
-  bootstrap_status TEXT NOT NULL DEFAULT 'pending',
-  teardown_status TEXT NOT NULL DEFAULT 'pending',
-  warning_flags_json TEXT NOT NULL DEFAULT '[]',
-  teardown_evidence_json TEXT NOT NULL DEFAULT '{}',
-  error_code TEXT NOT NULL DEFAULT '',
-  error_message TEXT NOT NULL DEFAULT '',
-  last_completed_step_index INTEGER NOT NULL DEFAULT 0,
-  started_at TEXT NOT NULL DEFAULT '',
-  finished_at TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS skill_test_chain_run_steps (
-  id TEXT PRIMARY KEY,
-  chain_run_id TEXT NOT NULL,
-  test_case_id TEXT NOT NULL,
-  sequence_index INTEGER NOT NULL,
-  depends_on_step_ids_json TEXT NOT NULL DEFAULT '[]',
-  status TEXT NOT NULL DEFAULT 'pending',
-  skill_test_run_id TEXT NOT NULL DEFAULT '',
-  carry_forward_json TEXT NOT NULL DEFAULT '{}',
-  artifact_refs_json TEXT NOT NULL DEFAULT '[]',
-  error_code TEXT NOT NULL DEFAULT '',
-  error_message TEXT NOT NULL DEFAULT '',
-  started_at TEXT NOT NULL DEFAULT '',
-  finished_at TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  FOREIGN KEY (chain_run_id) REFERENCES skill_test_chain_runs(id),
-  FOREIGN KEY (test_case_id) REFERENCES skill_test_cases(id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_skill_test_cases_skill_id ON skill_test_cases (skill_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_skill_test_cases_validity ON skill_test_cases (validity_status);
-CREATE INDEX IF NOT EXISTS idx_skill_test_runs_case_id ON skill_test_runs (test_case_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_skill_test_environment_assets_skill_profile ON skill_test_environment_assets (skill_id, env_profile);
-CREATE INDEX IF NOT EXISTS idx_skill_test_chain_runs_skill_chain ON skill_test_chain_runs (skill_id, export_chain_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_skill_test_chain_run_steps_chain ON skill_test_chain_run_steps (chain_run_id, sequence_index);
-CREATE INDEX IF NOT EXISTS idx_skill_test_chain_run_steps_case ON skill_test_chain_run_steps (test_case_id, created_at DESC);
-  `);
-
-  ensureColumn(db, 'skill_test_cases', 'case_status', "case_status TEXT NOT NULL DEFAULT 'draft'");
-  ensureColumn(db, 'skill_test_cases', 'expected_goal', "expected_goal TEXT NOT NULL DEFAULT ''");
-  ensureColumn(db, 'skill_test_cases', 'expected_steps_json', "expected_steps_json TEXT NOT NULL DEFAULT '[]'");
-  ensureColumn(db, 'skill_test_cases', 'expected_sequence_json', "expected_sequence_json TEXT NOT NULL DEFAULT '[]'");
-  ensureColumn(db, 'skill_test_cases', 'evaluation_rubric_json', "evaluation_rubric_json TEXT NOT NULL DEFAULT '{}' ");
-  ensureColumn(db, 'skill_test_cases', 'environment_config_json', "environment_config_json TEXT NOT NULL DEFAULT '{}' ");
-  ensureColumn(db, 'skill_test_cases', 'generation_provider', "generation_provider TEXT NOT NULL DEFAULT ''");
-  ensureColumn(db, 'skill_test_cases', 'generation_model', "generation_model TEXT NOT NULL DEFAULT ''");
-  ensureColumn(db, 'skill_test_cases', 'generation_created_at', "generation_created_at TEXT NOT NULL DEFAULT ''");
-
-  ensureColumn(db, 'skill_test_runs', 'required_step_completion_rate', 'required_step_completion_rate REAL');
-  ensureColumn(db, 'skill_test_runs', 'step_completion_rate', 'step_completion_rate REAL');
-  ensureColumn(db, 'skill_test_runs', 'required_tool_coverage', 'required_tool_coverage REAL');
-  ensureColumn(db, 'skill_test_runs', 'tool_call_success_rate', 'tool_call_success_rate REAL');
-  ensureColumn(db, 'skill_test_runs', 'tool_error_rate', 'tool_error_rate REAL');
-  ensureColumn(db, 'skill_test_runs', 'sequence_adherence', 'sequence_adherence REAL');
-  ensureColumn(db, 'skill_test_runs', 'goal_achievement', 'goal_achievement REAL');
-  ensureColumn(db, 'skill_test_runs', 'instruction_adherence', 'instruction_adherence REAL');
-  ensureColumn(db, 'skill_test_runs', 'environment_status', "environment_status TEXT NOT NULL DEFAULT ''");
-  ensureColumn(db, 'skill_test_runs', 'environment_phase', "environment_phase TEXT NOT NULL DEFAULT ''");
-  ensureColumn(db, 'skill_test_runs', 'verdict', "verdict TEXT DEFAULT ''");
-  ensureColumn(db, 'skill_test_runs', 'evaluation_json', "evaluation_json TEXT NOT NULL DEFAULT '{}' ");
-
-  ensureColumn(db, 'skill_test_chain_runs', 'status', "status TEXT NOT NULL DEFAULT 'pending'");
-  ensureColumn(db, 'skill_test_chain_runs', 'stop_policy', "stop_policy TEXT NOT NULL DEFAULT 'stop_on_failure'");
-  ensureColumn(db, 'skill_test_chain_runs', 'shared_environment_policy', "shared_environment_policy TEXT NOT NULL DEFAULT 'single_chain_environment'");
-  ensureColumn(db, 'skill_test_chain_runs', 'bootstrap_status', "bootstrap_status TEXT NOT NULL DEFAULT 'pending'");
-  ensureColumn(db, 'skill_test_chain_runs', 'teardown_status', "teardown_status TEXT NOT NULL DEFAULT 'pending'");
-  ensureColumn(db, 'skill_test_chain_runs', 'warning_flags_json', "warning_flags_json TEXT NOT NULL DEFAULT '[]'");
-  ensureColumn(db, 'skill_test_chain_runs', 'teardown_evidence_json', "teardown_evidence_json TEXT NOT NULL DEFAULT '{}'");
-  ensureColumn(db, 'skill_test_chain_runs', 'error_code', "error_code TEXT NOT NULL DEFAULT ''");
-  ensureColumn(db, 'skill_test_chain_runs', 'error_message', "error_message TEXT NOT NULL DEFAULT ''");
-  ensureColumn(db, 'skill_test_chain_runs', 'last_completed_step_index', "last_completed_step_index INTEGER NOT NULL DEFAULT 0");
-  ensureColumn(db, 'skill_test_chain_runs', 'started_at', "started_at TEXT NOT NULL DEFAULT ''");
-  ensureColumn(db, 'skill_test_chain_runs', 'finished_at', "finished_at TEXT NOT NULL DEFAULT ''");
-  ensureColumn(db, 'skill_test_chain_runs', 'created_at', "created_at TEXT NOT NULL DEFAULT ''");
-  ensureColumn(db, 'skill_test_chain_runs', 'updated_at', "updated_at TEXT NOT NULL DEFAULT ''");
-
-  ensureColumn(db, 'skill_test_chain_run_steps', 'depends_on_step_ids_json', "depends_on_step_ids_json TEXT NOT NULL DEFAULT '[]'");
-  ensureColumn(db, 'skill_test_chain_run_steps', 'status', "status TEXT NOT NULL DEFAULT 'pending'");
-  ensureColumn(db, 'skill_test_chain_run_steps', 'skill_test_run_id', "skill_test_run_id TEXT NOT NULL DEFAULT ''");
-  ensureColumn(db, 'skill_test_chain_run_steps', 'carry_forward_json', "carry_forward_json TEXT NOT NULL DEFAULT '{}' ");
-  ensureColumn(db, 'skill_test_chain_run_steps', 'artifact_refs_json', "artifact_refs_json TEXT NOT NULL DEFAULT '[]'");
-  ensureColumn(db, 'skill_test_chain_run_steps', 'error_code', "error_code TEXT NOT NULL DEFAULT ''");
-  ensureColumn(db, 'skill_test_chain_run_steps', 'error_message', "error_message TEXT NOT NULL DEFAULT ''");
-  ensureColumn(db, 'skill_test_chain_run_steps', 'started_at', "started_at TEXT NOT NULL DEFAULT ''");
-  ensureColumn(db, 'skill_test_chain_run_steps', 'finished_at', "finished_at TEXT NOT NULL DEFAULT ''");
-  ensureColumn(db, 'skill_test_chain_run_steps', 'created_at', "created_at TEXT NOT NULL DEFAULT ''");
-  ensureColumn(db, 'skill_test_chain_run_steps', 'updated_at', "updated_at TEXT NOT NULL DEFAULT ''");
-
-  db.exec(`
-CREATE INDEX IF NOT EXISTS idx_skill_test_cases_status ON skill_test_cases (case_status);
-CREATE INDEX IF NOT EXISTS idx_skill_test_runs_verdict ON skill_test_runs (verdict);
-CREATE INDEX IF NOT EXISTS idx_skill_test_environment_assets_skill_profile ON skill_test_environment_assets (skill_id, env_profile);
-CREATE INDEX IF NOT EXISTS idx_skill_test_chain_runs_skill_chain ON skill_test_chain_runs (skill_id, export_chain_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_skill_test_chain_run_steps_chain ON skill_test_chain_run_steps (chain_run_id, sequence_index);
-CREATE INDEX IF NOT EXISTS idx_skill_test_chain_run_steps_case ON skill_test_chain_run_steps (test_case_id, created_at DESC);
-  `);
-
-  ensureColumn(db, 'skill_test_cases', 'source_metadata_json', "source_metadata_json TEXT NOT NULL DEFAULT '{}'");
 }

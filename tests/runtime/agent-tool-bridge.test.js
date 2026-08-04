@@ -10,7 +10,7 @@ const { markConversationRetrievalTraceUsage } = require('../../build/server/doma
 const { withTempDir } = require('../helpers/temp-dir');
 
 function createPublicInvocationFixture(store, suffix) {
-  const agent = store.saveCustomRoleConfig({
+  const agent = store.saveAgent({
     id: `bridge-agent-${suffix}`,
     name: `Bridge Agent ${suffix}`,
     personaPrompt: 'Reply briefly.',
@@ -389,80 +389,6 @@ test('agent tool bridge updates session goal checklist progress', (t) => {
   assert.ok(broadcastEvents.some((event) => event.eventName === 'conversation_goal_updated'));
 });
 
-test('agent tool bridge enforces skill-test run and case auth scope', (t) => {
-  const tempDir = withTempDir('caff-agent-tool-bridge-skill-test-auth-');
-  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
-  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
-  const bridge = createAgentToolBridge({ store });
-
-  t.after(() => {
-    try {
-      store.close();
-    } catch {}
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  const fixture = createPublicInvocationFixture(store, 'skill-test-auth');
-  const context = bridge.registerInvocation(
-    bridge.createInvocationContext({
-      conversationId: fixture.conversation.id,
-      turnId: fixture.assistantMessage.turnId,
-      agentId: fixture.agent.id,
-      agentName: fixture.agent.name,
-      assistantMessageId: fixture.assistantMessage.id,
-      conversationAgents: fixture.conversation.agents,
-      stage: fixture.stage,
-      turnState: fixture.turnState,
-      authScope: 'skill-test',
-      caseId: 'case-1',
-      runId: 'run-1',
-      tokenTtlSec: 60,
-      dryRun: true,
-    })
-  );
-
-  assert.throws(
-    () =>
-      bridge.handlePostMessage({
-        invocationId: context.invocationId,
-        callbackToken: context.callbackToken,
-        visibility: 'public',
-        content: 'missing scope',
-      }),
-    (error) => error && error.statusCode === 403
-  );
-
-  assert.throws(
-    () =>
-      bridge.handlePostMessage({
-        invocationId: context.invocationId,
-        callbackToken: context.callbackToken,
-        skillTestRunId: 'run-1',
-        skillTestCaseId: 'case-2',
-        visibility: 'public',
-        content: 'wrong case',
-      }),
-    (error) => error && error.statusCode === 403
-  );
-
-  const okPost = bridge.handlePostMessage({
-    invocationId: context.invocationId,
-    callbackToken: context.callbackToken,
-    skillTestRunId: 'run-1',
-    skillTestCaseId: 'case-1',
-    visibility: 'public',
-    content: 'scoped ok',
-  });
-
-  assert.equal(okPost.ok, true);
-  assert.equal(context.auth.validated, true);
-  assert.equal(context.auth.validatedCount, 1);
-  assert.deepEqual(
-    context.auth.rejects.map((entry) => entry.reason),
-    ['missing_case_binding', 'case_binding_mismatch']
-  );
-});
-
 test('agent tool bridge expires invocation auth tokens', (t) => {
   const tempDir = withTempDir('caff-agent-tool-bridge-auth-expiry-');
   const sqlitePath = path.join(tempDir, 'bridge.sqlite');
@@ -487,11 +413,7 @@ test('agent tool bridge expires invocation auth tokens', (t) => {
       conversationAgents: fixture.conversation.agents,
       stage: fixture.stage,
       turnState: fixture.turnState,
-      authScope: 'skill-test',
-      caseId: 'case-expired',
-      runId: 'run-expired',
       expiresAt: '2000-01-01T00:00:00.000Z',
-      dryRun: true,
     })
   );
 
@@ -500,8 +422,6 @@ test('agent tool bridge expires invocation auth tokens', (t) => {
       bridge.handlePostMessage({
         invocationId: context.invocationId,
         callbackToken: context.callbackToken,
-        skillTestRunId: 'run-expired',
-        skillTestCaseId: 'case-expired',
         visibility: 'public',
         content: 'too late',
       }),
@@ -1284,7 +1204,7 @@ test('agent tool search-messages returns scoped public recall results', (t) => {
   });
 
   const fixture = createPublicInvocationFixture(store, 'search');
-  const otherAgent = store.saveCustomRoleConfig({
+  const otherAgent = store.saveAgent({
     id: 'bridge-search-other-agent',
     name: 'Bridge Search Other Agent',
     personaPrompt: 'Reply briefly too.',
@@ -1645,7 +1565,7 @@ test('agent tool memory cards save durable local-user scope and stay agent-scope
   });
 
   const fixture = createPublicInvocationFixture(store, 'memory');
-  const otherAgent = store.saveCustomRoleConfig({
+  const otherAgent = store.saveAgent({
     id: 'bridge-memory-other-agent',
     name: 'Other Memory Agent',
     personaPrompt: 'Stay scoped.',
@@ -1892,215 +1812,4 @@ test('agent tool memory cards update and forget durable local-user scope safely'
 
   const listedAfterForget = bridge.handleListMemories(listUrl);
   assert.equal(listedAfterForget.cardCount, 0);
-});
-
-test('agent tool bridge routes memory writes to invocation store overrides', (t) => {
-  const liveDir = withTempDir('caff-agent-tool-live-store-');
-  const isolatedDir = withTempDir('caff-agent-tool-isolated-store-');
-  const liveStore = createChatAppStore({ agentDir: liveDir, sqlitePath: path.join(liveDir, 'live.sqlite') });
-  const isolatedStore = createChatAppStore({ agentDir: isolatedDir, sqlitePath: path.join(isolatedDir, 'isolated.sqlite') });
-  const bridge = createAgentToolBridge({ store: liveStore });
-
-  t.after(() => {
-    try {
-      isolatedStore.close();
-    } catch {}
-    try {
-      liveStore.close();
-    } catch {}
-    fs.rmSync(liveDir, { recursive: true, force: true });
-    fs.rmSync(isolatedDir, { recursive: true, force: true });
-  });
-
-  const fixture = createPublicInvocationFixture(liveStore, 'store-override');
-  isolatedStore.saveCustomRoleConfig({
-    id: fixture.agent.id,
-    name: fixture.agent.name,
-    personaPrompt: 'Reply briefly.',
-  });
-  isolatedStore.createConversation({
-    id: fixture.conversation.id,
-    title: fixture.conversation.title,
-    participants: [fixture.agent.id],
-  });
-
-  const context = bridge.registerInvocation(
-    bridge.createInvocationContext({
-      conversationId: fixture.conversation.id,
-      turnId: fixture.assistantMessage.turnId,
-      agentId: fixture.agent.id,
-      agentName: fixture.agent.name,
-      assistantMessageId: fixture.assistantMessage.id,
-      conversationAgents: fixture.conversation.agents,
-      stage: fixture.stage,
-      turnState: fixture.turnState,
-      store: isolatedStore,
-      toolPolicy: { allowedTools: ['save-memory', 'list-memories'], rejects: [] },
-    })
-  );
-
-  const saved = bridge.handleSaveMemory({
-    invocationId: context.invocationId,
-    callbackToken: context.callbackToken,
-    title: 'preference',
-    content: 'User prefers isolated test worlds.',
-    ttlDays: 30,
-  });
-
-  assert.equal(saved.ok, true);
-  assert.equal(liveStore.listVisibleMemoryCards(fixture.conversation.id, fixture.agent.id, { limit: 6 }).length, 0);
-  assert.equal(isolatedStore.listVisibleMemoryCards(fixture.conversation.id, fixture.agent.id, { limit: 6 }).length, 1);
-});
-
-test('agent tool bridge rejects blocked tools via invocation policy and records evidence', (t) => {
-  const tempDir = withTempDir('caff-agent-tool-policy-');
-  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
-  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
-  const bridge = createAgentToolBridge({ store });
-
-  t.after(() => {
-    try {
-      store.close();
-    } catch {}
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  const fixture = createPublicInvocationFixture(store, 'policy');
-  const context = bridge.registerInvocation(
-    bridge.createInvocationContext({
-      conversationId: fixture.conversation.id,
-      turnId: fixture.assistantMessage.turnId,
-      projectDir: tempDir,
-      agentId: fixture.agent.id,
-      agentName: fixture.agent.name,
-      assistantMessageId: fixture.assistantMessage.id,
-      conversationAgents: fixture.conversation.agents,
-      stage: fixture.stage,
-      turnState: fixture.turnState,
-      dryRun: true,
-      toolPolicy: { allowedTools: ['read-context'], rejects: [] },
-    })
-  );
-
-  assert.throws(
-    () =>
-      bridge.handleTrellisWrite({
-        invocationId: context.invocationId,
-        callbackToken: context.callbackToken,
-        path: '.trellis/tasks/policy/prd.md',
-        content: '# blocked',
-      }),
-    (error) => error && error.statusCode === 403
-  );
-
-  assert.equal(Array.isArray(context.policyRejects), true);
-  assert.equal(context.policyRejects.length, 1);
-  assert.equal(context.policyRejects[0].toolName, 'trellis-write');
-});
-
-test('agent tool bridge proxies sandbox file and bash tools via invocation adapter', async (t) => {
-  const tempDir = withTempDir('caff-agent-tool-bridge-sandbox-tools-');
-  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
-  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
-  const bridge = createAgentToolBridge({ store });
-  const sandboxFilePath = path.join(tempDir, 'project', 'SKILL.md');
-  const sandboxWritePath = path.join(tempDir, 'project', 'notes.md');
-  const sandboxDirPath = path.join(tempDir, 'project', 'nested');
-  const sandboxCwd = path.join(tempDir, 'project');
-  const calls = {
-    access: [],
-    read: [],
-    write: [],
-    mkdir: [],
-    bash: [],
-  };
-
-  t.after(() => {
-    try {
-      store.close();
-    } catch {}
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  const fixture = createPublicInvocationFixture(store, 'sandbox-tools');
-  const context = bridge.registerInvocation(
-    bridge.createInvocationContext({
-      conversationId: fixture.conversation.id,
-      turnId: fixture.assistantMessage.turnId,
-      projectDir: tempDir,
-      agentId: fixture.agent.id,
-      agentName: fixture.agent.name,
-      assistantMessageId: fixture.assistantMessage.id,
-      conversationAgents: fixture.conversation.agents,
-      stage: fixture.stage,
-      turnState: fixture.turnState,
-      dryRun: true,
-      sandboxToolAdapter: {
-        async access(targetPath) {
-          calls.access.push(targetPath);
-        },
-        async readFile(targetPath) {
-          calls.read.push(targetPath);
-          return Uint8Array.from(Buffer.from('# sandbox skill\n', 'utf8'));
-        },
-        async writeFile(targetPath, content) {
-          calls.write.push({ targetPath, content });
-        },
-        async mkdir(targetPath) {
-          calls.mkdir.push(targetPath);
-        },
-        async runCommand(command, options = {}) {
-          calls.bash.push({ command, options });
-          return {
-            stdout: '/case/project\n',
-            stderr: '',
-            exitCode: 0,
-          };
-        },
-      },
-    })
-  );
-
-  const accessResult = await bridge.handleSandboxAccess({
-    invocationId: context.invocationId,
-    callbackToken: context.callbackToken,
-    absolutePath: sandboxFilePath,
-  });
-  const readResult = await bridge.handleSandboxRead({
-    invocationId: context.invocationId,
-    callbackToken: context.callbackToken,
-    absolutePath: sandboxFilePath,
-  });
-  const writeResult = await bridge.handleSandboxWrite({
-    invocationId: context.invocationId,
-    callbackToken: context.callbackToken,
-    absolutePath: sandboxWritePath,
-    content: '# sandbox write\n',
-  });
-  const mkdirResult = await bridge.handleSandboxMkdir({
-    invocationId: context.invocationId,
-    callbackToken: context.callbackToken,
-    absolutePath: sandboxDirPath,
-  });
-  const bashResult = await bridge.handleSandboxBash({
-    invocationId: context.invocationId,
-    callbackToken: context.callbackToken,
-    command: 'pwd',
-    cwd: sandboxCwd,
-    timeout: 12,
-    env: { DEMO_FLAG: '1' },
-  });
-
-  assert.deepEqual(accessResult, { ok: true });
-  assert.equal(Buffer.from(readResult.base64, 'base64').toString('utf8'), '# sandbox skill\n');
-  assert.deepEqual(writeResult, { ok: true });
-  assert.deepEqual(mkdirResult, { ok: true });
-  assert.equal(bashResult.stdout, '/case/project\n');
-  assert.equal(bashResult.stderr, '');
-  assert.equal(bashResult.exitCode, 0);
-  assert.deepEqual(calls.access, [sandboxFilePath]);
-  assert.deepEqual(calls.read, [sandboxFilePath]);
-  assert.deepEqual(calls.write, [{ targetPath: sandboxWritePath, content: '# sandbox write\n' }]);
-  assert.deepEqual(calls.mkdir, [sandboxDirPath]);
-  assert.deepEqual(calls.bash, [{ command: 'pwd', options: { cwd: sandboxCwd, timeout: 12, env: { DEMO_FLAG: '1' } } }]);
 });

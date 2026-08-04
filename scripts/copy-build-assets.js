@@ -32,5 +32,4 @@ copyFile(path.join(ROOT_DIR, 'scripts', 'chat-schema-backup.mjs'), path.join(BUI
 copyFile(path.join(ROOT_DIR, 'lib', 'pi-sdk-host.mjs'), path.join(BUILD_DIR, 'lib', 'pi-sdk-host.mjs'));
 copyFile(path.join(ROOT_DIR, 'lib', 'pi-model-config-validator.mjs'), path.join(BUILD_DIR, 'lib', 'pi-model-config-validator.mjs'));
 copyFile(path.join(ROOT_DIR, 'lib', 'pi-model-catalog-host.mjs'), path.join(BUILD_DIR, 'lib', 'pi-model-catalog-host.mjs'));
-copyFile(path.join(ROOT_DIR, 'lib', 'pi-skill-test-sandbox-env.mjs'), path.join(BUILD_DIR, 'lib', 'pi-skill-test-sandbox-env.mjs'));
-copyFile(path.join(ROOT_DIR, 'lib', 'pi-skill-test-sandbox-extension.mjs'), path.join(BUILD_DIR, 'lib', 'pi-skill-test-sandbox-extension.mjs'));
+copyFile(path.join(ROOT_DIR, 'lib', 'pi-heartbeat-extension.mjs'), path.join(BUILD_DIR, 'lib', 'pi-heartbeat-extension.mjs'));

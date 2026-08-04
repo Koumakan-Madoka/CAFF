@@ -27,7 +27,7 @@ $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $actionArg
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $currentUser
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
 $principal = New-ScheduledTaskPrincipal -UserId $currentUser -LogonType Interactive -RunLevel Limited
-$description = 'Keeps WSL Docker/OpenSandbox and the local CAFF server running after Windows logon.'
+$description = 'Keeps WSL Docker and the local CAFF server running after Windows logon.'
 
 $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
 if ($existing) {

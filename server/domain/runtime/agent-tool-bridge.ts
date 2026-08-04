@@ -29,7 +29,6 @@ const MEMORY_MUTATION_REASON_TAG = 'explicit-user-request';
 const TURN_PREVIEW_LENGTH = 180;
 const MEMORY_SECRET_RE = /\b(password|passwd|secret|token|api[_ -]?key|private[_ -]?key|ssh[_ -]?key|cookie|session)\b|密码|口令|令牌|密钥|私钥/iu;
 const MEMORY_TRANSIENT_RE = /\b(todo|fixme|later|temporary|temp|today|tomorrow|next step|pending|wip)\b|待办|临时|今天|明天|稍后|下一步|本轮|这次/iu;
-const DEFAULT_SKILL_TEST_TOKEN_TTL_SECONDS = 600;
 const MAX_AUTH_REJECTS = 20;
 
 function nowIso() {
@@ -273,16 +272,6 @@ function normalizeBooleanFlag(value: any, fallback = false) {
   return fallback;
 }
 
-function resolveSkillTestAuthValue(input: any, key: string) {
-  const auth = input && input.auth && typeof input.auth === 'object' ? input.auth : null;
-  return String(
-    (auth && auth[key] !== undefined ? auth[key] : undefined) ||
-      input[`skillTest${key.charAt(0).toUpperCase()}${key.slice(1)}`] ||
-      input[key] ||
-      ''
-  ).trim();
-}
-
 function normalizeIsoTimestamp(value: any) {
   const normalized = String(value || '').trim();
   if (!normalized) {
@@ -296,19 +285,14 @@ function normalizeIsoTimestamp(value: any) {
 function createInvocationAuth(input: any = {}) {
   const auth = input && input.auth && typeof input.auth === 'object' ? input.auth : null;
   const scope = String((auth && auth.scope) || input.authScope || input.scope || 'conversation').trim() || 'conversation';
-  const isSkillTest = scope === 'skill-test';
   const requestedTtlSec = normalizePositiveInteger((auth && auth.tokenTtlSec) || input.tokenTtlSec || input.ttlSec, 0);
-  const tokenTtlSec = requestedTtlSec || (isSkillTest ? DEFAULT_SKILL_TEST_TOKEN_TTL_SECONDS : 0);
+  const tokenTtlSec = requestedTtlSec;
   const createdAt = nowIso();
   const explicitExpiresAt = normalizeIsoTimestamp((auth && auth.expiresAt) || input.expiresAt);
   const expiresAt = explicitExpiresAt || (tokenTtlSec > 0 ? new Date(Date.now() + tokenTtlSec * 1000).toISOString() : '');
 
   return {
     scope,
-    caseId: resolveSkillTestAuthValue(input, 'caseId'),
-    runId: resolveSkillTestAuthValue(input, 'runId'),
-    taskId: resolveSkillTestAuthValue(input, 'taskId'),
-    requireScope: (auth && auth.requireScope === true) || input.requireAuthScope === true || isSkillTest,
     tokenTtlSec,
     createdAt,
     expiresAt,
@@ -317,27 +301,6 @@ function createInvocationAuth(input: any = {}) {
     lastValidatedAt: '',
     rejects: [] as any[],
   };
-}
-
-function buildRequestAuthScope(source: any = {}) {
-  return {
-    caseId: String(source.skillTestCaseId || source.caseId || '').trim(),
-    runId: String(source.skillTestRunId || source.runId || '').trim(),
-  };
-}
-
-function buildUrlRequestAuthScope(requestUrl: any) {
-  const params = requestUrl && requestUrl.searchParams ? requestUrl.searchParams : null;
-  if (!params) {
-    return {};
-  }
-
-  return buildRequestAuthScope({
-    caseId: params.get('caseId'),
-    runId: params.get('runId'),
-    skillTestCaseId: params.get('skillTestCaseId'),
-    skillTestRunId: params.get('skillTestRunId'),
-  });
 }
 
 function recordAuthReject(context: any, reason: string, details: any = {}) {
@@ -370,9 +333,6 @@ function summarizeInvocationAuth(context: any) {
 
   return {
     scope: String(auth.scope || '').trim(),
-    caseId: String(auth.caseId || '').trim(),
-    runId: String(auth.runId || '').trim(),
-    taskId: String(auth.taskId || '').trim(),
     tokenTtlSec: Number.isInteger(auth.tokenTtlSec) ? auth.tokenTtlSec : 0,
     createdAt: String(auth.createdAt || '').trim(),
     expiresAt: String(auth.expiresAt || '').trim(),
@@ -391,65 +351,6 @@ export function createAgentToolBridge(options: any = {}) {
     typeof options.broadcastConversationSummary === 'function' ? options.broadcastConversationSummary : () => {};
   const onTurnUpdated = typeof options.onTurnUpdated === 'function' ? options.onTurnUpdated : () => {};
   const activeInvocations = new Map();
-
-  function normalizePolicyToolName(value: any) {
-    const normalized = String(value || '').trim().toLowerCase();
-    return normalized === 'participants' ? 'list-participants' : normalized;
-  }
-
-  function resolveContextStore(context: any) {
-    return context && context.store ? context.store : store;
-  }
-
-  function recordPolicyReject(context: any, toolName: string, reason: string, details: any = {}) {
-    const normalizedToolName = normalizePolicyToolName(toolName);
-    const policy = context && context.toolPolicy && typeof context.toolPolicy === 'object' ? context.toolPolicy : null;
-    const rejectEntry = {
-      toolName: normalizedToolName,
-      reason: clipText(reason, 240),
-      details: details && typeof details === 'object' ? details : {},
-      createdAt: nowIso(),
-    };
-
-    if (policy && Array.isArray(policy.rejects)) {
-      policy.rejects.push(rejectEntry);
-    }
-
-    if (context) {
-      if (!Array.isArray(context.policyRejects)) {
-        context.policyRejects = [];
-      }
-      context.policyRejects.push(rejectEntry);
-    }
-
-    tryAppendInvocationEvent(context, 'agent_tool_policy_reject', {
-      schemaVersion: 1,
-      tool: normalizedToolName,
-      invocationId: context && context.invocationId ? context.invocationId : '',
-      conversationId: context && context.conversationId ? context.conversationId : '',
-      turnId: context && context.turnId ? context.turnId : '',
-      agentId: context && context.agentId ? context.agentId : '',
-      agentName: context && context.agentName ? context.agentName : '',
-      assistantMessageId: context && context.assistantMessageId ? context.assistantMessageId : '',
-      reject: rejectEntry,
-    });
-  }
-
-  function ensureToolAllowed(context: any, toolName: string, details: any = {}) {
-    const policy = context && context.toolPolicy && typeof context.toolPolicy === 'object' ? context.toolPolicy : null;
-    if (!policy || !Array.isArray(policy.allowedTools) || policy.allowedTools.length === 0) {
-      return;
-    }
-
-    const normalizedToolName = normalizePolicyToolName(toolName);
-    const allowed = policy.allowedTools.some((entry: any) => normalizePolicyToolName(entry) === normalizedToolName);
-    if (allowed) {
-      return;
-    }
-
-    recordPolicyReject(context, normalizedToolName, `${normalizedToolName} is blocked by tool policy`, details);
-    throw createHttpError(403, `${normalizedToolName} is blocked by tool policy`);
-  }
 
   function resolveStageTaskId(context: any) {
     const taskId = context && context.stage && context.stage.taskId ? String(context.stage.taskId).trim() : '';
@@ -579,13 +480,6 @@ export function createAgentToolBridge(options: any = {}) {
       userMessageId: String(input.userMessageId || (promptUserMessage && promptUserMessage.id) || '').trim(),
       promptUserMessage,
       conversationAgents: Array.isArray(input.conversationAgents) ? input.conversationAgents.slice() : [],
-      dryRun: input.dryRun === true,
-      dryRunPublicPosts: [] as any[],
-      dryRunPrivatePosts: [] as any[],
-      store: input.store || null,
-      toolPolicy: input.toolPolicy || null,
-      sandboxToolAdapter: input.sandboxToolAdapter || null,
-      policyRejects: [],
       runStore: input.runStore || null,
       stage: input.stage || null,
       turnState: input.turnState || null,
@@ -615,10 +509,9 @@ export function createAgentToolBridge(options: any = {}) {
     return context;
   }
 
-  function getInvocation(invocationId: any, callbackToken: any, requestAuthScope: any = {}) {
+  function getInvocation(invocationId: any, callbackToken: any) {
     const normalizedInvocationId = String(invocationId || '').trim();
     const normalizedCallbackToken = String(callbackToken || '').trim();
-    const normalizedRequestScope = buildRequestAuthScope(requestAuthScope);
     const context = activeInvocations.get(normalizedInvocationId);
     const stageStatus = String(context && context.stage && context.stage.status ? context.stage.status : '')
       .trim()
@@ -628,8 +521,6 @@ export function createAgentToolBridge(options: any = {}) {
       recordAuthReject(context, 'invalid_or_expired_credentials', {
         hasInvocation: Boolean(context),
         hasCallbackToken: Boolean(normalizedCallbackToken),
-        caseId: normalizedRequestScope.caseId,
-        runId: normalizedRequestScope.runId,
       });
       throw createHttpError(401, 'Invalid or expired agent tool credentials');
     }
@@ -639,38 +530,9 @@ export function createAgentToolBridge(options: any = {}) {
     if (Number.isFinite(expiresAtMs) && expiresAtMs <= Date.now()) {
       recordAuthReject(context, 'token_expired', {
         expiresAt: auth.expiresAt,
-        caseId: normalizedRequestScope.caseId,
-        runId: normalizedRequestScope.runId,
       });
       activeInvocations.delete(normalizedInvocationId);
       throw createHttpError(401, 'Invalid or expired agent tool credentials');
-    }
-
-    if (auth && auth.requireScope) {
-      if (auth.caseId && !normalizedRequestScope.caseId) {
-        recordAuthReject(context, 'missing_case_binding', { expectedCaseId: auth.caseId });
-        throw createHttpError(403, 'Agent tool credentials are missing skill-test case binding');
-      }
-      if (auth.runId && !normalizedRequestScope.runId) {
-        recordAuthReject(context, 'missing_run_binding', { expectedRunId: auth.runId });
-        throw createHttpError(403, 'Agent tool credentials are missing skill-test run binding');
-      }
-    }
-
-    if (auth && auth.caseId && normalizedRequestScope.caseId && normalizedRequestScope.caseId !== auth.caseId) {
-      recordAuthReject(context, 'case_binding_mismatch', {
-        expectedCaseId: auth.caseId,
-        requestCaseId: normalizedRequestScope.caseId,
-      });
-      throw createHttpError(403, 'Agent tool credentials do not match the active skill-test case');
-    }
-
-    if (auth && auth.runId && normalizedRequestScope.runId && normalizedRequestScope.runId !== auth.runId) {
-      recordAuthReject(context, 'run_binding_mismatch', {
-        expectedRunId: auth.runId,
-        requestRunId: normalizedRequestScope.runId,
-      });
-      throw createHttpError(403, 'Agent tool credentials do not match the active skill-test run');
     }
 
     if (
@@ -813,7 +675,7 @@ export function createAgentToolBridge(options: any = {}) {
   }
 
   function buildAgentToolContextPayload(context: any, options: any = {}) {
-    const activeStore = resolveContextStore(context);
+    const activeStore = store;
     const publicLimit = Number.isInteger(options.publicLimit) && options.publicLimit > 0 ? options.publicLimit : MAX_HISTORY_MESSAGES;
     const privateLimit =
       Number.isInteger(options.privateLimit) && options.privateLimit > 0 ? options.privateLimit : MAX_PRIVATE_CONTEXT_MESSAGES;
@@ -884,7 +746,7 @@ export function createAgentToolBridge(options: any = {}) {
   }
 
   function applyAgentToolPublicUpdate(context: any, content: any, mode = 'replace') {
-    const activeStore = resolveContextStore(context);
+    const activeStore = store;
     const existingMessage = activeStore.getMessage(context.assistantMessageId);
 
     if (!existingMessage) {
@@ -956,8 +818,8 @@ export function createAgentToolBridge(options: any = {}) {
 
   function handlePostMessage(body: any = {}) {
     const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
-    const activeStore = resolveContextStore(context);
+    const context = getInvocation(body.invocationId, body.callbackToken);
+    const activeStore = store;
     const content = String(body.content || '').trim();
     const visibility = String(body.visibility || 'public').trim().toLowerCase();
     const mode = String(body.mode || 'replace').trim().toLowerCase() || 'replace';
@@ -986,100 +848,11 @@ export function createAgentToolBridge(options: any = {}) {
     });
 
     try {
-      ensureToolAllowed(context, toolName, {
-        visibility,
-      });
-
       if (!content) {
         throw createHttpError(400, 'Message content is required');
       }
 
       if (visibility === 'public') {
-        if (context.dryRun) {
-          const timestamp = nowIso();
-          const normalizedMode = String(mode || 'replace').trim().toLowerCase() || 'replace';
-          const nextContent =
-            normalizedMode === 'append' && String(context.lastPublicContent || '').trim()
-              ? `${context.lastPublicContent}${content}`
-              : content;
-          const messageId = `dryrun-${randomUUID()}`;
-
-          context.publicToolUsed = true;
-          context.publicPostCount = (context.publicPostCount || 0) + 1;
-          context.lastPublicContent = nextContent;
-          context.lastPublicPostedAt = timestamp;
-          context.dryRunPublicPosts.push({
-            id: messageId,
-            content: nextContent,
-            mode: normalizedMode,
-            createdAt: timestamp,
-          });
-
-          if (context.stage) {
-            context.stage.status = 'running';
-            context.stage.replyLength = nextContent.length;
-            context.stage.preview = clipText(nextContent, TURN_PREVIEW_LENGTH);
-            context.stage.lastTextDeltaAt = timestamp;
-          }
-
-          if (context.turnState) {
-            context.turnState.updatedAt = timestamp;
-            onTurnUpdated(context.turnState);
-          }
-
-          const serialized = {
-            id: messageId,
-            role: 'assistant',
-            agentId: context.agentId || null,
-            senderName: context.agentName,
-            content: nextContent,
-            status: 'completed',
-            createdAt: timestamp,
-            publicPostedAt: timestamp,
-            publicPostCount: context.publicPostCount || 0,
-            publicPostMode: normalizedMode,
-            mentions: [],
-          };
-
-          tryAppendInvocationEvent(context, 'agent_tool_call', {
-            schemaVersion: 1,
-            toolCallId,
-            tool: 'send-public',
-            status: 'succeeded',
-            durationMs: Date.now() - startedAt,
-            invocationId: context.invocationId,
-            conversationId: context.conversationId,
-            turnId: context.turnId,
-            agentId: context.agentId,
-            agentName: context.agentName,
-            assistantMessageId: context.assistantMessageId,
-            request: {
-              visibility: 'public',
-              mode: normalizedMode,
-              contentLength: content.length,
-            },
-            result: {
-              messageId: serialized.id,
-              publicPostCount: serialized.publicPostCount,
-              publicPostMode: serialized.publicPostMode,
-              publicPostedAt: serialized.publicPostedAt,
-            },
-          });
-          requestPublicPostCompletion(context, {
-            messageId: serialized.id,
-            publicPostCount: serialized.publicPostCount,
-            publicPostMode: serialized.publicPostMode,
-            publicPostedAt: serialized.publicPostedAt,
-            toolCallId,
-          });
-
-          return {
-            ok: true,
-            visibility: 'public',
-            message: serialized,
-          };
-        }
-
         const message = applyAgentToolPublicUpdate(context, content, mode);
         const serialized = serializeAgentToolPublicMessage(message);
         tryAppendInvocationEvent(context, 'agent_tool_call', {
@@ -1121,71 +894,6 @@ export function createAgentToolBridge(options: any = {}) {
       }
 
       if (visibility === 'private') {
-        if (context.dryRun) {
-          const timestamp = nowIso();
-          const recipientAgentIds = resolveAgentToolRecipientIds(
-            body.recipientAgentIds !== undefined ? body.recipientAgentIds : body.recipients,
-            context.conversationAgents
-          );
-          const resolvedRecipientAgentIds = recipientAgentIds.length > 0 ? recipientAgentIds : [context.agentId];
-          const handoffAgentIds = resolvedRecipientAgentIds.filter((agentId: any) => agentId && agentId !== context.agentId);
-          const explicitHandoff = body.handoff === true || body.triggerReply === true;
-          const explicitNoHandoff = body.handoff === false || body.triggerReply === false || body.noHandoff === true;
-          const handoffRequested =
-            context.allowHandoffs && !explicitNoHandoff && (explicitHandoff || handoffAgentIds.length > 0);
-          const messageId = `dryrun-${randomUUID()}`;
-
-          const privateMessage = {
-            id: messageId,
-            turnId: context.turnId || 'eval',
-            senderAgentId: context.agentId || null,
-            senderName: context.agentName,
-            recipientAgentIds: resolvedRecipientAgentIds,
-            content,
-            createdAt: timestamp,
-          };
-
-          context.privatePostCount = (context.privatePostCount || 0) + 1;
-          context.dryRunPrivatePosts.push({
-            ...privateMessage,
-            handoffRequested,
-          });
-
-          const response = {
-            ok: true,
-            visibility: 'private',
-            message: serializeAgentToolPrivateMessage(privateMessage),
-            handoffRequested,
-            enqueuedAgentIds: [],
-          };
-
-          tryAppendInvocationEvent(context, 'agent_tool_call', {
-            schemaVersion: 1,
-            toolCallId,
-            tool: 'send-private',
-            status: 'succeeded',
-            durationMs: Date.now() - startedAt,
-            invocationId: context.invocationId,
-            conversationId: context.conversationId,
-            turnId: context.turnId,
-            agentId: context.agentId,
-            agentName: context.agentName,
-            assistantMessageId: context.assistantMessageId,
-            request: {
-              visibility: 'private',
-              contentLength: content.length,
-              recipientCount: resolvedRecipientAgentIds.length,
-              handoffRequested,
-            },
-            result: {
-              messageId: response.message.id,
-              recipientCount: response.message.recipientAgentIds.length,
-              enqueuedCount: 0,
-            },
-          });
-
-          return response;
-        }
 
         const conversation = activeStore.getConversation(context.conversationId);
 
@@ -1329,8 +1037,7 @@ export function createAgentToolBridge(options: any = {}) {
     const startedAt = Date.now();
     const context = getInvocation(
       requestUrl.searchParams.get('invocationId'),
-      requestUrl.searchParams.get('callbackToken'),
-      buildUrlRequestAuthScope(requestUrl)
+      requestUrl.searchParams.get('callbackToken')
     );
     const publicLimit = Number.parseInt(requestUrl.searchParams.get('publicLimit') || '', 10);
     const privateLimit = Number.parseInt(requestUrl.searchParams.get('privateLimit') || '', 10);
@@ -1348,67 +1055,6 @@ export function createAgentToolBridge(options: any = {}) {
     });
 
     try {
-      ensureToolAllowed(context, 'read-context');
-
-      if (context.dryRun) {
-        let payload: any = null;
-
-        try {
-          payload = buildAgentToolContextPayload(context, {
-            publicLimit: Number.isFinite(publicLimit) ? publicLimit : undefined,
-            privateLimit: Number.isFinite(privateLimit) ? privateLimit : undefined,
-          });
-        } catch {
-          payload = null;
-        }
-
-        const response =
-          payload && typeof payload === 'object'
-            ? {
-                ok: true,
-                ...payload,
-              }
-            : {
-                ok: true,
-                conversation: null,
-                agent: {
-                  id: context.agentId,
-                  name: context.agentName,
-                },
-                participants: serializeAgentToolParticipants(context.conversationAgents),
-                latestUserMessage: context.promptUserMessage
-                  ? serializeAgentToolPublicMessage(context.promptUserMessage)
-                  : null,
-                publicMessages: [],
-                privateMessages: [],
-              };
-
-        tryAppendInvocationEvent(context, 'agent_tool_call', {
-          schemaVersion: 1,
-          toolCallId,
-          tool: 'read-context',
-          status: 'succeeded',
-          durationMs: Date.now() - startedAt,
-          invocationId: context.invocationId,
-          conversationId: context.conversationId,
-          turnId: context.turnId,
-          agentId: context.agentId,
-          agentName: context.agentName,
-          assistantMessageId: context.assistantMessageId,
-          request: {
-            publicLimit: Number.isFinite(publicLimit) ? publicLimit : null,
-            privateLimit: Number.isFinite(privateLimit) ? privateLimit : null,
-          },
-          result: {
-            publicMessageCount: Array.isArray(response.publicMessages) ? response.publicMessages.length : 0,
-            privateMessageCount: Array.isArray(response.privateMessages) ? response.privateMessages.length : 0,
-            participantCount: Array.isArray(response.participants) ? response.participants.length : 0,
-          },
-        });
-
-        return response;
-      }
-
       const payload = buildAgentToolContextPayload(context, {
         publicLimit: Number.isFinite(publicLimit) ? publicLimit : undefined,
         privateLimit: Number.isFinite(privateLimit) ? privateLimit : undefined,
@@ -1476,11 +1122,10 @@ export function createAgentToolBridge(options: any = {}) {
     const startedAt = Date.now();
     const context = getInvocation(
       requestUrl.searchParams.get('invocationId'),
-      requestUrl.searchParams.get('callbackToken'),
-      buildUrlRequestAuthScope(requestUrl)
+      requestUrl.searchParams.get('callbackToken')
     );
-    const activeStore = resolveContextStore(context);
-    const conversation = context.dryRun ? null : activeStore.getConversation(context.conversationId);
+    const activeStore = store;
+    const conversation = activeStore.getConversation(context.conversationId);
     const toolCallId = randomUUID();
 
     setContextCurrentTool(context, {
@@ -1494,14 +1139,10 @@ export function createAgentToolBridge(options: any = {}) {
     });
 
     try {
-      ensureToolAllowed(context, 'list-participants');
-
       const response = {
         ok: true,
         conversation: conversation ? pickConversationSummary(conversation) : null,
-        participants: context.dryRun
-          ? serializeAgentToolParticipants(context.conversationAgents)
-          : conversation
+        participants: conversation
             ? serializeAgentToolParticipants(conversation.agents)
             : [],
       };
@@ -1552,8 +1193,8 @@ export function createAgentToolBridge(options: any = {}) {
 
   function handleSuggestGoal(body: any = {}) {
     const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
-    const activeStore = resolveContextStore(context);
+    const context = getInvocation(body.invocationId, body.callbackToken);
+    const activeStore = store;
     const action = String(body.action || '').trim().toLowerCase();
     const objective = String(body.objective || '').trim();
     const reason = String(body.reason || '').trim();
@@ -1572,51 +1213,6 @@ export function createAgentToolBridge(options: any = {}) {
     });
 
     try {
-      ensureToolAllowed(context, 'suggest-goal', { action });
-
-      if (context.dryRun) {
-        const response = {
-          ok: true,
-          dryRun: true,
-          proposal: {
-            action,
-            status: 'pending',
-            ...(objective ? { objective } : {}),
-            ...(reason ? { reason: clipText(reason, 1000) } : {}),
-            proposedBy: {
-              agentId: context.agentId,
-              agentName: context.agentName,
-            },
-            createdAt: nowIso(),
-          },
-        };
-
-        tryAppendInvocationEvent(context, 'agent_tool_call', {
-          schemaVersion: 1,
-          toolCallId,
-          tool: 'suggest-goal',
-          status: 'succeeded',
-          durationMs: Date.now() - startedAt,
-          invocationId: context.invocationId,
-          conversationId: context.conversationId,
-          turnId: context.turnId,
-          agentId: context.agentId,
-          agentName: context.agentName,
-          assistantMessageId: context.assistantMessageId,
-          request: {
-            action,
-            objectiveLength: objective.length,
-            reasonPreview: clipText(reason, 120),
-          },
-          result: {
-            dryRun: true,
-            proposalAction: action,
-          },
-        });
-
-        return response;
-      }
-
       if (!activeStore || typeof activeStore.getConversation !== 'function') {
         throw createHttpError(501, 'Session goal proposals are not available');
       }
@@ -1702,8 +1298,8 @@ export function createAgentToolBridge(options: any = {}) {
 
   function handleUpdateGoalChecklist(body: any = {}) {
     const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
-    const activeStore = resolveContextStore(context);
+    const context = getInvocation(body.invocationId, body.callbackToken);
+    const activeStore = store;
     const checklistText = String(body.checklistText || body.checklist_text || body.content || '').trim();
     const toolCallId = randomUUID();
 
@@ -1718,34 +1314,6 @@ export function createAgentToolBridge(options: any = {}) {
     });
 
     try {
-      ensureToolAllowed(context, 'update-goal-checklist');
-
-      if (context.dryRun) {
-        const response = {
-          ok: true,
-          dryRun: true,
-          checklistLength: checklistText.length,
-        };
-
-        tryAppendInvocationEvent(context, 'agent_tool_call', {
-          schemaVersion: 1,
-          toolCallId,
-          tool: 'update-goal-checklist',
-          status: 'succeeded',
-          durationMs: Date.now() - startedAt,
-          invocationId: context.invocationId,
-          conversationId: context.conversationId,
-          turnId: context.turnId,
-          agentId: context.agentId,
-          agentName: context.agentName,
-          assistantMessageId: context.assistantMessageId,
-          request: { checklistLength: checklistText.length },
-          result: { dryRun: true },
-        });
-
-        return response;
-      }
-
       if (!activeStore || typeof activeStore.getConversation !== 'function') {
         throw createHttpError(501, 'Session goal checklist updates are not available');
       }
@@ -1825,8 +1393,8 @@ export function createAgentToolBridge(options: any = {}) {
 
   function handleSearchMessages(body: any = {}) {
     const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
-    const activeStore = resolveContextStore(context);
+    const context = getInvocation(body.invocationId, body.callbackToken);
+    const activeStore = store;
     const query = String(body.query || '').trim().replace(/\s+/g, ' ');
     const speaker = String(body.speaker || body.senderName || body.sender || '').trim().replace(/\s+/g, ' ');
     const agentId = String(body.agentId || body.agentID || '').trim().replace(/\s+/g, ' ');
@@ -1873,11 +1441,6 @@ export function createAgentToolBridge(options: any = {}) {
       if (agentId.length > MAX_MESSAGE_SEARCH_FILTER_LENGTH) {
         throw createHttpError(400, `agentId must be at most ${MAX_MESSAGE_SEARCH_FILTER_LENGTH} characters`);
       }
-
-      ensureToolAllowed(context, 'search-messages', {
-        scope: 'conversation-public',
-      });
-
       if (!activeStore || typeof activeStore.searchConversationMessages !== 'function') {
         throw createHttpError(501, 'Message search is not available');
       }
@@ -1953,8 +1516,8 @@ export function createAgentToolBridge(options: any = {}) {
 
   function handleSearchMemory(body: any = {}) {
     const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
-    const activeStore = resolveContextStore(context);
+    const context = getInvocation(body.invocationId, body.callbackToken);
+    const activeStore = store;
     const query = String(body.query || body.q || '').trim().replace(/\s+/g, ' ');
     const latest = normalizeBooleanFlag(body.latest || body.recent, false);
     const requestedLimit = Number.parseInt(String(body.limit || ''), 10);
@@ -2016,11 +1579,6 @@ export function createAgentToolBridge(options: any = {}) {
       if (query.length > MAX_SUMMARY_MEMORY_SEARCH_QUERY_LENGTH) {
         throw createHttpError(400, `query must be at most ${MAX_SUMMARY_MEMORY_SEARCH_QUERY_LENGTH} characters`);
       }
-
-      ensureToolAllowed(context, 'search-memory', {
-        scope: 'summary-segments',
-      });
-
       if (!activeStore || typeof activeStore.searchSummarySegments !== 'function') {
         throw createHttpError(501, 'Summary memory search is not available');
       }
@@ -2112,10 +1670,9 @@ export function createAgentToolBridge(options: any = {}) {
     const startedAt = Date.now();
     const context = getInvocation(
       requestUrl.searchParams.get('invocationId'),
-      requestUrl.searchParams.get('callbackToken'),
-      buildUrlRequestAuthScope(requestUrl)
+      requestUrl.searchParams.get('callbackToken')
     );
-    const activeStore = resolveContextStore(context);
+    const activeStore = store;
     const limit = normalizeMemoryListLimit(requestUrl.searchParams.get('limit'));
     const toolCallId = randomUUID();
 
@@ -2131,10 +1688,6 @@ export function createAgentToolBridge(options: any = {}) {
     });
 
     try {
-      ensureToolAllowed(context, 'list-memories', {
-        scope: 'agent-visible',
-      });
-
       if (!activeStore || typeof activeStore.listVisibleMemoryCards !== 'function') {
         throw createHttpError(501, 'Memory cards are not available');
       }
@@ -2207,8 +1760,8 @@ export function createAgentToolBridge(options: any = {}) {
 
   function handleSaveMemory(body: any = {}) {
     const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
-    const activeStore = resolveContextStore(context);
+    const context = getInvocation(body.invocationId, body.callbackToken);
+    const activeStore = store;
     const title = normalizeMemoryField(body.title, MAX_MEMORY_CARD_TITLE_LENGTH, 'title');
     const content = normalizeMemoryField(body.content, MAX_MEMORY_CARD_CONTENT_LENGTH, 'content');
     const ttlDays = normalizeMemoryTtlDays(body.ttlDays);
@@ -2228,11 +1781,6 @@ export function createAgentToolBridge(options: any = {}) {
 
     try {
       validateMemoryCardCandidate(title, content);
-      ensureToolAllowed(context, 'save-memory', {
-        scope: 'local-user-agent',
-        title,
-      });
-
       if (!activeStore || typeof activeStore.saveLocalUserMemoryCard !== 'function') {
         throw createHttpError(501, 'Memory cards are not available');
       }
@@ -2318,8 +1866,8 @@ export function createAgentToolBridge(options: any = {}) {
 
   function handleWriteExperience(body: any = {}) {
     const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
-    const activeStore = resolveContextStore(context);
+    const context = getInvocation(body.invocationId, body.callbackToken);
+    const activeStore = store;
     const toolCallId = randomUUID();
     const title = clipText(body.title, 100);
     const category = clipText(body.category || 'other', 80);
@@ -2336,11 +1884,6 @@ export function createAgentToolBridge(options: any = {}) {
     });
 
     try {
-      ensureToolAllowed(context, 'write-experience', {
-        title,
-        category,
-      });
-
       const result = createConversationExperienceDraft(activeStore, context.conversationId, body, {
         agentId: context.agentId,
         agentName: context.agentName,
@@ -2420,8 +1963,8 @@ export function createAgentToolBridge(options: any = {}) {
 
   function handleUpdateMemory(body: any = {}) {
     const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
-    const activeStore = resolveContextStore(context);
+    const context = getInvocation(body.invocationId, body.callbackToken);
+    const activeStore = store;
     const title = normalizeMemoryField(body.title, MAX_MEMORY_CARD_TITLE_LENGTH, 'title');
     const content = normalizeMemoryField(body.content, MAX_MEMORY_CARD_CONTENT_LENGTH, 'content');
     const reason = normalizeMemoryReason(body.reason);
@@ -2444,11 +1987,6 @@ export function createAgentToolBridge(options: any = {}) {
 
     try {
       validateMemoryCardCandidate(title, content);
-      ensureToolAllowed(context, 'update-memory', {
-        scope: 'local-user-agent',
-        title,
-      });
-
       if (!activeStore || typeof activeStore.updateLocalUserMemoryCard !== 'function') {
         throw createHttpError(501, 'Memory cards are not available');
       }
@@ -2541,8 +2079,8 @@ export function createAgentToolBridge(options: any = {}) {
 
   function handleForgetMemory(body: any = {}) {
     const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
-    const activeStore = resolveContextStore(context);
+    const context = getInvocation(body.invocationId, body.callbackToken);
+    const activeStore = store;
     const title = normalizeMemoryField(body.title, MAX_MEMORY_CARD_TITLE_LENGTH, 'title');
     const reason = normalizeMemoryReason(body.reason);
     const expectedUpdatedAt = normalizeExpectedUpdatedAt(body.expectedUpdatedAt || body['expected-updated-at']);
@@ -2563,11 +2101,6 @@ export function createAgentToolBridge(options: any = {}) {
     });
 
     try {
-      ensureToolAllowed(context, 'forget-memory', {
-        scope: 'local-user-agent',
-        title,
-      });
-
       if (!activeStore || typeof activeStore.forgetLocalUserMemoryCard !== 'function') {
         throw createHttpError(501, 'Memory cards are not available');
       }
@@ -2894,7 +2427,7 @@ export function createAgentToolBridge(options: any = {}) {
 
   function handleTrellisInit(body: any = {}) {
     const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
+    const context = getInvocation(body.invocationId, body.callbackToken);
     const includeContent = body.includeContent === true;
     const confirm = body.confirm === true;
     const force = body.force === true;
@@ -2916,8 +2449,6 @@ export function createAgentToolBridge(options: any = {}) {
     });
 
     try {
-      ensureToolAllowed(context, 'trellis-init');
-
       if (!taskName) {
         throw createHttpError(400, 'taskName must be a simple directory name (letters/numbers/._-)');
       }
@@ -3138,7 +2669,7 @@ export function createAgentToolBridge(options: any = {}) {
 
   function handleTrellisWrite(body: any = {}) {
     const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
+    const context = getInvocation(body.invocationId, body.callbackToken);
     const includeContent = body.includeContent === true;
     const confirm = body.confirm === true;
     const force = body.force === true;
@@ -3161,7 +2692,6 @@ export function createAgentToolBridge(options: any = {}) {
     let pathsSample: string[] = [];
 
     try {
-      ensureToolAllowed(context, 'trellis-write');
       const filesPayload = Array.isArray(body.files) ? body.files : null;
       const files = filesPayload
         ? filesPayload
@@ -3420,119 +2950,6 @@ export function createAgentToolBridge(options: any = {}) {
     }
   }
 
-  async function handleSandboxAccess(body: any = {}) {
-    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
-    const adapter = context && context.sandboxToolAdapter ? context.sandboxToolAdapter : null;
-    const absolutePath = String(body.absolutePath || body.path || '').trim();
-
-    if (!adapter || typeof adapter.access !== 'function') {
-      throw createHttpError(503, 'Sandbox tool adapter is unavailable for this invocation');
-    }
-
-    if (!absolutePath) {
-      throw createHttpError(400, 'absolutePath is required');
-    }
-
-    await Promise.resolve(adapter.access(absolutePath));
-    return { ok: true };
-  }
-
-  async function handleSandboxRead(body: any = {}) {
-    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
-    const adapter = context && context.sandboxToolAdapter ? context.sandboxToolAdapter : null;
-    const absolutePath = String(body.absolutePath || body.path || '').trim();
-
-    if (!adapter || typeof adapter.readFile !== 'function') {
-      throw createHttpError(503, 'Sandbox tool adapter is unavailable for this invocation');
-    }
-
-    if (!absolutePath) {
-      throw createHttpError(400, 'absolutePath is required');
-    }
-
-    const value = await Promise.resolve(adapter.readFile(absolutePath));
-    const buffer = Buffer.isBuffer(value)
-      ? value
-      : value instanceof Uint8Array
-        ? Buffer.from(value)
-        : ArrayBuffer.isView(value)
-          ? Buffer.from(value.buffer, value.byteOffset, value.byteLength)
-          : value instanceof ArrayBuffer
-            ? Buffer.from(value)
-            : Buffer.from(String(value || ''), 'utf8');
-    return {
-      ok: true,
-      base64: buffer.toString('base64'),
-    };
-  }
-
-  async function handleSandboxWrite(body: any = {}) {
-    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
-    const adapter = context && context.sandboxToolAdapter ? context.sandboxToolAdapter : null;
-    const absolutePath = String(body.absolutePath || body.path || '').trim();
-    const content = body.content !== undefined && body.content !== null ? String(body.content) : '';
-
-    if (!adapter || typeof adapter.writeFile !== 'function') {
-      throw createHttpError(503, 'Sandbox tool adapter is unavailable for this invocation');
-    }
-
-    if (!absolutePath) {
-      throw createHttpError(400, 'absolutePath is required');
-    }
-
-    await Promise.resolve(adapter.writeFile(absolutePath, content));
-    return { ok: true };
-  }
-
-  async function handleSandboxMkdir(body: any = {}) {
-    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
-    const adapter = context && context.sandboxToolAdapter ? context.sandboxToolAdapter : null;
-    const absolutePath = String(body.absolutePath || body.path || '').trim();
-
-    if (!adapter || typeof adapter.mkdir !== 'function') {
-      throw createHttpError(503, 'Sandbox tool adapter is unavailable for this invocation');
-    }
-
-    if (!absolutePath) {
-      throw createHttpError(400, 'absolutePath is required');
-    }
-
-    await Promise.resolve(adapter.mkdir(absolutePath));
-    return { ok: true };
-  }
-
-  async function handleSandboxBash(body: any = {}) {
-    const context = getInvocation(body.invocationId, body.callbackToken, buildRequestAuthScope(body));
-    const adapter = context && context.sandboxToolAdapter ? context.sandboxToolAdapter : null;
-    const command = String(body.command || '').trim();
-    const cwd = String(body.cwd || '').trim();
-    const timeout = body.timeout !== undefined && body.timeout !== null && body.timeout !== ''
-      ? Number(body.timeout)
-      : undefined;
-    const env = body.env && typeof body.env === 'object' ? body.env : {};
-
-    if (!adapter || typeof adapter.runCommand !== 'function') {
-      throw createHttpError(503, 'Sandbox tool adapter is unavailable for this invocation');
-    }
-
-    if (!command) {
-      throw createHttpError(400, 'command is required');
-    }
-
-    const result = await Promise.resolve(adapter.runCommand(command, {
-      cwd: cwd || undefined,
-      timeout,
-      env,
-    }));
-
-    return {
-      ok: true,
-      stdout: String(result && result.stdout ? result.stdout : ''),
-      stderr: String(result && result.stderr ? result.stderr : ''),
-      exitCode: Number.isInteger(result && result.exitCode) ? result.exitCode : null,
-    };
-  }
-
   return {
     createInvocationContext,
     handleForgetMemory,
@@ -3540,11 +2957,6 @@ export function createAgentToolBridge(options: any = {}) {
     handleListParticipants,
     handlePostMessage,
     handleReadContext,
-    handleSandboxAccess,
-    handleSandboxBash,
-    handleSandboxMkdir,
-    handleSandboxRead,
-    handleSandboxWrite,
     handleSaveMemory,
     handleSearchMemory,
     handleWriteExperience,

@@ -19,11 +19,6 @@ import {
   summarizeAgentContextSnapshot,
 } from '../domain/conversation/turn/context-snapshot';
 import { buildAssistantMessageToolTrace } from '../domain/runtime/message-tool-trace';
-import {
-  SKILL_TEST_DESIGN_CONVERSATION_TYPE,
-  createSkillTestDesignMetadata,
-  isSkillTestDesignConversation,
-} from '../domain/skill-test/chat-workbench-mode';
 import { UNDERCOVER_CONVERSATION_TYPE } from '../../lib/who-is-undercover-game';
 import { WEREWOLF_CONVERSATION_TYPE } from '../../lib/werewolf-game';
 
@@ -159,13 +154,18 @@ function mergeModeSkillIdsIntoParticipants(input: any, mode: any) {
   const participants = Array.isArray(input.participants) ? input.participants : [];
 
   const merged = participants.map((participant: any) => {
-    const existing = Array.isArray(participant.conversationSkillIds || participant.conversationSkills)
-      ? (participant.conversationSkillIds || participant.conversationSkills)
+    const normalizedParticipant = typeof participant === 'string'
+      ? { agentId: participant }
+      : participant && typeof participant === 'object'
+        ? participant
+        : {};
+    const existing = Array.isArray(normalizedParticipant.conversationSkillIds || normalizedParticipant.conversationSkills)
+      ? (normalizedParticipant.conversationSkillIds || normalizedParticipant.conversationSkills)
       : [];
     const mergedSkills = new Set([...existing.map((id: any) => String(id || '').trim()).filter(Boolean), ...modeSkillIds]);
 
     return {
-      ...participant,
+      ...normalizedParticipant,
       conversationSkillIds: Array.from(mergedSkills),
     };
   });
@@ -173,32 +173,7 @@ function mergeModeSkillIdsIntoParticipants(input: any, mode: any) {
   return { ...input, participants: merged };
 }
 
-function resolveSkillTestDesignSkillId(body: any) {
-  const metadata = body && body.metadata && typeof body.metadata === 'object' ? body.metadata : {};
-  const skillTestDesign = metadata.skillTestDesign && typeof metadata.skillTestDesign === 'object'
-    ? metadata.skillTestDesign
-    : {};
-  return String(skillTestDesign.skillId || body && body.skillId || '').trim();
-}
 
-function buildSkillTestDesignConversationInput(body: any, skillRegistry: any) {
-  const skillId = resolveSkillTestDesignSkillId(body);
-
-  if (!skillId) {
-    throw createHttpError(400, 'Skill Test 设计模式需要选择目标 skill');
-  }
-
-  const skill = skillRegistry && typeof skillRegistry.getSkill === 'function' ? skillRegistry.getSkill(skillId) : null;
-  if (!skill) {
-    throw createHttpError(404, '目标 skill 不存在');
-  }
-
-  const title = String(body && body.title || '').trim() || `Skill Test · ${String(skill.name || skill.id).trim() || skill.id}`;
-  return {
-    title,
-    skill,
-  };
-}
 
 function assertSkillTestDesignParticipantCount(participants: any[]) {
   if (participants.length === 3) {
@@ -299,13 +274,6 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         metadata = {
           ...metadata,
           werewolfGame: options.werewolfHost.buildPublicState(null),
-        };
-      } else if (conversationType === SKILL_TEST_DESIGN_CONVERSATION_TYPE) {
-        const skillTestConversation = buildSkillTestDesignConversationInput(body, skillRegistry);
-        skillTestSkill = skillTestConversation.skill;
-        conversationInput = {
-          ...body,
-          title: skillTestConversation.title,
         };
       }
 
@@ -693,10 +661,6 @@ export function createConversationsController(options: any = {}): RouteHandler<A
       if (req.method === 'PUT') {
         const body = await readRequestJson(req);
         const existingConversation = store.getConversationWithoutMessages(conversationId);
-
-        if (existingConversation && isSkillTestDesignConversation(existingConversation) && Array.isArray(body.participants)) {
-          throw createHttpError(409, 'Skill Test 设计模式使用固定参与者，当前不支持修改参与人格');
-        }
 
         if (
           existingConversation &&

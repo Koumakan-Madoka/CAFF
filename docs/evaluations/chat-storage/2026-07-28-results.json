@@ -1,0 +1,606 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-07-28T03:24:04.202Z",
+  "environment": {
+    "platform": "win32",
+    "release": "10.0.19045",
+    "arch": "x64",
+    "node": "v24.13.1",
+    "cpuModel": "13th Gen Intel(R) Core(TM) i5-13600K",
+    "cpuCount": 20,
+    "totalMemoryBytes": 34088402944,
+    "betterSqlite3": "12.8.0",
+    "redisServer": "Redis server v=8.8.0 sha=00000000:0 malloc=libc bits=64 build=b36aaec09c4e1fe0",
+    "sourceCommit": "cab7d39391ec07e1d2958e797c7bd95337a90e37"
+  },
+  "configuration": {
+    "profile": "standard",
+    "seed": 20260728,
+    "messageCount": 50000,
+    "hotThreadMessageCount": 25000,
+    "ordinaryThreadCount": 100,
+    "ordinaryThreadMessageCount": 250,
+    "operationSamples": 500,
+    "recoveryMessageCount": 2000,
+    "appendBatchSize": 100,
+    "durabilityProfiles": [
+      "balanced",
+      "strict"
+    ]
+  },
+  "runs": [
+    {
+      "schemaVersion": 1,
+      "environment": {
+        "platform": "win32",
+        "release": "10.0.19045",
+        "arch": "x64",
+        "node": "v24.13.1",
+        "cpuModel": "13th Gen Intel(R) Core(TM) i5-13600K",
+        "cpuCount": 20,
+        "totalMemoryBytes": 34088402944,
+        "betterSqlite3": "12.8.0",
+        "redisServer": "Redis server v=8.8.0 sha=00000000:0 malloc=libc bits=64 build=b36aaec09c4e1fe0",
+        "sourceCommit": "cab7d39391ec07e1d2958e797c7bd95337a90e37"
+      },
+      "configuration": {
+        "profile": "standard",
+        "seed": 20260728,
+        "messageCount": 50000,
+        "hotThreadMessageCount": 25000,
+        "ordinaryThreadCount": 100,
+        "ordinaryThreadMessageCount": 250,
+        "operationSamples": 500,
+        "recoveryMessageCount": 2000,
+        "appendBatchSize": 100,
+        "durability": "balanced"
+      },
+      "backends": {
+        "sqlite": {
+          "status": "completed",
+          "startupMs": 35.162300000000016,
+          "durabilitySettings": {
+            "journalMode": "wal",
+            "synchronous": "NORMAL"
+          },
+          "operations": {
+            "append": {
+              "count": 50000,
+              "elapsedMs": 1410.5114,
+              "throughputPerSecond": 35448.136045,
+              "minMs": 0.7063,
+              "p50Ms": 1.2498,
+              "p95Ms": 11.9447,
+              "p99Ms": 14.43,
+              "maxMs": 16.1624,
+              "meanMs": 2.778801,
+              "sampleCount": 500,
+              "batchSize": 100,
+              "latencyUnit": "transaction-batch"
+            },
+            "latest": {
+              "count": 500,
+              "elapsedMs": 44.1317,
+              "throughputPerSecond": 11329.724438,
+              "minMs": 0.0783,
+              "p50Ms": 0.082,
+              "p95Ms": 0.1091,
+              "p99Ms": 0.209,
+              "maxMs": 0.4106,
+              "meanMs": 0.088077,
+              "sampleCount": 500
+            },
+            "after": {
+              "count": 500,
+              "elapsedMs": 70.6677,
+              "throughputPerSecond": 7075.368238,
+              "minMs": 0.0632,
+              "p50Ms": 0.1168,
+              "p95Ms": 0.2585,
+              "p99Ms": 0.384,
+              "maxMs": 0.6727,
+              "meanMs": 0.141131,
+              "sampleCount": 500
+            },
+            "pointRead": {
+              "count": 500,
+              "elapsedMs": 7.9115,
+              "throughputPerSecond": 63199.140492,
+              "minMs": 0.0045,
+              "p50Ms": 0.0105,
+              "p95Ms": 0.0348,
+              "p99Ms": 0.094,
+              "maxMs": 0.2649,
+              "meanMs": 0.015666,
+              "sampleCount": 500
+            },
+            "statusUpdate": {
+              "count": 500,
+              "elapsedMs": 29.1905,
+              "throughputPerSecond": 17128.860417,
+              "minMs": 0.0121,
+              "p50Ms": 0.0133,
+              "p95Ms": 0.0482,
+              "p99Ms": 0.1406,
+              "maxMs": 17.3633,
+              "meanMs": 0.058282,
+              "sampleCount": 500
+            },
+            "count": {
+              "count": 500,
+              "elapsedMs": 247.3144,
+              "throughputPerSecond": 2021.718105,
+              "minMs": 0.4492,
+              "p50Ms": 0.4801,
+              "p95Ms": 0.5863,
+              "p99Ms": 0.7521,
+              "maxMs": 0.8674,
+              "meanMs": 0.494503,
+              "sampleCount": 500
+            }
+          },
+          "storage": {
+            "bytes": 138698752,
+            "files": [
+              {
+                "path": "chat-storage.sqlite",
+                "bytes": 138698752
+              }
+            ],
+            "preparation": {
+              "kind": "graceful-sqlite-close"
+            }
+          },
+          "memory": {
+            "scope": "shared-node-process",
+            "rssBytes": 152399872,
+            "comparableAcrossBackends": false
+          },
+          "recovery": {
+            "acknowledged": 2000,
+            "recovered": 2000,
+            "lost": 0,
+            "lostIds": [],
+            "restartRecoveryMs": 2.2146999999999935,
+            "evidenceKind": "process-crash"
+          }
+        },
+        "redis": {
+          "status": "completed",
+          "startupMs": 94.13090000000011,
+          "durabilitySettings": {
+            "appendonly": "yes",
+            "appendfsync": "everysec",
+            "rdbSchedule": "60 1",
+            "autoAofRewritePercentage": "0"
+          },
+          "operations": {
+            "append": {
+              "count": 50000,
+              "elapsedMs": 2219.8226,
+              "throughputPerSecond": 22524.322439,
+              "minMs": 3.3692,
+              "p50Ms": 4.3037,
+              "p95Ms": 5.4596,
+              "p99Ms": 6.2802,
+              "maxMs": 12.7783,
+              "meanMs": 4.39826,
+              "sampleCount": 500,
+              "batchSize": 100,
+              "latencyUnit": "transaction-batch"
+            },
+            "latest": {
+              "count": 500,
+              "elapsedMs": 323.0393,
+              "throughputPerSecond": 1547.799293,
+              "minMs": 0.4881,
+              "p50Ms": 0.5844,
+              "p95Ms": 1.0052,
+              "p99Ms": 1.2626,
+              "maxMs": 3.2189,
+              "meanMs": 0.645827,
+              "sampleCount": 500
+            },
+            "after": {
+              "count": 500,
+              "elapsedMs": 334.4458,
+              "throughputPerSecond": 1495.010552,
+              "minMs": 0.521,
+              "p50Ms": 0.6365,
+              "p95Ms": 0.8716,
+              "p99Ms": 1.0667,
+              "maxMs": 1.9373,
+              "meanMs": 0.668662,
+              "sampleCount": 500
+            },
+            "pointRead": {
+              "count": 500,
+              "elapsedMs": 45.8371,
+              "throughputPerSecond": 10908.194454,
+              "minMs": 0.0643,
+              "p50Ms": 0.0798,
+              "p95Ms": 0.1631,
+              "p99Ms": 0.2033,
+              "maxMs": 0.7105,
+              "meanMs": 0.091537,
+              "sampleCount": 500
+            },
+            "statusUpdate": {
+              "count": 500,
+              "elapsedMs": 88.342,
+              "throughputPerSecond": 5659.822055,
+              "minMs": 0.1318,
+              "p50Ms": 0.1545,
+              "p95Ms": 0.2948,
+              "p99Ms": 0.3348,
+              "maxMs": 0.3605,
+              "meanMs": 0.1765,
+              "sampleCount": 500
+            },
+            "count": {
+              "count": 500,
+              "elapsedMs": 37.1519,
+              "throughputPerSecond": 13458.261892,
+              "minMs": 0.0567,
+              "p50Ms": 0.0653,
+              "p95Ms": 0.1229,
+              "p99Ms": 0.1466,
+              "maxMs": 0.1569,
+              "meanMs": 0.074173,
+              "sampleCount": 500
+            }
+          },
+          "storage": {
+            "bytes": 24802076,
+            "files": [
+              {
+                "path": "appendonlydir/appendonly.aof.2.base.rdb",
+                "bytes": 12399563
+              },
+              {
+                "path": "appendonlydir/appendonly.aof.2.incr.aof",
+                "bytes": 0
+              },
+              {
+                "path": "appendonlydir/appendonly.aof.manifest",
+                "bytes": 124
+              },
+              {
+                "path": "dump.rdb",
+                "bytes": 12399563
+              },
+              {
+                "path": "redis.log",
+                "bytes": 2826
+              }
+            ],
+            "preparation": {
+              "kind": "explicit-bgrewriteaof",
+              "elapsedMs": 539.4939999999997
+            }
+          },
+          "memory": {
+            "scope": "redis-process",
+            "usedMemoryBytes": 152007883,
+            "rssBytes": 152007768,
+            "comparableAcrossBackends": true
+          },
+          "recovery": {
+            "acknowledged": 2000,
+            "recovered": 2000,
+            "lost": 0,
+            "lostIds": [],
+            "restartRecoveryMs": 121.08660000000054,
+            "evidenceKind": "process-crash"
+          }
+        }
+      },
+      "limitations": [
+        "One local Windows machine; results are not a distributed deployment benchmark.",
+        "Synthetic deterministic message content does not reproduce every production access pattern.",
+        "Process termination does not simulate host power loss or storage-device failure.",
+        "SQLite RSS is measured inside the shared Node harness process and is not directly comparable to Redis process RSS.",
+        "Synthetic payloads use repeated characters and are highly compressible; Redis RDB/AOF-base compression makes measured disk bytes unsuitable for generalizing real-chat storage ratios.",
+        "Performance runs use alternating backend order by durability, but OS cache and background activity can still affect results."
+      ],
+      "verdictInputs": {
+        "complete": true,
+        "acknowledgedLoss": {
+          "sqlite": 0,
+          "redis": 0
+        }
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "environment": {
+        "platform": "win32",
+        "release": "10.0.19045",
+        "arch": "x64",
+        "node": "v24.13.1",
+        "cpuModel": "13th Gen Intel(R) Core(TM) i5-13600K",
+        "cpuCount": 20,
+        "totalMemoryBytes": 34088402944,
+        "betterSqlite3": "12.8.0",
+        "redisServer": "Redis server v=8.8.0 sha=00000000:0 malloc=libc bits=64 build=b36aaec09c4e1fe0",
+        "sourceCommit": "cab7d39391ec07e1d2958e797c7bd95337a90e37"
+      },
+      "configuration": {
+        "profile": "standard",
+        "seed": 20260728,
+        "messageCount": 50000,
+        "hotThreadMessageCount": 25000,
+        "ordinaryThreadCount": 100,
+        "ordinaryThreadMessageCount": 250,
+        "operationSamples": 500,
+        "recoveryMessageCount": 2000,
+        "appendBatchSize": 100,
+        "durability": "strict"
+      },
+      "backends": {
+        "redis": {
+          "status": "completed",
+          "startupMs": 71.97410000000036,
+          "durabilitySettings": {
+            "appendonly": "yes",
+            "appendfsync": "always",
+            "rdbSchedule": "60 1",
+            "autoAofRewritePercentage": "0"
+          },
+          "operations": {
+            "append": {
+              "count": 50000,
+              "elapsedMs": 3238.2012,
+              "throughputPerSecond": 15440.671197,
+              "minMs": 4.7176,
+              "p50Ms": 5.9838,
+              "p95Ms": 7.9968,
+              "p99Ms": 8.0646,
+              "maxMs": 15.9485,
+              "meanMs": 6.426061,
+              "sampleCount": 500,
+              "batchSize": 100,
+              "latencyUnit": "transaction-batch"
+            },
+            "latest": {
+              "count": 500,
+              "elapsedMs": 418.2571,
+              "throughputPerSecond": 1195.436969,
+              "minMs": 0.7003,
+              "p50Ms": 0.8017,
+              "p95Ms": 1.0258,
+              "p99Ms": 1.1607,
+              "maxMs": 1.8803,
+              "meanMs": 0.836159,
+              "sampleCount": 500
+            },
+            "after": {
+              "count": 500,
+              "elapsedMs": 452.7972,
+              "throughputPerSecond": 1104.247111,
+              "minMs": 0.7143,
+              "p50Ms": 0.8592,
+              "p95Ms": 1.2105,
+              "p99Ms": 1.5009,
+              "maxMs": 2.826,
+              "meanMs": 0.905234,
+              "sampleCount": 500
+            },
+            "pointRead": {
+              "count": 500,
+              "elapsedMs": 52.4388,
+              "throughputPerSecond": 9534.924522,
+              "minMs": 0.0856,
+              "p50Ms": 0.0906,
+              "p95Ms": 0.1608,
+              "p99Ms": 0.1939,
+              "maxMs": 0.4115,
+              "meanMs": 0.104636,
+              "sampleCount": 500
+            },
+            "statusUpdate": {
+              "count": 500,
+              "elapsedMs": 999.8448,
+              "throughputPerSecond": 500.077612,
+              "minMs": 0.9589,
+              "p50Ms": 1.9905,
+              "p95Ms": 2.15,
+              "p99Ms": 2.2654,
+              "maxMs": 3.9196,
+              "meanMs": 1.999275,
+              "sampleCount": 500
+            },
+            "count": {
+              "count": 500,
+              "elapsedMs": 48.1878,
+              "throughputPerSecond": 10376.070292,
+              "minMs": 0.0726,
+              "p50Ms": 0.0853,
+              "p95Ms": 0.1458,
+              "p99Ms": 0.1655,
+              "maxMs": 0.2155,
+              "meanMs": 0.096117,
+              "sampleCount": 500
+            }
+          },
+          "storage": {
+            "bytes": 24802076,
+            "files": [
+              {
+                "path": "appendonlydir/appendonly.aof.2.base.rdb",
+                "bytes": 12399563
+              },
+              {
+                "path": "appendonlydir/appendonly.aof.2.incr.aof",
+                "bytes": 0
+              },
+              {
+                "path": "appendonlydir/appendonly.aof.manifest",
+                "bytes": 124
+              },
+              {
+                "path": "dump.rdb",
+                "bytes": 12399563
+              },
+              {
+                "path": "redis.log",
+                "bytes": 2826
+              }
+            ],
+            "preparation": {
+              "kind": "explicit-bgrewriteaof",
+              "elapsedMs": 510.42219999999907
+            }
+          },
+          "memory": {
+            "scope": "redis-process",
+            "usedMemoryBytes": 150803403,
+            "rssBytes": 150803288,
+            "comparableAcrossBackends": true
+          },
+          "recovery": {
+            "acknowledged": 2000,
+            "recovered": 2000,
+            "lost": 0,
+            "lostIds": [],
+            "restartRecoveryMs": 111.81310000000121,
+            "evidenceKind": "process-crash"
+          }
+        },
+        "sqlite": {
+          "status": "completed",
+          "startupMs": 25.03939999999966,
+          "durabilitySettings": {
+            "journalMode": "wal",
+            "synchronous": "FULL"
+          },
+          "operations": {
+            "append": {
+              "count": 50000,
+              "elapsedMs": 3109.5684,
+              "throughputPerSecond": 16079.401887,
+              "minMs": 2.0291,
+              "p50Ms": 3.9825,
+              "p95Ms": 17.8972,
+              "p99Ms": 21.9034,
+              "maxMs": 25.9776,
+              "meanMs": 6.159973,
+              "sampleCount": 500,
+              "batchSize": 100,
+              "latencyUnit": "transaction-batch"
+            },
+            "latest": {
+              "count": 500,
+              "elapsedMs": 84.2478,
+              "throughputPerSecond": 5934.873077,
+              "minMs": 0.1528,
+              "p50Ms": 0.1591,
+              "p95Ms": 0.2037,
+              "p99Ms": 0.2719,
+              "maxMs": 1.4022,
+              "meanMs": 0.168258,
+              "sampleCount": 500
+            },
+            "after": {
+              "count": 500,
+              "elapsedMs": 111.5817,
+              "throughputPerSecond": 4481.02153,
+              "minMs": 0.1098,
+              "p50Ms": 0.2037,
+              "p95Ms": 0.3394,
+              "p99Ms": 0.3759,
+              "maxMs": 1.29,
+              "meanMs": 0.222929,
+              "sampleCount": 500
+            },
+            "pointRead": {
+              "count": 500,
+              "elapsedMs": 11.3692,
+              "throughputPerSecond": 43978.468142,
+              "minMs": 0.0096,
+              "p50Ms": 0.018,
+              "p95Ms": 0.0327,
+              "p99Ms": 0.0571,
+              "maxMs": 1.4687,
+              "meanMs": 0.0226,
+              "sampleCount": 500
+            },
+            "statusUpdate": {
+              "count": 500,
+              "elapsedMs": 1034.0127,
+              "throughputPerSecond": 483.553055,
+              "minMs": 1.0718,
+              "p50Ms": 1.9738,
+              "p95Ms": 2.1036,
+              "p99Ms": 2.1194,
+              "maxMs": 34.1339,
+              "meanMs": 2.067515,
+              "sampleCount": 500
+            },
+            "count": {
+              "count": 500,
+              "elapsedMs": 417.9303,
+              "throughputPerSecond": 1196.371739,
+              "minMs": 0.8054,
+              "p50Ms": 0.8224,
+              "p95Ms": 0.8943,
+              "p99Ms": 1.0777,
+              "maxMs": 1.4706,
+              "meanMs": 0.835621,
+              "sampleCount": 500
+            }
+          },
+          "storage": {
+            "bytes": 138698752,
+            "files": [
+              {
+                "path": "chat-storage.sqlite",
+                "bytes": 138698752
+              }
+            ],
+            "preparation": {
+              "kind": "graceful-sqlite-close"
+            }
+          },
+          "memory": {
+            "scope": "shared-node-process",
+            "rssBytes": 222552064,
+            "comparableAcrossBackends": false
+          },
+          "recovery": {
+            "acknowledged": 2000,
+            "recovered": 2000,
+            "lost": 0,
+            "lostIds": [],
+            "restartRecoveryMs": 3.219199999999546,
+            "evidenceKind": "process-crash"
+          }
+        }
+      },
+      "limitations": [
+        "One local Windows machine; results are not a distributed deployment benchmark.",
+        "Synthetic deterministic message content does not reproduce every production access pattern.",
+        "Process termination does not simulate host power loss or storage-device failure.",
+        "SQLite RSS is measured inside the shared Node harness process and is not directly comparable to Redis process RSS.",
+        "Synthetic payloads use repeated characters and are highly compressible; Redis RDB/AOF-base compression makes measured disk bytes unsuitable for generalizing real-chat storage ratios.",
+        "Performance runs use alternating backend order by durability, but OS cache and background activity can still affect results."
+      ],
+      "verdictInputs": {
+        "complete": true,
+        "acknowledgedLoss": {
+          "sqlite": 0,
+          "redis": 0
+        }
+      }
+    }
+  ],
+  "limitations": [
+    "One local Windows machine; results are not a distributed deployment benchmark.",
+    "Synthetic deterministic message content does not reproduce every production access pattern.",
+    "Process termination does not simulate host power loss or storage-device failure.",
+    "SQLite RSS is measured inside the shared Node harness process and is not directly comparable to Redis process RSS.",
+    "Synthetic payloads use repeated characters and are highly compressible; Redis RDB/AOF-base compression makes measured disk bytes unsuitable for generalizing real-chat storage ratios.",
+    "Performance runs use alternating backend order by durability, but OS cache and background activity can still affect results."
+  ],
+  "verdictStatus": "complete"
+}

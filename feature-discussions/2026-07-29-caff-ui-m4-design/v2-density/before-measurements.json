@@ -1,0 +1,72 @@
+{
+  "runId": "c8233697",
+  "measuredAt": "2026-07-29T10:08:58.450Z",
+  "scenarios": [
+    {
+      "viewport": "desktop-1440x820",
+      "innerWidth": 1440,
+      "innerHeight": 820,
+      "messageList": {
+        "width": 1104,
+        "height": 645.9,
+        "paddingX": 32,
+        "paddingY": 48,
+        "columnGap": "12px"
+      },
+      "cardGap": 12,
+      "assistantCard": {
+        "width": 554,
+        "height": 70.7,
+        "left": 490.5,
+        "paddingX": 28.8,
+        "paddingY": 20.8,
+        "maxWidth": "85%"
+      },
+      "userCard": {
+        "width": 405.1,
+        "height": 70.7,
+        "left": 865.4,
+        "paddingX": 28.8,
+        "paddingY": 20.8,
+        "maxWidth": "75%"
+      },
+      "headerHeight": 71.5,
+      "composerHeight": 102.6,
+      "visibleMessageCards": 8,
+      "totalMessageCards": 28
+    },
+    {
+      "viewport": "mobile-375x800",
+      "innerWidth": 375,
+      "innerHeight": 800,
+      "messageList": {
+        "width": 375,
+        "height": 588,
+        "paddingX": 32,
+        "paddingY": 48,
+        "columnGap": "12px"
+      },
+      "cardGap": 12,
+      "assistantCard": {
+        "width": 288.6,
+        "height": 121.1,
+        "left": 16,
+        "paddingX": 28.8,
+        "paddingY": 20.8,
+        "maxWidth": "88%"
+      },
+      "userCard": {
+        "width": 288.6,
+        "height": 95.9,
+        "left": 55.4,
+        "paddingX": 28.8,
+        "paddingY": 20.8,
+        "maxWidth": "88%"
+      },
+      "headerHeight": 61,
+      "composerHeight": 95,
+      "visibleMessageCards": 6,
+      "totalMessageCards": 28
+    }
+  ]
+}

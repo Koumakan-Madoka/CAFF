@@ -1,5 +1,7 @@
 # Skill Tests 功能产品总结
 
+> **⚠️ RETIRED** — Skill Tests 模块已于 2026-07-23 完整移除。本文档仅作为历史归档保留，描述的功能已不再存在。
+
 ## 一句话定位
 
 `Skill Tests` 是 CAFF 内部面向 Skill 作者、评审者与平台维护者的 **Skill 质量工作台**。

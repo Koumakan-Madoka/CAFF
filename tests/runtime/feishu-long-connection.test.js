@@ -341,5 +341,5 @@ test('feishu service uses the configured Trellis Coding mode for new chats', asy
   assert.equal(conversation.type, codingMode.id);
   assert.ok(Array.isArray(conversation.agents));
   assert.ok(conversation.agents.length > 0);
-  assert.deepEqual(conversation.agents[0].conversationSkillIds, ['before-dev', 'start']);
+  assert.deepEqual(conversation.agents[0].conversationSkillIds, ['before-dev', 'start', 'skill-creator']);
 });

@@ -175,14 +175,14 @@ Contract:
 
 Builtin conversation modes may require fixed helper skills in addition to user-selected or participant-bound skills.
 
-Example contract: `skill_test_design`
+Global helper contract: `skill-creator`
 
-- `lib/mode-store.ts` seeds the builtin mode with `skillIds = ["skill-test-design-workbench"]`
-- `lib/mode-store.ts` repairs older builtin rows by merging the required helper skill id while keeping builtin `loadingStrategy = "dynamic"`
-- the helper skill body lives at `.agents/skills/skill-test-design-workbench/SKILL.md`
-- `server/domain/conversation/turn/agent-executor.ts` forces full injection for the helper skill and the selected target skill only, so unrelated conversation skills can stay descriptor-only in dynamic mode
-- `server/domain/conversation/turn/agent-prompt.ts` keeps reusable workflow rules inside that helper skill and limits inline mode text to runtime state (`phase`, `role`, target skill, matrix status, case summary)
-- the helper skill tells the scribe to place large official matrices in `.tmp/skill-test-design/<skillId>/<matrixId>.json` and send only a short `MATRIX_ARTIFACT:` pointer in chat
+- the skill body lives at `.agents/skills/skill-creator/SKILL.md`
+- `lib/mode-store.ts` exports `SKILL_CREATOR_SKILL_ID` and includes it in every mode's effective `skillIds`
+- custom mode saves and built-in seed/repair paths re-add `skill-creator` so users cannot accidentally create a mode without the Skill authoring helper
+- `lib/mode-store.ts` exports `ALWAYS_DYNAMIC_MODE_SKILL_IDS = ["skill-creator"]`
+- `server/domain/conversation/turn/agent-executor.ts` passes those ids to prompt assembly as `forceDynamicConversationSkillIds`
+- `server/domain/conversation/turn/agent-prompt.ts` must render those skills as descriptors even when the mode `loadingStrategy` is `full`; this prevents oversized helper skills from being injected into game/full modes while preserving full injection for other mode skills
 
 Why:
 
@@ -205,14 +205,12 @@ When changing how skills are loaded or formatted:
 
 1. Update `lib/skill-registry.ts` if changing loading/structure
 2. Update `server/domain/conversation/turn/agent-prompt.ts` if changing prompt injection
-3. Update `server/api/skill-test-controller.ts` if changing dynamic trigger detection via `read` path
-4. Check prompt descriptor wording in `server/domain/conversation/turn/agent-prompt.ts`
-5. Add/update tests in `tests/skill-test/` or `tests/runtime/`
+3. Check prompt descriptor wording in `server/domain/conversation/turn/agent-prompt.ts`
+4. Add/update tests in `tests/runtime/`
 
 ### Testing Skill Loading
 
 - Use `tests/runtime/skill-loading.test.js` for dynamic prompt path-loading behavior
-- Use skill testing framework (`server/api/skill-test-controller.ts`) for end-to-end validation
 - Verify descriptor format matches prompt expectations
 - Test truncation with oversized skill bodies
 

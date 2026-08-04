@@ -46,6 +46,7 @@ const UNDERCOVER_TYPE = 'who_is_undercover';
 const WEREWOLF_TYPE = 'werewolf';
 const shared = window.CaffShared || {};
 const chatModules = window.CaffChat || {};
+const connectionStatus = chatModules.createConnectionStatus ? chatModules.createConnectionStatus() : null;
 const fetchJson = shared.fetchJson;
 const avatarUtils = shared.avatar || {};
 const modelOptionUtils = shared.modelOptions || {};
@@ -69,11 +70,13 @@ if (!summaryMemoryUtils) {
 const dom = {
   appShell: /** @type {HTMLElement | null} */ (document.getElementById('app-shell')),
   runtimePill: /** @type {HTMLSpanElement | null} */ (document.getElementById('runtime-pill')),
+  connectionDot: /** @type {HTMLSpanElement | null} */ (document.getElementById('connection-dot')),
   refreshButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('refresh-button')),
   newConversationButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('open-new-conversation-button')),
   newConversationBackdrop: /** @type {HTMLElement | null} */ (document.getElementById('new-conversation-backdrop')),
   newConversationDialog: /** @type {HTMLElement | null} */ (document.getElementById('new-conversation-dialog')),
   newConversationForm: /** @type {HTMLFormElement | null} */ (document.getElementById('new-conversation-form')),
+  newConversationToggle: /** @type {HTMLButtonElement | null} */ (document.getElementById('new-conversation-toggle')),
   newConversationTitle: /** @type {HTMLInputElement | null} */ (document.getElementById('new-conversation-title')),
   newConversationType: /** @type {HTMLSelectElement | null} */ (document.getElementById('new-conversation-type')),
   newConversationSkillField: /** @type {HTMLElement | null} */ (document.getElementById('new-conversation-skill-field')),
@@ -224,6 +227,13 @@ const dom = {
 };
 
 const toast = typeof shared.createToastController === 'function' ? shared.createToastController(dom.toast) : { show() {} };
+
+function setComposerValue(value) {
+  if (!window.caffShell || typeof window.caffShell.setComposerValue !== 'function') {
+    throw new Error('caffShell.setComposerValue helper is required');
+  }
+  window.caffShell.setComposerValue(value);
+}
 
 let pendingConversationRefreshId = null;
 let pendingConversationRefreshTimer = null;
@@ -788,7 +798,6 @@ let messageTimelineRenderer = noopRenderer;
 let conversationSettingsController = noopConversationSettingsController;
 let undercoverPanelRenderer = noopRenderer;
 let werewolfPanelRenderer = noopRenderer;
-let skillTestDesignPanelRenderer = noopRenderer;
 let sessionGoalPanelController = noopRenderer;
 let conversationDigestPanelController = noopRenderer;
 let summaryMemoryPanelController = noopRenderer;
@@ -916,17 +925,6 @@ function setupChatModules() {
         })
       : noopRenderer;
 
-  skillTestDesignPanelRenderer =
-    typeof chatModules.createSkillTestDesignPanelRenderer === 'function'
-      ? chatModules.createSkillTestDesignPanelRenderer({
-          state,
-          dom,
-          helpers: {
-            activeTurnForConversation,
-          },
-        })
-      : noopRenderer;
-
   sessionGoalPanelController =
     typeof chatModules.createSessionGoalPanelController === 'function'
       ? chatModules.createSessionGoalPanelController({
@@ -997,7 +995,6 @@ function setupChatModules() {
             renderParticipantList,
             renderUndercoverGameCard,
             renderWerewolfGameCard,
-            renderSkillTestDesignCard,
             scheduleConversationPaneRender,
             timelineMessagesForConversation,
             undercoverGameState,
@@ -2181,10 +2178,6 @@ function renderWerewolfGameCard() {
   werewolfPanelRenderer.render();
 }
 
-function renderSkillTestDesignCard() {
-  skillTestDesignPanelRenderer.render();
-}
-
 function renderConversationPane() {
   conversationPaneRenderer.render();
   renderSessionGoalPanel();
@@ -2713,9 +2706,23 @@ function isConversationBusy(conversationId) {
   return runtimeBusyIds.includes(conversationId) || dispatchingIds.includes(conversationId) || activeTurnBusy || activeSlotBusy;
 }
 
+function syncConnectionDot(status, label) {
+  if (!dom.connectionDot) {
+    return;
+  }
+
+  dom.connectionDot.dataset.status = status;
+  dom.connectionDot.title = label;
+  dom.connectionDot.setAttribute('aria-label', `连接状态：${label}`);
+}
+
 function renderRuntime() {
   if (!state.runtime) {
     dom.runtimePill.textContent = '正在连接本地服务...';
+    const dot = connectionStatus
+      ? connectionStatus.resolveDot({ busy: false, runtimeLabel: '', connectingLabel: '正在连接本地服务...' })
+      : { status: 'connecting', label: '正在连接本地服务...' };
+    syncConnectionDot(dot.status, dot.label);
     return;
   }
 
@@ -2726,7 +2733,16 @@ function renderRuntime() {
       .concat(Array.isArray(state.runtime.activeAgentSlots) ? state.runtime.activeAgentSlots.map((slot) => slot.conversationId) : [])
       .filter(Boolean)
   );
-  dom.runtimePill.textContent = `${state.runtime.host}:${state.runtime.port} · ${state.agents.length} Agent · ${busyConversationIds.size} 个房间处理中`;
+  const statusText = `${state.runtime.host}:${state.runtime.port} · ${state.agents.length} Agent · ${busyConversationIds.size} 个房间处理中`;
+  dom.runtimePill.textContent = statusText;
+  const dot = connectionStatus
+    ? connectionStatus.resolveDot({
+        busy: busyConversationIds.size > 0,
+        runtimeLabel: statusText,
+        connectingLabel: '正在连接事件通道…',
+      })
+    : { status: busyConversationIds.size > 0 ? 'busy' : 'ok', label: statusText };
+  syncConnectionDot(dot.status, dot.label);
 }
 
 function messageDisplayText(message) {
@@ -2883,11 +2899,14 @@ function messageContextSnapshotUrl(conversationId, messageId, exportMode = false
   return `/api/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/${suffix}`;
 }
 
-function setAgentContextDrawerOpen(open) {
+function setAgentContextDrawerOpen(open, options = {}) {
   state.contextInspector.open = Boolean(open);
-  if (dom.agentContextDrawer) {
-    dom.agentContextDrawer.classList.toggle('hidden', !state.contextInspector.open);
-    dom.agentContextDrawer.setAttribute('aria-hidden', state.contextInspector.open ? 'false' : 'true');
+  if (!options.fromShell && window.caffShell) {
+    if (state.contextInspector.open) {
+      window.caffShell.openTab('agent-context-drawer');
+    } else {
+      window.caffShell.releaseTab('agent-context-drawer');
+    }
   }
   renderAgentContextInspector();
 }
@@ -3256,7 +3275,6 @@ function renderAll() {
   renderConversationPane();
   renderUndercoverGameCard();
   renderWerewolfGameCard();
-  renderSkillTestDesignCard();
   renderCompactConversationPersonaSettings();
 }
 
@@ -3501,6 +3519,18 @@ function connectEventStream() {
 
   const source = new EventSource('/api/events');
   state.eventSource = source;
+
+  source.addEventListener('open', () => {
+    if (state.eventSource !== source) {
+      return;
+    }
+
+    if (connectionStatus) {
+      connectionStatus.markOpen();
+    }
+
+    renderRuntime();
+  });
 
   source.addEventListener('runtime_state', (event) => {
     const payload = JSON.parse(event.data);
@@ -3749,6 +3779,13 @@ function connectEventStream() {
     } catch {}
 
     state.eventSource = null;
+
+    if (connectionStatus) {
+      connectionStatus.markFailed();
+    }
+
+    renderRuntime();
+
     window.setTimeout(() => {
       if (!state.eventSource) {
         connectEventStream();
@@ -3910,6 +3947,15 @@ function bindEvents() {
     dom.agentContextCloseButton.addEventListener('click', () => setAgentContextDrawerOpen(false));
   }
 
+  if (window.caffShell && typeof window.caffShell.onChange === 'function') {
+    window.caffShell.onChange(({ open, tab }) => {
+      const shouldBeOpen = open && tab === 'agent-context-drawer';
+      if (state.contextInspector && Boolean(state.contextInspector.open) !== shouldBeOpen) {
+        setAgentContextDrawerOpen(shouldBeOpen, { fromShell: true });
+      }
+    });
+  }
+
   if (dom.agentContextExportButton) {
     dom.agentContextExportButton.addEventListener('click', async () => {
       const previousText = dom.agentContextExportButton.textContent;
@@ -3996,56 +4042,6 @@ function bindEvents() {
       } finally {
         toolTraceCopyButton.disabled = false;
         toolTraceCopyButton.textContent = previousText;
-      }
-
-      return;
-    }
-
-    const recordButton =
-      event.target instanceof Element
-        ? /** @type {HTMLButtonElement | null} */ (event.target.closest('.message-record-button'))
-        : null;
-
-    if (recordButton) {
-      const messageId = recordButton.dataset.messageId || '';
-      const message =
-        state.currentConversation && Array.isArray(state.currentConversation.messages)
-          ? state.currentConversation.messages.find((item) => item.id === messageId) || null
-          : null;
-
-      if (!message) {
-        showToast('找不到要记录的消息');
-        return;
-      }
-
-      if (!message.taskId) {
-        showToast('这条消息暂时没有 taskId，无法记录');
-        return;
-      }
-
-      const previousText = recordButton.textContent;
-      recordButton.disabled = true;
-      recordButton.textContent = '记录中';
-
-      try {
-        const result = await fetchJson('/api/eval-cases', {
-          method: 'POST',
-          body: {
-            conversationId: state.currentConversation.id,
-            messageId: message.id,
-          },
-        });
-
-        if (result && result.case && result.case.id) {
-          showToast('已记录到错题本，可在「错题本」页面做 A/B 测试');
-        } else {
-          showToast('已记录到错题本');
-        }
-      } catch (error) {
-        showToast(error.message);
-      } finally {
-        recordButton.disabled = !message.taskId;
-        recordButton.textContent = previousText;
       }
 
       return;
@@ -4139,7 +4135,7 @@ function bindEvents() {
     if (goalCommand) {
       try {
         await submitGoalCommand(conversationId, goalCommand);
-        dom.composerInput.value = '';
+        setComposerValue('');
         closeMentionMenu();
       } catch (error) {
         showToast(error.message);
@@ -4152,7 +4148,7 @@ function bindEvents() {
     if (digestCommand) {
       try {
         await submitDigestCommand(conversationId, digestCommand);
-        dom.composerInput.value = '';
+        setComposerValue('');
         closeMentionMenu();
       } catch (error) {
         showToast(error.message);
@@ -4165,7 +4161,7 @@ function bindEvents() {
     if (summaryMemoryCommand) {
       try {
         await submitSummaryMemoryCommand(summaryMemoryCommand);
-        dom.composerInput.value = '';
+        setComposerValue('');
         closeMentionMenu();
       } catch (error) {
         showToast(error.message);
@@ -4176,7 +4172,7 @@ function bindEvents() {
 
     const clientRequestId = createClientRequestId();
     const shouldStickToBottom = isMessageListNearBottom();
-    dom.composerInput.value = '';
+    setComposerValue('');
     closeMentionMenu();
     applyOptimisticUserMessage(conversationId, content, clientRequestId);
     renderConversationPane();
@@ -4230,7 +4226,7 @@ function bindEvents() {
       clearOptimisticUserMessage(conversationId, clientRequestId);
 
       if (state.selectedConversationId === conversationId && !dom.composerInput.value.trim()) {
-        dom.composerInput.value = content;
+        setComposerValue(content);
       }
 
       showToast(error.message);
@@ -4593,6 +4589,7 @@ async function init() {
     await refreshAll();
   } catch (error) {
     dom.runtimePill.textContent = '服务连接失败';
+    syncConnectionDot('failed', '服务连接失败');
     showToast(error.message);
   }
 }

@@ -43,7 +43,7 @@
       dom.conversationList.innerHTML = '';
 
       if (state.conversations.length === 0) {
-        const empty = document.createElement('div');
+        const empty = document.createElement('li');
         empty.className = 'empty-state';
         empty.textContent = '还没有会话，先创建一个。';
         dom.conversationList.appendChild(empty);
@@ -51,7 +51,11 @@
       }
 
       state.conversations.forEach((conversation) => {
-        const item = document.createElement('div');
+        const row = document.createElement('li');
+        row.className = 'conversation-list-row';
+
+        const item = document.createElement('button');
+        item.type = 'button';
         item.className = 'conversation-item';
         item.dataset.id = conversation.id;
         item.classList.toggle('active', conversation.id === state.selectedConversationId);
@@ -62,42 +66,36 @@
 
         const title = document.createElement('strong');
         title.textContent = conversation.title;
+        titleLine.appendChild(title);
 
-        const typeBadge = document.createElement('span');
+        const metaLine = document.createElement('div');
+        metaLine.className = 'conversation-meta-line';
+
         const isGameRoom = isUndercoverConversation(conversation) || isWerewolfConversation(conversation);
-        const isSkillTestDesign = String(conversation.type || '') === 'skill_test_design';
-        typeBadge.className = `conversation-type-badge${isGameRoom ? ' game' : ''}${isSkillTestDesign ? ' skill-test-design' : ''}`;
+        const typeBadge = document.createElement('span');
+        typeBadge.className = `conversation-type-badge${isGameRoom ? ' game' : ''}`;
         typeBadge.textContent = conversationTypeLabel(conversation);
 
-        const badge = document.createElement('span');
-        badge.className = `mini-badge${isConversationBusy(conversation.id) ? ' busy' : ''}`;
-        badge.textContent = isConversationBusy(conversation.id)
-          ? '处理中'
-          : `${conversation.agentCount || 0}A / ${conversation.messageCount || 0}M`;
-        titleLine.append(title, typeBadge, badge);
-
-        const preview = document.createElement('p');
-        preview.className = 'conversation-preview';
-        preview.textContent =
-          conversationPreviewText(conversation.lastMessagePreview || '') ||
-          ((conversation.messageCount || 0) > 0 ? '[silent reply]' : '新的协作房间，等待第一条消息。');
-
-        const footer = document.createElement('div');
-        footer.className = 'section-row';
-
-        const updated = document.createElement('span');
-        updated.className = 'muted';
-        updated.textContent = conversation.lastMessageAt ? formatDateTime(conversation.lastMessageAt) : '尚未开始';
-
         const participants = document.createElement('span');
-        participants.className = 'muted';
-        participants.textContent = isUndercoverConversation(conversation) || isWerewolfConversation(conversation)
+        participants.textContent = isGameRoom
           ? `${conversation.agentCount || 0} 名玩家`
           : `${conversation.agentCount || 0} 个 Agent`;
 
-        footer.append(updated, participants);
-        item.append(titleLine, preview, footer);
-        dom.conversationList.appendChild(item);
+        const updated = document.createElement('span');
+        updated.textContent = conversation.lastMessageAt ? formatDateTime(conversation.lastMessageAt) : '尚未开始';
+
+        metaLine.append(typeBadge, participants, updated);
+
+        if (isConversationBusy(conversation.id)) {
+          const busyBadge = document.createElement('span');
+          busyBadge.className = 'mini-badge busy';
+          busyBadge.textContent = '处理中';
+          metaLine.appendChild(busyBadge);
+        }
+
+        item.append(titleLine, metaLine);
+        row.appendChild(item);
+        dom.conversationList.appendChild(row);
       });
 
       dom.conversationList.scrollTop = previousScrollTop;
