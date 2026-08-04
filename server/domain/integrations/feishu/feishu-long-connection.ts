@@ -60,6 +60,15 @@ function getSdkErrorMessage(error: any) {
   return error && error.message ? error.message : String(error || 'Unknown error');
 }
 
+export function isFeishuLongConnectionSdkAvailable(resolveModule: any = require.resolve) {
+  try {
+    resolveModule('@larksuiteoapi/node-sdk');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function createFeishuLongConnectionSource(options: any = {}) {
   const feishuService = options.feishuService;
   const logger = options.logger || console;
@@ -94,11 +103,13 @@ export function createFeishuLongConnectionSource(options: any = {}) {
   }
 
   function loadSdk() {
-    if (options.larkSdk) {
-      return options.larkSdk;
-    }
-
     try {
+      if (options.larkSdk) {
+        return options.larkSdk;
+      }
+      if (typeof options.loadSdk === 'function') {
+        return options.loadSdk();
+      }
       return require('@larksuiteoapi/node-sdk');
     } catch (error) {
       logWarn('Failed to load @larksuiteoapi/node-sdk', {

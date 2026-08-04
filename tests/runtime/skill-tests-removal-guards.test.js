@@ -48,7 +48,7 @@ test('Skill Tests module files are deleted', () => {
   assert.ok(!exists('tests/skill-test'), 'tests/skill-test/ directory must be deleted');
 });
 
-test('package.json no longer references Skill Tests scripts or opensandbox dep', () => {
+test('package.json keeps retired OpenSandbox absent and Feishu SDK optional', () => {
   const pkg = JSON.parse(readSrc('package.json'));
   const checkScript = String(pkg.scripts.check || '');
   assert.ok(!/skill-tests/.test(checkScript), 'check script must not syntax-check skill-test files');
@@ -56,7 +56,17 @@ test('package.json no longer references Skill Tests scripts or opensandbox dep',
   assert.ok(!/skill-test-design-panel/.test(checkScript), 'check script must not syntax-check skill-test-design-panel.js');
   assert.ok(!pkg.scripts['opensandbox:build-runtime-image'], 'opensandbox build script must be removed');
   assert.ok(!pkg.scripts['opensandbox:build-caff-image'], 'opensandbox caff-image script must be removed');
-  assert.ok(!pkg.dependencies || !pkg.dependencies.opensandbox, 'opensandbox dependency must be removed');
+  for (const dependencyGroup of ['dependencies', 'optionalDependencies', 'devDependencies']) {
+    assert.ok(!pkg[dependencyGroup] || !pkg[dependencyGroup].opensandbox, `opensandbox must be absent from ${dependencyGroup}`);
+  }
+  assert.ok(
+    !pkg.dependencies || !pkg.dependencies['@larksuiteoapi/node-sdk'],
+    'Feishu long-connection SDK must not be a core dependency'
+  );
+  assert.equal(
+    pkg.optionalDependencies && pkg.optionalDependencies['@larksuiteoapi/node-sdk'],
+    '^1.60.0'
+  );
 });
 
 test('no destructive migration drops Skill Test / eval-case data', () => {

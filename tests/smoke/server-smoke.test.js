@@ -4440,11 +4440,18 @@ test('server smoke: bootstrap, static files, projects, skills, agents, and conve
       CHAT_APP_PORT: String(port),
       PI_CODING_AGENT_DIR: tempDir,
       PI_SQLITE_PATH: sqlitePath,
+      FEISHU_APP_ID: '',
+      FEISHU_APP_SECRET: '',
+      FEISHU_CONNECTION_MODE: 'webhook',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
   let stderrText = '';
+  let stdoutText = '';
+  child.stdout.on('data', (chunk) => {
+    stdoutText += String(chunk);
+  });
   child.stderr.on('data', (chunk) => {
     stderrText += String(chunk);
   });
@@ -4469,6 +4476,30 @@ test('server smoke: bootstrap, static files, projects, skills, agents, and conve
   assert.ok(Array.isArray(bootstrap.conversations), `Expected conversations to be an array, got ${typeof bootstrap.conversations}`);
   assert.ok(Array.isArray(bootstrap.agents), `Expected agents to be an array, got ${typeof bootstrap.agents}`);
   assert.ok(Array.isArray(bootstrap.skills), `Expected skills to be an array, got ${typeof bootstrap.skills}`);
+
+  const healthResponse = await fetch(`${baseUrl}/api/health`);
+  assert.equal(healthResponse.status, 200);
+  assert.equal(healthResponse.headers.get('cache-control'), 'no-store');
+  const health = await healthResponse.json();
+  assert.equal(health.ok, false);
+  assert.deepEqual(health.core, { ready: true, host: '127.0.0.1', port });
+  assert.deepEqual(health.chat, {
+    ready: false,
+    defaultRoleCount: 0,
+    availableDefaultRoleCount: 0,
+    roles: [],
+  });
+  assert.equal(health.optional.feishu.configured, false);
+  assert.equal(health.optional.feishu.connectionMode, 'webhook');
+  assert.equal(typeof health.optional.feishu.longConnectionSdkAvailable, 'boolean');
+  assert.equal(Object.hasOwn(health.core, 'databasePath'), false);
+  assert.match(health.timestamp, /^\d{4}-\d{2}-\d{2}T/u);
+
+  const unsupportedHealth = await fetchJsonResponse(baseUrl, '/api/health', { method: 'POST' });
+  assert.equal(unsupportedHealth.status, 404);
+
+  await waitForCondition(() => stdoutText.includes(`Health: ${baseUrl}/api/health`));
+  assert.match(stdoutText, /Chat defaults: 0\/0 ready/u);
 
   const metrics = await fetchJson(baseUrl, '/api/metrics/agent');
   assert.ok(Array.isArray(metrics.agents), `Expected metrics.agents to be an array, got ${typeof metrics.agents}`);

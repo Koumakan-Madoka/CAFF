@@ -10,6 +10,7 @@ backend domain services.
 - Domain services that support chat, session goals, games, metrics, or projects
 - Backend changes that may affect prompt assembly or active project resolution
 - Session goal API and metadata contracts (`session-goal.md`)
+- Core and role-aware readiness projection (`health-endpoint.md`)
 - Conversation digest API, metadata, prompt, and UI contracts (`conversation-digest.md`)
 - Digest-to-skill draft extraction and confirmation (`../runtime/skill-extraction.md`)
 - Cross-conversation summary segment memory search (`summary-memory.md`)
@@ -35,6 +36,7 @@ backend domain services.
 - `feishu-integration.md`: Feishu webhook/long-connection contracts, env keys,
   event normalization, dedup expectations, and test points
 - `session-goal.md`: `/goal` API, metadata, prompt, SSE, and frontend slash command contracts
+- `health-endpoint.md`: `/api/health` local readiness, redaction, and optional integration contracts
 - `conversation-digest.md`: `/digest` API, metadata, prompt, SSE, and frontend panel contracts
 - `../runtime/skill-extraction.md`: `/digest extract-skill` and `/skill-drafts` contracts
 - `summary-memory.md`: searchable digest segment ledger and `/api/memory/search` contracts
