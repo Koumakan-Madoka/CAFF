@@ -31,6 +31,7 @@ try {
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const RUN_ID = randomUUID().slice(0, 8);
 const TITLE_PREFIX = `STRUCT-${RUN_ID}`;
+const VERIFICATION_ROLE_ID = 'ui-verification-role';
 const EVIDENCE_DIR = path.join(ROOT_DIR, 'feature-discussions', '2026-07-29-caff-ui-m4-design', 'v3-structure');
 
 function flagValue(name, fallback) {
@@ -129,11 +130,41 @@ async function startIsolatedApp() {
   }
 }
 
+async function ensureVerificationRole(baseUrl) {
+  const listResponse = await fetch(`${baseUrl}api/agents`);
+  if (!listResponse.ok) {
+    throw new Error(`failed to list roles: ${listResponse.status}`);
+  }
+  const directory = await listResponse.json();
+  const existing = (Array.isArray(directory.agents) ? directory.agents : []).find(
+    (role) => role && role.id === VERIFICATION_ROLE_ID
+  );
+  if (existing) return existing.id;
+  const response = await fetch(`${baseUrl}api/agents`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      id: VERIFICATION_ROLE_ID,
+      name: 'UI 验证角色',
+      description: 'Isolated UI verification role (no model binding, always available).',
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(`failed to create verification role: ${response.status} ${await response.text()}`);
+  }
+  return VERIFICATION_ROLE_ID;
+}
+
 async function createConversation(baseUrl, title) {
+  const roleId = await ensureVerificationRole(baseUrl);
   const response = await fetch(`${baseUrl}api/conversations`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title, type: 'standard' }),
+    body: JSON.stringify({
+      title,
+      type: 'standard',
+      participants: [{ agentId: roleId, modelProfileId: null, conversationSkillIds: [] }],
+    }),
   });
   if (!response.ok) {
     throw new Error(`failed to create structure conversation: ${response.status} ${await response.text()}`);

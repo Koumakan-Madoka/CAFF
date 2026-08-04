@@ -1819,4 +1819,3 @@ test('agent tool memory cards update and forget durable local-user scope safely'
   const listedAfterForget = bridge.handleListMemories(listUrl);
   assert.equal(listedAfterForget.cardCount, 0);
 });
-

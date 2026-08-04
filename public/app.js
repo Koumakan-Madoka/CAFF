@@ -79,8 +79,6 @@ const dom = {
   newConversationToggle: /** @type {HTMLButtonElement | null} */ (document.getElementById('new-conversation-toggle')),
   newConversationTitle: /** @type {HTMLInputElement | null} */ (document.getElementById('new-conversation-title')),
   newConversationType: /** @type {HTMLSelectElement | null} */ (document.getElementById('new-conversation-type')),
-  newConversationSkillField: /** @type {HTMLElement | null} */ (document.getElementById('new-conversation-skill-field')),
-  newConversationSkill: /** @type {HTMLSelectElement | null} */ (document.getElementById('new-conversation-skill')),
   newConversationClose: /** @type {HTMLButtonElement | null} */ (document.getElementById('new-conversation-close')),
   newConversationCancel: /** @type {HTMLButtonElement | null} */ (document.getElementById('new-conversation-cancel')),
   newConversationSubmit: /** @type {HTMLButtonElement | null} */ (document.getElementById('new-conversation-submit')),

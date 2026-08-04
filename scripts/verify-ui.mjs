@@ -28,6 +28,7 @@ try {
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const RUN_ID = randomUUID().slice(0, 8);
 const TITLE_PREFIX = `UI-VERIFY-${RUN_ID}`;
+const VERIFICATION_ROLE_ID = 'ui-verification-role';
 const OUT = process.env.CAFF_VERIFY_OUT || path.join(os.tmpdir(), 'caff-ui-verify', RUN_ID);
 const MANAGEMENT_SCREENSHOT = 'ui-v2-1440-management.png';
 fs.mkdirSync(OUT, { recursive: true });
@@ -128,11 +129,41 @@ async function startIsolatedApp() {
   }
 }
 
+async function ensureVerificationRole(baseUrl) {
+  const listResponse = await fetch(`${baseUrl}api/agents`);
+  if (!listResponse.ok) {
+    throw new Error(`failed to list roles: ${listResponse.status}`);
+  }
+  const directory = await listResponse.json();
+  const existing = (Array.isArray(directory.agents) ? directory.agents : []).find(
+    (role) => role && role.id === VERIFICATION_ROLE_ID
+  );
+  if (existing) return existing.id;
+  const response = await fetch(`${baseUrl}api/agents`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      id: VERIFICATION_ROLE_ID,
+      name: 'UI 验证角色',
+      description: 'Isolated UI verification role (no model binding, always available).',
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(`failed to create verification role: ${response.status} ${await response.text()}`);
+  }
+  return VERIFICATION_ROLE_ID;
+}
+
 async function createVerificationConversation(baseUrl, title) {
+  const roleId = await ensureVerificationRole(baseUrl);
   const response = await fetch(`${baseUrl}api/conversations`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title, type: 'standard' }),
+    body: JSON.stringify({
+      title,
+      type: 'standard',
+      participants: [{ agentId: roleId, modelProfileId: null, conversationSkillIds: [] }],
+    }),
   });
   if (!response.ok) {
     throw new Error(`failed to create verification conversation: ${response.status} ${await response.text()}`);
