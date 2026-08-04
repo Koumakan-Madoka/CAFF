@@ -129,15 +129,27 @@ async function startIsolatedApp() {
   }
 }
 
-async function ensureVerificationRole(baseUrl) {
+async function listRoles(baseUrl) {
   const listResponse = await fetch(`${baseUrl}api/agents`);
   if (!listResponse.ok) {
     throw new Error(`failed to list roles: ${listResponse.status}`);
   }
   const directory = await listResponse.json();
-  const existing = (Array.isArray(directory.agents) ? directory.agents : []).find(
-    (role) => role && role.id === VERIFICATION_ROLE_ID
-  );
+  return Array.isArray(directory.agents) ? directory.agents : [];
+}
+
+async function selectVerificationRole(baseUrl, { allowCreate }) {
+  const roles = await listRoles(baseUrl);
+  if (!allowCreate) {
+    const available = roles.find(
+      (role) => role && role.availability && role.availability.status === 'available'
+    );
+    if (!available) {
+      throw new Error('explicit verification target has no available role; refusing to create a permanent verification role on a persistent instance');
+    }
+    return available.id;
+  }
+  const existing = roles.find((role) => role && role.id === VERIFICATION_ROLE_ID);
   if (existing) return existing.id;
   const response = await fetch(`${baseUrl}api/agents`, {
     method: 'POST',
@@ -154,8 +166,7 @@ async function ensureVerificationRole(baseUrl) {
   return VERIFICATION_ROLE_ID;
 }
 
-async function createVerificationConversation(baseUrl, title) {
-  const roleId = await ensureVerificationRole(baseUrl);
+async function createVerificationConversation(baseUrl, title, roleId) {
   const response = await fetch(`${baseUrl}api/conversations`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -211,6 +222,8 @@ let APP = '';
 let browser = null;
 let managedApp = null;
 let baselineConversationId = '';
+let verificationRoleId = '';
+let explicitRoleIds = null;
 let exitCode = 1;
 
 try {
@@ -220,7 +233,11 @@ try {
     managedApp = await startIsolatedApp();
     APP = managedApp.baseUrl;
   }
-  const baselineConversation = await createVerificationConversation(APP, `${TITLE_PREFIX}-BASE`);
+  verificationRoleId = await selectVerificationRole(APP, { allowCreate: Boolean(managedApp) });
+  if (!managedApp) {
+    explicitRoleIds = (await listRoles(APP)).map((role) => role && role.id).sort();
+  }
+  const baselineConversation = await createVerificationConversation(APP, `${TITLE_PREFIX}-BASE`, verificationRoleId);
   baselineConversationId = baselineConversation.id;
   browser = await chromium.launch({ channel: 'msedge', headless: true });
 
@@ -785,7 +802,7 @@ try {
     await page.click('#open-new-conversation-button');
     await page.waitForSelector('#new-conversation-backdrop:not(.hidden)', { timeout: 5000 });
     await page.fill('#new-conversation-title', title);
-    await page.check(`input[name="new-conversation-participants"][value="${VERIFICATION_ROLE_ID}"]`);
+    await page.check(`input[name="new-conversation-participants"][value="${verificationRoleId}"]`);
     await page.click('#new-conversation-submit');
     await page.waitForSelector('#new-conversation-backdrop.hidden', { state: 'attached', timeout: 5000 });
     await page.waitForTimeout(700);
@@ -936,6 +953,10 @@ if (baselineDeletion.ok) {
 }
 const finalResidue = await verificationResidue(APP);
 ok('N2 verification run leaves zero verification conversations', finalResidue.length === 0, JSON.stringify(finalResidue));
+if (explicitRoleIds) {
+  const afterRoleIds = (await listRoles(APP)).map((role) => role && role.id).sort();
+  ok('N3 explicit target role directory unchanged', JSON.stringify(afterRoleIds) === JSON.stringify(explicitRoleIds), JSON.stringify({ before: explicitRoleIds, after: afterRoleIds }));
+}
 
 const passed = results.filter((r) => r.pass).length;
 console.log(`\n=== ${passed}/${results.length} PASS ===`);
