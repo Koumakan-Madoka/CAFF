@@ -160,11 +160,12 @@ Feishu status is derived only from local env/configuration and lazy SDK availabi
 
 ## Task 6: Reconcile Branch Truth And Quality Gates
 
-1. Verify `feat/model-family-roles` has no durable source-only artifact beyond private workspace journals; classify it as superseded by PR #50/#51.
-2. Verify `feat/agent-parallel-side-dispatch` has no unmatched patch and classify it as stale after PR #26/#28.
-3. Verify the Feishu revert branch conflicts with the retained product direction and classify it as abandoned.
-4. Run `npm run check`, `npm run typecheck`, `npm test`, `git diff --check`, and the Skill Tests removal guard.
-5. Run quality gate, fresh-context review if needed, and cross-individual review before merge-gate.
+1. Verify the GitHub closed-but-unmerged inventory: PR #1 has the same `f6b1b0a` head as merged PR #2, while PR #36 merged only into the orphaned Skill Tests feature base and supplies this reconciliation's selective source.
+2. Verify `feat/model-family-roles` has no durable source-only artifact beyond private workspace journals; classify it as superseded by PR #50/#51.
+3. Verify `feat/agent-parallel-side-dispatch` has no unmatched patch and classify it as stale after PR #26/#28.
+4. Verify the Feishu revert branch conflicts with the retained product direction and classify it as abandoned.
+5. Run `npm run check`, `npm run typecheck`, `npm test`, `git diff --check`, and the Skill Tests removal guard.
+6. Run quality gate, fresh-context review if needed, and cross-individual review before merge-gate.
 
 ## Task 7: Merge And Remote Cleanup
 
