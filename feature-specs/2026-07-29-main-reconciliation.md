@@ -3,8 +3,17 @@ feature_ids: [CAFF-MAIN-RECONCILIATION]
 topics: [git, integration, main, ui, skill-tests, evaluation]
 doc_kind: plan
 created: 2026-07-29
-status: review_ready
+status: merged
 ---
+
+## Reconciliation Log
+
+| Round | Base | Branch | PR | Merged | Reviews |
+|---|---|---|---|---|---|
+| R1 | `b9f3ddf` | `chore/main-reconcile` | — | merged earlier | independent cross-family APPROVE |
+| R2 | `454f828` (incl. PR #50 model-family roles) | `chore/main-reconcile-r2` | [#51](https://github.com/Koumakan-Madoka/CAFF/pull/51) | 2026-08-04 as `7a73aad` (squash) | 砚砚 (Maine Coon) APPROVE `db26d28`; 宪宪 (Ragdoll) APPROVE `db26d28` as cloud-degradation substitute (codex quota exhausted); CI unit ×2 pass |
+
+R2 notes: 15 semantic conflicts resolved (personas modularization vs M4 management pages, shared management-list primitive); `skill_test_design` specialization fully retired (INV-3); verify-ui explicit `CAFF_VERIFY_APP` path is fail-closed and never writes permanent roles (N3 gate). INV-1 still holds: `b9f3ddf` remains an ancestor of main.
 
 # CAFF Main Reconciliation Implementation Plan
 
@@ -110,10 +119,10 @@ git diff --check origin/main...HEAD
 
 Also run targeted F001 pagination/scroll-anchor tests, F002 SDK-host tests, and Skill Tests retirement guards by exact file path.
 
-## Task 5: Review and Merge
+## Task 5: Review and Merge ✅
 
-1. Freeze the final SHA and produce a findings-first review packet with original provenance and new compatibility deltas separated.
-2. Request independent cross-family review; the author cannot review this integration.
-3. Address findings with Red→Green evidence and refresh review if SHA changes.
-4. Enter merge-gate only after approval; create a PR to GitHub main and verify remote checks.
-5. After merge and isolated acceptance, clean only worktrees/branches proven merged or obsolete; preserve excluded runtime history until separately adjudicated.
+1. ✅ Freeze the final SHA and produce a findings-first review packet with original provenance and new compatibility deltas separated.
+2. ✅ Request independent cross-family review; the author cannot review this integration.
+3. ✅ Address findings with Red→Green evidence and refresh review if SHA changes.
+4. ✅ Enter merge-gate only after approval; create a PR to GitHub main and verify remote checks. (R2: PR #51, CI unit ×2 pass, merged 2026-08-04 as `7a73aad`.)
+5. ⏳ After merge and isolated acceptance, clean only worktrees/branches proven merged or obsolete; preserve excluded runtime history until separately adjudicated. (R2 worktree/branch cleaned post-merge; legacy local `main@1cd4b55` and old feature worktrees preserved pending separate adjudication.)
