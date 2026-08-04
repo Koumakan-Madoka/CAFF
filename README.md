@@ -89,7 +89,7 @@ npm run start:dev
 只运行核心服务或飞书 webhook 时，可以跳过 long-connection SDK：
 
 ```bash
-npm install --omit=optional
+npm ci --omit=optional
 ```
 
 启动后先运行 `curl http://127.0.0.1:3100/api/health`：`core.ready` 表示服务已启动，`chat.ready` 表示至少有一个默认聊天角色能从当前模型目录解析。该接口不联网探测 provider。然后打开浏览器访问 **http://127.0.0.1:3100**。

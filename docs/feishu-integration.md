@@ -19,13 +19,13 @@ CAFF 可以把飞书私聊和普通群聊文本路由到本地 conversation，�
 最小核心/webhook 安装可以使用：
 
 ```bash
-npm install --omit=optional
+npm ci --omit=optional
 ```
 
-如果之后启用 long connection，再安装 SDK：
+如果之后启用 long connection，重新安装并包含 optional dependencies：
 
 ```bash
-npm install @larksuiteoapi/node-sdk
+npm ci --include=optional
 ```
 
 ## 前置条件
@@ -78,7 +78,7 @@ npm install @larksuiteoapi/node-sdk
 ### Long connection 没有启动
 
 - 检查健康接口中的 `longConnectionSdkAvailable`；
-- 如果使用过 `--omit=optional`，安装 `@larksuiteoapi/node-sdk`；
+- 如果使用过 `--omit=optional`，运行 `npm ci --include=optional`；
 - 检查 app id / secret；
 - 把 `FEISHU_LONG_CONNECTION_LOGGER_LEVEL` 临时设为 `debug` 查看官方 SDK 日志。
 

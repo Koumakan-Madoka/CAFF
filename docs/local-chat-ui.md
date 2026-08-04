@@ -23,7 +23,7 @@ npm install
 npm run start:dev
 ```
 
-只使用核心服务或飞书 webhook 时，可以用 `npm install --omit=optional` 跳过 long-connection SDK。
+只使用核心服务或飞书 webhook 时，可以用 `npm ci --omit=optional` 跳过 long-connection SDK。
 
 Then open:
 
