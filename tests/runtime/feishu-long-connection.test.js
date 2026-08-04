@@ -133,6 +133,37 @@ test('feishu long connection source starts the official SDK client and forwards 
   assert.deepEqual(closeParams[1], { force: true });
 });
 
+test('feishu long connection source fails closed when the optional SDK is not installed', () => {
+  const warnings = [];
+  const source = createFeishuLongConnectionSource({
+    feishuService: {
+      handleLongConnectionEvent() {
+        throw new Error('must not process without an SDK client');
+      },
+    },
+    loadSdk() {
+      const error = new Error("Cannot find module '@larksuiteoapi/node-sdk'");
+      error.code = 'MODULE_NOT_FOUND';
+      throw error;
+    },
+    logger: {
+      log() {},
+      warn(message) {
+        warnings.push(String(message || ''));
+      },
+    },
+    env: {
+      FEISHU_CONNECTION_MODE: 'long-connection',
+      FEISHU_APP_ID: 'sdk_optional_app',
+      FEISHU_APP_SECRET: 'sdk_optional_secret',
+    },
+  });
+
+  assert.equal(source.isEnabled(), true);
+  assert.equal(source.start(), false);
+  assert.ok(warnings.some((message) => message.includes('Failed to load @larksuiteoapi/node-sdk')));
+});
+
 test('feishu service processes long connection events without webhook token verification', async (t) => {
   const tempDir = withTempDir('caff-feishu-long-connection-');
   const sqlitePath = path.join(tempDir, 'chat.sqlite');

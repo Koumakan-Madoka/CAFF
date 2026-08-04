@@ -15,6 +15,7 @@ const { createAgentsController } = require('../api/agents-controller');
 const { createBootstrapController } = require('../api/bootstrap-controller');
 const { createConversationsController } = require('../api/conversations-controller');
 const { createFeishuController } = require('../api/feishu-controller');
+const { createHealthController } = require('../api/health-controller');
 const { createMetricsController } = require('../api/metrics-controller');
 const { createMemoryController } = require('../api/memory-controller');
 const { createModelProvidersController } = require('../api/model-providers-controller');
@@ -37,10 +38,14 @@ const { createWerewolfService } = require('../domain/werewolf/werewolf-service')
 const { createAgentToolBridge } = require('../domain/runtime/agent-tool-bridge');
 const { createFeishuClient } = require('../domain/integrations/feishu/feishu-client');
 const { createFeishuIntegrationService } = require('../domain/integrations/feishu/feishu-service');
-const { createFeishuLongConnectionSource } = require('../domain/integrations/feishu/feishu-long-connection');
+const {
+  createFeishuLongConnectionSource,
+  isFeishuLongConnectionSdkAvailable,
+} = require('../domain/integrations/feishu/feishu-long-connection');
 const { createConfiguredModelCatalog } = require('../domain/models/configured-model-catalog');
 const { readExternalAuthProviderIds } = require('../domain/models/external-provider-auth');
 const { createRoleService } = require('../domain/roles/role-service');
+const { createReadinessHealthStatus } = require('../domain/runtime/readiness-health');
 const { createRouter } = require('../http/router');
 const { createSseBus } = require('../http/sse-bus');
 const { buildErrorJsonPayload, sendJson } = require('../http/response');
@@ -424,7 +429,21 @@ export function createServerApp(options: any = {}) {
       },
     }),
   });
+  const getHealthStatus = createReadinessHealthStatus({
+    host,
+    port,
+    getAddress() {
+      return server && server.address();
+    },
+    getRoleDirectory: roleService.getDirectory,
+    resolveRuntimeParticipants: roleService.resolveRuntimeParticipants,
+    env: process.env,
+    isFeishuLongConnectionSdkAvailable,
+  });
   const router = createRouter([
+    createHealthController({
+      getHealthStatus,
+    }),
     createBootstrapController({
       sseBus,
       turnOrchestrator,
@@ -568,6 +587,7 @@ export function createServerApp(options: any = {}) {
 
   return {
     close,
+    getHealthStatus,
     host,
     port,
     runMaybeAutoCreateDigest,

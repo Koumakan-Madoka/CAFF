@@ -86,7 +86,13 @@ cp .env.example .env.local  # Windows PowerShell: copy .env.example .env.local
 npm run start:dev
 ```
 
-打开浏览器访问：**http://127.0.0.1:3100**
+只运行核心服务或飞书 webhook 时，可以跳过 long-connection SDK：
+
+```bash
+npm ci --omit=optional
+```
+
+启动后先运行 `curl http://127.0.0.1:3100/api/health`：`core.ready` 表示服务已启动，`chat.ready` 表示至少有一个默认聊天角色能从当前模型目录解析。该接口不联网探测 provider。然后打开浏览器访问 **http://127.0.0.1:3100**。
 
 ### Environment Variables
 
@@ -105,14 +111,10 @@ npm run start:dev
 | `PI_PROVIDER` | — | 默认模型提供商 |
 | `PI_MODEL` | — | 默认模型名 |
 | `PI_THINKING` | — | 默认 thinking / reasoning 配置 |
-| `FEISHU_APP_ID` | — | 飞书 app id |
-| `FEISHU_APP_SECRET` | — | 飞书 app secret |
-| `FEISHU_VERIFICATION_TOKEN` | — | webhook 模式下的校验 token |
-| `FEISHU_BOT_OPEN_ID` | — | 获取 bot info 失败时的可选回退值 |
-| `FEISHU_CONNECTION_MODE` | `webhook` | 飞书入站模式：`webhook` 或 `long-connection` |
-| `FEISHU_LONG_CONNECTION_LOGGER_LEVEL` | `info` | 官方 SDK long connection 日志级别 |
 
 CAFF 在 `npm run start` / `npm run start:dev` 时会自动读取 `./.env.local`。如果变量已经存在于当前进程环境中，则进程环境优先。
+
+飞书的 webhook / long connection 变量、权限和验证步骤见 [`docs/feishu-integration.md`](docs/feishu-integration.md)。
 
 如果你希望 Windows 登录后自动恢复整条本地链路（`WSL Debian` + `docker` + `CAFF`），仓库附带了 `scripts/windows/run-caff-stack.ps1` 和 `scripts/windows/register-caff-stack-task.ps1`。详细步骤见 `docs/windows-local-stack.md`。
 
@@ -150,9 +152,9 @@ CAFF 内置一个给 Agent 使用的本地聊天桥：运行时入口是 `build/
 
 这套工具是多 Agent 本地协作、private mailbox、handoff 路由和工具埋点的基础。
 
-### 飞书接入 MVP
+### 飞书接入
 
-CAFF 当前提供一版最小可用的飞书接入：
+CAFF 当前支持：
 
 - 入站模式：`POST /api/integrations/feishu/webhook` webhook，或 `FEISHU_CONNECTION_MODE=long-connection`
 - 传输层：long connection 模式下复用官方 `@larksuiteoapi/node-sdk` `WSClient`
@@ -162,17 +164,7 @@ CAFF 当前提供一版最小可用的飞书接入：
 - 出站范围：已完成的 assistant 文本回复
 - 当前限制：暂不支持加密 webhook payload
 
-### 飞书配置步骤
-
-1. 创建自建飞书应用，并启用 bot capability。
-2. 选择入站模式：
-   - webhook：把事件订阅地址指向 `https://<your-public-host>/api/integrations/feishu/webhook`，并设置 `FEISHU_VERIFICATION_TOKEN`
-   - long connection：切换到 long connection，并设置 `FEISHU_CONNECTION_MODE=long-connection`
-3. 订阅事件 `im.message.receive_v1`。
-4. 授予接收 IM 文本与发送 bot 文本消息所需权限。
-5. 如果租户无法使用 `GET /open-apis/bot/v3/info`，手动设置 `FEISHU_BOT_OPEN_ID`。
-6. 当前 MVP 需要保持 webhook 事件加密关闭；加密 payload 会被拒绝。
-7. 配好环境变量后启动 CAFF，再通过私聊或普通群聊文本验证。
+Webhook 不依赖额外 SDK；long connection 需要可选的 `@larksuiteoapi/node-sdk`。完整配置、权限、验证与故障排查见 [`docs/feishu-integration.md`](docs/feishu-integration.md)。
 
 ### GitHub CLI 自动化接入
 

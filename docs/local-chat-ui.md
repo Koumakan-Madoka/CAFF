@@ -23,11 +23,15 @@ npm install
 npm run start:dev
 ```
 
+只使用核心服务或飞书 webhook 时，可以用 `npm ci --omit=optional` 跳过 long-connection SDK。
+
 Then open:
 
 ```text
 http://127.0.0.1:3100
 ```
+
+请求 `http://127.0.0.1:3100/api/health` 可以分别查看核心服务、默认聊天角色和飞书本地配置状态；该接口不会联网探测模型 provider。
 
 ## Optional environment variables
 
