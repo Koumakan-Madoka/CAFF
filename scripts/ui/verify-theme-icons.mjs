@@ -8,6 +8,17 @@ const ROUTES = [
   { key: 'metrics', file: 'metrics.html', route: '/metrics.html', primary: '#filter-form button[type="submit"]' },
 ];
 
+const MANAGEMENT_SURFACE_SELECTOR = [
+  '.management-list-row',
+  '.provider-source-note',
+  '.management-card',
+  '.runtime-profile',
+  '.skill-option',
+  '.provider-model-row',
+  '.management-warning',
+  '.danger-confirmation',
+].join(',');
+
 function trackPage(page) {
   const diagnostics = { consoleErrors: [], pageErrors: [], badResponses: [] };
   page.on('console', (message) => {
@@ -64,8 +75,46 @@ async function openPage(browser, baseUrl, definition, theme, viewport) {
   return { context, page, diagnostics };
 }
 
-async function readThemeSnapshot(page, definition) {
-  return page.evaluate(async ({ primarySelector }) => {
+async function readVisibleManagementSurfaceBackgrounds(page) {
+  return page.evaluate((selector) => {
+    const visible = (element) => Boolean(element && element.getClientRects().length > 0 && getComputedStyle(element).display !== 'none');
+    return Array.from(new Set(
+      Array.from(document.querySelectorAll(selector))
+        .filter(visible)
+        .map((element) => getComputedStyle(element).backgroundColor),
+    ));
+  }, MANAGEMENT_SURFACE_SELECTOR);
+}
+
+async function sampleManagementSurfaceBackgrounds(page, definition) {
+  if (definition.key !== 'personas') {
+    return [];
+  }
+
+  const backgrounds = new Set(await readVisibleManagementSurfaceBackgrounds(page));
+  await page.click('#show-provider-management');
+  await page.waitForSelector('#provider-management-view:not(.hidden)');
+  if (await page.locator('#provider-management-view .management-card').count() === 0) {
+    await page.click('#add-provider');
+  }
+  await page.waitForSelector('#provider-management-view:not(.hidden) .management-card');
+  if (await page.locator('#provider-management-view .provider-model-row').count() === 0) {
+    await page.click('#add-provider-model');
+  }
+  await page.waitForSelector('#provider-management-view:not(.hidden) .provider-model-row');
+  await page.click('#remove-provider');
+  await page.waitForSelector('#remove-provider-confirmation:not(.hidden)');
+  for (const background of await readVisibleManagementSurfaceBackgrounds(page)) {
+    backgrounds.add(background);
+  }
+  await page.click('#cancel-remove-provider');
+  await page.click('#show-role-management');
+  await page.waitForSelector('#role-management-view:not(.hidden) .management-card');
+  return [...backgrounds];
+}
+
+async function readThemeSnapshot(page, definition, managementSurfaceBackgrounds) {
+  return page.evaluate(async ({ primarySelector, managementBackgrounds }) => {
     const visible = (element) => Boolean(element && element.getClientRects().length > 0 && getComputedStyle(element).display !== 'none');
     const styleOf = (element) => element ? getComputedStyle(element) : null;
     const rail = document.querySelector('.rail');
@@ -108,20 +157,6 @@ async function readThemeSnapshot(page, definition) {
       '.management-index',
       '.management-detail',
     ].join(','))).filter(visible);
-    const managementSurfaceBackgrounds = Array.from(new Set(
-      Array.from(document.querySelectorAll([
-        '.management-list-row',
-        '.provider-source-note',
-        '.management-card',
-        '.runtime-profile',
-        '.skill-option',
-        '.provider-model-row',
-        '.management-warning',
-        '.danger-confirmation',
-      ].join(',')))
-        .filter(visible)
-        .map((element) => getComputedStyle(element).backgroundColor),
-    ));
     const spriteResponse = await fetch('/assets/icons.svg');
     const spriteType = spriteResponse.headers.get('content-type') || '';
     await spriteResponse.arrayBuffer();
@@ -172,9 +207,9 @@ async function readThemeSnapshot(page, definition) {
         text: participantStyle.color,
         borderRadius: Number.parseFloat(participantStyle.borderTopLeftRadius) || 0,
       } : null,
-      managementSurfaceBackgrounds,
+      managementSurfaceBackgrounds: managementBackgrounds,
     };
-  }, { primarySelector: definition.primary });
+  }, { primarySelector: definition.primary, managementBackgrounds: managementSurfaceBackgrounds });
 }
 
 async function readResponsiveState(page) {
@@ -210,7 +245,8 @@ export async function verifyThemeIcons({ browser, baseUrl, ok }) {
     for (const theme of THEMES) {
       const opened = await openPage(browser, baseUrl, definition, theme, { width: 1440, height: 900 });
       try {
-        const snapshot = await readThemeSnapshot(opened.page, definition);
+        const managementSurfaceBackgrounds = await sampleManagementSurfaceBackgrounds(opened.page, definition);
+        const snapshot = await readThemeSnapshot(opened.page, definition, managementSurfaceBackgrounds);
         snapshots.set(`${definition.key}:${theme}`, snapshot);
         const expectedIcon = theme === 'dark' ? 'sun' : 'moon';
         const expectedLabel = theme === 'dark' ? '切换为浅色主题' : '切换为深色主题';

@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
+const { createConfiguredModelCatalog } = require('../../build/server/domain/models/configured-model-catalog');
 const { createRoleService } = require('../../build/server/domain/roles/role-service');
 
 function modelOption(provider, model, family, supportedThinkingLevels = ['off', 'low', 'high']) {
@@ -9,8 +10,8 @@ function modelOption(provider, model, family, supportedThinkingLevels = ['off', 
     provider,
     model,
     label: `${provider} / ${model}`,
-    source: 'runtime_registry',
-    sourceLabel: 'runtime registry',
+    source: 'models_json',
+    sourceLabel: 'models.json',
     family,
     familySource: 'explicit',
     supportedThinkingLevels,
@@ -41,6 +42,41 @@ function createService(roles, getOptions) {
     },
   });
 }
+
+test('registry-only models make existing roles explicitly unavailable instead of leaking into the directory', () => {
+  const catalog = createConfiguredModelCatalog({
+    loadRuntimeModels: () => [{
+      provider: 'moonshotai',
+      id: 'kimi-k2.5',
+      name: 'Kimi K2.5',
+      supportedThinkingLevels: ['off', 'low', 'high'],
+    }],
+    readProviderDocument: () => ({ providers: {} }),
+    readRuntimeDefault: () => ({ provider: '', model: '' }),
+  });
+  const service = createService([{
+    id: 'role-family-kimi',
+    name: 'Kimi',
+    roleKind: 'model_family',
+    modelFamily: 'kimi',
+    provider: 'moonshotai',
+    model: 'kimi-k2.5',
+    thinking: 'low',
+    modelProfiles: [],
+  }], () => catalog.getOptions());
+
+  assert.equal(catalog.getOptions().some((option) => option.model === 'kimi-k2.5'), false);
+  assert.deepEqual(service.getDirectory().agents[0].availability, {
+    status: 'no_family_models',
+    familyModelCount: 0,
+  });
+  assert.throws(
+    () => service.validateConversationParticipants({
+      participants: [{ agentId: 'role-family-kimi', modelProfileId: null }],
+    }),
+    (error) => error && error.statusCode === 422 && error.issues[0].code === 'participant_role_unavailable'
+  );
+});
 
 test('runtime role resolution uses exact family profiles, preserves custom fallback, and strips family Persona inputs', () => {
   const roles = [

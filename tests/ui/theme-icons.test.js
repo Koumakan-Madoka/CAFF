@@ -325,6 +325,11 @@ test('model-family management surfaces consume semantic light and dark theme tok
 
   const verifier = read('scripts/ui/verify-theme-icons.mjs');
   assert.match(verifier, /managementSurfaceBackgrounds/);
+  assert.match(verifier, /sampleManagementSurfaceBackgrounds/);
+  assert.match(verifier, /page\.click\('#show-provider-management'\)/);
+  assert.match(verifier, /page\.click\('#add-provider'\)/);
+  assert.match(verifier, /page\.click\('#add-provider-model'\)/);
+  assert.match(verifier, /page\.click\('#remove-provider'\)/);
   assert.match(verifier, /dark\.managementSurfaceBackgrounds\.every/);
 });
 
