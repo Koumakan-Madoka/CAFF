@@ -140,31 +140,32 @@ export async function verifyManagementPages({ browser, baseUrl, ok, outputDir, s
     const keyboard = await browser.newPage({ viewport: { width: 1440, height: 900 } });
     pages.push(keyboard);
     const keyboardDiagnostics = trackPage(keyboard);
-    await keyboard.route('**/api/agents', async (route) => {
+    await keyboard.route('**/api/bootstrap', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
           agents: [
-            { id: 'verify-a', name: '验证人格 A', description: '键盘测试', modelProfiles: [], skills: [] },
-            { id: 'verify-b', name: '验证人格 B', description: '键盘测试', modelProfiles: [], skills: [] },
+            { id: 'verify-a', name: '验证人格 A', description: '键盘测试', roleKind: 'custom', modelProfiles: [], skills: [] },
+            { id: 'verify-b', name: '验证人格 B', description: '键盘测试', roleKind: 'custom', modelProfiles: [], skills: [] },
           ],
           skills: [],
           modelOptions: [],
+          localAdmin: { modelProviders: { enabled: false } },
         }),
       });
     });
     await keyboard.goto(new URL('/personas.html', baseUrl).href, { waitUntil: 'load' });
-    await keyboard.waitForSelector('#agent-list li:nth-child(2) > button');
-    await keyboard.locator('#agent-list li:nth-child(2) > button').focus();
+    await keyboard.waitForSelector('#custom-role-list li:nth-child(2) > button');
+    await keyboard.locator('#custom-role-list li:nth-child(2) > button').focus();
     await keyboard.keyboard.press('Enter');
-    await keyboard.waitForFunction(() => document.querySelector('#agent-list button[data-id="verify-b"]')?.classList.contains('active'));
+    await keyboard.waitForFunction(() => document.querySelector('#custom-role-list button[data-id="verify-b"]')?.classList.contains('active'));
     const keyboardState = await keyboard.evaluate(() => ({
-      listTag: document.getElementById('agent-list')?.tagName,
-      rowTag: document.querySelector('#agent-list > li')?.tagName,
-      buttonTag: document.querySelector('#agent-list > li > button')?.tagName,
-      activeId: document.querySelector('#agent-list .agent-list-item.active')?.dataset.id,
-      title: document.getElementById('editor-title')?.textContent,
+      listTag: document.getElementById('custom-role-list')?.tagName,
+      rowTag: document.querySelector('#custom-role-list > li')?.tagName,
+      buttonTag: document.querySelector('#custom-role-list > li > button')?.tagName,
+      activeId: document.querySelector('#custom-role-list .agent-list-item.active')?.dataset.id,
+      title: document.getElementById('role-name')?.value,
     }));
     ok(
       'P-keyboard native list button Enter selects a management item',

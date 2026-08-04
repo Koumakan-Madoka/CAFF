@@ -324,7 +324,7 @@ test('conversations controller preserves string participant ids when mode skills
       },
     },
   });
-  const agent = store.saveAgent({
+  const agent = store.saveCustomRoleConfig({
     id: 'string-participant-agent',
     name: 'String Participant Agent',
     description: 'Exercises the legacy string participant API contract.',
@@ -5213,7 +5213,6 @@ test('conversation create validates the explicit roster and only merges mode ski
     modeStore: {
       get(id) {
         if (id === 'coding') return { id: 'coding', name: 'Coding', skillIds: ['mode-skill'] };
-        if (id === 'skill_test_design') return { id, name: 'Skill Test 设计', skillIds: ['skill-test-design-workbench'] };
         return null;
       },
     },
@@ -5309,32 +5308,23 @@ test('conversation create validates the explicit roster and only merges mode ski
     'role-family-gemini',
   ]);
 
-  const skillTestConversation = await invokeConversationsController(controller, {
+  const skillTestModeRemoved = await invokeConversationsController(controller, {
     method: 'POST',
     pathname: '/api/conversations',
     body: {
+      title: 'Retired skill-test mode roster',
       type: 'skill_test_design',
       skillId: 'tdd',
-      participants: ['role-family-gpt', 'role-family-claude', 'role-family-gemini'],
+      participants: ['role-family-gpt'],
     },
   });
-  assert.equal(skillTestConversation.statusCode, 201);
-  assert.deepEqual(skillTestConversation.json.conversation.agents.map((agent) => agent.id), [
-    'role-family-gpt',
-    'role-family-claude',
-    'role-family-gemini',
-  ]);
-  assert.deepEqual(skillTestConversation.json.conversation.metadata.skillTestDesign.participantRoles, {
-    'role-family-gpt': 'planner',
-    'role-family-claude': 'critic',
-    'role-family-gemini': 'scribe',
-  });
-  assert.equal(JSON.stringify(skillTestConversation.json.conversation).includes('agent-strategist'), false);
+  assert.equal(JSON.stringify(skillTestModeRemoved.json.conversation || {}).includes('skillTestDesign'), false);
+  assert.equal(JSON.stringify(skillTestModeRemoved.json).includes('agent-strategist'), false);
 
   modelOptions.splice(0, modelOptions.length);
   await assertCreateError({
     title: 'Unavailable role',
-    participants: ['role-family-gpt'],
+    participants: [{ agentId: 'role-family-gpt' }],
   }, 422, 'participant_role_unavailable');
   assert.equal(store.listConversations().length, 4);
 });

@@ -25,8 +25,8 @@ const PAGES = [
     key: 'personas',
     file: 'personas.html',
     route: '/personas.html',
-    lists: ['agent-list'],
-    criticalIds: ['refresh-button', 'new-agent-button', 'agent-form', 'save-agent-button', 'delete-agent-button'],
+    lists: ['family-role-list', 'custom-role-list', 'provider-list'],
+    criticalIds: ['show-role-management', 'show-provider-management', 'refresh-roles', 'new-custom-role', 'refresh-providers', 'add-provider', 'role-detail', 'provider-detail'],
   },
   {
     key: 'skills',
@@ -152,7 +152,7 @@ test('management CSS owns viewport, bounded panes, mobile rail, and touch target
 });
 
 test('management renderer migration uses the shared primitive instead of div click targets', () => {
-  for (const file of ['personas.js', 'skills.js', 'projects.js', 'metrics.js']) {
+  for (const file of ['personas/role-management.js', 'personas/provider-management.js', 'skills.js', 'projects.js', 'metrics.js']) {
     const source = readPublic(file);
     assert.match(source, /createManagementListItem/);
     assert.doesNotMatch(source, /createElement\(['"]div['"]\)[\s\S]{0,100}className\s*=\s*[`'"]agent-list-item/);

@@ -243,9 +243,13 @@ test('ModeStore: migrates legacy empty Feishu coding mode to custom Coding mode'
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `).run('custom-coding', 'Coding', 'User Trellis Coding mode', 0, JSON.stringify(['before-dev', 'check']), 'dynamic', timestamp, timestamp);
   db.prepare(`
-    INSERT INTO chat_agents (id, name, persona_prompt, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?)
-  `).run('agent-1', 'Agent 1', 'Test persona', timestamp, timestamp);
+    INSERT INTO chat_role_identities (role_id, display_name_snapshot, origin_kind, lifecycle_state, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run('agent-1', 'Agent 1', 'custom', 'active', timestamp, timestamp);
+  db.prepare(`
+    INSERT INTO chat_agents (id, name, persona_prompt, role_kind, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run('agent-1', 'Agent 1', 'Test persona', 'custom', timestamp, timestamp);
   db.prepare(`
     INSERT INTO chat_conversations (id, title, type, metadata_json, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?)

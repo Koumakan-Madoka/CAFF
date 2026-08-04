@@ -117,13 +117,13 @@ test('M4: sidebar new-conversation form is collapsed behind a + toggle', () => {
   const headStart = INDEX_HTML.indexOf('class="sidebar-head"');
   const headEnd = INDEX_HTML.indexOf('</div>', headStart);
   const headHtml = INDEX_HTML.slice(headStart, headEnd);
-  assert.ok(headHtml.includes('id="new-conversation-toggle"'), 'sidebar head must expose a + toggle button');
+  assert.ok(headHtml.includes('id="open-new-conversation-button"'), 'sidebar head must expose a + button that opens the creation dialog');
 
-  const formStart = INDEX_HTML.indexOf('id="new-conversation-form"');
-  const formTag = INDEX_HTML.slice(INDEX_HTML.lastIndexOf('<form', formStart), INDEX_HTML.indexOf('>', formStart) + 1);
-  assert.ok(/\bhidden\b/.test(formTag), 'new-conversation form must be hidden by default');
+  const backdropStart = INDEX_HTML.indexOf('id="new-conversation-backdrop"');
+  const backdropTag = INDEX_HTML.slice(INDEX_HTML.lastIndexOf('<div', backdropStart), INDEX_HTML.indexOf('>', backdropStart) + 1);
+  assert.ok(/\bhidden\b/.test(backdropTag), 'new-conversation dialog must be hidden by default');
 
-  assert.match(APP_JS, /new-conversation-toggle/, 'app.js must wire the + toggle');
+  assert.match(APP_JS, /open-new-conversation-button|createNewConversationDialogController/, 'app.js must wire the + button to the creation dialog');
 });
 
 test('M4: assistant/system messages are full-width transcript rows without card chrome', () => {

@@ -4593,6 +4593,27 @@ body.management-app .management-detail {
   background: var(--caff-canvas);
 }
 
+body.management-app .management-content > .management-view {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+body.management-app .management-content > .management-view.hidden {
+  display: none;
+}
+
+body.management-app .management-view > .management-index,
+body.management-app .management-view > .management-detail {
+  max-height: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
 body.management-app .management-pane > .panel-header:first-child {
   margin-bottom: var(--caff-space-4);
 }
@@ -4762,6 +4783,11 @@ body.management-app .toast {
 
   body.management-app .management-detail {
     grid-column: 1;
+  }
+
+  body.management-app .management-content > .management-view {
+    grid-template-columns: 1fr;
+    overflow: visible;
   }
 
   body.management-app .field-grid,
