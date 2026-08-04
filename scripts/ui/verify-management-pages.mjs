@@ -178,6 +178,25 @@ export async function verifyManagementPages({ browser, baseUrl, ok, outputDir, s
       JSON.stringify({ keyboardState, diagnostics: keyboardDiagnostics }),
     );
 
+    const rowChrome = await keyboard.evaluate(() => Array.from(document.querySelectorAll('#custom-role-list > li')).map((li) => {
+      const button = li.querySelector(':scope > button');
+      const buttonRect = button ? button.getBoundingClientRect() : null;
+      return {
+        liHasRowClass: li.classList.contains('management-list-row'),
+        buttonHasRowClass: Boolean(button && button.classList.contains('management-list-row')),
+        liHeight: Math.round(li.getBoundingClientRect().height),
+        buttonHeight: buttonRect ? Math.round(buttonRect.height) : 0,
+      };
+    }));
+    ok(
+      'P-role-rows single card chrome: chrome-free li wrapper, button owns .management-list-row',
+      rowChrome.length > 0
+        && rowChrome.every((row) => !row.liHasRowClass
+          && row.buttonHasRowClass
+          && Math.abs(row.liHeight - row.buttonHeight) <= 1),
+      JSON.stringify(rowChrome),
+    );
+
     const tabletLayout = await readLayout(keyboard);
     await keyboard.setViewportSize({ width: 820, height: 900 });
     await keyboard.waitForTimeout(200);

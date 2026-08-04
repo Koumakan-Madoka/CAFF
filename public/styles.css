@@ -2358,6 +2358,10 @@ textarea {
   list-style: none;
 }
 
+.management-list-item {
+  min-width: 0;
+}
+
 .management-list-row {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
