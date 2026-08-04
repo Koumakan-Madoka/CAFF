@@ -42,15 +42,16 @@ function providerDocument() {
   };
 }
 
-test('configured model catalog merges runtime registry, models.json metadata, and exact runtime default', () => {
+test('configured model catalog exposes configured models and the exact runtime default while registry data only enriches them', () => {
   const catalog = createConfiguredModelCatalog({
     loadRuntimeModels: () => runtimeModels(),
     readProviderDocument: () => providerDocument(),
-    readRuntimeDefault: () => ({ provider: 'runtime-only', model: 'orphan-model' }),
+    readRuntimeDefault: () => ({ provider: 'anthropic', model: 'claude-opus-4-7' }),
   });
 
   const options = catalog.getOptions();
   assert.equal(new Set(options.map((option) => option.key)).size, options.length);
+  assert.equal(options.length, 3, 'the full runtime registry must not become a user-facing picker');
   assert.deepEqual(options.find((option) => option.key === 'openai\u001fgpt-5.4'), {
     key: 'openai\u001fgpt-5.4',
     provider: 'openai',
@@ -73,29 +74,18 @@ test('configured model catalog merges runtime registry, models.json metadata, an
     familySource: 'explicit',
     supportedThinkingLevels: ['off'],
   });
-  assert.deepEqual(options.find((option) => option.key === 'moonshotai\u001fkimi-k2.5'), {
-    key: 'moonshotai\u001fkimi-k2.5',
-    provider: 'moonshotai',
-    model: 'kimi-k2.5',
-    label: 'Kimi K2.5',
-    source: 'runtime_registry',
-    sourceLabel: 'runtime registry',
-    family: 'kimi',
-    familySource: 'model_alias',
-    supportedThinkingLevels: ['off', 'minimal', 'low', 'medium', 'high'],
-  });
-  assert.deepEqual(options.find((option) => option.key === 'runtime-only\u001forphan-model'), {
-    key: 'runtime-only\u001forphan-model',
-    provider: 'runtime-only',
-    model: 'orphan-model',
-    label: 'runtime-only / orphan-model',
+  assert.equal(options.find((option) => option.key === 'moonshotai\u001fkimi-k2.5'), undefined);
+  assert.deepEqual(options.find((option) => option.key === 'anthropic\u001fclaude-opus-4-7'), {
+    key: 'anthropic\u001fclaude-opus-4-7',
+    provider: 'anthropic',
+    model: 'claude-opus-4-7',
+    label: 'Claude Opus 4.7',
     source: 'runtime',
     sourceLabel: 'runtime default',
-    family: null,
-    familySource: 'unknown',
-    supportedThinkingLevels: ['off'],
+    family: 'claude',
+    familySource: 'provider_alias',
+    supportedThinkingLevels: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
   });
-  assert.equal(options.find((option) => option.key === 'anthropic\u001fclaude-opus-4-7').supportedThinkingLevels.includes('max'), true);
 });
 
 test('configured model catalog caches snapshots until explicit invalidation', () => {

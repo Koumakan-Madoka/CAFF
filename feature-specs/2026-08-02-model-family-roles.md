@@ -38,7 +38,7 @@ completed: 2026-08-03
 9. 删除旧系统 seed 不得删除或静默改写用户可见历史消息、摘要、记忆、任务、指标或其他持久状态。旧角色不自动映射成任何模型族角色；迁移必须保留可审计的历史身份显示。
 10. 数据迁移、API、prompt、模型过滤、新建聊天交互、管理页和游戏模式均有 Red→Green 契约测试；UI 实现前完成独立 Design Gate，最终冻结 SHA 经跨个体 review 后才能进入 merge-gate。
 11. 新建聊天 dialog / mobile sheet 满足键盘与模态可访问性：打开时背景 AppShell `inert` 且焦点进入表单，`focus trap` 覆盖 Tab/Shift+Tab，Escape/取消/关闭后焦点归还触发入口；所有可见交互目标不小于 44px。
-12. 角色管理旁提供独立“模型供应商”管理 surface，可维护 `models.json` 中的 provider ID/name、Base URL、API 协议、认证方式及模型条目；每个模型可显式选择七族之一或“未归类”。聚合 runtime registry、env default 与 `models.json` 的 `ConfiguredModelCatalog` 仍是角色 availability 的唯一面向角色事实源。
+12. 角色管理旁提供独立“模型供应商”管理 surface，可维护 `models.json` 中的 provider ID/name、Base URL、API 协议、认证方式及模型条目；每个模型可显式选择七族之一或“未归类”。`ConfiguredModelCatalog` 只暴露 `models.json` 明确配置的模型条目与精确 runtime default；Pi runtime registry 仅用于补齐这些可见条目的标签与 `supportedThinkingLevels`，不得整库进入角色选择器。所有模型 selector 必须显示 provider 与配置来源。
 13. Provider 读取接口永不返回明文密钥、原始 env/command reference 或 credential-bearing header；UI 只显示 configured/mode/masked state。密钥留空保留现有值，清除只能走二次确认的显式清除动作；`models.json` 写入必须先完整校验并从旧 snapshot 留下默认不设 TTL 的可恢复备份，再走 platform-aware 原子替换。
 14. Provider 管理与连接验证首版只允许 loopback local-admin：非 loopback host/socket、foreign/missing Origin、Host 不匹配、非 JSON 或 CSRF 不通过均 fail closed；验证不得执行 `!command`，网络探测使用 timeout/body cap/零 redirect 的 redacted response。
 15. 已保存的 `models.json` provider 可通过独立 danger action 移除：UI 二次确认必须显示模型数量与 family-role availability 影响；`DELETE /api/model-providers/:id` 只原子移除该配置条目并重算 catalog，不删除角色身份、历史聊天、消息、记忆或 `auth.json` / CLI 外部认证。失去模型的 role config 保留引用并显式变为 unavailable，不自动换模。
@@ -240,7 +240,7 @@ operator 已明确：按系统 ID 判定。即使对应记录曾被用户修改�
 
 1. 角色管理与“模型供应商”是同一 management shell 内的两个清晰 surface；provider 连接不混进单个角色详情。
 2. Provider 表单覆盖连接、协议、masked secret 状态、模型列表、显式 family 归类、验证、保存、secret clear 与 provider remove 语义。
-3. 角色管理页清晰分组“系统模型族”与“自定义角色”，并指明 availability 来自模型供应商目录。
+3. 角色管理页清晰分组“系统模型族”与“自定义角色”，并指明 availability 来自模型供应商目录；模型 selector 始终显示 provider 与“已配置 / 运行时默认”来源，不能把不同 provider 的同名模型表现成重复项。
 4. 模型族卡片显示系统身份、可用模型数量、unavailable 原因、默认聊天开关与不可编辑字段；详情以 select 明确开放默认模型、能力感知的默认思考强度与同族运行 Profiles。
 5. 自定义角色继续提供完整编辑器，包括模型、思考强度、Profiles、Persona Prompt 与 Skills；不把高级 Persona 能力塞进模型族默认体验。
 6. 新建普通聊天有明确的参与者确认步骤：defaults 只体现为预勾选，提交前可增删。
@@ -276,7 +276,7 @@ Architecture Gate 已给出数据流、迁移回滚方案、失败模式与测�
 | `chat_messages` / private messages | conversation history | 角色迁移不得删除或重写内容与发送者历史。 |
 | memory / summaries / metrics / tasks | respective domains | 不因系统 seed 删除而丢失或误归属。 |
 | agentDir `models.json` provider config | model runtime + local-admin user settings | raw secret/reference 不读回；空值保留；显式清除/移除；校验 + old snapshot backup 后 platform-aware 原子替换；移除不删除历史/角色/外部认证；备份默认 TTL=0。 |
-| configured model catalog | bootstrap/runtime | family availability 的唯一事实输入，经 registry 归类。 |
+| configured model catalog | bootstrap/runtime | family availability 的唯一事实输入；可见键只来自 `models.json` 与精确 runtime default，Pi registry 只补标签、能力与归类元数据。 |
 | role/profile thinking | role config + runtime | 空值继承 runtime default；非空值必须属于所选模型的 `supportedThinkingLevels`，save/runtime 均验证，不静默 clamp。 |
 | old seed identity snapshot | migration/history | 仅用于解释历史，不是隐藏、归档或可运行角色。 |
 
@@ -293,7 +293,7 @@ Architecture Gate 已给出数据流、迁移回滚方案、失败模式与测�
 | Conversation create | defaults 只作为前端预选；API 以最终 participants 为准；无隐式前三名。 |
 | Existing conversations | 改 defaults 不改变参与者；旧角色历史仍可读；零活动参与者时明确阻断。 |
 | Games | Undercover/Werewolf/自定义 mode 的参与者与 skill 行为无回归。 |
-| UI | provider/role 导航、masked key、显式 clear/remove、显式 family、目录来源、分组、锁定字段、unavailable、默认模型、能力感知思考强度、运行 Profiles、custom Persona/Skills、默认多选、新建确认、移动端可用性。 |
+| UI | provider/role 导航、masked key、显式 clear/remove、显式 family、provider/source 可辨模型选项、目录降噪、分组、锁定字段、unavailable、默认模型、能力感知思考强度、运行 Profiles、custom Persona/Skills、默认多选、新建确认、移动端可用性，以及角色/供应商卡片在 Light/Dark 下均只消费语义主题 token。 |
 | Runtime | 会话 Profile 不能跨 family；thinking 必须受所选模型 `supportedThinkingLevels` 约束；模型消失时阻断而非跨族 fallback。 |
 
 ## Non-goals

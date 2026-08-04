@@ -56,7 +56,7 @@ Capability provenance 固定为仓库 `package.json` 锁定的 `@earendil-works/
 |---|---|---|
 | AG-1 | 分离永久 `RoleIdentity` 与活动 `RoleConfig`；`chat_agents` 继续承载可运行配置，新增 `chat_role_identities` 承接永久身份。 | 删除角色配置不再等于删除历史主体，直接消除级联数据丢失坐标。 |
 | AG-2 | `chat_conversation_agents` 只表示当前可运行参与者；被移除角色的参会事实写入 `chat_conversation_agent_history`。 | 活动 roster 与历史 roster 语义不能混在同一行。 |
-| AG-3 | canonical model catalog 只来自 runtime registry、`models.json` 和 `PI_PROVIDER/PI_MODEL`；Agent/Profile 只是消费者，不再反向扩充 catalog。 | 避免失效模型因被角色引用而被误判为“已配置”。 |
+| AG-3 | canonical model catalog 的可见键只来自 `models.json` 和精确 `PI_PROVIDER/PI_MODEL`；runtime registry 只为这些键补标签与能力，Agent/Profile 只是消费者。 | 避免失效引用或 Pi 内建全量目录被误判为“已配置”，让 operator 看到的模型与自己维护的供应商目录一致。 |
 | AG-4 | 模型族归类仅通过 `model-family-registry`；未知或冲突模型保持 `family=null`，只能给 custom role 使用。 | 禁止 UI/API/runtime 各写一套字符串包含判断，也禁止跨族猜测 fallback。 |
 | AG-5 | family role 只允许配置模型运行参数与聊天默认偏好；Persona Prompt、Persona Skills 和系统身份字段均不可编辑。 | 模型族是模型身份，不是另一层预设人格。 |
 | AG-6 | 所有 conversation persistence API 都要求显式 participants；interactive、starter、external channel、game/mode 各自在调用边界解析政策。 | “默认建议”不会在无确认场景里悄悄变成强制参与者。 |
@@ -195,7 +195,7 @@ type ConfiguredModelOption = {
   provider: string;
   model: string;
   label: string;
-  source: 'runtime' | 'models_json' | 'runtime_registry';
+  source: 'runtime' | 'models_json';
   family: ModelFamily | null;
   familySource: 'explicit' | 'provider_alias' | 'model_alias' | 'unknown' | 'conflict';
 };
@@ -238,11 +238,12 @@ model alias 规则必须在 registry 内以 anchored matcher 表达，例如 `gp
 
 `buildConfiguredModelOptions()` 不再读取 `store.listAgents()`。角色保存的 provider/model/profile 是对 catalog key 的引用，不是“该模型已配置”的证据。
 
-Catalog 来源只包括：
+Catalog 可见来源只包括：
 
-- pi/runtime 实际注册且可解析的模型；
-- `PI_PROVIDER` + `PI_MODEL` runtime default；
-- 当前有效 `models.json` entries。
+- 当前有效 `models.json` entries；
+- `PI_PROVIDER` + `PI_MODEL` 的精确 runtime default。
+
+Pi/runtime registry 是 metadata lookup，不是第三个可见来源：它只为上述可见键提供 display label 与 `supportedThinkingLevels`，registry-only 键不得进入 bootstrap、角色页或聊天模型 selector。
 
 每个 catalog option 除 `key/provider/model/label/source/family` 外还必须携带 `supportedThinkingLevels`。该字段由 Pi runtime model metadata 的 `reasoning` 与 `thinkingLevelMap` 计算；无 reasoning 的模型只返回 `['off']`。CAFF 不在 UI 或角色表中复制一份模型能力表。
 

@@ -13,7 +13,7 @@ const MODEL_KEY_SEPARATOR = '\u001f';
 const HOST_PATH = path.resolve(__dirname, '..', '..', '..', 'lib', 'pi-model-catalog-host.mjs');
 const THINKING_LEVELS = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 
-type CatalogSource = 'runtime' | 'models_json' | 'runtime_registry';
+type CatalogSource = 'runtime' | 'models_json';
 type RuntimeModel = {
   provider: string;
   id: string;
@@ -58,10 +58,7 @@ function sourceLabel(source: CatalogSource) {
   if (source === 'models_json') {
     return 'models.json';
   }
-  if (source === 'runtime') {
-    return 'runtime default';
-  }
-  return 'runtime registry';
+  return 'runtime default';
 }
 
 export function createConfiguredModelCatalog(options: any = {}) {
@@ -81,6 +78,7 @@ export function createConfiguredModelCatalog(options: any = {}) {
   let cachedOptions: any[] | null = null;
 
   function rebuild() {
+    const runtimeByKey = new Map<string, any>();
     const byKey = new Map<string, any>();
 
     for (const runtimeModel of loadRuntimeModels()) {
@@ -90,13 +88,11 @@ export function createConfiguredModelCatalog(options: any = {}) {
         continue;
       }
       const key = buildConfiguredModelKey(provider, model);
-      byKey.set(key, {
+      runtimeByKey.set(key, {
         key,
         provider,
         model,
         label: normalize(runtimeModel.name) || `${provider} / ${model}`,
-        source: 'runtime_registry' as CatalogSource,
-        explicitFamily: '',
         supportedThinkingLevels: normalizeThinkingLevels(runtimeModel.supportedThinkingLevels),
       });
     }
@@ -111,7 +107,7 @@ export function createConfiguredModelCatalog(options: any = {}) {
           continue;
         }
         const key = buildConfiguredModelKey(provider, model);
-        const current = byKey.get(key);
+        const current = runtimeByKey.get(key);
         byKey.set(key, {
           key,
           provider,
@@ -130,14 +126,15 @@ export function createConfiguredModelCatalog(options: any = {}) {
     if (defaultModel) {
       const key = buildConfiguredModelKey(defaultProvider, defaultModel);
       if (!byKey.has(key)) {
+        const current = runtimeByKey.get(key);
         byKey.set(key, {
           key,
           provider: defaultProvider,
           model: defaultModel,
-          label: defaultProvider ? `${defaultProvider} / ${defaultModel}` : defaultModel,
+          label: current?.label || (defaultProvider ? `${defaultProvider} / ${defaultModel}` : defaultModel),
           source: 'runtime' as CatalogSource,
           explicitFamily: '',
-          supportedThinkingLevels: ['off'],
+          supportedThinkingLevels: current?.supportedThinkingLevels || ['off'],
         });
       }
     }

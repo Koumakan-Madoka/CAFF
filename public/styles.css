@@ -2366,21 +2366,21 @@ textarea {
   width: 100%;
   min-height: 58px;
   padding: 0.7rem 0.75rem;
-  border: 1px solid var(--line);
+  border: 1px solid var(--caff-border);
   border-radius: 10px;
-  background: #fff;
-  color: var(--ink);
+  background: var(--caff-surface-elevated);
+  color: var(--caff-text);
   text-align: left;
   box-shadow: none;
 }
 
 .management-list-row.active {
-  border-color: rgba(42, 157, 143, 0.46);
-  background: rgba(42, 157, 143, 0.08);
+  border-color: color-mix(in srgb, var(--caff-success) 48%, var(--caff-border));
+  background: color-mix(in srgb, var(--caff-success) 12%, var(--caff-surface-elevated));
 }
 
 .management-list-row.unavailable {
-  background: rgba(217, 164, 65, 0.08);
+  background: color-mix(in srgb, var(--caff-warning) 10%, var(--caff-surface-elevated));
 }
 
 .management-list-copy {
@@ -2400,15 +2400,15 @@ textarea {
   width: 9px;
   height: 9px;
   border-radius: 50%;
-  background: rgba(96, 114, 130, 0.35);
+  background: color-mix(in srgb, var(--caff-text-soft) 42%, transparent);
 }
 
 .status-dot.default {
-  background: var(--teal);
+  background: var(--caff-success);
 }
 
 .status-dot.warning {
-  background: var(--gold);
+  background: var(--caff-warning);
 }
 
 .provider-mark {
@@ -2417,8 +2417,8 @@ textarea {
   width: 36px;
   height: 36px;
   border-radius: 9px;
-  background: rgba(34, 49, 63, 0.08);
-  color: var(--ink);
+  background: var(--caff-surface-sunk);
+  color: var(--caff-text);
   font-size: 0.72rem;
   font-weight: 800;
 }
@@ -2448,21 +2448,21 @@ textarea {
   min-height: 26px;
   padding: 0.2rem 0.58rem;
   border-radius: 999px;
-  background: rgba(42, 157, 143, 0.12);
-  color: #1d756a;
+  background: var(--caff-success-soft);
+  color: var(--caff-success);
   font-size: 0.75rem;
   font-weight: 700;
 }
 
 .status-badge.system,
 .status-badge.neutral {
-  background: rgba(34, 49, 63, 0.08);
-  color: var(--ink);
+  background: var(--caff-surface-sunk);
+  color: var(--caff-text);
 }
 
 .status-badge.warning {
-  background: rgba(217, 164, 65, 0.16);
-  color: #806016;
+  background: var(--caff-warning-soft);
+  color: var(--caff-warning);
 }
 
 .provider-source-note,
@@ -2471,9 +2471,9 @@ textarea {
 .runtime-profile,
 .danger-confirmation {
   padding: 1rem;
-  border: 1px solid var(--line);
+  border: 1px solid var(--caff-border);
   border-radius: var(--radius-sm);
-  background: #fff;
+  background: var(--caff-surface);
 }
 
 .provider-source-note {
@@ -2485,13 +2485,13 @@ textarea {
 
 .management-warning,
 .danger-confirmation {
-  border-color: rgba(217, 164, 65, 0.3);
-  background: #fff9ee;
+  border-color: color-mix(in srgb, var(--caff-warning) 38%, var(--caff-border));
+  background: var(--caff-warning-soft);
 }
 
 .danger-confirmation {
-  border-color: rgba(176, 68, 68, 0.28);
-  background: #fff6f5;
+  border-color: color-mix(in srgb, var(--caff-danger) 38%, var(--caff-border));
+  background: var(--caff-danger-soft);
 }
 
 .danger-confirmation > div {
@@ -2553,7 +2553,7 @@ textarea {
 .runtime-profile {
   display: grid;
   gap: 0.75rem;
-  background: rgba(243, 237, 227, 0.38);
+  background: var(--caff-surface-sunk);
 }
 
 .skill-options {
@@ -2566,9 +2566,9 @@ textarea {
   gap: 0.6rem !important;
   align-items: flex-start;
   padding: 0.7rem;
-  border: 1px solid var(--line);
+  border: 1px solid var(--caff-border);
   border-radius: 9px;
-  background: rgba(243, 237, 227, 0.28);
+  background: var(--caff-surface-sunk);
 }
 
 .skill-option input {
@@ -2592,7 +2592,7 @@ textarea {
   height: 28px;
   padding: 0;
   border-radius: 999px;
-  background: rgba(96, 114, 130, 0.28);
+  background: var(--caff-border-strong);
   box-shadow: none;
 }
 
@@ -2604,12 +2604,12 @@ textarea {
   width: 20px;
   height: 20px;
   border-radius: 50%;
-  background: #fff;
+  background: var(--caff-surface-elevated);
   transition: transform 150ms ease;
 }
 
 .toggle[aria-pressed='true'] {
-  background: var(--teal);
+  background: var(--caff-success);
 }
 
 .toggle[aria-pressed='true']::after {
@@ -2622,9 +2622,9 @@ textarea {
   gap: 0.65rem;
   align-items: end;
   padding: 0.75rem;
-  border: 1px solid var(--line);
+  border: 1px solid var(--caff-border);
   border-radius: 10px;
-  background: rgba(243, 237, 227, 0.3);
+  background: var(--caff-surface-sunk);
 }
 
 .provider-model-reasoning {
