@@ -782,16 +782,12 @@ try {
     await page.waitForTimeout(300);
   }
   for (const title of [`${caseTitlePrefix}-A`, `${caseTitlePrefix}-B`]) {
-    const formHidden = await page.evaluate(() => {
-      const form = document.getElementById('new-conversation-form');
-      return form ? form.hidden : false;
-    });
-    if (formHidden) {
-      await page.click('#new-conversation-toggle');
-      await page.waitForTimeout(200);
-    }
+    await page.click('#open-new-conversation-button');
+    await page.waitForSelector('#new-conversation-backdrop:not(.hidden)', { timeout: 5000 });
     await page.fill('#new-conversation-title', title);
-    await page.click('#new-conversation-form button[type="submit"]');
+    await page.check(`input[name="new-conversation-participants"][value="${VERIFICATION_ROLE_ID}"]`);
+    await page.click('#new-conversation-submit');
+    await page.waitForSelector('#new-conversation-backdrop.hidden', { state: 'attached', timeout: 5000 });
     await page.waitForTimeout(700);
     const id = await page.evaluate((t) => {
       const btn = Array.from(document.querySelectorAll('#conversation-list .conversation-item'))

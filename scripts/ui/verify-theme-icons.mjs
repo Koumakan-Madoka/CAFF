@@ -2,7 +2,7 @@ const THEMES = ['light', 'dark'];
 
 const ROUTES = [
   { key: 'chat', file: 'index.html', route: '/', primary: '#send-button' },
-  { key: 'personas', file: 'personas.html', route: '/personas.html', primary: '#new-agent-button' },
+  { key: 'personas', file: 'personas.html', route: '/personas.html', primary: '#new-custom-role' },
   { key: 'skills', file: 'skills.html', route: '/skills.html', primary: '#new-skill-button' },
   { key: 'projects', file: 'projects.html', route: '/projects.html', primary: '#new-project-form button[type="submit"]' },
   { key: 'metrics', file: 'metrics.html', route: '/metrics.html', primary: '#filter-form button[type="submit"]' },

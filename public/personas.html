@@ -44,6 +44,7 @@
             <button id="show-role-management" type="button" role="tab" aria-controls="role-management-view" aria-selected="true">角色管理</button>
             <button id="show-provider-management" class="ghost-button" type="button" role="tab" aria-controls="provider-management-view" aria-selected="false">模型供应商</button>
           </div>
+          <button id="refresh-button" class="management-icon-button" type="button" title="刷新" aria-label="刷新"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-refresh"></use></svg></button>
         </header>
 
         <main class="management-content">
@@ -58,7 +59,7 @@
                 <button id="refresh-roles" class="ghost-button" type="button">刷新角色</button>
               </div>
               <section class="management-group"><div class="management-group-title"><h3>系统模型族</h3><span id="family-role-count">7 个固定身份</span></div><ul id="family-role-list" class="management-list"></ul></section>
-              <section class="management-group"><div class="management-group-title"><h3>自定义角色</h3><span id="custom-role-count">0 个自定义角色</span></div><button id="new-custom-role" class="ghost-button management-wide-action" type="button">新建自定义角色</button><ul id="custom-role-list" class="management-list"></ul></section>
+              <section class="management-group"><div class="management-group-title"><h3>自定义角色</h3><span id="custom-role-count">0 个自定义角色</span></div><button id="new-custom-role" class="management-wide-action" type="button">新建自定义角色</button><ul id="custom-role-list" class="management-list"></ul></section>
             </aside>
             <section class="management-pane management-detail" aria-live="polite"><div id="role-detail"></div></section>
           </section>
