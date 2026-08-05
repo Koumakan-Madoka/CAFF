@@ -4124,7 +4124,7 @@ function bindEvents() {
 
     try {
       await loadConversation(item.dataset.id);
-      if (window.matchMedia('(max-width: 900px)').matches && document.body.dataset.sidebar === 'open') {
+      if (!window.matchMedia('(min-width: 1280px)').matches && document.body.dataset.sidebar === 'open') {
         const sidebarClose = /** @type {HTMLButtonElement | null} */ (document.getElementById('sidebarClose'));
         if (sidebarClose) sidebarClose.click();
       }

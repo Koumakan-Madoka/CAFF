@@ -331,6 +331,21 @@ test('app and mention-menu composer writes use the shell setter', () => {
   assert.match(mentionSource, /caffShell\.setComposerValue\(/, 'mention insertion must resync composer height');
 });
 
+test('conversation selection closes the overlay sidebar at the AppShell breakpoint', () => {
+  const source = readPublic('app.js');
+
+  assert.match(
+    source,
+    /!window\.matchMedia\('\(min-width: 1280px\)'\)\.matches && document\.body\.dataset\.sidebar === 'open'/,
+    'conversation selection must use the AppShell desktop breakpoint',
+  );
+  assert.doesNotMatch(
+    source,
+    /matchMedia\('\(max-width: 900px\)'\)/,
+    'conversation selection must not use a second, narrower sidebar breakpoint',
+  );
+});
+
 test('v5 mock exposes six permanent and two conditional drawer tabs', () => {
   const dom = new JSDOM(MOCK_HTML);
   const { document } = dom.window;
