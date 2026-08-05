@@ -1,6 +1,7 @@
 export class CrossConversationDeliveryRepository {
   getStatement: any;
   getByIdempotencyStatement: any;
+  getTraceEdgeStatement: any;
   insertStatement: any;
   markMessagesPersistedStatement: any;
   claimNextStatement: any;
@@ -21,6 +22,14 @@ export class CrossConversationDeliveryRepository {
       SELECT *
       FROM chat_cross_conversation_deliveries
       WHERE idempotency_scope = ? AND idempotency_key = ?
+      LIMIT 1
+    `);
+    this.getTraceEdgeStatement = db.prepare(`
+      SELECT *
+      FROM chat_cross_conversation_deliveries
+      WHERE trace_id = ?
+        AND source_conversation_id = ?
+        AND target_conversation_id = ?
       LIMIT 1
     `);
     this.insertStatement = db.prepare(`
@@ -231,6 +240,10 @@ export class CrossConversationDeliveryRepository {
 
   getByIdempotency(idempotencyScope: string, idempotencyKey: string) {
     return this.getByIdempotencyStatement.get(idempotencyScope, idempotencyKey) || null;
+  }
+
+  getTraceEdge(traceId: string, sourceConversationId: string, targetConversationId: string) {
+    return this.getTraceEdgeStatement.get(traceId, sourceConversationId, targetConversationId) || null;
   }
 
   create(payload: any) {

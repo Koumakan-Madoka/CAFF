@@ -605,6 +605,73 @@ function normalizeExternalEventRow(row: any) {
   };
 }
 
+function normalizeCrossConversationDeliveryRow(row: any) {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    id: row.id,
+    kind: row.kind,
+    idempotencyScope: row.idempotency_scope,
+    idempotencyKey: row.idempotency_key,
+    principalKind: row.principal_kind,
+    sourceConversationId: row.source_conversation_id,
+    sourceMessageId: row.source_message_id || null,
+    sourceTurnId: row.source_turn_id || null,
+    sourceInvocationId: row.source_invocation_id || null,
+    sourceAgentId: row.source_agent_id || null,
+    sourceAgentName: row.source_agent_name,
+    sourceProjectScopeId: row.source_project_scope_id,
+    targetConversationId: row.target_conversation_id,
+    targetAgentId: row.target_agent_id,
+    targetMessageId: row.target_message_id || null,
+    sourceReceiptMessageId: row.source_receipt_message_id || null,
+    targetProjectScopeId: row.target_project_scope_id,
+    traceId: row.trace_id,
+    rootDeliveryId: row.root_delivery_id,
+    parentDeliveryId: row.parent_delivery_id || null,
+    replyToDeliveryId: row.reply_to_delivery_id || null,
+    hopCount: Number(row.hop_count || 0),
+    messageStatus: row.message_status,
+    dispatchStatus: row.dispatch_status,
+    responseStatus: row.response_status,
+    attemptCount: Number(row.attempt_count || 0),
+    deadlineAt: row.deadline_at || null,
+    cancelRequestedAt: row.cancel_requested_at || null,
+    lastErrorCode: row.last_error_code || null,
+    lastErrorMessage: row.last_error_message || null,
+    claimOwner: row.claim_owner || null,
+    claimExpiresAt: row.claim_expires_at || null,
+    nextAttemptAt: row.next_attempt_at || null,
+    targetInvocationId: row.target_invocation_id || null,
+    deliveredAt: row.delivered_at || null,
+    startedAt: row.started_at || null,
+    completedAt: row.completed_at || null,
+    respondedAt: row.responded_at || null,
+    terminalAt: row.terminal_at || null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function normalizeCrossConversationDeliveryEventRow(row: any) {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    id: Number(row.id),
+    deliveryId: row.delivery_id,
+    eventType: row.event_type,
+    attemptNumber: Number(row.attempt_number || 0),
+    actorKind: row.actor_kind || null,
+    actorId: row.actor_id || null,
+    event: parseJson(row.event_json) || {},
+    createdAt: row.created_at,
+  };
+}
+
 function normalizeConversation(row: any, agents: any, messages: any) {
   const header = normalizeConversationHeader(row);
 
@@ -870,6 +937,68 @@ export class ChatAppStore {
         });
 
         return this.getMessage(payload.id);
+      });
+
+      this.persistCrossConversationDeliveryTransaction = this.db.transaction((payload: any) => {
+        const existing = this.crossConversationDeliveryRepository.getByIdempotency(
+          payload.delivery.idempotencyScope,
+          payload.delivery.idempotencyKey
+        );
+
+        if (existing) {
+          return {
+            duplicate: true,
+            delivery: normalizeCrossConversationDeliveryRow(existing),
+            targetMessage: normalizeMessageRow(this.messageRepository.get(existing.target_message_id)),
+            sourceReceipt: normalizeMessageRow(this.messageRepository.get(existing.source_receipt_message_id)),
+          };
+        }
+
+        this.crossConversationDeliveryRepository.create(payload.delivery);
+        this.messageRepository.create({
+          ...payload.targetMessage,
+          metadataJson: serializeJson(payload.targetMessage.metadata),
+        });
+        this.conversationRepository.touch(payload.delivery.targetConversationId, {
+          updatedAt: payload.targetMessage.createdAt,
+          lastMessageAt: payload.targetMessage.createdAt,
+        });
+        this.messageRepository.create({
+          ...payload.sourceReceipt,
+          metadataJson: serializeJson(payload.sourceReceipt.metadata),
+        });
+        this.conversationRepository.touch(payload.delivery.sourceConversationId, {
+          updatedAt: payload.sourceReceipt.createdAt,
+          lastMessageAt: payload.sourceReceipt.createdAt,
+        });
+
+        const persisted = this.crossConversationDeliveryRepository.markMessagesPersisted(payload.delivery.id, {
+          targetMessageId: payload.targetMessage.id,
+          sourceReceiptMessageId: payload.sourceReceipt.id,
+          deliveredAt: payload.deliveredAt,
+          updatedAt: payload.deliveredAt,
+        });
+
+        if (!persisted) {
+          throw new Error('Cross-conversation delivery message projection transition failed');
+        }
+
+        this.crossConversationDeliveryRepository.appendEvent({
+          deliveryId: payload.delivery.id,
+          eventType: 'persisted',
+          attemptNumber: 0,
+          actorKind: payload.delivery.principalKind,
+          actorId: payload.delivery.sourceAgentId || null,
+          eventJson: serializeJson(payload.persistedEvent),
+          createdAt: payload.deliveredAt,
+        });
+
+        return {
+          duplicate: false,
+          delivery: normalizeCrossConversationDeliveryRow(persisted),
+          targetMessage: normalizeMessageRow(this.messageRepository.get(payload.targetMessage.id)),
+          sourceReceipt: normalizeMessageRow(this.messageRepository.get(payload.sourceReceipt.id)),
+        };
       });
 
       this.createPrivateMessageTransaction = this.db.transaction((payload: any) => {
@@ -1219,6 +1348,60 @@ export class ChatAppStore {
 
   listConversationTree() {
     return this.conversationRepository.listTreeHeaders().map(normalizeConversationHeader);
+  }
+
+  getCrossConversationDelivery(deliveryId: any) {
+    return normalizeCrossConversationDeliveryRow(
+      this.crossConversationDeliveryRepository.get(String(deliveryId || '').trim())
+    );
+  }
+
+  getCrossConversationDeliveryByIdempotency(idempotencyScope: any, idempotencyKey: any) {
+    return normalizeCrossConversationDeliveryRow(
+      this.crossConversationDeliveryRepository.getByIdempotency(
+        String(idempotencyScope || '').trim(),
+        String(idempotencyKey || '').trim()
+      )
+    );
+  }
+
+  getCrossConversationDeliveryBundleByIdempotency(idempotencyScope: any, idempotencyKey: any) {
+    const row = this.crossConversationDeliveryRepository.getByIdempotency(
+      String(idempotencyScope || '').trim(),
+      String(idempotencyKey || '').trim()
+    );
+
+    if (!row) {
+      return null;
+    }
+
+    return {
+      duplicate: true,
+      delivery: normalizeCrossConversationDeliveryRow(row),
+      targetMessage: normalizeMessageRow(this.messageRepository.get(row.target_message_id)),
+      sourceReceipt: normalizeMessageRow(this.messageRepository.get(row.source_receipt_message_id)),
+    };
+  }
+
+  getCrossConversationTraceEdge(traceId: any, sourceConversationId: any, targetConversationId: any) {
+    return normalizeCrossConversationDeliveryRow(
+      this.crossConversationDeliveryRepository.getTraceEdge(
+        String(traceId || '').trim(),
+        String(sourceConversationId || '').trim(),
+        String(targetConversationId || '').trim()
+      )
+    );
+  }
+
+  listCrossConversationDeliveryEvents(deliveryId: any) {
+    return this.crossConversationDeliveryRepository
+      .listEvents(String(deliveryId || '').trim())
+      .map(normalizeCrossConversationDeliveryEventRow)
+      .filter(Boolean);
+  }
+
+  persistCrossConversationDelivery(payload: any) {
+    return this.persistCrossConversationDeliveryTransaction(payload);
   }
 
   getConversation(conversationId: any) {
