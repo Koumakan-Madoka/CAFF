@@ -8,7 +8,7 @@ created: 2026-08-05
 
 # F003: Cross-Conversation Delivery, Child Conversation Tree, and Pi MCP Bridge
 
-> **Status**: spec | **Owner**: @cat-ir4rwo6b | **Priority**: P1
+> **Status**: in-progress | **Owner**: @cat-ir4rwo6b | **Priority**: P1
 
 ## Why
 
@@ -94,16 +94,16 @@ CAFF 的 Agent 目前只能在当前聊天室内发言、私信和使用 invocat
 
 | ID | 需求点（operator experience/转述） | AC 编号 | 验证方式 | 状态 |
 |----|---------------------------|---------|----------|------|
-| R1 | Agent 能明确寻址另一个聊天室，发送消息或请求 | AC-A1, AC-A5 | API/domain tests + two-conversation fixture | [ ] |
-| R2 | 原聊天室能看到发送状态、来源、回执、失败与重试 | AC-A2, AC-C4 | persisted receipt assertions + screenshots | [ ] |
-| R3 | “Pi 原生不支持 MCP，但允许通过受控 bridge 使用 MCP” | AC-B1, AC-B2, AC-B3 | facade/schema/security tests | [ ] |
-| R4 | “派生子聊天室的功能也要一起做……左侧体现树状结构” | AC-C1, AC-C3, AC-C5 | spawn tests + desktop/mobile browser evidence | [ ] |
-| R5 | 新聊天室，不是 Fork | AC-C2 | history/participant/config non-copy assertions | [ ] |
-| R6 | “一条写得足够完整的首条交接消息就够了” | AC-C1, AC-C2 | first-message and prompt fixture | [ ] |
-| R7 | participants、主理 Agent、项目配置显式指定 | AC-C1 | request validation tests | [ ] |
-| R8 | 自动启动失败时聊天室保留并可重试 | AC-C3 | crash/failure recovery fixture | [ ] |
-| R9 | 不产生 recipient-only 暗上下文 | AC-C2 | prompt + UI visibility assertions | [ ] |
-| R10 | 树是导航/来源，不自动授予通信权 | AC-A3 | permission matrix tests | [ ] |
+| R1 | Agent 能明确寻址另一个聊天室，发送消息或请求 | AC-A1, AC-A5 | API/domain tests + two-conversation fixture | [x] |
+| R2 | 原聊天室能看到发送状态、来源、回执、失败与重试 | AC-A2, AC-C4 | persisted receipt assertions + screenshots | [x] |
+| R3 | “Pi 原生不支持 MCP，但允许通过受控 bridge 使用 MCP” | AC-B1, AC-B2, AC-B3 | facade/schema/security tests | [x] |
+| R4 | “派生子聊天室的功能也要一起做……左侧体现树状结构” | AC-C1, AC-C3, AC-C5 | spawn tests + desktop/mobile browser evidence | [x] |
+| R5 | 新聊天室，不是 Fork | AC-C2 | history/participant/config non-copy assertions | [x] |
+| R6 | “一条写得足够完整的首条交接消息就够了” | AC-C1, AC-C2 | first-message and prompt fixture | [x] |
+| R7 | participants、主理 Agent、项目配置显式指定 | AC-C1 | request validation tests | [x] |
+| R8 | 自动启动失败时聊天室保留并可重试 | AC-C3 | crash/failure recovery fixture | [x] |
+| R9 | 不产生 recipient-only 暗上下文 | AC-C2 | prompt + UI visibility assertions | [x] |
+| R10 | 树是导航/来源，不自动授予通信权 | AC-A3 | permission matrix tests | [x] |
 
 ### 覆盖检查
 
@@ -115,28 +115,28 @@ CAFF 的 Agent 目前只能在当前聊天室内发言、私信和使用 invocat
 
 ### Phase A: Durable Cross-Conversation Delivery Core
 
-- [ ] AC-A1: `notify` 与单 responder `request` 共用一套 durable delivery contract；每条 delivery 只能寻址一个目标 conversation + 一个当前 participant Agent，source/target message projection 均关联同一 delivery ID。
-- [ ] AC-A2: delivery 的 message/dispatch/response 三组状态及 append-only events 在 SQLite 中持久化；页面刷新和进程重启后可恢复 receipt、目标 provenance 与合法下一动作。
-- [ ] AC-A3: Agent sender/source 由 invocation principal 注入；target 必须存在、与 source 同一非空 project scope、target Agent 为当前 participant。树关系不授予权限，unbound/different-project/非 participant/self-conversation 均 fail closed 并有测试。
-- [ ] AC-A4: 同 principal + facade + idempotency key 只产生一条 delivery/目标消息；提交后 enqueue 前崩溃可恢复，目标 invocation 已启动后不得自动重执行；queued cancel、running best-effort stop、timeout 与 late reply 均有确定状态和测试。
-- [ ] AC-A5: 跨聊天室执行使用单 Agent side-dispatch，不进入目标 conversation 主 turn；request 最终回答自动关联回源但不自动唤醒源 Agent。loop guard 拒绝同 trace 重复有向 edge，reply 反向 edge 仅允许一次，`maxHop=8`。
+- [x] AC-A1: `notify` 与单 responder `request` 共用一套 durable delivery contract；每条 delivery 只能寻址一个目标 conversation + 一个当前 participant Agent，source/target message projection 均关联同一 delivery ID。
+- [x] AC-A2: delivery 的 message/dispatch/response 三组状态及 append-only events 在 SQLite 中持久化；页面刷新和进程重启后可恢复 receipt、目标 provenance 与合法下一动作。
+- [x] AC-A3: Agent sender/source 由 invocation principal 注入；target 必须存在、与 source 同一非空 project scope、target Agent 为当前 participant。树关系不授予权限，unbound/different-project/非 participant/self-conversation 均 fail closed 并有测试。
+- [x] AC-A4: 同 principal + facade + idempotency key 只产生一条 delivery/目标消息；提交后 enqueue 前崩溃可恢复，目标 invocation 已启动后不得自动重执行；queued cancel、running best-effort stop、timeout 与 late reply 均有确定状态和测试。
+- [x] AC-A5: 跨聊天室执行使用单 Agent side-dispatch，不进入目标 conversation 主 turn；request 最终回答自动关联回源但不自动唤醒源 Agent。loop guard 拒绝同 trace 重复有向 edge，reply 反向 edge 仅允许一次，`maxHop=8`。
 
 ### Phase B: CAFF-Owned Pi MCP Capability Bridge
 
-- [ ] AC-B1: Pi SDK Host 通过 CAFF-owned extension 获得固定 facade tools；模型可见 schema 不包含 server URL/ID、transport、command、env、headers、credential、真实 MCP tool name 或通用 `{server, tool, arguments}` 代理。
-- [ ] AC-B2: server-side capability registry 只调用显式 allowlist 的 internal/MCP capability，并注入 invocation principal、project scope、trace 与 idempotency；未知 facade、参数越界、过期 token 和 result projection 失败均 fail closed。
-- [ ] AC-B3: `conversation_notify` 与 `conversation_request` 端到端通过同一 bridge 进入 Phase A delivery service，调用与结果均进入现有 agent tool trace 和 delivery event 审计，敏感配置不进入 prompt、timeline、日志或 API 响应。
-- [ ] AC-B4: bridge 有至少一条真实 MCP transport fixture、断连/超时/恶意参数 fixture，以及“不得降级为 shell/HTTP 通用代理”的回归测试。
+- [x] AC-B1: Pi SDK Host 通过 CAFF-owned extension 获得固定 facade tools；模型可见 schema 不包含 server URL/ID、transport、command、env、headers、credential、真实 MCP tool name 或通用 `{server, tool, arguments}` 代理。
+- [x] AC-B2: server-side capability registry 只调用显式 allowlist 的 internal/MCP capability，并注入 invocation principal、project scope、trace 与 idempotency；未知 facade、参数越界、过期 token 和 result projection 失败均 fail closed。
+- [x] AC-B3: `conversation_notify` 与 `conversation_request` 端到端通过同一 bridge 进入 Phase A delivery service，调用与结果均进入现有 agent tool trace 和 delivery event 审计，敏感配置不进入 prompt、timeline、日志或 API 响应。
+- [x] AC-B4: bridge 有至少一条真实 MCP transport fixture、断连/超时/恶意参数 fixture，以及“不得降级为 shell/HTTP 通用代理”的回归测试。
 
 ### Phase C: New Child Conversation + Complete Initial Message + Tree UI
 
-- [ ] AC-C1: spawn API/UI 必须显式提供 title、project scope、participants、primary Agent 和非空 `initialMessage`；单事务持久化新 conversation、parent/origin provenance、participants、第一条公开 message 与 `bootstrap` delivery/outbox row。
-- [ ] AC-C2: 新聊天室不复制父历史、摘要、participants、模型 Profile、Skills、任务或状态；`initialMessage` 是所有 participants 可见的第一条 user message，只有 primary Agent 自动 side-dispatch，且其 authority 不高于后续 operator 输入。
-- [ ] AC-C3: DB 事务失败不产生半个聊天室；事务成功后的 bootstrap dispatch 失败保留聊天室并显示 retry。重试不重复创建 conversation、message 或 delivery。
-- [ ] AC-C4: source receipt、target provenance、tree node 三处使用同一 persisted state，复用现有 trace pill/tone/live rotor；正常路径低噪音，失败提供人话原因、重试/取消/跳转，SSE 只做 patch，DB 是刷新后的真相源。
-- [ ] AC-C5: desktop 左侧渲染稳定 tree row，选中节点自动展开祖先；mobile 复用既有 drawer，节点选择后关闭。1440px 与 375px 证据覆盖空态、根/子/孙、queued/running/failed/responded、折叠与深链。
-- [ ] AC-C6: conversation sibling ordering 在状态更新和 SSE 刷新时保持稳定，不因子节点消息活动重排整棵树；v1 禁止拖拽/reparent，达到最大深度时给出明确新建根聊天室引导。
-- [ ] AC-C7: `npm run check`、`npm run typecheck`、focused storage/runtime/UI tests、`npm run test:fast`、`npm run test:smoke` 和隔离 SQLite browser verification 全部通过；测试不得连接 Redis 6399 或生产用户数据。
+- [x] AC-C1: spawn API/UI 必须显式提供 title、project scope、participants、primary Agent 和非空 `initialMessage`；单事务持久化新 conversation、parent/origin provenance、participants、第一条公开 message 与 `bootstrap` delivery/outbox row。
+- [x] AC-C2: 新聊天室不复制父历史、摘要、participants、模型 Profile、Skills、任务或状态；`initialMessage` 是所有 participants 可见的第一条 user message，只有 primary Agent 自动 side-dispatch，且其 authority 不高于后续 operator 输入。
+- [x] AC-C3: DB 事务失败不产生半个聊天室；事务成功后的 bootstrap dispatch 失败保留聊天室并显示 retry。重试不重复创建 conversation、message 或 delivery。
+- [x] AC-C4: source receipt、target provenance、tree node 三处使用同一 persisted state，复用现有 trace pill/tone/live rotor；正常路径低噪音，失败提供人话原因、重试/取消/跳转，SSE 只做 patch，DB 是刷新后的真相源。
+- [x] AC-C5: desktop 左侧渲染稳定 tree row，选中节点自动展开祖先；mobile 复用既有 drawer，节点选择后关闭。1440px 与 375px 证据覆盖空态、根/子/孙、queued/running/failed/responded、折叠与深链。
+- [x] AC-C6: conversation sibling ordering 在状态更新和 SSE 刷新时保持稳定，不因子节点消息活动重排整棵树；v1 禁止拖拽/reparent，达到最大深度时给出明确新建根聊天室引导。
+- [x] AC-C7: `npm run check`、`npm run typecheck`、focused storage/runtime/UI tests、`npm run test:fast`、`npm run test:smoke` 和隔离 SQLite browser verification 全部通过；测试不得连接 Redis 6399 或生产用户数据。
 
 ## Dependencies
 
@@ -243,6 +243,7 @@ CAFF 的 Agent 目前只能在当前聊天室内发言、私信和使用 invocat
 | 2026-08-05 | operator 纠正 Fork 假设，并冻结 Clowder 原版语义：全新聊天室 + 一条完整首消息 |
 | 2026-08-05 | F003 kickoff/spec/Design Gate draft 落盘；等待 MCP SDK 依赖与 UI 方向确认 |
 | 2026-08-05 | operator 在 message `0001785912003140-001436-f87dfd0e` 回复“两项都批准”，Design Gate 放行实施 |
+| 2026-08-05 | F003 Phase A/B/C merged (PR #55) |
 
 ## Review Gate
 
