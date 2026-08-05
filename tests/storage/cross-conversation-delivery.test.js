@@ -534,3 +534,133 @@ test('delivery dispatch transitions are guarded and delivery events are database
 
   db.close();
 });
+
+test('chat store persists one canonical child spawn transaction with lineage and bootstrap projections', () => {
+  const store = createChatAppStore({ agentDir: process.cwd(), sqlitePath: ':memory:' });
+  try {
+    const sourceAgent = store.saveCustomRoleConfig({
+      id: 'spawn-storage-source-agent',
+      name: 'Spawn Storage Source',
+      personaPrompt: 'Source only.',
+    });
+    const primaryAgent = store.saveCustomRoleConfig({
+      id: 'spawn-storage-primary-agent',
+      name: 'Spawn Storage Primary',
+      personaPrompt: 'Primary only.',
+    });
+    const source = store.createConversation({
+      id: 'spawn-storage-source',
+      title: 'Spawn Storage Source',
+      participants: [sourceAgent.id],
+    });
+    store.db.prepare('UPDATE chat_conversations SET project_scope_id = ? WHERE id = ?')
+      .run('project-1', source.id);
+    const sourceMessage = store.createMessage({
+      id: 'spawn-storage-source-message',
+      conversationId: source.id,
+      turnId: 'spawn-storage-source-turn',
+      role: 'assistant',
+      agentId: sourceAgent.id,
+      senderName: sourceAgent.name,
+      content: 'Spawn a child.',
+    });
+    const createdAt = '2026-08-05T08:00:00.000Z';
+    const payload = {
+      conversation: {
+        id: 'spawn-storage-child',
+        title: 'Spawn Storage Child',
+        type: 'standard',
+        metadata: {},
+        projectScopeId: 'project-1',
+        parentConversationId: source.id,
+        originConversationId: source.id,
+        originMessageId: sourceMessage.id,
+        treeDepth: 1,
+        participants: [{ agentId: primaryAgent.id, conversationSkills: ['child-skill'] }],
+        createdAt,
+      },
+      delivery: createDeliveryPayload({
+        id: 'spawn-storage-delivery',
+        kind: 'bootstrap',
+        idempotencyScope: `operator:${source.id}:conversation_spawn`,
+        idempotencyKey: 'spawn-storage-request',
+        principalKind: 'operator',
+        sourceConversationId: source.id,
+        sourceMessageId: sourceMessage.id,
+        sourceTurnId: null,
+        sourceInvocationId: null,
+        sourceAgentId: null,
+        sourceAgentName: 'Operator',
+        sourceProjectScopeId: 'project-1',
+        targetConversationId: 'spawn-storage-child',
+        targetAgentId: primaryAgent.id,
+        targetMessageId: null,
+        sourceReceiptMessageId: null,
+        targetProjectScopeId: 'project-1',
+        traceId: 'spawn-storage-trace',
+        rootDeliveryId: 'spawn-storage-delivery',
+        responseStatus: 'not_expected',
+        deadlineAt: null,
+        createdAt,
+        updatedAt: createdAt,
+        nextAttemptAt: createdAt,
+      }),
+      initialMessage: {
+        id: 'spawn-storage-initial-message',
+        conversationId: 'spawn-storage-child',
+        turnId: 'conversation-spawn:spawn-storage-delivery',
+        role: 'user',
+        agentId: null,
+        senderName: 'You',
+        content: 'Complete public initial message.',
+        status: 'completed',
+        taskId: null,
+        runId: null,
+        errorMessage: null,
+        metadata: { kind: 'conversation_spawn_initial_message' },
+        createdAt,
+      },
+      sourceReceipt: {
+        id: 'spawn-storage-source-receipt',
+        conversationId: source.id,
+        turnId: 'conversation-spawn:spawn-storage-delivery',
+        role: 'system',
+        agentId: null,
+        senderName: 'System',
+        content: '',
+        status: 'completed',
+        taskId: null,
+        runId: null,
+        errorMessage: null,
+        metadata: { kind: 'cross_conversation_receipt' },
+        createdAt,
+      },
+      persistedEvent: {
+        kind: 'bootstrap',
+        initialMessageLength: 32,
+      },
+      deliveredAt: createdAt,
+    };
+
+    const first = store.persistConversationSpawn(payload);
+    const duplicate = store.persistConversationSpawn(payload);
+
+    assert.equal(first.duplicate, false);
+    assert.equal(duplicate.duplicate, true);
+    assert.equal(duplicate.conversation.id, first.conversation.id);
+    assert.equal(duplicate.delivery.id, first.delivery.id);
+    assert.equal(first.conversation.parentConversationId, source.id);
+    assert.equal(first.conversation.originConversationId, source.id);
+    assert.equal(first.conversation.originMessageId, sourceMessage.id);
+    assert.equal(first.conversation.treeDepth, 1);
+    assert.equal(first.initialMessage.role, 'user');
+    assert.equal(first.delivery.kind, 'bootstrap');
+    assert.equal(first.delivery.messageStatus, 'persisted');
+    assert.equal(
+      store.db.prepare('SELECT COUNT(*) AS count FROM chat_cross_conversation_deliveries').get().count,
+      1
+    );
+  } finally {
+    store.close();
+  }
+});

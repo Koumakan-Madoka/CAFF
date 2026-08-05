@@ -402,6 +402,40 @@ test('server smoke: Agent delivery, operator receipt lookup, cancellation, and p
     assert.equal(binding.conversation.projectScopeId, projectId);
   }
 
+  const spawnBody = {
+    title: 'Delivery HTTP Spawned Child',
+    projectScopeId: projectId,
+    participants: [{ agentId: targetAgent.id }],
+    primaryAgentId: targetAgent.id,
+    initialMessage: 'Start the child from this complete public message.',
+    clientRequestId: 'delivery-http-spawn-key',
+  };
+  const spawned = await fetchJson(
+    baseUrl,
+    `/api/conversations/${sourceConversation.id}/spawn`,
+    { method: 'POST', body: spawnBody }
+  );
+  const duplicateSpawn = await fetchJson(
+    baseUrl,
+    `/api/conversations/${sourceConversation.id}/spawn`,
+    { method: 'POST', body: spawnBody }
+  );
+  assert.equal(spawned.conversation.parentConversationId, sourceConversation.id);
+  assert.equal(spawned.conversation.treeDepth, 1);
+  assert.equal(spawned.conversation.messages.length, 1);
+  assert.equal(spawned.initialMessage.role, 'user');
+  assert.equal(spawned.delivery.kind, 'bootstrap');
+  assert.equal(spawned.delivery.targetAgentId, targetAgent.id);
+  assert.equal(duplicateSpawn.duplicate, true);
+  assert.equal(duplicateSpawn.conversation.id, spawned.conversation.id);
+  assert.equal(duplicateSpawn.delivery.id, spawned.delivery.id);
+  const spawnReceipt = await fetchJson(
+    baseUrl,
+    `/api/conversation-deliveries/${spawned.delivery.id}`
+  );
+  assert.equal(spawnReceipt.targetMessage.id, spawned.initialMessage.id);
+  assert.equal(spawnReceipt.sourceReceipt.id, spawned.sourceReceipt.id);
+
   const invocation = app.agentToolBridge.registerInvocation(
     app.agentToolBridge.createInvocationContext({
       conversationId: sourceConversation.id,

@@ -1279,14 +1279,15 @@ export function createTurnOrchestrator(options: any = {}) {
         ),
       }
     );
+    const isBootstrap = delivery.kind === 'bootstrap';
     entry.crossConversationDeliveryId = delivery.id;
     entry.toolInvocationId = randomUUID();
-    entry.triggerType = 'external_agent';
-    entry.triggeredByAgentId = delivery.sourceAgentId || null;
-    entry.triggeredByAgentName = delivery.sourceAgentName || 'External Agent';
-    entry.enqueueReason = 'cross_conversation_delivery';
+    entry.triggerType = isBootstrap ? 'user' : 'external_agent';
+    entry.triggeredByAgentId = isBootstrap ? null : delivery.sourceAgentId || null;
+    entry.triggeredByAgentName = isBootstrap ? 'You' : delivery.sourceAgentName || 'External Agent';
+    entry.enqueueReason = isBootstrap ? 'conversation_spawn_bootstrap' : 'cross_conversation_delivery';
     entry.routingMode = 'cross_conversation';
-    entry.entryStrategy = 'cross_conversation_delivery';
+    entry.entryStrategy = isBootstrap ? 'conversation_spawn_bootstrap' : 'cross_conversation_delivery';
     entry.propagateError = true;
     entry.onInvocationStarting = input.onInvocationStarting;
     entry.sourceConversationId = crossConversation.sourceConversationId || delivery.sourceConversationId;

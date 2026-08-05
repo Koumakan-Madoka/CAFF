@@ -358,6 +358,17 @@ isolated SDK `McpServer` + `StdioServerTransport` child process.
 4. After commit, wake the existing delivery worker; failure never deletes child/message.
 5. Add `POST /api/conversations/:sourceConversationId/spawn`; response returns child + updated summaries + canonical bootstrap delivery. Commit Phase C backend.
 
+Resolved Phase C backend contract (2026-08-05): the source must already be
+project-bound and the explicit child `projectScopeId` must equal that binding so
+the `bootstrap` row preserves the delivery table's same-project invariant.
+`clientRequestId` is required and maps to
+`operator:<sourceConversationId>:conversation_spawn`. One store transaction
+creates lineage + explicit participants + the public `user` first message +
+source receipt + bootstrap delivery/event. Post-commit scheduling uses the
+existing delivery worker; bootstrap stays on the single-Agent side lane but is
+presented with normal user authority. Pre-start failure retains the child and
+the regular delivery retry path reuses the same delivery identity.
+
 ## Task 7: Tree, Spawn Dialog, Receipt, and Provenance UI — RED → GREEN
 
 **Files:** Modify `public/index.html`, `public/app.js`, `public/styles.css`, `public/chat/conversation-list.js`, `public/chat/new-conversation-dialog.js`, `public/chat/message-timeline.js`; Create `public/chat/cross-conversation-ui.js`; Modify `package.json`; Test `tests/ui/cross-conversation-ui.test.js`, `tests/runtime/new-conversation-dialog.test.js`, `tests/ui/app-shell.test.js`, `tests/ui/chat-experience-m4.test.js`, browser verifier scripts as needed.

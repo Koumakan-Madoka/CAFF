@@ -33,6 +33,7 @@ const { createTurnOrchestrator } = require('../domain/conversation/turn-orchestr
 const { resolveBrowserCliPath } = require('../domain/conversation/turn/browser-cli');
 const { resolveCurrentTrellisTaskName } = require('../domain/conversation/turn/trellis-context');
 const { maybeAutoCreateConversationDigest } = require('../domain/conversation/conversation-digest');
+const { createConversationSpawnService } = require('../domain/conversation/conversation-spawn');
 const {
   createCrossConversationDeliveryService,
   createCrossConversationDeliveryWorker,
@@ -604,6 +605,23 @@ export function createServerApp(options: any = {}) {
       onDeliveryChanged: handleCrossConversationDeliveryChanged,
     });
 
+  const conversationSpawnService =
+    options.conversationSpawnService
+    || createConversationSpawnService({
+      store,
+      validateParticipants(input: any) {
+        return roleService.validateConversationParticipants(input);
+      },
+      resolveProject(projectScopeId: any) {
+        const normalizedProjectScopeId = String(projectScopeId || '').trim();
+        return projectManager.listProjects()
+          .find((project: any) => project && project.id === normalizedProjectScopeId) || null;
+      },
+      onBootstrapAvailable() {
+        requestCrossConversationDeliveryDrain();
+      },
+    });
+
   feishuIntegration = createFeishuIntegrationService({
     store,
     turnOrchestrator,
@@ -729,6 +747,7 @@ export function createServerApp(options: any = {}) {
     }),
     createConversationsController({
       store,
+      conversationSpawnService,
       roleService,
       skillRegistry,
       projectManager,
@@ -834,6 +853,7 @@ export function createServerApp(options: any = {}) {
     agentToolBridge,
     crossConversationDeliveryService,
     crossConversationDeliveryWorker,
+    conversationSpawnService,
     getHealthStatus,
     host,
     port,

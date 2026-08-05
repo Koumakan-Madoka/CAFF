@@ -1053,6 +1053,86 @@ export class ChatAppStore {
         };
       });
 
+      this.persistConversationSpawnTransaction = this.db.transaction((payload: any) => {
+        const existing = this.crossConversationDeliveryRepository.getByIdempotency(
+          payload.delivery.idempotencyScope,
+          payload.delivery.idempotencyKey
+        );
+
+        if (existing) {
+          return {
+            duplicate: true,
+            conversation: this.getConversation(existing.target_conversation_id),
+            initialMessage: normalizeMessageRow(this.messageRepository.get(existing.target_message_id)),
+            sourceReceipt: normalizeMessageRow(this.messageRepository.get(existing.source_receipt_message_id)),
+            delivery: normalizeCrossConversationDeliveryRow(existing),
+          };
+        }
+
+        const conversation = payload.conversation;
+        this.conversationRepository.create({
+          id: conversation.id,
+          title: conversation.title,
+          type: normalizeConversationType(conversation.type),
+          metadataJson: serializeJson(conversation.metadata || {}),
+          projectScopeId: conversation.projectScopeId,
+          parentConversationId: conversation.parentConversationId,
+          originConversationId: conversation.originConversationId,
+          originMessageId: conversation.originMessageId,
+          treeDepth: conversation.treeDepth,
+          createdAt: conversation.createdAt,
+          updatedAt: conversation.createdAt,
+          lastMessageAt: null,
+        });
+        this.replaceConversationParticipants(conversation.id, conversation.participants);
+
+        this.crossConversationDeliveryRepository.create(payload.delivery);
+        this.messageRepository.create({
+          ...payload.initialMessage,
+          metadataJson: serializeJson(payload.initialMessage.metadata),
+        });
+        this.conversationRepository.touch(conversation.id, {
+          updatedAt: payload.initialMessage.createdAt,
+          lastMessageAt: payload.initialMessage.createdAt,
+        });
+        this.messageRepository.create({
+          ...payload.sourceReceipt,
+          metadataJson: serializeJson(payload.sourceReceipt.metadata),
+        });
+        this.conversationRepository.touch(payload.delivery.sourceConversationId, {
+          updatedAt: payload.sourceReceipt.createdAt,
+          lastMessageAt: payload.sourceReceipt.createdAt,
+        });
+
+        const persisted = this.crossConversationDeliveryRepository.markMessagesPersisted(payload.delivery.id, {
+          targetMessageId: payload.initialMessage.id,
+          sourceReceiptMessageId: payload.sourceReceipt.id,
+          deliveredAt: payload.deliveredAt,
+          updatedAt: payload.deliveredAt,
+        });
+        if (!persisted) {
+          throw new Error('Conversation spawn message projection transition failed');
+        }
+
+        this.crossConversationDeliveryRepository.appendEvent({
+          deliveryId: payload.delivery.id,
+          eventType: 'persisted',
+          attemptNumber: 0,
+          actorKind: 'operator',
+          actorId: null,
+          eventJson: serializeJson(payload.persistedEvent),
+          createdAt: payload.deliveredAt,
+        });
+
+        return {
+          duplicate: false,
+          conversation: this.getConversation(conversation.id),
+          initialMessage: normalizeMessageRow(this.messageRepository.get(payload.initialMessage.id)),
+          sourceReceipt: normalizeMessageRow(this.messageRepository.get(payload.sourceReceipt.id)),
+          delivery: normalizeCrossConversationDeliveryRow(persisted),
+        };
+      });
+
       this.persistCrossConversationResponseTransaction = this.db.transaction((payload: any) => {
         const requestRow = this.crossConversationDeliveryRepository.get(payload.requestDeliveryId);
 
@@ -1623,6 +1703,10 @@ export class ChatAppStore {
 
   persistCrossConversationDelivery(payload: any) {
     return this.persistCrossConversationDeliveryTransaction(payload);
+  }
+
+  persistConversationSpawn(payload: any) {
+    return this.persistConversationSpawnTransaction(payload);
   }
 
   claimNextCrossConversationDelivery(payload: any) {

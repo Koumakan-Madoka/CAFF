@@ -201,7 +201,8 @@ POST /api/conversations/:sourceConversationId/spawn
   participants: [{ agentId, modelProfileId?, conversationSkillIds? }],
   primaryAgentId,
   initialMessage,
-  sourceMessageId?
+  sourceMessageId?,
+  clientRequestId
 }
 ```
 
@@ -210,8 +211,11 @@ Validation:
 - source exists; requested parent depth < max depth;
 - explicit non-empty participants using current participant validator;
 - primary Agent is one selected participant and runnable;
-- project scope is explicitly selected and accessible;
+- source is explicitly project-bound; project scope is explicitly selected,
+  accessible, and equal to the source binding;
 - initialMessage is non-empty and bounded;
+- clientRequestId is non-empty and idempotently returns the canonical existing
+  child/message/receipt/delivery on duplicate submission;
 - no history/config/participant inheritance code path is called.
 
 One SQLite transaction persists:

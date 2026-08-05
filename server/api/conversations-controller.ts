@@ -177,6 +177,7 @@ function mergeModeSkillIdsIntoParticipants(input: any, mode: any) {
 
 export function createConversationsController(options: any = {}): RouteHandler<ApiContext> {
   const store = options.store;
+  const conversationSpawnService = options.conversationSpawnService;
   const roleService = options.roleService;
   const skillRegistry = options.skillRegistry;
   const projectManager = options.projectManager;
@@ -231,6 +232,65 @@ export function createConversationsController(options: any = {}): RouteHandler<A
 
     if (req.method === 'GET' && pathname === '/api/conversations') {
       sendJson(res, 200, { conversations: store.listConversations() });
+      return true;
+    }
+
+    const spawnMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/spawn$/);
+    if (spawnMatch && req.method === 'POST') {
+      if (!conversationSpawnService || typeof conversationSpawnService.spawn !== 'function') {
+        throw createHttpError(501, 'Conversation spawn is unavailable');
+      }
+      const sourceConversationId = decodeURIComponent(spawnMatch[1]);
+      const body = await readRequestJson(req);
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        throw createHttpError(400, 'Request body must be a JSON object', {
+          issues: [{ code: 'invalid_body', message: 'Request body must be a JSON object' }],
+        });
+      }
+      const allowedFields = new Set([
+        'title',
+        'projectScopeId',
+        'participants',
+        'primaryAgentId',
+        'initialMessage',
+        'sourceMessageId',
+        'clientRequestId',
+      ]);
+      const unknownField = Object.keys(body).find((fieldName) => !allowedFields.has(fieldName));
+      if (unknownField) {
+        throw createHttpError(400, `Unknown conversation spawn field: ${unknownField}`, {
+          issues: [{
+            code: 'conversation_spawn_unknown_field',
+            field: unknownField,
+            message: `Unknown field: ${unknownField}`,
+          }],
+        });
+      }
+
+      const result = await conversationSpawnService.spawn(sourceConversationId, body);
+      const summary = pickConversationSummary(result.conversation);
+      const conversations = typeof store.listConversationTree === 'function'
+        ? store.listConversationTree()
+        : store.listConversations();
+      broadcastEvent('conversation_spawned', {
+        sourceConversationId,
+        conversationId: result.conversation.id,
+        summary,
+        delivery: result.delivery,
+      });
+      broadcastEvent('conversation_summary_updated', {
+        conversationId: result.conversation.id,
+        summary,
+      });
+      sendJson(res, 201, {
+        duplicate: Boolean(result.duplicate),
+        conversation: result.conversation,
+        summary,
+        conversations,
+        initialMessage: result.initialMessage,
+        sourceReceipt: result.sourceReceipt,
+        delivery: result.delivery,
+      });
       return true;
     }
 

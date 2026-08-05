@@ -184,6 +184,52 @@ test('turn orchestrator dispatches a persisted cross-conversation message throug
   assert.equal(executions[0].queueItem.toolInvocationId, startedInput.invocationId);
   assert.equal(executions[0].promptUserMessage.id, targetMessage.id);
   assert.equal(result.replyMessage.id, 'cross-target-reply');
+
+  const bootstrapMessage = {
+    ...targetMessage,
+    id: 'cross-bootstrap-message',
+    turnId: 'cross-bootstrap-turn',
+    role: 'user',
+    agentId: null,
+    senderName: 'You',
+    content: 'Complete public bootstrap message.',
+    metadata: {
+      kind: 'conversation_spawn_initial_message',
+      crossConversation: {
+        deliveryId: 'cross-bootstrap-delivery',
+        kind: 'bootstrap',
+        authority: 'user',
+        sourceConversationId: 'cross-source-conversation',
+      },
+    },
+  };
+  conversation.messages.push(bootstrapMessage);
+  let bootstrapStartedInput = null;
+  await orchestrator.dispatchCrossConversationDelivery({
+    delivery: {
+      id: 'cross-bootstrap-delivery',
+      kind: 'bootstrap',
+      sourceConversationId: 'cross-source-conversation',
+      sourceAgentId: null,
+      sourceAgentName: 'Operator',
+      targetConversationId: conversation.id,
+      targetAgentId: 'target-agent',
+      targetMessageId: bootstrapMessage.id,
+    },
+    targetMessage: bootstrapMessage,
+    onInvocationStarting(input) {
+      bootstrapStartedInput = input;
+    },
+  });
+
+  assert.equal(executions.length, 2);
+  assert.equal(executions[1].turnState.executionLane, 'side');
+  assert.equal(executions[1].allowHandoffs, false);
+  assert.equal(executions[1].queueItem.triggerType, 'user');
+  assert.equal(executions[1].queueItem.enqueueReason, 'conversation_spawn_bootstrap');
+  assert.equal(executions[1].queueItem.crossConversationDeliveryId, 'cross-bootstrap-delivery');
+  assert.equal(executions[1].queueItem.toolInvocationId, bootstrapStartedInput.invocationId);
+  assert.equal(executions[1].promptUserMessage.role, 'user');
   assert.equal(orchestrator.listTurnSummaries({ conversationId: conversation.id }).length, 0);
   assert.equal(orchestrator.listAgentSlotSummaries({ conversationId: conversation.id }).length, 0);
 });
