@@ -363,6 +363,83 @@ test('chat store and conversation summaries project scope/lineage without allowi
   }
 });
 
+test('conversation tree headers include the latest target delivery state without activity reordering siblings', () => {
+  const store = createChatAppStore({ agentDir: process.cwd(), sqlitePath: ':memory:' });
+  const db = store.db;
+  const deliveries = createCrossConversationDeliveryRepository(db);
+
+  insertConversation(db, {
+    id: 'tree-root',
+    projectScopeId: 'project-1',
+    createdAt: '2026-08-05T00:00:00.000Z',
+  });
+  insertConversation(db, {
+    id: 'tree-child-a',
+    projectScopeId: 'project-1',
+    parentConversationId: 'tree-root',
+    originConversationId: 'tree-root',
+    treeDepth: 1,
+    createdAt: '2026-08-05T00:01:00.000Z',
+    updatedAt: '2026-08-05T12:00:00.000Z',
+  });
+  insertConversation(db, {
+    id: 'tree-child-b',
+    projectScopeId: 'project-1',
+    parentConversationId: 'tree-root',
+    originConversationId: 'tree-root',
+    treeDepth: 1,
+    createdAt: '2026-08-05T00:02:00.000Z',
+  });
+
+  deliveries.create(createDeliveryPayload({
+    id: 'tree-delivery-old',
+    rootDeliveryId: 'tree-delivery-old',
+    traceId: 'trace-tree-old',
+    kind: 'bootstrap',
+    idempotencyScope: 'operator:tree-root:conversation_spawn',
+    idempotencyKey: 'tree-old',
+    principalKind: 'operator',
+    sourceConversationId: 'tree-root',
+    sourceTurnId: null,
+    sourceInvocationId: null,
+    sourceAgentId: null,
+    sourceAgentName: 'Operator',
+    targetConversationId: 'tree-child-a',
+    targetAgentId: 'role-family-gpt',
+    responseStatus: 'not_expected',
+    createdAt: '2026-08-05T00:01:00.000Z',
+    updatedAt: '2026-08-05T00:01:00.000Z',
+  }));
+  deliveries.create(createDeliveryPayload({
+    id: 'tree-delivery-latest',
+    rootDeliveryId: 'tree-delivery-latest',
+    traceId: 'trace-tree-latest',
+    kind: 'notify',
+    idempotencyScope: 'agent:tree:conversation_notify',
+    idempotencyKey: 'tree-latest',
+    sourceConversationId: 'tree-root',
+    targetConversationId: 'tree-child-a',
+    dispatchStatus: 'running',
+    responseStatus: 'not_expected',
+    startedAt: '2026-08-05T00:03:00.000Z',
+    targetInvocationId: 'invocation-tree',
+    createdAt: '2026-08-05T00:03:00.000Z',
+    updatedAt: '2026-08-05T00:03:00.000Z',
+  }));
+
+  const tree = store.listConversationTree();
+  assert.deepEqual(tree.map((conversation) => conversation.id), [
+    'tree-root',
+    'tree-child-a',
+    'tree-child-b',
+  ]);
+  assert.equal(tree[1].crossConversationStatus.id, 'tree-delivery-latest');
+  assert.equal(tree[1].crossConversationStatus.dispatchStatus, 'running');
+  assert.equal(tree[2].crossConversationStatus, null);
+
+  store.close();
+});
+
 test('delivery repository enforces idempotency/projection uniqueness and supports one atomic claim winner', () => {
   const db = openMigratedDatabase();
   seedDeliveryConversations(db);

@@ -5408,6 +5408,31 @@ test('bootstrap leaves an empty conversation database untouched', (t) => {
   assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM chat_conversation_agents').get().count, 0);
 });
 
+test('bootstrap projects stable conversation tree headers when the store supports them', () => {
+  const activityHeaders = [{ id: 'active-child' }, { id: 'root' }];
+  const treeHeaders = [{ id: 'root' }, { id: 'active-child', parentConversationId: 'root' }];
+  const builder = createBootstrapPayloadBuilder({
+    store: {
+      ensureStarterConversation() { return null; },
+      listConversations() { return activityHeaders; },
+      listConversationTree() { return treeHeaders; },
+    },
+    skillRegistry: { listSkills() { return []; } },
+    turnOrchestrator: { buildRuntimePayload() { return {}; } },
+    modeStore: { list() { return []; } },
+    modelCatalog: { getOptions() { return []; } },
+    roleService: {
+      getDirectory() {
+        return { agents: [], modelOptions: [] };
+      },
+    },
+  });
+
+  const payload = builder.buildBootstrapPayload();
+  assert.deepEqual(payload.conversations, treeHeaders);
+  assert.equal(payload.selectedConversationId, 'root');
+});
+
 test('conversation create validates the explicit roster and only merges mode skills into supplied participants', async (t) => {
   const tempDir = withTempDir('caff-conversation-participant-policy-');
   const sqlitePath = path.join(tempDir, 'chat.sqlite');

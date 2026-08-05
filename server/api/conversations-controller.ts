@@ -187,6 +187,12 @@ export function createConversationsController(options: any = {}): RouteHandler<A
   const buildBootstrapPayload = options.buildBootstrapPayload;
   const modeStore = options.modeStore;
   const broadcastEvent = typeof options.broadcastEvent === 'function' ? options.broadcastEvent : () => {};
+
+  function listConversationHeaders() {
+    return typeof store.listConversationTree === 'function'
+      ? store.listConversationTree()
+      : store.listConversations();
+  }
   const digestOptions = {
     ...(options.digestOptions || {}),
     digestModelRunner: options.digestModelRunner,
@@ -231,7 +237,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
     const { req, res, pathname, requestUrl } = context;
 
     if (req.method === 'GET' && pathname === '/api/conversations') {
-      sendJson(res, 200, { conversations: store.listConversations() });
+      sendJson(res, 200, { conversations: listConversationHeaders() });
       return true;
     }
 
@@ -269,9 +275,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
 
       const result = await conversationSpawnService.spawn(sourceConversationId, body);
       const summary = pickConversationSummary(result.conversation);
-      const conversations = typeof store.listConversationTree === 'function'
-        ? store.listConversationTree()
-        : store.listConversations();
+      const conversations = listConversationHeaders();
       broadcastEvent('conversation_spawned', {
         sourceConversationId,
         conversationId: result.conversation.id,
@@ -335,7 +339,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
       sendJson(res, 200, {
         conversation,
         summary,
-        conversations: store.listConversations(),
+        conversations: listConversationHeaders(),
         project,
       });
       return true;
@@ -391,7 +395,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
       sendJson(res, 201, {
         conversation,
         summary: pickConversationSummary(conversation),
-        conversations: store.listConversations(),
+        conversations: listConversationHeaders(),
       });
       return true;
     }
@@ -533,7 +537,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
           skillDrafts: result.skillDrafts,
           draft: result.draft,
           summary,
-          conversations: store.listConversations(),
+          conversations: listConversationHeaders(),
         });
         return true;
       }
@@ -595,7 +599,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         deleted: result.deleted,
         compacted: result.compacted,
         summary: pickConversationSummary(latestConversation),
-        conversations: store.listConversations(),
+        conversations: listConversationHeaders(),
       });
       return true;
     }
@@ -637,7 +641,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         draft: result.draft,
         skill: result.skill,
         summary,
-        conversations: store.listConversations(),
+        conversations: listConversationHeaders(),
       });
       return true;
     }
@@ -714,7 +718,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         cleared: result.cleared,
         autoContinuation,
         summary: pickConversationSummary(latestConversation),
-        conversations: store.listConversations(),
+        conversations: listConversationHeaders(),
       });
       return true;
     }
@@ -791,7 +795,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         sendJson(res, 200, {
           conversation,
           summary: pickConversationSummary(conversation),
-          conversations: store.listConversations(),
+          conversations: listConversationHeaders(),
         });
         return true;
       }

@@ -7,6 +7,7 @@ export class CrossConversationDeliveryRepository {
   listExpiredClaimsStatement: any;
   listExpiredDeadlinesStatement: any;
   listPendingResponsesStatement: any;
+  listLatestByTargetStatement: any;
   insertStatement: any;
   markMessagesPersistedStatement: any;
   claimNextStatement: any;
@@ -91,6 +92,20 @@ export class CrossConversationDeliveryRepository {
         )
       ORDER BY request.updated_at ASC, request.created_at ASC, request.id ASC
       LIMIT ?
+    `);
+    this.listLatestByTargetStatement = db.prepare(`
+      SELECT delivery.*
+      FROM chat_cross_conversation_deliveries delivery
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM chat_cross_conversation_deliveries newer
+        WHERE newer.target_conversation_id = delivery.target_conversation_id
+          AND (
+            newer.created_at > delivery.created_at
+            OR (newer.created_at = delivery.created_at AND newer.id > delivery.id)
+          )
+      )
+      ORDER BY delivery.target_conversation_id ASC
     `);
     this.insertStatement = db.prepare(`
       INSERT INTO chat_cross_conversation_deliveries (
@@ -500,6 +515,10 @@ export class CrossConversationDeliveryRepository {
 
   listPendingResponses(limit = 100) {
     return this.listPendingResponsesStatement.all(limit);
+  }
+
+  listLatestByTarget() {
+    return this.listLatestByTargetStatement.all();
   }
 
   create(payload: any) {

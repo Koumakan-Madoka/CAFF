@@ -655,6 +655,29 @@ function normalizeCrossConversationDeliveryRow(row: any) {
   };
 }
 
+function compactCrossConversationDeliveryStatus(row: any) {
+  const delivery = normalizeCrossConversationDeliveryRow(row);
+  if (!delivery) {
+    return null;
+  }
+  return {
+    id: delivery.id,
+    kind: delivery.kind,
+    sourceConversationId: delivery.sourceConversationId,
+    targetConversationId: delivery.targetConversationId,
+    targetAgentId: delivery.targetAgentId,
+    messageStatus: delivery.messageStatus,
+    dispatchStatus: delivery.dispatchStatus,
+    responseStatus: delivery.responseStatus,
+    startedAt: delivery.startedAt,
+    targetInvocationId: delivery.targetInvocationId,
+    lastErrorCode: delivery.lastErrorCode,
+    lastErrorMessage: delivery.lastErrorMessage,
+    createdAt: delivery.createdAt,
+    updatedAt: delivery.updatedAt,
+  };
+}
+
 function normalizeCrossConversationDeliveryEventRow(row: any) {
   if (!row) {
     return null;
@@ -1638,7 +1661,15 @@ export class ChatAppStore {
   }
 
   listConversationTree() {
-    return this.conversationRepository.listTreeHeaders().map(normalizeConversationHeader);
+    const latestDeliveryByTarget = new Map(
+      this.crossConversationDeliveryRepository
+        .listLatestByTarget()
+        .map((row: any) => [row.target_conversation_id, compactCrossConversationDeliveryStatus(row)])
+    );
+    return this.conversationRepository.listTreeHeaders().map((row: any) => ({
+      ...normalizeConversationHeader(row),
+      crossConversationStatus: latestDeliveryByTarget.get(row.id) || null,
+    }));
   }
 
   bindConversationProjectScope(conversationId: any, projectScopeId: any) {

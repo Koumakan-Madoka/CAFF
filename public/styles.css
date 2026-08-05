@@ -5542,6 +5542,247 @@ body.chat-app .conversation-meta-line .mini-badge {
   font-size: 0.7rem;
 }
 
+/* F003: compact conversation tree */
+body.chat-app .conversation-tree-row {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) 44px;
+  align-items: center;
+  min-width: 0;
+  padding-left: calc(var(--tree-depth, 0) * 14px);
+}
+
+body.chat-app .conversation-tree-row .conversation-item {
+  grid-column: 2;
+  min-width: 0;
+}
+
+body.chat-app .conversation-tree-toggle,
+body.chat-app .conversation-tree-toggle-spacer {
+  grid-column: 1;
+  grid-row: 1;
+  width: 44px;
+  height: 44px;
+}
+
+body.chat-app .conversation-tree-toggle {
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--caff-ink-soft);
+  font: inherit;
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+body.chat-app .conversation-tree-toggle:hover,
+body.chat-app .conversation-tree-toggle:focus-visible {
+  color: var(--caff-accent-deep);
+  background: color-mix(in srgb, var(--caff-accent) 10%, transparent);
+}
+
+body.chat-app .conversation-spawn-button {
+  grid-column: 3;
+  grid-row: 1;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--caff-ink-soft);
+  font: inherit;
+  font-size: 1.05rem;
+  opacity: 0;
+  cursor: pointer;
+}
+
+body.chat-app .conversation-tree-row:hover .conversation-spawn-button,
+body.chat-app .conversation-tree-row:focus-within .conversation-spawn-button,
+body.chat-app .conversation-spawn-button:disabled {
+  opacity: 1;
+}
+
+body.chat-app .conversation-spawn-button:hover:not(:disabled),
+body.chat-app .conversation-spawn-button:focus-visible {
+  color: var(--caff-accent-deep);
+  background: color-mix(in srgb, var(--caff-accent) 10%, transparent);
+}
+
+body.chat-app .conversation-tree-row[data-depth-limit="true"]::after {
+  content: "层级上限";
+  grid-column: 3;
+  grid-row: 1;
+  align-self: center;
+  color: var(--caff-ink-soft);
+  font-size: 0.62rem;
+  line-height: 1.15;
+  text-align: center;
+}
+
+body.chat-app .conversation-tree-status {
+  flex: 0 0 auto;
+  padding: 0.12rem 0.4rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--caff-ink-soft) 10%, transparent);
+  color: var(--caff-ink-soft);
+  font-size: 0.64rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+body.chat-app .conversation-tree-status.success,
+body.chat-app .conversation-tree-status.running {
+  background: color-mix(in srgb, var(--caff-success) 14%, transparent);
+  color: var(--caff-success);
+}
+
+body.chat-app .conversation-tree-status.failed {
+  background: color-mix(in srgb, var(--caff-danger) 14%, transparent);
+  color: var(--caff-danger);
+}
+
+body.chat-app .conversation-tree-status.live::before {
+  content: "";
+  width: 0.38rem;
+  height: 0.38rem;
+  margin-right: 0.28rem;
+  display: inline-block;
+  border-radius: 50%;
+  background: currentColor;
+  animation: livePulse 1.2s ease-in-out infinite;
+}
+
+@media (hover: none) {
+  body.chat-app .conversation-spawn-button {
+    opacity: 1;
+  }
+}
+
+.new-conversation-spawn-only:not(.hidden) {
+  display: grid;
+  gap: 16px;
+}
+
+.new-conversation-spawn-only textarea {
+  min-height: 150px;
+  resize: vertical;
+}
+
+/* F003: durable receipt and provenance */
+body.chat-app .cross-conversation-panel {
+  min-width: 0;
+}
+
+body.chat-app .cross-conversation-receipt-panel {
+  display: grid;
+  gap: var(--caff-space-2);
+  padding: var(--caff-space-3);
+  border: 1px solid var(--caff-border);
+  border-radius: var(--caff-radius-lg);
+  background: var(--caff-surface-elevated);
+}
+
+body.chat-app .cross-conversation-summary,
+body.chat-app .cross-conversation-actions,
+body.chat-app .cross-conversation-provenance,
+body.chat-app .cross-conversation-birth {
+  display: flex;
+  align-items: center;
+  gap: var(--caff-space-2);
+}
+
+body.chat-app .cross-conversation-summary {
+  justify-content: space-between;
+}
+
+body.chat-app .cross-conversation-title {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+body.chat-app .cross-conversation-title strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body.chat-app .cross-conversation-error {
+  margin: 0;
+  padding: var(--caff-space-2);
+  border-left: 2px solid var(--caff-danger);
+  background: color-mix(in srgb, var(--caff-danger) 8%, transparent);
+  color: var(--caff-danger);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+body.chat-app .cross-conversation-actions {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+body.chat-app .cross-conversation-action {
+  min-height: 44px;
+}
+
+body.chat-app .cross-conversation-provenance,
+body.chat-app .cross-conversation-birth {
+  justify-content: space-between;
+  padding: var(--caff-space-2) var(--caff-space-3);
+  border: 1px solid var(--caff-border);
+  border-radius: var(--caff-radius-lg);
+  background: color-mix(in srgb, var(--caff-accent) 5%, var(--caff-surface));
+  color: var(--caff-ink-soft);
+  font-size: 0.78rem;
+}
+
+body.chat-app .cross-conversation-backlink {
+  color: var(--caff-accent-deep);
+  font-weight: 700;
+}
+
+body.chat-app .cross-conversation-context {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body.chat-app .cross-conversation-birth .cross-conversation-summary > div {
+  display: grid;
+  gap: 2px;
+}
+
+body.chat-app .cross-conversation-birth p {
+  margin: 0;
+}
+
+body.chat-app .message-card.cross-conversation-receipt {
+  max-width: 760px;
+  justify-self: center;
+  padding-left: 0;
+  border-left: 0;
+}
+
+@media (max-width: 700px) {
+  body.chat-app .conversation-tree-row {
+    padding-left: calc(var(--tree-depth, 0) * 10px);
+  }
+
+  body.chat-app .cross-conversation-summary,
+  body.chat-app .cross-conversation-provenance,
+  body.chat-app .cross-conversation-birth {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  body.chat-app .cross-conversation-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 /* ── 消息流：V3 结构分化 — transcript 行（assistant/system）+ user 右气泡 ── */
 body.chat-app .message-list {
   grid-template-columns: minmax(0, 1080px);

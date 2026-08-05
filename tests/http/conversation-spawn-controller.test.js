@@ -116,3 +116,24 @@ test('spawn route rejects unknown fields before domain execution', async () => {
   );
   assert.equal(callCount, 0);
 });
+
+test('conversation list route uses stable tree headers instead of activity-sorted headers', async () => {
+  const controller = createConversationsController({
+    store: {
+      listConversations() {
+        return [{ id: 'activity-child' }, { id: 'root' }];
+      },
+      listConversationTree() {
+        return [{ id: 'root' }, { id: 'activity-child', parentConversationId: 'root' }];
+      },
+    },
+  });
+
+  const response = await invoke(controller, {
+    pathname: '/api/conversations',
+    method: 'GET',
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json.conversations.map((conversation) => conversation.id), ['root', 'activity-child']);
+});

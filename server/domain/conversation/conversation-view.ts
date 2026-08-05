@@ -21,6 +21,9 @@ export function pickConversationSummary(conversation: any) {
     messageCount: conversation.messageCount,
     agentCount: conversation.agentCount,
     lastMessagePreview: conversation.lastMessagePreview,
+    ...(Object.prototype.hasOwnProperty.call(conversation, 'crossConversationStatus')
+      ? { crossConversationStatus: conversation.crossConversationStatus || null }
+      : {}),
   };
 }
 

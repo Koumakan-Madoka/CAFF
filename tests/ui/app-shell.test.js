@@ -189,6 +189,7 @@ test('goal panel never grabs focus when opened from shell (APG roving focus inta
 
 test('conversation list renders ul > li > button semantics (keyboard operable)', () => {
   const { window, document } = bootShell();
+  window.eval(readPublic('chat/cross-conversation-ui.js'));
   window.eval(readPublic('chat/conversation-list.js'));
   const renderer = window.CaffChat.createConversationListRenderer({
     state: {
