@@ -17,6 +17,7 @@
     <script defer src="/shared/clipboard.js"></script>
     <script defer src="/shared/safe-markdown.js"></script>
     <script defer src="/shell/app-shell.js"></script>
+    <script defer src="/chat/cross-conversation-ui.js"></script>
     <script defer src="/chat/conversation-list.js"></script>
     <script defer src="/chat/connection-status.js"></script>
     <script defer src="/chat/participant-pane.js"></script>
@@ -495,7 +496,7 @@
                 <div>
                   <p class="eyebrow">Conversation setup</p>
                   <h2 id="new-conversation-dialog-title">新建聊天</h2>
-                  <p class="muted">确认后才会创建会话并写入最终参与者。</p>
+                  <p id="new-conversation-dialog-description" class="muted">确认后才会创建会话并写入最终参与者。</p>
                 </div>
                 <button id="new-conversation-close" class="new-conversation-close ghost-button" type="button" aria-label="关闭新建聊天">×</button>
               </header>
@@ -510,15 +511,42 @@
                     <span>房间标题</span>
                     <input id="new-conversation-title" name="title" type="text" maxlength="80" placeholder="例如：模型族协作讨论" />
                   </label>
-                  <label>
+                  <label class="new-conversation-normal-only">
                     <span>会话类型</span>
                     <select id="new-conversation-type" name="type">
                       <!-- dynamically populated from /api/bootstrap -->
                     </select>
                   </label>
-                  <div class="new-conversation-snapshot-note">
+                  <div class="new-conversation-snapshot-note new-conversation-normal-only">
                     <strong>创建快照</strong>
                     <p>打开时只读取一次当前角色状态。之后即使默认设置发生变化，本表单也不会悄悄改选。</p>
+                  </div>
+                  <div class="new-conversation-spawn-only hidden">
+                    <label>
+                      <span>父会话</span>
+                      <input id="new-conversation-parent" type="text" readonly aria-readonly="true" />
+                    </label>
+                    <label>
+                      <span>项目边界</span>
+                      <select id="new-conversation-project"></select>
+                    </label>
+                    <label>
+                      <span>主理 Agent</span>
+                      <select id="new-conversation-primary-agent"></select>
+                    </label>
+                    <label>
+                      <span>完整首条消息</span>
+                      <textarea
+                        id="new-conversation-initial-message"
+                        rows="8"
+                        maxlength="12000"
+                        placeholder="写清目标、背景、边界、期望产物与验证方式。"
+                      ></textarea>
+                    </label>
+                    <div id="new-conversation-non-fork-note" class="new-conversation-snapshot-note">
+                      <strong>全新会话，不是 Fork</strong>
+                      <p>不会复制父会话的历史、摘要、参与者、模型配置、Skills、任务或状态；只有这条公开首消息会启动所选主理 Agent。</p>
+                    </div>
                   </div>
                 </section>
 

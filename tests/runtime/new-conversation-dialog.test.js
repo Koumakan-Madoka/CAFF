@@ -149,3 +149,48 @@ test('retired skill_test_design id behaves like any custom mode with no special-
   assert.equal(request.metadata, undefined);
   assert.equal(JSON.stringify(request).includes('skillTestDesign'), false);
 });
+
+test('spawn requests require explicit project, roster, primary Agent, public initial message, and idempotency key', () => {
+  const dialog = loadDialogModule();
+  const snapshot = dialog.snapshotRoles([
+    role({ id: 'role-family-gpt', name: 'GPT' }),
+    role({ id: 'role-family-claude', name: 'Claude', modelFamily: 'claude' }),
+  ]);
+
+  const request = dialog.buildConversationSpawnRequest({
+    title: '  Child investigation  ',
+    projectScopeId: ' project-1 ',
+    snapshot,
+    selectedRoleIds: new Set(['role-family-gpt', 'role-family-claude']),
+    primaryAgentId: 'role-family-claude',
+    initialMessage: '  Investigate the complete failure chain.  ',
+    sourceMessageId: ' message-1 ',
+    clientRequestId: ' request-1 ',
+  });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(request)), {
+    title: 'Child investigation',
+    projectScopeId: 'project-1',
+    participants: [
+      { agentId: 'role-family-gpt', modelProfileId: null, conversationSkillIds: [] },
+      { agentId: 'role-family-claude', modelProfileId: null, conversationSkillIds: [] },
+    ],
+    primaryAgentId: 'role-family-claude',
+    initialMessage: 'Investigate the complete failure chain.',
+    sourceMessageId: 'message-1',
+    clientRequestId: 'request-1',
+  });
+
+  assert.throws(
+    () => dialog.buildConversationSpawnRequest({
+      title: 'Child',
+      projectScopeId: 'project-1',
+      snapshot,
+      selectedRoleIds: new Set(['role-family-gpt']),
+      primaryAgentId: 'role-family-claude',
+      initialMessage: 'Do the work',
+      clientRequestId: 'request-2',
+    }),
+    (error) => error && error.code === 'primary_agent_required'
+  );
+});

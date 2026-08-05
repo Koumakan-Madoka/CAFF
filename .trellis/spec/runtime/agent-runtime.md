@@ -186,6 +186,130 @@ CAFF uses a descriptor + on-demand loading model for conversation skills:
 
 ## Agent Chat Bridge Prompt Guidance
 
+## CAFF-Owned Pi Capability Facades
+
+### Runtime path and visible signatures
+
+- Every conversation Agent run receives `lib/pi-extensions/caff-capabilities.mjs`
+  through `startRun(..., { extensionPaths })`.
+- The extension registers exactly two model-visible tools:
+  - `conversation_notify(targetConversationId, targetAgentId, content, idempotencyKey)`
+  - `conversation_request(targetConversationId, targetAgentId, content, idempotencyKey, deadlineSeconds?)`
+- Both TypeBox object schemas set `additionalProperties: false`. They must not
+  expose server IDs/URLs, MCP tool names, transports, commands, env, headers,
+  credentials, raw arguments, or fallback actions.
+
+### Local HTTP contract
+
+- Route: `POST /api/agent-tools/capabilities/:facade`
+- Request body:
+  `{ invocationId, callbackToken, arguments }`
+- Successful response:
+  `{ ok: true, facade, result }`
+- The extension reads only `CAFF_CHAT_API_URL`, `CAFF_CHAT_INVOCATION_ID`, and
+  `CAFF_CHAT_CALLBACK_TOKEN`; credentials are not part of the model schema.
+- `agent-tool-bridge` validates the active invocation, then injects
+  `{ invocationId, sourceConversationId, sourceAgentId, sourceAgentName,
+  projectScopeId, traceId, incomingDeliveryId }`. For an incoming delivery,
+  `traceId` comes from the persisted parent delivery, not from the delivery ID.
+
+### Registry and MCP adapter contract
+
+- `server/domain/runtime/pi-capability-bridge.ts` is the only facade registry.
+  Unknown facade names fail with `pi_capability_unknown_facade`; invalid or
+  proxy-shaped arguments fail with `pi_capability_invalid_arguments` before a
+  handler or transport starts.
+- Internal `conversation_notify/request` entries call the existing Phase A
+  delivery service and return a bounded delivery/status projection.
+- MCP entries are server-configured allowlist records with a fixed stdio
+  command, argument list, tool name, argument mapper, result projector, and
+  timeout. Invocation input cannot select or override those values.
+- Timeout, disconnect/call failure, and unsafe result projection fail closed as
+  `pi_capability_timeout`, `pi_capability_mcp_failed`, and
+  `pi_capability_projection_failed`. Audit events contain only facade, kind,
+  status, duration, bounded principal IDs, and error code.
+- The official `@modelcontextprotocol/sdk` is a direct exact dependency. The
+  F003 implementation is pinned to `1.30.0`.
+
+### Required tests
+
+- `tests/runtime/pi-capability-bridge.test.js`: schema snapshots, forbidden
+  fields, principal/project/trace injection, fixed internal handlers, real
+  isolated stdio MCP transport, timeout, disconnect, malformed/secret result,
+  no shell/HTTP fallback, build asset copy, and real local HTTP dogfood.
+- `tests/runtime/agent-executor-hook.test.js`: fixed extension path propagation.
+- `tests/runtime/pi-sdk-host.test.js`: Pi SDK host extension loading.
+
+## Conversation Spawn and Bootstrap Delivery
+
+### Runtime path and HTTP signature
+
+- Route: `POST /api/conversations/:sourceConversationId/spawn`.
+- Exact body fields:
+  `{ title, projectScopeId, participants, primaryAgentId, initialMessage,
+  sourceMessageId?, clientRequestId }`. Unknown fields fail before domain work.
+- `server/domain/conversation/conversation-spawn.ts` owns validation and payload
+  construction. `ChatAppStore.persistConversationSpawn(...)` owns the single
+  SQLite transaction.
+- `clientRequestId` maps to idempotency scope
+  `operator:<sourceConversationId>:conversation_spawn`; a duplicate returns the
+  canonical child/message/receipt/delivery and creates nothing.
+
+### Persistence and dispatch contract
+
+- The source conversation must exist, already have a non-empty project binding,
+  and have `treeDepth < 2`. The explicitly supplied `projectScopeId` must resolve
+  through `ProjectManager` and equal the source binding because the bootstrap
+  delivery remains inside the same project permission boundary.
+- Participants pass the existing runnable-role validator. `primaryAgentId` must
+  identify one selected participant.
+- One transaction creates the child with immutable parent/origin/depth fields,
+  the explicit participant roster, one public `user` first message, one source
+  receipt, the `bootstrap` delivery row, and its redacted persisted event.
+- The transaction never calls parent history/digest/metadata/participant/Skill/
+  task/game-state copy paths. Child metadata starts as `{}`.
+- Only after commit does the server request the existing delivery-worker drain.
+  Bootstrap uses the same target-scoped side lane but enters the Agent prompt as
+  ordinary `user` input (`triggerType=user`, no handoffs), not `external_agent`.
+- A deterministic pre-start failure updates only the delivery state. The child
+  and public initial message remain navigable; the normal delivery retry endpoint
+  requeues the same safe delivery identity.
+
+### Validation and error matrix
+
+| Case | Expected behavior |
+| --- | --- |
+| Missing/empty/bounded text field | `400 conversation_spawn_invalid_request`; no rows written. |
+| Source missing or optional source message outside source | `404 conversation_spawn_source_not_found` / `conversation_spawn_source_message_not_found`. |
+| Source unbound or source already depth 2 | `409 conversation_spawn_source_unbound` / `conversation_spawn_max_depth`. |
+| Project missing or differs from source binding | `404 conversation_spawn_project_not_found` / `403 conversation_spawn_project_mismatch`. |
+| Participant unavailable or primary not selected | Existing participant error / `422 conversation_spawn_primary_not_participant`. |
+| Any insert/event transition fails | Whole transaction rolls back; no half child/message/delivery. |
+| Worker fails before invocation start | Delivery becomes retryable failed; child/message remain. |
+| Duplicate `clientRequestId` | Return canonical existing spawn with `duplicate: true`. |
+
+### Good / Base / Bad cases
+
+- Good: explicit same-project participants, one primary, complete public first
+  message, and stable `clientRequestId`; response includes child summary and
+  canonical bootstrap delivery.
+- Base: `sourceMessageId` is omitted; parent conversation remains the provenance
+  anchor and no parent content is copied.
+- Bad: accepting model/profile/history/metadata snapshots, a hidden recipient-only
+  bundle, cross-project bootstrap, or starting all participants.
+
+### Required tests
+
+- `tests/runtime/conversation-spawn.test.js`: validation, non-Fork assertions,
+  duplicate request, fault rollback matrix, retained failure/retry, primary-only
+  dispatch.
+- `tests/http/conversation-spawn-controller.test.js`: exact body and response.
+- `tests/storage/cross-conversation-delivery.test.js`: canonical transactional
+  persistence.
+- `tests/runtime/turn-orchestrator.test.js`: bootstrap stays in the side lane but
+  uses ordinary user authority.
+- `tests/smoke/server-smoke.test.js`: real local HTTP spawn and receipt lookup.
+
 ### 1. Scope / Trigger
 - Trigger: changing the `Chat bridge tools` prompt block in `server/domain/conversation/turn/agent-prompt.ts`.
 - Goal: keep per-turn tool instructions compact while preserving operational safety, routing behavior, and command signatures that agents need to act correctly.

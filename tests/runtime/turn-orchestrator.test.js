@@ -73,6 +73,167 @@ test('sanitizePromptMentions rewrites raw @mentions into safe placeholders', () 
   );
 });
 
+test('turn orchestrator dispatches a persisted cross-conversation message through the side lane only', { concurrency: false }, async (t) => {
+  const tempDir = withTempDir('caff-cross-delivery-side-lane-');
+  const sqlitePath = path.join(tempDir, 'cross-delivery-side-lane.sqlite');
+  const targetMessage = {
+    id: 'cross-target-message',
+    conversationId: 'cross-target-conversation',
+    turnId: 'cross-target-turn',
+    role: 'external_agent',
+    agentId: 'source-agent',
+    senderName: 'Source Agent',
+    content: 'Inspect this without expanding @Other as a handoff.',
+    status: 'completed',
+    metadata: {
+      crossConversation: {
+        deliveryId: 'cross-delivery-1',
+        authority: 'external_agent',
+        allowHandoffs: false,
+        sourceConversationId: 'cross-source-conversation',
+      },
+    },
+    createdAt: '2026-08-05T00:00:00.000Z',
+  };
+  const conversation = {
+    id: targetMessage.conversationId,
+    title: 'Cross Target',
+    type: 'standard',
+    agents: [{ id: 'target-agent', name: 'Target Agent' }],
+    messages: [targetMessage],
+  };
+  const executions = [];
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const store = {
+    databasePath: sqlitePath,
+    getConversation(conversationId) {
+      return conversationId === conversation.id ? conversation : null;
+    },
+    listConversations() {
+      return [{
+        id: conversation.id,
+        title: conversation.title,
+        type: conversation.type,
+        metadata: {},
+        createdAt: targetMessage.createdAt,
+        updatedAt: targetMessage.createdAt,
+        lastMessageAt: targetMessage.createdAt,
+        messageCount: 1,
+        agentCount: 1,
+        lastMessagePreview: targetMessage.content,
+      }];
+    },
+  };
+  const orchestrator = createTurnOrchestrator({
+    store,
+    skillRegistry: { listSkills() { return []; }, resolveSkills() { return []; } },
+    modeStore: { get() { return null; } },
+    agentToolBridge: {},
+    host: '127.0.0.1',
+    port: 0,
+    agentDir: tempDir,
+    sqlitePath,
+    toolBaseUrl: 'http://127.0.0.1:0',
+    agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
+    executeConversationAgent: async (input) => {
+      executions.push(input);
+      const reply = {
+        id: 'cross-target-reply',
+        conversationId: conversation.id,
+        turnId: input.turnId,
+        role: 'assistant',
+        agentId: input.agent.id,
+        senderName: input.agent.name,
+        content: 'Done.',
+        status: 'completed',
+        metadata: { crossConversationDeliveryId: 'cross-delivery-1' },
+        createdAt: '2026-08-05T00:00:01.000Z',
+      };
+      input.completedReplies.push(reply);
+      return { stopTurn: false, terminationReason: '' };
+    },
+  });
+  let startedInput = null;
+  const result = await orchestrator.dispatchCrossConversationDelivery({
+    delivery: {
+      id: 'cross-delivery-1',
+      kind: 'request',
+      sourceConversationId: 'cross-source-conversation',
+      sourceAgentId: 'source-agent',
+      sourceAgentName: 'Source Agent',
+      targetConversationId: conversation.id,
+      targetAgentId: 'target-agent',
+      targetMessageId: targetMessage.id,
+    },
+    targetMessage,
+    onInvocationStarting(input) {
+      startedInput = input;
+    },
+  });
+
+  assert.equal(executions.length, 1);
+  assert.equal(executions[0].turnState.executionLane, 'side');
+  assert.equal(executions[0].allowHandoffs, false);
+  assert.equal(executions[0].enqueueAgent, null);
+  assert.equal(executions[0].queueItem.triggerType, 'external_agent');
+  assert.equal(executions[0].queueItem.crossConversationDeliveryId, 'cross-delivery-1');
+  assert.equal(executions[0].queueItem.toolInvocationId, startedInput.invocationId);
+  assert.equal(executions[0].promptUserMessage.id, targetMessage.id);
+  assert.equal(result.replyMessage.id, 'cross-target-reply');
+
+  const bootstrapMessage = {
+    ...targetMessage,
+    id: 'cross-bootstrap-message',
+    turnId: 'cross-bootstrap-turn',
+    role: 'user',
+    agentId: null,
+    senderName: 'You',
+    content: 'Complete public bootstrap message.',
+    metadata: {
+      kind: 'conversation_spawn_initial_message',
+      crossConversation: {
+        deliveryId: 'cross-bootstrap-delivery',
+        kind: 'bootstrap',
+        authority: 'user',
+        sourceConversationId: 'cross-source-conversation',
+      },
+    },
+  };
+  conversation.messages.push(bootstrapMessage);
+  let bootstrapStartedInput = null;
+  await orchestrator.dispatchCrossConversationDelivery({
+    delivery: {
+      id: 'cross-bootstrap-delivery',
+      kind: 'bootstrap',
+      sourceConversationId: 'cross-source-conversation',
+      sourceAgentId: null,
+      sourceAgentName: 'Operator',
+      targetConversationId: conversation.id,
+      targetAgentId: 'target-agent',
+      targetMessageId: bootstrapMessage.id,
+    },
+    targetMessage: bootstrapMessage,
+    onInvocationStarting(input) {
+      bootstrapStartedInput = input;
+    },
+  });
+
+  assert.equal(executions.length, 2);
+  assert.equal(executions[1].turnState.executionLane, 'side');
+  assert.equal(executions[1].allowHandoffs, false);
+  assert.equal(executions[1].queueItem.triggerType, 'user');
+  assert.equal(executions[1].queueItem.enqueueReason, 'conversation_spawn_bootstrap');
+  assert.equal(executions[1].queueItem.crossConversationDeliveryId, 'cross-bootstrap-delivery');
+  assert.equal(executions[1].queueItem.toolInvocationId, bootstrapStartedInput.invocationId);
+  assert.equal(executions[1].promptUserMessage.role, 'user');
+  assert.equal(orchestrator.listTurnSummaries({ conversationId: conversation.id }).length, 0);
+  assert.equal(orchestrator.listAgentSlotSummaries({ conversationId: conversation.id }).length, 0);
+});
+
 test('buildAgentTurnPrompt avoids raw @mention tokens from room context', () => {
   const agent = {
     id: 'agent-mecha-engineer',

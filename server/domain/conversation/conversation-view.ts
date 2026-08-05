@@ -10,12 +10,20 @@ export function pickConversationSummary(conversation: any) {
     title: conversation.title,
     type: conversation.type || 'standard',
     metadata: conversation.metadata && typeof conversation.metadata === 'object' ? conversation.metadata : {},
+    projectScopeId: conversation.projectScopeId || null,
+    parentConversationId: conversation.parentConversationId || null,
+    originConversationId: conversation.originConversationId || null,
+    originMessageId: conversation.originMessageId || null,
+    treeDepth: Number.isInteger(conversation.treeDepth) ? conversation.treeDepth : 0,
     createdAt: conversation.createdAt,
     updatedAt: conversation.updatedAt,
     lastMessageAt: conversation.lastMessageAt,
     messageCount: conversation.messageCount,
     agentCount: conversation.agentCount,
     lastMessagePreview: conversation.lastMessagePreview,
+    ...(Object.prototype.hasOwnProperty.call(conversation, 'crossConversationStatus')
+      ? { crossConversationStatus: conversation.crossConversationStatus || null }
+      : {}),
   };
 }
 

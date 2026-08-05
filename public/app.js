@@ -27,6 +27,7 @@ const state = {
   messageToolTraceTimers: new Map(),
   optimisticMessagesByConversation: new Map(),
   digestStatusByConversation: new Map(),
+  crossConversationDeliveryBundles: new Map(),
   bindingFeishuChat: false,
   feishuBindingNotice: '',
   feishuBindingNoticeConversationId: null,
@@ -46,6 +47,7 @@ const UNDERCOVER_TYPE = 'who_is_undercover';
 const WEREWOLF_TYPE = 'werewolf';
 const shared = window.CaffShared || {};
 const chatModules = window.CaffChat || {};
+const crossConversationUi = chatModules.crossConversationUi;
 const connectionStatus = chatModules.createConnectionStatus ? chatModules.createConnectionStatus() : null;
 const fetchJson = shared.fetchJson;
 const avatarUtils = shared.avatar || {};
@@ -75,10 +77,16 @@ const dom = {
   newConversationButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('open-new-conversation-button')),
   newConversationBackdrop: /** @type {HTMLElement | null} */ (document.getElementById('new-conversation-backdrop')),
   newConversationDialog: /** @type {HTMLElement | null} */ (document.getElementById('new-conversation-dialog')),
+  newConversationDialogTitle: /** @type {HTMLElement | null} */ (document.getElementById('new-conversation-dialog-title')),
+  newConversationDialogDescription: /** @type {HTMLElement | null} */ (document.getElementById('new-conversation-dialog-description')),
   newConversationForm: /** @type {HTMLFormElement | null} */ (document.getElementById('new-conversation-form')),
   newConversationToggle: /** @type {HTMLButtonElement | null} */ (document.getElementById('new-conversation-toggle')),
   newConversationTitle: /** @type {HTMLInputElement | null} */ (document.getElementById('new-conversation-title')),
   newConversationType: /** @type {HTMLSelectElement | null} */ (document.getElementById('new-conversation-type')),
+  newConversationParent: /** @type {HTMLInputElement | null} */ (document.getElementById('new-conversation-parent')),
+  newConversationProject: /** @type {HTMLSelectElement | null} */ (document.getElementById('new-conversation-project')),
+  newConversationPrimaryAgent: /** @type {HTMLSelectElement | null} */ (document.getElementById('new-conversation-primary-agent')),
+  newConversationInitialMessage: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('new-conversation-initial-message')),
   newConversationClose: /** @type {HTMLButtonElement | null} */ (document.getElementById('new-conversation-close')),
   newConversationCancel: /** @type {HTMLButtonElement | null} */ (document.getElementById('new-conversation-cancel')),
   newConversationSubmit: /** @type {HTMLButtonElement | null} */ (document.getElementById('new-conversation-submit')),
@@ -756,6 +764,7 @@ const noopRenderer = {
   bindEvents(..._args) {},
   async openWithQuery(..._args) {},
   render(..._args) {},
+  toggle(..._args) {},
 };
 
 const noopMentionMenuController = {
@@ -786,6 +795,7 @@ const noopNewConversationDialogController = {
   bindEvents() {},
   close() {},
   open() {},
+  openSpawn(..._args) {},
   syncOptions() {},
 };
 
@@ -811,6 +821,15 @@ function setupChatModules() {
           helpers: {
             createConversation(body) {
               return fetchJson('/api/conversations', { method: 'POST', body });
+            },
+            spawnConversation(sourceConversationId, body) {
+              return fetchJson(`/api/conversations/${encodeURIComponent(sourceConversationId)}/spawn`, {
+                method: 'POST',
+                body,
+              });
+            },
+            listProjects() {
+              return fetchJson('/api/projects');
             },
             onCreated: applyNewConversationResult,
           },
@@ -876,6 +895,17 @@ function setupChatModules() {
             agentById,
             buildAgentAvatarElement,
             canInspectToolTrace,
+            conversationSummaries() {
+              return state.conversations;
+            },
+            crossConversationBundleForMessage(message) {
+              const metadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
+              const crossConversation = metadata && metadata.crossConversation && typeof metadata.crossConversation === 'object'
+                ? metadata.crossConversation
+                : null;
+              const deliveryId = crossConversation ? String(crossConversation.deliveryId || '').trim() : '';
+              return deliveryId ? state.crossConversationDeliveryBundles.get(deliveryId) || null : null;
+            },
             displayedMessageBody,
             digestStatusForConversation,
             formatDateTime,
@@ -3276,6 +3306,43 @@ function renderAll() {
   renderCompactConversationPersonaSettings();
 }
 
+function crossConversationDeliveryIds(conversation) {
+  const messages = []
+    .concat(Array.isArray(conversation && conversation.messages) ? conversation.messages : [])
+    .concat(Array.isArray(conversation && conversation.privateMessages) ? conversation.privateMessages : []);
+  return Array.from(new Set(messages.map((message) => {
+    const metadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
+    const crossConversation = metadata && metadata.crossConversation && typeof metadata.crossConversation === 'object'
+      ? metadata.crossConversation
+      : null;
+    return crossConversation ? String(crossConversation.deliveryId || '').trim() : '';
+  }).filter(Boolean)));
+}
+
+async function hydrateCrossConversationDeliveries(conversation) {
+  if (!conversation || !crossConversationUi) return;
+  const deliveryIds = crossConversationDeliveryIds(conversation);
+  await Promise.all(deliveryIds.map(async (deliveryId) => {
+    try {
+      const bundle = await fetchJson(`/api/conversation-deliveries/${encodeURIComponent(deliveryId)}`);
+      state.crossConversationDeliveryBundles.set(deliveryId, bundle);
+      if (bundle && bundle.delivery) {
+        crossConversationUi.applyDeliveryPatch(
+          state.crossConversationDeliveryBundles,
+          state.conversations,
+          bundle.delivery
+        );
+      }
+      if (bundle && bundle.responseDelivery) {
+        state.crossConversationDeliveryBundles.set(bundle.responseDelivery.id, {
+          delivery: bundle.responseDelivery,
+          targetMessage: bundle.responseMessage || null,
+        });
+      }
+    } catch {}
+  }));
+}
+
 async function loadConversation(conversationId) {
   clearAllMessageToolTraceTimers();
 
@@ -3306,6 +3373,7 @@ async function loadConversation(conversationId) {
     ...data.conversation,
     messages,
   };
+  await hydrateCrossConversationDeliveries(state.currentConversation);
   pruneOptimisticMessagesForConversation(normalizedConversationId, messages);
   closeMentionMenu();
   renderAll();
@@ -3345,6 +3413,7 @@ async function loadEarlierMessages() {
         page
       ),
     };
+    await hydrateCrossConversationDeliveries(state.currentConversation);
     renderConversationPane();
     warmConversationToolTraces(state.currentConversation);
     syncToolTraceStatesWithConversation(state.currentConversation);
@@ -3412,6 +3481,18 @@ function applyNewConversationResult(result) {
     return;
   }
   state.conversations = Array.isArray(result.conversations) ? result.conversations : state.conversations;
+  if (result.delivery && crossConversationUi) {
+    state.crossConversationDeliveryBundles.set(result.delivery.id, {
+      delivery: result.delivery,
+      targetMessage: result.initialMessage || null,
+      sourceReceipt: result.sourceReceipt || null,
+    });
+    crossConversationUi.applyDeliveryPatch(
+      state.crossConversationDeliveryBundles,
+      state.conversations,
+      result.delivery
+    );
+  }
   state.selectedConversationId = result.conversation.id;
   messageHistory.reset(state.messageHistory, result.conversation.id);
   state.currentConversation = {
@@ -3463,6 +3544,7 @@ async function refreshConversationFromEvent(conversationId) {
         page
       ),
     };
+    await hydrateCrossConversationDeliveries(state.currentConversation);
     pruneOptimisticMessagesForConversation(conversationId, page && page.items);
     renderConversationPane();
     renderUndercoverGameCard();
@@ -3561,6 +3643,38 @@ function connectEventStream() {
     const payload = JSON.parse(event.data);
     mergeConversationSummary(payload.summary);
     renderConversationList();
+  });
+
+  source.addEventListener('conversation_spawned', (event) => {
+    const payload = JSON.parse(event.data);
+    if (payload.summary) mergeConversationSummary(payload.summary);
+    if (payload.delivery && crossConversationUi) {
+      crossConversationUi.applyDeliveryPatch(
+        state.crossConversationDeliveryBundles,
+        state.conversations,
+        payload.delivery
+      );
+    }
+    renderConversationList();
+    scheduleConversationRefresh(payload.sourceConversationId);
+  });
+
+  source.addEventListener('cross_conversation_delivery_updated', (event) => {
+    const payload = JSON.parse(event.data);
+    if (!payload.delivery || !crossConversationUi) return;
+    crossConversationUi.applyDeliveryPatch(
+      state.crossConversationDeliveryBundles,
+      state.conversations,
+      payload.delivery
+    );
+    renderConversationList();
+    if (
+      state.currentConversation
+      && (payload.delivery.sourceConversationId === state.currentConversation.id
+        || payload.delivery.targetConversationId === state.currentConversation.id)
+    ) {
+      renderConversationPane();
+    }
   });
 
   source.addEventListener('conversation_message_created', (event) => {
@@ -3972,6 +4086,35 @@ function bindEvents() {
   }
 
   dom.conversationList.addEventListener('click', async (event) => {
+    const treeToggle =
+      event.target instanceof Element
+        ? /** @type {HTMLButtonElement | null} */ (event.target.closest('.conversation-tree-toggle'))
+        : null;
+    if (treeToggle) {
+      conversationListRenderer.toggle(treeToggle.dataset.conversationTreeToggle || '');
+      return;
+    }
+
+    const spawnButton =
+      event.target instanceof Element
+        ? /** @type {HTMLButtonElement | null} */ (event.target.closest('.conversation-spawn-button'))
+        : null;
+    if (spawnButton) {
+      const parentConversation = state.conversations.find(
+        (conversation) => conversation.id === spawnButton.dataset.parentConversationId
+      );
+      if (!parentConversation) {
+        showToast('找不到要派生的父会话');
+        return;
+      }
+      try {
+        await newConversationDialogController.openSpawn(parentConversation);
+      } catch (error) {
+        showToast(error && error.message ? error.message : '无法打开派生会话表单');
+      }
+      return;
+    }
+
     const item =
       event.target instanceof Element ? /** @type {HTMLElement | null} */ (event.target.closest('.conversation-item')) : null;
 
@@ -3981,6 +4124,10 @@ function bindEvents() {
 
     try {
       await loadConversation(item.dataset.id);
+      if (!window.matchMedia('(min-width: 1280px)').matches && document.body.dataset.sidebar === 'open') {
+        const sidebarClose = /** @type {HTMLButtonElement | null} */ (document.getElementById('sidebarClose'));
+        if (sidebarClose) sidebarClose.click();
+      }
     } catch (error) {
       showToast(error.message);
     }
@@ -3989,6 +4136,51 @@ function bindEvents() {
   dom.messageList.addEventListener('click', async (event) => {
     if (!state.currentConversation) {
       return;
+    }
+
+    const crossConversationAction =
+      event.target instanceof Element
+        ? /** @type {HTMLButtonElement | null} */ (event.target.closest('.cross-conversation-action'))
+        : null;
+    if (crossConversationAction) {
+      const action = crossConversationAction.dataset.crossConversationAction || '';
+      if (action === 'jump') {
+        const conversationId = crossConversationAction.dataset.conversationId || '';
+        if (!conversationId) return;
+        try {
+          await loadConversation(conversationId);
+        } catch (error) {
+          showToast(error && error.message ? error.message : '无法打开关联会话');
+        }
+        return;
+      }
+
+      if (action === 'retry' || action === 'cancel') {
+        const deliveryId = crossConversationAction.dataset.deliveryId || '';
+        if (!deliveryId) return;
+        crossConversationAction.disabled = true;
+        try {
+          const bundle = await fetchJson(
+            `/api/conversation-deliveries/${encodeURIComponent(deliveryId)}/${action}`,
+            { method: 'POST', body: {} }
+          );
+          state.crossConversationDeliveryBundles.set(deliveryId, bundle);
+          if (bundle && bundle.delivery && crossConversationUi) {
+            crossConversationUi.applyDeliveryPatch(
+              state.crossConversationDeliveryBundles,
+              state.conversations,
+              bundle.delivery
+            );
+          }
+          renderConversationList();
+          renderConversationPane();
+          showToast(action === 'retry' ? '已重新排队' : '已提交取消');
+        } catch (error) {
+          crossConversationAction.disabled = false;
+          showToast(error && error.message ? error.message : '投递操作失败');
+        }
+        return;
+      }
     }
 
     const toolTraceToggle =

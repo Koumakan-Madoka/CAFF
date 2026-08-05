@@ -14,6 +14,9 @@ const { createAgentToolsController } = require('../api/agent-tools-controller');
 const { createAgentsController } = require('../api/agents-controller');
 const { createBootstrapController } = require('../api/bootstrap-controller');
 const { createConversationsController } = require('../api/conversations-controller');
+const {
+  createConversationDeliveriesController,
+} = require('../api/conversation-deliveries-controller');
 const { createFeishuController } = require('../api/feishu-controller');
 const { createHealthController } = require('../api/health-controller');
 const { createMetricsController } = require('../api/metrics-controller');
@@ -30,6 +33,11 @@ const { createTurnOrchestrator } = require('../domain/conversation/turn-orchestr
 const { resolveBrowserCliPath } = require('../domain/conversation/turn/browser-cli');
 const { resolveCurrentTrellisTaskName } = require('../domain/conversation/turn/trellis-context');
 const { maybeAutoCreateConversationDigest } = require('../domain/conversation/conversation-digest');
+const { createConversationSpawnService } = require('../domain/conversation/conversation-spawn');
+const {
+  createCrossConversationDeliveryService,
+  createCrossConversationDeliveryWorker,
+} = require('../domain/conversation/cross-conversation-delivery');
 const { getPendingConversationExperienceDrafts } = require('../domain/conversation/experience-draft');
 const { maybeAutoCreateConversationSkillDraft } = require('../domain/conversation/skill-draft');
 const { pickConversationSummary } = require('../domain/conversation/conversation-view');
@@ -131,6 +139,36 @@ export function createServerApp(options: any = {}) {
   const undercoverHost = createWhoIsUndercoverHost({ agentDir });
   const sseBus = createSseBus();
   let turnOrchestrator: any = null;
+  let crossConversationDeliveryWorker: any = null;
+  let deliveryMaintenanceTimer: any = null;
+  let deliveryDrainPromise: Promise<any> | null = null;
+  let deliveryDrainRequested = false;
+  let deliveryRuntimeClosing = false;
+  const deliveryServiceFactory =
+    typeof options.deliveryServiceFactory === 'function'
+      ? options.deliveryServiceFactory
+      : createCrossConversationDeliveryService;
+  const deliveryWorkerFactory =
+    typeof options.deliveryWorkerFactory === 'function'
+      ? options.deliveryWorkerFactory
+      : createCrossConversationDeliveryWorker;
+  const setDeliveryMaintenanceInterval =
+    typeof options.setDeliveryMaintenanceInterval === 'function'
+      ? options.setDeliveryMaintenanceInterval
+      : setInterval;
+  const clearDeliveryMaintenanceInterval =
+    typeof options.clearDeliveryMaintenanceInterval === 'function'
+      ? options.clearDeliveryMaintenanceInterval
+      : clearInterval;
+  const deliveryMaintenanceIntervalMs =
+    Number.isInteger(options.deliveryMaintenanceIntervalMs)
+      && options.deliveryMaintenanceIntervalMs > 0
+      ? options.deliveryMaintenanceIntervalMs
+      : 1_000;
+  const deliveryDrainBatchSize =
+    Number.isInteger(options.deliveryDrainBatchSize) && options.deliveryDrainBatchSize > 0
+      ? options.deliveryDrainBatchSize
+      : 32;
 
   syncActiveProject();
 
@@ -161,6 +199,157 @@ export function createServerApp(options: any = {}) {
     }
 
     broadcastEvent('runtime_state', turnOrchestrator.buildRuntimePayload());
+  }
+
+  function broadcastCrossConversationDelivery(delivery: any, reason: any = '') {
+    if (!delivery || !delivery.id) {
+      return;
+    }
+
+    const conversationIds = Array.from(new Set([
+      String(delivery.sourceConversationId || '').trim(),
+      String(delivery.targetConversationId || '').trim(),
+    ].filter(Boolean)));
+
+    for (const conversationId of conversationIds) {
+      broadcastEvent('cross_conversation_delivery_updated', {
+        conversationId,
+        delivery,
+        reason: String(reason || '').trim() || null,
+      });
+      broadcastConversationSummary(conversationId);
+    }
+  }
+
+  function broadcastCrossConversationMessage(message: any) {
+    const conversationId = String(message && message.conversationId || '').trim();
+
+    if (!conversationId || !message || !message.id) {
+      return;
+    }
+
+    broadcastEvent('conversation_message_created', {
+      conversationId,
+      message,
+    });
+  }
+
+  function requestCrossConversationDeliveryDrain() {
+    deliveryDrainRequested = true;
+
+    if (deliveryRuntimeClosing || !crossConversationDeliveryWorker || deliveryDrainPromise) {
+      return deliveryDrainPromise;
+    }
+
+    deliveryDrainPromise = (async () => {
+      try {
+        while (deliveryDrainRequested && !deliveryRuntimeClosing) {
+          deliveryDrainRequested = false;
+          let processedCount = 0;
+
+          while (processedCount < deliveryDrainBatchSize && !deliveryRuntimeClosing) {
+            const outcome = await crossConversationDeliveryWorker.processNext();
+            if (!outcome) {
+              break;
+            }
+            processedCount += 1;
+          }
+
+          if (processedCount === deliveryDrainBatchSize) {
+            deliveryDrainRequested = true;
+          }
+        }
+      } catch (error) {
+        console.error(
+          `[cross-conversation-delivery] Drain failed: ${
+            error && (error as any).stack ? (error as any).stack : error
+          }`
+        );
+      } finally {
+        deliveryDrainPromise = null;
+
+        if (deliveryDrainRequested && !deliveryRuntimeClosing) {
+          requestCrossConversationDeliveryDrain();
+        }
+      }
+    })();
+
+    return deliveryDrainPromise;
+  }
+
+  function handleCrossConversationDeliveryPersisted(result: any) {
+    if (!result || !result.delivery) {
+      return;
+    }
+
+    if (!result.duplicate) {
+      broadcastCrossConversationMessage(result.targetMessage);
+      broadcastCrossConversationMessage(result.sourceReceipt);
+    }
+
+    broadcastCrossConversationDelivery(result.delivery, result.duplicate ? 'duplicate_submit' : 'persisted');
+    requestCrossConversationDeliveryDrain();
+  }
+
+  function handleCrossConversationDeliveryChanged(change: any) {
+    if (!change || !change.delivery) {
+      return;
+    }
+
+    const responseMessage = change.response && change.response.responseMessage
+      ? change.response.responseMessage
+      : null;
+    if (responseMessage && !(change.response && change.response.duplicate)) {
+      broadcastCrossConversationMessage(responseMessage);
+    }
+
+    broadcastCrossConversationDelivery(change.delivery, change.reason);
+  }
+
+  function runCrossConversationDeliveryMaintenance() {
+    if (deliveryRuntimeClosing || !crossConversationDeliveryWorker) {
+      return;
+    }
+
+    try {
+      crossConversationDeliveryWorker.recoverExpiredClaims();
+      crossConversationDeliveryWorker.recoverPendingResponses();
+      crossConversationDeliveryWorker.expireRequestDeadlines();
+    } catch (error) {
+      console.error(
+        `[cross-conversation-delivery] Maintenance failed: ${
+          error && (error as any).stack ? (error as any).stack : error
+        }`
+      );
+    }
+
+    requestCrossConversationDeliveryDrain();
+  }
+
+  function startCrossConversationDeliveryRuntime() {
+    if (!crossConversationDeliveryWorker || deliveryMaintenanceTimer) {
+      return;
+    }
+
+    try {
+      crossConversationDeliveryWorker.recoverExpiredClaims();
+      crossConversationDeliveryWorker.recoverPendingResponses();
+    } catch (error) {
+      console.error(
+        `[cross-conversation-delivery] Startup recovery failed: ${
+          error && (error as any).stack ? (error as any).stack : error
+        }`
+      );
+    }
+    requestCrossConversationDeliveryDrain();
+
+    deliveryMaintenanceTimer = setDeliveryMaintenanceInterval(
+      runCrossConversationDeliveryMaintenance,
+      deliveryMaintenanceIntervalMs
+    );
+    if (deliveryMaintenanceTimer && typeof deliveryMaintenanceTimer.unref === 'function') {
+      deliveryMaintenanceTimer.unref();
+    }
   }
 
   const digestOptions = {
@@ -332,9 +521,18 @@ export function createServerApp(options: any = {}) {
     await runMaybeAutoCreateDigest(conversationId);
   }
 
+  const crossConversationDeliveryService =
+    options.crossConversationDeliveryService
+    || deliveryServiceFactory({
+      store,
+      onDeliveryPersisted: handleCrossConversationDeliveryPersisted,
+    });
+
   const agentToolBridge = createAgentToolBridge({
     store,
     agentDir,
+    piCapabilityBridge: options.piCapabilityBridge,
+    crossConversationDeliveryService,
     broadcastEvent,
     broadcastConversationSummary,
     onTurnUpdated(turnState: any) {
@@ -351,6 +549,12 @@ export function createServerApp(options: any = {}) {
   let feishuIntegration: any = null;
   const agentToolScriptPath = path.resolve(ROOT_DIR, 'lib', 'agent-chat-tools.js');
   const agentToolRelativePath = resolveToolRelativePath(agentToolScriptPath);
+  const piCapabilityExtensionPath = path.resolve(
+    String(
+      options.piCapabilityExtensionPath
+      || path.join(ROOT_DIR, 'lib', 'pi-extensions', 'caff-capabilities.mjs')
+    )
+  );
   const browserCliPath = resolveBrowserCliPath({ rootDir: ROOT_DIR });
 
   turnOrchestrator = createTurnOrchestrator({
@@ -369,6 +573,7 @@ export function createServerApp(options: any = {}) {
     toolBaseUrl,
     agentToolScriptPath,
     agentToolRelativePath,
+    piCapabilityExtensionPath,
     browserCliPath,
     resolveRuntimeParticipants: roleService.resolveRuntimeParticipants,
     async onAssistantMessageCompleted(message: any) {
@@ -381,6 +586,41 @@ export function createServerApp(options: any = {}) {
       return feishuIntegration.deliverAssistantMessage(message);
     },
   });
+
+  crossConversationDeliveryWorker =
+    options.crossConversationDeliveryWorker
+    || deliveryWorkerFactory({
+      store,
+      dispatchTarget(input: any) {
+        return turnOrchestrator.dispatchCrossConversationDelivery(input);
+      },
+      stopTarget(delivery: any) {
+        return turnOrchestrator.requestStopCrossConversationDelivery(
+          delivery,
+          delivery && delivery.lastErrorMessage
+            ? delivery.lastErrorMessage
+            : 'Cancelled by operator'
+        );
+      },
+      onDeliveryChanged: handleCrossConversationDeliveryChanged,
+    });
+
+  const conversationSpawnService =
+    options.conversationSpawnService
+    || createConversationSpawnService({
+      store,
+      validateParticipants(input: any) {
+        return roleService.validateConversationParticipants(input);
+      },
+      resolveProject(projectScopeId: any) {
+        const normalizedProjectScopeId = String(projectScopeId || '').trim();
+        return projectManager.listProjects()
+          .find((project: any) => project && project.id === normalizedProjectScopeId) || null;
+      },
+      onBootstrapAvailable() {
+        requestCrossConversationDeliveryDrain();
+      },
+    });
 
   feishuIntegration = createFeishuIntegrationService({
     store,
@@ -482,6 +722,11 @@ export function createServerApp(options: any = {}) {
     createAgentToolsController({
       agentToolBridge,
     }),
+    createConversationDeliveriesController({
+      store,
+      deliveryWorker: crossConversationDeliveryWorker,
+      onDeliveryAvailable: requestCrossConversationDeliveryDrain,
+    }),
     createModesController({
       modeStore,
     }),
@@ -502,6 +747,7 @@ export function createServerApp(options: any = {}) {
     }),
     createConversationsController({
       store,
+      conversationSpawnService,
       roleService,
       skillRegistry,
       projectManager,
@@ -550,6 +796,8 @@ export function createServerApp(options: any = {}) {
 
   function start(onListen: any) {
     server.listen(port, host, () => {
+      startCrossConversationDeliveryRuntime();
+
       if (typeof onListen === 'function') {
         onListen();
       }
@@ -565,7 +813,13 @@ export function createServerApp(options: any = {}) {
   }
 
   function close(callback: any) {
+    deliveryRuntimeClosing = true;
     sseBus.closeAll();
+
+    if (deliveryMaintenanceTimer) {
+      clearDeliveryMaintenanceInterval(deliveryMaintenanceTimer);
+      deliveryMaintenanceTimer = null;
+    }
 
     for (const timer of autoDigestScheduledTimers.values()) {
       clearTimeout(timer);
@@ -577,16 +831,29 @@ export function createServerApp(options: any = {}) {
     }
 
     server.close(() => {
-      store.close();
+      const finishClose = () => {
+        store.close();
 
-      if (typeof callback === 'function') {
-        callback();
+        if (typeof callback === 'function') {
+          callback();
+        }
+      };
+
+      if (deliveryDrainPromise) {
+        void deliveryDrainPromise.then(finishClose, finishClose);
+        return;
       }
+
+      finishClose();
     });
   }
 
   return {
     close,
+    agentToolBridge,
+    crossConversationDeliveryService,
+    crossConversationDeliveryWorker,
+    conversationSpawnService,
     getHealthStatus,
     host,
     port,
@@ -594,5 +861,6 @@ export function createServerApp(options: any = {}) {
     server,
     start,
     store,
+    turnOrchestrator,
   };
 }

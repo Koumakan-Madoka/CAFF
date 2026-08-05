@@ -245,6 +245,289 @@ CREATE INDEX IF NOT EXISTS idx_chat_memory_cards_expires_at
 `);
 }
 
+const CHAT_CONVERSATION_LINEAGE_COLUMNS = [
+  'project_scope_id',
+  'parent_conversation_id',
+  'origin_conversation_id',
+  'origin_message_id',
+  'tree_depth',
+];
+
+function createChatConversationTableSql(tableName: string) {
+  return `
+CREATE TABLE ${tableName} (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  type TEXT NOT NULL DEFAULT 'standard',
+  metadata_json TEXT,
+  project_scope_id TEXT,
+  parent_conversation_id TEXT,
+  origin_conversation_id TEXT,
+  origin_message_id TEXT,
+  tree_depth INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  last_message_at TEXT,
+  CHECK (project_scope_id IS NULL OR length(trim(project_scope_id)) > 0),
+  CHECK (parent_conversation_id IS NULL OR parent_conversation_id <> id),
+  CHECK (origin_conversation_id IS NULL OR origin_conversation_id <> id),
+  CHECK (tree_depth BETWEEN 0 AND 2),
+  CHECK (
+    (parent_conversation_id IS NULL AND tree_depth = 0)
+    OR (parent_conversation_id IS NOT NULL AND tree_depth BETWEEN 1 AND 2)
+  ),
+  CHECK (parent_conversation_id IS NULL OR origin_conversation_id IS NOT NULL),
+  FOREIGN KEY (parent_conversation_id) REFERENCES ${tableName}(id) ON DELETE RESTRICT,
+  FOREIGN KEY (origin_conversation_id) REFERENCES ${tableName}(id) ON DELETE RESTRICT,
+  FOREIGN KEY (origin_message_id) REFERENCES chat_messages(id) ON DELETE SET NULL
+);`;
+}
+
+function ensureChatConversationLineageSchema(db: any) {
+  const columns = listTableInfo(db, 'chat_conversations');
+  if (!Array.isArray(columns) || columns.length === 0) {
+    return;
+  }
+
+  const columnNames = new Set(columns.map((column: any) => String(column.name)));
+  const foreignKeySources = new Set(
+    db.prepare('PRAGMA foreign_key_list(chat_conversations)').all()
+      .map((foreignKey: any) => String(foreignKey.from || ''))
+  );
+  const tableDefinition = String(
+    db.prepare(`
+      SELECT sql
+      FROM sqlite_master
+      WHERE type = 'table' AND name = 'chat_conversations'
+      LIMIT 1
+    `).get()?.sql || ''
+  );
+  const hasCompleteLineageSchema =
+    CHAT_CONVERSATION_LINEAGE_COLUMNS.every((columnName) => columnNames.has(columnName))
+    && ['parent_conversation_id', 'origin_conversation_id', 'origin_message_id']
+      .every((columnName) => foreignKeySources.has(columnName))
+    && /tree_depth\s+BETWEEN\s+0\s+AND\s+2/i.test(tableDefinition)
+    && /parent_conversation_id\s+IS\s+NULL\s+OR\s+parent_conversation_id\s*<>\s*id/i.test(tableDefinition);
+
+  if (!hasCompleteLineageSchema) {
+    const selectColumn = (columnName: string, fallbackSql: string) =>
+      columnNames.has(columnName) ? columnName : fallbackSql;
+    const foreignKeysEnabled = Number(db.pragma('foreign_keys', { simple: true }) || 0) === 1;
+
+    if (foreignKeysEnabled) {
+      db.pragma('foreign_keys = OFF');
+    }
+
+    try {
+      db.exec(`
+BEGIN IMMEDIATE;
+DROP TABLE IF EXISTS chat_conversations_lineage_migrated;
+${createChatConversationTableSql('chat_conversations_lineage_migrated')}
+
+INSERT INTO chat_conversations_lineage_migrated (
+  id,
+  title,
+  type,
+  metadata_json,
+  project_scope_id,
+  parent_conversation_id,
+  origin_conversation_id,
+  origin_message_id,
+  tree_depth,
+  created_at,
+  updated_at,
+  last_message_at
+)
+SELECT
+  id,
+  title,
+  ${selectColumn('type', "'standard'")},
+  ${selectColumn('metadata_json', 'NULL')},
+  ${selectColumn('project_scope_id', 'NULL')},
+  ${selectColumn('parent_conversation_id', 'NULL')},
+  ${selectColumn('origin_conversation_id', 'NULL')},
+  ${selectColumn('origin_message_id', 'NULL')},
+  ${selectColumn('tree_depth', '0')},
+  created_at,
+  updated_at,
+  last_message_at
+FROM chat_conversations;
+
+DROP TABLE chat_conversations;
+ALTER TABLE chat_conversations_lineage_migrated RENAME TO chat_conversations;
+COMMIT;
+      `);
+    } catch (error) {
+      if (db.inTransaction) {
+        db.exec('ROLLBACK;');
+      }
+      throw error;
+    } finally {
+      if (foreignKeysEnabled) {
+        db.pragma('foreign_keys = ON');
+      }
+    }
+  }
+
+  db.exec(`
+CREATE INDEX IF NOT EXISTS idx_chat_conversations_updated_at
+  ON chat_conversations (updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_chat_conversations_last_message_at
+  ON chat_conversations (last_message_at DESC);
+CREATE INDEX IF NOT EXISTS idx_chat_conversations_tree_parent
+  ON chat_conversations (parent_conversation_id, created_at ASC, id ASC);
+CREATE INDEX IF NOT EXISTS idx_chat_conversations_project_scope
+  ON chat_conversations (project_scope_id, created_at ASC, id ASC);
+  `);
+
+  const foreignKeyViolations = db.pragma('foreign_key_check');
+  if (Array.isArray(foreignKeyViolations) && foreignKeyViolations.length > 0) {
+    throw new Error('Conversation lineage migration left foreign key violations');
+  }
+}
+
+function ensureCrossConversationDeliverySchema(db: any) {
+  db.exec(`
+CREATE TABLE IF NOT EXISTS chat_cross_conversation_deliveries (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL CHECK (kind IN ('notify', 'request', 'bootstrap')),
+  idempotency_scope TEXT NOT NULL CHECK (length(trim(idempotency_scope)) > 0),
+  idempotency_key TEXT NOT NULL CHECK (length(trim(idempotency_key)) > 0),
+  principal_kind TEXT NOT NULL CHECK (principal_kind IN ('agent', 'operator')),
+  source_conversation_id TEXT NOT NULL,
+  source_message_id TEXT,
+  source_turn_id TEXT,
+  source_invocation_id TEXT,
+  source_agent_id TEXT,
+  source_agent_name TEXT NOT NULL CHECK (length(trim(source_agent_name)) > 0),
+  source_project_scope_id TEXT NOT NULL CHECK (length(trim(source_project_scope_id)) > 0),
+  target_conversation_id TEXT NOT NULL,
+  target_agent_id TEXT NOT NULL,
+  target_message_id TEXT,
+  source_receipt_message_id TEXT,
+  target_project_scope_id TEXT NOT NULL CHECK (length(trim(target_project_scope_id)) > 0),
+  trace_id TEXT NOT NULL CHECK (length(trim(trace_id)) > 0),
+  root_delivery_id TEXT NOT NULL,
+  parent_delivery_id TEXT,
+  reply_to_delivery_id TEXT,
+  hop_count INTEGER NOT NULL DEFAULT 0 CHECK (hop_count BETWEEN 0 AND 8),
+  message_status TEXT NOT NULL CHECK (message_status IN ('pending', 'persisted', 'failed')),
+  dispatch_status TEXT NOT NULL CHECK (
+    dispatch_status IN (
+      'not_requested', 'queued', 'running', 'completed',
+      'failed', 'cancel_requested', 'cancelled'
+    )
+  ),
+  response_status TEXT NOT NULL CHECK (
+    response_status IN ('not_expected', 'waiting', 'received', 'timed_out', 'cancelled', 'late')
+  ),
+  attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+  deadline_at TEXT,
+  cancel_requested_at TEXT,
+  last_error_code TEXT,
+  last_error_message TEXT,
+  claim_owner TEXT,
+  claim_expires_at TEXT,
+  next_attempt_at TEXT,
+  target_invocation_id TEXT,
+  delivered_at TEXT,
+  started_at TEXT,
+  completed_at TEXT,
+  responded_at TEXT,
+  terminal_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (idempotency_scope, idempotency_key),
+  CHECK (source_conversation_id <> target_conversation_id),
+  CHECK (source_project_scope_id = target_project_scope_id),
+  CHECK (
+    (claim_owner IS NULL AND claim_expires_at IS NULL)
+    OR (claim_owner IS NOT NULL AND claim_expires_at IS NOT NULL)
+  ),
+  CHECK (started_at IS NULL OR target_invocation_id IS NOT NULL),
+  CHECK (
+    message_status <> 'persisted'
+    OR (
+      target_message_id IS NOT NULL
+      AND (reply_to_delivery_id IS NOT NULL OR source_receipt_message_id IS NOT NULL)
+    )
+  ),
+  CHECK (
+    (kind = 'request' AND response_status <> 'not_expected')
+    OR (kind IN ('notify', 'bootstrap') AND response_status = 'not_expected')
+  ),
+  FOREIGN KEY (source_conversation_id) REFERENCES chat_conversations(id) ON DELETE RESTRICT,
+  FOREIGN KEY (source_message_id) REFERENCES chat_messages(id) ON DELETE RESTRICT,
+  FOREIGN KEY (source_agent_id) REFERENCES chat_role_identities(role_id) ON DELETE SET NULL,
+  FOREIGN KEY (target_conversation_id) REFERENCES chat_conversations(id) ON DELETE RESTRICT,
+  FOREIGN KEY (target_agent_id) REFERENCES chat_role_identities(role_id) ON DELETE RESTRICT,
+  FOREIGN KEY (target_message_id) REFERENCES chat_messages(id) ON DELETE RESTRICT,
+  FOREIGN KEY (source_receipt_message_id) REFERENCES chat_messages(id) ON DELETE RESTRICT,
+  FOREIGN KEY (root_delivery_id) REFERENCES chat_cross_conversation_deliveries(id) ON DELETE RESTRICT,
+  FOREIGN KEY (parent_delivery_id) REFERENCES chat_cross_conversation_deliveries(id) ON DELETE RESTRICT,
+  FOREIGN KEY (reply_to_delivery_id) REFERENCES chat_cross_conversation_deliveries(id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS chat_cross_conversation_delivery_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  delivery_id TEXT NOT NULL,
+  event_type TEXT NOT NULL CHECK (length(trim(event_type)) > 0),
+  attempt_number INTEGER NOT NULL DEFAULT 0 CHECK (attempt_number >= 0),
+  actor_kind TEXT,
+  actor_id TEXT,
+  event_json TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (delivery_id) REFERENCES chat_cross_conversation_deliveries(id) ON DELETE RESTRICT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_cross_delivery_target_message
+  ON chat_cross_conversation_deliveries (target_message_id)
+  WHERE target_message_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_cross_delivery_source_receipt_message
+  ON chat_cross_conversation_deliveries (source_receipt_message_id)
+  WHERE source_receipt_message_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_cross_delivery_reply_to
+  ON chat_cross_conversation_deliveries (reply_to_delivery_id)
+  WHERE reply_to_delivery_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_cross_delivery_trace_edge
+  ON chat_cross_conversation_deliveries (
+    trace_id,
+    source_conversation_id,
+    target_conversation_id
+  );
+CREATE INDEX IF NOT EXISTS idx_cross_delivery_source_conversation
+  ON chat_cross_conversation_deliveries (source_conversation_id, created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_cross_delivery_target_conversation
+  ON chat_cross_conversation_deliveries (target_conversation_id, created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_cross_delivery_claimable
+  ON chat_cross_conversation_deliveries (
+    dispatch_status,
+    next_attempt_at,
+    claim_expires_at,
+    created_at,
+    id
+  )
+  WHERE dispatch_status = 'queued';
+CREATE INDEX IF NOT EXISTS idx_cross_delivery_deadline
+  ON chat_cross_conversation_deliveries (response_status, deadline_at, id)
+  WHERE response_status = 'waiting' AND deadline_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_cross_delivery_events_delivery
+  ON chat_cross_conversation_delivery_events (delivery_id, created_at ASC, id ASC);
+
+CREATE TRIGGER IF NOT EXISTS chat_cross_delivery_events_append_only_update
+BEFORE UPDATE ON chat_cross_conversation_delivery_events
+BEGIN
+  SELECT RAISE(ABORT, 'cross-conversation delivery events are append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS chat_cross_delivery_events_append_only_delete
+BEFORE DELETE ON chat_cross_conversation_delivery_events
+BEGIN
+  SELECT RAISE(ABORT, 'cross-conversation delivery events are append-only');
+END;
+  `);
+}
+
 export function migrateChatSchema(db: any, options: any = {}) {
   migrateLegacyModelFamilyRoles(db, { backupPath: options.backupPath });
   db.exec(`
@@ -291,9 +574,26 @@ CREATE TABLE IF NOT EXISTS chat_conversations (
   title TEXT NOT NULL,
   type TEXT NOT NULL DEFAULT 'standard',
   metadata_json TEXT,
+  project_scope_id TEXT,
+  parent_conversation_id TEXT,
+  origin_conversation_id TEXT,
+  origin_message_id TEXT,
+  tree_depth INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  last_message_at TEXT
+  last_message_at TEXT,
+  CHECK (project_scope_id IS NULL OR length(trim(project_scope_id)) > 0),
+  CHECK (parent_conversation_id IS NULL OR parent_conversation_id <> id),
+  CHECK (origin_conversation_id IS NULL OR origin_conversation_id <> id),
+  CHECK (tree_depth BETWEEN 0 AND 2),
+  CHECK (
+    (parent_conversation_id IS NULL AND tree_depth = 0)
+    OR (parent_conversation_id IS NOT NULL AND tree_depth BETWEEN 1 AND 2)
+  ),
+  CHECK (parent_conversation_id IS NULL OR origin_conversation_id IS NOT NULL),
+  FOREIGN KEY (parent_conversation_id) REFERENCES chat_conversations(id) ON DELETE RESTRICT,
+  FOREIGN KEY (origin_conversation_id) REFERENCES chat_conversations(id) ON DELETE RESTRICT,
+  FOREIGN KEY (origin_message_id) REFERENCES chat_messages(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS chat_conversation_agents (
@@ -479,6 +779,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_external_events_platform_direction_me
     'conversation_skills_json',
     'conversation_skills_json TEXT'
   );
+
+  ensureChatConversationLineageSchema(db);
+  ensureCrossConversationDeliverySchema(db);
 
   ensureChatMessageSearchSchema(db);
   ensureChatMemoryCardSchema(db);

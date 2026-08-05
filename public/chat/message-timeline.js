@@ -4,12 +4,19 @@
   const chat = window.CaffChat || (window.CaffChat = {});
   const shared = window.CaffShared || {};
   const digestUtils = shared.conversationDigest;
+  const crossConversationUi = chat.crossConversationUi;
+
+  if (!crossConversationUi) {
+    throw new Error('CaffChat.crossConversationUi helper is required');
+  }
 
   chat.createMessageTimelineRenderer = function createMessageTimelineRenderer({ dom, helpers, showToast }) {
     const {
       agentById,
       buildAgentAvatarElement,
       canInspectToolTrace,
+      conversationSummaries,
+      crossConversationBundleForMessage,
       displayedMessageBody,
       digestStatusForConversation,
       formatDateTime,
@@ -415,6 +422,119 @@
       }
 
       return pill;
+    }
+
+    function createCrossConversationAction(label, action, options = {}) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'cross-conversation-action ghost-button';
+      button.dataset.crossConversationAction = action;
+      if (options.deliveryId) button.dataset.deliveryId = options.deliveryId;
+      if (options.conversationId) button.dataset.conversationId = options.conversationId;
+      button.textContent = label;
+      return button;
+    }
+
+    function syncCrossConversationPanel(panel, message, bundle) {
+      const summaries = typeof conversationSummaries === 'function' ? conversationSummaries() : [];
+      const delivery = bundle && bundle.delivery ? bundle.delivery : null;
+      const receipt = crossConversationUi.receiptModel(message, delivery, summaries);
+      const provenance = crossConversationUi.provenanceModel(message, summaries);
+      const birth = crossConversationUi.birthModel(message, summaries, delivery);
+      panel.replaceChildren();
+      panel.className = 'cross-conversation-panel hidden';
+
+      if (receipt) {
+        panel.className = 'cross-conversation-panel cross-conversation-receipt-panel';
+        const summary = document.createElement('div');
+        summary.className = 'cross-conversation-summary';
+        const title = document.createElement('div');
+        title.className = 'cross-conversation-title';
+        const eyebrow = document.createElement('span');
+        eyebrow.className = 'eyebrow';
+        eyebrow.textContent = receipt.kindLabel;
+        const target = document.createElement('strong');
+        target.textContent = receipt.targetTitle || receipt.targetConversationId;
+        title.append(eyebrow, target);
+        const status = createTracePill(receipt.view.label, receipt.view.tone, { live: receipt.view.live });
+        status.classList.add('cross-conversation-status');
+        summary.append(title, status);
+        panel.appendChild(summary);
+
+        if (receipt.view.failed) {
+          const error = document.createElement('p');
+          error.className = 'cross-conversation-error';
+          error.textContent = receipt.view.errorMessage || '投递没有完成，请检查目标 Agent 状态后重试。';
+          panel.appendChild(error);
+        }
+
+        const actions = document.createElement('div');
+        actions.className = 'cross-conversation-actions';
+        if (receipt.view.canRetry) {
+          actions.appendChild(createCrossConversationAction('重试', 'retry', { deliveryId: receipt.deliveryId }));
+        }
+        if (receipt.view.canCancel) {
+          actions.appendChild(createCrossConversationAction('取消', 'cancel', { deliveryId: receipt.deliveryId }));
+        }
+        actions.appendChild(createCrossConversationAction('前往会话', 'jump', {
+          deliveryId: receipt.deliveryId,
+          conversationId: receipt.jumpConversationId,
+        }));
+        panel.appendChild(actions);
+        return { receipt, provenance: null, birth: null };
+      }
+
+      if (provenance) {
+        panel.className = 'cross-conversation-panel cross-conversation-provenance';
+        const backlink = createCrossConversationAction(provenance.label, 'jump', {
+          deliveryId: provenance.deliveryId,
+          conversationId: provenance.backlinkConversationId,
+        });
+        backlink.classList.add('cross-conversation-backlink');
+        const context = document.createElement('span');
+        context.className = 'cross-conversation-context';
+        context.textContent = [provenance.kindLabel, provenance.sourceAgentName].filter(Boolean).join(' · ');
+        panel.append(backlink, context);
+        return { receipt: null, provenance, birth: null };
+      }
+
+      if (birth) {
+        panel.className = 'cross-conversation-panel cross-conversation-birth';
+        const summary = document.createElement('div');
+        summary.className = 'cross-conversation-summary';
+        const text = document.createElement('div');
+        const title = document.createElement('strong');
+        title.textContent = `由 ${birth.sourceTitle} 派生`;
+        const notice = document.createElement('p');
+        notice.textContent = birth.notice;
+        text.append(title, notice);
+        const status = createTracePill(birth.view.label, birth.view.tone, { live: birth.view.live });
+        status.classList.add('cross-conversation-status');
+        summary.append(text, status);
+        panel.appendChild(summary);
+        if (birth.view.failed) {
+          const error = document.createElement('p');
+          error.className = 'cross-conversation-error';
+          error.textContent = birth.view.errorMessage || '主理 Agent 没有启动，请检查可用性后重试。';
+          panel.appendChild(error);
+        }
+        const actions = document.createElement('div');
+        actions.className = 'cross-conversation-actions';
+        if (birth.view.canRetry) {
+          actions.appendChild(createCrossConversationAction('重试', 'retry', { deliveryId: birth.deliveryId }));
+        }
+        if (birth.view.canCancel) {
+          actions.appendChild(createCrossConversationAction('取消', 'cancel', { deliveryId: birth.deliveryId }));
+        }
+        actions.appendChild(createCrossConversationAction('返回父会话', 'jump', {
+          deliveryId: birth.deliveryId,
+          conversationId: birth.backlinkConversationId,
+        }));
+        panel.appendChild(actions);
+        return { receipt: null, provenance: null, birth };
+      }
+
+      return { receipt: null, provenance: null, birth: null };
     }
 
     function formatTracePayload(value) {
@@ -1653,6 +1773,7 @@
       const sender = document.createElement('span');
       const time = document.createElement('span');
       const body = document.createElement('div');
+      const crossConversationPanel = document.createElement('div');
       const liveHint = document.createElement('div');
       const toolTrace = document.createElement('section');
 
@@ -1660,11 +1781,12 @@
       sender.className = 'message-sender';
       time.className = 'message-time';
       body.className = 'message-body';
+      crossConversationPanel.className = 'cross-conversation-panel hidden';
       liveHint.className = 'message-live-hint hidden';
       toolTrace.className = 'message-tool-trace hidden';
 
       meta.append(sender, time);
-      card.append(meta, toolTrace, body, liveHint);
+      card.append(meta, crossConversationPanel, toolTrace, body, liveHint);
       syncMessageCard(card, message, conversationId, agents, activeTurn, activeAgentSlots);
 
       return card;
@@ -1688,6 +1810,12 @@
         ? metadata.agentContextSnapshot
         : null;
       const tokenUsage = messageTokenUsage(message);
+      const crossConversationBundle = typeof crossConversationBundleForMessage === 'function'
+        ? crossConversationBundleForMessage(message)
+        : null;
+      const crossConversationDelivery = crossConversationBundle && crossConversationBundle.delivery
+        ? crossConversationBundle.delivery
+        : null;
       const tokenUsageLabel = formatTokenUsageLabel(tokenUsage);
       const recipients = privateRecipientNames(message);
       const privacyLabel =
@@ -1728,6 +1856,16 @@
         tokenUsage && tokenUsage.cacheReadCostUsd !== null ? tokenUsage.cacheReadCostUsd : '',
         tokenUsage && tokenUsage.cacheWriteCostUsd !== null ? tokenUsage.cacheWriteCostUsd : '',
         digestResult ? JSON.stringify(digestResult) : '',
+        metadata && metadata.crossConversation ? JSON.stringify(metadata.crossConversation) : '',
+        crossConversationDelivery ? JSON.stringify([
+          crossConversationDelivery.id,
+          crossConversationDelivery.messageStatus,
+          crossConversationDelivery.dispatchStatus,
+          crossConversationDelivery.responseStatus,
+          crossConversationDelivery.lastErrorCode,
+          crossConversationDelivery.lastErrorMessage,
+          crossConversationDelivery.updatedAt,
+        ]) : '',
         traceSignature,
       ].join('\u001f');
 
@@ -1751,6 +1889,7 @@
       const sender = card.querySelector('.message-sender');
       const time = card.querySelector('.message-time');
       const body = card.querySelector('.message-body');
+      const crossConversationPanel = card.querySelector('.cross-conversation-panel');
       const liveHint = card.querySelector('.message-live-hint');
       const toolTrace = card.querySelector('.message-tool-trace');
 
@@ -1802,6 +1941,15 @@
 
       time.textContent = '';
 
+      const crossConversationModels = syncCrossConversationPanel(
+        crossConversationPanel,
+        message,
+        crossConversationBundle
+      );
+      card.classList.toggle('cross-conversation-receipt', Boolean(crossConversationModels.receipt));
+      card.classList.toggle('cross-conversation-provenance-message', Boolean(crossConversationModels.provenance));
+      card.classList.toggle('conversation-spawn-birth', Boolean(crossConversationModels.birth));
+
       const timestampLabel = document.createElement('span');
       timestampLabel.textContent = formatDateTime(message.createdAt);
       time.appendChild(timestampLabel);
@@ -1815,6 +1963,7 @@
       }
 
       body.classList.toggle('digest-result-body', isDigestResultMessage);
+      body.classList.toggle('hidden', Boolean(crossConversationModels.receipt));
       if (isDigestResultMessage) {
         syncDigestResultBody(body, digestResult);
       } else {

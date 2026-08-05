@@ -206,6 +206,7 @@ test('M4: sidebar conversation items render two-line density', () => {
     runScripts: 'outside-only',
   });
   const { window } = dom;
+  window.eval(readPublic('chat/cross-conversation-ui.js'));
   window.eval(CONVERSATION_LIST_JS);
 
   const list = window.document.getElementById('conversation-list');

@@ -250,6 +250,7 @@ test('agent executor sends the prevalidated runtime config without env fallback 
     metadata: {},
   };
   const store = createFakeStore(conversation);
+  const piCapabilityExtensionPath = path.join(tempDir, 'caff-capabilities.mjs');
   const executor = createAgentExecutor({
     store,
     skillRegistry: { resolveSkills: () => [] },
@@ -260,6 +261,7 @@ test('agent executor sends the prevalidated runtime config without env fallback 
     toolBaseUrl: 'http://127.0.0.1:3100',
     agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
     agentToolRelativePath: './lib/agent-chat-tools.js',
+    piCapabilityExtensionPath,
   });
   const turnState = createTurnState(conversation, 'turn-runtime-config');
 
@@ -288,6 +290,7 @@ test('agent executor sends the prevalidated runtime config without env fallback 
   assert.equal(captured.provider, 'openai-runtime');
   assert.equal(captured.model, 'gpt-runtime');
   assert.equal(captured.options.thinking, 'max');
+  assert.deepEqual(captured.options.extensionPaths, [piCapabilityExtensionPath]);
   assert.doesNotMatch(captured.prompt, /Contaminated family Persona|contaminated-family-skill/u);
   assert.match(captured.prompt, /This is a model-family identity, not a fictional persona\./u);
 });

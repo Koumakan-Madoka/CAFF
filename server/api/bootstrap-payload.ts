@@ -21,7 +21,9 @@ export function createBootstrapPayloadBuilder({
     }
     const roleDirectory = roleService.getDirectory();
     const starterConversation = store.ensureStarterConversation();
-    const conversations = store.listConversations();
+    const conversations = typeof store.listConversationTree === 'function'
+      ? store.listConversationTree()
+      : store.listConversations();
     const selectedConversationId = starterConversation ? starterConversation.id : conversations[0] ? conversations[0].id : null;
 
     return {

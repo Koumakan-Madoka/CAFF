@@ -7,7 +7,12 @@ const { buildAgentMentionLookup, formatAgentMention, resolveMentionValues } = re
 const { applySessionGoalAction, proposeSessionGoalAction } = require('../conversation/session-goal');
 const { createConversationExperienceDraft } = require('../conversation/experience-draft');
 const { recordConversationRetrievalTrace } = require('../conversation/retrieval-trace');
+const { createCrossConversationDeliveryService } = require('../conversation/cross-conversation-delivery');
 const { createLiveBridgeToolStep } = require('./message-tool-trace');
+const {
+  createConversationCapabilityDefinitions,
+  createPiCapabilityBridge,
+} = require('./pi-capability-bridge');
 const { resolveCurrentTrellisTaskName } = require('../conversation/turn/trellis-context');
 
 const MAX_HISTORY_MESSAGES = 24;
@@ -350,6 +355,10 @@ export function createAgentToolBridge(options: any = {}) {
   const broadcastConversationSummary =
     typeof options.broadcastConversationSummary === 'function' ? options.broadcastConversationSummary : () => {};
   const onTurnUpdated = typeof options.onTurnUpdated === 'function' ? options.onTurnUpdated : () => {};
+  const crossConversationDeliveryService =
+    options.crossConversationDeliveryService
+    || (store ? createCrossConversationDeliveryService({ store }) : null);
+  let piCapabilityBridge = options.piCapabilityBridge || null;
   const activeInvocations = new Map();
 
   function resolveStageTaskId(context: any) {
@@ -476,6 +485,9 @@ export function createAgentToolBridge(options: any = {}) {
       projectDir: String(input.projectDir || '').trim(),
       agentId: String(input.agentId || '').trim(),
       agentName: String(input.agentName || '').trim() || 'Assistant',
+      incomingDeliveryId: String(
+        input.incomingDeliveryId || input.crossConversationDeliveryId || ''
+      ).trim() || null,
       assistantMessageId: String(input.assistantMessageId || '').trim(),
       userMessageId: String(input.userMessageId || (promptUserMessage && promptUserMessage.id) || '').trim(),
       promptUserMessage,
@@ -1031,6 +1043,231 @@ export function createAgentToolBridge(options: any = {}) {
     } finally {
       setContextCurrentTool(context, null);
     }
+  }
+
+  function handleConversationDelivery(
+    kind: 'notify' | 'request',
+    body: any = {},
+    authenticatedContext: any = null,
+    toolNameOverride = ''
+  ) {
+    const startedAt = Date.now();
+    const context = authenticatedContext || getInvocation(body.invocationId, body.callbackToken);
+    const toolCallId = randomUUID();
+    const toolName = toolNameOverride || (kind === 'request' ? 'conversation-request' : 'conversation-notify');
+    const allowedFields = new Set([
+      ...(authenticatedContext ? [] : ['invocationId', 'callbackToken']),
+      'targetConversationId',
+      'targetAgentId',
+      'content',
+      'idempotencyKey',
+      ...(kind === 'request' ? ['deadlineSeconds'] : []),
+    ]);
+    const unknownField = Object.keys(body).find((fieldName) => !allowedFields.has(fieldName));
+
+    setContextCurrentTool(context, {
+      toolName,
+      toolKind: 'bridge',
+      toolStepId: toolCallId,
+      inferred: false,
+      request: {
+        targetConversationId: String(body.targetConversationId || '').trim(),
+        targetAgentId: String(body.targetAgentId || '').trim(),
+        contentLength: String(body.content || '').length,
+        hasIdempotencyKey: Boolean(String(body.idempotencyKey || '').trim()),
+        ...(kind === 'request' ? { deadlineSeconds: body.deadlineSeconds ?? null } : {}),
+      },
+    });
+
+    try {
+      if (unknownField) {
+        throw createHttpError(400, `Unknown conversation delivery field: ${unknownField}`, {
+          code: 'cross_conversation_unknown_field',
+          field: unknownField,
+        });
+      }
+      if (!crossConversationDeliveryService) {
+        throw createHttpError(501, 'Cross-conversation delivery is not available', {
+          code: 'cross_conversation_delivery_unavailable',
+        });
+      }
+
+      const result = crossConversationDeliveryService.submitFromAgent(
+        {
+          kind: 'agent',
+          sourceConversationId: context.conversationId,
+          sourceMessageId: context.assistantMessageId || context.userMessageId || null,
+          sourceTurnId: context.turnId || null,
+          sourceInvocationId: context.invocationId,
+          sourceAgentId: context.agentId,
+          sourceAgentName: context.agentName,
+          incomingDeliveryId: context.incomingDeliveryId || null,
+        },
+        {
+          kind,
+          targetConversationId: body.targetConversationId,
+          targetAgentId: body.targetAgentId,
+          content: body.content,
+          idempotencyKey: body.idempotencyKey,
+          ...(kind === 'request' ? { deadlineSeconds: body.deadlineSeconds } : {}),
+        }
+      );
+      const response = {
+        ok: true,
+        duplicate: result.duplicate === true,
+        delivery: result.delivery,
+        targetMessageId: result.targetMessage && result.targetMessage.id ? result.targetMessage.id : null,
+        sourceReceiptMessageId: result.sourceReceipt && result.sourceReceipt.id ? result.sourceReceipt.id : null,
+      };
+
+      tryAppendInvocationEvent(context, 'agent_tool_call', {
+        schemaVersion: 1,
+        toolCallId,
+        tool: toolName,
+        status: 'succeeded',
+        durationMs: Date.now() - startedAt,
+        invocationId: context.invocationId,
+        conversationId: context.conversationId,
+        turnId: context.turnId,
+        agentId: context.agentId,
+        agentName: context.agentName,
+        assistantMessageId: context.assistantMessageId,
+        request: {
+          targetConversationId: response.delivery.targetConversationId,
+          targetAgentId: response.delivery.targetAgentId,
+          contentLength: String(body.content || '').length,
+          hasIdempotencyKey: true,
+          ...(kind === 'request' ? { deadlineSeconds: body.deadlineSeconds ?? null } : {}),
+        },
+        result: {
+          deliveryId: response.delivery.id,
+          duplicate: response.duplicate,
+          messageStatus: response.delivery.messageStatus,
+          dispatchStatus: response.delivery.dispatchStatus,
+          responseStatus: response.delivery.responseStatus,
+        },
+      });
+
+      return response;
+    } catch (error) {
+      const errorValue = error as any;
+      tryAppendInvocationEvent(context, 'agent_tool_call', {
+        schemaVersion: 1,
+        toolCallId,
+        tool: toolName,
+        status: 'failed',
+        durationMs: Date.now() - startedAt,
+        invocationId: context.invocationId,
+        conversationId: context.conversationId,
+        turnId: context.turnId,
+        agentId: context.agentId,
+        agentName: context.agentName,
+        assistantMessageId: context.assistantMessageId,
+        request: {
+          targetConversationId: String(body.targetConversationId || '').trim(),
+          targetAgentId: String(body.targetAgentId || '').trim(),
+          contentLength: String(body.content || '').length,
+          hasIdempotencyKey: Boolean(String(body.idempotencyKey || '').trim()),
+        },
+        error: {
+          statusCode: Number.isInteger(errorValue && errorValue.statusCode) ? errorValue.statusCode : null,
+          code: String(errorValue && errorValue.code || '').trim() || null,
+          message: clipText(errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Unknown error')),
+        },
+      });
+      throw error;
+    } finally {
+      setContextCurrentTool(context, null);
+    }
+  }
+
+  function handleConversationNotify(body: any = {}) {
+    return handleConversationDelivery('notify', body);
+  }
+
+  function handleConversationRequest(body: any = {}) {
+    return handleConversationDelivery('request', body);
+  }
+
+  function resolvePiCapabilityBridge() {
+    if (piCapabilityBridge) {
+      return piCapabilityBridge;
+    }
+
+    piCapabilityBridge = createPiCapabilityBridge({
+      capabilities: createConversationCapabilityDefinitions({
+        notify(input: any) {
+          return handleConversationDelivery(
+            'notify',
+            input.arguments,
+            input.context,
+            'conversation_notify'
+          );
+        },
+        request(input: any) {
+          return handleConversationDelivery(
+            'request',
+            input.arguments,
+            input.context,
+            'conversation_request'
+          );
+        },
+      }),
+    });
+    return piCapabilityBridge;
+  }
+
+  function createPiCapabilityPrincipal(context: any) {
+    const conversation = store && typeof store.getConversation === 'function'
+      ? store.getConversation(context.conversationId)
+      : null;
+    const incomingDeliveryId = String(context.incomingDeliveryId || '').trim() || null;
+    const incomingDelivery =
+      incomingDeliveryId && store && typeof store.getCrossConversationDelivery === 'function'
+        ? store.getCrossConversationDelivery(incomingDeliveryId)
+        : null;
+    const traceId = String(incomingDelivery && incomingDelivery.traceId || '').trim()
+      || context.invocationId;
+
+    return {
+      invocationId: context.invocationId,
+      sourceConversationId: context.conversationId,
+      sourceAgentId: context.agentId,
+      sourceAgentName: context.agentName,
+      projectScopeId: String(conversation && conversation.projectScopeId || '').trim(),
+      traceId,
+      incomingDeliveryId,
+    };
+  }
+
+  async function handlePiCapability(facadeValue: any, body: any = {}) {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      throw createHttpError(400, 'Pi capability request body must be an object', {
+        code: 'pi_capability_invalid_request',
+      });
+    }
+
+    const allowedFields = new Set(['invocationId', 'callbackToken', 'arguments']);
+    const unknownField = Object.keys(body).find((fieldName) => !allowedFields.has(fieldName));
+    if (unknownField) {
+      throw createHttpError(400, `Unknown Pi capability request field: ${unknownField}`, {
+        code: 'pi_capability_invalid_request',
+      });
+    }
+
+    const facade = String(facadeValue || '').trim();
+    if (!/^[a-z][a-z0-9_]*$/u.test(facade)) {
+      throw createHttpError(404, 'Unknown Pi capability facade', {
+        code: 'pi_capability_unknown_facade',
+      });
+    }
+
+    const context = getInvocation(body.invocationId, body.callbackToken);
+    return resolvePiCapabilityBridge().invokeFacade(facade, {
+      principal: createPiCapabilityPrincipal(context),
+      arguments: body.arguments,
+      context,
+    });
   }
 
   function handleReadContext(requestUrl: any) {
@@ -2952,6 +3189,9 @@ export function createAgentToolBridge(options: any = {}) {
 
   return {
     createInvocationContext,
+    handleConversationNotify,
+    handleConversationRequest,
+    handlePiCapability,
     handleForgetMemory,
     handleListMemories,
     handleListParticipants,

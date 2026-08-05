@@ -177,6 +177,7 @@ function mergeModeSkillIdsIntoParticipants(input: any, mode: any) {
 
 export function createConversationsController(options: any = {}): RouteHandler<ApiContext> {
   const store = options.store;
+  const conversationSpawnService = options.conversationSpawnService;
   const roleService = options.roleService;
   const skillRegistry = options.skillRegistry;
   const projectManager = options.projectManager;
@@ -186,6 +187,12 @@ export function createConversationsController(options: any = {}): RouteHandler<A
   const buildBootstrapPayload = options.buildBootstrapPayload;
   const modeStore = options.modeStore;
   const broadcastEvent = typeof options.broadcastEvent === 'function' ? options.broadcastEvent : () => {};
+
+  function listConversationHeaders() {
+    return typeof store.listConversationTree === 'function'
+      ? store.listConversationTree()
+      : store.listConversations();
+  }
   const digestOptions = {
     ...(options.digestOptions || {}),
     digestModelRunner: options.digestModelRunner,
@@ -230,7 +237,111 @@ export function createConversationsController(options: any = {}): RouteHandler<A
     const { req, res, pathname, requestUrl } = context;
 
     if (req.method === 'GET' && pathname === '/api/conversations') {
-      sendJson(res, 200, { conversations: store.listConversations() });
+      sendJson(res, 200, { conversations: listConversationHeaders() });
+      return true;
+    }
+
+    const spawnMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/spawn$/);
+    if (spawnMatch && req.method === 'POST') {
+      if (!conversationSpawnService || typeof conversationSpawnService.spawn !== 'function') {
+        throw createHttpError(501, 'Conversation spawn is unavailable');
+      }
+      const sourceConversationId = decodeURIComponent(spawnMatch[1]);
+      const body = await readRequestJson(req);
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        throw createHttpError(400, 'Request body must be a JSON object', {
+          issues: [{ code: 'invalid_body', message: 'Request body must be a JSON object' }],
+        });
+      }
+      const allowedFields = new Set([
+        'title',
+        'projectScopeId',
+        'participants',
+        'primaryAgentId',
+        'initialMessage',
+        'sourceMessageId',
+        'clientRequestId',
+      ]);
+      const unknownField = Object.keys(body).find((fieldName) => !allowedFields.has(fieldName));
+      if (unknownField) {
+        throw createHttpError(400, `Unknown conversation spawn field: ${unknownField}`, {
+          issues: [{
+            code: 'conversation_spawn_unknown_field',
+            field: unknownField,
+            message: `Unknown field: ${unknownField}`,
+          }],
+        });
+      }
+
+      const result = await conversationSpawnService.spawn(sourceConversationId, body);
+      const summary = pickConversationSummary(result.conversation);
+      const conversations = listConversationHeaders();
+      broadcastEvent('conversation_spawned', {
+        sourceConversationId,
+        conversationId: result.conversation.id,
+        summary,
+        delivery: result.delivery,
+      });
+      broadcastEvent('conversation_summary_updated', {
+        conversationId: result.conversation.id,
+        summary,
+      });
+      sendJson(res, 201, {
+        duplicate: Boolean(result.duplicate),
+        conversation: result.conversation,
+        summary,
+        conversations,
+        initialMessage: result.initialMessage,
+        sourceReceipt: result.sourceReceipt,
+        delivery: result.delivery,
+      });
+      return true;
+    }
+
+    const projectScopeMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/project-scope$/);
+    if (projectScopeMatch && req.method === 'PUT') {
+      const conversationId = decodeURIComponent(projectScopeMatch[1]);
+      const body = await readRequestJson(req);
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        throw createHttpError(400, 'Request body must be a JSON object', {
+          issues: [{ code: 'invalid_body', message: 'Request body must be a JSON object' }],
+        });
+      }
+      const unknownField = Object.keys(body).find((fieldName) => fieldName !== 'projectId');
+      if (unknownField) {
+        throw createHttpError(400, `Unknown project scope field: ${unknownField}`, {
+          issues: [{ code: 'unknown_field', field: unknownField, message: `Unknown field: ${unknownField}` }],
+        });
+      }
+      const projectId = String(body.projectId || '').trim();
+      if (!projectId) {
+        throw createHttpError(400, 'projectId is required', {
+          issues: [{ code: 'project_id_required', field: 'projectId', message: 'projectId is required' }],
+        });
+      }
+      if (!projectManager || typeof projectManager.listProjects !== 'function') {
+        throw createHttpError(501, 'Project manager is not configured');
+      }
+      const project = projectManager.listProjects()
+        .find((candidate: any) => candidate && candidate.id === projectId);
+      if (!project) {
+        throw createHttpError(404, 'Project not found', {
+          issues: [{ code: 'project_not_found', field: 'projectId', message: 'Project not found' }],
+        });
+      }
+      if (!store || typeof store.bindConversationProjectScope !== 'function') {
+        throw createHttpError(501, 'Conversation project scope binding is unavailable');
+      }
+
+      const conversation = store.bindConversationProjectScope(conversationId, project.id);
+      const summary = pickConversationSummary(conversation);
+      broadcastEvent('conversation_summary_updated', { conversationId, summary });
+      sendJson(res, 200, {
+        conversation,
+        summary,
+        conversations: listConversationHeaders(),
+        project,
+      });
       return true;
     }
 
@@ -284,7 +395,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
       sendJson(res, 201, {
         conversation,
         summary: pickConversationSummary(conversation),
-        conversations: store.listConversations(),
+        conversations: listConversationHeaders(),
       });
       return true;
     }
@@ -426,7 +537,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
           skillDrafts: result.skillDrafts,
           draft: result.draft,
           summary,
-          conversations: store.listConversations(),
+          conversations: listConversationHeaders(),
         });
         return true;
       }
@@ -488,7 +599,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         deleted: result.deleted,
         compacted: result.compacted,
         summary: pickConversationSummary(latestConversation),
-        conversations: store.listConversations(),
+        conversations: listConversationHeaders(),
       });
       return true;
     }
@@ -530,7 +641,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         draft: result.draft,
         skill: result.skill,
         summary,
-        conversations: store.listConversations(),
+        conversations: listConversationHeaders(),
       });
       return true;
     }
@@ -607,7 +718,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         cleared: result.cleared,
         autoContinuation,
         summary: pickConversationSummary(latestConversation),
-        conversations: store.listConversations(),
+        conversations: listConversationHeaders(),
       });
       return true;
     }
@@ -684,7 +795,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         sendJson(res, 200, {
           conversation,
           summary: pickConversationSummary(conversation),
-          conversations: store.listConversations(),
+          conversations: listConversationHeaders(),
         });
         return true;
       }
