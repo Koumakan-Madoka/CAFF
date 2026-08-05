@@ -5609,15 +5609,11 @@ body.chat-app .conversation-spawn-button:focus-visible {
   background: color-mix(in srgb, var(--caff-accent) 10%, transparent);
 }
 
-body.chat-app .conversation-tree-row[data-depth-limit="true"]::after {
-  content: "层级上限";
-  grid-column: 3;
-  grid-row: 1;
-  align-self: center;
+body.chat-app .conversation-depth-limit-hint {
   color: var(--caff-ink-soft);
   font-size: 0.62rem;
-  line-height: 1.15;
-  text-align: center;
+  line-height: 1.3;
+  white-space: normal;
 }
 
 body.chat-app .conversation-tree-status {

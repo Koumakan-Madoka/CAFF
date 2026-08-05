@@ -280,6 +280,9 @@ test('conversation list renders compact semantic tree rows with collapse, status
   assert.ok(rows[0].querySelector('.conversation-spawn-button'));
   assert.equal(rows[2].querySelector('.conversation-spawn-button'), null);
   assert.equal(rows[2].dataset.depthLimit, 'true');
+  const depthHint = rows[2].querySelector('.conversation-depth-limit-hint');
+  assert.ok(depthHint, 'depth-limit row must render root-conversation guidance');
+  assert.match(depthHint.textContent, /根聊天室|根会话|新建/);
   assert.equal(window.document.querySelector('[draggable="true"]'), null);
 
   state.selectedConversationId = 'root';
@@ -288,6 +291,80 @@ test('conversation list renders compact semantic tree rows with collapse, status
     Array.from(window.document.querySelectorAll('.conversation-item'), (item) => item.dataset.id),
     ['root']
   );
+});
+
+test('tree rows hide compact status pills for terminal non-action delivery states', () => {
+  const dom = new JSDOM('<ul id="conversation-list" class="conversation-list sidebar-list"></ul>', {
+    runScripts: 'outside-only',
+  });
+  const { window } = dom;
+  window.CaffChat = {};
+  window.eval(fs.readFileSync(path.join(__dirname, '../../public/chat/cross-conversation-ui.js'), 'utf8'));
+  window.eval(fs.readFileSync(path.join(__dirname, '../../public/chat/conversation-list.js'), 'utf8'));
+  const state = {
+    conversations: [
+      conversation('root-a', { title: 'Root A' }),
+      conversation('child-completed', {
+        title: 'Child Done',
+        parentConversationId: 'root-a',
+        treeDepth: 1,
+        createdAt: '2026-08-05T00:01:00.000Z',
+        crossConversationStatus: delivery({
+          dispatchStatus: 'completed',
+          responseStatus: 'received',
+        }),
+      }),
+      conversation('child-cancelled', {
+        title: 'Child Cancelled',
+        parentConversationId: 'root-a',
+        treeDepth: 1,
+        createdAt: '2026-08-05T00:02:00.000Z',
+        crossConversationStatus: delivery({
+          dispatchStatus: 'cancelled',
+        }),
+      }),
+      conversation('child-failed', {
+        title: 'Child Failed',
+        parentConversationId: 'root-a',
+        treeDepth: 1,
+        createdAt: '2026-08-05T00:03:00.000Z',
+        crossConversationStatus: delivery({
+          dispatchStatus: 'failed',
+          lastErrorCode: 'runtime_unavailable',
+          lastErrorMessage: 'Primary Agent is unavailable',
+        }),
+      }),
+      conversation('child-queued', {
+        title: 'Child Queued',
+        parentConversationId: 'root-a',
+        treeDepth: 1,
+        createdAt: '2026-08-05T00:04:00.000Z',
+        crossConversationStatus: delivery({
+          dispatchStatus: 'queued',
+        }),
+      }),
+    ],
+    selectedConversationId: 'child-completed',
+  };
+  const renderer = window.CaffChat.createConversationListRenderer({
+    state,
+    dom: { conversationList: window.document.getElementById('conversation-list') },
+    helpers: {
+      conversationPreviewText: (value) => String(value || ''),
+      conversationTypeLabel: () => '标准',
+      formatDateTime: () => '-',
+      isConversationBusy: () => false,
+      isUndercoverConversation: () => false,
+      isWerewolfConversation: () => false,
+    },
+  });
+  renderer.render();
+  const rows = Array.from(window.document.querySelectorAll('.conversation-list-row'));
+  const byTitle = new Map(rows.map((row) => [row.querySelector('.conversation-title-line strong').textContent, row]));
+  assert.equal(byTitle.get('Child Done').querySelector('.conversation-tree-status'), null, 'completed terminal pill hidden');
+  assert.equal(byTitle.get('Child Cancelled').querySelector('.conversation-tree-status'), null, 'cancelled terminal pill hidden');
+  assert.equal(byTitle.get('Child Failed').querySelector('.conversation-tree-status').textContent, '失败', 'failed actionable pill shown');
+  assert.equal(byTitle.get('Child Queued').querySelector('.conversation-tree-status').textContent, '已排队', 'queued actionable pill shown');
 });
 
 test('chat shell loads cross-conversation UI and the reused dialog exposes explicit non-Fork spawn fields', () => {

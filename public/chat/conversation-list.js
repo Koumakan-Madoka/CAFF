@@ -19,7 +19,9 @@
 
     function compactStatus(conversation) {
       if (!conversation || !conversation.crossConversationStatus) return null;
-      return crossConversationUi.deliveryView(conversation.crossConversationStatus);
+      const status = crossConversationUi.deliveryView(conversation.crossConversationStatus);
+      if (!status.live && !status.failed) return null;
+      return status;
     }
 
     function signatureForRows(rows) {
@@ -148,6 +150,12 @@
         }
 
         item.append(titleLine, metaLine);
+        if (row.depthLimit) {
+          const depthHint = document.createElement('span');
+          depthHint.className = 'conversation-depth-limit-hint';
+          depthHint.textContent = '已达最大层级，请新建根聊天室';
+          item.appendChild(depthHint);
+        }
         listRow.appendChild(item);
         listRow.appendChild(createToggle(row));
         const spawnButton = createSpawnButton(row);
