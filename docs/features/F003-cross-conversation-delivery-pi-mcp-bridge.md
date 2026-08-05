@@ -141,7 +141,7 @@ CAFF 的 Agent 目前只能在当前聊天室内发言、私信和使用 invocat
 ## Dependencies
 
 - **Evolved from**: N/A — CAFF 首个跨 conversation delivery / tree / MCP bridge Feature
-- **Blocked by**: Design Gate 对官方 MCP SDK 直接依赖与 UI 线框的 operator 确认
+- **Blocked by**: None — Design Gate 两项确认已由 operator 在 message `0001785912003140-001436-f87dfd0e` 批准
 - **Related**: F002 — Pi SDK Host 已提供 extension binding 与进程隔离基础
 
 ## Risk
@@ -161,8 +161,8 @@ CAFF 的 Agent 目前只能在当前聊天室内发言、私信和使用 invocat
 
 | # | 问题 | 状态 |
 |---|------|------|
-| OQ-1 | 是否批准将官方 `@modelcontextprotocol/sdk` 作为 CAFF 的直接、精确锁定依赖，以实现真实白名单 MCP bridge？ | ⬜ 等 operator 确认；推荐批准 |
-| OQ-2 | 是否批准 Design Gate 中“紧凑 tree row + 复用现有新建聊天室 dialog/sheet + 独立 receipt card”的 UI 方向？ | ⬜ 等 operator 确认 |
+| OQ-1 | 是否批准将官方 `@modelcontextprotocol/sdk` 作为 CAFF 的直接、精确锁定依赖，以实现真实白名单 MCP bridge？ | ✅ 已批准（message `0001785912003140-001436-f87dfd0e`） |
+| OQ-2 | 是否批准 Design Gate 中“紧凑 tree row + 复用现有新建聊天室 dialog/sheet + 独立 receipt card”的 UI 方向？ | ✅ 已批准（message `0001785912003140-001436-f87dfd0e`） |
 
 ## Key Decisions
 
@@ -175,6 +175,8 @@ CAFF 的 Agent 目前只能在当前聊天室内发言、私信和使用 invocat
 | KD-5 | Spawn 对齐 Clowder `propose_thread` 语义：全新聊天室 + 一条完整首消息 | operator 明确拒绝 Fork、snapshot 和自动 handoff bundle | 2026-08-05 |
 | KD-6 | spawn 首消息公开可见，只自动启动 primary Agent | 无暗上下文，且保持定向启动 | 2026-08-05 |
 | KD-7 | v1 每条 delivery 单目标 Agent | 一条 envelope 对应一个权限判断、dispatch 生命周期与 request responder | 2026-08-05 |
+| KD-8 | CAFF 直接依赖并精确锁定官方 `@modelcontextprotocol/sdk` | 真实 MCP interoperability 不能依赖当前 transitive optional copy；安全边界仍由固定 facade、allowlist 与 principal 注入承担 | 2026-08-05 |
+| KD-9 | UI 采用紧凑 tree row、复用现有 dialog/sheet，并用独立 durable receipt card 呈现跨聊天室状态 | 保持深层树可读、移动端沿用既有 drawer，并让状态留在发生现场 | 2026-08-05 |
 
 ## Architecture
 
@@ -240,6 +242,7 @@ CAFF 的 Agent 目前只能在当前聊天室内发言、私信和使用 invocat
 | 2026-08-04 | operator 授权跨聊天室通信与受控 Pi MCP bridge；新增派生子聊天室树需求 |
 | 2026-08-05 | operator 纠正 Fork 假设，并冻结 Clowder 原版语义：全新聊天室 + 一条完整首消息 |
 | 2026-08-05 | F003 kickoff/spec/Design Gate draft 落盘；等待 MCP SDK 依赖与 UI 方向确认 |
+| 2026-08-05 | operator 在 message `0001785912003140-001436-f87dfd0e` 回复“两项都批准”，Design Gate 放行实施 |
 
 ## Review Gate
 

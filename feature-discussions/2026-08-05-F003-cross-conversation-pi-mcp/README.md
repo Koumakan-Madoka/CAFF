@@ -3,14 +3,14 @@ feature_ids: [F003]
 topics: [cross-conversation, mcp, pi, tree-navigation, handoff, design-gate]
 doc_kind: discussion
 created: 2026-08-05
-status: pending_operator_confirmation
+status: approved_for_implementation
 ---
 
 # F003 Kickoff Discussion and Design Gate Decision Record
 
 ## Status
 
-产品语义与架构主线已经由三猫讨论收敛，operator 已确认“全新聊天室 + 一条完整首消息”的 Clowder 原版方向。当前 Design Gate 仍等待两项显式确认：官方 MCP SDK 直接依赖，以及 UI 文本线框。确认前不写产品实现。
+产品语义、架构主线、官方 MCP SDK 直接依赖与 UI 文本线框均已获得 operator 确认。Design Gate 已放行实施；实现继续遵守固定 facade、非 Fork spawn、持久 receipt/provenance 与树非 ACL 的冻结边界。
 
 ## Operator Experience / 原始需求锚点
 
@@ -31,6 +31,10 @@ status: pending_operator_confirmation
    > “我们先向Clowder 原版看齐吧，一条写得足够完整的首条交接消息就够了”
 
 5. operator 在修正版总结后回复“好”，授权进入 kickoff 文档收敛。
+
+6. Design Gate 最终批准（2026-08-05，message `0001785912003140-001436-f87dfd0e`）：
+
+   > “两项都批准，创建一个新线程，还是以你为主理人，烁烁为UI设计官，宪宪辅助”
 
 ## Evidence Read
 
@@ -202,7 +206,9 @@ Why: CAFF 无独立 ownership map；新 delivery domain 放进既有 conversatio
 - **Hard**：principal 注入、project scope、participant check、allowlist、schema projection、idempotency、claim lease、maxHop、restart recovery。
 - **Eval**：cross-room/crash/permission/MCP adversarial/spawn non-Fork/desktop-mobile 六组 fixture；完整指标见 Feature spec。
 
-## Pending Operator Decision Packet
+## Approved Operator Decisions
+
+Approval evidence: message `0001785912003140-001436-f87dfd0e` — “两项都批准”。
 
 ### Decision 1: 真实 MCP interoperability
 
@@ -222,6 +228,6 @@ Why: CAFF 无独立 ownership map；新 delivery domain 放进既有 conversatio
 
 ## Next Action
 
-operator 确认上述两项后，将本文 status 改为 `approved_for_implementation`；随后加载 `writing-plans`，从当前 F003 worktree 编写实施计划，再按 `tdd` 进入代码实现。
+创建 F003 实现线程，工作区固定为 `E:\pythonproject\caff-f003-cross-conversation-pi-mcp`，回报契约使用 `state-transitions`。角色为：砚砚主理，烁烁负责 UI 设计，宪宪提供架构与实现辅助。新线程先读本讨论、Feature 聚合页与 Technical Design Gate，加载 `writing-plans` 形成分阶段实施计划，再按 `worktree`/`tdd` 进入代码实现。
 
 [砚砚/gpt-5.6-sol🐾]

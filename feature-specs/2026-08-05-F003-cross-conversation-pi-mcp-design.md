@@ -3,14 +3,14 @@ feature_ids: [F003]
 topics: [architecture, cross-conversation, delivery, mcp, pi, tree, design-gate]
 doc_kind: design_gate
 created: 2026-08-05
-status: pending_operator_confirmation
+status: approved_for_implementation
 ---
 
 # F003 Technical Design Gate
 
 ## Status
 
-Architecture consensus recorded; product semantics approved. Implementation remains blocked on the explicit dependency and UI confirmations in the [discussion record](../feature-discussions/2026-08-05-F003-cross-conversation-pi-mcp/README.md).
+Architecture consensus, product semantics, the exact official MCP SDK dependency, and the UI direction are approved. Implementation is unblocked under the frozen contracts in this document and the [discussion record](../feature-discussions/2026-08-05-F003-cross-conversation-pi-mcp/README.md).
 
 ## Architecture Cell
 
@@ -189,7 +189,7 @@ Forbidden model-visible/runtime-selectable fields:
 - arbitrary raw argument object;
 - fallback shell/HTTP action.
 
-The official MCP SDK dependency is pending operator authorization. If authorized, pin it exactly and cover stdio/HTTP transport behavior proportionate to the selected first server; never rely on the current transitive optional copy.
+The operator approved a direct, exactly pinned official `@modelcontextprotocol/sdk` dependency in message `0001785912003140-001436-f87dfd0e`. Cover stdio/HTTP transport behavior proportionate to the selected first server; never rely on the current transitive optional copy.
 
 ## Spawn Contract
 
@@ -307,11 +307,13 @@ All fixtures use isolated temporary SQLite and test MCP servers. Redis 6399 and 
 - Generic MCP proxy or model-controlled transport/config.
 - Toast-only failure or dashboard-first observability.
 
-## Pending Gate
+## Approved Gate
 
-1. operator approval for exact official MCP SDK dependency.
-2. operator approval for the text UI wireframe/direction.
+Approval evidence: message `0001785912003140-001436-f87dfd0e` — “两项都批准”。
 
-No product implementation may begin before both are recorded as approved.
+1. ✅ Direct, exactly pinned official `@modelcontextprotocol/sdk` dependency.
+2. ✅ Compact tree rows, reused new-conversation dialog/sheet, and independent durable receipt cards.
+
+Implementation thread roles: 砚砚主理，烁烁负责 UI 设计，宪宪提供架构与实现辅助。
 
 [砚砚/gpt-5.6-sol🐾]
