@@ -2,11 +2,24 @@ export class CrossConversationDeliveryRepository {
   getStatement: any;
   getByIdempotencyStatement: any;
   getTraceEdgeStatement: any;
+  getByReplyToStatement: any;
+  listExpiredClaimsStatement: any;
+  listExpiredDeadlinesStatement: any;
+  listPendingResponsesStatement: any;
   insertStatement: any;
   markMessagesPersistedStatement: any;
   claimNextStatement: any;
   markDispatchStartedStatement: any;
   markDispatchCompletedStatement: any;
+  releaseForRetryStatement: any;
+  markDispatchFailedBeforeStartStatement: any;
+  markDispatchUnknownOutcomeStatement: any;
+  cancelQueuedStatement: any;
+  requestRunningCancelStatement: any;
+  markRunningCancelledStatement: any;
+  markResponseMessagePersistedStatement: any;
+  markRequestResponseStatement: any;
+  timeoutRequestStatement: any;
   insertEventStatement: any;
   getEventStatement: any;
   listEventsStatement: any;
@@ -31,6 +44,44 @@ export class CrossConversationDeliveryRepository {
         AND source_conversation_id = ?
         AND target_conversation_id = ?
       LIMIT 1
+    `);
+    this.getByReplyToStatement = db.prepare(`
+      SELECT *
+      FROM chat_cross_conversation_deliveries
+      WHERE reply_to_delivery_id = ?
+      LIMIT 1
+    `);
+    this.listExpiredClaimsStatement = db.prepare(`
+      SELECT *
+      FROM chat_cross_conversation_deliveries
+      WHERE claim_owner IS NOT NULL
+        AND claim_expires_at IS NOT NULL
+        AND claim_expires_at <= ?
+        AND dispatch_status IN ('queued', 'running', 'cancel_requested')
+      ORDER BY claim_expires_at ASC, created_at ASC, id ASC
+    `);
+    this.listExpiredDeadlinesStatement = db.prepare(`
+      SELECT *
+      FROM chat_cross_conversation_deliveries
+      WHERE kind = 'request'
+        AND response_status = 'waiting'
+        AND deadline_at IS NOT NULL
+        AND deadline_at <= ?
+      ORDER BY deadline_at ASC, id ASC
+    `);
+    this.listPendingResponsesStatement = db.prepare(`
+      SELECT request.*
+      FROM chat_cross_conversation_deliveries request
+      WHERE request.kind = 'request'
+        AND request.dispatch_status IN ('completed', 'failed', 'cancelled')
+        AND request.response_status IN ('waiting', 'timed_out', 'cancelled')
+        AND NOT EXISTS (
+          SELECT 1
+          FROM chat_cross_conversation_deliveries response
+          WHERE response.reply_to_delivery_id = request.id
+        )
+      ORDER BY request.updated_at ASC, request.created_at ASC, request.id ASC
+      LIMIT ?
     `);
     this.insertStatement = db.prepare(`
       INSERT INTO chat_cross_conversation_deliveries (
@@ -192,13 +243,165 @@ export class CrossConversationDeliveryRepository {
         claim_expires_at = NULL,
         completed_at = @completedAt,
         terminal_at = CASE
-          WHEN response_status = 'not_expected' THEN COALESCE(@terminalAt, @completedAt)
+          WHEN response_status <> 'waiting' THEN COALESCE(@terminalAt, @completedAt)
           ELSE terminal_at
         END,
         updated_at = @updatedAt
       WHERE id = @deliveryId
         AND dispatch_status = 'running'
         AND claim_owner = @claimOwner
+      RETURNING *
+    `);
+    this.releaseForRetryStatement = db.prepare(`
+      UPDATE chat_cross_conversation_deliveries
+      SET
+        claim_owner = NULL,
+        claim_expires_at = NULL,
+        next_attempt_at = @nextAttemptAt,
+        last_error_code = @errorCode,
+        last_error_message = @errorMessage,
+        updated_at = @updatedAt
+      WHERE id = @deliveryId
+        AND dispatch_status = 'queued'
+        AND claim_owner = @claimOwner
+        AND started_at IS NULL
+        AND target_invocation_id IS NULL
+      RETURNING *
+    `);
+    this.markDispatchFailedBeforeStartStatement = db.prepare(`
+      UPDATE chat_cross_conversation_deliveries
+      SET
+        dispatch_status = 'failed',
+        response_status = CASE WHEN response_status = 'waiting' THEN 'cancelled' ELSE response_status END,
+        claim_owner = NULL,
+        claim_expires_at = NULL,
+        last_error_code = @errorCode,
+        last_error_message = @errorMessage,
+        completed_at = @failedAt,
+        terminal_at = @failedAt,
+        updated_at = @failedAt
+      WHERE id = @deliveryId
+        AND dispatch_status = 'queued'
+        AND claim_owner = @claimOwner
+        AND started_at IS NULL
+        AND target_invocation_id IS NULL
+      RETURNING *
+    `);
+    this.markDispatchUnknownOutcomeStatement = db.prepare(`
+      UPDATE chat_cross_conversation_deliveries
+      SET
+        dispatch_status = 'failed',
+        response_status = CASE WHEN response_status = 'waiting' THEN 'cancelled' ELSE response_status END,
+        claim_owner = NULL,
+        claim_expires_at = NULL,
+        last_error_code = @errorCode,
+        last_error_message = @errorMessage,
+        completed_at = @failedAt,
+        terminal_at = @failedAt,
+        updated_at = @failedAt
+      WHERE id = @deliveryId
+        AND dispatch_status IN ('queued', 'running')
+        AND claim_owner = @claimOwner
+        AND started_at IS NOT NULL
+        AND target_invocation_id IS NOT NULL
+      RETURNING *
+    `);
+    this.cancelQueuedStatement = db.prepare(`
+      UPDATE chat_cross_conversation_deliveries
+      SET
+        dispatch_status = 'cancelled',
+        response_status = CASE WHEN response_status = 'waiting' THEN 'cancelled' ELSE response_status END,
+        claim_owner = NULL,
+        claim_expires_at = NULL,
+        cancel_requested_at = @cancelledAt,
+        last_error_code = 'cancelled_by_operator',
+        last_error_message = @reason,
+        completed_at = @cancelledAt,
+        terminal_at = @cancelledAt,
+        updated_at = @cancelledAt
+      WHERE id = @deliveryId
+        AND dispatch_status = 'queued'
+        AND started_at IS NULL
+      RETURNING *
+    `);
+    this.requestRunningCancelStatement = db.prepare(`
+      UPDATE chat_cross_conversation_deliveries
+      SET
+        dispatch_status = 'cancel_requested',
+        cancel_requested_at = @requestedAt,
+        last_error_code = 'cancel_requested_by_operator',
+        last_error_message = @reason,
+        updated_at = @requestedAt
+      WHERE id = @deliveryId
+        AND dispatch_status = 'running'
+      RETURNING *
+    `);
+    this.markRunningCancelledStatement = db.prepare(`
+      UPDATE chat_cross_conversation_deliveries
+      SET
+        dispatch_status = 'cancelled',
+        response_status = CASE WHEN response_status = 'waiting' THEN 'cancelled' ELSE response_status END,
+        claim_owner = NULL,
+        claim_expires_at = NULL,
+        last_error_code = 'cancelled_by_operator',
+        last_error_message = COALESCE(last_error_message, @reason),
+        completed_at = @cancelledAt,
+        terminal_at = @cancelledAt,
+        updated_at = @cancelledAt
+      WHERE id = @deliveryId
+        AND dispatch_status = 'cancel_requested'
+        AND claim_owner = @claimOwner
+      RETURNING *
+    `);
+    this.markResponseMessagePersistedStatement = db.prepare(`
+      UPDATE chat_cross_conversation_deliveries
+      SET
+        target_message_id = @targetMessageId,
+        message_status = 'persisted',
+        delivered_at = @deliveredAt,
+        updated_at = @deliveredAt
+      WHERE id = @deliveryId
+        AND reply_to_delivery_id IS NOT NULL
+        AND message_status = 'pending'
+        AND target_message_id IS NULL
+        AND source_receipt_message_id IS NULL
+        AND EXISTS (
+          SELECT 1
+          FROM chat_messages response_message
+          WHERE response_message.id = @targetMessageId
+            AND response_message.conversation_id = target_conversation_id
+        )
+      RETURNING *
+    `);
+    this.markRequestResponseStatement = db.prepare(`
+      UPDATE chat_cross_conversation_deliveries
+      SET
+        response_status = CASE WHEN response_status = 'waiting' THEN 'received' ELSE 'late' END,
+        responded_at = @respondedAt,
+        terminal_at = CASE
+          WHEN dispatch_status IN ('completed', 'failed', 'cancelled') THEN @respondedAt
+          ELSE terminal_at
+        END,
+        updated_at = @respondedAt
+      WHERE id = @deliveryId
+        AND kind = 'request'
+        AND response_status IN ('waiting', 'timed_out', 'cancelled')
+      RETURNING *
+    `);
+    this.timeoutRequestStatement = db.prepare(`
+      UPDATE chat_cross_conversation_deliveries
+      SET
+        response_status = 'timed_out',
+        terminal_at = CASE
+          WHEN dispatch_status IN ('completed', 'failed', 'cancelled') THEN @timedOutAt
+          ELSE terminal_at
+        END,
+        updated_at = @timedOutAt
+      WHERE id = @deliveryId
+        AND kind = 'request'
+        AND response_status = 'waiting'
+        AND deadline_at IS NOT NULL
+        AND deadline_at <= @timedOutAt
       RETURNING *
     `);
     this.insertEventStatement = db.prepare(`
@@ -244,6 +447,22 @@ export class CrossConversationDeliveryRepository {
 
   getTraceEdge(traceId: string, sourceConversationId: string, targetConversationId: string) {
     return this.getTraceEdgeStatement.get(traceId, sourceConversationId, targetConversationId) || null;
+  }
+
+  getByReplyTo(deliveryId: string) {
+    return this.getByReplyToStatement.get(deliveryId) || null;
+  }
+
+  listExpiredClaims(now: string) {
+    return this.listExpiredClaimsStatement.all(now);
+  }
+
+  listExpiredDeadlines(now: string) {
+    return this.listExpiredDeadlinesStatement.all(now);
+  }
+
+  listPendingResponses(limit = 100) {
+    return this.listPendingResponsesStatement.all(limit);
   }
 
   create(payload: any) {
@@ -329,6 +548,84 @@ export class CrossConversationDeliveryRepository {
       completedAt: payload.completedAt,
       terminalAt: payload.terminalAt || null,
       updatedAt: payload.updatedAt,
+    }) || null;
+  }
+
+  releaseForRetry(deliveryId: string, payload: any) {
+    return this.releaseForRetryStatement.get({
+      deliveryId,
+      claimOwner: payload.claimOwner,
+      nextAttemptAt: payload.nextAttemptAt,
+      errorCode: payload.errorCode,
+      errorMessage: payload.errorMessage,
+      updatedAt: payload.updatedAt,
+    }) || null;
+  }
+
+  markDispatchFailedBeforeStart(deliveryId: string, payload: any) {
+    return this.markDispatchFailedBeforeStartStatement.get({
+      deliveryId,
+      claimOwner: payload.claimOwner,
+      errorCode: payload.errorCode,
+      errorMessage: payload.errorMessage,
+      failedAt: payload.failedAt,
+    }) || null;
+  }
+
+  markDispatchUnknownOutcome(deliveryId: string, payload: any) {
+    return this.markDispatchUnknownOutcomeStatement.get({
+      deliveryId,
+      claimOwner: payload.claimOwner,
+      errorCode: payload.errorCode,
+      errorMessage: payload.errorMessage,
+      failedAt: payload.failedAt,
+    }) || null;
+  }
+
+  cancelQueued(deliveryId: string, payload: any) {
+    return this.cancelQueuedStatement.get({
+      deliveryId,
+      reason: payload.reason,
+      cancelledAt: payload.cancelledAt,
+    }) || null;
+  }
+
+  requestRunningCancel(deliveryId: string, payload: any) {
+    return this.requestRunningCancelStatement.get({
+      deliveryId,
+      reason: payload.reason,
+      requestedAt: payload.requestedAt,
+    }) || null;
+  }
+
+  markRunningCancelled(deliveryId: string, payload: any) {
+    return this.markRunningCancelledStatement.get({
+      deliveryId,
+      claimOwner: payload.claimOwner,
+      reason: payload.reason,
+      cancelledAt: payload.cancelledAt,
+    }) || null;
+  }
+
+  markResponseMessagePersisted(deliveryId: string, payload: any) {
+    return this.markResponseMessagePersistedStatement.get({
+      deliveryId,
+      targetMessageId: payload.targetMessageId,
+      deliveredAt: payload.deliveredAt,
+    }) || null;
+  }
+
+  markRequestResponse(deliveryId: string, payload: any) {
+    return this.markRequestResponseStatement.get({
+      deliveryId,
+      respondedAt: payload.respondedAt,
+    }) || null;
+  }
+
+  timeoutRequest(deliveryId: string, payload: any) {
+    return this.timeoutRequestStatement.get({
+      deliveryId,
+      timedOutAt: payload.timedOutAt,
     }) || null;
   }
 

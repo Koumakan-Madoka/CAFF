@@ -1001,6 +1001,165 @@ export class ChatAppStore {
         };
       });
 
+      this.persistCrossConversationResponseTransaction = this.db.transaction((payload: any) => {
+        const requestRow = this.crossConversationDeliveryRepository.get(payload.requestDeliveryId);
+
+        if (!requestRow || requestRow.kind !== 'request') {
+          throw new Error('Cross-conversation request delivery not found');
+        }
+
+        const existingResponse = this.crossConversationDeliveryRepository.getByReplyTo(requestRow.id);
+        if (existingResponse) {
+          return {
+            duplicate: true,
+            requestDelivery: normalizeCrossConversationDeliveryRow(requestRow),
+            responseDelivery: normalizeCrossConversationDeliveryRow(existingResponse),
+            responseMessage: normalizeMessageRow(this.messageRepository.get(existingResponse.target_message_id)),
+          };
+        }
+
+        const assistantMessage = this.messageRepository.get(payload.assistantMessage.id);
+        if (
+          !assistantMessage
+          || assistantMessage.conversation_id !== requestRow.target_conversation_id
+          || assistantMessage.agent_id !== requestRow.target_agent_id
+          || assistantMessage.role !== 'assistant'
+          || assistantMessage.status !== 'completed'
+        ) {
+          throw new Error('Cross-conversation response assistant message does not match the request target');
+        }
+        if (!requestRow.source_agent_id) {
+          throw new Error('Cross-conversation Agent request is missing its source Agent');
+        }
+
+        const responseDeliveryId = randomUUID();
+        const responseMessageId = randomUUID();
+        const createdAt = payload.createdAt || nowIso();
+        this.crossConversationDeliveryRepository.create({
+          id: responseDeliveryId,
+          kind: 'notify',
+          idempotencyScope: `response:${requestRow.id}`,
+          idempotencyKey: assistantMessage.id,
+          principalKind: 'agent',
+          sourceConversationId: requestRow.target_conversation_id,
+          sourceMessageId: assistantMessage.id,
+          sourceTurnId: assistantMessage.turn_id,
+          sourceInvocationId: requestRow.target_invocation_id || null,
+          sourceAgentId: requestRow.target_agent_id,
+          sourceAgentName: assistantMessage.sender_name,
+          sourceProjectScopeId: requestRow.target_project_scope_id,
+          targetConversationId: requestRow.source_conversation_id,
+          targetAgentId: requestRow.source_agent_id,
+          targetMessageId: null,
+          sourceReceiptMessageId: null,
+          targetProjectScopeId: requestRow.source_project_scope_id,
+          traceId: requestRow.trace_id,
+          rootDeliveryId: requestRow.root_delivery_id,
+          parentDeliveryId: requestRow.id,
+          replyToDeliveryId: requestRow.id,
+          hopCount: Number(requestRow.hop_count || 0),
+          messageStatus: 'pending',
+          dispatchStatus: 'not_requested',
+          responseStatus: 'not_expected',
+          attemptCount: 0,
+          deadlineAt: null,
+          cancelRequestedAt: null,
+          lastErrorCode: null,
+          lastErrorMessage: null,
+          claimOwner: null,
+          claimExpiresAt: null,
+          nextAttemptAt: null,
+          targetInvocationId: null,
+          deliveredAt: null,
+          startedAt: null,
+          completedAt: createdAt,
+          respondedAt: null,
+          terminalAt: createdAt,
+          createdAt,
+          updatedAt: createdAt,
+        });
+        this.messageRepository.create({
+          id: responseMessageId,
+          conversationId: requestRow.source_conversation_id,
+          turnId: `cross-response:${responseDeliveryId}`,
+          role: 'external_agent',
+          agentId: requestRow.target_agent_id,
+          senderName: assistantMessage.sender_name,
+          content: assistantMessage.content,
+          status: 'completed',
+          taskId: null,
+          runId: null,
+          errorMessage: null,
+          metadataJson: serializeJson({
+            crossConversation: {
+              deliveryId: responseDeliveryId,
+              replyToDeliveryId: requestRow.id,
+              kind: 'response',
+              authority: 'external_agent',
+              allowHandoffs: false,
+              sourceConversationId: requestRow.target_conversation_id,
+              sourceAgentId: requestRow.target_agent_id,
+              sourceAgentName: assistantMessage.sender_name,
+              traceId: requestRow.trace_id,
+            },
+          }),
+          createdAt,
+        });
+        this.conversationRepository.touch(requestRow.source_conversation_id, {
+          updatedAt: createdAt,
+          lastMessageAt: createdAt,
+        });
+
+        const responseDelivery = this.crossConversationDeliveryRepository.markResponseMessagePersisted(
+          responseDeliveryId,
+          {
+            targetMessageId: responseMessageId,
+            deliveredAt: createdAt,
+          }
+        );
+        const requestDelivery = this.crossConversationDeliveryRepository.markRequestResponse(requestRow.id, {
+          respondedAt: createdAt,
+        });
+
+        if (!responseDelivery || !requestDelivery) {
+          throw new Error('Cross-conversation response state transition failed');
+        }
+
+        this.crossConversationDeliveryRepository.appendEvent({
+          deliveryId: responseDeliveryId,
+          eventType: 'response_persisted',
+          attemptNumber: 0,
+          actorKind: 'agent',
+          actorId: requestRow.target_agent_id,
+          eventJson: serializeJson({
+            replyToDeliveryId: requestRow.id,
+            targetMessageId: responseMessageId,
+            traceId: requestRow.trace_id,
+          }),
+          createdAt,
+        });
+        this.crossConversationDeliveryRepository.appendEvent({
+          deliveryId: requestRow.id,
+          eventType: requestDelivery.response_status === 'late' ? 'late_response_received' : 'response_received',
+          attemptNumber: Number(requestRow.attempt_count || 0),
+          actorKind: 'agent',
+          actorId: requestRow.target_agent_id,
+          eventJson: serializeJson({
+            responseDeliveryId,
+            responseMessageId,
+            responseStatus: requestDelivery.response_status,
+          }),
+          createdAt,
+        });
+
+        return {
+          duplicate: false,
+          requestDelivery: normalizeCrossConversationDeliveryRow(requestDelivery),
+          responseDelivery: normalizeCrossConversationDeliveryRow(responseDelivery),
+          responseMessage: normalizeMessageRow(this.messageRepository.get(responseMessageId)),
+        };
+      });
+
       this.createPrivateMessageTransaction = this.db.transaction((payload: any) => {
         const createdAt = payload.createdAt || nowIso();
 
@@ -1402,6 +1561,133 @@ export class ChatAppStore {
 
   persistCrossConversationDelivery(payload: any) {
     return this.persistCrossConversationDeliveryTransaction(payload);
+  }
+
+  claimNextCrossConversationDelivery(payload: any) {
+    return normalizeCrossConversationDeliveryRow(
+      this.crossConversationDeliveryRepository.claimNext(payload)
+    );
+  }
+
+  markCrossConversationDispatchStarted(deliveryId: any, payload: any) {
+    return normalizeCrossConversationDeliveryRow(
+      this.crossConversationDeliveryRepository.markDispatchStarted(String(deliveryId || '').trim(), payload)
+    );
+  }
+
+  markCrossConversationDispatchCompleted(deliveryId: any, payload: any) {
+    return normalizeCrossConversationDeliveryRow(
+      this.crossConversationDeliveryRepository.markDispatchCompleted(String(deliveryId || '').trim(), payload)
+    );
+  }
+
+  releaseCrossConversationDeliveryForRetry(deliveryId: any, payload: any) {
+    return normalizeCrossConversationDeliveryRow(
+      this.crossConversationDeliveryRepository.releaseForRetry(String(deliveryId || '').trim(), payload)
+    );
+  }
+
+  failCrossConversationDeliveryBeforeStart(deliveryId: any, payload: any) {
+    return normalizeCrossConversationDeliveryRow(
+      this.crossConversationDeliveryRepository.markDispatchFailedBeforeStart(
+        String(deliveryId || '').trim(),
+        payload
+      )
+    );
+  }
+
+  failCrossConversationDeliveryUnknownOutcome(deliveryId: any, payload: any) {
+    return normalizeCrossConversationDeliveryRow(
+      this.crossConversationDeliveryRepository.markDispatchUnknownOutcome(
+        String(deliveryId || '').trim(),
+        payload
+      )
+    );
+  }
+
+  cancelQueuedCrossConversationDelivery(deliveryId: any, payload: any) {
+    return normalizeCrossConversationDeliveryRow(
+      this.crossConversationDeliveryRepository.cancelQueued(String(deliveryId || '').trim(), payload)
+    );
+  }
+
+  requestRunningCrossConversationDeliveryCancel(deliveryId: any, payload: any) {
+    return normalizeCrossConversationDeliveryRow(
+      this.crossConversationDeliveryRepository.requestRunningCancel(
+        String(deliveryId || '').trim(),
+        payload
+      )
+    );
+  }
+
+  markRunningCrossConversationDeliveryCancelled(deliveryId: any, payload: any) {
+    return normalizeCrossConversationDeliveryRow(
+      this.crossConversationDeliveryRepository.markRunningCancelled(
+        String(deliveryId || '').trim(),
+        payload
+      )
+    );
+  }
+
+  listExpiredCrossConversationDeliveryClaims(now: any) {
+    return this.crossConversationDeliveryRepository
+      .listExpiredClaims(String(now || '').trim())
+      .map(normalizeCrossConversationDeliveryRow)
+      .filter(Boolean);
+  }
+
+  listExpiredCrossConversationRequestDeadlines(now: any) {
+    return this.crossConversationDeliveryRepository
+      .listExpiredDeadlines(String(now || '').trim())
+      .map(normalizeCrossConversationDeliveryRow)
+      .filter(Boolean);
+  }
+
+  listCrossConversationRequestsPendingResponse(limit: any = 100) {
+    const normalizedLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 100) : 100;
+    return this.crossConversationDeliveryRepository
+      .listPendingResponses(normalizedLimit)
+      .map(normalizeCrossConversationDeliveryRow)
+      .filter(Boolean);
+  }
+
+  findCrossConversationReplyMessage(delivery: any) {
+    if (!delivery) {
+      return null;
+    }
+
+    return normalizeMessageRow(
+      this.messageRepository.findCompletedCrossConversationReply({
+        deliveryId: delivery.id,
+        conversationId: delivery.targetConversationId,
+        agentId: delivery.targetAgentId,
+        startedAt: delivery.startedAt,
+      })
+    );
+  }
+
+  timeoutCrossConversationRequest(deliveryId: any, payload: any) {
+    return normalizeCrossConversationDeliveryRow(
+      this.crossConversationDeliveryRepository.timeoutRequest(String(deliveryId || '').trim(), payload)
+    );
+  }
+
+  appendCrossConversationDeliveryEvent(deliveryId: any, payload: any) {
+    return normalizeCrossConversationDeliveryEventRow(
+      this.crossConversationDeliveryRepository.appendEvent({
+        deliveryId: String(deliveryId || '').trim(),
+        eventType: payload.eventType,
+        attemptNumber: payload.attemptNumber,
+        actorKind: payload.actorKind,
+        actorId: payload.actorId,
+        eventJson: serializeJson(payload.event || {}),
+        createdAt: payload.createdAt,
+      })
+    );
+  }
+
+  persistCrossConversationResponse(payload: any) {
+    return this.persistCrossConversationResponseTransaction(payload);
   }
 
   getConversation(conversationId: any) {

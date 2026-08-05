@@ -99,9 +99,38 @@ export function createCrossConversationDeliveryService(options: any = {}) {
   const store = options.store;
   const now = typeof options.now === 'function' ? options.now : () => new Date();
   const createId = typeof options.createId === 'function' ? options.createId : () => randomUUID();
+  const onDeliveryPersisted =
+    typeof options.onDeliveryPersisted === 'function' ? options.onDeliveryPersisted : null;
 
   if (!store) {
     throw new Error('Cross-conversation delivery service requires a chat store');
+  }
+
+  function publishPersisted(result: any) {
+    if (!onDeliveryPersisted || !result) {
+      return result;
+    }
+
+    try {
+      const maybePromise = onDeliveryPersisted(result);
+      if (maybePromise && typeof maybePromise.catch === 'function') {
+        void maybePromise.catch((error: any) => {
+          console.error(
+            `[cross-conversation-delivery] Post-commit publish failed: ${
+              error && error.stack ? error.stack : error
+            }`
+          );
+        });
+      }
+    } catch (error) {
+      console.error(
+        `[cross-conversation-delivery] Post-commit publish failed: ${
+          error && (error as any).stack ? (error as any).stack : error
+        }`
+      );
+    }
+
+    return result;
   }
 
   function resolveTrace(principal: any, sourceConversation: any, targetConversation: any) {
@@ -263,7 +292,7 @@ export function createCrossConversationDeliveryService(options: any = {}) {
       idempotencyKey
     );
     if (canonical) {
-      return canonical;
+      return publishPersisted(canonical);
     }
 
     const createdAtDate = normalizeNow(now());
@@ -400,7 +429,7 @@ export function createCrossConversationDeliveryService(options: any = {}) {
     };
 
     try {
-      return store.persistCrossConversationDelivery(payload);
+      return publishPersisted(store.persistCrossConversationDelivery(payload));
     } catch (error) {
       if (isSqliteConstraintError(error)) {
         const canonical = store.getCrossConversationDeliveryByIdempotency(
@@ -408,7 +437,7 @@ export function createCrossConversationDeliveryService(options: any = {}) {
           idempotencyKey
         );
         if (canonical) {
-          return store.persistCrossConversationDelivery(payload);
+          return publishPersisted(store.persistCrossConversationDelivery(payload));
         }
       }
       throw error;
@@ -417,5 +446,481 @@ export function createCrossConversationDeliveryService(options: any = {}) {
 
   return {
     submitFromAgent,
+  };
+}
+
+function clipDeliveryError(error: any, maxLength = 500) {
+  const message = String(error && error.message ? error.message : error || 'Unknown delivery error').trim();
+  return message.length <= maxLength ? message : `${message.slice(0, maxLength - 3)}...`;
+}
+
+export function createCrossConversationDeliveryWorker(options: any = {}) {
+  const store = options.store;
+  const dispatchTarget = options.dispatchTarget;
+  const stopTarget = typeof options.stopTarget === 'function' ? options.stopTarget : async () => false;
+  const now = typeof options.now === 'function' ? options.now : () => new Date();
+  const workerId = String(options.workerId || `cross-delivery-worker-${randomUUID()}`).trim();
+  const leaseMs = Number.isInteger(options.leaseMs) && options.leaseMs > 0 ? options.leaseMs : 30_000;
+  const retryDelayMs = Number.isInteger(options.retryDelayMs) && options.retryDelayMs >= 0
+    ? options.retryDelayMs
+    : 1_000;
+  const maxAttempts = Number.isInteger(options.maxAttempts) && options.maxAttempts > 0
+    ? options.maxAttempts
+    : 3;
+  const onDeliveryChanged =
+    typeof options.onDeliveryChanged === 'function' ? options.onDeliveryChanged : null;
+
+  if (!store) {
+    throw new Error('Cross-conversation delivery worker requires a chat store');
+  }
+  if (typeof dispatchTarget !== 'function') {
+    throw new Error('Cross-conversation delivery worker requires dispatchTarget');
+  }
+
+  function currentDate() {
+    return normalizeNow(now());
+  }
+
+  function appendEvent(delivery: any, eventType: string, event: any, createdAt: string) {
+    return store.appendCrossConversationDeliveryEvent(delivery.id, {
+      eventType,
+      attemptNumber: delivery.attemptCount,
+      actorKind: 'worker',
+      actorId: workerId,
+      event,
+      createdAt,
+    });
+  }
+
+  function publishDeliveryChanged(delivery: any, reason: string, extra: any = {}) {
+    if (!onDeliveryChanged || !delivery) {
+      return;
+    }
+
+    try {
+      const maybePromise = onDeliveryChanged({
+        delivery,
+        reason,
+        ...extra,
+      });
+      if (maybePromise && typeof maybePromise.catch === 'function') {
+        void maybePromise.catch((error: any) => {
+          console.error(
+            `[cross-conversation-delivery] State publish failed for ${delivery.id}: ${
+              error && error.stack ? error.stack : error
+            }`
+          );
+        });
+      }
+    } catch (error) {
+      console.error(
+        `[cross-conversation-delivery] State publish failed for ${delivery.id}: ${
+          error && (error as any).stack ? (error as any).stack : error
+        }`
+      );
+    }
+  }
+
+  function persistResponseIfPresent(delivery: any, result: any) {
+    if (!delivery || delivery.kind !== 'request' || !result || !result.replyMessage) {
+      return { response: null, responsePending: false };
+    }
+
+    try {
+      const response = store.persistCrossConversationResponse({
+        requestDeliveryId: delivery.id,
+        assistantMessage: result.replyMessage,
+        createdAt: currentDate().toISOString(),
+      });
+      publishDeliveryChanged(response.requestDelivery, 'response_persisted', { response });
+      return { response, responsePending: false };
+    } catch (error) {
+      const failedAt = currentDate().toISOString();
+      appendEvent(delivery, 'response_projection_failed', {
+        errorMessage: clipDeliveryError(error),
+      }, failedAt);
+      publishDeliveryChanged(delivery, 'response_projection_pending');
+      return { response: null, responsePending: true };
+    }
+  }
+
+  async function processNext() {
+    const claimDate = currentDate();
+    const claimed = store.claimNextCrossConversationDelivery({
+      owner: workerId,
+      now: claimDate.toISOString(),
+      claimExpiresAt: new Date(claimDate.getTime() + leaseMs).toISOString(),
+    });
+
+    if (!claimed) {
+      return null;
+    }
+
+    appendEvent(claimed, 'claimed', {
+      claimOwner: workerId,
+      claimExpiresAt: claimed.claimExpiresAt,
+    }, claimDate.toISOString());
+
+    const targetMessage = store.getMessage(claimed.targetMessageId);
+    if (!targetMessage) {
+      const failedAt = currentDate().toISOString();
+      const failed = store.failCrossConversationDeliveryBeforeStart(claimed.id, {
+        claimOwner: workerId,
+        errorCode: 'target_message_missing',
+        errorMessage: 'Persisted target message is missing',
+        failedAt,
+      });
+      if (failed) {
+        appendEvent(failed, 'dispatch_failed', {
+          errorCode: 'target_message_missing',
+          started: false,
+        }, failedAt);
+        publishDeliveryChanged(failed, 'dispatch_failed');
+      }
+      return { status: 'failed', delivery: failed || claimed };
+    }
+
+    let invocationStarted = false;
+
+    try {
+      const result = await dispatchTarget({
+        delivery: claimed,
+        targetMessage,
+        onInvocationStarting(input: any = {}) {
+          if (invocationStarted) {
+            return store.getCrossConversationDelivery(claimed.id);
+          }
+
+          const invocationId = normalizeRequiredText(input.invocationId, 'targetInvocationId');
+          const startedAt = currentDate().toISOString();
+          const started = store.markCrossConversationDispatchStarted(claimed.id, {
+            claimOwner: workerId,
+            targetInvocationId: invocationId,
+            startedAt,
+            updatedAt: startedAt,
+          });
+
+          if (!started) {
+            throw new Error('Cross-conversation dispatch start transition was rejected');
+          }
+
+          invocationStarted = true;
+          appendEvent(started, 'dispatch_started', {
+            targetInvocationId: invocationId,
+          }, startedAt);
+          publishDeliveryChanged(started, 'dispatch_started');
+          return started;
+        },
+      });
+
+      if (!invocationStarted) {
+        throw new Error('Target dispatcher returned without marking invocation start');
+      }
+
+      const stateAfterDispatch = store.getCrossConversationDelivery(claimed.id);
+      if (stateAfterDispatch && stateAfterDispatch.dispatchStatus === 'cancel_requested') {
+        const cancelledAt = currentDate().toISOString();
+        const cancelled = store.markRunningCrossConversationDeliveryCancelled(claimed.id, {
+          claimOwner: workerId,
+          reason: stateAfterDispatch.lastErrorMessage || 'Cancelled while running',
+          cancelledAt,
+        });
+        if (cancelled) {
+          appendEvent(cancelled, 'cancelled', { phase: 'running' }, cancelledAt);
+          publishDeliveryChanged(cancelled, 'cancelled');
+        }
+        const responseOutcome = persistResponseIfPresent(cancelled || stateAfterDispatch, result);
+        return {
+          status: 'cancelled',
+          delivery: responseOutcome.response
+            ? responseOutcome.response.requestDelivery
+            : cancelled || stateAfterDispatch,
+          response: responseOutcome.response,
+          responsePending: responseOutcome.responsePending,
+        };
+      }
+
+      const completedAt = currentDate().toISOString();
+      const completed = store.markCrossConversationDispatchCompleted(claimed.id, {
+        claimOwner: workerId,
+        completedAt,
+        terminalAt: completedAt,
+        updatedAt: completedAt,
+      });
+
+      if (!completed) {
+        throw new Error('Cross-conversation dispatch completion transition was rejected');
+      }
+
+      appendEvent(completed, 'dispatch_completed', {
+        targetInvocationId: completed.targetInvocationId,
+      }, completedAt);
+      publishDeliveryChanged(completed, 'dispatch_completed');
+
+      const responseOutcome = persistResponseIfPresent(completed, result);
+
+      return {
+        status: responseOutcome.responsePending ? 'response_pending' : 'completed',
+        delivery: responseOutcome.response ? responseOutcome.response.requestDelivery : completed,
+        response: responseOutcome.response,
+        responsePending: responseOutcome.responsePending,
+      };
+    } catch (error) {
+      const failedAt = currentDate().toISOString();
+      const current = store.getCrossConversationDelivery(claimed.id);
+      const errorMessage = clipDeliveryError(error);
+
+      if (current && current.dispatchStatus === 'cancelled') {
+        return { status: 'cancelled', delivery: current };
+      }
+
+      if (current && current.dispatchStatus === 'cancel_requested') {
+        const cancelled = store.markRunningCrossConversationDeliveryCancelled(claimed.id, {
+          claimOwner: workerId,
+          reason: current.lastErrorMessage || errorMessage,
+          cancelledAt: failedAt,
+        });
+        if (cancelled) {
+          appendEvent(cancelled, 'cancelled', { phase: 'running', stopError: errorMessage }, failedAt);
+          publishDeliveryChanged(cancelled, 'cancelled');
+        }
+        return { status: 'cancelled', delivery: cancelled || current };
+      }
+
+      if (invocationStarted || (current && current.startedAt)) {
+        const failed = store.failCrossConversationDeliveryUnknownOutcome(claimed.id, {
+          claimOwner: workerId,
+          errorCode: 'dispatch_unknown_outcome',
+          errorMessage,
+          failedAt,
+        });
+        if (failed) {
+          appendEvent(failed, 'dispatch_failed_unknown_outcome', {
+            errorCode: 'dispatch_unknown_outcome',
+          }, failedAt);
+          publishDeliveryChanged(failed, 'dispatch_failed_unknown_outcome');
+        }
+        return { status: 'failed_unknown_outcome', delivery: failed || current };
+      }
+
+      if (claimed.attemptCount < maxAttempts) {
+        const nextAttemptAt = new Date(new Date(failedAt).getTime() + retryDelayMs).toISOString();
+        const retry = store.releaseCrossConversationDeliveryForRetry(claimed.id, {
+          claimOwner: workerId,
+          nextAttemptAt,
+          errorCode: 'dispatch_pre_start_failed',
+          errorMessage,
+          updatedAt: failedAt,
+        });
+        if (retry) {
+          appendEvent(retry, 'retry_scheduled', {
+            errorCode: 'dispatch_pre_start_failed',
+            nextAttemptAt,
+          }, failedAt);
+          publishDeliveryChanged(retry, 'retry_scheduled');
+        }
+        return { status: 'retry_scheduled', delivery: retry || current };
+      }
+
+      const failed = store.failCrossConversationDeliveryBeforeStart(claimed.id, {
+        claimOwner: workerId,
+        errorCode: 'dispatch_pre_start_exhausted',
+        errorMessage,
+        failedAt,
+      });
+      if (failed) {
+        appendEvent(failed, 'dispatch_failed', {
+          errorCode: 'dispatch_pre_start_exhausted',
+          started: false,
+        }, failedAt);
+        publishDeliveryChanged(failed, 'dispatch_failed');
+      }
+      return { status: 'failed', delivery: failed || current };
+    }
+  }
+
+  function recoverExpiredClaims() {
+    const recoveredAt = currentDate().toISOString();
+    const requeuedDeliveryIds = [] as string[];
+    const failedUnknownDeliveryIds = [] as string[];
+
+    for (const delivery of store.listExpiredCrossConversationDeliveryClaims(recoveredAt)) {
+      if (delivery.startedAt || delivery.targetInvocationId) {
+        if (delivery.dispatchStatus === 'cancel_requested') {
+          const cancelled = store.markRunningCrossConversationDeliveryCancelled(delivery.id, {
+            claimOwner: delivery.claimOwner,
+            reason: delivery.lastErrorMessage || 'Recovered after cancellation request',
+            cancelledAt: recoveredAt,
+          });
+          if (cancelled) {
+            appendEvent(cancelled, 'cancelled', { recovered: true }, recoveredAt);
+            publishDeliveryChanged(cancelled, 'cancelled');
+          }
+          continue;
+        }
+
+        const failed = store.failCrossConversationDeliveryUnknownOutcome(delivery.id, {
+          claimOwner: delivery.claimOwner,
+          errorCode: 'recovered_started_unknown_outcome',
+          errorMessage: 'Worker lease expired after target invocation started; automatic replay is forbidden',
+          failedAt: recoveredAt,
+        });
+        if (failed) {
+          failedUnknownDeliveryIds.push(failed.id);
+          appendEvent(failed, 'recovered_unknown_outcome', {
+            previousClaimOwner: delivery.claimOwner,
+          }, recoveredAt);
+          publishDeliveryChanged(failed, 'recovered_unknown_outcome');
+        }
+        continue;
+      }
+
+      if (delivery.attemptCount < maxAttempts) {
+        const requeued = store.releaseCrossConversationDeliveryForRetry(delivery.id, {
+          claimOwner: delivery.claimOwner,
+          nextAttemptAt: recoveredAt,
+          errorCode: 'recovered_unstarted_claim',
+          errorMessage: 'Worker lease expired before target invocation started',
+          updatedAt: recoveredAt,
+        });
+        if (requeued) {
+          requeuedDeliveryIds.push(requeued.id);
+          appendEvent(requeued, 'recovered_requeued', {
+            previousClaimOwner: delivery.claimOwner,
+          }, recoveredAt);
+          publishDeliveryChanged(requeued, 'recovered_requeued');
+        }
+        continue;
+      }
+
+      const failed = store.failCrossConversationDeliveryBeforeStart(delivery.id, {
+        claimOwner: delivery.claimOwner,
+        errorCode: 'recovered_pre_start_exhausted',
+        errorMessage: 'Worker lease expired and the pre-start retry budget is exhausted',
+        failedAt: recoveredAt,
+      });
+      if (failed) {
+        appendEvent(failed, 'dispatch_failed', {
+          errorCode: 'recovered_pre_start_exhausted',
+        }, recoveredAt);
+        publishDeliveryChanged(failed, 'dispatch_failed');
+      }
+    }
+
+    return { requeuedDeliveryIds, failedUnknownDeliveryIds };
+  }
+
+  function recoverPendingResponses() {
+    const recoveredDeliveryIds = [] as string[];
+
+    for (const delivery of store.listCrossConversationRequestsPendingResponse(100)) {
+      const replyMessage = store.findCrossConversationReplyMessage(delivery);
+      if (!replyMessage) {
+        continue;
+      }
+
+      try {
+        const response = store.persistCrossConversationResponse({
+          requestDeliveryId: delivery.id,
+          assistantMessage: replyMessage,
+          createdAt: currentDate().toISOString(),
+        });
+        recoveredDeliveryIds.push(delivery.id);
+        publishDeliveryChanged(response.requestDelivery, 'response_persisted', {
+          response,
+          recovered: true,
+        });
+      } catch (error) {
+        appendEvent(delivery, 'response_projection_recovery_failed', {
+          errorMessage: clipDeliveryError(error),
+        }, currentDate().toISOString());
+      }
+    }
+
+    return recoveredDeliveryIds;
+  }
+
+  function expireRequestDeadlines() {
+    const timedOutAt = currentDate().toISOString();
+    const expiredIds = [] as string[];
+
+    for (const delivery of store.listExpiredCrossConversationRequestDeadlines(timedOutAt)) {
+      const timedOut = store.timeoutCrossConversationRequest(delivery.id, { timedOutAt });
+      if (!timedOut) {
+        continue;
+      }
+      expiredIds.push(timedOut.id);
+      appendEvent(timedOut, 'request_timed_out', {
+        deadlineAt: timedOut.deadlineAt,
+      }, timedOutAt);
+      publishDeliveryChanged(timedOut, 'request_timed_out');
+    }
+
+    return expiredIds;
+  }
+
+  async function cancel(deliveryId: any, reason: any = 'Cancelled by operator') {
+    const normalizedDeliveryId = normalizeRequiredText(deliveryId, 'deliveryId');
+    const cancelReason = String(reason || 'Cancelled by operator').trim() || 'Cancelled by operator';
+    const delivery = store.getCrossConversationDelivery(normalizedDeliveryId);
+
+    if (!delivery) {
+      throw createDeliveryError(404, 'cross_conversation_delivery_not_found', 'Delivery not found');
+    }
+
+    const requestedAt = currentDate().toISOString();
+    if (delivery.dispatchStatus === 'queued') {
+      const cancelled = store.cancelQueuedCrossConversationDelivery(delivery.id, {
+        reason: cancelReason,
+        cancelledAt: requestedAt,
+      });
+      if (cancelled) {
+        appendEvent(cancelled, 'cancelled', { phase: 'queued', reason: cancelReason }, requestedAt);
+        publishDeliveryChanged(cancelled, 'cancelled');
+      }
+      if (delivery.claimOwner) {
+        try {
+          await stopTarget(cancelled || delivery);
+        } catch (error) {
+          appendEvent(cancelled || delivery, 'cancel_stop_failed', {
+            errorMessage: clipDeliveryError(error),
+          }, currentDate().toISOString());
+        }
+      }
+      return cancelled || delivery;
+    }
+
+    if (delivery.dispatchStatus === 'running') {
+      const cancelRequested = store.requestRunningCrossConversationDeliveryCancel(delivery.id, {
+        reason: cancelReason,
+        requestedAt,
+      });
+      if (!cancelRequested) {
+        return store.getCrossConversationDelivery(delivery.id);
+      }
+      appendEvent(cancelRequested, 'cancel_requested', {
+        phase: 'running',
+        reason: cancelReason,
+      }, requestedAt);
+      publishDeliveryChanged(cancelRequested, 'cancel_requested');
+      try {
+        await stopTarget(cancelRequested);
+      } catch (error) {
+        appendEvent(cancelRequested, 'cancel_stop_failed', {
+          errorMessage: clipDeliveryError(error),
+        }, currentDate().toISOString());
+      }
+      return store.getCrossConversationDelivery(delivery.id);
+    }
+
+    return delivery;
+  }
+
+  return {
+    cancel,
+    expireRequestDeadlines,
+    processNext,
+    recoverExpiredClaims,
+    recoverPendingResponses,
   };
 }

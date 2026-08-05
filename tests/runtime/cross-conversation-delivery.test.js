@@ -4,6 +4,7 @@ const test = require('node:test');
 const { createChatAppStore } = require('../../build/lib/chat-app-store');
 const {
   createCrossConversationDeliveryService,
+  createCrossConversationDeliveryWorker,
 } = require('../../build/server/domain/conversation/cross-conversation-delivery');
 const { createAgentToolBridge } = require('../../build/server/domain/runtime/agent-tool-bridge');
 
@@ -149,6 +150,36 @@ test('agent request atomically persists one delivery, low-authority target messa
     assert.equal(events[0].eventType, 'persisted');
     assert.equal(events[0].event.content, undefined);
     assert.equal(events[0].event.credential, undefined);
+  } finally {
+    fixture.store.close();
+  }
+});
+
+test('delivery submit publishes canonical projections only after the transaction commits', () => {
+  const fixture = createFixture();
+  const published = [];
+  const service = createCrossConversationDeliveryService({
+    store: fixture.store,
+    onDeliveryPersisted(result) {
+      published.push({
+        result,
+        storedDelivery: fixture.store.getCrossConversationDelivery(result.delivery.id),
+        storedTargetMessage: fixture.store.getMessage(result.targetMessage.id),
+        storedSourceReceipt: fixture.store.getMessage(result.sourceReceipt.id),
+      });
+    },
+  });
+
+  try {
+    const result = submitRequest(service, fixture, {
+      idempotencyKey: 'post-commit-publish',
+    });
+
+    assert.equal(published.length, 1);
+    assert.equal(published[0].result.delivery.id, result.delivery.id);
+    assert.equal(published[0].storedDelivery.messageStatus, 'persisted');
+    assert.equal(published[0].storedTargetMessage.id, result.targetMessage.id);
+    assert.equal(published[0].storedSourceReceipt.id, result.sourceReceipt.id);
   } finally {
     fixture.store.close();
   }
@@ -457,6 +488,428 @@ test('agent bridge derives source principal, rejects spoofed fields, and rejects
       }),
       (error) => error && error.statusCode === 409
     );
+  } finally {
+    fixture.store.close();
+  }
+});
+
+test('delivery worker claims committed notify, marks invocation start before dispatch, and completes once', async () => {
+  const fixture = createFixture();
+  const service = createCrossConversationDeliveryService({ store: fixture.store });
+  const submitted = service.submitFromAgent(createPrincipal(fixture), {
+    kind: 'notify',
+    targetConversationId: fixture.targetConversation.id,
+    targetAgentId: fixture.targetAgent.id,
+    content: 'Run exactly one target-scoped dispatch.',
+    idempotencyKey: 'worker-notify',
+  });
+  const calls = [];
+  const deliveryChanges = [];
+  const worker = createCrossConversationDeliveryWorker({
+    store: fixture.store,
+    workerId: 'worker-one',
+    onDeliveryChanged(change) {
+      deliveryChanges.push({
+        reason: change.reason,
+        dispatchStatus: change.delivery.dispatchStatus,
+      });
+    },
+    async dispatchTarget(input) {
+      calls.push({
+        deliveryId: input.delivery.id,
+        targetConversationId: input.delivery.targetConversationId,
+        targetAgentId: input.delivery.targetAgentId,
+        targetMessageId: input.targetMessage.id,
+      });
+      input.onInvocationStarting({ invocationId: 'target-invocation-worker-one' });
+      return { replyMessage: null };
+    },
+  });
+
+  try {
+    const outcome = await worker.processNext();
+    assert.equal(outcome.status, 'completed');
+    assert.deepEqual(calls, [{
+      deliveryId: submitted.delivery.id,
+      targetConversationId: fixture.targetConversation.id,
+      targetAgentId: fixture.targetAgent.id,
+      targetMessageId: submitted.targetMessage.id,
+    }]);
+    const delivery = fixture.store.getCrossConversationDelivery(submitted.delivery.id);
+    assert.equal(delivery.dispatchStatus, 'completed');
+    assert.equal(delivery.targetInvocationId, 'target-invocation-worker-one');
+    assert.equal(delivery.attemptCount, 1);
+    assert.equal(delivery.claimOwner, null);
+    assert.deepEqual(deliveryChanges, [
+      { reason: 'dispatch_started', dispatchStatus: 'running' },
+      { reason: 'dispatch_completed', dispatchStatus: 'completed' },
+    ]);
+    assert.equal((await worker.processNext()), null);
+  } finally {
+    fixture.store.close();
+  }
+});
+
+test('delivery worker retries only pre-start failures and never automatically replays a started unknown outcome', async () => {
+  const fixture = createFixture();
+  let currentTime = new Date('2026-08-05T00:00:00.000Z');
+  const service = createCrossConversationDeliveryService({
+    store: fixture.store,
+    now: () => currentTime,
+  });
+  const preStart = service.submitFromAgent(createPrincipal(fixture), {
+    kind: 'notify',
+    targetConversationId: fixture.targetConversation.id,
+    targetAgentId: fixture.targetAgent.id,
+    content: 'Retry only before invocation starts.',
+    idempotencyKey: 'worker-pre-start',
+  });
+  let dispatchCount = 0;
+  const retryWorker = createCrossConversationDeliveryWorker({
+    store: fixture.store,
+    workerId: 'worker-retry',
+    now: () => currentTime,
+    retryDelayMs: 1_000,
+    maxAttempts: 2,
+    async dispatchTarget(input) {
+      dispatchCount += 1;
+      if (dispatchCount === 1) {
+        throw new Error('synthetic pre-start failure');
+      }
+      input.onInvocationStarting({ invocationId: 'retry-success-invocation' });
+      return { replyMessage: null };
+    },
+  });
+
+  try {
+    const first = await retryWorker.processNext();
+    assert.equal(first.status, 'retry_scheduled');
+    assert.equal(fixture.store.getCrossConversationDelivery(preStart.delivery.id).dispatchStatus, 'queued');
+    assert.equal(await retryWorker.processNext(), null);
+    currentTime = new Date('2026-08-05T00:00:02.000Z');
+    const second = await retryWorker.processNext();
+    assert.equal(second.status, 'completed');
+    assert.equal(dispatchCount, 2);
+
+    const started = service.submitFromAgent(createPrincipal(fixture, {
+      sourceInvocationId: 'source-invocation-started-failure',
+    }), {
+      kind: 'notify',
+      targetConversationId: fixture.targetConversation.id,
+      targetAgentId: fixture.targetAgent.id,
+      content: 'Do not replay after start.',
+      idempotencyKey: 'worker-started-failure',
+    });
+    let startedDispatchCount = 0;
+    const noReplayWorker = createCrossConversationDeliveryWorker({
+      store: fixture.store,
+      workerId: 'worker-no-replay',
+      now: () => currentTime,
+      async dispatchTarget(input) {
+        startedDispatchCount += 1;
+        input.onInvocationStarting({ invocationId: 'unknown-outcome-invocation' });
+        throw new Error('synthetic post-start failure');
+      },
+    });
+    const failed = await noReplayWorker.processNext();
+    assert.equal(failed.status, 'failed_unknown_outcome');
+    const failedDelivery = fixture.store.getCrossConversationDelivery(started.delivery.id);
+    assert.equal(failedDelivery.dispatchStatus, 'failed');
+    assert.equal(failedDelivery.lastErrorCode, 'dispatch_unknown_outcome');
+    assert.equal(startedDispatchCount, 1);
+    assert.equal(await noReplayWorker.processNext(), null);
+    assert.equal(startedDispatchCount, 1);
+  } finally {
+    fixture.store.close();
+  }
+});
+
+test('delivery recovery reclaims expired unstarted leases but terminally fails expired started leases', () => {
+  const fixture = createFixture();
+  const service = createCrossConversationDeliveryService({
+    store: fixture.store,
+    now: () => new Date('2026-08-05T00:00:00.000Z'),
+  });
+  const unstarted = service.submitFromAgent(createPrincipal(fixture), {
+    kind: 'notify',
+    targetConversationId: fixture.targetConversation.id,
+    targetAgentId: fixture.targetAgent.id,
+    content: 'Recover an unstarted lease.',
+    idempotencyKey: 'recover-unstarted',
+  });
+  fixture.store.claimNextCrossConversationDelivery({
+    owner: 'dead-worker-unstarted',
+    now: '2026-08-05T00:00:00.000Z',
+    claimExpiresAt: '2026-08-05T00:00:01.000Z',
+  });
+  const started = service.submitFromAgent(createPrincipal(fixture, {
+    sourceInvocationId: 'recover-started-source-invocation',
+  }), {
+    kind: 'notify',
+    targetConversationId: fixture.targetConversation.id,
+    targetAgentId: fixture.targetAgent.id,
+    content: 'Fail a started stale lease.',
+    idempotencyKey: 'recover-started',
+  });
+  fixture.store.claimNextCrossConversationDelivery({
+    owner: 'dead-worker-started',
+    now: '2026-08-05T00:00:00.000Z',
+    claimExpiresAt: '2026-08-05T00:00:01.000Z',
+  });
+  fixture.store.markCrossConversationDispatchStarted(started.delivery.id, {
+    claimOwner: 'dead-worker-started',
+    targetInvocationId: 'stale-started-invocation',
+    startedAt: '2026-08-05T00:00:00.500Z',
+    updatedAt: '2026-08-05T00:00:00.500Z',
+  });
+  const worker = createCrossConversationDeliveryWorker({
+    store: fixture.store,
+    workerId: 'recovery-worker',
+    now: () => new Date('2026-08-05T00:00:02.000Z'),
+    dispatchTarget: async () => ({ replyMessage: null }),
+  });
+
+  try {
+    const result = worker.recoverExpiredClaims();
+    assert.equal(result.requeuedDeliveryIds.includes(unstarted.delivery.id), true);
+    assert.equal(result.failedUnknownDeliveryIds.includes(started.delivery.id), true);
+    assert.equal(fixture.store.getCrossConversationDelivery(unstarted.delivery.id).dispatchStatus, 'queued');
+    assert.equal(fixture.store.getCrossConversationDelivery(unstarted.delivery.id).claimOwner, null);
+    assert.equal(fixture.store.getCrossConversationDelivery(started.delivery.id).dispatchStatus, 'failed');
+    assert.equal(
+      fixture.store.getCrossConversationDelivery(started.delivery.id).lastErrorCode,
+      'recovered_started_unknown_outcome'
+    );
+  } finally {
+    fixture.store.close();
+  }
+});
+
+test('request response is projected once to source without scheduling source work, and timeout converts later reply to late', async () => {
+  const fixture = createFixture();
+  let currentTime = new Date('2026-08-05T00:00:00.000Z');
+  const service = createCrossConversationDeliveryService({
+    store: fixture.store,
+    now: () => currentTime,
+  });
+  const request = submitRequest(service, fixture, {
+    idempotencyKey: 'worker-request-response',
+    deadlineSeconds: 10,
+  });
+  let sourceScheduleCount = 0;
+  const deliveryChanges = [];
+  const worker = createCrossConversationDeliveryWorker({
+    store: fixture.store,
+    workerId: 'worker-response',
+    now: () => currentTime,
+    onSourceWorkScheduled() {
+      sourceScheduleCount += 1;
+    },
+    onDeliveryChanged(change) {
+      deliveryChanges.push(change);
+    },
+    async dispatchTarget(input) {
+      input.onInvocationStarting({ invocationId: 'request-target-invocation' });
+      return {
+        replyMessage: fixture.store.createMessage({
+          id: 'target-request-reply',
+          conversationId: fixture.targetConversation.id,
+          turnId: 'target-request-reply-turn',
+          role: 'assistant',
+          agentId: fixture.targetAgent.id,
+          senderName: fixture.targetAgent.name,
+          content: 'The requested inspection is complete.',
+          metadata: { crossConversationDeliveryId: request.delivery.id },
+        }),
+      };
+    },
+  });
+
+  try {
+    const outcome = await worker.processNext();
+    assert.equal(outcome.status, 'completed');
+    const received = fixture.store.getCrossConversationDelivery(request.delivery.id);
+    assert.equal(received.responseStatus, 'received');
+    const sourceReplies = fixture.store.listMessages(fixture.sourceConversation.id)
+      .filter((message) => message.metadata && message.metadata.crossConversation
+        && message.metadata.crossConversation.replyToDeliveryId === request.delivery.id);
+    assert.equal(sourceReplies.length, 1);
+    assert.equal(sourceReplies[0].role, 'external_agent');
+    assert.equal(sourceReplies[0].content, 'The requested inspection is complete.');
+    assert.equal(sourceScheduleCount, 0);
+    const responseChange = deliveryChanges.find((change) => change.reason === 'response_persisted');
+    assert.equal(responseChange.delivery.responseStatus, 'received');
+    assert.equal(responseChange.response.responseMessage.id, sourceReplies[0].id);
+    const duplicate = fixture.store.persistCrossConversationResponse({
+      requestDeliveryId: request.delivery.id,
+      assistantMessage: fixture.store.getMessage('target-request-reply'),
+      createdAt: currentTime.toISOString(),
+    });
+    assert.equal(duplicate.duplicate, true);
+    assert.equal(fixture.store.listMessages(fixture.sourceConversation.id)
+      .filter((message) => message.metadata && message.metadata.crossConversation
+        && message.metadata.crossConversation.replyToDeliveryId === request.delivery.id).length, 1);
+
+    const lateRequest = submitRequest(service, fixture, {
+      idempotencyKey: 'worker-request-late',
+      deadlineSeconds: 1,
+    }, {
+      sourceInvocationId: 'source-invocation-late-request',
+    });
+    currentTime = new Date('2026-08-05T00:00:02.000Z');
+    const expired = worker.expireRequestDeadlines();
+    assert.equal(expired.includes(lateRequest.delivery.id), true);
+    assert.equal(fixture.store.getCrossConversationDelivery(lateRequest.delivery.id).responseStatus, 'timed_out');
+    const lateReply = fixture.store.createMessage({
+      id: 'target-late-reply',
+      conversationId: fixture.targetConversation.id,
+      turnId: 'target-late-reply-turn',
+      role: 'assistant',
+      agentId: fixture.targetAgent.id,
+      senderName: fixture.targetAgent.name,
+      content: 'Late but durable.',
+    });
+    fixture.store.persistCrossConversationResponse({
+      requestDeliveryId: lateRequest.delivery.id,
+      assistantMessage: lateReply,
+      createdAt: currentTime.toISOString(),
+    });
+    assert.equal(fixture.store.getCrossConversationDelivery(lateRequest.delivery.id).responseStatus, 'late');
+  } finally {
+    fixture.store.close();
+  }
+});
+
+test('response projection recovers from a post-dispatch persistence failure without replaying the target Agent', async () => {
+  const fixture = createFixture();
+  const service = createCrossConversationDeliveryService({ store: fixture.store });
+  const request = submitRequest(service, fixture, {
+    idempotencyKey: 'worker-response-projection-recovery',
+  });
+  const persistResponse = fixture.store.persistCrossConversationResponse.bind(fixture.store);
+  let failResponseProjection = true;
+  let dispatchCount = 0;
+  fixture.store.persistCrossConversationResponse = (payload) => {
+    if (failResponseProjection) {
+      failResponseProjection = false;
+      throw new Error('Synthetic response projection failure');
+    }
+    return persistResponse(payload);
+  };
+  const worker = createCrossConversationDeliveryWorker({
+    store: fixture.store,
+    workerId: 'worker-response-recovery',
+    async dispatchTarget(input) {
+      dispatchCount += 1;
+      input.onInvocationStarting({ invocationId: 'response-recovery-invocation' });
+      return {
+        replyMessage: fixture.store.createMessage({
+          id: 'response-recovery-target-reply',
+          conversationId: fixture.targetConversation.id,
+          turnId: 'response-recovery-target-reply-turn',
+          role: 'assistant',
+          agentId: fixture.targetAgent.id,
+          senderName: fixture.targetAgent.name,
+          content: 'Durable target answer awaiting source projection.',
+          metadata: { crossConversationDeliveryId: request.delivery.id },
+        }),
+      };
+    },
+  });
+
+  try {
+    const outcome = await worker.processNext();
+    assert.equal(outcome.status, 'response_pending');
+    assert.equal(dispatchCount, 1);
+    const pending = fixture.store.getCrossConversationDelivery(request.delivery.id);
+    assert.equal(pending.dispatchStatus, 'completed');
+    assert.equal(pending.responseStatus, 'waiting');
+    assert.equal(fixture.store.listMessages(fixture.sourceConversation.id)
+      .filter((message) => message.metadata && message.metadata.crossConversation
+        && message.metadata.crossConversation.replyToDeliveryId === request.delivery.id).length, 0);
+
+    const recoveredIds = worker.recoverPendingResponses();
+    assert.deepEqual(recoveredIds, [request.delivery.id]);
+    assert.equal(dispatchCount, 1);
+    assert.equal(fixture.store.getCrossConversationDelivery(request.delivery.id).responseStatus, 'received');
+    assert.equal(fixture.store.listMessages(fixture.sourceConversation.id)
+      .filter((message) => message.metadata && message.metadata.crossConversation
+        && message.metadata.crossConversation.replyToDeliveryId === request.delivery.id).length, 1);
+  } finally {
+    fixture.store.close();
+  }
+});
+
+test('queued cancel is terminal and running cancel records best-effort stop without deleting projections', async () => {
+  const fixture = createFixture();
+  const service = createCrossConversationDeliveryService({ store: fixture.store });
+  const queued = service.submitFromAgent(createPrincipal(fixture), {
+    kind: 'notify',
+    targetConversationId: fixture.targetConversation.id,
+    targetAgentId: fixture.targetAgent.id,
+    content: 'Cancel before dispatch.',
+    idempotencyKey: 'cancel-queued',
+  });
+  let releaseDispatch;
+  let invocationStarted;
+  const startedPromise = new Promise((resolve) => {
+    invocationStarted = resolve;
+  });
+  let stopCount = 0;
+  const worker = createCrossConversationDeliveryWorker({
+    store: fixture.store,
+    workerId: 'worker-cancel',
+    async stopTarget() {
+      stopCount += 1;
+      return true;
+    },
+    async dispatchTarget(input) {
+      input.onInvocationStarting({ invocationId: 'cancel-running-invocation' });
+      invocationStarted();
+      return new Promise((resolve) => {
+        releaseDispatch = resolve;
+      });
+    },
+  });
+
+  try {
+    const queuedCancelled = await worker.cancel(queued.delivery.id, 'No longer needed');
+    assert.equal(queuedCancelled.dispatchStatus, 'cancelled');
+    assert.ok(fixture.store.getMessage(queued.delivery.targetMessageId));
+
+    const running = service.submitFromAgent(createPrincipal(fixture, {
+      sourceInvocationId: 'source-invocation-cancel-running',
+    }), {
+      kind: 'request',
+      targetConversationId: fixture.targetConversation.id,
+      targetAgentId: fixture.targetAgent.id,
+      content: 'Cancel after dispatch starts.',
+      idempotencyKey: 'cancel-running',
+      deadlineSeconds: 60,
+    });
+    const processing = worker.processNext();
+    await startedPromise;
+    const runningCancelled = await worker.cancel(running.delivery.id, 'Stop this run');
+    assert.equal(runningCancelled.dispatchStatus, 'cancel_requested');
+    assert.equal(stopCount, 1);
+    const replyMessage = fixture.store.createMessage({
+      id: 'cancel-running-reply',
+      conversationId: fixture.targetConversation.id,
+      turnId: 'cancel-running-reply-turn',
+      role: 'assistant',
+      agentId: fixture.targetAgent.id,
+      senderName: fixture.targetAgent.name,
+      content: 'This completed after cancellation was requested.',
+    });
+    releaseDispatch({ replyMessage });
+    const outcome = await processing;
+    assert.equal(outcome.status, 'cancelled');
+    const cancelledDelivery = fixture.store.getCrossConversationDelivery(running.delivery.id);
+    assert.equal(cancelledDelivery.dispatchStatus, 'cancelled');
+    assert.equal(cancelledDelivery.responseStatus, 'late');
+    assert.equal(fixture.store.listMessages(fixture.sourceConversation.id)
+      .filter((message) => message.metadata && message.metadata.crossConversation
+        && message.metadata.crossConversation.replyToDeliveryId === running.delivery.id).length, 1);
   } finally {
     fixture.store.close();
   }

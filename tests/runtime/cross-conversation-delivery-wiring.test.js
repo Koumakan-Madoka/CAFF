@@ -1,0 +1,211 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const test = require('node:test');
+
+const { createServerApp } = require('../../build/server/app/create-server');
+const { withTempDir } = require('../helpers/temp-dir');
+
+function nextTurn() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+test('server composition shares delivery service, wires worker adapters, maintenance, broadcasts, and cleanup', async (t) => {
+  const tempDir = withTempDir('caff-cross-delivery-wiring-');
+  const sqlitePath = path.join(tempDir, 'chat.sqlite');
+  const broadcasts = [];
+  const serviceCalls = [];
+  let serviceOptions = null;
+  let workerOptions = null;
+  let maintenanceCallback = null;
+  let clearedTimer = null;
+  let recoverCount = 0;
+  let responseRecoveryCount = 0;
+  let deadlineCount = 0;
+  let processNextCount = 0;
+  const maintenanceTimer = { unrefCalled: false, unref() { this.unrefCalled = true; } };
+  const canonicalResult = {
+    duplicate: false,
+    delivery: {
+      id: 'delivery-wiring-1',
+      sourceConversationId: 'delivery-wiring-source',
+      targetConversationId: 'delivery-wiring-target',
+      targetAgentId: 'delivery-wiring-target-agent',
+      dispatchStatus: 'queued',
+      responseStatus: 'not_expected',
+    },
+    targetMessage: {
+      id: 'delivery-wiring-target-message',
+      conversationId: 'delivery-wiring-target',
+    },
+    sourceReceipt: {
+      id: 'delivery-wiring-source-receipt',
+      conversationId: 'delivery-wiring-source',
+    },
+  };
+  const deliveryService = {
+    submitFromAgent(principal, input) {
+      serviceCalls.push({ principal, input });
+      return canonicalResult;
+    },
+  };
+  const deliveryWorker = {
+    recoverExpiredClaims() {
+      recoverCount += 1;
+      return { requeuedDeliveryIds: [], failedUnknownDeliveryIds: [] };
+    },
+    recoverPendingResponses() {
+      responseRecoveryCount += 1;
+      return [];
+    },
+    expireRequestDeadlines() {
+      deadlineCount += 1;
+      return [];
+    },
+    async processNext() {
+      processNextCount += 1;
+      return null;
+    },
+  };
+  const app = createServerApp({
+    host: '127.0.0.1',
+    port: 0,
+    agentDir: tempDir,
+    sqlitePath,
+    projectDir: tempDir,
+    onBroadcastEvent(eventName, payload) {
+      broadcasts.push({ eventName, payload });
+    },
+    deliveryServiceFactory(options) {
+      serviceOptions = options;
+      return deliveryService;
+    },
+    deliveryWorkerFactory(options) {
+      workerOptions = options;
+      return deliveryWorker;
+    },
+    setDeliveryMaintenanceInterval(callback) {
+      maintenanceCallback = callback;
+      return maintenanceTimer;
+    },
+    clearDeliveryMaintenanceInterval(timer) {
+      clearedTimer = timer;
+    },
+  });
+  let closed = false;
+
+  t.after(async () => {
+    if (!closed) {
+      await new Promise((resolve) => app.close(resolve));
+    }
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const sourceAgent = app.store.saveCustomRoleConfig({
+    id: 'delivery-wiring-source-agent',
+    name: 'Source Agent',
+    personaPrompt: 'Source.',
+  });
+  const targetAgent = app.store.saveCustomRoleConfig({
+    id: 'delivery-wiring-target-agent',
+    name: 'Target Agent',
+    personaPrompt: 'Target.',
+  });
+  app.store.createConversation({
+    id: canonicalResult.delivery.sourceConversationId,
+    title: 'Source',
+    participants: [sourceAgent.id],
+  });
+  app.store.createConversation({
+    id: canonicalResult.delivery.targetConversationId,
+    title: 'Target',
+    participants: [targetAgent.id],
+  });
+
+  assert.ok(serviceOptions);
+  assert.ok(workerOptions);
+  assert.equal(app.crossConversationDeliveryService, deliveryService);
+
+  const invocation = app.agentToolBridge.registerInvocation(
+    app.agentToolBridge.createInvocationContext({
+      conversationId: canonicalResult.delivery.sourceConversationId,
+      turnId: 'delivery-wiring-turn',
+      projectDir: tempDir,
+      agentId: sourceAgent.id,
+      agentName: sourceAgent.name,
+      conversationAgents: [sourceAgent],
+    })
+  );
+  const bridgeResponse = app.agentToolBridge.handleConversationNotify({
+    invocationId: invocation.invocationId,
+    callbackToken: invocation.callbackToken,
+    targetConversationId: canonicalResult.delivery.targetConversationId,
+    targetAgentId: targetAgent.id,
+    content: 'Notify target.',
+    idempotencyKey: 'delivery-wiring-notify',
+  });
+  assert.equal(bridgeResponse.delivery.id, canonicalResult.delivery.id);
+  assert.equal(serviceCalls.length, 1);
+
+  let dispatchedInput = null;
+  app.turnOrchestrator.dispatchCrossConversationDelivery = async (input) => {
+    dispatchedInput = input;
+    return { replyMessage: null };
+  };
+  const dispatchResult = await workerOptions.dispatchTarget({ delivery: canonicalResult.delivery });
+  assert.deepEqual(dispatchResult, { replyMessage: null });
+  assert.equal(dispatchedInput.delivery.id, canonicalResult.delivery.id);
+
+  let stoppedInput = null;
+  app.turnOrchestrator.requestStopCrossConversationDelivery = (delivery, reason) => {
+    stoppedInput = { delivery, reason };
+    return true;
+  };
+  assert.equal(await workerOptions.stopTarget(canonicalResult.delivery), true);
+  assert.equal(stoppedInput.delivery.id, canonicalResult.delivery.id);
+
+  await new Promise((resolve) => app.start(resolve));
+  await nextTurn();
+  assert.equal(recoverCount, 1);
+  assert.equal(responseRecoveryCount, 1);
+  assert.equal(processNextCount >= 1, true);
+  assert.equal(maintenanceTimer.unrefCalled, true);
+
+  const processCountBeforeSubmit = processNextCount;
+  serviceOptions.onDeliveryPersisted(canonicalResult);
+  await nextTurn();
+  assert.equal(processNextCount > processCountBeforeSubmit, true);
+  assert.equal(broadcasts.some((event) => event.eventName === 'conversation_message_created'
+    && event.payload.message.id === canonicalResult.targetMessage.id), true);
+  assert.equal(broadcasts.some((event) => event.eventName === 'conversation_message_created'
+    && event.payload.message.id === canonicalResult.sourceReceipt.id), true);
+  assert.equal(broadcasts.filter((event) => event.eventName === 'cross_conversation_delivery_updated'
+    && event.payload.delivery.id === canonicalResult.delivery.id).length >= 2, true);
+
+  const responseMessage = {
+    id: 'delivery-wiring-response-message',
+    conversationId: canonicalResult.delivery.sourceConversationId,
+  };
+  workerOptions.onDeliveryChanged({
+    delivery: {
+      ...canonicalResult.delivery,
+      dispatchStatus: 'completed',
+      responseStatus: 'received',
+    },
+    reason: 'response_persisted',
+    response: { responseMessage },
+  });
+  assert.equal(broadcasts.some((event) => event.eventName === 'conversation_message_created'
+    && event.payload.message.id === responseMessage.id), true);
+
+  assert.equal(typeof maintenanceCallback, 'function');
+  maintenanceCallback();
+  await nextTurn();
+  assert.equal(recoverCount, 2);
+  assert.equal(responseRecoveryCount, 2);
+  assert.equal(deadlineCount, 1);
+
+  await new Promise((resolve) => app.close(resolve));
+  closed = true;
+  assert.equal(clearedTimer, maintenanceTimer);
+});

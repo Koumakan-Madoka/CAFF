@@ -95,6 +95,7 @@ export class ChatMessageRepository {
   getStatement: any;
   updateStatement: any;
   appendTextStatement: any;
+  findCompletedCrossConversationReplyStatement: any;
   searchLikeStatements: Map<number, any>;
   hasSearchTableCache: boolean | null;
   searchFtsStatement: any;
@@ -161,6 +162,18 @@ export class ChatMessageRepository {
       SET content = COALESCE(content, '') || ?
       WHERE id = ?
     `);
+    this.findCompletedCrossConversationReplyStatement = db.prepare(`
+      SELECT *
+      FROM chat_messages
+      WHERE conversation_id = ?
+        AND agent_id = ?
+        AND role = 'assistant'
+        AND status = 'completed'
+        AND (? = '' OR created_at >= ?)
+        AND metadata_json LIKE ? ESCAPE '\\'
+      ORDER BY created_at ASC, id ASC
+      LIMIT 1
+    `);
     this.searchLikeStatements = new Map();
     this.hasSearchTableCache = null;
     this.searchFtsStatement = null;
@@ -184,6 +197,25 @@ export class ChatMessageRepository {
     );
 
     return this.get(payload.id);
+  }
+
+  findCompletedCrossConversationReply(payload: any) {
+    const deliveryId = String(payload && payload.deliveryId || '').trim();
+    const conversationId = String(payload && payload.conversationId || '').trim();
+    const agentId = String(payload && payload.agentId || '').trim();
+    const startedAt = String(payload && payload.startedAt || '').trim();
+
+    if (!deliveryId || !conversationId || !agentId) {
+      return null;
+    }
+
+    return this.findCompletedCrossConversationReplyStatement.get(
+      conversationId,
+      agentId,
+      startedAt,
+      startedAt,
+      `%"crossConversationDeliveryId":"${escapeLikePattern(deliveryId)}"%`
+    ) || null;
   }
 
   listByConversationId(conversationId: string) {

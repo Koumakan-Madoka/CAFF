@@ -902,6 +902,8 @@ export function createTurnOrchestrator(options: any = {}) {
     let slotState = null as any;
     let runStore = null as any;
     let rootTaskId = '';
+    const completedReplies: any[] = [];
+    const failedReplies: any[] = [];
 
     try {
       const storedConversation = store.getConversation(entry.conversationId);
@@ -925,8 +927,6 @@ export function createTurnOrchestrator(options: any = {}) {
 
       runStore = createSqliteRunStore({ agentDir, sqlitePath });
       rootTaskId = createTaskId('conversation-side-dispatch');
-      const completedReplies: any[] = [];
-      const failedReplies: any[] = [];
       const inputText = String(entry.promptUserMessage && entry.promptUserMessage.content ? entry.promptUserMessage.content : '').trim();
 
       runStore.createTask({
@@ -939,9 +939,9 @@ export function createTurnOrchestrator(options: any = {}) {
           conversationId: entry.conversationId,
           turnId: slotState.turnId,
           participantAgentIds: [agent.id],
-          routingMode: 'mention_queue',
+          routingMode: entry.routingMode || 'mention_queue',
           entryAgentIds: [agent.id],
-          entryStrategy: 'user_mentions',
+          entryStrategy: entry.entryStrategy || 'user_mentions',
           entryExecutionMode: 'serial',
           explicitIntent: entry.explicitIntent || '',
           dispatchLane: 'side',
@@ -962,6 +962,14 @@ export function createTurnOrchestrator(options: any = {}) {
         entry.promptUserMessage,
         entry.promptSnapshotMessageIds
       );
+      if (typeof entry.onInvocationStarting === 'function') {
+        await entry.onInvocationStarting({
+          invocationId: entry.toolInvocationId,
+          conversationId: entry.conversationId,
+          targetAgentId: entry.targetAgentId,
+          targetMessageId: entry.acceptedMessage.id,
+        });
+      }
       const result = await baseExecuteConversationAgent({
         runStore,
         conversationId: entry.conversationId,
@@ -973,19 +981,21 @@ export function createTurnOrchestrator(options: any = {}) {
         promptUserMessage: entry.promptUserMessage,
         queueItem: {
           agentId: agent.id,
-          triggerType: 'user',
-          triggeredByAgentId: null,
-          triggeredByAgentName: 'You',
+          triggerType: entry.triggerType || 'user',
+          triggeredByAgentId: entry.triggeredByAgentId || null,
+          triggeredByAgentName: entry.triggeredByAgentName || 'You',
           triggeredByMessageId: entry.acceptedMessage.id,
           parentRunId: null,
-          enqueueReason: 'user_mentions',
+          enqueueReason: entry.enqueueReason || 'user_mentions',
           privateOnly: Boolean(entry.acceptedMessage && entry.acceptedMessage.metadata && entry.acceptedMessage.metadata.privateOnly),
+          crossConversationDeliveryId: entry.crossConversationDeliveryId || null,
+          toolInvocationId: entry.toolInvocationId || null,
         },
         agent,
         turnState: slotState,
         completedReplies,
         failedReplies,
-        routingMode: 'mention_queue',
+        routingMode: entry.routingMode || 'mention_queue',
         hop: 1,
         remainingSlots: 0,
         enqueueAgent: null,
@@ -1044,6 +1054,12 @@ export function createTurnOrchestrator(options: any = {}) {
           errorMessage: message.errorMessage,
         }))
       );
+      return {
+        status: slotState.status,
+        replyMessage: completedReplies[0] || null,
+        completedReplies,
+        failedReplies,
+      };
     } catch (error) {
       const errorValue = error as any;
       const finishedAt = nowIso();
@@ -1089,6 +1105,15 @@ export function createTurnOrchestrator(options: any = {}) {
           errorValue && errorValue.stack ? errorValue.stack : errorValue
         }`
       );
+      if (entry.propagateError) {
+        throw error;
+      }
+      return {
+        status: slotState && slotState.status ? slotState.status : 'failed',
+        replyMessage: null,
+        completedReplies,
+        failedReplies,
+      };
     } finally {
       if (slotState && slotState.slotId) {
         activeAgentSlots.delete(slotState.slotId);
@@ -1145,14 +1170,25 @@ export function createTurnOrchestrator(options: any = {}) {
     const conversationId = entry.conversationId;
     markSideDispatchMessage(conversationId, entry.acceptedMessage.id);
 
+    let resolveExecution = null as any;
+    let rejectExecution = null as any;
+    const executionPromise = new Promise((resolve, reject) => {
+      resolveExecution = resolve;
+      rejectExecution = reject;
+    });
+    void executionPromise.catch(() => {});
+
     const slotRequest = agentSlotRegistry.requestSlot({
       conversationId,
       agentId: entry.targetAgentId,
       lane: 'side',
       onGranted(grant: any) {
-        return runSideDispatch(entry, grant);
+        const runPromise = runSideDispatch(entry, grant);
+        void runPromise.then(resolveExecution, rejectExecution);
+        return runPromise;
       },
     });
+    void slotRequest.promise.catch(rejectExecution);
 
     if (slotRequest.queued) {
       const queuedSideDispatch = {
@@ -1186,7 +1222,10 @@ export function createTurnOrchestrator(options: any = {}) {
       broadcastRuntimeState();
     }
 
-    return slotRequest;
+    return {
+      ...slotRequest,
+      executionPromise,
+    };
   }
 
   function submitSideDispatch(conversation: any, turnInput: any, acceptedMessage: any, sideTarget: any, options: any = {}) {
@@ -1198,6 +1237,105 @@ export function createTurnOrchestrator(options: any = {}) {
       dispatchLane: 'side',
       dispatchTargetAgentId: entry.targetAgentId,
     };
+  }
+
+  async function dispatchCrossConversationDelivery(input: any = {}) {
+    const delivery = input.delivery;
+    const targetMessage = input.targetMessage;
+    const conversation = delivery
+      ? store.getConversation(delivery.targetConversationId)
+      : null;
+    const targetAgent = conversation && delivery
+      ? getAgentById(conversation.agents, delivery.targetAgentId)
+      : null;
+
+    if (!delivery || !targetMessage || !conversation || !targetAgent) {
+      throw createHttpError(404, 'Cross-conversation delivery target is unavailable');
+    }
+    if (targetMessage.id !== delivery.targetMessageId || targetMessage.conversationId !== delivery.targetConversationId) {
+      throw createHttpError(409, 'Cross-conversation delivery target message does not match persisted intent');
+    }
+
+    const crossConversation = targetMessage.metadata && targetMessage.metadata.crossConversation
+      && typeof targetMessage.metadata.crossConversation === 'object'
+      ? targetMessage.metadata.crossConversation
+      : {};
+    const sideTarget = {
+      targetAgentId: delivery.targetAgentId,
+      cleanedContent: targetMessage.content,
+      explicitIntent: delivery.kind,
+    };
+    const entry: any = buildSideDispatchEntry(
+      conversation,
+      { content: targetMessage.content, metadata: targetMessage.metadata },
+      targetMessage,
+      sideTarget,
+      {
+        promptUserMessage: targetMessage,
+        promptSnapshotMessageIds: Array.from(
+          buildPromptSnapshotMessageIdsThroughMessage(conversation.id, targetMessage.id)
+        ),
+      }
+    );
+    entry.crossConversationDeliveryId = delivery.id;
+    entry.toolInvocationId = randomUUID();
+    entry.triggerType = 'external_agent';
+    entry.triggeredByAgentId = delivery.sourceAgentId || null;
+    entry.triggeredByAgentName = delivery.sourceAgentName || 'External Agent';
+    entry.enqueueReason = 'cross_conversation_delivery';
+    entry.routingMode = 'cross_conversation';
+    entry.entryStrategy = 'cross_conversation_delivery';
+    entry.propagateError = true;
+    entry.onInvocationStarting = input.onInvocationStarting;
+    entry.sourceConversationId = crossConversation.sourceConversationId || delivery.sourceConversationId;
+
+    const slotRequest = startSideDispatch(entry);
+    return slotRequest.executionPromise;
+  }
+
+  function requestStopCrossConversationDelivery(delivery: any, reason: any = 'Cancelled by operator') {
+    const conversationId = String(delivery && delivery.targetConversationId || '').trim();
+    const targetMessageId = String(delivery && delivery.targetMessageId || '').trim();
+    const stopReason = String(reason || 'Cancelled by operator').trim() || 'Cancelled by operator';
+    let stopped = false;
+
+    for (const queuedSideDispatch of listQueuedSideDispatches(conversationId)) {
+      if (!queuedSideDispatch || queuedSideDispatch.sourceMessageId !== targetMessageId) {
+        continue;
+      }
+      try {
+        stopped = queuedSideDispatch.cancel(stopReason) || stopped;
+      } catch {}
+      untrackQueuedSideDispatch(conversationId, queuedSideDispatch.requestId);
+    }
+
+    for (const slotState of listConversationActiveAgentSlots(conversationId)) {
+      if (!slotState || slotState.sourceMessageId !== targetMessageId) {
+        continue;
+      }
+      slotState.stopRequested = true;
+      slotState.stopReason = stopReason;
+      slotState.stopRequestedAt = nowIso();
+      slotState.status = 'stopping';
+      const handles = slotState.runHandles instanceof Set ? (Array.from(slotState.runHandles) as any[]) : [];
+      for (const handle of handles) {
+        if (!handle || typeof handle.cancel !== 'function') {
+          continue;
+        }
+        try {
+          handle.cancel(stopReason);
+          stopped = true;
+        } catch {}
+      }
+      slotState.updatedAt = nowIso();
+      syncCurrentTurnAgent(slotState);
+      emitTurnProgress(slotState);
+    }
+
+    if (stopped) {
+      broadcastRuntimeState();
+    }
+    return stopped;
   }
 
   function recoverPersistedSideDispatches() {
@@ -1431,11 +1569,13 @@ export function createTurnOrchestrator(options: any = {}) {
   return {
     buildRuntimePayload,
     clearConversationState,
+    dispatchCrossConversationDelivery,
     emitTurnProgress,
     getConversationQueueDepth,
     listAgentSlotSummaries,
     listTurnSummaries,
     requestStopConversationExecution,
+    requestStopCrossConversationDelivery,
     requestStopConversationTurn: requestStopMainTurn,
     resolveAssistantMessageSessionPath: sessionExporter.resolveAssistantMessageSessionPath,
     runConversationTurn,

@@ -1294,6 +1294,7 @@ export function createAgentExecutor(options: any = {}) {
       triggeredByAgentName: queueItem.triggeredByAgentName || '',
       triggeredByMessageId: queueItem.triggeredByMessageId || null,
       triggerType: queueItem.triggerType || 'user',
+      crossConversationDeliveryId: queueItem.crossConversationDeliveryId || null,
       agentContextSnapshot: contextSnapshot,
     };
 
@@ -1334,11 +1335,13 @@ export function createAgentExecutor(options: any = {}) {
     let bridgePublicCompletionRequested = false;
     const toolInvocation = agentToolBridge.registerInvocation(
       agentToolBridge.createInvocationContext({
+        invocationId: queueItem.toolInvocationId || undefined,
         conversationId,
         turnId,
         projectDir: resolvedProjectDir,
         agentId: agent.id,
         agentName: agent.name,
+        incomingDeliveryId: queueItem.crossConversationDeliveryId || null,
         assistantMessageId: assistantMessage.id,
         userMessageId: promptUserMessage && promptUserMessage.id ? promptUserMessage.id : null,
         promptUserMessage,
