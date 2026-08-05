@@ -184,6 +184,55 @@ async function sendPublic(config: any, flags: any, options: any = {}) {
   });
 }
 
+async function conversationDelivery(config: any, flags: any, kind: 'notify' | 'request', options: any = {}) {
+  const targetConversationId = String(flags['target-conversation'] || '').trim();
+  const targetAgentId = String(flags['target-agent'] || '').trim();
+  const idempotencyKey = String(flags['idempotency-key'] || '').trim();
+  const content = await resolveMessageContent(flags, options);
+
+  if (!targetConversationId) {
+    throw new Error(`conversation-${kind} requires --target-conversation.`);
+  }
+  if (!targetAgentId) {
+    throw new Error(`conversation-${kind} requires --target-agent.`);
+  }
+  if (!content) {
+    throw new Error(`conversation-${kind} requires --content or --content-stdin.`);
+  }
+  if (!idempotencyKey) {
+    throw new Error(`conversation-${kind} requires --idempotency-key.`);
+  }
+
+  const body: any = {
+    invocationId: config.invocationId,
+    callbackToken: config.callbackToken,
+    targetConversationId,
+    targetAgentId,
+    content,
+    idempotencyKey,
+  };
+  if (kind === 'request' && flags['deadline-seconds'] !== undefined) {
+    const deadlineSeconds = Number(flags['deadline-seconds']);
+    if (!Number.isInteger(deadlineSeconds) || deadlineSeconds < 1) {
+      throw new Error('conversation-request --deadline-seconds must be a positive integer.');
+    }
+    body.deadlineSeconds = deadlineSeconds;
+  }
+
+  return requestJson(`${config.apiUrl}/api/agent-tools/conversation-${kind}`, {
+    method: 'POST',
+    body,
+  });
+}
+
+async function conversationNotify(config: any, flags: any, options: any = {}) {
+  return conversationDelivery(config, flags, 'notify', options);
+}
+
+async function conversationRequest(config: any, flags: any, options: any = {}) {
+  return conversationDelivery(config, flags, 'request', options);
+}
+
 async function sendPrivate(config: any, flags: any, options: any = {}) {
   const content = await resolveMessageContent(flags, options);
 
@@ -678,6 +727,10 @@ async function main() {
     result = await sendPublic(config, flags);
   } else if (command === 'send-private') {
     result = await sendPrivate(config, flags);
+  } else if (command === 'conversation-notify') {
+    result = await conversationNotify(config, flags);
+  } else if (command === 'conversation-request') {
+    result = await conversationRequest(config, flags);
   } else if (command === 'read-context') {
     result = await readContext(config, flags);
   } else if (command === 'search-messages') {
@@ -706,7 +759,7 @@ async function main() {
     result = await trellisWrite(config, flags);
   } else {
     throw new Error(
-      'Unknown command. Use one of: send-public, send-private, read-context, search-messages, search-memory, write-experience, list-memories, save-memory, update-memory, forget-memory, list-participants, suggest-goal, update-goal-checklist, trellis-init, trellis-write.'
+      'Unknown command. Use one of: send-public, send-private, conversation-notify, conversation-request, read-context, search-messages, search-memory, write-experience, list-memories, save-memory, update-memory, forget-memory, list-participants, suggest-goal, update-goal-checklist, trellis-init, trellis-write.'
     );
   }
 
@@ -722,6 +775,8 @@ if (require.main === module) {
 }
 
 export {
+  conversationNotify,
+  conversationRequest,
   compactSendPrivateResult,
   compactSendPublicResult,
   formatCommandResult,

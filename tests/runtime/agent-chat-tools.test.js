@@ -2,6 +2,8 @@ const assert = require('node:assert/strict');
 const { PassThrough } = require('node:stream');
 const test = require('node:test');
 const {
+  conversationNotify,
+  conversationRequest,
   forgetMemory,
   formatCommandResult,
   resolveMessageContent,
@@ -14,6 +16,68 @@ const {
   updateMemory,
   writeExperience,
 } = require('../../build/lib/agent-chat-tools');
+
+test('conversation notify and request CLI helpers call only the fixed Agent delivery routes', async (t) => {
+  const requests = [];
+  t.mock.method(global, 'fetch', async (url, options) => {
+    requests.push({ url: String(url), body: JSON.parse(String(options.body)) });
+    return {
+      ok: true,
+      async text() {
+        return JSON.stringify({ ok: true, delivery: { id: `delivery-${requests.length}` } });
+      },
+    };
+  });
+  const config = {
+    apiUrl: 'http://127.0.0.1:3100',
+    invocationId: 'invocation-cross-delivery',
+    callbackToken: 'token-cross-delivery',
+  };
+
+  await conversationNotify(config, {
+    'target-conversation': 'target-conversation',
+    'target-agent': 'target-agent',
+    content: 'Notify the target Agent.',
+    'idempotency-key': 'notify-cli-key',
+  });
+  await conversationRequest(config, {
+    'target-conversation': 'target-conversation',
+    'target-agent': 'target-agent',
+    content: 'Request a bounded response.',
+    'idempotency-key': 'request-cli-key',
+    'deadline-seconds': '45',
+  });
+
+  assert.equal(requests[0].url, 'http://127.0.0.1:3100/api/agent-tools/conversation-notify');
+  assert.deepEqual(requests[0].body, {
+    invocationId: 'invocation-cross-delivery',
+    callbackToken: 'token-cross-delivery',
+    targetConversationId: 'target-conversation',
+    targetAgentId: 'target-agent',
+    content: 'Notify the target Agent.',
+    idempotencyKey: 'notify-cli-key',
+  });
+  assert.equal(requests[1].url, 'http://127.0.0.1:3100/api/agent-tools/conversation-request');
+  assert.equal(requests[1].body.deadlineSeconds, 45);
+  assert.equal('sourceConversationId' in requests[1].body, false);
+  assert.equal('projectScopeId' in requests[1].body, false);
+});
+
+test('conversation request CLI rejects invalid explicit deadlines before HTTP', async () => {
+  await assert.rejects(
+    () => conversationRequest(
+      { apiUrl: 'http://127.0.0.1:3100', invocationId: 'invocation-1', callbackToken: 'token-1' },
+      {
+        'target-conversation': 'target-conversation',
+        'target-agent': 'target-agent',
+        content: 'Request a response.',
+        'idempotency-key': 'request-cli-invalid-deadline',
+        'deadline-seconds': '1.5',
+      }
+    ),
+    /deadline-seconds must be a positive integer/
+  );
+});
 
 test('send-public tool results are compact by default', () => {
   const result = formatCommandResult('send-public', {

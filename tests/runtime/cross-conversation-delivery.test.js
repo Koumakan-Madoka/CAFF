@@ -914,3 +914,77 @@ test('queued cancel is terminal and running cancel records best-effort stop with
     fixture.store.close();
   }
 });
+
+test('explicit retry requeues only deterministic pre-start failures and rejects unknown started outcomes', async () => {
+  const safeFixture = createFixture();
+  let safeNow = new Date('2026-08-05T10:00:00.000Z');
+  const safeService = createCrossConversationDeliveryService({
+    store: safeFixture.store,
+    now: () => safeNow,
+  });
+
+  try {
+    const submitted = submitRequest(safeService, safeFixture, {
+      idempotencyKey: 'safe-explicit-retry',
+      deadlineSeconds: 60,
+    });
+    const worker = createCrossConversationDeliveryWorker({
+      store: safeFixture.store,
+      now: () => safeNow,
+      maxAttempts: 1,
+      async dispatchTarget() {
+        throw new Error('Deterministic failure before invocation start');
+      },
+    });
+
+    const failed = await worker.processNext();
+    assert.equal(failed.status, 'failed');
+    assert.equal(failed.delivery.startedAt, null);
+    assert.equal(failed.delivery.targetInvocationId, null);
+
+    safeNow = new Date('2026-08-05T10:00:10.000Z');
+    const retried = await worker.retry(submitted.delivery.id, 'Operator confirmed retry');
+    assert.equal(retried.dispatchStatus, 'queued');
+    assert.equal(retried.responseStatus, 'waiting');
+    assert.equal(retried.attemptCount, 1);
+    assert.equal(retried.lastErrorCode, null);
+    assert.equal(retried.deadlineAt, '2026-08-05T10:01:10.000Z');
+    assert.equal(
+      safeFixture.store.listCrossConversationDeliveryEvents(retried.id).at(-1).eventType,
+      'retry_requested'
+    );
+  } finally {
+    safeFixture.store.close();
+  }
+
+  const unsafeFixture = createFixture();
+  let unsafeNow = new Date('2026-08-05T11:00:00.000Z');
+  const unsafeService = createCrossConversationDeliveryService({
+    store: unsafeFixture.store,
+    now: () => unsafeNow,
+  });
+
+  try {
+    const submitted = submitRequest(unsafeService, unsafeFixture, {
+      idempotencyKey: 'unsafe-explicit-retry',
+    });
+    const worker = createCrossConversationDeliveryWorker({
+      store: unsafeFixture.store,
+      now: () => unsafeNow,
+      async dispatchTarget({ onInvocationStarting }) {
+        onInvocationStarting({ invocationId: 'started-before-crash' });
+        throw new Error('Outcome lost after invocation start');
+      },
+    });
+
+    const failed = await worker.processNext();
+    assert.equal(failed.status, 'failed_unknown_outcome');
+    unsafeNow = new Date('2026-08-05T11:00:10.000Z');
+    await assert.rejects(
+      () => worker.retry(submitted.delivery.id, 'Do not replay an unknown outcome'),
+      assertDeliveryError('cross_conversation_retry_unsafe', 409)
+    );
+  } finally {
+    unsafeFixture.store.close();
+  }
+});

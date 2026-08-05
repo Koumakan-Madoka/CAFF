@@ -9,7 +9,14 @@ const MAX_REQUEST_DEADLINE_SECONDS = 86_400;
 const MAX_TRACE_HOP = 8;
 
 function createDeliveryError(statusCode: number, code: string, message: string, details: any = {}) {
-  return createHttpError(statusCode, message, { code, ...details });
+  const issues = Array.isArray(details.issues)
+    ? details.issues
+    : [{
+        code,
+        message,
+        ...(details.field ? { field: details.field } : {}),
+      }];
+  return createHttpError(statusCode, message, { code, ...details, issues });
 }
 
 function normalizeRequiredText(value: any, fieldName: string, maxLength = MAX_DELIVERY_IDENTIFIER_LENGTH) {
@@ -916,11 +923,74 @@ export function createCrossConversationDeliveryWorker(options: any = {}) {
     return delivery;
   }
 
+  async function retry(deliveryId: any, reason: any = 'Retried by operator') {
+    const normalizedDeliveryId = normalizeRequiredText(deliveryId, 'deliveryId');
+    const retryReason = String(reason || 'Retried by operator').trim() || 'Retried by operator';
+    const delivery = store.getCrossConversationDelivery(normalizedDeliveryId);
+
+    if (!delivery) {
+      throw createDeliveryError(404, 'cross_conversation_delivery_not_found', 'Delivery not found');
+    }
+    if (delivery.startedAt || delivery.targetInvocationId) {
+      throw createDeliveryError(
+        409,
+        'cross_conversation_retry_unsafe',
+        'This delivery may already have executed; retry requires a new explicitly linked delivery'
+      );
+    }
+    if (delivery.dispatchStatus !== 'failed') {
+      throw createDeliveryError(
+        409,
+        'cross_conversation_retry_not_allowed',
+        'Only a failed delivery that never started can be retried in place'
+      );
+    }
+
+    const retryDate = currentDate();
+    let deadlineAt = null;
+    if (delivery.kind === 'request') {
+      const createdAtMs = new Date(delivery.createdAt).getTime();
+      const originalDeadlineMs = new Date(delivery.deadlineAt).getTime();
+      const originalDurationMs = Number.isFinite(createdAtMs) && Number.isFinite(originalDeadlineMs)
+        ? originalDeadlineMs - createdAtMs
+        : DEFAULT_REQUEST_DEADLINE_SECONDS * 1000;
+      const boundedDurationMs = Math.min(
+        MAX_REQUEST_DEADLINE_SECONDS * 1000,
+        Math.max(1_000, originalDurationMs > 0 ? originalDurationMs : DEFAULT_REQUEST_DEADLINE_SECONDS * 1000)
+      );
+      deadlineAt = new Date(retryDate.getTime() + boundedDurationMs).toISOString();
+    }
+
+    const retried = store.retryCrossConversationDeliveryBeforeStart(delivery.id, {
+      deadlineAt,
+      retryAt: retryDate.toISOString(),
+    });
+    if (!retried) {
+      throw createDeliveryError(
+        409,
+        'cross_conversation_retry_conflict',
+        'Delivery state changed before retry; refresh and try again'
+      );
+    }
+
+    store.appendCrossConversationDeliveryEvent(retried.id, {
+      eventType: 'retry_requested',
+      attemptNumber: retried.attemptCount,
+      actorKind: 'operator',
+      actorId: null,
+      event: { reasonProvided: Boolean(retryReason) },
+      createdAt: retryDate.toISOString(),
+    });
+    publishDeliveryChanged(retried, 'retry_requested');
+    return retried;
+  }
+
   return {
     cancel,
     expireRequestDeadlines,
     processNext,
     recoverExpiredClaims,
     recoverPendingResponses,
+    retry,
   };
 }

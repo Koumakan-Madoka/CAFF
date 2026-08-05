@@ -12,6 +12,9 @@ const { createServerApp } = require('../../build/server/app/create-server');
 const { createBootstrapPayloadBuilder } = require('../../build/server/api/bootstrap-payload');
 const { createConversationsController } = require('../../build/server/api/conversations-controller');
 const { createMemoryController } = require('../../build/server/api/memory-controller');
+const {
+  createCrossConversationDeliveryService,
+} = require('../../build/server/domain/conversation/cross-conversation-delivery');
 const { maybeAutoCreateConversationDigest } = require('../../build/server/domain/conversation/conversation-digest');
 const { maybeAutoCreateConversationSkillDraft } = require('../../build/server/domain/conversation/skill-draft');
 const { createRoleService } = require('../../build/server/domain/roles/role-service');
@@ -314,6 +317,133 @@ test('create server wires loopback model-provider administration with bootstrap 
   closed = true;
 });
 
+test('server smoke: Agent delivery, operator receipt lookup, cancellation, and project binding share one HTTP surface', async (t) => {
+  const tempDir = withTempDir('caff-cross-delivery-http-smoke-');
+  const sqlitePath = path.join(tempDir, 'chat.sqlite');
+  const port = await findFreePort();
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const app = createServerApp({
+    host: '127.0.0.1',
+    port,
+    agentDir: tempDir,
+    sqlitePath,
+    projectDir: tempDir,
+    deliveryWorkerFactory(options) {
+      return {
+        recoverExpiredClaims() {
+          return { requeuedDeliveryIds: [], failedUnknownDeliveryIds: [] };
+        },
+        recoverPendingResponses() {
+          return [];
+        },
+        expireRequestDeadlines() {
+          return [];
+        },
+        async processNext() {
+          return null;
+        },
+        async cancel(deliveryId, reason) {
+          const cancelledAt = new Date().toISOString();
+          return options.store.cancelQueuedCrossConversationDelivery(deliveryId, {
+            reason,
+            cancelledAt,
+          });
+        },
+        async retry() {
+          throw new Error('Retry is not used by this smoke path');
+        },
+      };
+    },
+    setDeliveryMaintenanceInterval() {
+      return { unref() {} };
+    },
+    clearDeliveryMaintenanceInterval() {},
+  });
+  let closed = false;
+
+  t.after(async () => {
+    if (!closed) {
+      await new Promise((resolve) => app.close(resolve));
+    }
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const sourceAgent = app.store.saveCustomRoleConfig({
+    id: 'delivery-http-source-agent',
+    name: 'Delivery HTTP Source',
+    personaPrompt: 'Send one bounded delivery.',
+  });
+  const targetAgent = app.store.saveCustomRoleConfig({
+    id: 'delivery-http-target-agent',
+    name: 'Delivery HTTP Target',
+    personaPrompt: 'Receive one bounded delivery.',
+  });
+  const sourceConversation = app.store.createConversation({
+    id: 'delivery-http-source-conversation',
+    title: 'Delivery HTTP Source',
+    participants: [sourceAgent.id],
+  });
+  const targetConversation = app.store.createConversation({
+    id: 'delivery-http-target-conversation',
+    title: 'Delivery HTTP Target',
+    participants: [targetAgent.id],
+  });
+
+  await new Promise((resolve) => app.start(resolve));
+  const projects = await fetchJson(baseUrl, '/api/projects');
+  const projectId = projects.activeProjectId;
+  assert.ok(projectId);
+
+  for (const conversationId of [sourceConversation.id, targetConversation.id]) {
+    const binding = await fetchJson(baseUrl, `/api/conversations/${conversationId}/project-scope`, {
+      method: 'PUT',
+      body: { projectId },
+    });
+    assert.equal(binding.conversation.projectScopeId, projectId);
+  }
+
+  const invocation = app.agentToolBridge.registerInvocation(
+    app.agentToolBridge.createInvocationContext({
+      conversationId: sourceConversation.id,
+      turnId: 'delivery-http-source-turn',
+      projectDir: tempDir,
+      agentId: sourceAgent.id,
+      agentName: sourceAgent.name,
+      conversationAgents: [sourceAgent],
+    })
+  );
+  const submitted = await fetchJson(baseUrl, '/api/agent-tools/conversation-notify', {
+    method: 'POST',
+    body: {
+      invocationId: invocation.invocationId,
+      callbackToken: invocation.callbackToken,
+      targetConversationId: targetConversation.id,
+      targetAgentId: targetAgent.id,
+      content: 'Deliver through the fixed Agent HTTP route.',
+      idempotencyKey: 'delivery-http-smoke-key',
+    },
+  });
+  assert.equal(submitted.delivery.dispatchStatus, 'queued');
+
+  const receipt = await fetchJson(
+    baseUrl,
+    `/api/conversation-deliveries/${submitted.delivery.id}`
+  );
+  assert.equal(receipt.delivery.id, submitted.delivery.id);
+  assert.equal(receipt.targetMessage.id, submitted.targetMessageId);
+  assert.equal(receipt.sourceReceipt.id, submitted.sourceReceiptMessageId);
+
+  const cancelled = await fetchJson(
+    baseUrl,
+    `/api/conversation-deliveries/${submitted.delivery.id}/cancel`,
+    { method: 'POST', body: { reason: 'Smoke cancellation' } }
+  );
+  assert.equal(cancelled.delivery.dispatchStatus, 'cancelled');
+
+  await new Promise((resolve) => app.close(resolve));
+  closed = true;
+});
+
 test('conversations controller preserves string participant ids when mode skills are merged', async (t) => {
   const { handler, store } = createConversationsControllerHarness(t, {
     modeStore: {
@@ -343,6 +473,92 @@ test('conversations controller preserves string participant ids when mode skills
   assert.equal(result.statusCode, 201);
   assert.deepEqual(result.json.conversation.agents.map((participant) => participant.id), [agent.id]);
   assert.deepEqual(result.json.conversation.agents[0].conversationSkillIds, ['skill-creator']);
+});
+
+test('operator project binding resolves a real project and rejects non-terminal delivery ambiguity', async (t) => {
+  const project = { id: 'project-scope-1', name: 'Project Scope One', path: process.cwd() };
+  const otherProject = { id: 'project-scope-2', name: 'Project Scope Two', path: process.cwd() };
+  const { handler, store } = createConversationsControllerHarness(t, {
+    projectManager: {
+      listProjects() {
+        return [project, otherProject];
+      },
+    },
+  });
+  const source = createSmokeConversation(store, {
+    id: 'project-binding-source',
+    title: 'Project Binding Source',
+  });
+  const target = createSmokeConversation(store, {
+    id: 'project-binding-target',
+    title: 'Project Binding Target',
+  });
+
+  const bound = await invokeConversationsController(handler, {
+    method: 'PUT',
+    pathname: `/api/conversations/${source.id}/project-scope`,
+    body: { projectId: project.id },
+  });
+  assert.equal(bound.statusCode, 200);
+  assert.equal(bound.json.conversation.projectScopeId, project.id);
+  assert.equal(bound.json.project.id, project.id);
+
+  const idempotentBinding = await invokeConversationsController(handler, {
+    method: 'PUT',
+    pathname: `/api/conversations/${source.id}/project-scope`,
+    body: { projectId: project.id },
+  });
+  assert.equal(idempotentBinding.statusCode, 200);
+  assert.equal(idempotentBinding.json.conversation.projectScopeId, project.id);
+
+  await assert.rejects(
+    () => invokeConversationsController(handler, {
+      method: 'PUT',
+      pathname: `/api/conversations/${source.id}/project-scope`,
+      body: { projectId: otherProject.id },
+    }),
+    (error) => error && error.statusCode === 409
+      && error.issues[0].code === 'conversation_project_scope_immutable'
+  );
+
+  await assert.rejects(
+    () => invokeConversationsController(handler, {
+      method: 'PUT',
+      pathname: `/api/conversations/${target.id}/project-scope`,
+      body: { projectId: 'missing-project' },
+    }),
+    (error) => error && error.statusCode === 404 && error.issues[0].code === 'project_not_found'
+  );
+
+  store.db.prepare('UPDATE chat_conversations SET project_scope_id = ? WHERE id = ?')
+    .run(project.id, target.id);
+  const sourceAgent = store.getConversationWithoutMessages(source.id).agents[0];
+  const targetAgent = store.getConversationWithoutMessages(target.id).agents[0];
+  const service = createCrossConversationDeliveryService({ store });
+  service.submitFromAgent({
+    kind: 'agent',
+    sourceConversationId: source.id,
+    sourceInvocationId: 'project-binding-invocation',
+    sourceAgentId: sourceAgent.id,
+    sourceAgentName: sourceAgent.name,
+  }, {
+    kind: 'notify',
+    targetConversationId: target.id,
+    targetAgentId: targetAgent.id,
+    content: 'Keep this delivery non-terminal while checking scope binding.',
+    idempotencyKey: 'project-binding-delivery',
+  });
+  store.db.prepare('UPDATE chat_conversations SET project_scope_id = NULL WHERE id = ?').run(target.id);
+
+  await assert.rejects(
+    () => invokeConversationsController(handler, {
+      method: 'PUT',
+      pathname: `/api/conversations/${target.id}/project-scope`,
+      body: { projectId: project.id },
+    }),
+    (error) => error && error.statusCode === 409
+      && error.issues[0].code === 'conversation_project_scope_delivery_conflict'
+  );
 });
 
 test('conversations controller exposes bounded cursor pages without hydrating public messages in the conversation projection', async (t) => {

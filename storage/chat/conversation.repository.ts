@@ -4,6 +4,7 @@ export class ChatConversationRepository {
   getStatement: any;
   insertStatement: any;
   updateStatement: any;
+  bindProjectScopeStatement: any;
   touchStatement: any;
   deleteStatement: any;
 
@@ -103,6 +104,15 @@ export class ChatConversationRepository {
         updated_at = ?
       WHERE id = ?
     `);
+    this.bindProjectScopeStatement = db.prepare(`
+      UPDATE chat_conversations
+      SET
+        project_scope_id = @projectScopeId,
+        updated_at = @updatedAt
+      WHERE id = @conversationId
+        AND project_scope_id IS NULL
+      RETURNING *
+    `);
     this.touchStatement = db.prepare(`
       UPDATE chat_conversations
       SET
@@ -154,6 +164,14 @@ export class ChatConversationRepository {
     );
 
     return this.get(conversationId);
+  }
+
+  bindProjectScope(conversationId: string, payload: any) {
+    return this.bindProjectScopeStatement.get({
+      conversationId,
+      projectScopeId: payload.projectScopeId,
+      updatedAt: payload.updatedAt,
+    }) || null;
   }
 
   touch(conversationId: string, payload: any) {

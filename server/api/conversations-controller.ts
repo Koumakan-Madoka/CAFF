@@ -234,6 +234,53 @@ export function createConversationsController(options: any = {}): RouteHandler<A
       return true;
     }
 
+    const projectScopeMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/project-scope$/);
+    if (projectScopeMatch && req.method === 'PUT') {
+      const conversationId = decodeURIComponent(projectScopeMatch[1]);
+      const body = await readRequestJson(req);
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        throw createHttpError(400, 'Request body must be a JSON object', {
+          issues: [{ code: 'invalid_body', message: 'Request body must be a JSON object' }],
+        });
+      }
+      const unknownField = Object.keys(body).find((fieldName) => fieldName !== 'projectId');
+      if (unknownField) {
+        throw createHttpError(400, `Unknown project scope field: ${unknownField}`, {
+          issues: [{ code: 'unknown_field', field: unknownField, message: `Unknown field: ${unknownField}` }],
+        });
+      }
+      const projectId = String(body.projectId || '').trim();
+      if (!projectId) {
+        throw createHttpError(400, 'projectId is required', {
+          issues: [{ code: 'project_id_required', field: 'projectId', message: 'projectId is required' }],
+        });
+      }
+      if (!projectManager || typeof projectManager.listProjects !== 'function') {
+        throw createHttpError(501, 'Project manager is not configured');
+      }
+      const project = projectManager.listProjects()
+        .find((candidate: any) => candidate && candidate.id === projectId);
+      if (!project) {
+        throw createHttpError(404, 'Project not found', {
+          issues: [{ code: 'project_not_found', field: 'projectId', message: 'Project not found' }],
+        });
+      }
+      if (!store || typeof store.bindConversationProjectScope !== 'function') {
+        throw createHttpError(501, 'Conversation project scope binding is unavailable');
+      }
+
+      const conversation = store.bindConversationProjectScope(conversationId, project.id);
+      const summary = pickConversationSummary(conversation);
+      broadcastEvent('conversation_summary_updated', { conversationId, summary });
+      sendJson(res, 200, {
+        conversation,
+        summary,
+        conversations: store.listConversations(),
+        project,
+      });
+      return true;
+    }
+
     if (req.method === 'POST' && pathname === '/api/conversations') {
       const body = await readRequestJson(req);
       const rawType = String(body && body.type ? body.type : '').trim().toLowerCase();

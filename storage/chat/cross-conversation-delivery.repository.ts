@@ -3,6 +3,7 @@ export class CrossConversationDeliveryRepository {
   getByIdempotencyStatement: any;
   getTraceEdgeStatement: any;
   getByReplyToStatement: any;
+  hasNonTerminalForConversationStatement: any;
   listExpiredClaimsStatement: any;
   listExpiredDeadlinesStatement: any;
   listPendingResponsesStatement: any;
@@ -14,6 +15,7 @@ export class CrossConversationDeliveryRepository {
   releaseForRetryStatement: any;
   markDispatchFailedBeforeStartStatement: any;
   markDispatchUnknownOutcomeStatement: any;
+  retryFailedBeforeStartStatement: any;
   cancelQueuedStatement: any;
   requestRunningCancelStatement: any;
   markRunningCancelledStatement: any;
@@ -49,6 +51,13 @@ export class CrossConversationDeliveryRepository {
       SELECT *
       FROM chat_cross_conversation_deliveries
       WHERE reply_to_delivery_id = ?
+      LIMIT 1
+    `);
+    this.hasNonTerminalForConversationStatement = db.prepare(`
+      SELECT 1 AS found
+      FROM chat_cross_conversation_deliveries
+      WHERE terminal_at IS NULL
+        AND (source_conversation_id = ? OR target_conversation_id = ?)
       LIMIT 1
     `);
     this.listExpiredClaimsStatement = db.prepare(`
@@ -306,6 +315,30 @@ export class CrossConversationDeliveryRepository {
         AND target_invocation_id IS NOT NULL
       RETURNING *
     `);
+    this.retryFailedBeforeStartStatement = db.prepare(`
+      UPDATE chat_cross_conversation_deliveries
+      SET
+        dispatch_status = 'queued',
+        response_status = CASE WHEN kind = 'request' THEN 'waiting' ELSE 'not_expected' END,
+        deadline_at = @deadlineAt,
+        cancel_requested_at = NULL,
+        last_error_code = NULL,
+        last_error_message = NULL,
+        claim_owner = NULL,
+        claim_expires_at = NULL,
+        next_attempt_at = @retryAt,
+        completed_at = NULL,
+        responded_at = NULL,
+        terminal_at = NULL,
+        updated_at = @retryAt
+      WHERE id = @deliveryId
+        AND message_status = 'persisted'
+        AND dispatch_status = 'failed'
+        AND started_at IS NULL
+        AND target_invocation_id IS NULL
+        AND claim_owner IS NULL
+      RETURNING *
+    `);
     this.cancelQueuedStatement = db.prepare(`
       UPDATE chat_cross_conversation_deliveries
       SET
@@ -453,6 +486,10 @@ export class CrossConversationDeliveryRepository {
     return this.getByReplyToStatement.get(deliveryId) || null;
   }
 
+  hasNonTerminalForConversation(conversationId: string) {
+    return Boolean(this.hasNonTerminalForConversationStatement.get(conversationId, conversationId));
+  }
+
   listExpiredClaims(now: string) {
     return this.listExpiredClaimsStatement.all(now);
   }
@@ -579,6 +616,14 @@ export class CrossConversationDeliveryRepository {
       errorCode: payload.errorCode,
       errorMessage: payload.errorMessage,
       failedAt: payload.failedAt,
+    }) || null;
+  }
+
+  retryFailedBeforeStart(deliveryId: string, payload: any) {
+    return this.retryFailedBeforeStartStatement.get({
+      deliveryId,
+      deadlineAt: payload.deadlineAt || null,
+      retryAt: payload.retryAt,
     }) || null;
   }
 

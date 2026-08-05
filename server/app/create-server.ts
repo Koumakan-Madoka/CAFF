@@ -14,6 +14,9 @@ const { createAgentToolsController } = require('../api/agent-tools-controller');
 const { createAgentsController } = require('../api/agents-controller');
 const { createBootstrapController } = require('../api/bootstrap-controller');
 const { createConversationsController } = require('../api/conversations-controller');
+const {
+  createConversationDeliveriesController,
+} = require('../api/conversation-deliveries-controller');
 const { createFeishuController } = require('../api/feishu-controller');
 const { createHealthController } = require('../api/health-controller');
 const { createMetricsController } = require('../api/metrics-controller');
@@ -692,6 +695,11 @@ export function createServerApp(options: any = {}) {
     }),
     createAgentToolsController({
       agentToolBridge,
+    }),
+    createConversationDeliveriesController({
+      store,
+      deliveryWorker: crossConversationDeliveryWorker,
+      onDeliveryAvailable: requestCrossConversationDeliveryDrain,
     }),
     createModesController({
       modeStore,

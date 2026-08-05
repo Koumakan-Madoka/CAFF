@@ -705,6 +705,14 @@ function createParticipantRosterError(
   return error;
 }
 
+function createProjectScopeBindingError(statusCode: number, code: string, message: string) {
+  const error: any = new Error(message);
+  error.statusCode = statusCode;
+  error.code = code;
+  error.issues = [{ code, message }];
+  return error;
+}
+
 function normalizeRecipientAgentIds(recipientAgentIds: any) {
   const seen = new Set();
   const normalized = [];
@@ -911,6 +919,50 @@ export class ChatAppStore {
         }
 
         return this.getConversation(conversationId);
+      });
+
+      this.bindConversationProjectScopeTransaction = this.db.transaction((conversationId: any, projectScopeId: any) => {
+        const normalizedConversationId = String(conversationId || '').trim();
+        const normalizedProjectScopeId = String(projectScopeId || '').trim();
+        const existing = this.getConversationWithoutMessages(normalizedConversationId);
+
+        if (!existing) {
+          throw createProjectScopeBindingError(404, 'conversation_not_found', 'Conversation not found');
+        }
+        if (!normalizedProjectScopeId) {
+          throw createProjectScopeBindingError(400, 'project_id_required', 'projectId is required');
+        }
+        if (existing.projectScopeId === normalizedProjectScopeId) {
+          return existing;
+        }
+        if (existing.projectScopeId) {
+          throw createProjectScopeBindingError(
+            409,
+            'conversation_project_scope_immutable',
+            'Conversation project scope is already bound and cannot be changed'
+          );
+        }
+        if (this.crossConversationDeliveryRepository.hasNonTerminalForConversation(normalizedConversationId)) {
+          throw createProjectScopeBindingError(
+            409,
+            'conversation_project_scope_delivery_conflict',
+            'Conversation project scope cannot change while a cross-conversation delivery is non-terminal'
+          );
+        }
+
+        const bound = this.conversationRepository.bindProjectScope(normalizedConversationId, {
+          projectScopeId: normalizedProjectScopeId,
+          updatedAt: nowIso(),
+        });
+        if (!bound) {
+          throw createProjectScopeBindingError(
+            409,
+            'conversation_project_scope_conflict',
+            'Conversation project scope binding changed concurrently; refresh and retry'
+          );
+        }
+
+        return this.getConversationWithoutMessages(normalizedConversationId);
       });
 
       this.createMessageTransaction = this.db.transaction((payload: any) => {
@@ -1509,6 +1561,10 @@ export class ChatAppStore {
     return this.conversationRepository.listTreeHeaders().map(normalizeConversationHeader);
   }
 
+  bindConversationProjectScope(conversationId: any, projectScopeId: any) {
+    return this.bindConversationProjectScopeTransaction(conversationId, projectScopeId);
+  }
+
   getCrossConversationDelivery(deliveryId: any) {
     return normalizeCrossConversationDeliveryRow(
       this.crossConversationDeliveryRepository.get(String(deliveryId || '').trim())
@@ -1540,6 +1596,12 @@ export class ChatAppStore {
       targetMessage: normalizeMessageRow(this.messageRepository.get(row.target_message_id)),
       sourceReceipt: normalizeMessageRow(this.messageRepository.get(row.source_receipt_message_id)),
     };
+  }
+
+  getCrossConversationResponseDelivery(deliveryId: any) {
+    return normalizeCrossConversationDeliveryRow(
+      this.crossConversationDeliveryRepository.getByReplyTo(String(deliveryId || '').trim())
+    );
   }
 
   getCrossConversationTraceEdge(traceId: any, sourceConversationId: any, targetConversationId: any) {
@@ -1599,6 +1661,15 @@ export class ChatAppStore {
   failCrossConversationDeliveryUnknownOutcome(deliveryId: any, payload: any) {
     return normalizeCrossConversationDeliveryRow(
       this.crossConversationDeliveryRepository.markDispatchUnknownOutcome(
+        String(deliveryId || '').trim(),
+        payload
+      )
+    );
+  }
+
+  retryCrossConversationDeliveryBeforeStart(deliveryId: any, payload: any) {
+    return normalizeCrossConversationDeliveryRow(
+      this.crossConversationDeliveryRepository.retryFailedBeforeStart(
         String(deliveryId || '').trim(),
         payload
       )

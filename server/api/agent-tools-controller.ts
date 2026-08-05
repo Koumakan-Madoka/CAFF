@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { URL } from 'node:url';
 
 import type { RouteHandler } from '../http/router';
+import { createHttpError } from '../http/http-errors';
 import { readRequestJson } from '../http/request-body';
 import { sendJson } from '../http/response';
 
@@ -11,6 +12,36 @@ type ApiContext = {
   pathname: string;
   requestUrl: URL;
 };
+
+function validateConversationDeliveryBody(body: any, kind: 'notify' | 'request') {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw createHttpError(400, 'Request body must be a JSON object', {
+      issues: [{ code: 'invalid_body', message: 'Request body must be a JSON object' }],
+    });
+  }
+
+  const allowedFields = new Set([
+    'invocationId',
+    'callbackToken',
+    'targetConversationId',
+    'targetAgentId',
+    'content',
+    'idempotencyKey',
+    ...(kind === 'request' ? ['deadlineSeconds'] : []),
+  ]);
+  const unknownField = Object.keys(body).find((fieldName) => !allowedFields.has(fieldName));
+  if (unknownField) {
+    throw createHttpError(400, `Unknown conversation delivery field: ${unknownField}`, {
+      issues: [{
+        code: 'cross_conversation_unknown_field',
+        field: unknownField,
+        message: `Unknown field: ${unknownField}`,
+      }],
+    });
+  }
+
+  return body;
+}
 
 export function createAgentToolsController(options: any = {}): RouteHandler<ApiContext> {
   const agentToolBridge = options.agentToolBridge;
@@ -38,6 +69,18 @@ export function createAgentToolsController(options: any = {}): RouteHandler<ApiC
     if (pathname === '/api/agent-tools/search-memory' && req.method === 'POST') {
       const body = await readRequestJson(req);
       sendJson(res, 200, agentToolBridge.handleSearchMemory(body));
+      return true;
+    }
+
+    if (pathname === '/api/agent-tools/conversation-notify' && req.method === 'POST') {
+      const body = validateConversationDeliveryBody(await readRequestJson(req), 'notify');
+      sendJson(res, 200, agentToolBridge.handleConversationNotify(body));
+      return true;
+    }
+
+    if (pathname === '/api/agent-tools/conversation-request' && req.method === 'POST') {
+      const body = validateConversationDeliveryBody(await readRequestJson(req), 'request');
+      sendJson(res, 200, agentToolBridge.handleConversationRequest(body));
       return true;
     }
 
