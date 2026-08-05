@@ -12,6 +12,9 @@ const { createChatMemoryCardRepository } = require('../storage/chat/memory-card.
 const { createChatSummarySegmentRepository } = require('../storage/chat/summary-segment.repository');
 const { createChatChannelBindingRepository } = require('../storage/chat/channel-binding.repository');
 const { createChatExternalEventRepository } = require('../storage/chat/external-event.repository');
+const {
+  createCrossConversationDeliveryRepository,
+} = require('../storage/chat/cross-conversation-delivery.repository');
 
 const MAX_AVATAR_DATA_URL_LENGTH = 2 * 1024 * 1024;
 const MAX_AGENT_SANDBOX_NAME_LENGTH = 80;
@@ -555,6 +558,11 @@ function normalizeConversationHeader(row: any) {
     title: row.title,
     type: normalizeConversationType(row.type),
     metadata: parseJson(row.metadata_json) || {},
+    projectScopeId: row.project_scope_id || null,
+    parentConversationId: row.parent_conversation_id || null,
+    originConversationId: row.origin_conversation_id || null,
+    originMessageId: row.origin_message_id || null,
+    treeDepth: Number.isInteger(row.tree_depth) ? row.tree_depth : Number(row.tree_depth || 0),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     lastMessageAt: row.last_message_at || null,
@@ -676,6 +684,7 @@ export class ChatAppStore {
       this.summarySegmentRepository = createChatSummarySegmentRepository(this.db);
       this.channelBindingRepository = createChatChannelBindingRepository(this.db);
       this.externalEventRepository = createChatExternalEventRepository(this.db);
+      this.crossConversationDeliveryRepository = createCrossConversationDeliveryRepository(this.db);
 
       this.replaceConversationParticipants = (conversationId: any, participants: any) => {
         const createdAt = nowIso();
@@ -801,6 +810,11 @@ export class ChatAppStore {
           title: payload.title,
           type: normalizeConversationType(payload.type),
           metadataJson: serializeJson(payload.metadata || {}),
+          projectScopeId: null,
+          parentConversationId: null,
+          originConversationId: null,
+          originMessageId: null,
+          treeDepth: 0,
           createdAt: timestamp,
           updatedAt: timestamp,
           lastMessageAt: null,
@@ -1201,6 +1215,10 @@ export class ChatAppStore {
 
   listConversations() {
     return this.conversationRepository.listHeaders().map(normalizeConversationHeader);
+  }
+
+  listConversationTree() {
+    return this.conversationRepository.listTreeHeaders().map(normalizeConversationHeader);
   }
 
   getConversation(conversationId: any) {
