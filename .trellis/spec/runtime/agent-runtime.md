@@ -186,6 +186,60 @@ CAFF uses a descriptor + on-demand loading model for conversation skills:
 
 ## Agent Chat Bridge Prompt Guidance
 
+## CAFF-Owned Pi Capability Facades
+
+### Runtime path and visible signatures
+
+- Every conversation Agent run receives `lib/pi-extensions/caff-capabilities.mjs`
+  through `startRun(..., { extensionPaths })`.
+- The extension registers exactly two model-visible tools:
+  - `conversation_notify(targetConversationId, targetAgentId, content, idempotencyKey)`
+  - `conversation_request(targetConversationId, targetAgentId, content, idempotencyKey, deadlineSeconds?)`
+- Both TypeBox object schemas set `additionalProperties: false`. They must not
+  expose server IDs/URLs, MCP tool names, transports, commands, env, headers,
+  credentials, raw arguments, or fallback actions.
+
+### Local HTTP contract
+
+- Route: `POST /api/agent-tools/capabilities/:facade`
+- Request body:
+  `{ invocationId, callbackToken, arguments }`
+- Successful response:
+  `{ ok: true, facade, result }`
+- The extension reads only `CAFF_CHAT_API_URL`, `CAFF_CHAT_INVOCATION_ID`, and
+  `CAFF_CHAT_CALLBACK_TOKEN`; credentials are not part of the model schema.
+- `agent-tool-bridge` validates the active invocation, then injects
+  `{ invocationId, sourceConversationId, sourceAgentId, sourceAgentName,
+  projectScopeId, traceId, incomingDeliveryId }`. For an incoming delivery,
+  `traceId` comes from the persisted parent delivery, not from the delivery ID.
+
+### Registry and MCP adapter contract
+
+- `server/domain/runtime/pi-capability-bridge.ts` is the only facade registry.
+  Unknown facade names fail with `pi_capability_unknown_facade`; invalid or
+  proxy-shaped arguments fail with `pi_capability_invalid_arguments` before a
+  handler or transport starts.
+- Internal `conversation_notify/request` entries call the existing Phase A
+  delivery service and return a bounded delivery/status projection.
+- MCP entries are server-configured allowlist records with a fixed stdio
+  command, argument list, tool name, argument mapper, result projector, and
+  timeout. Invocation input cannot select or override those values.
+- Timeout, disconnect/call failure, and unsafe result projection fail closed as
+  `pi_capability_timeout`, `pi_capability_mcp_failed`, and
+  `pi_capability_projection_failed`. Audit events contain only facade, kind,
+  status, duration, bounded principal IDs, and error code.
+- The official `@modelcontextprotocol/sdk` is a direct exact dependency. The
+  F003 implementation is pinned to `1.30.0`.
+
+### Required tests
+
+- `tests/runtime/pi-capability-bridge.test.js`: schema snapshots, forbidden
+  fields, principal/project/trace injection, fixed internal handlers, real
+  isolated stdio MCP transport, timeout, disconnect, malformed/secret result,
+  no shell/HTTP fallback, build asset copy, and real local HTTP dogfood.
+- `tests/runtime/agent-executor-hook.test.js`: fixed extension path propagation.
+- `tests/runtime/pi-sdk-host.test.js`: Pi SDK host extension loading.
+
 ### 1. Scope / Trigger
 - Trigger: changing the `Chat bridge tools` prompt block in `server/domain/conversation/turn/agent-prompt.ts`.
 - Goal: keep per-turn tool instructions compact while preserving operational safety, routing behavior, and command signatures that agents need to act correctly.

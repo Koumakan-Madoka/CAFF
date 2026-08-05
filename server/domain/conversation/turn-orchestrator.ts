@@ -78,6 +78,7 @@ export function createTurnOrchestrator(options: any = {}) {
   const toolBaseUrl = String(options.toolBaseUrl || '').trim();
   const agentToolScriptPath = path.resolve(String(options.agentToolScriptPath || '').trim());
   const agentToolRelativePath = String(options.agentToolRelativePath || './lib/agent-chat-tools.js').trim() || './lib/agent-chat-tools.js';
+  const piCapabilityExtensionPath = String(options.piCapabilityExtensionPath || '').trim();
   const browserCliPath = String(options.browserCliPath || '').trim();
   const resolveRuntimeParticipants = typeof options.resolveRuntimeParticipants === 'function'
     ? options.resolveRuntimeParticipants
@@ -527,6 +528,7 @@ export function createTurnOrchestrator(options: any = {}) {
         toolBaseUrl,
         agentToolScriptPath,
         agentToolRelativePath,
+        piCapabilityExtensionPath,
         browserCliPath,
         onAssistantMessageCompleted: options.onAssistantMessageCompleted,
       });

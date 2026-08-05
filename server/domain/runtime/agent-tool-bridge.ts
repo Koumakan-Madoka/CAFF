@@ -9,6 +9,10 @@ const { createConversationExperienceDraft } = require('../conversation/experienc
 const { recordConversationRetrievalTrace } = require('../conversation/retrieval-trace');
 const { createCrossConversationDeliveryService } = require('../conversation/cross-conversation-delivery');
 const { createLiveBridgeToolStep } = require('./message-tool-trace');
+const {
+  createConversationCapabilityDefinitions,
+  createPiCapabilityBridge,
+} = require('./pi-capability-bridge');
 const { resolveCurrentTrellisTaskName } = require('../conversation/turn/trellis-context');
 
 const MAX_HISTORY_MESSAGES = 24;
@@ -354,6 +358,7 @@ export function createAgentToolBridge(options: any = {}) {
   const crossConversationDeliveryService =
     options.crossConversationDeliveryService
     || (store ? createCrossConversationDeliveryService({ store }) : null);
+  let piCapabilityBridge = options.piCapabilityBridge || null;
   const activeInvocations = new Map();
 
   function resolveStageTaskId(context: any) {
@@ -1040,14 +1045,18 @@ export function createAgentToolBridge(options: any = {}) {
     }
   }
 
-  function handleConversationDelivery(kind: 'notify' | 'request', body: any = {}) {
+  function handleConversationDelivery(
+    kind: 'notify' | 'request',
+    body: any = {},
+    authenticatedContext: any = null,
+    toolNameOverride = ''
+  ) {
     const startedAt = Date.now();
-    const context = getInvocation(body.invocationId, body.callbackToken);
+    const context = authenticatedContext || getInvocation(body.invocationId, body.callbackToken);
     const toolCallId = randomUUID();
-    const toolName = kind === 'request' ? 'conversation-request' : 'conversation-notify';
+    const toolName = toolNameOverride || (kind === 'request' ? 'conversation-request' : 'conversation-notify');
     const allowedFields = new Set([
-      'invocationId',
-      'callbackToken',
+      ...(authenticatedContext ? [] : ['invocationId', 'callbackToken']),
       'targetConversationId',
       'targetAgentId',
       'content',
@@ -1178,6 +1187,87 @@ export function createAgentToolBridge(options: any = {}) {
 
   function handleConversationRequest(body: any = {}) {
     return handleConversationDelivery('request', body);
+  }
+
+  function resolvePiCapabilityBridge() {
+    if (piCapabilityBridge) {
+      return piCapabilityBridge;
+    }
+
+    piCapabilityBridge = createPiCapabilityBridge({
+      capabilities: createConversationCapabilityDefinitions({
+        notify(input: any) {
+          return handleConversationDelivery(
+            'notify',
+            input.arguments,
+            input.context,
+            'conversation_notify'
+          );
+        },
+        request(input: any) {
+          return handleConversationDelivery(
+            'request',
+            input.arguments,
+            input.context,
+            'conversation_request'
+          );
+        },
+      }),
+    });
+    return piCapabilityBridge;
+  }
+
+  function createPiCapabilityPrincipal(context: any) {
+    const conversation = store && typeof store.getConversation === 'function'
+      ? store.getConversation(context.conversationId)
+      : null;
+    const incomingDeliveryId = String(context.incomingDeliveryId || '').trim() || null;
+    const incomingDelivery =
+      incomingDeliveryId && store && typeof store.getCrossConversationDelivery === 'function'
+        ? store.getCrossConversationDelivery(incomingDeliveryId)
+        : null;
+    const traceId = String(incomingDelivery && incomingDelivery.traceId || '').trim()
+      || context.invocationId;
+
+    return {
+      invocationId: context.invocationId,
+      sourceConversationId: context.conversationId,
+      sourceAgentId: context.agentId,
+      sourceAgentName: context.agentName,
+      projectScopeId: String(conversation && conversation.projectScopeId || '').trim(),
+      traceId,
+      incomingDeliveryId,
+    };
+  }
+
+  async function handlePiCapability(facadeValue: any, body: any = {}) {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      throw createHttpError(400, 'Pi capability request body must be an object', {
+        code: 'pi_capability_invalid_request',
+      });
+    }
+
+    const allowedFields = new Set(['invocationId', 'callbackToken', 'arguments']);
+    const unknownField = Object.keys(body).find((fieldName) => !allowedFields.has(fieldName));
+    if (unknownField) {
+      throw createHttpError(400, `Unknown Pi capability request field: ${unknownField}`, {
+        code: 'pi_capability_invalid_request',
+      });
+    }
+
+    const facade = String(facadeValue || '').trim();
+    if (!/^[a-z][a-z0-9_]*$/u.test(facade)) {
+      throw createHttpError(404, 'Unknown Pi capability facade', {
+        code: 'pi_capability_unknown_facade',
+      });
+    }
+
+    const context = getInvocation(body.invocationId, body.callbackToken);
+    return resolvePiCapabilityBridge().invokeFacade(facade, {
+      principal: createPiCapabilityPrincipal(context),
+      arguments: body.arguments,
+      context,
+    });
   }
 
   function handleReadContext(requestUrl: any) {
@@ -3101,6 +3191,7 @@ export function createAgentToolBridge(options: any = {}) {
     createInvocationContext,
     handleConversationNotify,
     handleConversationRequest,
+    handlePiCapability,
     handleForgetMemory,
     handleListMemories,
     handleListParticipants,

@@ -1142,6 +1142,7 @@ export function createAgentExecutor(options: any = {}) {
   const toolBaseUrl = String(options.toolBaseUrl || '').trim();
   const agentToolScriptPath = options.agentToolScriptPath;
   const agentToolRelativePath = String(options.agentToolRelativePath || './lib/agent-chat-tools.js').trim() || './lib/agent-chat-tools.js';
+  const piCapabilityExtensionPath = String(options.piCapabilityExtensionPath || '').trim();
   const browserCliPath = String(options.browserCliPath || '').trim() || resolveBrowserCliPath({ rootDir: process.cwd() });
   const onAssistantMessageCompleted =
     typeof options.onAssistantMessageCompleted === 'function' ? options.onAssistantMessageCompleted : null;
@@ -1454,6 +1455,7 @@ export function createAgentExecutor(options: any = {}) {
 
     const handle = startRun(provider, model, prompt, {
       thinking,
+      extensionPaths: piCapabilityExtensionPath ? [piCapabilityExtensionPath] : [],
       agentDir,
       sqlitePath,
       heartbeatIntervalMs,

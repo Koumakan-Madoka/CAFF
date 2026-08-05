@@ -339,6 +339,15 @@ schema + narrow repositories
 5. Implement registry entries for `conversation_notify/request` using Phase A service. Add at least one real local stdio or Streamable HTTP MCP test server fixture through official SDK.
 6. Ensure trace/event audit contains facade/result status but no credential/server config/raw secret. Run focused bridge tests and commit Phase B.
 
+Resolved Phase B contract (2026-08-05): the npm registry `latest` and package
+version both resolved to official `@modelcontextprotocol/sdk@1.30.0`, installed
+as a direct exact dependency. The CAFF extension calls
+`POST /api/agent-tools/capabilities/:facade` with
+`{ invocationId, callbackToken, arguments }`; the server injects the persisted
+project/trace principal and returns only the facade result projection. The real
+transport fixture uses the SDK `Client` + `StdioClientTransport` against an
+isolated SDK `McpServer` + `StdioServerTransport` child process.
+
 ## Task 6: Spawn Transaction and Bootstrap Delivery — RED → GREEN
 
 **Files:** Create `server/domain/conversation/conversation-spawn.ts`; Modify `lib/chat-app-store.ts`, `server/api/conversations-controller.ts`, `server/app/create-server.ts`; Test `tests/runtime/conversation-spawn.test.js`, `tests/http/conversation-spawn-controller.test.js`, `tests/storage/cross-conversation-delivery.test.js`.

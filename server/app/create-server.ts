@@ -530,6 +530,7 @@ export function createServerApp(options: any = {}) {
   const agentToolBridge = createAgentToolBridge({
     store,
     agentDir,
+    piCapabilityBridge: options.piCapabilityBridge,
     crossConversationDeliveryService,
     broadcastEvent,
     broadcastConversationSummary,
@@ -547,6 +548,12 @@ export function createServerApp(options: any = {}) {
   let feishuIntegration: any = null;
   const agentToolScriptPath = path.resolve(ROOT_DIR, 'lib', 'agent-chat-tools.js');
   const agentToolRelativePath = resolveToolRelativePath(agentToolScriptPath);
+  const piCapabilityExtensionPath = path.resolve(
+    String(
+      options.piCapabilityExtensionPath
+      || path.join(ROOT_DIR, 'lib', 'pi-extensions', 'caff-capabilities.mjs')
+    )
+  );
   const browserCliPath = resolveBrowserCliPath({ rootDir: ROOT_DIR });
 
   turnOrchestrator = createTurnOrchestrator({
@@ -565,6 +572,7 @@ export function createServerApp(options: any = {}) {
     toolBaseUrl,
     agentToolScriptPath,
     agentToolRelativePath,
+    piCapabilityExtensionPath,
     browserCliPath,
     resolveRuntimeParticipants: roleService.resolveRuntimeParticipants,
     async onAssistantMessageCompleted(message: any) {
