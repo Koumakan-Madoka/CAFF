@@ -124,7 +124,7 @@
       ...(family ? {} : { personaPrompt: profile.personaPrompt || '' }),
     }));
     if (family) {
-      const payload = { isDefaultChatRole: Boolean(role.isDefaultChatRole) };
+      const payload = { isDefaultChatRole: Boolean(role.isDefaultChatRole), avatarDataUrl: role.avatarDataUrl || '' };
       if (role.model || roleModelOptions(role, modelOptions).length > 0) {
         Object.assign(payload, {
           provider: role.provider || '',

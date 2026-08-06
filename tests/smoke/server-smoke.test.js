@@ -4879,7 +4879,7 @@ test('role API protects model-family roles and shares one availability projectio
   const initialGpt = directory.agents.find((agent) => agent.id === 'role-family-gpt');
   const initialQwen = directory.agents.find((agent) => agent.id === 'role-family-qwen');
   assert.equal(initialGpt.systemManaged, true);
-  assert.deepEqual(initialGpt.editableFields, ['provider', 'model', 'thinking', 'modelProfiles', 'isDefaultChatRole']);
+  assert.deepEqual(initialGpt.editableFields, ['provider', 'model', 'thinking', 'modelProfiles', 'isDefaultChatRole', 'avatarDataUrl']);
   assert.deepEqual(initialGpt.availability, { status: 'default_model_missing', familyModelCount: 1 });
   assert.deepEqual(initialQwen.availability, { status: 'no_family_models', familyModelCount: 0 });
 
@@ -4889,6 +4889,19 @@ test('role API protects model-family roles and shares one availability projectio
   });
   assert.equal(lockedUpdate.status, 422);
   assert.equal(lockedUpdate.json.issues[0].code, 'role_locked_field');
+
+  const avatarUpdate = await fetchJson(baseUrl, '/api/agents/role-family-gpt', {
+    method: 'PUT',
+    body: { avatarDataUrl: 'data:image/png;base64,iVBORw0KGgo=' },
+  });
+  assert.equal(avatarUpdate.agent.avatarDataUrl, 'data:image/png;base64,iVBORw0KGgo=');
+  const directoryAfterAvatar = await fetchJson(baseUrl, '/api/agents');
+  assert.equal(directoryAfterAvatar.agents.find((agent) => agent.id === 'role-family-gpt').avatarDataUrl, 'data:image/png;base64,iVBORw0KGgo=');
+  const avatarCleared = await fetchJson(baseUrl, '/api/agents/role-family-gpt', {
+    method: 'PUT',
+    body: { avatarDataUrl: '' },
+  });
+  assert.equal(avatarCleared.agent.avatarDataUrl, '');
 
   for (const body of [
     { personaPrompt: 'Pretend to be someone.' },
