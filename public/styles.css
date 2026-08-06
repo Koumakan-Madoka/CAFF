@@ -2643,6 +2643,45 @@ textarea {
   width: auto;
 }
 
+.catalog-provider-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+  max-height: 22rem;
+  overflow-y: auto;
+}
+
+.catalog-provider-row > button,
+.catalog-model-row > button {
+  display: flex;
+  width: 100%;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+  text-align: left;
+}
+
+.catalog-provider-row > button[aria-expanded='true'] {
+  border-color: var(--caff-accent, currentColor);
+}
+
+.catalog-model-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin: 0.4rem 0 0.2rem 1rem;
+}
+
+#catalog-import-metadata ul {
+  margin: 0.35rem 0 0.75rem;
+  padding-left: 1.1rem;
+}
+
+#catalog-import-metadata li {
+  margin: 0.25rem 0;
+}
+
 .advanced-auth summary {
   cursor: pointer;
   font-weight: 700;

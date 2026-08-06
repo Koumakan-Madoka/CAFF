@@ -69,6 +69,7 @@
     function setMutationPending(pending) {
       mutationPending = pending;
       options.addButton.disabled = pending || !options.isEnabled();
+      options.importButton.disabled = pending || !options.isEnabled();
       options.refreshButton.disabled = pending || !options.isEnabled();
       list.inert = pending;
       options.detail.inert = pending;
@@ -170,14 +171,38 @@
       idInput.focus();
     });
 
+    const catalogImport = namespace.createCatalogImport({
+      root: options.detail,
+      fetchJson: options.fetchJson,
+      showToast: options.showToast,
+      isEnabled: options.isEnabled,
+      getCsrfToken: options.getCsrfToken,
+      onImported: async (providerId) => {
+        await refreshProviders(providerId);
+        await options.onProvidersChanged();
+      },
+      onClose: () => {
+        const selected = providers.find((provider) => provider.id === selectedProviderId) || null;
+        editor.show(selected, Boolean(selected && selected.__draft));
+      },
+    });
+
+    options.importButton.addEventListener('click', async () => {
+      try { await catalogImport.open(); } catch (error) { options.showToast(error.message || '目录加载失败'); }
+    });
+
+    async function refreshProviders(preferredProviderId = '') {
+      const result = await options.fetchJson('/api/model-providers');
+      setProviders(result.providers, preferredProviderId || selectedProviderId);
+    }
+
     return {
       async refresh(preferredProviderId = '') {
         if (!options.isEnabled()) {
           setProviders([]);
           return;
         }
-        const result = await options.fetchJson('/api/model-providers');
-        setProviders(result.providers, preferredProviderId || selectedProviderId);
+        await refreshProviders(preferredProviderId);
       },
     };
   };
