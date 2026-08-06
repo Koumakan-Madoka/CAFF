@@ -61,7 +61,7 @@ type ModelCatalogDocument = {
 type ImportProjection = {
   providerId: string;
   modelId: string;
-  caFFDialect?: 'openai-responses' | 'openai-completions' | 'anthropic-messages' | 'google-generative-ai';
+  caffDialect?: 'openai-responses' | 'openai-completions' | 'anthropic-messages' | 'google-generative-ai';
   family?: string;
   familyStatus: 'mapped' | 'unclassified';
   env: Array<{ name: string; kind: 'key' | 'parameter'; required: boolean }>;
@@ -71,7 +71,7 @@ type ImportProjection = {
 };
 ```
 
-`caFFDialect` is intentionally optional in the projection. The importer must not invent a dialect for an unknown provider. The exact upstream parser may retain additional raw metadata in the cache, but only the normalized projection above crosses into the UI/import API.
+`caffDialect` is intentionally optional in the projection. The importer must not invent a dialect for an unknown provider. The exact upstream parser may retain additional raw metadata in the cache, but only the normalized projection above crosses into the UI/import API.
 
 ## Cross-Layer Data Flow
 
@@ -133,6 +133,8 @@ Catalog discovery must never call `readModelProviderDocument` as a write-through
 **Likely files:** `server/api/model-providers-controller.ts`, `server/api/bootstrap-payload.ts` only if needed, `tests/http/model-providers-controller.test.js`.
 
 - Add an explicit catalog read route and an explicit import action; keep existing provider CRUD route matching and masking behavior unchanged.
+- The P1 route contract is `GET /api/model-catalog` (provider/model index), `GET /api/model-catalog?providerId=<id>&modelId=<id>` (single projection), and `POST /api/model-catalog/import` (explicit import). Query parameters are used because model IDs may contain `/`.
+- The import body is restricted to `{ providerId, modelId, name?, baseUrl?, reasoning? }`; API keys, headers, env values, and arbitrary upstream fields are rejected.
 - API responses contain normalized projection and provenance, never env values, raw credentials, or unsupported runtime controls.
 - Import writes through `model-provider-persistence.ts` only after request validation and operator confirmation semantics are satisfied.
 

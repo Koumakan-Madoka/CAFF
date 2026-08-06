@@ -22,6 +22,7 @@ const { createHealthController } = require('../api/health-controller');
 const { createMetricsController } = require('../api/metrics-controller');
 const { createMemoryController } = require('../api/memory-controller');
 const { createModelProvidersController } = require('../api/model-providers-controller');
+const { createModelCatalogController } = require('../api/model-catalog-controller');
 const { createProjectsController } = require('../api/projects-controller');
 const { createModesController } = require('../api/modes-controller');
 const { createSkillsController } = require('../api/skills-controller');
@@ -714,6 +715,20 @@ export function createServerApp(options: any = {}) {
         : () => readExternalAuthProviderIds(agentDir),
       onCommitted: () => modelCatalog.invalidate(),
       validateProvider: options.validateProvider,
+    }),
+    createModelCatalogController({
+      agentDir,
+      host,
+      port,
+      csrfToken: providerConfigCsrfToken,
+      getAuthority() {
+        const address = server && server.address();
+        const actualPort = address && typeof address === 'object' ? address.port : port;
+        return new URL(buildToolBaseUrl(host, actualPort)).host;
+      },
+      catalogDocument: options.catalogDocument,
+      loadCatalog: options.loadCatalog,
+      onCommitted: () => modelCatalog.invalidate(),
     }),
     createProjectsController({
       projectManager,
