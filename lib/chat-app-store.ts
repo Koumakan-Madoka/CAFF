@@ -837,7 +837,7 @@ export class ChatAppStore {
             name: existing.name,
             sandboxName: existing.sandboxName,
             description: existing.description,
-            avatarDataUrl: existing.avatarDataUrl,
+            avatarDataUrl: Object.hasOwn(payload, 'avatarDataUrl') ? payload.avatarDataUrl : existing.avatarDataUrl,
             personaPrompt: '',
             accentColor: existing.accentColor,
             skillsJson: '[]',
@@ -1649,6 +1649,7 @@ export class ChatAppStore {
       thinking: String(input.thinking || '').trim(),
       modelProfiles: this.normalizeModelProfiles(input.modelProfiles),
       isDefaultChatRole: Boolean(input.isDefaultChatRole),
+      ...(Object.hasOwn(input, 'avatarDataUrl') ? { avatarDataUrl: normalizeAvatarDataUrl(input.avatarDataUrl) } : {}),
     });
   }
 

@@ -292,12 +292,26 @@ async function serveProductionUi() {
     assert.equal(thinkingReset.value, '');
     assert.match(thinkingReset.notice, /跟随运行时默认/u);
 
+    const familyAvatarControls = await evaluate(cdp, `(() => {
+      const input = document.getElementById('role-avatar-file');
+      const preview = document.getElementById('role-avatar-preview');
+      const clear = document.getElementById('clear-role-avatar');
+      const dt = new DataTransfer();
+      dt.items.add(new File([new Blob(['fake-png'], { type: 'image/png' })], 'avatar.png', { type: 'image/png' }));
+      input.files = dt.files;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      return { hasInput: Boolean(input), hasPreview: Boolean(preview), hasClear: Boolean(clear) };
+    })()`);
+    assert.deepEqual(familyAvatarControls, { hasInput: true, hasPreview: true, hasClear: true });
+    await waitFor(cdp, `document.getElementById('role-avatar-preview').querySelector('img') !== null`);
+
     await evaluate(cdp, `document.getElementById('save-role').click()`);
     await waitFor(cdp, `${JSON.stringify(true)} && window.__neverDefined !== 'force-sync' && document.getElementById('toast').textContent.includes('已保存')`);
     const familySave = fixture.requests.find((request) => request.url === '/api/agents/role-family-gpt');
     assert.ok(familySave);
     assert.equal(Object.hasOwn(familySave.body, 'personaPrompt'), false);
     assert.equal(Object.hasOwn(familySave.body.modelProfiles[0], 'personaPrompt'), false);
+    assert.match(familySave.body.avatarDataUrl, /^data:image\/png;base64,/u);
 
     await evaluate(cdp, `document.getElementById('show-provider-management').click()`);
     await waitFor(cdp, `!document.getElementById('provider-management-view').classList.contains('hidden')`);

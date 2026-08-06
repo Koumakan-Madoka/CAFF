@@ -47,18 +47,33 @@
         </article>`;
     }
 
+    function avatarUploadMarkup() {
+      return `
+        <div class="avatar-upload-row">
+          <div id="role-avatar-preview" class="agent-avatar large avatar-preview">AI</div>
+          <div class="avatar-upload-actions">
+            <input id="role-avatar-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" />
+            <input id="role-avatar-data" type="hidden" value="${utils.escapeHtml(draft.avatarDataUrl || '')}" />
+            <button id="clear-role-avatar" class="ghost-button" type="button">移除头像</button>
+          </div>
+        </div>`;
+    }
+
     function identityMarkup() {
       if (isFamily()) {
         return `
           <section class="management-card">
-            <div class="management-card-title"><div><h3>系统身份</h3><p>展示身份与模型族边界由 CAFF 维护。</p></div><span class="status-badge system">系统维护</span></div>
+            <div class="management-card-title"><div><h3>系统身份</h3><p>展示身份与模型族边界由 CAFF 维护；头像可自定义。</p></div><span class="status-badge system">系统维护</span></div>
             <div class="field-grid">
               <label><span>名称</span><input value="${utils.escapeHtml(draft.name)}" readonly /></label>
               <label><span>稳定 ID</span><input value="${utils.escapeHtml(draft.id)}" readonly /></label>
               <label><span>角色类型</span><input value="model_family" readonly /></label>
               <label><span>模型族</span><input value="${utils.escapeHtml(draft.modelFamily)}" readonly /></label>
             </div>
-            <p class="management-note">名称、头像、颜色、稳定 ID、角色类型和族归属不可通过普通保存覆盖。</p>
+            <div class="role-identity-extras">
+              ${avatarUploadMarkup()}
+            </div>
+            <p class="management-note">名称、颜色、稳定 ID、角色类型和族归属不可通过普通保存覆盖。</p>
           </section>`;
       }
       return `
@@ -71,14 +86,7 @@
             <label><span>工作目录名</span><input id="role-sandbox-name" value="${utils.escapeHtml(draft.sandboxName || '')}" maxlength="80" /></label>
           </div>
           <div class="role-identity-extras">
-            <div class="avatar-upload-row">
-              <div id="role-avatar-preview" class="agent-avatar large avatar-preview">AI</div>
-              <div class="avatar-upload-actions">
-                <input id="role-avatar-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" />
-                <input id="role-avatar-data" type="hidden" value="${utils.escapeHtml(draft.avatarDataUrl || '')}" />
-                <button id="clear-role-avatar" class="ghost-button" type="button">移除头像</button>
-              </div>
-            </div>
+            ${avatarUploadMarkup()}
             <label><span>主色</span><input id="role-accent-color" type="color" value="${utils.escapeHtml(draft.accentColor || '#3d405b')}" /></label>
           </div>
         </section>`;
@@ -142,9 +150,7 @@
         utils.fillThinkingSelect(card.querySelector('[data-field="thinking"]'), options.getModelOptions(), profile.provider, profile.model, profile.thinking || '');
       });
       bindEvents();
-      if (!isFamily()) {
-        options.avatarUtils.renderAvatarPreview(document.getElementById('role-avatar-preview'), draft.avatarDataUrl || '', draft.name || '', draft.accentColor || '#3d405b');
-      }
+      options.avatarUtils.renderAvatarPreview(document.getElementById('role-avatar-preview'), draft.avatarDataUrl || '', draft.name || '', draft.accentColor || '#3d405b');
     }
 
     function bindEvents() {
@@ -191,7 +197,17 @@
       });
       const deleteButton = document.getElementById('delete-role');
       if (deleteButton) deleteButton.addEventListener('click', () => options.onDelete(draft));
+      bindAvatarEvents();
       if (!isFamily()) bindCustomEvents();
+    }
+
+    function bindAvatarEvents() {
+      document.getElementById('role-avatar-file').addEventListener('change', async (event) => {
+        const target = /** @type {HTMLInputElement} */ (event.target);
+        const file = target.files && target.files[0];
+        try { draft.avatarDataUrl = await options.avatarUtils.readAvatarFileAsDataUrl(file); render(); } catch (error) { options.showToast(error.message); }
+      });
+      document.getElementById('clear-role-avatar').addEventListener('click', () => { draft.avatarDataUrl = ''; render(); });
     }
 
     function bindCustomEvents() {
@@ -201,12 +217,6 @@
       root.querySelectorAll('input[name="role-skill"]').forEach((input) => input.addEventListener('change', () => {
         draft.skillIds = Array.from(root.querySelectorAll('input[name="role-skill"]:checked')).map((item) => item.value);
       }));
-      document.getElementById('role-avatar-file').addEventListener('change', async (event) => {
-        const target = /** @type {HTMLInputElement} */ (event.target);
-        const file = target.files && target.files[0];
-        try { draft.avatarDataUrl = await options.avatarUtils.readAvatarFileAsDataUrl(file); render(); } catch (error) { options.showToast(error.message); }
-      });
-      document.getElementById('clear-role-avatar').addEventListener('click', () => { draft.avatarDataUrl = ''; render(); });
     }
 
     return {

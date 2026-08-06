@@ -20,6 +20,7 @@ const FAMILY_EDITABLE_FIELDS = Object.freeze([
   'thinking',
   'modelProfiles',
   'isDefaultChatRole',
+  'avatarDataUrl',
 ]);
 const CUSTOM_EDITABLE_FIELDS = Object.freeze([
   'name',
@@ -698,6 +699,7 @@ export function createRoleService(options: any = {}) {
       model: hasOwn(input, 'model') ? normalize(input.model) : normalize(existing.model),
       thinking: hasOwn(input, 'thinking') ? normalize(input.thinking) : normalize(existing.thinking),
       modelProfiles: hasOwn(input, 'modelProfiles') ? input.modelProfiles : existing.modelProfiles,
+      avatarDataUrl: hasOwn(input, 'avatarDataUrl') ? normalize(input.avatarDataUrl) : normalize(existing.avatarDataUrl),
       isDefaultChatRole: hasOwn(input, 'isDefaultChatRole')
         ? Boolean(input.isDefaultChatRole)
         : Boolean(existing.isDefaultChatRole),
