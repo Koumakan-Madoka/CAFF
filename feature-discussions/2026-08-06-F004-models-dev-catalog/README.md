@@ -45,8 +45,10 @@ Operator 需要在 provider editor 中减少手工输入，但不希望外部目
 
 **Approved for implementation** for P1. The implementation must keep the unresolved upstream SHA/hash as a blocker for the snapshot asset itself; it may proceed with schema/tests/domain scaffolding without fabricating those values.
 
-Architecture cell: `server/domain/models + model-provider persistence + model-providers controller + public/personas`  
-Map delta: none  
+Architecture cell: `server/domain/models + model-provider persistence + model-providers controller + public/personas`
+
+Map delta: none
+
 Why: the feature extends the existing provider/configuration cell; no parallel store or runtime registry is introduced.
 
 ## Next Action

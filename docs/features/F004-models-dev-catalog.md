@@ -103,8 +103,10 @@ vendored snapshot / online last-known-good cache
         -> user models.json / configured-model-catalog
 ```
 
-Architecture cell: `server/domain/models + model-provider persistence + model-providers controller + public/personas`  
-Map delta: none  
+Architecture cell: `server/domain/models + model-provider persistence + model-providers controller + public/personas`
+
+Map delta: none
+
 Why: this extends the existing provider/configuration ownership cell and does not introduce a parallel store, queue, or runtime registry.
 
 ## Eval / Tracking Contract
