@@ -221,6 +221,8 @@ export function createModelCatalogController(options: any = {}): RouteHandler<Ap
           };
           if (projection.family) {
             modelPatch.family = projection.family;
+          } else {
+            modelPatch.family = '';
           }
           if (Object.hasOwn(body, 'reasoning')) {
             modelPatch.reasoning = body.reasoning;
