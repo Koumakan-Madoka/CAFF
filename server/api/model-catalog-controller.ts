@@ -31,7 +31,7 @@ type ApiContext = {
   requestUrl: URL;
 };
 
-const CATALOG_ASSET_PATH = path.resolve(__dirname, '..', '..', '..', 'assets', 'model-catalog.json');
+const CATALOG_ASSET_PATH = path.resolve(__dirname, '..', '..', 'assets', 'model-catalog.json');
 const IMPORT_FIELDS = new Set(['providerId', 'modelId', 'name', 'baseUrl', 'reasoning']);
 
 function catalogErrorStatus(error: ModelCatalogError) {
