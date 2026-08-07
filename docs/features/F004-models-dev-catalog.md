@@ -8,7 +8,7 @@ created: 2026-08-06
 
 # F004: models.dev Catalog and Runtime-Safe Provider Import
 
-> **Status**: in-progress | **Owner**: @cat-ir4rwo6b | **Priority**: P1
+> **Status**: in-progress (P1 UI import merged in #57 @ `3350b38`; AC-1 vendored snapshot still blocked on upstream retrieval) | **Owner**: @cat-ir4rwo6b | **Priority**: P1
 
 ## Why
 
@@ -76,13 +76,13 @@ Use catalog cost/limit metadata as clearly labelled reference values for token-u
 ## Acceptance Criteria
 
 - [ ] **AC-1 — Vendored provenance**: P1 ships `assets/model-catalog.json`, its MIT license, and a source declaration containing the exact models.dev commit SHA, source URL, generation date, and payload hash. A missing upstream verification blocks the snapshot rather than inventing provenance.
-- [ ] **AC-2 — Override merge**: provider defaults are merged with model-level `provider` overrides; override fields win, absent fields inherit, and the normalized result is deterministic.
-- [ ] **AC-3 — Dialect allowlist**: only reviewed mappings produce a CAFF Pi dialect (`openai-responses`, `openai-completions`, `anthropic-messages`, `google-generative-ai`, or another explicitly registered dialect); all other values are returned with `manualConfigurationRequired: true`.
-- [ ] **AC-4 — Secret-safe env projection**: every upstream `env[]` name is projected for display; provider-specific key allowlists classify key inputs; no environment value is read, serialized, logged, uploaded, or persisted by catalog discovery/import.
-- [ ] **AC-5 — Storage isolation and precedence**: catalog cache writes never mutate `models.json`; effective configuration precedence is `models.json > explicit user import > online cache > vendored snapshot`; restart preserves the last-known-good cache.
-- [ ] **AC-6 — Family mapping**: the explicit mapping table covers CAFF’s seven families; unmapped upstream families produce an empty family plus an “unclassified” marker.
-- [ ] **AC-7 — Honest UI**: provider editor separates catalog metadata from Pi runtime controls and never renders catalog-only reasoning/cost/limit/modalities as executable controls.
-- [ ] **AC-8 — Regression safety**: existing provider GET/PUT/DELETE/validate behavior, masked secret behavior, and configured-model catalog behavior remain unchanged; all tests use isolated data and Redis 6398 only.
+- [x] **AC-2 — Override merge**: provider defaults are merged with model-level `provider` overrides; override fields win, absent fields inherit, and the normalized result is deterministic.
+- [x] **AC-3 — Dialect allowlist**: only reviewed mappings produce a CAFF Pi dialect (`openai-responses`, `openai-completions`, `anthropic-messages`, `google-generative-ai`, or another explicitly registered dialect); all other values are returned with `manualConfigurationRequired: true`.
+- [x] **AC-4 — Secret-safe env projection**: every upstream `env[]` name is projected for display; provider-specific key allowlists classify key inputs; no environment value is read, serialized, logged, uploaded, or persisted by catalog discovery/import.
+- [x] **AC-5 — Storage isolation and precedence**: catalog cache writes never mutate `models.json`; effective configuration precedence is `models.json > explicit user import > online cache > vendored snapshot`; restart preserves the last-known-good cache.
+- [x] **AC-6 — Family mapping**: the explicit mapping table covers CAFF’s seven families; unmapped upstream families produce an empty family plus an “unclassified” marker.
+- [x] **AC-7 — Honest UI**: provider editor separates catalog metadata from Pi runtime controls and never renders catalog-only reasoning/cost/limit/modalities as executable controls.
+- [x] **AC-8 — Regression safety**: existing provider GET/PUT/DELETE/validate behavior, masked secret behavior, and configured-model catalog behavior remain unchanged; all tests use isolated data and Redis 6398 only.
 
 ## Dependencies
 
@@ -138,7 +138,8 @@ Why: this extends the existing provider/configuration ownership cell and does no
 |---|---|
 | 2026-08-05 | v2.1 design revised after source audit; operator questions captured. |
 | 2026-08-06 | Operator authorized F004 kickoff and the mapping/domain plus provider-editor UI implementation split. |
-| TBD | Pin and commit the official vendored snapshot when network access is available. |
+| 2026-08-07 | PR #57 squash-merged as `3350b38`: catalog import UI with honest metadata/runtime split, 12/12 browser acceptance, and post-review fix `8aa8dc1` (import merges into existing provider instead of replacing it; provider connection fields fill-only-when-missing). Cross-family review chain: 砚砚 (Maine Coon) + opus (Ragdoll) approvals; cloud Codex gate unavailable (quota), replaced by full cross-provider local review. AC-2–AC-8 marked done on this evidence. |
+| TBD | Pin and commit the official vendored snapshot when network access is available (AC-1 remains open). |
 
 ## Review Gate
 
