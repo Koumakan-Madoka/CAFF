@@ -8,7 +8,7 @@ created: 2026-08-06
 
 # F004: models.dev Catalog and Runtime-Safe Provider Import
 
-> **Status**: in-progress (P1 AC-1 snapshot implemented and cross-family reviewed; P2/P3 remain) | **Owner**: @cat-ir4rwo6b | **Priority**: P1
+> **Status**: in-progress (P1 AC-1 vendored snapshot merged in #58 @ `94d5f34`; P2/P3 remain) | **Owner**: @cat-ir4rwo6b | **Priority**: P1
 
 ## Why
 
@@ -140,6 +140,7 @@ Why: this extends the existing provider/configuration ownership cell and does no
 | 2026-08-06 | Operator authorized F004 kickoff and the mapping/domain plus provider-editor UI implementation split. |
 | 2026-08-07 | PR #57 squash-merged as `3350b38`: catalog import UI with honest metadata/runtime split, 12/12 browser acceptance, and post-review fix `8aa8dc1` (import merges into existing provider instead of replacing it; provider connection fields fill-only-when-missing). Cross-family review chain: 砚砚 (Maine Coon) + opus (Ragdoll) approvals; cloud Codex gate unavailable (quota), replaced by full cross-provider local review. AC-2–AC-8 marked done on this evidence. |
 | 2026-08-07 | AC-1 vendored snapshot generated from `https://models.dev/api.json`, pinned to upstream `dev` commit `e951706c7e89d932c0814bb53534b1762c2230ea`, with raw payload hash, normalized-provider hash, MIT license, and reproducibility fixture; local full `test:fast` gate passed. |
+| 2026-08-07 | Phase P1 merged (PR #58): vendored models.dev snapshot and runtime-safe provenance verification. |
 | 2026-08-07 | Fixed catalog search caret loss after provider-list rerenders; added a regression test preserving selection range and direction. |
 
 ## Review Gate
