@@ -41,10 +41,11 @@
     }
 
     function providerRow(provider) {
-      const haystack = `${provider.id} ${provider.name || ''}`.toLowerCase();
-      const hidden = filter && !haystack.includes(filter);
-      const open = selectedProviderId === provider.id;
       const models = Array.isArray(provider.models) ? provider.models : [];
+      const providerMatch = `${provider.id} ${provider.name || ''}`.toLowerCase().includes(filter);
+      const modelMatch = Boolean(filter) && models.some((model) => `${model.id} ${model.name || ''}`.toLowerCase().includes(filter));
+      const hidden = Boolean(filter) && !providerMatch && !modelMatch;
+      const open = selectedProviderId === provider.id || (Boolean(filter) && !providerMatch && modelMatch);
       return `
         <div class="catalog-provider-row${hidden ? ' hidden' : ''}" data-catalog-provider="${utils.escapeHtml(provider.id)}">
           <button class="ghost-button" type="button" data-catalog-open-provider="${utils.escapeHtml(provider.id)}" aria-expanded="${open}">
@@ -177,7 +178,9 @@
         render();
       }));
       root.querySelectorAll('[data-catalog-open-model]').forEach((button) => button.addEventListener('click', () => {
-        openModel(selectedProviderId, button.dataset.catalogOpenModel);
+        const providerId = button.closest('[data-catalog-provider]').dataset.catalogProvider;
+        selectedProviderId = providerId;
+        openModel(providerId, button.dataset.catalogOpenModel);
       }));
       const confirm = document.getElementById('catalog-import-confirm');
       if (confirm) confirm.addEventListener('click', () => confirmImport());

@@ -154,6 +154,31 @@ test('catalog import wizard lists providers, filters by search, and keeps catalo
   assert.equal(session.input('catalog-import-confirm').disabled, false);
 });
 
+test('catalog import search covers provider model id and name so model-only queries keep the provider visible', async () => {
+  const session = setup({ fetchImpl: indexFetch });
+  await session.wizard.open();
+
+  session.type('catalog-import-search', 'm-1');
+  let visible = Array.from(session.document.querySelectorAll('[data-catalog-provider]'))
+    .filter((row) => !row.classList.contains('hidden'));
+  assert.deepEqual(visible.map((row) => row.dataset.catalogProvider), ['mystery']);
+  const modelButton = visible[0].querySelector('[data-catalog-model="m-1"] button');
+  assert.ok(modelButton, 'model-only query auto-expands the provider so the model stays reachable');
+  modelButton.click();
+  await flush();
+  assert.match(session.document.getElementById('catalog-import-manual').textContent, /手工配置/u);
+
+  session.type('catalog-import-search', 'on azure');
+  visible = Array.from(session.document.querySelectorAll('[data-catalog-provider]'))
+    .filter((row) => !row.classList.contains('hidden'));
+  assert.deepEqual(visible.map((row) => row.dataset.catalogProvider), ['azure']);
+
+  session.type('catalog-import-search', '');
+  visible = Array.from(session.document.querySelectorAll('[data-catalog-provider]'))
+    .filter((row) => !row.classList.contains('hidden'));
+  assert.equal(visible.length, 3, 'clearing the filter restores the full provider list');
+});
+
 test('catalog import confirm posts only the allowed import fields and never env values', async () => {
   const session = setup({ fetchImpl: indexFetch });
   await session.wizard.open();
