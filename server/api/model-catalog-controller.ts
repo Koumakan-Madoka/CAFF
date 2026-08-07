@@ -215,9 +215,11 @@ export function createModelCatalogController(options: any = {}): RouteHandler<Ap
         }
 
         const result = await updateModelProviderDocument(agentDir, (configured: any) => {
+          const explicitName = typeof body.name === 'string' && body.name.trim() ? body.name.trim() : '';
+          const explicitBaseUrl = typeof body.baseUrl === 'string' && body.baseUrl.trim() ? body.baseUrl.trim() : '';
           const modelPatch: any = {
             id: modelId,
-            name: typeof body.name === 'string' && body.name.trim() ? body.name.trim() : projection.name,
+            name: explicitName || projection.name,
           };
           if (projection.family) {
             modelPatch.family = projection.family;
@@ -228,14 +230,41 @@ export function createModelCatalogController(options: any = {}): RouteHandler<Ap
             modelPatch.reasoning = body.reasoning;
           }
 
-          return patchModelProvider(configured, providerId, {
-            name: typeof body.name === 'string' && body.name.trim() ? body.name.trim() : projection.name,
-            baseUrl: typeof body.baseUrl === 'string' && body.baseUrl.trim()
-              ? body.baseUrl.trim()
-              : projection.baseUrl,
-            api: projection.dialect,
-            models: [modelPatch],
-          });
+          const existingProvider = configured.providers && typeof configured.providers[providerId] === 'object' && configured.providers[providerId] !== null
+            ? configured.providers[providerId]
+            : null;
+          const existingModels = existingProvider && Array.isArray(existingProvider.models) ? existingProvider.models : [];
+
+          const mergedModels: any[] = [];
+          let replacedExisting = false;
+          for (const existingModel of existingModels) {
+            const existingId = existingModel && typeof existingModel.id === 'string' ? existingModel.id.trim() : '';
+            if (existingId === modelId) {
+              mergedModels.push(modelPatch);
+              replacedExisting = true;
+            } else {
+              mergedModels.push(existingModel);
+            }
+          }
+          if (!replacedExisting) {
+            mergedModels.push(modelPatch);
+          }
+
+          const patch: any = { models: mergedModels };
+          const existingName = existingProvider && typeof existingProvider.name === 'string' ? existingProvider.name.trim() : '';
+          const existingBaseUrl = existingProvider && typeof existingProvider.baseUrl === 'string' ? existingProvider.baseUrl.trim() : '';
+          const existingApi = existingProvider && typeof existingProvider.api === 'string' ? existingProvider.api.trim() : '';
+          if (!existingName) {
+            patch.name = explicitName || projection.name;
+          }
+          if (explicitBaseUrl || !existingBaseUrl) {
+            patch.baseUrl = explicitBaseUrl || projection.baseUrl;
+          }
+          if (!existingApi) {
+            patch.api = projection.dialect;
+          }
+
+          return patchModelProvider(configured, providerId, patch);
         });
         onCommitted();
         sendJson(res, 200, {

@@ -37,17 +37,18 @@ function catalogDocument() {
   };
 }
 
-function createHarness(t) {
+function createHarness(t, options = {}) {
   const agentDir = withTempDir('caff-model-catalog-http-');
   t.after(() => fs.rmSync(agentDir, { recursive: true, force: true }));
-  fs.writeFileSync(path.join(agentDir, 'models.json'), `${JSON.stringify({
+  const initialDocument = options.initialDocument || {
     providers: {
       openai: {
         apiKey: '$OPENAI_API_KEY',
         models: [],
       },
     },
-  }, null, 2)}\n`, 'utf8');
+  };
+  fs.writeFileSync(path.join(agentDir, 'models.json'), `${JSON.stringify(initialDocument, null, 2)}\n`, 'utf8');
 
   const controller = createModelCatalogController({
     agentDir,
@@ -170,4 +171,110 @@ test('catalog import rejects unknown provider or model without touching models.j
     (error) => error && error.statusCode === 404
   );
   assert.equal(fs.readFileSync(path.join(agentDir, 'models.json'), 'utf8'), before);
+});
+
+test('catalog import preserves existing models on the target provider', async (t) => {
+  const { agentDir, controller } = createHarness(t, {
+    initialDocument: {
+      providers: {
+        openai: {
+          name: 'My Proxy',
+          baseUrl: 'https://proxy.example/v1',
+          api: 'openai-completions',
+          apiKey: '$OPENAI_API_KEY',
+          models: [
+            { id: 'o3', name: 'O3', family: 'gpt' },
+            { id: 'gpt-4.1', name: 'GPT-4.1', family: 'gpt', reasoning: true },
+          ],
+        },
+      },
+    },
+  });
+
+  const response = await invoke(controller, {
+    method: 'POST',
+    pathname: '/api/model-catalog/import',
+    headers: mutationHeaders(),
+    body: { providerId: 'openai', modelId: 'gpt-5/pro' },
+  });
+
+  assert.equal(response.statusCode, 200);
+  const persisted = JSON.parse(fs.readFileSync(path.join(agentDir, 'models.json'), 'utf8'));
+  const models = persisted.providers.openai.models;
+  assert.deepEqual(models.map((model) => model.id), ['o3', 'gpt-4.1', 'gpt-5/pro']);
+  assert.equal(models[0].name, 'O3');
+  assert.equal(models[1].reasoning, true);
+  assert.equal(models[2].family, 'gpt');
+  assert.equal(persisted.providers.openai.apiKey, '$OPENAI_API_KEY');
+});
+
+test('catalog import re-importing the same model merges in place without dropping custom fields', async (t) => {
+  const { agentDir, controller } = createHarness(t, {
+    initialDocument: {
+      providers: {
+        openai: {
+          apiKey: '$OPENAI_API_KEY',
+          models: [
+            { id: 'o3', name: 'O3' },
+            { id: 'gpt-5/pro', name: 'Custom GPT-5 Pro', baseUrl: 'https://proxy.example/v1' },
+          ],
+        },
+      },
+    },
+  });
+
+  const response = await invoke(controller, {
+    method: 'POST',
+    pathname: '/api/model-catalog/import',
+    headers: mutationHeaders(),
+    body: { providerId: 'openai', modelId: 'gpt-5/pro', name: 'GPT-5 Pro reimported' },
+  });
+
+  assert.equal(response.statusCode, 200);
+  const persisted = JSON.parse(fs.readFileSync(path.join(agentDir, 'models.json'), 'utf8'));
+  const models = persisted.providers.openai.models;
+  assert.deepEqual(models.map((model) => model.id), ['o3', 'gpt-5/pro']);
+  assert.equal(models[1].name, 'GPT-5 Pro reimported');
+  assert.equal(models[1].baseUrl, 'https://proxy.example/v1');
+});
+
+test('catalog import preserves existing provider connection settings unless explicitly overridden', async (t) => {
+  const { agentDir, controller } = createHarness(t, {
+    initialDocument: {
+      providers: {
+        openai: {
+          name: 'My Proxy',
+          baseUrl: 'https://proxy.example/v1',
+          api: 'openai-completions',
+          apiKey: '$OPENAI_API_KEY',
+          models: [],
+        },
+      },
+    },
+  });
+
+  const preserved = await invoke(controller, {
+    method: 'POST',
+    pathname: '/api/model-catalog/import',
+    headers: mutationHeaders(),
+    body: { providerId: 'openai', modelId: 'gpt-5/pro', name: 'GPT-5 Pro imported' },
+  });
+
+  assert.equal(preserved.statusCode, 200);
+  let persisted = JSON.parse(fs.readFileSync(path.join(agentDir, 'models.json'), 'utf8'));
+  assert.equal(persisted.providers.openai.name, 'My Proxy');
+  assert.equal(persisted.providers.openai.baseUrl, 'https://proxy.example/v1');
+  assert.equal(persisted.providers.openai.api, 'openai-completions');
+  assert.equal(persisted.providers.openai.models[0].name, 'GPT-5 Pro imported');
+
+  const overridden = await invoke(controller, {
+    method: 'POST',
+    pathname: '/api/model-catalog/import',
+    headers: mutationHeaders(),
+    body: { providerId: 'openai', modelId: 'gpt-5/pro', baseUrl: 'https://override.example/v1' },
+  });
+
+  assert.equal(overridden.statusCode, 200);
+  persisted = JSON.parse(fs.readFileSync(path.join(agentDir, 'models.json'), 'utf8'));
+  assert.equal(persisted.providers.openai.baseUrl, 'https://override.example/v1');
 });
