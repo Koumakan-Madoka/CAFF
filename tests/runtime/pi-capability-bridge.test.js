@@ -585,7 +585,7 @@ test('dogfood: Pi extension reaches the authenticated delivery facade over real 
 
 test('fixed MCP stdio adapter uses trusted config and injects principal server-side', async () => {
   const bridge = createPiCapabilityBridge({
-    capabilities: [createMcpCapability('echo')],
+    capabilities: [createMcpCapability('echo', { timeoutMs: 10_000 })],
   });
 
   const result = await bridge.invokeFacade('fixture_echo', {
