@@ -32,11 +32,12 @@ function loadManagementUtils() {
 test('production management page loads focused modules before the entry and preserves the compatibility route', () => {
   const html = fs.readFileSync(path.join(projectRoot, 'public/personas.html'), 'utf8');
   const scripts = Array.from(html.matchAll(/<script defer src="([^"]+)"/gu), (match) => match[1]);
-  assert.deepEqual(scripts.slice(-6), [
+  assert.deepEqual(scripts.slice(-7), [
     '/personas/management-utils.js',
     '/personas/role-editor.js',
     '/personas/role-management.js',
     '/personas/provider-editor.js',
+    '/personas/catalog-import.js',
     '/personas/provider-management.js',
     '/personas.js',
   ]);

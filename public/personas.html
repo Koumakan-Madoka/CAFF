@@ -16,6 +16,7 @@
     <script defer src="/personas/role-editor.js"></script>
     <script defer src="/personas/role-management.js"></script>
     <script defer src="/personas/provider-editor.js"></script>
+    <script defer src="/personas/catalog-import.js"></script>
     <script defer src="/personas/provider-management.js"></script>
     <script defer src="/personas.js"></script>
   </head>
@@ -72,7 +73,7 @@
                   <h2>模型供应商</h2>
                   <p>凭据只显示配置状态；已有密钥和 env/command reference 永不回传浏览器。</p>
                 </div>
-                <div class="button-row"><button id="refresh-providers" class="ghost-button" type="button">刷新状态</button><button id="add-provider" type="button">添加供应商</button></div>
+                <div class="button-row"><button id="refresh-providers" class="ghost-button" type="button">刷新状态</button><button id="import-from-catalog" class="ghost-button" type="button">从目录导入</button><button id="add-provider" type="button">添加供应商</button></div>
               </div>
               <div id="provider-local-admin-banner" class="management-warning hidden"><strong>当前部署只读</strong><p>Provider 管理首版只允许本机 loopback local-admin。聊天与角色目录仍可使用。</p></div>
               <section class="management-group"><div class="management-group-title"><h3>已配置供应商</h3><span id="provider-count">0 个连接</span></div><ul id="provider-list" class="management-list"></ul></section>

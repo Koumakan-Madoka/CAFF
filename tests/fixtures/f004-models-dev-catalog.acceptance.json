@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "provenance": {
+    "kind": "vendored",
+    "sourceUrl": "https://models.dev/api.json",
+    "commitSha": "acceptance-fixture",
+    "payloadSha256": "acceptance-fixture",
+    "fetchedAt": "2026-08-06T00:00:00.000Z"
+  },
+  "providers": {
+    "openai": {
+      "name": "OpenAI",
+      "env": ["OPENAI_API_KEY"],
+      "api": "https://api.openai.com/v1",
+      "npm": "@ai-sdk/openai",
+      "models": {
+        "gpt-5": {
+          "name": "GPT-5",
+          "family": "gpt",
+          "modalities": {"input": ["text"], "output": ["text"]},
+          "reasoning_options": ["minimal", "high"],
+          "cost": {"input": 1, "output": 2},
+          "limit": {"context": 200000, "output": 8192}
+        }
+      }
+    },
+    "mystery": {
+      "name": "Mystery",
+      "env": ["MYSTERY_TOKEN"],
+      "npm": "@unknown/provider",
+      "models": {
+        "m-1": {"name": "Manual Model", "family": "unknown-family"}
+      }
+    }
+  }
+}

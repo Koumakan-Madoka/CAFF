@@ -50,6 +50,7 @@ const providerManagement = personas.createProviderManagement({
   detail: document.getElementById('provider-detail'),
   count: document.getElementById('provider-count'),
   addButton: document.getElementById('add-provider'),
+  importButton: document.getElementById('import-from-catalog'),
   refreshButton: document.getElementById('refresh-providers'),
   fetchJson,
   showToast,
@@ -82,6 +83,7 @@ async function init() {
     adminState.csrfToken = String(localAdmin.csrfToken || '');
     providerBanner.classList.toggle('hidden', adminState.enabled);
     /** @type {HTMLButtonElement} */ (document.getElementById('add-provider')).disabled = !adminState.enabled;
+    /** @type {HTMLButtonElement} */ (document.getElementById('import-from-catalog')).disabled = !adminState.enabled;
     /** @type {HTMLButtonElement} */ (document.getElementById('refresh-providers')).disabled = !adminState.enabled;
     roleManagement.setDirectory(bootstrap);
     await providerManagement.refresh();
