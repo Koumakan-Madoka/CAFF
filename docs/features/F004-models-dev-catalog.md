@@ -8,7 +8,7 @@ created: 2026-08-06
 
 # F004: models.dev Catalog and Runtime-Safe Provider Import
 
-> **Status**: review-ready (P1 AC-1 snapshot verified locally; AC-1–AC-8 implemented, awaiting cross-family review) | **Owner**: @cat-ir4rwo6b | **Priority**: P1
+> **Status**: in-progress (P1 AC-1 snapshot implemented and cross-family reviewed; P2/P3 remain) | **Owner**: @cat-ir4rwo6b | **Priority**: P1
 
 ## Why
 
