@@ -179,6 +179,22 @@ test('catalog import search covers provider model id and name so model-only quer
   assert.equal(visible.length, 3, 'clearing the filter restores the full provider list');
 });
 
+test('catalog import search preserves the caret when filtering rerenders the provider list', async () => {
+  const session = setup({ fetchImpl: indexFetch });
+  await session.wizard.open();
+
+  const search = session.input('catalog-import-search');
+  search.focus();
+  search.value = 'azure';
+  search.setSelectionRange(3, 3);
+  search.dispatchEvent(new session.document.defaultView.Event('input', { bubbles: true }));
+
+  const rerenderedSearch = session.input('catalog-import-search');
+  assert.equal(rerenderedSearch.value, 'azure');
+  assert.equal(rerenderedSearch.selectionStart, 3, 'selection start remains at the pre-render caret');
+  assert.equal(rerenderedSearch.selectionEnd, 3, 'selection end remains at the pre-render caret');
+});
+
 test('catalog import confirm posts only the allowed import fields and never env values', async () => {
   const session = setup({ fetchImpl: indexFetch });
   await session.wizard.open();

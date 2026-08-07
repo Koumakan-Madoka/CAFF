@@ -1,6 +1,9 @@
 type JsonObject = Record<string, any>;
 
-const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/u;
+// models.dev is a display catalog, not a shell parser. Keep names strict
+// enough to exclude controls/whitespace while preserving upstream names such
+// as `302AI_API_KEY` that are valid in provider/runtime environments.
+const ENV_NAME_PATTERN = /^[A-Za-z0-9_]+$/u;
 const RESERVED_CATALOG_IDS = new Set(['__proto__', 'constructor', 'prototype']);
 const UNSAFE_PROVIDER_ID_PATTERN = /[\u0000-\u001f\u007f/\\]/u;
 const UNSAFE_MODEL_ID_PATTERN = /[\u0000-\u001f\u007f\\]/u;

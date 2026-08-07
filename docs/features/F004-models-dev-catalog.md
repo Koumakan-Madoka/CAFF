@@ -8,7 +8,7 @@ created: 2026-08-06
 
 # F004: models.dev Catalog and Runtime-Safe Provider Import
 
-> **Status**: in-progress (P1 UI import merged in #57 @ `3350b38`; AC-1 vendored snapshot still blocked on upstream retrieval) | **Owner**: @cat-ir4rwo6b | **Priority**: P1
+> **Status**: in-progress (P1 AC-1 snapshot implemented and cross-family reviewed; P2/P3 remain) | **Owner**: @cat-ir4rwo6b | **Priority**: P1
 
 ## Why
 
@@ -75,7 +75,7 @@ Use catalog cost/limit metadata as clearly labelled reference values for token-u
 
 ## Acceptance Criteria
 
-- [ ] **AC-1 — Vendored provenance**: P1 ships `assets/model-catalog.json`, its MIT license, and a source declaration containing the exact models.dev commit SHA, source URL, generation date, and payload hash. A missing upstream verification blocks the snapshot rather than inventing provenance.
+- [x] **AC-1 — Vendored provenance**: P1 ships `assets/model-catalog.json`, its MIT license, and a source declaration containing the independently verified models.dev `dev` commit `e951706c7e89d932c0814bb53534b1762c2230ea`, source URL, generation date, and raw payload SHA-256 `e9cf5169bf822b9ded99431beea42a34dddc1fa6750732bcc674096fd666349d`.
 - [x] **AC-2 — Override merge**: provider defaults are merged with model-level `provider` overrides; override fields win, absent fields inherit, and the normalized result is deterministic.
 - [x] **AC-3 — Dialect allowlist**: only reviewed mappings produce a CAFF Pi dialect (`openai-responses`, `openai-completions`, `anthropic-messages`, `google-generative-ai`, or another explicitly registered dialect); all other values are returned with `manualConfigurationRequired: true`.
 - [x] **AC-4 — Secret-safe env projection**: every upstream `env[]` name is projected for display; provider-specific key allowlists classify key inputs; no environment value is read, serialized, logged, uploaded, or persisted by catalog discovery/import.
@@ -88,7 +88,7 @@ Use catalog cost/limit metadata as clearly labelled reference values for token-u
 
 - **Evolved from**: F002 (Pi SDK host/runtime dialect boundary).
 - **Related**: F003 (provider/runtime capability boundaries and operator-visible provenance).
-- **Blocked by**: exact official models.dev snapshot retrieval for AC-1; current TLS/network failure is recorded, not bypassed with guessed data.
+- **P1 unblock**: the official models.dev snapshot was retrieved through a successful HTTP 200 response and independently pinned to the upstream `dev` commit above; the direct `curl.exe` path remains unavailable in this environment, but no provenance value was inferred from that failed path.
 
 ## Architecture
 
@@ -128,7 +128,7 @@ Why: this extends the existing provider/configuration ownership cell and does no
 
 ## Open Questions
 
-1. Which exact models.dev commit and payload hash will be used for the first vendored snapshot? **Open until official HTTPS retrieval succeeds.**
+1. Which exact models.dev commit and payload hash will be used for the first vendored snapshot? **Resolved: `e951706c7e89d932c0814bb53534b1762c2230ea` and `e9cf5169bf822b9ded99431beea42a34dddc1fa6750732bcc674096fd666349d`, documented in `assets/model-catalog.SOURCE.md`.**
 2. Which provider-specific env names are key inputs for the initial allowlist? **Must be derived from reviewed provider contracts, not a regex.**
 3. Which catalog fields, if any, can be added to token-usage UI in P3 without implying billing accuracy?
 
@@ -139,7 +139,8 @@ Why: this extends the existing provider/configuration ownership cell and does no
 | 2026-08-05 | v2.1 design revised after source audit; operator questions captured. |
 | 2026-08-06 | Operator authorized F004 kickoff and the mapping/domain plus provider-editor UI implementation split. |
 | 2026-08-07 | PR #57 squash-merged as `3350b38`: catalog import UI with honest metadata/runtime split, 12/12 browser acceptance, and post-review fix `8aa8dc1` (import merges into existing provider instead of replacing it; provider connection fields fill-only-when-missing). Cross-family review chain: 砚砚 (Maine Coon) + opus (Ragdoll) approvals; cloud Codex gate unavailable (quota), replaced by full cross-provider local review. AC-2–AC-8 marked done on this evidence. |
-| TBD | Pin and commit the official vendored snapshot when network access is available (AC-1 remains open). |
+| 2026-08-07 | AC-1 vendored snapshot generated from `https://models.dev/api.json`, pinned to upstream `dev` commit `e951706c7e89d932c0814bb53534b1762c2230ea`, with raw payload hash, normalized-provider hash, MIT license, and reproducibility fixture; local full `test:fast` gate passed. |
+| 2026-08-07 | Fixed catalog search caret loss after provider-list rerenders; added a regression test preserving selection range and direction. |
 
 ## Review Gate
 
