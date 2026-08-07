@@ -2,10 +2,13 @@
 // 用法:
 //   node scripts/ui/verify-catalog-import.mjs
 // 环境变量:
-//   CAFF_CATALOG_ACCEPT_OUT  证据输出目录（默认 .tmp/ui-catalog-import）
+//   CAFF_CATALOG_ACCEPT_OUT       证据输出目录（默认 .tmp/ui-catalog-import）
+//   CAFF_CATALOG_ACCEPT_FIXTURE   外部 fixture 覆盖（默认 repo-owned 测试夹具；使用时记录其 SHA-256）
+//   GIT_HEAD                      覆盖自动解析的 git HEAD
 // 退出码: 0 全绿 / 1 有 FAIL / 2 缺少 repo-owned playwright-core
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -25,7 +28,27 @@ const OUT = process.env.CAFF_CATALOG_ACCEPT_OUT || path.join(ROOT_DIR, '.tmp', '
 const SHOTS = path.join(OUT, 'shots');
 fs.mkdirSync(SHOTS, { recursive: true });
 
-const ACCEPT_FIXTURE = 'E:\\temp\\caff-f004-ui-accept\\models-dev-catalog.json';
+const REPO_FIXTURE = path.join(ROOT_DIR, 'tests', 'fixtures', 'f004-models-dev-catalog.acceptance.json');
+const ACCEPT_FIXTURE = process.env.CAFF_CATALOG_ACCEPT_FIXTURE
+  ? path.resolve(process.env.CAFF_CATALOG_ACCEPT_FIXTURE)
+  : REPO_FIXTURE;
+const fixtureBuffer = fs.readFileSync(ACCEPT_FIXTURE);
+const fixtureInfo = {
+  path: ACCEPT_FIXTURE,
+  repoOwned: ACCEPT_FIXTURE === REPO_FIXTURE,
+  sha256: crypto.createHash('sha256').update(fixtureBuffer).digest('hex'),
+};
+
+function resolveGitHead() {
+  if (process.env.GIT_HEAD) return process.env.GIT_HEAD;
+  const result = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: ROOT_DIR, encoding: 'utf8' });
+  if (result.status !== 0) {
+    console.error(`无法解析 git HEAD：${result.stderr || result.error}`);
+    process.exit(1);
+  }
+  return result.stdout.trim();
+}
+const gitHead = resolveGitHead();
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const results = [];
@@ -109,7 +132,7 @@ async function newTrackedPage(browser, viewport) {
   page.consoleErrors = [];
   page.pageErrors = [];
   page.notFound = [];
-  page.on('console', (msg) => { if (msg.type() === 'error') page.consoleErrors.push(msg.text()); });
+  page.on('console', (msg) => { if (msg.type() === 'error') page.consoleErrors.push(`${msg.text()} @ ${msg.location().url}`); });
   page.on('pageerror', (err) => page.pageErrors.push(String(err)));
   page.on('response', (res) => { if (res.status() === 404) page.notFound.push(res.url()); });
   return page;
@@ -214,9 +237,10 @@ try {
     `confirmDisabled=${manualConfirmDisabled}`);
   await desktop.screenshot({ path: path.join(SHOTS, '06-desktop-manual-fail-closed.png'), fullPage: true });
 
+  const desktopRealConsole = desktop.consoleErrors.filter((text) => !text.includes('favicon'));
   const desktopRealNotFound = desktop.notFound.filter((url) => !url.includes('favicon'));
-  ok('desktop: no console/page errors or missing resources', desktop.pageErrors.length === 0 && desktopRealNotFound.length === 0,
-    `page=${desktop.pageErrors.length} 404=${JSON.stringify(desktopRealNotFound)} (favicon 404 benign=${desktop.notFound.length - desktopRealNotFound.length})`);
+  ok('desktop: no console/page errors or missing resources', desktopRealConsole.length === 0 && desktop.pageErrors.length === 0 && desktopRealNotFound.length === 0,
+    `console=${JSON.stringify(desktopRealConsole)} page=${JSON.stringify(desktop.pageErrors)} 404=${JSON.stringify(desktopRealNotFound)} (favicon benign: console=${desktop.consoleErrors.length - desktopRealConsole.length} 404=${desktop.notFound.length - desktopRealNotFound.length})`);
   await desktop.close();
 
   // ---------- 移动场景 ----------
@@ -233,9 +257,10 @@ try {
   ok('mobile: catalog import usable at 390px (search + metadata/controls)', mobileExpanded === 'true' && !mobileOverflow,
     `expanded=${mobileExpanded} horizontalOverflow=${mobileOverflow}`);
   await mobile.screenshot({ path: path.join(SHOTS, '07-mobile-catalog-metadata.png'), fullPage: true });
+  const mobileRealConsole = mobile.consoleErrors.filter((text) => !text.includes('favicon'));
   const mobileRealNotFound = mobile.notFound.filter((url) => !url.includes('favicon'));
-  ok('mobile: no console/page errors or missing resources', mobile.pageErrors.length === 0 && mobileRealNotFound.length === 0,
-    `page=${mobile.pageErrors.length} 404=${JSON.stringify(mobileRealNotFound)}`);
+  ok('mobile: no console/page errors or missing resources', mobileRealConsole.length === 0 && mobile.pageErrors.length === 0 && mobileRealNotFound.length === 0,
+    `console=${JSON.stringify(mobileRealConsole)} page=${JSON.stringify(mobile.pageErrors)} 404=${JSON.stringify(mobileRealNotFound)}`);
   await mobile.close();
 
   // ---------- 快照不可用 503 ----------
@@ -255,6 +280,13 @@ try {
     /目录快照未就位/.test(unavailableText) && (await unavailablePage.locator('#catalog-import-confirm').count()) === 0,
     `text=${unavailableText.trim().slice(0, 40)}...`);
   await unavailablePage.screenshot({ path: path.join(SHOTS, '08-desktop-snapshot-unavailable.png'), fullPage: true });
+  const expected503Console = /^Failed to load resource: the server responded with a status of 503/;
+  const unexpectedConsole = unavailablePage.consoleErrors.filter((text) => !expected503Console.test(text) && !text.includes('favicon'));
+  const allowlistedConsole = unavailablePage.consoleErrors.filter((text) => expected503Console.test(text));
+  const unavailableRealNotFound = unavailablePage.notFound.filter((url) => !url.includes('favicon'));
+  ok('desktop: snapshot unavailable surfaces no unexpected console/page errors (503 resource error allowlisted)',
+    unexpectedConsole.length === 0 && unavailablePage.pageErrors.length === 0 && unavailableRealNotFound.length === 0,
+    `unexpectedConsole=${JSON.stringify(unexpectedConsole)} allowlisted=${JSON.stringify(allowlistedConsole)} page=${JSON.stringify(unavailablePage.pageErrors)} 404=${JSON.stringify(unavailableRealNotFound)}`);
   await unavailablePage.close();
 
   exitCode = results.every((r) => r.pass) ? 0 : 1;
@@ -269,7 +301,8 @@ try {
 
 const summary = {
   feature: 'F004',
-  head: process.env.GIT_HEAD || '',
+  head: gitHead,
+  fixture: fixtureInfo,
   out: SHOTS,
   results,
 };
