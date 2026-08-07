@@ -57,6 +57,17 @@ const ok = (name, pass, detail) => {
   console.log(`${pass ? 'PASS' : 'FAIL'} | ${name} | ${detail}`);
 };
 
+const pathnameOf = (url) => {
+  try {
+    return new URL(url).pathname;
+  } catch {
+    return '';
+  }
+};
+const isBenignFavicon404 = (entry) => pathnameOf(entry.url) === '/favicon.ico' && entry.text.includes('404');
+const isExpectedCatalog503 = (entry) => pathnameOf(entry.url) === '/api/model-catalog'
+  && /^Failed to load resource: the server responded with a status of 503/.test(entry.text);
+
 async function findFreePort() {
   const port = await new Promise((resolve, reject) => {
     const server = net.createServer();
@@ -132,7 +143,7 @@ async function newTrackedPage(browser, viewport) {
   page.consoleErrors = [];
   page.pageErrors = [];
   page.notFound = [];
-  page.on('console', (msg) => { if (msg.type() === 'error') page.consoleErrors.push(`${msg.text()} @ ${msg.location().url}`); });
+  page.on('console', (msg) => { if (msg.type() === 'error') page.consoleErrors.push({ text: msg.text(), url: msg.location().url || '' }); });
   page.on('pageerror', (err) => page.pageErrors.push(String(err)));
   page.on('response', (res) => { if (res.status() === 404) page.notFound.push(res.url()); });
   return page;
@@ -237,7 +248,7 @@ try {
     `confirmDisabled=${manualConfirmDisabled}`);
   await desktop.screenshot({ path: path.join(SHOTS, '06-desktop-manual-fail-closed.png'), fullPage: true });
 
-  const desktopRealConsole = desktop.consoleErrors.filter((text) => !text.includes('favicon'));
+  const desktopRealConsole = desktop.consoleErrors.filter((entry) => !isBenignFavicon404(entry));
   const desktopRealNotFound = desktop.notFound.filter((url) => !url.includes('favicon'));
   ok('desktop: no console/page errors or missing resources', desktopRealConsole.length === 0 && desktop.pageErrors.length === 0 && desktopRealNotFound.length === 0,
     `console=${JSON.stringify(desktopRealConsole)} page=${JSON.stringify(desktop.pageErrors)} 404=${JSON.stringify(desktopRealNotFound)} (favicon benign: console=${desktop.consoleErrors.length - desktopRealConsole.length} 404=${desktop.notFound.length - desktopRealNotFound.length})`);
@@ -257,7 +268,7 @@ try {
   ok('mobile: catalog import usable at 390px (search + metadata/controls)', mobileExpanded === 'true' && !mobileOverflow,
     `expanded=${mobileExpanded} horizontalOverflow=${mobileOverflow}`);
   await mobile.screenshot({ path: path.join(SHOTS, '07-mobile-catalog-metadata.png'), fullPage: true });
-  const mobileRealConsole = mobile.consoleErrors.filter((text) => !text.includes('favicon'));
+  const mobileRealConsole = mobile.consoleErrors.filter((entry) => !isBenignFavicon404(entry));
   const mobileRealNotFound = mobile.notFound.filter((url) => !url.includes('favicon'));
   ok('mobile: no console/page errors or missing resources', mobileRealConsole.length === 0 && mobile.pageErrors.length === 0 && mobileRealNotFound.length === 0,
     `console=${JSON.stringify(mobileRealConsole)} page=${JSON.stringify(mobile.pageErrors)} 404=${JSON.stringify(mobileRealNotFound)}`);
@@ -280,9 +291,8 @@ try {
     /目录快照未就位/.test(unavailableText) && (await unavailablePage.locator('#catalog-import-confirm').count()) === 0,
     `text=${unavailableText.trim().slice(0, 40)}...`);
   await unavailablePage.screenshot({ path: path.join(SHOTS, '08-desktop-snapshot-unavailable.png'), fullPage: true });
-  const expected503Console = /^Failed to load resource: the server responded with a status of 503/;
-  const unexpectedConsole = unavailablePage.consoleErrors.filter((text) => !expected503Console.test(text) && !text.includes('favicon'));
-  const allowlistedConsole = unavailablePage.consoleErrors.filter((text) => expected503Console.test(text));
+  const unexpectedConsole = unavailablePage.consoleErrors.filter((entry) => !isExpectedCatalog503(entry) && !isBenignFavicon404(entry));
+  const allowlistedConsole = unavailablePage.consoleErrors.filter((entry) => isExpectedCatalog503(entry));
   const unavailableRealNotFound = unavailablePage.notFound.filter((url) => !url.includes('favicon'));
   ok('desktop: snapshot unavailable surfaces no unexpected console/page errors (503 resource error allowlisted)',
     unexpectedConsole.length === 0 && unavailablePage.pageErrors.length === 0 && unavailableRealNotFound.length === 0,
