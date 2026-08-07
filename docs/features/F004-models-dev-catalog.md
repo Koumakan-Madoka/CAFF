@@ -8,7 +8,7 @@ created: 2026-08-06
 
 # F004: models.dev Catalog and Runtime-Safe Provider Import
 
-> **Status**: in-progress (P1 AC-1 vendored snapshot merged in #58 @ `94d5f34`; P2/P3 remain) | **Owner**: @cat-ir4rwo6b | **Priority**: P1
+> **Status**: in-progress (P1 merged across #57/#58; provider-only acceptance fix merged in #59; P2/P3 remain) | **Owner**: @cat-ir4rwo6b | **Priority**: P1
 
 ## Why
 
@@ -142,6 +142,7 @@ Why: this extends the existing provider/configuration ownership cell and does no
 | 2026-08-07 | AC-1 vendored snapshot generated from `https://models.dev/api.json`, pinned to upstream `dev` commit `e951706c7e89d932c0814bb53534b1762c2230ea`, with raw payload hash, normalized-provider hash, MIT license, and reproducibility fixture; local full `test:fast` gate passed. |
 | 2026-08-07 | Phase P1 merged (PR #58): vendored models.dev snapshot and runtime-safe provenance verification. |
 | 2026-08-07 | Fixed catalog search caret loss after provider-list rerenders; added a regression test preserving selection range and direction. |
+| 2026-08-08 | Acceptance follow-up merged (PR #59, squash `b9c5af0`): catalog search now matches provider id/name only and filters the loaded 180-provider DOM in place; focused 6/6, browser 13/13 (`catalogRequests=1->1`, `inputStable=true`), typecheck/test:fast, and cross-provider fallback review passed. |
 
 ## Review Gate
 
