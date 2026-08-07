@@ -53,7 +53,7 @@ Use catalog cost/limit metadata as clearly labelled reference values for token-u
 - **Entry**: operator opens provider editor and chooses “从目录导入”.
 - **Flow**:
   1. CAFF loads the vendored catalog/cache without reading any environment-variable value.
-  2. Operator searches a provider/model and sees dialect, family, env names, and catalog metadata in a read-only catalog section.
+  2. Operator searches a provider by provider id/name, selects one of its models, and sees dialect, family, env names, and catalog metadata in a read-only catalog section.
   3. CAFF marks unsupported dialects or unmapped families as manual/unclassified instead of inventing a runnable config.
   4. Operator explicitly confirms the mapped fields and fills any required non-key parameters.
   5. CAFF writes only the selected CAFF provider entry through the existing persistence path; catalog provenance remains separate.

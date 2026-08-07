@@ -42,12 +42,11 @@
 
     function providerRow(provider) {
       const models = Array.isArray(provider.models) ? provider.models : [];
-      const providerMatch = `${provider.id} ${provider.name || ''}`.toLowerCase().includes(filter);
-      const modelMatch = Boolean(filter) && models.some((model) => `${model.id} ${model.name || ''}`.toLowerCase().includes(filter));
-      const hidden = Boolean(filter) && !providerMatch && !modelMatch;
-      const open = selectedProviderId === provider.id || (Boolean(filter) && !providerMatch && modelMatch);
+      const providerSearch = `${provider.id} ${provider.name || ''}`.toLowerCase();
+      const hidden = Boolean(filter) && !providerSearch.includes(filter);
+      const open = selectedProviderId === provider.id;
       return `
-        <div class="catalog-provider-row${hidden ? ' hidden' : ''}" data-catalog-provider="${utils.escapeHtml(provider.id)}">
+        <div class="catalog-provider-row${hidden ? ' hidden' : ''}" data-catalog-provider="${utils.escapeHtml(provider.id)}" data-catalog-search="${utils.escapeHtml(providerSearch)}">
           <button class="ghost-button" type="button" data-catalog-open-provider="${utils.escapeHtml(provider.id)}" aria-expanded="${open}">
             ${utils.escapeHtml(provider.name || provider.id)} <small>${utils.escapeHtml(provider.id)} · ${models.length} 个模型 · ${provider.env.length} 个环境变量</small>
           </button>
@@ -118,12 +117,19 @@
         </div>
         <section class="management-card">
           <div class="management-card-title"><div><h3>models.dev 目录</h3><p>${utils.escapeHtml(provenanceSummary(index && index.provenance))}</p></div></div>
-          <label><span>搜索供应商</span><input id="catalog-import-search" value="${utils.escapeHtml(filter)}" placeholder="按名称或 ID 过滤" /></label>
+          <label><span>搜索供应商</span><input id="catalog-import-search" value="${utils.escapeHtml(filter)}" placeholder="按供应商名称或 ID 过滤" /></label>
           <div class="catalog-provider-list">${index.providers.map(providerRow).join('')}</div>
         </section>
         ${projection ? metadataMarkup() + controlsMarkup() : ''}
         <p id="catalog-import-error" class="management-error hidden" role="alert"></p>`;
       bindEvents();
+    }
+
+    function applyProviderFilter() {
+      root.querySelectorAll('[data-catalog-provider]').forEach((row) => {
+        const providerSearch = row.dataset.catalogSearch || '';
+        row.classList.toggle('hidden', Boolean(filter) && !providerSearch.includes(filter));
+      });
     }
 
     function showError(error, fallback) {
@@ -168,17 +174,8 @@
       document.getElementById('catalog-import-close').addEventListener('click', () => options.onClose());
       input('catalog-import-search').addEventListener('input', () => {
         const search = input('catalog-import-search');
-        const selectionStart = search.selectionStart;
-        const selectionEnd = search.selectionEnd;
-        const selectionDirection = search.selectionDirection;
         filter = search.value.trim().toLowerCase();
-        render();
-        const rerenderedSearch = input('catalog-import-search');
-        rerenderedSearch.focus();
-        const valueLength = rerenderedSearch.value.length;
-        const start = Math.min(selectionStart ?? valueLength, valueLength);
-        const end = Math.min(selectionEnd ?? start, valueLength);
-        rerenderedSearch.setSelectionRange(start, end, selectionDirection || 'none');
+        applyProviderFilter();
       });
       root.querySelectorAll('[data-catalog-open-provider]').forEach((button) => button.addEventListener('click', () => {
         const providerId = button.dataset.catalogOpenProvider;

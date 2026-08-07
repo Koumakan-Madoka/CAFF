@@ -154,21 +154,16 @@ test('catalog import wizard lists providers, filters by search, and keeps catalo
   assert.equal(session.input('catalog-import-confirm').disabled, false);
 });
 
-test('catalog import search covers provider model id and name so model-only queries keep the provider visible', async () => {
+test('catalog import search matches provider id and name only', async () => {
   const session = setup({ fetchImpl: indexFetch });
   await session.wizard.open();
 
   session.type('catalog-import-search', 'm-1');
   let visible = Array.from(session.document.querySelectorAll('[data-catalog-provider]'))
     .filter((row) => !row.classList.contains('hidden'));
-  assert.deepEqual(visible.map((row) => row.dataset.catalogProvider), ['mystery']);
-  const modelButton = visible[0].querySelector('[data-catalog-model="m-1"] button');
-  assert.ok(modelButton, 'model-only query auto-expands the provider so the model stays reachable');
-  modelButton.click();
-  await flush();
-  assert.match(session.document.getElementById('catalog-import-manual').textContent, /手工配置/u);
+  assert.deepEqual(visible.map((row) => row.dataset.catalogProvider), [], 'model-only query does not match a provider');
 
-  session.type('catalog-import-search', 'on azure');
+  session.type('catalog-import-search', 'azure open');
   visible = Array.from(session.document.querySelectorAll('[data-catalog-provider]'))
     .filter((row) => !row.classList.contains('hidden'));
   assert.deepEqual(visible.map((row) => row.dataset.catalogProvider), ['azure']);
@@ -179,20 +174,22 @@ test('catalog import search covers provider model id and name so model-only quer
   assert.equal(visible.length, 3, 'clearing the filter restores the full provider list');
 });
 
-test('catalog import search preserves the caret when filtering rerenders the provider list', async () => {
+test('catalog import search filters in place without replacing the input or refetching the catalog', async () => {
   const session = setup({ fetchImpl: indexFetch });
   await session.wizard.open();
 
   const search = session.input('catalog-import-search');
+  const callsBeforeTyping = session.calls.length;
   search.focus();
   search.value = 'azure';
   search.setSelectionRange(3, 3);
   search.dispatchEvent(new session.document.defaultView.Event('input', { bubbles: true }));
 
-  const rerenderedSearch = session.input('catalog-import-search');
-  assert.equal(rerenderedSearch.value, 'azure');
-  assert.equal(rerenderedSearch.selectionStart, 3, 'selection start remains at the pre-render caret');
-  assert.equal(rerenderedSearch.selectionEnd, 3, 'selection end remains at the pre-render caret');
+  assert.equal(session.input('catalog-import-search'), search, 'filtering keeps the existing input node');
+  assert.equal(search.value, 'azure');
+  assert.equal(search.selectionStart, 3, 'selection start remains unchanged');
+  assert.equal(search.selectionEnd, 3, 'selection end remains unchanged');
+  assert.equal(session.calls.length, callsBeforeTyping, 'typing does not issue another catalog request');
 });
 
 test('catalog import confirm posts only the allowed import fields and never env values', async () => {
