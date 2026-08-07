@@ -249,7 +249,7 @@ try {
   await desktop.screenshot({ path: path.join(SHOTS, '06-desktop-manual-fail-closed.png'), fullPage: true });
 
   const desktopRealConsole = desktop.consoleErrors.filter((entry) => !isBenignFavicon404(entry));
-  const desktopRealNotFound = desktop.notFound.filter((url) => !url.includes('favicon'));
+  const desktopRealNotFound = desktop.notFound.filter((url) => pathnameOf(url) !== '/favicon.ico');
   ok('desktop: no console/page errors or missing resources', desktopRealConsole.length === 0 && desktop.pageErrors.length === 0 && desktopRealNotFound.length === 0,
     `console=${JSON.stringify(desktopRealConsole)} page=${JSON.stringify(desktop.pageErrors)} 404=${JSON.stringify(desktopRealNotFound)} (favicon benign: console=${desktop.consoleErrors.length - desktopRealConsole.length} 404=${desktop.notFound.length - desktopRealNotFound.length})`);
   await desktop.close();
@@ -269,7 +269,7 @@ try {
     `expanded=${mobileExpanded} horizontalOverflow=${mobileOverflow}`);
   await mobile.screenshot({ path: path.join(SHOTS, '07-mobile-catalog-metadata.png'), fullPage: true });
   const mobileRealConsole = mobile.consoleErrors.filter((entry) => !isBenignFavicon404(entry));
-  const mobileRealNotFound = mobile.notFound.filter((url) => !url.includes('favicon'));
+  const mobileRealNotFound = mobile.notFound.filter((url) => pathnameOf(url) !== '/favicon.ico');
   ok('mobile: no console/page errors or missing resources', mobileRealConsole.length === 0 && mobile.pageErrors.length === 0 && mobileRealNotFound.length === 0,
     `console=${JSON.stringify(mobileRealConsole)} page=${JSON.stringify(mobile.pageErrors)} 404=${JSON.stringify(mobileRealNotFound)}`);
   await mobile.close();
@@ -293,7 +293,7 @@ try {
   await unavailablePage.screenshot({ path: path.join(SHOTS, '08-desktop-snapshot-unavailable.png'), fullPage: true });
   const unexpectedConsole = unavailablePage.consoleErrors.filter((entry) => !isExpectedCatalog503(entry) && !isBenignFavicon404(entry));
   const allowlistedConsole = unavailablePage.consoleErrors.filter((entry) => isExpectedCatalog503(entry));
-  const unavailableRealNotFound = unavailablePage.notFound.filter((url) => !url.includes('favicon'));
+  const unavailableRealNotFound = unavailablePage.notFound.filter((url) => pathnameOf(url) !== '/favicon.ico');
   ok('desktop: snapshot unavailable surfaces no unexpected console/page errors (503 resource error allowlisted)',
     unexpectedConsole.length === 0 && unavailablePage.pageErrors.length === 0 && unavailableRealNotFound.length === 0,
     `unexpectedConsole=${JSON.stringify(unexpectedConsole)} allowlisted=${JSON.stringify(allowlistedConsole)} page=${JSON.stringify(unavailablePage.pageErrors)} 404=${JSON.stringify(unavailableRealNotFound)}`);
