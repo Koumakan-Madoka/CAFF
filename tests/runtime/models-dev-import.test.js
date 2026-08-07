@@ -36,6 +36,15 @@ function catalogFixture() {
 }
 
 test('catalog validation rejects malformed provider maps and missing model records', () => {
+  assert.doesNotThrow(() => validateModelsDevDocument({
+    '302ai': { env: ['302AI_API_KEY'], models: { model: {} } },
+  }));
+
+  assert.throws(
+    () => validateModelsDevDocument({ openai: { env: ['OPEN AI_API_KEY'], models: { model: {} } } }),
+    (error) => error instanceof ModelCatalogError && error.code === 'catalog_env_invalid'
+  );
+
   assert.throws(
     () => validateModelsDevDocument({ openai: { env: [], models: [] } }),
     (error) => error instanceof ModelCatalogError && error.code === 'catalog_models_invalid'
