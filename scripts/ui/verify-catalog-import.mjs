@@ -65,9 +65,6 @@ const pathnameOf = (url) => {
   }
 };
 const isBenignFavicon404 = (entry) => pathnameOf(entry.url) === '/favicon.ico' && entry.text.includes('404');
-const isExpectedCatalog503 = (entry) => pathnameOf(entry.url) === '/api/model-catalog'
-  && /^Failed to load resource: the server responded with a status of 503/.test(entry.text);
-
 async function findFreePort() {
   const port = await new Promise((resolve, reject) => {
     const server = net.createServer();
@@ -143,8 +140,10 @@ async function newTrackedPage(browser, viewport) {
   page.consoleErrors = [];
   page.pageErrors = [];
   page.notFound = [];
+  page.requestUrls = [];
   page.on('console', (msg) => { if (msg.type() === 'error') page.consoleErrors.push({ text: msg.text(), url: msg.location().url || '' }); });
   page.on('pageerror', (err) => page.pageErrors.push(String(err)));
+  page.on('request', (request) => page.requestUrls.push(request.url()));
   page.on('response', (res) => { if (res.status() === 404) page.notFound.push(res.url()); });
   return page;
 }
@@ -180,27 +179,24 @@ try {
     `providers=${providerCount} provenance=${/vendored/.test(catalogCardText || '')}`);
   await desktop.screenshot({ path: path.join(SHOTS, '01-desktop-catalog-list.png'), fullPage: true });
 
-  // UI-1 修复：model-only 搜索（按模型 id）
-  await desktop.fill('#catalog-import-search', 'gpt-5');
+  // 供应商搜索：只按 provider id/name 过滤
+  await desktop.fill('#catalog-import-search', 'openai');
   await desktop.waitForTimeout(200);
   const openaiRow = desktop.locator('[data-catalog-provider="openai"]');
   const mysteryRow = desktop.locator('[data-catalog-provider="mystery"]');
-  const openaiExpanded = await openaiRow.locator('[data-catalog-open-provider]').getAttribute('aria-expanded');
-  const openaiModelVisible = await openaiRow.locator('[data-catalog-open-model="gpt-5"]').isVisible();
+  const openaiVisible = await openaiRow.isVisible();
   const mysteryHidden = await mysteryRow.evaluate((el) => el.classList.contains('hidden'));
-  ok('desktop: model-only id search keeps provider reachable (UI-1)', openaiExpanded === 'true' && openaiModelVisible && mysteryHidden,
-    `openaiExpanded=${openaiExpanded} modelVisible=${openaiModelVisible} mysteryHidden=${mysteryHidden}`);
-  await desktop.screenshot({ path: path.join(SHOTS, '02-desktop-model-only-search.png'), fullPage: true });
+  ok('desktop: provider search filters by provider id/name only', openaiVisible && mysteryHidden,
+    `openaiVisible=${openaiVisible} mysteryHidden=${mysteryHidden}`);
+  await desktop.screenshot({ path: path.join(SHOTS, '02-desktop-provider-search.png'), fullPage: true });
 
-  // UI-1 修复：model-only 搜索（按模型 name）
-  await desktop.fill('#catalog-import-search', 'Manual Model');
+  // 模型 id/name 不参与供应商搜索
+  await desktop.fill('#catalog-import-search', 'gpt-5');
   await desktop.waitForTimeout(200);
-  const mysteryExpanded = await mysteryRow.locator('[data-catalog-open-provider]').getAttribute('aria-expanded');
-  const manualModelVisible = await mysteryRow.locator('[data-catalog-open-model="m-1"]').isVisible();
-  const openaiHidden = await openaiRow.evaluate((el) => el.classList.contains('hidden'));
-  ok('desktop: model-only name search expands matching provider (UI-1)', mysteryExpanded === 'true' && manualModelVisible && openaiHidden,
-    `mysteryExpanded=${mysteryExpanded} manualVisible=${manualModelVisible} openaiHidden=${openaiHidden}`);
-  await desktop.screenshot({ path: path.join(SHOTS, '03-desktop-model-name-search.png'), fullPage: true });
+  const modelQueryVisibleCount = await desktop.locator('.catalog-provider-row:not(.hidden)').count();
+  ok('desktop: model-only query does not match providers', modelQueryVisibleCount === 0,
+    `visibleProviders=${modelQueryVisibleCount}`);
+  await desktop.screenshot({ path: path.join(SHOTS, '03-desktop-model-query-no-match.png'), fullPage: true });
 
   // metadata / runtime 分区（AC-7）
   await desktop.fill('#catalog-import-search', '');
@@ -258,14 +254,15 @@ try {
   const mobile = await newTrackedPage(browser, { width: 390, height: 844 });
   await openCatalogImport(mobile, appA.baseUrl);
   await mobile.waitForSelector('.catalog-provider-row', { timeout: 15000 });
-  await mobile.fill('#catalog-import-search', 'gpt-5');
+  await mobile.fill('#catalog-import-search', 'openai');
   await mobile.waitForTimeout(200);
+  await mobile.locator('[data-catalog-provider="openai"] [data-catalog-open-provider]').click();
   const mobileExpanded = await mobile.locator('[data-catalog-provider="openai"] [data-catalog-open-provider]').getAttribute('aria-expanded');
   await mobile.locator('[data-catalog-provider="openai"] [data-catalog-open-model="gpt-5"]').click();
   await mobile.waitForSelector('#catalog-import-metadata', { timeout: 15000 });
   await mobile.waitForSelector('#catalog-import-controls', { timeout: 15000 });
   const mobileOverflow = await mobile.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1);
-  ok('mobile: catalog import usable at 390px (search + metadata/controls)', mobileExpanded === 'true' && !mobileOverflow,
+  ok('mobile: provider search and catalog import usable at 390px', mobileExpanded === 'true' && !mobileOverflow,
     `expanded=${mobileExpanded} horizontalOverflow=${mobileOverflow}`);
   await mobile.screenshot({ path: path.join(SHOTS, '07-mobile-catalog-metadata.png'), fullPage: true });
   const mobileRealConsole = mobile.consoleErrors.filter((entry) => !isBenignFavicon404(entry));
@@ -274,30 +271,45 @@ try {
     `console=${JSON.stringify(mobileRealConsole)} page=${JSON.stringify(mobile.pageErrors)} 404=${JSON.stringify(mobileRealNotFound)}`);
   await mobile.close();
 
-  // ---------- 快照不可用 503 ----------
+  // ---------- 无 cache 时回退到 vendored snapshot ----------
   appB = await startIsolatedApp({ withCatalogCache: false });
-  const unavailableResponse = await fetch(`${appB.baseUrl}api/model-catalog`);
-  const unavailablePayload = await unavailableResponse.json().catch(() => ({}));
-  const unavailableCode = unavailablePayload && unavailablePayload.issues && unavailablePayload.issues[0] && unavailablePayload.issues[0].code;
-  ok('api: missing snapshot returns 503 catalog_source_unavailable',
-    unavailableResponse.status === 503 && unavailableCode === 'catalog_source_unavailable',
-    `status=${unavailableResponse.status} code=${unavailableCode}`);
+  const vendoredResponse = await fetch(`${appB.baseUrl}api/model-catalog`);
+  const vendoredPayload = await vendoredResponse.json().catch(() => ({}));
+  const vendoredProviderCount = Array.isArray(vendoredPayload.providers) ? vendoredPayload.providers.length : 0;
+  ok('api: empty agentDir falls back to the vendored snapshot',
+    vendoredResponse.status === 200 && vendoredPayload.provenance?.kind === 'vendored' && vendoredProviderCount === 180,
+    `status=${vendoredResponse.status} kind=${vendoredPayload.provenance?.kind} providers=${vendoredProviderCount}`);
 
-  const unavailablePage = await newTrackedPage(browser, { width: 1440, height: 900 });
-  await openCatalogImport(unavailablePage, appB.baseUrl);
-  await unavailablePage.waitForSelector('#catalog-import-unavailable', { timeout: 15000 });
-  const unavailableText = await unavailablePage.locator('#catalog-import-unavailable').textContent();
-  ok('desktop: snapshot unavailable renders honest empty state without import actions',
-    /目录快照未就位/.test(unavailableText) && (await unavailablePage.locator('#catalog-import-confirm').count()) === 0,
-    `text=${unavailableText.trim().slice(0, 40)}...`);
-  await unavailablePage.screenshot({ path: path.join(SHOTS, '08-desktop-snapshot-unavailable.png'), fullPage: true });
-  const unexpectedConsole = unavailablePage.consoleErrors.filter((entry) => !isExpectedCatalog503(entry) && !isBenignFavicon404(entry));
-  const allowlistedConsole = unavailablePage.consoleErrors.filter((entry) => isExpectedCatalog503(entry));
-  const unavailableRealNotFound = unavailablePage.notFound.filter((url) => pathnameOf(url) !== '/favicon.ico');
-  ok('desktop: snapshot unavailable surfaces no unexpected console/page errors (503 resource error allowlisted)',
-    unexpectedConsole.length === 0 && unavailablePage.pageErrors.length === 0 && unavailableRealNotFound.length === 0,
-    `unexpectedConsole=${JSON.stringify(unexpectedConsole)} allowlisted=${JSON.stringify(allowlistedConsole)} page=${JSON.stringify(unavailablePage.pageErrors)} 404=${JSON.stringify(unavailableRealNotFound)}`);
-  await unavailablePage.close();
+  const vendoredPage = await newTrackedPage(browser, { width: 1440, height: 900 });
+  await openCatalogImport(vendoredPage, appB.baseUrl);
+  await vendoredPage.waitForSelector('.catalog-provider-row', { timeout: 15000 });
+  const vendoredUiCount = await vendoredPage.locator('.catalog-provider-row').count();
+  ok('desktop: vendored fallback renders the full provider catalog',
+    vendoredUiCount === 180 && (await vendoredPage.locator('#catalog-import-unavailable').count()) === 0,
+    `providers=${vendoredUiCount}`);
+
+  const vendoredSearch = vendoredPage.locator('#catalog-import-search');
+  const vendoredSearchHandle = await vendoredSearch.elementHandle();
+  const catalogRequestsBeforeTyping = vendoredPage.requestUrls.filter((url) => pathnameOf(url) === '/api/model-catalog').length;
+  const typingStartedAt = performance.now();
+  await vendoredSearch.pressSequentially('gpt-5');
+  const typingElapsedMs = Math.round(performance.now() - typingStartedAt);
+  const vendoredModelQueryVisibleCount = await vendoredPage.locator('.catalog-provider-row:not(.hidden)').count();
+  const catalogRequestsAfterTyping = vendoredPage.requestUrls.filter((url) => pathnameOf(url) === '/api/model-catalog').length;
+  const vendoredSearchNodeStable = await vendoredSearchHandle.evaluate((node) => node === document.getElementById('catalog-import-search'));
+  ok('desktop: 180-provider model query filters in place without catalog refetch',
+    vendoredModelQueryVisibleCount === 0
+      && catalogRequestsAfterTyping === catalogRequestsBeforeTyping
+      && vendoredSearchNodeStable,
+    `visibleProviders=${vendoredModelQueryVisibleCount} catalogRequests=${catalogRequestsBeforeTyping}->${catalogRequestsAfterTyping} inputStable=${vendoredSearchNodeStable} typingMs=${typingElapsedMs}`);
+
+  await vendoredPage.screenshot({ path: path.join(SHOTS, '08-desktop-vendored-fallback.png'), fullPage: true });
+  const vendoredRealConsole = vendoredPage.consoleErrors.filter((entry) => !isBenignFavicon404(entry));
+  const vendoredRealNotFound = vendoredPage.notFound.filter((url) => pathnameOf(url) !== '/favicon.ico');
+  ok('desktop: vendored fallback surfaces no console/page errors or missing resources',
+    vendoredRealConsole.length === 0 && vendoredPage.pageErrors.length === 0 && vendoredRealNotFound.length === 0,
+    `console=${JSON.stringify(vendoredRealConsole)} page=${JSON.stringify(vendoredPage.pageErrors)} 404=${JSON.stringify(vendoredRealNotFound)}`);
+  await vendoredPage.close();
 
   exitCode = results.every((r) => r.pass) ? 0 : 1;
 } catch (error) {
