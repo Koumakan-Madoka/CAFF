@@ -7,8 +7,8 @@ created: 2026-08-07
 
 # F004 AC-1 Quality Gate Report
 
-Branch: `feat/f004-ac1`  
-HEAD: `1a5d568f791244b2075e0a3b28309b2f9abac286`  
+Branch: `feat/f004-ac1`
+HEAD: `1a5d568f791244b2075e0a3b28309b2f9abac286`
 Worktree: `E:\pythonproject\caff-f004-ac1`
 
 ## Original requirements and vision coverage
@@ -40,8 +40,8 @@ Dogfood initially exposed `catalog_env_invalid` for upstream `302AI_API_KEY`. Th
 
 ## Architecture ownership
 
-Architecture cell: `server/domain/models + model-provider persistence + model-providers controller + public/personas`  
-Map delta: none  
+Architecture cell: `server/domain/models + model-provider persistence + model-providers controller + public/personas`
+Map delta: none
 Why: this adds the vendored source and validation coverage inside the existing catalog/import boundary; it introduces no parallel store, queue, router, adapter, or runtime registry.
 
 ## Dogfood-Your-Slice

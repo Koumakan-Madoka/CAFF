@@ -7,8 +7,8 @@ created: 2026-08-07
 
 # Review Request: F004 AC-1 vendored models.dev snapshot
 
-Review-Target-ID: `f004-ac1`  
-Branch: `feat/f004-ac1`  
+Review-Target-ID: `f004-ac1`
+Branch: `feat/f004-ac1`
 HEAD: `1a5d568f791244b2075e0a3b28309b2f9abac286`
 
 ## What
@@ -37,8 +37,8 @@ The snapshot is ~6.66 MB and pins one upstream commit for deterministic offline 
 
 ## Architecture Ownership
 
-Architecture cell: `server/domain/models + model-provider persistence + model-providers controller + public/personas`  
-Map delta: none  
+Architecture cell: `server/domain/models + model-provider persistence + model-providers controller + public/personas`
+Map delta: none
 Why: the change extends the existing catalog/import boundary and adds no parallel persistence or runtime registry.
 
 ## Open Questions
