@@ -167,9 +167,18 @@
     function bindEvents() {
       document.getElementById('catalog-import-close').addEventListener('click', () => options.onClose());
       input('catalog-import-search').addEventListener('input', () => {
-        filter = input('catalog-import-search').value.trim().toLowerCase();
+        const search = input('catalog-import-search');
+        const selectionStart = search.selectionStart;
+        const selectionEnd = search.selectionEnd;
+        const selectionDirection = search.selectionDirection;
+        filter = search.value.trim().toLowerCase();
         render();
-        input('catalog-import-search').focus();
+        const rerenderedSearch = input('catalog-import-search');
+        rerenderedSearch.focus();
+        const valueLength = rerenderedSearch.value.length;
+        const start = Math.min(selectionStart ?? valueLength, valueLength);
+        const end = Math.min(selectionEnd ?? start, valueLength);
+        rerenderedSearch.setSelectionRange(start, end, selectionDirection || 'none');
       });
       root.querySelectorAll('[data-catalog-open-provider]').forEach((button) => button.addEventListener('click', () => {
         const providerId = button.dataset.catalogOpenProvider;
