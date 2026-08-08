@@ -3,7 +3,7 @@ feature_ids: [F005]
 topics: [image, multimodal, ui, composer, timeline, design-gate]
 doc_kind: design
 created: 2026-08-09
-status: design_gate_submitted
+status: design_gate_review_revision
 ---
 
 # F005 UI Design Gate — 图片输入与时间线渲染设计
@@ -61,9 +61,10 @@ status: design_gate_submitted
 - 缩略图 `onerror` → 替换为占位卡片（同尺寸，`dashed` 边框 + `icon-image` 灰显 + 「图片加载失败」`muted` 文案 + 可点击的 URL 文本）。
 - **绝不空白、绝不破版**；占位卡片同样可点击尝试新 tab 打开。
 
-### 2.3 路由阻断标注（与 status 语言一致）
+### 2.3 路由阻断反馈（预写入 422 + composer 保留附件）
 
-- 目标模型不支持图片输入时，消息不进入 runtime（Phase B 阻断）；UI 在该消息的 meta 区域追加一条 `message-tool-trace-note failed` 同款 tone 的说明行：「该模型不支持图片输入，图片未发送给模型」（文案以服务端结构化 reason 为准）。
+- 目标模型不支持图片输入时，服务端返回 **422 `MODEL_NO_IMAGE_INPUT`**（结构化 error + 人话 reason），**消息不落库、不进入 runtime、图片保持 staged 可复用**（Phase B 定案，见 spec 契约不变量）。
+- UI 行为：发送后乐观消息**回滚**（时间线不出现 blocked 消息——无 blocked 状态机）；composer **保留 attachment strip**（operator 可移除图片，或换支持图片的模型后重发）；`#composer-status` 常驻显示阻断原因（如「该模型不支持图片输入，图片未发送给模型」，文案以服务端 reason 为准），toast 同步提示。
 - 复用现有 failed/pill 色彩与字号，不新造状态色。
 
 ### 2.4 三种渲染路径一致性
@@ -81,7 +82,7 @@ status: design_gate_submitted
 | AC-C2 时间线渲染 | image-grid 正常态 | verifier + 渲染单测 | 单图/多图 grid 截图 | 375px 2 列 grid 截图 |
 | AC-C2 历史/刷新一致 | 三路径同一 renderImageBlocks | verifier：发送 → 刷新 → 图片仍在原位 | 刷新前后对比截图 | 同左 |
 | AC-C2 降级态 | onerror 占位卡片 | verifier（坏 URL fixture） | 占位卡片截图 | 同左 |
-| AC-C2 阻断标注 | failed-tone 说明行 | verifier（无 vision 模型 fixture） | 阻断说明行截图 | 同左 |
+| AC-C2 阻断反馈 | 422 回滚乐观消息 + strip 保留 + status/toast 原因 | verifier（无 vision 模型 fixture） | 阻断后 strip 保留 + composer-status 文案截图 | 同左 |
 
 > browser verifier 沿用 `scripts/ui/verify-*.mjs` 现有模式（自起隔离实例 + Playwright desktop/390px 双 viewport + 截图落 `.tmp/`）。
 

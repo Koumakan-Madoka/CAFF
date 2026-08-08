@@ -3,7 +3,7 @@ feature_ids: [F005]
 topics: [image, multimodal, content-blocks, capability, routing, upload, storage, design-gate]
 doc_kind: discussion
 created: 2026-08-09
-status: design_gate_submitted
+status: design_gate_review_revision
 ---
 
 # F005 Image Input and Multimodal Routing — Design Gate 讨论与架构决策记录
@@ -11,6 +11,8 @@ status: design_gate_submitted
 ## Status
 
 Kickoff lead（@opus/布偶猫）完成架构发现后，进入 Design Gate 讨论。本记录产出 Architecture cell / Map delta 与 Decision Packet（OQ 1/2/3），等待跨猫讨论收敛 + operator 拍板后再进入 worktree 实现。UI 部分（OQ 4/5）转交 @烁烁/暹罗猫 负责视觉与交互设计 Gate。
+
+> **2026-08-09 Review 修订**：砚砚 Changes Requested（5 P1 + 3 P2）已逐条收敛——D1 保持定案；D2 改为 model-level `inputModalities`（P1-4）；D3 定为两阶段 + 生命周期状态机、不再升级 operator（P2-2）；阻断语义定案为预写入 422 + composer 保留附件（P1-3）；opaque imageId 投影 URL 保 SSRF=0（P1-2）；`content` 为唯一文本真相源（P1-1）；spec Owner 统一 @opus（P2-1）；F003 图片 delivery 显式 Non-goal（P2-3）。**待砚砚复审放行后进入实现。**
 
 ## 架构发现（Evidence Read）
 
@@ -38,9 +40,18 @@ Kickoff lead（@opus/布偶猫）完成架构发现后，进入 Design Gate 讨�
 
 ## 关键 Tradeoff（决策要点）
 
-1. **content-block 契约落点**：在现有 `content` + `metadata_json.contentBlocks` 做增量扩展（历史/FTS/摘要零回归）vs 把 `content` 整体改为结构化数组（更"统一"但破坏 FTS/digest/全部 string 消费者）。
-2. **图片传输时序**：两阶段（先 upload 拿 URL，消息引用 URL——幂等清晰、失败可重试）vs multipart 单次提交（事务简单但耦合，clowder 风格）。
-3. **capability 落库**：`supportsImageInput` 直接进 `models.json`（显式、持久、operator 可见）vs 运行时由 catalog 动态派生（不污染配置但需要每次判定、依赖 catalog 在线/快照）。
+1. **content-block 契约落点**：在现有 `content` + `metadata_json.contentBlocks` 做增量扩展（历史/FTS/摘要零回归）vs 把 `content` 整体改为结构化数组（更"统一"但破坏 FTS/digest/全部 string 消费者）。**已定案**：增量扩展，`content` 为唯一文本真相源，text block 服务端派生（P1-1 双真相源收敛）。
+2. **图片传输时序**：两阶段（先 upload 拿 opaque imageId，消息引用 imageId，服务端投影 URL——幂等清晰、失败可重试）vs multipart 单次提交（事务简单但耦合，clowder 风格）。**已定案（D3）**：两阶段，属技术决策不升级 operator；生命周期状态机（staged→attached、幂等复用、TTL GC、删除后回收）。
+3. **capability 落库**：model-level `inputModalities`（`providers[id].models[i]`，显式、持久、operator 可见）vs 运行时由 catalog 动态派生（不污染配置但需要每次判定、依赖 catalog 在线/快照）。**已定案（D2）**：model-level 显式声明，catalog 仅 import 时投影默认值，未知 fail closed。
+
+## 阻断语义（P1-3 定案，2026-08-09）
+
+采用**预写入 422 + composer 保留附件**：目标模型不支持图片输入时，服务端返回 422 `MODEL_NO_IMAGE_INPUT`，消息不落库、不进入 runtime、图片保持 staged 可复用；前端回滚乐观消息、保留 strip、composer-status/toast 展示原因。时间线不出现 blocked 消息，无 blocked 状态机。原"时间线持久化 failed note"方案废弃（与 AC-B2 发送前阻断冲突）。
+
+## 安全边界（P1-2 定案，2026-08-09）
+
+- 客户端**只提交 opaque `imageIds`**，服务端校验归属/存在/状态后投影 `/uploads/` URL——SSRF 面为零由契约保证，非运行期假设。
+- 上传校验在服务端：magic-byte（不信任浏览器 MIME）+ 像素尺寸 + 大小/张数 + 文件名消毒。
 
 ## Decision Packet（OQ 1/2/3 → operator 拍板）
 
@@ -56,17 +67,17 @@ Kickoff lead（@opus/布偶猫）完成架构发现后，进入 Design Gate 讨�
 
 **D1 定案：采用 B（结构化 `session.prompt(prompt, { images })`）**，图片 base64 + mimeType 直传模型上下文。实现透传路径已定位：`agent-executor.ts:1456` → `startRun()`（`pi-runtime.ts:347`）→ IPC `{type:'start', prompt, config}`（`pi-runtime.ts:968`）→ `normalizeStartCommand`（`pi-sdk-host.mjs:61`）→ `runAgentRuntime(runtime, prompt)`（`pi-sdk-host.mjs:208`）→ `session.prompt(prompt)`（`pi-sdk-host.mjs:225`）。需在 `start` 命令增加 `images` 字段并透传至 `session.prompt` 第二参。A（路径 hint）降级为 Non-goal——不引入双路径复杂度。
 
-### D2: capability 落库形态（OQ 2）— 价值取舍
+### D2: capability 落库形态（OQ 2）— **已定案（技术决策）**
 
-- **A. `models.json` 顶层 `supportsImageInput: boolean`**：operator 在 provider 配置里显式看到并确认，`models.json` 优先、catalog 缺失即 false。语义清晰、可审计，但扩展了 F004 刚钉死的 `models.json` 契约（F004 说"目录元数据不得静默升级 runtime 契约"——这里是**显式**升级，需 operator 点头）。
-- **B. catalog 派生视图**：不碰 `models.json`，每次路由时查 catalog modalities。零配置污染，但离线/快照过期时会漂移，且 provider 手动配置的模型无法可靠判定。
-- **倾向**：A。F005 本质是把 catalog 的 `modalities` 变成 CAFF 自己的可写能力位，与 F004"显式确认"精神一致。**需 operator 确认接受对 F004 契约的显式扩展。**
+- **定案（Design Gate Review，2026-08-09）**：能力位是 **model-level**——`providers[id].models[i].inputModalities: ['text','image']`（或等价 `supportsImageInput?: boolean`），**不挂在 provider 顶层**（砚砚 P1-4 纠正：图片能力因模型而异，provider 层无意义）。
+- catalog `modalities.input` 仅在**显式 import/save 模型时**投影为默认值写入 models.json；运行时判定以 models.json 显式值为准，未知/缺失一律 fail closed 为不支持图片。
+- 原 A（provider 顶层字段）/ B（catalog 派生视图）两选项均因坐标错误废弃，不再需要 operator 拍板。
 
-### D3: 上传与发送时序（OQ 3）— 技术 A/B
+### D3: 上传与发送时序（OQ 3）— **已定案（技术决策）**
 
-- **A. 两阶段（upload → 消息引用 URL）**：`POST /api/conversations/:id/images` 返回 `{url, uploadId}`，消息体带 `imageUrls` 引用；重试/幂等清晰，上传失败不影响文本消息发送。孤儿文件可后台 GC。
-- **B. 单次 multipart**：消息接口直接收文件流（clowder 风格），一个事务落文件+消息，无孤儿，但发送接口耦合文件解析、失败重试需要重传整包。
-- **倾向**：A。CAFF 消息接口是 JSON body + 幂等 key，两阶段改动面最小且失败路径干净。**需 operator 确认。**
+- **定案（Design Gate Review，2026-08-09）**：两阶段——`POST /api/conversations/:id/images` 返回 `{ imageId }`（opaque），消息体带 `imageIds` 引用，服务端落库时校验并投影 URL。**属技术决策，不升级 operator**（砚砚 P2-2）。
+- 生命周期状态机：`staged`（上传完成未关联）→ `attached`（消息落库原子关联）；`clientRequestId` 幂等复用已 attached 图片；`staged` 超 TTL（24h）由 GC 清理；消息删除后图片引用转可回收，GC 释放。
+- 客户端不提交 URL/路径——SSRF 面为零由 opaque id 契约保证（砚砚 P1-2）。
 
 ## Architecture cell / Map delta
 
