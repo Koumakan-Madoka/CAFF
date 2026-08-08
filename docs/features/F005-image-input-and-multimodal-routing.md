@@ -35,23 +35,36 @@ Baseline: `origin/main@3c51a8b` (2026-08-08)。
 - **写入派生**：服务端落库时由 `content` 派生 text block（`contentBlocks = [{type:'text', text: content}, ...imageBlocks]`），客户端**只提交 `content` + `imageIds`**，不得直接提交 text block。
 - **冲突拒绝**：客户端请求中若携带 `contentBlocks` 或与 `content` 冲突的 text 内容，服务端返回 400（结构化错误 `TEXT_BLOCK_FROM_CLIENT_REJECTED`），拒绝落库。
 - **读取规则**：FTS 搜索、摘要 digest、历史解析一律只读 `content`；`contentBlocks` 仅供渲染结构与图片引用。`content` 与 text block 永不并行歧义。
+- **image-only 消息（P1-3 定案）**：`content.trim() || imageIds.length > 0` 为合法消息。纯图消息允许空 `content`，此时**不生成 text block**（`contentBlocks` 只有 image blocks），`content` 落库为空字符串。前后端空文本校验同步放宽（现 `public/app.js:4319-4321`、`turn-orchestrator.ts:1405-1407` 的"Message content is required"改为"content 为空时必须有 imageIds"）。
 
 - 定义最小 content-block 契约：消息在现有 `content` 纯文本之上，经 `metadata_json.contentBlocks` 携带可选结构化块，首版只含 `{ type: 'text', text }`（服务端派生）与 `{ type: 'image', imageId, url, alt? }`（url 由服务端投影，见下）。`content` 保持兼容，历史消息、FTS 搜索、摘要 digest 不破坏。
-- **受控 opaque 引用（SSRF 面为零）**：上传端点返回 `{ imageId, url }`，但**客户端只提交 `imageIds: string[]`（opaque id），服务端在落库时校验归属/存在/状态后投影出 `/uploads/...` URL** 写入 contentBlocks。客户端无法提交任意 URL/路径——`/uploads/` 静态路由只接受服务端生成的受控文件名，无符号路径解析，无远程抓取。
-- 新增受控图片上传端点：MIME 白名单（png/jpeg/webp/gif）、**magic-byte 校验（不信任浏览器 MIME）**、**像素尺寸校验（解码失败/超限拒绝）**、单文件大小上限、每次张数上限、文件名消毒防路径穿越；图片存到 upload 目录并通过静态路由暴露。
-- **图片生命周期（最小状态机）**：`staged`（上传完成，未关联消息）→ `attached`（消息落库时原子关联）。同 `clientRequestId` 重试复用已 attached 的图片（幂等，不重复消费）；`staged` 超过 TTL（如 24h）由后台 GC 清理；消息删除后其图片引用转为可回收，`attached` 图片随消息级联或 GC 释放（首版采用 GC，不引入独立 attachment 表）。
+- **受控 opaque 引用（SSRF 面为零）**：上传端点只返回 `{ imageId }`（opaque，不返回 url——首版 UI 用 objectURL 预览，无需提前持有持久 URL；P2-1 定案），客户端**只提交 `imageIds: string[]`（opaque id）**，服务端在落库时校验归属/存在/状态后投影出 `/uploads/...` URL 写入 contentBlocks。客户端无法提交任意 URL/路径——`/uploads/` 静态路由只接受服务端生成的受控文件名，无符号路径解析，无远程抓取。
+- 新增受控图片上传端点：MIME 白名单（png/jpeg/webp/gif）、**magic-byte 校验（不信任浏览器 MIME）**、**像素尺寸校验（解码失败/超限拒绝，精确上限见 P1-5）**、单文件大小上限、每次张数上限、文件名消毒防路径穿越；图片存到 upload 目录并通过静态路由暴露。
+- **图片生命周期（P1-2 定案：引入最小 `image_uploads` registry 表，非重型附件系统）**：新增 `image_uploads` SQLite 表作为图片状态的**持久化真相源**（列：`image_id` PK、`conversation_id`、`status` staged/attached、`client_request_id`、`file_name`、`stored_path`、`mime_type`、`width`、`height`、`size_bytes`、`attached_message_id`、`created_at`、`attached_at`、`ttl_expires_at`）。状态机：`staged`（上传完成，未关联消息）→ `attached`（消息落库时原子 UPDATE）。DB 是真相源，文件与 DB 通过 `stored_path` 关联；启动时做 DB/文件 reconciliation（DB 有引用但文件缺失 → 标记 broken；文件存在但无 DB 行 → 孤儿回收）。
+- **幂等矩阵（P1-2 修正自相矛盾）**：
+  | 场景 | 行为 |
+  |------|------|
+  | 同 `clientRequestId` + 同 imageIds 重试（消息落库后） | **canonical result**：返回既有消息，imageId 复用已 attached，不重复消费 |
+  | 不同 `clientRequestId` 引用已 attached 的 imageId | **明确拒绝**（400 `IMAGE_ALREADY_ATTACHED`），不静默复用 |
+  | imageId 不存在 / 非本会话 / broken | 400 结构化错误 |
+  | `staged` 超过 TTL（24h） | 后台 GC 删文件 + 删行 |
+  | 消息删除 | 其 `attached` 图片引用转 `staged`+TTL 或直接可回收，GC 释放 |
 - 图片持久化随消息原子性：上传文件与消息落库通过幂等流程关联，刷新/历史回放/继续会话后图片仍存在；孤儿上传文件不阻塞消息写入。
-- 失败路径明确：上传校验失败、存储失败、imageId 校验失败（不存在/非本会话/已 attached）时返回结构化错误，前端展示人话原因，不静默丢图。
+- 失败路径明确：上传校验失败、存储失败、imageId 校验失败（不存在/非本会话/已 attached 且非同 key）时返回结构化错误，前端展示人话原因，不静默丢图。
 
 ### Phase B: Capability registry 与多模态路由判定
 
-- **能力是 model-level，不是 provider 顶层**：capability 位挂在 `models.json` 的模型节点上——`providers[id].models[i].inputModalities: ['text','image']`（或等价 `supportsImageInput?: boolean`）。catalog `modalities.input` **仅在显式 import/save 时作为默认值投影**进 models.json，运行时判定以 models.json 显式值为准，未知/缺失一律 fail closed 为不支持图片。
-- **阻断语义定案（P1-3）**：采用**预写入 422 + composer 保留附件**，不持久化 blocked message。路由层在组装 user 消息时检测 imageIds 是否非空：目标 Agent 的模型不支持图片输入 → 服务端返回 422（结构化错误 `MODEL_NO_IMAGE_INPUT` + 人话 reason），**消息不落库、不进入 runtime、图片保持 staged 可复用**；前端回滚乐观消息、保留 attachment strip（可换目标重发或移除）、在 composer-status/toast 展示原因。时间线不出现 blocked 消息，幂等/重试只作用于成功路径（无 blocked 状态机）。
+- **能力是 model-level，不是 provider 顶层**：capability 位**钉死字段为 `providers[id].models[i].supportsImageInput?: boolean`**（P1-4 定案：不再摇摆 `inputModalities` 与 `supportsImageInput` 两写）。catalog `modalities.input` 仅在显式 import/save 时作为默认值投影（`modalities.input.includes('image')` → `supportsImageInput: true`），运行时判定以 models.json 显式值为准，未知/缺失一律 fail closed 为不支持图片。
+- **capability 可执行契约（P1-4）**：`supportsImageInput` 必须可被 operator 读写——provider-editor 模型级新增 capability 控件（checkbox），normalize 时接受 `boolean` 或 `'true'/'false'` 字符串并规范为 boolean；validate 阶段拒绝非 boolean；API 投影把 `supportsImageInput` 纳入 provider 回读 payload；手工编辑的模型默认 `false`，operator 可显式开启。UI Gate §1 需补模型级 capability 控件设计 + desktop/mobile 证据（见 UI Gate 修订）。
+- **阻断语义定案（P1-1 修正：preflight 必须在落库前，且覆盖多 Agent target-set）**：真实链路是 controller **同步**调用 `submitConversationMessage` → `store.createMessage`（同步落库）→ 异步 drain（`turn-orchestrator.ts:1420-1445`）。因此 capability preflight 必须发生在 **`store.createMessage` 之前**（controller 同步段内），而不是 routing 异步段——否则 HTTP 已 200 且消息已落库。具体规则：
+  - **initial targets 的 all 规则**：preflight 解析初始 target-set（与 `resolveInitialSpeakerQueue` 同源：@mention 命中的所有 agents，无 mention 则第一个 agent，`routing-executor.ts:95-102`），**所有 initial target 的模型必须都支持图片输入**（任一不支持 → 422 `MODEL_NO_IMAGE_INPUT`，消息不落库、不进入 runtime、图片保持 staged 可复用）。首版采用 all 规则（图片进共享 user 消息，所有 initial agents 都会收到；不能为某个 agent 剥图）。多 agent mixed-capability 场景下，operator 可移除图片或换用全 vision 的 target-set 重发。
+  - **handoff/side-dispatch 的 per-invocation 阻断**：后续 handoff 或 side-dispatch 到不支持图片的模型时，该 invocation 输出结构化 block `MODEL_NO_IMAGE_INPUT`（附人话 reason），**不剥图继续、不静默丢弃**——图片仍在该用户消息里，只是该 invocation 明确声明不可读图。
+  - 422 为**预写入**（不入队、无 blocked 状态机、无半条消息）；时间线不出现 blocked 消息。
 - provider adapter（PI SDK host 侧）：把结构化 image block 翻译成 PI 可消费的输入——具体形态已在 Design Gate 后经 spike 验证（见 Open Questions / Decision Packet D1）。
 
 ### Phase C: 聊天 UI 输入与展示
 
-- composer 增加图片选择入口：文件选择 + 预览 + 移除，随文本一起发送；不支持的图片类型/超限在 UI 层即时提示。
+- composer 增加图片选择入口：文件选择 + 预览 + 移除，随文本一起发送（**image-only 允许**：strip 有图时无文本也可发送）；不支持的图片类型/超限在 UI 层即时提示。
 - 消息时间线渲染 image block：历史消息回放、SSE 增量、refresh 后均显示图片；展示失败有降级提示而非空白。
 
 ## User Journey
@@ -65,7 +78,7 @@ Baseline: `origin/main@3c51a8b` (2026-08-08)。
   1. 图片在输入区即时预览，operator 可移除后重新选择，并输入随图文字。
   2. 发送后，带图消息立即以 optimistic 形态出现在时间线（含图片缩略图）。
   3. 目标 Agent 的模型支持图片输入时，图片随消息进入模型上下文，Agent 可描述/分析图片内容。
-  4. 目标模型不支持图片输入时，消息被明确阻断或图片被标注不可达，operator 看到人话原因，绝不静默丢图。
+  4. 目标模型不支持图片输入时，服务端返回 422 `MODEL_NO_IMAGE_INPUT`，消息不落库、图片保持 staged 可复用，operator 看到人话原因可移除图片或换支持图片的模型重发，绝不静默丢图。
   5. 刷新页面或回到该会话继续聊天，图片仍在原消息位置完整显示。
 - **Success evidence**: 上传/存储/渲染/能力判定/runtime 传输各层测试 + desktop/375px 浏览器证据。
 
@@ -73,8 +86,8 @@ Baseline: `origin/main@3c51a8b` (2026-08-08)。
 
 - **Scope unit**: provider 配置页面。
 - **Actor**: operator。
-- **Flow**: operator 在 provider 配置中能看到所选模型是否支持图片输入（来自 model-level `inputModalities` 能力位，catalog 仅 import 时投影默认值），不支持的模型不被展示为可读图能力。
-- **Evidence**: provider-editor 截图 + capability 判定测试。
+- **Flow**: operator 在 provider 配置中能看到并可编辑所选模型是否支持图片输入（来自 model-level `supportsImageInput` 能力位，provider-editor 模型级 checkbox，catalog 仅 import 时投影默认值），不支持的模型不被展示为可读图能力。
+- **Evidence**: provider-editor 截图（含模型级 capability 控件）+ capability 判定测试。
 
 ## 需求点 Checklist
 
@@ -95,16 +108,17 @@ Baseline: `origin/main@3c51a8b` (2026-08-08)。
 
 ### Phase A: Content-block 契约 + 上传存储
 
-- [ ] AC-A1: 图片上传端点拒绝白名单外 MIME（magic-byte 校验，不信任浏览器 MIME）、超限文件（大小/像素）、超张数、路径穿越文件名；`/uploads/` 只服务受控目录，无符号路径/远程抓取（SSRF 面为零——客户端只提交 opaque imageId，服务端投影 URL）。验证：校验矩阵测试 + 静态路由测试 + imageId 投影测试。
-- [ ] AC-A2: 带图消息以 `contentBlocks`（text 由 content 派生 + image 含 imageId/url）持久化，`content` 是唯一文本真相源且兼容不受破坏；客户端提交 text block/URL 返回 400；FTS 搜索、摘要 digest、历史消息解析不回归。验证：message repository + 搜索/摘要测试 + 冲突拒绝测试。
+- [ ] AC-A1: 图片上传端点拒绝白名单外 MIME（magic-byte 校验，不信任浏览器 MIME）、超限文件（大小/像素）、超张数、路径穿越文件名；`/uploads/` 只服务受控目录，无符号路径/远程抓取（SSRF 面为零——客户端只提交 opaque imageId，服务端投影 URL）。**P1-5 精确安全上限**：`MAX_IMAGE_BYTES=10MB`、`MAX_IMAGES_PER_UPLOAD=5`、`MAX_IMAGE_WIDTH=4096`、`MAX_IMAGE_HEIGHT=4096`、`MAX_IMAGE_PIXELS=16_000_000`；**GIF 策略**：animated GIF 拒绝（`ANIMATED_GIF_REJECTED`），static GIF 按首帧尺寸校验；**attach-time 再校验**：消息 attach 时对 `imageIds` 去重并校验 distinct 数量 ≤ `MAX_IMAGES_PER_MESSAGE=5`（多 upload 请求无法绕过）。**常量真相源**：服务端 `lib/image-constants.ts` 为单一真相源，经 `GET /api/image-upload/config` 以 JSON 暴露给前端（前端启动时 fetch，不 import TS——classic defer scripts 无 bundler）；**依赖策略**：magic-byte/尺寸解析采用 dependency-free 有限解析器（png/jpeg/webp/gif 头解析），若需新增 direct dependency 先回指挥中心走依赖授权。验证：校验矩阵测试 + 静态路由测试 + imageId 投影测试 + config parity 测试。
+- [ ] AC-A2: 带图消息以 `contentBlocks`（text 由 content 派生 + image 含 imageId/url）持久化，`content` 是唯一文本真相源且兼容不受破坏；客户端提交 text block/URL 返回 400；FTS 搜索、摘要 digest、历史消息解析不回归；**image-only 消息**（空 content + imageIds）可持久化且不生成空 text block。验证：message repository + 搜索/摘要测试 + 冲突拒绝测试 + image-only 测试。
 - [ ] AC-A3: 刷新页面与进程重启后，图片引用仍可从静态路由访问且消息可完整回放。验证：restart fixture + 浏览器回放证据。
-- [ ] AC-A4: 上传/存储/引用失败时返回结构化错误并展示人话原因，消息写入与图片上传通过幂等流程关联（clientRequestId 幂等复用已 attached 图片），不产生半个消息或孤儿阻断。验证：错误路径测试 + 幂等复用测试。
+- [ ] AC-A4: 上传/存储/引用失败时返回结构化错误并展示人话原因，消息写入与图片上传通过幂等流程关联，不产生半个消息或孤儿阻断；**幂等矩阵**：同 clientRequestId 重试返回 canonical result、不同 key 引用已 attached imageId 拒绝。验证：错误路径测试 + 幂等矩阵测试 + registry reconciliation 测试。
 
 ### Phase B: Capability registry + 路由
 
-- [ ] AC-B1: capability 位为 model-level（`providers[id].models[i].inputModalities`），catalog `modalities.input` 仅在显式 import/save 时投影默认值，`models.json` 显式值优先，未知模型 fail closed 为不支持图片。验证：model-level 判定矩阵 + 投影/优先级测试。
-- [ ] AC-B2: 路由组装 user 消息时识别 imageIds；目标模型不支持 → 预写入 422 结构化阻断（`MODEL_NO_IMAGE_INPUT`），消息不落库、不进入 runtime、图片保持 staged 可复用。验证：路由阻断测试 + 消息不入队断言 + staged 复用断言。
+- [ ] AC-B1: capability 位为 model-level（`providers[id].models[i].supportsImageInput?: boolean`，P1-4 钉死），catalog `modalities.input` 仅在显式 import/save 时投影默认值，models.json 显式值优先，未知模型 fail closed 为不支持图片；`supportsImageInput` 可经 provider-editor 模型级控件读写（normalize/validate/回读保留）。验证：model-level 判定矩阵 + 投影/优先级测试 + capability 读写测试。
+- [ ] AC-B2: **同步 preflight 在 `store.createMessage` 之前**（controller 同步段）识别 imageIds；**initial targets 任一模型不支持图片 → 预写入 422**（`MODEL_NO_IMAGE_INPUT`），消息不落库、不进入 runtime、图片保持 staged 可复用；handoff/side-dispatch 到不支持图片的模型时输出 per-invocation 结构化 block（不剥图）。验证：路由阻断测试 + 消息不入队断言 + staged 复用断言 + preflight 位置断言（createMessage 前）+ handoff block 测试。
 - [ ] AC-B3: 任何路径都不得静默丢图：不支持的模型不剥图继续，失败必带明确原因。验证：全路径断言测试（grep 无静默过滤）。
+- [ ] AC-B4 (P2-3): F003 notify/request 两入口收到带图消息 → 结构化 reject `IMAGE_DELIVERY_NOT_SUPPORTED` + 人话原因，消息与图片不剥离不降级。验证：notify/request 两路径 reject 测试。
 
 ### Phase C: UI 输入与展示
 - [ ] AC-C1: composer 支持选图 + 预览 + 移除 + 随文本发送；非法图片在 UI 层即时提示。验证：UI 测试 + desktop/mobile 证据。
@@ -114,18 +128,21 @@ Baseline: `origin/main@3c51a8b` (2026-08-08)。
 
 - **Evolved from**: F002（PI SDK host 运行时方言边界，image 输入投影依赖其 prompt 契约）。
 - **Related**: F004（capability registry 从 catalog modalities 投影）；F003（跨聊天室 delivery 复用 content-block 契约时需同步支持图片）。
-- **Blocked by**: Design Gate review 对 D2/D3 的技术定案（本 spec OQ 2/3，已收敛）+ operator 对 UI 入口范围确认（OQ 4，UI Gate 已收敛）。D1 已 spike 定案。
+- **Blocked by**: Design Gate review 对 D1-D5 的技术定案（本 spec OQ 1/2/3/5 与 UI Gate OQ 4 均已收敛，P1-1..P1-5/P2-1..P2-3 已修订）。D1 已 spike 定案。等待 Design Gate 复审放行后进入实现。
 
 ## Architecture
 
 ```text
-composer (file input + preview + remove)
-  -> POST /api/conversations/:id/images (multipart, magic-byte MIME/size/pixel/count/filename guard)
-  -> controlled upload store (/uploads/, opaque server-generated filename) -> returns { imageId }
-  -> message { content: text (canonical), imageIds: opaque[] }  // client never submits url/text-block
-  -> server: validate imageId ownership/state -> project url -> metadata.contentBlocks [{type:text(derived)}, {type:image,imageId,url}]
-  -> capability registry (model-level inputModalities on providers[id].models[i]; catalog import default; unknown fail closed)
-  -> routing: image present + model lacks vision -> pre-write 422 MODEL_NO_IMAGE_INPUT (no persistence, image stays staged)
+composer (file input + preview + remove; image-only allowed when strip non-empty)
+  -> GET /api/image-upload/config (constants: mime/size/pixel/count whitelist, JSON, single truth lib/image-constants.ts)
+  -> POST /api/conversations/:id/images (multipart, magic-byte MIME/size/pixel/count/filename guard; dependency-free header parser)
+  -> controlled upload store (/uploads/, opaque server-generated filename) + image_uploads registry (staged) -> returns { imageId }
+  -> message { content: text (canonical, may be ''), imageIds: opaque[] }  // client never submits url/text-block
+  -> SYNC capability preflight (BEFORE store.createMessage): resolve initial targets (mention-set or first agent);
+     imageIds present + any target lacks supportsImageInput -> 422 MODEL_NO_IMAGE_INPUT (no persistence, images stay staged)
+  -> store.createMessage (validate imageId ownership/state + distinct-count<=5 -> UPDATE registry staged->attached -> project url
+     -> metadata.contentBlocks [{type:text(derived, omitted when content empty)}, {type:image,imageId,url}])
+  -> async drain -> routing (handoff/side-dispatch to non-vision model -> per-invocation MODEL_NO_IMAGE_INPUT block, no stripping)
   -> agent-executor prompt projection (images) -> pi-sdk-host session.prompt(prompt, { images }) -> model
 ```
 
@@ -150,20 +167,23 @@ Why: F004 的 models cell 只覆盖 provider 配置；本 Feature 首次把"能�
 | content-block 破坏历史消息/FTS/摘要 | content 保持兼容，contentBlocks 只做增量扩展 |
 | 上传面开放攻击（路径穿越/SSRF/炸弹） | 受控目录、opaque imageId 投影（客户端不提交 URL）、magic-byte MIME、大小/像素/张数限制、无符号解析、无远程抓取 |
 | PI 不支持结构化 image 输入 | Design Gate spike 已定案：SDK 0.80.10 原生支持 `images` 参数（见 OQ1）；不剥图 fail closed |
-| capability 误判（catalog 与运行时不符） | model-level inputModalities 显式声明 + catalog 仅 import 投影默认 + models.json 优先，未知 fail closed |
+| capability 误判（catalog 与运行时不符） | model-level `supportsImageInput` 显式声明 + catalog 仅 import 投影默认 + models.json 优先，未知 fail closed |
+| preflight 放错层（落库后才阻断） | capability preflight 在 `store.createMessage` 之前的同步段（AC-B2 位置断言测试） |
+| image_uploads registry 与文件漂移 | DB 为真相源，启动 reconciliation + broken 标记 + 孤儿回收（AC-A4 reconciliation 测试） |
+| 多 Agent mixed-capability 会话 | initial targets all 规则（任一不支持 → 422）+ handoff/side-dispatch per-invocation block，不剥图 |
 
 ## Open Questions
 
 1. **PI SDK host 如何接收 image 输入**：`session.prompt(prompt)` 是字符串。图片应走 prompt 内路径 hint（模型有工具可读 uploads 目录）、SDK media 参数（若 0.80.10 暴露）、还是消息 content-block 直传？需 spike 验证——决定 adapter 实现形态。**✅ 已定案（D1 spike，2026-08-09 @opus）**：`@earendil-works/pi-coding-agent@0.80.10` 的 `PromptOptions` 声明 `images?: ImageContent[]`（`dist/core/agent-session.d.ts:130-141`），`ImageContent = { type: 'image', data: base64, mimeType }`（`pi-ai/dist/types.d.ts:239-243`）；`session.prompt(prompt, { images })` 直传结构化 image，一等公民。A 路径 hint 降级为 Non-goal。实现透传路径见 Decision Packet D1。
-2. **Capability 落库形态**：**✅ 已定案（Design Gate Review，2026-08-09 @opus）**——能力位是 **model-level**（`providers[id].models[i].inputModalities: ['text','image']` 或等价 `supportsImageInput?: boolean`），不是 provider 顶层。catalog `modalities.input` 仅在显式 import/save 时投影默认值，运行时以 models.json 显式值为准，未知 fail closed。不再需要 operator 拍板（技术决策，D2 收敛）。
-3. **上传与发送时序**：**✅ 已定案（Design Gate Review，2026-08-09 @opus）**——两阶段（先 upload 拿 opaque imageId → 消息引用 imageId，服务端投影 URL）。技术决策，不再升级 operator（D3 收敛）。生命周期状态机（staged→attached、幂等复用、TTL GC、删除后回收）见 Phase A。
+2. **Capability 落库形态**：**✅ 已定案（Design Gate Review R2，2026-08-09 @opus）**——能力位是 **model-level**，**字段钉死为 `providers[id].models[i].supportsImageInput?: boolean`**（P1-4：不再摇摆 `inputModalities`/`supportsImageInput` 两写），并定义可执行读写契约（provider-editor 模型级 checkbox、normalize/validate/回读保留、catalog import 仅投影默认、未知 fail closed）。技术决策，不需要 operator 拍板（D2 收敛）。
+3. **上传与发送时序**：**✅ 已定案（Design Gate Review R2，2026-08-09 @opus）**——两阶段（先 upload 拿 opaque imageId → 消息引用 imageId，服务端投影 URL），上传响应只返回 `{ imageId }`（P2-1）。**图片状态以 `image_uploads` registry 表为持久化真相源**（P1-2），非重型附件系统；幂等矩阵（同 key canonical result / 不同 key 拒绝）、TTL GC、消息删除回收、启动 reconciliation 见 Phase A。技术决策，不再升级 operator（D3 收敛）。
 4. **UI 首版范围**：文件选择是否与拖拽/粘贴同 Phase 交付，还是拖拽/粘贴延后？**✅ UI Gate 已收敛（2026-08-09 @烁烁）**：选图主入口 + 粘贴同 Phase、拖拽延后。
 5. **跨聊天室 delivery**：**✅ 已定案（Design Gate Review，2026-08-09 @opus）**——F005 首版**不支持** F003 图片 delivery：若 F003 notify/request 路径收到带图消息，返回结构化 reject（`IMAGE_DELIVERY_NOT_SUPPORTED` + 人话原因），显式 Non-goal，禁止静默剥图。见 Non-goals。
 
 ## Non-goals
 
 - 图片生成、图片编辑、任意文件附件、OCR fallback、视频/音频上传。
-- **F003 跨聊天室图片 delivery 首版不支持**：notify/request 收到带图消息 → 结构化 reject（`IMAGE_DELIVERY_NOT_SUPPORTED`），不静默剥图（OQ5 定案）。
+- **F003 跨聊天室图片 delivery 首版不支持**：notify/request 收到带图消息 → 结构化 reject（`IMAGE_DELIVERY_NOT_SUPPORTED`），不静默剥图（OQ5 定案；executable AC 见 AC-B4）。
 - 不用 data URI 把图片塞进消息体（防 DB 膨胀）。
 - 不按模型名硬编码 vision 白名单；不把 provider 差异泄漏到 UI/store。
 - 首版不连 Redis 6399、不用生产用户数据；所有测试用隔离存储。

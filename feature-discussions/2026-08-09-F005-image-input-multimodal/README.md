@@ -10,9 +10,11 @@ status: design_gate_review_revision
 
 ## Status
 
-Kickoff lead（@opus/布偶猫）完成架构发现后，进入 Design Gate 讨论。本记录产出 Architecture cell / Map delta 与 Decision Packet（OQ 1/2/3），等待跨猫讨论收敛 + operator 拍板后再进入 worktree 实现。UI 部分（OQ 4/5）转交 @烁烁/暹罗猫 负责视觉与交互设计 Gate。
+Kickoff lead（@opus/布偶猫）完成架构发现后，进入 Design Gate 讨论。本记录产出 Architecture cell / Map delta 与 Decision Packet（OQ 1/2/3）。D1-D5 均为技术决策，**不升级 operator**。UI 部分（OQ 4/5）由 @烁烁/暹罗猫 负责视觉与交互设计 Gate。
 
-> **2026-08-09 Review 修订**：砚砚 Changes Requested（5 P1 + 3 P2）已逐条收敛——D1 保持定案；D2 改为 model-level `inputModalities`（P1-4）；D3 定为两阶段 + 生命周期状态机、不再升级 operator（P2-2）；阻断语义定案为预写入 422 + composer 保留附件（P1-3）；opaque imageId 投影 URL 保 SSRF=0（P1-2）；`content` 为唯一文本真相源（P1-1）；spec Owner 统一 @opus（P2-1）；F003 图片 delivery 显式 Non-goal（P2-3）。**待砚砚复审放行后进入实现。**
+> **2026-08-09 Review R1 修订**：砚砚 Changes Requested（5 P1 + 3 P2）已逐条收敛——D1 保持定案；D2 改为 model-level `supportsImageInput`（P1-4）；D3 定为两阶段 + 生命周期状态机、不再升级 operator（P2-2）；阻断语义定案为预写入 422 + composer 保留附件（P1-3）；opaque imageId 投影 URL 保 SSRF=0（P1-2）；`content` 为唯一文本真相源（P1-1）；spec Owner 统一 @opus（P2-1）；F003 图片 delivery 显式 Non-goal（P2-3）。
+>
+> **2026-08-09 Review R2 修订**：砚砚第二轮 Changes Requested（5 P1 + 3 P2，commit `docs(F005): address design gate review R2`）——P1-1 capability preflight 移到 `store.createMessage` 前同步段 + initial targets all 规则 + handoff per-invocation block；P1-2 引入 `image_uploads` registry 表为持久化真相源 + 幂等矩阵；P1-3 image-only 消息支持（`content.trim() || imageIds.length>0`）；P1-4 `supportsImageInput` 字段钉死 + provider-editor 模型级控件；P1-5 精确像素/GIF/attach-time 去重上限 + config endpoint + dependency-free parser；P2-1 上传响应统一 `{ imageId }`；P2-2 清理"等待 operator 拍板"旧语义；P2-3 F003 reject 补 AC-B4。**待砚砚复审放行后进入实现。**
 
 ## 架构发现（Evidence Read）
 
@@ -42,18 +44,20 @@ Kickoff lead（@opus/布偶猫）完成架构发现后，进入 Design Gate 讨�
 
 1. **content-block 契约落点**：在现有 `content` + `metadata_json.contentBlocks` 做增量扩展（历史/FTS/摘要零回归）vs 把 `content` 整体改为结构化数组（更"统一"但破坏 FTS/digest/全部 string 消费者）。**已定案**：增量扩展，`content` 为唯一文本真相源，text block 服务端派生（P1-1 双真相源收敛）。
 2. **图片传输时序**：两阶段（先 upload 拿 opaque imageId，消息引用 imageId，服务端投影 URL——幂等清晰、失败可重试）vs multipart 单次提交（事务简单但耦合，clowder 风格）。**已定案（D3）**：两阶段，属技术决策不升级 operator；生命周期状态机（staged→attached、幂等复用、TTL GC、删除后回收）。
-3. **capability 落库**：model-level `inputModalities`（`providers[id].models[i]`，显式、持久、operator 可见）vs 运行时由 catalog 动态派生（不污染配置但需要每次判定、依赖 catalog 在线/快照）。**已定案（D2）**：model-level 显式声明，catalog 仅 import 时投影默认值，未知 fail closed。
+3. **capability 落库**：model-level `supportsImageInput`（`providers[id].models[i]`，显式、持久、operator 可读写）vs 运行时由 catalog 动态派生（不污染配置但需要每次判定、依赖 catalog 在线/快照）。**已定案（D2）**：model-level 显式声明（字段钉死 `supportsImageInput`，R2 P1-4），catalog 仅 import 时投影默认值，未知 fail closed。
 
-## 阻断语义（P1-3 定案，2026-08-09）
+## 阻断语义（P1-3 定案，2026-08-09；P1-1 R2 修正位置）
 
-采用**预写入 422 + composer 保留附件**：目标模型不支持图片输入时，服务端返回 422 `MODEL_NO_IMAGE_INPUT`，消息不落库、不进入 runtime、图片保持 staged 可复用；前端回滚乐观消息、保留 strip、composer-status/toast 展示原因。时间线不出现 blocked 消息，无 blocked 状态机。原"时间线持久化 failed note"方案废弃（与 AC-B2 发送前阻断冲突）。
+采用**预写入 422 + composer 保留附件**。**capability preflight 必须发生在 `store.createMessage` 之前的同步段**（真实链：controller 同步调用 `submitConversationMessage` → `createMessage` 同步落库 → 异步 drain，`turn-orchestrator.ts:1420-1445`），不能放 routing 异步段——否则 HTTP 已 200 且消息已落库。initial targets 用 **all 规则**（@mention 命中的所有 agents 或第一个 agent，任一模型不支持图片 → 422 `MODEL_NO_IMAGE_INPUT`，消息不落库、图片保持 staged 可复用）；后续 handoff/side-dispatch 到不支持图片的模型时输出 per-invocation 结构化 block，不剥图。前端回滚乐观消息、保留 strip、composer-status/toast 展示原因。时间线不出现 blocked 消息，无 blocked 状态机。原"时间线持久化 failed note"方案废弃。
 
-## 安全边界（P1-2 定案，2026-08-09）
+## 安全边界（P1-2 定案，2026-08-09；P1-2/P1-5 R2 加固）
 
-- 客户端**只提交 opaque `imageIds`**，服务端校验归属/存在/状态后投影 `/uploads/` URL——SSRF 面为零由契约保证，非运行期假设。
-- 上传校验在服务端：magic-byte（不信任浏览器 MIME）+ 像素尺寸 + 大小/张数 + 文件名消毒。
+- 客户端**只提交 opaque `imageIds`**，服务端校验归属/存在/状态后投影 `/uploads/` URL——SSRF 面为零由契约保证，非运行期假设。**上传响应只返回 `{ imageId }`，不提前下发持久 URL**（P2-1；首版 UI 用 objectURL 预览）。
+- 上传校验在服务端：magic-byte（不信任浏览器 MIME）+ 像素尺寸（`MAX_IMAGE_WIDTH/HEIGHT=4096`、`MAX_IMAGE_PIXELS=16M`、animated GIF 拒绝）+ 大小（10MB）/张数（5）+ 文件名消毒；**attach-time 再校验** distinct imageIds ≤ 5 且去重（多 upload 请求无法绕过）。
+- **图片状态以最小 `image_uploads` registry 表为持久化真相源**（P1-2）：DB 真相源 + 启动 DB/文件 reconciliation + broken 标记 + 孤儿回收；幂等矩阵（同 clientRequestId canonical result / 不同 key 引用已 attached 明确拒绝）。
+- **常量真相源**：`lib/image-constants.ts` 为单一真相源，经 `GET /api/image-upload/config` 以 JSON 暴露前端（classic defer scripts 无法 import TS，P1-5）。magic-byte/尺寸解析采用 dependency-free 有限解析器；需新增 direct dependency 时先回指挥中心走依赖授权。
 
-## Decision Packet（OQ 1/2/3 → operator 拍板）
+## Decision Packet（OQ 1/2/3 — 技术决策，不升级 operator）
 
 ### D1: PI image 输入形态（OQ 1）— 技术 A/B
 
@@ -69,14 +73,15 @@ Kickoff lead（@opus/布偶猫）完成架构发现后，进入 Design Gate 讨�
 
 ### D2: capability 落库形态（OQ 2）— **已定案（技术决策）**
 
-- **定案（Design Gate Review，2026-08-09）**：能力位是 **model-level**——`providers[id].models[i].inputModalities: ['text','image']`（或等价 `supportsImageInput?: boolean`），**不挂在 provider 顶层**（砚砚 P1-4 纠正：图片能力因模型而异，provider 层无意义）。
-- catalog `modalities.input` 仅在**显式 import/save 模型时**投影为默认值写入 models.json；运行时判定以 models.json 显式值为准，未知/缺失一律 fail closed 为不支持图片。
-- 原 A（provider 顶层字段）/ B（catalog 派生视图）两选项均因坐标错误废弃，不再需要 operator 拍板。
+- **定案（Design Gate Review R2，2026-08-09）**：能力位是 **model-level**，**字段钉死为 `providers[id].models[i].supportsImageInput?: boolean`**（砚砚 P1-4：图片能力因模型而异，provider 层无意义；不再在 `inputModalities` 与 `supportsImageInput` 间摇摆）。
+- **可执行读写契约（P1-4）**：provider-editor 模型级新增 capability checkbox（operator 可显式开启/关闭）；normalize 接受 boolean 或 'true'/'false' 字符串并规范为 boolean；validate 拒绝非 boolean；API 回读 payload 保留该字段；手工编辑默认 `false`。
+- catalog `modalities.input` 仅在**显式 import/save 模型时**投影为默认值（`modalities.input.includes('image')` → `supportsImageInput: true`）写入 models.json；运行时判定以 models.json 显式值为准，未知/缺失一律 fail closed 为不支持图片。
+- 原 A（provider 顶层字段）/ B（catalog 派生视图）两选项均因坐标错误废弃。技术决策，不升级 operator。
 
 ### D3: 上传与发送时序（OQ 3）— **已定案（技术决策）**
 
-- **定案（Design Gate Review，2026-08-09）**：两阶段——`POST /api/conversations/:id/images` 返回 `{ imageId }`（opaque），消息体带 `imageIds` 引用，服务端落库时校验并投影 URL。**属技术决策，不升级 operator**（砚砚 P2-2）。
-- 生命周期状态机：`staged`（上传完成未关联）→ `attached`（消息落库原子关联）；`clientRequestId` 幂等复用已 attached 图片；`staged` 超 TTL（24h）由 GC 清理；消息删除后图片引用转可回收，GC 释放。
+- **定案（Design Gate Review R2，2026-08-09）**：两阶段——`POST /api/conversations/:id/images` 返回 **`{ imageId }`**（opaque，P2-1 统一不返回 url），消息体带 `imageIds` 引用，服务端落库时校验并投影 URL。**属技术决策，不升级 operator**（砚砚 P2-2）。
+- **生命周期以 `image_uploads` registry 表为持久化真相源（P1-2）**：`staged`（上传完成未关联）→ `attached`（消息落库原子 UPDATE）；幂等矩阵（同 `clientRequestId` 返回 canonical result / 不同 key 引用已 attached imageId 明确拒绝）；`staged` 超 TTL（24h）由 GC 清理；消息删除后图片引用转可回收；启动时 DB/文件 reconciliation。
 - 客户端不提交 URL/路径——SSRF 面为零由 opaque id 契约保证（砚砚 P1-2）。
 
 ## Architecture cell / Map delta

@@ -9,6 +9,7 @@ status: design_gate_review_revision
 # F005 UI Design Gate — 图片输入与时间线渲染设计
 
 > Owner: @烁烁/暹罗猫（视觉与交互）· 输入: kickoff 架构发现 + OQ 4/5 · 下游: @opus 实现前对齐
+> **R2 修订（@opus 同步，2026-08-09）**：§1.3 预检加像素/GIF 上限并改用 config endpoint 常量源；§1.3 增加 image-only 发送；§3 补 image-only + AC-B1 证据行；§5 常量改为 config endpoint（不再前后端同 import TS，P1-5）、新增 provider-editor 模型级 capability 控件约定（P1-4）、上传响应统一 `{ imageId }`（P2-1）。
 
 ## 0. 设计原则
 
@@ -39,11 +40,12 @@ status: design_gate_review_revision
 
 ### 1.3 非法图片即时提示
 
-- **前端预检**（选择/粘贴时立即）：MIME 白名单（png/jpeg/webp/gif）+ 单文件大小上限（10MB）+ 张数上限（5）。
+- **前端预检**（选择/粘贴时立即，白名单值来自 `GET /api/image-upload/config` 启动时 fetch，非硬编码）：MIME 白名单（png/jpeg/webp/gif）+ 单文件大小上限（10MB）+ 张数上限（5）+ 宽/高 ≤ 4096 + 总像素 ≤ 16M（animated GIF 拒绝）。
 - **提示双通道**：
-  - 瞬态：`showToast` 一条人话原因（如「不支持 .bmp，仅支持 PNG/JPEG/WebP/GIF」「单张不能超过 10MB」「最多 5 张图片」）；
+  - 瞬态：`showToast` 一条人话原因（如「不支持 .bmp，仅支持 PNG/JPEG/WebP/GIF」「单张不能超过 10MB」「最多 5 张图片」「图片像素超限」）；
   - 常驻：`#composer-status`（composer-footer 现有 status 位）同步显示同一原因，直到下一次合法操作清除——保证 toast 消失后仍可追溯。
 - **合规图片进入 strip，非法的永远不进入**；发送按钮不被非法选择阻塞（operator 可仍发纯文本）。
+- **image-only 发送**：strip 非空 + 文本为空时可发送（P1-3）；发送按钮启用条件 = `content.trim() || strip 非空`。
 
 ## 2. OQ5 收敛：时间线图片渲染
 
@@ -79,10 +81,12 @@ status: design_gate_review_revision
 | AC-C1 粘贴 | paste 事件进同一管线 | UI 单测 + verifier 粘贴事件模拟 | 粘贴截图 → strip 出现 | 同左（mobile viewport） |
 | AC-C1 非法提示 | MIME/大小/张数预检 + toast + status | UI 单测矩阵（bmp/11MB/第6张）+ verifier | toast + composer-status 文案截图 | 同左 |
 | AC-C1 随文本发送 | strip + textarea 一起提交 | verifier：发送后 strip 清空、消息含图 | 发送后 timeline 带图消息截图 | 375px 发送流程截图 |
+| AC-C1 image-only | strip 非空 + 文本空可发送 | verifier：无文本 + 图 → 发送成功、无空 text block | image-only 消息截图 | 同左 |
 | AC-C2 时间线渲染 | image-grid 正常态 | verifier + 渲染单测 | 单图/多图 grid 截图 | 375px 2 列 grid 截图 |
 | AC-C2 历史/刷新一致 | 三路径同一 renderImageBlocks | verifier：发送 → 刷新 → 图片仍在原位 | 刷新前后对比截图 | 同左 |
 | AC-C2 降级态 | onerror 占位卡片 | verifier（坏 URL fixture） | 占位卡片截图 | 同左 |
 | AC-C2 阻断反馈 | 422 回滚乐观消息 + strip 保留 + status/toast 原因 | verifier（无 vision 模型 fixture） | 阻断后 strip 保留 + composer-status 文案截图 | 同左 |
+| AC-B1 Supporting 能力一目了然 | provider-editor 模型级 `supportsImageInput` checkbox（默认关，import 投影） | verifier：开启/关闭 checkbox → payload 含字段 → 回读保留 | provider-editor 模型卡片 checkbox 截图 | 375px provider 配置截图 |
 
 > browser verifier 沿用 `scripts/ui/verify-*.mjs` 现有模式（自起隔离实例 + Playwright desktop/390px 双 viewport + 截图落 `.tmp/`）。
 
@@ -96,6 +100,8 @@ status: design_gate_review_revision
 1. `public/assets/icons.svg` 需新增 `icon-image` symbol（注意实际路径带 `public/assets/` 前缀，非仓库根裸 `icons.svg`；设计稿：矩形框 + 内含圆形太阳 + 波浪山形线，`stroke-width=1.75`，24 viewBox）。
 2. composer DOM 插入点：`composer-inner` 之前新增 `#composer-attachments` 容器；附件按钮插入 `composer-inner` 内 textarea 之前。
 3. 时间线渲染入口：`message-timeline.js` 新增 `renderImageBlocks(message)`，被三路径（历史/SSE/刷新）统一调用。
-4. 常量（前端预检与服务端校验同源）：新建 `lib/image-constants.ts`，导出 `IMAGE_MIME_WHITELIST`（png/jpeg/webp/gif）、`MAX_IMAGE_BYTES=10MB`、`MAX_IMAGES_PER_MESSAGE=5`——前后端同 import，避免双写漂移（仓库无 `shared/` 目录，参照 `lib/chat-app-store.ts:19,77` 头像 MIME+2MB 校验先例）。
+4. 常量（前端预检与服务端校验同源，**R2 P1-5 修订**）：服务端 `lib/image-constants.ts` 为**单一真相源**，导出 `IMAGE_MIME_WHITELIST`（png/jpeg/webp/gif）、`MAX_IMAGE_BYTES=10MB`、`MAX_IMAGES_PER_MESSAGE=5`、`MAX_IMAGE_WIDTH/HEIGHT=4096`、`MAX_IMAGE_PIXELS=16M`、`MAX_IMAGES_PER_UPLOAD=5`、`ANIMATED_GIF_REJECTED`；经 **`GET /api/image-upload/config` 以 JSON 暴露**，前端启动时 fetch（classic defer scripts 无 bundler，不能 import TS；config parity 测试保证前后端不漂移）。不再采用"前后端同 import TS"（浏览器不可行，R2 修正）。
+5. **provider-editor 模型级 capability 控件（R2 P1-4 新增）**：provider 配置页每个 model 卡片增加 `supportsImageInput` checkbox（默认关，catalog import 时按 `modalities.input` 投影默认），随 provider payload 保存/回读；不引入新组件体系，复用现有 checkbox/switch 视觉。
+6. **上传响应契约（R2 P2-1 统一）**：`POST /api/conversations/:id/images` 只返回 `{ imageId }`，不返回持久 URL；预览全部用 `URL.createObjectURL` 本地 objectURL，发送成功后 revoke。
 
 [烁烁/k3-256k🐾]
