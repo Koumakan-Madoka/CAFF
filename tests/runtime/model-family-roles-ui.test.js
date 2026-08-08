@@ -29,6 +29,54 @@ function loadManagementUtils() {
   return loadManagementModules().managementUtils;
 }
 
+function loadProviderManagement(provider) {
+  const dom = new JSDOM(`
+    <ul id="provider-list"></ul>
+    <section id="provider-detail"></section>
+    <button id="add-provider"></button>
+    <button id="import-provider"></button>
+    <button id="refresh-providers"></button>
+    <span id="provider-count"></span>
+  `);
+  const context = {
+    document: dom.window.document,
+    window: dom.window,
+  };
+  context.window.CaffShared = {};
+  context.window.CaffPersonas = {
+    createProviderEditor() {
+      return { show() {} };
+    },
+    createCatalogImport() {
+      return { async open() {} };
+    },
+  };
+
+  for (const file of ['public/shared/management-list.js', 'public/personas/provider-management.js']) {
+    const sourcePath = path.join(projectRoot, file);
+    vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), context, { filename: sourcePath });
+  }
+
+  const management = context.window.CaffPersonas.createProviderManagement({
+    list: context.document.getElementById('provider-list'),
+    detail: context.document.getElementById('provider-detail'),
+    addButton: context.document.getElementById('add-provider'),
+    importButton: context.document.getElementById('import-provider'),
+    refreshButton: context.document.getElementById('refresh-providers'),
+    count: context.document.getElementById('provider-count'),
+    isEnabled: () => true,
+    getCsrfToken: () => '',
+    showToast() {},
+    async onProvidersChanged() {},
+    async fetchJson(url) {
+      assert.equal(url, '/api/model-providers');
+      return { providers: [provider] };
+    },
+  });
+
+  return { document: context.document, management };
+}
+
 test('production management page loads focused modules before the entry and preserves the compatibility route', () => {
   const html = fs.readFileSync(path.join(projectRoot, 'public/personas.html'), 'utf8');
   const scripts = Array.from(html.matchAll(/<script defer src="([^"]+)"/gu), (match) => match[1]);
@@ -45,6 +93,22 @@ test('production management page loads focused modules before the entry and pres
   assert.match(html, /id="provider-management-view"/u);
   assert.match(html, /模型供应商/u);
   assert.equal(html.includes('人格管理中心'), false);
+});
+
+test('configured provider cards display the provider id instead of the runtime API dialect', async () => {
+  const { document, management } = loadProviderManagement({
+    id: 'kimi-for-coding',
+    name: 'Kimi K3-256K',
+    api: 'anthropic-messages',
+    models: [{ id: 'kimi-k3-256k' }],
+  });
+
+  await management.refresh();
+
+  const meta = document.querySelector('#provider-list small');
+  assert.ok(meta);
+  assert.match(meta.textContent, /kimi-for-coding/u);
+  assert.doesNotMatch(meta.textContent, /anthropic-messages/u);
 });
 
 test('role UI payload keeps family fields credential-free and preserves complete custom capabilities', () => {
