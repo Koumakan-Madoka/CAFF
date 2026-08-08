@@ -121,7 +121,7 @@
           : validation.status === 'error'
             ? '最近验证失败'
             : '最近验证已完成';
-      meta.textContent = draft ? '尚未保存' : `${provider.api || '协议未设置'} · ${(provider.models || []).length} 个模型 · ${validationLabel}`;
+      meta.textContent = draft ? '尚未保存' : `${provider.id} · ${(provider.models || []).length} 个模型 · ${validationLabel}`;
       copy.append(name, meta);
       const status = document.createElement('span');
       status.className = `status-dot${validation && validation.status === 'ok' ? ' default' : ' warning'}`;
