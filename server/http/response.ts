@@ -4,7 +4,7 @@ import type { ServerResponse } from 'node:http';
 
 import { createHttpError } from './http-errors';
 
-const ERROR_DETAIL_KEYS = ['issues', 'references', 'caseSchemaStatus', 'derivedFromLegacy'];
+const ERROR_DETAIL_KEYS = ['issues', 'references', 'caseSchemaStatus', 'derivedFromLegacy', 'code'];
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);

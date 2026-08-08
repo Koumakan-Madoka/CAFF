@@ -39,6 +39,7 @@ function createAcceptedMessagePayload(conversationId: any, turnInput: any) {
     senderName: turnInput.senderName,
     content: turnInput.content,
     status: 'completed',
+    imageIds: Array.isArray(turnInput.imageIds) ? turnInput.imageIds : [],
     metadata: turnInput.privateOnly ? { ...turnInput.metadata, privateOnly: true } : turnInput.metadata,
   };
 }
@@ -1402,7 +1403,7 @@ export function createTurnOrchestrator(options: any = {}) {
 
     const turnInput = normalizeConversationTurnInput(input, storedConversation);
 
-    if (!turnInput.content) {
+    if (!turnInput.content && (!Array.isArray(turnInput.imageIds) || turnInput.imageIds.length === 0)) {
       throw createHttpError(400, 'Message content is required');
     }
 

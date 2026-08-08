@@ -58,7 +58,7 @@ function multipartHeaders(boundary = '----testboundary7f9a') {
   };
 }
 
-async function startApp(t) {
+async function startApp(t, options = {}) {
   const tempDir = withTempDir('caff-img-http-');
   const sqlitePath = path.join(tempDir, 'store.sqlite');
   const port = await findFreePort();
@@ -69,6 +69,7 @@ async function startApp(t) {
     sqlitePath,
     projectDir: tempDir,
     uploadsDir: path.join(tempDir, 'uploads'),
+    executeConversationAgent: options.executeConversationAgent,
   });
 
   await new Promise((resolve, reject) => {
@@ -177,4 +178,96 @@ test('POST upload rejects non-whitelisted magic bytes with structured error', as
   const uploadBody = await uploadResponse.json();
   assert.ok(uploadBody.error);
   assert.ok(uploadBody.error.code);
+});
+
+function stubAgentExecutor() {
+  return async (input) => {
+    const reply = {
+      id: `stub-reply-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      conversationId: input.conversationId,
+      turnId: input.turnId,
+      role: 'assistant',
+      agentId: input.agent.id,
+      senderName: input.agent.name,
+      content: 'Stub reply.',
+      status: 'completed',
+      metadata: {},
+      createdAt: new Date().toISOString(),
+    };
+    input.completedReplies.push(reply);
+    return { stopTurn: false, terminationReason: '' };
+  };
+}
+
+test('upload then send message with imageIds persists contentBlocks and attaches image', async (t) => {
+  const { app, baseUrl } = await startApp(t, {
+    executeConversationAgent: stubAgentExecutor(),
+  });
+
+  const agent = app.store.saveCustomRoleConfig({ id: 'agent-msg', name: 'A', personaPrompt: 'p' });
+  const conversation = app.store.createConversation({
+    title: 'Msg',
+    participants: [{ agentId: agent.id }],
+  });
+
+  const uploadBody = buildMultipartBody([
+    { name: 'client_request_id', value: 'req-msg' },
+    { name: 'files', filename: 'photo.png', type: 'image/png', value: pngBuffer(120, 80) },
+  ]);
+  const uploadResponse = await fetch(`${baseUrl}/api/conversations/${conversation.id}/images`, {
+    method: 'POST',
+    headers: multipartHeaders(),
+    body: uploadBody,
+  });
+  assert.equal(uploadResponse.status, 200);
+  const uploadResult = await uploadResponse.json();
+  const imageId = uploadResult.images[0].imageId;
+
+  const messageResponse = await fetch(`${baseUrl}/api/conversations/${conversation.id}/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      content: 'with image',
+      imageIds: [imageId],
+      clientRequestId: 'msg-1',
+    }),
+  });
+  assert.equal(messageResponse.status, 200);
+  const messageResult = await messageResponse.json();
+  const acceptedMessage = messageResult.acceptedMessage;
+
+  assert.equal(acceptedMessage.content, 'with image');
+  const blocks = acceptedMessage.metadata.contentBlocks;
+  assert.ok(Array.isArray(blocks));
+  assert.equal(blocks.length, 2);
+  assert.deepEqual(blocks[0], { type: 'text', text: 'with image' });
+  assert.equal(blocks[1].type, 'image');
+  assert.equal(blocks[1].imageId, imageId);
+  assert.ok(blocks[1].url.startsWith('/uploads/'));
+
+  const stored = app.store.listImageUploadsByIds([imageId]);
+  assert.equal(stored[0].status, 'attached');
+  assert.equal(stored[0].attachedMessageId, acceptedMessage.id);
+});
+
+test('sending message with client-submitted contentBlocks is rejected', async (t) => {
+  const { app, baseUrl } = await startApp(t);
+
+  const agent = app.store.saveCustomRoleConfig({ id: 'agent-reject', name: 'A', personaPrompt: 'p' });
+  const conversation = app.store.createConversation({
+    title: 'Reject',
+    participants: [{ agentId: agent.id }],
+  });
+
+  const messageResponse = await fetch(`${baseUrl}/api/conversations/${conversation.id}/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      content: 'x',
+      metadata: { contentBlocks: [{ type: 'text', text: 'x' }] },
+    }),
+  });
+  assert.equal(messageResponse.status, 400);
+  const body = await messageResponse.json();
+  assert.equal(body.code, 'TEXT_BLOCK_FROM_CLIENT_REJECTED');
 });

@@ -1015,8 +1015,17 @@ export function createConversationsController(options: any = {}): RouteHandler<A
       }
 
       const clientRequestId = typeof body.clientRequestId === 'string' ? body.clientRequestId.trim() : '';
+      const submittedMetadata = body.metadata && typeof body.metadata === 'object' ? body.metadata : {};
+
+      if (submittedMetadata.contentBlocks) {
+        throw createHttpError(400, 'Client must not submit contentBlocks; content + imageIds only', {
+          code: 'TEXT_BLOCK_FROM_CLIENT_REJECTED',
+        });
+      }
+
       const result = turnOrchestrator.submitConversationMessage(conversationId, {
         content: body.content,
+        imageIds: Array.isArray(body.imageIds) ? body.imageIds : [],
         metadata: clientRequestId ? { clientRequestId } : undefined,
       });
       sendJson(res, 200, result);

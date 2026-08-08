@@ -1,5 +1,5 @@
 const { randomUUID } = require('node:crypto');
-const { UPLOAD_LEASE_TTL_MS, STAGED_IMAGE_TTL_MS } = require('../lib/image-constants');
+const { UPLOAD_LEASE_TTL_MS, STAGED_IMAGE_TTL_MS, MAX_IMAGES_PER_MESSAGE } = require('../lib/image-constants');
 const { openSqliteDatabase } = require('../storage/sqlite/connection');
 const { migrateChatSchema } = require('../storage/sqlite/migrations');
 const { createChatAgentRepository } = require('../storage/chat/agent.repository');
@@ -254,6 +254,25 @@ function normalizeMessageRow(row: any) {
     metadata: parseJson(row.metadata_json),
     createdAt: row.created_at,
   };
+}
+
+function deriveMessageContentBlocks(content: any, imageRows: any[] = []) {
+  const blocks: any[] = [];
+  const normalizedContent = String(content || '');
+
+  if (normalizedContent.trim()) {
+    blocks.push({ type: 'text', text: normalizedContent });
+  }
+
+  for (const image of imageRows) {
+    blocks.push({
+      type: 'image',
+      imageId: image.imageId,
+      url: image.storedPath,
+    });
+  }
+
+  return blocks;
 }
 
 function clipSearchSnippet(value: any, maxLength = 240) {
@@ -1009,6 +1028,24 @@ export class ChatAppStore {
           metadataJson: serializeJson(payload.metadata),
           createdAt,
         });
+
+        if (Array.isArray(payload.imageIds) && payload.imageIds.length > 0) {
+          const attachedCount = this.imageUploadRepository.attachChildren(
+            payload.imageIds,
+            payload.conversationId,
+            payload.id,
+            createdAt
+          );
+
+          if (attachedCount !== payload.imageIds.length) {
+            const imageError = new Error('IMAGE_ATTACH_FAILED') as any;
+            imageError.statusCode = 400;
+            imageError.code = 'IMAGE_ALREADY_ATTACHED';
+            imageError.message = 'One or more images are not staged or do not belong to this conversation';
+            throw imageError;
+          }
+        }
+
         this.conversationRepository.touch(payload.conversationId, {
           updatedAt: createdAt,
           lastMessageAt: createdAt,
@@ -2492,6 +2529,60 @@ export class ChatAppStore {
       throw new Error('Conversation not found');
     }
 
+    const metadata = payload.metadata && typeof payload.metadata === 'object' ? payload.metadata : {};
+
+    if (metadata.contentBlocks) {
+      const contentBlockError = new Error('Client must not submit contentBlocks; content + imageIds only') as any;
+      contentBlockError.statusCode = 400;
+      contentBlockError.code = 'TEXT_BLOCK_FROM_CLIENT_REJECTED';
+      throw contentBlockError;
+    }
+
+    const rawImageIds = Array.isArray(payload.imageIds) ? payload.imageIds : [];
+    const imageIds = Array.from(new Set(rawImageIds.map((id: any) => String(id || '').trim()).filter(Boolean)));
+
+    if (imageIds.length > MAX_IMAGES_PER_MESSAGE) {
+      const imageLimitError = new Error(`At most ${MAX_IMAGES_PER_MESSAGE} images per message`) as any;
+      imageLimitError.statusCode = 400;
+      imageLimitError.code = 'IMAGE_COUNT_EXCEEDED';
+      throw imageLimitError;
+    }
+
+    let imageRows: any[] = [];
+    let nextMetadata = metadata;
+
+    if (imageIds.length > 0) {
+      const batchOwnership = this.imageUploadRepository.listChildrenByIds(imageIds);
+      const ownedByConversation = batchOwnership.filter(
+        (row: any) => {
+          const batch = this.imageUploadRepository.getBatchById(row.batchId);
+          return batch && batch.conversationId === payload.conversationId;
+        }
+      );
+
+      if (ownedByConversation.length !== imageIds.length) {
+        const notFoundError = new Error('One or more images do not exist or do not belong to this conversation') as any;
+        notFoundError.statusCode = 400;
+        notFoundError.code = 'IMAGE_NOT_FOUND';
+        throw notFoundError;
+      }
+
+      const notStaged = ownedByConversation.some((row: any) => row.status !== 'staged');
+
+      if (notStaged) {
+        const alreadyAttachedError = new Error('One or more images are already attached') as any;
+        alreadyAttachedError.statusCode = 400;
+        alreadyAttachedError.code = 'IMAGE_ALREADY_ATTACHED';
+        throw alreadyAttachedError;
+      }
+
+      imageRows = ownedByConversation;
+      nextMetadata = {
+        ...metadata,
+        contentBlocks: deriveMessageContentBlocks(payload.content, imageRows),
+      };
+    }
+
     const senderName =
       String(payload.senderName || '').trim() ||
       (payload.role === 'user' ? 'You' : payload.role === 'assistant' ? 'Assistant' : 'System');
@@ -2508,7 +2599,8 @@ export class ChatAppStore {
       taskId: payload.taskId || null,
       runId: payload.runId || null,
       errorMessage: String(payload.errorMessage || '').trim(),
-      metadata: payload.metadata,
+      metadata: nextMetadata,
+      imageIds,
       createdAt: payload.createdAt,
     });
   }
