@@ -271,3 +271,145 @@ test('sending message with client-submitted contentBlocks is rejected', async (t
   const body = await messageResponse.json();
   assert.equal(body.code, 'TEXT_BLOCK_FROM_CLIENT_REJECTED');
 });
+
+test('GET /uploads/ rejects path traversal outside the controlled upload dir', async (t) => {
+  const { baseUrl } = await startApp(t);
+
+  const traversalResponses = await Promise.all([
+    fetch(`${baseUrl}/uploads/..%2F..%2Fstore.sqlite`),
+    fetch(`${baseUrl}/uploads/../../../etc/passwd`),
+  ]);
+
+  for (const response of traversalResponses) {
+    assert.ok(
+      response.status === 403 || response.status === 404,
+      `path traversal must be blocked (got ${response.status})`
+    );
+  }
+});
+
+test('POST upload rejects oversized single file with FILE_TOO_LARGE', async (t) => {
+  const { app, baseUrl } = await startApp(t);
+
+  const agent = app.store.saveCustomRoleConfig({ id: 'agent-big', name: 'A', personaPrompt: 'p' });
+  const conversation = app.store.createConversation({
+    title: 'Big',
+    participants: [{ agentId: agent.id }],
+  });
+
+  const body = buildMultipartBody([
+    { name: 'client_request_id', value: 'req-big' },
+    {
+      name: 'files',
+      filename: 'big.png',
+      type: 'image/png',
+      value: Buffer.concat([pngBuffer(100, 50), Buffer.alloc(10 * 1024 * 1024)]),
+    },
+  ]);
+
+  const uploadResponse = await fetch(`${baseUrl}/api/conversations/${conversation.id}/images`, {
+    method: 'POST',
+    headers: multipartHeaders(),
+    body,
+  });
+  assert.equal(uploadResponse.status, 400);
+  const uploadBody = await uploadResponse.json();
+  assert.equal(uploadBody.error.code, 'FILE_TOO_LARGE');
+});
+
+test('restart fixture: image reference and message replay survive process restart', async (t) => {
+  const tempDir = withTempDir('caff-img-restart-');
+  const sqlitePath = path.join(tempDir, 'store.sqlite');
+  const uploadsDir = path.join(tempDir, 'uploads');
+
+  async function startInstance() {
+    const port = await findFreePort();
+    const instance = createServerApp({
+      host: '127.0.0.1',
+      port,
+      agentDir: tempDir,
+      sqlitePath,
+      projectDir: tempDir,
+      uploadsDir,
+      executeConversationAgent: stubAgentExecutor(),
+    });
+
+    await new Promise((resolve, reject) => {
+      instance.start((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+
+        resolve();
+      });
+    });
+
+    return { instance, baseUrl: `http://127.0.0.1:${port}` };
+  }
+
+  async function closeInstance(instance) {
+    await new Promise((resolve) => instance.close(resolve));
+  }
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const first = await startInstance();
+  const agent = first.instance.store.saveCustomRoleConfig({
+    id: `agent-restart-${Math.random().toString(36).slice(2, 8)}`,
+    name: 'A',
+    personaPrompt: 'p',
+  });
+  const conversation = first.instance.store.createConversation({
+    title: 'Restart',
+    participants: [{ agentId: agent.id }],
+  });
+
+  const uploadBody = buildMultipartBody([
+    { name: 'client_request_id', value: 'req-restart' },
+    { name: 'files', filename: 'photo.png', type: 'image/png', value: pngBuffer(120, 80) },
+  ]);
+  const uploadResponse = await fetch(`${first.baseUrl}/api/conversations/${conversation.id}/images`, {
+    method: 'POST',
+    headers: multipartHeaders(),
+    body: uploadBody,
+  });
+  assert.equal(uploadResponse.status, 200);
+  const uploadResult = await uploadResponse.json();
+  const imageId = uploadResult.images[0].imageId;
+
+  const messageResponse = await fetch(`${first.baseUrl}/api/conversations/${conversation.id}/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content: 'survives restart', imageIds: [imageId], clientRequestId: 'msg-restart' }),
+  });
+  assert.equal(messageResponse.status, 200);
+  const messageResult = await messageResponse.json();
+  const acceptedMessage = messageResult.acceptedMessage;
+
+  await closeInstance(first.instance);
+
+  const second = await startInstance();
+  try {
+    const stored = second.instance.store.listImageUploadsByIds([imageId]);
+    assert.equal(stored.length, 1);
+    assert.equal(stored[0].status, 'attached');
+    assert.ok(stored[0].storedPath.startsWith('/uploads/'));
+
+    const replayed = second.instance.store.getMessage(acceptedMessage.id);
+    assert.equal(replayed.content, 'survives restart');
+    const blocks = replayed.metadata.contentBlocks;
+    assert.ok(Array.isArray(blocks));
+    const imageBlock = blocks.find((block) => block.type === 'image');
+    assert.ok(imageBlock, 'image block must survive restart');
+    assert.equal(imageBlock.imageId, imageId);
+
+    const fileResponse = await fetch(`${second.baseUrl}${stored[0].storedPath}`);
+    assert.equal(fileResponse.status, 200, 'image must remain reachable from static route after restart');
+    assert.match(fileResponse.headers.get('content-type') || '', /image\/png/);
+  } finally {
+    await closeInstance(second.instance);
+  }
+});

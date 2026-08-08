@@ -417,3 +417,72 @@ test('cleanupOrphanFiles removes upload dirs with no matching batch row', (t) =>
   assert.equal(fs.existsSync(orphanDir), false, 'orphan dir without batch row must be removed');
   assert.ok(fs.existsSync(keptDir), 'dir with a batch row must be kept');
 });
+
+test('rejects file larger than MAX_IMAGE_BYTES', async (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+
+  const oversized = Buffer.concat([pngBuffer(100, 50), Buffer.alloc(10 * 1024 * 1024)]);
+  const outcome = await ctx.service.upload(ctx.conversationId, 'req-size', [
+    { fieldName: 'files', fileName: 'big.png', mimeType: 'image/png', content: oversized },
+  ]);
+
+  assert.equal(outcome.kind, 'error');
+  assert.equal(outcome.code, 'FILE_TOO_LARGE');
+
+  const batch = ctx.store.getImageUploadBatchByKey(ctx.conversationId, 'req-size');
+  assert.equal(batch.status, 'rejected', 'deterministic size rejection must enter rejected terminal state');
+});
+
+test('rejects dimensions beyond MAX_IMAGE_WIDTH/HEIGHT', async (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+
+  const outcome = await ctx.service.upload(ctx.conversationId, 'req-dim', [
+    { fieldName: 'files', fileName: 'wide.png', mimeType: 'image/png', content: pngBuffer(5000, 10) },
+  ]);
+
+  assert.equal(outcome.kind, 'error');
+  assert.equal(outcome.code, 'DIMENSIONS_EXCEEDED');
+});
+
+test('rejects pixel count beyond MAX_IMAGE_PIXELS', async (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+
+  const outcome = await ctx.service.upload(ctx.conversationId, 'req-px', [
+    { fieldName: 'files', fileName: 'big-px.png', mimeType: 'image/png', content: pngBuffer(4096, 4096) },
+  ]);
+
+  assert.equal(outcome.kind, 'error');
+  assert.equal(outcome.code, 'PIXEL_COUNT_EXCEEDED');
+});
+
+test('sanitizes path traversal file names and rejects invalid names', async (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+
+  const traversal = await ctx.service.upload(ctx.conversationId, 'req-traversal', [
+    {
+      fieldName: 'files',
+      fileName: '../../../../etc/passwd',
+      mimeType: 'image/png',
+      content: pngBuffer(40, 40),
+    },
+  ]);
+
+  assert.equal(traversal.kind, 'ok');
+  const batch = ctx.store.getImageUploadBatchByKey(ctx.conversationId, 'req-traversal');
+  const children = ctx.store.listImageUploadsByBatch(batch.batchId);
+  assert.ok(
+    children[0].storedPath.includes('etc_passwd') || !children[0].storedPath.includes('..'),
+    'traversal name must be sanitized to a safe stored path'
+  );
+
+  const invalid = await ctx.service.upload(ctx.conversationId, 'req-invalid-name', [
+    { fieldName: 'files', fileName: '', mimeType: 'image/png', content: pngBuffer(40, 40) },
+  ]);
+
+  assert.equal(invalid.kind, 'error');
+  assert.equal(invalid.code, 'INVALID_FILE_NAME');
+});
