@@ -3,7 +3,7 @@ feature_ids: [F005]
 topics: [image, multimodal, content-blocks, capability, routing, upload, storage, design-gate]
 doc_kind: discussion
 created: 2026-08-09
-status: design_gate_pending
+status: design_gate_submitted
 ---
 
 # F005 Image Input and Multimodal Routing — Design Gate 讨论与架构决策记录
