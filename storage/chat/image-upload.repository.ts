@@ -1,0 +1,301 @@
+function normalizeBatchRow(row: any) {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    batchId: row.batch_id,
+    conversationId: row.conversation_id,
+    clientRequestId: row.client_request_id,
+    requestFingerprint: row.request_fingerprint,
+    expectedCount: row.expected_count,
+    status: row.status,
+    leaseToken: row.lease_token,
+    leaseExpiresAt: row.lease_expires_at,
+    rejectedReason: row.rejected_reason,
+    createdAt: row.created_at,
+    completedAt: row.completed_at,
+  };
+}
+
+function normalizeUploadRow(row: any) {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    imageId: row.image_id,
+    batchId: row.batch_id,
+    status: row.status,
+    slot: row.slot,
+    fileName: row.file_name,
+    storedPath: row.stored_path,
+    mimeType: row.mime_type,
+    width: row.width,
+    height: row.height,
+    sizeBytes: row.size_bytes,
+    attachedMessageId: row.attached_message_id,
+    attachedAt: row.attached_at,
+    integrityStatus: row.integrity_status,
+    integrityError: row.integrity_error,
+    createdAt: row.created_at,
+    ttlExpiresAt: row.ttl_expires_at,
+  };
+}
+
+export class ImageUploadRepository {
+  db: any;
+  createBatchStatement: any;
+  getBatchByKeyStatement: any;
+  getBatchByIdStatement: any;
+  takeoverLeaseStatement: any;
+  completeBatchStatement: any;
+  rejectBatchStatement: any;
+  insertChildStatement: any;
+  listChildrenByBatchStatement: any;
+  recycleByMessageStatement: any;
+  purgeByConversationStatement: any;
+  purgeBatchesByConversationStatement: any;
+  countChildrenByBatchStatement: any;
+  listStagedExpiredStatement: any;
+  listByConversationStatement: any;
+  getChildStatement: any;
+
+  constructor(db: any) {
+    this.db = db;
+    this.createBatchStatement = db.prepare(`
+      INSERT INTO image_upload_batches (
+        batch_id,
+        conversation_id,
+        client_request_id,
+        request_fingerprint,
+        expected_count,
+        status,
+        lease_token,
+        lease_expires_at,
+        created_at
+      ) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+    `);
+    this.getBatchByKeyStatement = db.prepare(`
+      SELECT *
+      FROM image_upload_batches
+      WHERE conversation_id = ? AND client_request_id = ?
+      LIMIT 1
+    `);
+    this.getBatchByIdStatement = db.prepare(`
+      SELECT *
+      FROM image_upload_batches
+      WHERE batch_id = ?
+      LIMIT 1
+    `);
+    this.takeoverLeaseStatement = db.prepare(`
+      UPDATE image_upload_batches
+      SET lease_token = ?, lease_expires_at = ?
+      WHERE batch_id = ? AND status = 'pending' AND lease_expires_at < ?
+    `);
+    this.completeBatchStatement = db.prepare(`
+      UPDATE image_upload_batches
+      SET status = 'complete', completed_at = ?, lease_token = NULL, lease_expires_at = NULL
+      WHERE batch_id = ? AND status = 'pending' AND lease_token = ?
+    `);
+    this.rejectBatchStatement = db.prepare(`
+      UPDATE image_upload_batches
+      SET status = 'rejected', rejected_reason = ?
+      WHERE batch_id = ? AND status = 'pending'
+    `);
+    this.insertChildStatement = db.prepare(`
+      INSERT INTO image_uploads (
+        image_id,
+        batch_id,
+        status,
+        slot,
+        file_name,
+        stored_path,
+        mime_type,
+        width,
+        height,
+        size_bytes,
+        integrity_status,
+        created_at
+      ) VALUES (?, ?, 'staged', ?, ?, ?, ?, ?, ?, ?, 'ok', ?)
+    `);
+    this.listChildrenByBatchStatement = db.prepare(`
+      SELECT *
+      FROM image_uploads
+      WHERE batch_id = ?
+      ORDER BY slot ASC
+    `);
+    this.getChildStatement = db.prepare(`
+      SELECT *
+      FROM image_uploads
+      WHERE image_id = ?
+      LIMIT 1
+    `);
+    this.recycleByMessageStatement = db.prepare(`
+      UPDATE image_uploads
+      SET
+        status = 'recycled',
+        attached_message_id = NULL,
+        attached_at = NULL,
+        ttl_expires_at = ?
+      WHERE attached_message_id = ? AND status = 'attached'
+    `);
+    this.purgeByConversationStatement = db.prepare(`
+      DELETE FROM image_uploads
+      WHERE batch_id IN (SELECT batch_id FROM image_upload_batches WHERE conversation_id = ?)
+    `);
+    this.purgeBatchesByConversationStatement = db.prepare(`
+      DELETE FROM image_upload_batches WHERE conversation_id = ?
+    `);
+    this.countChildrenByBatchStatement = db.prepare(`
+      SELECT COUNT(*) AS count FROM image_uploads WHERE batch_id = ?
+    `);
+    this.listStagedExpiredStatement = db.prepare(`
+      SELECT *
+      FROM image_uploads
+      WHERE status = 'staged' AND created_at < ?
+    `);
+    this.listByConversationStatement = db.prepare(`
+      SELECT *
+      FROM image_uploads
+      WHERE batch_id IN (SELECT batch_id FROM image_upload_batches WHERE conversation_id = ?)
+    `);
+  }
+
+  createBatch(payload: any) {
+    this.createBatchStatement.run(
+      payload.batchId,
+      payload.conversationId,
+      payload.clientRequestId,
+      payload.requestFingerprint,
+      payload.expectedCount,
+      payload.leaseToken,
+      payload.leaseExpiresAt,
+      payload.createdAt
+    );
+
+    return this.getBatchById(payload.batchId);
+  }
+
+  getBatchByKey(conversationId: string, clientRequestId: string) {
+    return normalizeBatchRow(this.getBatchByKeyStatement.get(conversationId, clientRequestId));
+  }
+
+  getBatchById(batchId: string) {
+    return normalizeBatchRow(this.getBatchByIdStatement.get(batchId));
+  }
+
+  takeoverLease(batchId: string, newToken: string, newExpiry: string, now: string) {
+    const result = this.takeoverLeaseStatement.run(newToken, newExpiry, batchId, now);
+    return result.changes > 0;
+  }
+
+  completeBatch(batchId: string, leaseToken: string, completedAt: string) {
+    const result = this.completeBatchStatement.run(completedAt, batchId, leaseToken);
+    return result.changes > 0;
+  }
+
+  rejectBatch(batchId: string, reason: string, completedAt: string) {
+    const result = this.rejectBatchStatement.run(reason, batchId);
+    return result.changes > 0;
+  }
+
+  insertChild(payload: any) {
+    this.insertChildStatement.run(
+      payload.imageId,
+      payload.batchId,
+      payload.slot,
+      payload.fileName || null,
+      payload.storedPath,
+      payload.mimeType || null,
+      payload.width || null,
+      payload.height || null,
+      payload.sizeBytes || null,
+      payload.createdAt
+    );
+
+    return this.getChild(payload.imageId);
+  }
+
+  getChild(imageId: string) {
+    return normalizeUploadRow(this.getChildStatement.get(imageId));
+  }
+
+  listChildrenByBatch(batchId: string) {
+    return this.listChildrenByBatchStatement.all(batchId).map(normalizeUploadRow);
+  }
+
+  listChildrenByIds(imageIds: string[]) {
+    const safeIds = (Array.isArray(imageIds) ? imageIds : []).filter(Boolean).slice(0, 8);
+
+    if (safeIds.length === 0) {
+      return [];
+    }
+
+    const placeholders = safeIds.map(() => '?').join(',');
+    const rows = this.db
+      .prepare(`SELECT * FROM image_uploads WHERE image_id IN (${placeholders})`)
+      .all(...safeIds);
+
+    return rows.map(normalizeUploadRow);
+  }
+
+  attachChildren(imageIds: string[], conversationId: string, messageId: string, attachedAt: string) {
+    const safeIds = (Array.isArray(imageIds) ? imageIds : []).filter(Boolean).slice(0, 8);
+
+    if (safeIds.length === 0) {
+      return 0;
+    }
+
+    const placeholders = safeIds.map(() => '?').join(',');
+    const result = this.db
+      .prepare(`
+        UPDATE image_uploads
+        SET
+          status = 'attached',
+          attached_message_id = ?,
+          attached_at = ?
+        WHERE image_id IN (${placeholders})
+          AND status = 'staged'
+          AND attached_message_id IS NULL
+          AND batch_id IN (SELECT batch_id FROM image_upload_batches WHERE conversation_id = ?)
+      `)
+      .run(messageId, attachedAt, ...safeIds, conversationId);
+
+    return result.changes;
+  }
+
+  recycleByMessage(messageId: string, ttlExpiresAt: string) {
+    const result = this.recycleByMessageStatement.run(ttlExpiresAt, messageId);
+    return result.changes;
+  }
+
+  purgeByConversation(conversationId: string) {
+    const childrenResult = this.purgeByConversationStatement.run(conversationId);
+    const batchesResult = this.purgeBatchesByConversationStatement.run(conversationId);
+    return {
+      children: childrenResult.changes,
+      batches: batchesResult.changes,
+    };
+  }
+
+  countChildrenByBatch(batchId: string) {
+    return Number(this.countChildrenByBatchStatement.get(batchId)?.count || 0);
+  }
+
+  listStagedExpired(now: string) {
+    return this.listStagedExpiredStatement.all(now).map(normalizeUploadRow);
+  }
+
+  listByConversation(conversationId: string) {
+    return this.listByConversationStatement.all(conversationId).map(normalizeUploadRow);
+  }
+
+  deleteChild(imageId: string) {
+    return this.db.prepare('DELETE FROM image_uploads WHERE image_id = ?').run(imageId).changes;
+  }
+}
+
+export function createImageUploadRepository(db: any) {
+  return new ImageUploadRepository(db);
+}

@@ -1,4 +1,5 @@
 const { randomUUID } = require('node:crypto');
+const { UPLOAD_LEASE_TTL_MS, STAGED_IMAGE_TTL_MS } = require('../lib/image-constants');
 const { openSqliteDatabase } = require('../storage/sqlite/connection');
 const { migrateChatSchema } = require('../storage/sqlite/migrations');
 const { createChatAgentRepository } = require('../storage/chat/agent.repository');
@@ -12,6 +13,7 @@ const { createChatMemoryCardRepository } = require('../storage/chat/memory-card.
 const { createChatSummarySegmentRepository } = require('../storage/chat/summary-segment.repository');
 const { createChatChannelBindingRepository } = require('../storage/chat/channel-binding.repository');
 const { createChatExternalEventRepository } = require('../storage/chat/external-event.repository');
+const { createImageUploadRepository } = require('../storage/chat/image-upload.repository');
 const {
   createCrossConversationDeliveryRepository,
 } = require('../storage/chat/cross-conversation-delivery.repository');
@@ -782,6 +784,7 @@ export class ChatAppStore {
       this.summarySegmentRepository = createChatSummarySegmentRepository(this.db);
       this.channelBindingRepository = createChatChannelBindingRepository(this.db);
       this.externalEventRepository = createChatExternalEventRepository(this.db);
+      this.imageUploadRepository = createImageUploadRepository(this.db);
       this.crossConversationDeliveryRepository = createCrossConversationDeliveryRepository(this.db);
 
       this.replaceConversationParticipants = (conversationId: any, participants: any) => {
@@ -1012,6 +1015,23 @@ export class ChatAppStore {
         });
 
         return this.getMessage(payload.id);
+      });
+
+      this.attachImageUploadsTransaction = this.db.transaction((payload: any) => {
+        return this.imageUploadRepository.attachChildren(
+          payload.imageIds,
+          payload.conversationId,
+          payload.messageId,
+          payload.attachedAt
+        );
+      });
+
+      this.recycleImageUploadsByMessageTransaction = this.db.transaction((payload: any) => {
+        return this.imageUploadRepository.recycleByMessage(payload.messageId, payload.ttlExpiresAt);
+      });
+
+      this.purgeConversationImageUploadsTransaction = this.db.transaction((payload: any) => {
+        return this.imageUploadRepository.purgeByConversation(payload.conversationId);
       });
 
       this.persistCrossConversationDeliveryTransaction = this.db.transaction((payload: any) => {
@@ -2072,7 +2092,123 @@ export class ChatAppStore {
   }
 
   deleteConversation(conversationId: any) {
+    this.purgeConversationImageUploadsTransaction({ conversationId });
     this.conversationRepository.delete(conversationId);
+  }
+
+  getImageUploadBatchByKey(conversationId: any, clientRequestId: any) {
+    return this.imageUploadRepository.getBatchByKey(String(conversationId || ''), String(clientRequestId || ''));
+  }
+
+  getImageUploadBatch(batchId: any) {
+    return this.imageUploadRepository.getBatchById(String(batchId || ''));
+  }
+
+  createImageUploadBatch(payload: any = {}) {
+    const conversation = this.conversationRepository.get(payload.conversationId);
+
+    if (!conversation) {
+      throw new Error('Conversation not found');
+    }
+
+    const timestamp = payload.createdAt || nowIso();
+    const leaseExpiresAt = payload.leaseExpiresAt || new Date(Date.now() + UPLOAD_LEASE_TTL_MS).toISOString();
+    return this.imageUploadRepository.createBatch({
+      batchId: String(payload.batchId || randomUUID()).trim(),
+      conversationId: payload.conversationId,
+      clientRequestId: String(payload.clientRequestId || '').trim(),
+      requestFingerprint: String(payload.requestFingerprint || '').trim(),
+      expectedCount: payload.expectedCount,
+      leaseToken: String(payload.leaseToken || randomUUID()).trim(),
+      leaseExpiresAt,
+      createdAt: timestamp,
+    });
+  }
+
+  takeoverImageUploadLease(batchId: any, newToken: any, newExpiry: any, now: any) {
+    return this.imageUploadRepository.takeoverLease(
+      String(batchId || ''),
+      String(newToken || randomUUID()).trim(),
+      newExpiry || null,
+      now || nowIso()
+    );
+  }
+
+  completeImageUploadBatch(batchId: any, leaseToken: any, completedAt: any) {
+    return this.imageUploadRepository.completeBatch(
+      String(batchId || ''),
+      String(leaseToken || ''),
+      completedAt || nowIso()
+    );
+  }
+
+  rejectImageUploadBatch(batchId: any, reason: any, completedAt: any) {
+    return this.imageUploadRepository.rejectBatch(
+      String(batchId || ''),
+      String(reason || ''),
+      completedAt || nowIso()
+    );
+  }
+
+  insertImageUpload(payload: any = {}) {
+    return this.imageUploadRepository.insertChild({
+      imageId: String(payload.imageId || randomUUID()).trim(),
+      batchId: payload.batchId,
+      slot: payload.slot,
+      fileName: payload.fileName,
+      storedPath: payload.storedPath,
+      mimeType: payload.mimeType,
+      width: payload.width,
+      height: payload.height,
+      sizeBytes: payload.sizeBytes,
+      createdAt: payload.createdAt || nowIso(),
+    });
+  }
+
+  listImageUploadsByBatch(batchId: any) {
+    return this.imageUploadRepository.listChildrenByBatch(String(batchId || ''));
+  }
+
+  listImageUploadsByIds(imageIds: any) {
+    return this.imageUploadRepository.listChildrenByIds(imageIds);
+  }
+
+  listImageUploadsByConversation(conversationId: any) {
+    return this.imageUploadRepository.listByConversation(String(conversationId || ''));
+  }
+
+  countImageUploadsByBatch(batchId: any) {
+    return this.imageUploadRepository.countChildrenByBatch(String(batchId || ''));
+  }
+
+  listStagedImageUploadsExpired(now: any) {
+    const timestamp = now || nowIso();
+    const threshold = new Date(new Date(timestamp).getTime() - STAGED_IMAGE_TTL_MS).toISOString();
+    return this.imageUploadRepository.listStagedExpired(threshold);
+  }
+
+  deleteImageUpload(imageId: any) {
+    return this.imageUploadRepository.deleteChild(String(imageId || ''));
+  }
+
+  attachImageUploads(imageIds: any, conversationId: any, messageId: any) {
+    return this.attachImageUploadsTransaction({
+      imageIds: (Array.isArray(imageIds) ? imageIds : []).slice(0, 8),
+      conversationId,
+      messageId,
+      attachedAt: nowIso(),
+    });
+  }
+
+  recycleImageUploadsByMessage(messageId: any) {
+    return this.recycleImageUploadsByMessageTransaction({
+      messageId,
+      ttlExpiresAt: nowIso(),
+    });
+  }
+
+  purgeConversationImageUploads(conversationId: any) {
+    return this.purgeConversationImageUploadsTransaction({ conversationId });
   }
 
   listConversationAgents(conversationId: any) {
