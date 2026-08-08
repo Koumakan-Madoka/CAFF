@@ -840,6 +840,10 @@ export function createServerApp(options: any = {}) {
 
   function start(onListen: any) {
     server.listen(port, host, () => {
+      try {
+        uploadService.reconcile();
+      } catch {}
+
       startCrossConversationDeliveryRuntime();
 
       if (typeof onListen === 'function') {

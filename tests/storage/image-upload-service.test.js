@@ -311,3 +311,109 @@ test('STORAGE_FAILURE keeps batch pending (retryable) and removes own attempt', 
 
   assert.equal(residue.length, 0, 'own token attempt must be cleaned on storage failure');
 });
+
+test('reconcile completes a pending batch whose final dir is already fully written', async (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+
+  const batch = ctx.store.createImageUploadBatch({
+    conversationId: ctx.conversationId,
+    clientRequestId: 'req-final',
+    requestFingerprint: ctx.service.computeRequestFingerprint([pngCandidate()]),
+    expectedCount: 1,
+    leaseExpiresAt: new Date(Date.now() - 60_000).toISOString(),
+  });
+
+  const finalDir = path.join(ctx.uploadsDir, batch.batchId);
+  fs.mkdirSync(finalDir, { recursive: true });
+  fs.writeFileSync(path.join(finalDir, '0-final.png'), pngBuffer(80, 60));
+
+  ctx.service.reconcilePendingBatches();
+
+  const after = ctx.store.getImageUploadBatch(batch.batchId);
+  assert.equal(after.status, 'complete', 'fully-written final dir must be committed via fenced reconcile');
+  assert.ok(after.completedAt);
+  assert.equal(ctx.store.countImageUploadsByBatch(batch.batchId), 1);
+});
+
+test('reconcile cleans an incomplete pending final dir and keeps batch pending', async (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+
+  const batch = ctx.store.createImageUploadBatch({
+    conversationId: ctx.conversationId,
+    clientRequestId: 'req-incomplete',
+    requestFingerprint: ctx.service.computeRequestFingerprint([pngCandidate(), pngCandidate()]),
+    expectedCount: 2,
+    leaseExpiresAt: new Date(Date.now() - 60_000).toISOString(),
+  });
+
+  const finalDir = path.join(ctx.uploadsDir, batch.batchId);
+  fs.mkdirSync(finalDir, { recursive: true });
+  fs.writeFileSync(path.join(finalDir, '0-only.png'), pngBuffer(80, 60));
+
+  ctx.service.reconcilePendingBatches();
+
+  assert.equal(fs.existsSync(finalDir), false, 'incomplete final dir must be cleaned');
+
+  const after = ctx.store.getImageUploadBatch(batch.batchId);
+  assert.equal(after.status, 'pending', 'batch stays pending for retry');
+  assert.equal(ctx.store.countImageUploadsByBatch(batch.batchId), 0);
+});
+
+test('gcUnconsumedCompleteBatches purges expired unconsumed complete batch with children and files', (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+
+  const oldCompletedAt = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
+  const batch = ctx.store.createImageUploadBatch({
+    conversationId: ctx.conversationId,
+    clientRequestId: 'req-gc',
+    requestFingerprint: 'fp-gc',
+    expectedCount: 1,
+  });
+
+  const finalDir = path.join(ctx.uploadsDir, batch.batchId);
+  fs.mkdirSync(finalDir, { recursive: true });
+  fs.writeFileSync(path.join(finalDir, '0-gc.png'), pngBuffer(80, 60));
+  ctx.store.insertImageUpload({
+    imageId: 'gc-1',
+    batchId: batch.batchId,
+    slot: 0,
+    storedPath: `/uploads/${batch.batchId}/0-gc.png`,
+    createdAt: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(),
+  });
+  ctx.store.completeImageUploadBatch(batch.batchId, batch.leaseToken, oldCompletedAt);
+
+  const removed = ctx.service.gcUnconsumedCompleteBatches();
+
+  assert.equal(removed, 1);
+  assert.equal(ctx.store.getImageUploadBatch(batch.batchId), null, 'expired unconsumed complete batch must be purged');
+  assert.equal(ctx.store.countImageUploadsByBatch(batch.batchId), 0, 'child rows must be purged together');
+  assert.equal(fs.existsSync(finalDir), false, 'files must be removed with the batch');
+});
+
+test('cleanupOrphanFiles removes upload dirs with no matching batch row', (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+
+  const orphanDir = path.join(ctx.uploadsDir, 'orphan-dir');
+  fs.mkdirSync(orphanDir, { recursive: true });
+  fs.writeFileSync(path.join(orphanDir, '0-x.png'), pngBuffer(40, 40));
+
+  const batch = ctx.store.createImageUploadBatch({
+    conversationId: ctx.conversationId,
+    clientRequestId: 'req-keep',
+    requestFingerprint: 'fp-keep',
+    expectedCount: 1,
+  });
+  const keptDir = path.join(ctx.uploadsDir, batch.batchId);
+  fs.mkdirSync(keptDir, { recursive: true });
+  fs.writeFileSync(path.join(keptDir, '0-keep.png'), pngBuffer(40, 40));
+
+  const removed = ctx.service.cleanupOrphanFiles();
+
+  assert.equal(removed, 1);
+  assert.equal(fs.existsSync(orphanDir), false, 'orphan dir without batch row must be removed');
+  assert.ok(fs.existsSync(keptDir), 'dir with a batch row must be kept');
+});

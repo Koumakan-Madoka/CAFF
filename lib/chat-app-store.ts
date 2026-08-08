@@ -2268,6 +2268,22 @@ export class ChatAppStore {
     return this.imageUploadRepository.markBatchConsumed(String(batchId || ''), consumedAt || nowIso());
   }
 
+  listPendingImageUploadBatches() {
+    return this.imageUploadRepository.listPendingBatches();
+  }
+
+  listUnconsumedCompleteImageUploadBatches(completedBefore: any) {
+    return this.imageUploadRepository.listUnconsumedCompleteBatches(completedBefore || nowIso());
+  }
+
+  listAllImageUploadBatches() {
+    return this.imageUploadRepository.listAllBatches();
+  }
+
+  purgeImageUploadBatch(batchId: any) {
+    return this.imageUploadRepository.purgeBatch(String(batchId || ''));
+  }
+
   listStagedImageUploadsExpired(now: any) {
     const timestamp = now || nowIso();
     const threshold = new Date(new Date(timestamp).getTime() - STAGED_IMAGE_TTL_MS).toISOString();

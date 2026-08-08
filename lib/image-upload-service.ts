@@ -9,6 +9,7 @@ const {
   MAX_IMAGES_PER_UPLOAD,
   MAX_IMAGE_WIDTH,
   MAX_IMAGE_HEIGHT,
+  STAGED_IMAGE_TTL_MS,
   UPLOAD_LEASE_TTL_MS,
   UPLOAD_RETRY_AFTER_MS,
 } = require('./image-constants');
@@ -351,6 +352,161 @@ export class ImageUploadService {
 
     this.cleanupDirectory(path.join(this.uploadsDir, '.tmp', batchId));
     this.cleanupDirectory(path.join(this.uploadsDir, batchId));
+  }
+
+  private finalDirFor(batchId: string) {
+    return path.join(this.uploadsDir, batchId);
+  }
+
+  private verifyFinalDir(batchId: string, expectedCount: number): boolean {
+    const finalDir = this.finalDirFor(batchId);
+
+    if (!fs.existsSync(finalDir)) {
+      return false;
+    }
+
+    let entries: string[];
+
+    try {
+      entries = fs.readdirSync(finalDir);
+    } catch {
+      return false;
+    }
+
+    if (entries.length !== expectedCount) {
+      return false;
+    }
+
+    for (let slot = 0; slot < expectedCount; slot += 1) {
+      const match = entries.find((name) => name.startsWith(`${slot}-`));
+
+      if (!match) {
+        return false;
+      }
+
+      const fullPath = path.join(finalDir, match);
+
+      let content: Buffer;
+
+      try {
+        content = fs.readFileSync(fullPath);
+      } catch {
+        return false;
+      }
+
+      const parsed = parseImageHeader(content);
+
+      if (!parsed.ok) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  reconcilePendingBatches(now = new Date().toISOString()) {
+    const pending = this.store.listPendingImageUploadBatches();
+
+    for (const batch of pending) {
+      const complete = this.verifyFinalDir(batch.batchId, batch.expectedCount);
+
+      if (complete) {
+        const children: Array<any> = [];
+        const finalDir = this.finalDirFor(batch.batchId);
+
+        let entries: string[] = [];
+
+        try {
+          entries = fs.readdirSync(finalDir);
+        } catch {}
+
+        for (let slot = 0; slot < batch.expectedCount; slot += 1) {
+          const match = entries.find((name) => name.startsWith(`${slot}-`));
+
+          if (!match) {
+            continue;
+          }
+
+          const fullPath = path.join(finalDir, match);
+          const content = fs.readFileSync(fullPath);
+          const parsed = parseImageHeader(content);
+          const header = parsed.ok ? parsed.header : null;
+
+          children.push({
+            imageId: randomUUID(),
+            batchId: batch.batchId,
+            slot,
+            fileName: match.replace(/^\d+-/, ''),
+            storedPath: `/uploads/${batch.batchId}/${match}`,
+            mimeType: 'application/octet-stream',
+            width: header ? header.width : null,
+            height: header ? header.height : null,
+            sizeBytes: content.length,
+          });
+        }
+
+        if (children.length !== batch.expectedCount) {
+          this.cleanupDirectory(this.finalDirFor(batch.batchId));
+          continue;
+        }
+
+        try {
+          this.store.finalizeImageUploadBatch({
+            batchId: batch.batchId,
+            leaseToken: batch.leaseToken,
+            completedAt: now,
+            children,
+          });
+        } catch (error) {
+          if ((error as any).code === 'IMAGE_BATCH_FENCED') {
+            this.cleanupDirectory(this.finalDirFor(batch.batchId));
+          }
+        }
+      } else {
+        this.cleanupDirectory(this.finalDirFor(batch.batchId));
+      }
+    }
+  }
+
+  gcUnconsumedCompleteBatches(ttlMs = STAGED_IMAGE_TTL_MS, now = new Date().toISOString()) {
+    const threshold = new Date(new Date(now).getTime() - ttlMs).toISOString();
+    const expired = this.store.listUnconsumedCompleteImageUploadBatches(threshold);
+
+    for (const batch of expired) {
+      this.cleanupDirectory(this.finalDirFor(batch.batchId));
+      this.store.purgeImageUploadBatch(batch.batchId);
+    }
+
+    return expired.length;
+  }
+
+  cleanupOrphanFiles() {
+    const knownBatchIds = new Set(this.store.listAllImageUploadBatches().map((batch: any) => batch.batchId));
+
+    if (!fs.existsSync(this.uploadsDir)) {
+      return 0;
+    }
+
+    let removed = 0;
+
+    for (const entry of fs.readdirSync(this.uploadsDir)) {
+      if (entry === '.tmp') {
+        continue;
+      }
+
+      if (!knownBatchIds.has(entry)) {
+        this.cleanupDirectory(path.join(this.uploadsDir, entry));
+        removed += 1;
+      }
+    }
+
+    return removed;
+  }
+
+  reconcile(now = new Date().toISOString()) {
+    this.reconcilePendingBatches(now);
+    this.gcUnconsumedCompleteBatches(STAGED_IMAGE_TTL_MS, now);
+    return this.cleanupOrphanFiles();
   }
 }
 

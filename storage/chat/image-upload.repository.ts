@@ -62,6 +62,10 @@ export class ImageUploadRepository {
     listByConversationStatement: any;
     getChildStatement: any;
     markBatchConsumedStatement: any;
+    listPendingBatchesStatement: any;
+    listUnconsumedCompleteBatchesStatement: any;
+    purgeBatchTransaction: any;
+    listAllBatchesStatement: any;
 
   constructor(db: any) {
     this.db = db;
@@ -167,6 +171,24 @@ export class ImageUploadRepository {
       SET consumed_at = ?
       WHERE batch_id = ? AND status = 'complete'
     `);
+    this.listPendingBatchesStatement = db.prepare(`
+      SELECT *
+      FROM image_upload_batches
+      WHERE status = 'pending'
+    `);
+    this.listUnconsumedCompleteBatchesStatement = db.prepare(`
+      SELECT *
+      FROM image_upload_batches
+      WHERE status = 'complete' AND consumed_at IS NULL AND completed_at < ?
+    `);
+    this.listAllBatchesStatement = db.prepare(`
+      SELECT *
+      FROM image_upload_batches
+    `);
+    this.purgeBatchTransaction = db.transaction((batchId: string) => {
+      db.prepare('DELETE FROM image_uploads WHERE batch_id = ?').run(batchId);
+      db.prepare('DELETE FROM image_upload_batches WHERE batch_id = ?').run(batchId);
+    });
   }
 
   createBatch(payload: any) {
@@ -301,6 +323,22 @@ export class ImageUploadRepository {
   markBatchConsumed(batchId: string, consumedAt: string) {
     const result = this.markBatchConsumedStatement.run(consumedAt, batchId);
     return result.changes > 0;
+  }
+
+  listPendingBatches() {
+    return this.listPendingBatchesStatement.all().map(normalizeBatchRow);
+  }
+
+  listUnconsumedCompleteBatches(completedBefore: string) {
+    return this.listUnconsumedCompleteBatchesStatement.all(completedBefore).map(normalizeBatchRow);
+  }
+
+  listAllBatches() {
+    return this.listAllBatchesStatement.all().map(normalizeBatchRow);
+  }
+
+  purgeBatch(batchId: string) {
+    this.purgeBatchTransaction(batchId);
   }
 
   deleteChild(imageId: string) {
