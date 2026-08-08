@@ -246,3 +246,68 @@ test('failed validation leaves batch rejected with structured reason and no cano
   const uploadDir = path.join(ctx.uploadsDir, batch.batchId);
   assert.equal(fs.existsSync(uploadDir), false);
 });
+
+test('temp dir is lease_token-isolated and removed after success', async (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+
+  const outcome = await ctx.service.upload(ctx.conversationId, 'req-iso', [pngCandidate()]);
+  assert.equal(outcome.kind, 'ok');
+
+  const batch = ctx.store.getImageUploadBatchByKey(ctx.conversationId, 'req-iso');
+  const tmpRoot = path.join(ctx.uploadsDir, '.tmp', batch.batchId);
+
+  let residue = [];
+
+  if (fs.existsSync(tmpRoot)) {
+    residue = fs.readdirSync(tmpRoot, { recursive: true });
+  }
+
+  assert.equal(residue.length, 0, 'token attempt must not leave residue after success');
+
+  const finalDir = path.join(ctx.uploadsDir, batch.batchId);
+  assert.ok(fs.existsSync(finalDir), 'final batch dir must exist');
+});
+
+test('STORAGE_FAILURE keeps batch pending (retryable) and removes own attempt', async (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+
+  const batch = ctx.store.createImageUploadBatch({
+    conversationId: ctx.conversationId,
+    clientRequestId: 'req-storage',
+    requestFingerprint: ctx.service.computeRequestFingerprint([pngCandidate()]),
+    expectedCount: 1,
+    leaseExpiresAt: new Date(Date.now() - 60_000).toISOString(),
+  });
+
+  const originalMkdir = fs.mkdirSync;
+
+  try {
+    fs.mkdirSync = (dirPath, options) => {
+      if (typeof dirPath === 'string' && dirPath.includes('.tmp') && dirPath.includes(batch.batchId)) {
+        throw new Error('simulated disk write failure');
+      }
+
+      return originalMkdir(dirPath, options);
+    };
+
+    const outcome = await ctx.service.upload(ctx.conversationId, 'req-storage', [pngCandidate()]);
+    assert.equal(outcome.kind, 'error');
+    assert.equal(outcome.code, 'STORAGE_FAILURE');
+  } finally {
+    fs.mkdirSync = originalMkdir;
+  }
+
+  const after = ctx.store.getImageUploadBatch(batch.batchId);
+  assert.equal(after.status, 'pending', 'storage failure must keep batch pending, not rejected');
+  assert.ok(after.leaseToken, 'pending batch keeps lease for retry');
+
+  let residue = [];
+
+  if (fs.existsSync(path.join(ctx.uploadsDir, '.tmp', batch.batchId))) {
+    residue = fs.readdirSync(path.join(ctx.uploadsDir, '.tmp', batch.batchId), { recursive: true });
+  }
+
+  assert.equal(residue.length, 0, 'own token attempt must be cleaned on storage failure');
+});

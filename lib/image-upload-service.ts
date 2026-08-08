@@ -257,7 +257,7 @@ export class ImageUploadService {
     if (validationErrors.length > 0) {
       const first = validationErrors[0];
       this.rejectPendingBatch(batch.batchId, first.code, first.reason);
-      this.cleanupUploadArtifacts(batch.batchId);
+      this.cleanupUploadArtifacts(batch.batchId, leaseToken);
       return {
         kind: 'error',
         statusCode: 400,
@@ -266,7 +266,7 @@ export class ImageUploadService {
       };
     }
 
-    const tempDir = path.join(this.uploadsDir, '.tmp', batch.batchId);
+    const tempDir = path.join(this.uploadsDir, '.tmp', batch.batchId, leaseToken);
     const finalDir = path.join(this.uploadsDir, batch.batchId);
 
     try {
@@ -280,12 +280,10 @@ export class ImageUploadService {
         fs.writeFileSync(path.join(tempDir, writtenName), candidate.content);
       }
 
-      this.cleanupDirectory(finalDir);
       fs.mkdirSync(path.dirname(finalDir), { recursive: true });
       fs.renameSync(tempDir, finalDir);
     } catch (error) {
-      this.cleanupUploadArtifacts(batch.batchId);
-      this.rejectPendingBatch(batch.batchId, 'STORAGE_FAILURE', String((error as Error).message || error));
+      this.cleanupUploadArtifacts(batch.batchId, leaseToken);
       return {
         kind: 'error',
         statusCode: 500,
@@ -295,6 +293,7 @@ export class ImageUploadService {
     }
 
     const nowIso = new Date().toISOString();
+    const children = [];
 
     for (let i = 0; i < candidates.length; i += 1) {
       const candidate = candidates[i];
@@ -303,7 +302,7 @@ export class ImageUploadService {
       const safeFileName = this.normalizeFileName(candidate.fileName);
       const storedPath = `/uploads/${batch.batchId}/${i}-${safeFileName}`;
 
-      this.store.insertImageUpload({
+      children.push({
         imageId: randomUUID(),
         batchId: batch.batchId,
         slot: i,
@@ -313,40 +312,43 @@ export class ImageUploadService {
         width: header ? header.width : null,
         height: header ? header.height : null,
         sizeBytes: candidate.content.length,
-        createdAt: nowIso,
       });
     }
 
-    const childCount = this.store.countImageUploadsByBatch(batch.batchId);
-    const completed = this.store.completeImageUploadBatch(batch.batchId, leaseToken, nowIso);
+    try {
+      this.store.finalizeImageUploadBatch({
+        batchId: batch.batchId,
+        leaseToken,
+        completedAt: nowIso,
+        children,
+      });
+    } catch (error) {
+      const code = (error as any).code || '';
 
-    if (!completed) {
-      this.cleanupUploadArtifacts(batch.batchId);
-      return {
-        kind: 'in_progress',
-        retryAfterMs: UPLOAD_RETRY_AFTER_MS,
-      };
+      if (code === 'IMAGE_BATCH_FENCED') {
+        this.cleanupUploadArtifacts(batch.batchId, leaseToken);
+        return {
+          kind: 'in_progress',
+          retryAfterMs: UPLOAD_RETRY_AFTER_MS,
+        };
+      }
+
+      throw error;
     }
 
-    if (childCount !== candidates.length) {
-      this.rejectPendingBatch(batch.batchId, 'CHILD_COUNT_MISMATCH', 'Expected child count mismatch');
-      this.cleanupUploadArtifacts(batch.batchId);
-      return {
-        kind: 'error',
-        statusCode: 500,
-        code: 'CHILD_COUNT_MISMATCH',
-        reason: 'Expected child count mismatch',
-      };
-    }
-
-    const children = this.store.listImageUploadsByBatch(batch.batchId);
+    const completedChildren = this.store.listImageUploadsByBatch(batch.batchId);
     return {
       kind: 'ok',
-      images: children.map((child: any) => ({ imageId: child.imageId })),
+      images: completedChildren.map((child: any) => ({ imageId: child.imageId })),
     };
   }
 
-  cleanupUploadArtifacts(batchId: string) {
+  cleanupUploadArtifacts(batchId: string, leaseToken?: string) {
+    if (leaseToken) {
+      this.cleanupDirectory(path.join(this.uploadsDir, '.tmp', batchId, leaseToken));
+      return;
+    }
+
     this.cleanupDirectory(path.join(this.uploadsDir, '.tmp', batchId));
     this.cleanupDirectory(path.join(this.uploadsDir, batchId));
   }

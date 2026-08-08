@@ -13,6 +13,7 @@ function normalizeBatchRow(row: any) {
     leaseToken: row.lease_token,
     leaseExpiresAt: row.lease_expires_at,
     rejectedReason: row.rejected_reason,
+    consumedAt: row.consumed_at,
     createdAt: row.created_at,
     completedAt: row.completed_at,
   };
@@ -57,9 +58,10 @@ export class ImageUploadRepository {
   purgeByConversationStatement: any;
   purgeBatchesByConversationStatement: any;
   countChildrenByBatchStatement: any;
-  listStagedExpiredStatement: any;
-  listByConversationStatement: any;
-  getChildStatement: any;
+    listStagedExpiredStatement: any;
+    listByConversationStatement: any;
+    getChildStatement: any;
+    markBatchConsumedStatement: any;
 
   constructor(db: any) {
     this.db = db;
@@ -159,6 +161,11 @@ export class ImageUploadRepository {
       SELECT *
       FROM image_uploads
       WHERE batch_id IN (SELECT batch_id FROM image_upload_batches WHERE conversation_id = ?)
+    `);
+    this.markBatchConsumedStatement = db.prepare(`
+      UPDATE image_upload_batches
+      SET consumed_at = ?
+      WHERE batch_id = ? AND status = 'complete'
     `);
   }
 
@@ -289,6 +296,11 @@ export class ImageUploadRepository {
 
   listByConversation(conversationId: string) {
     return this.listByConversationStatement.all(conversationId).map(normalizeUploadRow);
+  }
+
+  markBatchConsumed(batchId: string, consumedAt: string) {
+    const result = this.markBatchConsumedStatement.run(consumedAt, batchId);
+    return result.changes > 0;
   }
 
   deleteChild(imageId: string) {

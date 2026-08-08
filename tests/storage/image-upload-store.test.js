@@ -398,3 +398,111 @@ test('staged expired uploads are listed for GC', (t) => {
   const notExpired = store.listStagedImageUploadsExpired(freshThreshold);
   assert.equal(notExpired.some((row) => row.imageId === 'i2'), false, 'fresh staged upload must not be GC-listed');
 });
+
+test('finalizeImageUploadBatch is single-transaction: stale worker rollback leaves no child rows', (t) => {
+  const store = createStore();
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(store.__tempDir, { recursive: true, force: true });
+  });
+
+  const conversationId = createConversation(store);
+  const batch = store.createImageUploadBatch({
+    conversationId,
+    clientRequestId: 'req-1',
+    requestFingerprint: 'fp-1',
+    expectedCount: 2,
+  });
+
+  assert.throws(() => {
+    store.finalizeImageUploadBatch({
+      batchId: batch.batchId,
+      leaseToken: 'stale-token',
+      completedAt: new Date().toISOString(),
+      children: [
+        { imageId: 'i1', slot: 0, storedPath: '/uploads/i1.png' },
+        { imageId: 'i2', slot: 1, storedPath: '/uploads/i2.png' },
+      ],
+    });
+  }, (error) => error && error.code === 'IMAGE_BATCH_FENCED');
+
+  assert.equal(
+    store.countImageUploadsByBatch(batch.batchId),
+    0,
+    'stale worker commit must roll back child rows in the same transaction'
+  );
+
+  const after = store.getImageUploadBatch(batch.batchId);
+  assert.equal(after.status, 'pending', 'batch must remain pending after fenced commit rollback');
+});
+
+test('finalizeImageUploadBatch completes with owner lease token', (t) => {
+  const store = createStore();
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(store.__tempDir, { recursive: true, force: true });
+  });
+
+  const conversationId = createConversation(store);
+  const batch = store.createImageUploadBatch({
+    conversationId,
+    clientRequestId: 'req-1',
+    requestFingerprint: 'fp-1',
+    expectedCount: 2,
+  });
+
+  const finalized = store.finalizeImageUploadBatch({
+    batchId: batch.batchId,
+    leaseToken: batch.leaseToken,
+    completedAt: new Date().toISOString(),
+    children: [
+      { imageId: 'i1', slot: 0, storedPath: '/uploads/i1.png' },
+      { imageId: 'i2', slot: 1, storedPath: '/uploads/i2.png' },
+    ],
+  });
+
+  assert.equal(finalized.status, 'complete');
+  assert.ok(finalized.completedAt);
+  assert.equal(finalized.leaseToken, null);
+  assert.equal(store.countImageUploadsByBatch(batch.batchId), 2);
+});
+
+test('markImageUploadBatchConsumed only marks complete batches', (t) => {
+  const store = createStore();
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(store.__tempDir, { recursive: true, force: true });
+  });
+
+  const conversationId = createConversation(store);
+  const pending = store.createImageUploadBatch({
+    conversationId,
+    clientRequestId: 'req-pending',
+    requestFingerprint: 'fp-p',
+    expectedCount: 1,
+  });
+
+  const marked = store.markImageUploadBatchConsumed(pending.batchId, new Date().toISOString());
+  assert.equal(marked, false, 'pending batch must not be marked consumed');
+
+  const complete = store.createImageUploadBatch({
+    conversationId,
+    clientRequestId: 'req-complete',
+    requestFingerprint: 'fp-c',
+    expectedCount: 1,
+  });
+  store.completeImageUploadBatch(complete.batchId, complete.leaseToken, new Date().toISOString());
+
+  const consumedAt = new Date().toISOString();
+  const markedComplete = store.markImageUploadBatchConsumed(complete.batchId, consumedAt);
+  assert.equal(markedComplete, true, 'complete batch can be marked consumed');
+
+  const after = store.getImageUploadBatch(complete.batchId);
+  assert.equal(after.consumedAt, consumedAt);
+});

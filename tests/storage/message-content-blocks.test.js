@@ -248,3 +248,100 @@ test('createMessage rejects more than MAX_IMAGES_PER_MESSAGE images', (t) => {
     }
   );
 });
+
+test('createMessage rejects partial batch attach (must reference all staged children)', (t) => {
+  const store = createStore();
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(store.__tempDir, { recursive: true, force: true });
+  });
+
+  const conversationId = createConversation(store);
+  const batch = store.createImageUploadBatch({
+    conversationId,
+    clientRequestId: 'req-2up',
+    requestFingerprint: 'fp-2up',
+    expectedCount: 2,
+  });
+  store.insertImageUpload({
+    imageId: 'img-a',
+    batchId: batch.batchId,
+    slot: 0,
+    storedPath: `/uploads/${batch.batchId}/0-a.png`,
+  });
+  store.insertImageUpload({
+    imageId: 'img-b',
+    batchId: batch.batchId,
+    slot: 1,
+    storedPath: `/uploads/${batch.batchId}/1-b.png`,
+  });
+
+  assert.throws(
+    () => {
+      store.createMessage({
+        conversationId,
+        role: 'user',
+        senderName: 'You',
+        content: 'partial',
+        imageIds: ['img-a'],
+      });
+    },
+    (error) => {
+      assert.equal(error.code, 'IMAGE_PARTIAL_BATCH_ATTACH_REJECTED');
+      return true;
+    }
+  );
+
+  const after = store.listImageUploadsByIds(['img-a', 'img-b']);
+  assert.ok(after.every((row) => row.status === 'staged'), 'rejected partial attach must not consume any image');
+});
+
+test('createMessage whole-batch attach marks batch consumed', (t) => {
+  const store = createStore();
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(store.__tempDir, { recursive: true, force: true });
+  });
+
+  const conversationId = createConversation(store);
+  const batch = store.createImageUploadBatch({
+    conversationId,
+    clientRequestId: 'req-full',
+    requestFingerprint: 'fp-full',
+    expectedCount: 2,
+  });
+  store.insertImageUpload({
+    imageId: 'img-1',
+    batchId: batch.batchId,
+    slot: 0,
+    storedPath: `/uploads/${batch.batchId}/0-1.png`,
+  });
+  store.insertImageUpload({
+    imageId: 'img-2',
+    batchId: batch.batchId,
+    slot: 1,
+    storedPath: `/uploads/${batch.batchId}/1-2.png`,
+  });
+  store.completeImageUploadBatch(batch.batchId, batch.leaseToken, new Date().toISOString());
+
+  const message = store.createMessage({
+    conversationId,
+    role: 'user',
+    senderName: 'You',
+    content: 'full',
+    imageIds: ['img-1', 'img-2'],
+  });
+
+  assert.ok(message.id);
+
+  const after = store.getImageUploadBatch(batch.batchId);
+  assert.ok(after.consumedAt, 'fully attached batch must be marked consumed');
+
+  const children = store.listImageUploadsByIds(['img-1', 'img-2']);
+  assert.ok(children.every((row) => row.status === 'attached'));
+  assert.ok(children.every((row) => row.attachedMessageId === message.id));
+});

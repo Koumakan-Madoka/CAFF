@@ -1044,6 +1044,10 @@ export class ChatAppStore {
             imageError.message = 'One or more images are not staged or do not belong to this conversation';
             throw imageError;
           }
+
+          for (const batchId of payload.consumedBatchIds || []) {
+            this.imageUploadRepository.markBatchConsumed(batchId, createdAt);
+          }
         }
 
         this.conversationRepository.touch(payload.conversationId, {
@@ -1061,6 +1065,39 @@ export class ChatAppStore {
           payload.messageId,
           payload.attachedAt
         );
+      });
+
+      this.finalizeImageUploadBatchTransaction = this.db.transaction((payload: any) => {
+        const children = Array.isArray(payload.children) ? payload.children : [];
+
+        for (const child of children) {
+          this.insertImageUpload({
+            imageId: child.imageId || randomUUID(),
+            batchId: payload.batchId,
+            slot: child.slot,
+            fileName: child.fileName,
+            storedPath: child.storedPath,
+            mimeType: child.mimeType,
+            width: child.width,
+            height: child.height,
+            sizeBytes: child.sizeBytes,
+            createdAt: payload.completedAt,
+          });
+        }
+
+        const completed = this.imageUploadRepository.completeBatch(
+          payload.batchId,
+          payload.leaseToken,
+          payload.completedAt
+        );
+
+        if (!completed) {
+          const fencedError = new Error('Image upload batch fenced by another lease owner') as any;
+          fencedError.code = 'IMAGE_BATCH_FENCED';
+          throw fencedError;
+        }
+
+        return this.imageUploadRepository.getBatchById(payload.batchId);
       });
 
       this.recycleImageUploadsByMessageTransaction = this.db.transaction((payload: any) => {
@@ -2179,6 +2216,15 @@ export class ChatAppStore {
     );
   }
 
+  finalizeImageUploadBatch(payload: any = {}) {
+    return this.finalizeImageUploadBatchTransaction({
+      batchId: String(payload.batchId || '').trim(),
+      leaseToken: String(payload.leaseToken || ''),
+      completedAt: payload.completedAt || nowIso(),
+      children: Array.isArray(payload.children) ? payload.children : [],
+    });
+  }
+
   rejectImageUploadBatch(batchId: any, reason: any, completedAt: any) {
     return this.imageUploadRepository.rejectBatch(
       String(batchId || ''),
@@ -2216,6 +2262,10 @@ export class ChatAppStore {
 
   countImageUploadsByBatch(batchId: any) {
     return this.imageUploadRepository.countChildrenByBatch(String(batchId || ''));
+  }
+
+  markImageUploadBatchConsumed(batchId: any, consumedAt: any) {
+    return this.imageUploadRepository.markBatchConsumed(String(batchId || ''), consumedAt || nowIso());
   }
 
   listStagedImageUploadsExpired(now: any) {
@@ -2549,6 +2599,7 @@ export class ChatAppStore {
     }
 
     let imageRows: any[] = [];
+    let consumedBatchIdsForMessage: Array<string> = [];
     let nextMetadata = metadata;
 
     if (imageIds.length > 0) {
@@ -2576,7 +2627,42 @@ export class ChatAppStore {
         throw alreadyAttachedError;
       }
 
+      const consumedBatchIds: Array<string> = [];
+      const byBatch = new Map<string, Array<any>>();
+
+      for (const row of ownedByConversation) {
+        const batchId = row.batchId;
+        const group = byBatch.get(batchId) || [];
+        group.push(row);
+        byBatch.set(batchId, group);
+      }
+
+      for (const [batchId, referencedChildren] of byBatch) {
+        const batch = this.imageUploadRepository.getBatchById(batchId);
+
+        if (!batch) {
+          const missingBatchError = new Error('Image batch does not exist') as any;
+          missingBatchError.statusCode = 400;
+          missingBatchError.code = 'IMAGE_NOT_FOUND';
+          throw missingBatchError;
+        }
+
+        const stagedChildren = this.imageUploadRepository.listChildrenByBatch(batchId);
+
+        if (stagedChildren.length !== referencedChildren.length) {
+          const partialBatchError = new Error(
+            'Message must reference all staged images of an upload batch; partial batch attach is rejected'
+          ) as any;
+          partialBatchError.statusCode = 400;
+          partialBatchError.code = 'IMAGE_PARTIAL_BATCH_ATTACH_REJECTED';
+          throw partialBatchError;
+        }
+
+        consumedBatchIds.push(batchId);
+      }
+
       imageRows = ownedByConversation;
+      consumedBatchIdsForMessage = consumedBatchIds;
       nextMetadata = {
         ...metadata,
         contentBlocks: deriveMessageContentBlocks(payload.content, imageRows),
@@ -2601,6 +2687,7 @@ export class ChatAppStore {
       errorMessage: String(payload.errorMessage || '').trim(),
       metadata: nextMetadata,
       imageIds,
+      consumedBatchIds: consumedBatchIdsForMessage,
       createdAt: payload.createdAt,
     });
   }

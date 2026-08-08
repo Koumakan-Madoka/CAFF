@@ -775,6 +775,7 @@ CREATE TABLE IF NOT EXISTS image_upload_batches (
   lease_token TEXT,
   lease_expires_at TEXT,
   rejected_reason TEXT,
+  consumed_at TEXT,
   created_at TEXT NOT NULL,
   completed_at TEXT,
   UNIQUE(conversation_id, client_request_id),
@@ -837,6 +838,8 @@ CREATE INDEX IF NOT EXISTS idx_image_uploads_status ON image_uploads (status);
 
   ensureChatConversationLineageSchema(db);
   ensureCrossConversationDeliverySchema(db);
+
+  ensureColumn(db, 'image_upload_batches', 'consumed_at', 'consumed_at TEXT');
 
   ensureChatMessageSearchSchema(db);
   ensureChatMemoryCardSchema(db);
