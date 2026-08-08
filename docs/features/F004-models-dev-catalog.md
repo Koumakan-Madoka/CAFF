@@ -34,6 +34,7 @@ Baseline: `origin/main@092938a` (2026-08-06).
 - Preserve every upstream `env[]` name for display. Key-like variables are identified only by a provider-specific allowlist; values are never read, uploaded, or persisted. Non-key parameters remain blank/manual.
 - Map models to CAFF’s seven families through an explicit table. Unmapped values remain unclassified.
 - Keep catalog metadata/provenance in a separate cache and expose it through an import-oriented API. An explicit operator save is the only path that writes `models.json`.
+- Preserve provider and model display names as separate catalog fields: importing a model may set the provider title from the catalog provider name, while the reviewed model name applies only to the model entry.
 - In the UI, render catalog metadata and Pi runtime controls in separate sections; unsupported `reasoning_options`, cost, limits, or modalities must not be presented as executable CAFF controls.
 
 ### Phase P2 — Optional online refresh

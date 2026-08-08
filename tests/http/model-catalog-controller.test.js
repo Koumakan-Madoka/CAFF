@@ -157,6 +157,23 @@ test('catalog import writes only reviewed provider fields and preserves existing
   assert.equal(persisted.providers.openai.models[0].reasoning, true);
 });
 
+test('catalog import uses the catalog provider name for a new provider', async (t) => {
+  const { agentDir, controller } = createHarness(t, {
+    initialDocument: { providers: {} },
+  });
+  const response = await invoke(controller, {
+    method: 'POST',
+    pathname: '/api/model-catalog/import',
+    headers: mutationHeaders(),
+    body: { providerId: 'openai', modelId: 'gpt-5/pro' },
+  });
+
+  assert.equal(response.statusCode, 200);
+  const persisted = JSON.parse(fs.readFileSync(path.join(agentDir, 'models.json'), 'utf8'));
+  assert.equal(persisted.providers.openai.name, 'OpenAI');
+  assert.equal(persisted.providers.openai.models[0].name, 'GPT-5 Pro');
+});
+
 test('catalog import rejects unknown provider or model without touching models.json', async (t) => {
   const { agentDir, controller } = createHarness(t);
   const before = fs.readFileSync(path.join(agentDir, 'models.json'), 'utf8');

@@ -93,6 +93,7 @@ test('catalog env projection uses provider-specific key allowlists and never rea
     { name: 'OPENAI_ORG_ID', kind: 'parameter', required: false },
   ]);
   assert.equal(JSON.stringify(projected).includes('secret'), false);
+  assert.equal(projected.providerName, 'OpenAI');
   assert.equal(projected.dialect, 'openai-responses');
   assert.equal(projected.manualConfigurationRequired, false);
 });

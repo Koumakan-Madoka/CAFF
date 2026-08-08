@@ -149,6 +149,7 @@ test('catalog import wizard lists providers, filters by search, and keeps catalo
   const controls = session.document.getElementById('catalog-import-controls');
   assert.ok(controls, 'import controls section exists');
   assert.equal(controls.contains(metadata), false, 'metadata is not nested inside runtime controls');
+  assert.match(controls.textContent, /模型显示名称/u);
   assert.equal(session.input('catalog-import-name').value, 'GPT-5');
   assert.equal(session.input('catalog-import-base-url').value, 'https://api.openai.com/v1');
   assert.equal(session.input('catalog-import-confirm').disabled, false);
