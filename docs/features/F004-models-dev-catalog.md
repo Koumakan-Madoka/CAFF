@@ -8,7 +8,7 @@ created: 2026-08-06
 
 # F004: models.dev Catalog and Runtime-Safe Provider Import
 
-> **Status**: in-progress (P1 merged across #57/#58; provider-only acceptance fix merged in #59; configured-provider identity fix merged in #60; P2/P3 remain) | **Owner**: @cat-ir4rwo6b | **Priority**: P1
+> **Status**: in-progress (P1 merged across #57/#58; provider-only acceptance fix merged in #59; configured-provider identity fix merged in #60; catalog provider/model naming fix merged in #61; P2/P3 remain) | **Owner**: @cat-ir4rwo6b | **Priority**: P1
 
 ## Why
 
@@ -145,6 +145,7 @@ Why: this extends the existing provider/configuration ownership cell and does no
 | 2026-08-07 | Fixed catalog search caret loss after provider-list rerenders; added a regression test preserving selection range and direction. |
 | 2026-08-08 | Acceptance follow-up merged (PR #59, squash `b9c5af0`): catalog search now matches provider id/name only and filters the loaded 180-provider DOM in place; focused 6/6, browser 13/13 (`catalogRequests=1->1`, `inputStable=true`), typecheck/test:fast, and cross-provider fallback review passed. |
 | 2026-08-08 | Configured-provider identity hotfix merged (PR #60, squash `09f51fb`): configured-provider cards now show the stable provider ID instead of the runtime API dialect; behavior-level regression, isolated Edge acceptance, full gate, CI, and cross-provider fallback review passed. |
+| 2026-08-08 | Catalog provider-display-name hotfix merged (PR #61, squash `9ca33d1`): catalog import now persists provider `Kimi For Coding` separately from model `Kimi K3-256K`; focused 19/19, full npm gate, CI, isolated acceptance, and cross-provider fallback review passed. |
 
 ## Review Gate
 
