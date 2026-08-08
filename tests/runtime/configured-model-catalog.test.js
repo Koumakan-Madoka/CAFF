@@ -11,6 +11,7 @@ function runtimeModels() {
       id: 'gpt-5.4',
       name: 'GPT 5.4',
       supportedThinkingLevels: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'],
+      input: ['text', 'image'],
     },
     {
       provider: 'anthropic',
@@ -31,7 +32,7 @@ function providerDocument() {
   return {
     providers: {
       openai: {
-        models: [{ id: 'gpt-5.4', name: 'Configured GPT', family: 'gpt' }],
+        models: [{ id: 'gpt-5.4', name: 'Configured GPT', family: 'gpt', input: ['text', 'image'] }],
       },
       custom: {
         baseUrl: 'https://custom.example/v1',
@@ -62,6 +63,7 @@ test('configured model catalog exposes configured models and the exact runtime d
     family: 'gpt',
     familySource: 'explicit',
     supportedThinkingLevels: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'],
+    input: ['text', 'image'],
   });
   assert.deepEqual(options.find((option) => option.key === 'custom\u001fmystery-1'), {
     key: 'custom\u001fmystery-1',
@@ -73,6 +75,7 @@ test('configured model catalog exposes configured models and the exact runtime d
     family: 'qwen',
     familySource: 'explicit',
     supportedThinkingLevels: ['off'],
+    input: ['text'],
   });
   assert.equal(options.find((option) => option.key === 'moonshotai\u001fkimi-k2.5'), undefined);
   assert.deepEqual(options.find((option) => option.key === 'anthropic\u001fclaude-opus-4-7'), {
@@ -85,7 +88,19 @@ test('configured model catalog exposes configured models and the exact runtime d
     family: 'claude',
     familySource: 'provider_alias',
     supportedThinkingLevels: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+    input: ['text'],
   });
+});
+
+test('configured model catalog exposes runtime input capability as the single truth source for unknown models', () => {
+  const catalog = createConfiguredModelCatalog({
+    loadRuntimeModels: () => [{ provider: 'google', id: 'gemini-vision', input: ['text', 'image'] }],
+    readProviderDocument: () => ({ providers: {} }),
+    readRuntimeDefault: () => ({ provider: 'google', model: 'gemini-vision' }),
+  });
+
+  const option = catalog.getOptions().find((entry) => entry.key === 'google\u001fgemini-vision');
+  assert.deepEqual(option.input, ['text', 'image']);
 });
 
 test('configured model catalog caches snapshots until explicit invalidation', () => {

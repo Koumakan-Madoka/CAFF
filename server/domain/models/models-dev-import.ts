@@ -209,6 +209,20 @@ export function mapCatalogFamily(rawFamily: any): string | undefined {
   return FAMILY_ALIASES.get(text(rawFamily).toLowerCase());
 }
 
+export function projectModelInputCapabilities(value: any): Array<'text' | 'image'> | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const allowed = new Set(['text', 'image']);
+  const entries = value
+    .map((entry) => text(entry))
+    .filter((entry) => allowed.has(entry)) as Array<'text' | 'image'>;
+  if (entries.length === 0) {
+    return undefined;
+  }
+  return [...new Set(entries)];
+}
+
 export function validateCatalogProvenance(provenance: any) {
   if (!isPlainObject(provenance)) {
     throw new ModelCatalogError('catalog_provenance_invalid', 'provenance');
@@ -235,6 +249,8 @@ export function projectCatalogModel(document: any, providerId: string, modelId: 
   const envNames = Array.isArray(provider.env) ? provider.env : [];
   const family = mapCatalogFamily(merged.model.family);
   const dialect = resolveDialect(merged.provider);
+  const rawModalities = isPlainObject(merged.model.modalities) ? merged.model.modalities : undefined;
+  const rawInput = Array.isArray(rawModalities?.input) ? rawModalities.input : undefined;
 
   return {
     providerId: id,
@@ -246,6 +262,7 @@ export function projectCatalogModel(document: any, providerId: string, modelId: 
     familyStatus: family ? 'mapped' as const : 'unclassified' as const,
     env: envNames.map((name: string) => classifyCatalogEnv(id, name)),
     manualConfigurationRequired: !dialect,
+    input: rawInput ? projectModelInputCapabilities(rawInput) : undefined,
     catalogMetadata: {
       modalities: clone(merged.model.modalities),
       reasoningOptions: clone(merged.model.reasoning_options ?? merged.model.reasoningOptions),

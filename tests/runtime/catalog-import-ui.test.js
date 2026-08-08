@@ -55,6 +55,7 @@ function projectionFor(providerId, modelId) {
       ? [{ name: 'AZURE_API_KEY', kind: 'parameter', required: false }, { name: 'AZURE_RESOURCE_NAME', kind: 'parameter', required: false }]
       : [{ name: 'OPENAI_API_KEY', kind: 'key', required: true }],
     manualConfigurationRequired: false,
+    input: azure ? undefined : ['text'],
     catalogMetadata: {
       modalities: { input: ['text'], output: ['text'] },
       reasoningOptions: { effort: ['low', 'high'] },
@@ -215,6 +216,7 @@ test('catalog import confirm posts only the allowed import fields and never env 
     name: '我的 Azure GPT',
     baseUrl: 'https://example.openai.azure.com',
     reasoning: true,
+    input: ['text'],
   });
   assert.equal(bodyText.includes('AZURE_API_KEY'), false, 'env names are not submitted');
   assert.equal(bodyText.includes('apiKey'), false, 'no apiKey field submitted');

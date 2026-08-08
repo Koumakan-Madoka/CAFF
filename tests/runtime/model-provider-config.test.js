@@ -87,6 +87,7 @@ test('provider projection is credential-blind for keys, references, commands, an
             baseUrl: '',
             family: 'deepseek',
             reasoning: true,
+            input: ['text'],
             hasCustomHeaders: true,
           },
         ],
@@ -289,6 +290,88 @@ test('provider and model protocols allow extension APIs but reject malformed str
         error.path === expectedPath
     );
   }
+});
+
+test('model input capability field validates only legal text/image arrays', () => {
+  assert.doesNotThrow(() => validateModelProviderDocument({
+    providers: {
+      vision: {
+        models: [
+          { id: 'vision-model', input: ['text', 'image'] },
+          { id: 'text-model', input: ['text'] },
+        ],
+      },
+    },
+  }));
+
+  for (const [badInput, expectedPath] of [
+    ['text', 'providers.vision.models[0].input'],
+    [['text', 'video'], 'providers.vision.models[0].input'],
+    [[42], 'providers.vision.models[0].input'],
+  ]) {
+    assert.throws(
+      () => validateModelProviderDocument({
+        providers: { vision: { models: [{ id: 'vision-model', input: badInput }] } },
+      }),
+      (error) =>
+        error instanceof ModelProviderConfigError &&
+        error.code === 'provider_model_input_invalid' &&
+        error.path === expectedPath
+    );
+  }
+});
+
+test('model input capability field projects into the credential-blind view', () => {
+  const projected = projectModelProviderDocument({
+    providers: {
+      vision: {
+        models: [
+          { id: 'vision-model', input: ['text', 'image'] },
+          { id: 'text-model' },
+        ],
+      },
+    },
+  });
+
+  assert.deepEqual(projected.providers[0].models, [
+    { id: 'vision-model', name: '', api: '', baseUrl: '', family: '', reasoning: false, hasCustomHeaders: false, input: ['text', 'image'] },
+    { id: 'text-model', name: '', api: '', baseUrl: '', family: '', reasoning: false, hasCustomHeaders: false, input: ['text'] },
+  ]);
+});
+
+test('model input capability field is preserved and editable through patches', () => {
+  const raw = providerFixture();
+  raw.providers.deepseek.models[0].input = ['text', 'image'];
+
+  const next = patchModelProvider(raw, 'deepseek', {
+    models: [
+      {
+        id: 'deepseek-v3.2',
+        name: 'DeepSeek V3.2 Updated',
+        input: ['text'],
+      },
+    ],
+  });
+  assert.deepEqual(next.providers.deepseek.models[0].input, ['text']);
+  assert.deepEqual(next.providers.deepseek.models[0].cost, raw.providers.deepseek.models[0].cost);
+
+  const mergeResult = patchModelProvider(raw, 'deepseek', {
+    models: [{ id: 'deepseek-v3.2', name: 'Name Only' }],
+  });
+  assert.deepEqual(mergeResult.providers.deepseek.models[0].input, ['text', 'image']);
+});
+
+test('model input capability field rejects illegal arrays on patch', () => {
+  const raw = providerFixture();
+  assert.throws(
+    () => patchModelProvider(raw, 'deepseek', {
+      models: [{ id: 'deepseek-v3.2', input: 'image' }],
+    }),
+    (error) =>
+      error instanceof ModelProviderConfigError &&
+      error.code === 'provider_model_input_invalid' &&
+      error.path === 'providers.deepseek.models[0].input'
+  );
 });
 
 test('provider patch removes blank optional Pi fields instead of persisting schema-invalid empty strings', () => {

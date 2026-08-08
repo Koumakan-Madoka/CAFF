@@ -104,6 +104,7 @@
             <label><span>显示名称</span><input id="catalog-import-name" value="${utils.escapeHtml(projection.name || '')}" /></label>
             <label><span>Base URL</span><input id="catalog-import-base-url" value="${utils.escapeHtml(projection.baseUrl || '')}" inputmode="url" /></label>
             <label class="provider-model-reasoning"><input id="catalog-import-reasoning" type="checkbox" />支持 reasoning</label>
+            <label class="provider-model-reasoning"><input id="catalog-import-input-image" type="checkbox" ${projection.input && projection.input.includes('image') ? 'checked' : ''} />支持图片输入</label>
           </div>
           <div class="management-actions"><button id="catalog-import-confirm" type="button" ${manual || importPending || !options.isEnabled() ? 'disabled' : ''}>确认导入</button></div>
         </section>`;
@@ -149,6 +150,7 @@
       if (name) body.name = name;
       if (baseUrl) body.baseUrl = baseUrl;
       if (input('catalog-import-reasoning').checked) body.reasoning = true;
+      body.input = input('catalog-import-input-image').checked ? ['text', 'image'] : ['text'];
       try {
         await options.fetchJson('/api/model-catalog/import', { method: 'POST', body, headers: adminHeaders() });
         options.showToast(`已导入 ${projection.providerId} / ${projection.modelId}；密钥请在供应商编辑中填写`);

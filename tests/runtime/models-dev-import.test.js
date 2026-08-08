@@ -157,3 +157,48 @@ test('catalog-only metadata is preserved as read-only metadata', () => {
     limit: { context: 200000, output: 8192 },
   });
 });
+
+test('catalog import projects modalities.input into a CAFF input capability array', () => {
+  const projected = projectCatalogModel(catalogFixture(), 'openai', 'gpt-5', {
+    provenance: {
+      kind: 'vendored',
+      sourceUrl: 'https://models.dev/api.json',
+      payloadSha256: 'hash',
+      fetchedAt: '2026-08-06T00:00:00.000Z',
+    },
+  });
+
+  assert.deepEqual(projected.input, ['text']);
+});
+
+test('catalog import projects vision models into an input capability that includes image', () => {
+  const raw = catalogFixture();
+  raw.openai.models['gpt-5'].modalities = { input: ['text', 'image'], output: ['text'] };
+
+  const projected = projectCatalogModel(raw, 'openai', 'gpt-5', {
+    provenance: {
+      kind: 'vendored',
+      sourceUrl: 'https://models.dev/api.json',
+      payloadSha256: 'hash',
+      fetchedAt: '2026-08-06T00:00:00.000Z',
+    },
+  });
+
+  assert.deepEqual(projected.input, ['text', 'image']);
+});
+
+test('catalog import leaves input capability absent when catalog declares no modalities', () => {
+  const raw = catalogFixture();
+  delete raw.openai.models['gpt-5'].modalities;
+
+  const projected = projectCatalogModel(raw, 'openai', 'gpt-5', {
+    provenance: {
+      kind: 'vendored',
+      sourceUrl: 'https://models.dev/api.json',
+      payloadSha256: 'hash',
+      fetchedAt: '2026-08-06T00:00:00.000Z',
+    },
+  });
+
+  assert.equal(projected.input, undefined);
+});
