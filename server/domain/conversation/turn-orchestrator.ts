@@ -1263,6 +1263,24 @@ export function createTurnOrchestrator(options: any = {}) {
       throw createHttpError(409, 'Cross-conversation delivery target message does not match persisted intent');
     }
 
+    const deliveryImageBlocks = Array.isArray(targetMessage.contentBlocks)
+      ? targetMessage.contentBlocks.filter((block: any) => block && block.type === 'image')
+      : [];
+    if (deliveryImageBlocks.length > 0) {
+      throw createHttpError(
+        422,
+        '跨会话消息投递暂不支持图片：图片不剥离、不降级，请改用文本或直接在当前会话发送图片。',
+        {
+          code: 'IMAGE_DELIVERY_NOT_SUPPORTED',
+          issues: [{
+            code: 'IMAGE_DELIVERY_NOT_SUPPORTED',
+            path: 'targetMessage.contentBlocks',
+            imageCount: deliveryImageBlocks.length,
+          }],
+        }
+      );
+    }
+
     const crossConversation = targetMessage.metadata && targetMessage.metadata.crossConversation
       && typeof targetMessage.metadata.crossConversation === 'object'
       ? targetMessage.metadata.crossConversation
