@@ -589,6 +589,7 @@ export function createServerApp(options: any = {}) {
     piCapabilityExtensionPath,
     browserCliPath,
     resolveRuntimeParticipants: roleService.resolveRuntimeParticipants,
+    modelCatalog,
     executeConversationAgent: options.executeConversationAgent,
     async onAssistantMessageCompleted(message: any) {
       await maybeAutoCreateDigestAfterAssistantMessage(message);

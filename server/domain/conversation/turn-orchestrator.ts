@@ -14,6 +14,7 @@ const {
 const { getAgentById, extractMentionedAgentIds, resolveTurnExecutionMode } = require('./mention-routing');
 const { buildAgentTurnPrompt, sanitizePromptMentions } = require('./turn/agent-prompt');
 const { createAgentExecutor } = require('./turn/agent-executor');
+const { assertImagePreflightForTargets } = require('./turn/image-preflight');
 const { createSessionExporter } = require('./turn/session-export');
 const { createTurnEventEmitter } = require('./turn/turn-events');
 const { createRuntimePayloadBuilder } = require('./turn/turn-runtime-payload');
@@ -69,6 +70,7 @@ export function createTurnOrchestrator(options: any = {}) {
   const getProjectDir = typeof options.getProjectDir === 'function' ? options.getProjectDir : null;
   const agentToolBridge = options.agentToolBridge;
   const broadcastEvent = typeof options.broadcastEvent === 'function' ? options.broadcastEvent : () => {};
+  const modelCatalog = options.modelCatalog;
   const broadcastConversationSummary =
     typeof options.broadcastConversationSummary === 'function' ? options.broadcastConversationSummary : () => {};
   const broadcastRuntimeState = typeof options.broadcastRuntimeState === 'function' ? options.broadcastRuntimeState : () => {};
@@ -1415,6 +1417,10 @@ export function createTurnOrchestrator(options: any = {}) {
       ...storedConversation,
       agents: resolveRuntimeParticipants(storedConversation.agents),
     };
+
+    if (Array.isArray(turnInput.imageIds) && turnInput.imageIds.length > 0) {
+      assertImagePreflightForTargets(turnInput, conversation, { modelCatalog });
+    }
 
     ensureQueueState(conversationId);
 
