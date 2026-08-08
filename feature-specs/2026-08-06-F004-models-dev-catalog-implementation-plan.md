@@ -60,8 +60,10 @@ type ModelCatalogDocument = {
 
 type ImportProjection = {
   providerId: string;
+  providerName: string;
   modelId: string;
-  caffDialect?: 'openai-responses' | 'openai-completions' | 'anthropic-messages' | 'google-generative-ai';
+  name: string;
+  dialect?: 'openai-responses' | 'openai-completions' | 'anthropic-messages' | 'google-generative-ai';
   family?: string;
   familyStatus: 'mapped' | 'unclassified';
   env: Array<{ name: string; kind: 'key' | 'parameter'; required: boolean }>;
@@ -136,6 +138,7 @@ Catalog discovery must never call `readModelProviderDocument` as a write-through
 - The P1 route contract is `GET /api/model-catalog` (provider/model index), `GET /api/model-catalog?providerId=<id>&modelId=<id>` (single projection), and `POST /api/model-catalog/import` (explicit import). Query parameters are used because model IDs may contain `/`.
 - The import body is restricted to `{ providerId, modelId, name?, baseUrl?, reasoning? }`; API keys, headers, env values, and arbitrary upstream fields are rejected.
 - API responses contain normalized projection and provenance, never env values, raw credentials, or unsupported runtime controls.
+- The projection keeps `providerName` separate from the model `name`; importing into a provider without a configured title uses `providerName`, while the reviewed `name` remains model-scoped.
 - Import writes through `model-provider-persistence.ts` only after request validation and operator confirmation semantics are satisfied.
 
 ## Task 5: Provider Editor Import UI — RED → GREEN

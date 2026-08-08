@@ -238,6 +238,7 @@ export function projectCatalogModel(document: any, providerId: string, modelId: 
 
   return {
     providerId: id,
+    providerName: text(provider.name) || id,
     modelId: text(modelId),
     name: text(merged.model.name) || text(modelId),
     dialect,

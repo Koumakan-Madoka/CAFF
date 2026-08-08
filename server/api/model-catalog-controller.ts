@@ -255,7 +255,7 @@ export function createModelCatalogController(options: any = {}): RouteHandler<Ap
           const existingBaseUrl = existingProvider && typeof existingProvider.baseUrl === 'string' ? existingProvider.baseUrl.trim() : '';
           const existingApi = existingProvider && typeof existingProvider.api === 'string' ? existingProvider.api.trim() : '';
           if (!existingName) {
-            patch.name = explicitName || projection.name;
+            patch.name = projection.providerName || projection.providerId;
           }
           if (explicitBaseUrl || !existingBaseUrl) {
             patch.baseUrl = explicitBaseUrl || projection.baseUrl;

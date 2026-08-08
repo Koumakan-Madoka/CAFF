@@ -101,7 +101,7 @@
           <div class="management-card-title"><div><h3>导入设置</h3><p>显式确认后才写入 models.json；不会提交密钥、header 或环境变量值。</p></div></div>
           ${manual ? '<p id="catalog-import-manual" class="management-warning"><strong>需手工配置</strong><p>该模型方言不在 CAFF 支持清单内，目录导入已关闭；请回到供应商编辑手工填写连接。</p></p>' : ''}
           <div class="field-grid">
-            <label><span>显示名称</span><input id="catalog-import-name" value="${utils.escapeHtml(projection.name || '')}" /></label>
+            <label><span>模型显示名称</span><input id="catalog-import-name" value="${utils.escapeHtml(projection.name || '')}" /></label>
             <label><span>Base URL</span><input id="catalog-import-base-url" value="${utils.escapeHtml(projection.baseUrl || '')}" inputmode="url" /></label>
             <label class="provider-model-reasoning"><input id="catalog-import-reasoning" type="checkbox" />支持 reasoning</label>
           </div>
