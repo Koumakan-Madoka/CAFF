@@ -533,6 +533,8 @@ export function createTurnOrchestrator(options: any = {}) {
         agentToolRelativePath,
         piCapabilityExtensionPath,
         browserCliPath,
+        modelCatalog,
+        uploadsDir: options.uploadsDir,
         onAssistantMessageCompleted: options.onAssistantMessageCompleted,
       });
   const baseExecuteConversationAgent = providedExecuteConversationAgent || agentExecutor.executeConversationAgent;

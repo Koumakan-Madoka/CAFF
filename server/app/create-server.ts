@@ -590,6 +590,7 @@ export function createServerApp(options: any = {}) {
     browserCliPath,
     resolveRuntimeParticipants: roleService.resolveRuntimeParticipants,
     modelCatalog,
+    uploadsDir,
     executeConversationAgent: options.executeConversationAgent,
     async onAssistantMessageCompleted(message: any) {
       await maybeAutoCreateDigestAfterAssistantMessage(message);

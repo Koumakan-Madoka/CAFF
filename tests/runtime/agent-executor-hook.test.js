@@ -81,6 +81,9 @@ function createFakeStore(conversation) {
     listVisibleMemoryCards() {
       return [];
     },
+    getMessage(messageId) {
+      return messages.find((item) => item.id === messageId) || null;
+    },
   };
 }
 
@@ -502,4 +505,197 @@ test('assistant completion hook broadcasts final message before blocking routing
     }),
     'completed turn progress should carry full final content while the hook is blocking routing'
   );
+});
+
+test('agent executor blocks a non-vision invocation with MODEL_NO_IMAGE_INPUT without calling startRun', async (t) => {
+  const tempDir = withTempDir('caff-agent-executor-image-block-');
+  const minimalPiPath = require.resolve('../../build/lib/minimal-pi');
+  const agentExecutorPath = require.resolve('../../build/server/domain/conversation/turn/agent-executor');
+  const turnStatePath = require.resolve('../../build/server/domain/conversation/turn/turn-state');
+  const minimalPi = require(minimalPiPath);
+  const originalStartRun = minimalPi.startRun;
+  let startRunCalled = false;
+
+  minimalPi.startRun = () => {
+    startRunCalled = true;
+    return createRunHandle('Done.');
+  };
+  delete require.cache[agentExecutorPath];
+
+  t.after(() => {
+    minimalPi.startRun = originalStartRun;
+    delete require.cache[agentExecutorPath];
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const { createAgentExecutor } = require(agentExecutorPath);
+  const { createTurnState } = require(turnStatePath);
+  const agent = {
+    id: 'agent-text-only',
+    name: 'Text Only',
+    description: 'Non-vision model.',
+    personaPrompt: 'Be brief.',
+    runtimeConfig: { provider: 'deepseek', model: 'deepseek-v3', thinking: 'off', personaPrompt: '', skillIds: [] },
+  };
+  const conversation = {
+    id: 'conversation-image-block',
+    title: 'Image Block',
+    type: 'standard',
+    agents: [agent],
+    metadata: {},
+  };
+  const store = createFakeStore(conversation);
+  const failedReplies = [];
+  const executor = createAgentExecutor({
+    store,
+    skillRegistry: { resolveSkills: () => [] },
+    modeStore: { get: () => null },
+    agentToolBridge: createFakeAgentToolBridge(),
+    agentDir: tempDir,
+    sqlitePath: path.join(tempDir, 'chat.sqlite'),
+    toolBaseUrl: 'http://127.0.0.1:3100',
+    agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+    modelCatalog: {
+      getOptions() {
+        return [{ provider: 'deepseek', model: 'deepseek-v3', input: ['text'] }];
+      },
+    },
+  });
+  const turnState = createTurnState(conversation, 'turn-image-block');
+
+  const result = await executor.executeConversationAgent({
+    runStore: createFakeRunStore(),
+    conversationId: conversation.id,
+    turnId: turnState.turnId,
+    rootTaskId: 'root-task-image-block',
+    conversation,
+    promptMessages: [{
+      id: 'user-message-with-image',
+      role: 'user',
+      content: 'what is this image',
+      contentBlocks: [
+        { type: 'text', text: 'what is this image' },
+        { type: 'image', imageId: 'img-1', url: '/uploads/batch-1/0-photo.png' },
+      ],
+      metadata: {},
+    }],
+    promptUserMessage: { id: 'user-message-with-image', role: 'user', content: 'what is this image' },
+    queueItem: { triggerType: 'user', enqueueReason: 'user_mentions' },
+    agent,
+    turnState,
+    completedReplies: [],
+    failedReplies,
+    routingMode: 'mention_queue',
+    hop: 1,
+    remainingSlots: 1,
+    enqueueAgent() {},
+    allowHandoffs: true,
+    finalStopsTurn: true,
+    projectDir: tempDir,
+  });
+
+  assert.equal(startRunCalled, false, 'startRun must not be called for a blocked invocation');
+  assert.equal(result.stopTurn, false, 'queue continues after the failed invocation');
+  assert.equal(failedReplies.length, 1);
+  assert.equal(failedReplies[0].status, 'failed');
+  assert.equal(failedReplies[0].metadata.invocationBlocks[0].code, 'MODEL_NO_IMAGE_INPUT');
+});
+
+test('agent executor passes projected images to startRun for a vision model', async (t) => {
+  const tempDir = withTempDir('caff-agent-executor-image-pass-');
+  const minimalPiPath = require.resolve('../../build/lib/minimal-pi');
+  const agentExecutorPath = require.resolve('../../build/server/domain/conversation/turn/agent-executor');
+  const turnStatePath = require.resolve('../../build/server/domain/conversation/turn/turn-state');
+  const minimalPi = require(minimalPiPath);
+  const originalStartRun = minimalPi.startRun;
+  let capturedImages = null;
+
+  minimalPi.startRun = (_provider, _model, _prompt, options) => {
+    capturedImages = options && options.images;
+    return createRunHandle('Done.');
+  };
+  delete require.cache[agentExecutorPath];
+
+  t.after(() => {
+    minimalPi.startRun = originalStartRun;
+    delete require.cache[agentExecutorPath];
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const { createAgentExecutor } = require(agentExecutorPath);
+  const { createTurnState } = require(turnStatePath);
+  const agent = {
+    id: 'agent-vision',
+    name: 'Vision',
+    description: 'Vision model.',
+    personaPrompt: 'Be brief.',
+    runtimeConfig: { provider: 'openai', model: 'gpt-5', thinking: 'off', personaPrompt: '', skillIds: [] },
+  };
+  const conversation = {
+    id: 'conversation-image-pass',
+    title: 'Image Pass',
+    type: 'standard',
+    agents: [agent],
+    metadata: {},
+  };
+  const store = createFakeStore(conversation);
+  const uploadsDir = path.join(tempDir, 'uploads');
+  fs.mkdirSync(path.join(uploadsDir, 'batch-1'), { recursive: true });
+  fs.writeFileSync(path.join(uploadsDir, 'batch-1', '0-photo.png'), Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex'));
+
+  const executor = createAgentExecutor({
+    store,
+    skillRegistry: { resolveSkills: () => [] },
+    modeStore: { get: () => null },
+    agentToolBridge: createFakeAgentToolBridge(),
+    agentDir: tempDir,
+    sqlitePath: path.join(tempDir, 'chat.sqlite'),
+    toolBaseUrl: 'http://127.0.0.1:3100',
+    agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+    modelCatalog: {
+      getOptions() {
+        return [{ provider: 'openai', model: 'gpt-5', input: ['text', 'image'] }];
+      },
+    },
+    uploadsDir,
+  });
+  const turnState = createTurnState(conversation, 'turn-image-pass');
+
+  await executor.executeConversationAgent({
+    runStore: createFakeRunStore(),
+    conversationId: conversation.id,
+    turnId: turnState.turnId,
+    rootTaskId: 'root-task-image-pass',
+    conversation,
+    promptMessages: [{
+      id: 'user-message-with-image',
+      role: 'user',
+      content: 'what is this image',
+      contentBlocks: [
+        { type: 'text', text: 'what is this image' },
+        { type: 'image', imageId: 'img-1', url: '/uploads/batch-1/0-photo.png' },
+      ],
+      metadata: {},
+    }],
+    promptUserMessage: { id: 'user-message-with-image', role: 'user', content: 'what is this image' },
+    queueItem: { triggerType: 'user', enqueueReason: 'user_mentions' },
+    agent,
+    turnState,
+    completedReplies: [],
+    failedReplies: [],
+    routingMode: 'mention_queue',
+    hop: 1,
+    remainingSlots: 1,
+    enqueueAgent() {},
+    allowHandoffs: true,
+    finalStopsTurn: true,
+    projectDir: tempDir,
+  });
+
+  assert.equal(capturedImages.length, 1);
+  assert.equal(capturedImages[0].type, 'image');
+  assert.equal(capturedImages[0].mimeType, 'image/png');
+  assert.ok(capturedImages[0].data.length > 0, 'image bytes are base64 encoded');
 });

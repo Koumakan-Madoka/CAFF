@@ -19,6 +19,7 @@ const {
 } = require('../mention-routing');
 const { ALWAYS_DYNAMIC_MODE_SKILL_IDS } = require('../../../../lib/mode-store');
 const { buildAgentTurnPromptSections, formatAgentTurnPromptSections, AGENT_PROMPT_VERSION } = require('./agent-prompt');
+const { buildInvocationImages } = require('./image-invocation');
 const { createAgentContextSnapshot } = require('./context-snapshot');
 const { markConversationRetrievalTraceUsage } = require('../retrieval-trace');
 const { extractSummaryMemorySearchTerms } = require('../../../../lib/summary-memory-query');
@@ -1139,6 +1140,8 @@ export function createAgentExecutor(options: any = {}) {
   const emitTurnProgress = typeof options.emitTurnProgress === 'function' ? options.emitTurnProgress : () => {};
   const agentDir = options.agentDir;
   const sqlitePath = options.sqlitePath;
+  const uploadsDir = String(options.uploadsDir || '').trim();
+  const modelCatalog = options.modelCatalog;
   const toolBaseUrl = String(options.toolBaseUrl || '').trim();
   const agentToolScriptPath = options.agentToolScriptPath;
   const agentToolRelativePath = String(options.agentToolRelativePath || './lib/agent-chat-tools.js').trim() || './lib/agent-chat-tools.js';
@@ -1238,6 +1241,26 @@ export function createAgentExecutor(options: any = {}) {
     };
     const promptSections = buildAgentTurnPromptSections(promptInput);
     const prompt = formatAgentTurnPromptSections(promptSections);
+    const readImageBytes = (block: any) => {
+      const url = String(block && block.url || '').trim();
+      if (!uploadsDir || !url.startsWith('/uploads/')) {
+        return null;
+      }
+      const filePath = path.join(uploadsDir, url.slice('/uploads'.length));
+      try {
+        return fs.readFileSync(filePath);
+      } catch {
+        return null;
+      }
+    };
+    const imageInvocation = buildInvocationImages({
+      promptMessages,
+      modelCatalog,
+      agent,
+      readImageBytes,
+    });
+    const imageBlock = imageInvocation.block;
+    const invocationImages = imageInvocation.images;
     const runtimeConfigResolved = Boolean(agent && agent.runtimeConfig && typeof agent.runtimeConfig === 'object');
     const provider = runtimeConfigResolved
       ? agentConfig.provider
@@ -1331,6 +1354,64 @@ export function createAgentExecutor(options: any = {}) {
     broadcastEvent('conversation_message_created', { conversationId, message: assistantMessage });
     broadcastConversationSummary(conversationId);
     emitTurnProgress(turnState);
+
+    if (imageBlock) {
+      const existingBlockedMessage = store.getMessage(assistantMessage.id);
+      const blockedMessage = store.updateMessage(assistantMessage.id, {
+        content: '',
+        status: 'failed',
+        taskId: stageTaskId,
+        errorMessage: imageBlock.reason,
+        metadata: {
+          ...queuedMetadata,
+          failure: true,
+          invocationBlocks: [{
+            code: imageBlock.code,
+            reason: imageBlock.reason,
+            ...(imageBlock.missingImageIds ? { missingImageIds: imageBlock.missingImageIds } : {}),
+          }],
+        },
+      });
+
+      stage.status = 'failed';
+      stage.runId = null;
+      stage.replyLength = 0;
+      stage.preview = clipText(imageBlock.reason, TURN_PREVIEW_LENGTH);
+      stage.errorMessage = imageBlock.reason;
+      stage.lastTextDeltaAt = null;
+      stage.endedAt = nowIso();
+      applyStageCurrentTool(stage, null);
+
+      if (!Boolean(turnState.stopRequested)) {
+        failedReplies.push(blockedMessage);
+        turnState.failedCount += 1;
+      }
+
+      turnState.updatedAt = nowIso();
+      syncCurrentTurnAgent(turnState);
+
+      runStore.updateTask(stageTaskId, {
+        status: 'failed',
+        runId: null,
+        errorMessage: imageBlock.reason,
+        endedAt: stage.endedAt,
+      });
+      runStore.appendTaskEvent(stageTaskId, 'agent_reply_failed', {
+        agentId: agent.id,
+        agentName: agent.name,
+        runId: null,
+        errorMessage: imageBlock.reason,
+        hop,
+      });
+
+      broadcastEvent('conversation_message_updated', { conversationId, message: blockedMessage });
+      emitTurnProgress(turnState);
+
+      return {
+        stopTurn: false,
+        terminationReason: '',
+      };
+    }
 
     let activeRunHandle: any = null;
     let bridgePublicCompletionRequested = false;
@@ -1455,6 +1536,7 @@ export function createAgentExecutor(options: any = {}) {
 
     const handle = startRun(provider, model, prompt, {
       thinking,
+      images: invocationImages,
       extensionPaths: piCapabilityExtensionPath ? [piCapabilityExtensionPath] : [],
       agentDir,
       sqlitePath,
