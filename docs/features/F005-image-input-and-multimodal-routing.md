@@ -41,22 +41,33 @@ Baseline: `origin/main@3c51a8b` (2026-08-08)。
 - **受控 opaque 引用（SSRF 面为零）**：上传端点按 **batch 契约（P1-2 定案）**返回 `{ images: [{ imageId }] }`（有序 opaque id 数组，与请求 file 顺序一致；不返回持久 url——首版 UI 用 objectURL 预览，无需提前持有持久 URL）。客户端**只提交 `imageIds: string[]`（opaque id）**，服务端在落库时校验归属/存在/状态后投影出 `/uploads/...` URL 写入 contentBlocks。客户端无法提交任意 URL/路径——`/uploads/` 静态路由只接受服务端生成的受控文件名，无符号路径解析，无远程抓取。
 - 新增受控图片上传端点：MIME 白名单（png/jpeg/webp/gif）、**magic-byte 校验（不信任浏览器 MIME）**、**结构头解析校验（签名/尺寸头/像素，见 P1-5——只承诺结构头解析成功，不承诺完整解码）**、单文件大小上限、每次张数上限、文件名消毒防路径穿越；图片存到 upload 目录并通过静态路由暴露。
 - **图片生命周期（P1-2/P1-3 定案：最小 `image_uploads` registry 表，非重型附件系统）**：新增 `image_uploads` SQLite 表作为图片状态的**持久化真相源**。完整 schema 与状态机见下（P1-3 补齐 broken 状态与 client_request_id 约束）。
-- **`image_uploads` registry schema（P1-3 定案）**：
-  - 列：`image_id` PK、`conversation_id` NOT NULL、`status` NOT NULL、`client_request_id` NOT NULL、`slot` NOT NULL（该图在上传批次内的 0-based 位置，同一批次每张图一个固定槽位）、`file_name`、`stored_path` NOT NULL、`mime_type`、`width`、`height`、`size_bytes`、`attached_message_id`（nullable，仅 attached 非空）、`created_at`、`attached_at`（nullable）、`ttl_expires_at`（nullable）。
-  - **唯一约束**：`UNIQUE(conversation_id, client_request_id, slot)`——同一次上传批次的每张图占据固定槽位；batch 重试（同 `client_request_id`）命中同一批次的既有槽位返回 canonical，不会重复写行。
+- **`image_uploads` registry schema（P1-3 定案 + R4 补 batch identity/integrity/SQL invariants）**：
+  - **批级 `image_upload_batches` 表（R4 P1-2 新增，batch completion truth）**：`batch_id` PK、`conversation_id` NOT NULL、`client_request_id` NOT NULL、`request_fingerprint` NOT NULL、`expected_count` NOT NULL、`status` NOT NULL（`pending | complete | rejected`）、`created_at` NOT NULL、`completed_at`（nullable）。**唯一约束** `UNIQUE(conversation_id, client_request_id)`——batch identity 的持久化真相源。
+  - **`request_fingerprint`（R4 P1-1 新增）**：上传首次尝试时对**冻结后的 batch** 计算的确定性摘要 = `hash(ordered [mime, size_bytes, file_content_hash] per file, count)`。**同 `(conversation_id, client_request_id)` 重试时**：fingerprint 一致 → 返回 canonical `{ images }`（幂等）；**fingerprint 不一致（payload 已变）→ 409 `UPLOAD_IDEMPOTENCY_CONFLICT`**，服务端返回既有批次与差异说明，前端必须换新 key 重新上传。任何 strip 变更（增删图、改顺序、换文件）都要求新 `client_request_id`。
+  - **图级 `image_uploads` 列**：`image_id` PK、`batch_id` NOT NULL REFERENCES `image_upload_batches`、`conversation_id` NOT NULL、`status` NOT NULL、`slot` NOT NULL（batch 内 0-based 位置）、`file_name`、`stored_path` NOT NULL、`mime_type`、`width`、`height`、`size_bytes`、`attached_message_id`（nullable）、`attached_at`（nullable）、`integrity_status` NOT NULL DEFAULT 'ok'（R4 P1-5：`ok | missing_file`）、`integrity_error`（nullable，R4 P1-5）、`created_at`、`ttl_expires_at`（nullable）。
+  - **唯一约束**：`UNIQUE(conversation_id, client_request_id, slot)`——同一次上传批次的每张图占据固定槽位。
   - **`client_request_id` 语义**：**上传请求 id**，由前端**在首次上传尝试前生成**（选择第一张图、进入 strip 时即生成，不是点击发送时——P1-2 修正现 `app.js:4363` 的时机），同一批次的全部图片共享，跨"结果未知"重试复用。发送消息用的是**另一个消息级 `clientRequestId`**（现有 F003 机制）。
   - **状态机**：`staged`（上传完成，未关联消息）→ `attached`（消息落库时原子 UPDATE，写入 `attached_message_id`/`attached_at`）；`recycled`（消息删除后由 attached 转入，可由 GC 释放）；`broken`（启动 reconciliation 发现 DB 有引用但文件缺失）。状态集合：`staged | attached | recycled | broken`。
-  - **转移约束**：仅 `staged` 可 → `attached`；仅 `attached` 可 → `recycled`；`broken` 从非 attached 状态（staged/recycled）由 reconciliation 标记；`recycled`/`broken`/超 TTL 的 `staged` 由 GC 删文件 + 删行。`attached` 不允许被直接删除（必须先转 `recycled`）。
-  - DB 是真相源，文件与 DB 通过 `stored_path` 关联；启动时 DB/文件 reconciliation（DB 有引用但文件缺失 → 非 attached 标记 broken、attached 记录 integrity 告警不剥图；文件存在但无 DB 行 → 孤儿回收）。
-- **幂等矩阵（P1-2/P1-3 修正，两阶段分别幂等）**：
+  - **转移约束（R4 P2-2 补可执行 SQL invariants）**：
+    - `status` CHECK 枚举 `staged|attached|recycled|broken`；`integrity_status` CHECK 枚举 `ok|missing_file`；`slot` CHECK `0 <= slot < MAX_IMAGES_PER_UPLOAD`。
+    - `attached` 后置条件：`attached_message_id` 与 `attached_at` 均 NOT NULL；`staged`/`recycled`/`broken` 时二者均 NULL（UPDATE 语句强制）。
+    - `recycled` 后置条件：`ttl_expires_at` NOT NULL（由 attached→recycled 转移时写入 `now()`）。
+    - 仅 `staged` 可 → `attached`；仅 `attached` 可 → `recycled`（转移时**清空** `attached_message_id`/`attached_at`，回收语义 = 从消息生命周期分离）；`broken` 从非 attached 状态（staged/recycled）由 reconciliation 标记；`attached` 行文件缺失时 `integrity_status='missing_file'`（**保留 attached 状态与消息关联**，R4 P1-5——不再依赖"仅记录告警"）。
+    - `recycled`/`broken`/超 TTL 的 `staged` 由 GC 删文件 + 删行；`attached` 不允许被直接删除（必须先转 `recycled`）。
+  - DB 是真相源，文件与 DB 通过 `stored_path` 关联；启动时 DB/文件 reconciliation（DB 有引用但文件缺失 → 非 attached 标记 broken、**attached 行标记 `integrity_status='missing_file'` + `integrity_error` 持久化**；文件存在但无 DB 行 → 孤儿回收）。
+- **batch 原子性（R4 P1-2 定案：all-or-nothing）**：一次上传 = 全量预检（magic-byte/像素/大小/张数/文件名）→ 写临时文件 → **单次 SQLite transaction**（batch 行置 `complete` + 全部 image 行置 `staged`）→ 文件 finalization（临时 → 受控目录）→ 响应。任何一步失败：DB 回滚 + 补偿删除临时文件，**不留下半批次**。响应只在完整 batch 落库后返回；同 key 重试命中的要么是 `complete` 的 canonical batch，要么是不存在的空批次（重新走全流程）。补中途失败、进程 crash、丢响应后 canonical/recovery 测试。
+- **幂等矩阵（P1-2/P1-3 修正 + R4 补 batch identity，两阶段分别幂等）**：
   | 场景 | 行为 |
   |------|------|
-  | **上传阶段**：同 `(conversation_id, client_request_id)` 重试（首传响应丢失 / network-unknown） | **canonical result**：返回既有批次的 `{ images: [{ imageId }] }`，不重复写行不重复存文件 |
+  | **上传阶段**：同 `(conversation_id, client_request_id)` + **同 `request_fingerprint`** 重试（首传响应丢失 / network-unknown） | **canonical result**：返回既有 `complete` 批次的 `{ images: [{ imageId }] }`，不重复写行不重复存文件 |
+  | **上传阶段**：同 `(conversation_id, client_request_id)` 但 **fingerprint 不同（payload 已变）** | **409 `UPLOAD_IDEMPOTENCY_CONFLICT`**（R4 P1-1），返回既有批次与差异说明；前端必须换新 key 重新上传 |
+  | 上传 batch 未 `complete`（中途失败/崩溃）| 无 canonical 可返回；重试走全流程（batch 表无 complete 行 = 空批次） |
   | **消息阶段**：同消息 `clientRequestId` + 同 imageIds 重试（消息落库后） | **canonical result**：返回既有消息，imageId 复用已 attached，不重复消费 |
   | 不同 `client_request_id` / 不同消息 key 引用已 attached 的 imageId | **明确拒绝**（400 `IMAGE_ALREADY_ATTACHED`），不静默复用 |
   | imageId 不存在 / 非本会话 / broken | 400 结构化错误 |
   | `staged` 超过 TTL（24h） | 后台 GC 删文件 + 删行 |
   | **消息删除（P1-3 选定一种）** | 其 `attached` 图片行 → `recycled`（原子 UPDATE，`ttl_expires_at = now()`），GC 按 TTL 释放文件 + 行；不做"转 staged 复用"分支 |
+  | **attached 行文件缺失（R4 P1-5）** | reconciliation 置 `integrity_status='missing_file'` + `integrity_error`，**保留 attached 状态与消息关联**；历史 UI 显示降级占位；任何 invocation 读该图必须结构化失败，不得剥图继续 |
 - **attach 单事务（P1-3 定案）**：`message INSERT` 与所有 image 行条件 UPDATE（`staged`→`attached`，校验 `conversation_id` 归属、`status='staged'`、`attached_message_id IS NULL`、影响行数 = imageIds 去重后数量）在**同一个 SQLite transaction** 内；任一行不满足则整体回滚，不产生半条消息或部分 attached。
 - 图片持久化随消息原子性：上传文件与消息落库通过幂等流程关联，刷新/历史回放/继续会话后图片仍存在；孤儿上传文件不阻塞消息写入。
 - 失败路径明确：上传校验失败、存储失败、imageId 校验失败（不存在/非本会话/已 attached 且非同 key）时返回结构化错误，前端展示人话原因，不静默丢图。
@@ -69,14 +80,17 @@ Baseline: `origin/main@3c51a8b` (2026-08-08)。
 - **capability 可执行契约（P1-1 R3）**：`input` 必须可被 operator 读写——provider-editor 模型级新增 capability 控件（**checkbox 编辑 `'image'` membership**：勾选 → `input` 含 `'image'`；取消 → 移除），normalize 时接受 `Array<'text'|'image'>`（非规范值拒绝：非数组、含非 text/image 元素）；API 投影把 `input` 纳入 provider 回读 payload；手工编辑的模型默认 `input: ['text']`，operator 可显式勾选图片能力。**parity 回归测试**：CAFF capability 判定与 PI `model.input.includes('image')` 必须一致（含静默降级回归测试——`input` 不含 image 的模型，images 不得被送进 `session.prompt`）。
 - **阻断语义定案（P1-1 R2 修正位置 + R3 扩展）**：真实链路是 controller **同步**调用 `submitConversationMessage` → `store.createMessage`（同步落库）→ 异步 drain（`turn-orchestrator.ts:1420-1445`）。因此 capability preflight 必须发生在 **`store.createMessage` 之前**（controller 同步段内），而不是 routing 异步段——否则 HTTP 已 200 且消息已落库。具体规则：
   - **initial targets 的 all 规则**：preflight 解析初始 target-set（与 `resolveInitialSpeakerQueue` 同源：@mention 命中的所有 agents，无 mention 则第一个 agent，`routing-executor.ts:95-102`），**所有 initial target 的模型必须都支持图片输入**（任一不支持 → 422 `MODEL_NO_IMAGE_INPUT`，消息不落库、不进入 runtime、图片保持 staged 可复用）。首版采用 all 规则（图片进共享 user 消息，所有 initial agents 都会收到；不能为某个 agent 剥图）。多 agent mixed-capability 场景下，operator 可移除图片或换用全 vision 的 target-set 重发。
-  - **handoff/side-dispatch 的 per-invocation 阻断（P1-4 R3 扩展）**：后续 handoff 或 side-dispatch 到不支持图片的模型时，该 invocation 输出结构化 block `MODEL_NO_IMAGE_INPUT`（附人话 reason），**不剥图继续、不静默丢弃**——图片仍在该用户消息里，只是该 invocation 明确声明不可读图。**持久化/UI carrier**：该 block 写入该 invocation 的 assistant 消息 `metadata_json.invocationBlocks`，UI 以 trace pill / inline note 展示（复用现有 trace pill 语言）；**queue 继续**：该 invocation 失败不终止 turn，其余 agent 正常执行；turn failure 按现有计数逻辑计入（`failedReplies`）。**prompt 可见性同源（P1-4 关键）**：每个 invocation 组装 prompt 时，从 `promptMessages`/snapshot 经 **`collectPromptImages(promptMessages)`**（与 `prompt-visibility.ts` 同源）收集可见图片集合（历史带图消息 + 当前 imageIds，按消息顺序与文本 prompt 对齐），以 `input.includes('image')` 对**该 invocation 的可见图片集合**逐次判定——不仅看当前请求是否带图，后续纯文本 turn 但可见历史含图时，非 vision target 也要 per-invocation block，不允许历史图被静默剥掉（见 AC-B3 扩展）。
+  - **handoff/side-dispatch 的 per-invocation 阻断（P1-4 R3 扩展 + R4 钉死失败持久化）**：后续 handoff 或 side-dispatch 到不支持图片的模型时，该 invocation 输出结构化 block `MODEL_NO_IMAGE_INPUT`（附人话 reason），**不剥图继续、不静默丢弃**——图片仍在该用户消息里，只是该 invocation 明确声明不可读图。**执行路径（R4 P1-4 钉死，沿 `agent-executor.ts:1302-1313,1947-1980` 的 assistant placeholder/failed 契约）**：invocation 仍创建 assistant placeholder → capability 判定后**直接写 `status='failed'`** + `MODEL_NO_IMAGE_INPUT`/reason + `metadata_json.invocationBlocks` → 计入 `failedReplies` → **断言 `startRun` 未被调用**；queue 仅继续其他 agent。**持久化/UI carrier**：block 写入该 invocation 的 assistant 消息 `metadata_json.invocationBlocks`，UI 以 trace pill / inline note 展示（文案为「本次调用已阻断：模型不支持读取历史图片」，**不得写"已跳过图片上下文"**）；**queue 继续**：该 invocation 失败不终止 turn，其余 agent 正常执行；turn failure 按现有计数逻辑计入（`failedReplies`）。
+  - **多模态 prompt 单一投影（R4 P1-3 定案，替代原 `collectPromptImages`）**：每个 invocation 组装 prompt 时，由**一个投影函数**同时产出文本与图片：**先选定与文本完全相同的 message window**（与 `agent-prompt.ts:205` 的 `.slice(-MAX_HISTORY_MESSAGES)` 同一窗口），**在文本中插入确定性 image marker**（如 `[image:<messageOrdinal>:<imageOrdinal>]`，随 `formatHistory` 同一份历史展开），**images 按 marker 出现顺序排列**。不单独对全部 `promptMessages` 收集图片——避免文本 prompt 中不存在的更老图片被孤立传入（现 `prompt-visibility.ts:20-41` 不裁剪，与 `agent-prompt.ts:205` 的 `.slice(-24)` 是两条不同窗口，R4 实锤为 P1-3 根因）。
+  - **per-invocation 图片预算（R4 P1-3）**：定义 `MAX_IMAGES_PER_INVOCATION` 与 `MAX_IMAGE_PROMPT_BYTES`（base64 总量上限，依据 provider/IPC 边界自决，实现侧定具体数值）。**超限必须显式 fail-closed（结构化 block，附人话原因）或显式截断说明**——不得静默丢图。可见图片集合（历史带图消息 + 当前 imageIds）以 `input.includes('image')` 对该 invocation 逐次判定——不仅看当前请求是否带图，后续纯文本 turn 但可见历史含图时，非 vision target 也要 per-invocation block，不允许历史图被静默剥掉（见 AC-B3 扩展）。补「第 25 条含图消息不被孤立传入」「多条消息多图锚点顺序」「预算超限」测试。
   - 422 为**预写入**（不入队、无 blocked 状态机、无半条消息）；时间线不出现 blocked 消息。
 - provider adapter（PI SDK host 侧）：把结构化 image block 翻译成 PI 可消费的输入——具体形态已在 Design Gate 后经 spike 验证（见 Open Questions / Decision Packet D1）。
 
 ### Phase C: 聊天 UI 输入与展示
 
 - composer 增加图片选择入口：文件选择 + 预览 + 移除，随文本一起发送（**image-only 允许**：strip 有图时无文本也可发送）；不支持的图片类型/超限在 UI 层即时提示。
-- 消息时间线渲染 image block：历史消息回放、SSE 增量、refresh 后均显示图片；展示失败有降级提示而非空白。
+- **图片项状态机（R4 P2-1 定案：`pending_validation → ready | rejected`）**：选择/粘贴进入 strip 时每张图为 `pending_validation`（本地 objectURL 可预览，但**未拿到服务端 imageId 前发送按钮禁用**）；服务端上传成功 → `ready`（持有 imageId，可随消息发送）；失败 → `rejected`（标记错误 + 移除，提示原因）。文件必须有明确状态，不允许"有歧义既不放行也不拦截"的悬空态。
+- 消息时间线渲染 image block：历史消息回放、SSE 增量、refresh 后均显示图片；展示失败有降级提示而非空白；**attached 行 `integrity_status='missing_file'` 时历史 UI 显示降级占位（不剥图、不空白）**（R4 P1-5）。
 
 ## User Journey
 
@@ -122,39 +136,41 @@ Baseline: `origin/main@3c51a8b` (2026-08-08)。
 - [ ] AC-A1: 图片上传端点拒绝白名单外 MIME（magic-byte 校验，不信任浏览器 MIME）、超限文件（大小/像素）、超张数、路径穿越文件名；`/uploads/` 只服务受控目录，无符号路径/远程抓取（SSRF 面为零——客户端只提交 opaque imageId，服务端投影 URL）。**P1-5 安全策略定案**：上传接受 = **结构头解析成功**（magic-byte 签名 + 尺寸头 + 像素上限 + animated GIF 探测），**不承诺完整图片可解码**（有限 dependency-free header parser 无法证明解码性；删"解码失败拒绝"承诺）；**前端预检只是 UX，服务端始终权威，前端预检不作为安全边界**。**精确上限**：`MAX_IMAGE_BYTES = 10 * 1024 * 1024 = 10_485_760`（P2-1 精确字节值）、`MAX_IMAGES_PER_UPLOAD=5`、`MAX_IMAGE_WIDTH=4096`、`MAX_IMAGE_HEIGHT=4096`、`MAX_IMAGE_PIXELS=16_000_000`；**GIF 策略**：animated GIF 拒绝（`ANIMATED_GIF_REJECTED`），static GIF 按首帧尺寸校验；**attach-time 再校验**：消息 attach 时对 `imageIds` 去重并校验 distinct 数量 ≤ `MAX_IMAGES_PER_MESSAGE=5`（多 upload 请求无法绕过）。**常量真相源**：服务端 `lib/image-constants.ts` 为单一真相源，经 `GET /api/image-upload/config` 以 JSON 暴露给前端（前端启动时 fetch，不 import TS——classic defer scripts 无 bundler）；**config 拉取失败 = fail closed**：禁用附件入口/展示原因，禁止硬编码 fallback（P2-1）。**依赖策略**：magic-byte/尺寸解析采用 dependency-free 有限解析器（png/jpeg/webp/gif 头解析），若需新增 direct dependency 先回指挥中心走依赖授权。验证：校验矩阵测试 + 静态路由测试 + imageId 投影测试 + config parity 测试 + config fail-closed 测试。
 - [ ] AC-A2: 带图消息以 `contentBlocks`（text 由 content 派生 + image 含 imageId/url）持久化，`content` 是唯一文本真相源且兼容不受破坏；客户端提交 text block/URL 返回 400；FTS 搜索、摘要 digest、历史消息解析不回归；**image-only 消息**（空 content + imageIds）可持久化且不生成空 text block。验证：message repository + 搜索/摘要测试 + 冲突拒绝测试 + image-only 测试。
 - [ ] AC-A3: 刷新页面与进程重启后，图片引用仍可从静态路由访问且消息可完整回放。验证：restart fixture + 浏览器回放证据。
-- [ ] AC-A4: 上传/存储/引用失败时返回结构化错误并展示人话原因，消息写入与图片上传通过幂等流程关联，不产生半个消息或孤儿阻断；**两阶段幂等矩阵（P1-2 R3）**：上传阶段同 `(conversation_id, client_request_id)` 重试（响应丢失/network-unknown）返回 canonical batch；消息阶段同消息 `clientRequestId` 重试返回 canonical result、不同 key 引用已 attached imageId 拒绝；`client_request_id` 在**首次上传前**由前端生成并跨重试复用；**attach 单事务**：message INSERT + 所有 image 行条件 UPDATE（staged→attached，含 ownership/status/row-count 校验）同一 SQLite transaction，任一行失败整体回滚。验证：错误路径测试 + 两阶段幂等矩阵测试（含丢响应重试）+ attach 事务原子性测试 + registry reconciliation 测试。
+- [ ] AC-A4: 上传/存储/引用失败时返回结构化错误并展示人话原因，消息写入与图片上传通过幂等流程关联，不产生半个消息或孤儿阻断；**两阶段幂等矩阵（P1-2 R3 + R4 batch identity）**：上传阶段同 `(conversation_id, client_request_id)` + 同 `request_fingerprint` 重试（响应丢失/network-unknown）返回 canonical complete batch；**同 key 异 payload → 409 `UPLOAD_IDEMPOTENCY_CONFLICT`**；batch 未 `complete`（中途失败/崩溃）无 canonical、重试走全流程；消息阶段同消息 `clientRequestId` 重试返回 canonical result、不同 key 引用已 attached imageId 拒绝；`client_request_id` 在**首次上传前**由前端生成并跨重试复用；**attach 单事务**：message INSERT + 所有 image 行条件 UPDATE（staged→attached，含 ownership/status/row-count 校验）同一 SQLite transaction，任一行失败整体回滚；**batch all-or-nothing 原子性**：全量预检→临时文件→单次 DB commit→finalization→响应，任一步失败回滚+删临时文件，不留下半批次。验证：错误路径测试 + 两阶段幂等矩阵测试（含丢响应重试 + 同 key 异 payload 冲突 + crash recovery）+ attach 事务原子性测试 + registry reconciliation 测试 + batch atomicity 测试。
 
 ### Phase B: Capability registry + 路由
 
 - [ ] AC-B1: capability 位为 model-level 且**以 PI runtime canonical `providers[id].models[i].input: Array<'text'|'image'>` 为单一真相源**（P1-1 R3；弃 `supportsImageInput` 布尔——PI 层不认识它，会造成 preflight 放行 + PI 静默剥图）；catalog `modalities.input` 仅在显式 import/save 时投影为 `input`，models.json 显式值优先，未知模型 fail closed 为不支持图片；`input` 可经 provider-editor 模型级控件读写（checkbox 编辑 `'image'` membership；normalize 只接受合法数组；回读保留）。**parity 回归测试**：CAFF 判定与 PI `model.input.includes('image')` 一致 + 静默降级回归测试（`input` 不含 image 的模型，images 不得进 `session.prompt`）。验证：model-level 判定矩阵 + 投影/优先级测试 + capability 读写测试 + parity/静默降级测试。
-- [ ] AC-B2: **同步 preflight 在 `store.createMessage` 之前**（controller 同步段）识别 imageIds；**initial targets 任一模型不支持图片 → 预写入 422**（`MODEL_NO_IMAGE_INPUT`），消息不落库、不进入 runtime、图片保持 staged 可复用；**prompt 可见性同源**：每次 invocation 用 `collectPromptImages(promptMessages)` 按可见图片集合判定（`agent-executor.ts:1322-1329` 每个 invocation 都是新 session 且注入完整 room history），后续纯文本 turn 可见历史含图时同样判定，非 vision target 输出 per-invocation 结构化 block（**持久化到 `metadata_json.invocationBlocks` + UI carrier，queue 继续，失败计入 failedReplies**）。验证：路由阻断测试 + 消息不入队断言 + staged 复用断言 + preflight 位置断言（createMessage 前）+ handoff block 测试 + **"图片消息后刷新/重启再发纯文本"测试 + 多图顺序测试**。
+- [ ] AC-B2: **同步 preflight 在 `store.createMessage` 之前**（controller 同步段）识别 imageIds；**initial targets 任一模型不支持图片 → 预写入 422**（`MODEL_NO_IMAGE_INPUT`），消息不落库、不进入 runtime、图片保持 staged 可复用；**多模态 prompt 单一投影（R4 P1-3）**：每次 invocation 由单一投影函数产出 `{ text, images }`——文本与图片**同一 message window**（与 `agent-prompt.ts:205` `.slice(-MAX_HISTORY_MESSAGES)` 对齐），文本中插入确定性 image marker、images 按 marker 顺序排列；per-invocation 图片数量/字节预算超限显式 fail-closed；后续纯文本 turn 可见历史含图时同样判定，非 vision target 输出 per-invocation 结构化 block（**R4 P1-4 钉死：assistant placeholder 直接写 `status='failed'` + `MODEL_NO_IMAGE_INPUT`/reason + `metadata_json.invocationBlocks` + 计入 failedReplies + 断言 startRun 未调用**；queue 继续）。验证：路由阻断测试 + 消息不入队断言 + staged 复用断言 + preflight 位置断言（createMessage 前）+ handoff block 测试 + **"图片消息后刷新/重启再发纯文本"测试 + 多图顺序测试 + "第 25 条含图消息不被孤立传入"测试 + 预算超限 fail-closed 测试 + startRun 未调用断言**。
 - [ ] AC-B3: 任何路径都不得静默丢图：不支持的模型不剥图继续，失败必带明确原因；**PI runtime 的静默降级被 preflight + per-invocation 判定双保险挡住**（`input` 不含 image 的模型 images 永不进 `session.prompt`）。验证：全路径断言测试（grep 无静默过滤）+ parity 静默降级回归测试。
 - [ ] AC-B4 (P2-3): F003 notify/request 两入口收到带图消息 → 结构化 reject `IMAGE_DELIVERY_NOT_SUPPORTED` + 人话原因，消息与图片不剥离不降级。验证：notify/request 两路径 reject 测试。
 
 ### Phase C: UI 输入与展示
-- [ ] AC-C1: composer 支持选图 + 预览 + 移除 + 随文本发送；非法图片在 UI 层即时提示。验证：UI 测试 + desktop/mobile 证据。
-- [ ] AC-C2: 消息时间线渲染图片，历史回放/SSE 增量/刷新后一致；展示失败有降级提示。验证：browser 证据 + 渲染测试。
+- [ ] AC-C1: composer 支持选图 + 预览 + 移除 + 随文本发送；非法图片在 UI 层即时提示；**图片项状态机 `pending_validation → ready | rejected`**（未拿 imageId 前发送禁用，失败标记错误+移除）。验证：UI 测试 + desktop/mobile 证据。
+- [ ] AC-C2: 消息时间线渲染图片，历史回放/SSE 增量/刷新后一致；展示失败有降级提示而非空白（**attached `integrity_status='missing_file'` 显示降级占位**）。验证：browser 证据 + 渲染测试。
 
 ## Dependencies
 
 - **Evolved from**: F002（PI SDK host 运行时方言边界，image 输入投影依赖其 prompt 契约）。
 - **Related**: F004（capability registry 从 catalog modalities 投影）；F003（跨聊天室 delivery 复用 content-block 契约时需同步支持图片）。
-- **Blocked by**: Design Gate review 对 D1-D5 的技术定案（本 spec OQ 1/2/3/5 与 UI Gate OQ 4 均已收敛；R1/R2/R3 三轮 review 的 P1/P2 已修订）。D1 已 spike 定案。等待 Design Gate 复审放行后进入实现。
+- **Blocked by**: Design Gate review 对技术决策包 D1-D3 与 UI OQ4/5 的定案（R1/R2/R3/R4 四轮 review 的 P1/P2 已修订）。D1 已 spike 定案。等待 Design Gate 复审放行后进入实现。
 
 ## Architecture
 
 ```text
-composer (file input + preview + remove; image-only allowed when strip non-empty; clientRequestId for upload generated BEFORE first upload)
+composer (file input + preview + remove; image-only allowed when strip non-empty; clientRequestId for upload generated BEFORE first upload; per-image pending_validation -> ready | rejected)
   -> GET /api/image-upload/config (constants: mime/size/pixel/count whitelist, JSON, single truth lib/image-constants.ts; fetch failure -> fail closed, disable attachment entry)
-  -> POST /api/conversations/:id/images (multipart batch, magic-byte MIME/size/pixel/count/filename guard; dependency-free header parser; client_request_id) -> returns { images: [{ imageId }] } (ordered)
-  -> controlled upload store (/uploads/, opaque server-generated filename) + image_uploads registry (staged, UNIQUE(conversation_id, client_request_id, slot))
+  -> POST /api/conversations/:id/images (multipart batch, magic-byte MIME/size/pixel/count/filename guard; dependency-free header parser; client_request_id + request_fingerprint + expected_count)
+     -> all-or-nothing: full prevalidate -> temp files -> SINGLE transaction (batch complete + image rows staged) -> finalize -> response { images: [{ imageId }] } (ordered)
+     -> same key + same fingerprint -> canonical complete batch; same key + diff fingerprint -> 409 UPLOAD_IDEMPOTENCY_CONFLICT
+  -> controlled upload store (/uploads/, opaque server-generated filename) + image_upload_batches (UNIQUE(conversation_id, client_request_id), status complete) + image_uploads registry (staged, UNIQUE(conversation_id, client_request_id, slot), integrity_status)
   -> message { content: text (canonical, may be ''), imageIds: opaque[] }  // client never submits url/text-block
   -> SYNC capability preflight (BEFORE store.createMessage): resolve initial targets (mention-set or first agent);
      imageIds present + any target model.input lacks 'image' -> 422 MODEL_NO_IMAGE_INPUT (no persistence, images stay staged)
   -> store.createMessage (validate imageId ownership/state + distinct-count<=5 -> SINGLE transaction: message INSERT + conditional image rows staged->attached -> project url
      -> metadata.contentBlocks [{type:text(derived, omitted when content empty)}, {type:image,imageId,url}])
-  -> async drain -> routing (per-invocation: collectPromptImages(promptMessages) visible set; handoff/side-dispatch to non-vision model
-     -> per-invocation MODEL_NO_IMAGE_INPUT block persisted to metadata_json.invocationBlocks + UI carrier, no stripping, queue continues)
+  -> async drain -> routing (per-invocation multimodal projection: SAME window as text .slice(-MAX_HISTORY_MESSAGES) -> { text, images } with deterministic markers; budget MAX_IMAGES_PER_INVOCATION/MAX_IMAGE_PROMPT_BYTES; handoff/side-dispatch to non-vision model
+     -> assistant placeholder status='failed' + per-invocation MODEL_NO_IMAGE_INPUT block persisted to metadata_json.invocationBlocks + UI carrier, no stripping, startRun never called, queue continues)
   -> agent-executor prompt projection (images) -> pi-sdk-host session.prompt(prompt, { images }) -> model (PI runtime gate: model.input.includes('image'); images never passed when input lacks image)
 ```
 
@@ -182,15 +198,20 @@ Why: F004 的 models cell 只覆盖 provider 配置；本 Feature 首次把"能�
 | capability 误判（CAFF 声明与 PI runtime 不符） | 单一真相源 `model.input`（与 PI 0.80.10 一致）+ catalog 仅 import 投影默认 + parity 回归测试（CAFF 判定 == `model.input.includes('image')`），未知 fail closed |
 | preflight 放错层（落库后才阻断） | capability preflight 在 `store.createMessage` 之前的同步段（AC-B2 位置断言测试） |
 | PI 层静默降级剥图（`input` 不含 image 仍传图） | preflight + per-invocation 判定双保险：`input` 不含 image 的模型 images 永不进 `session.prompt`（AC-B3 parity 静默降级回归测试） |
-| prompt 历史图片被静默剥掉（later-invocation） | `collectPromptImages(promptMessages)` 与 prompt-visibility 同源，每次 invocation 按可见图片集合判定 + per-invocation block 持久化 carrier（AC-B2） |
-| image_uploads registry 与文件漂移 | DB 为真相源，启动 reconciliation + broken 标记 + 孤儿回收（AC-A4 reconciliation 测试） |
+| prompt 历史图片被静默剥掉（later-invocation） | 多模态 prompt **单一投影**（文本与图片同一 message window）+ 确定性 marker + per-invocation block 持久化 carrier（AC-B2）；R4 P1-3 钉死两窗口同源 |
+| 图片窗口 ≠ 文本窗口（更老图片被孤立传入） | 单一投影函数先选 window 再产出 `{text, images}`，marker 嵌入文本；补「第 25 条含图消息不被孤立传入」测试（R4 P1-3） |
+| 图片 prompt 预算无界（base64/IPC 超限） | `MAX_IMAGES_PER_INVOCATION` + `MAX_IMAGE_PROMPT_BYTES` 预算，超限显式 fail-closed（R4 P1-3） |
+| attached 文件缺失无法表达（读文件必失败） | `integrity_status='missing_file'` + `integrity_error` 持久化，保留 attached 与消息关联；历史 UI 降级占位、invocation 结构化失败不剥图（R4 P1-5） |
+| image_uploads registry 与文件漂移 | DB 为真相源，启动 reconciliation + broken 标记 + integrity_status + 孤儿回收（AC-A4 reconciliation 测试） |
+| 上传幂等键 canonical 到错误图片（payload 已变） | `request_fingerprint`（count + ordered file hashes）+ 同 key 异 payload → 409 `UPLOAD_IDEMPOTENCY_CONFLICT`（R4 P1-1） |
+| batch 半批次 / crash 无法区分完整性 | `image_upload_batches` completion truth + all-or-nothing 原子提交 + crash recovery 测试（R4 P1-2） |
 | 多 Agent mixed-capability 会话 | initial targets all 规则（任一不支持 → 422）+ handoff/side-dispatch per-invocation block，不剥图 |
 
 ## Open Questions
 
 1. **PI SDK host 如何接收 image 输入**：`session.prompt(prompt)` 是字符串。图片应走 prompt 内路径 hint（模型有工具可读 uploads 目录）、SDK media 参数（若 0.80.10 暴露）、还是消息 content-block 直传？需 spike 验证——决定 adapter 实现形态。**✅ 已定案（D1 spike，2026-08-09 @opus）**：`@earendil-works/pi-coding-agent@0.80.10` 的 `PromptOptions` 声明 `images?: ImageContent[]`（`dist/core/agent-session.d.ts:130-141`），`ImageContent = { type: 'image', data: base64, mimeType }`（`pi-ai/dist/types.d.ts:239-243`）；`session.prompt(prompt, { images })` 直传结构化 image，一等公民。A 路径 hint 降级为 Non-goal。实现透传路径见 Decision Packet D1。
 2. **Capability 落库形态**：**✅ 已定案（Design Gate Review R2 + R3，2026-08-09 @opus）**——能力位是 **model-level**，**以 PI runtime canonical `providers[id].models[i].input: Array<'text'|'image'>` 为单一真相源**（P1-1 R3：弃 `supportsImageInput` 布尔，避免与 PI `model.input` 双真相源导致静默剥图），并定义可执行读写契约（provider-editor 模型级 checkbox 编辑 `'image'` membership、normalize/回读保留、catalog import 仅投影默认、未知 fail closed）。**parity 回归测试**保证 CAFF 判定与 PI `model.input.includes('image')` 一致。技术决策，不需要 operator 拍板（D2 收敛）。
-3. **上传与发送时序**：**✅ 已定案（Design Gate Review R2 + R3，2026-08-09 @opus）**——两阶段（先 upload 拿 opaque imageId → 消息引用 imageId，服务端投影 URL），上传按 **batch 契约**返回 `{ images: [{ imageId }] }`（有序，P1-2）。**图片状态以 `image_uploads` registry 表为持久化真相源**（P1-2/P1-3）：状态机 `staged → attached → recycled` + `broken`，唯一约束 `UNIQUE(conversation_id, client_request_id, slot)`（上传阶段幂等，client_request_id 首次上传前生成），attach 单事务（message INSERT + 条件 UPDATE 同一 transaction），TTL GC、消息删除转 recycled、启动 reconciliation。技术决策，不再升级 operator（D3 收敛）。
+3. **上传与发送时序**：**✅ 已定案（Design Gate Review R2 + R3 + R4，2026-08-09 @opus）**——两阶段（先 upload 拿 opaque imageId → 消息引用 imageId，服务端投影 URL），上传按 **batch 契约**返回 `{ images: [{ imageId }] }`（有序，P1-2）。**图片状态以 `image_upload_batches` + `image_uploads` registry 表为持久化真相源**（P1-2/P1-3 + R4 P1-1/P1-2）：batch 唯一 `UNIQUE(conversation_id, client_request_id)` + `request_fingerprint`（count + ordered file hashes，同 key 异 payload → 409）+ `status` completion truth + all-or-nothing 原子提交；图级状态机 `staged → attached → recycled` + `broken` + `integrity_status`（missing_file，R4 P1-5），唯一 `UNIQUE(conversation_id, client_request_id, slot)`（client_request_id 首次上传前生成），attach 单事务（message INSERT + 条件 UPDATE 同一 transaction），TTL GC、消息删除转 recycled、启动 reconciliation。技术决策，不再升级 operator（D3 收敛）。
 4. **UI 首版范围**：文件选择是否与拖拽/粘贴同 Phase 交付，还是拖拽/粘贴延后？**✅ UI Gate 已收敛（2026-08-09 @烁烁）**：选图主入口 + 粘贴同 Phase、拖拽延后。
 5. **跨聊天室 delivery**：**✅ 已定案（Design Gate Review，2026-08-09 @opus）**——F005 首版**不支持** F003 图片 delivery：若 F003 notify/request 路径收到带图消息，返回结构化 reject（`IMAGE_DELIVERY_NOT_SUPPORTED` + 人话原因），显式 Non-goal，禁止静默剥图。见 Non-goals。
 

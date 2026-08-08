@@ -10,13 +10,21 @@ status: design_gate_review_revision
 
 ## Status
 
-Kickoff lead（@opus/布偶猫）完成架构发现后，进入 Design Gate 讨论。本记录产出 Architecture cell / Map delta 与 Decision Packet（OQ 1/2/3）。D1-D5 均为技术决策，**不升级 operator**。UI 部分（OQ 4/5）由 @烁烁/暹罗猫 负责视觉与交互设计 Gate。
+Kickoff lead（@opus/布偶猫）完成架构发现后，进入 Design Gate 讨论。本记录产出 Architecture cell / Map delta 与 Decision Packet（OQ 1/2/3）。D1-D3 为技术决策，**不升级 operator**。UI 部分（OQ 4/5）由 @烁烁/暹罗猫 负责视觉与交互设计 Gate。
 
 > **2026-08-09 Review R1 修订**：砚砚 Changes Requested（5 P1 + 3 P2）已逐条收敛——D1 保持定案；D2 改为 model-level `supportsImageInput`（P1-4）；D3 定为两阶段 + 生命周期状态机、不再升级 operator（P2-2）；阻断语义定案为预写入 422 + composer 保留附件（P1-3）；opaque imageId 投影 URL 保 SSRF=0（P1-2）；`content` 为唯一文本真相源（P1-1）；spec Owner 统一 @opus（P2-1）；F003 图片 delivery 显式 Non-goal（P2-3）。
 >
 > **2026-08-09 Review R2 修订**：砚砚第二轮 Changes Requested（5 P1 + 3 P2，commit `docs(F005): address design gate review R2`）——P1-1 capability preflight 移到 `store.createMessage` 前同步段 + initial targets all 规则 + handoff per-invocation block；P1-2 引入 `image_uploads` registry 表为持久化真相源 + 幂等矩阵；P1-3 image-only 消息支持（`content.trim() || imageIds.length>0`）；P1-4 `supportsImageInput` 字段钉死 + provider-editor 模型级控件；P1-5 精确像素/GIF/attach-time 去重上限 + config endpoint + dependency-free parser；P2-1 上传响应统一 `{ imageId }`；P2-2 清理"等待 operator 拍板"旧语义；P2-3 F003 reject 补 AC-B4。
 >
 > **2026-08-09 Review R3 修订**：砚砚第三轮 Changes Requested（5 P1 + 3 P2，commit `docs(F005): address design gate review R3`）——P1-1 capability 改以 **PI runtime canonical `model.input` 为单一真相源**（弃 `supportsImageInput` 布尔，防 preflight 放行 + PI 静默剥图；parity + 静默降级回归测试）；P1-2 upload **batch 契约 `{ images: [{ imageId }] }`** + 上传阶段 `clientRequestId`（首次上传前生成）+ 两阶段幂等矩阵 + 丢响应重试；P1-3 registry schema 补 `broken` 状态 + `client_request_id` 约束 + **attach 单事务**（message INSERT + 条件 UPDATE 同一 transaction）；P1-4 `collectPromptImages(promptMessages)` prompt visibility 同源 + later-invocation per-invocation block（持久化 carrier + UI trace pill）；P1-5 安全策略 = **只承诺结构头解析**（删完整解码承诺）+ 前端预检 UX-only + config fetch 失败 fail-closed；P2-1 `MAX_IMAGE_BYTES=10_485_760` 精确字节；P2-2 UI 证据矩阵补 pixel/animated GIF/config-fail/network-unknown 行；P2-3 README 清 D1-D5/"需 operator 授权 spike"/failed-tone 旧语义。**待砚砚复审放行后进入实现。**
+>
+> **2026-08-09 Review R4 修订（三个完整状态模型，Stateful Object Gate）**：砚砚第四轮 Changes Requested（5 P1 + 3 P2，commit `docs(F005): address design gate review R4`）。同一状态对象连续 4 轮 finding → 触发 ≥3 轮升级规则，按三个完整状态模型修订，不再逐句补丁：
+> 1. **Upload batch identity + atomic completion/retry**（P1-1+P1-2）：新增 `image_upload_batches` 批级表（`UNIQUE(conversation_id, client_request_id)` + `status complete` 为 completion truth）+ `request_fingerprint`（count + ordered file hashes/size/mime，同 key 异 payload → 409 `UPLOAD_IDEMPOTENCY_CONFLICT`）+ **all-or-nothing 原子提交**（全量预检→临时文件→单次 DB commit→finalization→响应，失败回滚删临时文件）+ 半批次/crash recovery 测试。
+> 2. **Multimodal prompt 单一投影 + markers + budget**（P1-3）：单一投影函数同 window（与 `agent-prompt.ts:205` `.slice(-24)` 对齐）产出 `{text, images}` + 确定性 image marker + `MAX_IMAGES_PER_INVOCATION`/`MAX_IMAGE_PROMPT_BYTES` 预算，超限显式 fail-closed，不孤立传入窗口外历史图。
+> 3. **Per-invocation/integrity failure persistence**（P1-4+P1-5）：capability 阻断后沿 `agent-executor.ts:1302-1313,1947-1980` 契约直接写 `status='failed'` + `MODEL_NO_IMAGE_INPUT`/reason + `metadata_json.invocationBlocks` + 计入 failedReplies + **断言 startRun 未调用**；registry 补 `integrity_status='missing_file'`（attached 保留消息关联），历史 UI 降级占位、invocation 结构化失败不剥图。UI 文案改「本次调用已阻断：模型不支持读取历史图片」。
+> 4. 补齐：P2-1 UI 图片项状态机 `pending_validation → ready | rejected`；P2-2 registry 转移约束补可执行 SQL invariants（status/integrity 枚举 CHECK、attached 必填 message/time 字段、recycled 必有 TTL、slot 范围）；P2-3 清理 D1-D5 → D1-D3 + OQ4/5。
+>
+> **待砚砚复审 R4 放行后进入实现。**
 
 ## 架构发现（Evidence Read）
 
@@ -82,8 +90,10 @@ Kickoff lead（@opus/布偶猫）完成架构发现后，进入 Design Gate 讨�
 
 ### D3: 上传与发送时序（OQ 3）— **已定案（技术决策）**
 
-- **定案（Design Gate Review R2 + R3，2026-08-09）**：两阶段——`POST /api/conversations/:id/images` 按 **batch 契约**返回 **`{ images: [{ imageId }] }`**（有序，P1-2 R3；opaque 不返回 url），消息体带 `imageIds` 引用，服务端落库时校验并投影 URL。**属技术决策，不升级 operator**（砚砚 P2-2）。
-- **生命周期以 `image_uploads` registry 表为持久化真相源（P1-2/P1-3）**：状态机 `staged` → `attached` → `recycled` + `broken`；唯一约束 `UNIQUE(conversation_id, client_request_id, slot)`（上传阶段幂等，`client_request_id` 首次上传前生成）；**attach 单事务**（message INSERT + image 行条件 UPDATE 同一 SQLite transaction）；两阶段幂等矩阵（上传同 key canonical batch / 消息同 key canonical result / 不同 key 引用已 attached 明确拒绝）；`staged` 超 TTL（24h）由 GC 清理；消息删除后 attached → recycled（选定一种，不做转 staged 复用）；启动时 DB/文件 reconciliation。
+- **定案（Design Gate Review R2 + R3 + R4，2026-08-09）**：两阶段——`POST /api/conversations/:id/images` 按 **batch 契约**返回 **`{ images: [{ imageId }] }`**（有序，P1-2 R3；opaque 不返回 url），消息体带 `imageIds` 引用，服务端落库时校验并投影 URL。**属技术决策，不升级 operator**（砚砚 P2-2）。
+- **batch identity（R4 P1-1）**：新增 `image_upload_batches` 批级表为 **completion truth**（`UNIQUE(conversation_id, client_request_id)` + `status complete`）+ **`request_fingerprint`**（count + ordered file hashes/size/mime）；同 `(conversation_id, client_request_id)` 重试 fingerprint 一致 → canonical batch、**不一致 → 409 `UPLOAD_IDEMPOTENCY_CONFLICT`**。
+- **batch 原子性（R4 P1-2）**：all-or-nothing——全量预检 → 临时文件 → 单次 DB commit（batch complete + 全部 image staged）→ finalization → 响应；任一步失败回滚 + 删临时文件，不留下半批次；补中途失败/crash/丢响应 recovery 测试。
+- **生命周期以 `image_upload_batches` + `image_uploads` registry 表为持久化真相源（P1-2/P1-3 + R4）**：图级状态机 `staged` → `attached` → `recycled` + `broken` + `integrity_status`（`missing_file`，R4 P1-5，attached 缺文件保留消息关联）；唯一约束 `UNIQUE(conversation_id, client_request_id, slot)`（上传阶段幂等，`client_request_id` 首次上传前生成）；**attach 单事务**（message INSERT + image 行条件 UPDATE 同一 SQLite transaction）；两阶段幂等矩阵（上传同 key+同 fingerprint canonical batch / 同 key 异 payload 409 / 消息同 key canonical result / 不同 key 引用已 attached 明确拒绝）；`staged` 超 TTL（24h）由 GC 清理；消息删除后 attached → recycled（选定一种，不做转 staged 复用）；启动时 DB/文件 reconciliation。
 - 客户端不提交 URL/路径——SSRF 面为零由 opaque id 契约保证（砚砚 P1-2）。
 
 ## Architecture cell / Map delta
