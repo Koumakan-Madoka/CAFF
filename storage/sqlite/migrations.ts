@@ -764,6 +764,61 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_external_events_platform_direction_ex
 CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_external_events_platform_direction_message_id
   ON chat_external_events (platform, direction, message_id)
   WHERE message_id IS NOT NULL AND message_id <> '';
+
+CREATE TABLE IF NOT EXISTS image_upload_batches (
+  batch_id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL,
+  client_request_id TEXT NOT NULL,
+  request_fingerprint TEXT NOT NULL,
+  expected_count INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  lease_token TEXT,
+  lease_expires_at TEXT,
+  rejected_reason TEXT,
+  created_at TEXT NOT NULL,
+  completed_at TEXT,
+  UNIQUE(conversation_id, client_request_id),
+  CHECK (1 <= expected_count AND expected_count <= 5),
+  CHECK (status IN ('pending', 'complete', 'rejected')),
+  CHECK ((status = 'complete') = (completed_at IS NOT NULL)),
+  CHECK (status <> 'rejected' OR (rejected_reason IS NOT NULL AND rejected_reason <> ''))
+);
+
+CREATE TABLE IF NOT EXISTS image_uploads (
+  image_id TEXT PRIMARY KEY,
+  batch_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  slot INTEGER NOT NULL,
+  file_name TEXT,
+  stored_path TEXT NOT NULL,
+  mime_type TEXT,
+  width INTEGER,
+  height INTEGER,
+  size_bytes INTEGER,
+  attached_message_id TEXT,
+  attached_at TEXT,
+  integrity_status TEXT NOT NULL DEFAULT 'ok',
+  integrity_error TEXT,
+  created_at TEXT NOT NULL,
+  ttl_expires_at TEXT,
+  UNIQUE(batch_id, slot),
+  CHECK (status IN ('staged', 'attached', 'recycled')),
+  CHECK (integrity_status IN ('ok', 'missing_file')),
+  CHECK (0 <= slot AND slot < 5),
+  CHECK ((integrity_status = 'ok') = (integrity_error IS NULL)),
+  CHECK (integrity_status <> 'missing_file' OR (integrity_error IS NOT NULL AND integrity_error <> '')),
+  CHECK (status = 'attached' OR (attached_message_id IS NULL AND attached_at IS NULL)),
+  CHECK (status <> 'attached' OR (attached_message_id IS NOT NULL AND attached_at IS NOT NULL)),
+  CHECK (status <> 'recycled' OR (ttl_expires_at IS NOT NULL)),
+  FOREIGN KEY (batch_id) REFERENCES image_upload_batches(batch_id),
+  FOREIGN KEY (attached_message_id) REFERENCES chat_messages(id) ON DELETE RESTRICT
+);
+
+CREATE INDEX IF NOT EXISTS idx_image_upload_batches_conversation ON image_upload_batches (conversation_id);
+CREATE INDEX IF NOT EXISTS idx_image_uploads_batch_id ON image_uploads (batch_id, slot ASC);
+CREATE INDEX IF NOT EXISTS idx_image_uploads_attached_message ON image_uploads (attached_message_id);
+CREATE INDEX IF NOT EXISTS idx_image_uploads_ttl ON image_uploads (ttl_expires_at);
+CREATE INDEX IF NOT EXISTS idx_image_uploads_status ON image_uploads (status);
   `);
 
   ensureColumn(db, 'chat_agents', 'model_profiles_json', 'model_profiles_json TEXT');
