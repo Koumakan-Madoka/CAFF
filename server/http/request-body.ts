@@ -7,6 +7,51 @@ export type ReadRequestJsonOptions = {
   bodyLimit?: number;
 };
 
+export function readRawRequestBody(req: Readable, options: ReadRequestJsonOptions = {}): Promise<Buffer> {
+  const providedBodyLimit = options.bodyLimit;
+  const bodyLimit =
+    typeof providedBodyLimit === 'number' && Number.isFinite(providedBodyLimit) && providedBodyLimit > 0
+      ? providedBodyLimit
+      : config.DEFAULT_BODY_LIMIT;
+
+  return new Promise<Buffer>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let received = 0;
+    let bodyLimitExceeded = false;
+
+    req.on('data', (chunk: Buffer) => {
+      if (bodyLimitExceeded) {
+        return;
+      }
+
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+      received += buffer.length;
+
+      if (received > bodyLimit) {
+        bodyLimitExceeded = true;
+        reject(createHttpError(413, 'Request body is too large'));
+        req.resume();
+        return;
+      }
+
+      chunks.push(buffer);
+    });
+
+    req.on('end', () => {
+      if (bodyLimitExceeded) {
+        return;
+      }
+
+      resolve(Buffer.concat(chunks));
+    });
+
+    req.on('error', (error) => {
+      reject(error);
+    });
+  });
+}
+
+
 export function readRequestJson(req: Readable, options: ReadRequestJsonOptions = {}): Promise<any> {
   const providedBodyLimit = options.bodyLimit;
   const bodyLimit =

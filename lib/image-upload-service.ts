@@ -351,3 +351,7 @@ export class ImageUploadService {
     this.cleanupDirectory(path.join(this.uploadsDir, batchId));
   }
 }
+
+export function createImageUploadService(options: UploadServiceOptions) {
+  return new ImageUploadService(options);
+}

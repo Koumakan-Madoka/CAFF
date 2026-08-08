@@ -34,6 +34,22 @@ function resolveContentType(filePath: string) {
     return 'image/svg+xml';
   }
 
+  if (ext === '.png') {
+    return 'image/png';
+  }
+
+  if (ext === '.jpg' || ext === '.jpeg') {
+    return 'image/jpeg';
+  }
+
+  if (ext === '.webp') {
+    return 'image/webp';
+  }
+
+  if (ext === '.gif') {
+    return 'image/gif';
+  }
+
   return 'application/octet-stream';
 }
 
