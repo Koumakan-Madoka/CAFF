@@ -75,3 +75,5 @@ Why: 首次把能力判定写进 models domain 契约，并在 conversation/mess
 - OQ 4: 文件选择入口是否与拖拽/粘贴同 Phase；预览/移除交互形态；非法图片的即时提示样式。
 - OQ 5: 消息时间线图片渲染（缩略图/原图/降级态）；与现有 trace pill/status 语言一致性。
 - 需求→证据映射表：AC-C1/C2 的 desktop + 375px 浏览器证据计划。
+
+**UI Gate 已提交（2026-08-09 @烁烁）**：见 [ui-design-gate.md](./ui-design-gate.md)。收敛要点：选图主入口 + 粘贴同 Phase、拖拽延后；attachment strip 预览/移除；时间线 image-grid + 占位降级 + failed-tone 阻断标注；AC-C1/C2 desktop/375px 证据映射表已备。
