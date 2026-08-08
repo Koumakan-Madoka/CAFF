@@ -92,9 +92,9 @@ status: design_gate_submitted
 
 ## 5. 对实现的接口约定（给 @opus）
 
-1. `icons.svg` 需新增 `icon-image` symbol（设计稿：矩形框 + 内含圆形太阳 + 波浪山形线，`stroke-width=1.75`，24 viewBox）。
+1. `public/assets/icons.svg` 需新增 `icon-image` symbol（注意实际路径带 `public/assets/` 前缀，非仓库根裸 `icons.svg`；设计稿：矩形框 + 内含圆形太阳 + 波浪山形线，`stroke-width=1.75`，24 viewBox）。
 2. composer DOM 插入点：`composer-inner` 之前新增 `#composer-attachments` 容器；附件按钮插入 `composer-inner` 内 textarea 之前。
 3. 时间线渲染入口：`message-timeline.js` 新增 `renderImageBlocks(message)`，被三路径（历史/SSE/刷新）统一调用。
-4. 常量（前端预检与服务端校验同源）：`IMAGE_MIME_WHITELIST`、`MAX_IMAGE_BYTES=10MB`、`MAX_IMAGES_PER_MESSAGE=5`——建议定义在共享模块，前端 import，服务端复用，避免双写漂移。
+4. 常量（前端预检与服务端校验同源）：新建 `lib/image-constants.ts`，导出 `IMAGE_MIME_WHITELIST`（png/jpeg/webp/gif）、`MAX_IMAGE_BYTES=10MB`、`MAX_IMAGES_PER_MESSAGE=5`——前后端同 import，避免双写漂移（仓库无 `shared/` 目录，参照 `lib/chat-app-store.ts:19,77` 头像 MIME+2MB 校验先例）。
 
 [烁烁/k3-256k🐾]
