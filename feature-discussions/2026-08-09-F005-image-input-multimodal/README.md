@@ -50,6 +50,12 @@ Kickoff lead（@opus/布偶猫）完成架构发现后，进入 Design Gate 讨�
 - **B. SDK media/结构化参数**：若 `@earendil-works/pi-coding-agent@0.80.10` 暴露 image/content-block prompt 参数，则直传结构化 image，模型一定"看见"。需 spike 验证 SDK 能力。
 - **倾向**：B 优先（符合"图片是一等内容"愿景），A 为退化路径；两者都要求不剥图 fail closed。**需 operator 授权 spike 验证 SDK 0.80.10 的 prompt 输入面。**
 
+**✅ D1 Spike 结论（2026-08-09 @opus，读全局安装 SDK 0.80.10 type defs）**：
+
+**B 可行，且是一等公民**。`session.prompt(text, options)` 的 `PromptOptions` 已声明 `images?: ImageContent[]`（`dist/core/agent-session.d.ts:130-141`），`ImageContent = { type: 'image', data: string /* base64 */, mimeType: string }`（`pi-ai/dist/types.d.ts:239-243`）。`steer(text, images?)` / `followUp(text, images?)` 同样接受 `ImageContent[]`。SDK 还自带 `cli/file-processor.ts` 把 `@file` 参数转成 `{ text, images }`（含 `autoResizeImages` 2000×2000 上限），印证结构化 image 是官方输入路径。
+
+**D1 定案：采用 B（结构化 `session.prompt(prompt, { images })`）**，图片 base64 + mimeType 直传模型上下文。实现透传路径已定位：`agent-executor.ts:1456` → `startRun()`（`pi-runtime.ts:347`）→ IPC `{type:'start', prompt, config}`（`pi-runtime.ts:968`）→ `normalizeStartCommand`（`pi-sdk-host.mjs:61`）→ `runAgentRuntime(runtime, prompt)`（`pi-sdk-host.mjs:208`）→ `session.prompt(prompt)`（`pi-sdk-host.mjs:225`）。需在 `start` 命令增加 `images` 字段并透传至 `session.prompt` 第二参。A（路径 hint）降级为 Non-goal——不引入双路径复杂度。
+
 ### D2: capability 落库形态（OQ 2）— 价值取舍
 
 - **A. `models.json` 顶层 `supportsImageInput: boolean`**：operator 在 provider 配置里显式看到并确认，`models.json` 优先、catalog 缺失即 false。语义清晰、可审计，但扩展了 F004 刚钉死的 `models.json` 契约（F004 说"目录元数据不得静默升级 runtime 契约"——这里是**显式**升级，需 operator 点头）。
