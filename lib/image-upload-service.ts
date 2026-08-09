@@ -123,9 +123,9 @@ export class ImageUploadService {
     return null;
   }
 
-  rejectPendingBatch(batchId: string, code: string, reason: string) {
+  rejectPendingBatch(batchId: string, code: string, reason: string, leaseToken?: string) {
     try {
-      this.store.rejectImageUploadBatch(batchId, code, new Date().toISOString());
+      this.store.rejectImageUploadBatch(batchId, code + ': ' + reason, leaseToken);
     } catch {}
   }
 
@@ -182,20 +182,21 @@ export class ImageUploadService {
       };
     }
 
-    const inFlightPromise = this.inFlight.get(clientRequestId);
+    const inFlightKey = `${conversationId}\u001f${clientRequestId}`;
+    const inFlightPromise = this.inFlight.get(inFlightKey);
 
     if (inFlightPromise) {
       return inFlightPromise;
     }
 
     const run = this.performUpload(conversationId, clientRequestId, requestFingerprint, candidates);
-    this.inFlight.set(clientRequestId, run);
+    this.inFlight.set(inFlightKey, run);
 
     try {
       const outcome = await run;
       return outcome;
     } finally {
-      this.inFlight.delete(clientRequestId);
+      this.inFlight.delete(inFlightKey);
     }
   }
 
@@ -222,10 +223,26 @@ export class ImageUploadService {
         batch.batchId,
         newToken,
         new Date(Date.now() + UPLOAD_LEASE_TTL_MS).toISOString(),
-        new Date().toISOString()
+        new Date().toISOString(),
+        requestFingerprint,
+        candidates.length
       );
 
       if (!tookOver) {
+        const payloadChanged =
+          batch.requestFingerprint !== requestFingerprint || Number(batch.expectedCount) !== candidates.length;
+
+        if (payloadChanged) {
+          const existingImages = this.store
+            .listImageUploadsByBatch(batch.batchId)
+            .map((child: any) => ({ imageId: child.imageId }));
+
+          return {
+            kind: 'conflict',
+            existingImages,
+          };
+        }
+
         return {
           kind: 'in_progress',
           retryAfterMs: UPLOAD_RETRY_AFTER_MS,
@@ -258,7 +275,7 @@ export class ImageUploadService {
 
     if (validationErrors.length > 0) {
       const first = validationErrors[0];
-      this.rejectPendingBatch(batch.batchId, first.code, first.reason);
+      this.rejectPendingBatch(batch.batchId, first.code, first.reason, leaseToken);
       this.cleanupUploadArtifacts(batch.batchId, leaseToken);
       return {
         kind: 'error',
@@ -412,11 +429,37 @@ export class ImageUploadService {
     const pending = this.store.listPendingImageUploadBatches();
 
     for (const batch of pending) {
-      const complete = this.verifyFinalDir(batch.batchId, batch.expectedCount);
+      const leaseActive = batch.leaseExpiresAt && new Date(batch.leaseExpiresAt).getTime() > Date.now();
+
+      if (leaseActive) {
+        continue;
+      }
+
+      const newToken = randomUUID();
+      const tookOver = this.store.takeoverImageUploadLease(
+        batch.batchId,
+        newToken,
+        new Date(Date.now() + UPLOAD_LEASE_TTL_MS).toISOString(),
+        now,
+        batch.requestFingerprint,
+        batch.expectedCount
+      );
+
+      if (!tookOver) {
+        continue;
+      }
+
+      const ownedBatch = this.store.getImageUploadBatch(batch.batchId);
+
+      if (!ownedBatch) {
+        continue;
+      }
+
+      const complete = this.verifyFinalDir(ownedBatch.batchId, ownedBatch.expectedCount);
 
       if (complete) {
         const children: Array<any> = [];
-        const finalDir = this.finalDirFor(batch.batchId);
+        const finalDir = this.finalDirFor(ownedBatch.batchId);
 
         let entries: string[] = [];
 
@@ -424,7 +467,7 @@ export class ImageUploadService {
           entries = fs.readdirSync(finalDir);
         } catch {}
 
-        for (let slot = 0; slot < batch.expectedCount; slot += 1) {
+        for (let slot = 0; slot < ownedBatch.expectedCount; slot += 1) {
           const match = entries.find((name) => name.startsWith(`${slot}-`));
 
           if (!match) {
@@ -438,10 +481,10 @@ export class ImageUploadService {
 
           children.push({
             imageId: randomUUID(),
-            batchId: batch.batchId,
+            batchId: ownedBatch.batchId,
             slot,
             fileName: match.replace(/^\d+-/, ''),
-            storedPath: `/uploads/${batch.batchId}/${match}`,
+            storedPath: `/uploads/${ownedBatch.batchId}/${match}`,
             mimeType: header ? header.mimeType : 'application/octet-stream',
             width: header ? header.width : null,
             height: header ? header.height : null,
@@ -449,25 +492,27 @@ export class ImageUploadService {
           });
         }
 
-        if (children.length !== batch.expectedCount) {
-          this.cleanupDirectory(this.finalDirFor(batch.batchId));
+        if (children.length !== ownedBatch.expectedCount) {
+          this.cleanupDirectory(this.finalDirFor(ownedBatch.batchId));
           continue;
         }
 
         try {
           this.store.finalizeImageUploadBatch({
-            batchId: batch.batchId,
-            leaseToken: batch.leaseToken,
+            batchId: ownedBatch.batchId,
+            leaseToken: ownedBatch.leaseToken,
             completedAt: now,
             children,
           });
         } catch (error) {
           if ((error as any).code === 'IMAGE_BATCH_FENCED') {
-            this.cleanupDirectory(this.finalDirFor(batch.batchId));
+            continue;
           }
+
+          throw error;
         }
       } else {
-        this.cleanupDirectory(this.finalDirFor(batch.batchId));
+        this.cleanupDirectory(this.finalDirFor(ownedBatch.batchId));
       }
     }
   }

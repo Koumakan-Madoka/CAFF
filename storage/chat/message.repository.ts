@@ -93,6 +93,7 @@ export class ChatMessageRepository {
   pageByConversationStatement: any;
   pageBeforeConversationStatement: any;
   getStatement: any;
+  getByClientRequestStatement: any;
   updateStatement: any;
   appendTextStatement: any;
   findCompletedCrossConversationReplyStatement: any;
@@ -116,8 +117,15 @@ export class ChatMessageRepository {
         run_id,
         error_message,
         metadata_json,
+        client_request_id,
         created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    this.getByClientRequestStatement = db.prepare(`
+      SELECT *
+      FROM chat_messages
+      WHERE conversation_id = ? AND client_request_id = ?
+      LIMIT 1
     `);
     this.listByConversationStatement = db.prepare(`
       SELECT *
@@ -193,10 +201,22 @@ export class ChatMessageRepository {
       payload.runId || null,
       payload.errorMessage || null,
       payload.metadataJson,
+      payload.clientRequestId || null,
       payload.createdAt
     );
 
     return this.get(payload.id);
+  }
+
+  getByClientRequestId(conversationId: string, clientRequestId: string) {
+    const normalizedConversationId = String(conversationId || '').trim();
+    const normalizedClientRequestId = String(clientRequestId || '').trim();
+
+    if (!normalizedConversationId || !normalizedClientRequestId) {
+      return null;
+    }
+
+    return this.getByClientRequestStatement.get(normalizedConversationId, normalizedClientRequestId) || null;
   }
 
   findCompletedCrossConversationReply(payload: any) {

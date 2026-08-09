@@ -381,6 +381,38 @@ test('reconcile cleans an incomplete pending final dir and keeps batch pending',
   assert.equal(ctx.store.countImageUploadsByBatch(batch.batchId), 0);
 });
 
+test('reconcile does not delete final dir completed by another lease owner', async (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+
+  const batch = ctx.store.createImageUploadBatch({
+    conversationId: ctx.conversationId,
+    clientRequestId: 'req-newowner',
+    requestFingerprint: ctx.service.computeRequestFingerprint([pngCandidate()]),
+    expectedCount: 1,
+    leaseExpiresAt: new Date(Date.now() - 60_000).toISOString(),
+  });
+
+  const finalDir = path.join(ctx.uploadsDir, batch.batchId);
+  fs.mkdirSync(finalDir, { recursive: true });
+  fs.writeFileSync(path.join(finalDir, '0-image.png'), pngBuffer(80, 60));
+
+  const newOwnerToken = 'new-owner-token';
+  ctx.store.takeoverImageUploadLease(
+    batch.batchId,
+    newOwnerToken,
+    new Date(Date.now() + 60_000).toISOString(),
+    new Date().toISOString(),
+    batch.requestFingerprint,
+    1
+  );
+
+  ctx.service.reconcilePendingBatches();
+
+  assert.equal(fs.existsSync(finalDir), true, 'final dir owned by active new owner must not be deleted');
+  assert.equal(fs.readdirSync(finalDir).length, 1);
+});
+
 test('gcUnconsumedCompleteBatches purges expired unconsumed complete batch with children and files', (t) => {
   const ctx = setup();
   t.after(ctx.cleanup);

@@ -113,7 +113,7 @@ test('fenced lease takeover succeeds only when lease expired (CAS)', (t) => {
     leaseExpiresAt: validExpiry,
   });
 
-  const takeoverWhileValid = store.takeoverImageUploadLease(activeBatch.batchId, 'new-token', validExpiry, nowIso());
+  const takeoverWhileValid = store.takeoverImageUploadLease(activeBatch.batchId, 'new-token', validExpiry, nowIso(), 'fp-active', 1);
   assert.equal(takeoverWhileValid, false, 'non-expired lease must not be taken over');
 
   const expiredExpiry = new Date(Date.now() - 60_000).toISOString();
@@ -129,12 +129,58 @@ test('fenced lease takeover succeeds only when lease expired (CAS)', (t) => {
     expiredBatch.batchId,
     'new-token',
     validExpiry,
-    nowIso()
+    nowIso(),
+    'fp-expired',
+    1
   );
   assert.equal(takeoverAfterExpiry, true, 'expired lease must be taken over');
 
   const batchAfter = store.getImageUploadBatch(expiredBatch.batchId);
   assert.equal(batchAfter.leaseToken, 'new-token');
+});
+
+test('takeover is rejected when payload fingerprint differs (stale payload cannot complete old batch)', (t) => {
+  const store = createStore();
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(store.__tempDir, { recursive: true, force: true });
+  });
+
+  const conversationId = createConversation(store);
+  const expiredExpiry = new Date(Date.now() - 60_000).toISOString();
+
+  const batch = store.createImageUploadBatch({
+    conversationId,
+    clientRequestId: 'req-payload',
+    requestFingerprint: 'original-fp',
+    expectedCount: 1,
+    leaseExpiresAt: expiredExpiry,
+  });
+
+  const wrongFingerprint = store.takeoverImageUploadLease(
+    batch.batchId,
+    'new-token',
+    new Date(Date.now() + 60_000).toISOString(),
+    new Date().toISOString(),
+    'different-fp',
+    1
+  );
+  assert.equal(wrongFingerprint, false, 'fingerprint mismatch must reject takeover');
+
+  const wrongCount = store.takeoverImageUploadLease(
+    batch.batchId,
+    'new-token',
+    new Date(Date.now() + 60_000).toISOString(),
+    new Date().toISOString(),
+    'original-fp',
+    2
+  );
+  assert.equal(wrongCount, false, 'expected_count mismatch must reject takeover');
+
+  const batchAfter = store.getImageUploadBatch(batch.batchId);
+  assert.equal(batchAfter.leaseToken !== 'new-token', true);
 });
 
 test('complete batch requires owner lease token (stale worker fenced off)', (t) => {
@@ -211,7 +257,7 @@ test('reject batch persists rejected_reason as terminal state', (t) => {
     expectedCount: 1,
   });
 
-  store.rejectImageUploadBatch(batch.batchId, 'ANIMATED_GIF_REJECTED', new Date().toISOString());
+  store.rejectImageUploadBatch(batch.batchId, 'ANIMATED_GIF_REJECTED', batch.leaseToken);
   const after = store.getImageUploadBatch(batch.batchId);
   assert.equal(after.status, 'rejected');
   assert.equal(after.rejectedReason, 'ANIMATED_GIF_REJECTED');

@@ -841,6 +841,13 @@ CREATE INDEX IF NOT EXISTS idx_image_uploads_status ON image_uploads (status);
 
   ensureColumn(db, 'image_upload_batches', 'consumed_at', 'consumed_at TEXT');
 
+  ensureColumn(db, 'chat_messages', 'client_request_id', 'client_request_id TEXT');
+  db.exec(`
+CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_messages_conversation_client_request
+  ON chat_messages (conversation_id, client_request_id)
+  WHERE client_request_id IS NOT NULL AND client_request_id <> ''
+  `);
+
   ensureChatMessageSearchSchema(db);
   ensureChatMemoryCardSchema(db);
   reconcileSystemModelFamilyRoles(db);

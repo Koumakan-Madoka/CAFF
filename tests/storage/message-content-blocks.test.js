@@ -154,6 +154,79 @@ test('createMessage attaches images in same transaction (atomic)', (t) => {
   assert.equal(after[0].attachedMessageId, message.id);
 });
 
+test('createMessage with same clientRequestId + imageIds returns canonical message (lost-response retry)', (t) => {
+  const store = createStore();
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(store.__tempDir, { recursive: true, force: true });
+  });
+
+  const conversationId = createConversation(store);
+  const { imageId } = createStagedImage(store, conversationId, 'img-idem', 'req-upload');
+
+  const first = store.createMessage({
+    conversationId,
+    role: 'user',
+    senderName: 'You',
+    content: 'first',
+    imageIds: [imageId],
+    metadata: { clientRequestId: 'msg-req-1' },
+  });
+
+  const retry = store.createMessage({
+    conversationId,
+    role: 'user',
+    senderName: 'You',
+    content: 'first',
+    imageIds: [imageId],
+    metadata: { clientRequestId: 'msg-req-1' },
+  });
+
+  assert.equal(retry.id, first.id);
+  assert.equal(retry.content, 'first');
+
+  const images = store.listImageUploadsByIds([imageId]);
+  assert.equal(images.length, 1);
+  assert.equal(images[0].status, 'attached');
+  assert.equal(images[0].attachedMessageId, first.id);
+});
+
+test('createMessage with same clientRequestId but different content returns the original canonical message', (t) => {
+  const store = createStore();
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(store.__tempDir, { recursive: true, force: true });
+  });
+
+  const conversationId = createConversation(store);
+  const { imageId } = createStagedImage(store, conversationId, 'img-idem2', 'req-upload2');
+
+  const first = store.createMessage({
+    conversationId,
+    role: 'user',
+    senderName: 'You',
+    content: 'original',
+    imageIds: [imageId],
+    metadata: { clientRequestId: 'msg-req-2' },
+  });
+
+  const retry = store.createMessage({
+    conversationId,
+    role: 'user',
+    senderName: 'You',
+    content: 'changed',
+    imageIds: [imageId],
+    metadata: { clientRequestId: 'msg-req-2' },
+  });
+
+  assert.equal(retry.id, first.id);
+  assert.equal(retry.content, 'original');
+});
+
 test('createMessage rejects already-attached image', (t) => {
   const store = createStore();
   t.after(() => {

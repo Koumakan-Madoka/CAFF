@@ -98,6 +98,7 @@ export class ImageUploadRepository {
       UPDATE image_upload_batches
       SET lease_token = ?, lease_expires_at = ?
       WHERE batch_id = ? AND status = 'pending' AND lease_expires_at < ?
+        AND request_fingerprint = ? AND expected_count = ?
     `);
     this.completeBatchStatement = db.prepare(`
       UPDATE image_upload_batches
@@ -107,7 +108,7 @@ export class ImageUploadRepository {
     this.rejectBatchStatement = db.prepare(`
       UPDATE image_upload_batches
       SET status = 'rejected', rejected_reason = ?
-      WHERE batch_id = ? AND status = 'pending'
+      WHERE batch_id = ? AND status = 'pending' AND lease_token = ?
     `);
     this.insertChildStatement = db.prepare(`
       INSERT INTO image_uploads (
@@ -214,8 +215,8 @@ export class ImageUploadRepository {
     return normalizeBatchRow(this.getBatchByIdStatement.get(batchId));
   }
 
-  takeoverLease(batchId: string, newToken: string, newExpiry: string, now: string) {
-    const result = this.takeoverLeaseStatement.run(newToken, newExpiry, batchId, now);
+  takeoverLease(batchId: string, newToken: string, newExpiry: string, now: string, requestFingerprint: string, expectedCount: number) {
+    const result = this.takeoverLeaseStatement.run(newToken, newExpiry, batchId, now, requestFingerprint, expectedCount);
     return result.changes > 0;
   }
 
@@ -224,8 +225,8 @@ export class ImageUploadRepository {
     return result.changes > 0;
   }
 
-  rejectBatch(batchId: string, reason: string, completedAt: string) {
-    const result = this.rejectBatchStatement.run(reason, batchId);
+  rejectBatch(batchId: string, reason: string, leaseToken: string) {
+    const result = this.rejectBatchStatement.run(reason, batchId, leaseToken);
     return result.changes > 0;
   }
 

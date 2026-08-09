@@ -1026,6 +1026,7 @@ export class ChatAppStore {
           runId: payload.runId || null,
           errorMessage: payload.errorMessage || null,
           metadataJson: serializeJson(payload.metadata),
+          clientRequestId: payload.clientRequestId || null,
           createdAt,
         });
 
@@ -1069,6 +1070,33 @@ export class ChatAppStore {
 
       this.finalizeImageUploadBatchTransaction = this.db.transaction((payload: any) => {
         const children = Array.isArray(payload.children) ? payload.children : [];
+        const batch = this.imageUploadRepository.getBatchById(payload.batchId);
+
+        if (!batch) {
+          const missingBatchError = new Error('Image upload batch does not exist') as any;
+          missingBatchError.code = 'IMAGE_BATCH_NOT_FOUND';
+          throw missingBatchError;
+        }
+
+        const expectedCount = Number(batch.expectedCount);
+
+        if (children.length !== expectedCount) {
+          const countError = new Error(
+            `Finalize rejected: expected ${expectedCount} children, got ${children.length}`
+          ) as any;
+          countError.code = 'IMAGE_BATCH_COUNT_MISMATCH';
+          throw countError;
+        }
+
+        const slots = children.map((child: any) => child.slot).sort((a: number, b: number) => a - b);
+
+        for (let i = 0; i < slots.length; i += 1) {
+          if (slots[i] !== i) {
+            const slotError = new Error('Finalize rejected: slots are not continuous 0..n-1') as any;
+            slotError.code = 'IMAGE_BATCH_SLOT_MISMATCH';
+            throw slotError;
+          }
+        }
 
         for (const child of children) {
           this.insertImageUpload({
@@ -1106,6 +1134,12 @@ export class ChatAppStore {
 
       this.purgeConversationImageUploadsTransaction = this.db.transaction((payload: any) => {
         return this.imageUploadRepository.purgeByConversation(payload.conversationId);
+      });
+
+      this.deleteConversationTransaction = this.db.transaction((payload: any) => {
+        this.imageUploadRepository.purgeByConversation(payload.conversationId);
+        this.conversationRepository.delete(payload.conversationId);
+        return { deleted: true };
       });
 
       this.persistCrossConversationDeliveryTransaction = this.db.transaction((payload: any) => {
@@ -2166,8 +2200,7 @@ export class ChatAppStore {
   }
 
   deleteConversation(conversationId: any) {
-    this.purgeConversationImageUploadsTransaction({ conversationId });
-    this.conversationRepository.delete(conversationId);
+    return this.deleteConversationTransaction({ conversationId });
   }
 
   getImageUploadBatchByKey(conversationId: any, clientRequestId: any) {
@@ -2199,12 +2232,14 @@ export class ChatAppStore {
     });
   }
 
-  takeoverImageUploadLease(batchId: any, newToken: any, newExpiry: any, now: any) {
+  takeoverImageUploadLease(batchId: any, newToken: any, newExpiry: any, now: any, requestFingerprint: any, expectedCount: any) {
     return this.imageUploadRepository.takeoverLease(
       String(batchId || ''),
       String(newToken || randomUUID()).trim(),
       newExpiry || null,
-      now || nowIso()
+      now || nowIso(),
+      String(requestFingerprint || ''),
+      Number.isInteger(expectedCount) ? expectedCount : -1
     );
   }
 
@@ -2225,11 +2260,11 @@ export class ChatAppStore {
     });
   }
 
-  rejectImageUploadBatch(batchId: any, reason: any, completedAt: any) {
+  rejectImageUploadBatch(batchId: any, reason: any, leaseToken: any) {
     return this.imageUploadRepository.rejectBatch(
       String(batchId || ''),
       String(reason || ''),
-      completedAt || nowIso()
+      String(leaseToken || '')
     );
   }
 
@@ -2604,6 +2639,23 @@ export class ChatAppStore {
       throw contentBlockError;
     }
 
+    const clientRequestId = String(metadata.clientRequestId || payload.clientRequestId || '').trim();
+
+    if (clientRequestId) {
+      const existingByRequest = this.messageRepository.getByClientRequestId(
+        payload.conversationId,
+        clientRequestId
+      );
+
+      if (existingByRequest) {
+        const canonical = normalizeMessageRow(existingByRequest);
+
+        if (canonical) {
+          return canonical;
+        }
+      }
+    }
+
     const rawImageIds = Array.isArray(payload.imageIds) ? payload.imageIds : [];
     const imageIds = Array.from(new Set(rawImageIds.map((id: any) => String(id || '').trim()).filter(Boolean)));
 
@@ -2704,6 +2756,7 @@ export class ChatAppStore {
       metadata: nextMetadata,
       imageIds,
       consumedBatchIds: consumedBatchIdsForMessage,
+      clientRequestId,
       createdAt: payload.createdAt,
     });
   }
