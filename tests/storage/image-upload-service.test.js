@@ -78,6 +78,29 @@ test('upload returns ordered imageIds and persists staged rows', async (t) => {
   assert.equal(finalFiles.length, 2);
 });
 
+test('stores uploaded files with canonical image extension and magic-byte mime, ignoring client extension', async (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+
+  const outcome = await ctx.service.upload(ctx.conversationId, 'req-xss', [
+    { fieldName: 'files', fileName: 'payload.html', mimeType: 'image/png', content: pngBuffer(100, 50) },
+  ]);
+
+  assert.equal(outcome.kind, 'ok');
+
+  const batch = ctx.store.getImageUploadBatchByKey(ctx.conversationId, 'req-xss');
+  const children = ctx.store.listImageUploadsByBatch(batch.batchId);
+  assert.equal(children.length, 1);
+  assert.equal(children[0].mimeType, 'image/png');
+  assert.match(children[0].storedPath, /\.png$/u);
+  assert.doesNotMatch(children[0].storedPath, /\.html$/u);
+  assert.match(children[0].fileName, /\.png$/u);
+
+  const finalFiles = fs.readdirSync(path.join(ctx.uploadsDir, batch.batchId));
+  assert.equal(finalFiles.length, 1);
+  assert.match(finalFiles[0], /\.png$/u);
+});
+
 test('same key + same fingerprint returns canonical result (idempotent retry)', async (t) => {
   const ctx = setup();
   t.after(ctx.cleanup);
@@ -146,10 +169,7 @@ test('rejects animated GIF', async (t) => {
   const ctx = setup();
   t.after(ctx.cleanup);
 
-  const gif = Buffer.alloc(13);
-  gif.write('GIF89a', 0, 'ascii');
-  gif.writeUInt16LE(10, 6);
-  gif.writeUInt16LE(10, 8);
+  const gif = fs.readFileSync(path.join(__dirname, '..', 'runtime', 'fixtures', 'real-animated.gif'));
 
   const outcome = await ctx.service.upload(ctx.conversationId, 'req-1', [
     { fieldName: 'files', fileName: 'anim.gif', mimeType: 'image/gif', content: gif },

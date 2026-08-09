@@ -6,6 +6,14 @@ import type { ServerResponse } from 'node:http';
 import config = require('../app/config');
 import { sendText } from './response';
 
+const IMAGE_EXTENSION_TO_MIME: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+};
+
 export type StaticFileServeOptions = {
   publicDir?: string;
 };
@@ -78,9 +86,15 @@ export function serveStaticFile(res: ServerResponse, pathname: string, options: 
     return;
   }
 
+  const isUpload = normalizedPath.startsWith('uploads/');
+  const contentType = isUpload
+    ? IMAGE_EXTENSION_TO_MIME[path.extname(filePath).toLowerCase()] || 'application/octet-stream'
+    : resolveContentType(filePath);
+
   res.writeHead(200, {
-    'Content-Type': resolveContentType(filePath),
+    'Content-Type': contentType,
     'Cache-Control': 'no-store',
+    'X-Content-Type-Options': 'nosniff',
   });
   fs.createReadStream(filePath).pipe(res);
 }

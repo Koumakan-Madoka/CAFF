@@ -1218,29 +1218,6 @@ export function createAgentExecutor(options: any = {}) {
           projectDir: resolvedProjectDir,
         })
       : [];
-    const promptInput = {
-      conversation,
-      agent,
-      agentConfig,
-      resolvedPersonaSkills,
-      resolvedConversationSkills,
-      sandbox: agentSandbox,
-      projectDir: resolvedProjectDir,
-      agents: conversation.agents,
-      messages: promptMessages,
-      privateMessages,
-      relatedMemorySegments,
-      trigger: queueItem,
-      remainingSlots,
-      routingMode,
-      allowHandoffs,
-      agentToolRelativePath,
-      modeLoadingStrategy,
-      forceDynamicConversationSkillIds: ALWAYS_DYNAMIC_MODE_SKILL_IDS,
-      browserCliPath,
-    };
-    const promptSections = buildAgentTurnPromptSections(promptInput);
-    const prompt = formatAgentTurnPromptSections(promptSections);
     const readImageBytes = (block: any) => {
       const url = String(block && block.url || '').trim();
       if (!uploadsDir || !url.startsWith('/uploads/')) {
@@ -1261,6 +1238,31 @@ export function createAgentExecutor(options: any = {}) {
     });
     const imageBlock = imageInvocation.block;
     const invocationImages = imageInvocation.images;
+    const projectedConversationHistory = imageInvocation.projectedText || '';
+    const promptInput = {
+      conversation,
+      agent,
+      agentConfig,
+      resolvedPersonaSkills,
+      resolvedConversationSkills,
+      sandbox: agentSandbox,
+      projectDir: resolvedProjectDir,
+      agents: conversation.agents,
+      messages: promptMessages,
+      privateMessages,
+      relatedMemorySegments,
+      trigger: queueItem,
+      remainingSlots,
+      routingMode,
+      allowHandoffs,
+      agentToolRelativePath,
+      modeLoadingStrategy,
+      forceDynamicConversationSkillIds: ALWAYS_DYNAMIC_MODE_SKILL_IDS,
+      browserCliPath,
+      projectedConversationHistory,
+    };
+    const promptSections = buildAgentTurnPromptSections(promptInput);
+    const prompt = formatAgentTurnPromptSections(promptSections);
     const runtimeConfigResolved = Boolean(agent && agent.runtimeConfig && typeof agent.runtimeConfig === 'object');
     const provider = runtimeConfigResolved
       ? agentConfig.provider

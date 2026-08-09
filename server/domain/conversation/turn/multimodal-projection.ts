@@ -125,3 +125,33 @@ export function projectMultimodalPrompt(messages: any, options: any = {}) {
     budgetReason,
   };
 }
+
+export function buildProjectedHistoryText(messages: any, options: any = {}) {
+  const maxMessages = Number.isInteger(options.maxMessages) ? options.maxMessages : 24;
+  const windowed = (Array.isArray(messages) ? messages : []).slice(-maxMessages);
+  const textParts: string[] = [];
+
+  for (let messageOrdinal = 0; messageOrdinal < windowed.length; messageOrdinal += 1) {
+    const message = windowed[messageOrdinal];
+    const imageBlocks = messageImageBlocks(message);
+    const text = String(message && message.content || '').trim();
+
+    if (!message || message.role !== 'user' || imageBlocks.length === 0) {
+      textParts.push(text);
+      continue;
+    }
+
+    let messageText = text;
+    let hadText = Boolean(messageText);
+
+    for (let imageOrdinal = 0; imageOrdinal < imageBlocks.length; imageOrdinal += 1) {
+      const marker = imageMarkerFor(messageOrdinal, imageOrdinal);
+      messageText = ordinalText(messageText, marker, hadText);
+      hadText = true;
+    }
+
+    textParts.push(messageText);
+  }
+
+  return textParts.filter(Boolean).join('\n\n').trim();
+}

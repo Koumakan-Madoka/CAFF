@@ -12,6 +12,7 @@ const {
   STAGED_IMAGE_TTL_MS,
   UPLOAD_LEASE_TTL_MS,
   UPLOAD_RETRY_AFTER_MS,
+  canonicalImageExtensionForMime,
 } = require('./image-constants');
 const { parseImageHeader } = require('./image-header-parser');
 
@@ -276,8 +277,10 @@ export class ImageUploadService {
 
       for (let i = 0; i < candidates.length; i += 1) {
         const candidate = candidates[i];
-        const safeFileName = this.normalizeFileName(candidate.fileName);
-        const writtenName = `${i}-${safeFileName}`;
+        const parsed = parseImageHeader(candidate.content);
+        const header = parsed.ok ? parsed.header : null;
+        const canonicalExt = header ? canonicalImageExtensionForMime(header.mimeType) : null;
+        const writtenName = `${i}-image.${canonicalExt || 'bin'}`;
         fs.writeFileSync(path.join(tempDir, writtenName), candidate.content);
       }
 
@@ -300,16 +303,17 @@ export class ImageUploadService {
       const candidate = candidates[i];
       const parsed = parseImageHeader(candidate.content);
       const header = parsed.ok ? parsed.header : null;
-      const safeFileName = this.normalizeFileName(candidate.fileName);
-      const storedPath = `/uploads/${batch.batchId}/${i}-${safeFileName}`;
+      const canonicalExt = header ? canonicalImageExtensionForMime(header.mimeType) : null;
+      const storedName = `${i}-image.${canonicalExt || 'bin'}`;
+      const storedPath = `/uploads/${batch.batchId}/${storedName}`;
 
       children.push({
         imageId: randomUUID(),
         batchId: batch.batchId,
         slot: i,
-        fileName: safeFileName,
+        fileName: storedName,
         storedPath,
-        mimeType: candidate.mimeType,
+        mimeType: header ? header.mimeType : candidate.mimeType,
         width: header ? header.width : null,
         height: header ? header.height : null,
         sizeBytes: candidate.content.length,
@@ -438,7 +442,7 @@ export class ImageUploadService {
             slot,
             fileName: match.replace(/^\d+-/, ''),
             storedPath: `/uploads/${batch.batchId}/${match}`,
-            mimeType: 'application/octet-stream',
+            mimeType: header ? header.mimeType : 'application/octet-stream',
             width: header ? header.width : null,
             height: header ? header.height : null,
             sizeBytes: content.length,

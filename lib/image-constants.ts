@@ -23,6 +23,17 @@ export const ALLOWED_IMAGE_MIME_TYPES: ReadonlyArray<string> = [
 
 export const ALLOWED_IMAGE_EXTENSIONS: ReadonlyArray<string> = ['png', 'jpg', 'jpeg', 'webp', 'gif'];
 
+export const MIME_TO_CANONICAL_EXTENSION: Readonly<Record<string, string>> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/webp': 'webp',
+  'image/gif': 'gif',
+};
+
+export function canonicalImageExtensionForMime(mimeType: string) {
+  return MIME_TO_CANONICAL_EXTENSION[String(mimeType || '').trim()] || null;
+}
+
 export const STAGED_IMAGE_TTL_MS = 24 * 60 * 60 * 1000;
 
 export const UPLOAD_LEASE_TTL_MS = 10 * 60 * 1000;

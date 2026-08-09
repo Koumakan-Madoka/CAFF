@@ -2,15 +2,8 @@ import {
   MAX_IMAGES_PER_INVOCATION,
   MAX_IMAGE_PROMPT_BYTES,
 } from '../../../../lib/image-constants';
-import { projectMultimodalPrompt } from './multimodal-projection';
-
-const MIME_BY_EXTENSION: Record<string, string> = {
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.webp': 'image/webp',
-  '.gif': 'image/gif',
-};
+import { parseImageHeader } from '../../../../lib/image-header-parser';
+import { buildProjectedHistoryText, projectMultimodalPrompt } from './multimodal-projection';
 
 function normalize(value: any) {
   return typeof value === 'string' ? value.trim() : '';
@@ -65,14 +58,29 @@ export function resolveInvocationModelCapability(agent: any, modelCatalog: any) 
   };
 }
 
-function mimeTypeForUrl(url: any) {
-  const normalized = String(url || '').toLowerCase();
-  for (const [extension, mime] of Object.entries(MIME_BY_EXTENSION)) {
-    if (normalized.endsWith(extension)) {
-      return mime;
-    }
+function resolveImageMimeFromBytes(bytes: Buffer, persistedMime: string) {
+  const parsed = parseImageHeader(bytes);
+
+  if (!parsed.ok) {
+    return {
+      ok: false as const,
+      code: 'IMAGE_MAGIC_BYTE_MISMATCH',
+      reason: 'Image bytes do not match a supported image header',
+    };
   }
-  return 'image/png';
+
+  const canonical = parsed.header.mimeType;
+  const persisted = String(persistedMime || '').trim();
+
+  if (persisted && persisted !== canonical) {
+    return {
+      ok: false as const,
+      code: 'IMAGE_MIME_MISMATCH',
+      reason: `Persisted MIME ${persisted} does not match magic-byte ${canonical}`,
+    };
+  }
+
+  return { ok: true as const, mimeType: canonical };
 }
 
 export function buildInvocationImages(options: any = {}) {
@@ -80,7 +88,7 @@ export function buildInvocationImages(options: any = {}) {
   const modelCatalog = options.modelCatalog;
   const agent = options.agent;
   const readImageBytes = typeof options.readImageBytes === 'function' ? options.readImageBytes : null;
-  const imageMimeType = typeof options.imageMimeType === 'function' ? options.imageMimeType : mimeTypeForUrl;
+  const imageMimeType = typeof options.imageMimeType === 'function' ? options.imageMimeType : null;
   const maxImagesPerInvocation = Number.isInteger(options.maxImagesPerInvocation)
     ? options.maxImagesPerInvocation
     : MAX_IMAGES_PER_INVOCATION;
@@ -89,14 +97,15 @@ export function buildInvocationImages(options: any = {}) {
     : MAX_IMAGE_PROMPT_BYTES;
 
   const capability = resolveInvocationModelCapability(agent, modelCatalog);
-
-  const hasImages = promptMessages.some((message: any) =>
+  const maxMessages = Number.isInteger(options.maxMessages) ? options.maxMessages : 24;
+  const windowedMessages = promptMessages.slice(-maxMessages);
+  const hasImagesInWindow = windowedMessages.some((message: any) =>
     Array.isArray(message && message.contentBlocks)
     && message.contentBlocks.some((block: any) => block && block.type === 'image')
   );
 
-  if (!hasImages) {
-    return { block: null, images: [], capability };
+  if (!hasImagesInWindow) {
+    return { block: null, images: [], capability, projectedText: '' };
   }
 
   if (!capability.supportsImage) {
@@ -107,11 +116,12 @@ export function buildInvocationImages(options: any = {}) {
       },
       images: [],
       capability,
+      projectedText: '',
     };
   }
 
   const projection = projectMultimodalPrompt(promptMessages, {
-    maxMessages: options.maxMessages,
+    maxMessages,
     maxImages: maxImagesPerInvocation,
     maxPromptBytes: maxImagePromptBytes,
     readImage: (block: any) => {
@@ -133,6 +143,7 @@ export function buildInvocationImages(options: any = {}) {
       },
       images: [],
       capability,
+      projectedText: '',
     };
   }
 
@@ -145,17 +156,61 @@ export function buildInvocationImages(options: any = {}) {
       },
       images: [],
       capability,
+      projectedText: '',
     };
   }
 
-  const images = projection.images.map((image: any) => {
+  const images: any[] = [];
+  const resolvedMimeErrors: any[] = [];
+
+  for (const image of projection.images) {
     const bytes = Buffer.isBuffer(image.bytes) ? image.bytes : Buffer.from(image.bytes || '');
-    return {
+    let mimeType: string | null = null;
+
+    if (imageMimeType) {
+      const candidate = String(imageMimeType(image.url, image) || '').trim();
+      const resolved = resolveImageMimeFromBytes(bytes, candidate);
+
+      if (!resolved.ok) {
+        resolvedMimeErrors.push(resolved);
+        continue;
+      }
+
+      mimeType = resolved.mimeType;
+    } else {
+      const resolved = resolveImageMimeFromBytes(bytes, '');
+
+      if (!resolved.ok) {
+        resolvedMimeErrors.push(resolved);
+        continue;
+      }
+
+      mimeType = resolved.mimeType;
+    }
+
+    images.push({
       type: 'image' as const,
       data: bytes.toString('base64'),
-      mimeType: imageMimeType(image.url, image),
-    };
-  });
+      mimeType,
+    });
+  }
 
-  return { block: null, images, capability };
+  if (resolvedMimeErrors.length > 0) {
+    return {
+      block: {
+        code: resolvedMimeErrors[0].code,
+        reason: resolvedMimeErrors[0].reason,
+      },
+      images: [],
+      capability,
+      projectedText: '',
+    };
+  }
+
+  return {
+    block: null,
+    images,
+    capability,
+    projectedText: buildProjectedHistoryText(promptMessages, { maxMessages }),
+  };
 }
