@@ -2649,6 +2649,9 @@ export class ChatAppStore {
 
     const clientRequestId = String(metadata.clientRequestId || payload.clientRequestId || '').trim();
 
+    const rawImageIds = Array.isArray(payload.imageIds) ? payload.imageIds : [];
+    const imageIds = Array.from(new Set(rawImageIds.map((id: any) => String(id || '').trim()).filter(Boolean)));
+
     if (clientRequestId) {
       const existingByRequest = this.messageRepository.getByClientRequestId(
         payload.conversationId,
@@ -2659,13 +2662,33 @@ export class ChatAppStore {
         const canonical = normalizeMessageRow(existingByRequest);
 
         if (canonical) {
-          return canonical;
+          const existingBlocks =
+            canonical.metadata && Array.isArray(canonical.metadata.contentBlocks)
+              ? canonical.metadata.contentBlocks
+              : [];
+          const existingImageIds = existingBlocks
+            .filter((block: any) => block && block.type === 'image')
+            .map((block: any) => String(block.imageId || '').trim())
+            .filter(Boolean);
+          const normalizedContent = String(payload.content || '');
+          const sameContent = String(canonical.content || '') === normalizedContent;
+          const sameImages =
+            existingImageIds.length === imageIds.length &&
+            existingImageIds.every((id: string, index: number) => id === imageIds[index]);
+
+          if (sameContent && sameImages) {
+            return canonical;
+          }
+
+          const conflictError = new Error(
+            'Same client_request_id used with a different message payload; retry must reuse the exact content and imageIds'
+          ) as any;
+          conflictError.statusCode = 409;
+          conflictError.code = 'MESSAGE_IDEMPOTENCY_CONFLICT';
+          throw conflictError;
         }
       }
     }
-
-    const rawImageIds = Array.isArray(payload.imageIds) ? payload.imageIds : [];
-    const imageIds = Array.from(new Set(rawImageIds.map((id: any) => String(id || '').trim()).filter(Boolean)));
 
     if (imageIds.length > MAX_IMAGES_PER_MESSAGE) {
       const imageLimitError = new Error(`At most ${MAX_IMAGES_PER_MESSAGE} images per message`) as any;

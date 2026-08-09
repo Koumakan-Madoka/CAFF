@@ -92,7 +92,7 @@ export function projectMultimodalPrompt(messages: any, options: any = {}) {
         images.length = 0;
         missingImages.length = 0;
         textParts.length = 0;
-        return { text: '', images: [], missingImages: [], budgetExceeded, budgetReason };
+        return { text: '', images: [], missingImages: [], projectedMessages: [], budgetExceeded, budgetReason };
       }
 
       if (projectedBytes + byteLength > maxPromptBytes) {
@@ -101,7 +101,7 @@ export function projectMultimodalPrompt(messages: any, options: any = {}) {
         images.length = 0;
         missingImages.length = 0;
         textParts.length = 0;
-        return { text: '', images: [], missingImages: [], budgetExceeded, budgetReason };
+        return { text: '', images: [], missingImages: [], projectedMessages: [], budgetExceeded, budgetReason };
       }
 
       projectedBytes += byteLength;
@@ -121,9 +121,42 @@ export function projectMultimodalPrompt(messages: any, options: any = {}) {
     text: textParts.filter(Boolean).join('\n\n').trim(),
     images,
     missingImages,
+    projectedMessages: projectMessagesWithMarkers(windowed, { maxMessages }),
     budgetExceeded,
     budgetReason,
   };
+}
+
+export function projectMessagesWithMarkers(messages: any, options: any = {}) {
+  const maxMessages = Number.isInteger(options.maxMessages) ? options.maxMessages : 24;
+  const windowed = (Array.isArray(messages) ? messages : []).slice(-maxMessages);
+
+  return windowed.map((message: any, messageOrdinal: number) => {
+    if (!message || message.role !== 'user') {
+      return message;
+    }
+
+    const imageBlocks = messageImageBlocks(message);
+
+    if (imageBlocks.length === 0) {
+      return message;
+    }
+
+    const text = String(message && message.content || '').trim();
+    let messageText = text;
+    let hadText = Boolean(messageText);
+
+    for (let imageOrdinal = 0; imageOrdinal < imageBlocks.length; imageOrdinal += 1) {
+      const marker = imageMarkerFor(messageOrdinal, imageOrdinal);
+      messageText = ordinalText(messageText, marker, hadText);
+      hadText = true;
+    }
+
+    return {
+      ...message,
+      content: messageText,
+    };
+  });
 }
 
 export function buildProjectedHistoryText(messages: any, options: any = {}) {

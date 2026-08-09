@@ -1259,10 +1259,18 @@ export function createAgentExecutor(options: any = {}) {
       modelCatalog,
       agent,
       readImageBytes,
+      imageMimeType: (url: string, image: any) => {
+        const imageId = String(image && image.imageId || '').trim();
+        if (!imageId || typeof store.listImageUploadsByIds !== 'function') {
+          return '';
+        }
+        const rows = store.listImageUploadsByIds([imageId]);
+        return rows && rows.length > 0 ? String(rows[0].mimeType || '').trim() : '';
+      },
     });
     const imageBlock = imageInvocation.block;
     const invocationImages = imageInvocation.images;
-    const projectedConversationHistory = imageInvocation.projectedText || '';
+    const projectedConversationHistory = imageInvocation.projectedMessages || null;
     const promptInput = {
       conversation,
       agent,

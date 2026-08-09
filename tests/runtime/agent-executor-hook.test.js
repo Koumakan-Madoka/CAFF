@@ -90,6 +90,13 @@ function createFakeStore(conversation) {
       integrityWrites.push({ imageId, integrityError });
       return 1;
     },
+    listImageUploadsByIds(imageIds) {
+      return (Array.isArray(imageIds) ? imageIds : []).map((imageId) => ({
+        imageId,
+        batchId: 'batch-1',
+        mimeType: 'image/png',
+      }));
+    },
   };
 }
 
@@ -616,9 +623,11 @@ test('agent executor passes projected images to startRun for a vision model', as
   const minimalPi = require(minimalPiPath);
   const originalStartRun = minimalPi.startRun;
   let capturedImages = null;
+  let capturedPrompt = null;
 
-  minimalPi.startRun = (_provider, _model, _prompt, options) => {
+  minimalPi.startRun = (_provider, _model, prompt, options) => {
     capturedImages = options && options.images;
+    capturedPrompt = prompt;
     return createRunHandle('Done.');
   };
   delete require.cache[agentExecutorPath];
@@ -687,6 +696,14 @@ test('agent executor passes projected images to startRun for a vision model', as
         { type: 'image', imageId: 'img-1', url: '/uploads/batch-1/0-photo.png' },
       ],
       metadata: {},
+    }, {
+      id: 'failed-assistant-turn',
+      role: 'assistant',
+      senderName: 'Helper',
+      status: 'failed',
+      content: 'partial answer',
+      contentBlocks: [],
+      metadata: {},
     }],
     promptUserMessage: { id: 'user-message-with-image', role: 'user', content: 'what is this image' },
     queueItem: { triggerType: 'user', enqueueReason: 'user_mentions' },
@@ -707,6 +724,120 @@ test('agent executor passes projected images to startRun for a vision model', as
   assert.equal(capturedImages[0].type, 'image');
   assert.equal(capturedImages[0].mimeType, 'image/png');
   assert.ok(capturedImages[0].data.length > 0, 'image bytes are base64 encoded');
+
+  assert.ok(capturedPrompt, 'startRun prompt must be captured');
+  assert.match(String(capturedPrompt), /User: what is this image[\s\S]*\[image:0:0\]/u,
+    'image message must keep speaker attribution and carry the image marker through the normal history formatter');
+  assert.match(String(capturedPrompt), /Helper \[failed\][\s\S]*partial answer/u,
+    'failed assistant status must survive the projected history');
+});
+
+test('agent executor blocks IMAGE_MIME_MISMATCH when registry persisted MIME contradicts magic bytes', async (t) => {
+  const tempDir = withTempDir('caff-agent-executor-mime-mismatch-');
+  const minimalPiPath = require.resolve('../../build/lib/minimal-pi');
+  const agentExecutorPath = require.resolve('../../build/server/domain/conversation/turn/agent-executor');
+  const turnStatePath = require.resolve('../../build/server/domain/conversation/turn/turn-state');
+  const minimalPi = require(minimalPiPath);
+  const originalStartRun = minimalPi.startRun;
+  let startRunCalled = false;
+
+  minimalPi.startRun = () => {
+    startRunCalled = true;
+    return createRunHandle('Done.');
+  };
+  delete require.cache[agentExecutorPath];
+
+  t.after(() => {
+    minimalPi.startRun = originalStartRun;
+    delete require.cache[agentExecutorPath];
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const { createAgentExecutor } = require(agentExecutorPath);
+  const { createTurnState } = require(turnStatePath);
+  const agent = {
+    id: 'agent-vision',
+    name: 'Vision',
+    description: 'Vision model.',
+    personaPrompt: 'Be brief.',
+    runtimeConfig: { provider: 'openai', model: 'gpt-5', thinking: 'off', personaPrompt: '', skillIds: [] },
+  };
+  const conversation = {
+    id: 'conversation-mime-mismatch',
+    title: 'Mime Mismatch',
+    type: 'standard',
+    agents: [agent],
+    metadata: {},
+  };
+  const store = createFakeStore(conversation);
+  store.listImageUploadsByIds = (imageIds) =>
+    (Array.isArray(imageIds) ? imageIds : []).map((imageId) => ({
+      imageId,
+      batchId: 'batch-1',
+      mimeType: 'image/jpeg',
+    }));
+  const failedReplies = [];
+  const uploadsDir = path.join(tempDir, 'uploads');
+  fs.mkdirSync(path.join(uploadsDir, 'batch-1'), { recursive: true });
+  fs.writeFileSync(
+    path.join(uploadsDir, 'batch-1', '0-photo.png'),
+    Buffer.from('89504e470d0a1a0a0000000d4948445200000064000000320806000000', 'hex')
+  );
+
+  const executor = createAgentExecutor({
+    store,
+    skillRegistry: { resolveSkills: () => [] },
+    modeStore: { get: () => null },
+    agentToolBridge: createFakeAgentToolBridge(),
+    agentDir: tempDir,
+    sqlitePath: path.join(tempDir, 'chat.sqlite'),
+    toolBaseUrl: 'http://127.0.0.1:3100',
+    agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+    modelCatalog: {
+      getOptions() {
+        return [{ provider: 'openai', model: 'gpt-5', input: ['text', 'image'] }];
+      },
+    },
+    uploadsDir,
+  });
+  const turnState = createTurnState(conversation, 'turn-mime-mismatch');
+
+  const result = await executor.executeConversationAgent({
+    runStore: createFakeRunStore(),
+    conversationId: conversation.id,
+    turnId: turnState.turnId,
+    rootTaskId: 'root-task-mime-mismatch',
+    conversation,
+    promptMessages: [{
+      id: 'user-message-with-image',
+      role: 'user',
+      content: 'what is this image',
+      contentBlocks: [
+        { type: 'text', text: 'what is this image' },
+        { type: 'image', imageId: 'img-1', url: '/uploads/batch-1/0-photo.png' },
+      ],
+      metadata: {},
+    }],
+    promptUserMessage: { id: 'user-message-with-image', role: 'user', content: 'what is this image' },
+    queueItem: { triggerType: 'user', enqueueReason: 'user_mentions' },
+    agent,
+    turnState,
+    completedReplies: [],
+    failedReplies,
+    routingMode: 'mention_queue',
+    hop: 1,
+    remainingSlots: 1,
+    enqueueAgent() {},
+    allowHandoffs: true,
+    finalStopsTurn: true,
+    projectDir: tempDir,
+  });
+
+  assert.equal(startRunCalled, false, 'startRun must not be called on persisted MIME mismatch');
+  assert.equal(failedReplies.length, 1, 'invocation must fail with structured block');
+  assert.equal(failedReplies[0].status, 'failed');
+  assert.equal(failedReplies[0].metadata.invocationBlocks[0].code, 'IMAGE_MIME_MISMATCH');
 });
 
 test('agent executor writes integrity_status=missing_file when attached image file is gone', async (t) => {

@@ -65,11 +65,13 @@ export class ImageUploadService {
     hash.update('\0');
 
     for (const candidate of candidates) {
-      hash.update(candidate.mimeType);
+      const parsed = parseImageHeader(candidate.content);
+      const normalizedMime = parsed.ok ? parsed.header.mimeType : candidate.mimeType;
+      hash.update(normalizedMime);
       hash.update('\0');
       hash.update(String(candidate.content.length));
       hash.update('\0');
-      hash.update(candidate.content);
+      hash.update(createHash('sha256').update(candidate.content).digest('hex'));
       hash.update('\0');
     }
 
@@ -373,6 +375,24 @@ export class ImageUploadService {
 
     this.cleanupDirectory(path.join(this.uploadsDir, '.tmp', batchId));
     this.cleanupDirectory(path.join(this.uploadsDir, batchId));
+  }
+
+  removeBatchDirectories(batchIds: string[]) {
+    const ids = Array.isArray(batchIds) ? batchIds.filter(Boolean) : [];
+    let removed = 0;
+
+    for (const batchId of ids) {
+      const dir = path.join(this.uploadsDir, batchId);
+
+      try {
+        if (fs.existsSync(dir)) {
+          fs.rmSync(dir, { recursive: true, force: true });
+          removed += 1;
+        }
+      } catch {}
+    }
+
+    return removed;
   }
 
   private finalDirFor(batchId: string) {

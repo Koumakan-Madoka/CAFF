@@ -58,6 +58,26 @@ function multipartHeaders(boundary = '----testboundary7f9a') {
   };
 }
 
+function visionModelCatalog() {
+  return {
+    getOptions() {
+      return [
+        { provider: 'openai', model: 'gpt-5', input: ['text', 'image'] },
+      ];
+    },
+  };
+}
+
+function visionAgent(id) {
+  return {
+    id,
+    name: 'Vision Agent',
+    personaPrompt: 'p',
+    provider: 'openai',
+    model: 'gpt-5',
+  };
+}
+
 async function startApp(t, options = {}) {
   const tempDir = withTempDir('caff-img-http-');
   const sqlitePath = path.join(tempDir, 'store.sqlite');
@@ -70,6 +90,7 @@ async function startApp(t, options = {}) {
     projectDir: tempDir,
     uploadsDir: path.join(tempDir, 'uploads'),
     executeConversationAgent: options.executeConversationAgent,
+    modelCatalog: options.modelCatalog || visionModelCatalog(),
   });
 
   await new Promise((resolve, reject) => {
@@ -204,7 +225,7 @@ test('upload then send message with imageIds persists contentBlocks and attaches
     executeConversationAgent: stubAgentExecutor(),
   });
 
-  const agent = app.store.saveCustomRoleConfig({ id: 'agent-msg', name: 'A', personaPrompt: 'p' });
+  const agent = app.store.saveCustomRoleConfig(visionAgent('agent-msg'));
   const conversation = app.store.createConversation({
     title: 'Msg',
     participants: [{ agentId: agent.id }],
@@ -272,6 +293,72 @@ test('sending message with client-submitted contentBlocks is rejected', async (t
   assert.equal(body.code, 'TEXT_BLOCK_FROM_CLIENT_REJECTED');
 });
 
+test('conversation delete removes uploaded batch directories after DB purge', async (t) => {
+  const tempDir = withTempDir('caff-img-delete-');
+  const sqlitePath = path.join(tempDir, 'store.sqlite');
+  const uploadsDir = path.join(tempDir, 'uploads');
+  const port = await findFreePort();
+  const app = createServerApp({
+    host: '127.0.0.1',
+    port,
+    agentDir: tempDir,
+    sqlitePath,
+    projectDir: tempDir,
+    uploadsDir,
+  });
+
+  await new Promise((resolve, reject) => {
+    app.start((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+
+      resolve();
+    });
+  });
+
+  t.after(async () => {
+    try {
+      await new Promise((resolve) => app.close(resolve));
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const agent = app.store.saveCustomRoleConfig({ id: 'agent-del', name: 'A', personaPrompt: 'p' });
+  const conversation = app.store.createConversation({
+    title: 'Del',
+    participants: [{ agentId: agent.id }],
+  });
+
+  const body = buildMultipartBody([
+    { name: 'client_request_id', value: 'req-del' },
+    { name: 'files', filename: 'photo.png', type: 'image/png', value: pngBuffer(120, 80) },
+  ]);
+  const uploadResponse = await fetch(`${baseUrl}/api/conversations/${conversation.id}/images`, {
+    method: 'POST',
+    headers: multipartHeaders(),
+    body,
+  });
+  assert.equal(uploadResponse.status, 200);
+  const uploadResult = await uploadResponse.json();
+  const imageId = uploadResult.images[0].imageId;
+
+  const batch = app.store.getImageUploadBatchByKey(conversation.id, 'req-del');
+  const batchDir = path.join(uploadsDir, batch.batchId);
+  assert.ok(fs.existsSync(batchDir), 'uploaded batch dir must exist before delete');
+
+  const deleteResponse = await fetch(`${baseUrl}/api/conversations/${conversation.id}`, {
+    method: 'DELETE',
+  });
+  assert.equal(deleteResponse.status, 200);
+
+  assert.equal(app.store.listImageUploadsByIds([imageId]).length, 0, 'child rows purged');
+  assert.equal(app.store.getImageUploadBatch(batch.batchId), null, 'batch rows purged');
+  assert.equal(fs.existsSync(batchDir), false, 'batch directory must be removed after conversation delete');
+});
+
 test('GET /uploads/ rejects path traversal outside the controlled upload dir', async (t) => {
   const { baseUrl } = await startApp(t);
 
@@ -286,6 +373,40 @@ test('GET /uploads/ rejects path traversal outside the controlled upload dir', a
       `path traversal must be blocked (got ${response.status})`
     );
   }
+});
+
+test('uploads served with isUpload never emit text/html or image/svg+xml content types', async (t) => {
+  const { app, baseUrl } = await startApp(t);
+
+  const agent = app.store.saveCustomRoleConfig({ id: 'agent-ctype', name: 'A', personaPrompt: 'p' });
+  const conversation = app.store.createConversation({
+    title: 'CType',
+    participants: [{ agentId: agent.id }],
+  });
+
+  const body = buildMultipartBody([
+    { name: 'client_request_id', value: 'req-ctype' },
+    { name: 'files', filename: 'photo.png', type: 'image/png', value: pngBuffer(120, 80) },
+  ]);
+  const uploadResponse = await fetch(`${baseUrl}/api/conversations/${conversation.id}/images`, {
+    method: 'POST',
+    headers: multipartHeaders(),
+    body,
+  });
+  assert.equal(uploadResponse.status, 200);
+  const uploadResult = await uploadResponse.json();
+  const imageId = uploadResult.images[0].imageId;
+
+  const child = app.store.listImageUploadsByIds([imageId])[0];
+  assert.ok(child.storedPath);
+
+  const htmlExtensionPath = child.storedPath.replace(/\.png$/u, '.html');
+  const fileResponse = await fetch(`${baseUrl}${htmlExtensionPath}`);
+  const contentType = String(fileResponse.headers.get('content-type') || '').toLowerCase();
+  assert.ok(
+    !contentType.includes('text/html') && !contentType.includes('image/svg+xml'),
+    `uploads must not serve active content types, got ${contentType}`
+  );
 });
 
 test('POST upload rejects oversized single file with FILE_TOO_LARGE', async (t) => {
@@ -332,6 +453,7 @@ test('restart fixture: image reference and message replay survive process restar
       projectDir: tempDir,
       uploadsDir,
       executeConversationAgent: stubAgentExecutor(),
+      modelCatalog: visionModelCatalog(),
     });
 
     await new Promise((resolve, reject) => {
@@ -358,38 +480,42 @@ test('restart fixture: image reference and message replay survive process restar
 
   const first = await startInstance();
   const agent = first.instance.store.saveCustomRoleConfig({
-    id: `agent-restart-${Math.random().toString(36).slice(2, 8)}`,
+    ...visionAgent(`agent-restart-${Math.random().toString(36).slice(2, 8)}`),
     name: 'A',
-    personaPrompt: 'p',
   });
   const conversation = first.instance.store.createConversation({
     title: 'Restart',
     participants: [{ agentId: agent.id }],
   });
 
-  const uploadBody = buildMultipartBody([
-    { name: 'client_request_id', value: 'req-restart' },
-    { name: 'files', filename: 'photo.png', type: 'image/png', value: pngBuffer(120, 80) },
-  ]);
-  const uploadResponse = await fetch(`${first.baseUrl}/api/conversations/${conversation.id}/images`, {
-    method: 'POST',
-    headers: multipartHeaders(),
-    body: uploadBody,
-  });
-  assert.equal(uploadResponse.status, 200);
-  const uploadResult = await uploadResponse.json();
-  const imageId = uploadResult.images[0].imageId;
+  let acceptedMessage;
+  let imageId;
 
-  const messageResponse = await fetch(`${first.baseUrl}/api/conversations/${conversation.id}/messages`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content: 'survives restart', imageIds: [imageId], clientRequestId: 'msg-restart' }),
-  });
-  assert.equal(messageResponse.status, 200);
-  const messageResult = await messageResponse.json();
-  const acceptedMessage = messageResult.acceptedMessage;
+  try {
+    const uploadBody = buildMultipartBody([
+      { name: 'client_request_id', value: 'req-restart' },
+      { name: 'files', filename: 'photo.png', type: 'image/png', value: pngBuffer(120, 80) },
+    ]);
+    const uploadResponse = await fetch(`${first.baseUrl}/api/conversations/${conversation.id}/images`, {
+      method: 'POST',
+      headers: multipartHeaders(),
+      body: uploadBody,
+    });
+    assert.equal(uploadResponse.status, 200);
+    const uploadResult = await uploadResponse.json();
+    imageId = uploadResult.images[0].imageId;
 
-  await closeInstance(first.instance);
+    const messageResponse = await fetch(`${first.baseUrl}/api/conversations/${conversation.id}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: 'survives restart', imageIds: [imageId], clientRequestId: 'msg-restart' }),
+    });
+    assert.equal(messageResponse.status, 200);
+    const messageResult = await messageResponse.json();
+    acceptedMessage = messageResult.acceptedMessage;
+  } finally {
+    await closeInstance(first.instance);
+  }
 
   const second = await startInstance();
   try {

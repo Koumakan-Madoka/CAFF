@@ -794,6 +794,7 @@ export function createServerApp(options: any = {}) {
       digestOptions,
       skillDraftOptions,
       digestModelRunner: options.digestModelRunner,
+      uploadService,
     }),
     createImageUploadController({
       store,
@@ -828,7 +829,7 @@ export function createServerApp(options: any = {}) {
 
       if (requestUrl.pathname.startsWith('/uploads/')) {
         const uploadPathname = requestUrl.pathname.slice('/uploads'.length) || '/';
-        serveStaticFile(res, uploadPathname, { publicDir: uploadsDir });
+        serveStaticFile(res, uploadPathname, { publicDir: uploadsDir, isUpload: true });
         return;
       }
 

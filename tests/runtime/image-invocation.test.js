@@ -242,7 +242,7 @@ test('buildInvocationImages does not block when image is outside the projection 
   assert.equal(result.images.length, 0);
 });
 
-test('buildInvocationImages returns projectedText with image markers in window order', () => {
+test('buildInvocationImages returns projectedMessages with image markers in window order', () => {
   const result = buildInvocationImages({
     promptMessages: [
       imageMessage('m1', [{ imageId: 'i1', url: '/uploads/b1/0-a.png' }], 'what is this'),
@@ -258,5 +258,7 @@ test('buildInvocationImages returns projectedText with image markers in window o
 
   assert.equal(result.block, null);
   assert.equal(result.images.length, 1);
-  assert.match(result.projectedText, /\[image:0:0\]/u);
+  assert.ok(Array.isArray(result.projectedMessages));
+  assert.equal(result.projectedMessages.length, 1);
+  assert.match(result.projectedMessages[0].content, /\[image:0:0\]/u);
 });

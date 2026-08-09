@@ -16,6 +16,7 @@ const IMAGE_EXTENSION_TO_MIME: Record<string, string> = {
 
 export type StaticFileServeOptions = {
   publicDir?: string;
+  isUpload?: boolean;
 };
 
 function isPathWithin(parentDir: string, targetPath: string) {
@@ -86,7 +87,7 @@ export function serveStaticFile(res: ServerResponse, pathname: string, options: 
     return;
   }
 
-  const isUpload = normalizedPath.startsWith('uploads/');
+  const isUpload = Boolean(options.isUpload);
   const contentType = isUpload
     ? IMAGE_EXTENSION_TO_MIME[path.extname(filePath).toLowerCase()] || 'application/octet-stream'
     : resolveContentType(filePath);

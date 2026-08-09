@@ -193,7 +193,7 @@ test('createMessage with same clientRequestId + imageIds returns canonical messa
   assert.equal(images[0].attachedMessageId, first.id);
 });
 
-test('createMessage with same clientRequestId but different content returns the original canonical message', (t) => {
+test('createMessage with same clientRequestId but different content throws MESSAGE_IDEMPOTENCY_CONFLICT', (t) => {
   const store = createStore();
   t.after(() => {
     try {
@@ -214,17 +214,68 @@ test('createMessage with same clientRequestId but different content returns the 
     metadata: { clientRequestId: 'msg-req-2' },
   });
 
-  const retry = store.createMessage({
+  assert.throws(
+    () => {
+      store.createMessage({
+        conversationId,
+        role: 'user',
+        senderName: 'You',
+        content: 'changed',
+        imageIds: [imageId],
+        metadata: { clientRequestId: 'msg-req-2' },
+      });
+    },
+    (error) => {
+      assert.equal(error.code, 'MESSAGE_IDEMPOTENCY_CONFLICT');
+      return true;
+    }
+  );
+
+  const images = store.listImageUploadsByIds([imageId]);
+  assert.equal(images[0].status, 'attached', 'first message must keep the attached image');
+  assert.equal(images[0].attachedMessageId, first.id);
+});
+
+test('createMessage with same clientRequestId but different imageIds throws MESSAGE_IDEMPOTENCY_CONFLICT', (t) => {
+  const store = createStore();
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(store.__tempDir, { recursive: true, force: true });
+  });
+
+  const conversationId = createConversation(store);
+  const { imageId: firstImageId } = createStagedImage(store, conversationId, 'img-idem-a', 'req-upload-a');
+  const { imageId: secondImageId } = createStagedImage(store, conversationId, 'img-idem-b', 'req-upload-b');
+
+  store.createMessage({
     conversationId,
     role: 'user',
     senderName: 'You',
-    content: 'changed',
-    imageIds: [imageId],
-    metadata: { clientRequestId: 'msg-req-2' },
+    content: 'same text',
+    imageIds: [firstImageId],
+    metadata: { clientRequestId: 'msg-req-images' },
   });
 
-  assert.equal(retry.id, first.id);
-  assert.equal(retry.content, 'original');
+  assert.throws(
+    () => {
+      store.createMessage({
+        conversationId,
+        role: 'user',
+        senderName: 'You',
+        content: 'same text',
+        imageIds: [secondImageId],
+        metadata: { clientRequestId: 'msg-req-images' },
+      });
+    },
+    (error) => {
+      assert.equal(error.code, 'MESSAGE_IDEMPOTENCY_CONFLICT');
+      return true;
+    }
+  );
+
+  assert.equal(store.listImageUploadsByIds([secondImageId])[0].status, 'staged', 'conflicting retry must not attach the new image');
 });
 
 test('createMessage rejects already-attached image', (t) => {

@@ -573,9 +573,10 @@ export function buildAgentTurnPromptSections({
     forceDynamicSkillIds: forceDynamicConversationSkillIds,
   });
   const privateMailboxSection = hasPrivateMailboxItems(privateMessages) ? formatPrivateMailbox(privateMessages, agents) : '';
-  const projectedHistoryText = typeof projectedConversationHistory === 'string' ? projectedConversationHistory.trim() : '';
-  const conversationHistorySection = hasConversationHistoryItems(messages)
-    ? (projectedHistoryText || formatHistory(messages, agents))
+  const projectedMessages = Array.isArray(projectedConversationHistory) ? projectedConversationHistory : null;
+  const historyMessages = projectedMessages || messages;
+  const conversationHistorySection = hasConversationHistoryItems(historyMessages)
+    ? formatHistory(historyMessages, agents)
     : '';
   const turnRoutingStateSection = formatTurnRoutingState(trigger, agents);
 

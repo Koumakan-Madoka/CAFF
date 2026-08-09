@@ -128,6 +128,28 @@ test('same key + different fingerprint returns UPLOAD_IDEMPOTENCY_CONFLICT', asy
   assert.equal(conflict.existingImages.length, 1);
 });
 
+test('same bytes with different declared MIME produce the same fingerprint (canonical retry)', async (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+
+  const bytes = pngBuffer(120, 80);
+  const asPng = { fieldName: 'files', fileName: 'a.png', mimeType: 'image/png', content: bytes };
+  const asJpeg = { fieldName: 'files', fileName: 'a.jpg', mimeType: 'image/jpeg', content: bytes };
+
+  assert.equal(
+    ctx.service.computeRequestFingerprint([asPng]),
+    ctx.service.computeRequestFingerprint([asJpeg]),
+    'fingerprint must depend on magic-byte normalized MIME, not the client-declared header MIME'
+  );
+
+  const first = await ctx.service.upload(ctx.conversationId, 'req-mime-1', [asPng]);
+  assert.equal(first.kind, 'ok');
+
+  const retry = await ctx.service.upload(ctx.conversationId, 'req-mime-1', [asJpeg]);
+  assert.equal(retry.kind, 'ok');
+  assert.deepEqual(retry.images, first.images, 'same bytes with different declared MIME must canonical retry');
+});
+
 test('rejects MIME outside whitelist via magic-byte', async (t) => {
   const ctx = setup();
   t.after(ctx.cleanup);

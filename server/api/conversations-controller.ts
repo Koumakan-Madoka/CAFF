@@ -844,7 +844,24 @@ export function createConversationsController(options: any = {}): RouteHandler<A
 
         undercoverService.deleteConversationState(conversationId);
         werewolfService.deleteConversationState(conversationId);
+
+        const batchIds = Array.from(
+          new Set(
+            store
+              .listImageUploadsByConversation(conversationId)
+              .map((row: any) => String(row && row.batchId || '').trim())
+              .filter(Boolean)
+          )
+        );
+
         store.deleteConversation(conversationId);
+
+        if (batchIds.length > 0 && options.uploadService && typeof options.uploadService.removeBatchDirectories === 'function') {
+          try {
+            options.uploadService.removeBatchDirectories(batchIds);
+          } catch {}
+        }
+
         turnOrchestrator.clearConversationState(conversationId);
         sendJson(res, 200, {
           deletedId: conversationId,

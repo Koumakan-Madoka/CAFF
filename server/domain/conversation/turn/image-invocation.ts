@@ -1,9 +1,9 @@
-import {
+﻿import {
   MAX_IMAGES_PER_INVOCATION,
   MAX_IMAGE_PROMPT_BYTES,
 } from '../../../../lib/image-constants';
 import { parseImageHeader } from '../../../../lib/image-header-parser';
-import { buildProjectedHistoryText, projectMultimodalPrompt } from './multimodal-projection';
+import { projectMultimodalPrompt } from './multimodal-projection';
 
 function normalize(value: any) {
   return typeof value === 'string' ? value.trim() : '';
@@ -105,7 +105,7 @@ export function buildInvocationImages(options: any = {}) {
   );
 
   if (!hasImagesInWindow) {
-    return { block: null, images: [], capability, projectedText: '' };
+    return { block: null, images: [], capability, projectedMessages: null };
   }
 
   if (!capability.supportsImage) {
@@ -116,7 +116,7 @@ export function buildInvocationImages(options: any = {}) {
       },
       images: [],
       capability,
-      projectedText: '',
+      projectedMessages: null,
     };
   }
 
@@ -143,7 +143,7 @@ export function buildInvocationImages(options: any = {}) {
       },
       images: [],
       capability,
-      projectedText: '',
+      projectedMessages: null,
     };
   }
 
@@ -156,7 +156,7 @@ export function buildInvocationImages(options: any = {}) {
       },
       images: [],
       capability,
-      projectedText: '',
+      projectedMessages: null,
     };
   }
 
@@ -203,7 +203,7 @@ export function buildInvocationImages(options: any = {}) {
       },
       images: [],
       capability,
-      projectedText: '',
+      projectedMessages: null,
     };
   }
 
@@ -211,6 +211,6 @@ export function buildInvocationImages(options: any = {}) {
     block: null,
     images,
     capability,
-    projectedText: buildProjectedHistoryText(promptMessages, { maxMessages }),
+    projectedMessages: projection.projectedMessages,
   };
 }
