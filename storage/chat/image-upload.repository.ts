@@ -345,6 +345,17 @@ export class ImageUploadRepository {
   deleteChild(imageId: string) {
     return this.db.prepare('DELETE FROM image_uploads WHERE image_id = ?').run(imageId).changes;
   }
+
+  markIntegrityFailure(imageId: string, integrityError: string, failedAt: string) {
+    const result = this.db
+      .prepare(`
+        UPDATE image_uploads
+        SET integrity_status = 'missing_file', integrity_error = ?
+        WHERE image_id = ? AND integrity_status = 'ok'
+      `)
+      .run(integrityError || null, imageId);
+    return result.changes;
+  }
 }
 
 export function createImageUploadRepository(db: any) {

@@ -2329,6 +2329,14 @@ export class ChatAppStore {
     return this.imageUploadRepository.deleteChild(String(imageId || ''));
   }
 
+  markImageUploadIntegrityFailure(imageId: any, integrityError: any) {
+    return this.imageUploadRepository.markIntegrityFailure(
+      String(imageId || ''),
+      String(integrityError || ''),
+      nowIso()
+    );
+  }
+
   attachImageUploads(imageIds: any, conversationId: any, messageId: any) {
     return this.attachImageUploadsTransaction({
       imageIds: (Array.isArray(imageIds) ? imageIds : []).slice(0, 8),

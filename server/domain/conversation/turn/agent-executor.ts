@@ -1224,9 +1224,33 @@ export function createAgentExecutor(options: any = {}) {
         return null;
       }
       const filePath = path.join(uploadsDir, url.slice('/uploads'.length));
+
+      if (!fs.existsSync(filePath)) {
+        const imageId = String(block && block.imageId || '').trim();
+
+        if (imageId && typeof store.markImageUploadIntegrityFailure === 'function') {
+          try {
+            store.markImageUploadIntegrityFailure(imageId, `file missing at runtime: ${url}`);
+          } catch {}
+        }
+
+        return null;
+      }
+
       try {
         return fs.readFileSync(filePath);
-      } catch {
+      } catch (error) {
+        const imageId = String(block && block.imageId || '').trim();
+
+        if (imageId && typeof store.markImageUploadIntegrityFailure === 'function') {
+          try {
+            store.markImageUploadIntegrityFailure(
+              imageId,
+              `file read failed at runtime: ${(error as Error).message || String(error)}`
+            );
+          } catch {}
+        }
+
         return null;
       }
     };
