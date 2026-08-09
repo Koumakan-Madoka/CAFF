@@ -60,6 +60,7 @@ export class ImageUploadRepository {
   countChildrenByBatchStatement: any;
     listStagedExpiredStatement: any;
     listByConversationStatement: any;
+    listBatchesByConversationStatement: any;
     getChildStatement: any;
     markBatchConsumedStatement: any;
     listPendingBatchesStatement: any;
@@ -166,6 +167,11 @@ export class ImageUploadRepository {
       SELECT *
       FROM image_uploads
       WHERE batch_id IN (SELECT batch_id FROM image_upload_batches WHERE conversation_id = ?)
+    `);
+    this.listBatchesByConversationStatement = db.prepare(`
+      SELECT *
+      FROM image_upload_batches
+      WHERE conversation_id = ?
     `);
     this.markBatchConsumedStatement = db.prepare(`
       UPDATE image_upload_batches
@@ -319,6 +325,10 @@ export class ImageUploadRepository {
 
   listByConversation(conversationId: string) {
     return this.listByConversationStatement.all(conversationId).map(normalizeUploadRow);
+  }
+
+  listBatchesByConversation(conversationId: string) {
+    return this.listBatchesByConversationStatement.all(conversationId).map(normalizeBatchRow);
   }
 
   markBatchConsumed(batchId: string, consumedAt: string) {

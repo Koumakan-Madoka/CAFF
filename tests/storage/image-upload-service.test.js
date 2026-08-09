@@ -378,6 +378,74 @@ test('reconcile completes a pending batch whose final dir is already fully writt
   assert.equal(ctx.store.countImageUploadsByBatch(batch.batchId), 1);
 });
 
+test('removeBatchDirectories also removes the .tmp staging dir of a pending batch', (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+
+  const batch = ctx.store.createImageUploadBatch({
+    conversationId: ctx.conversationId,
+    clientRequestId: 'req-tmpclean',
+    requestFingerprint: 'fp-tmpclean',
+    expectedCount: 1,
+  });
+
+  const tmpDir = path.join(ctx.uploadsDir, '.tmp', batch.batchId, batch.leaseToken);
+  fs.mkdirSync(tmpDir, { recursive: true });
+  fs.writeFileSync(path.join(tmpDir, '0-image.png'), pngBuffer(40, 40));
+
+  ctx.service.removeBatchDirectories([batch.batchId]);
+
+  assert.equal(
+    fs.existsSync(path.join(ctx.uploadsDir, '.tmp', batch.batchId)),
+    false,
+    'pending batch .tmp staging dir must be removed with the batch'
+  );
+});
+
+test('reconcile cleans a stale .tmp staging dir for an incomplete pending batch', async (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+
+  const batch = ctx.store.createImageUploadBatch({
+    conversationId: ctx.conversationId,
+    clientRequestId: 'req-tmpstale',
+    requestFingerprint: ctx.service.computeRequestFingerprint([pngCandidate(), pngCandidate()]),
+    expectedCount: 2,
+    leaseExpiresAt: new Date(Date.now() - 60_000).toISOString(),
+  });
+
+  const finalDir = path.join(ctx.uploadsDir, batch.batchId);
+  fs.mkdirSync(finalDir, { recursive: true });
+  fs.writeFileSync(path.join(finalDir, '0-only.png'), pngBuffer(80, 60));
+
+  const tmpDir = path.join(ctx.uploadsDir, '.tmp', batch.batchId, batch.leaseToken);
+  fs.mkdirSync(tmpDir, { recursive: true });
+  fs.writeFileSync(path.join(tmpDir, '0-image.png'), pngBuffer(80, 60));
+
+  ctx.service.reconcilePendingBatches();
+
+  assert.equal(fs.existsSync(finalDir), false, 'incomplete final dir must be cleaned');
+  assert.equal(
+    fs.existsSync(path.join(ctx.uploadsDir, '.tmp', batch.batchId)),
+    false,
+    'stale .tmp staging dir must be cleaned by reconcile'
+  );
+});
+
+test('cleanupOrphanFiles removes orphan .tmp staging dirs with no batch row', (t) => {
+  const ctx = setup();
+  t.after(ctx.cleanup);
+
+  const orphanTmpDir = path.join(ctx.uploadsDir, '.tmp', 'orphan-tmp', 'lease');
+  fs.mkdirSync(orphanTmpDir, { recursive: true });
+  fs.writeFileSync(path.join(orphanTmpDir, '0-x.png'), pngBuffer(40, 40));
+
+  const removed = ctx.service.cleanupOrphanFiles();
+
+  assert.equal(removed, 1);
+  assert.equal(fs.existsSync(orphanTmpDir), false, 'orphan .tmp staging dir must be removed');
+});
+
 test('reconcile cleans an incomplete pending final dir and keeps batch pending', async (t) => {
   const ctx = setup();
   t.after(ctx.cleanup);

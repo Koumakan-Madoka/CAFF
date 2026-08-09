@@ -382,14 +382,21 @@ export class ImageUploadService {
     let removed = 0;
 
     for (const batchId of ids) {
-      const dir = path.join(this.uploadsDir, batchId);
+      const dirs = [path.join(this.uploadsDir, '.tmp', batchId), path.join(this.uploadsDir, batchId)];
+      let hit = false;
 
-      try {
-        if (fs.existsSync(dir)) {
-          fs.rmSync(dir, { recursive: true, force: true });
-          removed += 1;
-        }
-      } catch {}
+      for (const dir of dirs) {
+        try {
+          if (fs.existsSync(dir)) {
+            fs.rmSync(dir, { recursive: true, force: true });
+            hit = true;
+          }
+        } catch {}
+      }
+
+      if (hit) {
+        removed += 1;
+      }
     }
 
     return removed;
@@ -533,6 +540,7 @@ export class ImageUploadService {
         }
       } else {
         this.cleanupDirectory(this.finalDirFor(ownedBatch.batchId));
+        this.cleanupDirectory(path.join(this.uploadsDir, '.tmp', ownedBatch.batchId));
       }
     }
   }
@@ -560,6 +568,17 @@ export class ImageUploadService {
 
     for (const entry of fs.readdirSync(this.uploadsDir)) {
       if (entry === '.tmp') {
+        const tmpRoot = path.join(this.uploadsDir, '.tmp');
+
+        if (fs.existsSync(tmpRoot)) {
+          for (const tmpEntry of fs.readdirSync(tmpRoot)) {
+            if (!knownBatchIds.has(tmpEntry)) {
+              this.cleanupDirectory(path.join(tmpRoot, tmpEntry));
+              removed += 1;
+            }
+          }
+        }
+
         continue;
       }
 

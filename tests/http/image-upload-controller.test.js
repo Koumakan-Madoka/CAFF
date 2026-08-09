@@ -82,13 +82,14 @@ async function startApp(t, options = {}) {
   const tempDir = withTempDir('caff-img-http-');
   const sqlitePath = path.join(tempDir, 'store.sqlite');
   const port = await findFreePort();
+  const uploadsDir = options.uploadsDir || path.join(tempDir, 'uploads');
   const app = createServerApp({
     host: '127.0.0.1',
     port,
     agentDir: tempDir,
     sqlitePath,
     projectDir: tempDir,
-    uploadsDir: path.join(tempDir, 'uploads'),
+    uploadsDir,
     executeConversationAgent: options.executeConversationAgent,
     modelCatalog: options.modelCatalog || visionModelCatalog(),
   });
@@ -111,7 +112,7 @@ async function startApp(t, options = {}) {
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  return { app, baseUrl: `http://127.0.0.1:${port}` };
+  return { app, baseUrl: `http://127.0.0.1:${port}`, uploadsDir };
 }
 
 test('GET /api/image-upload/config exposes single-truth constants', async (t) => {
@@ -359,6 +360,68 @@ test('conversation delete removes uploaded batch directories after DB purge', as
   assert.equal(fs.existsSync(batchDir), false, 'batch directory must be removed after conversation delete');
 });
 
+test('conversation delete removes .tmp staging dir of a pending batch without children', async (t) => {
+  const tempDir = withTempDir('caff-img-delete-tmp-');
+  const sqlitePath = path.join(tempDir, 'store.sqlite');
+  const uploadsDir = path.join(tempDir, 'uploads');
+  const port = await findFreePort();
+  const app = createServerApp({
+    host: '127.0.0.1',
+    port,
+    agentDir: tempDir,
+    sqlitePath,
+    projectDir: tempDir,
+    uploadsDir,
+  });
+
+  await new Promise((resolve, reject) => {
+    app.start((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+
+      resolve();
+    });
+  });
+
+  t.after(async () => {
+    try {
+      await new Promise((resolve) => app.close(resolve));
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const agent = app.store.saveCustomRoleConfig({ id: 'agent-del-tmp', name: 'A', personaPrompt: 'p' });
+  const conversation = app.store.createConversation({
+    title: 'DelTmp',
+    participants: [{ agentId: agent.id }],
+  });
+
+  const pendingBatch = app.store.createImageUploadBatch({
+    conversationId: conversation.id,
+    clientRequestId: 'req-pending',
+    requestFingerprint: 'fp-pending',
+    expectedCount: 1,
+  });
+  const pendingTmpDir = path.join(uploadsDir, '.tmp', pendingBatch.batchId, pendingBatch.leaseToken);
+  fs.mkdirSync(pendingTmpDir, { recursive: true });
+  fs.writeFileSync(path.join(pendingTmpDir, '0-image.png'), pngBuffer(40, 40));
+  assert.ok(fs.existsSync(pendingTmpDir), 'pending .tmp staging dir must exist before delete');
+
+  const deleteResponse = await fetch(`${baseUrl}/api/conversations/${conversation.id}`, {
+    method: 'DELETE',
+  });
+  assert.equal(deleteResponse.status, 200);
+
+  assert.equal(
+    fs.existsSync(path.join(uploadsDir, '.tmp', pendingBatch.batchId)),
+    false,
+    'pending batch .tmp staging dir must be removed after conversation delete'
+  );
+});
+
 test('GET /uploads/ rejects path traversal outside the controlled upload dir', async (t) => {
   const { baseUrl } = await startApp(t);
 
@@ -376,7 +439,7 @@ test('GET /uploads/ rejects path traversal outside the controlled upload dir', a
 });
 
 test('uploads served with isUpload never emit text/html or image/svg+xml content types', async (t) => {
-  const { app, baseUrl } = await startApp(t);
+  const { app, baseUrl, uploadsDir } = await startApp(t);
 
   const agent = app.store.saveCustomRoleConfig({ id: 'agent-ctype', name: 'A', personaPrompt: 'p' });
   const conversation = app.store.createConversation({
@@ -400,13 +463,23 @@ test('uploads served with isUpload never emit text/html or image/svg+xml content
   const child = app.store.listImageUploadsByIds([imageId])[0];
   assert.ok(child.storedPath);
 
-  const htmlExtensionPath = child.storedPath.replace(/\.png$/u, '.html');
-  const fileResponse = await fetch(`${baseUrl}${htmlExtensionPath}`);
-  const contentType = String(fileResponse.headers.get('content-type') || '').toLowerCase();
-  assert.ok(
-    !contentType.includes('text/html') && !contentType.includes('image/svg+xml'),
-    `uploads must not serve active content types, got ${contentType}`
-  );
+  const batchId = child.storedPath.split('/')[2];
+  const batchDir = path.join(uploadsDir, batchId);
+  fs.mkdirSync(batchDir, { recursive: true });
+  fs.writeFileSync(path.join(batchDir, 'evil.html'), '<script>alert(1)</script>');
+  fs.writeFileSync(path.join(batchDir, 'evil.svg'), '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>');
+
+  for (const hostileName of ['evil.html', 'evil.svg']) {
+    const hostilePath = child.storedPath.replace(/\/0-image\.png$/u, `/${hostileName}`);
+    const hostileResponse = await fetch(`${baseUrl}${hostilePath}`);
+    assert.equal(hostileResponse.status, 200, `hostile ${hostileName} file must exist on disk`);
+    const hostileContentType = String(hostileResponse.headers.get('content-type') || '').toLowerCase();
+    assert.ok(
+      !hostileContentType.includes('text/html') && !hostileContentType.includes('image/svg+xml'),
+      `uploads must not serve active content types, got ${hostileContentType}`
+    );
+    assert.match(hostileContentType, /application\/octet-stream/u, 'isUpload branch must serve unknown extensions as octet-stream');
+  }
 });
 
 test('POST upload rejects oversized single file with FILE_TOO_LARGE', async (t) => {

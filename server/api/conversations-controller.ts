@@ -847,8 +847,10 @@ export function createConversationsController(options: any = {}): RouteHandler<A
 
         const batchIds = Array.from(
           new Set(
-            store
-              .listImageUploadsByConversation(conversationId)
+            [
+              ...store.listImageUploadsByConversation(conversationId),
+              ...store.listImageUploadBatchesByConversation(conversationId),
+            ]
               .map((row: any) => String(row && row.batchId || '').trim())
               .filter(Boolean)
           )

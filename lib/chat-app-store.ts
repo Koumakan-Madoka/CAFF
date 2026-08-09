@@ -2295,6 +2295,10 @@ export class ChatAppStore {
     return this.imageUploadRepository.listByConversation(String(conversationId || ''));
   }
 
+  listImageUploadBatchesByConversation(conversationId: any) {
+    return this.imageUploadRepository.listBatchesByConversation(String(conversationId || ''));
+  }
+
   countImageUploadsByBatch(batchId: any) {
     return this.imageUploadRepository.countChildrenByBatch(String(batchId || ''));
   }
