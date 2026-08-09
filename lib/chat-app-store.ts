@@ -1,4 +1,5 @@
 const { randomUUID } = require('node:crypto');
+const { UPLOAD_LEASE_TTL_MS, STAGED_IMAGE_TTL_MS, MAX_IMAGES_PER_MESSAGE } = require('../lib/image-constants');
 const { openSqliteDatabase } = require('../storage/sqlite/connection');
 const { migrateChatSchema } = require('../storage/sqlite/migrations');
 const { createChatAgentRepository } = require('../storage/chat/agent.repository');
@@ -12,6 +13,7 @@ const { createChatMemoryCardRepository } = require('../storage/chat/memory-card.
 const { createChatSummarySegmentRepository } = require('../storage/chat/summary-segment.repository');
 const { createChatChannelBindingRepository } = require('../storage/chat/channel-binding.repository');
 const { createChatExternalEventRepository } = require('../storage/chat/external-event.repository');
+const { createImageUploadRepository } = require('../storage/chat/image-upload.repository');
 const {
   createCrossConversationDeliveryRepository,
 } = require('../storage/chat/cross-conversation-delivery.repository');
@@ -252,6 +254,25 @@ function normalizeMessageRow(row: any) {
     metadata: parseJson(row.metadata_json),
     createdAt: row.created_at,
   };
+}
+
+function deriveMessageContentBlocks(content: any, imageRows: any[] = []) {
+  const blocks: any[] = [];
+  const normalizedContent = String(content || '');
+
+  if (normalizedContent.trim()) {
+    blocks.push({ type: 'text', text: normalizedContent });
+  }
+
+  for (const image of imageRows) {
+    blocks.push({
+      type: 'image',
+      imageId: image.imageId,
+      url: image.storedPath,
+    });
+  }
+
+  return blocks;
 }
 
 function clipSearchSnippet(value: any, maxLength = 240) {
@@ -782,6 +803,7 @@ export class ChatAppStore {
       this.summarySegmentRepository = createChatSummarySegmentRepository(this.db);
       this.channelBindingRepository = createChatChannelBindingRepository(this.db);
       this.externalEventRepository = createChatExternalEventRepository(this.db);
+      this.imageUploadRepository = createImageUploadRepository(this.db);
       this.crossConversationDeliveryRepository = createCrossConversationDeliveryRepository(this.db);
 
       this.replaceConversationParticipants = (conversationId: any, participants: any) => {
@@ -1004,14 +1026,120 @@ export class ChatAppStore {
           runId: payload.runId || null,
           errorMessage: payload.errorMessage || null,
           metadataJson: serializeJson(payload.metadata),
+          clientRequestId: payload.clientRequestId || null,
           createdAt,
         });
+
+        if (Array.isArray(payload.imageIds) && payload.imageIds.length > 0) {
+          const attachedCount = this.imageUploadRepository.attachChildren(
+            payload.imageIds,
+            payload.conversationId,
+            payload.id,
+            createdAt
+          );
+
+          if (attachedCount !== payload.imageIds.length) {
+            const imageError = new Error('IMAGE_ATTACH_FAILED') as any;
+            imageError.statusCode = 400;
+            imageError.code = 'IMAGE_ALREADY_ATTACHED';
+            imageError.message = 'One or more images are not staged or do not belong to this conversation';
+            throw imageError;
+          }
+
+          for (const batchId of payload.consumedBatchIds || []) {
+            this.imageUploadRepository.markBatchConsumed(batchId, createdAt);
+          }
+        }
+
         this.conversationRepository.touch(payload.conversationId, {
           updatedAt: createdAt,
           lastMessageAt: createdAt,
         });
 
         return this.getMessage(payload.id);
+      });
+
+      this.attachImageUploadsTransaction = this.db.transaction((payload: any) => {
+        return this.imageUploadRepository.attachChildren(
+          payload.imageIds,
+          payload.conversationId,
+          payload.messageId,
+          payload.attachedAt
+        );
+      });
+
+      this.finalizeImageUploadBatchTransaction = this.db.transaction((payload: any) => {
+        const children = Array.isArray(payload.children) ? payload.children : [];
+        const batch = this.imageUploadRepository.getBatchById(payload.batchId);
+
+        if (!batch) {
+          const missingBatchError = new Error('Image upload batch does not exist') as any;
+          missingBatchError.code = 'IMAGE_BATCH_NOT_FOUND';
+          throw missingBatchError;
+        }
+
+        const expectedCount = Number(batch.expectedCount);
+
+        if (children.length !== expectedCount) {
+          const countError = new Error(
+            `Finalize rejected: expected ${expectedCount} children, got ${children.length}`
+          ) as any;
+          countError.code = 'IMAGE_BATCH_COUNT_MISMATCH';
+          throw countError;
+        }
+
+        const slots = children.map((child: any) => child.slot).sort((a: number, b: number) => a - b);
+
+        for (let i = 0; i < slots.length; i += 1) {
+          if (slots[i] !== i) {
+            const slotError = new Error('Finalize rejected: slots are not continuous 0..n-1') as any;
+            slotError.code = 'IMAGE_BATCH_SLOT_MISMATCH';
+            throw slotError;
+          }
+        }
+
+        for (const child of children) {
+          this.insertImageUpload({
+            imageId: child.imageId || randomUUID(),
+            batchId: payload.batchId,
+            slot: child.slot,
+            fileName: child.fileName,
+            storedPath: child.storedPath,
+            mimeType: child.mimeType,
+            width: child.width,
+            height: child.height,
+            sizeBytes: child.sizeBytes,
+            createdAt: payload.completedAt,
+          });
+        }
+
+        const completed = this.imageUploadRepository.completeBatch(
+          payload.batchId,
+          payload.leaseToken,
+          payload.completedAt
+        );
+
+        if (!completed) {
+          const fencedError = new Error('Image upload batch fenced by another lease owner') as any;
+          fencedError.code = 'IMAGE_BATCH_FENCED';
+          throw fencedError;
+        }
+
+        return this.imageUploadRepository.getBatchById(payload.batchId);
+      });
+
+      this.recycleImageUploadsByMessageTransaction = this.db.transaction((payload: any) => {
+        return this.imageUploadRepository.recycleByMessage(payload.messageId, payload.ttlExpiresAt);
+      });
+
+      this.purgeConversationImageUploadsTransaction = this.db.transaction((payload: any) => {
+        return this.imageUploadRepository.purgeByConversation(payload.conversationId);
+      });
+
+      this.deleteConversationTransaction = this.db.transaction((payload: any) => {
+        this.imageUploadRepository.purgeByConversation(payload.conversationId);
+        this.conversationRepository.delete(payload.conversationId);
+        return { deleted: true };
       });
 
       this.persistCrossConversationDeliveryTransaction = this.db.transaction((payload: any) => {
@@ -2072,7 +2200,165 @@ export class ChatAppStore {
   }
 
   deleteConversation(conversationId: any) {
-    this.conversationRepository.delete(conversationId);
+    return this.deleteConversationTransaction({ conversationId });
+  }
+
+  getImageUploadBatchByKey(conversationId: any, clientRequestId: any) {
+    return this.imageUploadRepository.getBatchByKey(String(conversationId || ''), String(clientRequestId || ''));
+  }
+
+  getImageUploadBatch(batchId: any) {
+    return this.imageUploadRepository.getBatchById(String(batchId || ''));
+  }
+
+  createImageUploadBatch(payload: any = {}) {
+    const conversation = this.conversationRepository.get(payload.conversationId);
+
+    if (!conversation) {
+      throw new Error('Conversation not found');
+    }
+
+    const timestamp = payload.createdAt || nowIso();
+    const leaseExpiresAt = payload.leaseExpiresAt || new Date(Date.now() + UPLOAD_LEASE_TTL_MS).toISOString();
+    return this.imageUploadRepository.createBatch({
+      batchId: String(payload.batchId || randomUUID()).trim(),
+      conversationId: payload.conversationId,
+      clientRequestId: String(payload.clientRequestId || '').trim(),
+      requestFingerprint: String(payload.requestFingerprint || '').trim(),
+      expectedCount: payload.expectedCount,
+      leaseToken: String(payload.leaseToken || randomUUID()).trim(),
+      leaseExpiresAt,
+      createdAt: timestamp,
+    });
+  }
+
+  takeoverImageUploadLease(batchId: any, newToken: any, newExpiry: any, now: any, requestFingerprint: any, expectedCount: any) {
+    return this.imageUploadRepository.takeoverLease(
+      String(batchId || ''),
+      String(newToken || randomUUID()).trim(),
+      newExpiry || null,
+      now || nowIso(),
+      String(requestFingerprint || ''),
+      Number.isInteger(expectedCount) ? expectedCount : -1
+    );
+  }
+
+  completeImageUploadBatch(batchId: any, leaseToken: any, completedAt: any) {
+    return this.imageUploadRepository.completeBatch(
+      String(batchId || ''),
+      String(leaseToken || ''),
+      completedAt || nowIso()
+    );
+  }
+
+  finalizeImageUploadBatch(payload: any = {}) {
+    return this.finalizeImageUploadBatchTransaction({
+      batchId: String(payload.batchId || '').trim(),
+      leaseToken: String(payload.leaseToken || ''),
+      completedAt: payload.completedAt || nowIso(),
+      children: Array.isArray(payload.children) ? payload.children : [],
+    });
+  }
+
+  rejectImageUploadBatch(batchId: any, reason: any, leaseToken: any) {
+    return this.imageUploadRepository.rejectBatch(
+      String(batchId || ''),
+      String(reason || ''),
+      String(leaseToken || '')
+    );
+  }
+
+  insertImageUpload(payload: any = {}) {
+    return this.imageUploadRepository.insertChild({
+      imageId: String(payload.imageId || randomUUID()).trim(),
+      batchId: payload.batchId,
+      slot: payload.slot,
+      fileName: payload.fileName,
+      storedPath: payload.storedPath,
+      mimeType: payload.mimeType,
+      width: payload.width,
+      height: payload.height,
+      sizeBytes: payload.sizeBytes,
+      createdAt: payload.createdAt || nowIso(),
+    });
+  }
+
+  listImageUploadsByBatch(batchId: any) {
+    return this.imageUploadRepository.listChildrenByBatch(String(batchId || ''));
+  }
+
+  listImageUploadsByIds(imageIds: any) {
+    return this.imageUploadRepository.listChildrenByIds(imageIds);
+  }
+
+  listImageUploadsByConversation(conversationId: any) {
+    return this.imageUploadRepository.listByConversation(String(conversationId || ''));
+  }
+
+  listImageUploadBatchesByConversation(conversationId: any) {
+    return this.imageUploadRepository.listBatchesByConversation(String(conversationId || ''));
+  }
+
+  countImageUploadsByBatch(batchId: any) {
+    return this.imageUploadRepository.countChildrenByBatch(String(batchId || ''));
+  }
+
+  markImageUploadBatchConsumed(batchId: any, consumedAt: any) {
+    return this.imageUploadRepository.markBatchConsumed(String(batchId || ''), consumedAt || nowIso());
+  }
+
+  listPendingImageUploadBatches() {
+    return this.imageUploadRepository.listPendingBatches();
+  }
+
+  listUnconsumedCompleteImageUploadBatches(completedBefore: any) {
+    return this.imageUploadRepository.listUnconsumedCompleteBatches(completedBefore || nowIso());
+  }
+
+  listAllImageUploadBatches() {
+    return this.imageUploadRepository.listAllBatches();
+  }
+
+  purgeImageUploadBatch(batchId: any) {
+    return this.imageUploadRepository.purgeBatch(String(batchId || ''));
+  }
+
+  listStagedImageUploadsExpired(now: any) {
+    const timestamp = now || nowIso();
+    const threshold = new Date(new Date(timestamp).getTime() - STAGED_IMAGE_TTL_MS).toISOString();
+    return this.imageUploadRepository.listStagedExpired(threshold);
+  }
+
+  deleteImageUpload(imageId: any) {
+    return this.imageUploadRepository.deleteChild(String(imageId || ''));
+  }
+
+  markImageUploadIntegrityFailure(imageId: any, integrityError: any) {
+    return this.imageUploadRepository.markIntegrityFailure(
+      String(imageId || ''),
+      String(integrityError || ''),
+      nowIso()
+    );
+  }
+
+  attachImageUploads(imageIds: any, conversationId: any, messageId: any) {
+    return this.attachImageUploadsTransaction({
+      imageIds: (Array.isArray(imageIds) ? imageIds : []).slice(0, 8),
+      conversationId,
+      messageId,
+      attachedAt: nowIso(),
+    });
+  }
+
+  recycleImageUploadsByMessage(messageId: any) {
+    return this.recycleImageUploadsByMessageTransaction({
+      messageId,
+      ttlExpiresAt: nowIso(),
+    });
+  }
+
+  purgeConversationImageUploads(conversationId: any) {
+    return this.purgeConversationImageUploadsTransaction({ conversationId });
   }
 
   listConversationAgents(conversationId: any) {
@@ -2356,6 +2642,136 @@ export class ChatAppStore {
       throw new Error('Conversation not found');
     }
 
+    const metadata = payload.metadata && typeof payload.metadata === 'object' ? payload.metadata : {};
+
+    if (metadata.contentBlocks) {
+      const contentBlockError = new Error('Client must not submit contentBlocks; content + imageIds only') as any;
+      contentBlockError.statusCode = 400;
+      contentBlockError.code = 'TEXT_BLOCK_FROM_CLIENT_REJECTED';
+      throw contentBlockError;
+    }
+
+    const clientRequestId = String(metadata.clientRequestId || payload.clientRequestId || '').trim();
+
+    const rawImageIds = Array.isArray(payload.imageIds) ? payload.imageIds : [];
+    const imageIds = Array.from(new Set(rawImageIds.map((id: any) => String(id || '').trim()).filter(Boolean)));
+
+    if (clientRequestId) {
+      const existingByRequest = this.messageRepository.getByClientRequestId(
+        payload.conversationId,
+        clientRequestId
+      );
+
+      if (existingByRequest) {
+        const canonical = normalizeMessageRow(existingByRequest);
+
+        if (canonical) {
+          const existingBlocks =
+            canonical.metadata && Array.isArray(canonical.metadata.contentBlocks)
+              ? canonical.metadata.contentBlocks
+              : [];
+          const existingImageIds = existingBlocks
+            .filter((block: any) => block && block.type === 'image')
+            .map((block: any) => String(block.imageId || '').trim())
+            .filter(Boolean);
+          const normalizedContent = String(payload.content || '');
+          const sameContent = String(canonical.content || '') === normalizedContent;
+          const sameImages =
+            existingImageIds.length === imageIds.length &&
+            existingImageIds.every((id: string, index: number) => id === imageIds[index]);
+
+          if (sameContent && sameImages) {
+            return canonical;
+          }
+
+          const conflictError = new Error(
+            'Same client_request_id used with a different message payload; retry must reuse the exact content and imageIds'
+          ) as any;
+          conflictError.statusCode = 409;
+          conflictError.code = 'MESSAGE_IDEMPOTENCY_CONFLICT';
+          throw conflictError;
+        }
+      }
+    }
+
+    if (imageIds.length > MAX_IMAGES_PER_MESSAGE) {
+      const imageLimitError = new Error(`At most ${MAX_IMAGES_PER_MESSAGE} images per message`) as any;
+      imageLimitError.statusCode = 400;
+      imageLimitError.code = 'IMAGE_COUNT_EXCEEDED';
+      throw imageLimitError;
+    }
+
+    let imageRows: any[] = [];
+    let consumedBatchIdsForMessage: Array<string> = [];
+    let nextMetadata = metadata;
+
+    if (imageIds.length > 0) {
+      const batchOwnership = this.imageUploadRepository.listChildrenByIds(imageIds);
+      const ownedByConversation = batchOwnership.filter(
+        (row: any) => {
+          const batch = this.imageUploadRepository.getBatchById(row.batchId);
+          return batch && batch.conversationId === payload.conversationId;
+        }
+      );
+
+      if (ownedByConversation.length !== imageIds.length) {
+        const notFoundError = new Error('One or more images do not exist or do not belong to this conversation') as any;
+        notFoundError.statusCode = 400;
+        notFoundError.code = 'IMAGE_NOT_FOUND';
+        throw notFoundError;
+      }
+
+      const notStaged = ownedByConversation.some((row: any) => row.status !== 'staged');
+
+      if (notStaged) {
+        const alreadyAttachedError = new Error('One or more images are already attached') as any;
+        alreadyAttachedError.statusCode = 400;
+        alreadyAttachedError.code = 'IMAGE_ALREADY_ATTACHED';
+        throw alreadyAttachedError;
+      }
+
+      const consumedBatchIds: Array<string> = [];
+      const byBatch = new Map<string, Array<any>>();
+
+      for (const row of ownedByConversation) {
+        const batchId = row.batchId;
+        const group = byBatch.get(batchId) || [];
+        group.push(row);
+        byBatch.set(batchId, group);
+      }
+
+      for (const [batchId, referencedChildren] of byBatch) {
+        const batch = this.imageUploadRepository.getBatchById(batchId);
+
+        if (!batch) {
+          const missingBatchError = new Error('Image batch does not exist') as any;
+          missingBatchError.statusCode = 400;
+          missingBatchError.code = 'IMAGE_NOT_FOUND';
+          throw missingBatchError;
+        }
+
+        const stagedChildren = this.imageUploadRepository.listChildrenByBatch(batchId);
+
+        if (stagedChildren.length !== referencedChildren.length) {
+          const partialBatchError = new Error(
+            'Message must reference all staged images of an upload batch; partial batch attach is rejected'
+          ) as any;
+          partialBatchError.statusCode = 400;
+          partialBatchError.code = 'IMAGE_PARTIAL_BATCH_ATTACH_REJECTED';
+          throw partialBatchError;
+        }
+
+        consumedBatchIds.push(batchId);
+      }
+
+      imageRows = ownedByConversation;
+      consumedBatchIdsForMessage = consumedBatchIds;
+      nextMetadata = {
+        ...metadata,
+        contentBlocks: deriveMessageContentBlocks(payload.content, imageRows),
+      };
+    }
+
     const senderName =
       String(payload.senderName || '').trim() ||
       (payload.role === 'user' ? 'You' : payload.role === 'assistant' ? 'Assistant' : 'System');
@@ -2372,7 +2788,10 @@ export class ChatAppStore {
       taskId: payload.taskId || null,
       runId: payload.runId || null,
       errorMessage: String(payload.errorMessage || '').trim(),
-      metadata: payload.metadata,
+      metadata: nextMetadata,
+      imageIds,
+      consumedBatchIds: consumedBatchIdsForMessage,
+      clientRequestId,
       createdAt: payload.createdAt,
     });
   }

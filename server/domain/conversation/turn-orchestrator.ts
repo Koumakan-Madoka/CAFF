@@ -14,6 +14,7 @@ const {
 const { getAgentById, extractMentionedAgentIds, resolveTurnExecutionMode } = require('./mention-routing');
 const { buildAgentTurnPrompt, sanitizePromptMentions } = require('./turn/agent-prompt');
 const { createAgentExecutor } = require('./turn/agent-executor');
+const { assertImagePreflightForTargets } = require('./turn/image-preflight');
 const { createSessionExporter } = require('./turn/session-export');
 const { createTurnEventEmitter } = require('./turn/turn-events');
 const { createRuntimePayloadBuilder } = require('./turn/turn-runtime-payload');
@@ -39,6 +40,7 @@ function createAcceptedMessagePayload(conversationId: any, turnInput: any) {
     senderName: turnInput.senderName,
     content: turnInput.content,
     status: 'completed',
+    imageIds: Array.isArray(turnInput.imageIds) ? turnInput.imageIds : [],
     metadata: turnInput.privateOnly ? { ...turnInput.metadata, privateOnly: true } : turnInput.metadata,
   };
 }
@@ -68,6 +70,7 @@ export function createTurnOrchestrator(options: any = {}) {
   const getProjectDir = typeof options.getProjectDir === 'function' ? options.getProjectDir : null;
   const agentToolBridge = options.agentToolBridge;
   const broadcastEvent = typeof options.broadcastEvent === 'function' ? options.broadcastEvent : () => {};
+  const modelCatalog = options.modelCatalog;
   const broadcastConversationSummary =
     typeof options.broadcastConversationSummary === 'function' ? options.broadcastConversationSummary : () => {};
   const broadcastRuntimeState = typeof options.broadcastRuntimeState === 'function' ? options.broadcastRuntimeState : () => {};
@@ -530,6 +533,8 @@ export function createTurnOrchestrator(options: any = {}) {
         agentToolRelativePath,
         piCapabilityExtensionPath,
         browserCliPath,
+        modelCatalog,
+        uploadsDir: options.uploadsDir,
         onAssistantMessageCompleted: options.onAssistantMessageCompleted,
       });
   const baseExecuteConversationAgent = providedExecuteConversationAgent || agentExecutor.executeConversationAgent;
@@ -1258,6 +1263,24 @@ export function createTurnOrchestrator(options: any = {}) {
       throw createHttpError(409, 'Cross-conversation delivery target message does not match persisted intent');
     }
 
+    const deliveryImageBlocks = Array.isArray(targetMessage.contentBlocks)
+      ? targetMessage.contentBlocks.filter((block: any) => block && block.type === 'image')
+      : [];
+    if (deliveryImageBlocks.length > 0) {
+      throw createHttpError(
+        422,
+        '跨会话消息投递暂不支持图片：图片不剥离、不降级，请改用文本或直接在当前会话发送图片。',
+        {
+          code: 'IMAGE_DELIVERY_NOT_SUPPORTED',
+          issues: [{
+            code: 'IMAGE_DELIVERY_NOT_SUPPORTED',
+            path: 'targetMessage.contentBlocks',
+            imageCount: deliveryImageBlocks.length,
+          }],
+        }
+      );
+    }
+
     const crossConversation = targetMessage.metadata && targetMessage.metadata.crossConversation
       && typeof targetMessage.metadata.crossConversation === 'object'
       ? targetMessage.metadata.crossConversation
@@ -1402,7 +1425,7 @@ export function createTurnOrchestrator(options: any = {}) {
 
     const turnInput = normalizeConversationTurnInput(input, storedConversation);
 
-    if (!turnInput.content) {
+    if (!turnInput.content && (!Array.isArray(turnInput.imageIds) || turnInput.imageIds.length === 0)) {
       throw createHttpError(400, 'Message content is required');
     }
 
@@ -1414,6 +1437,10 @@ export function createTurnOrchestrator(options: any = {}) {
       ...storedConversation,
       agents: resolveRuntimeParticipants(storedConversation.agents),
     };
+
+    if (Array.isArray(turnInput.imageIds) && turnInput.imageIds.length > 0) {
+      assertImagePreflightForTargets(turnInput, conversation, { modelCatalog });
+    }
 
     ensureQueueState(conversationId);
 

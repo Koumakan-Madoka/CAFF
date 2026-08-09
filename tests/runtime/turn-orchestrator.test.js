@@ -4565,3 +4565,287 @@ test('agent sandbox helper creates private directory', (t) => {
   assert.ok(fs.existsSync(sandbox.privateDir));
   assert.match(sandbox.privateDir, /private$/u);
 });
+
+test('turn orchestrator preflight rejects 422 MODEL_NO_IMAGE_INPUT before createMessage when target cannot read images', { concurrency: false }, (t) => {
+  const tempDir = withTempDir('caff-image-preflight-');
+  const sqlitePath = path.join(tempDir, 'image-preflight.sqlite');
+  const conversation = {
+    id: 'conversation-image-preflight',
+    title: 'Image Preflight',
+    type: 'standard',
+    agents: [
+      { id: 'text-agent', name: 'Text Agent' },
+    ],
+    messages: [],
+  };
+  let createMessageCount = 0;
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const store = {
+    databasePath: sqlitePath,
+    getConversation(conversationId) {
+      return conversationId === conversation.id ? conversation : null;
+    },
+    listConversations() {
+      return [];
+    },
+    createMessage(input) {
+      createMessageCount += 1;
+      const message = { id: `message-${createMessageCount}`, ...input };
+      conversation.messages.push(message);
+      return message;
+    },
+  };
+  const modelCatalog = {
+    getOptions() {
+      return [{ provider: 'deepseek', model: 'deepseek-v3', input: ['text'] }];
+    },
+  };
+  const orchestrator = createTurnOrchestrator({
+    store,
+    skillRegistry: { listSkills() { return []; }, resolveSkills() { return []; } },
+    modeStore: { get() { return null; } },
+    agentToolBridge: {},
+    host: '127.0.0.1',
+    port: 0,
+    agentDir: tempDir,
+    sqlitePath,
+    toolBaseUrl: 'http://127.0.0.1:0',
+    agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
+    modelCatalog,
+    resolveRuntimeParticipants(participants) {
+      return participants.map((agent) => ({
+        ...agent,
+        runtimeConfig: { provider: 'deepseek', model: 'deepseek-v3', thinking: 'off' },
+      }));
+    },
+    executeConversationAgent: async () => {
+      throw new Error('must not execute when preflight blocks');
+    },
+  });
+
+  assert.throws(
+    () => orchestrator.submitConversationMessage(conversation.id, {
+      content: 'describe this image',
+      imageIds: ['image-1'],
+    }),
+    (error) => error.statusCode === 422 && error.code === 'MODEL_NO_IMAGE_INPUT'
+  );
+  assert.equal(createMessageCount, 0, 'message must not be persisted');
+  assert.equal(conversation.messages.length, 0, 'no partial message rows');
+});
+
+test('turn orchestrator preflight passes when all initial targets support images', { concurrency: false }, (t) => {
+  const tempDir = withTempDir('caff-image-preflight-pass-');
+  const sqlitePath = path.join(tempDir, 'image-preflight-pass.sqlite');
+  const conversation = {
+    id: 'conversation-image-preflight-pass',
+    title: 'Image Preflight Pass',
+    type: 'standard',
+    agents: [
+      { id: 'vision-agent', name: 'Vision Agent' },
+    ],
+    messages: [],
+  };
+  let createMessageCount = 0;
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const store = {
+    databasePath: sqlitePath,
+    getConversation(conversationId) {
+      return conversationId === conversation.id ? conversation : null;
+    },
+    listConversations() {
+      return [];
+    },
+    createMessage(input) {
+      createMessageCount += 1;
+      const message = { id: `message-${createMessageCount}`, ...input };
+      conversation.messages.push(message);
+      return message;
+    },
+  };
+  const modelCatalog = {
+    getOptions() {
+      return [{ provider: 'openai', model: 'gpt-5', input: ['text', 'image'] }];
+    },
+  };
+  const orchestrator = createTurnOrchestrator({
+    store,
+    skillRegistry: { listSkills() { return []; }, resolveSkills() { return []; } },
+    modeStore: { get() { return null; } },
+    agentToolBridge: {},
+    host: '127.0.0.1',
+    port: 0,
+    agentDir: tempDir,
+    sqlitePath,
+    toolBaseUrl: 'http://127.0.0.1:0',
+    agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
+    modelCatalog,
+    resolveRuntimeParticipants(participants) {
+      return participants.map((agent) => ({
+        ...agent,
+        runtimeConfig: { provider: 'openai', model: 'gpt-5', thinking: 'off' },
+      }));
+    },
+    executeConversationAgent: async () => {
+      return { stopTurn: false };
+    },
+  });
+
+  const result = orchestrator.submitConversationMessage(conversation.id, {
+    content: 'describe this image',
+    imageIds: ['image-1'],
+  });
+  assert.equal(createMessageCount, 1, 'message persisted after preflight pass');
+  assert.equal(result.acceptedMessage.imageIds.length, 1);
+});
+
+test('turn orchestrator preflight skips text-only messages entirely', { concurrency: false }, (t) => {
+  const tempDir = withTempDir('caff-image-preflight-text-');
+  const sqlitePath = path.join(tempDir, 'image-preflight-text.sqlite');
+  const conversation = {
+    id: 'conversation-image-preflight-text',
+    title: 'Text Only',
+    type: 'standard',
+    agents: [{ id: 'text-agent', name: 'Text Agent' }],
+    messages: [],
+  };
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const store = {
+    databasePath: sqlitePath,
+    getConversation(conversationId) {
+      return conversationId === conversation.id ? conversation : null;
+    },
+    listConversations() {
+      return [];
+    },
+    createMessage(input) {
+      const message = { id: `message-${conversation.messages.length + 1}`, ...input };
+      conversation.messages.push(message);
+      return message;
+    },
+  };
+  const orchestrator = createTurnOrchestrator({
+    store,
+    skillRegistry: { listSkills() { return []; }, resolveSkills() { return []; } },
+    modeStore: { get() { return null; } },
+    agentToolBridge: {},
+    host: '127.0.0.1',
+    port: 0,
+    agentDir: tempDir,
+    sqlitePath,
+    toolBaseUrl: 'http://127.0.0.1:0',
+    agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
+    modelCatalog: {
+      getOptions() {
+        throw new Error('model catalog must not be read for text-only messages');
+      },
+    },
+    resolveRuntimeParticipants(participants) {
+      return participants.map((agent) => ({
+        ...agent,
+        runtimeConfig: { provider: 'deepseek', model: 'deepseek-v3', thinking: 'off' },
+      }));
+    },
+    executeConversationAgent: async () => {
+      return { stopTurn: false };
+    },
+  });
+
+  const result = orchestrator.submitConversationMessage(conversation.id, { content: 'plain text only' });
+  assert.equal(result.acceptedMessage.content, 'plain text only');
+});
+
+test('cross-conversation delivery rejects image-bearing target messages with IMAGE_DELIVERY_NOT_SUPPORTED', { concurrency: false }, async (t) => {
+  const tempDir = withTempDir('caff-cross-delivery-image-reject-');
+  const sqlitePath = path.join(tempDir, 'cross-delivery-image-reject.sqlite');
+  const targetMessage = {
+    id: 'cross-image-target-message',
+    conversationId: 'cross-image-target-conversation',
+    turnId: 'cross-image-target-turn',
+    role: 'external_agent',
+    agentId: 'source-agent',
+    senderName: 'Source Agent',
+    content: 'Deliver this with an image',
+    status: 'completed',
+    contentBlocks: [
+      { type: 'text', text: 'Deliver this with an image' },
+      { type: 'image', imageId: 'img-1', url: '/uploads/batch-1/0-photo.png' },
+    ],
+    metadata: {
+      crossConversation: {
+        deliveryId: 'cross-image-delivery-1',
+        authority: 'external_agent',
+        allowHandoffs: false,
+        sourceConversationId: 'cross-source-conversation',
+      },
+    },
+    createdAt: '2026-08-05T00:00:00.000Z',
+  };
+  const conversation = {
+    id: targetMessage.conversationId,
+    title: 'Cross Image Target',
+    type: 'standard',
+    agents: [{ id: 'target-agent', name: 'Target Agent' }],
+    messages: [targetMessage],
+  };
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const store = {
+    databasePath: sqlitePath,
+    getConversation(conversationId) {
+      return conversationId === conversation.id ? conversation : null;
+    },
+    listConversations() {
+      return [];
+    },
+  };
+  const orchestrator = createTurnOrchestrator({
+    store,
+    skillRegistry: { listSkills() { return []; }, resolveSkills() { return []; } },
+    modeStore: { get() { return null; } },
+    agentToolBridge: {},
+    host: '127.0.0.1',
+    port: 0,
+    agentDir: tempDir,
+    sqlitePath,
+    toolBaseUrl: 'http://127.0.0.1:0',
+    agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
+    executeConversationAgent: async () => ({ stopTurn: false, terminationReason: '' }),
+  });
+
+  await assert.rejects(
+    orchestrator.dispatchCrossConversationDelivery({
+      delivery: {
+        id: 'cross-image-delivery-1',
+        kind: 'request',
+        sourceConversationId: 'cross-source-conversation',
+        sourceAgentId: 'source-agent',
+        sourceAgentName: 'Source Agent',
+        targetConversationId: conversation.id,
+        targetAgentId: 'target-agent',
+        targetMessageId: targetMessage.id,
+      },
+      targetMessage,
+    }),
+    (error) => {
+      assert.equal(error.statusCode, 422);
+      assert.equal(error.code, 'IMAGE_DELIVERY_NOT_SUPPORTED');
+      return true;
+    }
+  );
+});

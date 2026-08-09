@@ -32,7 +32,7 @@ type ApiContext = {
 };
 
 const CATALOG_ASSET_PATH = path.resolve(__dirname, '..', '..', 'assets', 'model-catalog.json');
-const IMPORT_FIELDS = new Set(['providerId', 'modelId', 'name', 'baseUrl', 'reasoning']);
+const IMPORT_FIELDS = new Set(['providerId', 'modelId', 'name', 'baseUrl', 'reasoning', 'input']);
 
 function catalogErrorStatus(error: ModelCatalogError) {
   if (error.code === 'catalog_provider_not_found' || error.code === 'catalog_model_not_found') {
@@ -160,6 +160,9 @@ function assertImportBody(body: any) {
   if (Object.hasOwn(body, 'reasoning') && typeof body.reasoning !== 'boolean') {
     throw new ModelCatalogError('catalog_import_reasoning_invalid', 'body.reasoning');
   }
+  if (Object.hasOwn(body, 'input') && !Array.isArray(body.input)) {
+    throw new ModelCatalogError('catalog_import_input_invalid', 'body.input');
+  }
 
   return { providerId, modelId };
 }
@@ -228,6 +231,11 @@ export function createModelCatalogController(options: any = {}): RouteHandler<Ap
           }
           if (Object.hasOwn(body, 'reasoning')) {
             modelPatch.reasoning = body.reasoning;
+          }
+          if (Object.hasOwn(body, 'input')) {
+            modelPatch.input = body.input;
+          } else if (Array.isArray(projection.input)) {
+            modelPatch.input = projection.input;
           }
 
           const existingProvider = configured.providers && typeof configured.providers[providerId] === 'object' && configured.providers[providerId] !== null

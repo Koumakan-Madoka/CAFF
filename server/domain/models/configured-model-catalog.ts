@@ -19,10 +19,19 @@ type RuntimeModel = {
   id: string;
   name?: string;
   supportedThinkingLevels?: string[];
+  input?: string[];
 };
 
 function normalize(value: any) {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function normalizeModelInput(value: any) {
+  const allowed = new Set(['text', 'image']);
+  const entries = Array.isArray(value)
+    ? value.map(normalize).filter((entry) => allowed.has(entry))
+    : [];
+  return entries.length > 0 ? [...new Set(entries)] : ['text'];
 }
 
 function normalizeThinkingLevels(value: any) {
@@ -94,6 +103,7 @@ export function createConfiguredModelCatalog(options: any = {}) {
         model,
         label: normalize(runtimeModel.name) || `${provider} / ${model}`,
         supportedThinkingLevels: normalizeThinkingLevels(runtimeModel.supportedThinkingLevels),
+        input: normalizeModelInput(runtimeModel.input),
       });
     }
 
@@ -116,6 +126,7 @@ export function createConfiguredModelCatalog(options: any = {}) {
           source: 'models_json' as CatalogSource,
           explicitFamily: normalize(modelConfig?.family),
           supportedThinkingLevels: current?.supportedThinkingLevels || ['off'],
+          input: normalizeModelInput(modelConfig?.input),
         });
       }
     }
@@ -135,6 +146,7 @@ export function createConfiguredModelCatalog(options: any = {}) {
           source: 'runtime' as CatalogSource,
           explicitFamily: '',
           supportedThinkingLevels: current?.supportedThinkingLevels || ['off'],
+          input: current?.input || ['text'],
         });
       }
     }
@@ -154,6 +166,7 @@ export function createConfiguredModelCatalog(options: any = {}) {
         sourceLabel: sourceLabel(entry.source),
         ...classification,
         supportedThinkingLevels: entry.supportedThinkingLevels,
+        input: entry.input,
       };
     }).sort((left, right) => {
       const labelOrder = left.label.localeCompare(right.label, 'zh-CN');

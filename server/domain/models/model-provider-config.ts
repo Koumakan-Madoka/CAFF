@@ -17,6 +17,8 @@ const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f]/u;
 
 type ApiKeyMode = 'literal' | 'env' | 'command' | 'external' | 'none';
 type JsonObject = Record<string, any>;
+export type ModelInputCapability = 'text' | 'image';
+const MODEL_INPUT_ALLOWED = new Set<ModelInputCapability>(['text', 'image']);
 
 export class ModelProviderConfigError extends Error {
   code: string;
@@ -45,6 +47,28 @@ function cloneDocument<T>(value: T): T {
 
 function normalizeText(value: any) {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+export function normalizeModelInputCapabilities(value: any, path: string): ModelInputCapability[] {
+  if (value === undefined || value === null) {
+    return ['text'];
+  }
+
+  if (
+    !Array.isArray(value) ||
+    value.some((entry) => typeof entry !== 'string' || !MODEL_INPUT_ALLOWED.has(entry as ModelInputCapability))
+  ) {
+    throw new ModelProviderConfigError('provider_model_input_invalid', path);
+  }
+
+  return [...new Set(value as ModelInputCapability[])];
+}
+
+export function modelSupportsImageInput(value: any): boolean {
+  if (!Array.isArray(value)) {
+    return false;
+  }
+  return value.includes('image');
 }
 
 function hasCustomHeaders(value: any) {
@@ -157,7 +181,7 @@ function normalizeSecretValue(mode: string, value: string, path: string) {
   return value.trim();
 }
 
-function mergeModelEntries(existingModels: any[], incomingModels: any[]) {
+function mergeModelEntries(existingModels: any[], incomingModels: any[], pathPrefix = '') {
   const existingById = new Map<string, JsonObject>();
 
   for (const model of existingModels) {
@@ -166,11 +190,12 @@ function mergeModelEntries(existingModels: any[], incomingModels: any[]) {
     }
   }
 
-  return incomingModels.map((incomingModel) => {
+  return incomingModels.map((incomingModel, index) => {
     const input = isPlainObject(incomingModel) ? incomingModel : {};
     const id = normalizeText(input.id);
     const existing = existingById.get(id);
     const next = existing ? cloneDocument(existing) : {};
+    const modelPath = `${pathPrefix}.models[${index}]`;
 
     for (const field of ['id', 'name', 'api', 'baseUrl'] as const) {
       if (Object.hasOwn(input, field)) {
@@ -194,6 +219,10 @@ function mergeModelEntries(existingModels: any[], incomingModels: any[]) {
 
     if (Object.hasOwn(input, 'reasoning')) {
       next.reasoning = Boolean(input.reasoning);
+    }
+
+    if (Object.hasOwn(input, 'input')) {
+      next.input = normalizeModelInputCapabilities(input.input, `${modelPath}.input`);
     }
 
     return next;
@@ -274,6 +303,10 @@ export function validateModelProviderDocument(document: any) {
       if (Object.hasOwn(model, 'api')) {
         validateProtocol(model.api, `${modelPath}.api`);
       }
+
+      if (Object.hasOwn(model, 'input')) {
+        normalizeModelInputCapabilities(model.input, `${modelPath}.input`);
+      }
     }
   }
 
@@ -316,6 +349,7 @@ export function projectModelProviderDocument(document: any, options: any = {}) {
             baseUrl: normalizeText(model.baseUrl),
             family: normalizeText(model.family),
             reasoning: Boolean(model.reasoning),
+            input: normalizeModelInputCapabilities(model.input, ''),
             hasCustomHeaders: hasCustomHeaders(model.headers),
           };
         }),
@@ -359,7 +393,11 @@ export function patchModelProvider(document: any, rawProviderId: any, patch: any
     if (!Array.isArray(patch.models)) {
       throw new ModelProviderConfigError('provider_models_invalid', `providers.${providerId}.models`);
     }
-    provider.models = mergeModelEntries(Array.isArray(existing.models) ? existing.models : [], patch.models);
+    provider.models = mergeModelEntries(
+      Array.isArray(existing.models) ? existing.models : [],
+      patch.models,
+      `providers.${providerId}`
+    );
   } else if (!Array.isArray(provider.models)) {
     provider.models = [];
   }

@@ -844,7 +844,26 @@ export function createConversationsController(options: any = {}): RouteHandler<A
 
         undercoverService.deleteConversationState(conversationId);
         werewolfService.deleteConversationState(conversationId);
+
+        const batchIds = Array.from(
+          new Set(
+            [
+              ...store.listImageUploadsByConversation(conversationId),
+              ...store.listImageUploadBatchesByConversation(conversationId),
+            ]
+              .map((row: any) => String(row && row.batchId || '').trim())
+              .filter(Boolean)
+          )
+        );
+
         store.deleteConversation(conversationId);
+
+        if (batchIds.length > 0 && options.uploadService && typeof options.uploadService.removeBatchDirectories === 'function') {
+          try {
+            options.uploadService.removeBatchDirectories(batchIds);
+          } catch {}
+        }
+
         turnOrchestrator.clearConversationState(conversationId);
         sendJson(res, 200, {
           deletedId: conversationId,
@@ -1015,8 +1034,17 @@ export function createConversationsController(options: any = {}): RouteHandler<A
       }
 
       const clientRequestId = typeof body.clientRequestId === 'string' ? body.clientRequestId.trim() : '';
+      const submittedMetadata = body.metadata && typeof body.metadata === 'object' ? body.metadata : {};
+
+      if (submittedMetadata.contentBlocks) {
+        throw createHttpError(400, 'Client must not submit contentBlocks; content + imageIds only', {
+          code: 'TEXT_BLOCK_FROM_CLIENT_REJECTED',
+        });
+      }
+
       const result = turnOrchestrator.submitConversationMessage(conversationId, {
         content: body.content,
+        imageIds: Array.isArray(body.imageIds) ? body.imageIds : [],
         metadata: clientRequestId ? { clientRequestId } : undefined,
       });
       sendJson(res, 200, result);

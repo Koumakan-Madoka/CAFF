@@ -529,6 +529,7 @@ export function buildAgentTurnPromptSections({
   modeLoadingStrategy,
   forceDynamicConversationSkillIds,
   browserCliPath,
+  projectedConversationHistory,
 }: any) {
   const normalizedProjectDir = String(projectDir || '').trim();
   const conversationType = String(conversation && conversation.type ? conversation.type : '').trim();
@@ -572,7 +573,11 @@ export function buildAgentTurnPromptSections({
     forceDynamicSkillIds: forceDynamicConversationSkillIds,
   });
   const privateMailboxSection = hasPrivateMailboxItems(privateMessages) ? formatPrivateMailbox(privateMessages, agents) : '';
-  const conversationHistorySection = hasConversationHistoryItems(messages) ? formatHistory(messages, agents) : '';
+  const projectedMessages = Array.isArray(projectedConversationHistory) ? projectedConversationHistory : null;
+  const historyMessages = projectedMessages || messages;
+  const conversationHistorySection = hasConversationHistoryItems(historyMessages)
+    ? formatHistory(historyMessages, agents)
+    : '';
   const turnRoutingStateSection = formatTurnRoutingState(trigger, agents);
 
   const routingRules = allowHandoffs

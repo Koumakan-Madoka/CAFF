@@ -4434,6 +4434,12 @@ test('conversations controller rejects deleting queued conversations', async () 
       deleteConversation() {
         deleteCalled = true;
       },
+      listImageUploadsByConversation() {
+        return [];
+      },
+      listImageUploadBatchesByConversation() {
+        return [];
+      },
       listConversations() {
         return [];
       },
@@ -4493,6 +4499,12 @@ test('conversations controller force-deletes failed queued conversations when id
       },
       deleteConversation(id) {
         deleteCalled = id === conversationId;
+      },
+      listImageUploadsByConversation() {
+        return [];
+      },
+      listImageUploadBatchesByConversation() {
+        return [];
       },
       listConversations() {
         return [];
@@ -4561,6 +4573,12 @@ test('conversations controller rejects deleting conversations with active side s
       deleteConversation() {
         deleteCalled = true;
       },
+      listImageUploadsByConversation() {
+        return [];
+      },
+      listImageUploadBatchesByConversation() {
+        return [];
+      },
       listConversations() {
         return [];
       },
@@ -4628,6 +4646,12 @@ test('conversations controller rejects deleting conversations with queued agent 
       },
       deleteConversation() {
         deleteCalled = true;
+      },
+      listImageUploadsByConversation() {
+        return [];
+      },
+      listImageUploadBatchesByConversation() {
+        return [];
       },
       listConversations() {
         return [];

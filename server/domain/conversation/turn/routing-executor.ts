@@ -72,6 +72,7 @@ export function normalizeConversationTurnInput(input: any, conversation: any) {
     explicitIntent: Boolean(payload.explicitIntent),
     privateOnly: Boolean(payload.privateOnly),
     cleanedContent: String(payload.cleanedContent || content).trim() || content,
+    imageIds: Array.isArray(payload.imageIds) ? payload.imageIds.map((id: any) => String(id || '').trim()).filter(Boolean) : [],
   };
 }
 

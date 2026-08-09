@@ -19,8 +19,8 @@ function createFakeSession(calls) {
       calls.push({ type: 'subscribe', listener });
       return () => calls.push({ type: 'unsubscribe' });
     },
-    async prompt(prompt) {
-      calls.push({ type: 'prompt', prompt });
+    async prompt(prompt, options) {
+      calls.push({ type: 'prompt', prompt, options });
       const subscription = [...calls].reverse().find((entry) => entry.type === 'subscribe');
       subscription?.listener({
         type: 'tool_execution_start',
@@ -223,6 +223,22 @@ test('SDK host binds extensions, forwards typed events, and aborts before runtim
 
   await abortSdkRuntime(runtime);
   assert.ok(calls.findIndex((entry) => entry.type === 'abort') < calls.findIndex((entry) => entry.type === 'runtime_dispose'));
+});
+
+test('SDK host passes images into session.prompt options', async () => {
+  const { runAgentRuntime, abortSdkRuntime } = await loadHostModule();
+  const calls = [];
+  const sdk = createFakeSdk(calls);
+  const { runtime } = await createSdkRuntimeForTest(sdk, calls);
+  const images = [{ type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' }];
+
+  await runAgentRuntime(runtime, 'describe this', (message) => {}, { images });
+
+  const promptCall = calls.find((entry) => entry.type === 'prompt');
+  assert.equal(promptCall.prompt, 'describe this');
+  assert.deepEqual(promptCall.options, { images });
+
+  await abortSdkRuntime(runtime);
 });
 
 test('SDK host rejects Node versions below the pinned SDK minimum before loading it', async () => {

@@ -20,12 +20,15 @@
     }
 
     function modelMarkup(model, index) {
+      const inputCapabilities = Array.isArray(model.input) ? model.input : ['text'];
+      const supportsImage = inputCapabilities.includes('image');
       return `
         <div class="provider-model-row" data-provider-model data-model-index="${index}">
           <label><span>模型 ID</span><input data-field="id" value="${utils.escapeHtml(model.id || '')}" /></label>
           <label><span>显示名称</span><input data-field="name" value="${utils.escapeHtml(model.name || '')}" /></label>
           <label><span>模型族归类</span><select data-field="family">${familyOptions(model.family || '')}</select></label>
           <label class="provider-model-reasoning"><input data-field="reasoning" type="checkbox" ${model.reasoning ? 'checked' : ''} />支持 reasoning</label>
+          <label class="provider-model-reasoning"><input data-field="input-image" type="checkbox" ${supportsImage ? 'checked' : ''} />支持图片输入</label>
           <button class="ghost-button danger" type="button" data-remove-provider-model="${index}">移除</button>
         </div>`;
     }
@@ -108,7 +111,7 @@
         apiKeyMode: draft.apiKeyMode, apiKey: secret,
         models: draft.models.map((model) => ({
           id: String(model.id || '').trim(), name: String(model.name || '').trim(), family: String(model.family || '').trim(),
-          reasoning: Boolean(model.reasoning),
+          reasoning: Boolean(model.reasoning), input: Array.isArray(model.input) ? model.input.slice() : ['text'],
         })),
       };
     }
@@ -141,7 +144,12 @@
         row.addEventListener('input', (event) => {
           const field = event.target.dataset.field;
           if (field === 'reasoning') draft.models[index].reasoning = event.target.checked;
-          else if (field) draft.models[index][field] = event.target.value;
+          else if (field === 'input-image') {
+            const capabilities = Array.isArray(draft.models[index].input) ? draft.models[index].input : ['text'];
+            const next = capabilities.filter((entry) => entry !== 'image');
+            if (event.target.checked && !next.includes('image')) next.push('image');
+            draft.models[index].input = next;
+          } else if (field) draft.models[index][field] = event.target.value;
         });
       });
       root.querySelectorAll('[data-remove-provider-model]').forEach((button) => button.addEventListener('click', () => {
@@ -151,7 +159,7 @@
       document.getElementById('add-provider-model').addEventListener('click', () => {
         updateSimpleFields();
         const index = draft.models.length;
-        draft.models.push({ id: '', name: '', family: '', reasoning: false });
+        draft.models.push({ id: '', name: '', family: '', reasoning: false, input: ['text'] });
         render();
         root.querySelector(`[data-model-index="${index}"] [data-field="id"]`).focus();
       });

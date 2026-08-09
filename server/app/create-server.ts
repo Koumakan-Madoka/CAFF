@@ -28,6 +28,16 @@ const { createModesController } = require('../api/modes-controller');
 const { createSkillsController } = require('../api/skills-controller');
 const { createUndercoverController } = require('../api/undercover-controller');
 const { createWerewolfController } = require('../api/werewolf-controller');
+const { createImageUploadController } = require('../api/image-upload-controller');
+const { createImageUploadService } = require('../../lib/image-upload-service');
+const {
+  ALLOWED_IMAGE_MIME_TYPES,
+  MAX_IMAGE_BYTES,
+  MAX_IMAGE_HEIGHT,
+  MAX_IMAGE_PIXELS,
+  MAX_IMAGES_PER_MESSAGE,
+  MAX_IMAGE_WIDTH,
+} = require('../../lib/image-constants');
 const { resolveToolRelativePath } = require('../http/path-utils');
 const { HOST, PORT, ROOT_DIR } = require('./config');
 const { createTurnOrchestrator } = require('../domain/conversation/turn-orchestrator');
@@ -134,6 +144,8 @@ export function createServerApp(options: any = {}) {
   }
 
   const store = createChatAppStore({ agentDir, sqlitePath });
+  const uploadsDir = path.resolve(String(options.uploadsDir || '').trim() || path.join(ROOT_DIR, 'uploads'));
+  const uploadService = createImageUploadService({ store, uploadsDir });
   const roleService = createRoleService({ store, modelCatalog });
   const modeStore = createModeStore(store.db);
   const skillRegistry = createSkillRegistry({ agentDir, extraSkillDirs: [] });
@@ -577,6 +589,9 @@ export function createServerApp(options: any = {}) {
     piCapabilityExtensionPath,
     browserCliPath,
     resolveRuntimeParticipants: roleService.resolveRuntimeParticipants,
+    modelCatalog,
+    uploadsDir,
+    executeConversationAgent: options.executeConversationAgent,
     async onAssistantMessageCompleted(message: any) {
       await maybeAutoCreateDigestAfterAssistantMessage(message);
 
@@ -779,6 +794,17 @@ export function createServerApp(options: any = {}) {
       digestOptions,
       skillDraftOptions,
       digestModelRunner: options.digestModelRunner,
+      uploadService,
+    }),
+    createImageUploadController({
+      store,
+      uploadService,
+      maxImageBytes: MAX_IMAGE_BYTES,
+      maxImagesPerMessage: MAX_IMAGES_PER_MESSAGE,
+      maxImageWidth: MAX_IMAGE_WIDTH,
+      maxImageHeight: MAX_IMAGE_HEIGHT,
+      maxImagePixels: MAX_IMAGE_PIXELS,
+      allowedMimeTypes: ALLOWED_IMAGE_MIME_TYPES,
     }),
   ]);
 
@@ -801,6 +827,12 @@ export function createServerApp(options: any = {}) {
         return;
       }
 
+      if (requestUrl.pathname.startsWith('/uploads/')) {
+        const uploadPathname = requestUrl.pathname.slice('/uploads'.length) || '/';
+        serveStaticFile(res, uploadPathname, { publicDir: uploadsDir, isUpload: true });
+        return;
+      }
+
       serveStaticFile(res, requestUrl.pathname);
     } catch (error) {
       const errorValue = error as any;
@@ -811,6 +843,10 @@ export function createServerApp(options: any = {}) {
 
   function start(onListen: any) {
     server.listen(port, host, () => {
+      try {
+        uploadService.reconcile();
+      } catch {}
+
       startCrossConversationDeliveryRuntime();
 
       if (typeof onListen === 'function') {

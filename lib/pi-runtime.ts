@@ -375,6 +375,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
     DEFAULT_TERMINATE_GRACE_MS,
     'terminateGraceMs'
   );
+  const images = Array.isArray(options.images) ? options.images : [];
   const resume = Boolean(options.resume);
   const sessionPath = resolveSessionPath(options.session, agentDir);
   const cwd = path.resolve(String(options.cwd || process.cwd()).trim() || process.cwd());
@@ -968,6 +969,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
       child.send({
         type: 'start',
         prompt: String(prompt),
+        images,
         config: {
           provider: provider || '',
           model: model || '',
