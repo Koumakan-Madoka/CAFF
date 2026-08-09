@@ -121,7 +121,7 @@ function parseJpeg(buffer: Buffer): HeaderParseResult {
       return { ok: false, reason: 'JPEG_BAD_SEGMENT_LENGTH' };
     }
 
-    offset += 2 + 2 + segmentLength;
+    offset += 2 + segmentLength;
   }
 
   return { ok: false, reason: 'JPEG_SOF_NOT_FOUND' };
@@ -165,7 +165,11 @@ function parseWebp(buffer: Buffer): HeaderParseResult {
       return { ok: false, reason: 'WEBP_VP8L_TRUNCATED' };
     }
 
-    const bits = buffer.readUInt32LE(20);
+    if (buffer[20] !== 0x2f) {
+      return { ok: false, reason: 'WEBP_VP8L_SIGNATURE_MISSING' };
+    }
+
+    const bits = buffer.readUInt32LE(21);
     const width = (bits & 0x3fff) + 1;
     const height = ((bits >> 14) & 0x3fff) + 1;
 
@@ -209,9 +213,10 @@ function parseWebp(buffer: Buffer): HeaderParseResult {
 }
 
 function parseGif(buffer: Buffer): HeaderParseResult {
-  const animated = matches(buffer, 0, GIF89);
+  const isGif89 = matches(buffer, 0, GIF89);
+  const isGif87 = matches(buffer, 0, GIF87);
 
-  if (!matches(buffer, 0, GIF87) && !animated) {
+  if (!isGif87 && !isGif89) {
     return { ok: false, reason: 'GIF_MAGIC_MISMATCH' };
   }
 
@@ -226,7 +231,7 @@ function parseGif(buffer: Buffer): HeaderParseResult {
     return { ok: false, reason: 'GIF_INVALID_DIMENSIONS' };
   }
 
-  if (animated) {
+  if (isGifAnimated(buffer)) {
     return { ok: false, reason: 'ANIMATED_GIF_REJECTED' };
   }
 
@@ -240,6 +245,94 @@ function parseGif(buffer: Buffer): HeaderParseResult {
       pixelCount: width * height,
     },
   };
+}
+
+function isGifAnimated(buffer: Buffer): boolean {
+  if (buffer.length < 13) {
+    return false;
+  }
+
+  const packed = buffer[10];
+  let offset = 13;
+  let imageCount = 0;
+
+  if ((packed & 0x80) !== 0) {
+    const gctSize = 3 * 2 ** ((packed & 0x07) + 1);
+    offset += gctSize;
+  }
+
+  while (offset < buffer.length) {
+    const block = buffer[offset];
+
+    if (block === 0x3b) {
+      return imageCount > 1;
+    }
+
+    if (block === 0x2c) {
+      imageCount += 1;
+
+      if (imageCount > 1) {
+        return true;
+      }
+
+      if (offset + 10 > buffer.length) {
+        return false;
+      }
+
+      const imagePacked = buffer[offset + 9];
+      offset += 10;
+
+      if ((imagePacked & 0x80) !== 0) {
+        const lctSize = 3 * 2 ** ((imagePacked & 0x07) + 1);
+        offset += lctSize;
+      }
+
+      if (offset >= buffer.length) {
+        return false;
+      }
+
+      offset += 1;
+
+      while (offset < buffer.length && buffer[offset] !== 0x00) {
+        offset += 1 + buffer[offset];
+      }
+
+      if (offset < buffer.length) {
+        offset += 1;
+      }
+
+      continue;
+    }
+
+    if (block === 0x21) {
+      if (offset + 1 >= buffer.length) {
+        return false;
+      }
+
+      const label = buffer[offset + 1];
+      offset += 2;
+
+      while (offset < buffer.length && buffer[offset] !== 0x00) {
+        const subLen = buffer[offset];
+
+        if (label === 0xff && subLen >= 11 && matches(buffer, offset + 1, Buffer.from('NETSCAPE'))) {
+          return true;
+        }
+
+        offset += 1 + subLen;
+      }
+
+      if (offset < buffer.length) {
+        offset += 1;
+      }
+
+      continue;
+    }
+
+    return false;
+  }
+
+  return imageCount > 1;
 }
 
 export function parseImageHeader(buffer: Buffer): HeaderParseResult {

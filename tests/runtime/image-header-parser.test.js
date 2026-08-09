@@ -1,6 +1,12 @@
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const test = require('node:test');
 const { parseImageHeader } = require('../../build/lib/image-header-parser');
+
+function fixture(name) {
+  return fs.readFileSync(path.join(__dirname, 'fixtures', name));
+}
 
 function pngBuffer(width = 100, height = 50) {
   const buffer = Buffer.alloc(33);
@@ -24,7 +30,7 @@ function jpegBuffer(width = 800, height = 600) {
   buffer[1] = 0xd8;
   buffer[2] = 0xff;
   buffer[3] = 0xe0;
-  buffer.writeUInt16BE(4, 4);
+  buffer.writeUInt16BE(6, 4);
   buffer[6] = 0x00;
   buffer[7] = 0x01;
   buffer[8] = 0x02;
@@ -60,7 +66,8 @@ function webpVp8lBuffer(width = 32, height = 16) {
   buffer.write('WEBP', 8, 'ascii');
   buffer.write('VP8L', 12, 'ascii');
   buffer.writeUInt32LE(0, 16);
-  buffer.writeUInt32LE((height - 1) << 14 | (width - 1), 20);
+  buffer[20] = 0x2f;
+  buffer.writeUInt32LE((height - 1) << 14 | (width - 1), 21);
   return buffer;
 }
 
@@ -106,16 +113,17 @@ test('parses WEBP VP8X and VP8L headers', () => {
   assert.equal(vp8l.header.height, 16);
 });
 
-test('parses static GIF and rejects animated GIF', () => {
-  const staticGif = parseImageHeader(gifBuffer(40, 30, 'GIF87a'));
-  assert.equal(staticGif.ok, true);
-  assert.equal(staticGif.header.mimeType, 'image/gif');
-  assert.equal(staticGif.header.width, 40);
-  assert.equal(staticGif.header.height, 30);
+test('parses static GIF87a and GIF89a (version alone is not animation)', () => {
+  const gif87 = parseImageHeader(gifBuffer(40, 30, 'GIF87a'));
+  assert.equal(gif87.ok, true);
+  assert.equal(gif87.header.mimeType, 'image/gif');
+  assert.equal(gif87.header.width, 40);
+  assert.equal(gif87.header.height, 30);
 
-  const animated = parseImageHeader(gifBuffer(40, 30, 'GIF89a'));
-  assert.equal(animated.ok, false);
-  assert.equal(animated.reason, 'ANIMATED_GIF_REJECTED');
+  const gif89 = parseImageHeader(gifBuffer(40, 30, 'GIF89a'));
+  assert.equal(gif89.ok, true);
+  assert.equal(gif89.header.mimeType, 'image/gif');
+  assert.equal(gif89.header.animated, false);
 });
 
 test('rejects unsupported magic bytes', () => {
@@ -139,4 +147,35 @@ test('rejects JPEG without SOF marker', () => {
   const buffer = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x04]);
   const result = parseImageHeader(buffer);
   assert.equal(result.ok, false);
+});
+
+test('parses real Pillow JPEG fixture (100x50)', () => {
+  const result = parseImageHeader(fixture('real-100x50.jpg'));
+  assert.equal(result.ok, true);
+  assert.equal(result.header.mimeType, 'image/jpeg');
+  assert.equal(result.header.width, 100);
+  assert.equal(result.header.height, 50);
+});
+
+test('parses real lossless WebP fixture (100x50)', () => {
+  const result = parseImageHeader(fixture('real-100x50-lossless.webp'));
+  assert.equal(result.ok, true);
+  assert.equal(result.header.mimeType, 'image/webp');
+  assert.equal(result.header.width, 100);
+  assert.equal(result.header.height, 50);
+});
+
+test('parses real static GIF fixture (single frame, accepted)', () => {
+  const result = parseImageHeader(fixture('real-static.gif'));
+  assert.equal(result.ok, true);
+  assert.equal(result.header.mimeType, 'image/gif');
+  assert.equal(result.header.width, 100);
+  assert.equal(result.header.height, 50);
+  assert.equal(result.header.animated, false);
+});
+
+test('rejects real animated GIF fixture', () => {
+  const result = parseImageHeader(fixture('real-animated.gif'));
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'ANIMATED_GIF_REJECTED');
 });
