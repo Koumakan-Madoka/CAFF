@@ -175,12 +175,24 @@ test('M4: meta row is compact (no full-width sender/time split)', () => {
   assert.match(metaBlock, /justify-content:\s*flex-start/, 'meta row must cluster sender+time together');
 });
 
-test('M4: message-level actions only reveal on hover/focus', () => {
+test('M4: message-level actions stay visible, light up on hover/focus', () => {
   const idleBlock = cssBlock('body.chat-app .message-card :is(.message-export-button, .message-context-button) {');
-  assert.match(idleBlock, /opacity:\s*0/, 'message actions must be invisible by default');
+  assert.match(idleBlock, /opacity:\s*0\.[1-9]\d*/, 'message actions must stay visible by default (idle opacity > 0)');
 
-  const hoverStart = M4_STYLES.indexOf('body.chat-app .message-card:hover :is(.message-export-button, .message-context-button)');
-  assert.notEqual(hoverStart, -1, 'hover reveal rule missing');
+  const disabledBlock = cssBlock('body.chat-app .message-card :is(.message-export-button, .message-context-button):disabled {');
+  assert.match(disabledBlock, /opacity:\s*0\.[1-9]\d*/, 'disabled message actions must render dimmed');
+
+  const hoverStart = M4_STYLES.indexOf('body.chat-app .message-card:hover :is(.message-export-button, .message-context-button):not(:disabled)');
+  assert.notEqual(hoverStart, -1, 'hover reveal rule must exist and exclude :disabled');
+});
+
+test('M4: context button shares export button compact sizing', () => {
+  const compactStart = STYLES.indexOf(':is(.message-export-button, .message-context-button) {');
+  assert.notEqual(compactStart, -1, 'shared compact sizing selector missing');
+  const open = STYLES.indexOf('{', compactStart);
+  const close = STYLES.indexOf('}', open);
+  const compactBlock = STYLES.slice(open + 1, close);
+  assert.match(compactBlock, /padding:\s*0\.28rem 0\.7rem/, 'context button must share the export button compact padding');
 });
 
 test('M4: failed messages render as a centered narrow banner', () => {
