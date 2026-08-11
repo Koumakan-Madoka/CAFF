@@ -90,3 +90,25 @@ test('provider editor keeps text capability present when image is toggled off', 
   session.click('save-provider');
   assert.deepEqual(session.saved().payload.models[0].input, ['text']);
 });
+
+test('provider editor saves a newly entered API key as a literal secret by default', () => {
+  const provider = {
+    id: 'kimi-for-coding',
+    name: 'Kimi for Coding',
+    apiKeyMode: 'none',
+    hasApiKey: false,
+    models: [],
+  };
+  const session = setup({ provider });
+  session.editor.show(provider);
+
+  const apiKeyInput = session.document.getElementById('provider-api-key');
+  apiKeyInput.value = 'sk-test-secret';
+  apiKeyInput.dispatchEvent(new session.document.defaultView.Event('input', { bubbles: true }));
+
+  assert.equal(session.document.getElementById('provider-auth-mode').value, 'literal');
+  session.click('save-provider');
+
+  assert.equal(session.saved().payload.apiKeyMode, 'literal');
+  assert.equal(session.saved().payload.apiKey, 'sk-test-secret');
+});

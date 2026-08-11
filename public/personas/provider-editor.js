@@ -96,9 +96,16 @@
       draft.baseUrl = input('provider-base-url').value.trim();
       draft.api = input('provider-api-protocol').value.trim();
       draft.authHeader = select('provider-auth-header').value === 'true';
-      draft.apiKeyMode = select('provider-auth-mode').value;
       draft.pendingApiKey = input('provider-api-key').value;
+      draft.apiKeyMode = normalizePlainSecretMode(select('provider-auth-mode').value, draft.pendingApiKey);
+      select('provider-auth-mode').value = draft.apiKeyMode;
       draft.pendingAuthReference = input('provider-auth-reference').value;
+    }
+
+    function normalizePlainSecretMode(mode, value) {
+      if (mode !== 'none' && mode !== 'literal') return mode;
+      if (value.trim()) return 'literal';
+      return draft.hasApiKey ? mode : 'none';
     }
 
     function buildPayload() {
@@ -162,6 +169,10 @@
         draft.models.push({ id: '', name: '', family: '', reasoning: false, input: ['text'] });
         render();
         root.querySelector(`[data-model-index="${index}"] [data-field="id"]`).focus();
+      });
+      input('provider-api-key').addEventListener('input', () => {
+        const mode = select('provider-auth-mode');
+        mode.value = normalizePlainSecretMode(mode.value, input('provider-api-key').value);
       });
       document.getElementById('save-provider').addEventListener('click', () => saveProvider());
       document.getElementById('validate-provider').addEventListener('click', async () => { try { await options.onValidate(draft.id); } catch (error) { showError(error, '连接验证失败'); } });
