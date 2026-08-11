@@ -6,6 +6,18 @@ const vm = require('node:vm');
 const { JSDOM } = require('jsdom');
 
 const projectRoot = path.resolve(__dirname, '..', '..');
+const KNOWN_API_PROTOCOLS = [
+  'openai-completions',
+  'mistral-conversations',
+  'openai-responses',
+  'azure-openai-responses',
+  'openai-codex-responses',
+  'anthropic-messages',
+  'bedrock-converse-stream',
+  'google-generative-ai',
+  'google-vertex',
+  'pi-messages',
+];
 
 function setup({ provider }) {
   const dom = new JSDOM('<div id="root"></div>');
@@ -111,4 +123,48 @@ test('provider editor saves a newly entered API key as a literal secret by defau
 
   assert.equal(session.saved().payload.apiKeyMode, 'literal');
   assert.equal(session.saved().payload.apiKey, 'sk-test-secret');
+});
+
+test('provider editor renders known API protocols as a select and saves the selected value', () => {
+  const provider = {
+    id: 'anthropic',
+    name: 'Anthropic',
+    api: 'anthropic-messages',
+    models: [],
+  };
+  const session = setup({ provider });
+  session.editor.show(provider);
+
+  const protocolSelect = session.document.getElementById('provider-api-protocol');
+  assert.equal(protocolSelect.tagName, 'SELECT');
+  assert.deepEqual(
+    Array.from(protocolSelect.options, (option) => option.value),
+    KNOWN_API_PROTOCOLS,
+  );
+  assert.equal(protocolSelect.value, 'anthropic-messages');
+
+  protocolSelect.value = 'google-generative-ai';
+  session.click('save-provider');
+  assert.equal(session.saved().payload.api, 'google-generative-ai');
+});
+
+test('provider editor preserves a historical custom API protocol as an extra selected option', () => {
+  const provider = {
+    id: 'extension',
+    name: 'Extension',
+    api: 'custom-stream-v2',
+    models: [],
+  };
+  const session = setup({ provider });
+  session.editor.show(provider);
+
+  const protocolSelect = session.document.getElementById('provider-api-protocol');
+  assert.equal(protocolSelect.tagName, 'SELECT');
+  assert.equal(protocolSelect.value, 'custom-stream-v2');
+  const customOption = Array.from(protocolSelect.options).find((option) => option.value === 'custom-stream-v2');
+  assert.ok(customOption);
+  assert.match(customOption.textContent, /自定义/);
+
+  session.click('save-provider');
+  assert.equal(session.saved().payload.api, 'custom-stream-v2');
 });
