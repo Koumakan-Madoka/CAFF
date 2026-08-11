@@ -2,6 +2,18 @@
 
 (function registerProviderEditor() {
   const namespace = window.CaffPersonas || (window.CaffPersonas = {});
+  const API_PROTOCOLS = [
+    'openai-completions',
+    'mistral-conversations',
+    'openai-responses',
+    'azure-openai-responses',
+    'openai-codex-responses',
+    'anthropic-messages',
+    'bedrock-converse-stream',
+    'google-generative-ai',
+    'google-vertex',
+    'pi-messages',
+  ];
 
   namespace.createProviderEditor = function createProviderEditor(options) {
     const root = options.root;
@@ -17,6 +29,18 @@
       return ['', ...Object.keys(utils.FAMILY_LABELS)].map((family) => (
         `<option value="${family}" ${family === selected ? 'selected' : ''}>${family ? utils.familyLabel(family) : '未归类'}</option>`
       )).join('');
+    }
+
+    function apiProtocolOptions(selected) {
+      const current = String(selected || '').trim();
+      const options = API_PROTOCOLS.map((protocol) => (
+        `<option value="${protocol}" ${protocol === current ? 'selected' : ''}>${protocol}</option>`
+      ));
+      if (current && !API_PROTOCOLS.includes(current)) {
+        const escaped = utils.escapeHtml(current);
+        options.push(`<option value="${escaped}" selected>${escaped}（自定义）</option>`);
+      }
+      return options.join('');
     }
 
     function modelMarkup(model, index) {
@@ -65,7 +89,7 @@
             <label><span>Provider ID</span><input id="provider-id" value="${utils.escapeHtml(draft.id || '')}" ${isDraft ? '' : 'readonly'} placeholder="例如 openai-compatible" /></label>
             <label><span>显示名称</span><input id="provider-name" value="${utils.escapeHtml(draft.name || '')}" /></label>
             <label><span>Base URL</span><input id="provider-base-url" value="${utils.escapeHtml(draft.baseUrl || '')}" inputmode="url" /></label>
-            <label><span>API 协议</span><input id="provider-api-protocol" value="${utils.escapeHtml(draft.api || '')}" placeholder="openai-responses" /></label>
+            <label><span>API 协议</span><select id="provider-api-protocol">${apiProtocolOptions(draft.api)}</select></label>
             <label><span>Authorization Header</span><select id="provider-auth-header"><option value="false" ${draft.authHeader ? '' : 'selected'}>由协议处理</option><option value="true" ${draft.authHeader ? 'selected' : ''}>启用 Bearer</option></select></label>
             <label><span>models.json 认证模式</span><select id="provider-auth-mode">${['none', 'literal', 'env', 'command'].map((mode) => `<option value="${mode}" ${mode === writableAuthMode ? 'selected' : ''}>${mode}</option>`).join('')}</select></label>
           </div>
@@ -94,7 +118,7 @@
       draft.id = input('provider-id').value.trim();
       draft.name = input('provider-name').value.trim();
       draft.baseUrl = input('provider-base-url').value.trim();
-      draft.api = input('provider-api-protocol').value.trim();
+      draft.api = select('provider-api-protocol').value.trim();
       draft.authHeader = select('provider-auth-header').value === 'true';
       draft.pendingApiKey = input('provider-api-key').value;
       draft.apiKeyMode = normalizePlainSecretMode(select('provider-auth-mode').value, draft.pendingApiKey);
