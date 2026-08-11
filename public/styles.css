@@ -1312,7 +1312,7 @@ textarea {
   letter-spacing: 0.02em;
 }
 
-.message-export-button {
+:is(.message-export-button, .message-context-button) {
   padding: 0.28rem 0.7rem;
   border-radius: 999px;
   font-size: 0.74rem;
@@ -1322,7 +1322,7 @@ textarea {
   box-shadow: none;
 }
 
-.message-export-button:hover:not(:disabled) {
+:is(.message-export-button, .message-context-button):hover:not(:disabled) {
   transform: none;
   background: rgba(255, 247, 238, 0.96);
 }
@@ -5391,7 +5391,7 @@ body.chat-app :is(.message-tool-trace-toggle-prominent, .skill-draft-alert, .ski
   box-shadow: none;
 }
 
-body.chat-app :is(.message-tool-trace-pill, .message-tool-trace-toggle, .message-tool-trace-copy-button, .message-export-button) {
+body.chat-app :is(.message-tool-trace-pill, .message-tool-trace-toggle, .message-tool-trace-copy-button, .message-export-button, .message-context-button) {
   border-radius: var(--caff-radius-sm);
 }
 
@@ -5923,14 +5923,18 @@ body.chat-app .message-card.user .message-time {
   order: -1;
 }
 
-/* ── 消息级操作：hover/focus 才露（G4） ── */
+/* ── 消息级操作：常驻可见，hover/focus 提亮（G4） ── */
 body.chat-app .message-card :is(.message-export-button, .message-context-button) {
-  opacity: 0;
+  opacity: 0.65;
   transition: opacity 140ms ease;
 }
 
-body.chat-app .message-card:hover :is(.message-export-button, .message-context-button),
-body.chat-app .message-card:focus-within :is(.message-export-button, .message-context-button) {
+body.chat-app .message-card :is(.message-export-button, .message-context-button):disabled {
+  opacity: 0.4;
+}
+
+body.chat-app .message-card:hover :is(.message-export-button, .message-context-button):not(:disabled),
+body.chat-app .message-card:focus-within :is(.message-export-button, .message-context-button):not(:disabled) {
   opacity: 1;
 }
 
