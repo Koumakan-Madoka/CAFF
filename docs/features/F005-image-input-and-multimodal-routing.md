@@ -8,7 +8,7 @@ created: 2026-08-09
 
 # F005: Image Input and Multimodal Message Routing
 
-> **Status**: spec | **Owner**: @opus/布偶猫 (kickoff lead) | **Priority**: P1
+> **Status**: in-progress (Phase A/B merged; Phase C implemented, awaiting review/merge) | **Owner**: @opus/布偶猫 (kickoff lead) | **Priority**: P1
 
 ## Why
 
@@ -160,14 +160,14 @@ Baseline: `origin/main@3c51a8b` (2026-08-08)。
 - [x] AC-B4 (P2-3): F003 notify/request 两入口收到带图消息 → 结构化 reject `IMAGE_DELIVERY_NOT_SUPPORTED` + 人话原因，消息与图片不剥离不降级。验证：notify/request 两路径 reject 测试。
 
 ### Phase C: UI 输入与展示
-- [ ] AC-C1: composer 支持选图 + 预览 + 移除 + 随文本发送；非法图片在 UI 层即时提示；**图片项状态机 `pending_validation → ready | rejected`**（未拿 imageId 前发送禁用，失败标记错误+移除）；**发送条件钉死（R5 P1-3）**：`hasPayload = content.trim().length > 0 || strip.length > 0`；`canSend = hasPayload && strip.every(item => item.status === 'ready')`——存在 `pending_validation`/`rejected` 项时禁用发送（rejected 项保留时须先移除），strip 为空时纯文本照常。验证：UI 测试（含四象限发送条件矩阵：空文本/空 strip、有文本/空 strip、空文本/全 ready、有文本/含 pending 或 rejected）+ desktop/mobile 证据。
-- [ ] AC-C2: 消息时间线渲染图片，历史回放/SSE 增量/刷新后一致；展示失败有降级提示而非空白（**attached `integrity_status='missing_file'` 显示降级占位**）。验证：browser 证据 + 渲染测试。
+- [x] AC-C1: composer 支持选图 + 预览 + 移除 + 随文本发送；非法图片在 UI 层即时提示；**图片项状态机 `pending_validation → ready | rejected`**（未拿 imageId 前发送禁用，失败标记错误+移除）；上传失败区分 retryable（network unknown / HTTP 202 `UPLOAD_IN_PROGRESS` / 408/429/5xx，同 key 重试）与 deterministic reject（validation/conflict/响应数量不匹配，须变更 strip 换 key）；**发送条件钉死（R5 P1-3）**：`hasPayload = content.trim().length > 0 || strip.length > 0`；`canSend = hasPayload && strip.every(item => item.status === 'ready')`——存在 `pending_validation`/`rejected` 项时禁用发送，strip 为空时纯文本照常。图片消息 POST 由 `(conversation, caption, ordered imageIds)` 签名持有消息级 `clientRequestId`，未知结果重试复用；发送期间冻结 caption/附件，失败恢复原 caption，SSE/history 命中同 key 则以持久化消息为真相并清 strip。验证：UI/集成测试 + desktop/mobile 证据。
+- [x] AC-C2: 消息时间线渲染图片，历史回放/SSE 增量/刷新后一致；展示失败有降级提示而非空白（**attached `integrity_status='missing_file'` 显示降级占位**）；瞬时 load error 提供显式重试与新标签打开，不依赖 timeline 重渲染恢复。验证：browser 证据 + 渲染测试。
 
 ## Dependencies
 
 - **Evolved from**: F002（PI SDK host 运行时方言边界，image 输入投影依赖其 prompt 契约）。
 - **Related**: F004（capability registry 从 catalog modalities 投影）；F003（跨聊天室 delivery 复用 content-block 契约时需同步支持图片）。
-- **Blocked by**: Design Gate review 对技术决策包 D1-D3 与 UI OQ4/5 的定案（R1/R2/R3/R4/R5/R6/R7 七轮 review 的 P1/P2 已修订）。D1 已 spike 定案。等待 Design Gate 复审放行后进入实现。
+- **Blocked by**: None for implementation. Design Gate decisions D1-D3 and UI OQ4/5 are resolved; Phase C is awaiting code review and merge.
 
 ## Architecture
 

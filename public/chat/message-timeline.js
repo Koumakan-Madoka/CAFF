@@ -5,9 +5,14 @@
   const shared = window.CaffShared || {};
   const digestUtils = shared.conversationDigest;
   const crossConversationUi = chat.crossConversationUi;
+  const messageImages = chat.messageImages;
 
   if (!crossConversationUi) {
     throw new Error('CaffChat.crossConversationUi helper is required');
+  }
+
+  if (!messageImages) {
+    throw new Error('CaffChat.messageImages helper is required');
   }
 
   chat.createMessageTimelineRenderer = function createMessageTimelineRenderer({ dom, helpers, showToast }) {
@@ -1776,6 +1781,7 @@
       const crossConversationPanel = document.createElement('div');
       const liveHint = document.createElement('div');
       const toolTrace = document.createElement('section');
+      const imageGallery = document.createElement('div');
 
       meta.className = 'message-meta';
       sender.className = 'message-sender';
@@ -1784,9 +1790,11 @@
       crossConversationPanel.className = 'cross-conversation-panel hidden';
       liveHint.className = 'message-live-hint hidden';
       toolTrace.className = 'message-tool-trace hidden';
+      imageGallery.className = 'message-images';
+      imageGallery.hidden = true;
 
       meta.append(sender, time);
-      card.append(meta, crossConversationPanel, toolTrace, body, liveHint);
+      card.append(meta, crossConversationPanel, toolTrace, imageGallery, body, liveHint);
       syncMessageCard(card, message, conversationId, agents, activeTurn, activeAgentSlots);
 
       return card;
@@ -1866,6 +1874,7 @@
           crossConversationDelivery.lastErrorMessage,
           crossConversationDelivery.updatedAt,
         ]) : '',
+        messageImages.imageBlockSignature(message),
         traceSignature,
       ].join('\u001f');
 
@@ -1892,6 +1901,7 @@
       const crossConversationPanel = card.querySelector('.cross-conversation-panel');
       const liveHint = card.querySelector('.message-live-hint');
       const toolTrace = card.querySelector('.message-tool-trace');
+      const imageGallery = card.querySelector('.message-images');
 
       sender.textContent = '';
 
@@ -1964,6 +1974,8 @@
 
       body.classList.toggle('digest-result-body', isDigestResultMessage);
       body.classList.toggle('hidden', Boolean(crossConversationModels.receipt));
+      messageImages.syncMessageImages(imageGallery, message);
+      imageGallery.hidden = imageGallery.hidden || Boolean(crossConversationModels.receipt) || isDigestResultMessage;
       if (isDigestResultMessage) {
         syncDigestResultBody(body, digestResult);
       } else {

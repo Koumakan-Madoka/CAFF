@@ -50,6 +50,7 @@ const chatModules = window.CaffChat || {};
 const crossConversationUi = chatModules.crossConversationUi;
 const connectionStatus = chatModules.createConnectionStatus ? chatModules.createConnectionStatus() : null;
 const fetchJson = shared.fetchJson;
+const fetchFormDataJson = shared.fetchFormDataJson;
 const avatarUtils = shared.avatar || {};
 const modelOptionUtils = shared.modelOptions || {};
 const copyTextToClipboard = shared.copyTextToClipboard;
@@ -67,6 +68,10 @@ if (!conversationDigestUtils) {
 
 if (!summaryMemoryUtils) {
   throw new Error('CaffShared.summaryMemory helper is required');
+}
+
+if (typeof fetchFormDataJson !== 'function') {
+  throw new Error('CaffShared.fetchFormDataJson helper is required');
 }
 
 const dom = {
@@ -173,6 +178,10 @@ const dom = {
   messageHistoryStatus: /** @type {HTMLElement | null} */ (document.getElementById('message-history-status')),
   composerForm: /** @type {HTMLFormElement | null} */ (document.getElementById('composer-form')),
   composerInput: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('composer-input')),
+  composerAttachButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('composer-attach-button')),
+  composerImageInput: /** @type {HTMLInputElement | null} */ (document.getElementById('composer-image-input')),
+  composerAttachmentStrip: /** @type {HTMLDivElement | null} */ (document.getElementById('composer-attachment-strip')),
+  composerAttachmentStatus: /** @type {HTMLElement | null} */ (document.getElementById('composer-attachment-status')),
   composerMentionMenu: /** @type {HTMLDivElement | null} */ (document.getElementById('composer-mention-menu')),
   composerStatus: /** @type {HTMLElement | null} */ (document.getElementById('composer-status')),
   stopButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('stop-button')),
@@ -799,6 +808,23 @@ const noopNewConversationDialogController = {
   syncOptions() {},
 };
 
+const noopImageComposerController = {
+  beginMessageSend(_content) { return null; },
+  bindEvents() {},
+  canSend(content) { return Boolean(String(content || '').trim()); },
+  confirmMessage(_conversationId, _clientRequestId) { return false; },
+  handleMessageFailure(_sendToken) {},
+  handleMessageSuccess(_sendToken) {},
+  hasPayload(content) { return Boolean(String(content || '').trim()); },
+  async loadConfig() { return false; },
+  optimisticContentBlocks(_content) { return []; },
+  readyImageIds() { return []; },
+  snapshot() { return { items: [] }; },
+  syncBaseAvailability(_enabled) {},
+  syncConversation(_conversationId) {},
+  wasMessageConfirmed(_sendToken) { return false; },
+};
+
 let mentionMenuController = noopMentionMenuController;
 let conversationListRenderer = noopRenderer;
 let participantPaneRenderer = noopRenderer;
@@ -811,8 +837,52 @@ let conversationDigestPanelController = noopRenderer;
 let summaryMemoryPanelController = noopRenderer;
 let conversationPaneRenderer = noopRenderer;
 let newConversationDialogController = noopNewConversationDialogController;
+let imageComposerController = noopImageComposerController;
 
 function setupChatModules() {
+  if (typeof chatModules.createImageComposerController !== 'function') {
+    throw new Error('CaffChat.createImageComposerController helper is required');
+  }
+
+  imageComposerController = chatModules.createImageComposerController({
+    dom: {
+      composerForm: dom.composerForm,
+      composerInput: dom.composerInput,
+      sendButton: dom.sendButton,
+      attachButton: dom.composerAttachButton,
+      fileInput: dom.composerImageInput,
+      strip: dom.composerAttachmentStrip,
+      status: dom.composerAttachmentStatus,
+    },
+    helpers: {
+      createClientRequestId,
+      getConversationId() {
+        return state.currentConversation ? state.currentConversation.id : '';
+      },
+      fetchConfig() {
+        return fetchJson('/api/image-upload/config');
+      },
+      uploadBatch({ conversationId, clientRequestId, files }) {
+        const body = new FormData();
+        body.append('client_request_id', clientRequestId);
+        files.forEach((file) => {
+          body.append('files', file, file.name || 'image');
+        });
+        return fetchFormDataJson(`/api/conversations/${encodeURIComponent(conversationId)}/images`, {
+          method: 'POST',
+          body,
+        });
+      },
+      createObjectURL(file) {
+        return window.URL.createObjectURL(file);
+      },
+      revokeObjectURL(url) {
+        window.URL.revokeObjectURL(url);
+      },
+    },
+    showToast,
+  });
+
   newConversationDialogController =
     typeof chatModules.createNewConversationDialogController === 'function'
       ? chatModules.createNewConversationDialogController({
@@ -2208,6 +2278,8 @@ function renderWerewolfGameCard() {
 
 function renderConversationPane() {
   conversationPaneRenderer.render();
+  imageComposerController.syncConversation(state.currentConversation ? state.currentConversation.id : '');
+  imageComposerController.syncBaseAvailability(Boolean(state.currentConversation && !dom.composerInput.disabled));
   renderSessionGoalPanel();
   renderConversationDigestPanel();
   renderSummaryMemoryPanel();
@@ -2455,12 +2527,14 @@ function setOptimisticMessagesForConversation(conversationId, messages) {
   state.optimisticMessagesByConversation.set(normalizedConversationId, nextMessages);
 }
 
-function applyOptimisticUserMessage(conversationId, content, clientRequestId) {
+function applyOptimisticUserMessage(conversationId, content, clientRequestId, contentBlocks = []) {
   const normalizedConversationId = String(conversationId || '').trim();
   const normalizedContent = String(content || '').trim();
   const normalizedClientRequestId = String(clientRequestId || '').trim();
+  const normalizedContentBlocks = Array.isArray(contentBlocks) ? contentBlocks.filter(Boolean) : [];
+  const hasImageBlocks = normalizedContentBlocks.some((block) => block && block.type === 'image');
 
-  if (!normalizedConversationId || !normalizedContent || !normalizedClientRequestId) {
+  if (!normalizedConversationId || (!normalizedContent && !hasImageBlocks) || !normalizedClientRequestId) {
     return null;
   }
 
@@ -2476,6 +2550,7 @@ function applyOptimisticUserMessage(conversationId, content, clientRequestId) {
       source: 'web-ui',
       clientRequestId: normalizedClientRequestId,
       optimistic: true,
+      ...(hasImageBlocks ? { contentBlocks: normalizedContentBlocks } : {}),
     },
     createdAt: new Date().toISOString(),
   };
@@ -2514,6 +2589,10 @@ function pruneOptimisticMessagesForConversation(conversationId, persistedMessage
   const persistedClientRequestIds = new Set(
     (Array.isArray(persistedMessages) ? persistedMessages : []).map(messageClientRequestId).filter(Boolean)
   );
+
+  persistedClientRequestIds.forEach((clientRequestId) => {
+    imageComposerController.confirmMessage(normalizedConversationId, clientRequestId);
+  });
 
   if (persistedClientRequestIds.size === 0) {
     return;
@@ -4315,13 +4394,20 @@ function bindEvents() {
 
     const conversationId = state.currentConversation.id;
     const content = dom.composerInput.value.trim();
+    const attachmentSnapshot = imageComposerController.snapshot();
+    const hasAttachments = attachmentSnapshot.items.length > 0;
 
-    if (!content) {
-      showToast('请输入消息内容');
+    if (!imageComposerController.hasPayload(content)) {
+      showToast('请输入消息内容或添加图片');
       return;
     }
 
-    const goalCommand = parseGoalCommand(content);
+    if (!imageComposerController.canSend(content)) {
+      showToast(hasAttachments ? '请等待图片上传完成，并先移除或重试失败的图片' : '当前房间暂时不能发送消息');
+      return;
+    }
+
+    const goalCommand = hasAttachments ? null : parseGoalCommand(content);
     if (goalCommand) {
       try {
         await submitGoalCommand(conversationId, goalCommand);
@@ -4334,7 +4420,7 @@ function bindEvents() {
       return;
     }
 
-    const digestCommand = parseDigestCommand(content);
+    const digestCommand = hasAttachments ? null : parseDigestCommand(content);
     if (digestCommand) {
       try {
         await submitDigestCommand(conversationId, digestCommand);
@@ -4347,7 +4433,7 @@ function bindEvents() {
       return;
     }
 
-    const summaryMemoryCommand = parseSummaryMemoryCommand(content);
+    const summaryMemoryCommand = hasAttachments ? null : parseSummaryMemoryCommand(content);
     if (summaryMemoryCommand) {
       try {
         await submitSummaryMemoryCommand(summaryMemoryCommand);
@@ -4360,11 +4446,18 @@ function bindEvents() {
       return;
     }
 
-    const clientRequestId = createClientRequestId();
+    const imageIds = imageComposerController.readyImageIds();
+    const optimisticContentBlocks = imageComposerController.optimisticContentBlocks(content);
+    const imageMessageSendToken = hasAttachments ? imageComposerController.beginMessageSend(content) : null;
+    if (hasAttachments && !imageMessageSendToken) {
+      showToast('图片状态已经变化，请确认全部图片就绪后重试');
+      return;
+    }
+    const clientRequestId = hasAttachments ? imageMessageSendToken.clientRequestId : createClientRequestId();
     const shouldStickToBottom = isMessageListNearBottom();
     setComposerValue('');
     closeMentionMenu();
-    applyOptimisticUserMessage(conversationId, content, clientRequestId);
+    applyOptimisticUserMessage(conversationId, content, clientRequestId, optimisticContentBlocks);
     renderConversationPane();
 
     if (shouldStickToBottom) {
@@ -4374,10 +4467,13 @@ function bindEvents() {
     try {
       const result = await fetchJson(`/api/conversations/${conversationId}/messages`, {
         method: 'POST',
-        body: { content, clientRequestId },
+        body: { content, imageIds, clientRequestId },
       });
 
       clearOptimisticUserMessage(conversationId, clientRequestId);
+      if (hasAttachments) {
+        imageComposerController.handleMessageSuccess(imageMessageSendToken);
+      }
 
       if (result.runtime) {
         mergeRuntimePayload(result.runtime);
@@ -4414,6 +4510,14 @@ function bindEvents() {
       }
     } catch (error) {
       clearOptimisticUserMessage(conversationId, clientRequestId);
+      const messageWasConfirmed = hasAttachments && imageComposerController.wasMessageConfirmed(imageMessageSendToken);
+      if (messageWasConfirmed) {
+        renderConversationPane();
+        return;
+      }
+      if (hasAttachments) {
+        imageComposerController.handleMessageFailure(imageMessageSendToken);
+      }
 
       if (state.selectedConversationId === conversationId && !dom.composerInput.value.trim()) {
         setComposerValue(content);
@@ -4766,6 +4870,8 @@ function bindEvents() {
 
 async function init() {
   setupChatModules();
+  imageComposerController.bindEvents();
+  const imageConfigPromise = imageComposerController.loadConfig();
   newConversationDialogController.bindEvents();
   mentionMenuController.bindEvents();
   conversationSettingsController.bindEvents();
@@ -4776,7 +4882,7 @@ async function init() {
   connectEventStream();
 
   try {
-    await refreshAll();
+    await Promise.all([refreshAll(), imageConfigPromise]);
   } catch (error) {
     dom.runtimePill.textContent = '服务连接失败';
     syncConnectionDot('failed', '服务连接失败');

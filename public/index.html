@@ -22,6 +22,7 @@
     <script defer src="/chat/connection-status.js"></script>
     <script defer src="/chat/participant-pane.js"></script>
     <script defer src="/chat/message-history.js"></script>
+    <script defer src="/chat/message-images.js"></script>
     <script defer src="/chat/message-timeline.js"></script>
     <script defer src="/chat/conversation-settings.js"></script>
     <script defer src="/chat/undercover-panel.js"></script>
@@ -31,6 +32,7 @@
     <script defer src="/chat/session-goal-panel.js"></script>
     <script defer src="/chat/conversation-digest-panel.js"></script>
     <script defer src="/chat/summary-memory-panel.js"></script>
+    <script defer src="/chat/image-composer.js"></script>
     <script defer src="/chat/conversation-pane.js"></script>
     <script defer src="/app.js"></script>
   </head>
@@ -94,7 +96,18 @@
         </div>
 
         <form id="composer-form" class="composer">
+          <div id="composer-attachment-strip" class="composer-attachment-strip hidden" aria-label="待发送图片"></div>
           <div class="composer-inner">
+            <input
+              id="composer-image-input"
+              type="file"
+              accept="image/png,image/jpeg,image/webp,image/gif"
+              multiple
+              hidden
+            />
+            <button id="composer-attach-button" class="icon-btn composer-attach-button" type="button" aria-label="添加图片" title="选择图片或直接粘贴图片" disabled>
+              <svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-paperclip"></use></svg>
+            </button>
             <textarea
               id="composer-input"
               name="content"
@@ -108,6 +121,7 @@
             <button id="send-button" class="send" type="submit">发送</button>
           </div>
           <div class="composer-footer">
+            <span id="composer-attachment-status" class="muted" role="status" aria-live="polite"></span>
             <span id="composer-status" class="muted">就绪</span>
           </div>
         </form>
