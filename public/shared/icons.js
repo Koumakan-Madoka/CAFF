@@ -20,6 +20,7 @@
     'archive',
     'file-text',
     'chevron-down',
+    'paperclip',
   ]);
 
   function create(name, options = {}) {

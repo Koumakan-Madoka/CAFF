@@ -1,3 +1,10 @@
+---
+feature_ids: [F005]
+topics: [chat, image, multimodal, ui, composer, timeline]
+doc_kind: implementation_plan
+created: 2026-08-11
+---
+
 # F005 Phase C Image Composer and Timeline Implementation Plan
 
 **Feature:** F005 — `docs/features/F005-image-input-and-multimodal-routing.md`
@@ -74,9 +81,11 @@ Lifecycle owner: existing optimistic-message map in `public/app.js`. It is a pro
 
 | State | Event | Next | Rule |
 | --- | --- | --- | --- |
-| absent | valid submit | pending | copy content blocks with current preview URLs; never take ownership of URLs |
-| pending | server accepted | absent | persisted accepted message becomes timeline truth |
-| pending | send failure | absent | remove optimistic card; composer restores text and retains strip |
+| absent | valid submit | pending | copy content blocks with current preview URLs; allocate a message `clientRequestId` from the exact `(conversation, caption, ordered imageIds)` signature and freeze the textarea |
+| pending | retry after unknown response | pending | reuse the same message key while the payload signature is unchanged |
+| pending | server accepted or SSE/history exposes the same message key | absent | persisted accepted message becomes timeline truth; clear the strip exactly once |
+| pending | send failure not confirmed by history | absent | remove optimistic card; restore the frozen caption, unfreeze the textarea, and retain the strip/message key |
+| pending | caption or strip mutation after failure | absent | the next submit receives a new message key because its payload signature changed |
 
 ## Invariants
 
@@ -84,12 +93,14 @@ Lifecycle owner: existing optimistic-message map in `public/app.js`. It is a pro
 - **INV-2:** `canSend = baseComposerEnabled && hasPayload && strip.every(item => item.status === 'ready')`.
 - **INV-3:** The ordered `imageIds` list exists only when every current strip item is ready and the response count equals the strip count.
 - **INV-4:** Every strip add/remove mutation invalidates prior imageIds and creates a new upload key; retry without mutation reuses the existing key.
-- **INV-5:** Message failure never clears or revokes the strip; message success clears and revokes it exactly once.
+- **INV-5:** Message failure never clears or revokes the strip; message success or persisted same-key confirmation clears and revokes it exactly once.
 - **INV-6:** Conversation changes clear the strip before the new conversation can send.
 - **INV-7:** `metadata.contentBlocks` is the only timeline image input; image blocks render before text through one renderer for optimistic, SSE, history, and refresh data.
-- **INV-8:** Every image tile has either a loaded image or a visible fallback; load failure cannot leave a blank tile.
+- **INV-8:** Every image tile has either a loaded image or a visible fallback; transient load failure exposes explicit retry/open actions so recovery does not depend on a timeline rerender.
 - **INV-9:** Attachment entry is disabled until config is loaded and remains disabled after config failure.
 - **INV-10:** Browser MIME/size/count checks are advisory only; server errors remain visible and are never translated into success.
+- **INV-11:** Only unknown transport outcomes, HTTP 202 `UPLOAD_IN_PROGRESS`, 408/429, and 5xx upload failures offer same-key retry; deterministic validation/conflict/response-shape failures require a strip mutation and new upload key.
+- **INV-12:** While an image message POST is pending, the textarea and attachment mutations are frozen under one send token; failure restores that token's exact caption.
 
 ## Adversarial scenarios and test mapping
 
@@ -104,7 +115,8 @@ Lifecycle owner: existing optimistic-message map in `public/app.js`. It is a pro
 | Unknown upload failure then retry | same upload key and same ordered files |
 | Upload response count mismatch | whole strip rejected; no partial ready state |
 | `UPLOAD_IN_PROGRESS` | retryable error remains visible; retry uses same key |
-| Message 422 or network failure | optimistic card removed, text restored, strip retained |
+| Message 422 or network failure | optimistic card removed, exact frozen text restored, strip and message key retained |
+| Message response lost after persistence | SSE/history same-key confirmation clears strip and suppresses duplicate draft/error recovery |
 | Message success | strip cleared and all preview URLs revoked |
 | Conversation switch with pending/ready files | strip cleared and URLs revoked |
 | Persisted single/multiple images | image before text; max 320px single; two-column multi layout |
@@ -169,5 +181,5 @@ Lifecycle owner: existing optimistic-message map in `public/app.js`. It is a pro
 
 ## Open questions
 
-- **Technical OQ:** Whether the existing UI verification runner can inject a deterministic clipboard image. Resolve during Task 4; if browser clipboard permissions are unavailable, keep paste covered by jsdom and verify picker golden path in the browser.
+- **Technical OQ:** ✅ Resolved during Task 4. Chromium accepts a deterministic `File` through a `DataTransfer`-backed paste event; both paste and picker paths were verified in the browser in addition to jsdom coverage.
 - **Value OQ:** none. The UI gate already fixed picker + paste in scope and drag/drop/lightbox/reordering out of scope.

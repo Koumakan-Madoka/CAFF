@@ -158,6 +158,7 @@ globalThis.__testExports = {
     renderConversationList = overrides.renderConversationList || renderConversationList;
     renderRuntime = overrides.renderRuntime || renderRuntime;
     refreshConversationFromEvent = overrides.refreshConversationFromEvent || refreshConversationFromEvent;
+    imageComposerController = overrides.imageComposerController || imageComposerController;
   },
 };
 `
@@ -207,6 +208,10 @@ globalThis.__testExports = {
   const window = {
     CaffShared: {
       fetchJson: typeof options.fetchJson === 'function' ? options.fetchJson : async () => ({}),
+      fetchFormDataJson:
+        typeof options.fetchFormDataJson === 'function'
+          ? options.fetchFormDataJson
+          : async () => ({}),
       sessionGoal: {
         formatConversationStatus() {
           return '会话目标未设置';
@@ -385,6 +390,100 @@ test('conversation UI loads bounded pages, prepends older messages, and merges l
   ]);
   assert.equal(app.state.currentConversation.messages[3].content, 'updated-d');
   assert.equal(app.state.messageHistory.nextCursor, null);
+});
+
+test('persisted message clientRequestId confirms a pending image send through the shared history merge path', () => {
+  const confirmed = [];
+  const { app } = loadPublicAppHarness();
+  app.setOverrides({
+    imageComposerController: {
+      confirmMessage(conversationId, clientRequestId) {
+        confirmed.push({ conversationId, clientRequestId });
+        return true;
+      },
+    },
+  });
+
+  app.pruneOptimisticMessagesForConversation('conversation-images', [
+    { metadata: { clientRequestId: 'message-image-key' } },
+  ]);
+
+  assert.deepEqual(confirmed, [
+    { conversationId: 'conversation-images', clientRequestId: 'message-image-key' },
+  ]);
+});
+
+test('image message POST uses the composer-owned key and matching history wins over a lost response', async () => {
+  const request = createDeferred();
+  const fetchCalls = [];
+  const confirmedTokens = new Set();
+  let activeToken = null;
+  let failureCalls = 0;
+  const imageComposerController = {
+    snapshot() { return { items: [{ status: 'ready', imageId: 'image-1' }] }; },
+    hasPayload() { return true; },
+    canSend() { return true; },
+    readyImageIds() { return ['image-1']; },
+    optimisticContentBlocks(content) {
+      return [
+        { type: 'text', text: content },
+        { type: 'image', imageId: 'image-1', url: 'blob:image-1' },
+      ];
+    },
+    beginMessageSend(content) {
+      activeToken = { clientRequestId: 'message-image-key', content };
+      return activeToken;
+    },
+    confirmMessage(conversationId, clientRequestId) {
+      if (conversationId === 'conversation-images' && clientRequestId === activeToken.clientRequestId) {
+        confirmedTokens.add(activeToken);
+        return true;
+      }
+      return false;
+    },
+    wasMessageConfirmed(sendToken) { return confirmedTokens.has(sendToken); },
+    handleMessageFailure() { failureCalls += 1; },
+    handleMessageSuccess() {},
+  };
+  const { app } = loadPublicAppHarness({
+    fetchJson: async (url, options = {}) => {
+      fetchCalls.push({ url, options });
+      return request.promise;
+    },
+  });
+  app.setOverrides({
+    imageComposerController,
+    renderConversationPane() {},
+    renderConversationList() {},
+    renderRuntime() {},
+    refreshConversationFromEvent: async () => {},
+  });
+  app.bindEvents();
+  app.state.currentConversation = {
+    id: 'conversation-images',
+    title: 'Images',
+    type: 'standard',
+    metadata: {},
+    agents: [{ id: 'agent-1', name: 'Alpha' }],
+    messages: [],
+    privateMessages: [],
+  };
+  app.state.selectedConversationId = 'conversation-images';
+  app.dom.composerInput.value = 'caption';
+
+  const submitPromise = app.dom.composerForm.emit('submit');
+  await Promise.resolve();
+  assert.equal(fetchCalls[0].options.body.clientRequestId, 'message-image-key');
+  assert.deepEqual(fetchCalls[0].options.body.imageIds, ['image-1']);
+
+  app.pruneOptimisticMessagesForConversation('conversation-images', [
+    { metadata: { clientRequestId: 'message-image-key' } },
+  ]);
+  request.reject(new Error('response lost'));
+  await submitPromise;
+
+  assert.equal(failureCalls, 0, 'confirmed history must not restore a duplicate draft after transport loss');
+  assert.equal(app.dom.composerInput.value, '');
 });
 
 test('send response cannot rehydrate unrequested historical messages into the paged UI', () => {
