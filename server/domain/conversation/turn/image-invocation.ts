@@ -3,7 +3,7 @@
   MAX_IMAGE_PROMPT_BYTES,
 } from '../../../../lib/image-constants';
 import { parseImageHeader } from '../../../../lib/image-header-parser';
-import { projectMultimodalPrompt } from './multimodal-projection';
+import { messageImageBlocks, projectMultimodalPrompt } from './multimodal-projection';
 
 function normalize(value: any) {
   return typeof value === 'string' ? value.trim() : '';
@@ -99,10 +99,7 @@ export function buildInvocationImages(options: any = {}) {
   const capability = resolveInvocationModelCapability(agent, modelCatalog);
   const maxMessages = Number.isInteger(options.maxMessages) ? options.maxMessages : 24;
   const windowedMessages = promptMessages.slice(-maxMessages);
-  const hasImagesInWindow = windowedMessages.some((message: any) =>
-    Array.isArray(message && message.contentBlocks)
-    && message.contentBlocks.some((block: any) => block && block.type === 'image')
-  );
+  const hasImagesInWindow = windowedMessages.some((message: any) => messageImageBlocks(message).length > 0);
 
   if (!hasImagesInWindow) {
     return { block: null, images: [], capability, projectedMessages: null };

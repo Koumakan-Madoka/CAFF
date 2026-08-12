@@ -2695,6 +2695,260 @@ test('routing executor preserves queued batch context that existed before dispat
   ]);
 });
 
+test('routing executor validates persisted image-only batches from canonical metadata content blocks', async (t) => {
+  const tempDir = withTempDir('caff-turn-image-only-batch-');
+  const sqlitePath = path.join(tempDir, 'image-only-batch.sqlite');
+  const activeConversationIds = new Set();
+  const activeTurns = new Map();
+  const imageMessage = {
+    id: 'message-image-only',
+    conversationId: 'conversation-image-only-batch',
+    turnId: 'turn-image-only',
+    role: 'user',
+    senderName: 'You',
+    content: '',
+    status: 'completed',
+    metadata: {
+      contentBlocks: [
+        { type: 'image', imageId: 'image-1', url: '/uploads/batch-1/0-image.png' },
+      ],
+    },
+    createdAt: '2026-08-12T00:00:00.000Z',
+  };
+  const conversation = {
+    id: imageMessage.conversationId,
+    title: 'Image-only batch',
+    type: 'standard',
+    agents: [{ id: 'agent-a', name: 'Alpha' }],
+    messages: [imageMessage],
+  };
+  const executions = [];
+  let messageCounter = 1;
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const store = {
+    getConversation(conversationId) {
+      return conversationId === conversation.id ? conversation : null;
+    },
+    createMessage(input) {
+      messageCounter += 1;
+      const message = {
+        id: input.id || `message-${messageCounter}`,
+        errorMessage: '',
+        taskId: null,
+        runId: null,
+        metadata: null,
+        createdAt: input.createdAt || `2026-08-12T00:00:${String(messageCounter).padStart(2, '0')}.000Z`,
+        ...input,
+      };
+      conversation.messages.push(message);
+      return message;
+    },
+  };
+  const executor = createRoutingExecutor({
+    store,
+    agentDir: tempDir,
+    sqlitePath,
+    activeConversationIds,
+    activeTurns,
+    async executeConversationAgent({ promptMessages, completedReplies, agent }) {
+      executions.push(promptMessages);
+      completedReplies.push({
+        agentId: agent.id,
+        senderName: agent.name,
+        content: 'ok',
+        status: 'completed',
+      });
+      return { stopTurn: false };
+    },
+  });
+
+  await executor(conversation.id, { batchMessageIds: [imageMessage.id] });
+
+  assert.equal(executions.length, 1, 'image-only input must reach agent execution');
+  const persistedInput = executions[0].find((message) => message.id === imageMessage.id);
+  assert.equal(persistedInput.content, '');
+  assert.deepEqual(persistedInput.metadata.contentBlocks, imageMessage.metadata.contentBlocks);
+
+  await assert.rejects(
+    executor(conversation.id, {
+      batchMessageIds: [imageMessage.id],
+      imageIds: ['detached-image-id'],
+    }),
+    /Queued message batches must not include detached image ids/
+  );
+
+  const emptyMessage = {
+    ...imageMessage,
+    id: 'message-empty-batch',
+    metadata: {},
+  };
+  conversation.messages.push(emptyMessage);
+
+  await assert.rejects(
+    executor(conversation.id, {
+      batchMessageIds: [emptyMessage.id],
+    }),
+    /Message content is required/
+  );
+
+  await assert.rejects(
+    executor(conversation.id, {
+      batchMessageIds: [emptyMessage.id],
+      imageIds: ['detached-image-id'],
+    }),
+    /Queued message batches must not include detached image ids/
+  );
+});
+
+test('routing executor persists direct image-only input through the store imageIds contract', async (t) => {
+  const tempDir = withTempDir('caff-turn-image-only-direct-');
+  const sqlitePath = path.join(tempDir, 'image-only-direct.sqlite');
+  const activeConversationIds = new Set();
+  const activeTurns = new Map();
+  const conversation = {
+    id: 'conversation-image-only-direct',
+    title: 'Direct image-only input',
+    type: 'standard',
+    agents: [{ id: 'agent-a', name: 'Alpha' }],
+    messages: [],
+  };
+  const createMessageInputs = [];
+  const executions = [];
+  let messageCounter = 0;
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const store = {
+    getConversation(conversationId) {
+      return conversationId === conversation.id ? conversation : null;
+    },
+    createMessage(input) {
+      createMessageInputs.push(input);
+      messageCounter += 1;
+      const imageIds = Array.isArray(input.imageIds) ? input.imageIds : [];
+      const message = {
+        id: `message-${messageCounter}`,
+        errorMessage: '',
+        taskId: null,
+        runId: null,
+        createdAt: `2026-08-12T00:01:${String(messageCounter).padStart(2, '0')}.000Z`,
+        ...input,
+        metadata: {
+          ...(input.metadata || {}),
+          contentBlocks: imageIds.map((imageId) => ({
+            type: 'image',
+            imageId,
+            url: `/uploads/batch-1/${imageId}.png`,
+          })),
+        },
+      };
+      conversation.messages.push(message);
+      return message;
+    },
+  };
+  const executor = createRoutingExecutor({
+    store,
+    agentDir: tempDir,
+    sqlitePath,
+    activeConversationIds,
+    activeTurns,
+    async executeConversationAgent({ promptMessages, completedReplies, agent }) {
+      executions.push(promptMessages);
+      completedReplies.push({
+        agentId: agent.id,
+        senderName: agent.name,
+        content: 'ok',
+        status: 'completed',
+      });
+      return { stopTurn: false };
+    },
+  });
+
+  await executor(conversation.id, { content: '', imageIds: ['image-1'] });
+
+  assert.deepEqual(createMessageInputs[0].imageIds, ['image-1']);
+  const persistedInput = executions[0].find((message) => message.role === 'user');
+  assert.equal(persistedInput.content, '');
+  assert.deepEqual(persistedInput.metadata.contentBlocks, [
+    { type: 'image', imageId: 'image-1', url: '/uploads/batch-1/image-1.png' },
+  ]);
+});
+
+test('routing executor releases active turn when direct image persistence fails', async (t) => {
+  const tempDir = withTempDir('caff-turn-image-attach-failure-');
+  const sqlitePath = path.join(tempDir, 'image-attach-failure.sqlite');
+  const activeConversationIds = new Set();
+  const activeTurns = new Map();
+  const conversation = {
+    id: 'conversation-image-attach-failure',
+    title: 'Image attach failure cleanup',
+    type: 'standard',
+    agents: [{ id: 'agent-a', name: 'Alpha' }],
+    messages: [],
+  };
+  let messageCounter = 0;
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const store = {
+    getConversation(conversationId) {
+      return conversationId === conversation.id ? conversation : null;
+    },
+    createMessage(input) {
+      if (Array.isArray(input.imageIds) && input.imageIds.length > 0) {
+        throw new Error('IMAGE_NOT_STAGED');
+      }
+
+      messageCounter += 1;
+      const message = {
+        id: `message-${messageCounter}`,
+        errorMessage: '',
+        taskId: null,
+        runId: null,
+        metadata: null,
+        createdAt: `2026-08-12T00:02:${String(messageCounter).padStart(2, '0')}.000Z`,
+        ...input,
+      };
+      conversation.messages.push(message);
+      return message;
+    },
+  };
+  const executor = createRoutingExecutor({
+    store,
+    agentDir: tempDir,
+    sqlitePath,
+    activeConversationIds,
+    activeTurns,
+    async executeConversationAgent({ completedReplies, agent }) {
+      completedReplies.push({
+        agentId: agent.id,
+        senderName: agent.name,
+        content: 'ok',
+        status: 'completed',
+      });
+      return { stopTurn: false };
+    },
+  });
+
+  await assert.rejects(
+    executor(conversation.id, { content: '', imageIds: ['missing-image'] }),
+    /IMAGE_NOT_STAGED/
+  );
+  assert.equal(activeConversationIds.has(conversation.id), false);
+  assert.equal(activeTurns.has(conversation.id), false);
+
+  const retry = await executor(conversation.id, { content: 'retry after attach failure' });
+  assert.equal(retry.replies.length, 1);
+});
+
 test('turn orchestrator queues user messages behind the active run and drains them serially', { concurrency: false }, async (t) => {
   const tempDir = withTempDir('caff-turn-queue-');
   const sqlitePath = path.join(tempDir, 'turn-queue.sqlite');

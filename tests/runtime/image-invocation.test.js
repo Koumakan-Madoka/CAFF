@@ -16,8 +16,7 @@ function imageMessage(id, images, text = '') {
     id,
     role: 'user',
     content: text,
-    contentBlocks: blocks,
-    metadata: {},
+    metadata: { contentBlocks: blocks },
   };
 }
 
@@ -148,7 +147,7 @@ test('buildInvocationImages blocks IMAGE_CONTENT_UNAVAILABLE when a referenced f
 test('buildInvocationImages returns no images for a text-only prompt', () => {
   const result = buildInvocationImages({
     promptMessages: [
-      { id: 'm1', role: 'user', content: 'plain text', contentBlocks: [{ type: 'text', text: 'plain text' }], metadata: {} },
+      { id: 'm1', role: 'user', content: 'plain text', metadata: { contentBlocks: [{ type: 'text', text: 'plain text' }] } },
     ],
     modelCatalog: {
       getOptions() {
@@ -224,7 +223,7 @@ test('buildInvocationImages does not block when image is outside the projection 
   messages.push(imageMessage('old', [{ imageId: 'i0', url: '/uploads/b1/0-a.png' }], 'first with image'));
 
   for (let i = 0; i < 24; i += 1) {
-    messages.push({ id: `t${i}`, role: 'user', content: `text ${i}`, contentBlocks: [{ type: 'text', text: `text ${i}` }], metadata: {} });
+    messages.push({ id: `t${i}`, role: 'user', content: `text ${i}`, metadata: { contentBlocks: [{ type: 'text', text: `text ${i}` }] } });
   }
 
   const result = buildInvocationImages({

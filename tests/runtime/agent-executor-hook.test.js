@@ -587,11 +587,12 @@ test('agent executor blocks a non-vision invocation with MODEL_NO_IMAGE_INPUT wi
       id: 'user-message-with-image',
       role: 'user',
       content: 'what is this image',
-      contentBlocks: [
-        { type: 'text', text: 'what is this image' },
-        { type: 'image', imageId: 'img-1', url: '/uploads/batch-1/0-photo.png' },
-      ],
-      metadata: {},
+      metadata: {
+        contentBlocks: [
+          { type: 'text', text: 'what is this image' },
+          { type: 'image', imageId: 'img-1', url: '/uploads/batch-1/0-photo.png' },
+        ],
+      },
     }],
     promptUserMessage: { id: 'user-message-with-image', role: 'user', content: 'what is this image' },
     queueItem: { triggerType: 'user', enqueueReason: 'user_mentions' },
@@ -691,18 +692,18 @@ test('agent executor passes projected images to startRun for a vision model', as
       id: 'user-message-with-image',
       role: 'user',
       content: 'what is this image',
-      contentBlocks: [
-        { type: 'text', text: 'what is this image' },
-        { type: 'image', imageId: 'img-1', url: '/uploads/batch-1/0-photo.png' },
-      ],
-      metadata: {},
+      metadata: {
+        contentBlocks: [
+          { type: 'text', text: 'what is this image' },
+          { type: 'image', imageId: 'img-1', url: '/uploads/batch-1/0-photo.png' },
+        ],
+      },
     }, {
       id: 'failed-assistant-turn',
       role: 'assistant',
       senderName: 'Helper',
       status: 'failed',
       content: 'partial answer',
-      contentBlocks: [],
       metadata: {},
     }],
     promptUserMessage: { id: 'user-message-with-image', role: 'user', content: 'what is this image' },
@@ -813,11 +814,12 @@ test('agent executor blocks IMAGE_MIME_MISMATCH when registry persisted MIME con
       id: 'user-message-with-image',
       role: 'user',
       content: 'what is this image',
-      contentBlocks: [
-        { type: 'text', text: 'what is this image' },
-        { type: 'image', imageId: 'img-1', url: '/uploads/batch-1/0-photo.png' },
-      ],
-      metadata: {},
+      metadata: {
+        contentBlocks: [
+          { type: 'text', text: 'what is this image' },
+          { type: 'image', imageId: 'img-1', url: '/uploads/batch-1/0-photo.png' },
+        ],
+      },
     }],
     promptUserMessage: { id: 'user-message-with-image', role: 'user', content: 'what is this image' },
     queueItem: { triggerType: 'user', enqueueReason: 'user_mentions' },
@@ -910,11 +912,12 @@ test('agent executor writes integrity_status=missing_file when attached image fi
       id: 'user-message-with-missing-image',
       role: 'user',
       content: 'what is this image',
-      contentBlocks: [
-        { type: 'text', text: 'what is this image' },
-        { type: 'image', imageId: 'img-missing', url: '/uploads/batch-1/0-photo.png' },
-      ],
-      metadata: {},
+      metadata: {
+        contentBlocks: [
+          { type: 'text', text: 'what is this image' },
+          { type: 'image', imageId: 'img-missing', url: '/uploads/batch-1/0-photo.png' },
+        ],
+      },
     }],
     promptUserMessage: { id: 'user-message-with-missing-image', role: 'user', content: 'what is this image' },
     queueItem: { triggerType: 'user', enqueueReason: 'user_mentions' },
