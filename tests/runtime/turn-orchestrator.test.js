@@ -2880,6 +2880,75 @@ test('routing executor persists direct image-only input through the store imageI
   ]);
 });
 
+test('routing executor releases active turn when direct image persistence fails', async (t) => {
+  const tempDir = withTempDir('caff-turn-image-attach-failure-');
+  const sqlitePath = path.join(tempDir, 'image-attach-failure.sqlite');
+  const activeConversationIds = new Set();
+  const activeTurns = new Map();
+  const conversation = {
+    id: 'conversation-image-attach-failure',
+    title: 'Image attach failure cleanup',
+    type: 'standard',
+    agents: [{ id: 'agent-a', name: 'Alpha' }],
+    messages: [],
+  };
+  let messageCounter = 0;
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const store = {
+    getConversation(conversationId) {
+      return conversationId === conversation.id ? conversation : null;
+    },
+    createMessage(input) {
+      if (Array.isArray(input.imageIds) && input.imageIds.length > 0) {
+        throw new Error('IMAGE_NOT_STAGED');
+      }
+
+      messageCounter += 1;
+      const message = {
+        id: `message-${messageCounter}`,
+        errorMessage: '',
+        taskId: null,
+        runId: null,
+        metadata: null,
+        createdAt: `2026-08-12T00:02:${String(messageCounter).padStart(2, '0')}.000Z`,
+        ...input,
+      };
+      conversation.messages.push(message);
+      return message;
+    },
+  };
+  const executor = createRoutingExecutor({
+    store,
+    agentDir: tempDir,
+    sqlitePath,
+    activeConversationIds,
+    activeTurns,
+    async executeConversationAgent({ completedReplies, agent }) {
+      completedReplies.push({
+        agentId: agent.id,
+        senderName: agent.name,
+        content: 'ok',
+        status: 'completed',
+      });
+      return { stopTurn: false };
+    },
+  });
+
+  await assert.rejects(
+    executor(conversation.id, { content: '', imageIds: ['missing-image'] }),
+    /IMAGE_NOT_STAGED/
+  );
+  assert.equal(activeConversationIds.has(conversation.id), false);
+  assert.equal(activeTurns.has(conversation.id), false);
+
+  const retry = await executor(conversation.id, { content: 'retry after attach failure' });
+  assert.equal(retry.replies.length, 1);
+});
+
 test('turn orchestrator queues user messages behind the active run and drains them serially', { concurrency: false }, async (t) => {
   const tempDir = withTempDir('caff-turn-queue-');
   const sqlitePath = path.join(tempDir, 'turn-queue.sqlite');

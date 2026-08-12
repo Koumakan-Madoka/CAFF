@@ -62,4 +62,26 @@ truth.
   the hotfix review request. Independent cross-cat quality-gate and review evidence are required
   before merge and will be recorded by the reviewer.
 
+## PR Review Finding: Active Turn Leak on Attach Failure
+
+Cloud review of PR #68 identified a second boundary failure on the direct `imageIds` path. The
+routing executor registered the conversation in `activeConversationIds` and `activeTurns` before
+calling `store.createMessage()`, but its lifecycle `try/finally` started only after that call. If
+store-owned image validation or attachment rejected the request, no cleanup path ran and every
+later send to the conversation returned 409 until process restart.
+
+The fix protects the persistence boundary directly: a `createMessage()` failure invokes the
+existing idempotent active-turn cleanup, closes the run store that has not yet entered the main
+lifecycle guard, and rethrows the original error. No failed turn is synthesized because agent
+execution never started.
+
+Red-Green evidence:
+
+- RED: the first direct image request throws `IMAGE_NOT_STAGED`; both active registries still
+  contain the conversation.
+- GREEN: both registries are empty after the same failure, and an immediate text retry completes
+  with one agent reply.
+- Regression: `turn-orchestrator.test.js` 74/74, `npm test`, `npm run typecheck`, `npm run check`,
+  and `git diff --check` pass.
+
 [砚砚/gpt-5.6-sol🐾]

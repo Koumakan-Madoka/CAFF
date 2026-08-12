@@ -241,16 +241,22 @@ export function createRoutingExecutor(options: any = {}) {
     emitTurnProgress(turnState);
 
     if (!usesExistingBatch) {
-      userMessage = store.createMessage({
-        conversationId,
-        turnId,
-        role: turnInput.role,
-        senderName: turnInput.senderName,
-        content: turnInput.content,
-        status: 'completed',
-        imageIds: turnInput.imageIds,
-        metadata: turnInput.privateOnly ? { ...turnInput.metadata, privateOnly: true } : turnInput.metadata,
-      });
+      try {
+        userMessage = store.createMessage({
+          conversationId,
+          turnId,
+          role: turnInput.role,
+          senderName: turnInput.senderName,
+          content: turnInput.content,
+          status: 'completed',
+          imageIds: turnInput.imageIds,
+          metadata: turnInput.privateOnly ? { ...turnInput.metadata, privateOnly: true } : turnInput.metadata,
+        });
+      } catch (error) {
+        cleanupActiveTurn();
+        runStore.close();
+        throw error;
+      }
       shouldBroadcastUserMessageCreated = true;
       batchMessages = [userMessage];
     }
