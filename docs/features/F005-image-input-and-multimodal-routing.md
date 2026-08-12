@@ -8,7 +8,7 @@ created: 2026-08-09
 
 # F005: Image Input and Multimodal Message Routing
 
-> **Status**: in-progress (Phase A/B/C merged; awaiting isolated acceptance and vision-guardian completion) | **Owner**: @opus/布偶猫 (kickoff lead) | **Priority**: P1
+> **Status**: in-progress (Phase A/B/C merged; isolated acceptance passed; awaiting vision-guardian completion) | **Owner**: @opus/布偶猫 (kickoff lead) | **Priority**: P1
 
 ## Why
 
@@ -167,7 +167,7 @@ Baseline: `origin/main@3c51a8b` (2026-08-08)。
 
 - **Evolved from**: F002（PI SDK host 运行时方言边界，image 输入投影依赖其 prompt 契约）。
 - **Related**: F004（capability registry 从 catalog modalities 投影）；F003（跨聊天室 delivery 复用 content-block 契约时需同步支持图片）。
-- **Blocked by**: None for implementation. Design Gate decisions D1-D3 and UI OQ4/5 are resolved; all implementation phases are merged, with isolated acceptance and vision-guardian completion remaining.
+- **Blocked by**: None for implementation. Design Gate decisions D1-D3 and UI OQ4/5 are resolved; all implementation phases are merged and isolated acceptance passed, with vision-guardian completion remaining.
 
 ## Architecture
 
@@ -245,6 +245,7 @@ Why: F004 的 models cell 只覆盖 provider 配置；本 Feature 首次把"能�
 | 2026-08-11 | Phase A/B merged in PR #62 (`eb96a4f`): controlled image storage, content blocks, model capability routing, fail-closed multimodal invocation, and lifecycle recovery. |
 | 2026-08-12 | Phase C merged in PR #66 (`6daeaff`): picker/paste composer, recoverable image submission, shared timeline rendering, desktop/mobile browser operation, and explicit 422/load-error recovery. Cloud review quota was unavailable; cross-provider local review covered final head `737c65a`, with CI and full local gates green. |
 | 2026-08-12 | Room-lock hotfix merged in PR #67 (`fe35b24`): switching conversations during a pending image send preserves the destination room composer lock. Cloud review quota remained unavailable; cross-cat hotfix review plus scoped continuity covered final head `6dc0181`, with CI and full local/browser gates green. |
+| 2026-08-12 | Image-only runtime hotfix merged in PR #68 (`0dea0f4`): canonical `metadata.contentBlocks` routing, direct `imageIds` persistence, image-only invocation, mixed-source rejection, and active-turn cleanup after attachment failure. Cloud found the cleanup P2 on `08e3f84`; `fc0c8d2` fixed it Red-to-Green, cross-provider fallback review approved the repaired head, current-head CI passed, and isolated merged-main `npm test` passed. |
 
 ## Non-goals
 
