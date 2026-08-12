@@ -8,7 +8,7 @@ created: 2026-08-09
 
 # F005: Image Input and Multimodal Message Routing
 
-> **Status**: in-progress (Phase A/B merged; Phase C implemented, awaiting review/merge) | **Owner**: @opus/布偶猫 (kickoff lead) | **Priority**: P1
+> **Status**: in-progress (Phase A/B/C merged; awaiting isolated acceptance and vision-guardian completion) | **Owner**: @opus/布偶猫 (kickoff lead) | **Priority**: P1
 
 ## Why
 
@@ -28,7 +28,7 @@ Baseline: `origin/main@3c51a8b` (2026-08-08)。
 
 ## What
 
-### Phase A: 统一 content-block 契约 + 受控图片上传存储
+### Phase A: 统一 content-block 契约 + 受控图片上传存储（merged in PR #62）
 
 **文本单一真相源（canonical）**：`content`（TEXT 列）是消息文本的唯一真相源。`metadata_json.contentBlocks` 里的 `{ type: 'text', text }` 是**写入时的派生视图**，不是第二真相源：
 
@@ -86,7 +86,7 @@ Baseline: `origin/main@3c51a8b` (2026-08-08)。
 - 图片持久化随消息原子性：上传文件与消息落库通过幂等流程关联，刷新/历史回放/继续会话后图片仍存在；孤儿上传文件不阻塞消息写入。
 - 失败路径明确：上传校验失败、存储失败、imageId 校验失败（不存在/非本会话/已 attached 且非同 key）时返回结构化错误，前端展示人话原因，不静默丢图。
 
-### Phase B: Capability registry 与多模态路由判定
+### Phase B: Capability registry 与多模态路由判定（merged in PR #62）
 
 - **能力是 model-level，且以 PI runtime canonical `model.input` 为单一真相源（P1-1 R3 定案）**：capability 位钉死为 **`providers[id].models[i].input?: Array<'text' | 'image'>`**——与 PI runtime 0.80.10 一致（`@earendil-works/pi-ai` `transform-messages.js` 用 `model.input.includes('image')` 判定，不包含时把 image 降级成 `"(image omitted: model does not support images)"`；CAFF 的 `pi-model-config-validator.mjs` 已把 models.json 交给 pinned PI `ModelRuntime.create` 校验，`input` 字段可直接被 runtime 消费）。**不引入并行布尔位** `supportsImageInput`：自定义 `supportsImageInput: true` 会被 Pi 模型合成忽略，造成 CAFF preflight 放行、PI 层静默剥图，直接违反 AC-B3。运行时可读视图 = `input.includes('image')`。
   - **catalog import 投影**：`modalities.input` 仅在显式 import/save 模型时投影为 `input`（`modalities.input.includes('image')` → `input: ['text','image']`），运行时判定以 models.json 显式值为准。
@@ -100,7 +100,7 @@ Baseline: `origin/main@3c51a8b` (2026-08-08)。
   - 422 为**预写入**（不入队、无 blocked 状态机、无半条消息）；时间线不出现 blocked 消息。
 - provider adapter（PI SDK host 侧）：把结构化 image block 翻译成 PI 可消费的输入——具体形态已在 Design Gate 后经 spike 验证（见 Open Questions / Decision Packet D1）。
 
-### Phase C: 聊天 UI 输入与展示
+### Phase C: 聊天 UI 输入与展示（merged in PR #66）
 
 - composer 增加图片选择入口：文件选择 + 预览 + 移除，随文本一起发送（**image-only 允许**：strip 有图时无文本也可发送）；不支持的图片类型/超限在 UI 层即时提示。
 - **图片项状态机（R4 P2-1 定案：`pending_validation → ready | rejected`）**：选择/粘贴进入 strip 时每张图为 `pending_validation`（本地 objectURL 可预览，但**未拿到服务端 imageId 前发送按钮禁用**）；服务端上传成功 → `ready`（持有 imageId，可随消息发送）；失败 → `rejected`（标记错误 + 移除，提示原因）。文件必须有明确状态，不允许"有歧义既不放行也不拦截"的悬空态。
@@ -147,10 +147,10 @@ Baseline: `origin/main@3c51a8b` (2026-08-08)。
 
 ### Phase A: Content-block 契约 + 上传存储
 
-- [ ] AC-A1: 图片上传端点拒绝白名单外 MIME（magic-byte 校验，不信任浏览器 MIME）、超限文件（大小/像素）、超张数、路径穿越文件名；`/uploads/` 只服务受控目录，无符号路径/远程抓取（SSRF 面为零——客户端只提交 opaque imageId，服务端投影 URL）。**P1-5 安全策略定案**：上传接受 = **结构头解析成功**（magic-byte 签名 + 尺寸头 + 像素上限 + animated GIF 探测），**不承诺完整图片可解码**（有限 dependency-free header parser 无法证明解码性；删"解码失败拒绝"承诺）；**前端预检只是 UX，服务端始终权威，前端预检不作为安全边界**。**精确上限**：`MAX_IMAGE_BYTES = 10 * 1024 * 1024 = 10_485_760`（P2-1 精确字节值）、`MAX_IMAGES_PER_UPLOAD=5`、`MAX_IMAGE_WIDTH=4096`、`MAX_IMAGE_HEIGHT=4096`、`MAX_IMAGE_PIXELS=16_000_000`；**GIF 策略**：animated GIF 拒绝（`ANIMATED_GIF_REJECTED`），static GIF 按首帧尺寸校验；**attach-time 再校验**：消息 attach 时对 `imageIds` 去重并校验 distinct 数量 ≤ `MAX_IMAGES_PER_MESSAGE=5`（多 upload 请求无法绕过）。**常量真相源**：服务端 `lib/image-constants.ts` 为单一真相源，经 `GET /api/image-upload/config` 以 JSON 暴露给前端（前端启动时 fetch，不 import TS——classic defer scripts 无 bundler）；**config 拉取失败 = fail closed**：禁用附件入口/展示原因，禁止硬编码 fallback（P2-1）。**依赖策略**：magic-byte/尺寸解析采用 dependency-free 有限解析器（png/jpeg/webp/gif 头解析），若需新增 direct dependency 先回指挥中心走依赖授权。验证：校验矩阵测试 + 静态路由测试 + imageId 投影测试 + config parity 测试 + config fail-closed 测试。
+- [x] AC-A1: 图片上传端点拒绝白名单外 MIME（magic-byte 校验，不信任浏览器 MIME）、超限文件（大小/像素）、超张数、路径穿越文件名；`/uploads/` 只服务受控目录，无符号路径/远程抓取（SSRF 面为零——客户端只提交 opaque imageId，服务端投影 URL）。**P1-5 安全策略定案**：上传接受 = **结构头解析成功**（magic-byte 签名 + 尺寸头 + 像素上限 + animated GIF 探测），**不承诺完整图片可解码**（有限 dependency-free header parser 无法证明解码性；删"解码失败拒绝"承诺）；**前端预检只是 UX，服务端始终权威，前端预检不作为安全边界**。**精确上限**：`MAX_IMAGE_BYTES = 10 * 1024 * 1024 = 10_485_760`（P2-1 精确字节值）、`MAX_IMAGES_PER_UPLOAD=5`、`MAX_IMAGE_WIDTH=4096`、`MAX_IMAGE_HEIGHT=4096`、`MAX_IMAGE_PIXELS=16_000_000`；**GIF 策略**：animated GIF 拒绝（`ANIMATED_GIF_REJECTED`），static GIF 按首帧尺寸校验；**attach-time 再校验**：消息 attach 时对 `imageIds` 去重并校验 distinct 数量 ≤ `MAX_IMAGES_PER_MESSAGE=5`（多 upload 请求无法绕过）。**常量真相源**：服务端 `lib/image-constants.ts` 为单一真相源，经 `GET /api/image-upload/config` 以 JSON 暴露给前端（前端启动时 fetch，不 import TS——classic defer scripts 无 bundler）；**config 拉取失败 = fail closed**：禁用附件入口/展示原因，禁止硬编码 fallback（P2-1）。**依赖策略**：magic-byte/尺寸解析采用 dependency-free 有限解析器（png/jpeg/webp/gif 头解析），若需新增 direct dependency 先回指挥中心走依赖授权。验证：校验矩阵测试 + 静态路由测试 + imageId 投影测试 + config parity 测试 + config fail-closed 测试。
 - [x] AC-A2: 带图消息以 `contentBlocks`（text 由 content 派生 + image 含 imageId/url）持久化，`content` 是唯一文本真相源且兼容不受破坏；客户端提交 text block/URL 返回 400；FTS 搜索、摘要 digest、历史消息解析不回归；**image-only 消息**（空 content + imageIds）可持久化且不生成空 text block。验证：message repository + 搜索/摘要测试 + 冲突拒绝测试 + image-only 测试。
-- [ ] AC-A3: 刷新页面与进程重启后，图片引用仍可从静态路由访问且消息可完整回放。验证：restart fixture + 浏览器回放证据。
-- [ ] AC-A4: 上传/存储/引用失败时返回结构化错误并展示人话原因，消息写入与图片上传通过幂等流程关联，不产生半个消息或孤儿阻断；**两阶段幂等矩阵（P1-2 R3 + R4 batch identity + R5 服务端 fingerprint + R6 fenced lease + R7 filesystem fencing/P1-3 整批消费）**：上传阶段同 `(conversation_id, client_request_id)` + 同 `request_fingerprint` 重试（响应丢失/network-unknown）返回 canonical complete batch；**同 key 异 payload → 409 `UPLOAD_IDEMPOTENCY_CONFLICT`**；`request_fingerprint` **由服务端对实际校验后的 multipart bytes 计算**（客户端 digest 仅 hint，服务端重算/核对，R5 P1-1）；batch `pending`（中途失败/崩溃）无 canonical、同 key 重试：**同进程 in-flight → 等待既有 promise、lease 有效但非 owner → `UPLOAD_IN_PROGRESS` + retryAfter、lease 过期 → CAS 条件 UPDATE 抢占取新 `lease_token` 成为唯一 owner 后 reconcile/重跑**（**不得当空批次重跑 INSERT**，R5 P1-1 + R6 P1-1 fenced lease）；**R7 P1-1 filesystem fencing**：temp 目录以 `batch_id + lease_token` 双键隔离（`.tmp/<batch_id>/<lease_token>/`），stale worker 只清自己 attempt；fenced commit 影响行数 0 → 整个 transaction ROLLBACK（已插 child rows 一并撤销）+ 清自己 attempt；**R7 P2-1 失败分类**：确定性校验失败（magic-byte/像素/大小/张数/文件名/expected_count）→ `rejected` + reason 终态，同 key 重试返回既有 reason（换 payload 须新 key）；存储/DB/crash → 保持 `pending` 走 pending 分支；消息阶段同消息 `clientRequestId` 重试返回 canonical result、不同 key 引用已 attached imageId 拒绝；`client_request_id` 在**首次上传前**由前端生成并跨重试复用；**attach 单事务（R7 P1-3 整批消费）**：message INSERT + 所有 image 行条件 UPDATE（staged→attached，含 ownership/status/row-count 校验，**影响行数 = 该 batch 全部 staged child 数，引用任意子集 → 400 `IMAGE_PARTIAL_BATCH_ATTACH_REJECTED`**）同一 SQLite transaction，任一行失败整体回滚；**batch 可恢复提交协议（R5 P1-1 + R6 P1-1 + R7 P1-2）**：pending reservation（带随机 `lease_token`）→ 全量预检 → token 隔离 temp 目录 → 同文件系统原子 rename batch 目录到 final → 最终 SQLite transaction（校验 expected_count/children/final paths 后插 image rows + **条件 UPDATE 置 complete，`WHERE status='pending' AND lease_token=<caller>`**）→ response 只认 complete（batch + row_count + slots + files 全满足）；**rename 后/DB complete 前 crash → 启动 reconciliation 验证 final 目录（齐全 → fenced commit 补 complete；不齐 → 清 final 目录保留 pending）**；**R7 P1-3 整批 GC**：未消费 complete batch（`consumed_at IS NULL`）TTL 到期 → batch 行 + 全部 child 行 + 文件整体清理，**不逐 child GC**；已消费 batch 的 child 随消息删除转 recycled 后按各自 TTL 释放，batch 行在最后一个 child GC 后清理。**会话删除（R6 P1-2）**：同一 transaction 内先 purge 该会话全部 image rows + batch rows 再删 conversation（不依赖 CASCADE 碰运气），DB commit 后 best-effort 删 batch dirs、失败由 reconciliation 清孤儿。验证：错误路径测试 + 两阶段幂等矩阵测试（含丢响应重试 + 同 key 异 payload 冲突 + crash 点测试：pending reservation 后/temp 写入中/rename 后 DB complete 前（含 R7 final-dir 验证）/complete 后 response 前 + **R6 concurrency：concurrent duplicate / lease expiry takeover / stale worker late-complete / complete 后 canonical retry** + **R7：不同 lease 写不同 attempt 目录互不干扰、校验失败进 rejected 且同 key 重试返回原因、整批消费（部分 attach → 400）、未消费 batch 整批 GC、消费后 child 逐 TTL + batch 行最后清理**）+ attach 事务原子性测试 + registry reconciliation 测试 + batch 可恢复提交协议测试 + **会话删除测试（带 attached/staged/recycled 图删除成功、无 FK 错误、registry/batch 无残留、目录删除失败后 reconciliation 收敛、DELETE conversation 不回归，R6 P1-2）**。
+- [x] AC-A3: 刷新页面与进程重启后，图片引用仍可从静态路由访问且消息可完整回放。验证：restart fixture + 浏览器回放证据。
+- [x] AC-A4: 上传/存储/引用失败时返回结构化错误并展示人话原因，消息写入与图片上传通过幂等流程关联，不产生半个消息或孤儿阻断；**两阶段幂等矩阵（P1-2 R3 + R4 batch identity + R5 服务端 fingerprint + R6 fenced lease + R7 filesystem fencing/P1-3 整批消费）**：上传阶段同 `(conversation_id, client_request_id)` + 同 `request_fingerprint` 重试（响应丢失/network-unknown）返回 canonical complete batch；**同 key 异 payload → 409 `UPLOAD_IDEMPOTENCY_CONFLICT`**；`request_fingerprint` **由服务端对实际校验后的 multipart bytes 计算**（客户端 digest 仅 hint，服务端重算/核对，R5 P1-1）；batch `pending`（中途失败/崩溃）无 canonical、同 key 重试：**同进程 in-flight → 等待既有 promise、lease 有效但非 owner → `UPLOAD_IN_PROGRESS` + retryAfter、lease 过期 → CAS 条件 UPDATE 抢占取新 `lease_token` 成为唯一 owner 后 reconcile/重跑**（**不得当空批次重跑 INSERT**，R5 P1-1 + R6 P1-1 fenced lease）；**R7 P1-1 filesystem fencing**：temp 目录以 `batch_id + lease_token` 双键隔离（`.tmp/<batch_id>/<lease_token>/`），stale worker 只清自己 attempt；fenced commit 影响行数 0 → 整个 transaction ROLLBACK（已插 child rows 一并撤销）+ 清自己 attempt；**R7 P2-1 失败分类**：确定性校验失败（magic-byte/像素/大小/张数/文件名/expected_count）→ `rejected` + reason 终态，同 key 重试返回既有 reason（换 payload 须新 key）；存储/DB/crash → 保持 `pending` 走 pending 分支；消息阶段同消息 `clientRequestId` 重试返回 canonical result、不同 key 引用已 attached imageId 拒绝；`client_request_id` 在**首次上传前**由前端生成并跨重试复用；**attach 单事务（R7 P1-3 整批消费）**：message INSERT + 所有 image 行条件 UPDATE（staged→attached，含 ownership/status/row-count 校验，**影响行数 = 该 batch 全部 staged child 数，引用任意子集 → 400 `IMAGE_PARTIAL_BATCH_ATTACH_REJECTED`**）同一 SQLite transaction，任一行失败整体回滚；**batch 可恢复提交协议（R5 P1-1 + R6 P1-1 + R7 P1-2）**：pending reservation（带随机 `lease_token`）→ 全量预检 → token 隔离 temp 目录 → 同文件系统原子 rename batch 目录到 final → 最终 SQLite transaction（校验 expected_count/children/final paths 后插 image rows + **条件 UPDATE 置 complete，`WHERE status='pending' AND lease_token=<caller>`**）→ response 只认 complete（batch + row_count + slots + files 全满足）；**rename 后/DB complete 前 crash → 启动 reconciliation 验证 final 目录（齐全 → fenced commit 补 complete；不齐 → 清 final 目录保留 pending）**；**R7 P1-3 整批 GC**：未消费 complete batch（`consumed_at IS NULL`）TTL 到期 → batch 行 + 全部 child 行 + 文件整体清理，**不逐 child GC**；已消费 batch 的 child 随消息删除转 recycled 后按各自 TTL 释放，batch 行在最后一个 child GC 后清理。**会话删除（R6 P1-2）**：同一 transaction 内先 purge 该会话全部 image rows + batch rows 再删 conversation（不依赖 CASCADE 碰运气），DB commit 后 best-effort 删 batch dirs、失败由 reconciliation 清孤儿。验证：错误路径测试 + 两阶段幂等矩阵测试（含丢响应重试 + 同 key 异 payload 冲突 + crash 点测试：pending reservation 后/temp 写入中/rename 后 DB complete 前（含 R7 final-dir 验证）/complete 后 response 前 + **R6 concurrency：concurrent duplicate / lease expiry takeover / stale worker late-complete / complete 后 canonical retry** + **R7：不同 lease 写不同 attempt 目录互不干扰、校验失败进 rejected 且同 key 重试返回原因、整批消费（部分 attach → 400）、未消费 batch 整批 GC、消费后 child 逐 TTL + batch 行最后清理**）+ attach 事务原子性测试 + registry reconciliation 测试 + batch 可恢复提交协议测试 + **会话删除测试（带 attached/staged/recycled 图删除成功、无 FK 错误、registry/batch 无残留、目录删除失败后 reconciliation 收敛、DELETE conversation 不回归，R6 P1-2）**。
 
 ### Phase B: Capability registry + 路由
 
@@ -167,7 +167,7 @@ Baseline: `origin/main@3c51a8b` (2026-08-08)。
 
 - **Evolved from**: F002（PI SDK host 运行时方言边界，image 输入投影依赖其 prompt 契约）。
 - **Related**: F004（capability registry 从 catalog modalities 投影）；F003（跨聊天室 delivery 复用 content-block 契约时需同步支持图片）。
-- **Blocked by**: None for implementation. Design Gate decisions D1-D3 and UI OQ4/5 are resolved; Phase C is awaiting code review and merge.
+- **Blocked by**: None for implementation. Design Gate decisions D1-D3 and UI OQ4/5 are resolved; all implementation phases are merged, with isolated acceptance and vision-guardian completion remaining.
 
 ## Architecture
 
@@ -237,6 +237,13 @@ Why: F004 的 models cell 只覆盖 provider 配置；本 Feature 首次把"能�
 3. **上传与发送时序**：**✅ 已定案（Design Gate Review R2 + R3 + R4 + R5 + R6 + R7，2026-08-09 @opus）**——两阶段（先 upload 拿 opaque imageId → 消息引用 imageId，服务端投影 URL），上传按 **batch 契约**返回 `{ images: [{ imageId }] }`（有序，P1-2）。**图片状态以 `image_upload_batches` + `image_uploads` registry 表为持久化真相源**（P1-2/P1-3 + R4 + R5 + R6 + R7）：batch 唯一 `UNIQUE(conversation_id, client_request_id)` + `conversation_id` FK（R6 P1-2）+ `request_fingerprint`（**服务端对实际 bytes 计算**，count + ordered file hashes，同 key 异 payload → 409，R5 P1-1）+ `status` completion truth（complete ⟺ completed_at + child count = expected_count）+ **可恢复提交协议 + fenced lease + filesystem fencing**（pending reservation 带随机 `lease_token` → token 隔离 temp（`.tmp/<batch_id>/<lease_token>/`，R7 P1-1）→ 原子 rename → 最终 DB complete 带 `WHERE lease_token=<caller>`（影响 0 行 → 整事务回滚）→ response 只认 complete；非 owner 不得 resume、过期 CAS takeover，rename 后 crash → pending final-dir 验证，R5 P1-1 + R6 P1-1 + R7 P1-1/P1-2）；**整批消费/整批 GC**（R7 P1-3：attach 消费 batch 全部 child，部分 → 400；未消费 batch 整批 GC；已消费 child 随消息删除逐 TTL 释放）；**失败分类**（R7 P2-1：确定性校验失败 → rejected 终态，存储/crash → pending 保持）；图级状态机 `staged → attached → recycled` + `integrity_status`（missing_file，R4 P1-5），唯一 `UNIQUE(batch_id, slot)`（R5 P1-2 修正），`attached_message_id` FK `ON DELETE RESTRICT`，attach 单事务（message INSERT + 条件 UPDATE 同一 transaction），**会话删除 = 同一 transaction 内先 purge image rows + batch rows 再删 conversation（R6 P1-2）**，TTL GC（整批/逐 child 语义见 R7 P1-3）、消息删除转 recycled、启动 reconciliation。技术决策，不再升级 operator（D3 收敛）。
 4. **UI 首版范围**：文件选择是否与拖拽/粘贴同 Phase 交付，还是拖拽/粘贴延后？**✅ UI Gate 已收敛（2026-08-09 @烁烁）**：选图主入口 + 粘贴同 Phase、拖拽延后。
 5. **跨聊天室 delivery**：**✅ 已定案（Design Gate Review，2026-08-09 @opus）**——F005 首版**不支持** F003 图片 delivery：若 F003 notify/request 路径收到带图消息，返回结构化 reject（`IMAGE_DELIVERY_NOT_SUPPORTED` + 人话原因），显式 Non-goal，禁止静默剥图。见 Non-goals。
+
+## Timeline
+
+| Date | Event |
+|---|---|
+| 2026-08-11 | Phase A/B merged in PR #62 (`eb96a4f`): controlled image storage, content blocks, model capability routing, fail-closed multimodal invocation, and lifecycle recovery. |
+| 2026-08-12 | Phase C merged in PR #66 (`6daeaff`): picker/paste composer, recoverable image submission, shared timeline rendering, desktop/mobile browser operation, and explicit 422/load-error recovery. Cloud review quota was unavailable; cross-provider local review covered final head `737c65a`, with CI and full local gates green. |
 
 ## Non-goals
 
