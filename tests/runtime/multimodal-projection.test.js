@@ -16,8 +16,7 @@ function imageMessage(id, ordinal, images, text = '') {
     id,
     role: 'user',
     content: text,
-    contentBlocks: blocks,
-    metadata: {},
+    metadata: { contentBlocks: blocks },
   };
 }
 
@@ -127,8 +126,8 @@ test('imageMarkerFor produces deterministic markers', () => {
 test('multimodal projection ignores non-user and text-only messages', () => {
   const messages = [
     imageMessage('m0', 0, [{ imageId: 'i0', url: '/uploads/i0.png' }], 'user image'),
-    { id: 'a0', role: 'assistant', content: 'reply', contentBlocks: [{ type: 'text', text: 'reply' }], metadata: {} },
-    { id: 'm1', role: 'user', content: 'plain text', contentBlocks: [{ type: 'text', text: 'plain text' }], metadata: {} },
+    { id: 'a0', role: 'assistant', content: 'reply', metadata: { contentBlocks: [{ type: 'text', text: 'reply' }] } },
+    { id: 'm1', role: 'user', content: 'plain text', metadata: { contentBlocks: [{ type: 'text', text: 'plain text' }] } },
   ];
 
   const result = projectMultimodalPrompt(messages, {

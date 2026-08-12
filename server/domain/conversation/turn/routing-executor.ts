@@ -16,6 +16,7 @@ const {
   syncCurrentTurnAgent,
 } = require('./turn-state');
 const { buildPromptMessages, buildPromptSnapshotMessageIds, isPrivateOnlyMessage } = require('./prompt-visibility');
+const { messageImageBlocks } = require('./multimodal-projection');
 
 const MAX_PARALLEL_MENTION_BATCH_SIZE = 5;
 
@@ -192,7 +193,15 @@ export function createRoutingExecutor(options: any = {}) {
       inputText = turnInput.content;
     }
 
-    if (!turnInput.content) {
+    if (usesExistingBatch && turnInput.imageIds.length > 0) {
+      throw createHttpError(400, 'Queued message batches must not include detached image ids');
+    }
+
+    const hasImages = usesExistingBatch
+      ? batchMessages.some((message: any) => messageImageBlocks(message).length > 0)
+      : turnInput.imageIds.length > 0;
+
+    if (!turnInput.content && !hasImages) {
       throw createHttpError(400, 'Message content is required');
     }
 
@@ -239,6 +248,7 @@ export function createRoutingExecutor(options: any = {}) {
         senderName: turnInput.senderName,
         content: turnInput.content,
         status: 'completed',
+        imageIds: turnInput.imageIds,
         metadata: turnInput.privateOnly ? { ...turnInput.metadata, privateOnly: true } : turnInput.metadata,
       });
       shouldBroadcastUserMessageCreated = true;

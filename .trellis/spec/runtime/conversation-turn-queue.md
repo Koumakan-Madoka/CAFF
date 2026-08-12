@@ -13,7 +13,7 @@
 
 ### 2. Signatures
 - `POST /api/conversations/:conversationId/messages`
-  - Request: `{ content: string, clientRequestId?: string }`
+  - Request: `{ content: string, imageIds?: string[], clientRequestId?: string }`
   - Success response:
     - `acceptedMessage`: persisted user message that was accepted immediately
     - `conversation`: latest stored conversation snapshot
@@ -49,6 +49,9 @@
 
 ### 3. Contracts
 - `POST /messages` must not wait for the full agent turn to finish. It acknowledges accepted work immediately and relies on SSE/runtime updates for the long-running state.
+- A message is non-empty when `content.trim()` is non-empty or `imageIds` contains at least one valid opaque upload id. Image-only messages persist `content = ''`; the store derives image blocks under `message.metadata.contentBlocks` and runtime consumers must read that canonical location.
+- A persisted queued batch with no text remains executable when at least one batched user message has a canonical image block. Direct `runConversationTurn(..., { imageIds })` must pass those ids into `store.createMessage()` so ownership validation, upload attachment, and content-block derivation stay atomic; routing code must not synthesize a second content-block representation.
+- Persisted-batch execution accepts image references only from the selected messages' canonical `metadata.contentBlocks`. A mixed internal payload containing both `batchMessageIds` and detached `imageIds` is invalid and must return `400` instead of silently ignoring either source.
 - When the browser sends `clientRequestId`, the accepted persisted user message must echo it in `acceptedMessage.metadata.clientRequestId` so optimistic user-message rendering can reconcile without showing duplicates after SSE or refresh.
 - New user messages are always stored first, then scheduled:
   - no active/dispatching work → main lane `dispatch = 'started'`, `dispatchLane = 'main'`
@@ -99,7 +102,9 @@
 | Operation | Condition | Expected result |
 | --- | --- | --- |
 | `POST /messages` | conversation missing | `404 Conversation not found` / localized equivalent from controller |
-| `POST /messages` | empty content after trim | `400 Message content is required` |
+| `POST /messages` | empty content after trim and no `imageIds` | `400 Message content is required` |
+| `POST /messages` | empty content with valid `imageIds` | `200`; persist an image-only message and execute it through the normal queue |
+| queued batch drain | concatenated text is empty but canonical `metadata.contentBlocks` contains an image | execute the batch instead of rejecting it as empty |
 | `POST /messages` | no agents selected | `400 Add at least one agent to the conversation first` |
 | `POST /messages` | undercover auto-host phase | `409` and keep manual input blocked |
 | `POST /messages` | werewolf auto-host phase | `409` and keep manual input blocked |
@@ -117,6 +122,7 @@
 
 ### 5. Good / Base / Bad Cases
 - Good: idle conversation accepts a user message, returns `dispatch = 'started'`, creates one active main turn, and shows main queue depth `0`.
+- Good: an image-only message is accepted with empty `content`, persists canonical image blocks under metadata, and reaches multimodal invocation without losing its image ids during queue drain.
 - Good: while the main turn is running, an explicit single `@Beta` message with idle target returns `dispatch = 'started'`, `dispatchLane = 'side'`, and runtime shows one `activeTurn` plus one `activeAgentSlot`.
 - Good: when the same target agent is already busy, a second explicit single mention returns `dispatch = 'queued'`, increments `agentSlotQueueDepths`, and runs after the first slot releases.
 - Good: side-lane user messages persist `metadata.dispatchLane = 'side'`, so main queue drain never consumes them as normal queued user batches after restart or retry.
@@ -130,6 +136,7 @@
 
 ### 6. Tests Required
 - `tests/runtime/turn-orchestrator.test.js`
+  - persisted and direct image-only inputs retain canonical image blocks and reach agent execution
   - idle target side-dispatch starts concurrently with the main lane
   - direct main turns are blocked while a side slot is active
   - busy target side-dispatch queues per agent slot and later runs

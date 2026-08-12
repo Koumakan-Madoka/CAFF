@@ -8,8 +8,11 @@ export function imageMarkerFor(messageOrdinal: number, imageOrdinal: number) {
   return `[image:${messageOrdinal}:${imageOrdinal}]`;
 }
 
-function messageImageBlocks(message: any) {
-  const blocks = Array.isArray(message && message.contentBlocks) ? message.contentBlocks : [];
+export function messageImageBlocks(message: any) {
+  const metadata = message && message.metadata && typeof message.metadata === 'object'
+    ? message.metadata
+    : null;
+  const blocks = metadata && Array.isArray(metadata.contentBlocks) ? metadata.contentBlocks : [];
   return blocks.filter((block: any) => block && block.type === 'image');
 }
 
