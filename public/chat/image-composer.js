@@ -212,8 +212,8 @@
       pendingMessageSubmission = null;
     }
 
-    function clearItems() {
-      const composerInputWasDisabled = activeMessageSendToken
+    function clearItems({ restoreComposerState = true } = {}) {
+      const composerInputWasDisabled = restoreComposerState && activeMessageSendToken
         ? Boolean(activeMessageSendToken.composerInputWasDisabled)
         : dom.composerInput.disabled;
       for (const item of items) {
@@ -526,7 +526,7 @@
         renderAvailability();
         return;
       }
-      clearItems();
+      clearItems({ restoreComposerState: false });
       currentConversationId = normalized;
       renderAvailability();
     }
