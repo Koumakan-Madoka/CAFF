@@ -399,6 +399,24 @@ test('late success from a previous conversation cannot clear the new conversatio
   assert.equal(app.controller.snapshot().items[0].name, 'new-room.png');
 });
 
+test('conversation switch preserves the destination room composer lock during a pending send', async () => {
+  const app = boot();
+  const input = app.document.getElementById('composer-input');
+  await app.controller.loadConfig();
+  app.controller.syncBaseAvailability(true);
+  await app.controller.addFiles([png(app.window, 'old-room.png')]);
+  assert.ok(app.controller.beginMessageSend('caption'));
+
+  app.setConversationId('conversation-2');
+  input.disabled = true;
+  app.controller.syncConversation('conversation-2');
+  app.controller.syncBaseAvailability(!input.disabled);
+
+  assert.equal(input.disabled, true, 'the destination room lock must override the source send snapshot');
+  assert.equal(app.controller.canSend('destination text'), false);
+  assert.equal(app.controller.snapshot().items.length, 0);
+});
+
 test('conversation switch clears staged UI state and revokes previews', async () => {
   const app = boot();
   await app.controller.loadConfig();
