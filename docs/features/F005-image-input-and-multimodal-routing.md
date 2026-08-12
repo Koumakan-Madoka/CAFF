@@ -244,6 +244,7 @@ Why: F004 的 models cell 只覆盖 provider 配置；本 Feature 首次把"能�
 |---|---|
 | 2026-08-11 | Phase A/B merged in PR #62 (`eb96a4f`): controlled image storage, content blocks, model capability routing, fail-closed multimodal invocation, and lifecycle recovery. |
 | 2026-08-12 | Phase C merged in PR #66 (`6daeaff`): picker/paste composer, recoverable image submission, shared timeline rendering, desktop/mobile browser operation, and explicit 422/load-error recovery. Cloud review quota was unavailable; cross-provider local review covered final head `737c65a`, with CI and full local gates green. |
+| 2026-08-12 | Room-lock hotfix merged in PR #67 (`fe35b24`): switching conversations during a pending image send preserves the destination room composer lock. Cloud review quota remained unavailable; cross-cat hotfix review plus scoped continuity covered final head `6dc0181`, with CI and full local/browser gates green. |
 
 ## Non-goals
 
