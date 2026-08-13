@@ -520,7 +520,7 @@ test('assistant completion hook broadcasts final message before blocking routing
   );
 });
 
-test('agent executor blocks a non-vision invocation with MODEL_NO_IMAGE_INPUT without calling startRun', async (t) => {
+test('agent executor downgrades historical images for a non-vision invocation and calls startRun', async (t) => {
   const tempDir = withTempDir('caff-agent-executor-image-block-');
   const minimalPiPath = require.resolve('../../build/lib/minimal-pi');
   const agentExecutorPath = require.resolve('../../build/server/domain/conversation/turn/agent-executor');
@@ -528,9 +528,13 @@ test('agent executor blocks a non-vision invocation with MODEL_NO_IMAGE_INPUT wi
   const minimalPi = require(minimalPiPath);
   const originalStartRun = minimalPi.startRun;
   let startRunCalled = false;
+  let capturedPrompt = '';
+  let capturedImages = null;
 
-  minimalPi.startRun = () => {
+  minimalPi.startRun = (_provider, _model, prompt, options) => {
     startRunCalled = true;
+    capturedPrompt = String(prompt || '');
+    capturedImages = options && options.images;
     return createRunHandle('Done.');
   };
   delete require.cache[agentExecutorPath];
@@ -609,11 +613,11 @@ test('agent executor blocks a non-vision invocation with MODEL_NO_IMAGE_INPUT wi
     projectDir: tempDir,
   });
 
-  assert.equal(startRunCalled, false, 'startRun must not be called for a blocked invocation');
-  assert.equal(result.stopTurn, false, 'queue continues after the failed invocation');
-  assert.equal(failedReplies.length, 1);
-  assert.equal(failedReplies[0].status, 'failed');
-  assert.equal(failedReplies[0].metadata.invocationBlocks[0].code, 'MODEL_NO_IMAGE_INPUT');
+  assert.equal(startRunCalled, true, 'text-only history images should be projected, not block the invocation');
+  assert.deepEqual(capturedImages, []);
+  assert.match(capturedPrompt, /what is this image[\s\S]*\[一张图片，但是你没有读取图片的能力\]/u);
+  assert.equal(result.stopTurn, true, 'a successful final reply completes the turn normally');
+  assert.equal(failedReplies.length, 0);
 });
 
 test('agent executor passes projected images to startRun for a vision model', async (t) => {

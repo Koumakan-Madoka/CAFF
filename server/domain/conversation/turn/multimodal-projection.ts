@@ -1,5 +1,7 @@
 import { MAX_IMAGES_PER_INVOCATION, MAX_IMAGE_PROMPT_BYTES } from '../../../../lib/image-constants';
 
+export const IMAGE_UNREADABLE_PLACEHOLDER = '[一张图片，但是你没有读取图片的能力]';
+
 function normalize(value: any) {
   return typeof value === 'string' ? value.trim() : '';
 }
@@ -158,6 +160,33 @@ export function projectMessagesWithMarkers(messages: any, options: any = {}) {
     return {
       ...message,
       content: messageText,
+    };
+  });
+}
+
+export function projectMessagesWithImagePlaceholders(messages: any, options: any = {}) {
+  const maxMessages = Number.isInteger(options.maxMessages) ? options.maxMessages : 24;
+  const windowed = (Array.isArray(messages) ? messages : []).slice(-maxMessages);
+
+  return windowed.map((message: any) => {
+    if (!message || message.role !== 'user') {
+      return message;
+    }
+
+    const imageBlocks = messageImageBlocks(message);
+    if (imageBlocks.length === 0) {
+      return message;
+    }
+
+    const text = String(message.content || '').trim();
+    const contentParts = text ? [text] : [];
+    for (let index = 0; index < imageBlocks.length; index += 1) {
+      contentParts.push(IMAGE_UNREADABLE_PLACEHOLDER);
+    }
+
+    return {
+      ...message,
+      content: contentParts.join('\n'),
     };
   });
 }

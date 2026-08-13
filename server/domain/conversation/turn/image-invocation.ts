@@ -3,7 +3,11 @@
   MAX_IMAGE_PROMPT_BYTES,
 } from '../../../../lib/image-constants';
 import { parseImageHeader } from '../../../../lib/image-header-parser';
-import { messageImageBlocks, projectMultimodalPrompt } from './multimodal-projection';
+import {
+  messageImageBlocks,
+  projectMessagesWithImagePlaceholders,
+  projectMultimodalPrompt,
+} from './multimodal-projection';
 
 function normalize(value: any) {
   return typeof value === 'string' ? value.trim() : '';
@@ -107,13 +111,10 @@ export function buildInvocationImages(options: any = {}) {
 
   if (!capability.supportsImage) {
     return {
-      block: {
-        code: 'MODEL_NO_IMAGE_INPUT',
-        reason: `本次调用已阻断：模型不支持读取历史图片（${capability.provider || '?'}/${capability.model || '?'}）。`,
-      },
+      block: null,
       images: [],
       capability,
-      projectedMessages: null,
+      projectedMessages: projectMessagesWithImagePlaceholders(promptMessages, { maxMessages }),
     };
   }
 

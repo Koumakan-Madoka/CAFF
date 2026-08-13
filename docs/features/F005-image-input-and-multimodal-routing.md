@@ -14,7 +14,11 @@ created: 2026-08-09
 
 CAFF 聊天目前只支持纯文本消息：`chat_messages.content` 是单一 TEXT，发送接口只接收 `{ content, clientRequestId }`，没有任何图片输入、内容块或多模态能力判定的契约。CAFF 原始改造愿景（`thread_msiputnz4yxhs6j3`）明确要求"支持图片输入"，且多模态路由不能靠硬编码模型名猜——必须在 capability registry 层回答"这个模型能不能读图"，再决定把图片送给谁。
 
-价值终点：operator 在聊天里选一张图、预览、随文本发出，带图消息在刷新/历史回放/继续会话后依然完整；路由层依据 CAFF 自己的 capability registry 判断目标模型是否支持图片输入，支持的 provider adapter 收到结构化 image 内容，不支持的模型在发送前或路由处被明确阻断——任何路径都不得静默丢图。
+价值终点：operator 在聊天里选一张图、预览、随文本发出，带图消息在刷新/历史回放/继续会话后依然完整；路由层依据 CAFF 自己的 capability registry 判断目标模型是否支持图片输入，支持的 provider adapter 收到结构化 image 内容；当前发送给不支持图片的初始目标仍在 preflight 明确阻断，而历史已含图的后续 text-only invocation 降级为明确的占位文本后继续——任何路径都不得静默丢图。
+
+### Superseding amendment (2026-08-13): historical images on text-only invocations
+
+Clowder compatibility research found that persisted image history is projected to text for providers whose `input` lacks `image`; it is not replayed as image bytes and does not hard-fail the later invocation. CAFF therefore supersedes the earlier per-invocation historical-image blocker contract: `buildInvocationImages()` now returns `{ block: null, images: [], projectedMessages }` for a visible image-bearing history window when the selected model is text-only. Each historical image becomes the explicit placeholder `[一张图片，但是你没有读取图片的能力]`, in message/image order. Canonical `metadata.contentBlocks` and timeline image metadata remain unchanged. The current-send synchronous `image-preflight.ts` 422 `MODEL_NO_IMAGE_INPUT` contract remains unchanged.
 
 ## Current State / 现状基线
 
@@ -94,7 +98,7 @@ Baseline: `origin/main@3c51a8b` (2026-08-08)。
 - **capability 可执行契约（P1-1 R3）**：`input` 必须可被 operator 读写——provider-editor 模型级新增 capability 控件（**checkbox 编辑 `'image'` membership**：勾选 → `input` 含 `'image'`；取消 → 移除），normalize 时接受 `Array<'text'|'image'>`（非规范值拒绝：非数组、含非 text/image 元素）；API 投影把 `input` 纳入 provider 回读 payload；手工编辑的模型默认 `input: ['text']`，operator 可显式勾选图片能力。**parity 回归测试**：CAFF capability 判定与 PI `model.input.includes('image')` 必须一致（含静默降级回归测试——`input` 不含 image 的模型，images 不得被送进 `session.prompt`）。
 - **阻断语义定案（P1-1 R2 修正位置 + R3 扩展）**：真实链路是 controller **同步**调用 `submitConversationMessage` → `store.createMessage`（同步落库）→ 异步 drain（`turn-orchestrator.ts:1420-1445`）。因此 capability preflight 必须发生在 **`store.createMessage` 之前**（controller 同步段内），而不是 routing 异步段——否则 HTTP 已 200 且消息已落库。具体规则：
   - **initial targets 的 all 规则**：preflight 解析初始 target-set（与 `resolveInitialSpeakerQueue` 同源：@mention 命中的所有 agents，无 mention 则第一个 agent，`routing-executor.ts:95-102`），**所有 initial target 的模型必须都支持图片输入**（任一不支持 → 422 `MODEL_NO_IMAGE_INPUT`，消息不落库、不进入 runtime、图片保持 staged 可复用）。首版采用 all 规则（图片进共享 user 消息，所有 initial agents 都会收到；不能为某个 agent 剥图）。多 agent mixed-capability 场景下，operator 可移除图片或换用全 vision 的 target-set 重发。
-  - **handoff/side-dispatch 的 per-invocation 阻断（P1-4 R3 扩展 + R4 钉死失败持久化）**：后续 handoff 或 side-dispatch 到不支持图片的模型时，该 invocation 输出结构化 block `MODEL_NO_IMAGE_INPUT`（附人话 reason），**不剥图继续、不静默丢弃**——图片仍在该用户消息里，只是该 invocation 明确声明不可读图。**执行路径（R4 P1-4 钉死，沿 `agent-executor.ts:1302-1313,1947-1980` 的 assistant placeholder/failed 契约）**：invocation 仍创建 assistant placeholder → capability 判定后**直接写 `status='failed'`** + `MODEL_NO_IMAGE_INPUT`/reason + `metadata_json.invocationBlocks` → 计入 `failedReplies` → **断言 `startRun` 未被调用**；queue 仅继续其他 agent。**持久化/UI carrier**：block 写入该 invocation 的 assistant 消息 `metadata_json.invocationBlocks`，UI 以 trace pill / inline note 展示（文案为「本次调用已阻断：模型不支持读取历史图片」，**不得写"已跳过图片上下文"**）；**queue 继续**：该 invocation 失败不终止 turn，其余 agent 正常执行；turn failure 按现有计数逻辑计入（`failedReplies`）。
+  - **handoff/side-dispatch 的 per-invocation 历史图片降级（2026-08-13 amendment）**：后续 handoff 或 side-dispatch 到不支持图片的模型时，不读取历史图片 bytes，也不创建失败 invocation block；每个可见历史 image block 投影为 `[一张图片，但是你没有读取图片的能力]`，返回 `images: []` 并照常调用 `startRun`。canonical image metadata 仍保留给历史 UI。当前发送给不支持图片的 initial target 仍由同步 preflight 返回 422 `MODEL_NO_IMAGE_INPUT`，消息不落库、staged 图片可复用。
   - **多模态 prompt 单一投影（R4 P1-3 定案，替代原 `collectPromptImages`）**：每个 invocation 组装 prompt 时，由**一个投影函数**同时产出文本与图片：**先选定与文本完全相同的 message window**（与 `agent-prompt.ts:205` 的 `.slice(-MAX_HISTORY_MESSAGES)` 同一窗口），**在文本中插入确定性 image marker**（如 `[image:<messageOrdinal>:<imageOrdinal>]`，随 `formatHistory` 同一份历史展开），**images 按 marker 出现顺序排列**。不单独对全部 `promptMessages` 收集图片——避免文本 prompt 中不存在的更老图片被孤立传入（现 `prompt-visibility.ts:20-41` 不裁剪，与 `agent-prompt.ts:205` 的 `.slice(-24)` 是两条不同窗口，R4 实锤为 P1-3 根因）。
   - **per-invocation 图片预算（R4 P1-3 + R5 P1-4 修订：单一 fail-closed 契约）**：定义 `MAX_IMAGES_PER_INVOCATION` 与 `MAX_IMAGE_PROMPT_BYTES`（base64 总量上限，依据 provider/IPC 边界自决，实现侧定具体数值）。**超限一律显式 fail-closed**：结构化 block `IMAGE_PROMPT_BUDGET_EXCEEDED`（附人话原因），**不允许"显式截断"分支**（R5 P1-4 删除"或显式截断"——截断 = 带不完整图片继续调用，与 fail-closed 语义矛盾；AC-B2/Risk 已钉死 fail-closed，spec 与其保持一致）——不得静默丢图。可见图片集合（历史带图消息 + 当前 imageIds）以 `input.includes('image')` 对该 invocation 逐次判定——不仅看当前请求是否带图，后续纯文本 turn 但可见历史含图时，非 vision target 也要 per-invocation block，不允许历史图被静默剥掉（见 AC-B3 扩展）。补「第 25 条含图消息不被孤立传入」「多条消息多图锚点顺序」「预算超限 fail-closed」测试。
   - 422 为**预写入**（不入队、无 blocked 状态机、无半条消息）；时间线不出现 blocked 消息。
@@ -155,8 +159,8 @@ Baseline: `origin/main@3c51a8b` (2026-08-08)。
 ### Phase B: Capability registry + 路由
 
 - [x] AC-B1: capability 位为 model-level 且**以 PI runtime canonical `providers[id].models[i].input: Array<'text'|'image'>` 为单一真相源**（P1-1 R3；弃 `supportsImageInput` 布尔——PI 层不认识它，会造成 preflight 放行 + PI 静默剥图）；catalog `modalities.input` 仅在显式 import/save 时投影为 `input`，models.json 显式值优先，未知模型 fail closed 为不支持图片；`input` 可经 provider-editor 模型级控件读写（checkbox 编辑 `'image'` membership；normalize 只接受合法数组；回读保留）。**parity 回归测试**：CAFF 判定与 PI `model.input.includes('image')` 一致 + 静默降级回归测试（`input` 不含 image 的模型，images 不得进 `session.prompt`）。验证：model-level 判定矩阵 + 投影/优先级测试 + capability 读写测试 + parity/静默降级测试。
-- [x] AC-B2: **同步 preflight 在 `store.createMessage` 之前**（controller 同步段）识别 imageIds；**initial targets 任一模型不支持图片 → 预写入 422**（`MODEL_NO_IMAGE_INPUT`），消息不落库、不进入 runtime、图片保持 staged 可复用；**多模态 prompt 单一投影（R4 P1-3）**：每次 invocation 由单一投影函数产出 `{ text, images }`——文本与图片**同一 message window**（与 `agent-prompt.ts:205` `.slice(-MAX_HISTORY_MESSAGES)` 对齐），文本中插入确定性 image marker、images 按 marker 顺序排列；per-invocation 图片数量/字节预算超限一律 fail-closed（结构化 block `IMAGE_PROMPT_BUDGET_EXCEEDED`，**无显式截断分支**，R5 P1-4）；后续纯文本 turn 可见历史含图时同样判定，非 vision target 输出 per-invocation 结构化 block（**R4 P1-4 钉死：assistant placeholder 直接写 `status='failed'` + block code/reason + `metadata_json.invocationBlocks` + 计入 failedReplies + 断言 startRun 未调用**；queue 继续）；**attached 行 `integrity_status='missing_file'` 或运行期读文件失败 → invocation 结构化 block `IMAGE_CONTENT_UNAVAILABLE`**（R5 P1-4：复用同一 assistant `status='failed'` + invocationBlocks + failedReplies + startRun 未调用 + queue 继续失败路径，不剥图）。验证：路由阻断测试 + 消息不入队断言 + staged 复用断言 + preflight 位置断言（createMessage 前）+ handoff block 测试 + **"图片消息后刷新/重启再发纯文本"测试 + 多图顺序测试 + "第 25 条含图消息不被孤立传入"测试 + 预算超限 fail-closed 测试（`IMAGE_PROMPT_BUDGET_EXCEEDED`）+ missing-file invocation 测试（`IMAGE_CONTENT_UNAVAILABLE`，restart reconciliation 后纯文本 invocation）+ startRun 未调用断言**。
-- [x] AC-B3: 任何路径都不得静默丢图：不支持的模型不剥图继续，失败必带明确原因；**PI runtime 的静默降级被 preflight + per-invocation 判定双保险挡住**（`input` 不含 image 的模型 images 永不进 `session.prompt`）。验证：全路径断言测试（grep 无静默过滤）+ parity 静默降级回归测试。
+- [x] AC-B2: **同步 preflight 在 `store.createMessage` 之前**（controller 同步段）识别 imageIds；**initial targets 任一模型不支持图片 → 预写入 422**（`MODEL_NO_IMAGE_INPUT`），消息不落库、不进入 runtime、图片保持 staged 可复用；**多模态 prompt 单一投影（R4 P1-3）**：每次 invocation 由单一投影函数产出 `{ text, images }`——文本与图片**同一 message window**（与 `agent-prompt.ts:205` `.slice(-MAX_HISTORY_MESSAGES)` 对齐），文本中插入确定性 image marker、images 按 marker 顺序排列；per-invocation 图片数量/字节预算超限一律 fail-closed（结构化 block `IMAGE_PROMPT_BUDGET_EXCEEDED`，**无显式截断分支**，R5 P1-4）；后续纯文本 turn 可见历史含图时，text-only target 改为历史图片占位降级：每个 image block 投影为 `[一张图片，但是你没有读取图片的能力]`，返回 `images: []`、`block: null` 并调用 `startRun`；**attached 行 `integrity_status='missing_file'` 或 vision invocation 运行期读文件失败 → invocation 结构化 block `IMAGE_CONTENT_UNAVAILABLE`**（R5 P1-4：复用同一 assistant `status='failed'` + invocationBlocks + failedReplies + startRun 未调用的失败路径）。验证：路由 preflight 测试 + 消息不入队断言 + staged 复用断言 + preflight 位置断言（createMessage 前）+ **text-only 历史图片降级与多图顺序测试** + **"第 25 条含图消息不被孤立传入"测试** + 预算超限 fail-closed 测试（`IMAGE_PROMPT_BUDGET_EXCEEDED`）+ missing-file invocation 测试（`IMAGE_CONTENT_UNAVAILABLE`，restart reconciliation 后 vision invocation）+ text-only `startRun` 调用与 `images: []` 断言。
+- [x] AC-B3: 任何路径都不得**无提示**丢图：initial send 的不支持模型仍在 preflight 明确阻断；历史图片进入 text-only invocation 时必须替换为明确占位文本，不传 image bytes（`images: []`）；vision invocation 与 missing-file/预算错误保留各自结构化行为。验证：全路径断言测试（placeholder / `images: []` / 无静默过滤）+ parity 回归测试。
 - [x] AC-B4 (P2-3): F003 notify/request 两入口收到带图消息 → 结构化 reject `IMAGE_DELIVERY_NOT_SUPPORTED` + 人话原因，消息与图片不剥离不降级。验证：notify/request 两路径 reject 测试。
 
 ### Phase C: UI 输入与展示
@@ -188,7 +192,7 @@ composer (file input + preview + remove; image-only allowed when strip non-empty
   -> store.createMessage (validate imageId ownership/state + distinct-count<=5 -> SINGLE transaction: message INSERT + conditional image rows staged->attached -> project url
      -> metadata.contentBlocks [{type:text(derived, omitted when content empty)}, {type:image,imageId,url}])
   -> async drain -> routing (per-invocation multimodal projection: SAME window as text .slice(-MAX_HISTORY_MESSAGES) -> { text, images } with deterministic markers; budget MAX_IMAGES_PER_INVOCATION/MAX_IMAGE_PROMPT_BYTES; handoff/side-dispatch to non-vision model
-     -> assistant placeholder status='failed' + per-invocation MODEL_NO_IMAGE_INPUT / IMAGE_PROMPT_BUDGET_EXCEEDED / IMAGE_CONTENT_UNAVAILABLE block persisted to metadata_json.invocationBlocks + UI carrier, no stripping, startRun never called, queue continues)
+     -> text-only historical image blocks project to explicit placeholder text + images:[] + block:null; vision invocations receive structured images; IMAGE_PROMPT_BUDGET_EXCEEDED / IMAGE_CONTENT_UNAVAILABLE remain fail-closed blocks persisted to metadata_json.invocationBlocks)
   -> agent-executor prompt projection (images) -> pi-sdk-host session.prompt(prompt, { images }) -> model (PI runtime gate: model.input.includes('image'); images never passed when input lacks image)
 ```
 
@@ -202,21 +206,21 @@ Why: F004 的 models cell 只覆盖 provider 配置；本 Feature 首次把"能�
 
 - **Primary users + activation**: 聊天 operator；activation 是首次选择图片并发送，或配置 provider 时查看图片能力。
 - **Friction metric**: 带图消息中被阻断（不支持模型）或展示失败的占比；上传被拒次数，按原因聚类。
-- **Regression fixtures**: content-block 持久化 fixture；restart 图片可达 fixture；capability 判定矩阵 fixture；阻断（不剥图）fixture；UI 选图/预览/移除 fixture。
+- **Regression fixtures**: content-block 持久化 fixture；restart 图片可达 fixture；capability 判定矩阵 fixture；initial-send 422 与 text-only 历史图片占位降级 fixture；UI 选图/预览/移除 fixture。
 - **Sunset signal**: 当 catalog/runtime 两侧 capability 判定冗余（所有目标模型统一支持图片）时移除 registry 分支；替换方案必须保留不剥图保证与上传安全。
 
 ## Risk
 
 | 风险 | 缓解 |
 |------|------|
-| 静默丢图或剥图继续 | 全路径断言：阻断必带原因，无静默过滤 |
+| 静默丢图或剥图继续 | 初始发送保留 422；历史 text-only invocation 以明确占位文本降级，`images: []`，不无提示丢失上下文 |
 | content-block 破坏历史消息/FTS/摘要 | content 保持兼容，contentBlocks 只做增量扩展 |
 | 上传面开放攻击（路径穿越/SSRF/炸弹） | 受控目录、opaque imageId 投影（客户端不提交 URL）、magic-byte MIME、大小/像素/张数限制、无符号解析、无远程抓取 |
 | PI 不支持结构化 image 输入 | Design Gate spike 已定案：SDK 0.80.10 原生支持 `images` 参数（见 OQ1）；不剥图 fail closed |
 | capability 误判（CAFF 声明与 PI runtime 不符） | 单一真相源 `model.input`（与 PI 0.80.10 一致）+ catalog 仅 import 投影默认 + parity 回归测试（CAFF 判定 == `model.input.includes('image')`），未知 fail closed |
 | preflight 放错层（落库后才阻断） | capability preflight 在 `store.createMessage` 之前的同步段（AC-B2 位置断言测试） |
-| PI 层静默降级剥图（`input` 不含 image 仍传图） | preflight + per-invocation 判定双保险：`input` 不含 image 的模型 images 永不进 `session.prompt`（AC-B3 parity 静默降级回归测试） |
-| prompt 历史图片被静默剥掉（later-invocation） | 多模态 prompt **单一投影**（文本与图片同一 message window）+ 确定性 marker + per-invocation block 持久化 carrier（AC-B2）；R4 P1-3 钉死两窗口同源 |
+| PI 层静默降级剥图（`input` 不含 image 仍传图） | CAFF 在 invocation 前显式投影占位文本；`input` 不含 image 的模型 `images` 永不进 `session.prompt`（AC-B3 parity 回归测试） |
+| prompt 历史图片被静默剥掉（later-invocation） | 单一 message window 投影；vision 用确定性 marker + images，text-only 用明确 `[一张图片，但是你没有读取图片的能力]` 占位文本，canonical metadata 仍保留 |
 | 图片窗口 ≠ 文本窗口（更老图片被孤立传入） | 单一投影函数先选 window 再产出 `{text, images}`，marker 嵌入文本；补「第 25 条含图消息不被孤立传入」测试（R4 P1-3） |
 | 图片 prompt 预算无界（base64/IPC 超限） | `MAX_IMAGES_PER_INVOCATION` + `MAX_IMAGE_PROMPT_BYTES` 预算，超限一律 fail-closed `IMAGE_PROMPT_BUDGET_EXCEEDED`（无显式截断分支，R4 P1-3 + R5 P1-4） |
 | attached 文件缺失无法表达（读文件必失败） | `integrity_status='missing_file'` + `integrity_error` 持久化，保留 attached 与消息关联；历史 UI 降级占位、invocation 结构化失败 `IMAGE_CONTENT_UNAVAILABLE` 不剥图（R4 P1-5 + R5 P1-4） |
@@ -228,7 +232,7 @@ Why: F004 的 models cell 只覆盖 provider 配置；本 Feature 首次把"能�
 | batch canonical 与 child TTL 冲突（部分 attach + 逐 child GC → complete batch 指向缺失 child） | **整批消费/整批 GC 模型**：attach 必须消费 batch 全部 child（部分 → 400 `IMAGE_PARTIAL_BATCH_ATTACH_REJECTED`）；未消费 complete batch 整批 GC（batch + child + 文件同事件）；已消费 batch 的 child 随消息删除转 recycled 后逐 TTL 释放，batch 行最后清理（R7 P1-3 + 整批消费/GC 测试） |
 | rejected 无执行路径（校验失败与可重试失败混为一谈） | **失败分类**：确定性校验失败 → `rejected` + reason 终态（同 key 重试返回原因，换 payload 须新 key）；存储/DB/crash → 保持 `pending` 走 fenced lease 恢复（R7 P2-1 + 失败分类测试） |
 | 会话删除被 `attached_message_id ON DELETE RESTRICT` 阻断 | **显式会话删除 purge**：同一 transaction 内先删该会话全部 image rows + batch rows 再删 conversation（`conversation_id` FK 明确）；DB commit 后 best-effort 删 batch dirs、失败由 reconciliation 清孤儿（R6 P1-2 + 回归测试） |
-| 多 Agent mixed-capability 会话 | initial targets all 规则（任一不支持 → 422）+ handoff/side-dispatch per-invocation block，不剥图 |
+| 多 Agent mixed-capability 会话 | initial targets all 规则（任一不支持 → 422）+ handoff/side-dispatch text-only 历史图片占位降级；vision target 仍按预算/完整性 fail-closed |
 
 ## Open Questions
 
