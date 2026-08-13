@@ -83,10 +83,15 @@ test('buildInvocationImages returns structured ImageContent for a vision model',
   ]);
 });
 
-test('buildInvocationImages blocks MODEL_NO_IMAGE_INPUT when the model cannot read images', () => {
+test('buildInvocationImages projects historical images to explicit placeholders for a text-only model', () => {
+  let readImageCalls = 0;
   const result = buildInvocationImages({
     promptMessages: [
       imageMessage('m1', [{ imageId: 'i1', url: '/uploads/b1/0-a.png' }], 'what is this'),
+      imageMessage('m2', [
+        { imageId: 'i2', url: '/uploads/b1/1-b.png' },
+        { imageId: 'i3', url: '/uploads/b1/2-c.png' },
+      ]),
     ],
     modelCatalog: {
       getOptions() {
@@ -94,13 +99,27 @@ test('buildInvocationImages blocks MODEL_NO_IMAGE_INPUT when the model cannot re
       },
     },
     agent: { runtimeConfig: { provider: 'deepseek', model: 'deepseek-v3' } },
-    readImageBytes: () => pngBytes(),
+    readImageBytes: () => {
+      readImageCalls += 1;
+      return pngBytes();
+    },
     imageMimeType: () => 'image/png',
   });
 
-  assert.equal(result.block.code, 'MODEL_NO_IMAGE_INPUT');
-  assert.equal(result.images.length, 0);
-  assert.match(result.block.reason, /不支持/u);
+  assert.equal(result.block, null);
+  assert.deepEqual(result.images, []);
+  assert.equal(readImageCalls, 0, 'text-only history projection must not read image bytes');
+  assert.ok(Array.isArray(result.projectedMessages));
+  assert.equal(result.projectedMessages.length, 2);
+  assert.equal(
+    result.projectedMessages[0].content,
+    'what is this\n[一张图片，但是你没有读取图片的能力]'
+  );
+  assert.equal(
+    result.projectedMessages[1].content,
+    '[一张图片，但是你没有读取图片的能力]\n[一张图片，但是你没有读取图片的能力]'
+  );
+  assert.equal(result.projectedMessages[0].metadata.contentBlocks[1].imageId, 'i1');
 });
 
 test('buildInvocationImages blocks IMAGE_PROMPT_BUDGET_EXCEEDED on image count overflow', () => {
