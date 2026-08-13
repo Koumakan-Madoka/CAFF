@@ -251,6 +251,7 @@ Why: F004 的 models cell 只覆盖 provider 配置；本 Feature 首次把"能�
 | 2026-08-12 | Room-lock hotfix merged in PR #67 (`fe35b24`): switching conversations during a pending image send preserves the destination room composer lock. Cloud review quota remained unavailable; cross-cat hotfix review plus scoped continuity covered final head `6dc0181`, with CI and full local/browser gates green. |
 | 2026-08-12 | Image-only runtime hotfix merged in PR #68 (`0dea0f4`): canonical `metadata.contentBlocks` routing, direct `imageIds` persistence, image-only invocation, mixed-source rejection, and active-turn cleanup after attachment failure. Cloud found the cleanup P2 on `08e3f84`; `fc0c8d2` fixed it Red-to-Green, cross-provider fallback review approved the repaired head, current-head CI passed, and isolated merged-main `npm test` passed. |
 
+| 2026-08-13 | Text-only historical-image degradation merged in PR #69 (`6d481de`): later text-only invocations with visible image history project each historical image to `[一张图片，但是你没有读取图片的能力]` placeholder, return `images: []`/`block: null`, and continue through `startRun`, aligning with Clowder. Cloud codex review quota was unavailable; cross-provider local review (opus) approved head `9a6c51b` with 0/0/0 findings, current-head CI passed, and full local gates green. |
 ## Non-goals
 
 - 图片生成、图片编辑、任意文件附件、OCR fallback、视频/音频上传。
