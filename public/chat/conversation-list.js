@@ -85,9 +85,16 @@
       const tree = crossConversationUi.buildConversationTree(state.conversations, {
         selectedConversationId: state.selectedConversationId,
         collapsedIds,
+        sortMode: 'activity',
       });
       collapsedIds = tree.collapsedIds;
-      const signature = signatureForRows(tree.rows);
+      const directoryState = state.conversationDirectory || {};
+      const signature = [
+        signatureForRows(tree.rows),
+        directoryState.loading ? 'loading' : '',
+        directoryState.query || '',
+        directoryState.error || '',
+      ].join('\u001d');
       if (dom.conversationList.dataset.renderSignature === signature) return;
 
       dom.conversationList.dataset.renderSignature = signature;
@@ -97,7 +104,11 @@
       if (tree.rows.length === 0) {
         const empty = document.createElement('li');
         empty.className = 'empty-state';
-        empty.textContent = '还没有会话，先创建一个。';
+        empty.textContent = state.conversationDirectory && state.conversationDirectory.loading
+          ? 'Loading conversations…'
+          : state.conversationDirectory && state.conversationDirectory.query
+            ? 'No matching conversations'
+            : '还没有会话，先创建一个。';
         dom.conversationList.appendChild(empty);
         return;
       }

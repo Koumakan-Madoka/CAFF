@@ -11,6 +11,7 @@ import { sendFileDownload, sendJson, sendTextDownload } from '../http/response';
 import { pickConversationSummary, withConversationPrivateMessages } from '../domain/conversation/conversation-view';
 import { applyConversationDigestAction } from '../domain/conversation/conversation-digest';
 import { buildConversationMessagePage } from '../domain/conversation/message-pagination';
+import { buildConversationDirectoryPage } from '../domain/conversation/conversation-directory-pagination';
 import { applyConversationSkillDraftAction } from '../domain/conversation/skill-draft';
 import { applySessionGoalAction } from '../domain/conversation/session-goal';
 import {
@@ -237,7 +238,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
     const { req, res, pathname, requestUrl } = context;
 
     if (req.method === 'GET' && pathname === '/api/conversations') {
-      sendJson(res, 200, { conversations: listConversationHeaders() });
+      sendJson(res, 200, buildConversationDirectoryPage(store, requestUrl.searchParams));
       return true;
     }
 

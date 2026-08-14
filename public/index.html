@@ -18,6 +18,7 @@
     <script defer src="/shared/safe-markdown.js"></script>
     <script defer src="/shell/app-shell.js"></script>
     <script defer src="/chat/cross-conversation-ui.js"></script>
+    <script defer src="/chat/conversation-directory.js"></script>
     <script defer src="/chat/conversation-list.js"></script>
     <script defer src="/chat/connection-status.js"></script>
     <script defer src="/chat/participant-pane.js"></script>
@@ -59,7 +60,19 @@
         </div>
 
 
+        <form id="conversation-directory-search" class="conversation-directory-search" role="search">
+          <label class="sr-only" for="conversation-directory-query">Search conversations</label>
+          <div class="conversation-directory-search-row">
+            <input id="conversation-directory-query" type="search" autocomplete="off" placeholder="Search title or message" />
+            <button class="ghost-button" type="submit">Search</button>
+          </div>
+          <p id="conversation-directory-status" class="conversation-directory-status muted" role="status" aria-live="polite"></p>
+        </form>
         <ul id="conversation-list" class="conversation-list sidebar-list"></ul>
+        <div class="conversation-directory-footer">
+          <button id="conversation-directory-more" class="ghost-button" type="button" hidden>Load more</button>
+          <button id="conversation-directory-retry" class="ghost-button" type="button" hidden>Retry</button>
+        </div>
       </aside>
 
       <main class="main">

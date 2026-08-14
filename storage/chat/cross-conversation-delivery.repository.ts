@@ -8,6 +8,7 @@ export class CrossConversationDeliveryRepository {
   listExpiredDeadlinesStatement: any;
   listPendingResponsesStatement: any;
   listLatestByTargetStatement: any;
+  listLatestByTargetIdsStatement: any;
   insertStatement: any;
   markMessagesPersistedStatement: any;
   claimNextStatement: any;
@@ -105,6 +106,21 @@ export class CrossConversationDeliveryRepository {
             OR (newer.created_at = delivery.created_at AND newer.id > delivery.id)
           )
       )
+      ORDER BY delivery.target_conversation_id ASC
+    `);
+    this.listLatestByTargetIdsStatement = db.prepare(`
+      SELECT delivery.*
+      FROM chat_cross_conversation_deliveries delivery
+      WHERE delivery.target_conversation_id IN (SELECT value FROM json_each(?))
+        AND NOT EXISTS (
+          SELECT 1
+          FROM chat_cross_conversation_deliveries newer
+          WHERE newer.target_conversation_id = delivery.target_conversation_id
+            AND (
+              newer.created_at > delivery.created_at
+              OR (newer.created_at = delivery.created_at AND newer.id > delivery.id)
+            )
+        )
       ORDER BY delivery.target_conversation_id ASC
     `);
     this.insertStatement = db.prepare(`
@@ -519,6 +535,13 @@ export class CrossConversationDeliveryRepository {
 
   listLatestByTarget() {
     return this.listLatestByTargetStatement.all();
+  }
+
+  listLatestByTargetIds(conversationIds: any[]) {
+    const ids = Array.from(new Set((Array.isArray(conversationIds) ? conversationIds : [])
+      .map((id) => String(id || '').trim())
+      .filter(Boolean)));
+    return ids.length > 0 ? this.listLatestByTargetIdsStatement.all(JSON.stringify(ids)) : [];
   }
 
   create(payload: any) {

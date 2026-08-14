@@ -117,7 +117,7 @@ test('spawn route rejects unknown fields before domain execution', async () => {
   assert.equal(callCount, 0);
 });
 
-test('conversation list route uses stable tree headers instead of activity-sorted headers', async () => {
+test('conversation list route returns the paged activity-ordered directory when supported', async () => {
   const controller = createConversationsController({
     store: {
       listConversations() {
@@ -125,6 +125,14 @@ test('conversation list route uses stable tree headers instead of activity-sorte
       },
       listConversationTree() {
         return [{ id: 'root' }, { id: 'activity-child', parentConversationId: 'root' }];
+      },
+      listConversationDirectoryPage(options) {
+        assert.deepEqual(options, { limit: 50, query: '', before: null });
+        return {
+          items: [{ id: 'activity-child' }, { id: 'root' }],
+          nextCursor: null,
+          hasMore: false,
+        };
       },
     },
   });
@@ -135,5 +143,6 @@ test('conversation list route uses stable tree headers instead of activity-sorte
   });
 
   assert.equal(response.statusCode, 200);
-  assert.deepEqual(response.json.conversations.map((conversation) => conversation.id), ['root', 'activity-child']);
+  assert.deepEqual(response.json.conversations.map((conversation) => conversation.id), ['activity-child', 'root']);
+  assert.equal(response.json.hasMore, false);
 });

@@ -13,6 +13,7 @@ const state = {
   modes: [],
   agents: [],
   conversations: [],
+  conversationDirectory: null,
   selectedConversationId: null,
   currentConversation: null,
   messageHistory: messageHistory.createState(),
@@ -48,6 +49,7 @@ const WEREWOLF_TYPE = 'werewolf';
 const shared = window.CaffShared || {};
 const chatModules = window.CaffChat || {};
 const crossConversationUi = chatModules.crossConversationUi;
+const conversationDirectory = chatModules.conversationDirectory;
 const connectionStatus = chatModules.createConnectionStatus ? chatModules.createConnectionStatus() : null;
 const fetchJson = shared.fetchJson;
 const fetchFormDataJson = shared.fetchFormDataJson;
@@ -69,6 +71,12 @@ if (!conversationDigestUtils) {
 if (!summaryMemoryUtils) {
   throw new Error('CaffShared.summaryMemory helper is required');
 }
+
+if (!conversationDirectory) {
+  throw new Error('CaffChat.conversationDirectory helper is required');
+}
+
+state.conversationDirectory = conversationDirectory.createState();
 
 if (typeof fetchFormDataJson !== 'function') {
   throw new Error('CaffShared.fetchFormDataJson helper is required');
@@ -104,6 +112,11 @@ const dom = {
   newConversationSelectionCount: /** @type {HTMLElement | null} */ (document.getElementById('new-conversation-selection-count')),
   newConversationError: /** @type {HTMLElement | null} */ (document.getElementById('new-conversation-error')),
   conversationList: /** @type {HTMLDivElement | null} */ (document.getElementById('conversation-list')),
+  conversationDirectorySearch: /** @type {HTMLFormElement | null} */ (document.getElementById('conversation-directory-search')),
+  conversationDirectoryQuery: /** @type {HTMLInputElement | null} */ (document.getElementById('conversation-directory-query')),
+  conversationDirectoryStatus: /** @type {HTMLElement | null} */ (document.getElementById('conversation-directory-status')),
+  conversationDirectoryMore: /** @type {HTMLButtonElement | null} */ (document.getElementById('conversation-directory-more')),
+  conversationDirectoryRetry: /** @type {HTMLButtonElement | null} */ (document.getElementById('conversation-directory-retry')),
   conversationTitleDisplay: /** @type {HTMLElement | null} */ (document.getElementById('conversation-title-display')),
   conversationModeBadge: /** @type {HTMLElement | null} */ (document.getElementById('conversation-mode-badge')),
   conversationMeta: /** @type {HTMLElement | null} */ (document.getElementById('conversation-meta')),
@@ -262,10 +275,6 @@ function applyConversationResponse(result) {
     return;
   }
 
-  if (Array.isArray(result.conversations)) {
-    state.conversations = result.conversations;
-  }
-
   if (result.conversation) {
     const incomingConversation = result.conversation;
     const currentConversation = state.currentConversation;
@@ -292,6 +301,21 @@ function applyConversationResponse(result) {
     }
 
     state.selectedConversationId = incomingConversation.id;
+    mergeConversationSummary({
+      id: incomingConversation.id,
+      title: incomingConversation.title,
+      type: incomingConversation.type,
+      metadata: incomingConversation.metadata,
+      createdAt: incomingConversation.createdAt,
+      updatedAt: incomingConversation.updatedAt,
+      lastMessageAt: incomingConversation.lastMessageAt,
+      messageCount: incomingConversation.messageCount,
+      agentCount: incomingConversation.agentCount,
+      lastMessagePreview: incomingConversation.lastMessagePreview,
+      parentConversationId: incomingConversation.parentConversationId,
+      projectScopeId: incomingConversation.projectScopeId,
+      treeDepth: incomingConversation.treeDepth,
+    });
   }
 }
 
@@ -2249,6 +2273,55 @@ function toggleMessageToolTrace(conversationId, message) {
 
 function renderConversationList() {
   conversationListRenderer.render();
+  renderConversationDirectoryControls();
+}
+
+function renderConversationDirectoryControls() {
+  const directory = state.conversationDirectory;
+  if (!directory) return;
+
+  if (dom.conversationDirectoryQuery && dom.conversationDirectoryQuery.value !== directory.query) {
+    dom.conversationDirectoryQuery.value = directory.query;
+  }
+  if (dom.conversationDirectoryStatus) {
+    dom.conversationDirectoryStatus.textContent = directory.loading
+      ? 'Loading conversations…'
+      : directory.error
+        ? directory.error
+        : directory.query
+          ? `${directory.items.length} matching conversations`
+          : '';
+  }
+  if (dom.conversationDirectoryMore) {
+    dom.conversationDirectoryMore.hidden = !directory.hasMore && !directory.loading;
+    dom.conversationDirectoryMore.disabled = directory.loading;
+    dom.conversationDirectoryMore.textContent = directory.loading ? 'Loading…' : 'Load more';
+  }
+  if (dom.conversationDirectoryRetry) {
+    dom.conversationDirectoryRetry.hidden = !directory.error || directory.loading;
+    dom.conversationDirectoryRetry.disabled = directory.loading;
+  }
+}
+
+async function loadConversationDirectoryPage(query = state.conversationDirectory.query, append = false) {
+  const request = conversationDirectory.beginRequest(state.conversationDirectory, query, append);
+  if (!request) return false;
+
+  state.conversations = state.conversationDirectory.items;
+  renderAll();
+
+  try {
+    const page = await fetchJson(conversationDirectory.buildUrl(state.conversationDirectory, request));
+    if (!conversationDirectory.applyPage(state.conversationDirectory, page, request)) return false;
+    state.conversations = state.conversationDirectory.items;
+    renderAll();
+    return true;
+  } catch (error) {
+    conversationDirectory.failRequest(state.conversationDirectory, request, error);
+    state.conversations = state.conversationDirectory.items;
+    renderAll();
+    return false;
+  }
 }
 
 function renderParticipantList(conversation) {
@@ -3513,7 +3586,11 @@ async function refreshAll(preferredConversationId) {
   state.skills = Array.isArray(data.skills) ? data.skills : [];
   state.modes = Array.isArray(data.modes) ? data.modes : [];
   state.agents = data.agents;
-  state.conversations = data.conversations;
+  conversationDirectory.applyBootstrap(state.conversationDirectory, data);
+  state.conversations = state.conversationDirectory.items;
+  if (state.currentConversation && !state.conversations.some((item) => item.id === state.currentConversation.id)) {
+    mergeConversationSummary(state.currentConversation);
+  }
   await refreshKnownFeishuChats({ render: false });
 
   newConversationDialogController.syncOptions();
@@ -3536,15 +3613,22 @@ function mergeConversationSummary(summary) {
     return;
   }
 
-  const index = state.conversations.findIndex((item) => item.id === summary.id);
-
-  if (index === -1) {
-    state.conversations.unshift(summary);
-  } else {
-    state.conversations[index] = {
-      ...state.conversations[index],
-      ...summary,
-    };
+  const directory = state.conversationDirectory;
+  const existing = state.conversations.find((item) => item.id === summary.id);
+  if (existing) {
+    state.conversations = conversationDirectory.sortByActivity(
+      conversationDirectory.mergeItems(state.conversations, [summary])
+    );
+    if (directory) {
+      directory.items = state.conversations;
+    }
+  } else if (!directory || !directory.query) {
+    state.conversations = conversationDirectory.sortByActivity(
+      conversationDirectory.mergeItems(state.conversations, [summary])
+    );
+    if (directory) {
+      directory.items = state.conversations;
+    }
   }
 
   if (state.currentConversation && state.currentConversation.id === summary.id) {
@@ -3559,7 +3643,7 @@ function applyNewConversationResult(result) {
   if (!result || !result.conversation) {
     return;
   }
-  state.conversations = Array.isArray(result.conversations) ? result.conversations : state.conversations;
+  mergeConversationSummary(result.conversation);
   if (result.delivery && crossConversationUi) {
     state.crossConversationDeliveryBundles.set(result.delivery.id, {
       delivery: result.delivery,
@@ -4076,6 +4160,25 @@ function bindEvents() {
       showToast(error.message);
     }
   });
+
+  if (dom.conversationDirectorySearch) {
+    dom.conversationDirectorySearch.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      await loadConversationDirectoryPage(dom.conversationDirectoryQuery && dom.conversationDirectoryQuery.value, false);
+    });
+  }
+
+  if (dom.conversationDirectoryMore) {
+    dom.conversationDirectoryMore.addEventListener('click', async () => {
+      await loadConversationDirectoryPage(state.conversationDirectory.query, true);
+    });
+  }
+
+  if (dom.conversationDirectoryRetry) {
+    dom.conversationDirectoryRetry.addEventListener('click', async () => {
+      await loadConversationDirectoryPage(state.conversationDirectory.query, false);
+    });
+  }
 
   if (
     dom.undercoverSetupForm &&
@@ -4596,7 +4699,7 @@ function bindEvents() {
         },
       });
       state.currentConversation = result.conversation;
-      state.conversations = result.conversations;
+      mergeConversationSummary(result.conversation);
       renderAll();
       syncToolTraceStatesWithConversation(state.currentConversation);
       showToast('会话设置已保存');
@@ -4727,8 +4830,11 @@ function bindEvents() {
       });
       state.runtime = result.runtime;
       state.agents = result.agents;
-      state.conversations = result.conversations;
-      state.selectedConversationId = result.selectedConversationId;
+      state.conversationDirectory.items = state.conversationDirectory.items.filter(
+        (conversation) => conversation.id !== conversationId
+      );
+      state.conversations = state.conversationDirectory.items;
+      state.selectedConversationId = state.conversations[0] ? state.conversations[0].id : null;
       renderAll();
 
       if (state.selectedConversationId) {
