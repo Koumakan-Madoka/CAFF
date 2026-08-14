@@ -248,7 +248,10 @@ export class ChatMessageRepository {
         SELECT DISTINCT m.conversation_id
         FROM chat_messages m
         WHERE m.role = 'user'
-          AND COALESCE(json_extract(m.metadata_json, '$.dispatchLane'), '') <> 'side'
+          AND (
+            json_valid(m.metadata_json) = 0
+            OR COALESCE(json_extract(m.metadata_json, '$.dispatchLane'), '') <> 'side'
+          )
           AND NOT EXISTS (
             SELECT 1
             FROM chat_messages m2

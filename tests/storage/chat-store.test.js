@@ -1604,3 +1604,40 @@ test('listConversationIdsWithPendingUserMessages returns only conversations whos
 
   assert.deepEqual(result, [mainPending.id]);
 });
+
+test('listConversationIdsWithPendingUserMessages tolerates historical malformed metadata_json', (t) => {
+  const tempDir = withTempDir('caff-pending-bad-metadata-');
+  const sqlitePath = path.join(tempDir, 'pending-bad-metadata.sqlite');
+  let store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const badMetadata = store.createConversation({
+    id: 'pending-bad-metadata',
+    title: 'Historical malformed metadata',
+    participants: TEST_CONVERSATION_PARTICIPANTS,
+  });
+  store.createMessage({
+    id: 'pending-bad-metadata-message',
+    conversationId: badMetadata.id,
+    turnId: 'pending-bad-metadata-turn',
+    role: 'user',
+    agentId: null,
+    senderName: 'User',
+    content: 'Trailing user message with corrupt metadata',
+    createdAt: '2026-08-14T00:00:00.000Z',
+  });
+
+  store.db
+    .prepare(`UPDATE chat_messages SET metadata_json = ? WHERE id = ?`)
+    .run('{ not valid json', 'pending-bad-metadata-message');
+
+  const result = store.listConversationIdsWithPendingUserMessages();
+
+  assert.deepEqual(result, [badMetadata.id]);
+});
