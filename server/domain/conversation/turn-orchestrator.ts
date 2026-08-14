@@ -450,7 +450,6 @@ export function createTurnOrchestrator(options: any = {}) {
 
   function listTrackedConversationIds() {
     return new Set([
-      ...store.listConversations().map((conversation: any) => conversation.id),
       ...Array.from(activeTurns.keys()),
       ...Array.from(queueStates.keys()),
       ...Array.from(dispatchingConversationIds),
@@ -458,7 +457,20 @@ export function createTurnOrchestrator(options: any = {}) {
     ]);
   }
 
+  function hasInMemoryQueueState() {
+    return (
+      activeTurns.size > 0
+      || queueStates.size > 0
+      || dispatchingConversationIds.size > 0
+      || activeAgentSlots.size > 0
+    );
+  }
+
   function buildConversationQueueDepths() {
+    if (!hasInMemoryQueueState()) {
+      return {};
+    }
+
     const queueDepths: Record<string, number> = {};
 
     for (const conversationId of listTrackedConversationIds()) {
@@ -473,6 +485,10 @@ export function createTurnOrchestrator(options: any = {}) {
   }
 
   function buildConversationQueueFailures() {
+    if (!hasInMemoryQueueState()) {
+      return {};
+    }
+
     const queueFailures: Record<string, any> = {};
 
     for (const conversationId of listTrackedConversationIds()) {
@@ -491,6 +507,22 @@ export function createTurnOrchestrator(options: any = {}) {
     }
 
     return queueFailures;
+  }
+
+  function recoverPersistedQueueStates() {
+    if (!store || typeof store.listConversationIdsWithPendingUserMessages !== 'function') {
+      return;
+    }
+
+    const pendingConversationIds = store.listConversationIdsWithPendingUserMessages();
+
+    for (const conversationId of Array.isArray(pendingConversationIds) ? pendingConversationIds : []) {
+      const normalizedConversationId = String(conversationId || '').trim();
+
+      if (normalizedConversationId) {
+        ensureQueueState(normalizedConversationId);
+      }
+    }
   }
 
   const { buildRuntimePayload } = createRuntimePayloadBuilder({
@@ -1594,6 +1626,7 @@ export function createTurnOrchestrator(options: any = {}) {
       .map(summarizeAgentSlotState);
   }
 
+  recoverPersistedQueueStates();
   recoverPersistedSideDispatches();
 
   return {

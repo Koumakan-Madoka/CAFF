@@ -2369,6 +2369,10 @@ export class ChatAppStore {
     return this.messageRepository.listByConversationId(conversationId).map(normalizeMessageRow);
   }
 
+  listConversationIdsWithPendingUserMessages() {
+    return this.messageRepository.listConversationIdsWithPendingUserMessages();
+  }
+
   listMessagePage(conversationId: any, options: any = {}) {
     const page = this.messageRepository.listPageByConversationId(conversationId, options);
 
