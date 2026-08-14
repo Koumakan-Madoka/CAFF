@@ -450,7 +450,6 @@ export function createTurnOrchestrator(options: any = {}) {
 
   function listTrackedConversationIds() {
     return new Set([
-      ...store.listConversations().map((conversation: any) => conversation.id),
       ...Array.from(activeTurns.keys()),
       ...Array.from(queueStates.keys()),
       ...Array.from(dispatchingConversationIds),
@@ -458,39 +457,86 @@ export function createTurnOrchestrator(options: any = {}) {
     ]);
   }
 
-  function buildConversationQueueDepths() {
-    const queueDepths: Record<string, number> = {};
-
-    for (const conversationId of listTrackedConversationIds()) {
-      const depth = getConversationQueueDepth(conversationId);
-
-      if (depth > 0) {
-        queueDepths[conversationId] = depth;
-      }
-    }
-
-    return queueDepths;
+  function hasInMemoryQueueState() {
+    return (
+      activeTurns.size > 0
+      || queueStates.size > 0
+      || dispatchingConversationIds.size > 0
+      || activeAgentSlots.size > 0
+    );
   }
 
-  function buildConversationQueueFailures() {
+  function hasActiveRuntimeState(conversationId: any) {
+    return (
+      activeTurns.has(conversationId)
+      || dispatchingConversationIds.has(conversationId)
+      || hasActiveAgentSlots(conversationId)
+    );
+  }
+
+  function buildConversationQueueSnapshot() {
+    if (!hasInMemoryQueueState()) {
+      return { depths: {}, failures: {} };
+    }
+
+    const queueDepths: Record<string, number> = {};
     const queueFailures: Record<string, any> = {};
+    const settledConversationIds: string[] = [];
 
     for (const conversationId of listTrackedConversationIds()) {
       const queueState = ensureQueueState(conversationId);
       const queueDepth = getConversationQueueDepth(conversationId);
 
-      if (!queueState.lastFailureAt || queueDepth <= 0) {
-        continue;
+      if (queueDepth > 0) {
+        queueDepths[conversationId] = queueDepth;
       }
 
-      queueFailures[conversationId] = {
-        failedBatchCount: Math.max(0, Number(queueState.failedBatchCount || 0)),
-        lastFailureAt: queueState.lastFailureAt,
-        lastFailureMessage: queueState.lastFailureMessage || '',
-      };
+      if (queueState.lastFailureAt && queueDepth > 0) {
+        queueFailures[conversationId] = {
+          failedBatchCount: Math.max(0, Number(queueState.failedBatchCount || 0)),
+          lastFailureAt: queueState.lastFailureAt,
+          lastFailureMessage: queueState.lastFailureMessage || '',
+        };
+      }
+
+      if (
+        queueDepth === 0
+        && !queueState.lastFailureAt
+        && !hasActiveRuntimeState(conversationId)
+      ) {
+        settledConversationIds.push(conversationId);
+      }
     }
 
-    return queueFailures;
+    for (const conversationId of settledConversationIds) {
+      queueStates.delete(conversationId);
+    }
+
+    return { depths: queueDepths, failures: queueFailures };
+  }
+
+  function buildConversationQueueDepths() {
+    return buildConversationQueueSnapshot().depths;
+  }
+
+  function buildConversationQueueFailures() {
+    return buildConversationQueueSnapshot().failures;
+  }
+
+  function recoverPersistedQueueStates() {
+    if (!store || typeof store.listConversationIdsWithPendingUserMessages !== 'function') {
+      return;
+    }
+
+    const pendingConversationIds = store.listConversationIdsWithPendingUserMessages();
+
+    for (const conversationId of Array.isArray(pendingConversationIds) ? pendingConversationIds : []) {
+      const normalizedConversationId = String(conversationId || '').trim();
+
+      if (normalizedConversationId) {
+        ensureQueueState(normalizedConversationId);
+      }
+    }
   }
 
   const { buildRuntimePayload } = createRuntimePayloadBuilder({
@@ -504,6 +550,7 @@ export function createTurnOrchestrator(options: any = {}) {
     dispatchingConversationIds,
     getConversationQueueDepths: buildConversationQueueDepths,
     getConversationQueueFailures: buildConversationQueueFailures,
+    getConversationQueueSnapshot: buildConversationQueueSnapshot,
     getAgentSlotQueueDepths: () => agentSlotRegistry.buildSideQueueDepths(),
   });
   const sessionExporter = createSessionExporter({ agentDir });
@@ -1594,6 +1641,7 @@ export function createTurnOrchestrator(options: any = {}) {
       .map(summarizeAgentSlotState);
   }
 
+  recoverPersistedQueueStates();
   recoverPersistedSideDispatches();
 
   return {

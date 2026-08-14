@@ -242,6 +242,32 @@ export class ChatMessageRepository {
     return this.listByConversationStatement.all(conversationId);
   }
 
+  listConversationIdsWithPendingUserMessages() {
+    return this.db
+      .prepare(`
+        SELECT DISTINCT m.conversation_id
+        FROM chat_messages m
+        WHERE m.role = 'user'
+          AND (
+            json_valid(m.metadata_json) = 0
+            OR COALESCE(json_extract(m.metadata_json, '$.dispatchLane'), '') <> 'side'
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM chat_messages m2
+            WHERE m2.conversation_id = m.conversation_id
+              AND m2.role <> 'user'
+              AND (
+                m2.created_at > m.created_at
+                OR (m2.created_at = m.created_at AND m2.id > m.id)
+              )
+          )
+      `)
+      .all()
+      .map((row: any) => String(row.conversation_id || '').trim())
+      .filter(Boolean);
+  }
+
   listPageByConversationId(conversationId: string, options: any = {}) {
     const limit = normalizeMessagePageLimit(options.limit);
     const before = normalizeMessagePageCursor(options.before);

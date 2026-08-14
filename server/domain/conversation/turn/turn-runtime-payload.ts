@@ -20,6 +20,13 @@ export function createRuntimePayloadBuilder(options: any = {}) {
     typeof options.getConversationQueueDepths === 'function' ? options.getConversationQueueDepths : () => ({});
   const getConversationQueueFailures =
     typeof options.getConversationQueueFailures === 'function' ? options.getConversationQueueFailures : () => ({});
+  const getConversationQueueSnapshot =
+    typeof options.getConversationQueueSnapshot === 'function'
+      ? options.getConversationQueueSnapshot
+      : () => ({
+          depths: getConversationQueueDepths(),
+          failures: getConversationQueueFailures(),
+        });
   const getAgentSlotQueueDepths =
     typeof options.getAgentSlotQueueDepths === 'function' ? options.getAgentSlotQueueDepths : () => ({});
 
@@ -33,6 +40,7 @@ export function createRuntimePayloadBuilder(options: any = {}) {
         ...activeAgentSlotSummaries.map((slot: any) => slot.conversationId).filter(Boolean),
       ])
     );
+    const queueSnapshot = getConversationQueueSnapshot();
 
     return {
       host,
@@ -44,8 +52,8 @@ export function createRuntimePayloadBuilder(options: any = {}) {
       databasePath: store.databasePath,
       activeConversationIds: runtimeActiveConversationIds,
       dispatchingConversationIds: Array.from(dispatchingConversationIds || []),
-      conversationQueueDepths: getConversationQueueDepths(),
-      conversationQueueFailures: getConversationQueueFailures(),
+      conversationQueueDepths: queueSnapshot.depths,
+      conversationQueueFailures: queueSnapshot.failures,
       agentSlotQueueDepths: getAgentSlotQueueDepths(),
       activeTurns: activeTurnSummaries,
       activeAgentSlots: activeAgentSlotSummaries,

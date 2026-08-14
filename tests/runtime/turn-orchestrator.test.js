@@ -5103,3 +5103,301 @@ test('cross-conversation delivery rejects image-bearing target messages with IMA
     }
   );
 });
+
+test('bootstrap queue payload does not scan store.listConversations when no in-memory queue state exists', { concurrency: false }, (t) => {
+  const tempDir = withTempDir('caff-bootstrap-queue-scan-');
+  const sqlitePath = path.join(tempDir, 'bootstrap-queue-scan.sqlite');
+  const conversation = {
+    id: 'conversation-bootstrap-queue-scan',
+    title: 'Bootstrap Queue Scan',
+    type: 'standard',
+    agents: [{ id: 'agent-a', name: 'Alpha' }],
+    messages: [],
+  };
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  let listConversationsCalls = 0;
+
+  const store = {
+    databasePath: sqlitePath,
+    getConversation(conversationId) {
+      return conversationId === conversation.id ? conversation : null;
+    },
+    listConversations() {
+      listConversationsCalls += 1;
+      return [{ id: conversation.id, title: conversation.title, type: conversation.type }];
+    },
+    createMessage(input) {
+      const message = { id: input.id || `message-${conversation.messages.length + 1}`, ...input };
+      conversation.messages.push(message);
+      return message;
+    },
+  };
+  const orchestrator = createTurnOrchestrator({
+    store,
+    skillRegistry: { listSkills() { return []; }, resolveSkills() { return []; } },
+    modeStore: { get() { return null; } },
+    agentToolBridge: {},
+    host: '127.0.0.1',
+    port: 0,
+    agentDir: tempDir,
+    sqlitePath,
+    toolBaseUrl: 'http://127.0.0.1:0',
+    agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
+    executeConversationAgent: async () => ({ stopTurn: false }),
+  });
+
+  const callsAfterStartup = listConversationsCalls;
+
+  const payload = orchestrator.buildRuntimePayload();
+
+  assert.deepEqual(payload.conversationQueueDepths, {});
+  assert.deepEqual(payload.conversationQueueFailures, {});
+  assert.equal(listConversationsCalls, callsAfterStartup);
+});
+
+test('bootstrap queue payload recovers persisted conversations with pending user messages into queue state', { concurrency: false }, (t) => {
+  const tempDir = withTempDir('caff-bootstrap-queue-recover-');
+  const sqlitePath = path.join(tempDir, 'bootstrap-queue-recover.sqlite');
+  const pendingConversation = {
+    id: 'conversation-bootstrap-queue-recover',
+    title: 'Pending Recovery',
+    type: 'standard',
+    agents: [{ id: 'agent-a', name: 'Alpha' }],
+    messages: [
+      {
+        id: 'message-user-1',
+        conversationId: 'conversation-bootstrap-queue-recover',
+        turnId: 'turn-1',
+        role: 'user',
+        agentId: null,
+        senderName: 'User',
+        content: 'Pending user message',
+        status: 'completed',
+        createdAt: '2026-08-13T00:00:00.000Z',
+      },
+    ],
+  };
+  const idleConversation = {
+    id: 'conversation-bootstrap-queue-idle',
+    title: 'Idle Conversation',
+    type: 'standard',
+    agents: [{ id: 'agent-a', name: 'Alpha' }],
+    messages: [],
+  };
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  let listConversationIdsWithPendingUserMessagesCalls = 0;
+
+  const store = {
+    databasePath: sqlitePath,
+    getConversation(conversationId) {
+      if (conversationId === pendingConversation.id) {
+        return pendingConversation;
+      }
+      if (conversationId === idleConversation.id) {
+        return idleConversation;
+      }
+      return null;
+    },
+    listConversations() {
+      return [
+        { id: pendingConversation.id, title: pendingConversation.title, type: pendingConversation.type },
+        { id: idleConversation.id, title: idleConversation.title, type: idleConversation.type },
+      ];
+    },
+    listConversationIdsWithPendingUserMessages() {
+      listConversationIdsWithPendingUserMessagesCalls += 1;
+      return [pendingConversation.id];
+    },
+  };
+  const orchestrator = createTurnOrchestrator({
+    store,
+    skillRegistry: { listSkills() { return []; }, resolveSkills() { return []; } },
+    modeStore: { get() { return null; } },
+    agentToolBridge: {},
+    host: '127.0.0.1',
+    port: 0,
+    agentDir: tempDir,
+    sqlitePath,
+    toolBaseUrl: 'http://127.0.0.1:0',
+    agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
+    executeConversationAgent: async () => ({ stopTurn: false }),
+  });
+
+  assert.equal(listConversationIdsWithPendingUserMessagesCalls, 1);
+
+  const payload = orchestrator.buildRuntimePayload();
+
+  assert.equal(payload.conversationQueueDepths[pendingConversation.id], 1);
+  assert.equal(payload.conversationQueueDepths[idleConversation.id], undefined);
+  assert.deepEqual(payload.conversationQueueFailures, {});
+});
+
+test('bootstrap queue payload evicts settled queue states so repeated payloads stop reloading conversations', { concurrency: false }, (t) => {
+  const tempDir = withTempDir('caff-bootstrap-queue-evict-');
+  const sqlitePath = path.join(tempDir, 'bootstrap-queue-evict.sqlite');
+  const conversationA = {
+    id: 'conversation-bootstrap-queue-evict-a',
+    title: 'Evict A',
+    type: 'standard',
+    agents: [{ id: 'agent-a', name: 'Alpha' }],
+    messages: [],
+  };
+  const conversationB = {
+    id: 'conversation-bootstrap-queue-evict-b',
+    title: 'Evict B',
+    type: 'standard',
+    agents: [{ id: 'agent-a', name: 'Alpha' }],
+    messages: [],
+  };
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  let getConversationCalls = 0;
+
+  const store = {
+    databasePath: sqlitePath,
+    getConversation(conversationId) {
+      getConversationCalls += 1;
+      if (conversationId === conversationA.id) {
+        return conversationA;
+      }
+      if (conversationId === conversationB.id) {
+        return conversationB;
+      }
+      return null;
+    },
+    listConversations() {
+      return [
+        { id: conversationA.id, title: conversationA.title, type: conversationA.type },
+        { id: conversationB.id, title: conversationB.title, type: conversationB.type },
+      ];
+    },
+    createMessage(input) {
+      const message = { id: input.id || `message-${conversationA.messages.length + 1}`, ...input };
+      return message;
+    },
+  };
+  const orchestrator = createTurnOrchestrator({
+    store,
+    skillRegistry: { listSkills() { return []; }, resolveSkills() { return []; } },
+    modeStore: { get() { return null; } },
+    agentToolBridge: {},
+    host: '127.0.0.1',
+    port: 0,
+    agentDir: tempDir,
+    sqlitePath,
+    toolBaseUrl: 'http://127.0.0.1:0',
+    agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
+    executeConversationAgent: async () => ({ stopTurn: false }),
+  });
+
+  const callsAfterStartup = getConversationCalls;
+
+  orchestrator.getConversationQueueDepth(conversationA.id);
+  orchestrator.getConversationQueueDepth(conversationB.id);
+
+  const callsAfterTouch = getConversationCalls;
+  assert.ok(callsAfterTouch > callsAfterStartup);
+
+  const firstPayload = orchestrator.buildRuntimePayload();
+  assert.deepEqual(firstPayload.conversationQueueDepths, {});
+
+  const callsAfterFirstPayload = getConversationCalls;
+  assert.ok(callsAfterFirstPayload > callsAfterTouch);
+
+  const secondPayload = orchestrator.buildRuntimePayload();
+  assert.deepEqual(secondPayload.conversationQueueDepths, {});
+  assert.equal(getConversationCalls, callsAfterFirstPayload);
+});
+
+test('bootstrap queue payload keeps failed pending queues visible across repeated payload builds', { concurrency: false }, async (t) => {
+  const tempDir = withTempDir('caff-bootstrap-queue-failed-visible-');
+  const sqlitePath = path.join(tempDir, 'bootstrap-queue-failed-visible.sqlite');
+  const conversation = {
+    id: 'conversation-bootstrap-queue-failed-visible',
+    title: 'Failed Visible',
+    type: 'standard',
+    agents: [{ id: 'agent-a', name: 'Alpha' }],
+    messages: [],
+  };
+  let messageCounter = 0;
+  let failNextBatch = false;
+  const seenBatches = [];
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const store = {
+    databasePath: sqlitePath,
+    getConversation(conversationId) {
+      return conversationId === conversation.id ? conversation : null;
+    },
+    listConversations() {
+      return [{ id: conversation.id, title: conversation.title, type: conversation.type }];
+    },
+    createMessage(input) {
+      messageCounter += 1;
+      const message = { id: input.id || `message-${messageCounter}`, ...input };
+      conversation.messages.push(message);
+      return message;
+    },
+    listPrivateMessagesForAgent() {
+      return [];
+    },
+  };
+  const orchestrator = createTurnOrchestrator({
+    store,
+    skillRegistry: { listSkills() { return []; }, resolveSkills() { return []; } },
+    modeStore: { get() { return null; } },
+    agentToolBridge: {},
+    host: '127.0.0.1',
+    port: 0,
+    agentDir: tempDir,
+    sqlitePath,
+    toolBaseUrl: 'http://127.0.0.1:0',
+    agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
+    executeConversationAgent: async ({ completedReplies, agent }) => {
+      seenBatches.push({ agentId: agent.id });
+      if (failNextBatch) {
+        failNextBatch = false;
+        throw new Error('Synthetic queued failure');
+      }
+      completedReplies.push({
+        agentId: agent.id,
+        senderName: agent.name,
+        content: 'ok',
+        status: 'completed',
+      });
+      return { stopTurn: false };
+    },
+  });
+
+  failNextBatch = true;
+  orchestrator.submitConversationMessage(conversation.id, { content: 'Will fail' });
+
+  await waitForCondition(
+    () =>
+      orchestrator.listTurnSummaries({ conversationId: conversation.id }).length === 0
+      && orchestrator.getConversationQueueDepth(conversation.id) === 1
+  );
+
+  const firstPayload = orchestrator.buildRuntimePayload();
+  assert.equal(firstPayload.conversationQueueDepths[conversation.id], 1);
+  assert.ok(firstPayload.conversationQueueFailures[conversation.id]);
+  assert.equal(firstPayload.conversationQueueFailures[conversation.id].failedBatchCount, 1);
+
+  const secondPayload = orchestrator.buildRuntimePayload();
+  assert.equal(secondPayload.conversationQueueDepths[conversation.id], 1);
+  assert.ok(secondPayload.conversationQueueFailures[conversation.id]);
+});
