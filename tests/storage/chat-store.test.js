@@ -1528,3 +1528,79 @@ test('chat store rejects missing, empty, unknown, duplicate, and invalid-profile
 
   assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM chat_channel_bindings').get().count, 0);
 });
+
+test('listConversationIdsWithPendingUserMessages returns only conversations whose trailing message is a non-side user message', (t) => {
+  const tempDir = withTempDir('caff-pending-user-messages-');
+  const sqlitePath = path.join(tempDir, 'pending-user-messages.sqlite');
+  let store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const mainPending = store.createConversation({
+    id: 'pending-main-trailing',
+    title: 'Main pending trailing',
+    participants: TEST_CONVERSATION_PARTICIPANTS,
+  });
+  store.createMessage({
+    id: 'pending-main-message',
+    conversationId: mainPending.id,
+    turnId: 'pending-main-turn',
+    role: 'user',
+    agentId: null,
+    senderName: 'User',
+    content: 'Trailing user message',
+    createdAt: '2026-08-14T00:00:00.000Z',
+  });
+
+  const sideOnly = store.createConversation({
+    id: 'pending-side-only',
+    title: 'Side dispatch only',
+    participants: TEST_CONVERSATION_PARTICIPANTS,
+  });
+  store.createMessage({
+    id: 'pending-side-message',
+    conversationId: sideOnly.id,
+    turnId: 'pending-side-turn',
+    role: 'user',
+    agentId: null,
+    senderName: 'User',
+    content: 'Side dispatch user message',
+    metadata: { dispatchLane: 'side' },
+    createdAt: '2026-08-14T00:00:01.000Z',
+  });
+
+  const completed = store.createConversation({
+    id: 'pending-completed',
+    title: 'Completed user assistant',
+    participants: TEST_CONVERSATION_PARTICIPANTS,
+  });
+  store.createMessage({
+    id: 'pending-completed-user',
+    conversationId: completed.id,
+    turnId: 'pending-completed-turn',
+    role: 'user',
+    agentId: null,
+    senderName: 'User',
+    content: 'Consumed user message',
+    createdAt: '2026-08-14T00:00:02.000Z',
+  });
+  store.createMessage({
+    id: 'pending-completed-assistant',
+    conversationId: completed.id,
+    turnId: 'pending-completed-turn',
+    role: 'assistant',
+    agentId: 'role-family-gpt',
+    senderName: 'Assistant',
+    content: 'Consumed assistant reply',
+    createdAt: '2026-08-14T00:00:03.000Z',
+  });
+
+  const result = store.listConversationIdsWithPendingUserMessages();
+
+  assert.deepEqual(result, [mainPending.id]);
+});

@@ -466,47 +466,61 @@ export function createTurnOrchestrator(options: any = {}) {
     );
   }
 
-  function buildConversationQueueDepths() {
+  function hasActiveRuntimeState(conversationId: any) {
+    return (
+      activeTurns.has(conversationId)
+      || dispatchingConversationIds.has(conversationId)
+      || hasActiveAgentSlots(conversationId)
+    );
+  }
+
+  function buildConversationQueueSnapshot() {
     if (!hasInMemoryQueueState()) {
-      return {};
+      return { depths: {}, failures: {} };
     }
 
     const queueDepths: Record<string, number> = {};
-
-    for (const conversationId of listTrackedConversationIds()) {
-      const depth = getConversationQueueDepth(conversationId);
-
-      if (depth > 0) {
-        queueDepths[conversationId] = depth;
-      }
-    }
-
-    return queueDepths;
-  }
-
-  function buildConversationQueueFailures() {
-    if (!hasInMemoryQueueState()) {
-      return {};
-    }
-
     const queueFailures: Record<string, any> = {};
+    const settledConversationIds: string[] = [];
 
     for (const conversationId of listTrackedConversationIds()) {
       const queueState = ensureQueueState(conversationId);
       const queueDepth = getConversationQueueDepth(conversationId);
 
-      if (!queueState.lastFailureAt || queueDepth <= 0) {
-        continue;
+      if (queueDepth > 0) {
+        queueDepths[conversationId] = queueDepth;
       }
 
-      queueFailures[conversationId] = {
-        failedBatchCount: Math.max(0, Number(queueState.failedBatchCount || 0)),
-        lastFailureAt: queueState.lastFailureAt,
-        lastFailureMessage: queueState.lastFailureMessage || '',
-      };
+      if (queueState.lastFailureAt && queueDepth > 0) {
+        queueFailures[conversationId] = {
+          failedBatchCount: Math.max(0, Number(queueState.failedBatchCount || 0)),
+          lastFailureAt: queueState.lastFailureAt,
+          lastFailureMessage: queueState.lastFailureMessage || '',
+        };
+      }
+
+      if (
+        queueDepth === 0
+        && !queueState.lastFailureAt
+        && !hasActiveRuntimeState(conversationId)
+      ) {
+        settledConversationIds.push(conversationId);
+      }
     }
 
-    return queueFailures;
+    for (const conversationId of settledConversationIds) {
+      queueStates.delete(conversationId);
+    }
+
+    return { depths: queueDepths, failures: queueFailures };
+  }
+
+  function buildConversationQueueDepths() {
+    return buildConversationQueueSnapshot().depths;
+  }
+
+  function buildConversationQueueFailures() {
+    return buildConversationQueueSnapshot().failures;
   }
 
   function recoverPersistedQueueStates() {
@@ -536,6 +550,7 @@ export function createTurnOrchestrator(options: any = {}) {
     dispatchingConversationIds,
     getConversationQueueDepths: buildConversationQueueDepths,
     getConversationQueueFailures: buildConversationQueueFailures,
+    getConversationQueueSnapshot: buildConversationQueueSnapshot,
     getAgentSlotQueueDepths: () => agentSlotRegistry.buildSideQueueDepths(),
   });
   const sessionExporter = createSessionExporter({ agentDir });
