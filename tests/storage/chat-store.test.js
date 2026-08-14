@@ -549,6 +549,87 @@ test('chat store pages public messages by stable created-at and id cursors', (t)
   });
 });
 
+test('chat store pages conversation directory by activity and searches title or message text', (t) => {
+  const tempDir = withTempDir('caff-chat-conversation-directory-page-');
+  const sqlitePath = path.join(tempDir, 'chat.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const conversations = [
+    ['directory-old', 'Old room'],
+    ['directory-new', 'Newest room'],
+    ['directory-tie-a', 'Tie A'],
+    ['directory-tie-b', 'Tie B'],
+    ['directory-title-match', 'Needle title'],
+    ['directory-message-match', 'Ordinary title'],
+  ].map(([id, title]) => store.createConversation({
+    id,
+    title,
+    participants: TEST_CONVERSATION_PARTICIPANTS,
+  }));
+
+  const activityById = {
+    'directory-old': '2026-08-10T00:00:00.000Z',
+    'directory-new': '2026-08-13T00:00:00.000Z',
+    'directory-tie-a': '2026-08-12T00:00:00.000Z',
+    'directory-tie-b': '2026-08-12T00:00:00.000Z',
+    'directory-title-match': '2026-08-11T00:00:00.000Z',
+    'directory-message-match': '2026-08-09T00:00:00.000Z',
+  };
+  const updateActivity = store.db.prepare(`
+    UPDATE chat_conversations
+    SET updated_at = ?, last_message_at = ?
+    WHERE id = ?
+  `);
+  for (const conversation of conversations) {
+    const timestamp = activityById[conversation.id];
+    updateActivity.run(timestamp, timestamp, conversation.id);
+  }
+
+  store.createMessage({
+    id: 'directory-message-search',
+    conversationId: 'directory-message-match',
+    turnId: 'directory-turn',
+    role: 'user',
+    senderName: 'Operator',
+    content: 'needle appears in the message body',
+    status: 'completed',
+    createdAt: '2026-08-09T00:00:01.000Z',
+  });
+
+  const firstPage = store.listConversationDirectoryPage({ limit: 3 });
+  assert.deepEqual(firstPage.items.map((item) => item.id), [
+    'directory-new',
+    'directory-tie-b',
+    'directory-tie-a',
+  ]);
+  assert.equal(firstPage.hasMore, true);
+  assert.ok(firstPage.nextCursor);
+
+  const secondPage = store.listConversationDirectoryPage({ limit: 3, before: firstPage.nextCursor });
+  assert.deepEqual(secondPage.items.map((item) => item.id), [
+    'directory-title-match',
+    'directory-old',
+    'directory-message-match',
+  ]);
+  assert.equal(secondPage.hasMore, false);
+  assert.equal(secondPage.nextCursor, null);
+
+  const titleSearch = store.listConversationDirectoryPage({ query: 'needle', limit: 10 });
+  assert.deepEqual(titleSearch.items.map((item) => item.id), [
+    'directory-title-match',
+    'directory-message-match',
+  ]);
+  const literalWildcardSearch = store.listConversationDirectoryPage({ query: '%', limit: 10 });
+  assert.deepEqual(literalWildcardSearch.items, []);
+});
+
 test('chat store page queries reuse the composite index for a 50,000-message conversation', (t) => {
   const tempDir = withTempDir('caff-chat-message-page-long-');
   const sqlitePath = path.join(tempDir, 'chat.sqlite');

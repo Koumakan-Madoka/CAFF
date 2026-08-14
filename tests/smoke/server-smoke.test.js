@@ -5445,7 +5445,7 @@ test('bootstrap leaves an empty conversation database untouched', (t) => {
   assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM chat_conversation_agents').get().count, 0);
 });
 
-test('bootstrap projects stable conversation tree headers when the store supports them', () => {
+test('bootstrap projects the first activity-ordered conversation directory page when supported', () => {
   const activityHeaders = [{ id: 'active-child' }, { id: 'root' }];
   const treeHeaders = [{ id: 'root' }, { id: 'active-child', parentConversationId: 'root' }];
   const builder = createBootstrapPayloadBuilder({
@@ -5453,6 +5453,10 @@ test('bootstrap projects stable conversation tree headers when the store support
       ensureStarterConversation() { return null; },
       listConversations() { return activityHeaders; },
       listConversationTree() { return treeHeaders; },
+      listConversationDirectoryPage(options) {
+        assert.deepEqual(options, { limit: 50, query: '', before: null });
+        return { items: activityHeaders, nextCursor: { activityAt: '2026-08-13T00:00:00.000Z', id: 'root' }, hasMore: true };
+      },
     },
     skillRegistry: { listSkills() { return []; } },
     turnOrchestrator: { buildRuntimePayload() { return {}; } },
@@ -5466,8 +5470,14 @@ test('bootstrap projects stable conversation tree headers when the store support
   });
 
   const payload = builder.buildBootstrapPayload();
-  assert.deepEqual(payload.conversations, treeHeaders);
-  assert.equal(payload.selectedConversationId, 'root');
+  assert.deepEqual(payload.conversations, activityHeaders);
+  assert.equal(typeof payload.conversationsNextCursor, 'string');
+  assert.deepEqual(
+    JSON.parse(Buffer.from(payload.conversationsNextCursor, 'base64url').toString('utf8')),
+    { v: 1, query: '', activityAt: '2026-08-13T00:00:00.000Z', id: 'root' }
+  );
+  assert.equal(payload.conversationsHasMore, true);
+  assert.equal(payload.selectedConversationId, 'active-child');
 });
 
 test('conversation create validates the explicit roster and only merges mode skills into supplied participants', async (t) => {

@@ -271,7 +271,9 @@ globalThis.__testExports = {
   context.global = context;
   context.self = window;
 
+  const conversationDirectoryPath = path.join(__dirname, '../../public/chat/conversation-directory.js');
   const messageHistoryPath = path.join(__dirname, '../../public/chat/message-history.js');
+  vm.runInNewContext(fs.readFileSync(conversationDirectoryPath, 'utf8'), context, { filename: conversationDirectoryPath });
   vm.runInNewContext(fs.readFileSync(messageHistoryPath, 'utf8'), context, { filename: messageHistoryPath });
   vm.runInNewContext(instrumented, context, { filename: sourcePath });
 

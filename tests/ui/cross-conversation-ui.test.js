@@ -96,6 +96,22 @@ test('conversation tree keeps sibling order stable, expands selected ancestors, 
   assert.deepEqual(Array.from(second.rows, (row) => row.conversation.id), ['root-a', 'root-b']);
 });
 
+test('conversation tree can render directory roots by latest activity without changing its legacy default', () => {
+  const ui = loadCrossConversationUi();
+  const conversations = [
+    conversation('older', { createdAt: '2026-08-01T00:00:00.000Z', lastMessageAt: '2026-08-11T00:00:00.000Z' }),
+    conversation('newer', { createdAt: '2026-08-02T00:00:00.000Z', lastMessageAt: '2026-08-13T00:00:00.000Z' }),
+  ];
+  assert.deepEqual(
+    Array.from(ui.buildConversationTree(conversations).rows, (row) => row.conversation.id),
+    ['older', 'newer']
+  );
+  assert.deepEqual(
+    Array.from(ui.buildConversationTree(conversations, { sortMode: 'activity' }).rows, (row) => row.conversation.id),
+    ['newer', 'older']
+  );
+});
+
 test('delivery view preserves message, dispatch, and response state while exposing only safe actions', () => {
   const ui = loadCrossConversationUi();
 

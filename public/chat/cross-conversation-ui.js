@@ -17,6 +17,14 @@
     return normalizeText(left && left.id).localeCompare(normalizeText(right && right.id));
   }
 
+  function compareActivityConversationOrder(left, right) {
+    const leftValue = left && (left.lastMessageAt || left.updatedAt || left.createdAt);
+    const rightValue = right && (right.lastMessageAt || right.updatedAt || right.createdAt);
+    const byActivity = (Date.parse(String(rightValue || '')) || 0) - (Date.parse(String(leftValue || '')) || 0);
+    if (byActivity !== 0) return byActivity;
+    return normalizeText(right && right.id).localeCompare(normalizeText(left && left.id));
+  }
+
   function buildConversationTree(conversations, options = {}) {
     const items = (Array.isArray(conversations) ? conversations : [])
       .filter((conversation) => conversation && normalizeText(conversation.id));
@@ -34,8 +42,11 @@
       if (!childrenByParent.has(parentId)) childrenByParent.set(parentId, []);
       childrenByParent.get(parentId).push(conversation);
     });
-    roots.sort(compareStableConversationOrder);
-    childrenByParent.forEach((children) => children.sort(compareStableConversationOrder));
+    const compareOrder = options.sortMode === 'activity'
+      ? compareActivityConversationOrder
+      : compareStableConversationOrder;
+    roots.sort(compareOrder);
+    childrenByParent.forEach((children) => children.sort(compareOrder));
 
     let selectedId = normalizeText(options.selectedConversationId);
     const ancestorGuard = new Set();

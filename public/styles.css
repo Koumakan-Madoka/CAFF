@@ -4065,6 +4065,45 @@ body.chat-app .sidebar-head h1 {
   letter-spacing: 0.02em;
 }
 
+body.chat-app .conversation-directory-search {
+  flex-shrink: 0;
+  display: grid;
+  gap: var(--caff-space-1);
+  padding: var(--caff-space-2) var(--caff-space-3);
+  border-bottom: 1px solid var(--caff-line);
+}
+
+body.chat-app .conversation-directory-search-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--caff-space-2);
+}
+
+body.chat-app .conversation-directory-search :is(input, button),
+body.chat-app .conversation-directory-footer button {
+  min-height: 44px;
+}
+
+body.chat-app .conversation-directory-search input {
+  min-width: 0;
+}
+
+body.chat-app .conversation-directory-status {
+  min-height: 1.2em;
+  margin: 0;
+  font-size: 0.76rem;
+}
+
+body.chat-app .conversation-directory-footer {
+  flex-shrink: 0;
+  display: grid;
+  padding: var(--caff-space-2) var(--caff-space-3) var(--caff-space-3);
+}
+
+body.chat-app .conversation-directory-footer button[hidden] {
+  display: none;
+}
+
 body.chat-app .sidebar-new-form {
   flex-shrink: 0;
   display: grid;

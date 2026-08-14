@@ -1801,6 +1801,35 @@ export class ChatAppStore {
     }));
   }
 
+  listConversationDirectoryPage(options: any = {}) {
+    const limit = Number(options.limit);
+    const rows = this.conversationRepository.listDirectoryPage({
+      limit,
+      query: String(options.query || '').trim(),
+      before: options.before || null,
+    });
+    const hasMore = rows.length > limit;
+    const items = rows.slice(0, limit).map(normalizeConversationHeader);
+    const latestDeliveryByTarget = new Map(
+      this.crossConversationDeliveryRepository
+        .listLatestByTargetIds(items.map((item: any) => item.id))
+        .map((row: any) => [row.target_conversation_id, compactCrossConversationDeliveryStatus(row)])
+    );
+    const normalizedItems = items.map((item: any) => ({
+      ...item,
+      crossConversationStatus: latestDeliveryByTarget.get(item.id) || null,
+    }));
+    const oldest = rows[limit - 1] || null;
+
+    return {
+      items: normalizedItems,
+      nextCursor: hasMore && oldest
+        ? { activityAt: oldest.activity_at, id: oldest.id }
+        : null,
+      hasMore,
+    };
+  }
+
   bindConversationProjectScope(conversationId: any, projectScopeId: any) {
     return this.bindConversationProjectScopeTransaction(conversationId, projectScopeId);
   }
@@ -3174,6 +3203,11 @@ export class ChatAppStore {
   }
 
   ensureStarterConversation() {
+    if (typeof this.listConversationDirectoryPage === 'function') {
+      const page = this.listConversationDirectoryPage({ limit: 1, query: '' });
+      return page.items[0] || null;
+    }
+
     const conversations = this.listConversations();
     return conversations[0] || null;
   }
