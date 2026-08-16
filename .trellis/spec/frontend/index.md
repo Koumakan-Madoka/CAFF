@@ -16,7 +16,11 @@ Use this index for changes in `public/`.
       API payloads or Trellis prompt state
 - [ ] Read `../guides/code-reuse-thinking-guide.md` before adding another
       shared helper or duplicating DOM update logic
+- [ ] Read `plan-panel.md` if you touch the DAG plan drawer tab, plan SVG
+      rendering, or plan SSE refresh
 
 ## Documents
 
 - `ui-structure.md`: browser module layout and editing expectations
+- `plan-panel.md`: DAG plan panel contracts (layout isolation, draft/active
+  editing semantics, `conversation_plan_updated` SSE refresh)

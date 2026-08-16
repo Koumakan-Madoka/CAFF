@@ -14,6 +14,7 @@ backend domain services.
 - Conversation digest API, metadata, prompt, and UI contracts (`conversation-digest.md`)
 - Digest-to-skill draft extraction and confirmation (`../runtime/skill-extraction.md`)
 - Cross-conversation summary segment memory search (`summary-memory.md`)
+- Conversation tree DAG plan storage, lifecycle, and plan API (`dag-planning.md`)
 - Skill management and configuration (skills-controller.ts)
 
 ## Pre-Development Checklist
@@ -40,4 +41,6 @@ backend domain services.
 - `conversation-digest.md`: `/digest` API, metadata, prompt, SSE, and frontend panel contracts
 - `../runtime/skill-extraction.md`: `/digest extract-skill` and `/skill-drafts` contracts
 - `summary-memory.md`: searchable digest segment ledger and `/api/memory/search` contracts
+- `dag-planning.md`: `chat_plans` storage, plan lifecycle (draft→active), shared
+  validation, and `/api/conversations/:id/plan` contracts
 - See `../skills/` for skill-related backend patterns (skills-controller.ts)
