@@ -988,3 +988,55 @@ test('explicit retry requeues only deterministic pre-start failures and rejects 
     unsafeFixture.store.close();
   }
 });
+
+test('system submit persists a principal-less notify delivery with marker metadata, idempotently', () => {
+  const fixture = createFixture();
+  const service = createCrossConversationDeliveryService({ store: fixture.store });
+
+  try {
+    const input = {
+      sourceConversationId: fixture.sourceConversation.id,
+      targetConversationId: fixture.targetConversation.id,
+      targetAgentId: fixture.targetAgent.id,
+      content: '请继续执行节点任务。',
+      idempotencyKey: 'dag-resume-1',
+      messageMetadata: { kind: 'dag_resume', dagResume: true, dagNodeId: 'n1' },
+    };
+    const result = service.submitFromSystem(input);
+
+    assert.equal(result.delivery.kind, 'notify');
+    assert.equal(result.delivery.principalKind, 'operator', 'schema CHECK limits principals to agent/operator');
+    assert.equal(result.delivery.sourceAgentId, null);
+    assert.equal(result.delivery.sourceAgentName, 'DAG Scheduler');
+    assert.equal(result.delivery.dispatchStatus, 'queued');
+    assert.equal(result.delivery.responseStatus, 'not_expected');
+    assert.equal(result.targetMessage.role, 'user');
+    assert.equal(result.targetMessage.senderName, 'DAG Scheduler');
+    assert.equal(result.targetMessage.metadata.kind, 'dag_resume');
+    assert.equal(result.targetMessage.metadata.dagResume, true);
+    assert.equal(result.targetMessage.metadata.crossConversation.authority, 'system');
+    assert.equal(result.sourceReceipt.role, 'system');
+
+    // Idempotent replay returns the canonical delivery without new rows.
+    const replay = service.submitFromSystem(input);
+    assert.equal(replay.delivery.id, result.delivery.id);
+    const targetMessages = fixture.store.listMessages(fixture.targetConversation.id);
+    assert.equal(targetMessages.filter((message) => message.id === result.targetMessage.id).length, 1);
+
+    // Non-participant target and self-delivery are rejected.
+    assert.throws(
+      () => service.submitFromSystem({ ...input, targetAgentId: fixture.otherAgent.id, idempotencyKey: 'dag-resume-2' }),
+      assertDeliveryError('cross_conversation_target_not_participant', 403)
+    );
+    assert.throws(
+      () => service.submitFromSystem({
+        ...input,
+        targetConversationId: fixture.sourceConversation.id,
+        idempotencyKey: 'dag-resume-3',
+      }),
+      assertDeliveryError('cross_conversation_self_delivery', 409)
+    );
+  } finally {
+    fixture.store.close();
+  }
+});

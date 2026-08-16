@@ -570,3 +570,104 @@ test('plan store: missing conversation / missing plan error codes', (t) => {
       && error.issues.some((issue) => issue.code === 'plan_cycle')
   );
 });
+
+test('plan store: writePlanNodeExecution — internal channel binds spawned id and audits as system', (t) => {
+  const store = createStore(t);
+  const root = createRootConversation(store);
+  store.savePlanForConversation(root.id, { doc: validDoc() });
+  store.activatePlanForConversation(root.id);
+
+  // The public path rejects spawned_conversation_id changes while active...
+  const lockedDoc = validDoc();
+  lockedDoc.nodes[0].spawned_conversation_id = 'child-n1';
+  assert.throws(
+    () => store.savePlanForConversation(root.id, { doc: lockedDoc, version: 2 }),
+    (error) => error.code === 'plan_locked'
+  );
+
+  // ...while the internal scheduler channel binds it together with doing.
+  const result = store.writePlanNodeExecution(root.id, [
+    { nodeId: 'n1', status: 'doing', spawnedConversationId: 'child-n1' },
+  ], { reason: 'dag_dispatch' });
+  const n1 = result.plan.doc.nodes.find((node) => node.id === 'n1');
+  assert.equal(n1.status, 'doing');
+  assert.equal(n1.spawned_conversation_id, 'child-n1');
+  assert.equal(result.plan.version, 3);
+  assert.deepEqual(
+    result.plan.doc.history.map((entry) => `${entry.node_id}:${entry.from}->${entry.to}:${entry.actor}:${entry.reason}`),
+    ['n1:pending->doing:system:dag_dispatch']
+  );
+
+  // Completion write-back carries the result summary (D23).
+  const done = store.writePlanNodeExecution(root.id, [
+    { nodeId: 'n1', status: 'done', result: '执行摘要' },
+  ], { reason: 'dag_node_completed' });
+  const doneNode = done.plan.doc.nodes.find((node) => node.id === 'n1');
+  assert.equal(doneNode.status, 'done');
+  assert.equal(doneNode.result, '执行摘要');
+  assert.equal(done.plan.doc.history.length, 2);
+});
+
+test('plan store: writePlanNodeExecution — guards: active-only, known node, valid status, D16', (t) => {
+  const store = createStore(t);
+  const root = createRootConversation(store);
+  store.savePlanForConversation(root.id, {
+    doc: {
+      nodes: [
+        { id: 'n1', title: 'A', goal: '', status: 'pending', depends_on: [], kind: 'work' },
+        { id: 'n2', title: 'B', goal: '', status: 'pending', depends_on: ['n1'], kind: 'work' },
+      ],
+    },
+  });
+
+  // Draft plan rejects execution write-backs.
+  assert.throws(
+    () => store.writePlanNodeExecution(root.id, [{ nodeId: 'n1', status: 'doing' }]),
+    (error) => error.statusCode === 409 && error.code === 'plan_not_active'
+  );
+
+  store.activatePlanForConversation(root.id);
+
+  // Unknown node.
+  assert.throws(
+    () => store.writePlanNodeExecution(root.id, [{ nodeId: 'ghost', status: 'doing' }]),
+    (error) => error.statusCode === 404 && error.code === 'plan_node_not_found'
+  );
+
+  // Invalid status enum.
+  assert.throws(
+    () => store.writePlanNodeExecution(root.id, [{ nodeId: 'n1', status: 'todo' }]),
+    (error) => error.statusCode === 422 && error.code === 'plan_validation_failed'
+  );
+
+  // D16 fail-closed applies to the internal channel as well.
+  store.writePlanNodeExecution(root.id, [{ nodeId: 'n1', status: 'blocked' }], { reason: 'test' });
+  assert.throws(
+    () => store.writePlanNodeExecution(root.id, [{ nodeId: 'n2', status: 'doing' }]),
+    (error) => error.statusCode === 409 && error.code === 'plan_upstream_blocked'
+  );
+
+  // Empty update list is rejected.
+  assert.throws(
+    () => store.writePlanNodeExecution(root.id, []),
+    (error) => error.statusCode === 400 && error.code === 'plan_execution_updates_required'
+  );
+});
+
+test('plan store: listActivePlans returns only active plans for reconcile (D25)', (t) => {
+  const store = createStore(t);
+  const rootA = createRootConversation(store, 'root-a');
+  const rootB = createRootConversation(store, 'root-b');
+
+  assert.deepEqual(store.listActivePlans(), []);
+
+  store.savePlanForConversation(rootA.id, { doc: validDoc() });
+  store.savePlanForConversation(rootB.id, { doc: validDoc() });
+  assert.deepEqual(store.listActivePlans(), [], 'draft plans are not listed');
+
+  store.activatePlanForConversation(rootB.id);
+  const active = store.listActivePlans();
+  assert.equal(active.length, 1);
+  assert.equal(active[0].ownerConversationId, rootB.id);
+  assert.equal(active[0].status, 'active');
+});

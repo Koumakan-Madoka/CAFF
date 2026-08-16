@@ -19,6 +19,7 @@ const {
 } = require('../storage/chat/cross-conversation-delivery.repository');
 const { createChatPlanRepository } = require('../storage/chat/plan.repository');
 const {
+  NODE_STATUSES,
   validatePlanDoc,
   validateStatusOnlyUpdate,
   appendPlanHistory,
@@ -2311,6 +2312,155 @@ export class ChatAppStore {
       ownerConversationId: owner.id,
       plan: normalizePlanRow(row),
       warnings: validation.warnings.concat(activeWarnings),
+    };
+  }
+
+  /** Scheduler reconcile (D25): all active plans, oldest updated first. */
+  listActivePlans() {
+    return this.planRepository.listByStatus('active').map(normalizePlanRow).filter(Boolean);
+  }
+
+  /** True while a cross-conversation delivery targeting this conversation is still in flight. */
+  hasNonTerminalCrossConversationDelivery(conversationId: any) {
+    return this.crossConversationDeliveryRepository.hasNonTerminalForConversation(
+      String(conversationId || '').trim()
+    );
+  }
+
+  /**
+   * Internal scheduler channel (D21): apply execution write-backs to an
+   * ACTIVE plan — node status transitions, spawned_conversation_id binding
+   * and result summaries. Unlike the public savePlanForConversation path,
+   * spawned_conversation_id may be bound here; everything else stays
+   * structurally locked. D16 fail-closed still guards pending→doing and
+   * every status transition is audited to history with actor 'system' (D18).
+   *
+   * updates: [{ nodeId, status?, spawnedConversationId?, result? }]
+   * options: { reason? } — recorded on auto-appended history entries.
+   */
+  writePlanNodeExecution(conversationId: any, updates: any, options: any = {}) {
+    const owner = this.resolvePlanOwnerConversation(conversationId);
+    if (!owner) {
+      throw createPlanError(404, 'conversation_not_found', 'Conversation not found');
+    }
+    const existing = this.planRepository.getByOwnerConversationId(owner.id);
+    if (!existing) {
+      throw createPlanError(404, 'plan_not_found', 'Conversation tree has no plan');
+    }
+    if (existing.status !== 'active') {
+      throw createPlanError(
+        409,
+        'plan_not_active',
+        `Plan is ${existing.status}; execution write-back requires an active plan`
+      );
+    }
+
+    const updateList = Array.isArray(updates) ? updates : [];
+    if (updateList.length === 0) {
+      throw createPlanError(400, 'plan_execution_updates_required', 'At least one node execution update is required');
+    }
+
+    const oldDoc = parseJson(existing.doc_json) || {};
+    const oldNodes = Array.isArray(oldDoc.nodes) ? oldDoc.nodes : [];
+    let doc: any = {
+      ...oldDoc,
+      nodes: oldNodes.map((node: any) => ({ ...node })),
+    };
+    const reason = typeof options.reason === 'string' && options.reason.trim() ? options.reason.trim() : undefined;
+    const transitions: Array<{ node_id: string; from: string; to: string }> = [];
+
+    for (const update of updateList) {
+      const nodeId = String(update && update.nodeId || '').trim();
+      const node = doc.nodes.find((candidate: any) => candidate && String(candidate.id || '').trim() === nodeId);
+      if (!node) {
+        throw createPlanError(404, 'plan_node_not_found', `Plan node not found: ${nodeId}`, {
+          issues: [{ code: 'plan_node_not_found', nodeId, message: `Plan node not found: ${nodeId}` }],
+        });
+      }
+
+      if (update.status !== undefined) {
+        const to = String(update.status || '').trim();
+        if (!NODE_STATUSES.includes(to)) {
+          throw createPlanError(422, 'plan_validation_failed', `Invalid node status: ${to}`, {
+            issues: [{ code: 'plan_node_status_invalid', nodeId, message: `status must be one of ${NODE_STATUSES.join('/')}` }],
+          });
+        }
+        const from = NODE_STATUSES.includes(node.status) ? node.status : 'pending';
+        if (from !== to) {
+          transitions.push({ node_id: nodeId, from, to });
+          node.status = to;
+        }
+      }
+
+      if (update.spawnedConversationId !== undefined) {
+        node.spawned_conversation_id = update.spawnedConversationId === null
+          ? null
+          : String(update.spawnedConversationId || '').trim() || null;
+      }
+
+      if (update.result !== undefined) {
+        node.result = String(update.result || '');
+      }
+    }
+
+    // D16 fail-closed: scheduler starts are held to the same standard as
+    // manual ones — no pending→doing while a transitive upstream is blocked.
+    const blockedIssues: any[] = [];
+    for (const transition of transitions) {
+      if (transition.from === 'pending' && transition.to === 'doing') {
+        const blockedUpstreams = findBlockedUpstreams(doc, transition.node_id);
+        if (blockedUpstreams.length > 0) {
+          blockedIssues.push({
+            code: 'plan_upstream_blocked',
+            nodeId: transition.node_id,
+            blockedUpstreams,
+            message: `Node ${transition.node_id} cannot start: blocked upstream(s): ${blockedUpstreams.join(', ')}`,
+          });
+        }
+      }
+    }
+    if (blockedIssues.length > 0) {
+      throw createPlanError(409, 'plan_upstream_blocked', 'Blocked upstream node(s); fail-closed (D16)', {
+        issues: blockedIssues,
+      });
+    }
+
+    // D18: audit every transition with the system actor.
+    for (const transition of transitions) {
+      doc = appendPlanHistory(doc, {
+        node_id: transition.node_id,
+        from: transition.from,
+        to: transition.to,
+        actor: 'system',
+        reason,
+      });
+    }
+
+    const validation = validatePlanDoc(doc);
+    if (!validation.ok) {
+      throw createPlanError(422, 'plan_validation_failed', 'Plan doc validation failed after execution write-back', {
+        issues: validation.issues,
+        warnings: validation.warnings,
+      });
+    }
+
+    const expectedVersion = Number(existing.version);
+    const row = this.planRepository.updateWithVersionGuard({
+      id: existing.id,
+      expectedVersion,
+      status: existing.status,
+      version: expectedVersion + 1,
+      docJson: JSON.stringify(doc),
+      activatedAt: existing.activated_at,
+      updatedAt: nowIso(),
+    });
+    if (!row) {
+      throw createPlanError(409, 'plan_version_conflict', 'Plan version conflict');
+    }
+
+    return {
+      ownerConversationId: owner.id,
+      plan: normalizePlanRow(row),
     };
   }
 

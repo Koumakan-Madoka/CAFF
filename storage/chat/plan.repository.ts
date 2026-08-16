@@ -1,6 +1,7 @@
 export class ChatPlanRepository {
   getByOwnerStatement: any;
   getByIdStatement: any;
+  listByStatusStatement: any;
   insertStatement: any;
   updateStatement: any;
 
@@ -16,6 +17,12 @@ export class ChatPlanRepository {
       FROM chat_plans
       WHERE id = ?
       LIMIT 1
+    `);
+    this.listByStatusStatement = db.prepare(`
+      SELECT *
+      FROM chat_plans
+      WHERE status = ?
+      ORDER BY updated_at ASC
     `);
     this.insertStatement = db.prepare(`
       INSERT INTO chat_plans (
@@ -49,6 +56,11 @@ export class ChatPlanRepository {
 
   getById(planId: string) {
     return this.getByIdStatement.get(planId) || null;
+  }
+
+  /** Scheduler reconcile (D25): enumerate plans in a given lifecycle status. */
+  listByStatus(status: string) {
+    return this.listByStatusStatement.all(status);
   }
 
   create(payload: any) {

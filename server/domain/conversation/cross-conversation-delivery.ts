@@ -451,8 +451,216 @@ export function createCrossConversationDeliveryService(options: any = {}) {
     }
   }
 
+  /**
+   * System-principal delivery (DAG scheduler, D25 resume): persists a
+   * one-way notify delivery + target message without requiring an active
+   * agent invocation. principal_kind is stored as 'operator' (the schema's
+   * non-agent principal) with sourceAgentName defaulting to the scheduler
+   * label. Fresh trace (no incoming delivery parent).
+   */
+  function submitFromSystem(input: any = {}) {
+    const sourceConversationId = normalizeRequiredText(input.sourceConversationId, 'sourceConversationId');
+    const targetConversationId = normalizeRequiredText(input.targetConversationId, 'targetConversationId');
+    const targetAgentId = normalizeRequiredText(input.targetAgentId, 'targetAgentId');
+    const content = normalizeDeliveryContent(input.content);
+    const idempotencyKey = normalizeRequiredText(
+      input.idempotencyKey,
+      'idempotencyKey',
+      MAX_DELIVERY_IDEMPOTENCY_KEY_LENGTH
+    );
+    const sourceAgentName = String(input.sourceAgentName || '').trim() || 'DAG Scheduler';
+    const messageMetadata = input.messageMetadata && typeof input.messageMetadata === 'object' && !Array.isArray(input.messageMetadata)
+      ? input.messageMetadata
+      : {};
+
+    if (sourceConversationId === targetConversationId) {
+      throw createDeliveryError(
+        409,
+        'cross_conversation_self_delivery',
+        'Source and target conversations must be different'
+      );
+    }
+
+    const sourceConversation = store.getConversationWithoutMessages(sourceConversationId);
+    if (!sourceConversation) {
+      throw createDeliveryError(404, 'cross_conversation_source_not_found', 'Source conversation not found');
+    }
+    const targetConversation = store.getConversationWithoutMessages(targetConversationId);
+    if (!targetConversation) {
+      throw createDeliveryError(404, 'cross_conversation_target_not_found', 'Target conversation not found');
+    }
+    if (
+      sourceConversation.projectScopeId
+      && targetConversation.projectScopeId
+      && sourceConversation.projectScopeId !== targetConversation.projectScopeId
+    ) {
+      throw createDeliveryError(
+        403,
+        'cross_conversation_project_mismatch',
+        'Cross-conversation delivery is allowed only inside one explicitly bound project'
+      );
+    }
+    const targetParticipant = (Array.isArray(targetConversation.agents) ? targetConversation.agents : [])
+      .some((agent: any) => agent && agent.id === targetAgentId);
+    if (!targetParticipant) {
+      throw createDeliveryError(
+        403,
+        'cross_conversation_target_not_participant',
+        'The target Agent is not an active target conversation participant'
+      );
+    }
+
+    const idempotencyScope = `system:${sourceConversationId}:conversation_notify`;
+    const canonical = store.getCrossConversationDeliveryBundleByIdempotency(
+      idempotencyScope,
+      idempotencyKey
+    );
+    if (canonical) {
+      return publishPersisted(canonical);
+    }
+
+    const createdAt = normalizeNow(now()).toISOString();
+    const deliveryId = String(createId()).trim();
+    const targetMessageId = String(createId()).trim();
+    const sourceReceiptMessageId = String(createId()).trim();
+    const traceId = String(createId()).trim();
+    const turnId = `cross-delivery:${deliveryId}`;
+
+    const payload = {
+      delivery: {
+        id: deliveryId,
+        kind: 'notify',
+        idempotencyScope,
+        idempotencyKey,
+        principalKind: 'operator',
+        sourceConversationId,
+        sourceMessageId: null,
+        sourceTurnId: null,
+        sourceInvocationId: null,
+        sourceAgentId: null,
+        sourceAgentName,
+        sourceProjectScopeId: sourceConversation.projectScopeId || null,
+        targetConversationId,
+        targetAgentId,
+        targetMessageId: null,
+        sourceReceiptMessageId: null,
+        targetProjectScopeId: targetConversation.projectScopeId || null,
+        traceId,
+        rootDeliveryId: deliveryId,
+        parentDeliveryId: null,
+        replyToDeliveryId: null,
+        hopCount: 0,
+        messageStatus: 'pending',
+        dispatchStatus: 'queued',
+        responseStatus: 'not_expected',
+        attemptCount: 0,
+        deadlineAt: null,
+        cancelRequestedAt: null,
+        lastErrorCode: null,
+        lastErrorMessage: null,
+        claimOwner: null,
+        claimExpiresAt: null,
+        nextAttemptAt: createdAt,
+        targetInvocationId: null,
+        deliveredAt: null,
+        startedAt: null,
+        completedAt: null,
+        respondedAt: null,
+        terminalAt: null,
+        createdAt,
+        updatedAt: createdAt,
+      },
+      targetMessage: {
+        id: targetMessageId,
+        conversationId: targetConversationId,
+        turnId,
+        role: 'user',
+        agentId: null,
+        senderName: sourceAgentName,
+        content,
+        status: 'completed',
+        taskId: null,
+        runId: null,
+        errorMessage: null,
+        metadata: {
+          ...messageMetadata,
+          crossConversation: {
+            deliveryId,
+            kind: 'notify',
+            authority: 'system',
+            allowHandoffs: false,
+            sourceConversationId,
+            sourceConversationTitle: sourceConversation.title,
+            sourceMessageId: null,
+            sourceAgentId: null,
+            sourceAgentName,
+            traceId,
+            deadlineAt: null,
+          },
+        },
+        createdAt,
+      },
+      sourceReceipt: {
+        id: sourceReceiptMessageId,
+        conversationId: sourceConversationId,
+        turnId,
+        role: 'system',
+        agentId: null,
+        senderName: 'System',
+        content: '',
+        status: 'completed',
+        taskId: null,
+        runId: null,
+        errorMessage: null,
+        metadata: {
+          kind: 'cross_conversation_receipt',
+          crossConversation: {
+            deliveryId,
+            kind: 'notify',
+            targetConversationId,
+            targetConversationTitle: targetConversation.title,
+            targetAgentId,
+            traceId,
+          },
+        },
+        createdAt,
+      },
+      persistedEvent: {
+        kind: 'notify',
+        sourceConversationId,
+        targetConversationId,
+        targetAgentId,
+        targetMessageId,
+        sourceReceiptMessageId,
+        traceId,
+        parentDeliveryId: null,
+        hopCount: 0,
+        messageStatus: 'persisted',
+        dispatchStatus: 'queued',
+        responseStatus: 'not_expected',
+      },
+      deliveredAt: createdAt,
+    };
+
+    try {
+      return publishPersisted(store.persistCrossConversationDelivery(payload));
+    } catch (error) {
+      if (isSqliteConstraintError(error)) {
+        const existing = store.getCrossConversationDeliveryBundleByIdempotency(
+          idempotencyScope,
+          idempotencyKey
+        );
+        if (existing) {
+          return publishPersisted(existing);
+        }
+      }
+      throw error;
+    }
+  }
+
   return {
     submitFromAgent,
+    submitFromSystem,
   };
 }
 

@@ -56,6 +56,8 @@ const { pickConversationSummary } = require('../domain/conversation/conversation
 const { createUndercoverService } = require('../domain/undercover/undercover-service');
 const { createWerewolfService } = require('../domain/werewolf/werewolf-service');
 const { createAgentToolBridge } = require('../domain/runtime/agent-tool-bridge');
+const { createDagScheduler } = require('../domain/dag/dag-scheduler');
+const { prepareNodeWorktree, resolveDagWorktreePath } = require('../../lib/dag-worktree');
 const { createFeishuClient } = require('../domain/integrations/feishu/feishu-client');
 const { createFeishuIntegrationService } = require('../domain/integrations/feishu/feishu-service');
 const {
@@ -153,6 +155,7 @@ export function createServerApp(options: any = {}) {
   const undercoverHost = createWhoIsUndercoverHost({ agentDir });
   const sseBus = createSseBus();
   let turnOrchestrator: any = null;
+  let dagScheduler: any = null;
   let crossConversationDeliveryWorker: any = null;
   let deliveryMaintenanceTimer: any = null;
   let deliveryDrainPromise: Promise<any> | null = null;
@@ -191,6 +194,16 @@ export function createServerApp(options: any = {}) {
 
     if (typeof options.onBroadcastEvent === 'function') {
       options.onBroadcastEvent(eventName, payload);
+    }
+
+    // D21 event hook: the DAG scheduler observes plan updates and side-slot
+    // completions. Never let scheduler failures break the broadcast path.
+    if (dagScheduler) {
+      try {
+        dagScheduler.handleEvent(eventName, payload);
+      } catch (error) {
+        console.error(`[dag-scheduler] handleEvent(${eventName}) failed: ${String(error)}`);
+      }
     }
   }
 
@@ -575,7 +588,18 @@ export function createServerApp(options: any = {}) {
     store,
     skillRegistry,
     modeStore,
-    getProjectDir: () => activeProjectDir,
+    // D22: DAG node child conversations run inside their per-node worktree;
+    // everything else uses the active project dir. dagScheduler is assigned
+    // after construction, so resolve lazily and null-check.
+    getProjectDir: (conversation?: any) => {
+      if (conversation && dagScheduler && typeof dagScheduler.resolveConversationWorkdir === 'function') {
+        const workdir = dagScheduler.resolveConversationWorkdir(conversation);
+        if (workdir) {
+          return workdir;
+        }
+      }
+      return activeProjectDir;
+    },
     agentToolBridge,
     broadcastEvent,
     broadcastConversationSummary,
@@ -638,6 +662,112 @@ export function createServerApp(options: any = {}) {
         requestCrossConversationDeliveryDrain();
       },
     });
+
+  // DAG execution scheduler (第二阶段, D21 event hook). Wired AFTER the spawn
+  // service exists; handleEvent is called from broadcastEvent above (the
+  // dagScheduler variable starts null, so early broadcasts are no-ops).
+  if (options.dagScheduler !== null && options.dagScheduler !== false) {
+    const resolveProjectDirForScope = (projectScopeId: any) => {
+      const normalizedScopeId = String(projectScopeId || '').trim();
+      const project = normalizedScopeId
+        ? projectManager.listProjects().find((candidate: any) => candidate && candidate.id === normalizedScopeId)
+        : null;
+      return project && project.path ? String(project.path) : activeProjectDir;
+    };
+
+    const dagSchedulerFactory = typeof options.dagSchedulerFactory === 'function'
+      ? options.dagSchedulerFactory
+      : createDagScheduler;
+    dagScheduler = dagSchedulerFactory({
+      store,
+      broadcastEvent,
+      // D22: prepare the per-node worktree against the owning project's repo.
+      prepareNodeWorktree({ ownerConversationId, plan, node }: any) {
+        const owner = store.getConversationWithoutMessages(ownerConversationId);
+        const repoRoot = resolveProjectDirForScope(owner && owner.projectScopeId);
+        if (!repoRoot) {
+          return { ok: false, error: 'no active project directory for worktree preparation' };
+        }
+        const result = prepareNodeWorktree({
+          repoRoot,
+          planId: plan && plan.id,
+          nodeId: node && node.id,
+          branch: String(node && node.branch || '').trim() || `dag/${plan && String(plan.id || '').slice(0, 8)}/${node && node.id}`,
+          baseRef: String(node && node.base_branch || '').trim() || undefined,
+        });
+        if (!result.ok) {
+          return { ok: false, error: `${result.code || 'dag_worktree_failed'}: ${result.error || result.reason || ''}`.trim() };
+        }
+        return { ok: true, path: result.path, reused: Boolean(result.reused) };
+      },
+      // D22 cwd hook backing store: derive the worktree path statelessly.
+      resolveWorktreePathForNode({ ownerConversationId, plan, node }: any) {
+        const owner = store.getConversationWithoutMessages(ownerConversationId);
+        const repoRoot = resolveProjectDirForScope(owner && owner.projectScopeId);
+        if (!repoRoot) {
+          return null;
+        }
+        const worktreePath = resolveDagWorktreePath(repoRoot, String(plan && plan.id || ''), String(node && node.id || ''));
+        if (!worktreePath) {
+          return null;
+        }
+        try {
+          return require('node:fs').existsSync(worktreePath) ? worktreePath : null;
+        } catch {
+          return null;
+        }
+      },
+      // D13: spawn the node child conversation flat under the ROOT owner
+      // conversation; the executor is the root conversation's primary
+      // (first) participant agent. The goal + upstream result summaries are
+      // injected as the initial message (D23).
+      async spawnNodeConversation({ ownerConversationId, node, initialMessage, clientRequestId }: any) {
+        const owner = store.getConversationWithoutMessages(ownerConversationId);
+        if (!owner) {
+          throw new Error('Plan owner conversation not found');
+        }
+        const participants = (Array.isArray(owner.agents) ? owner.agents : [])
+          .map((agent: any) => ({ agentId: agent && agent.id }))
+          .filter((participant: any) => participant.agentId);
+        if (participants.length === 0) {
+          throw new Error('Plan owner conversation has no participant agents');
+        }
+        const title = `DAG ${node.id}: ${String(node.title || node.id)}`.slice(0, 200);
+        const result = await conversationSpawnService.spawn(ownerConversationId, {
+          title,
+          projectScopeId: owner.projectScopeId,
+          participants,
+          primaryAgentId: participants[0].agentId,
+          initialMessage,
+          clientRequestId,
+        });
+        return { conversationId: result && result.conversation ? result.conversation.id : '' };
+      },
+      // D25: resume inside the ORIGINAL child conversation via a
+      // system-principal notify delivery (drained by the delivery worker).
+      async resumeNodeConversation({ ownerConversationId, conversation, node, content, idempotencyKey }: any) {
+        const participants = (Array.isArray(conversation.agents) ? conversation.agents : [])
+          .map((agent: any) => agent && agent.id)
+          .filter(Boolean);
+        if (participants.length === 0) {
+          throw new Error('Spawned conversation has no participant agents');
+        }
+        crossConversationDeliveryService.submitFromSystem({
+          sourceConversationId: ownerConversationId,
+          targetConversationId: conversation.id,
+          targetAgentId: participants[0],
+          content,
+          idempotencyKey,
+          sourceAgentName: 'DAG Scheduler',
+          messageMetadata: {
+            kind: 'dag_resume',
+            dagResume: true,
+            dagNodeId: String(node && node.id || '').trim(),
+          },
+        });
+      },
+    });
+  }
 
   feishuIntegration = createFeishuIntegrationService({
     store,
@@ -854,6 +984,15 @@ export function createServerApp(options: any = {}) {
 
       startCrossConversationDeliveryRuntime();
 
+      // D25: reconcile DAG execution state after restart (fire-and-forget).
+      if (dagScheduler && typeof dagScheduler.reconcileOnStartup === 'function') {
+        void Promise.resolve()
+          .then(() => dagScheduler.reconcileOnStartup())
+          .catch((error: any) => {
+            console.error(`[dag-scheduler] startup reconcile failed: ${error && error.stack ? error.stack : error}`);
+          });
+      }
+
       if (typeof onListen === 'function') {
         onListen();
       }
@@ -910,6 +1049,9 @@ export function createServerApp(options: any = {}) {
     crossConversationDeliveryService,
     crossConversationDeliveryWorker,
     conversationSpawnService,
+    get dagScheduler() {
+      return dagScheduler;
+    },
     getHealthStatus,
     host,
     port,
