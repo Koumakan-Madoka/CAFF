@@ -19,6 +19,7 @@ const { maybeAutoCreateConversationDigest } = require('../../build/server/domain
 const { maybeAutoCreateConversationSkillDraft } = require('../../build/server/domain/conversation/skill-draft');
 const { createRoleService } = require('../../build/server/domain/roles/role-service');
 
+const { isolateExternalIntegrations } = require('../helpers/external-integrations');
 const { requireSpawn } = require('../helpers/spawn');
 const { withTempDir } = require('../helpers/temp-dir');
 
@@ -29,6 +30,8 @@ const FAKE_PI_SDK_HOST_TRELLIS_TOOLS_PATH = path.join(
   'fixtures',
   'fake-pi-sdk-host-trellis-tools.mjs'
 );
+
+isolateExternalIntegrations();
 
 function findFreePort() {
   return new Promise((resolve, reject) => {

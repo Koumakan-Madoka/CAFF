@@ -1,0 +1,5 @@
+{"file": ".agents/skills/finish-work/SKILL.md", "reason": "Finish work checklist"}
+{"file": ".agents/skills/check/SKILL.md", "reason": "Code quality check spec"}
+{"file": ".trellis/spec/runtime/agent-runtime.md", "reason": "Verify runtime timeout behavior"}
+{"file": ".trellis/spec/backend/feishu-integration.md", "reason": "Verify integration shutdown behavior"}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Verify regression coverage"}

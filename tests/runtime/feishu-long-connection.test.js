@@ -83,13 +83,13 @@ test('feishu long connection source starts the official SDK client and forwards 
 
   assert.equal(source.isEnabled(), true);
   assert.equal(source.start(), true);
-  assert.deepEqual(wsClientConfig, {
-    appId: 'sdk_test_app',
-    appSecret: 'sdk_test_secret',
-    autoReconnect: true,
-    domain: 'feishu-domain',
-    loggerLevel: 3,
-  });
+  assert.equal(wsClientConfig.appId, 'sdk_test_app');
+  assert.equal(wsClientConfig.appSecret, 'sdk_test_secret');
+  assert.equal(wsClientConfig.autoReconnect, true);
+  assert.equal(wsClientConfig.domain, 'feishu-domain');
+  assert.equal(wsClientConfig.loggerLevel, 3);
+  assert.equal(typeof wsClientConfig.onReady, 'function');
+  assert.equal(typeof wsClientConfig.onReconnected, 'function');
   assert.ok(dispatcherInstance);
   assert.deepEqual(dispatcherInstance.options, { loggerLevel: 3 });
 
@@ -123,14 +123,115 @@ test('feishu long connection source starts the official SDK client and forwards 
   assert.equal(handledPayloads[0].header.event_type, 'im.message.receive_v1');
   assert.equal(handledPayloads[0].event.message.message_id, 'om-long-1');
 
-  source.stop();
+  await source.stop();
   assert.deepEqual(closeParams[0], { force: true });
 
   assert.equal(source.start(), true);
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(wsClientCount, 2);
-  source.stop();
+  await source.stop();
   assert.deepEqual(closeParams[1], { force: true });
+});
+
+test('feishu long connection stop waits for an in-flight SDK start before completing cleanup', async () => {
+  let resolveStart;
+  const closeParams = [];
+  const source = createFeishuLongConnectionSource({
+    feishuService: {
+      handleLongConnectionEvent() {
+        return Promise.resolve({ ok: true });
+      },
+    },
+    logger: createSilentLogger(),
+    larkSdk: {
+      EventDispatcher: class FakeEventDispatcher {
+        register() {
+          return this;
+        }
+      },
+      WSClient: class FakeWSClient {
+        start() {
+          return new Promise((resolve) => {
+            resolveStart = resolve;
+          });
+        }
+
+        close(params) {
+          closeParams.push(params);
+        }
+      },
+    },
+    env: {
+      FEISHU_CONNECTION_MODE: 'long-connection',
+      FEISHU_APP_ID: 'sdk_pending_app',
+      FEISHU_APP_SECRET: 'sdk_pending_secret',
+    },
+  });
+
+  assert.equal(source.start(), true);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(typeof resolveStart, 'function');
+
+  let stopped = false;
+  const stopPromise = source.stop().then(() => {
+    stopped = true;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(stopped, false);
+  assert.deepEqual(closeParams, [{ force: true }]);
+
+  resolveStart();
+  await stopPromise;
+
+  assert.equal(stopped, true);
+  assert.deepEqual(closeParams, [{ force: true }, { force: true }]);
+});
+
+test('feishu long connection closes a stale SDK client that becomes ready after stop', async () => {
+  let wsClientConfig = null;
+  const closeParams = [];
+  const source = createFeishuLongConnectionSource({
+    feishuService: {
+      handleLongConnectionEvent() {
+        return Promise.resolve({ ok: true });
+      },
+    },
+    logger: createSilentLogger(),
+    larkSdk: {
+      EventDispatcher: class FakeEventDispatcher {
+        register() {
+          return this;
+        }
+      },
+      WSClient: class FakeWSClient {
+        constructor(config) {
+          wsClientConfig = config;
+        }
+
+        start() {
+          return Promise.resolve();
+        }
+
+        close(params) {
+          closeParams.push(params);
+        }
+      },
+    },
+    env: {
+      FEISHU_CONNECTION_MODE: 'long-connection',
+      FEISHU_APP_ID: 'sdk_late_ready_app',
+      FEISHU_APP_SECRET: 'sdk_late_ready_secret',
+    },
+  });
+
+  assert.equal(source.start(), true);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await source.stop();
+  assert.deepEqual(closeParams, [{ force: true }]);
+
+  wsClientConfig.onReady();
+  assert.deepEqual(closeParams, [{ force: true }, { force: true }]);
 });
 
 test('feishu long connection source fails closed when the optional SDK is not installed', () => {

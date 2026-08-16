@@ -1150,9 +1150,9 @@ export function createServerApp(options: any = {}) {
     }
     autoDigestScheduledTimers.clear();
 
-    if (feishuLongConnection) {
-      feishuLongConnection.stop();
-    }
+    const feishuClosePromise = feishuLongConnection
+      ? Promise.resolve(feishuLongConnection.stop()).catch(() => null)
+      : Promise.resolve();
 
     server.close(() => {
       const finishClose = () => {
@@ -1162,13 +1162,11 @@ export function createServerApp(options: any = {}) {
           callback();
         }
       };
+      const pendingCloseWork = deliveryDrainPromise
+        ? Promise.allSettled([deliveryDrainPromise, feishuClosePromise])
+        : feishuClosePromise;
 
-      if (deliveryDrainPromise) {
-        void deliveryDrainPromise.then(finishClose, finishClose);
-        return;
-      }
-
-      finishClose();
+      void Promise.resolve(pendingCloseWork).then(finishClose, finishClose);
     });
   }
 

@@ -224,6 +224,14 @@ test('agent executor sends the prevalidated runtime config without env fallback 
   const turnStatePath = require.resolve('../../build/server/domain/conversation/turn/turn-state');
   const minimalPi = require(minimalPiPath);
   const originalStartRun = minimalPi.startRun;
+  const previousTimeoutEnv = {
+    heartbeat: process.env.PI_HEARTBEAT_TIMEOUT_MS,
+    progress: process.env.PI_PROGRESS_TIMEOUT_MS,
+    total: process.env.PI_TIMEOUT_MS,
+  };
+  process.env.PI_HEARTBEAT_TIMEOUT_MS = '11000';
+  process.env.PI_PROGRESS_TIMEOUT_MS = '22000';
+  process.env.PI_TIMEOUT_MS = '33000';
   let captured = null;
 
   minimalPi.startRun = (provider, model, prompt, options) => {
@@ -235,6 +243,19 @@ test('agent executor sends the prevalidated runtime config without env fallback 
   t.after(() => {
     minimalPi.startRun = originalStartRun;
     delete require.cache[agentExecutorPath];
+
+    for (const [name, value] of [
+      ['PI_HEARTBEAT_TIMEOUT_MS', previousTimeoutEnv.heartbeat],
+      ['PI_PROGRESS_TIMEOUT_MS', previousTimeoutEnv.progress],
+      ['PI_TIMEOUT_MS', previousTimeoutEnv.total],
+    ]) {
+      if (value === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = value;
+      }
+    }
+
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
@@ -306,6 +327,9 @@ test('agent executor sends the prevalidated runtime config without env fallback 
   assert.equal(captured.provider, 'openai-runtime');
   assert.equal(captured.model, 'gpt-runtime');
   assert.equal(captured.options.thinking, 'max');
+  assert.equal(captured.options.heartbeatTimeoutMs, 11000);
+  assert.equal(captured.options.progressTimeoutMs, 22000);
+  assert.equal(captured.options.timeoutMs, 33000);
   assert.deepEqual(captured.options.extensionPaths, [piCapabilityExtensionPath]);
   assert.doesNotMatch(captured.prompt, /Contaminated family Persona|contaminated-family-skill/u);
   assert.match(captured.prompt, /This is a model-family identity, not a fictional persona\./u);

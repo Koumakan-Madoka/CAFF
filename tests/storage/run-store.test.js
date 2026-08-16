@@ -195,6 +195,8 @@ CREATE TABLE runs (
     model: 'gpt-test',
     thinking: 'medium',
     prompt: 'run something',
+    timeoutMs: 60000,
+    idleTimeoutMs: 10000,
     heartbeatIntervalMs: 1000,
     heartbeatTimeoutMs: 2000,
     terminateGraceMs: 3000,
@@ -256,6 +258,11 @@ CREATE TABLE runs (
     `)
     .get();
   const sessionRow = migratedDb.prepare('SELECT session_name, last_run_id FROM sessions LIMIT 1').get();
+  const runRow = migratedDb.prepare(`
+    SELECT timeout_ms, idle_timeout_ms, heartbeat_interval_ms, heartbeat_timeout_ms
+    FROM runs
+    WHERE id = ?
+  `).get(runRecord.runId);
   const artifactCount = migratedDb.prepare('SELECT COUNT(*) AS count FROM a2a_artifacts').get();
 
   assert.equal(runColumns.has('heartbeat_interval_ms'), true);
@@ -268,5 +275,11 @@ CREATE TABLE runs (
   assert.equal(Boolean(taskTable), true);
   assert.equal(sessionRow.session_name, 'demo');
   assert.equal(sessionRow.last_run_id, runRecord.runId);
+  assert.deepEqual(runRow, {
+    timeout_ms: 60000,
+    idle_timeout_ms: 10000,
+    heartbeat_interval_ms: 1000,
+    heartbeat_timeout_ms: 2000,
+  });
   assert.equal(artifactCount.count, 1);
 });

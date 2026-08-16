@@ -64,6 +64,46 @@ function createFakeSdkHostWaitingForAbort(baseDir, capturePath = '') {
   ]);
 }
 
+function createFakeSdkHostHeartbeatOnly(baseDir, capturePath) {
+  return createFakeSdkHost(baseDir, [
+    "import { writeFileSync } from 'node:fs';",
+    "let heartbeatTimer = null;",
+    "process.on('message', (command) => {",
+    "  if (command?.type === 'start') {",
+    "    heartbeatTimer = setInterval(() => {",
+    "      process.send({ type: 'heartbeat', timestamp: Date.now() });",
+    "    }, 10);",
+    "    return;",
+    "  }",
+    "  if (command?.type === 'abort') {",
+    "    if (heartbeatTimer) clearInterval(heartbeatTimer);",
+    `    writeFileSync(${JSON.stringify(capturePath)}, JSON.stringify(command), 'utf8');`,
+    "    process.exit(0);",
+    "  }",
+    "});",
+  ]);
+}
+
+function createFakeSdkHostProgressOnly(baseDir, capturePath) {
+  return createFakeSdkHost(baseDir, [
+    "import { writeFileSync } from 'node:fs';",
+    "let eventTimer = null;",
+    "process.on('message', (command) => {",
+    "  if (command?.type === 'start') {",
+    "    eventTimer = setInterval(() => {",
+    "      process.send({ type: 'pi_event', event: { type: 'tool_execution_update', toolCallId: 'running-tool' } });",
+    "    }, 10);",
+    "    return;",
+    "  }",
+    "  if (command?.type === 'abort') {",
+    "    if (eventTimer) clearInterval(eventTimer);",
+    `    writeFileSync(${JSON.stringify(capturePath)}, JSON.stringify(command), 'utf8');`,
+    "    process.exit(0);",
+    "  }",
+    "});",
+  ]);
+}
+
 function createFakeSdkHostMultipleUsages(baseDir) {
   return createFakeSdkHost(baseDir, [
     "const assistantMessages = [",
@@ -636,6 +676,86 @@ test('pi runtime does not let unused SDK host stdout backpressure block IPC comp
 
   assert.equal(result.reply, 'stdout did not block IPC');
   assert.equal(result.parseErrors, 0);
+});
+
+test('pi runtime aborts a heartbeat-only host after the progress timeout', async (t) => {
+  if (!requireSpawn(t)) {
+    return;
+  }
+
+  const tempDir = withTempDir('caff-pi-runtime-progress-timeout-');
+  const capturePath = path.join(tempDir, 'progress-abort.json');
+  const fakeHostPath = createFakeSdkHostHeartbeatOnly(tempDir, capturePath);
+  const { runtime, restore } = loadRuntimeWithSdkHost(fakeHostPath);
+  let handle = null;
+
+  t.after(() => {
+    try {
+      handle && handle.cancel('test cleanup');
+    } catch {}
+
+    restore();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  handle = runtime.startRun('test-provider', 'test-model', 'wait for progress timeout', {
+    agentDir: tempDir,
+    sqlitePath: path.join(tempDir, 'pi-runtime-progress-timeout.sqlite'),
+    heartbeatIntervalMs: 10,
+    heartbeatTimeoutMs: 500,
+    progressTimeoutMs: 75,
+    timeoutMs: 1000,
+    terminateGraceMs: 500,
+    streamOutput: false,
+  });
+
+  await assert.rejects(handle.resultPromise, (error) => {
+    assert.equal(error.terminationReason.type, 'progress_timeout');
+    return true;
+  });
+
+  const captured = JSON.parse(fs.readFileSync(capturePath, 'utf8'));
+  assert.equal(captured.reason.type, 'progress_timeout');
+});
+
+test('pi runtime total timeout is not extended by repeated progress events', async (t) => {
+  if (!requireSpawn(t)) {
+    return;
+  }
+
+  const tempDir = withTempDir('caff-pi-runtime-total-timeout-');
+  const capturePath = path.join(tempDir, 'run-abort.json');
+  const fakeHostPath = createFakeSdkHostProgressOnly(tempDir, capturePath);
+  const { runtime, restore } = loadRuntimeWithSdkHost(fakeHostPath);
+  let handle = null;
+
+  t.after(() => {
+    try {
+      handle && handle.cancel('test cleanup');
+    } catch {}
+
+    restore();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  handle = runtime.startRun('test-provider', 'test-model', 'wait for total timeout', {
+    agentDir: tempDir,
+    sqlitePath: path.join(tempDir, 'pi-runtime-total-timeout.sqlite'),
+    heartbeatIntervalMs: 0,
+    heartbeatTimeoutMs: 500,
+    progressTimeoutMs: 500,
+    timeoutMs: 75,
+    terminateGraceMs: 500,
+    streamOutput: false,
+  });
+
+  await assert.rejects(handle.resultPromise, (error) => {
+    assert.equal(error.terminationReason.type, 'run_timeout');
+    return true;
+  });
+
+  const captured = JSON.parse(fs.readFileSync(capturePath, 'utf8'));
+  assert.equal(captured.reason.type, 'run_timeout');
 });
 
 test('pi runtime aborts a silent host after heartbeat timeout', async (t) => {

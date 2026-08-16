@@ -52,6 +52,50 @@
   parent directory creation uses the decoded underlying filesystem path, and
   unsupported URI query parameters fail fast instead of being silently ignored.
 
+## Agent Run Watchdogs
+
+### Signatures and configuration
+
+- `lib/pi-runtime.ts` accepts `startRun(provider, model, prompt, { heartbeatTimeoutMs?, progressTimeoutMs?, idleTimeoutMs?, timeoutMs? })`.
+- Host liveness resolves from `heartbeatTimeoutMs` -> `PI_HEARTBEAT_TIMEOUT_MS` -> 60 seconds.
+- Useful-progress timeout resolves from `progressTimeoutMs` -> legacy `idleTimeoutMs` -> `PI_PROGRESS_TIMEOUT_MS` -> legacy `PI_IDLE_TIMEOUT_MS` -> 10 minutes.
+- Absolute run timeout resolves from `timeoutMs` -> `PI_TIMEOUT_MS` -> 60 minutes.
+- Setting any resolved timeout to `0` disables that watchdog.
+
+### Contracts
+
+- A host `heartbeat` refreshes only the heartbeat watchdog. It proves that the
+  pi host process and IPC channel are alive; it does not prove that a model or
+  tool made progress.
+- A structured `pi_event` refreshes heartbeat and useful-progress watchdogs.
+  Tool start/update/end and model events therefore count as progress, while the
+  host's periodic heartbeat does not.
+- Nothing refreshes the absolute run watchdog.
+- Timeout termination keeps the existing abort-then-process-tree-kill flow and
+  records distinct `termination_type` values: `heartbeat_timeout`,
+  `progress_timeout`, or `run_timeout`.
+- `runs.timeout_ms` stores the absolute limit and `runs.idle_timeout_ms` stores
+  the useful-progress limit. `runs.heartbeat_timeout_ms` remains host liveness.
+
+### Validation matrix
+
+| Case | Expected behavior |
+| --- | --- |
+| Host emits heartbeats but no `pi_event` | Terminate with `progress_timeout`. |
+| Host emits repeated `pi_event` values beyond the total limit | Terminate with `run_timeout`. |
+| Host and IPC become silent | Terminate with `heartbeat_timeout`. |
+| A timeout is configured as `0` | Disable only that watchdog. |
+| Watchdog terminates a run on Windows | Kill the pi host and its descendant process tree through `taskkill /T`, forcing it after the grace period. |
+
+### Required tests
+
+- `tests/runtime/pi-runtime.test.js` uses heartbeat-only and progress-only fake
+  hosts to assert the watchdogs do not extend one another.
+- `tests/storage/run-store.test.js` asserts all three configured timeout values
+  are persisted in their existing SQLite columns.
+- `tests/runtime/agent-executor-hook.test.js` covers the executor-to-runtime
+  options wiring when that contract changes.
+
 ## Mirrored Update Paths
 
 - Trellis tool API:

@@ -5,7 +5,10 @@ const test = require('node:test');
 
 const { createServerApp } = require('../../build/server/app/create-server');
 const { createProjectManager } = require('../../build/lib/project-manager');
+const { isolateExternalIntegrations } = require('../helpers/external-integrations');
 const { withTempDir } = require('../helpers/temp-dir');
+
+isolateExternalIntegrations();
 
 function nextTurn() {
   return new Promise((resolve) => setImmediate(resolve));
