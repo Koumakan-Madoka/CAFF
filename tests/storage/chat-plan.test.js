@@ -23,7 +23,9 @@ function createStore(t, prefix = 'caff-chat-plan-') {
 }
 
 function createRootConversation(store, id = 'root-conversation') {
-  return store.createConversation({ id, title: 'Root', participants: TEST_PARTICIPANTS });
+  const conversation = store.createConversation({ id, title: 'Root', participants: TEST_PARTICIPANTS });
+  store.bindConversationProjectScope(id, 'proj-test');
+  return conversation;
 }
 
 function createChildConversation(store, id, parentId) {
@@ -543,6 +545,28 @@ test('plan store: D15 — activate/revert restricted to user, system or root par
   // System actor (scheduler) bypasses D15.
   const reactivated = store.activatePlanForConversation(root.id, { type: 'system' });
   assert.equal(reactivated.plan.status, 'active');
+});
+
+test('plan store: activate preflight — owner conversation must be bound to a project', (t) => {
+  const store = createStore(t);
+  // Deliberately bypass the helper's binding to simulate an unbound root.
+  const root = store.createConversation({ id: 'unbound-root', title: 'Root', participants: TEST_PARTICIPANTS });
+  store.savePlanForConversation(root.id, { doc: validDoc() });
+
+  assert.throws(
+    () => store.activatePlanForConversation(root.id),
+    (error) => error.statusCode === 409 && error.code === 'plan_owner_project_unbound'
+  );
+
+  // Revert preflight does not apply (plan never activated).
+  // After binding, activate succeeds.
+  store.bindConversationProjectScope(root.id, 'proj-test');
+  const activated = store.activatePlanForConversation(root.id);
+  assert.equal(activated.plan.status, 'active');
+
+  // Revert is unaffected by the preflight even though it is not an activate.
+  const reverted = store.revertPlanForConversation(root.id);
+  assert.equal(reverted.plan.status, 'draft');
 });
 
 test('plan store: missing conversation / missing plan error codes', (t) => {

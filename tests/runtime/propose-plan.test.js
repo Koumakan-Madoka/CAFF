@@ -20,6 +20,7 @@ function createInvocationFixture(store, suffix) {
     title: `Plan Conversation ${suffix}`,
     participants: [agent.id],
   });
+  store.bindConversationProjectScope(conversation.id, 'proj-test');
   const assistantMessage = store.createMessage({
     id: `plan-message-${suffix}`,
     conversationId: conversation.id,

@@ -40,6 +40,7 @@ function createFixture(t, prefix = 'caff-dag-baseline-') {
 
   const store = createChatAppStore({ agentDir: tempDir, sqlitePath: path.join(tempDir, 'chat.sqlite') });
   store.createConversation({ id: ROOT_ID, title: 'Root', participants: ['role-family-gpt'] });
+  store.bindConversationProjectScope(ROOT_ID, 'proj-test');
 
   t.after(() => {
     try {

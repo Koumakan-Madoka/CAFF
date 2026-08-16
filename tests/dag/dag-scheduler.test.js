@@ -23,7 +23,9 @@ function createStore(t, prefix = 'caff-dag-scheduler-') {
 }
 
 function createRoot(store, id = ROOT_ID) {
-  return store.createConversation({ id, title: 'Root', participants: ['role-family-gpt'] });
+  const conversation = store.createConversation({ id, title: 'Root', participants: ['role-family-gpt'] });
+  store.bindConversationProjectScope(id, 'proj-test');
+  return conversation;
 }
 
 function createChildConversation(store, id, originId = ROOT_ID) {

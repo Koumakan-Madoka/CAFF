@@ -95,6 +95,12 @@
   `CAFF_DAG_VERIFY_TIMEOUT_MS` (verify command timeout, default 120000).
 - **Repo root**: worktree/merge operations resolve against the owner
   conversation's project dir (`resolveProjectDirForScope`), never cwd.
+- **Activate preflight**: draft→active is rejected with 409
+  `plan_owner_project_unbound` when the owner conversation has no project
+  scope binding — dispatch resolves the repo from it, so an unbound owner
+  would otherwise fail-closed block every node with `dag_spawn_failed`.
+  Revert is unaffected; the check lives in `transitionPlanStatus` keyed on
+  `markActivatedAt`.
 - `.worktrees/` is gitignored; registered-worktree detection uses the `.git`
   pointer file + `rev-parse` — `git -C <subdir>` alone would resolve to the
   parent repo for in-repo worktrees and cause false positives.
@@ -108,6 +114,7 @@
 | prepare | registered worktree dirty | `{ ok:false, code:'dag_worktree_dirty' }`, node → blocked, zero bytes touched |
 | prepare | branch mismatch / path occupied by plain dir | `dag_worktree_branch_mismatch` / `dag_worktree_path_occupied` |
 | prepare | branch checked out elsewhere | `dag_worktree_add_failed` (git stderr clipped to 500 chars) |
+| activate | owner conversation not bound to a project | 409 `plan_owner_project_unbound`, plan stays `draft` |
 | dispatch | node ready but cap reached | stays `pending`; refilled FIFO when a slot frees |
 | spawn | spawn throws | node → `blocked`, reason `dag_spawn_failed: <msg>` |
 | completion | slot event with unknown conversation / non-DAG source | ignored entirely |

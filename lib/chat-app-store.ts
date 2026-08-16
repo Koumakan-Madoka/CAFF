@@ -2521,6 +2521,17 @@ export class ChatAppStore {
       );
     }
 
+    // Activate preflight: the owner conversation must be bound to a project
+    // scope. DAG dispatch resolves the repo (worktree + spawn) from it; without
+    // a binding every node would fail-closed block with dag_spawn_failed.
+    if (options.markActivatedAt && !String(owner.project_scope_id || '').trim()) {
+      throw createPlanError(
+        409,
+        'plan_owner_project_unbound',
+        'Bind the conversation to a project before activating the plan; node dispatch requires a project repository'
+      );
+    }
+
     const timestamp = nowIso();
     const row = this.planRepository.updateWithVersionGuard({
       id: existing.id,
