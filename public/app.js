@@ -235,6 +235,7 @@ const dom = {
   sendButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('send-button')),
   conversationSettingsForm: /** @type {HTMLFormElement | null} */ (document.getElementById('conversation-settings-form')),
   conversationTitleInput: /** @type {HTMLInputElement | null} */ (document.getElementById('conversation-title-input')),
+  renameConversationButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('rename-conversation-button')),
   conversationAgentOptions: /** @type {HTMLElement | null} */ (document.getElementById('conversation-agent-options')),
   saveConversationButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('save-conversation-button')),
   bulkSkillSelect: /** @type {HTMLSelectElement | null} */ (document.getElementById('bulk-skill-select')),
@@ -832,6 +833,8 @@ const noopRenderer = {
   async openWithQuery(..._args) {},
   render(..._args) {},
   toggle(..._args) {},
+  startRename(..._args) {},
+  cancelRename(..._args) {},
 };
 
 const noopPlanPanelController = {
@@ -4382,6 +4385,24 @@ function bindEvents() {
       return;
     }
 
+    const renameButton =
+      event.target instanceof Element
+        ? /** @type {HTMLButtonElement | null} */ (event.target.closest('.conversation-rename-button'))
+        : null;
+    if (renameButton) {
+      conversationListRenderer.startRename(renameButton.dataset.renameConversationId || '');
+      return;
+    }
+
+    const renameCancel =
+      event.target instanceof Element
+        ? /** @type {HTMLButtonElement | null} */ (event.target.closest('.conversation-rename-cancel'))
+        : null;
+    if (renameCancel) {
+      conversationListRenderer.cancelRename();
+      return;
+    }
+
     const item =
       event.target instanceof Element ? /** @type {HTMLElement | null} */ (event.target.closest('.conversation-item')) : null;
 
@@ -4397,6 +4418,26 @@ function bindEvents() {
       }
     } catch (error) {
       showToast(error.message);
+    }
+  });
+
+  dom.conversationList.addEventListener('submit', async (event) => {
+    const renameForm =
+      event.target instanceof Element
+        ? /** @type {HTMLFormElement | null} */ (event.target.closest('.conversation-rename-form'))
+        : null;
+    if (!renameForm) {
+      return;
+    }
+
+    event.preventDefault();
+    const titleInput = /** @type {HTMLInputElement | null} */ (renameForm.querySelector('input[name="title"]'));
+    const renamed = await renameConversation(
+      renameForm.dataset.renameConversationId || '',
+      titleInput ? titleInput.value : ''
+    );
+    if (renamed) {
+      conversationListRenderer.cancelRename();
     }
   });
 
@@ -4761,6 +4802,41 @@ function bindEvents() {
     }
   });
 
+  async function renameConversation(conversationId, rawTitle) {
+    const id = String(conversationId || '').trim();
+    const title = String(rawTitle || '').trim();
+
+    if (!id) {
+      showToast('请先选择一个会话');
+      return false;
+    }
+
+    if (!title) {
+      showToast('标题不能为空');
+      return false;
+    }
+
+    try {
+      // 手动改名：显式声明 titleSource 为 manual，此后首条消息截断与
+      // LLM 精炼等自动标题流程都会被 store 层状态机拒绝，标题保持不变。
+      const result = await fetchJson(`/api/conversations/${encodeURIComponent(id)}`, {
+        method: 'PUT',
+        body: { title, titleSource: 'manual' },
+      });
+      if (state.currentConversation && state.currentConversation.id === id) {
+        state.currentConversation = result.conversation;
+        syncToolTraceStatesWithConversation(state.currentConversation);
+      }
+      mergeConversationSummary(result.conversation);
+      renderAll();
+      showToast('会话已重命名，自动标题将不再覆盖它');
+      return true;
+    } catch (error) {
+      showToast(error && error.message ? error.message : '重命名失败');
+      return false;
+    }
+  }
+
   dom.conversationSettingsForm.addEventListener('submit', async (event) => {
     event.preventDefault();
 
@@ -4776,10 +4852,12 @@ function bindEvents() {
     }
 
     try {
+      // 会话设置只提交参与者，不回写标题：
+      // 标题写入会被状态机视为 manual（手动改名），保存设置不应意外锁定自动标题。
+      // 改名请使用“会话标题”区域的专属入口。
       const result = await fetchJson(`/api/conversations/${state.currentConversation.id}`, {
         method: 'PUT',
         body: {
-          title: state.currentConversation.title,
           participants,
         },
       });
@@ -4792,6 +4870,26 @@ function bindEvents() {
       showToast(error.message);
     }
   });
+
+  if (dom.renameConversationButton) {
+    dom.renameConversationButton.addEventListener('click', async (event) => {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+
+      if (!state.currentConversation) {
+        showToast('请先选择一个会话');
+        return;
+      }
+
+      const renamed = await renameConversation(
+        state.currentConversation.id,
+        dom.conversationTitleInput ? dom.conversationTitleInput.value : ''
+      );
+      if (renamed && dom.conversationTitleInput && state.currentConversation) {
+        dom.conversationTitleInput.value = state.currentConversation.title;
+      }
+    });
+  }
 
   if (dom.feishuChatSelect) {
     dom.feishuChatSelect.addEventListener('change', () => {

@@ -5624,7 +5624,7 @@ body.chat-app .conversation-meta-line .mini-badge {
 /* F003: compact conversation tree */
 body.chat-app .conversation-tree-row {
   display: grid;
-  grid-template-columns: 44px minmax(0, 1fr) 44px;
+  grid-template-columns: 44px minmax(0, 1fr) 44px 44px;
   align-items: center;
   min-width: 0;
   padding-left: calc(var(--tree-depth, 0) * 14px);
@@ -5661,8 +5661,52 @@ body.chat-app .conversation-tree-toggle:focus-visible {
   background: color-mix(in srgb, var(--caff-accent) 10%, transparent);
 }
 
-body.chat-app .conversation-spawn-button {
+body.chat-app .conversation-rename-button {
   grid-column: 3;
+  grid-row: 1;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--caff-ink-soft);
+  font: inherit;
+  font-size: 0.95rem;
+  opacity: 0;
+  cursor: pointer;
+}
+
+body.chat-app .conversation-tree-row:hover .conversation-rename-button,
+body.chat-app .conversation-tree-row:focus-within .conversation-rename-button {
+  opacity: 1;
+}
+
+body.chat-app .conversation-rename-button:hover:not(:disabled),
+body.chat-app .conversation-rename-button:focus-visible {
+  color: var(--caff-accent-deep);
+  background: color-mix(in srgb, var(--caff-accent) 10%, transparent);
+}
+
+body.chat-app .conversation-rename-form {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 4px 0;
+}
+
+body.chat-app .conversation-rename-form input {
+  flex: 1;
+  min-width: 0;
+}
+
+body.chat-app .conversation-rename-form button {
+  flex: none;
+}
+
+body.chat-app .conversation-spawn-button {
+  grid-column: 4;
   grid-row: 1;
   width: 44px;
   height: 44px;

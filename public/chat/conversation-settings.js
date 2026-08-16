@@ -440,6 +440,20 @@
         dom.saveConversationButton.disabled = disabled;
       }
 
+      // 会话标题（手动改名）入口：仅在切换会话时回填输入框，避免覆盖用户正在编辑的内容。
+      if (dom.conversationTitleInput) {
+        const renameConversationId = conversation ? conversation.id : '';
+        if (dom.conversationTitleInput.dataset.conversationId !== renameConversationId) {
+          dom.conversationTitleInput.dataset.conversationId = renameConversationId;
+          dom.conversationTitleInput.value = conversation ? conversation.title : '';
+        }
+        dom.conversationTitleInput.disabled = disabled;
+      }
+
+      if (dom.renameConversationButton) {
+        dom.renameConversationButton.disabled = disabled;
+      }
+
       fillBulkSkillSelect(dom.bulkSkillSelect ? dom.bulkSkillSelect.value : '');
       fillFeishuChatSelect(
         conversationFeishuBinding
