@@ -58,6 +58,7 @@ const { createWerewolfService } = require('../domain/werewolf/werewolf-service')
 const { createAgentToolBridge } = require('../domain/runtime/agent-tool-bridge');
 const { createDagScheduler } = require('../domain/dag/dag-scheduler');
 const { prepareNodeWorktree, resolveDagWorktreePath } = require('../../lib/dag-worktree');
+const { prepareMergeNodeWorktree, verifyMergeOutcome } = require('../../lib/dag-merge');
 const { createFeishuClient } = require('../domain/integrations/feishu/feishu-client');
 const { createFeishuIntegrationService } = require('../domain/integrations/feishu/feishu-service');
 const {
@@ -682,11 +683,41 @@ export function createServerApp(options: any = {}) {
       store,
       broadcastEvent,
       // D22: prepare the per-node worktree against the owning project's repo.
+      // Merge nodes go through the merge executor (D11): integration branch
+      // checked out from the upstream LCA into the dedicated worktree.
       prepareNodeWorktree({ ownerConversationId, plan, node }: any) {
         const owner = store.getConversationWithoutMessages(ownerConversationId);
         const repoRoot = resolveProjectDirForScope(owner && owner.projectScopeId);
         if (!repoRoot) {
           return { ok: false, error: 'no active project directory for worktree preparation' };
+        }
+        if (String(node && node.kind || '') === 'merge') {
+          const nodeById = new Map<string, any>(
+            (plan && plan.doc && Array.isArray(plan.doc.nodes) ? plan.doc.nodes : [])
+              .map((candidate: any) => [String(candidate && candidate.id || '').trim(), candidate] as [string, any])
+          );
+          const upstreamBranches = (Array.isArray(node && node.depends_on) ? node.depends_on : [])
+            .map((depId: any) => {
+              const parent = nodeById.get(String(depId || '').trim());
+              return parent ? String(parent.branch || '').trim() : '';
+            });
+          if (upstreamBranches.some((branch: string) => !branch)) {
+            return { ok: false, error: 'dag_merge_missing_upstream_branch: every upstream node must declare a branch before the merge node can start' };
+          }
+          const mergeResult = prepareMergeNodeWorktree({
+            repoRoot,
+            planId: plan && plan.id,
+            node: {
+              id: node && node.id,
+              branch: String(node && node.branch || '').trim() || `dag/${plan && String(plan.id || '').slice(0, 8)}/${node && node.id}`,
+              base_branch: String(node && node.base_branch || '').trim() || undefined,
+            },
+            upstreamBranches,
+          });
+          if (!mergeResult.ok) {
+            return { ok: false, error: `${mergeResult.code || 'dag_worktree_failed'}: ${mergeResult.reason || ''}`.trim() };
+          }
+          return { ok: true, path: mergeResult.path, reused: Boolean(mergeResult.reused) };
         }
         const result = prepareNodeWorktree({
           repoRoot,
@@ -699,6 +730,39 @@ export function createServerApp(options: any = {}) {
           return { ok: false, error: `${result.code || 'dag_worktree_failed'}: ${result.error || result.reason || ''}`.trim() };
         }
         return { ok: true, path: result.path, reused: Boolean(result.reused) };
+      },
+      // D11/D19 fail-closed post-check: a merge node may only flip to done
+      // when every source branch is merged into the integration HEAD and the
+      // node verify command passes inside the integration worktree.
+      verifyNodeCompletion({ ownerConversationId, plan, node }: any) {
+        if (String(node && node.kind || '') !== 'merge') {
+          return { ok: true };
+        }
+        const owner = store.getConversationWithoutMessages(ownerConversationId);
+        const repoRoot = resolveProjectDirForScope(owner && owner.projectScopeId);
+        if (!repoRoot) {
+          return { ok: false, error: 'no active project directory for merge verification' };
+        }
+        const worktreePath = resolveDagWorktreePath(repoRoot, String(plan && plan.id || ''), String(node && node.id || ''));
+        if (!worktreePath || !require('node:fs').existsSync(worktreePath)) {
+          return { ok: false, error: 'integration worktree missing after reported merge completion' };
+        }
+        const nodeById = new Map<string, any>(
+          (plan && plan.doc && Array.isArray(plan.doc.nodes) ? plan.doc.nodes : [])
+            .map((candidate: any) => [String(candidate && candidate.id || '').trim(), candidate] as [string, any])
+        );
+        const sourceBranches = (Array.isArray(node && node.depends_on) ? node.depends_on : [])
+          .map((depId: any) => {
+            const parent = nodeById.get(String(depId || '').trim());
+            return parent ? String(parent.branch || '').trim() : '';
+          })
+          .filter(Boolean);
+        const verdict = verifyMergeOutcome({
+          worktreePath,
+          sourceBranches,
+          verifyCommand: String(node && node.verify || '').trim() || undefined,
+        });
+        return verdict.ok ? { ok: true } : { ok: false, error: verdict.reason };
       },
       // D22 cwd hook backing store: derive the worktree path statelessly.
       resolveWorktreePathForNode({ ownerConversationId, plan, node }: any) {

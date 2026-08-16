@@ -571,3 +571,110 @@ test('merge node instruction embeds source branch order and verify command (D26)
   assert.ok(instruction.includes('merge --abort'));
   assert.equal(getNode(store, 'm1').status, 'doing');
 });
+
+test('merge node completion is gated by verifyNodeCompletion: pass → done, fail → blocked (D11/D19 fail-closed)', async () => {
+  const store = createStore(test);
+  createRoot(store);
+  createActivePlan(store, makeDoc([
+    node('n1'),
+    node('n2'),
+    node('m1', { depends_on: ['n1', 'n2'], kind: 'merge', branch: 'dag/integrate', verify: 'npm test' }),
+    node('n3', { depends_on: ['m1'] }),
+  ]));
+  store.writePlanNodeExecution(ROOT_ID, [
+    { nodeId: 'n1', status: 'done', result: 'r1' },
+    { nodeId: 'n2', status: 'done', result: 'r2' },
+  ]);
+
+  let verdict = { ok: false, error: 'source branch "dag/n2" is not merged into the integration branch (D11)' };
+  const verifyCalls = [];
+  const { scheduler } = createHarness(store, {
+    schedulerOptions: {
+      verifyNodeCompletion(input) {
+        verifyCalls.push({ nodeId: input.node.id, kind: input.node.kind });
+        return verdict;
+      },
+    },
+  });
+
+  scheduler.handleEvent('conversation_plan_updated', {
+    ownerConversationId: ROOT_ID,
+    plan: store.getPlanForConversation(ROOT_ID).plan,
+  });
+  await flush(scheduler);
+  assert.equal(getNode(store, 'm1').status, 'doing');
+
+  // Merger agent reports completion, but the outcome check fails → blocked.
+  scheduler.handleEvent('agent_slot_finished', {
+    conversationId: 'child-m1',
+    slot: { sourceMessageId: 'bootstrap-m1', status: 'completed', finalContent: 'merged' },
+  });
+  await flush(scheduler);
+
+  assert.equal(verifyCalls.length, 1);
+  assert.equal(getNode(store, 'm1').status, 'blocked');
+  assert.equal(getNode(store, 'm1').result, undefined, 'blocked merge must not record a result');
+  assert.equal(getNode(store, 'n3').status, 'pending', 'D16: downstream of blocked merge stays pending');
+  const blockedHistory = historyFor(store, 'm1').map((entry) => `${entry.from}->${entry.to}:${entry.reason}`);
+  assert.ok(blockedHistory.some((line) => line.startsWith('doing->blocked:dag_merge_verify_failed:')), JSON.stringify(blockedHistory));
+
+  // Manual unblock + operator re-flip to doing, then a passing verdict → done.
+  store.writePlanNodeExecution(ROOT_ID, [{ nodeId: 'm1', status: 'doing' }], { reason: 'manual retry after fixing merge' });
+  verdict = { ok: true };
+  scheduler.handleEvent('agent_slot_finished', {
+    conversationId: 'child-m1',
+    slot: { sourceMessageId: 'bootstrap-m1', status: 'completed', finalContent: 'merged for real' },
+  });
+  await flush(scheduler);
+
+  assert.equal(verifyCalls.length, 2);
+  assert.equal(getNode(store, 'm1').status, 'done');
+  assert.equal(getNode(store, 'm1').result, 'merged for real');
+  assert.equal(getNode(store, 'n3').status, 'doing', 'downstream dispatches after the merge passes verification');
+});
+
+test('verifyNodeCompletion errors fail closed (exception → blocked), and work nodes skip the hook', async () => {
+  const store = createStore(test);
+  createRoot(store);
+  createActivePlan(store, makeDoc([
+    node('n1'),
+    node('m1', { depends_on: ['n1'], kind: 'merge', branch: 'dag/integrate' }),
+  ]));
+  const verifyCalls = [];
+  const { scheduler } = createHarness(store, {
+    schedulerOptions: {
+      verifyNodeCompletion(input) {
+        verifyCalls.push(input.node.id);
+        throw new Error('worktree gone');
+      },
+    },
+  });
+
+  scheduler.handleEvent('conversation_plan_updated', {
+    ownerConversationId: ROOT_ID,
+    plan: store.getPlanForConversation(ROOT_ID).plan,
+  });
+  await flush(scheduler);
+  assert.equal(getNode(store, 'n1').status, 'doing');
+
+  // Work node completion never invokes the merge hook.
+  scheduler.handleEvent('agent_slot_finished', {
+    conversationId: 'child-n1',
+    slot: { sourceMessageId: 'bootstrap-n1', status: 'completed', finalContent: 'done' },
+  });
+  await flush(scheduler);
+  assert.equal(getNode(store, 'n1').status, 'done');
+  assert.equal(verifyCalls.length, 0);
+  assert.equal(getNode(store, 'm1').status, 'doing');
+
+  // Merge node completion with a throwing hook → blocked, not done.
+  scheduler.handleEvent('agent_slot_finished', {
+    conversationId: 'child-m1',
+    slot: { sourceMessageId: 'bootstrap-m1', status: 'completed', finalContent: 'merged' },
+  });
+  await flush(scheduler);
+  assert.equal(verifyCalls.length, 1);
+  assert.equal(getNode(store, 'm1').status, 'blocked');
+  const reasons = historyFor(store, 'm1').map((entry) => entry.reason || '');
+  assert.ok(reasons.some((reason) => reason.includes('worktree gone')), JSON.stringify(reasons));
+});

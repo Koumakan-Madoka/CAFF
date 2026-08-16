@@ -11,7 +11,10 @@
  *   spawned conversation's terminal slot flips the node to done (with a
  *   ≤2000-char result summary) or blocked (with the failure reason), then
  *   readiness dispatch runs again so downstream nodes start (D16-consistent:
- *   a blocked upstream never lets downstream start).
+ *   a blocked upstream never lets downstream start). Merge nodes additionally
+ *   pass through the `verifyNodeCompletion` hook (D11/D19 fail-closed): every
+ *   source branch must be merged and the verify command must pass, otherwise
+ *   the completion becomes blocked with the verification reason.
  * - `reconcileOnStartup()` → D25: re-scan active plans after a server
  *   restart; finished children are written back, interrupted children get ONE
  *   automatic resume injection into the original conversation (marker
@@ -76,6 +79,11 @@ export function createDagScheduler(options: any = {}) {
   const prepareNodeWorktreeForNode = typeof options.prepareNodeWorktree === 'function'
     ? options.prepareNodeWorktree
     : () => ({ ok: true });
+  // Merge-node post-check (D11/D19 fail-closed): called before a merge node
+  // may flip to done; { ok: false, error } turns the completion into blocked.
+  const verifyNodeCompletion = typeof options.verifyNodeCompletion === 'function'
+    ? options.verifyNodeCompletion
+    : null;
   const logger = options.logger || console;
   const maxConcurrency = Number.isInteger(options.maxConcurrency) && options.maxConcurrency > 0
     ? options.maxConcurrency
@@ -234,19 +242,43 @@ export function createDagScheduler(options: any = {}) {
     return null;
   }
 
+  /** done write-back, guarded by the merge-outcome check for merge nodes. */
+  function settleCompleted(ownerConversationId: string, plan: any, node: any, resultText: string, reason: string): void {
+    const nodeId = String(node && node.id || '').trim();
+    if (String(node && node.kind || '') === 'merge' && verifyNodeCompletion) {
+      let verdict: any = null;
+      try {
+        verdict = verifyNodeCompletion({ ownerConversationId, plan, node });
+      } catch (error: any) {
+        verdict = { ok: false, error: error && error.message ? error.message : String(error) };
+      }
+      if (verdict && verdict.ok === false) {
+        writeExecution(
+          ownerConversationId,
+          [{ nodeId, status: 'blocked' }],
+          `dag_merge_verify_failed: ${clipText(verdict.error || 'merge outcome verification failed', 500)}`
+        );
+        return;
+      }
+    }
+    writeExecution(ownerConversationId, [{ nodeId, status: 'done', result: resultText }], reason);
+  }
+
   /** Write back a terminal child state: done+result or blocked+reason (D23/D18). */
-  function settleTerminalReply(ownerConversationId: string, nodeId: string, terminal: { kind: string; message: any }, reasonPrefix: string): void {
+  function settleTerminalReply(ownerConversationId: string, plan: any, node: any, terminal: { kind: string; message: any }, reasonPrefix: string): void {
     if (terminal.kind === 'completed') {
-      writeExecution(
+      settleCompleted(
         ownerConversationId,
-        [{ nodeId, status: 'done', result: clipText(String(terminal.message.content || '').trim() || '(no textual result)', 2000) }],
+        plan,
+        node,
+        clipText(String(terminal.message.content || '').trim() || '(no textual result)', 2000),
         `${reasonPrefix}_completed`
       );
       return;
     }
     writeExecution(
       ownerConversationId,
-      [{ nodeId, status: 'blocked' }],
+      [{ nodeId: String(node && node.id || '').trim(), status: 'blocked' }],
       `${reasonPrefix}_failed: ${clipText(terminal.message.errorMessage || 'spawned conversation turn failed', 500)}`
     );
   }
@@ -324,7 +356,7 @@ export function createDagScheduler(options: any = {}) {
       const spawnedConversation = store.getConversation(spawnedConversationId);
       const terminal = spawnedConversation ? findTerminalDagReply(spawnedConversation) : null;
       if (terminal) {
-        settleTerminalReply(ownerConversationId, nodeId, terminal, 'dag_dispatch_settled');
+        settleTerminalReply(ownerConversationId, current.plan, node, terminal, 'dag_dispatch_settled');
       }
     } catch (settleError) {
       logError(`post-bind settle failed for node ${nodeId}`, settleError);
@@ -407,7 +439,7 @@ export function createDagScheduler(options: any = {}) {
             || '(no textual result)',
           2000
         );
-        writeExecution(ownerConversationId, [{ nodeId, status: 'done', result: resultText }], 'dag_node_completed');
+        settleCompleted(ownerConversationId, plan, node, resultText, 'dag_node_completed');
       } else {
         const reason = (slot.errorMessage && String(slot.errorMessage).trim())
           || `spawned conversation slot ${slotStatus || 'failed'}`;
@@ -469,7 +501,7 @@ export function createDagScheduler(options: any = {}) {
 
       const terminal = findTerminalDagReply(conversation);
       if (terminal) {
-        settleTerminalReply(ownerConversationId, nodeId, terminal, 'dag_reconcile');
+        settleTerminalReply(ownerConversationId, plan, node, terminal, 'dag_reconcile');
         continue;
       }
 
