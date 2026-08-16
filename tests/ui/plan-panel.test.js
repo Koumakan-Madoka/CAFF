@@ -24,6 +24,11 @@ const FIXTURE_IDS = [
   'plan-node-status',
   'plan-node-kind',
   'plan-node-branch',
+  'plan-node-verify',
+  'plan-node-base-branch',
+  'plan-node-execution',
+  'plan-history',
+  'plan-history-list',
   'plan-node-deps',
   'plan-node-spawned',
   'plan-node-delete-button',
@@ -39,7 +44,7 @@ const FIXTURE_IDS = [
 ];
 
 function buildWindow() {
-  const inputs = ['plan-node-title', 'plan-node-branch'];
+  const inputs = ['plan-node-title', 'plan-node-branch', 'plan-node-verify', 'plan-node-base-branch'];
   const textareas = ['plan-node-goal'];
   const selects = ['plan-node-status', 'plan-node-kind'];
   const fixture = FIXTURE_IDS.map((id) => {
@@ -48,6 +53,9 @@ function buildWindow() {
     }
     if (textareas.includes(id)) {
       return `<textarea id="${id}"></textarea>`;
+    }
+    if (id === 'plan-history') {
+      return '<details id="plan-history"><summary>执行历史</summary></details>';
     }
     if (selects.includes(id)) {
       const options = id === 'plan-node-status'
@@ -598,4 +606,150 @@ test('plan-panel: editor form renders dependency chips with remove buttons in dr
   await flush();
   const savedN2 = saved[0].doc.nodes.find((entry) => entry.id === 'n2');
   assert.deepEqual(Array.from(savedN2.depends_on), [], 'chip removal persisted');
+});
+
+test('normalizeDoc preserves dag-execution fields (verify/base_branch/result)', () => {
+  const window = buildWindow();
+  const { normalizeDoc } = window.CaffChat.planDagView;
+  const doc = {
+    nodes: [
+      {
+        id: 'm1', title: '合并', goal: '', status: 'pending', depends_on: [], branch: 'feat/m', kind: 'merge',
+        verify: 'npm test', base_branch: 'feat/base', result: '已合并两条分支',
+        spawned_conversation_id: null,
+      },
+      { id: 'w1', title: '普通', goal: '', status: 'pending', depends_on: [], branch: '', kind: 'work', verify: '  ', result: '' },
+    ],
+    history: [{ node_id: 'm1', from: 'pending', to: 'doing', at: '2026-08-16T00:00:00.000Z', actor: 'system' }],
+  };
+  const normalized = normalizeDoc(doc);
+  const m1 = normalized.nodes.find((node) => node.id === 'm1');
+  assert.equal(m1.verify, 'npm test');
+  assert.equal(m1.base_branch, 'feat/base');
+  assert.equal(m1.result, '已合并两条分支');
+  const w1 = normalized.nodes.find((node) => node.id === 'w1');
+  assert.equal('verify' in w1, false, 'blank verify is dropped');
+  assert.equal('result' in w1, false, 'blank result is dropped');
+  assert.equal('base_branch' in w1, false);
+});
+
+test('deriveNodeBadges flags ready and upstream-blocked pending nodes', () => {
+  const window = buildWindow();
+  const { deriveNodeBadges } = window.CaffChat.planDagView;
+  const doc = {
+    nodes: [
+      { id: 'n1', status: 'done', depends_on: [] },
+      { id: 'n2', status: 'blocked', depends_on: ['n1'] },
+      { id: 'n3', status: 'pending', depends_on: ['n2'] }, // 传递上游 blocked
+      { id: 'n4', status: 'pending', depends_on: ['n1'] }, // 全部上游 done → ready
+      { id: 'n5', status: 'pending', depends_on: ['n3'] }, // 传递上游 blocked（隔一层）
+      { id: 'n6', status: 'pending', depends_on: ['n4'] }, // 上游 pending → 无徽标
+    ],
+  };
+  const badges = deriveNodeBadges(doc);
+  // jsdom 跨 realm：deriveNodeBadges 返回的对象原型与测试侧不同，逐字段断言
+  const badgeOf = (id) => {
+    const badge = badges.get(id);
+    return badge ? { ready: badge.ready, upstreamBlocked: badge.upstreamBlocked } : null;
+  };
+  assert.deepEqual(badgeOf('n3'), { ready: false, upstreamBlocked: true });
+  assert.deepEqual(badgeOf('n5'), { ready: false, upstreamBlocked: true }, 'transitive blocked propagates');
+  assert.deepEqual(badgeOf('n4'), { ready: true, upstreamBlocked: false });
+  assert.equal(badges.has('n6'), false, 'waiting on pending upstream: no badge');
+  assert.equal(badges.has('n2'), false, 'non-pending nodes get no badge');
+});
+
+test('renderGraph renders derived badges when provided', () => {
+  const window = buildWindow();
+  const { renderGraph } = window.CaffChat.planDagView;
+  const container = window.document.getElementById('plan-graph');
+  const badges = new Map([
+    ['n3', { ready: true, upstreamBlocked: false }],
+    ['n4', { ready: false, upstreamBlocked: true }],
+  ]);
+  renderGraph(container, sampleDoc(), { badges });
+  const ready = container.querySelector('[data-node-id="n3"] .plan-node-derived-badge.badge-ready');
+  assert.ok(ready, 'ready badge rendered');
+  assert.match(ready.textContent, /就绪待派发/);
+  const blocked = container.querySelector('[data-node-id="n4"] .plan-node-derived-badge.badge-blocked');
+  assert.ok(blocked, 'upstream-blocked badge rendered');
+  assert.match(blocked.textContent, /上游阻塞/);
+  assert.equal(container.querySelector('[data-node-id="n1"] .plan-node-derived-badge'), null, 'no badge without entry');
+});
+
+test('active plan shows derived badges, history timeline and node execution info; saves omit history', async () => {
+  const window = buildWindow();
+  const refs = domRefs(window);
+  const saved = [];
+  const state = { currentConversation: { id: 'conv-1' } };
+  const doc = {
+    nodes: [
+      { id: 'n1', title: '根任务', goal: '', status: 'done', depends_on: [], branch: 'feat/root', kind: 'work', result: '根任务完成' },
+      { id: 'n2', title: '并行A', goal: '', status: 'blocked', depends_on: ['n1'], branch: '', kind: 'work' },
+      { id: 'n3', title: '并行B', goal: '', status: 'pending', depends_on: ['n1'], branch: '', kind: 'work' },
+      { id: 'n4', title: '合并', goal: '', status: 'pending', depends_on: ['n2', 'n3'], branch: '', kind: 'merge' },
+    ],
+    history: [
+      { node_id: 'n1', from: 'doing', to: 'done', at: '2026-08-16T01:00:00.000Z', actor: 'system' },
+      { node_id: 'n2', from: 'doing', to: 'blocked', at: '2026-08-16T02:00:00.000Z', actor: 'system', reason: 'worktree 脏目录' },
+    ],
+  };
+
+  const controller = window.CaffChat.createPlanPanelController({
+    state,
+    dom: refs,
+    helpers: {
+      async fetchPlan() {
+        return { ownerConversationId: 'conv-1', plan: samplePlan({ status: 'active', version: 3, doc }) };
+      },
+      async savePlan(conversationId, body) {
+        saved.push(body);
+        return { ownerConversationId: 'conv-1', plan: samplePlan({ status: 'active', version: body.version + 1, doc: body.doc }) };
+      },
+      async activatePlan() {
+        throw new Error('not used');
+      },
+      async revertPlan() {
+        throw new Error('not used');
+      },
+      async openConversation() {},
+    },
+    showToast() {},
+  });
+
+  controller.bindEvents();
+  controller.render();
+  await flush();
+  await flush();
+
+  // 派生徽标：n3 上游全 done → 就绪待派发；n4 传递上游 n2 blocked → 上游阻塞
+  assert.ok(refs.planGraph.querySelector('[data-node-id="n3"] .plan-node-derived-badge.badge-ready'), 'ready badge on n3');
+  assert.ok(refs.planGraph.querySelector('[data-node-id="n4"] .plan-node-derived-badge.badge-blocked'), 'blocked badge on n4');
+  assert.equal(refs.planGraph.querySelector('[data-node-id="n2"] .plan-node-derived-badge'), null, 'blocked node itself gets no derived badge');
+
+  // D18 历史时间线：最新在前，含原因
+  assert.equal(refs.planHistory.classList.contains('hidden'), false, 'history section visible');
+  assert.match(refs.planHistory.querySelector('summary').textContent, /执行历史（2）/);
+  const entries = refs.planHistoryList.querySelectorAll('.plan-history-entry');
+  assert.equal(entries.length, 2);
+  assert.match(entries[0].textContent, /并行A：进行 → 阻塞 · system · worktree 脏目录/);
+  assert.match(entries[1].textContent, /根任务：进行 → 完成 · system/);
+
+  // 节点执行信息：blocked 原因与 result 摘要
+  refs.planGraph.querySelector('[data-node-id="n2"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await flush();
+  assert.match(refs.planNodeExecution.textContent, /阻塞原因：worktree 脏目录/);
+  refs.planGraph.querySelector('[data-node-id="n1"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await flush();
+  assert.match(refs.planNodeExecution.textContent, /结果摘要：根任务完成/);
+
+  // 保存时 history 字段被剥离（服务端继承路径，D18）
+  refs.planNodeStatus.value = 'done';
+  refs.planNodeStatus.dispatchEvent(new window.Event('change', { bubbles: true }));
+  await flush();
+  await flush();
+  assert.equal(saved.length, 1);
+  assert.equal('history' in saved[0].doc, false, 'outbound payload omits server-owned history');
+  const savedN1 = saved[0].doc.nodes.find((entry) => entry.id === 'n1');
+  assert.equal(savedN1.result, '根任务完成', 'result field survives round-trip');
 });

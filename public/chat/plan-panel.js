@@ -33,18 +33,99 @@
     return {
       nodes: nodes
         .filter((node) => node && typeof node === 'object')
-        .map((node) => ({
-          id: String(node.id || '').trim(),
-          title: String(node.title || node.id || ''),
-          goal: String(node.goal || ''),
-          status: NODE_STATUSES.includes(node.status) ? node.status : 'pending',
-          depends_on: Array.isArray(node.depends_on) ? node.depends_on.map((dep) => String(dep || '').trim()).filter(Boolean) : [],
-          branch: node.branch ? String(node.branch) : '',
-          spawned_conversation_id: node.spawned_conversation_id ? String(node.spawned_conversation_id) : null,
-          kind: node.kind === 'merge' ? 'merge' : 'work',
-        }))
+        .map((node) => {
+          const normalized = {
+            id: String(node.id || '').trim(),
+            title: String(node.title || node.id || ''),
+            goal: String(node.goal || ''),
+            status: NODE_STATUSES.includes(node.status) ? node.status : 'pending',
+            depends_on: Array.isArray(node.depends_on) ? node.depends_on.map((dep) => String(dep || '').trim()).filter(Boolean) : [],
+            branch: node.branch ? String(node.branch) : '',
+            spawned_conversation_id: node.spawned_conversation_id ? String(node.spawned_conversation_id) : null,
+            kind: node.kind === 'merge' ? 'merge' : 'work',
+          };
+          // dag-execution schema 增量（D11/D19/D23）必须保真透传，否则前端
+          // 编辑草稿会把这些字段静默剥掉。空值不写出，保持载荷干净。
+          if (typeof node.verify === 'string' && node.verify.trim()) {
+            normalized.verify = node.verify;
+          }
+          if (typeof node.base_branch === 'string' && node.base_branch.trim()) {
+            normalized.base_branch = node.base_branch;
+          }
+          if (typeof node.result === 'string' && node.result.trim()) {
+            normalized.result = node.result;
+          }
+          return normalized;
+        })
         .filter((node) => node.id),
     };
+  }
+
+  /**
+   * 执行态派生徽标（纯展示，不改状态机）：
+   * - ready：pending 且全部传递上游均 done（D24：就绪但可能在等并发槽位）
+   * - upstreamBlocked：pending 且任一传递上游 blocked（D16 fail-closed 可见化）
+   * 返回 Map<nodeId, { ready, upstreamBlocked }>，仅含需要徽标的 pending 节点。
+   */
+  function deriveNodeBadges(doc) {
+    const normalized = normalizeDoc(doc);
+    const byId = new Map(normalized.nodes.map((node) => [node.id, node]));
+    const badges = new Map();
+    const memo = new Map();
+    const aggregate = (id, stack = new Set()) => {
+      if (memo.has(id)) {
+        return memo.get(id);
+      }
+      if (stack.has(id)) {
+        return { allDone: false, anyBlocked: false }; // 环兜底（服务端已拦截）
+      }
+      stack.add(id);
+      const node = byId.get(id);
+      const deps = (node ? node.depends_on : []).filter((dep) => byId.has(dep) && dep !== id);
+      let allDone = true;
+      let anyBlocked = false;
+      for (const dep of deps) {
+        const depNode = byId.get(dep);
+        if (depNode.status !== 'done') {
+          allDone = false;
+        }
+        if (depNode.status === 'blocked') {
+          anyBlocked = true;
+        }
+        const sub = aggregate(dep, stack);
+        if (!sub.allDone) {
+          allDone = false;
+        }
+        if (sub.anyBlocked) {
+          anyBlocked = true;
+        }
+      }
+      stack.delete(id);
+      const result = { allDone, anyBlocked };
+      memo.set(id, result);
+      return result;
+    };
+    for (const node of normalized.nodes) {
+      if (node.status !== 'pending') {
+        continue;
+      }
+      const agg = aggregate(node.id);
+      if (agg.anyBlocked) {
+        badges.set(node.id, { ready: false, upstreamBlocked: true });
+      } else if (agg.allDone) {
+        badges.set(node.id, { ready: true, upstreamBlocked: false });
+      }
+    }
+    return badges;
+  }
+
+  function formatHistoryTime(at) {
+    const date = new Date(at);
+    if (Number.isNaN(date.getTime())) {
+      return '';
+    }
+    const pad = (value) => String(value).padStart(2, '0');
+    return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
   }
 
   /** dagre 风格分层布局：longest-path 分层 + barycenter 排序扫描。 */
@@ -194,6 +275,7 @@
       onRemoveEdge = null,
       zoom = 1,
       locked = false,
+      badges = null,
     } = options;
     const linkable = !locked && typeof onLinkNodes === 'function';
     container.innerHTML = '';
@@ -324,6 +406,20 @@
       if (node.spawned_conversation_id) {
         const badge = svgEl('text', { class: 'plan-node-spawned', x: 12, y: NODE_HEIGHT - 8 });
         badge.textContent = '⤴ 已绑定子会话';
+        group.appendChild(badge);
+      }
+
+      // 执行态派生徽标（D16 上游阻塞 / D24 就绪待派发），右下角避免与
+      // 左侧 spawned 徽标和右上状态 chip 重叠
+      const derived = badges && typeof badges.get === 'function' ? badges.get(entry.id) : null;
+      if (derived) {
+        const badge = svgEl('text', {
+          class: `plan-node-derived-badge ${derived.upstreamBlocked ? 'badge-blocked' : 'badge-ready'}`,
+          x: NODE_WIDTH - 8,
+          y: NODE_HEIGHT - 8,
+          'text-anchor': 'end',
+        });
+        badge.textContent = derived.upstreamBlocked ? '⛔ 上游阻塞' : '⏳ 就绪待派发';
         group.appendChild(badge);
       }
 
@@ -505,7 +601,7 @@
   }
 
   // 暴露纯函数给测试与未来复用（tool 提示、导出等）
-  chat.planDagView = { layoutPlan, normalizeDoc, renderGraph };
+  chat.planDagView = { layoutPlan, normalizeDoc, renderGraph, deriveNodeBadges };
 
   chat.createPlanPanelController = function createPlanPanelController({ state, dom, helpers, showToast }) {
     const { fetchPlan, savePlan, activatePlan, revertPlan, openConversation } = helpers;
@@ -726,7 +822,12 @@
       saving = true;
       renderButtons();
       try {
-        const result = await savePlan(currentConversationId(), { doc, version: plan.version });
+        // history 由服务端全权维护（D18）：省略字段 = 继承存量。
+        // 显式回传草稿期克隆的旧 history 会在服务端追加新条目后
+        // 误触 append-only 前缀校验（409 plan_locked）。
+        const outgoing = { ...doc };
+        delete outgoing.history;
+        const result = await savePlan(currentConversationId(), { doc: outgoing, version: plan.version });
         plan = result.plan || plan;
         ownerConversationId = String(result.ownerConversationId || ownerConversationId);
         editDoc = null;
@@ -876,6 +977,7 @@
         selectedNodeId,
         zoom,
         locked: !isDraft(),
+        badges: doc && isActive() ? deriveNodeBadges(doc) : null,
         onLinkNodes: linkNodes,
         onRemoveEdge: removeEdge,
         onSelect(id) {
@@ -950,6 +1052,62 @@
       }, { passive: false });
     }
 
+    /** 节点执行信息：blocked 原因（取自 D18 history 最近条目）+ result 摘要（D23）。 */
+    function renderNodeExecution(node) {
+      const container = dom.planNodeExecution;
+      if (!container) {
+        return;
+      }
+      container.innerHTML = '';
+      const doc = workingDoc();
+      const history = doc && Array.isArray(doc.history) ? doc.history : [];
+      const lastBlocked = history
+        .slice()
+        .reverse()
+        .find((entry) => entry && entry.node_id === node.id && entry.to === 'blocked' && entry.reason);
+      if (node.status === 'blocked' && lastBlocked) {
+        const reason = document.createElement('p');
+        reason.className = 'plan-node-blocked-reason';
+        reason.textContent = `⛔ 阻塞原因：${lastBlocked.reason}`;
+        container.appendChild(reason);
+      }
+      if (node.result) {
+        const result = document.createElement('p');
+        result.className = 'plan-node-result';
+        result.textContent = `📦 结果摘要：${node.result}`;
+        container.appendChild(result);
+      }
+      container.classList.toggle('hidden', container.childNodes.length === 0);
+    }
+
+    /** D18 执行历史时间线：只读展示服务端已落库的 history（最近 20 条，新的在前）。 */
+    function renderHistory() {
+      if (!dom.planHistory || !dom.planHistoryList) {
+        return;
+      }
+      const doc = plan ? plan.doc : null;
+      const history = doc && Array.isArray(doc.history) ? doc.history : [];
+      dom.planHistory.classList.toggle('hidden', history.length === 0);
+      dom.planHistoryList.innerHTML = '';
+      if (history.length === 0) {
+        return;
+      }
+      const summary = dom.planHistory.querySelector('summary');
+      if (summary) {
+        summary.textContent = `执行历史（${history.length}）`;
+      }
+      const titleOf = new Map(((doc && doc.nodes) || []).map((node) => [node.id, node.title || node.id]));
+      for (const entry of history.slice(-20).reverse()) {
+        const row = document.createElement('p');
+        row.className = 'plan-history-entry';
+        const time = formatHistoryTime(entry.at);
+        const label = titleOf.get(entry.node_id) || entry.node_id;
+        const reason = entry.reason ? ` · ${truncate(entry.reason, 60)}` : '';
+        row.textContent = `${time ? `${time} ` : ''}${label}：${STATUS_LABELS[entry.from] || entry.from} → ${STATUS_LABELS[entry.to] || entry.to} · ${entry.actor}${reason}`;
+        dom.planHistoryList.appendChild(row);
+      }
+    }
+
     function renderIssues() {
       if (!dom.planIssues) {
         return;
@@ -998,6 +1156,15 @@
         dom.planNodeKind.value = node.kind || 'work';
         dom.planNodeKind.disabled = locked;
       }
+      if (dom.planNodeVerify) {
+        dom.planNodeVerify.value = node.verify || '';
+        dom.planNodeVerify.disabled = locked;
+      }
+      if (dom.planNodeBaseBranch) {
+        dom.planNodeBaseBranch.value = node.base_branch || '';
+        dom.planNodeBaseBranch.disabled = locked;
+      }
+      renderNodeExecution(node);
       if (dom.planNodeDeleteButton) {
         dom.planNodeDeleteButton.disabled = locked || saving;
       }
@@ -1093,6 +1260,7 @@
       renderStatus();
       renderGraphs();
       renderEditor();
+      renderHistory();
       renderButtons();
     }
 
@@ -1272,6 +1440,20 @@
       });
       bindInput(dom.planNodeBranch, (target, value) => {
         target.branch = value;
+      });
+      bindInput(dom.planNodeVerify, (target, value) => {
+        if (value.trim()) {
+          target.verify = value;
+        } else {
+          delete target.verify;
+        }
+      });
+      bindInput(dom.planNodeBaseBranch, (target, value) => {
+        if (value.trim()) {
+          target.base_branch = value;
+        } else {
+          delete target.base_branch;
+        }
       });
       if (dom.planNodeKind) {
         dom.planNodeKind.addEventListener('change', () => {

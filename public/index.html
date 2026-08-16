@@ -256,6 +256,11 @@
           <p class="muted plan-hint">草稿态：底部手柄拖拽连边 · 点边或边中点 × 删边 · 双击编辑 · Delete 删节点 · Ctrl/⌘+滚轮缩放</p>
           <div id="plan-graph" class="plan-graph" aria-label="规划图画布"></div>
 
+          <details id="plan-history" class="plan-history hidden">
+            <summary>执行历史</summary>
+            <div id="plan-history-list" class="plan-history-list"></div>
+          </details>
+
           <div id="plan-editor" class="plan-editor hidden">
             <div class="section-row">
               <span class="section-label">节点 <strong id="plan-node-id"></strong></span>
@@ -291,6 +296,15 @@
               <span>分支（图构建期命名，执行时才检出）</span>
               <input id="plan-node-branch" type="text" maxlength="120" placeholder="feat/..." />
             </label>
+            <label>
+              <span>verify 命令（执行完成后的校验命令，可选）</span>
+              <input id="plan-node-verify" type="text" maxlength="200" placeholder="npm test" />
+            </label>
+            <label>
+              <span>base_branch（merge 检出基线，可选；须等于某个父节点分支，留空 = 上游 LCA）</span>
+              <input id="plan-node-base-branch" type="text" maxlength="120" placeholder="留空 = 上游 LCA" />
+            </label>
+            <div id="plan-node-execution" class="plan-node-execution hidden"></div>
             <div class="plan-deps-field">
               <span class="section-label">依赖（depends_on）</span>
               <div id="plan-node-deps" class="plan-deps-list"></div>
