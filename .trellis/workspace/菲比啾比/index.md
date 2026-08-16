@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 11
-- **Last Active**: 2026-04-24
+- **Total Sessions**: 12
+- **Last Active**: 2026-08-16
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~518 | Active |
+| `journal-1.md` | ~576 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 12 | 2026-08-16 | DAG 规划功能 POC 落地（feat/dag-planning-ui-poc） | `dedd470`, `fab22c0`, `6afd4d9` | `feat/dag-planning-ui-poc` |
 | 12 | 2026-04-24 | Close out skill-test chat workbench mode | `d45f871`, `92fbf53`, `31f56c3`, `a90522f`, `9fc3212` | `feat/skill-test-chat-workbench-mode` |
 | 11 | 2026-04-21 | Bind Current Conversation To Feishu Chat | `7036ad8`, `299d713` | `feat/feishu-conversation-binding` |
 | 10 | 2026-04-20 | Close out skill-test sandbox environment hardening | `8b05f67` | `feat/04-18-skill-test-host-loop-sandbox-tools` |

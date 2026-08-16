@@ -517,3 +517,60 @@ Committed the skill-test sandbox environment bootstrap and typing-hardening stac
 ### Next Steps
 
 - None - task complete
+
+
+## Session 12: DAG 规划功能 POC 落地（feat/dag-planning-ui-poc）
+
+**Date**: 2026-08-16
+**Task**: DAG 规划功能 POC 落地（feat/dag-planning-ui-poc）
+**Branch**: `feat/dag-planning-ui-poc`
+
+### Summary
+
+(Add summary)
+
+### Main Changes
+
+| Feature | Description |
+|---------|-------------|
+| plans 存储 | chat_plans 表（owner UNIQUE/version 乐观并发/FK 级联）+ conversations.branch 三路径迁移 |
+| plan 生命周期 | draft 可编辑 → active 锁结构 → done/archived |
+| API+校验 | GET/PUT/activate/revert + propose-plan tool；validatePlanDoc（无环/id 唯一/依赖存在） |
+| 前端 panel | dagre+SVG 可折叠面板：拖拽手柄连边、× 删边、缩放/全屏居中、dark 模式 CSS 变量 |
+| 测试 | 四步 demo 基线 + 9 条 plan-panel 测试；check/typecheck/全量测试 0 失败 |
+| 决策 | PRD 决策表 D1-D20 全量归档（含 merge 执行语义、扁平化子会话、权限边界、blocked 传播、status 审计、熔断） |
+
+**关键文件**:
+- `lib/plan-dag.ts` / `storage/chat/plan.repository.ts` / `storage/sqlite/migrations.ts`
+- `server/api/conversation-plan-controller.ts` / `server/api/agent-tools-controller.ts`
+- `public/chat/plan-panel.js` + `public/styles.css`（plan 配色变量）
+- `tests/ui/plan-panel.test.js` / `tests/ui/dag-planning-demo.test.js`
+
+**经验**:
+- pointer capture 会重定向 click：图谱内可交互 SVG 元素必须加入平移豁免名单
+- plan 配色禁止硬编码深色 rgba，走 CSS 变量以适配 dark 主题
+- 全量测试挂起根因：真实 FEISHU_* 环境变量注入导致长连接挂住事件循环，需 env -u 剥离后重跑
+- npx 会解析到另一 node 版本导致 better-sqlite3 ERR_DLOPEN_FAILED，直接 node 跑测试
+
+**遗留（第二阶段 backlog）**: 显式 input/output 字段、base_branch/merge_order、真实 git 检出与合并执行
+
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `dedd470` | (see git log) |
+| `fab22c0` | (see git log) |
+| `6afd4d9` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
