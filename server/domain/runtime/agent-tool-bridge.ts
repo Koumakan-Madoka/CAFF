@@ -3233,6 +3233,12 @@ export function createAgentToolBridge(options: any = {}) {
       const result = store.savePlanForConversation(context.conversationId, {
         doc,
         version: normalizedVersion,
+      }, {
+        actor: {
+          type: 'agent',
+          agentId: context.agentId,
+          conversationId: context.conversationId,
+        },
       });
 
       broadcastEvent('conversation_plan_updated', {

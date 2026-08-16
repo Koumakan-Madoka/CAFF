@@ -44,3 +44,6 @@ logs/
 nul
 tsconfig.public.tsbuildinfo
 tsconfig.typecheck.tsbuildinfo
+
+# DAG execution per-node worktrees (D22)
+.worktrees/

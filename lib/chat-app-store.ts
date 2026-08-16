@@ -18,7 +18,13 @@ const {
   createCrossConversationDeliveryRepository,
 } = require('../storage/chat/cross-conversation-delivery.repository');
 const { createChatPlanRepository } = require('../storage/chat/plan.repository');
-const { validatePlanDoc, validateStatusOnlyUpdate } = require('./plan-dag');
+const {
+  validatePlanDoc,
+  validateStatusOnlyUpdate,
+  appendPlanHistory,
+  diffNodeStatusTransitions,
+  findBlockedUpstreams,
+} = require('./plan-dag');
 
 const MAX_AVATAR_DATA_URL_LENGTH = 2 * 1024 * 1024;
 const MAX_AGENT_SANDBOX_NAME_LENGTH = 80;
@@ -755,6 +761,38 @@ function createPlanError(statusCode: number, code: string, message: string, deta
   error.code = code;
   Object.assign(error, details);
   return error;
+}
+
+/**
+ * Plan actor (D15/D18, .trellis/tasks/dag-execution/prd.md §3.4):
+ * - user   — the local single-user REST/UI channel (trusted)
+ * - agent  — authenticated agent-tool bridge invocations; D15 restricts
+ *            activate/revert to agents participating in the ROOT owner
+ *            conversation, invoked from that root conversation
+ * - system — internal scheduler write-backs (bypass D15, still audited)
+ */
+type PlanActor = { type: 'user' | 'agent' | 'system'; agentId?: string; conversationId?: string };
+
+function normalizePlanActor(actor: any): PlanActor {
+  if (!actor || typeof actor !== 'object') {
+    return { type: 'user' };
+  }
+  const type = ['user', 'agent', 'system'].includes(actor.type) ? actor.type : 'user';
+  return {
+    type,
+    agentId: typeof actor.agentId === 'string' && actor.agentId.trim() ? actor.agentId.trim() : undefined,
+    conversationId: typeof actor.conversationId === 'string' && actor.conversationId.trim()
+      ? actor.conversationId.trim()
+      : undefined,
+  };
+}
+
+/** History attribution label (D18): user / agent:<id> / system. */
+function planActorLabel(actor: PlanActor): string {
+  if (actor.type === 'agent') {
+    return `agent:${actor.agentId || 'unknown'}`;
+  }
+  return actor.type === 'system' ? 'system' : 'user';
 }
 
 function createParticipantRosterError(
@@ -2134,7 +2172,7 @@ export class ChatAppStore {
    * done/archived plans reject all writes. Version guard: callers must pass
    * the version they read, 409 on mismatch.
    */
-  savePlanForConversation(conversationId: any, payload: any = {}) {
+  savePlanForConversation(conversationId: any, payload: any = {}, options: any = {}) {
     const owner = this.resolvePlanOwnerConversation(conversationId);
     if (!owner) {
       throw createPlanError(404, 'conversation_not_found', 'Conversation not found');
@@ -2174,12 +2212,75 @@ export class ChatAppStore {
       throw createPlanError(409, 'plan_locked', `Plan is ${existing.status} and no longer accepts writes`);
     }
 
+    let activeWarnings: any[] = [];
+    let docToPersist = doc;
     if (existing.status === 'active') {
-      const statusOnly = validateStatusOnlyUpdate(parseJson(existing.doc_json), doc);
+      const oldDoc = parseJson(existing.doc_json);
+      // history is server-owned: callers that omit the field inherit the
+      // stored trail; callers that include it must keep it append-only
+      // (enforced by validateStatusOnlyUpdate below).
+      const workingDoc = !Array.isArray(doc.history)
+        && oldDoc && Array.isArray(oldDoc.history) && oldDoc.history.length > 0
+        ? { ...doc, history: oldDoc.history }
+        : doc;
+      docToPersist = workingDoc;
+      const statusOnly = validateStatusOnlyUpdate(oldDoc, workingDoc);
       if (!statusOnly.ok) {
         throw createPlanError(409, 'plan_locked', 'Active plan is structurally locked: only node status may change', {
           issues: statusOnly.issues,
         });
+      }
+      // Surface soft signals (e.g. done without result summary, D23).
+      activeWarnings = statusOnly.warnings;
+
+      const actor = normalizePlanActor(options.actor);
+      const transitions = diffNodeStatusTransitions(oldDoc, workingDoc);
+
+      // D16 fail-closed: pending→doing is rejected while any transitive
+      // upstream is blocked (evaluated on the incoming doc, so unblocking
+      // upstream + starting downstream in one write is allowed).
+      const blockedIssues: any[] = [];
+      for (const transition of transitions) {
+        if (transition.from === 'pending' && transition.to === 'doing') {
+          const blockedUpstreams = findBlockedUpstreams(workingDoc, transition.node_id);
+          if (blockedUpstreams.length > 0) {
+            blockedIssues.push({
+              code: 'plan_upstream_blocked',
+              nodeId: transition.node_id,
+              blockedUpstreams,
+              message: `Node ${transition.node_id} cannot start: blocked upstream(s): ${blockedUpstreams.join(', ')}`,
+            });
+          }
+        }
+      }
+      if (blockedIssues.length > 0) {
+        throw createPlanError(409, 'plan_upstream_blocked', 'Blocked upstream node(s); fail-closed (D16)', {
+          issues: blockedIssues,
+        });
+      }
+
+      // D18: server-owned audit trail — auto-append history entries for
+      // status transitions the caller did not already record in the
+      // appended suffix (pre-recording lets the scheduler attach reasons).
+      const oldHistoryLength = Array.isArray(oldDoc && oldDoc.history) ? oldDoc.history.length : 0;
+      const appendedSuffix = Array.isArray(workingDoc.history) ? workingDoc.history.slice(oldHistoryLength) : [];
+      const reason = typeof options.reason === 'string' && options.reason.trim() ? options.reason.trim() : undefined;
+      for (const transition of transitions) {
+        const alreadyRecorded = appendedSuffix.some((entry: any) => Boolean(entry)
+          && typeof entry === 'object'
+          && !Array.isArray(entry)
+          && entry.node_id === transition.node_id
+          && entry.from === transition.from
+          && entry.to === transition.to);
+        if (!alreadyRecorded) {
+          docToPersist = appendPlanHistory(docToPersist, {
+            node_id: transition.node_id,
+            from: transition.from,
+            to: transition.to,
+            actor: planActorLabel(actor),
+            reason,
+          });
+        }
       }
     }
 
@@ -2198,7 +2299,7 @@ export class ChatAppStore {
       expectedVersion,
       status: existing.status,
       version: expectedVersion + 1,
-      docJson: JSON.stringify(doc),
+      docJson: JSON.stringify(docToPersist),
       activatedAt: existing.activated_at,
       updatedAt: timestamp,
     });
@@ -2209,27 +2310,29 @@ export class ChatAppStore {
     return {
       ownerConversationId: owner.id,
       plan: normalizePlanRow(row),
-      warnings: validation.warnings,
+      warnings: validation.warnings.concat(activeWarnings),
     };
   }
 
-  /** draft → active. User-only entry point; snapshots by bumping version. */
-  activatePlanForConversation(conversationId: any) {
+  /** draft → active. D15: user / root-conversation participant agent only. */
+  activatePlanForConversation(conversationId: any, actor?: any) {
     return this.transitionPlanStatus(conversationId, {
       fromStatus: 'draft',
       toStatus: 'active',
       errorCode: 'plan_not_activatable',
       markActivatedAt: true,
+      actor,
     });
   }
 
   /** active → draft. Doc (including node status history) is preserved. */
-  revertPlanForConversation(conversationId: any) {
+  revertPlanForConversation(conversationId: any, actor?: any) {
     return this.transitionPlanStatus(conversationId, {
       fromStatus: 'active',
       toStatus: 'draft',
       errorCode: 'plan_not_revertible',
       markActivatedAt: false,
+      actor,
     });
   }
 
@@ -2237,6 +2340,23 @@ export class ChatAppStore {
     const owner = this.resolvePlanOwnerConversation(conversationId);
     if (!owner) {
       throw createPlanError(404, 'conversation_not_found', 'Conversation not found');
+    }
+
+    // D15: agent actors may only activate/revert when they participate in
+    // the ROOT owner conversation and invoke from it; child-conversation
+    // agents (and non-participants) are rejected with 403.
+    const actor = normalizePlanActor(options.actor);
+    if (actor.type === 'agent') {
+      const invokingFromRoot = Boolean(actor.conversationId) && actor.conversationId === owner.id;
+      const isRootParticipant = invokingFromRoot
+        && this.listConversationAgents(owner.id).some((agent: any) => agent && agent.id === actor.agentId);
+      if (!isRootParticipant) {
+        throw createPlanError(
+          403,
+          'plan_forbidden',
+          'Only the user or a root-conversation participant agent may activate/revert the plan (D15)'
+        );
+      }
     }
 
     const existing = this.planRepository.getByOwnerConversationId(owner.id);

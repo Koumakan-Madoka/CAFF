@@ -6,17 +6,30 @@
  * - agent tool thin wrapper (propose-plan)
  * - frontend bundle (plain JS, no server-only deps allowed here)
  *
- * Contract (PRD .trellis/tasks/dag-planning/prd.md, D3/D5):
+ * Contract (PRD .trellis/tasks/dag-planning/prd.md D3/D5,
+ * .trellis/tasks/dag-execution/prd.md D18/D19/D23):
  * - plan doc: { nodes: [{id, title, goal, status, depends_on[], branch,
- *   spawned_conversation_id, kind}], edges?: [{from, to}] }
+ *   spawned_conversation_id, kind, verify?, base_branch?, result?}],
+ *   edges?: [{from, to}], history?: [{node_id, from, to, at, actor, reason?}] }
  * - validation: unique node ids, depends_on references exist, acyclic,
- *   merge nodes with in-degree < 2 produce a warning
- * - active plans are structurally locked: only node `status` may change
+ *   merge nodes with in-degree < 2 produce a warning;
+ *   base_branch (when set) must equal a parent node's branch;
+ *   result is capped at PLAN_RESULT_MAX_LENGTH chars;
+ *   history is an append-only audit trail capped at PLAN_HISTORY_LIMIT
+ * - active plans are structurally locked: only node `status`/`result` may
+ *   change and history may only grow by appending
+ * - execution helpers: diffNodeStatusTransitions (status diff) and
+ *   findBlockedUpstreams (D16 fail-closed upstream scan)
  */
 
 export const PLAN_STATUSES = ['draft', 'active', 'done', 'archived'] as const;
 export const NODE_STATUSES = ['pending', 'doing', 'done', 'blocked'] as const;
 export const NODE_KINDS = ['work', 'merge'] as const;
+
+/** D18: history[] rolling cap — oldest entries are discarded beyond this. */
+export const PLAN_HISTORY_LIMIT = 200;
+/** D23: result summary character cap. */
+export const PLAN_RESULT_MAX_LENGTH = 2000;
 
 export type PlanStatus = (typeof PLAN_STATUSES)[number];
 export type NodeStatus = (typeof NODE_STATUSES)[number];
@@ -178,6 +191,23 @@ export function validatePlanDoc(doc: any): PlanValidationResult {
         nodeId: id,
       });
     }
+    if (node.verify !== undefined && node.verify !== null && typeof node.verify !== 'string') {
+      issues.push({ code: 'plan_node_verify_invalid', message: `${label}.verify must be a string`, nodeId: id });
+    }
+    if (node.base_branch !== undefined && node.base_branch !== null && typeof node.base_branch !== 'string') {
+      issues.push({ code: 'plan_node_base_branch_invalid', message: `${label}.base_branch must be a string`, nodeId: id });
+    }
+    if (node.result !== undefined && node.result !== null) {
+      if (typeof node.result !== 'string') {
+        issues.push({ code: 'plan_node_result_invalid', message: `${label}.result must be a string`, nodeId: id });
+      } else if (node.result.length > PLAN_RESULT_MAX_LENGTH) {
+        issues.push({
+          code: 'plan_node_result_too_long',
+          message: `${label}.result exceeds ${PLAN_RESULT_MAX_LENGTH} characters`,
+          nodeId: id,
+        });
+      }
+    }
     if (node.depends_on !== undefined) {
       if (!Array.isArray(node.depends_on) || node.depends_on.some((dep: any) => typeof dep !== 'string')) {
         issues.push({
@@ -208,6 +238,79 @@ export function validatePlanDoc(doc: any): PlanValidationResult {
           message: `Node ${id} depends on unknown node ${depId}`,
           nodeId: id,
         });
+      }
+    }
+  }
+
+  // base_branch (D11, dag-execution PRD 3.3): when set, it must equal the
+  // branch of one of the node's parents. Nodes without parents should omit
+  // base_branch and inherit the parent conversation branch (D6).
+  const nodeById = new Map<string, AnyRecord>();
+  for (const node of nodes) {
+    if (isPlainObject(node)) {
+      nodeById.set(nodeKey(node), node);
+    }
+  }
+  for (const node of nodes) {
+    if (!isPlainObject(node)) {
+      continue;
+    }
+    const baseBranch = typeof node.base_branch === 'string' ? node.base_branch.trim() : '';
+    if (!baseBranch) {
+      continue;
+    }
+    const id = nodeKey(node);
+    const parents = (Array.isArray(node.depends_on) ? node.depends_on : [])
+      .map((dep: any) => nodeById.get(String(dep || '').trim()))
+      .filter((parent: AnyRecord | undefined): parent is AnyRecord => Boolean(parent));
+    const parentBranches = parents
+      .map((parent: AnyRecord) => (typeof parent.branch === 'string' ? parent.branch.trim() : ''));
+    if (!parentBranches.includes(baseBranch)) {
+      issues.push({
+        code: 'plan_node_base_branch_mismatch',
+        message: parents.length === 0
+          ? `Node ${id} sets base_branch but has no parent nodes; omit it to inherit the conversation branch`
+          : `Node ${id} base_branch "${baseBranch}" must equal a parent node branch (parents: ${parentBranches.map((value: string) => value || '(unset)').join(', ')})`,
+        nodeId: id,
+      });
+    }
+  }
+
+  // history (D18, optional append-only audit trail): shape + rolling cap.
+  if (doc.history !== undefined) {
+    if (!Array.isArray(doc.history)) {
+      issues.push({ code: 'plan_history_invalid', message: 'history must be an array of transition entries' });
+    } else {
+      if (doc.history.length > PLAN_HISTORY_LIMIT) {
+        issues.push({
+          code: 'plan_history_too_long',
+          message: `history exceeds ${PLAN_HISTORY_LIMIT} entries`,
+        });
+      }
+      for (const [index, entry] of doc.history.entries()) {
+        const entryLabel = `history[${index}]`;
+        if (!isPlainObject(entry)) {
+          issues.push({ code: 'plan_history_entry_invalid', message: `${entryLabel} must be an object` });
+          continue;
+        }
+        if (typeof entry.node_id !== 'string' || !entry.node_id.trim()) {
+          issues.push({ code: 'plan_history_entry_invalid', message: `${entryLabel}.node_id must be a non-empty string` });
+        }
+        if (!NODE_STATUSES.includes(entry.from) || !NODE_STATUSES.includes(entry.to)) {
+          issues.push({
+            code: 'plan_history_entry_invalid',
+            message: `${entryLabel}.from/to must be one of ${NODE_STATUSES.join('/')}`,
+          });
+        }
+        if (typeof entry.at !== 'string' || !entry.at.trim()) {
+          issues.push({ code: 'plan_history_entry_invalid', message: `${entryLabel}.at must be an ISO timestamp string` });
+        }
+        if (typeof entry.actor !== 'string' || !entry.actor.trim()) {
+          issues.push({ code: 'plan_history_entry_invalid', message: `${entryLabel}.actor must be a non-empty string` });
+        }
+        if (entry.reason !== undefined && entry.reason !== null && typeof entry.reason !== 'string') {
+          issues.push({ code: 'plan_history_entry_invalid', message: `${entryLabel}.reason must be a string` });
+        }
       }
     }
   }
@@ -278,8 +381,11 @@ export function validatePlanDoc(doc: any): PlanValidationResult {
   return { ok: issues.length === 0, issues, warnings };
 }
 
-/** Fields whose change counts as a structural modification (locked when active). */
-const STRUCTURAL_NODE_FIELDS = ['title', 'goal', 'depends_on', 'branch', 'kind', 'spawned_conversation_id'];
+/** Fields whose change counts as a structural modification (locked when active).
+ * `result` is deliberately absent: it is written back with status transitions
+ * (D23). `spawned_conversation_id` stays locked for the public API — the
+ * scheduler binds it through an internal path. */
+const STRUCTURAL_NODE_FIELDS = ['title', 'goal', 'depends_on', 'branch', 'kind', 'spawned_conversation_id', 'verify', 'base_branch'];
 
 function normalizeForCompare(value: any): any {
   if (Array.isArray(value)) {
@@ -342,7 +448,135 @@ export function validateStatusOnlyUpdate(oldDoc: any, newDoc: any): PlanValidati
         });
       }
     }
+    // D23: execution write-back must carry a result summary when a node
+    // transitions to done. Manual status flips are allowed but warned.
+    const becameDone = oldNode.status !== 'done' && newNode.status === 'done';
+    if (becameDone && !(typeof newNode.result === 'string' && newNode.result.trim())) {
+      warnings.push({
+        code: 'plan_done_result_missing',
+        message: `Node ${id} transitioned to done without a result summary (execution write-back requires one, D23)`,
+        nodeId: id,
+      });
+    }
+  }
+
+  // D18: history is append-only while active — existing entries must remain
+  // untouched and in order; only appends are accepted.
+  const oldHistory = Array.isArray(oldDoc && oldDoc.history) ? oldDoc.history : [];
+  const newHistory = Array.isArray(newDoc && newDoc.history) ? newDoc.history : [];
+  let historyAppendOnly = newHistory.length >= oldHistory.length;
+  if (historyAppendOnly) {
+    for (let index = 0; index < oldHistory.length; index += 1) {
+      const before = JSON.stringify(normalizeForCompare(oldHistory[index]));
+      const after = JSON.stringify(normalizeForCompare(newHistory[index]));
+      if (before !== after) {
+        historyAppendOnly = false;
+        break;
+      }
+    }
+  }
+  if (!historyAppendOnly) {
+    issues.push({
+      code: 'plan_locked_history_changed',
+      message: 'Active plan is locked: history is append-only; existing entries cannot change or be removed',
+    });
   }
 
   return { ok: issues.length === 0, issues, warnings };
+}
+
+/**
+ * Append a status-transition entry to doc.history (D18), trimming the oldest
+ * entries beyond PLAN_HISTORY_LIMIT. Returns a new doc; the input doc is not
+ * mutated. Entry shape is enforced by validatePlanDoc on the resulting doc.
+ */
+export function appendPlanHistory(doc: AnyRecord, entry: AnyRecord): AnyRecord {
+  const history = Array.isArray(doc && doc.history) ? doc.history.slice() : [];
+  history.push({
+    node_id: entry.node_id,
+    from: entry.from,
+    to: entry.to,
+    at: entry.at || new Date().toISOString(),
+    actor: entry.actor,
+    ...(entry.reason ? { reason: entry.reason } : {}),
+  });
+  const trimmed = history.length > PLAN_HISTORY_LIMIT
+    ? history.slice(history.length - PLAN_HISTORY_LIMIT)
+    : history;
+  return { ...(doc || {}), history: trimmed };
+}
+
+/** Status used when a node omits the field (validation treats it as optional). */
+function nodeStatusOf(node: AnyRecord | undefined): NodeStatus {
+  const status = node && node.status;
+  return NODE_STATUSES.includes(status) ? status : 'pending';
+}
+
+/**
+ * Diff per-node status between two docs. Returns one entry per node whose
+ * status changed, in newDoc node order. Nodes present in only one doc are
+ * ignored (structural changes are rejected elsewhere while active).
+ */
+export function diffNodeStatusTransitions(oldDoc: any, newDoc: any): Array<{ node_id: string; from: NodeStatus; to: NodeStatus }> {
+  const oldNodes = new Map<string, AnyRecord>();
+  for (const node of (oldDoc && Array.isArray(oldDoc.nodes) ? oldDoc.nodes : [])) {
+    if (isPlainObject(node)) {
+      oldNodes.set(nodeKey(node), node);
+    }
+  }
+  const transitions: Array<{ node_id: string; from: NodeStatus; to: NodeStatus }> = [];
+  for (const node of (newDoc && Array.isArray(newDoc.nodes) ? newDoc.nodes : [])) {
+    if (!isPlainObject(node)) {
+      continue;
+    }
+    const id = nodeKey(node);
+    const oldNode = oldNodes.get(id);
+    if (!oldNode) {
+      continue;
+    }
+    const from = nodeStatusOf(oldNode);
+    const to = nodeStatusOf(node);
+    if (from !== to) {
+      transitions.push({ node_id: id, from, to });
+    }
+  }
+  return transitions;
+}
+
+/**
+ * D16 fail-closed support: collect the ids of all transitive upstream nodes
+ * (via depends_on) whose status is 'blocked' in the given doc. BFS order,
+ * duplicates removed.
+ */
+export function findBlockedUpstreams(doc: any, nodeId: string): string[] {
+  const nodes = new Map<string, AnyRecord>();
+  for (const node of (doc && Array.isArray(doc.nodes) ? doc.nodes : [])) {
+    if (isPlainObject(node)) {
+      nodes.set(nodeKey(node), node);
+    }
+  }
+  const blocked: string[] = [];
+  const visited = new Set<string>();
+  const queue: string[] = [String(nodeId || '').trim()];
+  while (queue.length > 0) {
+    const current = queue.shift() as string;
+    const node = nodes.get(current);
+    if (!node) {
+      continue;
+    }
+    const deps = Array.isArray(node.depends_on) ? node.depends_on : [];
+    for (const dep of deps) {
+      const depId = String(dep || '').trim();
+      if (!depId || visited.has(depId)) {
+        continue;
+      }
+      visited.add(depId);
+      const parent = nodes.get(depId);
+      if (parent && nodeStatusOf(parent) === 'blocked') {
+        blocked.push(depId);
+      }
+      queue.push(depId);
+    }
+  }
+  return blocked;
 }

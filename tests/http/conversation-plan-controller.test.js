@@ -163,3 +163,31 @@ test('plan controller: wrong method on plan action is not handled', async () => 
   });
   assert.equal(response.handled, false);
 });
+
+test('plan controller: mutations pass the trusted user actor (D15 REST channel)', async () => {
+  const calls = [];
+  const controller = createConversationPlanController({
+    store: {
+      savePlanForConversation(conversationId, payload, options) {
+        calls.push(['save', conversationId, options]);
+        return { ownerConversationId: 'root', plan: samplePlan(), warnings: [] };
+      },
+      activatePlanForConversation(conversationId, actor) {
+        calls.push(['activate', conversationId, actor]);
+        return { ownerConversationId: 'root', plan: { ...samplePlan(), status: 'active', version: 2 } };
+      },
+      revertPlanForConversation(conversationId, actor) {
+        calls.push(['revert', conversationId, actor]);
+        return { ownerConversationId: 'root', plan: samplePlan() };
+      },
+    },
+  });
+
+  await invoke(controller, { method: 'PUT', body: { doc: { nodes: [] }, version: 1 } });
+  await invoke(controller, { method: 'POST', pathname: '/api/conversations/root/plan/activate' });
+  await invoke(controller, { method: 'POST', pathname: '/api/conversations/root/plan/revert' });
+
+  assert.deepEqual(calls[0], ['save', 'root', { actor: { type: 'user' } }]);
+  assert.deepEqual(calls[1], ['activate', 'root', { type: 'user' }]);
+  assert.deepEqual(calls[2], ['revert', 'root', { type: 'user' }]);
+});

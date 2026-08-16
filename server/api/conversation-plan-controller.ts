@@ -86,7 +86,7 @@ export function createConversationPlanController(options: any = {}): RouteHandle
       const result = store.savePlanForConversation(conversationId, {
         doc: body.doc,
         version: body.version,
-      });
+      }, { actor: { type: 'user' } });
       broadcastEvent('conversation_plan_updated', {
         conversationId,
         ownerConversationId: result.ownerConversationId,
@@ -99,7 +99,7 @@ export function createConversationPlanController(options: any = {}): RouteHandle
     }
 
     if (action === 'activate' && req.method === 'POST') {
-      const result = store.activatePlanForConversation(conversationId);
+      const result = store.activatePlanForConversation(conversationId, { type: 'user' });
       broadcastEvent('conversation_plan_updated', {
         conversationId,
         ownerConversationId: result.ownerConversationId,
@@ -110,7 +110,7 @@ export function createConversationPlanController(options: any = {}): RouteHandle
     }
 
     if (action === 'revert' && req.method === 'POST') {
-      const result = store.revertPlanForConversation(conversationId);
+      const result = store.revertPlanForConversation(conversationId, { type: 'user' });
       broadcastEvent('conversation_plan_updated', {
         conversationId,
         ownerConversationId: result.ownerConversationId,
