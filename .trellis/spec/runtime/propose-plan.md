@@ -13,13 +13,13 @@
   - `propose-plan --content-stdin | --content '<json>'` — plan doc JSON (object with `nodes`, optional `edges`).
   - `--version <n>` — optional positive integer; required in practice when updating an existing plan.
 - HTTP: `POST /api/agent-tools/propose-plan`, body `{ invocationId, callbackToken, doc, version? }` → `200 { ok, ownerConversationId, plan, warnings }`.
-- Bridge: `handleProposePlan(body)` in `agent-tool-bridge.ts`; resolves the invocation (conversation/agent/turn), then calls `store.savePlanForConversation(context.conversationId, { doc, version })`.
+- Bridge: `handleProposePlan(body)` in `agent-tool-bridge.ts`; resolves the invocation (conversation/agent/turn), then calls `store.savePlanForConversation(context.conversationId, { doc, version }, { actor: { type: 'agent', agentId, conversationId } })` — the invocation-authenticated agent actor feeds the D15 permission gate.
 - Skill: `.agents/skills/dag-planning/SKILL.md` teaches doc format, merge-node semantics, branch naming convention (named at graph build, checked out lazily), and lifecycle permissions.
 
 ### 3. Contracts
 - The tool is a **thin wrapper**: it never validates the DAG itself. All rules (`validatePlanDoc`, `validateStatusOnlyUpdate`, version guard, lifecycle gates) come from the store path shared with the REST API.
 - First write creates the plan as `draft` (no version needed); subsequent writes must pass the current `version` or get `409 plan_version_conflict` — the model should GET the plan (or read the panel payload) and retry with the fresh version.
-- Active plans: only node `status` transitions pass; structural attempts fail with `plan_locked_*` issue codes. `activate` is user-only — the tool must never offer an activate command.
+- Active plans: only node `status` transitions pass; structural attempts fail with `plan_locked_*` issue codes. `activate`/`revert` go through the D15 actor gate (see `../backend/dag-planning.md`): an agent may only activate/revert when it is a participant of the ROOT conversation and calls from the root — child-conversation agents get `403 plan_forbidden`.
 - On success the bridge broadcasts `conversation_plan_updated` (same payload as the REST controller) so every open panel refreshes.
 - Every call (success or failure) appends an `agent_tool_call` invocation event with `schemaVersion: 1`, a `request` summary (`nodeCount`/`edgeCount`/`version`, never the full doc), and a `result` summary (`planId`/`planStatus`/`planVersion`/`warningCount`) or an `error` summary (`statusCode` + clipped message).
 - Error responses keep the HTTP `statusCode` and `issues[]` so the model can branch on `plan_cycle`, `plan_dependency_missing`, `plan_node_id_duplicate`, `plan_version_conflict`, `plan_locked_*` and repair its next attempt.

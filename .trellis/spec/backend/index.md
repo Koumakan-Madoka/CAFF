@@ -43,4 +43,6 @@ backend domain services.
 - `summary-memory.md`: searchable digest segment ledger and `/api/memory/search` contracts
 - `dag-planning.md`: `chat_plans` storage, plan lifecycle (draft→active), shared
   validation, and `/api/conversations/:id/plan` contracts
+- `dag-execution.md`: event-hook scheduler, per-node worktrees, merge executor,
+  completion write-back, and restart reconcile contracts (D21–D26)
 - See `../skills/` for skill-related backend patterns (skills-controller.ts)

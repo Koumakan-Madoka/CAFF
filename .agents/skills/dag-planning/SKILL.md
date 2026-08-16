@@ -48,15 +48,18 @@ PLAN_EOF
 - `status`：`pending | doing | done | blocked`，缺省视为 `pending`
 - `depends_on`：依赖的节点 id 列表（权威边来源；不必单独传 `edges`，服务端会校验一致性）
 - `kind`：`work`（默认）或 `merge`。`merge` 节点表示把多个并行分支的成果汇合，入度应 ≥ 2（否则会收到 warning）
-- `branch`：节点的工作分支名。**图构建时定名、不立刻检出**；命名从父会话 branch 派生（如父 `feat/x` → 子 `feat/x-node-slug`）
-- `spawned_conversation_id`：绑定的执行子会话 id（POC 期由系统/用户侧填，你只读）
+- `branch`：节点的工作分支名。**图构建时定名、不立刻检出**；命名从父会话 branch 派生（如父 `feat/x` → 子 `feat/x-node-slug`）。执行期每个节点检出到独立 worktree（`.worktrees/dag/...`）
+- `base_branch`（可选）：显式检出基线，**必须等于某个父节点的 branch**；深层链路上的节点应设置它（如 `n2.base_branch = n1.branch`），否则节点分支默认从仓库主干 HEAD 切出，merge 时上游的传递性成果不会进入集成分支
+- `verify`（可选）：执行完成后的校验命令。merge 节点尤其推荐——服务端在主理人 agent 报完工后会真实执行它，失败则节点置 `blocked`（fail-closed，不接受口头报工）
+- `result`（执行期由调度器/你回写）：≤2000 字符的产出摘要，转 `done` 时携带；下游节点的初始指令会自动注入上游的 result
+- `spawned_conversation_id`：绑定的执行子会话 id（由调度器系统通道写入，你只读）
 
 ## 生命周期与权限
 
 - `draft`（讨论期）：可整体创建/替换 plan，结构随意改
-- `active`（用户点「开始执行」后）：**结构锁定**——你不能增删节点、改边、改 goal/branch/kind，只能更新节点的 `status`；尝试结构修改会收到 `plan_locked_*` 错误
+- `active`（用户点「开始执行」后）：**结构锁定**——你不能增删节点、改边、改 goal/branch/kind/verify/base_branch，只能更新节点的 `status`；尝试结构修改会收到 `plan_locked_*` 错误。上游任一传递节点为 `blocked` 时，下游 `pending→doing` 会被 `409 plan_upstream_blocked` 拒绝（fail-closed），先解阻上游
 - `done / archived`：拒写
-- draft→active 只能由用户触发；你可以建议，但不要替用户「开工」
+- draft→active 只能由用户或根会话主理人 agent 触发；子会话里的你没有 activate/revert 权限（403），可以建议，但不要替用户「开工」
 
 ## 失败自修复
 
@@ -65,10 +68,12 @@ PLAN_EOF
 - `plan_dependency_missing`：`depends_on` 引用了不存在的节点 id
 - `plan_version_conflict`：版本过期，重新读取最新 plan 再改
 - `plan_locked_*`：plan 已 active，只能改 status
+- `plan_upstream_blocked`：传递上游有 blocked 节点，先处理上游再启动下游
 
 ## 出图建议
 
 - 节点 5–12 个为宜；太碎用户难审，太粗失去规划意义
-- 并行分支要有 `merge` 节点收口，merge 节点的 goal 写明「合并哪些分支、如何验证」
+- 并行分支要有 `merge` 节点收口，merge 节点的 goal 写明「合并哪些分支、如何验证」，并配上 `verify` 命令
+- 深层依赖链上的节点设置 `base_branch` 指向父节点 branch，保证传递性成果能进集成分支
 - branch 命名遵循父会话派生约定，不要复用已有分支名
 - 提交前自检：无环、依赖 id 都存在、merge 入度 ≥ 2
