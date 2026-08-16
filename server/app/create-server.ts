@@ -14,6 +14,7 @@ const { createAgentToolsController } = require('../api/agent-tools-controller');
 const { createAgentsController } = require('../api/agents-controller');
 const { createBootstrapController } = require('../api/bootstrap-controller');
 const { createConversationsController } = require('../api/conversations-controller');
+const { createConversationPlanController } = require('../api/conversation-plan-controller');
 const {
   createConversationDeliveriesController,
 } = require('../api/conversation-deliveries-controller');
@@ -774,6 +775,10 @@ export function createServerApp(options: any = {}) {
     }),
     createWerewolfController({
       werewolfService,
+    }),
+    createConversationPlanController({
+      store,
+      broadcastEvent,
     }),
     createConversationsController({
       store,

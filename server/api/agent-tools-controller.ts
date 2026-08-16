@@ -167,6 +167,12 @@ export function createAgentToolsController(options: any = {}): RouteHandler<ApiC
       return true;
     }
 
+    if (pathname === '/api/agent-tools/propose-plan' && req.method === 'POST') {
+      const body = await readRequestJson(req);
+      sendJson(res, 200, agentToolBridge.handleProposePlan(body));
+      return true;
+    }
+
     if (pathname === '/api/agent-tools/trellis/init' && req.method === 'POST') {
       const body = await readRequestJson(req);
       sendJson(res, 200, agentToolBridge.handleTrellisInit(body));

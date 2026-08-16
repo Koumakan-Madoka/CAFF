@@ -6244,3 +6244,401 @@ body.chat-app .new-msg-pill {
     padding: 0 14px;
   }
 }
+
+/* ── DAG 规划图 panel（dag-planning POC, PRD D8） ── */
+/* 规划 tab 激活时抽屉加宽（graph 需要更大可视面积） */
+body.chat-app .context-drawer:has(#plan-drawer:not([hidden])) {
+  width: min(680px, 94vw);
+}
+
+.plan-drawer {
+  min-width: 0;
+}
+
+.plan-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  align-items: center;
+}
+
+.plan-toolbar button {
+  padding: 0.35rem 0.7rem;
+  font-size: 0.85rem;
+}
+
+.plan-hint {
+  margin: 0;
+  font-size: 0.76rem;
+}
+
+.plan-graph {
+  position: relative;
+  overflow: auto;
+  max-height: 62vh;
+  min-height: 220px;
+  /* 主题变量：暗色模式在下方 [data-theme="dark"] 块里覆盖 */
+  --plan-grid-line: rgba(34, 49, 63, 0.045);
+  --plan-edge: rgba(34, 49, 63, 0.42);
+  --plan-node-line: rgba(34, 49, 63, 0.3);
+  border: 1px solid rgba(34, 49, 63, 0.14);
+  border-radius: var(--radius-md);
+  background:
+    linear-gradient(var(--plan-grid-line) 1px, transparent 1px) 0 0 / 24px 24px,
+    linear-gradient(90deg, var(--plan-grid-line) 1px, transparent 1px) 0 0 / 24px 24px,
+    var(--paper-strong, #fff);
+  cursor: grab;
+  touch-action: none;
+}
+
+[data-theme="dark"] .plan-graph {
+  --plan-grid-line: rgba(224, 228, 222, 0.06);
+  --plan-edge: rgba(224, 228, 222, 0.55);
+  --plan-node-line: rgba(224, 228, 222, 0.4);
+  border-color: var(--line);
+}
+
+.plan-graph:active {
+  cursor: grabbing;
+}
+
+.plan-svg {
+  display: block;
+}
+
+/* 小于视口时居中，大于视口时保留滚动 / 拖拽平移空间 */
+.plan-graph-stage {
+  min-width: 100%;
+  min-height: 100%;
+  width: max-content;
+  height: max-content;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.plan-edge {
+  fill: none;
+  stroke: var(--plan-edge, rgba(34, 49, 63, 0.42));
+  stroke-width: 1.6;
+  transition: stroke 120ms ease;
+}
+
+/* draft 态点边删除：悬停时变红提示 */
+.plan-edge.removable-hover {
+  stroke: rgba(196, 64, 64, 0.85);
+}
+
+/* 宽透明 hit 区域，让细边容易点中 */
+.plan-edge-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 18;
+  cursor: pointer;
+  pointer-events: stroke;
+}
+
+/* draft 态边中点的 × 删除按钮（显性删边入口） */
+.plan-edge-del {
+  cursor: pointer;
+  opacity: 0.65;
+  transition: opacity 120ms ease;
+}
+.plan-edge-del:hover {
+  opacity: 1;
+}
+.plan-edge-del-bg {
+  fill: var(--paper-strong, #fff);
+  stroke: var(--plan-edge, rgba(34, 49, 63, 0.42));
+  stroke-width: 1.2;
+}
+.plan-edge-del-x {
+  fill: var(--plan-edge, rgba(34, 49, 63, 0.42));
+  font-size: 11px;
+  font-weight: 600;
+  pointer-events: none;
+}
+.plan-edge-del:hover .plan-edge-del-bg {
+  stroke: rgba(196, 64, 64, 0.9);
+}
+.plan-edge-del:hover .plan-edge-del-x {
+  fill: rgba(196, 64, 64, 0.9);
+}
+
+/* 编辑表单里的依赖 chip（带 × 删边） */
+.plan-deps-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 4px 0;
+}
+.plan-dep-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border: 1px solid var(--plan-node-line, rgba(34, 49, 63, 0.25));
+  border-radius: 10px;
+  font-size: 12px;
+}
+.plan-dep-chip-remove {
+  border: none;
+  background: none;
+  padding: 0 2px;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  color: inherit;
+  opacity: 0.6;
+}
+.plan-dep-chip-remove:hover {
+  opacity: 1;
+  color: rgba(196, 64, 64, 0.95);
+}
+
+/* 手柄拖拽时的虚线预览 */
+.plan-link-temp {
+  fill: none;
+  stroke: #2a9d8f;
+  stroke-width: 1.8;
+  stroke-dasharray: 5 4;
+  pointer-events: none;
+}
+
+/* 节点顶/底连边手柄（仅 draft 态渲染） */
+.plan-handle {
+  fill: var(--paper-strong, #fff);
+  stroke: #2a9d8f;
+  stroke-width: 1.8;
+  cursor: crosshair;
+  opacity: 0.75;
+  transition: opacity 120ms ease;
+}
+
+.plan-node:hover .plan-handle,
+.plan-handle:hover {
+  opacity: 1;
+}
+
+.plan-handle-out {
+  fill: #2a9d8f;
+}
+
+[data-theme="dark"] .plan-handle {
+  fill: var(--paper-strong, #1c2329);
+  stroke: #63c7b8;
+}
+
+[data-theme="dark"] .plan-handle-out {
+  fill: #63c7b8;
+}
+
+/* 拖拽连边时潜在落点高亮 */
+.plan-node.link-target .plan-node-rect {
+  stroke: #2a9d8f;
+  stroke-width: 2.6;
+}
+
+.plan-edge-arrow {
+  fill: var(--plan-edge, rgba(34, 49, 63, 0.42));
+}
+
+.plan-node {
+  cursor: pointer;
+  outline: none;
+}
+
+.plan-node-rect {
+  fill: var(--paper-strong, #fff);
+  stroke: var(--plan-node-line, rgba(34, 49, 63, 0.3));
+  stroke-width: 1.4;
+  transition: stroke 120ms ease, stroke-width 120ms ease;
+}
+
+.plan-node:hover .plan-node-rect,
+.plan-node:focus-visible .plan-node-rect {
+  stroke: rgba(42, 157, 143, 0.8);
+  stroke-width: 2;
+}
+
+.plan-node.selected .plan-node-rect {
+  stroke: #2a9d8f;
+  stroke-width: 2.4;
+}
+
+.plan-node.kind-merge .plan-node-rect {
+  stroke-dasharray: 6 4;
+}
+
+.plan-node.status-done .plan-node-rect {
+  fill: rgba(42, 157, 143, 0.08);
+}
+
+.plan-node.status-doing .plan-node-rect {
+  fill: rgba(217, 164, 65, 0.1);
+}
+
+.plan-node.status-blocked .plan-node-rect {
+  fill: rgba(196, 64, 64, 0.08);
+  stroke: rgba(196, 64, 64, 0.55);
+}
+
+.plan-node-title {
+  font-size: 12.5px;
+  font-weight: 700;
+  fill: var(--ink, #22313f);
+  pointer-events: none;
+}
+
+.plan-node-subtitle {
+  font-size: 10px;
+  fill: var(--muted, #6b7684);
+  pointer-events: none;
+}
+
+.plan-node-spawned {
+  font-size: 9.5px;
+  fill: #2a9d8f;
+  pointer-events: none;
+}
+
+.plan-status-chip-rect {
+  fill: rgba(34, 49, 63, 0.08);
+}
+
+.plan-status-chip.status-pending .plan-status-chip-rect { fill: rgba(34, 49, 63, 0.1); }
+.plan-status-chip.status-doing .plan-status-chip-rect { fill: rgba(217, 164, 65, 0.28); }
+.plan-status-chip.status-done .plan-status-chip-rect { fill: rgba(42, 157, 143, 0.28); }
+.plan-status-chip.status-blocked .plan-status-chip-rect { fill: rgba(196, 64, 64, 0.26); }
+
+.plan-status-chip-text {
+  font-size: 9.5px;
+  font-weight: 700;
+  fill: var(--ink, #22313f);
+  pointer-events: none;
+}
+
+.plan-status-chip.clickable {
+  cursor: pointer;
+}
+
+.plan-issues {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.55rem 0.7rem;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(196, 64, 64, 0.3);
+  background: rgba(196, 64, 64, 0.07);
+}
+
+.plan-issue {
+  margin: 0;
+  font-size: 0.82rem;
+  color: #96322e;
+}
+
+.plan-editor {
+  display: grid;
+  gap: 0.6rem;
+  padding: 0.8rem;
+  border: 1px solid rgba(34, 49, 63, 0.14);
+  border-radius: var(--radius-md);
+  background: rgba(34, 49, 63, 0.03);
+}
+
+.plan-editor label {
+  display: grid;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+}
+
+.plan-editor input,
+.plan-editor textarea,
+.plan-editor select {
+  font: inherit;
+  padding: 0.4rem 0.55rem;
+  border: 1px solid rgba(34, 49, 63, 0.2);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--paper-strong, #fff);
+}
+
+.plan-editor-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.6rem;
+}
+
+.plan-deps-field {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.plan-deps-list {
+  display: grid;
+  gap: 0.25rem;
+  max-height: 140px;
+  overflow-y: auto;
+}
+
+.plan-deps-summary,
+.plan-deps-hint {
+  margin: 2px 0;
+  font-size: 12px;
+}
+
+.plan-dep-option {
+  display: flex !important;
+  grid-template-columns: none !important;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.45rem !important;
+  font-size: 0.85rem;
+}
+
+.plan-node-spawned:empty {
+  display: none;
+}
+
+.plan-spawned-link {
+  justify-self: start;
+}
+
+/* 全屏二次扩展弹层 */
+.plan-expand-overlay {
+  position: fixed;
+  inset: 2.5vh 2.5vw;
+  z-index: 70;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  gap: 0.6rem;
+  padding: 1rem;
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--line, rgba(34, 49, 63, 0.2));
+  background: var(--paper-strong, #fff);
+  box-shadow: 0 32px 96px rgba(34, 49, 63, 0.32);
+}
+
+.plan-expand-overlay.hidden {
+  display: none;
+}
+
+.plan-expand-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.plan-expand-head h2 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.plan-graph-expanded {
+  max-height: none;
+  height: 100%;
+}
+
+body.plan-expanded-open {
+  overflow: hidden;
+}

@@ -17,6 +17,8 @@ const { createImageUploadRepository } = require('../storage/chat/image-upload.re
 const {
   createCrossConversationDeliveryRepository,
 } = require('../storage/chat/cross-conversation-delivery.repository');
+const { createChatPlanRepository } = require('../storage/chat/plan.repository');
+const { validatePlanDoc, validateStatusOnlyUpdate } = require('./plan-dag');
 
 const MAX_AVATAR_DATA_URL_LENGTH = 2 * 1024 * 1024;
 const MAX_AGENT_SANDBOX_NAME_LENGTH = 80;
@@ -730,6 +732,31 @@ function normalizeConversation(row: any, agents: any, messages: any) {
   };
 }
 
+function normalizePlanRow(row: any) {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    id: row.id,
+    ownerConversationId: row.owner_conversation_id,
+    status: row.status,
+    version: Number(row.version || 1),
+    doc: parseJson(row.doc_json) || { nodes: [] },
+    activatedAt: row.activated_at || null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function createPlanError(statusCode: number, code: string, message: string, details: Record<string, unknown> = {}) {
+  const error: any = new Error(message);
+  error.statusCode = statusCode;
+  error.code = code;
+  Object.assign(error, details);
+  return error;
+}
+
 function createParticipantRosterError(
   statusCode: number,
   code: string,
@@ -805,6 +832,7 @@ export class ChatAppStore {
       this.externalEventRepository = createChatExternalEventRepository(this.db);
       this.imageUploadRepository = createImageUploadRepository(this.db);
       this.crossConversationDeliveryRepository = createCrossConversationDeliveryRepository(this.db);
+      this.planRepository = createChatPlanRepository(this.db);
 
       this.replaceConversationParticipants = (conversationId: any, participants: any) => {
         const createdAt = nowIso();
@@ -2056,6 +2084,191 @@ export class ChatAppStore {
     }
 
     return normalizeConversation(row, this.listConversationAgents(conversationId), []);
+  }
+
+  /**
+   * Walk the origin_conversation_id chain to the root conversation that owns
+   * the shared plan (PRD D1: one plan per conversation tree, hung on the
+   * root). Returns the raw conversation row, or null when the conversation
+   * does not exist or the lineage contains a cycle.
+   */
+  resolvePlanOwnerConversation(conversationId: any) {
+    const normalizedId = String(conversationId || '').trim();
+    if (!normalizedId) {
+      return null;
+    }
+
+    const visited = new Set<string>();
+    let current = this.conversationRepository.get(normalizedId);
+    while (current) {
+      if (visited.has(current.id)) {
+        return null;
+      }
+      visited.add(current.id);
+      const originId = String(current.origin_conversation_id || '').trim();
+      if (!originId) {
+        return current;
+      }
+      current = this.conversationRepository.get(originId);
+    }
+    return null;
+  }
+
+  /** Returns { ownerConversationId, plan } — plan is null when none exists. */
+  getPlanForConversation(conversationId: any) {
+    const owner = this.resolvePlanOwnerConversation(conversationId);
+    if (!owner) {
+      throw createPlanError(404, 'conversation_not_found', 'Conversation not found');
+    }
+
+    const row = this.planRepository.getByOwnerConversationId(owner.id);
+    return {
+      ownerConversationId: owner.id,
+      plan: normalizePlanRow(row),
+    };
+  }
+
+  /**
+   * Create (first write) or replace the shared plan doc. Draft plans accept
+   * structural edits; active plans only accept node status transitions;
+   * done/archived plans reject all writes. Version guard: callers must pass
+   * the version they read, 409 on mismatch.
+   */
+  savePlanForConversation(conversationId: any, payload: any = {}) {
+    const owner = this.resolvePlanOwnerConversation(conversationId);
+    if (!owner) {
+      throw createPlanError(404, 'conversation_not_found', 'Conversation not found');
+    }
+
+    const doc = payload.doc;
+    const validation = validatePlanDoc(doc);
+    if (!validation.ok) {
+      throw createPlanError(422, 'plan_validation_failed', 'Plan doc validation failed', {
+        issues: validation.issues,
+        warnings: validation.warnings,
+      });
+    }
+
+    const timestamp = nowIso();
+    const existing = this.planRepository.getByOwnerConversationId(owner.id);
+
+    if (!existing) {
+      const row = this.planRepository.create({
+        id: randomUUID(),
+        ownerConversationId: owner.id,
+        status: 'draft',
+        version: 1,
+        docJson: JSON.stringify(doc),
+        activatedAt: null,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      });
+      return {
+        ownerConversationId: owner.id,
+        plan: normalizePlanRow(row),
+        warnings: validation.warnings,
+      };
+    }
+
+    if (existing.status === 'done' || existing.status === 'archived') {
+      throw createPlanError(409, 'plan_locked', `Plan is ${existing.status} and no longer accepts writes`);
+    }
+
+    if (existing.status === 'active') {
+      const statusOnly = validateStatusOnlyUpdate(parseJson(existing.doc_json), doc);
+      if (!statusOnly.ok) {
+        throw createPlanError(409, 'plan_locked', 'Active plan is structurally locked: only node status may change', {
+          issues: statusOnly.issues,
+        });
+      }
+    }
+
+    const expectedVersion = Number(payload.version);
+    if (!Number.isInteger(expectedVersion) || expectedVersion !== Number(existing.version)) {
+      throw createPlanError(409, 'plan_version_conflict', 'Plan version conflict', {
+        issues: [{
+          code: 'plan_version_conflict',
+          message: `Expected version ${existing.version}, got ${Number.isInteger(expectedVersion) ? expectedVersion : 'none'}`,
+        }],
+      });
+    }
+
+    const row = this.planRepository.updateWithVersionGuard({
+      id: existing.id,
+      expectedVersion,
+      status: existing.status,
+      version: expectedVersion + 1,
+      docJson: JSON.stringify(doc),
+      activatedAt: existing.activated_at,
+      updatedAt: timestamp,
+    });
+    if (!row) {
+      throw createPlanError(409, 'plan_version_conflict', 'Plan version conflict');
+    }
+
+    return {
+      ownerConversationId: owner.id,
+      plan: normalizePlanRow(row),
+      warnings: validation.warnings,
+    };
+  }
+
+  /** draft → active. User-only entry point; snapshots by bumping version. */
+  activatePlanForConversation(conversationId: any) {
+    return this.transitionPlanStatus(conversationId, {
+      fromStatus: 'draft',
+      toStatus: 'active',
+      errorCode: 'plan_not_activatable',
+      markActivatedAt: true,
+    });
+  }
+
+  /** active → draft. Doc (including node status history) is preserved. */
+  revertPlanForConversation(conversationId: any) {
+    return this.transitionPlanStatus(conversationId, {
+      fromStatus: 'active',
+      toStatus: 'draft',
+      errorCode: 'plan_not_revertible',
+      markActivatedAt: false,
+    });
+  }
+
+  transitionPlanStatus(conversationId: any, options: any) {
+    const owner = this.resolvePlanOwnerConversation(conversationId);
+    if (!owner) {
+      throw createPlanError(404, 'conversation_not_found', 'Conversation not found');
+    }
+
+    const existing = this.planRepository.getByOwnerConversationId(owner.id);
+    if (!existing) {
+      throw createPlanError(404, 'plan_not_found', 'Conversation tree has no plan');
+    }
+    if (existing.status !== options.fromStatus) {
+      throw createPlanError(
+        409,
+        options.errorCode,
+        `Plan is ${existing.status}; expected ${options.fromStatus} for this transition`
+      );
+    }
+
+    const timestamp = nowIso();
+    const row = this.planRepository.updateWithVersionGuard({
+      id: existing.id,
+      expectedVersion: Number(existing.version),
+      status: options.toStatus,
+      version: Number(existing.version) + 1,
+      docJson: existing.doc_json,
+      activatedAt: options.markActivatedAt ? timestamp : existing.activated_at,
+      updatedAt: timestamp,
+    });
+    if (!row) {
+      throw createPlanError(409, 'plan_version_conflict', 'Plan version conflict');
+    }
+
+    return {
+      ownerConversationId: owner.id,
+      plan: normalizePlanRow(row),
+    };
   }
 
   getConversationChannelBinding(platform: any, externalChatId: any) {

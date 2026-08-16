@@ -148,6 +148,35 @@ const dom = {
   sessionGoalResumeButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('session-goal-resume-button')),
   sessionGoalCompleteButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('session-goal-complete-button')),
   sessionGoalClearButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('session-goal-clear-button')),
+  planDrawer: /** @type {HTMLElement | null} */ (document.getElementById('plan-drawer')),
+  planPanelStatus: /** @type {HTMLElement | null} */ (document.getElementById('plan-panel-status')),
+  planRefreshButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('plan-refresh-button')),
+  planAddNodeButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('plan-add-node-button')),
+  planSaveButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('plan-save-button')),
+  planActivateButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('plan-activate-button')),
+  planRevertButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('plan-revert-button')),
+  planExpandButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('plan-expand-button')),
+  planIssues: /** @type {HTMLElement | null} */ (document.getElementById('plan-issues')),
+  planGraph: /** @type {HTMLElement | null} */ (document.getElementById('plan-graph')),
+  planEditor: /** @type {HTMLElement | null} */ (document.getElementById('plan-editor')),
+  planNodeId: /** @type {HTMLElement | null} */ (document.getElementById('plan-node-id')),
+  planNodeTitle: /** @type {HTMLInputElement | null} */ (document.getElementById('plan-node-title')),
+  planNodeGoal: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('plan-node-goal')),
+  planNodeStatus: /** @type {HTMLSelectElement | null} */ (document.getElementById('plan-node-status')),
+  planNodeKind: /** @type {HTMLSelectElement | null} */ (document.getElementById('plan-node-kind')),
+  planNodeBranch: /** @type {HTMLInputElement | null} */ (document.getElementById('plan-node-branch')),
+  planNodeDeps: /** @type {HTMLElement | null} */ (document.getElementById('plan-node-deps')),
+  planNodeSpawned: /** @type {HTMLElement | null} */ (document.getElementById('plan-node-spawned')),
+  planNodeDeleteButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('plan-node-delete-button')),
+  planExpandOverlay: /** @type {HTMLElement | null} */ (document.getElementById('plan-expand-overlay')),
+  planExpandCloseButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('plan-expand-close-button')),
+  planGraphExpanded: /** @type {HTMLElement | null} */ (document.getElementById('plan-graph-expanded')),
+  planZoomInButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('plan-zoom-in-button')),
+  planZoomOutButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('plan-zoom-out-button')),
+  planZoomResetButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('plan-zoom-reset-button')),
+  planDrawerZoomInButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('plan-drawer-zoom-in-button')),
+  planDrawerZoomOutButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('plan-drawer-zoom-out-button')),
+  planDrawerZoomFitButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('plan-drawer-zoom-fit-button')),
   conversationDigestDrawer: /** @type {HTMLElement | null} */ (document.getElementById('conversation-digest-drawer')),
   conversationDigestCloseButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('conversation-digest-close-button')),
   conversationDigestStatus: /** @type {HTMLElement | null} */ (document.getElementById('conversation-digest-status')),
@@ -800,6 +829,13 @@ const noopRenderer = {
   toggle(..._args) {},
 };
 
+const noopPlanPanelController = {
+  bindEvents(..._args) {},
+  render(..._args) {},
+  applyPlanEvent(..._args) {},
+  async reload(..._args) {},
+};
+
 const noopMentionMenuController = {
   appendHighlightedMessageBody(container, text, _agents) {
     container.textContent = String(text || '');
@@ -857,6 +893,7 @@ let conversationSettingsController = noopConversationSettingsController;
 let undercoverPanelRenderer = noopRenderer;
 let werewolfPanelRenderer = noopRenderer;
 let sessionGoalPanelController = noopRenderer;
+let planPanelController = noopPlanPanelController;
 let conversationDigestPanelController = noopRenderer;
 let summaryMemoryPanelController = noopRenderer;
 let conversationPaneRenderer = noopRenderer;
@@ -1059,6 +1096,39 @@ function setupChatModules() {
           showToast,
         })
       : noopRenderer;
+
+  planPanelController =
+    typeof chatModules.createPlanPanelController === 'function'
+      ? chatModules.createPlanPanelController({
+          state,
+          dom,
+          helpers: {
+            fetchPlan(conversationId) {
+              return fetchJson(`/api/conversations/${encodeURIComponent(conversationId)}/plan`);
+            },
+            savePlan(conversationId, body) {
+              return fetchJson(`/api/conversations/${encodeURIComponent(conversationId)}/plan`, {
+                method: 'PUT',
+                body,
+              });
+            },
+            activatePlan(conversationId) {
+              return fetchJson(`/api/conversations/${encodeURIComponent(conversationId)}/plan/activate`, {
+                method: 'POST',
+              });
+            },
+            revertPlan(conversationId) {
+              return fetchJson(`/api/conversations/${encodeURIComponent(conversationId)}/plan/revert`, {
+                method: 'POST',
+              });
+            },
+            openConversation(conversationId) {
+              return loadConversation(conversationId);
+            },
+          },
+          showToast,
+        })
+      : noopPlanPanelController;
 
   conversationDigestPanelController =
     typeof chatModules.createConversationDigestPanelController === 'function'
@@ -2354,12 +2424,17 @@ function renderConversationPane() {
   imageComposerController.syncConversation(state.currentConversation ? state.currentConversation.id : '');
   imageComposerController.syncBaseAvailability(Boolean(state.currentConversation && !dom.composerInput.disabled));
   renderSessionGoalPanel();
+  renderPlanPanel();
   renderConversationDigestPanel();
   renderSummaryMemoryPanel();
 }
 
 function renderSessionGoalPanel() {
   sessionGoalPanelController.render();
+}
+
+function renderPlanPanel() {
+  planPanelController.render();
 }
 
 function renderConversationDigestPanel() {
@@ -3887,6 +3962,11 @@ function connectEventStream() {
     scheduleConversationRefresh(payload.conversationId);
   });
 
+  source.addEventListener('conversation_plan_updated', (event) => {
+    const payload = JSON.parse(event.data);
+    planPanelController.applyPlanEvent(payload);
+  });
+
   source.addEventListener('conversation_digest_status', (event) => {
     const payload = JSON.parse(event.data);
     applyConversationDigestStatus(payload);
@@ -4982,6 +5062,7 @@ async function init() {
   mentionMenuController.bindEvents();
   conversationSettingsController.bindEvents();
   sessionGoalPanelController.bindEvents();
+  planPanelController.bindEvents();
   conversationDigestPanelController.bindEvents();
   summaryMemoryPanelController.bindEvents();
   bindEvents();

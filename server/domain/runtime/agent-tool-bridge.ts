@@ -3187,6 +3187,117 @@ export function createAgentToolBridge(options: any = {}) {
     }
   }
 
+  /**
+   * propose-plan tool (PRD .trellis/tasks/dag-planning/prd.md §5):
+   * thin wrapper over the same store validation + optimistic concurrency
+   * used by the REST plan API. Draft: create/replace whole doc; active:
+   * status-only updates. Validation failures are returned with issue
+   * details so the model can self-repair and retry.
+   */
+  function handleProposePlan(body: any = {}) {
+    const startedAt = Date.now();
+    const context = getInvocation(body.invocationId, body.callbackToken);
+    const toolCallId = randomUUID();
+
+    const doc = body.doc;
+    const hasVersion = body.version !== undefined && body.version !== null && body.version !== '';
+    const version = hasVersion ? Number(body.version) : undefined;
+    const normalizedVersion = Number.isInteger(version) && (version as number) >= 1 ? (version as number) : undefined;
+
+    const requestSummary = {
+      nodeCount: doc && typeof doc === 'object' && Array.isArray((doc as any).nodes) ? (doc as any).nodes.length : 0,
+      edgeCount: doc && typeof doc === 'object' && Array.isArray((doc as any).edges) ? (doc as any).edges.length : 0,
+      version: normalizedVersion ?? null,
+    };
+
+    setContextCurrentTool(context, {
+      toolName: 'propose-plan',
+      toolKind: 'bridge',
+      toolStepId: toolCallId,
+      inferred: false,
+      request: requestSummary,
+    });
+
+    try {
+      if (!doc || typeof doc !== 'object' || Array.isArray(doc)) {
+        throw createHttpError(400, 'doc is required and must be a JSON object', {
+          issues: [{ code: 'plan_doc_required', field: 'doc', message: 'doc is required and must be a JSON object' }],
+        });
+      }
+      if (hasVersion && normalizedVersion === undefined) {
+        throw createHttpError(400, 'version must be a positive integer when provided', {
+          issues: [{ code: 'plan_version_invalid', field: 'version', message: 'version must be a positive integer' }],
+        });
+      }
+
+      const result = store.savePlanForConversation(context.conversationId, {
+        doc,
+        version: normalizedVersion,
+      });
+
+      broadcastEvent('conversation_plan_updated', {
+        conversationId: context.conversationId,
+        ownerConversationId: result.ownerConversationId,
+        plan: result.plan,
+      });
+
+      const response = {
+        ok: true,
+        ownerConversationId: result.ownerConversationId,
+        plan: result.plan,
+        warnings: result.warnings || [],
+      };
+
+      tryAppendInvocationEvent(context, 'agent_tool_call', {
+        schemaVersion: 1,
+        toolCallId,
+        tool: 'propose-plan',
+        status: 'succeeded',
+        durationMs: Date.now() - startedAt,
+        invocationId: context.invocationId,
+        conversationId: context.conversationId,
+        turnId: context.turnId,
+        agentId: context.agentId,
+        agentName: context.agentName,
+        assistantMessageId: context.assistantMessageId,
+        request: requestSummary,
+        result: {
+          ownerConversationId: result.ownerConversationId,
+          planId: result.plan && result.plan.id ? result.plan.id : null,
+          planStatus: result.plan && result.plan.status ? result.plan.status : null,
+          planVersion: result.plan && Number.isInteger(result.plan.version) ? result.plan.version : null,
+          warningCount: Array.isArray(result.warnings) ? result.warnings.length : 0,
+        },
+      });
+
+      return response;
+    } catch (error) {
+      const errorValue = error as any;
+      tryAppendInvocationEvent(context, 'agent_tool_call', {
+        schemaVersion: 1,
+        toolCallId,
+        tool: 'propose-plan',
+        status: 'failed',
+        durationMs: Date.now() - startedAt,
+        invocationId: context.invocationId,
+        conversationId: context.conversationId,
+        turnId: context.turnId,
+        agentId: context.agentId,
+        agentName: context.agentName,
+        assistantMessageId: context.assistantMessageId,
+        request: requestSummary,
+        error: {
+          statusCode: Number.isInteger(errorValue && errorValue.statusCode) ? errorValue.statusCode : null,
+          message: clipText(errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Unknown error')),
+        },
+      });
+
+      throw error;
+    } finally {
+      setContextCurrentTool(context, null);
+    }
+  }
+
   return {
     createInvocationContext,
     handleConversationNotify,
@@ -3196,6 +3307,7 @@ export function createAgentToolBridge(options: any = {}) {
     handleListMemories,
     handleListParticipants,
     handlePostMessage,
+    handleProposePlan,
     handleReadContext,
     handleSaveMemory,
     handleSearchMemory,

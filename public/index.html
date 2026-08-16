@@ -31,6 +31,7 @@
     <script defer src="/chat/new-conversation-dialog.js"></script>
     <script defer src="/chat/mention-menu.js"></script>
     <script defer src="/chat/session-goal-panel.js"></script>
+    <script defer src="/chat/plan-panel.js"></script>
     <script defer src="/chat/conversation-digest-panel.js"></script>
     <script defer src="/chat/summary-memory-panel.js"></script>
     <script defer src="/chat/image-composer.js"></script>
@@ -150,6 +151,7 @@
       <div class="drawer-tabs" role="tablist" aria-label="面板分类">
         <button role="tab" id="tab-participants" aria-controls="panel-participants" aria-selected="true" tabindex="0">参与者</button>
         <button role="tab" id="tab-goal" aria-controls="session-goal-drawer" aria-selected="false" tabindex="-1">目标</button>
+        <button role="tab" id="tab-plan" aria-controls="plan-drawer" aria-selected="false" tabindex="-1">规划</button>
         <button role="tab" id="tab-memory" aria-controls="summary-memory-drawer" aria-selected="false" tabindex="-1">记忆</button>
         <button role="tab" id="tab-summary" aria-controls="conversation-digest-drawer" aria-selected="false" tabindex="-1">摘要</button>
         <button role="tab" id="tab-settings" aria-controls="panel-settings" aria-selected="false" tabindex="-1">设置</button>
@@ -233,6 +235,69 @@
               <button id="session-goal-resume-button" class="ghost-button" type="button">恢复</button>
               <button id="session-goal-complete-button" class="ghost-button" type="button">完成</button>
               <button id="session-goal-clear-button" class="ghost-button danger" type="button">清除</button>
+            </div>
+          </div>
+        </div>
+
+        <div role="tabpanel" id="plan-drawer" class="drawer-panel plan-drawer" aria-labelledby="tab-plan" hidden>
+          <p id="plan-panel-status" class="session-goal-status-badge active">当前会话树还没有规划图</p>
+          <div class="plan-toolbar" role="toolbar" aria-label="规划图操作">
+            <button id="plan-refresh-button" class="ghost-button" type="button">刷新</button>
+            <button id="plan-add-node-button" class="ghost-button" type="button">新增节点</button>
+            <button id="plan-save-button" type="button">保存修改</button>
+            <button id="plan-activate-button" class="ghost-button" type="button">开始执行</button>
+            <button id="plan-revert-button" class="ghost-button" type="button">退回草稿</button>
+            <button id="plan-drawer-zoom-out-button" class="ghost-button" type="button" aria-label="缩小">−</button>
+            <button id="plan-drawer-zoom-fit-button" class="ghost-button" type="button">适应宽度</button>
+            <button id="plan-drawer-zoom-in-button" class="ghost-button" type="button" aria-label="放大">＋</button>
+            <button id="plan-expand-button" class="ghost-button" type="button">全屏</button>
+          </div>
+          <div id="plan-issues" class="plan-issues hidden" role="status" aria-live="polite"></div>
+          <p class="muted plan-hint">草稿态：底部手柄拖拽连边 · 点边或边中点 × 删边 · 双击编辑 · Delete 删节点 · Ctrl/⌘+滚轮缩放</p>
+          <div id="plan-graph" class="plan-graph" aria-label="规划图画布"></div>
+
+          <div id="plan-editor" class="plan-editor hidden">
+            <div class="section-row">
+              <span class="section-label">节点 <strong id="plan-node-id"></strong></span>
+              <span class="section-hint">草稿态可编辑结构；执行态只能改状态</span>
+            </div>
+            <label>
+              <span>标题</span>
+              <input id="plan-node-title" type="text" maxlength="80" />
+            </label>
+            <label>
+              <span>目标</span>
+              <textarea id="plan-node-goal" rows="3" maxlength="500"></textarea>
+            </label>
+            <div class="plan-editor-grid">
+              <label>
+                <span>状态</span>
+                <select id="plan-node-status">
+                  <option value="pending">待办</option>
+                  <option value="doing">进行</option>
+                  <option value="done">完成</option>
+                  <option value="blocked">阻塞</option>
+                </select>
+              </label>
+              <label>
+                <span>类型</span>
+                <select id="plan-node-kind">
+                  <option value="work">work</option>
+                  <option value="merge">merge</option>
+                </select>
+              </label>
+            </div>
+            <label>
+              <span>分支（图构建期命名，执行时才检出）</span>
+              <input id="plan-node-branch" type="text" maxlength="120" placeholder="feat/..." />
+            </label>
+            <div class="plan-deps-field">
+              <span class="section-label">依赖（depends_on）</span>
+              <div id="plan-node-deps" class="plan-deps-list"></div>
+            </div>
+            <div id="plan-node-spawned" class="plan-node-spawned"></div>
+            <div class="button-row compact-button-row">
+              <button id="plan-node-delete-button" class="ghost-button danger" type="button">删除节点</button>
             </div>
           </div>
         </div>
@@ -510,6 +575,19 @@
     </aside>
 
     <div id="toast" class="toast hidden"></div>
+
+    <div id="plan-expand-overlay" class="plan-expand-overlay hidden" role="dialog" aria-modal="true" aria-label="规划图全屏" aria-hidden="true">
+      <div class="plan-expand-head">
+        <h2>规划图</h2>
+        <div class="plan-toolbar" role="toolbar" aria-label="全屏图操作">
+          <button id="plan-zoom-out-button" class="ghost-button" type="button" aria-label="缩小">−</button>
+          <button id="plan-zoom-reset-button" class="ghost-button" type="button">重置缩放</button>
+          <button id="plan-zoom-in-button" class="ghost-button" type="button" aria-label="放大">＋</button>
+          <button id="plan-expand-close-button" class="ghost-button" type="button">关闭全屏</button>
+        </div>
+      </div>
+      <div id="plan-graph-expanded" class="plan-graph plan-graph-expanded" aria-label="规划图全屏画布"></div>
+    </div>
       <div id="new-conversation-backdrop" class="new-conversation-backdrop hidden" aria-hidden="true">
           <section
             id="new-conversation-dialog"

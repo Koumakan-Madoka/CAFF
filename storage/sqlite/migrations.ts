@@ -261,6 +261,7 @@ CREATE TABLE ${tableName} (
   type TEXT NOT NULL DEFAULT 'standard',
   metadata_json TEXT,
   project_scope_id TEXT,
+  branch TEXT,
   parent_conversation_id TEXT,
   origin_conversation_id TEXT,
   origin_message_id TEXT,
@@ -330,6 +331,7 @@ INSERT INTO chat_conversations_lineage_migrated (
   type,
   metadata_json,
   project_scope_id,
+  branch,
   parent_conversation_id,
   origin_conversation_id,
   origin_message_id,
@@ -344,6 +346,7 @@ SELECT
   ${selectColumn('type', "'standard'")},
   ${selectColumn('metadata_json', 'NULL')},
   ${selectColumn('project_scope_id', 'NULL')},
+  ${selectColumn('branch', 'NULL')},
   ${selectColumn('parent_conversation_id', 'NULL')},
   ${selectColumn('origin_conversation_id', 'NULL')},
   ${selectColumn('origin_message_id', 'NULL')},
@@ -384,6 +387,27 @@ CREATE INDEX IF NOT EXISTS idx_chat_conversations_project_scope
   if (Array.isArray(foreignKeyViolations) && foreignKeyViolations.length > 0) {
     throw new Error('Conversation lineage migration left foreign key violations');
   }
+}
+
+function ensureChatPlanSchema(db: any) {
+  db.exec(`
+CREATE TABLE IF NOT EXISTS chat_plans (
+  id TEXT PRIMARY KEY,
+  owner_conversation_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'draft'
+    CHECK (status IN ('draft', 'active', 'done', 'archived')),
+  version INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
+  doc_json TEXT NOT NULL,
+  activated_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (owner_conversation_id),
+  FOREIGN KEY (owner_conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_plans_owner
+  ON chat_plans (owner_conversation_id, updated_at DESC);
+  `);
 }
 
 function ensureCrossConversationDeliverySchema(db: any) {
@@ -575,6 +599,7 @@ CREATE TABLE IF NOT EXISTS chat_conversations (
   type TEXT NOT NULL DEFAULT 'standard',
   metadata_json TEXT,
   project_scope_id TEXT,
+  branch TEXT,
   parent_conversation_id TEXT,
   origin_conversation_id TEXT,
   origin_message_id TEXT,
@@ -828,6 +853,7 @@ CREATE INDEX IF NOT EXISTS idx_image_uploads_status ON image_uploads (status);
   ensureColumn(db, 'chat_agents', 'skills_json', 'skills_json TEXT');
   ensureColumn(db, 'chat_conversations', 'type', "type TEXT NOT NULL DEFAULT 'standard'");
   ensureColumn(db, 'chat_conversations', 'metadata_json', 'metadata_json TEXT');
+  ensureColumn(db, 'chat_conversations', 'branch', 'branch TEXT');
   ensureColumn(db, 'chat_conversation_agents', 'model_profile_id', 'model_profile_id TEXT');
   ensureColumn(
     db,
@@ -837,6 +863,7 @@ CREATE INDEX IF NOT EXISTS idx_image_uploads_status ON image_uploads (status);
   );
 
   ensureChatConversationLineageSchema(db);
+  ensureChatPlanSchema(db);
   ensureCrossConversationDeliverySchema(db);
 
   ensureColumn(db, 'image_upload_batches', 'consumed_at', 'consumed_at TEXT');
