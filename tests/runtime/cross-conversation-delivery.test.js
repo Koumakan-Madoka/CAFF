@@ -1040,3 +1040,95 @@ test('system submit persists a principal-less notify delivery with marker metada
     fixture.store.close();
   }
 });
+
+test('delivery worker dispatches one specific queued delivery by id without touching FIFO order', async () => {
+  const fixture = createFixture();
+  const service = createCrossConversationDeliveryService({ store: fixture.store });
+
+  try {
+    const first = service.submitFromAgent(createPrincipal(fixture), {
+      kind: 'notify',
+      targetConversationId: fixture.targetConversation.id,
+      targetAgentId: fixture.targetAgent.id,
+      content: 'First queued; leave it for the serial drain.',
+      idempotencyKey: 'direct-first',
+    });
+    const second = service.submitFromAgent(createPrincipal(fixture), {
+      kind: 'notify',
+      targetConversationId: fixture.otherConversation.id,
+      targetAgentId: fixture.otherAgent.id,
+      content: 'Second queued; claimed directly out of order.',
+      idempotencyKey: 'direct-second',
+    });
+
+    const dispatched = [];
+    const worker = createCrossConversationDeliveryWorker({
+      store: fixture.store,
+      workerId: 'worker-direct',
+      async dispatchTarget(input) {
+        dispatched.push(input.delivery.id);
+        input.onInvocationStarting({ invocationId: `invocation-${input.delivery.id}` });
+        return { replyMessage: null };
+      },
+    });
+
+    // Out of FIFO order: claim the SECOND delivery directly by id.
+    const direct = await worker.processDeliveryById(second.delivery.id);
+    assert.equal(direct.status, 'completed');
+    assert.deepEqual(dispatched, [second.delivery.id]);
+    const secondRow = fixture.store.getCrossConversationDelivery(second.delivery.id);
+    assert.equal(secondRow.dispatchStatus, 'completed');
+    assert.equal(secondRow.claimOwner, null);
+    assert.equal(secondRow.attemptCount, 1);
+
+    // The earlier delivery is untouched and still served by the serial drain.
+    assert.equal(fixture.store.getCrossConversationDelivery(first.delivery.id).dispatchStatus, 'queued');
+    const drained = await worker.processNext();
+    assert.equal(drained.status, 'completed');
+    assert.equal(drained.delivery.id, first.delivery.id);
+
+    // Completed / unknown ids cannot be claimed again.
+    assert.equal(await worker.processDeliveryById(second.delivery.id), null);
+    assert.equal(await worker.processDeliveryById('missing-delivery-id'), null);
+    assert.equal(await worker.processNext(), null);
+  } finally {
+    fixture.store.close();
+  }
+});
+
+test('concurrent direct claims on the same delivery resolve to exactly one dispatch', async () => {
+  const fixture = createFixture();
+  const service = createCrossConversationDeliveryService({ store: fixture.store });
+
+  try {
+    const submitted = service.submitFromAgent(createPrincipal(fixture), {
+      kind: 'notify',
+      targetConversationId: fixture.targetConversation.id,
+      targetAgentId: fixture.targetAgent.id,
+      content: 'Claimed by exactly one racer.',
+      idempotencyKey: 'direct-race',
+    });
+
+    let dispatchCount = 0;
+    const worker = createCrossConversationDeliveryWorker({
+      store: fixture.store,
+      workerId: 'worker-race',
+      async dispatchTarget(input) {
+        dispatchCount += 1;
+        input.onInvocationStarting({ invocationId: 'race-invocation' });
+        return { replyMessage: null };
+      },
+    });
+
+    const [winner, loser] = await Promise.all([
+      worker.processDeliveryById(submitted.delivery.id),
+      worker.processDeliveryById(submitted.delivery.id),
+    ]);
+    assert.equal(dispatchCount, 1);
+    assert.equal(winner && winner.status, 'completed');
+    assert.equal(loser, null);
+    assert.equal(fixture.store.getCrossConversationDelivery(submitted.delivery.id).attemptCount, 1);
+  } finally {
+    fixture.store.close();
+  }
+});

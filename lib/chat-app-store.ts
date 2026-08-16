@@ -1971,6 +1971,12 @@ export class ChatAppStore {
     );
   }
 
+  claimCrossConversationDeliveryById(deliveryId: any, payload: any) {
+    return normalizeCrossConversationDeliveryRow(
+      this.crossConversationDeliveryRepository.claimById(String(deliveryId || '').trim(), payload)
+    );
+  }
+
   markCrossConversationDispatchStarted(deliveryId: any, payload: any) {
     return normalizeCrossConversationDeliveryRow(
       this.crossConversationDeliveryRepository.markDispatchStarted(String(deliveryId || '').trim(), payload)

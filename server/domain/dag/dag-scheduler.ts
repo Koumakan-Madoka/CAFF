@@ -76,6 +76,13 @@ export function createDagScheduler(options: any = {}) {
   const resumeNodeConversation = typeof options.resumeNodeConversation === 'function'
     ? options.resumeNodeConversation
     : null;
+  // Startup reconcile hook (D25 wiring): re-offer a doing node's QUEUED
+  // scheduler-owned delivery for direct parallel dispatch. Only invoked when
+  // the delivery worker already owns a non-terminal delivery for the spawned
+  // conversation; the atomic claim makes double-dispatch impossible.
+  const dispatchQueuedNodeDelivery = typeof options.dispatchQueuedNodeDelivery === 'function'
+    ? options.dispatchQueuedNodeDelivery
+    : null;
   const prepareNodeWorktreeForNode = typeof options.prepareNodeWorktree === 'function'
     ? options.prepareNodeWorktree
     : () => ({ ok: true });
@@ -509,6 +516,17 @@ export function createDagScheduler(options: any = {}) {
       // queued delivery for this conversation, it owns the dispatch — skip.
       if (typeof store.hasNonTerminalCrossConversationDelivery === 'function'
         && store.hasNonTerminalCrossConversationDelivery(spawnedConversationId)) {
+        // A delivery still QUEUED at this point was never claimed (persisted
+        // before direct dispatch existed, or the process died between persist
+        // and dispatch). Re-offer it so it runs in parallel instead of
+        // waiting behind the serial drain.
+        if (dispatchQueuedNodeDelivery) {
+          try {
+            dispatchQueuedNodeDelivery({ ownerConversationId, plan, node, conversation });
+          } catch (dispatchError) {
+            logError(`queued-delivery re-dispatch failed for node ${nodeId}`, dispatchError);
+          }
+        }
         continue;
       }
 

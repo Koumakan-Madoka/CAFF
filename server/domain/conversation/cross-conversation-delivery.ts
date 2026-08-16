@@ -759,18 +759,44 @@ export function createCrossConversationDeliveryWorker(options: any = {}) {
     }
   }
 
-  async function processNext() {
-    const claimDate = currentDate();
-    const claimed = store.claimNextCrossConversationDelivery({
+  function claimParams(claimDate: any) {
+    return {
       owner: workerId,
       now: claimDate.toISOString(),
       claimExpiresAt: new Date(claimDate.getTime() + leaseMs).toISOString(),
-    });
+    };
+  }
+
+  async function processNext() {
+    const claimDate = currentDate();
+    const claimed = store.claimNextCrossConversationDelivery(claimParams(claimDate));
 
     if (!claimed) {
       return null;
     }
 
+    return processClaimedDelivery(claimed, claimDate);
+  }
+
+  // DAG direct dispatch (D21/D24): claim one specific queued delivery by id
+  // and run it through the exact same lifecycle as the serial drain. The
+  // claim is atomic against claimNext (same guards, SQLite single writer), so
+  // a racing drain simply observes the delivery as already claimed.
+  async function processDeliveryById(deliveryIdInput: any) {
+    const deliveryId = normalizeRequiredText(deliveryIdInput, 'deliveryId');
+    const claimDate = currentDate();
+    const claimed = typeof store.claimCrossConversationDeliveryById === 'function'
+      ? store.claimCrossConversationDeliveryById(deliveryId, claimParams(claimDate))
+      : null;
+
+    if (!claimed) {
+      return null;
+    }
+
+    return processClaimedDelivery(claimed, claimDate);
+  }
+
+  async function processClaimedDelivery(claimed: any, claimDate: any) {
     appendEvent(claimed, 'claimed', {
       claimOwner: workerId,
       claimExpiresAt: claimed.claimExpiresAt,
@@ -1196,6 +1222,7 @@ export function createCrossConversationDeliveryWorker(options: any = {}) {
   return {
     cancel,
     expireRequestDeadlines,
+    processDeliveryById,
     processNext,
     recoverExpiredClaims,
     recoverPendingResponses,

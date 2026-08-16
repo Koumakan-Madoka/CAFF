@@ -485,6 +485,43 @@ test('reconcile resumes an interrupted child once, then blocks when the budget i
   assert.ok(historyFor(store, 'n1').some((entry) => (entry.reason || '').includes('dag_reconcile_resume_exhausted')));
 });
 
+test('reconcile re-offers a still-queued scheduler delivery for direct dispatch instead of resuming (D25 wiring)', async () => {
+  const store = createStore(test);
+  createRoot(store);
+  createActivePlan(store, makeDoc([node('n1')]));
+  store.writePlanNodeExecution(ROOT_ID, [{ nodeId: 'n1', status: 'doing', spawnedConversationId: 'child-n1' }]);
+  createChildConversation(store, 'child-n1');
+  addMessage(store, {
+    id: 'bootstrap-n1',
+    conversationId: 'child-n1',
+    metadata: { kind: 'conversation_spawn_initial_message' },
+  });
+
+  const redispatched = [];
+  const { scheduler, resumes } = createHarness(store, {
+    schedulerOptions: {
+      dispatchQueuedNodeDelivery(input) {
+        redispatched.push({ nodeId: input.node.id, conversationId: input.conversation.id });
+      },
+    },
+  });
+
+  // Simulate a non-terminal (still queued or in-flight) delivery that the
+  // delivery worker owns — e.g. a bootstrap persisted before direct dispatch
+  // existed, stranded behind the serial drain.
+  const original = store.hasNonTerminalCrossConversationDelivery;
+  store.hasNonTerminalCrossConversationDelivery = () => true;
+  try {
+    await scheduler.reconcileOnStartup();
+  } finally {
+    store.hasNonTerminalCrossConversationDelivery = original;
+  }
+
+  assert.deepEqual(redispatched, [{ nodeId: 'n1', conversationId: 'child-n1' }]);
+  assert.equal(resumes.length, 0, 'no resume while the worker owns a delivery');
+  assert.equal(getNode(store, 'n1').status, 'doing', 'node state untouched');
+});
+
 test('reconcile blocks a doing node without spawned conversation (fail-closed)', async () => {
   const store = createStore(test);
   createRoot(store);

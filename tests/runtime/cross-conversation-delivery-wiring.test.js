@@ -4,6 +4,7 @@ const path = require('node:path');
 const test = require('node:test');
 
 const { createServerApp } = require('../../build/server/app/create-server');
+const { createProjectManager } = require('../../build/lib/project-manager');
 const { withTempDir } = require('../helpers/temp-dir');
 
 function nextTurn() {
@@ -208,4 +209,126 @@ test('server composition shares delivery service, wires worker adapters, mainten
   await new Promise((resolve) => app.close(resolve));
   closed = true;
   assert.equal(clearedTimer, maintenanceTimer);
+});
+
+test('server composition dispatches DAG scheduler deliveries directly and skips the serial drain', async (t) => {
+  const tempDir = withTempDir('caff-dag-direct-dispatch-');
+  const sqlitePath = path.join(tempDir, 'chat.sqlite');
+  const directDispatched = [];
+  let processNextCount = 0;
+  let dagOptions = null;
+  const deliveryWorker = {
+    recoverExpiredClaims() {
+      return { requeuedDeliveryIds: [], failedUnknownDeliveryIds: [] };
+    },
+    recoverPendingResponses() {
+      return [];
+    },
+    expireRequestDeadlines() {
+      return [];
+    },
+    async processNext() {
+      processNextCount += 1;
+      return null;
+    },
+    async processDeliveryById(deliveryId) {
+      directDispatched.push(deliveryId);
+      return null;
+    },
+  };
+  const app = createServerApp({
+    host: '127.0.0.1',
+    port: 0,
+    agentDir: tempDir,
+    sqlitePath,
+    projectDir: tempDir,
+    crossConversationDeliveryWorker: deliveryWorker,
+    dagSchedulerFactory(options) {
+      dagOptions = options;
+      return {
+        handleEvent() {},
+        resolveConversationWorkdir() {
+          return null;
+        },
+        async reconcileOnStartup() {},
+      };
+    },
+  });
+  let closed = false;
+
+  t.after(async () => {
+    if (!closed) {
+      await new Promise((resolve) => app.close(() => resolve()));
+    }
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  assert.ok(dagOptions, 'dag scheduler wiring options captured');
+
+  const projectManager = createProjectManager({ agentDir: tempDir });
+  const project = projectManager.listProjects()[0];
+  assert.ok(project && project.id, 'project auto-registered for projectDir');
+
+  const agent = app.store.saveCustomRoleConfig({
+    id: 'dag-wiring-agent',
+    name: 'DAG Wiring Agent',
+    personaPrompt: 'Run node work.',
+  });
+  app.store.createConversation({
+    id: 'dag-wiring-owner',
+    title: 'DAG Owner',
+    participants: [agent.id],
+  });
+  app.store.db.prepare(`
+    UPDATE chat_conversations SET project_scope_id = ? WHERE id = ?
+  `).run(project.id, 'dag-wiring-owner');
+
+  // Spawn path: the bootstrap delivery must go straight to processDeliveryById.
+  const spawned = await dagOptions.spawnNodeConversation({
+    ownerConversationId: 'dag-wiring-owner',
+    node: { id: 'n1', title: 'Node One' },
+    initialMessage: 'Complete node one.',
+    clientRequestId: 'dag-node:plan-1:n1:ts',
+  });
+  assert.ok(spawned.conversationId, 'child conversation spawned');
+  const spawnBundle = app.store.getCrossConversationDeliveryBundleByIdempotency(
+    'operator:dag-wiring-owner:conversation_spawn',
+    'dag-node:plan-1:n1:ts'
+  );
+  assert.ok(spawnBundle && spawnBundle.delivery, 'bootstrap delivery persisted');
+  assert.deepEqual(directDispatched, [spawnBundle.delivery.id]);
+  assert.equal(processNextCount, 0, 'serial drain never claimed the DAG bootstrap');
+
+  // Resume path (D25): the notify delivery is also dispatched directly.
+  const child = app.store.getConversation(spawned.conversationId);
+  await dagOptions.resumeNodeConversation({
+    ownerConversationId: 'dag-wiring-owner',
+    conversation: child,
+    node: { id: 'n1' },
+    content: 'Continue node one.',
+    idempotencyKey: 'dag-resume:plan-1:n1:ts',
+  });
+  const resumeBundle = app.store.getCrossConversationDeliveryBundleByIdempotency(
+    'system:dag-wiring-owner:conversation_notify',
+    'dag-resume:plan-1:n1:ts'
+  );
+  assert.ok(resumeBundle && resumeBundle.delivery, 'resume delivery persisted');
+  assert.deepEqual(directDispatched, [spawnBundle.delivery.id, resumeBundle.delivery.id]);
+  assert.equal(processNextCount, 0, 'serial drain never claimed the DAG resume');
+
+  // Negative control: a non-DAG delivery still flows through the serial drain.
+  app.crossConversationDeliveryService.submitFromSystem({
+    sourceConversationId: 'dag-wiring-owner',
+    targetConversationId: spawned.conversationId,
+    targetAgentId: agent.id,
+    content: 'Manual notify still drains serially.',
+    idempotencyKey: 'manual-notify-1',
+  });
+  await nextTurn();
+  await nextTurn();
+  assert.equal(processNextCount >= 1, true, 'non-DAG delivery still triggers the drain');
+  assert.equal(directDispatched.length, 2, 'non-DAG delivery was not directly dispatched');
+
+  await new Promise((resolve) => app.close(() => resolve()));
+  closed = true;
 });

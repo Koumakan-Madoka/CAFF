@@ -305,6 +305,43 @@ export function createServerApp(options: any = {}) {
     return deliveryDrainPromise;
   }
 
+  // DAG scheduler-owned deliveries (idempotency key prefixes dag-node: /
+  // dag-resume:) are dispatched directly by the scheduler wiring, in
+  // parallel, bounded by the scheduler's own D24 concurrency cap. The global
+  // serial drain must not claim them first — that would re-serialize DAG
+  // child conversations behind one worker loop.
+  function isDagSchedulerDelivery(delivery: any) {
+    const key = String(delivery && delivery.idempotencyKey || '');
+    return key.startsWith('dag-node:') || key.startsWith('dag-resume:');
+  }
+
+  function dispatchDagDeliveryNow(result: any) {
+    const delivery = result && result.delivery;
+    if (!delivery || !isDagSchedulerDelivery(delivery)) {
+      return;
+    }
+    if (!crossConversationDeliveryWorker
+      || typeof crossConversationDeliveryWorker.processDeliveryById !== 'function') {
+      // Custom/injected worker without direct dispatch: degrade to the drain.
+      requestCrossConversationDeliveryDrain();
+      return;
+    }
+    if (String(delivery.dispatchStatus || '') !== 'queued') {
+      return; // duplicate canonical already claimed/running/completed elsewhere
+    }
+    void Promise.resolve(crossConversationDeliveryWorker.processDeliveryById(delivery.id))
+      .catch((error: any) => {
+        console.error(
+          `[dag-scheduler] Direct dispatch failed for ${delivery.id}: ${
+            error && (error as any).stack ? (error as any).stack : error
+          }`
+        );
+        // Never strand the delivery: fall back to the serial drain (an
+        // abandoned claim is requeued by recoverExpiredClaims).
+        requestCrossConversationDeliveryDrain();
+      });
+  }
+
   function handleCrossConversationDeliveryPersisted(result: any) {
     if (!result || !result.delivery) {
       return;
@@ -316,7 +353,9 @@ export function createServerApp(options: any = {}) {
     }
 
     broadcastCrossConversationDelivery(result.delivery, result.duplicate ? 'duplicate_submit' : 'persisted');
-    requestCrossConversationDeliveryDrain();
+    if (!isDagSchedulerDelivery(result.delivery)) {
+      requestCrossConversationDeliveryDrain();
+    }
   }
 
   function handleCrossConversationDeliveryChanged(change: any) {
@@ -659,7 +698,12 @@ export function createServerApp(options: any = {}) {
         return projectManager.listProjects()
           .find((project: any) => project && project.id === normalizedProjectScopeId) || null;
       },
-      onBootstrapAvailable() {
+      onBootstrapAvailable(result: any) {
+        // DAG-managed bootstraps are dispatched directly by the scheduler
+        // wiring (dispatchDagDeliveryNow) right after spawn returns.
+        if (isDagSchedulerDelivery(result && result.delivery)) {
+          return;
+        }
         requestCrossConversationDeliveryDrain();
       },
     });
@@ -781,6 +825,25 @@ export function createServerApp(options: any = {}) {
           return null;
         }
       },
+      // D25 reconcile support: a doing node whose scheduler-owned delivery is
+      // still QUEUED (legacy pre-direct-dispatch row, or a torn persist) is
+      // re-offered here for direct parallel dispatch. dispatchDagDeliveryNow
+      // ignores anything not currently queued, and the claim is atomic.
+      dispatchQueuedNodeDelivery({ ownerConversationId, plan, node }: any) {
+        const planId = String(plan && plan.id || '').trim();
+        const nodeId = String(node && node.id || '').trim();
+        const activation = String(plan && plan.activatedAt || 'na');
+        const keys = [
+          [`operator:${ownerConversationId}:conversation_spawn`, `dag-node:${planId}:${nodeId}:${activation}`],
+          [`system:${ownerConversationId}:conversation_notify`, `dag-resume:${planId}:${nodeId}:${activation}`],
+        ];
+        for (const [scope, key] of keys) {
+          const bundle = store.getCrossConversationDeliveryBundleByIdempotency(scope, key);
+          if (bundle && bundle.delivery) {
+            dispatchDagDeliveryNow({ delivery: bundle.delivery });
+          }
+        }
+      },
       // D13: spawn the node child conversation flat under the ROOT owner
       // conversation; the executor is the root conversation's primary
       // (first) participant agent. The goal + upstream result summaries are
@@ -805,10 +868,11 @@ export function createServerApp(options: any = {}) {
           initialMessage,
           clientRequestId,
         });
+        dispatchDagDeliveryNow(result);
         return { conversationId: result && result.conversation ? result.conversation.id : '' };
       },
       // D25: resume inside the ORIGINAL child conversation via a
-      // system-principal notify delivery (drained by the delivery worker).
+      // system-principal notify delivery (dispatched directly, in parallel).
       async resumeNodeConversation({ ownerConversationId, conversation, node, content, idempotencyKey }: any) {
         const participants = (Array.isArray(conversation.agents) ? conversation.agents : [])
           .map((agent: any) => agent && agent.id)
@@ -816,7 +880,7 @@ export function createServerApp(options: any = {}) {
         if (participants.length === 0) {
           throw new Error('Spawned conversation has no participant agents');
         }
-        crossConversationDeliveryService.submitFromSystem({
+        const result = crossConversationDeliveryService.submitFromSystem({
           sourceConversationId: ownerConversationId,
           targetConversationId: conversation.id,
           targetAgentId: participants[0],
@@ -829,6 +893,7 @@ export function createServerApp(options: any = {}) {
             dagNodeId: String(node && node.id || '').trim(),
           },
         });
+        dispatchDagDeliveryNow(result);
       },
     });
   }
