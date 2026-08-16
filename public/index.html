@@ -436,6 +436,23 @@
               </div>
             </section>
 
+            <section class="bulk-skill-card project-binding-card">
+              <div class="section-row">
+                <span class="section-label">项目绑定</span>
+                <span class="section-hint">绑定后不可更改，spawn 与计划执行需要项目</span>
+              </div>
+              <label>
+                <span>选择项目</span>
+                <select id="project-bind-select">
+                  <option value="">正在加载...</option>
+                </select>
+              </label>
+              <p id="project-binding-status" class="section-hint">选择一个项目后绑定到当前会话。</p>
+              <div class="button-row compact-button-row">
+                <button id="bind-project-button" class="ghost-button" type="button">绑定到当前会话</button>
+              </div>
+            </section>
+
             <div class="conversation-agent-section">
               <div class="section-row">
                 <span class="section-label">参与人格</span>

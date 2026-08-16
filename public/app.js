@@ -34,6 +34,9 @@ const state = {
   feishuBindingNoticeConversationId: null,
   knownFeishuChats: [],
   loadingFeishuChats: false,
+  projectOptions: [],
+  loadingProjects: false,
+  bindingProject: false,
   contextInspector: {
     open: false,
     loading: false,
@@ -244,6 +247,9 @@ const dom = {
   feishuChatIdInput: /** @type {HTMLInputElement | null} */ (document.getElementById('feishu-chat-id-input')),
   bindFeishuChatButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('bind-feishu-chat-button')),
   feishuBindingStatus: /** @type {HTMLElement | null} */ (document.getElementById('feishu-binding-status')),
+  projectBindSelect: /** @type {HTMLSelectElement | null} */ (document.getElementById('project-bind-select')),
+  bindProjectButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('bind-project-button')),
+  projectBindingStatus: /** @type {HTMLElement | null} */ (document.getElementById('project-binding-status')),
   undercoverGameCard: /** @type {HTMLElement | null} */ (document.getElementById('undercover-game-card')),
   undercoverGameStatus: /** @type {HTMLElement | null} */ (document.getElementById('undercover-game-status')),
   undercoverLastResult: /** @type {HTMLElement | null} */ (document.getElementById('undercover-last-result')),
@@ -2495,6 +2501,31 @@ async function refreshKnownFeishuChats(options = {}) {
   }
 }
 
+async function refreshProjectOptions(options = {}) {
+  const render = options.render !== false;
+  const swallowErrors = options.swallowErrors !== false;
+
+  state.loadingProjects = true;
+  if (render) {
+    renderCompactConversationPersonaSettings();
+  }
+
+  try {
+    const data = await fetchJson('/api/projects');
+    state.projectOptions = Array.isArray(data && data.projects) ? data.projects : [];
+  } catch (error) {
+    state.projectOptions = [];
+    if (!swallowErrors) {
+      throw error;
+    }
+  } finally {
+    state.loadingProjects = false;
+    if (render) {
+      renderCompactConversationPersonaSettings();
+    }
+  }
+}
+
 function activeTurnForConversation(conversationId) {
   if (!state.runtime || !Array.isArray(state.runtime.activeTurns)) {
     return null;
@@ -3672,6 +3703,7 @@ async function refreshAll(preferredConversationId) {
     mergeConversationSummary(state.currentConversation);
   }
   await refreshKnownFeishuChats({ render: false });
+  await refreshProjectOptions({ render: false });
 
   newConversationDialogController.syncOptions();
 
@@ -4851,6 +4883,56 @@ function bindEvents() {
         showToast(error.message);
       } finally {
         state.bindingFeishuChat = false;
+        conversationSettingsController.render();
+      }
+    });
+  }
+
+  if (dom.bindProjectButton) {
+    dom.bindProjectButton.addEventListener('click', async (event) => {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+
+      if (!state.currentConversation) {
+        showToast('请先选择一个会话');
+        return;
+      }
+
+      if (state.currentConversation.projectScopeId) {
+        showToast('当前会话已绑定项目，绑定后不可更改');
+        return;
+      }
+
+      const conversationId = state.currentConversation.id;
+      const projectId = dom.projectBindSelect ? dom.projectBindSelect.value.trim() : '';
+
+      if (!projectId) {
+        showToast('请先选择一个项目');
+        return;
+      }
+
+      state.bindingProject = true;
+      conversationSettingsController.render();
+
+      try {
+        const result = await fetchJson(
+          `/api/conversations/${encodeURIComponent(conversationId)}/project-scope`,
+          {
+            method: 'PUT',
+            body: { projectId },
+          }
+        );
+        if (result && result.conversation) {
+          state.currentConversation = result.conversation;
+          mergeConversationSummary(result.summary || result.conversation);
+        }
+        renderAll();
+        const projectName = result && result.project && result.project.name ? result.project.name : projectId;
+        showToast(`已绑定项目：${projectName}`);
+      } catch (error) {
+        showToast(error.message);
+      } finally {
+        state.bindingProject = false;
         conversationSettingsController.render();
       }
     });
