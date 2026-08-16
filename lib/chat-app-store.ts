@@ -26,6 +26,12 @@ const {
   diffNodeStatusTransitions,
   findBlockedUpstreams,
 } = require('./plan-dag');
+const {
+  TITLE_SOURCE_MANUAL,
+  normalizeConversationTitleSource,
+  readConversationTitleSource,
+  resolveConversationTitleTransition,
+} = require('./conversation-title-source');
 
 const MAX_AVATAR_DATA_URL_LENGTH = 2 * 1024 * 1024;
 const MAX_AGENT_SANDBOX_NAME_LENGTH = 80;
@@ -2700,9 +2706,27 @@ export class ChatAppStore {
       return null;
     }
 
-    const title = updates.title === undefined ? existing.title : String(updates.title || '').trim() || existing.title;
+    const currentTitleSource = readConversationTitleSource(existing.metadata);
+    let titleSource = currentTitleSource;
+    let title = updates.title === undefined ? existing.title : String(updates.title || '').trim() || existing.title;
+
+    if (updates.title !== undefined) {
+      // 写标题时同步维护 metadata.titleSource 状态机：
+      // 未显式声明来源的标题写入视为 manual（与既有 UI 改名语义一致）；
+      // 状态机拒绝的自动写入（例如 manual 终态上的 auto_*）保留原标题与来源。
+      const incomingTitleSource = updates.titleSource === undefined
+        ? TITLE_SOURCE_MANUAL
+        : normalizeConversationTitleSource(updates.titleSource);
+      const transition = resolveConversationTitleTransition(currentTitleSource, incomingTitleSource);
+      if (transition.applied) {
+        titleSource = transition.titleSource;
+      } else {
+        title = existing.title;
+      }
+    }
+
     const type = updates.type === undefined ? existing.type : normalizeConversationType(updates.type);
-    const metadata =
+    const baseMetadata =
       updates.metadata === undefined
         ? existing.metadata && typeof existing.metadata === 'object'
           ? existing.metadata
@@ -2710,6 +2734,9 @@ export class ChatAppStore {
         : updates.metadata && typeof updates.metadata === 'object'
           ? updates.metadata
           : {};
+    // metadata.titleSource 由状态机独占维护，调用方在 metadata 中夹带的
+    // titleSource 一律以状态机结果为准，避免绕过 manual 终态保护。
+    const metadata = { ...baseMetadata, titleSource };
     const participants = this.hasConversationParticipantsInput(updates)
       ? this.normalizeConversationParticipantsInput(updates)
       : undefined;
@@ -2719,6 +2746,38 @@ export class ChatAppStore {
       type,
       metadata,
       participants,
+    });
+  }
+
+  getConversationTitleSource(conversationId: any) {
+    const existing = this.getConversationWithoutMessages(conversationId);
+    if (!existing) {
+      return null;
+    }
+    return readConversationTitleSource(existing.metadata);
+  }
+
+  updateConversationTitleSource(conversationId: any, titleSource: any) {
+    const existing = this.getConversationWithoutMessages(conversationId);
+    if (!existing) {
+      return null;
+    }
+
+    const transition = resolveConversationTitleTransition(
+      readConversationTitleSource(existing.metadata),
+      titleSource
+    );
+    if (!transition.applied || transition.titleSource === readConversationTitleSource(existing.metadata)) {
+      return existing;
+    }
+
+    return this.updateConversationTransaction(conversationId, {
+      title: existing.title,
+      type: existing.type,
+      metadata: {
+        ...(existing.metadata && typeof existing.metadata === 'object' ? existing.metadata : {}),
+        titleSource: transition.titleSource,
+      },
     });
   }
 
