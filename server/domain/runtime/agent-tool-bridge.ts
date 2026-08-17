@@ -5,6 +5,7 @@ const { createHttpError } = require('../../http/http-errors');
 const { pickConversationSummary, serializeConversationPrivateMessageForUi } = require('../conversation/conversation-view');
 const { buildAgentMentionLookup, formatAgentMention, resolveMentionValues } = require('../conversation/mention-routing');
 const { applySessionGoalAction, getSessionGoalProposal, proposeSessionGoalAction } = require('../conversation/session-goal');
+const { getDagNodeGoalBinding } = require('../conversation/dag-goal-binding');
 const { createConversationExperienceDraft } = require('../conversation/experience-draft');
 const { recordConversationRetrievalTrace } = require('../conversation/retrieval-trace');
 const { createCrossConversationDeliveryService } = require('../conversation/cross-conversation-delivery');
@@ -1471,6 +1472,15 @@ export function createAgentToolBridge(options: any = {}) {
         if (proposerAgentId && proposerAgentId === String(context.agentId || '').trim()) {
           throw createHttpError(403, 'goal_proposal_self_review: the proposer cannot accept/reject their own proposal');
         }
+        // D28 fail-closed: when the conversation carries a DAG node goal
+        // binding with a designated verifier, ONLY that verifier may rule.
+        // "Not the proposer" alone is not enough — a third participant must
+        // not be able to hijack acceptance.
+        const rulingBinding = getDagNodeGoalBinding(conversation);
+        if (rulingBinding && rulingBinding.verifierId
+          && rulingBinding.verifierId !== String(context.agentId || '').trim()) {
+          throw createHttpError(403, 'dag_verifier_only: only the designated verifier agent can accept/reject this node completion proposal');
+        }
         const result = applySessionGoalAction(activeStore, context.conversationId, {
           action: action === 'accept' ? 'accept-proposal' : 'dismiss-proposal',
         });
@@ -1520,6 +1530,18 @@ export function createAgentToolBridge(options: any = {}) {
         });
 
         return response;
+      }
+
+      // D28 fail-closed: on a DAG-bound node goal, only the node worker
+      // (first participant) may declare completion. Another participant
+      // announcing "done" on the worker's behalf is rejected outright.
+      if (action === 'complete' && activeStore && typeof activeStore.getConversation === 'function') {
+        const bindingConversation = activeStore.getConversation(context.conversationId);
+        const proposalBinding = bindingConversation ? getDagNodeGoalBinding(bindingConversation) : null;
+        if (proposalBinding && proposalBinding.workerId
+          && proposalBinding.workerId !== String(context.agentId || '').trim()) {
+          throw createHttpError(403, 'dag_completion_worker_only: only the node worker can declare this node complete');
+        }
       }
 
       const result = proposeSessionGoalAction(

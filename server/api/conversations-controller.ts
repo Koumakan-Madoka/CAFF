@@ -669,10 +669,24 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         }
 
         if (result.proposalChanged) {
+          // D28: the user accepting/rejecting via the UI is a legitimate
+          // ruling path (manual verification). The cleared event must carry
+          // the authoritative pre-clear proposal snapshot (the scheduler
+          // derives the node result summary from it) plus an explicit user
+          // ruling marker — an absent ruledBy would be indistinguishable
+          // from a missing enforcement check.
+          const goalAction = String(body && body.action || '').trim().toLowerCase();
+          const isRulingAction = result.proposalCleared
+            && (goalAction === 'accept-proposal' || goalAction === 'accept_proposal'
+              || goalAction === 'dismiss-proposal' || goalAction === 'dismiss_proposal');
           broadcastEvent(result.proposalCleared ? 'conversation_goal_proposal_cleared' : 'conversation_goal_proposal_updated', {
             conversationId,
             goal: result.goal,
-            proposal: result.proposal,
+            proposal: result.proposalCleared ? (result.clearedProposal || null) : result.proposal,
+            ...(isRulingAction ? {
+              outcome: goalAction.startsWith('accept') ? 'accepted' : 'rejected',
+              ruledBy: { kind: 'user' },
+            } : {}),
             conversation: result.conversation,
             summary,
           });

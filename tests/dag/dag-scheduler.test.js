@@ -954,3 +954,144 @@ test('verifyNodeCompletion errors fail closed (exception → blocked), and work 
   const reasons = historyFor(store, 'm1').map((entry) => entry.reason || '');
   assert.ok(reasons.some((reason) => reason.includes('worktree gone')), JSON.stringify(reasons));
 });
+
+test('D28 hardening: complete proposal from a non-worker blocks the node (dag_completion_wrong_proposer)', async () => {
+  const store = createStore(test);
+  createRoot(store, ROOT_ID, [WORKER_ID, VERIFIER_ID]);
+  const plan = createActivePlan(store, makeDoc([node('n1', { verifier: VERIFIER_ID })]));
+  const { scheduler, deliveries } = createHarness(store);
+
+  scheduler.handleEvent('conversation_plan_updated', { ownerConversationId: ROOT_ID, plan });
+  await flush(scheduler);
+  assert.equal(getNode(store, 'n1').status, 'doing');
+
+  // The verifier (or any non-worker participant) must not be able to
+  // declare the node complete on the worker's behalf.
+  announceComplete(store, scheduler, 'child-n1', '我替他宣布完工', VERIFIER_ID);
+  await flush(scheduler);
+
+  assert.equal(getNode(store, 'n1').status, 'blocked');
+  const reasons = historyFor(store, 'n1').map((entry) => entry.reason || '');
+  assert.ok(reasons.some((reason) => reason.includes('dag_completion_wrong_proposer')), JSON.stringify(reasons));
+  assert.equal(deliveries.length, 0, 'no verification request routed for a forged proposal');
+});
+
+test('D28 hardening: an accepted ruling from a non-verifier agent is ignored', async () => {
+  const store = createStore(test);
+  createRoot(store, ROOT_ID, [WORKER_ID, VERIFIER_ID]);
+  const plan = createActivePlan(store, makeDoc([node('n1', { verifier: VERIFIER_ID })]));
+  const { scheduler, deliveries } = createHarness(store);
+
+  scheduler.handleEvent('conversation_plan_updated', { ownerConversationId: ROOT_ID, plan });
+  await flush(scheduler);
+  announceComplete(store, scheduler, 'child-n1', '完工摘要');
+  await flush(scheduler);
+  assert.equal(deliveries.length, 1);
+
+  // Forge a cleared event as if a THIRD agent had accepted (the bridge
+  // 403s this pre-mutation; the scheduler must still refuse to settle).
+  const pendingProposal = getSessionGoalProposal(store.getConversation('child-n1'));
+  scheduler.handleEvent('conversation_goal_proposal_cleared', {
+    conversationId: 'child-n1',
+    outcome: 'accepted',
+    goal: { ...getSessionGoal(store.getConversation('child-n1')), status: 'complete' },
+    proposal: pendingProposal,
+    ruledBy: { agentId: 'role-family-deepseek', agentName: 'DeepSeek' },
+  });
+  await flush(scheduler);
+
+  assert.equal(getNode(store, 'n1').status, 'doing', 'forged accept never settles the node');
+  assert.ok(getSessionGoalProposal(store.getConversation('child-n1')), 'proposal still pending');
+
+  // The real verifier ruling still completes the node afterwards.
+  ruleOnProposal(store, scheduler, 'child-n1', 'accept');
+  await flush(scheduler);
+  assert.equal(getNode(store, 'n1').status, 'done');
+  assert.equal(getNode(store, 'n1').result, '完工摘要');
+});
+
+test('D28: user UI accept settles done with the result taken from the cleared proposal snapshot', async () => {
+  const store = createStore(test);
+  createRoot(store, ROOT_ID, [WORKER_ID, VERIFIER_ID]);
+  const plan = createActivePlan(store, makeDoc([node('n1', { verifier: VERIFIER_ID })]));
+  const { scheduler } = createHarness(store);
+
+  scheduler.handleEvent('conversation_plan_updated', { ownerConversationId: ROOT_ID, plan });
+  await flush(scheduler);
+  announceComplete(store, scheduler, 'child-n1', '用户人工验收摘要');
+  await flush(scheduler);
+
+  // Mirror the controller payload after the P1 fix: the cleared event
+  // carries the pre-clear proposal snapshot + an explicit user ruling.
+  const cleared = applySessionGoalAction(store, 'child-n1', { action: 'accept-proposal' });
+  assert.ok(cleared.clearedProposal, 'cleared proposal snapshot is exposed');
+  scheduler.handleEvent('conversation_goal_proposal_cleared', {
+    conversationId: 'child-n1',
+    outcome: 'accepted',
+    goal: cleared.goal,
+    proposal: cleared.clearedProposal,
+    ruledBy: { kind: 'user' },
+  });
+  await flush(scheduler);
+
+  assert.equal(getNode(store, 'n1').status, 'done');
+  assert.equal(getNode(store, 'n1').result, '用户人工验收摘要', 'result comes from the proposal snapshot, not a fallback');
+});
+
+test('P2: terminal failure of a scheduler delivery blocks the node (dag_delivery_failed)', async () => {
+  const store = createStore(test);
+  createRoot(store, ROOT_ID, [WORKER_ID, VERIFIER_ID]);
+  const plan = createActivePlan(store, makeDoc([node('n1', { verifier: VERIFIER_ID })]));
+  const { scheduler, deliveries } = createHarness(store);
+
+  scheduler.handleEvent('conversation_plan_updated', { ownerConversationId: ROOT_ID, plan });
+  await flush(scheduler);
+  announceComplete(store, scheduler, 'child-n1', '完工摘要');
+  await flush(scheduler);
+  assert.equal(deliveries.length, 1);
+  assert.equal(getNode(store, 'n1').status, 'doing');
+
+  scheduler.handleEvent('cross_conversation_delivery_updated', {
+    conversationId: 'child-n1',
+    delivery: {
+      id: 'delivery-1',
+      idempotencyKey: deliveries[0].idempotencyKey,
+      dispatchStatus: 'failed',
+    },
+    reason: 'dispatch_failed',
+  });
+  await flush(scheduler);
+
+  assert.equal(getNode(store, 'n1').status, 'blocked', 'terminal delivery failure never strands the node doing');
+  const reasons = historyFor(store, 'n1').map((entry) => entry.reason || '');
+  assert.ok(reasons.some((reason) => reason.includes('dag_delivery_failed')), JSON.stringify(reasons));
+});
+
+test('P2: non-terminal or foreign delivery events are ignored', async () => {
+  const store = createStore(test);
+  createRoot(store, ROOT_ID, [WORKER_ID, VERIFIER_ID]);
+  const plan = createActivePlan(store, makeDoc([node('n1', { verifier: VERIFIER_ID })]));
+  const { scheduler, deliveries } = createHarness(store);
+
+  scheduler.handleEvent('conversation_plan_updated', { ownerConversationId: ROOT_ID, plan });
+  await flush(scheduler);
+  announceComplete(store, scheduler, 'child-n1', '完工摘要');
+  await flush(scheduler);
+  assert.equal(deliveries.length, 1);
+
+  // Retry scheduled (not terminal) → ignored.
+  scheduler.handleEvent('cross_conversation_delivery_updated', {
+    conversationId: 'child-n1',
+    delivery: { id: 'delivery-1', idempotencyKey: deliveries[0].idempotencyKey, dispatchStatus: 'queued' },
+    reason: 'retry_scheduled',
+  });
+  // A failed delivery with a non-DAG key → ignored.
+  scheduler.handleEvent('cross_conversation_delivery_updated', {
+    conversationId: 'child-n1',
+    delivery: { id: 'delivery-2', idempotencyKey: 'req:someone-else', dispatchStatus: 'failed' },
+    reason: 'dispatch_failed',
+  });
+  await flush(scheduler);
+
+  assert.equal(getNode(store, 'n1').status, 'doing');
+});

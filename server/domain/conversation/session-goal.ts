@@ -493,6 +493,7 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
       goalChanged: true,
       proposalChanged: Boolean(existingProposal),
       proposalCleared: Boolean(existingProposal),
+      clearedProposal: existingProposal || null,
     });
   }
 
@@ -502,6 +503,7 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
       proposal: null,
       proposalChanged: Boolean(existingProposal),
       proposalCleared: Boolean(existingProposal),
+      clearedProposal: existingProposal || null,
     });
   }
 
@@ -519,6 +521,7 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
         goalChanged: true,
         proposalChanged: true,
         proposalCleared: true,
+        clearedProposal: existingProposal,
       });
     }
 
@@ -530,6 +533,7 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
       goalChanged: true,
       proposalChanged: true,
       proposalCleared: true,
+      clearedProposal: existingProposal,
     });
   }
 
@@ -557,6 +561,7 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
     goalChanged: true,
     proposalChanged: Boolean(existingProposal),
     proposalCleared: Boolean(existingProposal),
+    clearedProposal: existingProposal || null,
     autoContinue: action !== 'update-checklist' && action !== 'update_checklist',
   });
 }

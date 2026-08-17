@@ -53,8 +53,24 @@
 - Agent tool bridge (`server/domain/runtime/agent-tool-bridge.ts`):
   - `suggest-goal --action accept|reject` (D28) rules on the PENDING proposal
     instead of creating one; broadcasts `conversation_goal_proposal_cleared`
-    with `{ outcome, reason, ruledBy }`. The proposer can never rule on their
-    own proposal → 403 `goal_proposal_self_review`.
+    with `{ outcome, reason, ruledBy, proposal }` (the pre-clear snapshot).
+    The proposer can never rule on their own proposal → 403
+    `goal_proposal_self_review`.
+  - **D28 binding enforcement** (review hardening): when the conversation
+    metadata carries `dagNodeGoalBinding` (written by the scheduler at
+    dispatch, see `server/domain/conversation/dag-goal-binding.ts`), the
+    bridge additionally fails closed:
+    - `complete` proposals from any agent ≠ `binding.workerId` → 403
+      `dag_completion_worker_only` (only the node worker declares done);
+    - `accept`/`reject` from any agent ≠ `binding.verifierId` → 403
+      `dag_verifier_only` (a third participant cannot hijack the ruling;
+      "not the proposer" alone is NOT sufficient).
+- Goal REST API (`server/api/conversations-controller.ts`): user
+  accept/dismiss broadcasts `conversation_goal_proposal_cleared` with the
+  pre-clear proposal snapshot (`clearedProposal`), `outcome`, and
+  `ruledBy: { kind: 'user' }` — the scheduler derives the node result from
+  the snapshot and treats an explicit user ruling as a legitimate manual
+  verification path.
 
 ### 3. Contracts
 - **Event-driven only (D21)**: the scheduler subscribes to
@@ -80,6 +96,12 @@
      inherited). Re-dispatch never clobbers an existing goal. Init failure →
      `blocked` `dag_goal_init_failed` (fail-closed: no goal = no sustained
      drive, no completion protocol);
+  3.5 **goal binding written (D28 enforcement anchor)** —
+     `metadata.dagNodeGoalBinding = { planId, nodeId, workerId, verifierId }`
+     on the child conversation (idempotent, first write wins; also repaired
+     on re-dispatch after a crash window). The bridge reads this binding to
+     403 non-worker completions and non-verifier rulings. Write failure →
+     `blocked` `dag_goal_binding_failed`;
   4. bind `doing + spawned_conversation_id` via `writePlanNodeExecution`;
   5. **post-bind settle**: immediately re-check the child's goal state
      (shared predicate with reconcile). Closes the spawn→bind race where the
@@ -105,7 +127,13 @@
   - no verifier (single-agent owner) → scheduler auto-accepts in-store and
     settles immediately;
   - goal-runner budget pause proposal → `blocked`
-    `dag_goal_budget_exhausted`.
+    `dag_goal_budget_exhausted`;
+  - **ruling identity is machine-checked, not prompt-checked**: the bridge
+    enforces worker-only completion and verifier-only rulings against the
+    dispatch-time binding (403 pre-mutation); the scheduler re-verifies
+    `ruledBy` on the cleared event and ignores forged accepts. The user
+    accepting in the UI is a legitimate manual ruling (`ruledBy.kind==='user'`)
+    and the node result is taken from the cleared proposal snapshot.
 - **Failure write-back**: `agent_slot_finished` with a failed status still
   flips `blocked` + reason; a COMPLETED slot only settles goal-less children
   (legacy pre-D27 fallback) — with a goal active it defers to the goal
@@ -161,8 +189,13 @@
 | completion | slot event with unknown conversation / non-DAG source | ignored entirely |
 | completion | completed slot, goal active, no proposal | no-op — continuation drives on (D27) |
 | completion | goal-runner budget pause proposal | `blocked` `dag_goal_budget_exhausted` |
+| completion | complete proposal proposedBy ≠ worker | `blocked` `dag_completion_wrong_proposer` (bridge 403s at creation; scheduler defense-in-depth) |
+| completion | accepted ruling by agent ≠ verifier | ignored (forged event); only `ruledBy.kind==='user'` / `dag-scheduler` auto-accept / designated verifier may settle |
+| delivery | scheduler delivery (`dag-node:`/`dag-verify:`/`dag-resume:`) reaches terminal `dispatchStatus: failed` | `blocked` `dag_delivery_failed` — never strands a node `doing` |
 | verification | verifier routing but no delivery channel wired | `blocked` `dag_verify_unavailable` |
 | bridge | proposer accepts/rejects own proposal | 403 `goal_proposal_self_review` |
+| bridge | DAG-bound goal: non-worker proposes complete | 403 `dag_completion_worker_only` |
+| bridge | DAG-bound goal: non-verifier accepts/rejects | 403 `dag_verifier_only` |
 | bridge | accept/reject with no pending proposal | 404 |
 | completion | merge node, verify verdict fail/throw | `blocked` + `dag_merge_verify_failed`, no `result` written |
 | merge prepare | any upstream lacks `branch` | dispatch refused `dag_merge_missing_upstream_branch` |

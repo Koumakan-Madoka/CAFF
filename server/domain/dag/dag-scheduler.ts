@@ -48,6 +48,7 @@ import {
   getSessionGoal,
   getSessionGoalProposal,
 } from '../conversation/session-goal';
+import { ensureDagNodeGoalBinding } from '../conversation/dag-goal-binding';
 
 /**
  * D28 verifier resolution. The worker is always the owner conversation's
@@ -456,6 +457,20 @@ export function createDagScheduler(options: any = {}) {
     const childIds = participantIdsOf(conversation);
     const ownerIds = participantIdsOf(store.getConversationWithoutMessages(ownerConversationId));
     const participantIds = childIds.length > 0 ? childIds : ownerIds;
+    // D28 fail-closed: only the node worker may declare completion. The
+    // bridge rejects non-worker proposals at creation time (403); a
+    // mismatched proposer reaching this point means a forged/legacy
+    // proposal — block visibly instead of routing it to the verifier.
+    const workerId = participantIds[0] || '';
+    const proposerId = String(proposal && proposal.proposedBy && proposal.proposedBy.agentId || '').trim();
+    if (workerId && proposerId && proposerId !== workerId) {
+      writeExecution(
+        ownerConversationId,
+        [{ nodeId, status: 'blocked' }],
+        `dag_completion_wrong_proposer: completion proposed by ${clipText(proposerId, 120)}, expected worker ${clipText(workerId, 120)}`
+      );
+      return;
+    }
     const resolution = resolveNodeVerifier(node, participantIds);
     if (resolution.error) {
       writeExecution(ownerConversationId, [{ nodeId, status: 'blocked' }], clipText(resolution.error, 500));
@@ -612,6 +627,27 @@ export function createDagScheduler(options: any = {}) {
         );
         return true;
       }
+    }
+
+    // D28 enforcement anchor: record the worker/verifier binding in the
+    // child conversation metadata so the agent-tool bridge can fail closed
+    // (403) on non-worker completion claims and non-verifier rulings.
+    // Written even when the goal already existed (idempotent re-dispatch)
+    // to repair a crash window between goal-set and binding-write.
+    try {
+      ensureDagNodeGoalBinding(store, spawnedConversationId, {
+        planId: current.plan.id,
+        nodeId,
+        workerId: ownerParticipantIds[0] || '',
+        verifierId: verifierId || null,
+      });
+    } catch (bindingError: any) {
+      writeExecution(
+        ownerConversationId,
+        [{ nodeId, status: 'blocked', spawnedConversationId }],
+        `dag_goal_binding_failed: ${clipText(bindingError && bindingError.message ? bindingError.message : bindingError, 500)}`
+      );
+      return true;
     }
 
     writeExecution(
@@ -958,8 +994,30 @@ export function createDagScheduler(options: any = {}) {
       const goal = (payload && payload.goal ? payload.goal : null) || getSessionGoal(conversation);
 
       if (goal && goal.status === 'complete') {
-        // Accepted (by the verifier via the bridge, by the scheduler's
-        // auto-accept, or by the user in the UI) — the node is done.
+        // Accepted — but by WHOM matters (D28). The bridge enforces
+        // verifier-only rulings pre-mutation (403), so a mismatched ruledBy
+        // here means a forged event or a bug: never settle on it. Allowed:
+        // the user (UI manual accept, kind 'user'), the scheduler's own
+        // auto-accept, the designated verifier, or a legacy/exempt accept
+        // with no ruling agent on a verification-exempt node.
+        const childIds = participantIdsOf(conversation);
+        const ownerIds = participantIdsOf(store.getConversationWithoutMessages(ownerConversationId));
+        const acceptParticipantIds = childIds.length > 0 ? childIds : ownerIds;
+        const resolution = resolveNodeVerifier(node, acceptParticipantIds);
+        const acceptedVerifierId = resolution && resolution.verifierId ? resolution.verifierId : null;
+        const ruledBy = payload && payload.ruledBy ? payload.ruledBy : {};
+        const ruledByAgentId = String(ruledBy.agentId || '').trim();
+        const rulingAllowed = String(ruledBy.kind || '') === 'user'
+          || ruledByAgentId === 'dag-scheduler'
+          || (acceptedVerifierId !== null && ruledByAgentId === acceptedVerifierId)
+          || (acceptedVerifierId === null && !ruledByAgentId);
+        if (!rulingAllowed) {
+          logError(
+            `ignoring completion accept for node ${nodeId}: ruled by ${ruledByAgentId || 'unknown'}, expected verifier ${acceptedVerifierId || '(exempt)'}`,
+            new Error('dag_verifier_ruling_mismatch')
+          );
+          return;
+        }
         settleCompleted(ownerConversationId, freshPlan, node, extractNodeResultText(conversation, proposal), 'dag_goal_completed');
         await dispatchReadyNodes(ownerConversationId);
         return;
@@ -998,6 +1056,73 @@ export function createDagScheduler(options: any = {}) {
     }).catch((error) => logError('goal proposal cleared handling failed', error));
   }
 
+  /**
+   * P2 guard: a scheduler-owned delivery (dag-node: spawn, dag-verify:
+   * verification request, dag-resume: restart resume) that reaches a
+   * TERMINAL dispatch failure must not leave the node doing forever — the
+   * worker's pending proposal would otherwise block the Goal Runner
+   * indefinitely with no further events. Fail closed to blocked; a human
+   * can revert the node to pending to retry.
+   */
+  function handleDeliveryUpdated(payload: any): void {
+    const delivery = payload && payload.delivery ? payload.delivery : null;
+    if (!delivery) {
+      return;
+    }
+    const key = String(delivery.idempotencyKey || '');
+    if (!key.startsWith('dag-node:') && !key.startsWith('dag-verify:') && !key.startsWith('dag-resume:')) {
+      return;
+    }
+    if (String(delivery.dispatchStatus || '') !== 'failed') {
+      return;
+    }
+    const reason = String(payload && payload.reason || 'dispatch_failed').trim() || 'dispatch_failed';
+    const activePlans = typeof store.listActivePlans === 'function' ? store.listActivePlans() : [];
+    for (const plan of activePlans) {
+      const planId = String(plan && plan.id || '').trim();
+      const ownerConversationId = String(plan && plan.ownerConversationId || '').trim();
+      if (!planId || !ownerConversationId) {
+        continue;
+      }
+      // Match by reconstructed key prefix per node — node ids and the
+      // trailing stamp (activatedAt / proposal timestamp) may contain
+      // colons, so naive split(':') parsing is unsafe.
+      const matched = nodesOf(plan).find((candidate: any) => {
+        const candidateId = String(candidate && candidate.id || '').trim();
+        return candidateId
+          && (key.startsWith(`dag-node:${planId}:${candidateId}:`)
+            || key.startsWith(`dag-verify:${planId}:${candidateId}:`)
+            || key.startsWith(`dag-resume:${planId}:${candidateId}:`));
+      });
+      if (!matched) {
+        continue;
+      }
+      const matchedNodeId = String(matched.id || '').trim();
+      void enqueueForOwner(ownerConversationId, async () => {
+        let fresh: any = null;
+        try {
+          fresh = store.getPlanForConversation(ownerConversationId);
+        } catch {
+          return;
+        }
+        const freshPlan = fresh && fresh.plan ? fresh.plan : null;
+        if (!freshPlan || freshPlan.status !== 'active') {
+          return;
+        }
+        const freshNode = nodesOf(freshPlan).find((candidate: any) => String(candidate && candidate.id || '').trim() === matchedNodeId);
+        if (!freshNode || String(freshNode.status || 'pending') !== 'doing') {
+          return;
+        }
+        writeExecution(
+          ownerConversationId,
+          [{ nodeId: matchedNodeId, status: 'blocked' }],
+          `dag_delivery_failed: scheduler delivery reached terminal failure (${clipText(reason, 200)})`
+        );
+      });
+      return;
+    }
+  }
+
   function handleEvent(eventName: string, payload: any): void {
     try {
       if (eventName === 'conversation_plan_updated') {
@@ -1022,6 +1147,10 @@ export function createDagScheduler(options: any = {}) {
       }
       if (eventName === 'conversation_goal_proposal_cleared') {
         handleGoalProposalCleared(payload && payload.conversationId, payload);
+        return;
+      }
+      if (eventName === 'cross_conversation_delivery_updated') {
+        handleDeliveryUpdated(payload);
         return;
       }
     } catch (error) {
