@@ -48,6 +48,10 @@ function setup({ provider }) {
       const row = dom.window.document.querySelectorAll('[data-provider-model]')[index];
       return row.querySelector('[data-field="input-image"]');
     },
+    modelField(index, field) {
+      const row = dom.window.document.querySelectorAll('[data-provider-model]')[index];
+      return row.querySelector(`[data-field="${field}"]`);
+    },
     click(id) {
       dom.window.document.getElementById(id).click();
     },
@@ -101,6 +105,71 @@ test('provider editor keeps text capability present when image is toggled off', 
 
   session.click('save-provider');
   assert.deepEqual(session.saved().payload.models[0].input, ['text']);
+});
+
+test('provider editor round-trips explicit model token limits and labels their source', () => {
+  const provider = {
+    id: 'large-context',
+    name: 'Large context',
+    models: [{ id: 'model-a', contextWindow: 262144, maxTokens: 32768 }],
+  };
+  const session = setup({ provider });
+  session.editor.show(provider);
+
+  assert.equal(session.modelField(0, 'contextWindow').value, '262144');
+  assert.equal(session.modelField(0, 'maxTokens').value, '32768');
+  assert.equal(
+    session.document.querySelector('.provider-model-limit-copy').textContent,
+    '上下文 262144（显式） · 输出 32768（显式）'
+  );
+
+  session.modelField(0, 'contextWindow').value = '131072';
+  session.modelField(0, 'contextWindow').dispatchEvent(new session.document.defaultView.Event('input', { bubbles: true }));
+  session.modelField(0, 'maxTokens').value = '16384';
+  session.modelField(0, 'maxTokens').dispatchEvent(new session.document.defaultView.Event('input', { bubbles: true }));
+  session.click('save-provider');
+
+  assert.equal(session.saved().payload.models[0].contextWindow, 131072);
+  assert.equal(session.saved().payload.models[0].maxTokens, 16384);
+});
+
+test('provider editor presents Pi defaults while submitting null to clear explicit limits', () => {
+  const provider = { id: 'defaults', name: 'Defaults', models: [{ id: 'model-a' }] };
+  const session = setup({ provider });
+  session.editor.show(provider);
+
+  assert.equal(session.modelField(0, 'contextWindow').value, '');
+  assert.equal(session.modelField(0, 'contextWindow').placeholder, '128000');
+  assert.equal(session.modelField(0, 'maxTokens').value, '');
+  assert.equal(session.modelField(0, 'maxTokens').placeholder, '16384');
+  assert.equal(
+    session.document.querySelector('.provider-model-limit-copy').textContent,
+    '上下文 128000（Pi 默认） · 输出 16384（Pi 默认）'
+  );
+
+  session.click('save-provider');
+  assert.equal(session.saved().payload.models[0].contextWindow, null);
+  assert.equal(session.saved().payload.models[0].maxTokens, null);
+});
+
+test('provider editor rejects invalid and inconsistent model token limits before saving', () => {
+  const provider = { id: 'invalid', name: 'Invalid', models: [{ id: 'model-a' }] };
+  const session = setup({ provider });
+  session.editor.show(provider);
+
+  session.modelField(0, 'contextWindow').value = '8192';
+  session.modelField(0, 'contextWindow').dispatchEvent(new session.document.defaultView.Event('input', { bubbles: true }));
+  session.click('save-provider');
+  assert.equal(session.saved(), null);
+  assert.match(session.document.getElementById('provider-error').textContent, /不能超过上下文窗口/u);
+
+  session.modelField(0, 'contextWindow').value = '131072';
+  session.modelField(0, 'contextWindow').dispatchEvent(new session.document.defaultView.Event('input', { bubbles: true }));
+  session.modelField(0, 'maxTokens').value = '1.5';
+  session.modelField(0, 'maxTokens').dispatchEvent(new session.document.defaultView.Event('input', { bubbles: true }));
+  session.click('save-provider');
+  assert.equal(session.saved(), null);
+  assert.match(session.document.getElementById('provider-error').textContent, /必须是正整数/u);
 });
 
 test('provider editor saves a newly entered API key as a literal secret by default', () => {

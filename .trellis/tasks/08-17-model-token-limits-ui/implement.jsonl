@@ -1,0 +1,8 @@
+{"file":".trellis/workflow.md","reason":"Project workflow and conventions"}
+{"file":".trellis/spec/backend/controller-patterns.md","reason":"Provider API validation and error response contract"}
+{"file":".trellis/spec/frontend/ui-structure.md","reason":"Plain JavaScript management UI conventions"}
+{"file":".trellis/spec/unit-test/runtime-tests.md","reason":"Regression test conventions"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Model field round-trip across storage API and UI"}
+{"file":"server/domain/models/model-provider-config.ts","reason":"Authoritative provider model projection patch and validation"}
+{"file":"public/personas/provider-editor.js","reason":"Existing model provider editor pattern"}
+{"file":"tests/runtime/model-provider-config.test.js","reason":"Domain contract regression examples"}

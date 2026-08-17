@@ -22,7 +22,7 @@ function createHarness(t, options = {}) {
         headers: {
           Authorization: 'Bearer header-secret',
         },
-        models: [{ id: 'deepseek-v3.2', family: 'deepseek' }],
+        models: [{ id: 'deepseek-v3.2', family: 'deepseek', contextWindow: 262144, maxTokens: 32768 }],
       },
     },
   };
@@ -115,6 +115,8 @@ test('provider GET is loopback/Host gated and returns credential-blind state wit
   assert.equal(response.json.providers[0].hasApiKey, true);
   assert.equal(response.json.providers[0].hasExternalAuth, true);
   assert.equal(response.json.providers[0].apiKeyMode, 'command');
+  assert.equal(response.json.providers[0].models[0].contextWindow, 262144);
+  assert.equal(response.json.providers[0].models[0].maxTokens, 32768);
 
   const serialized = JSON.stringify(response.json);
   for (const secret of ['controller-secret', 'resolve-deepseek', 'header-secret']) {
@@ -191,6 +193,43 @@ test('provider update preserves a blank secret and returns only masked write sta
 
   const stored = JSON.parse(fs.readFileSync(path.join(agentDir, 'models.json'), 'utf8'));
   assert.equal(stored.providers.deepseek.apiKey, '!resolve-deepseek --token controller-secret');
+});
+
+test('provider update persists explicit model token limits and rejects inconsistent values', async (t) => {
+  const { agentDir, controller } = createHarness(t);
+  const response = await invoke(controller, {
+    method: 'PUT',
+    pathname: '/api/model-providers/deepseek',
+    headers: mutationHeaders(),
+    body: {
+      apiKeyMode: 'command',
+      apiKey: '',
+      models: [{ id: 'deepseek-v3.2', family: 'deepseek', contextWindow: 131072, maxTokens: 16384 }],
+    },
+  });
+
+  assert.equal(response.json.providers[0].models[0].contextWindow, 131072);
+  assert.equal(response.json.providers[0].models[0].maxTokens, 16384);
+  const stored = JSON.parse(fs.readFileSync(path.join(agentDir, 'models.json'), 'utf8'));
+  assert.equal(stored.providers.deepseek.models[0].contextWindow, 131072);
+  assert.equal(stored.providers.deepseek.models[0].maxTokens, 16384);
+
+  await assert.rejects(
+    () => invoke(controller, {
+      method: 'PUT',
+      pathname: '/api/model-providers/deepseek',
+      headers: mutationHeaders(),
+      body: {
+        apiKeyMode: 'command',
+        apiKey: '',
+        models: [{ id: 'deepseek-v3.2', contextWindow: 8192, maxTokens: 16384 }],
+      },
+    }),
+    (error) =>
+      error.statusCode === 422 &&
+      error.issues[0].code === 'provider_model_limits_inconsistent' &&
+      error.issues[0].path === 'providers.deepseek.models[0].maxTokens'
+  );
 });
 
 test('provider secret clear, validation, and provider removal remain independent actions', async (t) => {

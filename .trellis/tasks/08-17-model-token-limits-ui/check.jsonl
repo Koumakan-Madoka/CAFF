@@ -1,0 +1,5 @@
+{"file":".trellis/spec/frontend/ui-structure.md","reason":"Frontend verification"}
+{"file":".trellis/spec/backend/controller-patterns.md","reason":"Backend verification"}
+{"file":".trellis/spec/unit-test/runtime-tests.md","reason":"Test verification"}
+{"file":"tests/http/model-providers-controller.test.js","reason":"HTTP round-trip verification"}
+{"file":"tests/ui/model-family-roles-production.test.js","reason":"Browser UI verification"}

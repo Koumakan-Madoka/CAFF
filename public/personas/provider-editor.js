@@ -2,6 +2,8 @@
 
 (function registerProviderEditor() {
   const namespace = window.CaffPersonas || (window.CaffPersonas = {});
+  const PI_DEFAULT_CONTEXT_WINDOW = 128000;
+  const PI_DEFAULT_MAX_TOKENS = 16384;
   const API_PROTOCOLS = [
     'openai-completions',
     'mistral-conversations',
@@ -43,14 +45,26 @@
       return options.join('');
     }
 
+    function modelLimitCopy(contextWindow, maxTokens) {
+      const explicitContextWindow = Number.isInteger(contextWindow);
+      const explicitMaxTokens = Number.isInteger(maxTokens);
+      return `上下文 ${explicitContextWindow ? contextWindow : PI_DEFAULT_CONTEXT_WINDOW}（${explicitContextWindow ? '显式' : 'Pi 默认'}） · 输出 ${explicitMaxTokens ? maxTokens : PI_DEFAULT_MAX_TOKENS}（${explicitMaxTokens ? '显式' : 'Pi 默认'}）`;
+    }
+
     function modelMarkup(model, index) {
       const inputCapabilities = Array.isArray(model.input) ? model.input : ['text'];
       const supportsImage = inputCapabilities.includes('image');
+      const hasExplicitContextWindow = Number.isInteger(model.contextWindow);
+      const hasExplicitMaxTokens = Number.isInteger(model.maxTokens);
+      const limitCopy = modelLimitCopy(model.contextWindow, model.maxTokens);
       return `
         <div class="provider-model-row" data-provider-model data-model-index="${index}">
           <label><span>模型 ID</span><input data-field="id" value="${utils.escapeHtml(model.id || '')}" /></label>
           <label><span>显示名称</span><input data-field="name" value="${utils.escapeHtml(model.name || '')}" /></label>
           <label><span>模型族归类</span><select data-field="family">${familyOptions(model.family || '')}</select></label>
+          <label><span>上下文窗口</span><input data-field="contextWindow" type="number" min="1" step="1" inputmode="numeric" value="${hasExplicitContextWindow ? model.contextWindow : ''}" placeholder="${PI_DEFAULT_CONTEXT_WINDOW}" /></label>
+          <label><span>最大输出 token</span><input data-field="maxTokens" type="number" min="1" step="1" inputmode="numeric" value="${hasExplicitMaxTokens ? model.maxTokens : ''}" placeholder="${PI_DEFAULT_MAX_TOKENS}" /></label>
+          <p class="provider-model-limit-copy">${limitCopy}</p>
           <label class="provider-model-reasoning"><input data-field="reasoning" type="checkbox" ${model.reasoning ? 'checked' : ''} />支持 reasoning</label>
           <label class="provider-model-reasoning"><input data-field="input-image" type="checkbox" ${supportsImage ? 'checked' : ''} />支持图片输入</label>
           <button class="ghost-button danger" type="button" data-remove-provider-model="${index}">移除</button>
@@ -143,12 +157,36 @@
         models: draft.models.map((model) => ({
           id: String(model.id || '').trim(), name: String(model.name || '').trim(), family: String(model.family || '').trim(),
           reasoning: Boolean(model.reasoning), input: Array.isArray(model.input) ? model.input.slice() : ['text'],
+          contextWindow: parseOptionalPositiveInteger(model.contextWindow, '上下文窗口'),
+          maxTokens: parseOptionalPositiveInteger(model.maxTokens, '最大输出 token'),
         })),
       };
     }
 
+    function parseOptionalPositiveInteger(value, label) {
+      if (value === '' || value === null || value === undefined) return null;
+      const parsed = Number(value);
+      if (!Number.isInteger(parsed) || parsed <= 0) throw new Error(`${label}必须是正整数`);
+      return parsed;
+    }
+
+    function validatePayloadModelLimits(payload) {
+      payload.models.forEach((model) => {
+        const contextWindow = model.contextWindow || PI_DEFAULT_CONTEXT_WINDOW;
+        const maxTokens = model.maxTokens || PI_DEFAULT_MAX_TOKENS;
+        if (maxTokens > contextWindow) throw new Error('最大输出 token 不能超过上下文窗口');
+      });
+    }
+
     async function saveProvider(skipCommandConfirmation = false) {
-      const payload = buildPayload();
+      let payload;
+      try {
+        payload = buildPayload();
+        validatePayloadModelLimits(payload);
+      } catch (error) {
+        showError(error, '模型 token 配置无效');
+        return;
+      }
       if (payload.apiKeyMode === 'command' && payload.apiKey && !skipCommandConfirmation) {
         document.getElementById('command-reference-confirmation').classList.remove('hidden');
         document.getElementById('confirm-command-reference').focus();
@@ -175,7 +213,15 @@
         row.addEventListener('input', (event) => {
           const field = event.target.dataset.field;
           if (field === 'reasoning') draft.models[index].reasoning = event.target.checked;
-          else if (field === 'input-image') {
+          else if (field === 'contextWindow' || field === 'maxTokens') {
+            draft.models[index][field] = event.target.value;
+            const copy = row.querySelector('.provider-model-limit-copy');
+            const contextValue = row.querySelector('[data-field="contextWindow"]').value;
+            const maxTokensValue = row.querySelector('[data-field="maxTokens"]').value;
+            const contextWindow = Number.isInteger(Number(contextValue)) && Number(contextValue) > 0 ? Number(contextValue) : null;
+            const maxTokens = Number.isInteger(Number(maxTokensValue)) && Number(maxTokensValue) > 0 ? Number(maxTokensValue) : null;
+            copy.textContent = modelLimitCopy(contextWindow, maxTokens);
+          } else if (field === 'input-image') {
             const capabilities = Array.isArray(draft.models[index].input) ? draft.models[index].input : ['text'];
             const next = capabilities.filter((entry) => entry !== 'image');
             if (event.target.checked && !next.includes('image')) next.push('image');
@@ -190,7 +236,7 @@
       document.getElementById('add-provider-model').addEventListener('click', () => {
         updateSimpleFields();
         const index = draft.models.length;
-        draft.models.push({ id: '', name: '', family: '', reasoning: false, input: ['text'] });
+        draft.models.push({ id: '', name: '', family: '', reasoning: false, input: ['text'], contextWindow: null, maxTokens: null });
         render();
         root.querySelector(`[data-model-index="${index}"] [data-field="id"]`).focus();
       });

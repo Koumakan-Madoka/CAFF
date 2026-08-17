@@ -102,7 +102,7 @@ async function serveProductionUi() {
     {
       id: 'openai', name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', api: 'openai-responses', authHeader: false,
       hasApiKey: true, hasExternalAuth: false, apiKeyMode: 'literal', hasCustomHeaders: false,
-      models: [{ id: 'gpt-5.4', name: 'GPT-5.4', api: '', baseUrl: '', family: 'gpt', reasoning: true, hasCustomHeaders: false }],
+      models: [{ id: 'gpt-5.4', name: 'GPT-5.4', api: '', baseUrl: '', family: 'gpt', reasoning: true, hasCustomHeaders: false, contextWindow: 262144, maxTokens: 32768 }],
     },
     {
       id: 'anthropic', name: 'Anthropic', baseUrl: 'https://api.anthropic.com', api: 'anthropic-messages', authHeader: false,
@@ -320,15 +320,29 @@ async function serveProductionUi() {
       configured: document.getElementById('provider-api-key').dataset.hasApiKey,
       authMode: document.getElementById('provider-auth-mode').value,
       rawLeak: document.getElementById('provider-detail').textContent.includes('resolve-') || document.getElementById('provider-detail').textContent.includes('$OPENAI'),
+      contextWindow: document.querySelector('[data-provider-model] [data-field="contextWindow"]').value,
+      maxTokens: document.querySelector('[data-provider-model] [data-field="maxTokens"]').value,
+      explicitCopy: document.querySelector('[data-provider-model] .provider-model-limit-copy').textContent,
     }))()`);
-    assert.deepEqual(provider, { secretValue: '', configured: 'true', authMode: 'literal', rawLeak: false });
+    assert.deepEqual(provider, {
+      secretValue: '', configured: 'true', authMode: 'literal', rawLeak: false,
+      contextWindow: '262144', maxTokens: '32768', explicitCopy: '上下文 262144（显式） · 输出 32768（显式）',
+    });
 
-    await evaluate(cdp, `document.getElementById('save-provider').click()`);
+    await evaluate(cdp, `(() => {
+      document.querySelector('[data-provider-model] [data-field="contextWindow"]').value = '131072';
+      document.querySelector('[data-provider-model] [data-field="contextWindow"]').dispatchEvent(new Event('input', { bubbles: true }));
+      document.querySelector('[data-provider-model] [data-field="maxTokens"]').value = '16384';
+      document.querySelector('[data-provider-model] [data-field="maxTokens"]').dispatchEvent(new Event('input', { bubbles: true }));
+      document.getElementById('save-provider').click();
+    })()`);
     await waitFor(cdp, `document.getElementById('toast').textContent.includes('供应商已保存')`);
     await waitFor(cdp, `!document.getElementById('add-provider').disabled && !document.getElementById('provider-detail').hasAttribute('aria-busy')`);
     const providerSave = fixture.requests.find((request) => request.url === '/api/model-providers/openai' && request.method === 'PUT');
     assert.ok(providerSave);
     assert.equal(providerSave.body.apiKey, '');
+    assert.equal(providerSave.body.models[0].contextWindow, 131072);
+    assert.equal(providerSave.body.models[0].maxTokens, 16384);
     assert.equal(providerSave.headers['x-caff-csrf-token'], 'provider-test-token');
 
     await evaluate(cdp, `document.getElementById('add-provider').click()`);
@@ -435,6 +449,12 @@ async function serveProductionUi() {
       secretValue: '',
       note: 'auth.json / CLI 外部认证只读；本页不会写入、替换或清除它。',
     });
+    const defaults = await evaluate(cdp, `(() => ({
+      contextWindow: document.querySelector('[data-provider-model] [data-field="contextWindow"]').value,
+      maxTokens: document.querySelector('[data-provider-model] [data-field="maxTokens"]').value,
+      copy: document.querySelector('[data-provider-model] .provider-model-limit-copy').textContent,
+    }))()`);
+    assert.deepEqual(defaults, { contextWindow: '', maxTokens: '', copy: '上下文 128000（Pi 默认） · 输出 16384（Pi 默认）' });
 
     const providerModelFocus = await evaluate(cdp, `(() => {
       document.getElementById('add-provider-model').click();

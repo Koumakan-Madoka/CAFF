@@ -16,12 +16,15 @@ backend domain services.
 - Cross-conversation summary segment memory search (`summary-memory.md`)
 - Conversation tree DAG plan storage, lifecycle, and plan API (`dag-planning.md`)
 - Skill management and configuration (skills-controller.ts)
+- Local-admin model provider projection, patching, and token limit fields (`model-provider-config.md`)
 
 ## Pre-Development Checklist
 
 - [ ] Read `architecture.md`
 - [ ] Read `controller-patterns.md` if you touch controllers, request parsing, or
       HTTP responses
+- [ ] Read `model-provider-config.md` if you touch `/api/model-providers`,
+      `models.json` persistence, or the provider editor
 - [ ] Read `feishu-integration.md` if you touch Feishu webhook, long connection,
       event parsing, external event dedup, or outbound reply delivery
 - [ ] Also read `../runtime/index.md` if the change touches agent execution,
@@ -34,6 +37,8 @@ backend domain services.
 
 - `architecture.md`: backend module boundaries and ownership
 - `controller-patterns.md`: handler conventions, error flow, and response shape
+- `model-provider-config.md`: local-admin provider API, token-limit defaults,
+  validation, patch-clear semantics, and cross-layer test points
 - `feishu-integration.md`: Feishu webhook/long-connection contracts, env keys,
   event normalization, dedup expectations, and test points
 - `session-goal.md`: `/goal` API, metadata, prompt, SSE, and frontend slash command contracts
