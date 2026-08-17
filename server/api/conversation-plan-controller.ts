@@ -16,9 +16,19 @@ function readConversationId(match: RegExpMatchArray): string {
   return decodeURIComponent(match[1]);
 }
 
-function planPayload(ownerConversationId: string, plan: any, extras: Record<string, unknown> = {}) {
+function planPayload(store: any, ownerConversationId: string, plan: any, extras: Record<string, unknown> = {}) {
+  const owner = typeof store.getConversationWithoutMessages === 'function'
+    ? store.getConversationWithoutMessages(ownerConversationId)
+    : null;
+  const participants = owner && Array.isArray(owner.agents)
+    ? owner.agents.map((agent: any) => ({
+        id: String(agent && agent.id || '').trim(),
+        name: String(agent && agent.name || agent && agent.id || '').trim(),
+      })).filter((agent: any) => agent.id)
+    : [];
   return {
     ownerConversationId,
+    participants,
     plan,
     ...extras,
   };
@@ -60,7 +70,7 @@ export function createConversationPlanController(options: any = {}): RouteHandle
           issues: [{ code: 'plan_not_found', message: 'Conversation tree has no plan' }],
         });
       }
-      sendJson(res, 200, planPayload(result.ownerConversationId, result.plan));
+      sendJson(res, 200, planPayload(store, result.ownerConversationId, result.plan));
       return true;
     }
 
@@ -92,7 +102,7 @@ export function createConversationPlanController(options: any = {}): RouteHandle
         ownerConversationId: result.ownerConversationId,
         plan: result.plan,
       });
-      sendJson(res, 200, planPayload(result.ownerConversationId, result.plan, {
+      sendJson(res, 200, planPayload(store, result.ownerConversationId, result.plan, {
         warnings: result.warnings || [],
       }));
       return true;
@@ -105,7 +115,7 @@ export function createConversationPlanController(options: any = {}): RouteHandle
         ownerConversationId: result.ownerConversationId,
         plan: result.plan,
       });
-      sendJson(res, 200, planPayload(result.ownerConversationId, result.plan));
+      sendJson(res, 200, planPayload(store, result.ownerConversationId, result.plan));
       return true;
     }
 
@@ -116,7 +126,7 @@ export function createConversationPlanController(options: any = {}): RouteHandle
         ownerConversationId: result.ownerConversationId,
         plan: result.plan,
       });
-      sendJson(res, 200, planPayload(result.ownerConversationId, result.plan));
+      sendJson(res, 200, planPayload(store, result.ownerConversationId, result.plan));
       return true;
     }
 

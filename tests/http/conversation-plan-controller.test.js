@@ -45,13 +45,22 @@ function samplePlan() {
   };
 }
 
-test('plan controller: GET returns the tree-shared plan', async () => {
+test('plan controller: GET returns the tree-shared plan and root participant choices', async () => {
   const calls = [];
   const controller = createConversationPlanController({
     store: {
       getPlanForConversation(conversationId) {
         calls.push(conversationId);
         return { ownerConversationId: 'root', plan: samplePlan() };
+      },
+      getConversationWithoutMessages(conversationId) {
+        assert.equal(conversationId, 'root');
+        return {
+          agents: [
+            { id: 'role-family-gpt', name: 'GPT', personaPrompt: 'must not leak' },
+            { id: 'role-family-kimi', name: 'Kimi' },
+          ],
+        };
       },
     },
   });
@@ -62,6 +71,10 @@ test('plan controller: GET returns the tree-shared plan', async () => {
   assert.equal(calls[0], 'child');
   assert.equal(response.json.plan.id, 'plan-1');
   assert.equal(response.json.ownerConversationId, 'root');
+  assert.deepEqual(response.json.participants, [
+    { id: 'role-family-gpt', name: 'GPT' },
+    { id: 'role-family-kimi', name: 'Kimi' },
+  ]);
 });
 
 test('plan controller: GET on unrelated paths is not handled', async () => {

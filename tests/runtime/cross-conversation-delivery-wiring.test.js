@@ -277,10 +277,15 @@ test('server composition dispatches DAG scheduler deliveries directly and skips 
     name: 'DAG Wiring Agent',
     personaPrompt: 'Run node work.',
   });
+  const selectedWorker = app.store.saveCustomRoleConfig({
+    id: 'dag-selected-worker',
+    name: 'Selected Worker',
+    personaPrompt: 'Own the selected DAG node.',
+  });
   app.store.createConversation({
     id: 'dag-wiring-owner',
     title: 'DAG Owner',
-    participants: [agent.id],
+    participants: [agent.id, selectedWorker.id],
   });
   app.store.db.prepare(`
     UPDATE chat_conversations SET project_scope_id = ? WHERE id = ?
@@ -292,6 +297,7 @@ test('server composition dispatches DAG scheduler deliveries directly and skips 
     node: { id: 'n1', title: 'Node One' },
     initialMessage: 'Complete node one.',
     clientRequestId: 'dag-node:plan-1:n1:ts',
+    workerId: selectedWorker.id,
   });
   assert.ok(spawned.conversationId, 'child conversation spawned');
   const spawnBundle = app.store.getCrossConversationDeliveryBundleByIdempotency(
@@ -299,6 +305,12 @@ test('server composition dispatches DAG scheduler deliveries directly and skips 
     'dag-node:plan-1:n1:ts'
   );
   assert.ok(spawnBundle && spawnBundle.delivery, 'bootstrap delivery persisted');
+  assert.equal(spawnBundle.delivery.targetAgentId, selectedWorker.id, 'selected node worker receives bootstrap');
+  assert.deepEqual(
+    app.store.getConversationWithoutMessages(spawned.conversationId).agents.map((participant) => participant.id),
+    [selectedWorker.id, agent.id],
+    'selected worker is first so Goal Runner keeps driving it'
+  );
   assert.deepEqual(directDispatched, [spawnBundle.delivery.id]);
   assert.equal(processNextCount, 0, 'serial drain never claimed the DAG bootstrap');
 

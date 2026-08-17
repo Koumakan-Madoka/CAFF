@@ -26,6 +26,8 @@ const FIXTURE_IDS = [
   'plan-node-branch',
   'plan-node-verify',
   'plan-node-base-branch',
+  'plan-node-worker',
+  'plan-node-verifier',
   'plan-node-execution',
   'plan-history',
   'plan-history-list',
@@ -46,7 +48,7 @@ const FIXTURE_IDS = [
 function buildWindow() {
   const inputs = ['plan-node-title', 'plan-node-branch', 'plan-node-verify', 'plan-node-base-branch'];
   const textareas = ['plan-node-goal'];
-  const selects = ['plan-node-status', 'plan-node-kind'];
+  const selects = ['plan-node-status', 'plan-node-kind', 'plan-node-worker', 'plan-node-verifier'];
   const fixture = FIXTURE_IDS.map((id) => {
     if (inputs.includes(id)) {
       return `<input id="${id}" />`;
@@ -60,7 +62,9 @@ function buildWindow() {
     if (selects.includes(id)) {
       const options = id === 'plan-node-status'
         ? '<option value="pending">待办</option><option value="doing">进行</option><option value="done">完成</option><option value="blocked">阻塞</option>'
-        : '<option value="work">work</option><option value="merge">merge</option>';
+        : id === 'plan-node-kind'
+          ? '<option value="work">work</option><option value="merge">merge</option>'
+          : '<option value="">自动</option>';
       return `<select id="${id}">${options}</select>`;
     }
     return `<div id="${id}"></div>`;
@@ -275,16 +279,25 @@ test('404 yields empty state; applyPlanEvent refreshes from SSE', async () => {
   const window = buildWindow();
   const refs = domRefs(window);
   const state = { currentConversation: { id: 'conv-1' } };
+  let fetchCount = 0;
 
   const controller = window.CaffChat.createPlanPanelController({
     state,
     dom: refs,
     helpers: {
       async fetchPlan() {
-        const error = new Error('Conversation tree has no plan');
-        error.status = 404;
-        error.code = 'plan_not_found';
-        throw error;
+        fetchCount += 1;
+        if (fetchCount === 1) {
+          const error = new Error('Conversation tree has no plan');
+          error.status = 404;
+          error.code = 'plan_not_found';
+          throw error;
+        }
+        return {
+          ownerConversationId: 'conv-1',
+          participants: [{ id: 'role-family-gpt', name: 'GPT' }, { id: 'role-family-kimi', name: 'Kimi' }],
+          plan: samplePlan({ version: 3 }),
+        };
       },
       async savePlan() {
         throw new Error('not used');
@@ -314,9 +327,14 @@ test('404 yields empty state; applyPlanEvent refreshes from SSE', async () => {
     plan: samplePlan({ version: 3 }),
   });
   await flush();
+  await flush();
 
   assert.equal(refs.planGraph.querySelectorAll('.plan-node').length, 4, 'SSE event renders incoming plan');
   assert.match(refs.planPanelStatus.textContent, /v3/);
+  refs.planGraph.querySelector('[data-node-id="n1"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await flush();
+  assert.equal(refs.planNodeWorker.disabled, false, 'SSE-created plan hydrates participant role choices');
+  assert.equal(refs.planNodeWorker.options.length, 3);
 });
 
 test('drawer zoom buttons rescale drawer graph; dblclick edits node; Delete removes selection', async () => {
@@ -608,14 +626,14 @@ test('plan-panel: editor form renders dependency chips with remove buttons in dr
   assert.deepEqual(Array.from(savedN2.depends_on), [], 'chip removal persisted');
 });
 
-test('normalizeDoc preserves dag-execution fields (verify/base_branch/result)', () => {
+test('normalizeDoc preserves dag-execution fields (verify/base_branch/worker/verifier/result)', () => {
   const window = buildWindow();
   const { normalizeDoc } = window.CaffChat.planDagView;
   const doc = {
     nodes: [
       {
         id: 'm1', title: '合并', goal: '', status: 'pending', depends_on: [], branch: 'feat/m', kind: 'merge',
-        verify: 'npm test', base_branch: 'feat/base', result: '已合并两条分支',
+        verify: 'npm test', base_branch: 'feat/base', worker: 'role-family-gpt', verifier: 'role-family-kimi', result: '已合并两条分支',
         spawned_conversation_id: null,
       },
       { id: 'w1', title: '普通', goal: '', status: 'pending', depends_on: [], branch: '', kind: 'work', verify: '  ', result: '' },
@@ -626,11 +644,67 @@ test('normalizeDoc preserves dag-execution fields (verify/base_branch/result)', 
   const m1 = normalized.nodes.find((node) => node.id === 'm1');
   assert.equal(m1.verify, 'npm test');
   assert.equal(m1.base_branch, 'feat/base');
+  assert.equal(m1.worker, 'role-family-gpt');
+  assert.equal(m1.verifier, 'role-family-kimi');
   assert.equal(m1.result, '已合并两条分支');
   const w1 = normalized.nodes.find((node) => node.id === 'w1');
   assert.equal('verify' in w1, false, 'blank verify is dropped');
   assert.equal('result' in w1, false, 'blank result is dropped');
   assert.equal('base_branch' in w1, false);
+});
+
+test('node editor renders participant dropdowns and prevents worker self-review selection', async () => {
+  const window = buildWindow();
+  const refs = domRefs(window);
+  const saved = [];
+  const doc = sampleDoc();
+  doc.nodes[0].worker = 'GPT';
+  doc.nodes[0].verifier = 'role-family-kimi';
+  const participants = [
+    { id: 'role-family-gpt', name: 'GPT' },
+    { id: 'role-family-kimi', name: 'Kimi' },
+  ];
+  const controller = window.CaffChat.createPlanPanelController({
+    state: { currentConversation: { id: 'conv-1' } },
+    dom: refs,
+    helpers: {
+      async fetchPlan() {
+        return { ownerConversationId: 'conv-1', participants, plan: samplePlan({ doc }) };
+      },
+      async savePlan(conversationId, body) {
+        saved.push(body);
+        return { ownerConversationId: 'conv-1', participants, plan: samplePlan({ version: 2, doc: body.doc }) };
+      },
+      async activatePlan() { throw new Error('not used'); },
+      async revertPlan() { throw new Error('not used'); },
+      async openConversation() {},
+    },
+    showToast() {},
+  });
+
+  controller.bindEvents();
+  controller.render();
+  await flush();
+  await flush();
+  refs.planGraph.querySelector('[data-node-id="n1"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await flush();
+
+  assert.equal(refs.planNodeWorker.value, 'role-family-gpt', 'legacy display name resolves in dropdown');
+  assert.equal(refs.planNodeVerifier.value, 'role-family-kimi');
+  assert.equal(Array.from(refs.planNodeVerifier.options).some((option) => option.value === 'role-family-gpt'), false, 'worker excluded from verifier options');
+
+  refs.planNodeWorker.value = 'role-family-kimi';
+  refs.planNodeWorker.dispatchEvent(new window.Event('change', { bubbles: true }));
+  await flush();
+  assert.equal(refs.planNodeVerifier.value, '', 'self-review verifier is cleared after worker change');
+  assert.equal(Array.from(refs.planNodeVerifier.options).some((option) => option.value === 'role-family-kimi'), false);
+
+  refs.planSaveButton.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await flush();
+  await flush();
+  const savedNode = saved[0].doc.nodes.find((node) => node.id === 'n1');
+  assert.equal(savedNode.worker, 'role-family-kimi', 'dropdown persists canonical worker id');
+  assert.equal('verifier' in savedNode, false);
 });
 
 test('deriveNodeBadges flags ready and upstream-blocked pending nodes', () => {

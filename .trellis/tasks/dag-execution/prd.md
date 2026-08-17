@@ -53,7 +53,7 @@ POC 的 activate 只翻转编排层状态（锁结构 + version+1），不 spawn
 - 可选 `verify?: string`（D19）
 - 可选 `base_branch?: string`（显式声明检出基线；merge 节点推荐）+ 校验（须等于某父节点 branch）
 - 可选 `result?: string`（done 回写必填的执行摘要，D23；**不引入结构化 input/output 字段**）
-- 可选 `verifier?: string`（验收 agent id，D28；须为根会话 participant 且 ≠ 执行 agent）
+- 可选 `worker?: string` + `verifier?: string`（D28/D29）：均接受根会话 participant 的 agent id 或唯一显示名；worker 缺省为第一位 participant，verifier 缺省为第一位 ≠ worker 的 participant
 - doc 内嵌 `history[]`（D18）
 
 ### 3.4 API / 权限
@@ -100,6 +100,7 @@ POC 的 activate 只翻转编排层状态（锁结构 + version+1），不 spawn
 |------|------|
 | D27 | **节点持续驱动 = 子会话轻量 session goal**（用户拍板「只复用 goal 机制，不复用默认 checklist」）：spawn 成功后调度器立即对子会话 set session goal——objective = 节点 goal + 完工/验收指引，**显式传空 checklist**（机制上 `hasChecklistInput` 命中即不注入会话级默认重 checklist；节点内 agent 可自行 update-goal-checklist 建轻量清单）。复用现有 continuation 循环（turn 完结 → Goal Runner 续推）与预算熔断（goal-runner pause 提案 → 节点 blocked + 原因）。节点 done 的触发从「turn 结束」改为「goal complete 被确认」；worker 被告知完工后调 suggest-goal --action complete 宣布 |
 | D28 | **验收 agent（verifier）**：schema 加可选 `verifier?: string`（agent id）。解析规则：显式指定 → 必须是根会话 participant 且 ≠ 执行 agent（=worker，即根会话第一位 participant；同人即自验收，spawn 前 fail-closed `dag_verifier_self_review`，呼应 no-self-review 治理）；未指定 → 取根会话 participants 中第一位 ≠ worker 的 agent（多 agent 会话天然「他人验收」，主理人兼任在其非 worker 时成立）；单 agent 会话 → 免验收。流程：worker propose complete → 调度器拦截（不等人工确认）→ 有 verifier：向子会话定向投递验收请求（targetAgentId=verifier，内容含节点 goal / worker result 摘要 / worktree 路径 / verify 命令 / git diff 指引）→ verifier 调 suggest-goal **accept / reject**（bridge 新增两动作，禁止提案人自批 403）裁决；accept → goal complete → 调度器写 done+result（merge 节点仍先过 verifyNodeCompletion 机械校验，双层兜底）；reject → 提案驳回 + verifier 反馈注回 worker（goal 保持 active，continuation 继续驱动），无次数上限。免验收节点：调度器代行 accept。用户在 UI 人工 accept 子会话提案同样生效（兼容人工验收） |
+| D29 | **节点执行角色显式化**（用户反馈）：schema 增加可选 `worker?: string`，前端节点编辑器为 worker/verifier 提供根会话 participant 下拉框并过滤自验收组合；后端 worker/verifier 引用同时兼容 canonical agent id 与唯一显示名（ID 优先，显示名重名则 `dag_*_ambiguous` fail-closed）。缺省 worker 保持第一 participant，缺省 verifier 保持第一位 ≠ worker，兼容旧 plan。spawn 时所选 worker 作为 primary agent 且排在子会话 participants 首位，持久 binding 始终写 canonical ID。 |
 
 ## 7. 开发顺序建议
 1. schema 增量（result/base_branch/verify/history）+ 校验 → 2. D15/D16/D18 API 落地 → 3. worktree 管理模块 → 4. 事件钩子调度器（spawn/就绪/排队）→ 5. merge 执行器（D11/D12/D19/D26）→ 6. 前端联动 → 7. 六条验收基线（①–⑦已完成）

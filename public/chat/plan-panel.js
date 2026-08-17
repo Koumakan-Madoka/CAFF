@@ -28,6 +28,15 @@
     return JSON.parse(JSON.stringify(value));
   }
 
+  function normalizeParticipants(participants) {
+    return (Array.isArray(participants) ? participants : [])
+      .map((agent) => ({
+        id: String(agent && agent.id || '').trim(),
+        name: String(agent && agent.name || agent && agent.id || '').trim(),
+      }))
+      .filter((agent) => agent.id);
+  }
+
   function normalizeDoc(doc) {
     const nodes = Array.isArray(doc && doc.nodes) ? doc.nodes : [];
     return {
@@ -51,6 +60,9 @@
           }
           if (typeof node.base_branch === 'string' && node.base_branch.trim()) {
             normalized.base_branch = node.base_branch;
+          }
+          if (typeof node.worker === 'string' && node.worker.trim()) {
+            normalized.worker = node.worker;
           }
           if (typeof node.verifier === 'string' && node.verifier.trim()) {
             normalized.verifier = node.verifier;
@@ -611,6 +623,8 @@
 
     let plan = null;
     let ownerConversationId = '';
+    /** @type {{id: string, name: string}[]} */
+    let planParticipants = [];
     let loadedConversationId = '';
     let loading = false;
     let saving = false;
@@ -643,6 +657,55 @@
       return Boolean(plan && plan.status === 'active');
     }
 
+    function resolveParticipantId(reference) {
+      const value = String(reference || '').trim();
+      if (!value) {
+        return '';
+      }
+      const exact = planParticipants.find((agent) => agent.id === value);
+      if (exact) {
+        return exact.id;
+      }
+      const named = planParticipants.filter((agent) => agent.name === value);
+      return named.length === 1 ? named[0].id : '';
+    }
+
+    function workerIdForNode(node) {
+      return resolveParticipantId(node && node.worker) || (planParticipants[0] ? planParticipants[0].id : '');
+    }
+
+    function renderParticipantSelect(select, reference, { automaticLabel, excludedId = '' }) {
+      if (!select) {
+        return;
+      }
+      const rawReference = String(reference || '').trim();
+      const resolvedId = resolveParticipantId(rawReference);
+      select.innerHTML = '';
+      const automatic = document.createElement('option');
+      automatic.value = '';
+      automatic.textContent = automaticLabel;
+      select.appendChild(automatic);
+      for (const agent of planParticipants) {
+        if (agent.id === excludedId) {
+          continue;
+        }
+        const option = document.createElement('option');
+        option.value = agent.id;
+        option.textContent = agent.name === agent.id ? agent.name : `${agent.name} (${agent.id})`;
+        select.appendChild(option);
+      }
+      if (rawReference && (!resolvedId || resolvedId === excludedId)) {
+        const invalid = document.createElement('option');
+        invalid.value = rawReference;
+        invalid.textContent = `无效配置：${rawReference}`;
+        invalid.disabled = true;
+        select.appendChild(invalid);
+        select.value = rawReference;
+      } else {
+        select.value = resolvedId;
+      }
+    }
+
     function setIssues(issues) {
       lastIssues = Array.isArray(issues) ? issues.map((issue) => String((issue && issue.message) || issue)) : [];
     }
@@ -652,6 +715,7 @@
       if (!normalizedId) {
         plan = null;
         ownerConversationId = '';
+        planParticipants = [];
         loadedConversationId = '';
         editDoc = null;
         dirty = false;
@@ -672,6 +736,7 @@
         }
         plan = result.plan || null;
         ownerConversationId = String(result.ownerConversationId || '');
+        planParticipants = normalizeParticipants(result.participants);
         loadedConversationId = normalizedId;
         editDoc = null;
         dirty = false;
@@ -684,6 +749,7 @@
         if (error && (error.status === 404 || error.code === 'plan_not_found' || error.code === 'conversation_not_found')) {
           plan = null;
           ownerConversationId = '';
+          planParticipants = [];
           loadedConversationId = normalizedId;
           editDoc = null;
           dirty = false;
@@ -722,6 +788,14 @@
       renderAll();
       if (hadLocalEdits) {
         showToast('规划图已被其他端更新，本地未保存修改已丢弃');
+      }
+      // A panel may have loaded before the tree had a plan: the initial GET
+      // then returned 404, so no root-participant projection was available.
+      // When the first plan arrives over SSE, refresh once to hydrate the
+      // worker/verifier dropdowns instead of leaving them empty until a
+      // manual reload.
+      if (planParticipants.length === 0 && currentConversationId()) {
+        void load(currentConversationId(), { force: true });
       }
     }
 
@@ -833,6 +907,9 @@
         const result = await savePlan(currentConversationId(), { doc: outgoing, version: plan.version });
         plan = result.plan || plan;
         ownerConversationId = String(result.ownerConversationId || ownerConversationId);
+        if (Array.isArray(result.participants)) {
+          planParticipants = normalizeParticipants(result.participants);
+        }
         editDoc = null;
         dirty = false;
         setIssues([]);
@@ -868,6 +945,9 @@
         const result = await action(currentConversationId());
         plan = result.plan || plan;
         ownerConversationId = String(result.ownerConversationId || ownerConversationId);
+        if (Array.isArray(result.participants)) {
+          planParticipants = normalizeParticipants(result.participants);
+        }
         editDoc = null;
         dirty = false;
         setIssues([]);
@@ -1167,9 +1247,25 @@
         dom.planNodeBaseBranch.value = node.base_branch || '';
         dom.planNodeBaseBranch.disabled = locked;
       }
+      const workerId = workerIdForNode(node);
+      if (dom.planNodeWorker) {
+        const defaultWorker = planParticipants[0];
+        renderParticipantSelect(dom.planNodeWorker, node.worker, {
+          automaticLabel: defaultWorker
+            ? `默认主理人：${defaultWorker.name}`
+            : '无可用参与者',
+        });
+        dom.planNodeWorker.disabled = locked || planParticipants.length === 0;
+      }
       if (dom.planNodeVerifier) {
-        dom.planNodeVerifier.value = node.verifier || '';
-        dom.planNodeVerifier.disabled = locked;
+        const fallbackVerifier = planParticipants.find((agent) => agent.id !== workerId);
+        renderParticipantSelect(dom.planNodeVerifier, node.verifier, {
+          automaticLabel: fallbackVerifier
+            ? `自动验收：${fallbackVerifier.name}`
+            : '免验收（无其他参与者）',
+          excludedId: workerId,
+        });
+        dom.planNodeVerifier.disabled = locked || planParticipants.length === 0;
       }
       renderNodeExecution(node);
       if (dom.planNodeDeleteButton) {
@@ -1462,13 +1558,43 @@
           delete target.base_branch;
         }
       });
-      bindInput(dom.planNodeVerifier, (target, value) => {
-        if (value.trim()) {
-          target.verifier = value;
-        } else {
-          delete target.verifier;
-        }
-      });
+      if (dom.planNodeWorker) {
+        dom.planNodeWorker.addEventListener('change', () => {
+          const workerId = String(dom.planNodeWorker && dom.planNodeWorker.value || '').trim();
+          mutateDraftDoc((doc) => {
+            const target = (doc.nodes || []).find((entry) => entry.id === selectedNodeId);
+            if (!target) {
+              return;
+            }
+            if (workerId) {
+              target.worker = workerId;
+            } else {
+              delete target.worker;
+            }
+            if (resolveParticipantId(target.verifier) === workerIdForNode(target)) {
+              delete target.verifier;
+            }
+          });
+          renderEditor();
+        });
+      }
+      if (dom.planNodeVerifier) {
+        dom.planNodeVerifier.addEventListener('change', () => {
+          const verifierId = String(dom.planNodeVerifier && dom.planNodeVerifier.value || '').trim();
+          mutateDraftDoc((doc) => {
+            const target = (doc.nodes || []).find((entry) => entry.id === selectedNodeId);
+            if (!target) {
+              return;
+            }
+            if (verifierId) {
+              target.verifier = verifierId;
+            } else {
+              delete target.verifier;
+            }
+          });
+          renderEditor();
+        });
+      }
       if (dom.planNodeKind) {
         dom.planNodeKind.addEventListener('change', () => {
           if (!dom.planNodeKind) {

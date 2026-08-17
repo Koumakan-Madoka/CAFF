@@ -204,7 +204,7 @@ test('plan store: lifecycle draft → active locks structure, revert unlocks', (
   assert.equal(grown.plan.doc.nodes.length, 3);
 });
 
-test('validatePlanDoc validates execution schema fields (verify / base_branch / result)', () => {
+test('validatePlanDoc validates execution schema fields (verify / base_branch / worker / verifier / result)', () => {
   // verify must be a string
   assert.equal(validatePlanDoc({ nodes: [{ id: 'a', verify: 42 }] }).issues
     .some((issue) => issue.code === 'plan_node_verify_invalid'), true);
@@ -212,6 +212,12 @@ test('validatePlanDoc validates execution schema fields (verify / base_branch / 
   // base_branch must be a string
   assert.equal(validatePlanDoc({ nodes: [{ id: 'a', base_branch: 42 }] }).issues
     .some((issue) => issue.code === 'plan_node_base_branch_invalid'), true);
+
+  // worker / verifier accept an agent id or display name reference, both represented as strings
+  assert.equal(validatePlanDoc({ nodes: [{ id: 'a', worker: 42 }] }).issues
+    .some((issue) => issue.code === 'plan_node_worker_invalid'), true);
+  assert.equal(validatePlanDoc({ nodes: [{ id: 'a', verifier: 42 }] }).issues
+    .some((issue) => issue.code === 'plan_node_verifier_invalid'), true);
 
   // result must be a string within the cap
   assert.equal(validatePlanDoc({ nodes: [{ id: 'a', result: 42 }] }).issues
@@ -231,6 +237,8 @@ test('validatePlanDoc validates execution schema fields (verify / base_branch / 
         branch: 'feat/merge',
         base_branch: 'feat/a',
         verify: 'npm run test:fast',
+        worker: 'GPT',
+        verifier: 'role-family-kimi',
       },
     ],
   });
@@ -295,7 +303,7 @@ test('validatePlanDoc validates doc.history shape and rolling cap', () => {
   assert.equal(valid.ok, true);
 });
 
-test('validateStatusOnlyUpdate: result mutable, verify/base_branch locked, history append-only', () => {
+test('validateStatusOnlyUpdate: result mutable, execution roles locked, history append-only', () => {
   const before = validDoc();
 
   // result write-back alongside a status transition is allowed
@@ -320,6 +328,16 @@ test('validateStatusOnlyUpdate: result mutable, verify/base_branch locked, histo
   const baseBranchChanged = JSON.parse(JSON.stringify(before));
   baseBranchChanged.nodes[1].base_branch = 'feat/x';
   assert.equal(validateStatusOnlyUpdate(before, baseBranchChanged).issues
+    .some((issue) => issue.code === 'plan_locked_field_changed'), true);
+
+  const workerChanged = JSON.parse(JSON.stringify(before));
+  workerChanged.nodes[0].worker = 'role-family-kimi';
+  assert.equal(validateStatusOnlyUpdate(before, workerChanged).issues
+    .some((issue) => issue.code === 'plan_locked_field_changed'), true);
+
+  const verifierChanged = JSON.parse(JSON.stringify(before));
+  verifierChanged.nodes[0].verifier = 'role-family-gpt';
+  assert.equal(validateStatusOnlyUpdate(before, verifierChanged).issues
     .some((issue) => issue.code === 'plan_locked_field_changed'), true);
 
   // history may grow by appending only

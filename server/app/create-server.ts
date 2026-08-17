@@ -853,11 +853,11 @@ export function createServerApp(options: any = {}) {
           }
         }
       },
-      // D13: spawn the node child conversation flat under the ROOT owner
-      // conversation; the executor is the root conversation's primary
-      // (first) participant agent. The goal + upstream result summaries are
-      // injected as the initial message (D23).
-      async spawnNodeConversation({ ownerConversationId, node, initialMessage, clientRequestId }: any) {
+      // D13: spawn the node child conversation flat under the ROOT owner.
+      // All root participants remain available for handoff/verification, but
+      // the node's resolved worker is placed first and selected as primary so
+      // normal routing and Goal Runner continuation keep driving that worker.
+      async spawnNodeConversation({ ownerConversationId, node, initialMessage, clientRequestId, workerId }: any) {
         const owner = store.getConversationWithoutMessages(ownerConversationId);
         if (!owner) {
           throw new Error('Plan owner conversation not found');
@@ -868,12 +868,19 @@ export function createServerApp(options: any = {}) {
         if (participants.length === 0) {
           throw new Error('Plan owner conversation has no participant agents');
         }
+        const primaryAgentId = String(workerId || '').trim();
+        const workerIndex = participants.findIndex((participant: any) => participant.agentId === primaryAgentId);
+        if (workerIndex < 0) {
+          throw new Error(`Resolved DAG worker is not a participant: ${primaryAgentId || '(empty)'}`);
+        }
+        const [workerParticipant] = participants.splice(workerIndex, 1);
+        participants.unshift(workerParticipant);
         const title = `DAG ${node.id}: ${String(node.title || node.id)}`.slice(0, 200);
         const result = await conversationSpawnService.spawn(ownerConversationId, {
           title,
           projectScopeId: owner.projectScopeId,
           participants,
-          primaryAgentId: participants[0].agentId,
+          primaryAgentId,
           initialMessage,
           clientRequestId,
         });

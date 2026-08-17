@@ -58,27 +58,64 @@ import {
 import { ensureDagNodeGoalBinding, getDagNodeGoalBinding } from '../conversation/dag-goal-binding';
 
 /**
- * D28 verifier resolution. The worker is always the owner conversation's
- * first participant agent (spawn copies participants and dispatches to the
- * primary). Explicit node.verifier must be a participant and must differ
- * from the worker (no self-review); when omitted, the first participant
- * other than the worker verifies; a single-agent owner means no verifier
- * (the scheduler auto-accepts the completion proposal instead).
+ * D28 execution-role resolution. Node worker/verifier references accept either
+ * the canonical participant agent id or a unique participant display name.
+ * IDs win over names; ambiguous names fail closed. Legacy plans without an
+ * explicit worker keep the first-participant default.
  */
-function resolveNodeVerifier(node: any, participantIds: string[]): { verifierId: string | null; error: string | null } {
-  const workerId = String(participantIds[0] || '').trim();
-  const explicit = String(node && node.verifier || '').trim();
-  if (explicit) {
-    if (!participantIds.includes(explicit)) {
-      return { verifierId: null, error: `dag_verifier_invalid: verifier "${explicit}" is not a participant agent of the owner conversation` };
-    }
-    if (explicit === workerId) {
-      return { verifierId: null, error: `dag_verifier_self_review: verifier "${explicit}" is the executing agent; a node cannot verify its own work (no self-review)` };
-    }
-    return { verifierId: explicit, error: null };
+function resolveParticipantReference(
+  reference: any,
+  participants: any[],
+  role: 'worker' | 'verifier'
+): { agentId: string | null; error: string | null } {
+  const explicit = String(reference || '').trim();
+  if (!explicit) {
+    return { agentId: null, error: null };
   }
-  const fallback = participantIds.find((id) => id && id !== workerId);
-  return { verifierId: fallback || null, error: null };
+  const byId = participants.find((agent: any) => String(agent && agent.id || '').trim() === explicit);
+  if (byId) {
+    return { agentId: explicit, error: null };
+  }
+  const byName = participants.filter((agent: any) => String(agent && agent.name || '').trim() === explicit);
+  if (byName.length === 1) {
+    return { agentId: String(byName[0].id || '').trim(), error: null };
+  }
+  if (byName.length > 1) {
+    return { agentId: null, error: `dag_${role}_ambiguous: ${role} display name "${explicit}" matches multiple participant agents; use an agent id` };
+  }
+  return { agentId: null, error: `dag_${role}_invalid: ${role} "${explicit}" is not a participant agent id or display name of the owner conversation` };
+}
+
+function resolveNodeExecutionRoles(node: any, participants: any[]): {
+  workerId: string | null;
+  verifierId: string | null;
+  error: string | null;
+} {
+  const participantIds = participants.map((agent: any) => String(agent && agent.id || '').trim()).filter(Boolean);
+  const workerResolution = resolveParticipantReference(node && node.worker, participants, 'worker');
+  if (workerResolution.error) {
+    return { workerId: null, verifierId: null, error: workerResolution.error };
+  }
+  const workerId = workerResolution.agentId || participantIds[0] || null;
+  if (!workerId) {
+    return { workerId: null, verifierId: null, error: 'dag_worker_invalid: owner conversation has no participant agent' };
+  }
+
+  const verifierResolution = resolveParticipantReference(node && node.verifier, participants, 'verifier');
+  if (verifierResolution.error) {
+    return { workerId, verifierId: null, error: verifierResolution.error };
+  }
+  const verifierId = verifierResolution.agentId
+    || participantIds.find((id) => id && id !== workerId)
+    || null;
+  if (verifierId === workerId) {
+    return {
+      workerId,
+      verifierId: null,
+      error: `dag_verifier_self_review: verifier "${String(node && node.verifier || verifierId)}" is the executing agent; a node cannot verify its own work (no self-review)`,
+    };
+  }
+  return { workerId, verifierId, error: null };
 }
 
 function clipText(value: any, maxLength: number): string {
@@ -400,9 +437,10 @@ export function createDagScheduler(options: any = {}) {
     if (binding) {
       return { bound: true, verifierId: binding.verifierId ? String(binding.verifierId) : null };
     }
-    const childIds = participantIdsOf(conversation);
-    const ownerIds = participantIdsOf(store.getConversationWithoutMessages(ownerConversationId));
-    const resolution = resolveNodeVerifier(node, childIds.length > 0 ? childIds : ownerIds);
+    const ownerConversation = store.getConversationWithoutMessages(ownerConversationId);
+    const childParticipants = conversation && Array.isArray(conversation.agents) ? conversation.agents : [];
+    const ownerParticipants = ownerConversation && Array.isArray(ownerConversation.agents) ? ownerConversation.agents : [];
+    const resolution = resolveNodeExecutionRoles(node, childParticipants.length > 0 ? childParticipants : ownerParticipants);
     return { bound: false, verifierId: resolution && resolution.verifierId ? resolution.verifierId : null };
   }
 
@@ -649,9 +687,11 @@ export function createDagScheduler(options: any = {}) {
     // bridge enforces against the binding, so the scheduler must agree with
     // it. Legacy children without a binding fall back to participant order.
     const binding = getDagNodeGoalBinding(conversation);
-    const childIds = participantIdsOf(conversation);
-    const ownerIds = participantIdsOf(store.getConversationWithoutMessages(ownerConversationId));
-    const participantIds = childIds.length > 0 ? childIds : ownerIds;
+    const ownerConversation = store.getConversationWithoutMessages(ownerConversationId);
+    const childParticipants = conversation && Array.isArray(conversation.agents) ? conversation.agents : [];
+    const ownerParticipants = ownerConversation && Array.isArray(ownerConversation.agents) ? ownerConversation.agents : [];
+    const participants = childParticipants.length > 0 ? childParticipants : ownerParticipants;
+    const participantIds = participants.map((agent: any) => String(agent && agent.id || '').trim()).filter(Boolean);
     // D28 fail-closed: only the node worker may declare completion. The
     // bridge rejects non-worker proposals at creation time (403); a
     // mismatched proposer reaching this point means a forged/legacy
@@ -670,7 +710,7 @@ export function createDagScheduler(options: any = {}) {
     if (binding) {
       verifierId = binding.verifierId || null;
     } else {
-      const resolution = resolveNodeVerifier(node, participantIds);
+      const resolution = resolveNodeExecutionRoles(node, participants);
       if (resolution.error) {
         writeExecution(ownerConversationId, [{ nodeId, status: 'blocked' }], clipText(resolution.error, 500));
         return;
@@ -800,17 +840,20 @@ export function createDagScheduler(options: any = {}) {
     }
     const nodeId = String(node.id || '').trim();
 
-    // D28: resolve the verifier BEFORE any side effect. An invalid explicit
-    // verifier (not a participant) or self-review (verifier == worker) fails
-    // closed — better a visible blocked node than unverifiable execution.
+    // Resolve worker + verifier BEFORE any side effect. References may be
+    // canonical ids or unique display names; ambiguous/invalid/self-review
+    // assignments fail closed before worktree creation.
     const ownerConversation = store.getConversationWithoutMessages(ownerConversationId);
-    const ownerParticipantIds = participantIdsOf(ownerConversation);
-    const verifierResolution = resolveNodeVerifier(node, ownerParticipantIds);
-    if (verifierResolution.error) {
-      writeExecution(ownerConversationId, [{ nodeId, status: 'blocked' }], clipText(verifierResolution.error, 500));
+    const ownerParticipants = ownerConversation && Array.isArray(ownerConversation.agents)
+      ? ownerConversation.agents
+      : [];
+    const roleResolution = resolveNodeExecutionRoles(node, ownerParticipants);
+    if (roleResolution.error) {
+      writeExecution(ownerConversationId, [{ nodeId, status: 'blocked' }], clipText(roleResolution.error, 500));
       return true;
     }
-    const verifierId = verifierResolution.verifierId;
+    const workerId = String(roleResolution.workerId || '');
+    const verifierId = roleResolution.verifierId;
 
     // D22: one worktree per node; a dirty/invalid worktree fails closed.
     const prepared = prepareNodeWorktreeForNode({
@@ -836,6 +879,7 @@ export function createDagScheduler(options: any = {}) {
         node,
         initialMessage: buildInitialInstruction(current.plan, node, String(prepared.path || ''), verifierId),
         clientRequestId,
+        workerId,
       });
     } catch (error: any) {
       writeExecution(
@@ -887,7 +931,7 @@ export function createDagScheduler(options: any = {}) {
       recordedBinding = ensureDagNodeGoalBinding(store, spawnedConversationId, {
         planId: current.plan.id,
         nodeId,
-        workerId: ownerParticipantIds[0] || '',
+        workerId,
         verifierId: verifierId || null,
       });
     } catch (bindingError: any) {

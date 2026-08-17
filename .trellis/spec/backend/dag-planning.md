@@ -30,16 +30,17 @@
 - Repository (`storage/chat/plan.repository.ts`):
   - `updateWithVersionGuard(payload)` — `UPDATE ... WHERE id = @id AND version = @expectedVersion`; returns null when the guard rejects (0 changes).
 - REST (`server/api/conversation-plan-controller.ts`, route pattern `/api/conversations/:id/plan[/activate|/revert]`, registered before the generic conversations controller in `create-server.ts`):
-  - `GET /api/conversations/:id/plan` → `200 { ownerConversationId, plan }`; `404 plan_not_found` when the tree has no plan.
+  - `GET /api/conversations/:id/plan` → `200 { ownerConversationId, participants:[{id,name}], plan }`; participant choices always come from the root owner and expose only id/name for the node-role dropdowns; `404 plan_not_found` when the tree has no plan.
   - `PUT /api/conversations/:id/plan` — body `{ doc, version? }`; `200 { ownerConversationId, plan, warnings }`.
   - `POST /api/conversations/:id/plan/activate` / `POST .../revert` → `200 { ownerConversationId, plan }`.
 
 ### 3. Contracts
-- Plan doc JSON: `{ nodes: [{ id, title?, goal?, status?, depends_on?, branch?, spawned_conversation_id?, kind?, verify?, base_branch?, result? }], edges?, history? }`.
+- Plan doc JSON: `{ nodes: [{ id, title?, goal?, status?, depends_on?, branch?, spawned_conversation_id?, kind?, verify?, base_branch?, worker?, verifier?, result? }], edges?, history? }`.
   - Node enums: `status ∈ pending|doing|done|blocked` (default pending), `kind ∈ work|merge` (default work).
   - `branch`: named at graph-build time, checked out lazily at execution into per-node worktrees (see `dag-execution.md`).
   - `verify?` (D19): optional shell command; merge nodes run it inside the integration worktree before `done` is accepted.
   - `base_branch?` (D11): explicit checkout baseline; when set it must equal a parent node's branch (`plan_node_base_branch_mismatch`); nodes without parents must omit it (inherit the conversation branch).
+  - `worker?` / `verifier?` (D28/D29): optional participant references represented as strings; execution resolves either canonical agent id or unique display name. Both are structural and locked while active. See `dag-execution.md` for defaults, ambiguity handling, and self-review enforcement.
   - `result?` (D23): ≤2000-char outcome summary, written back with status transitions; a transition to `done` without `result` produces a `plan_done_result_missing` **warning** (never blocks — manual POC-style status flips stay legal; the scheduler path always carries one).
   - `spawned_conversation_id`: bound by the scheduler via the system channel only; locked for all other writers while active.
   - `history?` (D18): append-only audit trail `[{ node_id, from, to, at, actor, reason? }]`, rolling-capped at 200 entries. **Server-owned**: a caller that omits the field inherits the stored entries; a caller that carries it must preserve the existing prefix exactly (append-only while active). Status transitions are auto-appended by the server with actor attribution (`user` / `agent:<id>` / `system`); caller-pre-recorded transitions are deduped on `(node_id, from, to)` so nothing double-writes.
@@ -50,7 +51,7 @@
   - `done`/`archived` reject all writes with `409 plan_locked`.
 - Write semantics by status:
   - `draft`: full-doc replace accepted after `validatePlanDoc`.
-  - `active`: `validateStatusOnlyUpdate` diff — only node `status`/`result` may change and `history` may only grow by appending; adding/removing nodes or changing `title/goal/depends_on/branch/kind/verify/base_branch/spawned_conversation_id` is rejected with `plan_locked_*` issues.
+  - `active`: `validateStatusOnlyUpdate` diff — only node `status`/`result` may change and `history` may only grow by appending; adding/removing nodes or changing `title/goal/depends_on/branch/kind/verify/base_branch/worker/verifier/spawned_conversation_id` is rejected with `plan_locked_*` issues.
   - D16 fail-closed: on active plans, `pending → doing` while any transitive upstream is `blocked` is rejected with `409 plan_upstream_blocked` + `{ nodeId, blockedUpstreams[] }`. The check evaluates the incoming doc, so unblocking an upstream in the same write unblocks the downstream. `blocked → doing` retries are deliberately not gated (D12 retry flow needs them).
 - Optimistic concurrency: updates require the caller's read version; mismatch → `409 plan_version_conflict`. First write (create) does not require a version. Every successful write bumps `version` by 1.
 - `edges[]` consistency: when present, every edge must be backed by a `depends_on` entry and vice versa (`plan_edge_mismatch`); the derived edge set is authoritative.

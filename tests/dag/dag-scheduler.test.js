@@ -136,6 +136,7 @@ function createHarness(store, overrides = {}) {
         bootstrapMessageId: messageId,
         initialMessage: input.initialMessage,
         clientRequestId: input.clientRequestId,
+        workerId: input.workerId,
       });
       return { conversationId: childId };
     },
@@ -518,6 +519,52 @@ test('D28: verifier rejection feeds back to the worker; re-announce then accept 
   await flush(scheduler);
   assert.equal(getNode(store, 'n1').status, 'done');
   assert.equal(getNode(store, 'n1').result, '第二版完工（补了测试）');
+});
+
+test('D28: explicit worker/verifier accept unique display names and bind canonical agent ids', async () => {
+  const store = createStore(test);
+  createRoot(store, ROOT_ID, [WORKER_ID, VERIFIER_ID]);
+  const plan = createActivePlan(store, makeDoc([
+    node('n1', { worker: 'Kimi', verifier: 'GPT' }),
+  ]));
+  const { scheduler, spawns, deliveries } = createHarness(store);
+
+  scheduler.handleEvent('conversation_plan_updated', { ownerConversationId: ROOT_ID, plan });
+  await flush(scheduler);
+
+  assert.equal(getNode(store, 'n1').status, 'doing');
+  assert.equal(spawns.length, 1);
+  assert.equal(spawns[0].workerId, VERIFIER_ID, 'display-name worker resolves to canonical id');
+  const binding = store.getConversationWithoutMessages('child-n1').metadata.dagNodeGoalBinding;
+  assert.equal(binding.workerId, VERIFIER_ID);
+  assert.equal(binding.verifierId, WORKER_ID);
+
+  announceComplete(store, scheduler, 'child-n1', '显示名配置完成', VERIFIER_ID);
+  await flush(scheduler);
+  assert.equal(deliveries[0].targetAgentId, WORKER_ID);
+});
+
+test('D28: ambiguous participant display names fail closed before side effects', async () => {
+  const store = createStore(test);
+  createRoot(store, ROOT_ID, [WORKER_ID, VERIFIER_ID]);
+  const original = store.getConversationWithoutMessages.bind(store);
+  store.getConversationWithoutMessages = (conversationId) => {
+    const conversation = original(conversationId);
+    if (conversationId === ROOT_ID && conversation) {
+      return { ...conversation, agents: conversation.agents.map((agent) => ({ ...agent, name: 'Reviewer' })) };
+    }
+    return conversation;
+  };
+  const plan = createActivePlan(store, makeDoc([node('n1', { verifier: 'Reviewer' })]));
+  const { scheduler, spawns, prepareCalls } = createHarness(store);
+
+  scheduler.handleEvent('conversation_plan_updated', { ownerConversationId: ROOT_ID, plan });
+  await flush(scheduler);
+
+  assert.equal(getNode(store, 'n1').status, 'blocked');
+  assert.ok(historyFor(store, 'n1').some((entry) => (entry.reason || '').includes('dag_verifier_ambiguous')));
+  assert.equal(spawns.length, 0);
+  assert.equal(prepareCalls.length, 0);
 });
 
 test('D28: invalid or self-review verifier fails closed before any side effect', async () => {

@@ -99,11 +99,16 @@
   idempotently.
 - **Dispatch pipeline** per ready node (`pending` + all transitive upstreams
   `done`, subject to the concurrency cap):
-  0. **verifier resolution (D28, before ANY side effect)** — explicit
-     `node.verifier` must be a root-conversation participant and ≠ the worker
-     (first participant); invalid → `blocked` `dag_verifier_invalid`,
-     self-review → `blocked` `dag_verifier_self_review`. Unspecified → first
-     participant ≠ worker; single-agent owner → no verifier (auto-accept).
+  0. **worker/verifier resolution (D28/D29, before ANY side effect)** — optional
+     `node.worker` / `node.verifier` accept either a canonical root participant
+     agent id or a unique participant display name (id match wins; ambiguous
+     names fail closed as `dag_worker_ambiguous` / `dag_verifier_ambiguous`).
+     Worker defaults to the first participant; verifier defaults to the first
+     participant ≠ worker. Invalid references → `dag_worker_invalid` /
+     `dag_verifier_invalid`; self-review → `dag_verifier_self_review`. The
+     resolved worker becomes the child spawn primary and first participant;
+     the durable binding always stores canonical ids. Single-agent owner → no
+     verifier (auto-accept).
   1. `prepareNodeWorktree` — dirty/mismatched/occupied → node `blocked` with
      the git reason (D22 fail-closed, never cleans user data);
   2. `spawnNodeConversation` — child hangs flat under the ROOT conversation
@@ -246,7 +251,9 @@
 | activate | owner conversation not bound to a project | 409 `plan_owner_project_unbound`, plan stays `draft` |
 | dispatch | node ready but cap reached | stays `pending`; refilled FIFO when a slot frees |
 | spawn | spawn throws | node → `blocked`, reason `dag_spawn_failed: <msg>` |
-| dispatch | explicit verifier not a participant / == worker | `blocked` `dag_verifier_invalid` / `dag_verifier_self_review`, zero side effects |
+| dispatch | worker/verifier id or unique display name resolves | canonical ids drive spawn + binding; selected worker is child primary |
+| dispatch | worker/verifier reference missing or display name ambiguous | `blocked` `dag_worker_invalid` / `dag_verifier_invalid` / `dag_*_ambiguous`, zero side effects |
+| dispatch | explicit verifier == worker | `blocked` `dag_verifier_self_review`, zero side effects |
 | dispatch | session goal init throws | `blocked` `dag_goal_init_failed` (spawned id bound for forensics) |
 | completion | slot event with unknown conversation / non-DAG source | ignored entirely |
 | completion | completed slot, goal active, no proposal | no-op — continuation drives on (D27) |
@@ -296,7 +303,8 @@
 - `tests/dag/dag-merge.test.js` (8): LCA correctness, explicit `base_branch`
   priority, orphan-branch fail-closed, ancestry gate, verify command output
   passthrough.
-- `tests/dag/dag-scheduler.test.js` (46): dispatch+bind, D24 cap+FIFO refill,
+- `tests/dag/dag-scheduler.test.js`: dispatch+bind, explicit worker/verifier id
+  and unique-display-name resolution, ambiguous-name fail-closed, D24 cap+FIFO refill,
   result propagation, spawn→bind race settle, failure→blocked+D16, dirty
   worktree fail-closed, spawn failure, stray events ignored, all D25
   reconcile branches, cwd hook, D26 instruction contents, merge gating

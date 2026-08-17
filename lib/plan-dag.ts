@@ -9,7 +9,7 @@
  * Contract (PRD .trellis/tasks/dag-planning/prd.md D3/D5,
  * .trellis/tasks/dag-execution/prd.md D18/D19/D23):
  * - plan doc: { nodes: [{id, title, goal, status, depends_on[], branch,
- *   spawned_conversation_id, kind, verify?, base_branch?, result?, verifier?}],
+ *   spawned_conversation_id, kind, verify?, base_branch?, result?, worker?, verifier?}],
  *   edges?: [{from, to}], history?: [{node_id, from, to, at, actor, reason?}] }
  * - validation: unique node ids, depends_on references exist, acyclic,
  *   merge nodes with in-degree < 2 produce a warning;
@@ -197,8 +197,11 @@ export function validatePlanDoc(doc: any): PlanValidationResult {
     if (node.base_branch !== undefined && node.base_branch !== null && typeof node.base_branch !== 'string') {
       issues.push({ code: 'plan_node_base_branch_invalid', message: `${label}.base_branch must be a string`, nodeId: id });
     }
+    if (node.worker !== undefined && node.worker !== null && typeof node.worker !== 'string') {
+      issues.push({ code: 'plan_node_worker_invalid', message: `${label}.worker must be a string (agent id or display name)`, nodeId: id });
+    }
     if (node.verifier !== undefined && node.verifier !== null && typeof node.verifier !== 'string') {
-      issues.push({ code: 'plan_node_verifier_invalid', message: `${label}.verifier must be a string (agent id)`, nodeId: id });
+      issues.push({ code: 'plan_node_verifier_invalid', message: `${label}.verifier must be a string (agent id or display name)`, nodeId: id });
     }
     if (node.result !== undefined && node.result !== null) {
       if (typeof node.result !== 'string') {
@@ -388,7 +391,7 @@ export function validatePlanDoc(doc: any): PlanValidationResult {
  * `result` is deliberately absent: it is written back with status transitions
  * (D23). `spawned_conversation_id` stays locked for the public API — the
  * scheduler binds it through an internal path. */
-const STRUCTURAL_NODE_FIELDS = ['title', 'goal', 'depends_on', 'branch', 'kind', 'spawned_conversation_id', 'verify', 'base_branch', 'verifier'];
+const STRUCTURAL_NODE_FIELDS = ['title', 'goal', 'depends_on', 'branch', 'kind', 'spawned_conversation_id', 'verify', 'base_branch', 'worker', 'verifier'];
 
 function normalizeForCompare(value: any): any {
   if (Array.isArray(value)) {
