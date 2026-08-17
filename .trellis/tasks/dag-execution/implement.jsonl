@@ -3,3 +3,4 @@
 {"file":".trellis/spec/backend/index.md","reason":"Backend spec index."}
 {"file":".trellis/spec/runtime/index.md","reason":"Runtime spec index (agent tool bridge suggest-goal accept/reject)."}
 {"file":".agents/skills/dag-planning/SKILL.md","reason":"Plan authoring skill: node fields incl. verifier, lifecycle, completion protocol."}
+{"ts":"2026-08-16T18:10:00Z","kind":"review-fix","commit":"8b7bdd9","summary":"fresh-context 复审第三轮：修复 2 个 D28 ruling 纵深缺口——① bound 免验收节点不再接受无 principal 的 accept（仅 dag-scheduler 自动验收或 user）；② reject 事件与 accept 走同一 ruling 权限校验（resolveRulingAuthority+isCompletionRulingAllowed），伪造 reject 不再注入假反馈。附带修复提案 idempotency stamp 唯一性隐患：session-goal 提案新增唯一 id（prop_*），避免同毫秒两轮提案 createdAt 冲突导致 round-2 验收请求被 dedup 吞掉（测试 flake 根因）。红测先行（stash 验证两条新测试在旧代码上失败），dag-scheduler 39/39×5 连跑、test:fast 627/627、build/typecheck/check 全绿，spec 已同步。"}
