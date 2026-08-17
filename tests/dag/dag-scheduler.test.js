@@ -150,7 +150,8 @@ function createHarness(store, overrides = {}) {
       });
     },
     async deliverNodeMessage(input) {
-      // Mimic the real channel: submitFromSystem dedups by idempotency key.
+      // Mimic the real channel: submitFromSystem dedups by idempotency key
+      // and persists the target message (with metadata) at submit time.
       if (deliveries.some((entry) => entry.idempotencyKey === input.idempotencyKey)) {
         return;
       }
@@ -159,6 +160,12 @@ function createHarness(store, overrides = {}) {
         targetAgentId: input.targetAgentId,
         content: input.content,
         idempotencyKey: input.idempotencyKey,
+      });
+      addMessage(store, {
+        id: `delivery-${deliveries.length}`,
+        conversationId: input.conversationId,
+        content: input.content,
+        metadata: { ...(input.messageMetadata || {}) },
       });
     },
     ...overrides.schedulerOptions,
@@ -457,7 +464,8 @@ test('D28: verifier rejection feeds back to the worker; re-announce then accept 
   assert.equal(deliveries[1].targetAgentId, WORKER_ID, 'feedback goes back to the worker');
   assert.ok(deliveries[1].content.includes('验收打回'));
   assert.ok(deliveries[1].content.includes('缺少关键测试'));
-  assert.ok(deliveries[1].idempotencyKey.startsWith('dag-verify-feedback:'));
+  assert.ok(deliveries[1].idempotencyKey.startsWith('dag-verify:'));
+  assert.ok(deliveries[1].idempotencyKey.includes(':feedback:'), 'feedback shares the dag-verify namespace');
   const goalAfterReject = getSessionGoal(store.getConversation('child-n1'));
   assert.equal(goalAfterReject.status, 'active', 'goal keeps driving the worker');
   assert.equal(getSessionGoalProposal(store.getConversation('child-n1')), null, 'proposal dismissed');
@@ -1038,6 +1046,20 @@ test('D28: user UI accept settles done with the result taken from the cleared pr
   assert.equal(getNode(store, 'n1').result, '用户人工验收摘要', 'result comes from the proposal snapshot, not a fallback');
 });
 
+/** Fabricate a scheduler-owned delivery payload with the authoritative
+ * persisted fields the terminal-failure guard validates against. */
+function schedulerDelivery(overrides = {}) {
+  return {
+    id: `delivery-${Math.random().toString(36).slice(2, 10)}`,
+    principalKind: 'operator',
+    idempotencyScope: `system:${ROOT_ID}:conversation_notify`,
+    sourceConversationId: ROOT_ID,
+    targetConversationId: 'child-n1',
+    dispatchStatus: 'failed',
+    ...overrides,
+  };
+}
+
 test('P2: terminal failure of a scheduler delivery blocks the node (dag_delivery_failed)', async () => {
   const store = createStore(test);
   createRoot(store, ROOT_ID, [WORKER_ID, VERIFIER_ID]);
@@ -1053,11 +1075,7 @@ test('P2: terminal failure of a scheduler delivery blocks the node (dag_delivery
 
   scheduler.handleEvent('cross_conversation_delivery_updated', {
     conversationId: 'child-n1',
-    delivery: {
-      id: 'delivery-1',
-      idempotencyKey: deliveries[0].idempotencyKey,
-      dispatchStatus: 'failed',
-    },
+    delivery: schedulerDelivery({ idempotencyKey: deliveries[0].idempotencyKey }),
     reason: 'dispatch_failed',
   });
   await flush(scheduler);
@@ -1082,16 +1100,199 @@ test('P2: non-terminal or foreign delivery events are ignored', async () => {
   // Retry scheduled (not terminal) → ignored.
   scheduler.handleEvent('cross_conversation_delivery_updated', {
     conversationId: 'child-n1',
-    delivery: { id: 'delivery-1', idempotencyKey: deliveries[0].idempotencyKey, dispatchStatus: 'queued' },
+    delivery: schedulerDelivery({ idempotencyKey: deliveries[0].idempotencyKey, dispatchStatus: 'queued' }),
     reason: 'retry_scheduled',
   });
   // A failed delivery with a non-DAG key → ignored.
   scheduler.handleEvent('cross_conversation_delivery_updated', {
     conversationId: 'child-n1',
-    delivery: { id: 'delivery-2', idempotencyKey: 'req:someone-else', dispatchStatus: 'failed' },
+    delivery: schedulerDelivery({ idempotencyKey: 'req:someone-else' }),
     reason: 'dispatch_failed',
   });
   await flush(scheduler);
 
   assert.equal(getNode(store, 'n1').status, 'doing');
+});
+
+test('delivery guard: forged agent-principal delivery with a dag-* key is ignored', async () => {
+  const store = createStore(test);
+  createRoot(store, ROOT_ID, [WORKER_ID, VERIFIER_ID]);
+  const plan = createActivePlan(store, makeDoc([node('n1', { verifier: VERIFIER_ID })]));
+  const { scheduler, deliveries } = createHarness(store);
+
+  scheduler.handleEvent('conversation_plan_updated', { ownerConversationId: ROOT_ID, plan });
+  await flush(scheduler);
+  announceComplete(store, scheduler, 'child-n1', '完工摘要');
+  await flush(scheduler);
+  assert.equal(deliveries.length, 1);
+
+  // Agent-forged key: agents may pick arbitrary idempotency keys, so the
+  // guard must trust only the persisted principal/scope/source/target.
+  scheduler.handleEvent('cross_conversation_delivery_updated', {
+    conversationId: 'child-n1',
+    delivery: schedulerDelivery({
+      idempotencyKey: deliveries[0].idempotencyKey,
+      principalKind: 'agent',
+    }),
+    reason: 'dispatch_failed',
+  });
+  // Wrong scope (agent invocation scope, not the scheduler's).
+  scheduler.handleEvent('cross_conversation_delivery_updated', {
+    conversationId: 'child-n1',
+    delivery: schedulerDelivery({
+      idempotencyKey: deliveries[0].idempotencyKey,
+      idempotencyScope: 'agent:invocation-1:conversation_request',
+    }),
+    reason: 'dispatch_failed',
+  });
+  // Wrong target (another conversation).
+  scheduler.handleEvent('cross_conversation_delivery_updated', {
+    conversationId: 'child-n1',
+    delivery: schedulerDelivery({
+      idempotencyKey: deliveries[0].idempotencyKey,
+      targetConversationId: 'some-other-conversation',
+    }),
+    reason: 'dispatch_failed',
+  });
+  await flush(scheduler);
+
+  assert.equal(getNode(store, 'n1').status, 'doing', 'forged/mismatched deliveries never block the node');
+});
+
+test('delivery guard: stale activation or earlier proposal-round failures are ignored', async () => {
+  const store = createStore(test);
+  createRoot(store, ROOT_ID, [WORKER_ID, VERIFIER_ID]);
+  const plan = createActivePlan(store, makeDoc([node('n1', { verifier: VERIFIER_ID })]));
+  const { scheduler, deliveries } = createHarness(store);
+
+  scheduler.handleEvent('conversation_plan_updated', { ownerConversationId: ROOT_ID, plan });
+  await flush(scheduler);
+  announceComplete(store, scheduler, 'child-n1', '第一轮完工摘要');
+  await flush(scheduler);
+  assert.equal(deliveries.length, 1);
+  const roundOneVerifyKey = deliveries[0].idempotencyKey;
+
+  // Verifier rejects round 1 → feedback delivered → worker re-announces.
+  ruleOnProposal(store, scheduler, 'child-n1', 'reject', '还差一点');
+  await flush(scheduler);
+  assert.equal(deliveries.length, 2);
+  const roundOneFeedbackKey = deliveries[1].idempotencyKey;
+  announceComplete(store, scheduler, 'child-n1', '第二轮完工摘要');
+  await flush(scheduler);
+  assert.equal(deliveries.length, 3, 'round-2 verification requested');
+
+  // Late failures from a stale activation stamp and from round 1's
+  // verify/feedback deliveries must NOT block the current round.
+  scheduler.handleEvent('cross_conversation_delivery_updated', {
+    conversationId: 'child-n1',
+    delivery: schedulerDelivery({ idempotencyKey: `dag-node:${plan.id}:n1:stale-activation` }),
+    reason: 'dispatch_failed',
+  });
+  scheduler.handleEvent('cross_conversation_delivery_updated', {
+    conversationId: 'child-n1',
+    delivery: schedulerDelivery({ idempotencyKey: roundOneVerifyKey }),
+    reason: 'dispatch_failed',
+  });
+  scheduler.handleEvent('cross_conversation_delivery_updated', {
+    conversationId: 'child-n1',
+    delivery: schedulerDelivery({ idempotencyKey: roundOneFeedbackKey }),
+    reason: 'dispatch_failed',
+  });
+  await flush(scheduler);
+
+  assert.equal(getNode(store, 'n1').status, 'doing', 'stale failures never block the current cycle');
+});
+
+test('delivery guard: current-cycle feedback failure blocks the node', async () => {
+  const store = createStore(test);
+  createRoot(store, ROOT_ID, [WORKER_ID, VERIFIER_ID]);
+  const plan = createActivePlan(store, makeDoc([node('n1', { verifier: VERIFIER_ID })]));
+  const { scheduler, deliveries } = createHarness(store);
+
+  scheduler.handleEvent('conversation_plan_updated', { ownerConversationId: ROOT_ID, plan });
+  await flush(scheduler);
+  announceComplete(store, scheduler, 'child-n1', '完工摘要');
+  await flush(scheduler);
+  ruleOnProposal(store, scheduler, 'child-n1', 'reject', '缺少关键测试');
+  await flush(scheduler);
+  assert.equal(deliveries.length, 2);
+  assert.equal(getNode(store, 'n1').status, 'doing');
+
+  // The proposal is already cleared at this point — the guard identifies
+  // the current feedback delivery via the persisted dagDeliveryKey on the
+  // latest feedback message, not via a pending proposal stamp.
+  scheduler.handleEvent('cross_conversation_delivery_updated', {
+    conversationId: 'child-n1',
+    delivery: schedulerDelivery({
+      idempotencyKey: deliveries[1].idempotencyKey,
+      dispatchStatus: 'cancelled',
+    }),
+    reason: 'delivery_cancelled',
+  });
+  await flush(scheduler);
+
+  assert.equal(getNode(store, 'n1').status, 'blocked', 'feedback terminal failure (failed OR cancelled) never strands the node');
+  const reasons = historyFor(store, 'n1').map((entry) => entry.reason || '');
+  assert.ok(reasons.some((reason) => reason.includes('dag_delivery_failed')), JSON.stringify(reasons));
+});
+
+test('delivery guard: synchronous verification-request persist failure blocks the node', async () => {
+  const store = createStore(test);
+  createRoot(store, ROOT_ID, [WORKER_ID, VERIFIER_ID]);
+  const plan = createActivePlan(store, makeDoc([node('n1', { verifier: VERIFIER_ID })]));
+  const { scheduler } = createHarness(store, {
+    schedulerOptions: {
+      async deliverNodeMessage() {
+        throw new Error('validation blew up');
+      },
+    },
+  });
+
+  scheduler.handleEvent('conversation_plan_updated', { ownerConversationId: ROOT_ID, plan });
+  await flush(scheduler);
+  announceComplete(store, scheduler, 'child-n1', '完工摘要');
+  await flush(scheduler);
+
+  assert.equal(getNode(store, 'n1').status, 'blocked', 'unpersisted verification request must not idle forever');
+  const reasons = historyFor(store, 'n1').map((entry) => entry.reason || '');
+  assert.ok(reasons.some((reason) => reason.includes('dag_delivery_failed')), JSON.stringify(reasons));
+});
+
+test('goal-driven child whose session goal vanishes fails closed (dag_goal_missing)', async () => {
+  const store = createStore(test);
+  createRoot(store);
+  const plan = createActivePlan(store, makeDoc([node('n1')]));
+  const { scheduler, spawns } = createHarness(store);
+
+  scheduler.handleEvent('conversation_plan_updated', { ownerConversationId: ROOT_ID, plan });
+  await flush(scheduler);
+  assert.equal(spawns.length, 1);
+  const childId = spawns[0].conversationId;
+
+  // The binding exists but the goal disappeared (tampered metadata): the
+  // completion protocol is unrecoverable, so the slot settle must NOT fall
+  // back to the legacy turn-terminal done path.
+  const child = store.getConversation(childId);
+  const metadata = { ...(child.metadata || {}) };
+  delete metadata.sessionGoal;
+  delete metadata.sessionGoalProposal;
+  store.updateConversation(childId, { title: child.title, type: child.type, metadata });
+
+  const bootstrapMessageId = spawns[0].bootstrapMessageId;
+  addMessage(store, {
+    id: 'reply-1',
+    conversationId: childId,
+    role: 'assistant',
+    content: 'done-ish',
+    metadata: { triggeredByMessageId: bootstrapMessageId },
+  });
+  scheduler.handleEvent('agent_slot_finished', {
+    conversationId: childId,
+    slot: { status: 'completed', sourceMessageId: bootstrapMessageId, finalContent: 'done-ish' },
+  });
+  await flush(scheduler);
+
+  assert.equal(getNode(store, 'n1').status, 'blocked');
+  const reasons = historyFor(store, 'n1').map((entry) => entry.reason || '');
+  assert.ok(reasons.some((reason) => reason.includes('dag_goal_missing')), JSON.stringify(reasons));
 });

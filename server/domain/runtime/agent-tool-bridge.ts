@@ -1532,15 +1532,22 @@ export function createAgentToolBridge(options: any = {}) {
         return response;
       }
 
-      // D28 fail-closed: on a DAG-bound node goal, only the node worker
-      // (first participant) may declare completion. Another participant
-      // announcing "done" on the worker's behalf is rejected outright.
-      if (action === 'complete' && activeStore && typeof activeStore.getConversation === 'function') {
+      // D28 fail-closed: on a DAG-bound node goal the completion protocol is
+      // the ONLY mutation an agent may drive — the worker proposes
+      // `complete`, the designated verifier rules via accept/reject (handled
+      // above). Every other proposal action (set/pause/resume/clear) would
+      // bypass the worker→verifier state machine, so it is rejected outright.
+      if (activeStore && typeof activeStore.getConversation === 'function') {
         const bindingConversation = activeStore.getConversation(context.conversationId);
         const proposalBinding = bindingConversation ? getDagNodeGoalBinding(bindingConversation) : null;
-        if (proposalBinding && proposalBinding.workerId
-          && proposalBinding.workerId !== String(context.agentId || '').trim()) {
-          throw createHttpError(403, 'dag_completion_worker_only: only the node worker can declare this node complete');
+        if (proposalBinding) {
+          if (action !== 'complete') {
+            throw createHttpError(403, 'dag_goal_mutation_forbidden: this conversation is executing a DAG node; only the worker completion proposal and verifier ruling are allowed');
+          }
+          if (proposalBinding.workerId
+            && proposalBinding.workerId !== String(context.agentId || '').trim()) {
+            throw createHttpError(403, 'dag_completion_worker_only: only the node worker can declare this node complete');
+          }
         }
       }
 

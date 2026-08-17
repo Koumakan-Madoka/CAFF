@@ -310,8 +310,17 @@ export function createServerApp(options: any = {}) {
   // wiring, in parallel, bounded by the scheduler's own D24 concurrency cap.
   // The global serial drain must not claim them first — that would
   // re-serialize DAG child conversations behind one worker loop.
+  // Trust boundary: the key prefix alone is model-controllable (agents may
+  // pass arbitrary idempotency keys), so ownership also requires the
+  // persisted operator principal — every scheduler delivery is persisted
+  // via the spawn service or submitFromSystem with principalKind
+  // 'operator'. A forged agent delivery with a dag-* key falls through to
+  // the normal serial drain instead of hijacking the direct path.
   function isDagSchedulerDelivery(delivery: any) {
     const key = String(delivery && delivery.idempotencyKey || '');
+    if (String(delivery && delivery.principalKind || '') !== 'operator') {
+      return false;
+    }
     return key.startsWith('dag-node:') || key.startsWith('dag-resume:') || key.startsWith('dag-verify:');
   }
 

@@ -1996,3 +1996,41 @@ test('DAG goal binding: only the designated verifier can accept/reject (dag_veri
   assert.equal(clearedEvent.payload.ruledBy.agentId, verifier.id);
   assert.ok(clearedEvent.payload.proposal, 'cleared event carries the proposal snapshot');
 });
+
+test('DAG goal binding: agents cannot drive non-complete goal mutations (dag_goal_mutation_forbidden)', (t) => {
+  const tempDir = withTempDir('caff-bridge-dag-mutation-lock-');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath: path.join(tempDir, 'bridge.sqlite') });
+  const broadcastEvents = [];
+  const bridge = createGoalTestBridge(store, broadcastEvents);
+  t.after(() => {
+    try { store.close(); } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const fixture = createDagBoundGoalFixture(store, 'dag-mutation', 2);
+  const [worker, verifier] = fixture.agents;
+
+  // set/pause/resume/clear proposals would bypass the worker→verifier
+  // completion protocol — forbidden for BOTH the worker and the verifier.
+  for (const agent of [worker, verifier]) {
+    for (const action of ['set', 'pause', 'resume', 'clear']) {
+      const context = registerAgentInvocation(bridge, fixture, agent);
+      assert.throws(
+        () => bridge.handleSuggestGoal({
+          invocationId: context.invocationId,
+          callbackToken: context.callbackToken,
+          action,
+          objective: 'hijack',
+          reason: 'hijack',
+        }),
+        (error) => { assertForbidden(error, 'dag_goal_mutation_forbidden'); return true; },
+        `${agent.id} must not propose ${action} on a DAG-bound goal`,
+      );
+    }
+  }
+
+  // The goal is untouched.
+  const conversation = store.getConversation(fixture.conversation.id);
+  assert.equal(conversation.metadata.sessionGoal.status, 'active');
+  assert.equal(conversation.metadata.sessionGoalProposal, undefined);
+});

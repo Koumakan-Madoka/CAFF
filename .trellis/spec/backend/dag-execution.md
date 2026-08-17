@@ -64,8 +64,21 @@
       `dag_completion_worker_only` (only the node worker declares done);
     - `accept`/`reject` from any agent ≠ `binding.verifierId` → 403
       `dag_verifier_only` (a third participant cannot hijack the ruling;
-      "not the proposer" alone is NOT sufficient).
-- Goal REST API (`server/api/conversations-controller.ts`): user
+      "not the proposer" alone is NOT sufficient);
+    - ANY other agent proposal action (`set`/`pause`/`resume`/`clear`) on a
+      bound conversation → 403 `dag_goal_mutation_forbidden` — agents may
+      only drive the completion protocol, never mutate the goal itself.
+  - **Binding-authoritative routing**: `getDagNodeExecutionContext(store,
+    conversationId)` resolves the live doing-node context (active plan +
+    node doing + spawned id match); `isDagBoundGoalMutationAllowed(action)`
+    is the shared whitelist (`get`, `update-checklist`, `accept-proposal`,
+    `dismiss-proposal`). The scheduler routes/verifies against the
+    persisted binding (not participant-order recomputation), so the bridge
+    and scheduler can never disagree after a participant rearrange.
+- Goal REST API (`server/api/conversations-controller.ts`): while
+  `getDagNodeExecutionContext` reports a doing node, POST actions outside
+  the whitelist → 403 `dag_goal_mutation_forbidden` (direct complete/clear/
+  set/pause/resume would bypass the worker→verifier protocol). User
   accept/dismiss broadcasts `conversation_goal_proposal_cleared` with the
   pre-clear proposal snapshot (`clearedProposal`), `outcome`, and
   `ruledBy: { kind: 'user' }` — the scheduler derives the node result from
@@ -135,10 +148,40 @@
     accepting in the UI is a legitimate manual ruling (`ruledBy.kind==='user'`)
     and the node result is taken from the cleared proposal snapshot.
 - **Failure write-back**: `agent_slot_finished` with a failed status still
-  flips `blocked` + reason; a COMPLETED slot only settles goal-less children
-  (legacy pre-D27 fallback) — with a goal active it defers to the goal
-  state. Only scheduler-injected source messages count; stray side
-  dispatches are ignored.
+  flips `blocked` + reason; a COMPLETED slot only settles children with NO
+  binding and no goal (legacy pre-D27 fallback) — with a goal active it
+  defers to the goal state, and a bound child whose goal vanished fails
+  closed `blocked` `dag_goal_missing` (the completion protocol is
+  unrecoverable; never fall back to the verifier-bypassing legacy path).
+  Only scheduler-injected source messages count; stray side dispatches are
+  ignored.
+- **Scheduler-delivery terminal-failure guard**: subscribes to
+  `cross_conversation_delivery_updated`; a scheduler delivery reaching
+  terminal `dispatchStatus` `failed` OR `cancelled` → `blocked`
+  `dag_delivery_failed`. Trust boundary (the idempotency key is
+  model-controllable for agent submissions, so the key alone proves
+  nothing):
+  - ownership requires the persisted authoritative fields:
+    `principalKind === 'operator'`, exact scheduler scope
+    (`operator:<owner>:conversation_spawn` or
+    `system:<owner>:conversation_notify`), `sourceConversationId` = plan
+    owner, `targetConversationId` = the node's current spawned child;
+  - the key must equal one of the node's CURRENT-cycle keys: spawn/resume
+    keys embed `activatedAt`; verification-request keys embed the pending
+    complete-proposal stamp; rejection-feedback keys (namespace
+    `dag-verify:<plan>:<node>:feedback:<stamp>`) outlive their cleared
+    proposal and are current only while they are the LATEST persisted
+    `dag_verify_feedback` message (`dagDeliveryKey` metadata) AND no newer
+    complete proposal is pending (a re-announcement supersedes the
+    feedback). Stale activations / earlier proposal rounds never block the
+    current execution;
+  - synchronous persist/validation failures of verification requests and
+    rejection feedback also fail closed to `blocked` `dag_delivery_failed`
+    (an unpersisted delivery has no retry path and would idle the node);
+  - the direct-dispatch wiring (`isDagSchedulerDelivery` in
+    `create-server.ts`) applies the same principal check, so a forged
+    agent delivery with a `dag-*` key falls back to the serial drain
+    instead of hijacking the parallel path.
 - **Merge gating (D11/D19 fail-closed)**: merge nodes must pass
   `verifyNodeCompletion` BEFORE `done` is written; failure or exception →
   `blocked` with `dag_merge_verify_failed: <reason>`, downstream stays
@@ -190,12 +233,18 @@
 | completion | completed slot, goal active, no proposal | no-op — continuation drives on (D27) |
 | completion | goal-runner budget pause proposal | `blocked` `dag_goal_budget_exhausted` |
 | completion | complete proposal proposedBy ≠ worker | `blocked` `dag_completion_wrong_proposer` (bridge 403s at creation; scheduler defense-in-depth) |
-| completion | accepted ruling by agent ≠ verifier | ignored (forged event); only `ruledBy.kind==='user'` / `dag-scheduler` auto-accept / designated verifier may settle |
-| delivery | scheduler delivery (`dag-node:`/`dag-verify:`/`dag-resume:`) reaches terminal `dispatchStatus: failed` | `blocked` `dag_delivery_failed` — never strands a node `doing` |
+| completion | accepted ruling by agent ≠ verifier | ignored (forged event); only `ruledBy.kind==='user'` / `dag-scheduler` auto-accept / designated verifier (binding-authoritative) may settle |
+| completion | bound child conversation lost its session goal | `blocked` `dag_goal_missing` — legacy terminal-reply fallback is binding-gated, never verifier-bypassing |
+| delivery | scheduler delivery reaches terminal `failed`/`cancelled` with authoritative ownership fields + current-cycle key | `blocked` `dag_delivery_failed` — never strands a node `doing` |
+| delivery | agent-principal delivery with forged `dag-*` key / wrong scope / wrong target / stale activation or proposal round | ignored entirely |
+| delivery | verification request / rejection feedback persist throws synchronously | `blocked` `dag_delivery_failed` (no retry path exists for unpersisted deliveries) |
 | verification | verifier routing but no delivery channel wired | `blocked` `dag_verify_unavailable` |
+| goal REST | DAG-bound doing node: POST `complete`/`clear`/`set`/`pause`/`resume` | 403 `dag_goal_mutation_forbidden`; only `get`/`update-checklist`/`accept-proposal`/`dismiss-proposal` allowed |
+| goal REST | binding present but node not doing (done/blocked) | unrestricted — post-execution cleanup stays possible |
 | bridge | proposer accepts/rejects own proposal | 403 `goal_proposal_self_review` |
 | bridge | DAG-bound goal: non-worker proposes complete | 403 `dag_completion_worker_only` |
 | bridge | DAG-bound goal: non-verifier accepts/rejects | 403 `dag_verifier_only` |
+| bridge | DAG-bound goal: agent proposes set/pause/resume/clear | 403 `dag_goal_mutation_forbidden` (worker and verifier alike) |
 | bridge | accept/reject with no pending proposal | 404 |
 | completion | merge node, verify verdict fail/throw | `blocked` + `dag_merge_verify_failed`, no `result` written |
 | merge prepare | any upstream lacks `branch` | dispatch refused `dag_merge_missing_upstream_branch` |
@@ -225,14 +274,23 @@
 - `tests/dag/dag-merge.test.js` (8): LCA correctness, explicit `base_branch`
   priority, orphan-branch fail-closed, ancestry gate, verify command output
   passthrough.
-- `tests/dag/dag-scheduler.test.js` (26): dispatch+bind, D24 cap+FIFO refill,
+- `tests/dag/dag-scheduler.test.js` (36): dispatch+bind, D24 cap+FIFO refill,
   result propagation, spawn→bind race settle, failure→blocked+D16, dirty
   worktree fail-closed, spawn failure, stray events ignored, all D25
   reconcile branches, cwd hook, D26 instruction contents, merge gating
   pass/fail/throw, D27 lightweight goal (empty checklist, objective teaches
   the completion protocol, budget→blocked), D28 verifier flow
   (routing/accept/reject feedback/default resolution/self-review & invalid
-  fail-closed, reconcile re-route).
+  verifier fail-closed/wrong-proposer blocked/forged accept ignored/user
+  manual accept with snapshot result), binding write failure, delivery
+  guard (terminal failed+cancelled → blocked, forged agent principal /
+  wrong scope / wrong target / stale activation / stale proposal round
+  ignored, current-cycle feedback failure blocked, sync persist failure
+  blocked), `dag_goal_missing` fail-closed.
+- `tests/http/conversation-goal-dag-guard.test.js` (3): REST goal mutation
+  lock for DAG-bound doing nodes (403 matrix), proposal ruling + checklist
+  whitelist with user ruledBy snapshot, post-execution unrestricted
+  cleanup.
 - `tests/dag/dag-execution-baseline.test.js` (3): PRD §5 baselines 2–6
   end-to-end with REAL git (baseline 1 stays in
   `tests/ui/dag-planning-demo.test.js`); completion driven by D27 goal

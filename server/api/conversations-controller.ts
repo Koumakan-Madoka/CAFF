@@ -15,6 +15,10 @@ import { buildConversationDirectoryPage } from '../domain/conversation/conversat
 import { applyConversationSkillDraftAction } from '../domain/conversation/skill-draft';
 import { applySessionGoalAction } from '../domain/conversation/session-goal';
 import {
+  getDagNodeExecutionContext,
+  isDagBoundGoalMutationAllowed,
+} from '../domain/conversation/dag-goal-binding';
+import {
   exportAgentContextSnapshotMarkdown,
   materializeAgentContextSnapshot,
   summarizeAgentContextSnapshot,
@@ -652,6 +656,17 @@ export function createConversationsController(options: any = {}): RouteHandler<A
     if (conversationGoalMatch && (req.method === 'GET' || req.method === 'POST')) {
       const conversationId = decodeURIComponent(conversationGoalMatch[1]);
       const body = req.method === 'POST' ? await readRequestJson(req) : { action: 'get' };
+      // D28 fail-closed: while a DAG node is doing, the bound child
+      // conversation's goal may only be read, checklist-updated, or have its
+      // pending proposal ruled on (accept/dismiss = user manual
+      // verification). Direct complete/clear/set/pause/resume would bypass
+      // the worker→verifier completion protocol.
+      if (req.method === 'POST' && getDagNodeExecutionContext(store, conversationId)
+        && !isDagBoundGoalMutationAllowed(body && body.action)) {
+        throw createHttpError(403, '该会话正在执行 DAG 节点，目标仅支持验收裁决（接受/驳回提案），不能直接完成/清除/替换', {
+          code: 'dag_goal_mutation_forbidden',
+        });
+      }
       const result = applySessionGoalAction(store, conversationId, body || {});
       let autoContinuation = null;
 

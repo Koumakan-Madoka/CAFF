@@ -29,6 +29,7 @@
   - `public/chat/session-goal-panel.js` renders the selected conversation goal, checklist progress, and pending proposal from metadata.
   - Save sends `{ action: 'set', objective, checklistText }`; empty new-goal forms prefill the Trellis long-task checklist and expose a one-click preset restore button.
   - Pause/resume/complete/clear buttons send the same lifecycle actions as slash commands.
+  - DAG execution lock (D27/D28): when the conversation metadata carries `dagNodeGoalBinding` and the goal is active/paused (node doing), the set/pause/resume/complete/clear buttons are disabled up front — the server enforces the same boundary with 403 `dag_goal_mutation_forbidden` (see `dag-execution.md`); proposal ruling buttons stay enabled (user manual verification).
   - Confirm/ignore proposal buttons send `{ action: 'accept-proposal' }` or `{ action: 'dismiss-proposal' }`.
 
 ### 3. Contracts

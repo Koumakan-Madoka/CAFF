@@ -23,7 +23,8 @@
     "test:smoke": "npm run build && node tests/smoke/server-smoke.test.js && node tests/smoke/mode-store.test.js",
     "test:dag-planning": "npm run build && node tests/storage/chat-plan.test.js && node tests/http/conversation-plan-controller.test.js && node tests/runtime/propose-plan.test.js && node tests/ui/plan-panel.test.js && node tests/ui/dag-planning-demo.test.js",
     "test": "npm run test:fast && npm run test:smoke",
-    "web": "npm run start:dev"
+    "web": "npm run start:dev",
+    "test:dag-execution": "npm run build && node tests/dag/dag-scheduler.test.js && node tests/dag/dag-worktree.test.js && node tests/dag/dag-merge.test.js && node tests/dag/dag-execution-baseline.test.js && node tests/http/conversation-goal-dag-guard.test.js"
   },
   "keywords": [
     "multi-agent",

@@ -48,7 +48,7 @@ import {
   getSessionGoal,
   getSessionGoalProposal,
 } from '../conversation/session-goal';
-import { ensureDagNodeGoalBinding } from '../conversation/dag-goal-binding';
+import { ensureDagNodeGoalBinding, getDagNodeGoalBinding } from '../conversation/dag-goal-binding';
 
 /**
  * D28 verifier resolution. The worker is always the owner conversation's
@@ -454,6 +454,12 @@ export function createDagScheduler(options: any = {}) {
   async function routeCompletionProposal(ownerConversationId: string, plan: any, node: any, conversationId: string, proposal: any): Promise<void> {
     const nodeId = String(node.id || '').trim();
     const conversation = store.getConversation(conversationId) || store.getConversationWithoutMessages(conversationId);
+    // The persisted binding (written at dispatch) is the authoritative
+    // worker/verifier contract — participant-order recomputation could drift
+    // if the child conversation's participants are ever rearranged, and the
+    // bridge enforces against the binding, so the scheduler must agree with
+    // it. Legacy children without a binding fall back to participant order.
+    const binding = getDagNodeGoalBinding(conversation);
     const childIds = participantIdsOf(conversation);
     const ownerIds = participantIdsOf(store.getConversationWithoutMessages(ownerConversationId));
     const participantIds = childIds.length > 0 ? childIds : ownerIds;
@@ -461,7 +467,7 @@ export function createDagScheduler(options: any = {}) {
     // bridge rejects non-worker proposals at creation time (403); a
     // mismatched proposer reaching this point means a forged/legacy
     // proposal — block visibly instead of routing it to the verifier.
-    const workerId = participantIds[0] || '';
+    const workerId = binding ? binding.workerId : (participantIds[0] || '');
     const proposerId = String(proposal && proposal.proposedBy && proposal.proposedBy.agentId || '').trim();
     if (workerId && proposerId && proposerId !== workerId) {
       writeExecution(
@@ -471,12 +477,17 @@ export function createDagScheduler(options: any = {}) {
       );
       return;
     }
-    const resolution = resolveNodeVerifier(node, participantIds);
-    if (resolution.error) {
-      writeExecution(ownerConversationId, [{ nodeId, status: 'blocked' }], clipText(resolution.error, 500));
-      return;
+    let verifierId: string | null = null;
+    if (binding) {
+      verifierId = binding.verifierId || null;
+    } else {
+      const resolution = resolveNodeVerifier(node, participantIds);
+      if (resolution.error) {
+        writeExecution(ownerConversationId, [{ nodeId, status: 'blocked' }], clipText(resolution.error, 500));
+        return;
+      }
+      verifierId = resolution.verifierId;
     }
-    const verifierId = resolution.verifierId;
     if (!verifierId) {
       acceptProposalAndSettle(ownerConversationId, plan, node, conversationId, proposal);
       return;
@@ -490,19 +501,29 @@ export function createDagScheduler(options: any = {}) {
       return;
     }
     const proposalStamp = String(proposal && (proposal.createdAt || proposal.updatedAt) || 'na');
+    const verifyKey = `dag-verify:${plan.id}:${nodeId}:${proposalStamp}`;
     try {
       await deliverNodeMessage({
         ownerConversationId,
         conversationId,
         targetAgentId: verifierId,
-        content: buildVerificationRequestContent(node, proposal, participantIds[0] || ''),
-        idempotencyKey: `dag-verify:${plan.id}:${nodeId}:${proposalStamp}`,
-        messageMetadata: { kind: 'dag_verify_request', dagNodeId: nodeId },
+        content: buildVerificationRequestContent(node, proposal, workerId),
+        idempotencyKey: verifyKey,
+        // dagDeliveryKey is persisted on the target message so the
+        // terminal-failure guard can identify current-cycle deliveries
+        // authoritatively (the key format alone is forgeable).
+        messageMetadata: { kind: 'dag_verify_request', dagNodeId: nodeId, dagDeliveryKey: verifyKey },
       });
     } catch (error: any) {
-      // Persist or dispatch failed; the proposal stays pending and the next
-      // event / startup reconcile re-delivers under the same idempotency key.
-      logError(`verification request delivery failed for node ${nodeId}`, error);
+      // Persist/validation failed synchronously — no delivery exists to
+      // retry, and the pending proposal would block the Goal Runner
+      // forever. Fail closed; a human can flip the node back to pending to
+      // re-drive the completion protocol.
+      writeExecution(
+        ownerConversationId,
+        [{ nodeId, status: 'blocked' }],
+        `dag_delivery_failed: verification request could not be persisted (${clipText(error && error.message ? error.message : error, 200)})`
+      );
     }
   }
 
@@ -634,8 +655,9 @@ export function createDagScheduler(options: any = {}) {
     // (403) on non-worker completion claims and non-verifier rulings.
     // Written even when the goal already existed (idempotent re-dispatch)
     // to repair a crash window between goal-set and binding-write.
+    let recordedBinding: any = null;
     try {
-      ensureDagNodeGoalBinding(store, spawnedConversationId, {
+      recordedBinding = ensureDagNodeGoalBinding(store, spawnedConversationId, {
         planId: current.plan.id,
         nodeId,
         workerId: ownerParticipantIds[0] || '',
@@ -646,6 +668,17 @@ export function createDagScheduler(options: any = {}) {
         ownerConversationId,
         [{ nodeId, status: 'blocked', spawnedConversationId }],
         `dag_goal_binding_failed: ${clipText(bindingError && bindingError.message ? bindingError.message : bindingError, 500)}`
+      );
+      return true;
+    }
+    if (!recordedBinding) {
+      // ensure() returns null when the child conversation (or the store
+      // read path) is unavailable — without the binding the bridge cannot
+      // enforce the worker/verifier contract, so fail closed.
+      writeExecution(
+        ownerConversationId,
+        [{ nodeId, status: 'blocked', spawnedConversationId }],
+        'dag_goal_binding_failed: binding could not be persisted'
       );
       return true;
     }
@@ -739,14 +772,25 @@ export function createDagScheduler(options: any = {}) {
       if (slotStatus === 'completed') {
         const freshConversation = store.getConversation(normalizedConversationId);
         const goal = freshConversation ? getSessionGoal(freshConversation) : null;
+        const binding = freshConversation ? getDagNodeGoalBinding(freshConversation) : null;
         if (goal) {
           // D27: a finished turn no longer completes the node — the goal
           // does. Settle only when the goal already reached a terminal or
           // verifiable state; otherwise the continuation loop (goal active)
           // or the verification flow (pending complete proposal) drives on.
           await settleFromGoalState(ownerConversationId, plan, node, freshConversation, 'dag_slot');
+        } else if (binding) {
+          // Bound child whose goal vanished (e.g. tampered metadata): the
+          // completion protocol is unrecoverable from here — fail closed
+          // instead of falling back to the goal-less legacy path, which
+          // would bypass the verifier.
+          writeExecution(
+            ownerConversationId,
+            [{ nodeId, status: 'blocked' }],
+            'dag_goal_missing: bound node conversation lost its session goal (D27/D28)'
+          );
         } else {
-          // Child without a session goal (pre-D27 or goal init failure):
+          // Child without a binding (pre-D27 or binding never written):
           // keep the legacy turn-terminal completion behavior.
           const fallbackReply = messages
             .filter((message: any) => message && message.role === 'assistant' && isTerminalMessage(message)
@@ -826,11 +870,20 @@ export function createDagScheduler(options: any = {}) {
         continue;
       }
 
-      // Legacy terminal-reply settle only for goal-less children: with a
-      // goal active, a finished-but-unannounced turn must NOT flip done
-      // (D27) — the resume below nudges the worker through the completion
-      // protocol instead.
+      // Legacy terminal-reply settle only for children with NO binding and
+      // no goal: with a goal active, a finished-but-unannounced turn must
+      // NOT flip done (D27) — the resume below nudges the worker through
+      // the completion protocol instead. A bound child whose goal vanished
+      // fails closed (the completion protocol is unrecoverable).
       if (!getSessionGoal(conversation)) {
+        if (getDagNodeGoalBinding(conversation)) {
+          writeExecution(
+            ownerConversationId,
+            [{ nodeId, status: 'blocked' }],
+            'dag_goal_missing: bound node conversation lost its session goal (D27/D28)'
+          );
+          continue;
+        }
         const terminal = findTerminalDagReply(conversation);
         if (terminal) {
           settleTerminalReply(ownerConversationId, plan, node, terminal, 'dag_reconcile');
@@ -999,12 +1052,21 @@ export function createDagScheduler(options: any = {}) {
         // here means a forged event or a bug: never settle on it. Allowed:
         // the user (UI manual accept, kind 'user'), the scheduler's own
         // auto-accept, the designated verifier, or a legacy/exempt accept
-        // with no ruling agent on a verification-exempt node.
-        const childIds = participantIdsOf(conversation);
-        const ownerIds = participantIdsOf(store.getConversationWithoutMessages(ownerConversationId));
-        const acceptParticipantIds = childIds.length > 0 ? childIds : ownerIds;
-        const resolution = resolveNodeVerifier(node, acceptParticipantIds);
-        const acceptedVerifierId = resolution && resolution.verifierId ? resolution.verifierId : null;
+        // with no ruling agent on a verification-exempt node. The persisted
+        // binding is the authoritative verifier contract (it is what the
+        // bridge enforces); participant-order resolution is the fallback
+        // for legacy children without a binding.
+        const binding = getDagNodeGoalBinding(conversation);
+        let acceptedVerifierId: string | null = null;
+        if (binding) {
+          acceptedVerifierId = binding.verifierId || null;
+        } else {
+          const childIds = participantIdsOf(conversation);
+          const ownerIds = participantIdsOf(store.getConversationWithoutMessages(ownerConversationId));
+          const acceptParticipantIds = childIds.length > 0 ? childIds : ownerIds;
+          const resolution = resolveNodeVerifier(node, acceptParticipantIds);
+          acceptedVerifierId = resolution && resolution.verifierId ? resolution.verifierId : null;
+        }
         const ruledBy = payload && payload.ruledBy ? payload.ruledBy : {};
         const ruledByAgentId = String(ruledBy.agentId || '').trim();
         const rulingAllowed = String(ruledBy.kind || '') === 'user'
@@ -1026,7 +1088,9 @@ export function createDagScheduler(options: any = {}) {
       if (outcome === 'rejected') {
         // D28 rejection: feed the verifier's feedback back to the worker;
         // the goal stays active so the continuation loop keeps driving.
-        const workerId = participantIdsOf(conversation)[0]
+        const binding = getDagNodeGoalBinding(conversation);
+        const workerId = (binding && binding.workerId)
+          || participantIdsOf(conversation)[0]
           || participantIdsOf(store.getConversationWithoutMessages(ownerConversationId))[0]
           || '';
         if (!deliverNodeMessage || !workerId) {
@@ -1036,6 +1100,9 @@ export function createDagScheduler(options: any = {}) {
         const verifierName = String(ruledBy.agentName || ruledBy.agentId || '验收 agent');
         const reasonText = String(payload && payload.reason || '').trim() || '(验收 agent 未给出具体反馈)';
         const proposalStamp = String(proposal && (proposal.createdAt || proposal.updatedAt) || 'na');
+        // Shares the dag-verify: namespace so the direct-dispatch wiring and
+        // the terminal-failure guard treat it as scheduler-owned.
+        const feedbackKey = `dag-verify:${freshPlan.id}:${nodeId}:feedback:${proposalStamp}`;
         try {
           await deliverNodeMessage({
             ownerConversationId,
@@ -1046,23 +1113,41 @@ export function createDagScheduler(options: any = {}) {
               `验收反馈：${clipText(reasonText, 1500)}`,
               '请根据反馈继续改进；达成目标后再次调用 suggest-goal --action complete --reason "<执行结果摘要>" 宣布完工。',
             ].join('\n'),
-            idempotencyKey: `dag-verify-feedback:${freshPlan.id}:${nodeId}:${proposalStamp}`,
-            messageMetadata: { kind: 'dag_verify_feedback', dagNodeId: nodeId },
+            idempotencyKey: feedbackKey,
+            messageMetadata: { kind: 'dag_verify_feedback', dagNodeId: nodeId, dagDeliveryKey: feedbackKey },
           });
         } catch (error: any) {
-          logError(`rejection feedback delivery failed for node ${nodeId}`, error);
+          // The proposal is already cleared — if the feedback cannot even be
+          // persisted the worker will never learn about the rejection and
+          // the node would idle in doing forever. Fail closed.
+          writeExecution(
+            ownerConversationId,
+            [{ nodeId, status: 'blocked' }],
+            `dag_delivery_failed: rejection feedback could not be persisted (${clipText(error && error.message ? error.message : error, 200)})`
+          );
+          await dispatchReadyNodes(ownerConversationId);
         }
       }
     }).catch((error) => logError('goal proposal cleared handling failed', error));
   }
 
   /**
-   * P2 guard: a scheduler-owned delivery (dag-node: spawn, dag-verify:
-   * verification request, dag-resume: restart resume) that reaches a
-   * TERMINAL dispatch failure must not leave the node doing forever — the
-   * worker's pending proposal would otherwise block the Goal Runner
-   * indefinitely with no further events. Fail closed to blocked; a human
-   * can revert the node to pending to retry.
+   * Scheduler-owned delivery terminal-failure guard (fail closed).
+   *
+   * A scheduler delivery (dag-node: spawn, dag-resume: restart resume,
+   * dag-verify: verification request / rejection feedback) that reaches a
+   * TERMINAL failure (failed OR cancelled) must not leave the node doing
+   * forever — the worker's pending proposal would otherwise block the Goal
+   * Runner indefinitely with no further events.
+   *
+   * Trust boundary: the idempotency key is model-controllable for
+   * agent-submitted deliveries, so ownership is established ONLY from the
+   * persisted authoritative fields — principalKind 'operator', the exact
+   * scheduler idempotency scopes, source = plan owner, target = the node's
+   * current spawned child — and the key must equal one of the node's
+   * CURRENT-cycle keys (activation stamp / pending proposal stamp). A stale
+   * failure from a previous activation or an earlier proposal round never
+   * blocks the current execution.
    */
   function handleDeliveryUpdated(payload: any): void {
     const delivery = payload && payload.delivery ? payload.delivery : null;
@@ -1073,31 +1158,34 @@ export function createDagScheduler(options: any = {}) {
     if (!key.startsWith('dag-node:') && !key.startsWith('dag-verify:') && !key.startsWith('dag-resume:')) {
       return;
     }
-    if (String(delivery.dispatchStatus || '') !== 'failed') {
+    const dispatchStatus = String(delivery.dispatchStatus || '');
+    if (dispatchStatus !== 'failed' && dispatchStatus !== 'cancelled') {
       return;
     }
-    const reason = String(payload && payload.reason || 'dispatch_failed').trim() || 'dispatch_failed';
+    if (String(delivery.principalKind || '') !== 'operator') {
+      return; // agent-principal delivery with a forged dag-* key — not ours
+    }
+    const sourceConversationId = String(delivery.sourceConversationId || '').trim();
+    const targetConversationId = String(delivery.targetConversationId || '').trim();
+    const scope = String(delivery.idempotencyScope || '');
+    if (!sourceConversationId || !targetConversationId) {
+      return;
+    }
+    const reason = String(payload && payload.reason || dispatchStatus).trim() || dispatchStatus;
     const activePlans = typeof store.listActivePlans === 'function' ? store.listActivePlans() : [];
     for (const plan of activePlans) {
       const planId = String(plan && plan.id || '').trim();
       const ownerConversationId = String(plan && plan.ownerConversationId || '').trim();
-      if (!planId || !ownerConversationId) {
+      if (!planId || !ownerConversationId || sourceConversationId !== ownerConversationId) {
         continue;
       }
-      // Match by reconstructed key prefix per node — node ids and the
-      // trailing stamp (activatedAt / proposal timestamp) may contain
-      // colons, so naive split(':') parsing is unsafe.
-      const matched = nodesOf(plan).find((candidate: any) => {
-        const candidateId = String(candidate && candidate.id || '').trim();
-        return candidateId
-          && (key.startsWith(`dag-node:${planId}:${candidateId}:`)
-            || key.startsWith(`dag-verify:${planId}:${candidateId}:`)
-            || key.startsWith(`dag-resume:${planId}:${candidateId}:`));
-      });
-      if (!matched) {
+      const expectedScopes = new Set([
+        `operator:${ownerConversationId}:conversation_spawn`,
+        `system:${ownerConversationId}:conversation_notify`,
+      ]);
+      if (!expectedScopes.has(scope)) {
         continue;
       }
-      const matchedNodeId = String(matched.id || '').trim();
       void enqueueForOwner(ownerConversationId, async () => {
         let fresh: any = null;
         try {
@@ -1106,19 +1194,73 @@ export function createDagScheduler(options: any = {}) {
           return;
         }
         const freshPlan = fresh && fresh.plan ? fresh.plan : null;
-        if (!freshPlan || freshPlan.status !== 'active') {
+        if (!freshPlan || freshPlan.status !== 'active'
+          || String(freshPlan.id || '').trim() !== planId) {
           return;
         }
-        const freshNode = nodesOf(freshPlan).find((candidate: any) => String(candidate && candidate.id || '').trim() === matchedNodeId);
-        if (!freshNode || String(freshNode.status || 'pending') !== 'doing') {
+        const activation = String(freshPlan.activatedAt || 'na');
+        for (const candidate of nodesOf(freshPlan)) {
+          const candidateId = String(candidate && candidate.id || '').trim();
+          if (!candidateId || nodeStatusOf(candidate) !== 'doing') {
+            continue;
+          }
+          const spawnedId = String(candidate.spawned_conversation_id || '').trim();
+          if (!spawnedId || spawnedId !== targetConversationId) {
+            continue;
+          }
+          // Rebuild the node's CURRENT-cycle scheduler keys. Verify-request
+          // keys embed the pending proposal stamp; without a pending
+          // proposal that delivery cannot belong to this cycle.
+          const currentKeys = new Set([
+            `dag-node:${planId}:${candidateId}:${activation}`,
+            `dag-resume:${planId}:${candidateId}:${activation}`,
+          ]);
+          const childConversation = typeof store.getConversation === 'function'
+            ? store.getConversation(spawnedId)
+            : null;
+          const pendingProposal = childConversation ? getSessionGoalProposal(childConversation) : null;
+          const pendingCompletion = pendingProposal && pendingProposal.action === 'complete'
+            ? pendingProposal
+            : null;
+          const proposalStamp = String(pendingCompletion && (pendingCompletion.createdAt || pendingCompletion.updatedAt) || '').trim();
+          if (pendingCompletion && proposalStamp) {
+            currentKeys.add(`dag-verify:${planId}:${candidateId}:${proposalStamp}`);
+          }
+          // Rejection-feedback keys OUTLIVE their (already cleared) proposal
+          // round, so the stamp check above cannot cover them. The durable
+          // currency marker is the persisted feedback message itself:
+          // scheduler deliveries carry dagDeliveryKey in the target message
+          // metadata, and only the LATEST feedback message belongs to the
+          // current round. Additionally, once the worker has re-announced
+          // completion (a new pending complete proposal), any prior feedback
+          // delivery is superseded — its "notify the worker" purpose has
+          // been served by the new proposal round — so a late failure of it
+          // must not block the node.
+          const childMessages = childConversation && Array.isArray(childConversation.messages)
+            ? childConversation.messages
+            : [];
+          const latestFeedback = childMessages
+            .filter((message: any) => message && message.metadata && typeof message.metadata === 'object'
+              && message.metadata.kind === 'dag_verify_feedback')
+            .pop();
+          const latestFeedbackKey = String(
+            latestFeedback && latestFeedback.metadata && latestFeedback.metadata.dagDeliveryKey || ''
+          ).trim();
+          if (latestFeedbackKey && !pendingCompletion) {
+            currentKeys.add(latestFeedbackKey);
+          }
+          if (!currentKeys.has(key)) {
+            continue; // stale activation / earlier proposal round
+          }
+          writeExecution(
+            ownerConversationId,
+            [{ nodeId: candidateId, status: 'blocked' }],
+            `dag_delivery_failed: scheduler delivery reached terminal failure (${clipText(reason, 200)})`
+          );
+          await dispatchReadyNodes(ownerConversationId);
           return;
         }
-        writeExecution(
-          ownerConversationId,
-          [{ nodeId: matchedNodeId, status: 'blocked' }],
-          `dag_delivery_failed: scheduler delivery reached terminal failure (${clipText(reason, 200)})`
-        );
-      });
+      }).catch((error) => logError('delivery failure handling failed', error));
       return;
     }
   }
