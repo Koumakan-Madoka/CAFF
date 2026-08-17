@@ -16,6 +16,7 @@
 - Agent bridge command:
   - `suggest-goal --action set|pause|resume|complete|clear [--objective "..."] [--reason "..."]`
   - Writes a pending proposal only; it never mutates `sessionGoal` directly.
+  - Proposal schema: `{ id, action, status:'pending', objective?, reason?, proposedBy:{agentId,agentName}, createdAt, updatedAt }` — `id` (`prop_*`) is unique per proposal and survives normalization; consumers deriving idempotency keys (e.g. the DAG scheduler's verify/feedback deliveries) must stamp with `id` (createdAt has only ms resolution and same-ms proposals would collide).
   - `update-goal-checklist --content-stdin` writes factual checklist progress lines such as `[ ] todo`, `[~] doing`, and `[x] done`.
 - Conversation metadata field:
   - `conversation.metadata.sessionGoal?: { objective: string, status: 'active' | 'paused' | 'complete', createdAt: string, updatedAt: string, completedAt?: string, checklist?: { id: string, text: string, status: 'todo' | 'in_progress' | 'done', createdAt: string, updatedAt: string, completedAt?: string }[] }`

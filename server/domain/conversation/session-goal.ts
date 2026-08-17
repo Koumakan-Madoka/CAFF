@@ -28,6 +28,15 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+/**
+ * Unique proposal id. Consumers (e.g. the DAG scheduler) derive idempotency
+ * keys from the proposal; createdAt alone has only millisecond resolution
+ * and two proposals in the same ms would collide.
+ */
+function newProposalId() {
+  return `prop_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function isPlainObject(value: any) {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
@@ -224,9 +233,12 @@ function normalizeSessionGoalProposal(value: any) {
   const updatedAt = normalizeText(value.updatedAt || value.updated_at) || createdAt;
   const reason = clipText(value.reason, MAX_SESSION_GOAL_PROPOSAL_REASON_LENGTH);
 
+  const proposalId = normalizeText(value.id);
+
   return {
     action,
     status: 'pending',
+    ...(proposalId ? { id: proposalId } : {}),
     ...(objective ? { objective } : {}),
     ...(reason ? { reason } : {}),
     proposedBy: {
@@ -592,6 +604,7 @@ export function proposeSessionGoalAction(store: any, conversationId: any, input:
   const proposal = {
     action,
     status: 'pending',
+    id: newProposalId(),
     ...(objective ? { objective } : {}),
     ...(reason ? { reason } : {}),
     proposedBy: {

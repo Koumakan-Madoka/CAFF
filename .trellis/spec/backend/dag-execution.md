@@ -144,9 +144,22 @@
   - **ruling identity is machine-checked, not prompt-checked**: the bridge
     enforces worker-only completion and verifier-only rulings against the
     dispatch-time binding (403 pre-mutation); the scheduler re-verifies
-    `ruledBy` on the cleared event and ignores forged accepts. The user
-    accepting in the UI is a legitimate manual ruling (`ruledBy.kind==='user'`)
-    and the node result is taken from the cleared proposal snapshot.
+    `ruledBy` on the cleared event — BOTH accepts and rejects — via
+    `resolveRulingAuthority` (binding-authoritative, participant-order
+    fallback for legacy children) + `isCompletionRulingAllowed`. Bound node
+    with a verifier: only that verifier agent or the user. Bound exempt
+    node (`verifierId: null`): NO agent ruling is accepted — only the
+    scheduler auto-accept marker (`ruledBy.agentId==='dag-scheduler'`,
+    accept path) or the user (`ruledBy.kind==='user'`); a principal-less
+    or third-agent event is ignored as forged. Legacy (no binding) keeps
+    the tolerant contract. The user accepting/dismissing in the UI is a
+    legitimate manual ruling and the node result is taken from the cleared
+    proposal snapshot.
+  - verification-request / rejection-feedback idempotency keys are stamped
+    with `proposal.id` (unique per proposal, added to the session-goal
+    proposal schema; `createdAt` has only millisecond resolution and two
+    proposals in the same ms would collide and dedup-suppress the round-2
+    verification request).
 - **Failure write-back**: `agent_slot_finished` with a failed status still
   flips `blocked` + reason; a COMPLETED slot only settles children with NO
   binding and no goal (legacy pre-D27 fallback) — with a goal active it
@@ -234,6 +247,8 @@
 | completion | goal-runner budget pause proposal | `blocked` `dag_goal_budget_exhausted` |
 | completion | complete proposal proposedBy ≠ worker | `blocked` `dag_completion_wrong_proposer` (bridge 403s at creation; scheduler defense-in-depth) |
 | completion | accepted ruling by agent ≠ verifier | ignored (forged event); only `ruledBy.kind==='user'` / `dag-scheduler` auto-accept / designated verifier (binding-authoritative) may settle |
+| completion | accepted ruling with NO principal on a bound exempt (`verifierId: null`) node | ignored — exempt nodes settle only via scheduler auto-accept or user ruling |
+| completion | rejected ruling by agent ≠ verifier (or any agent on a bound exempt node) | ignored — no bogus feedback injected; only the designated verifier or the user may reject |
 | completion | bound child conversation lost its session goal | `blocked` `dag_goal_missing` — legacy terminal-reply fallback is binding-gated, never verifier-bypassing |
 | delivery | scheduler delivery reaches terminal `failed`/`cancelled` with authoritative ownership fields + current-cycle key | `blocked` `dag_delivery_failed` — never strands a node `doing` |
 | delivery | agent-principal delivery with forged `dag-*` key / wrong scope / wrong target / stale activation or proposal round | ignored entirely |

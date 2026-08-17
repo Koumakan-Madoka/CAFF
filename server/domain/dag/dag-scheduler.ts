@@ -382,6 +382,57 @@ export function createDagScheduler(options: any = {}) {
   }
 
   /**
+   * D28 ruling authority for a node's completion proposal. The persisted
+   * goal binding (written at dispatch) is authoritative — it is exactly
+   * what the bridge enforces pre-mutation. Participant-order resolution is
+   * the fallback for legacy children that predate the binding.
+   */
+  function resolveRulingAuthority(conversation: any, node: any, ownerConversationId: string)
+    : { bound: boolean; verifierId: string | null } {
+    const binding = getDagNodeGoalBinding(conversation);
+    if (binding) {
+      return { bound: true, verifierId: binding.verifierId ? String(binding.verifierId) : null };
+    }
+    const childIds = participantIdsOf(conversation);
+    const ownerIds = participantIdsOf(store.getConversationWithoutMessages(ownerConversationId));
+    const resolution = resolveNodeVerifier(node, childIds.length > 0 ? childIds : ownerIds);
+    return { bound: false, verifierId: resolution && resolution.verifierId ? resolution.verifierId : null };
+  }
+
+  /**
+   * D28 defense-in-depth: the bridge already 403s wrong rulers
+   * pre-mutation, so a mismatched ruledBy here means a forged event or a
+   * bug — never act on it. Allowed principals:
+   * - the user (UI manual accept/dismiss, kind 'user') — always;
+   * - the scheduler's own auto-accept (accept path only);
+   * - bound node: ONLY the designated verifier agent; an exempt binding
+   *   (verifierId null) accepts NO agent ruling — its completion can only
+   *   come from the scheduler auto-accept or the user;
+   * - legacy node (no binding): the resolved verifier, or an agent-less
+   *   ruling on a verification-exempt node (tolerant legacy contract).
+   */
+  function isCompletionRulingAllowed(
+    authority: { bound: boolean; verifierId: string | null },
+    ruledBy: any,
+    options: { schedulerAutoAccept: boolean },
+  ): boolean {
+    if (String(ruledBy && ruledBy.kind || '') === 'user') {
+      return true;
+    }
+    const agentId = String(ruledBy && ruledBy.agentId || '').trim();
+    if (options.schedulerAutoAccept && agentId === 'dag-scheduler') {
+      return true;
+    }
+    if (authority.bound) {
+      return authority.verifierId !== null && agentId === authority.verifierId;
+    }
+    if (authority.verifierId !== null) {
+      return agentId === authority.verifierId;
+    }
+    return !agentId;
+  }
+
+  /**
    * Result summary for a done write-back (D23 requires non-empty): the
    * worker's completion-proposal reason first, then its terminal reply.
    */
@@ -500,7 +551,7 @@ export function createDagScheduler(options: any = {}) {
       );
       return;
     }
-    const proposalStamp = String(proposal && (proposal.createdAt || proposal.updatedAt) || 'na');
+    const proposalStamp = String(proposal && (proposal.id || proposal.createdAt || proposal.updatedAt) || 'na');
     const verifyKey = `dag-verify:${plan.id}:${nodeId}:${proposalStamp}`;
     try {
       await deliverNodeMessage({
@@ -1047,35 +1098,13 @@ export function createDagScheduler(options: any = {}) {
       const goal = (payload && payload.goal ? payload.goal : null) || getSessionGoal(conversation);
 
       if (goal && goal.status === 'complete') {
-        // Accepted — but by WHOM matters (D28). The bridge enforces
-        // verifier-only rulings pre-mutation (403), so a mismatched ruledBy
-        // here means a forged event or a bug: never settle on it. Allowed:
-        // the user (UI manual accept, kind 'user'), the scheduler's own
-        // auto-accept, the designated verifier, or a legacy/exempt accept
-        // with no ruling agent on a verification-exempt node. The persisted
-        // binding is the authoritative verifier contract (it is what the
-        // bridge enforces); participant-order resolution is the fallback
-        // for legacy children without a binding.
-        const binding = getDagNodeGoalBinding(conversation);
-        let acceptedVerifierId: string | null = null;
-        if (binding) {
-          acceptedVerifierId = binding.verifierId || null;
-        } else {
-          const childIds = participantIdsOf(conversation);
-          const ownerIds = participantIdsOf(store.getConversationWithoutMessages(ownerConversationId));
-          const acceptParticipantIds = childIds.length > 0 ? childIds : ownerIds;
-          const resolution = resolveNodeVerifier(node, acceptParticipantIds);
-          acceptedVerifierId = resolution && resolution.verifierId ? resolution.verifierId : null;
-        }
+        // Accepted — but by WHOM matters (D28). Never settle on a ruling
+        // the persisted authority contract would not have permitted.
+        const authority = resolveRulingAuthority(conversation, node, ownerConversationId);
         const ruledBy = payload && payload.ruledBy ? payload.ruledBy : {};
-        const ruledByAgentId = String(ruledBy.agentId || '').trim();
-        const rulingAllowed = String(ruledBy.kind || '') === 'user'
-          || ruledByAgentId === 'dag-scheduler'
-          || (acceptedVerifierId !== null && ruledByAgentId === acceptedVerifierId)
-          || (acceptedVerifierId === null && !ruledByAgentId);
-        if (!rulingAllowed) {
+        if (!isCompletionRulingAllowed(authority, ruledBy, { schedulerAutoAccept: true })) {
           logError(
-            `ignoring completion accept for node ${nodeId}: ruled by ${ruledByAgentId || 'unknown'}, expected verifier ${acceptedVerifierId || '(exempt)'}`,
+            `ignoring completion accept for node ${nodeId}: ruled by ${String(ruledBy.agentId || ruledBy.kind || 'none')}, expected verifier ${authority.verifierId || '(exempt)'}`,
             new Error('dag_verifier_ruling_mismatch')
           );
           return;
@@ -1086,6 +1115,17 @@ export function createDagScheduler(options: any = {}) {
       }
 
       if (outcome === 'rejected') {
+        // Rejected — the same D28 ruling contract applies (a forged reject
+        // would otherwise inject bogus feedback into the worker).
+        const authority = resolveRulingAuthority(conversation, node, ownerConversationId);
+        const ruledBy = payload && payload.ruledBy ? payload.ruledBy : {};
+        if (!isCompletionRulingAllowed(authority, ruledBy, { schedulerAutoAccept: false })) {
+          logError(
+            `ignoring completion reject for node ${nodeId}: ruled by ${String(ruledBy.agentId || ruledBy.kind || 'none')}, expected verifier ${authority.verifierId || '(exempt)'}`,
+            new Error('dag_verifier_ruling_mismatch')
+          );
+          return;
+        }
         // D28 rejection: feed the verifier's feedback back to the worker;
         // the goal stays active so the continuation loop keeps driving.
         const binding = getDagNodeGoalBinding(conversation);
@@ -1096,10 +1136,9 @@ export function createDagScheduler(options: any = {}) {
         if (!deliverNodeMessage || !workerId) {
           return;
         }
-        const ruledBy = payload && payload.ruledBy ? payload.ruledBy : {};
         const verifierName = String(ruledBy.agentName || ruledBy.agentId || '验收 agent');
         const reasonText = String(payload && payload.reason || '').trim() || '(验收 agent 未给出具体反馈)';
-        const proposalStamp = String(proposal && (proposal.createdAt || proposal.updatedAt) || 'na');
+        const proposalStamp = String(proposal && (proposal.id || proposal.createdAt || proposal.updatedAt) || 'na');
         // Shares the dag-verify: namespace so the direct-dispatch wiring and
         // the terminal-failure guard treat it as scheduler-owned.
         const feedbackKey = `dag-verify:${freshPlan.id}:${nodeId}:feedback:${proposalStamp}`;
@@ -1222,7 +1261,7 @@ export function createDagScheduler(options: any = {}) {
           const pendingCompletion = pendingProposal && pendingProposal.action === 'complete'
             ? pendingProposal
             : null;
-          const proposalStamp = String(pendingCompletion && (pendingCompletion.createdAt || pendingCompletion.updatedAt) || '').trim();
+          const proposalStamp = String(pendingCompletion && (pendingCompletion.id || pendingCompletion.createdAt || pendingCompletion.updatedAt) || '').trim();
           if (pendingCompletion && proposalStamp) {
             currentKeys.add(`dag-verify:${planId}:${candidateId}:${proposalStamp}`);
           }

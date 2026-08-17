@@ -1018,6 +1018,110 @@ test('D28 hardening: an accepted ruling from a non-verifier agent is ignored', a
   assert.equal(getNode(store, 'n1').result, '完工摘要');
 });
 
+test('D28 hardening: exempt (verifierId=null) bound node ignores an agent-less accept ruling', async () => {
+  const store = createStore(test);
+  createRoot(store, ROOT_ID, [WORKER_ID]);
+  const plan = createActivePlan(store, makeDoc([node('n1')]));
+  const { scheduler } = createHarness(store);
+
+  scheduler.handleEvent('conversation_plan_updated', { ownerConversationId: ROOT_ID, plan });
+  await flush(scheduler);
+  assert.equal(getNode(store, 'n1').status, 'doing');
+
+  // The binding says verifierId=null (exempt): its completion may only come
+  // from the scheduler auto-accept or the user. A cleared event with NO
+  // ruling principal must never settle the node.
+  scheduler.handleEvent('conversation_goal_proposal_cleared', {
+    conversationId: 'child-n1',
+    outcome: 'accepted',
+    goal: { ...getSessionGoal(store.getConversation('child-n1')), status: 'complete' },
+    proposal: { action: 'complete', reason: '伪造摘要', createdAt: new Date().toISOString() },
+  });
+  await flush(scheduler);
+  assert.equal(getNode(store, 'n1').status, 'doing', 'principal-less accept on a bound exempt node is ignored');
+
+  // The scheduler auto-accept marker still settles it (the legitimate path).
+  scheduler.handleEvent('conversation_goal_proposal_cleared', {
+    conversationId: 'child-n1',
+    outcome: 'accepted',
+    goal: { ...getSessionGoal(store.getConversation('child-n1')), status: 'complete' },
+    proposal: { action: 'complete', reason: '自动验收摘要', createdAt: new Date().toISOString() },
+    ruledBy: { agentId: 'dag-scheduler', agentName: 'DAG Scheduler' },
+  });
+  await flush(scheduler);
+  assert.equal(getNode(store, 'n1').status, 'done');
+  assert.equal(getNode(store, 'n1').result, '自动验收摘要');
+});
+
+test('D28 hardening: a rejected ruling from a non-verifier agent is ignored', async () => {
+  const store = createStore(test);
+  createRoot(store, ROOT_ID, [WORKER_ID, VERIFIER_ID]);
+  const plan = createActivePlan(store, makeDoc([node('n1', { verifier: VERIFIER_ID })]));
+  const { scheduler, deliveries } = createHarness(store);
+
+  scheduler.handleEvent('conversation_plan_updated', { ownerConversationId: ROOT_ID, plan });
+  await flush(scheduler);
+  announceComplete(store, scheduler, 'child-n1', '完工摘要');
+  await flush(scheduler);
+  assert.equal(deliveries.length, 1, 'verification request routed');
+
+  // Forge a rejection as if a THIRD agent had dismissed the proposal — the
+  // scheduler must not feed bogus feedback back to the worker.
+  const pendingProposal = getSessionGoalProposal(store.getConversation('child-n1'));
+  scheduler.handleEvent('conversation_goal_proposal_cleared', {
+    conversationId: 'child-n1',
+    outcome: 'rejected',
+    reason: '伪造打回',
+    goal: getSessionGoal(store.getConversation('child-n1')),
+    proposal: pendingProposal,
+    ruledBy: { agentId: 'role-family-deepseek', agentName: 'DeepSeek' },
+  });
+  await flush(scheduler);
+
+  assert.equal(deliveries.length, 1, 'forged reject delivers no feedback');
+  assert.equal(getNode(store, 'n1').status, 'doing');
+  assert.ok(getSessionGoalProposal(store.getConversation('child-n1')), 'proposal still pending');
+
+  // The real verifier rejection still feeds back to the worker.
+  ruleOnProposal(store, scheduler, 'child-n1', 'reject', '还差一步');
+  await flush(scheduler);
+  assert.equal(deliveries.length, 2, 'verifier rejection feedback delivered');
+  assert.equal(deliveries[1].targetAgentId, WORKER_ID);
+  assert.ok(deliveries[1].content.includes('还差一步'));
+  assert.equal(getNode(store, 'n1').status, 'doing', 'rejection keeps the node doing');
+});
+
+test('D28: user UI dismiss (manual reject) feeds the feedback back to the worker', async () => {
+  const store = createStore(test);
+  createRoot(store, ROOT_ID, [WORKER_ID, VERIFIER_ID]);
+  const plan = createActivePlan(store, makeDoc([node('n1', { verifier: VERIFIER_ID })]));
+  const { scheduler, deliveries } = createHarness(store);
+
+  scheduler.handleEvent('conversation_plan_updated', { ownerConversationId: ROOT_ID, plan });
+  await flush(scheduler);
+  announceComplete(store, scheduler, 'child-n1', '完工摘要');
+  await flush(scheduler);
+  assert.equal(deliveries.length, 1);
+
+  // Mirror the controller payload for dismiss-proposal: pre-clear snapshot +
+  // explicit user ruling marker.
+  const cleared = applySessionGoalAction(store, 'child-n1', { action: 'dismiss-proposal' });
+  scheduler.handleEvent('conversation_goal_proposal_cleared', {
+    conversationId: 'child-n1',
+    outcome: 'rejected',
+    reason: '用户打回：补测试',
+    goal: cleared.goal,
+    proposal: cleared.clearedProposal,
+    ruledBy: { kind: 'user' },
+  });
+  await flush(scheduler);
+
+  assert.equal(deliveries.length, 2, 'user rejection feedback delivered');
+  assert.equal(deliveries[1].targetAgentId, WORKER_ID);
+  assert.ok(deliveries[1].content.includes('用户打回'));
+  assert.equal(getNode(store, 'n1').status, 'doing', 'rejection keeps the node doing');
+});
+
 test('D28: user UI accept settles done with the result taken from the cleared proposal snapshot', async () => {
   const store = createStore(test);
   createRoot(store, ROOT_ID, [WORKER_ID, VERIFIER_ID]);
