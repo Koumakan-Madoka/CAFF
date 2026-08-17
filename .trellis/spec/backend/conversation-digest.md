@@ -8,6 +8,7 @@
 - Goal: preserve bounded, structured historical conversation context beyond the recent-message prompt window without introducing a heavy evidence index.
 - v2 adds bounded auto-compaction of older digest entries into one rollup; model-generated summaries can be enabled explicitly while deterministic extractive summaries remain the fallback.
 - Auto-generation can be enabled explicitly so completed assistant replies create a new digest once enough new public messages have accumulated since the latest digest; v3-style gating can also wait for an idle window, cooldown, or high-value signals.
+- The first successful auto-created digest may refine the conversation title once through the shared digest model configuration. The exact trigger, state machine, and manual rename race guards are specified in [Conversation Automatic Title](./conversation-title.md).
 
 ### 2. Signatures
 - `GET /api/conversations/:conversationId/digest`
@@ -75,6 +76,7 @@
 - If model JSON parsing fails with a likely missing escape for an inner double quote in a JSON string, the backend may run one bounded repair retry that returns the diagnostic, original digest prompt, and bounded invalid output to the same digest model. A successful repair still stores `createdBy: model:<provider>/<model>`; a failed repair falls back normally. This text JSON repair path remains for injected/non-structured model runners and non-migrated providers.
 - If model JSON parsing fails, backend warning logs include a bounded raw-output preview for diagnosis plus any detected syntax diagnostic. Setting `CAFF_DIGEST_LOG_RAW_OUTPUT=true` logs the full raw model output to the local server console only; it must not be persisted into conversation metadata or digest memory.
 - Model configuration uses `CAFF_DIGEST_SUMMARY_MODE=model|extractive|auto`, `CAFF_DIGEST_PROVIDER`, `CAFF_DIGEST_MODEL`, `CAFF_DIGEST_THINKING`, `CAFF_DIGEST_MODEL_TIMEOUT_MS`, and optional diagnostic `CAFF_DIGEST_LOG_RAW_OUTPUT=true|false`; without digest-specific provider/model or explicit `summaryMode: 'model'`, default behavior remains extractive.
+- Title refinement reuses the resolved digest provider/model/thinking (or injected digest runner) independently of digest summary mode; title-specific enablement and timeout are `CAFF_DIGEST_AUTO_TITLE_REFINE` and `CAFF_TITLE_REFINE_TIMEOUT_MS`. See `conversation-title.md` before changing this shared configuration chain.
 - Auto-create configuration uses `CAFF_DIGEST_AUTO_CREATE=true|false`, `CAFF_DIGEST_AUTO_CREATE_MESSAGE_BUDGET`, `CAFF_DIGEST_AUTO_IDLE_MS`, `CAFF_DIGEST_AUTO_COOLDOWN_MS`, `CAFF_DIGEST_AUTO_HIGH_VALUE=true|false`, and `CAFF_DIGEST_AUTO_HIGH_VALUE_MIN_MESSAGES`; auto-create remains disabled unless explicitly enabled.
 
 ### 4. Validation & Error Matrix

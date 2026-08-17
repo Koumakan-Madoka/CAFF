@@ -12,6 +12,8 @@ backend domain services.
 - Session goal API and metadata contracts (`session-goal.md`)
 - Core and role-aware readiness projection (`health-endpoint.md`)
 - Conversation digest API, metadata, prompt, and UI contracts (`conversation-digest.md`)
+- Automatic conversation title state, first-message derivation, first-digest
+  refinement, and manual rename protection (`conversation-title.md`)
 - Digest-to-skill draft extraction and confirmation (`../runtime/skill-extraction.md`)
 - Cross-conversation summary segment memory search (`summary-memory.md`)
 - Conversation tree DAG plan storage, lifecycle, and plan API (`dag-planning.md`)
@@ -39,6 +41,8 @@ backend domain services.
 - `session-goal.md`: `/goal` API, metadata, prompt, SSE, and frontend slash command contracts
 - `health-endpoint.md`: `/api/health` local readiness, redaction, and optional integration contracts
 - `conversation-digest.md`: `/digest` API, metadata, prompt, SSE, and frontend panel contracts
+- `conversation-title.md`: `titleSource` state machine, first-user-message title,
+  first-auto-digest model refinement/config chain, and manual rename guards
 - `../runtime/skill-extraction.md`: `/digest extract-skill` and `/skill-drafts` contracts
 - `summary-memory.md`: searchable digest segment ledger and `/api/memory/search` contracts
 - `dag-planning.md`: `chat_plans` storage, plan lifecycle (draft→active), shared
