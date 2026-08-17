@@ -75,6 +75,12 @@
     `dismiss-proposal`). The scheduler routes/verifies against the
     persisted binding (not participant-order recomputation), so the bridge
     and scheduler can never disagree after a participant rearrange.
+  - **Durable ruling identity**: `sessionGoalRuling.proposalId` must be
+    present and exactly equal `sessionGoalRuling.proposalSnapshot.id`;
+    malformed/mismatched records normalize to `null`, so scheduler settle and
+    reconcile fail closed instead of accepting an unrelated proposal snapshot.
+    Checklist-only goal updates preserve this ruling record; replacing or
+    clearing the goal starts a new epoch and removes stale ruling evidence.
 - Goal REST API (`server/api/conversations-controller.ts`): while
   `getDagNodeExecutionContext` reports a doing node, POST actions outside
   the whitelist → 403 `dag_goal_mutation_forbidden` (direct complete/clear/
@@ -156,10 +162,10 @@
     legitimate manual ruling and the node result is taken from the cleared
     proposal snapshot.
   - verification-request / rejection-feedback idempotency keys are stamped
-    with `proposal.id` (unique per proposal, added to the session-goal
-    proposal schema; `createdAt` has only millisecond resolution and two
-    proposals in the same ms would collide and dedup-suppress the round-2
-    verification request).
+    with `proposal.id` (`prop_${randomUUID()}`, unique per proposal and
+    preserved by normalization); `createdAt` has only millisecond resolution
+    and two proposals in the same ms would collide and dedup-suppress the
+    round-2 verification request.
 - **Failure write-back**: `agent_slot_finished` with a failed status still
   flips `blocked` + reason; a COMPLETED slot only settles children with NO
   binding and no goal (legacy pre-D27 fallback) — with a goal active it
@@ -248,6 +254,7 @@
 | completion | complete proposal proposedBy ≠ worker | `blocked` `dag_completion_wrong_proposer` (bridge 403s at creation; scheduler defense-in-depth) |
 | completion | accepted ruling by agent ≠ verifier | ignored (forged event); only `ruledBy.kind==='user'` / `dag-scheduler` auto-accept / designated verifier (binding-authoritative) may settle |
 | completion | accepted ruling with NO principal on a bound exempt (`verifierId: null`) node | ignored — exempt nodes settle only via scheduler auto-accept or user ruling |
+| completion | durable ruling `proposalId` missing or ≠ `proposalSnapshot.id` | ruling rejected; bound complete goal → blocked `dag_goal_completion_unverified` |
 | completion | rejected ruling by agent ≠ verifier (or any agent on a bound exempt node) | ignored — no bogus feedback injected; only the designated verifier or the user may reject |
 | completion | bound child conversation lost its session goal | `blocked` `dag_goal_missing` — legacy terminal-reply fallback is binding-gated, never verifier-bypassing |
 | delivery | scheduler delivery reaches terminal `failed`/`cancelled` with authoritative ownership fields + current-cycle key | `blocked` `dag_delivery_failed` — never strands a node `doing` |
@@ -289,7 +296,7 @@
 - `tests/dag/dag-merge.test.js` (8): LCA correctness, explicit `base_branch`
   priority, orphan-branch fail-closed, ancestry gate, verify command output
   passthrough.
-- `tests/dag/dag-scheduler.test.js` (36): dispatch+bind, D24 cap+FIFO refill,
+- `tests/dag/dag-scheduler.test.js` (46): dispatch+bind, D24 cap+FIFO refill,
   result propagation, spawn→bind race settle, failure→blocked+D16, dirty
   worktree fail-closed, spawn failure, stray events ignored, all D25
   reconcile branches, cwd hook, D26 instruction contents, merge gating

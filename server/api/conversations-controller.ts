@@ -667,7 +667,14 @@ export function createConversationsController(options: any = {}): RouteHandler<A
           code: 'dag_goal_mutation_forbidden',
         });
       }
-      const result = applySessionGoalAction(store, conversationId, body || {});
+      const result = applySessionGoalAction(store, conversationId, {
+        ...(body || {}),
+        // D28: a ruling via this endpoint is ALWAYS the user (manual
+        // verification). Forced server-side — a client-supplied ruledBy is
+        // never trusted. The principal is persisted atomically with the
+        // proposal clear (durable ruling record), not just broadcast.
+        ruledBy: { kind: 'user' },
+      });
       let autoContinuation = null;
 
       if (req.method === 'POST') {

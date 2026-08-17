@@ -1473,16 +1473,29 @@ export function createAgentToolBridge(options: any = {}) {
           throw createHttpError(403, 'goal_proposal_self_review: the proposer cannot accept/reject their own proposal');
         }
         // D28 fail-closed: when the conversation carries a DAG node goal
-        // binding with a designated verifier, ONLY that verifier may rule.
-        // "Not the proposer" alone is not enough — a third participant must
-        // not be able to hijack acceptance.
+        // binding, the ruling principal is contractually fixed — "not the
+        // proposer" alone is never enough:
+        // - verifier configured: ONLY that verifier may rule (a third
+        //   participant must not hijack acceptance);
+        // - verification-EXEMPT binding (verifierId null): NO agent may
+        //   rule at all — completion is ruled by the scheduler auto-accept
+        //   or the user (REST). An agent ruling here would otherwise
+        //   persist a goal-complete state the scheduler never verified.
         const rulingBinding = getDagNodeGoalBinding(conversation);
-        if (rulingBinding && rulingBinding.verifierId
-          && rulingBinding.verifierId !== String(context.agentId || '').trim()) {
-          throw createHttpError(403, 'dag_verifier_only: only the designated verifier agent can accept/reject this node completion proposal');
+        if (rulingBinding) {
+          if (!rulingBinding.verifierId) {
+            throw createHttpError(403, 'dag_verifier_exempt: this node is verification-exempt; its completion can only be ruled by the scheduler auto-accept or the user, not by agents');
+          }
+          if (rulingBinding.verifierId !== String(context.agentId || '').trim()) {
+            throw createHttpError(403, 'dag_verifier_only: only the designated verifier agent can accept/reject this node completion proposal');
+          }
         }
         const result = applySessionGoalAction(activeStore, context.conversationId, {
           action: action === 'accept' ? 'accept-proposal' : 'dismiss-proposal',
+          reason,
+          // The ruling principal is persisted atomically with the mutation
+          // (durable D28 record the scheduler validates at settle/reconcile).
+          ruledBy: { agentId: context.agentId, agentName: context.agentName },
         });
         const summary = pickConversationSummary(result.conversation);
 

@@ -18,6 +18,12 @@
  *   when the node has no verifier; verifier accept → done + result, reject →
  *   feedback delivered back to the worker (unbounded, goal budget-backed);
  *   a goal-runner budget pause proposal flips the node to blocked.
+ *   Every ruling is persisted ATOMICALLY with the proposal clear (durable
+ *   `sessionGoalRuling` record); settle/reconcile validate THAT record —
+ *   outcome, permitted principal (verifier/user/scheduler), worker
+ *   provenance — so forged events and crash windows can neither settle a
+ *   node nor lose a rejection (a bound goal-complete without a valid ruling
+ *   fails closed: `dag_goal_completion_unverified`).
  *   done write-backs carry a ≤2000-char result summary (D23) and trigger
  *   readiness dispatch so downstream nodes start (D16-consistent: a blocked
  *   upstream never lets downstream start). Merge nodes additionally pass
@@ -47,6 +53,7 @@ import {
   applySessionGoalAction,
   getSessionGoal,
   getSessionGoalProposal,
+  getSessionGoalRuling,
 } from '../conversation/session-goal';
 import { ensureDagNodeGoalBinding, getDagNodeGoalBinding } from '../conversation/dag-goal-binding';
 
@@ -433,6 +440,54 @@ export function createDagScheduler(options: any = {}) {
   }
 
   /**
+   * D28 durable-ruling validation. The persisted ruling record (written
+   * atomically with the proposal clear / goal mutation) is the ONLY
+   * trustworthy proof that a completion verdict happened — event payloads
+   * are forgeable and a bare `goal.complete` proves nothing. A ruling is
+   * valid iff: outcome/action match, the ruling principal is one the
+   * binding contract permits (verifier / user / scheduler auto-accept), and
+   * the ruled proposal was the WORKER's completion announcement (bound
+   * nodes require an identified proposer — the bridge enforced it at
+   * proposal time, so an absent proposer means the record circumvented
+   * enforcement).
+   */
+  function validateCompletionRuling(
+    conversation: any,
+    node: any,
+    ownerConversationId: string,
+    expectedOutcome: 'accepted' | 'rejected',
+  ): any {
+    const ruling = getSessionGoalRuling(conversation);
+    if (!ruling || ruling.outcome !== expectedOutcome || ruling.action !== 'complete') {
+      return null;
+    }
+    const proposalId = String(ruling.proposalId || '').trim();
+    const snapshotProposalId = String(ruling.proposalSnapshot && ruling.proposalSnapshot.id || '').trim();
+    if (!proposalId || proposalId !== snapshotProposalId) {
+      return null;
+    }
+    const authority = resolveRulingAuthority(conversation, node, ownerConversationId);
+    if (!isCompletionRulingAllowed(authority, ruling.ruledBy, { schedulerAutoAccept: expectedOutcome === 'accepted' })) {
+      return null;
+    }
+    const binding = getDagNodeGoalBinding(conversation);
+    const proposerId = String(
+      ruling.proposalSnapshot && ruling.proposalSnapshot.proposedBy && ruling.proposalSnapshot.proposedBy.agentId || ''
+    ).trim();
+    if (binding && !proposerId) {
+      return null;
+    }
+    const workerId = binding
+      ? String(binding.workerId || '').trim()
+      : (participantIdsOf(conversation)[0]
+        || participantIdsOf(store.getConversationWithoutMessages(ownerConversationId))[0] || '');
+    if (workerId && proposerId && proposerId !== workerId) {
+      return null;
+    }
+    return ruling;
+  }
+
+  /**
    * Result summary for a done write-back (D23 requires non-empty): the
    * worker's completion-proposal reason first, then its terminal reply.
    */
@@ -476,7 +531,13 @@ export function createDagScheduler(options: any = {}) {
     const nodeId = String(node.id || '').trim();
     let goalConversation: any = null;
     try {
-      const result = applySessionGoalAction(store, conversationId, { action: 'accept-proposal' });
+      const result = applySessionGoalAction(store, conversationId, {
+        action: 'accept-proposal',
+        // The auto-accept ruling is persisted atomically with the mutation
+        // (durable record) so settle/reconcile can prove its origin.
+        ruledBy: { agentId: 'dag-scheduler', agentName: DAG_RESUME_SENDER_NAME },
+        reason: 'scheduler auto-accept (verification-exempt node, D28)',
+      });
       goalConversation = result && result.conversation ? result.conversation : null;
       broadcastEvent('conversation_goal_proposal_cleared', {
         conversationId,
@@ -496,6 +557,83 @@ export function createDagScheduler(options: any = {}) {
       extractNodeResultText(goalConversation || store.getConversation(conversationId), proposal),
       'dag_goal_completed'
     );
+  }
+
+  /**
+   * D28 rejection feedback → worker. Sourced from the DURABLE ruling record
+   * (not the ephemeral event payload) so the cleared-event handler and the
+   * reconcile re-drive share one path. Idempotent: the delivery key embeds
+   * the ruled proposal id, so an already-persisted feedback dedups.
+   */
+  async function deliverRejectionFeedback(
+    ownerConversationId: string,
+    plan: any,
+    node: any,
+    conversationId: string,
+    ruling: any,
+  ): Promise<void> {
+    const nodeId = String(node.id || '').trim();
+    const binding = getDagNodeGoalBinding(store.getConversationWithoutMessages(conversationId));
+    const workerId = (binding && binding.workerId)
+      || participantIdsOf(store.getConversationWithoutMessages(conversationId))[0]
+      || participantIdsOf(store.getConversationWithoutMessages(ownerConversationId))[0]
+      || '';
+    if (!deliverNodeMessage || !workerId) {
+      // The proposal is already cleared — without a feedback channel the
+      // worker never learns about the rejection and idles in doing forever.
+      writeExecution(
+        ownerConversationId,
+        [{ nodeId, status: 'blocked' }],
+        'dag_delivery_failed: rejection feedback cannot be delivered (no delivery channel or worker)'
+      );
+      return;
+    }
+    const ruledBy = ruling && ruling.ruledBy ? ruling.ruledBy : {};
+    const verifierName = String(ruledBy.agentName || ruledBy.agentId || (ruledBy.kind === 'user' ? '用户' : '验收方'));
+    const reasonText = String(ruling && ruling.reason || '').trim() || '(验收 agent 未给出具体反馈)';
+    const proposalStamp = String(
+      ruling && (ruling.proposalId || (ruling.proposalSnapshot && ruling.proposalSnapshot.id)) || 'na'
+    );
+    // Shares the dag-verify: namespace so the direct-dispatch wiring and
+    // the terminal-failure guard treat it as scheduler-owned.
+    const feedbackKey = `dag-verify:${plan.id}:${nodeId}:feedback:${proposalStamp}`;
+    try {
+      await deliverNodeMessage({
+        ownerConversationId,
+        conversationId,
+        targetAgentId: workerId,
+        content: [
+          `[DAG 验收打回] 节点 ${nodeId}：${node.title || nodeId} 的完工提案被 ${verifierName} 驳回。`,
+          `验收反馈：${clipText(reasonText, 1500)}`,
+          '请根据反馈继续改进；达成目标后再次调用 suggest-goal --action complete --reason "<执行结果摘要>" 宣布完工。',
+        ].join('\n'),
+        idempotencyKey: feedbackKey,
+        messageMetadata: { kind: 'dag_verify_feedback', dagNodeId: nodeId, dagDeliveryKey: feedbackKey },
+      });
+    } catch (error: any) {
+      // The proposal is already cleared — if the feedback cannot even be
+      // persisted the worker will never learn about the rejection and the
+      // node would idle in doing forever. Fail closed.
+      writeExecution(
+        ownerConversationId,
+        [{ nodeId, status: 'blocked' }],
+        `dag_delivery_failed: rejection feedback could not be persisted (${clipText(error && error.message ? error.message : error, 200)})`
+      );
+    }
+  }
+
+  /** Whether the rejection feedback for this ruling is already persisted
+   * (the scheduler persists the target message, carrying dagDeliveryKey,
+   * at submit time). Drives the reconcile re-drive decision. */
+  function rejectionFeedbackDelivered(conversation: any, plan: any, node: any, ruling: any): boolean {
+    const nodeId = String(node.id || '').trim();
+    const proposalStamp = String(
+      ruling && (ruling.proposalId || (ruling.proposalSnapshot && ruling.proposalSnapshot.id)) || 'na'
+    );
+    const feedbackKey = `dag-verify:${plan.id}:${nodeId}:feedback:${proposalStamp}`;
+    const messages = conversation && Array.isArray(conversation.messages) ? conversation.messages : [];
+    return messages.some((message: any) => message && message.metadata && typeof message.metadata === 'object'
+      && String(message.metadata.dagDeliveryKey || '') === feedbackKey);
   }
 
   /**
@@ -583,6 +721,16 @@ export function createDagScheduler(options: any = {}) {
    * startup reconcile. Returns true when the goal state fully handled the
    * node (settled, blocked, or verification (re-)routed); false when the
    * caller should fall back to legacy terminal-reply / resume handling.
+   *
+   * D28 durable-proof rules for BOUND children:
+   * - goal complete is settleable ONLY with a valid persisted ruling
+   *   (worker proposal + permitted principal) — a bare complete goal (direct
+   *   mutation in the spawn→bind window, tampered state) fails closed to
+   *   blocked `dag_goal_completion_unverified`;
+   * - a persisted REJECTED ruling whose feedback never landed is re-driven
+   *   idempotently (crash window between proposal clear and delivery);
+   *   feedback already persisted falls through so the D25 resume logic can
+   *   still nudge an idle worker.
    */
   async function settleFromGoalState(ownerConversationId: string, plan: any, node: any, conversation: any, reasonPrefix: string): Promise<boolean> {
     const conversationId = String(conversation && conversation.id || '').trim();
@@ -592,8 +740,29 @@ export function createDagScheduler(options: any = {}) {
     const nodeId = String(node.id || '').trim();
     const goal = getSessionGoal(conversation);
     const proposal = getSessionGoalProposal(conversation);
+    const binding = getDagNodeGoalBinding(conversation);
 
     if (goal && goal.status === 'complete') {
+      if (binding) {
+        const acceptedRuling = validateCompletionRuling(conversation, node, ownerConversationId, 'accepted');
+        if (!acceptedRuling) {
+          writeExecution(
+            ownerConversationId,
+            [{ nodeId, status: 'blocked' }],
+            `dag_goal_completion_unverified: goal is complete but no valid worker→verifier ruling is persisted (${reasonPrefix}, D28)`
+          );
+          return true;
+        }
+        settleCompleted(
+          ownerConversationId,
+          plan,
+          node,
+          extractNodeResultText(conversation, acceptedRuling.proposalSnapshot),
+          `${reasonPrefix}_goal_complete`
+        );
+        return true;
+      }
+      // Legacy (binding-less) child: keep the tolerant goal-complete settle.
       settleCompleted(ownerConversationId, plan, node, extractNodeResultText(conversation, proposal), `${reasonPrefix}_goal_complete`);
       return true;
     }
@@ -609,6 +778,13 @@ export function createDagScheduler(options: any = {}) {
     if (proposal && proposal.action === 'complete') {
       await routeCompletionProposal(ownerConversationId, plan, node, conversationId, proposal);
       return true;
+    }
+    if (binding) {
+      const rejectedRuling = validateCompletionRuling(conversation, node, ownerConversationId, 'rejected');
+      if (rejectedRuling && !rejectionFeedbackDelivered(conversation, plan, node, rejectedRuling)) {
+        await deliverRejectionFeedback(ownerConversationId, plan, node, conversationId, rejectedRuling);
+        return true;
+      }
     }
     return false;
   }
@@ -1093,80 +1269,57 @@ export function createDagScheduler(options: any = {}) {
       if (!conversation) {
         return;
       }
-      const outcome = String(payload && payload.outcome || '').trim();
-      const proposal = payload && payload.proposal ? payload.proposal : null;
-      const goal = (payload && payload.goal ? payload.goal : null) || getSessionGoal(conversation);
+      // D28 durable-proof: the event payload is only a TRIGGER. The verdict
+      // itself is read from the persisted ruling record (written atomically
+      // with the proposal clear), so a forged/tampered event can neither
+      // settle a node nor inject bogus feedback.
+      const goal = getSessionGoal(conversation);
+      const binding = getDagNodeGoalBinding(conversation);
 
       if (goal && goal.status === 'complete') {
-        // Accepted — but by WHOM matters (D28). Never settle on a ruling
-        // the persisted authority contract would not have permitted.
-        const authority = resolveRulingAuthority(conversation, node, ownerConversationId);
-        const ruledBy = payload && payload.ruledBy ? payload.ruledBy : {};
-        if (!isCompletionRulingAllowed(authority, ruledBy, { schedulerAutoAccept: true })) {
-          logError(
-            `ignoring completion accept for node ${nodeId}: ruled by ${String(ruledBy.agentId || ruledBy.kind || 'none')}, expected verifier ${authority.verifierId || '(exempt)'}`,
-            new Error('dag_verifier_ruling_mismatch')
-          );
+        const acceptedRuling = validateCompletionRuling(conversation, node, ownerConversationId, 'accepted');
+        if (!acceptedRuling) {
+          if (binding) {
+            // The goal really IS complete but no valid ruling is persisted —
+            // not a forgeable-event no-op but a genuinely unverifiable
+            // state: fail closed now instead of waiting for a slot/restart
+            // settle to discover it.
+            writeExecution(
+              ownerConversationId,
+              [{ nodeId, status: 'blocked' }],
+              'dag_goal_completion_unverified: goal is complete but no valid worker→verifier ruling is persisted (D28)'
+            );
+            await dispatchReadyNodes(ownerConversationId);
+          } else {
+            logError(
+              `ignoring completion accept for node ${nodeId}: no valid ruling record`,
+              new Error('dag_verifier_ruling_mismatch')
+            );
+          }
           return;
         }
-        settleCompleted(ownerConversationId, freshPlan, node, extractNodeResultText(conversation, proposal), 'dag_goal_completed');
+        settleCompleted(
+          ownerConversationId,
+          freshPlan,
+          node,
+          extractNodeResultText(conversation, acceptedRuling.proposalSnapshot),
+          'dag_goal_completed'
+        );
         await dispatchReadyNodes(ownerConversationId);
         return;
       }
 
-      if (outcome === 'rejected') {
-        // Rejected — the same D28 ruling contract applies (a forged reject
-        // would otherwise inject bogus feedback into the worker).
-        const authority = resolveRulingAuthority(conversation, node, ownerConversationId);
-        const ruledBy = payload && payload.ruledBy ? payload.ruledBy : {};
-        if (!isCompletionRulingAllowed(authority, ruledBy, { schedulerAutoAccept: false })) {
-          logError(
-            `ignoring completion reject for node ${nodeId}: ruled by ${String(ruledBy.agentId || ruledBy.kind || 'none')}, expected verifier ${authority.verifierId || '(exempt)'}`,
-            new Error('dag_verifier_ruling_mismatch')
-          );
-          return;
-        }
-        // D28 rejection: feed the verifier's feedback back to the worker;
-        // the goal stays active so the continuation loop keeps driving.
-        const binding = getDagNodeGoalBinding(conversation);
-        const workerId = (binding && binding.workerId)
-          || participantIdsOf(conversation)[0]
-          || participantIdsOf(store.getConversationWithoutMessages(ownerConversationId))[0]
-          || '';
-        if (!deliverNodeMessage || !workerId) {
-          return;
-        }
-        const verifierName = String(ruledBy.agentName || ruledBy.agentId || '验收 agent');
-        const reasonText = String(payload && payload.reason || '').trim() || '(验收 agent 未给出具体反馈)';
-        const proposalStamp = String(proposal && (proposal.id || proposal.createdAt || proposal.updatedAt) || 'na');
-        // Shares the dag-verify: namespace so the direct-dispatch wiring and
-        // the terminal-failure guard treat it as scheduler-owned.
-        const feedbackKey = `dag-verify:${freshPlan.id}:${nodeId}:feedback:${proposalStamp}`;
-        try {
-          await deliverNodeMessage({
-            ownerConversationId,
-            conversationId: normalizedConversationId,
-            targetAgentId: workerId,
-            content: [
-              `[DAG 验收打回] 节点 ${nodeId}：${node.title || nodeId} 的完工提案被 ${verifierName} 驳回。`,
-              `验收反馈：${clipText(reasonText, 1500)}`,
-              '请根据反馈继续改进；达成目标后再次调用 suggest-goal --action complete --reason "<执行结果摘要>" 宣布完工。',
-            ].join('\n'),
-            idempotencyKey: feedbackKey,
-            messageMetadata: { kind: 'dag_verify_feedback', dagNodeId: nodeId, dagDeliveryKey: feedbackKey },
-          });
-        } catch (error: any) {
-          // The proposal is already cleared — if the feedback cannot even be
-          // persisted the worker will never learn about the rejection and
-          // the node would idle in doing forever. Fail closed.
-          writeExecution(
-            ownerConversationId,
-            [{ nodeId, status: 'blocked' }],
-            `dag_delivery_failed: rejection feedback could not be persisted (${clipText(error && error.message ? error.message : error, 200)})`
-          );
-          await dispatchReadyNodes(ownerConversationId);
-        }
+      // Rejected — the same D28 ruling contract applies (a forged reject
+      // would otherwise inject bogus feedback into the worker). Sourced
+      // from the durable ruling record; the delivery is idempotent per
+      // ruled proposal.
+      const rejectedRuling = validateCompletionRuling(conversation, node, ownerConversationId, 'rejected');
+      if (rejectedRuling) {
+        await deliverRejectionFeedback(ownerConversationId, freshPlan, node, normalizedConversationId, rejectedRuling);
+        await dispatchReadyNodes(ownerConversationId);
       }
+      // Anything else (non-complete proposal rulings, forged events without
+      // a durable record) is irrelevant to the node — ignore.
     }).catch((error) => logError('goal proposal cleared handling failed', error));
   }
 

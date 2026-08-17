@@ -20,7 +20,8 @@
   - `update-goal-checklist --content-stdin` writes factual checklist progress lines such as `[ ] todo`, `[~] doing`, and `[x] done`.
 - Conversation metadata field:
   - `conversation.metadata.sessionGoal?: { objective: string, status: 'active' | 'paused' | 'complete', createdAt: string, updatedAt: string, completedAt?: string, checklist?: { id: string, text: string, status: 'todo' | 'in_progress' | 'done', createdAt: string, updatedAt: string, completedAt?: string }[] }`
-  - `conversation.metadata.sessionGoalProposal?: { action: 'set' | 'pause' | 'resume' | 'complete' | 'clear', status: 'pending', objective?: string, reason?: string, proposedBy: { agentId: string, agentName: string }, createdAt: string, updatedAt: string }`
+  - `conversation.metadata.sessionGoalProposal?: { id: string, action: 'set' | 'pause' | 'resume' | 'complete' | 'clear', status:'pending', objective?: string, reason?: string, proposedBy:{ agentId:string, agentName:string }, createdAt:string, updatedAt:string }`
+  - `conversation.metadata.sessionGoalRuling?: { id:string, proposalId:string, action:string, outcome:'accepted'|'rejected', reason?:string, ruledBy:{ kind:'user'|'agent'|'system', agentId?:string, agentName?:string }, proposalSnapshot:SessionGoalProposal, ruledAt:string }`
   - `conversation.metadata.sessionGoalRunner?: { status: 'running' | 'budget_limited' | string, goalUpdatedAt: string, iteration: number, maxIterations: number, updatedAt: string, lastContinuedAt?: string }`
 - Browser slash commands:
   - `/goal` reads the selected conversation metadata and displays current status.
@@ -39,7 +40,9 @@
 - `set` must trim and validate `objective`, create an `active` goal, preserve `createdAt` when replacing an existing goal, refresh `updatedAt`, remove stale `completedAt`, and normalize optional checklist lines/items.
 - `set` without explicit checklist input must seed a Trellis long-task checklist covering multi-agent brainstorm, Trellis task/PRD creation, Trellis/spec validation, `before-dev`, implementation, tests, quality checks, `update-spec`, `finish-work`, and Trellis archive/session recording.
 - `pause`, `resume`, and `complete` require an existing goal; `complete` adds `completedAt`, while `pause`/`resume` remove stale `completedAt`.
-- `clear` removes `sessionGoal`, stale `sessionGoalProposal`, and stale `sessionGoalRunner` from metadata instead of leaving empty objects.
+- Accepting or dismissing a proposal writes `sessionGoalRuling` atomically in the same conversation-metadata update that clears the proposal (and, for accept, mutates the goal). The durable record is the restart-safe proof of the verdict; `proposalId` must be non-empty and exactly equal `proposalSnapshot.id`, otherwise normalization rejects the record.
+- `update-checklist` changes only the current goal checklist and preserves both pending proposal and durable ruling metadata. `set` starts a new goal epoch and clears stale proposal/ruling evidence.
+- `clear` removes `sessionGoal`, stale `sessionGoalProposal`, stale `sessionGoalRuling`, and stale `sessionGoalRunner` from metadata instead of leaving empty objects.
 - Setting or resuming an active goal may schedule bounded automatic continuation through transparent `Goal Runner` user messages.
 - Automatic continuation must not run while a conversation is busy, while user messages are queued, while the goal is paused/complete/cleared, or while any proposal is pending.
 - The runner increments `sessionGoalRunner.iteration` per automatic continuation and creates a pending pause proposal when `maxIterations` is reached; default max is 20 unless `CAFF_SESSION_GOAL_AUTO_CONTINUE_MAX_TURNS` overrides it.
@@ -65,8 +68,9 @@
 | `POST /goal complete` | existing goal | `200`, goal status becomes `complete`, `completedAt` is set |
 | `POST /goal clear` | no existing goal | `200`, metadata still has no `sessionGoal` |
 | `POST /goal unknown` | unsupported action | `400 Unsupported goal action` |
-| `POST /goal update-checklist` | existing goal and checklist lines | `200`, goal keeps lifecycle status and stores normalized checklist items |
-| `suggest-goal complete` | existing active goal | proposal is persisted, goal remains unchanged until accepted |
+| `POST /goal update-checklist` | existing goal and checklist lines | `200`, goal keeps lifecycle status, stores normalized checklist items, and preserves proposal/ruling metadata |
+| ruling normalization | `proposalId` absent or differs from `proposalSnapshot.id` | ruling normalizes to `null`; DAG completion cannot use it as proof |
+| `suggest-goal complete` | existing active goal | proposal is persisted with a `prop_<uuid>` id, goal remains unchanged until accepted |
 | `POST /goal accept-proposal` | pending complete proposal | goal status becomes `complete`, proposal metadata is removed |
 | `POST /goal dismiss-proposal` | pending proposal | proposal metadata is removed, goal remains unchanged |
 | auto continuation | active goal, idle conversation, no pending proposal | creates a `Goal Runner` user message and drains the main turn queue |

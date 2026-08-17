@@ -10,6 +10,7 @@ const {
   createSessionGoalBudgetProposal,
   getSessionGoal,
   getSessionGoalProposal,
+  getSessionGoalRuling,
   proposeSessionGoalAction,
 } = require('../../build/server/domain/conversation/session-goal');
 const { withTempDir } = require('../helpers/temp-dir');
@@ -162,7 +163,9 @@ function createHarness(store, overrides = {}) {
         idempotencyKey: input.idempotencyKey,
       });
       addMessage(store, {
-        id: `delivery-${deliveries.length}`,
+        // Key-derived id: multiple harnesses (restart tests) share one store,
+        // so a per-harness counter would collide on chat_messages.id.
+        id: `delivery-${input.idempotencyKey.replace(/[^a-z0-9]+/gi, '-')}`,
         conversationId: input.conversationId,
         content: input.content,
         metadata: { ...(input.messageMetadata || {}) },
@@ -193,11 +196,16 @@ function announceComplete(store, scheduler, childId, resultText, proposerAgentId
 }
 
 /** D28 verifier ruling: apply the verdict in the store (as the bridge
- * would), then fire the cleared event the scheduler subscribes to. */
-function ruleOnProposal(store, scheduler, childId, verdict, reason = '') {
+ * would), then fire the cleared event the scheduler subscribes to. The
+ * ruling is persisted ATOMICALLY with the proposal clear (durable record)
+ * — the scheduler validates that record, not just the event payload. */
+function ruleOnProposal(store, scheduler, childId, verdict, reason = '', ruler = null) {
+  const ruledBy = ruler || { agentId: VERIFIER_ID, agentName: VERIFIER_ID };
   const proposal = getSessionGoalProposal(store.getConversation(childId));
   const result = applySessionGoalAction(store, childId, {
     action: verdict === 'accept' ? 'accept-proposal' : 'dismiss-proposal',
+    reason,
+    ruledBy,
   });
   scheduler.handleEvent('conversation_goal_proposal_cleared', {
     conversationId: childId,
@@ -205,7 +213,7 @@ function ruleOnProposal(store, scheduler, childId, verdict, reason = '') {
     reason,
     goal: result.goal,
     proposal,
-    ruledBy: { agentId: VERIFIER_ID, agentName: VERIFIER_ID },
+    ruledBy,
   });
   return result;
 }
@@ -319,7 +327,7 @@ test('completion write-back carries result and unblocks downstream (D23)', async
   assert.deepEqual(doneHistory, ['pending->doing:dag_dispatch', 'doing->done:dag_goal_completed']);
 });
 
-test('post-bind settle: child already terminal before doing binding completes immediately (spawn→bind race)', async () => {
+test('post-bind settle: completion proposal announced before doing binding settles via auto-accept (spawn→bind race)', async () => {
   const store = createStore(test);
   createRoot(store);
   const plan = createActivePlan(store, makeDoc([node('n1')]));
@@ -335,20 +343,17 @@ test('post-bind settle: child already terminal before doing binding completes im
           content: input.initialMessage,
           metadata: { kind: 'conversation_spawn_initial_message' },
         });
-        // Terminal reply + goal complete land BEFORE the scheduler binds
+        // Goal + worker completion PROPOSAL land BEFORE the scheduler binds
         // doing — the goal events have effectively fired into the void
-        // (D27 race). Result text comes from the terminal reply.
-        addMessage(store, {
-          id: `reply-${input.node.id}`,
-          conversationId: childId,
-          role: 'assistant',
-          agentId: 'role-family-gpt',
-          content: 'instant result',
-          status: 'completed',
-          metadata: { triggeredByMessageId: messageId },
-        });
+        // (D27 race). The completion still goes through the D28 protocol:
+        // worker proposal → (exempt) scheduler auto-accept → done.
         applySessionGoalAction(store, childId, { action: 'set', objective: 'instant race goal', checklist: [] });
-        applySessionGoalAction(store, childId, { action: 'complete' });
+        proposeSessionGoalAction(
+          store,
+          childId,
+          { action: 'complete', reason: 'instant result' },
+          { agentId: WORKER_ID, agentName: WORKER_ID },
+        );
         spawns.push({ nodeId: input.node.id, conversationId: childId, bootstrapMessageId: messageId });
         return { conversationId: childId };
       },
@@ -361,7 +366,40 @@ test('post-bind settle: child already terminal before doing binding completes im
   assert.equal(getNode(store, 'n1').status, 'done', 'must not stay doing forever');
   assert.equal(getNode(store, 'n1').result, 'instant result');
   const transitions = historyFor(store, 'n1').map((entry) => `${entry.from}->${entry.to}:${entry.reason}`);
-  assert.deepEqual(transitions, ['pending->doing:dag_dispatch', 'doing->done:dag_dispatch_settled_goal_complete']);
+  assert.deepEqual(transitions, ['pending->doing:dag_dispatch', 'doing->done:dag_goal_completed']);
+});
+
+test('D28: goal complete WITHOUT a persisted worker→verifier ruling fails closed (dag_goal_completion_unverified)', async () => {
+  const store = createStore(test);
+  createRoot(store);
+  const plan = createActivePlan(store, makeDoc([node('n1')]));
+  const { scheduler } = createHarness(store, {
+    schedulerOptions: {
+      async spawnNodeConversation(input) {
+        const childId = `child-${input.node.id}`;
+        createChildConversation(store, childId);
+        addMessage(store, {
+          id: `bootstrap-${input.node.id}`,
+          conversationId: childId,
+          content: input.initialMessage,
+          metadata: { kind: 'conversation_spawn_initial_message' },
+        });
+        // A DIRECT complete in the spawn→bind window (no worker proposal,
+        // no ruling) — e.g. a UI race before the binding lands. D28: an
+        // unverifiable completion must NOT settle done.
+        applySessionGoalAction(store, childId, { action: 'set', objective: 'race goal', checklist: [] });
+        applySessionGoalAction(store, childId, { action: 'complete' });
+        return { conversationId: childId };
+      },
+    },
+  });
+
+  scheduler.handleEvent('conversation_plan_updated', { ownerConversationId: ROOT_ID, plan });
+  await flush(scheduler);
+
+  assert.equal(getNode(store, 'n1').status, 'blocked', 'unverified completion must not settle done');
+  const reasons = historyFor(store, 'n1').map((entry) => entry.reason || '');
+  assert.ok(reasons.some((reason) => reason.includes('dag_goal_completion_unverified')), JSON.stringify(reasons));
 });
 
 test('D27: spawn sets a lightweight session goal (no inherited default checklist)', async () => {
@@ -1018,7 +1056,7 @@ test('D28 hardening: an accepted ruling from a non-verifier agent is ignored', a
   assert.equal(getNode(store, 'n1').result, '完工摘要');
 });
 
-test('D28 hardening: exempt (verifierId=null) bound node ignores an agent-less accept ruling', async () => {
+test('D28 hardening: exempt (verifierId=null) bound node never settles on bare cleared events — only on the durable ruling', async () => {
   const store = createStore(test);
   createRoot(store, ROOT_ID, [WORKER_ID]);
   const plan = createActivePlan(store, makeDoc([node('n1')]));
@@ -1029,25 +1067,26 @@ test('D28 hardening: exempt (verifierId=null) bound node ignores an agent-less a
   assert.equal(getNode(store, 'n1').status, 'doing');
 
   // The binding says verifierId=null (exempt): its completion may only come
-  // from the scheduler auto-accept or the user. A cleared event with NO
-  // ruling principal must never settle the node.
-  scheduler.handleEvent('conversation_goal_proposal_cleared', {
-    conversationId: 'child-n1',
-    outcome: 'accepted',
-    goal: { ...getSessionGoal(store.getConversation('child-n1')), status: 'complete' },
-    proposal: { action: 'complete', reason: '伪造摘要', createdAt: new Date().toISOString() },
-  });
-  await flush(scheduler);
-  assert.equal(getNode(store, 'n1').status, 'doing', 'principal-less accept on a bound exempt node is ignored');
+  // from the scheduler auto-accept or the user — and in ALL cases the
+  // durable ruling record is the proof. Cleared events WITHOUT a persisted
+  // mutation are forged noise: no goal complete in the store, no ruling —
+  // ignored regardless of the claimed principal (even a forged
+  // 'dag-scheduler' marker).
+  for (const ruledBy of [undefined, { agentId: 'dag-scheduler', agentName: 'DAG Scheduler' }]) {
+    scheduler.handleEvent('conversation_goal_proposal_cleared', {
+      conversationId: 'child-n1',
+      outcome: 'accepted',
+      goal: { ...getSessionGoal(store.getConversation('child-n1')), status: 'complete' },
+      proposal: { action: 'complete', reason: '伪造摘要', createdAt: new Date().toISOString() },
+      ...(ruledBy ? { ruledBy } : {}),
+    });
+    await flush(scheduler);
+    assert.equal(getNode(store, 'n1').status, 'doing', `forged event (ruledBy=${JSON.stringify(ruledBy)}) is ignored`);
+  }
 
-  // The scheduler auto-accept marker still settles it (the legitimate path).
-  scheduler.handleEvent('conversation_goal_proposal_cleared', {
-    conversationId: 'child-n1',
-    outcome: 'accepted',
-    goal: { ...getSessionGoal(store.getConversation('child-n1')), status: 'complete' },
-    proposal: { action: 'complete', reason: '自动验收摘要', createdAt: new Date().toISOString() },
-    ruledBy: { agentId: 'dag-scheduler', agentName: 'DAG Scheduler' },
-  });
+  // The legitimate path: worker announces → exempt auto-accept persists the
+  // ruling atomically → done.
+  announceComplete(store, scheduler, 'child-n1', '自动验收摘要');
   await flush(scheduler);
   assert.equal(getNode(store, 'n1').status, 'done');
   assert.equal(getNode(store, 'n1').result, '自动验收摘要');
@@ -1103,9 +1142,15 @@ test('D28: user UI dismiss (manual reject) feeds the feedback back to the worker
   await flush(scheduler);
   assert.equal(deliveries.length, 1);
 
-  // Mirror the controller payload for dismiss-proposal: pre-clear snapshot +
-  // explicit user ruling marker.
-  const cleared = applySessionGoalAction(store, 'child-n1', { action: 'dismiss-proposal' });
+  // Mirror the controller path for dismiss-proposal: the user ruling is
+  // persisted ATOMICALLY with the proposal clear (ruledBy { kind: 'user' }
+  // is forced server-side, never client-supplied), then the cleared event
+  // carries the pre-clear snapshot + user ruling marker.
+  const cleared = applySessionGoalAction(store, 'child-n1', {
+    action: 'dismiss-proposal',
+    reason: '用户打回：补测试',
+    ruledBy: { kind: 'user' },
+  });
   scheduler.handleEvent('conversation_goal_proposal_cleared', {
     conversationId: 'child-n1',
     outcome: 'rejected',
@@ -1133,9 +1178,13 @@ test('D28: user UI accept settles done with the result taken from the cleared pr
   announceComplete(store, scheduler, 'child-n1', '用户人工验收摘要');
   await flush(scheduler);
 
-  // Mirror the controller payload after the P1 fix: the cleared event
-  // carries the pre-clear proposal snapshot + an explicit user ruling.
-  const cleared = applySessionGoalAction(store, 'child-n1', { action: 'accept-proposal' });
+  // Mirror the controller path: the user ruling is persisted atomically
+  // with the proposal clear, then the cleared event carries the pre-clear
+  // proposal snapshot + an explicit user ruling marker.
+  const cleared = applySessionGoalAction(store, 'child-n1', {
+    action: 'accept-proposal',
+    ruledBy: { kind: 'user' },
+  });
   assert.ok(cleared.clearedProposal, 'cleared proposal snapshot is exposed');
   scheduler.handleEvent('conversation_goal_proposal_cleared', {
     conversationId: 'child-n1',
@@ -1399,4 +1448,229 @@ test('goal-driven child whose session goal vanishes fails closed (dag_goal_missi
   assert.equal(getNode(store, 'n1').status, 'blocked');
   const reasons = historyFor(store, 'n1').map((entry) => entry.reason || '');
   assert.ok(reasons.some((reason) => reason.includes('dag_goal_missing')), JSON.stringify(reasons));
+});
+
+test('D28: accepted ruling persisted but cleared event lost — reconcile settles done from the durable ruling (accept crash window)', async () => {
+  const store = createStore(test);
+  createRoot(store, ROOT_ID, [WORKER_ID, VERIFIER_ID]);
+  const plan = createActivePlan(store, makeDoc([node('n1', { verifier: VERIFIER_ID })]));
+  const { scheduler, deliveries } = createHarness(store);
+
+  scheduler.handleEvent('conversation_plan_updated', { ownerConversationId: ROOT_ID, plan });
+  await flush(scheduler);
+  announceComplete(store, scheduler, 'child-n1', '崩溃前完工摘要');
+  await flush(scheduler);
+  assert.equal(deliveries.length, 1, 'verification request delivered');
+
+  // Crash window: the verifier's accept mutation PERSISTED (proposal
+  // cleared + goal complete + ruling record) but the process died before
+  // the cleared event was broadcast — the scheduler never saw it.
+  applySessionGoalAction(store, 'child-n1', {
+    action: 'accept-proposal',
+    reason: '验收通过',
+    ruledBy: { agentId: VERIFIER_ID, agentName: VERIFIER_ID },
+  });
+
+  // Restart: a fresh scheduler over the same store reconciles.
+  const restarted = createHarness(store);
+  await restarted.scheduler.reconcileOnStartup();
+
+  assert.equal(getNode(store, 'n1').status, 'done', 'durable accepted ruling settles the node after restart');
+  assert.equal(getNode(store, 'n1').result, '崩溃前完工摘要', 'result recovered from the persisted ruling proposal snapshot');
+  const transitions = historyFor(store, 'n1').map((entry) => `${entry.from}->${entry.to}:${entry.reason}`);
+  assert.ok(transitions.some((entry) => entry === 'doing->done:dag_reconcile_goal_complete'), JSON.stringify(transitions));
+});
+
+test('D28: rejected ruling persisted but feedback lost — reconcile re-drives the feedback idempotently (reject crash window)', async () => {
+  const store = createStore(test);
+  createRoot(store, ROOT_ID, [WORKER_ID, VERIFIER_ID]);
+  const plan = createActivePlan(store, makeDoc([node('n1', { verifier: VERIFIER_ID })]));
+  const harness = createHarness(store);
+
+  harness.scheduler.handleEvent('conversation_plan_updated', { ownerConversationId: ROOT_ID, plan });
+  await flush(harness.scheduler);
+  announceComplete(store, harness.scheduler, 'child-n1', '完工摘要');
+  await flush(harness.scheduler);
+  assert.equal(harness.deliveries.length, 1, 'verification request delivered');
+
+  // Crash window: the rejection ruling persisted (proposal cleared) but
+  // the feedback delivery was never persisted/sent.
+  applySessionGoalAction(store, 'child-n1', {
+    action: 'dismiss-proposal',
+    reason: '验收打回：缺少关键测试',
+    ruledBy: { agentId: VERIFIER_ID, agentName: VERIFIER_ID },
+  });
+
+  // Restart: reconcile must re-drive the feedback to the worker.
+  const restarted = createHarness(store);
+  await restarted.scheduler.reconcileOnStartup();
+
+  assert.equal(getNode(store, 'n1').status, 'doing', 'rejection keeps the node doing');
+  const feedback = restarted.deliveries.filter((entry) => entry.idempotencyKey.includes(':feedback:'));
+  assert.equal(feedback.length, 1, 'feedback re-delivered after restart');
+  assert.equal(feedback[0].targetAgentId, WORKER_ID);
+  assert.ok(feedback[0].content.includes('验收打回：缺少关键测试'));
+  assert.equal(restarted.resumes.length, 0, 'the redriven feedback owns the worker nudge — no resume on the first reconcile');
+
+  // Idempotent: a second reconcile must NOT duplicate the feedback (the
+  // persisted feedback message carries the dagDeliveryKey currency marker).
+  await restarted.scheduler.reconcileOnStartup();
+  const feedbackAfter = restarted.deliveries.filter((entry) => entry.idempotencyKey.includes(':feedback:'));
+  assert.equal(feedbackAfter.length, 1, 'no duplicate feedback delivery');
+});
+
+test('D28: goal complete with a ruling from the WRONG agent fails closed at the cleared event (defense in depth)', async () => {
+  const store = createStore(test);
+  createRoot(store, ROOT_ID, [WORKER_ID, VERIFIER_ID]);
+  const plan = createActivePlan(store, makeDoc([node('n1', { verifier: VERIFIER_ID })]));
+  const { scheduler } = createHarness(store);
+
+  scheduler.handleEvent('conversation_plan_updated', { ownerConversationId: ROOT_ID, plan });
+  await flush(scheduler);
+  announceComplete(store, scheduler, 'child-n1', '完工摘要');
+  await flush(scheduler);
+
+  // Tampered/buggy mutation: the store layer has no ruler validation
+  // (enforcement lives in the bridge/REST), so a ruling ruled by a THIRD
+  // agent can be persisted. The scheduler must refuse to settle on it.
+  const proposal = getSessionGoalProposal(store.getConversation('child-n1'));
+  const cleared = applySessionGoalAction(store, 'child-n1', {
+    action: 'accept-proposal',
+    ruledBy: { agentId: 'role-family-third', agentName: 'Third' },
+  });
+  scheduler.handleEvent('conversation_goal_proposal_cleared', {
+    conversationId: 'child-n1',
+    outcome: 'accepted',
+    goal: cleared.goal,
+    proposal,
+    ruledBy: { agentId: 'role-family-third', agentName: 'Third' },
+  });
+  await flush(scheduler);
+
+  assert.equal(getNode(store, 'n1').status, 'blocked', 'a ruling the binding contract forbids must not settle done');
+  const reasons = historyFor(store, 'n1').map((entry) => entry.reason || '');
+  assert.ok(reasons.some((reason) => reason.includes('dag_goal_completion_unverified')), JSON.stringify(reasons));
+});
+
+test('session goal: proposal ids are strong-unique (randomUUID) and survive normalization', async () => {
+  const store = createStore(test);
+  createRoot(store);
+  applySessionGoalAction(store, ROOT_ID, { action: 'set', objective: 'id uniqueness goal', checklist: [] });
+
+  const first = proposeSessionGoalAction(store, ROOT_ID, { action: 'complete', reason: 'one' }, { agentId: WORKER_ID, agentName: WORKER_ID });
+  const second = proposeSessionGoalAction(store, ROOT_ID, { action: 'complete', reason: 'two' }, { agentId: WORKER_ID, agentName: WORKER_ID });
+
+  assert.ok(String(first.proposal.id).startsWith('prop_'));
+  assert.ok(String(second.proposal.id).startsWith('prop_'));
+  assert.notEqual(first.proposal.id, second.proposal.id, 'same-ms proposals must not collide (delivery idempotency depends on it)');
+  // Read-back normalization preserves the id (dag scheduler stamps keys with it).
+  assert.equal(getSessionGoalProposal(store.getConversation(ROOT_ID)).id, second.proposal.id);
+});
+
+test('session goal ruling: accept/dismiss persist a durable ruling atomically with the mutation', async () => {
+  const store = createStore(test);
+  createRoot(store, ROOT_ID, [WORKER_ID, VERIFIER_ID]);
+  applySessionGoalAction(store, ROOT_ID, { action: 'set', objective: 'ruling goal', checklist: [] });
+
+  // Accept: ruling record carries outcome/snapshot/ruledBy in one write.
+  proposeSessionGoalAction(store, ROOT_ID, { action: 'complete', reason: 'worker 摘要' }, { agentId: WORKER_ID, agentName: WORKER_ID });
+  const accepted = applySessionGoalAction(store, ROOT_ID, {
+    action: 'accept-proposal',
+    reason: '验收通过',
+    ruledBy: { agentId: VERIFIER_ID, agentName: VERIFIER_ID },
+  });
+  const acceptRuling = getSessionGoalRuling(accepted.conversation);
+  assert.ok(acceptRuling, 'ruling persisted with the accept mutation');
+  assert.equal(acceptRuling.outcome, 'accepted');
+  assert.equal(acceptRuling.action, 'complete');
+  assert.equal(acceptRuling.ruledBy.kind, 'agent');
+  assert.equal(acceptRuling.ruledBy.agentId, VERIFIER_ID);
+  assert.equal(acceptRuling.reason, '验收通过');
+  assert.equal(acceptRuling.proposalSnapshot.reason, 'worker 摘要', 'snapshot carries the worker result summary (D23)');
+  assert.equal(acceptRuling.proposalSnapshot.proposedBy.agentId, WORKER_ID);
+  assert.ok(acceptRuling.proposalId, 'ruling references the ruled proposal');
+  assert.equal(acceptRuling.proposalId, acceptRuling.proposalSnapshot.id, 'ruling id and snapshot id must identify the same proposal');
+  assert.equal(getSessionGoalProposal(accepted.conversation), null, 'proposal cleared in the same write');
+
+  const checklistUpdated = applySessionGoalAction(store, ROOT_ID, {
+    action: 'update-checklist',
+    checklistText: '- [x] verified',
+  });
+  assert.equal(
+    getSessionGoalRuling(checklistUpdated.conversation).id,
+    acceptRuling.id,
+    'checklist-only updates must preserve the durable ruling record',
+  );
+  assert.equal(checklistUpdated.proposalChanged, false, 'checklist-only updates must not claim a proposal was cleared');
+  assert.equal(checklistUpdated.proposalCleared, false);
+
+  // A checklist update during a pending round also preserves the proposal
+  // and must not emit proposal-cleared response flags.
+  proposeSessionGoalAction(store, ROOT_ID, { action: 'complete', reason: '第二次完工' }, { agentId: WORKER_ID, agentName: WORKER_ID });
+  const pendingChecklistUpdated = applySessionGoalAction(store, ROOT_ID, {
+    action: 'update-checklist',
+    checklistText: '- [~] awaiting review',
+  });
+  assert.equal(pendingChecklistUpdated.proposal.reason, '第二次完工');
+  assert.equal(pendingChecklistUpdated.proposalChanged, false);
+  assert.equal(pendingChecklistUpdated.proposalCleared, false);
+
+  // Reject: the pending fresh round is ruled by the user.
+  const dismissed = applySessionGoalAction(store, ROOT_ID, {
+    action: 'dismiss-proposal',
+    reason: '用户打回',
+    ruledBy: { kind: 'user' },
+  });
+  const rejectRuling = getSessionGoalRuling(dismissed.conversation);
+  assert.ok(rejectRuling, 'ruling persisted with the dismiss mutation');
+  assert.equal(rejectRuling.outcome, 'rejected');
+  assert.equal(rejectRuling.ruledBy.kind, 'user');
+  assert.equal(rejectRuling.reason, '用户打回');
+  assert.equal(rejectRuling.proposalSnapshot.reason, '第二次完工');
+
+  // Ruling without an explicit ruledBy is marked system (never silently
+  // treated as user/verifier by the scheduler).
+  proposeSessionGoalAction(store, ROOT_ID, { action: 'complete', reason: '第三次' }, { agentId: WORKER_ID, agentName: WORKER_ID });
+  const unmarked = applySessionGoalAction(store, ROOT_ID, { action: 'accept-proposal' });
+  assert.equal(getSessionGoalRuling(unmarked.conversation).ruledBy.kind, 'system');
+
+  // Replacing the goal starts a new epoch: the stale ruling is dropped.
+  const replaced = applySessionGoalAction(store, ROOT_ID, { action: 'set', objective: 'new epoch', checklist: [] });
+  assert.equal(getSessionGoalRuling(replaced.conversation), null, 'goal replacement drops the stale ruling');
+});
+
+test('D28: a ruling whose proposalId disagrees with its proposal snapshot is rejected and cannot settle', async () => {
+  const store = createStore(test);
+  createRoot(store, ROOT_ID, [WORKER_ID, VERIFIER_ID]);
+  const plan = createActivePlan(store, makeDoc([node('n1', { verifier: VERIFIER_ID })]));
+  const harness = createHarness(store);
+
+  harness.scheduler.handleEvent('conversation_plan_updated', { ownerConversationId: ROOT_ID, plan });
+  await flush(harness.scheduler);
+  announceComplete(store, harness.scheduler, 'child-n1', '待验收摘要');
+  await flush(harness.scheduler);
+
+  applySessionGoalAction(store, 'child-n1', {
+    action: 'accept-proposal',
+    ruledBy: { agentId: VERIFIER_ID, agentName: VERIFIER_ID },
+  });
+  const conversation = store.getConversation('child-n1');
+  store.updateConversation('child-n1', {
+    metadata: {
+      ...conversation.metadata,
+      sessionGoalRuling: {
+        ...conversation.metadata.sessionGoalRuling,
+        proposalId: 'prop_tampered',
+      },
+    },
+  });
+
+  assert.equal(getSessionGoalRuling(store.getConversation('child-n1')), null, 'normalization rejects the mismatched durable record');
+
+  const restarted = createHarness(store);
+  await restarted.scheduler.reconcileOnStartup();
+
+  assert.equal(getNode(store, 'n1').status, 'blocked', 'a mismatched ruling cannot prove completion');
+  const reasons = historyFor(store, 'n1').map((entry) => entry.reason || '');
+  assert.ok(reasons.some((reason) => reason.includes('dag_goal_completion_unverified')), JSON.stringify(reasons));
 });

@@ -1995,6 +1995,69 @@ test('DAG goal binding: only the designated verifier can accept/reject (dag_veri
   assert.ok(clearedEvent, 'cleared event broadcast');
   assert.equal(clearedEvent.payload.ruledBy.agentId, verifier.id);
   assert.ok(clearedEvent.payload.proposal, 'cleared event carries the proposal snapshot');
+
+  // The ruling is persisted ATOMICALLY with the mutation (durable record
+  // the DAG scheduler validates at settle/reconcile time).
+  const ruling = store.getConversation(fixture.conversation.id).metadata.sessionGoalRuling;
+  assert.ok(ruling, 'ruling record persisted with the accept mutation');
+  assert.equal(ruling.outcome, 'accepted');
+  assert.equal(ruling.action, 'complete');
+  assert.equal(ruling.ruledBy.agentId, verifier.id);
+  assert.equal(ruling.reason, 'looks good');
+  assert.equal(ruling.proposalSnapshot.reason, 'Work finished');
+  assert.ok(ruling.proposalId, 'ruling references the ruled proposal id');
+});
+
+test('DAG goal binding: verification-exempt node rejects ALL agent rulings (dag_verifier_exempt)', (t) => {
+  const tempDir = withTempDir('caff-bridge-dag-exempt-');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath: path.join(tempDir, 'bridge.sqlite') });
+  const broadcastEvents = [];
+  const bridge = createGoalTestBridge(store, broadcastEvents);
+  t.after(() => {
+    try { store.close(); } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  // Two participants, but the binding marks the node verification-EXEMPT
+  // (verifierId null): completion may only be ruled by the scheduler
+  // auto-accept or the user — never by an agent.
+  const fixture = createDagBoundGoalFixture(store, 'dag-exempt', 2);
+  const [worker, other] = fixture.agents;
+  const current = store.getConversation(fixture.conversation.id);
+  store.updateConversation(current.id, {
+    metadata: {
+      ...(current.metadata || {}),
+      dagNodeGoalBinding: { planId: 'plan-1', nodeId: 'n1', workerId: worker.id, verifierId: null },
+    },
+  });
+
+  const workerContext = registerAgentInvocation(bridge, fixture, worker);
+  bridge.handleSuggestGoal({
+    invocationId: workerContext.invocationId,
+    callbackToken: workerContext.callbackToken,
+    action: 'complete',
+    reason: 'Work finished',
+  });
+
+  for (const action of ['accept', 'reject']) {
+    const otherContext = registerAgentInvocation(bridge, fixture, other);
+    assert.throws(
+      () => bridge.handleSuggestGoal({
+        invocationId: otherContext.invocationId,
+        callbackToken: otherContext.callbackToken,
+        action,
+        reason: 'I rule anyway',
+      }),
+      (error) => { assertForbidden(error, 'dag_verifier_exempt'); return true; },
+      `exempt node must 403 agent ${action}`,
+    );
+  }
+
+  // The attempted rulings never happened: goal still active, proposal still pending.
+  const conversation = store.getConversation(fixture.conversation.id);
+  assert.equal(conversation.metadata.sessionGoal.status, 'active');
+  assert.ok(conversation.metadata.sessionGoalProposal, 'proposal still pending');
+  assert.equal(conversation.metadata.sessionGoalRuling, undefined, 'no ruling persisted');
 });
 
 test('DAG goal binding: agents cannot drive non-complete goal mutations (dag_goal_mutation_forbidden)', (t) => {
