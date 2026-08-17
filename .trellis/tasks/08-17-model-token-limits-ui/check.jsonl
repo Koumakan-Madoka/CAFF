@@ -3,3 +3,8 @@
 {"file":".trellis/spec/unit-test/runtime-tests.md","reason":"Test verification"}
 {"file":"tests/http/model-providers-controller.test.js","reason":"HTTP round-trip verification"}
 {"file":"tests/ui/model-family-roles-production.test.js","reason":"Browser UI verification"}
+{"file":".trellis/spec/backend/model-provider-config.md","reason":"Executable catalog limit mapping and validation contract"}
+{"file":"server/domain/models/models-dev-import.ts","reason":"Catalog normalization and shared Pi defaults"}
+{"file":"server/api/model-catalog-controller.ts","reason":"Trusted snapshot comparison and atomic import"}
+{"file":"public/personas/catalog-import.js","reason":"Read-only prefill provenance and responsive controls"}
+{"file":"scripts/ui/verify-catalog-import.mjs","reason":"Real Edge persistence and mobile acceptance"}

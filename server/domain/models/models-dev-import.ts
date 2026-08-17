@@ -1,3 +1,8 @@
+import {
+  PI_DEFAULT_CONTEXT_WINDOW,
+  PI_DEFAULT_MAX_TOKENS,
+} from './model-provider-config';
+
 type JsonObject = Record<string, any>;
 
 // models.dev is a display catalog, not a shell parser. Keep names strict
@@ -223,6 +228,30 @@ export function projectModelInputCapabilities(value: any): Array<'text' | 'image
   return [...new Set(entries)];
 }
 
+export function projectCatalogModelLimits(value: any) {
+  if (!isPlainObject(value)) {
+    return {};
+  }
+
+  const contextWindow = Number.isInteger(value.context) && value.context > 0
+    ? value.context
+    : undefined;
+  const maxTokens = Number.isInteger(value.output) && value.output > 0
+    ? value.output
+    : undefined;
+  const effectiveContextWindow = contextWindow ?? PI_DEFAULT_CONTEXT_WINDOW;
+  const effectiveMaxTokens = maxTokens ?? PI_DEFAULT_MAX_TOKENS;
+
+  if (effectiveMaxTokens > effectiveContextWindow) {
+    return {};
+  }
+
+  return {
+    ...(contextWindow === undefined ? {} : { contextWindow }),
+    ...(maxTokens === undefined ? {} : { maxTokens }),
+  };
+}
+
 export function validateCatalogProvenance(provenance: any) {
   if (!isPlainObject(provenance)) {
     throw new ModelCatalogError('catalog_provenance_invalid', 'provenance');
@@ -251,6 +280,7 @@ export function projectCatalogModel(document: any, providerId: string, modelId: 
   const dialect = resolveDialect(merged.provider);
   const rawModalities = isPlainObject(merged.model.modalities) ? merged.model.modalities : undefined;
   const rawInput = Array.isArray(rawModalities?.input) ? rawModalities.input : undefined;
+  const runtimeLimits = projectCatalogModelLimits(merged.model.limit);
 
   return {
     providerId: id,
@@ -264,6 +294,7 @@ export function projectCatalogModel(document: any, providerId: string, modelId: 
     env: envNames.map((name: string) => classifyCatalogEnv(id, name)),
     manualConfigurationRequired: !dialect,
     input: rawInput ? projectModelInputCapabilities(rawInput) : undefined,
+    ...runtimeLimits,
     catalogMetadata: {
       modalities: clone(merged.model.modalities),
       reasoningOptions: clone(merged.model.reasoning_options ?? merged.model.reasoningOptions),

@@ -6,3 +6,9 @@
 {"file":"server/domain/models/model-provider-config.ts","reason":"Authoritative provider model projection patch and validation"}
 {"file":"public/personas/provider-editor.js","reason":"Existing model provider editor pattern"}
 {"file":"tests/runtime/model-provider-config.test.js","reason":"Domain contract regression examples"}
+{"file":"server/domain/models/models-dev-import.ts","reason":"Map trusted models.dev limit fields into Pi runtime limits"}
+{"file":"server/api/model-catalog-controller.ts","reason":"Catalog detail defaults and trusted import persistence contract"}
+{"file":"public/personas/catalog-import.js","reason":"Read-only catalog limit prefill and import payload"}
+{"file":"tests/runtime/models-dev-import.test.js","reason":"Catalog limit normalization edge cases"}
+{"file":"tests/http/model-catalog-controller.test.js","reason":"Import persistence tamper rejection and stale-value clearing"}
+{"file":"tests/runtime/catalog-import-ui.test.js","reason":"Catalog limit UI projection and payload regression"}

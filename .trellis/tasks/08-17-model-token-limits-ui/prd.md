@@ -1,6 +1,6 @@
 ---
 feature_ids: [model-token-limits-ui]
-topics: [model-provider, context-window, max-tokens, frontend, validation]
+topics: [model-provider, model-catalog, context-window, max-tokens, frontend, validation]
 doc_kind: prd
 created: 2026-08-17
 branch: feat/model-token-limits-ui
@@ -11,7 +11,7 @@ base_branch: feat/dag-execution
 
 ## Goal
 
-Allow local administrators to inspect and edit each configured model's Pi `contextWindow` and `maxTokens` values from the existing model provider management screen.
+Allow local administrators to inspect and edit each configured model's Pi `contextWindow` and `maxTokens` values from the existing model provider management screen, including trusted prefill from models.dev catalog imports.
 
 ## Requirements
 
@@ -22,6 +22,10 @@ Allow local administrators to inspect and edit each configured model's Pi `conte
 - Show the effective value/default source in the UI without implying the model capability was auto-detected.
 - Reject non-integers, non-positive values, and explicit `maxTokens > contextWindow` with stable field paths.
 - Preserve unrelated model compatibility fields through patch-merge.
+- Map valid models.dev `limit.context` / `limit.output` values to Pi `contextWindow` / `maxTokens` during catalog import.
+- Show catalog-derived runtime limits as read-only import values with explicit provenance; missing or invalid values remain empty and use Pi defaults.
+- Revalidate catalog-derived limits server-side so a modified browser payload cannot forge model capabilities.
+- Re-import updates catalog-managed limits (or clears stale values when the current snapshot omits them) while preserving unrelated custom model fields.
 
 ## Cross-Layer Contract
 
@@ -42,6 +46,9 @@ When omitted, the UI displays Pi defaults (`128000` and `16384`) as defaults but
 | both omitted | Remove explicit fields; UI labels Pi defaults |
 | zero, negative, decimal, string | `422` with `provider_model_limit_invalid` at exact model field path |
 | `maxTokens > contextWindow` | `422` with `provider_model_limits_inconsistent` at `maxTokens` path |
+| catalog `200000 / 8192` | import writes `contextWindow: 200000`, `maxTokens: 8192` |
+| catalog limit missing/invalid/inconsistent | import writes no explicit limit; re-import clears stale catalog-managed limits |
+| browser sends a value different from the current catalog projection | `422` with `catalog_import_limit_mismatch` at the exact body field |
 
 ## Acceptance Criteria
 
@@ -51,3 +58,7 @@ When omitted, the UI displays Pi defaults (`128000` and `16384`) as defaults but
 - [x] Invalid values produce a visible, stable validation error.
 - [x] Provider config, HTTP, and production browser UI regression tests pass.
 - [x] Build, typecheck, and repository checks pass.
+- [x] Catalog detail displays valid limits as read-only runtime values with snapshot provenance.
+- [x] Catalog import persists trusted `limit.context` / `limit.output` mappings.
+- [x] Missing or invalid catalog limits do not invent capabilities, and re-import clears stale values.
+- [x] Tampered catalog limit payloads fail closed without changing `models.json`.
