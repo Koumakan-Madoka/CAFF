@@ -51,13 +51,15 @@ PLAN_EOF
 - `branch`：节点的工作分支名。**图构建时定名、不立刻检出**；命名从父会话 branch 派生（如父 `feat/x` → 子 `feat/x-node-slug`）。执行期每个节点检出到独立 worktree（`.worktrees/dag/...`）
 - `base_branch`（可选）：显式检出基线，**必须等于某个父节点的 branch**；深层链路上的节点应设置它（如 `n2.base_branch = n1.branch`），否则节点分支默认从仓库主干 HEAD 切出，merge 时上游的传递性成果不会进入集成分支
 - `verify`（可选）：执行完成后的校验命令。merge 节点尤其推荐——服务端在主理人 agent 报完工后会真实执行它，失败则节点置 `blocked`（fail-closed，不接受口头报工）
+- `verifier`（可选）：验收 agent id（D28）。必须是根会话 participant 且 ≠ 执行 agent（worker=根会话第一位 participant），否则派发前 fail-closed（`dag_verifier_invalid` / `dag_verifier_self_review`，呼应 no-self-review 治理）。不指定时缺省取第一位 ≠ worker 的 participant；单 agent 会话免验收（调度器代行 accept）
 - `result`（执行期由调度器/你回写）：≤2000 字符的产出摘要，转 `done` 时携带；下游节点的初始指令会自动注入上游的 result
 - `spawned_conversation_id`：绑定的执行子会话 id（由调度器系统通道写入，你只读）
 
 ## 生命周期与权限
 
 - `draft`（讨论期）：可整体创建/替换 plan，结构随意改
-- `active`（用户点「开始执行」后）：**结构锁定**——你不能增删节点、改边、改 goal/branch/kind/verify/base_branch，只能更新节点的 `status`；尝试结构修改会收到 `plan_locked_*` 错误。上游任一传递节点为 `blocked` 时，下游 `pending→doing` 会被 `409 plan_upstream_blocked` 拒绝（fail-closed），先解阻上游
+- `active`（用户点「开始执行」后）：**结构锁定**——你不能增删节点、改边、改 goal/branch/kind/verify/base_branch/verifier，只能更新节点的 `status`；尝试结构修改会收到 `plan_locked_*` 错误。上游任一传递节点为 `blocked` 时，下游 `pending→doing` 会被 `409 plan_upstream_blocked` 拒绝（fail-closed），先解阻上游
+- 节点执行由子会话轻量 session goal 持续驱动（D27）：干完活要调 `suggest-goal --action complete --reason "<结果摘要>"` 宣布完工；有 verifier 的节点由验收 agent 裁决（accept→done，reject→带反馈重干，不限次数），不是「回完一条消息就算完」
 - `done / archived`：拒写
 - draft→active 只能由用户或根会话主理人 agent 触发；子会话里的你没有 activate/revert 权限（403），可以建议，但不要替用户「开工」
 
@@ -74,6 +76,7 @@ PLAN_EOF
 
 - 节点 5–12 个为宜；太碎用户难审，太粗失去规划意义
 - 并行分支要有 `merge` 节点收口，merge 节点的 goal 写明「合并哪些分支、如何验证」，并配上 `verify` 命令
+- 多 agent 会话里给关键节点配 `verifier` 验收人（不能是执行者自己）；单 agent 会话无需配置
 - 深层依赖链上的节点设置 `base_branch` 指向父节点 branch，保证传递性成果能进集成分支
 - branch 命名遵循父会话派生约定，不要复用已有分支名
 - 提交前自检：无环、依赖 id 都存在、merge 入度 ≥ 2

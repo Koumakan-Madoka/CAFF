@@ -38,8 +38,10 @@
 - `server/domain/dag/dag-scheduler.ts`:
   - `createDagScheduler({ store, broadcastEvent, prepareNodeWorktree,
     spawnNodeConversation, resumeNodeConversation, verifyNodeCompletion?,
-    resolveWorktreePathForNode?, maxConcurrency?, logger? })`
-  - `scheduler.handleEvent('conversation_plan_updated' | 'agent_slot_finished', payload)`
+    deliverVerificationRequest?, resolveWorktreePathForNode?, maxConcurrency?,
+    logger? })`
+  - `scheduler.handleEvent('conversation_plan_updated' | 'agent_slot_finished'
+    | 'conversation_goal_proposal_updated' | 'conversation_goal_proposal_cleared', payload)`
   - `scheduler.dispatchReadyNodes(ownerConversationId)` — manual flush (tests).
   - `scheduler.reconcileOnStartup()` — D25 restart recovery scan.
   - `scheduler.resolveConversationWorkdir(conversation)` — cwd hook backing
@@ -48,6 +50,11 @@
   - `writePlanNodeExecution(conversationId, [{ nodeId, status, result?, spawnedConversationId? }], { reason? })`
     — system actor; may bind `spawned_conversation_id` (REST/tool cannot);
     same D16/D18 standards as user writes.
+- Agent tool bridge (`server/domain/runtime/agent-tool-bridge.ts`):
+  - `suggest-goal --action accept|reject` (D28) rules on the PENDING proposal
+    instead of creating one; broadcasts `conversation_goal_proposal_cleared`
+    with `{ outcome, reason, ruledBy }`. The proposer can never rule on their
+    own proposal → 403 `goal_proposal_self_review`.
 
 ### 3. Contracts
 - **Event-driven only (D21)**: the scheduler subscribes to
@@ -57,25 +64,53 @@
   idempotently.
 - **Dispatch pipeline** per ready node (`pending` + all transitive upstreams
   `done`, subject to the concurrency cap):
+  0. **verifier resolution (D28, before ANY side effect)** — explicit
+     `node.verifier` must be a root-conversation participant and ≠ the worker
+     (first participant); invalid → `blocked` `dag_verifier_invalid`,
+     self-review → `blocked` `dag_verifier_self_review`. Unspecified → first
+     participant ≠ worker; single-agent owner → no verifier (auto-accept).
   1. `prepareNodeWorktree` — dirty/mismatched/occupied → node `blocked` with
      the git reason (D22 fail-closed, never cleans user data);
   2. `spawnNodeConversation` — child hangs flat under the ROOT conversation
      (D13); `clientRequestId` idempotency key embeds `activatedAt` so a crash
      retry reuses the same child instead of double-spawning;
-  3. bind `doing + spawned_conversation_id` via `writePlanNodeExecution`;
-  4. **post-bind settle**: immediately re-check the child for a terminal DAG
-     reply (shared predicate with reconcile). Closes the spawn→bind race where
-     `agent_slot_finished` fired before the binding existed — without this the
-     node would stick `doing` forever.
+  3. **session goal set (D27)** — lightweight goal on the child BEFORE the
+     doing binding: objective = node goal + completion protocol, explicit
+     EMPTY checklist (the heavy session-level default checklist is never
+     inherited). Re-dispatch never clobbers an existing goal. Init failure →
+     `blocked` `dag_goal_init_failed` (fail-closed: no goal = no sustained
+     drive, no completion protocol);
+  4. bind `doing + spawned_conversation_id` via `writePlanNodeExecution`;
+  5. **post-bind settle**: immediately re-check the child's goal state
+     (shared predicate with reconcile). Closes the spawn→bind race where the
+     goal reached a terminal state before the binding existed.
 - **Initial message** (D23/D26): goal + upstream `result` summaries; merge
   nodes additionally get the ordered source branch list (`depends_on` order,
   D11), the verify command, and the D12 bounded-retry / `merge --abort`
   instructions.
-- **Completion write-back**: only terminal assistant replies whose
-  `metadata.triggeredByMessageId` references a scheduler-injected source
-  message (`kind: 'conversation_spawn_initial_message'` or `dagResume: true`)
-  settle a node — stray side-dispatches are ignored. Completed →
-  `done + result` (≤2000 chars, D23); failed → `blocked` + reason.
+- **Completion protocol (D27/D28)**: a finished turn NEVER completes a
+  goal-driven node. The worker announces completion via
+  `suggest-goal --action complete --reason "<result summary>"`; the
+  scheduler observes `conversation_goal_proposal_updated` and routes the
+  pending proposal:
+  - verifier present → verification request delivered to the verifier
+    participant (idempotent per proposal: node goal + result summary +
+    worktree path + verify command + git diff guidance); verifier rules via
+    `suggest-goal --action accept|reject` (bridge blocks self-ruling, 403);
+  - accept → goal complete → `done + result` (reason string, ≤2000 chars,
+    D23), merge nodes still pass `verifyNodeCompletion` first;
+  - reject → proposal dismissed, verifier feedback delivered back to the
+    worker, goal stays active and continuation re-drives — unbounded rounds
+    (goal budget + conversation depth are the backstop);
+  - no verifier (single-agent owner) → scheduler auto-accepts in-store and
+    settles immediately;
+  - goal-runner budget pause proposal → `blocked`
+    `dag_goal_budget_exhausted`.
+- **Failure write-back**: `agent_slot_finished` with a failed status still
+  flips `blocked` + reason; a COMPLETED slot only settles goal-less children
+  (legacy pre-D27 fallback) — with a goal active it defers to the goal
+  state. Only scheduler-injected source messages count; stray side
+  dispatches are ignored.
 - **Merge gating (D11/D19 fail-closed)**: merge nodes must pass
   `verifyNodeCompletion` BEFORE `done` is written; failure or exception →
   `blocked` with `dag_merge_verify_failed: <reason>`, downstream stays
@@ -84,7 +119,11 @@
   `CAFF_DAG_MAX_CONCURRENCY` (default 3). Surplus ready nodes stay `pending`
   (no `queued` enum, D17); freed slots refill FIFO in doc declaration order.
 - **Restart reconcile (D25)**: `reconcileOnStartup()` scans active plans —
-  - child finished while down → write back `done`/`blocked` and propagate;
+  - goal state is the source of truth for goal-driven children: goal
+    complete → `done`; budget-exhausted pause proposal → `blocked`; pending
+    complete proposal → verification (re-)routed idempotently;
+  - goal-less child finished while down → legacy terminal-reply write-back
+    and propagate;
   - child interrupted → resume by injecting into the ORIGINAL child
     conversation (no new spawn, context preserved), exactly once — the
     persisted `dag_resume` marker message is the durable attempt counter;
@@ -117,7 +156,14 @@
 | activate | owner conversation not bound to a project | 409 `plan_owner_project_unbound`, plan stays `draft` |
 | dispatch | node ready but cap reached | stays `pending`; refilled FIFO when a slot frees |
 | spawn | spawn throws | node → `blocked`, reason `dag_spawn_failed: <msg>` |
+| dispatch | explicit verifier not a participant / == worker | `blocked` `dag_verifier_invalid` / `dag_verifier_self_review`, zero side effects |
+| dispatch | session goal init throws | `blocked` `dag_goal_init_failed` (spawned id bound for forensics) |
 | completion | slot event with unknown conversation / non-DAG source | ignored entirely |
+| completion | completed slot, goal active, no proposal | no-op — continuation drives on (D27) |
+| completion | goal-runner budget pause proposal | `blocked` `dag_goal_budget_exhausted` |
+| verification | verifier routing but no delivery channel wired | `blocked` `dag_verify_unavailable` |
+| bridge | proposer accepts/rejects own proposal | 403 `goal_proposal_self_review` |
+| bridge | accept/reject with no pending proposal | 404 |
 | completion | merge node, verify verdict fail/throw | `blocked` + `dag_merge_verify_failed`, no `result` written |
 | merge prepare | any upstream lacks `branch` | dispatch refused `dag_merge_missing_upstream_branch` |
 | merge LCA | upstreams share no ancestor / unknown ref | fail closed, no worktree mutation |
@@ -146,18 +192,23 @@
 - `tests/dag/dag-merge.test.js` (8): LCA correctness, explicit `base_branch`
   priority, orphan-branch fail-closed, ancestry gate, verify command output
   passthrough.
-- `tests/dag/dag-scheduler.test.js` (18): dispatch+bind, D24 cap+FIFO refill,
+- `tests/dag/dag-scheduler.test.js` (26): dispatch+bind, D24 cap+FIFO refill,
   result propagation, spawn→bind race settle, failure→blocked+D16, dirty
   worktree fail-closed, spawn failure, stray events ignored, all D25
   reconcile branches, cwd hook, D26 instruction contents, merge gating
-  pass/fail/throw.
+  pass/fail/throw, D27 lightweight goal (empty checklist, objective teaches
+  the completion protocol, budget→blocked), D28 verifier flow
+  (routing/accept/reject feedback/default resolution/self-review & invalid
+  fail-closed, reconcile re-route).
 - `tests/dag/dag-execution-baseline.test.js` (3): PRD §5 baselines 2–6
   end-to-end with REAL git (baseline 1 stays in
-  `tests/ui/dag-planning-demo.test.js`).
+  `tests/ui/dag-planning-demo.test.js`); completion driven by D27 goal
+  proposals (single-agent owner → auto-accept path).
 - Assertion points: history lines (`pending->doing:dag_dispatch`,
-  `doing->done:dag_node_completed`, `doing->blocked:<reason>`), resume
+  `doing->done:dag_goal_completed`, `doing->blocked:<reason>`), resume
   targets the original conversation id, verify hook call count, downstream
-  status while upstream blocked.
+  status while upstream blocked, verifier delivery `targetAgentId`,
+  rejection feedback re-entering the worker.
 
 ### 7. Wrong vs Correct
 #### Wrong

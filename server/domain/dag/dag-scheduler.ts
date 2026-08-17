@@ -7,14 +7,22 @@
  *   one git worktree per node (D22), one spawned child conversation per node
  *   (D13 flat under the root conversation), goal + upstream result summaries
  *   injected as the initial instruction (D23).
- * - `handleEvent('agent_slot_finished', …)` → completion write-back: the
- *   spawned conversation's terminal slot flips the node to done (with a
- *   ≤2000-char result summary) or blocked (with the failure reason), then
- *   readiness dispatch runs again so downstream nodes start (D16-consistent:
- *   a blocked upstream never lets downstream start). Merge nodes additionally
- *   pass through the `verifyNodeCompletion` hook (D11/D19 fail-closed): every
- *   source branch must be merged and the verify command must pass, otherwise
- *   the completion becomes blocked with the verification reason.
+ * - `handleEvent('agent_slot_finished', …)` → failure write-back and
+ *   goal-aware settle: a finished turn no longer completes the node (D27) —
+ *   it only settles when the child's session goal already reached a terminal
+ *   or verifiable state; slot failures still flip the node to blocked.
+ * - `handleEvent('conversation_goal_proposal_updated'/'_cleared', …)` →
+ *   D27/D28 completion flow: the worker announces completion via a goal
+ *   complete proposal; the scheduler routes it to the node's verifier agent
+ *   (targeted delivery into the same child conversation) or auto-accepts
+ *   when the node has no verifier; verifier accept → done + result, reject →
+ *   feedback delivered back to the worker (unbounded, goal budget-backed);
+ *   a goal-runner budget pause proposal flips the node to blocked.
+ *   done write-backs carry a ≤2000-char result summary (D23) and trigger
+ *   readiness dispatch so downstream nodes start (D16-consistent: a blocked
+ *   upstream never lets downstream start). Merge nodes additionally pass
+ *   through the `verifyNodeCompletion` hook (D11/D19 fail-closed) even after
+ *   acceptance.
  * - `reconcileOnStartup()` → D25: re-scan active plans after a server
  *   restart; finished children are written back, interrupted children get ONE
  *   automatic resume injection into the original conversation (marker
@@ -34,6 +42,36 @@
  */
 
 const DAG_RESUME_SENDER_NAME = 'DAG Scheduler';
+
+import {
+  applySessionGoalAction,
+  getSessionGoal,
+  getSessionGoalProposal,
+} from '../conversation/session-goal';
+
+/**
+ * D28 verifier resolution. The worker is always the owner conversation's
+ * first participant agent (spawn copies participants and dispatches to the
+ * primary). Explicit node.verifier must be a participant and must differ
+ * from the worker (no self-review); when omitted, the first participant
+ * other than the worker verifies; a single-agent owner means no verifier
+ * (the scheduler auto-accepts the completion proposal instead).
+ */
+function resolveNodeVerifier(node: any, participantIds: string[]): { verifierId: string | null; error: string | null } {
+  const workerId = String(participantIds[0] || '').trim();
+  const explicit = String(node && node.verifier || '').trim();
+  if (explicit) {
+    if (!participantIds.includes(explicit)) {
+      return { verifierId: null, error: `dag_verifier_invalid: verifier "${explicit}" is not a participant agent of the owner conversation` };
+    }
+    if (explicit === workerId) {
+      return { verifierId: null, error: `dag_verifier_self_review: verifier "${explicit}" is the executing agent; a node cannot verify its own work (no self-review)` };
+    }
+    return { verifierId: explicit, error: null };
+  }
+  const fallback = participantIds.find((id) => id && id !== workerId);
+  return { verifierId: fallback || null, error: null };
+}
 
 function clipText(value: any, maxLength: number): string {
   const text = String(value || '');
@@ -67,6 +105,24 @@ function isTerminalMessage(message: any): boolean {
   return status === 'completed' || status === 'failed';
 }
 
+/** Participant agent ids of a conversation, in declaration order. */
+function participantIdsOf(conversation: any): string[] {
+  const agents = conversation && Array.isArray(conversation.agents) ? conversation.agents : [];
+  return agents.map((agent: any) => String(agent && agent.id || '').trim()).filter(Boolean);
+}
+
+/** Completion protocol lines shared by the bootstrap instruction and the goal objective (D27/D28). */
+function completionProtocolLines(node: any, verifierId: string | null): string[] {
+  return [
+    '完工协议（D27/D28）：本节点由 session goal 持续驱动，单次回复结束不代表完工。',
+    '达成目标后调用 suggest-goal --action complete --reason "<执行结果摘要>" 宣布完工（reason 会回写为节点 result，≤2000 字符，供下游消费）。',
+    verifierId
+      ? `验收 agent（${verifierId}）将复核你的完工提案：通过则节点标记 done；打回则按反馈改进后重新宣布完工。`
+      : '完工提案确认后节点即标记 done。',
+    '目标未达成前不要宣布完工。',
+  ];
+}
+
 export function createDagScheduler(options: any = {}) {
   const store = options.store;
   const broadcastEvent = typeof options.broadcastEvent === 'function' ? options.broadcastEvent : () => {};
@@ -75,6 +131,13 @@ export function createDagScheduler(options: any = {}) {
     : null;
   const resumeNodeConversation = typeof options.resumeNodeConversation === 'function'
     ? options.resumeNodeConversation
+    : null;
+  // D28 verification channel: deliver a scheduler-authored message to a
+  // specific participant of the spawned child conversation (verification
+  // request → verifier, rejection feedback → worker). Wired in create-server
+  // via crossConversationDeliveryService.submitFromSystem + direct dispatch.
+  const deliverNodeMessage = typeof options.deliverNodeMessage === 'function'
+    ? options.deliverNodeMessage
     : null;
   // Startup reconcile hook (D25 wiring): re-offer a doing node's QUEUED
   // scheduler-owned delivery for direct parallel dispatch. Only invoked when
@@ -164,7 +227,7 @@ export function createDagScheduler(options: any = {}) {
     return null;
   }
 
-  function buildInitialInstruction(plan: any, node: any, worktreePath: string): string {
+  function buildInitialInstruction(plan: any, node: any, worktreePath: string, verifierId: string | null = null): string {
     const nodes = nodesOf(plan);
     const nodeById = new Map<string, any>();
     for (const candidate of nodes) {
@@ -200,7 +263,7 @@ export function createDagScheduler(options: any = {}) {
         '',
         '冲突处理流程（D10/D12）：发生冲突时由你解决；同一源分支合并失败可有界重试（≤3 次，可先 merge --abort 再重来）；',
         '仍失败则停止并在回复中说明原因，调度器会把节点置为 blocked 并回写原因。',
-        '完成后请输出简短的合并结果摘要（将回写为节点 result）。',
+        ...completionProtocolLines(node, verifierId),
       ].filter(Boolean).join('\n');
     }
 
@@ -213,8 +276,21 @@ export function createDagScheduler(options: any = {}) {
       upstreamLines.length > 0 ? '上游节点执行结果：' : '本节点无上游依赖。',
       ...upstreamLines,
       '',
-      '完成后请输出简短的执行结果摘要（将回写为节点 result，供下游节点消费）。',
+      ...completionProtocolLines(node, verifierId),
     ].filter((line) => line !== '').join('\n');
+  }
+
+  /** D27 lightweight session goal objective for the spawned child (≤2000 chars). */
+  function buildNodeGoalObjective(plan: any, node: any, worktreePath: string, verifierId: string | null): string {
+    const lines = [
+      `[DAG 节点目标] ${node.id}：${node.title || node.id}`,
+      `目标：${clipText(String(node.goal || '(未填写)'), 1200)}`,
+      node.branch ? `分支：${node.branch}` : '',
+      worktreePath ? `工作目录：${worktreePath}` : '',
+      node.kind === 'merge' ? '节点类型：merge（按 depends_on 顺序逐条合并上游分支，冲突由你解决，verify 命令必须通过）。' : '',
+      ...completionProtocolLines(node, verifierId),
+    ].filter(Boolean);
+    return clipText(lines.join('\n'), 2000);
   }
 
   function broadcastPlanUpdated(ownerConversationId: string, plan: any) {
@@ -297,6 +373,159 @@ export function createDagScheduler(options: any = {}) {
     return result;
   }
 
+  /** Find the doing node bound to a spawned child conversation. */
+  function findDoingNodeForChild(plan: any, conversationId: string): any {
+    return nodesOf(plan).find((candidate: any) =>
+      nodeStatusOf(candidate) === 'doing'
+      && String(candidate.spawned_conversation_id || '').trim() === conversationId) || null;
+  }
+
+  /**
+   * Result summary for a done write-back (D23 requires non-empty): the
+   * worker's completion-proposal reason first, then its terminal reply.
+   */
+  function extractNodeResultText(conversation: any, proposal: any): string {
+    const reasonText = String(proposal && proposal.reason || '').trim();
+    if (reasonText) {
+      return clipText(reasonText, 2000);
+    }
+    const terminal = conversation ? findTerminalDagReply(conversation) : null;
+    if (terminal && terminal.kind === 'completed' && String(terminal.message.content || '').trim()) {
+      return clipText(String(terminal.message.content).trim(), 2000);
+    }
+    return '(no textual result)';
+  }
+
+  /** D28: verification request delivered to the verifier participant. */
+  function buildVerificationRequestContent(node: any, proposal: any, workerId: string): string {
+    const resultSummary = clipText(
+      String(proposal && proposal.reason || '').trim() || '(worker 未在 reason 中提供摘要)',
+      1500
+    );
+    return [
+      `[DAG 验收请求] 节点 ${node.id}：${node.title || node.id}`,
+      `工作 agent（${workerId || 'worker'}）已宣布完工，请你验收。`,
+      '',
+      `节点目标：${clipText(String(node.goal || '(未填写)'), 800)}`,
+      `完工摘要（通过后将回写为节点 result）：${resultSummary}`,
+      node.branch ? `分支：${node.branch}` : '',
+      node.verify ? `verify 命令：\`${node.verify}\`` : '',
+      '',
+      '请审查节点目标的达成情况（可查看本会话上下文、worktree 产物与 git diff）。',
+      '裁决方式：通过 → suggest-goal --action accept；打回 → suggest-goal --action reject --reason "<具体反馈>"。',
+    ].filter((line) => line !== '').join('\n');
+  }
+
+  /**
+   * D28 auto-accept: the node has no verifier (single-agent owner), so the
+   * scheduler rules on the worker's completion proposal and settles done.
+   */
+  function acceptProposalAndSettle(ownerConversationId: string, plan: any, node: any, conversationId: string, proposal: any): void {
+    const nodeId = String(node.id || '').trim();
+    let goalConversation: any = null;
+    try {
+      const result = applySessionGoalAction(store, conversationId, { action: 'accept-proposal' });
+      goalConversation = result && result.conversation ? result.conversation : null;
+      broadcastEvent('conversation_goal_proposal_cleared', {
+        conversationId,
+        outcome: 'accepted',
+        goal: result && result.goal ? result.goal : null,
+        proposal,
+        ruledBy: { agentId: 'dag-scheduler', agentName: DAG_RESUME_SENDER_NAME },
+      });
+    } catch (error: any) {
+      logError(`auto-accept failed for node ${nodeId}`, error);
+      return;
+    }
+    settleCompleted(
+      ownerConversationId,
+      plan,
+      node,
+      extractNodeResultText(goalConversation || store.getConversation(conversationId), proposal),
+      'dag_goal_completed'
+    );
+  }
+
+  /**
+   * D28 routing of a pending complete proposal: verifier present → deliver a
+   * verification request (idempotent per proposal); no verifier → auto-accept.
+   */
+  async function routeCompletionProposal(ownerConversationId: string, plan: any, node: any, conversationId: string, proposal: any): Promise<void> {
+    const nodeId = String(node.id || '').trim();
+    const conversation = store.getConversation(conversationId) || store.getConversationWithoutMessages(conversationId);
+    const childIds = participantIdsOf(conversation);
+    const ownerIds = participantIdsOf(store.getConversationWithoutMessages(ownerConversationId));
+    const participantIds = childIds.length > 0 ? childIds : ownerIds;
+    const resolution = resolveNodeVerifier(node, participantIds);
+    if (resolution.error) {
+      writeExecution(ownerConversationId, [{ nodeId, status: 'blocked' }], clipText(resolution.error, 500));
+      return;
+    }
+    const verifierId = resolution.verifierId;
+    if (!verifierId) {
+      acceptProposalAndSettle(ownerConversationId, plan, node, conversationId, proposal);
+      return;
+    }
+    if (!deliverNodeMessage) {
+      writeExecution(
+        ownerConversationId,
+        [{ nodeId, status: 'blocked' }],
+        'dag_verify_unavailable: verifier configured but no delivery channel is wired'
+      );
+      return;
+    }
+    const proposalStamp = String(proposal && (proposal.createdAt || proposal.updatedAt) || 'na');
+    try {
+      await deliverNodeMessage({
+        ownerConversationId,
+        conversationId,
+        targetAgentId: verifierId,
+        content: buildVerificationRequestContent(node, proposal, participantIds[0] || ''),
+        idempotencyKey: `dag-verify:${plan.id}:${nodeId}:${proposalStamp}`,
+        messageMetadata: { kind: 'dag_verify_request', dagNodeId: nodeId },
+      });
+    } catch (error: any) {
+      // Persist or dispatch failed; the proposal stays pending and the next
+      // event / startup reconcile re-delivers under the same idempotency key.
+      logError(`verification request delivery failed for node ${nodeId}`, error);
+    }
+  }
+
+  /**
+   * Goal-state driven settle shared by the spawn→bind race check and the
+   * startup reconcile. Returns true when the goal state fully handled the
+   * node (settled, blocked, or verification (re-)routed); false when the
+   * caller should fall back to legacy terminal-reply / resume handling.
+   */
+  async function settleFromGoalState(ownerConversationId: string, plan: any, node: any, conversation: any, reasonPrefix: string): Promise<boolean> {
+    const conversationId = String(conversation && conversation.id || '').trim();
+    if (!conversationId) {
+      return false;
+    }
+    const nodeId = String(node.id || '').trim();
+    const goal = getSessionGoal(conversation);
+    const proposal = getSessionGoalProposal(conversation);
+
+    if (goal && goal.status === 'complete') {
+      settleCompleted(ownerConversationId, plan, node, extractNodeResultText(conversation, proposal), `${reasonPrefix}_goal_complete`);
+      return true;
+    }
+    if (proposal && proposal.action === 'pause'
+      && String(proposal.proposedBy && proposal.proposedBy.agentId || '') === 'goal-runner') {
+      writeExecution(
+        ownerConversationId,
+        [{ nodeId, status: 'blocked' }],
+        `dag_goal_budget_exhausted: goal continuation budget exhausted (${reasonPrefix}, D27)`
+      );
+      return true;
+    }
+    if (proposal && proposal.action === 'complete') {
+      await routeCompletionProposal(ownerConversationId, plan, node, conversationId, proposal);
+      return true;
+    }
+    return false;
+  }
+
   async function dispatchOneNode(ownerConversationId: string): Promise<boolean> {
     const current = getActivePlanForOwner(ownerConversationId);
     if (!current) {
@@ -307,6 +536,18 @@ export function createDagScheduler(options: any = {}) {
       return false;
     }
     const nodeId = String(node.id || '').trim();
+
+    // D28: resolve the verifier BEFORE any side effect. An invalid explicit
+    // verifier (not a participant) or self-review (verifier == worker) fails
+    // closed — better a visible blocked node than unverifiable execution.
+    const ownerConversation = store.getConversationWithoutMessages(ownerConversationId);
+    const ownerParticipantIds = participantIdsOf(ownerConversation);
+    const verifierResolution = resolveNodeVerifier(node, ownerParticipantIds);
+    if (verifierResolution.error) {
+      writeExecution(ownerConversationId, [{ nodeId, status: 'blocked' }], clipText(verifierResolution.error, 500));
+      return true;
+    }
+    const verifierId = verifierResolution.verifierId;
 
     // D22: one worktree per node; a dirty/invalid worktree fails closed.
     const prepared = prepareNodeWorktreeForNode({
@@ -330,7 +571,7 @@ export function createDagScheduler(options: any = {}) {
         ownerConversationId,
         plan: current.plan,
         node,
-        initialMessage: buildInitialInstruction(current.plan, node, String(prepared.path || '')),
+        initialMessage: buildInitialInstruction(current.plan, node, String(prepared.path || ''), verifierId),
         clientRequestId,
       });
     } catch (error: any) {
@@ -348,22 +589,46 @@ export function createDagScheduler(options: any = {}) {
       return true;
     }
 
+    // D27: set the lightweight session goal BEFORE binding doing so the
+    // continuation loop never observes a goal-less doing node. Explicit
+    // empty checklist — the node must NOT inherit the heavy session-level
+    // default checklist. An idempotent re-dispatch reusing a child that
+    // already has a goal must NOT clobber it (the goal may already be
+    // complete or under verification). Failure here is fail-closed: without
+    // the goal the node has no sustained drive and no completion protocol.
+    const existingGoalConversation = store.getConversationWithoutMessages(spawnedConversationId);
+    if (!getSessionGoal(existingGoalConversation)) {
+      try {
+        applySessionGoalAction(store, spawnedConversationId, {
+          action: 'set',
+          objective: buildNodeGoalObjective(current.plan, node, String(prepared.path || ''), verifierId),
+          checklist: [],
+        });
+      } catch (goalError: any) {
+        writeExecution(
+          ownerConversationId,
+          [{ nodeId, status: 'blocked', spawnedConversationId }],
+          `dag_goal_init_failed: ${clipText(goalError && goalError.message ? goalError.message : goalError, 500)}`
+        );
+        return true;
+      }
+    }
+
     writeExecution(
       ownerConversationId,
       [{ nodeId, status: 'doing', spawnedConversationId }],
       'dag_dispatch'
     );
 
-    // Close the spawn→bind race: if the child already produced a terminal
-    // reply before the doing binding landed (extremely fast executor, or a
-    // crash-restart re-dispatch that reused the idempotent child), its
-    // agent_slot_finished event has already fired and will never re-fire —
-    // settle immediately instead of leaving the node doing forever.
+    // Close the spawn→bind race: if the child already reached a terminal
+    // goal state before the doing binding landed (extremely fast executor,
+    // or a crash-restart re-dispatch that reused the idempotent child), the
+    // goal events have already fired and will never re-fire — settle
+    // immediately instead of leaving the node doing forever.
     try {
       const spawnedConversation = store.getConversation(spawnedConversationId);
-      const terminal = spawnedConversation ? findTerminalDagReply(spawnedConversation) : null;
-      if (terminal) {
-        settleTerminalReply(ownerConversationId, current.plan, node, terminal, 'dag_dispatch_settled');
+      if (spawnedConversation) {
+        await settleFromGoalState(ownerConversationId, current.plan, node, spawnedConversation, 'dag_dispatch_settled');
       }
     } catch (settleError) {
       logError(`post-bind settle failed for node ${nodeId}`, settleError);
@@ -436,17 +701,29 @@ export function createDagScheduler(options: any = {}) {
     await enqueueForOwner(ownerConversationId, async () => {
       const slotStatus = String(slot && slot.status || '').trim();
       if (slotStatus === 'completed') {
-        const fallbackReply = messages
-          .filter((message: any) => message && message.role === 'assistant' && isTerminalMessage(message)
-            && dagSourceMessageIds.has(String(message.metadata && message.metadata.triggeredByMessageId || '').trim()))
-          .pop();
-        const resultText = clipText(
-          (slot.finalContent && String(slot.finalContent).trim())
-            || (fallbackReply && String(fallbackReply.content || '').trim())
-            || '(no textual result)',
-          2000
-        );
-        settleCompleted(ownerConversationId, plan, node, resultText, 'dag_node_completed');
+        const freshConversation = store.getConversation(normalizedConversationId);
+        const goal = freshConversation ? getSessionGoal(freshConversation) : null;
+        if (goal) {
+          // D27: a finished turn no longer completes the node — the goal
+          // does. Settle only when the goal already reached a terminal or
+          // verifiable state; otherwise the continuation loop (goal active)
+          // or the verification flow (pending complete proposal) drives on.
+          await settleFromGoalState(ownerConversationId, plan, node, freshConversation, 'dag_slot');
+        } else {
+          // Child without a session goal (pre-D27 or goal init failure):
+          // keep the legacy turn-terminal completion behavior.
+          const fallbackReply = messages
+            .filter((message: any) => message && message.role === 'assistant' && isTerminalMessage(message)
+              && dagSourceMessageIds.has(String(message.metadata && message.metadata.triggeredByMessageId || '').trim()))
+            .pop();
+          const resultText = clipText(
+            (slot.finalContent && String(slot.finalContent).trim())
+              || (fallbackReply && String(fallbackReply.content || '').trim())
+              || '(no textual result)',
+            2000
+          );
+          settleCompleted(ownerConversationId, plan, node, resultText, 'dag_node_completed');
+        }
       } else {
         const reason = (slot.errorMessage && String(slot.errorMessage).trim())
           || `spawned conversation slot ${slotStatus || 'failed'}`;
@@ -467,7 +744,7 @@ export function createDagScheduler(options: any = {}) {
       `[DAG 恢复指令] 节点 ${nodeId}：${node.title || nodeId}`,
       'server 重启导致本次执行被中断。请基于当前 worktree 与对话上下文继续完成节点目标：',
       `目标：${node.goal || '(未填写)'}`,
-      '完成后请输出简短的执行结果摘要。',
+      '完工协议：达成目标后调用 suggest-goal --action complete --reason "<执行结果摘要>" 宣布完工（D27/D28）。',
     ].join('\n');
     await resumeNodeConversation({
       ownerConversationId,
@@ -506,10 +783,23 @@ export function createDagScheduler(options: any = {}) {
         continue;
       }
 
-      const terminal = findTerminalDagReply(conversation);
-      if (terminal) {
-        settleTerminalReply(ownerConversationId, plan, node, terminal, 'dag_reconcile');
+      // D27/D28: for goal-driven children the goal state is the source of
+      // truth — complete → done, budget-exhausted pause proposal → blocked,
+      // pending complete proposal → (re-)route verification idempotently.
+      if (await settleFromGoalState(ownerConversationId, plan, node, conversation, 'dag_reconcile')) {
         continue;
+      }
+
+      // Legacy terminal-reply settle only for goal-less children: with a
+      // goal active, a finished-but-unannounced turn must NOT flip done
+      // (D27) — the resume below nudges the worker through the completion
+      // protocol instead.
+      if (!getSessionGoal(conversation)) {
+        const terminal = findTerminalDagReply(conversation);
+        if (terminal) {
+          settleTerminalReply(ownerConversationId, plan, node, terminal, 'dag_reconcile');
+          continue;
+        }
       }
 
       // No terminal reply. If the delivery worker still has an in-flight or
@@ -558,6 +848,156 @@ export function createDagScheduler(options: any = {}) {
     await dispatchReadyNodes(ownerConversationId);
   }
 
+  /**
+   * D27/D28 goal events for spawned children. Both handlers re-resolve the
+   * (plan, node) pair fresh inside the per-owner chain so stale event
+   * payloads never drive a write.
+   */
+  function handleGoalProposalUpdated(conversationId: string): void {
+    const normalizedConversationId = String(conversationId || '').trim();
+    if (!normalizedConversationId) {
+      return;
+    }
+    let ownerResult: any = null;
+    try {
+      ownerResult = store.getPlanForConversation(normalizedConversationId);
+    } catch {
+      return;
+    }
+    const plan = ownerResult && ownerResult.plan ? ownerResult.plan : null;
+    if (!plan || plan.status !== 'active') {
+      return;
+    }
+    const ownerConversationId = ownerResult.ownerConversationId;
+    void enqueueForOwner(ownerConversationId, async () => {
+      let fresh: any = null;
+      try {
+        fresh = store.getPlanForConversation(normalizedConversationId);
+      } catch {
+        return;
+      }
+      const freshPlan = fresh && fresh.plan ? fresh.plan : null;
+      if (!freshPlan || freshPlan.status !== 'active') {
+        return;
+      }
+      const node = findDoingNodeForChild(freshPlan, normalizedConversationId);
+      if (!node) {
+        return;
+      }
+      const nodeId = String(node.id || '').trim();
+      const conversation = store.getConversation(normalizedConversationId);
+      if (!conversation) {
+        return;
+      }
+      const proposal = getSessionGoalProposal(conversation);
+      if (!proposal) {
+        return;
+      }
+      if (proposal.action === 'pause'
+        && String(proposal.proposedBy && proposal.proposedBy.agentId || '') === 'goal-runner') {
+        // D27 budget fuse: the continuation runner asked to pause after
+        // exhausting its turn budget — for an unattended node that is a
+        // terminal failure, not a user decision.
+        writeExecution(
+          ownerConversationId,
+          [{ nodeId, status: 'blocked' }],
+          'dag_goal_budget_exhausted: goal continuation budget exhausted (D27)'
+        );
+        await dispatchReadyNodes(ownerConversationId);
+        return;
+      }
+      if (proposal.action === 'complete') {
+        await routeCompletionProposal(ownerConversationId, freshPlan, node, normalizedConversationId, proposal);
+        // Auto-accept settled the node (or a fail-closed path blocked it) —
+        // either way a concurrency slot may have freed; refill it.
+        await dispatchReadyNodes(ownerConversationId);
+      }
+      // Other proposal actions (set/pause/resume from the worker itself)
+      // are left to the normal user-confirmation flow; the node stays doing.
+    }).catch((error) => logError('goal proposal updated handling failed', error));
+  }
+
+  function handleGoalProposalCleared(conversationId: string, payload: any): void {
+    const normalizedConversationId = String(conversationId || '').trim();
+    if (!normalizedConversationId) {
+      return;
+    }
+    let ownerResult: any = null;
+    try {
+      ownerResult = store.getPlanForConversation(normalizedConversationId);
+    } catch {
+      return;
+    }
+    const plan = ownerResult && ownerResult.plan ? ownerResult.plan : null;
+    if (!plan || plan.status !== 'active') {
+      return;
+    }
+    const ownerConversationId = ownerResult.ownerConversationId;
+    void enqueueForOwner(ownerConversationId, async () => {
+      let fresh: any = null;
+      try {
+        fresh = store.getPlanForConversation(normalizedConversationId);
+      } catch {
+        return;
+      }
+      const freshPlan = fresh && fresh.plan ? fresh.plan : null;
+      if (!freshPlan || freshPlan.status !== 'active') {
+        return;
+      }
+      const node = findDoingNodeForChild(freshPlan, normalizedConversationId);
+      if (!node) {
+        return;
+      }
+      const nodeId = String(node.id || '').trim();
+      const conversation = store.getConversation(normalizedConversationId);
+      if (!conversation) {
+        return;
+      }
+      const outcome = String(payload && payload.outcome || '').trim();
+      const proposal = payload && payload.proposal ? payload.proposal : null;
+      const goal = (payload && payload.goal ? payload.goal : null) || getSessionGoal(conversation);
+
+      if (goal && goal.status === 'complete') {
+        // Accepted (by the verifier via the bridge, by the scheduler's
+        // auto-accept, or by the user in the UI) — the node is done.
+        settleCompleted(ownerConversationId, freshPlan, node, extractNodeResultText(conversation, proposal), 'dag_goal_completed');
+        await dispatchReadyNodes(ownerConversationId);
+        return;
+      }
+
+      if (outcome === 'rejected') {
+        // D28 rejection: feed the verifier's feedback back to the worker;
+        // the goal stays active so the continuation loop keeps driving.
+        const workerId = participantIdsOf(conversation)[0]
+          || participantIdsOf(store.getConversationWithoutMessages(ownerConversationId))[0]
+          || '';
+        if (!deliverNodeMessage || !workerId) {
+          return;
+        }
+        const ruledBy = payload && payload.ruledBy ? payload.ruledBy : {};
+        const verifierName = String(ruledBy.agentName || ruledBy.agentId || '验收 agent');
+        const reasonText = String(payload && payload.reason || '').trim() || '(验收 agent 未给出具体反馈)';
+        const proposalStamp = String(proposal && (proposal.createdAt || proposal.updatedAt) || 'na');
+        try {
+          await deliverNodeMessage({
+            ownerConversationId,
+            conversationId: normalizedConversationId,
+            targetAgentId: workerId,
+            content: [
+              `[DAG 验收打回] 节点 ${nodeId}：${node.title || nodeId} 的完工提案被 ${verifierName} 驳回。`,
+              `验收反馈：${clipText(reasonText, 1500)}`,
+              '请根据反馈继续改进；达成目标后再次调用 suggest-goal --action complete --reason "<执行结果摘要>" 宣布完工。',
+            ].join('\n'),
+            idempotencyKey: `dag-verify-feedback:${freshPlan.id}:${nodeId}:${proposalStamp}`,
+            messageMetadata: { kind: 'dag_verify_feedback', dagNodeId: nodeId },
+          });
+        } catch (error: any) {
+          logError(`rejection feedback delivery failed for node ${nodeId}`, error);
+        }
+      }
+    }).catch((error) => logError('goal proposal cleared handling failed', error));
+  }
+
   function handleEvent(eventName: string, payload: any): void {
     try {
       if (eventName === 'conversation_plan_updated') {
@@ -574,6 +1014,15 @@ export function createDagScheduler(options: any = {}) {
         void completeNodeFromSlot(conversationId, payload && payload.slot ? payload.slot : {}).catch((error) => {
           logError('agent_slot_finished handling failed', error);
         });
+        return;
+      }
+      if (eventName === 'conversation_goal_proposal_updated') {
+        handleGoalProposalUpdated(payload && payload.conversationId);
+        return;
+      }
+      if (eventName === 'conversation_goal_proposal_cleared') {
+        handleGoalProposalCleared(payload && payload.conversationId, payload);
+        return;
       }
     } catch (error) {
       logError(`handleEvent(${eventName}) failed`, error);

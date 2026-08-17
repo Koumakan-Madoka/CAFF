@@ -52,6 +52,9 @@
           if (typeof node.base_branch === 'string' && node.base_branch.trim()) {
             normalized.base_branch = node.base_branch;
           }
+          if (typeof node.verifier === 'string' && node.verifier.trim()) {
+            normalized.verifier = node.verifier;
+          }
           if (typeof node.result === 'string' && node.result.trim()) {
             normalized.result = node.result;
           }
@@ -1164,6 +1167,10 @@
         dom.planNodeBaseBranch.value = node.base_branch || '';
         dom.planNodeBaseBranch.disabled = locked;
       }
+      if (dom.planNodeVerifier) {
+        dom.planNodeVerifier.value = node.verifier || '';
+        dom.planNodeVerifier.disabled = locked;
+      }
       renderNodeExecution(node);
       if (dom.planNodeDeleteButton) {
         dom.planNodeDeleteButton.disabled = locked || saving;
@@ -1453,6 +1460,13 @@
           target.base_branch = value;
         } else {
           delete target.base_branch;
+        }
+      });
+      bindInput(dom.planNodeVerifier, (target, value) => {
+        if (value.trim()) {
+          target.verifier = value;
+        } else {
+          delete target.verifier;
         }
       });
       if (dom.planNodeKind) {

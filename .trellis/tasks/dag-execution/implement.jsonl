@@ -1,0 +1,5 @@
+{"file":".trellis/tasks/dag-execution/prd.md","reason":"Task requirements (PRD), decisions D21-D28."}
+{"file":".trellis/spec/backend/dag-execution.md","reason":"Execution-layer contracts: scheduler, worktree, merge, D27/D28 goal+verifier flow."}
+{"file":".trellis/spec/backend/index.md","reason":"Backend spec index."}
+{"file":".trellis/spec/runtime/index.md","reason":"Runtime spec index (agent tool bridge suggest-goal accept/reject)."}
+{"file":".agents/skills/dag-planning/SKILL.md","reason":"Plan authoring skill: node fields incl. verifier, lifecycle, completion protocol."}

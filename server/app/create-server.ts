@@ -306,13 +306,13 @@ export function createServerApp(options: any = {}) {
   }
 
   // DAG scheduler-owned deliveries (idempotency key prefixes dag-node: /
-  // dag-resume:) are dispatched directly by the scheduler wiring, in
-  // parallel, bounded by the scheduler's own D24 concurrency cap. The global
-  // serial drain must not claim them first — that would re-serialize DAG
-  // child conversations behind one worker loop.
+  // dag-resume: / dag-verify:) are dispatched directly by the scheduler
+  // wiring, in parallel, bounded by the scheduler's own D24 concurrency cap.
+  // The global serial drain must not claim them first — that would
+  // re-serialize DAG child conversations behind one worker loop.
   function isDagSchedulerDelivery(delivery: any) {
     const key = String(delivery && delivery.idempotencyKey || '');
-    return key.startsWith('dag-node:') || key.startsWith('dag-resume:');
+    return key.startsWith('dag-node:') || key.startsWith('dag-resume:') || key.startsWith('dag-verify:');
   }
 
   function dispatchDagDeliveryNow(result: any) {
@@ -870,6 +870,21 @@ export function createServerApp(options: any = {}) {
         });
         dispatchDagDeliveryNow(result);
         return { conversationId: result && result.conversation ? result.conversation.id : '' };
+      },
+      // D28 verification channel: scheduler-authored targeted delivery into
+      // the spawned child conversation (verification request → verifier,
+      // rejection feedback → worker), dispatched directly like resumes.
+      async deliverNodeMessage({ ownerConversationId, conversationId, targetAgentId, content, idempotencyKey, messageMetadata }: any) {
+        const result = crossConversationDeliveryService.submitFromSystem({
+          sourceConversationId: ownerConversationId,
+          targetConversationId: conversationId,
+          targetAgentId,
+          content,
+          idempotencyKey,
+          sourceAgentName: 'DAG Scheduler',
+          messageMetadata,
+        });
+        dispatchDagDeliveryNow(result);
       },
       // D25: resume inside the ORIGINAL child conversation via a
       // system-principal notify delivery (dispatched directly, in parallel).

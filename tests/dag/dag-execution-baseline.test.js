@@ -6,6 +6,7 @@ const test = require('node:test');
 
 const { createChatAppStore } = require('../../build/lib/chat-app-store');
 const { createDagScheduler } = require('../../build/server/domain/dag/dag-scheduler');
+const { proposeSessionGoalAction } = require('../../build/server/domain/conversation/session-goal');
 const {
   resolveDagWorktreePath,
   prepareNodeWorktree: libPrepareNodeWorktree,
@@ -233,6 +234,28 @@ function lastSpawnFor(spawns, nodeId) {
   return spawns.filter((spawn) => spawn.nodeId === nodeId).pop();
 }
 
+const WORKER_ID = 'role-family-gpt';
+
+/** D27 完工协议：worker 通过 goal complete 提案宣布完工，随后触发调度器
+ * 订阅的 proposal_updated 事件（桥接层在真实运行中负责广播）。
+ * 本 fixture 的根会话只有单一 participant → 无 verifier（D28）→
+ * 调度器代行 auto-accept，提案即落定 done。 */
+function announceComplete(store, scheduler, childId, resultText) {
+  const result = proposeSessionGoalAction(
+    store,
+    childId,
+    { action: 'complete', reason: resultText },
+    { agentId: WORKER_ID, agentName: WORKER_ID },
+  );
+  scheduler.handleEvent('conversation_goal_proposal_updated', {
+    conversationId: childId,
+    goal: result.goal,
+    proposal: result.proposal,
+    conversation: result.conversation,
+  });
+  return result;
+}
+
 test('基线 2+3+4：菱形 DAG 真实 git 全程（activate→派发→完结传播→LCA merge→verify→done）', async (t) => {
   const { repoRoot, store } = createFixture(t);
   const verifyCmd = 'node -e "const fs=require(\'node:fs\');fs.accessSync(\'f1.txt\');fs.accessSync(\'f2.txt\');fs.accessSync(\'f3.txt\')"';
@@ -257,12 +280,9 @@ test('基线 2+3+4：菱形 DAG 真实 git 全程（activate→派发→完结�
   assert.ok(fs.existsSync(n1Worktree), 'D22: real worktree created on disk');
   assert.equal(git(['rev-parse', '--abbrev-ref', 'HEAD'], n1Worktree), 'dag/n1');
 
-  // n1 agent 真实产出：在 worktree 里提交 f1.txt，然后完结
+  // n1 agent 真实产出：在 worktree 里提交 f1.txt，然后宣布完工（D27）
   agentCommit(n1Worktree, 'f1.txt', 'from n1\n');
-  scheduler.handleEvent('agent_slot_finished', {
-    conversationId: spawns[0].conversationId,
-    slot: { sourceMessageId: spawns[0].bootstrapMessageId, status: 'completed', finalContent: 'n1 产出：f1' },
-  });
+  announceComplete(store, scheduler, spawns[0].conversationId, 'n1 产出：f1');
   await scheduler.dispatchReadyNodes(ROOT_ID);
 
   // ── 基线 3：完结 → done + result → 下游自动就绪（D23 上游 result 注入）
@@ -282,20 +302,14 @@ test('基线 2+3+4：菱形 DAG 真实 git 全程（activate→派发→完结�
   assert.ok(fs.existsSync(path.join(n3Worktree, 'f1.txt')), 'n3 branched from dag/n1 tip');
   assert.equal(getNode(store, 'm1').status, 'pending', 'merge waits for both upstreams');
 
-  // n2/n3 各自真实产出并完结
+  // n2/n3 各自真实产出并宣布完工（D27）
   agentCommit(n2Worktree, 'f2.txt', 'from n2\n');
-  scheduler.handleEvent('agent_slot_finished', {
-    conversationId: n2Spawn.conversationId,
-    slot: { sourceMessageId: n2Spawn.bootstrapMessageId, status: 'completed', finalContent: 'n2 done' },
-  });
+  announceComplete(store, scheduler, n2Spawn.conversationId, 'n2 done');
   await scheduler.dispatchReadyNodes(ROOT_ID);
   assert.equal(getNode(store, 'm1').status, 'pending', 'merge still waits for n3');
 
   agentCommit(n3Worktree, 'f3.txt', 'from n3\n');
-  scheduler.handleEvent('agent_slot_finished', {
-    conversationId: n3Spawn.conversationId,
-    slot: { sourceMessageId: n3Spawn.bootstrapMessageId, status: 'completed', finalContent: 'n3 done' },
-  });
+  announceComplete(store, scheduler, n3Spawn.conversationId, 'n3 done');
   await scheduler.dispatchReadyNodes(ROOT_ID);
 
   // ── 基线 4：merge 节点真实 LCA 检出 + 逐条合并 + verify
@@ -309,13 +323,10 @@ test('基线 2+3+4：菱形 DAG 真实 git 全程（activate→派发→完结�
   assert.ok(!fs.existsSync(path.join(m1Worktree, 'f2.txt')), 'f2 not merged yet');
   assert.ok(m1Spawn.initialMessage.indexOf('n2 → dag/n2') < m1Spawn.initialMessage.indexOf('n3 → dag/n3'), 'D26: merge order follows depends_on');
 
-  // 主理人 agent 逐条合并（D11）
+  // 主理人 agent 逐条合并（D11），随后宣布完工（D27）
   git(['merge', '--no-edit', 'dag/n2'], m1Worktree);
   git(['merge', '--no-edit', 'dag/n3'], m1Worktree);
-  scheduler.handleEvent('agent_slot_finished', {
-    conversationId: m1Spawn.conversationId,
-    slot: { sourceMessageId: m1Spawn.bootstrapMessageId, status: 'completed', finalContent: '合并完成：n2+n3' },
-  });
+  announceComplete(store, scheduler, m1Spawn.conversationId, '合并完成：n2+n3');
   await scheduler.dispatchReadyNodes(ROOT_ID);
 
   // verifyNodeCompletion（真实 verifyMergeOutcome）通过才允许 done
@@ -330,14 +341,14 @@ test('基线 2+3+4：菱形 DAG 真实 git 全程（activate→派发→完结�
   git(['merge-base', '--is-ancestor', 'dag/n3', 'dag/integrate'], repoRoot);
   assert.ok(git(['rev-parse', 'dag/integrate'], repoRoot), 'integration branch tip resolves');
 
-  // D18：全链路 history 审计完整
+  // D18：全链路 history 审计完整（done 经由 D27 goal 完工协议落定）
   assert.deepEqual(historyLines(store, 'n1'), [
     'pending->doing:dag_dispatch',
-    'doing->done:dag_node_completed',
+    'doing->done:dag_goal_completed',
   ]);
   assert.deepEqual(historyLines(store, 'm1'), [
     'pending->doing:dag_dispatch',
-    'doing->done:dag_node_completed',
+    'doing->done:dag_goal_completed',
   ]);
 });
 
@@ -390,11 +401,8 @@ test('基线 5：失败 → blocked 回写原因 → D16 拒绝下游 → 人工
   const retrySpawn = lastSpawnFor(spawns, 'a1');
   assert.ok(retrySpawn, 'a1 respawned');
 
-  // 重试成功 → done → a2 自动就绪
-  scheduler.handleEvent('agent_slot_finished', {
-    conversationId: retrySpawn.conversationId,
-    slot: { sourceMessageId: retrySpawn.bootstrapMessageId, status: 'completed', finalContent: 'a1 重试成功' },
-  });
+  // 重试成功 → worker 宣布完工（D27）→ done → a2 自动就绪
+  announceComplete(store, scheduler, retrySpawn.conversationId, 'a1 重试成功');
   await scheduler.dispatchReadyNodes(ROOT_ID);
   assert.equal(getNode(store, 'a1').status, 'done');
   assert.equal(getNode(store, 'a2').status, 'doing', 'downstream dispatched after unblock+retry');
@@ -416,22 +424,21 @@ test('基线 6：server 重启 reconcile——down 期间完结的回写传播�
   const r1Spawn = lastSpawnFor(first.spawns, 'r1');
   const r3Spawn = lastSpawnFor(first.spawns, 'r3');
 
-  // 模拟 server 停机：r3 的子会话在停机期间完结（终态回复已落库），r1 被中断（无回复）
-  addMessage(store, {
-    id: 'reply-r3',
-    conversationId: r3Spawn.conversationId,
-    role: 'assistant',
-    agentId: 'role-family-gpt',
-    content: 'r3 在重启前已完成',
-    status: 'completed',
-    metadata: { triggeredByMessageId: r3Spawn.bootstrapMessageId },
-  });
+  // 模拟 server 停机：r3 的 worker 在停机期间宣布了完工（goal complete
+  // 提案已落库但调度器没活到路由它），r1 被中断（无任何完工信号）
+  proposeSessionGoalAction(
+    store,
+    r3Spawn.conversationId,
+    { action: 'complete', reason: 'r3 在重启前已完成' },
+    { agentId: WORKER_ID, agentName: WORKER_ID },
+  );
 
   // 重启：新调度器实例 + reconcileOnStartup
   const second = createHarness(store, repoRoot);
   await second.scheduler.reconcileOnStartup();
 
-  // 完结的 r3 回写 done + result；中断的 r1 向原子会话注入一次恢复
+  // 完结的 r3：reconcile 识别 pending 完工提案 → 无 verifier 代行 accept
+  // → 回写 done + result；中断的 r1 向原子会话注入一次恢复
   assert.equal(getNode(store, 'r3').status, 'done');
   assert.equal(getNode(store, 'r3').result, 'r3 在重启前已完成');
   assert.equal(second.resumes.length, 1, 'r1 resumed exactly once');
@@ -440,26 +447,14 @@ test('基线 6：server 重启 reconcile——down 期间完结的回写传播�
   assert.equal(getNode(store, 'r1').status, 'doing', 'resumed node stays doing');
   assert.equal(getNode(store, 'r2').status, 'pending');
 
-  // 恢复后 r1 的 agent 完结（回复由 resume 消息触发）→ done → r2 就绪
-  addMessage(store, {
-    id: 'reply-r1',
-    conversationId: r1Spawn.conversationId,
-    role: 'assistant',
-    agentId: 'role-family-gpt',
-    content: 'r1 恢复后完成',
-    status: 'completed',
-    metadata: { triggeredByMessageId: second.resumes[0].messageId },
-  });
-  second.scheduler.handleEvent('agent_slot_finished', {
-    conversationId: r1Spawn.conversationId,
-    slot: { sourceMessageId: second.resumes[0].messageId, status: 'completed', finalContent: 'r1 恢复后完成' },
-  });
+  // 恢复后 r1 的 worker 宣布完工（D27）→ done → r2 就绪
+  announceComplete(store, second.scheduler, r1Spawn.conversationId, 'r1 恢复后完成');
   await second.scheduler.dispatchReadyNodes(ROOT_ID);
 
   assert.equal(getNode(store, 'r1').status, 'done');
   assert.equal(getNode(store, 'r2').status, 'doing', 'downstream dispatched after reconcile+resume completes');
   assert.deepEqual(historyLines(store, 'r1'), [
     'pending->doing:dag_dispatch',
-    'doing->done:dag_node_completed',
+    'doing->done:dag_goal_completed',
   ]);
 });

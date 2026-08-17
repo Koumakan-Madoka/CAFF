@@ -304,6 +304,10 @@
               <span>base_branch（merge 检出基线，可选；须等于某个父节点分支，留空 = 上游 LCA）</span>
               <input id="plan-node-base-branch" type="text" maxlength="120" placeholder="留空 = 上游 LCA" />
             </label>
+            <label>
+              <span>verifier（验收 agent id，可选；须为根会话参与者且 ≠ 执行 agent，留空 = 自动选定）</span>
+              <input id="plan-node-verifier" type="text" maxlength="120" placeholder="留空 = 自动选定" />
+            </label>
             <div id="plan-node-execution" class="plan-node-execution hidden"></div>
             <div class="plan-deps-field">
               <span class="section-label">依赖（depends_on）</span>

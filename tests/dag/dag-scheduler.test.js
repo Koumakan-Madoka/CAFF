@@ -5,9 +5,18 @@ const test = require('node:test');
 
 const { createChatAppStore } = require('../../build/lib/chat-app-store');
 const { createDagScheduler } = require('../../build/server/domain/dag/dag-scheduler');
+const {
+  applySessionGoalAction,
+  createSessionGoalBudgetProposal,
+  getSessionGoal,
+  getSessionGoalProposal,
+  proposeSessionGoalAction,
+} = require('../../build/server/domain/conversation/session-goal');
 const { withTempDir } = require('../helpers/temp-dir');
 
 const ROOT_ID = 'root-conversation';
+const WORKER_ID = 'role-family-gpt';
+const VERIFIER_ID = 'role-family-kimi';
 
 function createStore(t, prefix = 'caff-dag-scheduler-') {
   const tempDir = withTempDir(prefix);
@@ -22,8 +31,8 @@ function createStore(t, prefix = 'caff-dag-scheduler-') {
   return store;
 }
 
-function createRoot(store, id = ROOT_ID) {
-  const conversation = store.createConversation({ id, title: 'Root', participants: ['role-family-gpt'] });
+function createRoot(store, id = ROOT_ID, participants = [WORKER_ID]) {
+  const conversation = store.createConversation({ id, title: 'Root', participants });
   store.bindConversationProjectScope(id, 'proj-test');
   return conversation;
 }
@@ -91,6 +100,7 @@ function createHarness(store, overrides = {}) {
   const resumes = [];
   const broadcasts = [];
   const prepareCalls = [];
+  const deliveries = [];
 
   const scheduler = createDagScheduler({
     store,
@@ -139,10 +149,58 @@ function createHarness(store, overrides = {}) {
         metadata: { kind: 'dag_resume', dagResume: true, dagNodeId: input.node.id },
       });
     },
+    async deliverNodeMessage(input) {
+      // Mimic the real channel: submitFromSystem dedups by idempotency key.
+      if (deliveries.some((entry) => entry.idempotencyKey === input.idempotencyKey)) {
+        return;
+      }
+      deliveries.push({
+        conversationId: input.conversationId,
+        targetAgentId: input.targetAgentId,
+        content: input.content,
+        idempotencyKey: input.idempotencyKey,
+      });
+    },
     ...overrides.schedulerOptions,
   });
 
-  return { scheduler, spawns, resumes, broadcasts, prepareCalls };
+  return { scheduler, spawns, resumes, broadcasts, prepareCalls, deliveries };
+}
+
+/** D27 completion protocol: the worker announces completion via a goal
+ * complete proposal, then the scheduler event fires (as the bridge would). */
+function announceComplete(store, scheduler, childId, resultText, proposerAgentId = WORKER_ID) {
+  const result = proposeSessionGoalAction(
+    store,
+    childId,
+    { action: 'complete', reason: resultText },
+    { agentId: proposerAgentId, agentName: proposerAgentId },
+  );
+  scheduler.handleEvent('conversation_goal_proposal_updated', {
+    conversationId: childId,
+    goal: result.goal,
+    proposal: result.proposal,
+    conversation: result.conversation,
+  });
+  return result;
+}
+
+/** D28 verifier ruling: apply the verdict in the store (as the bridge
+ * would), then fire the cleared event the scheduler subscribes to. */
+function ruleOnProposal(store, scheduler, childId, verdict, reason = '') {
+  const proposal = getSessionGoalProposal(store.getConversation(childId));
+  const result = applySessionGoalAction(store, childId, {
+    action: verdict === 'accept' ? 'accept-proposal' : 'dismiss-proposal',
+  });
+  scheduler.handleEvent('conversation_goal_proposal_cleared', {
+    conversationId: childId,
+    outcome: verdict === 'accept' ? 'accepted' : 'rejected',
+    reason,
+    goal: result.goal,
+    proposal,
+    ruledBy: { agentId: VERIFIER_ID, agentName: VERIFIER_ID },
+  });
+  return result;
 }
 
 function getNode(store, nodeId) {
@@ -206,11 +264,9 @@ test('D24 concurrency cap holds and freed slots are refilled FIFO in doc order',
   assert.equal(getNode(store, 'c').status, 'pending');
   assert.equal(getNode(store, 'd').status, 'pending');
 
-  // Free one slot: node a completes.
-  scheduler.handleEvent('agent_slot_finished', {
-    conversationId: 'child-a',
-    slot: { sourceMessageId: 'bootstrap-a', status: 'completed', finalContent: 'a done' },
-  });
+  // Free one slot: node a announces completion (D27) and is auto-accepted
+  // (single-participant root → no verifier, D28).
+  announceComplete(store, scheduler, 'child-a', 'a done');
   await flush(scheduler);
 
   assert.equal(getNode(store, 'a').status, 'done');
@@ -239,6 +295,13 @@ test('completion write-back carries result and unblocks downstream (D23)', async
   });
   await flush(scheduler);
 
+  // D27: a finished turn alone no longer completes the node.
+  assert.equal(getNode(store, 'n1').status, 'doing', 'turn end is not completion anymore');
+
+  // Worker announces completion → no verifier → scheduler auto-accepts.
+  announceComplete(store, scheduler, 'child-n1', 'n1 产出摘要');
+  await flush(scheduler);
+
   assert.equal(getNode(store, 'n1').status, 'done');
   assert.equal(getNode(store, 'n1').result, 'n1 产出摘要');
   assert.equal(getNode(store, 'n2').status, 'doing');
@@ -246,7 +309,7 @@ test('completion write-back carries result and unblocks downstream (D23)', async
   assert.ok(spawns[1].initialMessage.includes('n1 产出摘要'), 'downstream instruction embeds upstream result (D23)');
 
   const doneHistory = historyFor(store, 'n1').map((entry) => `${entry.from}->${entry.to}:${entry.reason}`);
-  assert.deepEqual(doneHistory, ['pending->doing:dag_dispatch', 'doing->done:dag_node_completed']);
+  assert.deepEqual(doneHistory, ['pending->doing:dag_dispatch', 'doing->done:dag_goal_completed']);
 });
 
 test('post-bind settle: child already terminal before doing binding completes immediately (spawn→bind race)', async () => {
@@ -265,8 +328,9 @@ test('post-bind settle: child already terminal before doing binding completes im
           content: input.initialMessage,
           metadata: { kind: 'conversation_spawn_initial_message' },
         });
-        // Terminal reply lands BEFORE the scheduler binds doing — the
-        // agent_slot_finished event has effectively fired into the void.
+        // Terminal reply + goal complete land BEFORE the scheduler binds
+        // doing — the goal events have effectively fired into the void
+        // (D27 race). Result text comes from the terminal reply.
         addMessage(store, {
           id: `reply-${input.node.id}`,
           conversationId: childId,
@@ -276,6 +340,8 @@ test('post-bind settle: child already terminal before doing binding completes im
           status: 'completed',
           metadata: { triggeredByMessageId: messageId },
         });
+        applySessionGoalAction(store, childId, { action: 'set', objective: 'instant race goal', checklist: [] });
+        applySessionGoalAction(store, childId, { action: 'complete' });
         spawns.push({ nodeId: input.node.id, conversationId: childId, bootstrapMessageId: messageId });
         return { conversationId: childId };
       },
@@ -288,7 +354,189 @@ test('post-bind settle: child already terminal before doing binding completes im
   assert.equal(getNode(store, 'n1').status, 'done', 'must not stay doing forever');
   assert.equal(getNode(store, 'n1').result, 'instant result');
   const transitions = historyFor(store, 'n1').map((entry) => `${entry.from}->${entry.to}:${entry.reason}`);
-  assert.deepEqual(transitions, ['pending->doing:dag_dispatch', 'doing->done:dag_dispatch_settled_completed']);
+  assert.deepEqual(transitions, ['pending->doing:dag_dispatch', 'doing->done:dag_dispatch_settled_goal_complete']);
+});
+
+test('D27: spawn sets a lightweight session goal (no inherited default checklist)', async () => {
+  const store = createStore(test);
+  createRoot(store);
+  const plan = createActivePlan(store, makeDoc([node('n1')]));
+  const { scheduler } = createHarness(store);
+
+  scheduler.handleEvent('conversation_plan_updated', { ownerConversationId: ROOT_ID, plan });
+  await flush(scheduler);
+
+  const goal = getSessionGoal(store.getConversation('child-n1'));
+  assert.ok(goal, 'goal set on the spawned child');
+  assert.equal(goal.status, 'active');
+  assert.ok(goal.objective.includes('goal of n1'), 'objective carries the node goal');
+  assert.ok(goal.objective.includes('suggest-goal'), 'objective teaches the completion protocol');
+  assert.equal(goal.checklist, undefined, 'explicit empty checklist — heavy default NOT inherited');
+});
+
+test('D27: goal continuation budget exhaustion blocks the node', async () => {
+  const store = createStore(test);
+  createRoot(store);
+  const plan = createActivePlan(store, makeDoc([node('n1'), node('n2', { depends_on: ['n1'] })]));
+  const { scheduler, spawns } = createHarness(store);
+
+  scheduler.handleEvent('conversation_plan_updated', { ownerConversationId: ROOT_ID, plan });
+  await flush(scheduler);
+  assert.equal(getNode(store, 'n1').status, 'doing');
+
+  // Goal Runner 预算熔断：创建 pause 提案并广播（与 turn-orchestrator 同路径）
+  const result = createSessionGoalBudgetProposal(store, 'child-n1', {});
+  scheduler.handleEvent('conversation_goal_proposal_updated', {
+    conversationId: 'child-n1',
+    goal: result.goal,
+    proposal: result.proposal,
+    conversation: result.conversation,
+  });
+  await flush(scheduler);
+
+  assert.equal(getNode(store, 'n1').status, 'blocked');
+  assert.ok(historyFor(store, 'n1').some((entry) => (entry.reason || '').includes('dag_goal_budget_exhausted')));
+  assert.equal(getNode(store, 'n2').status, 'pending', 'D16: downstream stays pending');
+  assert.equal(spawns.length, 1);
+});
+
+test('D28: verifier flow — proposal routes to verifier, accept settles done', async () => {
+  const store = createStore(test);
+  createRoot(store, ROOT_ID, [WORKER_ID, VERIFIER_ID]);
+  const plan = createActivePlan(store, makeDoc([node('n1', { verifier: VERIFIER_ID })]));
+  const { scheduler, deliveries } = createHarness(store);
+
+  scheduler.handleEvent('conversation_plan_updated', { ownerConversationId: ROOT_ID, plan });
+  await flush(scheduler);
+  assert.equal(getNode(store, 'n1').status, 'doing');
+
+  // Worker 宣布完工 → 不直接 done，调度器向 verifier 投递验收请求
+  const announced = announceComplete(store, scheduler, 'child-n1', 'n1 完工摘要');
+  await flush(scheduler);
+
+  assert.equal(getNode(store, 'n1').status, 'doing', 'pending verifier ruling');
+  assert.equal(deliveries.length, 1, 'verification request delivered');
+  assert.equal(deliveries[0].targetAgentId, VERIFIER_ID);
+  assert.equal(deliveries[0].conversationId, 'child-n1');
+  assert.ok(deliveries[0].content.includes('验收请求'));
+  assert.ok(deliveries[0].content.includes('n1 完工摘要'), 'verifier sees the result summary');
+  assert.ok(deliveries[0].idempotencyKey.startsWith('dag-verify:'));
+
+  // Verifier 通过 → goal complete → done + result
+  ruleOnProposal(store, scheduler, 'child-n1', 'accept');
+  await flush(scheduler);
+
+  assert.equal(getNode(store, 'n1').status, 'done');
+  assert.equal(getNode(store, 'n1').result, 'n1 完工摘要');
+  assert.ok(announced.proposal, 'proposal existed before ruling');
+  assert.deepEqual(
+    historyFor(store, 'n1').map((entry) => `${entry.from}->${entry.to}:${entry.reason}`),
+    ['pending->doing:dag_dispatch', 'doing->done:dag_goal_completed'],
+  );
+});
+
+test('D28: verifier rejection feeds back to the worker; re-announce then accept completes', async () => {
+  const store = createStore(test);
+  createRoot(store, ROOT_ID, [WORKER_ID, VERIFIER_ID]);
+  const plan = createActivePlan(store, makeDoc([node('n1', { verifier: VERIFIER_ID })]));
+  const { scheduler, deliveries } = createHarness(store);
+
+  scheduler.handleEvent('conversation_plan_updated', { ownerConversationId: ROOT_ID, plan });
+  await flush(scheduler);
+
+  announceComplete(store, scheduler, 'child-n1', '第一版完工');
+  await flush(scheduler);
+  assert.equal(deliveries.length, 1);
+
+  // Verifier 打回 → 反馈注回 worker，goal 保持 active，节点保持 doing
+  ruleOnProposal(store, scheduler, 'child-n1', 'reject', '缺少关键测试');
+  await flush(scheduler);
+
+  assert.equal(getNode(store, 'n1').status, 'doing', 'rejection never completes the node');
+  assert.equal(deliveries.length, 2, 'feedback delivered');
+  assert.equal(deliveries[1].targetAgentId, WORKER_ID, 'feedback goes back to the worker');
+  assert.ok(deliveries[1].content.includes('验收打回'));
+  assert.ok(deliveries[1].content.includes('缺少关键测试'));
+  assert.ok(deliveries[1].idempotencyKey.startsWith('dag-verify-feedback:'));
+  const goalAfterReject = getSessionGoal(store.getConversation('child-n1'));
+  assert.equal(goalAfterReject.status, 'active', 'goal keeps driving the worker');
+  assert.equal(getSessionGoalProposal(store.getConversation('child-n1')), null, 'proposal dismissed');
+
+  // Worker 改进后重新宣布 → 再次走验收 → 通过 → done（无重试上限，Q3）
+  announceComplete(store, scheduler, 'child-n1', '第二版完工（补了测试）');
+  await flush(scheduler);
+  assert.equal(deliveries.length, 3, 'verification re-requested');
+  assert.equal(deliveries[2].targetAgentId, VERIFIER_ID);
+
+  ruleOnProposal(store, scheduler, 'child-n1', 'accept');
+  await flush(scheduler);
+  assert.equal(getNode(store, 'n1').status, 'done');
+  assert.equal(getNode(store, 'n1').result, '第二版完工（补了测试）');
+});
+
+test('D28: invalid or self-review verifier fails closed before any side effect', async () => {
+  const store = createStore(test);
+  createRoot(store, ROOT_ID, [WORKER_ID, VERIFIER_ID]);
+  const plan = createActivePlan(store, makeDoc([
+    node('self', { verifier: WORKER_ID }),
+    node('ghost', { verifier: 'no-such-agent' }),
+  ]));
+  const { scheduler, spawns, prepareCalls } = createHarness(store);
+
+  scheduler.handleEvent('conversation_plan_updated', { ownerConversationId: ROOT_ID, plan });
+  await flush(scheduler);
+
+  assert.equal(getNode(store, 'self').status, 'blocked');
+  assert.ok(historyFor(store, 'self').some((entry) => (entry.reason || '').includes('dag_verifier_self_review')));
+  assert.equal(getNode(store, 'ghost').status, 'blocked');
+  assert.ok(historyFor(store, 'ghost').some((entry) => (entry.reason || '').includes('dag_verifier_invalid')));
+  assert.equal(spawns.length, 0, 'no child spawned for either node');
+  assert.equal(prepareCalls.length, 0, 'verifier resolution runs before worktree prep');
+});
+
+test('D28: default verifier is the first participant other than the worker', async () => {
+  const store = createStore(test);
+  createRoot(store, ROOT_ID, [WORKER_ID, VERIFIER_ID]);
+  // 不显式指定 verifier → 缺省取第一位 ≠ worker 的根会话 participant
+  const plan = createActivePlan(store, makeDoc([node('n1')]));
+  const { scheduler, deliveries } = createHarness(store);
+
+  scheduler.handleEvent('conversation_plan_updated', { ownerConversationId: ROOT_ID, plan });
+  await flush(scheduler);
+
+  announceComplete(store, scheduler, 'child-n1', '默认验收路径');
+  await flush(scheduler);
+
+  assert.equal(getNode(store, 'n1').status, 'doing');
+  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries[0].targetAgentId, VERIFIER_ID, 'default verifier resolved');
+});
+
+test('D25+D28: reconcile re-routes a pending completion proposal (idempotent)', async () => {
+  const store = createStore(test);
+  createRoot(store, ROOT_ID, [WORKER_ID, VERIFIER_ID]);
+  createActivePlan(store, makeDoc([node('n1', { verifier: VERIFIER_ID })]));
+  store.writePlanNodeExecution(ROOT_ID, [{ nodeId: 'n1', status: 'doing', spawnedConversationId: 'child-n1' }]);
+  createChildConversation(store, 'child-n1');
+  addMessage(store, {
+    id: 'bootstrap-n1',
+    conversationId: 'child-n1',
+    metadata: { kind: 'conversation_spawn_initial_message' },
+  });
+  applySessionGoalAction(store, 'child-n1', { action: 'set', objective: 'goal', checklist: [] });
+  proposeSessionGoalAction(store, 'child-n1', { action: 'complete', reason: '重启前宣布完工' }, { agentId: WORKER_ID, agentName: WORKER_ID });
+
+  const { scheduler, deliveries, resumes } = createHarness(store);
+  await scheduler.reconcileOnStartup();
+
+  assert.equal(getNode(store, 'n1').status, 'doing', 'verification still pending');
+  assert.equal(deliveries.length, 1, 'verification request re-delivered after restart');
+  assert.equal(deliveries[0].targetAgentId, VERIFIER_ID);
+  assert.equal(resumes.length, 0, 'resume budget untouched while verification is pending');
+
+  // 幂等：再次 reconcile 不重复投递（同一提案 → 同一幂等键）
+  await scheduler.reconcileOnStartup();
+  assert.equal(deliveries.length, 1);
 });
 
 test('failed slot flips the node blocked and fail-closed keeps downstream pending (D16)', async () => {
@@ -643,11 +891,9 @@ test('merge node completion is gated by verifyNodeCompletion: pass → done, fai
   await flush(scheduler);
   assert.equal(getNode(store, 'm1').status, 'doing');
 
-  // Merger agent reports completion, but the outcome check fails → blocked.
-  scheduler.handleEvent('agent_slot_finished', {
-    conversationId: 'child-m1',
-    slot: { sourceMessageId: 'bootstrap-m1', status: 'completed', finalContent: 'merged' },
-  });
+  // Merger agent announces completion (D27), but the outcome check fails →
+  // blocked even after the goal-level auto-accept (双层兜底, D28 + D19).
+  announceComplete(store, scheduler, 'child-m1', 'merged');
   await flush(scheduler);
 
   assert.equal(verifyCalls.length, 1);
@@ -660,10 +906,7 @@ test('merge node completion is gated by verifyNodeCompletion: pass → done, fai
   // Manual unblock + operator re-flip to doing, then a passing verdict → done.
   store.writePlanNodeExecution(ROOT_ID, [{ nodeId: 'm1', status: 'doing' }], { reason: 'manual retry after fixing merge' });
   verdict = { ok: true };
-  scheduler.handleEvent('agent_slot_finished', {
-    conversationId: 'child-m1',
-    slot: { sourceMessageId: 'bootstrap-m1', status: 'completed', finalContent: 'merged for real' },
-  });
+  announceComplete(store, scheduler, 'child-m1', 'merged for real');
   await flush(scheduler);
 
   assert.equal(verifyCalls.length, 2);
@@ -697,20 +940,14 @@ test('verifyNodeCompletion errors fail closed (exception → blocked), and work 
   assert.equal(getNode(store, 'n1').status, 'doing');
 
   // Work node completion never invokes the merge hook.
-  scheduler.handleEvent('agent_slot_finished', {
-    conversationId: 'child-n1',
-    slot: { sourceMessageId: 'bootstrap-n1', status: 'completed', finalContent: 'done' },
-  });
+  announceComplete(store, scheduler, 'child-n1', 'done');
   await flush(scheduler);
   assert.equal(getNode(store, 'n1').status, 'done');
   assert.equal(verifyCalls.length, 0);
   assert.equal(getNode(store, 'm1').status, 'doing');
 
   // Merge node completion with a throwing hook → blocked, not done.
-  scheduler.handleEvent('agent_slot_finished', {
-    conversationId: 'child-m1',
-    slot: { sourceMessageId: 'bootstrap-m1', status: 'completed', finalContent: 'merged' },
-  });
+  announceComplete(store, scheduler, 'child-m1', 'merged');
   await flush(scheduler);
   assert.equal(verifyCalls.length, 1);
   assert.equal(getNode(store, 'm1').status, 'blocked');

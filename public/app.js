@@ -170,6 +170,7 @@ const dom = {
   planNodeBranch: /** @type {HTMLInputElement | null} */ (document.getElementById('plan-node-branch')),
   planNodeVerify: /** @type {HTMLInputElement | null} */ (document.getElementById('plan-node-verify')),
   planNodeBaseBranch: /** @type {HTMLInputElement | null} */ (document.getElementById('plan-node-base-branch')),
+  planNodeVerifier: /** @type {HTMLInputElement | null} */ (document.getElementById('plan-node-verifier')),
   planNodeExecution: /** @type {HTMLElement | null} */ (document.getElementById('plan-node-execution')),
   planHistory: /** @type {HTMLElement | null} */ (document.getElementById('plan-history')),
   planHistoryList: /** @type {HTMLElement | null} */ (document.getElementById('plan-history-list')),

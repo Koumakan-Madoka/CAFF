@@ -4,7 +4,7 @@ const path = require('node:path');
 const { createHttpError } = require('../../http/http-errors');
 const { pickConversationSummary, serializeConversationPrivateMessageForUi } = require('../conversation/conversation-view');
 const { buildAgentMentionLookup, formatAgentMention, resolveMentionValues } = require('../conversation/mention-routing');
-const { applySessionGoalAction, proposeSessionGoalAction } = require('../conversation/session-goal');
+const { applySessionGoalAction, getSessionGoalProposal, proposeSessionGoalAction } = require('../conversation/session-goal');
 const { createConversationExperienceDraft } = require('../conversation/experience-draft');
 const { recordConversationRetrievalTrace } = require('../conversation/retrieval-trace');
 const { createCrossConversationDeliveryService } = require('../conversation/cross-conversation-delivery');
@@ -1452,6 +1452,74 @@ export function createAgentToolBridge(options: any = {}) {
     try {
       if (!activeStore || typeof activeStore.getConversation !== 'function') {
         throw createHttpError(501, 'Session goal proposals are not available');
+      }
+
+      // accept/reject (D28): act on the PENDING proposal instead of creating
+      // one. The proposer can never rule on their own proposal (403) — this
+      // is what lets a DAG verifier agent accept/reject a worker's completion
+      // proposal while the worker cannot self-approve.
+      if (action === 'accept' || action === 'reject') {
+        const conversation = activeStore.getConversation(context.conversationId);
+        if (!conversation) {
+          throw createHttpError(404, 'Conversation not found');
+        }
+        const pendingProposal = getSessionGoalProposal(conversation);
+        if (!pendingProposal) {
+          throw createHttpError(404, 'No session goal proposal is pending');
+        }
+        const proposerAgentId = String(pendingProposal.proposedBy && pendingProposal.proposedBy.agentId || '').trim();
+        if (proposerAgentId && proposerAgentId === String(context.agentId || '').trim()) {
+          throw createHttpError(403, 'goal_proposal_self_review: the proposer cannot accept/reject their own proposal');
+        }
+        const result = applySessionGoalAction(activeStore, context.conversationId, {
+          action: action === 'accept' ? 'accept-proposal' : 'dismiss-proposal',
+        });
+        const summary = pickConversationSummary(result.conversation);
+
+        broadcastEvent('conversation_goal_proposal_cleared', {
+          conversationId: context.conversationId,
+          outcome: action === 'accept' ? 'accepted' : 'rejected',
+          reason,
+          goal: result.goal,
+          proposal: pendingProposal,
+          ruledBy: { agentId: context.agentId, agentName: context.agentName },
+          conversation: result.conversation,
+          summary,
+        });
+        broadcastConversationSummary(context.conversationId);
+
+        const response = {
+          ok: true,
+          conversation: summary,
+          goal: result.goal,
+          proposal: null,
+          outcome: action === 'accept' ? 'accepted' : 'rejected',
+        };
+
+        tryAppendInvocationEvent(context, 'agent_tool_call', {
+          schemaVersion: 1,
+          toolCallId,
+          tool: 'suggest-goal',
+          status: 'succeeded',
+          durationMs: Date.now() - startedAt,
+          invocationId: context.invocationId,
+          conversationId: context.conversationId,
+          turnId: context.turnId,
+          agentId: context.agentId,
+          agentName: context.agentName,
+          assistantMessageId: context.assistantMessageId,
+          request: {
+            action,
+            objectiveLength: objective.length,
+            reasonPreview: clipText(reason, 120),
+          },
+          result: {
+            proposalAction: pendingProposal.action,
+            goalStatus: result.goal ? result.goal.status : '',
+          },
+        });
+
+        return response;
       }
 
       const result = proposeSessionGoalAction(
