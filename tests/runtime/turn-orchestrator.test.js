@@ -1146,7 +1146,9 @@ test('buildAgentTurnPrompt gives bash-only multiline chat bridge guidance', () =
   assert.match(prompt, /Use write-experience sparingly/u);
   assert.match(prompt, /reusable, validated lessons/u);
   assert.match(prompt, /Never put raw message text on a new shell line by itself/u);
-  assert.match(prompt, /successful send-public call completes the turn automatically/u);
+  assert.match(prompt, /successful send-public call completes the turn automatically unless you pass --no-finalize/u);
+  assert.match(prompt, /send-public \[--no-finalize\] --content-stdin/u);
+  assert.match(prompt, /--no-finalize posts an interim update and keeps the current run active/u);
   assert.match(prompt, /if send-private succeeds without a public reply, use a tiny control reply/u);
   assert.doesNotMatch(prompt, /After send-public\/send-private succeeds/u);
   assert.doesNotMatch(prompt, /PowerShell example/u);

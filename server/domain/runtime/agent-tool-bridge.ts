@@ -836,6 +836,7 @@ export function createAgentToolBridge(options: any = {}) {
     const content = String(body.content || '').trim();
     const visibility = String(body.visibility || 'public').trim().toLowerCase();
     const mode = String(body.mode || 'replace').trim().toLowerCase() || 'replace';
+    const noFinalize = body.noFinalize === true;
     const rawRecipients = body.recipientAgentIds !== undefined ? body.recipientAgentIds : body.recipients;
     const requestedRecipientCount = normalizeAgentToolRecipientValues(rawRecipients).length;
     const toolCallId = randomUUID();
@@ -856,6 +857,7 @@ export function createAgentToolBridge(options: any = {}) {
           : {
               visibility,
               mode,
+              noFinalize,
               contentLength: content.length,
             },
     });
@@ -883,6 +885,7 @@ export function createAgentToolBridge(options: any = {}) {
           request: {
             visibility: 'public',
             mode,
+            noFinalize,
             contentLength: content.length,
           },
           result: {
@@ -892,13 +895,15 @@ export function createAgentToolBridge(options: any = {}) {
             publicPostedAt: serialized.publicPostedAt,
           },
         });
-        requestPublicPostCompletion(context, {
-          messageId: serialized.id,
-          publicPostCount: serialized.publicPostCount,
-          publicPostMode: serialized.publicPostMode,
-          publicPostedAt: serialized.publicPostedAt,
-          toolCallId,
-        });
+        if (!noFinalize) {
+          requestPublicPostCompletion(context, {
+            messageId: serialized.id,
+            publicPostCount: serialized.publicPostCount,
+            publicPostMode: serialized.publicPostMode,
+            publicPostedAt: serialized.publicPostedAt,
+            toolCallId,
+          });
+        }
         return {
           ok: true,
           visibility: 'public',

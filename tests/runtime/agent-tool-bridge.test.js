@@ -560,6 +560,64 @@ test('agent tool bridge auto-completes active runs after successful public posts
   assert.equal(callbackPayload.publicPostMode, 'replace');
 });
 
+test('agent tool bridge keeps active runs alive when public posts opt out of finalization', async (t) => {
+  const tempDir = withTempDir('caff-agent-tool-bridge-no-finalize-');
+  const sqlitePath = path.join(tempDir, 'bridge-no-finalize.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const bridge = createAgentToolBridge({ store });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const fixture = createPublicInvocationFixture(store, 'no-finalize');
+  let callbackCount = 0;
+  const context = bridge.registerInvocation(
+    bridge.createInvocationContext({
+      conversationId: fixture.conversation.id,
+      turnId: fixture.assistantMessage.turnId,
+      agentId: fixture.agent.id,
+      agentName: fixture.agent.name,
+      assistantMessageId: fixture.assistantMessage.id,
+      conversationAgents: fixture.conversation.agents,
+      stage: fixture.stage,
+      turnState: fixture.turnState,
+      autoCompleteOnPublicPost: true,
+      onPublicPostCompleted() {
+        callbackCount += 1;
+      },
+    })
+  );
+
+  const response = bridge.handlePostMessage({
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    visibility: 'public',
+    content: 'Progress update before continuing work',
+    noFinalize: true,
+  });
+
+  assert.equal(response.ok, true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(callbackCount, 0);
+  assert.equal(context.publicPostCompletionRequested, false);
+
+  const finalResponse = bridge.handlePostMessage({
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    visibility: 'public',
+    content: 'Final public reply',
+  });
+
+  assert.equal(finalResponse.ok, true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(callbackCount, 1);
+  assert.equal(context.publicPostCompletionRequested, true);
+});
+
 test('agent tool bridge broadcasts live tool events for started and finished bridge steps', (t) => {
   const tempDir = withTempDir('caff-agent-tool-bridge-live-events-');
   const sqlitePath = path.join(tempDir, 'bridge-live-events.sqlite');
