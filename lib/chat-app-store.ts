@@ -32,6 +32,7 @@ const {
   readConversationTitleSource,
   resolveConversationTitleTransition,
 } = require('./conversation-title-source');
+const { deriveTitleFromFirstMessage } = require('./conversation-first-message-title');
 
 const MAX_AVATAR_DATA_URL_LENGTH = 2 * 1024 * 1024;
 const MAX_AGENT_SANDBOX_NAME_LENGTH = 80;
@@ -3362,7 +3363,20 @@ export class ChatAppStore {
       String(payload.senderName || '').trim() ||
       (payload.role === 'user' ? 'You' : payload.role === 'assistant' ? 'Assistant' : 'System');
 
-    return this.createMessageTransaction({
+    // 首条用户消息自动标题（auto_first_message）：
+    // 仅当会话 titleSource 仍为 default 且此前没有任何 user 消息时触发；
+    // 空消息 / 纯空白消息不触发（derive 返回 null）。状态机裁决在
+    // updateConversation 内完成（manual 终态等并发改写不会被覆盖）。
+    const messageRole = String(payload.role || 'assistant').trim();
+    let autoTitleFromFirstMessage: string | null = null;
+    if (messageRole === 'user' && readConversationTitleSource(conversation.metadata) === 'default') {
+      const priorUserMessageCount = this.messageRepository.countByRole(payload.conversationId, 'user');
+      if (priorUserMessageCount === 0) {
+        autoTitleFromFirstMessage = deriveTitleFromFirstMessage(payload.content);
+      }
+    }
+
+    const createdMessage = this.createMessageTransaction({
       id: String(payload.id || randomUUID()).trim(),
       conversationId: payload.conversationId,
       turnId: String(payload.turnId || randomUUID()).trim(),
@@ -3380,6 +3394,15 @@ export class ChatAppStore {
       clientRequestId,
       createdAt: payload.createdAt,
     });
+
+    if (autoTitleFromFirstMessage) {
+      this.updateConversation(payload.conversationId, {
+        title: autoTitleFromFirstMessage,
+        titleSource: 'auto_first_message',
+      });
+    }
+
+    return createdMessage;
   }
 
   createPrivateMessage(payload: any = {}) {

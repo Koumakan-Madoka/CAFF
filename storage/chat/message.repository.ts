@@ -97,6 +97,7 @@ export class ChatMessageRepository {
   updateStatement: any;
   appendTextStatement: any;
   findCompletedCrossConversationReplyStatement: any;
+  countByRoleStatement: any;
   searchLikeStatements: Map<number, any>;
   hasSearchTableCache: boolean | null;
   searchFtsStatement: any;
@@ -182,6 +183,11 @@ export class ChatMessageRepository {
       ORDER BY created_at ASC, id ASC
       LIMIT 1
     `);
+    this.countByRoleStatement = db.prepare(`
+      SELECT COUNT(*) AS message_count
+      FROM chat_messages
+      WHERE conversation_id = ? AND role = ?
+    `);
     this.searchLikeStatements = new Map();
     this.hasSearchTableCache = null;
     this.searchFtsStatement = null;
@@ -236,6 +242,11 @@ export class ChatMessageRepository {
       startedAt,
       `%"crossConversationDeliveryId":"${escapeLikePattern(deliveryId)}"%`
     ) || null;
+  }
+
+  countByRole(conversationId: string, role: string) {
+    const row = this.countByRoleStatement.get(String(conversationId || ''), String(role || ''));
+    return Number(row && row.message_count) || 0;
   }
 
   listByConversationId(conversationId: string) {
