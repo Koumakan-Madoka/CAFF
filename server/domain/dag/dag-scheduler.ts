@@ -418,10 +418,127 @@ export function createDagScheduler(options: any = {}) {
     return result;
   }
 
-  /** Find the doing node bound to a spawned child conversation. */
-  function findDoingNodeForChild(plan: any, conversationId: string): any {
+  /**
+   * Execution start for the node's current attempt. History order is the
+   * authority (timestamps only have millisecond precision): a recoverable
+   * blocked attempt must have a system-authored block after its latest
+   * transition into doing. User-authored blocks remain terminal until the
+   * user explicitly resets the node.
+   */
+  function currentExecutionStart(plan: any, node: any): { retryBoundaryAt: string } | null {
+    const nodeId = String(node && node.id || '').trim();
+    const history = plan && plan.doc && Array.isArray(plan.doc.history) ? plan.doc.history : [];
+    let latestDoingIndex = -1;
+    let latestBlockedIndex = -1;
+    let latestBlockedActor = '';
+    let latestBlockedAt = '';
+    let latestPendingIndex = -1;
+    let latestPendingAt = '';
+    let retryBoundaryAt = '';
+    for (let index = 0; index < history.length; index += 1) {
+      const entry = history[index];
+      if (String(entry && entry.node_id || '').trim() !== nodeId) {
+        continue;
+      }
+      const to = String(entry && entry.to || '').trim();
+      if (to === 'pending') {
+        latestPendingIndex = index;
+        latestPendingAt = String(entry && entry.at || '').trim();
+      } else if (to === 'doing') {
+        latestDoingIndex = index;
+        retryBoundaryAt = latestPendingIndex > latestBlockedIndex ? latestPendingAt : latestBlockedAt;
+      } else if (to === 'blocked') {
+        latestBlockedIndex = index;
+        latestBlockedActor = String(entry && entry.actor || '').trim();
+        latestBlockedAt = String(entry && entry.at || '').trim();
+      }
+    }
+    if (latestDoingIndex < 0) {
+      return null;
+    }
+    if (nodeStatusOf(node) === 'blocked'
+      && (latestBlockedIndex < latestDoingIndex || latestBlockedActor !== 'system')) {
+      return null;
+    }
+    return { retryBoundaryAt };
+  }
+
+  /** A user reset (blocked→pending) starts a new goal epoch. The spawn key
+   * may deliberately reuse the same child conversation within one plan
+   * activation, so stale complete goals/rulings must be cleared explicitly. */
+  function isExplicitRetryPending(plan: any, node: any): boolean {
+    if (nodeStatusOf(node) !== 'pending') {
+      return false;
+    }
+    const nodeId = String(node && node.id || '').trim();
+    const history = plan && plan.doc && Array.isArray(plan.doc.history) ? plan.doc.history : [];
+    let latestBlockedIndex = -1;
+    let latestPendingIndex = -1;
+    for (let index = 0; index < history.length; index += 1) {
+      const entry = history[index];
+      if (String(entry && entry.node_id || '').trim() !== nodeId) {
+        continue;
+      }
+      const to = String(entry && entry.to || '').trim();
+      if (to === 'blocked') {
+        latestBlockedIndex = index;
+      } else if (to === 'pending') {
+        latestPendingIndex = index;
+      }
+    }
+    return latestBlockedIndex >= 0 && latestPendingIndex > latestBlockedIndex;
+  }
+
+  /** A blocked child may keep running after a fail-closed transport verdict.
+   * Only a system-authored block in the current bound execution is eligible
+   * for authoritative goal/ruling recovery; a manual user block is not. */
+  function isRecoverableBlockedExecution(plan: any, node: any): boolean {
+    const spawnedConversationId = String(node && node.spawned_conversation_id || '').trim();
+    if (nodeStatusOf(node) !== 'blocked' || !spawnedConversationId || currentExecutionStart(plan, node) === null) {
+      return false;
+    }
+    const conversation = store.getConversationWithoutMessages(spawnedConversationId);
+    const binding = getDagNodeGoalBinding(conversation);
+    return Boolean(binding
+      && String(binding.planId || '').trim() === String(plan && plan.id || '').trim()
+      && String(binding.nodeId || '').trim() === String(node && node.id || '').trim());
+  }
+
+  /** Prevent a durable ruling from an older manual retry cycle from settling
+   * a newly blocked attempt that happens to reuse the same child binding. */
+  function isProposalFromCurrentExecution(plan: any, node: any, proposal: any): boolean {
+    if (nodeStatusOf(node) !== 'blocked') {
+      return true;
+    }
+    const executionStart = currentExecutionStart(plan, node);
+    if (!executionStart) {
+      return false;
+    }
+    // First dispatch has no retry boundary: the child can complete in the
+    // spawn→doing bind window, so its proposal may legitimately predate the
+    // doing history entry. The binding identity proves plan/node ownership.
+    if (!executionStart.retryBoundaryAt) {
+      return true;
+    }
+    // Retry boundary is the explicit blocked→pending reset that authorizes a
+    // new attempt. Old proposal/ruling evidence must predate it. Equality is
+    // ambiguous at millisecond precision, so retries fail closed on equality.
+    const proposedAt = String(proposal && (proposal.createdAt || proposal.updatedAt) || '').trim();
+    if (!executionStart.retryBoundaryAt || !proposedAt) {
+      return false;
+    }
+    const boundaryMs = Date.parse(executionStart.retryBoundaryAt);
+    const proposedMs = Date.parse(proposedAt);
+    return Number.isFinite(boundaryMs) && Number.isFinite(proposedMs) && proposedMs > boundaryMs;
+  }
+
+  /** Find the live goal-driven node bound to a spawned child conversation.
+   * Besides doing, include system-blocked executions: an invocation whose
+   * delivery lease reached recovered_unknown_outcome can still finish and
+   * earn a valid verifier ruling after the fail-closed plan write. */
+  function findGoalDrivenNodeForChild(plan: any, conversationId: string): any {
     return nodesOf(plan).find((candidate: any) =>
-      nodeStatusOf(candidate) === 'doing'
+      (nodeStatusOf(candidate) === 'doing' || isRecoverableBlockedExecution(plan, candidate))
       && String(candidate.spawned_conversation_id || '').trim() === conversationId) || null;
   }
 
@@ -491,6 +608,7 @@ export function createDagScheduler(options: any = {}) {
    */
   function validateCompletionRuling(
     conversation: any,
+    plan: any,
     node: any,
     ownerConversationId: string,
     expectedOutcome: 'accepted' | 'rejected',
@@ -509,6 +627,13 @@ export function createDagScheduler(options: any = {}) {
       return null;
     }
     const binding = getDagNodeGoalBinding(conversation);
+    if (binding && (String(binding.planId || '').trim() !== String(plan && plan.id || '').trim()
+      || String(binding.nodeId || '').trim() !== String(node && node.id || '').trim())) {
+      return null;
+    }
+    if (!isProposalFromCurrentExecution(plan, node, ruling.proposalSnapshot)) {
+      return null;
+    }
     const proposerId = String(
       ruling.proposalSnapshot && ruling.proposalSnapshot.proposedBy && ruling.proposalSnapshot.proposedBy.agentId || ''
     ).trim();
@@ -784,7 +909,7 @@ export function createDagScheduler(options: any = {}) {
 
     if (goal && goal.status === 'complete') {
       if (binding) {
-        const acceptedRuling = validateCompletionRuling(conversation, node, ownerConversationId, 'accepted');
+        const acceptedRuling = validateCompletionRuling(conversation, plan, node, ownerConversationId, 'accepted');
         if (!acceptedRuling) {
           writeExecution(
             ownerConversationId,
@@ -820,7 +945,7 @@ export function createDagScheduler(options: any = {}) {
       return true;
     }
     if (binding) {
-      const rejectedRuling = validateCompletionRuling(conversation, node, ownerConversationId, 'rejected');
+      const rejectedRuling = validateCompletionRuling(conversation, plan, node, ownerConversationId, 'rejected');
       if (rejectedRuling && !rejectionFeedbackDelivered(conversation, plan, node, rejectedRuling)) {
         await deliverRejectionFeedback(ownerConversationId, plan, node, conversationId, rejectedRuling);
         return true;
@@ -899,12 +1024,15 @@ export function createDagScheduler(options: any = {}) {
     // D27: set the lightweight session goal BEFORE binding doing so the
     // continuation loop never observes a goal-less doing node. Explicit
     // empty checklist — the node must NOT inherit the heavy session-level
-    // default checklist. An idempotent re-dispatch reusing a child that
-    // already has a goal must NOT clobber it (the goal may already be
-    // complete or under verification). Failure here is fail-closed: without
-    // the goal the node has no sustained drive and no completion protocol.
+    // default checklist. Crash-idempotent re-entry while the same attempt is
+    // still pending preserves an existing goal; an explicit blocked→pending
+    // retry starts a fresh goal epoch (and atomically clears stale proposal /
+    // ruling evidence) even when the spawn key reuses the same child.
+    // Failure here is fail-closed: without the goal the node has no sustained
+    // drive and no completion protocol.
     const existingGoalConversation = store.getConversationWithoutMessages(spawnedConversationId);
-    if (!getSessionGoal(existingGoalConversation)) {
+    const explicitRetry = isExplicitRetryPending(current.plan, node);
+    if (!getSessionGoal(existingGoalConversation) || explicitRetry) {
       try {
         applySessionGoalAction(store, spawnedConversationId, {
           action: 'set',
@@ -1115,7 +1243,9 @@ export function createDagScheduler(options: any = {}) {
     const { plan } = current;
 
     for (const node of nodesOf(plan)) {
-      if (nodeStatusOf(node) !== 'doing') {
+      const nodeStatus = nodeStatusOf(node);
+      const recoverableBlocked = isRecoverableBlockedExecution(plan, node);
+      if (nodeStatus !== 'doing' && !recoverableBlocked) {
         continue;
       }
       const nodeId = String(node.id || '').trim();
@@ -1138,6 +1268,12 @@ export function createDagScheduler(options: any = {}) {
       // truth — complete → done, budget-exhausted pause proposal → blocked,
       // pending complete proposal → (re-)route verification idempotently.
       if (await settleFromGoalState(ownerConversationId, plan, node, conversation, 'dag_reconcile')) {
+        continue;
+      }
+      // A system-blocked execution is inspected only for authoritative
+      // goal/ruling recovery. If no fresh completion evidence exists, keep
+      // the block visible; never resume it or consume another retry budget.
+      if (recoverableBlocked) {
         continue;
       }
 
@@ -1240,7 +1376,7 @@ export function createDagScheduler(options: any = {}) {
       if (!freshPlan || freshPlan.status !== 'active') {
         return;
       }
-      const node = findDoingNodeForChild(freshPlan, normalizedConversationId);
+      const node = findGoalDrivenNodeForChild(freshPlan, normalizedConversationId);
       if (!node) {
         return;
       }
@@ -1250,7 +1386,7 @@ export function createDagScheduler(options: any = {}) {
         return;
       }
       const proposal = getSessionGoalProposal(conversation);
-      if (!proposal) {
+      if (!proposal || !isProposalFromCurrentExecution(freshPlan, node, proposal)) {
         return;
       }
       if (proposal.action === 'pause'
@@ -1304,7 +1440,7 @@ export function createDagScheduler(options: any = {}) {
       if (!freshPlan || freshPlan.status !== 'active') {
         return;
       }
-      const node = findDoingNodeForChild(freshPlan, normalizedConversationId);
+      const node = findGoalDrivenNodeForChild(freshPlan, normalizedConversationId);
       if (!node) {
         return;
       }
@@ -1321,7 +1457,7 @@ export function createDagScheduler(options: any = {}) {
       const binding = getDagNodeGoalBinding(conversation);
 
       if (goal && goal.status === 'complete') {
-        const acceptedRuling = validateCompletionRuling(conversation, node, ownerConversationId, 'accepted');
+        const acceptedRuling = validateCompletionRuling(conversation, freshPlan, node, ownerConversationId, 'accepted');
         if (!acceptedRuling) {
           if (binding) {
             // The goal really IS complete but no valid ruling is persisted —
@@ -1357,7 +1493,7 @@ export function createDagScheduler(options: any = {}) {
       // would otherwise inject bogus feedback into the worker). Sourced
       // from the durable ruling record; the delivery is idempotent per
       // ruled proposal.
-      const rejectedRuling = validateCompletionRuling(conversation, node, ownerConversationId, 'rejected');
+      const rejectedRuling = validateCompletionRuling(conversation, freshPlan, node, ownerConversationId, 'rejected');
       if (rejectedRuling) {
         await deliverRejectionFeedback(ownerConversationId, freshPlan, node, normalizedConversationId, rejectedRuling);
         await dispatchReadyNodes(ownerConversationId);

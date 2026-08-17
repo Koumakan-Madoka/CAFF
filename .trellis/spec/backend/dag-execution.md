@@ -117,9 +117,12 @@
   3. **session goal set (D27)** — lightweight goal on the child BEFORE the
      doing binding: objective = node goal + completion protocol, explicit
      EMPTY checklist (the heavy session-level default checklist is never
-     inherited). Re-dispatch never clobbers an existing goal. Init failure →
-     `blocked` `dag_goal_init_failed` (fail-closed: no goal = no sustained
-     drive, no completion protocol);
+     inherited). Crash-idempotent re-entry within the same attempt preserves
+     an existing goal; an explicit `blocked→pending` retry starts a fresh goal
+     epoch even when the spawn idempotency key reuses the same child, thereby
+     clearing stale proposal/ruling evidence before the new `doing` bind.
+     Init/reset failure → `blocked` `dag_goal_init_failed` (fail-closed: no
+     trustworthy goal epoch = no completion protocol);
   3.5 **goal binding written (D28 enforcement anchor)** —
      `metadata.dagNodeGoalBinding = { planId, nodeId, workerId, verifierId }`
      on the child conversation (idempotent, first write wins; also repaired
@@ -213,10 +216,24 @@
 - **Concurrency (D24)**: global in-flight `doing` nodes ≤
   `CAFF_DAG_MAX_CONCURRENCY` (default 3). Surplus ready nodes stay `pending`
   (no `queued` enum, D17); freed slots refill FIFO in doc declaration order.
+- **Blocked-execution late completion recovery**: a scheduler-owned delivery
+  may fail closed to `blocked` after the target invocation has already begun
+  (`recovered_unknown_outcome`). The child session goal can therefore keep
+  running and later produce a valid completion proposal/ruling. Goal proposal
+  handlers and startup reconcile inspect both `doing` nodes and **recoverable
+  system-blocked executions**; the latter may transition `blocked→done` only
+  when all of these hold: the current node still points at the same spawned
+  child, its persisted `dagNodeGoalBinding` matches the current plan/node,
+  the latest block after the current `doing` transition was authored by
+  `system`, and the proposal timestamp is not older than that execution start.
+  An explicit user-authored block remains terminal until the user resets it.
+  Blocked recovery never auto-resumes an incomplete child or consumes another
+  D25 resume attempt; absent fresh authoritative evidence, it stays blocked.
 - **Restart reconcile (D25)**: `reconcileOnStartup()` scans active plans —
   - goal state is the source of truth for goal-driven children: goal
     complete → `done`; budget-exhausted pause proposal → `blocked`; pending
-    complete proposal → verification (re-)routed idempotently;
+    complete proposal → verification (re-)routed idempotently; system-blocked
+    children are inspected only for fresh completion/ruling recovery;
   - goal-less child finished while down → legacy terminal-reply write-back
     and propagate;
   - child interrupted → resume by injecting into the ORIGINAL child
@@ -264,7 +281,10 @@
 | completion | durable ruling `proposalId` missing or ≠ `proposalSnapshot.id` | ruling rejected; bound complete goal → blocked `dag_goal_completion_unverified` |
 | completion | rejected ruling by agent ≠ verifier (or any agent on a bound exempt node) | ignored — no bogus feedback injected; only the designated verifier or the user may reject |
 | completion | bound child conversation lost its session goal | `blocked` `dag_goal_missing` — legacy terminal-reply fallback is binding-gated, never verifier-bypassing |
-| delivery | scheduler delivery reaches terminal `failed`/`cancelled` with authoritative ownership fields + current-cycle key | `blocked` `dag_delivery_failed` — never strands a node `doing` |
+| delivery | scheduler delivery reaches terminal `failed`/`cancelled` with authoritative ownership fields + current-cycle key | immediately `blocked` `dag_delivery_failed`; if that same already-running bound child later earns a fresh valid accepted ruling, recover `blocked→done` |
+| completion | system-blocked current execution + matching binding + fresh worker proposal + valid accept ruling | `blocked→done + result`; downstream readiness resumes |
+| completion | user-authored block or stale proposal from before the latest retry boundary | remains `blocked`; event/reconcile must not override user intent or reuse old evidence |
+| redispatch | explicit `blocked→pending`, spawn reuses the same child with old complete goal/ruling | reset lightweight goal to a fresh active epoch before `pending→doing`; old ruling cannot post-bind settle the retry |
 | delivery | agent-principal delivery with forged `dag-*` key / wrong scope / wrong target / stale activation or proposal round | ignored entirely |
 | delivery | verification request / rejection feedback persist throws synchronously | `blocked` `dag_delivery_failed` (no retry path exists for unpersisted deliveries) |
 | verification | verifier routing but no delivery channel wired | `blocked` `dag_verify_unavailable` |
@@ -316,7 +336,9 @@
   guard (terminal failed+cancelled → blocked, forged agent principal /
   wrong scope / wrong target / stale activation / stale proposal round
   ignored, current-cycle feedback failure blocked, sync persist failure
-  blocked), `dag_goal_missing` fail-closed.
+  blocked), late authoritative completion after `recovered_unknown_outcome`
+  (`blocked→done` via event and restart reconcile), explicit user-block stays
+  blocked, `dag_goal_missing` fail-closed.
 - `tests/http/conversation-goal-dag-guard.test.js` (3): REST goal mutation
   lock for DAG-bound doing nodes (403 matrix), proposal ruling + checklist
   whitelist with user ruledBy snapshot, post-execution unrestricted

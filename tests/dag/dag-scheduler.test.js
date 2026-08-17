@@ -122,8 +122,13 @@ function createHarness(store, overrides = {}) {
         throw new Error(overrides.spawnError);
       }
       const childId = `child-${input.node.id}`;
-      createChildConversation(store, childId);
-      const messageId = `bootstrap-${input.node.id}`;
+      if (!store.getConversationWithoutMessages(childId)) {
+        createChildConversation(store, childId);
+      }
+      const priorSpawnsForNode = spawns.filter((entry) => entry.nodeId === input.node.id).length;
+      const messageId = priorSpawnsForNode === 0
+        ? `bootstrap-${input.node.id}`
+        : `bootstrap-${input.node.id}-${priorSpawnsForNode + 1}`;
       addMessage(store, {
         id: messageId,
         conversationId: childId,
@@ -1283,6 +1288,207 @@ test('P2: terminal failure of a scheduler delivery blocks the node (dag_delivery
   assert.equal(getNode(store, 'n1').status, 'blocked', 'terminal delivery failure never strands the node doing');
   const reasons = historyFor(store, 'n1').map((entry) => entry.reason || '');
   assert.ok(reasons.some((reason) => reason.includes('dag_delivery_failed')), JSON.stringify(reasons));
+});
+
+test('delivery unknown-outcome block is recoverable when the same child later earns an authoritative accepted ruling', async () => {
+  const store = createStore(test);
+  createRoot(store, ROOT_ID, [WORKER_ID, VERIFIER_ID]);
+  const plan = createActivePlan(store, makeDoc([node('n1', { verifier: VERIFIER_ID })]));
+  const { scheduler, deliveries } = createHarness(store);
+
+  scheduler.handleEvent('conversation_plan_updated', { ownerConversationId: ROOT_ID, plan });
+  await flush(scheduler);
+
+  // The delivery lease expires after invocation started. The scheduler must
+  // fail closed immediately, but the already-running child may still finish.
+  scheduler.handleEvent('cross_conversation_delivery_updated', {
+    conversationId: 'child-n1',
+    delivery: schedulerDelivery({
+      idempotencyKey: `dag-node:${plan.id}:n1:${plan.activatedAt}`,
+      idempotencyScope: `operator:${ROOT_ID}:conversation_spawn`,
+    }),
+    reason: 'recovered_unknown_outcome',
+  });
+  await flush(scheduler);
+  assert.equal(getNode(store, 'n1').status, 'blocked');
+
+  // The live child finishes after the transport-level block. Its proposal
+  // must still reach the verifier, and a durable valid ruling supersedes the
+  // earlier operational failure for this same bound child execution.
+  announceComplete(store, scheduler, 'child-n1', '未知结果恢复后的完工摘要');
+  await flush(scheduler);
+  assert.equal(deliveries.length, 1, 'blocked child completion is still routed to its verifier');
+
+  ruleOnProposal(store, scheduler, 'child-n1', 'accept', '验收通过');
+  await flush(scheduler);
+
+  assert.equal(getNode(store, 'n1').status, 'done');
+  assert.equal(getNode(store, 'n1').result, '未知结果恢复后的完工摘要');
+  const transitions = historyFor(store, 'n1').map((entry) => `${entry.from}->${entry.to}:${entry.reason}`);
+  assert.ok(transitions.some((entry) => entry === 'blocked->done:dag_goal_completed'), JSON.stringify(transitions));
+});
+
+test('manual user block remains terminal even if the child later records an accepted ruling', async () => {
+  const store = createStore(test);
+  createRoot(store, ROOT_ID, [WORKER_ID, VERIFIER_ID]);
+  const plan = createActivePlan(store, makeDoc([node('n1', { verifier: VERIFIER_ID })]));
+  const harness = createHarness(store);
+
+  harness.scheduler.handleEvent('conversation_plan_updated', { ownerConversationId: ROOT_ID, plan });
+  await flush(harness.scheduler);
+
+  const current = store.getPlanForConversation(ROOT_ID).plan;
+  const manuallyBlockedDoc = JSON.parse(JSON.stringify(current.doc));
+  manuallyBlockedDoc.nodes.find((entry) => entry.id === 'n1').status = 'blocked';
+  store.savePlanForConversation(
+    ROOT_ID,
+    { doc: manuallyBlockedDoc, version: current.version },
+    { actor: { type: 'user' } },
+  );
+
+  proposeSessionGoalAction(
+    store,
+    'child-n1',
+    { action: 'complete', reason: '用户阻塞后迟到的摘要' },
+    { agentId: WORKER_ID, agentName: WORKER_ID },
+  );
+  applySessionGoalAction(store, 'child-n1', {
+    action: 'accept-proposal',
+    reason: '迟到验收',
+    ruledBy: { agentId: VERIFIER_ID, agentName: VERIFIER_ID },
+  });
+
+  harness.scheduler.handleEvent('conversation_goal_proposal_cleared', { conversationId: 'child-n1' });
+  await flush(harness.scheduler);
+  await harness.scheduler.reconcileOnStartup();
+
+  assert.equal(getNode(store, 'n1').status, 'blocked', 'scheduler must not override an explicit user block');
+  assert.equal(getNode(store, 'n1').result, undefined);
+  const transitions = historyFor(store, 'n1').map((entry) => `${entry.from}->${entry.to}:${entry.actor}`);
+  assert.ok(transitions.some((entry) => entry === 'doing->blocked:user'), JSON.stringify(transitions));
+  assert.equal(transitions.some((entry) => entry.startsWith('blocked->done:')), false);
+});
+
+test('manual blocked→pending redispatch resets the reused child goal epoch before post-bind settle', async () => {
+  const store = createStore(test);
+  createRoot(store, ROOT_ID, [WORKER_ID, VERIFIER_ID]);
+  const plan = createActivePlan(store, makeDoc([node('n1', { verifier: VERIFIER_ID })]));
+  const harness = createHarness(store);
+
+  harness.scheduler.handleEvent('conversation_plan_updated', { ownerConversationId: ROOT_ID, plan });
+  await flush(harness.scheduler);
+  proposeSessionGoalAction(
+    store,
+    'child-n1',
+    { action: 'complete', reason: '旧执行周期摘要' },
+    { agentId: WORKER_ID, agentName: WORKER_ID },
+  );
+  applySessionGoalAction(store, 'child-n1', {
+    action: 'accept-proposal',
+    ruledBy: { agentId: VERIFIER_ID, agentName: VERIFIER_ID },
+  });
+  store.writePlanNodeExecution(ROOT_ID, [{ nodeId: 'n1', status: 'blocked' }], { reason: 'old attempt failed' });
+
+  const blockedPlan = store.getPlanForConversation(ROOT_ID).plan;
+  const pendingDoc = JSON.parse(JSON.stringify(blockedPlan.doc));
+  pendingDoc.nodes.find((entry) => entry.id === 'n1').status = 'pending';
+  const reset = store.savePlanForConversation(
+    ROOT_ID,
+    { doc: pendingDoc, version: blockedPlan.version },
+    { actor: { type: 'user' } },
+  );
+  harness.scheduler.handleEvent('conversation_plan_updated', { ownerConversationId: ROOT_ID, plan: reset.plan });
+  await flush(harness.scheduler);
+
+  assert.equal(getNode(store, 'n1').status, 'doing', 'stale accepted ruling must not auto-complete the retry');
+  assert.equal(getNode(store, 'n1').result, undefined);
+  assert.equal(getSessionGoal(store.getConversation('child-n1')).status, 'active', 'retry starts a fresh goal epoch');
+  assert.equal(getSessionGoalRuling(store.getConversation('child-n1')), null, 'stale ruling is cleared before doing bind');
+  assert.equal(harness.spawns.length, 2, 'idempotent spawn reuses the child for the retry attempt');
+});
+
+test('restart reconcile does not reuse an accepted ruling from before the latest execution attempt', async () => {
+  const store = createStore(test);
+  createRoot(store, ROOT_ID, [WORKER_ID, VERIFIER_ID]);
+  const plan = createActivePlan(store, makeDoc([node('n1', { verifier: VERIFIER_ID })]));
+  const harness = createHarness(store);
+
+  harness.scheduler.handleEvent('conversation_plan_updated', { ownerConversationId: ROOT_ID, plan });
+  await flush(harness.scheduler);
+  proposeSessionGoalAction(
+    store,
+    'child-n1',
+    { action: 'complete', reason: '旧执行周期摘要' },
+    { agentId: WORKER_ID, agentName: WORKER_ID },
+  );
+  applySessionGoalAction(store, 'child-n1', {
+    action: 'accept-proposal',
+    ruledBy: { agentId: VERIFIER_ID, agentName: VERIFIER_ID },
+  });
+
+  // Start a later attempt without dispatching an event. The old durable
+  // ruling remains in the reused child metadata, but predates this attempt.
+  store.writePlanNodeExecution(ROOT_ID, [{ nodeId: 'n1', status: 'blocked' }], { reason: 'first attempt failed' });
+  const blockedPlan = store.getPlanForConversation(ROOT_ID).plan;
+  const pendingDoc = JSON.parse(JSON.stringify(blockedPlan.doc));
+  pendingDoc.nodes.find((entry) => entry.id === 'n1').status = 'pending';
+  store.savePlanForConversation(
+    ROOT_ID,
+    { doc: pendingDoc, version: blockedPlan.version },
+    { actor: { type: 'user' } },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  store.writePlanNodeExecution(
+    ROOT_ID,
+    [{ nodeId: 'n1', status: 'doing', spawnedConversationId: 'child-n1' }],
+    { reason: 'later attempt' },
+  );
+  store.writePlanNodeExecution(ROOT_ID, [{ nodeId: 'n1', status: 'blocked' }], { reason: 'later attempt interrupted' });
+
+  const restarted = createHarness(store);
+  await restarted.scheduler.reconcileOnStartup();
+
+  assert.equal(getNode(store, 'n1').status, 'blocked', 'stale evidence must not settle the latest attempt');
+  assert.equal(getNode(store, 'n1').result, undefined);
+});
+
+test('restart reconcile recovers a system-blocked node from its durable accepted ruling', async () => {
+  const store = createStore(test);
+  createRoot(store, ROOT_ID, [WORKER_ID, VERIFIER_ID]);
+  const plan = createActivePlan(store, makeDoc([node('n1', { verifier: VERIFIER_ID })]));
+  const harness = createHarness(store);
+
+  harness.scheduler.handleEvent('conversation_plan_updated', { ownerConversationId: ROOT_ID, plan });
+  await flush(harness.scheduler);
+  harness.scheduler.handleEvent('cross_conversation_delivery_updated', {
+    conversationId: 'child-n1',
+    delivery: schedulerDelivery({
+      idempotencyKey: `dag-node:${plan.id}:n1:${plan.activatedAt}`,
+      idempotencyScope: `operator:${ROOT_ID}:conversation_spawn`,
+    }),
+    reason: 'recovered_unknown_outcome',
+  });
+  await flush(harness.scheduler);
+
+  proposeSessionGoalAction(
+    store,
+    'child-n1',
+    { action: 'complete', reason: '崩溃窗口中的完工摘要' },
+    { agentId: WORKER_ID, agentName: WORKER_ID },
+  );
+  applySessionGoalAction(store, 'child-n1', {
+    action: 'accept-proposal',
+    reason: '验收通过',
+    ruledBy: { agentId: VERIFIER_ID, agentName: VERIFIER_ID },
+  });
+
+  const restarted = createHarness(store);
+  await restarted.scheduler.reconcileOnStartup();
+
+  assert.equal(getNode(store, 'n1').status, 'done');
+  assert.equal(getNode(store, 'n1').result, '崩溃窗口中的完工摘要');
+  const transitions = historyFor(store, 'n1').map((entry) => `${entry.from}->${entry.to}:${entry.reason}`);
+  assert.ok(transitions.some((entry) => entry === 'blocked->done:dag_reconcile_goal_complete'), JSON.stringify(transitions));
 });
 
 test('P2: non-terminal or foreign delivery events are ignored', async () => {
