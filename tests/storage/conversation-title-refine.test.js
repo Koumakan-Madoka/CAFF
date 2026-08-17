@@ -155,6 +155,30 @@ test('manual title is never refined', async (t) => {
   assert.equal(store.getConversationTitleSource(conversation.id), 'manual');
 });
 
+test('manual rename during the title model call wins the write-time race', async (t) => {
+  const store = createStore(t, 'caff-title-refine-race-');
+  const conversation = createConversation(store);
+  store.updateConversation(conversation.id, {
+    title: '首条消息标题',
+    titleSource: 'auto_first_message',
+  });
+
+  let runnerCalls = 0;
+  appendPublicMessages(store, conversation.id, 1, 2);
+  const result = await maybeAutoCreateConversationDigest(store, conversation.id, digestOptions(async () => {
+    runnerCalls += 1;
+    store.updateConversation(conversation.id, { title: '模型运行期间手动改名' });
+    return '迟到的模型标题';
+  }));
+
+  assert.equal(result.digestChanged, true);
+  assert.equal(runnerCalls, 1);
+  const updated = store.getConversation(conversation.id);
+  assert.equal(updated.title, '模型运行期间手动改名');
+  assert.equal(store.getConversationTitleSource(conversation.id), 'manual');
+  assert.equal(updated.metadata.titleRefinedAt, undefined);
+});
+
 test('autoTitleRefine: false disables the refine call', async (t) => {
   const store = createStore(t);
   const conversation = createConversation(store, '保留标题');

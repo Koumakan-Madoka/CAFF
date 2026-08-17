@@ -197,6 +197,33 @@ test('long first user message stores truncated title with ellipsis', (t) => {
   assert.equal(store.getConversationTitleSource(conversation.id), 'auto_first_message');
 });
 
+test('store truncation boundary preserves exactly 40 code points and clips the 41st', (t) => {
+  const store = createStore(t, 'caff-first-msg-boundary-');
+  const cases = [
+    {
+      content: '界'.repeat(AUTO_FIRST_MESSAGE_TITLE_MAX_CHARS),
+      expected: '界'.repeat(AUTO_FIRST_MESSAGE_TITLE_MAX_CHARS),
+    },
+    {
+      content: '界'.repeat(AUTO_FIRST_MESSAGE_TITLE_MAX_CHARS + 1),
+      expected: '界'.repeat(AUTO_FIRST_MESSAGE_TITLE_MAX_CHARS) + '…',
+    },
+    {
+      content: 'a'.repeat(AUTO_FIRST_MESSAGE_TITLE_MAX_CHARS - 1) + '🚀x',
+      expected: 'a'.repeat(AUTO_FIRST_MESSAGE_TITLE_MAX_CHARS - 1) + '🚀…',
+    },
+  ];
+
+  for (const { content, expected } of cases) {
+    const conversation = createConversation(store);
+    store.createMessage({ conversationId: conversation.id, role: 'user', content });
+
+    const updated = store.getConversationWithoutMessages(conversation.id);
+    assert.equal(updated.title, expected);
+    assert.equal(store.getConversationTitleSource(conversation.id), 'auto_first_message');
+  }
+});
+
 test('manual rename after auto title still upgrades rank (auto_first_message -> manual)', (t) => {
   const store = createStore(t);
   const conversation = createConversation(store);

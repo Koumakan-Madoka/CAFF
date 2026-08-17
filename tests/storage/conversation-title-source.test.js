@@ -126,6 +126,41 @@ test('store: title write upgrades default -> auto_first_message -> auto_llm -> m
   assert.equal(store.getConversationTitleSource(conversation.id), 'manual');
 });
 
+test('store: persists the full 4x4 titleSource transition matrix', (t) => {
+  const store = createStore(t, 'caff-title-source-matrix-');
+
+  for (const current of CONVERSATION_TITLE_SOURCES) {
+    for (const incoming of CONVERSATION_TITLE_SOURCES) {
+      const conversation = createConversation(store);
+      if (current !== 'default') {
+        store.updateConversation(conversation.id, {
+          title: `current:${current}`,
+          titleSource: current,
+        });
+      }
+
+      const existing = store.getConversationWithoutMessages(conversation.id);
+      const attemptedTitle = `incoming:${incoming}`;
+      const updated = store.updateConversation(conversation.id, {
+        title: attemptedTitle,
+        titleSource: incoming,
+      });
+      const expectedApplied = RANK[incoming] >= RANK[current];
+
+      assert.equal(
+        updated.title,
+        expectedApplied ? attemptedTitle : existing.title,
+        `${current} -> ${incoming} persisted title`
+      );
+      assert.equal(
+        store.getConversationTitleSource(conversation.id),
+        expectedApplied ? incoming : current,
+        `${current} -> ${incoming} persisted source`
+      );
+    }
+  }
+});
+
 test('store: manual is terminal — automatic title writes are rejected and preserve title', (t) => {
   const store = createStore(t);
   const conversation = createConversation(store);
