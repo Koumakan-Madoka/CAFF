@@ -98,6 +98,7 @@ test('auto_first_message title is upgraded to auto_llm by refine', async (t) => 
 test('model failure keeps the existing title and does not block the digest', async (t) => {
   const store = createStore(t);
   const conversation = createConversation(store, '原始标题');
+  store.updateConversation(conversation.id, { title: '原始标题', titleSource: 'auto_first_message' });
   const runnerCalls = [];
   const runner = async (context) => {
     runnerCalls.push(context);
@@ -111,7 +112,7 @@ test('model failure keeps the existing title and does not block the digest', asy
   assert.equal(runnerCalls.length, 1);
   const updated = store.getConversation(conversation.id);
   assert.equal(updated.title, '原始标题');
-  assert.equal(store.getConversationTitleSource(conversation.id), 'default');
+  assert.equal(store.getConversationTitleSource(conversation.id), 'auto_first_message');
   assert.equal(updated.metadata.titleRefinedAt, undefined);
   assert.equal(updated.metadata.conversationDigests.length, 1);
 });
@@ -120,11 +121,12 @@ test('blank or over-long model output falls back to the existing title', async (
   const store = createStore(t);
 
   const blankConversation = createConversation(store, 'Blank Title');
+  store.updateConversation(blankConversation.id, { title: 'Blank Title', titleSource: 'auto_first_message' });
   appendPublicMessages(store, blankConversation.id, 1, 2);
   const blankResult = await maybeAutoCreateConversationDigest(store, blankConversation.id, digestOptions(async () => '  ""  '));
   assert.equal(blankResult.digestChanged, true);
   assert.equal(store.getConversation(blankConversation.id).title, 'Blank Title');
-  assert.equal(store.getConversationTitleSource(blankConversation.id), 'default');
+  assert.equal(store.getConversationTitleSource(blankConversation.id), 'auto_first_message');
 
   const longConversation = createConversation(store, 'Long Title');
   appendPublicMessages(store, longConversation.id, 11, 2);
@@ -156,6 +158,7 @@ test('manual title is never refined', async (t) => {
 test('autoTitleRefine: false disables the refine call', async (t) => {
   const store = createStore(t);
   const conversation = createConversation(store, '保留标题');
+  store.updateConversation(conversation.id, { title: '保留标题', titleSource: 'auto_first_message' });
   const runnerCalls = [];
 
   appendPublicMessages(store, conversation.id, 1, 2);
@@ -171,7 +174,7 @@ test('autoTitleRefine: false disables the refine call', async (t) => {
   assert.equal(result.digestChanged, true);
   assert.equal(runnerCalls.length, 0);
   assert.equal(store.getConversation(conversation.id).title, '保留标题');
-  assert.equal(store.getConversationTitleSource(conversation.id), 'default');
+  assert.equal(store.getConversationTitleSource(conversation.id), 'auto_first_message');
 });
 
 test('metadata-only digest writes do not flip titleSource to manual', async (t) => {
