@@ -16,6 +16,7 @@
       isWerewolfConversation,
     } = helpers;
     let collapsedIds = new Set();
+    let renamingConversationId = '';
 
     function compactStatus(conversation) {
       if (!conversation || !conversation.crossConversationStatus) return null;
@@ -64,6 +65,46 @@
       return toggle;
     }
 
+    function createRenameButton(row) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'conversation-rename-button';
+      button.dataset.renameConversationId = row.conversation.id;
+      button.textContent = '\u270e';
+      button.setAttribute('aria-label', `\u91cd\u547d\u540d\u201c${row.conversation.title}\u201d`);
+      button.title = '\u91cd\u547d\u540d\uff08\u624b\u52a8\u6807\u9898\u4e0d\u4f1a\u88ab\u81ea\u52a8\u6807\u9898\u8986\u76d6\uff09';
+      return button;
+    }
+
+    function createRenameForm(conversation) {
+      const form = document.createElement('form');
+      form.className = 'conversation-rename-form';
+      form.dataset.renameConversationId = conversation.id;
+
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.name = 'title';
+      input.required = true;
+      input.maxLength = 120;
+      input.autocomplete = 'off';
+      input.value = conversation.title;
+      input.setAttribute('aria-label', '\u65b0\u7684\u4f1a\u8bdd\u6807\u9898');
+
+      const save = document.createElement('button');
+      save.type = 'submit';
+      save.className = 'conversation-rename-save';
+      save.textContent = '\u4fdd\u5b58';
+
+      const cancel = document.createElement('button');
+      cancel.type = 'button';
+      cancel.className = 'conversation-rename-cancel';
+      cancel.dataset.renameCancelId = conversation.id;
+      cancel.textContent = '\u53d6\u6d88';
+
+      form.append(input, save, cancel);
+      return form;
+    }
+
     function createSpawnButton(row) {
       if (row.depthLimit) return null;
       const button = document.createElement('button');
@@ -94,6 +135,7 @@
         directoryState.loading ? 'loading' : '',
         directoryState.query || '',
         directoryState.error || '',
+        renamingConversationId ? `renaming:${renamingConversationId}` : '',
       ].join('\u001d');
       if (dom.conversationList.dataset.renderSignature === signature) return;
 
@@ -120,6 +162,11 @@
         listRow.style.setProperty('--tree-depth', String(row.depth));
         listRow.dataset.depth = String(row.depth);
         if (row.depthLimit) listRow.dataset.depthLimit = 'true';
+
+        const isRenaming = renamingConversationId === conversation.id;
+        if (isRenaming) {
+          listRow.classList.add('is-renaming');
+        }
 
         const item = document.createElement('button');
         item.type = 'button';
@@ -160,6 +207,18 @@
           metaLine.appendChild(busyBadge);
         }
 
+        if (isRenaming) {
+          const renameForm = createRenameForm(conversation);
+          listRow.appendChild(renameForm);
+          dom.conversationList.appendChild(listRow);
+          const renameInput = /** @type {HTMLInputElement | null} */ (renameForm.querySelector('input[name="title"]'));
+          if (renameInput) {
+            renameInput.focus();
+            renameInput.select();
+          }
+          return;
+        }
+
         item.append(titleLine, metaLine);
         if (row.depthLimit) {
           const depthHint = document.createElement('span');
@@ -169,6 +228,7 @@
         }
         listRow.appendChild(item);
         listRow.appendChild(createToggle(row));
+        listRow.appendChild(createRenameButton(row));
         const spawnButton = createSpawnButton(row);
         if (spawnButton) listRow.appendChild(spawnButton);
         dom.conversationList.appendChild(listRow);
@@ -186,6 +246,21 @@
       render();
     }
 
-    return { render, toggle };
+    function startRename(conversationId) {
+      const id = String(conversationId || '').trim();
+      if (!id) return;
+      renamingConversationId = id;
+      dom.conversationList.dataset.renderSignature = '';
+      render();
+    }
+
+    function cancelRename() {
+      if (!renamingConversationId) return;
+      renamingConversationId = '';
+      dom.conversationList.dataset.renderSignature = '';
+      render();
+    }
+
+    return { render, toggle, startRename, cancelRename };
   };
 })();
