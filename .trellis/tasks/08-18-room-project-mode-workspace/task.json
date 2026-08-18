@@ -3,7 +3,7 @@
   "name": "room-project-mode-workspace",
   "title": "Room project mode workspace",
   "description": "Room 创建必选 Project 与固定 Mode；开发前绑定 branch/worktree；运行上下文注入编排；验收证据；破坏性下线旧游戏与 Skill Test。",
-  "status": "planning",
+  "status": "review",
   "dev_type": "fullstack",
   "scope": "fullstack",
   "package": null,
@@ -14,32 +14,44 @@
   "completedAt": null,
   "branch": "room/b6fae6e6-room-project-mode-workspace",
   "base_branch": "develop",
-  "worktree_path": null,
-  "current_phase": 0,
+  "worktree_path": "E:/pythonproject/worktrees/room/b6fae6e6-room-project-mode-workspace",
+  "current_phase": 3,
   "next_action": [
     {
-      "phase": 1,
-      "action": "implement"
-    },
-    {
-      "phase": 2,
-      "action": "check"
-    },
-    {
       "phase": 3,
-      "action": "finish"
+      "action": "finish-work"
     },
     {
       "phase": 4,
-      "action": "create-pr"
+      "action": "human-acceptance"
+    },
+    {
+      "phase": 5,
+      "action": "archive"
     }
   ],
-  "commit": null,
+  "commit": "188d7f9",
   "pr_url": null,
   "subtasks": [],
   "children": [],
   "parent": null,
-  "relatedFiles": [],
-  "notes": "",
-  "meta": {}
+  "relatedFiles": [
+    "server/api/conversations-controller.ts",
+    "server/domain/conversation/room-workspace.ts",
+    "server/domain/conversation/turn/agent-executor.ts",
+    "server/domain/conversation/turn/agent-prompt.ts",
+    "lib/chat-app-store.ts",
+    "lib/mode-store.ts",
+    "storage/sqlite/migrations.ts",
+    "public/chat/new-conversation-dialog.js",
+    "tests/http/room-conversation-create.test.js",
+    "tests/runtime/room-workspace.test.js",
+    "tests/smoke/mode-store.test.js",
+    ".trellis/spec/backend/room-context-workspace.md"
+  ],
+  "notes": "Implementation candidate 188d7f9 passed independent cross-family review. Specs are synchronized; finish-work and human acceptance remain. Known limitation: historical agentDir game JSON files are not deleted, but all execution/API/UI entry points are removed.",
+  "meta": {
+    "independentReview": "approved",
+    "reviewedCandidate": "188d7f9"
+  }
 }

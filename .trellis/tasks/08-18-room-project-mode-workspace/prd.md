@@ -160,16 +160,16 @@ Success: `201` for a newly created binding or `200` for an idempotent existing b
 
 ## Acceptance criteria
 
-- [ ] New Room form requires and submits Project and fixed Mode; legacy types are absent.
-- [ ] Backend contract tests prove create validation, immutable context, and Skill merge.
-- [ ] Workspace tests prove preview is read-only, confirmation creates the expected branch/worktree, repeat is idempotent, and conflicts/rollback fail closed.
-- [ ] Runtime tests prove cwd precedence: DAG node > Room worktree > Room Project repository.
-- [ ] Prompt tests prove Mode and orchestration are distinct and injected.
-- [ ] Migration tests prove legacy game/Skill Test modes and Rooms are removed without deleting ordinary/custom Mode Rooms.
-- [ ] Acceptance storage/API tests cover candidate, rejection, accepted SHA equality, idempotency, and append-only records.
-- [ ] Legacy game/Skill Test routes/assets and startup wiring are removed.
-- [ ] Applicable targeted tests, `npm run check`, `npm run typecheck`, `npm run build`, and `git diff --check` pass.
-- [ ] Exact HEAD receives independent non-author review before any merge request.
+- [x] New Room form requires and submits Project and fixed Mode; legacy types are absent.
+- [x] Backend contract tests prove create validation, immutable context, and Skill merge.
+- [x] Workspace tests prove preview is read-only, confirmation creates the expected branch/worktree, repeat is idempotent, and conflicts/rollback fail closed.
+- [x] Runtime tests prove cwd precedence: DAG node > Room worktree > Room Project repository.
+- [x] Prompt tests prove Mode and orchestration are distinct and injected.
+- [x] Migration tests prove legacy game/Skill Test modes and Rooms are removed without deleting ordinary/custom Mode Rooms.
+- [x] Acceptance storage/API tests cover candidate, rejection, accepted SHA equality, idempotency, and append-only records.
+- [x] Legacy game/Skill Test routes/assets and startup wiring are removed.
+- [x] Applicable targeted tests, `npm run check`, `npm run typecheck`, `npm run build`, and `git diff --check` pass.
+- [x] Exact HEAD receives independent non-author review before any merge request.
 
 ## Constraints
 
