@@ -7,6 +7,7 @@ const {
   mapCatalogFamily,
   mergeCatalogProviderModel,
   projectCatalogModel,
+  projectCatalogModelLimits,
   validateModelsDevDocument,
 } = require('../../build/server/domain/models/models-dev-import');
 
@@ -96,6 +97,8 @@ test('catalog env projection uses provider-specific key allowlists and never rea
   assert.equal(projected.providerName, 'OpenAI');
   assert.equal(projected.dialect, 'openai-responses');
   assert.equal(projected.manualConfigurationRequired, false);
+  assert.equal(projected.contextWindow, 200000);
+  assert.equal(projected.maxTokens, 8192);
 });
 
 test('projection drops arbitrary credential-bearing upstream fields', () => {
@@ -157,6 +160,20 @@ test('catalog-only metadata is preserved as read-only metadata', () => {
     cost: { input: 1, output: 2 },
     limit: { context: 200000, output: 8192 },
   });
+});
+
+test('catalog limit projection accepts only valid Pi runtime limit pairs', () => {
+  assert.deepEqual(projectCatalogModelLimits({ context: 262144, output: 32768 }), {
+    contextWindow: 262144,
+    maxTokens: 32768,
+  });
+  assert.deepEqual(projectCatalogModelLimits({ context: 262144 }), { contextWindow: 262144 });
+  assert.deepEqual(projectCatalogModelLimits({ output: 8192 }), { maxTokens: 8192 });
+  assert.deepEqual(projectCatalogModelLimits({ context: 8192 }), {}, 'Pi default output would exceed this context');
+  assert.deepEqual(projectCatalogModelLimits({ context: '262144', output: 8192 }), { maxTokens: 8192 });
+  assert.deepEqual(projectCatalogModelLimits({ context: 128000, output: 128001 }), {});
+  assert.deepEqual(projectCatalogModelLimits({ context: -1, output: 0 }), {});
+  assert.deepEqual(projectCatalogModelLimits(null), {});
 });
 
 test('catalog import projects modalities.input into a CAFF input capability array', () => {

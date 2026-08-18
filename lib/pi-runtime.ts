@@ -9,6 +9,8 @@ const DEFAULT_MODEL = 'k2p5';
 const DEFAULT_THINKING = '';
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 5 * 1000;
 const DEFAULT_HEARTBEAT_TIMEOUT_MS = 60 * 1000;
+const DEFAULT_PROGRESS_TIMEOUT_MS = 10 * 60 * 1000;
+const DEFAULT_RUN_TIMEOUT_MS = 60 * 60 * 1000;
 const DEFAULT_TERMINATE_GRACE_MS = 5 * 1000;
 const MAX_STDERR_TAIL_LENGTH = 4000;
 const MAX_DEBUG_LINES = 10;
@@ -358,16 +360,22 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
     'heartbeatIntervalMs'
   );
   const heartbeatTimeoutMs = resolveIntegerSettingCandidates(
-    [
-      options.heartbeatTimeoutMs,
-      options.idleTimeoutMs,
-      options.timeoutMs,
-      process.env.PI_HEARTBEAT_TIMEOUT_MS,
-      process.env.PI_IDLE_TIMEOUT_MS,
-      process.env.PI_TIMEOUT_MS,
-      DEFAULT_HEARTBEAT_TIMEOUT_MS,
-    ],
+    [options.heartbeatTimeoutMs, process.env.PI_HEARTBEAT_TIMEOUT_MS, DEFAULT_HEARTBEAT_TIMEOUT_MS],
     'heartbeatTimeoutMs'
+  );
+  const progressTimeoutMs = resolveIntegerSettingCandidates(
+    [
+      options.progressTimeoutMs,
+      options.idleTimeoutMs,
+      process.env.PI_PROGRESS_TIMEOUT_MS,
+      process.env.PI_IDLE_TIMEOUT_MS,
+      DEFAULT_PROGRESS_TIMEOUT_MS,
+    ],
+    'progressTimeoutMs'
+  );
+  const timeoutMs = resolveIntegerSettingCandidates(
+    [options.timeoutMs, process.env.PI_TIMEOUT_MS, DEFAULT_RUN_TIMEOUT_MS],
+    'timeoutMs'
   );
   const terminateGraceMs = resolveIntegerSetting(
     options.terminateGraceMs,
@@ -431,6 +439,8 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
     let settled = false;
     let terminating = false;
     let heartbeatTimeout: any = null;
+    let progressTimeout: any = null;
+    let runTimeout: any = null;
     let forceKillTimeout: any = null;
     let terminationReason: any = null;
     let stderrBuffer = '';
@@ -510,6 +520,16 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
         heartbeatTimeout = null;
       }
 
+      if (progressTimeout) {
+        clearTimeout(progressTimeout);
+        progressTimeout = null;
+      }
+
+      if (runTimeout) {
+        clearTimeout(runTimeout);
+        runTimeout = null;
+      }
+
       if (forceKillTimeout) {
         clearTimeout(forceKillTimeout);
         forceKillTimeout = null;
@@ -561,6 +581,16 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
       if (heartbeatTimeout) {
         clearTimeout(heartbeatTimeout);
         heartbeatTimeout = null;
+      }
+
+      if (progressTimeout) {
+        clearTimeout(progressTimeout);
+        progressTimeout = null;
+      }
+
+      if (runTimeout) {
+        clearTimeout(runTimeout);
+        runTimeout = null;
       }
 
       emit('run_terminating', { reason });
@@ -628,6 +658,44 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
 
       if (typeof heartbeatTimeout.unref === 'function') {
         heartbeatTimeout.unref();
+      }
+    }
+
+    function refreshProgressTimeout() {
+      if (!progressTimeoutMs || settled || terminating) {
+        return;
+      }
+
+      if (progressTimeout) {
+        clearTimeout(progressTimeout);
+      }
+
+      progressTimeout = setTimeout(() => {
+        beginTermination({
+          type: 'progress_timeout',
+          message: `pi made no model or tool progress for ${progressTimeoutMs}ms`,
+        });
+      }, progressTimeoutMs);
+
+      if (typeof progressTimeout.unref === 'function') {
+        progressTimeout.unref();
+      }
+    }
+
+    function startRunTimeout() {
+      if (!timeoutMs || settled || terminating || runTimeout) {
+        return;
+      }
+
+      runTimeout = setTimeout(() => {
+        beginTermination({
+          type: 'run_timeout',
+          message: `pi run exceeded ${timeoutMs}ms`,
+        });
+      }, timeoutMs);
+
+      if (typeof runTimeout.unref === 'function') {
+        runTimeout.unref();
       }
     }
 
@@ -718,6 +786,8 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
         model,
         thinking,
         prompt,
+        timeoutMs,
+        idleTimeoutMs: progressTimeoutMs,
         heartbeatIntervalMs,
         heartbeatTimeoutMs,
         terminateGraceMs,
@@ -821,6 +891,8 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
     });
     emit('run_started', { runId: runRecord ? runRecord.runId : null, pid: child.pid || null, sessionPath: sessionPath || null });
     refreshHeartbeatTimeout();
+    refreshProgressTimeout();
+    startRunTimeout();
 
     addProcessHandler('SIGINT', () => beginTermination({ type: 'parent_signal', signal: 'SIGINT', message: 'Parent process received SIGINT' }));
     addProcessHandler('SIGTERM', () => beginTermination({ type: 'parent_signal', signal: 'SIGTERM', message: 'Parent process received SIGTERM' }));
@@ -853,6 +925,8 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
       }
 
       if (message.type === 'pi_event' && message.event && typeof message.event === 'object') {
+        refreshHeartbeatTimeout();
+        refreshProgressTimeout();
         handlePiEvent(message.event);
         return;
       }
@@ -1063,6 +1137,8 @@ export {
   DEFAULT_AGENT_DIR,
   DEFAULT_HEARTBEAT_INTERVAL_MS,
   DEFAULT_HEARTBEAT_TIMEOUT_MS,
+  DEFAULT_PROGRESS_TIMEOUT_MS,
+  DEFAULT_RUN_TIMEOUT_MS,
   DEFAULT_MODEL,
   DEFAULT_PROVIDER,
   DEFAULT_TERMINATE_GRACE_MS,

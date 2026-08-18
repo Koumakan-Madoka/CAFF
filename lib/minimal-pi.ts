@@ -4,6 +4,8 @@ const {
   DEFAULT_AGENT_DIR,
   DEFAULT_HEARTBEAT_INTERVAL_MS,
   DEFAULT_HEARTBEAT_TIMEOUT_MS,
+  DEFAULT_PROGRESS_TIMEOUT_MS,
+  DEFAULT_RUN_TIMEOUT_MS,
   DEFAULT_MODEL,
   DEFAULT_PROVIDER,
   DEFAULT_TERMINATE_GRACE_MS,
@@ -23,6 +25,8 @@ function parseCliArgs(argv: any) {
     sqlitePath: '',
     heartbeatIntervalMs: undefined,
     heartbeatTimeoutMs: undefined,
+    progressTimeoutMs: undefined,
+    timeoutMs: undefined,
     terminateGraceMs: undefined,
     resume: false,
     session: '',
@@ -63,8 +67,12 @@ function parseCliArgs(argv: any) {
         result.sqlitePath = value;
       } else if (arg === '--heartbeat-interval-ms') {
         result.heartbeatIntervalMs = value;
-      } else if (arg === '--heartbeat-timeout-ms' || arg === '--timeout-ms' || arg === '--idle-timeout-ms') {
+      } else if (arg === '--heartbeat-timeout-ms') {
         result.heartbeatTimeoutMs = value;
+      } else if (arg === '--idle-timeout-ms') {
+        result.progressTimeoutMs = value;
+      } else if (arg === '--timeout-ms') {
+        result.timeoutMs = value;
       } else if (arg === '--terminate-grace-ms') {
         result.terminateGraceMs = value;
       } else {
@@ -89,7 +97,7 @@ function parseCliArgs(argv: any) {
 
 function printUsage() {
   console.error(
-    'Usage: node build/lib/minimal-pi.js [--resume] [--session name|path] [--provider name] [--model name] [--thinking level] [--db-path path] [--heartbeat-interval-ms n] [--heartbeat-timeout-ms n] [--terminate-grace-ms n] "Say hello in one sentence"'
+    'Usage: node build/lib/minimal-pi.js [--resume] [--session name|path] [--provider name] [--model name] [--thinking level] [--db-path path] [--heartbeat-interval-ms n] [--heartbeat-timeout-ms n] [--idle-timeout-ms n] [--timeout-ms n] [--terminate-grace-ms n] "Say hello in one sentence"'
   );
   console.error(`Default provider: ${DEFAULT_PROVIDER}`);
   console.error(`Default model: ${DEFAULT_MODEL}`);
@@ -98,10 +106,12 @@ function printUsage() {
   console.error('If --session is a plain name, it is stored under ./.pi-sandbox/named-sessions/<name>.jsonl.');
   console.error(`Default heartbeatIntervalMs: ${DEFAULT_HEARTBEAT_INTERVAL_MS}`);
   console.error(`Default heartbeatTimeoutMs: ${DEFAULT_HEARTBEAT_TIMEOUT_MS}`);
+  console.error(`Default progressTimeoutMs: ${DEFAULT_PROGRESS_TIMEOUT_MS}`);
+  console.error(`Default runTimeoutMs: ${DEFAULT_RUN_TIMEOUT_MS}`);
   console.error(`Default terminateGraceMs: ${DEFAULT_TERMINATE_GRACE_MS}`);
   console.error('SQLite defaults to <agentDir>/pi-state.sqlite. Override with --db-path or PI_SQLITE_PATH.');
   console.error(
-    'Optional env: PI_PROVIDER, PI_MODEL, PI_THINKING, PI_CODING_AGENT_DIR, PI_SQLITE_PATH, PI_HEARTBEAT_INTERVAL_MS, PI_HEARTBEAT_TIMEOUT_MS, PI_TERMINATE_GRACE_MS, PI_ENV, GIT_BASH_PATH'
+    'Optional env: PI_PROVIDER, PI_MODEL, PI_THINKING, PI_CODING_AGENT_DIR, PI_SQLITE_PATH, PI_HEARTBEAT_INTERVAL_MS, PI_HEARTBEAT_TIMEOUT_MS, PI_PROGRESS_TIMEOUT_MS, PI_IDLE_TIMEOUT_MS, PI_TIMEOUT_MS, PI_TERMINATE_GRACE_MS, PI_ENV, GIT_BASH_PATH'
   );
 }
 
@@ -156,14 +166,21 @@ async function main(argv = process.argv.slice(2)) {
     'heartbeatIntervalMs'
   );
   const heartbeatTimeoutMs = resolveIntegerSettingCandidates(
-    [
-      cli.heartbeatTimeoutMs,
-      process.env.PI_HEARTBEAT_TIMEOUT_MS,
-      process.env.PI_IDLE_TIMEOUT_MS,
-      process.env.PI_TIMEOUT_MS,
-      DEFAULT_HEARTBEAT_TIMEOUT_MS,
-    ],
+    [cli.heartbeatTimeoutMs, process.env.PI_HEARTBEAT_TIMEOUT_MS, DEFAULT_HEARTBEAT_TIMEOUT_MS],
     'heartbeatTimeoutMs'
+  );
+  const progressTimeoutMs = resolveIntegerSettingCandidates(
+    [
+      cli.progressTimeoutMs,
+      process.env.PI_PROGRESS_TIMEOUT_MS,
+      process.env.PI_IDLE_TIMEOUT_MS,
+      DEFAULT_PROGRESS_TIMEOUT_MS,
+    ],
+    'progressTimeoutMs'
+  );
+  const timeoutMs = resolveIntegerSettingCandidates(
+    [cli.timeoutMs, process.env.PI_TIMEOUT_MS, DEFAULT_RUN_TIMEOUT_MS],
+    'timeoutMs'
   );
   const terminateGraceMs = resolveIntegerSetting(
     cli.terminateGraceMs,
@@ -184,6 +201,8 @@ async function main(argv = process.argv.slice(2)) {
       sqlitePath,
       heartbeatIntervalMs,
       heartbeatTimeoutMs,
+      progressTimeoutMs,
+      timeoutMs,
       terminateGraceMs,
       resume: cli.resume,
       session: cli.session,
@@ -205,6 +224,8 @@ export {
   DEFAULT_AGENT_DIR,
   DEFAULT_HEARTBEAT_INTERVAL_MS,
   DEFAULT_HEARTBEAT_TIMEOUT_MS,
+  DEFAULT_PROGRESS_TIMEOUT_MS,
+  DEFAULT_RUN_TIMEOUT_MS,
   DEFAULT_MODEL,
   DEFAULT_PROVIDER,
   DEFAULT_TERMINATE_GRACE_MS,

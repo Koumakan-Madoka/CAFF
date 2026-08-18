@@ -53,6 +53,53 @@
       dom.bulkSkillSelect.value = selectedSkillId && state.skills.some((skill) => skill.id === selectedSkillId) ? selectedSkillId : '';
     }
 
+    function projectOptions() {
+      return Array.isArray(state.projectOptions) ? state.projectOptions.filter((project) => project && project.id) : [];
+    }
+
+    function projectLabel(projectId) {
+      const id = String(projectId || '').trim();
+      const project = projectOptions().find((candidate) => candidate.id === id);
+      return project && project.name ? `${project.name} (${id})` : id;
+    }
+
+    function fillProjectBindSelect(selectedProjectId = '') {
+      if (!dom.projectBindSelect) {
+        return;
+      }
+
+      const projects = projectOptions();
+      dom.projectBindSelect.innerHTML = '';
+
+      const defaultOption = document.createElement('option');
+      defaultOption.value = '';
+      defaultOption.textContent = state.loadingProjects
+        ? '正在加载项目列表...'
+        : projects.length > 0
+          ? '请选择一个项目...'
+          : '暂无项目';
+      dom.projectBindSelect.appendChild(defaultOption);
+
+      if (selectedProjectId && !projects.some((project) => project.id === selectedProjectId)) {
+        const boundOption = document.createElement('option');
+        boundOption.value = selectedProjectId;
+        boundOption.textContent = projectLabel(selectedProjectId);
+        dom.projectBindSelect.appendChild(boundOption);
+      }
+
+      projects.forEach((project) => {
+        const option = document.createElement('option');
+        option.value = project.id;
+        option.textContent = project.name ? `${project.name} (${project.id})` : project.id;
+        dom.projectBindSelect.appendChild(option);
+      });
+
+      dom.projectBindSelect.value =
+        selectedProjectId && Array.from(dom.projectBindSelect.options).some((option) => option.value === selectedProjectId)
+          ? selectedProjectId
+          : '';
+    }
+
     function knownFeishuChats() {
       return Array.isArray(state.knownFeishuChats) ? state.knownFeishuChats.filter((chat) => chat && chat.chatId) : [];
     }
@@ -432,15 +479,35 @@
       const disabled = !conversation || state.sending;
       const conversationBusy = Boolean(conversation && typeof isConversationBusy === 'function' && isConversationBusy(conversation.id));
       const conversationFeishuBinding = currentFeishuBinding(conversation);
+      const conversationProjectScopeId = conversation ? String(conversation.projectScopeId || '').trim() : '';
       const disableSkillControls = disabled || state.agents.length === 0 || state.skills.length === 0;
       const disableFeishuBinding = disabled || conversationBusy || Boolean(state.bindingFeishuChat) || Boolean(conversationFeishuBinding);
       const disableFeishuChatSelection = disableFeishuBinding || Boolean(state.loadingFeishuChats);
+      const disableProjectBinding =
+        disabled || Boolean(conversationProjectScopeId) || Boolean(state.bindingProject) || Boolean(state.loadingProjects);
 
       if (dom.saveConversationButton) {
         dom.saveConversationButton.disabled = disabled;
       }
 
+      // 会话标题（手动改名）入口：仅在切换会话时回填输入框，避免覆盖用户正在编辑的内容。
+      if (dom.conversationTitleInput) {
+        const renameConversationId = conversation ? conversation.id : '';
+        if (dom.conversationTitleInput.dataset.conversationId !== renameConversationId) {
+          dom.conversationTitleInput.dataset.conversationId = renameConversationId;
+          dom.conversationTitleInput.value = conversation ? conversation.title : '';
+        }
+        dom.conversationTitleInput.disabled = disabled;
+      }
+
+      if (dom.renameConversationButton) {
+        dom.renameConversationButton.disabled = disabled;
+      }
+
       fillBulkSkillSelect(dom.bulkSkillSelect ? dom.bulkSkillSelect.value : '');
+      fillProjectBindSelect(
+        conversationProjectScopeId || (dom.projectBindSelect ? dom.projectBindSelect.value.trim() : '')
+      );
       fillFeishuChatSelect(
         conversationFeishuBinding
           ? conversationFeishuBinding.chatId
@@ -474,6 +541,27 @@
       if (dom.bindFeishuChatButton) {
         dom.bindFeishuChatButton.disabled = disableFeishuBinding;
         dom.bindFeishuChatButton.textContent = state.bindingFeishuChat ? '绑定中...' : '绑定到当前会话';
+      }
+
+      if (dom.projectBindSelect) {
+        dom.projectBindSelect.disabled = disableProjectBinding;
+      }
+
+      if (dom.bindProjectButton) {
+        dom.bindProjectButton.disabled = disableProjectBinding;
+        dom.bindProjectButton.textContent = state.bindingProject ? '绑定中...' : '绑定到当前会话';
+      }
+
+      if (dom.projectBindingStatus) {
+        dom.projectBindingStatus.textContent = !conversation
+          ? '选中一个会话后，再选择项目绑定。'
+          : conversationProjectScopeId
+            ? `当前会话已绑定项目：${projectLabel(conversationProjectScopeId)}（绑定后不可更改）。`
+            : state.loadingProjects
+              ? '正在加载项目列表...'
+              : projectOptions().length === 0
+                ? '还没有项目；先到项目管理页创建，再回来绑定。'
+                : '选择项目后绑定；绑定后不可更改，spawn 与计划执行需要项目。';
       }
 
       if (dom.feishuBindingStatus) {

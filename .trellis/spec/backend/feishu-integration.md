@@ -26,6 +26,8 @@
 - Missing SDK `WSClient` / `EventDispatcher`: `start()` returns `false` and logs a warning.
 - Server bootstrap: Feishu bot identity warm-up and websocket start are best-effort side effects; `server.listen(...)` must not wait for `feishuIntegration.initialize()` or `feishuLongConnection.start()` to settle.
 - SDK start lifecycle: log a start attempt before `WSClient.start(...)` resolves, log readiness only after the promise resolves, and clear active client references on rejection so a later `start()` can retry.
+- Shutdown lifecycle: `createFeishuLongConnectionSource(...).stop()` returns a `Promise<void>`, is idempotent while closing, force-closes the active client immediately, waits for any in-flight `WSClient.start(...)`, and force-closes the same client again after start settles. `createServerApp.close(callback)` invokes the callback only after HTTP close, delivery drain, and Feishu shutdown settle.
+- Test isolation: in-process smoke suites must force `FEISHU_CONNECTION_MODE=webhook` and blank `FEISHU_APP_ID` / `FEISHU_APP_SECRET` before creating an app, so a developer's production `.env.local` cannot open a websocket or reconnect timer.
 - Encrypted long-connection payload: return an ignored result from the Feishu service; encryption support remains out of scope for MVP.
 - Unsupported or ignored message event: return success-shaped ignored payload to avoid Feishu retries when the event reached the service.
 - Bot self messages are ignored by sender type or bot `open_id` to prevent outbound echo loops.
@@ -41,6 +43,8 @@
 - Runtime: assert `createFeishuLongConnectionSource` constructs SDK `WSClient`, registers `im.message.receive_v1`, normalizes flat SDK events, forwards them to `handleLongConnectionEvent`, and closes the client on stop.
 - Runtime: assert long-connection events are processed without webhook token verification.
 - Runtime: assert long-connection start logs distinguish attempt vs ready states and `stop()` permits a later `start()` retry/reuse.
+- Runtime: assert `stop()` does not resolve while SDK start is pending and closes the client again after that start settles.
+- Smoke: run the complete in-process server suite while production Feishu env values exist externally; the suite must remain in webhook mode and exit normally.
 - HTTP: keep challenge/token, dedup, group text without bot mention, non-text ignore, `/new` rebinding, downstream-failure dedupe retention, and bot self-message webhook coverage green because both transports share parsing logic.
 - Runtime: assert outbound delivery prefixes assistant replies with the resolved Agent display name and keeps duplicate delivery idempotent.
 

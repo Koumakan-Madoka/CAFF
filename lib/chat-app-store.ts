@@ -17,6 +17,22 @@ const { createImageUploadRepository } = require('../storage/chat/image-upload.re
 const {
   createCrossConversationDeliveryRepository,
 } = require('../storage/chat/cross-conversation-delivery.repository');
+const { createChatPlanRepository } = require('../storage/chat/plan.repository');
+const {
+  NODE_STATUSES,
+  validatePlanDoc,
+  validateStatusOnlyUpdate,
+  appendPlanHistory,
+  diffNodeStatusTransitions,
+  findBlockedUpstreams,
+} = require('./plan-dag');
+const {
+  TITLE_SOURCE_MANUAL,
+  normalizeConversationTitleSource,
+  readConversationTitleSource,
+  resolveConversationTitleTransition,
+} = require('./conversation-title-source');
+const { deriveTitleFromFirstMessage } = require('./conversation-first-message-title');
 
 const MAX_AVATAR_DATA_URL_LENGTH = 2 * 1024 * 1024;
 const MAX_AGENT_SANDBOX_NAME_LENGTH = 80;
@@ -730,6 +746,63 @@ function normalizeConversation(row: any, agents: any, messages: any) {
   };
 }
 
+function normalizePlanRow(row: any) {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    id: row.id,
+    ownerConversationId: row.owner_conversation_id,
+    status: row.status,
+    version: Number(row.version || 1),
+    doc: parseJson(row.doc_json) || { nodes: [] },
+    activatedAt: row.activated_at || null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function createPlanError(statusCode: number, code: string, message: string, details: Record<string, unknown> = {}) {
+  const error: any = new Error(message);
+  error.statusCode = statusCode;
+  error.code = code;
+  Object.assign(error, details);
+  return error;
+}
+
+/**
+ * Plan actor (D15/D18, .trellis/tasks/dag-execution/prd.md §3.4):
+ * - user   — the local single-user REST/UI channel (trusted)
+ * - agent  — authenticated agent-tool bridge invocations; D15 restricts
+ *            activate/revert to agents participating in the ROOT owner
+ *            conversation, invoked from that root conversation
+ * - system — internal scheduler write-backs (bypass D15, still audited)
+ */
+type PlanActor = { type: 'user' | 'agent' | 'system'; agentId?: string; conversationId?: string };
+
+function normalizePlanActor(actor: any): PlanActor {
+  if (!actor || typeof actor !== 'object') {
+    return { type: 'user' };
+  }
+  const type = ['user', 'agent', 'system'].includes(actor.type) ? actor.type : 'user';
+  return {
+    type,
+    agentId: typeof actor.agentId === 'string' && actor.agentId.trim() ? actor.agentId.trim() : undefined,
+    conversationId: typeof actor.conversationId === 'string' && actor.conversationId.trim()
+      ? actor.conversationId.trim()
+      : undefined,
+  };
+}
+
+/** History attribution label (D18): user / agent:<id> / system. */
+function planActorLabel(actor: PlanActor): string {
+  if (actor.type === 'agent') {
+    return `agent:${actor.agentId || 'unknown'}`;
+  }
+  return actor.type === 'system' ? 'system' : 'user';
+}
+
 function createParticipantRosterError(
   statusCode: number,
   code: string,
@@ -805,6 +878,7 @@ export class ChatAppStore {
       this.externalEventRepository = createChatExternalEventRepository(this.db);
       this.imageUploadRepository = createImageUploadRepository(this.db);
       this.crossConversationDeliveryRepository = createCrossConversationDeliveryRepository(this.db);
+      this.planRepository = createChatPlanRepository(this.db);
 
       this.replaceConversationParticipants = (conversationId: any, participants: any) => {
         const createdAt = nowIso();
@@ -1904,6 +1978,12 @@ export class ChatAppStore {
     );
   }
 
+  claimCrossConversationDeliveryById(deliveryId: any, payload: any) {
+    return normalizeCrossConversationDeliveryRow(
+      this.crossConversationDeliveryRepository.claimById(String(deliveryId || '').trim(), payload)
+    );
+  }
+
   markCrossConversationDispatchStarted(deliveryId: any, payload: any) {
     return normalizeCrossConversationDeliveryRow(
       this.crossConversationDeliveryRepository.markDispatchStarted(String(deliveryId || '').trim(), payload)
@@ -2058,6 +2138,433 @@ export class ChatAppStore {
     return normalizeConversation(row, this.listConversationAgents(conversationId), []);
   }
 
+  /**
+   * Walk the origin_conversation_id chain to the root conversation that owns
+   * the shared plan (PRD D1: one plan per conversation tree, hung on the
+   * root). Returns the raw conversation row, or null when the conversation
+   * does not exist or the lineage contains a cycle.
+   */
+  resolvePlanOwnerConversation(conversationId: any) {
+    const normalizedId = String(conversationId || '').trim();
+    if (!normalizedId) {
+      return null;
+    }
+
+    const visited = new Set<string>();
+    let current = this.conversationRepository.get(normalizedId);
+    while (current) {
+      if (visited.has(current.id)) {
+        return null;
+      }
+      visited.add(current.id);
+      const originId = String(current.origin_conversation_id || '').trim();
+      if (!originId) {
+        return current;
+      }
+      current = this.conversationRepository.get(originId);
+    }
+    return null;
+  }
+
+  /** Returns { ownerConversationId, plan } — plan is null when none exists. */
+  getPlanForConversation(conversationId: any) {
+    const owner = this.resolvePlanOwnerConversation(conversationId);
+    if (!owner) {
+      throw createPlanError(404, 'conversation_not_found', 'Conversation not found');
+    }
+
+    const row = this.planRepository.getByOwnerConversationId(owner.id);
+    return {
+      ownerConversationId: owner.id,
+      plan: normalizePlanRow(row),
+    };
+  }
+
+  /**
+   * Create (first write) or replace the shared plan doc. Draft plans accept
+   * structural edits; active plans only accept node status transitions;
+   * done/archived plans reject all writes. Version guard: callers must pass
+   * the version they read, 409 on mismatch.
+   */
+  savePlanForConversation(conversationId: any, payload: any = {}, options: any = {}) {
+    const owner = this.resolvePlanOwnerConversation(conversationId);
+    if (!owner) {
+      throw createPlanError(404, 'conversation_not_found', 'Conversation not found');
+    }
+
+    const doc = payload.doc;
+    const validation = validatePlanDoc(doc);
+    if (!validation.ok) {
+      throw createPlanError(422, 'plan_validation_failed', 'Plan doc validation failed', {
+        issues: validation.issues,
+        warnings: validation.warnings,
+      });
+    }
+
+    const timestamp = nowIso();
+    const existing = this.planRepository.getByOwnerConversationId(owner.id);
+
+    if (!existing) {
+      const row = this.planRepository.create({
+        id: randomUUID(),
+        ownerConversationId: owner.id,
+        status: 'draft',
+        version: 1,
+        docJson: JSON.stringify(doc),
+        activatedAt: null,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      });
+      return {
+        ownerConversationId: owner.id,
+        plan: normalizePlanRow(row),
+        warnings: validation.warnings,
+      };
+    }
+
+    if (existing.status === 'done' || existing.status === 'archived') {
+      throw createPlanError(409, 'plan_locked', `Plan is ${existing.status} and no longer accepts writes`);
+    }
+
+    let activeWarnings: any[] = [];
+    let docToPersist = doc;
+    if (existing.status === 'active') {
+      const oldDoc = parseJson(existing.doc_json);
+      // history is server-owned: callers that omit the field inherit the
+      // stored trail; callers that include it must keep it append-only
+      // (enforced by validateStatusOnlyUpdate below).
+      const workingDoc = !Array.isArray(doc.history)
+        && oldDoc && Array.isArray(oldDoc.history) && oldDoc.history.length > 0
+        ? { ...doc, history: oldDoc.history }
+        : doc;
+      docToPersist = workingDoc;
+      const statusOnly = validateStatusOnlyUpdate(oldDoc, workingDoc);
+      if (!statusOnly.ok) {
+        throw createPlanError(409, 'plan_locked', 'Active plan is structurally locked: only node status may change', {
+          issues: statusOnly.issues,
+        });
+      }
+      // Surface soft signals (e.g. done without result summary, D23).
+      activeWarnings = statusOnly.warnings;
+
+      const actor = normalizePlanActor(options.actor);
+      const transitions = diffNodeStatusTransitions(oldDoc, workingDoc);
+
+      // D16 fail-closed: pending→doing is rejected while any transitive
+      // upstream is blocked (evaluated on the incoming doc, so unblocking
+      // upstream + starting downstream in one write is allowed).
+      const blockedIssues: any[] = [];
+      for (const transition of transitions) {
+        if (transition.from === 'pending' && transition.to === 'doing') {
+          const blockedUpstreams = findBlockedUpstreams(workingDoc, transition.node_id);
+          if (blockedUpstreams.length > 0) {
+            blockedIssues.push({
+              code: 'plan_upstream_blocked',
+              nodeId: transition.node_id,
+              blockedUpstreams,
+              message: `Node ${transition.node_id} cannot start: blocked upstream(s): ${blockedUpstreams.join(', ')}`,
+            });
+          }
+        }
+      }
+      if (blockedIssues.length > 0) {
+        throw createPlanError(409, 'plan_upstream_blocked', 'Blocked upstream node(s); fail-closed (D16)', {
+          issues: blockedIssues,
+        });
+      }
+
+      // D18: server-owned audit trail — auto-append history entries for
+      // status transitions the caller did not already record in the
+      // appended suffix (pre-recording lets the scheduler attach reasons).
+      const oldHistoryLength = Array.isArray(oldDoc && oldDoc.history) ? oldDoc.history.length : 0;
+      const appendedSuffix = Array.isArray(workingDoc.history) ? workingDoc.history.slice(oldHistoryLength) : [];
+      const reason = typeof options.reason === 'string' && options.reason.trim() ? options.reason.trim() : undefined;
+      for (const transition of transitions) {
+        const alreadyRecorded = appendedSuffix.some((entry: any) => Boolean(entry)
+          && typeof entry === 'object'
+          && !Array.isArray(entry)
+          && entry.node_id === transition.node_id
+          && entry.from === transition.from
+          && entry.to === transition.to);
+        if (!alreadyRecorded) {
+          docToPersist = appendPlanHistory(docToPersist, {
+            node_id: transition.node_id,
+            from: transition.from,
+            to: transition.to,
+            actor: planActorLabel(actor),
+            reason,
+          });
+        }
+      }
+    }
+
+    const expectedVersion = Number(payload.version);
+    if (!Number.isInteger(expectedVersion) || expectedVersion !== Number(existing.version)) {
+      throw createPlanError(409, 'plan_version_conflict', 'Plan version conflict', {
+        issues: [{
+          code: 'plan_version_conflict',
+          message: `Expected version ${existing.version}, got ${Number.isInteger(expectedVersion) ? expectedVersion : 'none'}`,
+        }],
+      });
+    }
+
+    const row = this.planRepository.updateWithVersionGuard({
+      id: existing.id,
+      expectedVersion,
+      status: existing.status,
+      version: expectedVersion + 1,
+      docJson: JSON.stringify(docToPersist),
+      activatedAt: existing.activated_at,
+      updatedAt: timestamp,
+    });
+    if (!row) {
+      throw createPlanError(409, 'plan_version_conflict', 'Plan version conflict');
+    }
+
+    return {
+      ownerConversationId: owner.id,
+      plan: normalizePlanRow(row),
+      warnings: validation.warnings.concat(activeWarnings),
+    };
+  }
+
+  /** Scheduler reconcile (D25): all active plans, oldest updated first. */
+  listActivePlans() {
+    return this.planRepository.listByStatus('active').map(normalizePlanRow).filter(Boolean);
+  }
+
+  /** True while a cross-conversation delivery targeting this conversation is still in flight. */
+  hasNonTerminalCrossConversationDelivery(conversationId: any) {
+    return this.crossConversationDeliveryRepository.hasNonTerminalForConversation(
+      String(conversationId || '').trim()
+    );
+  }
+
+  /**
+   * Internal scheduler channel (D21): apply execution write-backs to an
+   * ACTIVE plan — node status transitions, spawned_conversation_id binding
+   * and result summaries. Unlike the public savePlanForConversation path,
+   * spawned_conversation_id may be bound here; everything else stays
+   * structurally locked. D16 fail-closed still guards pending→doing and
+   * every status transition is audited to history with actor 'system' (D18).
+   *
+   * updates: [{ nodeId, status?, spawnedConversationId?, result? }]
+   * options: { reason? } — recorded on auto-appended history entries.
+   */
+  writePlanNodeExecution(conversationId: any, updates: any, options: any = {}) {
+    const owner = this.resolvePlanOwnerConversation(conversationId);
+    if (!owner) {
+      throw createPlanError(404, 'conversation_not_found', 'Conversation not found');
+    }
+    const existing = this.planRepository.getByOwnerConversationId(owner.id);
+    if (!existing) {
+      throw createPlanError(404, 'plan_not_found', 'Conversation tree has no plan');
+    }
+    if (existing.status !== 'active') {
+      throw createPlanError(
+        409,
+        'plan_not_active',
+        `Plan is ${existing.status}; execution write-back requires an active plan`
+      );
+    }
+
+    const updateList = Array.isArray(updates) ? updates : [];
+    if (updateList.length === 0) {
+      throw createPlanError(400, 'plan_execution_updates_required', 'At least one node execution update is required');
+    }
+
+    const oldDoc = parseJson(existing.doc_json) || {};
+    const oldNodes = Array.isArray(oldDoc.nodes) ? oldDoc.nodes : [];
+    let doc: any = {
+      ...oldDoc,
+      nodes: oldNodes.map((node: any) => ({ ...node })),
+    };
+    const reason = typeof options.reason === 'string' && options.reason.trim() ? options.reason.trim() : undefined;
+    const transitions: Array<{ node_id: string; from: string; to: string }> = [];
+
+    for (const update of updateList) {
+      const nodeId = String(update && update.nodeId || '').trim();
+      const node = doc.nodes.find((candidate: any) => candidate && String(candidate.id || '').trim() === nodeId);
+      if (!node) {
+        throw createPlanError(404, 'plan_node_not_found', `Plan node not found: ${nodeId}`, {
+          issues: [{ code: 'plan_node_not_found', nodeId, message: `Plan node not found: ${nodeId}` }],
+        });
+      }
+
+      if (update.status !== undefined) {
+        const to = String(update.status || '').trim();
+        if (!NODE_STATUSES.includes(to)) {
+          throw createPlanError(422, 'plan_validation_failed', `Invalid node status: ${to}`, {
+            issues: [{ code: 'plan_node_status_invalid', nodeId, message: `status must be one of ${NODE_STATUSES.join('/')}` }],
+          });
+        }
+        const from = NODE_STATUSES.includes(node.status) ? node.status : 'pending';
+        if (from !== to) {
+          transitions.push({ node_id: nodeId, from, to });
+          node.status = to;
+        }
+      }
+
+      if (update.spawnedConversationId !== undefined) {
+        node.spawned_conversation_id = update.spawnedConversationId === null
+          ? null
+          : String(update.spawnedConversationId || '').trim() || null;
+      }
+
+      if (update.result !== undefined) {
+        node.result = String(update.result || '');
+      }
+    }
+
+    // D16 fail-closed: scheduler starts are held to the same standard as
+    // manual ones — no pending→doing while a transitive upstream is blocked.
+    const blockedIssues: any[] = [];
+    for (const transition of transitions) {
+      if (transition.from === 'pending' && transition.to === 'doing') {
+        const blockedUpstreams = findBlockedUpstreams(doc, transition.node_id);
+        if (blockedUpstreams.length > 0) {
+          blockedIssues.push({
+            code: 'plan_upstream_blocked',
+            nodeId: transition.node_id,
+            blockedUpstreams,
+            message: `Node ${transition.node_id} cannot start: blocked upstream(s): ${blockedUpstreams.join(', ')}`,
+          });
+        }
+      }
+    }
+    if (blockedIssues.length > 0) {
+      throw createPlanError(409, 'plan_upstream_blocked', 'Blocked upstream node(s); fail-closed (D16)', {
+        issues: blockedIssues,
+      });
+    }
+
+    // D18: audit every transition with the system actor.
+    for (const transition of transitions) {
+      doc = appendPlanHistory(doc, {
+        node_id: transition.node_id,
+        from: transition.from,
+        to: transition.to,
+        actor: 'system',
+        reason,
+      });
+    }
+
+    const validation = validatePlanDoc(doc);
+    if (!validation.ok) {
+      throw createPlanError(422, 'plan_validation_failed', 'Plan doc validation failed after execution write-back', {
+        issues: validation.issues,
+        warnings: validation.warnings,
+      });
+    }
+
+    const expectedVersion = Number(existing.version);
+    const row = this.planRepository.updateWithVersionGuard({
+      id: existing.id,
+      expectedVersion,
+      status: existing.status,
+      version: expectedVersion + 1,
+      docJson: JSON.stringify(doc),
+      activatedAt: existing.activated_at,
+      updatedAt: nowIso(),
+    });
+    if (!row) {
+      throw createPlanError(409, 'plan_version_conflict', 'Plan version conflict');
+    }
+
+    return {
+      ownerConversationId: owner.id,
+      plan: normalizePlanRow(row),
+    };
+  }
+
+  /** draft → active. D15: user / root-conversation participant agent only. */
+  activatePlanForConversation(conversationId: any, actor?: any) {
+    return this.transitionPlanStatus(conversationId, {
+      fromStatus: 'draft',
+      toStatus: 'active',
+      errorCode: 'plan_not_activatable',
+      markActivatedAt: true,
+      actor,
+    });
+  }
+
+  /** active → draft. Doc (including node status history) is preserved. */
+  revertPlanForConversation(conversationId: any, actor?: any) {
+    return this.transitionPlanStatus(conversationId, {
+      fromStatus: 'active',
+      toStatus: 'draft',
+      errorCode: 'plan_not_revertible',
+      markActivatedAt: false,
+      actor,
+    });
+  }
+
+  transitionPlanStatus(conversationId: any, options: any) {
+    const owner = this.resolvePlanOwnerConversation(conversationId);
+    if (!owner) {
+      throw createPlanError(404, 'conversation_not_found', 'Conversation not found');
+    }
+
+    // D15: agent actors may only activate/revert when they participate in
+    // the ROOT owner conversation and invoke from it; child-conversation
+    // agents (and non-participants) are rejected with 403.
+    const actor = normalizePlanActor(options.actor);
+    if (actor.type === 'agent') {
+      const invokingFromRoot = Boolean(actor.conversationId) && actor.conversationId === owner.id;
+      const isRootParticipant = invokingFromRoot
+        && this.listConversationAgents(owner.id).some((agent: any) => agent && agent.id === actor.agentId);
+      if (!isRootParticipant) {
+        throw createPlanError(
+          403,
+          'plan_forbidden',
+          'Only the user or a root-conversation participant agent may activate/revert the plan (D15)'
+        );
+      }
+    }
+
+    const existing = this.planRepository.getByOwnerConversationId(owner.id);
+    if (!existing) {
+      throw createPlanError(404, 'plan_not_found', 'Conversation tree has no plan');
+    }
+    if (existing.status !== options.fromStatus) {
+      throw createPlanError(
+        409,
+        options.errorCode,
+        `Plan is ${existing.status}; expected ${options.fromStatus} for this transition`
+      );
+    }
+
+    // Activate preflight: the owner conversation must be bound to a project
+    // scope. DAG dispatch resolves the repo (worktree + spawn) from it; without
+    // a binding every node would fail-closed block with dag_spawn_failed.
+    if (options.markActivatedAt && !String(owner.project_scope_id || '').trim()) {
+      throw createPlanError(
+        409,
+        'plan_owner_project_unbound',
+        'Bind the conversation to a project before activating the plan; node dispatch requires a project repository'
+      );
+    }
+
+    const timestamp = nowIso();
+    const row = this.planRepository.updateWithVersionGuard({
+      id: existing.id,
+      expectedVersion: Number(existing.version),
+      status: options.toStatus,
+      version: Number(existing.version) + 1,
+      docJson: existing.doc_json,
+      activatedAt: options.markActivatedAt ? timestamp : existing.activated_at,
+      updatedAt: timestamp,
+    });
+    if (!row) {
+      throw createPlanError(409, 'plan_version_conflict', 'Plan version conflict');
+    }
+
+    return {
+      ownerConversationId: owner.id,
+      plan: normalizePlanRow(row),
+    };
+  }
+
   getConversationChannelBinding(platform: any, externalChatId: any) {
     return normalizeConversationChannelBindingRow(
       this.channelBindingRepository.getByExternalChatId(String(platform || '').trim(), String(externalChatId || '').trim())
@@ -2206,9 +2713,27 @@ export class ChatAppStore {
       return null;
     }
 
-    const title = updates.title === undefined ? existing.title : String(updates.title || '').trim() || existing.title;
+    const currentTitleSource = readConversationTitleSource(existing.metadata);
+    let titleSource = currentTitleSource;
+    let title = updates.title === undefined ? existing.title : String(updates.title || '').trim() || existing.title;
+
+    if (updates.title !== undefined) {
+      // 写标题时同步维护 metadata.titleSource 状态机：
+      // 未显式声明来源的标题写入视为 manual（与既有 UI 改名语义一致）；
+      // 状态机拒绝的自动写入（例如 manual 终态上的 auto_*）保留原标题与来源。
+      const incomingTitleSource = updates.titleSource === undefined
+        ? TITLE_SOURCE_MANUAL
+        : normalizeConversationTitleSource(updates.titleSource);
+      const transition = resolveConversationTitleTransition(currentTitleSource, incomingTitleSource);
+      if (transition.applied) {
+        titleSource = transition.titleSource;
+      } else {
+        title = existing.title;
+      }
+    }
+
     const type = updates.type === undefined ? existing.type : normalizeConversationType(updates.type);
-    const metadata =
+    const baseMetadata =
       updates.metadata === undefined
         ? existing.metadata && typeof existing.metadata === 'object'
           ? existing.metadata
@@ -2216,6 +2741,9 @@ export class ChatAppStore {
         : updates.metadata && typeof updates.metadata === 'object'
           ? updates.metadata
           : {};
+    // metadata.titleSource 由状态机独占维护，调用方在 metadata 中夹带的
+    // titleSource 一律以状态机结果为准，避免绕过 manual 终态保护。
+    const metadata = { ...baseMetadata, titleSource };
     const participants = this.hasConversationParticipantsInput(updates)
       ? this.normalizeConversationParticipantsInput(updates)
       : undefined;
@@ -2225,6 +2753,38 @@ export class ChatAppStore {
       type,
       metadata,
       participants,
+    });
+  }
+
+  getConversationTitleSource(conversationId: any) {
+    const existing = this.getConversationWithoutMessages(conversationId);
+    if (!existing) {
+      return null;
+    }
+    return readConversationTitleSource(existing.metadata);
+  }
+
+  updateConversationTitleSource(conversationId: any, titleSource: any) {
+    const existing = this.getConversationWithoutMessages(conversationId);
+    if (!existing) {
+      return null;
+    }
+
+    const transition = resolveConversationTitleTransition(
+      readConversationTitleSource(existing.metadata),
+      titleSource
+    );
+    if (!transition.applied || transition.titleSource === readConversationTitleSource(existing.metadata)) {
+      return existing;
+    }
+
+    return this.updateConversationTransaction(conversationId, {
+      title: existing.title,
+      type: existing.type,
+      metadata: {
+        ...(existing.metadata && typeof existing.metadata === 'object' ? existing.metadata : {}),
+        titleSource: transition.titleSource,
+      },
     });
   }
 
@@ -2809,7 +3369,20 @@ export class ChatAppStore {
       String(payload.senderName || '').trim() ||
       (payload.role === 'user' ? 'You' : payload.role === 'assistant' ? 'Assistant' : 'System');
 
-    return this.createMessageTransaction({
+    // 首条用户消息自动标题（auto_first_message）：
+    // 仅当会话 titleSource 仍为 default 且此前没有任何 user 消息时触发；
+    // 空消息 / 纯空白消息不触发（derive 返回 null）。状态机裁决在
+    // updateConversation 内完成（manual 终态等并发改写不会被覆盖）。
+    const messageRole = String(payload.role || 'assistant').trim();
+    let autoTitleFromFirstMessage: string | null = null;
+    if (messageRole === 'user' && readConversationTitleSource(conversation.metadata) === 'default') {
+      const priorUserMessageCount = this.messageRepository.countByRole(payload.conversationId, 'user');
+      if (priorUserMessageCount === 0) {
+        autoTitleFromFirstMessage = deriveTitleFromFirstMessage(payload.content);
+      }
+    }
+
+    const createdMessage = this.createMessageTransaction({
       id: String(payload.id || randomUUID()).trim(),
       conversationId: payload.conversationId,
       turnId: String(payload.turnId || randomUUID()).trim(),
@@ -2827,6 +3400,15 @@ export class ChatAppStore {
       clientRequestId,
       createdAt: payload.createdAt,
     });
+
+    if (autoTitleFromFirstMessage) {
+      this.updateConversation(payload.conversationId, {
+        title: autoTitleFromFirstMessage,
+        titleSource: 'auto_first_message',
+      });
+    }
+
+    return createdMessage;
   }
 
   createPrivateMessage(payload: any = {}) {

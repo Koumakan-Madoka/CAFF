@@ -1,10 +1,14 @@
+import { randomUUID } from 'node:crypto';
+
 import { createHttpError } from '../../http/http-errors';
 
 const SESSION_GOAL_METADATA_KEY = 'sessionGoal';
 const SESSION_GOAL_PROPOSAL_METADATA_KEY = 'sessionGoalProposal';
+const SESSION_GOAL_RULING_METADATA_KEY = 'sessionGoalRuling';
 const SESSION_GOAL_RUNNER_METADATA_KEY = 'sessionGoalRunner';
 const SESSION_GOAL_STATUSES = new Set(['active', 'paused', 'complete']);
 const SESSION_GOAL_PROPOSAL_ACTIONS = new Set(['set', 'pause', 'resume', 'complete', 'clear']);
+const SESSION_GOAL_RULING_OUTCOMES = new Set(['accepted', 'rejected']);
 const SESSION_GOAL_ACTIONS = new Set(['set', 'pause', 'resume', 'complete', 'clear', 'update-checklist', 'update_checklist']);
 const SESSION_GOAL_CHECKLIST_STATUSES = new Set(['todo', 'in_progress', 'done']);
 const MAX_SESSION_GOAL_OBJECTIVE_LENGTH = 2000;
@@ -26,6 +30,15 @@ const DEFAULT_SESSION_GOAL_CHECKLIST_TEXTS = [
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+/**
+ * Unique proposal id. Consumers (e.g. the DAG scheduler) derive idempotency
+ * keys from the proposal; createdAt alone has only millisecond resolution
+ * and two proposals in the same ms would collide.
+ */
+function newProposalId() {
+  return `prop_${randomUUID()}`;
 }
 
 function isPlainObject(value: any) {
@@ -224,9 +237,12 @@ function normalizeSessionGoalProposal(value: any) {
   const updatedAt = normalizeText(value.updatedAt || value.updated_at) || createdAt;
   const reason = clipText(value.reason, MAX_SESSION_GOAL_PROPOSAL_REASON_LENGTH);
 
+  const proposalId = normalizeText(value.id);
+
   return {
     action,
     status: 'pending',
+    ...(proposalId ? { id: proposalId } : {}),
     ...(objective ? { objective } : {}),
     ...(reason ? { reason } : {}),
     proposedBy: {
@@ -235,6 +251,94 @@ function normalizeSessionGoalProposal(value: any) {
     },
     createdAt,
     updatedAt,
+  };
+}
+
+/**
+ * Who ruled on a proposal. `user` = UI/REST manual ruling (forced
+ * server-side by the controller, never client-supplied); `agent` = bridge
+ * ruling by a participant agent; `system` = no authoritative principal was
+ * recorded (internal/legacy call) — the DAG scheduler never treats a system
+ * ruling as a valid verification.
+ */
+function normalizeRuledBy(value: any) {
+  const source = isPlainObject(value) ? value : {};
+  const kind = normalizeText(source.kind).toLowerCase();
+  if (kind === 'user' || kind === 'system') {
+    return { kind };
+  }
+  const agentId = normalizeText(source.agentId);
+  if (agentId) {
+    return {
+      kind: 'agent',
+      agentId,
+      agentName: normalizeText(source.agentName) || 'Assistant',
+    };
+  }
+  return { kind: 'system' };
+}
+
+/**
+ * Durable ruling record (D28). Written ATOMICALLY with the proposal clear /
+ * goal mutation so a crash between mutation and event broadcast never loses
+ * the verdict: the DAG scheduler validates THIS record (outcome, ruled
+ * proposal snapshot, ruling principal) at settle/reconcile time instead of
+ * trusting the ephemeral cleared-event payload.
+ */
+function normalizeSessionGoalRuling(value: any) {
+  if (!isPlainObject(value)) {
+    return null;
+  }
+  const outcome = normalizeText(value.outcome).toLowerCase();
+  if (!SESSION_GOAL_RULING_OUTCOMES.has(outcome)) {
+    return null;
+  }
+  const action = normalizeProposalAction(value.action);
+  if (!action) {
+    return null;
+  }
+  const proposalSnapshot = normalizeSessionGoalProposal(value.proposalSnapshot || value.proposal_snapshot);
+  if (!proposalSnapshot) {
+    return null;
+  }
+  const proposalId = normalizeText(value.proposalId || value.proposal_id);
+  const snapshotProposalId = normalizeText(proposalSnapshot.id);
+  if (!proposalId || !snapshotProposalId || proposalId !== snapshotProposalId) {
+    return null;
+  }
+  const reason = clipText(value.reason, MAX_SESSION_GOAL_PROPOSAL_REASON_LENGTH);
+  return {
+    id: normalizeText(value.id) || `ruling_${randomUUID()}`,
+    proposalId,
+    action,
+    outcome,
+    ...(reason ? { reason } : {}),
+    ruledBy: normalizeRuledBy(value.ruledBy || value.ruled_by),
+    proposalSnapshot,
+    ruledAt: normalizeText(value.ruledAt || value.ruled_at) || nowIso(),
+  };
+}
+
+function buildRulingRecord(proposal: any, outcome: string, ruledBy: any, reason: any, timestamp: string) {
+  const snapshot = normalizeSessionGoalProposal(proposal);
+  if (!snapshot) {
+    throw createHttpError(500, 'Cannot record a ruling without a valid proposal snapshot');
+  }
+  const proposalId = normalizeText(snapshot.id) || newProposalId();
+  const proposalSnapshot = {
+    ...snapshot,
+    id: proposalId,
+  };
+  const normalizedReason = clipText(reason, MAX_SESSION_GOAL_PROPOSAL_REASON_LENGTH);
+  return {
+    id: `ruling_${randomUUID()}`,
+    proposalId,
+    action: proposalSnapshot.action,
+    outcome,
+    ...(normalizedReason ? { reason: normalizedReason } : {}),
+    ruledBy: normalizeRuledBy(ruledBy),
+    proposalSnapshot,
+    ruledAt: timestamp,
   };
 }
 
@@ -270,6 +374,11 @@ export function getSessionGoalProposal(conversation: any) {
   return normalizeSessionGoalProposal(metadata[SESSION_GOAL_PROPOSAL_METADATA_KEY]);
 }
 
+export function getSessionGoalRuling(conversation: any) {
+  const metadata = conversation && isPlainObject(conversation.metadata) ? conversation.metadata : {};
+  return normalizeSessionGoalRuling(metadata[SESSION_GOAL_RULING_METADATA_KEY]);
+}
+
 export function getSessionGoalRunner(conversation: any) {
   const metadata = conversation && isPlainObject(conversation.metadata) ? conversation.metadata : {};
   return normalizeSessionGoalRunner(metadata[SESSION_GOAL_RUNNER_METADATA_KEY]);
@@ -281,7 +390,11 @@ function currentMetadata(conversation: any) {
 
 function buildMetadataWithGoal(conversation: any, goal: any) {
   const metadata = currentMetadata(conversation);
-  const { [SESSION_GOAL_PROPOSAL_METADATA_KEY]: _proposal, ...remainingMetadata } = metadata;
+  const {
+    [SESSION_GOAL_PROPOSAL_METADATA_KEY]: _proposal,
+    [SESSION_GOAL_RULING_METADATA_KEY]: _ruling,
+    ...remainingMetadata
+  } = metadata;
   return {
     ...remainingMetadata,
     [SESSION_GOAL_METADATA_KEY]: goal,
@@ -301,6 +414,7 @@ function buildMetadataWithoutGoal(conversation: any) {
   const {
     [SESSION_GOAL_METADATA_KEY]: _sessionGoal,
     [SESSION_GOAL_PROPOSAL_METADATA_KEY]: _proposal,
+    [SESSION_GOAL_RULING_METADATA_KEY]: _ruling,
     [SESSION_GOAL_RUNNER_METADATA_KEY]: _runner,
     ...remainingMetadata
   } = metadata;
@@ -314,8 +428,8 @@ function buildMetadataWithoutProposal(conversation: any) {
 }
 
 function updateConversationMetadata(store: any, conversation: any, metadata: any) {
+  // metadata-only 写入：不传 title，避免 titleSource 状态机误判为 manual 改名。
   return store.updateConversation(conversation.id, {
-    title: conversation.title,
     type: conversation.type,
     metadata,
   });
@@ -456,6 +570,7 @@ function responseForConversation(conversation: any, overrides: any = {}) {
     conversation,
     goal: getSessionGoal(conversation),
     proposal: getSessionGoalProposal(conversation),
+    ruling: getSessionGoalRuling(conversation),
     cleared: false,
     goalChanged: false,
     proposalChanged: false,
@@ -493,15 +608,28 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
       goalChanged: true,
       proposalChanged: Boolean(existingProposal),
       proposalCleared: Boolean(existingProposal),
+      clearedProposal: existingProposal || null,
     });
   }
 
   if (action === 'dismiss-proposal' || action === 'dismiss_proposal') {
-    const nextConversation = updateConversationMetadata(store, conversation, buildMetadataWithoutProposal(conversation));
+    // D28 durable ruling: the rejection (who ruled + feedback reason + the
+    // ruled proposal snapshot) is persisted in the SAME write that clears
+    // the proposal, so a crash before the cleared-event broadcast never
+    // loses the verdict — the scheduler re-drives feedback from this record.
+    let metadata = buildMetadataWithoutProposal(conversation);
+    if (existingProposal) {
+      metadata = {
+        ...metadata,
+        [SESSION_GOAL_RULING_METADATA_KEY]: buildRulingRecord(existingProposal, 'rejected', input.ruledBy, input.reason, timestamp),
+      };
+    }
+    const nextConversation = updateConversationMetadata(store, conversation, metadata);
     return responseForConversation(nextConversation, {
       proposal: null,
       proposalChanged: Boolean(existingProposal),
       proposalCleared: Boolean(existingProposal),
+      clearedProposal: existingProposal || null,
     });
   }
 
@@ -511,6 +639,7 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
     }
 
     if (existingProposal.action === 'clear') {
+      // Approving a clear wipes the whole goal epoch — including rulings.
       const nextConversation = updateConversationMetadata(store, conversation, buildMetadataWithoutGoal(conversation));
       return responseForConversation(nextConversation, {
         goal: null,
@@ -519,17 +648,26 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
         goalChanged: true,
         proposalChanged: true,
         proposalCleared: true,
+        clearedProposal: existingProposal,
       });
     }
 
     const goal = goalFromMutation(existingProposal.action, existingGoal, existingProposal, timestamp);
-    const nextConversation = updateConversationGoal(store, conversation, goal);
+    // D28 durable ruling: goal mutation + proposal clear + ruling record in
+    // ONE metadata write (buildMetadataWithGoal strips the stale proposal
+    // and any prior ruling; the fresh ruling is then attached atomically).
+    const metadata = {
+      ...buildMetadataWithGoal(conversation, goal),
+      [SESSION_GOAL_RULING_METADATA_KEY]: buildRulingRecord(existingProposal, 'accepted', input.ruledBy, input.reason, timestamp),
+    };
+    const nextConversation = updateConversationMetadata(store, conversation, metadata);
     return responseForConversation(nextConversation, {
       goal: getSessionGoal(nextConversation),
       proposal: null,
       goalChanged: true,
       proposalChanged: true,
       proposalCleared: true,
+      clearedProposal: existingProposal,
     });
   }
 
@@ -550,14 +688,24 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
   }
 
   const goal = goalFromMutation(action, existingGoal, input, timestamp);
-  const nextConversation = updateConversationGoal(store, conversation, goal);
+  const checklistOnly = action === 'update-checklist' || action === 'update_checklist';
+  // Checklist progress is factual state inside the current goal epoch. It
+  // must not erase a pending proposal or the durable ruling that proves how
+  // the current lifecycle state was reached.
+  const nextConversation = checklistOnly
+    ? updateConversationMetadata(store, conversation, {
+      ...currentMetadata(conversation),
+      [SESSION_GOAL_METADATA_KEY]: goal,
+    })
+    : updateConversationGoal(store, conversation, goal);
   return responseForConversation(nextConversation, {
     goal: getSessionGoal(nextConversation),
-    proposal: null,
+    proposal: checklistOnly ? getSessionGoalProposal(nextConversation) : null,
     goalChanged: true,
-    proposalChanged: Boolean(existingProposal),
-    proposalCleared: Boolean(existingProposal),
-    autoContinue: action !== 'update-checklist' && action !== 'update_checklist',
+    proposalChanged: checklistOnly ? false : Boolean(existingProposal),
+    proposalCleared: checklistOnly ? false : Boolean(existingProposal),
+    clearedProposal: checklistOnly ? null : existingProposal || null,
+    autoContinue: !checklistOnly,
   });
 }
 
@@ -587,6 +735,7 @@ export function proposeSessionGoalAction(store: any, conversationId: any, input:
   const proposal = {
     action,
     status: 'pending',
+    id: newProposalId(),
     ...(objective ? { objective } : {}),
     ...(reason ? { reason } : {}),
     proposedBy: {

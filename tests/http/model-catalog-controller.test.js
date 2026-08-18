@@ -55,7 +55,7 @@ function createHarness(t, options = {}) {
     host: '127.0.0.1',
     port: 4313,
     csrfToken: 'catalog-csrf-token',
-    catalogDocument: catalogDocument(),
+    catalogDocument: options.catalogDocument || catalogDocument(),
   });
   return { agentDir, controller };
 }
@@ -126,6 +126,12 @@ test('catalog GET exposes an index and a safe single-model projection', async (t
   });
   assert.equal(projection.statusCode, 200);
   assert.equal(projection.json.projection.dialect, 'openai-responses');
+  assert.equal(projection.json.projection.contextWindow, 200000);
+  assert.equal(projection.json.projection.maxTokens, 8192);
+  assert.deepEqual(projection.json.runtimeDefaults, {
+    contextWindow: 128000,
+    maxTokens: 16384,
+  });
   assert.deepEqual(projection.json.projection.env, [
     { name: 'OPENAI_API_KEY', kind: 'key', required: true },
     { name: 'OPENAI_ORG_ID', kind: 'parameter', required: false },
@@ -155,6 +161,8 @@ test('catalog import writes only reviewed provider fields and preserves existing
   assert.equal(persisted.providers.openai.api, 'openai-responses');
   assert.equal(persisted.providers.openai.baseUrl, 'https://api.openai.com/v1');
   assert.equal(persisted.providers.openai.models[0].reasoning, true);
+  assert.equal(persisted.providers.openai.models[0].contextWindow, 200000);
+  assert.equal(persisted.providers.openai.models[0].maxTokens, 8192);
 });
 
 test('catalog import uses the catalog provider name for a new provider', async (t) => {
@@ -233,7 +241,14 @@ test('catalog import re-importing the same model merges in place without droppin
           apiKey: '$OPENAI_API_KEY',
           models: [
             { id: 'o3', name: 'O3' },
-            { id: 'gpt-5/pro', name: 'Custom GPT-5 Pro', baseUrl: 'https://proxy.example/v1' },
+            {
+              id: 'gpt-5/pro',
+              name: 'Custom GPT-5 Pro',
+              baseUrl: 'https://proxy.example/v1',
+              contextWindow: 128000,
+              maxTokens: 4096,
+              headers: { 'X-Custom': 'kept' },
+            },
           ],
         },
       },
@@ -253,6 +268,67 @@ test('catalog import re-importing the same model merges in place without droppin
   assert.deepEqual(models.map((model) => model.id), ['o3', 'gpt-5/pro']);
   assert.equal(models[1].name, 'GPT-5 Pro reimported');
   assert.equal(models[1].baseUrl, 'https://proxy.example/v1');
+  assert.equal(models[1].contextWindow, 200000);
+  assert.equal(models[1].maxTokens, 8192);
+  assert.deepEqual(models[1].headers, { 'X-Custom': 'kept' });
+});
+
+test('catalog re-import clears stale limits when the current snapshot has no valid limits', async (t) => {
+  const document = catalogDocument();
+  delete document.providers.openai.models['gpt-5/pro'].limit;
+  const { agentDir, controller } = createHarness(t, {
+    catalogDocument: document,
+    initialDocument: {
+      providers: {
+        openai: {
+          apiKey: '$OPENAI_API_KEY',
+          models: [{
+            id: 'gpt-5/pro',
+            contextWindow: 200000,
+            maxTokens: 8192,
+            compat: { maxTokensField: 'max_tokens' },
+          }],
+        },
+      },
+    },
+  });
+
+  const response = await invoke(controller, {
+    method: 'POST',
+    pathname: '/api/model-catalog/import',
+    headers: mutationHeaders(),
+    body: { providerId: 'openai', modelId: 'gpt-5/pro' },
+  });
+
+  assert.equal(response.statusCode, 200);
+  const persisted = JSON.parse(fs.readFileSync(path.join(agentDir, 'models.json'), 'utf8'));
+  const model = persisted.providers.openai.models[0];
+  assert.equal(Object.hasOwn(model, 'contextWindow'), false);
+  assert.equal(Object.hasOwn(model, 'maxTokens'), false);
+  assert.deepEqual(model.compat, { maxTokensField: 'max_tokens' });
+});
+
+test('catalog import rejects client limit tampering without touching models.json', async (t) => {
+  const { agentDir, controller } = createHarness(t);
+  const before = fs.readFileSync(path.join(agentDir, 'models.json'), 'utf8');
+
+  await assert.rejects(
+    () => invoke(controller, {
+      method: 'POST',
+      pathname: '/api/model-catalog/import',
+      headers: mutationHeaders(),
+      body: {
+        providerId: 'openai',
+        modelId: 'gpt-5/pro',
+        contextWindow: 999999,
+        maxTokens: 8192,
+      },
+    }),
+    (error) => error && error.statusCode === 422 &&
+      error.issues[0].code === 'catalog_import_limit_mismatch' &&
+      error.issues[0].path === 'body.contextWindow'
+  );
+  assert.equal(fs.readFileSync(path.join(agentDir, 'models.json'), 'utf8'), before);
 });
 
 test('catalog import preserves existing provider connection settings unless explicitly overridden', async (t) => {

@@ -988,3 +988,147 @@ test('explicit retry requeues only deterministic pre-start failures and rejects 
     unsafeFixture.store.close();
   }
 });
+
+test('system submit persists a principal-less notify delivery with marker metadata, idempotently', () => {
+  const fixture = createFixture();
+  const service = createCrossConversationDeliveryService({ store: fixture.store });
+
+  try {
+    const input = {
+      sourceConversationId: fixture.sourceConversation.id,
+      targetConversationId: fixture.targetConversation.id,
+      targetAgentId: fixture.targetAgent.id,
+      content: '请继续执行节点任务。',
+      idempotencyKey: 'dag-resume-1',
+      messageMetadata: { kind: 'dag_resume', dagResume: true, dagNodeId: 'n1' },
+    };
+    const result = service.submitFromSystem(input);
+
+    assert.equal(result.delivery.kind, 'notify');
+    assert.equal(result.delivery.principalKind, 'operator', 'schema CHECK limits principals to agent/operator');
+    assert.equal(result.delivery.sourceAgentId, null);
+    assert.equal(result.delivery.sourceAgentName, 'DAG Scheduler');
+    assert.equal(result.delivery.dispatchStatus, 'queued');
+    assert.equal(result.delivery.responseStatus, 'not_expected');
+    assert.equal(result.targetMessage.role, 'user');
+    assert.equal(result.targetMessage.senderName, 'DAG Scheduler');
+    assert.equal(result.targetMessage.metadata.kind, 'dag_resume');
+    assert.equal(result.targetMessage.metadata.dagResume, true);
+    assert.equal(result.targetMessage.metadata.crossConversation.authority, 'system');
+    assert.equal(result.sourceReceipt.role, 'system');
+
+    // Idempotent replay returns the canonical delivery without new rows.
+    const replay = service.submitFromSystem(input);
+    assert.equal(replay.delivery.id, result.delivery.id);
+    const targetMessages = fixture.store.listMessages(fixture.targetConversation.id);
+    assert.equal(targetMessages.filter((message) => message.id === result.targetMessage.id).length, 1);
+
+    // Non-participant target and self-delivery are rejected.
+    assert.throws(
+      () => service.submitFromSystem({ ...input, targetAgentId: fixture.otherAgent.id, idempotencyKey: 'dag-resume-2' }),
+      assertDeliveryError('cross_conversation_target_not_participant', 403)
+    );
+    assert.throws(
+      () => service.submitFromSystem({
+        ...input,
+        targetConversationId: fixture.sourceConversation.id,
+        idempotencyKey: 'dag-resume-3',
+      }),
+      assertDeliveryError('cross_conversation_self_delivery', 409)
+    );
+  } finally {
+    fixture.store.close();
+  }
+});
+
+test('delivery worker dispatches one specific queued delivery by id without touching FIFO order', async () => {
+  const fixture = createFixture();
+  const service = createCrossConversationDeliveryService({ store: fixture.store });
+
+  try {
+    const first = service.submitFromAgent(createPrincipal(fixture), {
+      kind: 'notify',
+      targetConversationId: fixture.targetConversation.id,
+      targetAgentId: fixture.targetAgent.id,
+      content: 'First queued; leave it for the serial drain.',
+      idempotencyKey: 'direct-first',
+    });
+    const second = service.submitFromAgent(createPrincipal(fixture), {
+      kind: 'notify',
+      targetConversationId: fixture.otherConversation.id,
+      targetAgentId: fixture.otherAgent.id,
+      content: 'Second queued; claimed directly out of order.',
+      idempotencyKey: 'direct-second',
+    });
+
+    const dispatched = [];
+    const worker = createCrossConversationDeliveryWorker({
+      store: fixture.store,
+      workerId: 'worker-direct',
+      async dispatchTarget(input) {
+        dispatched.push(input.delivery.id);
+        input.onInvocationStarting({ invocationId: `invocation-${input.delivery.id}` });
+        return { replyMessage: null };
+      },
+    });
+
+    // Out of FIFO order: claim the SECOND delivery directly by id.
+    const direct = await worker.processDeliveryById(second.delivery.id);
+    assert.equal(direct.status, 'completed');
+    assert.deepEqual(dispatched, [second.delivery.id]);
+    const secondRow = fixture.store.getCrossConversationDelivery(second.delivery.id);
+    assert.equal(secondRow.dispatchStatus, 'completed');
+    assert.equal(secondRow.claimOwner, null);
+    assert.equal(secondRow.attemptCount, 1);
+
+    // The earlier delivery is untouched and still served by the serial drain.
+    assert.equal(fixture.store.getCrossConversationDelivery(first.delivery.id).dispatchStatus, 'queued');
+    const drained = await worker.processNext();
+    assert.equal(drained.status, 'completed');
+    assert.equal(drained.delivery.id, first.delivery.id);
+
+    // Completed / unknown ids cannot be claimed again.
+    assert.equal(await worker.processDeliveryById(second.delivery.id), null);
+    assert.equal(await worker.processDeliveryById('missing-delivery-id'), null);
+    assert.equal(await worker.processNext(), null);
+  } finally {
+    fixture.store.close();
+  }
+});
+
+test('concurrent direct claims on the same delivery resolve to exactly one dispatch', async () => {
+  const fixture = createFixture();
+  const service = createCrossConversationDeliveryService({ store: fixture.store });
+
+  try {
+    const submitted = service.submitFromAgent(createPrincipal(fixture), {
+      kind: 'notify',
+      targetConversationId: fixture.targetConversation.id,
+      targetAgentId: fixture.targetAgent.id,
+      content: 'Claimed by exactly one racer.',
+      idempotencyKey: 'direct-race',
+    });
+
+    let dispatchCount = 0;
+    const worker = createCrossConversationDeliveryWorker({
+      store: fixture.store,
+      workerId: 'worker-race',
+      async dispatchTarget(input) {
+        dispatchCount += 1;
+        input.onInvocationStarting({ invocationId: 'race-invocation' });
+        return { replyMessage: null };
+      },
+    });
+
+    const [winner, loser] = await Promise.all([
+      worker.processDeliveryById(submitted.delivery.id),
+      worker.processDeliveryById(submitted.delivery.id),
+    ]);
+    assert.equal(dispatchCount, 1);
+    assert.equal(winner && winner.status, 'completed');
+    assert.equal(loser, null);
+    assert.equal(fixture.store.getCrossConversationDelivery(submitted.delivery.id).attemptCount, 1);
+  } finally {
+    fixture.store.close();
+  }
+});

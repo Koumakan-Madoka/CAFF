@@ -10,6 +10,7 @@
     let filter = '';
     let selectedProviderId = '';
     let projection = null;
+    let runtimeDefaults = { contextWindow: 128000, maxTokens: 16384 };
     let importPending = false;
 
     const input = (id) => /** @type {HTMLInputElement} */ (document.getElementById(id));
@@ -71,7 +72,7 @@
         ? `<p class="management-note">目录参考价（非计费真相）：input $${utils.escapeHtml(meta.cost.input)} / output $${utils.escapeHtml(meta.cost.output)} 每 M token。</p>`
         : '';
       const limit = meta.limit && (meta.limit.context != null || meta.limit.output != null)
-        ? `<p class="management-note">目录参考上下文上限：${utils.escapeHtml(meta.limit.context ?? '?')} tokens · 输出上限 ${utils.escapeHtml(meta.limit.output ?? '?')} tokens。</p>`
+        ? `<p class="management-note">目录原始限制：上下文 ${utils.escapeHtml(meta.limit.context ?? '?')} tokens · 输出 ${utils.escapeHtml(meta.limit.output ?? '?')} tokens。只有有效正整数会进入下方运行配置。</p>`
         : '';
       const modalities = meta.modalities
         ? `<p class="management-note">目录声明模态：<code>${utils.escapeHtml(JSON.stringify(meta.modalities))}</code>（参考元数据）。</p>`
@@ -96,6 +97,11 @@
 
     function controlsMarkup() {
       const manual = Boolean(projection.manualConfigurationRequired);
+      const hasContextWindow = Number.isInteger(projection.contextWindow);
+      const hasMaxTokens = Number.isInteger(projection.maxTokens);
+      const limitSource = hasContextWindow || hasMaxTokens
+        ? '有效值来自当前 models.dev 快照，确认导入后写入模型运行配置。'
+        : '目录未提供有效限制；不会猜测或写入，新的模型将使用 Pi 默认值。';
       return `
         <section class="management-card" id="catalog-import-controls">
           <div class="management-card-title"><div><h3>导入设置</h3><p>显式确认后才写入 models.json；不会提交密钥、header 或环境变量值。</p></div></div>
@@ -103,9 +109,12 @@
           <div class="field-grid">
             <label><span>模型显示名称</span><input id="catalog-import-name" value="${utils.escapeHtml(projection.name || '')}" /></label>
             <label><span>Base URL</span><input id="catalog-import-base-url" value="${utils.escapeHtml(projection.baseUrl || '')}" inputmode="url" /></label>
+            <label><span>上下文窗口</span><input id="catalog-import-context-window" type="number" value="${hasContextWindow ? projection.contextWindow : ''}" placeholder="Pi 默认 ${utils.escapeHtml(runtimeDefaults.contextWindow)}" readonly /></label>
+            <label><span>最大输出 token</span><input id="catalog-import-max-tokens" type="number" value="${hasMaxTokens ? projection.maxTokens : ''}" placeholder="Pi 默认 ${utils.escapeHtml(runtimeDefaults.maxTokens)}" readonly /></label>
             <label class="provider-model-reasoning"><input id="catalog-import-reasoning" type="checkbox" />支持 reasoning</label>
             <label class="provider-model-reasoning"><input id="catalog-import-input-image" type="checkbox" ${projection.input && projection.input.includes('image') ? 'checked' : ''} />支持图片输入</label>
           </div>
+          <p id="catalog-import-limit-source" class="management-note">${limitSource}</p>
           <div class="management-actions"><button id="catalog-import-confirm" type="button" ${manual || importPending || !options.isEnabled() ? 'disabled' : ''}>确认导入</button></div>
         </section>`;
     }
@@ -151,6 +160,8 @@
       if (baseUrl) body.baseUrl = baseUrl;
       if (input('catalog-import-reasoning').checked) body.reasoning = true;
       body.input = input('catalog-import-input-image').checked ? ['text', 'image'] : ['text'];
+      if (Number.isInteger(projection.contextWindow)) body.contextWindow = projection.contextWindow;
+      if (Number.isInteger(projection.maxTokens)) body.maxTokens = projection.maxTokens;
       try {
         await options.fetchJson('/api/model-catalog/import', { method: 'POST', body, headers: adminHeaders() });
         options.showToast(`已导入 ${projection.providerId} / ${projection.modelId}；密钥请在供应商编辑中填写`);
@@ -166,6 +177,9 @@
       try {
         const result = await options.fetchJson(`/api/model-catalog?providerId=${encodeURIComponent(providerId)}&modelId=${encodeURIComponent(modelId)}`);
         projection = result.projection;
+        if (result.runtimeDefaults && Number.isInteger(result.runtimeDefaults.contextWindow) && Number.isInteger(result.runtimeDefaults.maxTokens)) {
+          runtimeDefaults = result.runtimeDefaults;
+        }
         render();
       } catch (error) {
         showError(error, '目录详情加载失败');
@@ -200,6 +214,7 @@
         filter = '';
         selectedProviderId = '';
         projection = null;
+        runtimeDefaults = { contextWindow: 128000, maxTokens: 16384 };
         importPending = false;
         root.innerHTML = '<div class="empty-state">目录加载中…</div>';
         try {

@@ -560,6 +560,64 @@ test('agent tool bridge auto-completes active runs after successful public posts
   assert.equal(callbackPayload.publicPostMode, 'replace');
 });
 
+test('agent tool bridge keeps active runs alive when public posts opt out of finalization', async (t) => {
+  const tempDir = withTempDir('caff-agent-tool-bridge-no-finalize-');
+  const sqlitePath = path.join(tempDir, 'bridge-no-finalize.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const bridge = createAgentToolBridge({ store });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const fixture = createPublicInvocationFixture(store, 'no-finalize');
+  let callbackCount = 0;
+  const context = bridge.registerInvocation(
+    bridge.createInvocationContext({
+      conversationId: fixture.conversation.id,
+      turnId: fixture.assistantMessage.turnId,
+      agentId: fixture.agent.id,
+      agentName: fixture.agent.name,
+      assistantMessageId: fixture.assistantMessage.id,
+      conversationAgents: fixture.conversation.agents,
+      stage: fixture.stage,
+      turnState: fixture.turnState,
+      autoCompleteOnPublicPost: true,
+      onPublicPostCompleted() {
+        callbackCount += 1;
+      },
+    })
+  );
+
+  const response = bridge.handlePostMessage({
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    visibility: 'public',
+    content: 'Progress update before continuing work',
+    noFinalize: true,
+  });
+
+  assert.equal(response.ok, true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(callbackCount, 0);
+  assert.equal(context.publicPostCompletionRequested, false);
+
+  const finalResponse = bridge.handlePostMessage({
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    visibility: 'public',
+    content: 'Final public reply',
+  });
+
+  assert.equal(finalResponse.ok, true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(callbackCount, 1);
+  assert.equal(context.publicPostCompletionRequested, true);
+});
+
 test('agent tool bridge broadcasts live tool events for started and finished bridge steps', (t) => {
   const tempDir = withTempDir('caff-agent-tool-bridge-live-events-');
   const sqlitePath = path.join(tempDir, 'bridge-live-events.sqlite');
@@ -1818,4 +1876,282 @@ test('agent tool memory cards update and forget durable local-user scope safely'
 
   const listedAfterForget = bridge.handleListMemories(listUrl);
   assert.equal(listedAfterForget.cardCount, 0);
+});
+
+function createDagBoundGoalFixture(store, suffix, participantCount = 2) {
+  const agents = [];
+  for (let index = 0; index < participantCount; index += 1) {
+    agents.push(store.saveCustomRoleConfig({
+      id: `bridge-agent-${suffix}-${index}`,
+      name: `Bridge Agent ${suffix} ${index}`,
+      personaPrompt: 'Reply briefly.',
+    }));
+  }
+  const conversation = store.createConversation({
+    id: `bridge-conversation-${suffix}`,
+    title: `DAG Node ${suffix}`,
+    participants: agents.map((agent) => agent.id),
+  });
+  const assistantMessage = store.createMessage({
+    id: `bridge-message-${suffix}`,
+    conversationId: conversation.id,
+    turnId: `bridge-turn-${suffix}`,
+    role: 'assistant',
+    agentId: agents[0].id,
+    senderName: agents[0].name,
+    content: 'Thinking...',
+    status: 'streaming',
+  });
+  store.updateConversation(conversation.id, {
+    metadata: {
+      sessionGoal: {
+        objective: 'DAG node goal',
+        status: 'active',
+        createdAt: '2026-08-16T00:00:00.000Z',
+        updatedAt: '2026-08-16T00:00:00.000Z',
+      },
+      dagNodeGoalBinding: {
+        planId: 'plan-1',
+        nodeId: 'n1',
+        workerId: agents[0].id,
+        verifierId: agents.length > 1 ? agents[1].id : null,
+      },
+    },
+  });
+  return {
+    agents,
+    conversation: store.getConversation(conversation.id),
+    assistantMessage,
+    turnState: { conversationId: conversation.id, turnId: assistantMessage.turnId, stopRequested: false },
+    stage: { status: 'running', replyLength: 0, preview: '', lastTextDeltaAt: null },
+  };
+}
+
+function registerAgentInvocation(bridge, fixture, agent) {
+  return bridge.registerInvocation(
+    bridge.createInvocationContext({
+      conversationId: fixture.conversation.id,
+      turnId: fixture.assistantMessage.turnId,
+      agentId: agent.id,
+      agentName: agent.name,
+      assistantMessageId: fixture.assistantMessage.id,
+      conversationAgents: fixture.conversation.agents,
+      stage: fixture.stage,
+      turnState: fixture.turnState,
+    })
+  );
+}
+
+function createGoalTestBridge(store, broadcastEvents) {
+  return createAgentToolBridge({
+    store,
+    broadcastEvent(eventName, payload) {
+      broadcastEvents.push({ eventName, payload });
+    },
+    broadcastConversationSummary() {},
+  });
+}
+
+function assertForbidden(error, code) {
+  assert.equal(error && error.statusCode, 403, `expected 403, got ${error && error.statusCode}: ${error && error.message}`);
+  assert.ok(String(error && error.message || '').includes(code), `expected ${code}: ${error && error.message}`);
+}
+
+test('DAG goal binding: only the node worker can declare completion (dag_completion_worker_only)', (t) => {
+  const tempDir = withTempDir('caff-bridge-dag-worker-only-');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath: path.join(tempDir, 'bridge.sqlite') });
+  const broadcastEvents = [];
+  const bridge = createGoalTestBridge(store, broadcastEvents);
+  t.after(() => {
+    try { store.close(); } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const fixture = createDagBoundGoalFixture(store, 'dag-worker', 2);
+  const [worker, verifier] = fixture.agents;
+
+  // The verifier (non-worker) cannot announce completion on the worker's behalf.
+  const verifierContext = registerAgentInvocation(bridge, fixture, verifier);
+  assert.throws(
+    () => bridge.handleSuggestGoal({
+      invocationId: verifierContext.invocationId,
+      callbackToken: verifierContext.callbackToken,
+      action: 'complete',
+      reason: 'I say it is done',
+    }),
+    (error) => { assertForbidden(error, 'dag_completion_worker_only'); return true; },
+  );
+  assert.equal(store.getConversation(fixture.conversation.id).metadata.sessionGoalProposal, undefined);
+
+  // The worker can.
+  const workerContext = registerAgentInvocation(bridge, fixture, worker);
+  const result = bridge.handleSuggestGoal({
+    invocationId: workerContext.invocationId,
+    callbackToken: workerContext.callbackToken,
+    action: 'complete',
+    reason: 'Work finished',
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.proposal.action, 'complete');
+});
+
+test('DAG goal binding: only the designated verifier can accept/reject (dag_verifier_only)', (t) => {
+  const tempDir = withTempDir('caff-bridge-dag-verifier-only-');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath: path.join(tempDir, 'bridge.sqlite') });
+  const broadcastEvents = [];
+  const bridge = createGoalTestBridge(store, broadcastEvents);
+  t.after(() => {
+    try { store.close(); } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const fixture = createDagBoundGoalFixture(store, 'dag-verifier', 3);
+  const [worker, verifier, third] = fixture.agents;
+
+  // Worker proposes completion.
+  const workerContext = registerAgentInvocation(bridge, fixture, worker);
+  bridge.handleSuggestGoal({
+    invocationId: workerContext.invocationId,
+    callbackToken: workerContext.callbackToken,
+    action: 'complete',
+    reason: 'Work finished',
+  });
+
+  // A third participant cannot hijack the ruling.
+  const thirdContext = registerAgentInvocation(bridge, fixture, third);
+  assert.throws(
+    () => bridge.handleSuggestGoal({
+      invocationId: thirdContext.invocationId,
+      callbackToken: thirdContext.callbackToken,
+      action: 'accept',
+    }),
+    (error) => { assertForbidden(error, 'dag_verifier_only'); return true; },
+  );
+
+  // The worker still cannot self-review (binding check must not weaken it).
+  const workerContext2 = registerAgentInvocation(bridge, fixture, worker);
+  assert.throws(
+    () => bridge.handleSuggestGoal({
+      invocationId: workerContext2.invocationId,
+      callbackToken: workerContext2.callbackToken,
+      action: 'accept',
+    }),
+    (error) => { assertForbidden(error, 'goal_proposal_self_review'); return true; },
+  );
+
+  // The designated verifier can.
+  const verifierContext = registerAgentInvocation(bridge, fixture, verifier);
+  const result = bridge.handleSuggestGoal({
+    invocationId: verifierContext.invocationId,
+    callbackToken: verifierContext.callbackToken,
+    action: 'accept',
+    reason: 'looks good',
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.outcome, 'accepted');
+  const clearedEvent = broadcastEvents.find((event) => event.eventName === 'conversation_goal_proposal_cleared');
+  assert.ok(clearedEvent, 'cleared event broadcast');
+  assert.equal(clearedEvent.payload.ruledBy.agentId, verifier.id);
+  assert.ok(clearedEvent.payload.proposal, 'cleared event carries the proposal snapshot');
+
+  // The ruling is persisted ATOMICALLY with the mutation (durable record
+  // the DAG scheduler validates at settle/reconcile time).
+  const ruling = store.getConversation(fixture.conversation.id).metadata.sessionGoalRuling;
+  assert.ok(ruling, 'ruling record persisted with the accept mutation');
+  assert.equal(ruling.outcome, 'accepted');
+  assert.equal(ruling.action, 'complete');
+  assert.equal(ruling.ruledBy.agentId, verifier.id);
+  assert.equal(ruling.reason, 'looks good');
+  assert.equal(ruling.proposalSnapshot.reason, 'Work finished');
+  assert.ok(ruling.proposalId, 'ruling references the ruled proposal id');
+});
+
+test('DAG goal binding: verification-exempt node rejects ALL agent rulings (dag_verifier_exempt)', (t) => {
+  const tempDir = withTempDir('caff-bridge-dag-exempt-');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath: path.join(tempDir, 'bridge.sqlite') });
+  const broadcastEvents = [];
+  const bridge = createGoalTestBridge(store, broadcastEvents);
+  t.after(() => {
+    try { store.close(); } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  // Two participants, but the binding marks the node verification-EXEMPT
+  // (verifierId null): completion may only be ruled by the scheduler
+  // auto-accept or the user — never by an agent.
+  const fixture = createDagBoundGoalFixture(store, 'dag-exempt', 2);
+  const [worker, other] = fixture.agents;
+  const current = store.getConversation(fixture.conversation.id);
+  store.updateConversation(current.id, {
+    metadata: {
+      ...(current.metadata || {}),
+      dagNodeGoalBinding: { planId: 'plan-1', nodeId: 'n1', workerId: worker.id, verifierId: null },
+    },
+  });
+
+  const workerContext = registerAgentInvocation(bridge, fixture, worker);
+  bridge.handleSuggestGoal({
+    invocationId: workerContext.invocationId,
+    callbackToken: workerContext.callbackToken,
+    action: 'complete',
+    reason: 'Work finished',
+  });
+
+  for (const action of ['accept', 'reject']) {
+    const otherContext = registerAgentInvocation(bridge, fixture, other);
+    assert.throws(
+      () => bridge.handleSuggestGoal({
+        invocationId: otherContext.invocationId,
+        callbackToken: otherContext.callbackToken,
+        action,
+        reason: 'I rule anyway',
+      }),
+      (error) => { assertForbidden(error, 'dag_verifier_exempt'); return true; },
+      `exempt node must 403 agent ${action}`,
+    );
+  }
+
+  // The attempted rulings never happened: goal still active, proposal still pending.
+  const conversation = store.getConversation(fixture.conversation.id);
+  assert.equal(conversation.metadata.sessionGoal.status, 'active');
+  assert.ok(conversation.metadata.sessionGoalProposal, 'proposal still pending');
+  assert.equal(conversation.metadata.sessionGoalRuling, undefined, 'no ruling persisted');
+});
+
+test('DAG goal binding: agents cannot drive non-complete goal mutations (dag_goal_mutation_forbidden)', (t) => {
+  const tempDir = withTempDir('caff-bridge-dag-mutation-lock-');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath: path.join(tempDir, 'bridge.sqlite') });
+  const broadcastEvents = [];
+  const bridge = createGoalTestBridge(store, broadcastEvents);
+  t.after(() => {
+    try { store.close(); } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const fixture = createDagBoundGoalFixture(store, 'dag-mutation', 2);
+  const [worker, verifier] = fixture.agents;
+
+  // set/pause/resume/clear proposals would bypass the worker→verifier
+  // completion protocol — forbidden for BOTH the worker and the verifier.
+  for (const agent of [worker, verifier]) {
+    for (const action of ['set', 'pause', 'resume', 'clear']) {
+      const context = registerAgentInvocation(bridge, fixture, agent);
+      assert.throws(
+        () => bridge.handleSuggestGoal({
+          invocationId: context.invocationId,
+          callbackToken: context.callbackToken,
+          action,
+          objective: 'hijack',
+          reason: 'hijack',
+        }),
+        (error) => { assertForbidden(error, 'dag_goal_mutation_forbidden'); return true; },
+        `${agent.id} must not propose ${action} on a DAG-bound goal`,
+      );
+    }
+  }
+
+  // The goal is untouched.
+  const conversation = store.getConversation(fixture.conversation.id);
+  assert.equal(conversation.metadata.sessionGoal.status, 'active');
+  assert.equal(conversation.metadata.sessionGoalProposal, undefined);
 });

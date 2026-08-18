@@ -4,6 +4,10 @@ const path = require('node:path');
 const net = require('node:net');
 const test = require('node:test');
 
+const { isolateExternalIntegrations } = require('../helpers/external-integrations');
+
+isolateExternalIntegrations();
+
 // Removal guards for the Skill Tests module.
 // Part 1: Structural source-regex guards verify wiring is removed (fast, no build).
 // Part 2: Real behavioral guards use build artifacts (SQLite + HTTP) to verify

@@ -19,6 +19,7 @@ const { maybeAutoCreateConversationDigest } = require('../../build/server/domain
 const { maybeAutoCreateConversationSkillDraft } = require('../../build/server/domain/conversation/skill-draft');
 const { createRoleService } = require('../../build/server/domain/roles/role-service');
 
+const { isolateExternalIntegrations } = require('../helpers/external-integrations');
 const { requireSpawn } = require('../helpers/spawn');
 const { withTempDir } = require('../helpers/temp-dir');
 
@@ -29,6 +30,8 @@ const FAKE_PI_SDK_HOST_TRELLIS_TOOLS_PATH = path.join(
   'fixtures',
   'fake-pi-sdk-host-trellis-tools.mjs'
 );
+
+isolateExternalIntegrations();
 
 function findFreePort() {
   return new Promise((resolve, reject) => {
@@ -1264,6 +1267,9 @@ test('conversation digest auto-creates model summaries after the message budget'
     resolveSummaryMemoryTaskName: () => 'Auto Digest Memory Task',
     digestModelRunner: async (context) => {
       modelCalls.push(context);
+      if (context.purpose === 'title_refine') {
+        return '自动摘要标题精炼';
+      }
       return {
         summary: `模型自动摘要 ${modelCalls.length}`,
         facts: ['模型事实：自动摘要达到消息预算后触发。'],
@@ -1285,8 +1291,12 @@ test('conversation digest auto-creates model summaries after the message budget'
   });
   assert.equal(autoSegmentSearch.resultCount, 1);
   assert.equal(autoSegmentSearch.results[0].taskName, 'Auto Digest Memory Task');
-  assert.equal(modelCalls.length, 1);
+  // 首次自动摘要后会追加一次 title_refine 调用（本节点新增契约）。
+  assert.equal(modelCalls.length, 2);
   assert.equal(modelCalls[0].purpose, 'entry');
+  assert.equal(modelCalls[1].purpose, 'title_refine');
+  assert.equal(store.getConversation(conversation.id).title, '自动摘要标题精炼');
+  assert.equal(store.getConversationTitleSource(conversation.id), 'auto_llm');
 
   const repeatedResult = await maybeAutoCreateConversationDigest(store, conversation.id, {
     autoCreate: true,

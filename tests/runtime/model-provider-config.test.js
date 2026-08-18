@@ -33,6 +33,8 @@ function providerFixture() {
             name: 'DeepSeek V3.2',
             family: 'deepseek',
             reasoning: true,
+            contextWindow: 262144,
+            maxTokens: 32768,
             headers: {
               'X-Model-Key': 'model-secret',
             },
@@ -88,6 +90,8 @@ test('provider projection is credential-blind for keys, references, commands, an
             family: 'deepseek',
             reasoning: true,
             input: ['text'],
+            contextWindow: 262144,
+            maxTokens: 32768,
             hasCustomHeaders: true,
           },
         ],
@@ -161,6 +165,62 @@ test('provider patch preserves blank secrets and unknown compatibility fields', 
   assert.equal(next.providers.deepseek.api, 'openai-responses');
   assert.equal(next.providers.deepseek.authHeader, false);
   assert.equal(next.providers.deepseek.models[0].name, 'DeepSeek V3.2 Updated');
+});
+
+test('model token limits project, patch, clear, and preserve unrelated compatibility fields', () => {
+  const raw = providerFixture();
+  const updated = patchModelProvider(raw, 'deepseek', {
+    models: [{
+      id: 'deepseek-v3.2',
+      contextWindow: 131072,
+      maxTokens: 16384,
+    }],
+  });
+
+  assert.equal(updated.providers.deepseek.models[0].contextWindow, 131072);
+  assert.equal(updated.providers.deepseek.models[0].maxTokens, 16384);
+  assert.deepEqual(updated.providers.deepseek.models[0].cost, raw.providers.deepseek.models[0].cost);
+
+  const cleared = patchModelProvider(updated, 'deepseek', {
+    models: [{ id: 'deepseek-v3.2', contextWindow: null, maxTokens: null }],
+  });
+  assert.equal(Object.hasOwn(cleared.providers.deepseek.models[0], 'contextWindow'), false);
+  assert.equal(Object.hasOwn(cleared.providers.deepseek.models[0], 'maxTokens'), false);
+  assert.equal(projectModelProviderDocument(cleared).providers[0].models[0].contextWindow, null);
+  assert.equal(projectModelProviderDocument(cleared).providers[0].models[0].maxTokens, null);
+});
+
+test('model token limits reject invalid integers and inconsistent effective values with stable paths', () => {
+  for (const [field, value] of [
+    ['contextWindow', 0],
+    ['contextWindow', 1.5],
+    ['maxTokens', -1],
+    ['maxTokens', '16384'],
+  ]) {
+    assert.throws(
+      () => validateModelProviderDocument({
+        providers: { custom: { models: [{ id: 'model-a', [field]: value }] } },
+      }),
+      (error) =>
+        error instanceof ModelProviderConfigError &&
+        error.code === 'provider_model_limit_invalid' &&
+        error.path === `providers.custom.models[0].${field}`
+    );
+  }
+
+  for (const model of [
+    { id: 'model-a', contextWindow: 8192 },
+    { id: 'model-a', maxTokens: 131072 },
+    { id: 'model-a', contextWindow: 32768, maxTokens: 65536 },
+  ]) {
+    assert.throws(
+      () => validateModelProviderDocument({ providers: { custom: { models: [model] } } }),
+      (error) =>
+        error instanceof ModelProviderConfigError &&
+        error.code === 'provider_model_limits_inconsistent' &&
+        error.path === 'providers.custom.models[0].maxTokens'
+    );
+  }
 });
 
 test('provider patch requires a new secret when changing auth mode and normalizes explicit env/command values', () => {
@@ -334,8 +394,8 @@ test('model input capability field projects into the credential-blind view', () 
   });
 
   assert.deepEqual(projected.providers[0].models, [
-    { id: 'vision-model', name: '', api: '', baseUrl: '', family: '', reasoning: false, hasCustomHeaders: false, input: ['text', 'image'] },
-    { id: 'text-model', name: '', api: '', baseUrl: '', family: '', reasoning: false, hasCustomHeaders: false, input: ['text'] },
+    { id: 'vision-model', name: '', api: '', baseUrl: '', family: '', reasoning: false, hasCustomHeaders: false, input: ['text', 'image'], contextWindow: null, maxTokens: null },
+    { id: 'text-model', name: '', api: '', baseUrl: '', family: '', reasoning: false, hasCustomHeaders: false, input: ['text'], contextWindow: null, maxTokens: null },
   ]);
 });
 

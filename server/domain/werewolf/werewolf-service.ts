@@ -38,8 +38,8 @@ export function createWerewolfService(options: any = {}) {
       return conversation;
     }
 
+    // metadata-only 写入：不传 title，避免 titleSource 状态机误判为 manual 改名。
     return store.updateConversation(conversationId, {
-      title: conversation.title,
       type: conversation.type,
       metadata: buildWerewolfConversationMetadata(conversation, stateOverride),
     });
@@ -66,8 +66,8 @@ export function createWerewolfService(options: any = {}) {
       return conversation;
     }
 
+    // metadata-only 写入：不传 title，避免 titleSource 状态机误判为 manual 改名。
     return store.updateConversation(conversationId, {
-      title: conversation.title,
       type: conversation.type,
       metadata: getConversationMetadata(conversation),
       participants: (Array.isArray(conversation.agents) ? conversation.agents : []).map((agent: any) => ({

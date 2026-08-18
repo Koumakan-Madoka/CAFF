@@ -1307,8 +1307,16 @@ export function createAgentExecutor(options: any = {}) {
       : resolveThinkingSetting(provider, agentConfig.thinking, process.env.PI_THINKING, DEFAULT_THINKING);
     const heartbeatIntervalMs = resolveIntegerSettingCandidates([process.env.PI_HEARTBEAT_INTERVAL_MS, 5000], 'heartbeatIntervalMs');
     const heartbeatTimeoutMs = resolveIntegerSettingCandidates(
-      [process.env.PI_HEARTBEAT_TIMEOUT_MS, process.env.PI_IDLE_TIMEOUT_MS, 60000],
+      [process.env.PI_HEARTBEAT_TIMEOUT_MS, 60000],
       'heartbeatTimeoutMs'
+    );
+    const progressTimeoutMs = resolveIntegerSettingCandidates(
+      [process.env.PI_PROGRESS_TIMEOUT_MS, process.env.PI_IDLE_TIMEOUT_MS, 10 * 60 * 1000],
+      'progressTimeoutMs'
+    );
+    const timeoutMs = resolveIntegerSettingCandidates(
+      [process.env.PI_TIMEOUT_MS, 60 * 60 * 1000],
+      'timeoutMs'
     );
     const stageTaskId = createTaskId('agent-turn');
     // We already inject the full room history into every prompt, so reusing one
@@ -1576,6 +1584,8 @@ export function createAgentExecutor(options: any = {}) {
       sqlitePath,
       heartbeatIntervalMs,
       heartbeatTimeoutMs,
+      progressTimeoutMs,
+      timeoutMs,
       extraEnv: {
         PI_AGENT_ID: agent.id,
         PI_AGENT_NAME: agent.name,

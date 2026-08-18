@@ -31,6 +31,7 @@
     <script defer src="/chat/new-conversation-dialog.js"></script>
     <script defer src="/chat/mention-menu.js"></script>
     <script defer src="/chat/session-goal-panel.js"></script>
+    <script defer src="/chat/plan-panel.js"></script>
     <script defer src="/chat/conversation-digest-panel.js"></script>
     <script defer src="/chat/summary-memory-panel.js"></script>
     <script defer src="/chat/image-composer.js"></script>
@@ -150,6 +151,7 @@
       <div class="drawer-tabs" role="tablist" aria-label="面板分类">
         <button role="tab" id="tab-participants" aria-controls="panel-participants" aria-selected="true" tabindex="0">参与者</button>
         <button role="tab" id="tab-goal" aria-controls="session-goal-drawer" aria-selected="false" tabindex="-1">目标</button>
+        <button role="tab" id="tab-plan" aria-controls="plan-drawer" aria-selected="false" tabindex="-1">规划</button>
         <button role="tab" id="tab-memory" aria-controls="summary-memory-drawer" aria-selected="false" tabindex="-1">记忆</button>
         <button role="tab" id="tab-summary" aria-controls="conversation-digest-drawer" aria-selected="false" tabindex="-1">摘要</button>
         <button role="tab" id="tab-settings" aria-controls="panel-settings" aria-selected="false" tabindex="-1">设置</button>
@@ -237,6 +239,97 @@
           </div>
         </div>
 
+        <div role="tabpanel" id="plan-drawer" class="drawer-panel plan-drawer" aria-labelledby="tab-plan" hidden>
+          <p id="plan-panel-status" class="session-goal-status-badge active">当前会话树还没有规划图</p>
+          <div class="plan-toolbar" role="toolbar" aria-label="规划图操作">
+            <button id="plan-refresh-button" class="ghost-button" type="button">刷新</button>
+            <button id="plan-add-node-button" class="ghost-button" type="button">新增节点</button>
+            <button id="plan-save-button" type="button">保存修改</button>
+            <button id="plan-activate-button" class="ghost-button" type="button">开始执行</button>
+            <button id="plan-revert-button" class="ghost-button" type="button">退回草稿</button>
+            <button id="plan-drawer-zoom-out-button" class="ghost-button" type="button" aria-label="缩小">−</button>
+            <button id="plan-drawer-zoom-fit-button" class="ghost-button" type="button">适应宽度</button>
+            <button id="plan-drawer-zoom-in-button" class="ghost-button" type="button" aria-label="放大">＋</button>
+            <button id="plan-expand-button" class="ghost-button" type="button">全屏</button>
+          </div>
+          <div id="plan-issues" class="plan-issues hidden" role="status" aria-live="polite"></div>
+          <p class="muted plan-hint">草稿态：底部手柄拖拽连边 · 点边或边中点 × 删边 · 双击编辑 · Delete 删节点 · Ctrl/⌘+滚轮缩放</p>
+          <div id="plan-graph" class="plan-graph" aria-label="规划图画布"></div>
+
+          <details id="plan-history" class="plan-history hidden">
+            <summary>执行历史</summary>
+            <div id="plan-history-list" class="plan-history-list"></div>
+          </details>
+
+          <div id="plan-editor" class="plan-editor hidden">
+            <div class="section-row">
+              <span class="section-label">节点 <strong id="plan-node-id"></strong></span>
+              <span class="section-hint">草稿态可编辑结构；执行态只能改状态</span>
+            </div>
+            <label>
+              <span>标题</span>
+              <input id="plan-node-title" type="text" maxlength="80" />
+            </label>
+            <label>
+              <span>目标</span>
+              <textarea id="plan-node-goal" rows="3" maxlength="500"></textarea>
+            </label>
+            <div class="plan-editor-grid">
+              <label>
+                <span>状态</span>
+                <select id="plan-node-status">
+                  <option value="pending">待办</option>
+                  <option value="doing">进行</option>
+                  <option value="done">完成</option>
+                  <option value="blocked">阻塞</option>
+                </select>
+              </label>
+              <label>
+                <span>类型</span>
+                <select id="plan-node-kind">
+                  <option value="work">work</option>
+                  <option value="merge">merge</option>
+                </select>
+              </label>
+            </div>
+            <label>
+              <span>分支（图构建期命名，执行时才检出）</span>
+              <input id="plan-node-branch" type="text" maxlength="120" placeholder="feat/..." />
+            </label>
+            <label>
+              <span>verify 命令（执行完成后的校验命令，可选）</span>
+              <input id="plan-node-verify" type="text" maxlength="200" placeholder="npm test" />
+            </label>
+            <label>
+              <span>base_branch（merge 检出基线，可选；须等于某个父节点分支，留空 = 上游 LCA）</span>
+              <input id="plan-node-base-branch" type="text" maxlength="120" placeholder="留空 = 上游 LCA" />
+            </label>
+            <div class="plan-editor-grid">
+              <label>
+                <span>主理人</span>
+                <select id="plan-node-worker">
+                  <option value="">默认主理人</option>
+                </select>
+              </label>
+              <label>
+                <span>验证者</span>
+                <select id="plan-node-verifier">
+                  <option value="">自动验收</option>
+                </select>
+              </label>
+            </div>
+            <div id="plan-node-execution" class="plan-node-execution hidden"></div>
+            <div class="plan-deps-field">
+              <span class="section-label">依赖（depends_on）</span>
+              <div id="plan-node-deps" class="plan-deps-list"></div>
+            </div>
+            <div id="plan-node-spawned" class="plan-node-spawned"></div>
+            <div class="button-row compact-button-row">
+              <button id="plan-node-delete-button" class="ghost-button danger" type="button">删除节点</button>
+            </div>
+          </div>
+        </div>
+
         <div role="tabpanel" id="summary-memory-drawer" class="drawer-panel" aria-labelledby="tab-memory" hidden>
           <p id="summary-memory-status" class="session-goal-status-badge active">输入关键词搜索跨会话 / 跨任务摘要段</p>
           <form id="summary-memory-form" class="settings-form compact-settings-form summary-memory-form">
@@ -320,6 +413,20 @@
             <a class="ghost-button link-button" href="/personas.html">管理页</a>
           </div>
 
+          <section class="bulk-skill-card conversation-rename-card">
+            <div class="section-row">
+              <span class="section-label">会话标题</span>
+              <span class="section-hint">手动改名后，自动标题将不再覆盖</span>
+            </div>
+            <label>
+              <span>标题</span>
+              <input id="conversation-title-input" type="text" autocomplete="off" maxlength="120" placeholder="输入新的会话标题" />
+            </label>
+            <div class="button-row compact-button-row">
+              <button id="rename-conversation-button" class="ghost-button" type="button">重命名会话</button>
+            </div>
+          </section>
+
           <form id="conversation-settings-form" class="settings-form compact-settings-form">
             <section class="bulk-skill-card">
               <div class="section-row">
@@ -354,6 +461,23 @@
               <p id="feishu-binding-status" class="section-hint">可从已知飞书聊天里选择，也可手动输入 chat_id。</p>
               <div class="button-row compact-button-row">
                 <button id="bind-feishu-chat-button" class="ghost-button" type="button">绑定到当前会话</button>
+              </div>
+            </section>
+
+            <section class="bulk-skill-card project-binding-card">
+              <div class="section-row">
+                <span class="section-label">项目绑定</span>
+                <span class="section-hint">绑定后不可更改，spawn 与计划执行需要项目</span>
+              </div>
+              <label>
+                <span>选择项目</span>
+                <select id="project-bind-select">
+                  <option value="">正在加载...</option>
+                </select>
+              </label>
+              <p id="project-binding-status" class="section-hint">选择一个项目后绑定到当前会话。</p>
+              <div class="button-row compact-button-row">
+                <button id="bind-project-button" class="ghost-button" type="button">绑定到当前会话</button>
               </div>
             </section>
 
@@ -510,6 +634,19 @@
     </aside>
 
     <div id="toast" class="toast hidden"></div>
+
+    <div id="plan-expand-overlay" class="plan-expand-overlay hidden" role="dialog" aria-modal="true" aria-label="规划图全屏" aria-hidden="true">
+      <div class="plan-expand-head">
+        <h2>规划图</h2>
+        <div class="plan-toolbar" role="toolbar" aria-label="全屏图操作">
+          <button id="plan-zoom-out-button" class="ghost-button" type="button" aria-label="缩小">−</button>
+          <button id="plan-zoom-reset-button" class="ghost-button" type="button">重置缩放</button>
+          <button id="plan-zoom-in-button" class="ghost-button" type="button" aria-label="放大">＋</button>
+          <button id="plan-expand-close-button" class="ghost-button" type="button">关闭全屏</button>
+        </div>
+      </div>
+      <div id="plan-graph-expanded" class="plan-graph plan-graph-expanded" aria-label="规划图全屏画布"></div>
+    </div>
       <div id="new-conversation-backdrop" class="new-conversation-backdrop hidden" aria-hidden="true">
           <section
             id="new-conversation-dialog"

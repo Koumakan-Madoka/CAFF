@@ -14,6 +14,7 @@ const { createAgentToolsController } = require('../api/agent-tools-controller');
 const { createAgentsController } = require('../api/agents-controller');
 const { createBootstrapController } = require('../api/bootstrap-controller');
 const { createConversationsController } = require('../api/conversations-controller');
+const { createConversationPlanController } = require('../api/conversation-plan-controller');
 const {
   createConversationDeliveriesController,
 } = require('../api/conversation-deliveries-controller');
@@ -55,6 +56,9 @@ const { pickConversationSummary } = require('../domain/conversation/conversation
 const { createUndercoverService } = require('../domain/undercover/undercover-service');
 const { createWerewolfService } = require('../domain/werewolf/werewolf-service');
 const { createAgentToolBridge } = require('../domain/runtime/agent-tool-bridge');
+const { createDagScheduler } = require('../domain/dag/dag-scheduler');
+const { prepareNodeWorktree, resolveDagWorktreePath } = require('../../lib/dag-worktree');
+const { prepareMergeNodeWorktree, verifyMergeOutcome } = require('../../lib/dag-merge');
 const { createFeishuClient } = require('../domain/integrations/feishu/feishu-client');
 const { createFeishuIntegrationService } = require('../domain/integrations/feishu/feishu-service');
 const {
@@ -152,6 +156,7 @@ export function createServerApp(options: any = {}) {
   const undercoverHost = createWhoIsUndercoverHost({ agentDir });
   const sseBus = createSseBus();
   let turnOrchestrator: any = null;
+  let dagScheduler: any = null;
   let crossConversationDeliveryWorker: any = null;
   let deliveryMaintenanceTimer: any = null;
   let deliveryDrainPromise: Promise<any> | null = null;
@@ -190,6 +195,16 @@ export function createServerApp(options: any = {}) {
 
     if (typeof options.onBroadcastEvent === 'function') {
       options.onBroadcastEvent(eventName, payload);
+    }
+
+    // D21 event hook: the DAG scheduler observes plan updates and side-slot
+    // completions. Never let scheduler failures break the broadcast path.
+    if (dagScheduler) {
+      try {
+        dagScheduler.handleEvent(eventName, payload);
+      } catch (error) {
+        console.error(`[dag-scheduler] handleEvent(${eventName}) failed: ${String(error)}`);
+      }
     }
   }
 
@@ -290,6 +305,52 @@ export function createServerApp(options: any = {}) {
     return deliveryDrainPromise;
   }
 
+  // DAG scheduler-owned deliveries (idempotency key prefixes dag-node: /
+  // dag-resume: / dag-verify:) are dispatched directly by the scheduler
+  // wiring, in parallel, bounded by the scheduler's own D24 concurrency cap.
+  // The global serial drain must not claim them first — that would
+  // re-serialize DAG child conversations behind one worker loop.
+  // Trust boundary: the key prefix alone is model-controllable (agents may
+  // pass arbitrary idempotency keys), so ownership also requires the
+  // persisted operator principal — every scheduler delivery is persisted
+  // via the spawn service or submitFromSystem with principalKind
+  // 'operator'. A forged agent delivery with a dag-* key falls through to
+  // the normal serial drain instead of hijacking the direct path.
+  function isDagSchedulerDelivery(delivery: any) {
+    const key = String(delivery && delivery.idempotencyKey || '');
+    if (String(delivery && delivery.principalKind || '') !== 'operator') {
+      return false;
+    }
+    return key.startsWith('dag-node:') || key.startsWith('dag-resume:') || key.startsWith('dag-verify:');
+  }
+
+  function dispatchDagDeliveryNow(result: any) {
+    const delivery = result && result.delivery;
+    if (!delivery || !isDagSchedulerDelivery(delivery)) {
+      return;
+    }
+    if (!crossConversationDeliveryWorker
+      || typeof crossConversationDeliveryWorker.processDeliveryById !== 'function') {
+      // Custom/injected worker without direct dispatch: degrade to the drain.
+      requestCrossConversationDeliveryDrain();
+      return;
+    }
+    if (String(delivery.dispatchStatus || '') !== 'queued') {
+      return; // duplicate canonical already claimed/running/completed elsewhere
+    }
+    void Promise.resolve(crossConversationDeliveryWorker.processDeliveryById(delivery.id))
+      .catch((error: any) => {
+        console.error(
+          `[dag-scheduler] Direct dispatch failed for ${delivery.id}: ${
+            error && (error as any).stack ? (error as any).stack : error
+          }`
+        );
+        // Never strand the delivery: fall back to the serial drain (an
+        // abandoned claim is requeued by recoverExpiredClaims).
+        requestCrossConversationDeliveryDrain();
+      });
+  }
+
   function handleCrossConversationDeliveryPersisted(result: any) {
     if (!result || !result.delivery) {
       return;
@@ -301,7 +362,9 @@ export function createServerApp(options: any = {}) {
     }
 
     broadcastCrossConversationDelivery(result.delivery, result.duplicate ? 'duplicate_submit' : 'persisted');
-    requestCrossConversationDeliveryDrain();
+    if (!isDagSchedulerDelivery(result.delivery)) {
+      requestCrossConversationDeliveryDrain();
+    }
   }
 
   function handleCrossConversationDeliveryChanged(change: any) {
@@ -368,6 +431,7 @@ export function createServerApp(options: any = {}) {
   const digestOptions = {
     ...(options.digestOptions || {}),
     digestModelRunner: options.digestModelRunner,
+    titleModelRunner: options.titleModelRunner,
     agentDir,
     sqlitePath,
     resolveSummaryMemoryTaskName:
@@ -574,7 +638,18 @@ export function createServerApp(options: any = {}) {
     store,
     skillRegistry,
     modeStore,
-    getProjectDir: () => activeProjectDir,
+    // D22: DAG node child conversations run inside their per-node worktree;
+    // everything else uses the active project dir. dagScheduler is assigned
+    // after construction, so resolve lazily and null-check.
+    getProjectDir: (conversation?: any) => {
+      if (conversation && dagScheduler && typeof dagScheduler.resolveConversationWorkdir === 'function') {
+        const workdir = dagScheduler.resolveConversationWorkdir(conversation);
+        if (workdir) {
+          return workdir;
+        }
+      }
+      return activeProjectDir;
+    },
     agentToolBridge,
     broadcastEvent,
     broadcastConversationSummary,
@@ -633,10 +708,227 @@ export function createServerApp(options: any = {}) {
         return projectManager.listProjects()
           .find((project: any) => project && project.id === normalizedProjectScopeId) || null;
       },
-      onBootstrapAvailable() {
+      onBootstrapAvailable(result: any) {
+        // DAG-managed bootstraps are dispatched directly by the scheduler
+        // wiring (dispatchDagDeliveryNow) right after spawn returns.
+        if (isDagSchedulerDelivery(result && result.delivery)) {
+          return;
+        }
         requestCrossConversationDeliveryDrain();
       },
     });
+
+  // DAG execution scheduler (第二阶段, D21 event hook). Wired AFTER the spawn
+  // service exists; handleEvent is called from broadcastEvent above (the
+  // dagScheduler variable starts null, so early broadcasts are no-ops).
+  if (options.dagScheduler !== null && options.dagScheduler !== false) {
+    const resolveProjectDirForScope = (projectScopeId: any) => {
+      const normalizedScopeId = String(projectScopeId || '').trim();
+      const project = normalizedScopeId
+        ? projectManager.listProjects().find((candidate: any) => candidate && candidate.id === normalizedScopeId)
+        : null;
+      return project && project.path ? String(project.path) : activeProjectDir;
+    };
+
+    const dagSchedulerFactory = typeof options.dagSchedulerFactory === 'function'
+      ? options.dagSchedulerFactory
+      : createDagScheduler;
+    dagScheduler = dagSchedulerFactory({
+      store,
+      broadcastEvent,
+      // D22: prepare the per-node worktree against the owning project's repo.
+      // Merge nodes go through the merge executor (D11): integration branch
+      // checked out from the upstream LCA into the dedicated worktree.
+      prepareNodeWorktree({ ownerConversationId, plan, node }: any) {
+        const owner = store.getConversationWithoutMessages(ownerConversationId);
+        const repoRoot = resolveProjectDirForScope(owner && owner.projectScopeId);
+        if (!repoRoot) {
+          return { ok: false, error: 'no active project directory for worktree preparation' };
+        }
+        if (String(node && node.kind || '') === 'merge') {
+          const nodeById = new Map<string, any>(
+            (plan && plan.doc && Array.isArray(plan.doc.nodes) ? plan.doc.nodes : [])
+              .map((candidate: any) => [String(candidate && candidate.id || '').trim(), candidate] as [string, any])
+          );
+          const upstreamBranches = (Array.isArray(node && node.depends_on) ? node.depends_on : [])
+            .map((depId: any) => {
+              const parent = nodeById.get(String(depId || '').trim());
+              return parent ? String(parent.branch || '').trim() : '';
+            });
+          if (upstreamBranches.some((branch: string) => !branch)) {
+            return { ok: false, error: 'dag_merge_missing_upstream_branch: every upstream node must declare a branch before the merge node can start' };
+          }
+          const mergeResult = prepareMergeNodeWorktree({
+            repoRoot,
+            planId: plan && plan.id,
+            node: {
+              id: node && node.id,
+              branch: String(node && node.branch || '').trim() || `dag/${plan && String(plan.id || '').slice(0, 8)}/${node && node.id}`,
+              base_branch: String(node && node.base_branch || '').trim() || undefined,
+            },
+            upstreamBranches,
+          });
+          if (!mergeResult.ok) {
+            return { ok: false, error: `${mergeResult.code || 'dag_worktree_failed'}: ${mergeResult.reason || ''}`.trim() };
+          }
+          return { ok: true, path: mergeResult.path, reused: Boolean(mergeResult.reused) };
+        }
+        const result = prepareNodeWorktree({
+          repoRoot,
+          planId: plan && plan.id,
+          nodeId: node && node.id,
+          branch: String(node && node.branch || '').trim() || `dag/${plan && String(plan.id || '').slice(0, 8)}/${node && node.id}`,
+          baseRef: String(node && node.base_branch || '').trim() || undefined,
+        });
+        if (!result.ok) {
+          return { ok: false, error: `${result.code || 'dag_worktree_failed'}: ${result.error || result.reason || ''}`.trim() };
+        }
+        return { ok: true, path: result.path, reused: Boolean(result.reused) };
+      },
+      // D11/D19 fail-closed post-check: a merge node may only flip to done
+      // when every source branch is merged into the integration HEAD and the
+      // node verify command passes inside the integration worktree.
+      verifyNodeCompletion({ ownerConversationId, plan, node }: any) {
+        if (String(node && node.kind || '') !== 'merge') {
+          return { ok: true };
+        }
+        const owner = store.getConversationWithoutMessages(ownerConversationId);
+        const repoRoot = resolveProjectDirForScope(owner && owner.projectScopeId);
+        if (!repoRoot) {
+          return { ok: false, error: 'no active project directory for merge verification' };
+        }
+        const worktreePath = resolveDagWorktreePath(repoRoot, String(plan && plan.id || ''), String(node && node.id || ''));
+        if (!worktreePath || !require('node:fs').existsSync(worktreePath)) {
+          return { ok: false, error: 'integration worktree missing after reported merge completion' };
+        }
+        const nodeById = new Map<string, any>(
+          (plan && plan.doc && Array.isArray(plan.doc.nodes) ? plan.doc.nodes : [])
+            .map((candidate: any) => [String(candidate && candidate.id || '').trim(), candidate] as [string, any])
+        );
+        const sourceBranches = (Array.isArray(node && node.depends_on) ? node.depends_on : [])
+          .map((depId: any) => {
+            const parent = nodeById.get(String(depId || '').trim());
+            return parent ? String(parent.branch || '').trim() : '';
+          })
+          .filter(Boolean);
+        const verdict = verifyMergeOutcome({
+          worktreePath,
+          sourceBranches,
+          verifyCommand: String(node && node.verify || '').trim() || undefined,
+        });
+        return verdict.ok ? { ok: true } : { ok: false, error: verdict.reason };
+      },
+      // D22 cwd hook backing store: derive the worktree path statelessly.
+      resolveWorktreePathForNode({ ownerConversationId, plan, node }: any) {
+        const owner = store.getConversationWithoutMessages(ownerConversationId);
+        const repoRoot = resolveProjectDirForScope(owner && owner.projectScopeId);
+        if (!repoRoot) {
+          return null;
+        }
+        const worktreePath = resolveDagWorktreePath(repoRoot, String(plan && plan.id || ''), String(node && node.id || ''));
+        if (!worktreePath) {
+          return null;
+        }
+        try {
+          return require('node:fs').existsSync(worktreePath) ? worktreePath : null;
+        } catch {
+          return null;
+        }
+      },
+      // D25 reconcile support: a doing node whose scheduler-owned delivery is
+      // still QUEUED (legacy pre-direct-dispatch row, or a torn persist) is
+      // re-offered here for direct parallel dispatch. dispatchDagDeliveryNow
+      // ignores anything not currently queued, and the claim is atomic.
+      dispatchQueuedNodeDelivery({ ownerConversationId, plan, node }: any) {
+        const planId = String(plan && plan.id || '').trim();
+        const nodeId = String(node && node.id || '').trim();
+        const activation = String(plan && plan.activatedAt || 'na');
+        const keys = [
+          [`operator:${ownerConversationId}:conversation_spawn`, `dag-node:${planId}:${nodeId}:${activation}`],
+          [`system:${ownerConversationId}:conversation_notify`, `dag-resume:${planId}:${nodeId}:${activation}`],
+        ];
+        for (const [scope, key] of keys) {
+          const bundle = store.getCrossConversationDeliveryBundleByIdempotency(scope, key);
+          if (bundle && bundle.delivery) {
+            dispatchDagDeliveryNow({ delivery: bundle.delivery });
+          }
+        }
+      },
+      // D13: spawn the node child conversation flat under the ROOT owner.
+      // All root participants remain available for handoff/verification, but
+      // the node's resolved worker is placed first and selected as primary so
+      // normal routing and Goal Runner continuation keep driving that worker.
+      async spawnNodeConversation({ ownerConversationId, node, initialMessage, clientRequestId, workerId }: any) {
+        const owner = store.getConversationWithoutMessages(ownerConversationId);
+        if (!owner) {
+          throw new Error('Plan owner conversation not found');
+        }
+        const participants = (Array.isArray(owner.agents) ? owner.agents : [])
+          .map((agent: any) => ({ agentId: agent && agent.id }))
+          .filter((participant: any) => participant.agentId);
+        if (participants.length === 0) {
+          throw new Error('Plan owner conversation has no participant agents');
+        }
+        const primaryAgentId = String(workerId || '').trim();
+        const workerIndex = participants.findIndex((participant: any) => participant.agentId === primaryAgentId);
+        if (workerIndex < 0) {
+          throw new Error(`Resolved DAG worker is not a participant: ${primaryAgentId || '(empty)'}`);
+        }
+        const [workerParticipant] = participants.splice(workerIndex, 1);
+        participants.unshift(workerParticipant);
+        const title = `DAG ${node.id}: ${String(node.title || node.id)}`.slice(0, 200);
+        const result = await conversationSpawnService.spawn(ownerConversationId, {
+          title,
+          projectScopeId: owner.projectScopeId,
+          participants,
+          primaryAgentId,
+          initialMessage,
+          clientRequestId,
+        });
+        dispatchDagDeliveryNow(result);
+        return { conversationId: result && result.conversation ? result.conversation.id : '' };
+      },
+      // D28 verification channel: scheduler-authored targeted delivery into
+      // the spawned child conversation (verification request → verifier,
+      // rejection feedback → worker), dispatched directly like resumes.
+      async deliverNodeMessage({ ownerConversationId, conversationId, targetAgentId, content, idempotencyKey, messageMetadata }: any) {
+        const result = crossConversationDeliveryService.submitFromSystem({
+          sourceConversationId: ownerConversationId,
+          targetConversationId: conversationId,
+          targetAgentId,
+          content,
+          idempotencyKey,
+          sourceAgentName: 'DAG Scheduler',
+          messageMetadata,
+        });
+        dispatchDagDeliveryNow(result);
+      },
+      // D25: resume inside the ORIGINAL child conversation via a
+      // system-principal notify delivery (dispatched directly, in parallel).
+      async resumeNodeConversation({ ownerConversationId, conversation, node, content, idempotencyKey }: any) {
+        const participants = (Array.isArray(conversation.agents) ? conversation.agents : [])
+          .map((agent: any) => agent && agent.id)
+          .filter(Boolean);
+        if (participants.length === 0) {
+          throw new Error('Spawned conversation has no participant agents');
+        }
+        const result = crossConversationDeliveryService.submitFromSystem({
+          sourceConversationId: ownerConversationId,
+          targetConversationId: conversation.id,
+          targetAgentId: participants[0],
+          content,
+          idempotencyKey,
+          sourceAgentName: 'DAG Scheduler',
+          messageMetadata: {
+            kind: 'dag_resume',
+            dagResume: true,
+            dagNodeId: String(node && node.id || '').trim(),
+          },
+        });
+        dispatchDagDeliveryNow(result);
+      },
+    });
+  }
 
   feishuIntegration = createFeishuIntegrationService({
     store,
@@ -775,6 +1067,10 @@ export function createServerApp(options: any = {}) {
     createWerewolfController({
       werewolfService,
     }),
+    createConversationPlanController({
+      store,
+      broadcastEvent,
+    }),
     createConversationsController({
       store,
       conversationSpawnService,
@@ -849,6 +1145,15 @@ export function createServerApp(options: any = {}) {
 
       startCrossConversationDeliveryRuntime();
 
+      // D25: reconcile DAG execution state after restart (fire-and-forget).
+      if (dagScheduler && typeof dagScheduler.reconcileOnStartup === 'function') {
+        void Promise.resolve()
+          .then(() => dagScheduler.reconcileOnStartup())
+          .catch((error: any) => {
+            console.error(`[dag-scheduler] startup reconcile failed: ${error && error.stack ? error.stack : error}`);
+          });
+      }
+
       if (typeof onListen === 'function') {
         onListen();
       }
@@ -877,9 +1182,9 @@ export function createServerApp(options: any = {}) {
     }
     autoDigestScheduledTimers.clear();
 
-    if (feishuLongConnection) {
-      feishuLongConnection.stop();
-    }
+    const feishuClosePromise = feishuLongConnection
+      ? Promise.resolve(feishuLongConnection.stop()).catch(() => null)
+      : Promise.resolve();
 
     server.close(() => {
       const finishClose = () => {
@@ -889,13 +1194,11 @@ export function createServerApp(options: any = {}) {
           callback();
         }
       };
+      const pendingCloseWork = deliveryDrainPromise
+        ? Promise.allSettled([deliveryDrainPromise, feishuClosePromise])
+        : feishuClosePromise;
 
-      if (deliveryDrainPromise) {
-        void deliveryDrainPromise.then(finishClose, finishClose);
-        return;
-      }
-
-      finishClose();
+      void Promise.resolve(pendingCloseWork).then(finishClose, finishClose);
     });
   }
 
@@ -905,6 +1208,9 @@ export function createServerApp(options: any = {}) {
     crossConversationDeliveryService,
     crossConversationDeliveryWorker,
     conversationSpawnService,
+    get dagScheduler() {
+      return dagScheduler;
+    },
     getHealthStatus,
     host,
     port,

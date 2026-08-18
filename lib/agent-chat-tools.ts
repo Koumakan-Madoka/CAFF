@@ -590,6 +590,44 @@ async function trellisWrite(config: any, flags: any) {
   });
 }
 
+async function proposePlan(config: any, flags: any, options: any = {}) {
+  const docText = await resolveFileContent(flags, options);
+
+  if (!docText.trim()) {
+    throw new Error('propose-plan requires --content or --content-stdin with the plan doc JSON.');
+  }
+
+  let doc;
+  try {
+    doc = JSON.parse(docText);
+  } catch {
+    throw new Error('propose-plan doc must be valid JSON (object with nodes/edges).');
+  }
+
+  if (!doc || typeof doc !== 'object' || Array.isArray(doc)) {
+    throw new Error('propose-plan doc must be a JSON object with nodes/edges.');
+  }
+
+  const body: Record<string, any> = {
+    invocationId: config.invocationId,
+    callbackToken: config.callbackToken,
+    doc,
+  };
+
+  if (flags.version !== undefined && flags.version !== true) {
+    const version = Number(flags.version);
+    if (!Number.isInteger(version) || version < 1) {
+      throw new Error('propose-plan --version must be a positive integer.');
+    }
+    body.version = version;
+  }
+
+  return requestJson(`${config.apiUrl}/api/agent-tools/propose-plan`, {
+    method: 'POST',
+    body,
+  });
+}
+
 async function listParticipants(config: any) {
   const query = new URLSearchParams({
     invocationId: config.invocationId,
@@ -753,13 +791,15 @@ async function main() {
     result = await suggestGoal(config, flags);
   } else if (command === 'update-goal-checklist') {
     result = await updateGoalChecklist(config, flags);
+  } else if (command === 'propose-plan') {
+    result = await proposePlan(config, flags);
   } else if (command === 'trellis-init') {
     result = await trellisInit(config, flags);
   } else if (command === 'trellis-write') {
     result = await trellisWrite(config, flags);
   } else {
     throw new Error(
-      'Unknown command. Use one of: send-public, send-private, conversation-notify, conversation-request, read-context, search-messages, search-memory, write-experience, list-memories, save-memory, update-memory, forget-memory, list-participants, suggest-goal, update-goal-checklist, trellis-init, trellis-write.'
+      'Unknown command. Use one of: send-public, send-private, conversation-notify, conversation-request, read-context, search-messages, search-memory, write-experience, list-memories, save-memory, update-memory, forget-memory, list-participants, suggest-goal, update-goal-checklist, propose-plan, trellis-init, trellis-write.'
     );
   }
 
@@ -785,6 +825,7 @@ export {
   main,
   normalizeRecipients,
   parseArgs,
+  proposePlan,
   readTextStream,
   resolveMessageContent,
   resolveFileContent,

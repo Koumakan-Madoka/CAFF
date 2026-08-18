@@ -15,6 +15,10 @@ import { buildConversationDirectoryPage } from '../domain/conversation/conversat
 import { applyConversationSkillDraftAction } from '../domain/conversation/skill-draft';
 import { applySessionGoalAction } from '../domain/conversation/session-goal';
 import {
+  getDagNodeExecutionContext,
+  isDagBoundGoalMutationAllowed,
+} from '../domain/conversation/dag-goal-binding';
+import {
   exportAgentContextSnapshotMarkdown,
   materializeAgentContextSnapshot,
   summarizeAgentContextSnapshot,
@@ -652,7 +656,25 @@ export function createConversationsController(options: any = {}): RouteHandler<A
     if (conversationGoalMatch && (req.method === 'GET' || req.method === 'POST')) {
       const conversationId = decodeURIComponent(conversationGoalMatch[1]);
       const body = req.method === 'POST' ? await readRequestJson(req) : { action: 'get' };
-      const result = applySessionGoalAction(store, conversationId, body || {});
+      // D28 fail-closed: while a DAG node is doing, the bound child
+      // conversation's goal may only be read, checklist-updated, or have its
+      // pending proposal ruled on (accept/dismiss = user manual
+      // verification). Direct complete/clear/set/pause/resume would bypass
+      // the worker→verifier completion protocol.
+      if (req.method === 'POST' && getDagNodeExecutionContext(store, conversationId)
+        && !isDagBoundGoalMutationAllowed(body && body.action)) {
+        throw createHttpError(403, '该会话正在执行 DAG 节点，目标仅支持验收裁决（接受/驳回提案），不能直接完成/清除/替换', {
+          code: 'dag_goal_mutation_forbidden',
+        });
+      }
+      const result = applySessionGoalAction(store, conversationId, {
+        ...(body || {}),
+        // D28: a ruling via this endpoint is ALWAYS the user (manual
+        // verification). Forced server-side — a client-supplied ruledBy is
+        // never trusted. The principal is persisted atomically with the
+        // proposal clear (durable ruling record), not just broadcast.
+        ruledBy: { kind: 'user' },
+      });
       let autoContinuation = null;
 
       if (req.method === 'POST') {
@@ -669,10 +691,24 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         }
 
         if (result.proposalChanged) {
+          // D28: the user accepting/rejecting via the UI is a legitimate
+          // ruling path (manual verification). The cleared event must carry
+          // the authoritative pre-clear proposal snapshot (the scheduler
+          // derives the node result summary from it) plus an explicit user
+          // ruling marker — an absent ruledBy would be indistinguishable
+          // from a missing enforcement check.
+          const goalAction = String(body && body.action || '').trim().toLowerCase();
+          const isRulingAction = result.proposalCleared
+            && (goalAction === 'accept-proposal' || goalAction === 'accept_proposal'
+              || goalAction === 'dismiss-proposal' || goalAction === 'dismiss_proposal');
           broadcastEvent(result.proposalCleared ? 'conversation_goal_proposal_cleared' : 'conversation_goal_proposal_updated', {
             conversationId,
             goal: result.goal,
-            proposal: result.proposal,
+            proposal: result.proposalCleared ? (result.clearedProposal || null) : result.proposal,
+            ...(isRulingAction ? {
+              outcome: goalAction.startsWith('accept') ? 'accepted' : 'rejected',
+              ruledBy: { kind: 'user' },
+            } : {}),
             conversation: result.conversation,
             summary,
           });

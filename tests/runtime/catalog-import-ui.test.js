@@ -56,6 +56,8 @@ function projectionFor(providerId, modelId) {
       : [{ name: 'OPENAI_API_KEY', kind: 'key', required: true }],
     manualConfigurationRequired: false,
     input: azure ? undefined : ['text'],
+    contextWindow: 400000,
+    maxTokens: 128000,
     catalogMetadata: {
       modalities: { input: ['text'], output: ['text'] },
       reasoningOptions: { effort: ['low', 'high'] },
@@ -114,7 +116,10 @@ function indexFetch(url) {
   if (url === '/api/model-catalog') return Promise.resolve(structuredClone(INDEX));
   const match = /\/api\/model-catalog\?providerId=([^&]+)&modelId=(.+)$/u.exec(url);
   if (match) {
-    return Promise.resolve({ projection: projectionFor(decodeURIComponent(match[1]), decodeURIComponent(match[2])) });
+    return Promise.resolve({
+      projection: projectionFor(decodeURIComponent(match[1]), decodeURIComponent(match[2])),
+      runtimeDefaults: { contextWindow: 128000, maxTokens: 16384 },
+    });
   }
   if (url === '/api/model-catalog/import') return Promise.resolve({ providers: [], write: { backupCreated: true } });
   return Promise.reject(new Error(`unexpected url ${url}`));
@@ -153,6 +158,11 @@ test('catalog import wizard lists providers, filters by search, and keeps catalo
   assert.match(controls.textContent, /模型显示名称/u);
   assert.equal(session.input('catalog-import-name').value, 'GPT-5');
   assert.equal(session.input('catalog-import-base-url').value, 'https://api.openai.com/v1');
+  assert.equal(session.input('catalog-import-context-window').value, '400000');
+  assert.equal(session.input('catalog-import-context-window').readOnly, true);
+  assert.equal(session.input('catalog-import-max-tokens').value, '128000');
+  assert.equal(session.input('catalog-import-max-tokens').readOnly, true);
+  assert.match(session.document.getElementById('catalog-import-limit-source').textContent, /写入模型运行配置/u);
   assert.equal(session.input('catalog-import-confirm').disabled, false);
 });
 
@@ -218,10 +228,34 @@ test('catalog import confirm posts only the allowed import fields and never env 
     baseUrl: 'https://example.openai.azure.com',
     reasoning: true,
     input: ['text'],
+    contextWindow: 400000,
+    maxTokens: 128000,
   });
   assert.equal(bodyText.includes('AZURE_API_KEY'), false, 'env names are not submitted');
   assert.equal(bodyText.includes('apiKey'), false, 'no apiKey field submitted');
   assert.deepEqual(session.imported, [{ providerId: 'azure', modelId: 'gpt-5' }]);
+});
+
+test('catalog import leaves missing limits empty and identifies server-projected Pi defaults without inventing values', async () => {
+  const session = setup({
+    fetchImpl: async (url, options) => {
+      const result = await indexFetch(url, options);
+      if (url.includes('providerId=mystery')) {
+        result.runtimeDefaults = { contextWindow: 131072, maxTokens: 4096 };
+      }
+      return result;
+    },
+  });
+  await session.wizard.open();
+  session.document.querySelector('[data-catalog-provider="mystery"] button').click();
+  session.document.querySelector('[data-catalog-model="m-1"] button').click();
+  await flush();
+
+  assert.equal(session.input('catalog-import-context-window').value, '');
+  assert.equal(session.input('catalog-import-context-window').placeholder, 'Pi 默认 131072');
+  assert.equal(session.input('catalog-import-max-tokens').value, '');
+  assert.equal(session.input('catalog-import-max-tokens').placeholder, 'Pi 默认 4096');
+  assert.match(session.document.getElementById('catalog-import-limit-source').textContent, /不会猜测或写入/u);
 });
 
 test('manual-configuration models fail closed and never offer an import action', async () => {

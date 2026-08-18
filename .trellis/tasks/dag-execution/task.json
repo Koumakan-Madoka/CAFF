@@ -1,0 +1,7 @@
+{
+  "title": "Task: dag-execution（DAG 规划第二阶段：执行层）",
+  "status": "discussion",
+  "createdAt": "2026-08-16",
+  "predecessor": ".trellis/tasks/archive/2026-08/dag-planning/prd.md",
+  "branch": "feat/dag-execution (待创建，基于 feat/dag-planning-ui-poc)"
+}

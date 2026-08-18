@@ -17,6 +17,8 @@ import {
 import { readCatalogCache } from '../domain/models/models-dev-catalog-cache';
 import {
   ModelProviderConfigError,
+  PI_DEFAULT_CONTEXT_WINDOW,
+  PI_DEFAULT_MAX_TOKENS,
   patchModelProvider,
   projectModelProviderDocument,
 } from '../domain/models/model-provider-config';
@@ -32,7 +34,16 @@ type ApiContext = {
 };
 
 const CATALOG_ASSET_PATH = path.resolve(__dirname, '..', '..', 'assets', 'model-catalog.json');
-const IMPORT_FIELDS = new Set(['providerId', 'modelId', 'name', 'baseUrl', 'reasoning', 'input']);
+const IMPORT_FIELDS = new Set([
+  'providerId',
+  'modelId',
+  'name',
+  'baseUrl',
+  'reasoning',
+  'input',
+  'contextWindow',
+  'maxTokens',
+]);
 
 function catalogErrorStatus(error: ModelCatalogError) {
   if (error.code === 'catalog_provider_not_found' || error.code === 'catalog_model_not_found') {
@@ -163,8 +174,24 @@ function assertImportBody(body: any) {
   if (Object.hasOwn(body, 'input') && !Array.isArray(body.input)) {
     throw new ModelCatalogError('catalog_import_input_invalid', 'body.input');
   }
+  for (const field of ['contextWindow', 'maxTokens'] as const) {
+    if (Object.hasOwn(body, field) && (!Number.isInteger(body[field]) || body[field] <= 0)) {
+      throw new ModelCatalogError('catalog_import_limit_invalid', `body.${field}`);
+    }
+  }
 
   return { providerId, modelId };
+}
+
+function assertTrustedCatalogLimits(body: any, projection: any) {
+  for (const field of ['contextWindow', 'maxTokens'] as const) {
+    if (!Object.hasOwn(body, field)) {
+      continue;
+    }
+    if (!Object.hasOwn(projection, field) || body[field] !== projection[field]) {
+      throw new ModelCatalogError('catalog_import_limit_mismatch', `body.${field}`);
+    }
+  }
 }
 
 export function createModelCatalogController(options: any = {}): RouteHandler<ApiContext> {
@@ -201,6 +228,10 @@ export function createModelCatalogController(options: any = {}): RouteHandler<Ap
           projection: projectCatalogModel(document.providers, providerId, modelId, {
             provenance: document.provenance,
           }),
+          runtimeDefaults: {
+            contextWindow: PI_DEFAULT_CONTEXT_WINDOW,
+            maxTokens: PI_DEFAULT_MAX_TOKENS,
+          },
         });
         return true;
       }
@@ -216,6 +247,7 @@ export function createModelCatalogController(options: any = {}): RouteHandler<Ap
         if (projection.manualConfigurationRequired || !projection.dialect) {
           throw new ModelCatalogError('catalog_manual_configuration_required', `providers.${providerId}.models.${modelId}`);
         }
+        assertTrustedCatalogLimits(body, projection);
 
         const result = await updateModelProviderDocument(agentDir, (configured: any) => {
           const explicitName = typeof body.name === 'string' && body.name.trim() ? body.name.trim() : '';
@@ -236,6 +268,9 @@ export function createModelCatalogController(options: any = {}): RouteHandler<Ap
             modelPatch.input = body.input;
           } else if (Array.isArray(projection.input)) {
             modelPatch.input = projection.input;
+          }
+          for (const field of ['contextWindow', 'maxTokens'] as const) {
+            modelPatch[field] = Object.hasOwn(projection, field) ? projection[field] : null;
           }
 
           const existingProvider = configured.providers && typeof configured.providers[providerId] === 'object' && configured.providers[providerId] !== null

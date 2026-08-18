@@ -1,0 +1,5 @@
+{"file": ".trellis/workflow.md", "reason": "Project workflow and conventions"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend development guide"}
+{"file": ".trellis/spec/runtime/agent-runtime.md", "reason": "Runtime watchdog ownership and run contracts"}
+{"file": ".trellis/spec/backend/feishu-integration.md", "reason": "Feishu long-connection lifecycle contract"}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Runtime regression test patterns"}

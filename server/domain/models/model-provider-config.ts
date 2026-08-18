@@ -14,6 +14,10 @@ const ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 const RESERVED_PROVIDER_IDS = new Set(['__proto__', 'constructor', 'prototype']);
 const UNSAFE_PROVIDER_ID_PATTERN = /[\u0000-\u001f\u007f/\\]/u;
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f]/u;
+// Keep aligned with the pinned Pi custom-provider fallbacks in
+// @earendil-works/pi-coding-agent/dist/core/provider-composer.js.
+export const PI_DEFAULT_CONTEXT_WINDOW = 128000;
+export const PI_DEFAULT_MAX_TOKENS = 16384;
 
 type ApiKeyMode = 'literal' | 'env' | 'command' | 'external' | 'none';
 type JsonObject = Record<string, any>;
@@ -181,6 +185,31 @@ function normalizeSecretValue(mode: string, value: string, path: string) {
   return value.trim();
 }
 
+function validateOptionalModelLimit(value: any, path: string) {
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new ModelProviderConfigError('provider_model_limit_invalid', path);
+  }
+}
+
+function validateModelLimits(model: JsonObject, modelPath: string) {
+  if (Object.hasOwn(model, 'contextWindow')) {
+    validateOptionalModelLimit(model.contextWindow, `${modelPath}.contextWindow`);
+  }
+  if (Object.hasOwn(model, 'maxTokens')) {
+    validateOptionalModelLimit(model.maxTokens, `${modelPath}.maxTokens`);
+  }
+
+  const contextWindow = Object.hasOwn(model, 'contextWindow')
+    ? model.contextWindow
+    : PI_DEFAULT_CONTEXT_WINDOW;
+  const maxTokens = Object.hasOwn(model, 'maxTokens')
+    ? model.maxTokens
+    : PI_DEFAULT_MAX_TOKENS;
+  if (maxTokens > contextWindow) {
+    throw new ModelProviderConfigError('provider_model_limits_inconsistent', `${modelPath}.maxTokens`);
+  }
+}
+
 function mergeModelEntries(existingModels: any[], incomingModels: any[], pathPrefix = '') {
   const existingById = new Map<string, JsonObject>();
 
@@ -225,6 +254,18 @@ function mergeModelEntries(existingModels: any[], incomingModels: any[], pathPre
       next.input = normalizeModelInputCapabilities(input.input, `${modelPath}.input`);
     }
 
+    for (const field of ['contextWindow', 'maxTokens'] as const) {
+      if (Object.hasOwn(input, field)) {
+        if (input[field] === null || input[field] === undefined) {
+          delete next[field];
+        } else {
+          validateOptionalModelLimit(input[field], `${modelPath}.${field}`);
+          next[field] = input[field];
+        }
+      }
+    }
+
+    validateModelLimits(next, modelPath);
     return next;
   });
 }
@@ -307,6 +348,8 @@ export function validateModelProviderDocument(document: any) {
       if (Object.hasOwn(model, 'input')) {
         normalizeModelInputCapabilities(model.input, `${modelPath}.input`);
       }
+
+      validateModelLimits(model, modelPath);
     }
   }
 
@@ -350,6 +393,8 @@ export function projectModelProviderDocument(document: any, options: any = {}) {
             family: normalizeText(model.family),
             reasoning: Boolean(model.reasoning),
             input: normalizeModelInputCapabilities(model.input, ''),
+            contextWindow: Number.isInteger(model.contextWindow) ? model.contextWindow : null,
+            maxTokens: Number.isInteger(model.maxTokens) ? model.maxTokens : null,
             hasCustomHeaders: hasCustomHeaders(model.headers),
           };
         }),

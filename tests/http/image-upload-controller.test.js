@@ -5,8 +5,11 @@ const net = require('node:net');
 const test = require('node:test');
 
 const { createServerApp } = require('../../build/server/app/create-server');
+const { isolateExternalIntegrations } = require('../helpers/external-integrations');
 const { withTempDir } = require('../helpers/temp-dir');
 const { pngBuffer } = require('../storage/image-buffers');
+
+isolateExternalIntegrations();
 
 function findFreePort() {
   return new Promise((resolve, reject) => {

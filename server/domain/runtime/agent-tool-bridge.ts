@@ -4,7 +4,8 @@ const path = require('node:path');
 const { createHttpError } = require('../../http/http-errors');
 const { pickConversationSummary, serializeConversationPrivateMessageForUi } = require('../conversation/conversation-view');
 const { buildAgentMentionLookup, formatAgentMention, resolveMentionValues } = require('../conversation/mention-routing');
-const { applySessionGoalAction, proposeSessionGoalAction } = require('../conversation/session-goal');
+const { applySessionGoalAction, getSessionGoalProposal, proposeSessionGoalAction } = require('../conversation/session-goal');
+const { getDagNodeGoalBinding } = require('../conversation/dag-goal-binding');
 const { createConversationExperienceDraft } = require('../conversation/experience-draft');
 const { recordConversationRetrievalTrace } = require('../conversation/retrieval-trace');
 const { createCrossConversationDeliveryService } = require('../conversation/cross-conversation-delivery');
@@ -835,6 +836,7 @@ export function createAgentToolBridge(options: any = {}) {
     const content = String(body.content || '').trim();
     const visibility = String(body.visibility || 'public').trim().toLowerCase();
     const mode = String(body.mode || 'replace').trim().toLowerCase() || 'replace';
+    const noFinalize = body.noFinalize === true;
     const rawRecipients = body.recipientAgentIds !== undefined ? body.recipientAgentIds : body.recipients;
     const requestedRecipientCount = normalizeAgentToolRecipientValues(rawRecipients).length;
     const toolCallId = randomUUID();
@@ -855,6 +857,7 @@ export function createAgentToolBridge(options: any = {}) {
           : {
               visibility,
               mode,
+              noFinalize,
               contentLength: content.length,
             },
     });
@@ -882,6 +885,7 @@ export function createAgentToolBridge(options: any = {}) {
           request: {
             visibility: 'public',
             mode,
+            noFinalize,
             contentLength: content.length,
           },
           result: {
@@ -891,13 +895,15 @@ export function createAgentToolBridge(options: any = {}) {
             publicPostedAt: serialized.publicPostedAt,
           },
         });
-        requestPublicPostCompletion(context, {
-          messageId: serialized.id,
-          publicPostCount: serialized.publicPostCount,
-          publicPostMode: serialized.publicPostMode,
-          publicPostedAt: serialized.publicPostedAt,
-          toolCallId,
-        });
+        if (!noFinalize) {
+          requestPublicPostCompletion(context, {
+            messageId: serialized.id,
+            publicPostCount: serialized.publicPostCount,
+            publicPostMode: serialized.publicPostMode,
+            publicPostedAt: serialized.publicPostedAt,
+            toolCallId,
+          });
+        }
         return {
           ok: true,
           visibility: 'public',
@@ -1452,6 +1458,115 @@ export function createAgentToolBridge(options: any = {}) {
     try {
       if (!activeStore || typeof activeStore.getConversation !== 'function') {
         throw createHttpError(501, 'Session goal proposals are not available');
+      }
+
+      // accept/reject (D28): act on the PENDING proposal instead of creating
+      // one. The proposer can never rule on their own proposal (403) — this
+      // is what lets a DAG verifier agent accept/reject a worker's completion
+      // proposal while the worker cannot self-approve.
+      if (action === 'accept' || action === 'reject') {
+        const conversation = activeStore.getConversation(context.conversationId);
+        if (!conversation) {
+          throw createHttpError(404, 'Conversation not found');
+        }
+        const pendingProposal = getSessionGoalProposal(conversation);
+        if (!pendingProposal) {
+          throw createHttpError(404, 'No session goal proposal is pending');
+        }
+        const proposerAgentId = String(pendingProposal.proposedBy && pendingProposal.proposedBy.agentId || '').trim();
+        if (proposerAgentId && proposerAgentId === String(context.agentId || '').trim()) {
+          throw createHttpError(403, 'goal_proposal_self_review: the proposer cannot accept/reject their own proposal');
+        }
+        // D28 fail-closed: when the conversation carries a DAG node goal
+        // binding, the ruling principal is contractually fixed — "not the
+        // proposer" alone is never enough:
+        // - verifier configured: ONLY that verifier may rule (a third
+        //   participant must not hijack acceptance);
+        // - verification-EXEMPT binding (verifierId null): NO agent may
+        //   rule at all — completion is ruled by the scheduler auto-accept
+        //   or the user (REST). An agent ruling here would otherwise
+        //   persist a goal-complete state the scheduler never verified.
+        const rulingBinding = getDagNodeGoalBinding(conversation);
+        if (rulingBinding) {
+          if (!rulingBinding.verifierId) {
+            throw createHttpError(403, 'dag_verifier_exempt: this node is verification-exempt; its completion can only be ruled by the scheduler auto-accept or the user, not by agents');
+          }
+          if (rulingBinding.verifierId !== String(context.agentId || '').trim()) {
+            throw createHttpError(403, 'dag_verifier_only: only the designated verifier agent can accept/reject this node completion proposal');
+          }
+        }
+        const result = applySessionGoalAction(activeStore, context.conversationId, {
+          action: action === 'accept' ? 'accept-proposal' : 'dismiss-proposal',
+          reason,
+          // The ruling principal is persisted atomically with the mutation
+          // (durable D28 record the scheduler validates at settle/reconcile).
+          ruledBy: { agentId: context.agentId, agentName: context.agentName },
+        });
+        const summary = pickConversationSummary(result.conversation);
+
+        broadcastEvent('conversation_goal_proposal_cleared', {
+          conversationId: context.conversationId,
+          outcome: action === 'accept' ? 'accepted' : 'rejected',
+          reason,
+          goal: result.goal,
+          proposal: pendingProposal,
+          ruledBy: { agentId: context.agentId, agentName: context.agentName },
+          conversation: result.conversation,
+          summary,
+        });
+        broadcastConversationSummary(context.conversationId);
+
+        const response = {
+          ok: true,
+          conversation: summary,
+          goal: result.goal,
+          proposal: null,
+          outcome: action === 'accept' ? 'accepted' : 'rejected',
+        };
+
+        tryAppendInvocationEvent(context, 'agent_tool_call', {
+          schemaVersion: 1,
+          toolCallId,
+          tool: 'suggest-goal',
+          status: 'succeeded',
+          durationMs: Date.now() - startedAt,
+          invocationId: context.invocationId,
+          conversationId: context.conversationId,
+          turnId: context.turnId,
+          agentId: context.agentId,
+          agentName: context.agentName,
+          assistantMessageId: context.assistantMessageId,
+          request: {
+            action,
+            objectiveLength: objective.length,
+            reasonPreview: clipText(reason, 120),
+          },
+          result: {
+            proposalAction: pendingProposal.action,
+            goalStatus: result.goal ? result.goal.status : '',
+          },
+        });
+
+        return response;
+      }
+
+      // D28 fail-closed: on a DAG-bound node goal the completion protocol is
+      // the ONLY mutation an agent may drive — the worker proposes
+      // `complete`, the designated verifier rules via accept/reject (handled
+      // above). Every other proposal action (set/pause/resume/clear) would
+      // bypass the worker→verifier state machine, so it is rejected outright.
+      if (activeStore && typeof activeStore.getConversation === 'function') {
+        const bindingConversation = activeStore.getConversation(context.conversationId);
+        const proposalBinding = bindingConversation ? getDagNodeGoalBinding(bindingConversation) : null;
+        if (proposalBinding) {
+          if (action !== 'complete') {
+            throw createHttpError(403, 'dag_goal_mutation_forbidden: this conversation is executing a DAG node; only the worker completion proposal and verifier ruling are allowed');
+          }
+          if (proposalBinding.workerId
+            && proposalBinding.workerId !== String(context.agentId || '').trim()) {
+            throw createHttpError(403, 'dag_completion_worker_only: only the node worker can declare this node complete');
+          }
+        }
       }
 
       const result = proposeSessionGoalAction(
@@ -3187,6 +3302,123 @@ export function createAgentToolBridge(options: any = {}) {
     }
   }
 
+  /**
+   * propose-plan tool (PRD .trellis/tasks/dag-planning/prd.md §5):
+   * thin wrapper over the same store validation + optimistic concurrency
+   * used by the REST plan API. Draft: create/replace whole doc; active:
+   * status-only updates. Validation failures are returned with issue
+   * details so the model can self-repair and retry.
+   */
+  function handleProposePlan(body: any = {}) {
+    const startedAt = Date.now();
+    const context = getInvocation(body.invocationId, body.callbackToken);
+    const toolCallId = randomUUID();
+
+    const doc = body.doc;
+    const hasVersion = body.version !== undefined && body.version !== null && body.version !== '';
+    const version = hasVersion ? Number(body.version) : undefined;
+    const normalizedVersion = Number.isInteger(version) && (version as number) >= 1 ? (version as number) : undefined;
+
+    const requestSummary = {
+      nodeCount: doc && typeof doc === 'object' && Array.isArray((doc as any).nodes) ? (doc as any).nodes.length : 0,
+      edgeCount: doc && typeof doc === 'object' && Array.isArray((doc as any).edges) ? (doc as any).edges.length : 0,
+      version: normalizedVersion ?? null,
+    };
+
+    setContextCurrentTool(context, {
+      toolName: 'propose-plan',
+      toolKind: 'bridge',
+      toolStepId: toolCallId,
+      inferred: false,
+      request: requestSummary,
+    });
+
+    try {
+      if (!doc || typeof doc !== 'object' || Array.isArray(doc)) {
+        throw createHttpError(400, 'doc is required and must be a JSON object', {
+          issues: [{ code: 'plan_doc_required', field: 'doc', message: 'doc is required and must be a JSON object' }],
+        });
+      }
+      if (hasVersion && normalizedVersion === undefined) {
+        throw createHttpError(400, 'version must be a positive integer when provided', {
+          issues: [{ code: 'plan_version_invalid', field: 'version', message: 'version must be a positive integer' }],
+        });
+      }
+
+      const result = store.savePlanForConversation(context.conversationId, {
+        doc,
+        version: normalizedVersion,
+      }, {
+        actor: {
+          type: 'agent',
+          agentId: context.agentId,
+          conversationId: context.conversationId,
+        },
+      });
+
+      broadcastEvent('conversation_plan_updated', {
+        conversationId: context.conversationId,
+        ownerConversationId: result.ownerConversationId,
+        plan: result.plan,
+      });
+
+      const response = {
+        ok: true,
+        ownerConversationId: result.ownerConversationId,
+        plan: result.plan,
+        warnings: result.warnings || [],
+      };
+
+      tryAppendInvocationEvent(context, 'agent_tool_call', {
+        schemaVersion: 1,
+        toolCallId,
+        tool: 'propose-plan',
+        status: 'succeeded',
+        durationMs: Date.now() - startedAt,
+        invocationId: context.invocationId,
+        conversationId: context.conversationId,
+        turnId: context.turnId,
+        agentId: context.agentId,
+        agentName: context.agentName,
+        assistantMessageId: context.assistantMessageId,
+        request: requestSummary,
+        result: {
+          ownerConversationId: result.ownerConversationId,
+          planId: result.plan && result.plan.id ? result.plan.id : null,
+          planStatus: result.plan && result.plan.status ? result.plan.status : null,
+          planVersion: result.plan && Number.isInteger(result.plan.version) ? result.plan.version : null,
+          warningCount: Array.isArray(result.warnings) ? result.warnings.length : 0,
+        },
+      });
+
+      return response;
+    } catch (error) {
+      const errorValue = error as any;
+      tryAppendInvocationEvent(context, 'agent_tool_call', {
+        schemaVersion: 1,
+        toolCallId,
+        tool: 'propose-plan',
+        status: 'failed',
+        durationMs: Date.now() - startedAt,
+        invocationId: context.invocationId,
+        conversationId: context.conversationId,
+        turnId: context.turnId,
+        agentId: context.agentId,
+        agentName: context.agentName,
+        assistantMessageId: context.assistantMessageId,
+        request: requestSummary,
+        error: {
+          statusCode: Number.isInteger(errorValue && errorValue.statusCode) ? errorValue.statusCode : null,
+          message: clipText(errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Unknown error')),
+        },
+      });
+
+      throw error;
+    } finally {
+      setContextCurrentTool(context, null);
+    }
+  }
+
   return {
     createInvocationContext,
     handleConversationNotify,
@@ -3196,6 +3428,7 @@ export function createAgentToolBridge(options: any = {}) {
     handleListMemories,
     handleListParticipants,
     handlePostMessage,
+    handleProposePlan,
     handleReadContext,
     handleSaveMemory,
     handleSearchMemory,

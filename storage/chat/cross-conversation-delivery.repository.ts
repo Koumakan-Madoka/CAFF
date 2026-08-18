@@ -12,6 +12,7 @@ export class CrossConversationDeliveryRepository {
   insertStatement: any;
   markMessagesPersistedStatement: any;
   claimNextStatement: any;
+  claimByIdStatement: any;
   markDispatchStartedStatement: any;
   markDispatchCompletedStatement: any;
   releaseForRetryStatement: any;
@@ -258,6 +259,22 @@ export class CrossConversationDeliveryRepository {
         AND dispatch_status = 'queued'
         AND started_at IS NULL
         AND target_invocation_id IS NULL
+        AND (claim_owner IS NULL OR claim_expires_at <= @now)
+      RETURNING *
+    `);
+    this.claimByIdStatement = db.prepare(`
+      UPDATE chat_cross_conversation_deliveries
+      SET
+        claim_owner = @owner,
+        claim_expires_at = @claimExpiresAt,
+        attempt_count = attempt_count + 1,
+        updated_at = @now
+      WHERE id = @deliveryId
+        AND message_status = 'persisted'
+        AND dispatch_status = 'queued'
+        AND started_at IS NULL
+        AND target_invocation_id IS NULL
+        AND (next_attempt_at IS NULL OR next_attempt_at <= @now)
         AND (claim_owner IS NULL OR claim_expires_at <= @now)
       RETURNING *
     `);
@@ -604,6 +621,15 @@ export class CrossConversationDeliveryRepository {
 
   claimNext(payload: any) {
     return this.claimNextStatement.get({
+      owner: payload.owner,
+      now: payload.now,
+      claimExpiresAt: payload.claimExpiresAt,
+    }) || null;
+  }
+
+  claimById(deliveryId: string, payload: any) {
+    return this.claimByIdStatement.get({
+      deliveryId,
       owner: payload.owner,
       now: payload.now,
       claimExpiresAt: payload.claimExpiresAt,

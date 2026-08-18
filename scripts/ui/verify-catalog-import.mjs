@@ -208,12 +208,19 @@ try {
   const metadataText = await desktop.locator('#catalog-import-metadata').textContent();
   const controlsText = await desktop.locator('#catalog-import-controls').textContent();
   const metadataReadonlyCount = await desktop.locator('#catalog-import-metadata input[readonly]').count();
-  const metadataCovers = ['目录参考价', '上下文上限', '模态', 'reasoning 选项', 'OPENAI_API_KEY', '来源：'].every((s) => metadataText.includes(s));
+  const metadataCovers = ['目录参考价', '目录原始限制', '模态', 'reasoning 选项', 'OPENAI_API_KEY', '来源：'].every((s) => metadataText.includes(s));
   const controlsClean = !controlsText.includes('目录参考价') && !controlsText.includes('每 M token');
+  const contextWindowInput = desktop.locator('#catalog-import-context-window');
+  const maxTokensInput = desktop.locator('#catalog-import-max-tokens');
+  const catalogLimitsPrefilled = await contextWindowInput.inputValue() === '200000'
+    && await contextWindowInput.getAttribute('readonly') !== null
+    && await maxTokensInput.inputValue() === '8192'
+    && await maxTokensInput.getAttribute('readonly') !== null
+    && /models\.dev 快照/.test(controlsText || '');
   const confirmEnabled = await desktop.locator('#catalog-import-confirm').isEnabled();
   ok('desktop: catalog metadata and runtime controls render in separate sections (AC-7)',
-    metadataCovers && controlsClean && metadataReadonlyCount >= 3 && confirmEnabled,
-    `metadataCovers=${metadataCovers} controlsClean=${controlsClean} readonly=${metadataReadonlyCount} confirmEnabled=${confirmEnabled}`);
+    metadataCovers && controlsClean && metadataReadonlyCount >= 3 && catalogLimitsPrefilled && confirmEnabled,
+    `metadataCovers=${metadataCovers} controlsClean=${controlsClean} readonly=${metadataReadonlyCount} limitsPrefilled=${catalogLimitsPrefilled} confirmEnabled=${confirmEnabled}`);
   await desktop.screenshot({ path: path.join(SHOTS, '04-desktop-metadata-runtime-split.png'), fullPage: true });
 
   // 完整导入闭环
@@ -226,9 +233,14 @@ try {
   const importedModel = imported && (imported.models || []).find((m) => m.id === 'gpt-5');
   const modelsJsonPath = path.join(appA.agentDir, 'models.json');
   const modelsJson = fs.existsSync(modelsJsonPath) ? JSON.parse(fs.readFileSync(modelsJsonPath, 'utf8')) : null;
-  ok('desktop: explicit confirm imports provider through persistence path',
-    Boolean(imported && importedModel && imported.api === 'openai-responses' && modelsJson),
-    `imported=${JSON.stringify(imported && { id: imported.id, api: imported.api, models: (imported.models || []).map((m) => m.id) })} modelsJson=${Boolean(modelsJson)}`);
+  const persistedModel = modelsJson?.providers?.openai?.models?.find((model) => model.id === 'gpt-5');
+  const limitsPersisted = importedModel?.contextWindow === 200000
+    && importedModel?.maxTokens === 8192
+    && persistedModel?.contextWindow === 200000
+    && persistedModel?.maxTokens === 8192;
+  ok('desktop: explicit confirm imports provider and catalog limits through persistence path',
+    Boolean(imported && importedModel && imported.api === 'openai-responses' && modelsJson && limitsPersisted),
+    `imported=${JSON.stringify(imported && { id: imported.id, api: imported.api, model: importedModel })} persistedLimits=${JSON.stringify(persistedModel && { contextWindow: persistedModel.contextWindow, maxTokens: persistedModel.maxTokens })}`);
   await desktop.screenshot({ path: path.join(SHOTS, '05-desktop-import-complete.png'), fullPage: true });
 
   // manual fail-closed（AC-3）
@@ -262,8 +274,10 @@ try {
   await mobile.waitForSelector('#catalog-import-metadata', { timeout: 15000 });
   await mobile.waitForSelector('#catalog-import-controls', { timeout: 15000 });
   const mobileOverflow = await mobile.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1);
-  ok('mobile: provider search and catalog import usable at 390px', mobileExpanded === 'true' && !mobileOverflow,
-    `expanded=${mobileExpanded} horizontalOverflow=${mobileOverflow}`);
+  const mobileLimitsVisible = await mobile.locator('#catalog-import-context-window').isVisible()
+    && await mobile.locator('#catalog-import-max-tokens').isVisible();
+  ok('mobile: provider search and catalog limit import usable at 390px', mobileExpanded === 'true' && mobileLimitsVisible && !mobileOverflow,
+    `expanded=${mobileExpanded} limitsVisible=${mobileLimitsVisible} horizontalOverflow=${mobileOverflow}`);
   await mobile.screenshot({ path: path.join(SHOTS, '07-mobile-catalog-metadata.png'), fullPage: true });
   const mobileRealConsole = mobile.consoleErrors.filter((entry) => !isBenignFavicon404(entry));
   const mobileRealNotFound = mobile.notFound.filter((url) => pathnameOf(url) !== '/favicon.ico');

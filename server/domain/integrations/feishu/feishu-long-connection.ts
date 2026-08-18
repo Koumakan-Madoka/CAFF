@@ -80,6 +80,8 @@ export function createFeishuLongConnectionSource(options: any = {}) {
 
   let wsClient = null as any;
   let eventDispatcher = null as any;
+  let startPromise = null as Promise<void> | null;
+  let stopPromise = null as Promise<void> | null;
   let startGeneration = 0;
   let processingChain = Promise.resolve();
 
@@ -131,12 +133,19 @@ export function createFeishuLongConnectionSource(options: any = {}) {
     return processingChain;
   }
 
-  function buildWsClientConfig(sdk: any) {
+  function buildWsClientConfig(sdk: any, isCurrentClient: () => boolean, closeStaleClient: () => void) {
     const loggerLevel = pickSdkLoggerLevel(sdk, sdkLoggerLevelValue);
+    const closeIfStale = () => {
+      if (!isCurrentClient()) {
+        closeStaleClient();
+      }
+    };
     const config = {
       appId,
       appSecret,
       autoReconnect: true,
+      onReady: closeIfStale,
+      onReconnected: closeIfStale,
     } as any;
 
     if (sdk && sdk.Domain && Object.prototype.hasOwnProperty.call(sdk.Domain, 'Feishu')) {
@@ -164,7 +173,7 @@ export function createFeishuLongConnectionSource(options: any = {}) {
   }
 
   function start() {
-    if (!isEnabled() || wsClient) {
+    if (!isEnabled() || wsClient || stopPromise) {
       return false;
     }
 
@@ -184,9 +193,23 @@ export function createFeishuLongConnectionSource(options: any = {}) {
       return false;
     }
 
+    let activeClient = null as any;
+    const activeGeneration = ++startGeneration;
+
     try {
       eventDispatcher = buildEventDispatcher(sdk);
-      wsClient = new sdk.WSClient(buildWsClientConfig(sdk));
+      activeClient = new sdk.WSClient(buildWsClientConfig(
+        sdk,
+        () => wsClient === activeClient && activeGeneration === startGeneration,
+        () => {
+          if (activeClient && typeof activeClient.close === 'function') {
+            try {
+              activeClient.close({ force: true });
+            } catch {}
+          }
+        }
+      ));
+      wsClient = activeClient;
     } catch (error) {
       wsClient = null;
       eventDispatcher = null;
@@ -195,12 +218,9 @@ export function createFeishuLongConnectionSource(options: any = {}) {
       });
       return false;
     }
-
-    const activeClient = wsClient;
-    const activeGeneration = ++startGeneration;
     logInfo('Starting SDK long connection client');
 
-    Promise.resolve()
+    const pendingStart = Promise.resolve()
       .then(() => activeClient.start({ eventDispatcher }))
       .then(() => {
         if (wsClient !== activeClient || activeGeneration !== startGeneration) {
@@ -218,23 +238,55 @@ export function createFeishuLongConnectionSource(options: any = {}) {
         logWarn('SDK long connection client failed to start', {
           error: getSdkErrorMessage(error),
         });
+      })
+      .finally(() => {
+        if (startPromise === pendingStart) {
+          startPromise = null;
+        }
       });
+    startPromise = pendingStart;
 
     return true;
   }
 
+  async function closeClient(activeClient: any) {
+    if (!activeClient || typeof activeClient.close !== 'function') {
+      return;
+    }
+
+    try {
+      await Promise.resolve(activeClient.close({ force: true }));
+    } catch {}
+  }
+
   function stop() {
+    if (stopPromise) {
+      return stopPromise;
+    }
+
     startGeneration += 1;
 
     const activeClient = wsClient;
+    const pendingStart = startPromise;
     wsClient = null;
     eventDispatcher = null;
 
-    if (activeClient && typeof activeClient.close === 'function') {
-      try {
-        activeClient.close({ force: true });
-      } catch {}
-    }
+    const pendingStop = (async () => {
+      await closeClient(activeClient);
+
+      if (pendingStart) {
+        await pendingStart;
+        await closeClient(activeClient);
+      }
+    })();
+
+    const finalStop = pendingStop.finally(() => {
+      if (stopPromise === finalStop) {
+        stopPromise = null;
+      }
+    });
+    stopPromise = finalStop;
+    return finalStop;
   }
 
   return {

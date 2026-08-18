@@ -34,6 +34,9 @@ const state = {
   feishuBindingNoticeConversationId: null,
   knownFeishuChats: [],
   loadingFeishuChats: false,
+  projectOptions: [],
+  loadingProjects: false,
+  bindingProject: false,
   contextInspector: {
     open: false,
     loading: false,
@@ -148,6 +151,42 @@ const dom = {
   sessionGoalResumeButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('session-goal-resume-button')),
   sessionGoalCompleteButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('session-goal-complete-button')),
   sessionGoalClearButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('session-goal-clear-button')),
+  planDrawer: /** @type {HTMLElement | null} */ (document.getElementById('plan-drawer')),
+  planPanelStatus: /** @type {HTMLElement | null} */ (document.getElementById('plan-panel-status')),
+  planRefreshButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('plan-refresh-button')),
+  planAddNodeButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('plan-add-node-button')),
+  planSaveButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('plan-save-button')),
+  planActivateButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('plan-activate-button')),
+  planRevertButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('plan-revert-button')),
+  planExpandButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('plan-expand-button')),
+  planIssues: /** @type {HTMLElement | null} */ (document.getElementById('plan-issues')),
+  planGraph: /** @type {HTMLElement | null} */ (document.getElementById('plan-graph')),
+  planEditor: /** @type {HTMLElement | null} */ (document.getElementById('plan-editor')),
+  planNodeId: /** @type {HTMLElement | null} */ (document.getElementById('plan-node-id')),
+  planNodeTitle: /** @type {HTMLInputElement | null} */ (document.getElementById('plan-node-title')),
+  planNodeGoal: /** @type {HTMLTextAreaElement | null} */ (document.getElementById('plan-node-goal')),
+  planNodeStatus: /** @type {HTMLSelectElement | null} */ (document.getElementById('plan-node-status')),
+  planNodeKind: /** @type {HTMLSelectElement | null} */ (document.getElementById('plan-node-kind')),
+  planNodeBranch: /** @type {HTMLInputElement | null} */ (document.getElementById('plan-node-branch')),
+  planNodeVerify: /** @type {HTMLInputElement | null} */ (document.getElementById('plan-node-verify')),
+  planNodeBaseBranch: /** @type {HTMLInputElement | null} */ (document.getElementById('plan-node-base-branch')),
+  planNodeWorker: /** @type {HTMLSelectElement | null} */ (document.getElementById('plan-node-worker')),
+  planNodeVerifier: /** @type {HTMLSelectElement | null} */ (document.getElementById('plan-node-verifier')),
+  planNodeExecution: /** @type {HTMLElement | null} */ (document.getElementById('plan-node-execution')),
+  planHistory: /** @type {HTMLElement | null} */ (document.getElementById('plan-history')),
+  planHistoryList: /** @type {HTMLElement | null} */ (document.getElementById('plan-history-list')),
+  planNodeDeps: /** @type {HTMLElement | null} */ (document.getElementById('plan-node-deps')),
+  planNodeSpawned: /** @type {HTMLElement | null} */ (document.getElementById('plan-node-spawned')),
+  planNodeDeleteButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('plan-node-delete-button')),
+  planExpandOverlay: /** @type {HTMLElement | null} */ (document.getElementById('plan-expand-overlay')),
+  planExpandCloseButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('plan-expand-close-button')),
+  planGraphExpanded: /** @type {HTMLElement | null} */ (document.getElementById('plan-graph-expanded')),
+  planZoomInButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('plan-zoom-in-button')),
+  planZoomOutButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('plan-zoom-out-button')),
+  planZoomResetButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('plan-zoom-reset-button')),
+  planDrawerZoomInButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('plan-drawer-zoom-in-button')),
+  planDrawerZoomOutButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('plan-drawer-zoom-out-button')),
+  planDrawerZoomFitButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('plan-drawer-zoom-fit-button')),
   conversationDigestDrawer: /** @type {HTMLElement | null} */ (document.getElementById('conversation-digest-drawer')),
   conversationDigestCloseButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('conversation-digest-close-button')),
   conversationDigestStatus: /** @type {HTMLElement | null} */ (document.getElementById('conversation-digest-status')),
@@ -201,6 +240,7 @@ const dom = {
   sendButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('send-button')),
   conversationSettingsForm: /** @type {HTMLFormElement | null} */ (document.getElementById('conversation-settings-form')),
   conversationTitleInput: /** @type {HTMLInputElement | null} */ (document.getElementById('conversation-title-input')),
+  renameConversationButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('rename-conversation-button')),
   conversationAgentOptions: /** @type {HTMLElement | null} */ (document.getElementById('conversation-agent-options')),
   saveConversationButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('save-conversation-button')),
   bulkSkillSelect: /** @type {HTMLSelectElement | null} */ (document.getElementById('bulk-skill-select')),
@@ -210,6 +250,9 @@ const dom = {
   feishuChatIdInput: /** @type {HTMLInputElement | null} */ (document.getElementById('feishu-chat-id-input')),
   bindFeishuChatButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('bind-feishu-chat-button')),
   feishuBindingStatus: /** @type {HTMLElement | null} */ (document.getElementById('feishu-binding-status')),
+  projectBindSelect: /** @type {HTMLSelectElement | null} */ (document.getElementById('project-bind-select')),
+  bindProjectButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('bind-project-button')),
+  projectBindingStatus: /** @type {HTMLElement | null} */ (document.getElementById('project-binding-status')),
   undercoverGameCard: /** @type {HTMLElement | null} */ (document.getElementById('undercover-game-card')),
   undercoverGameStatus: /** @type {HTMLElement | null} */ (document.getElementById('undercover-game-status')),
   undercoverLastResult: /** @type {HTMLElement | null} */ (document.getElementById('undercover-last-result')),
@@ -798,6 +841,15 @@ const noopRenderer = {
   async openWithQuery(..._args) {},
   render(..._args) {},
   toggle(..._args) {},
+  startRename(..._args) {},
+  cancelRename(..._args) {},
+};
+
+const noopPlanPanelController = {
+  bindEvents(..._args) {},
+  render(..._args) {},
+  applyPlanEvent(..._args) {},
+  async reload(..._args) {},
 };
 
 const noopMentionMenuController = {
@@ -857,6 +909,7 @@ let conversationSettingsController = noopConversationSettingsController;
 let undercoverPanelRenderer = noopRenderer;
 let werewolfPanelRenderer = noopRenderer;
 let sessionGoalPanelController = noopRenderer;
+let planPanelController = noopPlanPanelController;
 let conversationDigestPanelController = noopRenderer;
 let summaryMemoryPanelController = noopRenderer;
 let conversationPaneRenderer = noopRenderer;
@@ -1059,6 +1112,39 @@ function setupChatModules() {
           showToast,
         })
       : noopRenderer;
+
+  planPanelController =
+    typeof chatModules.createPlanPanelController === 'function'
+      ? chatModules.createPlanPanelController({
+          state,
+          dom,
+          helpers: {
+            fetchPlan(conversationId) {
+              return fetchJson(`/api/conversations/${encodeURIComponent(conversationId)}/plan`);
+            },
+            savePlan(conversationId, body) {
+              return fetchJson(`/api/conversations/${encodeURIComponent(conversationId)}/plan`, {
+                method: 'PUT',
+                body,
+              });
+            },
+            activatePlan(conversationId) {
+              return fetchJson(`/api/conversations/${encodeURIComponent(conversationId)}/plan/activate`, {
+                method: 'POST',
+              });
+            },
+            revertPlan(conversationId) {
+              return fetchJson(`/api/conversations/${encodeURIComponent(conversationId)}/plan/revert`, {
+                method: 'POST',
+              });
+            },
+            openConversation(conversationId) {
+              return loadConversation(conversationId);
+            },
+          },
+          showToast,
+        })
+      : noopPlanPanelController;
 
   conversationDigestPanelController =
     typeof chatModules.createConversationDigestPanelController === 'function'
@@ -2354,12 +2440,17 @@ function renderConversationPane() {
   imageComposerController.syncConversation(state.currentConversation ? state.currentConversation.id : '');
   imageComposerController.syncBaseAvailability(Boolean(state.currentConversation && !dom.composerInput.disabled));
   renderSessionGoalPanel();
+  renderPlanPanel();
   renderConversationDigestPanel();
   renderSummaryMemoryPanel();
 }
 
 function renderSessionGoalPanel() {
   sessionGoalPanelController.render();
+}
+
+function renderPlanPanel() {
+  planPanelController.render();
 }
 
 function renderConversationDigestPanel() {
@@ -2409,6 +2500,31 @@ async function refreshKnownFeishuChats(options = {}) {
     }
   } finally {
     state.loadingFeishuChats = false;
+    if (render) {
+      renderCompactConversationPersonaSettings();
+    }
+  }
+}
+
+async function refreshProjectOptions(options = {}) {
+  const render = options.render !== false;
+  const swallowErrors = options.swallowErrors !== false;
+
+  state.loadingProjects = true;
+  if (render) {
+    renderCompactConversationPersonaSettings();
+  }
+
+  try {
+    const data = await fetchJson('/api/projects');
+    state.projectOptions = Array.isArray(data && data.projects) ? data.projects : [];
+  } catch (error) {
+    state.projectOptions = [];
+    if (!swallowErrors) {
+      throw error;
+    }
+  } finally {
+    state.loadingProjects = false;
     if (render) {
       renderCompactConversationPersonaSettings();
     }
@@ -3592,6 +3708,7 @@ async function refreshAll(preferredConversationId) {
     mergeConversationSummary(state.currentConversation);
   }
   await refreshKnownFeishuChats({ render: false });
+  await refreshProjectOptions({ render: false });
 
   newConversationDialogController.syncOptions();
 
@@ -3885,6 +4002,11 @@ function connectEventStream() {
       mergeConversationSummary(payload.summary);
     }
     scheduleConversationRefresh(payload.conversationId);
+  });
+
+  source.addEventListener('conversation_plan_updated', (event) => {
+    const payload = JSON.parse(event.data);
+    planPanelController.applyPlanEvent(payload);
   });
 
   source.addEventListener('conversation_digest_status', (event) => {
@@ -4297,6 +4419,24 @@ function bindEvents() {
       return;
     }
 
+    const renameButton =
+      event.target instanceof Element
+        ? /** @type {HTMLButtonElement | null} */ (event.target.closest('.conversation-rename-button'))
+        : null;
+    if (renameButton) {
+      conversationListRenderer.startRename(renameButton.dataset.renameConversationId || '');
+      return;
+    }
+
+    const renameCancel =
+      event.target instanceof Element
+        ? /** @type {HTMLButtonElement | null} */ (event.target.closest('.conversation-rename-cancel'))
+        : null;
+    if (renameCancel) {
+      conversationListRenderer.cancelRename();
+      return;
+    }
+
     const item =
       event.target instanceof Element ? /** @type {HTMLElement | null} */ (event.target.closest('.conversation-item')) : null;
 
@@ -4312,6 +4452,26 @@ function bindEvents() {
       }
     } catch (error) {
       showToast(error.message);
+    }
+  });
+
+  dom.conversationList.addEventListener('submit', async (event) => {
+    const renameForm =
+      event.target instanceof Element
+        ? /** @type {HTMLFormElement | null} */ (event.target.closest('.conversation-rename-form'))
+        : null;
+    if (!renameForm) {
+      return;
+    }
+
+    event.preventDefault();
+    const titleInput = /** @type {HTMLInputElement | null} */ (renameForm.querySelector('input[name="title"]'));
+    const renamed = await renameConversation(
+      renameForm.dataset.renameConversationId || '',
+      titleInput ? titleInput.value : ''
+    );
+    if (renamed) {
+      conversationListRenderer.cancelRename();
     }
   });
 
@@ -4676,6 +4836,41 @@ function bindEvents() {
     }
   });
 
+  async function renameConversation(conversationId, rawTitle) {
+    const id = String(conversationId || '').trim();
+    const title = String(rawTitle || '').trim();
+
+    if (!id) {
+      showToast('请先选择一个会话');
+      return false;
+    }
+
+    if (!title) {
+      showToast('标题不能为空');
+      return false;
+    }
+
+    try {
+      // 手动改名：显式声明 titleSource 为 manual，此后首条消息截断与
+      // LLM 精炼等自动标题流程都会被 store 层状态机拒绝，标题保持不变。
+      const result = await fetchJson(`/api/conversations/${encodeURIComponent(id)}`, {
+        method: 'PUT',
+        body: { title, titleSource: 'manual' },
+      });
+      if (state.currentConversation && state.currentConversation.id === id) {
+        state.currentConversation = result.conversation;
+        syncToolTraceStatesWithConversation(state.currentConversation);
+      }
+      mergeConversationSummary(result.conversation);
+      renderAll();
+      showToast('会话已重命名，自动标题将不再覆盖它');
+      return true;
+    } catch (error) {
+      showToast(error && error.message ? error.message : '重命名失败');
+      return false;
+    }
+  }
+
   dom.conversationSettingsForm.addEventListener('submit', async (event) => {
     event.preventDefault();
 
@@ -4691,10 +4886,12 @@ function bindEvents() {
     }
 
     try {
+      // 会话设置只提交参与者，不回写标题：
+      // 标题写入会被状态机视为 manual（手动改名），保存设置不应意外锁定自动标题。
+      // 改名请使用“会话标题”区域的专属入口。
       const result = await fetchJson(`/api/conversations/${state.currentConversation.id}`, {
         method: 'PUT',
         body: {
-          title: state.currentConversation.title,
           participants,
         },
       });
@@ -4707,6 +4904,26 @@ function bindEvents() {
       showToast(error.message);
     }
   });
+
+  if (dom.renameConversationButton) {
+    dom.renameConversationButton.addEventListener('click', async (event) => {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+
+      if (!state.currentConversation) {
+        showToast('请先选择一个会话');
+        return;
+      }
+
+      const renamed = await renameConversation(
+        state.currentConversation.id,
+        dom.conversationTitleInput ? dom.conversationTitleInput.value : ''
+      );
+      if (renamed && dom.conversationTitleInput && state.currentConversation) {
+        dom.conversationTitleInput.value = state.currentConversation.title;
+      }
+    });
+  }
 
   if (dom.feishuChatSelect) {
     dom.feishuChatSelect.addEventListener('change', () => {
@@ -4766,6 +4983,56 @@ function bindEvents() {
         showToast(error.message);
       } finally {
         state.bindingFeishuChat = false;
+        conversationSettingsController.render();
+      }
+    });
+  }
+
+  if (dom.bindProjectButton) {
+    dom.bindProjectButton.addEventListener('click', async (event) => {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+
+      if (!state.currentConversation) {
+        showToast('请先选择一个会话');
+        return;
+      }
+
+      if (state.currentConversation.projectScopeId) {
+        showToast('当前会话已绑定项目，绑定后不可更改');
+        return;
+      }
+
+      const conversationId = state.currentConversation.id;
+      const projectId = dom.projectBindSelect ? dom.projectBindSelect.value.trim() : '';
+
+      if (!projectId) {
+        showToast('请先选择一个项目');
+        return;
+      }
+
+      state.bindingProject = true;
+      conversationSettingsController.render();
+
+      try {
+        const result = await fetchJson(
+          `/api/conversations/${encodeURIComponent(conversationId)}/project-scope`,
+          {
+            method: 'PUT',
+            body: { projectId },
+          }
+        );
+        if (result && result.conversation) {
+          state.currentConversation = result.conversation;
+          mergeConversationSummary(result.summary || result.conversation);
+        }
+        renderAll();
+        const projectName = result && result.project && result.project.name ? result.project.name : projectId;
+        showToast(`已绑定项目：${projectName}`);
+      } catch (error) {
+        showToast(error.message);
+      } finally {
+        state.bindingProject = false;
         conversationSettingsController.render();
       }
     });
@@ -4982,6 +5249,7 @@ async function init() {
   mentionMenuController.bindEvents();
   conversationSettingsController.bindEvents();
   sessionGoalPanelController.bindEvents();
+  planPanelController.bindEvents();
   conversationDigestPanelController.bindEvents();
   summaryMemoryPanelController.bindEvents();
   bindEvents();

@@ -208,30 +208,51 @@
       const hasGoal = Boolean(goal);
       const hasProposal = Boolean(proposal);
       const disabled = !hasConversation || isSaving;
+      // DAG execution lock (D27/D28): while this conversation is a bound DAG
+      // node child with an active/paused goal, direct mutations (set/pause/
+      // resume/complete/clear) would bypass the worker→verifier completion
+      // protocol — the server rejects them with 403 dag_goal_mutation_
+      // forbidden, so disable the buttons up front. Proposal rulings
+      // (accept/dismiss = user manual verification) stay available.
+      const metadata = state.currentConversation && state.currentConversation.metadata;
+      const dagExecutionLocked = Boolean(
+        metadata && typeof metadata === 'object' && metadata.dagNodeGoalBinding
+        && hasGoal && (status === 'active' || status === 'paused')
+      );
 
       if (dom.sessionGoalSaveButton) {
-        dom.sessionGoalSaveButton.disabled = disabled;
+        dom.sessionGoalSaveButton.disabled = disabled || dagExecutionLocked;
         dom.sessionGoalSaveButton.textContent = isSaving ? '保存中...' : hasGoal ? '保存并替换目标' : '创建目标';
+        if (dagExecutionLocked) {
+          dom.sessionGoalSaveButton.title = 'DAG 节点执行中：目标由调度器托管，仅支持验收裁决';
+        } else {
+          dom.sessionGoalSaveButton.removeAttribute('title');
+        }
       }
 
       if (dom.sessionGoalChecklistPresetButton) {
-        dom.sessionGoalChecklistPresetButton.disabled = disabled || !dom.sessionGoalChecklist;
+        dom.sessionGoalChecklistPresetButton.disabled = disabled || dagExecutionLocked || !dom.sessionGoalChecklist;
       }
 
       if (dom.sessionGoalPauseButton) {
-        dom.sessionGoalPauseButton.disabled = disabled || !hasGoal || status === 'paused';
+        dom.sessionGoalPauseButton.disabled = disabled || dagExecutionLocked || !hasGoal || status === 'paused';
       }
 
       if (dom.sessionGoalResumeButton) {
-        dom.sessionGoalResumeButton.disabled = disabled || !hasGoal || status === 'active';
+        dom.sessionGoalResumeButton.disabled = disabled || dagExecutionLocked || !hasGoal || status === 'active';
       }
 
       if (dom.sessionGoalCompleteButton) {
-        dom.sessionGoalCompleteButton.disabled = disabled || !hasGoal || status === 'complete';
+        dom.sessionGoalCompleteButton.disabled = disabled || dagExecutionLocked || !hasGoal || status === 'complete';
+        if (dagExecutionLocked) {
+          dom.sessionGoalCompleteButton.title = 'DAG 节点执行中：完工须由工作 agent 宣布并通过验收';
+        } else {
+          dom.sessionGoalCompleteButton.removeAttribute('title');
+        }
       }
 
       if (dom.sessionGoalClearButton) {
-        dom.sessionGoalClearButton.disabled = disabled || !hasGoal;
+        dom.sessionGoalClearButton.disabled = disabled || dagExecutionLocked || !hasGoal;
       }
 
       if (dom.sessionGoalAcceptProposalButton) {

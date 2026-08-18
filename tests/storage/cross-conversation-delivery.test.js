@@ -345,7 +345,7 @@ test('chat store and conversation summaries project scope/lineage without allowi
       id: 'scoped-root',
       title: 'Renamed Root',
       type: 'standard',
-      metadata: {},
+      metadata: { titleSource: 'manual' },
       projectScopeId: 'project-1',
       parentConversationId: null,
       originConversationId: null,
@@ -521,6 +521,106 @@ test('delivery repository enforces idempotency/projection uniqueness and support
     now: '2026-08-05T00:00:03.000Z',
     claimExpiresAt: '2026-08-05T00:01:03.000Z',
   }), null);
+
+  db.close();
+});
+
+test('delivery repository claimById targets one queued delivery with the same guards as claimNext', () => {
+  const db = openMigratedDatabase();
+  seedDeliveryConversations(db);
+  const repository = createCrossConversationDeliveryRepository(db);
+
+  repository.create(createDeliveryPayload());
+  repository.create(createDeliveryPayload({
+    id: 'delivery-2',
+    idempotencyKey: 'request-2',
+    traceId: 'trace-2',
+    rootDeliveryId: 'delivery-2',
+  }));
+  insertMessage(db, {
+    id: 'target-message-1',
+    conversationId: 'conversation-target',
+    role: 'external_agent',
+    agentId: 'role-family-gpt',
+    senderName: 'GPT',
+    content: 'First.',
+  });
+  insertMessage(db, {
+    id: 'source-receipt-1',
+    conversationId: 'conversation-source',
+    content: '',
+  });
+  insertMessage(db, {
+    id: 'target-message-2',
+    conversationId: 'conversation-target',
+    role: 'external_agent',
+    agentId: 'role-family-gpt',
+    senderName: 'GPT',
+    content: 'Second.',
+  });
+  insertMessage(db, {
+    id: 'source-receipt-2',
+    conversationId: 'conversation-source',
+    content: '',
+  });
+  repository.markMessagesPersisted('delivery-1', {
+    targetMessageId: 'target-message-1',
+    sourceReceiptMessageId: 'source-receipt-1',
+    deliveredAt: '2026-08-05T00:00:02.000Z',
+    updatedAt: '2026-08-05T00:00:02.000Z',
+  });
+  repository.markMessagesPersisted('delivery-2', {
+    targetMessageId: 'target-message-2',
+    sourceReceiptMessageId: 'source-receipt-2',
+    deliveredAt: '2026-08-05T00:00:02.500Z',
+    updatedAt: '2026-08-05T00:00:02.500Z',
+  });
+
+  const claimParams = {
+    owner: 'worker-a',
+    now: '2026-08-05T00:00:03.000Z',
+    claimExpiresAt: '2026-08-05T00:01:03.000Z',
+  };
+
+  // Missing / unknown ids cannot be claimed.
+  assert.equal(repository.claimById('delivery-missing', claimParams), null);
+
+  // Out of FIFO order: delivery-2 is claimed directly while delivery-1 stays queued.
+  const claim = repository.claimById('delivery-2', claimParams);
+  assert.equal(claim.id, 'delivery-2');
+  assert.equal(claim.claim_owner, 'worker-a');
+  assert.equal(claim.attempt_count, 1);
+
+  // A second claim by id loses the race, and claimNext skips the claimed row.
+  assert.equal(repository.claimById('delivery-2', { ...claimParams, owner: 'worker-b' }), null);
+  const next = repository.claimNext({ ...claimParams, owner: 'worker-b' });
+  assert.equal(next.id, 'delivery-1');
+
+  // A delivery whose next_attempt_at lies in the future cannot be claimed by id yet.
+  repository.create(createDeliveryPayload({
+    id: 'delivery-3',
+    idempotencyKey: 'request-3',
+    traceId: 'trace-3',
+    rootDeliveryId: 'delivery-3',
+    nextAttemptAt: '2026-08-05T00:05:00.000Z',
+  }));
+  insertMessage(db, {
+    id: 'target-message-3',
+    conversationId: 'conversation-target',
+    content: 'Delayed.',
+  });
+  insertMessage(db, {
+    id: 'source-receipt-3',
+    conversationId: 'conversation-source',
+    content: '',
+  });
+  repository.markMessagesPersisted('delivery-3', {
+    targetMessageId: 'target-message-3',
+    sourceReceiptMessageId: 'source-receipt-3',
+    deliveredAt: '2026-08-05T00:00:03.100Z',
+    updatedAt: '2026-08-05T00:00:03.100Z',
+  });
+  assert.equal(repository.claimById('delivery-3', { ...claimParams, owner: 'worker-c' }), null);
 
   db.close();
 });
