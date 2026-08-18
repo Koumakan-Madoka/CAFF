@@ -345,7 +345,7 @@ test('chat store and conversation summaries project scope/lineage without allowi
       id: 'scoped-root',
       title: 'Renamed Root',
       type: 'standard',
-      metadata: {},
+      metadata: { titleSource: 'manual' },
       projectScopeId: 'project-1',
       parentConversationId: null,
       originConversationId: null,

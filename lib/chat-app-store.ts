@@ -26,6 +26,13 @@ const {
   diffNodeStatusTransitions,
   findBlockedUpstreams,
 } = require('./plan-dag');
+const {
+  TITLE_SOURCE_MANUAL,
+  normalizeConversationTitleSource,
+  readConversationTitleSource,
+  resolveConversationTitleTransition,
+} = require('./conversation-title-source');
+const { deriveTitleFromFirstMessage } = require('./conversation-first-message-title');
 
 const MAX_AVATAR_DATA_URL_LENGTH = 2 * 1024 * 1024;
 const MAX_AGENT_SANDBOX_NAME_LENGTH = 80;
@@ -2706,9 +2713,27 @@ export class ChatAppStore {
       return null;
     }
 
-    const title = updates.title === undefined ? existing.title : String(updates.title || '').trim() || existing.title;
+    const currentTitleSource = readConversationTitleSource(existing.metadata);
+    let titleSource = currentTitleSource;
+    let title = updates.title === undefined ? existing.title : String(updates.title || '').trim() || existing.title;
+
+    if (updates.title !== undefined) {
+      // 写标题时同步维护 metadata.titleSource 状态机：
+      // 未显式声明来源的标题写入视为 manual（与既有 UI 改名语义一致）；
+      // 状态机拒绝的自动写入（例如 manual 终态上的 auto_*）保留原标题与来源。
+      const incomingTitleSource = updates.titleSource === undefined
+        ? TITLE_SOURCE_MANUAL
+        : normalizeConversationTitleSource(updates.titleSource);
+      const transition = resolveConversationTitleTransition(currentTitleSource, incomingTitleSource);
+      if (transition.applied) {
+        titleSource = transition.titleSource;
+      } else {
+        title = existing.title;
+      }
+    }
+
     const type = updates.type === undefined ? existing.type : normalizeConversationType(updates.type);
-    const metadata =
+    const baseMetadata =
       updates.metadata === undefined
         ? existing.metadata && typeof existing.metadata === 'object'
           ? existing.metadata
@@ -2716,6 +2741,9 @@ export class ChatAppStore {
         : updates.metadata && typeof updates.metadata === 'object'
           ? updates.metadata
           : {};
+    // metadata.titleSource 由状态机独占维护，调用方在 metadata 中夹带的
+    // titleSource 一律以状态机结果为准，避免绕过 manual 终态保护。
+    const metadata = { ...baseMetadata, titleSource };
     const participants = this.hasConversationParticipantsInput(updates)
       ? this.normalizeConversationParticipantsInput(updates)
       : undefined;
@@ -2725,6 +2753,38 @@ export class ChatAppStore {
       type,
       metadata,
       participants,
+    });
+  }
+
+  getConversationTitleSource(conversationId: any) {
+    const existing = this.getConversationWithoutMessages(conversationId);
+    if (!existing) {
+      return null;
+    }
+    return readConversationTitleSource(existing.metadata);
+  }
+
+  updateConversationTitleSource(conversationId: any, titleSource: any) {
+    const existing = this.getConversationWithoutMessages(conversationId);
+    if (!existing) {
+      return null;
+    }
+
+    const transition = resolveConversationTitleTransition(
+      readConversationTitleSource(existing.metadata),
+      titleSource
+    );
+    if (!transition.applied || transition.titleSource === readConversationTitleSource(existing.metadata)) {
+      return existing;
+    }
+
+    return this.updateConversationTransaction(conversationId, {
+      title: existing.title,
+      type: existing.type,
+      metadata: {
+        ...(existing.metadata && typeof existing.metadata === 'object' ? existing.metadata : {}),
+        titleSource: transition.titleSource,
+      },
     });
   }
 
@@ -3309,7 +3369,20 @@ export class ChatAppStore {
       String(payload.senderName || '').trim() ||
       (payload.role === 'user' ? 'You' : payload.role === 'assistant' ? 'Assistant' : 'System');
 
-    return this.createMessageTransaction({
+    // 首条用户消息自动标题（auto_first_message）：
+    // 仅当会话 titleSource 仍为 default 且此前没有任何 user 消息时触发；
+    // 空消息 / 纯空白消息不触发（derive 返回 null）。状态机裁决在
+    // updateConversation 内完成（manual 终态等并发改写不会被覆盖）。
+    const messageRole = String(payload.role || 'assistant').trim();
+    let autoTitleFromFirstMessage: string | null = null;
+    if (messageRole === 'user' && readConversationTitleSource(conversation.metadata) === 'default') {
+      const priorUserMessageCount = this.messageRepository.countByRole(payload.conversationId, 'user');
+      if (priorUserMessageCount === 0) {
+        autoTitleFromFirstMessage = deriveTitleFromFirstMessage(payload.content);
+      }
+    }
+
+    const createdMessage = this.createMessageTransaction({
       id: String(payload.id || randomUUID()).trim(),
       conversationId: payload.conversationId,
       turnId: String(payload.turnId || randomUUID()).trim(),
@@ -3327,6 +3400,15 @@ export class ChatAppStore {
       clientRequestId,
       createdAt: payload.createdAt,
     });
+
+    if (autoTitleFromFirstMessage) {
+      this.updateConversation(payload.conversationId, {
+        title: autoTitleFromFirstMessage,
+        titleSource: 'auto_first_message',
+      });
+    }
+
+    return createdMessage;
   }
 
   createPrivateMessage(payload: any = {}) {

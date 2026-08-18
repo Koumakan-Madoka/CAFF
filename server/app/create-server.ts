@@ -431,6 +431,7 @@ export function createServerApp(options: any = {}) {
   const digestOptions = {
     ...(options.digestOptions || {}),
     digestModelRunner: options.digestModelRunner,
+    titleModelRunner: options.titleModelRunner,
     agentDir,
     sqlitePath,
     resolveSummaryMemoryTaskName:

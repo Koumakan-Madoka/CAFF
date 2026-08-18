@@ -428,8 +428,8 @@ function buildMetadataWithoutProposal(conversation: any) {
 }
 
 function updateConversationMetadata(store: any, conversation: any, metadata: any) {
+  // metadata-only 写入：不传 title，避免 titleSource 状态机误判为 manual 改名。
   return store.updateConversation(conversation.id, {
-    title: conversation.title,
     type: conversation.type,
     metadata,
   });

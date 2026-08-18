@@ -5,6 +5,13 @@ import { createHttpError } from '../../http/http-errors';
 import { DEFAULT_AGENT_DIR, DEFAULT_MODEL, DEFAULT_PROVIDER, DEFAULT_THINKING, resolveIntegerSetting, resolveSetting, resolveThinkingSetting, startRun } from '../../../lib/minimal-pi';
 import { absorbExperienceDraftsInMetadata, experienceDraftsForDigest, getPendingConversationExperienceDrafts } from './experience-draft';
 
+const {
+  TITLE_SOURCE_AUTO_FIRST_MESSAGE,
+  TITLE_SOURCE_AUTO_LLM,
+  TITLE_SOURCE_DEFAULT,
+  readConversationTitleSource,
+} = require('../../../lib/conversation-title-source');
+
 const CONVERSATION_DIGEST_METADATA_KEY = 'conversationDigests';
 const CONVERSATION_DIGEST_STATE_METADATA_KEY = 'conversationDigestState';
 const CONVERSATION_DIGEST_ACTIONS = new Set(['get', 'create', 'delete', 'clear', 'compact']);
@@ -31,6 +38,11 @@ const DEFAULT_DIGEST_AUTO_COOLDOWN_MS = 0;
 const DEFAULT_DIGEST_AUTO_HIGH_VALUE = false;
 const DEFAULT_DIGEST_AUTO_HIGH_VALUE_MIN_MESSAGES = 12;
 const MAX_BACKFILL_DIAGNOSTIC_ITEMS = 10;
+const TITLE_REFINED_AT_METADATA_KEY = 'titleRefinedAt';
+const MAX_TITLE_REFINE_SOURCE_MESSAGES = 12;
+const MAX_TITLE_REFINE_MESSAGE_LENGTH = 300;
+const MAX_REFINED_TITLE_LENGTH = 15;
+const DEFAULT_TITLE_REFINE_TIMEOUT_MS = 30 * 1000;
 const DIGEST_SECTION_KEYS = ['facts', 'decisions', 'openQuestions', 'nextActions', 'artifacts'];
 const DIGEST_MODEL_REQUIRED_KEYS = ['summary', ...DIGEST_SECTION_KEYS];
 
@@ -439,8 +451,9 @@ function buildMetadataWithDigestState(conversation: any, state: any) {
 }
 
 function updateConversationMetadata(store: any, conversation: any, metadata: any) {
+  // metadata-only 写入：不传 title，避免 titleSource 状态机把
+  // “携带现有标题”误判为 manual 改名（manual 终态会永久锁死自动标题）。
   return store.updateConversation(conversation.id, {
-    title: conversation.title,
     type: conversation.type,
     metadata,
   });
@@ -2125,6 +2138,136 @@ function autoDigestIdleRemainingMs(sourceMessages: any[], timestamp: string, idl
   return Math.max(0, idleMs - (nowMs - latestMessageMs));
 }
 
+function titleRefineEnabled(options: any = {}) {
+  return normalizeBooleanSetting(
+    options.autoTitleRefine !== undefined ? options.autoTitleRefine : process.env.CAFF_DIGEST_AUTO_TITLE_REFINE,
+    true
+  );
+}
+
+function hasTitleRefineModelConfig(options: any = {}) {
+  return Boolean(
+    typeof options.titleModelRunner === 'function'
+      || typeof options.digestModelRunner === 'function'
+      || hasExplicitDigestModelConfig({}, options)
+      || normalizeText(process.env.PI_MODEL)
+      || normalizeText(process.env.PI_PROVIDER)
+  );
+}
+
+function normalizeRefinedTitle(value: any) {
+  const firstLine = normalizeText(value)
+    .replace(/^```[a-z]*\s*/iu, '')
+    .replace(/```$/u, '')
+    .split(/\r?\n/u)[0] || '';
+  const text = normalizeText(firstLine)
+    .replace(/^(?:title|标题)\s*[:：]\s*/iu, '')
+    .replace(/^["'“”‘’「」『』《》\s]+|["'“”‘’「」『』《》\s。.,!！?？:：;；]+$/gu, '')
+    .replace(/\s+/gu, ' ')
+    .trim();
+
+  if (!text) {
+    return '';
+  }
+
+  return text.length > MAX_REFINED_TITLE_LENGTH
+    ? text.slice(0, MAX_REFINED_TITLE_LENGTH).trimEnd()
+    : text;
+}
+
+function buildTitleRefinePrompt(normalizedMessages: any[]) {
+  const sourceMessages = normalizedMessages.slice(0, MAX_TITLE_REFINE_SOURCE_MESSAGES).map((message: any, index: number) => ({
+    index: index + 1,
+    role: message.role,
+    speaker: message.speaker,
+    content: clipText(message.content, MAX_TITLE_REFINE_MESSAGE_LENGTH),
+  }));
+
+  return [
+    'You are CAFF conversation title writer.',
+    'Generate a short title for the conversation based on its first public messages.',
+    'Requirements: 5-15 characters; match the conversation language; no quotes, no "Title:" prefix, no trailing punctuation; output only the title text on a single line.',
+    '',
+    'Public messages JSON:',
+    JSON.stringify(sourceMessages, null, 2),
+  ].join('\n');
+}
+
+function titleRefineAllowedForConversation(conversation: any) {
+  const metadata = currentMetadata(conversation);
+  const source = readConversationTitleSource(metadata);
+
+  if (source !== TITLE_SOURCE_DEFAULT && source !== TITLE_SOURCE_AUTO_FIRST_MESSAGE) {
+    return false;
+  }
+
+  return !normalizeText(metadata[TITLE_REFINED_AT_METADATA_KEY]);
+}
+
+async function maybeRefineConversationTitle(store: any, conversation: any, sourceMessages: any[], timestamp: string, options: any = {}) {
+  if (!store || !conversation || !titleRefineEnabled(options) || !hasTitleRefineModelConfig(options)) {
+    return null;
+  }
+
+  if (!titleRefineAllowedForConversation(conversation)) {
+    return null;
+  }
+
+  const normalizedMessages = sourceMessages
+    .map((message: any) => normalizeMessageWithLimit(message, MAX_TITLE_REFINE_MESSAGE_LENGTH))
+    .filter(Boolean) as any[];
+
+  if (normalizedMessages.length === 0) {
+    return null;
+  }
+
+  try {
+    const titleTimeoutMs = resolveIntegerSetting(
+      options.titleRefineTimeoutMs,
+      process.env.CAFF_TITLE_REFINE_TIMEOUT_MS,
+      DEFAULT_TITLE_REFINE_TIMEOUT_MS,
+      'titleRefineTimeoutMs'
+    );
+    const config = resolveDigestModelConfig({}, { ...options, heartbeatTimeoutMs: titleTimeoutMs });
+    const runnerOptions = {
+      ...options,
+      digestModelRunner: typeof options.titleModelRunner === 'function' ? options.titleModelRunner : options.digestModelRunner,
+      purpose: 'title_refine',
+      conversationId: normalizeText(conversation.id),
+    };
+    const output = await runDigestModelPrompt(buildTitleRefinePrompt(normalizedMessages), config, runnerOptions);
+    const title = normalizeRefinedTitle(output);
+
+    if (!title) {
+      return null;
+    }
+
+    const latestConversation = typeof store.getConversation === 'function'
+      ? store.getConversation(conversation.id) || conversation
+      : conversation;
+
+    // 写入前复核最新 titleSource：模型调用期间用户可能已手动改名（manual 终态）。
+    if (!titleRefineAllowedForConversation(latestConversation)) {
+      return null;
+    }
+
+    const updated = store.updateConversation(conversation.id, {
+      title,
+      titleSource: TITLE_SOURCE_AUTO_LLM,
+      metadata: {
+        ...currentMetadata(latestConversation),
+        [TITLE_REFINED_AT_METADATA_KEY]: timestamp,
+      },
+    });
+
+    return updated || null;
+  } catch (error) {
+    const errorValue = error as any;
+    console.warn(`[conversation-digest] Title refine failed, keeping existing title: ${errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Unknown error')}`);
+    return null;
+  }
+}
+
 export async function maybeAutoCreateConversationDigest(store: any, conversationId: any, options: any = {}) {
   const normalizedConversationId = normalizeText(conversationId);
   const conversation = store.getConversation(normalizedConversationId);
@@ -2229,7 +2372,8 @@ export async function maybeAutoCreateConversationDigest(store: any, conversation
   }
 
   const latestConversation = store.getConversation(normalizedConversationId) || stateConversation;
-  const compactResult = await compactDigestEntries([...getConversationDigests(latestConversation), digest], timestamp, {
+  const digestsBeforeCreate = getConversationDigests(latestConversation);
+  const compactResult = await compactDigestEntries([...digestsBeforeCreate, digest], timestamp, {
     ...digestOptions,
     input,
   });
@@ -2253,7 +2397,16 @@ export async function maybeAutoCreateConversationDigest(store: any, conversation
   syncSummarySegmentFromDigest(store, nextConversation, compactResult.rollup, timestamp, { trigger: 'auto-compaction' }, options);
   deleteSummarySegmentsForDigests(store, compactResult.obsoleteDigestIds);
 
-  return responseForConversation(nextConversation, {
+  // 首次成功生成 digest 时，用同一模型链路精炼一次标题（失败静默兜底，不影响主流程）。
+  let resultConversation = nextConversation;
+  if (digestsBeforeCreate.length === 0) {
+    const refinedConversation = await maybeRefineConversationTitle(store, nextConversation, sourceMessages, timestamp, digestOptions);
+    if (refinedConversation) {
+      resultConversation = refinedConversation;
+    }
+  }
+
+  return responseForConversation(resultConversation, {
     digest,
     rollup: compactResult.rollup,
     compacted: compactResult.compacted,
