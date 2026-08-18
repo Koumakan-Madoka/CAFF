@@ -9,7 +9,7 @@ A different port alone is not an isolated environment. Before startup, verify wo
 | Room preview | room's unique worktree | `3210-3299` | Temporary manual preview |
 | Automated tests | test workspace | dynamic/`0` | Parallel-safe checks |
 
-Ports `3003` and `3004` are reserved and forbidden. Preview ports have no lease manager in phase one: probe availability immediately before starting, report the selected port, and never claim it is reserved. A probe has a race window; stop on bind failure rather than killing an unknown process.
+Preview ports have no lease manager in phase one: probe availability immediately before starting, report the selected port, and never claim it is reserved. A probe has a race window; stop on bind failure rather than killing an unknown process.
 
 ## Data and logs
 
@@ -17,7 +17,6 @@ Ports `3003` and `3004` are reserved and forbidden. Preview ports have no lease 
 - Send each instance's stdout/stderr or supervisor output to a different log directory. CAFF currently has no universal log-directory environment key, so configure the launcher/redirection rather than inventing one.
 - Keep uploads, generated output, caches, and other mutable storage separate whenever enabled. If separation cannot be demonstrated, do not call the instance isolated.
 - Back up data and obtain specific authorization before migrations, destructive tests, or production writes.
-- If Redis is used, development/test may use `6398`; never connect them to production `6399`.
 
 ## Credentials and side effects
 
