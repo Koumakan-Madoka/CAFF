@@ -939,7 +939,7 @@ export function createServerApp(options: any = {}) {
     client: feishuClient,
     modeStore,
     roleService,
-    projectScopeId: projectManager.getActiveProjectId(),
+    getProjectScopeId: () => projectManager.getActiveProjectId(),
     ...(Object.prototype.hasOwnProperty.call(options, 'feishuDefaultRoleIds')
       ? { defaultRoleIds: options.feishuDefaultRoleIds }
       : {}),

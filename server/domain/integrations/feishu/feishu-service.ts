@@ -218,6 +218,9 @@ export function createFeishuIntegrationService(options: any = {}) {
   );
   const verificationToken = trimString(options.verificationToken || process.env.FEISHU_VERIFICATION_TOKEN);
   const logger = options.logger || console;
+  const getProjectScopeId = typeof options.getProjectScopeId === 'function'
+    ? options.getProjectScopeId
+    : () => options.projectScopeId;
 
   function logInfo(message: string, payload: any = null) {
     if (logger && typeof logger.log === 'function') {
@@ -406,7 +409,7 @@ export function createFeishuIntegrationService(options: any = {}) {
     return {
       title: buildConversationTitle(String(acceptedInbound.chatType || ''), String(acceptedInbound.chatId || '')),
       modeId: trimString(mode && mode.id) || FEISHU_FALLBACK_CONVERSATION_TYPE,
-      projectScopeId: trimString(options.projectScopeId),
+      projectScopeId: trimString(getProjectScopeId()),
       participants,
       metadata: {
         source: FEISHU_PLATFORM,

@@ -262,36 +262,49 @@ export class ModeStore {
         }
       }
       for (const modeId of retiredModeIds) {
-        const mode = this.getStatement.get(modeId);
-        if (mode && mode.builtin) {
-          const roomRows = this.db.prepare(`
-            WITH RECURSIVE retired_rooms(id, depth) AS (
-              SELECT id, 0 FROM chat_conversations WHERE type = ?
-              UNION ALL
-              SELECT child.id, retired_rooms.depth + 1
-              FROM chat_conversations child
-              JOIN retired_rooms ON child.parent_conversation_id = retired_rooms.id
-            )
-            SELECT id, MAX(depth) AS depth FROM retired_rooms GROUP BY id ORDER BY depth DESC
-          `).all(modeId);
-          const roomIds = roomRows.map((row: any) => String(row.id));
-          if (roomIds.length > 0) {
-            const placeholders = roomIds.map(() => '?').join(', ');
-            const deliveryRows = this.db.prepare(`
-              SELECT id, hop_count FROM chat_cross_conversation_deliveries
-              WHERE source_conversation_id IN (${placeholders}) OR target_conversation_id IN (${placeholders})
-              ORDER BY hop_count DESC, created_at DESC
-            `).all(...roomIds, ...roomIds);
+        const roomRows = this.db.prepare(`
+          WITH RECURSIVE retired_rooms(id, depth) AS (
+            SELECT id, 0 FROM chat_conversations WHERE type = ?
+            UNION ALL
+            SELECT child.id, retired_rooms.depth + 1
+            FROM chat_conversations child
+            JOIN retired_rooms ON child.parent_conversation_id = retired_rooms.id
+          )
+          SELECT id, MAX(depth) AS depth FROM retired_rooms GROUP BY id ORDER BY depth DESC
+        `).all(modeId);
+        const roomIds = roomRows.map((row: any) => String(row.id));
+        if (roomIds.length > 0) {
+          const placeholders = roomIds.map(() => '?').join(', ');
+          const deliveryRows = this.db.prepare(`
+            SELECT id, hop_count FROM chat_cross_conversation_deliveries
+            WHERE source_conversation_id IN (${placeholders}) OR target_conversation_id IN (${placeholders})
+            ORDER BY hop_count DESC, created_at DESC
+          `).all(...roomIds, ...roomIds);
+          if (deliveryRows.length > 0) {
+            // Product retirement is the one destructive migration allowed to
+            // remove the otherwise append-only delivery audit trail. DDL is
+            // transactional in SQLite, so a later failure restores the guard.
+            this.db.exec('DROP TRIGGER IF EXISTS chat_cross_delivery_events_append_only_delete');
             for (const delivery of deliveryRows) {
               this.db.prepare('DELETE FROM chat_cross_conversation_delivery_events WHERE delivery_id = ?').run(delivery.id);
             }
             for (const delivery of deliveryRows) {
               this.db.prepare('DELETE FROM chat_cross_conversation_deliveries WHERE id = ?').run(delivery.id);
             }
-            for (const room of roomRows) {
-              this.db.prepare('DELETE FROM chat_conversations WHERE id = ?').run(room.id);
-            }
+            this.db.exec(`
+              CREATE TRIGGER chat_cross_delivery_events_append_only_delete
+              BEFORE DELETE ON chat_cross_conversation_delivery_events
+              BEGIN
+                SELECT RAISE(ABORT, 'cross-conversation delivery events are append-only');
+              END
+            `);
           }
+          for (const room of roomRows) {
+            this.db.prepare('DELETE FROM chat_conversations WHERE id = ?').run(room.id);
+          }
+        }
+        const mode = this.getStatement.get(modeId);
+        if (mode && mode.builtin) {
           this.deleteStatement.run(modeId);
         }
       }

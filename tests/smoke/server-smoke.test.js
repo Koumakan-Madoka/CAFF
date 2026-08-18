@@ -219,8 +219,6 @@ function createConversationsControllerHarness(t, options = {}) {
       },
       clearConversationState() {},
     },
-    undercoverService: { deleteConversationState() {} },
-    werewolfService: { deleteConversationState() {} },
     buildBootstrapPayload() {
       return { conversations: store.listConversations(), agents: [], runtime: runtimePayload };
     },
@@ -4470,8 +4468,6 @@ test('conversations controller rejects deleting queued conversations', async () 
       },
       clearConversationState() {},
     },
-    undercoverService: { deleteConversationState() {} },
-    werewolfService: { deleteConversationState() {} },
     buildBootstrapPayload() {
       return { conversations: [], agents: [], runtime: {} };
     },
@@ -4543,8 +4539,6 @@ test('conversations controller force-deletes failed queued conversations when id
       },
       clearConversationState() {},
     },
-    undercoverService: { deleteConversationState() {} },
-    werewolfService: { deleteConversationState() {} },
     buildBootstrapPayload() {
       return { conversations: [], agents: [], runtime: {} };
     },
@@ -4617,8 +4611,6 @@ test('conversations controller rejects deleting conversations with active side s
       },
       clearConversationState() {},
     },
-    undercoverService: { deleteConversationState() {} },
-    werewolfService: { deleteConversationState() {} },
     buildBootstrapPayload() {
       return { conversations: [], agents: [], runtime: {} };
     },
@@ -4687,8 +4679,6 @@ test('conversations controller rejects deleting conversations with queued agent 
       },
       clearConversationState() {},
     },
-    undercoverService: { deleteConversationState() {} },
-    werewolfService: { deleteConversationState() {} },
     buildBootstrapPayload() {
       return { conversations: [], agents: [], runtime: {} };
     },
@@ -5578,10 +5568,6 @@ test('conversation create validates the explicit roster and only merges mode ski
       buildRuntimePayload() { return {}; },
       clearConversationState() {},
     },
-    undercoverHost: { buildPublicState() { return null; } },
-    werewolfHost: { buildPublicState() { return null; } },
-    undercoverService: { prepareConversation(id) { return store.getConversation(id); }, deleteConversationState() {} },
-    werewolfService: { prepareConversation(id) { return store.getConversation(id); }, deleteConversationState() {} },
     skillRegistry: {
       getSkill(id) {
         return id === 'tdd' ? { id: 'tdd', name: 'TDD' } : null;
