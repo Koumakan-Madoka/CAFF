@@ -3736,51 +3736,12 @@ textarea {
   letter-spacing: 0.03em;
 }
 
-.mode-pill.game,
-.conversation-type-badge.game {
-  background: rgba(217, 164, 65, 0.16);
-  color: #8d6411;
-}
-
 .conversation-title-line {
   flex-wrap: wrap;
 }
 
 .conversation-type-badge {
   margin-left: auto;
-}
-
-.undercover-status-card,
-.werewolf-status-card {
-  display: grid;
-  gap: 0.55rem;
-  padding: 1rem 1.1rem;
-  border-radius: var(--radius-md);
-  background: rgba(217, 164, 65, 0.1);
-  border: 1px solid rgba(217, 164, 65, 0.16);
-}
-
-.undercover-player-grid,
-.werewolf-player-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.7rem;
-}
-
-.undercover-player-chip,
-.werewolf-player-chip {
-  display: grid;
-  gap: 0.18rem;
-  padding: 0.8rem 0.9rem;
-  border-radius: var(--radius-sm);
-  background: rgba(255, 255, 255, 0.66);
-  border: 1px solid rgba(34, 49, 63, 0.08);
-}
-
-.undercover-player-chip.is-eliminated,
-.werewolf-player-chip.is-eliminated {
-  background: rgba(176, 68, 68, 0.08);
-  border-color: rgba(176, 68, 68, 0.16);
 }
 
 .two-column-grid,
@@ -3831,8 +3792,6 @@ textarea {
     justify-content: flex-start;
   }
 
-  .undercover-player-grid,
-  .werewolf-player-grid,
   .two-column-grid,
   .three-column-grid {
     grid-template-columns: 1fr;
@@ -5297,8 +5256,6 @@ body.chat-app :is(
   .agent-context-section-card,
   .conversation-digest-card,
   .timeline-digest-card,
-  .undercover-player-chip,
-  .werewolf-player-chip,
   .mention-menu
 ) {
   border-color: var(--caff-border);

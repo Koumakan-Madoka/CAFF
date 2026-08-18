@@ -227,8 +227,10 @@ function createConversationsControllerHarness(t, options = {}) {
     broadcastEvent(eventName, payload) {
       broadcastEvents.push({ eventName, payload });
     },
-    modeStore: options.modeStore || { get() { return null; } },
-    projectManager: options.projectManager,
+    modeStore: options.modeStore || { get(id) { return id === 'standard' ? { id: 'standard', skillIds: [] } : null; } },
+    projectManager: options.projectManager || {
+      listProjects() { return [{ id: 'project-scope-1', name: 'Test Project', path: tempDir }]; },
+    },
     projectDir: options.projectDir,
     digestOptions: { summaryMode: 'extractive', ...(options.digestOptions || {}) },
     digestModelRunner: options.digestModelRunner,
@@ -503,6 +505,8 @@ test('conversations controller preserves string participant ids when mode skills
     pathname: '/api/conversations',
     body: {
       title: 'String Participant Conversation',
+      projectScopeId: 'project-scope-1',
+      modeId: 'standard',
       participants: [agent.id],
     },
   });
@@ -4829,6 +4833,8 @@ test('server smoke: bootstrap, static files, projects, skills, agents, and conve
     method: 'POST',
     body: {
       title: 'Smoke Conversation',
+      projectScopeId: createdProject.activeProject.id,
+      modeId: 'standard',
       participants: [agentResult.agent.id],
     },
   });
@@ -5061,10 +5067,14 @@ test('role API protects model-family roles and shares one availability projectio
     return exists ? app.store.db.prepare(`SELECT COUNT(*) AS count FROM ${tableName}`).get().count : 0;
   };
 
+  const roleProjects = await fetchJson(baseUrl, '/api/projects');
+  const roleProject = roleProjects.projects.find((project) => project && project.active) || roleProjects.projects[0];
   const runtimeConversation = await fetchJson(baseUrl, '/api/conversations', {
     method: 'POST',
     body: {
       title: 'Runtime role validation',
+      projectScopeId: roleProject.id,
+      modeId: 'standard',
       participants: ['role-family-gpt', 'role-family-claude'],
     },
   });
@@ -5106,6 +5116,8 @@ test('role API protects model-family roles and shares one availability projectio
     method: 'POST',
     body: {
       title: 'Stale selected profile',
+      projectScopeId: roleProject.id,
+      modeId: 'standard',
       participants: [{ agentId: 'role-family-gpt', modelProfileId: 'gpt-max' }],
     },
   });
@@ -5364,6 +5376,8 @@ test('server smoke: pi-mono agent can initialize and write Trellis files for the
     method: 'POST',
     body: {
       title: 'pi Trellis Smoke Conversation',
+      projectScopeId: projectResult.activeProject.id,
+      modeId: 'standard',
       participants: [agentResult.agent.id],
     },
   });
@@ -5576,8 +5590,12 @@ test('conversation create validates the explicit roster and only merges mode ski
     modeStore: {
       get(id) {
         if (id === 'coding') return { id: 'coding', name: 'Coding', skillIds: ['mode-skill'] };
+        if (id === 'standard') return { id: 'standard', name: 'Standard', skillIds: [] };
         return null;
       },
+    },
+    projectManager: {
+      listProjects() { return [{ id: 'project-scope-1', name: 'Test Project', path: tempDir }]; },
     },
     broadcastEvent() {},
   });
@@ -5603,10 +5621,12 @@ test('conversation create validates the explicit roster and only merges mode ski
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  await assertCreateError({ title: 'Missing roster' }, 400, 'participants_required');
-  await assertCreateError({ title: 'Empty roster', participants: [] }, 400, 'participants_required');
-  await assertCreateError({ title: 'Unknown roster', participants: ['missing-role'] }, 422, 'participant_role_unknown');
+  const baseRoom = { projectScopeId: 'project-scope-1', modeId: 'coding' };
+  await assertCreateError({ ...baseRoom, title: 'Missing roster' }, 400, 'participants_required');
+  await assertCreateError({ ...baseRoom, title: 'Empty roster', participants: [] }, 400, 'participants_required');
+  await assertCreateError({ ...baseRoom, title: 'Unknown roster', participants: ['missing-role'] }, 422, 'participant_role_unknown');
   await assertCreateError({
+    ...baseRoom,
     title: 'Invalid profile',
     participants: [{ agentId: 'role-family-gpt', modelProfileId: 'missing-profile' }],
   }, 422, 'participant_profile_invalid');
@@ -5616,7 +5636,8 @@ test('conversation create validates the explicit roster and only merges mode ski
     pathname: '/api/conversations',
     body: {
       title: 'Explicit coding roster',
-      type: 'coding',
+      projectScopeId: 'project-scope-1',
+      modeId: 'coding',
       participants: [{ agentId: 'role-family-gpt', modelProfileId: 'high-effort' }],
     },
   });
@@ -5631,6 +5652,8 @@ test('conversation create validates the explicit roster and only merges mode ski
     pathname: '/api/conversations',
     body: {
       title: 'Recovery roster',
+      projectScopeId: 'project-scope-1',
+      modeId: 'coding',
       participants: [{ agentId: 'role-family-gpt' }],
     },
   });
@@ -5651,6 +5674,7 @@ test('conversation create validates the explicit roster and only merges mode ski
   assert.equal(recoveredConversation.json.conversation.agents[0].selectedModelProfileId, 'high-effort');
 
   await assertCreateError({
+    ...baseRoom,
     title: 'Unavailable new role with valid profile',
     participants: [{ agentId: 'role-family-gpt', modelProfileId: 'high-effort' }],
   }, 422, 'participant_role_unavailable');
@@ -5661,7 +5685,8 @@ test('conversation create validates the explicit roster and only merges mode ski
     pathname: '/api/conversations',
     body: {
       title: 'Explicit game roster',
-      type: 'werewolf',
+      projectScopeId: 'project-scope-1',
+      modeId: 'standard',
       participants: ['role-family-gpt', 'role-family-gemini'],
     },
   });
@@ -5676,8 +5701,8 @@ test('conversation create validates the explicit roster and only merges mode ski
     pathname: '/api/conversations',
     body: {
       title: 'Retired skill-test mode roster',
-      type: 'skill_test_design',
-      skillId: 'tdd',
+      projectScopeId: 'project-scope-1',
+      modeId: 'standard',
       participants: ['role-family-gpt'],
     },
   });
@@ -5686,6 +5711,7 @@ test('conversation create validates the explicit roster and only merges mode ski
 
   modelOptions.splice(0, modelOptions.length);
   await assertCreateError({
+    ...baseRoom,
     title: 'Unavailable role',
     participants: [{ agentId: 'role-family-gpt' }],
   }, 422, 'participant_role_unavailable');

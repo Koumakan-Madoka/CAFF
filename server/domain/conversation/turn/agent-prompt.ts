@@ -1,6 +1,4 @@
 const { getAgentById } = require('../mention-routing');
-const { UNDERCOVER_CONVERSATION_TYPE } = require('../../../../lib/who-is-undercover-game');
-const { WEREWOLF_CONVERSATION_TYPE } = require('../../../../lib/werewolf-game');
 const { formatConversationDigestsForPrompt } = require('../conversation-digest');
 const { formatConversationRetrievalTracesForPrompt } = require('../retrieval-trace');
 const { formatSessionGoalForPrompt } = require('../session-goal');
@@ -394,78 +392,6 @@ function buildAgentToolInstructions(agentToolRelativePath: string) {
   ].join('\n');
 }
 
-function buildUndercoverPromptSection(conversation: any, agent: any) {
-  if (!conversation || conversation.type !== UNDERCOVER_CONVERSATION_TYPE) {
-    return '';
-  }
-
-  const metadata = conversation.metadata && typeof conversation.metadata === 'object' ? conversation.metadata : {};
-  const game = metadata.undercoverGame && typeof metadata.undercoverGame === 'object' ? metadata.undercoverGame : null;
-  const players = Array.isArray(game && game.players) ? game.players : [];
-  const currentPlayer = players.find((player: any) => player.agentId === agent.id) || null;
-  const aliveNames = players.filter((player: any) => player.isAlive).map((player: any) => player.name);
-  const eliminatedNames = players.filter((player: any) => !player.isAlive).map((player: any) => player.name);
-  const gameFinished = Boolean(game && (game.phase === 'finished' || game.status === 'completed' || game.status === 'revealed'));
-
-  return [
-    'Backend-hosted full-auto Who is Undercover mode:',
-    gameFinished
-      ? '- The backend already hosted and finished this round. Do not fabricate a new round, new eliminations, or new host actions on your own.'
-      : '- The backend is the host and will automatically advance each round. Do not self-assign roles, do not reveal hidden identities, and do not announce eliminations on your own.',
-    `- Public game status: ${(game && game.status) || 'setup'}`,
-    `- Current game phase: ${(game && game.phase) || 'setup'}`,
-    `- Current round: ${Number.isInteger(game && game.roundNumber) ? game.roundNumber : 1}`,
-    `- Your player status: ${currentPlayer ? (currentPlayer.isAlive ? 'alive' : 'eliminated') : 'unknown'}`,
-    `- Alive players: ${aliveNames.length > 0 ? aliveNames.join(', ') : 'none'}`,
-    `- Eliminated players: ${eliminatedNames.length > 0 ? eliminatedNames.join(', ') : 'none'}`,
-    gameFinished
-      ? '- If the backend has already revealed identities, you may discuss your revealed role and the finished result honestly with the user.'
-      : '- Your hidden word, if assigned, is only available in your private mailbox. The backend does not directly tell you your role during an active game.',
-    '- During clue rounds, the backend calls on players one by one in strict order. Give one indirect clue and do not say the secret word directly.',
-    '- During vote rounds, output exactly one vote target in the format "投票：@玩家名".',
-    '- If you have already been eliminated, do not keep participating unless the host explicitly asks for a reveal.',
-    gameFinished
-      ? '- The hosted game has already finished. You may chat with the user naturally about the result or other follow-up topics until the backend starts a new round.'
-      : '- While the hosted game is still running, wait for the backend-driven clue and vote prompts instead of free chatting.',
-  ].join('\n');
-}
-
-function buildWerewolfPromptSection(conversation: any, agent: any) {
-  if (!conversation || conversation.type !== WEREWOLF_CONVERSATION_TYPE) {
-    return '';
-  }
-
-  const metadata = conversation.metadata && typeof conversation.metadata === 'object' ? conversation.metadata : {};
-  const game = metadata.werewolfGame && typeof metadata.werewolfGame === 'object' ? metadata.werewolfGame : null;
-  const players = Array.isArray(game && game.players) ? game.players : [];
-  const currentPlayer = players.find((player: any) => player.agentId === agent.id) || null;
-  const aliveNames = players.filter((player: any) => player.isAlive).map((player: any) => player.name);
-  const eliminatedNames = players.filter((player: any) => !player.isAlive).map((player: any) => player.name);
-  const gameFinished = Boolean(game && (game.phase === 'finished' || game.status === 'completed' || game.status === 'revealed'));
-
-  return [
-    'Backend-hosted full-auto Werewolf mode:',
-    gameFinished
-      ? '- The backend already hosted and finished this round. Do not fabricate a new round, new eliminations, or new host actions on your own.'
-      : '- The backend is the host and will automatically advance each phase. Do not self-assign roles, do not reveal hidden identities, and do not announce eliminations on your own.',
-    `- Public game status: ${(game && game.status) || 'setup'}`,
-    `- Current game phase: ${(game && game.phase) || 'setup'}`,
-    `- Current round: ${Number.isInteger(game && game.roundNumber) ? game.roundNumber : 1}`,
-    `- Your player status: ${currentPlayer ? (currentPlayer.isAlive ? 'alive' : 'eliminated') : 'unknown'}`,
-    `- Alive players: ${aliveNames.length > 0 ? aliveNames.join(', ') : 'none'}`,
-    `- Eliminated players: ${eliminatedNames.length > 0 ? eliminatedNames.join(', ') : 'none'}`,
-    gameFinished
-      ? '- If the backend has already revealed identities, you may discuss your revealed role and the finished result honestly with the user.'
-      : '- Your role, if assigned, is only available in your private mailbox. The backend does not reveal your role in public chat during an active game.',
-    '- During night phases, do not post public chat. Use private messages only when the host prompts you in a private-only phase.',
-    '- During vote phases, output exactly one vote target in the format "投票：@玩家名".',
-    '- If you have already been eliminated, do not keep participating unless the host explicitly asks for a reveal.',
-    gameFinished
-      ? '- The hosted game has already finished. You may chat with the user naturally about the result or other follow-up topics until the backend starts a new round.'
-      : '- While the hosted game is still running, wait for the backend-driven prompts instead of free chatting.',
-  ].join('\n');
-}
-
 function promptSection(sectionKey: string, title: string, source: string, content: any, visibility?: 'full' | 'summary' | 'presence') {
   return {
     sectionKey,
@@ -529,14 +455,14 @@ export function buildAgentTurnPromptSections({
   modeLoadingStrategy,
   forceDynamicConversationSkillIds,
   browserCliPath,
+  workspaceContext,
+  orchestrationMode,
   projectedConversationHistory,
 }: any) {
   const normalizedProjectDir = String(projectDir || '').trim();
   const conversationType = String(conversation && conversation.type ? conversation.type : '').trim();
-  const isGameplayConversation =
-    conversationType === UNDERCOVER_CONVERSATION_TYPE || conversationType === WEREWOLF_CONVERSATION_TYPE;
   const trellisPromptContext =
-    normalizedProjectDir && !isGameplayConversation ? buildTrellisPromptContext({ startDir: normalizedProjectDir }) : '';
+    normalizedProjectDir ? buildTrellisPromptContext({ startDir: normalizedProjectDir }) : '';
   const participants = (Array.isArray(agents) ? agents : [])
     .filter((item: any) => !isSamePromptAgent(item, agent))
     .map((item: any) => {
@@ -607,19 +533,30 @@ export function buildAgentTurnPromptSections({
         '- Plain at-mentions are allowed for readability, but they will not continue this parallel turn.',
         '- Private messages that would wake another participant are disabled in this parallel first-round mode.',
       ];
-  const undercoverSection = buildUndercoverPromptSection(conversation, agent);
-  const werewolfSection = buildWerewolfPromptSection(conversation, agent);
   const conversationDigestSection = formatConversationDigestsForPrompt(conversation);
   const retrievedMemorySection = formatRetrievedMemorySegments(relatedMemorySegments);
   const retrievalTraceSection = formatConversationRetrievalTracesForPrompt(conversation, agent);
   const sessionGoalSection = formatSessionGoalForPrompt(conversation);
-  const gameplaySections = [undercoverSection, werewolfSection].filter(Boolean);
   const includeDynamicSkillLoadingGuidance = hasDynamicSkillDescriptors(resolvedConversationSkills, {
     forceFull: false,
     modeLoadingStrategy,
     forceDynamicSkillIds: forceDynamicConversationSkillIds,
   });
   const browserCliInstructions = buildBrowserCliInstructions({ browserCliPath });
+  const normalizedWorkspaceContext = workspaceContext && typeof workspaceContext === 'object' ? workspaceContext : {};
+  const normalizedOrchestrationMode = ['direct', 'goal', 'dag'].includes(String(orchestrationMode || ''))
+    ? String(orchestrationMode)
+    : 'direct';
+  const roomWorkContext = [
+    'Room work context:',
+    `- Project: ${String(normalizedWorkspaceContext.projectScopeId || '[unavailable]')}`,
+    `- Project repository: ${String(normalizedWorkspaceContext.projectPath || normalizedProjectDir || '[unavailable]')}`,
+    `- Mode: ${String(normalizedWorkspaceContext.modeName || normalizedWorkspaceContext.modeId || conversationType || 'standard')} (${String(normalizedWorkspaceContext.modeId || conversationType || 'standard')})`,
+    `- Git branch: ${String(normalizedWorkspaceContext.branch || '[unbound]')}`,
+    `- Worktree: ${String(normalizedWorkspaceContext.worktreePath || '[unbound]')}`,
+    `- Current orchestration: ${normalizedOrchestrationMode}`,
+    '- Mode is immutable Room configuration. Direct/Goal/DAG is a separate model-driven orchestration choice and may evolve through the existing Goal/DAG tools.',
+  ].join('\n');
 
   const sections = [
     promptSection(
@@ -647,6 +584,13 @@ export function buildAgentTurnPromptSections({
           'full'
         )
       : null,
+    promptSection(
+      'room_work_context',
+      'Room Work Context',
+      'conversation/workspace',
+      roomWorkContext,
+      'full'
+    ),
     promptSection('rules', 'Rules', 'runtime/routing', ['Rules:', ...routingRules].join('\n'), 'full'),
     promptSection('routing_instructions', 'Routing Instructions', 'runtime/routing', ['Routing instructions:', ...routingInstructions].join('\n'), 'full'),
     promptSection(
@@ -714,9 +658,6 @@ export function buildAgentTurnPromptSections({
       : null,
     participants
       ? promptSection('participants', 'Other Visible Participants', 'conversation/participants', ['Other visible participants:', participants].join('\n'), 'full')
-      : null,
-    gameplaySections.length > 0
-      ? promptSection('gameplay_mode', 'Gameplay Mode', 'conversation/mode', ['Gameplay mode:', gameplaySections.join('\n\n')].join('\n'), 'full')
       : null,
     trellisPromptContext
       ? promptSection('trellis_context', 'Trellis Project Context', 'trellis/project', ['Trellis project context:', trellisPromptContext].join('\n'), 'full')

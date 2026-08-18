@@ -12,8 +12,6 @@
     const {
       conversationTypeLabel,
       isConversationBusy,
-      isUndercoverConversation,
-      isWerewolfConversation,
     } = helpers;
     let collapsedIds = new Set();
     let renamingConversationId = '';
@@ -191,14 +189,11 @@
 
         const metaLine = document.createElement('div');
         metaLine.className = 'conversation-meta-line';
-        const isGameRoom = isUndercoverConversation(conversation) || isWerewolfConversation(conversation);
         const typeBadge = document.createElement('span');
-        typeBadge.className = `conversation-type-badge${isGameRoom ? ' game' : ''}`;
+        typeBadge.className = 'conversation-type-badge';
         typeBadge.textContent = conversationTypeLabel(conversation);
         const participants = document.createElement('span');
-        participants.textContent = isGameRoom
-          ? `${conversation.agentCount || 0} 名玩家`
-          : `${conversation.agentCount || 0} 个 Agent`;
+        participants.textContent = `${conversation.agentCount || 0} 个 Agent`;
         metaLine.append(typeBadge, participants);
         if (isConversationBusy(conversation.id)) {
           const busyBadge = document.createElement('span');

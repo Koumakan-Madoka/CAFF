@@ -1,0 +1,45 @@
+{
+  "id": "room-project-mode-workspace",
+  "name": "room-project-mode-workspace",
+  "title": "Room project mode workspace",
+  "description": "Room 创建必选 Project 与固定 Mode；开发前绑定 branch/worktree；运行上下文注入编排；验收证据；破坏性下线旧游戏与 Skill Test。",
+  "status": "planning",
+  "dev_type": "fullstack",
+  "scope": "fullstack",
+  "package": null,
+  "priority": "P1",
+  "creator": "GPT",
+  "assignee": "GPT",
+  "createdAt": "2026-08-18",
+  "completedAt": null,
+  "branch": "room/b6fae6e6-room-project-mode-workspace",
+  "base_branch": "develop",
+  "worktree_path": null,
+  "current_phase": 0,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "check"
+    },
+    {
+      "phase": 3,
+      "action": "finish"
+    },
+    {
+      "phase": 4,
+      "action": "create-pr"
+    }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}

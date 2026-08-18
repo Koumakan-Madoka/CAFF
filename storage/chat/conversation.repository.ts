@@ -6,6 +6,7 @@ export class ChatConversationRepository {
   insertStatement: any;
   updateStatement: any;
   bindProjectScopeStatement: any;
+  bindWorkspaceStatement: any;
   touchStatement: any;
   deleteStatement: any;
 
@@ -127,6 +128,10 @@ export class ChatConversationRepository {
         type,
         metadata_json,
         project_scope_id,
+        branch,
+        worktree_path,
+        workspace_base_sha,
+        workspace_bound_at,
         parent_conversation_id,
         origin_conversation_id,
         origin_message_id,
@@ -134,7 +139,7 @@ export class ChatConversationRepository {
         created_at,
         updated_at,
         last_message_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     this.updateStatement = db.prepare(`
       UPDATE chat_conversations
@@ -152,6 +157,18 @@ export class ChatConversationRepository {
         updated_at = @updatedAt
       WHERE id = @conversationId
         AND project_scope_id IS NULL
+      RETURNING *
+    `);
+    this.bindWorkspaceStatement = db.prepare(`
+      UPDATE chat_conversations
+      SET branch = @branch,
+          worktree_path = @worktreePath,
+          workspace_base_sha = @workspaceBaseSha,
+          workspace_bound_at = @workspaceBoundAt,
+          updated_at = @updatedAt
+      WHERE id = @conversationId
+        AND branch IS NULL
+        AND worktree_path IS NULL
       RETURNING *
     `);
     this.touchStatement = db.prepare(`
@@ -194,6 +211,10 @@ export class ChatConversationRepository {
       payload.type,
       payload.metadataJson,
       payload.projectScopeId || null,
+      payload.branch || null,
+      payload.worktreePath || null,
+      payload.workspaceBaseSha || null,
+      payload.workspaceBoundAt || null,
       payload.parentConversationId || null,
       payload.originConversationId || null,
       payload.originMessageId || null,
@@ -222,6 +243,17 @@ export class ChatConversationRepository {
     return this.bindProjectScopeStatement.get({
       conversationId,
       projectScopeId: payload.projectScopeId,
+      updatedAt: payload.updatedAt,
+    }) || null;
+  }
+
+  bindWorkspace(conversationId: string, payload: any) {
+    return this.bindWorkspaceStatement.get({
+      conversationId,
+      branch: payload.branch,
+      worktreePath: payload.worktreePath,
+      workspaceBaseSha: payload.workspaceBaseSha,
+      workspaceBoundAt: payload.workspaceBoundAt,
       updatedAt: payload.updatedAt,
     }) || null;
   }

@@ -4,7 +4,6 @@
   const chat = window.CaffChat || (window.CaffChat = {});
   const modelOptionUtils = window.CaffShared && window.CaffShared.modelOptions;
   if (!modelOptionUtils) throw new Error('CaffShared.modelOptions helper is required');
-  const GAME_TYPES = new Set(['who_is_undercover', 'werewolf']);
 
   function normalizeText(value) {
     return String(value || '').trim();
@@ -37,10 +36,7 @@
       });
   }
 
-  function initialSelectedRoleIds(snapshot, modeId) {
-    if (normalizeText(modeId) !== 'standard') {
-      return new Set();
-    }
+  function initialSelectedRoleIds(snapshot) {
     return new Set(
       (Array.isArray(snapshot) ? snapshot : [])
         .filter((role) => role.available && role.isDefaultChatRole)
@@ -66,7 +62,8 @@
   }
 
   function buildConversationRequest(input) {
-    const type = normalizeText(input && input.type) || 'standard';
+    const modeId = requiredRequestText(input && input.modeId, 'modeId', 'mode_required');
+    const projectScopeId = requiredRequestText(input && input.projectScopeId, 'projectScopeId', 'project_required');
     const participants = buildParticipants(input && input.snapshot, input && input.selectedRoleIds);
     if (participants.length === 0) {
       throw createRequestError('participants_required', '至少选择一位当前可用的角色');
@@ -74,7 +71,8 @@
 
     return {
       title: normalizeText(input && input.title),
-      type,
+      projectScopeId,
+      modeId,
       participants,
     };
   }
@@ -114,18 +112,10 @@
     return request;
   }
 
-  function isGameType(type) {
-    return GAME_TYPES.has(normalizeText(type));
-  }
-
   function modePolicyLabel(type) {
-    if (normalizeText(type) === 'standard') {
-      return '默认角色只是本次创建的预选建议，你可以自由增删。';
-    }
-    if (isGameType(type)) {
-      return '游戏模式使用自己的玩家配置：这里的选择就是本房间最终玩家，不读取普通聊天默认。';
-    }
-    return '该模式要求显式选择参与者，不读取普通聊天默认。';
+    return normalizeText(type) === 'standard'
+      ? '默认角色只是本次创建的预选建议，你可以自由增删。'
+      : '该 Mode 可挂载自己的 Skills；参与者仍由本次 Room 显式选择。';
   }
 
   function createNewConversationDialogController({ state, dom, helpers, showToast }) {
@@ -162,7 +152,7 @@
     function currentSelection() {
       const modeId = selectedMode();
       if (!selectionByMode.has(modeId)) {
-        selectionByMode.set(modeId, initialSelectedRoleIds(snapshot, modeId));
+        selectionByMode.set(modeId, initialSelectedRoleIds(snapshot));
       }
       return selectionByMode.get(modeId);
     }
@@ -204,20 +194,25 @@
         element.classList.toggle('hidden', !isSpawnMode());
       });
       if (dom.newConversationDialogTitle) {
-        dom.newConversationDialogTitle.textContent = isSpawnMode() ? '派生子会话' : '新建聊天';
+        dom.newConversationDialogTitle.textContent = isSpawnMode() ? '派生子 Room' : '新建 Room';
       }
       if (dom.newConversationDialogDescription) {
         dom.newConversationDialogDescription.textContent = isSpawnMode()
-          ? '显式确认新会话的项目、参与者、主理 Agent 与公开首消息。'
-          : '确认后才会创建会话并写入最终参与者。';
+          ? '显式确认子 Room 的固定项目、参与者、主理 Agent 与公开首消息。'
+          : '选择固定的项目、模式与参与者后创建 Room。';
       }
       if (dom.newConversationSubmit) {
-        dom.newConversationSubmit.textContent = isSpawnMode() ? '创建并启动' : '创建聊天';
+        dom.newConversationSubmit.textContent = isSpawnMode() ? '创建并启动' : '创建 Room';
       }
     }
 
     function syncProjectOptions() {
       if (!dom.newConversationProject) return;
+      if (!isSpawnMode()) {
+        fillSelect(dom.newConversationProject, projectSnapshot, '请选择项目');
+        dom.newConversationProject.disabled = projectSnapshot.length === 0;
+        return;
+      }
       const projectScopeId = normalizeText(spawnParent && spawnParent.projectScopeId);
       const matchingProject = projectSnapshot.find((project) => normalizeText(project && project.id) === projectScopeId);
       const options = matchingProject
@@ -302,10 +297,11 @@
       if (isSpawnMode() && !normalizeText(dom.newConversationTitle && dom.newConversationTitle.value)) {
         return '请填写会话标题。';
       }
+      if (!normalizeText(dom.newConversationProject && dom.newConversationProject.value)) {
+        return '请选择项目。';
+      }
       if (currentSelection().size === 0) {
-        return isGameType(type)
-          ? '至少选择一位当前可用的玩家后才能创建游戏房间。'
-          : '至少选择一位当前可用的角色后才能创建聊天。';
+        return '至少选择一位当前可用的角色后才能创建 Room。';
       }
       if (isSpawnMode()) {
         if (!normalizeText(dom.newConversationProject && dom.newConversationProject.value)) {
@@ -340,12 +336,10 @@
           : modePolicyLabel(type);
       }
       if (dom.newConversationParticipantsTitle) {
-        dom.newConversationParticipantsTitle.textContent = isSpawnMode()
-          ? '选择子会话参与者'
-          : isGameType(type) ? '选择玩家' : '选择参与者';
+        dom.newConversationParticipantsTitle.textContent = isSpawnMode() ? '选择子 Room 参与者' : '选择参与者';
       }
       if (dom.newConversationClearSelection) {
-        dom.newConversationClearSelection.textContent = isGameType(type) ? '清空玩家' : '清空选择';
+        dom.newConversationClearSelection.textContent = '清空选择';
       }
       if (open) {
         renderParticipants();
@@ -377,7 +371,7 @@
         dom.newConversationType.value = 'standard';
       }
       const type = selectedMode();
-      selectionByMode.set(type, isSpawnMode() ? new Set() : initialSelectedRoleIds(snapshot, type));
+      selectionByMode.set(type, isSpawnMode() ? new Set() : initialSelectedRoleIds(snapshot));
       dom.newConversationTitle.value = '';
       if (dom.newConversationParent) dom.newConversationParent.value = normalizeText(parentConversation && parentConversation.title);
       if (dom.newConversationInitialMessage) dom.newConversationInitialMessage.value = '';
@@ -391,7 +385,16 @@
       window.requestAnimationFrame(() => dom.newConversationTitle.focus());
     }
 
-    function openDialog() {
+    async function openDialog() {
+      projectSnapshot = [];
+      if (typeof listProjects === 'function') {
+        try {
+          const result = await listProjects();
+          projectSnapshot = Array.isArray(result && result.projects) ? result.projects : [];
+        } catch {
+          projectSnapshot = [];
+        }
+      }
       prepareDialog('create');
     }
 
@@ -470,7 +473,8 @@
             })
           : buildConversationRequest({
               title: dom.newConversationTitle && dom.newConversationTitle.value,
-              type: selectedMode(),
+              projectScopeId: dom.newConversationProject && dom.newConversationProject.value,
+              modeId: selectedMode(),
               snapshot,
               selectedRoleIds: currentSelection(),
             });
@@ -489,7 +493,7 @@
           : await createConversation(request);
         closeDialog();
         if (typeof onCreated === 'function') onCreated(result);
-        if (showToast) showToast(wasSpawn ? '子会话已创建并开始启动' : '新会话已创建');
+        if (showToast) showToast(wasSpawn ? '子 Room 已创建并开始启动' : 'Room 已创建');
       } catch (error) {
         submitting = false;
         updateValidation();
@@ -535,7 +539,6 @@
     buildConversationSpawnRequest,
     buildParticipants,
     initialSelectedRoleIds,
-    isGameType,
     modePolicyLabel,
     snapshotRoles,
   };

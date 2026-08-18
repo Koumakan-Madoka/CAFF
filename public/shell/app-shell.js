@@ -354,16 +354,6 @@
     });
   }
 
-  // ── 条件 tab：游戏（卧底/狼人杀卡片可见性驱动） ──────────────
-  const gameCards = [document.getElementById('undercover-game-card'), document.getElementById('werewolf-game-card')].filter(Boolean);
-  function syncGameTabVisibility() {
-    const anyVisible = gameCards.some((card) => card && !card.classList.contains('hidden'));
-    shellApi.setTabVisible('panel-game', anyVisible);
-  }
-  gameCards.forEach((card) => {
-    new MutationObserver(syncGameTabVisibility).observe(card, { attributes: true, attributeFilter: ['class'] });
-  });
-
   // ── 对外 API（panel 模块接线） ───────────────────────────────
   const shellApi = {
     openTab(panelId) {
@@ -426,7 +416,6 @@
   // ── 初始化 ───────────────────────────────────────────────────
   activateTab(currentTab, { focus: false, notifyModules: false });
   syncSidebarMedia();
-  syncGameTabVisibility();
   pinnedToBottom = true;
   scrollToBottom(false);
 })();

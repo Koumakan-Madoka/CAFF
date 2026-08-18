@@ -227,34 +227,34 @@ test('conditional tab hidden while drawer open: focus migrates to a visible fall
   const { window, document } = bootShell();
   const shell = window.caffShell;
 
-  shell.setTabVisible('panel-game', true);
-  shell.openTab('panel-game');
-  assert.equal(shell.activeTab(), 'panel-game');
+  shell.setTabVisible('skill-draft-drawer', true);
+  shell.openTab('skill-draft-drawer');
+  assert.equal(shell.activeTab(), 'skill-draft-drawer');
 
-  document.getElementById('tab-game').focus();
-  shell.setTabVisible('panel-game', false);
+  document.getElementById('tab-drafts').focus();
+  shell.setTabVisible('skill-draft-drawer', false);
 
   const active = document.activeElement;
-  assert.equal(shell.activeTab() !== 'panel-game', true, 'active tab must move off the hidden tab');
+  assert.equal(shell.activeTab() !== 'skill-draft-drawer', true, 'active tab must move off the hidden tab');
   assert.equal(active && active.id, 'tab-participants', 'focus must land on the fallback tab, not a hidden element or BODY');
   assert.equal(document.getElementById('tab-participants').getAttribute('aria-selected'), 'true');
-  assert.equal(document.getElementById('panel-game').hidden, true, 'hidden tab panel must be hidden');
+  assert.equal(document.getElementById('skill-draft-drawer').hidden, true, 'hidden tab panel must be hidden');
 });
 
 test('conditional tab hidden while drawer closed: reopen leaves no hidden active panel', () => {
   const { window, document } = bootShell();
   const shell = window.caffShell;
 
-  shell.setTabVisible('panel-game', true);
-  shell.openTab('panel-game');
+  shell.setTabVisible('skill-draft-drawer', true);
+  shell.openTab('skill-draft-drawer');
   shell.closeDrawer();
-  shell.setTabVisible('panel-game', false);
+  shell.setTabVisible('skill-draft-drawer', false);
 
   document.getElementById('drawerToggle').click();
 
-  assert.equal(shell.activeTab() !== 'panel-game', true, 'current tab must not be the hidden tab');
-  assert.equal(document.getElementById('tab-game').hidden, true);
-  assert.equal(document.getElementById('panel-game').hidden, true, 'hidden tab panel must stay hidden');
+  assert.equal(shell.activeTab() !== 'skill-draft-drawer', true, 'current tab must not be the hidden tab');
+  assert.equal(document.getElementById('tab-drafts').hidden, true);
+  assert.equal(document.getElementById('skill-draft-drawer').hidden, true, 'hidden tab panel must stay hidden');
   const visibleSelected = Array.from(document.querySelectorAll('.drawer-tabs [role="tab"]'))
     .filter((tab) => !tab.hidden && tab.getAttribute('aria-selected') === 'true');
   assert.equal(visibleSelected.length, 1, 'exactly one visible tab must be selected');

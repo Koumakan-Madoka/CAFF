@@ -133,10 +133,7 @@ async function serveProductionUi() {
     }],
     skills: [{ id: 'tdd', name: 'TDD' }],
     modes: [
-      { id: 'standard', name: '普通对话' },
-      { id: 'skill_test_design', name: 'Skill Test 设计' },
-      { id: 'werewolf', name: '狼人杀' },
-      { id: 'who_is_undercover', name: '谁是卧底' },
+      { id: 'standard', name: '普通协作' },
     ],
     agents,
     conversations: [recoveryConversation],
@@ -164,6 +161,11 @@ async function serveProductionUi() {
     if (request.url === '/api/bootstrap') {
       response.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
       response.end(JSON.stringify(bootstrap));
+      return;
+    }
+    if (request.url === '/api/projects') {
+      response.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+      response.end(JSON.stringify({ projects: [{ id: 'project-1', name: 'Project One', path: '/repo' }] }));
       return;
     }
     if (request.url === '/api/channel-bindings/feishu') {
@@ -198,8 +200,10 @@ async function serveProductionUi() {
         });
         const conversation = {
           id: 'conversation-created',
-          title: parsed.title || '新会话',
-          type: parsed.type,
+          title: parsed.title || '新 Room',
+          type: parsed.modeId,
+          modeId: parsed.modeId,
+          projectScopeId: parsed.projectScopeId,
           agents: selectedAgents,
           messages: [],
           metadata: parsed.metadata || {},
@@ -298,7 +302,7 @@ async function connectCdp(webSocketDebuggerUrl) {
 
 async function evaluate(cdp, expression) {
   const result = await cdp.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
-  if (result.exceptionDetails) throw new Error(result.exceptionDetails.text || 'Browser evaluation failed');
+  if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails));
   return result.result.value;
 }
 
@@ -352,6 +356,9 @@ async function captureScreenshot(cdp, fileName) {
     });
     await waitFor(cdp, `Boolean(document.getElementById('open-new-conversation-button'))`);
     await waitFor(cdp, `document.getElementById('runtime-pill').textContent !== '正在连接本地服务...'`);
+    await evaluate(cdp, `document.getElementById('rail-settings-button').click()`);
+    await waitFor(cdp, `document.getElementById('panel-settings') && !document.getElementById('panel-settings').hidden`);
+    await waitFor(cdp, `Boolean(document.querySelector('#conversation-agent-options [data-agent-id="role-family-qwen"]'))`);
 
     const recoverySettings = await evaluate(cdp, `(() => {
       const card = document.querySelector('[data-agent-id="role-family-qwen"]');
@@ -384,19 +391,24 @@ async function captureScreenshot(cdp, fileName) {
     await evaluate(cdp, `document.getElementById('open-new-conversation-button').click()`);
     await waitFor(cdp, `document.activeElement && document.activeElement.id === 'new-conversation-title'`);
     const opened = await evaluate(cdp, `(() => ({
-      inert: document.getElementById('app-shell').inert,
+      backdropVisible: !document.getElementById('new-conversation-backdrop').classList.contains('hidden'),
       checked: Array.from(document.querySelectorAll('input[name="new-conversation-participants"]:checked')).map((item) => item.value),
       qwenDisabled: document.querySelector('input[name="new-conversation-participants"][value="role-family-qwen"]').disabled,
       qwenText: document.querySelector('input[name="new-conversation-participants"][value="role-family-qwen"]').closest('label').textContent,
       activeId: document.activeElement.id,
     }))()`);
-    assert.equal(opened.inert, true);
+    assert.equal(opened.backdropVisible, true);
     assert.deepEqual(opened.checked, ['role-family-gpt', 'role-family-claude', 'role-family-gemini']);
     assert.equal(opened.qwenDisabled, true);
     assert.match(opened.qwenText, /不可用/u);
     assert.equal(opened.activeId, 'new-conversation-title');
     await captureScreenshot(cdp, 'new-conversation-defaults-desktop.png');
 
+    await evaluate(cdp, `(() => {
+      const project = document.getElementById('new-conversation-project');
+      project.value = 'project-1';
+      project.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`);
     await evaluate(cdp, `document.getElementById('new-conversation-submit').focus()`);
     await key(cdp, 'Tab');
     assert.equal(await evaluate(cdp, `document.activeElement.id`), 'new-conversation-close');
@@ -405,7 +417,7 @@ async function captureScreenshot(cdp, fileName) {
 
     await key(cdp, 'Escape');
     await waitFor(cdp, `document.getElementById('new-conversation-backdrop').classList.contains('hidden')`);
-    assert.equal(await evaluate(cdp, `document.activeElement.id`), 'open-new-conversation-button');
+    assert.equal(await evaluate(cdp, `document.activeElement.id`), 'drawerClose');
     assert.equal(fixture.requests.length, 0);
 
     await evaluate(cdp, `document.getElementById('open-new-conversation-button').click()`);
@@ -423,32 +435,20 @@ async function captureScreenshot(cdp, fileName) {
     assert.deepEqual(emptyState, { disabled: true, errorVisible: true });
     await captureScreenshot(cdp, 'new-conversation-empty-desktop.png');
 
-    const gameState = await evaluate(cdp, `(() => {
-      const type = document.getElementById('new-conversation-type');
-      type.value = 'werewolf';
-      type.dispatchEvent(new Event('change', { bubbles: true }));
-      return {
-        checked: document.querySelectorAll('input[name="new-conversation-participants"]:checked').length,
-        policy: document.getElementById('new-conversation-policy-note').textContent,
-        title: document.getElementById('new-conversation-participants-title').textContent,
-      };
-    })()`);
-    assert.equal(gameState.checked, 0);
-    assert.match(gameState.policy, /不读取普通聊天默认/u);
-    assert.equal(gameState.title, '选择玩家');
-
     await evaluate(cdp, `(() => {
+      document.getElementById('new-conversation-project').value = 'project-1';
       const input = document.querySelector('input[name="new-conversation-participants"][value="role-family-gpt"]');
       input.checked = true;
       input.dispatchEvent(new Event('change', { bubbles: true }));
-      document.getElementById('new-conversation-title').value = '明确玩家';
+      document.getElementById('new-conversation-title').value = '明确协作 Room';
       document.getElementById('new-conversation-form').requestSubmit();
     })()`);
     for (let attempt = 0; attempt < 50 && fixture.requests.length === 0; attempt += 1) await delay(100);
     assert.equal(fixture.requests.length, 1);
     assert.deepEqual(fixture.requests[0], {
-      title: '明确玩家',
-      type: 'werewolf',
+      title: '明确协作 Room',
+      projectScopeId: 'project-1',
+      modeId: 'standard',
       participants: [{ agentId: 'role-family-gpt', modelProfileId: null, conversationSkillIds: [] }],
     });
 

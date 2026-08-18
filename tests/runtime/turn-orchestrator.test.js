@@ -546,6 +546,7 @@ test('buildAgentTurnPromptSections orders stable prompt sections before dynamic 
   assert.deepEqual(sections.map((section) => section.sectionKey), [
     'workspace_header',
     'private_persona',
+    'room_work_context',
     'rules',
     'routing_instructions',
     'command_format_rules',
@@ -2187,7 +2188,7 @@ test('buildAgentTurnPrompt skips Trellis context when projectDir is empty', (t) 
   assert.doesNotMatch(prompt, /Trellis project context:/u);
 });
 
-test('buildAgentTurnPrompt skips Trellis context for gameplay conversations', (t) => {
+test('buildAgentTurnPrompt injects Trellis context for every Skill-backed Mode', (t) => {
   const tempDir = withTempDir('caff-trellis-game-skip-');
   const projectDir = path.join(tempDir, 'project');
   const trellisDir = path.join(projectDir, '.trellis');
@@ -2245,8 +2246,8 @@ test('buildAgentTurnPrompt skips Trellis context for gameplay conversations', (t
     agentToolRelativePath: './lib/agent-chat-tools.js',
   });
 
-  assert.doesNotMatch(prompt, /Trellis project context:/u);
-  assert.doesNotMatch(prompt, /SENTINEL_TRELLIS_PRD/u);
+  assert.match(prompt, /Trellis project context:/u);
+  assert.match(prompt, /SENTINEL_TRELLIS_PRD/u);
 });
 
 test('buildAgentTurnPrompt blocks absolute Trellis task dirs outside project', (t) => {

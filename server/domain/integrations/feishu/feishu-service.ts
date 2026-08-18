@@ -405,7 +405,8 @@ export function createFeishuIntegrationService(options: any = {}) {
   function buildFeishuConversationInput(acceptedInbound: any, mode: any, participants: any[]) {
     return {
       title: buildConversationTitle(String(acceptedInbound.chatType || ''), String(acceptedInbound.chatId || '')),
-      type: trimString(mode && mode.id) || FEISHU_FALLBACK_CONVERSATION_TYPE,
+      modeId: trimString(mode && mode.id) || FEISHU_FALLBACK_CONVERSATION_TYPE,
+      projectScopeId: trimString(options.projectScopeId),
       participants,
       metadata: {
         source: FEISHU_PLATFORM,

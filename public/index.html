@@ -26,8 +26,6 @@
     <script defer src="/chat/message-images.js"></script>
     <script defer src="/chat/message-timeline.js"></script>
     <script defer src="/chat/conversation-settings.js"></script>
-    <script defer src="/chat/undercover-panel.js"></script>
-    <script defer src="/chat/werewolf-panel.js"></script>
     <script defer src="/chat/new-conversation-dialog.js"></script>
     <script defer src="/chat/mention-menu.js"></script>
     <script defer src="/chat/session-goal-panel.js"></script>
@@ -155,7 +153,6 @@
         <button role="tab" id="tab-memory" aria-controls="summary-memory-drawer" aria-selected="false" tabindex="-1">记忆</button>
         <button role="tab" id="tab-summary" aria-controls="conversation-digest-drawer" aria-selected="false" tabindex="-1">摘要</button>
         <button role="tab" id="tab-settings" aria-controls="panel-settings" aria-selected="false" tabindex="-1">设置</button>
-        <button role="tab" id="tab-game" aria-controls="panel-game" aria-selected="false" tabindex="-1" hidden>游戏</button>
         <button role="tab" id="tab-drafts" aria-controls="skill-draft-drawer" aria-selected="false" tabindex="-1" hidden>草稿</button>
         <button role="tab" id="tab-context" aria-controls="agent-context-drawer" aria-selected="false" tabindex="-1">上下文</button>
       </div>
@@ -164,7 +161,7 @@
           <div class="participant-section">
             <div class="section-row">
               <span class="section-label">当前参与人格</span>
-              <span class="section-hint">普通房间按提及路由，谁是卧底 / 狼人杀房间由后端主持统一调度。</span>
+              <span class="section-hint">多个 Agent 按提及和交接规则协作。</span>
             </div>
             <div id="participant-list" class="participant-list"></div>
           </div>
@@ -466,19 +463,10 @@
 
             <section class="bulk-skill-card project-binding-card">
               <div class="section-row">
-                <span class="section-label">项目绑定</span>
-                <span class="section-hint">绑定后不可更改，spawn 与计划执行需要项目</span>
+                <span class="section-label">Project</span>
+                <span class="section-hint">Room 创建时固定，不可更改</span>
               </div>
-              <label>
-                <span>选择项目</span>
-                <select id="project-bind-select">
-                  <option value="">正在加载...</option>
-                </select>
-              </label>
-              <p id="project-binding-status" class="section-hint">选择一个项目后绑定到当前会话。</p>
-              <div class="button-row compact-button-row">
-                <button id="bind-project-button" class="ghost-button" type="button">绑定到当前会话</button>
-              </div>
+              <p id="project-binding-status" class="section-hint">选择一个 Room 后显示其 Project。</p>
             </section>
 
             <div class="conversation-agent-section">
@@ -501,113 +489,6 @@
               <button id="delete-conversation-button" class="ghost-button danger" type="button">删除对话</button>
             </div>
           </div>
-        </div>
-
-        <div role="tabpanel" id="panel-game" class="drawer-panel" aria-labelledby="tab-game" hidden>
-          <section id="undercover-game-card" class="stack-card hidden">
-            <div class="panel-header">
-              <div>
-                <p class="eyebrow">卧底主持台</p>
-                <h2>谁是卧底主持台</h2>
-              </div>
-            </div>
-
-            <div class="undercover-status-card">
-              <div id="undercover-game-status" class="muted">选择谁是卧底房间后，这里会显示全自动对局状态。</div>
-              <div id="undercover-last-result" class="muted"></div>
-            </div>
-
-            <section class="conversation-agent-section">
-              <div class="section-row">
-                <span class="section-label">当前玩家状态</span>
-                <span class="section-hint">后端主持只会调度仍存活的玩家</span>
-              </div>
-              <div id="undercover-player-status" class="undercover-player-grid"></div>
-            </section>
-
-            <form id="undercover-setup-form" class="settings-form compact-settings-form">
-              <div class="two-column-grid">
-                <label>
-                  <span>平民词</span>
-                  <input id="undercover-civilian-word" type="text" maxlength="40" placeholder="例如：苹果" />
-                </label>
-                <label>
-                  <span>卧底词</span>
-                  <input id="undercover-undercover-word" type="text" maxlength="40" placeholder="例如：梨子" />
-                </label>
-              </div>
-
-              <div class="three-column-grid">
-                <label>
-                  <span>卧底人数</span>
-                  <input id="undercover-undercover-count" type="number" min="1" max="6" value="1" />
-                </label>
-                <label>
-                  <span>白板人数</span>
-                  <input id="undercover-blank-count" type="number" min="0" max="3" value="0" />
-                </label>
-                <label>
-                  <span>白板词</span>
-                  <input id="undercover-blank-word" type="text" maxlength="40" placeholder="可留空" />
-                </label>
-              </div>
-
-              <div class="button-row compact-button-row">
-                <button id="undercover-start-button" type="submit">开始全自动新一局</button>
-                <button id="undercover-reset-button" class="ghost-button danger" type="button">重置对局</button>
-              </div>
-            </form>
-
-            <p class="muted">点击开始后，后端会自动完成发言、投票、结算与身份揭晓。</p>
-          </section>
-
-          <section id="werewolf-game-card" class="stack-card hidden">
-            <div class="panel-header">
-              <div>
-                <p class="eyebrow">狼人杀主持台</p>
-                <h2>狼人杀主持台</h2>
-              </div>
-            </div>
-
-            <div class="werewolf-status-card">
-              <div id="werewolf-game-status" class="muted">选择狼人杀房间后，这里会显示全自动对局状态。</div>
-              <div id="werewolf-last-result" class="muted"></div>
-            </div>
-
-            <section class="conversation-agent-section">
-              <div class="section-row">
-                <span class="section-label">当前玩家状态</span>
-                <span class="section-hint">后端主持只会调度仍存活的玩家</span>
-              </div>
-              <div id="werewolf-player-status" class="werewolf-player-grid"></div>
-            </section>
-
-            <form id="werewolf-setup-form" class="settings-form compact-settings-form">
-              <div class="three-column-grid">
-                <label>
-                  <span>狼人数量</span>
-                  <input id="werewolf-count" type="number" min="1" max="6" value="2" />
-                </label>
-                <label>
-                  <span>预言家数量</span>
-                  <input id="werewolf-seer-count" type="number" min="0" max="2" value="1" />
-                </label>
-                <label>
-                  <span>女巫数量</span>
-                  <input id="werewolf-witch-count" type="number" min="0" max="1" value="1" />
-                </label>
-              </div>
-
-              <p class="muted">村民人数将自动补足，且总人数至少需要 4 名玩家。</p>
-
-              <div class="button-row compact-button-row">
-                <button id="werewolf-start-button" type="submit">开始全自动新一局</button>
-                <button id="werewolf-reset-button" class="ghost-button danger" type="button">重置对局</button>
-              </div>
-            </form>
-
-            <p class="muted">点击开始后，后端会自动推进夜晚、白天讨论、投票、结算与身份揭晓。</p>
-          </section>
         </div>
 
         <div role="tabpanel" id="skill-draft-drawer" class="drawer-panel" aria-labelledby="tab-drafts" hidden>
@@ -659,8 +540,8 @@
               <header class="new-conversation-header">
                 <div>
                   <p class="eyebrow">Conversation setup</p>
-                  <h2 id="new-conversation-dialog-title">新建聊天</h2>
-                  <p id="new-conversation-dialog-description" class="muted">确认后才会创建会话并写入最终参与者。</p>
+                  <h2 id="new-conversation-dialog-title">新建 Room</h2>
+                  <p id="new-conversation-dialog-description" class="muted">选择固定的项目、模式与参与者后创建 Room。</p>
                 </div>
                 <button id="new-conversation-close" class="new-conversation-close ghost-button" type="button" aria-label="关闭新建聊天">×</button>
               </header>
@@ -675,9 +556,13 @@
                     <span>房间标题</span>
                     <input id="new-conversation-title" name="title" type="text" maxlength="80" placeholder="例如：模型族协作讨论" />
                   </label>
+                  <label>
+                    <span>Project</span>
+                    <select id="new-conversation-project" required></select>
+                  </label>
                   <label class="new-conversation-normal-only">
-                    <span>会话类型</span>
-                    <select id="new-conversation-type" name="type">
+                    <span>Mode</span>
+                    <select id="new-conversation-type" name="modeId" required>
                       <!-- dynamically populated from /api/bootstrap -->
                     </select>
                   </label>
@@ -689,10 +574,6 @@
                     <label>
                       <span>父会话</span>
                       <input id="new-conversation-parent" type="text" readonly aria-readonly="true" />
-                    </label>
-                    <label>
-                      <span>项目边界</span>
-                      <select id="new-conversation-project"></select>
                     </label>
                     <label>
                       <span>主理 Agent</span>
@@ -741,7 +622,7 @@
                 <p class="new-conversation-selection-summary">已选择 <strong id="new-conversation-selection-count">0</strong> 位</p>
                 <div class="new-conversation-actions">
                   <button id="new-conversation-cancel" class="ghost-button" type="button">取消</button>
-                  <button id="new-conversation-submit" type="submit">创建聊天</button>
+                  <button id="new-conversation-submit" type="submit">创建 Room</button>
                 </div>
               </footer>
             </form>

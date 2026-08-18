@@ -6,8 +6,6 @@ const { DEFAULT_AGENT_DIR, resolveSetting } = require('../../lib/minimal-pi');
 const { createChatAppStore } = require('../../lib/chat-app-store');
 const { createSkillRegistry } = require('../../lib/skill-registry');
 const { createProjectManager } = require('../../lib/project-manager');
-const { createWhoIsUndercoverHost } = require('../../lib/who-is-undercover-game');
-const { createWerewolfHost } = require('../../lib/werewolf-game');
 const { createModeStore } = require('../../lib/mode-store');
 const { createBootstrapPayloadBuilder } = require('../api/bootstrap-payload');
 const { createAgentToolsController } = require('../api/agent-tools-controller');
@@ -27,8 +25,6 @@ const { createModelCatalogController } = require('../api/model-catalog-controlle
 const { createProjectsController } = require('../api/projects-controller');
 const { createModesController } = require('../api/modes-controller');
 const { createSkillsController } = require('../api/skills-controller');
-const { createUndercoverController } = require('../api/undercover-controller');
-const { createWerewolfController } = require('../api/werewolf-controller');
 const { createImageUploadController } = require('../api/image-upload-controller');
 const { createImageUploadService } = require('../../lib/image-upload-service');
 const {
@@ -53,8 +49,6 @@ const {
 const { getPendingConversationExperienceDrafts } = require('../domain/conversation/experience-draft');
 const { maybeAutoCreateConversationSkillDraft } = require('../domain/conversation/skill-draft');
 const { pickConversationSummary } = require('../domain/conversation/conversation-view');
-const { createUndercoverService } = require('../domain/undercover/undercover-service');
-const { createWerewolfService } = require('../domain/werewolf/werewolf-service');
 const { createAgentToolBridge } = require('../domain/runtime/agent-tool-bridge');
 const { createDagScheduler } = require('../domain/dag/dag-scheduler');
 const { prepareNodeWorktree, resolveDagWorktreePath } = require('../../lib/dag-worktree');
@@ -153,7 +147,6 @@ export function createServerApp(options: any = {}) {
   const roleService = createRoleService({ store, modelCatalog });
   const modeStore = createModeStore(store.db);
   const skillRegistry = createSkillRegistry({ agentDir, extraSkillDirs: [] });
-  const undercoverHost = createWhoIsUndercoverHost({ agentDir });
   const sseBus = createSseBus();
   let turnOrchestrator: any = null;
   let dagScheduler: any = null;
@@ -648,6 +641,16 @@ export function createServerApp(options: any = {}) {
           return workdir;
         }
       }
+      if (conversation && String(conversation.worktreePath || '').trim()) {
+        return String(conversation.worktreePath).trim();
+      }
+      if (conversation && String(conversation.projectScopeId || '').trim()) {
+        const project = projectManager.listProjects()
+          .find((candidate: any) => candidate && candidate.id === conversation.projectScopeId);
+        if (project && project.path) {
+          return String(project.path);
+        }
+      }
       return activeProjectDir;
     },
     agentToolBridge,
@@ -936,6 +939,7 @@ export function createServerApp(options: any = {}) {
     client: feishuClient,
     modeStore,
     roleService,
+    projectScopeId: projectManager.getActiveProjectId(),
     ...(Object.prototype.hasOwnProperty.call(options, 'feishuDefaultRoleIds')
       ? { defaultRoleIds: options.feishuDefaultRoleIds }
       : {}),
@@ -944,24 +948,6 @@ export function createServerApp(options: any = {}) {
     feishuService: feishuIntegration,
   });
 
-  const undercoverService = createUndercoverService({
-    store,
-    skillRegistry,
-    undercoverHost,
-    turnOrchestrator,
-    broadcastEvent,
-    broadcastConversationSummary,
-  });
-  const werewolfHost = createWerewolfHost({ agentDir });
-  const werewolfService = createWerewolfService({
-    store,
-    skillRegistry,
-    werewolfHost,
-    turnOrchestrator,
-    broadcastEvent,
-    broadcastConversationSummary,
-    agentDir,
-  });
   let server: any = null;
   const { buildBootstrapPayload, buildConfiguredModelOptions } = createBootstrapPayloadBuilder({
     store,
@@ -989,20 +975,10 @@ export function createServerApp(options: any = {}) {
     isFeishuLongConnectionSdkAvailable,
   });
   const router = createRouter([
-    createHealthController({
-      getHealthStatus,
-    }),
-    createBootstrapController({
-      sseBus,
-      turnOrchestrator,
-      buildBootstrapPayload,
-    }),
-    createFeishuController({
-      feishuService: feishuIntegration,
-    }),
-    createMetricsController({
-      store,
-    }),
+    createHealthController({ getHealthStatus }),
+    createBootstrapController({ sseBus, turnOrchestrator, buildBootstrapPayload }),
+    createFeishuController({ feishuService: feishuIntegration }),
+    createMetricsController({ store }),
     createMemoryController({
       store,
       resolveCurrentTaskName: () => resolveCurrentTrellisTaskName({ startDir: activeProjectDir }),
@@ -1037,51 +1013,24 @@ export function createServerApp(options: any = {}) {
       loadCatalog: options.loadCatalog,
       onCommitted: () => modelCatalog.invalidate(),
     }),
-    createProjectsController({
-      projectManager,
-      syncActiveProject,
-    }),
-    createAgentToolsController({
-      agentToolBridge,
-    }),
+    createProjectsController({ projectManager, syncActiveProject }),
+    createAgentToolsController({ agentToolBridge }),
     createConversationDeliveriesController({
       store,
       deliveryWorker: crossConversationDeliveryWorker,
       onDeliveryAvailable: requestCrossConversationDeliveryDrain,
     }),
-    createModesController({
-      modeStore,
-    }),
-    createSkillsController({
-      store,
-      skillRegistry,
-    }),
-    createAgentsController({
-      store,
-      skillRegistry,
-      roleService,
-    }),
-    createUndercoverController({
-      undercoverService,
-    }),
-    createWerewolfController({
-      werewolfService,
-    }),
-    createConversationPlanController({
-      store,
-      broadcastEvent,
-    }),
+    createModesController({ modeStore }),
+    createSkillsController({ store, skillRegistry }),
+    createAgentsController({ store, skillRegistry, roleService }),
+    createConversationPlanController({ store, broadcastEvent }),
     createConversationsController({
       store,
       conversationSpawnService,
       roleService,
       skillRegistry,
       projectManager,
-      undercoverHost,
-      werewolfHost,
       turnOrchestrator,
-      undercoverService,
-      werewolfService,
       buildBootstrapPayload,
       modeStore,
       broadcastEvent,
