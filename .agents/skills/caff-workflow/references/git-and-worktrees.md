@@ -33,15 +33,19 @@ git worktree list --porcelain
 git check-ref-format --branch room/<id>-<slug>
 ```
 
-Then, from the repository root:
+Choose and record the exact base SHA without changing the persistent acceptance worktree:
 
 ```text
 git fetch origin
-git -C ../worktrees/develop merge --ff-only origin/develop
-git worktree add -b room/<id>-<slug> ../worktrees/room/<id>-<slug> develop
+git rev-parse develop
+# Only when the remote-tracking ref exists:
+git show-ref --verify --quiet refs/remotes/origin/develop && git rev-parse origin/develop
+git worktree add -b room/<id>-<slug> ../worktrees/room/<id>-<slug> <verified-develop-sha>
 ```
 
-If no remote `develop` has been authorized/published yet, use the verified local `develop`. Never silently reset it. DAG nodes keep CAFF's existing `.worktrees/dag/<plan>/<node>/` convention, but every writable node still needs a unique derived branch.
+Use local `develop` by default because it is the current integration baseline. If `origin/develop` exists and differs, report both SHAs and stop for a base decision; if it does not exist, report that fact and use the verified local SHA. Do not merge, pull, reset, checkout, or otherwise advance the persistent acceptance worktree as a side effect of room creation. Updating that worktree is a separate integration/acceptance operation requiring explicit authorization plus clean-status and running-instance checks.
+
+If no remote `develop` has been authorized/published yet, use the verified local `develop`. DAG nodes keep CAFF's existing `.worktrees/dag/<plan>/<node>/` convention, but every writable node still needs a unique derived branch.
 
 ## Integrate a normal room
 
@@ -53,7 +57,7 @@ When no hosting gate exists, an equivalent local merge still requires recorded c
 git -C ../worktrees/develop merge --no-ff room/<id>-<slug>
 ```
 
-Do not claim technical branch protection when this is only a documented procedure. Protect `main` and `develop` against direct pushes, force pushes, deletion, and approval bypass when the hosting platform supports it.
+Do not claim technical branch protection when this is only a documented procedure. `main` and `develop` accept no implementation commits or direct pushes; only explicitly authorized, reviewed PR merges (or the recorded local equivalent above) may update them. Protect both branches against force pushes, deletion, and approval bypass when the hosting platform supports it.
 
 An acceptance fix is committed to the same room branch, reviewed, and merged to `develop` again with `--no-ff`. If the change must be removed, revert its merge commit; do not rewrite shared history.
 

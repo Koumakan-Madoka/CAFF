@@ -3,7 +3,7 @@
 ## Intake and pre-write gate
 
 - [ ] Classified as Discussion, Change, or Operations.
-- [ ] Loaded `caff-workflow`; for state changes, loaded `grill-with-docs`.
+- [ ] Loaded `caff-workflow` and completed its tracked `grill-with-docs` protocol; loaded an optional richer local Skill if available.
 - [ ] User confirmed goal, non-goals, constraints, and acceptance evidence.
 - [ ] Declared Direct/Goal/DAG with reason; Goal/DAG explicitly approved.
 - [ ] Change room has unique conversation-ID-based branch/worktree; Operations uses the designated persistent worktree.
@@ -68,4 +68,4 @@ Only the user's explicit acceptance changes `candidate_sha` into `accepted_sha`.
 
 ## Mandatory stop conditions
 
-Stop and ask when a worktree/branch belongs to another room, a target is dirty, a port owner is unknown, environment separation is incomplete, acceptance SHA is ambiguous, review independence is unavailable, a requested cleanup can lose work, or instructions would modify `main`/`develop` directly.
+Stop and ask when a worktree/branch belongs to another room, a target is dirty, a port owner is unknown, environment separation is incomplete, acceptance SHA is ambiguous, review independence is unavailable, a requested cleanup can lose work, or instructions would add implementation commits/direct pushes to `main` or `develop`. Authorized reviewed merge commits follow the integration and release gates above.

@@ -9,7 +9,7 @@ Use this skill before the first state-changing action. It is a procedural guardr
 
 ## Non-negotiable gates
 
-1. Do not change state until the user confirms shared understanding from `grill-with-docs`.
+1. Do not change state until the user confirms shared understanding from the project-owned `grill-with-docs` protocol below.
 2. Do not edit tracked files until the conversation owns one unique branch and worktree. Never implement in `main` or `develop`.
 3. Do not start an instance until its port, `PI_SQLITE_PATH`, logs, credentials, and side effects are isolated.
 4. Do not merge without checks, evidence, and a reviewer other than the author.
@@ -22,9 +22,18 @@ Use this skill before the first state-changing action. It is a procedural guardr
 - **Change**: modifies tracked files, code, documentation, templates, or schemas. It requires a unique `room/<conversation-id-short>-<slug>` branch and worktree.
 - **Operations**: only starts, stops, or observes an existing production or acceptance instance. Use its persistent worktree; do not modify tracked files. Confirm local ignored configuration before writing it. Any implementation work transitions to Change.
 
-## Clarify and choose execution mode
+## Clarify with docs and choose execution mode
 
-Load `grill-with-docs`. Establish goal, non-goals, constraints, acceptance evidence, and unresolved decisions. A clear atomic request may close after one confirmation round; do not ask questions merely to increase the count.
+Run this project-owned `grill-with-docs` protocol; it is always available from this tracked Skill and does not depend on a local sandbox Skill:
+
+1. Research repository/environment facts yourself; do not ask the user for facts you can inspect.
+2. Build a design tree. In each round, ask the whole currently unblocked frontier, number every decision, and include a recommended answer with tradeoffs.
+3. Establish the goal, non-goals, constraints, acceptance evidence, terminology, and unresolved decisions. Challenge vague terms and verify claims against code.
+4. Recompute the frontier after each answer. Do not implement while any decision required for safe execution remains open.
+5. Capture a glossary or ADR only when requested or genuinely useful; creating either is itself repository state change and waits for workspace binding.
+6. Summarize the resulting shared understanding and obtain explicit user confirmation before the first state-changing action.
+
+If an installed `grill-with-docs` Skill is discoverable, load it for richer guidance, but never stop merely because that optional local Skill is absent. A clear atomic request may close after one confirmation round; do not ask questions merely to increase the count.
 
 Declare the mode and reason publicly:
 
