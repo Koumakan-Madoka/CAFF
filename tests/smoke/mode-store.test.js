@@ -80,7 +80,37 @@ test('ModeStore destructively removes legacy product Room subtrees, deliveries, 
     INSERT INTO chat_cross_conversation_delivery_events (delivery_id, event_type, created_at)
     VALUES (?, ?, ?)
   `).run('legacy-delivery', 'created', ts);
-  db.exec('CREATE TABLE skill_test_cases (id TEXT); CREATE TABLE eval_cases (id TEXT);');
+  db.exec(`
+    CREATE TABLE skill_test_cases (id TEXT PRIMARY KEY);
+    CREATE TABLE skill_test_runs (
+      id TEXT PRIMARY KEY,
+      test_case_id TEXT NOT NULL,
+      FOREIGN KEY (test_case_id) REFERENCES skill_test_cases(id)
+    );
+    CREATE TABLE skill_test_chain_runs (id TEXT PRIMARY KEY);
+    CREATE TABLE skill_test_chain_run_steps (
+      id TEXT PRIMARY KEY,
+      chain_run_id TEXT NOT NULL,
+      test_case_id TEXT NOT NULL,
+      FOREIGN KEY (chain_run_id) REFERENCES skill_test_chain_runs(id),
+      FOREIGN KEY (test_case_id) REFERENCES skill_test_cases(id)
+    );
+    CREATE TABLE skill_test_environment_assets (id TEXT PRIMARY KEY);
+    CREATE TABLE eval_cases (id TEXT PRIMARY KEY);
+    CREATE TABLE eval_case_runs (
+      id TEXT PRIMARY KEY,
+      case_id TEXT NOT NULL,
+      FOREIGN KEY (case_id) REFERENCES eval_cases(id) ON DELETE CASCADE
+    );
+    INSERT INTO skill_test_cases (id) VALUES ('legacy-case');
+    INSERT INTO skill_test_runs (id, test_case_id) VALUES ('legacy-run', 'legacy-case');
+    INSERT INTO skill_test_chain_runs (id) VALUES ('legacy-chain');
+    INSERT INTO skill_test_chain_run_steps (id, chain_run_id, test_case_id)
+      VALUES ('legacy-step', 'legacy-chain', 'legacy-case');
+    INSERT INTO skill_test_environment_assets (id) VALUES ('legacy-environment');
+    INSERT INTO eval_cases (id) VALUES ('legacy-eval');
+    INSERT INTO eval_case_runs (id, case_id) VALUES ('legacy-eval-run', 'legacy-eval');
+  `);
 
   const store = new ModeStore(db);
   try {
@@ -97,7 +127,17 @@ test('ModeStore destructively removes legacy product Room subtrees, deliveries, 
       WHERE type = 'trigger' AND name = 'chat_cross_delivery_events_append_only_delete'
     `).get());
     const names = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((row) => row.name);
-    assert.ok(!names.includes('skill_test_cases'));
-    assert.ok(!names.includes('eval_cases'));
+    for (const retiredTableName of [
+      'skill_test_chain_run_steps',
+      'skill_test_runs',
+      'skill_test_chain_runs',
+      'skill_test_environment_assets',
+      'skill_test_cases',
+      'eval_case_runs',
+      'eval_cases',
+    ]) {
+      assert.ok(!names.includes(retiredTableName), `${retiredTableName} must be dropped`);
+    }
+    assert.deepEqual(db.pragma('foreign_key_check'), []);
   } finally { db.close(); }
 });

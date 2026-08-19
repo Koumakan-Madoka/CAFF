@@ -308,8 +308,19 @@ export class ModeStore {
           this.deleteStatement.run(modeId);
         }
       }
-      for (const tableName of ['skill_test_cases', 'eval_cases']) {
-        const safeName = tableName === 'skill_test_cases' ? 'skill_test_cases' : 'eval_cases';
+      // Legacy Skill Test tables may still exist in user databases with child
+      // tables that reference the case/eval parent tables. Drop dependents
+      // first so SQLite foreign-key enforcement cannot reject the retirement.
+      for (const tableName of [
+        'skill_test_chain_run_steps',
+        'skill_test_runs',
+        'skill_test_chain_runs',
+        'skill_test_environment_assets',
+        'skill_test_cases',
+        'eval_case_runs',
+        'eval_cases',
+      ]) {
+        const safeName = tableName.replace(/[^a-z0-9_]/gi, '');
         this.db.exec(`DROP TABLE IF EXISTS ${safeName}`);
       }
     });
