@@ -79,6 +79,12 @@
           <button class="icon-btn" id="sidebarToggle" type="button" aria-label="打开会话栏" aria-expanded="false"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-menu"></use></svg></button>
           <div class="titles">
             <h2 id="conversation-title-display">正在加载...</h2>
+            <div id="conversation-workspace-context" class="conversation-workspace-context" role="status" aria-live="polite" aria-label="当前 Room 工作区">
+              <span class="workspace-context-label">工作区</span>
+              <span id="conversation-workspace-branch" class="workspace-context-value">未绑定 branch</span>
+              <span class="workspace-context-separator" aria-hidden="true">·</span>
+              <span id="conversation-workspace-path" class="workspace-context-value">未绑定 worktree</span>
+            </div>
           </div>
           <span id="connection-dot" class="connection-dot" data-status="connecting" role="status" aria-label="连接状态" title="正在连接本地服务..."></span>
           <p id="conversation-mode-badge" class="mode-pill hidden"></p>

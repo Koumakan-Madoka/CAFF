@@ -55,7 +55,27 @@
       const activeAgentSlots = conversation ? activeAgentSlotsForConversation(conversation.id) : [];
       clearLiveDraftFinalizingTimer();
 
+      function renderWorkspaceContext(conversation) {
+        const branch = conversation && String(conversation.branch || '').trim();
+        const worktreePath = conversation && String(conversation.worktreePath || '').trim();
+        if (dom.conversationWorkspaceBranch) {
+          dom.conversationWorkspaceBranch.textContent = branch || '未绑定 branch';
+          dom.conversationWorkspaceBranch.title = branch || '当前 Room 尚未绑定 branch';
+          dom.conversationWorkspaceBranch.classList.toggle('is-bound', Boolean(branch));
+        }
+        if (dom.conversationWorkspacePath) {
+          dom.conversationWorkspacePath.textContent = worktreePath || '未绑定 worktree';
+          dom.conversationWorkspacePath.title = worktreePath || '当前 Room 尚未绑定 worktree';
+          dom.conversationWorkspacePath.classList.toggle('is-bound', Boolean(worktreePath));
+        }
+        if (dom.conversationWorkspaceContext) {
+          dom.conversationWorkspaceContext.classList.toggle('is-bound', Boolean(branch && worktreePath));
+          dom.conversationWorkspaceContext.classList.toggle('is-unbound', !(branch && worktreePath));
+        }
+      }
+
       if (!conversation) {
+        renderWorkspaceContext(null);
         dom.conversationTitleDisplay.textContent = '请选择一个 Room';
         if (dom.conversationModeBadge) {
           dom.conversationModeBadge.classList.add('hidden');
@@ -75,6 +95,7 @@
         return;
       }
 
+      renderWorkspaceContext(conversation);
       dom.conversationTitleDisplay.textContent = conversation.title;
       if (dom.conversationModeBadge) {
         dom.conversationModeBadge.classList.remove('hidden', 'game');

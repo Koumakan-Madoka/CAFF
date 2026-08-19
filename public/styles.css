@@ -4124,7 +4124,57 @@ body.chat-app .chat-header .titles {
   gap: 1px;
 }
 
-body.chat-app .chat-header h2 {
+body.chat-app .chat-header .titles {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow: hidden;
+}
+
+body.chat-app .conversation-workspace-context {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: min(72vw, 760px);
+  color: var(--caff-ink-soft);
+  font-size: 11px;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+body.chat-app .workspace-context-label {
+  flex-shrink: 0;
+  color: var(--caff-accent-deep);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+body.chat-app .workspace-context-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+body.chat-app .conversation-workspace-context.is-bound .workspace-context-value.is-bound {
+  color: var(--caff-ink);
+  font-weight: 600;
+}
+
+body.chat-app .conversation-workspace-context.is-unbound {
+  color: var(--caff-warning-ink, #9a6700);
+}
+
+body.chat-app .workspace-context-separator {
+  flex-shrink: 0;
+  opacity: .55;
+}
+
   margin: 0;
   font-size: 17px;
   white-space: nowrap;
