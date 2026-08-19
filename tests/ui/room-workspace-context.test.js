@@ -6,6 +6,7 @@ const { JSDOM } = require('jsdom');
 
 const ROOT = path.join(__dirname, '..', '..');
 const INDEX_HTML = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
+const STYLES_CSS = fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8');
 
 function boot(conversation) {
   const dom = new JSDOM(INDEX_HTML, { url: 'http://localhost/', runScripts: 'outside-only' });
@@ -68,6 +69,11 @@ function boot(conversation) {
 function room(overrides = {}) {
   return { id: 'room-1', title: '验收 Room', agents: [], privateMessages: [], ...overrides };
 }
+
+test('Room workspace header preserves the chat title CSS rule', () => {
+  assert.match(STYLES_CSS, /body\.chat-app \.chat-header h2\s*\{[\s\S]*?margin:\s*0;/);
+  assert.equal((STYLES_CSS.match(/body\.chat-app \.chat-header \.titles\s*\{/g) || []).length, 1);
+});
 
 test('Room header visibly shows bound branch and worktree', () => {
   const { document } = boot(room({ branch: 'room/demo', worktreePath: 'E:/worktrees/room/demo' }));

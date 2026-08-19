@@ -4120,13 +4120,6 @@ body.chat-app .chat-header {
 body.chat-app .chat-header .titles {
   min-width: 0;
   flex: 1;
-  display: grid;
-  gap: 1px;
-}
-
-body.chat-app .chat-header .titles {
-  min-width: 0;
-  flex: 1;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -4175,6 +4168,7 @@ body.chat-app .workspace-context-separator {
   opacity: .55;
 }
 
+body.chat-app .chat-header h2 {
   margin: 0;
   font-size: 17px;
   white-space: nowrap;
