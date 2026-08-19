@@ -7,6 +7,7 @@ const { JSDOM } = require('jsdom');
 const ROOT = path.join(__dirname, '..', '..');
 const INDEX_HTML = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8');
 const STYLES_CSS = fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8');
+const APP_JS = fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8');
 
 function boot(conversation) {
   const dom = new JSDOM(INDEX_HTML, { url: 'http://localhost/', runScripts: 'outside-only' });
@@ -78,6 +79,10 @@ test('workspace authorization cards are rendered inside the message flow and use
   assert.match(STYLES_CSS, /body\.chat-app \.new-conversation-role-badge\.warning[\s\S]*background: var\(--caff-warning-soft\)[\s\S]*color: var\(--caff-warning\)/u);
 });
 
+test('workspace authorization response merges the header without replacing loaded history', () => {
+  assert.match(APP_JS, /mergeConversationSummary\(result\.conversation\);\s*renderAll\(\);/u);
+  assert.doesNotMatch(APP_JS, /state\.currentConversation\s*=\s*\{\s*\.\.\.state\.currentConversation,\s*\.\.\.result\.conversation\s*\};\s*mergeConversationSummary\(result\.conversation\);/u);
+});
 test('Room workspace header preserves the chat title CSS rule', () => {
   assert.match(STYLES_CSS, /body\.chat-app \.chat-header h2\s*\{[\s\S]*?margin:\s*0;/);
   assert.equal((STYLES_CSS.match(/body\.chat-app \.chat-header \.titles\s*\{/g) || []).length, 1);

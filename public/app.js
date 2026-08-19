@@ -3683,7 +3683,10 @@ async function decideWorkspaceAuthorization(authorizationId, decision) {
     });
     applyWorkspaceAuthorizationEvent({ conversationId, authorization: result.authorization });
     if (state.selectedConversationId === conversationId && result.conversation) {
-      state.currentConversation = { ...state.currentConversation, ...result.conversation };
+      // Workspace authorization returns a conversation header (without messages).
+      // Merge it through the summary path so the already-rendered history is not
+      // replaced by the header's empty `messages` array. A subsequent refresh
+      // used to make the history reappear, which looked like a new Room.
       mergeConversationSummary(result.conversation);
       renderAll();
     }
