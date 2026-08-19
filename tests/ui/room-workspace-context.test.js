@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const vm = require('node:vm');
 const { JSDOM } = require('jsdom');
 
 const ROOT = path.join(__dirname, '..', '..');
@@ -80,8 +81,33 @@ test('workspace authorization cards are rendered inside the message flow and use
 });
 
 test('workspace authorization response merges the header without replacing loaded history', () => {
+  assert.match(APP_JS, /const projection = \{ \.\.\.summary \};\s*delete projection\.messages;/u);
   assert.match(APP_JS, /mergeConversationSummary\(result\.conversation\);\s*renderAll\(\);/u);
   assert.doesNotMatch(APP_JS, /state\.currentConversation\s*=\s*\{\s*\.\.\.state\.currentConversation,\s*\.\.\.result\.conversation\s*\};\s*mergeConversationSummary\(result\.conversation\);/u);
+});
+
+test('summary merge ignores an empty messages projection at runtime', () => {
+  const start = APP_JS.indexOf('function mergeConversationSummary(summary) {');
+  const end = APP_JS.indexOf('\nfunction applyNewConversationResult(result) {', start);
+  assert.ok(start >= 0 && end > start);
+  const history = [{ id: 'message-1', content: '历史消息' }];
+  const state = {
+    conversations: [{ id: 'room-1', title: '旧标题' }],
+    currentConversation: { id: 'room-1', title: '旧标题', messages: history },
+    conversationDirectory: {
+      query: '',
+      mergeItems: (items, incoming) => items.map((item) => ({ ...item, ...incoming.find((next) => next.id === item.id) })),
+      sortByActivity: (items) => items,
+    },
+  };
+  const mergeConversationSummary = vm.runInNewContext(`(${APP_JS.slice(start, end)})`, {
+    state,
+    conversationDirectory: state.conversationDirectory,
+  });
+  mergeConversationSummary({ id: 'room-1', title: '新标题', messages: [] });
+  assert.deepEqual(state.currentConversation.messages, history);
+  assert.equal(state.currentConversation.title, '新标题');
+  assert.equal(Object.prototype.hasOwnProperty.call(state.conversations[0], 'messages'), false);
 });
 test('Room workspace header preserves the chat title CSS rule', () => {
   assert.match(STYLES_CSS, /body\.chat-app \.chat-header h2\s*\{[\s\S]*?margin:\s*0;/);

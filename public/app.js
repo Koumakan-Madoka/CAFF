@@ -3544,28 +3544,35 @@ function mergeConversationSummary(summary) {
     return;
   }
 
+  // Conversation headers returned by mutation endpoints may include an empty
+  // messages array. A summary merge must never replace the history already
+  // loaded for the selected Room; full message replacement is owned by the
+  // explicit conversation-loading paths below.
+  const projection = { ...summary };
+  delete projection.messages;
+
   const directory = state.conversationDirectory;
-  const existing = state.conversations.find((item) => item.id === summary.id);
+  const existing = state.conversations.find((item) => item.id === projection.id);
   if (existing) {
     state.conversations = conversationDirectory.sortByActivity(
-      conversationDirectory.mergeItems(state.conversations, [summary])
+      conversationDirectory.mergeItems(state.conversations, [projection])
     );
     if (directory) {
       directory.items = state.conversations;
     }
   } else if (!directory || !directory.query) {
     state.conversations = conversationDirectory.sortByActivity(
-      conversationDirectory.mergeItems(state.conversations, [summary])
+      conversationDirectory.mergeItems(state.conversations, [projection])
     );
     if (directory) {
       directory.items = state.conversations;
     }
   }
 
-  if (state.currentConversation && state.currentConversation.id === summary.id) {
+  if (state.currentConversation && state.currentConversation.id === projection.id) {
     state.currentConversation = {
       ...state.currentConversation,
-      ...summary,
+      ...projection,
     };
   }
 }
