@@ -27,6 +27,8 @@ const state = {
   messageToolTraceById: new Map(),
   messageToolTraceTimers: new Map(),
   optimisticMessagesByConversation: new Map(),
+  workspaceAuthorizationCardsByConversation: new Map(),
+  bindingWorkspaceAuthorizationIds: new Set(),
   digestStatusByConversation: new Map(),
   crossConversationDeliveryBundles: new Map(),
   bindingFeishuChat: false,
@@ -121,6 +123,7 @@ const dom = {
   conversationWorkspaceContext: /** @type {HTMLElement | null} */ (document.getElementById('conversation-workspace-context')),
   conversationWorkspaceBranch: /** @type {HTMLElement | null} */ (document.getElementById('conversation-workspace-branch')),
   conversationWorkspacePath: /** @type {HTMLElement | null} */ (document.getElementById('conversation-workspace-path')),
+  workspaceAuthorizationCards: /** @type {HTMLElement | null} */ (document.getElementById('workspace-authorization-cards')),
   conversationModeBadge: /** @type {HTMLElement | null} */ (document.getElementById('conversation-mode-badge')),
   conversationMeta: /** @type {HTMLElement | null} */ (document.getElementById('conversation-meta')),
   skillDraftToggleButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('skill-draft-toggle-button')),
@@ -3450,6 +3453,8 @@ async function loadConversation(conversationId) {
     ...data.conversation,
     messages,
   };
+  renderWorkspaceAuthorizationCards();
+  void loadWorkspaceAuthorizationCards(normalizedConversationId);
   await hydrateCrossConversationDeliveries(state.currentConversation);
   pruneOptimisticMessagesForConversation(normalizedConversationId, messages);
   closeMentionMenu();
@@ -3593,6 +3598,7 @@ function applyNewConversationResult(result) {
     }),
   };
   renderAll();
+  void loadWorkspaceAuthorizationCards(result.conversation.id);
   syncToolTraceStatesWithConversation(state.currentConversation);
 }
 
@@ -3645,6 +3651,101 @@ async function refreshConversationFromEvent(conversationId) {
   } catch {}
 }
 
+async function loadWorkspaceAuthorizationCards(conversationId) {
+  const normalizedConversationId = String(conversationId || '').trim();
+  if (!normalizedConversationId) return;
+  try {
+    const result = await fetchJson(`/api/conversations/${encodeURIComponent(normalizedConversationId)}/workspace/authorizations`);
+    state.workspaceAuthorizationCardsByConversation.set(
+      normalizedConversationId,
+      Array.isArray(result && result.authorizations) ? result.authorizations : []
+    );
+    if (state.selectedConversationId === normalizedConversationId) renderWorkspaceAuthorizationCards();
+  } catch {}
+}
+
+async function decideWorkspaceAuthorization(authorizationId, decision) {
+  const conversationId = String(state.selectedConversationId || '').trim();
+  const requestKey = `${conversationId}:${authorizationId}`;
+  if (!conversationId || state.bindingWorkspaceAuthorizationIds.has(requestKey)) return;
+  const cards = state.workspaceAuthorizationCardsByConversation.get(conversationId) || [];
+  const authorization = cards.find((item) => item && item.id === authorizationId);
+  if (!authorization || !authorization.token || !authorization.fingerprint) {
+    showToast('授权卡片已失效，请让 Agent 重新预览');
+    return;
+  }
+  state.bindingWorkspaceAuthorizationIds.add(requestKey);
+  renderWorkspaceAuthorizationCards();
+  try {
+    const result = await fetchJson(`/api/conversations/${encodeURIComponent(conversationId)}/workspace/authorizations/${encodeURIComponent(authorizationId)}/decision`, {
+      method: 'POST',
+      body: { token: authorization.token, fingerprint: authorization.fingerprint, decision },
+    });
+    applyWorkspaceAuthorizationEvent({ conversationId, authorization: result.authorization });
+    if (state.selectedConversationId === conversationId && result.conversation) {
+      state.currentConversation = { ...state.currentConversation, ...result.conversation };
+      mergeConversationSummary(result.conversation);
+      renderAll();
+    }
+    showToast(decision === 'accepted' ? '工作区已绑定' : '已拒绝工作区绑定');
+  } catch (error) {
+    showToast(error && error.message ? error.message : '工作区授权失败');
+  } finally {
+    state.bindingWorkspaceAuthorizationIds.delete(requestKey);
+    renderWorkspaceAuthorizationCards();
+  }
+}
+
+function renderWorkspaceAuthorizationCards() {
+    const container = dom.workspaceAuthorizationCards;
+    if (!container) return;
+    container.replaceChildren();
+    const conversationId = state.selectedConversationId;
+    const cards = conversationId ? state.workspaceAuthorizationCardsByConversation.get(conversationId) || [] : [];
+    cards.filter((item) => item && (item.status === 'pending' || item.status === 'accepted' || item.status === 'rejected' || item.status === 'expired' || item.status === 'failed')).forEach((authorization) => {
+      const card = document.createElement('section');
+      card.className = `workspace-authorization-card ${authorization.status}`;
+      const title = document.createElement('strong');
+      const statusLabels = {
+        accepted: '已绑定',
+        rejected: '已拒绝',
+        expired: '已过期',
+        failed: '绑定失败',
+      };
+      title.textContent = authorization.status === 'pending'
+        ? 'Agent 请求绑定 Room 工作区'
+        : `工作区授权：${statusLabels[authorization.status] || authorization.status}`;
+      const details = document.createElement('p');
+      details.textContent = `${authorization.branch || '-'} · ${authorization.worktreePath || '-'} · 基线 ${authorization.baseSha || '-'}`;
+      card.append(title, details);
+      if (authorization.status === 'pending') {
+        const actions = document.createElement('div');
+        actions.className = 'button-row compact-button-row';
+        for (const [decision, label] of [['accepted', '授权绑定'], ['rejected', '拒绝']] ) {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.textContent = label;
+          button.dataset.workspaceAuthorizationDecision = decision;
+          button.dataset.workspaceAuthorizationId = authorization.id;
+          button.disabled = state.bindingWorkspaceAuthorizationIds.has(`${conversationId}:${authorization.id}`);
+          actions.appendChild(button);
+        }
+        card.appendChild(actions);
+      }
+      container.appendChild(card);
+    });
+  }
+
+function applyWorkspaceAuthorizationEvent(payload) {
+    if (!payload || !payload.conversationId || !payload.authorization) return;
+    const id = String(payload.conversationId);
+    const next = payload.authorization;
+    const cards = state.workspaceAuthorizationCardsByConversation.get(id) || [];
+    const index = cards.findIndex((item) => item && item.id === next.id);
+    if (index === -1) cards.push(next); else cards[index] = { ...cards[index], ...next };
+    state.workspaceAuthorizationCardsByConversation.set(id, cards);
+    if (state.selectedConversationId === id) renderWorkspaceAuthorizationCards();
+  }
 function scheduleConversationRefresh(conversationId) {
   if (!conversationId || state.selectedConversationId !== conversationId) {
     return;
@@ -3847,6 +3948,10 @@ function connectEventStream() {
       mergeConversationSummary(payload.summary);
     }
     scheduleConversationRefresh(payload.conversationId);
+  });
+
+  source.addEventListener('room_workspace_authorization_updated', (event) => {
+    applyWorkspaceAuthorizationEvent(JSON.parse(event.data));
   });
 
   source.addEventListener('conversation_tool_event', (event) => {
@@ -4165,6 +4270,19 @@ function bindEvents() {
       conversationListRenderer.cancelRename();
     }
   });
+
+  if (dom.workspaceAuthorizationCards) {
+    dom.workspaceAuthorizationCards.addEventListener('click', async (event) => {
+      const button = event.target instanceof Element
+        ? /** @type {HTMLButtonElement | null} */ (event.target.closest('[data-workspace-authorization-decision]'))
+        : null;
+      if (!button || !state.selectedConversationId) return;
+      await decideWorkspaceAuthorization(
+        button.dataset.workspaceAuthorizationId || '',
+        button.dataset.workspaceAuthorizationDecision || ''
+      );
+    });
+  }
 
   dom.messageList.addEventListener('click', async (event) => {
     if (!state.currentConversation) {

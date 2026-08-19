@@ -74,7 +74,8 @@ Persisted Conversation fields:
 - `workspace_bound_at TEXT NULL`
 
 - Model-visible Room workspace capability facades are defined in `server/domain/runtime/pi-capability-bridge.ts` and wired by `server/domain/runtime/agent-tool-bridge.ts`.
-- `room_workspace_preview` accepts `{}` only and is read-only; `room_workspace_bind` accepts `{ confirm: true }` only. Both derive Room identity from the authenticated invocation principal and never accept a conversation id, branch, path, repository, or base ref from the model.
+- `room_workspace_preview` accepts `{}` and is read-only; when unbound it issues a short-lived authorization-card request. The UI lists pending requests at `GET /api/conversations/:conversationId/workspace/authorizations` and renders a system card; user decisions use a one-time token plus preview fingerprint at `POST /api/conversations/:conversationId/workspace/authorizations/:authorizationId/decision`. The normal UI path performs binding directly after user approval, so the model does not need a second bind turn.
+- `room_workspace_bind` remains a non-UI fallback and accepts `{ confirm: true }` only. Both capabilities derive Room identity from the authenticated invocation principal and never accept a conversation id, branch, path, repository, or base ref from the model.
 - Git creation and Conversation CAS persistence are shared through `bindAndPersistRoomWorkspace(...)`; persistence failure rolls back only artifacts created by that request.
 
 

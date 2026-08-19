@@ -4234,6 +4234,31 @@ body.chat-app .skill-draft-alert {
 }
 
 /* ── Message list（唯一长滚动区） ── */
+body.chat-app .workspace-authorization-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 16px 0;
+}
+
+body.chat-app .workspace-authorization-card {
+  border: 1px solid var(--border-strong, #b9c2d0);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: var(--surface-raised, #fff);
+  box-shadow: 0 2px 10px rgb(30 41 59 / 8%);
+}
+
+body.chat-app .workspace-authorization-card.pending {
+  border-color: var(--accent, #2563eb);
+}
+
+body.chat-app .workspace-authorization-card p {
+  margin: 5px 0 8px;
+  overflow-wrap: anywhere;
+  color: var(--text-muted, #64748b);
+}
+
 body.chat-app .message-viewport {
   position: relative;
   flex: 1;

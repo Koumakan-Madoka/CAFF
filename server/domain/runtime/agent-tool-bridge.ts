@@ -15,6 +15,10 @@ const {
   previewRoomWorkspace,
 } = require('../conversation/room-workspace');
 const {
+  RoomWorkspaceAuthorizationStore,
+  previewFingerprint,
+} = require('../conversation/room-workspace-authorization');
+const {
   createConversationCapabilityDefinitions,
   createPiCapabilityBridge,
   createRoomWorkspaceCapabilityDefinitions,
@@ -367,6 +371,7 @@ export function createAgentToolBridge(options: any = {}) {
   const resolveProject = typeof options.resolveProject === 'function' ? options.resolveProject : () => null;
   let piCapabilityBridge = options.piCapabilityBridge || null;
   const activeInvocations = new Map();
+  const workspaceAuthorizations = options.workspaceAuthorizations || new RoomWorkspaceAuthorizationStore();
 
   function resolveStageTaskId(context: any) {
     const taskId = context && context.stage && context.stage.taskId ? String(context.stage.taskId).trim() : '';
@@ -1221,7 +1226,24 @@ export function createAgentToolBridge(options: any = {}) {
       throw createHttpError(404, 'Room Project not found', { code: 'room_project_not_found' });
     }
     if (kind === 'preview') {
-      return previewRoomWorkspace({ conversation, project });
+      const preview = previewRoomWorkspace({ conversation, project });
+      if (!preview.alreadyBound) {
+        const authorization = workspaceAuthorizations.issue({
+          conversation,
+          preview,
+          invocationId: principal.invocationId,
+        });
+        if (authorization) {
+          const clientAuthorization = workspaceAuthorizations.clientRecord(
+            workspaceAuthorizations.records.get(authorization.id)
+          );
+          broadcastEvent('room_workspace_authorization_updated', {
+            conversationId,
+            authorization: clientAuthorization,
+          });
+        }
+      }
+      return preview;
     }
 
     const result = bindAndPersistRoomWorkspace({
@@ -1232,6 +1254,62 @@ export function createAgentToolBridge(options: any = {}) {
     });
     broadcastConversationSummary(conversationId);
     return result.workspace;
+  }
+
+  function handleRoomWorkspaceAuthorization(input: any = {}) {
+    const conversationId = String(input.conversationId || '').trim();
+    const authorizationId = String(input.authorizationId || '').trim();
+    const token = String(input.token || '').trim();
+    const decision = String(input.decision || '').trim().toLowerCase();
+    const fingerprint = String(input.fingerprint || '').trim();
+    if (!conversationId || !authorizationId || !token || !fingerprint) {
+      throw createHttpError(400, 'Workspace authorization fields are required', {
+        code: 'room_workspace_authorization_invalid_request',
+      });
+    }
+    const conversation = store.getConversationWithoutMessages(conversationId);
+    if (!conversation) {
+      throw createHttpError(404, 'Conversation not found', { code: 'room_workspace_conversation_not_found' });
+    }
+    const project = resolveProject(conversation.projectScopeId);
+    if (!project) {
+      throw createHttpError(404, 'Room Project not found', { code: 'room_project_not_found' });
+    }
+    return workspaceAuthorizations.decide({
+      id: authorizationId,
+      token,
+      conversationId,
+      decision,
+      fingerprint,
+      execute: async () => {
+        const currentConversation = store.getConversationWithoutMessages(conversationId) || conversation;
+        const currentPreview = previewRoomWorkspace({ conversation: currentConversation, project });
+        if (previewFingerprint(currentPreview) !== fingerprint) {
+          throw createHttpError(409, 'Workspace preview changed; request a new authorization card', {
+            code: 'room_workspace_authorization_stale',
+          });
+        }
+        const result = bindAndPersistRoomWorkspace({
+          store,
+          conversation: currentConversation,
+          project,
+          workspaceBoundAt: nowIso(),
+        });
+        broadcastConversationSummary(conversationId);
+        broadcastEvent('room_workspace_authorization_updated', {
+          conversationId,
+          authorization: { id: authorizationId, status: 'accepted', result: result.workspace },
+        });
+        return result;
+      },
+    });
+  }
+  function listRoomWorkspaceAuthorizations(conversationId: any) {
+    const conversation = store.getConversationWithoutMessages(String(conversationId || '').trim());
+    if (!conversation) {
+      throw createHttpError(404, 'Conversation not found', { code: 'room_workspace_conversation_not_found' });
+    }
+    return workspaceAuthorizations.listForClient(conversation.id);
   }
 
   function resolvePiCapabilityBridge() {
@@ -3473,6 +3551,9 @@ export function createAgentToolBridge(options: any = {}) {
     handleConversationNotify,
     handleConversationRequest,
     handlePiCapability,
+    handleRoomWorkspaceAuthorization,
+    listRoomWorkspaceAuthorizations,
+    resolvePiCapabilityBridge,
     handleForgetMemory,
     handleListMemories,
     handleListParticipants,

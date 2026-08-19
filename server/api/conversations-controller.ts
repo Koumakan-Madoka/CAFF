@@ -209,6 +209,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
   const buildBootstrapPayload = options.buildBootstrapPayload;
   const modeStore = options.modeStore;
   const broadcastEvent = typeof options.broadcastEvent === 'function' ? options.broadcastEvent : () => {};
+  const agentToolBridge = options.agentToolBridge || null;
 
   function listConversationHeaders() {
     return typeof store.listConversationTree === 'function'
@@ -416,6 +417,58 @@ export function createConversationsController(options: any = {}): RouteHandler<A
       return true;
     }
 
+    const workspaceAuthorizationMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/workspace\/authorizations$/);
+    if (workspaceAuthorizationMatch && req.method === 'GET') {
+      if (!agentToolBridge || typeof agentToolBridge.listRoomWorkspaceAuthorizations !== 'function') {
+        throw createHttpError(501, 'Workspace authorization is not available');
+      }
+      const conversationId = decodeURIComponent(workspaceAuthorizationMatch[1]);
+      sendJson(res, 200, {
+        authorizations: agentToolBridge.listRoomWorkspaceAuthorizations(conversationId),
+      });
+      return true;
+    }
+
+    const workspaceAuthorizationDecisionMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/workspace\/authorizations\/([^/]+)\/decision$/);
+    if (workspaceAuthorizationDecisionMatch && req.method === 'POST') {
+      if (!agentToolBridge || typeof agentToolBridge.handleRoomWorkspaceAuthorization !== 'function') {
+        throw createHttpError(501, 'Workspace authorization is not available');
+      }
+      const conversationId = decodeURIComponent(workspaceAuthorizationDecisionMatch[1]);
+      const authorizationId = decodeURIComponent(workspaceAuthorizationDecisionMatch[2]);
+      const body = await readRequestJson(req);
+      const allowedFields = new Set(['token', 'fingerprint', 'decision']);
+      const unknownField = body && typeof body === 'object'
+        ? Object.keys(body).find((fieldName) => !allowedFields.has(fieldName))
+        : null;
+      if (unknownField) {
+        throw roomCreationError(400, 'room_workspace_authorization_invalid_request', `Unknown authorization field: ${unknownField}`, unknownField);
+      }
+      const outcome = await agentToolBridge.handleRoomWorkspaceAuthorization({
+        conversationId,
+        authorizationId,
+        token: body && body.token,
+        fingerprint: body && body.fingerprint,
+        decision: body && body.decision,
+      });
+      const result = outcome && outcome.result;
+      if (result && result.conversation) {
+        broadcastEvent('conversation_summary_updated', {
+          conversationId,
+          summary: pickConversationSummary(result.conversation),
+        });
+      }
+      broadcastEvent('room_workspace_authorization_updated', {
+        conversationId,
+        authorization: outcome.record,
+      });
+      sendJson(res, 200, {
+        authorization: outcome.record,
+        conversation: result ? result.conversation : null,
+        workspace: result ? result.workspace : null,
+      });
+      return true;
+    }
     const workspacePreviewMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/workspace\/preview$/);
     if (workspacePreviewMatch && req.method === 'GET') {
       const conversationId = decodeURIComponent(workspacePreviewMatch[1]);

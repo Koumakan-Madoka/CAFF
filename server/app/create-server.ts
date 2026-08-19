@@ -1030,6 +1030,7 @@ export function createServerApp(options: any = {}) {
     createConversationPlanController({ store, broadcastEvent }),
     createConversationsController({
       store,
+      agentToolBridge,
       conversationSpawnService,
       roleService,
       skillRegistry,
