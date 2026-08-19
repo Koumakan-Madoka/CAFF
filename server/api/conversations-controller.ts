@@ -14,9 +14,8 @@ import { buildConversationMessagePage } from '../domain/conversation/message-pag
 import { buildConversationDirectoryPage } from '../domain/conversation/conversation-directory-pagination';
 import { applyConversationSkillDraftAction } from '../domain/conversation/skill-draft';
 import {
-  bindRoomWorkspace,
+  bindAndPersistRoomWorkspace,
   previewRoomWorkspace,
-  rollbackCreatedRoomWorkspace,
 } from '../domain/conversation/room-workspace';
 import { applySessionGoalAction } from '../domain/conversation/session-goal';
 import {
@@ -439,27 +438,16 @@ export function createConversationsController(options: any = {}): RouteHandler<A
       if (!conversation) throw createHttpError(404, 'Conversation not found');
       const project = projectById(projectManager, conversation.projectScopeId);
       if (!project) throw roomCreationError(404, 'room_project_not_found', 'Room Project not found', 'projectScopeId');
-      if (conversation.branch || conversation.worktreePath || conversation.workspaceBaseSha) {
-        sendJson(res, 200, { conversation, workspace: previewRoomWorkspace({ conversation, project }) });
-        return true;
-      }
-      const binding = bindRoomWorkspace({ conversation, project });
-      if (binding.reused) {
-        sendJson(res, 200, { conversation, workspace: binding });
-        return true;
-      }
-      try {
-        const bound = store.bindConversationWorkspace(conversationId, {
-          branch: binding.branch,
-          worktreePath: binding.worktreePath,
-          workspaceBaseSha: binding.baseSha,
-          workspaceBoundAt: new Date().toISOString(),
-        });
-        sendJson(res, 201, { conversation: bound, workspace: binding });
-      } catch (error) {
-        rollbackCreatedRoomWorkspace(binding);
-        throw error;
-      }
+      const result = bindAndPersistRoomWorkspace({
+        store,
+        conversation,
+        project,
+        workspaceBoundAt: new Date().toISOString(),
+      });
+      sendJson(res, result.created ? 201 : 200, {
+        conversation: result.conversation,
+        workspace: result.workspace,
+      });
       return true;
     }
 

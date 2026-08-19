@@ -151,6 +151,33 @@ export function bindRoomWorkspace({ conversation, project }: any) {
   return { ...preview, reused: false, alreadyBound: true };
 }
 
+export function bindAndPersistRoomWorkspace({ store, conversation, project, workspaceBoundAt }: any) {
+  if (conversation.branch || conversation.worktreePath || conversation.workspaceBaseSha) {
+    return {
+      conversation,
+      workspace: { ...previewRoomWorkspace({ conversation, project }), reused: true },
+      created: false,
+    };
+  }
+
+  const binding = bindRoomWorkspace({ conversation, project });
+  if (binding.reused) {
+    return { conversation, workspace: binding, created: false };
+  }
+  try {
+    const bound = store.bindConversationWorkspace(conversation.id, {
+      branch: binding.branch,
+      worktreePath: binding.worktreePath,
+      workspaceBaseSha: binding.baseSha,
+      workspaceBoundAt,
+    });
+    return { conversation: bound, workspace: binding, created: true };
+  } catch (error) {
+    rollbackCreatedRoomWorkspace(binding);
+    throw error;
+  }
+}
+
 export function rollbackCreatedRoomWorkspace(binding: any) {
   if (!binding || binding.reused || !binding.repositoryPath || !binding.worktreePath || !binding.branch) {
     return;

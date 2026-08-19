@@ -603,6 +603,10 @@ export function createServerApp(options: any = {}) {
     agentDir,
     piCapabilityBridge: options.piCapabilityBridge,
     crossConversationDeliveryService,
+    resolveProject(projectScopeId: any) {
+      const normalizedProjectScopeId = String(projectScopeId || '').trim();
+      return projectManager.listProjects().find((project: any) => project && project.id === normalizedProjectScopeId) || null;
+    },
     broadcastEvent,
     broadcastConversationSummary,
     onTurnUpdated(turnState: any) {

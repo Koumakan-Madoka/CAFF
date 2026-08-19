@@ -73,7 +73,10 @@ Persisted Conversation fields:
 - `workspace_base_sha TEXT NULL`
 - `workspace_bound_at TEXT NULL`
 
-#### Acceptance evidence
+- Model-visible Room workspace capability facades are defined in `server/domain/runtime/pi-capability-bridge.ts` and wired by `server/domain/runtime/agent-tool-bridge.ts`.
+- `room_workspace_preview` accepts `{}` only and is read-only; `room_workspace_bind` accepts `{ confirm: true }` only. Both derive Room identity from the authenticated invocation principal and never accept a conversation id, branch, path, repository, or base ref from the model.
+- Git creation and Conversation CAS persistence are shared through `bindAndPersistRoomWorkspace(...)`; persistence failure rolls back only artifacts created by that request.
+
 
 - `GET /api/conversations/:conversationId/acceptance-records`
 - `POST /api/conversations/:conversationId/acceptance-records`
@@ -194,6 +197,8 @@ Model guidance may evolve Goal/DAG state through the existing governance tools, 
 ### 6. Tests Required
 
 - `tests/http/room-conversation-create.test.js`: required Project/Mode validation happens before persistence.
+- `tests/runtime/pi-capability-bridge.test.js`: facade schemas, principal-scoped preview/bind, explicit confirmation, safe projection, and rollback-scoped wiring.
+- `tests/runtime/turn-orchestrator.test.js`: prompt advertises preview-first and explicit-confirmation workspace flow.
 - `tests/ui/new-conversation-dialog.test.js` and `tests/runtime/new-conversation-dialog.test.js`: Room form requires/submits Project + Mode and has no legacy game selector.
 - `tests/runtime/room-workspace.test.js`: preview is read-only, confirmation uses `develop`, generated branch/path are deterministic, and existing-branch conflict fails closed.
 - `tests/storage/chat-store.test.js`: acceptance rows append, candidate-SHA equality is DB-enforced, and one-way decision CAS rejects a second mutation.

@@ -11,8 +11,13 @@ const { recordConversationRetrievalTrace } = require('../conversation/retrieval-
 const { createCrossConversationDeliveryService } = require('../conversation/cross-conversation-delivery');
 const { createLiveBridgeToolStep } = require('./message-tool-trace');
 const {
+  bindAndPersistRoomWorkspace,
+  previewRoomWorkspace,
+} = require('../conversation/room-workspace');
+const {
   createConversationCapabilityDefinitions,
   createPiCapabilityBridge,
+  createRoomWorkspaceCapabilityDefinitions,
 } = require('./pi-capability-bridge');
 const { resolveCurrentTrellisTaskName } = require('../conversation/turn/trellis-context');
 
@@ -359,6 +364,7 @@ export function createAgentToolBridge(options: any = {}) {
   const crossConversationDeliveryService =
     options.crossConversationDeliveryService
     || (store ? createCrossConversationDeliveryService({ store }) : null);
+  const resolveProject = typeof options.resolveProject === 'function' ? options.resolveProject : () => null;
   let piCapabilityBridge = options.piCapabilityBridge || null;
   const activeInvocations = new Map();
 
@@ -1195,30 +1201,73 @@ export function createAgentToolBridge(options: any = {}) {
     return handleConversationDelivery('request', body);
   }
 
+  function handleRoomWorkspaceCapability(kind: 'preview' | 'bind', input: any) {
+    const principal = input && input.principal;
+    const conversationId = String(principal && principal.sourceConversationId || '').trim();
+    const projectScopeId = String(principal && principal.projectScopeId || '').trim();
+    const conversation = store && typeof store.getConversationWithoutMessages === 'function'
+      ? store.getConversationWithoutMessages(conversationId)
+      : null;
+    if (!conversation) {
+      throw createHttpError(404, 'Conversation not found', { code: 'room_workspace_conversation_not_found' });
+    }
+    if (!projectScopeId || String(conversation.projectScopeId || '').trim() !== projectScopeId) {
+      throw createHttpError(409, 'Room Project does not match the active invocation', {
+        code: 'room_workspace_project_mismatch',
+      });
+    }
+    const project = resolveProject(projectScopeId);
+    if (!project || String(project.id || '').trim() !== projectScopeId) {
+      throw createHttpError(404, 'Room Project not found', { code: 'room_project_not_found' });
+    }
+    if (kind === 'preview') {
+      return previewRoomWorkspace({ conversation, project });
+    }
+
+    const result = bindAndPersistRoomWorkspace({
+      store,
+      conversation,
+      project,
+      workspaceBoundAt: nowIso(),
+    });
+    broadcastConversationSummary(conversationId);
+    return result.workspace;
+  }
+
   function resolvePiCapabilityBridge() {
     if (piCapabilityBridge) {
       return piCapabilityBridge;
     }
 
     piCapabilityBridge = createPiCapabilityBridge({
-      capabilities: createConversationCapabilityDefinitions({
-        notify(input: any) {
-          return handleConversationDelivery(
-            'notify',
-            input.arguments,
-            input.context,
-            'conversation_notify'
-          );
-        },
-        request(input: any) {
-          return handleConversationDelivery(
-            'request',
-            input.arguments,
-            input.context,
-            'conversation_request'
-          );
-        },
-      }),
+      capabilities: [
+        ...createConversationCapabilityDefinitions({
+          notify(input: any) {
+            return handleConversationDelivery(
+              'notify',
+              input.arguments,
+              input.context,
+              'conversation_notify'
+            );
+          },
+          request(input: any) {
+            return handleConversationDelivery(
+              'request',
+              input.arguments,
+              input.context,
+              'conversation_request'
+            );
+          },
+        }),
+        ...createRoomWorkspaceCapabilityDefinitions({
+          preview(input: any) {
+            return handleRoomWorkspaceCapability('preview', input);
+          },
+          bind(input: any) {
+            return handleRoomWorkspaceCapability('bind', input);
+          },
+        }),
+      ],
     });
     return piCapabilityBridge;
   }

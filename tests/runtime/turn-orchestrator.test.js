@@ -1144,7 +1144,9 @@ test('buildAgentTurnPrompt gives bash-only multiline chat bridge guidance', () =
   assert.doesNotMatch(prompt, /forget-memory/u);
   assert.doesNotMatch(prompt, /Browser tool:/u);
   assert.match(prompt, /write-experience --title "lesson title" --category bug_fix/u);
-  assert.match(prompt, /Use write-experience sparingly/u);
+  assert.match(prompt, /Room workspace: use the model-visible `room_workspace_preview` tool/u);
+  assert.match(prompt, /`room_workspace_bind` with `\{ "confirm": true \}`/u);
+  assert.match(prompt, /Never invent or pass conversation IDs, branches, paths, repositories, or base refs/u);
   assert.match(prompt, /reusable, validated lessons/u);
   assert.match(prompt, /Never put raw message text on a new shell line by itself/u);
   assert.match(prompt, /successful send-public call completes the turn automatically unless you pass --no-finalize/u);
