@@ -281,7 +281,7 @@ export function createConversationSpawnService(options: ConversationSpawnService
       conversation: {
         id: conversationId,
         title,
-        type: 'standard',
+        type: String(sourceConversation.modeId || sourceConversation.type || 'standard'),
         metadata: {},
         projectScopeId,
         parentConversationId: sourceConversationId,

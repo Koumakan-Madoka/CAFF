@@ -48,6 +48,7 @@ backend domain services.
 - `conversation-digest.md`: `/digest` API, metadata, prompt, SSE, and frontend panel contracts
 - `conversation-title.md`: `titleSource` state machine, first-user-message title,
   first-auto-digest model refinement/config chain, and manual rename guards
+- `room-context-workspace.md`: Room=Conversation Project/Mode identity, generated workspace binding, runtime cwd/orchestration context, destructive legacy retirement, and acceptance evidence contracts
 - `../runtime/skill-extraction.md`: `/digest extract-skill` and `/skill-drafts` contracts
 - `summary-memory.md`: searchable digest segment ledger and `/api/memory/search` contracts
 - `dag-planning.md`: `chat_plans` storage, plan lifecycle (draft→active), shared

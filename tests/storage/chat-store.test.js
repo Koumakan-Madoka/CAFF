@@ -9,6 +9,68 @@ const { withTempDir } = require('../helpers/temp-dir');
 
 const TEST_CONVERSATION_PARTICIPANTS = ['role-family-gpt'];
 
+function createAcceptanceRoom(store, id = 'acceptance-room') {
+  return store.createConversation({
+    id,
+    title: 'Acceptance Room',
+    type: 'standard',
+    projectScopeId: 'project-1',
+    participants: TEST_CONVERSATION_PARTICIPANTS,
+  });
+}
+
+test('acceptance records are append-only and accept only the candidate SHA', () => {
+  const tempDir = withTempDir('caff-acceptance-records-');
+  const sqlitePath = path.join(tempDir, 'acceptance.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  try {
+    const room = createAcceptanceRoom(store);
+    const candidateSha = 'a'.repeat(40);
+    const created = store.createAcceptanceRecord(room.id, {
+      candidateSha,
+      roomBranch: 'room/acceptance-room',
+      mergeCommits: ['b'.repeat(40)],
+      automatedChecks: [{ command: 'npm run check', result: 'pass' }],
+      manualChecks: [{ item: 'Room flow', result: 'pass' }],
+      knownLimitations: ['shared worktree concurrency is unmanaged'],
+      environment: { base: 'develop' },
+      createdBy: 'tester',
+    });
+    assert.equal(created.status, 'pending');
+    assert.deepEqual(store.listAcceptanceRecords(room.id), [created]);
+    assert.throws(
+      () => store.decideAcceptanceRecord(room.id, created.id, {
+        status: 'accepted',
+        acceptedSha: 'c'.repeat(40),
+      }),
+      /CHECK constraint failed/u
+    );
+    const accepted = store.decideAcceptanceRecord(room.id, created.id, {
+      status: 'accepted',
+      acceptedSha: candidateSha,
+      decisionNote: 'manual approval',
+    });
+    assert.equal(accepted.status, 'accepted');
+    assert.equal(accepted.acceptedSha, candidateSha);
+    assert.equal(store.decideAcceptanceRecord(room.id, created.id, {
+      status: 'accepted',
+      acceptedSha: candidateSha,
+    }), null);
+    assert.equal(store.createAcceptanceRecord(room.id, {
+      candidateSha: 'd'.repeat(40),
+      mergeCommits: [],
+      automatedChecks: [],
+      manualChecks: [],
+      knownLimitations: [],
+      environment: {},
+    }).status, 'pending');
+    assert.equal(store.listAcceptanceRecords(room.id).length, 2);
+  } finally {
+    store.close();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test('migrateChatSchema emits debug warning when FTS setup fails and debug logging is enabled', (t) => {
   const originalWarn = console.warn;
   const originalFlag = process.env.CAFF_DEBUG_SQLITE_MIGRATIONS;

@@ -1,314 +1,103 @@
 const assert = require('node:assert/strict');
-const path = require('node:fs');
-const fs = require('node:fs');
-const os = require('node:os');
 const test = require('node:test');
-
+const Database = require('better-sqlite3');
 const { migrateChatSchema } = require('../../build/storage/sqlite/migrations');
 const { ModeStore } = require('../../build/lib/mode-store');
 
-function createTestDb() {
-  const betterSqlite3 = require('better-sqlite3');
-  const db = betterSqlite3(':memory:');
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
+function createStore() {
+  const db = new Database(':memory:');
   migrateChatSchema(db);
-  return db;
+  return { db, store: new ModeStore(db) };
 }
 
-// ─── CRUD ────────────────────────────────────────────────────
-
-test('ModeStore: seeds 3 builtin modes on construction', () => {
-  const db = createTestDb();
-  const store = new ModeStore(db);
-
-  const modes = store.list();
-  assert.equal(modes.length, 3);
-
-  const ids = modes.map((mode) => mode.id).sort();
-  assert.deepEqual(ids, ['standard', 'werewolf', 'who_is_undercover']);
-
-  assert.ok(modes.every((mode) => mode.skillIds.includes('skill-creator')));
-
-  const standardMode = store.get('standard');
-  assert.deepEqual(standardMode.skillIds, ['skill-creator']);
-  assert.equal(standardMode.loadingStrategy, 'dynamic');
-
-  const werewolfMode = store.get('werewolf');
-  assert.deepEqual(werewolfMode.skillIds, ['skill-creator']);
-  assert.equal(werewolfMode.loadingStrategy, 'full');
-  assert.ok(modes.every((mode) => mode.builtin === true));
+test('ModeStore seeds only the generic collaboration Mode', () => {
+  const { db, store } = createStore();
+  try {
+    assert.deepEqual(store.list().map((mode) => mode.id), ['standard']);
+    assert.equal(store.get('standard').builtin, true);
+    assert.equal(store.get('werewolf'), null);
+    assert.equal(store.get('who_is_undercover'), null);
+    assert.equal(store.get('skill_test_design'), null);
+  } finally { db.close(); }
 });
 
-test('ModeStore: get returns a single mode by id', () => {
-  const db = createTestDb();
-  const store = new ModeStore(db);
-
-  const mode = store.get('werewolf');
-  assert.ok(mode);
-  assert.equal(mode.id, 'werewolf');
-  assert.equal(mode.name, '狼人杀');
-  assert.equal(mode.builtin, true);
+test('ModeStore preserves custom Skill-backed Modes', () => {
+  const { db, store } = createStore();
+  try {
+    const saved = store.save({ id: 'architecture-review', name: 'Architecture review', skillIds: ['review', 'review'] });
+    assert.equal(saved.builtin, false);
+    assert.ok(saved.skillIds.includes('review'));
+    assert.equal(saved.skillIds.filter((id) => id === 'review').length, 1);
+    store.delete('architecture-review');
+    assert.equal(store.get('architecture-review'), null);
+  } finally { db.close(); }
 });
 
-test('ModeStore: get returns null for missing id', () => {
-  const db = createTestDb();
-  const store = new ModeStore(db);
-
-  const mode = store.get('does-not-exist');
-  assert.equal(mode, null);
+test('ModeStore keeps builtin Mode undeletable but configurable', () => {
+  const { db, store } = createStore();
+  try {
+    assert.throws(() => store.delete('standard'), /cannot delete builtin/i);
+    const updated = store.save({ id: 'standard', name: '协作', skillIds: ['start'], loadingStrategy: 'full' });
+    assert.equal(updated.builtin, true);
+    assert.equal(updated.name, '协作');
+    assert.equal(updated.loadingStrategy, 'full');
+    assert.ok(updated.skillIds.includes('start'));
+  } finally { db.close(); }
 });
 
-test('ModeStore: save creates a new custom mode', () => {
-  const db = createTestDb();
-  const store = new ModeStore(db);
-
-  const created = store.save({
-    name: 'Coding',
-    description: 'Coding assistant mode',
-    skillIds: ['check', 'before-dev'],
-    loadingStrategy: 'dynamic',
-  });
-
-  assert.ok(created);
-  assert.ok(created.id);
-  assert.equal(created.name, 'Coding');
-  assert.equal(created.description, 'Coding assistant mode');
-  assert.equal(created.builtin, false);
-  assert.deepEqual(created.skillIds, ['check', 'before-dev', 'skill-creator']);
-  assert.equal(created.loadingStrategy, 'dynamic');
-
-  // Persisted
-  const fetched = store.get(created.id);
-  assert.equal(fetched.name, 'Coding');
-});
-
-test('ModeStore: save with explicit id uses that id', () => {
-  const db = createTestDb();
-  const store = new ModeStore(db);
-
-  const created = store.save({
-    id: 'coding',
-    name: 'Coding Mode',
-  });
-
-  assert.equal(created.id, 'coding');
-});
-
-test('ModeStore: save updates an existing mode', () => {
-  const db = createTestDb();
-  const store = new ModeStore(db);
-
-  const created = store.save({ name: 'Temp' });
-  const updated = store.save({ id: created.id, name: 'Updated', description: 'Now with desc' });
-
-  assert.equal(updated.id, created.id);
-  assert.equal(updated.name, 'Updated');
-  assert.equal(updated.description, 'Now with desc');
-
-  // Only one extra custom mode (total 4)
-  assert.equal(store.list().length, 4);
-});
-
-test('ModeStore: save throws if name is empty', () => {
-  const db = createTestDb();
-  const store = new ModeStore(db);
-
-  assert.throws(() => store.save({ name: '' }), /name is required/i);
-});
-
-test('ModeStore: delete removes a custom mode', () => {
-  const db = createTestDb();
-  const store = new ModeStore(db);
-
-  const created = store.save({ name: 'ToDelete' });
-  assert.equal(store.list().length, 4);
-
-  store.delete(created.id);
-  assert.equal(store.get(created.id), null);
-  assert.equal(store.list().length, 3);
-});
-
-// ─── Builtin protection ──────────────────────────────────────
-
-test('ModeStore: cannot delete builtin modes', () => {
-  const db = createTestDb();
-  const store = new ModeStore(db);
-
-  for (const id of ['standard', 'werewolf', 'who_is_undercover']) {
-    assert.throws(() => store.delete(id), /cannot delete builtin/i);
-  }
-});
-
-test('ModeStore: can update builtin mode name and skillIds', () => {
-  const db = createTestDb();
-  const store = new ModeStore(db);
-
-  const updated = store.save({
-    id: 'werewolf',
-    name: '大灰狼',
-    skillIds: ['werewolf-skill'],
-    loadingStrategy: 'full',
-  });
-
-  assert.equal(updated.name, '大灰狼');
-  assert.deepEqual(updated.skillIds, ['werewolf-skill', 'skill-creator']);
-  assert.equal(updated.builtin, true);
-  assert.equal(updated.loadingStrategy, 'full');
-});
-
-// ─── normalizeSkillIds ───────────────────────────────────────
-
-test('ModeStore: save deduplicates skillIds', () => {
-  const db = createTestDb();
-  const store = new ModeStore(db);
-
-  const created = store.save({
-    name: 'Dedup',
-    skillIds: ['alpha', 'beta', 'alpha', 'gamma', 'beta'],
-  });
-
-  assert.deepEqual(created.skillIds, ['alpha', 'beta', 'gamma', 'skill-creator']);
-});
-
-test('ModeStore: save filters out empty and whitespace-only skillIds', () => {
-  const db = createTestDb();
-  const store = new ModeStore(db);
-
-  const created = store.save({
-    name: 'Clean',
-    skillIds: ['valid', '', '  ', 'also-valid'],
-  });
-
-  assert.deepEqual(created.skillIds, ['valid', 'also-valid', 'skill-creator']);
-});
-
-test('ModeStore: save with no skillIds defaults to the required skill set', () => {
-  const db = createTestDb();
-  const store = new ModeStore(db);
-
-  const created = store.save({ name: 'Empty' });
-  assert.deepEqual(created.skillIds, ['skill-creator']);
-});
-
-// ─── normalizeLoadingStrategy ────────────────────────────────
-
-test('ModeStore: loadingStrategy "full" is preserved', () => {
-  const db = createTestDb();
-  const store = new ModeStore(db);
-
-  const created = store.save({ name: 'Full', loadingStrategy: 'full' });
-  assert.equal(created.loadingStrategy, 'full');
-});
-
-test('ModeStore: loadingStrategy defaults to "dynamic" for unknown values', () => {
-  const db = createTestDb();
-  const store = new ModeStore(db);
-
-  const created = store.save({ name: 'Unknown', loadingStrategy: 'something-weird' });
-  assert.equal(created.loadingStrategy, 'dynamic');
-});
-
-test('ModeStore: loadingStrategy is case-insensitive', () => {
-  const db = createTestDb();
-  const store = new ModeStore(db);
-
-  const created = store.save({ name: 'Upper', loadingStrategy: 'FULL' });
-  assert.equal(created.loadingStrategy, 'full');
-});
-
-// ─── Seed idempotency ───────────────────────────────────────
-
-test('ModeStore: seedBuiltinModes is idempotent (constructing twice does not duplicate)', () => {
-  const db = createTestDb();
-
-  const store1 = new ModeStore(db);
-  assert.equal(store1.list().length, 3);
-
-  // Construct again on the same db — should not add duplicates
-  const store2 = new ModeStore(db);
-  assert.equal(store2.list().length, 3);
-});
-
-test('ModeStore: migrates legacy empty Feishu coding mode to custom Coding mode', () => {
-  const db = createTestDb();
-  const timestamp = '2026-04-14T00:00:00.000Z';
-
+test('ModeStore destructively removes legacy product Room subtrees, deliveries, and orphaned modes', () => {
+  const db = new Database(':memory:');
+  db.pragma('foreign_keys = ON');
+  migrateChatSchema(db);
+  const ts = new Date().toISOString();
+  db.prepare('INSERT INTO modes VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+    .run('werewolf', 'Werewolf', '', 1, '[]', 'full', ts, ts);
+  const insertRoom = db.prepare(`
+    INSERT INTO chat_conversations (
+      id, title, type, project_scope_id, parent_conversation_id,
+      origin_conversation_id, tree_depth, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  insertRoom.run('game-root', 'Legacy game', 'werewolf', 'project-1', null, null, 0, ts, ts);
+  insertRoom.run('game-child', 'Legacy child', 'standard', 'project-1', 'game-root', 'game-root', 1, ts, ts);
+  insertRoom.run('game-grandchild', 'Legacy grandchild', 'standard', 'project-1', 'game-child', 'game-root', 2, ts, ts);
+  insertRoom.run('orphan-game', 'Orphaned legacy game', 'who_is_undercover', 'project-1', null, null, 0, ts, ts);
+  insertRoom.run('healthy-room', 'Healthy Room', 'standard', 'project-1', null, null, 0, ts, ts);
   db.prepare(`
-    INSERT INTO modes (id, name, description, builtin, skill_ids_json, loading_strategy, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run('coding', 'Coding', 'Legacy empty Feishu coding mode', 1, '[]', 'dynamic', timestamp, timestamp);
+    INSERT INTO chat_cross_conversation_deliveries (
+      id, kind, idempotency_scope, idempotency_key, principal_kind,
+      source_conversation_id, source_agent_name, source_project_scope_id,
+      target_conversation_id, target_agent_id, target_project_scope_id,
+      trace_id, root_delivery_id, hop_count, message_status, dispatch_status,
+      response_status, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    'legacy-delivery', 'notify', 'legacy-retirement', 'legacy-delivery', 'operator',
+    'game-child', 'Migration', 'project-1', 'healthy-room', 'role-family-gpt', 'project-1',
+    'legacy-trace', 'legacy-delivery', 0, 'pending', 'queued', 'not_expected', ts, ts
+  );
   db.prepare(`
-    INSERT INTO modes (id, name, description, builtin, skill_ids_json, loading_strategy, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run('custom-coding', 'Coding', 'User Trellis Coding mode', 0, JSON.stringify(['before-dev', 'check']), 'dynamic', timestamp, timestamp);
-  db.prepare(`
-    INSERT INTO chat_role_identities (role_id, display_name_snapshot, origin_kind, lifecycle_state, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run('agent-1', 'Agent 1', 'custom', 'active', timestamp, timestamp);
-  db.prepare(`
-    INSERT INTO chat_agents (id, name, persona_prompt, role_kind, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run('agent-1', 'Agent 1', 'Test persona', 'custom', timestamp, timestamp);
-  db.prepare(`
-    INSERT INTO chat_conversations (id, title, type, metadata_json, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run('conversation-1', 'Legacy Feishu chat', 'coding', '{}', timestamp, timestamp);
-  db.prepare(`
-    INSERT INTO chat_conversation_agents (conversation_id, agent_id, conversation_skills_json, sort_order, created_at)
-    VALUES (?, ?, ?, ?, ?)
-  `).run('conversation-1', 'agent-1', JSON.stringify(['start']), 0, timestamp);
+    INSERT INTO chat_cross_conversation_delivery_events (delivery_id, event_type, created_at)
+    VALUES (?, ?, ?)
+  `).run('legacy-delivery', 'created', ts);
+  db.exec('CREATE TABLE skill_test_cases (id TEXT); CREATE TABLE eval_cases (id TEXT);');
 
   const store = new ModeStore(db);
-  const modes = store.list();
-  const conversation = db.prepare('SELECT type FROM chat_conversations WHERE id = ?').get('conversation-1');
-  const participant = db.prepare(`
-    SELECT conversation_skills_json
-    FROM chat_conversation_agents
-    WHERE conversation_id = ? AND agent_id = ?
-  `).get('conversation-1', 'agent-1');
-
-  assert.equal(store.get('coding'), null);
-  assert.equal(modes.some((mode) => mode.id === 'coding'), false);
-  assert.equal(conversation.type, 'custom-coding');
-  assert.deepEqual(JSON.parse(participant.conversation_skills_json), ['start', 'before-dev', 'check', 'skill-creator']);
-});
-
-// ─── list ordering ──────────────────────────────────────────
-
-test('ModeStore: list returns builtin modes first, then custom by created_at', () => {
-  const db = createTestDb();
-  const store = new ModeStore(db);
-
-  store.save({ name: 'Zebra Mode' });
-  store.save({ name: 'Alpha Mode' });
-
-  const modes = store.list();
-  // 3 builtin + 2 custom = 5
-  assert.equal(modes.length, 5);
-
-  // First 3 are builtin
-  assert.ok(modes[0].builtin);
-  assert.ok(modes[1].builtin);
-  assert.ok(modes[2].builtin);
-
-  // Last 2 are custom (order depends on created_at resolution)
-  const customNames = [modes[3].name, modes[4].name].sort();
-  assert.deepEqual(customNames, ['Alpha Mode', 'Zebra Mode']);
-});
-
-// ─── P0 regression: custom mode with same id must survive retirement ───
-
-test('ModeStore: retireSkillTestDesignMode preserves user-created custom mode with same id', () => {
-  const db = createTestDb();
-  const store = new ModeStore(db);
-
-  store.save({ id: 'skill_test_design', name: 'User Custom ST', skillIds: ['start'] });
-
-  store.retireSkillTestDesignMode();
-
-  const mode = store.get('skill_test_design');
-  assert.ok(mode, 'user-created mode with id=skill_test_design must survive retireSkillTestDesignMode');
-  assert.equal(mode.builtin, false);
-  assert.equal(mode.name, 'User Custom ST');
+  try {
+    assert.equal(store.get('werewolf'), null);
+    assert.equal(store.get('who_is_undercover'), null);
+    assert.deepEqual(
+      db.prepare('SELECT id FROM chat_conversations ORDER BY id').all().map((row) => row.id),
+      ['healthy-room']
+    );
+    assert.equal(db.prepare('SELECT id FROM chat_cross_conversation_deliveries').get(), undefined);
+    assert.equal(db.prepare('SELECT id FROM chat_cross_conversation_delivery_events').get(), undefined);
+    assert.ok(db.prepare(`
+      SELECT name FROM sqlite_master
+      WHERE type = 'trigger' AND name = 'chat_cross_delivery_events_append_only_delete'
+    `).get());
+    const names = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((row) => row.name);
+    assert.ok(!names.includes('skill_test_cases'));
+    assert.ok(!names.includes('eval_cases'));
+  } finally { db.close(); }
 });

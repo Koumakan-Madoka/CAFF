@@ -2157,10 +2157,7 @@
 
         const empty = document.createElement('div');
         empty.className = 'empty-state';
-        empty.textContent =
-          conversation && (conversation.type === 'who_is_undercover' || conversation.type === 'werewolf')
-            ? '\u5f00\u59cb\u65b0\u4e00\u5c40\u540e\uff0c\u540e\u7aef\u4f1a\u81ea\u52a8\u63a8\u8fdb\u6574\u5c40\u5bf9\u8bdd\u3002'
-            : '\u53d1\u9001\u4e00\u6761\u6d88\u606f\uff0c\u5f00\u59cb\u591a\u4eba\u683c\u8ba8\u8bba\u3002';
+        empty.textContent = '\u53d1\u9001\u4e00\u6761\u6d88\u606f\uff0c\u5f00\u59cb\u591a Agent \u534f\u4f5c\u3002';
         messageContainer.replaceChildren(empty);
         return;
       }

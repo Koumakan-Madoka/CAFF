@@ -1271,6 +1271,14 @@ export function createAgentExecutor(options: any = {}) {
     const imageBlock = imageInvocation.block;
     const invocationImages = imageInvocation.images;
     const projectedConversationHistory = imageInvocation.projectedMessages || null;
+    const metadata = conversation && conversation.metadata && typeof conversation.metadata === 'object' ? conversation.metadata : {};
+    const goal = metadata.sessionGoal && typeof metadata.sessionGoal === 'object' ? metadata.sessionGoal : null;
+    const plan = typeof store.getPlanForConversation === 'function' ? store.getPlanForConversation(conversation.id) : null;
+    const orchestrationMode = plan && ['draft', 'active'].includes(String(plan.status || ''))
+      ? 'dag'
+      : goal && ['active', 'pending', 'paused'].includes(String(goal.status || ''))
+        ? 'goal'
+        : 'direct';
     const promptInput = {
       conversation,
       agent,
@@ -1291,6 +1299,15 @@ export function createAgentExecutor(options: any = {}) {
       modeLoadingStrategy,
       forceDynamicConversationSkillIds: ALWAYS_DYNAMIC_MODE_SKILL_IDS,
       browserCliPath,
+      orchestrationMode,
+      workspaceContext: {
+        projectScopeId: conversation.projectScopeId,
+        projectPath: conversation.worktreePath ? '' : resolvedProjectDir,
+        modeId: conversation.modeId || conversation.type,
+        modeName: modeForType && modeForType.name,
+        branch: conversation.branch,
+        worktreePath: conversation.worktreePath,
+      },
       projectedConversationHistory,
     };
     const promptSections = buildAgentTurnPromptSections(promptInput);

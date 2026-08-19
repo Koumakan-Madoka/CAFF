@@ -13,6 +13,10 @@ import { applyConversationDigestAction } from '../domain/conversation/conversati
 import { buildConversationMessagePage } from '../domain/conversation/message-pagination';
 import { buildConversationDirectoryPage } from '../domain/conversation/conversation-directory-pagination';
 import { applyConversationSkillDraftAction } from '../domain/conversation/skill-draft';
+import {
+  bindAndPersistRoomWorkspace,
+  previewRoomWorkspace,
+} from '../domain/conversation/room-workspace';
 import { applySessionGoalAction } from '../domain/conversation/session-goal';
 import {
   getDagNodeExecutionContext,
@@ -24,8 +28,6 @@ import {
   summarizeAgentContextSnapshot,
 } from '../domain/conversation/turn/context-snapshot';
 import { buildAssistantMessageToolTrace } from '../domain/runtime/message-tool-trace';
-import { UNDERCOVER_CONVERSATION_TYPE } from '../../lib/who-is-undercover-game';
-import { WEREWOLF_CONVERSATION_TYPE } from '../../lib/werewolf-game';
 
 type ApiContext = {
   req: IncomingMessage;
@@ -150,6 +152,23 @@ function listKnownFeishuChats(store: any) {
     });
 }
 
+function isPlainObject(value: any) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+const CREATE_ROOM_FIELDS = new Set(['title', 'projectScopeId', 'modeId', 'participants']);
+
+function projectById(projectManager: any, projectScopeId: any) {
+  const normalized = String(projectScopeId || '').trim();
+  return (projectManager && typeof projectManager.listProjects === 'function'
+    ? projectManager.listProjects()
+    : []).find((project: any) => project && project.id === normalized) || null;
+}
+
+function roomCreationError(statusCode: number, code: string, message: string, field: string) {
+  return createHttpError(statusCode, message, { code, issues: [{ code, field, message }] });
+}
+
 function mergeModeSkillIdsIntoParticipants(input: any, mode: any) {
   if (!mode || !Array.isArray(mode.skillIds) || mode.skillIds.length === 0) {
     return input;
@@ -187,11 +206,10 @@ export function createConversationsController(options: any = {}): RouteHandler<A
   const skillRegistry = options.skillRegistry;
   const projectManager = options.projectManager;
   const turnOrchestrator = options.turnOrchestrator;
-  const undercoverService = options.undercoverService;
-  const werewolfService = options.werewolfService;
   const buildBootstrapPayload = options.buildBootstrapPayload;
   const modeStore = options.modeStore;
   const broadcastEvent = typeof options.broadcastEvent === 'function' ? options.broadcastEvent : () => {};
+  const agentToolBridge = options.agentToolBridge || null;
 
   function listConversationHeaders() {
     return typeof store.listConversationTree === 'function'
@@ -312,90 +330,216 @@ export function createConversationsController(options: any = {}): RouteHandler<A
           issues: [{ code: 'invalid_body', message: 'Request body must be a JSON object' }],
         });
       }
-      const unknownField = Object.keys(body).find((fieldName) => fieldName !== 'projectId');
-      if (unknownField) {
-        throw createHttpError(400, `Unknown project scope field: ${unknownField}`, {
-          issues: [{ code: 'unknown_field', field: unknownField, message: `Unknown field: ${unknownField}` }],
-        });
-      }
       const projectId = String(body.projectId || '').trim();
-      if (!projectId) {
-        throw createHttpError(400, 'projectId is required', {
-          issues: [{ code: 'project_id_required', field: 'projectId', message: 'projectId is required' }],
-        });
-      }
-      if (!projectManager || typeof projectManager.listProjects !== 'function') {
-        throw createHttpError(501, 'Project manager is not configured');
-      }
-      const project = projectManager.listProjects()
-        .find((candidate: any) => candidate && candidate.id === projectId);
+      const project = projectById(projectManager, projectId);
       if (!project) {
         throw createHttpError(404, 'Project not found', {
           issues: [{ code: 'project_not_found', field: 'projectId', message: 'Project not found' }],
         });
       }
-      if (!store || typeof store.bindConversationProjectScope !== 'function') {
-        throw createHttpError(501, 'Conversation project scope binding is unavailable');
-      }
-
       const conversation = store.bindConversationProjectScope(conversationId, project.id);
+      if (!conversation) throw createHttpError(409, 'Conversation project is already bound or missing');
       const summary = pickConversationSummary(conversation);
       broadcastEvent('conversation_summary_updated', { conversationId, summary });
+      sendJson(res, 200, { conversation, summary, conversations: listConversationHeaders(), project });
+      return true;
+    }
+
+    const acceptanceRecordsMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/acceptance-records$/);
+    if (acceptanceRecordsMatch && req.method === 'GET') {
+      const conversationId = decodeURIComponent(acceptanceRecordsMatch[1]);
+      const conversation = store.getConversationWithoutMessages(conversationId);
+      if (!conversation) throw createHttpError(404, 'Conversation not found');
+      const records = store.listAcceptanceRecords(conversationId);
+      sendJson(res, 200, { records });
+      return true;
+    }
+    if (acceptanceRecordsMatch && req.method === 'POST') {
+      const conversationId = decodeURIComponent(acceptanceRecordsMatch[1]);
+      const body = await readRequestJson(req);
+      const conversation = store.getConversationWithoutMessages(conversationId);
+      if (!conversation) throw createHttpError(404, 'Conversation not found');
+      const candidateSha = String(body && body.candidateSha || '').trim().toLowerCase();
+      if (!/^[0-9a-f]{40}$/u.test(candidateSha)) {
+        throw roomCreationError(400, 'acceptance_record_invalid', 'candidateSha must be a full Git SHA', 'candidateSha');
+      }
+      const requiredArrays = ['mergeCommits', 'automatedChecks', 'manualChecks', 'knownLimitations'];
+      if (requiredArrays.some((field) => !Array.isArray(body && body[field]))) {
+        throw roomCreationError(400, 'acceptance_record_invalid', 'Acceptance evidence arrays are required', 'evidence');
+      }
+      const record = store.createAcceptanceRecord(conversationId, {
+        candidateSha,
+        roomBranch: conversation.branch || null,
+        mergeCommits: body.mergeCommits,
+        automatedChecks: body.automatedChecks,
+        manualChecks: body.manualChecks,
+        knownLimitations: body.knownLimitations,
+        environment: isPlainObject(body.environment) ? body.environment : {},
+        createdBy: String(body.createdBy || 'operator').trim() || 'operator',
+      });
+      sendJson(res, 201, { record });
+      return true;
+    }
+
+    const acceptanceDecisionMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/acceptance-records\/([^/]+)\/decision$/);
+    if (acceptanceDecisionMatch && req.method === 'POST') {
+      const conversationId = decodeURIComponent(acceptanceDecisionMatch[1]);
+      const recordId = decodeURIComponent(acceptanceDecisionMatch[2]);
+      const body = await readRequestJson(req);
+      const conversation = store.getConversationWithoutMessages(conversationId);
+      if (!conversation) throw createHttpError(404, 'Conversation not found');
+      const current = store.getAcceptanceRecord(conversationId, recordId);
+      if (!current) throw createHttpError(404, 'Acceptance record not found');
+      const decision = String(body && body.decision || '').trim();
+      if (!['accepted', 'rejected'].includes(decision)) {
+        throw roomCreationError(400, 'acceptance_decision_invalid', 'decision must be accepted or rejected', 'decision');
+      }
+      if (current.status !== 'pending') {
+        if (current.status === decision) {
+          sendJson(res, 200, { record: current, conversation });
+          return true;
+        }
+        throw roomCreationError(409, 'acceptance_record_decided', 'Acceptance record is already decided', 'decision');
+      }
+      const acceptedSha = decision === 'accepted' ? String(body.acceptedSha || '').trim().toLowerCase() : null;
+      if (decision === 'accepted' && acceptedSha !== current.candidateSha) {
+        throw roomCreationError(409, 'acceptance_sha_mismatch', 'acceptedSha must equal candidateSha', 'acceptedSha');
+      }
+      const decided = store.decideAcceptanceRecord(conversationId, recordId, {
+        status: decision,
+        acceptedSha,
+        decisionNote: String(body.note || '').trim(),
+      });
+      if (!decided) {
+        throw roomCreationError(409, 'acceptance_record_decided', 'Acceptance record changed concurrently', 'decision');
+      }
+      sendJson(res, 200, { record: decided });
+      return true;
+    }
+
+    const workspaceAuthorizationMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/workspace\/authorizations$/);
+    if (workspaceAuthorizationMatch && req.method === 'GET') {
+      if (!agentToolBridge || typeof agentToolBridge.listRoomWorkspaceAuthorizations !== 'function') {
+        throw createHttpError(501, 'Workspace authorization is not available');
+      }
+      const conversationId = decodeURIComponent(workspaceAuthorizationMatch[1]);
       sendJson(res, 200, {
+        authorizations: agentToolBridge.listRoomWorkspaceAuthorizations(conversationId),
+      });
+      return true;
+    }
+
+    const workspaceAuthorizationDecisionMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/workspace\/authorizations\/([^/]+)\/decision$/);
+    if (workspaceAuthorizationDecisionMatch && req.method === 'POST') {
+      if (!agentToolBridge || typeof agentToolBridge.handleRoomWorkspaceAuthorization !== 'function') {
+        throw createHttpError(501, 'Workspace authorization is not available');
+      }
+      const conversationId = decodeURIComponent(workspaceAuthorizationDecisionMatch[1]);
+      const authorizationId = decodeURIComponent(workspaceAuthorizationDecisionMatch[2]);
+      const body = await readRequestJson(req);
+      const allowedFields = new Set(['token', 'fingerprint', 'decision']);
+      const unknownField = body && typeof body === 'object'
+        ? Object.keys(body).find((fieldName) => !allowedFields.has(fieldName))
+        : null;
+      if (unknownField) {
+        throw roomCreationError(400, 'room_workspace_authorization_invalid_request', `Unknown authorization field: ${unknownField}`, unknownField);
+      }
+      const outcome = await agentToolBridge.handleRoomWorkspaceAuthorization({
+        conversationId,
+        authorizationId,
+        token: body && body.token,
+        fingerprint: body && body.fingerprint,
+        decision: body && body.decision,
+      });
+      const result = outcome && outcome.result;
+      if (result && result.conversation) {
+        broadcastEvent('conversation_summary_updated', {
+          conversationId,
+          summary: pickConversationSummary(result.conversation),
+        });
+      }
+      broadcastEvent('room_workspace_authorization_updated', {
+        conversationId,
+        authorization: outcome.record,
+      });
+      sendJson(res, 200, {
+        authorization: outcome.record,
+        conversation: result ? result.conversation : null,
+        workspace: result ? result.workspace : null,
+      });
+      return true;
+    }
+    const workspacePreviewMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/workspace\/preview$/);
+    if (workspacePreviewMatch && req.method === 'GET') {
+      const conversationId = decodeURIComponent(workspacePreviewMatch[1]);
+      const conversation = store.getConversationWithoutMessages(conversationId);
+      if (!conversation) throw createHttpError(404, 'Conversation not found');
+      const project = projectById(projectManager, conversation.projectScopeId);
+      if (!project) throw roomCreationError(404, 'room_project_not_found', 'Room Project not found', 'projectScopeId');
+      sendJson(res, 200, { preview: previewRoomWorkspace({ conversation, project }) });
+      return true;
+    }
+
+    const workspaceMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/workspace$/);
+    if (workspaceMatch && req.method === 'POST') {
+      const conversationId = decodeURIComponent(workspaceMatch[1]);
+      const body = await readRequestJson(req);
+      if (!body || body.confirm !== true) {
+        throw roomCreationError(400, 'room_workspace_confirmation_required', 'confirm=true is required', 'confirm');
+      }
+      const conversation = store.getConversationWithoutMessages(conversationId);
+      if (!conversation) throw createHttpError(404, 'Conversation not found');
+      const project = projectById(projectManager, conversation.projectScopeId);
+      if (!project) throw roomCreationError(404, 'room_project_not_found', 'Room Project not found', 'projectScopeId');
+      const result = bindAndPersistRoomWorkspace({
+        store,
         conversation,
-        summary,
-        conversations: listConversationHeaders(),
         project,
+        workspaceBoundAt: new Date().toISOString(),
+      });
+      sendJson(res, result.created ? 201 : 200, {
+        conversation: result.conversation,
+        workspace: result.workspace,
       });
       return true;
     }
 
     if (req.method === 'POST' && pathname === '/api/conversations') {
       const body = await readRequestJson(req);
-      const rawType = String(body && body.type ? body.type : '').trim().toLowerCase();
-      let conversationType = 'standard';
-      if (rawType === UNDERCOVER_CONVERSATION_TYPE) {
-        conversationType = UNDERCOVER_CONVERSATION_TYPE;
-      } else if (rawType === WEREWOLF_CONVERSATION_TYPE) {
-        conversationType = WEREWOLF_CONVERSATION_TYPE;
-      } else if (rawType && modeStore && modeStore.get(rawType)) {
-        conversationType = rawType;
+      if (!isPlainObject(body)) {
+        throw roomCreationError(400, 'room_invalid_request', 'Room request must be an object', 'body');
       }
-
-      let metadata = body && body.metadata && typeof body.metadata === 'object' ? body.metadata : {};
-      let conversationInput = body || {};
-      if (conversationType === UNDERCOVER_CONVERSATION_TYPE) {
-        metadata = {
-          ...metadata,
-          undercoverGame: options.undercoverHost.buildPublicState(null),
-        };
-      } else if (conversationType === WEREWOLF_CONVERSATION_TYPE) {
-        metadata = {
-          ...metadata,
-          werewolfGame: options.werewolfHost.buildPublicState(null),
-        };
+      const unknownField = Object.keys(body).find((key) => !CREATE_ROOM_FIELDS.has(key));
+      if (unknownField) {
+        throw roomCreationError(400, 'room_unknown_field', `Unknown Room field: ${unknownField}`, unknownField);
       }
-
-      conversationInput = {
-        ...conversationInput,
-        participants: validateConversationParticipants(conversationInput),
+      const projectScopeId = String(body.projectScopeId || '').trim();
+      if (!projectScopeId) {
+        throw roomCreationError(400, 'room_project_required', 'Project is required', 'projectScopeId');
+      }
+      const project = projectById(projectManager, projectScopeId);
+      if (!project) {
+        throw roomCreationError(404, 'room_project_not_found', 'Project not found', 'projectScopeId');
+      }
+      const modeId = String(body.modeId || '').trim();
+      if (!modeId) {
+        throw roomCreationError(400, 'room_mode_required', 'Mode is required', 'modeId');
+      }
+      const mode = modeStore && modeStore.get(modeId);
+      if (!mode) {
+        throw roomCreationError(404, 'room_mode_not_found', 'Mode not found', 'modeId');
+      }
+      const conversationInput = {
+        ...body,
+        participants: validateConversationParticipants(body),
       };
-
-      // Merge mode skill bindings only into the explicit participant roster.
-      const mode = modeStore ? modeStore.get(conversationType) : null;
       const enrichedBody = mergeModeSkillIdsIntoParticipants(conversationInput, mode);
-
-      let conversation = store.createConversation({
+      const conversation = store.createConversation({
         ...enrichedBody,
-        type: conversationType,
-        metadata,
+        projectScopeId,
+        modeId,
+        metadata: {},
       });
-
-      if (conversation.type === UNDERCOVER_CONVERSATION_TYPE) {
-        conversation = undercoverService.prepareConversation(conversation.id);
-      } else if (conversation.type === WEREWOLF_CONVERSATION_TYPE) {
-        conversation = werewolfService.prepareConversation(conversation.id);
-      }
 
       sendJson(res, 201, {
         conversation,
@@ -784,25 +928,10 @@ export function createConversationsController(options: any = {}): RouteHandler<A
 
       if (req.method === 'PUT') {
         const body = await readRequestJson(req);
+        if (body && (body.projectScopeId !== undefined || body.modeId !== undefined || body.type !== undefined)) {
+          throw roomCreationError(409, 'room_context_immutable', 'Room Project and Mode cannot be changed', 'modeId');
+        }
         const existingConversation = store.getConversationWithoutMessages(conversationId);
-
-        if (
-          existingConversation &&
-          existingConversation.type === UNDERCOVER_CONVERSATION_TYPE &&
-          Array.isArray(body.participants) &&
-          options.undercoverHost.loadState(conversationId)
-        ) {
-          throw createHttpError(409, '请先重置当前谁是卧底对局，再修改参与者');
-        }
-
-        if (
-          existingConversation &&
-          existingConversation.type === WEREWOLF_CONVERSATION_TYPE &&
-          Array.isArray(body.participants) &&
-          options.werewolfHost.loadState(conversationId)
-        ) {
-          throw createHttpError(409, '请先重置当前狼人杀对局，再修改参与者');
-        }
 
         // Omitting both roster fields means "leave participants unchanged".
         // Callers that intend to replace or clear the roster must send an explicit array;
@@ -817,16 +946,10 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         const validatedBody = (Array.isArray(body.participants) || Array.isArray(body.agentIds))
           ? { ...body, participants: validateConversationParticipants(body, { recoverableRoleIds }) }
           : body;
-        let conversation = store.updateConversation(conversationId, validatedBody);
+        const conversation = store.updateConversation(conversationId, validatedBody);
 
         if (!conversation) {
           throw createHttpError(404, '会话不存在');
-        }
-
-        if (conversation.type === UNDERCOVER_CONVERSATION_TYPE) {
-          conversation = undercoverService.prepareConversation(conversation.id);
-        } else if (conversation.type === WEREWOLF_CONVERSATION_TYPE) {
-          conversation = werewolfService.prepareConversation(conversation.id);
         }
 
         sendJson(res, 200, {
@@ -878,9 +1001,6 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         if ((queuedUserCount > 0 && (!forceDelete || !queueFailure)) || queuedAgentSlotCount > 0) {
           throw createHttpError(409, '当前会话仍有待处理消息，请等待自动续跑完成后再删除');
         }
-
-        undercoverService.deleteConversationState(conversationId);
-        werewolfService.deleteConversationState(conversationId);
 
         const batchIds = Array.from(
           new Set(
@@ -1054,20 +1174,6 @@ export function createConversationsController(options: any = {}): RouteHandler<A
 
       if (!conversation) {
         throw createHttpError(404, '会话不存在');
-      }
-
-      if (
-        conversation.type === UNDERCOVER_CONVERSATION_TYPE &&
-        !undercoverService.canChatInConversation(conversationId)
-      ) {
-        throw createHttpError(409, '谁是卧底对局进行中由后端全自动主持，请等待本局结束后再发送聊天消息');
-      }
-
-      if (
-        conversation.type === WEREWOLF_CONVERSATION_TYPE &&
-        !werewolfService.canChatInConversation(conversationId)
-      ) {
-        throw createHttpError(409, '狼人杀对局进行中由后端全自动主持，请等待本局结束后再发送聊天消息');
       }
 
       const clientRequestId = typeof body.clientRequestId === 'string' ? body.clientRequestId.trim() : '';

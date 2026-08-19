@@ -83,6 +83,8 @@ function createFeishuTestHarness(t, options = {}) {
     defaultRoleIds,
     modeStore: options.modeStore,
     roleService,
+    projectScopeId: options.projectScopeId,
+    getProjectScopeId: options.getProjectScopeId,
     verificationToken: 'test-feishu-token',
     logger: createSilentLogger(),
   });
@@ -461,7 +463,12 @@ test('feishu new rooms use only configured default roles and merge mode skills i
       return { id: 'coding', name: 'Coding', skillIds: ['feishu-mode-skill'] };
     },
   };
-  const { controller, defaultRole, store } = createFeishuTestHarness(t, { modeStore });
+  let activeProjectScopeId = 'project-before-switch';
+  const { controller, defaultRole, store } = createFeishuTestHarness(t, {
+    modeStore,
+    getProjectScopeId: () => activeProjectScopeId,
+  });
+  activeProjectScopeId = 'project-after-switch';
   const response = await invokeWebhook(controller, {
     header: {
       token: 'test-feishu-token',
@@ -488,6 +495,7 @@ test('feishu new rooms use only configured default roles and merge mode skills i
   const binding = store.getConversationChannelBinding('feishu', 'oc-policy-1');
   const conversation = store.getConversation(binding.conversationId);
   assert.equal(conversation.type, 'coding');
+  assert.equal(conversation.projectScopeId, 'project-after-switch');
   assert.deepEqual(conversation.agents.map((agent) => agent.id), [defaultRole.id]);
   assert.deepEqual(conversation.agents[0].conversationSkillIds, ['feishu-mode-skill']);
 });

@@ -27,6 +27,8 @@ const state = {
   messageToolTraceById: new Map(),
   messageToolTraceTimers: new Map(),
   optimisticMessagesByConversation: new Map(),
+  workspaceAuthorizationCardsByConversation: new Map(),
+  bindingWorkspaceAuthorizationIds: new Set(),
   digestStatusByConversation: new Map(),
   crossConversationDeliveryBundles: new Map(),
   bindingFeishuChat: false,
@@ -36,7 +38,6 @@ const state = {
   loadingFeishuChats: false,
   projectOptions: [],
   loadingProjects: false,
-  bindingProject: false,
   contextInspector: {
     open: false,
     loading: false,
@@ -47,8 +48,6 @@ const state = {
   },
 };
 
-const UNDERCOVER_TYPE = 'who_is_undercover';
-const WEREWOLF_TYPE = 'werewolf';
 const shared = window.CaffShared || {};
 const chatModules = window.CaffChat || {};
 const crossConversationUi = chatModules.crossConversationUi;
@@ -121,6 +120,10 @@ const dom = {
   conversationDirectoryMore: /** @type {HTMLButtonElement | null} */ (document.getElementById('conversation-directory-more')),
   conversationDirectoryRetry: /** @type {HTMLButtonElement | null} */ (document.getElementById('conversation-directory-retry')),
   conversationTitleDisplay: /** @type {HTMLElement | null} */ (document.getElementById('conversation-title-display')),
+  conversationWorkspaceContext: /** @type {HTMLElement | null} */ (document.getElementById('conversation-workspace-context')),
+  conversationWorkspaceBranch: /** @type {HTMLElement | null} */ (document.getElementById('conversation-workspace-branch')),
+  conversationWorkspacePath: /** @type {HTMLElement | null} */ (document.getElementById('conversation-workspace-path')),
+  workspaceAuthorizationCards: /** @type {HTMLElement | null} */ (document.getElementById('workspace-authorization-cards')),
   conversationModeBadge: /** @type {HTMLElement | null} */ (document.getElementById('conversation-mode-badge')),
   conversationMeta: /** @type {HTMLElement | null} */ (document.getElementById('conversation-meta')),
   skillDraftToggleButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('skill-draft-toggle-button')),
@@ -250,34 +253,7 @@ const dom = {
   feishuChatIdInput: /** @type {HTMLInputElement | null} */ (document.getElementById('feishu-chat-id-input')),
   bindFeishuChatButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('bind-feishu-chat-button')),
   feishuBindingStatus: /** @type {HTMLElement | null} */ (document.getElementById('feishu-binding-status')),
-  projectBindSelect: /** @type {HTMLSelectElement | null} */ (document.getElementById('project-bind-select')),
-  bindProjectButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('bind-project-button')),
   projectBindingStatus: /** @type {HTMLElement | null} */ (document.getElementById('project-binding-status')),
-  undercoverGameCard: /** @type {HTMLElement | null} */ (document.getElementById('undercover-game-card')),
-  undercoverGameStatus: /** @type {HTMLElement | null} */ (document.getElementById('undercover-game-status')),
-  undercoverLastResult: /** @type {HTMLElement | null} */ (document.getElementById('undercover-last-result')),
-  undercoverPlayerStatus: /** @type {HTMLElement | null} */ (document.getElementById('undercover-player-status')),
-  undercoverSetupForm: /** @type {HTMLFormElement | null} */ (document.getElementById('undercover-setup-form')),
-  undercoverCivilianWord: /** @type {HTMLInputElement | null} */ (document.getElementById('undercover-civilian-word')),
-  undercoverUndercoverWord: /** @type {HTMLInputElement | null} */ (document.getElementById('undercover-undercover-word')),
-  undercoverUndercoverCount: /** @type {HTMLInputElement | null} */ (document.getElementById('undercover-undercover-count')),
-  undercoverBlankCount: /** @type {HTMLInputElement | null} */ (document.getElementById('undercover-blank-count')),
-  undercoverBlankWord: /** @type {HTMLInputElement | null} */ (document.getElementById('undercover-blank-word')),
-  undercoverStartButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('undercover-start-button')),
-  undercoverResetButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('undercover-reset-button')),
-  undercoverClueButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('undercover-clue-button')),
-  undercoverVoteButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('undercover-vote-button')),
-  undercoverRevealButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('undercover-reveal-button')),
-  werewolfGameCard: /** @type {HTMLElement | null} */ (document.getElementById('werewolf-game-card')),
-  werewolfGameStatus: /** @type {HTMLElement | null} */ (document.getElementById('werewolf-game-status')),
-  werewolfLastResult: /** @type {HTMLElement | null} */ (document.getElementById('werewolf-last-result')),
-  werewolfPlayerStatus: /** @type {HTMLElement | null} */ (document.getElementById('werewolf-player-status')),
-  werewolfSetupForm: /** @type {HTMLFormElement | null} */ (document.getElementById('werewolf-setup-form')),
-  werewolfCount: /** @type {HTMLInputElement | null} */ (document.getElementById('werewolf-count')),
-  werewolfSeerCount: /** @type {HTMLInputElement | null} */ (document.getElementById('werewolf-seer-count')),
-  werewolfWitchCount: /** @type {HTMLInputElement | null} */ (document.getElementById('werewolf-witch-count')),
-  werewolfStartButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('werewolf-start-button')),
-  werewolfResetButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('werewolf-reset-button')),
   newAgentButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('new-agent-button')),
   agentList: /** @type {HTMLElement | null} */ (document.getElementById('agent-list')),
   agentForm: /** @type {HTMLFormElement | null} */ (document.getElementById('agent-form')),
@@ -553,38 +529,6 @@ async function submitGoalCommand(conversationId, command) {
   return result;
 }
 
-async function triggerUndercoverAction(action, body = {}) {
-  if (!state.currentConversation) {
-    return null;
-  }
-
-  const result = await fetchJson(`/api/conversations/${state.currentConversation.id}/undercover/${action}`, {
-    method: 'POST',
-    body,
-  });
-  applyConversationResponse(result);
-  renderAll();
-  await refreshConversationFromEvent(state.currentConversation.id);
-  scrollMessageListToBottom();
-  return result;
-}
-
-async function triggerWerewolfAction(action, body = {}) {
-  if (!state.currentConversation) {
-    return null;
-  }
-
-  const result = await fetchJson(`/api/conversations/${state.currentConversation.id}/werewolf/${action}`, {
-    method: 'POST',
-    body,
-  });
-  applyConversationResponse(result);
-  renderAll();
-  await refreshConversationFromEvent(state.currentConversation.id);
-  scrollMessageListToBottom();
-  return result;
-}
-
 function formatDateTime(value) {
   if (!value) {
     return '';
@@ -614,52 +558,6 @@ function agentById(agentId) {
 
 function normalizedSkillIds(value) {
   return Array.isArray(value) ? value.filter(Boolean) : [];
-}
-
-function isUndercoverConversation(conversation) {
-  return Boolean(conversation && conversation.type === UNDERCOVER_TYPE);
-}
-
-function isWerewolfConversation(conversation) {
-  return Boolean(conversation && conversation.type === WEREWOLF_TYPE);
-}
-
-function undercoverGameState(conversation) {
-  const metadata = conversation && conversation.metadata && typeof conversation.metadata === 'object' ? conversation.metadata : null;
-  return metadata && metadata.undercoverGame && typeof metadata.undercoverGame === 'object' ? metadata.undercoverGame : null;
-}
-
-function werewolfGameState(conversation) {
-  const metadata = conversation && conversation.metadata && typeof conversation.metadata === 'object' ? conversation.metadata : null;
-  return metadata && metadata.werewolfGame && typeof metadata.werewolfGame === 'object' ? metadata.werewolfGame : null;
-}
-
-function canChatInUndercoverConversation(conversation) {
-  if (!isUndercoverConversation(conversation)) {
-    return true;
-  }
-
-  const game = undercoverGameState(conversation);
-
-  if (!game) {
-    return false;
-  }
-
-  return game.phase === 'finished' || game.status === 'completed' || game.status === 'revealed';
-}
-
-function canChatInWerewolfConversation(conversation) {
-  if (!isWerewolfConversation(conversation)) {
-    return true;
-  }
-
-  const game = werewolfGameState(conversation);
-
-  if (!game) {
-    return false;
-  }
-
-  return game.phase === 'finished' || game.status === 'completed' || game.status === 'revealed';
 }
 
 function parseGoalCommand(content) {
@@ -754,40 +652,6 @@ function parseSummaryMemoryCommand(content) {
     action: query ? 'search' : 'open',
     query,
   };
-}
-
-function undercoverPlayerEntries(conversation) {
-  const game = undercoverGameState(conversation);
-  return Array.isArray(game && game.players) ? game.players : [];
-}
-
-function undercoverPlayerLabel(player) {
-  if (!player) {
-    return '';
-  }
-
-  return player.isAlive ? '存活' : `出局${player.eliminatedRound ? ` · 第 ${player.eliminatedRound} 轮` : ''}`;
-}
-
-function werewolfPlayerEntries(conversation) {
-  const game = werewolfGameState(conversation);
-  return Array.isArray(game && game.players) ? game.players : [];
-}
-
-function werewolfPlayerLabel(player) {
-  if (!player) {
-    return '';
-  }
-
-  if (player.isAlive) {
-    return '存活';
-  }
-
-  const phaseLabel = player.eliminatedPhase === 'night' ? '夜晚' : player.eliminatedPhase === 'vote' ? '投票' : '';
-  const roundLabel = player.eliminatedRound ? `第 ${player.eliminatedRound} 轮` : '';
-  const tags = [phaseLabel, roundLabel].filter(Boolean).join(' · ');
-
-  return tags ? `出局 · ${tags}` : '出局';
 }
 
 function conversationTypeLabel(conversation) {
@@ -906,8 +770,6 @@ let conversationListRenderer = noopRenderer;
 let participantPaneRenderer = noopRenderer;
 let messageTimelineRenderer = noopRenderer;
 let conversationSettingsController = noopConversationSettingsController;
-let undercoverPanelRenderer = noopRenderer;
-let werewolfPanelRenderer = noopRenderer;
 let sessionGoalPanelController = noopRenderer;
 let planPanelController = noopPlanPanelController;
 let conversationDigestPanelController = noopRenderer;
@@ -1016,8 +878,6 @@ function setupChatModules() {
             conversationTypeLabel,
             formatDateTime,
             isConversationBusy,
-            isUndercoverConversation,
-            isWerewolfConversation,
           },
         })
       : noopRenderer;
@@ -1067,36 +927,6 @@ function setupChatModules() {
             toolTraceStateForMessage,
           },
           showToast,
-        })
-      : noopRenderer;
-
-  undercoverPanelRenderer =
-    typeof chatModules.createUndercoverPanelRenderer === 'function'
-      ? chatModules.createUndercoverPanelRenderer({
-          state,
-          dom,
-          helpers: {
-            activeTurnForConversation,
-            isUndercoverConversation,
-            undercoverGameState,
-            undercoverPlayerEntries,
-            undercoverPlayerLabel,
-          },
-        })
-      : noopRenderer;
-
-  werewolfPanelRenderer =
-    typeof chatModules.createWerewolfPanelRenderer === 'function'
-      ? chatModules.createWerewolfPanelRenderer({
-          state,
-          dom,
-          helpers: {
-            activeTurnForConversation,
-            isWerewolfConversation,
-            werewolfGameState,
-            werewolfPlayerEntries,
-            werewolfPlayerLabel,
-          },
         })
       : noopRenderer;
 
@@ -1185,15 +1015,11 @@ function setupChatModules() {
             activeTurnForConversation,
             activeAgentSlotsForConversation,
             agentById,
-            canChatInUndercoverConversation,
-            canChatInWerewolfConversation,
             clearLiveDraftFinalizingTimer,
             closeMentionMenu,
             conversationTypeLabel,
             isConversationBusy,
             digestStatusForConversation,
-            isUndercoverConversation,
-            isWerewolfConversation,
             liveDraftIdleMs: LIVE_DRAFT_IDLE_MS,
             liveStageLabel,
             queueFailureForConversation,
@@ -1201,12 +1027,8 @@ function setupChatModules() {
             queuedAgentSlotMessageCountForConversation,
             queuedUserMessageCountForConversation,
             renderParticipantList,
-            renderUndercoverGameCard,
-            renderWerewolfGameCard,
             scheduleConversationPaneRender,
             timelineMessagesForConversation,
-            undercoverGameState,
-            werewolfGameState,
           },
         })
       : noopRenderer;
@@ -2427,14 +2249,6 @@ function renderCompactConversationPersonaSettings() {
   conversationSettingsController.render();
 }
 
-function renderUndercoverGameCard() {
-  undercoverPanelRenderer.render();
-}
-
-function renderWerewolfGameCard() {
-  werewolfPanelRenderer.render();
-}
-
 function renderConversationPane() {
   conversationPaneRenderer.render();
   imageComposerController.syncConversation(state.currentConversation ? state.currentConversation.id : '');
@@ -3569,8 +3383,6 @@ function renderAll() {
   renderRuntime();
   renderConversationList();
   renderConversationPane();
-  renderUndercoverGameCard();
-  renderWerewolfGameCard();
   renderCompactConversationPersonaSettings();
 }
 
@@ -3641,6 +3453,8 @@ async function loadConversation(conversationId) {
     ...data.conversation,
     messages,
   };
+  renderWorkspaceAuthorizationCards();
+  void loadWorkspaceAuthorizationCards(normalizedConversationId);
   await hydrateCrossConversationDeliveries(state.currentConversation);
   pruneOptimisticMessagesForConversation(normalizedConversationId, messages);
   closeMentionMenu();
@@ -3730,28 +3544,35 @@ function mergeConversationSummary(summary) {
     return;
   }
 
+  // Conversation headers returned by mutation endpoints may include an empty
+  // messages array. A summary merge must never replace the history already
+  // loaded for the selected Room; full message replacement is owned by the
+  // explicit conversation-loading paths below.
+  const projection = { ...summary };
+  delete projection.messages;
+
   const directory = state.conversationDirectory;
-  const existing = state.conversations.find((item) => item.id === summary.id);
+  const existing = state.conversations.find((item) => item.id === projection.id);
   if (existing) {
     state.conversations = conversationDirectory.sortByActivity(
-      conversationDirectory.mergeItems(state.conversations, [summary])
+      conversationDirectory.mergeItems(state.conversations, [projection])
     );
     if (directory) {
       directory.items = state.conversations;
     }
   } else if (!directory || !directory.query) {
     state.conversations = conversationDirectory.sortByActivity(
-      conversationDirectory.mergeItems(state.conversations, [summary])
+      conversationDirectory.mergeItems(state.conversations, [projection])
     );
     if (directory) {
       directory.items = state.conversations;
     }
   }
 
-  if (state.currentConversation && state.currentConversation.id === summary.id) {
+  if (state.currentConversation && state.currentConversation.id === projection.id) {
     state.currentConversation = {
       ...state.currentConversation,
-      ...summary,
+      ...projection,
     };
   }
 }
@@ -3784,6 +3605,7 @@ function applyNewConversationResult(result) {
     }),
   };
   renderAll();
+  void loadWorkspaceAuthorizationCards(result.conversation.id);
   syncToolTraceStatesWithConversation(state.currentConversation);
 }
 
@@ -3827,7 +3649,6 @@ async function refreshConversationFromEvent(conversationId) {
     await hydrateCrossConversationDeliveries(state.currentConversation);
     pruneOptimisticMessagesForConversation(conversationId, page && page.items);
     renderConversationPane();
-    renderUndercoverGameCard();
     warmConversationToolTraces(state.currentConversation);
     syncToolTraceStatesWithConversation(state.currentConversation);
 
@@ -3837,6 +3658,105 @@ async function refreshConversationFromEvent(conversationId) {
   } catch {}
 }
 
+async function loadWorkspaceAuthorizationCards(conversationId) {
+  const normalizedConversationId = String(conversationId || '').trim();
+  if (!normalizedConversationId) return;
+  try {
+    const result = await fetchJson(`/api/conversations/${encodeURIComponent(normalizedConversationId)}/workspace/authorizations`);
+    state.workspaceAuthorizationCardsByConversation.set(
+      normalizedConversationId,
+      Array.isArray(result && result.authorizations) ? result.authorizations : []
+    );
+    if (state.selectedConversationId === normalizedConversationId) renderWorkspaceAuthorizationCards();
+  } catch {}
+}
+
+async function decideWorkspaceAuthorization(authorizationId, decision) {
+  const conversationId = String(state.selectedConversationId || '').trim();
+  const requestKey = `${conversationId}:${authorizationId}`;
+  if (!conversationId || state.bindingWorkspaceAuthorizationIds.has(requestKey)) return;
+  const cards = state.workspaceAuthorizationCardsByConversation.get(conversationId) || [];
+  const authorization = cards.find((item) => item && item.id === authorizationId);
+  if (!authorization || !authorization.token || !authorization.fingerprint) {
+    showToast('授权卡片已失效，请让 Agent 重新预览');
+    return;
+  }
+  state.bindingWorkspaceAuthorizationIds.add(requestKey);
+  renderWorkspaceAuthorizationCards();
+  try {
+    const result = await fetchJson(`/api/conversations/${encodeURIComponent(conversationId)}/workspace/authorizations/${encodeURIComponent(authorizationId)}/decision`, {
+      method: 'POST',
+      body: { token: authorization.token, fingerprint: authorization.fingerprint, decision },
+    });
+    applyWorkspaceAuthorizationEvent({ conversationId, authorization: result.authorization });
+    if (state.selectedConversationId === conversationId && result.conversation) {
+      // Workspace authorization returns a conversation header (without messages).
+      // Merge it through the summary path so the already-rendered history is not
+      // replaced by the header's empty `messages` array. A subsequent refresh
+      // used to make the history reappear, which looked like a new Room.
+      mergeConversationSummary(result.conversation);
+      renderAll();
+    }
+    showToast(decision === 'accepted' ? '工作区已绑定' : '已拒绝工作区绑定');
+  } catch (error) {
+    showToast(error && error.message ? error.message : '工作区授权失败');
+  } finally {
+    state.bindingWorkspaceAuthorizationIds.delete(requestKey);
+    renderWorkspaceAuthorizationCards();
+  }
+}
+
+function renderWorkspaceAuthorizationCards() {
+    const container = dom.workspaceAuthorizationCards;
+    if (!container) return;
+    container.replaceChildren();
+    const conversationId = state.selectedConversationId;
+    const cards = conversationId ? state.workspaceAuthorizationCardsByConversation.get(conversationId) || [] : [];
+    cards.filter((item) => item && (item.status === 'pending' || item.status === 'accepted' || item.status === 'rejected' || item.status === 'expired' || item.status === 'failed')).forEach((authorization) => {
+      const card = document.createElement('section');
+      card.className = `workspace-authorization-card ${authorization.status}`;
+      card.setAttribute('role', 'status');
+      const title = document.createElement('strong');
+      const statusLabels = {
+        accepted: '已绑定',
+        rejected: '已拒绝',
+        expired: '已过期',
+        failed: '绑定失败',
+      };
+      title.textContent = authorization.status === 'pending'
+        ? 'Agent 请求绑定 Room 工作区'
+        : `工作区授权：${statusLabels[authorization.status] || authorization.status}`;
+      const details = document.createElement('p');
+      details.textContent = `${authorization.branch || '-'} · ${authorization.worktreePath || '-'} · 基线 ${authorization.baseSha || '-'}`;
+      card.append(title, details);
+      if (authorization.status === 'pending') {
+        const actions = document.createElement('div');
+        actions.className = 'button-row compact-button-row';
+        for (const [decision, label] of [['accepted', '授权绑定'], ['rejected', '拒绝']] ) {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.textContent = label;
+          button.dataset.workspaceAuthorizationDecision = decision;
+          button.dataset.workspaceAuthorizationId = authorization.id;
+          button.disabled = state.bindingWorkspaceAuthorizationIds.has(`${conversationId}:${authorization.id}`);
+          actions.appendChild(button);
+        }
+        card.appendChild(actions);
+      }
+      container.appendChild(card);
+    });
+  }
+
+function applyWorkspaceAuthorizationEvent(payload) {
+    if (!payload || !payload.conversationId || !payload.authorization) return;
+    const id = String(payload.conversationId);
+    const next = payload.authorization;
+    const cards = state.workspaceAuthorizationCardsByConversation.get(id) || [];
+    const index = cards.findIndex((item) => item && item.id === next.id);
+    if (index === -1) cards.push(next); else cards[index] = { ...cards[index], ...next };
+    state.workspaceAuthorizationCardsByConversation.set(id, cards);
+    if (state.selectedConversationId === id) renderWorkspaceAuthorizationCards();
+  }
 function scheduleConversationRefresh(conversationId) {
   if (!conversationId || state.selectedConversationId !== conversationId) {
     return;
@@ -4041,6 +3961,10 @@ function connectEventStream() {
     scheduleConversationRefresh(payload.conversationId);
   });
 
+  source.addEventListener('room_workspace_authorization_updated', (event) => {
+    applyWorkspaceAuthorizationEvent(JSON.parse(event.data));
+  });
+
   source.addEventListener('conversation_tool_event', (event) => {
     const payload = JSON.parse(event.data);
     applyConversationToolEvent(payload);
@@ -4210,70 +4134,6 @@ function serializeAgentForm() {
 }
 
 function bindEvents() {
-  async function handleUndercoverAction(action, body, successMessage) {
-    if (!state.currentConversation || !isUndercoverConversation(state.currentConversation) || state.sending) {
-      return;
-    }
-
-    state.sending = true;
-    state.runtime = state.runtime || {};
-    state.runtime.activeConversationIds = Array.from(
-      new Set([...(state.runtime.activeConversationIds || []), state.currentConversation.id])
-    );
-    renderAll();
-
-    try {
-      await triggerUndercoverAction(action, body);
-      if (successMessage) {
-        showToast(successMessage);
-      }
-    } catch (error) {
-      showToast(error.message);
-    } finally {
-      state.sending = false;
-
-      if (state.runtime && state.currentConversation) {
-        state.runtime.activeConversationIds = (state.runtime.activeConversationIds || []).filter(
-          (id) => id !== state.currentConversation.id
-        );
-      }
-
-      renderAll();
-    }
-  }
-
-  async function handleWerewolfAction(action, body, successMessage) {
-    if (!state.currentConversation || !isWerewolfConversation(state.currentConversation) || state.sending) {
-      return;
-    }
-
-    state.sending = true;
-    state.runtime = state.runtime || {};
-    state.runtime.activeConversationIds = Array.from(
-      new Set([...(state.runtime.activeConversationIds || []), state.currentConversation.id])
-    );
-    renderAll();
-
-    try {
-      await triggerWerewolfAction(action, body);
-      if (successMessage) {
-        showToast(successMessage);
-      }
-    } catch (error) {
-      showToast(error.message);
-    } finally {
-      state.sending = false;
-
-      if (state.runtime && state.currentConversation) {
-        state.runtime.activeConversationIds = (state.runtime.activeConversationIds || []).filter(
-          (id) => id !== state.currentConversation.id
-        );
-      }
-
-      renderAll();
-    }
-  }
-
   dom.refreshButton.addEventListener('click', async () => {
     try {
       await refreshAll(state.selectedConversationId);
@@ -4299,59 +4159,6 @@ function bindEvents() {
   if (dom.conversationDirectoryRetry) {
     dom.conversationDirectoryRetry.addEventListener('click', async () => {
       await loadConversationDirectoryPage(state.conversationDirectory.query, false);
-    });
-  }
-
-  if (
-    dom.undercoverSetupForm &&
-    dom.undercoverCivilianWord &&
-    dom.undercoverUndercoverWord &&
-    dom.undercoverUndercoverCount &&
-    dom.undercoverBlankCount &&
-    dom.undercoverBlankWord
-  ) {
-    dom.undercoverSetupForm.addEventListener('submit', async (event) => {
-      event.preventDefault();
-
-      await handleUndercoverAction(
-        'start',
-        {
-          civilianWord: dom.undercoverCivilianWord.value.trim(),
-          undercoverWord: dom.undercoverUndercoverWord.value.trim(),
-          undercoverCount: dom.undercoverUndercoverCount.value,
-          blankCount: dom.undercoverBlankCount.value,
-          blankWord: dom.undercoverBlankWord.value.trim(),
-        },
-        '谁是卧底全自动新一局已开始'
-      );
-    });
-  }
-
-  if (dom.undercoverResetButton) {
-    dom.undercoverResetButton.addEventListener('click', async () => {
-      await handleUndercoverAction('reset', {}, '对局已重置');
-    });
-  }
-
-  if (dom.werewolfSetupForm && dom.werewolfCount && dom.werewolfSeerCount && dom.werewolfWitchCount) {
-    dom.werewolfSetupForm.addEventListener('submit', async (event) => {
-      event.preventDefault();
-
-      await handleWerewolfAction(
-        'start',
-        {
-          werewolfCount: dom.werewolfCount.value,
-          seerCount: dom.werewolfSeerCount.value,
-          witchCount: dom.werewolfWitchCount.value,
-        },
-        '狼人杀全自动新一局已开始'
-      );
-    });
-  }
-
-  if (dom.werewolfResetButton) {
-    dom.werewolfResetButton.addEventListener('click', async () => {
-      await handleWerewolfAction('reset', {}, '对局已重置');
     });
   }
 
@@ -4474,6 +4281,19 @@ function bindEvents() {
       conversationListRenderer.cancelRename();
     }
   });
+
+  if (dom.workspaceAuthorizationCards) {
+    dom.workspaceAuthorizationCards.addEventListener('click', async (event) => {
+      const button = event.target instanceof Element
+        ? /** @type {HTMLButtonElement | null} */ (event.target.closest('[data-workspace-authorization-decision]'))
+        : null;
+      if (!button || !state.selectedConversationId) return;
+      await decideWorkspaceAuthorization(
+        button.dataset.workspaceAuthorizationId || '',
+        button.dataset.workspaceAuthorizationDecision || ''
+      );
+    });
+  }
 
   dom.messageList.addEventListener('click', async (event) => {
     if (!state.currentConversation) {
@@ -4983,56 +4803,6 @@ function bindEvents() {
         showToast(error.message);
       } finally {
         state.bindingFeishuChat = false;
-        conversationSettingsController.render();
-      }
-    });
-  }
-
-  if (dom.bindProjectButton) {
-    dom.bindProjectButton.addEventListener('click', async (event) => {
-      event.preventDefault();
-      event.stopImmediatePropagation();
-
-      if (!state.currentConversation) {
-        showToast('请先选择一个会话');
-        return;
-      }
-
-      if (state.currentConversation.projectScopeId) {
-        showToast('当前会话已绑定项目，绑定后不可更改');
-        return;
-      }
-
-      const conversationId = state.currentConversation.id;
-      const projectId = dom.projectBindSelect ? dom.projectBindSelect.value.trim() : '';
-
-      if (!projectId) {
-        showToast('请先选择一个项目');
-        return;
-      }
-
-      state.bindingProject = true;
-      conversationSettingsController.render();
-
-      try {
-        const result = await fetchJson(
-          `/api/conversations/${encodeURIComponent(conversationId)}/project-scope`,
-          {
-            method: 'PUT',
-            body: { projectId },
-          }
-        );
-        if (result && result.conversation) {
-          state.currentConversation = result.conversation;
-          mergeConversationSummary(result.summary || result.conversation);
-        }
-        renderAll();
-        const projectName = result && result.project && result.project.name ? result.project.name : projectId;
-        showToast(`已绑定项目：${projectName}`);
-      } catch (error) {
-        showToast(error.message);
-      } finally {
-        state.bindingProject = false;
         conversationSettingsController.render();
       }
     });

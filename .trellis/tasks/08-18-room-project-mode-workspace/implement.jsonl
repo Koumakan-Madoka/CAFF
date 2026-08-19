@@ -1,0 +1,12 @@
+{"file": ".trellis/workflow.md", "reason": "Project workflow and conventions"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend development guide"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend development guide"}
+{"file": ".trellis/spec/backend/architecture.md", "reason": "Backend layering and composition"}
+{"file": ".trellis/spec/backend/controller-patterns.md", "reason": "HTTP validation and response contracts"}
+{"file": ".trellis/spec/runtime/agent-runtime.md", "reason": "Runtime cwd and prompt injection"}
+{"file": ".trellis/spec/frontend/ui-structure.md", "reason": "Room creation UI conventions"}
+{"file": ".trellis/spec/skills/skill-system.md", "reason": "Mode-backed Skill loading contract"}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Regression test conventions"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Cross-layer payload and persistence flow"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Reuse worktree and validation helpers"}
+{"file": ".trellis/spec/guides/cross-platform-thinking-guide.md", "reason": "Git paths and Windows worktree behavior"}

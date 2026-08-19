@@ -52,7 +52,7 @@ function cssBlock(selector) {
 
 test('M4: runtime/meta pills live inside drawer settings tab, header keeps connection dot', () => {
   const settingsStart = INDEX_HTML.indexOf('id="panel-settings"');
-  const settingsEnd = INDEX_HTML.indexOf('id="panel-game"');
+  const settingsEnd = INDEX_HTML.indexOf('id="skill-draft-drawer"');
   const runtimePill = INDEX_HTML.indexOf('id="runtime-pill"');
   const conversationMeta = INDEX_HTML.indexOf('id="conversation-meta"');
   assert.ok(settingsStart > -1 && settingsEnd > settingsStart, 'settings panel missing');

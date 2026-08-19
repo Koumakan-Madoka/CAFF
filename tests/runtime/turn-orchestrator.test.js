@@ -546,6 +546,7 @@ test('buildAgentTurnPromptSections orders stable prompt sections before dynamic 
   assert.deepEqual(sections.map((section) => section.sectionKey), [
     'workspace_header',
     'private_persona',
+    'room_work_context',
     'rules',
     'routing_instructions',
     'command_format_rules',
@@ -1143,7 +1144,9 @@ test('buildAgentTurnPrompt gives bash-only multiline chat bridge guidance', () =
   assert.doesNotMatch(prompt, /forget-memory/u);
   assert.doesNotMatch(prompt, /Browser tool:/u);
   assert.match(prompt, /write-experience --title "lesson title" --category bug_fix/u);
-  assert.match(prompt, /Use write-experience sparingly/u);
+  assert.match(prompt, /Room workspace: use the model-visible `room_workspace_preview` tool/u);
+  assert.match(prompt, /`room_workspace_bind` with `\{ "confirm": true \}`/u);
+  assert.match(prompt, /Never invent or pass conversation IDs, branches, paths, repositories, or base refs/u);
   assert.match(prompt, /reusable, validated lessons/u);
   assert.match(prompt, /Never put raw message text on a new shell line by itself/u);
   assert.match(prompt, /successful send-public call completes the turn automatically unless you pass --no-finalize/u);
@@ -2187,7 +2190,7 @@ test('buildAgentTurnPrompt skips Trellis context when projectDir is empty', (t) 
   assert.doesNotMatch(prompt, /Trellis project context:/u);
 });
 
-test('buildAgentTurnPrompt skips Trellis context for gameplay conversations', (t) => {
+test('buildAgentTurnPrompt injects Trellis context for every Skill-backed Mode', (t) => {
   const tempDir = withTempDir('caff-trellis-game-skip-');
   const projectDir = path.join(tempDir, 'project');
   const trellisDir = path.join(projectDir, '.trellis');
@@ -2245,8 +2248,8 @@ test('buildAgentTurnPrompt skips Trellis context for gameplay conversations', (t
     agentToolRelativePath: './lib/agent-chat-tools.js',
   });
 
-  assert.doesNotMatch(prompt, /Trellis project context:/u);
-  assert.doesNotMatch(prompt, /SENTINEL_TRELLIS_PRD/u);
+  assert.match(prompt, /Trellis project context:/u);
+  assert.match(prompt, /SENTINEL_TRELLIS_PRD/u);
 });
 
 test('buildAgentTurnPrompt blocks absolute Trellis task dirs outside project', (t) => {

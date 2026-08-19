@@ -585,6 +585,27 @@ function normalizeConversationType(value: any) {
   return normalized;
 }
 
+function normalizeAcceptanceRecord(row: any) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    conversationId: row.conversation_id,
+    candidateSha: row.candidate_sha,
+    roomBranch: row.room_branch || null,
+    mergeCommits: parseJson(row.merge_commits_json) || [],
+    automatedChecks: parseJson(row.automated_checks_json) || [],
+    manualChecks: parseJson(row.manual_checks_json) || [],
+    knownLimitations: parseJson(row.known_limitations_json) || [],
+    environment: parseJson(row.environment_json) || {},
+    status: row.status,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+    decisionAt: row.decision_at || null,
+    acceptedSha: row.accepted_sha || null,
+    decisionNote: row.decision_note || '',
+  };
+}
+
 function normalizeConversationHeader(row: any) {
   if (!row) {
     return null;
@@ -594,8 +615,13 @@ function normalizeConversationHeader(row: any) {
     id: row.id,
     title: row.title,
     type: normalizeConversationType(row.type),
+    modeId: normalizeConversationType(row.type),
     metadata: parseJson(row.metadata_json) || {},
     projectScopeId: row.project_scope_id || null,
+    branch: row.branch || null,
+    worktreePath: row.worktree_path || null,
+    workspaceBaseSha: row.workspace_base_sha || null,
+    workspaceBoundAt: row.workspace_bound_at || null,
     parentConversationId: row.parent_conversation_id || null,
     originConversationId: row.origin_conversation_id || null,
     originMessageId: row.origin_message_id || null,
@@ -879,6 +905,35 @@ export class ChatAppStore {
       this.imageUploadRepository = createImageUploadRepository(this.db);
       this.crossConversationDeliveryRepository = createCrossConversationDeliveryRepository(this.db);
       this.planRepository = createChatPlanRepository(this.db);
+      this.listAcceptanceRecordsStatement = this.db.prepare(`
+        SELECT * FROM chat_acceptance_records
+        WHERE conversation_id = ?
+        ORDER BY created_at ASC, id ASC
+      `);
+      this.getAcceptanceRecordStatement = this.db.prepare(`
+        SELECT * FROM chat_acceptance_records
+        WHERE id = ? AND conversation_id = ?
+        LIMIT 1
+      `);
+      this.insertAcceptanceRecordStatement = this.db.prepare(`
+        INSERT INTO chat_acceptance_records (
+          id, conversation_id, candidate_sha, room_branch,
+          merge_commits_json, automated_checks_json, manual_checks_json,
+          known_limitations_json, environment_json, status,
+          created_by, created_at, decision_at, accepted_sha, decision_note
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, NULL, NULL, '')
+      `);
+      this.decideAcceptanceRecordStatement = this.db.prepare(`
+        UPDATE chat_acceptance_records
+        SET status = @status,
+            decision_at = @decisionAt,
+            accepted_sha = @acceptedSha,
+            decision_note = @decisionNote
+        WHERE id = @id
+          AND conversation_id = @conversationId
+          AND status = 'pending'
+        RETURNING *
+      `);
 
       this.replaceConversationParticipants = (conversationId: any, participants: any) => {
         const createdAt = nowIso();
@@ -1004,7 +1059,11 @@ export class ChatAppStore {
           title: payload.title,
           type: normalizeConversationType(payload.type),
           metadataJson: serializeJson(payload.metadata || {}),
-          projectScopeId: null,
+          projectScopeId: payload.projectScopeId,
+          branch: null,
+          worktreePath: null,
+          workspaceBaseSha: null,
+          workspaceBoundAt: null,
           parentConversationId: null,
           originConversationId: null,
           originMessageId: null,
@@ -1082,6 +1141,31 @@ export class ChatAppStore {
         }
 
         return this.getConversationWithoutMessages(normalizedConversationId);
+      });
+
+      this.bindConversationWorkspaceTransaction = this.db.transaction((conversationId: any, workspace: any) => {
+        const existing = this.getConversationWithoutMessages(conversationId);
+        if (!existing) {
+          const error: any = new Error('Conversation not found');
+          error.code = 'conversation_not_found';
+          throw error;
+        }
+        if (existing.branch || existing.worktreePath) {
+          return existing;
+        }
+        const bound = this.conversationRepository.bindWorkspace(conversationId, {
+          branch: workspace.branch,
+          worktreePath: workspace.worktreePath,
+          workspaceBaseSha: workspace.workspaceBaseSha,
+          workspaceBoundAt: workspace.workspaceBoundAt || nowIso(),
+          updatedAt: nowIso(),
+        });
+        if (!bound) {
+          const error: any = new Error('Room workspace binding changed concurrently');
+          error.code = 'room_workspace_binding_conflict';
+          throw error;
+        }
+        return this.getConversationWithoutMessages(conversationId);
       });
 
       this.createMessageTransaction = this.db.transaction((payload: any) => {
@@ -1716,8 +1800,17 @@ export class ChatAppStore {
         this.conversationRepository.create({
           id: conversationId,
           title: payload.title,
-          type: normalizeConversationType(payload.type),
+          type: normalizeConversationType(payload.modeId || payload.type),
           metadataJson: serializeJson(payload.metadata || {}),
+          projectScopeId: String(payload.projectScopeId || '').trim() || null,
+          branch: null,
+          worktreePath: null,
+          workspaceBaseSha: null,
+          workspaceBoundAt: null,
+          parentConversationId: null,
+          originConversationId: null,
+          originMessageId: null,
+          treeDepth: 0,
           createdAt: timestamp,
           updatedAt: timestamp,
           lastMessageAt: null,
@@ -2642,7 +2735,9 @@ export class ChatAppStore {
       platform,
       externalChatId,
       title: String(input.title || '').trim() || 'External Conversation',
-      type: normalizeConversationType(input.type),
+      type: normalizeConversationType(input.modeId || input.type),
+      modeId: normalizeConversationType(input.modeId || input.type),
+      projectScopeId: String(input.projectScopeId || '').trim() || null,
       metadata: input.metadata && typeof input.metadata === 'object' ? input.metadata : {},
       bindingMetadata: input.bindingMetadata && typeof input.bindingMetadata === 'object' ? input.bindingMetadata : {},
     });
@@ -2700,10 +2795,60 @@ export class ChatAppStore {
     return this.createConversationTransaction({
       id,
       title,
-      type: normalizeConversationType(input.type),
+      type: normalizeConversationType(input.modeId || input.type),
+      projectScopeId: String(input.projectScopeId || '').trim() || null,
       metadata: input.metadata && typeof input.metadata === 'object' ? input.metadata : {},
       participants,
     });
+  }
+
+  bindConversationWorkspace(conversationId: any, workspace: any) {
+    return this.bindConversationWorkspaceTransaction(conversationId, workspace);
+  }
+
+  listAcceptanceRecords(conversationId: any) {
+    return this.listAcceptanceRecordsStatement
+      .all(String(conversationId || '').trim())
+      .map(normalizeAcceptanceRecord);
+  }
+
+  getAcceptanceRecord(conversationId: any, recordId: any) {
+    return normalizeAcceptanceRecord(this.getAcceptanceRecordStatement.get(
+      String(recordId || '').trim(),
+      String(conversationId || '').trim()
+    ));
+  }
+
+  createAcceptanceRecord(conversationId: any, input: any) {
+    const normalizedConversationId = String(conversationId || '').trim();
+    if (!this.getConversationWithoutMessages(normalizedConversationId)) return null;
+    const id = String(input.id || randomUUID()).trim();
+    const createdAt = String(input.createdAt || nowIso()).trim();
+    this.insertAcceptanceRecordStatement.run(
+      id,
+      normalizedConversationId,
+      input.candidateSha,
+      input.roomBranch || null,
+      serializeJson(input.mergeCommits || []),
+      serializeJson(input.automatedChecks || []),
+      serializeJson(input.manualChecks || []),
+      serializeJson(input.knownLimitations || []),
+      serializeJson(input.environment || {}),
+      String(input.createdBy || 'operator').trim() || 'operator',
+      createdAt
+    );
+    return this.getAcceptanceRecord(normalizedConversationId, id);
+  }
+
+  decideAcceptanceRecord(conversationId: any, recordId: any, input: any) {
+    return normalizeAcceptanceRecord(this.decideAcceptanceRecordStatement.get({
+      id: String(recordId || '').trim(),
+      conversationId: String(conversationId || '').trim(),
+      status: input.status,
+      decisionAt: input.decisionAt || nowIso(),
+      acceptedSha: input.acceptedSha || null,
+      decisionNote: String(input.decisionNote || '').trim(),
+    }));
   }
 
   updateConversation(conversationId: any, updates: any = {}) {

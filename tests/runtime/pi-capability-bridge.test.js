@@ -9,6 +9,7 @@ const { pathToFileURL } = require('node:url');
 const {
   createConversationCapabilityDefinitions,
   createPiCapabilityBridge,
+  createRoomWorkspaceCapabilityDefinitions,
 } = require('../../build/server/domain/runtime/pi-capability-bridge');
 const { createAgentToolBridge } = require('../../build/server/domain/runtime/agent-tool-bridge');
 const { createAgentToolsController } = require('../../build/server/api/agent-tools-controller');
@@ -129,11 +130,20 @@ test('Pi extension exposes only fixed business facade schemas', async () => {
 
   assert.deepEqual(tools.map((tool) => tool.name), [
     'conversation_notify',
+    'room_workspace_preview',
+    'room_workspace_bind',
     'conversation_request',
   ]);
 
   const notify = tools[0];
-  const request = tools[1];
+  const preview = tools[1];
+  const bind = tools[2];
+  const request = tools[3];
+  assert.deepEqual(Object.keys(preview.parameters.properties), []);
+  assert.deepEqual(Object.keys(bind.parameters.properties), ['confirm']);
+  assert.equal(preview.parameters.additionalProperties, false);
+  assert.equal(bind.parameters.additionalProperties, false);
+  assert.match(JSON.stringify(bind.parameters), /explicitly confirms/u);
   assert.deepEqual(Object.keys(notify.parameters.properties), [
     'targetConversationId',
     'targetAgentId',
@@ -286,6 +296,55 @@ test('registry injects principal into fixed internal delivery handlers and proje
   assert.doesNotMatch(JSON.stringify([notifyResult, requestResult]), /rawSecret|privateInternalField|must-not-project/u);
 });
 
+test('Room workspace capability schemas reject caller-selected identity and require explicit bind confirmation', async () => {
+  const calls = [];
+  const workspace = {
+    conversationId: 'conversation-source',
+    projectScopeId: 'project-f003',
+    repositoryPath: '/repo',
+    baseBranch: 'develop',
+    baseSha: 'a'.repeat(40),
+    branch: 'room/conversa-demo',
+    worktreePath: '/worktrees/room/conversa-demo',
+    alreadyBound: false,
+  };
+  const bridge = createPiCapabilityBridge({
+    capabilities: createRoomWorkspaceCapabilityDefinitions({
+      preview(input) {
+        calls.push({ kind: 'preview', input });
+        return workspace;
+      },
+      bind(input) {
+        calls.push({ kind: 'bind', input });
+        return { ...workspace, alreadyBound: true };
+      },
+    }),
+  });
+  const principal = createPrincipal();
+
+  const preview = await bridge.invokeFacade('room_workspace_preview', { principal, arguments: {} });
+  assert.equal(preview.branch, workspace.branch);
+  assert.equal(preview.reused, false);
+
+  for (const argumentsValue of [
+    {},
+    { confirm: false },
+    { confirm: true, branch: 'attacker-selected' },
+    { confirm: true, conversationId: 'other-room' },
+  ]) {
+    await assert.rejects(
+      bridge.invokeFacade('room_workspace_bind', { principal, arguments: argumentsValue }),
+      (error) => error && error.code === 'pi_capability_invalid_arguments'
+    );
+  }
+  const bound = await bridge.invokeFacade('room_workspace_bind', {
+    principal,
+    arguments: { confirm: true },
+  });
+  assert.equal(bound.alreadyBound, true);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].input.principal, principal);
+});
 test('registry rejects unknown facade and generic proxy fields before dispatch', async () => {
   let dispatchCount = 0;
   const capabilities = createConversationCapabilityDefinitions({
@@ -437,6 +496,69 @@ test('default Agent bridge Pi facade enters the fixed Phase A delivery handler',
   assert.equal(result.responseStatus, 'waiting');
 });
 
+test('default Agent bridge workspace facade is scoped to the invoking Room and Project', async () => {
+  const conversation = {
+    id: 'conversation-source',
+    projectScopeId: 'project-f003',
+    title: 'Workspace Facade',
+    branch: 'room/conversa-workspace-facade',
+    worktreePath: path.resolve('.'),
+    workspaceBaseSha: 'b'.repeat(40),
+  };
+  let summaryBroadcasts = 0;
+  const store = {
+    getConversation(conversationId) {
+      return conversationId === conversation.id ? conversation : null;
+    },
+    getConversationWithoutMessages(conversationId) {
+      return conversationId === conversation.id ? conversation : null;
+    },
+  };
+  const bridge = createAgentToolBridge({
+    store,
+    resolveProject(projectScopeId) {
+      return projectScopeId === conversation.projectScopeId
+        ? { id: projectScopeId, path: path.resolve('.') }
+        : null;
+    },
+    broadcastConversationSummary() {
+      summaryBroadcasts += 1;
+    },
+    crossConversationDeliveryService: {
+      submitFromAgent() {
+        throw new Error('not used');
+      },
+    },
+  });
+  const context = bridge.registerInvocation(bridge.createInvocationContext({
+    invocationId: 'invocation-workspace-facade',
+    callbackToken: 'callback-workspace-facade',
+    conversationId: conversation.id,
+    turnId: 'turn-workspace-facade',
+    agentId: 'agent-source',
+    agentName: 'Source Agent',
+    stage: { status: 'running' },
+  }));
+
+  const preview = await bridge.handlePiCapability('room_workspace_preview', {
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    arguments: {},
+  });
+  assert.equal(preview.conversationId, conversation.id);
+  assert.equal(preview.projectScopeId, conversation.projectScopeId);
+  assert.equal(preview.branch, conversation.branch);
+  assert.equal(preview.alreadyBound, true);
+
+  const bound = await bridge.handlePiCapability('room_workspace_bind', {
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    arguments: { confirm: true },
+  });
+  assert.equal(bound.branch, conversation.branch);
+  assert.equal(bound.reused, true);
+  assert.equal(summaryBroadcasts, 1);
+});
 test('Agent tools controller exposes only a fixed facade route shape', async () => {
   let received = null;
   const controller = createAgentToolsController({

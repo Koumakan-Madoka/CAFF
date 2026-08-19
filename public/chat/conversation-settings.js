@@ -64,40 +64,7 @@
     }
 
     function fillProjectBindSelect(selectedProjectId = '') {
-      if (!dom.projectBindSelect) {
-        return;
-      }
-
-      const projects = projectOptions();
-      dom.projectBindSelect.innerHTML = '';
-
-      const defaultOption = document.createElement('option');
-      defaultOption.value = '';
-      defaultOption.textContent = state.loadingProjects
-        ? '正在加载项目列表...'
-        : projects.length > 0
-          ? '请选择一个项目...'
-          : '暂无项目';
-      dom.projectBindSelect.appendChild(defaultOption);
-
-      if (selectedProjectId && !projects.some((project) => project.id === selectedProjectId)) {
-        const boundOption = document.createElement('option');
-        boundOption.value = selectedProjectId;
-        boundOption.textContent = projectLabel(selectedProjectId);
-        dom.projectBindSelect.appendChild(boundOption);
-      }
-
-      projects.forEach((project) => {
-        const option = document.createElement('option');
-        option.value = project.id;
-        option.textContent = project.name ? `${project.name} (${project.id})` : project.id;
-        dom.projectBindSelect.appendChild(option);
-      });
-
-      dom.projectBindSelect.value =
-        selectedProjectId && Array.from(dom.projectBindSelect.options).some((option) => option.value === selectedProjectId)
-          ? selectedProjectId
-          : '';
+      return selectedProjectId;
     }
 
     function knownFeishuChats() {
@@ -483,8 +450,6 @@
       const disableSkillControls = disabled || state.agents.length === 0 || state.skills.length === 0;
       const disableFeishuBinding = disabled || conversationBusy || Boolean(state.bindingFeishuChat) || Boolean(conversationFeishuBinding);
       const disableFeishuChatSelection = disableFeishuBinding || Boolean(state.loadingFeishuChats);
-      const disableProjectBinding =
-        disabled || Boolean(conversationProjectScopeId) || Boolean(state.bindingProject) || Boolean(state.loadingProjects);
 
       if (dom.saveConversationButton) {
         dom.saveConversationButton.disabled = disabled;
@@ -505,9 +470,6 @@
       }
 
       fillBulkSkillSelect(dom.bulkSkillSelect ? dom.bulkSkillSelect.value : '');
-      fillProjectBindSelect(
-        conversationProjectScopeId || (dom.projectBindSelect ? dom.projectBindSelect.value.trim() : '')
-      );
       fillFeishuChatSelect(
         conversationFeishuBinding
           ? conversationFeishuBinding.chatId
@@ -543,25 +505,12 @@
         dom.bindFeishuChatButton.textContent = state.bindingFeishuChat ? '绑定中...' : '绑定到当前会话';
       }
 
-      if (dom.projectBindSelect) {
-        dom.projectBindSelect.disabled = disableProjectBinding;
-      }
-
-      if (dom.bindProjectButton) {
-        dom.bindProjectButton.disabled = disableProjectBinding;
-        dom.bindProjectButton.textContent = state.bindingProject ? '绑定中...' : '绑定到当前会话';
-      }
-
       if (dom.projectBindingStatus) {
         dom.projectBindingStatus.textContent = !conversation
-          ? '选中一个会话后，再选择项目绑定。'
+          ? '选择一个 Room 后显示其 Project。'
           : conversationProjectScopeId
-            ? `当前会话已绑定项目：${projectLabel(conversationProjectScopeId)}（绑定后不可更改）。`
-            : state.loadingProjects
-              ? '正在加载项目列表...'
-              : projectOptions().length === 0
-                ? '还没有项目；先到项目管理页创建，再回来绑定。'
-                : '选择项目后绑定；绑定后不可更改，spawn 与计划执行需要项目。';
+            ? `当前 Room 的 Project：${projectLabel(conversationProjectScopeId)}（创建后不可更改）。`
+            : '当前 Room 缺少 Project；新建 Room 时必须选择 Project。';
       }
 
       if (dom.feishuBindingStatus) {

@@ -236,6 +236,39 @@ function validatePrincipal(principal: unknown): PiCapabilityPrincipal {
   return principal as PiCapabilityPrincipal;
 }
 
+function validateRoomWorkspacePreviewArguments(input: unknown): UnknownRecord {
+  rejectForbiddenProxyArguments(input);
+  if (Object.keys(input).length > 0) {
+    throw createCapabilityError(400, 'pi_capability_invalid_arguments', 'room_workspace_preview accepts no arguments');
+  }
+  return {};
+}
+
+function validateRoomWorkspaceBindArguments(input: unknown): UnknownRecord {
+  rejectForbiddenProxyArguments(input);
+  if (Object.keys(input).length !== 1 || input.confirm !== true) {
+    throw createCapabilityError(400, 'pi_capability_invalid_arguments', 'room_workspace_bind requires confirm=true');
+  }
+  return { confirm: true };
+}
+
+function projectRoomWorkspaceResult(result: unknown) {
+  const value = isPlainObject(result) ? result : null;
+  if (!value || !String(value.branch || '').trim() || !String(value.worktreePath || '').trim()) {
+    throw new Error('Room workspace result is missing its canonical binding');
+  }
+  return {
+    conversationId: String(value.conversationId || '').trim(),
+    projectScopeId: String(value.projectScopeId || '').trim(),
+    repositoryPath: String(value.repositoryPath || '').trim(),
+    baseBranch: String(value.baseBranch || '').trim(),
+    baseSha: String(value.baseSha || '').trim(),
+    branch: String(value.branch).trim(),
+    worktreePath: String(value.worktreePath).trim(),
+    alreadyBound: value.alreadyBound === true,
+    reused: value.reused === true,
+  };
+}
 function projectConversationDeliveryResult(result: unknown) {
   const resultRecord = isPlainObject(result) ? result : null;
   const delivery = resultRecord && isPlainObject(resultRecord.delivery) ? resultRecord.delivery : null;
@@ -283,6 +316,35 @@ export function createConversationCapabilityDefinitions(handlers: unknown = {}):
     },
   ];
 }
+
+export function createRoomWorkspaceCapabilityDefinitions(handlers: unknown = {}): InternalPiCapabilityDefinition[] {
+  if (
+    !isPlainObject(handlers)
+    || typeof handlers.preview !== 'function'
+    || typeof handlers.bind !== 'function'
+  ) {
+    throw new Error('Room workspace capability handlers are required');
+  }
+
+  return [
+    {
+      facade: 'room_workspace_preview',
+      kind: 'internal',
+      validateArguments: validateRoomWorkspacePreviewArguments,
+      execute: handlers.preview as PiCapabilityHandler,
+      projectResult: projectRoomWorkspaceResult,
+    },
+    {
+      facade: 'room_workspace_bind',
+      kind: 'internal',
+      validateArguments: validateRoomWorkspaceBindArguments,
+      execute: handlers.bind as PiCapabilityHandler,
+      projectResult: projectRoomWorkspaceResult,
+    },
+  ];
+}
+
+
 
 function normalizeCapabilityDefinitions(capabilities: unknown): Map<string, PiCapabilityDefinition> {
   const definitions = Array.isArray(capabilities) ? capabilities as unknown[] : [];

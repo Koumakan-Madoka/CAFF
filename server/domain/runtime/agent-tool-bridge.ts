@@ -11,8 +11,17 @@ const { recordConversationRetrievalTrace } = require('../conversation/retrieval-
 const { createCrossConversationDeliveryService } = require('../conversation/cross-conversation-delivery');
 const { createLiveBridgeToolStep } = require('./message-tool-trace');
 const {
+  bindAndPersistRoomWorkspace,
+  previewRoomWorkspace,
+} = require('../conversation/room-workspace');
+const {
+  RoomWorkspaceAuthorizationStore,
+  previewFingerprint,
+} = require('../conversation/room-workspace-authorization');
+const {
   createConversationCapabilityDefinitions,
   createPiCapabilityBridge,
+  createRoomWorkspaceCapabilityDefinitions,
 } = require('./pi-capability-bridge');
 const { resolveCurrentTrellisTaskName } = require('../conversation/turn/trellis-context');
 
@@ -359,8 +368,10 @@ export function createAgentToolBridge(options: any = {}) {
   const crossConversationDeliveryService =
     options.crossConversationDeliveryService
     || (store ? createCrossConversationDeliveryService({ store }) : null);
+  const resolveProject = typeof options.resolveProject === 'function' ? options.resolveProject : () => null;
   let piCapabilityBridge = options.piCapabilityBridge || null;
   const activeInvocations = new Map();
+  const workspaceAuthorizations = options.workspaceAuthorizations || new RoomWorkspaceAuthorizationStore();
 
   function resolveStageTaskId(context: any) {
     const taskId = context && context.stage && context.stage.taskId ? String(context.stage.taskId).trim() : '';
@@ -1195,30 +1206,146 @@ export function createAgentToolBridge(options: any = {}) {
     return handleConversationDelivery('request', body);
   }
 
+  function handleRoomWorkspaceCapability(kind: 'preview' | 'bind', input: any) {
+    const principal = input && input.principal;
+    const conversationId = String(principal && principal.sourceConversationId || '').trim();
+    const projectScopeId = String(principal && principal.projectScopeId || '').trim();
+    const conversation = store && typeof store.getConversationWithoutMessages === 'function'
+      ? store.getConversationWithoutMessages(conversationId)
+      : null;
+    if (!conversation) {
+      throw createHttpError(404, 'Conversation not found', { code: 'room_workspace_conversation_not_found' });
+    }
+    if (!projectScopeId || String(conversation.projectScopeId || '').trim() !== projectScopeId) {
+      throw createHttpError(409, 'Room Project does not match the active invocation', {
+        code: 'room_workspace_project_mismatch',
+      });
+    }
+    const project = resolveProject(projectScopeId);
+    if (!project || String(project.id || '').trim() !== projectScopeId) {
+      throw createHttpError(404, 'Room Project not found', { code: 'room_project_not_found' });
+    }
+    if (kind === 'preview') {
+      const preview = previewRoomWorkspace({ conversation, project });
+      if (!preview.alreadyBound) {
+        const authorization = workspaceAuthorizations.issue({
+          conversation,
+          preview,
+          invocationId: principal.invocationId,
+        });
+        if (authorization) {
+          const clientAuthorization = workspaceAuthorizations.clientRecord(
+            workspaceAuthorizations.records.get(authorization.id)
+          );
+          broadcastEvent('room_workspace_authorization_updated', {
+            conversationId,
+            authorization: clientAuthorization,
+          });
+        }
+      }
+      return preview;
+    }
+
+    const result = bindAndPersistRoomWorkspace({
+      store,
+      conversation,
+      project,
+      workspaceBoundAt: nowIso(),
+    });
+    broadcastConversationSummary(conversationId);
+    return result.workspace;
+  }
+
+  function handleRoomWorkspaceAuthorization(input: any = {}) {
+    const conversationId = String(input.conversationId || '').trim();
+    const authorizationId = String(input.authorizationId || '').trim();
+    const token = String(input.token || '').trim();
+    const decision = String(input.decision || '').trim().toLowerCase();
+    const fingerprint = String(input.fingerprint || '').trim();
+    if (!conversationId || !authorizationId || !token || !fingerprint) {
+      throw createHttpError(400, 'Workspace authorization fields are required', {
+        code: 'room_workspace_authorization_invalid_request',
+      });
+    }
+    const conversation = store.getConversationWithoutMessages(conversationId);
+    if (!conversation) {
+      throw createHttpError(404, 'Conversation not found', { code: 'room_workspace_conversation_not_found' });
+    }
+    const project = resolveProject(conversation.projectScopeId);
+    if (!project) {
+      throw createHttpError(404, 'Room Project not found', { code: 'room_project_not_found' });
+    }
+    return workspaceAuthorizations.decide({
+      id: authorizationId,
+      token,
+      conversationId,
+      decision,
+      fingerprint,
+      execute: async () => {
+        const currentConversation = store.getConversationWithoutMessages(conversationId) || conversation;
+        const currentPreview = previewRoomWorkspace({ conversation: currentConversation, project });
+        if (previewFingerprint(currentPreview) !== fingerprint) {
+          throw createHttpError(409, 'Workspace preview changed; request a new authorization card', {
+            code: 'room_workspace_authorization_stale',
+          });
+        }
+        const result = bindAndPersistRoomWorkspace({
+          store,
+          conversation: currentConversation,
+          project,
+          workspaceBoundAt: nowIso(),
+        });
+        broadcastConversationSummary(conversationId);
+        broadcastEvent('room_workspace_authorization_updated', {
+          conversationId,
+          authorization: { id: authorizationId, status: 'accepted', result: result.workspace },
+        });
+        return result;
+      },
+    });
+  }
+  function listRoomWorkspaceAuthorizations(conversationId: any) {
+    const conversation = store.getConversationWithoutMessages(String(conversationId || '').trim());
+    if (!conversation) {
+      throw createHttpError(404, 'Conversation not found', { code: 'room_workspace_conversation_not_found' });
+    }
+    return workspaceAuthorizations.listForClient(conversation.id);
+  }
+
   function resolvePiCapabilityBridge() {
     if (piCapabilityBridge) {
       return piCapabilityBridge;
     }
 
     piCapabilityBridge = createPiCapabilityBridge({
-      capabilities: createConversationCapabilityDefinitions({
-        notify(input: any) {
-          return handleConversationDelivery(
-            'notify',
-            input.arguments,
-            input.context,
-            'conversation_notify'
-          );
-        },
-        request(input: any) {
-          return handleConversationDelivery(
-            'request',
-            input.arguments,
-            input.context,
-            'conversation_request'
-          );
-        },
-      }),
+      capabilities: [
+        ...createConversationCapabilityDefinitions({
+          notify(input: any) {
+            return handleConversationDelivery(
+              'notify',
+              input.arguments,
+              input.context,
+              'conversation_notify'
+            );
+          },
+          request(input: any) {
+            return handleConversationDelivery(
+              'request',
+              input.arguments,
+              input.context,
+              'conversation_request'
+            );
+          },
+        }),
+        ...createRoomWorkspaceCapabilityDefinitions({
+          preview(input: any) {
+            return handleRoomWorkspaceCapability('preview', input);
+          },
+          bind(input: any) {
+            return handleRoomWorkspaceCapability('bind', input);
+          },
+        }),
+      ],
     });
     return piCapabilityBridge;
   }
@@ -3424,6 +3551,9 @@ export function createAgentToolBridge(options: any = {}) {
     handleConversationNotify,
     handleConversationRequest,
     handlePiCapability,
+    handleRoomWorkspaceAuthorization,
+    listRoomWorkspaceAuthorizations,
+    resolvePiCapabilityBridge,
     handleForgetMemory,
     handleListMemories,
     handleListParticipants,

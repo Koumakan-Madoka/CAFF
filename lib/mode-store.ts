@@ -117,27 +117,11 @@ function normalizeModeRow(row: any) {
 const BUILTIN_MODES = [
   {
     id: 'standard',
-    name: '普通对话',
-    description: '标准对话模式，不自动注入额外 skill',
+    name: '普通协作',
+    description: '通用多 Agent 协作 Room，可通过 Mode 挂载 Skills',
     builtin: true,
     skillIds: withRequiredModeSkillIds([]),
     loadingStrategy: 'dynamic',
-  },
-  {
-    id: 'werewolf',
-    name: '狼人杀',
-    description: '后端全自动主持的狼人杀游戏模式',
-    builtin: true,
-    skillIds: withRequiredModeSkillIds([]),
-    loadingStrategy: 'full',
-  },
-  {
-    id: 'who_is_undercover',
-    name: '谁是卧底',
-    description: '后端全自动主持的谁是卧底游戏模式',
-    builtin: true,
-    skillIds: withRequiredModeSkillIds([]),
-    loadingStrategy: 'full',
   },
 ];
 
@@ -180,7 +164,7 @@ export class ModeStore {
 
     this.seedBuiltinModes();
     this.migrateLegacyFeishuCodingMode();
-    this.retireSkillTestDesignMode();
+    this.retireLegacyProductModes();
   }
 
   resolveCodingMode() {
@@ -258,41 +242,77 @@ export class ModeStore {
     migrateLegacyMode();
   }
 
-  retireSkillTestDesignMode() {
+  retireLegacyProductModes() {
+    const retiredModeIds = ['skill_test_design', 'werewolf', 'who_is_undercover'];
+    const retiredSkillIds = new Set(['skill-test-design-workbench', 'werewolf', 'who-is-undercover']);
     const listParticipants = this.db.prepare(`
       SELECT conversation_id, agent_id, conversation_skills_json
       FROM chat_conversation_agents
-      WHERE conversation_skills_json LIKE '%skill-test-design-workbench%'
     `);
     const updateParticipant = this.db.prepare(`
-      UPDATE chat_conversation_agents
-      SET conversation_skills_json = ?
+      UPDATE chat_conversation_agents SET conversation_skills_json = ?
       WHERE conversation_id = ? AND agent_id = ?
     `);
-
-    const existingMode = this.getStatement.get('skill_test_design');
-
     const retire = this.db.transaction(() => {
-      const participants = listParticipants.all();
-
-      for (const participant of participants) {
+      for (const participant of listParticipants.all()) {
         const existingSkillIds = normalizeSkillIds(participant.conversation_skills_json);
-        const filtered = existingSkillIds.filter((id: string) => id !== 'skill-test-design-workbench');
-
+        const filtered = existingSkillIds.filter((id: string) => !retiredSkillIds.has(id));
         if (filtered.length !== existingSkillIds.length) {
-          updateParticipant.run(
-            serializeJson(filtered),
-            participant.conversation_id,
-            participant.agent_id,
-          );
+          updateParticipant.run(serializeJson(filtered), participant.conversation_id, participant.agent_id);
         }
       }
-
-      if (existingMode && existingMode.builtin) {
-        this.deleteStatement.run('skill_test_design');
+      for (const modeId of retiredModeIds) {
+        const roomRows = this.db.prepare(`
+          WITH RECURSIVE retired_rooms(id, depth) AS (
+            SELECT id, 0 FROM chat_conversations WHERE type = ?
+            UNION ALL
+            SELECT child.id, retired_rooms.depth + 1
+            FROM chat_conversations child
+            JOIN retired_rooms ON child.parent_conversation_id = retired_rooms.id
+          )
+          SELECT id, MAX(depth) AS depth FROM retired_rooms GROUP BY id ORDER BY depth DESC
+        `).all(modeId);
+        const roomIds = roomRows.map((row: any) => String(row.id));
+        if (roomIds.length > 0) {
+          const placeholders = roomIds.map(() => '?').join(', ');
+          const deliveryRows = this.db.prepare(`
+            SELECT id, hop_count FROM chat_cross_conversation_deliveries
+            WHERE source_conversation_id IN (${placeholders}) OR target_conversation_id IN (${placeholders})
+            ORDER BY hop_count DESC, created_at DESC
+          `).all(...roomIds, ...roomIds);
+          if (deliveryRows.length > 0) {
+            // Product retirement is the one destructive migration allowed to
+            // remove the otherwise append-only delivery audit trail. DDL is
+            // transactional in SQLite, so a later failure restores the guard.
+            this.db.exec('DROP TRIGGER IF EXISTS chat_cross_delivery_events_append_only_delete');
+            for (const delivery of deliveryRows) {
+              this.db.prepare('DELETE FROM chat_cross_conversation_delivery_events WHERE delivery_id = ?').run(delivery.id);
+            }
+            for (const delivery of deliveryRows) {
+              this.db.prepare('DELETE FROM chat_cross_conversation_deliveries WHERE id = ?').run(delivery.id);
+            }
+            this.db.exec(`
+              CREATE TRIGGER chat_cross_delivery_events_append_only_delete
+              BEFORE DELETE ON chat_cross_conversation_delivery_events
+              BEGIN
+                SELECT RAISE(ABORT, 'cross-conversation delivery events are append-only');
+              END
+            `);
+          }
+          for (const room of roomRows) {
+            this.db.prepare('DELETE FROM chat_conversations WHERE id = ?').run(room.id);
+          }
+        }
+        const mode = this.getStatement.get(modeId);
+        if (mode && mode.builtin) {
+          this.deleteStatement.run(modeId);
+        }
+      }
+      for (const tableName of ['skill_test_cases', 'eval_cases']) {
+        const safeName = tableName === 'skill_test_cases' ? 'skill_test_cases' : 'eval_cases';
+        this.db.exec(`DROP TABLE IF EXISTS ${safeName}`);
       }
     });
-
     retire();
   }
 

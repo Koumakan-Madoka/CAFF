@@ -247,6 +247,10 @@ CREATE INDEX IF NOT EXISTS idx_chat_memory_cards_expires_at
 
 const CHAT_CONVERSATION_LINEAGE_COLUMNS = [
   'project_scope_id',
+  'branch',
+  'worktree_path',
+  'workspace_base_sha',
+  'workspace_bound_at',
   'parent_conversation_id',
   'origin_conversation_id',
   'origin_message_id',
@@ -262,6 +266,9 @@ CREATE TABLE ${tableName} (
   metadata_json TEXT,
   project_scope_id TEXT,
   branch TEXT,
+  worktree_path TEXT,
+  workspace_base_sha TEXT,
+  workspace_bound_at TEXT,
   parent_conversation_id TEXT,
   origin_conversation_id TEXT,
   origin_message_id TEXT,
@@ -332,6 +339,9 @@ INSERT INTO chat_conversations_lineage_migrated (
   metadata_json,
   project_scope_id,
   branch,
+  worktree_path,
+  workspace_base_sha,
+  workspace_bound_at,
   parent_conversation_id,
   origin_conversation_id,
   origin_message_id,
@@ -347,6 +357,9 @@ SELECT
   ${selectColumn('metadata_json', 'NULL')},
   ${selectColumn('project_scope_id', 'NULL')},
   ${selectColumn('branch', 'NULL')},
+  ${selectColumn('worktree_path', 'NULL')},
+  ${selectColumn('workspace_base_sha', 'NULL')},
+  ${selectColumn('workspace_bound_at', 'NULL')},
   ${selectColumn('parent_conversation_id', 'NULL')},
   ${selectColumn('origin_conversation_id', 'NULL')},
   ${selectColumn('origin_message_id', 'NULL')},
@@ -600,6 +613,9 @@ CREATE TABLE IF NOT EXISTS chat_conversations (
   metadata_json TEXT,
   project_scope_id TEXT,
   branch TEXT,
+  worktree_path TEXT,
+  workspace_base_sha TEXT,
+  workspace_bound_at TEXT,
   parent_conversation_id TEXT,
   origin_conversation_id TEXT,
   origin_message_id TEXT,
@@ -620,6 +636,29 @@ CREATE TABLE IF NOT EXISTS chat_conversations (
   FOREIGN KEY (origin_conversation_id) REFERENCES chat_conversations(id) ON DELETE RESTRICT,
   FOREIGN KEY (origin_message_id) REFERENCES chat_messages(id) ON DELETE SET NULL
 );
+
+CREATE TABLE IF NOT EXISTS chat_acceptance_records (
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL,
+  candidate_sha TEXT NOT NULL CHECK (length(candidate_sha) = 40),
+  room_branch TEXT,
+  merge_commits_json TEXT NOT NULL,
+  automated_checks_json TEXT NOT NULL,
+  manual_checks_json TEXT NOT NULL,
+  known_limitations_json TEXT NOT NULL,
+  environment_json TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'rejected')),
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  decision_at TEXT,
+  accepted_sha TEXT,
+  decision_note TEXT NOT NULL DEFAULT '',
+  FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE,
+  CHECK (accepted_sha IS NULL OR accepted_sha = candidate_sha)
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_acceptance_records_conversation
+  ON chat_acceptance_records (conversation_id, created_at DESC, id DESC);
 
 CREATE TABLE IF NOT EXISTS chat_conversation_agents (
   conversation_id TEXT NOT NULL,
@@ -854,6 +893,9 @@ CREATE INDEX IF NOT EXISTS idx_image_uploads_status ON image_uploads (status);
   ensureColumn(db, 'chat_conversations', 'type', "type TEXT NOT NULL DEFAULT 'standard'");
   ensureColumn(db, 'chat_conversations', 'metadata_json', 'metadata_json TEXT');
   ensureColumn(db, 'chat_conversations', 'branch', 'branch TEXT');
+  ensureColumn(db, 'chat_conversations', 'worktree_path', 'worktree_path TEXT');
+  ensureColumn(db, 'chat_conversations', 'workspace_base_sha', 'workspace_base_sha TEXT');
+  ensureColumn(db, 'chat_conversations', 'workspace_bound_at', 'workspace_bound_at TEXT');
   ensureColumn(db, 'chat_conversation_agents', 'model_profile_id', 'model_profile_id TEXT');
   ensureColumn(
     db,
