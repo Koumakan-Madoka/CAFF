@@ -3705,6 +3705,7 @@ function renderWorkspaceAuthorizationCards() {
     cards.filter((item) => item && (item.status === 'pending' || item.status === 'accepted' || item.status === 'rejected' || item.status === 'expired' || item.status === 'failed')).forEach((authorization) => {
       const card = document.createElement('section');
       card.className = `workspace-authorization-card ${authorization.status}`;
+      card.setAttribute('role', 'status');
       const title = document.createElement('strong');
       const statusLabels = {
         accepted: '已绑定',

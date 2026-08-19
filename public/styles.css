@@ -4234,30 +4234,7 @@ body.chat-app .skill-draft-alert {
 }
 
 /* ── Message list（唯一长滚动区） ── */
-body.chat-app .workspace-authorization-cards {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 10px 16px 0;
-}
-
-body.chat-app .workspace-authorization-card {
-  border: 1px solid var(--border-strong, #b9c2d0);
-  border-radius: 10px;
-  padding: 10px 12px;
-  background: var(--surface-raised, #fff);
-  box-shadow: 0 2px 10px rgb(30 41 59 / 8%);
-}
-
-body.chat-app .workspace-authorization-card.pending {
-  border-color: var(--accent, #2563eb);
-}
-
-body.chat-app .workspace-authorization-card p {
-  margin: 5px 0 8px;
-  overflow-wrap: anywhere;
-  color: var(--text-muted, #64748b);
-}
+/* Workspace authorization cards are styled with semantic theme tokens below. */
 
 body.chat-app .message-viewport {
   position: relative;
@@ -4535,6 +4512,15 @@ body.chat-app .drawer-panel {
 
   body.chat-app .chat-header #conversation-meta {
     display: none;
+  }
+
+  body.chat-app .workspace-authorization-card .button-row {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  body.chat-app .workspace-authorization-card .button-row button {
+    width: 100%;
   }
 }
 
@@ -5375,6 +5361,95 @@ body.chat-app .file-chip {
   border-radius: var(--caff-radius-md);
   background: var(--caff-surface-elevated);
   color: var(--caff-text);
+}
+
+body.chat-app .workspace-authorization-cards {
+  display: grid;
+  gap: var(--caff-space-3);
+  width: min(100%, 780px);
+  margin: 0 auto;
+  padding: 0;
+}
+
+body.chat-app .workspace-authorization-card {
+  display: grid;
+  gap: var(--caff-space-2);
+  border: 1px solid color-mix(in srgb, var(--caff-info) 42%, var(--caff-border));
+  border-radius: var(--caff-radius-lg);
+  padding: var(--caff-space-4);
+  background: var(--caff-info-soft);
+  color: var(--caff-text);
+  box-shadow: var(--caff-shadow-sm);
+}
+
+body.chat-app .workspace-authorization-card.pending {
+  border-color: color-mix(in srgb, var(--caff-accent) 56%, var(--caff-border));
+  background: var(--caff-accent-soft);
+}
+
+body.chat-app .workspace-authorization-card strong {
+  color: var(--caff-text);
+}
+
+body.chat-app .workspace-authorization-card p {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--caff-text-soft);
+  font-size: 0.86rem;
+  line-height: 1.5;
+}
+
+body.chat-app .workspace-authorization-card .button-row {
+  justify-content: flex-start;
+}
+
+body.chat-app .workspace-authorization-card .button-row button {
+  min-height: 44px;
+}
+
+body.chat-app .new-conversation-backdrop {
+  background: var(--caff-overlay);
+  backdrop-filter: none;
+}
+
+body.chat-app .new-conversation-dialog {
+  border-color: var(--caff-border-strong);
+  border-radius: var(--caff-radius-xl);
+  background: var(--caff-surface-elevated);
+  color: var(--caff-text);
+  box-shadow: 0 24px 72px rgb(0 0 0 / 32%);
+}
+
+body.chat-app :is(.new-conversation-header, .new-conversation-footer) {
+  background: var(--caff-surface);
+  border-color: var(--caff-border);
+}
+
+body.chat-app .new-conversation-basics {
+  background: var(--caff-surface-sunk);
+  border-color: var(--caff-border);
+}
+
+body.chat-app :is(.new-conversation-role-card, .new-conversation-snapshot-note, .new-conversation-policy-note) {
+  border-color: var(--caff-border);
+  background: var(--caff-surface);
+  color: var(--caff-text);
+}
+
+body.chat-app .new-conversation-role-card:has(input:checked) {
+  border-color: var(--caff-accent);
+  background: var(--caff-accent-soft);
+  box-shadow: 0 0 0 3px var(--caff-focus);
+}
+
+body.chat-app .new-conversation-role-card.is-unavailable {
+  background: var(--caff-surface-sunk);
+}
+
+body.chat-app .new-conversation-error {
+  border-color: color-mix(in srgb, var(--caff-danger) 30%, var(--caff-border));
+  background: var(--caff-danger-soft);
+  color: var(--caff-danger);
 }
 
 body.chat-app .message-card {

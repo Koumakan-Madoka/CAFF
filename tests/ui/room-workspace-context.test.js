@@ -70,6 +70,13 @@ function room(overrides = {}) {
   return { id: 'room-1', title: '验收 Room', agents: [], privateMessages: [], ...overrides };
 }
 
+test('workspace authorization cards are rendered inside the message flow and use theme tokens', () => {
+  assert.match(INDEX_HTML, /id="message-list"[^>]*>[\s\S]*id="message-timeline"[\s\S]*id="workspace-authorization-cards"/u);
+  assert.doesNotMatch(INDEX_HTML, /<div id="workspace-authorization-cards"[^>]*>[^<]*<\/div>\s*<div class="message-viewport"/u);
+  assert.match(STYLES_CSS, /body\.chat-app \.workspace-authorization-card[\s\S]*background: var\(--caff-info-soft\)/u);
+  assert.match(STYLES_CSS, /body\.chat-app \.new-conversation-dialog[\s\S]*background: var\(--caff-surface-elevated\)/u);
+});
+
 test('Room workspace header preserves the chat title CSS rule', () => {
   assert.match(STYLES_CSS, /body\.chat-app \.chat-header h2\s*\{[\s\S]*?margin:\s*0;/);
   assert.equal((STYLES_CSS.match(/body\.chat-app \.chat-header \.titles\s*\{/g) || []).length, 1);
