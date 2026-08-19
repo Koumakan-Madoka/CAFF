@@ -5446,6 +5446,12 @@ body.chat-app .new-conversation-role-card.is-unavailable {
   background: var(--caff-surface-sunk);
 }
 
+body.chat-app .new-conversation-role-badge.warning {
+  border: 1px solid color-mix(in srgb, var(--caff-warning) 42%, var(--caff-border));
+  background: var(--caff-warning-soft);
+  color: var(--caff-warning);
+}
+
 body.chat-app .new-conversation-error {
   border-color: color-mix(in srgb, var(--caff-danger) 30%, var(--caff-border));
   background: var(--caff-danger-soft);

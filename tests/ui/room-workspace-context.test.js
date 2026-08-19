@@ -75,6 +75,7 @@ test('workspace authorization cards are rendered inside the message flow and use
   assert.doesNotMatch(INDEX_HTML, /<div id="workspace-authorization-cards"[^>]*>[^<]*<\/div>\s*<div class="message-viewport"/u);
   assert.match(STYLES_CSS, /body\.chat-app \.workspace-authorization-card[\s\S]*background: var\(--caff-info-soft\)/u);
   assert.match(STYLES_CSS, /body\.chat-app \.new-conversation-dialog[\s\S]*background: var\(--caff-surface-elevated\)/u);
+  assert.match(STYLES_CSS, /body\.chat-app \.new-conversation-role-badge\.warning[\s\S]*background: var\(--caff-warning-soft\)[\s\S]*color: var\(--caff-warning\)/u);
 });
 
 test('Room workspace header preserves the chat title CSS rule', () => {
