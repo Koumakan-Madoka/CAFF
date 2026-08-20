@@ -991,6 +991,7 @@
         (step) => step && step.status === 'failed'
       ) || null;
       const taskErrorText = trace && trace.task && trace.task.errorMessage ? formatInlineTraceText(trace.task.errorMessage) : '';
+      const failureSummaryText = failureContext && failureContext.summary ? formatInlineTraceText(failureContext.summary) : '';
       const failureContextText = failureContext && failureContext.text ? formatInlineTraceText(failureContext.text) : '';
       const failureText = failedStep
         ? formatInlineTraceText(
@@ -1013,6 +1014,18 @@
 
       if (taskErrorText) {
         note.textContent = `任务失败：${taskErrorText}`;
+        return note;
+      }
+
+      if (failureSummaryText) {
+        const label = failureContext.source === 'step'
+          ? '失败步骤'
+          : failureContext.source === 'task'
+            ? '任务失败'
+            : failureContext.source === 'session'
+              ? '会话失败'
+              : '消息失败';
+        note.textContent = `${label}：${failureSummaryText}`;
         return note;
       }
 

@@ -119,6 +119,34 @@
   `lib/project-manager.ts` <-> `server/app/create-server.ts` <->
   `server/domain/conversation/turn/agent-prompt.ts` (`getSkillLoadingMode`, `formatSkillDocuments`, `formatSkillDescriptors`)
 
+## Tool Trace Failure Classification and Summary
+
+### Scope / Trigger
+
+- Applies when `server/domain/runtime/message-tool-trace.ts` projects persisted message/task state plus Pi session JSONL into `failureContext`, and when `public/chat/message-timeline.js` renders the collapsed failure note.
+- Pi expected-completion cleanup can call SDK abort after the final assistant reply has already completed. Some providers append a trailing assistant record with `stopReason=aborted` and `errorMessage="Request was aborted."` even though CAFF persisted the message as `completed` and the task as `succeeded`.
+
+### Contract
+
+- Authoritative completed state wins over that exact cleanup artifact only when all conditions hold: message status is `completed`; task status is `succeeded` or `completed`; session stop reason is `aborted`; session error normalizes to `Request was aborted`; and no assistant error list is present.
+- Do not broadly suppress `aborted`: a different session error, a failed message/task, a failed tool step, an assistant error list, user cancellation, or watchdog timeout remains a failure.
+- `failureContext.summary` is the concise, redacted, actionable headline. Priority is failed-step error/result, task error, message error, session error, assistant error, then a status-specific fallback.
+- `failureContext.text` remains the full redacted diagnostic context for expansion/copy and may contain message/task IDs and status metadata. The collapsed UI uses `summary`, never the full metadata block.
+
+### Validation Matrix
+
+| Case | Expected behavior |
+| --- | --- |
+| completed message + succeeded task + trailing `aborted / Request was aborted.` | `hasFailure=false`; no failure note |
+| completed message + succeeded task + another aborted-session error | session failure remains visible |
+| failed step, task, or message | failure remains visible with its highest-priority summary |
+| user cancellation or watchdog timeout persisted as failed | failure remains visible |
+
+### Required Tests
+
+- `tests/runtime/message-tool-trace.test.js` covers cleanup-noise suppression, unrelated session errors, task summary priority, and detailed context retention.
+- A jsdom timeline test covers concise collapsed text and absence of UUID/status metadata from that headline.
+
 ## Conversation Reply Token Usage
 
 ### 1. Scope / Trigger

@@ -1,5 +1,32 @@
 # UI Structure
 
+## Collapsed Tool-Trace Failure Summary
+
+### Scope / Trigger
+
+- Applies to `public/app.js` trace-state normalization and `public/chat/message-timeline.js` collapsed failure notes.
+
+### Contract
+
+- Backend `failureContext.summary` is the collapsed headline; `failureContext.text` remains the full redacted context used by the copy/details action.
+- The collapsed note must prefer the summary and label it by source (`失败步骤`, `任务失败`, `会话失败`, or `消息失败`). It must not use the full metadata block as the first-line text.
+- Legacy/live trace payloads without `summary` continue to render through the existing failed-step or generic status fallback.
+
+### Validation Matrix
+
+| Case | Expected behavior |
+| --- | --- |
+| summary contains provider/task/step error | collapsed note shows the concise summary only |
+| summary absent but failed step exists | existing failed-step fallback remains visible |
+| summary absent and task/message failed | localized generic task/message failure fallback |
+| full `text` contains IDs/status metadata | IDs remain available for copy/details, never become the collapsed headline |
+
+### Required Tests
+
+- `tests/ui/cross-conversation-ui.test.js` asserts summary-first rendering and metadata exclusion from the collapsed note.
+- `npm run check` covers the browser modules; targeted jsdom timeline tests cover legacy fallback behavior.
+
+
 ## Current Shape
 
 - `public/*.js`: page-level entry files and screen composition

@@ -397,6 +397,89 @@ test('chat shell loads cross-conversation UI and the reused dialog exposes expli
   }
 });
 
+test('message timeline renders a concise failure summary while keeping metadata in the copied context', () => {
+  const dom = new JSDOM('<div id="message-timeline"></div>', { runScripts: 'outside-only' });
+  const { window } = dom;
+  window.CaffChat = {};
+  window.CaffShared = {};
+  window.eval(fs.readFileSync(path.join(__dirname, '../../public/shared/conversation-digest.js'), 'utf8'));
+  window.eval(fs.readFileSync(path.join(__dirname, '../../public/chat/cross-conversation-ui.js'), 'utf8'));
+  window.eval(fs.readFileSync(path.join(__dirname, '../../public/chat/message-images.js'), 'utf8'));
+  window.eval(fs.readFileSync(path.join(__dirname, '../../public/chat/message-timeline.js'), 'utf8'));
+
+  const assistantMessage = {
+    id: 'trace-message-summary-1',
+    role: 'assistant',
+    senderName: 'Trace Agent',
+    content: 'Failed',
+    status: 'failed',
+    createdAt: '2026-08-05T00:00:00.000Z',
+  };
+  const traceState = {
+    open: true,
+    status: 'ready',
+    errorMessage: '',
+    data: {
+      summary: {
+        status: 'failed',
+        totalSteps: 0,
+        toolExecutionCount: 0,
+        failedSteps: 0,
+      },
+      task: {
+        status: 'failed',
+        errorMessage: 'Provider timed out after 60 seconds',
+      },
+      session: {
+        provider: 'demo-provider',
+        model: 'demo-model',
+        stopReason: 'error',
+      },
+      steps: [],
+      bridgeToolEvents: [],
+      sessionToolCalls: [],
+      failureContext: {
+        hasFailure: true,
+        source: 'task',
+        stepId: '',
+        toolName: '',
+        summary: 'Provider timed out after 60 seconds',
+        text: '消息: trace-message-summary-1 · status=failed\n任务: trace-task-summary-1 · status=failed\n\n任务错误:\nProvider timed out after 60 seconds',
+      },
+    },
+  };
+  const renderer = window.CaffChat.createMessageTimelineRenderer({
+    dom: { messageTimeline: window.document.getElementById('message-timeline') },
+    helpers: {
+      agentById: () => null,
+      buildAgentAvatarElement: () => window.document.createElement('span'),
+      canInspectToolTrace: () => true,
+      conversationSummaries: () => [],
+      crossConversationBundleForMessage: () => null,
+      displayedMessageBody: (message) => message.content,
+      digestStatusForConversation: () => null,
+      formatDateTime: () => '-',
+      isPrivateTimelineMessage: () => false,
+      liveStageForMessage: () => null,
+      liveStageLabel: () => '',
+      messageSessionInfo: () => ({ sessionPath: '', sessionName: '', canExport: false }),
+      privateRecipientNames: () => [],
+      renderMessageBody(container, text) { container.textContent = text; },
+      timelineMessagesForConversation: (value) => value.messages,
+      toolTraceSignatureForMessage: () => 'failure-summary',
+      toolTraceStateForMessage: () => traceState,
+    },
+    showToast() {},
+  });
+
+  renderer.render({ id: 'trace-conversation-summary', messages: [assistantMessage], agents: [], metadata: {} }, null, []);
+
+  const failureNote = window.document.querySelector('.message-tool-trace-note.failed');
+  assert.equal(failureNote.textContent, '任务失败：Provider timed out after 60 seconds');
+  assert.equal(failureNote.textContent.includes('trace-message-summary-1'), false);
+  assert.ok(window.document.querySelector('.message-tool-trace-copy-button'));
+});
+
 test('message timeline renders durable receipt actions, external provenance, and a public spawn birth card', () => {
   const dom = new JSDOM('<div id="message-timeline"></div>', { runScripts: 'outside-only' });
   const { window } = dom;

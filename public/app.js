@@ -1144,6 +1144,7 @@ function emptyToolTraceFailureContext() {
     source: '',
     stepId: '',
     toolName: '',
+    summary: '',
     text: '',
   };
 }
@@ -1412,6 +1413,9 @@ function buildFallbackFailureContext(trace, message) {
       source: 'step',
       stepId: String(failedStep.stepId || ''),
       toolName: String(failedStep.toolName || ''),
+      summary: detail
+        ? `${failedStep.toolName || 'tool'} · ${typeof detail === 'string' ? detail : JSON.stringify(detail)}`
+        : `工具 ${failedStep.toolName || 'tool'} 执行失败`,
       text: detail ? `${failedStep.toolName || 'tool'} · ${typeof detail === 'string' ? detail : JSON.stringify(detail)}` : '',
     };
   }
@@ -1426,6 +1430,7 @@ function buildFallbackFailureContext(trace, message) {
       source: taskStatus === 'failed' ? 'task' : 'message',
       stepId: '',
       toolName: '',
+      summary: taskStatus === 'failed' ? '任务执行失败，未提供错误详情' : '消息处理失败，未提供错误详情',
       text: '',
     };
   }
@@ -1990,6 +1995,7 @@ function toolTraceSignatureForMessage(message) {
     failureContext && failureContext.source ? failureContext.source : '',
     failureContext && failureContext.stepId ? failureContext.stepId : '',
     failureContext && failureContext.toolName ? failureContext.toolName : '',
+    failureContext && failureContext.summary ? failureContext.summary : '',
     failureContext && failureContext.text ? failureContext.text : '',
     toolTraceDetailSignature(trace),
   ].join('\u001e');
