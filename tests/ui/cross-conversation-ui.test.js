@@ -294,14 +294,34 @@ test('conversation list renders compact semantic tree rows with collapse, status
   assert.equal(rows[2].style.getPropertyValue('--tree-depth'), '2');
   assert.equal(rows[1].querySelector('.conversation-tree-status').textContent, '处理中');
   assert.ok(rows[0].querySelector('.conversation-tree-toggle'), 'root parent keeps an expandable toggle');
+  assert.equal(rows[0].querySelector('.conversation-tree-toggle').getAttribute('aria-expanded'), 'true');
   assert.equal(rows[0].dataset.hasChildren, 'true');
   assert.ok(rows[1].querySelector('.conversation-tree-toggle'), 'nested parent keeps an expandable toggle');
   assert.equal(rows[1].dataset.hasChildren, 'true');
-  assert.equal(rows[2].querySelector('.conversation-tree-toggle-spacer'), null,
-    'depth-limit leaf rows must not render a dead toggle spacer');
+  assert.ok(rows[2].querySelector('.conversation-tree-leaf-marker'),
+    'leaf rows render a decorative endpoint in the same guide slot');
+  assert.equal(rows[2].querySelector('.conversation-tree-leaf-marker').getAttribute('aria-hidden'), 'true');
   assert.equal(rows[2].dataset.hasChildren, 'false');
-  assert.ok(rows[0].querySelector('.conversation-spawn-button'));
-  assert.equal(rows[2].querySelector('.conversation-spawn-button'), null);
+
+  for (const row of rows) {
+    const trigger = row.querySelector('.conversation-actions-trigger');
+    assert.ok(trigger, 'each normal row exposes one overflow action trigger');
+    assert.equal(trigger.getAttribute('aria-haspopup'), 'menu');
+    assert.equal(trigger.getAttribute('aria-expanded'), 'false');
+    assert.equal(row.querySelector('.conversation-rename-button'), null, 'legacy rename hover button must be removed');
+    assert.equal(row.querySelector('.conversation-spawn-button'), null, 'legacy spawn hover button must be removed');
+  }
+
+  const rootMenu = rows[0].querySelector('.conversation-actions-menu');
+  assert.equal(rootMenu.getAttribute('role'), 'menu');
+  assert.equal(rootMenu.hidden, true);
+  assert.ok(rootMenu.querySelector('[data-conversation-action="rename"][role="menuitem"]'));
+  assert.ok(rootMenu.querySelector('[data-conversation-action="spawn"][role="menuitem"]'));
+
+  const depthMenu = rows[2].querySelector('.conversation-actions-menu');
+  assert.ok(depthMenu.querySelector('[data-conversation-action="rename"]'));
+  assert.equal(depthMenu.querySelector('[data-conversation-action="spawn"]'), null,
+    'depth-limit rows omit the unavailable spawn command');
   assert.equal(rows[2].dataset.depthLimit, 'true');
   const depthHint = rows[2].querySelector('.conversation-depth-limit-hint');
   assert.ok(depthHint, 'depth-limit row must render root-conversation guidance');

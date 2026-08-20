@@ -8,30 +8,38 @@
 
 ### Contract
 
-- A parent row with children owns one 44px expand/collapse column, and its conversation card spans the remaining row width. A leaf row renders no spacer and collapses to one flexible column so its card fills the full depth-adjusted width; depth indentation remains authoritative in both cases.
-- The card permanently reserves only one 44px action slot. The secondary rename action overlays text only while revealed and uses an opaque card-colored background; this avoids sacrificing two action widths in the narrow sidebar.
-- The title line and title use `min-width: 0`; the title owns the remaining flex width and applies ellipsis inside the card. The metadata participant text is independently shrinkable and uses ellipsis rather than a hard clip.
-- Hidden hover actions must not intercept pointer input. Touch layouts expose spawn through the existing `@media (hover: none)` rule; all action targets remain 44px.
-- Compact failure/live pills keep their existing delivery-state semantics; layout changes must not derive or rewrite status.
+- Every normal row is a flat three-track surface: a 44px tree-guide target, one flexible two-line conversation item, and one 44px overflow trigger. Parent and leaf rows at the same depth therefore share the same title baseline and full-row hover/active boundary.
+- Depth uses compact 14px indentation outside the guide track. Parent rows render an accessible disclosure button with `aria-expanded`; leaf rows render an `aria-hidden` endpoint. Nested rows may use low-contrast decorative continuation/branch lines, but those lines never become controls.
+- `button.conversation-item` remains the primary navigation target. It paints no independent card background; hover, focus-within, and active backgrounds belong to the containing row, with an additional non-color active marker.
+- The title line and title use `min-width: 0`; the title owns the remaining flex width and applies ellipsis. Metadata remains a second line, and participant text is independently shrinkable with ellipsis. Type/agent metadata is flat text rather than a nested card/pill treatment.
+- One overflow trigger replaces separate rename/spawn hover buttons. The trigger has `aria-haspopup="menu"` and synchronized `aria-expanded`; only one row menu can be open. Menu actions are 44px high, Escape restores trigger focus, outside click closes the menu, and touch layouts keep the trigger visible.
+- Rename is always offered. Spawn is omitted at the depth limit; otherwise it preserves the existing disabled state and explanatory title when project binding does not permit spawning. Starting rename or spawn closes the menu, and inline rename retains prefilled focus/select plus save/cancel behavior.
+- Focus leaving the combined overflow trigger/menu region closes the menu without stealing focus; Escape restores trigger focus and outside pointer clicks close the menu.
+- Compact tree guides use the same 14px depth step as row indentation: nested continuation lines pass through the guide slot center and branch ticks extend from that line toward the row marker. Guides are decorative and must not intercept input.
+- Rows use `isolation: isolate` to keep decorative guide lines behind row content, which also confines each row's stacking. A row whose overflow menu is open must therefore be lifted (`z-index: 1` via `:has(.conversation-actions-menu:not([hidden]))`) so following rows never cover or intercept the open menu.
+- Compact failure/live pills and busy metadata keep their existing delivery/runtime semantics; the redesign must not derive or rewrite status.
 
 ### Validation Matrix
 
 | Case | Expected behavior |
 | --- | --- |
-| parent row with children | keeps a 44px expand/collapse target and the card fills the remainder |
-| leaf row without children | renders no toggle spacer; card and overlaid actions use the full depth-adjusted row width |
-| root or nested row with long title | idle text keeps all space except one 44px action slot and ellipsizes inside the card |
-| narrow metadata line | participant text shrinks with an ellipsis instead of being hard-clipped |
-| hover/focus with rename and spawn | both controls appear over the card tail; the secondary action masks underlying text and remains keyboard operable |
-| actions visually hidden | their transparent boxes do not intercept card clicks |
-| depth-limit row without spawn | card width and title containment stay unchanged |
+| root parent and root leaf | aligned full-row surfaces and title baselines; disclosure caret vs decorative endpoint |
+| nested parent/leaf | compact depth indentation plus faint guides without a dead 44px spacer |
+| collapsed parent | `aria-expanded=false`, descendants hidden, row geometry unchanged |
+| root or nested row with long title | title and participant metadata ellipsize while status and menu remain reachable |
+| hover/focus/active | row owns the background; active state also has a visible leading marker |
+| overflow menu | one menu open; correct ARIA; 44px actions; Escape/focus-leave/outside click close safely; open row stacks above siblings |
+| spawn unavailable | disabled menu item retains the project-binding explanation |
+| depth-limit row | rename remains; spawn is absent; root-conversation guidance remains visible |
+| inline rename | menu disappears; prefilled form and save/cancel flow remain keyboard operable |
+| touch layout | overflow trigger remains visible and all controls retain 44px targets |
 
 ### Required Tests
 
-- `tests/ui/chat-experience-m4.test.js` locks the parent two-column grid, leaf one-column grid, card span, single-slot idle reservation, opaque secondary action, and shrinkable title/metadata contracts.
-- `tests/ui/cross-conversation-ui.test.js` locks that parent rows retain toggles while leaf rows expose `data-has-children="false"` without a dead spacer.
-- Browser geometry checks should assert zero card-to-row right gap, title containment, metadata ellipsis, and no readable text showing through revealed actions for an injected long title.
-- Existing cross-conversation and rename tests continue to lock status semantics and keyboard-operable `ul > li > button` structure.
+- `tests/ui/chat-experience-m4.test.js` locks the shared three-track row, full-row states, compact depth, accessible guide/trigger targets, overlay menu, open-row stacking lift, ellipsis, and flat metadata contracts.
+- `tests/ui/cross-conversation-ui.test.js` locks semantic `ul > li`, parent disclosure buttons, leaf endpoints, menu contents, depth-limit behavior, collapse, and unchanged status semantics.
+- `tests/ui/conversation-list-rename.test.js` locks ARIA/menu contents, disabled spawn, one-open-menu state, and rename transitions.
+- Browser geometry checks should cover 280px width, root/nested parent and leaf alignment, long text, light/dark row states, menu containment, open-menu click-through on rows with following siblings, and touch/keyboard focus behavior. Focus-leave behavior should be covered by the jsdom renderer suite.
 
 
 ## Pending Goal Proposal Checklist

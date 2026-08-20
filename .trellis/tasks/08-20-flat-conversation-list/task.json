@@ -1,0 +1,41 @@
+{
+  "id": "flat-conversation-list",
+  "name": "flat-conversation-list",
+  "title": "重新设计扁平树形对话列表",
+  "description": "将左侧会话列表重构为对齐一致、空间高效且可访问的扁平树形列表。",
+  "status": "dev",
+  "dev_type": "frontend",
+  "scope": "frontend",
+  "package": "public",
+  "priority": "P2",
+  "creator": "GPT",
+  "assignee": "GPT",
+  "createdAt": "2026-08-20",
+  "completedAt": null,
+  "branch": "room/c2fab452-caff-bug-bug",
+  "base_branch": "develop",
+  "worktree_path": "E:/pythonproject/worktrees/room/c2fab452-caff-bug-bug",
+  "current_phase": 1,
+  "next_action": [
+    { "phase": 1, "action": "implement" },
+    { "phase": 2, "action": "check" },
+    { "phase": 3, "action": "finish-work" },
+    { "phase": 4, "action": "human-acceptance" }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "public/chat/conversation-list.js",
+    "public/app.js",
+    "public/styles.css",
+    "tests/ui/chat-experience-m4.test.js",
+    "tests/ui/cross-conversation-ui.test.js",
+    "tests/ui/conversation-list-rename.test.js",
+    ".trellis/spec/frontend/ui-structure.md"
+  ],
+  "notes": "Goal mode; visual design confirmed as flat rows, tree guides, two-line metadata, and one overflow action menu.",
+  "meta": {}
+}

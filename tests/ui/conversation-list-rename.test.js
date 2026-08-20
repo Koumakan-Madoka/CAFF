@@ -55,16 +55,83 @@ function baseState() {
   };
 }
 
-test('conversation list renders a rename button per row', () => {
+test('conversation list renders one accessible overflow menu per row', () => {
   const state = baseState();
   const { renderer, listEl } = loadRenderer({ state, dom: {} });
 
   renderer.render();
 
-  const button = listEl.querySelector('.conversation-rename-button');
-  assert.ok(button, 'rename button should exist');
-  assert.equal(button.dataset.renameConversationId, 'conv-1');
-  assert.match(button.getAttribute('aria-label'), /重命名/);
+  const trigger = listEl.querySelector('.conversation-actions-trigger');
+  assert.ok(trigger, 'overflow trigger should exist');
+  assert.equal(trigger.dataset.conversationActionsId, 'conv-1');
+  assert.equal(trigger.getAttribute('aria-haspopup'), 'menu');
+  assert.equal(trigger.getAttribute('aria-expanded'), 'false');
+
+  const menu = listEl.querySelector('.conversation-actions-menu');
+  assert.ok(menu, 'row menu should exist');
+  assert.equal(menu.getAttribute('role'), 'menu');
+  assert.equal(menu.hidden, true);
+  assert.ok(menu.querySelector('[data-conversation-action="rename"][role="menuitem"]'));
+  const spawn = menu.querySelector('[data-conversation-action="spawn"][role="menuitem"]');
+  assert.ok(spawn);
+  assert.equal(spawn.disabled, true, 'project-less conversations keep spawn unavailable');
+});
+
+test('opening actions keeps only one row menu open and closing restores the trigger state', () => {
+  const state = baseState();
+  state.conversations.push({
+    id: 'conv-2',
+    title: '第二个会话',
+    type: 'standard',
+    projectScopeId: 'project-1',
+    agentCount: 2,
+    messageCount: 0,
+    lastMessageAt: null,
+  });
+  const { renderer, listEl } = loadRenderer({ state, dom: {} });
+
+  renderer.render();
+  renderer.toggleActions('conv-1');
+  let firstTrigger = listEl.querySelector('[data-conversation-actions-id="conv-1"]');
+  let secondTrigger = listEl.querySelector('[data-conversation-actions-id="conv-2"]');
+  let firstMenu = listEl.querySelector('[data-conversation-actions-menu="conv-1"]');
+  let secondMenu = listEl.querySelector('[data-conversation-actions-menu="conv-2"]');
+  assert.equal(firstTrigger.getAttribute('aria-expanded'), 'true');
+  assert.equal(firstMenu.hidden, false);
+  assert.equal(secondMenu.hidden, true);
+
+  renderer.toggleActions('conv-2');
+  firstTrigger = listEl.querySelector('[data-conversation-actions-id="conv-1"]');
+  secondTrigger = listEl.querySelector('[data-conversation-actions-id="conv-2"]');
+  firstMenu = listEl.querySelector('[data-conversation-actions-menu="conv-1"]');
+  secondMenu = listEl.querySelector('[data-conversation-actions-menu="conv-2"]');
+  assert.equal(firstTrigger.getAttribute('aria-expanded'), 'false');
+  assert.equal(firstMenu.hidden, true);
+  assert.equal(secondTrigger.getAttribute('aria-expanded'), 'true');
+  assert.equal(secondMenu.hidden, false);
+
+  renderer.closeActions();
+  assert.equal(listEl.querySelectorAll('.conversation-actions-menu:not([hidden])').length, 0);
+});
+
+test('moving focus outside an open actions region closes its menu', () => {
+  const state = baseState();
+  const { renderer, listEl, document } = loadRenderer({ state, dom: {} });
+  const outside = document.createElement('button');
+  document.body.appendChild(outside);
+
+  renderer.render();
+  renderer.toggleActions('conv-1');
+  const menuItem = listEl.querySelector('[role="menuitem"]');
+  assert.equal(listEl.querySelector('.conversation-actions-menu').hidden, false);
+
+  menuItem.dispatchEvent(new document.defaultView.FocusEvent('focusout', {
+    bubbles: true,
+    relatedTarget: outside,
+  }));
+
+  assert.equal(listEl.querySelector('.conversation-actions-menu').hidden, true);
+  assert.equal(listEl.querySelector('.conversation-actions-trigger').getAttribute('aria-expanded'), 'false');
 });
 
 test('startRename renders an inline rename form prefilled with the current title', () => {
@@ -94,7 +161,19 @@ test('cancelRename restores the normal row rendering', () => {
 
   assert.equal(listEl.querySelector('.conversation-rename-form'), null);
   assert.ok(listEl.querySelector('.conversation-item'), 'normal item should be back');
-  assert.ok(listEl.querySelector('.conversation-rename-button'));
+  assert.ok(listEl.querySelector('.conversation-actions-trigger'));
+});
+
+test('starting rename closes the overflow menu', () => {
+  const state = baseState();
+  const { renderer, listEl } = loadRenderer({ state, dom: {} });
+
+  renderer.render();
+  renderer.toggleActions('conv-1');
+  renderer.startRename('conv-1');
+
+  assert.ok(listEl.querySelector('.conversation-rename-form'));
+  assert.equal(listEl.querySelector('.conversation-actions-menu'), null);
 });
 
 test('startRename with empty id is a no-op', () => {

@@ -212,54 +212,61 @@ test('M4: mobile anchors the new-message pill bottom-right', () => {
   assert.match(pillBlock, /right:/, 'mobile pill must anchor to the right edge');
 });
 
-test('M4: conversation tree keeps the card across the available row width', () => {
+test('M4: conversation tree uses aligned flat rows with compact guides and one action menu', () => {
   const treeRow = cssBlock('body.chat-app .conversation-tree-row');
+  assert.match(treeRow, /position:\s*relative/, 'flat row must own its full hover/active/action surface');
   assert.match(
     treeRow,
-    /grid-template-columns:\s*44px\s+minmax\(0,\s*1fr\)/,
-    'tree row must reserve only the leading control column before the flexible card'
+    /grid-template-columns:\s*44px\s+minmax\(0,\s*1fr\)\s+44px/,
+    'every row must use the same accessible guide, content, and compact action tracks'
   );
-  assert.doesNotMatch(
-    treeRow,
-    /grid-template-columns:[^;}]*44px\s+44px\s*;/,
-    'hidden row actions must not permanently consume two trailing columns'
-  );
-
-  const leafRowBlock = cssBlock('body.chat-app .conversation-tree-row[data-has-children="false"]');
   assert.match(
-    leafRowBlock,
-    /grid-template-columns:\s*minmax\(0,\s*1fr\)/,
-    'leaf rows must remove the unused leading toggle column'
+    treeRow,
+    /padding-left:\s*calc\(6px\s*\+\s*var\(--tree-depth,\s*0\)\s*\*\s*14px\)/,
+    'tree depth must use compact 14px indentation while guide targets remain accessible'
   );
-
-  const leafItemBlock = cssBlock('body.chat-app .conversation-tree-row[data-has-children="false"] .conversation-item');
-  assert.match(leafItemBlock, /grid-column:\s*1\s*\/\s*-1/, 'leaf cards must fill the whole row after indentation');
-
-  const leafRenameBlock = cssBlock('body.chat-app .conversation-tree-row[data-has-children="false"] .conversation-rename-button');
-  assert.match(leafRenameBlock, /grid-column:\s*1/, 'leaf rename actions must stay over the full-width card');
-
-  const leafSpawnBlock = cssBlock('body.chat-app .conversation-tree-row[data-has-children="false"] .conversation-spawn-button');
-  assert.match(leafSpawnBlock, /grid-column:\s*1/, 'leaf spawn actions must stay over the full-width card');
 
   const itemBlock = cssBlock('body.chat-app .conversation-tree-row .conversation-item');
-  assert.match(itemBlock, /grid-column:\s*2\s*\/\s*-1/, 'conversation card must span the remaining row width');
-  assert.match(
-    itemBlock,
-    /padding-right:\s*calc\(44px\s*\+\s*0\.75rem\)/,
-    'the idle card must reserve only the action that can remain visible'
-  );
-  assert.doesNotMatch(
-    itemBlock,
-    /padding-right:\s*calc\(88px\s*\+\s*0\.75rem\)/,
-    'the hidden rename action must not permanently shorten sidebar text'
-  );
+  assert.match(itemBlock, /grid-column:\s*2\s*\/\s*3/, 'parent and leaf content must share one aligned track');
+  assert.match(itemBlock, /background:\s*transparent/, 'the primary item must not paint an independent card');
+  assert.doesNotMatch(itemBlock, /padding-right:\s*calc\(44px/, 'the action track must not also shorten item content');
 
-  const renameBlock = cssBlock('body.chat-app .conversation-rename-button');
+  const hoverBlock = cssBlock('body.chat-app .conversation-tree-row:hover');
+  assert.match(hoverBlock, /background:\s*var\(--caff-surface-hover\)/, 'hover belongs to the whole flat row');
+  const activeBlock = cssBlock('body.chat-app .conversation-tree-row:has\(\.conversation-item\.active\)');
+  assert.match(activeBlock, /background:\s*var\(--caff-accent-soft\)/, 'active state belongs to the whole flat row');
+
+  const guideBlock = cssBlock('body.chat-app .conversation-tree-guide');
+  assert.match(guideBlock, /grid-column:\s*1/, 'parent toggles and leaf endpoints must share the guide track');
+  assert.match(guideBlock, /width:\s*44px/, 'parent disclosure controls retain a 44px touch target');
+  assert.match(guideBlock, /min-height:\s*44px/, 'guide controls retain a 44px touch target');
+  const continuationBlock = cssBlock('body.chat-app .conversation-tree-row::before');
   assert.match(
-    renameBlock,
-    /background:\s*var\(--conversation-action-bg\)/,
-    'the overlaid rename action must mask text underneath with the current card state when revealed'
+    continuationBlock,
+    /left:\s*calc\(28px\s*\+\s*\(var\(--tree-depth,\s*0\)\s*-\s*1\)\s*\*\s*14px\)/,
+    'continuation guides must share the compact 14px depth step and align with the parent guide center'
   );
+  const branchBlock = cssBlock('body.chat-app .conversation-tree-guide::after');
+  assert.match(branchBlock, /left:\s*8px/, 'branch ticks must begin at the parent continuation line');
+  assert.match(branchBlock, /width:\s*14px/, 'branch ticks must reach the current guide center');
+  const leafMarkerBlock = cssBlock('body.chat-app .conversation-tree-leaf-marker');
+  assert.match(leafMarkerBlock, /pointer-events:\s*none/, 'leaf endpoints are decorative, never fake controls');
+
+  const actionTriggerBlock = cssBlock('body.chat-app .conversation-actions-trigger');
+  assert.match(actionTriggerBlock, /width:\s*44px/, 'compact dots still need a 44px pointer target');
+  assert.match(actionTriggerBlock, /height:\s*44px/, 'compact dots still need a 44px touch target');
+  const actionMenuBlock = cssBlock('body.chat-app .conversation-actions-menu');
+  assert.match(actionMenuBlock, /position:\s*absolute/, 'row menu must overlay rather than compress the title');
+  const openMenuRowBlock = cssBlock(
+    'body.chat-app .conversation-tree-row:has(.conversation-actions-menu:not([hidden]))'
+  );
+  assert.match(
+    openMenuRowBlock,
+    /z-index:\s*1/,
+    'a row with an open menu must lift above following isolated rows so the menu stays clickable'
+  );
+  const actionItemBlock = cssBlock('body.chat-app .conversation-action-menu-item');
+  assert.match(actionItemBlock, /min-height:\s*44px/, 'menu actions must remain touch accessible');
 
   const metaBlock = cssBlock('body.chat-app .conversation-meta-line');
   assert.match(metaBlock, /text-overflow:\s*ellipsis/, 'narrow metadata must use an ellipsis instead of a hard clip');
@@ -268,26 +275,12 @@ test('M4: conversation tree keeps the card across the available row width', () =
   assert.match(participantsBlock, /min-width:\s*0/, 'participant metadata must be shrinkable');
   assert.match(participantsBlock, /text-overflow:\s*ellipsis/, 'participant metadata must show its truncation');
 
-  const depthLimitItemBlock = cssBlock('body.chat-app .conversation-tree-row[data-depth-limit="true"] .conversation-item');
-  assert.match(
-    depthLimitItemBlock,
-    /padding-right:\s*calc\(44px\s*\+\s*0\.75rem\)/,
-    'depth-limit rows without spawn must reserve only the rename action'
-  );
-
-  const depthLimitRenameBlock = cssBlock('body.chat-app .conversation-tree-row[data-depth-limit="true"] .conversation-rename-button');
-  assert.match(
-    depthLimitRenameBlock,
-    /margin-right:\s*0/,
-    'depth-limit rows must place rename in the only reserved action slot'
-  );
-
   const titleLine = cssBlock('body.chat-app .sidebar-list .conversation-title-line');
-  assert.match(titleLine, /min-width:\s*0/, 'title line must be shrinkable inside the card');
+  assert.match(titleLine, /min-width:\s*0/, 'title line must be shrinkable inside the row');
 
   const titleBlock = cssBlock('body.chat-app .sidebar-list .conversation-title-line strong');
   assert.match(titleBlock, /min-width:\s*0/, 'long titles must shrink before applying ellipsis');
-  assert.match(titleBlock, /flex:\s*1\s+1\s+auto/, 'title must own the card remainder while status stays visible');
+  assert.match(titleBlock, /flex:\s*1\s+1\s+auto/, 'title must own the row remainder while status stays visible');
 });
 
 test('M4: sidebar conversation items render two-line density', () => {
