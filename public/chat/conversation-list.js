@@ -193,6 +193,7 @@
         typeBadge.className = 'conversation-type-badge';
         typeBadge.textContent = conversationTypeLabel(conversation);
         const participants = document.createElement('span');
+        participants.className = 'conversation-participants';
         participants.textContent = `${conversation.agentCount || 0} 个 Agent`;
         metaLine.append(typeBadge, participants);
         if (isConversationBusy(conversation.id)) {

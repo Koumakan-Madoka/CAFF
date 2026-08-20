@@ -8,8 +8,9 @@
 
 ### Contract
 
-- The leading expand/collapse control owns one 44px column. The conversation card spans all remaining row width; hidden rename/spawn actions must overlay the card tail instead of permanently reserving trailing grid columns.
-- The card reserves enough right padding for both 44px actions. The title line and title use `min-width: 0`; the title owns the remaining flex width and applies ellipsis inside the card without crossing the action hit targets.
+- The leading expand/collapse control owns one 44px column. The conversation card spans all remaining row width; hidden rename/spawn actions overlay the card tail instead of consuming trailing grid columns.
+- The card permanently reserves only one 44px action slot. The secondary rename action overlays text only while revealed and uses an opaque card-colored background; this avoids sacrificing two action widths in the narrow sidebar.
+- The title line and title use `min-width: 0`; the title owns the remaining flex width and applies ellipsis inside the card. The metadata participant text is independently shrinkable and uses ellipsis rather than a hard clip.
 - Hidden hover actions must not intercept pointer input. Touch layouts expose spawn through the existing `@media (hover: none)` rule; all action targets remain 44px.
 - Compact failure/live pills keep their existing delivery-state semantics; layout changes must not derive or rewrite status.
 
@@ -17,15 +18,16 @@
 
 | Case | Expected behavior |
 | --- | --- |
-| root or nested row with long title | card fills the depth-adjusted remainder; title ellipsizes inside it |
-| hover/focus with rename and spawn | both controls appear over reserved card padding and remain keyboard operable |
+| root or nested row with long title | card fills the depth-adjusted remainder; idle text keeps all space except one 44px action slot and ellipsizes inside it |
+| narrow metadata line | participant text shrinks with an ellipsis instead of being hard-clipped |
+| hover/focus with rename and spawn | both controls appear over the card tail; the secondary action masks underlying text and remains keyboard operable |
 | actions visually hidden | their transparent boxes do not intercept card clicks |
 | depth-limit row without spawn | card width and title containment stay unchanged |
 
 ### Required Tests
 
-- `tests/ui/chat-experience-m4.test.js` locks the two-column tree grid, card span, and shrinkable title contract.
-- Browser geometry checks should assert zero card-to-row right gap, title containment, and no title/action intersection for an injected long title.
+- `tests/ui/chat-experience-m4.test.js` locks the two-column tree grid, card span, single-slot idle reservation, opaque secondary action, and shrinkable title/metadata contracts.
+- Browser geometry checks should assert zero card-to-row right gap, title containment, metadata ellipsis, and no readable text showing through revealed actions for an injected long title.
 - Existing cross-conversation and rename tests continue to lock status semantics and keyboard-operable `ul > li > button` structure.
 
 

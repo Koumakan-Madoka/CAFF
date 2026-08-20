@@ -227,6 +227,30 @@ test('M4: conversation tree keeps the card across the available row width', () =
 
   const itemBlock = cssBlock('body.chat-app .conversation-tree-row .conversation-item');
   assert.match(itemBlock, /grid-column:\s*2\s*\/\s*-1/, 'conversation card must span the remaining row width');
+  assert.match(
+    itemBlock,
+    /padding-right:\s*calc\(44px\s*\+\s*0\.75rem\)/,
+    'the idle card must reserve only the action that can remain visible'
+  );
+  assert.doesNotMatch(
+    itemBlock,
+    /padding-right:\s*calc\(88px\s*\+\s*0\.75rem\)/,
+    'the hidden rename action must not permanently shorten sidebar text'
+  );
+
+  const renameBlock = cssBlock('body.chat-app .conversation-rename-button');
+  assert.match(
+    renameBlock,
+    /background:\s*var\(--conversation-action-bg\)/,
+    'the overlaid rename action must mask text underneath with the current card state when revealed'
+  );
+
+  const metaBlock = cssBlock('body.chat-app .conversation-meta-line');
+  assert.match(metaBlock, /text-overflow:\s*ellipsis/, 'narrow metadata must use an ellipsis instead of a hard clip');
+
+  const participantsBlock = cssBlock('body.chat-app .conversation-meta-line .conversation-participants');
+  assert.match(participantsBlock, /min-width:\s*0/, 'participant metadata must be shrinkable');
+  assert.match(participantsBlock, /text-overflow:\s*ellipsis/, 'participant metadata must show its truncation');
 
   const depthLimitItemBlock = cssBlock('body.chat-app .conversation-tree-row[data-depth-limit="true"] .conversation-item');
   assert.match(
@@ -296,6 +320,11 @@ test('M4: sidebar conversation items render two-line density', () => {
   assert.ok(metaLine, 'two-line density requires a single meta line');
   assert.ok(metaLine.textContent.includes('普通对话'), 'type label demoted into the meta line text');
   assert.ok(metaLine.textContent.includes('3'), 'agent count stays in the meta line');
+  assert.equal(
+    metaLine.querySelector('.conversation-participants')?.textContent,
+    '3 个 Agent',
+    'participant text needs its own shrinkable ellipsis target'
+  );
   assert.ok(!item.querySelector('.section-row'), 'legacy footer row must be gone');
   assert.ok(!item.querySelector('.conversation-preview'), 'preview paragraph must not render as a third line');
 });

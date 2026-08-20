@@ -5742,22 +5742,32 @@ body.chat-app .conversation-meta-line {
   color: var(--caff-ink-soft);
   white-space: nowrap;
   overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 body.chat-app .conversation-meta-line .conversation-type-badge {
+  flex: 0 0 auto;
   margin-left: 0;
   padding: 0.1rem 0.45rem;
   font-size: 0.7rem;
   font-weight: 600;
 }
 
+body.chat-app .conversation-meta-line .conversation-participants {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 body.chat-app .conversation-meta-line .mini-badge {
+  flex: 0 0 auto;
   padding: 0.1rem 0.45rem;
   font-size: 0.7rem;
 }
 
 /* F003: compact conversation tree */
 body.chat-app .conversation-tree-row {
+  --conversation-action-bg: var(--caff-surface);
   display: grid;
   grid-template-columns: 44px minmax(0, 1fr);
   align-items: center;
@@ -5765,11 +5775,19 @@ body.chat-app .conversation-tree-row {
   padding-left: calc(var(--tree-depth, 0) * 14px);
 }
 
+body.chat-app .conversation-tree-row:hover {
+  --conversation-action-bg: var(--caff-surface-hover);
+}
+
+body.chat-app .conversation-tree-row:has(.conversation-item.active) {
+  --conversation-action-bg: var(--caff-accent-soft);
+}
+
 body.chat-app .conversation-tree-row .conversation-item {
   grid-column: 2 / -1;
   grid-row: 1;
   min-width: 0;
-  padding-right: calc(88px + 0.75rem);
+  padding-right: calc(44px + 0.75rem);
 }
 
 body.chat-app .conversation-tree-row[data-depth-limit="true"] .conversation-item {
@@ -5816,7 +5834,7 @@ body.chat-app .conversation-rename-button {
   height: 44px;
   padding: 0;
   border: 0;
-  background: transparent;
+  background: var(--conversation-action-bg);
   color: var(--caff-ink-soft);
   font: inherit;
   font-size: 0.95rem;
@@ -5834,7 +5852,7 @@ body.chat-app .conversation-tree-row:focus-within .conversation-rename-button {
 body.chat-app .conversation-rename-button:hover:not(:disabled),
 body.chat-app .conversation-rename-button:focus-visible {
   color: var(--caff-accent-deep);
-  background: color-mix(in srgb, var(--caff-accent) 10%, transparent);
+  background: color-mix(in srgb, var(--caff-accent) 10%, var(--conversation-action-bg));
 }
 
 body.chat-app .conversation-rename-form {
