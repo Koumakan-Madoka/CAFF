@@ -212,6 +212,44 @@ test('M4: mobile anchors the new-message pill bottom-right', () => {
   assert.match(pillBlock, /right:/, 'mobile pill must anchor to the right edge');
 });
 
+test('M4: conversation tree keeps the card across the available row width', () => {
+  const treeRow = cssBlock('body.chat-app .conversation-tree-row');
+  assert.match(
+    treeRow,
+    /grid-template-columns:\s*44px\s+minmax\(0,\s*1fr\)/,
+    'tree row must reserve only the leading control column before the flexible card'
+  );
+  assert.doesNotMatch(
+    treeRow,
+    /grid-template-columns:[^;}]*44px\s+44px\s*;/,
+    'hidden row actions must not permanently consume two trailing columns'
+  );
+
+  const itemBlock = cssBlock('body.chat-app .conversation-tree-row .conversation-item');
+  assert.match(itemBlock, /grid-column:\s*2\s*\/\s*-1/, 'conversation card must span the remaining row width');
+
+  const depthLimitItemBlock = cssBlock('body.chat-app .conversation-tree-row[data-depth-limit="true"] .conversation-item');
+  assert.match(
+    depthLimitItemBlock,
+    /padding-right:\s*calc\(44px\s*\+\s*0\.75rem\)/,
+    'depth-limit rows without spawn must reserve only the rename action'
+  );
+
+  const depthLimitRenameBlock = cssBlock('body.chat-app .conversation-tree-row[data-depth-limit="true"] .conversation-rename-button');
+  assert.match(
+    depthLimitRenameBlock,
+    /margin-right:\s*0/,
+    'depth-limit rows must place rename in the only reserved action slot'
+  );
+
+  const titleLine = cssBlock('body.chat-app .sidebar-list .conversation-title-line');
+  assert.match(titleLine, /min-width:\s*0/, 'title line must be shrinkable inside the card');
+
+  const titleBlock = cssBlock('body.chat-app .sidebar-list .conversation-title-line strong');
+  assert.match(titleBlock, /min-width:\s*0/, 'long titles must shrink before applying ellipsis');
+  assert.match(titleBlock, /flex:\s*1\s+1\s+auto/, 'title must own the card remainder while status stays visible');
+});
+
 test('M4: sidebar conversation items render two-line density', () => {
   const dom = new JSDOM('<ul id="conversation-list" class="conversation-list sidebar-list"></ul>', {
     url: 'http://localhost/',
