@@ -938,6 +938,65 @@ test('buildAgentTurnPrompt includes active session goal guidance', () => {
   assert.match(prompt, /suggest-goal --action complete/u);
 });
 
+test('buildAgentTurnPrompt includes pending set proposal checklist guidance', () => {
+  const agent = {
+    id: 'agent-goal-proposal-prompt',
+    name: 'Builder',
+    description: 'Keeps proposed work aligned.',
+    personaPrompt: 'Stay focused.',
+  };
+  const conversation = {
+    id: 'conversation-goal-proposal-prompt',
+    title: 'Goal Proposal Prompt',
+    type: 'standard',
+    metadata: {
+      sessionGoalProposal: {
+        id: 'prop-prompt-checklist',
+        action: 'set',
+        status: 'pending',
+        objective: 'Ship pending checklist guidance',
+        checklist: [
+          { id: 'item-1', text: 'Reproduce', status: 'done' },
+          { id: 'item-2', text: 'Implement', status: 'in_progress' },
+          { id: 'item-3', text: 'Validate', status: 'todo' },
+        ],
+        proposedBy: { agentId: agent.id, agentName: agent.name },
+        createdAt: '2026-05-03T00:00:00.000Z',
+        updatedAt: '2026-05-03T00:00:00.000Z',
+      },
+    },
+    agents: [agent],
+  };
+  const prompt = buildAgentTurnPrompt({
+    conversation,
+    agent,
+    agentConfig: { profileName: 'Default', personaPrompt: agent.personaPrompt },
+    resolvedPersonaSkills: [],
+    resolvedConversationSkills: [],
+    sandbox: {
+      sandboxDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-goal-proposal-prompt',
+      privateDir: 'E:/pythonproject/caff/.pi-sandbox/agent-sandboxes/agent-goal-proposal-prompt/private',
+    },
+    agents: [agent],
+    messages: [],
+    privateMessages: [],
+    trigger: { triggerType: 'user', enqueueReason: 'default_first_agent' },
+    remainingSlots: 7,
+    routingMode: 'mention_queue',
+    allowHandoffs: true,
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+  });
+
+  assert.match(prompt, /Pending user-confirmation proposal: set/u);
+  assert.match(prompt, /Proposed objective: Ship pending checklist guidance/u);
+  assert.match(prompt, /Proposed checklist:/u);
+  assert.match(prompt, /\[x\] Reproduce/u);
+  assert.match(prompt, /\[~\] Implement/u);
+  assert.match(prompt, /\[ \] Validate/u);
+  assert.match(prompt, /update-goal-checklist edits this pending proposed checklist/u);
+  assert.match(prompt, /does not activate the goal/u);
+});
+
 test('buildAgentTurnPrompt includes paused session goal guidance', () => {
   const agent = {
     id: 'agent-goal-paused-prompt',

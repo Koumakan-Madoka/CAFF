@@ -62,6 +62,7 @@
 
       const item = document.createElement('div');
       item.className = 'session-goal-detail-item';
+      item.classList.toggle('multiline', String(value).includes('\n'));
 
       const key = document.createElement('span');
       key.className = 'muted';
@@ -161,6 +162,8 @@
       if (dom.sessionGoalProposalDetails) {
         dom.sessionGoalProposalDetails.innerHTML = '';
         appendDetail(dom.sessionGoalProposalDetails, '动作', sessionGoalUtils.proposalActionLabel(proposal));
+        appendDetail(dom.sessionGoalProposalDetails, '拟定目标', sessionGoalUtils.objectiveText(proposal));
+        appendDetail(dom.sessionGoalProposalDetails, '拟定 checklist', sessionGoalUtils.checklistTextForGoal(proposal));
         appendDetail(dom.sessionGoalProposalDetails, '提议人', sessionGoalUtils.proposalAgentName(proposal));
         appendDetail(dom.sessionGoalProposalDetails, '原因', sessionGoalUtils.proposalReasonText(proposal));
         appendDetail(dom.sessionGoalProposalDetails, '时间', formatDateTime(proposal.createdAt || proposal.updatedAt));

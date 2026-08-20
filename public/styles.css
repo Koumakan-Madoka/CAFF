@@ -3426,9 +3426,26 @@ textarea {
 
 .session-goal-detail-item {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 0.8rem;
+}
+
+.session-goal-detail-item > strong {
+  min-width: 0;
+  text-align: right;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.session-goal-detail-item.multiline {
+  display: grid;
+  justify-content: stretch;
+}
+
+.session-goal-detail-item.multiline > strong {
+  text-align: left;
+  line-height: 1.55;
 }
 
 .conversation-digest-list {

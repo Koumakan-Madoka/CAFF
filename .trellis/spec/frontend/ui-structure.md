@@ -1,5 +1,22 @@
 # UI Structure
 
+## Pending Goal Proposal Checklist
+
+### Scope / Trigger
+
+- Applies to `public/chat/session-goal-panel.js` when `metadata.sessionGoalProposal.action === 'set'`.
+
+### Contract
+
+- The proposal card shows the proposed objective and normalized checklist as read-only approval content.
+- The normal goal form remains an active-goal/new-goal editor; a pending proposal must not silently populate that editable form or look already active.
+- Checklist markers render as `[ ]`, `[~]`, and `[x]`, matching the agent bridge and stored proposal contract.
+
+### Required Tests
+
+- `tests/ui/app-shell.test.js` verifies pending objective/checklist visibility and that the no-active-goal form still shows its normal default state.
+
+
 ## Collapsed Tool-Trace Failure Summary
 
 ### Scope / Trigger

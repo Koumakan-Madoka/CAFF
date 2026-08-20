@@ -330,6 +330,108 @@ test('agent tool bridge creates pending session goal proposals without mutating 
   assert.deepEqual(summaryEvents, [fixture.conversation.id]);
 });
 
+test('agent tool bridge preserves and updates checklist content on pending set proposals', (t) => {
+  const tempDir = withTempDir('caff-agent-tool-goal-set-checklist-');
+  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const broadcastEvents = [];
+  const bridge = createAgentToolBridge({
+    store,
+    broadcastEvent(eventName, payload) {
+      broadcastEvents.push({ eventName, payload });
+    },
+  });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const fixture = createPublicInvocationFixture(store, 'goal-set-checklist');
+  const context = bridge.registerInvocation(
+    bridge.createInvocationContext({
+      conversationId: fixture.conversation.id,
+      turnId: fixture.assistantMessage.turnId,
+      agentId: fixture.agent.id,
+      agentName: fixture.agent.name,
+      assistantMessageId: fixture.assistantMessage.id,
+      conversationAgents: fixture.conversation.agents,
+      stage: fixture.stage,
+      turnState: fixture.turnState,
+    })
+  );
+
+  const suggested = bridge.handleSuggestGoal({
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    action: 'set',
+    objective: 'Ship pending goal checklist support',
+    reason: 'Keep approval content explicit',
+    checklistText: '[x] Reproduce\n[~] Implement\n[ ] Validate',
+  });
+
+  assert.equal(suggested.goal, null);
+  assert.equal(suggested.proposal.action, 'set');
+  assert.equal(suggested.proposal.checklist.length, 3);
+  assert.equal(suggested.proposal.checklist[0].status, 'done');
+  assert.equal(suggested.proposal.checklist[1].status, 'in_progress');
+
+  const updated = bridge.handleUpdateGoalChecklist({
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    checklistText: '[x] Reproduce\n[x] Implement\n[~] Validate',
+  });
+  const conversation = store.getConversation(fixture.conversation.id);
+
+  assert.equal(updated.goal, null);
+  assert.equal(updated.checklistTarget, 'proposal');
+  assert.equal(updated.checklist[1].status, 'done');
+  assert.equal(conversation.metadata.sessionGoal, undefined);
+  assert.equal(conversation.metadata.sessionGoalProposal.checklist[2].status, 'in_progress');
+  assert.ok(broadcastEvents.some((event) => event.eventName === 'conversation_goal_proposal_updated'));
+});
+
+test('agent tool bridge seeds the default checklist on pending set proposals', (t) => {
+  const tempDir = withTempDir('caff-agent-tool-goal-set-default-checklist-');
+  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const bridge = createAgentToolBridge({ store });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const fixture = createPublicInvocationFixture(store, 'goal-set-default-checklist');
+  const context = bridge.registerInvocation(
+    bridge.createInvocationContext({
+      conversationId: fixture.conversation.id,
+      turnId: fixture.assistantMessage.turnId,
+      agentId: fixture.agent.id,
+      agentName: fixture.agent.name,
+      assistantMessageId: fixture.assistantMessage.id,
+      conversationAgents: fixture.conversation.agents,
+      stage: fixture.stage,
+      turnState: fixture.turnState,
+    })
+  );
+
+  const result = bridge.handleSuggestGoal({
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    action: 'set',
+    objective: 'Use an explicit default checklist',
+  });
+
+  assert.equal(result.proposal.checklist.length, 10);
+  assert.equal(result.proposal.checklist[0].text, '和其他 agent 一起头脑风暴，收敛目标、范围和风险');
+  assert.equal(result.proposal.checklist[9].text, '人工验收后记录会话并归档 Trellis 任务');
+});
+
 test('agent tool bridge updates session goal checklist progress', (t) => {
   const tempDir = withTempDir('caff-agent-tool-goal-checklist-');
   const sqlitePath = path.join(tempDir, 'bridge.sqlite');
@@ -387,6 +489,102 @@ test('agent tool bridge updates session goal checklist progress', (t) => {
   assert.equal(updatedGoal.checklist[0].status, 'done');
   assert.equal(updatedGoal.checklist[1].status, 'in_progress');
   assert.ok(broadcastEvents.some((event) => event.eventName === 'conversation_goal_updated'));
+});
+
+test('agent tool bridge updates the active checklist when a non-set proposal is pending', (t) => {
+  const tempDir = withTempDir('caff-agent-tool-goal-checklist-non-set-proposal-');
+  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const bridge = createAgentToolBridge({ store });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const fixture = createPublicInvocationFixture(store, 'goal-checklist-non-set-proposal');
+  store.updateConversation(fixture.conversation.id, {
+    metadata: {
+      sessionGoal: {
+        objective: 'Finish an active task',
+        status: 'active',
+        createdAt: '2026-05-03T00:00:00.000Z',
+        updatedAt: '2026-05-03T00:00:00.000Z',
+      },
+      sessionGoalProposal: {
+        id: 'prop-complete-pending',
+        action: 'complete',
+        status: 'pending',
+        reason: 'Await user acceptance',
+        proposedBy: { agentId: 'agent-reviewer', agentName: 'Reviewer' },
+        createdAt: '2026-05-03T00:10:00.000Z',
+        updatedAt: '2026-05-03T00:10:00.000Z',
+      },
+    },
+  });
+  const context = bridge.registerInvocation(
+    bridge.createInvocationContext({
+      conversationId: fixture.conversation.id,
+      turnId: fixture.assistantMessage.turnId,
+      agentId: fixture.agent.id,
+      agentName: fixture.agent.name,
+      assistantMessageId: fixture.assistantMessage.id,
+      conversationAgents: fixture.conversation.agents,
+      stage: fixture.stage,
+      turnState: fixture.turnState,
+    })
+  );
+
+  const result = bridge.handleUpdateGoalChecklist({
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    checklistText: '[x] Finish implementation\n[ ] Await acceptance',
+  });
+  const conversation = store.getConversation(fixture.conversation.id);
+
+  assert.equal(result.checklistTarget, 'goal');
+  assert.equal(result.goal.checklist[0].status, 'done');
+  assert.equal(conversation.metadata.sessionGoalProposal.action, 'complete');
+  assert.equal(conversation.metadata.sessionGoalProposal.checklist, undefined);
+});
+
+test('agent tool bridge keeps missing goal checklist updates as 404 without a pending set proposal', (t) => {
+  const tempDir = withTempDir('caff-agent-tool-goal-checklist-missing-');
+  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const bridge = createAgentToolBridge({ store });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const fixture = createPublicInvocationFixture(store, 'goal-checklist-missing');
+  const context = bridge.registerInvocation(
+    bridge.createInvocationContext({
+      conversationId: fixture.conversation.id,
+      turnId: fixture.assistantMessage.turnId,
+      agentId: fixture.agent.id,
+      agentName: fixture.agent.name,
+      assistantMessageId: fixture.assistantMessage.id,
+      conversationAgents: fixture.conversation.agents,
+      stage: fixture.stage,
+      turnState: fixture.turnState,
+    })
+  );
+
+  assert.throws(
+    () => bridge.handleUpdateGoalChecklist({
+      invocationId: context.invocationId,
+      callbackToken: context.callbackToken,
+      checklistText: '[ ] There is no target',
+    }),
+    (error) => error && error.statusCode === 404 && /No session goal is set/u.test(error.message)
+  );
 });
 
 test('agent tool bridge expires invocation auth tokens', (t) => {

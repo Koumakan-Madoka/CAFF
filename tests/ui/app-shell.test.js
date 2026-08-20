@@ -141,12 +141,16 @@ function goalDom(document) {
   };
 }
 
-function bootGoalPanel() {
+function bootGoalPanel({ conversation = { id: 'conv-1' }, useRealUtils = false } = {}) {
   const { dom, window, document } = bootShell();
-  window.CaffShared = { sessionGoal: sessionGoalUtilsStub() };
+  window.CaffShared = useRealUtils ? {} : { sessionGoal: sessionGoalUtilsStub() };
+  if (useRealUtils) {
+    window.eval(readPublic('shared/session-goal.js'));
+  }
   window.eval(readPublic('chat/session-goal-panel.js'));
+  const state = { currentConversation: conversation };
   const controller = window.CaffChat.createSessionGoalPanelController({
-    state: { currentConversation: { id: 'conv-1' } },
+    state,
     dom: goalDom(document),
     helpers: {
       formatDateTime: (value) => String(value || ''),
@@ -154,7 +158,7 @@ function bootGoalPanel() {
     },
     showToast: () => {},
   });
-  return { dom, window, document, controller };
+  return { dom, window, document, state, controller };
 }
 
 test('goal panel controller starts without legacy toggle/edge buttons', () => {
@@ -170,6 +174,44 @@ test('goal panel controller starts without legacy toggle/edge buttons', () => {
   const submit = new window.Event('submit', { cancelable: true, bubbles: true });
   document.getElementById('session-goal-form').dispatchEvent(submit);
   assert.equal(submit.defaultPrevented, true, 'submit handler must be bound (cancelable submit prevented)');
+});
+
+test('goal proposal card shows pending set objective and checklist for approval', () => {
+  const conversation = {
+    id: 'conv-proposal',
+    metadata: {
+      sessionGoalProposal: {
+        id: 'prop-ui-checklist',
+        action: 'set',
+        status: 'pending',
+        objective: 'Ship pending checklist UI',
+        checklist: [
+          { id: 'item-1', text: 'Reproduce the bug', status: 'done' },
+          { id: 'item-2', text: 'Implement the fix', status: 'in_progress' },
+          { id: 'item-3', text: 'Validate behavior', status: 'todo' },
+        ],
+        proposedBy: { agentId: 'agent-builder', agentName: 'Builder' },
+        reason: 'Let the user inspect everything before approval',
+        createdAt: '2026-05-03T00:00:00.000Z',
+        updatedAt: '2026-05-03T00:00:00.000Z',
+      },
+    },
+  };
+  const { document, controller } = bootGoalPanel({ conversation, useRealUtils: true });
+
+  controller.render();
+
+  const card = document.getElementById('session-goal-proposal-card');
+  const details = document.getElementById('session-goal-proposal-details');
+  assert.equal(card.classList.contains('hidden'), false);
+  assert.match(details.textContent, /拟定目标/u);
+  assert.match(details.textContent, /Ship pending checklist UI/u);
+  assert.match(details.textContent, /拟定 checklist/u);
+  assert.match(details.textContent, /\[x\] Reproduce the bug/u);
+  assert.match(details.textContent, /\[~\] Implement the fix/u);
+  assert.match(details.textContent, /\[ \] Validate behavior/u);
+  assert.equal(document.getElementById('session-goal-objective').value, '');
+  assert.match(document.getElementById('session-goal-checklist').value, /和其他 agent 一起头脑风暴/u);
 });
 
 test('goal panel never grabs focus when opened from shell (APG roving focus intact)', async () => {

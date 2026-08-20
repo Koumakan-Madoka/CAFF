@@ -4157,6 +4157,58 @@ test('conversations controller accepts and dismisses session goal proposals', as
   assert.equal(store.getConversation(conversation.id).metadata.sessionGoalProposal, undefined);
 });
 
+test('conversations controller promotes the latest pending set proposal checklist on acceptance', async (t) => {
+  const { handler, store } = createConversationsControllerHarness(t);
+  const conversation = createSmokeConversation(store, {
+    id: 'goal-set-proposal-checklist-conversation',
+    title: 'Goal Set Proposal Checklist Conversation',
+    metadata: {
+      sessionGoalProposal: {
+        id: 'prop-set-checklist',
+        action: 'set',
+        status: 'pending',
+        objective: 'Ship pending goal checklist support',
+        checklist: [
+          { id: 'item-1', text: 'Reproduce', status: 'done', createdAt: '2026-05-03T00:00:00.000Z', updatedAt: '2026-05-03T00:00:00.000Z' },
+          { id: 'item-2', text: 'Implement', status: 'in_progress', createdAt: '2026-05-03T00:00:00.000Z', updatedAt: '2026-05-03T00:00:00.000Z' },
+          { id: 'item-3', text: 'Validate', status: 'todo', createdAt: '2026-05-03T00:00:00.000Z', updatedAt: '2026-05-03T00:00:00.000Z' },
+        ],
+        proposedBy: {
+          agentId: 'agent-builder',
+          agentName: 'Builder',
+        },
+        createdAt: '2026-05-03T00:00:00.000Z',
+        updatedAt: '2026-05-03T00:00:00.000Z',
+      },
+    },
+  });
+
+  const updateResult = await invokeConversationsController(handler, {
+    method: 'POST',
+    pathname: `/api/conversations/${conversation.id}/goal`,
+    body: {
+      action: 'update-checklist',
+      checklistText: '[x] Reproduce\n[x] Implement\n[~] Validate',
+    },
+  });
+
+  assert.equal(updateResult.json.goal, null);
+  assert.equal(updateResult.json.proposal.checklist[1].status, 'done');
+  assert.equal(updateResult.json.proposal.checklist[2].status, 'in_progress');
+
+  const acceptResult = await invokeConversationsController(handler, {
+    method: 'POST',
+    pathname: `/api/conversations/${conversation.id}/goal`,
+    body: { action: 'accept-proposal' },
+  });
+
+  assert.equal(acceptResult.json.goal.objective, 'Ship pending goal checklist support');
+  assert.equal(acceptResult.json.goal.checklist.length, 3);
+  assert.equal(acceptResult.json.goal.checklist[1].status, 'done');
+  assert.equal(acceptResult.json.goal.checklist[2].status, 'in_progress');
+  assert.equal(store.getConversation(conversation.id).metadata.sessionGoalProposal, undefined);
+});
+
 test('conversations controller rejects invalid session goal commands', async (t) => {
   const { handler, store } = createConversationsControllerHarness(t);
   const conversation = createSmokeConversation(store, {
