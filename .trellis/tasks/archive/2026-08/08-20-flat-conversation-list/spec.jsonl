@@ -1,0 +1,2 @@
+{"status":"pending","scope":"frontend conversation tree contract","note":"Update ui-structure.md after implementation is validated."}
+{"status":"updated","file":".trellis/spec/frontend/ui-structure.md","contract":"flat three-track tree rows, decorative leaf markers, accessible disclosure and overflow menu"}

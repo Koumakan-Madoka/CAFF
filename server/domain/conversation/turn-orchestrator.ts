@@ -664,6 +664,7 @@ export function createTurnOrchestrator(options: any = {}) {
     sqlitePath,
     activeConversationIds,
     activeTurns,
+    isAgentBusy: agentSlotRegistry.isAgentBusy,
   });
 
   async function runConversationTurn(conversationId: any, userContent: any) {

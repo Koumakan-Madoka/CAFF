@@ -59,7 +59,7 @@
 - `lib/pi-runtime.ts` accepts `startRun(provider, model, prompt, { heartbeatTimeoutMs?, progressTimeoutMs?, idleTimeoutMs?, timeoutMs? })`.
 - Host liveness resolves from `heartbeatTimeoutMs` -> `PI_HEARTBEAT_TIMEOUT_MS` -> 60 seconds.
 - Useful-progress timeout resolves from `progressTimeoutMs` -> legacy `idleTimeoutMs` -> `PI_PROGRESS_TIMEOUT_MS` -> legacy `PI_IDLE_TIMEOUT_MS` -> 10 minutes.
-- Absolute run timeout resolves from `timeoutMs` -> `PI_TIMEOUT_MS` -> 60 minutes.
+- Absolute run timeout resolves from `timeoutMs` -> `PI_TIMEOUT_MS` -> 3 hours.
 - Setting any resolved timeout to `0` disables that watchdog.
 
 ### Contracts
@@ -82,7 +82,7 @@
 | Case | Expected behavior |
 | --- | --- |
 | Host emits heartbeats but no `pi_event` | Terminate with `progress_timeout`. |
-| Host emits repeated `pi_event` values beyond the total limit | Terminate with `run_timeout`. |
+| Host emits repeated `pi_event` values beyond the 3-hour default total limit | Terminate with `run_timeout`. |
 | Host and IPC become silent | Terminate with `heartbeat_timeout`. |
 | A timeout is configured as `0` | Disable only that watchdog. |
 | Watchdog terminates a run on Windows | Kill the pi host and its descendant process tree through `taskkill /T`, forcing it after the grace period. |
@@ -118,6 +118,34 @@
 - Project selection and skill loading:
   `lib/project-manager.ts` <-> `server/app/create-server.ts` <->
   `server/domain/conversation/turn/agent-prompt.ts` (`getSkillLoadingMode`, `formatSkillDocuments`, `formatSkillDescriptors`)
+
+## Tool Trace Failure Classification and Summary
+
+### Scope / Trigger
+
+- Applies when `server/domain/runtime/message-tool-trace.ts` projects persisted message/task state plus Pi session JSONL into `failureContext`, and when `public/chat/message-timeline.js` renders the collapsed failure note.
+- Pi expected-completion cleanup can call SDK abort after the final assistant reply has already completed. Some providers append a trailing assistant record with `stopReason=aborted` and `errorMessage="Request was aborted."` even though CAFF persisted the message as `completed` and the task as `succeeded`.
+
+### Contract
+
+- Authoritative completed state wins over that exact cleanup artifact only when all conditions hold: message status is `completed`; task status is `succeeded` or `completed`; session stop reason is `aborted`; session error normalizes to `Request was aborted`; and no assistant error list is present.
+- Do not broadly suppress `aborted`: a different session error, a failed message/task, a failed tool step, an assistant error list, user cancellation, or watchdog timeout remains a failure.
+- `failureContext.summary` is the concise, redacted, actionable headline. Priority is failed-step error/result, task error, message error, session error, assistant error, then a status-specific fallback.
+- `failureContext.text` remains the full redacted diagnostic context for expansion/copy and may contain message/task IDs and status metadata. The collapsed UI uses `summary`, never the full metadata block.
+
+### Validation Matrix
+
+| Case | Expected behavior |
+| --- | --- |
+| completed message + succeeded task + trailing `aborted / Request was aborted.` | `hasFailure=false`; no failure note |
+| completed message + succeeded task + another aborted-session error | session failure remains visible |
+| failed step, task, or message | failure remains visible with its highest-priority summary |
+| user cancellation or watchdog timeout persisted as failed | failure remains visible |
+
+### Required Tests
+
+- `tests/runtime/message-tool-trace.test.js` covers cleanup-noise suppression, unrelated session errors, task summary priority, and detailed context retention.
+- A jsdom timeline test covers concise collapsed text and absence of UUID/status metadata from that headline.
 
 ## Conversation Reply Token Usage
 
@@ -227,6 +255,14 @@ CAFF uses a descriptor + on-demand loading model for conversation skills:
   and the agent calls the generic `read` tool with that path when it needs the full skill body.
 - **Prompt instructions** for dynamic loading only appear when mode is `dynamic`;
   in `full` mode they are omitted to reduce noise.
+
+## Private Handoff and Commit-Pinned Review Guidance
+
+- `send-private` to another participant wakes an eligible idle recipient immediately in the current turn. A self-note or `--no-handoff` only persists the message.
+- Each source trace should send at most one complete private message per recipient. Do not poll, wait at P2, or send heartbeat follow-ups: server deduplication prevents a second launch and the already-running recipient may not see later content.
+- Formal review requests include the exact commit SHA, review scope/risks, author validation evidence, and requested response format. After sending the request, the author does not modify repository files for the rest of that trace.
+- Review worktree selection is risk-based rather than automatic: immutable `git show`/`git diff <SHA>` needs no worktree; a clean room worktree already at the requested SHA is usable when it will remain stable; tests against a SHA while the room worktree may change require a detached review worktree with isolated runtime resources; requested code changes require a separate writable branch/worktree.
+- Keep bridge behavior, compact CLI projection, prompt wording, and telemetry aligned. `dispatch[]` exposes bounded outcome labels/details without private content while legacy `handoffRequested` and `enqueuedAgentIds` remain available.
 
 ## Agent Chat Bridge Prompt Guidance
 

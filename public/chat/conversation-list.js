@@ -15,6 +15,7 @@
     } = helpers;
     let collapsedIds = new Set();
     let renamingConversationId = '';
+    let openActionsConversationId = '';
 
     function compactStatus(conversation) {
       if (!conversation || !conversation.crossConversationStatus) return null;
@@ -48,30 +49,75 @@
 
     function createToggle(row) {
       if (!row.hasChildren) {
-        const spacer = document.createElement('span');
-        spacer.className = 'conversation-tree-toggle-spacer';
-        spacer.setAttribute('aria-hidden', 'true');
-        return spacer;
+        const marker = document.createElement('span');
+        marker.className = 'conversation-tree-guide conversation-tree-leaf-marker';
+        marker.setAttribute('aria-hidden', 'true');
+        return marker;
       }
       const toggle = document.createElement('button');
       toggle.type = 'button';
-      toggle.className = 'conversation-tree-toggle';
+      toggle.className = 'conversation-tree-guide conversation-tree-toggle';
       toggle.dataset.conversationTreeToggle = row.conversation.id;
       toggle.setAttribute('aria-expanded', String(row.expanded));
       toggle.setAttribute('aria-label', row.expanded ? '折叠子会话' : '展开子会话');
-      toggle.textContent = row.expanded ? '−' : '+';
+      const caret = document.createElement('span');
+      caret.className = 'conversation-tree-caret';
+      caret.setAttribute('aria-hidden', 'true');
+      toggle.appendChild(caret);
       return toggle;
     }
 
-    function createRenameButton(row) {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'conversation-rename-button';
-      button.dataset.renameConversationId = row.conversation.id;
-      button.textContent = '\u270e';
-      button.setAttribute('aria-label', `\u91cd\u547d\u540d\u201c${row.conversation.title}\u201d`);
-      button.title = '\u91cd\u547d\u540d\uff08\u624b\u52a8\u6807\u9898\u4e0d\u4f1a\u88ab\u81ea\u52a8\u6807\u9898\u8986\u76d6\uff09';
-      return button;
+    function createActionMenu(row) {
+      const conversation = row.conversation;
+      const isOpen = openActionsConversationId === conversation.id;
+      const trigger = document.createElement('button');
+      trigger.type = 'button';
+      trigger.className = 'conversation-actions-trigger';
+      trigger.dataset.conversationActionsId = conversation.id;
+      trigger.setAttribute('aria-label', `“${conversation.title}”的更多操作`);
+      trigger.setAttribute('aria-haspopup', 'menu');
+      trigger.setAttribute('aria-expanded', String(isOpen));
+      trigger.setAttribute('aria-controls', `conversation-actions-menu-${conversation.id}`);
+      trigger.title = '更多操作';
+      const dots = document.createElement('span');
+      dots.className = 'conversation-actions-dots';
+      dots.setAttribute('aria-hidden', 'true');
+      dots.textContent = '⋯';
+      trigger.appendChild(dots);
+
+      const menu = document.createElement('div');
+      menu.id = `conversation-actions-menu-${conversation.id}`;
+      menu.className = 'conversation-actions-menu';
+      menu.dataset.conversationActionsMenu = conversation.id;
+      menu.setAttribute('role', 'menu');
+      menu.setAttribute('aria-label', `“${conversation.title}”的操作`);
+      menu.hidden = !isOpen;
+
+      const rename = document.createElement('button');
+      rename.type = 'button';
+      rename.className = 'conversation-action-menu-item';
+      rename.dataset.conversationAction = 'rename';
+      rename.dataset.conversationId = conversation.id;
+      rename.setAttribute('role', 'menuitem');
+      rename.textContent = '重命名';
+      menu.appendChild(rename);
+
+      if (!row.depthLimit) {
+        const spawn = document.createElement('button');
+        spawn.type = 'button';
+        spawn.className = 'conversation-action-menu-item';
+        spawn.dataset.conversationAction = 'spawn';
+        spawn.dataset.conversationId = conversation.id;
+        spawn.setAttribute('role', 'menuitem');
+        spawn.textContent = '派生子会话';
+        if (!row.canSpawn) {
+          spawn.disabled = true;
+          spawn.title = '先在会话设置中绑定项目，才能派生子会话';
+        }
+        menu.appendChild(spawn);
+      }
+
+      return { trigger, menu };
     }
 
     function createRenameForm(conversation) {
@@ -103,23 +149,6 @@
       return form;
     }
 
-    function createSpawnButton(row) {
-      if (row.depthLimit) return null;
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'conversation-spawn-button';
-      button.dataset.parentConversationId = row.conversation.id;
-      button.textContent = '+';
-      button.setAttribute('aria-label', `从“${row.conversation.title}”派生子会话`);
-      if (!row.canSpawn) {
-        button.disabled = true;
-        button.title = '先在会话设置中绑定项目，才能派生子会话';
-      } else {
-        button.title = '派生子会话';
-      }
-      return button;
-    }
-
     function render() {
       const tree = crossConversationUi.buildConversationTree(state.conversations, {
         selectedConversationId: state.selectedConversationId,
@@ -134,6 +163,7 @@
         directoryState.query || '',
         directoryState.error || '',
         renamingConversationId ? `renaming:${renamingConversationId}` : '',
+        openActionsConversationId ? `actions:${openActionsConversationId}` : '',
       ].join('\u001d');
       if (dom.conversationList.dataset.renderSignature === signature) return;
 
@@ -159,6 +189,7 @@
         listRow.className = 'conversation-list-row conversation-tree-row';
         listRow.style.setProperty('--tree-depth', String(row.depth));
         listRow.dataset.depth = String(row.depth);
+        listRow.dataset.hasChildren = String(row.hasChildren);
         if (row.depthLimit) listRow.dataset.depthLimit = 'true';
 
         const isRenaming = renamingConversationId === conversation.id;
@@ -193,6 +224,7 @@
         typeBadge.className = 'conversation-type-badge';
         typeBadge.textContent = conversationTypeLabel(conversation);
         const participants = document.createElement('span');
+        participants.className = 'conversation-participants';
         participants.textContent = `${conversation.agentCount || 0} 个 Agent`;
         metaLine.append(typeBadge, participants);
         if (isConversationBusy(conversation.id)) {
@@ -223,9 +255,8 @@
         }
         listRow.appendChild(item);
         listRow.appendChild(createToggle(row));
-        listRow.appendChild(createRenameButton(row));
-        const spawnButton = createSpawnButton(row);
-        if (spawnButton) listRow.appendChild(spawnButton);
+        const actions = createActionMenu(row);
+        listRow.append(actions.trigger, actions.menu);
         dom.conversationList.appendChild(listRow);
       });
 
@@ -235,15 +266,69 @@
     function toggle(conversationId) {
       const id = String(conversationId || '').trim();
       if (!id) return;
+      openActionsConversationId = '';
       if (collapsedIds.has(id)) collapsedIds.delete(id);
       else collapsedIds.add(id);
       dom.conversationList.dataset.renderSignature = '';
       render();
     }
 
+    function syncActionsDom() {
+      const triggers = dom.conversationList.querySelectorAll('.conversation-actions-trigger');
+      triggers.forEach((trigger) => {
+        const id = trigger.dataset.conversationActionsId || '';
+        trigger.setAttribute('aria-expanded', String(id === openActionsConversationId));
+      });
+      const menus = dom.conversationList.querySelectorAll('.conversation-actions-menu');
+      menus.forEach((menu) => {
+        const id = menu.dataset.conversationActionsMenu || '';
+        menu.hidden = id !== openActionsConversationId;
+      });
+    }
+
+    function toggleActions(conversationId) {
+      const id = String(conversationId || '').trim();
+      if (!id) return;
+      const opening = openActionsConversationId !== id;
+      openActionsConversationId = opening ? id : '';
+      dom.conversationList.dataset.renderSignature = '';
+      syncActionsDom();
+      const selector = opening
+        ? `[data-conversation-actions-menu="${id}"] [role="menuitem"]:not(:disabled)`
+        : `[data-conversation-actions-id="${id}"]`;
+      const focusTarget = /** @type {HTMLElement | null} */ (dom.conversationList.querySelector(selector));
+      if (focusTarget) focusTarget.focus();
+    }
+
+    function closeActions(options = {}) {
+      if (!openActionsConversationId) return;
+      const closingId = openActionsConversationId;
+      openActionsConversationId = '';
+      dom.conversationList.dataset.renderSignature = '';
+      syncActionsDom();
+      if (options.restoreFocus) {
+        const trigger = /** @type {HTMLElement | null} */ (
+          dom.conversationList.querySelector(`[data-conversation-actions-id="${closingId}"]`)
+        );
+        if (trigger) trigger.focus();
+      }
+    }
+
+    function handleActionsFocusOut(event) {
+      if (!openActionsConversationId) return;
+      const nextTarget = event.relatedTarget;
+      const insideActions = nextTarget && typeof nextTarget.closest === 'function'
+        ? nextTarget.closest('.conversation-actions-menu, .conversation-actions-trigger')
+        : null;
+      if (!insideActions) closeActions();
+    }
+
+    dom.conversationList.addEventListener('focusout', handleActionsFocusOut);
+
     function startRename(conversationId) {
       const id = String(conversationId || '').trim();
       if (!id) return;
+      openActionsConversationId = '';
       renamingConversationId = id;
       dom.conversationList.dataset.renderSignature = '';
       render();
@@ -256,6 +341,6 @@
       render();
     }
 
-    return { render, toggle, startRename, cancelRename };
+    return { render, toggle, toggleActions, closeActions, startRename, cancelRename };
   };
 })();

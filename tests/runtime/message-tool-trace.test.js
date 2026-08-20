@@ -204,6 +204,8 @@ globalThis.__testExports = {
     createElement() {
       return createDomElementStub();
     },
+    addEventListener() {},
+    removeEventListener() {},
   };
   const window = {
     CaffShared: {
@@ -1273,6 +1275,194 @@ test('live tool step helpers keep stable ids and redact sensitive payloads', () 
   fs.rmSync(tempDir, { recursive: true, force: true });
 });
 
+test('assistant message tool trace ignores expected-completion abort noise after persisted success', (t) => {
+  const tempDir = withTempDir('caff-message-tool-trace-completion-abort-');
+  const sqlitePath = path.join(tempDir, 'trace.sqlite');
+  const sessionsDir = path.join(tempDir, 'named-sessions');
+  const sessionPath = path.join(sessionsDir, 'trace-session-completion-abort.jsonl');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const runStore = createSqliteRunStore({ agentDir: tempDir, sqlitePath });
+
+  fs.mkdirSync(sessionsDir, { recursive: true });
+
+  t.after(() => {
+    try {
+      runStore.close();
+    } catch {}
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const agent = store.saveCustomRoleConfig({
+    id: 'trace-agent-completion-abort',
+    name: 'Trace Agent',
+    personaPrompt: 'Reply briefly.',
+  });
+  const conversation = store.createConversation({
+    id: 'trace-conversation-completion-abort',
+    title: 'Trace Conversation',
+    participants: [agent.id],
+  });
+  const taskId = 'trace-task-completion-abort-1';
+  const assistantMessage = store.createMessage({
+    id: 'trace-message-completion-abort-1',
+    conversationId: conversation.id,
+    turnId: 'trace-turn-completion-abort-1',
+    role: 'assistant',
+    agentId: agent.id,
+    senderName: agent.name,
+    content: 'Done',
+    status: 'completed',
+    taskId,
+  });
+
+  fs.writeFileSync(
+    sessionPath,
+    [
+      JSON.stringify({
+        type: 'message',
+        message: {
+          role: 'assistant',
+          provider: 'demo-provider',
+          model: 'demo-model',
+          stopReason: 'stop',
+          content: [{ type: 'text', text: 'Done' }],
+        },
+      }),
+      JSON.stringify({
+        type: 'message',
+        message: {
+          role: 'assistant',
+          provider: 'demo-provider',
+          model: 'demo-model',
+          stopReason: 'aborted',
+          errorMessage: 'Request was aborted.',
+          content: [],
+        },
+      }),
+      '',
+    ].join('\n'),
+    'utf8'
+  );
+
+  runStore.createTask({
+    taskId,
+    kind: 'conversation_agent_reply',
+    title: 'Trace Task',
+    status: 'succeeded',
+    sessionPath,
+  });
+
+  const trace = buildAssistantMessageToolTrace({
+    db: store.db,
+    agentDir: tempDir,
+    message: assistantMessage,
+    resolvedSessionPath: sessionPath,
+  });
+
+  assert.equal(trace.session.stopReason, 'aborted');
+  assert.equal(trace.task.status, 'succeeded');
+  assert.equal(trace.message.status, 'completed');
+  assert.equal(trace.failureContext.hasFailure, false);
+  assert.equal(trace.failureContext.summary, '');
+  assert.equal(trace.failureContext.text, '');
+});
+
+test('assistant message tool trace keeps unrelated session errors after persisted success', (t) => {
+  const tempDir = withTempDir('caff-message-tool-trace-session-error-');
+  const sqlitePath = path.join(tempDir, 'trace.sqlite');
+  const sessionsDir = path.join(tempDir, 'named-sessions');
+  const sessionPath = path.join(sessionsDir, 'trace-session-error.jsonl');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const runStore = createSqliteRunStore({ agentDir: tempDir, sqlitePath });
+
+  fs.mkdirSync(sessionsDir, { recursive: true });
+
+  t.after(() => {
+    try {
+      runStore.close();
+    } catch {}
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const agent = store.saveCustomRoleConfig({ id: 'trace-agent-session-error', name: 'Trace Agent', personaPrompt: 'Reply briefly.' });
+  const conversation = store.createConversation({ id: 'trace-conversation-session-error', title: 'Trace Conversation', participants: [agent.id] });
+  const taskId = 'trace-task-session-error-1';
+  const assistantMessage = store.createMessage({
+    id: 'trace-message-session-error-1',
+    conversationId: conversation.id,
+    turnId: 'trace-turn-session-error-1',
+    role: 'assistant',
+    agentId: agent.id,
+    senderName: agent.name,
+    content: 'Done',
+    status: 'completed',
+    taskId,
+  });
+
+  fs.writeFileSync(
+    sessionPath,
+    `${JSON.stringify({
+      type: 'message',
+      message: {
+        role: 'assistant',
+        provider: 'demo-provider',
+        model: 'demo-model',
+        stopReason: 'aborted',
+        errorMessage: 'Provider connection closed unexpectedly',
+        content: [],
+      },
+    })}\n`,
+    'utf8'
+  );
+  runStore.createTask({ taskId, kind: 'conversation_agent_reply', title: 'Trace Task', status: 'succeeded', sessionPath });
+
+  const trace = buildAssistantMessageToolTrace({ db: store.db, agentDir: tempDir, message: assistantMessage, resolvedSessionPath: sessionPath });
+
+  assert.equal(trace.failureContext.hasFailure, true);
+  assert.equal(trace.failureContext.source, 'session');
+  assert.equal(trace.failureContext.summary, 'Provider connection closed unexpectedly');
+});
+
+test('assistant message tool trace prioritizes persisted message errors over session metadata', (t) => {
+  const tempDir = withTempDir('caff-message-tool-trace-message-error-');
+  const sqlitePath = path.join(tempDir, 'trace.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const agent = store.saveCustomRoleConfig({ id: 'trace-agent-message-error', name: 'Trace Agent', personaPrompt: 'Reply briefly.' });
+  const conversation = store.createConversation({ id: 'trace-conversation-message-error', title: 'Trace Conversation', participants: [agent.id] });
+  const assistantMessage = store.createMessage({
+    id: 'trace-message-message-error-1',
+    conversationId: conversation.id,
+    turnId: 'trace-turn-message-error-1',
+    role: 'assistant',
+    agentId: agent.id,
+    senderName: agent.name,
+    content: 'Failed',
+    status: 'failed',
+    errorMessage: 'User cancelled this message',
+  });
+
+  const trace = buildAssistantMessageToolTrace({ db: store.db, agentDir: tempDir, message: assistantMessage, resolvedSessionPath: '' });
+
+  assert.equal(trace.failureContext.hasFailure, true);
+  assert.equal(trace.failureContext.source, 'message');
+  assert.equal(trace.failureContext.summary, 'User cancelled this message');
+  assert.match(trace.failureContext.text, /消息错误:\nUser cancelled this message/u);
+});
+
 test('assistant message tool trace exposes failure context when task fails without failed tool events', (t) => {
   const tempDir = withTempDir('caff-message-tool-trace-task-failure-');
   const sqlitePath = path.join(tempDir, 'trace.sqlite');
@@ -1336,6 +1526,8 @@ test('assistant message tool trace exposes failure context when task fails witho
   assert.equal(trace.failureContext.hasFailure, true);
   assert.equal(trace.failureContext.source, 'task');
   assert.equal(trace.failureContext.toolName, '');
+  assert.match(trace.failureContext.summary, /Authorization/u);
+  assert.equal(trace.failureContext.summary.includes('trace-message-task-failure-1'), false);
   assert.equal(trace.failureContext.text.includes('trace-message-task-failure-1'), true);
   assert.equal(trace.failureContext.text.includes('super-secret-token'), false);
   assert.equal(trace.failureContext.text.includes(tempDir), false);

@@ -212,6 +212,77 @@ test('M4: mobile anchors the new-message pill bottom-right', () => {
   assert.match(pillBlock, /right:/, 'mobile pill must anchor to the right edge');
 });
 
+test('M4: conversation tree uses aligned flat rows with compact guides and one action menu', () => {
+  const treeRow = cssBlock('body.chat-app .conversation-tree-row');
+  assert.match(treeRow, /position:\s*relative/, 'flat row must own its full hover/active/action surface');
+  assert.match(
+    treeRow,
+    /grid-template-columns:\s*44px\s+minmax\(0,\s*1fr\)\s+44px/,
+    'every row must use the same accessible guide, content, and compact action tracks'
+  );
+  assert.match(
+    treeRow,
+    /padding-left:\s*calc\(6px\s*\+\s*var\(--tree-depth,\s*0\)\s*\*\s*14px\)/,
+    'tree depth must use compact 14px indentation while guide targets remain accessible'
+  );
+
+  const itemBlock = cssBlock('body.chat-app .conversation-tree-row .conversation-item');
+  assert.match(itemBlock, /grid-column:\s*2\s*\/\s*3/, 'parent and leaf content must share one aligned track');
+  assert.match(itemBlock, /background:\s*transparent/, 'the primary item must not paint an independent card');
+  assert.doesNotMatch(itemBlock, /padding-right:\s*calc\(44px/, 'the action track must not also shorten item content');
+
+  const hoverBlock = cssBlock('body.chat-app .conversation-tree-row:hover');
+  assert.match(hoverBlock, /background:\s*var\(--caff-surface-hover\)/, 'hover belongs to the whole flat row');
+  const activeBlock = cssBlock('body.chat-app .conversation-tree-row:has\(\.conversation-item\.active\)');
+  assert.match(activeBlock, /background:\s*var\(--caff-accent-soft\)/, 'active state belongs to the whole flat row');
+
+  const guideBlock = cssBlock('body.chat-app .conversation-tree-guide');
+  assert.match(guideBlock, /grid-column:\s*1/, 'parent toggles and leaf endpoints must share the guide track');
+  assert.match(guideBlock, /width:\s*44px/, 'parent disclosure controls retain a 44px touch target');
+  assert.match(guideBlock, /min-height:\s*44px/, 'guide controls retain a 44px touch target');
+  const continuationBlock = cssBlock('body.chat-app .conversation-tree-row::before');
+  assert.match(
+    continuationBlock,
+    /left:\s*calc\(28px\s*\+\s*\(var\(--tree-depth,\s*0\)\s*-\s*1\)\s*\*\s*14px\)/,
+    'continuation guides must share the compact 14px depth step and align with the parent guide center'
+  );
+  const branchBlock = cssBlock('body.chat-app .conversation-tree-guide::after');
+  assert.match(branchBlock, /left:\s*8px/, 'branch ticks must begin at the parent continuation line');
+  assert.match(branchBlock, /width:\s*14px/, 'branch ticks must reach the current guide center');
+  const leafMarkerBlock = cssBlock('body.chat-app .conversation-tree-leaf-marker');
+  assert.match(leafMarkerBlock, /pointer-events:\s*none/, 'leaf endpoints are decorative, never fake controls');
+
+  const actionTriggerBlock = cssBlock('body.chat-app .conversation-actions-trigger');
+  assert.match(actionTriggerBlock, /width:\s*44px/, 'compact dots still need a 44px pointer target');
+  assert.match(actionTriggerBlock, /height:\s*44px/, 'compact dots still need a 44px touch target');
+  const actionMenuBlock = cssBlock('body.chat-app .conversation-actions-menu');
+  assert.match(actionMenuBlock, /position:\s*absolute/, 'row menu must overlay rather than compress the title');
+  const openMenuRowBlock = cssBlock(
+    'body.chat-app .conversation-tree-row:has(.conversation-actions-menu:not([hidden]))'
+  );
+  assert.match(
+    openMenuRowBlock,
+    /z-index:\s*1/,
+    'a row with an open menu must lift above following isolated rows so the menu stays clickable'
+  );
+  const actionItemBlock = cssBlock('body.chat-app .conversation-action-menu-item');
+  assert.match(actionItemBlock, /min-height:\s*44px/, 'menu actions must remain touch accessible');
+
+  const metaBlock = cssBlock('body.chat-app .conversation-meta-line');
+  assert.match(metaBlock, /text-overflow:\s*ellipsis/, 'narrow metadata must use an ellipsis instead of a hard clip');
+
+  const participantsBlock = cssBlock('body.chat-app .conversation-meta-line .conversation-participants');
+  assert.match(participantsBlock, /min-width:\s*0/, 'participant metadata must be shrinkable');
+  assert.match(participantsBlock, /text-overflow:\s*ellipsis/, 'participant metadata must show its truncation');
+
+  const titleLine = cssBlock('body.chat-app .sidebar-list .conversation-title-line');
+  assert.match(titleLine, /min-width:\s*0/, 'title line must be shrinkable inside the row');
+
+  const titleBlock = cssBlock('body.chat-app .sidebar-list .conversation-title-line strong');
+  assert.match(titleBlock, /min-width:\s*0/, 'long titles must shrink before applying ellipsis');
+  assert.match(titleBlock, /flex:\s*1\s+1\s+auto/, 'title must own the row remainder while status stays visible');
+});
+
 test('M4: sidebar conversation items render two-line density', () => {
   const dom = new JSDOM('<ul id="conversation-list" class="conversation-list sidebar-list"></ul>', {
     url: 'http://localhost/',
@@ -258,6 +329,11 @@ test('M4: sidebar conversation items render two-line density', () => {
   assert.ok(metaLine, 'two-line density requires a single meta line');
   assert.ok(metaLine.textContent.includes('普通对话'), 'type label demoted into the meta line text');
   assert.ok(metaLine.textContent.includes('3'), 'agent count stays in the meta line');
+  assert.equal(
+    metaLine.querySelector('.conversation-participants')?.textContent,
+    '3 个 Agent',
+    'participant text needs its own shrinkable ellipsis target'
+  );
   assert.ok(!item.querySelector('.section-row'), 'legacy footer row must be gone');
   assert.ok(!item.querySelector('.conversation-preview'), 'preview paragraph must not render as a third line');
 });

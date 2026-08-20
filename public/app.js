@@ -705,6 +705,8 @@ const noopRenderer = {
   async openWithQuery(..._args) {},
   render(..._args) {},
   toggle(..._args) {},
+  toggleActions(..._args) {},
+  closeActions(..._args) {},
   startRename(..._args) {},
   cancelRename(..._args) {},
 };
@@ -1144,6 +1146,7 @@ function emptyToolTraceFailureContext() {
     source: '',
     stepId: '',
     toolName: '',
+    summary: '',
     text: '',
   };
 }
@@ -1412,6 +1415,9 @@ function buildFallbackFailureContext(trace, message) {
       source: 'step',
       stepId: String(failedStep.stepId || ''),
       toolName: String(failedStep.toolName || ''),
+      summary: detail
+        ? `${failedStep.toolName || 'tool'} · ${typeof detail === 'string' ? detail : JSON.stringify(detail)}`
+        : `工具 ${failedStep.toolName || 'tool'} 执行失败`,
       text: detail ? `${failedStep.toolName || 'tool'} · ${typeof detail === 'string' ? detail : JSON.stringify(detail)}` : '',
     };
   }
@@ -1426,6 +1432,7 @@ function buildFallbackFailureContext(trace, message) {
       source: taskStatus === 'failed' ? 'task' : 'message',
       stepId: '',
       toolName: '',
+      summary: taskStatus === 'failed' ? '任务执行失败，未提供错误详情' : '消息处理失败，未提供错误详情',
       text: '',
     };
   }
@@ -1990,6 +1997,7 @@ function toolTraceSignatureForMessage(message) {
     failureContext && failureContext.source ? failureContext.source : '',
     failureContext && failureContext.stepId ? failureContext.stepId : '',
     failureContext && failureContext.toolName ? failureContext.toolName : '',
+    failureContext && failureContext.summary ? failureContext.summary : '',
     failureContext && failureContext.text ? failureContext.text : '',
     toolTraceDetailSignature(trace),
   ].join('\u001e');
@@ -4206,33 +4214,40 @@ function bindEvents() {
       return;
     }
 
-    const spawnButton =
+    const actionsTrigger =
       event.target instanceof Element
-        ? /** @type {HTMLButtonElement | null} */ (event.target.closest('.conversation-spawn-button'))
+        ? /** @type {HTMLButtonElement | null} */ (event.target.closest('.conversation-actions-trigger'))
         : null;
-    if (spawnButton) {
-      const parentConversation = state.conversations.find(
-        (conversation) => conversation.id === spawnButton.dataset.parentConversationId
-      );
-      if (!parentConversation) {
-        showToast('找不到要派生的父会话');
-        return;
-      }
-      try {
-        await newConversationDialogController.openSpawn(parentConversation);
-      } catch (error) {
-        showToast(error && error.message ? error.message : '无法打开派生会话表单');
-      }
+    if (actionsTrigger) {
+      conversationListRenderer.toggleActions(actionsTrigger.dataset.conversationActionsId || '');
       return;
     }
 
-    const renameButton =
+    const actionItem =
       event.target instanceof Element
-        ? /** @type {HTMLButtonElement | null} */ (event.target.closest('.conversation-rename-button'))
+        ? /** @type {HTMLButtonElement | null} */ (event.target.closest('.conversation-action-menu-item'))
         : null;
-    if (renameButton) {
-      conversationListRenderer.startRename(renameButton.dataset.renameConversationId || '');
-      return;
+    if (actionItem) {
+      const conversationId = actionItem.dataset.conversationId || '';
+      const action = actionItem.dataset.conversationAction || '';
+      if (action === 'rename') {
+        conversationListRenderer.startRename(conversationId);
+        return;
+      }
+      if (action === 'spawn') {
+        const parentConversation = state.conversations.find((conversation) => conversation.id === conversationId);
+        if (!parentConversation) {
+          showToast('找不到要派生的父会话');
+          return;
+        }
+        conversationListRenderer.closeActions();
+        try {
+          await newConversationDialogController.openSpawn(parentConversation);
+        } catch (error) {
+          showToast(error && error.message ? error.message : '无法打开派生会话表单');
+        }
+        return;
+      }
     }
 
     const renameCancel =
@@ -4260,6 +4275,23 @@ function bindEvents() {
     } catch (error) {
       showToast(error.message);
     }
+  });
+
+  dom.conversationList.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    const actionMenu = event.target instanceof Element
+      ? event.target.closest('.conversation-actions-menu, .conversation-actions-trigger')
+      : null;
+    if (!actionMenu) return;
+    event.preventDefault();
+    conversationListRenderer.closeActions({ restoreFocus: true });
+  });
+
+  document.addEventListener('click', (event) => {
+    const insideConversationActions = event.target instanceof Element
+      ? event.target.closest('.conversation-actions-menu, .conversation-actions-trigger')
+      : null;
+    if (!insideConversationActions) conversationListRenderer.closeActions();
   });
 
   dom.conversationList.addEventListener('submit', async (event) => {

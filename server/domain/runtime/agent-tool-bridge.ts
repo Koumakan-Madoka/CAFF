@@ -971,9 +971,10 @@ export function createAgentToolBridge(options: any = {}) {
 
         context.privatePostCount = (context.privatePostCount || 0) + 1;
         let enqueuedAgentIds = [];
+        let dispatch = [];
 
         if (handoffRequested) {
-          enqueuedAgentIds = context.enqueueAgent({
+          const enqueueResult = context.enqueueAgent({
             agentIds: handoffAgentIds,
             triggerType: 'private',
             triggeredByAgentId: context.agentId,
@@ -982,6 +983,22 @@ export function createAgentToolBridge(options: any = {}) {
             parentRunId: context.stage && context.stage.runId ? context.stage.runId : null,
             enqueueReason: 'private_message',
           });
+          enqueuedAgentIds = Array.isArray(enqueueResult)
+            ? enqueueResult
+            : Array.isArray(enqueueResult && enqueueResult.enqueuedAgentIds)
+              ? enqueueResult.enqueuedAgentIds
+              : [];
+          dispatch = Array.isArray(enqueueResult && enqueueResult.dispatch)
+            ? enqueueResult.dispatch.slice(0, 5).map((item: any) => ({
+                agentId: String(item && item.agentId || '').trim(),
+                outcome: String(item && item.outcome || '').trim(),
+                detail: clipText(item && item.detail ? item.detail : '', 240),
+              })).filter((item: any) => item.agentId && item.outcome)
+            : enqueuedAgentIds.slice(0, 5).map((agentId: any) => ({
+                agentId,
+                outcome: 'queued',
+                detail: 'Recipient queued for turn routing.',
+              }));
           context.privateHandoffCount = (context.privateHandoffCount || 0) + enqueuedAgentIds.length;
 
           if (context.turnState) {
@@ -1001,6 +1018,7 @@ export function createAgentToolBridge(options: any = {}) {
           message: serializeAgentToolPrivateMessage(privateMessage),
           handoffRequested,
           enqueuedAgentIds,
+          dispatch,
         };
 
         tryAppendInvocationEvent(context, 'agent_tool_call', {
@@ -1025,6 +1043,7 @@ export function createAgentToolBridge(options: any = {}) {
             messageId: response.message.id,
             recipientCount: response.message.recipientAgentIds.length,
             enqueuedCount: Array.isArray(enqueuedAgentIds) ? enqueuedAgentIds.length : 0,
+            dispatchOutcomes: dispatch.map((item: any) => item.outcome),
           },
         });
 
@@ -1568,6 +1587,7 @@ export function createAgentToolBridge(options: any = {}) {
     const action = String(body.action || '').trim().toLowerCase();
     const objective = String(body.objective || '').trim();
     const reason = String(body.reason || '').trim();
+    const checklistText = String(body.checklistText || body.checklist_text || body.checklist || '').trim();
     const toolCallId = randomUUID();
 
     setContextCurrentTool(context, {
@@ -1579,6 +1599,7 @@ export function createAgentToolBridge(options: any = {}) {
         action,
         objectiveLength: objective.length,
         reasonPreview: clipText(reason, 120),
+        checklistLength: checklistText.length,
       },
     });
 
@@ -1667,6 +1688,7 @@ export function createAgentToolBridge(options: any = {}) {
             action,
             objectiveLength: objective.length,
             reasonPreview: clipText(reason, 120),
+            checklistLength: checklistText.length,
           },
           result: {
             proposalAction: pendingProposal.action,
@@ -1699,7 +1721,7 @@ export function createAgentToolBridge(options: any = {}) {
       const result = proposeSessionGoalAction(
         activeStore,
         context.conversationId,
-        { action, objective, reason },
+        { action, objective, reason, ...(checklistText ? { checklistText } : {}) },
         { agentId: context.agentId, agentName: context.agentName }
       );
       const summary = pickConversationSummary(result.conversation);
@@ -1736,6 +1758,7 @@ export function createAgentToolBridge(options: any = {}) {
           action,
           objectiveLength: objective.length,
           reasonPreview: clipText(reason, 120),
+          checklistLength: checklistText.length,
         },
         result: {
           proposalAction: result.proposal ? result.proposal.action : '',
@@ -1762,6 +1785,7 @@ export function createAgentToolBridge(options: any = {}) {
           action,
           objectiveLength: objective.length,
           reasonPreview: clipText(reason, 120),
+          checklistLength: checklistText.length,
         },
         error: {
           statusCode: Number.isInteger(errorValue && errorValue.statusCode) ? errorValue.statusCode : null,
@@ -1803,7 +1827,11 @@ export function createAgentToolBridge(options: any = {}) {
       });
       const summary = pickConversationSummary(result.conversation);
 
-      broadcastEvent('conversation_goal_updated', {
+      const checklistTarget = result.checklistTarget === 'proposal' ? 'proposal' : 'goal';
+      const checklist = checklistTarget === 'proposal'
+        ? result.proposal && Array.isArray(result.proposal.checklist) ? result.proposal.checklist : []
+        : result.goal && Array.isArray(result.goal.checklist) ? result.goal.checklist : [];
+      broadcastEvent(checklistTarget === 'proposal' ? 'conversation_goal_proposal_updated' : 'conversation_goal_updated', {
         conversationId: context.conversationId,
         goal: result.goal,
         proposal: result.proposal,
@@ -1820,7 +1848,9 @@ export function createAgentToolBridge(options: any = {}) {
         ok: true,
         conversation: summary,
         goal: result.goal,
-        checklist: result.goal && Array.isArray(result.goal.checklist) ? result.goal.checklist : [],
+        proposal: result.proposal,
+        checklistTarget,
+        checklist,
       };
 
       tryAppendInvocationEvent(context, 'agent_tool_call', {
@@ -1838,6 +1868,7 @@ export function createAgentToolBridge(options: any = {}) {
         request: { checklistLength: checklistText.length },
         result: {
           checklistCount: response.checklist.length,
+          checklistTarget,
           goalStatus: result.goal ? result.goal.status : '',
         },
       });

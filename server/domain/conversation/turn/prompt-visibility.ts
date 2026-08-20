@@ -22,6 +22,17 @@ export function buildPromptMessages(messages: any, promptUserMessage: any, optio
   const currentTurnId = String(options.currentTurnId || '').trim();
   const shouldReplacePromptUserMessage = options.replacePromptUserMessage !== false;
   const visibleMessages = (Array.isArray(messages) ? messages : []).filter((message: any) => {
+    const messageStatus = String(message && message.status || '').trim();
+    if (
+      options.excludeIncompleteAssistantMessages === true &&
+      message &&
+      message.role === 'assistant' &&
+      Boolean(currentTurnId && String(message.turnId || '') === currentTurnId) &&
+      (messageStatus === 'queued' || messageStatus === 'streaming')
+    ) {
+      return false;
+    }
+
     if (!snapshotMessageIds) {
       return true;
     }

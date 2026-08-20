@@ -1,0 +1,5 @@
+{"file":".trellis/spec/frontend/ui-structure.md","reason":"conversation tree layout, semantic buttons, focus and touch contracts"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"confirm this is a frontend-only projection with no DTO changes"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"reuse existing renderer/event delegation and icon/menu patterns before adding helpers"}
+{"file":".trellis/spec/unit-test/runtime-tests.md","reason":"observable regression-test conventions; UI suites use node:test/jsdom"}
+{"phase":"implementation","status":"implemented","evidence":"Red tests reproduced legacy card/two-action layout; flat three-track rows, tree guides, overflow menu, Escape/outside-click close, rename/spawn flow implemented. Targeted UI 31/31; check/typecheck/build/diff-check passed."}

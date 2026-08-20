@@ -910,6 +910,35 @@ function formatFailureContextValue(value: any, maxLength = 1200) {
   }
 }
 
+function isExpectedCompletionAbortNoise(options: any = {}) {
+  const messageStatus = String(options.messageStatus || '').trim().toLowerCase();
+  const taskStatus = String(options.taskStatus || '').trim().toLowerCase();
+  const sessionStopReason = String(options.sessionStopReason || '').trim().toLowerCase();
+  const sessionErrorText = String(options.sessionErrorText || '').trim().toLowerCase();
+  const assistantErrorsText = String(options.assistantErrorsText || '').trim().toLowerCase();
+  const messageCompleted = messageStatus === 'completed';
+  const taskSucceeded = taskStatus === 'succeeded' || taskStatus === 'completed';
+  const abortError = sessionErrorText.replace(/[.!]+$/u, '') === 'request was aborted';
+
+  return (
+    messageCompleted &&
+    taskSucceeded &&
+    sessionStopReason === 'aborted' &&
+    abortError &&
+    !assistantErrorsText
+  );
+}
+
+function conciseFailureSummary(value: any, fallback = '') {
+  const formatted = formatFailureContextValue(value, 360);
+
+  if (!formatted) {
+    return fallback;
+  }
+
+  return clipText(formatted.replace(/\s+/gu, ' ').trim(), 240);
+}
+
 function buildTraceFailureContext(options: any = {}) {
   const message = options.message && typeof options.message === 'object' ? options.message : null;
   const task = options.task && typeof options.task === 'object' ? options.task : null;
@@ -919,17 +948,25 @@ function buildTraceFailureContext(options: any = {}) {
   const messageStatus = String(message && message.status ? message.status : '').trim().toLowerCase();
   const taskStatus = String(task && task.status ? task.status : '').trim().toLowerCase();
   const sessionStopReason = String(session && session.stopReason ? session.stopReason : '').trim().toLowerCase();
+  const messageErrorText = formatFailureContextValue(message && message.errorMessage ? message.errorMessage : '');
   const taskErrorText = formatFailureContextValue(task && task.errorMessage ? task.errorMessage : '');
   const sessionErrorText = formatFailureContextValue(session && session.errorMessage ? session.errorMessage : '');
   const assistantErrorsText = formatFailureContextValue(session && session.assistantErrors ? session.assistantErrors : '');
+  const expectedCompletionAbortNoise = isExpectedCompletionAbortNoise({
+    messageStatus,
+    taskStatus,
+    sessionStopReason,
+    sessionErrorText,
+    assistantErrorsText,
+  });
   const hasFailure = Boolean(
     failedStep ||
       messageStatus === 'failed' ||
       taskStatus === 'failed' ||
+      messageErrorText ||
       taskErrorText ||
       sessionStopReason === 'error' ||
-      sessionErrorText ||
-      assistantErrorsText
+      (!expectedCompletionAbortNoise && (sessionErrorText || assistantErrorsText))
   );
 
   if (!hasFailure) {
@@ -938,10 +975,29 @@ function buildTraceFailureContext(options: any = {}) {
       source: '',
       stepId: '',
       toolName: '',
+      summary: '',
       text: '',
     };
   }
 
+  const failedStepSummary = failedStep
+    ? conciseFailureSummary(
+        failedStep.errorSummary || failedStep.resultSummary,
+        `工具 ${failedStep.toolName || 'tool'} 执行失败`
+      )
+    : '';
+  const summary = failedStepSummary ||
+    conciseFailureSummary(taskErrorText) ||
+    conciseFailureSummary(messageErrorText) ||
+    conciseFailureSummary(sessionErrorText) ||
+    conciseFailureSummary(assistantErrorsText) ||
+    (taskStatus === 'failed'
+      ? '任务执行失败，未提供错误详情'
+      : messageStatus === 'failed'
+        ? '消息处理失败，未提供错误详情'
+        : sessionStopReason === 'error'
+          ? '模型会话异常结束，未提供错误详情'
+          : '会话执行失败，未提供错误详情');
   const lines = [];
 
   if (message) {
@@ -1026,6 +1082,12 @@ function buildTraceFailureContext(options: any = {}) {
     }
   }
 
+  if (messageErrorText) {
+    lines.push('');
+    lines.push('消息错误:');
+    lines.push(messageErrorText);
+  }
+
   if (taskErrorText) {
     lines.push('');
     lines.push('任务错误:');
@@ -1046,9 +1108,16 @@ function buildTraceFailureContext(options: any = {}) {
 
   return {
     hasFailure: true,
-    source: failedStep ? 'step' : taskErrorText ? 'task' : sessionErrorText || assistantErrorsText ? 'session' : 'message',
+    source: failedStep
+      ? 'step'
+      : taskErrorText || taskStatus === 'failed'
+        ? 'task'
+        : messageErrorText || messageStatus === 'failed'
+          ? 'message'
+          : 'session',
     stepId: failedStep && failedStep.stepId ? String(failedStep.stepId) : '',
     toolName: failedStep && failedStep.toolName ? String(failedStep.toolName) : '',
+    summary,
     text: lines.join('\n').trim(),
   };
 }
@@ -1136,6 +1205,10 @@ export function buildAssistantMessageToolTrace(options: any = {}) {
           taskId: taskId || null,
           runId: message.runId === undefined ? null : message.runId,
           createdAt: String(message.createdAt || '').trim(),
+          errorMessage:
+            message.errorMessage === null || message.errorMessage === undefined
+              ? ''
+              : clipText(redactString(message.errorMessage, traceOptions), 240),
         }
       : null,
     task,
@@ -1151,6 +1224,10 @@ export function buildAssistantMessageToolTrace(options: any = {}) {
           taskId: taskId || null,
           runId: message.runId === undefined ? null : message.runId,
           createdAt: String(message.createdAt || '').trim(),
+          errorMessage:
+            message.errorMessage === null || message.errorMessage === undefined
+              ? ''
+              : clipText(redactString(message.errorMessage, traceOptions), 240),
         }
       : null,
     task,

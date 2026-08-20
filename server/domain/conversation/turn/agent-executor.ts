@@ -4,6 +4,7 @@ const path = require('node:path');
 const {
   DEFAULT_MODEL,
   DEFAULT_PROVIDER,
+  DEFAULT_RUN_TIMEOUT_MS,
   DEFAULT_THINKING,
   resolveIntegerSettingCandidates,
   resolveSetting,
@@ -1332,7 +1333,7 @@ export function createAgentExecutor(options: any = {}) {
       'progressTimeoutMs'
     );
     const timeoutMs = resolveIntegerSettingCandidates(
-      [process.env.PI_TIMEOUT_MS, 60 * 60 * 1000],
+      [process.env.PI_TIMEOUT_MS, DEFAULT_RUN_TIMEOUT_MS],
       'timeoutMs'
     );
     const stageTaskId = createTaskId('agent-turn');
@@ -2049,7 +2050,7 @@ export function createAgentExecutor(options: any = {}) {
         };
       }
 
-      const enqueuedAgentIds =
+      const enqueueResult =
         enqueueAgent && routedMentions.length > 0
           ? enqueueAgent({
               agentIds: routedMentions,
@@ -2060,6 +2061,11 @@ export function createAgentExecutor(options: any = {}) {
               parentRunId: result.runId || handle.runId || null,
               enqueueReason: decision.reason || '',
             })
+          : null;
+      const enqueuedAgentIds = Array.isArray(enqueueResult)
+        ? enqueueResult
+        : Array.isArray(enqueueResult && enqueueResult.enqueuedAgentIds)
+          ? enqueueResult.enqueuedAgentIds
           : [];
 
       if (enqueuedAgentIds.length > 0) {

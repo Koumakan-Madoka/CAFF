@@ -20,6 +20,18 @@
 - [ ] Non-author reviewer reviewed the exact head SHA and findings are resolved or explicitly accepted.
 - [ ] Integration target is `develop`; merge preserves a merge commit (`--no-ff` semantics).
 
+## Commit-pinned review workspace decision
+
+A formal review request must name the exact commit SHA, scope and risks, author validation evidence, and desired response format. The author freezes repository writes for the rest of the trace after sending it.
+
+Choose the review workspace from actual mutation/test risk instead of creating one automatically:
+
+1. Static review through immutable commit objects (`git show <SHA>`, `git diff <SHA>^ <SHA>`) needs no worktree, even if later development continues.
+2. If the room worktree is clean, its `HEAD` equals the requested SHA, and the author will not continue modifying it, the reviewer may inspect and run tests there.
+3. If tests require the requested SHA while the room worktree may change or points elsewhere, create a detached review worktree outside the author's worktree. Reuse dependencies only when the project supports it; otherwise install them in that review workspace. Use distinct ports, SQLite/database, logs, caches, and external-side-effect configuration.
+4. If the reviewer must modify code, use a separate writable branch/worktree rather than the detached review worktree or the author's room worktree.
+5. Cleanup is non-destructive: remove only a clean review worktree; on Windows file locks, retry or report and retain it. Never force-remove a dirty or locked worktree.
+
 ## Independent handoff
 
 Use this five-part form:

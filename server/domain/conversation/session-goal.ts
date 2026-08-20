@@ -236,8 +236,10 @@ function normalizeSessionGoalProposal(value: any) {
   const createdAt = normalizeText(value.createdAt || value.created_at) || nowIso();
   const updatedAt = normalizeText(value.updatedAt || value.updated_at) || createdAt;
   const reason = clipText(value.reason, MAX_SESSION_GOAL_PROPOSAL_REASON_LENGTH);
-
   const proposalId = normalizeText(value.id);
+  const checklist = action === 'set'
+    ? (hasChecklistInput(value) ? normalizeChecklistItems(checklistInputValue(value), updatedAt) : normalizeChecklistItems(defaultSessionGoalChecklistText(), updatedAt))
+    : [];
 
   return {
     action,
@@ -245,6 +247,7 @@ function normalizeSessionGoalProposal(value: any) {
     ...(proposalId ? { id: proposalId } : {}),
     ...(objective ? { objective } : {}),
     ...(reason ? { reason } : {}),
+    ...(action === 'set' ? { checklist } : {}),
     proposedBy: {
       agentId: normalizeText(proposedBy.agentId),
       agentName: normalizeText(proposedBy.agentName) || 'Assistant',
@@ -441,6 +444,21 @@ function updateConversationGoal(store: any, conversation: any, goal: any) {
 
 function updateConversationProposal(store: any, conversation: any, proposal: any) {
   return updateConversationMetadata(store, conversation, buildMetadataWithProposal(conversation, proposal));
+}
+
+function updateConversationProposalChecklist(store: any, conversation: any, checklist: any, timestamp: string) {
+  const proposal = getSessionGoalProposal(conversation);
+  if (!proposal) {
+    throw createHttpError(404, 'No session goal proposal is pending');
+  }
+
+  const { checklist: _checklist, ...proposalWithoutChecklist } = proposal;
+  const nextProposal = {
+    ...proposalWithoutChecklist,
+    updatedAt: timestamp,
+    checklist,
+  };
+  return updateConversationProposal(store, conversation, nextProposal);
 }
 
 function buildMetadataWithGoalRunner(conversation: any, runner: any) {
@@ -675,6 +693,20 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
     throw createHttpError(400, 'Unsupported goal action');
   }
 
+  const checklistOnly = action === 'update-checklist' || action === 'update_checklist';
+  if (checklistOnly && existingProposal && existingProposal.action === 'set') {
+    const checklist = normalizeChecklistItems(checklistInputValue(input), timestamp);
+    const nextConversation = updateConversationProposalChecklist(store, conversation, checklist, timestamp);
+    return responseForConversation(nextConversation, {
+      goal: existingGoal,
+      proposal: getSessionGoalProposal(nextConversation),
+      goalChanged: false,
+      proposalChanged: true,
+      checklistTarget: 'proposal',
+      autoContinue: false,
+    });
+  }
+
   if (action === 'clear') {
     const nextConversation = updateConversationMetadata(store, conversation, buildMetadataWithoutGoal(conversation));
     return responseForConversation(nextConversation, {
@@ -688,7 +720,6 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
   }
 
   const goal = goalFromMutation(action, existingGoal, input, timestamp);
-  const checklistOnly = action === 'update-checklist' || action === 'update_checklist';
   // Checklist progress is factual state inside the current goal epoch. It
   // must not erase a pending proposal or the durable ruling that proves how
   // the current lifecycle state was reached.
@@ -738,6 +769,12 @@ export function proposeSessionGoalAction(store: any, conversationId: any, input:
     id: newProposalId(),
     ...(objective ? { objective } : {}),
     ...(reason ? { reason } : {}),
+    ...(action === 'set'
+      ? { checklist: normalizeChecklistItems(
+        hasChecklistInput(input) ? checklistInputValue(input) : defaultSessionGoalChecklistText(),
+        timestamp
+      ) }
+      : {}),
     proposedBy: {
       agentId: normalizeText(proposer.agentId),
       agentName: normalizeText(proposer.agentName) || 'Assistant',
@@ -793,11 +830,21 @@ function formatGoalProposalForPrompt(proposal: any) {
     return '';
   }
 
+  const checklist = Array.isArray(proposal.checklist) ? proposal.checklist : [];
+  const checklistLines = checklist.map((item: any) => {
+    const status = item && item.status === 'done' ? 'x' : item && item.status === 'in_progress' ? '~' : ' ';
+    return `- [${status}] ${item.text}`;
+  });
+
   return [
     `Pending user-confirmation proposal: ${proposal.action}`,
     proposal.objective ? `Proposed objective: ${proposal.objective}` : '',
+    ...(checklistLines.length > 0 ? ['Proposed checklist:', ...checklistLines] : []),
     proposal.reason ? `Agent reason: ${proposal.reason}` : '',
     proposal.proposedBy && proposal.proposedBy.agentName ? `Proposed by: ${proposal.proposedBy.agentName}` : '',
+    proposal.action === 'set'
+      ? 'Before approval, update-goal-checklist edits this pending proposed checklist; it does not activate the goal.'
+      : '',
     'Do not assume this proposal is applied until the user confirms it in the UI or with a goal command.',
   ].filter(Boolean).join('\n');
 }

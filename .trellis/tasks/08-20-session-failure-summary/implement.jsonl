@@ -1,0 +1,6 @@
+{"file": ".trellis/workflow.md", "reason": "Project workflow and conventions"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend development guide"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend development guide"}
+{"file": ".trellis/spec/runtime/agent-runtime.md", "reason": "expected completion and runtime session semantics"}
+{"file": ".trellis/spec/frontend/ui-structure.md", "reason": "collapsed error summary UI"}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "regression test conventions"}

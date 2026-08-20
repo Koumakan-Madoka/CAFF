@@ -1,0 +1,2 @@
+{"status":"pending","phase":"pre-implementation","evidence":"Design confirmed; red tests and implementation not started."}
+{"status":"passed","phase":"automated-verification","commands":["node --test tests/ui/chat-experience-m4.test.js tests/ui/cross-conversation-ui.test.js tests/ui/conversation-list-rename.test.js","npm run check","npm run typecheck","npm run build","git diff --check"],"result":"31/31 targeted tests and all static/build checks passed"}

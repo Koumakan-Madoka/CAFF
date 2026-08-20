@@ -159,6 +159,11 @@ test('send-private tool results are compact by default', () => {
     },
     handoffRequested: true,
     enqueuedAgentIds: ['agent-a'],
+    dispatch: [{
+      agentId: 'agent-a',
+      outcome: 'launched',
+      detail: 'Recipient started immediately in this turn.',
+    }],
   });
 
   assert.deepEqual(result, {
@@ -171,6 +176,11 @@ test('send-private tool results are compact by default', () => {
     },
     handoffRequested: true,
     enqueuedAgentIds: ['agent-a'],
+    dispatch: [{
+      agentId: 'agent-a',
+      outcome: 'launched',
+      detail: 'Recipient started immediately in this turn.',
+    }],
   });
   assert.equal('content' in result.message, false);
 });
@@ -471,6 +481,44 @@ test('suggest-goal forwards a pending goal proposal payload', async (t) => {
     callbackToken: 'token-goal-proposal',
     action: 'complete',
     reason: 'All checks passed',
+  });
+});
+
+test('suggest-goal forwards checklist payload for pending set proposals', async (t) => {
+  let requestUrl = '';
+  let requestOptions = null;
+
+  t.mock.method(global, 'fetch', async (url, options) => {
+    requestUrl = String(url);
+    requestOptions = options;
+    return {
+      ok: true,
+      async text() {
+        return JSON.stringify({ ok: true, proposal: { action: 'set' } });
+      },
+    };
+  });
+
+  await suggestGoal(
+    {
+      apiUrl: 'http://127.0.0.1:3100',
+      invocationId: 'inv-goal-set-checklist',
+      callbackToken: 'token-goal-set-checklist',
+    },
+    {
+      action: 'set',
+      objective: 'Ship a goal with visible checklist',
+      'checklist-text': '[ ] Plan\n[~] Build\n[x] Validate',
+    }
+  );
+
+  assert.equal(requestUrl, 'http://127.0.0.1:3100/api/agent-tools/goal/suggest');
+  assert.deepEqual(JSON.parse(String(requestOptions.body)), {
+    invocationId: 'inv-goal-set-checklist',
+    callbackToken: 'token-goal-set-checklist',
+    action: 'set',
+    objective: 'Ship a goal with visible checklist',
+    checklistText: '[ ] Plan\n[~] Build\n[x] Validate',
   });
 });
 

@@ -230,6 +230,29 @@ test('pi runtime resolves provider-specific default thinking without overriding 
   assert.equal(runtime.resolveThinkingSetting('kimi-coding', '', '', ''), '');
 });
 
+test('pi runtime defaults the absolute watchdog to three hours while preserving explicit overrides', () => {
+  const runtime = require('../../build/lib/pi-runtime');
+  const agentExecutorSource = fs.readFileSync(
+    path.resolve(__dirname, '..', '..', 'server', 'domain', 'conversation', 'turn', 'agent-executor.ts'),
+    'utf8'
+  );
+
+  assert.equal(runtime.DEFAULT_RUN_TIMEOUT_MS, 10_800_000);
+  assert.equal(
+    runtime.resolveIntegerSettingCandidates(['33000', runtime.DEFAULT_RUN_TIMEOUT_MS], 'timeoutMs'),
+    33_000
+  );
+  assert.equal(
+    runtime.resolveIntegerSettingCandidates([0, runtime.DEFAULT_RUN_TIMEOUT_MS], 'timeoutMs'),
+    0
+  );
+  assert.match(
+    agentExecutorSource,
+    /\[process\.env\.PI_TIMEOUT_MS, DEFAULT_RUN_TIMEOUT_MS\]/u,
+    'conversation runs should share the runtime default instead of duplicating it'
+  );
+});
+
 test('pi runtime treats a terminal assistant message as successful completion even if the child keeps running', async (t) => {
   if (!requireSpawn(t)) {
     return;
