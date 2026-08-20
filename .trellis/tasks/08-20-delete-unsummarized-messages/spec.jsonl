@@ -3,3 +3,5 @@
 {"at":"2026-08-20T15:45:00+08:00","file":".trellis/spec/backend/index.md","reason":"Indexed the conversation message deletion contract for future backend and cross-layer changes."}
 {"at":"2026-08-20T15:45:00+08:00","file":".trellis/spec/runtime/conversation-turn-queue.md","reason":"Documented the authoritative mutation idle state including queued side dispatches and the no-await delete boundary."}
 {"at":"2026-08-20T15:45:00+08:00","file":".trellis/spec/frontend/ui-structure.md","reason":"Documented single-delete, multi-select, confirmation, 44px touch targets, viewport toolbar ownership, and atomic failure selection retention."}
+{"at":"2026-08-20T16:18:00Z","file":".trellis/spec/backend/conversation-message-deletion.md","reason":"Added acceptance-discovered contracts for restoring controls after optimistic in-flight renders and reconciling a deleted consumed-user queue cursor."}
+{"at":"2026-08-20T16:18:00Z","file":".trellis/spec/runtime/conversation-turn-queue.md","reason":"Recorded post-delete lastConsumedUserMessageId fallback semantics and runtime regression coverage."}

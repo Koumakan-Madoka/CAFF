@@ -68,9 +68,15 @@
       messageContainer.querySelectorAll('.message-card').forEach((card) => {
         const messageId = String(card.dataset.messageId || '');
         const selected = selectedMessageIds.has(messageId);
+        const deletionEnabled = card.dataset.messageDeleteEnabled === 'true';
         const checkbox = card.querySelector('.message-delete-checkbox');
+        const deleteButton = card.querySelector('.message-delete-button');
         if (checkbox) {
           checkbox.checked = selected;
+          checkbox.disabled = !deletionEnabled || deleteInFlight;
+        }
+        if (deleteButton) {
+          deleteButton.disabled = !deletionEnabled || deleteInFlight;
         }
         card.classList.toggle('message-delete-selected', selected);
       });
@@ -2130,6 +2136,7 @@
             deletionEligibility && deletionEligibility.reason
           );
 
+      card.dataset.messageDeleteEnabled = deletionEnabled ? 'true' : 'false';
       if (deleteControls) {
         deleteControls.hidden = !supportsDeletionControls;
       }

@@ -28,7 +28,8 @@
 - The delete service checks this state after acquiring the conversation mutation lease and immediately before its synchronous SQLite transaction. Do not insert an `await` between the idle check and transaction.
 - Auto digest, manual digest, and message deletion share `createConversationMutationCoordinator`; a scheduled/running digest makes deletion return `409` instead of waiting.
 - Message-page eligibility may display current busy state, but the server submit-time guard remains authoritative because UI/runtime snapshots can become stale.
-- `tests/runtime/turn-orchestrator.test.js` asserts a busy target side-dispatch reports `queuedAgentSlotCount: 1`; message deletion tests assert all busy dimensions reject without database changes.
+- A successful deletion calls `reconcileConversationQueueAfterMessageDeletion(conversationId, deletedMessages)`. When the deleted batch contains `lastConsumedUserMessageId`, the cursor falls back to the previous surviving user message by `(createdAt, id)` order; leaving a dangling cursor would classify older consumed messages as pending and may replay them.
+- `tests/runtime/turn-orchestrator.test.js` asserts a busy target side-dispatch reports `queuedAgentSlotCount: 1` and that deletion reconciliation preserves zero queue depth after deleting the consumed-user cursor; message deletion tests assert all busy dimensions reject without database changes.
 - The complete API, validation, storage, attachment, SSE, and UI contract is in `../backend/conversation-message-deletion.md`.
 
 ## Scenario: Chat Workbench Continuous Send and Agent Side Dispatch

@@ -474,6 +474,46 @@ export function createTurnOrchestrator(options: any = {}) {
     );
   }
 
+  function reconcileConversationQueueAfterMessageDeletion(conversationId: any, deletedMessages: any[] = []) {
+    const normalizedConversationId = String(conversationId || '').trim();
+    const queueState = queueStates.get(normalizedConversationId) || null;
+    const deletedItems = Array.isArray(deletedMessages) ? deletedMessages : [];
+    const deletedIds = new Set(
+      deletedItems.map((message: any) => String(message && message.id || '').trim()).filter(Boolean)
+    );
+    const consumedMessageId = String(queueState && queueState.lastConsumedUserMessageId || '').trim();
+
+    if (!queueState || !consumedMessageId || !deletedIds.has(consumedMessageId)) {
+      return queueState;
+    }
+
+    const deletedCursor = deletedItems.find((message: any) => {
+      return String(message && message.id || '').trim() === consumedMessageId;
+    }) || null;
+    const cursorCreatedAt = String(deletedCursor && deletedCursor.createdAt || '').trim();
+
+    if (!cursorCreatedAt) {
+      const rebuiltState = createInitialQueueState(normalizedConversationId);
+      queueStates.set(normalizedConversationId, { ...queueState, ...rebuiltState });
+      return queueStates.get(normalizedConversationId);
+    }
+
+    let previousConsumedUserMessageId = '';
+    for (const message of listConversationMessages(normalizedConversationId)) {
+      const messageId = String(message && message.id || '').trim();
+      const createdAt = String(message && message.createdAt || '').trim();
+      const precedesDeletedCursor = createdAt < cursorCreatedAt
+        || (createdAt === cursorCreatedAt && messageId < consumedMessageId);
+
+      if (message && message.role === 'user' && messageId && precedesDeletedCursor) {
+        previousConsumedUserMessageId = messageId;
+      }
+    }
+
+    queueState.lastConsumedUserMessageId = previousConsumedUserMessageId;
+    return queueState;
+  }
+
   function getConversationMutationState(conversationId: any) {
     const normalizedConversationId = String(conversationId || '').trim();
     const active = activeConversationIds.has(normalizedConversationId);
@@ -1683,6 +1723,7 @@ export function createTurnOrchestrator(options: any = {}) {
     getConversationQueueDepth,
     listAgentSlotSummaries,
     listTurnSummaries,
+    reconcileConversationQueueAfterMessageDeletion,
     requestStopConversationExecution,
     requestStopCrossConversationDelivery,
     requestStopConversationTurn: requestStopMainTurn,

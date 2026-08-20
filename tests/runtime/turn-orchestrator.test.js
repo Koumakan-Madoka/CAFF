@@ -5720,3 +5720,66 @@ test('bootstrap queue payload keeps failed pending queues visible across repeate
   assert.equal(secondPayload.conversationQueueDepths[conversation.id], 1);
   assert.ok(secondPayload.conversationQueueFailures[conversation.id]);
 });
+
+test('message deletion reconciliation moves a deleted consumed-user cursor to the previous surviving user', { concurrency: false }, (t) => {
+  const tempDir = withTempDir('caff-delete-queue-cursor-');
+  const sqlitePath = path.join(tempDir, 'delete-queue-cursor.sqlite');
+  const oldUser = {
+    id: 'old-user',
+    role: 'user',
+    content: 'old user',
+    createdAt: '2026-08-20T10:00:00.000Z',
+  };
+  const latestUser = {
+    id: 'latest-user',
+    role: 'user',
+    content: 'latest user',
+    createdAt: '2026-08-20T10:02:00.000Z',
+  };
+  const conversation = {
+    id: 'conversation-delete-queue-cursor',
+    title: 'Deletion queue cursor',
+    type: 'standard',
+    agents: [{ id: 'agent-a', name: 'Alpha' }],
+    messages: [
+      oldUser,
+      { id: 'old-assistant', role: 'assistant', content: 'old reply', createdAt: '2026-08-20T10:01:00.000Z' },
+      latestUser,
+      { id: 'latest-assistant', role: 'assistant', content: 'latest reply', createdAt: '2026-08-20T10:03:00.000Z' },
+    ],
+  };
+  const store = {
+    databasePath: sqlitePath,
+    getConversation(conversationId) {
+      return conversationId === conversation.id ? conversation : null;
+    },
+    listConversations() {
+      return [{ id: conversation.id, title: conversation.title, type: conversation.type }];
+    },
+  };
+  const orchestrator = createTurnOrchestrator({
+    store,
+    skillRegistry: { listSkills() { return []; }, resolveSkills() { return []; } },
+    modeStore: { get() { return null; } },
+    agentToolBridge: {},
+    host: '127.0.0.1',
+    port: 0,
+    agentDir: tempDir,
+    sqlitePath,
+    toolBaseUrl: 'http://127.0.0.1:0',
+    agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
+  });
+
+  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+
+  assert.equal(orchestrator.getConversationMutationState(conversation.id).queuedUserCount, 0);
+  conversation.messages = conversation.messages.filter((message) => message.id !== latestUser.id);
+  orchestrator.reconcileConversationQueueAfterMessageDeletion(conversation.id, [latestUser]);
+
+  assert.equal(orchestrator.getConversationQueueDepth(conversation.id), 0);
+  assert.equal(orchestrator.getConversationMutationState(conversation.id).busy, false);
+
+  conversation.messages = conversation.messages.filter((message) => message.id !== oldUser.id);
+  orchestrator.reconcileConversationQueueAfterMessageDeletion(conversation.id, [oldUser]);
+  assert.equal(orchestrator.getConversationQueueDepth(conversation.id), 0);
+});

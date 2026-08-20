@@ -67,6 +67,9 @@ function bootTimeline(messages, options = {}) {
       crossConversationBundleForMessage: () => null,
       deleteConversationMessages: async (conversationId, messageIds) => {
         deleteCalls.push({ conversationId, messageIds });
+        if (options.deletePromise) {
+          await options.deletePromise;
+        }
         if (options.deleteError) {
           throw options.deleteError;
         }
@@ -148,6 +151,30 @@ test('single delete confirms permanence and submits exactly one message id', asy
   assert.deepEqual(JSON.parse(JSON.stringify(context.deleteCalls)), [
     { conversationId: 'conversation-1', messageIds: ['message-1'] },
   ]);
+});
+
+test('successful deletion re-enables remaining controls after an in-flight render', async () => {
+  let resolveDelete;
+  const deletePromise = new Promise((resolve) => {
+    resolveDelete = resolve;
+  });
+  const context = bootTimeline([
+    deletableMessage('message-1'),
+    deletableMessage('message-2', { createdAt: '2026-08-20T10:01:00.000Z' }),
+  ], { deletePromise });
+  const firstDeleteButton = context.document.querySelector('[data-message-id="message-1"] .message-delete-button');
+  firstDeleteButton.click();
+  await new Promise((resolve) => context.window.setTimeout(resolve, 0));
+  context.conversation.messages = context.conversation.messages.filter((message) => message.id !== 'message-1');
+  context.renderer.render(context.conversation, null, []);
+  const remainingCard = context.document.querySelector('[data-message-id="message-2"]');
+  assert.equal(remainingCard.querySelector('.message-delete-button').disabled, true);
+
+  resolveDelete();
+  await new Promise((resolve) => context.window.setTimeout(resolve, 0));
+
+  assert.equal(remainingCard.querySelector('.message-delete-button').disabled, false);
+  assert.equal(remainingCard.querySelector('.message-delete-checkbox').disabled, false);
 });
 
 test('multi-select keeps selection after an atomic server rejection and supports cancel', async () => {

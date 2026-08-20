@@ -37,12 +37,16 @@ function createHarness(t, options = {}) {
   };
   const events = [];
   const removedBatchIds = [];
+  const queueReconciliations = [];
   const service = createConversationMessageDeletionService({
     store,
     mutationCoordinator,
     turnOrchestrator: {
       getConversationMutationState() {
         return runtimeState;
+      },
+      reconcileConversationQueueAfterMessageDeletion(conversationId, deletedMessages) {
+        queueReconciliations.push({ conversationId, deletedMessages });
       },
     },
     uploadService: options.uploadService || {
@@ -63,7 +67,16 @@ function createHarness(t, options = {}) {
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  return { store, conversation, mutationCoordinator, runtimeState, service, events, removedBatchIds };
+  return {
+    store,
+    conversation,
+    mutationCoordinator,
+    runtimeState,
+    service,
+    events,
+    removedBatchIds,
+    queueReconciliations,
+  };
 }
 
 function createMessage(store, conversationId, payload = {}) {
@@ -230,14 +243,17 @@ test('attachment cleanup failure is reported after the durable message deletion'
   assert.deepEqual(result.attachmentCleanup.warning.batchIds, [batch.batchId]);
 });
 
-test('successful deletion refreshes digest state and emits content-free events', (t) => {
-  const { store, conversation, service, events } = createHarness(t);
+test('successful deletion refreshes runtime queue and digest state, then emits content-free events', (t) => {
+  const { store, conversation, service, events, queueReconciliations } = createHarness(t);
   const deleted = createMessage(store, conversation.id, { content: 'secret delete me' });
 
   const result = service.deleteMessages(conversation.id, { messageIds: [deleted.id] });
 
   assert.deepEqual(result.deletedMessageIds, [deleted.id]);
   assert.equal(store.getMessage(deleted.id), null);
+  assert.equal(queueReconciliations.length, 1);
+  assert.equal(queueReconciliations[0].conversationId, conversation.id);
+  assert.deepEqual(queueReconciliations[0].deletedMessages.map((message) => message.id), [deleted.id]);
   const deletionEvent = events.find((event) => event.eventName === 'conversation_messages_deleted');
   assert.deepEqual(deletionEvent.payload.deletedMessageIds, [deleted.id]);
   assert.equal(JSON.stringify(deletionEvent).includes('secret delete me'), false);

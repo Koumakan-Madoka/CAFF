@@ -245,6 +245,15 @@ export function createConversationMessageDeletionService(options: any = {}) {
       }
 
       const deletion = store.deleteConversationMessages(normalizedConversationId, uniqueMessageIds);
+      if (
+        turnOrchestrator
+        && typeof turnOrchestrator.reconcileConversationQueueAfterMessageDeletion === 'function'
+      ) {
+        turnOrchestrator.reconcileConversationQueueAfterMessageDeletion(
+          normalizedConversationId,
+          selectedMessages
+        );
+      }
       const digestState = recomputeConversationDigestState(store, normalizedConversationId, digestOptions);
       const attachmentBatchIds = Array.isArray(deletion.attachmentBatchIds) ? deletion.attachmentBatchIds : [];
       let cleanupWarning = null;
