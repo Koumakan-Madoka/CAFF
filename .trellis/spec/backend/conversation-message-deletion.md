@@ -38,6 +38,7 @@ The feature intentionally supports only unsummarized history in an idle conversa
 - `turnOrchestrator.reconcileConversationQueueAfterMessageDeletion(conversationId, deletedMessages)`:
   - moves a deleted `lastConsumedUserMessageId` cursor to the previous surviving consumed user message
   - leaves the cursor unchanged when the deleted batch does not contain it
+  - persists the resulting cursor under `conversation.metadata.conversationTurnQueue.lastConsumedUserMessageId`, including assistant-only deletion
 - `ChatAppStore.deleteConversationMessages(conversationId, messageIds)` returns:
   - `{ deletedMessageIds, attachmentBatchIds, lastMessageAt }`
 
@@ -73,7 +74,9 @@ The feature intentionally supports only unsummarized history in an idle conversa
 - Auto digest, manual digest, and message deletion use the same conversation-scoped mutation coordinator.
 - A scheduled auto digest or running mutation causes immediate `409`; deletion never holds an HTTP request while waiting for a model digest.
 - Idle validation and the SQLite transaction contain no `await`, so another JavaScript dispatch callback cannot enter between them.
-- After commit, deletion must reconcile the in-memory main-queue cursor before returning. If the deleted batch contains `lastConsumedUserMessageId`, move it to the previous surviving user message by `(createdAt, id)` order; otherwise older consumed user messages can be misclassified as pending and replayed.
+- After commit, deletion must reconcile the main-queue cursor before returning. If the deleted batch contains `lastConsumedUserMessageId`, move it to the previous surviving user message by `(createdAt, id)` order.
+- Persist the resulting cursor after every deletion, even when only assistant messages were deleted and the cursor did not change. A trailing consumed user row is indistinguishable from a pending user to the legacy restart heuristic; without the durable cursor, restart marks the room busy and may replay history.
+- Successful main-lane turn settlement advances the same durable cursor; failed batches never advance it. Orchestrator startup prefers the durable value and uses the legacy trailing-user inference only for conversations without this metadata.
 
 ### Attachment cleanup
 
@@ -139,7 +142,8 @@ The feature intentionally supports only unsummarized history in an idle conversa
   - manual digest honors the shared mutation lock
 - `tests/runtime/turn-orchestrator.test.js`
   - queued side dispatch increments `queuedAgentSlotCount`
-  - deleting the consumed-user cursor falls back without making older messages pending
+  - successful queue drain persists the latest consumed user cursor
+  - consumed-user and assistant-only deletion preserve zero queue depth after a fresh orchestrator is created
 - `tests/ui/message-deletion.test.js`
   - 44px/touch controls, single confirmation, multi-select/cancel
   - successful optimistic re-render restores remaining controls

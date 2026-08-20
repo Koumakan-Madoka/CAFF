@@ -3272,6 +3272,7 @@ test('turn orchestrator queues user messages behind the active run and drains th
     id: 'conversation-queue',
     title: 'Queued Conversation',
     type: 'standard',
+    metadata: {},
     agents: [{ id: 'agent-a', name: 'Alpha' }],
     messages: [],
   };
@@ -3321,6 +3322,11 @@ test('turn orchestrator queues user messages behind the active run and drains th
       };
       conversation.messages.push(message);
       return message;
+    },
+    updateConversation(conversationId, updates) {
+      assert.equal(conversationId, conversation.id);
+      conversation.metadata = updates.metadata;
+      return conversation;
     },
   };
 
@@ -3377,6 +3383,10 @@ test('turn orchestrator queues user messages behind the active run and drains th
   assert.ok(seenBatches[0].promptMessages.some((content) => content.includes('First queued message')));
   assert.ok(seenBatches[0].promptMessages.every((content) => !content.includes('Second queued message')));
   assert.ok(seenBatches[1].promptMessages.some((content) => content.includes('Second queued message')));
+  assert.equal(
+    conversation.metadata.conversationTurnQueue.lastConsumedUserMessageId,
+    secondResult.acceptedMessage.id
+  );
 });
 
 test('turn orchestrator rejects runtime blockers before persisting messages, placeholders, or run tasks', { concurrency: false }, (t) => {
@@ -5736,16 +5746,23 @@ test('message deletion reconciliation moves a deleted consumed-user cursor to th
     content: 'latest user',
     createdAt: '2026-08-20T10:02:00.000Z',
   };
+  const latestAssistant = {
+    id: 'latest-assistant',
+    role: 'assistant',
+    content: 'latest reply',
+    createdAt: '2026-08-20T10:03:00.000Z',
+  };
   const conversation = {
     id: 'conversation-delete-queue-cursor',
     title: 'Deletion queue cursor',
     type: 'standard',
+    metadata: {},
     agents: [{ id: 'agent-a', name: 'Alpha' }],
     messages: [
       oldUser,
       { id: 'old-assistant', role: 'assistant', content: 'old reply', createdAt: '2026-08-20T10:01:00.000Z' },
       latestUser,
-      { id: 'latest-assistant', role: 'assistant', content: 'latest reply', createdAt: '2026-08-20T10:03:00.000Z' },
+      latestAssistant,
     ],
   };
   const store = {
@@ -5756,8 +5773,13 @@ test('message deletion reconciliation moves a deleted consumed-user cursor to th
     listConversations() {
       return [{ id: conversation.id, title: conversation.title, type: conversation.type }];
     },
+    updateConversation(conversationId, updates) {
+      assert.equal(conversationId, conversation.id);
+      conversation.metadata = updates.metadata;
+      return conversation;
+    },
   };
-  const orchestrator = createTurnOrchestrator({
+  const createOrchestrator = () => createTurnOrchestrator({
     store,
     skillRegistry: { listSkills() { return []; }, resolveSkills() { return []; } },
     modeStore: { get() { return null; } },
@@ -5769,15 +5791,31 @@ test('message deletion reconciliation moves a deleted consumed-user cursor to th
     toolBaseUrl: 'http://127.0.0.1:0',
     agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
   });
+  const orchestrator = createOrchestrator();
 
   t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
 
   assert.equal(orchestrator.getConversationMutationState(conversation.id).queuedUserCount, 0);
+
+  conversation.messages = conversation.messages.filter((message) => message.id !== latestAssistant.id);
+  orchestrator.reconcileConversationQueueAfterMessageDeletion(conversation.id, [latestAssistant]);
+  assert.equal(orchestrator.getConversationQueueDepth(conversation.id), 0);
+  assert.equal(
+    conversation.metadata.conversationTurnQueue.lastConsumedUserMessageId,
+    latestUser.id
+  );
+  assert.equal(createOrchestrator().getConversationQueueDepth(conversation.id), 0);
+
   conversation.messages = conversation.messages.filter((message) => message.id !== latestUser.id);
   orchestrator.reconcileConversationQueueAfterMessageDeletion(conversation.id, [latestUser]);
 
   assert.equal(orchestrator.getConversationQueueDepth(conversation.id), 0);
   assert.equal(orchestrator.getConversationMutationState(conversation.id).busy, false);
+  assert.equal(
+    conversation.metadata.conversationTurnQueue.lastConsumedUserMessageId,
+    oldUser.id
+  );
+  assert.equal(createOrchestrator().getConversationQueueDepth(conversation.id), 0);
 
   conversation.messages = conversation.messages.filter((message) => message.id !== oldUser.id);
   orchestrator.reconcileConversationQueueAfterMessageDeletion(conversation.id, [oldUser]);
