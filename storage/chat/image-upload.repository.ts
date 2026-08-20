@@ -1,3 +1,5 @@
+import { MAX_CONVERSATION_MESSAGE_DELETE_BATCH_SIZE } from '../../lib/conversation-message-deletion-contract';
+
 function normalizeBatchRow(row: any) {
   if (!row) {
     return null;
@@ -261,6 +263,26 @@ export class ImageUploadRepository {
     return this.listChildrenByBatchStatement.all(batchId).map(normalizeUploadRow);
   }
 
+  listAttachedByMessageIds(messageIds: string[]) {
+    const safeIds = Array.from(
+      new Set((Array.isArray(messageIds) ? messageIds : []).map((value) => String(value || '').trim()).filter(Boolean))
+    ).slice(0, MAX_CONVERSATION_MESSAGE_DELETE_BATCH_SIZE);
+
+    if (safeIds.length === 0) {
+      return [];
+    }
+
+    return this.db
+      .prepare(`
+        SELECT *
+        FROM image_uploads
+        WHERE attached_message_id IN (SELECT value FROM json_each(?))
+        ORDER BY batch_id ASC, slot ASC
+      `)
+      .all(JSON.stringify(safeIds))
+      .map(normalizeUploadRow);
+  }
+
   listChildrenByIds(imageIds: string[]) {
     const safeIds = (Array.isArray(imageIds) ? imageIds : []).filter(Boolean).slice(0, 8);
 
@@ -350,6 +372,34 @@ export class ImageUploadRepository {
 
   purgeBatch(batchId: string) {
     this.purgeBatchTransaction(batchId);
+  }
+
+  deleteAttachedByMessageIds(messageIds: string[]) {
+    const safeIds = Array.from(
+      new Set((Array.isArray(messageIds) ? messageIds : []).map((value) => String(value || '').trim()).filter(Boolean))
+    ).slice(0, MAX_CONVERSATION_MESSAGE_DELETE_BATCH_SIZE);
+
+    if (safeIds.length === 0) {
+      return 0;
+    }
+
+    return this.db
+      .prepare(`DELETE FROM image_uploads WHERE attached_message_id IN (SELECT value FROM json_each(?))`)
+      .run(JSON.stringify(safeIds)).changes;
+  }
+
+  deleteBatchesByIds(batchIds: string[]) {
+    const safeIds = Array.from(
+      new Set((Array.isArray(batchIds) ? batchIds : []).map((value) => String(value || '').trim()).filter(Boolean))
+    ).slice(0, MAX_CONVERSATION_MESSAGE_DELETE_BATCH_SIZE);
+
+    if (safeIds.length === 0) {
+      return 0;
+    }
+
+    return this.db
+      .prepare(`DELETE FROM image_upload_batches WHERE batch_id IN (SELECT value FROM json_each(?))`)
+      .run(JSON.stringify(safeIds)).changes;
   }
 
   deleteChild(imageId: string) {

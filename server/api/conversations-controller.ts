@@ -210,6 +210,8 @@ export function createConversationsController(options: any = {}): RouteHandler<A
   const modeStore = options.modeStore;
   const broadcastEvent = typeof options.broadcastEvent === 'function' ? options.broadcastEvent : () => {};
   const agentToolBridge = options.agentToolBridge || null;
+  const conversationMessageDeletionService = options.conversationMessageDeletionService || null;
+  const conversationMutationCoordinator = options.conversationMutationCoordinator || null;
 
   function listConversationHeaders() {
     return typeof store.listConversationTree === 'function'
@@ -693,6 +695,17 @@ export function createConversationsController(options: any = {}): RouteHandler<A
 
       let shouldClearDigestStatus = false;
       let result: any;
+      const requiresMutation = req.method === 'POST' && action !== 'get';
+      const mutationLease = requiresMutation && conversationMutationCoordinator
+        && typeof conversationMutationCoordinator.tryAcquire === 'function'
+        ? conversationMutationCoordinator.tryAcquire(conversationId, 'manual_digest')
+        : { acquired: true, release() {} };
+
+      if (!mutationLease.acquired) {
+        throw createHttpError(409, '会话摘要或其它历史修改正在运行，请稍后重试', {
+          code: 'conversation_digest_running',
+        });
+      }
 
       try {
         result = await applyConversationDigestAction(store, conversationId, body || {}, {
@@ -719,6 +732,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
             reason: 'model_digest',
           });
         }
+        mutationLease.release();
       }
 
       if (req.method === 'POST' && result.digestChanged) {
@@ -1153,6 +1167,32 @@ export function createConversationsController(options: any = {}): RouteHandler<A
       return true;
     }
 
+    const messageDeleteMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/messages\/delete$/);
+
+    if (messageDeleteMatch && req.method === 'POST') {
+      if (!conversationMessageDeletionService || typeof conversationMessageDeletionService.deleteMessages !== 'function') {
+        throw createHttpError(501, 'Conversation message deletion is unavailable');
+      }
+
+      const conversationId = decodeURIComponent(messageDeleteMatch[1]);
+      const body = await readRequestJson(req);
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        throw createHttpError(400, 'Request body must be a JSON object', {
+          code: 'conversation_message_delete_invalid_request',
+        });
+      }
+      const unknownField = Object.keys(body).find((fieldName) => fieldName !== 'messageIds');
+      if (unknownField) {
+        throw createHttpError(400, `Unknown message deletion field: ${unknownField}`, {
+          code: 'conversation_message_delete_invalid_request',
+        });
+      }
+
+      const result = conversationMessageDeletionService.deleteMessages(conversationId, body);
+      sendJson(res, 200, result);
+      return true;
+    }
+
     const messageMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/messages$/);
 
     if (messageMatch && req.method === 'GET') {
@@ -1163,7 +1203,21 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         throw createHttpError(404, 'Conversation not found');
       }
 
-      sendJson(res, 200, buildConversationMessagePage(store, conversationId, requestUrl.searchParams));
+      const page = buildConversationMessagePage(store, conversationId, requestUrl.searchParams);
+      if (
+        conversationMessageDeletionService
+        && typeof conversationMessageDeletionService.projectMessages === 'function'
+      ) {
+        const projection = conversationMessageDeletionService.projectMessages(conversationId, page.items);
+        sendJson(res, 200, {
+          ...page,
+          items: projection.items,
+          deletionState: projection.deletionState,
+        });
+        return true;
+      }
+
+      sendJson(res, 200, page);
       return true;
     }
 

@@ -21,6 +21,7 @@
     'file-text',
     'chevron-down',
     'paperclip',
+    'trash',
   ]);
 
   function create(name, options = {}) {

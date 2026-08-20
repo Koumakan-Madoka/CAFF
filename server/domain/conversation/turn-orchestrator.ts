@@ -31,6 +31,8 @@ const {
 const { buildPromptMessages, buildPromptSnapshotMessageIds } = require('./turn/prompt-visibility');
 const { createAgentSlotRegistry } = require('./turn/agent-slot-registry');
 
+const CONVERSATION_TURN_QUEUE_METADATA_KEY = 'conversationTurnQueue';
+
 function createAcceptedMessagePayload(conversationId: any, turnInput: any) {
   return {
     id: randomUUID(),
@@ -110,6 +112,55 @@ export function createTurnOrchestrator(options: any = {}) {
     return Array.isArray(conversation && conversation.messages) ? conversation.messages : [];
   }
 
+  function conversationTurnQueueMetadata(conversation: any) {
+    const metadata = conversation && conversation.metadata && typeof conversation.metadata === 'object'
+      ? conversation.metadata
+      : {};
+    const queueMetadata = metadata[CONVERSATION_TURN_QUEUE_METADATA_KEY];
+
+    return queueMetadata && typeof queueMetadata === 'object' && !Array.isArray(queueMetadata)
+      ? queueMetadata
+      : null;
+  }
+
+  function persistConversationQueueState(conversationId: any, queueState: any) {
+    const normalizedConversationId = String(conversationId || '').trim();
+
+    if (!normalizedConversationId || !store || typeof store.updateConversation !== 'function') {
+      return null;
+    }
+
+    const conversation = typeof store.getConversationWithoutMessages === 'function'
+      ? store.getConversationWithoutMessages(normalizedConversationId)
+      : store.getConversation(normalizedConversationId);
+    if (!conversation) {
+      return null;
+    }
+
+    const metadata = conversation.metadata && typeof conversation.metadata === 'object'
+      ? conversation.metadata
+      : {};
+    const existingQueueMetadata = conversationTurnQueueMetadata(conversation) || {};
+    const lastConsumedUserMessageId = String(queueState && queueState.lastConsumedUserMessageId || '').trim();
+
+    if (
+      Object.prototype.hasOwnProperty.call(existingQueueMetadata, 'lastConsumedUserMessageId')
+      && String(existingQueueMetadata.lastConsumedUserMessageId || '').trim() === lastConsumedUserMessageId
+    ) {
+      return conversation;
+    }
+
+    return store.updateConversation(normalizedConversationId, {
+      metadata: {
+        ...metadata,
+        [CONVERSATION_TURN_QUEUE_METADATA_KEY]: {
+          ...existingQueueMetadata,
+          lastConsumedUserMessageId,
+        },
+      },
+    });
+  }
+
   function resolveConversationMessage(conversationId: any, messageId: any) {
     const normalizedMessageId = String(messageId || '').trim();
 
@@ -184,8 +235,7 @@ export function createTurnOrchestrator(options: any = {}) {
     return Array.from((queuedSideDispatches.get(normalizedConversationId) as Map<string, any>).values()) as any[];
   }
 
-  function createInitialQueueState(conversationId: any) {
-    const messages = listConversationMessages(conversationId);
+  function inferLastConsumedUserMessageId(messages: any[]) {
     let lastConsumedUserMessageId = '';
     let skippingTrailingUsers = true;
 
@@ -211,8 +261,22 @@ export function createTurnOrchestrator(options: any = {}) {
       }
     }
 
+    return lastConsumedUserMessageId;
+  }
+
+  function createInitialQueueState(conversationId: any) {
+    const conversation = store.getConversation(conversationId);
+    const messages = Array.isArray(conversation && conversation.messages) ? conversation.messages : [];
+    const persistedQueueMetadata = conversationTurnQueueMetadata(conversation);
+    const hasPersistedCursor = Boolean(
+      persistedQueueMetadata
+      && Object.prototype.hasOwnProperty.call(persistedQueueMetadata, 'lastConsumedUserMessageId')
+    );
+
     return {
-      lastConsumedUserMessageId,
+      lastConsumedUserMessageId: hasPersistedCursor
+        ? String(persistedQueueMetadata.lastConsumedUserMessageId || '').trim()
+        : inferLastConsumedUserMessageId(messages),
       failedBatchCount: 0,
       lastFailureAt: null,
       lastFailureMessage: '',
@@ -474,6 +538,79 @@ export function createTurnOrchestrator(options: any = {}) {
     );
   }
 
+  function reconcileConversationQueueAfterMessageDeletion(conversationId: any, deletedMessages: any[] = []) {
+    const normalizedConversationId = String(conversationId || '').trim();
+    const queueState = queueStates.get(normalizedConversationId) || null;
+    const deletedItems = Array.isArray(deletedMessages) ? deletedMessages : [];
+    const deletedIds = new Set(
+      deletedItems.map((message: any) => String(message && message.id || '').trim()).filter(Boolean)
+    );
+    const consumedMessageId = String(queueState && queueState.lastConsumedUserMessageId || '').trim();
+
+    if (!queueState) {
+      return queueState;
+    }
+
+    if (consumedMessageId && deletedIds.has(consumedMessageId)) {
+      const deletedCursor = deletedItems.find((message: any) => {
+        return String(message && message.id || '').trim() === consumedMessageId;
+      }) || null;
+      const cursorCreatedAt = String(deletedCursor && deletedCursor.createdAt || '').trim();
+
+      if (!cursorCreatedAt) {
+        queueState.lastConsumedUserMessageId = inferLastConsumedUserMessageId(
+          listConversationMessages(normalizedConversationId)
+        );
+      } else {
+        let previousConsumedUserMessageId = '';
+        for (const message of listConversationMessages(normalizedConversationId)) {
+          const messageId = String(message && message.id || '').trim();
+          const createdAt = String(message && message.createdAt || '').trim();
+          const precedesDeletedCursor = createdAt < cursorCreatedAt
+            || (createdAt === cursorCreatedAt && messageId < consumedMessageId);
+
+          if (message && message.role === 'user' && messageId && precedesDeletedCursor) {
+            previousConsumedUserMessageId = messageId;
+          }
+        }
+
+        queueState.lastConsumedUserMessageId = previousConsumedUserMessageId;
+      }
+    }
+
+    persistConversationQueueState(normalizedConversationId, queueState);
+    return queueState;
+  }
+
+  function getConversationMutationState(conversationId: any) {
+    const normalizedConversationId = String(conversationId || '').trim();
+    const active = activeConversationIds.has(normalizedConversationId);
+    const dispatching = dispatchingConversationIds.has(normalizedConversationId);
+    const activeTurnCount = activeTurns.has(normalizedConversationId) ? 1 : 0;
+    const activeAgentSlotCount = listConversationActiveAgentSlots(normalizedConversationId).length;
+    const queuedUserCount = normalizedConversationId ? getConversationQueueDepth(normalizedConversationId) : 0;
+    const queuedAgentSlotCount = normalizedConversationId
+      ? listQueuedSideDispatches(normalizedConversationId).length
+      : 0;
+
+    return {
+      active,
+      dispatching,
+      activeTurnCount,
+      activeAgentSlotCount,
+      queuedUserCount,
+      queuedAgentSlotCount,
+      busy: Boolean(
+        active
+        || dispatching
+        || activeTurnCount > 0
+        || activeAgentSlotCount > 0
+        || queuedUserCount > 0
+        || queuedAgentSlotCount > 0
+      ),
+    };
+  }
+
   function buildConversationQueueSnapshot() {
     if (!hasInMemoryQueueState()) {
       return { depths: {}, failures: {} };
@@ -667,6 +804,17 @@ export function createTurnOrchestrator(options: any = {}) {
     isAgentBusy: agentSlotRegistry.isAgentBusy,
   });
 
+  function markConversationQueueBatchConsumed(conversationId: any, messageId: any) {
+    const normalizedConversationId = String(conversationId || '').trim();
+    const queueState = ensureQueueState(normalizedConversationId);
+    queueState.lastConsumedUserMessageId = String(messageId || '').trim();
+    queueState.failedBatchCount = 0;
+    queueState.lastFailureAt = null;
+    queueState.lastFailureMessage = '';
+    persistConversationQueueState(normalizedConversationId, queueState);
+    return queueState;
+  }
+
   async function runConversationTurn(conversationId: any, userContent: any) {
     const normalizedConversationId = String(conversationId || '').trim();
 
@@ -677,7 +825,14 @@ export function createTurnOrchestrator(options: any = {}) {
       throw createHttpError(409, 'This conversation is already processing another turn');
     }
 
-    return baseRunConversationTurn(conversationId, userContent);
+    const result = await baseRunConversationTurn(conversationId, userContent);
+    const consumedMessageId = String(
+      result && result.turn && (result.turn.consumedUpToMessageId || result.turn.batchEndMessageId) || ''
+    ).trim();
+    if (normalizedConversationId && consumedMessageId) {
+      markConversationQueueBatchConsumed(normalizedConversationId, consumedMessageId);
+    }
+    return result;
   }
 
   function syncConversationQueueProgress(conversationId: any) {
@@ -895,10 +1050,7 @@ export function createTurnOrchestrator(options: any = {}) {
             );
           } finally {
             if (batchSucceeded) {
-              queueState.lastConsumedUserMessageId = String(batchEndMessageId || '').trim();
-              queueState.failedBatchCount = 0;
-              queueState.lastFailureAt = null;
-              queueState.lastFailureMessage = '';
+              markConversationQueueBatchConsumed(normalizedConversationId, batchEndMessageId);
             }
             syncConversationQueueProgress(normalizedConversationId);
           }
@@ -1650,9 +1802,11 @@ export function createTurnOrchestrator(options: any = {}) {
     clearConversationState,
     dispatchCrossConversationDelivery,
     emitTurnProgress,
+    getConversationMutationState,
     getConversationQueueDepth,
     listAgentSlotSummaries,
     listTurnSummaries,
+    reconcileConversationQueueAfterMessageDeletion,
     requestStopConversationExecution,
     requestStopCrossConversationDelivery,
     requestStopConversationTurn: requestStopMainTurn,

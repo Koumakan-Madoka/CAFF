@@ -22,9 +22,11 @@
       canInspectToolTrace,
       conversationSummaries,
       crossConversationBundleForMessage,
+      deleteConversationMessages,
       displayedMessageBody,
       digestStatusForConversation,
       formatDateTime,
+      isConversationMessageDeletionBlocked,
       isPrivateTimelineMessage,
       liveStageForMessage,
       liveStageLabel,
@@ -37,6 +39,114 @@
     } = helpers;
 
     const TRACE_SCROLL_STEP_LIMIT = 8;
+    const selectedMessageIds = new Set();
+    const renderedMessagesById = new Map();
+    const deleteToolbar = dom.messageDeleteToolbar || null;
+    const deleteCount = deleteToolbar && deleteToolbar.querySelector('[data-message-delete-count]');
+    const deleteConfirmButton = deleteToolbar && deleteToolbar.querySelector('[data-message-delete-confirm]');
+    const deleteCancelButton = deleteToolbar && deleteToolbar.querySelector('[data-message-delete-cancel]');
+    let selectionConversationId = '';
+    let deleteInFlight = false;
+
+    function deletionReasonLabel(reasonCode, fallback) {
+      const labels = {
+        message_summarized: '这条消息已被摘要覆盖，不能删除',
+        message_cross_conversation: '跨会话消息不能删除',
+        message_role_not_deletable: '这种消息不能删除',
+        message_status_not_deletable: 'Agent 回复尚未结束，不能删除',
+        message_not_found: '消息已不存在',
+      };
+      return labels[reasonCode] || String(fallback || '当前不能删除这条消息');
+    }
+
+    function syncSelectionControls() {
+      const messageContainer = dom.messageTimeline || dom.messageList;
+      if (!messageContainer) {
+        return;
+      }
+
+      messageContainer.querySelectorAll('.message-card').forEach((card) => {
+        const messageId = String(card.dataset.messageId || '');
+        const selected = selectedMessageIds.has(messageId);
+        const deletionEnabled = card.dataset.messageDeleteEnabled === 'true';
+        const checkbox = card.querySelector('.message-delete-checkbox');
+        const deleteButton = card.querySelector('.message-delete-button');
+        if (checkbox) {
+          checkbox.checked = selected;
+          checkbox.disabled = !deletionEnabled || deleteInFlight;
+        }
+        if (deleteButton) {
+          deleteButton.disabled = !deletionEnabled || deleteInFlight;
+        }
+        card.classList.toggle('message-delete-selected', selected);
+      });
+    }
+
+    function syncDeleteToolbar() {
+      if (!deleteToolbar) {
+        return;
+      }
+
+      const selectedCount = selectedMessageIds.size;
+      deleteToolbar.hidden = selectedCount === 0;
+      if (deleteCount) {
+        deleteCount.textContent = `已选择 ${selectedCount} 条`;
+      }
+      if (deleteConfirmButton) {
+        deleteConfirmButton.disabled = deleteInFlight || selectedCount === 0;
+      }
+      if (deleteCancelButton) {
+        deleteCancelButton.disabled = deleteInFlight;
+      }
+      syncSelectionControls();
+    }
+
+    function clearMessageSelection() {
+      selectedMessageIds.clear();
+      syncDeleteToolbar();
+    }
+
+    async function requestMessageDeletion(messageIds) {
+      const normalizedMessageIds = Array.from(new Set(messageIds.map((messageId) => String(messageId || '').trim()).filter(Boolean)));
+      if (
+        normalizedMessageIds.length === 0
+        || deleteInFlight
+        || typeof deleteConversationMessages !== 'function'
+      ) {
+        return;
+      }
+
+      const confirmation = [
+        `永久删除所选 ${normalizedMessageIds.length} 条消息？`,
+        '此操作不可恢复；不会回滚文件修改、提交、Goal/DAG 或外部副作用。',
+        '消息附带的图片也会永久删除。',
+      ].join('\n');
+      if (!window.confirm(confirmation)) {
+        return;
+      }
+
+      deleteInFlight = true;
+      syncDeleteToolbar();
+      try {
+        await deleteConversationMessages(selectionConversationId, normalizedMessageIds);
+        normalizedMessageIds.forEach((messageId) => selectedMessageIds.delete(messageId));
+        showToast(`已永久删除 ${normalizedMessageIds.length} 条消息`);
+      } catch (error) {
+        showToast(error && error.message ? error.message : '删除失败，未删除任何消息');
+      } finally {
+        deleteInFlight = false;
+        syncDeleteToolbar();
+      }
+    }
+
+    if (deleteConfirmButton) {
+      deleteConfirmButton.addEventListener('click', () => {
+        void requestMessageDeletion(Array.from(selectedMessageIds));
+      });
+    }
+    if (deleteCancelButton) {
+      deleteCancelButton.addEventListener('click', clearMessageSelection);
+    }
 
     function formatDuration(durationMs) {
       const value = Number(durationMs || 0);
@@ -1795,6 +1905,10 @@
       const liveHint = document.createElement('div');
       const toolTrace = document.createElement('section');
       const imageGallery = document.createElement('div');
+      const deleteControls = document.createElement('div');
+      const selectLabel = document.createElement('label');
+      const selectCheckbox = document.createElement('input');
+      const deleteButton = document.createElement('button');
 
       meta.className = 'message-meta';
       sender.className = 'message-sender';
@@ -1805,8 +1919,41 @@
       toolTrace.className = 'message-tool-trace hidden';
       imageGallery.className = 'message-images';
       imageGallery.hidden = true;
+      deleteControls.className = 'message-delete-controls';
+      selectLabel.className = 'message-delete-select-target';
+      selectCheckbox.type = 'checkbox';
+      selectCheckbox.className = 'message-delete-checkbox';
+      selectCheckbox.setAttribute('aria-label', '选择这条消息');
+      deleteButton.type = 'button';
+      deleteButton.className = 'message-delete-button icon-btn danger';
+      deleteButton.setAttribute('aria-label', '永久删除这条消息');
+      if (window.CaffIcons && typeof window.CaffIcons.create === 'function') {
+        deleteButton.appendChild(window.CaffIcons.create('trash'));
+      } else {
+        deleteButton.textContent = '删除';
+      }
+      selectCheckbox.addEventListener('change', () => {
+        const messageId = String(card.dataset.messageId || '');
+        if (!messageId) {
+          return;
+        }
+        if (selectCheckbox.checked) {
+          selectedMessageIds.add(messageId);
+        } else {
+          selectedMessageIds.delete(messageId);
+        }
+        syncDeleteToolbar();
+      });
+      deleteButton.addEventListener('click', () => {
+        const messageId = String(card.dataset.messageId || '');
+        if (messageId) {
+          void requestMessageDeletion([messageId]);
+        }
+      });
+      selectLabel.appendChild(selectCheckbox);
+      deleteControls.append(selectLabel, deleteButton);
 
-      meta.append(sender, time);
+      meta.append(sender, time, deleteControls);
       card.append(meta, crossConversationPanel, toolTrace, imageGallery, body, liveHint);
       syncMessageCard(card, message, conversationId, agents, activeTurn, activeAgentSlots);
 
@@ -1841,6 +1988,12 @@
       const recipients = privateRecipientNames(message);
       const privacyLabel =
         isPrivateTimelineMessage(message) && recipients.length > 0 ? `Private -> ${recipients.join(', ')}` : 'Private';
+      const deletionEligibility = message && message.deletionEligibility && typeof message.deletionEligibility === 'object'
+        ? message.deletionEligibility
+        : null;
+      const deletionBlocked = typeof isConversationMessageDeletionBlocked === 'function'
+        ? isConversationMessageDeletionBlocked(conversationId)
+        : false;
       const traceSignature = toolTraceSignatureForMessage(message);
       const signature = [
         message.id,
@@ -1888,6 +2041,8 @@
           crossConversationDelivery.updatedAt,
         ]) : '',
         messageImages.imageBlockSignature(message),
+        deletionEligibility ? JSON.stringify(deletionEligibility) : '',
+        deletionBlocked ? 'delete-blocked' : 'delete-ready',
         traceSignature,
       ].join('\u001f');
 
@@ -1915,6 +2070,9 @@
       const liveHint = card.querySelector('.message-live-hint');
       const toolTrace = card.querySelector('.message-tool-trace');
       const imageGallery = card.querySelector('.message-images');
+      const deleteControls = card.querySelector('.message-delete-controls');
+      const selectCheckbox = card.querySelector('.message-delete-checkbox');
+      const deleteButton = card.querySelector('.message-delete-button');
 
       sender.textContent = '';
 
@@ -1963,6 +2121,35 @@
       }
 
       time.textContent = '';
+
+      const supportsDeletionControls =
+        (message.role === 'user' || message.role === 'assistant')
+        && !isPrivateTimelineMessage(message)
+        && !isDigestStatusMessage
+        && !isDigestResultMessage;
+      const staticallyEligible = Boolean(deletionEligibility && deletionEligibility.eligible === true);
+      const deletionEnabled = supportsDeletionControls && staticallyEligible && !deletionBlocked;
+      const disabledReason = deletionBlocked
+        ? '会话正在处理消息或摘要，请结束后再删除'
+        : deletionReasonLabel(
+            deletionEligibility && deletionEligibility.reasonCode,
+            deletionEligibility && deletionEligibility.reason
+          );
+
+      card.dataset.messageDeleteEnabled = deletionEnabled ? 'true' : 'false';
+      if (deleteControls) {
+        deleteControls.hidden = !supportsDeletionControls;
+      }
+      if (selectCheckbox) {
+        selectCheckbox.disabled = !deletionEnabled || deleteInFlight;
+        selectCheckbox.checked = selectedMessageIds.has(message.id);
+        selectCheckbox.title = deletionEnabled ? '加入批量删除选择' : disabledReason;
+      }
+      if (deleteButton) {
+        deleteButton.disabled = !deletionEnabled || deleteInFlight;
+        deleteButton.title = deletionEnabled ? '永久删除这条消息' : disabledReason;
+      }
+      card.classList.toggle('message-delete-selected', selectedMessageIds.has(message.id));
 
       const crossConversationModels = syncCrossConversationPanel(
         crossConversationPanel,
@@ -2157,11 +2344,27 @@
 
     function render(conversation, activeTurn, activeAgentSlots = []) {
       const messageContainer = dom.messageTimeline || dom.messageList;
+      const nextConversationId = String(conversation && conversation.id || '');
+      if (selectionConversationId !== nextConversationId) {
+        selectedMessageIds.clear();
+        selectionConversationId = nextConversationId;
+      }
       const baseMessages = timelineMessagesForConversation(conversation);
       const digestStatusMessage = digestStatusTimelineMessage(conversation);
       const digestResultMessage = digestStatusMessage ? null : digestResultTimelineMessage(conversation);
       const messages = mergeDigestTimelineMessage(baseMessages, digestStatusMessage || digestResultMessage);
       const hasMessages = messages.length > 0;
+      renderedMessagesById.clear();
+      messages.forEach((message) => {
+        if (message && message.id) {
+          renderedMessagesById.set(message.id, message);
+        }
+      });
+      for (const messageId of Array.from(selectedMessageIds)) {
+        if (!renderedMessagesById.has(messageId)) {
+          selectedMessageIds.delete(messageId);
+        }
+      }
 
       if (!hasMessages) {
         if (messageContainer.childElementCount === 1 && messageContainer.firstElementChild.classList.contains('empty-state')) {
@@ -2172,6 +2375,7 @@
         empty.className = 'empty-state';
         empty.textContent = '\u53d1\u9001\u4e00\u6761\u6d88\u606f\uff0c\u5f00\u59cb\u591a Agent \u534f\u4f5c\u3002';
         messageContainer.replaceChildren(empty);
+        syncDeleteToolbar();
         return;
       }
 
@@ -2185,6 +2389,7 @@
         existingCards.forEach((card, index) => {
           syncMessageCard(card, messages[index], conversation.id, conversation.agents, activeTurn, activeAgentSlots);
         });
+        syncDeleteToolbar();
         return;
       }
 
@@ -2196,6 +2401,7 @@
         messages.slice(existingCards.length).forEach((message) => {
           messageContainer.appendChild(createMessageCard(message, conversation.id, conversation.agents, activeTurn, activeAgentSlots));
         });
+        syncDeleteToolbar();
         return;
       }
 
@@ -2204,6 +2410,7 @@
         fragment.appendChild(createMessageCard(message, conversation.id, conversation.agents, activeTurn, activeAgentSlots));
       });
       messageContainer.replaceChildren(fragment);
+      syncDeleteToolbar();
     }
 
     return {

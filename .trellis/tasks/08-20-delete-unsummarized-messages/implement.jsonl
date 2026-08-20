@@ -1,0 +1,13 @@
+{"file": ".trellis/workflow.md", "reason": "Project workflow and conventions"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend development guide"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend development guide"}
+{"file": ".trellis/spec/backend/architecture.md", "reason": "Required contract for cross-layer message deletion"}
+{"file": ".trellis/spec/backend/controller-patterns.md", "reason": "Required contract for cross-layer message deletion"}
+{"file": ".trellis/spec/backend/conversation-digest.md", "reason": "Required contract for cross-layer message deletion"}
+{"file": ".trellis/spec/runtime/agent-runtime.md", "reason": "Required contract for cross-layer message deletion"}
+{"file": ".trellis/spec/runtime/conversation-turn-queue.md", "reason": "Required contract for cross-layer message deletion"}
+{"file": ".trellis/spec/frontend/ui-structure.md", "reason": "Required contract for cross-layer message deletion"}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Required contract for cross-layer message deletion"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Required contract for cross-layer message deletion"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Required contract for cross-layer message deletion"}
+{"file": ".trellis/spec/backend/conversation-message-deletion.md", "reason": "Executable cross-layer message deletion contract"}

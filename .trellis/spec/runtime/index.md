@@ -34,7 +34,7 @@ Use this index for pi-mono runtime work and Trellis injection changes.
   visibility policy, safe rendering, and Markdown export contracts
 - `skill-extraction.md`: manual digest-to-skill draft contract and active-project save guardrails
 - `conversation-turn-queue.md`: continuous-send turn orchestration, batch snapshot,
-  runtime queue payload, and stop/delete guardrails
+  runtime queue payload, message-history mutation idle state, and stop/delete guardrails
 - `propose-plan.md`: `propose-plan` CLI/bridge contract for the shared DAG plan,
   self-repair error codes, and `agent_tool_call` event summaries
 - See `../skills/skill-system.md` for skill loading and dynamic `read`-path details

@@ -41,6 +41,12 @@ const { createTurnOrchestrator } = require('../domain/conversation/turn-orchestr
 const { resolveBrowserCliPath } = require('../domain/conversation/turn/browser-cli');
 const { resolveCurrentTrellisTaskName } = require('../domain/conversation/turn/trellis-context');
 const { maybeAutoCreateConversationDigest } = require('../domain/conversation/conversation-digest');
+const {
+  createConversationMutationCoordinator,
+} = require('../domain/conversation/conversation-mutation-coordinator');
+const {
+  createConversationMessageDeletionService,
+} = require('../domain/conversation/message-deletion');
 const { createConversationSpawnService } = require('../domain/conversation/conversation-spawn');
 const {
   createCrossConversationDeliveryService,
@@ -443,7 +449,8 @@ export function createServerApp(options: any = {}) {
     sqlitePath,
     getProjectDir: () => activeProjectDir,
   };
-  const autoDigestInFlightConversationIds = new Set();
+  const conversationMutationCoordinator =
+    options.conversationMutationCoordinator || createConversationMutationCoordinator();
   const autoDigestScheduledTimers = new Map();
 
   function clearScheduledAutoDigest(conversationId: any) {
@@ -453,14 +460,17 @@ export function createServerApp(options: any = {}) {
       clearTimeout(existingTimer);
       autoDigestScheduledTimers.delete(conversationId);
     }
+    conversationMutationCoordinator.clearDigestScheduled(conversationId);
   }
 
   function scheduleAutoDigestRetry(conversationId: any, delayMs: any) {
     clearScheduledAutoDigest(conversationId);
 
     const normalizedDelayMs = Math.max(0, Number.parseInt(String(delayMs || '0'), 10) || 0);
+    conversationMutationCoordinator.markDigestScheduled(conversationId);
     const timer = setTimeout(() => {
       autoDigestScheduledTimers.delete(conversationId);
+      conversationMutationCoordinator.clearDigestScheduled(conversationId);
       void runMaybeAutoCreateDigest(conversationId);
     }, normalizedDelayMs);
 
@@ -472,16 +482,22 @@ export function createServerApp(options: any = {}) {
   }
 
   async function runMaybeAutoCreateDigest(conversationId: any) {
-    if (!conversationId || autoDigestInFlightConversationIds.has(conversationId)) {
+    if (!conversationId) {
       return;
+    }
+
+    const mutationLease = conversationMutationCoordinator.tryAcquire(conversationId, 'auto_digest');
+    if (!mutationLease.acquired) {
+      return {
+        autoCreated: false,
+        reason: 'mutation_busy',
+      };
     }
 
     const conversationBeforeDigest = store.getConversation(conversationId);
     const pendingExperienceDraftCount = getPendingConversationExperienceDrafts(conversationBeforeDigest).length;
     const shouldAnnounceExperienceDigest = pendingExperienceDraftCount > 0;
     let shouldClearDigestStatus = shouldAnnounceExperienceDigest;
-
-    autoDigestInFlightConversationIds.add(conversationId);
 
     if (shouldAnnounceExperienceDigest) {
       broadcastEvent('conversation_digest_status', {
@@ -580,7 +596,7 @@ export function createServerApp(options: any = {}) {
         });
       }
 
-      autoDigestInFlightConversationIds.delete(conversationId);
+      mutationLease.release();
     }
   }
 
@@ -684,6 +700,17 @@ export function createServerApp(options: any = {}) {
       return feishuIntegration.deliverAssistantMessage(message);
     },
   });
+
+  const conversationMessageDeletionService =
+    options.conversationMessageDeletionService
+    || createConversationMessageDeletionService({
+      store,
+      turnOrchestrator,
+      mutationCoordinator: conversationMutationCoordinator,
+      uploadService,
+      digestOptions,
+      broadcastEvent,
+    });
 
   crossConversationDeliveryWorker =
     options.crossConversationDeliveryWorker
@@ -1044,6 +1071,8 @@ export function createServerApp(options: any = {}) {
       digestOptions,
       skillDraftOptions,
       digestModelRunner: options.digestModelRunner,
+      conversationMessageDeletionService,
+      conversationMutationCoordinator,
       uploadService,
     }),
     createImageUploadController({

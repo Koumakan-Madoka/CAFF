@@ -1,0 +1,51 @@
+{
+  "id": "08-20-delete-unsummarized-messages",
+  "name": "08-20-delete-unsummarized-messages",
+  "title": "Delete Unsummarized Conversation Messages",
+  "description": "Atomically hard-delete eligible unsummarized public messages with digest/runtime guards and accessible single or multi-select UI.",
+  "status": "review",
+  "dev_type": "fullstack",
+  "scope": "storage, digest concurrency, turn runtime, API/SSE, message timeline UI",
+  "package": null,
+  "priority": "P2",
+  "creator": "GPT",
+  "assignee": "GPT",
+  "createdAt": "2026-08-20",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "room/c2fab452-caff-bug-bug",
+  "worktree_path": null,
+  "current_phase": 2,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "check"
+    },
+    {
+      "phase": 3,
+      "action": "finish"
+    },
+    {
+      "phase": 4,
+      "action": "create-pr"
+    }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "server/domain/conversation/message-deletion.ts",
+    "server/domain/conversation/conversation-mutation-coordinator.ts",
+    "lib/chat-app-store.ts",
+    "server/api/conversations-controller.ts",
+    "public/chat/message-timeline.js"
+  ],
+  "notes": "Automated gates pass except the repository-known Windows image-preflight t.after rmSync EPERM cleanup issue; repository test:ui is separately blocked by its stale Room type field.",
+  "meta": {}
+}
