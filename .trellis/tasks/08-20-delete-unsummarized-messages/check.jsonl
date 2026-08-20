@@ -1,0 +1,12 @@
+{"file": ".agents/skills/finish-work/SKILL.md", "reason": "Finish work checklist"}
+{"file": ".agents/skills/check/SKILL.md", "reason": "Code quality check spec"}
+{"file": ".trellis/spec/backend/architecture.md", "reason": "Verify implementation against message deletion contract"}
+{"file": ".trellis/spec/backend/controller-patterns.md", "reason": "Verify implementation against message deletion contract"}
+{"file": ".trellis/spec/backend/conversation-digest.md", "reason": "Verify implementation against message deletion contract"}
+{"file": ".trellis/spec/runtime/agent-runtime.md", "reason": "Verify implementation against message deletion contract"}
+{"file": ".trellis/spec/runtime/conversation-turn-queue.md", "reason": "Verify implementation against message deletion contract"}
+{"file": ".trellis/spec/frontend/ui-structure.md", "reason": "Verify implementation against message deletion contract"}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Verify implementation against message deletion contract"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Verify implementation against message deletion contract"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Verify implementation against message deletion contract"}
+{"file": ".trellis/spec/backend/conversation-message-deletion.md", "reason": "Verify deletion API, transaction, concurrency, SSE, and UI"}

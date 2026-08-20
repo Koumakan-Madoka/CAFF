@@ -21,6 +21,16 @@
 | Sender returns final before recipient | Wait for recipient, then emit exactly one terminal turn event. |
 | User stops | Cancel registered executions/waits and prevent late launch. |
 
+## Message-History Mutation Idle Guard
+
+- `turnOrchestrator.getConversationMutationState(conversationId)` is the authoritative synchronous deletion guard. It returns `{ active, dispatching, activeTurnCount, activeAgentSlotCount, queuedUserCount, queuedAgentSlotCount, busy }`.
+- `queuedAgentSlotCount` comes from the tracked `queuedSideDispatches`, not only active slots or the runtime projection. Deletion must stay blocked while a side waiter can still acquire a slot.
+- The delete service checks this state after acquiring the conversation mutation lease and immediately before its synchronous SQLite transaction. Do not insert an `await` between the idle check and transaction.
+- Auto digest, manual digest, and message deletion share `createConversationMutationCoordinator`; a scheduled/running digest makes deletion return `409` instead of waiting.
+- Message-page eligibility may display current busy state, but the server submit-time guard remains authoritative because UI/runtime snapshots can become stale.
+- `tests/runtime/turn-orchestrator.test.js` asserts a busy target side-dispatch reports `queuedAgentSlotCount: 1`; message deletion tests assert all busy dimensions reject without database changes.
+- The complete API, validation, storage, attachment, SSE, and UI contract is in `../backend/conversation-message-deletion.md`.
+
 ## Scenario: Chat Workbench Continuous Send and Agent Side Dispatch
 
 ### 1. Scope / Trigger

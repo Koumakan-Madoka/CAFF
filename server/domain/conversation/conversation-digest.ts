@@ -1992,28 +1992,83 @@ function latestDigestCoverageBoundary(conversation: any) {
   };
 }
 
-function messagesSinceLatestDigest(messages: any[], conversation: any) {
-  const publicMessages = messages.filter((message: any) => normalizeMessage(message));
+export function getConversationDigestCoverage(messages: any[], conversation: any) {
+  const publicMessages = (Array.isArray(messages) ? messages : []).filter((message: any) => normalizeMessage(message));
   const latestBoundary = latestDigestCoverageBoundary(conversation);
 
   if (!latestBoundary.messageId) {
-    return publicMessages;
+    return {
+      boundary: latestBoundary,
+      coveredMessageIds: [] as string[],
+      pendingMessages: publicMessages,
+    };
   }
 
   const latestIndex = publicMessages.findIndex((message: any) => normalizeText(message.id) === latestBoundary.messageId);
-
   if (latestIndex !== -1) {
-    return publicMessages.slice(latestIndex + 1);
+    return {
+      boundary: latestBoundary,
+      coveredMessageIds: publicMessages.slice(0, latestIndex + 1).map((message: any) => normalizeText(message.id)).filter(Boolean),
+      pendingMessages: publicMessages.slice(latestIndex + 1),
+    };
   }
 
   if (latestBoundary.digestTimestampMs <= 0) {
-    return [];
+    return {
+      boundary: latestBoundary,
+      coveredMessageIds: publicMessages.map((message: any) => normalizeText(message.id)).filter(Boolean),
+      pendingMessages: [],
+    };
   }
 
-  return publicMessages.filter((message: any) => {
+  const coveredMessageIds: string[] = [];
+  const pendingMessages: any[] = [];
+  for (const message of publicMessages) {
     const messageTimestampMs = normalizeTimestampMs(message && message.createdAt);
-    return messageTimestampMs > latestBoundary.digestTimestampMs;
-  });
+    if (messageTimestampMs > latestBoundary.digestTimestampMs) {
+      pendingMessages.push(message);
+    } else {
+      const messageId = normalizeText(message && message.id);
+      if (messageId) {
+        coveredMessageIds.push(messageId);
+      }
+    }
+  }
+
+  return { boundary: latestBoundary, coveredMessageIds, pendingMessages };
+}
+
+export function isConversationMessageCoveredByLatestDigest(
+  message: any,
+  conversation: any,
+  boundaryMessage: any = null
+) {
+  const boundary = latestDigestCoverageBoundary(conversation);
+  if (!boundary.messageId) {
+    return false;
+  }
+
+  const messageId = normalizeText(message && message.id);
+  const normalizedBoundaryMessageId = normalizeText(boundaryMessage && boundaryMessage.id);
+  if (normalizedBoundaryMessageId === boundary.messageId) {
+    const messageTimestampMs = normalizeTimestampMs(message && message.createdAt);
+    const boundaryTimestampMs = normalizeTimestampMs(boundaryMessage && boundaryMessage.createdAt);
+    if (messageTimestampMs > 0 && boundaryTimestampMs > 0) {
+      return messageTimestampMs < boundaryTimestampMs
+        || (messageTimestampMs === boundaryTimestampMs && messageId <= boundary.messageId);
+    }
+    return messageId === boundary.messageId;
+  }
+
+  if (boundary.digestTimestampMs <= 0) {
+    return true;
+  }
+
+  return normalizeTimestampMs(message && message.createdAt) <= boundary.digestTimestampMs;
+}
+
+function messagesSinceLatestDigest(messages: any[], conversation: any) {
+  return getConversationDigestCoverage(messages, conversation).pendingMessages;
 }
 
 function estimatePendingTokens(messages: any[]) {
@@ -2268,6 +2323,38 @@ async function maybeRefineConversationTitle(store: any, conversation: any, sourc
   }
 }
 
+export function recomputeConversationDigestState(store: any, conversationId: any, options: any = {}) {
+  const normalizedConversationId = normalizeText(conversationId);
+  const conversation = store.getConversation(normalizedConversationId);
+
+  if (!conversation) {
+    throw createHttpError(404, 'Conversation not found');
+  }
+
+  const timestamp = nowIso();
+  const messages = typeof store.listMessages === 'function' ? store.listMessages(normalizedConversationId) : [];
+  const sourceMessages = messagesSinceLatestDigest(messages, conversation);
+  const messageBudget = digestAutoCreateMessageBudget(options);
+  const highValueMinMessages = digestAutoHighValueMinMessages(options, messageBudget);
+  const previousState = getConversationDigestState(conversation);
+  const state = buildDigestStateSnapshot(conversation, sourceMessages, timestamp, {
+    messageBudget,
+    highValueMinMessages,
+  });
+  const stateChanged = digestStateChanged(previousState, state);
+  const stateConversation = stateChanged ? updateDigestStateMetadata(store, conversation, state) : conversation;
+
+  return {
+    conversation: stateConversation,
+    highValueMinMessages,
+    messageBudget,
+    sourceMessages,
+    state,
+    stateChanged,
+    timestamp,
+  };
+}
+
 export async function maybeAutoCreateConversationDigest(store: any, conversationId: any, options: any = {}) {
   const normalizedConversationId = normalizeText(conversationId);
   const conversation = store.getConversation(normalizedConversationId);
@@ -2283,18 +2370,16 @@ export async function maybeAutoCreateConversationDigest(store: any, conversation
     });
   }
 
-  const timestamp = nowIso();
-  const messages = typeof store.listMessages === 'function' ? store.listMessages(normalizedConversationId) : [];
-  const sourceMessages = messagesSinceLatestDigest(messages, conversation);
-  const messageBudget = digestAutoCreateMessageBudget(options);
-  const highValueMinMessages = digestAutoHighValueMinMessages(options, messageBudget);
-  const previousState = getConversationDigestState(conversation);
-  const state = buildDigestStateSnapshot(conversation, sourceMessages, timestamp, {
-    messageBudget,
+  const recomputed = recomputeConversationDigestState(store, normalizedConversationId, options);
+  const {
+    conversation: stateConversation,
     highValueMinMessages,
-  });
-  const stateChanged = digestStateChanged(previousState, state);
-  const stateConversation = stateChanged ? updateDigestStateMetadata(store, conversation, state) : conversation;
+    messageBudget,
+    sourceMessages,
+    state,
+    stateChanged,
+    timestamp,
+  } = recomputed;
   const pendingExperienceDrafts = getPendingConversationExperienceDrafts(stateConversation);
   const pendingExperienceTriggered = pendingExperienceDrafts.length > 0 && sourceMessages.length > 0;
   const highValueTriggered = digestAutoHighValueEnabled(options)

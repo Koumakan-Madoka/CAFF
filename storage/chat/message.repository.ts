@@ -1,3 +1,5 @@
+import { MAX_CONVERSATION_MESSAGE_DELETE_BATCH_SIZE } from '../../lib/conversation-message-deletion-contract';
+
 function normalizeMessageSearchQuery(value: any) {
   return String(value || '').trim().replace(/\s+/g, ' ');
 }
@@ -60,6 +62,16 @@ function hasMessageSearchFilters(filters: any = {}) {
 
 const DEFAULT_MESSAGE_PAGE_LIMIT = 50;
 const MAX_MESSAGE_PAGE_LIMIT = 100;
+
+function normalizeMessageIds(value: any) {
+  return Array.from(
+    new Set(
+      (Array.isArray(value) ? value : [])
+        .map((messageId: any) => String(messageId || '').trim())
+        .filter(Boolean)
+    )
+  ).slice(0, MAX_CONVERSATION_MESSAGE_DELETE_BATCH_SIZE);
+}
 
 function normalizeMessagePageLimit(value: any) {
   const limit = value === undefined ? DEFAULT_MESSAGE_PAGE_LIMIT : value;
@@ -303,6 +315,39 @@ export class ChatMessageRepository {
 
   get(messageId: string) {
     return this.getStatement.get(messageId);
+  }
+
+  listByIds(messageIds: string[]) {
+    const normalizedMessageIds = normalizeMessageIds(messageIds);
+
+    if (normalizedMessageIds.length === 0) {
+      return [];
+    }
+
+    return this.db
+      .prepare(`
+        SELECT *
+        FROM chat_messages
+        WHERE id IN (SELECT value FROM json_each(?))
+        ORDER BY created_at ASC, id ASC
+      `)
+      .all(JSON.stringify(normalizedMessageIds));
+  }
+
+  deleteByIdsForConversation(conversationId: string, messageIds: string[]) {
+    const normalizedMessageIds = normalizeMessageIds(messageIds);
+
+    if (normalizedMessageIds.length === 0) {
+      return 0;
+    }
+
+    return this.db
+      .prepare(`
+        DELETE FROM chat_messages
+        WHERE conversation_id = ?
+          AND id IN (SELECT value FROM json_each(?))
+      `)
+      .run(conversationId, JSON.stringify(normalizedMessageIds)).changes;
   }
 
   update(messageId: string, payload: any) {

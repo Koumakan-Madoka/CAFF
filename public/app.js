@@ -30,6 +30,7 @@ const state = {
   workspaceAuthorizationCardsByConversation: new Map(),
   bindingWorkspaceAuthorizationIds: new Set(),
   digestStatusByConversation: new Map(),
+  messageDeletionStateByConversation: new Map(),
   crossConversationDeliveryBundles: new Map(),
   bindingFeishuChat: false,
   feishuBindingNotice: '',
@@ -228,6 +229,7 @@ const dom = {
   skillDraftAlertButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('skill-draft-alert-button')),
   messageList: /** @type {HTMLDivElement | null} */ (document.getElementById('message-list')),
   messageTimeline: /** @type {HTMLDivElement | null} */ (document.getElementById('message-timeline')),
+  messageDeleteToolbar: /** @type {HTMLDivElement | null} */ (document.getElementById('message-delete-toolbar')),
   messageHistoryControl: /** @type {HTMLDivElement | null} */ (document.getElementById('message-history-control')),
   messageHistoryButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('message-history-button')),
   messageHistoryStatus: /** @type {HTMLElement | null} */ (document.getElementById('message-history-status')),
@@ -915,9 +917,11 @@ function setupChatModules() {
               const deliveryId = crossConversation ? String(crossConversation.deliveryId || '').trim() : '';
               return deliveryId ? state.crossConversationDeliveryBundles.get(deliveryId) || null : null;
             },
+            deleteConversationMessages,
             displayedMessageBody,
             digestStatusForConversation,
             formatDateTime,
+            isConversationMessageDeletionBlocked,
             isPrivateTimelineMessage,
             liveStageForMessage,
             liveStageLabel,
@@ -2811,6 +2815,43 @@ function clearLiveDraftFinalizingTimer() {
   liveDraftFinalizingTimer = null;
 }
 
+function isConversationMessageDeletionBlocked(conversationId) {
+  const deletionState = state.messageDeletionStateByConversation.get(conversationId) || null;
+  const digestStatus = digestStatusForConversation(conversationId);
+
+  return Boolean(
+    isConversationBusy(conversationId)
+    || queuedUserMessageCountForConversation(conversationId) > 0
+    || queuedAgentSlotMessageCountForConversation(conversationId) > 0
+    || (digestStatus && digestStatus.status === 'running')
+    || (deletionState && deletionState.available === false)
+  );
+}
+
+async function deleteConversationMessages(conversationId, messageIds) {
+  const normalizedConversationId = String(conversationId || '').trim();
+  const result = await fetchJson(
+    `/api/conversations/${encodeURIComponent(normalizedConversationId)}/messages/delete`,
+    {
+      method: 'POST',
+      body: { messageIds },
+    }
+  );
+  const deletedIds = new Set(Array.isArray(result.deletedMessageIds) ? result.deletedMessageIds : []);
+
+  if (state.currentConversation && state.currentConversation.id === normalizedConversationId) {
+    state.currentConversation = {
+      ...state.currentConversation,
+      messages: (Array.isArray(state.currentConversation.messages) ? state.currentConversation.messages : [])
+        .filter((message) => !deletedIds.has(message && message.id)),
+    };
+    renderConversationPane();
+  }
+
+  scheduleConversationRefresh(normalizedConversationId);
+  return result;
+}
+
 function isConversationBusy(conversationId) {
   const runtimeBusyIds = Array.isArray(state.runtime && state.runtime.activeConversationIds)
     ? state.runtime.activeConversationIds
@@ -3456,6 +3497,7 @@ async function loadConversation(conversationId) {
   }
 
   const messages = messageHistory.applyInitialPage(state.messageHistory, page);
+  state.messageDeletionStateByConversation.set(normalizedConversationId, page && page.deletionState || null);
   state.selectedConversationId = normalizedConversationId;
   state.currentConversation = {
     ...data.conversation,
@@ -3495,6 +3537,7 @@ async function loadEarlierMessages() {
       return;
     }
 
+    state.messageDeletionStateByConversation.set(request.conversationId, page && page.deletionState || null);
     state.currentConversation = {
       ...state.currentConversation,
       messages: messageHistory.applyOlderPage(
@@ -3645,6 +3688,7 @@ async function refreshConversationFromEvent(conversationId) {
       return;
     }
 
+    state.messageDeletionStateByConversation.set(conversationId, page && page.deletionState || null);
     state.currentConversation = {
       ...state.currentConversation,
       ...data.conversation,
@@ -3891,6 +3935,11 @@ function connectEventStream() {
   });
 
   source.addEventListener('conversation_message_updated', (event) => {
+    const payload = JSON.parse(event.data);
+    scheduleConversationRefresh(payload.conversationId);
+  });
+
+  source.addEventListener('conversation_messages_deleted', (event) => {
     const payload = JSON.parse(event.data);
     scheduleConversationRefresh(payload.conversationId);
   });

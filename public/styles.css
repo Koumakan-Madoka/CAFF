@@ -6495,6 +6495,96 @@ body.chat-app .message-card:focus-within :is(.message-export-button, .message-co
   opacity: 1;
 }
 
+body.chat-app .message-delete-controls {
+  display: inline-flex;
+  align-items: center;
+  margin-left: auto;
+  opacity: 0;
+  transition: opacity 140ms ease;
+}
+
+body.chat-app .message-delete-controls[hidden] {
+  display: none;
+}
+
+body.chat-app .message-card:hover .message-delete-controls,
+body.chat-app .message-card:focus-within .message-delete-controls,
+body.chat-app .message-card.message-delete-selected .message-delete-controls {
+  opacity: 1;
+}
+
+body.chat-app .message-delete-select-target,
+body.chat-app .message-delete-button {
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+  min-height: 44px;
+}
+
+body.chat-app .message-delete-select-target {
+  display: inline-grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+body.chat-app .message-delete-checkbox {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--caff-danger);
+}
+
+body.chat-app .message-delete-select-target:has(.message-delete-checkbox:disabled) {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+body.chat-app .message-delete-button {
+  color: var(--caff-danger);
+}
+
+body.chat-app .message-card.message-delete-selected {
+  background: color-mix(in srgb, var(--caff-danger-soft) 55%, transparent);
+  outline: 1px solid color-mix(in srgb, var(--caff-danger) 35%, transparent);
+  outline-offset: 3px;
+}
+
+body.chat-app .message-delete-toolbar {
+  position: absolute;
+  z-index: 18;
+  left: 50%;
+  bottom: var(--caff-space-4);
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: var(--caff-space-2);
+  min-height: 52px;
+  max-width: calc(100% - 32px);
+  padding: 4px 6px 4px 14px;
+  border: 1px solid var(--caff-border-strong);
+  border-radius: var(--caff-radius-lg);
+  background: var(--caff-surface);
+  box-shadow: var(--caff-shadow-md);
+  color: var(--caff-text);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+body.chat-app .message-delete-toolbar[hidden] {
+  display: none;
+}
+
+body.chat-app .message-delete-toolbar > span {
+  min-width: 0;
+  white-space: nowrap;
+}
+
+@media (hover: none) {
+  body.chat-app .message-delete-controls {
+    opacity: 1;
+  }
+}
+
 /* ── 失败：居中窄条（G5） ── */
 body.chat-app .message-card.failed {
   justify-self: center;

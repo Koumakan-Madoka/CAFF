@@ -8,6 +8,7 @@ export class ChatConversationRepository {
   bindProjectScopeStatement: any;
   bindWorkspaceStatement: any;
   touchStatement: any;
+  recomputeLastMessageAtStatement: any;
   deleteStatement: any;
 
   constructor(db: any) {
@@ -178,6 +179,19 @@ export class ChatConversationRepository {
         last_message_at = COALESCE(?, last_message_at)
       WHERE id = ?
     `);
+    this.recomputeLastMessageAtStatement = db.prepare(`
+      UPDATE chat_conversations
+      SET
+        updated_at = ?,
+        last_message_at = (
+          SELECT created_at
+          FROM chat_messages
+          WHERE conversation_id = ?
+          ORDER BY created_at DESC, id DESC
+          LIMIT 1
+        )
+      WHERE id = ?
+    `);
     this.deleteStatement = db.prepare('DELETE FROM chat_conversations WHERE id = ?');
   }
 
@@ -260,6 +274,11 @@ export class ChatConversationRepository {
 
   touch(conversationId: string, payload: any) {
     this.touchStatement.run(payload.updatedAt, payload.lastMessageAt || null, conversationId);
+    return this.get(conversationId);
+  }
+
+  recomputeLastMessageAt(conversationId: string, updatedAt: string) {
+    this.recomputeLastMessageAtStatement.run(updatedAt, conversationId, conversationId);
     return this.get(conversationId);
   }
 

@@ -474,6 +474,35 @@ export function createTurnOrchestrator(options: any = {}) {
     );
   }
 
+  function getConversationMutationState(conversationId: any) {
+    const normalizedConversationId = String(conversationId || '').trim();
+    const active = activeConversationIds.has(normalizedConversationId);
+    const dispatching = dispatchingConversationIds.has(normalizedConversationId);
+    const activeTurnCount = activeTurns.has(normalizedConversationId) ? 1 : 0;
+    const activeAgentSlotCount = listConversationActiveAgentSlots(normalizedConversationId).length;
+    const queuedUserCount = normalizedConversationId ? getConversationQueueDepth(normalizedConversationId) : 0;
+    const queuedAgentSlotCount = normalizedConversationId
+      ? listQueuedSideDispatches(normalizedConversationId).length
+      : 0;
+
+    return {
+      active,
+      dispatching,
+      activeTurnCount,
+      activeAgentSlotCount,
+      queuedUserCount,
+      queuedAgentSlotCount,
+      busy: Boolean(
+        active
+        || dispatching
+        || activeTurnCount > 0
+        || activeAgentSlotCount > 0
+        || queuedUserCount > 0
+        || queuedAgentSlotCount > 0
+      ),
+    };
+  }
+
   function buildConversationQueueSnapshot() {
     if (!hasInMemoryQueueState()) {
       return { depths: {}, failures: {} };
@@ -1650,6 +1679,7 @@ export function createTurnOrchestrator(options: any = {}) {
     clearConversationState,
     dispatchCrossConversationDelivery,
     emitTurnProgress,
+    getConversationMutationState,
     getConversationQueueDepth,
     listAgentSlotSummaries,
     listTurnSummaries,

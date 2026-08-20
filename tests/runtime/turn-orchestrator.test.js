@@ -4237,6 +4237,8 @@ test('turn orchestrator queues explicit single mention side-dispatch when the ta
   assert.deepEqual(orchestrator.buildRuntimePayload().agentSlotQueueDepths[conversation.id], {
     'agent-a': 1,
   });
+  assert.equal(orchestrator.getConversationMutationState(conversation.id).busy, true);
+  assert.equal(orchestrator.getConversationMutationState(conversation.id).queuedAgentSlotCount, 1);
 
   releaseFirstRun();
 
@@ -4244,6 +4246,7 @@ test('turn orchestrator queues explicit single mention side-dispatch when the ta
   assert.equal(executions[0].lane, 'main');
   assert.equal(executions[1].lane, 'side');
   assert.equal(orchestrator.buildRuntimePayload().agentSlotQueueDepths[conversation.id], undefined);
+  assert.equal(orchestrator.getConversationMutationState(conversation.id).queuedAgentSlotCount, 0);
 });
 
 test('turn orchestrator stop cancels queued side-dispatch waiters before they start', { concurrency: false }, async (t) => {

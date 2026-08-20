@@ -1,4 +1,7 @@
+import { MAX_CONVERSATION_MESSAGE_DELETE_BATCH_SIZE } from '../../lib/conversation-message-deletion-contract';
+
 export class CrossConversationDeliveryRepository {
+  db: any;
   getStatement: any;
   getByIdempotencyStatement: any;
   getTraceEdgeStatement: any;
@@ -30,6 +33,7 @@ export class CrossConversationDeliveryRepository {
   listEventsStatement: any;
 
   constructor(db: any) {
+    this.db = db;
     this.getStatement = db.prepare(`
       SELECT *
       FROM chat_cross_conversation_deliveries
@@ -532,6 +536,28 @@ export class CrossConversationDeliveryRepository {
 
   getByReplyTo(deliveryId: string) {
     return this.getByReplyToStatement.get(deliveryId) || null;
+  }
+
+  listMessageReferences(messageIds: string[]) {
+    const safeIds = Array.from(
+      new Set((Array.isArray(messageIds) ? messageIds : []).map((value) => String(value || '').trim()).filter(Boolean))
+    ).slice(0, MAX_CONVERSATION_MESSAGE_DELETE_BATCH_SIZE);
+
+    if (safeIds.length === 0) {
+      return [];
+    }
+
+    const encodedIds = JSON.stringify(safeIds);
+    return this.db
+      .prepare(`
+        SELECT id, source_message_id, target_message_id, source_receipt_message_id
+        FROM chat_cross_conversation_deliveries
+        WHERE source_message_id IN (SELECT value FROM json_each(@messageIds))
+          OR target_message_id IN (SELECT value FROM json_each(@messageIds))
+          OR source_receipt_message_id IN (SELECT value FROM json_each(@messageIds))
+        ORDER BY created_at ASC, id ASC
+      `)
+      .all({ messageIds: encodedIds });
   }
 
   hasNonTerminalForConversation(conversationId: string) {

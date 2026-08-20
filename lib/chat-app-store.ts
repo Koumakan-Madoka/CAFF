@@ -1,4 +1,7 @@
 const { randomUUID } = require('node:crypto');
+const {
+  MAX_CONVERSATION_MESSAGE_DELETE_BATCH_SIZE,
+} = require('./conversation-message-deletion-contract');
 const { UPLOAD_LEASE_TTL_MS, STAGED_IMAGE_TTL_MS, MAX_IMAGES_PER_MESSAGE } = require('../lib/image-constants');
 const { openSqliteDatabase } = require('../storage/sqlite/connection');
 const { migrateChatSchema } = require('../storage/sqlite/migrations');
@@ -1294,6 +1297,60 @@ export class ChatAppStore {
         return this.imageUploadRepository.purgeByConversation(payload.conversationId);
       });
 
+      this.deleteConversationMessagesTransaction = this.db.transaction((payload: any) => {
+        const messageIds = Array.from(
+          new Set(
+            (Array.isArray(payload.messageIds) ? payload.messageIds : [])
+              .map((messageId: any) => String(messageId || '').trim())
+              .filter(Boolean)
+          )
+        );
+        const messages = this.messageRepository.listByIds(messageIds);
+        const allMessagesBelongToConversation =
+          messages.length === messageIds.length
+          && messages.every((message: any) => message.conversation_id === payload.conversationId);
+
+        if (!allMessagesBelongToConversation) {
+          const conflictError = new Error('One or more messages do not exist in this conversation') as any;
+          conflictError.statusCode = 409;
+          conflictError.code = 'conversation_message_delete_conflict';
+          throw conflictError;
+        }
+
+        const crossConversationReferences = this.crossConversationDeliveryRepository.listMessageReferences(messageIds);
+        if (crossConversationReferences.length > 0) {
+          const referenceError = new Error('Cross-conversation messages cannot be deleted') as any;
+          referenceError.statusCode = 409;
+          referenceError.code = 'conversation_message_cross_conversation';
+          throw referenceError;
+        }
+
+        const attachmentRows = this.imageUploadRepository.listAttachedByMessageIds(messageIds);
+        const attachmentBatchIds = Array.from(
+          new Set(attachmentRows.map((row: any) => String(row && row.batchId || '').trim()).filter(Boolean))
+        );
+
+        this.imageUploadRepository.deleteAttachedByMessageIds(messageIds);
+        this.imageUploadRepository.deleteBatchesByIds(attachmentBatchIds);
+        const deletedCount = this.messageRepository.deleteByIdsForConversation(payload.conversationId, messageIds);
+
+        if (deletedCount !== messageIds.length) {
+          const conflictError = new Error('Message deletion changed concurrently') as any;
+          conflictError.statusCode = 409;
+          conflictError.code = 'conversation_message_delete_conflict';
+          throw conflictError;
+        }
+
+        this.conversationRepository.recomputeLastMessageAt(payload.conversationId, payload.deletedAt);
+        const conversation = this.getConversationWithoutMessages(payload.conversationId);
+
+        return {
+          deletedMessageIds: messageIds,
+          attachmentBatchIds,
+          lastMessageAt: conversation && conversation.lastMessageAt ? conversation.lastMessageAt : null,
+        };
+      });
+
       this.deleteConversationTransaction = this.db.transaction((payload: any) => {
         this.imageUploadRepository.purgeByConversation(payload.conversationId);
         this.conversationRepository.delete(payload.conversationId);
@@ -2048,6 +2105,26 @@ export class ChatAppStore {
         String(targetConversationId || '').trim()
       )
     );
+  }
+
+  listCrossConversationMessageReferenceIds(messageIds: any) {
+    const selectedIds = new Set(
+      (Array.isArray(messageIds) ? messageIds : [])
+        .map((messageId: any) => String(messageId || '').trim())
+        .filter(Boolean)
+    );
+    const referencedIds = new Set<string>();
+
+    for (const row of this.crossConversationDeliveryRepository.listMessageReferences(Array.from(selectedIds))) {
+      for (const value of [row.source_message_id, row.target_message_id, row.source_receipt_message_id]) {
+        const messageId = String(value || '').trim();
+        if (selectedIds.has(messageId)) {
+          referencedIds.add(messageId);
+        }
+      }
+    }
+
+    return Array.from(referencedIds);
   }
 
   listCrossConversationDeliveryEvents(deliveryId: any) {
@@ -2930,6 +3007,36 @@ export class ChatAppStore {
         ...(existing.metadata && typeof existing.metadata === 'object' ? existing.metadata : {}),
         titleSource: transition.titleSource,
       },
+    });
+  }
+
+  deleteConversationMessages(conversationId: any, messageIds: any) {
+    const normalizedConversationId = String(conversationId || '').trim();
+    const normalizedMessageIds = Array.from(
+      new Set(
+        (Array.isArray(messageIds) ? messageIds : [])
+          .map((messageId: any) => String(messageId || '').trim())
+          .filter(Boolean)
+      )
+    );
+
+    if (
+      !normalizedConversationId
+      || normalizedMessageIds.length === 0
+      || normalizedMessageIds.length > MAX_CONVERSATION_MESSAGE_DELETE_BATCH_SIZE
+    ) {
+      const validationError = new Error(
+        `Message deletion requires between 1 and ${MAX_CONVERSATION_MESSAGE_DELETE_BATCH_SIZE} unique message ids`
+      ) as any;
+      validationError.statusCode = 400;
+      validationError.code = 'conversation_message_delete_invalid_request';
+      throw validationError;
+    }
+
+    return this.deleteConversationMessagesTransaction({
+      conversationId: normalizedConversationId,
+      messageIds: normalizedMessageIds,
+      deletedAt: nowIso(),
     });
   }
 

@@ -12,6 +12,7 @@ backend domain services.
 - Session goal API and metadata contracts (`session-goal.md`)
 - Core and role-aware readiness projection (`health-endpoint.md`)
 - Conversation digest API, metadata, prompt, and UI contracts (`conversation-digest.md`)
+- Atomic deletion of eligible unsummarized public messages (`conversation-message-deletion.md`)
 - Automatic conversation title state, first-message derivation, first-digest
   refinement, and manual rename protection (`conversation-title.md`)
 - Digest-to-skill draft extraction and confirmation (`../runtime/skill-extraction.md`)
@@ -25,6 +26,8 @@ backend domain services.
 - [ ] Read `architecture.md`
 - [ ] Read `controller-patterns.md` if you touch controllers, request parsing, or
       HTTP responses
+- [ ] Read `conversation-message-deletion.md` if you touch message deletion,
+      digest eligibility, conversation mutation locking, or attachment cleanup
 - [ ] Read `model-provider-config.md` if you touch `/api/model-providers`,
       `models.json` persistence, or the provider editor
 - [ ] Read `feishu-integration.md` if you touch Feishu webhook, long connection,
@@ -46,6 +49,7 @@ backend domain services.
 - `session-goal.md`: `/goal` API, metadata, prompt, SSE, and frontend slash command contracts
 - `health-endpoint.md`: `/api/health` local readiness, redaction, and optional integration contracts
 - `conversation-digest.md`: `/digest` API, metadata, prompt, SSE, and frontend panel contracts
+- `conversation-message-deletion.md`: deletion eligibility, batch API, mutation guard, SQLite/image cleanup, SSE, and UI contracts
 - `conversation-title.md`: `titleSource` state machine, first-user-message title,
   first-auto-digest model refinement/config chain, and manual rename guards
 - `room-context-workspace.md`: Room=Conversation Project/Mode identity, generated workspace binding, runtime cwd/orchestration context, destructive legacy retirement, and acceptance evidence contracts

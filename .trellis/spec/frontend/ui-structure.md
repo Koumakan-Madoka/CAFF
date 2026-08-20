@@ -125,6 +125,16 @@
   and restore scroll/anchor state for expanded tool timelines instead of
   snapping the viewport back to the top.
 
+## Unsummarized Message Deletion UI
+
+- `public/chat/message-timeline.js` renders deletion controls only for public `user` and `assistant` cards. Server-projected `message.deletionEligibility` owns summarized/cross-conversation/role/status policy; runtime and digest state only add a transient busy disable.
+- Each eligible card has a native checkbox and repository-owned `trash` icon button. Both controls retain a 44px target, remain visible under `@media (hover: none)`, and expose labels/titles for keyboard and assistive technology.
+- The batch toolbar is a sibling overlay under `.message-viewport`, outside `#message-list` renderer ownership. It shows selected count plus icon-only delete/cancel commands; it is not inserted as a fake timeline message.
+- Single and batch deletion use one confirmation contract: exact count, permanent/no-undo language, attachment removal, and no rollback of files, commits, Goal/DAG, or external effects.
+- A failed atomic request preserves every checkbox and displays the server reason. Success clears the deleted selection, filters the local timeline immediately, and schedules the standard SSE/page refresh.
+- Conversation switches and messages disappearing after refresh clear stale selected IDs. Summarized or busy messages retain disabled controls with a discoverable reason rather than accepting a request that is known to fail.
+- `tests/ui/message-deletion.test.js` covers single delete, multi-select/cancel, rejection retention, disabled reasons, toolbar ownership, 44px targets, and touch visibility. The complete server/API contract is in `../backend/conversation-message-deletion.md`.
+
 ## Chat Model Observability UI
 
 ### 1. Scope / Trigger

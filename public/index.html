@@ -111,6 +111,11 @@
             <div id="message-timeline" class="message-timeline"></div>
             <div id="workspace-authorization-cards" class="workspace-authorization-cards" aria-live="polite"></div>
           </div>
+          <div id="message-delete-toolbar" class="message-delete-toolbar" role="toolbar" aria-label="批量删除消息" hidden>
+            <span data-message-delete-count>已选择 0 条</span>
+            <button class="icon-btn danger" type="button" data-message-delete-confirm aria-label="永久删除所选消息" title="永久删除所选消息"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-trash"></use></svg></button>
+            <button class="icon-btn" type="button" data-message-delete-cancel aria-label="取消多选" title="取消多选"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-x"></use></svg></button>
+          </div>
           <button id="new-message-pill" class="new-msg-pill" type="button" aria-label="跳到最新消息" hidden><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-arrow-down"></use></svg><span>新消息</span></button>
         </div>
 
