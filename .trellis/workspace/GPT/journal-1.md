@@ -55,3 +55,51 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 2: Immediate private-message Agent wakeup
+
+**Date**: 2026-08-20
+**Task**: Immediate private-message Agent wakeup
+**Branch**: `room/c2fab452-caff-bug-bug`
+
+### Summary
+
+(Add summary)
+
+### Main Changes
+
+| Area | Result |
+|------|--------|
+| Runtime routing | Cross-Agent private handoffs now launch eligible idle recipients immediately while the sender trace is still running. |
+| Cost control | A source trace launches each recipient at most once; repeated private messages remain persisted and return an explicit duplicate dispatch result. |
+| Turn lifecycle | Turn finalization, root-task settlement, cleanup, and Goal continuation wait for all immediately launched recipients to settle. |
+| Concurrency safety | Hop capacity is reserved before launch, stop cancellation covers in-flight recipients and slot waits, and concurrent prompts exclude incomplete assistant placeholders. |
+| Bridge contract | CLI/bridge responses expose bounded dispatch outcomes while preserving compatibility fields and avoiding private-content telemetry. |
+| Review workflow | Formal review is commit-pinned, freezes author writes after the request, and uses a risk-based review-worktree decision. |
+
+**Validation evidence**:
+- `npm run check`, `npm run typecheck`, `npm run build`, and `git diff --check` passed.
+- Bridge/CLI targeted tests passed 53/53; immediate-wakeup runtime regressions passed.
+- Independent Kimi review of exact commit `773f69f5233f20c0cf7430ebfa6e34e048fbb5b4` passed with no blocking findings.
+- Isolated runtime verification proved the recipient started before the sender trace settled, duplicate handoffs did not create a second recipient run, and the same turn converged correctly.
+- User acceptance passed in the dedicated preview environment on port 3212.
+
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `773f69f5233f20c0cf7430ebfa6e34e048fbb5b4` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
