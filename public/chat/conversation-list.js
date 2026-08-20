@@ -47,12 +47,7 @@
     }
 
     function createToggle(row) {
-      if (!row.hasChildren) {
-        const spacer = document.createElement('span');
-        spacer.className = 'conversation-tree-toggle-spacer';
-        spacer.setAttribute('aria-hidden', 'true');
-        return spacer;
-      }
+      if (!row.hasChildren) return null;
       const toggle = document.createElement('button');
       toggle.type = 'button';
       toggle.className = 'conversation-tree-toggle';
@@ -159,6 +154,7 @@
         listRow.className = 'conversation-list-row conversation-tree-row';
         listRow.style.setProperty('--tree-depth', String(row.depth));
         listRow.dataset.depth = String(row.depth);
+        listRow.dataset.hasChildren = String(row.hasChildren);
         if (row.depthLimit) listRow.dataset.depthLimit = 'true';
 
         const isRenaming = renamingConversationId === conversation.id;
@@ -223,7 +219,8 @@
           item.appendChild(depthHint);
         }
         listRow.appendChild(item);
-        listRow.appendChild(createToggle(row));
+        const toggle = createToggle(row);
+        if (toggle) listRow.appendChild(toggle);
         listRow.appendChild(createRenameButton(row));
         const spawnButton = createSpawnButton(row);
         if (spawnButton) listRow.appendChild(spawnButton);

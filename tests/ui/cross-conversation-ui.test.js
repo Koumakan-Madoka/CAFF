@@ -293,6 +293,13 @@ test('conversation list renders compact semantic tree rows with collapse, status
   assert.ok(rows.every((row) => row.firstElementChild && row.firstElementChild.tagName === 'BUTTON'));
   assert.equal(rows[2].style.getPropertyValue('--tree-depth'), '2');
   assert.equal(rows[1].querySelector('.conversation-tree-status').textContent, '处理中');
+  assert.ok(rows[0].querySelector('.conversation-tree-toggle'), 'root parent keeps an expandable toggle');
+  assert.equal(rows[0].dataset.hasChildren, 'true');
+  assert.ok(rows[1].querySelector('.conversation-tree-toggle'), 'nested parent keeps an expandable toggle');
+  assert.equal(rows[1].dataset.hasChildren, 'true');
+  assert.equal(rows[2].querySelector('.conversation-tree-toggle-spacer'), null,
+    'depth-limit leaf rows must not render a dead toggle spacer');
+  assert.equal(rows[2].dataset.hasChildren, 'false');
   assert.ok(rows[0].querySelector('.conversation-spawn-button'));
   assert.equal(rows[2].querySelector('.conversation-spawn-button'), null);
   assert.equal(rows[2].dataset.depthLimit, 'true');

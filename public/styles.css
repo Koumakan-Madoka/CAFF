@@ -5775,6 +5775,24 @@ body.chat-app .conversation-tree-row {
   padding-left: calc(var(--tree-depth, 0) * 14px);
 }
 
+body.chat-app .conversation-tree-row[data-has-children="false"] {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+body.chat-app .conversation-tree-row[data-has-children="false"] .conversation-item {
+  grid-column: 1 / -1;
+  padding-right: calc(44px + 0.75rem);
+}
+
+body.chat-app .conversation-tree-row[data-has-children="false"] .conversation-rename-button,
+body.chat-app .conversation-tree-row[data-has-children="false"] .conversation-spawn-button {
+  grid-column: 1;
+}
+
+body.chat-app .conversation-tree-row[data-has-children="false"] .conversation-rename-button {
+  margin-right: 44px;
+}
+
 body.chat-app .conversation-tree-row:hover {
   --conversation-action-bg: var(--caff-surface-hover);
 }
@@ -5798,15 +5816,11 @@ body.chat-app .conversation-tree-row[data-depth-limit="true"] .conversation-rena
   margin-right: 0;
 }
 
-body.chat-app .conversation-tree-toggle,
-body.chat-app .conversation-tree-toggle-spacer {
+body.chat-app .conversation-tree-toggle {
   grid-column: 1;
   grid-row: 1;
   width: 44px;
   height: 44px;
-}
-
-body.chat-app .conversation-tree-toggle {
   display: inline-grid;
   place-items: center;
   padding: 0;

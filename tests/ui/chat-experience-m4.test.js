@@ -225,6 +225,22 @@ test('M4: conversation tree keeps the card across the available row width', () =
     'hidden row actions must not permanently consume two trailing columns'
   );
 
+  const leafRowBlock = cssBlock('body.chat-app .conversation-tree-row[data-has-children="false"]');
+  assert.match(
+    leafRowBlock,
+    /grid-template-columns:\s*minmax\(0,\s*1fr\)/,
+    'leaf rows must remove the unused leading toggle column'
+  );
+
+  const leafItemBlock = cssBlock('body.chat-app .conversation-tree-row[data-has-children="false"] .conversation-item');
+  assert.match(leafItemBlock, /grid-column:\s*1\s*\/\s*-1/, 'leaf cards must fill the whole row after indentation');
+
+  const leafRenameBlock = cssBlock('body.chat-app .conversation-tree-row[data-has-children="false"] .conversation-rename-button');
+  assert.match(leafRenameBlock, /grid-column:\s*1/, 'leaf rename actions must stay over the full-width card');
+
+  const leafSpawnBlock = cssBlock('body.chat-app .conversation-tree-row[data-has-children="false"] .conversation-spawn-button');
+  assert.match(leafSpawnBlock, /grid-column:\s*1/, 'leaf spawn actions must stay over the full-width card');
+
   const itemBlock = cssBlock('body.chat-app .conversation-tree-row .conversation-item');
   assert.match(itemBlock, /grid-column:\s*2\s*\/\s*-1/, 'conversation card must span the remaining row width');
   assert.match(
