@@ -1212,6 +1212,13 @@ test('buildAgentTurnPrompt gives bash-only multiline chat bridge guidance', () =
   assert.match(prompt, /send-public \[--no-finalize\] --content-stdin/u);
   assert.match(prompt, /--no-finalize posts an interim update and keeps the current run active/u);
   assert.match(prompt, /if send-private succeeds without a public reply, use a tiny control reply/u);
+  assert.match(prompt, /wake idle recipients immediately/u);
+  assert.match(prompt, /Send at most one complete private message per recipient in one trace/u);
+  assert.match(prompt, /do not poll, wait at P2, or send follow-up heartbeats/u);
+  assert.match(prompt, /exact commit SHA, review scope and risks, author validation evidence, and desired response format/u);
+  assert.match(prompt, /do not modify repository files for the rest of this trace/u);
+  assert.match(prompt, /Review worktrees are risk-based/u);
+  assert.match(prompt, /create a detached review worktree only when tests need a stable SHA while the room worktree may change/u);
   assert.doesNotMatch(prompt, /After send-public\/send-private succeeds/u);
   assert.doesNotMatch(prompt, /PowerShell example/u);
 });
@@ -2551,6 +2558,251 @@ test('routing executor snapshots project dir once per turn', async (t) => {
   assert.equal(projectCalls, 1);
   assert.equal(seenProjectDirs.length, 2);
   assert.ok(seenProjectDirs.every((value) => value === 'project-A'));
+});
+
+test('routing executor starts a private recipient before the sender trace settles', { concurrency: false }, async (t) => {
+  const tempDir = withTempDir('caff-private-immediate-wakeup-');
+  const sqlitePath = path.join(tempDir, 'private-immediate-wakeup.sqlite');
+  const activeConversationIds = new Set();
+  const activeTurns = new Map();
+  const conversation = {
+    id: 'conversation-private-immediate-wakeup',
+    title: 'Immediate private wakeup',
+    type: 'standard',
+    agents: [
+      { id: 'agent-a', name: 'Alpha' },
+      { id: 'agent-b', name: 'Beta' },
+      { id: 'agent-c', name: 'Gamma' },
+    ],
+    messages: [],
+  };
+  let messageCounter = 0;
+  let releaseSender;
+  const senderGate = new Promise((resolve) => {
+    releaseSender = resolve;
+  });
+  let releaseRecipient;
+  const recipientGate = new Promise((resolve) => {
+    releaseRecipient = resolve;
+  });
+  let markPrivateEnqueued;
+  const privateEnqueued = new Promise((resolve) => {
+    markPrivateEnqueued = resolve;
+  });
+  let recipientStartCount = 0;
+  const dispatchResults = [];
+  const reservedHops = [];
+  const recipientPromptContents = [];
+  let turnSettled = false;
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const store = {
+    getConversation(conversationId) {
+      return conversationId === conversation.id ? conversation : null;
+    },
+    createMessage(input) {
+      messageCounter += 1;
+      const message = {
+        id: `message-${messageCounter}`,
+        errorMessage: '',
+        taskId: null,
+        runId: null,
+        metadata: null,
+        createdAt: `2026-08-20T08:30:${String(messageCounter).padStart(2, '0')}.000Z`,
+        ...input,
+      };
+      conversation.messages.push(message);
+      return message;
+    },
+  };
+  const executor = createRoutingExecutor({
+    store,
+    agentDir: tempDir,
+    sqlitePath,
+    activeConversationIds,
+    activeTurns,
+    async executeConversationAgent({ agent, enqueueAgent, completedReplies, hop, promptMessages }) {
+      reservedHops.push(hop);
+      if (agent.id === 'agent-a') {
+        conversation.messages.push({
+          id: 'assistant-streaming-alpha',
+          conversationId: conversation.id,
+          turnId: 'active-turn',
+          role: 'assistant',
+          agentId: 'agent-a',
+          senderName: 'Alpha',
+          content: 'Thinking... secret partial output',
+          status: 'streaming',
+        });
+        dispatchResults.push(enqueueAgent({
+          agentIds: ['agent-b', 'agent-c'],
+          triggerType: 'private',
+          triggeredByAgentId: 'agent-a',
+          triggeredByAgentName: 'Alpha',
+          triggeredByMessageId: 'private-message-1',
+          parentRunId: 'run-agent-a',
+          enqueueReason: 'private_message',
+        }));
+        dispatchResults.push(enqueueAgent({
+          agentId: 'agent-b',
+          triggerType: 'private',
+          triggeredByAgentId: 'agent-a',
+          triggeredByAgentName: 'Alpha',
+          triggeredByMessageId: 'private-message-2',
+          parentRunId: 'run-agent-a',
+          enqueueReason: 'private_message',
+        }));
+        markPrivateEnqueued();
+        await senderGate;
+      } else {
+        recipientStartCount += 1;
+        recipientPromptContents.push(promptMessages.map((message) => message.content));
+        await recipientGate;
+      }
+
+      completedReplies.push({
+        agentId: agent.id,
+        senderName: agent.name,
+        content: 'ok',
+        status: 'completed',
+      });
+      return { stopTurn: agent.id === 'agent-a', terminationReason: agent.id === 'agent-a' ? 'agent_final' : '' };
+    },
+  });
+
+  const turnPromise = executor(conversation.id, {
+    content: 'Start with Alpha',
+    initialAgentIds: ['agent-a'],
+    executionMode: 'queue',
+  }).finally(() => {
+    turnSettled = true;
+  });
+
+  try {
+    await privateEnqueued;
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(recipientStartCount, 2, 'distinct private recipients must start while the sender trace is still running');
+    assert.deepEqual(dispatchResults[0].dispatch.map((item) => item.outcome), ['launched', 'launched']);
+    assert.equal(dispatchResults[1].dispatch[0].outcome, 'duplicate');
+    assert.ok(recipientPromptContents.every((contents) => !contents.includes('Thinking... secret partial output')));
+
+    releaseSender();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(turnSettled, false, 'sender final must not settle the turn before its private recipient');
+
+    releaseRecipient();
+    const result = await turnPromise;
+    assert.equal(recipientStartCount, 2, 'duplicate private handoff must not start an extra recipient run');
+    assert.deepEqual(reservedHops.slice().sort((left, right) => left - right), [1, 2, 3]);
+    assert.equal(result.replies.length, 3);
+  } finally {
+    releaseSender();
+    releaseRecipient();
+    await turnPromise;
+  }
+});
+
+test('routing executor stop cancels sender and immediate private recipient and blocks late launch', { concurrency: false }, async (t) => {
+  const tempDir = withTempDir('caff-private-wakeup-stop-');
+  const sqlitePath = path.join(tempDir, 'private-wakeup-stop.sqlite');
+  const activeConversationIds = new Set();
+  const activeTurns = new Map();
+  const conversation = {
+    id: 'conversation-private-wakeup-stop',
+    title: 'Stop immediate private wakeup',
+    type: 'standard',
+    agents: [
+      { id: 'agent-a', name: 'Alpha' },
+      { id: 'agent-b', name: 'Beta' },
+      { id: 'agent-c', name: 'Gamma' },
+    ],
+    messages: [],
+  };
+  let messageCounter = 0;
+  let executions = 0;
+  let cancelCount = 0;
+  let lateDispatch = null;
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const store = {
+    getConversation(conversationId) {
+      return conversationId === conversation.id ? conversation : null;
+    },
+    createMessage(input) {
+      messageCounter += 1;
+      const message = {
+        id: `stop-message-${messageCounter}`,
+        errorMessage: '',
+        taskId: null,
+        runId: null,
+        metadata: null,
+        createdAt: `2026-08-20T08:35:${String(messageCounter).padStart(2, '0')}.000Z`,
+        ...input,
+      };
+      conversation.messages.push(message);
+      return message;
+    },
+  };
+  const executor = createRoutingExecutor({
+    store,
+    agentDir: tempDir,
+    sqlitePath,
+    activeConversationIds,
+    activeTurns,
+    async executeConversationAgent({ agent, enqueueAgent, turnState }) {
+      executions += 1;
+      if (agent.id === 'agent-a') {
+        enqueueAgent({
+          agentId: 'agent-b',
+          triggerType: 'private',
+          triggeredByAgentId: 'agent-a',
+          parentRunId: 'stop-run-alpha',
+          enqueueReason: 'private_message',
+        });
+      }
+
+      await new Promise((resolve) => {
+        registerTurnHandle(turnState, {
+          cancel() {
+            cancelCount += 1;
+            resolve();
+          },
+        });
+      });
+
+      if (agent.id === 'agent-a') {
+        lateDispatch = enqueueAgent({
+          agentId: 'agent-c',
+          triggerType: 'private',
+          triggeredByAgentId: 'agent-a',
+          parentRunId: 'stop-run-alpha',
+          enqueueReason: 'private_message',
+        });
+      }
+      return { stopTurn: true, terminationReason: 'stopped_by_user' };
+    },
+  });
+  const turnPromise = executor(conversation.id, {
+    content: 'Start and then stop',
+    initialAgentIds: ['agent-a'],
+    executionMode: 'queue',
+  });
+
+  await waitForCondition(() => executions === 2);
+  const stopTurn = createTurnStopper({ activeTurns });
+  stopTurn(conversation.id, 'User stop');
+  const result = await turnPromise;
+
+  assert.equal(cancelCount, 2);
+  assert.equal(executions, 2, 'stop must prevent a late private recipient launch');
+  assert.deepEqual(lateDispatch, { enqueuedAgentIds: [], dispatch: [] });
+  assert.equal(result.turn.status, 'stopped');
 });
 
 test('routing executor keeps late user messages out of the active prompt snapshot', { concurrency: false }, async (t) => {

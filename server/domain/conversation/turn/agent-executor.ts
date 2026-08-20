@@ -2049,7 +2049,7 @@ export function createAgentExecutor(options: any = {}) {
         };
       }
 
-      const enqueuedAgentIds =
+      const enqueueResult =
         enqueueAgent && routedMentions.length > 0
           ? enqueueAgent({
               agentIds: routedMentions,
@@ -2060,6 +2060,11 @@ export function createAgentExecutor(options: any = {}) {
               parentRunId: result.runId || handle.runId || null,
               enqueueReason: decision.reason || '',
             })
+          : null;
+      const enqueuedAgentIds = Array.isArray(enqueueResult)
+        ? enqueueResult
+        : Array.isArray(enqueueResult && enqueueResult.enqueuedAgentIds)
+          ? enqueueResult.enqueuedAgentIds
           : [];
 
       if (enqueuedAgentIds.length > 0) {

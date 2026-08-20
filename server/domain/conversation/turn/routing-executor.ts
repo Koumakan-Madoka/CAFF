@@ -140,6 +140,7 @@ export function createRoutingExecutor(options: any = {}) {
   const resolveRuntimeParticipants = typeof options.resolveRuntimeParticipants === 'function'
     ? options.resolveRuntimeParticipants
     : (participants: any) => participants;
+  const isAgentBusy = typeof options.isAgentBusy === 'function' ? options.isAgentBusy : () => false;
 
   async function runConversationTurn(conversationId: any, userContent: any) {
     let conversation = store.getConversation(conversationId);
@@ -310,6 +311,7 @@ export function createRoutingExecutor(options: any = {}) {
     const rootTaskId = createTaskId('conversation-turn');
     const completedReplies: any[] = [];
     const failedReplies: any[] = [];
+    const inFlightPrivateExecutions = new Set<Promise<any>>();
 
     runStore.createTask({
       taskId: rootTaskId,
@@ -343,8 +345,27 @@ export function createRoutingExecutor(options: any = {}) {
     try {
       const queue: any[] = [];
       const queuedAgentIds = new Set();
+      const activeExecutionAgentIds = new Set();
+      const privateLaunchKeys = new Set();
       const maxReplies = Math.max(8, conversation.agents.length * 4);
       let terminationReason = 'queue_exhausted';
+
+      function reserveHop() {
+        if (turnState.stopRequested || turnState.hopCount >= maxReplies) {
+          return null;
+        }
+
+        turnState.hopCount += 1;
+        turnState.updatedAt = nowIso();
+        return turnState.hopCount;
+      }
+
+      function buildDispatchResult(enqueuedAgentIds: any[] = [], dispatch: any[] = []) {
+        return {
+          enqueuedAgentIds,
+          dispatch,
+        };
+      }
 
       function splitIntoMentionBatches(agentIds: any) {
         const batches = [];
@@ -384,34 +405,156 @@ export function createRoutingExecutor(options: any = {}) {
         return normalizedItems;
       }
 
-      function canMergeQueuedPrivateBatch(queueEntry: any, queueItem: any) {
-        const items = queueEntryItems(queueEntry);
+      function removeQueuedAgent(agentId: any) {
+        let removed = false;
 
-        if (items.length === 0 || items.length >= MAX_PARALLEL_MENTION_BATCH_SIZE) {
-          return false;
+        for (let index = queue.length - 1; index >= 0; index -= 1) {
+          const remainingItems = queueEntryItems(queue[index]).filter((item: any) => item.agentId !== agentId);
+
+          if (remainingItems.length === queueEntryItems(queue[index]).length) {
+            continue;
+          }
+
+          removed = true;
+          if (remainingItems.length === 0) {
+            queue.splice(index, 1);
+          } else {
+            queue[index] = remainingItems.length > 1
+              ? { items: refreshParallelGroupMetadata(remainingItems) }
+              : refreshParallelGroupMetadata(remainingItems)[0];
+          }
         }
 
-        if (String(queueItem && queueItem.triggerType ? queueItem.triggerType : 'user') !== 'private') {
-          return false;
+        if (removed) {
+          queuedAgentIds.delete(agentId);
         }
 
-        return items.every(
-          (item: any) =>
-            String(item && item.triggerType ? item.triggerType : 'user') === 'private' &&
-            String(item && item.triggeredByAgentId ? item.triggeredByAgentId : '') ===
-              String(queueItem && queueItem.triggeredByAgentId ? queueItem.triggeredByAgentId : '') &&
-            String(item && item.triggeredByAgentName ? item.triggeredByAgentName : '') ===
-              String(queueItem && queueItem.triggeredByAgentName ? queueItem.triggeredByAgentName : '') &&
-            String(item && item.parentRunId ? item.parentRunId : '') ===
-              String(queueItem && queueItem.parentRunId ? queueItem.parentRunId : '') &&
-            String(item && item.enqueueReason ? item.enqueueReason : '') ===
-              String(queueItem && queueItem.enqueueReason ? queueItem.enqueueReason : '')
-        );
+        return removed;
+      }
+
+      function buildExecutionInput(queueItem: any, agent: any, hop: number, finalStopsTurn: boolean) {
+        const refreshedConversationSnapshot = store.getConversation(conversationId);
+        const refreshedConversation = refreshedConversationSnapshot
+          ? { ...refreshedConversationSnapshot, agents: resolvedRuntimeAgents }
+          : conversation;
+
+        return {
+          runStore,
+          conversationId,
+          turnId,
+          rootTaskId,
+          conversation: refreshedConversation,
+          projectDir: projectDirSnapshot,
+          promptMessages: buildPromptMessages(refreshedConversation.messages, promptUserMessage, {
+            snapshotMessageIds: promptSnapshotMessageIds,
+            currentTurnId: turnId,
+            replacePromptUserMessage: !usesExistingBatch,
+            excludeIncompleteAssistantMessages: true,
+          }),
+          promptUserMessage,
+          queueItem,
+          agent,
+          turnState,
+          completedReplies,
+          failedReplies,
+          routingMode,
+          hop,
+          remainingSlots: maxReplies - hop,
+          enqueueAgent,
+          allowHandoffs: turnInput.allowHandoffs,
+          finalStopsTurn,
+        };
+      }
+
+      function executeReservedItem(queueItem: any, agent: any, hop: number, finalStopsTurn: boolean) {
+        activeExecutionAgentIds.add(agent.id);
+
+        return Promise.resolve()
+          .then(() => executeConversationAgent(buildExecutionInput(queueItem, agent, hop, finalStopsTurn)))
+          .finally(() => {
+            activeExecutionAgentIds.delete(agent.id);
+          });
+      }
+
+      function launchPrivateAgent(queueItem: any, agentId: any) {
+        const sourceTraceKey = [
+          String(queueItem.triggeredByAgentId || ''),
+          String(queueItem.parentRunId || turnId),
+          String(agentId || ''),
+        ].join(':');
+
+        if (privateLaunchKeys.has(sourceTraceKey)) {
+          return {
+            agentId,
+            outcome: 'duplicate',
+            detail: 'Message persisted; this source trace already dispatched the recipient, so the current run may not see this later message.',
+          };
+        }
+        privateLaunchKeys.add(sourceTraceKey);
+
+        if (activeExecutionAgentIds.has(agentId) || isAgentBusy(conversationId, agentId)) {
+          return {
+            agentId,
+            outcome: 'already_running',
+            detail: 'Message persisted; the recipient is already running and is not launched again.',
+          };
+        }
+
+        if (activeExecutionAgentIds.size >= MAX_PARALLEL_MENTION_BATCH_SIZE) {
+          return {
+            agentId,
+            outcome: 'capacity_limited',
+            detail: 'Message persisted; no recipient run was started because the current parallel limit is full.',
+          };
+        }
+
+        const agent = getAgentById(conversation.agents, agentId);
+        const hop = agent ? reserveHop() : null;
+        if (!agent || hop === null) {
+          return {
+            agentId,
+            outcome: 'capacity_limited',
+            detail: 'Message persisted; no recipient run was started because the turn budget is exhausted.',
+          };
+        }
+
+        removeQueuedAgent(agentId);
+        const privatePromise = executeReservedItem({
+          agentId,
+          triggerType: 'private',
+          triggeredByAgentId: queueItem.triggeredByAgentId || null,
+          triggeredByAgentName: queueItem.triggeredByAgentName || '',
+          triggeredByMessageId: queueItem.triggeredByMessageId || null,
+          parentRunId: queueItem.parentRunId || null,
+          enqueueReason: queueItem.enqueueReason || '',
+          parallelGroupSize: 0,
+          parallelGroupIndex: 0,
+          privateOnly: Boolean(queueItem.privateOnly),
+        }, agent, hop, false)
+          .catch((error: any) => {
+            if (!turnState.stopRequested) {
+              failedReplies.push({
+                agentId,
+                senderName: agent.name,
+                errorMessage: error && error.message ? error.message : String(error || 'Private recipient failed'),
+              });
+            }
+          })
+          .finally(() => {
+            inFlightPrivateExecutions.delete(privatePromise);
+          });
+        inFlightPrivateExecutions.add(privatePromise);
+
+        return {
+          agentId,
+          outcome: 'launched',
+          detail: 'Recipient started immediately in this turn.',
+        };
       }
 
       function enqueueAgent(queueItem: any) {
         if (!queueItem || turnState.stopRequested) {
-          return [];
+          return buildDispatchResult();
         }
 
         const requestedAgentIds = Array.isArray(queueItem.agentIds)
@@ -421,7 +564,29 @@ export function createRoutingExecutor(options: any = {}) {
             : [];
 
         if (requestedAgentIds.length === 0) {
-          return [];
+          return buildDispatchResult();
+        }
+
+        if (String(queueItem.triggerType || 'user') === 'private') {
+          const dispatch = [];
+          const seen = new Set();
+
+          for (const agentId of requestedAgentIds) {
+            if (!agentId || seen.has(agentId)) {
+              continue;
+            }
+            seen.add(agentId);
+            dispatch.push(launchPrivateAgent(queueItem, agentId));
+          }
+
+          turnState.pendingAgentIds = queuePendingAgentIds();
+          turnState.updatedAt = nowIso();
+          syncCurrentTurnAgent(turnState);
+          emitTurnProgress(turnState);
+          return buildDispatchResult(
+            dispatch.filter((item: any) => item.outcome === 'launched' || item.outcome === 'queued').map((item: any) => item.agentId),
+            dispatch
+          );
         }
 
         const uniqueAgentIds = [];
@@ -437,7 +602,7 @@ export function createRoutingExecutor(options: any = {}) {
         }
 
         if (uniqueAgentIds.length === 0) {
-          return [];
+          return buildDispatchResult();
         }
 
         for (const batchAgentIds of splitIntoMentionBatches(uniqueAgentIds)) {
@@ -455,26 +620,11 @@ export function createRoutingExecutor(options: any = {}) {
               privateOnly: Boolean(queueItem.privateOnly),
             }))
           );
-
-          const lastQueueEntry = queue.length > 0 ? queue[queue.length - 1] : null;
-
-          if (batchItems.length === 1 && canMergeQueuedPrivateBatch(lastQueueEntry, batchItems[0])) {
-            const mergedItems = refreshParallelGroupMetadata([...queueEntryItems(lastQueueEntry), batchItems[0]]);
-
-            if (lastQueueEntry && Array.isArray(lastQueueEntry.items)) {
-              lastQueueEntry.items = mergedItems;
-            } else {
-              queue[queue.length - 1] = { items: mergedItems };
-            }
-          } else {
-            queue.push(batchItems.length > 1 ? { items: batchItems } : batchItems[0]);
-          }
+          queue.push(batchItems.length > 1 ? { items: batchItems } : batchItems[0]);
 
           for (const batchItem of batchItems) {
             queuedAgentIds.add(batchItem.agentId);
-
             const stage = getTurnStage(turnState, batchItem.agentId);
-
             if (stage) {
               resetTurnStage(stage, 'queued');
             }
@@ -484,7 +634,11 @@ export function createRoutingExecutor(options: any = {}) {
         turnState.pendingAgentIds = queuePendingAgentIds();
         turnState.updatedAt = nowIso();
         syncCurrentTurnAgent(turnState);
-        return uniqueAgentIds;
+        return buildDispatchResult(uniqueAgentIds, uniqueAgentIds.map((agentId: any) => ({
+          agentId,
+          outcome: 'queued',
+          detail: 'Recipient queued for ordinary turn routing.',
+        })));
       }
 
       if (routingMode === 'mention_parallel' && initialQueue.agentIds.length > 1) {
@@ -618,67 +772,19 @@ export function createRoutingExecutor(options: any = {}) {
             continue;
           }
 
-          const hopBase = turnState.hopCount || 0;
-          const isParallelBatch = executionItems.length > 1;
-            const results = isParallelBatch
-              ? await Promise.all(
-                  executionItems.map(({ queueItem, agent }: any, index: any) => {
-                    const hop = hopBase + index + 1;
-
-                    return executeConversationAgent({
-                      runStore,
-                      conversationId,
-                    turnId,
-                    rootTaskId,
-                    conversation: refreshedConversation,
-                    projectDir: projectDirSnapshot,
-                    promptMessages: buildPromptMessages(refreshedConversation.messages, promptUserMessage, {
-                      snapshotMessageIds: promptSnapshotMessageIds,
-                      currentTurnId: turnId,
-                      replacePromptUserMessage: !usesExistingBatch,
-                    }),
-                    promptUserMessage,
-                    queueItem,
-                    agent,
-                    turnState,
-                    completedReplies,
-                    failedReplies,
-                    routingMode,
-                    hop,
-                    remainingSlots: maxReplies - hop,
-                    enqueueAgent,
-                    allowHandoffs: turnInput.allowHandoffs,
-                    finalStopsTurn: false,
-                  });
-                })
+          const reservedItems = executionItems
+            .map(({ queueItem, agent }: any) => ({ queueItem, agent, hop: reserveHop() }))
+            .filter((item: any) => item.hop !== null);
+          const isParallelBatch = reservedItems.length > 1;
+          const results = isParallelBatch
+            ? await Promise.all(
+                reservedItems.map(({ queueItem, agent, hop }: any) =>
+                  executeReservedItem(queueItem, agent, hop, false)
+                )
               )
-            : [
-                await executeConversationAgent({
-                  runStore,
-                  conversationId,
-                  turnId,
-                  rootTaskId,
-                  conversation: refreshedConversation,
-                  projectDir: projectDirSnapshot,
-                  promptMessages: buildPromptMessages(refreshedConversation.messages, promptUserMessage, {
-                    snapshotMessageIds: promptSnapshotMessageIds,
-                    currentTurnId: turnId,
-                    replacePromptUserMessage: !usesExistingBatch,
-                  }),
-                  promptUserMessage,
-                  queueItem: executionItems[0].queueItem,
-                  agent: executionItems[0].agent,
-                  turnState,
-                  completedReplies,
-                  failedReplies,
-                  routingMode,
-                  hop: hopBase + 1,
-                  remainingSlots: maxReplies - (hopBase + 1),
-                  enqueueAgent,
-                  allowHandoffs: turnInput.allowHandoffs,
-                  finalStopsTurn: true,
-                }),
-              ];
+            : reservedItems.length === 1
+              ? [await executeReservedItem(reservedItems[0].queueItem, reservedItems[0].agent, reservedItems[0].hop, true)]
+              : [];
 
           const stopResult = results.find((result) => result && result.stopTurn);
 
@@ -692,6 +798,10 @@ export function createRoutingExecutor(options: any = {}) {
             break;
           }
         }
+      }
+
+      while (inFlightPrivateExecutions.size > 0) {
+        await Promise.allSettled(Array.from(inFlightPrivateExecutions));
       }
 
       const finalConversation = store.getConversation(conversationId);
@@ -764,6 +874,10 @@ export function createRoutingExecutor(options: any = {}) {
         turn: finishedTurn,
       };
     } catch (error) {
+      if (inFlightPrivateExecutions.size > 0) {
+        await Promise.allSettled(Array.from(inFlightPrivateExecutions));
+      }
+
       const errorValue = error as any;
       const errorMessage = errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Unknown error');
       turnState.status = 'failed';

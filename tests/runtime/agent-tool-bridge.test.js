@@ -52,6 +52,110 @@ function createPublicInvocationFixture(store, suffix) {
   };
 }
 
+test('agent tool bridge projects bounded private handoff dispatch without echoing content', (t) => {
+  const tempDir = withTempDir('caff-agent-tool-private-dispatch-');
+  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const sender = store.saveCustomRoleConfig({
+    id: 'bridge-private-sender',
+    name: 'Private Sender',
+    personaPrompt: 'Send one complete review request.',
+  });
+  const recipient = store.saveCustomRoleConfig({
+    id: 'bridge-private-recipient',
+    name: 'Private Recipient',
+    personaPrompt: 'Review requests.',
+  });
+  const conversation = store.createConversation({
+    id: 'bridge-private-dispatch-conversation',
+    title: 'Private dispatch projection',
+    participants: [sender.id, recipient.id],
+  });
+  const assistantMessage = store.createMessage({
+    id: 'bridge-private-dispatch-message',
+    conversationId: conversation.id,
+    turnId: 'bridge-private-dispatch-turn',
+    role: 'assistant',
+    agentId: sender.id,
+    senderName: sender.name,
+    content: 'Thinking...',
+    status: 'streaming',
+  });
+  const fullConversation = store.getConversation(conversation.id);
+  const bridge = createAgentToolBridge({ store });
+  let enqueueCallCount = 0;
+  const context = bridge.registerInvocation(
+    bridge.createInvocationContext({
+      conversationId: conversation.id,
+      turnId: assistantMessage.turnId,
+      agentId: sender.id,
+      agentName: sender.name,
+      assistantMessageId: assistantMessage.id,
+      conversationAgents: fullConversation.agents,
+      stage: { status: 'running', runId: 'sender-run-1' },
+      turnState: { conversationId: conversation.id, turnId: assistantMessage.turnId, stopRequested: false },
+      enqueueAgent() {
+        enqueueCallCount += 1;
+        return {
+          enqueuedAgentIds: [recipient.id],
+          dispatch: [{
+            agentId: recipient.id,
+            outcome: 'launched',
+            detail: 'Recipient started immediately in this turn.',
+          }],
+        };
+      },
+    })
+  );
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const response = bridge.handlePostMessage({
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    visibility: 'private',
+    recipients: [recipient.name],
+    content: 'Private review body must not appear in dispatch telemetry.',
+  });
+
+  assert.equal(response.handoffRequested, true);
+  assert.equal(enqueueCallCount, 1);
+  assert.deepEqual(response.enqueuedAgentIds, [recipient.id]);
+  assert.deepEqual(response.dispatch, [{
+    agentId: recipient.id,
+    outcome: 'launched',
+    detail: 'Recipient started immediately in this turn.',
+  }]);
+  assert.equal(JSON.stringify(response.dispatch).includes('Private review body'), false);
+
+  const selfNote = bridge.handlePostMessage({
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    visibility: 'private',
+    recipients: [sender.name],
+    content: 'Self note only.',
+  });
+  const noHandoff = bridge.handlePostMessage({
+    invocationId: context.invocationId,
+    callbackToken: context.callbackToken,
+    visibility: 'private',
+    recipients: [recipient.name],
+    noHandoff: true,
+    content: 'Persist without wake-up.',
+  });
+
+  assert.equal(selfNote.handoffRequested, false);
+  assert.deepEqual(selfNote.dispatch, []);
+  assert.equal(noHandoff.handoffRequested, false);
+  assert.deepEqual(noHandoff.dispatch, []);
+  assert.equal(enqueueCallCount, 1, 'self-private and no-handoff must not dispatch another Agent');
+});
+
 test('agent tool bridge rejects stale invocations after a turn stops or completes', (t) => {
   const tempDir = withTempDir('caff-agent-tool-bridge-');
   const sqlitePath = path.join(tempDir, 'bridge.sqlite');

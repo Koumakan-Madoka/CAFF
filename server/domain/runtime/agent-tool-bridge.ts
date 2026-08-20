@@ -971,9 +971,10 @@ export function createAgentToolBridge(options: any = {}) {
 
         context.privatePostCount = (context.privatePostCount || 0) + 1;
         let enqueuedAgentIds = [];
+        let dispatch = [];
 
         if (handoffRequested) {
-          enqueuedAgentIds = context.enqueueAgent({
+          const enqueueResult = context.enqueueAgent({
             agentIds: handoffAgentIds,
             triggerType: 'private',
             triggeredByAgentId: context.agentId,
@@ -982,6 +983,22 @@ export function createAgentToolBridge(options: any = {}) {
             parentRunId: context.stage && context.stage.runId ? context.stage.runId : null,
             enqueueReason: 'private_message',
           });
+          enqueuedAgentIds = Array.isArray(enqueueResult)
+            ? enqueueResult
+            : Array.isArray(enqueueResult && enqueueResult.enqueuedAgentIds)
+              ? enqueueResult.enqueuedAgentIds
+              : [];
+          dispatch = Array.isArray(enqueueResult && enqueueResult.dispatch)
+            ? enqueueResult.dispatch.slice(0, 5).map((item: any) => ({
+                agentId: String(item && item.agentId || '').trim(),
+                outcome: String(item && item.outcome || '').trim(),
+                detail: clipText(item && item.detail ? item.detail : '', 240),
+              })).filter((item: any) => item.agentId && item.outcome)
+            : enqueuedAgentIds.slice(0, 5).map((agentId: any) => ({
+                agentId,
+                outcome: 'queued',
+                detail: 'Recipient queued for turn routing.',
+              }));
           context.privateHandoffCount = (context.privateHandoffCount || 0) + enqueuedAgentIds.length;
 
           if (context.turnState) {
@@ -1001,6 +1018,7 @@ export function createAgentToolBridge(options: any = {}) {
           message: serializeAgentToolPrivateMessage(privateMessage),
           handoffRequested,
           enqueuedAgentIds,
+          dispatch,
         };
 
         tryAppendInvocationEvent(context, 'agent_tool_call', {
@@ -1025,6 +1043,7 @@ export function createAgentToolBridge(options: any = {}) {
             messageId: response.message.id,
             recipientCount: response.message.recipientAgentIds.length,
             enqueuedCount: Array.isArray(enqueuedAgentIds) ? enqueuedAgentIds.length : 0,
+            dispatchOutcomes: dispatch.map((item: any) => item.outcome),
           },
         });
 

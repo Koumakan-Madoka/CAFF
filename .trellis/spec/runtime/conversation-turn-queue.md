@@ -1,5 +1,26 @@
 # Conversation Turn Queue
 
+## Immediate Private Handoff Scheduling
+
+- A private message to another Agent with handoff enabled is persisted first, then an eligible idle recipient is launched immediately inside the same turn. Self-private notes and `--no-handoff` remain persistence-only.
+- The turn-local scheduler reserves the hop before launch, caps concurrent Agent executions at the existing batch limit, and deduplicates by `(sourceAgentId, sourceRunId, recipientAgentId)`. A duplicate message remains durable but does not create another model run.
+- `turn_finished`, root task settlement, active-turn cleanup, and Goal continuation wait until all immediately launched private recipients settle. A sender `final` closes ordinary routing but cannot orphan recipients already in flight.
+- Stop cancellation applies to every registered sender/recipient run and queued slot wait. No private launch may begin after `turnState.stopRequested`.
+- Concurrent prompt construction excludes incomplete assistant placeholders from other in-flight runs; a recipient must not receive another Agent's `Thinking...`/streaming half-result as conversation history.
+- Bridge results preserve `handoffRequested` and `enqueuedAgentIds` and add bounded `dispatch[]` entries with `agentId`, `outcome`, and content-free `detail`. Supported outcomes are `launched`, `duplicate`, `already_running`, `queued`, and `capacity_limited`.
+- Agent guidance requires one complete private message per recipient per trace, no polling/P2 wait, and commit-pinned formal review. After a formal review request, the author freezes repository writes for the remainder of that trace.
+
+### Private handoff validation matrix
+
+| Case | Expected behavior |
+| --- | --- |
+| Idle recipient and capacity available | Persist and launch immediately; `dispatch.outcome = launched`. |
+| Same source trace repeats recipient | Persist only; `duplicate`; current recipient run may not see the later message. |
+| Recipient already running | Persist only; `already_running`; never queue a duplicate-cost invocation. |
+| Parallel/hop capacity exhausted | Persist; return `queued` or `capacity_limited` without exceeding the limit. |
+| Sender returns final before recipient | Wait for recipient, then emit exactly one terminal turn event. |
+| User stops | Cancel registered executions/waits and prevent late launch. |
+
 ## Scenario: Chat Workbench Continuous Send and Agent Side Dispatch
 
 ### 1. Scope / Trigger

@@ -737,6 +737,13 @@ function compactSendPrivateResult(result: any) {
       : null,
     handoffRequested: result && result.handoffRequested === true,
     enqueuedAgentIds: Array.isArray(result && result.enqueuedAgentIds) ? result.enqueuedAgentIds.filter(Boolean) : [],
+    dispatch: Array.isArray(result && result.dispatch)
+      ? result.dispatch.slice(0, 5).map((item: any) => ({
+          agentId: String(item && item.agentId || '').trim(),
+          outcome: String(item && item.outcome || '').trim(),
+          detail: String(item && item.detail || '').trim(),
+        })).filter((item: any) => item.agentId && item.outcome)
+      : [],
   };
 }
 

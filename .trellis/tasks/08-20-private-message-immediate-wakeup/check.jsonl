@@ -1,0 +1,5 @@
+{"file": ".agents/skills/finish-work/SKILL.md", "reason": "Finish work checklist"}
+{"file": ".agents/skills/check/SKILL.md", "reason": "Code quality check spec"}
+{"file": ".trellis/spec/runtime/agent-runtime.md", "reason": "Check prompt, bridge, and runtime contracts"}
+{"file": ".trellis/spec/runtime/conversation-turn-queue.md", "reason": "Check concurrent turn convergence and cancellation"}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Check regression test scope"}

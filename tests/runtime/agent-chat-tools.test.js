@@ -159,6 +159,11 @@ test('send-private tool results are compact by default', () => {
     },
     handoffRequested: true,
     enqueuedAgentIds: ['agent-a'],
+    dispatch: [{
+      agentId: 'agent-a',
+      outcome: 'launched',
+      detail: 'Recipient started immediately in this turn.',
+    }],
   });
 
   assert.deepEqual(result, {
@@ -171,6 +176,11 @@ test('send-private tool results are compact by default', () => {
     },
     handoffRequested: true,
     enqueuedAgentIds: ['agent-a'],
+    dispatch: [{
+      agentId: 'agent-a',
+      outcome: 'launched',
+      detail: 'Recipient started immediately in this turn.',
+    }],
   });
   assert.equal('content' in result.message, false);
 });

@@ -256,6 +256,14 @@ CAFF uses a descriptor + on-demand loading model for conversation skills:
 - **Prompt instructions** for dynamic loading only appear when mode is `dynamic`;
   in `full` mode they are omitted to reduce noise.
 
+## Private Handoff and Commit-Pinned Review Guidance
+
+- `send-private` to another participant wakes an eligible idle recipient immediately in the current turn. A self-note or `--no-handoff` only persists the message.
+- Each source trace should send at most one complete private message per recipient. Do not poll, wait at P2, or send heartbeat follow-ups: server deduplication prevents a second launch and the already-running recipient may not see later content.
+- Formal review requests include the exact commit SHA, review scope/risks, author validation evidence, and requested response format. After sending the request, the author does not modify repository files for the rest of that trace.
+- Review worktree selection is risk-based rather than automatic: immutable `git show`/`git diff <SHA>` needs no worktree; a clean room worktree already at the requested SHA is usable when it will remain stable; tests against a SHA while the room worktree may change require a detached review worktree with isolated runtime resources; requested code changes require a separate writable branch/worktree.
+- Keep bridge behavior, compact CLI projection, prompt wording, and telemetry aligned. `dispatch[]` exposes bounded outcome labels/details without private content while legacy `handoffRequested` and `enqueuedAgentIds` remain available.
+
 ## Agent Chat Bridge Prompt Guidance
 
 ## CAFF-Owned Pi Capability Facades
