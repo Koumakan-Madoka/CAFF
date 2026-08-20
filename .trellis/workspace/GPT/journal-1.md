@@ -103,3 +103,47 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 3: Delete unsummarized conversation messages
+
+**Date**: 2026-08-21
+**Task**: Delete unsummarized conversation messages
+**Branch**: `room/c2fab452-caff-bug-bug`
+
+### Summary
+
+(Add summary)
+
+### Main Changes
+
+| Area | Result |
+|------|--------|
+| Storage/API | Added atomic hard deletion for eligible unsummarized public messages, cross-conversation protection, attachment cleanup, last-message fallback, and content-free SSE responses. |
+| Runtime/digest | Added conversation mutation coordination, authoritative idle checks, digest exclusion, queue cursor reconciliation, and durable cursor recovery across restart. |
+| Frontend | Added accessible single-delete and multi-select flows with confirmation, conflict retention, touch targets, and refresh consistency. |
+| Verification | User accepted the commit-pinned 3214 preview; Kimi approved each exact implementation commit and PR #76; GitHub checks passed. PR #76 merged to develop as 5390a571. |
+
+Integration verification on the merge-equivalent tree: `npm run build` passed and the storage/runtime/HTTP/UI deletion suites passed 21/21. The known Windows image-preflight cleanup EPERM limitation remains unrelated.
+
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f562fc8af07d8ce66273d002294054b6cddbbc1c` | (see git log) |
+| `9aec9bc154a891653c201113742c5360b1998893` | (see git log) |
+| `8776b0952f3141b18d4143154f34db791e60a0b2` | (see git log) |
+| `5390a5716740e92f10e7b35d19d9b696c644be63` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
