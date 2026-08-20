@@ -59,7 +59,7 @@
 - `lib/pi-runtime.ts` accepts `startRun(provider, model, prompt, { heartbeatTimeoutMs?, progressTimeoutMs?, idleTimeoutMs?, timeoutMs? })`.
 - Host liveness resolves from `heartbeatTimeoutMs` -> `PI_HEARTBEAT_TIMEOUT_MS` -> 60 seconds.
 - Useful-progress timeout resolves from `progressTimeoutMs` -> legacy `idleTimeoutMs` -> `PI_PROGRESS_TIMEOUT_MS` -> legacy `PI_IDLE_TIMEOUT_MS` -> 10 minutes.
-- Absolute run timeout resolves from `timeoutMs` -> `PI_TIMEOUT_MS` -> 60 minutes.
+- Absolute run timeout resolves from `timeoutMs` -> `PI_TIMEOUT_MS` -> 3 hours.
 - Setting any resolved timeout to `0` disables that watchdog.
 
 ### Contracts
@@ -82,7 +82,7 @@
 | Case | Expected behavior |
 | --- | --- |
 | Host emits heartbeats but no `pi_event` | Terminate with `progress_timeout`. |
-| Host emits repeated `pi_event` values beyond the total limit | Terminate with `run_timeout`. |
+| Host emits repeated `pi_event` values beyond the 3-hour default total limit | Terminate with `run_timeout`. |
 | Host and IPC become silent | Terminate with `heartbeat_timeout`. |
 | A timeout is configured as `0` | Disable only that watchdog. |
 | Watchdog terminates a run on Windows | Kill the pi host and its descendant process tree through `taskkill /T`, forcing it after the grace period. |

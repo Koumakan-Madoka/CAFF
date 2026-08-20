@@ -4,6 +4,7 @@ const path = require('node:path');
 const {
   DEFAULT_MODEL,
   DEFAULT_PROVIDER,
+  DEFAULT_RUN_TIMEOUT_MS,
   DEFAULT_THINKING,
   resolveIntegerSettingCandidates,
   resolveSetting,
@@ -1332,7 +1333,7 @@ export function createAgentExecutor(options: any = {}) {
       'progressTimeoutMs'
     );
     const timeoutMs = resolveIntegerSettingCandidates(
-      [process.env.PI_TIMEOUT_MS, 60 * 60 * 1000],
+      [process.env.PI_TIMEOUT_MS, DEFAULT_RUN_TIMEOUT_MS],
       'timeoutMs'
     );
     const stageTaskId = createTaskId('agent-turn');
