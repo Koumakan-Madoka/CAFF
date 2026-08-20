@@ -204,6 +204,8 @@ globalThis.__testExports = {
     createElement() {
       return createDomElementStub();
     },
+    addEventListener() {},
+    removeEventListener() {},
   };
   const window = {
     CaffShared: {
