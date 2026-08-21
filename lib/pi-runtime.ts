@@ -1036,6 +1036,11 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
         return;
       }
 
+      if (result.assistantErrors.length > 0) {
+        finishWithError(createInvokeError('pi assistant reported a model invocation error', result));
+        return;
+      }
+
       finishWithResult(result);
     });
 

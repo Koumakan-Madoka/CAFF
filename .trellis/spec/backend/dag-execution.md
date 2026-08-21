@@ -155,6 +155,7 @@
     settles immediately;
   - goal-runner budget pause proposal → `blocked`
     `dag_goal_budget_exhausted`;
+  - durable Goal `paused` + runner `error_paused`, with matching `goalUpdatedAt` and `consecutiveModelFailureCount >= failureThreshold` → `blocked` `dag_goal_model_failure_paused`; this is a system failure state, not a worker completion or verifier ruling;
   - **ruling identity is machine-checked, not prompt-checked**: the bridge
     enforces worker-only completion and verifier-only rulings against the
     dispatch-time binding (403 pre-mutation); the scheduler re-verifies
@@ -231,7 +232,7 @@
   D25 resume attempt; absent fresh authoritative evidence, it stays blocked.
 - **Restart reconcile (D25)**: `reconcileOnStartup()` scans active plans —
   - goal state is the source of truth for goal-driven children: goal
-    complete → `done`; budget-exhausted pause proposal → `blocked`; pending
+    complete → `done`; budget-exhausted pause proposal or durable model-failure `error_paused` state → `blocked`; pending
     complete proposal → verification (re-)routed idempotently; system-blocked
     children are inspected only for fresh completion/ruling recovery;
   - goal-less child finished while down → legacy terminal-reply write-back
@@ -275,6 +276,9 @@
 | completion | slot event with unknown conversation / non-DAG source | ignored entirely |
 | completion | completed slot, goal active, no proposal | no-op — continuation drives on (D27) |
 | completion | goal-runner budget pause proposal | `blocked` `dag_goal_budget_exhausted` |
+| Goal update | bound doing child has matching durable `error_paused` runner | `blocked` `dag_goal_model_failure_paused`; no result/ruling is fabricated; downstream stays pending |
+| restart reconcile | Goal was `error_paused` before process restart | same `blocked` transition is recovered from metadata without requiring the lost SSE event |
+| Goal update | paused Goal has stale runner epoch or failure count below persisted threshold | do not apply the model-failure block path |
 | completion | complete proposal proposedBy ≠ worker | `blocked` `dag_completion_wrong_proposer` (bridge 403s at creation; scheduler defense-in-depth) |
 | completion | accepted ruling by agent ≠ verifier | ignored (forged event); only `ruledBy.kind==='user'` / `dag-scheduler` auto-accept / designated verifier (binding-authoritative) may settle |
 | completion | accepted ruling with NO principal on a bound exempt (`verifierId: null`) node | ignored — exempt nodes settle only via scheduler auto-accept or user ruling |
@@ -329,7 +333,7 @@
   worktree fail-closed, spawn failure, stray events ignored, all D25
   reconcile branches, cwd hook, D26 instruction contents, merge gating
   pass/fail/throw, D27 lightweight goal (empty checklist, objective teaches
-  the completion protocol, budget→blocked), D28 verifier flow
+  the completion protocol, budget→blocked), model-failure `error_paused` event/restart→blocked, D28 verifier flow
   (routing/accept/reject feedback/default resolution/self-review & invalid
   verifier fail-closed/wrong-proposer blocked/forged accept ignored/user
   manual accept with snapshot result), binding write failure, delivery

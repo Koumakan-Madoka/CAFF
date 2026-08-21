@@ -50,6 +50,23 @@ function createFakeSdkHostCompleteThenHang(baseDir) {
   ]);
 }
 
+function createFakeSdkHostAssistantError(baseDir) {
+  return createFakeSdkHost(baseDir, [
+    "process.on('message', (command) => {",
+    "  if (command?.type !== 'start') return;",
+    "  const message = {",
+    "    role: 'assistant',",
+    "    content: [],",
+    "    stopReason: 'error',",
+    "    errorMessage: '402: insufficient quota',",
+    "    timestamp: Date.now(),",
+    "  };",
+    "  process.send({ type: 'pi_event', event: { type: 'message_end', message } });",
+    "  setTimeout(() => process.exit(0), 20);",
+    "});",
+  ]);
+}
+
 function createFakeSdkHostWaitingForAbort(baseDir, capturePath = '') {
   return createFakeSdkHost(baseDir, [
     "import { writeFileSync } from 'node:fs';",
@@ -64,12 +81,13 @@ function createFakeSdkHostWaitingForAbort(baseDir, capturePath = '') {
   ]);
 }
 
-function createFakeSdkHostHeartbeatOnly(baseDir, capturePath) {
+function createFakeSdkHostHeartbeatOnly(baseDir, capturePath, assistantError = '') {
   return createFakeSdkHost(baseDir, [
     "import { writeFileSync } from 'node:fs';",
     "let heartbeatTimer = null;",
     "process.on('message', (command) => {",
     "  if (command?.type === 'start') {",
+    assistantError ? `    process.send({ type: 'pi_event', event: { type: 'message_end', message: { role: 'assistant', content: [], stopReason: 'error', errorMessage: ${JSON.stringify(assistantError)}, timestamp: Date.now() } } });` : '',
     "    heartbeatTimer = setInterval(() => {",
     "      process.send({ type: 'heartbeat', timestamp: Date.now() });",
     "    }, 10);",
@@ -300,6 +318,45 @@ test('pi runtime treats a terminal assistant message as successful completion ev
   assert.equal(result.signal, null);
   assert.equal(result.completionStopReason, 'stop');
   assert.ok(terminatingReasons.some((reason) => reason && reason.type === 'expected_completion'));
+});
+
+test('pi runtime rejects a terminal assistant model error even when the SDK host exits zero', async (t) => {
+  if (!requireSpawn(t)) {
+    return;
+  }
+
+  const tempDir = withTempDir('caff-pi-runtime-assistant-error-');
+  const sqlitePath = path.join(tempDir, 'pi-runtime-assistant-error.sqlite');
+  const fakeHostPath = createFakeSdkHostAssistantError(tempDir);
+  const { runtime, restore } = loadRuntimeWithSdkHost(fakeHostPath);
+  let handle = null;
+
+  t.after(() => {
+    try {
+      handle && handle.cancel('test cleanup');
+    } catch {}
+
+    restore();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  handle = runtime.startRun('test-provider', 'test-model', 'Trigger provider failure', {
+    agentDir: tempDir,
+    sqlitePath,
+    heartbeatIntervalMs: 50,
+    heartbeatTimeoutMs: 10000,
+    terminateGraceMs: 100,
+    streamOutput: false,
+  });
+
+  await assert.rejects(
+    handle.resultPromise,
+    (error) => {
+      assert.equal(error.message, 'pi assistant reported a model invocation error');
+      assert.deepEqual(error.assistantErrors, ['402: insufficient quota']);
+      return true;
+    }
+  );
 });
 
 test('pi runtime allows callers to mark a run complete early', async (t) => {
@@ -739,6 +796,44 @@ test('pi runtime aborts a heartbeat-only host after the progress timeout', async
 
   const captured = JSON.parse(fs.readFileSync(capturePath, 'utf8'));
   assert.equal(captured.reason.type, 'progress_timeout');
+});
+
+test('pi runtime keeps a watchdog timeout authoritative after an earlier assistant error', async (t) => {
+  if (!requireSpawn(t)) {
+    return;
+  }
+
+  const tempDir = withTempDir('caff-pi-runtime-error-then-timeout-');
+  const capturePath = path.join(tempDir, 'error-then-timeout-abort.json');
+  const fakeHostPath = createFakeSdkHostHeartbeatOnly(tempDir, capturePath, 'transient provider error');
+  const { runtime, restore } = loadRuntimeWithSdkHost(fakeHostPath);
+  let handle = null;
+
+  t.after(() => {
+    try {
+      handle && handle.cancel('test cleanup');
+    } catch {}
+
+    restore();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  handle = runtime.startRun('test-provider', 'test-model', 'wait for authoritative progress timeout', {
+    agentDir: tempDir,
+    sqlitePath: path.join(tempDir, 'pi-runtime-error-then-timeout.sqlite'),
+    heartbeatIntervalMs: 10,
+    heartbeatTimeoutMs: 500,
+    progressTimeoutMs: 75,
+    timeoutMs: 1000,
+    terminateGraceMs: 500,
+    streamOutput: false,
+  });
+
+  await assert.rejects(handle.resultPromise, (error) => {
+    assert.equal(error.terminationReason.type, 'progress_timeout');
+    assert.deepEqual(error.assistantErrors, ['transient provider error']);
+    return true;
+  });
 });
 
 test('pi runtime total timeout is not extended by repeated progress events', async (t) => {

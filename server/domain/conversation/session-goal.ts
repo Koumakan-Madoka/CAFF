@@ -15,6 +15,9 @@ const MAX_SESSION_GOAL_OBJECTIVE_LENGTH = 2000;
 const MAX_SESSION_GOAL_PROPOSAL_REASON_LENGTH = 1000;
 const MAX_SESSION_GOAL_CHECKLIST_ITEMS = 20;
 const MAX_SESSION_GOAL_CHECKLIST_ITEM_LENGTH = 200;
+const MAX_SESSION_GOAL_FAILURE_SUMMARY_LENGTH = 240;
+const MAX_SESSION_GOAL_FAILURE_REASON_LENGTH = 500;
+const SESSION_GOAL_MODEL_FAILURE_KINDS = new Set(['provider', 'timeout', 'process_exit']);
 const DEFAULT_SESSION_GOAL_CHECKLIST_TEXTS = [
   '和其他 agent 一起头脑风暴，收敛目标、范围和风险',
   '结论收敛后创建或更新 Trellis 任务与 PRD',
@@ -57,6 +60,15 @@ function clipText(value: any, maxLength: number) {
   }
 
   return text.slice(0, maxLength);
+}
+
+function redactGoalFailureSummary(value: any) {
+  let text = normalizeText(value).replace(/\s+/gu, ' ');
+  text = text.replace(/(authorization\s*[:=]\s*bearer\s+)([^\s,;]+)/giu, '$1[redacted]');
+  text = text.replace(/(authorization\s*[:=]\s*)(?!bearer\b)([^\s,;]+)/giu, '$1[redacted]');
+  text = text.replace(/((?:api[_ -]?key|token|secret|password|passwd)\s*[:=]\s*)([^\s,;]+)/giu, '$1[redacted]');
+  text = text.replace(/\bsk-[a-z0-9_-]{6,}\b/giu, '[redacted]');
+  return clipText(text, MAX_SESSION_GOAL_FAILURE_SUMMARY_LENGTH);
 }
 
 function normalizeObjective(value: any) {
@@ -356,6 +368,22 @@ function normalizeSessionGoalRunner(value: any) {
   const lastContinuedAt = normalizeText(value.lastContinuedAt || value.last_continued_at);
   const iteration = Math.max(0, Number.parseInt(String(value.iteration || '0'), 10) || 0);
   const maxIterations = Math.max(0, Number.parseInt(String(value.maxIterations || value.max_iterations || '0'), 10) || 0);
+  const consecutiveModelFailureCount = Math.max(
+    0,
+    Number.parseInt(String(value.consecutiveModelFailureCount || value.consecutive_model_failure_count || '0'), 10) || 0
+  );
+  const failureThreshold = Math.max(
+    2,
+    Number.parseInt(String(value.failureThreshold || value.failure_threshold || '3'), 10) || 3
+  );
+  const failureStreakStartedAt = normalizeText(value.failureStreakStartedAt || value.failure_streak_started_at);
+  const lastFailureAt = normalizeText(value.lastFailureAt || value.last_failure_at);
+  const lastFailureKindValue = normalizeText(value.lastFailureKind || value.last_failure_kind).toLowerCase();
+  const lastFailureKind = SESSION_GOAL_MODEL_FAILURE_KINDS.has(lastFailureKindValue) ? lastFailureKindValue : '';
+  const lastFailureCode = clipText(value.lastFailureCode || value.last_failure_code, 80);
+  const lastFailureSummary = redactGoalFailureSummary(value.lastFailureSummary || value.last_failure_summary);
+  const pauseReason = clipText(value.pauseReason || value.pause_reason, MAX_SESSION_GOAL_FAILURE_REASON_LENGTH);
+  const errorPausedAt = normalizeText(value.errorPausedAt || value.error_paused_at);
 
   return {
     status,
@@ -364,6 +392,15 @@ function normalizeSessionGoalRunner(value: any) {
     maxIterations,
     updatedAt,
     ...(lastContinuedAt ? { lastContinuedAt } : {}),
+    consecutiveModelFailureCount,
+    failureThreshold,
+    ...(failureStreakStartedAt ? { failureStreakStartedAt } : {}),
+    ...(lastFailureAt ? { lastFailureAt } : {}),
+    ...(lastFailureKind ? { lastFailureKind } : {}),
+    ...(lastFailureCode ? { lastFailureCode } : {}),
+    ...(lastFailureSummary ? { lastFailureSummary } : {}),
+    ...(pauseReason ? { pauseReason } : {}),
+    ...(errorPausedAt ? { errorPausedAt } : {}),
   };
 }
 
@@ -387,19 +424,35 @@ export function getSessionGoalRunner(conversation: any) {
   return normalizeSessionGoalRunner(metadata[SESSION_GOAL_RUNNER_METADATA_KEY]);
 }
 
+export function isSessionGoalModelFailurePaused(conversation: any) {
+  const goal = getSessionGoal(conversation);
+  const runner = getSessionGoalRunner(conversation);
+
+  return Boolean(
+    goal
+    && goal.status === 'paused'
+    && runner
+    && runner.status === 'error_paused'
+    && runner.goalUpdatedAt === goalRunnerKey(goal)
+    && runner.consecutiveModelFailureCount >= runner.failureThreshold
+  );
+}
+
 function currentMetadata(conversation: any) {
   return conversation && isPlainObject(conversation.metadata) ? conversation.metadata : {};
 }
 
-function buildMetadataWithGoal(conversation: any, goal: any) {
+function buildMetadataWithGoal(conversation: any, goal: any, options: any = {}) {
   const metadata = currentMetadata(conversation);
   const {
     [SESSION_GOAL_PROPOSAL_METADATA_KEY]: _proposal,
     [SESSION_GOAL_RULING_METADATA_KEY]: _ruling,
+    [SESSION_GOAL_RUNNER_METADATA_KEY]: existingRunner,
     ...remainingMetadata
   } = metadata;
   return {
     ...remainingMetadata,
+    ...(!options.clearRunner && existingRunner ? { [SESSION_GOAL_RUNNER_METADATA_KEY]: existingRunner } : {}),
     [SESSION_GOAL_METADATA_KEY]: goal,
   };
 }
@@ -438,8 +491,8 @@ function updateConversationMetadata(store: any, conversation: any, metadata: any
   });
 }
 
-function updateConversationGoal(store: any, conversation: any, goal: any) {
-  return updateConversationMetadata(store, conversation, buildMetadataWithGoal(conversation, goal));
+function updateConversationGoal(store: any, conversation: any, goal: any, options: any = {}) {
+  return updateConversationMetadata(store, conversation, buildMetadataWithGoal(conversation, goal, options));
 }
 
 function updateConversationProposal(store: any, conversation: any, proposal: any) {
@@ -498,17 +551,19 @@ export function claimSessionGoalAutoContinue(store: any, conversationId: any, in
   const maxIterations = Math.max(1, Number.parseInt(String(input.maxIterations || '0'), 10) || 1);
   const existingRunner = getSessionGoalRunner(conversation);
   const key = goalRunnerKey(goal);
-  const currentIteration = existingRunner && existingRunner.goalUpdatedAt === key ? existingRunner.iteration : 0;
+  const sameEpochRunner = existingRunner && existingRunner.goalUpdatedAt === key ? existingRunner : null;
+  const currentIteration = sameEpochRunner ? sameEpochRunner.iteration : 0;
 
   if (currentIteration >= maxIterations) {
     const timestamp = nowIso();
     const nextRunner = {
+      ...(sameEpochRunner || {}),
       status: 'budget_limited',
       goalUpdatedAt: key,
       iteration: currentIteration,
       maxIterations,
       updatedAt: timestamp,
-      ...(existingRunner && existingRunner.lastContinuedAt ? { lastContinuedAt: existingRunner.lastContinuedAt } : {}),
+      ...(sameEpochRunner && sameEpochRunner.lastContinuedAt ? { lastContinuedAt: sameEpochRunner.lastContinuedAt } : {}),
     };
     const nextConversation = updateConversationGoalRunner(store, conversation, nextRunner);
 
@@ -523,6 +578,7 @@ export function claimSessionGoalAutoContinue(store: any, conversationId: any, in
 
   const timestamp = nowIso();
   const nextRunner = {
+    ...(sameEpochRunner || {}),
     status: 'running',
     goalUpdatedAt: key,
     iteration: currentIteration + 1,
@@ -538,6 +594,195 @@ export function claimSessionGoalAutoContinue(store: any, conversationId: any, in
     goal,
     runner: getSessionGoalRunner(nextConversation),
     conversation: nextConversation,
+  };
+}
+
+function runnerWithoutFailureStreak(runner: any, timestamp: string) {
+  const {
+    consecutiveModelFailureCount: _failureCount,
+    failureStreakStartedAt: _streakStartedAt,
+    lastFailureAt: _lastFailureAt,
+    lastFailureKind: _lastFailureKind,
+    lastFailureCode: _lastFailureCode,
+    lastFailureSummary: _lastFailureSummary,
+    pauseReason: _pauseReason,
+    errorPausedAt: _errorPausedAt,
+    ...remainingRunner
+  } = runner || {};
+
+  return {
+    ...remainingRunner,
+    status: remainingRunner.status === 'error_paused' ? 'running' : remainingRunner.status || 'running',
+    consecutiveModelFailureCount: 0,
+    updatedAt: timestamp,
+  };
+}
+
+function isGoalRunnerSourceMessage(message: any) {
+  const metadata = message && isPlainObject(message.metadata) ? message.metadata : {};
+  return Boolean(metadata.goalAutoContinue) && normalizeText(metadata.source).toLowerCase() === 'goal-runner';
+}
+
+export function recordSessionGoalContinuationOutcome(store: any, conversationId: any, input: any = {}) {
+  const normalizedConversationId = normalizeText(conversationId);
+  const conversation = store.getConversation(normalizedConversationId);
+  const goal = getSessionGoal(conversation);
+
+  if (!conversation || !goal || goal.status !== 'active') {
+    return { changed: false, paused: false, conversation, goal, runner: getSessionGoalRunner(conversation) };
+  }
+
+  const turn = isPlainObject(input.turn) ? input.turn : {};
+  if (Boolean(turn.stopRequested) || normalizeText(turn.terminationReason) === 'stopped_by_user') {
+    return { changed: false, paused: false, conversation, goal, runner: getSessionGoalRunner(conversation) };
+  }
+
+  const sourceMessages = Array.isArray(input.sourceMessages) ? input.sourceMessages : [];
+  const goalRunnerBatch = sourceMessages.length > 0 && sourceMessages.every(isGoalRunnerSourceMessage);
+  const failures = Array.isArray(input.failures) ? input.failures : [];
+  const replies = Array.isArray(input.replies) ? input.replies : [];
+  const completedCount = Math.max(0, Number(turn.completedCount || 0) || 0, replies.length);
+  const currentRunner = getSessionGoalRunner(conversation);
+  const key = goalRunnerKey(goal);
+  const sameEpochRunner = currentRunner && currentRunner.goalUpdatedAt === key ? currentRunner : null;
+  const currentFailureCount = sameEpochRunner ? sameEpochRunner.consecutiveModelFailureCount : 0;
+  const occurredAt = normalizeText(turn.endedAt) || nowIso();
+
+  function resetStreak(reason: string) {
+    if (!sameEpochRunner || currentFailureCount === 0) {
+      return { changed: false, paused: false, reason, conversation, goal, runner: currentRunner };
+    }
+    const nextRunner = runnerWithoutFailureStreak(sameEpochRunner, occurredAt);
+    const nextConversation = updateConversationGoalRunner(store, conversation, nextRunner);
+    return {
+      changed: true,
+      paused: false,
+      reason,
+      conversation: nextConversation,
+      goal: getSessionGoal(nextConversation),
+      runner: getSessionGoalRunner(nextConversation),
+    };
+  }
+
+  if (!goalRunnerBatch) {
+    return resetStreak('ordinary_user_turn');
+  }
+
+  if (completedCount > 0) {
+    return resetStreak('completed_reply');
+  }
+
+  const startedAtMs = Date.parse(normalizeText(turn.startedAt));
+  const endedAtMs = Date.parse(occurredAt);
+  const fastFailureMs = Math.max(1, Number(input.fastFailureMs) || 60_000);
+  const failureWindowMs = Math.max(fastFailureMs, Number(input.failureWindowMs) || 5 * 60_000);
+  const failureThreshold = Math.max(2, Number.parseInt(String(input.failureThreshold || '3'), 10) || 3);
+  const durationMs = endedAtMs - startedAtMs;
+  const invocationFailures = failures
+    .map((failure: any) => failure && isPlainObject(failure.invocationFailure) ? failure.invocationFailure : null)
+    .filter(Boolean);
+  const pureModelInvocationFailure = failures.length > 0
+    && invocationFailures.length === failures.length
+    && invocationFailures.every((failure: any) => (
+      failure.eligible === true
+      && SESSION_GOAL_MODEL_FAILURE_KINDS.has(normalizeText(failure.kind).toLowerCase())
+    ));
+  const fastFailure = Number.isFinite(durationMs) && durationMs >= 0 && durationMs <= fastFailureMs;
+
+  if (!pureModelInvocationFailure || !fastFailure) {
+    return resetStreak(pureModelInvocationFailure ? 'slow_failure' : 'non_model_failure');
+  }
+
+  const previousStartedAtMs = sameEpochRunner && sameEpochRunner.failureStreakStartedAt
+    ? Date.parse(sameEpochRunner.failureStreakStartedAt)
+    : Number.NaN;
+  const withinWindow = currentFailureCount > 0
+    && Number.isFinite(previousStartedAtMs)
+    && endedAtMs - previousStartedAtMs <= failureWindowMs;
+  const nextFailureCount = withinWindow ? currentFailureCount + 1 : 1;
+  const streakStartedAt = withinWindow && sameEpochRunner
+    ? sameEpochRunner.failureStreakStartedAt
+    : occurredAt;
+  const lastFailure = invocationFailures[0];
+  const lastFailureKind = normalizeText(lastFailure.kind).toLowerCase();
+  const lastFailureCode = clipText(lastFailure.code, 80) || 'model_invocation_failed';
+  const lastFailureSummary = redactGoalFailureSummary(lastFailure.summary || failures[0].errorMessage)
+    || 'Provider/model invocation failed';
+  const baseRunner = sameEpochRunner || {
+    status: 'running',
+    goalUpdatedAt: key,
+    iteration: 0,
+    maxIterations: 0,
+  };
+
+  if (nextFailureCount < failureThreshold) {
+    const nextRunner = {
+      ...baseRunner,
+      status: 'running',
+      goalUpdatedAt: key,
+      consecutiveModelFailureCount: nextFailureCount,
+      failureThreshold,
+      failureStreakStartedAt: streakStartedAt,
+      lastFailureAt: occurredAt,
+      lastFailureKind,
+      lastFailureCode,
+      lastFailureSummary,
+      updatedAt: occurredAt,
+    };
+    const nextConversation = updateConversationGoalRunner(store, conversation, nextRunner);
+    return {
+      changed: true,
+      paused: false,
+      reason: 'failure_recorded',
+      conversation: nextConversation,
+      goal: getSessionGoal(nextConversation),
+      runner: getSessionGoalRunner(nextConversation),
+    };
+  }
+
+  const pauseReason = clipText(
+    `连续 ${nextFailureCount} 次快速模型调用失败，Goal 已自动暂停。最后原因：${lastFailureSummary}`,
+    MAX_SESSION_GOAL_FAILURE_REASON_LENGTH
+  );
+  const pausedGoal = {
+    ...goal,
+    status: 'paused',
+    updatedAt: occurredAt,
+  };
+  const pausedRunner = {
+    ...baseRunner,
+    status: 'error_paused',
+    goalUpdatedAt: occurredAt,
+    consecutiveModelFailureCount: nextFailureCount,
+    failureThreshold,
+    failureStreakStartedAt: streakStartedAt,
+    lastFailureAt: occurredAt,
+    lastFailureKind,
+    lastFailureCode,
+    lastFailureSummary,
+    pauseReason,
+    errorPausedAt: occurredAt,
+    updatedAt: occurredAt,
+  };
+  const metadata = currentMetadata(conversation);
+  const {
+    [SESSION_GOAL_PROPOSAL_METADATA_KEY]: _proposal,
+    [SESSION_GOAL_RULING_METADATA_KEY]: _ruling,
+    ...remainingMetadata
+  } = metadata;
+  const nextConversation = updateConversationMetadata(store, conversation, {
+    ...remainingMetadata,
+    [SESSION_GOAL_METADATA_KEY]: pausedGoal,
+    [SESSION_GOAL_RUNNER_METADATA_KEY]: pausedRunner,
+  });
+
+  return {
+    changed: true,
+    paused: true,
+    reason: 'error_paused',
+    conversation: nextConversation,
+    goal: getSessionGoal(nextConversation),
+    runner: getSessionGoalRunner(nextConversation),
   };
 }
 
@@ -675,7 +920,9 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
     // ONE metadata write (buildMetadataWithGoal strips the stale proposal
     // and any prior ruling; the fresh ruling is then attached atomically).
     const metadata = {
-      ...buildMetadataWithGoal(conversation, goal),
+      ...buildMetadataWithGoal(conversation, goal, {
+        clearRunner: existingProposal.action === 'set' || existingProposal.action === 'resume',
+      }),
       [SESSION_GOAL_RULING_METADATA_KEY]: buildRulingRecord(existingProposal, 'accepted', input.ruledBy, input.reason, timestamp),
     };
     const nextConversation = updateConversationMetadata(store, conversation, metadata);
@@ -728,7 +975,9 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
       ...currentMetadata(conversation),
       [SESSION_GOAL_METADATA_KEY]: goal,
     })
-    : updateConversationGoal(store, conversation, goal);
+    : updateConversationGoal(store, conversation, goal, {
+      clearRunner: action === 'set' || action === 'resume',
+    });
   return responseForConversation(nextConversation, {
     goal: getSessionGoal(nextConversation),
     proposal: checklistOnly ? getSessionGoalProposal(nextConversation) : null,

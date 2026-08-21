@@ -3590,6 +3590,128 @@ test('turn orchestrator auto-continues active session goals until safety budget'
   assert.ok(broadcastEvents.some((event) => event.eventName === 'conversation_goal_proposal_updated'));
 });
 
+test('turn orchestrator directly pauses an active Goal after three fast model invocation failures', { concurrency: false }, async (t) => {
+  const tempDir = withTempDir('caff-session-goal-failure-pause-');
+  const sqlitePath = path.join(tempDir, 'goal-failure-pause.sqlite');
+  const conversation = {
+    id: 'conversation-goal-failure-pause',
+    title: 'Goal failure pause',
+    type: 'standard',
+    metadata: {
+      sessionGoal: {
+        objective: 'Stop retrying a broken provider',
+        status: 'active',
+        createdAt: '2026-08-21T00:00:00.000Z',
+        updatedAt: '2026-08-21T00:00:00.000Z',
+      },
+    },
+    agents: [{ id: 'agent-a', name: 'Alpha' }],
+    messages: [],
+  };
+  const broadcastEvents = [];
+  let messageCounter = 0;
+  let executeCount = 0;
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const store = {
+    databasePath: sqlitePath,
+    getConversation(conversationId) {
+      return conversationId === conversation.id ? conversation : null;
+    },
+    listConversations() {
+      return [];
+    },
+    updateConversation(conversationId, updates) {
+      assert.equal(conversationId, conversation.id);
+      conversation.metadata = updates && updates.metadata && typeof updates.metadata === 'object'
+        ? updates.metadata
+        : conversation.metadata;
+      return conversation;
+    },
+    createMessage(input) {
+      messageCounter += 1;
+      const message = {
+        id: input.id || `goal-failure-message-${messageCounter}`,
+        errorMessage: '',
+        taskId: null,
+        runId: null,
+        createdAt: new Date().toISOString(),
+        ...input,
+      };
+      conversation.messages.push(message);
+      return message;
+    },
+  };
+
+  const orchestrator = createTurnOrchestrator({
+    store,
+    skillRegistry: { listSkills() { return []; }, resolveSkills() { return []; } },
+    modeStore: { get() { return null; } },
+    agentToolBridge: {},
+    host: '127.0.0.1',
+    port: 0,
+    agentDir: tempDir,
+    sqlitePath,
+    toolBaseUrl: 'http://127.0.0.1:0',
+    agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
+    sessionGoalAutoContinueMaxTurns: 4,
+    sessionGoalFailureThreshold: 3,
+    sessionGoalFastFailureMs: 60_000,
+    sessionGoalFailureWindowMs: 5 * 60_000,
+    broadcastEvent(eventName, payload) {
+      broadcastEvents.push({ eventName, payload });
+    },
+    executeConversationAgent: async ({ failedReplies, agent }) => {
+      executeCount += 1;
+      const failureSummary = executeCount === 3
+        ? 'Authorization: Bearer test-goal-runner-bearer-value'
+        : 'insufficient balance';
+      failedReplies.push({
+        agentId: agent.id,
+        senderName: agent.name,
+        content: '',
+        status: 'failed',
+        errorMessage: failureSummary,
+        metadata: {
+          invocationFailure: {
+            kind: 'provider',
+            code: 'assistant_error',
+            eligible: true,
+            summary: failureSummary,
+          },
+        },
+      });
+      return { stopTurn: false };
+    },
+  });
+
+  const scheduled = orchestrator.scheduleGoalContinuation(conversation.id);
+  assert.equal(scheduled.scheduled, true);
+
+  await waitForCondition(() => (
+    conversation.metadata.sessionGoal.status === 'paused'
+    || conversation.metadata.sessionGoalProposal
+  ));
+
+  assert.equal(executeCount, 3);
+  assert.equal(conversation.metadata.sessionGoal.status, 'paused');
+  assert.equal(conversation.metadata.sessionGoalRunner.status, 'error_paused');
+  assert.equal(conversation.metadata.sessionGoalRunner.consecutiveModelFailureCount, 3);
+  assert.equal(conversation.metadata.sessionGoalProposal, undefined);
+  const goalUpdate = broadcastEvents.find((event) => (
+    event.eventName === 'conversation_goal_updated'
+    && event.payload
+    && event.payload.runner
+    && event.payload.runner.status === 'error_paused'
+  ));
+  assert.ok(goalUpdate);
+  assert.match(JSON.stringify(goalUpdate.payload), /\[redacted\]/u);
+  assert.doesNotMatch(JSON.stringify(goalUpdate.payload), /test-goal-runner-bearer-value/u);
+});
+
 test('turn orchestrator continues with the next queued batch after a stop request', { concurrency: false }, async (t) => {
   const tempDir = withTempDir('caff-turn-stop-queue-');
   const sqlitePath = path.join(tempDir, 'turn-stop-queue.sqlite');

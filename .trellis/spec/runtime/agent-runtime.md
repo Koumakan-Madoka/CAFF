@@ -96,6 +96,71 @@
 - `tests/runtime/agent-executor-hook.test.js` covers the executor-to-runtime
   options wiring when that contract changes.
 
+## Goal Runner Model Invocation Failure Classification
+
+### 1. Scope / Trigger
+
+- Trigger: `server/domain/conversation/turn/agent-executor.ts` catches a failed Pi run that may contribute to the Goal Runner fast-failure guard.
+- Tool/application preflight failures that never produce structured invocation metadata must remain outside this guard.
+
+### 2. Signatures
+
+- `classifyAgentInvocationFailure(error, { stopRequested? }) -> { kind, code, eligible, terminationType, summary }`.
+- Failed assistant message metadata stores `invocationFailure` with that exact bounded projection.
+- `routing-executor` copies the projection into `turn_finished.failures[]` and the returned `failures[]`; it does not infer failure kinds from `errorMessage`.
+
+### 3. Contracts
+
+- `assistantErrors[]` means `kind='provider'`, `code='assistant_error'`, eligible.
+- A Pi terminal assistant error remains a failed invocation even when the SDK host exits with code zero. `startRun(...).resultPromise` rejects with the bounded generic message `pi assistant reported a model invocation error`, preserves `assistantErrors[]` for structured classification, and persists the run as failed. The executor defensively applies the same conversion if an alternate or mocked runtime resolves a result that still contains `assistantErrors[]`; it must never replace the provider signal with a later `Empty agent reply` parse error.
+- Structured network codes such as `ECONNRESET`, `ECONNREFUSED`, `ETIMEDOUT`, `ENOTFOUND`, `EAI_AGAIN`, and `UND_ERR_*` mean provider failure, eligible.
+- `terminationReason.type` in `heartbeat_timeout|progress_timeout|run_timeout` means timeout, eligible; the Goal layer separately enforces the fast-duration threshold, so normal 10-minute/3-hour watchdog failures do not become fast streaks.
+- Numeric exit code or process signal means `process_exit`, eligible.
+- User stop or `terminationReason.type='cancelled'` means `cancelled`, ineligible. Unclassified local/application errors mean `unknown`, ineligible.
+- `summary` is whitespace-normalized, clipped to 240 characters, and redacts Authorization/Bearer, token, secret, password, API-key, and `sk-*` values before message metadata or SSE projection.
+
+### 4. Validation & Error Matrix
+
+| Input | Projection |
+| --- | --- |
+| SDK host exits zero after terminal `stopReason='error'` with `assistantErrors=['insufficient balance']` | run rejects and persists failed; executor projects provider / assistant_error / eligible |
+| Alternate runtime resolves an empty reply with `assistantErrors=['insufficient balance']` | executor converts it to the same structured provider failure before reply parsing |
+| An assistant error is followed by `terminationReason.type='progress_timeout'` | timeout remains authoritative; `assistantErrors[]` stays attached for diagnostics |
+| `terminationReason.type='progress_timeout'` | timeout / progress_timeout / eligible; normally excluded later by duration |
+| `exitCode=7` | process_exit / `7` / eligible |
+| `code='ECONNRESET'` | provider / econnreset / eligible |
+| stop requested | cancelled / stop_requested / ineligible |
+| plain local `Error` with no runtime fields | unknown / unclassified_invocation_error / ineligible |
+| secret in assistant error | summary contains `[redacted]`, never the secret |
+
+### 5. Good/Base/Bad Cases
+
+- Good: provider billing/auth/network failure is classified once at the invocation boundary and Goal logic consumes only the structured projection.
+- Base: progress timeout is classified as timeout but exceeds the Goal fast threshold, so it breaks rather than increments the streak.
+- Bad: regex-matching localized provider billing text inside `turn-orchestrator`, or copying raw `assistantErrors` into Goal metadata/SSE.
+
+### 6. Tests Required
+
+- `tests/runtime/session-goal-auto-pause.test.js` covers every kind, network codes, eligibility, and secret redaction.
+- `tests/runtime/pi-runtime.test.js` proves a terminal assistant error rejects even when the SDK host exits zero.
+- `tests/runtime/agent-executor-hook.test.js` covers both a rejected run and a defensive resolved-result path, asserting failed-message `metadata.invocationFailure` keeps the provider signal.
+- `tests/runtime/turn-orchestrator.test.js` proves the projected failures pause on the third automatic continuation.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+```ts
+if (/insufficient balance|429|provider unavailable/iu.test(failure.errorMessage)) {
+  incrementGoalFailureStreak();
+}
+```
+
+#### Correct
+```ts
+const invocationFailure = classifyAgentInvocationFailure(error, { stopRequested });
+store.updateMessage(messageId, { metadata: { ...metadata, invocationFailure } });
+```
+
 ## Mirrored Update Paths
 
 - Trellis tool API:

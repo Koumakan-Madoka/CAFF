@@ -238,6 +238,73 @@ async function flush(scheduler) {
   await scheduler.dispatchReadyNodes(ROOT_ID);
 }
 
+function persistErrorPausedGoal(store, conversationId, timestamp = '2026-08-21T00:03:05.000Z') {
+  const conversation = store.getConversationWithoutMessages(conversationId);
+  const goal = getSessionGoal(conversation);
+  assert.ok(goal);
+  store.updateConversation(conversationId, {
+    metadata: {
+      ...(conversation.metadata || {}),
+      sessionGoal: {
+        ...goal,
+        status: 'paused',
+        updatedAt: timestamp,
+      },
+      sessionGoalRunner: {
+        status: 'error_paused',
+        goalUpdatedAt: timestamp,
+        iteration: 3,
+        maxIterations: 20,
+        updatedAt: timestamp,
+        consecutiveModelFailureCount: 3,
+        failureStreakStartedAt: '2026-08-21T00:01:05.000Z',
+        lastFailureAt: timestamp,
+        lastFailureKind: 'provider',
+        lastFailureCode: 'assistant_error',
+        lastFailureSummary: 'insufficient balance',
+        pauseReason: '连续 3 次快速模型调用失败，Goal 已自动暂停。',
+        errorPausedAt: timestamp,
+      },
+    },
+  });
+}
+
+test('error-paused goal update blocks a bound doing DAG node without a completion ruling', async () => {
+  const store = createStore(test, 'caff-dag-goal-error-pause-event-');
+  createRoot(store);
+  const plan = createActivePlan(store, makeDoc([node('n1')]));
+  const { scheduler } = createHarness(store);
+
+  scheduler.handleEvent('conversation_plan_updated', { ownerConversationId: ROOT_ID, plan });
+  await flush(scheduler);
+  assert.equal(getNode(store, 'n1').status, 'doing');
+
+  persistErrorPausedGoal(store, 'child-n1');
+  scheduler.handleEvent('conversation_goal_updated', { conversationId: 'child-n1' });
+  await flush(scheduler);
+
+  assert.equal(getNode(store, 'n1').status, 'blocked');
+  assert.match(historyFor(store, 'n1').at(-1).reason, /dag_goal_model_failure_paused/u);
+  assert.equal(getNode(store, 'n1').result, undefined);
+});
+
+test('startup reconcile blocks a bound DAG node whose Goal was error-paused before restart', async () => {
+  const store = createStore(test, 'caff-dag-goal-error-pause-restart-');
+  createRoot(store);
+  const plan = createActivePlan(store, makeDoc([node('n1')]));
+  const first = createHarness(store);
+
+  first.scheduler.handleEvent('conversation_plan_updated', { ownerConversationId: ROOT_ID, plan });
+  await flush(first.scheduler);
+  persistErrorPausedGoal(store, 'child-n1');
+
+  const restarted = createHarness(store);
+  await restarted.scheduler.reconcileOnStartup();
+
+  assert.equal(getNode(store, 'n1').status, 'blocked');
+  assert.match(historyFor(store, 'n1').at(-1).reason, /dag_goal_model_failure_paused/u);
+});
+
 test('activate dispatches in-degree-0 nodes and binds spawned conversations (D13/D21)', async () => {
   const store = createStore(test);
   createRoot(store);

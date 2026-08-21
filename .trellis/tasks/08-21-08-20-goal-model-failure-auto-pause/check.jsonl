@@ -1,0 +1,12 @@
+{"file": ".agents/skills/finish-work/SKILL.md", "reason": "Finish work checklist"}
+{"file": ".agents/skills/check/SKILL.md", "reason": "Code quality check spec"}
+{"file": ".trellis/spec/runtime/agent-runtime.md", "reason": "Verify failure classification and redaction"}
+{"file": ".trellis/spec/runtime/conversation-turn-queue.md", "reason": "Verify queue and reset semantics"}
+{"file": ".trellis/spec/backend/session-goal.md", "reason": "Verify Goal state machine and metadata normalization"}
+{"file": ".trellis/spec/backend/dag-execution.md", "reason": "Verify D27/D28 and restart reconcile"}
+{"file": ".trellis/spec/frontend/ui-structure.md", "reason": "Verify visible state, accessibility, and renderer ownership"}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Verify regression depth"}
+{"file":"tests/runtime/pi-runtime.test.js","reason":"21/21 passed, including terminal assistant error rejection and watchdog timeout authority"}
+{"file":"tests/runtime/agent-executor-hook.test.js","reason":"9/9 passed, including rejected and defensive resolved-result provider classification paths"}
+{"file":"tests/runtime/turn-orchestrator.test.js","reason":"81/81 test bodies passed; command reports only two existing Windows t.after rmSync EPERM cleanup failures"}
+{"file":".trellis/tasks/08-21-08-20-goal-model-failure-auto-pause/prd.md","reason":"Isolated 3215 preview with local 402 provider paused exactly at 3, exposed only redacted UI/API context, Resume cleared streak, and restart scheduled no fourth continuation"}

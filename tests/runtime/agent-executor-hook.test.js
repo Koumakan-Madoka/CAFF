@@ -6,7 +6,7 @@ const test = require('node:test');
 
 const { withTempDir } = require('../helpers/temp-dir');
 
-function createRunHandle(reply) {
+function createRunHandle(reply, resultOverrides = {}) {
   const handle = new EventEmitter();
   handle.runId = 'run-hook-await';
   handle.sessionPath = '';
@@ -16,7 +16,16 @@ function createRunHandle(reply) {
     usage: null,
     heartbeatCount: 0,
     sessionPath: '',
+    ...resultOverrides,
   });
+  return handle;
+}
+
+function createFailedRunHandle(error) {
+  const handle = new EventEmitter();
+  handle.runId = 'run-structured-failure';
+  handle.sessionPath = '';
+  handle.resultPromise = Promise.reject(error);
   return handle;
 }
 
@@ -129,6 +138,126 @@ function createFakeAgentToolBridge() {
     unregisterInvocation() {},
   };
 }
+
+test('agent executor persists structured provider failure metadata on failed replies', async (t) => {
+  const tempDir = withTempDir('caff-agent-executor-structured-failure-');
+  const minimalPiPath = require.resolve('../../build/lib/minimal-pi');
+  const agentExecutorPath = require.resolve('../../build/server/domain/conversation/turn/agent-executor');
+  const turnStatePath = require.resolve('../../build/server/domain/conversation/turn/turn-state');
+  const minimalPi = require(minimalPiPath);
+  const originalStartRun = minimalPi.startRun;
+  const invocationError = new Error('model invocation failed');
+  invocationError.assistantErrors = ['insufficient balance'];
+  let nextRunHandle = createFailedRunHandle(invocationError);
+
+  minimalPi.startRun = () => nextRunHandle;
+  delete require.cache[agentExecutorPath];
+
+  t.after(() => {
+    minimalPi.startRun = originalStartRun;
+    delete require.cache[agentExecutorPath];
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const { createAgentExecutor } = require(agentExecutorPath);
+  const { createTurnState } = require(turnStatePath);
+  const agent = {
+    id: 'agent-structured-failure',
+    name: 'Structured Failure',
+    description: 'Tests provider failure projection.',
+    personaPrompt: 'Be brief.',
+  };
+  const conversation = {
+    id: 'conversation-structured-failure',
+    title: 'Structured failure',
+    type: 'standard',
+    agents: [agent],
+    metadata: {},
+  };
+  const store = createFakeStore(conversation);
+  const executor = createAgentExecutor({
+    store,
+    skillRegistry: { resolveSkills: () => [] },
+    modeStore: { get: () => null },
+    agentToolBridge: createFakeAgentToolBridge(),
+    agentDir: tempDir,
+    sqlitePath: path.join(tempDir, 'chat.sqlite'),
+    toolBaseUrl: 'http://127.0.0.1:3100',
+    agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+  });
+  const turnState = createTurnState(conversation, 'turn-structured-failure');
+  const failedReplies = [];
+
+  await executor.executeConversationAgent({
+    runStore: createFakeRunStore(),
+    conversationId: conversation.id,
+    turnId: turnState.turnId,
+    rootTaskId: 'root-task-structured-failure',
+    conversation,
+    promptMessages: [{ role: 'user', content: 'Continue the Goal.' }],
+    promptUserMessage: { id: 'goal-user-message', role: 'user', content: 'Continue the Goal.' },
+    queueItem: { triggerType: 'user', enqueueReason: 'goal_runner' },
+    agent,
+    turnState,
+    completedReplies: [],
+    failedReplies,
+    routingMode: 'mention_queue',
+    hop: 1,
+    remainingSlots: 1,
+    enqueueAgent() {},
+    allowHandoffs: true,
+    finalStopsTurn: true,
+    projectDir: tempDir,
+  });
+
+  assert.equal(failedReplies.length, 1);
+  assert.deepEqual(failedReplies[0].metadata.invocationFailure, {
+    kind: 'provider',
+    code: 'assistant_error',
+    eligible: true,
+    terminationType: '',
+    summary: 'insufficient balance',
+  });
+
+  nextRunHandle = createRunHandle('', {
+    assistantErrors: ['402: insufficient quota'],
+    completionStopReason: 'error',
+  });
+  const resolvedFailureTurnState = createTurnState(conversation, 'turn-resolved-structured-failure');
+  const resolvedFailureReplies = [];
+
+  await executor.executeConversationAgent({
+    runStore: createFakeRunStore(),
+    conversationId: conversation.id,
+    turnId: resolvedFailureTurnState.turnId,
+    rootTaskId: 'root-task-resolved-structured-failure',
+    conversation,
+    promptMessages: [{ role: 'user', content: 'Continue the Goal again.' }],
+    promptUserMessage: { id: 'goal-user-message-2', role: 'user', content: 'Continue the Goal again.' },
+    queueItem: { triggerType: 'user', enqueueReason: 'goal_runner' },
+    agent,
+    turnState: resolvedFailureTurnState,
+    completedReplies: [],
+    failedReplies: resolvedFailureReplies,
+    routingMode: 'mention_queue',
+    hop: 1,
+    remainingSlots: 1,
+    enqueueAgent() {},
+    allowHandoffs: true,
+    finalStopsTurn: true,
+    projectDir: tempDir,
+  });
+
+  assert.equal(resolvedFailureReplies.length, 1);
+  assert.deepEqual(resolvedFailureReplies[0].metadata.invocationFailure, {
+    kind: 'provider',
+    code: 'assistant_error',
+    eligible: true,
+    terminationType: '',
+    summary: '402: insufficient quota',
+  });
+});
 
 test('agent executor does not auto-inject long-term memory by default', async (t) => {
   const tempDir = withTempDir('caff-agent-executor-no-auto-memory-');
