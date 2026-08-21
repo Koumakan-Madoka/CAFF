@@ -192,3 +192,59 @@ Known environment note: the persistent local develop worktree contains pre-exist
 ### Next Steps
 
 - None - task complete
+
+
+## Session 5: One-shot progress-timeout tool recovery
+
+**Date**: 2026-08-21
+**Task**: One-shot progress-timeout tool recovery
+**Branch**: `room/c2fab452-caff-bug-bug`
+
+### Summary
+
+(Add summary)
+
+### Main Changes
+
+| Area | Result |
+|------|--------|
+| Runtime | Added per-call one-shot recovery for a progress timeout only while a tool call is active; no-tool and second-timeout paths remain fail closed. |
+| SDK host | Aborts and settles the original turn before prompting the same Pi session with a bounded recovery instruction; idle-window requests are rejected. |
+| Executor | Enables recovery only for conversation Agents and projects bounded recovering/started task events without exposing tool arguments. |
+| Compatibility | Preserved cancellation, heartbeat/run timeout, provider/process failure, Goal streak, expected completion, and digest fallback authority. |
+| Acceptance | User accepted the isolated `3217` preview using a 20-second preview-only watchdog: one 45-second silent tool was stopped, one 3-second preflight ran, the same run/session succeeded, and no original command arguments appeared in recovery events. |
+| Review and integration | Kimi independently approved exact commit `ad466b81e78dc5905456fcb34d7f97890cd71d57` and PR #80 with no blocking findings. Both GitHub unit checks passed. PR #80 merged to `develop` as `98e7219d66ae6a3330c709871c8b359d67749488`. |
+| Merge verification | The merge commit tree exactly equals the accepted head tree `14696d56cd7c095e20a20e31e3d5bf5cbb3cd344`. In the clean room worktree carrying that tree, `npm run build` passed and `tests/runtime/pi-runtime.test.js` passed 33/33. |
+
+**Primary Files**:
+- `lib/pi-runtime.ts`
+- `lib/pi-sdk-host.mjs`
+- `server/domain/conversation/turn/agent-executor.ts`
+- `tests/runtime/pi-runtime.test.js`
+- `tests/runtime/pi-sdk-host.test.js`
+- `tests/runtime/agent-executor-hook.test.js`
+- `.trellis/spec/runtime/agent-runtime.md`
+- `.trellis/spec/runtime/conversation-turn-queue.md`
+
+**Known Environment Note**:
+- The broader turn-orchestrator command still reports two pre-existing Windows `t.after` temporary-directory `rmSync` EPERM cleanup failures after all 81 test bodies pass; this was independently confirmed unrelated to the feature.
+
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `ad466b81e78dc5905456fcb34d7f97890cd71d57` | (see git log) |
+| `98e7219d66ae6a3330c709871c8b359d67749488` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
