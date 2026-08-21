@@ -1,0 +1,11 @@
+{"file": ".agents/skills/finish-work/SKILL.md", "reason": "Finish work checklist"}
+{"file": ".agents/skills/check/SKILL.md", "reason": "Code quality check spec"}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Observable regression testing requirements"}
+{"file": ".trellis/spec/runtime/conversation-turn-queue.md", "reason": "Verify scheduling, stop, capacity, and hop contracts"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Verify mirrored dispatch decisions across layers"}
+{"file":"tests/runtime/turn-orchestrator.test.js","reason":"85/85 test bodies pass including cross-channel running/completed/capacity/Stop cases; command has only two pre-existing Windows t.after rmSync EPERM cleanup failures"}
+{"file":"tests/runtime/agent-tool-bridge.test.js","reason":"34/34 bridge tests pass including private identity and no-handoff behavior"}
+{"file":"tests/runtime/agent-executor-hook.test.js","reason":"11/11 executor tests pass including public routing identity after completion hooks"}
+{"file":"package.json","reason":"npm run check, npm run typecheck, npm run build, and git diff --check pass"}
+{"file":"tests/smoke/server-smoke.test.js","reason":"test:smoke passes 69/69 server cases plus 4/4 mode-store cases"}
+{"file":"tests/dag/dag-scheduler.test.js","reason":"test:dag-execution passes 55+8+8+3+3 scheduler/worktree/merge/baseline/HTTP cases"}
