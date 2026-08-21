@@ -147,3 +147,48 @@ Integration verification on the merge-equivalent tree: `npm run build` passed an
 ### Next Steps
 
 - None - task complete
+
+
+## Session 4: Goal model failure auto pause
+
+**Date**: 2026-08-21
+**Task**: Goal model failure auto pause
+**Branch**: `room/c2fab452-caff-bug-bug`
+
+### Summary
+
+Implemented durable same-epoch Goal Runner model-failure streaks, direct error pause, safe SSE/UI diagnostics, and DAG fail-closed blocking; completed user acceptance, independent review, and PR #78 merge into develop.
+
+### Main Changes
+
+| Area | Result |
+|------|--------|
+| Runtime classification | Preserved provider, timeout, process-exit, cancelled, and unknown invocation failures, including SDK host exit 0 with terminal assistant errors. |
+| Goal runner | Persisted same-epoch failure streaks; three qualifying failures within the 60-second/5-minute contract atomically pause the Goal and prevent a fourth continuation. |
+| UI and security | Displayed the automatic model-failure pause through existing SSE refresh paths with single-line clipped and redacted details; Resume clears the runner guard. |
+| DAG | Event handling and startup reconcile block the bound goal-driven child with `dag_goal_model_failure_paused` without fabricating D27/D28 completion. |
+| Verification | User accepted the isolated preview at port 3215. Kimi independently approved exact commit e3cd9675 and PR #78. Both GitHub unit checks passed. |
+| Integration | PR #78 merged to develop as merge commit 6bccec587accbbe883a82a076a3bf3657207c9d2. Merge tree equals accepted head tree 7bf4a3bcc8c25400beb13d0d410c214646fdcb86. Post-merge-equivalent build passed; auto-pause 8/8, pi-runtime 21/21, and agent-executor-hook 9/9 passed. |
+
+Known environment note: the persistent local develop worktree contains pre-existing untracked files, so it was not advanced. Integration verification used the clean room worktree after proving the remote merge commit tree exactly matched the accepted head.
+
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `e33edea4ed65c4bb50dcb5d51f124455783dbdf2` | (see git log) |
+| `e3cd9675d099b4427e9fba3c3e06bb19b1727cbb` | (see git log) |
+| `6bccec587accbbe883a82a076a3bf3657207c9d2` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
