@@ -112,6 +112,7 @@
 ### 3. Contracts
 
 - `assistantErrors[]` means `kind='provider'`, `code='assistant_error'`, eligible.
+- A Pi terminal assistant error remains a failed invocation even when the SDK host exits with code zero. `startRun(...).resultPromise` rejects with the bounded generic message `pi assistant reported a model invocation error`, preserves `assistantErrors[]` for structured classification, and persists the run as failed. The executor defensively applies the same conversion if an alternate or mocked runtime resolves a result that still contains `assistantErrors[]`; it must never replace the provider signal with a later `Empty agent reply` parse error.
 - Structured network codes such as `ECONNRESET`, `ECONNREFUSED`, `ETIMEDOUT`, `ENOTFOUND`, `EAI_AGAIN`, and `UND_ERR_*` mean provider failure, eligible.
 - `terminationReason.type` in `heartbeat_timeout|progress_timeout|run_timeout` means timeout, eligible; the Goal layer separately enforces the fast-duration threshold, so normal 10-minute/3-hour watchdog failures do not become fast streaks.
 - Numeric exit code or process signal means `process_exit`, eligible.
@@ -122,7 +123,9 @@
 
 | Input | Projection |
 | --- | --- |
-| `assistantErrors=['insufficient balance']` | provider / assistant_error / eligible |
+| SDK host exits zero after terminal `stopReason='error'` with `assistantErrors=['insufficient balance']` | run rejects and persists failed; executor projects provider / assistant_error / eligible |
+| Alternate runtime resolves an empty reply with `assistantErrors=['insufficient balance']` | executor converts it to the same structured provider failure before reply parsing |
+| An assistant error is followed by `terminationReason.type='progress_timeout'` | timeout remains authoritative; `assistantErrors[]` stays attached for diagnostics |
 | `terminationReason.type='progress_timeout'` | timeout / progress_timeout / eligible; normally excluded later by duration |
 | `exitCode=7` | process_exit / `7` / eligible |
 | `code='ECONNRESET'` | provider / econnreset / eligible |
@@ -139,7 +142,8 @@
 ### 6. Tests Required
 
 - `tests/runtime/session-goal-auto-pause.test.js` covers every kind, network codes, eligibility, and secret redaction.
-- `tests/runtime/agent-executor-hook.test.js` forces a real executor catch and asserts failed-message `metadata.invocationFailure`.
+- `tests/runtime/pi-runtime.test.js` proves a terminal assistant error rejects even when the SDK host exits zero.
+- `tests/runtime/agent-executor-hook.test.js` covers both a rejected run and a defensive resolved-result path, asserting failed-message `metadata.invocationFailure` keeps the provider signal.
 - `tests/runtime/turn-orchestrator.test.js` proves the projected failures pause on the third automatic continuation.
 
 ### 7. Wrong vs Correct

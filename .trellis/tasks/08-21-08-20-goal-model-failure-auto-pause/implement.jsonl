@@ -8,3 +8,7 @@
 {"file": ".trellis/spec/frontend/ui-structure.md", "reason": "Expose safe Goal auto-pause reason through existing UI ownership"}
 {"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Add observable regression tests before implementation"}
 {"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Track failure data from runtime through persistence, SSE, UI, and DAG"}
+{"file":"lib/pi-runtime.ts","reason":"Acceptance regression fix: terminal assistant stopReason=error with a zero SDK-host exit rejects the run and preserves assistantErrors"}
+{"file":"server/domain/conversation/turn/agent-executor.ts","reason":"Defensively preserve assistantErrors from an anomalous resolved runtime result before empty-reply parsing can erase the provider failure"}
+{"file":"tests/runtime/pi-runtime.test.js","reason":"Red-first coverage for zero-exit terminal assistant errors and timeout authority after an earlier assistant error"}
+{"file":"tests/runtime/agent-executor-hook.test.js","reason":"Red-first executor integration coverage for resolved empty replies carrying assistantErrors"}

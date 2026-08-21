@@ -1903,6 +1903,18 @@ export function createAgentExecutor(options: any = {}) {
 
     try {
       const result = await handle.resultPromise;
+      const resolvedAssistantErrors = Array.isArray(result.assistantErrors)
+        ? result.assistantErrors.map((value: any) => String(value || '').trim()).filter(Boolean)
+        : [];
+
+      if (resolvedAssistantErrors.length > 0) {
+        const invocationError: any = new Error('pi assistant reported a model invocation error');
+        invocationError.assistantErrors = resolvedAssistantErrors;
+        invocationError.runId = result.runId || handle.runId || null;
+        invocationError.sessionPath = result.sessionPath || handle.sessionPath || '';
+        throw invocationError;
+      }
+
       const finalRawReply = String(result.reply || rawReply || '').trim();
 
       // Fallback: some models print a bash heredoc as plain text instead of emitting a tool_use block.
