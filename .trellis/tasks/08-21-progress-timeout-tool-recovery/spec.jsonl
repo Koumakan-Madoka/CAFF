@@ -1,0 +1,2 @@
+{"file":".trellis/spec/runtime/agent-runtime.md","reason":"Document executable one-shot active-tool recovery signatures, IPC fields, lifecycle/precedence contracts, validation matrix, cases, tests, and anti-pattern"}
+{"file":".trellis/spec/runtime/conversation-turn-queue.md","reason":"Document running-stage task event and existing turn-progress SSE projection with bounded privacy fields"}

@@ -131,6 +131,8 @@
   - final completed message broadcasts should happen before awaited digest/side-effect hooks; same-turn handoff routing may still wait for those hooks so reusable experience is absorbed before the next agent runs
   - live-stage display must prefer `finalContent`, then already-populated non-placeholder message content, and only then clipped `preview`; bridge-updated assistant messages can contain full content while their stage is still marked running/finalizing
   - pending-experience and model-mode digest status should also appear as a temporary timeline card so users can see why routing is still waiting; model progress may include bounded `modelTrace.thinkingPreview` and `modelTrace.outputPreview` diagnostics from provider/pi events
+  - one-shot active-tool progress recovery keeps the Agent stage `running`: `run_recovering` temporarily exposes the bounded watchdog message through existing turn-progress SSE, `run_recovery_started` clears it, and task history records `agent_reply_recovering` / `agent_reply_recovery_started`; only the later fail-closed `run_terminating` transition marks the stage terminating
+  - recovery task/SSE projections may contain attempt number, bounded reason, and clipped tool name only; tool arguments and the injected recovery prompt remain runtime-private
   - `turn_finished` and `agent_slot_finished` UI handlers must pass the final `payload.turn` / `payload.slot` into tool-trace synchronization before removing active runtime state; passing `null` drops failed terminal status and can finalize a running bridge step as succeeded/observed
 - Game exception:
   - who-is-undercover / werewolf automatic-host phases still reject manual chat sends with `409`

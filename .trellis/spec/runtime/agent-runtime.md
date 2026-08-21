@@ -96,6 +96,86 @@
 - `tests/runtime/agent-executor-hook.test.js` covers the executor-to-runtime
   options wiring when that contract changes.
 
+## One-Shot Active-Tool Progress Recovery
+
+### 1. Scope / Trigger
+
+- Trigger: `PI_PROGRESS_TIMEOUT_MS` expires while `lib/pi-runtime.ts` has observed at least one unmatched `tool_execution_start` event.
+- Applies to `lib/pi-runtime.ts`, `lib/pi-sdk-host.mjs`, and `server/domain/conversation/turn/agent-executor.ts`.
+- This is an Agent-run recovery contract, not a general `startRun` default. Digest/title/other direct model consumers keep the existing hard-timeout and fallback behavior.
+
+### 2. Signatures And Payloads
+
+- `startRun(provider, model, prompt, { toolProgressRecovery?: boolean, ...watchdogOptions })` enables this behavior only when `toolProgressRecovery === true`.
+- Conversation Agent execution passes `toolProgressRecovery: true`; `server/domain/conversation/conversation-digest.ts` does not.
+- Parent to SDK host:
+  `{ type: 'recover', reason: { type: 'progress_timeout', message }, attempt: 1, toolName: string }`.
+- SDK host to parent:
+  `{ type: 'recovery_started', reason, attempt: 1, toolName }` or
+  `{ type: 'recovery_failed', reason, attempt: 1, toolName, code }`.
+- Runtime events: `run_recovering` and `run_recovery_started` carry the same bounded reason/attempt/tool name projection.
+- Executor task events: `agent_reply_recovering` and `agent_reply_recovery_started`; the stage remains running and uses the existing turn-progress SSE projection.
+
+### 3. Contracts
+
+- `pi-runtime` tracks active tool calls by `toolCallId`: start adds the id and end removes it. Tool arguments never enter recovery IPC, runtime recovery events, task events, or the recovery prompt; the optional tool name is reduced to a clipped ASCII identifier prefix before crossing the prompt boundary.
+- The first progress timeout recovers only when the caller opted in and the active-tool set is non-empty. A no-tool model stall or an opted-out caller terminates immediately with the existing `progress_timeout` reason.
+- Each run may request recovery exactly once. A second progress timeout, recovery delivery failure, invalid/missing acknowledgement, or `recovery_failed` terminates as `progress_timeout` with `recoveryAttempt: 1` and a bounded `recoveryFailureCode` when available.
+- The SDK host accepts recovery only while the original turn is marked in flight and `session.isStreaming === true`. A late request after idle returns `turn_not_active` and must not create a phantom prompt.
+- Recovery order is: `session.abort()` -> `session.waitForIdle()` -> recovery `session.prompt(...)` preflight accepted -> `recovery_started` -> await recovered turn idle. The same runtime/session is retained; no host or Pi session is replaced.
+- The prompt may include a clipped tool name only. It tells the model not to repeat the broad operation unchanged, to use a short bounded preflight/connectivity check, and to ask the user when an external prerequisite is missing.
+- `stopReason='aborted'` is not terminal expected completion. A genuine terminal assistant message from the recovered turn still follows the normal expected-completion path.
+- Absolute run timeout is never reset. User cancel, parent signal, heartbeat timeout, absolute timeout, assistant/provider error, signal exit, and nonzero process exit keep their existing authoritative close-path ordering.
+- A fail-closed progress timeout remains `invocationFailure.kind='timeout'`; its normal multi-minute duration keeps it outside the Goal Runner fast-failure streak. Recovered success creates no failure projection.
+
+### 4. Validation And Error Matrix
+
+| Condition | Expected result |
+| --- | --- |
+| opted in + unmatched tool start + first progress timeout | send one `recover`, abort/settle, prompt same session, continue |
+| active tool emits periodic updates | refresh sliding progress timer; do not recover merely because total tool time exceeds 10 minutes |
+| no active tool or caller opted out | existing immediate `progress_timeout`; no `recover` IPC |
+| second progress timeout | terminate `progress_timeout`, `recoveryAttempt=1`, no second recover |
+| host rejects recovery / IPC delivery fails / ack missing or mismatched | terminate `progress_timeout` with bounded recovery failure code |
+| user Stop races recovery | `cancelled` remains authoritative; late recovery messages are ignored |
+| provider assistant error after recovery starts | fixed provider invocation error remains authoritative and preserves `assistantErrors[]` |
+| host exits nonzero during recovery | process exit remains authoritative |
+| recovered terminal assistant reply | normal success/expected completion |
+| aborted assistant record | not expected completion; watchdog/cancel flow continues |
+| digest model timeout | no recovery prompt; existing catch and extractive fallback |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a silent `docker pull`-like tool is stopped once; the model performs a short connectivity check and asks the user for the missing prerequisite instead of repeating the 20-minute command.
+- Base: a large download emits progress events for longer than 10 minutes, so the sliding watchdog keeps refreshing and recovery never fires.
+- Bad: treating heartbeat as useful progress, recovering a pure model stall, copying tool args into the recovery prompt, resetting the 3-hour absolute timer, or globally enabling recovery for digest runs.
+
+### 6. Tests Required
+
+- `tests/runtime/pi-runtime.test.js`: active-tool recovery success, opt-out, no-tool timeout, second timeout, host rejection, cancellation precedence, provider/process-exit precedence, aborted-message filtering, and absence of tool args in recover IPC.
+- `tests/runtime/pi-sdk-host.test.js`: abort/idle/prompt order and late-idle recovery rejection without a phantom prompt.
+- `tests/runtime/agent-executor-hook.test.js`: Agent opt-in, running-stage/task-event projection, and digest call-site opt-out.
+- `tests/runtime/session-goal-auto-pause.test.js`: structured timeout/fast-failure behavior remains unchanged.
+- `tests/runtime/message-tool-trace.test.js`, `tests/runtime/turn-orchestrator.test.js`, and smoke digest tests remain regression gates for SSE/tool traces, cancellation, expected completion, and fallback behavior.
+
+### 7. Wrong Vs Correct
+
+#### Wrong
+```ts
+progressTimeout = setTimeout(() => child.send({ type: 'recover', toolArgs }), progressTimeoutMs);
+```
+- This recovers unknown/model stalls, leaks command data, and permits every `startRun` consumer to receive an Agent-specific prompt.
+
+#### Correct
+```ts
+if (options.toolProgressRecovery === true && activeToolCalls.size > 0 && recoveryCount === 0) {
+  child.send({ type: 'recover', attempt: 1, toolName: boundedToolName });
+} else {
+  beginTermination({ type: 'progress_timeout', message });
+}
+```
+- Recovery is caller-owned, active-tool-gated, single-use, and payload-bounded.
+
 ## Goal Runner Model Invocation Failure Classification
 
 ### 1. Scope / Trigger

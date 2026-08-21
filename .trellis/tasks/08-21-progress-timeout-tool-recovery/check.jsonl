@@ -1,0 +1,18 @@
+{"file": ".agents/skills/finish-work/SKILL.md", "reason": "Finish work checklist"}
+{"file": ".agents/skills/check/SKILL.md", "reason": "Code quality check spec"}
+{"file": ".trellis/spec/runtime/agent-runtime.md", "reason": "Verify runtime/IPC/error precedence and update executable contract"}
+{"file": ".trellis/spec/runtime/conversation-turn-queue.md", "reason": "Verify cancellation, Goal, and event propagation semantics"}
+{"file": ".trellis/spec/backend/conversation-digest.md", "reason": "Verify digest remains recovery-disabled and falls back normally"}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Require behavior-level red and regression coverage"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Verify every IPC/event field reaches intended consumers without leakage"}
+{"file":"tests/runtime/pi-runtime.test.js","reason":"33/33 runtime cases pass after red failures confirmed the missing recovery path, including missing ack and recovery-time heartbeat/absolute precedence"}
+{"file":"tests/runtime/pi-sdk-host.test.js","reason":"9/9 host cases pass, including prompt sanitization, settle-before-prompt, and idle-window rejection"}
+{"file":"tests/runtime/agent-executor-hook.test.js","reason":"11/11 executor cases pass, including opt-in/events and digest opt-out"}
+{"file":"tests/runtime/session-goal-auto-pause.test.js","reason":"8/8 Goal classification and durable streak regressions pass"}
+{"file":"tests/runtime/message-tool-trace.test.js","reason":"18/18 tool trace/SSE regressions pass"}
+{"file":"tests/storage/run-store.test.js","reason":"6/6 run-store timeout persistence and migration regressions pass"}
+{"file":"tests/runtime/turn-orchestrator.test.js","reason":"81/81 test bodies pass; command reports only two existing Windows temp-directory rmSync EPERM cleanup failures"}
+{"file":"tests/smoke/server-smoke.test.js","reason":"69/69 server smoke plus 4/4 mode-store pass, including digest model fallback"}
+{"file":"tests/ui/app-shell.test.js","reason":"17/17 UI regressions pass"}
+{"file":"package.json","reason":"test:fast suites before turn-orchestrator pass; gate stops only on the two existing Windows t.after rmSync EPERM cleanup failures after 81/81 turn test bodies pass"}
+{"file":"package.json","reason":"test:dag-execution 55+8+8+3+3 scheduler/worktree/merge/baseline/HTTP gate passes"}

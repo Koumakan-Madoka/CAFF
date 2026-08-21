@@ -213,7 +213,13 @@ function isTerminalAssistantMessage(message: any) {
 
   const stopReason = normalizeStopReason(message.stopReason);
 
-  if (stopReason === 'error' || stopReason === 'tool_use' || stopReason === 'tooluse' || stopReason === 'pause_turn') {
+  if (
+    stopReason === 'error' ||
+    stopReason === 'aborted' ||
+    stopReason === 'tool_use' ||
+    stopReason === 'tooluse' ||
+    stopReason === 'pause_turn'
+  ) {
     return false;
   }
 
@@ -385,6 +391,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
   );
   const images = Array.isArray(options.images) ? options.images : [];
   const resume = Boolean(options.resume);
+  const toolProgressRecovery = options.toolProgressRecovery === true;
   const sessionPath = resolveSessionPath(options.session, agentDir);
   const cwd = path.resolve(String(options.cwd || process.cwd()).trim() || process.cwd());
   const extensionPaths = normalizeExtensionPaths(options.extensionPaths || options.extensions);
@@ -433,6 +440,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
       heartbeatCount: 0,
       assistantUsage: null as any,
       assistantUsageByKey: new Map(),
+      activeToolCalls: new Map(),
     };
     const childState = { code: null as any, signal: null as any };
     const processHandlers: Array<[any, any]> = [];
@@ -445,6 +453,10 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
     let terminationReason: any = null;
     let stderrBuffer = '';
     let ignoreFurtherAssistantOutput = false;
+    let recoveryRequested = false;
+    let recoveryCount = 0;
+    let recoveryReason: any = null;
+    let recoveryToolName = '';
 
     function recordAssistantUsage(message: any) {
       const usage = extractAssistantUsage(message);
@@ -661,6 +673,88 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
       }
     }
 
+    function normalizeRecoveryIdentifier(value: any) {
+      const match = String(value || '').trim().match(/^[a-z0-9._:/-]+/iu);
+      return match ? match[0].slice(0, 80) : '';
+    }
+
+    function getActiveRecoveryToolName() {
+      const entries = Array.from(state.activeToolCalls.values());
+      return normalizeRecoveryIdentifier(entries.length > 0 ? entries[entries.length - 1] : '');
+    }
+
+    function failProgressTimeoutAfterRecovery(message: any, detail: any = {}) {
+      beginTermination({
+        type: 'progress_timeout',
+        message,
+        recoveryAttempt: recoveryCount || 1,
+        recoveryReason,
+        ...detail,
+      });
+    }
+
+    function requestProgressTimeoutRecovery(reason: any) {
+      recoveryRequested = true;
+      recoveryCount = 1;
+      recoveryReason = reason;
+      recoveryToolName = getActiveRecoveryToolName();
+      emit('run_recovering', {
+        reason,
+        attempt: recoveryCount,
+        toolName: recoveryToolName || null,
+      });
+
+      if (!child || !child.connected || typeof child.send !== 'function') {
+        failProgressTimeoutAfterRecovery('pi progress watchdog could not request tool recovery', {
+          recoveryFailureCode: 'ipc_unavailable',
+        });
+        return;
+      }
+
+      try {
+        child.send({
+          type: 'recover',
+          reason,
+          attempt: recoveryCount,
+          toolName: recoveryToolName,
+        }, (error: any) => {
+          if (error && !settled && !terminating) {
+            failProgressTimeoutAfterRecovery('pi progress watchdog could not deliver tool recovery', {
+              recoveryFailureCode: 'ipc_delivery_failed',
+            });
+          }
+        });
+        refreshProgressTimeout();
+      } catch {
+        failProgressTimeoutAfterRecovery('pi progress watchdog could not deliver tool recovery', {
+          recoveryFailureCode: 'ipc_delivery_failed',
+        });
+      }
+    }
+
+    function beginProgressTimeout() {
+      const reason = {
+        type: 'progress_timeout',
+        message: `pi made no model or tool progress for ${progressTimeoutMs}ms`,
+      };
+
+      if (recoveryRequested || recoveryCount > 0) {
+        failProgressTimeoutAfterRecovery(
+          recoveryRequested
+            ? `pi made no progress while starting tool recovery for ${progressTimeoutMs}ms`
+            : `pi made no progress after tool recovery for ${progressTimeoutMs}ms`
+        );
+        return;
+      }
+
+      if (toolProgressRecovery && state.activeToolCalls.size > 0) {
+        requestProgressTimeoutRecovery(reason);
+        return;
+      }
+
+      beginTermination(reason);
+    }
+
     function refreshProgressTimeout() {
       if (!progressTimeoutMs || settled || terminating) {
         return;
@@ -670,12 +764,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
         clearTimeout(progressTimeout);
       }
 
-      progressTimeout = setTimeout(() => {
-        beginTermination({
-          type: 'progress_timeout',
-          message: `pi made no model or tool progress for ${progressTimeoutMs}ms`,
-        });
-      }, progressTimeoutMs);
+      progressTimeout = setTimeout(beginProgressTimeout, progressTimeoutMs);
 
       if (typeof progressTimeout.unref === 'function') {
         progressTimeout.unref();
@@ -812,6 +901,15 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
     }
 
     function handlePiEvent(event: any) {
+      const eventType = String(event && event.type ? event.type : '').trim();
+      const toolCallId = String(event && event.toolCallId ? event.toolCallId : '').trim();
+
+      if (eventType === 'tool_execution_start' && toolCallId) {
+        state.activeToolCalls.set(toolCallId, normalizeRecoveryIdentifier(event.toolName));
+      } else if (eventType === 'tool_execution_end' && toolCallId) {
+        state.activeToolCalls.delete(toolCallId);
+      }
+
       emit('pi_event', { piEvent: event });
 
       if (ignoreFurtherAssistantOutput && (event.type === 'message_update' || event.type === 'message_end' || event.type === 'agent_end')) {
@@ -931,6 +1029,40 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
         return;
       }
 
+      if (message.type === 'recovery_started') {
+        if (settled || terminating || !recoveryRequested) {
+          return;
+        }
+
+        if (Number.parseInt(String(message.attempt || ''), 10) !== recoveryCount) {
+          failProgressTimeoutAfterRecovery('pi progress watchdog received an invalid recovery acknowledgement', {
+            recoveryFailureCode: 'acknowledgement_mismatch',
+          });
+          return;
+        }
+
+        recoveryRequested = false;
+        emit('run_recovery_started', {
+          reason: recoveryReason,
+          attempt: recoveryCount,
+          toolName: recoveryToolName || null,
+        });
+        refreshHeartbeatTimeout();
+        refreshProgressTimeout();
+        return;
+      }
+
+      if (message.type === 'recovery_failed') {
+        if (settled || terminating || !recoveryRequested) {
+          return;
+        }
+
+        failProgressTimeoutAfterRecovery('pi progress watchdog tool recovery failed', {
+          recoveryFailureCode: normalizeRecoveryIdentifier(message.code || 'host_recovery_failed') || 'host_recovery_failed',
+        });
+        return;
+      }
+
       if (message.type === 'host_error') {
         return;
       }
@@ -1038,6 +1170,21 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
 
       if (result.assistantErrors.length > 0) {
         finishWithError(createInvokeError('pi assistant reported a model invocation error', result));
+        return;
+      }
+
+      if (recoveryRequested) {
+        finishWithError(createInvokeError('pi progress watchdog tool recovery ended without acknowledgement', {
+          ...result,
+          exitCode: 1,
+          terminationReason: {
+            type: 'progress_timeout',
+            message: 'pi progress watchdog tool recovery ended without acknowledgement',
+            recoveryAttempt: recoveryCount,
+            recoveryReason,
+            recoveryFailureCode: 'missing_acknowledgement',
+          },
+        }));
         return;
       }
 

@@ -1,0 +1,17 @@
+{"file": ".trellis/workflow.md", "reason": "Project workflow and conventions"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend development guide"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend development guide"}
+{"file": ".trellis/spec/runtime/agent-runtime.md", "reason": "Pi runtime watchdogs, structured failures, tool events, and startRun contract"}
+{"file": ".trellis/spec/runtime/conversation-turn-queue.md", "reason": "Executor event projection, cancellation, queue, and Goal continuation semantics"}
+{"file": ".trellis/spec/backend/conversation-digest.md", "reason": "Digest startRun consumer must remain opted out and preserve fallback behavior"}
+{"file": ".trellis/spec/frontend/ui-structure.md", "reason": "Tool event and SSE payload alignment if recovery state reaches the timeline"}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Observable fake-host regression test conventions"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Map host IPC through runtime, executor, SSE, and UI"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Reuse existing termination and event machinery rather than duplicating it"}
+{"file": ".trellis/spec/guides/cross-platform-thinking-guide.md", "reason": "Preserve Windows process-tree cancellation behavior"}
+{"file":"lib/pi-runtime.ts","reason":"Track unmatched tool calls, request one opt-in recovery, preserve termination precedence, and fail closed on repeat/protocol failure"}
+{"file":"lib/pi-sdk-host.mjs","reason":"Accept recovery only for an in-flight streaming turn, abort and await idle, then preflight a bounded prompt in the same session"}
+{"file":"server/domain/conversation/turn/agent-executor.ts","reason":"Enable recovery only for conversation Agents and project bounded recovery lifecycle task/turn events"}
+{"file":"tests/runtime/pi-runtime.test.js","reason":"Red-first parent runtime coverage for active/no-tool stalls, single use, cancellation, provider/process exit, host failure, opt-out, and aborted completion"}
+{"file":"tests/runtime/pi-sdk-host.test.js","reason":"Red-first host coverage for abort-settle-prompt ordering and late idle-window rejection"}
+{"file":"tests/runtime/agent-executor-hook.test.js","reason":"Executor opt-in, running-stage event projection, and digest opt-out regression coverage"}

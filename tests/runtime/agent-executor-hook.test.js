@@ -21,6 +21,34 @@ function createRunHandle(reply, resultOverrides = {}) {
   return handle;
 }
 
+function createRecoveryRunHandle(reply) {
+  const handle = new EventEmitter();
+  handle.runId = 'run-recovery';
+  handle.sessionPath = '';
+  handle.resultPromise = new Promise((resolve) => {
+    setTimeout(() => resolve({
+      reply,
+      runId: handle.runId,
+      usage: null,
+      heartbeatCount: 0,
+      sessionPath: '',
+    }), 20);
+  });
+  setTimeout(() => {
+    handle.emit('run_recovering', {
+      reason: { type: 'progress_timeout', message: 'tool stalled' },
+      attempt: 1,
+      toolName: 'bash',
+    });
+    handle.emit('run_recovery_started', {
+      reason: { type: 'progress_timeout', message: 'tool stalled' },
+      attempt: 1,
+      toolName: 'bash',
+    });
+  }, 0);
+  return handle;
+}
+
 function createFailedRunHandle(error) {
   const handle = new EventEmitter();
   handle.runId = 'run-structured-failure';
@@ -109,11 +137,13 @@ function createFakeStore(conversation) {
   };
 }
 
-function createFakeRunStore() {
+function createFakeRunStore(events = []) {
   return {
     createTask() {},
     updateTask() {},
-    appendTaskEvent() {},
+    appendTaskEvent(_taskId, eventName, payload) {
+      events.push({ eventName, payload });
+    },
     addArtifact() {},
   };
 }
@@ -257,6 +287,107 @@ test('agent executor persists structured provider failure metadata on failed rep
     terminationType: '',
     summary: '402: insufficient quota',
   });
+});
+
+test('agent executor keeps the stage running while a stuck tool is recovered', async (t) => {
+  const tempDir = withTempDir('caff-agent-executor-tool-recovery-');
+  const minimalPiPath = require.resolve('../../build/lib/minimal-pi');
+  const agentExecutorPath = require.resolve('../../build/server/domain/conversation/turn/agent-executor');
+  const turnStatePath = require.resolve('../../build/server/domain/conversation/turn/turn-state');
+  const minimalPi = require(minimalPiPath);
+  const originalStartRun = minimalPi.startRun;
+  const progressSnapshots = [];
+  const taskEvents = [];
+  let capturedOptions = null;
+
+  minimalPi.startRun = (_provider, _model, _prompt, options) => {
+    capturedOptions = options;
+    return createRecoveryRunHandle('Recovered.');
+  };
+  delete require.cache[agentExecutorPath];
+
+  t.after(() => {
+    minimalPi.startRun = originalStartRun;
+    delete require.cache[agentExecutorPath];
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const { createAgentExecutor } = require(agentExecutorPath);
+  const { createTurnState } = require(turnStatePath);
+  const agent = { id: 'agent-recovery', name: 'Recovery', description: 'Tests recovery.', personaPrompt: 'Be brief.' };
+  const conversation = {
+    id: 'conversation-recovery',
+    title: 'Tool Recovery',
+    type: 'standard',
+    agents: [agent],
+    metadata: {},
+  };
+  const store = createFakeStore(conversation);
+  const executor = createAgentExecutor({
+    store,
+    skillRegistry: { resolveSkills: () => [] },
+    modeStore: { get: () => null },
+    agentToolBridge: createFakeAgentToolBridge(),
+    agentDir: tempDir,
+    sqlitePath: path.join(tempDir, 'chat.sqlite'),
+    toolBaseUrl: 'http://127.0.0.1:3100',
+    agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+    emitTurnProgress(turnState) {
+      progressSnapshots.push({
+        status: turnState.agents[0].status,
+        errorMessage: turnState.agents[0].errorMessage,
+      });
+    },
+  });
+  const turnState = createTurnState(conversation, 'turn-recovery');
+
+  await executor.executeConversationAgent({
+    runStore: createFakeRunStore(taskEvents),
+    conversationId: conversation.id,
+    turnId: turnState.turnId,
+    rootTaskId: 'root-task-recovery',
+    conversation,
+    promptMessages: [{ role: 'user', content: 'Recover the stuck tool.' }],
+    promptUserMessage: { id: 'user-message-recovery', role: 'user', content: 'hello' },
+    queueItem: { triggerType: 'user', enqueueReason: 'user_mentions' },
+    agent,
+    turnState,
+    completedReplies: [],
+    failedReplies: [],
+    routingMode: 'mention_queue',
+    hop: 1,
+    remainingSlots: 0,
+    enqueueAgent() {},
+    allowHandoffs: true,
+    finalStopsTurn: true,
+    projectDir: tempDir,
+  });
+
+  const recoveringIndex = taskEvents.findIndex((event) => event.eventName === 'agent_reply_recovering');
+  const recoveredIndex = taskEvents.findIndex((event) => event.eventName === 'agent_reply_recovery_started');
+  assert.equal(capturedOptions.toolProgressRecovery, true);
+  assert.ok(recoveringIndex >= 0);
+  assert.ok(recoveredIndex > recoveringIndex);
+  assert.equal(taskEvents[recoveringIndex].payload.toolName, 'bash');
+  assert.ok(progressSnapshots.some((snapshot) => snapshot.status === 'running' && snapshot.errorMessage === 'tool stalled'));
+  assert.ok(!progressSnapshots.some((snapshot) => snapshot.status === 'terminating'));
+  assert.equal(turnState.agents[0].status, 'completed');
+});
+
+test('conversation digest startRun calls remain opted out of tool recovery', () => {
+  const digestSource = fs.readFileSync(
+    path.resolve(__dirname, '..', '..', 'server', 'domain', 'conversation', 'conversation-digest.ts'),
+    'utf8'
+  );
+  const startIndex = digestSource.indexOf('const handle = startRun(config.provider, config.model, prompt, {');
+
+  assert.ok(startIndex >= 0, 'digest direct Pi startRun call should remain present');
+  assert.doesNotMatch(
+    digestSource.slice(startIndex, startIndex + 900),
+    /toolProgressRecovery/u,
+    'digest model calls must keep hard timeout/fallback semantics instead of receiving agent recovery prompts'
+  );
 });
 
 test('agent executor does not auto-inject long-term memory by default', async (t) => {
@@ -459,6 +590,7 @@ test('agent executor sends the prevalidated runtime config without env fallback 
   assert.equal(captured.options.heartbeatTimeoutMs, 11000);
   assert.equal(captured.options.progressTimeoutMs, 22000);
   assert.equal(captured.options.timeoutMs, 33000);
+  assert.equal(captured.options.toolProgressRecovery, true);
   assert.deepEqual(captured.options.extensionPaths, [piCapabilityExtensionPath]);
   assert.doesNotMatch(captured.prompt, /Contaminated family Persona|contaminated-family-skill/u);
   assert.match(captured.prompt, /This is a model-family identity, not a fictional persona\./u);
