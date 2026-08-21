@@ -1688,6 +1688,7 @@ export function createAgentExecutor(options: any = {}) {
       heartbeatTimeoutMs,
       progressTimeoutMs,
       timeoutMs,
+      toolProgressRecovery: true,
       extraEnv: {
         PI_AGENT_ID: agent.id,
         PI_AGENT_NAME: agent.name,
@@ -1887,6 +1888,37 @@ export function createAgentExecutor(options: any = {}) {
       runStore.appendTaskEvent(stageTaskId, 'agent_reply_heartbeat', {
         count: event.count,
         reason: sanitizeReason(event.payload && event.payload.reason),
+      });
+      emitTurnProgress(turnState);
+    });
+
+    handle.on('run_recovering', (event: any) => {
+      stage.errorMessage = event.reason && event.reason.message ? event.reason.message : '';
+      applyStageCurrentTool(stage, null);
+      turnState.updatedAt = nowIso();
+      syncCurrentTurnAgent(turnState);
+      runStore.appendTaskEvent(stageTaskId, 'agent_reply_recovering', {
+        reason: {
+          type: String(event.reason && event.reason.type || '').trim(),
+          message: sanitizeReason(event.reason && event.reason.message),
+        },
+        attempt: Number(event.attempt) || 1,
+        toolName: String(event.toolName || '').trim().slice(0, 80),
+      });
+      emitTurnProgress(turnState);
+    });
+
+    handle.on('run_recovery_started', (event: any) => {
+      stage.errorMessage = '';
+      turnState.updatedAt = nowIso();
+      syncCurrentTurnAgent(turnState);
+      runStore.appendTaskEvent(stageTaskId, 'agent_reply_recovery_started', {
+        reason: {
+          type: String(event.reason && event.reason.type || '').trim(),
+          message: sanitizeReason(event.reason && event.reason.message),
+        },
+        attempt: Number(event.attempt) || 1,
+        toolName: String(event.toolName || '').trim().slice(0, 80),
       });
       emitTurnProgress(turnState);
     });

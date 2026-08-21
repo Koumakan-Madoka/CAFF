@@ -67,6 +67,25 @@ function createFakeSdkHostAssistantError(baseDir) {
   ]);
 }
 
+function createFakeSdkHostAbortedAssistant(baseDir, capturePath) {
+  return createFakeSdkHost(baseDir, [
+    "import { writeFileSync } from 'node:fs';",
+    "let heartbeatTimer = null;",
+    "process.on('message', (command) => {",
+    "  if (command?.type === 'start') {",
+    "    process.send({ type: 'pi_event', event: { type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'aborted partial' }], stopReason: 'aborted', timestamp: Date.now() } } });",
+    "    heartbeatTimer = setInterval(() => process.send({ type: 'heartbeat', timestamp: Date.now() }), 10);",
+    "    return;",
+    "  }",
+    "  if (command?.type === 'abort') {",
+    "    if (heartbeatTimer) clearInterval(heartbeatTimer);",
+    `    writeFileSync(${JSON.stringify(capturePath)}, JSON.stringify(command), 'utf8');`,
+    "    process.exit(0);",
+    "  }",
+    "});",
+  ]);
+}
+
 function createFakeSdkHostWaitingForAbort(baseDir, capturePath = '') {
   return createFakeSdkHost(baseDir, [
     "import { writeFileSync } from 'node:fs';",
@@ -96,6 +115,127 @@ function createFakeSdkHostHeartbeatOnly(baseDir, capturePath, assistantError = '
     "  if (command?.type === 'abort') {",
     "    if (heartbeatTimer) clearInterval(heartbeatTimer);",
     `    writeFileSync(${JSON.stringify(capturePath)}, JSON.stringify(command), 'utf8');`,
+    "    process.exit(0);",
+    "  }",
+    "});",
+  ]);
+}
+
+function createFakeSdkHostRecoveringTool(baseDir, capturePath, options = {}) {
+  const completeAfterRecovery = options.completeAfterRecovery !== false;
+  const recoveryDelayMs = Number.isFinite(options.recoveryDelayMs) ? options.recoveryDelayMs : 0;
+  const stopHeartbeatOnRecovery = options.stopHeartbeatOnRecovery === true;
+
+  return createFakeSdkHost(baseDir, [
+    "import { writeFileSync } from 'node:fs';",
+    "let heartbeatTimer = null;",
+    "const commands = [];",
+    "function persist() { writeFileSync(" + JSON.stringify(capturePath) + ", JSON.stringify(commands), 'utf8'); }",
+    "process.on('message', (command) => {",
+    "  if (command?.type === 'start') {",
+    "    heartbeatTimer = setInterval(() => process.send({ type: 'heartbeat', timestamp: Date.now() }), 10);",
+    "    process.send({ type: 'pi_event', event: { type: 'tool_execution_start', toolCallId: 'tool-1', toolName: 'bash', args: { command: 'sensitive command' } } });",
+    "    return;",
+    "  }",
+    "  if (command?.type === 'recover') {",
+    "    commands.push(command); persist();",
+    stopHeartbeatOnRecovery ? "    if (heartbeatTimer) clearInterval(heartbeatTimer);" : '',
+    "    setTimeout(() => {",
+    "      process.send({ type: 'pi_event', event: { type: 'tool_execution_end', toolCallId: 'tool-1', toolName: 'bash', isError: true } });",
+    "      process.send({ type: 'recovery_started', reason: command.reason, attempt: command.attempt || 1, toolName: command.toolName || '' });",
+    completeAfterRecovery
+      ? "      process.send({ type: 'pi_event', event: { type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'recovered reply' }], stopReason: 'stop', timestamp: Date.now() } } });"
+      : "      process.send({ type: 'pi_event', event: { type: 'tool_execution_start', toolCallId: 'tool-2', toolName: 'bash' } });",
+    "    }, " + String(recoveryDelayMs) + ");",
+    "    return;",
+    "  }",
+    "  if (command?.type === 'abort') {",
+    "    commands.push(command); persist();",
+    "    if (heartbeatTimer) clearInterval(heartbeatTimer);",
+    "    process.exit(0);",
+    "  }",
+    "});",
+  ]);
+}
+
+function createFakeSdkHostRecoveryExitZero(baseDir) {
+  return createFakeSdkHost(baseDir, [
+    "let heartbeatTimer = null;",
+    "process.on('message', (command) => {",
+    "  if (command?.type === 'start') {",
+    "    heartbeatTimer = setInterval(() => process.send({ type: 'heartbeat', timestamp: Date.now() }), 10);",
+    "    process.send({ type: 'pi_event', event: { type: 'tool_execution_start', toolCallId: 'tool-1', toolName: 'bash' } });",
+    "    return;",
+    "  }",
+    "  if (command?.type === 'recover') {",
+    "    if (heartbeatTimer) clearInterval(heartbeatTimer);",
+    "    process.exit(0);",
+    "  }",
+    "  if (command?.type === 'abort') process.exit(0);",
+    "});",
+  ]);
+}
+
+function createFakeSdkHostRecoveryProviderError(baseDir) {
+  return createFakeSdkHost(baseDir, [
+    "let heartbeatTimer = null;",
+    "process.on('message', (command) => {",
+    "  if (command?.type === 'start') {",
+    "    heartbeatTimer = setInterval(() => process.send({ type: 'heartbeat', timestamp: Date.now() }), 10);",
+    "    process.send({ type: 'pi_event', event: { type: 'tool_execution_start', toolCallId: 'tool-1', toolName: 'bash' } });",
+    "    return;",
+    "  }",
+    "  if (command?.type === 'recover') {",
+    "    process.send({ type: 'pi_event', event: { type: 'tool_execution_end', toolCallId: 'tool-1', toolName: 'bash', isError: true } });",
+    "    process.send({ type: 'recovery_started', reason: command.reason, attempt: command.attempt, toolName: command.toolName });",
+    "    process.send({ type: 'pi_event', event: { type: 'message_end', message: { role: 'assistant', content: [], stopReason: 'error', errorMessage: 'provider unavailable after recovery', timestamp: Date.now() } } });",
+    "    if (heartbeatTimer) clearInterval(heartbeatTimer);",
+    "    setTimeout(() => process.exit(0), 20);",
+    "    return;",
+    "  }",
+    "  if (command?.type === 'abort') process.exit(0);",
+    "});",
+  ]);
+}
+
+function createFakeSdkHostRecoveryCrash(baseDir) {
+  return createFakeSdkHost(baseDir, [
+    "let heartbeatTimer = null;",
+    "process.on('message', (command) => {",
+    "  if (command?.type === 'start') {",
+    "    heartbeatTimer = setInterval(() => process.send({ type: 'heartbeat', timestamp: Date.now() }), 10);",
+    "    process.send({ type: 'pi_event', event: { type: 'tool_execution_start', toolCallId: 'tool-1', toolName: 'bash' } });",
+    "    return;",
+    "  }",
+    "  if (command?.type === 'recover') {",
+    "    if (heartbeatTimer) clearInterval(heartbeatTimer);",
+    "    process.exit(7);",
+    "  }",
+    "  if (command?.type === 'abort') process.exit(0);",
+    "});",
+  ]);
+}
+
+function createFakeSdkHostRejectingRecovery(baseDir, capturePath) {
+  return createFakeSdkHost(baseDir, [
+    "import { writeFileSync } from 'node:fs';",
+    "let heartbeatTimer = null;",
+    "const commands = [];",
+    "function persist() { writeFileSync(" + JSON.stringify(capturePath) + ", JSON.stringify(commands), 'utf8'); }",
+    "process.on('message', (command) => {",
+    "  if (command?.type === 'start') {",
+    "    heartbeatTimer = setInterval(() => process.send({ type: 'heartbeat', timestamp: Date.now() }), 10);",
+    "    process.send({ type: 'pi_event', event: { type: 'tool_execution_start', toolCallId: 'tool-1', toolName: 'bash' } });",
+    "    return;",
+    "  }",
+    "  if (command?.type === 'recover') {",
+    "    commands.push(command); persist();",
+    "    process.send({ type: 'recovery_failed', reason: command.reason, attempt: command.attempt, toolName: command.toolName, code: 'recovery_prompt_failed' });",
+    "    return;",
+    "  }",
+    "  if (command?.type === 'abort') {",
+    "    commands.push(command); persist();",
+    "    if (heartbeatTimer) clearInterval(heartbeatTimer);",
     "    process.exit(0);",
     "  }",
     "});",
@@ -798,6 +938,464 @@ test('pi runtime aborts a heartbeat-only host after the progress timeout', async
   assert.equal(captured.reason.type, 'progress_timeout');
 });
 
+test('pi runtime recovers one silent active tool in the same host run', async (t) => {
+  if (!requireSpawn(t)) {
+    return;
+  }
+
+  const tempDir = withTempDir('caff-pi-runtime-tool-recovery-');
+  const capturePath = path.join(tempDir, 'tool-recovery.json');
+  const fakeHostPath = createFakeSdkHostRecoveringTool(tempDir, capturePath);
+  const { runtime, restore } = loadRuntimeWithSdkHost(fakeHostPath);
+  let handle = null;
+
+  t.after(() => {
+    try {
+      handle && handle.cancel('test cleanup');
+    } catch {}
+
+    restore();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  handle = runtime.startRun('test-provider', 'test-model', 'recover the silent tool', {
+    agentDir: tempDir,
+    sqlitePath: path.join(tempDir, 'pi-runtime-tool-recovery.sqlite'),
+    heartbeatIntervalMs: 10,
+    heartbeatTimeoutMs: 500,
+    progressTimeoutMs: 75,
+    timeoutMs: 1000,
+    terminateGraceMs: 500,
+    toolProgressRecovery: true,
+    streamOutput: false,
+  });
+
+  const recoveringEvents = [];
+  const recoveredEvents = [];
+  handle.on('run_recovering', (event) => recoveringEvents.push(event));
+  handle.on('run_recovery_started', (event) => recoveredEvents.push(event));
+
+  const result = await handle.resultPromise;
+  const commands = JSON.parse(fs.readFileSync(capturePath, 'utf8'));
+  const recoverCommand = commands.find((command) => command.type === 'recover');
+
+  assert.equal(result.reply, 'recovered reply');
+  assert.equal(recoveringEvents.length, 1);
+  assert.equal(recoveredEvents.length, 1);
+  assert.equal(recoverCommand.attempt, 1);
+  assert.equal(recoverCommand.toolName, 'bash');
+  assert.equal(JSON.stringify(recoverCommand).includes('sensitive command'), false);
+});
+
+test('pi runtime keeps active-tool recovery disabled unless the caller opts in', async (t) => {
+  if (!requireSpawn(t)) {
+    return;
+  }
+
+  const tempDir = withTempDir('caff-pi-runtime-tool-recovery-disabled-');
+  const capturePath = path.join(tempDir, 'tool-recovery-disabled.json');
+  const fakeHostPath = createFakeSdkHostRecoveringTool(tempDir, capturePath);
+  const { runtime, restore } = loadRuntimeWithSdkHost(fakeHostPath);
+  let handle = null;
+
+  t.after(() => {
+    try {
+      handle && handle.cancel('test cleanup');
+    } catch {}
+
+    restore();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  handle = runtime.startRun('test-provider', 'test-model', 'keep recovery disabled', {
+    agentDir: tempDir,
+    sqlitePath: path.join(tempDir, 'pi-runtime-tool-recovery-disabled.sqlite'),
+    heartbeatIntervalMs: 10,
+    heartbeatTimeoutMs: 500,
+    progressTimeoutMs: 75,
+    timeoutMs: 1000,
+    terminateGraceMs: 500,
+    streamOutput: false,
+  });
+
+  await assert.rejects(handle.resultPromise, (error) => {
+    assert.equal(error.terminationReason.type, 'progress_timeout');
+    return true;
+  });
+
+  const commands = JSON.parse(fs.readFileSync(capturePath, 'utf8'));
+  assert.equal(commands.some((command) => command.type === 'recover'), false);
+  assert.equal(commands.at(-1).type, 'abort');
+});
+
+test('pi runtime does not recover a progress timeout without an active tool', async (t) => {
+  if (!requireSpawn(t)) {
+    return;
+  }
+
+  const tempDir = withTempDir('caff-pi-runtime-no-tool-recovery-');
+  const capturePath = path.join(tempDir, 'no-tool-abort.json');
+  const fakeHostPath = createFakeSdkHostHeartbeatOnly(tempDir, capturePath);
+  const { runtime, restore } = loadRuntimeWithSdkHost(fakeHostPath);
+  let handle = null;
+
+  t.after(() => {
+    try {
+      handle && handle.cancel('test cleanup');
+    } catch {}
+
+    restore();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  handle = runtime.startRun('test-provider', 'test-model', 'do not recover a model stall', {
+    agentDir: tempDir,
+    sqlitePath: path.join(tempDir, 'pi-runtime-no-tool-recovery.sqlite'),
+    heartbeatIntervalMs: 10,
+    heartbeatTimeoutMs: 500,
+    progressTimeoutMs: 75,
+    timeoutMs: 1000,
+    terminateGraceMs: 500,
+    toolProgressRecovery: true,
+    streamOutput: false,
+  });
+
+  await assert.rejects(handle.resultPromise, (error) => {
+    assert.equal(error.terminationReason.type, 'progress_timeout');
+    assert.equal(error.terminationReason.recoveryAttempt, undefined);
+    return true;
+  });
+
+  const captured = JSON.parse(fs.readFileSync(capturePath, 'utf8'));
+  assert.equal(captured.type, 'abort');
+});
+
+test('pi runtime fails closed on a second progress timeout after recovery', async (t) => {
+  if (!requireSpawn(t)) {
+    return;
+  }
+
+  const tempDir = withTempDir('caff-pi-runtime-second-tool-timeout-');
+  const capturePath = path.join(tempDir, 'second-tool-timeout.json');
+  const fakeHostPath = createFakeSdkHostRecoveringTool(tempDir, capturePath, { completeAfterRecovery: false });
+  const { runtime, restore } = loadRuntimeWithSdkHost(fakeHostPath);
+  let handle = null;
+
+  t.after(() => {
+    try {
+      handle && handle.cancel('test cleanup');
+    } catch {}
+
+    restore();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  handle = runtime.startRun('test-provider', 'test-model', 'fail after one recovery', {
+    agentDir: tempDir,
+    sqlitePath: path.join(tempDir, 'pi-runtime-second-tool-timeout.sqlite'),
+    heartbeatIntervalMs: 10,
+    heartbeatTimeoutMs: 500,
+    progressTimeoutMs: 75,
+    timeoutMs: 1000,
+    terminateGraceMs: 500,
+    toolProgressRecovery: true,
+    streamOutput: false,
+  });
+
+  await assert.rejects(handle.resultPromise, (error) => {
+    assert.equal(error.terminationReason.type, 'progress_timeout');
+    assert.equal(error.terminationReason.recoveryAttempt, 1);
+    return true;
+  });
+
+  const commands = JSON.parse(fs.readFileSync(capturePath, 'utf8'));
+  assert.equal(commands.filter((command) => command.type === 'recover').length, 1);
+  assert.equal(commands.at(-1).type, 'abort');
+});
+
+test('pi runtime fails closed when the SDK host rejects recovery', async (t) => {
+  if (!requireSpawn(t)) {
+    return;
+  }
+
+  const tempDir = withTempDir('caff-pi-runtime-recovery-failed-');
+  const capturePath = path.join(tempDir, 'recovery-failed.json');
+  const fakeHostPath = createFakeSdkHostRejectingRecovery(tempDir, capturePath);
+  const { runtime, restore } = loadRuntimeWithSdkHost(fakeHostPath);
+  let handle = null;
+
+  t.after(() => {
+    try {
+      handle && handle.cancel('test cleanup');
+    } catch {}
+
+    restore();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  handle = runtime.startRun('test-provider', 'test-model', 'reject recovery', {
+    agentDir: tempDir,
+    sqlitePath: path.join(tempDir, 'pi-runtime-recovery-failed.sqlite'),
+    heartbeatIntervalMs: 10,
+    heartbeatTimeoutMs: 500,
+    progressTimeoutMs: 75,
+    timeoutMs: 1000,
+    terminateGraceMs: 500,
+    toolProgressRecovery: true,
+    streamOutput: false,
+  });
+
+  await assert.rejects(handle.resultPromise, (error) => {
+    assert.equal(error.terminationReason.type, 'progress_timeout');
+    assert.equal(error.terminationReason.recoveryAttempt, 1);
+    assert.equal(error.terminationReason.recoveryFailureCode, 'recovery_prompt_failed');
+    return true;
+  });
+});
+
+test('pi runtime fails closed when a zero-exit host never acknowledges recovery', async (t) => {
+  if (!requireSpawn(t)) {
+    return;
+  }
+
+  const tempDir = withTempDir('caff-pi-runtime-recovery-missing-ack-');
+  const fakeHostPath = createFakeSdkHostRecoveryExitZero(tempDir);
+  const { runtime, restore } = loadRuntimeWithSdkHost(fakeHostPath);
+  let handle = null;
+
+  t.after(() => {
+    try {
+      handle && handle.cancel('test cleanup');
+    } catch {}
+
+    restore();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  handle = runtime.startRun('test-provider', 'test-model', 'host exits before recovery ack', {
+    agentDir: tempDir,
+    sqlitePath: path.join(tempDir, 'pi-runtime-recovery-missing-ack.sqlite'),
+    heartbeatIntervalMs: 10,
+    heartbeatTimeoutMs: 500,
+    progressTimeoutMs: 75,
+    timeoutMs: 1000,
+    terminateGraceMs: 500,
+    toolProgressRecovery: true,
+    streamOutput: false,
+  });
+
+  await assert.rejects(handle.resultPromise, (error) => {
+    assert.equal(error.terminationReason.type, 'progress_timeout');
+    assert.equal(error.terminationReason.recoveryAttempt, 1);
+    assert.equal(error.terminationReason.recoveryFailureCode, 'missing_acknowledgement');
+    return true;
+  });
+});
+
+test('pi runtime keeps heartbeat timeout authoritative during recovery', async (t) => {
+  if (!requireSpawn(t)) {
+    return;
+  }
+
+  const tempDir = withTempDir('caff-pi-runtime-recovery-heartbeat-timeout-');
+  const capturePath = path.join(tempDir, 'recovery-heartbeat-timeout.json');
+  const fakeHostPath = createFakeSdkHostRecoveringTool(tempDir, capturePath, {
+    recoveryDelayMs: 200,
+    stopHeartbeatOnRecovery: true,
+  });
+  const { runtime, restore } = loadRuntimeWithSdkHost(fakeHostPath);
+  let handle = null;
+
+  t.after(() => {
+    try {
+      handle && handle.cancel('test cleanup');
+    } catch {}
+
+    restore();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  handle = runtime.startRun('test-provider', 'test-model', 'heartbeat fails during recovery', {
+    agentDir: tempDir,
+    sqlitePath: path.join(tempDir, 'pi-runtime-recovery-heartbeat-timeout.sqlite'),
+    heartbeatIntervalMs: 10,
+    heartbeatTimeoutMs: 40,
+    progressTimeoutMs: 60,
+    timeoutMs: 1000,
+    terminateGraceMs: 500,
+    toolProgressRecovery: true,
+    streamOutput: false,
+  });
+
+  await assert.rejects(handle.resultPromise, (error) => {
+    assert.equal(error.terminationReason.type, 'heartbeat_timeout');
+    return true;
+  });
+});
+
+test('pi runtime keeps the absolute timeout authoritative during recovery', async (t) => {
+  if (!requireSpawn(t)) {
+    return;
+  }
+
+  const tempDir = withTempDir('caff-pi-runtime-recovery-absolute-timeout-');
+  const capturePath = path.join(tempDir, 'recovery-absolute-timeout.json');
+  const fakeHostPath = createFakeSdkHostRecoveringTool(tempDir, capturePath, { recoveryDelayMs: 200 });
+  const { runtime, restore } = loadRuntimeWithSdkHost(fakeHostPath);
+  let handle = null;
+
+  t.after(() => {
+    try {
+      handle && handle.cancel('test cleanup');
+    } catch {}
+
+    restore();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  handle = runtime.startRun('test-provider', 'test-model', 'absolute timeout during recovery', {
+    agentDir: tempDir,
+    sqlitePath: path.join(tempDir, 'pi-runtime-recovery-absolute-timeout.sqlite'),
+    heartbeatIntervalMs: 10,
+    heartbeatTimeoutMs: 500,
+    progressTimeoutMs: 60,
+    timeoutMs: 100,
+    terminateGraceMs: 500,
+    toolProgressRecovery: true,
+    streamOutput: false,
+  });
+
+  await assert.rejects(handle.resultPromise, (error) => {
+    assert.equal(error.terminationReason.type, 'run_timeout');
+    return true;
+  });
+});
+
+test('pi runtime keeps a provider error authoritative after recovery starts', async (t) => {
+  if (!requireSpawn(t)) {
+    return;
+  }
+
+  const tempDir = withTempDir('caff-pi-runtime-recovery-provider-error-');
+  const fakeHostPath = createFakeSdkHostRecoveryProviderError(tempDir);
+  const { runtime, restore } = loadRuntimeWithSdkHost(fakeHostPath);
+  let handle = null;
+
+  t.after(() => {
+    try {
+      handle && handle.cancel('test cleanup');
+    } catch {}
+
+    restore();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  handle = runtime.startRun('test-provider', 'test-model', 'provider fails after recovery', {
+    agentDir: tempDir,
+    sqlitePath: path.join(tempDir, 'pi-runtime-recovery-provider-error.sqlite'),
+    heartbeatIntervalMs: 10,
+    heartbeatTimeoutMs: 500,
+    progressTimeoutMs: 75,
+    timeoutMs: 1000,
+    terminateGraceMs: 500,
+    toolProgressRecovery: true,
+    streamOutput: false,
+  });
+
+  await assert.rejects(handle.resultPromise, (error) => {
+    assert.equal(error.message, 'pi assistant reported a model invocation error');
+    assert.equal(error.terminationReason, undefined);
+    assert.deepEqual(error.assistantErrors, ['provider unavailable after recovery']);
+    return true;
+  });
+});
+
+test('pi runtime keeps a nonzero process exit authoritative during recovery', async (t) => {
+  if (!requireSpawn(t)) {
+    return;
+  }
+
+  const tempDir = withTempDir('caff-pi-runtime-recovery-process-exit-');
+  const fakeHostPath = createFakeSdkHostRecoveryCrash(tempDir);
+  const { runtime, restore } = loadRuntimeWithSdkHost(fakeHostPath);
+  let handle = null;
+
+  t.after(() => {
+    try {
+      handle && handle.cancel('test cleanup');
+    } catch {}
+
+    restore();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  handle = runtime.startRun('test-provider', 'test-model', 'host crashes during recovery', {
+    agentDir: tempDir,
+    sqlitePath: path.join(tempDir, 'pi-runtime-recovery-process-exit.sqlite'),
+    heartbeatIntervalMs: 10,
+    heartbeatTimeoutMs: 500,
+    progressTimeoutMs: 75,
+    timeoutMs: 1000,
+    terminateGraceMs: 500,
+    toolProgressRecovery: true,
+    streamOutput: false,
+  });
+
+  await assert.rejects(handle.resultPromise, (error) => {
+    assert.equal(error.message, 'pi exited with code 7');
+    assert.equal(error.exitCode, 7);
+    assert.equal(error.terminationReason, undefined);
+    return true;
+  });
+});
+
+test('pi runtime keeps user cancellation authoritative during recovery', async (t) => {
+  if (!requireSpawn(t)) {
+    return;
+  }
+
+  const tempDir = withTempDir('caff-pi-runtime-cancel-recovery-');
+  const capturePath = path.join(tempDir, 'cancel-recovery.json');
+  const fakeHostPath = createFakeSdkHostRecoveringTool(tempDir, capturePath, { recoveryDelayMs: 200 });
+  const { runtime, restore } = loadRuntimeWithSdkHost(fakeHostPath);
+  let handle = null;
+
+  t.after(() => {
+    try {
+      handle && handle.cancel('test cleanup');
+    } catch {}
+
+    restore();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  handle = runtime.startRun('test-provider', 'test-model', 'cancel the recovering tool', {
+    agentDir: tempDir,
+    sqlitePath: path.join(tempDir, 'pi-runtime-cancel-recovery.sqlite'),
+    heartbeatIntervalMs: 10,
+    heartbeatTimeoutMs: 500,
+    progressTimeoutMs: 50,
+    timeoutMs: 1000,
+    terminateGraceMs: 500,
+    toolProgressRecovery: true,
+    streamOutput: false,
+  });
+
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('run_recovering was not emitted')), 500);
+    handle.once('run_recovering', () => {
+      clearTimeout(timer);
+      handle.cancel('Stopped by user');
+      resolve();
+    });
+  });
+
+  await assert.rejects(handle.resultPromise, (error) => {
+    assert.equal(error.terminationReason.type, 'cancelled');
+    return true;
+  });
+});
+
 test('pi runtime keeps a watchdog timeout authoritative after an earlier assistant error', async (t) => {
   if (!requireSpawn(t)) {
     return;
@@ -834,6 +1432,46 @@ test('pi runtime keeps a watchdog timeout authoritative after an earlier assista
     assert.deepEqual(error.assistantErrors, ['transient provider error']);
     return true;
   });
+});
+
+test('pi runtime does not treat an aborted assistant message as expected completion', async (t) => {
+  if (!requireSpawn(t)) {
+    return;
+  }
+
+  const tempDir = withTempDir('caff-pi-runtime-aborted-assistant-');
+  const capturePath = path.join(tempDir, 'aborted-assistant.json');
+  const fakeHostPath = createFakeSdkHostAbortedAssistant(tempDir, capturePath);
+  const { runtime, restore } = loadRuntimeWithSdkHost(fakeHostPath);
+  let handle = null;
+
+  t.after(() => {
+    try {
+      handle && handle.cancel('test cleanup');
+    } catch {}
+
+    restore();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  handle = runtime.startRun('test-provider', 'test-model', 'ignore aborted completion', {
+    agentDir: tempDir,
+    sqlitePath: path.join(tempDir, 'pi-runtime-aborted-assistant.sqlite'),
+    heartbeatIntervalMs: 10,
+    heartbeatTimeoutMs: 500,
+    progressTimeoutMs: 75,
+    timeoutMs: 1000,
+    terminateGraceMs: 500,
+    streamOutput: false,
+  });
+
+  await assert.rejects(handle.resultPromise, (error) => {
+    assert.equal(error.terminationReason.type, 'progress_timeout');
+    return true;
+  });
+
+  const captured = JSON.parse(fs.readFileSync(capturePath, 'utf8'));
+  assert.equal(captured.reason.type, 'progress_timeout');
 });
 
 test('pi runtime total timeout is not extended by repeated progress events', async (t) => {

@@ -1,0 +1,54 @@
+{
+  "id": "progress-timeout-tool-recovery",
+  "name": "progress-timeout-tool-recovery",
+  "title": "One-shot progress-timeout tool recovery",
+  "description": "Recover exactly once from a progress watchdog timeout only while a tool call is active, preserving the Pi session and failing closed on recovery failure or a second stall.",
+  "status": "review",
+  "dev_type": "fullstack",
+  "scope": "fullstack",
+  "package": null,
+  "priority": "P1",
+  "creator": "GPT",
+  "assignee": "GPT",
+  "createdAt": "2026-08-21",
+  "completedAt": null,
+  "branch": "room/c2fab452-caff-bug-bug",
+  "base_branch": "develop",
+  "worktree_path": "E:/pythonproject/worktrees/room/c2fab452-caff-bug-bug",
+  "current_phase": 3,
+  "next_action": [
+    {
+      "phase": 3,
+      "action": "independent-review"
+    },
+    {
+      "phase": 4,
+      "action": "human-acceptance"
+    },
+    {
+      "phase": 5,
+      "action": "create-pr"
+    },
+    {
+      "phase": 6,
+      "action": "archive"
+    }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "lib/pi-runtime.ts",
+    "lib/pi-sdk-host.mjs",
+    "server/domain/conversation/turn/agent-executor.ts",
+    "tests/runtime/pi-runtime.test.js",
+    "tests/runtime/pi-sdk-host.test.js",
+    "tests/runtime/agent-executor-hook.test.js",
+    ".trellis/spec/runtime/agent-runtime.md",
+    ".trellis/spec/runtime/conversation-turn-queue.md"
+  ],
+  "notes": "Red-first runtime/host/executor coverage is green. check/typecheck/build, smoke, Goal, tool trace, run-store, UI, and DAG gates pass; test:fast stops only on two existing Windows turn-orchestrator temp-directory rmSync EPERM cleanup failures after all 81 test bodies pass.",
+  "meta": {}
+}
