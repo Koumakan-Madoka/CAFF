@@ -1,0 +1,10 @@
+{"file": ".trellis/workflow.md", "reason": "Project workflow and conventions"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend development guide"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend development guide"}
+{"file": ".trellis/spec/runtime/agent-runtime.md", "reason": "Preserve structured model invocation failure classification at the agent boundary"}
+{"file": ".trellis/spec/runtime/conversation-turn-queue.md", "reason": "Modify Goal continuation inside serialized queue drain"}
+{"file": ".trellis/spec/backend/session-goal.md", "reason": "Extend durable Goal runner state and direct auto-pause semantics"}
+{"file": ".trellis/spec/backend/dag-execution.md", "reason": "Map error-paused bound Goals to blocked without weakening D27/D28"}
+{"file": ".trellis/spec/frontend/ui-structure.md", "reason": "Expose safe Goal auto-pause reason through existing UI ownership"}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Add observable regression tests before implementation"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Track failure data from runtime through persistence, SSE, UI, and DAG"}

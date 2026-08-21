@@ -23,7 +23,12 @@
   - `conversation.metadata.sessionGoal?: { objective: string, status: 'active' | 'paused' | 'complete', createdAt: string, updatedAt: string, completedAt?: string, checklist?: { id: string, text: string, status: 'todo' | 'in_progress' | 'done', createdAt: string, updatedAt: string, completedAt?: string }[] }`
   - `conversation.metadata.sessionGoalProposal?: { id: string, action: 'set' | 'pause' | 'resume' | 'complete' | 'clear', status:'pending', objective?: string, checklist?: SessionGoalChecklistItem[], reason?: string, proposedBy:{ agentId:string, agentName:string }, createdAt:string, updatedAt:string }`
   - `conversation.metadata.sessionGoalRuling?: { id:string, proposalId:string, action:string, outcome:'accepted'|'rejected', reason?:string, ruledBy:{ kind:'user'|'agent'|'system', agentId?:string, agentName?:string }, proposalSnapshot:SessionGoalProposal, ruledAt:string }`
-  - `conversation.metadata.sessionGoalRunner?: { status: 'running' | 'budget_limited' | string, goalUpdatedAt: string, iteration: number, maxIterations: number, updatedAt: string, lastContinuedAt?: string }`
+  - `conversation.metadata.sessionGoalRunner?: { status: 'running' | 'budget_limited' | 'error_paused' | string, goalUpdatedAt: string, iteration: number, maxIterations: number, updatedAt: string, lastContinuedAt?: string, consecutiveModelFailureCount: number, failureThreshold: number, failureStreakStartedAt?: string, lastFailureAt?: string, lastFailureKind?: 'provider'|'timeout'|'process_exit', lastFailureCode?: string, lastFailureSummary?: string, pauseReason?: string, errorPausedAt?: string }`
+- Goal Runner failure guard configuration:
+  - `CAFF_SESSION_GOAL_FAILURE_THRESHOLD` defaults to `3` and is clamped to at least `2`.
+  - `CAFF_SESSION_GOAL_FAST_FAILURE_MS` defaults to `60000`.
+  - `CAFF_SESSION_GOAL_FAILURE_WINDOW_MS` defaults to `300000` and cannot be lower than the per-turn fast-failure threshold.
+- Domain signature: `recordSessionGoalContinuationOutcome(store, conversationId, { sourceMessages, turn, replies, failures, failureThreshold, fastFailureMs, failureWindowMs }) -> { changed, paused, reason, conversation, goal, runner }`.
 - Browser slash commands:
   - `/goal` reads the selected conversation metadata and displays current status.
   - `/goal <objective>` sends `action: 'set'`.
@@ -47,6 +52,11 @@
 - Setting or resuming an active goal may schedule bounded automatic continuation through transparent `Goal Runner` user messages.
 - Automatic continuation must not run while a conversation is busy, while user messages are queued, while the goal is paused/complete/cleared, or while any proposal is pending.
 - The runner increments `sessionGoalRunner.iteration` per automatic continuation and creates a pending pause proposal when `maxIterations` is reached; default max is 20 unless `CAFF_SESSION_GOAL_AUTO_CONTINUE_MAX_TURNS` overrides it.
+- After an automatic-continuation batch returns normally, the queue evaluates its structured turn result before scheduling another continuation. A qualifying result has zero completed replies, at least one failure, every failure carries `invocationFailure.eligible=true` with kind `provider|timeout|process_exit`, the turn duration is at most 60 seconds by default, and the first-to-current failure span is at most 5 minutes by default.
+- Three consecutive qualifying failures directly update one metadata snapshot: Goal status becomes `paused`, runner status becomes `error_paused`, `goalUpdatedAt` matches the paused Goal's `updatedAt`, and bounded failure context is persisted. No pause proposal/ruling is fabricated; the inactive Goal prevents a fourth continuation.
+- A completed reply, a non-Goal user-authored main-lane batch, or a non-qualifying Goal Runner failure resets the streak. User stop/cancel is neutral. Goal `set` and `resume` remove stale runner metadata before continuation scheduling.
+- `claimSessionGoalAutoContinue` preserves same-epoch streak fields while advancing `iteration`; otherwise the second claim would erase the first failure before it could become consecutive.
+- `conversation_goal_updated` broadcasts the normalized Goal, runner, conversation summary, and a bounded `autoPauseReason`; the reason and `lastFailureSummary` are redacted before persistence/SSE.
 - Agents may propose lifecycle changes via `suggest-goal`; the proposal is stored as `sessionGoalProposal` and must wait for user confirmation.
 - Accepting a proposal applies the proposed action through the same domain state machine and clears `sessionGoalProposal`; dismissing only clears the proposal.
 - Prompt assembly injects a `Session goal:` section when metadata contains a valid objective or pending proposal, including checklist progress when present.
@@ -76,9 +86,17 @@
 | `POST /goal accept-proposal` | pending complete proposal | goal status becomes `complete`, proposal metadata is removed |
 | `POST /goal dismiss-proposal` | pending proposal | proposal metadata is removed, goal remains unchanged |
 | auto continuation | active goal, idle conversation, no pending proposal | creates a `Goal Runner` user message and drains the main turn queue |
-| auto continuation | max runner iterations reached | creates pending `pause` proposal by `Goal Runner`, goal remains active until user confirms |
+| auto continuation | max runner iterations reached without an error pause | creates pending `pause` proposal by `Goal Runner`, goal remains active until user confirms |
+| auto continuation | 3 pure model-invocation failures, each ≤60s and first-to-third span ≤5m | third result atomically writes Goal `paused` + runner `error_paused`; no fourth continuation and no proposal |
+| auto continuation | two qualifying failures then a completed reply or ordinary user batch | streak resets to zero; Goal stays active |
+| auto continuation | user stop/cancel | streak is unchanged and not incremented |
+| auto continuation | tool/application/unknown failure or duration > fast threshold | streak is broken/reset; Goal stays active |
+| service restart | durable streak count is 2 in the current `goalUpdatedAt` epoch | next qualifying claim preserves the streak and third failure pauses |
+| set/resume | stale error streak or `error_paused` runner exists | runner metadata is removed before a new continuation is claimed |
+| runner normalization | malformed fields or `goalUpdatedAt` differs from the Goal epoch | malformed values normalize safely; stale streak cannot contribute to the current Goal |
 
 ### 5. Good / Base / Bad Cases
+- Good: three immediate provider failures produce one durable `error_paused` state with a redacted reason, and restart/reload shows the same state without a fourth invocation.
 - Good: `/goal Implement X` updates conversation metadata, summary metadata, and future prompts include `Session goal` with `Status: active` plus the default Trellis long-task checklist.
 - Good: `/goal pause` keeps the objective visible but prompt guidance says not to actively drive new work until resumed.
 - Good: `/goal clear` removes the metadata key and future prompts omit the entire session goal section.
@@ -91,6 +109,8 @@
 - Bad: allowing `/goal pause` to be sent through `POST /messages`, because it pollutes history and can trigger agents.
 - Bad: making the drawer write metadata locally without the goal API, because other clients and summaries will not receive SSE refreshes.
 - Bad: letting `suggest-goal` directly apply `complete`, `clear`, or `set`, because the user loses confirmation control.
+- Bad: treating `failedReplies` as a thrown queue failure; routing intentionally returns failed Agent replies normally, so Goal streak evaluation must inspect the returned structured result.
+- Bad: matching provider-specific billing text in the Goal layer or persisting raw assistant errors; classification belongs at the invocation boundary and only a redacted summary crosses SSE/UI.
 - Bad: auto-continuing without a max iteration cap or while a pending proposal exists, because it can create runaway turns.
 - Bad: leaving `metadata.sessionGoal = {}` on clear, because prompt/UI consumers may diverge on empty-object handling.
 
@@ -109,6 +129,9 @@
   - Prompt includes status-specific guidance for paused and complete goals.
   - Prompt omits the section when the goal is cleared/missing.
   - Auto-continuation schedules bounded `Goal Runner` messages and creates a pending pause proposal at the safety budget.
+  - Three fast structured model failures pause on the third invocation, reset rules are enforced, and a fourth continuation is never claimed.
+- `tests/runtime/session-goal-auto-pause.test.js`
+  - Covers provider/timeout/process classification, redaction, 60-second/5-minute windows, success/user/cancel resets, malformed/stale epochs, configurable threshold, `set`/`resume`, and real SQLite close/reopen persistence.
 - Manual browser validation:
   - Open the goal drawer with the chat-header `目标 ▸` button.
   - Save, pause, resume, complete, and clear a goal; verify the drawer, conversation metadata line, composer status, and toast stay in sync.
@@ -118,6 +141,26 @@
   - `npm run typecheck`
 
 ### 7. Wrong vs Correct
+#### Wrong
+```ts
+await baseRunConversationTurn(conversationId, { batchMessageIds });
+markConversationQueueBatchConsumed(conversationId, batchEndMessageId);
+// A failed Agent reply returned normally, so the loop immediately claims again.
+```
+
+#### Correct
+```ts
+const result = await baseRunConversationTurn(conversationId, { batchMessageIds });
+const outcome = recordSessionGoalContinuationOutcome(store, conversationId, {
+  sourceMessages: batchMessages,
+  turn: result.turn,
+  replies: result.replies,
+  failures: result.failures,
+});
+broadcastGoalUpdateResult(conversationId, outcome);
+markConversationQueueBatchConsumed(conversationId, batchEndMessageId);
+```
+
 #### Wrong
 ```js
 // Browser submit path treats slash commands as normal chat.

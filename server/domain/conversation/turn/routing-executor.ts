@@ -24,6 +24,21 @@ function createTaskId(prefix = 'task') {
   return `${prefix}-${randomUUID()}`;
 }
 
+function projectFailedReply(message: any) {
+  const metadata = message && message.metadata && typeof message.metadata === 'object'
+    ? message.metadata
+    : {};
+  const invocationFailure = metadata.invocationFailure && typeof metadata.invocationFailure === 'object'
+    ? metadata.invocationFailure
+    : null;
+
+  return {
+    agentId: message.agentId,
+    senderName: message.senderName,
+    errorMessage: message.errorMessage,
+    ...(invocationFailure ? { invocationFailure } : {}),
+  };
+}
 
 export function normalizeConversationTurnInput(input: any, conversation: any) {
   const payload =
@@ -853,11 +868,7 @@ export function createRoutingExecutor(options: any = {}) {
       broadcastEvent('turn_finished', {
         conversationId,
         turn: finishedTurn,
-        failures: failedReplies.map((message: any) => ({
-          agentId: message.agentId,
-          senderName: message.senderName,
-          errorMessage: message.errorMessage,
-        })),
+        failures: failedReplies.map(projectFailedReply),
       });
       broadcastConversationSummary(conversationId);
       cleanupActiveTurn();
@@ -866,11 +877,7 @@ export function createRoutingExecutor(options: any = {}) {
         turnId,
         conversation: finalConversation,
         replies: completedReplies,
-        failures: failedReplies.map((message: any) => ({
-          agentId: message.agentId,
-          senderName: message.senderName,
-          errorMessage: message.errorMessage,
-        })),
+        failures: failedReplies.map(projectFailedReply),
         turn: finishedTurn,
       };
     } catch (error) {

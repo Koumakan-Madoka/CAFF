@@ -9,6 +9,7 @@ const {
   createSessionGoalBudgetProposal,
   getSessionGoal,
   getSessionGoalProposal,
+  recordSessionGoalContinuationOutcome,
 } = require('./session-goal');
 
 const { getAgentById, extractMentionedAgentIds, resolveTurnExecutionMode } = require('./mention-routing');
@@ -94,6 +95,27 @@ export function createTurnOrchestrator(options: any = {}) {
       String(options.sessionGoalAutoContinueMaxTurns || process.env.CAFF_SESSION_GOAL_AUTO_CONTINUE_MAX_TURNS || '20'),
       10
     ) || 20
+  );
+  const sessionGoalFailureThreshold = Math.max(
+    2,
+    Number.parseInt(
+      String(options.sessionGoalFailureThreshold || process.env.CAFF_SESSION_GOAL_FAILURE_THRESHOLD || '3'),
+      10
+    ) || 3
+  );
+  const sessionGoalFastFailureMs = Math.max(
+    1,
+    Number.parseInt(
+      String(options.sessionGoalFastFailureMs || process.env.CAFF_SESSION_GOAL_FAST_FAILURE_MS || '60000'),
+      10
+    ) || 60_000
+  );
+  const sessionGoalFailureWindowMs = Math.max(
+    sessionGoalFastFailureMs,
+    Number.parseInt(
+      String(options.sessionGoalFailureWindowMs || process.env.CAFF_SESSION_GOAL_FAILURE_WINDOW_MS || '300000'),
+      10
+    ) || 5 * 60_000
   );
 
   const activeConversationIds = new Set();
@@ -880,6 +902,28 @@ export function createTurnOrchestrator(options: any = {}) {
     broadcastConversationSummary(conversationId);
   }
 
+  function broadcastGoalUpdateResult(conversationId: any, result: any) {
+    if (!result || !result.changed) {
+      return;
+    }
+
+    const conversation = result.conversation || store.getConversation(conversationId);
+    const summary = pickConversationSummary(conversation);
+    broadcastEvent('conversation_goal_updated', {
+      conversationId,
+      goal: result.goal || getSessionGoal(conversation),
+      runner: result.runner || null,
+      autoPauseReason: result.paused && result.runner ? result.runner.pauseReason || '' : '',
+      conversation,
+      summary,
+    });
+    broadcastEvent('conversation_summary_updated', {
+      conversationId,
+      summary,
+    });
+    broadcastConversationSummary(conversationId);
+  }
+
   function maybeCreateGoalBudgetProposal(conversationId: any, claim: any) {
     if (!claim || claim.reason !== 'budget_limited') {
       return null;
@@ -1030,9 +1074,19 @@ export function createTurnOrchestrator(options: any = {}) {
           let batchSucceeded = false;
 
           try {
-            await baseRunConversationTurn(normalizedConversationId, {
+            const turnResult = await baseRunConversationTurn(normalizedConversationId, {
               batchMessageIds,
             });
+            const goalOutcome = recordSessionGoalContinuationOutcome(store, normalizedConversationId, {
+              sourceMessages: batchMessages,
+              turn: turnResult && turnResult.turn ? turnResult.turn : null,
+              replies: turnResult && Array.isArray(turnResult.replies) ? turnResult.replies : [],
+              failures: turnResult && Array.isArray(turnResult.failures) ? turnResult.failures : [],
+              failureThreshold: sessionGoalFailureThreshold,
+              fastFailureMs: sessionGoalFastFailureMs,
+              failureWindowMs: sessionGoalFailureWindowMs,
+            });
+            broadcastGoalUpdateResult(normalizedConversationId, goalOutcome);
             batchSucceeded = true;
           } catch (error) {
             const errorValue = error as any;

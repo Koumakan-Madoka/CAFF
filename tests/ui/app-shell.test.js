@@ -214,6 +214,43 @@ test('goal proposal card shows pending set objective and checklist for approval'
   assert.match(document.getElementById('session-goal-checklist').value, /和其他 agent 一起头脑风暴/u);
 });
 
+test('goal panel explains an automatic model-failure pause and keeps Resume available', () => {
+  const pausedAt = '2026-08-21T00:03:05.000Z';
+  const conversation = {
+    id: 'conv-error-paused',
+    metadata: {
+      sessionGoal: {
+        objective: 'Use a healthy provider',
+        status: 'paused',
+        createdAt: '2026-08-21T00:00:00.000Z',
+        updatedAt: pausedAt,
+      },
+      sessionGoalRunner: {
+        status: 'error_paused',
+        goalUpdatedAt: pausedAt,
+        iteration: 3,
+        maxIterations: 20,
+        consecutiveModelFailureCount: 3,
+        lastFailureKind: 'provider',
+        lastFailureSummary: 'insufficient balance',
+        pauseReason: '连续 3 次快速模型调用失败，Goal 已自动暂停。',
+        errorPausedAt: pausedAt,
+      },
+    },
+  };
+  const { document, controller } = bootGoalPanel({ conversation, useRealUtils: true });
+
+  controller.render();
+
+  const details = document.getElementById('session-goal-details');
+  assert.match(document.getElementById('session-goal-drawer-status').textContent, /模型失败自动暂停/u);
+  assert.match(details.textContent, /模型调用失败自动暂停/u);
+  assert.match(details.textContent, /连续 3 次/u);
+  assert.match(details.textContent, /insufficient balance/u);
+  assert.equal(document.getElementById('session-goal-resume-button').disabled, false);
+  assert.equal(document.getElementById('session-goal-pause-button').disabled, true);
+});
+
 test('goal panel never grabs focus when opened from shell (APG roving focus intact)', async () => {
   const { window, document, controller } = bootGoalPanel();
   controller.bindEvents();

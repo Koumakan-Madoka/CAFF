@@ -95,6 +95,9 @@
   - anything else (broadcast, multi-mention, no explicit single mention) stays on the main lane and uses queued main-batch semantics
 - Main-lane serialization rules:
   - at most one main turn may be active/dispatching per conversation
+  - after `baseRunConversationTurn` returns and before the next loop claim, call `recordSessionGoalContinuationOutcome` with the exact batch source messages plus returned `turn/replies/failures`; Agent-level failures return normally and are not represented by the queue `catch`
+  - persist/clear the Goal failure streak before marking the batch consumed; a third qualifying Goal Runner failure atomically pauses the Goal, so the next empty-queue continuation check observes `inactive_goal`
+  - ordinary user batches and successful Goal Runner replies reset an existing streak; user stop is neutral; infrastructure throws keep the batch pending through the existing queue-failure path
   - later main-lane user messages become the next batch instead of opening a second main turn
   - direct `runConversationTurn()` calls must respect active side slots and reject instead of bypassing the gate
 - Side-lane slot rules:
@@ -153,6 +156,9 @@
 | `DELETE /conversation` | queued side-slot work | `409 当前会话仍有待处理消息，请等待自动续跑完成后再删除` |
 | `DELETE /conversation?force=1` | idle queued main-lane failure | delete succeeds and drops the queued main-lane messages with the conversation |
 | queue drain loop | `runConversationTurn()` throws | log the failure, keep queue pending, do not advance `lastConsumedUserMessageId`, and expose queue failure metadata |
+| queue drain loop | Goal Runner turn returns zero replies + structured eligible failures in ≤60s | persist the same-epoch streak; on count 3 pause Goal before another continuation can be claimed |
+| queue drain loop | Agent failed replies exist but the call did not throw | still consume the user message under existing semantics; evaluate Goal streak from the returned result instead of queue `catch` |
+| queue drain loop | ordinary user batch follows a Goal failure streak | clear the streak without changing the Goal lifecycle status |
 
 ### 5. Good / Base / Bad Cases
 - Good: idle conversation accepts a user message, returns `dispatch = 'started'`, creates one active main turn, and shows main queue depth `0`.
@@ -179,6 +185,7 @@
   - persisted side-dispatch messages without terminal replies recover on orchestrator startup
   - cancelled persisted side-dispatch messages finalize stale assistant placeholders without replaying
   - main queue still excludes late messages from the active prompt snapshot and drains serially
+  - three fast Goal Runner model failures stop at exactly three, while the existing 20-turn budget-proposal path remains unchanged for successful continuations
 - `tests/smoke/server-smoke.test.js`
   - `POST /messages` still accepts immediately and exposes lane/runtime fields
   - delete rejects active side slots

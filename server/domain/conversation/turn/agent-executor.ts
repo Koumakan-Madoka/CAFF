@@ -92,6 +92,90 @@ function sanitizeReason(reason: any) {
   return clipText(reason || '', HEARTBEAT_EVENT_REASON_LIMIT);
 }
 
+function redactInvocationFailureSummary(value: any) {
+  let text = String(value || '').trim().replace(/\s+/gu, ' ');
+  text = text.replace(/(authorization\s*[:=]\s*bearer\s+)([^\s,;]+)/giu, '$1[redacted]');
+  text = text.replace(/(authorization\s*[:=]\s*)(?!bearer\b)([^\s,;]+)/giu, '$1[redacted]');
+  text = text.replace(/((?:api[_ -]?key|token|secret|password|passwd)\s*[:=]\s*)([^\s,;]+)/giu, '$1[redacted]');
+  text = text.replace(/\bsk-[a-z0-9_-]{6,}\b/giu, '[redacted]');
+  return clipText(text, 240);
+}
+
+export function classifyAgentInvocationFailure(error: any, options: any = {}) {
+  const errorValue = error && typeof error === 'object' ? error : {};
+  const stopRequested = Boolean(options.stopRequested);
+  const terminationType = String(
+    errorValue.terminationReason && errorValue.terminationReason.type || ''
+  ).trim().toLowerCase();
+  const assistantErrors = Array.isArray(errorValue.assistantErrors)
+    ? errorValue.assistantErrors.map((value: any) => String(value || '').trim()).filter(Boolean)
+    : [];
+  const message = String(errorValue.message || error || 'Unknown invocation error').trim();
+
+  if (stopRequested || terminationType === 'cancelled') {
+    return {
+      kind: 'cancelled',
+      code: terminationType || 'stop_requested',
+      eligible: false,
+      terminationType,
+      summary: redactInvocationFailureSummary(message),
+    };
+  }
+
+  if (['heartbeat_timeout', 'progress_timeout', 'run_timeout'].includes(terminationType)) {
+    return {
+      kind: 'timeout',
+      code: terminationType,
+      eligible: true,
+      terminationType,
+      summary: redactInvocationFailureSummary(message),
+    };
+  }
+
+  if (assistantErrors.length > 0) {
+    return {
+      kind: 'provider',
+      code: 'assistant_error',
+      eligible: true,
+      terminationType,
+      summary: redactInvocationFailureSummary(assistantErrors[0]),
+    };
+  }
+
+  const structuredErrorCode = String(errorValue.code || '').trim().toUpperCase();
+  if (/^(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|UND_ERR_[A-Z_]+)$/u.test(structuredErrorCode)) {
+    return {
+      kind: 'provider',
+      code: structuredErrorCode.toLowerCase(),
+      eligible: true,
+      terminationType,
+      summary: redactInvocationFailureSummary(message),
+    };
+  }
+
+  if (
+    (errorValue.exitCode !== undefined && errorValue.exitCode !== null && Number.isFinite(Number(errorValue.exitCode)))
+    || (errorValue.code !== undefined && errorValue.code !== null && Number.isFinite(Number(errorValue.code)))
+    || String(errorValue.signal || '').trim()
+  ) {
+    return {
+      kind: 'process_exit',
+      code: String(errorValue.signal || errorValue.exitCode || errorValue.code || 'process_exit').trim(),
+      eligible: true,
+      terminationType,
+      summary: redactInvocationFailureSummary(message),
+    };
+  }
+
+  return {
+    kind: 'unknown',
+    code: 'unclassified_invocation_error',
+    eligible: false,
+    terminationType,
+    summary: redactInvocationFailureSummary(message),
+  };
+}
+
 function normalizePromptMentionPlaceholders(text: any) {
   return String(text || '').replace(PROMPT_MENTION_PLACEHOLDER_RE, (match: any, token: any) => `@${token}`);
 }
@@ -2092,6 +2176,7 @@ export function createAgentExecutor(options: any = {}) {
       const errorUsage = errorValue && errorValue.usage && typeof errorValue.usage === 'object' && !Array.isArray(errorValue.usage) ? errorValue.usage : null;
       const errorTokenUsage = summarizeTokenUsage(errorUsage);
       const errorModelUsage = summarizeModelUsageCalls(errorValue && errorValue.usageCalls);
+      const invocationFailure = classifyAgentInvocationFailure(errorValue, { stopRequested });
       const existingMessage = store.getMessage(assistantMessage.id);
       const assistantMessageFailed = store.updateMessage(assistantMessage.id, {
         content: existingMessage && existingMessage.content !== 'Thinking...' ? existingMessage.content : '',
@@ -2124,6 +2209,7 @@ export function createAgentExecutor(options: any = {}) {
           usage: errorUsage,
           tokenUsage: errorTokenUsage,
           modelUsage: errorModelUsage,
+          invocationFailure,
           agentContextSnapshot: contextSnapshot,
         },
       });
@@ -2159,6 +2245,9 @@ export function createAgentExecutor(options: any = {}) {
         agentName: agent.name,
         runId: errorValue && errorValue.runId ? errorValue.runId : handle.runId || null,
         errorMessage,
+        invocationFailureKind: invocationFailure.kind,
+        invocationFailureCode: invocationFailure.code,
+        invocationFailureEligible: invocationFailure.eligible,
         hop,
       });
 

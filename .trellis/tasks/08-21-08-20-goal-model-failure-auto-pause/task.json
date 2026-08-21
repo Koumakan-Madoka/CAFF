@@ -1,0 +1,63 @@
+{
+  "id": "08-20-goal-model-failure-auto-pause",
+  "name": "08-20-goal-model-failure-auto-pause",
+  "title": "Goal model failure auto pause",
+  "description": "Pause active Goals after three same-epoch fast structured model invocation failures, expose a redacted reason, and block DAG goal-driven children safely.",
+  "status": "review",
+  "dev_type": "fullstack",
+  "scope": "fullstack",
+  "package": null,
+  "priority": "P2",
+  "creator": "GPT",
+  "assignee": "GPT",
+  "createdAt": "2026-08-21",
+  "completedAt": null,
+  "branch": "room/c2fab452-caff-bug-bug",
+  "base_branch": "develop",
+  "worktree_path": "E:/pythonproject/worktrees/room/c2fab452-caff-bug-bug",
+  "current_phase": 3,
+  "next_action": [
+    {
+      "phase": 3,
+      "action": "independent-review"
+    },
+    {
+      "phase": 4,
+      "action": "human-acceptance"
+    },
+    {
+      "phase": 5,
+      "action": "create-pr"
+    },
+    {
+      "phase": 6,
+      "action": "archive"
+    }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "server/domain/conversation/session-goal.ts",
+    "server/domain/conversation/turn-orchestrator.ts",
+    "server/domain/conversation/turn/agent-executor.ts",
+    "server/domain/conversation/turn/routing-executor.ts",
+    "server/domain/dag/dag-scheduler.ts",
+    "public/shared/session-goal.js",
+    "public/chat/session-goal-panel.js",
+    "tests/runtime/session-goal-auto-pause.test.js",
+    "tests/runtime/turn-orchestrator.test.js",
+    "tests/runtime/agent-executor-hook.test.js",
+    "tests/dag/dag-scheduler.test.js",
+    "tests/ui/app-shell.test.js",
+    ".trellis/spec/backend/session-goal.md",
+    ".trellis/spec/runtime/agent-runtime.md",
+    ".trellis/spec/runtime/conversation-turn-queue.md",
+    ".trellis/spec/backend/dag-execution.md",
+    ".trellis/spec/frontend/ui-structure.md"
+  ],
+  "notes": "Implementation and executable specs are complete. check/typecheck/build, Goal failure 8/8, DAG execution gate, smoke gate, UI, bridge, and targeted runtime suites pass. test:fast reaches turn-orchestrator 81/83 and stops only on the two existing Windows t.after rmSync EPERM cleanup failures; all test bodies and every new suite pass when run directly.",
+  "meta": {}
+}

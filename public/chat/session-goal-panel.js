@@ -46,13 +46,17 @@
       }
     }
 
-    function setStatusBadge(goal) {
+    function setStatusBadge(goal, runner) {
       if (!dom.sessionGoalDrawerStatus) {
         return;
       }
 
       dom.sessionGoalDrawerStatus.className = `session-goal-status-badge ${sessionGoalUtils.statusValue(goal)}`;
-      dom.sessionGoalDrawerStatus.textContent = goal ? sessionGoalUtils.formatStatus(goal) : '当前没有会话目标';
+      dom.sessionGoalDrawerStatus.textContent = runner && runner.status === 'error_paused'
+        ? `会话目标（模型失败自动暂停）：${sessionGoalUtils.objectiveText(goal)}`
+        : goal
+          ? sessionGoalUtils.formatStatus(goal)
+          : '当前没有会话目标';
     }
 
     function appendDetail(container, label, value) {
@@ -96,6 +100,16 @@
       }
       if (runner && runner.status === 'budget_limited') {
         appendDetail(dom.sessionGoalDetails, '续跑状态', '已到安全上限，等待确认');
+      }
+      if (runner && runner.status === 'error_paused') {
+        appendDetail(dom.sessionGoalDetails, '续跑状态', '模型调用失败自动暂停');
+        appendDetail(
+          dom.sessionGoalDetails,
+          '失败 streak',
+          `${runner.consecutiveModelFailureCount || 0} 次连续快速失败`
+        );
+        appendDetail(dom.sessionGoalDetails, '暂停原因', String(runner.pauseReason || '').trim());
+        appendDetail(dom.sessionGoalDetails, '最后错误', String(runner.lastFailureSummary || '').trim());
       }
       appendDetail(dom.sessionGoalDetails, '创建', formatDateTime(goal.createdAt));
       appendDetail(dom.sessionGoalDetails, '更新', formatDateTime(goal.updatedAt));
@@ -297,7 +311,7 @@
       renderToggleButton(dom.sessionGoalEdgeButton, goal, hasConversation);
 
       syncObjectiveInput(goal);
-      setStatusBadge(goal);
+      setStatusBadge(goal, runner);
       renderDetails(goal, runner);
       renderProgress(goal);
       renderProposal(proposal);

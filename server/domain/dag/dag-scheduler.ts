@@ -11,8 +11,8 @@
  *   goal-aware settle: a finished turn no longer completes the node (D27) —
  *   it only settles when the child's session goal already reached a terminal
  *   or verifiable state; slot failures still flip the node to blocked.
- * - `handleEvent('conversation_goal_proposal_updated'/'_cleared', …)` →
- *   D27/D28 completion flow: the worker announces completion via a goal
+ * - `handleEvent('conversation_goal_updated'/'_proposal_updated'/'_cleared', …)` →
+ *   model-failure auto-pause plus D27/D28 completion flow: the worker announces completion via a goal
  *   complete proposal; the scheduler routes it to the node's verifier agent
  *   (targeted delivery into the same child conversation) or auto-accepts
  *   when the node has no verifier; verifier accept → done + result, reject →
@@ -54,6 +54,8 @@ import {
   getSessionGoal,
   getSessionGoalProposal,
   getSessionGoalRuling,
+  getSessionGoalRunner,
+  isSessionGoalModelFailurePaused,
 } from '../conversation/session-goal';
 import { ensureDagNodeGoalBinding, getDagNodeGoalBinding } from '../conversation/dag-goal-binding';
 
@@ -905,7 +907,20 @@ export function createDagScheduler(options: any = {}) {
     const nodeId = String(node.id || '').trim();
     const goal = getSessionGoal(conversation);
     const proposal = getSessionGoalProposal(conversation);
+    const runner = getSessionGoalRunner(conversation);
     const binding = getDagNodeGoalBinding(conversation);
+
+    if (isSessionGoalModelFailurePaused(conversation)) {
+      const detail = runner && runner.lastFailureSummary
+        ? `: ${clipText(runner.lastFailureSummary, 200)}`
+        : '';
+      writeExecution(
+        ownerConversationId,
+        [{ nodeId, status: 'blocked' }],
+        `dag_goal_model_failure_paused: consecutive fast model invocation failures (${reasonPrefix})${detail}`
+      );
+      return true;
+    }
 
     if (goal && goal.status === 'complete') {
       if (binding) {
@@ -1349,6 +1364,44 @@ export function createDagScheduler(options: any = {}) {
    * (plan, node) pair fresh inside the per-owner chain so stale event
    * payloads never drive a write.
    */
+  function handleGoalUpdated(conversationId: string): void {
+    const normalizedConversationId = String(conversationId || '').trim();
+    if (!normalizedConversationId) {
+      return;
+    }
+    let ownerResult: any = null;
+    try {
+      ownerResult = store.getPlanForConversation(normalizedConversationId);
+    } catch {
+      return;
+    }
+    const plan = ownerResult && ownerResult.plan ? ownerResult.plan : null;
+    if (!plan || plan.status !== 'active') {
+      return;
+    }
+    const ownerConversationId = ownerResult.ownerConversationId;
+    void enqueueForOwner(ownerConversationId, async () => {
+      let fresh: any = null;
+      try {
+        fresh = store.getPlanForConversation(normalizedConversationId);
+      } catch {
+        return;
+      }
+      const freshPlan = fresh && fresh.plan ? fresh.plan : null;
+      if (!freshPlan || freshPlan.status !== 'active') {
+        return;
+      }
+      const node = findGoalDrivenNodeForChild(freshPlan, normalizedConversationId);
+      const conversation = store.getConversation(normalizedConversationId);
+      if (!node || !conversation) {
+        return;
+      }
+      if (await settleFromGoalState(ownerConversationId, freshPlan, node, conversation, 'dag_goal_updated')) {
+        await dispatchReadyNodes(ownerConversationId);
+      }
+    }).catch((error) => logError('goal updated handling failed', error));
+  }
+
   function handleGoalProposalUpdated(conversationId: string): void {
     const normalizedConversationId = String(conversationId || '').trim();
     if (!normalizedConversationId) {
@@ -1653,6 +1706,10 @@ export function createDagScheduler(options: any = {}) {
         void completeNodeFromSlot(conversationId, payload && payload.slot ? payload.slot : {}).catch((error) => {
           logError('agent_slot_finished handling failed', error);
         });
+        return;
+      }
+      if (eventName === 'conversation_goal_updated') {
+        handleGoalUpdated(payload && payload.conversationId);
         return;
       }
       if (eventName === 'conversation_goal_proposal_updated') {

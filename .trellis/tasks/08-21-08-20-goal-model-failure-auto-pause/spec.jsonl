@@ -1,0 +1,5 @@
+{"file":".trellis/spec/backend/session-goal.md","reason":"Document durable fast model-failure streak, direct error pause, reset matrix, env keys, SSE, and tests"}
+{"file":".trellis/spec/runtime/agent-runtime.md","reason":"Document structured invocation failure classification, eligibility, and redaction"}
+{"file":".trellis/spec/runtime/conversation-turn-queue.md","reason":"Document returned failedReplies evaluation inside serialized Goal continuation drain"}
+{"file":".trellis/spec/backend/dag-execution.md","reason":"Document error_paused event and restart reconciliation to blocked without D27/D28 bypass"}
+{"file":".trellis/spec/frontend/ui-structure.md","reason":"Document auto-pause badge, reason details, and Resume behavior"}

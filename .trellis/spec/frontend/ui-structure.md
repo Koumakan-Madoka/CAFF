@@ -42,6 +42,55 @@
 - Browser geometry checks should cover 280px width, root/nested parent and leaf alignment, long text, light/dark row states, menu containment, open-menu click-through on rows with following siblings, and touch/keyboard focus behavior. Focus-leave behavior should be covered by the jsdom renderer suite.
 
 
+## Goal Model-Failure Auto-Pause UI
+
+### Scope / Trigger
+
+- Applies when `conversation.metadata.sessionGoal.status === 'paused'` and normalized `sessionGoalRunner.status === 'error_paused'`.
+
+### Contract
+
+- `public/shared/session-goal.js` preserves the runner payload and normalizes `iteration`, `maxIterations`, and `consecutiveModelFailureCount` as non-negative numbers.
+- The Goal drawer badge says `模型失败自动暂停` instead of presenting this state as an unexplained manual pause.
+- Details show the automatic continuation position, `模型调用失败自动暂停`, consecutive count, bounded pause reason, and redacted last failure summary.
+- Existing Resume remains enabled for ordinary conversations and uses the normal Goal API; server-side Resume clears runner/streak metadata before scheduling another continuation.
+- DAG-bound goal controls keep the existing D27/D28 lock. The scheduler moves an error-paused doing node to blocked; UI must not synthesize a completion or verifier result.
+- Rendering uses only persisted normalized metadata delivered through the existing `conversation_goal_updated` refresh path; it never parses provider error text in the browser.
+
+### Validation Matrix
+
+| State | Expected UI |
+| --- | --- |
+| manual paused Goal without `error_paused` runner | existing `已暂停` label; no model-failure details |
+| matching `error_paused` runner | auto-pause badge, count, safe reason, safe last error, Resume available when not DAG-locked |
+| legacy/missing runner fields | numeric fields normalize to zero; no throw |
+| Resume succeeds | refreshed conversation no longer shows streak/auto-pause details |
+
+### Good/Base/Bad Cases
+
+- Good: a provider billing failure pauses after three attempts and the user can see the safe reason before fixing the provider and resuming.
+- Base: historical manually paused Goals render unchanged.
+- Bad: browser regex-matches `errorMessage`, exposes raw provider payloads, or shows an actionable Resume control that bypasses the existing DAG lock.
+
+### Required Tests
+
+- `tests/ui/app-shell.test.js` renders a real `error_paused` metadata fixture and asserts badge, reason, summary, and Resume/Pause enabled state.
+- `npm run check` and `npm run typecheck:public` cover the shared helper and panel syntax/types.
+
+### Wrong vs Correct
+
+#### Wrong
+```js
+if (/balance|429/u.test(lastError)) status.textContent = 'Provider failed';
+```
+
+#### Correct
+```js
+if (runner && runner.status === 'error_paused') {
+  appendDetail(details, '暂停原因', runner.pauseReason);
+}
+```
+
 ## Pending Goal Proposal Checklist
 
 ### Scope / Trigger

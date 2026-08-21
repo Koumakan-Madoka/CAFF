@@ -49,12 +49,17 @@
       : null;
     const iteration = Math.max(0, Number.parseInt(String((runner && runner.iteration) || '0'), 10) || 0);
     const maxIterations = Math.max(0, Number.parseInt(String((runner && runner.maxIterations) || '0'), 10) || 0);
+    const consecutiveModelFailureCount = Math.max(
+      0,
+      Number.parseInt(String((runner && runner.consecutiveModelFailureCount) || '0'), 10) || 0
+    );
 
     return runner
       ? {
           ...runner,
           iteration,
           maxIterations,
+          consecutiveModelFailureCount,
         }
       : null;
   }
