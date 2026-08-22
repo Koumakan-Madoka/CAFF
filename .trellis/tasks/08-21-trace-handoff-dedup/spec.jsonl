@@ -1,0 +1,2 @@
+{"file":".trellis/spec/runtime/conversation-turn-queue.md","reason":"Document executable cross-channel trace recipient signatures, separate attempt/success ledgers, validation matrix, cases, required assertions, and wrong/correct pattern"}
+{"file":".trellis/spec/runtime/agent-runtime.md","reason":"Clarify that same-run actionable public mentions remain visible but do not relaunch a recipient already dispatched by private handoff; no-handoff remains excluded"}

@@ -1,0 +1,52 @@
+{
+  "id": "trace-handoff-dedup",
+  "name": "trace-handoff-dedup",
+  "title": "Deduplicate private and public handoffs per trace",
+  "description": "Prevent send-private immediate launch and a later actionable public mention in the same source trace from launching the same recipient twice.",
+  "status": "review",
+  "dev_type": "backend",
+  "scope": "backend",
+  "package": null,
+  "priority": "P1",
+  "creator": "GPT",
+  "assignee": "GPT",
+  "createdAt": "2026-08-21",
+  "completedAt": null,
+  "branch": "room/c2fab452-caff-bug-bug",
+  "base_branch": "develop",
+  "worktree_path": "E:/pythonproject/worktrees/room/c2fab452-caff-bug-bug",
+  "current_phase": 3,
+  "next_action": [
+    {
+      "phase": 3,
+      "action": "independent-review"
+    },
+    {
+      "phase": 4,
+      "action": "human-acceptance"
+    },
+    {
+      "phase": 5,
+      "action": "create-pr"
+    },
+    {
+      "phase": 6,
+      "action": "archive"
+    }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "server/domain/conversation/turn/routing-executor.ts",
+    "tests/runtime/turn-orchestrator.test.js",
+    "tests/runtime/agent-tool-bridge.test.js",
+    "tests/runtime/agent-executor-hook.test.js",
+    ".trellis/spec/runtime/conversation-turn-queue.md",
+    ".trellis/spec/runtime/agent-runtime.md"
+  ],
+  "notes": "Red-first running/completed timing coverage is green. Bridge 34/34, executor 11/11, turn-orchestrator 85/85 test bodies, smoke 69+4, DAG 55+8+8+3+3, check/typecheck/build/diff-check pass; the turn command reports only two pre-existing Windows temp-directory rmSync EPERM cleanup failures.",
+  "meta": {}
+}

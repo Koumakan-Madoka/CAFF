@@ -1,0 +1,9 @@
+{"file": ".trellis/workflow.md", "reason": "Project workflow and conventions"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend development guide"}
+{"file": ".trellis/spec/runtime/agent-runtime.md", "reason": "Private handoff bridge contract and same-trace dispatch identity"}
+{"file": ".trellis/spec/runtime/conversation-turn-queue.md", "reason": "Turn-local scheduler, hop, cancellation, and immediate handoff semantics"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Trace identity flow across bridge, executor, and scheduler"}
+{"file":"server/domain/conversation/turn/routing-executor.ts","reason":"Keep private attempt dedup separate from a launched-or-queued cross-channel trace recipient ledger and suppress duplicate public handoffs before queue/hop reservation"}
+{"file":"tests/runtime/turn-orchestrator.test.js","reason":"Red-first running/completed recipient timing coverage plus repeated private, distinct recipient, capacity fallback, Stop, execution count, and hop assertions"}
+{"file":"tests/runtime/agent-tool-bridge.test.js","reason":"Lock private dispatch identity to sender agent id and current stage Pi run id; preserve self/no-handoff persistence-only behavior"}
+{"file":"tests/runtime/agent-executor-hook.test.js","reason":"Lock completed public mention routing to the same sender agent id and Pi result run id after completion hooks"}

@@ -2,24 +2,77 @@
 
 ## Immediate Private Handoff Scheduling
 
-- A private message to another Agent with handoff enabled is persisted first, then an eligible idle recipient is launched immediately inside the same turn. Self-private notes and `--no-handoff` remain persistence-only.
-- The turn-local scheduler reserves the hop before launch, caps concurrent Agent executions at the existing batch limit, and deduplicates by `(sourceAgentId, sourceRunId, recipientAgentId)`. A duplicate message remains durable but does not create another model run.
-- `turn_finished`, root task settlement, active-turn cleanup, and Goal continuation wait until all immediately launched private recipients settle. A sender `final` closes ordinary routing but cannot orphan recipients already in flight.
-- Stop cancellation applies to every registered sender/recipient run and queued slot wait. No private launch may begin after `turnState.stopRequested`.
-- Concurrent prompt construction excludes incomplete assistant placeholders from other in-flight runs; a recipient must not receive another Agent's `Thinking...`/streaming half-result as conversation history.
-- Bridge results preserve `handoffRequested` and `enqueuedAgentIds` and add bounded `dispatch[]` entries with `agentId`, `outcome`, and content-free `detail`. Supported outcomes are `launched`, `duplicate`, `already_running`, `queued`, and `capacity_limited`.
+### 1. Scope / Trigger
+
+- Trigger: an Agent uses `send-private` with handoff enabled during its source run, or its completed public reply contains an actionable Agent mention.
+- Owner: the `createRoutingExecutor()` turn-local scheduler in `server/domain/conversation/turn/routing-executor.ts`.
+- Non-owners: user side-lane dispatch, cross-conversation delivery, and Pi session/runtime code do not consult this ledger.
+
+### 2. Signatures And Identity
+
+- `enqueueAgent({ agentIds, triggerType, triggeredByAgentId, parentRunId, triggeredByMessageId, enqueueReason }) -> { enqueuedAgentIds, dispatch }`.
+- `triggerType='private'` comes from `agent-tool-bridge`: source identity is `context.agentId` plus `context.stage.runId`.
+- `triggerType='agent'` comes from completed public reply routing in `agent-executor`: source identity is `agent.id` plus `result.runId || handle.runId`.
+- The cross-channel key is `JSON.stringify([sourceAgentId, sourceRunId || turnId, recipientAgentId])`.
+- `dispatch[]` entries contain only `{ agentId, outcome, detail }`; outcomes remain `launched`, `duplicate`, `already_running`, `queued`, or `capacity_limited`.
+
+### 3. Contracts
+
+- A private message is persisted before dispatch. An eligible idle recipient launches immediately, reserves one hop, and is tracked until settlement. Self-private notes and `--no-handoff` remain persistence-only.
+- Successful dispatch is deduplicated across private handoff and ordinary public mention by `(sourceAgentId, sourceRunId, recipientAgentId)`. A duplicate message remains durable and visible to its intended audience but creates no model run and consumes no hop.
+- Keep two distinct ledgers. Private-private attempt deduplication records before busy/capacity checks to prevent polling. The shared cross-channel ledger records only `launched` private outcomes and accepted ordinary queue entries. Do not use private attempt keys as proof that a run started.
+- A private `already_running` or `capacity_limited` result does not suppress a later public mention. That mention remains subject to ordinary queue, stop, capacity, and hop limits.
+- `turn_finished`, root task settlement, active-turn cleanup, and Goal continuation wait until all immediately launched private recipients settle. A sender final cannot orphan an in-flight recipient.
+- Stop applies to every registered sender/recipient handle and prevents late launches. Concurrent prompt construction excludes other Agents' incomplete assistant placeholders.
 - Agent guidance requires one complete private message per recipient per trace, no polling/P2 wait, and commit-pinned formal review. After a formal review request, the author freezes repository writes for the remainder of that trace.
 
-### Private handoff validation matrix
+### 4. Validation And Error Matrix
 
 | Case | Expected behavior |
 | --- | --- |
-| Idle recipient and capacity available | Persist and launch immediately; `dispatch.outcome = launched`. |
-| Same source trace repeats recipient | Persist only; `duplicate`; current recipient run may not see the later message. |
-| Recipient already running | Persist only; `already_running`; never queue a duplicate-cost invocation. |
-| Parallel/hop capacity exhausted | Persist; return `queued` or `capacity_limited` without exceeding the limit. |
+| Idle recipient and capacity available | Persist and launch immediately; `dispatch.outcome='launched'`. |
+| Same source trace repeats private recipient | Persist only; `duplicate`; current recipient run may not see later content. |
+| Private launch succeeds, then same source run publicly mentions recipient | Keep public message visible; `duplicate`; no queue entry or hop, whether private run is active or completed. |
+| Private launch to B, then same source run publicly mentions B and C | Suppress only B; queue C normally. |
+| Recipient already running for another trace | Private result is `already_running`; do not mark cross-channel success; later public mention remains eligible. |
+| Parallel/hop capacity exhausted | Private result is `capacity_limited`; do not mark cross-channel success; later public mention uses ordinary limits. |
+| `--no-handoff` private message, then public mention | Private message is persistence-only; public mention dispatches normally. |
+| Different source Agent, source run, or recipient | Distinct key; dispatch remains eligible. |
 | Sender returns final before recipient | Wait for recipient, then emit exactly one terminal turn event. |
 | User stops | Cancel registered executions/waits and prevent late launch. |
+
+### 5. Good / Base / Bad Cases
+
+- Good: A privately launches B, then publicly mentions B and C. B executes once, C executes once, and only three hops exist: A, B, C.
+- Base: A's private attempt for B is capacity-limited, then A publicly mentions B. The public handoff may queue and execute under ordinary limits because no private run started.
+- Bad: reusing `privateLaunchKeys` for public routing. That set records failed busy/capacity attempts and would silently suppress a legal public handoff.
+- Bad: keying only by recipient. That would suppress another sender or a later source run.
+
+### 6. Tests Required
+
+- `tests/runtime/turn-orchestrator.test.js`: private plus same public recipient executes once while the recipient is running and after it completes; repeated private remains duplicate; a different public recipient executes; duplicate consumes no hop; capacity-limited private does not poison public eligibility; Stop prevents late launch.
+- `tests/runtime/agent-tool-bridge.test.js`: handoff-enabled private dispatch passes `triggerType='private'`, sender id, stage run id, and recipient ids; self-private and `--no-handoff` never call `enqueueAgent`.
+- `tests/runtime/agent-executor-hook.test.js`: actionable public mention passes `triggerType='agent'`, the same sender id, and completed Pi run id after completion hooks.
+
+### 7. Wrong Vs Correct
+
+#### Wrong
+```ts
+if (privateLaunchKeys.has(sourceTraceKey)) {
+  return duplicate;
+}
+privateLaunchKeys.add(sourceTraceKey); // Also records capacity failures.
+```
+
+#### Correct
+```ts
+if (privateLaunchSucceeded) {
+  dispatchedTraceRecipientKeys.add(sourceTraceKey);
+}
+if (triggerType === 'agent' && dispatchedTraceRecipientKeys.has(sourceTraceKey)) {
+  return { enqueuedAgentIds: [], dispatch: [duplicate] };
+}
+```
 
 ## Message-History Mutation Idle Guard
 

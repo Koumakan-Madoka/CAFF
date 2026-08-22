@@ -742,6 +742,7 @@ test('assistant completion hook broadcasts final message before blocking routing
   const store = createFakeStore(conversation);
   const events = [];
   const turnProgresses = [];
+  let routedInput = null;
   const executor = createAgentExecutor({
     store,
     skillRegistry: { resolveSkills: () => [] },
@@ -786,6 +787,7 @@ test('assistant completion hook broadcasts final message before blocking routing
     hop: 1,
     remainingSlots: 1,
     enqueueAgent(input) {
+      routedInput = input;
       events.push(`enqueue:${Array.isArray(input && input.agentIds) ? input.agentIds.join(',') : ''}`);
       return input.agentIds;
     },
@@ -796,6 +798,10 @@ test('assistant completion hook broadcasts final message before blocking routing
 
   assert.equal(result.stopTurn, false);
   assert.deepEqual(events, ['broadcast:streaming', 'broadcast:completed', 'hook:start', 'hook:end', 'enqueue:agent-hook-next']);
+  assert.equal(routedInput.triggerType, 'agent');
+  assert.equal(routedInput.triggeredByAgentId, agent.id);
+  assert.equal(routedInput.parentRunId, 'run-hook-await');
+  assert.deepEqual(routedInput.agentIds, [nextAgent.id]);
   assert.ok(
     turnProgresses.some((turn) => {
       const stage = Array.isArray(turn && turn.agents) ? turn.agents[0] : null;

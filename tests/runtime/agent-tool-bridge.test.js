@@ -84,6 +84,7 @@ test('agent tool bridge projects bounded private handoff dispatch without echoin
   const fullConversation = store.getConversation(conversation.id);
   const bridge = createAgentToolBridge({ store });
   let enqueueCallCount = 0;
+  const enqueueInputs = [];
   const context = bridge.registerInvocation(
     bridge.createInvocationContext({
       conversationId: conversation.id,
@@ -94,8 +95,9 @@ test('agent tool bridge projects bounded private handoff dispatch without echoin
       conversationAgents: fullConversation.agents,
       stage: { status: 'running', runId: 'sender-run-1' },
       turnState: { conversationId: conversation.id, turnId: assistantMessage.turnId, stopRequested: false },
-      enqueueAgent() {
+      enqueueAgent(input) {
         enqueueCallCount += 1;
+        enqueueInputs.push(input);
         return {
           enqueuedAgentIds: [recipient.id],
           dispatch: [{
@@ -125,6 +127,10 @@ test('agent tool bridge projects bounded private handoff dispatch without echoin
 
   assert.equal(response.handoffRequested, true);
   assert.equal(enqueueCallCount, 1);
+  assert.equal(enqueueInputs[0].triggerType, 'private');
+  assert.equal(enqueueInputs[0].triggeredByAgentId, sender.id);
+  assert.equal(enqueueInputs[0].parentRunId, 'sender-run-1');
+  assert.deepEqual(enqueueInputs[0].agentIds, [recipient.id]);
   assert.deepEqual(response.enqueuedAgentIds, [recipient.id]);
   assert.deepEqual(response.dispatch, [{
     agentId: recipient.id,

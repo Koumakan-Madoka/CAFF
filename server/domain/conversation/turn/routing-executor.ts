@@ -362,6 +362,7 @@ export function createRoutingExecutor(options: any = {}) {
       const queuedAgentIds = new Set();
       const activeExecutionAgentIds = new Set();
       const privateLaunchKeys = new Set();
+      const dispatchedTraceRecipientKeys = new Set();
       const maxReplies = Math.max(8, conversation.agents.length * 4);
       let terminationReason = 'queue_exhausted';
 
@@ -379,6 +380,24 @@ export function createRoutingExecutor(options: any = {}) {
         return {
           enqueuedAgentIds,
           dispatch,
+        };
+      }
+
+      function buildSourceTraceRecipientKey(queueItem: any, agentId: any) {
+        const sourceAgentId = String(queueItem && queueItem.triggeredByAgentId || '').trim();
+        const sourceRunId = String(queueItem && queueItem.parentRunId || turnId).trim();
+        const recipientAgentId = String(agentId || '').trim();
+
+        return sourceAgentId && sourceRunId && recipientAgentId
+          ? JSON.stringify([sourceAgentId, sourceRunId, recipientAgentId])
+          : '';
+      }
+
+      function duplicateTraceDispatch(agentId: any) {
+        return {
+          agentId,
+          outcome: 'duplicate',
+          detail: 'Message remains persisted; this source trace already dispatched the recipient, so no additional model run was created.',
         };
       }
 
@@ -492,20 +511,20 @@ export function createRoutingExecutor(options: any = {}) {
       }
 
       function launchPrivateAgent(queueItem: any, agentId: any) {
-        const sourceTraceKey = [
+        const dispatchedTraceRecipientKey = buildSourceTraceRecipientKey(queueItem, agentId);
+        const privateLaunchKey = dispatchedTraceRecipientKey || JSON.stringify([
           String(queueItem.triggeredByAgentId || ''),
           String(queueItem.parentRunId || turnId),
           String(agentId || ''),
-        ].join(':');
+        ]);
 
-        if (privateLaunchKeys.has(sourceTraceKey)) {
-          return {
-            agentId,
-            outcome: 'duplicate',
-            detail: 'Message persisted; this source trace already dispatched the recipient, so the current run may not see this later message.',
-          };
+        if (
+          privateLaunchKeys.has(privateLaunchKey)
+          || (dispatchedTraceRecipientKey && dispatchedTraceRecipientKeys.has(dispatchedTraceRecipientKey))
+        ) {
+          return duplicateTraceDispatch(agentId);
         }
-        privateLaunchKeys.add(sourceTraceKey);
+        privateLaunchKeys.add(privateLaunchKey);
 
         if (activeExecutionAgentIds.has(agentId) || isAgentBusy(conversationId, agentId)) {
           return {
@@ -534,6 +553,9 @@ export function createRoutingExecutor(options: any = {}) {
         }
 
         removeQueuedAgent(agentId);
+        if (dispatchedTraceRecipientKey) {
+          dispatchedTraceRecipientKeys.add(dispatchedTraceRecipientKey);
+        }
         const privatePromise = executeReservedItem({
           agentId,
           triggerType: 'private',
@@ -605,19 +627,39 @@ export function createRoutingExecutor(options: any = {}) {
         }
 
         const uniqueAgentIds = [];
+        const dispatch = [];
         const seen = new Set();
+        const deduplicateTraceRecipients = String(queueItem.triggerType || 'user') === 'agent';
 
         for (const agentId of requestedAgentIds) {
-          if (!agentId || seen.has(agentId) || queuedAgentIds.has(agentId)) {
+          if (!agentId || seen.has(agentId)) {
             continue;
           }
 
           seen.add(agentId);
+          const sourceTraceRecipientKey = deduplicateTraceRecipients
+            ? buildSourceTraceRecipientKey(queueItem, agentId)
+            : '';
+
+          if (sourceTraceRecipientKey && dispatchedTraceRecipientKeys.has(sourceTraceRecipientKey)) {
+            dispatch.push(duplicateTraceDispatch(agentId));
+            continue;
+          }
+
+          if (queuedAgentIds.has(agentId)) {
+            continue;
+          }
+
           uniqueAgentIds.push(agentId);
+          dispatch.push({
+            agentId,
+            outcome: 'queued',
+            detail: 'Recipient queued for ordinary turn routing.',
+          });
         }
 
         if (uniqueAgentIds.length === 0) {
-          return buildDispatchResult();
+          return buildDispatchResult([], dispatch);
         }
 
         for (const batchAgentIds of splitIntoMentionBatches(uniqueAgentIds)) {
@@ -639,6 +681,12 @@ export function createRoutingExecutor(options: any = {}) {
 
           for (const batchItem of batchItems) {
             queuedAgentIds.add(batchItem.agentId);
+            if (deduplicateTraceRecipients) {
+              const sourceTraceRecipientKey = buildSourceTraceRecipientKey(queueItem, batchItem.agentId);
+              if (sourceTraceRecipientKey) {
+                dispatchedTraceRecipientKeys.add(sourceTraceRecipientKey);
+              }
+            }
             const stage = getTurnStage(turnState, batchItem.agentId);
             if (stage) {
               resetTurnStage(stage, 'queued');
@@ -649,11 +697,7 @@ export function createRoutingExecutor(options: any = {}) {
         turnState.pendingAgentIds = queuePendingAgentIds();
         turnState.updatedAt = nowIso();
         syncCurrentTurnAgent(turnState);
-        return buildDispatchResult(uniqueAgentIds, uniqueAgentIds.map((agentId: any) => ({
-          agentId,
-          outcome: 'queued',
-          detail: 'Recipient queued for ordinary turn routing.',
-        })));
+        return buildDispatchResult(uniqueAgentIds, dispatch);
       }
 
       if (routingMode === 'mention_parallel' && initialQueue.agentIds.length > 1) {

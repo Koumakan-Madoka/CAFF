@@ -2705,6 +2705,269 @@ test('routing executor starts a private recipient before the sender trace settle
   }
 });
 
+test('routing executor deduplicates private and public handoffs to one recipient in the same source trace', { concurrency: false }, async (t) => {
+  for (const recipientTiming of ['running', 'completed']) {
+    await t.test(recipientTiming, async (t) => {
+      const tempDir = withTempDir(`caff-cross-channel-handoff-${recipientTiming}-`);
+      const sqlitePath = path.join(tempDir, 'cross-channel-handoff.sqlite');
+      const activeConversationIds = new Set();
+      const activeTurns = new Map();
+      const conversation = {
+        id: `conversation-cross-channel-handoff-${recipientTiming}`,
+        title: `Cross-channel handoff ${recipientTiming}`,
+        type: 'standard',
+        agents: [
+          { id: 'agent-a', name: 'Alpha' },
+          { id: 'agent-b', name: 'Beta' },
+          { id: 'agent-c', name: 'Gamma' },
+        ],
+        messages: [],
+      };
+      let messageCounter = 0;
+      let betaExecutionCount = 0;
+      let gammaExecutionCount = 0;
+      const reservedHops = [];
+      let privateDispatch = null;
+      let repeatedPrivateDispatch = null;
+      let publicDispatch = null;
+      let markFirstBetaStarted;
+      const firstBetaStarted = new Promise((resolve) => {
+        markFirstBetaStarted = resolve;
+      });
+      let releaseFirstBeta;
+      const firstBetaGate = new Promise((resolve) => {
+        releaseFirstBeta = resolve;
+      });
+      let markFirstBetaCompleted;
+      const firstBetaCompleted = new Promise((resolve) => {
+        markFirstBetaCompleted = resolve;
+      });
+
+      t.after(() => {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      });
+
+      const store = {
+        getConversation(conversationId) {
+          return conversationId === conversation.id ? conversation : null;
+        },
+        createMessage(input) {
+          messageCounter += 1;
+          const message = {
+            id: `cross-channel-message-${messageCounter}`,
+            errorMessage: '',
+            taskId: null,
+            runId: null,
+            metadata: null,
+            createdAt: `2026-08-21T11:20:${String(messageCounter).padStart(2, '0')}.000Z`,
+            ...input,
+          };
+          conversation.messages.push(message);
+          return message;
+        },
+      };
+      const executor = createRoutingExecutor({
+        store,
+        agentDir: tempDir,
+        sqlitePath,
+        activeConversationIds,
+        activeTurns,
+        async executeConversationAgent({ agent, enqueueAgent, completedReplies, hop }) {
+          reservedHops.push(hop);
+
+          if (agent.id === 'agent-a') {
+            privateDispatch = enqueueAgent({
+              agentId: 'agent-b',
+              triggerType: 'private',
+              triggeredByAgentId: 'agent-a',
+              triggeredByAgentName: 'Alpha',
+              triggeredByMessageId: 'private-message-beta',
+              parentRunId: 'run-agent-a',
+              enqueueReason: 'private_message',
+            });
+            repeatedPrivateDispatch = enqueueAgent({
+              agentId: 'agent-b',
+              triggerType: 'private',
+              triggeredByAgentId: 'agent-a',
+              triggeredByAgentName: 'Alpha',
+              triggeredByMessageId: 'private-message-beta-repeat',
+              parentRunId: 'run-agent-a',
+              enqueueReason: 'private_message',
+            });
+            await firstBetaStarted;
+
+            if (recipientTiming === 'completed') {
+              releaseFirstBeta();
+              await firstBetaCompleted;
+            }
+
+            publicDispatch = enqueueAgent({
+              agentIds: ['agent-b', 'agent-c'],
+              triggerType: 'agent',
+              triggeredByAgentId: 'agent-a',
+              triggeredByAgentName: 'Alpha',
+              triggeredByMessageId: 'public-message-beta',
+              parentRunId: 'run-agent-a',
+              enqueueReason: 'public_handoff',
+            });
+
+            if (recipientTiming === 'running') {
+              releaseFirstBeta();
+            }
+          } else if (agent.id === 'agent-b') {
+            betaExecutionCount += 1;
+            if (betaExecutionCount === 1) {
+              markFirstBetaStarted();
+              await firstBetaGate;
+              markFirstBetaCompleted();
+            }
+          } else {
+            gammaExecutionCount += 1;
+          }
+
+          completedReplies.push({
+            agentId: agent.id,
+            senderName: agent.name,
+            content: 'ok',
+            status: 'completed',
+          });
+          return { stopTurn: false, terminationReason: '' };
+        },
+      });
+
+      const result = await executor(conversation.id, {
+        content: 'Start with Alpha',
+        initialAgentIds: ['agent-a'],
+        executionMode: 'queue',
+      });
+
+      assert.deepEqual(privateDispatch.enqueuedAgentIds, ['agent-b']);
+      assert.equal(privateDispatch.dispatch[0].outcome, 'launched');
+      assert.deepEqual(repeatedPrivateDispatch.enqueuedAgentIds, []);
+      assert.equal(repeatedPrivateDispatch.dispatch[0].outcome, 'duplicate');
+      assert.deepEqual(publicDispatch.enqueuedAgentIds, ['agent-c']);
+      assert.deepEqual(publicDispatch.dispatch.map((item) => item.outcome), ['duplicate', 'queued']);
+      assert.equal(betaExecutionCount, 1, 'the same recipient must execute once per source trace across channels');
+      assert.equal(gammaExecutionCount, 1, 'a different recipient in the same trace must remain eligible');
+      assert.deepEqual(reservedHops, [1, 2, 3], 'only the distinct public recipient may consume another hop');
+      assert.equal(result.replies.length, 3);
+    });
+  }
+});
+
+test('routing executor does not let a capacity-limited private attempt suppress a public handoff', { concurrency: false }, async (t) => {
+  const tempDir = withTempDir('caff-cross-channel-capacity-');
+  const sqlitePath = path.join(tempDir, 'cross-channel-capacity.sqlite');
+  const activeConversationIds = new Set();
+  const activeTurns = new Map();
+  const recipientIds = ['agent-b', 'agent-c', 'agent-d', 'agent-e', 'agent-f'];
+  const conversation = {
+    id: 'conversation-cross-channel-capacity',
+    title: 'Cross-channel capacity fallback',
+    type: 'standard',
+    agents: [
+      { id: 'agent-a', name: 'Alpha' },
+      ...recipientIds.map((agentId) => ({ id: agentId, name: agentId.toUpperCase() })),
+    ],
+    messages: [],
+  };
+  let messageCounter = 0;
+  const executionCounts = new Map();
+  const reservedHops = [];
+  let privateDispatch = null;
+  let publicDispatch = null;
+  let releasePrivateRecipients;
+  const privateRecipientGate = new Promise((resolve) => {
+    releasePrivateRecipients = resolve;
+  });
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const store = {
+    getConversation(conversationId) {
+      return conversationId === conversation.id ? conversation : null;
+    },
+    createMessage(input) {
+      messageCounter += 1;
+      const message = {
+        id: `capacity-message-${messageCounter}`,
+        errorMessage: '',
+        taskId: null,
+        runId: null,
+        metadata: null,
+        createdAt: `2026-08-21T11:25:${String(messageCounter).padStart(2, '0')}.000Z`,
+        ...input,
+      };
+      conversation.messages.push(message);
+      return message;
+    },
+  };
+  const executor = createRoutingExecutor({
+    store,
+    agentDir: tempDir,
+    sqlitePath,
+    activeConversationIds,
+    activeTurns,
+    async executeConversationAgent({ agent, enqueueAgent, completedReplies, hop }) {
+      reservedHops.push(hop);
+      executionCounts.set(agent.id, (executionCounts.get(agent.id) || 0) + 1);
+
+      if (agent.id === 'agent-a') {
+        privateDispatch = enqueueAgent({
+          agentIds: recipientIds,
+          triggerType: 'private',
+          triggeredByAgentId: 'agent-a',
+          triggeredByAgentName: 'Alpha',
+          triggeredByMessageId: 'private-capacity-message',
+          parentRunId: 'run-agent-a-capacity',
+          enqueueReason: 'private_message',
+        });
+        publicDispatch = enqueueAgent({
+          agentId: 'agent-f',
+          triggerType: 'agent',
+          triggeredByAgentId: 'agent-a',
+          triggeredByAgentName: 'Alpha',
+          triggeredByMessageId: 'public-capacity-message',
+          parentRunId: 'run-agent-a-capacity',
+          enqueueReason: 'public_handoff',
+        });
+        releasePrivateRecipients();
+      } else if (agent.id !== 'agent-f') {
+        await privateRecipientGate;
+      }
+
+      completedReplies.push({
+        agentId: agent.id,
+        senderName: agent.name,
+        content: 'ok',
+        status: 'completed',
+      });
+      return { stopTurn: false, terminationReason: '' };
+    },
+  });
+
+  const result = await executor(conversation.id, {
+    content: 'Start with Alpha',
+    initialAgentIds: ['agent-a'],
+    executionMode: 'queue',
+  });
+
+  assert.deepEqual(privateDispatch.dispatch.map((item) => item.outcome), [
+    'launched',
+    'launched',
+    'launched',
+    'launched',
+    'capacity_limited',
+  ]);
+  assert.deepEqual(publicDispatch.enqueuedAgentIds, ['agent-f']);
+  assert.equal(publicDispatch.dispatch[0].outcome, 'queued');
+  assert.equal(executionCounts.get('agent-f'), 1, 'the public handoff must run when the private attempt never launched');
+  assert.deepEqual(reservedHops, [1, 2, 3, 4, 5, 6]);
+  assert.equal(result.replies.length, 6);
+});
+
 test('routing executor stop cancels sender and immediate private recipient and blocks late launch', { concurrency: false }, async (t) => {
   const tempDir = withTempDir('caff-private-wakeup-stop-');
   const sqlitePath = path.join(tempDir, 'private-wakeup-stop.sqlite');
