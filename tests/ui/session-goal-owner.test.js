@@ -194,6 +194,41 @@ test('owner missing from the roster is still displayed instead of silently reset
   assert.match(missingOption.textContent, /Zulu/);
 });
 
+test('a failed set-owner submit reverts the select to the persisted owner', async () => {
+  const window = buildWindow();
+  const toasts = [];
+  const state = {
+    currentConversation: conversationWithGoal({ owner: { agentId: 'agent-b', agentName: 'Bravo' } }),
+  };
+  const controller = window.CaffChat.createSessionGoalPanelController({
+    state,
+    dom: domRefs(window),
+    helpers: {
+      formatDateTime: (value) => String(value || ''),
+      submitGoalCommand: async () => {
+        throw new Error('500 set-owner failed');
+      },
+    },
+    showToast: (message) => toasts.push(message),
+  });
+  controller.bindEvents();
+  controller.render();
+
+  const select = window.document.getElementById('session-goal-owner-select');
+  assert.equal(select.value, 'agent-b');
+
+  select.value = 'agent-a';
+  select.dispatchEvent(new window.Event('change', { bubbles: true }));
+  await flush();
+
+  assert.equal(
+    select.value,
+    'agent-b',
+    'a failed owner change must not linger as if it were persisted'
+  );
+  assert.ok(toasts.length > 0, 'the failure is surfaced through a toast');
+});
+
 test('DAG execution lock disables the owner select', () => {
   const window = buildWindow();
   buildController(

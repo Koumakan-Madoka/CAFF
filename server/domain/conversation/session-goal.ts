@@ -1022,10 +1022,27 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
 
     // set-owner is a factual owner change inside the current goal epoch: it
     // must not erase a pending proposal, the durable ruling, or runner state.
-    const nextConversation = updateConversationMetadata(store, conversation, {
+    // The updatedAt refresh rotates the epoch key, so a same-epoch runner is
+    // atomically migrated to the new key in the SAME metadata write — an
+    // owner change must never reset the continuation budget or drop the
+    // failure streak. A stale (different-epoch) runner is left untouched.
+    const existingRunner = getSessionGoalRunner(conversation);
+    const previousEpochKey = goalRunnerKey(existingGoal);
+    const nextEpochKey = goalRunnerKey(nextGoal);
+    const migratedRunner = existingRunner
+      && existingRunner.goalUpdatedAt === previousEpochKey
+      && previousEpochKey !== nextEpochKey
+      ? { ...existingRunner, goalUpdatedAt: nextEpochKey }
+      : null;
+
+    const nextMetadata: any = {
       ...currentMetadata(conversation),
       [SESSION_GOAL_METADATA_KEY]: nextGoal,
-    });
+    };
+    if (migratedRunner) {
+      nextMetadata[SESSION_GOAL_RUNNER_METADATA_KEY] = migratedRunner;
+    }
+    const nextConversation = updateConversationMetadata(store, conversation, nextMetadata);
     return responseForConversation(nextConversation, {
       goal: getSessionGoal(nextConversation),
       proposal: getSessionGoalProposal(nextConversation),
@@ -1171,11 +1188,19 @@ export function pauseSessionGoalForRemovedOwner(store: any, conversationId: any,
     createdAt: timestamp,
     updatedAt: timestamp,
   };
-  const nextConversation = updateConversationMetadata(store, conversation, {
+  const existingProposal = getSessionGoalProposal(conversation);
+  const nextMetadata: any = {
     ...currentMetadata(conversation),
     [SESSION_GOAL_METADATA_KEY]: pausedGoal,
-    [SESSION_GOAL_PROPOSAL_METADATA_KEY]: proposal,
-  });
+  };
+  // When another proposal is already pending, keep it: the user already has
+  // an unresolved decision, and silently replacing it would destroy that
+  // context. The paused goal blocks continuation either way, and a later
+  // accepted resume re-triggers this check when the owner is still gone.
+  if (!existingProposal) {
+    nextMetadata[SESSION_GOAL_PROPOSAL_METADATA_KEY] = proposal;
+  }
+  const nextConversation = updateConversationMetadata(store, conversation, nextMetadata);
 
   return {
     changed: true,

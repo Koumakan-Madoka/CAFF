@@ -970,14 +970,12 @@ export function createTurnOrchestrator(options: any = {}) {
       return { scheduled: false, reason: 'inactive_goal' };
     }
 
-    if (getSessionGoalProposal(conversation)) {
-      return { scheduled: false, reason: 'pending_proposal' };
-    }
-
     // Fail-closed owner removal (D3): the goal owner must still be a
     // conversation participant. When the roster no longer contains the
     // owner, pause the goal and raise a pending resume proposal instead of
-    // silently falling back to default routing.
+    // silently falling back to default routing. This check runs BEFORE the
+    // pending-proposal gate so a removed owner pauses the goal even while a
+    // proposal is pending; the existing proposal is preserved.
     const goalOwnerId = String(goal.owner && goal.owner.agentId ? goal.owner.agentId : '').trim();
 
     if (
@@ -992,6 +990,10 @@ export function createTurnOrchestrator(options: any = {}) {
       }
 
       return { scheduled: false, reason: 'owner_removed', goal: ownerRemoved.goal || goal };
+    }
+
+    if (getSessionGoalProposal(conversation)) {
+      return { scheduled: false, reason: 'pending_proposal' };
     }
 
     const queueState = ensureQueueState(normalizedConversationId);

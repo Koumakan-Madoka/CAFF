@@ -119,10 +119,11 @@ if (runner && runner.status === 'error_paused') {
 - When the stored owner is no longer on the roster, keep a `XX（已不在会话）` option selected instead of silently resetting the display; removal is handled server-side (fail-closed pause + proposal).
 - Rebuild options only when conversation/roster/owner actually changes; do not clobber an in-progress user selection on unrelated refreshes.
 - Under the DAG execution lock (`dagNodeGoalBinding`, active/paused node doing), the select is disabled together with lifecycle buttons and reports that the owner is scheduler-managed.
+- A failed `set-owner` submit (network error, 4xx/5xx, concurrent roster change) must not leave the unpersisted value on screen: the panel invalidates its owner-select cache on error and re-renders the select from the persisted goal owner after showing the failure toast.
 
 ### Required Tests
 
-- `tests/ui/session-goal-owner.test.js` verifies rendering, `set-owner` submission, removed-owner display, and DAG-lock disabling.
+- `tests/ui/session-goal-owner.test.js` verifies rendering, `set-owner` submission, removed-owner display, DAG-lock disabling, and revert-to-persisted-owner on a failed submit.
 
 
 ## Collapsed Tool-Trace Failure Summary

@@ -407,6 +407,11 @@
         lastSyncedObjective = sessionGoalUtils.objectiveText(goal);
         lastSyncedChecklist = sessionGoalUtils.checklistTextForGoal(goal);
       } catch (error) {
+        // A failed submit must not leave an unpersisted value on screen:
+        // invalidate the owner-select cache so the finally-render rebuilds
+        // the select from the persisted goal owner.
+        lastSyncedOwnerId = null;
+        lastSyncedOwnerSignature = '';
         showToast(error.message);
       } finally {
         isSaving = false;

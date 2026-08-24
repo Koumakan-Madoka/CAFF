@@ -4265,6 +4265,52 @@ test('turn orchestrator auto-pauses a goal whose owner is no longer a participan
   assert.deepEqual(executedAgentIds, []);
 });
 
+test('turn orchestrator auto-pauses a removed owner even while a proposal is pending', { concurrency: false }, (t) => {
+  const tempDir = withTempDir('caff-goal-owner-removed-proposal-');
+  const sqlitePath = path.join(tempDir, 'goal-owner-removed-proposal.sqlite');
+  const { conversation } = createGoalOwnerConversation({
+    goalOwner: { agentId: 'agent-b', agentName: 'Bravo' },
+    agents: [{ id: 'agent-a', name: 'Alpha' }],
+    replies: [
+      {
+        agentId: 'agent-a',
+        senderName: 'Alpha',
+        content: 'Alpha is still here',
+        createdAt: '2026-08-24T00:00:10.000Z',
+      },
+    ],
+  });
+  conversation.metadata.sessionGoalProposal = {
+    action: 'pause',
+    status: 'pending',
+    id: 'proposal-pending-1',
+    reason: 'waiting on the user',
+    proposedBy: { agentId: 'goal-runner', agentName: 'Goal Runner' },
+    createdAt: '2026-08-24T00:00:20.000Z',
+    updatedAt: '2026-08-24T00:00:20.000Z',
+  };
+  conversation.__tempDir = tempDir;
+  conversation.__sqlitePath = sqlitePath;
+  const executedAgentIds = [];
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const orchestrator = createGoalOwnerOrchestrator({ conversation, executedAgentIds });
+  const scheduled = orchestrator.scheduleGoalContinuation(conversation.id);
+
+  assert.equal(scheduled.scheduled, false);
+  assert.equal(scheduled.reason, 'owner_removed');
+  assert.equal(conversation.metadata.sessionGoal.status, 'paused');
+  assert.equal(
+    conversation.metadata.sessionGoalProposal.id,
+    'proposal-pending-1',
+    'owner-removal pause must not silently replace the pending user decision'
+  );
+  assert.deepEqual(executedAgentIds, []);
+});
+
 test('turn orchestrator continues with the next queued batch after a stop request', { concurrency: false }, async (t) => {
   const tempDir = withTempDir('caff-turn-stop-queue-');
   const sqlitePath = path.join(tempDir, 'turn-stop-queue.sqlite');

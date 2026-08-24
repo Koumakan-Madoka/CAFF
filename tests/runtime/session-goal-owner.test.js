@@ -3,8 +3,11 @@ const test = require('node:test');
 
 const {
   applySessionGoalAction,
+  claimSessionGoalAutoContinue,
   formatSessionGoalForPrompt,
   getSessionGoal,
+  getSessionGoalProposal,
+  pauseSessionGoalForRemovedOwner,
   proposeSessionGoalAction,
 } = require('../../build/server/domain/conversation/session-goal');
 
@@ -94,6 +97,85 @@ test('accepting a set proposal stamps the proposer as the goal owner', () => {
   assert.ok(result.goal);
   assert.equal(result.goal.status, 'active');
   assert.deepEqual(result.goal.owner, { agentId: 'agent-b', agentName: 'Bravo' });
+});
+
+test('set-owner changes the owner without resetting the continuation epoch', () => {
+  const { store, conversation } = createOwnerTestStore({
+    sessionGoal: {
+      objective: 'Owner changes must not refresh the continuation budget',
+      status: 'active',
+      createdAt: '2026-08-24T00:00:00.000Z',
+      updatedAt: '2026-08-24T00:00:00.000Z',
+      owner: { agentId: 'agent-a', agentName: 'Alpha' },
+    },
+    sessionGoalRunner: {
+      status: 'running',
+      goalUpdatedAt: '2026-08-24T00:00:00.000Z',
+      iteration: 7,
+      maxIterations: 20,
+      consecutiveModelFailureCount: 2,
+      failureThreshold: 3,
+      failureStreakStartedAt: '2026-08-24T00:02:00.000Z',
+      lastFailureAt: '2026-08-24T00:02:00.000Z',
+    },
+  });
+
+  const firstClaim = claimSessionGoalAutoContinue(store, conversation.id, { maxIterations: 20 });
+  assert.equal(firstClaim.claimed, true);
+  assert.equal(firstClaim.runner.iteration, 8);
+
+  const changed = applySessionGoalAction(store, conversation.id, {
+    action: 'set-owner',
+    ownerAgentId: 'agent-b',
+  });
+  assert.deepEqual(changed.goal.owner, { agentId: 'agent-b', agentName: 'Bravo' });
+
+  const secondClaim = claimSessionGoalAutoContinue(store, conversation.id, { maxIterations: 20 });
+  assert.equal(secondClaim.claimed, true);
+  assert.equal(secondClaim.runner.iteration, 9, 'iteration must continue across an owner change');
+  assert.equal(secondClaim.runner.consecutiveModelFailureCount, 2, 'failure streak must survive an owner change');
+
+  const cleared = applySessionGoalAction(store, conversation.id, {
+    action: 'set-owner',
+    ownerAgentId: '',
+  });
+  assert.equal(cleared.goal.owner, undefined);
+
+  const thirdClaim = claimSessionGoalAutoContinue(store, conversation.id, { maxIterations: 20 });
+  assert.equal(thirdClaim.claimed, true);
+  assert.equal(thirdClaim.runner.iteration, 10, 'clearing the owner must not reset the epoch either');
+});
+
+test('owner-removed auto-pause keeps an existing pending proposal instead of replacing it', () => {
+  const { store, conversation } = createOwnerTestStore({
+    sessionGoal: {
+      objective: 'Pause even while a proposal is pending',
+      status: 'active',
+      createdAt: '2026-08-24T00:00:00.000Z',
+      updatedAt: '2026-08-24T00:00:00.000Z',
+      owner: { agentId: 'agent-b', agentName: 'Bravo' },
+    },
+    sessionGoalProposal: {
+      action: 'pause',
+      status: 'pending',
+      id: 'proposal-budget-1',
+      reason: 'budget exhausted, waiting on user',
+      proposedBy: { agentId: 'goal-runner', agentName: 'Goal Runner' },
+      createdAt: '2026-08-24T00:01:00.000Z',
+      updatedAt: '2026-08-24T00:01:00.000Z',
+    },
+  });
+  conversation.agents = [{ id: 'agent-a', name: 'Alpha' }];
+
+  const result = pauseSessionGoalForRemovedOwner(store, conversation.id, {
+    agentId: 'agent-b',
+    agentName: 'Bravo',
+  });
+
+  assert.equal(result.paused, true);
+  assert.equal(result.goal.status, 'paused');
+  assert.equal(result.proposal.id, 'proposal-budget-1', 'existing user decision must not be silently replaced');
+  assert.equal(getSessionGoalProposal(conversation).id, 'proposal-budget-1');
 });
 
 test('set-owner action sets, clears, and validates the owner against conversation participants', () => {
