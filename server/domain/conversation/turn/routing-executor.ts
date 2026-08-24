@@ -160,6 +160,20 @@ export function createRoutingExecutor(options: any = {}) {
 
       inputText = buildBatchedPromptContent(batchMessages);
       const anchorMessage = batchMessages[batchMessages.length - 1];
+      // Explicit per-message targets (e.g. goal-owner routing stamped on the
+      // goal-runner message) survive queueing: collect initialAgentIds from
+      // the batch messages' metadata so the batch routes to the stamped
+      // target instead of re-resolving default_last_agent at drain time.
+      const batchInitialAgentIds: string[] = [];
+      for (const message of batchMessages) {
+        const batchMessageMetadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : {};
+        for (const agentId of Array.isArray(batchMessageMetadata.initialAgentIds) ? batchMessageMetadata.initialAgentIds : []) {
+          const normalizedAgentId = String(agentId || '').trim();
+          if (normalizedAgentId) {
+            batchInitialAgentIds.push(normalizedAgentId);
+          }
+        }
+      }
       turnInput = normalizeConversationTurnInput(
         {
           ...(userContent && typeof userContent === 'object' ? userContent : {}),
@@ -168,6 +182,7 @@ export function createRoutingExecutor(options: any = {}) {
           senderName: anchorMessage.senderName || 'You',
           metadata: anchorMessage.metadata,
           privateOnly: batchMessages.some((message: any) => isPrivateOnlyMessage(message)),
+          ...(batchInitialAgentIds.length > 0 ? { initialAgentIds: batchInitialAgentIds } : {}),
         },
         conversation
       );

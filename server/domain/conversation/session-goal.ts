@@ -9,7 +9,7 @@ const SESSION_GOAL_RUNNER_METADATA_KEY = 'sessionGoalRunner';
 const SESSION_GOAL_STATUSES = new Set(['active', 'paused', 'complete']);
 const SESSION_GOAL_PROPOSAL_ACTIONS = new Set(['set', 'pause', 'resume', 'complete', 'clear']);
 const SESSION_GOAL_RULING_OUTCOMES = new Set(['accepted', 'rejected']);
-const SESSION_GOAL_ACTIONS = new Set(['set', 'pause', 'resume', 'complete', 'clear', 'update-checklist', 'update_checklist']);
+const SESSION_GOAL_ACTIONS = new Set(['set', 'pause', 'resume', 'complete', 'clear', 'set-owner', 'set_owner', 'update-checklist', 'update_checklist']);
 const SESSION_GOAL_CHECKLIST_STATUSES = new Set(['todo', 'in_progress', 'done']);
 const MAX_SESSION_GOAL_OBJECTIVE_LENGTH = 2000;
 const MAX_SESSION_GOAL_PROPOSAL_REASON_LENGTH = 1000;
@@ -98,6 +98,20 @@ function normalizeProposalReason(value: any) {
 function normalizeStatus(value: any) {
   const status = normalizeText(value).toLowerCase();
   return SESSION_GOAL_STATUSES.has(status) ? status : 'active';
+}
+
+function normalizeGoalOwner(value: any) {
+  const source = isPlainObject(value) ? value : {};
+  const agentId = normalizeText(source.agentId);
+
+  if (!agentId) {
+    return null;
+  }
+
+  return {
+    agentId,
+    agentName: normalizeText(source.agentName) || agentId,
+  };
 }
 
 function normalizeProposalAction(value: any) {
@@ -216,6 +230,7 @@ function normalizeSessionGoal(value: any) {
   const updatedAt = normalizeText(value.updatedAt || value.updated_at) || createdAt;
   const completedAt = normalizeText(value.completedAt || value.completed_at);
   const checklist = normalizeChecklistItems(value.checklist, updatedAt);
+  const owner = normalizeGoalOwner(value.owner);
 
   return {
     objective,
@@ -223,6 +238,7 @@ function normalizeSessionGoal(value: any) {
     createdAt,
     updatedAt,
     ...(completedAt ? { completedAt } : {}),
+    ...(owner ? { owner } : {}),
     ...(checklist.length > 0 ? { checklist } : {}),
   };
 }
@@ -812,6 +828,7 @@ function goalFromMutation(action: string, existingGoal: any, input: any, timesta
       createdAt: existingGoal.createdAt,
       updatedAt: timestamp,
       ...(existingGoal.completedAt ? { completedAt: existingGoal.completedAt } : {}),
+      ...(existingGoal.owner ? { owner: existingGoal.owner } : {}),
       ...(checklist.length > 0 ? { checklist } : {}),
     };
   }
@@ -823,6 +840,7 @@ function goalFromMutation(action: string, existingGoal: any, input: any, timesta
     status: nextStatus,
     createdAt: existingGoal.createdAt,
     updatedAt: timestamp,
+    ...(existingGoal.owner ? { owner: existingGoal.owner } : {}),
     ...(nextStatus === 'complete' ? { completedAt: timestamp } : {}),
     ...(checklist.length > 0 ? { checklist } : {}),
   };
@@ -916,11 +934,18 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
     }
 
     const goal = goalFromMutation(existingProposal.action, existingGoal, existingProposal, timestamp);
+    // Goal owner (D1): accepting a 'set' proposal stamps the proposer as the
+    // goal owner — only on the accept-proposal path, so a client-supplied
+    // proposedBy in a direct 'set' body can never forge an owner.
+    const acceptedOwner = existingProposal.action === 'set'
+      ? normalizeGoalOwner(existingProposal.proposedBy)
+      : null;
+    const goalWithOwner = acceptedOwner ? { ...goal, owner: acceptedOwner } : goal;
     // D28 durable ruling: goal mutation + proposal clear + ruling record in
     // ONE metadata write (buildMetadataWithGoal strips the stale proposal
     // and any prior ruling; the fresh ruling is then attached atomically).
     const metadata = {
-      ...buildMetadataWithGoal(conversation, goal, {
+      ...buildMetadataWithGoal(conversation, goalWithOwner, {
         clearRunner: existingProposal.action === 'set' || existingProposal.action === 'resume',
       }),
       [SESSION_GOAL_RULING_METADATA_KEY]: buildRulingRecord(existingProposal, 'accepted', input.ruledBy, input.reason, timestamp),
@@ -963,6 +988,50 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
       goalChanged: true,
       proposalChanged: Boolean(existingProposal),
       proposalCleared: Boolean(existingProposal),
+    });
+  }
+
+  if (action === 'set-owner' || action === 'set_owner') {
+    if (!existingGoal) {
+      throw createHttpError(404, 'No session goal is set');
+    }
+
+    const ownerAgentId = normalizeText(input.ownerAgentId || input.owner_agent_id);
+    let nextGoal: any;
+
+    if (ownerAgentId) {
+      const participants = Array.isArray(conversation.agents) ? conversation.agents : [];
+      const agent = participants.find((participant: any) => participant && normalizeText(participant.id) === ownerAgentId);
+
+      if (!agent) {
+        throw createHttpError(400, 'Goal owner must be a current conversation participant');
+      }
+
+      nextGoal = {
+        ...existingGoal,
+        owner: {
+          agentId: ownerAgentId,
+          agentName: normalizeText(agent.name) || ownerAgentId,
+        },
+        updatedAt: timestamp,
+      };
+    } else {
+      const { owner: _previousOwner, ...goalWithoutOwner } = existingGoal;
+      nextGoal = { ...goalWithoutOwner, updatedAt: timestamp };
+    }
+
+    // set-owner is a factual owner change inside the current goal epoch: it
+    // must not erase a pending proposal, the durable ruling, or runner state.
+    const nextConversation = updateConversationMetadata(store, conversation, {
+      ...currentMetadata(conversation),
+      [SESSION_GOAL_METADATA_KEY]: nextGoal,
+    });
+    return responseForConversation(nextConversation, {
+      goal: getSessionGoal(nextConversation),
+      proposal: getSessionGoalProposal(nextConversation),
+      goalChanged: true,
+      proposalChanged: false,
+      autoContinue: false,
     });
   }
 
@@ -1058,6 +1127,67 @@ export function createSessionGoalBudgetProposal(store: any, conversationId: any,
   );
 }
 
+/**
+ * Fail-closed owner removal (D3): when the goal owner is no longer a
+ * conversation participant, the goal is paused and a pending resume
+ * proposal is created in ONE metadata write. A crash between the pause and
+ * the proposal can therefore never leave an owner-less goal silently
+ * continuing; the pending proposal also blocks future auto-continuation.
+ */
+export function pauseSessionGoalForRemovedOwner(store: any, conversationId: any, owner: any) {
+  const normalizedConversationId = normalizeText(conversationId);
+  const conversation = store.getConversation(normalizedConversationId);
+  const goal = conversation ? getSessionGoal(conversation) : null;
+
+  if (!conversation || !goal || goal.status !== 'active') {
+    return { changed: false, conversation, goal, proposal: conversation ? getSessionGoalProposal(conversation) : null };
+  }
+
+  const normalizedOwner = normalizeGoalOwner(owner);
+
+  if (!normalizedOwner) {
+    return { changed: false, conversation, goal, proposal: getSessionGoalProposal(conversation) };
+  }
+
+  const timestamp = nowIso();
+  const pausedGoal = {
+    ...goal,
+    status: 'paused',
+    updatedAt: timestamp,
+  };
+  const reason = clipText(
+    `主理人 ${normalizedOwner.agentName} 已被移出会话，Goal 已自动暂停。请确认新的主理人后恢复 Goal。`,
+    MAX_SESSION_GOAL_PROPOSAL_REASON_LENGTH
+  );
+  const proposal = {
+    action: 'resume',
+    status: 'pending',
+    id: newProposalId(),
+    reason,
+    proposedBy: {
+      agentId: 'goal-runner',
+      agentName: 'Goal Runner',
+    },
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+  const nextConversation = updateConversationMetadata(store, conversation, {
+    ...currentMetadata(conversation),
+    [SESSION_GOAL_METADATA_KEY]: pausedGoal,
+    [SESSION_GOAL_PROPOSAL_METADATA_KEY]: proposal,
+  });
+
+  return {
+    changed: true,
+    paused: true,
+    reason: 'owner_removed',
+    conversation: nextConversation,
+    goal: getSessionGoal(nextConversation),
+    runner: null,
+    proposal: getSessionGoalProposal(nextConversation),
+  };
+}
+
 function formatGoalChecklistForPrompt(goal: any) {
   const checklist = goal && Array.isArray(goal.checklist) ? goal.checklist : [];
 
@@ -1118,6 +1248,7 @@ export function formatSessionGoalForPrompt(conversation: any) {
         return [
           `Status: ${statusLabel}`,
           `Objective: ${goal.objective}`,
+          goal.owner ? `Owner: ${goal.owner.agentName}` : '',
           formatGoalChecklistForPrompt(goal),
           goal.status === 'active' && Array.isArray(goal.checklist) && goal.checklist.length > 0
             ? 'Keep the checklist current as work progresses; use update-goal-checklist for factual progress updates.'

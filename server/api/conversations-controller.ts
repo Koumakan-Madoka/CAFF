@@ -17,7 +17,11 @@ import {
   bindAndPersistRoomWorkspace,
   previewRoomWorkspace,
 } from '../domain/conversation/room-workspace';
-import { applySessionGoalAction } from '../domain/conversation/session-goal';
+import {
+  applySessionGoalAction,
+  getSessionGoal,
+  pauseSessionGoalForRemovedOwner,
+} from '../domain/conversation/session-goal';
 import {
   getDagNodeExecutionContext,
   isDagBoundGoalMutationAllowed,
@@ -966,9 +970,41 @@ export function createConversationsController(options: any = {}): RouteHandler<A
           throw createHttpError(404, '会话不存在');
         }
 
+        // Eager fail-closed owner check (D3): a roster PUT is the only path
+        // that can remove the goal owner while the goal stays otherwise
+        // healthy. Pause the goal and raise a pending resume proposal in one
+        // atomic metadata write instead of waiting for the next scheduled
+        // continuation (lazy detection in turn-orchestrator remains the
+        // backstop for agent-role retirement and any missed write path).
+        let latestConversation = conversation;
+        let goalOwnerRemoved = false;
+        const goal = getSessionGoal(conversation);
+        const goalOwner = goal && goal.status === 'active' && goal.owner
+          ? String(goal.owner.agentId || '').trim()
+          : '';
+        if (goalOwner) {
+          const rosterIds = new Set(
+            (Array.isArray(conversation.agents) ? conversation.agents : [])
+              .map((agent: any) => String(agent && agent.id || '').trim())
+              .filter(Boolean)
+          );
+          if (!rosterIds.has(goalOwner)) {
+            const paused = pauseSessionGoalForRemovedOwner(store, conversationId, goal && goal.owner);
+            if (paused && paused.changed && paused.conversation) {
+              latestConversation = paused.conversation;
+              goalOwnerRemoved = true;
+              broadcastEvent('conversation_summary_updated', {
+                conversationId,
+                summary: pickConversationSummary(latestConversation),
+              });
+            }
+          }
+        }
+
         sendJson(res, 200, {
-          conversation,
-          summary: pickConversationSummary(conversation),
+          conversation: latestConversation,
+          ...(goalOwnerRemoved ? { goalOwnerRemoved: true } : {}),
+          summary: pickConversationSummary(latestConversation),
           conversations: listConversationHeaders(),
         });
         return true;

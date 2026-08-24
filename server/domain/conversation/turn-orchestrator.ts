@@ -9,6 +9,7 @@ const {
   createSessionGoalBudgetProposal,
   getSessionGoal,
   getSessionGoalProposal,
+  pauseSessionGoalForRemovedOwner,
   recordSessionGoalContinuationOutcome,
 } = require('./session-goal');
 
@@ -973,6 +974,26 @@ export function createTurnOrchestrator(options: any = {}) {
       return { scheduled: false, reason: 'pending_proposal' };
     }
 
+    // Fail-closed owner removal (D3): the goal owner must still be a
+    // conversation participant. When the roster no longer contains the
+    // owner, pause the goal and raise a pending resume proposal instead of
+    // silently falling back to default routing.
+    const goalOwnerId = String(goal.owner && goal.owner.agentId ? goal.owner.agentId : '').trim();
+
+    if (
+      goalOwnerId
+      && !conversation.agents.some((agent: any) => String(agent && agent.id ? agent.id : '').trim() === goalOwnerId)
+    ) {
+      const ownerRemoved = pauseSessionGoalForRemovedOwner(store, normalizedConversationId, goal.owner);
+
+      if (ownerRemoved.changed) {
+        broadcastGoalUpdateResult(normalizedConversationId, ownerRemoved);
+        broadcastGoalProposalResult(normalizedConversationId, ownerRemoved);
+      }
+
+      return { scheduled: false, reason: 'owner_removed', goal: ownerRemoved.goal || goal };
+    }
+
     const queueState = ensureQueueState(normalizedConversationId);
 
     if (listPendingUserMessages(normalizedConversationId, queueState.lastConsumedUserMessageId).length > 0) {
@@ -999,6 +1020,10 @@ export function createTurnOrchestrator(options: any = {}) {
           goalIteration: claim.runner.iteration,
           goalMaxIterations: claim.runner.maxIterations,
           goalObjective: claim.goal.objective,
+          // Goal owner routing: stamp the persisted owner as the explicit
+          // initial target so the queued batch routes to the owner instead
+          // of drifting with default_last_agent.
+          ...(goalOwnerId ? { initialAgentIds: [goalOwnerId] } : {}),
         },
       })
     );

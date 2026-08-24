@@ -183,6 +183,16 @@
           <p id="session-goal-drawer-status" class="session-goal-status-badge active">当前没有会话目标</p>
           <div id="session-goal-details" class="session-goal-detail-list"></div>
 
+          <div id="session-goal-owner-card" class="session-goal-action-card hidden">
+            <div class="section-row">
+              <span class="section-label">主理人</span>
+              <span class="section-hint">goal 自动续跑优先由主理人推进；为空时沿用最近回复者</span>
+            </div>
+            <select id="session-goal-owner-select" aria-label="Goal 主理人">
+              <option value="">未设置</option>
+            </select>
+          </div>
+
           <div id="session-goal-progress-card" class="session-goal-progress-card hidden">
             <div class="section-row">
               <span class="section-label">进度</span>
