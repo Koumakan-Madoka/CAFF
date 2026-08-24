@@ -4311,6 +4311,38 @@ test('turn orchestrator auto-pauses a removed owner even while a proposal is pen
   assert.deepEqual(executedAgentIds, []);
 });
 
+test('turn orchestrator auto-pauses a removed owner when the roster becomes empty', { concurrency: false }, (t) => {
+  const tempDir = withTempDir('caff-goal-owner-removed-empty-');
+  const sqlitePath = path.join(tempDir, 'goal-owner-removed-empty.sqlite');
+  const { conversation } = createGoalOwnerConversation({
+    goalOwner: { agentId: 'agent-b', agentName: 'Bravo' },
+    agents: [],
+    replies: [],
+  });
+  conversation.__tempDir = tempDir;
+  conversation.__sqlitePath = sqlitePath;
+  const executedAgentIds = [];
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const orchestrator = createGoalOwnerOrchestrator({ conversation, executedAgentIds });
+  const scheduled = orchestrator.scheduleGoalContinuation(conversation.id);
+
+  assert.equal(scheduled.scheduled, false);
+  assert.equal(scheduled.reason, 'owner_removed');
+  assert.equal(conversation.metadata.sessionGoal.status, 'paused');
+  assert.ok(conversation.metadata.sessionGoalProposal);
+  assert.equal(conversation.metadata.sessionGoalProposal.action, 'resume');
+  assert.ok(conversation.metadata.sessionGoalProposal.reason.includes('主理人'));
+  assert.equal(
+    conversation.messages.filter((message) => message.metadata && message.metadata.goalAutoContinue).length,
+    0
+  );
+  assert.deepEqual(executedAgentIds, []);
+});
+
 test('turn orchestrator continues with the next queued batch after a stop request', { concurrency: false }, async (t) => {
   const tempDir = withTempDir('caff-turn-stop-queue-');
   const sqlitePath = path.join(tempDir, 'turn-stop-queue.sqlite');

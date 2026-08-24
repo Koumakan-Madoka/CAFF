@@ -1146,10 +1146,12 @@ export function createSessionGoalBudgetProposal(store: any, conversationId: any,
 
 /**
  * Fail-closed owner removal (D3): when the goal owner is no longer a
- * conversation participant, the goal is paused and a pending resume
- * proposal is created in ONE metadata write. A crash between the pause and
- * the proposal can therefore never leave an owner-less goal silently
- * continuing; the pending proposal also blocks future auto-continuation.
+ * conversation participant, the goal is paused in ONE metadata write. When
+ * no proposal is pending, that same write also creates a pending resume
+ * proposal; when the user already has a pending proposal, it is preserved
+ * (never silently replaced) and the paused goal itself blocks future
+ * auto-continuation. A crash between the pause and the proposal can
+ * therefore never leave an owner-less goal silently continuing.
  */
 export function pauseSessionGoalForRemovedOwner(store: any, conversationId: any, owner: any) {
   const normalizedConversationId = normalizeText(conversationId);

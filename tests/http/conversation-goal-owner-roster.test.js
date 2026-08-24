@@ -112,6 +112,35 @@ test('PUT roster keeping the goal owner leaves the active goal untouched', async
   assert.equal(json.goalOwnerRemoved, undefined);
 });
 
+test('retiring the owner role empties the roster and leaves the active goal for the lazy owner-removed check', async (t) => {
+  const store = createStore(t);
+  const customOwnerId = 'custom-goal-owner';
+  store.saveCustomRoleConfig({ id: customOwnerId, name: 'Custom Owner' });
+  store.createConversation({
+    id: CONVERSATION_ID,
+    title: 'Owner retired via role deletion',
+    participants: [customOwnerId],
+  });
+  applySessionGoalAction(store, CONVERSATION_ID, {
+    action: 'set',
+    objective: 'Owner retirement must reach the lazy owner-removed check',
+  });
+  applySessionGoalAction(store, CONVERSATION_ID, {
+    action: 'set-owner',
+    ownerAgentId: customOwnerId,
+  });
+
+  store.retireRoleConfig(customOwnerId, 'custom_role_deleted');
+
+  const persisted = store.getConversation(CONVERSATION_ID);
+  const goal = getSessionGoal(persisted);
+
+  assert.equal(persisted.agents.length, 0, 'retiring the only custom role empties the roster');
+  assert.equal(goal.status, 'active', 'retirement itself must not mutate the goal; the lazy check pauses it');
+  assert.deepEqual(goal.owner, { agentId: customOwnerId, agentName: 'Custom Owner' });
+  assert.equal(getSessionGoalProposal(persisted), null, 'no proposal until the lazy scheduler runs');
+});
+
 test('PUT roster change on an owner-less goal keeps current default routing behavior', async (t) => {
   const store = createStore(t);
   setupConversationWithOwnedGoal(store, null);

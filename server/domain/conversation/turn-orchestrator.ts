@@ -960,9 +960,11 @@ export function createTurnOrchestrator(options: any = {}) {
 
     const conversation = store.getConversation(normalizedConversationId);
 
-    if (!conversation || !Array.isArray(conversation.agents) || conversation.agents.length === 0) {
+    if (!conversation) {
       return { scheduled: false, reason: 'missing_conversation_or_agents' };
     }
+
+    const rosterAgents = Array.isArray(conversation.agents) ? conversation.agents : [];
 
     const goal = getSessionGoal(conversation);
 
@@ -974,13 +976,16 @@ export function createTurnOrchestrator(options: any = {}) {
     // conversation participant. When the roster no longer contains the
     // owner, pause the goal and raise a pending resume proposal instead of
     // silently falling back to default routing. This check runs BEFORE the
-    // pending-proposal gate so a removed owner pauses the goal even while a
-    // proposal is pending; the existing proposal is preserved.
+    // pending-proposal gate and BEFORE the empty-roster gate so a removed
+    // owner pauses the goal even while a proposal is pending or even when
+    // retiring the owner was the last roster change (agents may be empty,
+    // e.g. after retiring the only custom role owning the goal); the
+    // existing proposal is preserved.
     const goalOwnerId = String(goal.owner && goal.owner.agentId ? goal.owner.agentId : '').trim();
 
     if (
       goalOwnerId
-      && !conversation.agents.some((agent: any) => String(agent && agent.id ? agent.id : '').trim() === goalOwnerId)
+      && !rosterAgents.some((agent: any) => String(agent && agent.id ? agent.id : '').trim() === goalOwnerId)
     ) {
       const ownerRemoved = pauseSessionGoalForRemovedOwner(store, normalizedConversationId, goal.owner);
 
@@ -990,6 +995,10 @@ export function createTurnOrchestrator(options: any = {}) {
       }
 
       return { scheduled: false, reason: 'owner_removed', goal: ownerRemoved.goal || goal };
+    }
+
+    if (rosterAgents.length === 0) {
+      return { scheduled: false, reason: 'missing_conversation_or_agents' };
     }
 
     if (getSessionGoalProposal(conversation)) {
