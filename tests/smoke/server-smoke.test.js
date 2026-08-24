@@ -5768,3 +5768,55 @@ test('conversation create validates the explicit roster and only merges mode ski
   }, 422, 'participant_role_unavailable');
   assert.equal(store.listConversations().length, 4);
 });
+
+test('server exposes runtime observability counters over HTTP with zeroed post-boot state', async (t) => {
+  const tempDir = withTempDir('caff-runtime-observability-server-');
+  const sqlitePath = path.join(tempDir, 'chat.sqlite');
+  const port = await findFreePort();
+  const baseUrl = `http://127.0.0.1:${port}`;
+
+  const app = createServerApp({
+    host: '127.0.0.1',
+    port,
+    agentDir: tempDir,
+    sqlitePath,
+    projectDir: tempDir,
+  });
+  let closed = false;
+
+  t.after(async () => {
+    if (!closed) {
+      await new Promise((resolve) => app.close(resolve));
+    }
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  await new Promise((resolve) => app.start(resolve));
+
+  const response = await fetch(`${baseUrl}/api/runtime/stats`);
+  assert.equal(response.status, 200);
+  const snapshot = await response.json();
+
+  assert.equal(typeof snapshot.timestamp, 'string');
+  assert.ok(Number.isFinite(snapshot.memory.heapUsedBytes) && snapshot.memory.heapUsedBytes > 0);
+  assert.ok(Number.isFinite(snapshot.memory.rssBytes) && snapshot.memory.rssBytes > 0);
+  assert.ok(Array.isArray(snapshot.memoryHistory));
+
+  // Fresh boot: every lifecycle counter must be at rest at zero.
+  assert.deepEqual(snapshot.counters.turns, {
+    activeTurns: 0,
+    activeQueues: 0,
+    activeAgentSlots: 0,
+  });
+  assert.deepEqual(snapshot.counters.invocations, { activeInvocations: 0 });
+  assert.deepEqual(snapshot.counters.sse, {
+    activeClients: 0,
+    backpressuredClients: 0,
+    queuedFrameBytes: 0,
+    writableBytes: 0,
+    disconnects: { byteBudget: 0, drainTimeout: 0 },
+  });
+
+  await new Promise((resolve) => app.close(resolve));
+  closed = true;
+});

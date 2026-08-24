@@ -4188,6 +4188,74 @@ test('turn orchestrator routes goal continuation to the goal owner over the late
   assert.deepEqual(executedAgentIds, ['agent-b']);
 });
 
+test('turn orchestrator exposes runtime stats that count the active turn and settle to zero after completion', { concurrency: false }, async (t) => {
+  const tempDir = withTempDir('caff-orchestrator-runtime-stats-');
+  const sqlitePath = path.join(tempDir, 'orchestrator-runtime-stats.sqlite');
+  const { conversation } = createGoalOwnerConversation({
+    goalOwner: { agentId: 'agent-b', agentName: 'Bravo' },
+    replies: [
+      {
+        agentId: 'agent-b',
+        senderName: 'Bravo',
+        content: 'Bravo replied earlier',
+        createdAt: '2026-08-24T00:00:10.000Z',
+      },
+    ],
+  });
+  conversation.__tempDir = tempDir;
+  conversation.__sqlitePath = sqlitePath;
+  const executedAgentIds = [];
+  const statsDuringExecution = [];
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const orchestrator = createTurnOrchestrator({
+    store: createGoalOwnerStore(conversation),
+    skillRegistry: { listSkills() { return []; }, resolveSkills() { return []; } },
+    modeStore: { get() { return null; } },
+    agentToolBridge: {},
+    host: '127.0.0.1',
+    port: 0,
+    agentDir: tempDir,
+    sqlitePath,
+    toolBaseUrl: 'http://127.0.0.1:0',
+    agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
+    sessionGoalAutoContinueMaxTurns: 1,
+    executeConversationAgent: async ({ agent, completedReplies }) => {
+      statsDuringExecution.push(orchestrator.getRuntimeStats());
+      executedAgentIds.push(agent.id);
+      completedReplies.push({
+        agentId: agent.id,
+        senderName: agent.name,
+        content: 'runtime stats continuation',
+        status: 'completed',
+      });
+      return { stopTurn: false };
+    },
+  });
+
+  const scheduled = orchestrator.scheduleGoalContinuation(conversation.id);
+  assert.equal(scheduled.scheduled, true);
+
+  await waitForCondition(() => executedAgentIds.length > 0);
+
+  assert.equal(statsDuringExecution.length > 0, true);
+  for (const stats of statsDuringExecution) {
+    assert.equal(typeof stats.activeTurns, 'number');
+    assert.equal(typeof stats.activeQueues, 'number');
+    assert.equal(typeof stats.activeAgentSlots, 'number');
+    assert.ok(stats.activeTurns >= 1, 'the executing turn must be counted as active');
+    assert.ok(stats.activeQueues >= 1, 'the draining conversation queue must be counted');
+  }
+
+  await waitForCondition(() => {
+    const stats = orchestrator.getRuntimeStats();
+    return stats.activeTurns === 0 && stats.activeQueues === 0 && stats.activeAgentSlots === 0;
+  });
+});
+
 test('turn orchestrator keeps default_last_agent continuation when no goal owner is set', { concurrency: false }, async (t) => {
   const tempDir = withTempDir('caff-goal-owner-default-');
   const sqlitePath = path.join(tempDir, 'goal-owner-default.sqlite');

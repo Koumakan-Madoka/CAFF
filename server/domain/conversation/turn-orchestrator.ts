@@ -1901,6 +1901,22 @@ export function createTurnOrchestrator(options: any = {}) {
       .map(summarizeAgentSlotState);
   }
 
+  // P1 observability: lightweight size probes over the internal lifecycle maps.
+  // The queue-state sweep reuses buildConversationQueueSnapshot's existing
+  // settlement logic so a queue that finished draining is not reported as
+  // active just because nothing rebuilt the runtime payload since. Queues
+  // with pending failures stay visible on purpose; clearConversationState
+  // remains the authoritative cleanup path.
+  function getRuntimeStats() {
+    buildConversationQueueSnapshot();
+
+    return {
+      activeTurns: activeTurns.size,
+      activeQueues: queueStates.size,
+      activeAgentSlots: activeAgentSlots.size,
+    };
+  }
+
   recoverPersistedQueueStates();
   recoverPersistedSideDispatches();
 
@@ -1911,6 +1927,7 @@ export function createTurnOrchestrator(options: any = {}) {
     emitTurnProgress,
     getConversationMutationState,
     getConversationQueueDepth,
+    getRuntimeStats,
     listAgentSlotSummaries,
     listTurnSummaries,
     reconcileConversationQueueAfterMessageDeletion,
