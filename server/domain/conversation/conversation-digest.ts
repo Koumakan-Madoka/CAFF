@@ -1843,33 +1843,19 @@ export function backfillConversationDigestSummarySegments(store: any, input: any
   const normalizedConversationId = normalizeText(input.conversationId || input.id);
   const explicitTaskName = normalizeText(input.taskName || input.summaryMemoryTaskName || options.taskName || options.summaryMemoryTaskName);
   const timestamp = nowIso();
-  const conversations = [] as any[];
 
-  if (normalizedConversationId) {
-    const conversation = store.getConversation(normalizedConversationId);
-
-    if (!conversation) {
-      throw createHttpError(404, 'Conversation not found');
-    }
-
-    conversations.push(conversation);
-  } else if (typeof store.listConversations === 'function' && typeof store.getConversation === 'function') {
-    for (const header of store.listConversations()) {
-      const conversationId = normalizeText(header && header.id);
-      const conversation = conversationId ? store.getConversation(conversationId) : null;
-
-      if (conversation) {
-        conversations.push(conversation);
-      }
-    }
-  }
-
+  // P0 OOM fix: process one lightweight conversation projection at a time.
+  // Global mode iterates conversation headers immediately; scoped mode uses
+  // getConversationWithoutMessages(). No path reads message history and no
+  // fully hydrated conversation is accumulated for the request.
+  let conversationCount = 0;
   let digestCount = 0;
   let segmentCount = 0;
   let failedCount = 0;
   const failures = [] as any[];
 
-  for (const conversation of conversations) {
+  const backfillConversation = (conversation: any) => {
+    conversationCount += 1;
     const digests = getConversationDigests(conversation);
     digestCount += digests.length;
 
@@ -1910,10 +1896,32 @@ export function backfillConversationDigestSummarySegments(store: any, input: any
         }
       }
     }
+  };
+
+  if (normalizedConversationId) {
+    // Fail closed: a store without the no-message projection must never fall
+    // back to getConversation() (full message hydration). Real ChatAppStore
+    // always provides the projection; missing it is a store-shape error.
+    if (typeof store.getConversationWithoutMessages !== 'function') {
+      throw createHttpError(501, 'Summary segment memory is not available');
+    }
+    const conversation = store.getConversationWithoutMessages(normalizedConversationId);
+
+    if (!conversation) {
+      throw createHttpError(404, 'Conversation not found');
+    }
+
+    backfillConversation(conversation);
+  } else if (typeof store.listConversations === 'function') {
+    for (const header of store.listConversations()) {
+      if (header && normalizeText(header.id)) {
+        backfillConversation(header);
+      }
+    }
   }
 
   return {
-    conversationCount: conversations.length,
+    conversationCount,
     digestCount,
     segmentCount,
     failedCount,

@@ -16,7 +16,7 @@ backend domain services.
 - Automatic conversation title state, first-message derivation, first-digest
   refinement, and manual rename protection (`conversation-title.md`)
 - Digest-to-skill draft extraction and confirmation (`../runtime/skill-extraction.md`)
-- Cross-conversation summary segment memory search (`summary-memory.md`)
+- Cross-conversation summary segment memory search and no-message memory health/backfill projections (`summary-memory.md`)
 - Conversation tree DAG plan storage, lifecycle, and plan API (`dag-planning.md`)
 - Skill management and configuration (skills-controller.ts)
 - Local-admin model provider projection, patching, and token limit fields (`model-provider-config.md`)
@@ -54,7 +54,7 @@ backend domain services.
   first-auto-digest model refinement/config chain, and manual rename guards
 - `room-context-workspace.md`: Room=Conversation Project/Mode identity, generated workspace binding, runtime cwd/orchestration context, destructive legacy retirement, and acceptance evidence contracts
 - `../runtime/skill-extraction.md`: `/digest extract-skill` and `/skill-drafts` contracts
-- `summary-memory.md`: searchable digest segment ledger and `/api/memory/search` contracts
+- `summary-memory.md`: searchable digest segment ledger, `/api/memory/search` contracts, and OOM-safe no-message health/backfill projections (`getConversationWithoutMessages()` / header-only global paths, `listMessages` poison guard, heap/RSS/latency budgets)
 - `dag-planning.md`: `chat_plans` storage, plan lifecycle (draft→active), shared
   validation, and `/api/conversations/:id/plan` contracts
 - `dag-execution.md`: event-hook scheduler, per-node worktrees, merge executor,

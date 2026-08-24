@@ -3768,7 +3768,9 @@ export class ChatAppStore {
 
   saveSummarySegmentFromDigest(conversationId: any, digest: any, options: any = {}) {
     const normalizedConversationId = String(conversationId || '').trim();
-    const conversation = this.getConversation(normalizedConversationId);
+    // P0 OOM fix: only existence and title are needed here; use the
+    // no-message projection so this entry never reads message history.
+    const conversation = this.getConversationWithoutMessages(normalizedConversationId);
 
     if (!conversation) {
       throw new Error('Conversation not found');
@@ -3882,33 +3884,18 @@ export class ChatAppStore {
       diagnostics.push({ code: 'summary_memory_unavailable', message: searchError });
     }
 
-    const conversations = [] as any[];
-
-    if (normalizedConversationId) {
-      const conversation = this.getConversation(normalizedConversationId);
-
-      if (conversation) {
-        conversations.push(conversation);
-      } else {
-        diagnostics.push({ code: 'conversation_not_found', message: 'Conversation not found' });
-      }
-    } else if (typeof this.listConversations === 'function') {
-      for (const header of this.listConversations()) {
-        const conversationId = String(header && header.id || '').trim();
-        const conversation = conversationId ? this.getConversation(conversationId) : null;
-
-        if (conversation) {
-          conversations.push(conversation);
-        }
-      }
-    }
-
+    // P0 OOM fix: consume lightweight projections only. Scoped mode uses
+    // getConversationWithoutMessages(); global mode consumes listConversations()
+    // headers directly and processes each header immediately, retaining only
+    // counters plus the already bounded unsyncedDigests list. Neither path
+    // reads message history, and no hydrated conversation (nor a second
+    // conversation array) is accumulated for the request.
     let digestConversationCount = 0;
     let digestCount = 0;
     let unsyncedDigestCount = 0;
     const unsyncedDigests = [] as any[];
 
-    for (const conversation of conversations) {
+    const countConversationDigests = (conversation: any) => {
       const digests = normalizeConversationDigestList(conversation);
 
       if (digests.length > 0) {
@@ -3951,6 +3938,22 @@ export class ChatAppStore {
               message: errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Unknown summary segment lookup error'),
             });
           }
+        }
+      }
+    };
+
+    if (normalizedConversationId) {
+      const conversation = this.getConversationWithoutMessages(normalizedConversationId);
+
+      if (conversation) {
+        countConversationDigests(conversation);
+      } else {
+        diagnostics.push({ code: 'conversation_not_found', message: 'Conversation not found' });
+      }
+    } else if (typeof this.listConversations === 'function') {
+      for (const header of this.listConversations()) {
+        if (header && String(header.id || '').trim()) {
+          countConversationDigests(header);
         }
       }
     }
