@@ -1,5 +1,79 @@
 # Conversation Turn Queue
 
+## Default Initial Agent Resolution
+
+### 1. Scope / Trigger
+
+- Trigger: a main-lane user message has no explicit initial target, or image capability preflight must identify the same initial target that text routing will execute.
+- Owner: `server/domain/conversation/turn/initial-target-resolution.ts`.
+- Consumers: `routing-executor.ts` for authoritative main-lane execution and `image-preflight.ts` for capability validation. Side-lane explicit single-mention dispatch keeps its existing target resolver.
+
+### 2. Signatures
+
+- `resolveMostRecentPublicReplyAgentId(conversation) -> string` returns a current participant Agent id or `''`.
+- `resolveInitialTurnTargets(turnInput, conversation) -> { agentIds, strategy, executionMode, explicitIntent, privateOnly, cleanedUserText }`.
+- `resolveInitialTargetAgentIds(turnInput, conversation) -> string[]` is the image-preflight compatibility projection of the shared result.
+- `assertImagePreflightForTargets(turnInput, conversation, { modelCatalog, targetResolution? })` accepts a precomputed shared resolution so validation and execution cannot select different targets.
+
+### 3. Contracts
+
+- Initial target priority is valid explicit `initialAgentIds`, actionable user mentions, most recent qualifying public-reply Agent, then the first participant.
+- A qualifying public reply has `role='assistant'`, `status='completed'`, non-empty trimmed content, a current participant `agentId`, and no private projection (`!Boolean(metadata.privateOnly)`, `message.visibility !== 'private'`, and `metadata.visibility !== 'private'`). Private-message repository rows never enter the public conversation message list.
+- The latest qualifying reply is selected by persisted `(createdAt, id)` ascending order. Equal timestamps use the message id as the deterministic tie-breaker, matching `ChatMessageRepository.listByConversationId`; missing timestamps in synthetic inputs fall back to array order.
+- Strategies are observable: `user_mentions`, `default_last_agent`, or `default_first_agent`. Explicit initial targets preserve their caller-supplied `entryStrategy`, execution mode, cleaned text, private-only flag, and explicit-intent projection.
+- `routing-executor` resolves after a main-lane batch is claimed. A queued unmentioned message therefore sees public replies completed before its batch actually starts, including state reloaded from SQLite after restart.
+- Submission-time image preflight remains a fast-fail for idle messages and stable explicit targets. When a busy conversation accepts an unmentioned default-routed image message, submission defers that check; `routing-executor` re-resolves the execution-time target and performs the authoritative preflight from canonical `metadata.contentBlocks` before launching any Agent.
+- An authoritative queued-image preflight failure uses the existing queue-failure path: no Agent launches, the failed batch remains pending, and runtime queue failure metadata stays visible. Do not freeze a default Agent at user-message creation just to preserve pre-persistence rejection.
+
+### 4. Validation And Error Matrix
+
+| Case | Expected result |
+| --- | --- |
+| valid explicit `initialAgentIds` plus user mention | explicit ids win and keep explicit entry settings |
+| actionable mention without explicit ids | mentioned ids and existing serial/parallel intent behavior |
+| unmentioned message after B completed a non-empty public reply | B, `strategy='default_last_agent'` |
+| newer failed, queued, streaming, empty, private-only, or private-visibility reply | skip it and use the prior qualifying current participant |
+| newest qualifying reply belongs to a removed Agent | skip it; use the next qualifying current participant or first fallback |
+| no qualifying public reply | first participant, `strategy='default_first_agent'` |
+| equal persisted timestamps | lexically greater message id is later and wins deterministically after restart |
+| busy main lane accepts unmentioned image while current default is A; B replies before batch start | defer submission check; execute-time resolution and preflight both target B |
+| explicit single mention while busy | existing side lane and submission-time image preflight remain unchanged |
+| execution-time target cannot read images | `MODEL_NO_IMAGE_INPUT`; no Agent invocation; queued batch remains pending |
+
+### 5. Good / Base / Bad Cases
+
+- Good: A conversation lists A first, but B most recently completed a public reply. Plain text and image preflight both select B; task metadata records `default_last_agent`.
+- Base: a new conversation has no completed public reply, so the first participant remains the default and existing first-message behavior is unchanged.
+- Bad: image preflight independently falls back to `agents[0]` while routing uses the last reply; the image can be rejected for the wrong model or passed to a model that cannot read it.
+- Bad: resolving a queued default target when the user message is created; this ignores public replies completed before the serialized batch begins.
+
+### 6. Tests Required
+
+- `tests/runtime/initial-target-resolution.test.js`: priority chain, every exclusion, removed participant, `(createdAt,id)` tie-break, first fallback, and close/reopen SQLite persistence.
+- `tests/runtime/image-preflight.test.js`: image target projection selects the same latest public Agent and validates that Agent's model capability.
+- `tests/runtime/turn-orchestrator.test.js`: actual executed Agent and `enqueueReason='default_last_agent'`; busy queued image defers submission preflight, re-resolves after the prior reply, and executes the same vision-capable Agent.
+- Full turn-orchestrator regressions cover side lane, Goal continuation, Stop, handoff, queue recovery, explicit mention, and image-only persistence.
+
+### 7. Wrong Vs Correct
+
+#### Wrong
+```ts
+const targetIds = mentionedAgentIds.length > 0
+  ? mentionedAgentIds
+  : conversation.agents[0] ? [conversation.agents[0].id] : [];
+```
+- This duplicates target policy and cannot observe the most recent qualifying public reply.
+
+#### Correct
+```ts
+const targetResolution = resolveInitialTurnTargets(turnInput, conversation);
+assertImagePreflightForTargets(turnInput, conversation, {
+  modelCatalog,
+  targetResolution,
+});
+```
+- One domain resolver owns priority, filtering, ordering, strategy, and cleaned-text behavior; consumers project or validate the same result.
+
 ## Immediate Private Handoff Scheduling
 
 ### 1. Scope / Trigger

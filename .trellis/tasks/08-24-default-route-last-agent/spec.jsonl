@@ -1,0 +1,2 @@
+{"file":".trellis/spec/index.md","reason":"Shared spec fallback."}
+{"file":".trellis/spec/runtime/conversation-turn-queue.md","date":"2026-08-24","files":[".trellis/spec/runtime/conversation-turn-queue.md",".trellis/spec/unit-test/runtime-tests.md"],"summary":"Documented shared resolver signatures, qualification/order contracts, submission versus execution-time image preflight, validation matrix, examples, required tests, and wrong/correct usage."}

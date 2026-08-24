@@ -1,0 +1,63 @@
+{
+  "id": "default-route-last-agent",
+  "name": "default-route-last-agent",
+  "title": "Default-route unmentioned user messages to the last qualifying public-reply agent",
+  "description": "Route un-@ user messages to the most recent qualifying public-reply agent instead of the first participant, with one shared target-resolution contract for both text routing and image preflight.",
+  "status": "review",
+  "dev_type": "backend",
+  "scope": "backend",
+  "package": null,
+  "priority": "P1",
+  "creator": "GLM",
+  "assignee": "GPT",
+  "createdAt": "2026-08-24",
+  "completedAt": null,
+  "branch": "room/c2fab452-caff-bug-bug",
+  "base_branch": "develop",
+  "worktree_path": "E:/pythonproject/worktrees/room/c2fab452-caff-bug-bug",
+  "current_phase": 3,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "load-specs-and-red-tests"
+    },
+    {
+      "phase": 2,
+      "action": "implement-shared-resolver"
+    },
+    {
+      "phase": 3,
+      "action": "independent-review"
+    },
+    {
+      "phase": 4,
+      "action": "human-acceptance"
+    },
+    {
+      "phase": 5,
+      "action": "create-pr"
+    },
+    {
+      "phase": 6,
+      "action": "archive"
+    }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "server/domain/conversation/turn/initial-target-resolution.ts",
+    "server/domain/conversation/turn/routing-executor.ts",
+    "server/domain/conversation/turn/image-preflight.ts",
+    "server/domain/conversation/turn-orchestrator.ts",
+    "tests/runtime/initial-target-resolution.test.js",
+    "tests/runtime/image-preflight.test.js",
+    "tests/runtime/turn-orchestrator.test.js",
+    ".trellis/spec/runtime/conversation-turn-queue.md",
+    ".trellis/spec/unit-test/runtime-tests.md"
+  ],
+  "notes": "Base develop@f7399d71da73c73ad35820d9b82aa325b9c462ae. Hard-coded first-agent sites: routing-executor.ts resolveInitialSpeakerQueue (agents[0]) and image-preflight.ts resolveInitialTargetAgentIds. Contract fully confirmed by user (Q1 definition, Q2 execution-time snapshot, Q3 priority chain).",
+  "meta": {}
+}
