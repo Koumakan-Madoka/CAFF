@@ -118,21 +118,25 @@ The negative assertion is an architectural contract: message history reads are f
 ### Transport Contract
 
 - Serialize each SSE event frame once. A frame is written to each ready response at most once.
-- Treat `res.write(frame) === false` as a backpressure signal, not proof that the client is dead. Mark the client blocked, arm a five-second drain deadline, and stop writing later frames directly until `drain` clears the state.
-- Maintain at most one bounded per-client FIFO whose queued frame bytes plus `res.writableLength` never exceed 2 MiB. On `drain`, flush that FIFO in order until it is empty or another write returns `false`. Do not enqueue the frame that first returned `false`; Node already accepted it into the response buffer.
+- Treat `res.write(frame) === false` as a backpressure signal, not proof that the client is dead. Mark the client blocked, arm a five-second drain deadline, and stop writing later frames directly until `drain` clears the state. Each new blocked episode gets a fresh five-second deadline; clear the prior timer on `drain`, close, error, or removal.
+- Maintain at most one bounded per-client FIFO whose queued frame bytes plus `res.writableLength` never exceed 2 MiB. Check the combined budget before every direct write or enqueue. A single frame larger than 2 MiB removes the client before that frame is written, even when its buffers are otherwise empty.
+- On `drain`, flush the FIFO in order until it is empty or another write returns `false`. Do not enqueue the frame that first returned `false`; Node already accepted it into the response buffer. If a flush write returns `false`, enter a new blocked episode and re-arm the deadline without duplicating that accepted frame.
 - Remove and end/destroy the client only when the 2 MiB combined budget would be exceeded, the five-second drain deadline expires, or the response closes/errors. Prelude, initial events, normal events, and keepalives use the same accounting before the client is admitted or retained.
-- Keep normal event ids, event names, conversation filtering, initial events, and pings compatible. Send a bounded EventSource `retry` value so a disconnected slow client cannot create a tight reconnect loop.
-- CAFF does not currently consume `Last-Event-ID` or replay missed SSE events. Recovery after a backpressure disconnect is reconnection plus the existing authoritative state refresh, not event replay; the implementation must not claim at-least-once delivery.
+- Keep normal event ids, event names, conversation filtering, initial events, and pings compatible. The server may send a bounded EventSource `retry` value for standards-compatible consumers, but the shipped browser currently closes errored streams and reconnects manually after 1.5 seconds; P1B preserves that bounded client delay rather than relying on `retry:` for reconnect throttling.
+- CAFF does not currently consume `Last-Event-ID` or replay missed SSE events, so P1B includes a minimal browser recovery change. After an errored stream successfully reopens, but not on the initial connection, coalesce one authoritative `refreshAll(selectedConversationId)` call to refresh bootstrap/conversation-list/runtime state and the selected conversation through HTTP. Repeated opens while that recovery refresh is in flight must not start parallel refreshes. The implementation must not claim at-least-once event delivery.
 - Track bounded diagnostics: active client count, clients currently backpressured, slow-client disconnects by byte-budget/timeout reason, queued frame bytes, and aggregate `writableLength`. Do not log payloads.
 
 ### Tests
 
 - a normal client gets one correctly formatted frame;
-- a healthy client may return `false` during a burst of large frames, emit `drain` within five seconds, receive the queued frames in order, and remain connected;
+- a healthy client may return `false` during a burst of large frames, emit `drain` within five seconds, receive the queued frames in order, and remain connected; the fake response must increment `writableLength` for accepted buffered bytes, return `false` after crossing its modeled high-water mark, then reduce `writableLength` before emitting `drain`;
+- a flush that returns `false` starts a fresh five-second blocked episode without duplicating or reordering frames;
+- a single frame over 2 MiB removes the client before `write()` receives that frame;
 - a permanently blocked client is removed when the 2 MiB combined budget is exceeded and receives no later write;
 - a client below the byte budget but without `drain` is removed after five seconds;
 - keepalive, prelude, and initial events follow the same budget/deadline rule;
-- reconnect recovery refreshes authoritative state and does not assert replay of missed event ids;
+- the first stream open does not duplicate bootstrap loading; an open after an error coalesces exactly one `refreshAll(selectedConversationId)` while recovery is in flight, and a turn that completed during the disconnect is visible afterward without replaying missed event ids;
+- the existing 1.5-second manual reconnect delay remains bounded; a server `retry:` field is not treated as controlling the shipped client's reconnect loop;
 - 100 connect/close/reconnect cycles leave zero clients, pending frames, listeners, and timers;
 - a permanently blocked client under 10,000 large events does not grow RSS beyond the budget.
 
@@ -288,9 +292,11 @@ If another restart shows rapid monotonic growth without panel activity, stop tre
 
 The exact planning commit `a2d37135ff7731123fd7d8d52b5543ab2792d32b` received an independent read-only architecture review with no blocking findings. The review confirmed the three P0 hydration paths, header-projection sufficiency, API/failure compatibility, P2 expand/contract direction, synthetic isolation, and rollout/rollback gates.
 
-The review's one medium finding rejected immediate disconnect on the first `write() === false`: a healthy response can cross Node's high-water mark on one large frame. P1B above now uses a 2 MiB combined buffer budget plus a five-second drain deadline, includes a healthy burst/drain test, and states that reconnect does not replay event ids. Low findings are also reflected above: the metrics HTTP break is explicit, header metadata remains measured by the P0 budget, and the synthetic manifest records digest cardinality.
+The review's first medium finding rejected immediate disconnect on the first `write() === false`: a healthy response can cross Node's high-water mark on one large frame. P1B above now uses a 2 MiB combined buffer budget plus a five-second per-blocked-episode drain deadline and includes a healthy burst/drain test. Low findings are also reflected above: the metrics HTTP break is explicit, header metadata remains measured by the P0 budget, and the synthetic manifest records digest cardinality.
 
-Because this revision changes the reviewed P1B contract, the revised exact commit must receive a focused independent re-review before user confirmation.
+A focused re-review of that revision confirmed the transport accounting but found that the existing browser does not refresh authoritative state on SSE `open`: it manually reconnects after 1.5 seconds and refreshes state only when later events arrive. P1B now explicitly includes a coalesced HTTP state refresh after a reconnect, while preserving no-replay semantics. The same revision also makes oversized-frame rejection, deadline re-arming, and realistic `writableLength` test modeling explicit.
+
+Because these edits resolve the focused re-review findings, the new exact commit must receive one final focused independent confirmation before user confirmation.
 
 ## Review And Implementation Gate
 
