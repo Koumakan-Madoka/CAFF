@@ -16,6 +16,7 @@ const { getAgentById, extractMentionedAgentIds, resolveTurnExecutionMode } = req
 const { buildAgentTurnPrompt, sanitizePromptMentions } = require('./turn/agent-prompt');
 const { createAgentExecutor } = require('./turn/agent-executor');
 const { assertImagePreflightForTargets } = require('./turn/image-preflight');
+const { resolveInitialTurnTargets } = require('./turn/initial-target-resolution');
 const { createSessionExporter } = require('./turn/session-export');
 const { createTurnEventEmitter } = require('./turn/turn-events');
 const { createRuntimePayloadBuilder } = require('./turn/turn-runtime-payload');
@@ -821,6 +822,7 @@ export function createTurnOrchestrator(options: any = {}) {
     emitTurnProgress,
     agentDir,
     sqlitePath,
+    modelCatalog,
     activeConversationIds,
     activeTurns,
     isAgentBusy: agentSlotRegistry.isAgentBusy,
@@ -1692,15 +1694,30 @@ export function createTurnOrchestrator(options: any = {}) {
       agents: resolveRuntimeParticipants(storedConversation.agents),
     };
 
-    if (Array.isArray(turnInput.imageIds) && turnInput.imageIds.length > 0) {
-      assertImagePreflightForTargets(turnInput, conversation, { modelCatalog });
+    const initialTargetResolution = resolveInitialTurnTargets(turnInput, conversation);
+    const sideTarget = resolveSideDispatchTarget(conversation, turnInput);
+    const conversationBusy = shouldAllowSideDispatch(conversationId);
+    const shouldSideDispatch = Boolean(sideTarget && conversationBusy);
+    const shouldDeferDefaultImagePreflight = Boolean(
+      conversationBusy
+      && (initialTargetResolution.strategy === 'default_last_agent'
+        || initialTargetResolution.strategy === 'default_first_agent')
+    );
+
+    if (
+      Array.isArray(turnInput.imageIds)
+      && turnInput.imageIds.length > 0
+      && !shouldDeferDefaultImagePreflight
+    ) {
+      assertImagePreflightForTargets(turnInput, conversation, {
+        modelCatalog,
+        targetResolution: initialTargetResolution,
+      });
     }
 
     ensureQueueState(conversationId);
 
     let dispatchResult = null as any;
-    const sideTarget = resolveSideDispatchTarget(conversation, turnInput);
-    const shouldSideDispatch = Boolean(sideTarget && shouldAllowSideDispatch(conversationId));
     const acceptedMessage = store.createMessage(
       createAcceptedMessagePayload(conversationId, {
         ...turnInput,

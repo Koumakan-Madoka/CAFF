@@ -1,35 +1,12 @@
 const { createHttpError } = require('../../../http/http-errors');
-const {
-  buildAgentMentionLookup,
-  extractMentionedAgentIds,
-} = require('../mention-routing');
+const { resolveInitialTurnTargets } = require('./initial-target-resolution');
 
 function normalize(value: any) {
   return typeof value === 'string' ? value.trim() : '';
 }
 
 export function resolveInitialTargetAgentIds(turnInput: any, conversation: any) {
-  const agents = Array.isArray(conversation && conversation.agents) ? conversation.agents : [];
-  const lookup = buildAgentMentionLookup(agents);
-  const userText = normalize(turnInput && (turnInput.cleanedContent || turnInput.content));
-  const mentionedAgentIds = extractMentionedAgentIds(userText, agents, {
-    lookup,
-    limit: Array.isArray(agents) ? agents.length : 0,
-  });
-
-  const initialAgentIds = Array.isArray(turnInput && turnInput.initialAgentIds)
-    ? turnInput.initialAgentIds
-    : [];
-
-  if (initialAgentIds.length > 0) {
-    return initialAgentIds.slice();
-  }
-
-  if (mentionedAgentIds.length > 0) {
-    return mentionedAgentIds.slice();
-  }
-
-  return agents[0] ? [agents[0].id] : [];
+  return resolveInitialTurnTargets(turnInput, conversation).agentIds.slice();
 }
 
 function resolveAgentModel(agent: any) {
@@ -91,7 +68,10 @@ export function assertImagePreflightForTargets(turnInput: any, conversation: any
   }
 
   const agents = Array.isArray(conversation && conversation.agents) ? conversation.agents : [];
-  const targetIds = resolveInitialTargetAgentIds(turnInput, conversation);
+  const targetResolution = options.targetResolution && typeof options.targetResolution === 'object'
+    ? options.targetResolution
+    : resolveInitialTurnTargets(turnInput, conversation);
+  const targetIds = Array.isArray(targetResolution.agentIds) ? targetResolution.agentIds : [];
   const targetAgents = agents.filter((agent: any) => targetIds.includes(String(agent && agent.id || '')));
   const capabilities = resolveTargetModelCapabilities(targetAgents, options.modelCatalog);
   const unsupported = capabilities.find((capability: any) => !capability.supportsImage);

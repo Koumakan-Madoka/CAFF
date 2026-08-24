@@ -2494,6 +2494,82 @@ test('buildAgentTurnPrompt preserves JSONL parse warnings when no context entrie
   assert.match(prompt, /\[no JSONL context loaded\]/u);
 });
 
+test('routing executor defaults an unmentioned user message to the latest completed public-reply agent', async (t) => {
+  const tempDir = withTempDir('caff-default-last-agent-');
+  const sqlitePath = path.join(tempDir, 'default-last-agent.sqlite');
+  const activeConversationIds = new Set();
+  const activeTurns = new Map();
+  const conversation = {
+    id: 'conversation-default-last-agent',
+    title: 'Default last agent',
+    type: 'standard',
+    agents: [
+      { id: 'agent-a', name: 'Alpha' },
+      { id: 'agent-b', name: 'Beta' },
+    ],
+    messages: [
+      {
+        id: 'message-agent-b-public',
+        conversationId: 'conversation-default-last-agent',
+        turnId: 'turn-previous',
+        role: 'assistant',
+        agentId: 'agent-b',
+        senderName: 'Beta',
+        content: 'Most recent completed public reply',
+        status: 'completed',
+        metadata: {},
+        createdAt: '2026-08-24T00:00:00.000Z',
+      },
+    ],
+  };
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const store = {
+    getConversation(conversationId) {
+      return conversationId === conversation.id ? conversation : null;
+    },
+    createMessage(input) {
+      const message = {
+        id: `message-${conversation.messages.length + 1}`,
+        createdAt: '2026-08-24T00:00:01.000Z',
+        ...input,
+      };
+      conversation.messages.push(message);
+      return message;
+    },
+  };
+  const executedAgentIds = [];
+  const enqueueReasons = [];
+  const executor = createRoutingExecutor({
+    store,
+    agentDir: tempDir,
+    sqlitePath,
+    activeConversationIds,
+    activeTurns,
+    async executeConversationAgent({ completedReplies, agent, queueItem }) {
+      executedAgentIds.push(agent.id);
+      enqueueReasons.push(queueItem.enqueueReason);
+      completedReplies.push({
+        agentId: agent.id,
+        senderName: agent.name,
+        content: 'done',
+        publicReply: 'done',
+        status: 'completed',
+      });
+      return { stopTurn: true, terminationReason: 'agent_final' };
+    },
+  });
+
+  const result = await executor(conversation.id, { content: 'Continue without a mention' });
+
+  assert.deepEqual(executedAgentIds, ['agent-b']);
+  assert.deepEqual(enqueueReasons, ['default_last_agent']);
+  assert.deepEqual(result.turn.entryAgentIds, ['agent-b']);
+});
+
 test('routing executor snapshots project dir once per turn', async (t) => {
   const tempDir = withTempDir('caff-project-snapshot-');
   const sqlitePath = path.join(tempDir, 'snapshot.sqlite');
@@ -5532,6 +5608,150 @@ test('agent sandbox helper creates private directory', (t) => {
   assert.ok(fs.existsSync(sandbox.sandboxDir));
   assert.ok(fs.existsSync(sandbox.privateDir));
   assert.match(sandbox.privateDir, /private$/u);
+});
+
+test('queued unmentioned image resolves and preflights the latest public-reply agent when the batch starts', { concurrency: false }, async (t) => {
+  const tempDir = withTempDir('caff-image-preflight-execution-snapshot-');
+  const sqlitePath = path.join(tempDir, 'image-preflight-execution-snapshot.sqlite');
+  const conversation = {
+    id: 'conversation-image-preflight-execution-snapshot',
+    title: 'Image Preflight Execution Snapshot',
+    type: 'standard',
+    metadata: {},
+    agents: [
+      { id: 'agent-a', name: 'agent-a' },
+      { id: 'agent-b', name: 'agent-b' },
+    ],
+    messages: [],
+  };
+  let messageCounter = 0;
+  let releaseFirstExecution;
+  const firstExecutionGate = new Promise((resolve) => {
+    releaseFirstExecution = resolve;
+  });
+  let markFirstExecutionStarted;
+  const firstExecutionStarted = new Promise((resolve) => {
+    markFirstExecutionStarted = resolve;
+  });
+  let markSecondExecutionStarted;
+  const secondExecutionStarted = new Promise((resolve) => {
+    markSecondExecutionStarted = resolve;
+  });
+  const executedAgentIds = [];
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const store = {
+    databasePath: sqlitePath,
+    getConversation(conversationId) {
+      return conversationId === conversation.id ? conversation : null;
+    },
+    listConversations() {
+      return [];
+    },
+    createMessage(input) {
+      messageCounter += 1;
+      const imageIds = Array.isArray(input.imageIds) ? input.imageIds : [];
+      const metadata = {
+        ...(input.metadata && typeof input.metadata === 'object' ? input.metadata : {}),
+        ...(imageIds.length > 0
+          ? {
+              contentBlocks: imageIds.map((imageId) => ({
+                type: 'image',
+                imageId,
+                url: `/uploads/${imageId}.png`,
+              })),
+            }
+          : {}),
+      };
+      const message = {
+        id: `message-${String(messageCounter).padStart(3, '0')}`,
+        createdAt: `2026-08-24T00:00:${String(messageCounter).padStart(2, '0')}.000Z`,
+        ...input,
+        metadata,
+      };
+      conversation.messages.push(message);
+      return message;
+    },
+  };
+  const orchestrator = createTurnOrchestrator({
+    store,
+    skillRegistry: { listSkills() { return []; }, resolveSkills() { return []; } },
+    modeStore: { get() { return null; } },
+    agentToolBridge: {},
+    host: '127.0.0.1',
+    port: 0,
+    agentDir: tempDir,
+    sqlitePath,
+    toolBaseUrl: 'http://127.0.0.1:0',
+    agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
+    modelCatalog: {
+      getOptions() {
+        return [
+          { provider: 'text-provider', model: 'text-model', input: ['text'] },
+          { provider: 'vision-provider', model: 'vision-model', input: ['text', 'image'] },
+        ];
+      },
+    },
+    resolveRuntimeParticipants(participants) {
+      return participants.map((agent) => ({
+        ...agent,
+        runtimeConfig: agent.id === 'agent-b'
+          ? { provider: 'vision-provider', model: 'vision-model', thinking: 'off' }
+          : { provider: 'text-provider', model: 'text-model', thinking: 'off' },
+      }));
+    },
+    async executeConversationAgent({ agent, completedReplies }) {
+      executedAgentIds.push(agent.id);
+
+      if (executedAgentIds.length === 1) {
+        markFirstExecutionStarted();
+        await firstExecutionGate;
+        store.createMessage({
+          conversationId: conversation.id,
+          turnId: 'turn-first-reply',
+          role: 'assistant',
+          agentId: agent.id,
+          senderName: agent.name,
+          content: 'Agent B completed after the queued image was accepted.',
+          status: 'completed',
+          metadata: {},
+        });
+      } else {
+        markSecondExecutionStarted();
+      }
+
+      completedReplies.push({
+        agentId: agent.id,
+        senderName: agent.name,
+        content: 'done',
+        publicReply: 'done',
+        status: 'completed',
+      });
+      return { stopTurn: true, terminationReason: 'agent_final' };
+    },
+  });
+
+  const first = orchestrator.submitConversationMessage(conversation.id, {
+    content: '@agent-b establish the latest public reply',
+  });
+  assert.equal(first.dispatch, 'started');
+  await firstExecutionStarted;
+
+  const queued = orchestrator.submitConversationMessage(conversation.id, {
+    content: 'describe this queued image without a mention',
+    imageIds: ['image-execution-snapshot'],
+  });
+  assert.equal(queued.dispatch, 'queued');
+  assert.equal(queued.dispatchLane, 'main');
+
+  releaseFirstExecution();
+  await secondExecutionStarted;
+  await waitForCondition(() => orchestrator.listTurnSummaries({ conversationId: conversation.id }).length === 0);
+
+  assert.deepEqual(executedAgentIds, ['agent-b', 'agent-b']);
 });
 
 test('turn orchestrator preflight rejects 422 MODEL_NO_IMAGE_INPUT before createMessage when target cannot read images', { concurrency: false }, (t) => {

@@ -46,6 +46,43 @@ test('image preflight resolves initial targets by mention set or first agent', (
   assert.deepEqual(resolveInitialTargetAgentIds({ content: '@vision-agent @text-agent hello', cleanedContent: '@vision-agent @text-agent hello', initialAgentIds: [] }, conversationFixture(agents)), ['vision-agent', 'text-agent']);
 });
 
+test('image preflight defaults to the latest completed public-reply agent used by text routing', () => {
+  const catalog = catalogFixture({
+    'openai\u001fgpt-5': ['text', 'image'],
+    'deepseek\u001fdeepseek-v3': ['text'],
+  });
+  const agents = [
+    agentFixture('vision-agent', { provider: 'openai', model: 'gpt-5' }),
+    agentFixture('text-agent', { provider: 'deepseek', model: 'deepseek-v3' }),
+  ];
+  const conversation = {
+    ...conversationFixture(agents),
+    messages: [
+      {
+        id: 'message-text-agent-public',
+        role: 'assistant',
+        agentId: 'text-agent',
+        content: 'Most recent completed public reply',
+        status: 'completed',
+        metadata: {},
+        createdAt: '2026-08-24T00:00:00.000Z',
+      },
+    ],
+  };
+  const turnInput = {
+    content: 'describe the image without a mention',
+    cleanedContent: 'describe the image without a mention',
+    initialAgentIds: [],
+    imageIds: ['image-1'],
+  };
+
+  assert.deepEqual(resolveInitialTargetAgentIds(turnInput, conversation), ['text-agent']);
+  assert.throws(
+    () => assertImagePreflightForTargets(turnInput, conversation, { modelCatalog: catalog }),
+    (error) => error.statusCode === 422 && error.code === 'MODEL_NO_IMAGE_INPUT' && /text-agent/u.test(error.message)
+  );
+});
+
 test('image preflight resolves model capabilities from the configured model catalog', () => {
   const catalog = catalogFixture({
     'openai\u001fgpt-5': ['text', 'image'],

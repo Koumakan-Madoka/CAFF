@@ -1,12 +1,7 @@
 const { randomUUID } = require('node:crypto');
 const { createSqliteRunStore } = require('../../../../lib/sqlite-store');
 const { createHttpError } = require('../../../http/http-errors');
-const {
-  buildAgentMentionLookup,
-  extractMentionedAgentIds,
-  getAgentById,
-  resolveTurnExecutionMode,
-} = require('../mention-routing');
+const { getAgentById } = require('../mention-routing');
 const {
   createTurnState,
   getTurnStage,
@@ -17,6 +12,8 @@ const {
 } = require('./turn-state');
 const { buildPromptMessages, buildPromptSnapshotMessageIds, isPrivateOnlyMessage } = require('./prompt-visibility');
 const { messageImageBlocks } = require('./multimodal-projection');
+const { resolveInitialTurnTargets } = require('./initial-target-resolution');
+const { assertImagePreflightForTargets } = require('./image-preflight');
 
 const MAX_PARALLEL_MENTION_BATCH_SIZE = 5;
 
@@ -109,36 +106,6 @@ function resolveExistingBatchMessages(conversation: any, batchMessageIds: any) {
     .filter((message: any) => message && message.role === 'user');
 }
 
-function resolveInitialSpeakerQueue(userText: any, agents: any) {
-  const lookup = buildAgentMentionLookup(agents);
-  const mentionedAgentIds = extractMentionedAgentIds(userText, agents, {
-    lookup,
-    limit: Array.isArray(agents) ? agents.length : 0,
-  });
-  const agentIds = mentionedAgentIds.length > 0 ? mentionedAgentIds : agents[0] ? [agents[0].id] : [];
-  const execution = resolveTurnExecutionMode(userText, agentIds.length);
-
-  if (mentionedAgentIds.length > 0) {
-    return {
-      agentIds,
-      strategy: 'user_mentions',
-      executionMode: execution.mode,
-      explicitIntent: execution.explicitIntent,
-      privateOnly: false,
-      cleanedUserText: execution.cleanedText,
-    };
-  }
-
-  return {
-    agentIds,
-    strategy: 'default_first_agent',
-    executionMode: execution.mode,
-    explicitIntent: execution.explicitIntent,
-    privateOnly: false,
-    cleanedUserText: execution.cleanedText,
-  };
-}
-
 export function createRoutingExecutor(options: any = {}) {
   const store = options.store;
   const executeConversationAgent = options.executeConversationAgent;
@@ -150,6 +117,7 @@ export function createRoutingExecutor(options: any = {}) {
   const emitTurnProgress = typeof options.emitTurnProgress === 'function' ? options.emitTurnProgress : () => {};
   const agentDir = options.agentDir;
   const sqlitePath = options.sqlitePath;
+  const modelCatalog = options.modelCatalog || null;
   const activeConversationIds = options.activeConversationIds;
   const activeTurns = options.activeTurns;
   const resolveRuntimeParticipants = typeof options.resolveRuntimeParticipants === 'function'
@@ -277,17 +245,27 @@ export function createRoutingExecutor(options: any = {}) {
       batchMessages = [userMessage];
     }
 
-    const initialQueue =
-      turnInput.initialAgentIds.length > 0
-        ? {
-            agentIds: turnInput.initialAgentIds.slice(),
-            strategy: turnInput.entryStrategy,
-            executionMode: turnInput.executionMode,
-            explicitIntent: turnInput.explicitIntent,
-            privateOnly: turnInput.privateOnly,
-            cleanedUserText: turnInput.cleanedContent,
-          }
-        : resolveInitialSpeakerQueue(turnInput.cleanedContent || turnInput.content || userMessage.content, conversation.agents);
+    const initialQueue = resolveInitialTurnTargets(
+      {
+        ...turnInput,
+        content: turnInput.cleanedContent || turnInput.content || userMessage.content,
+      },
+      conversation
+    );
+
+    if (hasImages && modelCatalog) {
+      const executionImageIds = usesExistingBatch
+        ? batchMessages
+            .flatMap((message: any) => messageImageBlocks(message))
+            .map((block: any) => String(block && (block.imageId || block.url) || '').trim())
+            .filter(Boolean)
+        : turnInput.imageIds;
+      assertImagePreflightForTargets(
+        { ...turnInput, imageIds: executionImageIds },
+        conversation,
+        { modelCatalog, targetResolution: initialQueue }
+      );
+    }
 
     promptUserMessage = {
       ...userMessage,

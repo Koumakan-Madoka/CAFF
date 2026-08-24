@@ -1,0 +1,4 @@
+{"file":".trellis/tasks/08-24-default-route-last-agent/prd.md","reason":"Task requirements (PRD)."}
+{"file":".trellis/spec/index.md","reason":"Project spec index (edit/add more spec files)."}
+{"file":"tests/runtime/turn-orchestrator.test.js","phase":"red","date":"2026-08-24","evidence":"Baseline image preflight selected vision-agent instead of latest text-agent; baseline text routing executed agent-a instead of latest public agent-b."}
+{"file":"server/domain/conversation/turn/initial-target-resolution.ts","phase":"implementation","date":"2026-08-24","files":["server/domain/conversation/turn/initial-target-resolution.ts","server/domain/conversation/turn/routing-executor.ts","server/domain/conversation/turn/image-preflight.ts","server/domain/conversation/turn-orchestrator.ts"],"summary":"Added one shared four-level initial-target resolver, execution-time default routing, deferred busy default-image fast preflight, and authoritative queued-batch image preflight."}

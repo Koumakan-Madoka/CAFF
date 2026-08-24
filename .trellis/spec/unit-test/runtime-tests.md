@@ -15,6 +15,9 @@
   stores, conversations, and temp project dirs
 - Preserve safety checks around symlinks, invalid paths, and missing active
   project state
+- For default Agent routing, test the shared resolver directly and also assert
+  observable orchestration behavior: actual Agent execution, enqueue strategy,
+  image capability target, queued execution-time snapshot, and SQLite close/reopen order
 
 ## Useful Existing Suites
 
