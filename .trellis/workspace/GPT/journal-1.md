@@ -248,3 +248,57 @@ Known environment note: the persistent local develop worktree contains pre-exist
 ### Next Steps
 
 - None - task complete
+
+
+## Session 6: Trace-local private/public handoff deduplication
+
+**Date**: 2026-08-24
+**Task**: Trace-local private/public handoff deduplication
+**Branch**: `room/c2fab452-caff-bug-bug`
+
+### Summary
+
+(Add summary)
+
+### Main Changes
+
+| Area | Result |
+|------|--------|
+| Root cause | Immediate private handoffs were absent from `queuedAgentIds`, so the sender's later public actionable mention could enqueue the same recipient again. |
+| Runtime | Added a turn-local launched-only trace-recipient ledger keyed by source Agent, source run, and recipient; duplicate public routing no longer reserves a hop or emits `agent_turn_routed`. |
+| Boundaries | Preserved private-private attempt deduplication, `--no-handoff`, different recipients/senders/runs, failed private dispatch eligibility, Stop, capacity, hop, side-lane, and cross-conversation semantics. |
+| Tests | Added red-first running/completed timing coverage, repeated-private and mixed-recipient cases, capacity and Stop regressions, and bridge/executor identity wiring assertions. |
+| Acceptance | User accepted isolated port 3218: source run 28/hop 1 launched Kimi run 29/hop 2 exactly once; the public actionable mention stayed visible, produced no second task/run or `agent_turn_routed`, and both runs succeeded. |
+| Review and integration | Kimi independently approved exact commit `07578b3fe3788a5a158473d02027e50d579180dd` and PR #82 with no blocking findings. Both GitHub `unit` checks passed. PR #82 merged to `develop` as `a9e063fba7dc0c52c914ab83773b1269e57840b1`. |
+| Merge verification | Merge tree `f893d73955e28bc996c42609a819496a224a9d46` exactly equals the accepted head tree. After syncing the clean room worktree to that integration commit, `npm run build` passed and the focused cross-channel/capacity/Stop selection passed 4/4. |
+
+**Primary Files**:
+- `server/domain/conversation/turn/routing-executor.ts`
+- `tests/runtime/turn-orchestrator.test.js`
+- `tests/runtime/agent-tool-bridge.test.js`
+- `tests/runtime/agent-executor-hook.test.js`
+- `.trellis/spec/runtime/conversation-turn-queue.md`
+- `.trellis/spec/runtime/agent-runtime.md`
+
+**Known Environment Note**:
+- The full turn-orchestrator command passed all 85 test bodies during author and independent review; its two command-level failures were pre-existing Windows `t.after` temporary-directory `rmSync` EPERM cleanup hooks.
+
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `07578b3fe3788a5a158473d02027e50d579180dd` | (see git log) |
+| `a9e063fba7dc0c52c914ab83773b1269e57840b1` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
