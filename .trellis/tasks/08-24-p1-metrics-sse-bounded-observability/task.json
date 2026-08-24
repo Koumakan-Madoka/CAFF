@@ -1,0 +1,64 @@
+{
+  "id": "08-24-p1-metrics-sse-bounded-observability",
+  "name": "08-24-p1-metrics-sse-bounded-observability",
+  "title": "P1: bounded HTTP metrics window, SSE backpressure budget, and runtime observability",
+  "description": "Eliminate the two remaining request-driven OOM risk classes from the frozen OOM remediation plan (a9f9eec) and add lightweight runtime observability: /api/metrics/agent requires a complete <=31-day window and must not retain unbounded raw rows; SSE applies a per-client 2 MiB combined budget with 5s per-blocked-episode drain deadline; add heap/RSS, turn/queue/invocation, and SSE buffer counters. Offline CLI keeps explicit unbounded mode.",
+  "status": "in_progress",
+  "dev_type": "fullstack",
+  "scope": [
+    "backend",
+    "frontend",
+    "runtime",
+    "performance",
+    "observability"
+  ],
+  "package": null,
+  "priority": "P1",
+  "creator": "GLM",
+  "assignee": "GLM",
+  "createdAt": "2026-08-24",
+  "completedAt": null,
+  "branch": "room/c2fab452-caff-bug-bug",
+  "base_branch": "develop",
+  "worktree_path": "E:/pythonproject/worktrees/room/c2fab452-caff-bug-bug",
+  "current_phase": 1,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "red-tests-metrics-sse"
+    },
+    {
+      "phase": 2,
+      "action": "implement-p1a-p1b-observability"
+    },
+    {
+      "phase": 3,
+      "action": "synthetic-gates"
+    },
+    {
+      "phase": 4,
+      "action": "independent-review"
+    },
+    {
+      "phase": 5,
+      "action": "isolated-acceptance-and-user-confirmation"
+    }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "08-24-develop-oom-remediation-plan",
+  "relatedFiles": [
+    "server/api/metrics-controller.ts",
+    "server/domain/metrics/agent-eval-report.ts",
+    "scripts/agent-eval-report.js",
+    "public/metrics.js",
+    "server/http/sse-bus.ts",
+    "public/app.js",
+    "tests/http/metrics-window.test.js",
+    "tests/http/sse-backpressure.test.js"
+  ],
+  "notes": "Base develop@b87295478dee9bdd3cd54caad9c6a5dbe65e4a82 (includes P0 merge 2afa667 + archive b872954). Contract source: frozen plan a9f9eec P1A/P1B sections plus performance acceptance matrix. Non-goals: P2 targeted queries / prompt window / modelUsage cap / snapshot table; production data/config/process changes; heap limit increase; production heap snapshots; merge before user acceptance.",
+  "meta": {}
+}
