@@ -5,7 +5,7 @@ import type { RouteHandler } from '../http/router';
 import { createHttpError } from '../http/http-errors';
 import { sendJson } from '../http/response';
 import { migrateRunSchema } from '../../storage/sqlite/migrations';
-import { buildAgentEvalReport } from '../domain/metrics/agent-eval-report';
+import { buildAgentEvalReport, validateAgentMetricsWindow } from '../domain/metrics/agent-eval-report';
 
 type ApiContext = {
   req: IncomingMessage;
@@ -48,6 +48,12 @@ export function createMetricsController(options: any = {}): RouteHandler<ApiCont
       const since = requestUrl.searchParams.get('since') || '';
       const until = requestUrl.searchParams.get('until') || '';
       const agentId = requestUrl.searchParams.get('agentId') || requestUrl.searchParams.get('agent') || '';
+
+      const windowError = validateAgentMetricsWindow(since, until);
+
+      if (windowError) {
+        throw createHttpError(400, windowError.message, { code: 'metrics_agent_window_invalid' });
+      }
 
       const report = buildAgentEvalReport(store.db, {
         databasePath: store.databasePath || null,

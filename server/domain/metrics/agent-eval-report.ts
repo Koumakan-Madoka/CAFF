@@ -1,4 +1,46 @@
 const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
+const ISO_BOUNDARY_RE = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})?)?$/;
+const MAX_METRICS_WINDOW_MS = 31 * 24 * 60 * 60 * 1000;
+
+export type MetricsWindowValidationError = {
+  message: string;
+};
+
+export function validateAgentMetricsWindow(sinceInput: any, untilInput: any): MetricsWindowValidationError | null {
+  const since = String(sinceInput || '').trim();
+  const until = String(untilInput || '').trim();
+
+  if (!since || !until) {
+    return { message: 'Agent metrics require both since and until boundaries' };
+  }
+
+  for (const boundary of [
+    ['since', since],
+    ['until', until],
+  ] as const) {
+    const [field, raw] = boundary;
+
+    if (!ISO_BOUNDARY_RE.test(raw) || !Number.isFinite(Date.parse(raw))) {
+      return {
+        message: `Agent metrics ${field} boundary must be a YYYY-MM-DD date or an ISO 8601 datetime: ${raw}`,
+      };
+    }
+  }
+
+  const sinceMs = Date.parse(normalizeIsoBoundary(since));
+  const untilMs = Date.parse(normalizeIsoBoundary(until, { exclusiveEndOfDay: true }));
+  const spanMs = untilMs - sinceMs;
+
+  if (!(spanMs > 0)) {
+    return { message: 'Agent metrics until boundary must be after the since boundary' };
+  }
+
+  if (spanMs > MAX_METRICS_WINDOW_MS) {
+    return { message: 'Agent metrics window must not exceed 31 days' };
+  }
+
+  return null;
+}
 
 function normalizeIsoBoundary(value: any, options: any = {}) {
   const raw = String(value || '').trim();
@@ -17,18 +59,6 @@ function normalizeIsoBoundary(value: any, options: any = {}) {
   }
 
   return raw;
-}
-
-function safeJsonParse(value: any) {
-  if (!value) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(value);
-  } catch {
-    return null;
-  }
 }
 
 function quantile(values: any[], q: number) {
@@ -144,16 +174,14 @@ export function buildAgentEvalReport(db: any, options: any = {}) {
     .prepare(
       `
       SELECT
-        m.id AS message_id,
-        m.conversation_id,
-        m.turn_id,
-        m.role,
-        m.agent_id,
-        m.sender_name,
-        m.status,
-        m.task_id,
-        m.metadata_json,
-        m.created_at
+        m.agent_id AS agent_id,
+        m.sender_name AS sender_name,
+        m.status AS status,
+        m.task_id AS task_id,
+        CASE WHEN json_valid(m.metadata_json) THEN json_extract(m.metadata_json, '$.publicToolUsed') END AS public_tool_used,
+        CASE WHEN json_valid(m.metadata_json) THEN json_extract(m.metadata_json, '$.publicPostCount') END AS public_post_count,
+        CASE WHEN json_valid(m.metadata_json) THEN json_extract(m.metadata_json, '$.privatePostCount') END AS private_post_count,
+        CASE WHEN json_valid(m.metadata_json) THEN json_extract(m.metadata_json, '$.privateHandoffCount') END AS private_handoff_count
       FROM chat_messages m
       WHERE ${messageWhereSql}
       ORDER BY m.created_at ASC, m.id ASC
@@ -168,7 +196,26 @@ export function buildAgentEvalReport(db: any, options: any = {}) {
     const events = db
       .prepare(
         `
-        SELECT e.task_id, e.event_type, e.event_json, e.created_at
+        SELECT
+          e.task_id AS task_id,
+          e.event_type AS event_type,
+          CASE WHEN json_valid(e.event_json) THEN
+            CASE json_type(e.event_json)
+              WHEN 'object' THEN 1
+              WHEN 'array' THEN 1
+              WHEN 'true' THEN 1
+              WHEN 'text' THEN CASE WHEN length(e.event_json) > 2 THEN 1 ELSE 0 END
+              WHEN 'integer' THEN CASE WHEN json_extract(e.event_json, '$') != 0 THEN 1 ELSE 0 END
+              WHEN 'real' THEN CASE WHEN json_extract(e.event_json, '$') != 0 THEN 1 ELSE 0 END
+              ELSE 0
+            END
+          ELSE 0 END AS root_truthy,
+          CASE WHEN json_valid(e.event_json) THEN json_type(e.event_json, '$.expectations') END AS expectations_type,
+          CASE WHEN json_valid(e.event_json) THEN json_extract(e.event_json, '$.expectations."send-public"') END AS send_public,
+          CASE WHEN json_valid(e.event_json) THEN json_extract(e.event_json, '$.expectations."send-private"') END AS send_private,
+          CASE WHEN json_valid(e.event_json) THEN json_extract(e.event_json, '$.tool') END AS tool,
+          CASE WHEN json_valid(e.event_json) THEN json_extract(e.event_json, '$.status') END AS tool_status,
+          CASE WHEN json_valid(e.event_json) THEN json_extract(e.event_json, '$.durationMs') END AS tool_duration_ms
         FROM a2a_task_events e
         WHERE e.event_type IN ('agent_expectations', 'agent_tool_call')
           AND e.task_id IN (
@@ -184,23 +231,32 @@ export function buildAgentEvalReport(db: any, options: any = {}) {
     for (const row of Array.isArray(events) ? events : []) {
       const taskId = String(row.task_id || '').trim();
       const eventType = String(row.event_type || '').trim();
-      const payload = safeJsonParse(row.event_json);
 
-      if (!taskId || !payload) {
+      if (!taskId || !row.root_truthy) {
         continue;
       }
 
       if (eventType === 'agent_expectations') {
-        expectationsByTask.set(taskId, payload);
+        expectationsByTask.set(taskId, {
+          hasExpectationMap: row.expectations_type === 'object' || row.expectations_type === 'array',
+          sendPublic: row.send_public,
+          sendPrivate: row.send_private,
+        });
         continue;
       }
 
       if (eventType === 'agent_tool_call') {
+        const toolCall = {
+          tool: row.tool,
+          status: row.tool_status,
+          durationMs: row.tool_duration_ms,
+        };
+
         const existing = toolCallsByTask.get(taskId);
         if (existing) {
-          existing.push(payload);
+          existing.push(toolCall);
         } else {
-          toolCallsByTask.set(taskId, [payload]);
+          toolCallsByTask.set(taskId, [toolCall]);
         }
       }
     }
@@ -224,11 +280,14 @@ export function buildAgentEvalReport(db: any, options: any = {}) {
       bucket.turnsFailed += 1;
     }
 
-    const metadata = safeJsonParse(row.metadata_json) || {};
-    const publicToolUsed = Boolean(metadata.publicToolUsed);
-    const publicPostCount = Number.isInteger(metadata.publicPostCount) ? metadata.publicPostCount : 0;
-    const privatePostCount = Number.isInteger(metadata.privatePostCount) ? metadata.privatePostCount : 0;
-    const privateHandoffCount = Number.isInteger(metadata.privateHandoffCount) ? metadata.privateHandoffCount : 0;
+    const metadataPublicToolUsed = row.public_tool_used;
+    const metadataPublicPostCount = row.public_post_count;
+    const metadataPrivatePostCount = row.private_post_count;
+    const metadataPrivateHandoffCount = row.private_handoff_count;
+    const publicToolUsed = Boolean(metadataPublicToolUsed);
+    const publicPostCount = Number.isInteger(metadataPublicPostCount) ? metadataPublicPostCount : 0;
+    const privatePostCount = Number.isInteger(metadataPrivatePostCount) ? metadataPrivatePostCount : 0;
+    const privateHandoffCount = Number.isInteger(metadataPrivateHandoffCount) ? metadataPrivateHandoffCount : 0;
     const privateToolUsed = privatePostCount > 0;
 
     if (publicToolUsed) {
@@ -245,16 +304,13 @@ export function buildAgentEvalReport(db: any, options: any = {}) {
 
     const taskId = String(row.task_id || '').trim();
     const expectations = taskId ? expectationsByTask.get(taskId) : null;
-    const expectationMap =
-      expectations && expectations.expectations && typeof expectations.expectations === 'object'
-        ? expectations.expectations
-        : null;
+    const expectationMap = expectations && expectations.hasExpectationMap ? expectations : null;
 
     if (!expectationMap) {
       bucket.missingExpectations += 1;
     } else {
-      const expSendPublic = String(expectationMap['send-public'] || '').trim();
-      const expSendPrivate = String(expectationMap['send-private'] || '').trim();
+      const expSendPublic = String(expectationMap.sendPublic || '').trim();
+      const expSendPrivate = String(expectationMap.sendPrivate || '').trim();
 
       if (expSendPublic === 'required' || expSendPublic === 'forbidden') {
         if (expSendPublic === 'required') {

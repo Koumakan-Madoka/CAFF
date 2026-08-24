@@ -4831,9 +4831,22 @@ test('server smoke: bootstrap, static files, projects, skills, agents, and conve
   await waitForCondition(() => stdoutText.includes(`Health: ${baseUrl}/api/health`));
   assert.match(stdoutText, /Chat defaults: 0\/0 ready/u);
 
-  const metrics = await fetchJson(baseUrl, '/api/metrics/agent');
+  const metricsUntil = new Date();
+  const metricsSince = new Date(metricsUntil.getTime() - 6 * 24 * 60 * 60 * 1000);
+  const isoDateOnly = (date) => date.toISOString().slice(0, 10);
+  const metrics = await fetchJson(
+    baseUrl,
+    `/api/metrics/agent?since=${isoDateOnly(metricsSince)}&until=${isoDateOnly(metricsUntil)}`
+  );
   assert.ok(Array.isArray(metrics.agents), `Expected metrics.agents to be an array, got ${typeof metrics.agents}`);
   assert.ok(Array.isArray(metrics.tools), `Expected metrics.tools to be an array, got ${typeof metrics.tools}`);
+  assert.equal(typeof metrics.since, 'string');
+  assert.equal(typeof metrics.until, 'string');
+
+  const unboundedMetrics = await fetchJsonResponse(baseUrl, '/api/metrics/agent');
+  assert.equal(unboundedMetrics.status, 400);
+  assert.equal(unboundedMetrics.json.error, 'Agent metrics require both since and until boundaries');
+  assert.equal(unboundedMetrics.json.code, 'metrics_agent_window_invalid');
 
   const projects = await fetchJson(baseUrl, '/api/projects');
   assert.ok(Array.isArray(projects.projects));
