@@ -1,0 +1,69 @@
+{
+  "id": "goal-owner",
+  "name": "goal-owner",
+  "title": "Goal owner (主理人) persistence, continuation owner routing, and fail-closed owner removal",
+  "description": "Persist a goal owner {agentId, agentName} (default empty; stamped as the proposer when a set proposal is accepted), let the user set/change it via a goal-card dropdown, route goal continuation to the owner with priority over default_last_agent, keep empty-owner behavior unchanged, and auto-pause the goal with a pending resume proposal (fail-closed, never silently falling back) when the owner is removed from the roster.",
+  "status": "completed",
+  "dev_type": "backend",
+  "scope": "backend",
+  "package": null,
+  "priority": "P1",
+  "creator": "GLM",
+  "assignee": "GLM",
+  "createdAt": "2026-08-24",
+  "completedAt": "2026-08-24",
+  "branch": "room/c2fab452-caff-bug-bug",
+  "base_branch": "develop",
+  "worktree_path": "E:/pythonproject/worktrees/room/c2fab452-caff-bug-bug",
+  "current_phase": 6,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "load-specs-and-red-tests"
+    },
+    {
+      "phase": 2,
+      "action": "implement-owner-persistence-and-routing"
+    },
+    {
+      "phase": 3,
+      "action": "independent-review"
+    },
+    {
+      "phase": 4,
+      "action": "human-acceptance"
+    },
+    {
+      "phase": 5,
+      "action": "create-pr"
+    },
+    {
+      "phase": 6,
+      "action": "archive"
+    }
+  ],
+  "commit": "5c977e9251c6bd68ce8f7b0294e2668ac7502aef",
+  "pr_url": "https://github.com/Koumakan-Madoka/CAFF/pull/86",
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "server/domain/conversation/session-goal.ts",
+    "server/domain/conversation/turn-orchestrator.ts",
+    "server/domain/conversation/turn/routing-executor.ts",
+    "server/api/conversations-controller.ts",
+    "public/chat/session-goal-panel.js",
+    "public/shared/session-goal.js",
+    "public/app.js",
+    "public/index.html",
+    "tests/runtime/session-goal-owner.test.js",
+    "tests/http/conversation-goal-owner-roster.test.js",
+    "tests/ui/session-goal-owner.test.js",
+    "tests/runtime/turn-orchestrator.test.js",
+    ".trellis/spec/backend/session-goal.md",
+    ".trellis/spec/runtime/conversation-turn-queue.md",
+    ".trellis/spec/frontend/ui-structure.md"
+  ],
+  "notes": "Base develop@2ae40161e359ca07bf6b3600653f0c20f67c2552. Three-round commit-pinned review by GPT: df336cb (HIGH set-owner epoch reset, MEDIUM UI rollback, LOW pending-proposal lazy check) -> 94a81a3 (HIGH sole-owner retirement gate skip, LOW doc contradiction) -> 5c977e9 approved with no blocking findings. Acceptance on isolated instance 3219 with dedicated blank acceptance SQLite per user instruction; production seed copy deleted after authorization. Merged via PR #86 merge commit 7881984; merge tree equals head tree 74ab5d2543a55eebacf829ea623c8fe2bc0c5171.",
+  "meta": {}
+}
