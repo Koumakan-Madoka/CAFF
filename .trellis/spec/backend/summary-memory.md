@@ -1,5 +1,63 @@
 # Summary Memory
 
+## Scenario: Memory Health / Backfill No-Message Projection (OOM Safety)
+
+### 1. Scope / Trigger
+- Trigger: the develop/3100 OOM incident where global memory health, global summary backfill, and `saveSummarySegmentFromDigest()` fully hydrated every conversation (repository get + `listMessages()` SELECT * without LIMIT + per-row `JSON.parse(metadata_json)`) and accumulated the hydrated objects for the whole request; production shape is 373MB `metadata_json` with a ~93.5MB single-conversation raw projection.
+- Applies when changes touch `getSummaryMemoryHealth()`, `backfillConversationDigestSummarySegments()`, `saveSummarySegmentFromDigest()`, `getConversationWithoutMessages()`, or any projection these paths consume.
+- Goal: these memory-summary paths must never read message history and must never accumulate fully hydrated conversation objects, while keeping every existing HTTP field, status value, count, idempotency, task attribution, bounded diagnostic, scoped missing-conversation, and per-digest partial-failure semantics byte-compatible.
+
+### 2. Signatures
+- `ChatAppStore.getSummaryMemoryHealth(conversationId?)`
+  - Scoped mode: `getConversationWithoutMessages(normalizedConversationId)` (existence + title + metadata only).
+  - Global mode: iterates `listConversations()` headers and processes each header immediately inside a per-conversation counting closure; only counters plus the already-bounded `unsyncedDigests` list survive to the response.
+- `backfillConversationDigestSummarySegments(store, input)`
+  - Scoped mode: `store.getConversationWithoutMessages(...)` when available (fallback `getConversation` only for mock stores that lack the projection); missing conversation still throws `404 'Conversation not found'`.
+  - Global mode: iterates `listConversations()` headers and processes each header immediately via a per-conversation backfill closure (`conversationCount` increments per header); no `conversations[]` array is accumulated.
+- `ChatAppStore.saveSummarySegmentFromDigest(conversationId, digest, options?)`
+  - Uses `getConversationWithoutMessages()` for existence + `conversation.title`; missing conversation still throws `'Conversation not found'`.
+- `ChatAppStore.getConversationWithoutMessages(id)` = repository get + agents projection; by construction it never calls `listMessages()` and never parses per-message `metadata_json`.
+
+### 3. Contracts
+- None of `getSummaryMemoryHealth()` (global or scoped), `backfillConversationDigestSummarySegments()` (global or scoped), or `saveSummarySegmentFromDigest()` may call `getConversation()` or `listMessages()` or otherwise read message history; the regression guard is a real-SQLite test where `store.listMessages` is poisoned to throw.
+- Global health consumes `listConversations()` headers directly; `id`, `title`, and digest metadata are all header fields, so no second hydrated conversation array may be built. Global backfill processes one header at a time with immediate per-header processing.
+- Do not add a new streaming id/title/metadata query surface for these paths; `listConversations()` headers and `getConversationWithoutMessages()` are sufficient and keep the emergency-fix surface minimal.
+- Response compatibility is frozen: health `{ ok, status: 'ok'|'needs_backfill'|'unavailable', table, segments, search, backfill, diagnostics }` (including bounded `unsyncedDigests` with `missing_segment` / lookup-failure reasons and `conversation_not_found` diagnostics for scoped misses); backfill `{ ok, action: 'backfill', conversationCount, digestCount, segmentCount, failedCount, failures }` (bounded failures, `reason: 'sync_failed'`, per-digest continue-on-error, single request timestamp, explicit-`taskName`-only attribution). Idempotency via unique `source_digest_id` is unchanged.
+- Known pre-existing normalization split (locked, not changed by P0): health counts digests with an id via id-only filtering (including pathological empty-summary digests), while backfill's `normalizeDigestEntry` drops empty-summary digests — so a pathological digest can show `unsynced` in health but never be attempted by backfill.
+- Memory budgets (from the production-shape synthetic gate, system Node v24): global health ≤10s / ≤128MiB heap delta; scoped health ≤2s / ≤64MiB; global backfill (single + idempotent repeat) ≤120s / ≤128MiB; 20 consecutive health runs leave ≤32MiB post-GC retained heap; concurrent (8-way real HTTP) health leaves ≤320MiB peak RSS delta with zero retained growth. The synthetic seed is deterministic, non-sensitive, and records exact digest count/distribution (201 digests / 64 conversations, distribution {1×21, 3×21, 5×21, 12×1}); it is not a production copy and must not become one.
+
+### 4. Validation & Error Matrix
+| Operation | Condition | Expected result |
+| --- | --- | --- |
+| any of the five paths (global/scoped health, global/scoped backfill, direct `saveSummarySegmentFromDigest`) | `store.listMessages` poisoned to throw | all complete successfully without reading message history |
+| scoped health / scoped backfill | conversation id missing from store | health records `conversation_not_found` diagnostic; backfill throws `404 'Conversation not found'` |
+| global health / global backfill | empty store | health `status: ok` with zero counts; backfill returns all-zero counts and `segmentCount: 0` |
+| global backfill | repeated invocation | counts identical, `segmentCount` stable, exactly one row per `source_digest_id`, no duplicates |
+| backfill | one conversation's digest save throws | continue-on-error: remaining conversations still backfill, `failedCount`/bounded `sync_failed` failures reported, health recheck shows remaining unsynced |
+| direct `saveSummarySegmentFromDigest` | valid digest | stores/updates one segment keyed by `source_digest_id` using only existence + `conversation.title` from the no-message projection |
+
+### 5. Tests Required
+- `tests/storage/summary-memory-no-messages.test.js`: real SQLite store with `store.listMessages` poisoned to throw; covers global/scoped health, global/scoped backfill, direct `saveSummarySegmentFromDigest`, scoped missing-conversation diagnostics, per-digest partial-failure continue-on-error, empty-store semantics, repeat-backfill idempotency, and `taskName` attribution branches — all under the no-message contract.
+- `scripts/summary-memory-p0-gate.js` (with `scripts/summary-memory-p0/{synthetic-seed.js, gate-child.js}`): production-shape synthetic SQLite gate enforcing the heap/RSS/latency budgets above for single, repeated, and concurrent health/backfill runs; fails with exact `listMessages` call counts if the implementation regresses to full hydration.
+
+### 6. Wrong vs Correct
+#### Wrong
+```ts
+// Health/backfill/save paths hydrating full history per conversation.
+const conversation = this.getConversation(conversationId); // listMessages() SELECT * + JSON.parse(metadata_json)
+conversations.push(conversation); // accumulated for the whole request
+```
+- On production shape (373MB metadata_json) this reaches multi-GB live sets and triggered the develop/3100 OOM.
+
+#### Correct
+```ts
+// Global: process one lightweight header at a time.
+for (const header of this.listConversations()) countConversationDigests(header);
+// Scoped / direct save: no-message projection.
+const conversation = this.getConversationWithoutMessages(conversationId);
+```
+- Only counters, bounded diagnostics, and lightweight projections survive the request; message history is never read.
+
 ## Scenario: Cross-Conversation Summary Segment Search
 
 ### 1. Scope / Trigger

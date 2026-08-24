@@ -1,0 +1,54 @@
+{
+  "id": "08-24-p0-memory-health-backfill-no-messages",
+  "name": "08-24-p0-memory-health-backfill-no-messages",
+  "title": "P0: eliminate memory health/backfill OOM trigger",
+  "description": "Remove the confirmed develop/3100 OOM trigger: global/scoped memory health, global/scoped summary backfill, and saveSummarySegmentFromDigest() must not read message history; global paths process lightweight conversation projections one at a time with unchanged HTTP semantics.",
+  "status": "in-progress",
+  "dev_type": "backend",
+  "scope": [
+    "backend",
+    "storage",
+    "performance"
+  ],
+  "package": null,
+  "priority": "P0",
+  "creator": "GLM",
+  "assignee": "GLM",
+  "createdAt": "2026-08-24",
+  "completedAt": null,
+  "branch": "room/c2fab452-caff-bug-bug",
+  "base_branch": "develop",
+  "worktree_path": "E:/pythonproject/worktrees/room/c2fab452-caff-bug-bug",
+  "current_phase": 1,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "check"
+    },
+    {
+      "phase": 3,
+      "action": "finish"
+    },
+    {
+      "phase": 4,
+      "action": "create-pr"
+    }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "08-24-develop-oom-remediation-plan",
+  "relatedFiles": [
+    "lib/chat-app-store.ts",
+    "server/domain/conversation/conversation-digest.ts",
+    "server/api/memory-controller.ts",
+    "storage/chat/message.repository.ts"
+  ],
+  "notes": "P0 implementation Goal approved by user. Planning reference frozen at a9f9eec4e3bb9751deb33e02ef905580f8909d5f. P1/P2 and production operations out of scope.",
+  "meta": {}
+}
