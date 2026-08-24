@@ -258,7 +258,7 @@ Known environment note: the persistent local develop worktree contains pre-exist
 
 ### Summary
 
-(Add summary)
+Deduplicated successful private handoffs and later actionable public mentions by source trace while preserving public visibility and existing bounded routing semantics.
 
 ### Main Changes
 
@@ -293,7 +293,10 @@ Known environment note: the persistent local develop worktree contains pre-exist
 
 ### Testing
 
-- [OK] (Add test results)
+- [OK] `npm run check`, `npm run typecheck`, `npm run build`, and `git diff --check` passed on the accepted feature head.
+- [OK] Turn-orchestrator 85/85 test bodies, bridge 34/34, executor hook 11/11, smoke 69+4, and DAG 55+8+8+3+3 passed during author and independent review.
+- [OK] After integration sync, `npm run build` and the focused cross-channel/capacity/Stop selection passed 4/4.
+- [OK] Both GitHub `unit` checks passed and the isolated 3218 workflow was accepted by the user.
 
 ### Status
 
