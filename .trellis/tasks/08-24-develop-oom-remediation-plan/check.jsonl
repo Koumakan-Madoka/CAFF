@@ -1,0 +1,5 @@
+{"file": ".agents/skills/finish-work/SKILL.md", "reason": "Finish work checklist"}
+{"file": ".agents/skills/check/SKILL.md", "reason": "Code quality check spec"}
+{"file": ".trellis/spec/backend/summary-memory.md", "reason": "Verify API compatibility and no raw message reads"}
+{"file": ".trellis/spec/runtime/conversation-turn-queue.md", "reason": "Verify P2 queue semantics are preserved"}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Verify tests are observable and non-tautological"}

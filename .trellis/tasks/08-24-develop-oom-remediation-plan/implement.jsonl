@@ -1,0 +1,8 @@
+{"file": ".trellis/workflow.md", "reason": "Project workflow and conventions"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend development guide"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend development guide"}
+{"file": ".trellis/spec/backend/summary-memory.md", "reason": "P0 health/backfill API and bounded memory contract"}
+{"file": ".trellis/spec/backend/conversation-digest.md", "reason": "Digest metadata and segment sync compatibility"}
+{"file": ".trellis/spec/runtime/agent-runtime.md", "reason": "Runtime retention and model usage contracts"}
+{"file": ".trellis/spec/runtime/conversation-turn-queue.md", "reason": "Goal and queue hydration boundaries"}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Observable regression test patterns"}
