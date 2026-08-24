@@ -54,6 +54,7 @@ const chatModules = window.CaffChat || {};
 const crossConversationUi = chatModules.crossConversationUi;
 const conversationDirectory = chatModules.conversationDirectory;
 const connectionStatus = chatModules.createConnectionStatus ? chatModules.createConnectionStatus() : null;
+const streamRecovery = chatModules.createStreamRecovery ? chatModules.createStreamRecovery() : null;
 const fetchJson = shared.fetchJson;
 const fetchFormDataJson = shared.fetchFormDataJson;
 const avatarUtils = shared.avatar || {};
@@ -3864,6 +3865,19 @@ function connectEventStream() {
     }
 
     renderRuntime();
+
+    // P1B recovery: only an errored stream's successful reopen triggers one
+    // coalesced authoritative refresh; initial opens never duplicate the
+    // bootstrap load. Missed events are not replayed and delivery is not
+    // at-least-once — authority comes from the HTTP refresh plus live events.
+    if (streamRecovery && streamRecovery.shouldRecoverOnOpen()) {
+      const preferredConversationId = state.selectedConversationId;
+
+      Promise.resolve()
+        .then(() => refreshAll(preferredConversationId))
+        .catch(() => {})
+        .finally(() => streamRecovery.finishRecovery());
+    }
   });
 
   source.addEventListener('runtime_state', (event) => {
@@ -4152,6 +4166,10 @@ function connectEventStream() {
 
     if (source.readyState === EventSource.OPEN) {
       return;
+    }
+
+    if (streamRecovery) {
+      streamRecovery.markStreamError();
     }
 
     try {
