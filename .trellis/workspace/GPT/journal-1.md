@@ -305,3 +305,46 @@ Deduplicated successful private handoffs and later actionable public mentions by
 ### Next Steps
 
 - None - task complete
+
+
+## Session 7: Default-route unmentioned messages to last replying agent
+
+- **Date**: 2026-08-24
+- **Branch**: `room/c2fab452-caff-bug-bug`
+- **Task**: `08-24-default-route-last-agent` (archived to `archive/2026-08/`)
+
+### Summary
+
+Unmentioned main-lane user messages now route to the most recent qualifying public-reply Agent instead of the first participant. A shared resolver (`server/domain/conversation/turn/initial-target-resolution.ts`) owns the priority chain `initialAgentIds > actionable mention > latest qualifying Agent (default_last_agent) > first participant (default_first_agent)` and is used by both text routing and image capability preflight. Queued main-lane batches resolve at execution-time snapshot via `store.getConversation`. Side lane, Goal continuation, Stop, handoff, and cross-conversation behavior unchanged.
+
+### Key Changes
+
+- `server/domain/conversation/turn/initial-target-resolution.ts` (new): shared target resolver with qualification filter (assistant, completed, non-empty public content, participant roster) and persisted `(createdAt, id)` ordering.
+- `server/domain/conversation/turn/routing-executor.ts`: consumes the shared result at batch execution; authoritative execution-time image preflight for canonical queued image blocks.
+- `server/domain/conversation/turn/image-preflight.ts`: accepts the shared target result instead of independently choosing `agents[0]`.
+- `server/domain/conversation/turn-orchestrator.ts`: passes modelCatalog; submission-time preflight deferred only for busy, unmentioned default-routed image messages.
+- Tests: `tests/runtime/initial-target-resolution.test.js` (new), `tests/runtime/image-preflight.test.js`, `tests/runtime/turn-orchestrator.test.js`.
+- Specs: `.trellis/spec/runtime/conversation-turn-queue.md`, `.trellis/spec/unit-test/runtime-tests.md`.
+
+### Validation
+
+- Red-first: baseline image resolver returned `['vision-agent']` vs expected `['text-agent']`; baseline routing returned `['agent-a']` vs expected `['agent-b']`.
+- Final: `npm run check`, `npm run typecheck`, `npm run build`, `git diff --check` passed.
+- Resolver + image-preflight 11/11; turn-orchestrator 89/89 test bodies (2 known Windows EPERM cleanup hooks at command level); goal auto-pause 8/8; smoke 69+4; DAG 55+8+8+3+3.
+- Commit-pinned independent review by GLM approved exact SHA `fa2d3f6546d4b73682aff11f06746a7de17c7500` with no blocking findings (3 LOW notes recorded).
+- User acceptance passed on isolated instance `http://127.0.0.1:3218`: queued unmentioned message executed at batch start by the latest qualifying public-reply Agent (`entryStrategy=default_last_agent`), matching the user-confirmed execution-time-snapshot contract; user explicitly confirmed acceptance and authorized the remote merge.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `fa2d3f6546d4b73682aff11f06746a7de17c7500` | fix: route unmentioned messages to last replying agent |
+| `8b1f424a7932a715ac8a6fd9f796384eeab42617` | Merge pull request #84 (develop integration) |
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete and merged via PR #84 (merge tree equals accepted head tree `dfb98365fb9422f45135b7493ea0c4ed1e72058f`).

@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 6
+- **Total Sessions**: 7
 - **Last Active**: 2026-08-24
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~304 | Active |
+| `journal-1.md` | ~350 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 7 | 2026-08-24 | Default-route unmentioned messages to last replying agent | `fa2d3f6546d4b73682aff11f06746a7de17c7500`, `8b1f424a7932a715ac8a6fd9f796384eeab42617` | `room/c2fab452-caff-bug-bug` |
 | 6 | 2026-08-24 | Trace-local private/public handoff deduplication | `07578b3fe3788a5a158473d02027e50d579180dd`, `a9e063fba7dc0c52c914ab83773b1269e57840b1` | `room/c2fab452-caff-bug-bug` |
 | 5 | 2026-08-21 | One-shot progress-timeout tool recovery | `ad466b81e78dc5905456fcb34d7f97890cd71d57`, `98e7219d66ae6a3330c709871c8b359d67749488` | `room/c2fab452-caff-bug-bug` |
 | 4 | 2026-08-21 | Goal model failure auto pause | `e33edea4ed65c4bb50dcb5d51f124455783dbdf2`, `e3cd9675d099b4427e9fba3c3e06bb19b1727cbb`, `6bccec587accbbe883a82a076a3bf3657207c9d2` | `room/c2fab452-caff-bug-bug` |

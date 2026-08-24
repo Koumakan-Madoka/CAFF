@@ -3,7 +3,7 @@
   "name": "default-route-last-agent",
   "title": "Default-route unmentioned user messages to the last qualifying public-reply agent",
   "description": "Route un-@ user messages to the most recent qualifying public-reply agent instead of the first participant, with one shared target-resolution contract for both text routing and image preflight.",
-  "status": "review",
+  "status": "completed",
   "dev_type": "backend",
   "scope": "backend",
   "package": null,
@@ -11,11 +11,11 @@
   "creator": "GLM",
   "assignee": "GPT",
   "createdAt": "2026-08-24",
-  "completedAt": null,
+  "completedAt": "2026-08-24",
   "branch": "room/c2fab452-caff-bug-bug",
   "base_branch": "develop",
   "worktree_path": "E:/pythonproject/worktrees/room/c2fab452-caff-bug-bug",
-  "current_phase": 3,
+  "current_phase": 6,
   "next_action": [
     {
       "phase": 1,
@@ -42,8 +42,8 @@
       "action": "archive"
     }
   ],
-  "commit": null,
-  "pr_url": null,
+  "commit": "fa2d3f6546d4b73682aff11f06746a7de17c7500",
+  "pr_url": "https://github.com/Koumakan-Madoka/CAFF/pull/84",
   "subtasks": [],
   "children": [],
   "parent": null,
