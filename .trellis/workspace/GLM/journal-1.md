@@ -50,3 +50,46 @@ Isolated acceptance instance http://127.0.0.1:3219 running candidate 5c977e9. In
 ### Next Steps
 
 - None - task complete and merged via PR #86 (merge tree equals accepted head tree `74ab5d2543a55eebacf829ea623c8fe2bc0c5171`).
+
+---
+
+## Session: 2026-08-24 - P0 memory health/backfill OOM remediation
+
+### Task
+
+P0: eliminate memory health/backfill OOM trigger (`.trellis/tasks/08-24-p0-memory-health-backfill-no-messages/`, parent planning task `08-24-develop-oom-remediation-plan` frozen at a9f9eec).
+
+### Summary
+
+Implemented the frozen P0 plan on develop baseline 2188f20: three full-hydration entry points (global/scoped `getSummaryMemoryHealth`, `backfillConversationDigestSummarySegments`, `saveSummarySegmentFromDigest`) switched to no-message projections. Global paths process one lightweight conversation projection at a time (headers only, no hydrated conversation accumulation); scoped paths and the direct save use `getConversationWithoutMessages()`. Scoped backfill fails closed (501) when the store lacks the no-message projection — no hydration fallback. HTTP fields, status values, counts, idempotency, task attribution, bounded diagnostics, scoped 404, and per-digest continue-on-error partial failure semantics are byte-compatible.
+
+### Review Rounds
+
+- `c9ea6555094acec3dd240a99b88ec17074657efc`: blocked — 2 MEDIUM: scoped backfill retained a `getConversation()` fallback reachable on projection-less stores (reviewer reproduced the call), and the RSS gate sampled only every 120ms externally so fast requests' true peaks were missed (in-process 225.9MiB boot artifact reported as +0.6MiB).
+- `67e87c61e2e123c0c9692cbb1a70591e1c4ce011`: approved with no blocking findings. Fallback deleted with fail-closed 501 before any store lookup + call-count regression; RSS methodology fixed (per-digest in-process maxRss, warm-baseline peak re-arm, budget = max(in-process, external)); seed pinned one exact 323KiB worst-row (330,771 bytes serialized).
+
+### Validation
+
+- Red-first on real SQLite with poisoned `store.listMessages()`: 5 forbidden paths red on baseline (stacks pointed at `getConversation -> listMessages`), 12/12 green after fix; gate proven non-tautological by temporarily restoring baseline sources (gate failed on exact call counts: 256/1/914 listMessages calls).
+- System node v24 serial: `npm run check` / `typecheck` / `build` pass; no-message suite 12/12, chat-store 24/24, server-smoke 69/69 (includes /api/memory/health and /api/memory/backfill HTTP contracts).
+- Synthetic production-shape gate (256 conversations / 15,052 messages / 387MB metadata / 201 digests {1x21,3x21,5x21,12x1}, all synthetic, gitignored .tmp): global health 5.9ms / heap +1.3MiB / RSS +1.2MiB; scoped health 2.0ms / +0.2MiB; global backfill + idempotent repeat 126ms / 201 rows zero duplicates / post-backfill unsynced=0; 20 sequential health runs retained heap +0.0MiB; 8-way concurrent real HTTP all 200, request-window heap +12.2MiB, RSS +1.2MiB, zero retained growth. SQLite integrity_check=ok.
+
+### Acceptance
+
+Isolated acceptance instance http://127.0.0.1:3220 running candidate 67e87c61 on the synthetic production-shape SQLite (independent port/database, Feishu disabled after an initial env-inherited credential leak was caught and the instance regenerated with a clean environment). All automated checks passed (global health 200/needs_backfill, two idempotent backfills 201 rows zero duplicates then ok/unsynced=0, scoped max-conversation paths, 4-way concurrent backfill, RSS stable ~127-153MiB). User acceptance PASSED (memory/summary panel — the original OOM trigger path — opened safely). Instance stopped after merge.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `c9ea6555094acec3dd240a99b88ec17074657efc` | fix(chat): eliminate message-history hydration from memory health/backfill paths |
+| `67e87c61e2e123c0c9692cbb1a70591e1c4ce011` | fix(chat): seal review findings on no-message summary memory paths |
+| `2afa667cbcf9240d6228cb8593f55e756e75ca77` | Merge pull request #88 (develop integration) |
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- P1 (metrics time-bounds, SSE bounded backpressure) and P2 (goal/turn targeted queries, modelUsage/context snapshot slimming) remain unplanned implementation follow-ups from the frozen plan; propose as separate Goals when prioritized.

@@ -1,0 +1,66 @@
+{
+  "id": "08-24-p0-memory-health-backfill-no-messages",
+  "name": "08-24-p0-memory-health-backfill-no-messages",
+  "title": "P0: eliminate memory health/backfill OOM trigger",
+  "description": "Remove the confirmed develop/3100 OOM trigger: global/scoped memory health, global/scoped summary backfill, and saveSummarySegmentFromDigest() must not read message history; global paths process lightweight conversation projections one at a time with unchanged HTTP semantics.",
+  "status": "completed",
+  "dev_type": "backend",
+  "scope": [
+    "backend",
+    "storage",
+    "performance"
+  ],
+  "package": null,
+  "priority": "P0",
+  "creator": "GLM",
+  "assignee": "GLM",
+  "createdAt": "2026-08-24",
+  "completedAt": "2026-08-24",
+  "branch": "room/c2fab452-caff-bug-bug",
+  "base_branch": "develop",
+  "worktree_path": "E:/pythonproject/worktrees/room/c2fab452-caff-bug-bug",
+  "current_phase": 6,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "red-tests-and-implementation"
+    },
+    {
+      "phase": 2,
+      "action": "compatibility-regression"
+    },
+    {
+      "phase": 3,
+      "action": "synthetic-memory-gate"
+    },
+    {
+      "phase": 4,
+      "action": "independent-review"
+    },
+    {
+      "phase": 5,
+      "action": "human-acceptance-and-merge"
+    },
+    {
+      "phase": 6,
+      "action": "archive"
+    }
+  ],
+  "commit": "67e87c61e2e123c0c9692cbb1a70591e1c4ce011",
+  "pr_url": "https://github.com/Koumukan-Madoka/CAFF/pull/88",
+  "subtasks": [],
+  "children": [],
+  "parent": "08-24-develop-oom-remediation-plan",
+  "relatedFiles": [
+    "lib/chat-app-store.ts",
+    "server/domain/conversation/conversation-digest.ts",
+    "tests/storage/summary-memory-no-messages.test.js",
+    "scripts/summary-memory-p0-gate.js",
+    "scripts/summary-memory-p0/synthetic-seed.js",
+    "scripts/summary-memory-p0/gate-child.js",
+    ".trellis/spec/backend/summary-memory.md",
+    ".trellis/spec/backend/index.md"
+  ],
+  "notes": "Base develop@2188f20cef21e70b05e92754b52a42f619f67598. Candidate chain a9f9eec (frozen plan, independently reviewed) -> c9ea655 (implementation; GPT review raised 2 MEDIUM: scoped backfill getConversation fallback, RSS gate sampling) -> 67e87c61 approved with no blocking findings. Red-first: poisoned store.listMessages() on real SQLite, 5 forbidden paths red on baseline, 12/12 green after fix; gate proven non-tautological by restoring baseline sources (256/1/914 listMessages calls). Synthetic production-shape gate (256 conversations / 15,052 messages / 387MB metadata / 201 digests, all synthetic): global health 5.9ms/+1.3MiB, scoped health 2.0ms/+0.2MiB, backfill 126ms/201 rows zero duplicates, 20-run retained heap +0.0MiB, 8-way concurrent HTTP all 200. HTTP fields/status/counts/idempotency/task attribution/bounded diagnostics/scoped 404/per-digest partial failure byte-compatible; fail-closed 501 when store lacks getConversationWithoutMessages. Isolated acceptance instance 127.0.0.1:3220 on synthetic SQLite passed all automated checks; user acceptance PASSED; instance stopped after merge. Merged via PR #88 merge commit 2afa667cbcf9240d6228cb8593f55e756e75ca77; merge tree equals reviewed head tree 26b93cee9be1ebaefc2dfdc9adf750f145393d68.",
+  "meta": {}
+}
