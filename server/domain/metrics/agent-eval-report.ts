@@ -1,10 +1,74 @@
-const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
-const ISO_BOUNDARY_RE = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})?)?$/;
+// YYYY-MM-DD, optionally with THH:mm[:ss[.sss]] and an optional Z or ±hh:mm zone.
+const ISO_BOUNDARY_RE = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?(Z|[+-]\d{2}:\d{2})?)?$/;
 const MAX_METRICS_WINDOW_MS = 31 * 24 * 60 * 60 * 1000;
 
 export type MetricsWindowValidationError = {
   message: string;
 };
+
+function boundaryFormatError(field: string, raw: string) {
+  return `Agent metrics ${field} boundary must be a YYYY-MM-DD date or an ISO 8601 datetime: ${raw}`;
+}
+
+/**
+ * Parses a boundary into its canonical UTC instant.
+ *
+ * All datetime boundaries (Z, ±hh:mm offset, or zone-less) are normalized to
+ * a canonical UTC `...Z` instant so SQLite TEXT comparison against persisted
+ * UTC created_at values selects rows chronologically: raw offset strings do
+ * not share lexical order with UTC strings. Zone-less datetimes are defined
+ * as UTC wall-clock time, matching the baseline lexical behavior. Impossible
+ * calendar dates (e.g. 2026-02-31) are rejected because Date.parse would
+ * silently normalize them via the legacy parser.
+ */
+function parseIsoBoundaryInstant(raw: string, field: string): { error: string } | { ms: number; dateOnly: boolean } {
+  const match = ISO_BOUNDARY_RE.exec(raw);
+
+  if (!match) {
+    return { error: boundaryFormatError(field, raw) };
+  }
+
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText, , zone] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const calendar = new Date(Date.UTC(year, month - 1, day));
+
+  if (calendar.getUTCFullYear() !== year || calendar.getUTCMonth() !== month - 1 || calendar.getUTCDate() !== day) {
+    return { error: `Agent metrics ${field} boundary is not a real calendar date: ${raw}` };
+  }
+
+  if (hourText === undefined) {
+    return { ms: Date.UTC(year, month - 1, day), dateOnly: true };
+  }
+
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const second = Number(secondText || '0');
+
+  if (hour > 23 || minute > 59 || second > 59) {
+    return { error: boundaryFormatError(field, raw) };
+  }
+
+  // Zone-less datetimes are treated as UTC (append Z before parsing).
+  const ms = Date.parse(zone ? raw : `${raw}Z`);
+
+  if (!Number.isFinite(ms)) {
+    return { error: boundaryFormatError(field, raw) };
+  }
+
+  return { ms, dateOnly: false };
+}
+
+function boundaryInstantOrThrow(raw: string, field: string): { ms: number; dateOnly: boolean } {
+  const parsed = parseIsoBoundaryInstant(raw, field);
+
+  if ('error' in parsed) {
+    throw new Error(parsed.error);
+  }
+
+  return parsed;
+}
 
 export function validateAgentMetricsWindow(sinceInput: any, untilInput: any): MetricsWindowValidationError | null {
   const since = String(sinceInput || '').trim();
@@ -19,16 +83,18 @@ export function validateAgentMetricsWindow(sinceInput: any, untilInput: any): Me
     ['until', until],
   ] as const) {
     const [field, raw] = boundary;
+    const parsed = parseIsoBoundaryInstant(raw, field);
 
-    if (!ISO_BOUNDARY_RE.test(raw) || !Number.isFinite(Date.parse(raw))) {
-      return {
-        message: `Agent metrics ${field} boundary must be a YYYY-MM-DD date or an ISO 8601 datetime: ${raw}`,
-      };
+    if ('error' in parsed) {
+      return { message: parsed.error };
     }
   }
 
-  const sinceMs = Date.parse(normalizeIsoBoundary(since));
-  const untilMs = Date.parse(normalizeIsoBoundary(until, { exclusiveEndOfDay: true }));
+  const sinceInstant = boundaryInstantOrThrow(since, 'since');
+  const untilInstant = boundaryInstantOrThrow(until, 'until');
+  const sinceMs = sinceInstant.ms;
+  // Date-only until boundaries are inclusive of the whole selected day.
+  const untilMs = untilInstant.dateOnly ? untilInstant.ms + 24 * 60 * 60 * 1000 : untilInstant.ms;
   const spanMs = untilMs - sinceMs;
 
   if (!(spanMs > 0)) {
@@ -49,16 +115,83 @@ function normalizeIsoBoundary(value: any, options: any = {}) {
     return '';
   }
 
-  if (DATE_ONLY_RE.test(raw)) {
-    if (options.exclusiveEndOfDay) {
-      const [year, month, day] = raw.split('-').map((part) => Number(part));
-      return new Date(Date.UTC(year, month - 1, day + 1, 0, 0, 0, 0)).toISOString();
-    }
+  // Strictly validated canonical UTC instant for every accepted form
+  // (date-only midnight, Z, offset, zone-less-as-UTC) so SQLite TEXT
+  // comparison against persisted UTC created_at values stays chronological.
+  // Date-only until boundaries are inclusive of the whole selected day.
+  const instant = boundaryInstantOrThrow(raw, 'boundary');
+  const ms = instant.dateOnly && options.exclusiveEndOfDay
+    ? instant.ms + 24 * 60 * 60 * 1000
+    : instant.ms;
 
-    return `${raw}T00:00:00.000Z`;
+  return new Date(ms).toISOString();
+}
+
+// Compact integer type codes for projected JSON values: small integers are
+// cheap in V8 (SMIs) and in the better-sqlite3 row transfer, unlike the
+// json_type() strings, which cost ~50 bytes per value and broke the RSS
+// budget on production-scale event tables (484k rows x several fields).
+const JSON_TYPE_TEXT = 1;
+const JSON_TYPE_INTEGER = 2;
+const JSON_TYPE_REAL = 3;
+const JSON_TYPE_TRUE = 4;
+const JSON_TYPE_FALSE = 5;
+const JSON_TYPE_OBJECT = 6;
+const JSON_TYPE_ARRAY = 7;
+
+function jsonTypeCodeSql(path: string) {
+  return 'CASE WHEN json_valid(e.event_json) THEN CASE json_type(e.event_json, ' + `'${path}'` + ') '
+    + `WHEN 'text' THEN ${JSON_TYPE_TEXT} `
+    + `WHEN 'integer' THEN ${JSON_TYPE_INTEGER} `
+    + `WHEN 'real' THEN ${JSON_TYPE_REAL} `
+    + `WHEN 'true' THEN ${JSON_TYPE_TRUE} `
+    + `WHEN 'false' THEN ${JSON_TYPE_FALSE} `
+    + `WHEN 'object' THEN ${JSON_TYPE_OBJECT} `
+    + `WHEN 'array' THEN ${JSON_TYPE_ARRAY} `
+    + 'ELSE 0 END ELSE 0 END';
+}
+
+function jsonIntegerCount(value: any) {
+  // Baseline: Number.isInteger(JSON.parse(...)). The SQL projection already
+  // gates on json_type IN ('integer', 'real') so JSON booleans (which SQLite
+  // folds into 1/0), strings, and objects never reach here; the remaining JS
+  // check keeps integral reals (JSON.parse turns 2.0 into the integral 2)
+  // and rejects fractional or non-finite numbers.
+  return Number.isInteger(value) ? value : 0;
+}
+
+function jsonJsValue(typeCode: any, extracted: any) {
+  // Reconstructs the JS value behind a projected type-code + json_extract
+  // pair so downstream String()/truthiness expressions keep the exact
+  // baseline JSON.parse semantics. json_extract folds booleans into 1/0 and
+  // objects/arrays into JSON text, none of which coerce like the parsed
+  // values did; only the small projected subtree is reparsed for arrays,
+  // never the raw event_json column.
+  if (typeCode === JSON_TYPE_TEXT || typeCode === JSON_TYPE_INTEGER || typeCode === JSON_TYPE_REAL) {
+    return extracted;
   }
 
-  return raw;
+  if (typeCode === JSON_TYPE_TRUE) {
+    return true;
+  }
+
+  if (typeCode === JSON_TYPE_FALSE) {
+    return false;
+  }
+
+  if (typeCode === JSON_TYPE_OBJECT) {
+    return {};
+  }
+
+  if (typeCode === JSON_TYPE_ARRAY) {
+    try {
+      return JSON.parse(extracted);
+    } catch {
+      return String(extracted);
+    }
+  }
+
+  return null;
 }
 
 function quantile(values: any[], q: number) {
@@ -179,9 +312,9 @@ export function buildAgentEvalReport(db: any, options: any = {}) {
         m.status AS status,
         m.task_id AS task_id,
         CASE WHEN json_valid(m.metadata_json) THEN json_extract(m.metadata_json, '$.publicToolUsed') END AS public_tool_used,
-        CASE WHEN json_valid(m.metadata_json) THEN json_extract(m.metadata_json, '$.publicPostCount') END AS public_post_count,
-        CASE WHEN json_valid(m.metadata_json) THEN json_extract(m.metadata_json, '$.privatePostCount') END AS private_post_count,
-        CASE WHEN json_valid(m.metadata_json) THEN json_extract(m.metadata_json, '$.privateHandoffCount') END AS private_handoff_count
+        CASE WHEN json_valid(m.metadata_json) THEN CASE WHEN json_type(m.metadata_json, '$.publicPostCount') IN ('integer', 'real') THEN json_extract(m.metadata_json, '$.publicPostCount') END END AS public_post_count,
+        CASE WHEN json_valid(m.metadata_json) THEN CASE WHEN json_type(m.metadata_json, '$.privatePostCount') IN ('integer', 'real') THEN json_extract(m.metadata_json, '$.privatePostCount') END END AS private_post_count,
+        CASE WHEN json_valid(m.metadata_json) THEN CASE WHEN json_type(m.metadata_json, '$.privateHandoffCount') IN ('integer', 'real') THEN json_extract(m.metadata_json, '$.privateHandoffCount') END END AS private_handoff_count
       FROM chat_messages m
       WHERE ${messageWhereSql}
       ORDER BY m.created_at ASC, m.id ASC
@@ -192,14 +325,7 @@ export function buildAgentEvalReport(db: any, options: any = {}) {
   const expectationsByTask = new Map();
   const toolCallsByTask = new Map();
 
-  try {
-    const events = db
-      .prepare(
-        `
-        SELECT
-          e.task_id AS task_id,
-          e.event_type AS event_type,
-          CASE WHEN json_valid(e.event_json) THEN
+  const rootTruthySql = `CASE WHEN json_valid(e.event_json) THEN
             CASE json_type(e.event_json)
               WHEN 'object' THEN 1
               WHEN 'array' THEN 1
@@ -209,15 +335,26 @@ export function buildAgentEvalReport(db: any, options: any = {}) {
               WHEN 'real' THEN CASE WHEN json_extract(e.event_json, '$') != 0 THEN 1 ELSE 0 END
               ELSE 0
             END
-          ELSE 0 END AS root_truthy,
+          ELSE 0 END`;
+
+  // The two event families are queried separately so each result row carries
+  // only the columns its own family needs: a single combined projection would
+  // give every one of the production-scale event rows (484k+) property slots
+  // for both families' fields, which broke the concurrent-report RSS budget.
+  try {
+    const expectations = db
+      .prepare(
+        `
+        SELECT
+          e.task_id AS task_id,
+          ${rootTruthySql} AS root_truthy,
           CASE WHEN json_valid(e.event_json) THEN json_type(e.event_json, '$.expectations') END AS expectations_type,
           CASE WHEN json_valid(e.event_json) THEN json_extract(e.event_json, '$.expectations."send-public"') END AS send_public,
+          ${jsonTypeCodeSql('$.expectations."send-public"')} AS send_public_type,
           CASE WHEN json_valid(e.event_json) THEN json_extract(e.event_json, '$.expectations."send-private"') END AS send_private,
-          CASE WHEN json_valid(e.event_json) THEN json_extract(e.event_json, '$.tool') END AS tool,
-          CASE WHEN json_valid(e.event_json) THEN json_extract(e.event_json, '$.status') END AS tool_status,
-          CASE WHEN json_valid(e.event_json) THEN json_extract(e.event_json, '$.durationMs') END AS tool_duration_ms
+          ${jsonTypeCodeSql('$.expectations."send-private"')} AS send_private_type
         FROM a2a_task_events e
-        WHERE e.event_type IN ('agent_expectations', 'agent_tool_call')
+        WHERE e.event_type = 'agent_expectations'
           AND e.task_id IN (
             SELECT DISTINCT m.task_id
             FROM chat_messages m
@@ -228,36 +365,64 @@ export function buildAgentEvalReport(db: any, options: any = {}) {
       )
       .all(params);
 
-    for (const row of Array.isArray(events) ? events : []) {
+    for (const row of Array.isArray(expectations) ? expectations : []) {
       const taskId = String(row.task_id || '').trim();
-      const eventType = String(row.event_type || '').trim();
 
       if (!taskId || !row.root_truthy) {
         continue;
       }
 
-      if (eventType === 'agent_expectations') {
-        expectationsByTask.set(taskId, {
-          hasExpectationMap: row.expectations_type === 'object' || row.expectations_type === 'array',
-          sendPublic: row.send_public,
-          sendPrivate: row.send_private,
-        });
+      expectationsByTask.set(taskId, {
+        hasExpectationMap: row.expectations_type === 'object' || row.expectations_type === 'array',
+        sendPublic: jsonJsValue(row.send_public_type, row.send_public),
+        sendPrivate: jsonJsValue(row.send_private_type, row.send_private),
+      });
+    }
+
+    const toolCalls = db
+      .prepare(
+        `
+        SELECT
+          e.task_id AS task_id,
+          ${rootTruthySql} AS root_truthy,
+          CASE WHEN json_valid(e.event_json) THEN json_extract(e.event_json, '$.tool') END AS tool,
+          ${jsonTypeCodeSql('$.tool')} AS tool_type,
+          CASE WHEN json_valid(e.event_json) THEN json_extract(e.event_json, '$.status') END AS tool_status,
+          ${jsonTypeCodeSql('$.status')} AS tool_status_type,
+          CASE WHEN json_valid(e.event_json) THEN CASE WHEN json_type(e.event_json, '$.durationMs') IN ('integer', 'real') THEN json_extract(e.event_json, '$.durationMs') END END AS tool_duration_ms
+        FROM a2a_task_events e
+        WHERE e.event_type = 'agent_tool_call'
+          AND e.task_id IN (
+            SELECT DISTINCT m.task_id
+            FROM chat_messages m
+            WHERE ${messageWhereSql}
+          )
+        ORDER BY e.created_at ASC, e.id ASC
+      `
+      )
+      .all(params);
+
+    for (const row of Array.isArray(toolCalls) ? toolCalls : []) {
+      const taskId = String(row.task_id || '').trim();
+
+      if (!taskId || !row.root_truthy) {
         continue;
       }
 
-      if (eventType === 'agent_tool_call') {
-        const toolCall = {
-          tool: row.tool,
-          status: row.tool_status,
-          durationMs: row.tool_duration_ms,
-        };
+      // durationMs is type-gated in SQL (JSON numbers only); booleans and
+      // strings never reach the JS Number.isFinite check below, matching the
+      // baseline JSON.parse semantics.
+      const toolCall = {
+        tool: jsonJsValue(row.tool_type, row.tool),
+        status: jsonJsValue(row.tool_status_type, row.tool_status),
+        durationMs: row.tool_duration_ms,
+      };
 
-        const existing = toolCallsByTask.get(taskId);
-        if (existing) {
-          existing.push(toolCall);
-        } else {
-          toolCallsByTask.set(taskId, [toolCall]);
-        }
+      const existing = toolCallsByTask.get(taskId);
+      if (existing) {
+        existing.push(toolCall);
+      } else {
+        toolCallsByTask.set(taskId, [toolCall]);
       }
     }
   } catch {
@@ -281,13 +446,13 @@ export function buildAgentEvalReport(db: any, options: any = {}) {
     }
 
     const metadataPublicToolUsed = row.public_tool_used;
-    const metadataPublicPostCount = row.public_post_count;
-    const metadataPrivatePostCount = row.private_post_count;
-    const metadataPrivateHandoffCount = row.private_handoff_count;
     const publicToolUsed = Boolean(metadataPublicToolUsed);
-    const publicPostCount = Number.isInteger(metadataPublicPostCount) ? metadataPublicPostCount : 0;
-    const privatePostCount = Number.isInteger(metadataPrivatePostCount) ? metadataPrivatePostCount : 0;
-    const privateHandoffCount = Number.isInteger(metadataPrivateHandoffCount) ? metadataPrivateHandoffCount : 0;
+    // Integer-typed counts gated on json_type keep the baseline
+    // Number.isInteger(JSON.parse(...)) semantics (booleans never count,
+    // integral reals do).
+    const publicPostCount = jsonIntegerCount(row.public_post_count);
+    const privatePostCount = jsonIntegerCount(row.private_post_count);
+    const privateHandoffCount = jsonIntegerCount(row.private_handoff_count);
     const privateToolUsed = privatePostCount > 0;
 
     if (publicToolUsed) {

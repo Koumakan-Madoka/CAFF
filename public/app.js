@@ -3870,13 +3870,24 @@ function connectEventStream() {
     // coalesced authoritative refresh; initial opens never duplicate the
     // bootstrap load. Missed events are not replayed and delivery is not
     // at-least-once — authority comes from the HTTP refresh plus live events.
+    // An errored episode that reopens while a refresh is in flight is coalesced
+    // into one serialized trailing refresh (finishRecovery() reports it), so
+    // state that changed after the first refresh read it is still recovered.
     if (streamRecovery && streamRecovery.shouldRecoverOnOpen()) {
       const preferredConversationId = state.selectedConversationId;
 
-      Promise.resolve()
-        .then(() => refreshAll(preferredConversationId))
-        .catch(() => {})
-        .finally(() => streamRecovery.finishRecovery());
+      const runRecoveryRefresh = (conversationId) => {
+        Promise.resolve()
+          .then(() => refreshAll(conversationId))
+          .catch(() => {})
+          .finally(() => {
+            if (streamRecovery.finishRecovery()) {
+              runRecoveryRefresh(state.selectedConversationId);
+            }
+          });
+      };
+
+      runRecoveryRefresh(preferredConversationId);
     }
   });
 

@@ -60,7 +60,43 @@ function resolveDbPath(args) {
   return path.resolve(agentDir, 'pi-state.sqlite');
 }
 
-const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
+// YYYY-MM-DD, optionally with THH:mm[:ss[.sss]] and an optional Z or ±hh:mm zone.
+const ISO_BOUNDARY_RE = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?(Z|[+-]\d{2}:\d{2})?)?$/;
+
+function parseIsoBoundaryInstant(raw) {
+  const match = ISO_BOUNDARY_RE.exec(raw);
+
+  if (!match) {
+    return null;
+  }
+
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText, , zone] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const calendar = new Date(Date.UTC(year, month - 1, day));
+
+  if (calendar.getUTCFullYear() !== year || calendar.getUTCMonth() !== month - 1 || calendar.getUTCDate() !== day) {
+    return null;
+  }
+
+  if (hourText === undefined) {
+    return { ms: Date.UTC(year, month - 1, day), dateOnly: true };
+  }
+
+  if (Number(hourText) > 23 || Number(minuteText) > 59 || Number(secondText || '0') > 59) {
+    return null;
+  }
+
+  // Zone-less datetimes are defined as UTC (matches the server contract).
+  const ms = Date.parse(zone ? raw : `${raw}Z`);
+
+  if (!Number.isFinite(ms)) {
+    return null;
+  }
+
+  return { ms, dateOnly: false };
+}
 
 function normalizeIsoBoundary(value, options = {}) {
   const raw = String(value || '').trim();
@@ -68,16 +104,20 @@ function normalizeIsoBoundary(value, options = {}) {
     return '';
   }
 
-  if (DATE_ONLY_RE.test(raw)) {
-    if (options.exclusiveEndOfDay) {
-      const [year, month, day] = raw.split('-').map((part) => Number(part));
-      return new Date(Date.UTC(year, month - 1, day + 1, 0, 0, 0, 0)).toISOString();
-    }
+  const instant = parseIsoBoundaryInstant(raw);
 
-    return `${raw}T00:00:00.000Z`;
+  if (!instant) {
+    throw new Error(`Invalid --since/--until boundary (expected YYYY-MM-DD or ISO 8601 datetime): ${raw}`);
   }
 
-  return raw;
+  // Canonical UTC instant for every accepted form (date-only midnight, Z,
+  // offset, zone-less-as-UTC) so SQLite TEXT comparison against persisted UTC
+  // created_at values stays chronological; raw offset strings would mis-sort.
+  const ms = instant.dateOnly && options.exclusiveEndOfDay
+    ? instant.ms + 24 * 60 * 60 * 1000
+    : instant.ms;
+
+  return new Date(ms).toISOString();
 }
 
 function safeJsonParse(value) {

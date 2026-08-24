@@ -235,6 +235,10 @@ function installProjectionGuard(db, violations) {
 function startSseServer(busOptions = {}) {
   const { createSseBus } = require('../../build/server/http/sse-bus');
   const bus = createSseBus(busOptions);
+  // Track live server-side sockets so scenarios can assert that a removed
+  // SSE client's connection is physically torn down (server-side destroy),
+  // not merely deregistered from the bus while its socket lingers.
+  const liveSockets = new Set();
   const server = http.createServer((req, res) => {
     if (req.url && req.url.startsWith('/api/events')) {
       bus.openStream(req, res, {
@@ -245,11 +249,15 @@ function startSseServer(busOptions = {}) {
     res.writeHead(404);
     res.end();
   });
+  server.on('connection', (socket) => {
+    liveSockets.add(socket);
+    socket.once('close', () => liveSockets.delete(socket));
+  });
 
   return new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(0, '127.0.0.1', () => {
-      resolve({ server, bus, port: server.address().port });
+      resolve({ server, bus, port: server.address().port, liveSockets });
     });
   });
 }
@@ -607,7 +615,7 @@ async function runSseHealthyBurst(args) {
 // ---------------------------------------------------------------------------
 
 async function runSseBlockedClient(args) {
-  const { server, bus, port } = await startSseServer({ keepAliveMs: 60_000 });
+  const { server, bus, port, liveSockets } = await startSseServer({ keepAliveMs: 60_000 });
   const sampler = createSampler();
   const interval = setInterval(() => sampleMemory(sampler), 20);
   interval.unref();
@@ -649,6 +657,25 @@ async function runSseBlockedClient(args) {
     const afterBurst = bus.getStats();
     await waitFor(() => bus.getStats().activeClients === 0, 2_000, 'client removal');
 
+    // The removal must physically tear down the server side of the stalled
+    // connection (forced destroy on the ServerResponse releases the socket
+    // and any bytes Node still buffers for it), not merely deregister the
+    // client from the bus. The paused client may keep unread bytes in its
+    // own kernel receive buffer, so the authoritative check is the
+    // server-side socket state.
+    let serverSocketPhysicallyClosed = false;
+
+    try {
+      await waitFor(
+        () => Array.from(liveSockets).every((socket) => socket.destroyed),
+        2_000,
+        'server-side socket teardown after budget removal'
+      );
+      serverSocketPhysicallyClosed = true;
+    } catch {
+      serverSocketPhysicallyClosed = false;
+    }
+
     // Post-removal writes must not reach the removed client: broadcast
     // another 100 frames; any leaked write would add >= 25 MiB.
     for (let index = 0; index < 100; index += 1) {
@@ -685,7 +712,10 @@ async function runSseBlockedClient(args) {
         `no writes after removal: client received ${receivedMiB.toFixed(2)} MiB total (bound 4 MiB)`,
         receivedBytes < 4 * MIB
       ),
-      functionalCheck('client socket actually ended', client.res.destroyed || finalStats.activeClients === 0),
+      functionalCheck(
+        'server-side socket of the removed client physically destroyed (not merely ended)',
+        serverSocketPhysicallyClosed === true
+      ),
     ];
     if (removalSeenAt !== -1) {
       checks.unshift(functionalCheck(

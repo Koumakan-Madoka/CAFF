@@ -111,7 +111,11 @@ test('permanently blocked client is removed at the 2 MiB combined budget', () =>
 
   const stats = bus.getStats();
   assert.equal(stats.activeClients, 0, 'client must be removed once the combined budget is exceeded');
-  assert.ok(res.writableEnded || res.destroyed, 'removed client stream must be ended or destroyed');
+  assert.equal(
+    res.destroyed,
+    true,
+    'budget removal must physically destroy the stalled stream so its accepted writable buffer is released, not just end() it'
+  );
   assert.equal(stats.disconnects.byteBudget, 1);
 
   // Bytes actually handed to the socket before removal stay within the budget.
@@ -127,7 +131,11 @@ test('single frame larger than 2 MiB removes the client before that frame is wri
   const stats = bus.getStats();
   assert.equal(stats.activeClients, 0);
   assert.equal(countEventFrames(res, 'data'), 0, 'oversize frame must never be written');
-  assert.ok(res.writableEnded || res.destroyed);
+  assert.equal(
+    res.destroyed,
+    true,
+    'oversize-frame removal must physically destroy the stream, not just end() it'
+  );
   assert.equal(stats.disconnects.byteBudget, 1);
 });
 
@@ -142,7 +150,11 @@ test('blocked client that never drains is removed after the drain deadline', asy
   const stats = bus.getStats();
   assert.equal(stats.activeClients, 0, 'deadline expiry must remove the client');
   assert.equal(stats.disconnects.drainTimeout, 1);
-  assert.ok(res.writableEnded || res.destroyed);
+  assert.equal(
+    res.destroyed,
+    true,
+    'drain-deadline removal must physically destroy the stalled stream so its accepted writable buffer is released'
+  );
 });
 
 test('each new blocked episode re-arms the drain deadline', async () => {

@@ -615,9 +615,9 @@ const icon = window.CaffIcons.create('archive', {
 ### Contract
 
 - Only an **errored** stream that successfully **reopens** triggers recovery: `markStreamError()` is called in the error handler before scheduling the existing manual reconnect (close + fixed 1.5s delay — unchanged; no reliance on EventSource native retry or a server `retry:` field).
-- On open, `shouldRecoverOnOpen()` returns true exactly once per errored episode; the open handler then captures `preferredConversationId = state.selectedConversationId` and runs one `refreshAll(preferredConversationId)` (bootstrap/list/runtime/current conversation over HTTP). The refresh failure path swallows errors; `finishRecovery()` runs in `finally` so a failed refresh re-arms future episodes without blocking them.
+- On open, `shouldRecoverOnOpen()` returns true exactly once per errored episode; the open handler then captures `preferredConversationId = state.selectedConversationId` and runs one `refreshAll(conversationId)` (bootstrap/list/runtime/current conversation over HTTP) via `runRecoveryRefresh`. The refresh failure path swallows errors; `finishRecovery()` runs in `finally` so a failed refresh re-arms future episodes without blocking them.
 - Initial/healthy opens never refresh — startup already calls `refreshAll()` once; recovery must not duplicate bootstrap.
-- Repeated opens while a recovery refresh is in flight are coalesced into that refresh (the episode flag is consumed and absorbed); no parallel `refreshAll` runs.
+- Repeated opens while a recovery refresh is in flight never start a parallel `refreshAll`; the coalesced episode is surfaced by `finishRecovery()` returning `true` and runs as **exactly one serialized trailing refresh** after the in-flight one settles (a trailing refresh re-reads `state.selectedConversationId` at its start instead of reusing the stale captured id). Dropping the trailing episode would leave a quiet conversation stuck on stale state — there is no replay and no periodic authoritative broadcast, so state that changed after the first refresh read it would stay invisible until the next SSE event.
 - No `Last-Event-ID` / `lastEventId` consumption on either client or server; no event replay; no at-least-once delivery claim. Missed events are recovered via the HTTP authoritative refresh plus subsequent live events (e.g. a turn finishing during disconnect becomes visible through the refresh).
 - The stale-source guard (`state.eventSource !== source`) still applies in the open handler.
 
@@ -627,9 +627,10 @@ const icon = window.CaffIcons.create('archive', {
 | --- | --- |
 | initial open | no refresh; no duplicate bootstrap |
 | errored stream reopens | exactly one coalesced `refreshAll(selectedConversationId)` |
-| recovery in flight, another open fires | coalesced; no parallel refresh |
-| recovery refresh rejects | error swallowed; latch released; future episodes still recover |
-| error during recovery window | absorbed by the in-flight recovery; no extra refresh |
+| recovery in flight, another errored episode reopens | no parallel refresh; `finishRecovery()` returns true and exactly one trailing refresh runs serialized after the in-flight one |
+| first refresh rejects while a trailing episode is pending | trailing refresh still runs (the latch releases in `finally` regardless of refresh outcome) |
+| recovery refresh rejects (no pending episode) | error swallowed; latch released; future episodes still recover |
+| error during recovery window, then reopen | coalesced into the trailing refresh; no extra parallel refresh |
 | any code path | no `lastEventId`/`Last-Event-ID` read (client or server) |
 
 ### Required Tests

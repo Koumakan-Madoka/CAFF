@@ -552,3 +552,149 @@ test('agent eval report CLI includes the selected until day for date-only filter
   assert.equal(report.agents[0].turns, 1);
   assert.equal(report.agents[0].publicPostCount, 1);
 });
+
+test('server agent eval report keeps baseline JS type semantics for projected JSON values', (t) => {
+  const { buildAgentEvalReport } = require('../../build/server/domain/metrics/agent-eval-report');
+  const tempDir = withTempDir('caff-agent-eval-report-type-semantics-');
+  const sqlitePath = path.join(tempDir, 'report.sqlite');
+  const db = new Database(sqlitePath);
+
+  t.after(() => {
+    try {
+      db.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  createChatMessagesTable(db);
+  db.exec(`
+    CREATE TABLE a2a_task_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id TEXT,
+      event_type TEXT,
+      event_json TEXT,
+      created_at TEXT
+    );
+  `);
+
+  const insertMessage = db.prepare(`
+    INSERT INTO chat_messages (id, conversation_id, turn_id, role, agent_id, sender_name, status, task_id, metadata_json, created_at)
+    VALUES (@id, 'conversation-1', @turnId, 'assistant', 'agent-1', 'Agent 1', 'completed', @taskId, @metadataJson, @createdAt)
+  `);
+
+  // Baseline: Number.isInteger(JSON.parse(...)) — JSON booleans are NOT integers,
+  // even though SQLite json_extract folds true/false into 1/0.
+  insertMessage.run({
+    id: 'message-boolean-counts',
+    turnId: 'turn-boolean-counts',
+    taskId: 'task-boolean-counts',
+    metadataJson: '{"publicPostCount":true,"privatePostCount":true,"privateHandoffCount":true}',
+    createdAt: '2026-03-30T00:00:00.000Z',
+  });
+  // JSON false and 0 counts stay 0 under both semantics (lock).
+  insertMessage.run({
+    id: 'message-false-counts',
+    turnId: 'turn-false-counts',
+    taskId: 'task-false-counts',
+    metadataJson: '{"publicPostCount":false,"privatePostCount":0,"privateHandoffCount":null}',
+    createdAt: '2026-03-30T00:01:00.000Z',
+  });
+  // JSON reals with integral value ARE integers in JS (Number.isInteger(2) is
+  // true); fractional reals and numeric strings are not (lock).
+  insertMessage.run({
+    id: 'message-real-counts',
+    turnId: 'turn-real-counts',
+    taskId: 'task-real-counts',
+    metadataJson: '{"publicPostCount":2.0}',
+    createdAt: '2026-03-30T00:02:00.000Z',
+  });
+  insertMessage.run({
+    id: 'message-fractional-counts',
+    turnId: 'turn-fractional-counts',
+    taskId: 'task-fractional-counts',
+    metadataJson: '{"publicPostCount":2.5,"privatePostCount":"3"}',
+    createdAt: '2026-03-30T00:03:00.000Z',
+  });
+
+  const insertEvent = db.prepare(`
+    INSERT INTO a2a_task_events (task_id, event_type, event_json, created_at)
+    VALUES (@taskId, @eventType, @eventJson, @createdAt)
+  `);
+
+  // Baseline: Number.isFinite(event.durationMs) — JSON true is not finite,
+  // even though SQLite folds it to 1.
+  insertEvent.run({
+    taskId: 'task-boolean-counts',
+    eventType: 'agent_tool_call',
+    eventJson: '{"tool":"send-public","status":"succeeded","durationMs":true}',
+    createdAt: '2026-03-30T00:00:01.000Z',
+  });
+  // Baseline: tool bucket names use String(event.tool) — objects stringify to
+  // '[object Object]', arrays to their join(','), true to 'true'.
+  insertEvent.run({
+    taskId: 'task-false-counts',
+    eventType: 'agent_tool_call',
+    eventJson: '{"tool":{"kind":"shell"},"status":"succeeded","durationMs":5}',
+    createdAt: '2026-03-30T00:01:01.000Z',
+  });
+  insertEvent.run({
+    taskId: 'task-real-counts',
+    eventType: 'agent_tool_call',
+    eventJson: '{"tool":["shell","run"],"status":["succeeded"],"durationMs":7}',
+    createdAt: '2026-03-30T00:02:01.000Z',
+  });
+  insertEvent.run({
+    taskId: 'task-fractional-counts',
+    eventType: 'agent_tool_call',
+    eventJson: '{"tool":true,"status":"succeeded","durationMs":9}',
+    createdAt: '2026-03-30T00:03:01.000Z',
+  });
+  // Baseline: String(expectation['send-public'] || '') — a single-element array
+  // stringifies to its element, so ['required'] matches the required contract.
+  insertEvent.run({
+    taskId: 'task-boolean-counts',
+    eventType: 'agent_expectations',
+    eventJson: '{"expectations":{"send-public":["required"]}}',
+    createdAt: '2026-03-30T00:00:02.000Z',
+  });
+  insertEvent.run({
+    taskId: 'task-fractional-counts',
+    eventType: 'agent_expectations',
+    eventJson: '{"expectations":{"send-public":"required"}}',
+    createdAt: '2026-03-30T00:03:02.000Z',
+  });
+
+  const report = buildAgentEvalReport(db, {});
+  const agent = report.agents[0];
+
+  assert.equal(agent.turns, 4);
+  // Boolean counts must stay 0 (baseline Number.isInteger(true) === false).
+  assert.equal(agent.publicPostCount, 2, 'true and 2.0 must contribute 0 + 2, not 1 + 2');
+  assert.equal(agent.privatePostCount, 0, 'true must not count as 1');
+  assert.equal(agent.privateHandoffCount, 0, 'true must not count as 1');
+
+  // ['required'] stringifies to 'required' and must match the required contract.
+  assert.equal(agent.sendPublic.required, 2);
+  assert.equal(agent.missingExpectations, 2);
+
+  const toolsByName = new Map(report.tools.map((tool) => [tool.tool, tool]));
+  const objectTool = toolsByName.get('[object Object]');
+  assert.ok(objectTool, 'object tool must bucket as [object Object] (baseline String semantics)');
+  assert.equal(objectTool.succeeded, 1);
+
+  const arrayTool = toolsByName.get('shell,run');
+  assert.ok(arrayTool, 'array tool must bucket as its join (baseline String semantics)');
+  assert.equal(arrayTool.succeeded, 1, "['succeeded'] status must stringify to 'succeeded' and count");
+
+  const trueTool = toolsByName.get('true');
+  assert.ok(trueTool, 'boolean true tool must bucket as ' + "'true' (baseline String semantics)");
+  assert.equal(trueTool.calls, 1);
+
+  const sendPublicTool = toolsByName.get('send-public');
+  assert.ok(sendPublicTool, 'string tool names keep their identity bucket');
+  // durationMs: true must be excluded from latency percentiles (baseline
+  // Number.isFinite(true) === false), leaving no durations at all.
+  assert.equal(sendPublicTool.calls, 1);
+  assert.equal(sendPublicTool.p50Ms, null);
+  assert.equal(sendPublicTool.p95Ms, null);
+});

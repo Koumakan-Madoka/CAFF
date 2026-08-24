@@ -189,3 +189,62 @@ test('metrics agent endpoint accepts a full ISO datetime window inside 31 days',
   assert.equal(report.agents.length, 1);
   assert.equal(report.agents[0].turns, 1);
 });
+
+test('metrics agent endpoint selects rows by UTC instant for timezone-offset boundaries', async (t) => {
+  const { controller, store } = createHarness(t, 'offset-window');
+
+  // 2026-08-01T04:00:00.000Z sits inside [2026-08-01T00:00:00Z, 2026-08-02T00:00:00Z),
+  // i.e. inside [2026-08-01T08:00:00+08:00, 2026-08-02T08:00:00+08:00). Raw TEXT
+  // comparison of the offset strings mis-sorts the boundary and drops the row.
+  store.db
+    .prepare(
+      `
+      INSERT INTO chat_messages (
+        id, conversation_id, turn_id, role, agent_id, sender_name, status, task_id, metadata_json, created_at
+      ) VALUES (
+        'message-offset-window', 'conversation-1', 'turn-offset', 'assistant', 'agent-1', 'Agent 1',
+        'completed', 'task-offset', '{}', '2026-08-01T04:00:00.000Z'
+      )
+    `
+    )
+    .run();
+
+  const context = createGetContext(
+    '?since=2026-08-01T08:00:00%2B08:00&until=2026-08-02T08:00:00%2B08:00'
+  );
+
+  assert.equal(await controller(context), true);
+  assert.equal(context.state.statusCode, 200);
+
+  const report = JSON.parse(context.state.body);
+  assert.equal(report.agents.length, 1);
+  assert.equal(report.agents[0].turns, 1, 'the 04:00Z row must be selected via its UTC instant');
+});
+
+test('metrics agent endpoint rejects impossible calendar dates', async (t) => {
+  await assertWindowRejected(t, 'feb-31', '?since=2026-02-31&until=2026-03-04');
+  await assertWindowRejected(t, 'feb-30', '?since=2026-02-30&until=2026-03-04');
+  await assertWindowRejected(t, 'apr-31', '?since=2026-04-31&until=2026-05-04');
+  await assertWindowRejected(t, 'day-zero', '?since=2026-08-00&until=2026-08-04');
+  await assertWindowRejected(t, 'month-zero', '?since=2026-00-10&until=2026-00-14');
+  await assertWindowRejected(t, 'datetime-calendar-lie', '?since=2026-02-31T00:00:00Z&until=2026-03-04T00:00:00Z');
+});
+
+test('metrics agent endpoint accepts real leap-day windows and treats zone-less datetimes as UTC', async (t) => {
+  const leapDay = await createGetContext('?since=2024-02-29&until=2024-03-30');
+  const { controller: leapController } = createHarness(t, 'valid-leap');
+  assert.equal(await leapController(leapDay), true);
+  assert.equal(leapDay.state.statusCode, 200);
+
+  // Zone-less datetime boundaries are defined as UTC wall-clock time (this
+  // matches the baseline lexical comparison against persisted UTC created_at).
+  const { controller } = createHarness(t, 'zone-less');
+  const context = createGetContext('?since=2026-08-10T12:00:00&until=2026-08-11T12:00:00');
+
+  assert.equal(await controller(context), true);
+  assert.equal(context.state.statusCode, 200);
+
+  const report = JSON.parse(context.state.body);
+  assert.equal(report.agents.length, 1);
+  assert.equal(report.agents[0].turns, 1, '12:00Z on Aug 10 must be inside the zone-less UTC window');
+});

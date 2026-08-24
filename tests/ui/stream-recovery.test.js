@@ -3,7 +3,8 @@
 // - only an errored stream's successful reopen triggers an authoritative refresh
 // - initial/healthy opens never duplicate bootstrap loading
 // - repeated opens while a recovery refresh is in flight never start parallel
-//   refreshes (coalesced into the in-flight one)
+//   refreshes; the coalesced episode surfaces as exactly one serialized
+//   trailing refresh when the in-flight one settles
 // - finishing a recovery re-arms future errored episodes
 // - no Last-Event-ID / replay / at-least-once semantics are claimed anywhere
 
@@ -80,47 +81,85 @@ test('P1B recovery: errored stream reopen triggers exactly one coalesced recover
   );
 });
 
-test('P1B recovery: repeated opens during an in-flight recovery never start parallel refreshes', () => {
+test('P1B recovery: repeated opens during an in-flight recovery coalesce into one trailing refresh', () => {
   const recovery = loadRecoveryModule();
 
   recovery.markStreamError();
   assert.equal(recovery.shouldRecoverOnOpen(), true, 'first reopen after error triggers the recovery refresh');
 
-  // A second errored episode whose reopen lands while the refresh is in flight
-  // must be coalesced into the in-flight refresh (no parallel refreshAll).
+  // A second errored episode whose reopen lands while the refresh is in
+  // flight must not start a parallel refreshAll...
   recovery.markStreamError();
   assert.equal(
     recovery.shouldRecoverOnOpen(),
     false,
-    'open during an in-flight recovery must be coalesced, not refreshed in parallel'
+    'open during an in-flight recovery must never start a parallel refresh'
   );
 
-  recovery.finishRecovery();
+  // ...but the episode's authoritative state change still needs a refresh of
+  // its own: when the in-flight refresh settles, the caller must run exactly
+  // one serialized trailing refresh (state may have changed after the first
+  // refresh already read it).
+  assert.equal(
+    recovery.finishRecovery(),
+    true,
+    'a coalesced trailing episode must be reported when the in-flight refresh settles'
+  );
 
-  // A genuinely later errored episode (error after the refresh completed)
+  // The trailing refresh runs; when it settles there is nothing left pending.
+  assert.equal(recovery.finishRecovery(), false, 'the trailing refresh consumed the pending episode');
+  assert.equal(recovery.shouldRecoverOnOpen(), false, 'healthy opens stay quiet after trailing recovery');
+
+  // A genuinely later errored episode (error after all refreshes completed)
   // recovers again.
   recovery.markStreamError();
   assert.equal(recovery.shouldRecoverOnOpen(), true, 'a new errored episode after completion recovers again');
   recovery.finishRecovery();
 });
 
-test('P1B recovery: an error inside the recovery window is absorbed by the coalesced open', () => {
+test('P1B recovery: a failing first refresh does not lose the coalesced trailing episode', () => {
+  const recovery = loadRecoveryModule();
+
+  recovery.markStreamError();
+  assert.equal(recovery.shouldRecoverOnOpen(), true);
+
+  // Second errored episode reopens while the first refresh is in flight.
+  recovery.markStreamError();
+  assert.equal(recovery.shouldRecoverOnOpen(), false);
+
+  // Even when the first refresh failed (its promise rejected and the caller
+  // only releases the latch in finally), the trailing episode must still be
+  // reported so authoritative state is eventually refreshed.
+  assert.equal(
+    recovery.finishRecovery(),
+    true,
+    'a rejected first refresh must still surface the pending trailing episode'
+  );
+  assert.equal(recovery.finishRecovery(), false);
+});
+
+test('P1B recovery: an error inside the recovery window re-arms through the trailing refresh', () => {
   const recovery = loadRecoveryModule();
 
   recovery.markStreamError();
   assert.equal(recovery.shouldRecoverOnOpen(), true);
 
   // Stream errors again while the recovery refresh is still running, then the
-  // stream reopens before the refresh completes: the reopen is coalesced and
-  // the pending episode flag is consumed by that coalesced open.
+  // stream reopens before the refresh completes: the reopen must not start a
+  // parallel refresh, but the episode is coalesced as trailing work.
   recovery.markStreamError();
   assert.equal(recovery.shouldRecoverOnOpen(), false);
 
-  recovery.finishRecovery();
+  assert.equal(
+    recovery.finishRecovery(),
+    true,
+    'the in-window episode must surface as a trailing refresh when the first settles'
+  );
+  assert.equal(recovery.finishRecovery(), false);
   assert.equal(
     recovery.shouldRecoverOnOpen(),
     false,
-    'the coalesced open already served the episode; healthy opens stay quiet'
+    'the trailing refresh already served the episode; healthy opens stay quiet'
   );
 });
 
@@ -133,7 +172,7 @@ test('P1B recovery: app.js error handler arms stream recovery before scheduling 
   );
 });
 
-test('P1B recovery: app.js open handler coalesces one refreshAll(selectedConversationId)', () => {
+test('P1B recovery: app.js open handler coalesces one refreshAll and serializes trailing refreshes', () => {
   const openBlock = openHandlerBlock();
 
   assert.match(openBlock, /shouldRecoverOnOpen\(\)/, 'open path must consult stream recovery');
@@ -144,13 +183,18 @@ test('P1B recovery: app.js open handler coalesces one refreshAll(selectedConvers
   );
   assert.match(
     openBlock,
-    /refreshAll\(preferredConversationId\)/,
-    'recovery must run refreshAll with the captured selected conversation id'
+    /refreshAll\(conversationId\)/,
+    'recovery refreshes must go through refreshAll with the selected conversation id'
   );
   assert.match(
     openBlock,
-    /finishRecovery\(\)/,
-    'recovery refresh must always release the in-flight latch (finally)'
+    /if \(streamRecovery\.finishRecovery\(\)\)/,
+    'the refresh settle path must check for a coalesced trailing episode and run it serialized'
+  );
+  assert.match(
+    openBlock,
+    /runRecoveryRefresh\(state\.selectedConversationId\)/,
+    'a trailing refresh must re-read the current selection instead of reusing the stale captured id'
   );
 });
 

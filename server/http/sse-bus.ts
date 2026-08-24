@@ -108,7 +108,7 @@ export function createSseBus(options: SseBusOptions = {}) {
     client.drainTimer = setTimeout(() => {
       client.drainTimer = null;
       removeClient(client.id, 'drain_timeout');
-      endClientStream(client);
+      endClientStream(client, { force: true });
     }, drainDeadlineMs);
 
     if (typeof client.drainTimer.unref === 'function') {
@@ -116,10 +116,17 @@ export function createSseBus(options: SseBusOptions = {}) {
     }
   }
 
-  function endClientStream(client: SseClient) {
+  function endClientStream(client: SseClient, options: { force?: boolean } = {}) {
+    // `force` is used when a client is removed for backpressure reasons
+    // (byte budget, drain deadline, oversize frame, write error): end() alone
+    // leaves the accepted writable buffer alive on a stalled socket until the
+    // OS flushes it (possibly never), so the removal physically destroys the
+    // stream to release the socket and its buffered bytes immediately.
     try {
       client.res.end();
-    } catch {
+    } catch {}
+
+    if (options.force === true) {
       try {
         client.res.destroy();
       } catch {}
@@ -158,7 +165,7 @@ export function createSseBus(options: SseBusOptions = {}) {
       // budget for the pending write is queuedBytes + writableLength.
       if (client.queuedBytes + client.res.writableLength > maxBufferBytes) {
         removeClient(client.id, 'byte_budget');
-        endClientStream(client);
+        endClientStream(client, { force: true });
         return;
       }
 
@@ -176,7 +183,7 @@ export function createSseBus(options: SseBusOptions = {}) {
         writeOk = client.res.write(frame.text);
       } catch {
         removeClient(client.id);
-        endClientStream(client);
+        endClientStream(client, { force: true });
         return;
       }
 
@@ -199,7 +206,7 @@ export function createSseBus(options: SseBusOptions = {}) {
     // frame is written, even when its buffers are otherwise empty.
     if (bytes > maxBufferBytes || client.queuedBytes + client.res.writableLength + bytes > maxBufferBytes) {
       removeClient(client.id, 'byte_budget');
-      endClientStream(client);
+      endClientStream(client, { force: true });
       return;
     }
 
@@ -215,7 +222,7 @@ export function createSseBus(options: SseBusOptions = {}) {
       writeOk = client.res.write(text);
     } catch {
       removeClient(client.id);
-      endClientStream(client);
+      endClientStream(client, { force: true });
       return;
     }
 
@@ -278,7 +285,7 @@ export function createSseBus(options: SseBusOptions = {}) {
     };
     const onError = () => {
       removeClient(clientId);
-      endClientStream(client);
+      endClientStream(client, { force: true });
     };
 
     client.detachHandlers = () => {

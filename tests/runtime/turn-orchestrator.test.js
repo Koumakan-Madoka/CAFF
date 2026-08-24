@@ -4256,6 +4256,138 @@ test('turn orchestrator exposes runtime stats that count the active turn and set
   });
 });
 
+test('turn orchestrator runtime stats never hydrate conversations after the queue drained', { concurrency: false }, async (t) => {
+  const tempDir = withTempDir('caff-orchestrator-runtime-stats-no-hydrate-');
+  const sqlitePath = path.join(tempDir, 'orchestrator-runtime-stats-no-hydrate.sqlite');
+  const { conversation } = createGoalOwnerConversation({
+    goalOwner: { agentId: 'agent-b', agentName: 'Bravo' },
+    replies: [
+      {
+        agentId: 'agent-b',
+        senderName: 'Bravo',
+        content: 'Bravo replied earlier',
+        createdAt: '2026-08-24T00:00:10.000Z',
+      },
+    ],
+  });
+  conversation.__tempDir = tempDir;
+  conversation.__sqlitePath = sqlitePath;
+  const executedAgentIds = [];
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const store = createGoalOwnerStore(conversation);
+  const statsWhileQueued = [];
+  const statsReadErrors = [];
+
+  const poisonHydration = () => {
+    const originals = {
+      getConversation: store.getConversation,
+      listMessages: store.listMessages,
+      listConversationMessages: store.listConversationMessages,
+    };
+
+    store.getConversation = () => {
+      throw new Error('poisoned: store.getConversation must not be called by getRuntimeStats');
+    };
+    store.listMessages = () => {
+      throw new Error('poisoned: store.listMessages must not be called by getRuntimeStats');
+    };
+    store.listConversationMessages = () => {
+      throw new Error('poisoned: store.listConversationMessages must not be called by getRuntimeStats');
+    };
+
+    return () => {
+      store.getConversation = originals.getConversation;
+      store.listMessages = originals.listMessages;
+      store.listConversationMessages = originals.listConversationMessages;
+    };
+  };
+
+  const orchestrator = createTurnOrchestrator({
+    store,
+    skillRegistry: { listSkills() { return []; }, resolveSkills() { return []; } },
+    modeStore: { get() { return null; } },
+    agentToolBridge: {},
+    host: '127.0.0.1',
+    port: 0,
+    agentDir: tempDir,
+    sqlitePath,
+    toolBaseUrl: 'http://127.0.0.1:0',
+    agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
+    sessionGoalAutoContinueMaxTurns: 1,
+    executeConversationAgent: async ({ agent, completedReplies }) => {
+      // While the queue is active (tracked conversation + queue state entry
+      // exist), the stats read path must stay O(1): poisoning every hydration
+      // primitive must not affect getRuntimeStats (review finding: the sweep
+      // used to re-hydrate every tracked conversation).
+      const restore = poisonHydration();
+
+      try {
+        statsWhileQueued.push(orchestrator.getRuntimeStats());
+      } catch (error) {
+        statsReadErrors.push(error);
+      } finally {
+        restore();
+      }
+
+      executedAgentIds.push(agent.id);
+      completedReplies.push({
+        agentId: agent.id,
+        senderName: agent.name,
+        content: 'no-hydrate continuation',
+        status: 'completed',
+      });
+      return { stopTurn: false };
+    },
+  });
+
+  const scheduled = orchestrator.scheduleGoalContinuation(conversation.id);
+  assert.equal(scheduled.scheduled, true);
+
+  await waitForCondition(() => executedAgentIds.length > 0);
+
+  // While the queue was active the stats had to be readable under poisoned
+  // hydration, and accurate: the executing turn and its queue must be counted.
+  assert.equal(statsReadErrors.length, 0, `getRuntimeStats must not hydrate: ${statsReadErrors[0] && statsReadErrors[0].message}`);
+  assert.ok(statsWhileQueued.length > 0);
+  for (const stats of statsWhileQueued) {
+    assert.ok(stats.activeTurns >= 1, 'the executing turn must be counted without hydration');
+    assert.ok(stats.activeQueues >= 1, 'the draining queue must be counted without hydration');
+  }
+
+  // Wait for the drain to fully settle (turn finished, queue drained) before
+  // poisoning hydration again.
+  await waitForCondition(() => {
+    const stats = orchestrator.getRuntimeStats();
+    return stats.activeTurns === 0 && stats.activeQueues === 0 && stats.activeAgentSlots === 0;
+  });
+
+  // From here on, any full-conversation hydration must fail loudly: the
+  // observability read path must be O(1) map probes, never a per-conversation
+  // message scan.
+  const restore = poisonHydration();
+
+  let statsAfterPoison;
+
+  try {
+    statsAfterPoison = orchestrator.getRuntimeStats();
+  } catch (error) {
+    restore();
+    assert.fail(`getRuntimeStats must stay O(1) after hydration is poisoned: ${(error && error.message) || error}`);
+  }
+
+  restore();
+
+  assert.deepEqual(statsAfterPoison, {
+    activeTurns: 0,
+    activeQueues: 0,
+    activeAgentSlots: 0,
+  });
+});
+
 test('turn orchestrator keeps default_last_agent continuation when no goal owner is set', { concurrency: false }, async (t) => {
   const tempDir = withTempDir('caff-goal-owner-default-');
   const sqlitePath = path.join(tempDir, 'goal-owner-default.sqlite');
