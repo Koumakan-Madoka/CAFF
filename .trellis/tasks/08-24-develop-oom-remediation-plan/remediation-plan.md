@@ -21,7 +21,7 @@ P0 should be a sequential Goal because it is one root-cause chain. P1A and P1B c
 
 #### `ChatAppStore.getSummaryMemoryHealth()`
 
-- Global mode consumes existing `listConversations()` header projections directly.
+- Global mode consumes existing `listConversations()` header projections directly. This still materializes and parses one header per conversation, including bounded digest metadata, but never message rows; the production-shape heap/RSS gate below is the acceptance bound for that deliberate P0 scope.
 - It must not call `getConversation()` or `listMessages()`.
 - It must not build a second array of conversation objects; process each returned header immediately and retain only counters plus the already bounded `unsyncedDigests` list.
 - Scoped mode uses `getConversationWithoutMessages()` so missing id diagnostics remain unchanged.
@@ -92,6 +92,7 @@ The negative assertion is an architectural contract: message history reads are f
 - Missing, one-sided, reversed, or oversized ranges return 400 with a stable error code/message.
 - `public/metrics.js` initializes both controls to the last seven complete days and always sends them.
 - The report echoes the effective boundaries so the UI never labels a bounded result as `Range: all`.
+- Requiring both HTTP boundaries is an intentional compatibility break for direct/bookmarked API calls. Update browser and smoke consumers in the same P1A change; do not silently apply a server default that could be mistaken for an all-time report.
 
 ### Offline Compatibility
 
@@ -116,18 +117,23 @@ The negative assertion is an architectural contract: message history reads are f
 
 ### Transport Contract
 
-- Serialize each SSE event frame once and call `res.write(frame)` once.
-- If `write()` returns `false`, mark the client slow, remove it from the bus, and destroy/end the response without writing any later event. Connection prelude and initial-event writes use the same check before the client is admitted.
-- Do not keep an unbounded application queue. Browser EventSource reconnection plus normal state refresh is the recovery mechanism; advertise a bounded reconnect delay so a persistently slow client cannot create a tight reconnect loop.
-- Keep normal event ids, event names, conversation filtering, initial events, and pings compatible.
-- Track bounded diagnostics: active client count, slow-client disconnect count, and aggregate `writableLength` where available. Do not log payloads.
+- Serialize each SSE event frame once. A frame is written to each ready response at most once.
+- Treat `res.write(frame) === false` as a backpressure signal, not proof that the client is dead. Mark the client blocked, arm a five-second drain deadline, and stop writing later frames directly until `drain` clears the state.
+- Maintain at most one bounded per-client FIFO whose queued frame bytes plus `res.writableLength` never exceed 2 MiB. On `drain`, flush that FIFO in order until it is empty or another write returns `false`. Do not enqueue the frame that first returned `false`; Node already accepted it into the response buffer.
+- Remove and end/destroy the client only when the 2 MiB combined budget would be exceeded, the five-second drain deadline expires, or the response closes/errors. Prelude, initial events, normal events, and keepalives use the same accounting before the client is admitted or retained.
+- Keep normal event ids, event names, conversation filtering, initial events, and pings compatible. Send a bounded EventSource `retry` value so a disconnected slow client cannot create a tight reconnect loop.
+- CAFF does not currently consume `Last-Event-ID` or replay missed SSE events. Recovery after a backpressure disconnect is reconnection plus the existing authoritative state refresh, not event replay; the implementation must not claim at-least-once delivery.
+- Track bounded diagnostics: active client count, clients currently backpressured, slow-client disconnects by byte-budget/timeout reason, queued frame bytes, and aggregate `writableLength`. Do not log payloads.
 
 ### Tests
 
-- normal client gets one correctly formatted frame;
-- a fake response returning false is removed after the first frame and receives no later broadcast;
-- keepalive follows the same backpressure rule;
-- 100 connect/close/reconnect cycles leave zero clients/timers;
+- a normal client gets one correctly formatted frame;
+- a healthy client may return `false` during a burst of large frames, emit `drain` within five seconds, receive the queued frames in order, and remain connected;
+- a permanently blocked client is removed when the 2 MiB combined budget is exceeded and receives no later write;
+- a client below the byte budget but without `drain` is removed after five seconds;
+- keepalive, prelude, and initial events follow the same budget/deadline rule;
+- reconnect recovery refreshes authoritative state and does not assert replay of missed event ids;
+- 100 connect/close/reconnect cycles leave zero clients, pending frames, listeners, and timers;
 - a permanently blocked client under 10,000 large events does not grow RSS beyond the budget.
 
 ## P2A: Goal And Queue Targeted Queries
@@ -196,7 +202,7 @@ Default validation uses non-sensitive synthetic data, not a production database 
 - 5,819 assistant rows with nested context snapshots and model usage;
 - one conversation near 93.5 MB raw message projection;
 - about 484,000 synthetic task events for metrics tests;
-- bounded digest metadata on representative conversations.
+- bounded digest metadata on representative conversations; the shape manifest records the exact digest count and per-conversation distribution used for the 120-second backfill budget.
 
 The generator must be deterministic, gitignored, and disposable. A real production copy requires separate explicit user authorization, isolated credentials/ports/logs, read-only source copying, and deletion approval after validation.
 
@@ -212,7 +218,8 @@ Measurements run in a disposable child process on the same Node major/ABI as pro
 | 20 sequential health calls | no 5xx/OOM; post-GC retained heap delta <=32 MiB from warm baseline |
 | 8 concurrent HTTP health requests | all succeed; peak RSS delta <=320 MiB; no retained growth after completion |
 | bounded 31-day metrics report | exact aggregates; peak RSS delta <=512 MiB |
-| blocked SSE client, 10,000 x 256 KiB events | client dropped on first backpressure signal; RSS delta <=64 MiB |
+| healthy SSE client, burst of 6 x 256 KiB events with timely drain | may observe `write() === false`; remains connected; receives frames in order; queued bytes return to zero |
+| blocked SSE client, 10,000 x 256 KiB events | client dropped when the 2 MiB combined budget or five-second drain deadline is reached; peak RSS delta <=64 MiB; no writes after removal |
 | mixed Goal + memory health 8-hour soak | peak RSS <1.5 GiB; after warm-up, heap trend <=5 MiB/hour and RSS trend <=20 MiB/hour; no monotonic climb to limit |
 
 Thresholds are stop gates, not targets to relax after failure. If the synthetic generator or reference hardware makes one threshold invalid, the implementation PR must document a revised measured baseline and obtain reviewer/user approval before acceptance.
@@ -276,6 +283,14 @@ Until P0 is accepted:
 - do not capture a near-limit heap snapshot on 3100.
 
 If another restart shows rapid monotonic growth without panel activity, stop treating memory health as the only trigger and prioritize SSE/metrics/turn retainer evidence in an isolated clone.
+
+## Independent Architecture Review
+
+The exact planning commit `a2d37135ff7731123fd7d8d52b5543ab2792d32b` received an independent read-only architecture review with no blocking findings. The review confirmed the three P0 hydration paths, header-projection sufficiency, API/failure compatibility, P2 expand/contract direction, synthetic isolation, and rollout/rollback gates.
+
+The review's one medium finding rejected immediate disconnect on the first `write() === false`: a healthy response can cross Node's high-water mark on one large frame. P1B above now uses a 2 MiB combined buffer budget plus a five-second drain deadline, includes a healthy burst/drain test, and states that reconnect does not replay event ids. Low findings are also reflected above: the metrics HTTP break is explicit, header metadata remains measured by the P0 budget, and the synthetic manifest records digest cardinality.
+
+Because this revision changes the reviewed P1B contract, the revised exact commit must receive a focused independent re-review before user confirmation.
 
 ## Review And Implementation Gate
 
