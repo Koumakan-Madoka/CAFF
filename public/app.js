@@ -137,6 +137,8 @@ const dom = {
   sessionGoalCloseButton: /** @type {HTMLButtonElement | null} */ (document.getElementById('session-goal-close-button')),
   sessionGoalDrawerStatus: /** @type {HTMLElement | null} */ (document.getElementById('session-goal-drawer-status')),
   sessionGoalDetails: /** @type {HTMLElement | null} */ (document.getElementById('session-goal-details')),
+  sessionGoalOwnerCard: /** @type {HTMLElement | null} */ (document.getElementById('session-goal-owner-card')),
+  sessionGoalOwnerSelect: /** @type {HTMLSelectElement | null} */ (document.getElementById('session-goal-owner-select')),
   sessionGoalProgressCard: /** @type {HTMLElement | null} */ (document.getElementById('session-goal-progress-card')),
   sessionGoalProgressSummary: /** @type {HTMLElement | null} */ (document.getElementById('session-goal-progress-summary')),
   sessionGoalProgressFill: /** @type {HTMLElement | null} */ (document.getElementById('session-goal-progress-fill')),

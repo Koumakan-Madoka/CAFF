@@ -9,6 +9,7 @@ const {
   createSessionGoalBudgetProposal,
   getSessionGoal,
   getSessionGoalProposal,
+  pauseSessionGoalForRemovedOwner,
   recordSessionGoalContinuationOutcome,
 } = require('./session-goal');
 
@@ -959,14 +960,45 @@ export function createTurnOrchestrator(options: any = {}) {
 
     const conversation = store.getConversation(normalizedConversationId);
 
-    if (!conversation || !Array.isArray(conversation.agents) || conversation.agents.length === 0) {
+    if (!conversation) {
       return { scheduled: false, reason: 'missing_conversation_or_agents' };
     }
+
+    const rosterAgents = Array.isArray(conversation.agents) ? conversation.agents : [];
 
     const goal = getSessionGoal(conversation);
 
     if (!goal || goal.status !== 'active') {
       return { scheduled: false, reason: 'inactive_goal' };
+    }
+
+    // Fail-closed owner removal (D3): the goal owner must still be a
+    // conversation participant. When the roster no longer contains the
+    // owner, pause the goal and raise a pending resume proposal instead of
+    // silently falling back to default routing. This check runs BEFORE the
+    // pending-proposal gate and BEFORE the empty-roster gate so a removed
+    // owner pauses the goal even while a proposal is pending or even when
+    // retiring the owner was the last roster change (agents may be empty,
+    // e.g. after retiring the only custom role owning the goal); the
+    // existing proposal is preserved.
+    const goalOwnerId = String(goal.owner && goal.owner.agentId ? goal.owner.agentId : '').trim();
+
+    if (
+      goalOwnerId
+      && !rosterAgents.some((agent: any) => String(agent && agent.id ? agent.id : '').trim() === goalOwnerId)
+    ) {
+      const ownerRemoved = pauseSessionGoalForRemovedOwner(store, normalizedConversationId, goal.owner);
+
+      if (ownerRemoved.changed) {
+        broadcastGoalUpdateResult(normalizedConversationId, ownerRemoved);
+        broadcastGoalProposalResult(normalizedConversationId, ownerRemoved);
+      }
+
+      return { scheduled: false, reason: 'owner_removed', goal: ownerRemoved.goal || goal };
+    }
+
+    if (rosterAgents.length === 0) {
+      return { scheduled: false, reason: 'missing_conversation_or_agents' };
     }
 
     if (getSessionGoalProposal(conversation)) {
@@ -999,6 +1031,10 @@ export function createTurnOrchestrator(options: any = {}) {
           goalIteration: claim.runner.iteration,
           goalMaxIterations: claim.runner.maxIterations,
           goalObjective: claim.goal.objective,
+          // Goal owner routing: stamp the persisted owner as the explicit
+          // initial target so the queued batch routes to the owner instead
+          // of drifting with default_last_agent.
+          ...(goalOwnerId ? { initialAgentIds: [goalOwnerId] } : {}),
         },
       })
     );

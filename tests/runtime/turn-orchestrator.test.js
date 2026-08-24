@@ -4051,6 +4051,298 @@ test('turn orchestrator directly pauses an active Goal after three fast model in
   assert.doesNotMatch(JSON.stringify(goalUpdate.payload), /test-goal-runner-bearer-value/u);
 });
 
+function createGoalOwnerConversation({ goalOwner, agents, replies }) {
+  const seededMessages = (Array.isArray(replies) ? replies : []).map((reply, index) => ({
+    id: `seeded-reply-${index + 1}`,
+    conversationId: 'conversation-goal-owner-routing',
+    turnId: `seeded-turn-${index + 1}`,
+    role: 'assistant',
+    agentId: reply.agentId,
+    senderName: reply.senderName,
+    content: reply.content,
+    status: 'completed',
+    errorMessage: '',
+    taskId: null,
+    runId: null,
+    metadata: {},
+    createdAt: reply.createdAt,
+  }));
+
+  const conversation = {
+    id: 'conversation-goal-owner-routing',
+    title: 'Goal owner routing',
+    type: 'standard',
+    agents: Array.isArray(agents) ? agents : [
+      { id: 'agent-a', name: 'Alpha' },
+      { id: 'agent-b', name: 'Bravo' },
+    ],
+    metadata: {
+      sessionGoal: {
+        objective: 'Keep the owner driving this goal',
+        status: 'active',
+        createdAt: '2026-08-24T00:00:00.000Z',
+        updatedAt: '2026-08-24T00:00:00.000Z',
+        ...(goalOwner ? { owner: goalOwner } : {}),
+      },
+    },
+    messages: seededMessages,
+  };
+  return { conversation, seededMessages };
+}
+
+function createGoalOwnerStore(conversation) {
+  let messageCounter = 0;
+  return {
+    databasePath: '',
+    getConversation(conversationId) {
+      return conversationId === conversation.id ? conversation : null;
+    },
+    listConversations() {
+      return [];
+    },
+    updateConversation(conversationId, updates) {
+      assert.equal(conversationId, conversation.id);
+      if (updates && updates.metadata && typeof updates.metadata === 'object') {
+        conversation.metadata = updates.metadata;
+      }
+      return conversation;
+    },
+    createMessage(input) {
+      messageCounter += 1;
+      const message = {
+        id: input.id || `goal-owner-message-${messageCounter}`,
+        errorMessage: '',
+        taskId: null,
+        runId: null,
+        metadata: null,
+        createdAt: input.createdAt || `2026-08-24T00:01:${String(messageCounter).padStart(2, '0')}.000Z`,
+        ...input,
+      };
+      conversation.messages.push(message);
+      return message;
+    },
+  };
+}
+
+function createGoalOwnerOrchestrator({ conversation, executedAgentIds }) {
+  return createTurnOrchestrator({
+    store: createGoalOwnerStore(conversation),
+    skillRegistry: { listSkills() { return []; }, resolveSkills() { return []; } },
+    modeStore: { get() { return null; } },
+    agentToolBridge: {},
+    host: '127.0.0.1',
+    port: 0,
+    agentDir: conversation.__tempDir,
+    sqlitePath: conversation.__sqlitePath,
+    toolBaseUrl: 'http://127.0.0.1:0',
+    agentToolScriptPath: path.join(conversation.__tempDir, 'agent-chat-tools.js'),
+    sessionGoalAutoContinueMaxTurns: 1,
+    executeConversationAgent: async ({ agent, completedReplies }) => {
+      executedAgentIds.push(agent.id);
+      completedReplies.push({
+        agentId: agent.id,
+        senderName: agent.name,
+        content: 'owner routing continuation',
+        status: 'completed',
+      });
+      return { stopTurn: false };
+    },
+  });
+}
+
+test('turn orchestrator routes goal continuation to the goal owner over the latest public replier', { concurrency: false }, async (t) => {
+  const tempDir = withTempDir('caff-goal-owner-routing-');
+  const sqlitePath = path.join(tempDir, 'goal-owner-routing.sqlite');
+  const { conversation } = createGoalOwnerConversation({
+    goalOwner: { agentId: 'agent-b', agentName: 'Bravo' },
+    replies: [
+      {
+        agentId: 'agent-b',
+        senderName: 'Bravo',
+        content: 'Bravo replied earlier',
+        createdAt: '2026-08-24T00:00:10.000Z',
+      },
+      {
+        agentId: 'agent-a',
+        senderName: 'Alpha',
+        content: 'Alpha replied later',
+        createdAt: '2026-08-24T00:00:20.000Z',
+      },
+    ],
+  });
+  conversation.__tempDir = tempDir;
+  conversation.__sqlitePath = sqlitePath;
+  const executedAgentIds = [];
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const orchestrator = createGoalOwnerOrchestrator({ conversation, executedAgentIds });
+  const scheduled = orchestrator.scheduleGoalContinuation(conversation.id);
+
+  assert.equal(scheduled.scheduled, true);
+
+  await waitForCondition(() => executedAgentIds.length > 0);
+
+  assert.deepEqual(executedAgentIds, ['agent-b']);
+});
+
+test('turn orchestrator keeps default_last_agent continuation when no goal owner is set', { concurrency: false }, async (t) => {
+  const tempDir = withTempDir('caff-goal-owner-default-');
+  const sqlitePath = path.join(tempDir, 'goal-owner-default.sqlite');
+  const { conversation } = createGoalOwnerConversation({
+    goalOwner: null,
+    replies: [
+      {
+        agentId: 'agent-a',
+        senderName: 'Alpha',
+        content: 'Alpha replied earlier',
+        createdAt: '2026-08-24T00:00:10.000Z',
+      },
+      {
+        agentId: 'agent-b',
+        senderName: 'Bravo',
+        content: 'Bravo replied later',
+        createdAt: '2026-08-24T00:00:20.000Z',
+      },
+    ],
+  });
+  conversation.__tempDir = tempDir;
+  conversation.__sqlitePath = sqlitePath;
+  const executedAgentIds = [];
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const orchestrator = createGoalOwnerOrchestrator({ conversation, executedAgentIds });
+  const scheduled = orchestrator.scheduleGoalContinuation(conversation.id);
+
+  assert.equal(scheduled.scheduled, true);
+
+  await waitForCondition(() => executedAgentIds.length > 0);
+
+  assert.deepEqual(executedAgentIds, ['agent-b']);
+});
+
+test('turn orchestrator auto-pauses a goal whose owner is no longer a participant', { concurrency: false }, (t) => {
+  const tempDir = withTempDir('caff-goal-owner-removed-');
+  const sqlitePath = path.join(tempDir, 'goal-owner-removed.sqlite');
+  const { conversation } = createGoalOwnerConversation({
+    goalOwner: { agentId: 'agent-b', agentName: 'Bravo' },
+    agents: [{ id: 'agent-a', name: 'Alpha' }],
+    replies: [
+      {
+        agentId: 'agent-a',
+        senderName: 'Alpha',
+        content: 'Alpha is still here',
+        createdAt: '2026-08-24T00:00:10.000Z',
+      },
+    ],
+  });
+  conversation.__tempDir = tempDir;
+  conversation.__sqlitePath = sqlitePath;
+  const executedAgentIds = [];
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const orchestrator = createGoalOwnerOrchestrator({ conversation, executedAgentIds });
+  const scheduled = orchestrator.scheduleGoalContinuation(conversation.id);
+
+  assert.equal(scheduled.scheduled, false);
+  assert.equal(scheduled.reason, 'owner_removed');
+  assert.equal(conversation.metadata.sessionGoal.status, 'paused');
+  assert.ok(conversation.metadata.sessionGoalProposal);
+  assert.equal(conversation.metadata.sessionGoalProposal.action, 'resume');
+  assert.ok(conversation.metadata.sessionGoalProposal.reason.includes('主理人'));
+  assert.equal(
+    conversation.messages.filter((message) => message.metadata && message.metadata.goalAutoContinue).length,
+    0
+  );
+  assert.deepEqual(executedAgentIds, []);
+});
+
+test('turn orchestrator auto-pauses a removed owner even while a proposal is pending', { concurrency: false }, (t) => {
+  const tempDir = withTempDir('caff-goal-owner-removed-proposal-');
+  const sqlitePath = path.join(tempDir, 'goal-owner-removed-proposal.sqlite');
+  const { conversation } = createGoalOwnerConversation({
+    goalOwner: { agentId: 'agent-b', agentName: 'Bravo' },
+    agents: [{ id: 'agent-a', name: 'Alpha' }],
+    replies: [
+      {
+        agentId: 'agent-a',
+        senderName: 'Alpha',
+        content: 'Alpha is still here',
+        createdAt: '2026-08-24T00:00:10.000Z',
+      },
+    ],
+  });
+  conversation.metadata.sessionGoalProposal = {
+    action: 'pause',
+    status: 'pending',
+    id: 'proposal-pending-1',
+    reason: 'waiting on the user',
+    proposedBy: { agentId: 'goal-runner', agentName: 'Goal Runner' },
+    createdAt: '2026-08-24T00:00:20.000Z',
+    updatedAt: '2026-08-24T00:00:20.000Z',
+  };
+  conversation.__tempDir = tempDir;
+  conversation.__sqlitePath = sqlitePath;
+  const executedAgentIds = [];
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const orchestrator = createGoalOwnerOrchestrator({ conversation, executedAgentIds });
+  const scheduled = orchestrator.scheduleGoalContinuation(conversation.id);
+
+  assert.equal(scheduled.scheduled, false);
+  assert.equal(scheduled.reason, 'owner_removed');
+  assert.equal(conversation.metadata.sessionGoal.status, 'paused');
+  assert.equal(
+    conversation.metadata.sessionGoalProposal.id,
+    'proposal-pending-1',
+    'owner-removal pause must not silently replace the pending user decision'
+  );
+  assert.deepEqual(executedAgentIds, []);
+});
+
+test('turn orchestrator auto-pauses a removed owner when the roster becomes empty', { concurrency: false }, (t) => {
+  const tempDir = withTempDir('caff-goal-owner-removed-empty-');
+  const sqlitePath = path.join(tempDir, 'goal-owner-removed-empty.sqlite');
+  const { conversation } = createGoalOwnerConversation({
+    goalOwner: { agentId: 'agent-b', agentName: 'Bravo' },
+    agents: [],
+    replies: [],
+  });
+  conversation.__tempDir = tempDir;
+  conversation.__sqlitePath = sqlitePath;
+  const executedAgentIds = [];
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const orchestrator = createGoalOwnerOrchestrator({ conversation, executedAgentIds });
+  const scheduled = orchestrator.scheduleGoalContinuation(conversation.id);
+
+  assert.equal(scheduled.scheduled, false);
+  assert.equal(scheduled.reason, 'owner_removed');
+  assert.equal(conversation.metadata.sessionGoal.status, 'paused');
+  assert.ok(conversation.metadata.sessionGoalProposal);
+  assert.equal(conversation.metadata.sessionGoalProposal.action, 'resume');
+  assert.ok(conversation.metadata.sessionGoalProposal.reason.includes('主理人'));
+  assert.equal(
+    conversation.messages.filter((message) => message.metadata && message.metadata.goalAutoContinue).length,
+    0
+  );
+  assert.deepEqual(executedAgentIds, []);
+});
+
 test('turn orchestrator continues with the next queued batch after a stop request', { concurrency: false }, async (t) => {
   const tempDir = withTempDir('caff-turn-stop-queue-');
   const sqlitePath = path.join(tempDir, 'turn-stop-queue.sqlite');

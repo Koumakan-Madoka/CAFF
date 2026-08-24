@@ -16,6 +16,8 @@
     let lastConversationId = '';
     let lastSyncedObjective = '';
     let lastSyncedChecklist = '';
+    let lastSyncedOwnerId = null;
+    let lastSyncedOwnerSignature = '';
 
     function currentGoal() {
       return sessionGoalUtils.goalForConversation(state.currentConversation);
@@ -95,6 +97,8 @@
       }
 
       appendDetail(dom.sessionGoalDetails, '状态', sessionGoalUtils.statusLabel(goal));
+      const owner = sessionGoalUtils.ownerForGoal(goal);
+      appendDetail(dom.sessionGoalDetails, '主理人', owner ? owner.agentName : '未设置');
       if (runner && runner.iteration > 0 && runner.maxIterations > 0) {
         appendDetail(dom.sessionGoalDetails, '自动续跑', `${runner.iteration}/${runner.maxIterations}`);
       }
@@ -114,6 +118,64 @@
       appendDetail(dom.sessionGoalDetails, '创建', formatDateTime(goal.createdAt));
       appendDetail(dom.sessionGoalDetails, '更新', formatDateTime(goal.updatedAt));
       appendDetail(dom.sessionGoalDetails, '完成', formatDateTime(goal.completedAt));
+    }
+
+    function renderOwnerSelect(goal) {
+      if (!dom.sessionGoalOwnerCard || !dom.sessionGoalOwnerSelect) {
+        return;
+      }
+
+      const conversation = state.currentConversation;
+      const hasGoal = Boolean(goal);
+      dom.sessionGoalOwnerCard.classList.toggle('hidden', !hasGoal);
+
+      if (!hasGoal) {
+        lastSyncedOwnerId = null;
+        lastSyncedOwnerSignature = '';
+        return;
+      }
+
+      const owner = sessionGoalUtils.ownerForGoal(goal);
+      const ownerId = owner ? owner.agentId : '';
+      const agents = conversation && Array.isArray(conversation.agents) ? conversation.agents : [];
+      const signature = `${conversation ? conversation.id : ''}|${ownerId}|${agents
+        .map((agent) => `${agent && agent.id}:${(agent && agent.name) || ''}`)
+        .join(',')}`;
+
+      // Repopulate options only when the conversation, roster, or persisted
+      // owner changes so an in-flight user selection survives re-renders.
+      if (signature !== lastSyncedOwnerSignature || ownerId !== lastSyncedOwnerId) {
+        dom.sessionGoalOwnerSelect.innerHTML = '';
+
+        const unsetOption = document.createElement('option');
+        unsetOption.value = '';
+        unsetOption.textContent = '未设置';
+        dom.sessionGoalOwnerSelect.appendChild(unsetOption);
+
+        for (const agent of agents) {
+          if (!agent || !agent.id) {
+            continue;
+          }
+          const option = document.createElement('option');
+          option.value = String(agent.id);
+          option.textContent = String(agent.name || agent.id);
+          dom.sessionGoalOwnerSelect.appendChild(option);
+        }
+
+        // A removed owner (roster change outracing the server-side pause
+        // proposal) keeps a visible option instead of silently resetting
+        // the displayed selection to 未设置.
+        if (owner && !agents.some((agent) => agent && String(agent.id) === ownerId)) {
+          const staleOption = document.createElement('option');
+          staleOption.value = ownerId;
+          staleOption.textContent = `${owner.agentName}（已不在会话）`;
+          dom.sessionGoalOwnerSelect.appendChild(staleOption);
+        }
+
+        dom.sessionGoalOwnerSelect.value = ownerId;
+        lastSyncedOwnerSignature = signature;
+        lastSyncedOwnerId = ownerId;
+      }
     }
 
     function renderProgress(goal) {
@@ -279,6 +341,18 @@
       if (dom.sessionGoalDismissProposalButton) {
         dom.sessionGoalDismissProposalButton.disabled = disabled || !hasProposal;
       }
+
+      // Owner is goal lifecycle state inside the current epoch: under the
+      // DAG execution lock the goal is scheduler-owned, so the dropdown is
+      // disabled alongside set/pause/resume/complete/clear.
+      if (dom.sessionGoalOwnerSelect) {
+        dom.sessionGoalOwnerSelect.disabled = disabled || dagExecutionLocked || !hasGoal;
+        if (dagExecutionLocked) {
+          dom.sessionGoalOwnerSelect.title = 'DAG 节点执行中：主理人由调度器托管，不可手动变更';
+        } else {
+          dom.sessionGoalOwnerSelect.removeAttribute('title');
+        }
+      }
     }
 
     function renderToggleButton(button, goal, hasConversation) {
@@ -313,6 +387,7 @@
       syncObjectiveInput(goal);
       setStatusBadge(goal, runner);
       renderDetails(goal, runner);
+      renderOwnerSelect(goal);
       renderProgress(goal);
       renderProposal(proposal);
       setActionDisabled(goal, proposal);
@@ -332,6 +407,11 @@
         lastSyncedObjective = sessionGoalUtils.objectiveText(goal);
         lastSyncedChecklist = sessionGoalUtils.checklistTextForGoal(goal);
       } catch (error) {
+        // A failed submit must not leave an unpersisted value on screen:
+        // invalidate the owner-select cache so the finally-render rebuilds
+        // the select from the persisted goal owner.
+        lastSyncedOwnerId = null;
+        lastSyncedOwnerSignature = '';
         showToast(error.message);
       } finally {
         isSaving = false;
@@ -401,6 +481,15 @@
 
       if (dom.sessionGoalDismissProposalButton) {
         dom.sessionGoalDismissProposalButton.addEventListener('click', () => submitAction({ action: 'dismiss-proposal' }));
+      }
+
+      if (dom.sessionGoalOwnerSelect) {
+        dom.sessionGoalOwnerSelect.addEventListener('change', () => {
+          submitAction({
+            action: 'set-owner',
+            ownerAgentId: dom.sessionGoalOwnerSelect.value,
+          });
+        });
       }
 
       document.addEventListener('keydown', (event) => {

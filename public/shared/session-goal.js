@@ -139,6 +139,20 @@
     return '更新目标';
   }
 
+  function ownerForGoal(goal) {
+    const owner = goal && goal.owner && typeof goal.owner === 'object' ? goal.owner : null;
+    const agentId = String((owner && owner.agentId) || '').trim();
+
+    if (!owner || !agentId) {
+      return null;
+    }
+
+    return {
+      agentId,
+      agentName: String(owner.agentName || '').trim() || agentId,
+    };
+  }
+
   function objectiveText(goal) {
     return String((goal && goal.objective) || '').trim();
   }
@@ -201,6 +215,7 @@
     proposalActionLabel,
     proposalReasonText,
     proposalAgentName,
+    ownerForGoal,
     objectiveText,
     formatStatus,
     formatProposalStatus,

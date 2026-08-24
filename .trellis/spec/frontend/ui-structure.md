@@ -107,6 +107,24 @@ if (runner && runner.status === 'error_paused') {
 
 - `tests/ui/app-shell.test.js` verifies pending objective/checklist visibility and that the no-active-goal form still shows its normal default state.
 
+## Goal Owner Select
+
+### Scope / Trigger
+
+- Applies to `public/chat/session-goal-panel.js` 主理人 select in the goal drawer, backed by shared helpers in `public/shared/session-goal.js`.
+
+### Contract
+
+- The select defaults to `未设置` (no owner) and lists current conversation roster agents as options; changing it submits `POST /goal { action: 'set-owner', ownerAgentId }`.
+- When the stored owner is no longer on the roster, keep a `XX（已不在会话）` option selected instead of silently resetting the display; removal is handled server-side (fail-closed pause + proposal).
+- Rebuild options only when conversation/roster/owner actually changes; do not clobber an in-progress user selection on unrelated refreshes.
+- Under the DAG execution lock (`dagNodeGoalBinding`, active/paused node doing), the select is disabled together with lifecycle buttons and reports that the owner is scheduler-managed.
+- A failed `set-owner` submit (network error, 4xx/5xx, concurrent roster change) must not leave the unpersisted value on screen: the panel invalidates its owner-select cache on error and re-renders the select from the persisted goal owner after showing the failure toast.
+
+### Required Tests
+
+- `tests/ui/session-goal-owner.test.js` verifies rendering, `set-owner` submission, removed-owner display, DAG-lock disabling, and revert-to-persisted-owner on a failed submit.
+
 
 ## Collapsed Tool-Trace Failure Summary
 

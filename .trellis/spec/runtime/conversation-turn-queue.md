@@ -22,6 +22,7 @@
 - The latest qualifying reply is selected by persisted `(createdAt, id)` ascending order. Equal timestamps use the message id as the deterministic tie-breaker, matching `ChatMessageRepository.listByConversationId`; missing timestamps in synthetic inputs fall back to array order.
 - Strategies are observable: `user_mentions`, `default_last_agent`, or `default_first_agent`. Explicit initial targets preserve their caller-supplied `entryStrategy`, execution mode, cleaned text, private-only flag, and explicit-intent projection.
 - `routing-executor` resolves after a main-lane batch is claimed. A queued unmentioned message therefore sees public replies completed before its batch actually starts, including state reloaded from SQLite after restart.
+- Batch-message metadata may carry explicit per-message targets: when rebuilding the turn input for a claimed batch, `routing-executor` collects `initialAgentIds` from each batch message's `metadata.initialAgentIds` and passes them as the explicit target (same priority as caller-supplied ids, above `default_last_agent`). The goal-owner continuation path stamps `metadata.initialAgentIds = [ownerAgentId]` on the `Goal Runner` message this way; messages without the stamp keep default resolution.
 - Submission-time image preflight remains a fast-fail for idle messages and stable explicit targets. When a busy conversation accepts an unmentioned default-routed image message, submission defers that check; `routing-executor` re-resolves the execution-time target and performs the authoritative preflight from canonical `metadata.contentBlocks` before launching any Agent.
 - An authoritative queued-image preflight failure uses the existing queue-failure path: no Agent launches, the failed batch remains pending, and runtime queue failure metadata stays visible. Do not freeze a default Agent at user-message creation just to preserve pre-persistence rejection.
 
@@ -39,6 +40,7 @@
 | busy main lane accepts unmentioned image while current default is A; B replies before batch start | defer submission check; execute-time resolution and preflight both target B |
 | explicit single mention while busy | existing side lane and submission-time image preflight remain unchanged |
 | execution-time target cannot read images | `MODEL_NO_IMAGE_INPUT`; no Agent invocation; queued batch remains pending |
+| queued batch message carries `metadata.initialAgentIds=[B]` while B did not reply last | B executes; stamped target outranks `default_last_agent` |
 
 ### 5. Good / Base / Bad Cases
 

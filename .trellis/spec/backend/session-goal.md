@@ -11,7 +11,7 @@
 - `GET /api/conversations/:conversationId/goal`
   - Response: `{ conversation, goal, cleared, summary, conversations }`
 - `POST /api/conversations/:conversationId/goal`
-  - Request: `{ action: 'set', objective: string, checklistText?: string, checklist?: SessionGoalChecklistItem[] } | { action: 'update-checklist', checklistText?: string, checklist?: SessionGoalChecklistItem[] } | { action: 'pause' | 'resume' | 'complete' | 'clear' | 'get' | 'accept-proposal' | 'dismiss-proposal' }`
+  - Request: `{ action: 'set', objective: string, checklistText?: string, checklist?: SessionGoalChecklistItem[] } | { action: 'set-owner', ownerAgentId: string | '' } | { action: 'update-checklist', checklistText?: string, checklist?: SessionGoalChecklistItem[] } | { action: 'pause' | 'resume' | 'complete' | 'clear' | 'get' | 'accept-proposal' | 'dismiss-proposal' }`
   - Response: `{ conversation, goal, proposal, cleared, autoContinuation?, summary, conversations }`
 - Agent bridge command:
   - `suggest-goal --action set|pause|resume|complete|clear [--objective "..."] [--reason "..."] [--checklist-stdin]`
@@ -20,7 +20,7 @@
   - Proposal schema: `{ id, action, status:'pending', objective?, checklist?, reason?, proposedBy:{agentId,agentName}, createdAt, updatedAt }` — `id` (`prop_*`) is unique per proposal and survives normalization; consumers deriving idempotency keys (e.g. the DAG scheduler's verify/feedback deliveries) must stamp with `id` (createdAt has only ms resolution and same-ms proposals would collide).
   - `update-goal-checklist --content-stdin` writes factual checklist progress lines such as `[ ] todo`, `[~] doing`, and `[x] done`. While a pending `set` proposal exists, it updates that proposal checklist without activating the goal; otherwise it updates the active goal checklist.
 - Conversation metadata field:
-  - `conversation.metadata.sessionGoal?: { objective: string, status: 'active' | 'paused' | 'complete', createdAt: string, updatedAt: string, completedAt?: string, checklist?: { id: string, text: string, status: 'todo' | 'in_progress' | 'done', createdAt: string, updatedAt: string, completedAt?: string }[] }`
+  - `conversation.metadata.sessionGoal?: { objective: string, status: 'active' | 'paused' | 'complete', createdAt: string, updatedAt: string, completedAt?: string, owner?: { agentId: string, agentName: string }, checklist?: { id: string, text: string, status: 'todo' | 'in_progress' | 'done', createdAt: string, updatedAt: string, completedAt?: string }[] }`
   - `conversation.metadata.sessionGoalProposal?: { id: string, action: 'set' | 'pause' | 'resume' | 'complete' | 'clear', status:'pending', objective?: string, checklist?: SessionGoalChecklistItem[], reason?: string, proposedBy:{ agentId:string, agentName:string }, createdAt:string, updatedAt:string }`
   - `conversation.metadata.sessionGoalRuling?: { id:string, proposalId:string, action:string, outcome:'accepted'|'rejected', reason?:string, ruledBy:{ kind:'user'|'agent'|'system', agentId?:string, agentName?:string }, proposalSnapshot:SessionGoalProposal, ruledAt:string }`
   - `conversation.metadata.sessionGoalRunner?: { status: 'running' | 'budget_limited' | 'error_paused' | string, goalUpdatedAt: string, iteration: number, maxIterations: number, updatedAt: string, lastContinuedAt?: string, consecutiveModelFailureCount: number, failureThreshold: number, failureStreakStartedAt?: string, lastFailureAt?: string, lastFailureKind?: 'provider'|'timeout'|'process_exit', lastFailureCode?: string, lastFailureSummary?: string, pauseReason?: string, errorPausedAt?: string }`
@@ -29,6 +29,7 @@
   - `CAFF_SESSION_GOAL_FAST_FAILURE_MS` defaults to `60000`.
   - `CAFF_SESSION_GOAL_FAILURE_WINDOW_MS` defaults to `300000` and cannot be lower than the per-turn fast-failure threshold.
 - Domain signature: `recordSessionGoalContinuationOutcome(store, conversationId, { sourceMessages, turn, replies, failures, failureThreshold, fastFailureMs, failureWindowMs }) -> { changed, paused, reason, conversation, goal, runner }`.
+- Domain signature: `pauseSessionGoalForRemovedOwner(store, conversationId, owner) -> { changed, paused?, reason: 'owner_removed', conversation, goal, runner: null, proposal }` — one atomic metadata write pauses an active goal; when no proposal is pending it also creates a pending `resume` proposal whose `proposedBy` is `goal-runner` and whose reason names the removed owner; an already-pending user proposal is preserved, and the paused goal itself blocks auto-continuation.
 - Browser slash commands:
   - `/goal` reads the selected conversation metadata and displays current status.
   - `/goal <objective>` sends `action: 'set'`.
@@ -39,12 +40,17 @@
   - Pause/resume/complete/clear buttons send the same lifecycle actions as slash commands.
   - DAG execution lock (D27/D28): when the conversation metadata carries `dagNodeGoalBinding` and the goal is active/paused (node doing), the set/pause/resume/complete/clear buttons are disabled up front — the server enforces the same boundary with 403 `dag_goal_mutation_forbidden` (see `dag-execution.md`); proposal ruling buttons stay enabled (user manual verification).
   - Confirm/ignore proposal buttons send `{ action: 'accept-proposal' }` or `{ action: 'dismiss-proposal' }`.
+  - Goal owner select (D1/D4): the drawer renders a 主理人 dropdown defaulting to `未设置` with options from the conversation roster; changing it submits `{ action: 'set-owner', ownerAgentId }`. When the stored owner is no longer on the roster, the select keeps a `XX（已不在会话）` option instead of silently resetting; options are rebuilt only when conversation/roster/owner changes so an in-progress selection is not clobbered. Under the DAG execution lock (`dagNodeGoalBinding`) the select is disabled with the other lifecycle controls.
 
 ### 3. Contracts
 - Store the goal under `conversation.metadata.sessionGoal`; do not add a dedicated table unless the feature grows beyond one current goal per conversation.
 - Keep controllers thin: route parsing belongs in `server/api/conversations-controller.ts`; lifecycle rules belong in `server/domain/conversation/session-goal.ts`.
 - `set` must trim and validate `objective`, create an `active` goal, preserve `createdAt` when replacing an existing goal, refresh `updatedAt`, remove stale `completedAt`, and normalize optional checklist lines/items.
 - `set` without explicit checklist input must seed a Trellis long-task checklist covering multi-agent brainstorm, Trellis task/PRD creation, Trellis/spec validation, `before-dev`, implementation, tests, quality checks, `update-spec`, `finish-work`, and Trellis archive/session recording.
+- Goal owner (D1): a goal may carry `owner?: { agentId, agentName }`. Accepting a pending `set` proposal stamps `proposedBy` as the goal owner — only on the `accept-proposal` path, so a client-supplied `proposedBy` in a direct `set` body can never forge an owner. A directly created goal (`POST set` without proposal) has no owner.
+- `set-owner` requires an existing goal. A non-empty `ownerAgentId` must reference a current conversation participant (`400` otherwise); an empty value removes `owner` while keeping the rest of the goal. It is a factual owner change inside the current goal epoch: it must not erase a pending proposal, the durable ruling, or runner state, and it does not schedule auto-continuation by itself. Empty owner keeps the pre-existing routing behavior unchanged (D2). Because the write refreshes `goal.updatedAt` (the runner epoch key), a same-epoch runner is atomically migrated to the new key in the same metadata write so `iteration` and the failure streak survive the owner change; a stale (different-epoch) runner is never revived. Without this migration an owner change would silently reset the continuation budget.
+- Continuation routing (D3-adjacent): when scheduling a `Goal Runner` message for a goal with an owner, the orchestrator stamps `metadata.initialAgentIds = [ownerAgentId]` on that message and the queue's batch branch collects `initialAgentIds` from batch-message metadata as an explicit target that outranks `default_last_agent`. A goal without an owner is not stamped and keeps `default_last_agent` routing.
+- Fail-closed owner removal (D3): when the stored owner is no longer a conversation participant, the goal is paused and a pending `resume` proposal is created in one atomic metadata write (`pauseSessionGoalForRemovedOwner`); it must never silently fall back to default routing. Detection happens lazily before each continuation scheduling in `turn-orchestrator` (covers agent-role retirement, including retirement of the owner as the last custom role leaving `agents` empty — the owner-removed check runs before the empty-roster `missing_conversation_or_agents` gate) and eagerly after `PUT /api/conversations/:id` roster updates (response carries `goalOwnerRemoved: true`). In the lazy scheduler the owner-removed check runs BEFORE the pending-proposal gate, so a removed owner pauses the goal even while another proposal is pending; in that case the existing pending proposal is preserved (never silently replaced) because the user already has an unresolved decision — the paused goal blocks continuation either way, and a later accepted `resume` whose owner is still gone re-triggers the pause. The pending proposal additionally blocks future auto-continuation. `pause/resume/complete/update-checklist` preserve the stored owner.
 - `pause`, `resume`, and `complete` require an existing goal; `complete` adds `completedAt`, while `pause`/`resume` remove stale `completedAt`.
 - Accepting or dismissing a proposal writes `sessionGoalRuling` atomically in the same conversation-metadata update that clears the proposal (and, for accept, mutates the goal). The durable record is the restart-safe proof of the verdict; `proposalId` must be non-empty and exactly equal `proposalSnapshot.id`, otherwise normalization rejects the record.
 - `update-checklist` changes the pending `set` proposal checklist when one exists; otherwise it changes only the current goal checklist. It preserves other pending proposal/ruling metadata and never activates a proposal by itself.
@@ -79,6 +85,17 @@
 | `POST /goal complete` | existing goal | `200`, goal status becomes `complete`, `completedAt` is set |
 | `POST /goal clear` | no existing goal | `200`, metadata still has no `sessionGoal` |
 | `POST /goal unknown` | unsupported action | `400 Unsupported goal action` |
+| `POST /goal set-owner` | no existing goal | `404 No session goal is set` |
+| `POST /goal set-owner` | `ownerAgentId` not a current participant | `400 Goal owner must be a current conversation participant` |
+| `POST /goal set-owner` | empty `ownerAgentId` | `200`, owner removed, pending proposal/ruling/runner preserved |
+| `POST /goal accept-proposal` | pending `set` proposal | goal becomes active and `owner` equals the proposal's `proposedBy` |
+| `POST /goal set` (direct, no proposal) | valid objective | goal stored with no `owner` field |
+| auto continuation | active goal with owner B, Agent A has the more recent qualifying public reply | continuation message carries `initialAgentIds=[B]` and the batch executes B (explicit target outranks `default_last_agent`) |
+| auto continuation | active goal with no owner | no `initialAgentIds` stamped; latest qualifying public reply executes (unchanged `default_last_agent`) |
+| auto continuation | stored owner missing from roster (lazy check) | `scheduled=false`, `reason='owner_removed'`, goal paused + pending `resume` proposal in one write (existing pending proposal preserved), zero agents executed |
+| auto continuation | stored owner missing and roster is empty (owner was the last agent) | same as above: `reason='owner_removed'` wins over `missing_conversation_or_agents` |
+| `PUT /api/conversations/:id` | roster update removes the active goal's owner | `200` with `goalOwnerRemoved: true`, goal paused + pending `resume` proposal, `conversation_summary_updated` broadcast |
+| `PUT /api/conversations/:id` | roster update keeps the owner, or goal has no owner | response and goal behavior identical to before the change |
 | `POST /goal update-checklist` | pending `set` proposal, with or without an existing active goal | `200`, proposal stores normalized checklist, active goal remains unchanged, proposal remains pending |
 | `POST /goal update-checklist` | existing goal and no pending `set` proposal | `200`, goal keeps lifecycle status, stores normalized checklist items, and preserves proposal/ruling metadata |
 | ruling normalization | `proposalId` absent or differs from `proposalSnapshot.id` | ruling normalizes to `null`; DAG completion cannot use it as proof |
@@ -105,12 +122,16 @@
 - Base: a completed goal remains visible as completed context but should not instruct agents to continue work.
 - Base: an agent can suggest `complete` when it believes work is done, but the UI must show it as pending until the user confirms.
 - Base: a newly set active goal starts bounded auto-continuation when the conversation is idle and agents exist.
+- Base: prompt assembly for a goal with an owner includes an `Owner: <agentName>` line so the owner knows it is responsible for driving the goal.
 - Base: auto-continuation stops when any proposal is pending so the user remains in control.
 - Bad: allowing `/goal pause` to be sent through `POST /messages`, because it pollutes history and can trigger agents.
 - Bad: making the drawer write metadata locally without the goal API, because other clients and summaries will not receive SSE refreshes.
 - Bad: letting `suggest-goal` directly apply `complete`, `clear`, or `set`, because the user loses confirmation control.
 - Bad: treating `failedReplies` as a thrown queue failure; routing intentionally returns failed Agent replies normally, so Goal streak evaluation must inspect the returned structured result.
 - Bad: matching provider-specific billing text in the Goal layer or persisting raw assistant errors; classification belongs at the invocation boundary and only a redacted summary crosses SSE/UI.
+- Bad: letting a direct `POST /goal set` body set `owner` or `proposedBy`, because ownership would be forgeable without a user-confirmed proposal.
+- Bad: silently falling back to `default_last_agent` when the owner was removed from the roster, because the goal would continue under an agent the user never chose (fail-closed pause + proposal instead).
+- Bad: letting `set-owner` clear a pending proposal or durable ruling, because an owner change must not erase how the current lifecycle state was reached.
 - Bad: auto-continuing without a max iteration cap or while a pending proposal exists, because it can create runaway turns.
 - Bad: leaving `metadata.sessionGoal = {}` on clear, because prompt/UI consumers may diverge on empty-object handling.
 
@@ -130,6 +151,13 @@
   - Prompt omits the section when the goal is cleared/missing.
   - Auto-continuation schedules bounded `Goal Runner` messages and creates a pending pause proposal at the safety budget.
   - Three fast structured model failures pause on the third invocation, reset rules are enforced, and a fourth continuation is never claimed.
+  - Goal-owner routing: owner B executes even when A replied more recently; removed owner pauses fail-closed with a proposal and zero executions; empty owner keeps `default_last_agent`.
+- `tests/runtime/session-goal-owner.test.js`
+  - Owner normalization/persistence, accept-proposal stamping of `proposedBy`, `set-owner` validation (missing goal, non-participant, empty clear), direct-set stays ownerless, prompt `Owner` line, set-owner epoch migration (claim → set/clear owner → claim keeps `iteration` and streak), owner-removed pause preserving an existing pending proposal.
+- `tests/http/conversation-goal-owner-roster.test.js`
+  - `PUT /api/conversations/:id` removing the owner pauses the goal, raises the resume proposal, and reports `goalOwnerRemoved`; keeper/no-owner roster updates are unchanged.
+- `tests/ui/session-goal-owner.test.js`
+  - Goal drawer owner select rendering, `set-owner` submission, removed-owner display, and DAG-lock disabling.
 - `tests/runtime/session-goal-auto-pause.test.js`
   - Covers provider/timeout/process classification, redaction, 60-second/5-minute windows, success/user/cancel resets, malformed/stale epochs, configurable threshold, `set`/`resume`, and real SQLite close/reopen persistence.
 - Manual browser validation:
