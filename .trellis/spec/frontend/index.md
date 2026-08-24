@@ -12,6 +12,8 @@ Use this index for changes in `public/`.
 ## Pre-Development Checklist
 
 - [ ] Read `ui-structure.md`
+- [ ] Read the SSE stream recovery section in `ui-structure.md` if you touch the
+      `public/app.js` stream open/error handlers or `public/chat/stream-recovery.js`
 - [ ] Read `../guides/cross-layer-thinking-guide.md` if your UI depends on new
       API payloads or Trellis prompt state
 - [ ] Read `../guides/code-reuse-thinking-guide.md` before adding another

@@ -606,6 +606,37 @@ const icon = window.CaffIcons.create('archive', {
 });
 ```
 
+## SSE Stream Recovery After Errored Reopen
+
+### Scope / Trigger
+
+- Applies when `public/app.js` stream open/error handlers or `public/chat/stream-recovery.js` change. Contract source: reviewed OOM remediation plan a9f9eec (P1B browser recovery).
+
+### Contract
+
+- Only an **errored** stream that successfully **reopens** triggers recovery: `markStreamError()` is called in the error handler before scheduling the existing manual reconnect (close + fixed 1.5s delay — unchanged; no reliance on EventSource native retry or a server `retry:` field).
+- On open, `shouldRecoverOnOpen()` returns true exactly once per errored episode; the open handler then captures `preferredConversationId = state.selectedConversationId` and runs one `refreshAll(preferredConversationId)` (bootstrap/list/runtime/current conversation over HTTP). The refresh failure path swallows errors; `finishRecovery()` runs in `finally` so a failed refresh re-arms future episodes without blocking them.
+- Initial/healthy opens never refresh — startup already calls `refreshAll()` once; recovery must not duplicate bootstrap.
+- Repeated opens while a recovery refresh is in flight are coalesced into that refresh (the episode flag is consumed and absorbed); no parallel `refreshAll` runs.
+- No `Last-Event-ID` / `lastEventId` consumption on either client or server; no event replay; no at-least-once delivery claim. Missed events are recovered via the HTTP authoritative refresh plus subsequent live events (e.g. a turn finishing during disconnect becomes visible through the refresh).
+- The stale-source guard (`state.eventSource !== source`) still applies in the open handler.
+
+### Validation Matrix
+
+| Case | Expected behavior |
+| --- | --- |
+| initial open | no refresh; no duplicate bootstrap |
+| errored stream reopens | exactly one coalesced `refreshAll(selectedConversationId)` |
+| recovery in flight, another open fires | coalesced; no parallel refresh |
+| recovery refresh rejects | error swallowed; latch released; future episodes still recover |
+| error during recovery window | absorbed by the in-flight recovery; no extra refresh |
+| any code path | no `lastEventId`/`Last-Event-ID` read (client or server) |
+
+### Required Tests
+
+- `tests/ui/stream-recovery.test.js`: jsdom behavior tests + source-contract greps (app.js error handler calls `markStreamError` before reconnect scheduling; no lastEventId consumption anywhere).
+- `tests/smoke/server-smoke.test.js` and chat-experience suites keep the existing open/error contracts green (no regression in connection-status handling).
+
 ## Cross-Layer Watch Points
 
 - UI payload expectations must stay aligned with controller and domain output.

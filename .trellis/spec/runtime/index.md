@@ -37,4 +37,7 @@ Use this index for pi-mono runtime work and Trellis injection changes.
   runtime queue payload, message-history mutation idle state, and stop/delete guardrails
 - `propose-plan.md`: `propose-plan` CLI/bridge contract for the shared DAG plan,
   self-repair error codes, and `agent_tool_call` event summaries
+- `runtime-observability.md`: `createRuntimeObservability` counter providers,
+  memory sampling/ring buffer, `getRuntimeStats()` probes on orchestrator/bridge/SSE,
+  `GET /api/runtime/stats` 501 fail-closed, and lifecycle/overhead contracts
 - See `../skills/skill-system.md` for skill loading and dynamic `read`-path details
