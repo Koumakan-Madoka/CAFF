@@ -244,6 +244,30 @@ test('scoped digest backfill keeps 404 for missing conversation without message 
   );
 });
 
+test('scoped digest backfill fails closed when the store lacks the no-message projection', () => {
+  // A store without getConversationWithoutMessages() must never fall back to
+  // getConversation() (full message hydration); it must fail closed with 501
+  // before touching the store's conversation lookups at all.
+  let getConversationCalls = 0;
+  const projectionLessStore = {
+    saveSummarySegmentFromDigest() {
+      throw new Error('unexpected save: scoped backfill must fail closed before any digest save');
+    },
+    getConversation() {
+      getConversationCalls += 1;
+      throw new Error('red-test: scoped backfill must never hydrate via getConversation');
+    },
+  };
+
+  assert.throws(
+    () => backfillConversationDigestSummarySegments(projectionLessStore, {
+      conversationId: 'no-projection-conversation',
+    }),
+    (error) => error && error.statusCode === 501
+  );
+  assert.equal(getConversationCalls, 0);
+});
+
 test('empty store health and backfill stay healthy without message history', (t) => {
   const store = createHarness(t, 'empty-store');
   poisonListMessages(store);

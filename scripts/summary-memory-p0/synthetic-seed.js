@@ -167,10 +167,18 @@ function planBigMetadataSizes(random) {
     }
     rawSizes.push(size);
   }
-  const rawTotal = rawSizes.reduce((sum, value) => sum + value, 0);
-  const scale = BIG_METADATA_TOTAL_BYTES / rawTotal;
-  return rawSizes.map((value) =>
-    Math.min(MAX_SINGLE_METADATA_BYTES, Math.max(8_000, Math.floor(value * scale)))
+  // Pin exactly one row to the measured production maximum (~323 KiB) so the
+  // manifest records the true worst-case single-row shape instead of only
+  // the scaled-down distribution peak; the remaining rows share the rest of
+  // the frozen big-metadata byte budget.
+  const pinnedIndex = 0;
+  const pinnedBytes = MAX_SINGLE_METADATA_BYTES;
+  const scalableTotal = rawSizes.reduce((sum, value) => sum + value, 0) - rawSizes[pinnedIndex];
+  const scale = (BIG_METADATA_TOTAL_BYTES - pinnedBytes) / scalableTotal;
+  return rawSizes.map((value, index) =>
+    index === pinnedIndex
+      ? pinnedBytes
+      : Math.min(MAX_SINGLE_METADATA_BYTES, Math.max(8_000, Math.floor(value * scale)))
   );
 }
 

@@ -1899,9 +1899,13 @@ export function backfillConversationDigestSummarySegments(store: any, input: any
   };
 
   if (normalizedConversationId) {
-    const conversation = typeof store.getConversationWithoutMessages === 'function'
-      ? store.getConversationWithoutMessages(normalizedConversationId)
-      : store.getConversation(normalizedConversationId);
+    // Fail closed: a store without the no-message projection must never fall
+    // back to getConversation() (full message hydration). Real ChatAppStore
+    // always provides the projection; missing it is a store-shape error.
+    if (typeof store.getConversationWithoutMessages !== 'function') {
+      throw createHttpError(501, 'Summary segment memory is not available');
+    }
+    const conversation = store.getConversationWithoutMessages(normalizedConversationId);
 
     if (!conversation) {
       throw createHttpError(404, 'Conversation not found');

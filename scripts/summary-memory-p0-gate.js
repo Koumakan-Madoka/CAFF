@@ -6,7 +6,11 @@
  * disposable directory, spawns a child node process (--expose-gc) that runs
  * the scenario, samples the child's RSS externally while it runs, evaluates
  * the frozen heap/RSS/latency budgets, and writes a JSON report plus a
- * summary table. Exit code is non-zero if any budget or assertion fails.
+ * summary table. RSS peak budget evaluation takes the larger of the child's
+ * in-process high-frequency peak (sampled at every repository call and via
+ * an interval tracker) and the parent's external samples, because fast
+ * requests can start and finish between external samples. Exit code is
+ * non-zero if any budget or assertion fails.
  *
  * Usage:
  *   node scripts/summary-memory-p0-gate.js [--out <dir>] [--regen-seed]
@@ -177,15 +181,22 @@ function evaluateScenario(scenario, run) {
     checks.push({ name: `post-GC retained heap delta ${delta.toFixed(1)} MiB <= ${budgets.retainedHeapDeltaMiB} MiB`, pass: delta <= budgets.retainedHeapDeltaMiB });
   }
   if (budgets.rssDeltaMiB !== undefined) {
-    if (run.peakRssBytes !== null && typeof baselineRssMiB === 'number') {
-      const peakDelta = run.peakRssBytes / MIB - baselineRssMiB;
+    const externalPeakMiB = run.peakRssBytes !== null ? run.peakRssBytes / MIB : null;
+    const inProcessPeakMiB = typeof metrics.peakRssMiB === 'number' ? metrics.peakRssMiB : null;
+    const peaks = [externalPeakMiB, inProcessPeakMiB].filter((value) => typeof value === 'number' && Number.isFinite(value));
+    if (peaks.length > 0 && typeof baselineRssMiB === 'number') {
+      // Authoritative peak = max(in-process high-frequency samples taken at
+      // every repository call / interval tick, external parent samples).
+      // External 120ms sampling alone can miss the peak of a fast request.
+      const peakMiB = Math.max(...peaks);
+      const peakDelta = peakMiB - baselineRssMiB;
       const pass = peakDelta <= budgets.rssDeltaMiB;
       checks.push({
-        name: `peak RSS delta ${peakDelta.toFixed(1)} MiB <= ${budgets.rssDeltaMiB} MiB (external samples: ${run.rssSampleCount})`,
+        name: `peak RSS delta ${peakDelta.toFixed(1)} MiB <= ${budgets.rssDeltaMiB} MiB (in-process peak ${inProcessPeakMiB !== null ? inProcessPeakMiB.toFixed(1) : 'n/a'} MiB, external peak ${externalPeakMiB !== null ? externalPeakMiB.toFixed(1) : 'n/a'} MiB, external samples: ${run.rssSampleCount})`,
         pass,
       });
     } else {
-      checks.push({ name: 'peak RSS delta measurable', pass: false, detail: 'external RSS sampling produced no samples' });
+      checks.push({ name: 'peak RSS delta measurable', pass: false, detail: 'no in-process or external RSS peak samples' });
     }
   }
   if (scenario === 'concurrent-http-health') {
@@ -216,6 +227,11 @@ async function main() {
   fs.mkdirSync(outDir, { recursive: true });
 
   if (options.regenSeed || !fs.existsSync(manifestPath)) {
+    if (options.regenSeed) {
+      // Wipe any previous seed output so regeneration starts from an empty
+      // database instead of colliding with existing conversation ids.
+      fs.rmSync(seedDir, { recursive: true, force: true });
+    }
     process.stdout.write('gate: generating deterministic synthetic seed (this takes a few minutes)...\n');
     const manifest = generateSyntheticSeed({ outputDir: seedDir });
     process.stdout.write(
@@ -281,6 +297,11 @@ async function main() {
       externalRss: {
         samples: run.rssSampleCount,
         peakRssMiB: run.peakRssBytes !== null ? run.peakRssBytes / MIB : null,
+      },
+      inProcessRss: {
+        peakRssMiB: run.result && run.result.metrics && typeof run.result.metrics.peakRssMiB === 'number'
+          ? run.result.metrics.peakRssMiB
+          : null,
       },
       stderr: run.stderr ? run.stderr.split('\n').slice(-20) : [],
     };

@@ -5,8 +5,11 @@
  * Runs one measurement scenario against a disposable copy of the synthetic
  * seed inside a child process started with --expose-gc. The parent process
  * samples this child's RSS externally while the scenario runs; this script
- * samples in-process heap at every per-digest repository call (the plan's
- * measurement contract) and reports a JSON result on stdout.
+ * samples in-process heap AND RSS at every per-digest repository call (the
+ * plan's measurement contract) plus a high-frequency interval tracker for
+ * HTTP scenarios, and reports a JSON result on stdout. RSS peak budget
+ * evaluation uses the larger of the in-process and externally sampled peaks,
+ * because fast requests can start and finish between external samples.
  *
  * Scenarios (frozen plan, Performance Acceptance Matrix, P0 rows):
  *   global-health        full seed global health: counts, <=128 MiB heap, <=10 s
@@ -51,12 +54,20 @@ function gc() {
 function sampleMemory(sampler) {
   const usage = process.memoryUsage();
   sampler.maxHeapUsed = Math.max(sampler.maxHeapUsed, usage.heapUsed);
+  sampler.maxRss = Math.max(sampler.maxRss, usage.rss);
   sampler.samples += 1;
   return usage;
 }
 
 function createSampler() {
-  return { maxHeapUsed: 0, samples: 0 };
+  return { maxHeapUsed: 0, maxRss: 0, samples: 0 };
+}
+
+// Re-arm peak trackers at a warm baseline so every reported peak delta
+// measures growth over that baseline, not over process start.
+function resetSamplerPeaks(sampler, baselineUsage) {
+  sampler.maxHeapUsed = baselineUsage.heapUsed;
+  sampler.maxRss = baselineUsage.rss;
 }
 
 function openStore(args) {
@@ -107,6 +118,7 @@ async function runGlobalHealth(args, manifest) {
   try {
     gc();
     const baseline = sampleMemory(perDigestSampler);
+    resetSamplerPeaks(perDigestSampler, baseline);
     const { value: health, durationMs } = timed(() => store.getSummaryMemoryHealth());
     const post = sampleMemory(perDigestSampler);
     assertZeroListMessages(counters);
@@ -137,6 +149,7 @@ async function runGlobalHealth(args, manifest) {
         retainedHeapUsedMiB: retained.heapUsed / MIB,
         perDigestSamples: perDigestSampler.samples,
         baselineRssMiB: baseline.rss / MIB,
+        peakRssMiB: perDigestSampler.maxRss / MIB,
         retainedRssMiB: retained.rss / MIB,
       },
       counts: {
@@ -155,6 +168,7 @@ async function runScopedHealth(args, manifest) {
   try {
     gc();
     const baseline = sampleMemory(perDigestSampler);
+    resetSamplerPeaks(perDigestSampler, baseline);
     const conversationId = manifest.largestConversation.id;
     const { value: health, durationMs } = timed(() =>
       store.getSummaryMemoryHealth({ conversationId })
@@ -190,6 +204,7 @@ async function runScopedHealth(args, manifest) {
         retainedHeapUsedMiB: retained.heapUsed / MIB,
         perDigestSamples: perDigestSampler.samples,
         baselineRssMiB: baseline.rss / MIB,
+        peakRssMiB: perDigestSampler.maxRss / MIB,
         retainedRssMiB: retained.rss / MIB,
       },
       counts: {
@@ -209,6 +224,7 @@ async function runGlobalBackfill(args, manifest) {
   try {
     gc();
     const baseline = sampleMemory(perDigestSampler);
+    resetSamplerPeaks(perDigestSampler, baseline);
 
     const first = timed(() => backfillConversationDigestSummarySegments(store, {}));
     const afterFirst = sampleMemory(perDigestSampler);
@@ -253,6 +269,7 @@ async function runGlobalBackfill(args, manifest) {
         afterSecondHeapUsedMiB: afterSecond.heapUsed / MIB,
         retainedHeapUsedMiB: retained.heapUsed / MIB,
         baselineRssMiB: baseline.rss / MIB,
+        peakRssMiB: perDigestSampler.maxRss / MIB,
         retainedRssMiB: retained.rss / MIB,
         perDigestSamples: perDigestSampler.samples,
       },
@@ -275,6 +292,7 @@ async function runSequentialHealth(args) {
     store.getSummaryMemoryHealth();
     gc();
     const warm = process.memoryUsage();
+    resetSamplerPeaks(perDigestSampler, warm);
 
     const durations = [];
     for (let i = 0; i < 20; i += 1) {
@@ -297,6 +315,7 @@ async function runSequentialHealth(args) {
         calls: durations.length,
         perDigestSamples: perDigestSampler.samples,
         baselineRssMiB: warm.rss / MIB,
+        peakRssMiB: perDigestSampler.maxRss / MIB,
         retainedRssMiB: retained.rss / MIB,
       },
       counts: {},
@@ -342,11 +361,10 @@ async function runConcurrentHttpHealth(args, manifest) {
     return originalGetBySourceDigestId(...fnArgs);
   };
 
-  const maxHeapTracker = setInterval(() => {
-    const usage = process.memoryUsage();
-    perDigestSampler.maxHeapUsed = Math.max(perDigestSampler.maxHeapUsed, usage.heapUsed);
+  const maxMemoryTracker = setInterval(() => {
+    sampleMemory(perDigestSampler);
   }, 50);
-  maxHeapTracker.unref();
+  maxMemoryTracker.unref();
 
   try {
     await new Promise((resolve, reject) => {
@@ -359,6 +377,10 @@ async function runConcurrentHttpHealth(args, manifest) {
     if (!warmupBody.ok) throw new Error('warmup health request failed');
     gc();
     const warm = process.memoryUsage();
+    // Re-arm peak trackers at the warm baseline: everything sampled before
+    // this point (server boot, warmup request) is excluded from the peak
+    // deltas that the RSS budget evaluates.
+    resetSamplerPeaks(perDigestSampler, warm);
 
     const start = process.hrtime.bigint();
     const responses = await Promise.all(
@@ -394,6 +416,7 @@ async function runConcurrentHttpHealth(args, manifest) {
         retainedHeapUsedMiB: retained.heapUsed / MIB,
         retainedHeapDeltaMiB: (retained.heapUsed - warm.heapUsed) / MIB,
         baselineRssMiB: warm.rss / MIB,
+        peakRssMiB: perDigestSampler.maxRss / MIB,
         retainedRssMiB: retained.rss / MIB,
         perDigestSamples: perDigestSampler.samples,
         concurrentRequests: responses.length,
@@ -401,7 +424,7 @@ async function runConcurrentHttpHealth(args, manifest) {
       counts: { digestCount: bodies[0].backfill.digestCount },
     };
   } finally {
-    clearInterval(maxHeapTracker);
+    clearInterval(maxMemoryTracker);
     await new Promise((resolve) => app.close(resolve));
   }
 }
