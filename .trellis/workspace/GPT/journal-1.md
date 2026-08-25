@@ -348,3 +348,55 @@ Unmentioned main-lane user messages now route to the most recent qualifying publ
 ### Next Steps
 
 - None - task complete and merged via PR #84 (merge tree equals accepted head tree `dfb98365fb9422f45135b7493ea0c4ed1e72058f`).
+
+
+## Session 8: Bound agent metrics, SSE backpressure, and runtime observability
+
+**Date**: 2026-08-25
+**Task**: Bound agent metrics, SSE backpressure, and runtime observability
+**Branch**: `room/c2fab452-caff-bug-bug`
+
+### Summary
+
+(Add summary)
+
+### Main Changes
+
+| Area | Result |
+|------|--------|
+| Agent metrics | HTTP requires canonical since/until boundaries no wider than 31 days; bounded projections preserve aggregate semantics; offline CLI keeps explicit unbounded mode. |
+| SSE | Per-client 2 MiB combined budget, five-second blocked-episode deadlines, FIFO buffering without replay, and forced teardown on bounded failure paths. |
+| Browser recovery | Errored stream reopen coalesces authoritative HTTP refreshes, including one trailing refresh after an in-flight second episode. |
+| Observability | Added bounded heap/RSS history and turn, queue, invocation, and SSE buffer lifecycle counters. |
+| Acceptance fix | Metrics date inputs use a page-scoped single-column layout; Edge geometry regression covers 1440, 820, and 375 px. |
+| Evidence | System Node v24 checks, focused tests, smoke, seven production-shape synthetic gates, independent commit-pinned review, and isolated user acceptance passed. |
+
+Feature PR #90 merged to develop as merge commit c6b90038fd8fb2eedd3ce310a62fe81233a7e63d. Its tree exactly matches accepted candidate da904710f51e6c2e3b046b5745bcaf3a46df2776. Production 3100 remained untouched.
+
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `6e1a991` | (see git log) |
+| `9f133ba` | (see git log) |
+| `c1d6d6c` | (see git log) |
+| `9491e92` | (see git log) |
+| `040c95e` | (see git log) |
+| `a13d65c` | (see git log) |
+| `fbdf7dc` | (see git log) |
+| `2840d5b` | (see git log) |
+| `da90471` | (see git log) |
+| `c6b90038` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
