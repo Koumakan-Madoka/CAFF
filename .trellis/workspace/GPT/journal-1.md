@@ -400,3 +400,37 @@ Feature PR #90 merged to develop as merge commit c6b90038fd8fb2eedd3ce310a62fe81
 ### Next Steps
 
 - None - task complete
+
+
+## Session 9: P2A+B bounded conversation hydration
+
+**Date**: 2026-08-25
+**Task**: P2A+B bounded conversation hydration
+**Branch**: `room/c2fab452-caff-bug-bug`
+
+### Summary
+
+Replaced persistent Goal/turn full-conversation hydration with targeted SQLite projections and a fixed recent-24 plus current/explicit prompt union; closed two independent review findings, passed production-shape gates, received user acceptance on isolated port 3222, and merged feature PR #92 to develop with an exact-tree merge commit.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `fc4173a08ad593256495179d2652767152783364` | (see git log) |
+| `87538d5e4fde93881147e7edce585be956a5542c` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

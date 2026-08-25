@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 8
+- **Total Sessions**: 9
 - **Last Active**: 2026-08-25
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~402 | Active |
+| `journal-1.md` | ~436 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 9 | 2026-08-25 | P2A+B bounded conversation hydration | `fc4173a08ad593256495179d2652767152783364`, `87538d5e4fde93881147e7edce585be956a5542c` | `room/c2fab452-caff-bug-bug` |
 | 8 | 2026-08-25 | Bound agent metrics, SSE backpressure, and runtime observability | `6e1a991`, `9f133ba`, `c1d6d6c`, `9491e92`, `040c95e`, `a13d65c`, `fbdf7dc`, `2840d5b`, `da90471`, `c6b90038` | `room/c2fab452-caff-bug-bug` |
 | 7 | 2026-08-24 | Default-route unmentioned messages to last replying agent | `fa2d3f6546d4b73682aff11f06746a7de17c7500`, `8b1f424a7932a715ac8a6fd9f796384eeab42617` | `room/c2fab452-caff-bug-bug` |
 | 6 | 2026-08-24 | Trace-local private/public handoff deduplication | `07578b3fe3788a5a158473d02027e50d579180dd`, `a9e063fba7dc0c52c914ab83773b1269e57840b1` | `room/c2fab452-caff-bug-bug` |
