@@ -707,6 +707,50 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   FOREIGN KEY (agent_id) REFERENCES chat_role_identities(role_id) ON DELETE RESTRICT
 );
 
+CREATE TABLE IF NOT EXISTS chat_message_context_snapshots (
+  message_id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL,
+  turn_id TEXT NOT NULL,
+  agent_id TEXT,
+  snapshot_id TEXT NOT NULL CHECK (length(trim(snapshot_id)) > 0),
+  snapshot_json TEXT NOT NULL CHECK (json_valid(snapshot_json) = 1 AND json_type(snapshot_json) = 'object'),
+  summary_json TEXT NOT NULL CHECK (json_valid(summary_json) = 1 AND json_type(summary_json) = 'object'),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (message_id) REFERENCES chat_messages(id) ON DELETE CASCADE,
+  FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS chat_message_model_usage_calls (
+  message_id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL,
+  turn_id TEXT NOT NULL,
+  agent_id TEXT,
+  model_call_count INTEGER NOT NULL DEFAULT 0 CHECK (model_call_count >= 0),
+  cold_start_model_call_count INTEGER NOT NULL DEFAULT 0 CHECK (cold_start_model_call_count >= 0),
+  post_cold_model_call_count INTEGER NOT NULL DEFAULT 0 CHECK (post_cold_model_call_count >= 0),
+  provider_miss_count INTEGER NOT NULL DEFAULT 0 CHECK (provider_miss_count >= 0),
+  calls_json TEXT NOT NULL DEFAULT '[]' CHECK (
+    json_valid(calls_json) = 1
+    AND json_type(calls_json) = 'array'
+    AND json_array_length(calls_json) <= 64
+  ),
+  calls_truncated INTEGER NOT NULL DEFAULT 0 CHECK (calls_truncated IN (0, 1)),
+  retained_call_count INTEGER NOT NULL DEFAULT 0 CHECK (
+    retained_call_count BETWEEN 0 AND 64
+    AND retained_call_count = json_array_length(calls_json)
+  ),
+  dropped_call_count INTEGER NOT NULL DEFAULT 0 CHECK (dropped_call_count >= 0),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CHECK (
+    (calls_truncated = 0 AND dropped_call_count = 0)
+    OR (calls_truncated = 1 AND dropped_call_count > 0)
+  ),
+  FOREIGN KEY (message_id) REFERENCES chat_messages(id) ON DELETE CASCADE,
+  FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS chat_private_messages (
   id TEXT PRIMARY KEY,
   conversation_id TEXT NOT NULL,
@@ -812,6 +856,10 @@ CREATE INDEX IF NOT EXISTS idx_chat_conversations_last_message_at ON chat_conver
 CREATE INDEX IF NOT EXISTS idx_chat_conversation_agents_agent_id ON chat_conversation_agents (agent_id, sort_order ASC);
 CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation_id ON chat_messages (conversation_id, created_at ASC, id ASC);
 CREATE INDEX IF NOT EXISTS idx_chat_messages_turn_id ON chat_messages (turn_id, created_at ASC, id ASC);
+CREATE INDEX IF NOT EXISTS idx_chat_message_context_snapshots_conversation
+  ON chat_message_context_snapshots (conversation_id, created_at DESC, message_id DESC);
+CREATE INDEX IF NOT EXISTS idx_chat_message_model_usage_calls_conversation
+  ON chat_message_model_usage_calls (conversation_id, created_at DESC, message_id DESC);
 CREATE INDEX IF NOT EXISTS idx_chat_private_messages_conversation_id ON chat_private_messages (conversation_id, created_at ASC, id ASC);
 CREATE INDEX IF NOT EXISTS idx_chat_private_messages_sender_agent_id ON chat_private_messages (sender_agent_id, created_at ASC, id ASC);
 CREATE INDEX IF NOT EXISTS idx_chat_summary_segments_conversation_id ON chat_summary_segments (conversation_id, segment_updated_at DESC);

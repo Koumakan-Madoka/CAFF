@@ -14,13 +14,16 @@
 - Prompt formatter: `formatAgentTurnPromptSections(sections) -> string`.
 - Snapshot builder: `createAgentContextSnapshot({ conversationId, turnId, messageId, agentId, agentName, promptVersion, sections }) -> AgentContextSnapshot`.
 - Snapshot read API: `GET /api/conversations/:conversationId/messages/:messageId/context-snapshot` returns `{ snapshot }` with safe display content only.
-- Snapshot list API: `GET /api/conversations/:conversationId/context-snapshots` returns `{ conversationId, snapshots }` with metadata summaries.
+- Snapshot list API: `GET /api/conversations/:conversationId/context-snapshots?limit=<1..100>&before=<opaque>` returns `{ conversationId, snapshots, pageInfo: { hasMore, nextCursor } }` with newest-first metadata summaries; default limit is 50 and maximum is 100.
 - Markdown export API: `GET /api/conversations/:conversationId/messages/:messageId/context-snapshot-export` downloads `text/markdown`.
-- Assistant message metadata key: `metadata.agentContextSnapshot` stores the immutable safe snapshot for that message.
+- Assistant message metadata key: `metadata.agentContextSnapshot` stores the immutable safe snapshot for that message during P2C-Expand.
+- Expand table: `chat_message_context_snapshots.message_id` stores the same full safe snapshot plus a lightweight summary. Reads prefer this row and fall back to message metadata.
 
 ### 3. Contracts
 
 - Snapshot capture happens after prompt sections are assembled and before `startRun(...)` is invoked.
+- Queued message creation persists the message and snapshot in one SQLite transaction. Streaming/tool/completed/failed updates carrying the same immutable `snapshotId` must not rewrite the snapshot row.
+- Detail/export and list reads are table-first with legacy metadata fallback. The list is driven by a single bounded `chat_messages` cursor query, never `getConversation()` or unbounded `listMessages()`.
 - The exact prompt sent to the model must be produced from the same `promptSections` object passed into `createAgentContextSnapshot`; do not rebuild prompt context a second time for snapshot capture.
 - Prompt assembly should omit optional sections that have no material body instead of emitting placeholder-only content such as `- none`, `No private mailbox items.`, legacy `No saved memory cards.`, or `No prior messages.`; omitted sections must also be absent from Inspector snapshots. Memory Cards are deprecated and must not be newly injected even when stored cards exist.
 - Every section stores `sectionKey`, `title`, `source`, `visibility`, `contentHash`, `displayContentHash`, `approxTokens`, `byteSize`, `truncated`, `truncationNote`, `redacted`, `policyNote`, and safe display fields.
@@ -45,6 +48,12 @@
 | Stored display hash differs from display content | Materialized section sets `integrityOk=false` and shows warning placeholder. |
 | Optional persona skill, room skill, participant, private mailbox, deprecated memory card, or history input is empty | Prompt and snapshot omit the whole section rather than rendering placeholder-only body text; deprecated memory cards stay omitted even when stored cards exist. |
 | Markdown export requested | Response is a grouped `.md` document with metadata table and safe content/placeholders. |
+| Detail table row exists but message metadata is lightweight or differs | Table snapshot is authoritative for Inspector/export. |
+| Detail table row is absent | Read the legacy `metadata.agentContextSnapshot` object. |
+| Snapshot list omits `limit` | Return at most 50 newest summaries plus `pageInfo`. |
+| Snapshot list requests `limit=100` | Return at most 100 summaries. |
+| Limit/cursor is malformed, over bound, or cross-conversation | Return HTTP 400; do not reset or widen the page. |
+| Snapshot list runs on a large mixed database | No `getConversation()` or unbounded `listMessages()` call; old/new rows share one stable cursor order. |
 
 ### 5. Good/Base/Bad Cases
 
@@ -61,6 +70,9 @@
 - Isolation: snapshots are keyed by message/agent/turn and do not mix one agent turn's content into another.
 - Prompt assembly: existing prompt ordering tests should keep passing after section refactors.
 - Empty optional sections: prompt tests assert placeholder-only optional sections are omitted from the assembled prompt.
+- Expand storage: real SQLite tests assert queued/completed/failed atomic writes, same-snapshot no-rewrite, rollback injection, new-table priority, metadata fallback, restart, and delete cascade.
+- Pagination: mixed old/new/table-only rows cover default 50, maximum 100, stable tie ordering, opaque cursor isolation, invalid inputs, and full-hydration poison.
+- Rollback: a pre-P2C build reads/updates an Expand-era message from full metadata; Expand can reopen it and still read the detail row.
 
 ### 7. Wrong vs Correct
 

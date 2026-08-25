@@ -11,6 +11,7 @@ import { sendFileDownload, sendJson, sendTextDownload } from '../http/response';
 import { pickConversationSummary, withConversationPrivateMessages } from '../domain/conversation/conversation-view';
 import { applyConversationDigestAction } from '../domain/conversation/conversation-digest';
 import { buildConversationMessagePage } from '../domain/conversation/message-pagination';
+import { buildContextSnapshotPage } from '../domain/conversation/context-snapshot-pagination';
 import { buildConversationDirectoryPage } from '../domain/conversation/conversation-directory-pagination';
 import { applyConversationSkillDraftAction } from '../domain/conversation/skill-draft';
 import {
@@ -109,13 +110,6 @@ function mergeFeishuBindingMetadata(existingBinding: any) {
 function timestampValue(value: any) {
   const timestamp = Date.parse(String(value || ''));
   return Number.isFinite(timestamp) ? timestamp : 0;
-}
-
-function contextSnapshotFromMessage(message: any) {
-  const metadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
-  return metadata && metadata.agentContextSnapshot && typeof metadata.agentContextSnapshot === 'object'
-    ? metadata.agentContextSnapshot
-    : null;
 }
 
 function defaultContextSnapshotFileName(message: any) {
@@ -1084,18 +1078,18 @@ export function createConversationsController(options: any = {}): RouteHandler<A
 
     if (contextSnapshotListMatch && req.method === 'GET') {
       const conversationId = decodeURIComponent(contextSnapshotListMatch[1]);
-      const conversation = store.getConversation(conversationId);
+      const conversation = store.getConversationWithoutMessages(conversationId);
 
       if (!conversation) {
         throw createHttpError(404, 'Conversation not found');
       }
 
-      const snapshots = (Array.isArray(conversation.messages) ? conversation.messages : [])
-        .filter((message: any) => message && message.role === 'assistant')
-        .map((message: any) => summarizeAgentContextSnapshot(contextSnapshotFromMessage(message)))
+      const page = buildContextSnapshotPage(store, conversationId, requestUrl.searchParams);
+      const snapshots = page.snapshots
+        .map((snapshot: any) => summarizeAgentContextSnapshot(snapshot))
         .filter(Boolean);
 
-      sendJson(res, 200, { conversationId, snapshots });
+      sendJson(res, 200, { conversationId, snapshots, pageInfo: page.pageInfo });
       return true;
     }
 
@@ -1121,7 +1115,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
         throw createHttpError(400, 'Only assistant messages can inspect context snapshots');
       }
 
-      const snapshot = contextSnapshotFromMessage(message);
+      const snapshot = store.getMessageContextSnapshot(messageId);
 
       if (!snapshot) {
         throw createHttpError(404, 'No context snapshot is available for this message');

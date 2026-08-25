@@ -11,6 +11,7 @@ const { createChatConversationAgentHistoryRepository } = require('../storage/cha
 const { createChatConversationRepository } = require('../storage/chat/conversation.repository');
 const { createChatParticipantRepository } = require('../storage/chat/participant.repository');
 const { createChatMessageRepository } = require('../storage/chat/message.repository');
+const { createChatMessageDetailRepository } = require('../storage/chat/message-detail.repository');
 const { createChatPrivateMessageRepository } = require('../storage/chat/private-message.repository');
 const { createChatMemoryCardRepository } = require('../storage/chat/memory-card.repository');
 const { createChatSummarySegmentRepository } = require('../storage/chat/summary-segment.repository');
@@ -36,6 +37,10 @@ const {
   resolveConversationTitleTransition,
 } = require('./conversation-title-source');
 const { deriveTitleFromFirstMessage } = require('./conversation-first-message-title');
+const {
+  buildStoredContextSnapshotSummary,
+  retainModelUsageCalls,
+} = require('./message-detail-contract');
 
 const MAX_AVATAR_DATA_URL_LENGTH = 2 * 1024 * 1024;
 const MAX_AGENT_SANDBOX_NAME_LENGTH = 80;
@@ -901,6 +906,7 @@ export class ChatAppStore {
       this.conversationRepository = createChatConversationRepository(this.db);
       this.participantRepository = createChatParticipantRepository(this.db);
       this.messageRepository = createChatMessageRepository(this.db);
+      this.messageDetailRepository = createChatMessageDetailRepository(this.db);
       this.privateMessageRepository = createChatPrivateMessageRepository(this.db);
       this.memoryCardRepository = createChatMemoryCardRepository(this.db);
       this.summarySegmentRepository = createChatSummarySegmentRepository(this.db);
@@ -1174,6 +1180,54 @@ export class ChatAppStore {
         return this.getConversationWithoutMessages(conversationId);
       });
 
+      this.persistMessageDetails = (payload: any) => {
+        if (String(payload.role || '').trim() !== 'assistant') {
+          return;
+        }
+
+        const metadata = payload.metadata && typeof payload.metadata === 'object' && !Array.isArray(payload.metadata)
+          ? payload.metadata
+          : {};
+        const snapshot = metadata.agentContextSnapshot;
+        if (snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot)) {
+          const snapshotId = String(snapshot.snapshotId || '').trim();
+          if (snapshotId && !this.messageDetailRepository.hasContextSnapshot(payload.messageId, snapshotId)) {
+            const summary = buildStoredContextSnapshotSummary(snapshot);
+            this.messageDetailRepository.upsertContextSnapshot({
+              messageId: payload.messageId,
+              conversationId: payload.conversationId,
+              turnId: payload.turnId,
+              agentId: payload.agentId || null,
+              snapshotId,
+              snapshotJson: serializeJson(snapshot),
+              summaryJson: serializeJson(summary),
+              createdAt: payload.createdAt,
+              updatedAt: payload.updatedAt,
+            });
+          }
+        }
+
+        const modelUsage = retainModelUsageCalls(metadata.modelUsage);
+        if (modelUsage) {
+          this.messageDetailRepository.upsertModelUsage({
+            messageId: payload.messageId,
+            conversationId: payload.conversationId,
+            turnId: payload.turnId,
+            agentId: payload.agentId || null,
+            modelCallCount: modelUsage.modelCallCount,
+            coldStartModelCallCount: modelUsage.coldStartModelCallCount,
+            postColdModelCallCount: modelUsage.postColdModelCallCount,
+            providerMissCount: modelUsage.providerMissCount,
+            callsJson: serializeJson(modelUsage.calls),
+            callsTruncated: modelUsage.callsTruncated ? 1 : 0,
+            retainedCallCount: modelUsage.retainedCallCount,
+            droppedCallCount: modelUsage.droppedCallCount,
+            createdAt: payload.createdAt,
+            updatedAt: payload.updatedAt,
+          });
+        }
+      };
+
       this.createMessageTransaction = this.db.transaction((payload: any) => {
         const createdAt = payload.createdAt || nowIso();
 
@@ -1192,6 +1246,17 @@ export class ChatAppStore {
           metadataJson: serializeJson(payload.metadata),
           clientRequestId: payload.clientRequestId || null,
           createdAt,
+        });
+
+        this.persistMessageDetails({
+          messageId: payload.id,
+          conversationId: payload.conversationId,
+          role: payload.role,
+          turnId: payload.turnId,
+          agentId: payload.agentId || null,
+          metadata: payload.metadata,
+          createdAt,
+          updatedAt: createdAt,
         });
 
         if (Array.isArray(payload.imageIds) && payload.imageIds.length > 0) {
@@ -1221,6 +1286,28 @@ export class ChatAppStore {
         });
 
         return this.getMessage(payload.id);
+      });
+
+      this.updateMessageTransaction = this.db.transaction((payload: any) => {
+        this.messageRepository.update(payload.messageId, {
+          content: payload.content,
+          status: payload.status,
+          taskId: payload.taskId,
+          runId: payload.runId,
+          errorMessage: payload.errorMessage,
+          metadataJson: serializeJson(payload.metadata),
+        });
+        this.persistMessageDetails({
+          messageId: payload.messageId,
+          conversationId: payload.conversationId,
+          role: payload.role,
+          turnId: payload.turnId,
+          agentId: payload.agentId || null,
+          metadata: payload.metadata,
+          createdAt: payload.createdAt,
+          updatedAt: payload.updatedAt,
+        });
+        return this.getMessage(payload.messageId);
       });
 
       this.attachImageUploadsTransaction = this.db.transaction((payload: any) => {
@@ -3548,6 +3635,27 @@ export class ChatAppStore {
     return normalizeMessageRow(this.messageRepository.get(messageId));
   }
 
+  getMessageContextSnapshot(messageId: any) {
+    return this.messageDetailRepository.getContextSnapshot(String(messageId || '').trim());
+  }
+
+  getMessageModelUsage(messageId: any) {
+    const result = this.messageDetailRepository.getModelUsage(String(messageId || '').trim());
+    if (!result) {
+      return null;
+    }
+    return result.source === 'table'
+      ? result.modelUsage
+      : retainModelUsageCalls(result.modelUsage);
+  }
+
+  listContextSnapshotPage(conversationId: any, options: any = {}) {
+    return this.messageDetailRepository.listContextSnapshotPage(
+      String(conversationId || '').trim(),
+      options
+    );
+  }
+
   createMessage(payload: any = {}) {
     const conversation = this.getConversationWithoutMessages(payload.conversationId);
 
@@ -3775,16 +3883,21 @@ export class ChatAppStore {
       updates.errorMessage === undefined ? existing.errorMessage : String(updates.errorMessage || '').trim();
     const nextMetadata = updates.metadata === undefined ? existing.metadata : updates.metadata;
 
-    return normalizeMessageRow(
-      this.messageRepository.update(messageId, {
-        content: nextContent,
-        status: nextStatus,
-        taskId: nextTaskId,
-        runId: nextRunId,
-        errorMessage: nextErrorMessage || null,
-        metadataJson: serializeJson(nextMetadata),
-      })
-    );
+    return this.updateMessageTransaction({
+      messageId,
+      conversationId: existing.conversationId,
+      role: existing.role,
+      turnId: existing.turnId,
+      agentId: existing.agentId,
+      content: nextContent,
+      status: nextStatus,
+      taskId: nextTaskId,
+      runId: nextRunId,
+      errorMessage: nextErrorMessage || null,
+      metadata: nextMetadata,
+      createdAt: existing.createdAt,
+      updatedAt: nowIso(),
+    });
   }
 
   appendMessageText(messageId: any, delta: any) {

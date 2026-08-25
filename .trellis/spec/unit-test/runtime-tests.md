@@ -33,6 +33,19 @@ Conversation hydration regressions require a real temporary `ChatAppStore`, not 
 
 The production-shape gate uses child processes with `--expose-gc`, a warm baseline, 10ms in-process heap/RSS sampling, projection-call sampling, and parent-process RSS sampling. Budget evaluation takes the larger RSS peak. Reports must include exact seed shape, selected-row counts/maxima, functional assertions, latency, peak deltas, post-GC retention, zero forbidden calls, and read-only `integrity_check=ok`. Synthetic databases live only under gitignored `.tmp`; external integration environment variables are cleared.
 
+## P2C-Expand Message Detail Guards
+
+- Use a real temporary `ChatAppStore`; inspect `sqlite_master`, `PRAGMA index_list`, `PRAGMA foreign_key_check`, and the detail tables directly.
+- Insert historical old-only rows through SQL after schema creation, reopen the store, and assert detail counts remain zero plus `metadata_json` bytes remain identical. This proves no hidden backfill/rewrite.
+- Exercise queued create, streaming updates, completed update, and failed/error update. Assert message plus detail atomicity and that repeated `(message_id, snapshot_id)` lifecycle updates do not change the snapshot row `updated_at`.
+- Monkey-patch each detail UPSERT to throw after the message statement. Assert the entire create/update transaction rolls back, including content, status, metadata, and any earlier detail write.
+- Test model usage at 63, 64, 65, and 100 calls. Full aggregate counters remain authoritative; retained sequences are respectively all calls, all calls, `1 + 3..65`, and `1 + 38..100`.
+- Test table-first reads after directly changing legacy metadata to a conflicting or Contract-shaped lightweight object. Separately test legacy-only fallback and no-usage/null absence.
+- Delete both an individual message and a whole conversation through store APIs; assert both detail rows disappear and `foreign_key_check` is empty. Raw SQLite fixtures must explicitly enable foreign keys or use the store connection.
+- The snapshot HTTP test seeds mixed old/new/table-only rows and malformed/null/string legacy snapshots, poisons `getConversation` and `listMessages`, and asserts default 50, max 100, same-time ID ties, no duplicate/skip, cross-conversation cursor rejection, Inspector, and export.
+- The production-shape gate must include at least 50 real object snapshots and one >=200 KiB snapshot, report disk delta for dual writes, verify unchanged historical metadata bytes, and clear external integration variables.
+- Rollback proof runs the exact pre-P2C build against an Expand-created SQLite fixture. It must read/update full metadata while ignoring extra tables; reopening with Expand must still return table details.
+
 ## Useful Existing Suites
 
 - `tests/runtime/agent-tool-bridge.test.js`: bridge behavior and `.trellis`
