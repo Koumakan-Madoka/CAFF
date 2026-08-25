@@ -1,6 +1,7 @@
 const { randomUUID } = require('node:crypto');
 const path = require('node:path');
 
+const { requiresBoundedConversationProjections } = require('../../../lib/conversation-hydration-contract');
 const { createSqliteRunStore } = require('../../../lib/sqlite-store');
 const { createHttpError } = require('../../http/http-errors');
 const { pickConversationSummary } = require('./conversation-view');
@@ -31,7 +32,7 @@ const {
   summarizeTurnState,
   syncCurrentTurnAgent,
 } = require('./turn/turn-state');
-const { buildPromptMessages, buildPromptSnapshotMessageIds } = require('./turn/prompt-visibility');
+const { buildPromptMessages, DEFAULT_PROMPT_HISTORY_LIMIT } = require('./turn/prompt-visibility');
 const { createAgentSlotRegistry } = require('./turn/agent-slot-registry');
 
 const CONVERSATION_TURN_QUEUE_METADATA_KEY = 'conversationTurnQueue';
@@ -130,10 +131,65 @@ export function createTurnOrchestrator(options: any = {}) {
   const agentSlotRegistry = createAgentSlotRegistry();
 
   const { emitTurnProgress, emitAgentSlotFinished } = createTurnEventEmitter({ broadcastEvent });
+  const requiresBoundedProjections = requiresBoundedConversationProjections(store);
+
+  function callBoundedProjection(name: string, args: any[], legacyFallback: () => any) {
+    if (store && typeof store[name] === 'function') {
+      return store[name](...args);
+    }
+    if (requiresBoundedProjections) {
+      throw createHttpError(501, `Bounded conversation projection is unavailable: ${name}`);
+    }
+    return legacyFallback();
+  }
+
+  function getConversationHeader(conversationId: any) {
+    const normalizedConversationId = String(conversationId || '').trim();
+    return callBoundedProjection('getConversationWithoutMessages', [normalizedConversationId], () => (
+      store && typeof store.getConversation === 'function'
+        ? store.getConversation(normalizedConversationId)
+        : null
+    ));
+  }
 
   function listConversationMessages(conversationId: any) {
+    if (requiresBoundedProjections) {
+      throw createHttpError(501, 'Bounded conversation projection is unavailable for this message read');
+    }
     const conversation = store.getConversation(conversationId);
     return Array.isArray(conversation && conversation.messages) ? conversation.messages : [];
+  }
+
+  function listPromptProjection(conversationId: any, options: any = {}) {
+    return callBoundedProjection('listPromptMessages', [conversationId, options], () => (
+      listConversationMessages(conversationId)
+    ));
+  }
+
+  function loadRoutingConversation(conversationId: any) {
+    const conversation = getConversationHeader(conversationId);
+
+    if (!conversation) {
+      return null;
+    }
+
+    const participantAgentIds = (Array.isArray(conversation.agents) ? conversation.agents : [])
+      .map((agent: any) => String(agent && agent.id || '').trim())
+      .filter(Boolean);
+    const latestReplyAgentId = callBoundedProjection(
+      'findLatestPublicCompletedAssistantReplyAgentId',
+      [conversationId, participantAgentIds],
+      () => ''
+    );
+    if (store && typeof store.findLatestPublicCompletedAssistantReplyAgentId === 'function') {
+      return {
+        ...conversation,
+        messages: [],
+        latestPublicReplyAgentId: String(latestReplyAgentId || '').trim(),
+      };
+    }
+
+    return conversation;
   }
 
   function conversationTurnQueueMetadata(conversation: any) {
@@ -154,9 +210,7 @@ export function createTurnOrchestrator(options: any = {}) {
       return null;
     }
 
-    const conversation = typeof store.getConversationWithoutMessages === 'function'
-      ? store.getConversationWithoutMessages(normalizedConversationId)
-      : store.getConversation(normalizedConversationId);
+    const conversation = getConversationHeader(normalizedConversationId);
     if (!conversation) {
       return null;
     }
@@ -174,7 +228,7 @@ export function createTurnOrchestrator(options: any = {}) {
       return conversation;
     }
 
-    return store.updateConversation(normalizedConversationId, {
+    return callBoundedProjection('updateConversationWithoutMessages', [normalizedConversationId, {
       metadata: {
         ...metadata,
         [CONVERSATION_TURN_QUEUE_METADATA_KEY]: {
@@ -182,7 +236,15 @@ export function createTurnOrchestrator(options: any = {}) {
           lastConsumedUserMessageId,
         },
       },
-    });
+    }], () => store.updateConversation(normalizedConversationId, {
+      metadata: {
+        ...metadata,
+        [CONVERSATION_TURN_QUEUE_METADATA_KEY]: {
+          ...existingQueueMetadata,
+          lastConsumedUserMessageId,
+        },
+      },
+    }));
   }
 
   function resolveConversationMessage(conversationId: any, messageId: any) {
@@ -192,16 +254,36 @@ export function createTurnOrchestrator(options: any = {}) {
       return null;
     }
 
-    return listConversationMessages(conversationId).find((message: any) => String(message && message.id ? message.id : '').trim() === normalizedMessageId) || null;
+    const message = callBoundedProjection('getMessage', [normalizedMessageId], () => (
+      listConversationMessages(conversationId).find(
+        (candidate: any) => String(candidate && candidate.id ? candidate.id : '').trim() === normalizedMessageId
+      ) || null
+    ));
+    return message && String(message.conversationId || '').trim() === String(conversationId || '').trim()
+      ? message
+      : null;
   }
 
-  function buildPromptMessagesFromSnapshot(conversationId: any, promptUserMessage: any, snapshotMessageIds: any) {
+  function buildPromptMessagesFromSnapshot(
+    conversationId: any,
+    promptUserMessage: any,
+    snapshotMessageIds: any,
+    currentTurnId: any = ''
+  ) {
     const normalizedSnapshotMessageIds = Array.isArray(snapshotMessageIds)
       ? snapshotMessageIds.map((messageId: any) => String(messageId || '').trim()).filter(Boolean)
       : [];
-    const snapshotMessages = normalizedSnapshotMessageIds
-      .map((messageId: any) => resolveConversationMessage(conversationId, messageId))
-      .filter(Boolean);
+    const snapshotMessages = store && typeof store.listPromptMessages === 'function'
+      ? listPromptProjection(conversationId, {
+          historyLimit: 0,
+          currentTurnId: String(currentTurnId || '').trim(),
+          requiredMessageIds: normalizedSnapshotMessageIds,
+        })
+      : requiresBoundedProjections
+        ? callBoundedProjection('listPromptMessages', [], () => [])
+        : normalizedSnapshotMessageIds
+            .map((messageId: any) => resolveConversationMessage(conversationId, messageId))
+            .filter(Boolean);
 
     return buildPromptMessages(snapshotMessages, promptUserMessage, {
       snapshotMessageIds: new Set(normalizedSnapshotMessageIds),
@@ -289,18 +371,24 @@ export function createTurnOrchestrator(options: any = {}) {
   }
 
   function createInitialQueueState(conversationId: any) {
-    const conversation = store.getConversation(conversationId);
-    const messages = Array.isArray(conversation && conversation.messages) ? conversation.messages : [];
+    const conversation = getConversationHeader(conversationId);
     const persistedQueueMetadata = conversationTurnQueueMetadata(conversation);
     const hasPersistedCursor = Boolean(
       persistedQueueMetadata
       && Object.prototype.hasOwnProperty.call(persistedQueueMetadata, 'lastConsumedUserMessageId')
     );
+    const inferredCursor = callBoundedProjection(
+      'inferLastConsumedUserMessageId',
+      [conversationId],
+      () => inferLastConsumedUserMessageId(
+        Array.isArray(conversation && conversation.messages) ? conversation.messages : []
+      )
+    );
 
     return {
       lastConsumedUserMessageId: hasPersistedCursor
         ? String(persistedQueueMetadata.lastConsumedUserMessageId || '').trim()
-        : inferLastConsumedUserMessageId(messages),
+        : inferredCursor,
       failedBatchCount: 0,
       lastFailureAt: null,
       lastFailureMessage: '',
@@ -379,6 +467,13 @@ export function createTurnOrchestrator(options: any = {}) {
       return [] as any[];
     }
 
+    if (store && typeof store.listAssistantRepliesForSourceMessage === 'function') {
+      return store.listAssistantRepliesForSourceMessage(conversationId, normalizedSourceMessageId);
+    }
+    if (requiresBoundedProjections) {
+      return callBoundedProjection('listAssistantRepliesForSourceMessage', [], () => []);
+    }
+
     return listConversationMessages(conversationId).filter((message: any) => {
       if (!message || message.role !== 'assistant') {
         return false;
@@ -448,22 +543,26 @@ export function createTurnOrchestrator(options: any = {}) {
 
   function buildPromptSnapshotMessageIdsThroughMessage(conversationId: any, sourceMessageId: any) {
     const normalizedSourceMessageId = String(sourceMessageId || '').trim();
-    const snapshotMessageIds = [] as any[];
 
-    for (const message of listConversationMessages(conversationId)) {
-      const messageId = String(message && message.id ? message.id : '').trim();
-
-      if (!messageId) {
-        continue;
-      }
-
-      snapshotMessageIds.push(messageId);
-
-      if (messageId === normalizedSourceMessageId) {
-        break;
-      }
+    if (store && typeof store.listPromptMessages === 'function') {
+      const sourceMessage = resolveConversationMessage(conversationId, normalizedSourceMessageId);
+      const messages = listPromptProjection(conversationId, {
+        historyLimit: DEFAULT_PROMPT_HISTORY_LIMIT,
+        requiredMessageIds: normalizedSourceMessageId ? [normalizedSourceMessageId] : [],
+        before: sourceMessage
+          ? { createdAt: sourceMessage.createdAt, id: sourceMessage.id }
+          : null,
+      });
+      return messages.map((message: any) => String(message && message.id || '').trim()).filter(Boolean);
     }
 
+    const snapshotMessageIds = [] as any[];
+    for (const message of listConversationMessages(conversationId)) {
+      const messageId = String(message && message.id ? message.id : '').trim();
+      if (!messageId) continue;
+      snapshotMessageIds.push(messageId);
+      if (messageId === normalizedSourceMessageId) break;
+    }
     return snapshotMessageIds;
   }
 
@@ -485,6 +584,13 @@ export function createTurnOrchestrator(options: any = {}) {
   }
 
   function listPendingUserMessages(conversationId: any, afterMessageId: any = '') {
+    if (store && typeof store.listPendingMainUserMessages === 'function') {
+      return store.listPendingMainUserMessages(conversationId, afterMessageId);
+    }
+    if (requiresBoundedProjections) {
+      return callBoundedProjection('listPendingMainUserMessages', [], () => []);
+    }
+
     const messages = listConversationMessages(conversationId);
     const normalizedAfterMessageId = String(afterMessageId || '').trim();
     const pendingMessages = [];
@@ -495,19 +601,14 @@ export function createTurnOrchestrator(options: any = {}) {
 
     for (const message of messages) {
       const messageId = String(message && message.id ? message.id : '').trim();
-
       if (!collecting) {
-        if (messageId === normalizedAfterMessageId) {
-          collecting = true;
-        }
+        if (messageId === normalizedAfterMessageId) collecting = true;
         continue;
       }
-
       if (message && message.role === 'user' && !isSideDispatchMessage(conversationId, message.id, message)) {
         pendingMessages.push(message);
       }
     }
-
     return pendingMessages;
   }
 
@@ -582,9 +683,18 @@ export function createTurnOrchestrator(options: any = {}) {
       const cursorCreatedAt = String(deletedCursor && deletedCursor.createdAt || '').trim();
 
       if (!cursorCreatedAt) {
-        queueState.lastConsumedUserMessageId = inferLastConsumedUserMessageId(
-          listConversationMessages(normalizedConversationId)
+        queueState.lastConsumedUserMessageId = callBoundedProjection(
+          'inferLastConsumedUserMessageId',
+          [normalizedConversationId],
+          () => inferLastConsumedUserMessageId(listConversationMessages(normalizedConversationId))
         );
+      } else if (store && typeof store.findPreviousUserMessageId === 'function') {
+        queueState.lastConsumedUserMessageId = String(store.findPreviousUserMessageId(normalizedConversationId, {
+          createdAt: cursorCreatedAt,
+          id: consumedMessageId,
+        }) || '').trim();
+      } else if (requiresBoundedProjections) {
+        callBoundedProjection('findPreviousUserMessageId', [], () => null);
       } else {
         let previousConsumedUserMessageId = '';
         for (const message of listConversationMessages(normalizedConversationId)) {
@@ -592,12 +702,10 @@ export function createTurnOrchestrator(options: any = {}) {
           const createdAt = String(message && message.createdAt || '').trim();
           const precedesDeletedCursor = createdAt < cursorCreatedAt
             || (createdAt === cursorCreatedAt && messageId < consumedMessageId);
-
           if (message && message.role === 'user' && messageId && precedesDeletedCursor) {
             previousConsumedUserMessageId = messageId;
           }
         }
-
         queueState.lastConsumedUserMessageId = previousConsumedUserMessageId;
       }
     }
@@ -898,7 +1006,7 @@ export function createTurnOrchestrator(options: any = {}) {
   }
 
   function broadcastGoalProposalResult(conversationId: any, result: any) {
-    const conversation = result && result.conversation ? result.conversation : store.getConversation(conversationId);
+    const conversation = result && result.conversation ? result.conversation : getConversationHeader(conversationId);
     const summary = pickConversationSummary(conversation);
 
     broadcastEvent(result && result.proposalCleared ? 'conversation_goal_proposal_cleared' : 'conversation_goal_proposal_updated', {
@@ -920,7 +1028,7 @@ export function createTurnOrchestrator(options: any = {}) {
       return;
     }
 
-    const conversation = result.conversation || store.getConversation(conversationId);
+    const conversation = result.conversation || getConversationHeader(conversationId);
     const summary = pickConversationSummary(conversation);
     broadcastEvent('conversation_goal_updated', {
       conversationId,
@@ -942,7 +1050,7 @@ export function createTurnOrchestrator(options: any = {}) {
       return null;
     }
 
-    const conversation = store.getConversation(conversationId);
+    const conversation = getConversationHeader(conversationId);
 
     if (!conversation || getSessionGoalProposal(conversation)) {
       return null;
@@ -968,7 +1076,7 @@ export function createTurnOrchestrator(options: any = {}) {
       return { scheduled: false, reason: 'busy' };
     }
 
-    const conversation = store.getConversation(normalizedConversationId);
+    const conversation = getConversationHeader(normalizedConversationId);
 
     if (!conversation) {
       return { scheduled: false, reason: 'missing_conversation_or_agents' };
@@ -1236,7 +1344,7 @@ export function createTurnOrchestrator(options: any = {}) {
     const failedReplies: any[] = [];
 
     try {
-      const storedConversation = store.getConversation(entry.conversationId);
+      const storedConversation = getConversationHeader(entry.conversationId);
       conversation = storedConversation
         ? { ...storedConversation, agents: resolveRuntimeParticipants(storedConversation.agents) }
         : null;
@@ -1290,7 +1398,8 @@ export function createTurnOrchestrator(options: any = {}) {
       const promptMessages = buildPromptMessagesFromSnapshot(
         entry.conversationId,
         entry.promptUserMessage,
-        entry.promptSnapshotMessageIds
+        entry.promptSnapshotMessageIds,
+        slotState.turnId
       );
       if (typeof entry.onInvocationStarting === 'function') {
         await entry.onInvocationStarting({
@@ -1464,7 +1573,7 @@ export function createTurnOrchestrator(options: any = {}) {
 
   function buildSideDispatchEntry(conversation: any, turnInput: any, acceptedMessage: any, sideTarget: any, options: any = {}) {
     const conversationId = conversation.id;
-    const snapshotConversation = store.getConversation(conversationId) || conversation;
+    const snapshotConversation = getConversationHeader(conversationId) || conversation;
     const promptUserMessage =
       options.promptUserMessage || {
         ...cloneMessageSnapshot(acceptedMessage),
@@ -1472,11 +1581,7 @@ export function createTurnOrchestrator(options: any = {}) {
       };
     const promptSnapshotMessageIds = Array.isArray(options.promptSnapshotMessageIds)
       ? options.promptSnapshotMessageIds.map((messageId: any) => String(messageId || '').trim()).filter(Boolean)
-      : Array.from(
-          buildPromptSnapshotMessageIds(
-            Array.isArray(snapshotConversation && snapshotConversation.messages) ? snapshotConversation.messages : []
-          )
-        );
+      : buildPromptSnapshotMessageIdsThroughMessage(conversationId, acceptedMessage.id);
 
     return {
       conversationId,
@@ -1573,7 +1678,7 @@ export function createTurnOrchestrator(options: any = {}) {
     const delivery = input.delivery;
     const targetMessage = input.targetMessage;
     const conversation = delivery
-      ? store.getConversation(delivery.targetConversationId)
+      ? getConversationHeader(delivery.targetConversationId)
       : null;
     const targetAgent = conversation && delivery
       ? getAgentById(conversation.agents, delivery.targetAgentId)
@@ -1688,59 +1793,61 @@ export function createTurnOrchestrator(options: any = {}) {
   }
 
   function recoverPersistedSideDispatches() {
-    const listedConversations = store && typeof store.listConversations === 'function' ? store.listConversations() : [];
-    const conversationSummaries = Array.isArray(listedConversations) ? listedConversations : [];
+    let recoveryMessages = [] as any[];
 
-    for (const summary of conversationSummaries) {
-      const conversationId = String(summary && summary.id ? summary.id : '').trim();
-      const conversation = conversationId ? store.getConversation(conversationId) : null;
+    if (store && typeof store.listSideDispatchRecoveryMessages === 'function') {
+      recoveryMessages = store.listSideDispatchRecoveryMessages();
+    } else if (requiresBoundedProjections) {
+      callBoundedProjection('listSideDispatchRecoveryMessages', [], () => []);
+    } else {
+      const listedConversations = store && typeof store.listConversations === 'function' ? store.listConversations() : [];
+      for (const summary of Array.isArray(listedConversations) ? listedConversations : []) {
+        const conversationId = String(summary && summary.id || '').trim();
+        const conversation = conversationId ? store.getConversation(conversationId) : null;
+        for (const message of Array.isArray(conversation && conversation.messages) ? conversation.messages : []) {
+          if (message && message.role === 'user' && isSideDispatchMessage(conversationId, message.id, message)) {
+            recoveryMessages.push(message);
+          }
+        }
+      }
+    }
 
-      if (!conversation || !Array.isArray(conversation.messages)) {
+    for (const message of recoveryMessages) {
+      const conversationId = String(message && message.conversationId || '').trim();
+      const conversation = conversationId ? getConversationHeader(conversationId) : null;
+      if (!conversation || !message || message.role !== 'user') continue;
+
+      const metadata = message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
+      if (metadata && (metadata.dispatchCancelled === true || String(metadata.dispatchCancelledAt || '').trim())) {
+        markStaleSideDispatchReplyMessages(conversationId, message.id);
         continue;
       }
 
-      for (const message of conversation.messages) {
-        if (!message || message.role !== 'user' || !isSideDispatchMessage(conversationId, message.id, message)) {
-          continue;
-        }
+      const sideTarget = resolvePersistedSideDispatchTarget(conversation, message);
+      if (!sideTarget) continue;
 
-        const metadata = message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
-
-        if (metadata && (metadata.dispatchCancelled === true || String(metadata.dispatchCancelledAt || '').trim())) {
-          markStaleSideDispatchReplyMessages(conversationId, message.id);
-          continue;
-        }
-
-        const sideTarget = resolvePersistedSideDispatchTarget(conversation, message);
-
-        if (!sideTarget) {
-          continue;
-        }
-
-        const replyMessages = listSideDispatchReplyMessages(conversationId, message.id);
-
-        if (replyMessages.some((replyMessage: any) => isTerminalMessageStatus(replyMessage))) {
-          markSideDispatchMessage(conversationId, message.id);
-          continue;
-        }
-
-        markStaleSideDispatchReplyMessages(conversationId, message.id);
-        submitSideDispatch(
-          conversation,
-          { metadata },
-          message,
-          sideTarget,
-          {
-            promptSnapshotMessageIds: buildPromptSnapshotMessageIdsThroughMessage(conversationId, message.id),
-            projectDirSnapshot: getProjectDir ? String(getProjectDir(conversation) || '').trim() : '',
-          }
-        );
+      const replyMessages = listSideDispatchReplyMessages(conversationId, message.id);
+      if (replyMessages.some((replyMessage: any) => isTerminalMessageStatus(replyMessage))) {
+        markSideDispatchMessage(conversationId, message.id);
+        continue;
       }
+
+      markStaleSideDispatchReplyMessages(conversationId, message.id);
+      submitSideDispatch(
+        conversation,
+        { metadata },
+        message,
+        sideTarget,
+        {
+          promptSnapshotMessageIds: buildPromptSnapshotMessageIdsThroughMessage(conversationId, message.id),
+          projectDirSnapshot: getProjectDir ? String(getProjectDir(conversation) || '').trim() : '',
+        }
+      );
     }
   }
 
   function submitConversationMessage(conversationId: any, input: any) {
-    const storedConversation = store.getConversation(conversationId);
+    const storedConversation = loadRoutingConversation(conversationId);
 
     if (!storedConversation) {
       throw createHttpError(404, 'Conversation not found');
@@ -1822,7 +1929,13 @@ export function createTurnOrchestrator(options: any = {}) {
 
     return {
       acceptedMessage,
-      conversation: store.getConversation(conversationId),
+      conversation: {
+        ...(getConversationHeader(conversationId) || conversation),
+        messages: listPromptProjection(conversationId, {
+          historyLimit: DEFAULT_PROMPT_HISTORY_LIMIT,
+          requiredMessageIds: [acceptedMessage.id],
+        }),
+      },
       conversations: store.listConversations(),
       dispatch: dispatchResult.dispatch,
       dispatchLane: dispatchResult.dispatchLane,

@@ -891,6 +891,7 @@ export class ChatAppStore {
       this.agentDir = connection.agentDir;
       this.databasePath = connection.databasePath;
       this.db = connection.db;
+      this.boundedConversationProjections = true;
 
       migrateChatSchema(this.db, { backupPath: connection.chatSchemaBackupPath });
 
@@ -1080,7 +1081,7 @@ export class ChatAppStore {
         return this.getConversation(payload.id);
       });
 
-      this.updateConversationTransaction = this.db.transaction((conversationId: any, updates: any) => {
+      this.updateConversationTransaction = this.db.transaction((conversationId: any, updates: any, messageProjection: any = 'full') => {
         if (updates.title !== undefined) {
           this.conversationRepository.update(conversationId, {
             title: updates.title,
@@ -1099,7 +1100,9 @@ export class ChatAppStore {
           this.replaceConversationParticipants(conversationId, updates.participants);
         }
 
-        return this.getConversation(conversationId);
+        return messageProjection === 'none'
+          ? this.getConversationWithoutMessages(conversationId)
+          : this.getConversation(conversationId);
       });
 
       this.bindConversationProjectScopeTransaction = this.db.transaction((conversationId: any, projectScopeId: any) => {
@@ -2928,7 +2931,7 @@ export class ChatAppStore {
     }));
   }
 
-  updateConversation(conversationId: any, updates: any = {}) {
+  updateConversation(conversationId: any, updates: any = {}, options: any = {}) {
     const existing = this.getConversationWithoutMessages(conversationId);
 
     if (!existing) {
@@ -2975,7 +2978,11 @@ export class ChatAppStore {
       type,
       metadata,
       participants,
-    });
+    }, options && options.messageProjection === 'none' ? 'none' : 'full');
+  }
+
+  updateConversationWithoutMessages(conversationId: any, updates: any = {}) {
+    return this.updateConversation(conversationId, updates, { messageProjection: 'none' });
   }
 
   getConversationTitleSource(conversationId: any) {
@@ -3212,6 +3219,70 @@ export class ChatAppStore {
 
   listConversationIdsWithPendingUserMessages() {
     return this.messageRepository.listConversationIdsWithPendingUserMessages();
+  }
+
+  inferLastConsumedUserMessageId(conversationId: any) {
+    return this.messageRepository.inferLastConsumedUserMessageId(String(conversationId || '').trim());
+  }
+
+  listPendingMainUserMessages(conversationId: any, afterMessageId: any = '') {
+    return this.messageRepository
+      .listPendingMainUserMessages(
+        String(conversationId || '').trim(),
+        String(afterMessageId || '').trim()
+      )
+      .map(normalizeMessageRow)
+      .filter(Boolean);
+  }
+
+  findPreviousUserMessageId(conversationId: any, before: any) {
+    const row = this.messageRepository.findPreviousUserMessageId(
+      String(conversationId || '').trim(),
+      before
+    );
+    return String(row && row.id || '').trim();
+  }
+
+  findLatestPublicCompletedAssistantReplyAgentId(conversationId: any, participantAgentIds: any) {
+    const row = this.messageRepository.findLatestPublicCompletedAssistantReplyAgentId(
+      String(conversationId || '').trim(),
+      Array.isArray(participantAgentIds) ? participantAgentIds : []
+    );
+    return String(row && row.agent_id || '').trim();
+  }
+
+  listMessagesByIds(conversationId: any, messageIds: any) {
+    return this.messageRepository
+      .listRuntimeByIdsForConversation(
+        String(conversationId || '').trim(),
+        Array.isArray(messageIds) ? messageIds : []
+      )
+      .map(normalizeMessageRow)
+      .filter(Boolean);
+  }
+
+  listPromptMessages(conversationId: any, options: any = {}) {
+    return this.messageRepository
+      .listPromptMessages(String(conversationId || '').trim(), options)
+      .map(normalizeMessageRow)
+      .filter(Boolean);
+  }
+
+  listSideDispatchRecoveryMessages() {
+    return this.messageRepository
+      .listSideDispatchRecoveryMessages()
+      .map(normalizeMessageRow)
+      .filter(Boolean);
+  }
+
+  listAssistantRepliesForSourceMessage(conversationId: any, sourceMessageId: any) {
+    return this.messageRepository
+      .listAssistantRepliesForSourceMessage(
+        String(conversationId || '').trim(),
+        String(sourceMessageId || '').trim()
+      )
+      .map(normalizeMessageRow)
+      .filter(Boolean);
   }
 
   listMessagePage(conversationId: any, options: any = {}) {
@@ -3462,18 +3533,14 @@ export class ChatAppStore {
   }
 
   listPrivateMessagesForAgent(conversationId: any, agentId: any, options: any = {}) {
+    const normalizedConversationId = String(conversationId || '').trim();
     const normalizedAgentId = String(agentId || '').trim();
-    const limit = Number.isInteger(options.limit) && options.limit > 0 ? options.limit : 0;
-    const visibleMessages = this.listPrivateMessages(conversationId).filter((message: any) => {
-      if (!normalizedAgentId) {
-        return false;
-      }
+    const limit = Number.isInteger(options.limit) && options.limit > 0 ? Math.min(options.limit, 100) : 24;
 
-      const recipients = Array.isArray(message.recipientAgentIds) ? message.recipientAgentIds : [];
-      return recipients.includes(normalizedAgentId) || message.senderAgentId === normalizedAgentId;
-    });
-
-    return limit > 0 ? visibleMessages.slice(-limit) : visibleMessages;
+    return this.privateMessageRepository
+      .listVisibleByConversationAgent(normalizedConversationId, normalizedAgentId, limit)
+      .map(normalizePrivateMessageRow)
+      .filter(Boolean);
   }
 
   getMessage(messageId: any) {
@@ -3654,7 +3721,7 @@ export class ChatAppStore {
     });
 
     if (autoTitleFromFirstMessage) {
-      this.updateConversation(payload.conversationId, {
+      this.updateConversationWithoutMessages(payload.conversationId, {
         title: autoTitleFromFirstMessage,
         titleSource: 'auto_first_message',
       });

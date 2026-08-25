@@ -68,6 +68,11 @@ export function resolveMostRecentPublicReplyAgentId(conversation: any) {
   const participantAgentIds = new Set<string>(
     agents.map((agent: any) => normalize(agent && agent.id)).filter(Boolean)
   );
+  const projectedAgentId = normalize(conversation && conversation.latestPublicReplyAgentId);
+  if (projectedAgentId && participantAgentIds.has(projectedAgentId)) {
+    return projectedAgentId;
+  }
+
   let latest: any = null;
 
   (Array.isArray(conversation && conversation.messages) ? conversation.messages : []).forEach((message: any, index: number) => {

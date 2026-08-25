@@ -1,4 +1,8 @@
+import { DEFAULT_PROMPT_HISTORY_LIMIT } from '../../../../lib/conversation-hydration-contract';
+
 const { replacePromptUserMessage } = require('./turn-state');
+
+export { DEFAULT_PROMPT_HISTORY_LIMIT };
 
 export function isPrivateOnlyMessage(message: any) {
   const metadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : null;

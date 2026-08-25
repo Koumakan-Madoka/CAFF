@@ -1,0 +1,6 @@
+{"file": ".agents/skills/finish-work/SKILL.md", "reason": "Finish work checklist"}
+{"file": ".agents/skills/check/SKILL.md", "reason": "Code quality check spec"}
+{"file": ".trellis/spec/backend/session-goal.md", "reason": "Verify Goal semantics and no full hydration regression"}
+{"file": ".trellis/spec/backend/conversation-message-deletion.md", "reason": "Verify cursor and deletion restart compatibility"}
+{"file": ".trellis/spec/runtime/conversation-turn-queue.md", "reason": "Verify queue routing side history compatibility"}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Verify non-tautological poison and observable runtime coverage"}
