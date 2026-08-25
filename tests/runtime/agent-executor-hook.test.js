@@ -85,10 +85,13 @@ function createFakeStore(conversation) {
   const messages = [];
   conversation.messages = messages;
   const integrityWrites = [];
+  const messageWrites = { creates: [], updates: [] };
 
   return {
     integrityWrites,
+    messageWrites,
     createMessage(input) {
+      messageWrites.creates.push(input);
       const message = {
         id: input.id || `message-${nextMessageIndex++}`,
         createdAt: new Date().toISOString(),
@@ -98,6 +101,7 @@ function createFakeStore(conversation) {
       return message;
     },
     updateMessage(messageId, patch) {
+      messageWrites.updates.push({ messageId, patch });
       const message = messages.find((item) => item.id === messageId);
       assert.ok(message, `message ${messageId} should exist`);
       Object.assign(message, patch);
@@ -249,6 +253,14 @@ test('agent executor persists structured provider failure metadata on failed rep
     terminationType: '',
     summary: 'insufficient balance',
   });
+  const failedWrite = store.messageWrites.updates.find(({ patch }) => patch.status === 'failed');
+  assert.ok(failedWrite);
+  assert.ok(Array.isArray(failedWrite.patch.contextSnapshot.sections));
+  assert.equal(Object.hasOwn(failedWrite.patch.metadata.agentContextSnapshot, 'sections'), false);
+  assert.equal(JSON.stringify(failedWrite.patch.metadata).includes('displayContent'), false);
+  assert.equal(failedWrite.patch.modelUsage, null);
+  assert.equal(Object.hasOwn(failedWrite.patch.metadata, 'modelUsage'), true);
+  assert.equal(failedWrite.patch.metadata.modelUsage, null);
 
   nextRunHandle = createRunHandle('', {
     assistantErrors: ['402: insufficient quota'],
@@ -708,7 +720,13 @@ test('assistant completion hook broadcasts final message before blocking routing
   const minimalPi = require(minimalPiPath);
   const originalStartRun = minimalPi.startRun;
 
-  minimalPi.startRun = () => createRunHandle('Done. @Next');
+  minimalPi.startRun = () => createRunHandle('Done. @Next', {
+    usage: { input: 10, output: 2, totalTokens: 12 },
+    usageCalls: [
+      { key: 'call-1', responseId: 'response-1', usage: { input: 10, output: 2, totalTokens: 12 } },
+      { key: 'call-2', responseId: 'response-2', usage: { input: 4, output: 1, totalTokens: 5, cacheRead: 0 } },
+    ],
+  });
   delete require.cache[agentExecutorPath];
 
   t.after(() => {
@@ -802,6 +820,25 @@ test('assistant completion hook broadcasts final message before blocking routing
   assert.equal(routedInput.triggeredByAgentId, agent.id);
   assert.equal(routedInput.parentRunId, 'run-hook-await');
   assert.deepEqual(routedInput.agentIds, [nextAgent.id]);
+
+  assert.equal(store.messageWrites.creates.length, 1);
+  const queuedWrite = store.messageWrites.creates[0];
+  assert.ok(Array.isArray(queuedWrite.contextSnapshot.sections));
+  assert.equal(Object.hasOwn(queuedWrite.metadata.agentContextSnapshot, 'sections'), false);
+  assert.equal(queuedWrite.metadata.agentContextSnapshot.sectionCount > 0, true);
+
+  const streamingWrite = store.messageWrites.updates.find(({ patch }) => patch.status === 'streaming');
+  const completedWrite = store.messageWrites.updates.find(({ patch }) => patch.status === 'completed');
+  assert.ok(streamingWrite);
+  assert.ok(Array.isArray(streamingWrite.patch.contextSnapshot.sections));
+  assert.equal(Object.hasOwn(streamingWrite.patch.metadata.agentContextSnapshot, 'sections'), false);
+  assert.ok(completedWrite);
+  assert.ok(Array.isArray(completedWrite.patch.contextSnapshot.sections));
+  assert.equal(completedWrite.patch.modelUsage.calls.length, 2);
+  assert.equal(completedWrite.patch.metadata.modelUsage.modelCallCount, 2);
+  assert.equal(Object.hasOwn(completedWrite.patch.metadata.modelUsage, 'calls'), false);
+  assert.equal(JSON.stringify(completedWrite.patch.metadata).includes('displayContent'), false);
+
   assert.ok(
     turnProgresses.some((turn) => {
       const stage = Array.isArray(turn && turn.agents) ? turn.agents[0] : null;

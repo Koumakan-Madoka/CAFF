@@ -38,6 +38,7 @@ const {
 } = require('./conversation-title-source');
 const { deriveTitleFromFirstMessage } = require('./conversation-first-message-title');
 const {
+  buildContractMessageMetadata,
   buildStoredContextSnapshotSummary,
   retainModelUsageCalls,
 } = require('./message-detail-contract');
@@ -1188,8 +1189,18 @@ export class ChatAppStore {
         const metadata = payload.metadata && typeof payload.metadata === 'object' && !Array.isArray(payload.metadata)
           ? payload.metadata
           : {};
-        const snapshot = metadata.agentContextSnapshot;
-        if (snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot)) {
+        const details = payload.details && typeof payload.details === 'object' && !Array.isArray(payload.details)
+          ? payload.details
+          : {};
+        const snapshot = Object.prototype.hasOwnProperty.call(details, 'contextSnapshot')
+          ? details.contextSnapshot
+          : metadata.agentContextSnapshot;
+        if (
+          snapshot
+          && typeof snapshot === 'object'
+          && !Array.isArray(snapshot)
+          && Array.isArray(snapshot.sections)
+        ) {
           const snapshotId = String(snapshot.snapshotId || '').trim();
           if (snapshotId && !this.messageDetailRepository.hasContextSnapshot(payload.messageId, snapshotId)) {
             const summary = buildStoredContextSnapshotSummary(snapshot);
@@ -1207,7 +1218,10 @@ export class ChatAppStore {
           }
         }
 
-        const modelUsage = retainModelUsageCalls(metadata.modelUsage);
+        const modelUsageInput = Object.prototype.hasOwnProperty.call(details, 'modelUsage')
+          ? details.modelUsage
+          : metadata.modelUsage;
+        const modelUsage = retainModelUsageCalls(modelUsageInput);
         if (modelUsage) {
           this.messageDetailRepository.upsertModelUsage({
             messageId: payload.messageId,
@@ -1255,6 +1269,7 @@ export class ChatAppStore {
           turnId: payload.turnId,
           agentId: payload.agentId || null,
           metadata: payload.metadata,
+          details: payload.details,
           createdAt,
           updatedAt: createdAt,
         });
@@ -1304,6 +1319,7 @@ export class ChatAppStore {
           turnId: payload.turnId,
           agentId: payload.agentId || null,
           metadata: payload.metadata,
+          details: payload.details,
           createdAt: payload.createdAt,
           updatedAt: payload.updatedAt,
         });
@@ -3802,6 +3818,16 @@ export class ChatAppStore {
     // 空消息 / 纯空白消息不触发（derive 返回 null）。状态机裁决在
     // updateConversation 内完成（manual 终态等并发改写不会被覆盖）。
     const messageRole = String(payload.role || 'assistant').trim();
+    const messageDetails: any = {};
+    if (Object.prototype.hasOwnProperty.call(payload, 'contextSnapshot')) {
+      messageDetails.contextSnapshot = payload.contextSnapshot;
+    }
+    if (Object.prototype.hasOwnProperty.call(payload, 'modelUsage')) {
+      messageDetails.modelUsage = payload.modelUsage;
+    }
+    const storedMetadata = messageRole === 'assistant'
+      ? buildContractMessageMetadata(nextMetadata, messageDetails)
+      : nextMetadata;
     let autoTitleFromFirstMessage: string | null = null;
     if (messageRole === 'user' && readConversationTitleSource(conversation.metadata) === 'default') {
       const priorUserMessageCount = this.messageRepository.countByRole(payload.conversationId, 'user');
@@ -3822,7 +3848,8 @@ export class ChatAppStore {
       taskId: payload.taskId || null,
       runId: payload.runId || null,
       errorMessage: String(payload.errorMessage || '').trim(),
-      metadata: nextMetadata,
+      metadata: storedMetadata,
+      details: messageDetails,
       imageIds,
       consumedBatchIds: consumedBatchIdsForMessage,
       clientRequestId,
@@ -3881,7 +3908,17 @@ export class ChatAppStore {
     const nextRunId = updates.runId === undefined ? existing.runId : updates.runId || null;
     const nextErrorMessage =
       updates.errorMessage === undefined ? existing.errorMessage : String(updates.errorMessage || '').trim();
-    const nextMetadata = updates.metadata === undefined ? existing.metadata : updates.metadata;
+    const requestedMetadata = updates.metadata === undefined ? existing.metadata : updates.metadata;
+    const messageDetails: any = {};
+    if (Object.prototype.hasOwnProperty.call(updates, 'contextSnapshot')) {
+      messageDetails.contextSnapshot = updates.contextSnapshot;
+    }
+    if (Object.prototype.hasOwnProperty.call(updates, 'modelUsage')) {
+      messageDetails.modelUsage = updates.modelUsage;
+    }
+    const nextMetadata = existing.role === 'assistant'
+      ? buildContractMessageMetadata(requestedMetadata, messageDetails)
+      : requestedMetadata;
 
     return this.updateMessageTransaction({
       messageId,
@@ -3895,6 +3932,7 @@ export class ChatAppStore {
       runId: nextRunId,
       errorMessage: nextErrorMessage || null,
       metadata: nextMetadata,
+      details: messageDetails,
       createdAt: existing.createdAt,
       updatedAt: nowIso(),
     });

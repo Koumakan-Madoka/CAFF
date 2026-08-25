@@ -1,3 +1,4 @@
+import { projectMessageForTransport } from '../../../lib/message-detail-contract';
 import { createHttpError } from '../../http/http-errors';
 
 export const DEFAULT_CONVERSATION_MESSAGE_PAGE_LIMIT = 50;
@@ -81,7 +82,7 @@ export function buildConversationMessagePage(store: any, conversationId: string,
   const page = store.listMessagePage(conversationId, { limit, before });
 
   return {
-    items: page.items,
+    items: page.items.map(projectMessageForTransport),
     nextCursor: page.nextBefore ? encodeCursor(conversationId, page.nextBefore) : null,
     hasMore: page.hasMore,
   };

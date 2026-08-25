@@ -19,6 +19,10 @@ const {
   getAgentById,
 } = require('../mention-routing');
 const { ALWAYS_DYNAMIC_MODE_SKILL_IDS } = require('../../../../lib/mode-store');
+const {
+  buildLightweightContextSnapshotReference,
+  buildLightweightModelUsageSummary,
+} = require('../../../../lib/message-detail-contract');
 const { buildAgentTurnPromptSections, formatAgentTurnPromptSections, AGENT_PROMPT_VERSION } = require('./agent-prompt');
 const { buildInvocationImages } = require('./image-invocation');
 const { createAgentContextSnapshot } = require('./context-snapshot');
@@ -1440,6 +1444,7 @@ export function createAgentExecutor(options: any = {}) {
       sections: promptSections,
     });
 
+    const contextSnapshotReference = buildLightweightContextSnapshotReference(contextSnapshot);
     const queuedMetadata = {
       provider,
       model,
@@ -1463,7 +1468,7 @@ export function createAgentExecutor(options: any = {}) {
       triggeredByMessageId: queueItem.triggeredByMessageId || null,
       triggerType: queueItem.triggerType || 'user',
       crossConversationDeliveryId: queueItem.crossConversationDeliveryId || null,
-      agentContextSnapshot: contextSnapshot,
+      agentContextSnapshot: contextSnapshotReference,
     };
 
     const assistantMessage = store.createMessage({
@@ -1477,6 +1482,7 @@ export function createAgentExecutor(options: any = {}) {
       status: 'queued',
       taskId: stageTaskId,
       metadata: queuedMetadata,
+      contextSnapshot,
     });
 
     stage.messageId = assistantMessage.id;
@@ -1515,6 +1521,7 @@ export function createAgentExecutor(options: any = {}) {
             ...(imageBlock.missingImageIds ? { missingImageIds: imageBlock.missingImageIds } : {}),
           }],
         },
+        contextSnapshot,
       });
 
       stage.status = 'failed';
@@ -1772,6 +1779,7 @@ export function createAgentExecutor(options: any = {}) {
       taskId: stageTaskId,
       runId: handle.runId || null,
       metadata: startedMetadata,
+      contextSnapshot,
     });
 
     runStore.updateTask(stageTaskId, {
@@ -2051,8 +2059,8 @@ export function createAgentExecutor(options: any = {}) {
         triggerType: queueItem.triggerType || 'user',
         usage: result.usage && typeof result.usage === 'object' && !Array.isArray(result.usage) ? result.usage : null,
         tokenUsage,
-        modelUsage,
-        agentContextSnapshot: contextSnapshot,
+        modelUsage: buildLightweightModelUsageSummary(modelUsage),
+        agentContextSnapshot: contextSnapshotReference,
       };
       const assistantMessageDone = store.updateMessage(assistantMessage.id, {
         content: publicReply,
@@ -2061,6 +2069,8 @@ export function createAgentExecutor(options: any = {}) {
         runId: result.runId || handle.runId || null,
         errorMessage: '',
         metadata: finalMetadata,
+        contextSnapshot,
+        modelUsage,
       });
 
       markConversationRetrievalTraceUsage(store, conversationId, {
@@ -2252,10 +2262,12 @@ export function createAgentExecutor(options: any = {}) {
           triggerType: queueItem.triggerType || 'user',
           usage: errorUsage,
           tokenUsage: errorTokenUsage,
-          modelUsage: errorModelUsage,
+          modelUsage: buildLightweightModelUsageSummary(errorModelUsage),
           invocationFailure,
-          agentContextSnapshot: contextSnapshot,
+          agentContextSnapshot: contextSnapshotReference,
         },
+        contextSnapshot,
+        modelUsage: errorModelUsage,
       });
 
       stage.status = 'failed';

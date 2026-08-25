@@ -216,6 +216,13 @@ if (runner && runner.status === 'error_paused') {
 - Provider miss labels use `providerMissCount / postColdModelCallCount` so cold start is visible but excluded from the miss denominator.
 - The expanded trace should use `timelineEvents[]` as the single rendering source when present, with first-class typed rows for `model_call` and `tool_execution`, while preserving existing tool execution previews and statuses. Frontend fallback derivation exists only for legacy payloads that lack backend-normalized summary/timeline fields.
 - Historical messages without `modelUsage` keep aggregate token badges and must not throw.
+- P2C-Contract message metadata may contain only a lightweight
+  `agentContextSnapshot` reference and aggregate-only `modelUsage`. The context
+  button depends on reference presence/`snapshotId`, not snapshot sections; the
+  token badge depends on the four aggregate counters, not `modelUsage.calls`.
+- Message pages and `conversation_message_created` / `_updated` SSE frames must
+  never deliver `displayContent` or model-call arrays to the browser. Inspector
+  and Markdown content continue to load from dedicated detail endpoints.
 
 ### 4. Validation & Error Matrix
 | Case | Expected behavior |

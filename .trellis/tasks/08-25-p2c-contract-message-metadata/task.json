@@ -1,0 +1,45 @@
+{
+  "id": "08-25-p2c-contract-message-metadata",
+  "name": "08-25-p2c-contract-message-metadata",
+  "title": "P2C Contract Message Metadata",
+  "description": "Slim future assistant metadata and public message transports while preserving full Expand detail-table reads and rollback compatibility.",
+  "status": "review",
+  "dev_type": "fullstack",
+  "scope": "storage,runtime,http,sse,frontend,performance",
+  "package": null,
+  "priority": "P2",
+  "creator": "GPT",
+  "assignee": "GPT",
+  "createdAt": "2026-08-25",
+  "completedAt": null,
+  "branch": "room/c2fab452-caff-bug-bug",
+  "base_branch": "develop",
+  "worktree_path": "E:/pythonproject/worktrees/room/c2fab452-caff-bug-bug",
+  "current_phase": 2,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "check"
+    },
+    {
+      "phase": 3,
+      "action": "finish"
+    },
+    {
+      "phase": 4,
+      "action": "create-pr"
+    }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}
