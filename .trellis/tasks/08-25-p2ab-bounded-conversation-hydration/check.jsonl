@@ -4,3 +4,4 @@
 {"file": ".trellis/spec/backend/conversation-message-deletion.md", "reason": "Verify cursor and deletion restart compatibility"}
 {"file": ".trellis/spec/runtime/conversation-turn-queue.md", "reason": "Verify queue routing side history compatibility"}
 {"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Verify non-tautological poison and observable runtime coverage"}
+{"file":"tests/storage/turn-runtime-no-full-hydration.test.js","at":"2026-08-25T04:24:00.000Z","result":"pass","evidence":"Review-fix regressions pass 14/14, including SQL-limited 300-row drain checkpoints and nullable imported turn history. Full focused runtime/storage/HTTP/DAG verification and the six-scenario production-shape gate remain green; turn-orchestrator has only its two known Windows EPERM cleanup-hook reports."}

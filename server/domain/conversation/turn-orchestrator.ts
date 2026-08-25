@@ -1,7 +1,10 @@
 const { randomUUID } = require('node:crypto');
 const path = require('node:path');
 
-const { requiresBoundedConversationProjections } = require('../../../lib/conversation-hydration-contract');
+const {
+  MAX_RUNTIME_MESSAGE_ID_PROJECTION,
+  requiresBoundedConversationProjections,
+} = require('../../../lib/conversation-hydration-contract');
 const { createSqliteRunStore } = require('../../../lib/sqlite-store');
 const { createHttpError } = require('../../http/http-errors');
 const { pickConversationSummary } = require('./conversation-view');
@@ -583,9 +586,9 @@ export function createTurnOrchestrator(options: any = {}) {
     };
   }
 
-  function listPendingUserMessages(conversationId: any, afterMessageId: any = '') {
+  function listPendingUserMessages(conversationId: any, afterMessageId: any = '', options: any = {}) {
     if (store && typeof store.listPendingMainUserMessages === 'function') {
-      return store.listPendingMainUserMessages(conversationId, afterMessageId);
+      return store.listPendingMainUserMessages(conversationId, afterMessageId, options);
     }
     if (requiresBoundedProjections) {
       return callBoundedProjection('listPendingMainUserMessages', [], () => []);
@@ -609,7 +612,8 @@ export function createTurnOrchestrator(options: any = {}) {
         pendingMessages.push(message);
       }
     }
-    return pendingMessages;
+    const limit = Number.isInteger(options.limit) && options.limit > 0 ? options.limit : 0;
+    return limit ? pendingMessages.slice(0, limit) : pendingMessages;
   }
 
   function hasActiveAgentSlots(conversationId: any) {
@@ -1225,7 +1229,11 @@ export function createTurnOrchestrator(options: any = {}) {
           }
 
           const queueState = ensureQueueState(normalizedConversationId);
-          const batchMessages = listPendingUserMessages(normalizedConversationId, queueState.lastConsumedUserMessageId);
+          const batchMessages = listPendingUserMessages(
+            normalizedConversationId,
+            queueState.lastConsumedUserMessageId,
+            { limit: MAX_RUNTIME_MESSAGE_ID_PROJECTION }
+          );
 
           if (batchMessages.length === 0) {
             const continuation = enqueueGoalContinuationMessage(normalizedConversationId, {

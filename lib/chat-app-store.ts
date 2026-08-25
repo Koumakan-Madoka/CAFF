@@ -3225,11 +3225,12 @@ export class ChatAppStore {
     return this.messageRepository.inferLastConsumedUserMessageId(String(conversationId || '').trim());
   }
 
-  listPendingMainUserMessages(conversationId: any, afterMessageId: any = '') {
+  listPendingMainUserMessages(conversationId: any, afterMessageId: any = '', options: any = {}) {
     return this.messageRepository
       .listPendingMainUserMessages(
         String(conversationId || '').trim(),
-        String(afterMessageId || '').trim()
+        String(afterMessageId || '').trim(),
+        options
       )
       .map(normalizeMessageRow)
       .filter(Boolean);

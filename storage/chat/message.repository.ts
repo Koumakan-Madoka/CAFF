@@ -358,9 +358,12 @@ export class ChatMessageRepository {
     return row && row.id ? String(row.id).trim() : '';
   }
 
-  listPendingMainUserMessages(conversationId: string, afterMessageId: string = '') {
+  listPendingMainUserMessages(conversationId: string, afterMessageId: string = '', options: any = {}) {
     const normalizedConversationId = String(conversationId || '').trim();
     const normalizedAfterMessageId = String(afterMessageId || '').trim();
+    const limit = Number.isInteger(options.limit) && options.limit > 0
+      ? Math.min(options.limit, MAX_RUNTIME_MESSAGE_ID_PROJECTION)
+      : -1;
 
     if (!normalizedConversationId) {
       return [];
@@ -389,9 +392,11 @@ export class ChatMessageRepository {
           )
         )
       ORDER BY message.created_at ASC, message.id ASC
+      LIMIT @limit
     `).all({
       conversationId: normalizedConversationId,
       afterMessageId: normalizedAfterMessageId,
+      limit,
     });
   }
 
@@ -479,7 +484,7 @@ export class ChatMessageRepository {
         FROM chat_messages
         WHERE conversation_id = @conversationId
           AND @historyLimit > 0
-          AND (@currentTurnId = '' OR turn_id <> @currentTurnId)
+          AND (@currentTurnId = '' OR turn_id IS NULL OR turn_id <> @currentTurnId)
           AND (
             @beforeCreatedAt = ''
             OR created_at < @beforeCreatedAt

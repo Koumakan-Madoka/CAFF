@@ -2,8 +2,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const Database = require('better-sqlite3');
 
 const { createChatAppStore } = require('../../build/lib/chat-app-store');
+const { createChatMessageRepository } = require('../../build/storage/chat/message.repository');
 const { createTurnOrchestrator } = require('../../build/server/domain/conversation/turn-orchestrator');
 const { applySessionGoalAction } = require('../../build/server/domain/conversation/session-goal');
 const { withTempDir } = require('../helpers/temp-dir');
@@ -195,6 +197,87 @@ test('pending queue depth after a durable cursor never hydrates full history', {
   assert.equal(orchestrator.getConversationQueueDepth(conversation.id), 1);
 });
 
+test('pending queue drains more than 256 messages in cursor-safe bounded batches', { concurrency: false }, async (t) => {
+  const harness = createHarness(t, 'pending-batches');
+  const agent = saveAgent(harness.store, 'pending-batches-agent', 'Pending Batches Agent');
+  const conversation = createConversation(harness.store, {
+    id: 'pending-batches-no-hydration',
+    participants: [{ agentId: agent.id }],
+    metadata: {
+      conversationTurnQueue: {
+        lastConsumedUserMessageId: 'pending-batches-consumed',
+      },
+    },
+  });
+  createMessage(harness.store, conversation.id, {
+    id: 'pending-batches-consumed',
+    role: 'user',
+    content: 'already consumed',
+    createdAt: '2000-01-01T00:00:00.000Z',
+  });
+
+  const pendingMessageIds = [];
+  for (let index = 0; index < 299; index += 1) {
+    const messageId = `pending-batches-${String(index).padStart(3, '0')}`;
+    pendingMessageIds.push(messageId);
+    createMessage(harness.store, conversation.id, {
+      id: messageId,
+      role: 'user',
+      content: `pending message ${index}`,
+      createdAt: new Date(Date.UTC(2000, 0, 1, 0, 0, 1, index)).toISOString(),
+    });
+  }
+
+  const persistedCursors = [];
+  const updateConversationWithoutMessages = harness.store.updateConversationWithoutMessages.bind(harness.store);
+  harness.store.updateConversationWithoutMessages = (conversationId, updates) => {
+    const cursor = String(
+      updates
+      && updates.metadata
+      && updates.metadata.conversationTurnQueue
+      && updates.metadata.conversationTurnQueue.lastConsumedUserMessageId
+      || ''
+    ).trim();
+    if (cursor && persistedCursors[persistedCursors.length - 1] !== cursor) {
+      persistedCursors.push(cursor);
+    }
+    return updateConversationWithoutMessages(conversationId, updates);
+  };
+
+  const executionPromptIds = [];
+  const orchestrator = createOrchestrator(harness, {
+    async executeConversationAgent(input) {
+      executionPromptIds.push(input.promptMessages.map((message) => message.id));
+      input.completedReplies.push({
+        id: `pending-batches-reply-${executionPromptIds.length}`,
+        agentId: input.agent.id,
+        senderName: input.agent.name,
+        content: `completed bounded batch ${executionPromptIds.length}`,
+        status: 'completed',
+      });
+      return { stopTurn: true, terminationReason: 'agent_final' };
+    },
+  });
+  poisonFullHydration(harness.store);
+
+  const submitted = orchestrator.submitConversationMessage(conversation.id, {
+    content: 'pending message 299',
+  });
+  pendingMessageIds.push(submitted.acceptedMessage.id);
+
+  await waitForCondition(() => {
+    const header = readHeader(harness.store, conversation.id);
+    return header.metadata.conversationTurnQueue.lastConsumedUserMessageId === submitted.acceptedMessage.id
+      && orchestrator.listTurnSummaries({ conversationId: conversation.id }).length === 0;
+  });
+
+  assert.equal(executionPromptIds.length, 2);
+  assert.deepEqual(persistedCursors, [pendingMessageIds[255], submitted.acceptedMessage.id]);
+  assert.equal(executionPromptIds[0].filter((id) => pendingMessageIds.slice(0, 256).includes(id)).length, 256);
+  assert.equal(executionPromptIds[1].filter((id) => pendingMessageIds.slice(256).includes(id)).length, 44);
+  assert.equal(orchestrator.getConversationQueueDepth(conversation.id), 0);
+});
+
 test('Goal continuation completes one bounded iteration without full hydration', { concurrency: false }, async (t) => {
   const harness = createHarness(t, 'goal');
   const agent = saveAgent(harness.store, 'goal-agent', 'Goal Agent');
@@ -358,6 +441,75 @@ test('bounded prompt union keeps an old explicit batch row and current-turn repl
   assert.equal(finalIds.filter((id) => id === 'prompt-explicit-old').length, 1);
   assert.equal(finalIds.filter((id) => id === 'prompt-current-reply').length, 1);
   assert.equal(finalIds.length, 26, 'fixed prompt union plus one current-turn reply');
+});
+
+test('message repository prompt projection preserves imported rows with null turn ids', { concurrency: false }, (t) => {
+  const db = new Database(':memory:');
+  t.after(() => db.close());
+  db.exec(`
+    CREATE TABLE chat_messages (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL,
+      turn_id TEXT,
+      role TEXT NOT NULL,
+      agent_id TEXT,
+      sender_name TEXT NOT NULL,
+      content TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'completed',
+      task_id TEXT,
+      run_id INTEGER,
+      error_message TEXT,
+      metadata_json TEXT,
+      client_request_id TEXT,
+      created_at TEXT NOT NULL
+    );
+  `);
+  const repository = createChatMessageRepository(db);
+  const insertMessage = db.prepare(`
+    INSERT INTO chat_messages (
+      id, conversation_id, turn_id, role, sender_name, content, status, metadata_json, created_at
+    ) VALUES (
+      @id, 'null-turn-history', @turnId, @role, @senderName, @content, 'completed', '{}', @createdAt
+    )
+  `);
+
+  const legacyMessageIds = [];
+  for (let index = 0; index < 30; index += 1) {
+    const messageId = `null-turn-history-${String(index).padStart(2, '0')}`;
+    legacyMessageIds.push(messageId);
+    insertMessage.run({
+      id: messageId,
+      turnId: null,
+      role: index % 2 === 0 ? 'user' : 'assistant',
+      senderName: index % 2 === 0 ? 'You' : 'Null Turn Agent',
+      content: `legacy history ${index}`,
+      createdAt: `2000-01-01T00:00:${String(index).padStart(2, '0')}.000Z`,
+    });
+  }
+
+  const currentMessageIds = [];
+  for (let index = 0; index < 3; index += 1) {
+    const messageId = `null-turn-current-${index}`;
+    currentMessageIds.push(messageId);
+    insertMessage.run({
+      id: messageId,
+      turnId: 'current-turn',
+      role: index === 0 ? 'user' : 'assistant',
+      senderName: index === 0 ? 'You' : 'Null Turn Agent',
+      content: `current turn ${index}`,
+      createdAt: `2000-01-01T00:01:0${index}.000Z`,
+    });
+  }
+
+  const projected = repository.listPromptMessages('null-turn-history', {
+    historyLimit: 24,
+    currentTurnId: 'current-turn',
+  });
+
+  assert.deepEqual(
+    projected.map((message) => message.id),
+    [...legacyMessageIds.slice(-24), ...currentMessageIds]
+  );
 });
 
 test('targeted default routing excludes ineligible replies and uses canonical id tie order', { concurrency: false }, (t) => {

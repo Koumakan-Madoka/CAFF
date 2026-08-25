@@ -7,7 +7,7 @@
 Persistent Goal/turn execution must not materialize a conversation's complete public or private message history. Production `ChatAppStore` exposes these purpose-specific projections:
 
 - `getConversationWithoutMessages(conversationId)` and `updateConversationWithoutMessages(conversationId, updates)` for header/metadata/roster reads and writes.
-- `inferLastConsumedUserMessageId(conversationId)` and `listPendingMainUserMessages(conversationId, afterMessageId)` for restart inference and cursor-scoped main-lane discovery.
+- `inferLastConsumedUserMessageId(conversationId)` and `listPendingMainUserMessages(conversationId, afterMessageId, { limit? })` for restart inference and cursor-scoped main-lane discovery; queue drain supplies the 256-row runtime projection limit so each successful batch advances only across rows it hydrated.
 - `findPreviousUserMessageId(conversationId, { createdAt, id })` for deletion reconciliation.
 - `findLatestPublicCompletedAssistantReplyAgentId(conversationId, participantAgentIds)` for default routing without parsing a reply row in JavaScript.
 - `listMessagesByIds(conversationId, messageIds)` for bounded batch hydration.
@@ -15,7 +15,7 @@ Persistent Goal/turn execution must not materialize a conversation's complete pu
 - `listSideDispatchRecoveryMessages()` and `listAssistantRepliesForSourceMessage(conversationId, sourceMessageId)` for restart-safe side-lane recovery.
 - `listPrivateMessagesForAgent(conversationId, agentId, { limit })` for authorized bounded mailbox projection.
 
-Every message projection is ordered by `(createdAt, id)` ascending. Runtime message-id inputs are deduplicated and capped at 256; prompt history accepts `0..100`, defaults to 24, and production callers use 24. No schema or migration is required: the existing `(conversation_id, created_at, id)`, `turn_id`, and primary-key indexes support these reads.
+Every message projection is ordered by `(createdAt, id)` ascending. Runtime message-id inputs are deduplicated and capped at 256; prompt history accepts `0..100`, defaults to 24, and production callers use 24. The authorized private mailbox defaults to 24 rows and caps an explicit limit at 100. No schema or migration is required: the existing `(conversation_id, created_at, id)`, `turn_id`, and primary-key indexes support these reads.
 
 ### Runtime Contracts
 
@@ -23,7 +23,7 @@ Every message projection is ordered by `(createdAt, id)` ascending. Runtime mess
 - Turn start freezes `promptSnapshotMessageIds` from the latest 24 ordinary history rows plus every claimed batch/source row. Later hops re-read only those ids plus rows with the current `turnId`; they do not recompute the recent-24 window, so current replies cannot evict turn-start history.
 - Prompt injection, Agent Context Inspector capture, and the final returned conversation projection consume the same bounded union. Current-turn and explicit rows survive even when older than the recent window; union duplicates are removed and canonical order is preserved.
 - Main queue startup prefers the durable `conversationTurnQueue.lastConsumedUserMessageId`, including explicit empty string. Missing durable metadata uses targeted legacy inference. Pending discovery excludes persisted `dispatchLane='side'` rows and still honors the in-memory side-id set.
-- Successful main batches persist the consumed user id; failed batches leave both cursors unchanged. Deleting the consumed row reads only the previous surviving user id and persists the reconciled cursor. Assistant-only deletion still persists the unchanged cursor through the existing deletion service contract.
+- Successful main batches persist the consumed user id; failed batches leave both cursors unchanged. More than 256 pending user rows are selected in stable SQL-limited batches, and the durable cursor advances only to the last row of each successful batch before the next batch is selected. Deleting the consumed row reads only the previous surviving user id and persists the reconciled cursor. Assistant-only deletion still persists the unchanged cursor through the existing deletion service contract.
 - Default routing priority remains explicit `initialAgentIds` > actionable user mention > latest qualifying public completed current-participant reply > first participant. The SQL projection excludes failed/incomplete/empty/private/removed-Agent rows and uses `(createdAt,id)` for ties.
 - Side submission/recovery stores a bounded snapshot id set through the source message. Slot grant rehydrates current content for exactly those ids plus its current turn; later ids remain invisible. Restart discovers only unresolved persisted side sources instead of hydrating every conversation.
 - Private mailbox SQL applies authorization before its row limit. Public history never gains private-message repository rows, and old public `privateOnly` rows keep the existing prompt visibility filter.
@@ -36,6 +36,8 @@ Every message projection is ordered by `(createdAt, id)` ascending. Runtime mess
 | exact baseline `75deccd8` with `getConversation` / `listMessages` poison | independent restart, queue, Goal, routing, side, private, and deletion tests fail at old hydration entrypoints |
 | current implementation with the same poison | all scenarios pass; forbidden call count stays zero |
 | >24 history plus old explicit source and a current reply | prompt has 24 + source once; final union adds current reply once; canonical order |
+| 300 pending main-lane user rows | drain executes 256 then 44; each batch contains all rows its cursor crosses and persists that batch endpoint only after success |
+| imported nullable `turn_id` history plus a current turn | recent history retains the latest 24 nullable rows and unions the current-turn rows |
 | side source followed by a later persisted row | recovered prompt contains 24-before + source; later row absent |
 | required production method removed | fail closed with 501 before a run-store/active-turn side effect |
 | 15,052-message production-shape gate | six scenarios pass pinned heap/RSS/latency/cardinality budgets and SQLite integrity check |
