@@ -413,6 +413,7 @@ window.caffShell.setComposerValue(restoredText);
 | Desktop 1440 | Left rail, fixed header, side-by-side index/detail panes, no document overflow. |
 | Tablet 820 | Left rail and two bounded panes remain usable; no horizontal overflow. |
 | Mobile 375 | Bottom rail is 56px; panes stack; content is the only internal scroll region; header text does not overlap refresh. |
+| Metrics filters at 1440/820/375 | Since and Until are single-column, fully contained by the narrow filter form, and never overlap; both native date-picker buttons remain reachable. |
 | Native list keyboard selection | Focusing a collection button and pressing Enter updates active selection and detail content. |
 | Empty projects payload | A semantic `li` empty state appears and unavailable selected-project actions are disabled. |
 | Missing shared helper | Page entry throws an explicit missing-module error instead of rendering a partial screen. |
@@ -427,8 +428,9 @@ window.caffShell.setComposerValue(restoredText);
   `scripts/verify-ui.mjs`. It reuses the runner-owned browser, loopback app,
   temporary SQLite, and output directory; it must not start a second service.
 - Browser proof covers all four routes at 1440 plus responsive 820/375,
-  keyboard selection, an intercepted empty projects payload, visible 44px
-  targets, document containment, and clean page/console/HTTP diagnostics.
+  keyboard selection, an intercepted empty projects payload, metrics date-input
+  containment/non-overlap at 1440/820/375, visible 44px targets, document
+  containment, and clean page/console/HTTP diagnostics.
 - The combined UI evidence stays bounded to three PNG files and one walkthrough
   WebM. One PNG is `ui-v2-1440-management.png`.
 - `npm run check` includes `public/shared/management-list.js` and all four page

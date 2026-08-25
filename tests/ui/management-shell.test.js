@@ -147,6 +147,8 @@ test('management CSS owns viewport, bounded panes, mobile rail, and touch target
   assert.match(STYLES, /body\.management-app\s+\.management-content\s*\{[^}]*grid-template-columns:[^}]*minmax\(0,\s*1fr\)/s);
   assert.match(STYLES, /body\.management-app\s+\.management-pane\s*\{[^}]*overflow:\s*auto/s);
   assert.match(STYLES, /body\.management-app\s+\.agent-list-item\s*\{[^}]*min-height:\s*44px/s);
+  assert.match(STYLES, /body\.management-app\[data-page="metrics"\]\s+#filter-form\s+\.field-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s);
+  assert.match(STYLES, /body\.management-app\[data-page="metrics"\]\s+#filter-form\s+input\[type="date"\]\s*\{[^}]*min-width:\s*0[^}]*width:\s*100%/s);
   assert.match(STYLES, /@media\s*\(max-width:\s*767px\)[\s\S]*body\.management-app\s+\.rail[\s\S]*position:\s*fixed/s);
   assert.match(STYLES, /@media\s*\(max-width:\s*767px\)[\s\S]*body\.management-app\s+\.management-content[\s\S]*grid-template-columns:\s*1fr/s);
 });
@@ -163,6 +165,12 @@ test('test:ui runs the repository-owned management page verifier', () => {
   assert.equal(fs.existsSync(MANAGEMENT_VERIFY), true, 'management browser verifier must exist');
   assert.match(VERIFY_UI, /verifyManagementPages/);
   assert.match(VERIFY_UI, /ui-v2-1440-management\.png/);
+
+  const managementVerifier = fs.readFileSync(MANAGEMENT_VERIFY, 'utf8');
+  assert.match(managementVerifier, /since-input/);
+  assert.match(managementVerifier, /until-input/);
+  assert.match(managementVerifier, /\[1440, 820, 375\]/);
+  assert.match(managementVerifier, /date controls are contained, non-overlapping, and reachable/);
 
   const screenshotNames = new Set(VERIFY_UI.match(/ui-v2-[\w-]+\.png/g) || []);
   assert.ok(screenshotNames.size > 0 && screenshotNames.size <= 3, 'combined browser evidence remains bounded to three PNGs');
