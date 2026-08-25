@@ -118,7 +118,7 @@ test('official MCP SDK is a direct exact dependency', () => {
   assert.doesNotMatch(packageJson.dependencies['@modelcontextprotocol/sdk'], /^[~^]/u);
 });
 
-test('Pi extension exposes only fixed business facade schemas', async () => {
+test('Pi extension omits conversation_request from the model-visible facade schemas', async () => {
   const extensionPath = path.resolve('lib/pi-extensions/caff-capabilities.mjs');
   const extension = await import(`${pathToFileURL(extensionPath).href}?schema=${Date.now()}`);
   const tools = [];
@@ -132,13 +132,11 @@ test('Pi extension exposes only fixed business facade schemas', async () => {
     'conversation_notify',
     'room_workspace_preview',
     'room_workspace_bind',
-    'conversation_request',
   ]);
 
   const notify = tools[0];
   const preview = tools[1];
   const bind = tools[2];
-  const request = tools[3];
   assert.deepEqual(Object.keys(preview.parameters.properties), []);
   assert.deepEqual(Object.keys(bind.parameters.properties), ['confirm']);
   assert.equal(preview.parameters.additionalProperties, false);
@@ -150,15 +148,7 @@ test('Pi extension exposes only fixed business facade schemas', async () => {
     'content',
     'idempotencyKey',
   ]);
-  assert.deepEqual(Object.keys(request.parameters.properties), [
-    'targetConversationId',
-    'targetAgentId',
-    'content',
-    'idempotencyKey',
-    'deadlineSeconds',
-  ]);
   assert.equal(notify.parameters.additionalProperties, false);
-  assert.equal(request.parameters.additionalProperties, false);
 
   const visibleSchema = JSON.stringify(tools.map((tool) => tool.parameters));
   for (const forbiddenField of FORBIDDEN_PROXY_FIELDS) {
