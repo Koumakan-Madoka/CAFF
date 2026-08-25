@@ -3,7 +3,7 @@
   "name": "08-24-p1-metrics-sse-bounded-observability",
   "title": "P1: bounded HTTP metrics window, SSE backpressure budget, and runtime observability",
   "description": "Eliminate the two remaining request-driven OOM risk classes from the frozen OOM remediation plan (a9f9eec) and add lightweight runtime observability: /api/metrics/agent requires a complete <=31-day window and must not retain unbounded raw rows; SSE applies a per-client 2 MiB combined budget with 5s per-blocked-episode drain deadline; add heap/RSS, turn/queue/invocation, and SSE buffer counters. Offline CLI keeps explicit unbounded mode.",
-  "status": "in_progress",
+  "status": "completed",
   "dev_type": "fullstack",
   "scope": [
     "backend",
@@ -17,7 +17,7 @@
   "creator": "GLM",
   "assignee": "GLM",
   "createdAt": "2026-08-24",
-  "completedAt": null,
+  "completedAt": "2026-08-25",
   "branch": "room/c2fab452-caff-bug-bug",
   "base_branch": "develop",
   "worktree_path": "E:/pythonproject/worktrees/room/c2fab452-caff-bug-bug",
