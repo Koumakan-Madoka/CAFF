@@ -434,3 +434,37 @@ Replaced persistent Goal/turn full-conversation hydration with targeted SQLite p
 ### Next Steps
 
 - None - task complete
+
+
+## Session 10: P2C Expand message detail tables
+
+**Date**: 2026-08-25
+**Task**: P2C Expand message detail tables
+**Branch**: `room/c2fab452-caff-bug-bug`
+
+### Summary
+
+Added reversible message-keyed context snapshot and model usage detail storage with atomic dual writes, table-first fallback reads, and bounded cursor pagination; completed independent review, isolated manual acceptance, and feature PR #94 merge without touching production 3100.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `bd25d0ce542be547ee9fc1e97b1b4f77b611fc99` | (see git log) |
+| `2ed64ee6e4b225c85523d34d8a75d4805d58ea6d` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
