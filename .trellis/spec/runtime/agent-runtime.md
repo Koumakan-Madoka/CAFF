@@ -305,9 +305,12 @@ store.updateMessage(messageId, { metadata: { ...metadata, invocationFailure } })
   - `usage`: aggregated provider usage object for the run, or `null`.
   - `tokenUsage`: normalized `{ inputTokens, uncachedInputTokens, outputTokens, totalTokens, cacheReadTokens, cacheWriteTokens, inputCostUsd, outputCostUsd, cacheReadCostUsd, cacheWriteCostUsd, totalCostUsd }`; token values are non-negative integers or `null`, cost values are non-negative USD numbers or `null`.
   - `modelUsage`: normalized per-run model-call summary `{ modelCallCount, coldStartModelCallCount, postColdModelCallCount, providerMissCount, calls[] }`, where each call has a 1-based `sequence`, canonical `isColdStart` (`coldStart` remains a legacy alias), `providerMiss`, and normalized `tokenUsage`; `providerMiss` means a non-cold-start call has `cacheReadTokens === 0` and positive uncached input.
+- P2C-Expand detail table `chat_message_model_usage_calls` stores the four full-run aggregate counters plus at most 64 `calls[]`: the first call and latest 63. It also stores `callsTruncated`, `retainedCallCount`, and `droppedCallCount` projections. The message metadata remains complete during Expand.
 
 ### 3. Contracts
 - Runtime preserves raw usage field names and sums numeric usage/cost fields across unique assistant model calls in the run.
+- Completed/error message updates and the model usage detail UPSERT share one SQLite transaction. No usable model calls means metadata `modelUsage=null` and no detail row.
+- Detail reads prefer the table and fall back to legacy metadata. Aggregate counts always represent the full run and must not be recomputed from the retained call array. Retention preserves original `sequence` values: 65 calls retain sequences `1, 3..65`; 100 calls retain `1, 38..100`.
 - Normalization accepts common provider key variants: `input_tokens` / `inputTokens` / `prompt_tokens` / `promptTokens`, `output_tokens` / `outputTokens` / `completion_tokens` / `completionTokens`, `cacheRead` / `cache_read` / `cacheReadTokens` / `cache_read_tokens`, `cacheWrite` / `cache_write` / `cacheWriteTokens` / `cache_write_tokens`, and `total_tokens` / `totalTokens`.
 - Provider `input` counts may mean non-cached input only. Normalized `inputTokens` represents effective prompt/context input, computed as `uncachedInputTokens + cacheReadTokens + cacheWriteTokens` when cache fields exist; `uncachedInputTokens` preserves the raw non-cached provider input.
 - If total is absent but token fields exist, total is computed as `(inputTokens || 0) + (outputTokens || 0)`, where `inputTokens` already includes cache read/write tokens.
@@ -330,6 +333,8 @@ store.updateMessage(messageId, { metadata: { ...metadata, invocationFailure } })
 
 ### 5. Tests Required
 - `tests/runtime/pi-runtime.test.js` asserts assistant `usage` survives `startRun` completion and multiple assistant model-call usage objects aggregate without double-counting `agent_end` duplicates.
+- `tests/storage/message-detail-expand.test.js` asserts 63/64/65/100 retention boundaries, original sequence preservation, full aggregate counters, full metadata preservation, completed/error atomicity, restart, and rollback injection.
+- `scripts/p2c-expand-gate.js` records production-shape snapshot/model usage disk, heap/RSS, latency, and integrity evidence.
 - `npm run check`, `npm run build`, and `npm run typecheck` must pass after UI/runtime changes.
 
 ### 6. Wrong vs Correct
@@ -340,6 +345,7 @@ store.updateMessage(messageId, { metadata: { ...metadata, invocationFailure } })
 #### Correct
 - Capture usage once in `lib/pi-runtime.ts`, persist it into assistant message metadata when the reply completes, and let the timeline render from the normal conversation payload.
 - Normalize multiple provider key variants while preserving raw `metadata.usage` for diagnostics.
+- Keep the full Expand metadata and retained detail write inside `ChatAppStore.updateMessageTransaction`; table retention must not mutate or replace the metadata object.
 - Use `模型调用` / `toolExecutionCount` wording for observability; do not use tool step counts as a proxy for model-call denominators.
 - Keep model price metadata in `models.json` as pi-ai per-million-token USD rates: `{ input, output, cacheRead, cacheWrite }`; if a provider only publishes cached-read pricing, set `cacheWrite` to the normal input rate unless the provider documents a distinct write rate.
 

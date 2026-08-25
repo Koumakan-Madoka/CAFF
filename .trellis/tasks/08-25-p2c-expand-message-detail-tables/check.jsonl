@@ -1,0 +1,14 @@
+{"file": ".agents/skills/finish-work/SKILL.md", "reason": "Finish work checklist"}
+{"file": ".agents/skills/check/SKILL.md", "reason": "Code quality check spec"}
+{"file": ".trellis/spec/backend/architecture.md", "reason": "Verify layer ownership and migration scope."}
+{"file": ".trellis/spec/backend/controller-patterns.md", "reason": "Verify bounded API validation and errors."}
+{"file": ".trellis/spec/runtime/agent-context-inspector.md", "reason": "Verify dual-read Inspector/export compatibility."}
+{"file": ".trellis/spec/runtime/agent-runtime.md", "reason": "Verify all assistant message write states."}
+{"file": ".trellis/spec/backend/conversation-message-deletion.md", "reason": "Verify cascades and rollback semantics."}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Verify real SQLite and non-tautological coverage."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Verify round-trip contracts across layers."}
+{"file": ".trellis/spec/backend/message-detail-storage.md", "reason": "Verify schema, atomicity, compatibility, bounded pagination, and rollback evidence against the executable contract."}
+{"file":"tests/storage/message-detail-expand.test.js","at":"2026-08-25T06:48:00.000Z","result":"pass","evidence":"Real SQLite focused suite passes 6/6: DDL/index/FK, byte-identical no-backfill restart, 63/64/65/100 retention, queued/streaming/completed/failed atomic writes, immutable snapshot no-rewrite, injected rollback, table priority, metadata fallback, and message/conversation cascade."}
+{"file":"tests/http/context-snapshot-pagination.test.js","at":"2026-08-25T06:49:00.000Z","result":"pass","evidence":"Mixed old/new/table-only pagination passes with getConversation/listMessages throwing: default 50, max 100, stable tie pages, cross-conversation and malformed cursor rejection, invalid limits, Inspector detail, Markdown export, and malformed/null/string legacy metadata exclusion."}
+{"file":"tests/smoke/server-smoke.test.js","at":"2026-08-25T06:52:00.000Z","result":"pass","evidence":"Existing storage/deletion/Inspector/agent-executor/server smoke regression batch passed 116/116. Goal/turn/private/image/handoff batch executed 194 test bodies: 192 pass and only the same two pre-existing Windows EPERM temporary-directory cleanup hooks; both affected image-preflight test bodies passed."}
+{"file":"package.json","at":"2026-08-25T07:10:00.000Z","result":"pass","evidence":"Final system Node verification passed npm run check, npm run typecheck, npm run typecheck:public, npm run build, focused Expand 6/6, storage/Inspector/executor/smoke 116/116, and production-shape gate. git diff --check and Trellis validate passed. High-confidence credential patterns found no matches across every changed/new file; gitleaks, shipguard, and git-security-scan are not installed, so no external scanner claim is made."}
