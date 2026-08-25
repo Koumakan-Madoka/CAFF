@@ -413,6 +413,7 @@ window.caffShell.setComposerValue(restoredText);
 | Desktop 1440 | Left rail, fixed header, side-by-side index/detail panes, no document overflow. |
 | Tablet 820 | Left rail and two bounded panes remain usable; no horizontal overflow. |
 | Mobile 375 | Bottom rail is 56px; panes stack; content is the only internal scroll region; header text does not overlap refresh. |
+| Metrics filters at 1440/820/375 | Since and Until are single-column, fully contained by the narrow filter form, and never overlap; both native date-picker buttons remain reachable. |
 | Native list keyboard selection | Focusing a collection button and pressing Enter updates active selection and detail content. |
 | Empty projects payload | A semantic `li` empty state appears and unavailable selected-project actions are disabled. |
 | Missing shared helper | Page entry throws an explicit missing-module error instead of rendering a partial screen. |
@@ -427,8 +428,9 @@ window.caffShell.setComposerValue(restoredText);
   `scripts/verify-ui.mjs`. It reuses the runner-owned browser, loopback app,
   temporary SQLite, and output directory; it must not start a second service.
 - Browser proof covers all four routes at 1440 plus responsive 820/375,
-  keyboard selection, an intercepted empty projects payload, visible 44px
-  targets, document containment, and clean page/console/HTTP diagnostics.
+  keyboard selection, an intercepted empty projects payload, metrics date-input
+  containment/non-overlap at 1440/820/375, visible 44px targets, document
+  containment, and clean page/console/HTTP diagnostics.
 - The combined UI evidence stays bounded to three PNG files and one walkthrough
   WebM. One PNG is `ui-v2-1440-management.png`.
 - `npm run check` includes `public/shared/management-list.js` and all four page
@@ -605,6 +607,38 @@ const icon = window.CaffIcons.create('archive', {
   className: 'app-icon digest-kind-icon',
 });
 ```
+
+## SSE Stream Recovery After Errored Reopen
+
+### Scope / Trigger
+
+- Applies when `public/app.js` stream open/error handlers or `public/chat/stream-recovery.js` change. Contract source: reviewed OOM remediation plan a9f9eec (P1B browser recovery).
+
+### Contract
+
+- Only an **errored** stream that successfully **reopens** triggers recovery: `markStreamError()` is called in the error handler before scheduling the existing manual reconnect (close + fixed 1.5s delay — unchanged; no reliance on EventSource native retry or a server `retry:` field).
+- On open, `shouldRecoverOnOpen()` returns true exactly once per errored episode; the open handler then captures `preferredConversationId = state.selectedConversationId` and runs one `refreshAll(conversationId)` (bootstrap/list/runtime/current conversation over HTTP) via `runRecoveryRefresh`. The refresh failure path swallows errors; `finishRecovery()` runs in `finally` so a failed refresh re-arms future episodes without blocking them.
+- Initial/healthy opens never refresh — startup already calls `refreshAll()` once; recovery must not duplicate bootstrap.
+- Repeated opens while a recovery refresh is in flight never start a parallel `refreshAll`; the coalesced episode is surfaced by `finishRecovery()` returning `true` and runs as **exactly one serialized trailing refresh** after the in-flight one settles (a trailing refresh re-reads `state.selectedConversationId` at its start instead of reusing the stale captured id). Dropping the trailing episode would leave a quiet conversation stuck on stale state — there is no replay and no periodic authoritative broadcast, so state that changed after the first refresh read it would stay invisible until the next SSE event.
+- No `Last-Event-ID` / `lastEventId` consumption on either client or server; no event replay; no at-least-once delivery claim. Missed events are recovered via the HTTP authoritative refresh plus subsequent live events (e.g. a turn finishing during disconnect becomes visible through the refresh).
+- The stale-source guard (`state.eventSource !== source`) still applies in the open handler.
+
+### Validation Matrix
+
+| Case | Expected behavior |
+| --- | --- |
+| initial open | no refresh; no duplicate bootstrap |
+| errored stream reopens | exactly one coalesced `refreshAll(selectedConversationId)` |
+| recovery in flight, another errored episode reopens | no parallel refresh; `finishRecovery()` returns true and exactly one trailing refresh runs serialized after the in-flight one |
+| first refresh rejects while a trailing episode is pending | trailing refresh still runs (the latch releases in `finally` regardless of refresh outcome) |
+| recovery refresh rejects (no pending episode) | error swallowed; latch released; future episodes still recover |
+| error during recovery window, then reopen | coalesced into the trailing refresh; no extra parallel refresh |
+| any code path | no `lastEventId`/`Last-Event-ID` read (client or server) |
+
+### Required Tests
+
+- `tests/ui/stream-recovery.test.js`: jsdom behavior tests + source-contract greps (app.js error handler calls `markStreamError` before reconnect scheduling; no lastEventId consumption anywhere).
+- `tests/smoke/server-smoke.test.js` and chat-experience suites keep the existing open/error contracts green (no regression in connection-status handling).
 
 ## Cross-Layer Watch Points
 

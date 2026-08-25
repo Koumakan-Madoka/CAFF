@@ -20,6 +20,7 @@ const { createFeishuController } = require('../api/feishu-controller');
 const { createHealthController } = require('../api/health-controller');
 const { createMetricsController } = require('../api/metrics-controller');
 const { createMemoryController } = require('../api/memory-controller');
+const { createRuntimeObservabilityController } = require('../api/runtime-observability-controller');
 const { createModelProvidersController } = require('../api/model-providers-controller');
 const { createModelCatalogController } = require('../api/model-catalog-controller');
 const { createProjectsController } = require('../api/projects-controller');
@@ -69,6 +70,7 @@ const { createConfiguredModelCatalog } = require('../domain/models/configured-mo
 const { readExternalAuthProviderIds } = require('../domain/models/external-provider-auth');
 const { createRoleService } = require('../domain/roles/role-service');
 const { createReadinessHealthStatus } = require('../domain/runtime/readiness-health');
+const { createRuntimeObservability } = require('../domain/runtime/runtime-observability');
 const { createRouter } = require('../http/router');
 const { createSseBus } = require('../http/sse-bus');
 const { buildErrorJsonPayload, sendJson } = require('../http/response');
@@ -154,6 +156,11 @@ export function createServerApp(options: any = {}) {
   const modeStore = createModeStore(store.db);
   const skillRegistry = createSkillRegistry({ agentDir, extraSkillDirs: [] });
   const sseBus = createSseBus();
+  const runtimeObservability = createRuntimeObservability(
+    options.runtimeObservability && typeof options.runtimeObservability === 'object'
+      ? options.runtimeObservability
+      : {}
+  );
   let turnOrchestrator: any = null;
   let dagScheduler: any = null;
   let crossConversationDeliveryWorker: any = null;
@@ -1005,6 +1012,14 @@ export function createServerApp(options: any = {}) {
     env: process.env,
     isFeishuLongConnectionSdkAvailable,
   });
+
+  // P1 observability: register the lightweight runtime counter providers.
+  // Each provider reads existing size probes only when a snapshot is taken,
+  // so steady-state overhead is zero and periodic cost is one map-size scan.
+  runtimeObservability.registerCounterProvider('turns', () => turnOrchestrator.getRuntimeStats());
+  runtimeObservability.registerCounterProvider('invocations', () => agentToolBridge.getRuntimeStats());
+  runtimeObservability.registerCounterProvider('sse', () => sseBus.getStats());
+
   const router = createRouter([
     createHealthController({ getHealthStatus }),
     createBootstrapController({ sseBus, turnOrchestrator, buildBootstrapPayload }),
@@ -1013,6 +1028,9 @@ export function createServerApp(options: any = {}) {
     createMemoryController({
       store,
       resolveCurrentTaskName: () => resolveCurrentTrellisTaskName({ startDir: activeProjectDir }),
+    }),
+    createRuntimeObservabilityController({
+      getSnapshot: () => runtimeObservability.getSnapshot(),
     }),
     createModelProvidersController({
       agentDir,
@@ -1128,6 +1146,9 @@ export function createServerApp(options: any = {}) {
 
       startCrossConversationDeliveryRuntime();
 
+      // P1 observability: begin periodic heap/RSS sampling (unref'd timer).
+      runtimeObservability.start();
+
       // D25: reconcile DAG execution state after restart (fire-and-forget).
       if (dagScheduler && typeof dagScheduler.reconcileOnStartup === 'function') {
         void Promise.resolve()
@@ -1154,6 +1175,7 @@ export function createServerApp(options: any = {}) {
   function close(callback: any) {
     deliveryRuntimeClosing = true;
     sseBus.closeAll();
+    runtimeObservability.dispose();
 
     if (deliveryMaintenanceTimer) {
       clearDeliveryMaintenanceInterval(deliveryMaintenanceTimer);
@@ -1197,6 +1219,7 @@ export function createServerApp(options: any = {}) {
     getHealthStatus,
     host,
     port,
+    runtimeObservability,
     runMaybeAutoCreateDigest,
     server,
     start,

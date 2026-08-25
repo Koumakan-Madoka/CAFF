@@ -617,6 +617,16 @@ export function createTurnOrchestrator(options: any = {}) {
       ? listQueuedSideDispatches(normalizedConversationId).length
       : 0;
 
+    // The depth probe above may have created a queue-state entry for a
+    // conversation that never went through the queue lifecycle (e.g. the
+    // deletion busy-gate probing an idle conversation). When the probe just
+    // proved the queue empty, settle the entry here — the depth is already
+    // known, so settlement adds no hydration — instead of leaving a
+    // permanently non-idle entry that inflates the O(1) activeQueues counter.
+    if (normalizedConversationId && queuedUserCount === 0) {
+      settleConversationQueueState(normalizedConversationId);
+    }
+
     return {
       active,
       dispatching,
@@ -1017,6 +1027,13 @@ export function createTurnOrchestrator(options: any = {}) {
 
     if (!claim || !claim.claimed) {
       maybeCreateGoalBudgetProposal(normalizedConversationId, claim);
+      // The queue was just confirmed empty (the pending scan above ran as part
+      // of this poll) and no continuation was claimed, so a queue-state entry
+      // this poll created is idle: settle it now instead of leaving a stale
+      // entry for the O(1) observability counters to over-report. Settling is
+      // a no-op while the drain loop owns the conversation (dispatch marker
+      // set) or when failures are still backlogged.
+      settleConversationQueueState(normalizedConversationId);
       return { scheduled: false, reason: claim && claim.reason ? claim.reason : 'not_claimed' };
     }
 
@@ -1082,9 +1099,17 @@ export function createTurnOrchestrator(options: any = {}) {
     }
 
     dispatchingConversationIds.add(normalizedConversationId);
+    ensureQueueState(normalizedConversationId).idle = false;
     broadcastRuntimeState();
 
     void (async () => {
+      // Set to true when the loop's final poll found the queue empty and no
+      // goal continuation was scheduled: the queue state is then settleable
+      // when the dispatch marker is released below (settlement must not
+      // hydrate on the observability path; the depth was just computed here
+      // as part of the drain's own work).
+      let drainedIdle = false;
+
       try {
         while (true) {
           if (activeConversationIds.has(normalizedConversationId) || hasActiveAgentSlots(normalizedConversationId)) {
@@ -1103,6 +1128,7 @@ export function createTurnOrchestrator(options: any = {}) {
               continue;
             }
 
+            drainedIdle = true;
             break;
           }
 
@@ -1153,6 +1179,11 @@ export function createTurnOrchestrator(options: any = {}) {
         }
       } finally {
         dispatchingConversationIds.delete(normalizedConversationId);
+
+        if (drainedIdle) {
+          settleConversationQueueState(normalizedConversationId);
+        }
+
         broadcastRuntimeState();
       }
     })();
@@ -1901,6 +1932,52 @@ export function createTurnOrchestrator(options: any = {}) {
       .map(summarizeAgentSlotState);
   }
 
+  // P1 observability: pure O(1) size probes over the internal lifecycle maps.
+  // The stats read path must never hydrate conversations (no queue-depth
+  // sweeps, no getConversation/listMessages), so stale queue-state entries are
+  // settled by the queue's own lifecycle instead: the drain loop settles when
+  // its final poll finds the queue empty, and the goal-continuation poll
+  // settles when it finds nothing pending and fails to claim. buildRuntimePayload
+  // keeps its own pre-existing sweep for the runtime payload broadcast path.
+  // Queues with pending failures stay visible on purpose;
+  // clearConversationState remains the authoritative cleanup path.
+  function settleConversationQueueState(conversationId: any) {
+    const normalizedConversationId = String(conversationId || '').trim();
+    const queueState = queueStates.get(normalizedConversationId) || null;
+
+    if (!queueState) {
+      return;
+    }
+
+    if (queueState.lastFailureAt || hasActiveRuntimeState(normalizedConversationId)) {
+      return;
+    }
+
+    // Mark idle instead of deleting: deleting would drop the in-memory
+    // consumed-cursor, and recreating it relies on persisted queue metadata
+    // (or an inferable trailing assistant message) that not every store
+    // provides. The idle flag keeps the cursor intact while excluding the
+    // entry from the O(1) activeQueues counter; the runtime-payload sweep
+    // keeps deleting settled entries exactly as before.
+    queueState.idle = true;
+  }
+
+  function getRuntimeStats() {
+    let activeQueues = 0;
+
+    for (const queueState of queueStates.values()) {
+      if (!queueState.idle) {
+        activeQueues += 1;
+      }
+    }
+
+    return {
+      activeTurns: activeTurns.size,
+      activeQueues,
+      activeAgentSlots: activeAgentSlots.size,
+    };
+  }
+
   recoverPersistedQueueStates();
   recoverPersistedSideDispatches();
 
@@ -1911,6 +1988,7 @@ export function createTurnOrchestrator(options: any = {}) {
     emitTurnProgress,
     getConversationMutationState,
     getConversationQueueDepth,
+    getRuntimeStats,
     listAgentSlotSummaries,
     listTurnSummaries,
     reconcileConversationQueueAfterMessageDeletion,

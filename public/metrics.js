@@ -100,18 +100,40 @@ function ensureSelectedAgent() {
   state.selectedAgentId = agents[0] ? agents[0].agentId : null;
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function toIsoDateOnly(date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function defaultMetricsWindow() {
+  const now = new Date();
+  const until = new Date(now.getTime() - DAY_MS);
+  const since = new Date(now.getTime() - 7 * DAY_MS);
+
+  return { since: toIsoDateOnly(since), until: toIsoDateOnly(until) };
+}
+
+function initializeDefaultWindow() {
+  const defaults = defaultMetricsWindow();
+
+  if (dom.sinceInput && !dom.sinceInput.value) {
+    dom.sinceInput.value = defaults.since;
+  }
+
+  if (dom.untilInput && !dom.untilInput.value) {
+    dom.untilInput.value = defaults.until;
+  }
+}
+
 function queryFilters() {
-  const since = dom.sinceInput ? dom.sinceInput.value : '';
-  const until = dom.untilInput ? dom.untilInput.value : '';
+  const defaults = defaultMetricsWindow();
+  const since = dom.sinceInput && dom.sinceInput.value ? dom.sinceInput.value : defaults.since;
+  const until = dom.untilInput && dom.untilInput.value ? dom.untilInput.value : defaults.until;
   const query = new URLSearchParams();
 
-  if (since) {
-    query.set('since', since);
-  }
-
-  if (until) {
-    query.set('until', until);
-  }
+  query.set('since', since);
+  query.set('until', until);
 
   return query;
 }
@@ -330,14 +352,17 @@ if (dom.filterForm) {
 
 if (dom.clearFilterButton) {
   dom.clearFilterButton.addEventListener('click', () => {
+    const defaults = defaultMetricsWindow();
+
     if (dom.sinceInput) {
-      dom.sinceInput.value = '';
+      dom.sinceInput.value = defaults.since;
     }
     if (dom.untilInput) {
-      dom.untilInput.value = '';
+      dom.untilInput.value = defaults.until;
     }
     bootstrap();
   });
 }
 
+initializeDefaultWindow();
 bootstrap();

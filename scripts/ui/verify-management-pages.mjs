@@ -98,6 +98,50 @@ async function readLayout(page) {
   });
 }
 
+async function readMetricsDateFilterLayout(page) {
+  return page.evaluate(() => {
+    const form = document.getElementById('filter-form');
+    const since = document.getElementById('since-input');
+    const until = document.getElementById('until-input');
+    if (!form || !since || !until) {
+      return { available: false };
+    }
+
+    const formRect = form.getBoundingClientRect();
+    const sinceRect = since.getBoundingClientRect();
+    const untilRect = until.getBoundingClientRect();
+    const overlaps = Math.min(sinceRect.right, untilRect.right) - Math.max(sinceRect.left, untilRect.left) > 1
+      && Math.min(sinceRect.bottom, untilRect.bottom) - Math.max(sinceRect.top, untilRect.top) > 1;
+    const contained = [sinceRect, untilRect].every((rect) => (
+      rect.left >= formRect.left - 1
+      && rect.right <= formRect.right + 1
+    ));
+    const pickerTargetIds = [sinceRect, untilRect].map((rect) => {
+      const target = document.elementFromPoint(rect.right - 12, rect.top + (rect.height / 2));
+      return target && target.id;
+    });
+
+    return {
+      available: true,
+      overlaps,
+      contained,
+      pickerTargetsReachable: pickerTargetIds[0] === 'since-input' && pickerTargetIds[1] === 'until-input',
+      pickerTargetIds,
+      formWidth: Math.round(formRect.width * 10) / 10,
+      since: {
+        left: Math.round(sinceRect.left * 10) / 10,
+        right: Math.round(sinceRect.right * 10) / 10,
+        width: Math.round(sinceRect.width * 10) / 10,
+      },
+      until: {
+        left: Math.round(untilRect.left * 10) / 10,
+        right: Math.round(untilRect.right * 10) / 10,
+        width: Math.round(untilRect.width * 10) / 10,
+      },
+    };
+  });
+}
+
 function layoutIsContained(layout) {
   return layout.bodyOverflow === 'hidden'
     && Math.abs(layout.shellHeight - layout.viewportHeight) < 2
@@ -134,6 +178,22 @@ export async function verifyManagementPages({ browser, baseUrl, ok, outputDir, s
         `P-${definition.key} visible targets >=44px + clean runtime`,
         layout.undersizedTargets.length === 0 && diagnosticsAreClean(tracked.diagnostics),
         JSON.stringify({ undersized: layout.undersizedTargets, diagnostics: tracked.diagnostics }),
+      );
+    }
+
+    const metrics = await openManagementPage(browser, baseUrl, '/metrics.html', { width: 1440, height: 900 });
+    pages.push(metrics.page);
+    for (const width of [1440, 820, 375]) {
+      await metrics.page.setViewportSize({ width, height: 900 });
+      await metrics.page.waitForTimeout(200);
+      const dateFilter = await readMetricsDateFilterLayout(metrics.page);
+      ok(
+        `P-metrics ${width} date controls are contained, non-overlapping, and reachable`,
+        dateFilter.available
+          && dateFilter.contained
+          && !dateFilter.overlaps
+          && dateFilter.pickerTargetsReachable,
+        JSON.stringify(dateFilter),
       );
     }
 

@@ -4798,6 +4798,16 @@ body.management-app .settings-form {
   margin: 0;
 }
 
+body.management-app[data-page="metrics"] #filter-form .field-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+body.management-app[data-page="metrics"] #filter-form label,
+body.management-app[data-page="metrics"] #filter-form input[type="date"] {
+  min-width: 0;
+  width: 100%;
+}
+
 body.management-app .stack-card {
   border: 1px solid var(--caff-line);
   border-radius: 8px;

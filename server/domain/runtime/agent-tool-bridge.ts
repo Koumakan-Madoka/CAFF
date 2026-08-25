@@ -595,6 +595,15 @@ export function createAgentToolBridge(options: any = {}) {
     return context;
   }
 
+  // P1 observability: lightweight size probe over the invocation registry.
+  // registerInvocation/unregisterInvocation own the lifecycle, so the counter
+  // returns to zero once every invocation completes or is stopped.
+  function getRuntimeStats() {
+    return {
+      activeInvocations: activeInvocations.size,
+    };
+  }
+
   function serializeAgentToolPublicMessage(message: any) {
     const metadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
     const toolBridgeMetadata =
@@ -3579,6 +3588,7 @@ export function createAgentToolBridge(options: any = {}) {
 
   return {
     createInvocationContext,
+    getRuntimeStats,
     handleConversationNotify,
     handleConversationRequest,
     handlePiCapability,

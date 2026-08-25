@@ -2463,3 +2463,78 @@ test('DAG goal binding: agents cannot drive non-complete goal mutations (dag_goa
   assert.equal(conversation.metadata.sessionGoal.status, 'active');
   assert.equal(conversation.metadata.sessionGoalProposal, undefined);
 });
+
+test('agent tool bridge exposes runtime stats that track active invocation lifecycle', (t) => {
+  const tempDir = withTempDir('caff-bridge-runtime-stats-');
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
+
+  const store = createChatAppStore({
+    agentDir: tempDir,
+    sqlitePath: path.join(tempDir, 'chat.sqlite'),
+  });
+
+  const agent = store.saveCustomRoleConfig({
+    id: 'bridge-stats-agent',
+    name: 'Stats Agent',
+    personaPrompt: 'Reply briefly.',
+  });
+  const conversation = store.createConversation({
+    id: 'bridge-stats-conversation',
+    title: 'Bridge Stats Conversation',
+    participants: [agent.id],
+  });
+  const assistantMessage = store.createMessage({
+    id: 'bridge-stats-message',
+    conversationId: conversation.id,
+    turnId: 'bridge-stats-turn',
+    role: 'assistant',
+    agentId: agent.id,
+    senderName: agent.name,
+    content: 'Thinking...',
+    status: 'streaming',
+  });
+  const fullConversation = store.getConversation(conversation.id);
+  const bridge = createAgentToolBridge({ store });
+
+  assert.deepEqual(bridge.getRuntimeStats(), { activeInvocations: 0 });
+
+  const first = bridge.registerInvocation(bridge.createInvocationContext({
+    conversationId: conversation.id,
+    turnId: assistantMessage.turnId,
+    agentId: agent.id,
+    agentName: agent.name,
+    assistantMessageId: assistantMessage.id,
+    conversationAgents: fullConversation.agents,
+    stage: { status: 'running', runId: 'stats-run-1' },
+    turnState: { conversationId: conversation.id, turnId: assistantMessage.turnId, stopRequested: false },
+    enqueueAgent() {
+      return { enqueuedAgentIds: [], dispatch: [] };
+    },
+  }));
+  const second = bridge.registerInvocation(bridge.createInvocationContext({
+    conversationId: conversation.id,
+    turnId: assistantMessage.turnId,
+    agentId: agent.id,
+    agentName: agent.name,
+    assistantMessageId: assistantMessage.id,
+    conversationAgents: fullConversation.agents,
+    stage: { status: 'running', runId: 'stats-run-2' },
+    turnState: { conversationId: conversation.id, turnId: assistantMessage.turnId, stopRequested: false },
+    enqueueAgent() {
+      return { enqueuedAgentIds: [], dispatch: [] };
+    },
+  }));
+
+  assert.deepEqual(bridge.getRuntimeStats(), { activeInvocations: 2 });
+
+  bridge.unregisterInvocation(first.invocationId);
+  assert.deepEqual(bridge.getRuntimeStats(), { activeInvocations: 1 });
+
+  bridge.unregisterInvocation(second.invocationId);
+  assert.deepEqual(bridge.getRuntimeStats(), { activeInvocations: 0 });
+});
