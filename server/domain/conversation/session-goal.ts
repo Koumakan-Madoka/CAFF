@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
+import { requiresBoundedConversationProjections } from '../../../lib/conversation-hydration-contract';
 import { createHttpError } from '../../http/http-errors';
 
 const SESSION_GOAL_METADATA_KEY = 'sessionGoal';
@@ -499,8 +500,37 @@ function buildMetadataWithoutProposal(conversation: any) {
   return remainingMetadata;
 }
 
+function missingBoundedGoalProjection(name: string) {
+  throw createHttpError(501, `Bounded conversation projection is unavailable: ${name}`);
+}
+
+function getGoalConversation(store: any, conversationId: any) {
+  const normalizedConversationId = normalizeText(conversationId);
+
+  if (store && typeof store.getConversationWithoutMessages === 'function') {
+    return store.getConversationWithoutMessages(normalizedConversationId);
+  }
+  if (requiresBoundedConversationProjections(store)) {
+    return missingBoundedGoalProjection('getConversationWithoutMessages');
+  }
+
+  return store && typeof store.getConversation === 'function'
+    ? store.getConversation(normalizedConversationId)
+    : null;
+}
+
 function updateConversationMetadata(store: any, conversation: any, metadata: any) {
   // metadata-only 写入：不传 title，避免 titleSource 状态机误判为 manual 改名。
+  if (store && typeof store.updateConversationWithoutMessages === 'function') {
+    return store.updateConversationWithoutMessages(conversation.id, {
+      type: conversation.type,
+      metadata,
+    });
+  }
+  if (requiresBoundedConversationProjections(store)) {
+    return missingBoundedGoalProjection('updateConversationWithoutMessages');
+  }
+
   return store.updateConversation(conversation.id, {
     type: conversation.type,
     metadata,
@@ -548,7 +578,7 @@ function goalRunnerKey(goal: any) {
 
 export function claimSessionGoalAutoContinue(store: any, conversationId: any, input: any = {}) {
   const normalizedConversationId = normalizeText(conversationId);
-  const conversation = store.getConversation(normalizedConversationId);
+  const conversation = getGoalConversation(store, normalizedConversationId);
 
   if (!conversation) {
     return { claimed: false, reason: 'missing_conversation' };
@@ -641,7 +671,7 @@ function isGoalRunnerSourceMessage(message: any) {
 
 export function recordSessionGoalContinuationOutcome(store: any, conversationId: any, input: any = {}) {
   const normalizedConversationId = normalizeText(conversationId);
-  const conversation = store.getConversation(normalizedConversationId);
+  const conversation = getGoalConversation(store, normalizedConversationId);
   const goal = getSessionGoal(conversation);
 
   if (!conversation || !goal || goal.status !== 'active') {
@@ -862,7 +892,7 @@ function responseForConversation(conversation: any, overrides: any = {}) {
 
 export function applySessionGoalAction(store: any, conversationId: any, input: any = {}) {
   const normalizedConversationId = normalizeText(conversationId);
-  const conversation = store.getConversation(normalizedConversationId);
+  const conversation = getGoalConversation(store, normalizedConversationId);
 
   if (!conversation) {
     throw createHttpError(404, 'Conversation not found');
@@ -1077,7 +1107,7 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
 
 export function proposeSessionGoalAction(store: any, conversationId: any, input: any = {}, proposer: any = {}) {
   const normalizedConversationId = normalizeText(conversationId);
-  const conversation = store.getConversation(normalizedConversationId);
+  const conversation = getGoalConversation(store, normalizedConversationId);
 
   if (!conversation) {
     throw createHttpError(404, 'Conversation not found');
@@ -1155,7 +1185,7 @@ export function createSessionGoalBudgetProposal(store: any, conversationId: any,
  */
 export function pauseSessionGoalForRemovedOwner(store: any, conversationId: any, owner: any) {
   const normalizedConversationId = normalizeText(conversationId);
-  const conversation = store.getConversation(normalizedConversationId);
+  const conversation = getGoalConversation(store, normalizedConversationId);
   const goal = conversation ? getSessionGoal(conversation) : null;
 
   if (!conversation || !goal || goal.status !== 'active') {

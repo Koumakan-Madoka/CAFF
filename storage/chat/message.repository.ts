@@ -1,4 +1,9 @@
 import { MAX_CONVERSATION_MESSAGE_DELETE_BATCH_SIZE } from '../../lib/conversation-message-deletion-contract';
+import {
+  DEFAULT_PROMPT_HISTORY_LIMIT,
+  MAX_PROMPT_HISTORY_LIMIT,
+  MAX_RUNTIME_MESSAGE_ID_PROJECTION,
+} from '../../lib/conversation-hydration-contract';
 
 function normalizeMessageSearchQuery(value: any) {
   return String(value || '').trim().replace(/\s+/g, ' ');
@@ -71,6 +76,28 @@ function normalizeMessageIds(value: any) {
         .filter(Boolean)
     )
   ).slice(0, MAX_CONVERSATION_MESSAGE_DELETE_BATCH_SIZE);
+}
+
+function normalizeRuntimeMessageIds(value: any) {
+  return Array.from(
+    new Set(
+      (Array.isArray(value) ? value : [])
+        .map((messageId: any) => String(messageId || '').trim())
+        .filter(Boolean)
+    )
+  ).slice(0, MAX_RUNTIME_MESSAGE_ID_PROJECTION);
+}
+
+function normalizePromptHistoryLimit(value: any) {
+  if (value === undefined || value === null) {
+    return DEFAULT_PROMPT_HISTORY_LIMIT;
+  }
+
+  if (!Number.isInteger(value) || value < 0 || value > MAX_PROMPT_HISTORY_LIMIT) {
+    throw new RangeError(`Prompt history limit must be an integer between 0 and ${MAX_PROMPT_HISTORY_LIMIT}`);
+  }
+
+  return value;
 }
 
 function normalizeMessagePageLimit(value: any) {
@@ -270,25 +297,266 @@ export class ChatMessageRepository {
       .prepare(`
         SELECT DISTINCT m.conversation_id
         FROM chat_messages m
+        JOIN chat_conversations c ON c.id = m.conversation_id
+        LEFT JOIN chat_messages cursor_message
+          ON cursor_message.conversation_id = m.conversation_id
+         AND cursor_message.id = CASE
+           WHEN json_valid(c.metadata_json) = 1
+           THEN COALESCE(json_extract(c.metadata_json, '$.conversationTurnQueue.lastConsumedUserMessageId'), '')
+           ELSE ''
+         END
         WHERE m.role = 'user'
           AND (
             json_valid(m.metadata_json) = 0
             OR COALESCE(json_extract(m.metadata_json, '$.dispatchLane'), '') <> 'side'
           )
-          AND NOT EXISTS (
-            SELECT 1
-            FROM chat_messages m2
-            WHERE m2.conversation_id = m.conversation_id
-              AND m2.role <> 'user'
-              AND (
-                m2.created_at > m.created_at
-                OR (m2.created_at = m.created_at AND m2.id > m.id)
+          AND (
+            CASE
+              WHEN json_valid(c.metadata_json) = 1
+               AND json_type(c.metadata_json, '$.conversationTurnQueue.lastConsumedUserMessageId') IS NOT NULL
+              THEN (
+                cursor_message.id IS NULL
+                OR m.created_at > cursor_message.created_at
+                OR (m.created_at = cursor_message.created_at AND m.id > cursor_message.id)
               )
+              ELSE NOT EXISTS (
+                SELECT 1
+                FROM chat_messages later_message
+                WHERE later_message.conversation_id = m.conversation_id
+                  AND later_message.role <> 'user'
+                  AND (
+                    later_message.created_at > m.created_at
+                    OR (later_message.created_at = m.created_at AND later_message.id > m.id)
+                  )
+              )
+            END
           )
       `)
       .all()
       .map((row: any) => String(row.conversation_id || '').trim())
       .filter(Boolean);
+  }
+
+  inferLastConsumedUserMessageId(conversationId: string) {
+    const row = this.db.prepare(`
+      SELECT user_message.id
+      FROM chat_messages user_message
+      WHERE user_message.conversation_id = ?
+        AND user_message.role = 'user'
+        AND (user_message.created_at, user_message.id) < (
+          SELECT non_user.created_at, non_user.id
+          FROM chat_messages non_user
+          WHERE non_user.conversation_id = ?
+            AND non_user.role <> 'user'
+          ORDER BY non_user.created_at DESC, non_user.id DESC
+          LIMIT 1
+        )
+      ORDER BY user_message.created_at DESC, user_message.id DESC
+      LIMIT 1
+    `).get(conversationId, conversationId);
+
+    return row && row.id ? String(row.id).trim() : '';
+  }
+
+  listPendingMainUserMessages(conversationId: string, afterMessageId: string = '', options: any = {}) {
+    const normalizedConversationId = String(conversationId || '').trim();
+    const normalizedAfterMessageId = String(afterMessageId || '').trim();
+    const limit = Number.isInteger(options.limit) && options.limit > 0
+      ? Math.min(options.limit, MAX_RUNTIME_MESSAGE_ID_PROJECTION)
+      : -1;
+
+    if (!normalizedConversationId) {
+      return [];
+    }
+
+    return this.db.prepare(`
+      WITH cursor_message AS (
+        SELECT created_at, id
+        FROM chat_messages
+        WHERE conversation_id = @conversationId AND id = @afterMessageId
+        LIMIT 1
+      )
+      SELECT message.*
+      FROM chat_messages message
+      WHERE message.conversation_id = @conversationId
+        AND message.role = 'user'
+        AND (
+          json_valid(message.metadata_json) = 0
+          OR COALESCE(json_extract(message.metadata_json, '$.dispatchLane'), '') <> 'side'
+        )
+        AND (
+          @afterMessageId = ''
+          OR NOT EXISTS (SELECT 1 FROM cursor_message)
+          OR (message.created_at, message.id) > (
+            SELECT created_at, id FROM cursor_message
+          )
+        )
+      ORDER BY message.created_at ASC, message.id ASC
+      LIMIT @limit
+    `).all({
+      conversationId: normalizedConversationId,
+      afterMessageId: normalizedAfterMessageId,
+      limit,
+    });
+  }
+
+  findPreviousUserMessageId(conversationId: string, before: any) {
+    const normalizedConversationId = String(conversationId || '').trim();
+    const createdAt = String(before && before.createdAt || '').trim();
+    const id = String(before && before.id || '').trim();
+
+    if (!normalizedConversationId || !createdAt || !id) {
+      return null;
+    }
+
+    return this.db.prepare(`
+      SELECT id
+      FROM chat_messages
+      WHERE conversation_id = ?
+        AND role = 'user'
+        AND (created_at, id) < (?, ?)
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1
+    `).get(normalizedConversationId, createdAt, id) || null;
+  }
+
+  findLatestPublicCompletedAssistantReplyAgentId(conversationId: string, participantAgentIds: string[]) {
+    const normalizedConversationId = String(conversationId || '').trim();
+    const normalizedAgentIds = normalizeRuntimeMessageIds(participantAgentIds);
+
+    if (!normalizedConversationId || normalizedAgentIds.length === 0) {
+      return null;
+    }
+
+    return this.db.prepare(`
+      SELECT message.agent_id
+      FROM chat_messages message
+      WHERE message.conversation_id = @conversationId
+        AND message.role = 'assistant'
+        AND message.status = 'completed'
+        AND TRIM(message.content) <> ''
+        AND message.agent_id IN (SELECT value FROM json_each(@participantAgentIds))
+        AND (
+          CASE
+            WHEN json_valid(message.metadata_json) = 0 THEN 0
+            WHEN json_type(message.metadata_json, '$.privateOnly') IS NULL THEN 0
+            WHEN json_type(message.metadata_json, '$.privateOnly') IN ('null', 'false') THEN 0
+            WHEN json_type(message.metadata_json, '$.privateOnly') = 'true' THEN 1
+            WHEN json_type(message.metadata_json, '$.privateOnly') IN ('integer', 'real')
+              THEN COALESCE(json_extract(message.metadata_json, '$.privateOnly'), 0) <> 0
+            WHEN json_type(message.metadata_json, '$.privateOnly') = 'text'
+              THEN LENGTH(COALESCE(json_extract(message.metadata_json, '$.privateOnly'), '')) > 0
+            ELSE 1
+          END
+        ) = 0
+        AND NOT (
+          json_valid(message.metadata_json) = 1
+          AND json_type(message.metadata_json, '$.visibility') = 'text'
+          AND LOWER(TRIM(COALESCE(json_extract(message.metadata_json, '$.visibility'), ''))) = 'private'
+        )
+      ORDER BY message.created_at DESC, message.id DESC
+      LIMIT 1
+    `).get({
+      conversationId: normalizedConversationId,
+      participantAgentIds: JSON.stringify(normalizedAgentIds),
+    }) || null;
+  }
+
+  listPromptMessages(conversationId: string, options: any = {}) {
+    const normalizedConversationId = String(conversationId || '').trim();
+    const historyLimit = normalizePromptHistoryLimit(options.historyLimit);
+    const currentTurnId = String(options.currentTurnId || '').trim();
+    const requiredMessageIds = normalizeRuntimeMessageIds(options.requiredMessageIds);
+    const before = options.before && typeof options.before === 'object'
+      ? {
+          createdAt: String(options.before.createdAt || '').trim(),
+          id: String(options.before.id || '').trim(),
+        }
+      : { createdAt: '', id: '' };
+
+    if (!normalizedConversationId) {
+      return [];
+    }
+
+    return this.db.prepare(`
+      WITH recent_history_ids AS (
+        SELECT id
+        FROM chat_messages
+        WHERE conversation_id = @conversationId
+          AND @historyLimit > 0
+          AND (@currentTurnId = '' OR turn_id IS NULL OR turn_id <> @currentTurnId)
+          AND (
+            @beforeCreatedAt = ''
+            OR created_at < @beforeCreatedAt
+            OR (created_at = @beforeCreatedAt AND id < @beforeId)
+          )
+        ORDER BY created_at DESC, id DESC
+        LIMIT @historyLimit
+      ), selected_ids AS (
+        SELECT id FROM recent_history_ids
+        UNION
+        SELECT id
+        FROM chat_messages
+        WHERE conversation_id = @conversationId
+          AND @currentTurnId <> ''
+          AND turn_id = @currentTurnId
+        UNION
+        SELECT id
+        FROM chat_messages
+        WHERE conversation_id = @conversationId
+          AND id IN (SELECT value FROM json_each(@requiredMessageIds))
+      )
+      SELECT message.*
+      FROM chat_messages message
+      JOIN selected_ids selected ON selected.id = message.id
+      ORDER BY message.created_at ASC, message.id ASC
+    `).all({
+      conversationId: normalizedConversationId,
+      historyLimit,
+      currentTurnId,
+      requiredMessageIds: JSON.stringify(requiredMessageIds),
+      beforeCreatedAt: before.createdAt,
+      beforeId: before.id,
+    });
+  }
+
+  listSideDispatchRecoveryMessages() {
+    return this.db.prepare(`
+      SELECT source_message.*
+      FROM chat_messages source_message
+      WHERE source_message.role = 'user'
+        AND json_valid(source_message.metadata_json) = 1
+        AND COALESCE(json_extract(source_message.metadata_json, '$.dispatchLane'), '') = 'side'
+        AND NOT EXISTS (
+          SELECT 1
+          FROM chat_messages reply_message
+          WHERE reply_message.conversation_id = source_message.conversation_id
+            AND reply_message.role = 'assistant'
+            AND reply_message.status IN ('completed', 'failed')
+            AND json_valid(reply_message.metadata_json) = 1
+            AND COALESCE(json_extract(reply_message.metadata_json, '$.triggeredByMessageId'), '') = source_message.id
+        )
+      ORDER BY source_message.created_at ASC, source_message.id ASC
+    `).all();
+  }
+
+  listAssistantRepliesForSourceMessage(conversationId: string, sourceMessageId: string) {
+    const normalizedConversationId = String(conversationId || '').trim();
+    const normalizedSourceMessageId = String(sourceMessageId || '').trim();
+
+    if (!normalizedConversationId || !normalizedSourceMessageId) {
+      return [];
+    }
+
+    return this.db.prepare(`
+      SELECT reply_message.*
+      FROM chat_messages reply_message
+      WHERE reply_message.conversation_id = ?
+        AND reply_message.role = 'assistant'
+        AND json_valid(reply_message.metadata_json) = 1
+        AND COALESCE(json_extract(reply_message.metadata_json, '$.triggeredByMessageId'), '') = ?
+      ORDER BY reply_message.created_at ASC, reply_message.id ASC
+    `).all(normalizedConversationId, normalizedSourceMessageId);
   }
 
   listPageByConversationId(conversationId: string, options: any = {}) {
@@ -332,6 +600,25 @@ export class ChatMessageRepository {
         ORDER BY created_at ASC, id ASC
       `)
       .all(JSON.stringify(normalizedMessageIds));
+  }
+
+  listRuntimeByIdsForConversation(conversationId: string, messageIds: string[]) {
+    const normalizedConversationId = String(conversationId || '').trim();
+    const normalizedMessageIds = normalizeRuntimeMessageIds(messageIds);
+
+    if (!normalizedConversationId || normalizedMessageIds.length === 0) {
+      return [];
+    }
+
+    return this.db
+      .prepare(`
+        SELECT *
+        FROM chat_messages
+        WHERE conversation_id = ?
+          AND id IN (SELECT value FROM json_each(?))
+        ORDER BY created_at ASC, id ASC
+      `)
+      .all(normalizedConversationId, JSON.stringify(normalizedMessageIds));
   }
 
   deleteByIdsForConversation(conversationId: string, messageIds: string[]) {

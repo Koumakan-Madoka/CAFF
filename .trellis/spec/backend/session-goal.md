@@ -43,6 +43,9 @@
   - Goal owner select (D1/D4): the drawer renders a 主理人 dropdown defaulting to `未设置` with options from the conversation roster; changing it submits `{ action: 'set-owner', ownerAgentId }`. When the stored owner is no longer on the roster, the select keeps a `XX（已不在会话）` option instead of silently resetting; options are rebuilt only when conversation/roster/owner changes so an in-progress selection is not clobbered. Under the DAG execution lock (`dagNodeGoalBinding`) the select is disabled with the other lifecycle controls.
 
 ### 3. Contracts
+- Goal reads and metadata-only writes are message-free. `claimSessionGoalAutoContinue`, `recordSessionGoalContinuationOutcome`, `applySessionGoalAction`, `proposeSessionGoalAction`, and `pauseSessionGoalForRemovedOwner` read `getConversationWithoutMessages()`; their metadata write helper uses `updateConversationWithoutMessages()`. The orchestrator's continuation eligibility, owner-removal, pending-proposal, budget-proposal, and Goal SSE fallback paths use the same header projection.
+- A production `ChatAppStore`, recognized by its bounded-projection marker or class identity, fails closed with `501 Bounded conversation projection is unavailable` when either Goal projection is missing. It never falls back to `getConversation()` or parses message metadata. Plain-object legacy test fixtures may retain compatibility fallback; production `ChatAppStore` cannot.
+- Goal API/SSE responses may therefore carry `conversation.messages=[]`. Goal consumers use normalized Goal/runner/proposal and conversation summary/header fields; message pagination and message SSE remain the timeline authority.
 - Store the goal under `conversation.metadata.sessionGoal`; do not add a dedicated table unless the feature grows beyond one current goal per conversation.
 - Keep controllers thin: route parsing belongs in `server/api/conversations-controller.ts`; lifecycle rules belong in `server/domain/conversation/session-goal.ts`.
 - `set` must trim and validate `objective`, create an `active` goal, preserve `createdAt` when replacing an existing goal, refresh `updatedAt`, remove stale `completedAt`, and normalize optional checklist lines/items.
@@ -76,6 +79,8 @@
 ### 4. Validation & Error Matrix
 | Operation | Condition | Expected result |
 | --- | --- | --- |
+| Goal read/write/continuation | large conversation and full-message APIs are poisoned | behavior unchanged; zero `getConversation()` / `listMessages()` calls |
+| Goal read/write | required header or header-write projection missing on production store | `501`, no fallback and no partial metadata mutation |
 | `GET /goal` | conversation exists without goal | `200`, `goal: null`, `cleared: false` |
 | `POST /goal set` | objective is empty after trim | `400 Goal objective is required` |
 | `POST /goal set` | objective is longer than 2000 chars | `400 Goal objective must be 2000 characters or fewer` |
@@ -145,6 +150,9 @@
   - `suggest-goal` persists a pending proposal without mutating the active goal.
 - `tests/runtime/agent-chat-tools.test.js`
   - CLI forwards `suggest-goal` action/reason/objective payloads to the agent tool endpoint.
+- `tests/storage/turn-runtime-no-full-hydration.test.js`
+  - Real SQLite poisons full public/private hydration while Goal continuation and direct Goal actions remain compatible.
+  - Exact baseline fails at the old Goal hydration entries; the bounded implementation passes and returns header-only conversations.
 - `tests/runtime/turn-orchestrator.test.js`
   - Prompt includes `Session goal` and objective for active goals.
   - Prompt includes status-specific guidance for paused and complete goals.

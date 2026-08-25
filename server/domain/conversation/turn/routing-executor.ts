@@ -1,4 +1,5 @@
 const { randomUUID } = require('node:crypto');
+const { requiresBoundedConversationProjections } = require('../../../../lib/conversation-hydration-contract');
 const { createSqliteRunStore } = require('../../../../lib/sqlite-store');
 const { createHttpError } = require('../../../http/http-errors');
 const { getAgentById } = require('../mention-routing');
@@ -10,7 +11,12 @@ const {
   summarizeTurnState,
   syncCurrentTurnAgent,
 } = require('./turn-state');
-const { buildPromptMessages, buildPromptSnapshotMessageIds, isPrivateOnlyMessage } = require('./prompt-visibility');
+const {
+  buildPromptMessages,
+  buildPromptSnapshotMessageIds,
+  DEFAULT_PROMPT_HISTORY_LIMIT,
+  isPrivateOnlyMessage,
+} = require('./prompt-visibility');
 const { messageImageBlocks } = require('./multimodal-projection');
 const { resolveInitialTurnTargets } = require('./initial-target-resolution');
 const { assertImagePreflightForTargets } = require('./image-preflight');
@@ -97,9 +103,11 @@ function buildBatchedPromptContent(batchMessages: any) {
     .trim();
 }
 
-function resolveExistingBatchMessages(conversation: any, batchMessageIds: any) {
-  const messages = Array.isArray(conversation && conversation.messages) ? conversation.messages : [];
-  const byId = new Map(messages.map((message: any) => [String(message && message.id ? message.id : ''), message]));
+function resolveExistingBatchMessages(messages: any, batchMessageIds: any) {
+  const byId = new Map(
+    (Array.isArray(messages) ? messages : [])
+      .map((message: any) => [String(message && message.id ? message.id : ''), message])
+  );
 
   return (Array.isArray(batchMessageIds) ? batchMessageIds : [])
     .map((messageId: any) => byId.get(String(messageId || '').trim()) || null)
@@ -124,9 +132,88 @@ export function createRoutingExecutor(options: any = {}) {
     ? options.resolveRuntimeParticipants
     : (participants: any) => participants;
   const isAgentBusy = typeof options.isAgentBusy === 'function' ? options.isAgentBusy : () => false;
+  const requiresBoundedProjections = requiresBoundedConversationProjections(store);
+
+  function missingBoundedProjection(name: string) {
+    throw createHttpError(501, `Bounded conversation projection is unavailable: ${name}`);
+  }
+
+  function requireBoundedProjection(name: string) {
+    if (requiresBoundedProjections && (!store || typeof store[name] !== 'function')) {
+      missingBoundedProjection(name);
+    }
+  }
+
+  function getConversationHeader(conversationId: any) {
+    if (store && typeof store.getConversationWithoutMessages === 'function') {
+      return store.getConversationWithoutMessages(conversationId);
+    }
+    if (requiresBoundedProjections) {
+      return missingBoundedProjection('getConversationWithoutMessages');
+    }
+    return store && typeof store.getConversation === 'function' ? store.getConversation(conversationId) : null;
+  }
+
+  function listMessagesByIds(conversationId: any, messageIds: any) {
+    if (store && typeof store.listMessagesByIds === 'function') {
+      return store.listMessagesByIds(conversationId, messageIds);
+    }
+    if (requiresBoundedProjections) {
+      return missingBoundedProjection('listMessagesByIds');
+    }
+    const conversation = store && typeof store.getConversation === 'function'
+      ? store.getConversation(conversationId)
+      : null;
+    const requestedIds = new Set(
+      (Array.isArray(messageIds) ? messageIds : [])
+        .map((messageId: any) => String(messageId || '').trim())
+        .filter(Boolean)
+    );
+    return (Array.isArray(conversation && conversation.messages) ? conversation.messages : [])
+      .filter((message: any) => requestedIds.has(String(message && message.id || '').trim()));
+  }
+
+  function listPromptProjection(conversationId: any, projectionOptions: any) {
+    if (store && typeof store.listPromptMessages === 'function') {
+      return store.listPromptMessages(conversationId, projectionOptions);
+    }
+    if (requiresBoundedProjections) {
+      return missingBoundedProjection('listPromptMessages');
+    }
+    const conversation = store && typeof store.getConversation === 'function'
+      ? store.getConversation(conversationId)
+      : null;
+    return Array.isArray(conversation && conversation.messages) ? conversation.messages : [];
+  }
+
+  function loadRoutingConversation(conversationId: any) {
+    const conversation = getConversationHeader(conversationId);
+    if (!conversation) {
+      return null;
+    }
+    if (store && typeof store.findLatestPublicCompletedAssistantReplyAgentId === 'function') {
+      const participantAgentIds = (Array.isArray(conversation.agents) ? conversation.agents : [])
+        .map((agent: any) => String(agent && agent.id || '').trim())
+        .filter(Boolean);
+      return {
+        ...conversation,
+        messages: [],
+        latestPublicReplyAgentId: String(
+          store.findLatestPublicCompletedAssistantReplyAgentId(conversationId, participantAgentIds) || ''
+        ).trim(),
+      };
+    }
+    if (requiresBoundedProjections) {
+      return missingBoundedProjection('findLatestPublicCompletedAssistantReplyAgentId');
+    }
+    return conversation;
+  }
 
   async function runConversationTurn(conversationId: any, userContent: any) {
-    let conversation = store.getConversation(conversationId);
+    requireBoundedProjection('getConversationWithoutMessages');
+    requireBoundedProjection('findLatestPublicCompletedAssistantReplyAgentId');
+    requireBoundedProjection('listPromptMessages');
+    let conversation = loadRoutingConversation(conversationId);
 
     if (!conversation) {
       throw createHttpError(404, 'Conversation not found');
@@ -152,7 +239,10 @@ export function createRoutingExecutor(options: any = {}) {
     let shouldBroadcastUserMessageCreated = false;
 
     if (usesExistingBatch) {
-      batchMessages = resolveExistingBatchMessages(conversation, userContent.batchMessageIds);
+      batchMessages = resolveExistingBatchMessages(
+        listMessagesByIds(conversationId, userContent.batchMessageIds),
+        userContent.batchMessageIds
+      );
 
       if (batchMessages.length === 0) {
         throw createHttpError(400, 'No queued user messages are available for this batch');
@@ -286,7 +376,14 @@ export function createRoutingExecutor(options: any = {}) {
       ...userMessage,
       content: initialQueue.cleanedUserText || turnInput.cleanedContent || turnInput.content || userMessage.content,
     };
-    const initialPromptMessages = store.getConversation(conversationId).messages;
+    const requiredBatchMessageIds = batchMessages
+      .map((message: any) => String(message && message.id || '').trim())
+      .filter(Boolean);
+    const initialPromptMessages = listPromptProjection(conversationId, {
+      historyLimit: DEFAULT_PROMPT_HISTORY_LIMIT,
+      currentTurnId: turnId,
+      requiredMessageIds: requiredBatchMessageIds,
+    });
     promptSnapshotMessageIds = buildPromptSnapshotMessageIds(initialPromptMessages);
     const basePromptMessages = buildPromptMessages(initialPromptMessages, promptUserMessage, {
       snapshotMessageIds: promptSnapshotMessageIds,
@@ -460,10 +557,15 @@ export function createRoutingExecutor(options: any = {}) {
       }
 
       function buildExecutionInput(queueItem: any, agent: any, hop: number, finalStopsTurn: boolean) {
-        const refreshedConversationSnapshot = store.getConversation(conversationId);
+        const refreshedConversationSnapshot = getConversationHeader(conversationId);
         const refreshedConversation = refreshedConversationSnapshot
           ? { ...refreshedConversationSnapshot, agents: resolvedRuntimeAgents }
           : conversation;
+        const projectedPromptMessages = listPromptProjection(conversationId, {
+          historyLimit: 0,
+          currentTurnId: turnId,
+          requiredMessageIds: Array.from(promptSnapshotMessageIds),
+        });
 
         return {
           runStore,
@@ -472,7 +574,7 @@ export function createRoutingExecutor(options: any = {}) {
           rootTaskId,
           conversation: refreshedConversation,
           projectDir: projectDirSnapshot,
-          promptMessages: buildPromptMessages(refreshedConversation.messages, promptUserMessage, {
+          promptMessages: buildPromptMessages(projectedPromptMessages, promptUserMessage, {
             snapshotMessageIds: promptSnapshotMessageIds,
             currentTurnId: turnId,
             replacePromptUserMessage: !usesExistingBatch,
@@ -796,7 +898,7 @@ export function createRoutingExecutor(options: any = {}) {
           turnState.updatedAt = nowIso();
           syncCurrentTurnAgent(turnState);
 
-          const refreshedConversationSnapshot = store.getConversation(conversationId);
+          const refreshedConversationSnapshot = getConversationHeader(conversationId);
           const refreshedConversation = refreshedConversationSnapshot
             ? { ...refreshedConversationSnapshot, agents: resolvedRuntimeAgents }
             : conversation;
@@ -856,7 +958,17 @@ export function createRoutingExecutor(options: any = {}) {
         await Promise.allSettled(Array.from(inFlightPrivateExecutions));
       }
 
-      const finalConversation = store.getConversation(conversationId);
+      const finalConversationHeader = getConversationHeader(conversationId);
+      const finalConversation = finalConversationHeader
+        ? {
+            ...finalConversationHeader,
+            messages: listPromptProjection(conversationId, {
+              historyLimit: 0,
+              currentTurnId: turnId,
+              requiredMessageIds: Array.from(promptSnapshotMessageIds),
+            }),
+          }
+        : null;
       if (turnState.stopRequested) {
         terminationReason = 'stopped_by_user';
       } else if (routingMode !== 'mention_parallel' && queue.length > 0 && turnState.hopCount >= maxReplies) {

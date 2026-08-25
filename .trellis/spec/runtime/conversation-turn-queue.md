@@ -1,5 +1,81 @@
 # Conversation Turn Queue
 
+## Bounded Conversation Hydration
+
+### Scope And Signatures
+
+Persistent Goal/turn execution must not materialize a conversation's complete public or private message history. Production `ChatAppStore` exposes these purpose-specific projections:
+
+- `getConversationWithoutMessages(conversationId)` and `updateConversationWithoutMessages(conversationId, updates)` for header/metadata/roster reads and writes.
+- `inferLastConsumedUserMessageId(conversationId)` and `listPendingMainUserMessages(conversationId, afterMessageId, { limit? })` for restart inference and cursor-scoped main-lane discovery; queue drain supplies the 256-row runtime projection limit so each successful batch advances only across rows it hydrated.
+- `findPreviousUserMessageId(conversationId, { createdAt, id })` for deletion reconciliation.
+- `findLatestPublicCompletedAssistantReplyAgentId(conversationId, participantAgentIds)` for default routing without parsing a reply row in JavaScript.
+- `listMessagesByIds(conversationId, messageIds)` for bounded batch hydration.
+- `listPromptMessages(conversationId, { historyLimit=24, currentTurnId?, requiredMessageIds?, before? })` for the canonical prompt/final union.
+- `listSideDispatchRecoveryMessages()` and `listAssistantRepliesForSourceMessage(conversationId, sourceMessageId)` for restart-safe side-lane recovery.
+- `listPrivateMessagesForAgent(conversationId, agentId, { limit })` for authorized bounded mailbox projection.
+
+Every message projection is ordered by `(createdAt, id)` ascending. Runtime message-id inputs are deduplicated and capped at 256; prompt history accepts `0..100`, defaults to 24, and production callers use 24. The authorized private mailbox defaults to 24 rows and caps an explicit limit at 100. No schema or migration is required: the existing `(conversation_id, created_at, id)`, `turn_id`, and primary-key indexes support these reads.
+
+### Runtime Contracts
+
+- A real `ChatAppStore` is recognized by its bounded-projection marker or class identity. If any required projection is absent, Goal/turn execution fails with `501 Bounded conversation projection is unavailable`; it must never fall back to `getConversation()` or unbounded `listMessages()`. Legacy plain-object test doubles may retain their compatibility path, while new compatibility fixtures should implement the bounded methods directly.
+- Turn start freezes `promptSnapshotMessageIds` from the latest 24 ordinary history rows plus every claimed batch/source row. Later hops re-read only those ids plus rows with the current `turnId`; they do not recompute the recent-24 window, so current replies cannot evict turn-start history.
+- Prompt injection, Agent Context Inspector capture, and the final returned conversation projection consume the same bounded union. Current-turn and explicit rows survive even when older than the recent window; union duplicates are removed and canonical order is preserved.
+- Main queue startup prefers the durable `conversationTurnQueue.lastConsumedUserMessageId`, including explicit empty string. Missing durable metadata uses targeted legacy inference. Pending discovery excludes persisted `dispatchLane='side'` rows and still honors the in-memory side-id set.
+- Successful main batches persist the consumed user id; failed batches leave both cursors unchanged. More than 256 pending user rows are selected in stable SQL-limited batches, and the durable cursor advances only to the last row of each successful batch before the next batch is selected. Deleting the consumed row reads only the previous surviving user id and persists the reconciled cursor. Assistant-only deletion still persists the unchanged cursor through the existing deletion service contract.
+- Default routing priority remains explicit `initialAgentIds` > actionable user mention > latest qualifying public completed current-participant reply > first participant. The SQL projection excludes failed/incomplete/empty/private/removed-Agent rows and uses `(createdAt,id)` for ties.
+- Side submission/recovery stores a bounded snapshot id set through the source message. Slot grant rehydrates current content for exactly those ids plus its current turn; later ids remain invisible. Restart discovers only unresolved persisted side sources instead of hydrating every conversation.
+- Private mailbox SQL applies authorization before its row limit. Public history never gains private-message repository rows, and old public `privateOnly` rows keep the existing prompt visibility filter.
+- `POST /messages`, Goal event payloads, and turn results may carry a bounded/header-only `conversation.messages` projection. Browser consumers must continue treating message pagination/SSE as authoritative for full timeline navigation.
+
+### Validation Matrix
+
+| Case | Required result |
+| --- | --- |
+| exact baseline `75deccd8` with `getConversation` / `listMessages` poison | independent restart, queue, Goal, routing, side, private, and deletion tests fail at old hydration entrypoints |
+| current implementation with the same poison | all scenarios pass; forbidden call count stays zero |
+| >24 history plus old explicit source and a current reply | prompt has 24 + source once; final union adds current reply once; canonical order |
+| 300 pending main-lane user rows | drain executes 256 then 44; each batch contains all rows its cursor crosses and persists that batch endpoint only after success |
+| imported nullable `turn_id` history plus a current turn | recent history retains the latest 24 nullable rows and unions the current-turn rows |
+| side source followed by a later persisted row | recovered prompt contains 24-before + source; later row absent |
+| required production method removed | fail closed with 501 before a run-store/active-turn side effect |
+| 15,052-message production-shape gate | six scenarios pass pinned heap/RSS/latency/cardinality budgets and SQLite integrity check |
+
+### Good / Base / Bad Cases
+
+- Good: a 3,044-message conversation starts from one old explicit batch row; the Agent sees that row once, the fixed latest 24 rows, and current-turn replies, while full hydration poison remains untouched.
+- Good: restart discovers one unresolved side source through SQL and rehydrates its 25 snapshotted ids; a later persisted row stays invisible.
+- Base: a short conversation has fewer than 24 ordinary rows, so the prompt contains fewer rows; 24 is a maximum window, not padding.
+- Base: more than 256 pending user rows drain in stable bounded id batches and advance the durable cursor after each successful batch.
+- Bad: recomputing latest 24 on every hop, because current replies evict turn-start history and make Agent prompts inconsistent within one turn.
+- Bad: catching a missing projection and calling `getConversation()`, because one wiring error restores conversation-size-dependent memory.
+
+### Required Tests And Gate
+
+- `tests/storage/turn-runtime-no-full-hydration.test.js`: real SQLite poison, baseline red/current green, routing exclusions/ties, explicit/current union, side snapshot, private visibility, Goal actions, fail-closed, and deletion reconciliation.
+- Existing `turn-orchestrator`, session Goal, message deletion, image preflight, agent executor/bridge, and server smoke suites remain compatibility gates.
+- `scripts/p2ab-bounded-hydration-gate.js` uses `scripts/p2ab-bounded-hydration/{synthetic-seed.js,gate-child.js}` to run `main-turn`, `goal-300`, `concurrent-turns`, `restart-recovery`, `side-snapshot`, and `deletion-reconcile`. It records every projection's selected rows, enforces `historyLimit + current-turn rows + required ids`, poisons full hydration, samples heap/RSS in process and RSS externally, and uses only synthetic isolated data.
+
+### Wrong Vs Correct
+
+#### Wrong
+```ts
+const conversation = store.getConversation(conversationId);
+const promptMessages = conversation.messages.slice(-24);
+```
+This parses every historical metadata row before clipping the JavaScript array and loses explicit rows outside the window.
+
+#### Correct
+```ts
+const promptMessages = store.listPromptMessages(conversationId, {
+  historyLimit: 24,
+  currentTurnId: turnId,
+  requiredMessageIds: promptSnapshotMessageIds,
+});
+```
+SQLite selects the bounded union first, then the runtime applies visibility and prompt-user replacement to that canonical set.
+
 ## Default Initial Agent Resolution
 
 ### 1. Scope / Trigger

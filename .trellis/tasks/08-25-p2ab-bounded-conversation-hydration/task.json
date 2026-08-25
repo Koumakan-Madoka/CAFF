@@ -1,0 +1,45 @@
+{
+  "id": "08-25-p2ab-bounded-conversation-hydration",
+  "name": "08-25-p2ab-bounded-conversation-hydration",
+  "title": "P2A+B bounded conversation hydration",
+  "description": "Replace Goal/queue/cursor/routing and prompt/side/final-reply full conversation hydration with targeted SQL or bounded projections; default prompt history to 24 recent messages plus current-turn and explicitly referenced rows, without schema changes.",
+  "status": "test",
+  "dev_type": "backend",
+  "scope": "backend,runtime,storage,performance",
+  "package": null,
+  "priority": "P2",
+  "creator": "GPT",
+  "assignee": "GPT",
+  "createdAt": "2026-08-25",
+  "completedAt": null,
+  "branch": "room/c2fab452-caff-bug-bug",
+  "base_branch": "develop",
+  "worktree_path": "E:/pythonproject/worktrees/room/c2fab452-caff-bug-bug",
+  "current_phase": 2,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "check"
+    },
+    {
+      "phase": 3,
+      "action": "finish"
+    },
+    {
+      "phase": 4,
+      "action": "create-pr"
+    }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}
