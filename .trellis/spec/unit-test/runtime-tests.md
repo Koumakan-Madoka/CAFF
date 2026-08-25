@@ -46,6 +46,37 @@ The production-shape gate uses child processes with `--expose-gc`, a warm baseli
 - The production-shape gate must include at least 50 real object snapshots and one >=200 KiB snapshot, report disk delta for dual writes, verify unchanged historical metadata bytes, and clear external integration variables.
 - Rollback proof runs the exact pre-P2C build against an Expand-created SQLite fixture. It must read/update full metadata while ignoring extra tables; reopening with Expand must still return table details.
 
+## P2C-Contract Message Metadata Guards
+
+- Run the same Contract test files against the exact accepted Expand build
+  before implementation. Storage, HTTP, and SSE failures must reach full
+  metadata/detail behavior; a lightweight UI compatibility fixture may already
+  pass because the existing timeline only consumes references and aggregates.
+- Real SQLite writes pass full `contextSnapshot` / `modelUsage` separately and
+  assert the message row contains no `sections`, `displayContent`, or `calls`.
+  Read the detail tables directly to prove full snapshots and retained call
+  objects survived.
+- Cover queued, streaming/tool, completed, failed/error, and null-usage states.
+  Capture the immutable snapshot row before lifecycle updates and assert its
+  JSON and `updated_at` remain unchanged.
+- Inject explicit snapshot and usage UPSERT failures after the message statement;
+  assert create/update content, status, metadata, and detail rows roll back.
+- Seed legacy-only, Expand dual-written, and Contract table-backed rows in one
+  real message page. Assert transport output preserves timeline/deletion/session/
+  usage/cross-conversation/Goal/image fields but contains no full detail bodies.
+- Test SSE at the real `SseBus` serialization boundary for both created and
+  updated event names. This is the shared boundary for all producer call sites;
+  source-only assertions are insufficient.
+- Render a lightweight assistant fixture in jsdom and assert the context button
+  remains enabled and aggregate model-call/provider-miss text remains visible.
+- Record historical `metadata_json` bytes before future writes and compare them
+  afterward. Production-shape gates must also report actual Contract row bytes,
+  hypothetical Expand duplicate bytes, message-page/SSE payload bytes, DB delta,
+  heap/RSS/latency, and integrity/FK results.
+- Rollback proof uses the exact accepted Expand build against a Contract-created
+  fixture. It must read full table detail, update the message, and leave the DB
+  readable when Contract is restored.
+
 ## Useful Existing Suites
 
 - `tests/runtime/agent-tool-bridge.test.js`: bridge behavior and `.trellis`

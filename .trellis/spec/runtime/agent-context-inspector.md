@@ -73,6 +73,16 @@
 - Expand storage: real SQLite tests assert queued/completed/failed atomic writes, same-snapshot no-rewrite, rollback injection, new-table priority, metadata fallback, restart, and delete cascade.
 - Pagination: mixed old/new/table-only rows cover default 50, maximum 100, stable tie ordering, opaque cursor isolation, invalid inputs, and full-hydration poison.
 - Rollback: a pre-P2C build reads/updates an Expand-era message from full metadata; Expand can reopen it and still read the detail row.
+- Contract storage: future assistant metadata keeps only the lightweight
+  snapshot reference (including `snapshotId` and `sectionCount`), while the
+  explicit full snapshot input is written to the Expand detail table in the
+  same transaction.
+- Contract transport: message pages and created/updated SSE events project
+  legacy, Expand, and Contract metadata without `sections.displayContent`;
+  Inspector detail and Markdown export remain table-first/legacy-fallback and
+  therefore still materialize full safe content.
+- Contract rollback: the accepted Expand build must read Contract-era full
+  table snapshots even though message metadata is lightweight.
 
 ### 7. Wrong vs Correct
 

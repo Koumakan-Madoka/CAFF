@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
+import { projectConversationMessageEventPayload } from '../../lib/message-detail-contract';
+
 export type SseNowFn = () => string;
 
 export type SseInitialEvent = {
@@ -86,7 +88,7 @@ export function createSseBus(options: SseBusOptions = {}) {
       text += `event: ${eventName}\n`;
     }
 
-    const body = JSON.stringify(payload);
+    const body = JSON.stringify(projectConversationMessageEventPayload(eventName, payload));
 
     for (const line of body.split('\n')) {
       text += `data: ${line}\n`;

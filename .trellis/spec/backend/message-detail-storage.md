@@ -213,3 +213,128 @@ if (!detailRepository.hasContextSnapshot(messageId, snapshot.snapshotId)) {
 ```
 
 Only a missing or genuinely different snapshot is serialized and written.
+
+## Scenario: P2C-Contract Lightweight Message Metadata And Transport
+
+### 1. Scope / Trigger
+
+- Trigger: a future assistant message is created or updated with explicit full
+  `contextSnapshot` / `modelUsage` detail input, or a public message crosses the
+  messages-page or SSE transport boundary.
+- P2C-Contract does not alter the Expand schema or historical rows. It only
+  changes future assistant metadata and browser-facing projections.
+- Contract rollback is guaranteed to the accepted Expand build. A pre-P2C
+  build is not required to understand Contract-era lightweight metadata.
+
+### 2. Signatures
+
+```ts
+ChatAppStore.createMessage({ ..., metadata, contextSnapshot?, modelUsage? })
+ChatAppStore.updateMessage(messageId, { ..., metadata, contextSnapshot?, modelUsage? })
+buildContractMessageMetadata(metadata, { contextSnapshot?, modelUsage? })
+projectMessageForTransport(message) -> message
+projectConversationMessageEventPayload(eventName, payload) -> payload
+```
+
+`contextSnapshot` and `modelUsage` are write-only detail inputs. They are never
+returned as top-level message fields.
+
+### 3. Contracts
+
+- New assistant queued/streaming/completed/error writes pass the full immutable
+  snapshot separately from metadata. Completed/error writes also pass full-run
+  model usage separately when available.
+- The Store writes full `snapshot_json` and retained full `calls_json` in the
+  same transaction as the message state, then serializes only lightweight
+  metadata. Detail failure rolls back the entire create/update.
+- Lightweight `metadata.agentContextSnapshot` contains only version, snapshot/
+  conversation/turn/message/agent/prompt identifiers, capture time,
+  immutability, total tokens/bytes, and `sectionCount`. It contains no
+  `sections`, `contentPreview`, or `displayContent`.
+- Lightweight `metadata.modelUsage` contains the four full-run aggregate
+  counters plus `callsTruncated`, `retainedCallCount`, and `droppedCallCount`.
+  It contains no `calls` array.
+- Store slimming is opt-in through explicit detail inputs. Expand-era callers
+  that still write full metadata without explicit inputs remain byte-compatible;
+  Contract must not silently rewrite historical or externally managed rows.
+- Full detail persistence prefers explicit inputs. Legacy fallback persistence
+  accepts only full snapshots with a `sections` array and model usage with calls;
+  a lightweight reference must never overwrite a full table row.
+- `GET /api/conversations/:id/messages` maps every item through the shared
+  transport projector before deletion eligibility is attached.
+- SSE serialization maps every `conversation_message_created` and
+  `conversation_message_updated` payload through the same projector. Applying
+  this at `SseBus` frame construction covers all producers, initial events, and
+  legacy `writeEvent` without changing internal scheduler payloads.
+- Transport projection is non-mutating and applies to legacy, Expand, and
+  Contract rows. It preserves unrelated metadata needed by timeline, deletion,
+  usage, digest, cross-conversation, Goal, private/image, and handoff behavior.
+- Inspector/export and dedicated detail reads never use the transport
+  projection. They remain table-first with legacy metadata fallback.
+
+### 4. Validation Matrix
+
+| Condition | Required result |
+| --- | --- |
+| queued assistant with explicit full snapshot | metadata has lightweight reference; table has full `displayContent` |
+| streaming/tool update with same snapshot | metadata stays lightweight; immutable table row does not rewrite |
+| completed/error with full usage | metadata has aggregates only; table keeps first + latest 63 full calls |
+| null usage | no usage detail row; metadata has no calls/detail body |
+| explicit detail UPSERT throws | matching message create/update fully rolls back |
+| historical legacy/Expand row | stored `metadata_json` bytes remain unchanged |
+| legacy/Expand/Contract mixed message page | no `displayContent` or `modelUsage.calls`; cursor/order unchanged |
+| any created/updated SSE producer | serialized event has the same lightweight message projection |
+| Inspector/Markdown for all three generations | full detail renders through table-first/legacy fallback |
+| exact Expand build opens Contract DB | Contract-era full table detail remains readable and updateable |
+
+### 5. Good / Base / Bad Cases
+
+- Good: queued metadata stores a 12-field snapshot reference while the same
+  transaction stores the complete 250 KiB snapshot in the detail table.
+- Base: a legacy-only row stays byte-identical in SQLite but is summarized when
+  it crosses HTTP/SSE.
+- Bad: derive table detail from already-slim metadata; Expand rollback would
+  open an Inspector snapshot with no `displayContent`.
+- Bad: delete `displayContent` separately in each controller/broadcaster; one of
+  the ten producers will drift and leak the full payload.
+
+### 6. Required Tests And Gate
+
+- `tests/storage/message-detail-contract.test.js`: real SQLite lightweight/full
+  split, queued/streaming/completed/failed/null usage, immutable no-rewrite,
+  injected rollback, retained call sequences, and historical byte identity.
+- `tests/http/message-metadata-contract.test.js`: mixed legacy/Expand/Contract
+  page projection plus full Inspector fallback.
+- `tests/http/sse-message-metadata-contract.test.js`: created/updated SSE frame
+  projection at the bus boundary.
+- `tests/ui/message-metadata-contract.test.js`: lightweight reference keeps the
+  context button enabled and aggregate model-usage badge intact.
+- `scripts/p2c-contract-gate.js`: production-shape historical-byte identity,
+  new-row/database/payload reduction, memory/latency, SQLite integrity, and
+  exact Expand rollback evidence.
+
+### 7. Wrong Vs Correct
+
+#### Wrong
+
+```ts
+store.updateMessage(messageId, {
+  metadata: { agentContextSnapshot: lightweightReference },
+});
+```
+
+No full detail input crosses the transaction boundary. If the table row is
+missing, Inspector and an Expand rollback have no complete snapshot to read.
+
+#### Correct
+
+```ts
+store.updateMessage(messageId, {
+  metadata: { agentContextSnapshot: lightweightReference },
+  contextSnapshot: fullSnapshot,
+  modelUsage: fullModelUsage,
+});
+```
+
+The Store atomically persists full detail while serializing only the lightweight
+message metadata.

@@ -306,10 +306,16 @@ store.updateMessage(messageId, { metadata: { ...metadata, invocationFailure } })
   - `tokenUsage`: normalized `{ inputTokens, uncachedInputTokens, outputTokens, totalTokens, cacheReadTokens, cacheWriteTokens, inputCostUsd, outputCostUsd, cacheReadCostUsd, cacheWriteCostUsd, totalCostUsd }`; token values are non-negative integers or `null`, cost values are non-negative USD numbers or `null`.
   - `modelUsage`: normalized per-run model-call summary `{ modelCallCount, coldStartModelCallCount, postColdModelCallCount, providerMissCount, calls[] }`, where each call has a 1-based `sequence`, canonical `isColdStart` (`coldStart` remains a legacy alias), `providerMiss`, and normalized `tokenUsage`; `providerMiss` means a non-cold-start call has `cacheReadTokens === 0` and positive uncached input.
 - P2C-Expand detail table `chat_message_model_usage_calls` stores the four full-run aggregate counters plus at most 64 `calls[]`: the first call and latest 63. It also stores `callsTruncated`, `retainedCallCount`, and `droppedCallCount` projections. The message metadata remains complete during Expand.
+- P2C-Contract future assistant writes pass the full model usage object as a
+  Store detail input. Message metadata keeps only the four full-run aggregate
+  counters plus truncation/retained/dropped counts and never stores `calls[]`.
+  Queued/streaming rows have no model-usage summary; completed/error rows store
+  it only when usable calls exist. Table aggregates remain authoritative and
+  must not be recomputed from the retained calls.
 
 ### 3. Contracts
 - Runtime preserves raw usage field names and sums numeric usage/cost fields across unique assistant model calls in the run.
-- Completed/error message updates and the model usage detail UPSERT share one SQLite transaction. No usable model calls means metadata `modelUsage=null` and no detail row.
+- Completed/error message updates and the model usage detail UPSERT share one SQLite transaction. No usable model calls means no detail row and no detailed model-usage metadata projection.
 - Detail reads prefer the table and fall back to legacy metadata. Aggregate counts always represent the full run and must not be recomputed from the retained call array. Retention preserves original `sequence` values: 65 calls retain sequences `1, 3..65`; 100 calls retain `1, 38..100`.
 - Normalization accepts common provider key variants: `input_tokens` / `inputTokens` / `prompt_tokens` / `promptTokens`, `output_tokens` / `outputTokens` / `completion_tokens` / `completionTokens`, `cacheRead` / `cache_read` / `cacheReadTokens` / `cache_read_tokens`, `cacheWrite` / `cache_write` / `cacheWriteTokens` / `cache_write_tokens`, and `total_tokens` / `totalTokens`.
 - Provider `input` counts may mean non-cached input only. Normalized `inputTokens` represents effective prompt/context input, computed as `uncachedInputTokens + cacheReadTokens + cacheWriteTokens` when cache fields exist; `uncachedInputTokens` preserves the raw non-cached provider input.
