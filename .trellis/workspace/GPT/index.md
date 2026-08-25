@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 10
+- **Total Sessions**: 11
 - **Last Active**: 2026-08-25
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~470 | Active |
+| `journal-1.md` | ~512 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 11 | 2026-08-25 | Complete P2C Contract message metadata | `e508de961eeb75ad06476362271b952317d3b10c`, `937110dc73fa820b75ba7c5098bcbf4948febf00`, `62f2e03ed377b200f9114186daf922245e07a8ef` | `room/c2fab452-caff-bug-bug` |
 | 10 | 2026-08-25 | P2C Expand message detail tables | `bd25d0ce542be547ee9fc1e97b1b4f77b611fc99`, `2ed64ee6e4b225c85523d34d8a75d4805d58ea6d` | `room/c2fab452-caff-bug-bug` |
 | 9 | 2026-08-25 | P2A+B bounded conversation hydration | `fc4173a08ad593256495179d2652767152783364`, `87538d5e4fde93881147e7edce585be956a5542c` | `room/c2fab452-caff-bug-bug` |
 | 8 | 2026-08-25 | Bound agent metrics, SSE backpressure, and runtime observability | `6e1a991`, `9f133ba`, `c1d6d6c`, `9491e92`, `040c95e`, `a13d65c`, `fbdf7dc`, `2840d5b`, `da90471`, `c6b90038` | `room/c2fab452-caff-bug-bug` |

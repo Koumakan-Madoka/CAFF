@@ -468,3 +468,45 @@ Added reversible message-keyed context snapshot and model usage detail storage w
 ### Next Steps
 
 - None - task complete
+
+
+## Session 11: Complete P2C Contract message metadata
+
+**Date**: 2026-08-25
+**Task**: Complete P2C Contract message metadata
+**Branch**: `room/c2fab452-caff-bug-bug`
+
+### Summary
+
+(Add summary)
+
+### Main Changes
+
+| Area | Result |
+|---|---|
+| Storage | Future assistant writes keep full context snapshots and retained model-usage calls in Expand detail tables while metadata stores lightweight timeline references and aggregate counters. |
+| Transport | Message pagination and created/updated SSE frames share a non-mutating projection that removes snapshot displayContent and modelUsage.calls for legacy, Expand, and Contract rows. |
+| Compatibility | Inspector, Markdown export, and dedicated detail reads remain table-first with legacy metadata fallback; exact accepted Expand rollback and Contract forward reopen passed. |
+| Evidence | Candidate e508de96 received independent commit-pinned approval, passed isolated 3224 manual acceptance, production-shape gates, focused tests, typechecks, build, and both GitHub unit checks. |
+| Integration | PR #97 merged to develop as 937110dc with merge tree f878ba76. Production port 3100 was not touched. |
+
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `e508de961eeb75ad06476362271b952317d3b10c` | (see git log) |
+| `937110dc73fa820b75ba7c5098bcbf4948febf00` | (see git log) |
+| `62f2e03ed377b200f9114186daf922245e07a8ef` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
