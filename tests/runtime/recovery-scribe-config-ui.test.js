@@ -169,3 +169,59 @@ test('personas management exposes a separate system services tab and chat listen
   assert.match(styles, /data-page="personas"\]\s+\.management-view-switch\s*\{[^}]*grid-template-columns:\s*repeat\(3,/su);
   assert.match(styles, /data-page="personas"\]\s+\.management-icon-button\s*\{[^}]*grid-row:\s*1/su);
 });
+
+test('provider refresh failure does not block the initial system services view or scribe load', async () => {
+  const html = fs.readFileSync(path.join(ROOT, 'public', 'personas.html'), 'utf8');
+  const source = fs.readFileSync(path.join(ROOT, 'public', 'personas.js'), 'utf8');
+  const dom = new JSDOM(html, {
+    runScripts: 'outside-only',
+    url: 'http://127.0.0.1/personas.html#system-services',
+  });
+  const calls = [];
+  const toasts = [];
+  dom.window.CaffShared = {
+    avatar: {},
+    createToastController() {
+      return { show(message) { toasts.push(String(message)); } };
+    },
+    async fetchJson(url) {
+      assert.equal(url, '/api/bootstrap');
+      return {
+        localAdmin: {
+          modelProviders: { enabled: true, csrfToken: 'provider-token' },
+          systemServices: { enabled: true, csrfToken: 'service-token' },
+        },
+      };
+    },
+  };
+  dom.window.CaffPersonas = {
+    createRoleManagement() {
+      return {
+        setDirectory() { calls.push('roles'); },
+        async refresh() { calls.push('roles-refresh'); },
+      };
+    },
+    createProviderManagement() {
+      return {
+        async refresh() {
+          calls.push('providers');
+          throw new Error('provider fixture rejected');
+        },
+      };
+    },
+    createRecoveryScribeManagement() {
+      return {
+        async refresh() { calls.push('system-services'); },
+      };
+    },
+  };
+
+  dom.window.eval(source);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(calls, ['roles', 'providers', 'system-services']);
+  assert.equal(dom.window.document.body.dataset.managementReady, 'true');
+  assert.equal(dom.window.document.getElementById('system-services-view').classList.contains('hidden'), false);
+  assert.equal(dom.window.document.getElementById('show-system-services').getAttribute('aria-selected'), 'true');
+  assert.ok(toasts.some((message) => message.includes('provider fixture rejected')));
+});

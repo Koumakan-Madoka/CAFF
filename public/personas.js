@@ -31,6 +31,22 @@ function showToast(message) {
   toast.show(message);
 }
 
+/**
+ * @param {Array<{ refresh: () => unknown | Promise<unknown>, fallback: string }>} sections
+ */
+async function refreshSections(sections) {
+  const results = await Promise.allSettled(
+    sections.map((section) => Promise.resolve().then(() => section.refresh()))
+  );
+  let succeeded = true;
+  results.forEach((result, index) => {
+    if (result.status === 'fulfilled') return;
+    succeeded = false;
+    showToast(result.reason && result.reason.message || sections[index].fallback);
+  });
+  return succeeded;
+}
+
 function showView(view, updateHash = true) {
   const roles = view === 'roles';
   const providers = view === 'providers';
@@ -99,12 +115,12 @@ document.getElementById('refresh-system-services').addEventListener('click', asy
   try { await recoveryScribeManagement.refresh(); showToast('系统服务状态已刷新'); } catch (error) { showToast(error.message); }
 });
 document.getElementById('refresh-button').addEventListener('click', async () => {
-  try {
-    await roleManagement.refresh();
-    await providerManagement.refresh();
-    await recoveryScribeManagement.refresh();
-    showToast('已刷新');
-  } catch (error) { showToast(error.message); }
+  const succeeded = await refreshSections([
+    { refresh: () => roleManagement.refresh(), fallback: '角色目录刷新失败' },
+    { refresh: () => providerManagement.refresh(), fallback: '供应商状态刷新失败' },
+    { refresh: () => recoveryScribeManagement.refresh(), fallback: '系统服务状态刷新失败' },
+  ]);
+  if (succeeded) showToast('已刷新');
 });
 
 async function init() {
@@ -122,15 +138,17 @@ async function init() {
     /** @type {HTMLButtonElement} */ (document.getElementById('import-from-catalog')).disabled = !adminState.providers.enabled;
     /** @type {HTMLButtonElement} */ (document.getElementById('refresh-providers')).disabled = !adminState.providers.enabled;
     /** @type {HTMLButtonElement} */ (document.getElementById('refresh-system-services')).disabled = !adminState.systemServices.enabled;
-    roleManagement.setDirectory(bootstrap);
-    await providerManagement.refresh();
-    await recoveryScribeManagement.refresh();
     const initialView = location.hash === '#providers'
       ? 'providers'
       : location.hash === '#system-services'
         ? 'system-services'
         : 'roles';
     showView(initialView, false);
+    await refreshSections([
+      { refresh: () => roleManagement.setDirectory(bootstrap), fallback: '角色目录加载失败' },
+      { refresh: () => providerManagement.refresh(), fallback: '供应商状态加载失败' },
+      { refresh: () => recoveryScribeManagement.refresh(), fallback: '系统服务状态加载失败' },
+    ]);
     document.body.dataset.managementReady = 'true';
   } catch (error) {
     document.body.dataset.managementReady = 'error';
