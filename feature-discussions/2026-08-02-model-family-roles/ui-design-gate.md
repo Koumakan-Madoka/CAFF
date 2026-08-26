@@ -30,7 +30,7 @@ Why: 本次在 role payload、availability 与 participant policy 上增加其�
 - `designs/caff-ui-redesign-brief.md`：AppShell、管理页响应式与“减少 AI 模板感”的既有设计真相。
 - `server/api/bootstrap-payload.ts:89-142`：当前模型目录读取 agentDir `models.json`，并错误混入 Agent/Profile 反向来源。
 - `lib/pi-runtime.ts`：runtime 当前 agentDir 解析规则。
-- 仓库锁定的 `@earendil-works/pi-coding-agent@0.80.10`（由 `lib/pi-sdk-host.mjs` 加载）及其 nested @earendil-works/pi-ai：Agent runtime 的模型与 thinking capability 权威来源；本机 global CLI 和根级旧 `@mariozechner/pi-ai` 不是本 Gate 的 capability source。
+- 仓库锁定的 `@earendil-works/pi-coding-agent@0.84.3`（由 `lib/pi-sdk-host.mjs` 加载）及其 nested @earendil-works/pi-ai 0.84.3：Agent runtime 的模型与 thinking capability 权威来源；根级同版本 `@earendil-works/pi-ai` 仅服务隔离的 digest 完成路径，本机 global CLI 和根级直接依赖都不是本 Gate 的 capability source。
 - `@earendil-works/pi-coding-agent/docs/models.md`：`models.json` provider/model 字段，以及 literal、env、command 三种 API-key value syntax。
 - nested `@earendil-works/pi-ai` 的 `getSupportedThinkingLevels(model)`：全局用户值域包含 `off/minimal/low/medium/high/xhigh/max`，具体模型选项受 model reasoning / `thinkingLevelMap` 约束；fixture capability 已按该 pinned package family 做 snapshot audit，生产实现仍从 catalog DTO 读取而不复制这张表。
 - `lib/chat-app-store.ts:293-322`、`server/domain/conversation/turn/agent-executor.ts:451-460`：CAFF base/profile 真实运行字段为 provider/model/thinking，custom profile 另有 Persona；provider 由 model option 派生。

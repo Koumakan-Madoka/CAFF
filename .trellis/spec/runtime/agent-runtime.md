@@ -12,6 +12,114 @@
 - `server/domain/runtime/agent-tool-bridge.ts` handles `trellis-init`,
   `trellis-write`, chat bridge calls, and conversation memory tools
 
+## PI Package Family Upgrade Contract
+
+### 1. Scope / Trigger
+
+- Trigger: changing `@earendil-works/pi-coding-agent`, its PI AI companion,
+  SDK host construction, model-catalog validation, or a direct PI AI consumer.
+- The audited runtime baseline is coding-agent 0.84.3 plus PI AI 0.84.3.
+  Dependency upgrades require a new release-note/API audit and updated exact
+  version assertions; do not silently float either dependency.
+
+### 2. Signatures And Owners
+
+- `package.json` directly pins `@earendil-works/pi-coding-agent`,
+  `@earendil-works/pi-ai`, and `typebox` without ranges.
+- `lib/pi-sdk-host.mjs` imports only `@earendil-works/pi-coding-agent` and owns
+  `AgentSessionRuntime`, `SessionManager`, extension binding, native session
+  events, prompt images, abort, and disposal.
+- `lib/pi-model-config-validator.mjs` resolves coding-agent's nested PI AI and
+  is the authority for Agent model configuration/capability validation.
+- `server/domain/conversation/conversation-digest.ts` uses the direct
+  `@earendil-works/pi-ai/compat` completion API as an isolated non-Agent model
+  call. It must not pass its models, providers, messages, streams, or credential
+  objects into `AgentSession`.
+- `lib/pi-extensions/caff-capabilities.mjs` imports schema builders from the
+  exact direct `typebox` dependency and passes only JSON-schema-shaped data to
+  PI. It must not import a second PI AI package merely to build schemas.
+
+### 3. Contracts
+
+- No `@mariozechner/pi-ai` dependency or production import is allowed.
+- Every resolved `@earendil-works/pi-ai` package instance must have the same
+  audited version as coding-agent's declared companion, even when the published
+  coding-agent shrinkwrap retains a physical nested copy.
+- Runtime identity does not cross the two allowed consumers: Agent execution
+  stays inside coding-agent's package graph; digest completion stays inside the
+  direct compat graph. Plain JSON text/model configuration may cross CAFF
+  boundaries, but class instances, streams, provider registrations, credential
+  stores, messages, and TypeBox runtime values may not.
+- CAFF subscribes to native `AgentSessionEvent` objects. JSON/RPC wire-format
+  changes such as delta-only `message_update` do not change this contract unless
+  CAFF explicitly switches transports.
+- A pure dependency-upgrade candidate must not add provider-error
+  normalization, retry classification, or CAFF outer retry behavior.
+
+### 4. Validation And Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| exact coding-agent and direct PI AI versions match | install, build, and runtime tests proceed |
+| lockfile contains multiple physical PI AI nodes at the same audited version | allowed only with the isolated-consumer boundary above |
+| any PI AI node resolves to another version | dependency test fails before runtime acceptance |
+| deprecated `@mariozechner/pi-ai` appears in dependencies or production imports | dependency test fails |
+| digest imports PI AI root instead of `/compat` and `complete()` is absent | build/smoke must fail; restore the official compat import |
+| capability extension imports PI AI for `Type` | boundary test fails; use exact `typebox` |
+| native SDK lifecycle signature changes | focused SDK-host tests fail and a compatibility adaptation is required |
+| JSON/RPC `message_update` changes while native events remain stable | no CAFF runtime change; native delta tests remain authoritative |
+
+### 5. Good / Base / Bad Cases
+
+- Good: coding-agent and direct PI AI are both exactly 0.84.3; the lockfile's
+  physical copies are all 0.84.3; Agent runtime objects and digest runtime
+  objects remain isolated.
+- Base: a PI release changes built-in model capability metadata. Update audited
+  model snapshots and UI fixtures without changing persisted user provider
+  configuration.
+- Bad: keep an old root PI AI for digest or TypeBox while upgrading the nested
+  Agent runtime, then pass its model/schema/message instances into 0.84.3.
+- Bad: treat a JSON/RPC serialization breaking change as proof that native SDK
+  events changed without testing the actual `AgentSession.subscribe()` path.
+
+### 6. Tests Required
+
+- `tests/runtime/pi-model-config-validator.test.js` asserts exact direct
+  versions, zero deprecated package nodes/imports, one version across every PI
+  AI lockfile node, `/compat` digest import, and `typebox` extension import.
+- `tests/runtime/pi-model-catalog-host.test.js` and
+  `tests/ui/model-family-roles-ui-gate.test.js` pin audited model capabilities.
+- `tests/runtime/pi-sdk-host.test.js`, `tests/runtime/pi-runtime.test.js`, and
+  `tests/runtime/model-input-capability-parity.test.js` cover SDK/session/event/
+  image compatibility.
+- Server smoke covers the real digest compat import and PI/Trellis host startup.
+- Run `npm ls`, `npm run check`, both typechecks, build, focused runtime tests,
+  DAG/Goal/private/image/handoff regression, and smoke before freezing an
+  upgrade candidate.
+
+### 7. Wrong Vs Correct
+
+#### Wrong
+
+```js
+import { Type } from '@mariozechner/pi-ai';
+import { complete } from '@earendil-works/pi-ai';
+```
+
+This retains a deprecated package family for schemas and assumes the modern root
+entry exports the legacy completion surface.
+
+#### Correct
+
+```js
+import { Type } from 'typebox';
+const piAi = await import('@earendil-works/pi-ai/compat');
+```
+
+Schemas use the documented TypeBox package; isolated digest completion uses the
+official compatibility entry while Agent execution remains owned by
+coding-agent.
+
 ## Runtime Rules
 
 - Treat active project resolution as security-sensitive. Trellis file reads and
