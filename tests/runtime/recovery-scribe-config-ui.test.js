@@ -25,10 +25,11 @@ const MODEL_OPTIONS = [
   },
 ];
 
-function setup() {
+function setup({ modelOptions = MODEL_OPTIONS, enabled = true } = {}) {
   const dom = new JSDOM('<div id="root"></div>');
   const requests = [];
   const toasts = [];
+  let managedProviders = 0;
   const response = {
     config: {
       enabled: true,
@@ -39,7 +40,7 @@ function setup() {
     },
     source: 'runtime_defaults',
     updatedAt: null,
-    modelOptions: MODEL_OPTIONS,
+    modelOptions,
   };
   const context = {
     document: dom.window.document,
@@ -56,8 +57,9 @@ function setup() {
   }
   const management = context.window.CaffPersonas.createRecoveryScribeManagement({
     root: dom.window.document.getElementById('root'),
-    isEnabled: () => true,
+    isEnabled: () => enabled,
     getCsrfToken: () => 'csrf-token',
+    onManageProviders() { managedProviders += 1; },
     showToast(message) { toasts.push(message); },
     async fetchJson(url, options = {}) {
       requests.push({ url, options });
@@ -69,7 +71,7 @@ function setup() {
       return structuredClone(response);
     },
   });
-  return { dom, management, requests, toasts };
+  return { dom, management, requests, toasts, managedProviders: () => managedProviders };
 }
 
 test('system scribe editor loads configured models and saves a full hot configuration snapshot', async () => {
@@ -83,9 +85,17 @@ test('system scribe editor loads configured models and saves a full hot configur
   assert.equal(document.getElementById('recovery-scribe-thinking').value, 'low');
   assert.equal(document.getElementById('recovery-scribe-timeout').value, '60');
   assert.match(document.getElementById('recovery-scribe-config-source').textContent, /启动默认/u);
-  assert.match(document.getElementById('root').textContent, /摘要、摘要压缩、标题润色与失败现场整理/u);
-  assert.match(document.getElementById('root').textContent, /启停仅控制失败现场整理/u);
-  assert.match(document.getElementById('root').textContent, /超时仅用于失败现场整理/u);
+  assert.match(document.getElementById('root').textContent, /当 Agent 回复失败时/u);
+  assert.match(document.getElementById('root').textContent, /已完成的操作、可能已生效但未确认的改动、未完成的部分/u);
+  assert.match(document.getElementById('root').textContent, /模型来自「模型供应商」中已配置的模型/u);
+  assert.match(document.getElementById('root').textContent, /无需创建角色/u);
+  assert.match(document.getElementById('root').textContent, /摘要、摘要压缩、标题润色和失败现场整理/u);
+  assert.match(document.getElementById('root').textContent, /失败消息上不再显示「整理失败现场」按钮/u);
+  assert.match(document.getElementById('root').textContent, /整理超时/u);
+  assert.match(document.getElementById('root').textContent, /不执行命令、不修改文件、不重试任务/u);
+  assert.match(document.getElementById('root').textContent, /原始失败记录保持原样/u);
+  document.getElementById('manage-providers-from-recovery-scribe').click();
+  assert.equal(session.managedProviders(), 1);
 
   const model = document.getElementById('recovery-scribe-model');
   model.value = 'openai\u001fgpt-5';
@@ -117,14 +127,43 @@ test('system scribe editor loads configured models and saves a full hot configur
   assert.match(document.getElementById('recovery-scribe-config-source').textContent, /已保存/u);
 });
 
+test('system scribe editor replaces an empty model select with a provider setup action', async () => {
+  const session = setup({ modelOptions: [] });
+  await session.management.refresh();
+  const { document } = session.dom.window;
+
+  assert.equal(document.getElementById('recovery-scribe-model'), null);
+  assert.match(document.getElementById('root').textContent, /还没有可用模型/u);
+  assert.match(document.getElementById('root').textContent, /请先到「模型供应商」添加连接并配置可用模型/u);
+  assert.match(document.getElementById('root').textContent, /无需创建角色/u);
+  assert.equal(document.getElementById('save-recovery-scribe-config').disabled, true);
+  document.getElementById('manage-providers-from-recovery-scribe').click();
+  assert.equal(session.managedProviders(), 1);
+});
+
+test('system scribe provider navigation remains available in a read-only deployment', async () => {
+  const session = setup({ enabled: false });
+  await session.management.refresh();
+  const { document } = session.dom.window;
+
+  assert.equal(document.getElementById('recovery-scribe-enabled').disabled, true);
+  assert.equal(document.getElementById('manage-providers-from-recovery-scribe').disabled, false);
+  document.getElementById('manage-providers-from-recovery-scribe').click();
+  assert.equal(session.managedProviders(), 1);
+});
+
 test('personas management exposes a separate system services tab and chat listens for hot config changes', () => {
   const html = fs.readFileSync(path.join(ROOT, 'public', 'personas.html'), 'utf8');
   const app = fs.readFileSync(path.join(ROOT, 'public', 'app.js'), 'utf8');
+  const personas = fs.readFileSync(path.join(ROOT, 'public', 'personas.js'), 'utf8');
   const styles = fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8');
   assert.match(html, /id="show-system-services"/u);
   assert.match(html, /id="system-services-view"/u);
   assert.match(html, /id="recovery-scribe-detail"/u);
   assert.match(html, /\/personas\/recovery-scribe-management\.js/u);
+  assert.match(html, /失败回复的只读现场报告/u);
+  assert.match(html, /不是普通角色/u);
+  assert.match(personas, /onManageProviders:\s*\(\)\s*=>\s*showView\('providers'\)/u);
   assert.match(app, /system_service_config_updated/u);
   assert.match(app, /scheduleConversationRefresh\(state\.selectedConversationId\)/u);
   assert.match(styles, /data-page="personas"\]\s+\.management-view-switch\s*\{[^}]*grid-template-columns:\s*repeat\(3,/su);

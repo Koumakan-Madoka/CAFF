@@ -83,6 +83,7 @@ const recoveryScribeManagement = personas.createRecoveryScribeManagement({
   showToast,
   isEnabled: () => adminState.systemServices.enabled,
   getCsrfToken: () => adminState.systemServices.csrfToken,
+  onManageProviders: () => showView('providers'),
 });
 
 roleTab.addEventListener('click', () => showView('roles'));

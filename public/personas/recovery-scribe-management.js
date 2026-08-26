@@ -63,42 +63,56 @@
       }
       const config = configuration.config;
       const locked = !options.isEnabled();
+      const hasModels = Array.isArray(configuration.modelOptions) && configuration.modelOptions.length > 0;
+      const providerSetup = hasModels
+        ? `<div class="provider-source-note"><p><strong>模型来自「模型供应商」中已配置的模型</strong><br />在这里直接选择即可，无需创建角色。</p><button id="manage-providers-from-recovery-scribe" class="ghost-button" type="button">管理模型供应商</button></div>`
+        : `<div class="management-warning provider-source-note"><div><strong>${locked ? '当前部署为只读模式' : '还没有可用模型'}</strong><p>${locked ? '你仍可查看模型供应商目录；配置需在本机管理员环境完成。' : '请先到「模型供应商」添加连接并配置可用模型，无需创建角色。'}</p></div><button id="manage-providers-from-recovery-scribe" class="ghost-button" type="button">${locked ? '查看模型供应商' : '去配置模型供应商'}</button></div>`;
+      const modelFields = hasModels
+        ? `<div class="field-grid recovery-scribe-config-grid">
+            <label><span>模型</span><select id="recovery-scribe-model"></select></label>
+            <label><span>思考强度</span><select id="recovery-scribe-thinking"></select></label>
+            <label><span>整理超时（秒，1–60）</span><input id="recovery-scribe-timeout" type="number" min="1" max="60" step="1" inputmode="numeric" value="${config.timeoutMs / 1000}" /></label>
+          </div>
+          <p class="management-note">整理超时后仍会生成一份简版机械摘要；摘要与标题使用各自的执行时限。</p>`
+        : '';
       root.innerHTML = `
         <div class="management-detail-top">
-          <div><p class="eyebrow">Recovery Scribe</p><h2>系统书记</h2><p>平台级只读恢复服务</p></div>
+          <div><p class="eyebrow">Recovery Scribe</p><h2>系统书记</h2><p>Agent 失败回复的只读现场报告</p></div>
           <span id="recovery-scribe-config-source" class="status-badge">${sourceLabel()}</span>
         </div>
         <section class="management-card">
-          <div class="management-card-title"><div><h3>共享模型配置</h3><p>模型与思考强度同时用于摘要、摘要压缩、标题润色与失败现场整理；保存后从下一次调用生效。</p></div></div>
-          <label class="system-service-enabled-row"><input id="recovery-scribe-enabled" type="checkbox" ${config.enabled ? 'checked' : ''} /><span>启用系统书记</span></label>
-          <p class="management-note">启停仅控制失败现场整理，不影响摘要服务。</p>
-          <div class="field-grid recovery-scribe-config-grid">
-            <label><span>共享模型</span><select id="recovery-scribe-model"></select></label>
-            <label><span>共享思考强度</span><select id="recovery-scribe-thinking"></select></label>
-            <label><span>书记绝对超时（秒）</span><input id="recovery-scribe-timeout" type="number" min="1" max="60" step="1" inputmode="numeric" value="${config.timeoutMs / 1000}" /></label>
-          </div>
-          <p class="management-note">超时仅用于失败现场整理；摘要与标题保留各自执行预算。</p>
+          <div class="management-card-title"><div><h3>它会做什么</h3><p>当 Agent 回复失败时，系统书记会生成一份现场整理报告，汇总已完成的操作、可能已生效但未确认的改动、未完成的部分，方便你和后续 Agent 接手。它不会自动触发，只在你点击失败消息上的「整理失败现场」按钮时运行一次。</p></div></div>
+        </section>
+        <section class="management-card">
+          <div class="management-card-title"><div><h3>摘要与失败整理使用的模型</h3><p>模型和思考强度同时用于会话摘要、摘要压缩、标题润色和失败现场整理；保存后从下一次调用生效。</p></div></div>
+          ${providerSetup}
+          <label class="system-service-enabled-row"><input id="recovery-scribe-enabled" type="checkbox" ${config.enabled ? 'checked' : ''} /><span>在失败消息上提供现场整理</span></label>
+          <p class="management-note">关闭后，失败消息上不再显示「整理失败现场」按钮；会话摘要和标题功能不受影响。</p>
+          ${modelFields}
           <p id="recovery-scribe-config-error" class="management-error hidden" role="alert"></p>
         </section>
         <section class="management-card system-service-boundaries">
-          <div class="management-card-title"><div><h3>固定边界</h3><p>固定提示 · 零工具 · 有界输入输出 · 机械兜底</p></div><span class="status-badge">不可放宽</span></div>
+          <div class="management-card-title"><div><h3>只生成报告</h3><p>不执行命令、不修改文件、不重试任务，原始失败记录保持原样。模型调用失败时仍会生成一份简版机械摘要。</p></div><span class="status-badge">只读</span></div>
         </section>
-        <div class="management-actions"><button id="save-recovery-scribe-config" type="button" ${locked ? 'disabled' : ''}>保存并立即生效</button></div>`;
+        <div class="management-actions"><button id="save-recovery-scribe-config" type="button" ${locked || !hasModels ? 'disabled' : ''}>保存并立即生效</button></div>`;
 
-      const modelSelect = /** @type {HTMLSelectElement} */ (document.getElementById('recovery-scribe-model'));
-      utils.fillModelSelect(
-        modelSelect,
-        configuration.modelOptions,
-        config.provider,
-        config.model
-      );
-      fillThinkingSelect(config.thinking);
-      modelSelect.addEventListener('change', () => fillThinkingSelect(''));
+      document.getElementById('manage-providers-from-recovery-scribe').addEventListener('click', options.onManageProviders);
+      if (hasModels) {
+        const modelSelect = /** @type {HTMLSelectElement} */ (document.getElementById('recovery-scribe-model'));
+        utils.fillModelSelect(
+          modelSelect,
+          configuration.modelOptions,
+          config.provider,
+          config.model
+        );
+        fillThinkingSelect(config.thinking);
+        modelSelect.addEventListener('change', () => fillThinkingSelect(''));
+      }
       document.getElementById('save-recovery-scribe-config').addEventListener('click', () => {
         void save().catch(() => {});
       });
       if (locked) {
-        root.querySelectorAll('input, select, button').forEach((control) => {
+        root.querySelectorAll('#recovery-scribe-enabled, #recovery-scribe-model, #recovery-scribe-thinking, #recovery-scribe-timeout, #save-recovery-scribe-config').forEach((control) => {
           control.disabled = true;
         });
       }
