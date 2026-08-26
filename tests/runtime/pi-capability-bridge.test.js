@@ -118,7 +118,7 @@ test('official MCP SDK is a direct exact dependency', () => {
   assert.doesNotMatch(packageJson.dependencies['@modelcontextprotocol/sdk'], /^[~^]/u);
 });
 
-test('Pi extension omits conversation_request from the model-visible facade schemas', async () => {
+test('Pi extension omits cross-conversation delivery facades from model-visible schemas', async () => {
   const extensionPath = path.resolve('lib/pi-extensions/caff-capabilities.mjs');
   const extension = await import(`${pathToFileURL(extensionPath).href}?schema=${Date.now()}`);
   const tools = [];
@@ -129,26 +129,17 @@ test('Pi extension omits conversation_request from the model-visible facade sche
   });
 
   assert.deepEqual(tools.map((tool) => tool.name), [
-    'conversation_notify',
     'room_workspace_preview',
     'room_workspace_bind',
   ]);
 
-  const notify = tools[0];
-  const preview = tools[1];
-  const bind = tools[2];
+  const preview = tools[0];
+  const bind = tools[1];
   assert.deepEqual(Object.keys(preview.parameters.properties), []);
   assert.deepEqual(Object.keys(bind.parameters.properties), ['confirm']);
   assert.equal(preview.parameters.additionalProperties, false);
   assert.equal(bind.parameters.additionalProperties, false);
   assert.match(JSON.stringify(bind.parameters), /explicitly confirms/u);
-  assert.deepEqual(Object.keys(notify.parameters.properties), [
-    'targetConversationId',
-    'targetAgentId',
-    'content',
-    'idempotencyKey',
-  ]);
-  assert.equal(notify.parameters.additionalProperties, false);
 
   const visibleSchema = JSON.stringify(tools.map((tool) => tool.parameters));
   for (const forbiddenField of FORBIDDEN_PROXY_FIELDS) {
@@ -175,10 +166,10 @@ test('Pi extension injects invocation credentials into a fixed local facade rout
     captured = { url: String(url), options };
     return new Response(JSON.stringify({
       ok: true,
-      facade: 'conversation_notify',
+      facade: 'room_workspace_preview',
       result: {
-        deliveryId: 'delivery-extension',
-        dispatchStatus: 'queued',
+        branch: 'room/conversa-extension',
+        alreadyBound: false,
       },
     }), {
       status: 200,
@@ -199,33 +190,23 @@ test('Pi extension injects invocation credentials into a fixed local facade rout
   extension.default({ registerTool(tool) { tools.push(tool); } });
   const result = await tools[0].execute(
     'tool-call-extension',
-    {
-      targetConversationId: 'conversation-target',
-      targetAgentId: 'agent-target',
-      content: 'hello',
-      idempotencyKey: 'idem-extension',
-    },
+    {},
     undefined
   );
 
   assert.equal(
     captured.url,
-    'http://127.0.0.1:3102/api/agent-tools/capabilities/conversation_notify'
+    'http://127.0.0.1:3102/api/agent-tools/capabilities/room_workspace_preview'
   );
   const body = JSON.parse(captured.options.body);
   assert.deepEqual(body, {
     invocationId: 'invocation-extension',
     callbackToken: 'callback-extension',
-    arguments: {
-      targetConversationId: 'conversation-target',
-      targetAgentId: 'agent-target',
-      content: 'hello',
-      idempotencyKey: 'idem-extension',
-    },
+    arguments: {},
   });
   assert.deepEqual(result.details, {
-    deliveryId: 'delivery-extension',
-    dispatchStatus: 'queued',
+    branch: 'room/conversa-extension',
+    alreadyBound: false,
   });
   assert.equal(result.content[0].text, JSON.stringify(result.details));
 });
@@ -603,21 +584,33 @@ test('Agent tools controller exposes only a fixed facade route shape', async () 
   });
 });
 
-test('dogfood: Pi extension reaches the authenticated delivery facade over real local HTTP', async (t) => {
-  let submitted = null;
+test('dogfood: Pi extension reaches the authenticated workspace facade over real local HTTP', async (t) => {
+  const conversation = {
+    id: 'conversation-source',
+    projectScopeId: 'project-f003',
+    title: 'Workspace Dogfood',
+    branch: 'room/conversa-workspace-dogfood',
+    worktreePath: path.resolve('.'),
+    workspaceBaseSha: 'c'.repeat(40),
+  };
   const store = {
     getConversation(conversationId) {
-      return conversationId === 'conversation-source'
-        ? { id: conversationId, projectScopeId: 'project-f003' }
-        : null;
+      return conversationId === conversation.id ? conversation : null;
+    },
+    getConversationWithoutMessages(conversationId) {
+      return conversationId === conversation.id ? conversation : null;
     },
   };
   const bridge = createAgentToolBridge({
     store,
+    resolveProject(projectScopeId) {
+      return projectScopeId === conversation.projectScopeId
+        ? { id: projectScopeId, path: path.resolve('.') }
+        : null;
+    },
     crossConversationDeliveryService: {
-      submitFromAgent(principal, args) {
-        submitted = { principal, args };
-        return createDeliveryResult(args.kind, args);
+      submitFromAgent() {
+        throw new Error('not used');
       },
     },
   });
@@ -680,19 +673,14 @@ test('dogfood: Pi extension reaches the authenticated delivery facade over real 
   extension.default({ registerTool(tool) { tools.push(tool); } });
   const result = await tools[0].execute(
     'tool-call-dogfood',
-    {
-      targetConversationId: 'conversation-target',
-      targetAgentId: 'agent-target',
-      content: 'dogfood through the full facade path',
-      idempotencyKey: 'dogfood-idem',
-    },
+    {},
     undefined
   );
 
-  assert.equal(submitted.principal.sourceInvocationId, 'invocation-dogfood');
-  assert.equal(submitted.args.kind, 'notify');
-  assert.equal(result.details.deliveryId, 'delivery-notify');
-  assert.equal(result.details.dispatchStatus, 'queued');
+  assert.equal(result.details.conversationId, conversation.id);
+  assert.equal(result.details.projectScopeId, conversation.projectScopeId);
+  assert.equal(result.details.branch, conversation.branch);
+  assert.equal(result.details.alreadyBound, true);
 });
 
 test('fixed MCP stdio adapter uses trusted config and injects principal server-side', async () => {

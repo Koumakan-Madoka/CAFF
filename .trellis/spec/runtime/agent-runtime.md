@@ -429,13 +429,12 @@ CAFF uses a descriptor + on-demand loading model for conversation skills:
 
 - Every conversation Agent run receives `lib/pi-extensions/caff-capabilities.mjs`
   through `startRun(..., { extensionPaths })`.
-- The extension registers exactly three model-visible tools:
-  - `conversation_notify(targetConversationId, targetAgentId, content, idempotencyKey)`
+- The extension registers exactly two model-visible tools:
   - `room_workspace_preview()`
   - `room_workspace_bind(confirm)`
-- `conversation_request` remains available in the server-side facade registry
-  for future restricted callers, but ordinary conversation Agent runs must not
-  register or expose it to the model.
+- `conversation_notify` and `conversation_request` remain available in the
+  server-side facade registry for future restricted callers, but ordinary
+  conversation Agent runs must not register or expose either tool to the model.
 - All TypeBox object schemas set `additionalProperties: false`. They must not
   expose server IDs/URLs, MCP tool names, transports, commands, env, headers,
   credentials, raw arguments, or fallback actions.
@@ -475,11 +474,11 @@ CAFF uses a descriptor + on-demand loading model for conversation skills:
 ### Required tests
 
 - `tests/runtime/pi-capability-bridge.test.js`: model-visible tool list omits
-  `conversation_request`; server-side request handling remains covered alongside
-  schema snapshots, forbidden fields, principal/project/trace injection, fixed
-  internal handlers, real isolated stdio MCP transport, timeout, disconnect,
-  malformed/secret result, no shell/HTTP fallback, build asset copy, and real
-  local HTTP dogfood.
+  `conversation_notify` and `conversation_request`; server-side delivery handling
+  remains covered alongside schema snapshots, forbidden fields,
+  principal/project/trace injection, fixed internal handlers, real isolated stdio
+  MCP transport, timeout, disconnect, malformed/secret result, no shell/HTTP
+  fallback, build asset copy, and real local HTTP dogfood.
 - `tests/runtime/agent-executor-hook.test.js`: fixed extension path propagation.
 - `tests/runtime/pi-sdk-host.test.js`: Pi SDK host extension loading.
 
