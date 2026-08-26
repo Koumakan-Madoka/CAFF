@@ -32,6 +32,7 @@
       liveStageLabel,
       messageSessionInfo,
       privateRecipientNames,
+      recoverFailedMessage,
       renderMessageBody,
       timelineMessagesForConversation,
       toolTraceSignatureForMessage,
@@ -40,6 +41,7 @@
 
     const TRACE_SCROLL_STEP_LIMIT = 8;
     const selectedMessageIds = new Set();
+    const recoveryRequestMessageIds = new Set();
     const renderedMessagesById = new Map();
     const deleteToolbar = dom.messageDeleteToolbar || null;
     const deleteCount = deleteToolbar && deleteToolbar.querySelector('[data-message-delete-count]');
@@ -146,6 +148,96 @@
     }
     if (deleteCancelButton) {
       deleteCancelButton.addEventListener('click', clearMessageSelection);
+    }
+
+    function recoveryStatusView(recovery) {
+      const status = String(recovery && recovery.status || '');
+      if (recovery && recovery.interrupted) {
+        return { label: '整理中断', tone: 'failed', terminal: true };
+      }
+      if (status === 'queued') {
+        return { label: '等待整理', tone: 'neutral', terminal: false };
+      }
+      if (status === 'running') {
+        return { label: '正在整理', tone: 'running', terminal: false };
+      }
+      if (status === 'completed') {
+        return { label: '整理完成', tone: 'success', terminal: true };
+      }
+      if (status === 'failed') {
+        return { label: recovery && recovery.fallbackUsed ? '机械摘要' : '整理失败', tone: 'failed', terminal: true };
+      }
+      return { label: '整理状态未知', tone: 'failed', terminal: true };
+    }
+
+    function syncRecoveryPanel(panel, message, conversationId) {
+      if (!panel) {
+        return;
+      }
+      const metadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : {};
+      const recovery = message && message.recovery && typeof message.recovery === 'object' ? message.recovery : null;
+      const isRecoveryResult = Boolean(metadata.recoveryResult);
+      const canRequest = Boolean(
+        message
+        && message.role === 'assistant'
+        && message.status === 'failed'
+        && !isRecoveryResult
+      );
+      panel.textContent = '';
+      panel.hidden = !isRecoveryResult && !canRequest;
+      panel.className = isRecoveryResult
+        ? 'message-recovery-panel message-recovery-provenance'
+        : 'message-recovery-panel';
+
+      if (isRecoveryResult) {
+        const sourceMessageId = String(metadata.sourceMessageId || 'unknown');
+        const sourceTaskId = String(metadata.sourceTaskId || 'unknown');
+        const sourceRunId = String(metadata.sourceRunId || 'unknown');
+        const kind = metadata.fallbackUsed ? '机械摘要' : '书记整理';
+        panel.textContent = `${kind} · 来源消息 ${sourceMessageId} · task ${sourceTaskId} · run ${sourceRunId} · 只读，不执行或重放`;
+        return;
+      }
+
+      if (recovery) {
+        const view = recoveryStatusView(recovery);
+        const status = document.createElement('span');
+        status.className = `message-recovery-status ${view.tone}`;
+        status.textContent = view.label;
+        status.title = recovery.errorMessage || view.label;
+        panel.appendChild(status);
+        if (view.terminal) {
+          return;
+        }
+      }
+
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'message-recovery-button ghost-button';
+      button.textContent = '整理失败现场';
+      button.disabled = Boolean(recovery) || recoveryRequestMessageIds.has(message.id);
+      button.title = recovery
+        ? '失败现场已进入整理流程'
+        : '生成只读、脱敏的失败现场摘要；不会重试或继续原任务';
+      button.addEventListener('click', async () => {
+        if (button.disabled || typeof recoverFailedMessage !== 'function') {
+          return;
+        }
+        recoveryRequestMessageIds.add(message.id);
+        button.disabled = true;
+        try {
+          const result = await recoverFailedMessage(conversationId, message.id);
+          if (result && result.recovery) {
+            message.recovery = result.recovery;
+          }
+          showToast(result && result.duplicate ? '已显示现有失败现场整理' : '失败现场已进入整理队列');
+        } catch (error) {
+          showToast(error && error.message ? error.message : '失败现场整理请求失败');
+        } finally {
+          recoveryRequestMessageIds.delete(message.id);
+          syncRecoveryPanel(panel, message, conversationId);
+        }
+      });
+      panel.appendChild(button);
     }
 
     function formatDuration(durationMs) {
@@ -1902,6 +1994,7 @@
       const time = document.createElement('span');
       const body = document.createElement('div');
       const crossConversationPanel = document.createElement('div');
+      const recoveryPanel = document.createElement('div');
       const liveHint = document.createElement('div');
       const toolTrace = document.createElement('section');
       const imageGallery = document.createElement('div');
@@ -1915,6 +2008,9 @@
       time.className = 'message-time';
       body.className = 'message-body';
       crossConversationPanel.className = 'cross-conversation-panel hidden';
+      recoveryPanel.className = 'message-recovery-panel';
+      recoveryPanel.hidden = true;
+      recoveryPanel.setAttribute('aria-live', 'polite');
       liveHint.className = 'message-live-hint hidden';
       toolTrace.className = 'message-tool-trace hidden';
       imageGallery.className = 'message-images';
@@ -1954,7 +2050,7 @@
       deleteControls.append(selectLabel, deleteButton);
 
       meta.append(sender, time, deleteControls);
-      card.append(meta, crossConversationPanel, toolTrace, imageGallery, body, liveHint);
+      card.append(meta, crossConversationPanel, recoveryPanel, toolTrace, imageGallery, body, liveHint);
       syncMessageCard(card, message, conversationId, agents, activeTurn, activeAgentSlots);
 
       return card;
@@ -2043,6 +2139,8 @@
         messageImages.imageBlockSignature(message),
         deletionEligibility ? JSON.stringify(deletionEligibility) : '',
         deletionBlocked ? 'delete-blocked' : 'delete-ready',
+        message.recovery ? JSON.stringify(message.recovery) : '',
+        recoveryRequestMessageIds.has(message.id) ? 'recovery-requesting' : '',
         traceSignature,
       ].join('\u001f');
 
@@ -2067,6 +2165,7 @@
       const time = card.querySelector('.message-time');
       const body = card.querySelector('.message-body');
       const crossConversationPanel = card.querySelector('.cross-conversation-panel');
+      const recoveryPanel = card.querySelector('.message-recovery-panel');
       const liveHint = card.querySelector('.message-live-hint');
       const toolTrace = card.querySelector('.message-tool-trace');
       const imageGallery = card.querySelector('.message-images');
@@ -2156,6 +2255,7 @@
         message,
         crossConversationBundle
       );
+      syncRecoveryPanel(recoveryPanel, message, conversationId);
       card.classList.toggle('cross-conversation-receipt', Boolean(crossConversationModels.receipt));
       card.classList.toggle('cross-conversation-provenance-message', Boolean(crossConversationModels.provenance));
       card.classList.toggle('conversation-spawn-birth', Boolean(crossConversationModels.birth));

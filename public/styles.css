@@ -6612,6 +6612,65 @@ body.chat-app .message-card.failed .message-meta {
   justify-content: center;
 }
 
+body.chat-app .message-recovery-panel {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+  gap: var(--caff-space-2);
+  flex-wrap: wrap;
+  color: var(--caff-text-muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+body.chat-app .message-recovery-panel[hidden] {
+  display: none;
+}
+
+body.chat-app .message-recovery-button {
+  min-height: 44px;
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--caff-radius-sm);
+  box-shadow: none;
+  white-space: nowrap;
+}
+
+body.chat-app .message-recovery-status {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  padding: 0.2rem 0.55rem;
+  border: 1px solid var(--caff-border);
+  border-radius: var(--caff-radius-sm);
+  background: var(--caff-surface-elevated);
+  color: var(--caff-text-muted);
+  font-weight: 700;
+}
+
+body.chat-app .message-recovery-status.running {
+  border-color: color-mix(in srgb, var(--caff-info) 45%, var(--caff-border));
+  color: var(--caff-info);
+}
+
+body.chat-app .message-recovery-status.success {
+  border-color: color-mix(in srgb, var(--caff-success) 45%, var(--caff-border));
+  color: var(--caff-success);
+}
+
+body.chat-app .message-recovery-status.failed {
+  border-color: color-mix(in srgb, var(--caff-danger) 45%, var(--caff-border));
+  color: var(--caff-danger);
+}
+
+body.chat-app .message-recovery-provenance {
+  justify-content: flex-start;
+  padding-top: var(--caff-space-2);
+  border-top: 1px solid var(--caff-border);
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
 /* ── 移动档（G6） ── */
 body.chat-app .new-msg-pill {
   left: auto;

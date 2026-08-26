@@ -930,6 +930,7 @@ function setupChatModules() {
             liveStageLabel,
             messageSessionInfo,
             privateRecipientNames,
+            recoverFailedMessage,
             renderMessageBody,
             timelineMessagesForConversation,
             toolTraceSignatureForMessage,
@@ -2831,6 +2832,32 @@ function isConversationMessageDeletionBlocked(conversationId) {
   );
 }
 
+async function recoverFailedMessage(conversationId, messageId) {
+  const normalizedConversationId = String(conversationId || '').trim();
+  const normalizedMessageId = String(messageId || '').trim();
+  const result = await fetchJson(
+    `/api/conversations/${encodeURIComponent(normalizedConversationId)}/messages/${encodeURIComponent(normalizedMessageId)}/recovery`,
+    {
+      method: 'POST',
+      body: {},
+    }
+  );
+
+  if (state.currentConversation && state.currentConversation.id === normalizedConversationId) {
+    const messages = Array.isArray(state.currentConversation.messages)
+      ? state.currentConversation.messages
+      : [];
+    const source = messages.find((message) => message && message.id === normalizedMessageId);
+    if (source && result && result.recovery) {
+      source.recovery = result.recovery;
+      renderConversationPane();
+    }
+  }
+
+  scheduleConversationRefresh(normalizedConversationId);
+  return result;
+}
+
 async function deleteConversationMessages(conversationId, messageIds) {
   const normalizedConversationId = String(conversationId || '').trim();
   const result = await fetchJson(
@@ -3964,6 +3991,23 @@ function connectEventStream() {
   source.addEventListener('conversation_message_updated', (event) => {
     const payload = JSON.parse(event.data);
     scheduleConversationRefresh(payload.conversationId);
+  });
+
+  source.addEventListener('conversation_recovery_updated', (event) => {
+    const payload = JSON.parse(event.data);
+    const conversationId = String(payload && payload.conversationId || '').trim();
+    const sourceMessageId = String(payload && payload.sourceMessageId || '').trim();
+    if (state.currentConversation && state.currentConversation.id === conversationId) {
+      const messages = Array.isArray(state.currentConversation.messages)
+        ? state.currentConversation.messages
+        : [];
+      const sourceMessage = messages.find((message) => message && message.id === sourceMessageId);
+      if (sourceMessage && payload.recovery) {
+        sourceMessage.recovery = payload.recovery;
+        renderConversationPane();
+      }
+    }
+    scheduleConversationRefresh(conversationId);
   });
 
   source.addEventListener('conversation_messages_deleted', (event) => {

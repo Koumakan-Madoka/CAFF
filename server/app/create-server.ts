@@ -48,6 +48,7 @@ const {
 const {
   createConversationMessageDeletionService,
 } = require('../domain/conversation/message-deletion');
+const { createMessageRecoveryService } = require('../domain/conversation/message-recovery');
 const { createConversationSpawnService } = require('../domain/conversation/conversation-spawn');
 const {
   createCrossConversationDeliveryService,
@@ -718,6 +719,49 @@ export function createServerApp(options: any = {}) {
       digestOptions,
       broadcastEvent,
     });
+  const rawRecoveryOptions = options.recoveryOptions || {};
+  const messageRecoveryService =
+    options.messageRecoveryService
+    || createMessageRecoveryService({
+      ...rawRecoveryOptions,
+      store,
+      agentDir,
+      sqlitePath,
+      mutationCoordinator: conversationMutationCoordinator,
+      broadcastEvent,
+      provider: options.recoveryProvider !== undefined
+        ? options.recoveryProvider
+        : rawRecoveryOptions.provider,
+      model: options.recoveryModel !== undefined
+        ? options.recoveryModel
+        : rawRecoveryOptions.model,
+      thinking: options.recoveryThinking !== undefined
+        ? options.recoveryThinking
+        : rawRecoveryOptions.thinking,
+      timeoutMs: options.recoveryTimeoutMs !== undefined
+        ? options.recoveryTimeoutMs
+        : rawRecoveryOptions.timeoutMs,
+      modelRuntimeFactory: options.recoveryModelRuntimeFactory || rawRecoveryOptions.modelRuntimeFactory,
+      getConversationMutationState(conversationId: any) {
+        return turnOrchestrator.getConversationMutationState(conversationId);
+      },
+      resolveAssistantMessageSessionPath(message: any) {
+        return turnOrchestrator.resolveAssistantMessageSessionPath(message);
+      },
+      getProjectDir(conversation: any) {
+        if (conversation && String(conversation.worktreePath || '').trim()) {
+          return String(conversation.worktreePath).trim();
+        }
+        if (conversation && String(conversation.projectScopeId || '').trim()) {
+          const project = projectManager.listProjects()
+            .find((candidate: any) => candidate && candidate.id === conversation.projectScopeId);
+          if (project && project.path) {
+            return String(project.path);
+          }
+        }
+        return activeProjectDir;
+      },
+    });
 
   crossConversationDeliveryWorker =
     options.crossConversationDeliveryWorker
@@ -1090,6 +1134,7 @@ export function createServerApp(options: any = {}) {
       skillDraftOptions,
       digestModelRunner: options.digestModelRunner,
       conversationMessageDeletionService,
+      messageRecoveryService,
       conversationMutationCoordinator,
       uploadService,
     }),

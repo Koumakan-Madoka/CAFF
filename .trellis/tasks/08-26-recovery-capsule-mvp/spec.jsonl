@@ -1,0 +1,2 @@
+{"at":"2026-08-26T03:40:00.000Z","file":".trellis/spec/backend/message-recovery.md","summary":"Executable cross-layer contract added for schema, state edges, Capsule evidence, redaction/bounds, direct no-tools ModelRuntime invocation, API/SSE/UI projection, restart behavior, validation matrix, required tests, and wrong/correct patterns."}
+{"at":"2026-08-26T03:40:00.000Z","file":".trellis/spec/backend/index.md","summary":"Registered failed-message Recovery Capsule contract in backend scope, pre-development checklist, and documents index."}

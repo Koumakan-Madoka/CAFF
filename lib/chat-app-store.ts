@@ -12,6 +12,7 @@ const { createChatConversationRepository } = require('../storage/chat/conversati
 const { createChatParticipantRepository } = require('../storage/chat/participant.repository');
 const { createChatMessageRepository } = require('../storage/chat/message.repository');
 const { createChatMessageDetailRepository } = require('../storage/chat/message-detail.repository');
+const { createChatMessageRecoveryRepository } = require('../storage/chat/message-recovery.repository');
 const { createChatPrivateMessageRepository } = require('../storage/chat/private-message.repository');
 const { createChatMemoryCardRepository } = require('../storage/chat/memory-card.repository');
 const { createChatSummarySegmentRepository } = require('../storage/chat/summary-segment.repository');
@@ -278,6 +279,35 @@ function normalizeMessageRow(row: any) {
     errorMessage: row.error_message || '',
     metadata: parseJson(row.metadata_json),
     createdAt: row.created_at,
+  };
+}
+
+function normalizeMessageRecoveryRow(row: any) {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    id: row.id,
+    conversationId: row.conversation_id,
+    sourceMessageId: row.source_message_id,
+    sourceTaskId: row.source_task_id,
+    sourceRunId: Number(row.source_run_id),
+    recoveryTaskId: row.recovery_task_id,
+    recoveryRunId: row.recovery_run_id === null || row.recovery_run_id === undefined
+      ? null
+      : Number(row.recovery_run_id),
+    recoveryMessageId: row.recovery_message_id || null,
+    status: row.status,
+    capsule: parseJson(row.capsule_json),
+    modelOutput: row.model_output || '',
+    errorCode: row.error_code || '',
+    errorMessage: row.error_message || '',
+    fallbackUsed: Boolean(row.fallback_used),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    startedAt: row.started_at || null,
+    endedAt: row.ended_at || null,
   };
 }
 
@@ -908,6 +938,7 @@ export class ChatAppStore {
       this.participantRepository = createChatParticipantRepository(this.db);
       this.messageRepository = createChatMessageRepository(this.db);
       this.messageDetailRepository = createChatMessageDetailRepository(this.db);
+      this.messageRecoveryRepository = createChatMessageRecoveryRepository(this.db);
       this.privateMessageRepository = createChatPrivateMessageRepository(this.db);
       this.memoryCardRepository = createChatMemoryCardRepository(this.db);
       this.summarySegmentRepository = createChatSummarySegmentRepository(this.db);
@@ -3649,6 +3680,87 @@ export class ChatAppStore {
 
   getMessage(messageId: any) {
     return normalizeMessageRow(this.messageRepository.get(messageId));
+  }
+
+  createMessageRecovery(payload: any = {}) {
+    const createdAt = nowIso();
+    try {
+      const row = this.messageRecoveryRepository.create({
+        id: String(payload.id || randomUUID()).trim(),
+        conversationId: String(payload.conversationId || '').trim(),
+        sourceMessageId: String(payload.sourceMessageId || '').trim(),
+        sourceTaskId: String(payload.sourceTaskId || '').trim(),
+        sourceRunId: Number(payload.sourceRunId),
+        recoveryTaskId: String(payload.recoveryTaskId || '').trim(),
+        createdAt,
+        updatedAt: createdAt,
+      });
+      return { recovery: normalizeMessageRecoveryRow(row), created: true };
+    } catch (error) {
+      if (!isSqliteUniqueConstraintError(error)) {
+        throw error;
+      }
+      const existing = this.messageRecoveryRepository.getBySourceMessageId(
+        String(payload.sourceMessageId || '').trim()
+      );
+      if (!existing) {
+        throw error;
+      }
+      return { recovery: normalizeMessageRecoveryRow(existing), created: false };
+    }
+  }
+
+  getMessageRecovery(recoveryId: any) {
+    return normalizeMessageRecoveryRow(
+      this.messageRecoveryRepository.get(String(recoveryId || '').trim())
+    );
+  }
+
+  getMessageRecoveryBySourceMessage(sourceMessageId: any) {
+    return normalizeMessageRecoveryRow(
+      this.messageRecoveryRepository.getBySourceMessageId(String(sourceMessageId || '').trim())
+    );
+  }
+
+  listMessageRecoveriesBySourceMessageIds(sourceMessageIds: any[] = []) {
+    return this.messageRecoveryRepository
+      .listBySourceMessageIds(sourceMessageIds)
+      .map(normalizeMessageRecoveryRow)
+      .filter(Boolean);
+  }
+
+  transitionMessageRecovery(recoveryId: any, expectedStatuses: any[] = [], updates: any = {}) {
+    const normalizedUpdates: Record<string, any> = {};
+    const passthroughKeys = [
+      'status',
+      'recoveryRunId',
+      'recoveryMessageId',
+      'modelOutput',
+      'errorCode',
+      'errorMessage',
+      'startedAt',
+      'endedAt',
+    ];
+    for (const key of passthroughKeys) {
+      if (Object.prototype.hasOwnProperty.call(updates, key)) {
+        normalizedUpdates[key] = updates[key];
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(updates, 'capsule')) {
+      normalizedUpdates.capsuleJson = serializeJson(updates.capsule);
+    }
+    if (Object.prototype.hasOwnProperty.call(updates, 'fallbackUsed')) {
+      normalizedUpdates.fallbackUsed = updates.fallbackUsed ? 1 : 0;
+    }
+
+    return normalizeMessageRecoveryRow(
+      this.messageRecoveryRepository.transition(
+        String(recoveryId || '').trim(),
+        expectedStatuses,
+        normalizedUpdates,
+        nowIso()
+      )
+    );
   }
 
   getMessageContextSnapshot(messageId: any) {
