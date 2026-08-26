@@ -751,6 +751,42 @@ CREATE TABLE IF NOT EXISTS chat_message_model_usage_calls (
   FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS chat_message_recoveries (
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL,
+  source_message_id TEXT NOT NULL,
+  source_task_id TEXT NOT NULL,
+  source_run_id INTEGER NOT NULL,
+  recovery_task_id TEXT NOT NULL,
+  recovery_run_id INTEGER,
+  recovery_message_id TEXT,
+  status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'running', 'completed', 'failed')),
+  capsule_json TEXT CHECK (capsule_json IS NULL OR (json_valid(capsule_json) = 1 AND json_type(capsule_json) = 'object')),
+  model_output TEXT,
+  error_code TEXT,
+  error_message TEXT,
+  fallback_used INTEGER NOT NULL DEFAULT 0 CHECK (fallback_used IN (0, 1)),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  started_at TEXT,
+  ended_at TEXT,
+  UNIQUE (source_message_id),
+  FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE,
+  FOREIGN KEY (source_message_id) REFERENCES chat_messages(id) ON DELETE CASCADE,
+  FOREIGN KEY (recovery_message_id) REFERENCES chat_messages(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS chat_system_service_configs (
+  service_type TEXT PRIMARY KEY CHECK (length(trim(service_type)) > 0),
+  enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+  provider TEXT NOT NULL CHECK (length(trim(provider)) > 0),
+  model TEXT NOT NULL CHECK (length(trim(model)) > 0),
+  thinking TEXT NOT NULL CHECK (thinking IN ('off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max')),
+  timeout_ms INTEGER NOT NULL CHECK (timeout_ms BETWEEN 1000 AND 60000),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS chat_private_messages (
   id TEXT PRIMARY KEY,
   conversation_id TEXT NOT NULL,
@@ -860,6 +896,12 @@ CREATE INDEX IF NOT EXISTS idx_chat_message_context_snapshots_conversation
   ON chat_message_context_snapshots (conversation_id, created_at DESC, message_id DESC);
 CREATE INDEX IF NOT EXISTS idx_chat_message_model_usage_calls_conversation
   ON chat_message_model_usage_calls (conversation_id, created_at DESC, message_id DESC);
+CREATE INDEX IF NOT EXISTS idx_chat_message_recoveries_conversation
+  ON chat_message_recoveries (conversation_id, created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_chat_message_recoveries_status
+  ON chat_message_recoveries (status, updated_at ASC, id ASC);
+CREATE INDEX IF NOT EXISTS idx_chat_message_recoveries_recovery_message
+  ON chat_message_recoveries (recovery_message_id);
 CREATE INDEX IF NOT EXISTS idx_chat_private_messages_conversation_id ON chat_private_messages (conversation_id, created_at ASC, id ASC);
 CREATE INDEX IF NOT EXISTS idx_chat_private_messages_sender_agent_id ON chat_private_messages (sender_agent_id, created_at ASC, id ASC);
 CREATE INDEX IF NOT EXISTS idx_chat_summary_segments_conversation_id ON chat_summary_segments (conversation_id, segment_updated_at DESC);

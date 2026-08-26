@@ -32,6 +32,7 @@
       liveStageLabel,
       messageSessionInfo,
       privateRecipientNames,
+      recoverFailedMessage,
       renderMessageBody,
       timelineMessagesForConversation,
       toolTraceSignatureForMessage,
@@ -39,7 +40,10 @@
     } = helpers;
 
     const TRACE_SCROLL_STEP_LIMIT = 8;
+    const MESSAGE_ERROR_COLLAPSE_MIN_CHARS = 480;
     const selectedMessageIds = new Set();
+    const recoveryRequestMessageIds = new Set();
+    const expandedFailureBodyIds = new Set();
     const renderedMessagesById = new Map();
     const deleteToolbar = dom.messageDeleteToolbar || null;
     const deleteCount = deleteToolbar && deleteToolbar.querySelector('[data-message-delete-count]');
@@ -146,6 +150,190 @@
     }
     if (deleteCancelButton) {
       deleteCancelButton.addEventListener('click', clearMessageSelection);
+    }
+
+    function recoveryStatusView(recovery) {
+      const status = String(recovery && recovery.status || '');
+      if (recovery && recovery.interrupted) {
+        return { label: '整理中断', tone: 'failed', terminal: true };
+      }
+      if (status === 'queued') {
+        return { label: '等待整理', tone: 'neutral', terminal: false };
+      }
+      if (status === 'running') {
+        return { label: '正在整理', tone: 'running', terminal: false };
+      }
+      if (status === 'completed') {
+        return { label: '整理完成', tone: 'success', terminal: true };
+      }
+      if (status === 'failed') {
+        return { label: recovery && recovery.fallbackUsed ? '机械摘要' : '整理失败', tone: 'failed', terminal: true };
+      }
+      return { label: '整理状态未知', tone: 'failed', terminal: true };
+    }
+
+    function focusTimelineMessage(messageId, missingNotice) {
+      const normalizedMessageId = String(messageId || '').trim();
+      const card = normalizedMessageId && dom && dom.messageList
+        ? Array.from(dom.messageList.querySelectorAll('.message-card'))
+          .find((item) => item.dataset.messageId === normalizedMessageId) || null
+        : null;
+
+      if (!card) {
+        showToast(missingNotice || '目标消息当前不在时间线中，可能已被过滤或尚未加载。');
+        return;
+      }
+
+      dom.messageList.querySelectorAll('.message-card.digest-source-target')
+        .forEach((item) => item.classList.remove('digest-source-target'));
+      card.classList.add('digest-source-target');
+      card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      window.setTimeout(() => card.classList.remove('digest-source-target'), 2200);
+    }
+
+    function buildRecoveryRefChip(label, value) {
+      const full = String(value || '').trim();
+      const known = Boolean(full && full !== 'unknown' && full !== '0');
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'message-recovery-ref';
+      chip.textContent = `${label} ${known && full.length > 8 ? `${full.slice(0, 8)}…` : (full || 'unknown')}`;
+      chip.disabled = !known;
+      chip.title = known ? `${label} ${full}（点击复制完整值）` : `${label}未知`;
+      chip.addEventListener('click', async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (typeof shared.copyTextToClipboard !== 'function') {
+          showToast('当前环境不支持复制');
+          return;
+        }
+        try {
+          await shared.copyTextToClipboard(full);
+          showToast(`已复制${label}完整标识`);
+        } catch (error) {
+          showToast(error && error.message ? error.message : '复制失败');
+        }
+      });
+      return chip;
+    }
+
+    function syncRecoveryPanel(panel, message, conversationId) {
+      if (!panel) {
+        return;
+      }
+      const metadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : {};
+      const recovery = message && message.recovery && typeof message.recovery === 'object' ? message.recovery : null;
+      const recoveryCapability = message && message.recoveryCapability && typeof message.recoveryCapability === 'object'
+        ? message.recoveryCapability
+        : null;
+      const isRecoveryResult = Boolean(metadata.recoveryResult);
+      const canRequest = Boolean(
+        message
+        && message.role === 'assistant'
+        && message.status === 'failed'
+        && !isRecoveryResult
+      );
+      panel.textContent = '';
+      panel.hidden = !isRecoveryResult && !canRequest;
+      panel.className = isRecoveryResult
+        ? 'message-recovery-panel message-recovery-provenance'
+        : 'message-recovery-panel';
+
+      if (isRecoveryResult) {
+        const fallbackUsed = Boolean(metadata.fallbackUsed);
+        const kindBadge = document.createElement('span');
+        kindBadge.className = `message-recovery-status ${fallbackUsed ? 'failed' : 'success'}`;
+        kindBadge.textContent = fallbackUsed ? '系统书记 · 机械摘要' : '系统书记 · 现场整理';
+
+        const refs = document.createElement('span');
+        refs.className = 'message-recovery-refs';
+        refs.append(
+          buildRecoveryRefChip('来源消息', metadata.sourceMessageId),
+          buildRecoveryRefChip('task', metadata.sourceTaskId),
+          buildRecoveryRefChip('run', metadata.sourceRunId)
+        );
+
+        const note = document.createElement('span');
+        note.className = 'message-recovery-note';
+        note.textContent = '只读 · 不执行或重放';
+
+        const locateSource = document.createElement('button');
+        locateSource.type = 'button';
+        locateSource.className = 'message-recovery-locate ghost-button';
+        locateSource.textContent = '定位来源';
+        locateSource.title = '滚动到被整理的失败消息';
+        locateSource.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          focusTimelineMessage(metadata.sourceMessageId, '被整理的失败消息当前不在时间线中。');
+        });
+
+        panel.append(kindBadge, refs, note, locateSource);
+        return;
+      }
+
+      if (recoveryCapability && recoveryCapability.enabled === false && !recovery) {
+        const disabledStatus = document.createElement('span');
+        disabledStatus.className = 'message-recovery-status neutral';
+        disabledStatus.textContent = '系统书记已停用';
+        disabledStatus.title = '平台只读恢复服务当前已停用';
+        panel.appendChild(disabledStatus);
+        return;
+      }
+
+      if (recovery) {
+        const view = recoveryStatusView(recovery);
+        const status = document.createElement('span');
+        status.className = `message-recovery-status ${view.tone}`;
+        status.textContent = view.label;
+        status.title = recovery.errorMessage || view.label;
+        panel.appendChild(status);
+        if (view.terminal) {
+          if (recovery.recoveryMessageId) {
+            const locateResult = document.createElement('button');
+            locateResult.type = 'button';
+            locateResult.className = 'message-recovery-locate ghost-button';
+            locateResult.textContent = '查看整理结果';
+            locateResult.title = '滚动到这条失败消息的现场整理结果';
+            locateResult.addEventListener('click', (event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              focusTimelineMessage(recovery.recoveryMessageId, '整理结果消息当前不在时间线中。');
+            });
+            panel.appendChild(locateResult);
+          }
+          return;
+        }
+      }
+
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'message-recovery-button ghost-button';
+      button.textContent = '整理失败现场';
+      button.disabled = Boolean(recovery) || recoveryRequestMessageIds.has(message.id);
+      button.title = recovery
+        ? '失败现场已进入整理流程'
+        : '生成只读、脱敏的失败现场摘要；不会重试或继续原任务';
+      button.addEventListener('click', async () => {
+        if (button.disabled || typeof recoverFailedMessage !== 'function') {
+          return;
+        }
+        recoveryRequestMessageIds.add(message.id);
+        button.disabled = true;
+        try {
+          const result = await recoverFailedMessage(conversationId, message.id);
+          if (result && result.recovery) {
+            message.recovery = result.recovery;
+          }
+          showToast(result && result.duplicate ? '已显示现有失败现场整理' : '失败现场已进入整理队列');
+        } catch (error) {
+          showToast(error && error.message ? error.message : '失败现场整理请求失败');
+        } finally {
+          recoveryRequestMessageIds.delete(message.id);
+          syncRecoveryPanel(panel, message, conversationId);
+        }
+      });
+      panel.appendChild(button);
     }
 
     function formatDuration(durationMs) {
@@ -1902,9 +2090,11 @@
       const time = document.createElement('span');
       const body = document.createElement('div');
       const crossConversationPanel = document.createElement('div');
+      const recoveryPanel = document.createElement('div');
       const liveHint = document.createElement('div');
       const toolTrace = document.createElement('section');
       const imageGallery = document.createElement('div');
+      const errorToggle = document.createElement('button');
       const deleteControls = document.createElement('div');
       const selectLabel = document.createElement('label');
       const selectCheckbox = document.createElement('input');
@@ -1915,10 +2105,32 @@
       time.className = 'message-time';
       body.className = 'message-body';
       crossConversationPanel.className = 'cross-conversation-panel hidden';
+      recoveryPanel.className = 'message-recovery-panel';
+      recoveryPanel.hidden = true;
+      recoveryPanel.setAttribute('aria-live', 'polite');
       liveHint.className = 'message-live-hint hidden';
       toolTrace.className = 'message-tool-trace hidden';
       imageGallery.className = 'message-images';
       imageGallery.hidden = true;
+      errorToggle.type = 'button';
+      errorToggle.className = 'message-error-toggle ghost-button';
+      errorToggle.hidden = true;
+      errorToggle.setAttribute('aria-expanded', 'false');
+      errorToggle.addEventListener('click', () => {
+        const messageId = String(card.dataset.messageId || '');
+        if (!messageId) {
+          return;
+        }
+        const expanded = !expandedFailureBodyIds.has(messageId);
+        if (expanded) {
+          expandedFailureBodyIds.add(messageId);
+        } else {
+          expandedFailureBodyIds.delete(messageId);
+        }
+        body.classList.toggle('collapsed-error', !expanded);
+        errorToggle.textContent = expanded ? '收起错误详情' : '展开错误详情';
+        errorToggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+      });
       deleteControls.className = 'message-delete-controls';
       selectLabel.className = 'message-delete-select-target';
       selectCheckbox.type = 'checkbox';
@@ -1954,7 +2166,7 @@
       deleteControls.append(selectLabel, deleteButton);
 
       meta.append(sender, time, deleteControls);
-      card.append(meta, crossConversationPanel, toolTrace, imageGallery, body, liveHint);
+      card.append(meta, crossConversationPanel, recoveryPanel, toolTrace, imageGallery, body, errorToggle, liveHint);
       syncMessageCard(card, message, conversationId, agents, activeTurn, activeAgentSlots);
 
       return card;
@@ -2043,6 +2255,9 @@
         messageImages.imageBlockSignature(message),
         deletionEligibility ? JSON.stringify(deletionEligibility) : '',
         deletionBlocked ? 'delete-blocked' : 'delete-ready',
+        message.recovery ? JSON.stringify(message.recovery) : '',
+        message.recoveryCapability ? JSON.stringify(message.recoveryCapability) : '',
+        recoveryRequestMessageIds.has(message.id) ? 'recovery-requesting' : '',
         traceSignature,
       ].join('\u001f');
 
@@ -2056,6 +2271,7 @@
       card.classList.toggle('failed', message.status === 'failed');
       card.classList.toggle('digest-status', isDigestStatusMessage);
       card.classList.toggle('digest-result', isDigestResultMessage);
+      card.classList.toggle('recovery-result', Boolean(metadata && metadata.recoveryResult));
 
       if (agent && agent.accentColor) {
         card.style.setProperty('--agent-color', agent.accentColor);
@@ -2067,9 +2283,11 @@
       const time = card.querySelector('.message-time');
       const body = card.querySelector('.message-body');
       const crossConversationPanel = card.querySelector('.cross-conversation-panel');
+      const recoveryPanel = card.querySelector('.message-recovery-panel');
       const liveHint = card.querySelector('.message-live-hint');
       const toolTrace = card.querySelector('.message-tool-trace');
       const imageGallery = card.querySelector('.message-images');
+      const errorToggle = card.querySelector('.message-error-toggle');
       const deleteControls = card.querySelector('.message-delete-controls');
       const selectCheckbox = card.querySelector('.message-delete-checkbox');
       const deleteButton = card.querySelector('.message-delete-button');
@@ -2156,6 +2374,7 @@
         message,
         crossConversationBundle
       );
+      syncRecoveryPanel(recoveryPanel, message, conversationId);
       card.classList.toggle('cross-conversation-receipt', Boolean(crossConversationModels.receipt));
       card.classList.toggle('cross-conversation-provenance-message', Boolean(crossConversationModels.provenance));
       card.classList.toggle('conversation-spawn-birth', Boolean(crossConversationModels.birth));
@@ -2174,6 +2393,18 @@
 
       body.classList.toggle('digest-result-body', isDigestResultMessage);
       body.classList.toggle('hidden', Boolean(crossConversationModels.receipt));
+      const shouldCollapseError = message.status === 'failed'
+        && !isDigestStatusMessage
+        && !isDigestResultMessage
+        && !(metadata && metadata.recoveryResult)
+        && String(bodyText || '').length >= MESSAGE_ERROR_COLLAPSE_MIN_CHARS;
+      const errorExpanded = expandedFailureBodyIds.has(message.id);
+      body.classList.toggle('collapsed-error', shouldCollapseError && !errorExpanded);
+      if (errorToggle) {
+        errorToggle.hidden = !shouldCollapseError;
+        errorToggle.textContent = errorExpanded ? '收起错误详情' : '展开错误详情';
+        errorToggle.setAttribute('aria-expanded', errorExpanded ? 'true' : 'false');
+      }
       messageImages.syncMessageImages(imageGallery, message);
       imageGallery.hidden = imageGallery.hidden || Boolean(crossConversationModels.receipt) || isDigestResultMessage;
       if (isDigestResultMessage) {

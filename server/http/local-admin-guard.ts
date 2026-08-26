@@ -46,14 +46,15 @@ function formatAuthority(host: string, port: number) {
   return `${formattedHost}:${port}`.toLowerCase();
 }
 
-function providerGuardError(statusCode: number, code: string, path: string) {
-  return createHttpError(statusCode, 'Model provider administration request was rejected', {
-    issues: [{ code, path }],
-  });
-}
-
 export function createLocalAdminGuard(options: any = {}) {
   const configuredHost = normalizeHostLiteral(options.host);
+  const issuePrefix = String(options.issuePrefix || 'provider_config').trim() || 'provider_config';
+  const errorMessage = String(options.errorMessage || 'Model provider administration request was rejected').trim();
+  function guardError(statusCode: number, suffix: string, path: string) {
+    return createHttpError(statusCode, errorMessage, {
+      issues: [{ code: `${issuePrefix}_${suffix}`, path }],
+    });
+  }
   const configuredPort = Number(options.port);
   const csrfToken = String(options.csrfToken || '');
   const getAuthority = typeof options.getAuthority === 'function'
@@ -66,13 +67,13 @@ export function createLocalAdminGuard(options: any = {}) {
 
   function assertRead(req: any) {
     if (!isLoopbackAddress(configuredHost) || !isLoopbackAddress(req && req.socket && req.socket.remoteAddress)) {
-      throw providerGuardError(403, 'provider_config_local_only', 'request.socket');
+      throw guardError(403, 'local_only', 'request.socket');
     }
 
     const authority = expectedAuthority();
     const hostHeader = normalizeHeader(req && req.headers && req.headers.host).toLowerCase();
     if (!authority || hostHeader !== authority) {
-      throw providerGuardError(403, 'provider_config_host_mismatch', 'headers.host');
+      throw guardError(403, 'host_mismatch', 'headers.host');
     }
 
     return { authority };
@@ -82,17 +83,17 @@ export function createLocalAdminGuard(options: any = {}) {
     const { authority } = assertRead(req);
     const contentType = normalizeHeader(req && req.headers && req.headers['content-type']);
     if (!JSON_CONTENT_TYPE_PATTERN.test(contentType)) {
-      throw providerGuardError(415, 'provider_config_json_required', 'headers.content-type');
+      throw guardError(415, 'json_required', 'headers.content-type');
     }
 
     const origin = normalizeHeader(req && req.headers && req.headers.origin).toLowerCase();
     if (origin !== `http://${authority}`) {
-      throw providerGuardError(403, 'provider_config_origin_mismatch', 'headers.origin');
+      throw guardError(403, 'origin_mismatch', 'headers.origin');
     }
 
     const suppliedToken = normalizeHeader(req && req.headers && req.headers['x-caff-csrf-token']);
     if (!csrfToken || suppliedToken !== csrfToken) {
-      throw providerGuardError(403, 'provider_config_csrf_invalid', 'headers.x-caff-csrf-token');
+      throw guardError(403, 'csrf_invalid', 'headers.x-caff-csrf-token');
     }
 
     return { authority };

@@ -3,6 +3,9 @@ const {
   extractMentionedAgentIds,
   resolveTurnExecutionMode,
 } = require('../mention-routing');
+const {
+  filterRoutableConversationAgents,
+} = require('../../roles/system-actor-catalog');
 
 function normalize(value: any) {
   return typeof value === 'string' ? value.trim() : '';
@@ -64,7 +67,7 @@ function compareMessageOrder(left: any, right: any) {
 }
 
 export function resolveMostRecentPublicReplyAgentId(conversation: any) {
-  const agents = Array.isArray(conversation && conversation.agents) ? conversation.agents : [];
+  const agents = filterRoutableConversationAgents(conversation && conversation.agents);
   const participantAgentIds = new Set<string>(
     agents.map((agent: any) => normalize(agent && agent.id)).filter(Boolean)
   );
@@ -90,7 +93,7 @@ export function resolveMostRecentPublicReplyAgentId(conversation: any) {
 }
 
 export function resolveInitialTurnTargets(turnInput: any, conversation: any) {
-  const agents = Array.isArray(conversation && conversation.agents) ? conversation.agents : [];
+  const agents = filterRoutableConversationAgents(conversation && conversation.agents);
   const participantAgentIds = new Set<string>(
     agents.map((agent: any) => normalize(agent && agent.id)).filter(Boolean)
   );

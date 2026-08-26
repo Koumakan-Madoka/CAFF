@@ -1,6 +1,7 @@
 export class RunRepository {
   insertStatement: any;
   finishStatement: any;
+  getStatement: any;
 
   constructor(db: any) {
     this.insertStatement = db.prepare(`
@@ -29,6 +30,12 @@ export class RunRepository {
         status,
         started_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    this.getStatement = db.prepare(`
+      SELECT *
+      FROM runs
+      WHERE id = ?
+      LIMIT 1
     `);
     this.finishStatement = db.prepare(`
       UPDATE runs
@@ -77,6 +84,10 @@ export class RunRepository {
     );
 
     return Number(info.lastInsertRowid);
+  }
+
+  get(runId: number) {
+    return this.getStatement.get(runId);
   }
 
   finish(runId: number, payload: any) {

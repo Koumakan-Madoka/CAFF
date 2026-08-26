@@ -4,7 +4,10 @@ const path = require('node:path');
 const test = require('node:test');
 
 const { createChatAppStore } = require('../../build/lib/chat-app-store');
-const { createDagScheduler } = require('../../build/server/domain/dag/dag-scheduler');
+const {
+  createDagScheduler,
+  resolveNodeExecutionRoles,
+} = require('../../build/server/domain/dag/dag-scheduler');
 const {
   applySessionGoalAction,
   createSessionGoalBudgetProposal,
@@ -18,6 +21,28 @@ const { withTempDir } = require('../helpers/temp-dir');
 const ROOT_ID = 'root-conversation';
 const WORKER_ID = 'role-family-gpt';
 const VERIFIER_ID = 'role-family-kimi';
+
+test('platform recovery scribe is excluded from DAG worker and verifier candidates', () => {
+  const participants = [
+    { id: 'recovery_scribe', name: '系统书记' },
+    { id: WORKER_ID, name: 'GPT' },
+    { id: VERIFIER_ID, name: 'Kimi' },
+  ];
+
+  assert.deepEqual(resolveNodeExecutionRoles({}, participants), {
+    workerId: WORKER_ID,
+    verifierId: VERIFIER_ID,
+    error: null,
+  });
+  assert.match(
+    resolveNodeExecutionRoles({ worker: 'recovery_scribe' }, participants).error,
+    /dag_worker_invalid/u
+  );
+  assert.match(
+    resolveNodeExecutionRoles({ worker: WORKER_ID, verifier: 'recovery_scribe' }, participants).error,
+    /dag_verifier_invalid/u
+  );
+});
 
 function createStore(t, prefix = 'caff-dag-scheduler-') {
   const tempDir = withTempDir(prefix);

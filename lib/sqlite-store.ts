@@ -92,6 +92,18 @@ function normalizeTaskRow(row: any) {
   };
 }
 
+function normalizeRunRow(row: any) {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    ...row,
+    metadata: parseJson(row.run_metadata_json),
+    assistantErrors: parseJson(row.assistant_errors_json) || [],
+  };
+}
+
 export class SqliteRunStore {
   [key: string]: any;
   constructor({ agentDir, sqlitePath, databasePath, db }: any) {
@@ -207,6 +219,14 @@ export class SqliteRunStore {
       sessionId,
       databasePath: this.databasePath,
     };
+  }
+
+  getRun(runId: any) {
+    const normalizedRunId = Number(runId);
+    if (!Number.isInteger(normalizedRunId) || normalizedRunId <= 0) {
+      return null;
+    }
+    return normalizeRunRow(this.runRepository.get(normalizedRunId));
   }
 
   finishRun(runId: any, result: any) {

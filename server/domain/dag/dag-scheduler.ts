@@ -58,6 +58,7 @@ import {
   isSessionGoalModelFailurePaused,
 } from '../conversation/session-goal';
 import { ensureDagNodeGoalBinding, getDagNodeGoalBinding } from '../conversation/dag-goal-binding';
+import { filterRoutableConversationAgents } from '../roles/system-actor-catalog';
 
 /**
  * D28 execution-role resolution. Node worker/verifier references accept either
@@ -88,11 +89,12 @@ function resolveParticipantReference(
   return { agentId: null, error: `dag_${role}_invalid: ${role} "${explicit}" is not a participant agent id or display name of the owner conversation` };
 }
 
-function resolveNodeExecutionRoles(node: any, participants: any[]): {
+export function resolveNodeExecutionRoles(node: any, participants: any[]): {
   workerId: string | null;
   verifierId: string | null;
   error: string | null;
 } {
+  participants = filterRoutableConversationAgents(participants);
   const participantIds = participants.map((agent: any) => String(agent && agent.id || '').trim()).filter(Boolean);
   const workerResolution = resolveParticipantReference(node && node.worker, participants, 'worker');
   if (workerResolution.error) {

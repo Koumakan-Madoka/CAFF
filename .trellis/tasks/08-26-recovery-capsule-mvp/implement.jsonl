@@ -1,0 +1,16 @@
+{"file": ".trellis/workflow.md", "reason": "Project workflow and conventions"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend development guide"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend development guide"}
+{"file": ".trellis/spec/backend/architecture.md", "reason": "Keep recovery workflow in domain service and controller thin"}
+{"file": ".trellis/spec/backend/controller-patterns.md", "reason": "Manual recovery POST validation and HTTP error contract"}
+{"file": ".trellis/spec/backend/message-detail-storage.md", "reason": "Atomic message/detail persistence and real SQLite expectations"}
+{"file": ".trellis/spec/runtime/agent-runtime.md", "reason": "Run linkage, context snapshot and tool-trace safety contracts"}
+{"file": ".trellis/spec/frontend/ui-structure.md", "reason": "Failed message card and SSE-driven timeline behavior"}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Real SQLite and runtime regression test patterns"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Recovery payload crosses storage, runtime, HTTP, SSE and UI"}
+{"file": "server/domain/conversation/conversation-digest.ts", "reason": "Existing independent model invocation and mechanical fallback pattern"}
+{"file": "server/domain/runtime/message-tool-trace.ts", "reason": "Existing session JSONL parsing, redaction and trace projection"}
+{"at":"2026-08-26T03:10:00.000Z","step":"storage_capsule","summary":"Added bounded/redacted Recovery Capsule v1 with exact toolCall/toolResult pairing and four evidence grades; added real SQLite chat_message_recoveries with durable source-message idempotency and immutable terminal CAS."}
+{"at":"2026-08-26T03:24:00.000Z","step":"service_api_scribe","summary":"Added manual recovery service/API, source integrity and idle guards, atomic child task/recovery creation, direct ModelRuntime.completeSimple scribe run, absolute timeout, persistent result/fallback message, SSE, and stale restart projection without replay."}
+{"at":"2026-08-26T03:39:00.000Z","step":"ui_verification","summary":"Added failed-card manual action and canonical states, recovery provenance UI, package test registration, 17 targeted tests, smoke 74/74, and isolated Playwright/Edge desktop/mobile acceptance."}
+{"at":"2026-08-26T15:07:21.000Z","step":"personas_partial_load_recovery","summary":"Added regression coverage and independent child-panel refresh settlement so a model-provider load failure no longer blocks the initial system-services hash view or Recovery Scribe configuration; documented the management-page partial-load contract."}

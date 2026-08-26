@@ -55,11 +55,29 @@ test('first auto digest refines the title once and writes titleSource auto_llm',
   };
 
   appendPublicMessages(store, conversation.id, 1, 2);
-  const result = await maybeAutoCreateConversationDigest(store, conversation.id, digestOptions(runner));
+  const result = await maybeAutoCreateConversationDigest(store, conversation.id, digestOptions(runner, {
+    resolveSystemModelConfigSnapshot() {
+      return {
+        enabled: false,
+        provider: 'moonshotai',
+        model: 'kimi-k2.5',
+        thinking: 'high',
+        timeoutMs: 30_000,
+      };
+    },
+  }));
 
   assert.equal(result.digestChanged, true);
   assert.equal(runnerCalls.length, 1);
   assert.equal(runnerCalls[0].purpose, 'title_refine');
+  assert.deepEqual(
+    {
+      provider: runnerCalls[0].config.provider,
+      model: runnerCalls[0].config.model,
+      thinking: runnerCalls[0].config.thinking,
+    },
+    { provider: 'moonshotai', model: 'kimi-k2.5', thinking: 'high' }
+  );
   assert.match(runnerCalls[0].prompt, /标题精炼消息 1/u);
 
   const updated = store.getConversation(conversation.id);

@@ -1,0 +1,13 @@
+{"file": ".agents/skills/finish-work/SKILL.md", "reason": "Finish work checklist"}
+{"file": ".agents/skills/check/SKILL.md", "reason": "Code quality check spec"}
+{"file": ".trellis/spec/backend/controller-patterns.md", "reason": "Verify error and response contracts"}
+{"file": ".trellis/spec/runtime/agent-runtime.md", "reason": "Verify no-tools run and provenance linkage"}
+{"file": ".trellis/spec/frontend/ui-structure.md", "reason": "Verify message UI and SSE projection"}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Verify real SQLite and non-tautological coverage"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Verify end-to-end field propagation"}
+{"at":"2026-08-26T03:33:00.000Z","command":"npm run build && npm run check && npm run typecheck","result":"pass"}
+{"at":"2026-08-26T03:35:00.000Z","command":"node --test Recovery target and adjacent regression suites","result":"17/17 Recovery target tests pass; adjacent message/delete/run/SSE tests 25/25 pass"}
+{"at":"2026-08-26T03:36:00.000Z","command":"npm run test:smoke","result":"74/74 pass"}
+{"at":"2026-08-26T03:37:00.000Z","command":"npm test","result":"stopped at known Windows after-hook cleanup issue: turn-orchestrator subject assertions pass, fs.rmSync EPERM in 2 tests, 96/98 at stop point"}
+{"at":"2026-08-26T03:39:00.000Z","command":"repo-owned Playwright/Edge Recovery acceptance","result":"pass desktop 1440x900 and mobile 375x812; click queued/running/completed, persistent provenance, source remains failed, 44px target, no overflow or overlap"}
+{"at":"2026-08-26T03:39:30.000Z","command":"npm run test:ui","result":"blocked by pre-existing verifier drift before browser launch: createVerificationConversation sends removed Room field type and receives 400 room_unknown_field"}

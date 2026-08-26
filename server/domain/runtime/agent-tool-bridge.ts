@@ -4,6 +4,7 @@ const path = require('node:path');
 const { createHttpError } = require('../../http/http-errors');
 const { pickConversationSummary, serializeConversationPrivateMessageForUi } = require('../conversation/conversation-view');
 const { buildAgentMentionLookup, formatAgentMention, resolveMentionValues } = require('../conversation/mention-routing');
+const { filterRoutableConversationAgents } = require('../roles/system-actor-catalog');
 const { applySessionGoalAction, getSessionGoalProposal, proposeSessionGoalAction } = require('../conversation/session-goal');
 const { getDagNodeGoalBinding } = require('../conversation/dag-goal-binding');
 const { createConversationExperienceDraft } = require('../conversation/experience-draft');
@@ -636,7 +637,7 @@ export function createAgentToolBridge(options: any = {}) {
   }
 
   function serializeAgentToolParticipants(agents: any) {
-    return (Array.isArray(agents) ? agents : []).map((agent: any) => ({
+    return filterRoutableConversationAgents(agents).map((agent: any) => ({
       id: agent.id,
       name: agent.name,
       description: agent.description || '',
