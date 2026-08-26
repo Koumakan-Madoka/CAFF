@@ -89,23 +89,23 @@ replaying completed tool side effects.
 
 ## Acceptance Criteria
 
-- [ ] Room branch is synchronized to the latest audited `origin/develop`, the
+- [x] Room branch is synchronized to the latest audited `origin/develop`, the
       task is active, and relevant PI/runtime/unit-test specs are loaded.
-- [ ] Release-note, SDK/extension, dependency-tree, and protocol compatibility
+- [x] Release-note, SDK/extension, dependency-tree, and protocol compatibility
       audit is recorded.
-- [ ] Upgrade-before baseline and controlled old-behavior reproduction are
+- [x] Upgrade-before baseline and controlled old-behavior reproduction are
       recorded.
-- [ ] PR A upgrades PI to 0.84.3 with only necessary compatibility changes.
-- [ ] PR A passes check, typechecks, build, dependency-tree audit, and complete
+- [x] PR A upgrades PI to 0.84.3 with only necessary compatibility changes.
+- [x] PR A passes check, typechecks, build, dependency-tree audit, and complete
       scoped runtime regressions; its exact SHA receives independent approval.
-- [ ] PR B's required behavior is red first on the approved PR A baseline.
-- [ ] PR B implements only the exact official-hook normalization and all focused
+- [x] PR B's required behavior is red first on the approved PR A baseline.
+- [x] PR B implements only the exact official-hook normalization and all focused
       tests pass.
-- [ ] PR B passes complete regressions, fault-injection gates, executable spec
+- [x] PR B passes complete regressions, fault-injection gates, executable spec
       validation, and exact-SHA independent review.
-- [ ] An isolated acceptance instance proves one-failure recovery and bounded
+- [x] An isolated acceptance instance proves one-failure recovery and bounded
       terminal failure across UI/SSE/log/usage/status without production access.
-- [ ] The user explicitly accepts both candidates before ordered merge commits
+- [x] The user explicitly accepts both candidates before ordered merge commits
       to `develop`; Trellis evidence is then archived.
 
 ## Environment And Evidence
