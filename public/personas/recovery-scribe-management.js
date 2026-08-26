@@ -69,13 +69,15 @@
           <span id="recovery-scribe-config-source" class="status-badge">${sourceLabel()}</span>
         </div>
         <section class="management-card">
-          <div class="management-card-title"><div><h3>运行配置</h3><p>保存后的配置用于下一次现场整理。</p></div></div>
+          <div class="management-card-title"><div><h3>共享模型配置</h3><p>模型与思考强度同时用于摘要、摘要压缩、标题润色与失败现场整理；保存后从下一次调用生效。</p></div></div>
           <label class="system-service-enabled-row"><input id="recovery-scribe-enabled" type="checkbox" ${config.enabled ? 'checked' : ''} /><span>启用系统书记</span></label>
+          <p class="management-note">启停仅控制失败现场整理，不影响摘要服务。</p>
           <div class="field-grid recovery-scribe-config-grid">
-            <label><span>模型</span><select id="recovery-scribe-model"></select></label>
-            <label><span>思考强度</span><select id="recovery-scribe-thinking"></select></label>
-            <label><span>绝对超时（秒）</span><input id="recovery-scribe-timeout" type="number" min="1" max="60" step="1" inputmode="numeric" value="${config.timeoutMs / 1000}" /></label>
+            <label><span>共享模型</span><select id="recovery-scribe-model"></select></label>
+            <label><span>共享思考强度</span><select id="recovery-scribe-thinking"></select></label>
+            <label><span>书记绝对超时（秒）</span><input id="recovery-scribe-timeout" type="number" min="1" max="60" step="1" inputmode="numeric" value="${config.timeoutMs / 1000}" /></label>
           </div>
+          <p class="management-note">超时仅用于失败现场整理；摘要与标题保留各自执行预算。</p>
           <p id="recovery-scribe-config-error" class="management-error hidden" role="alert"></p>
         </section>
         <section class="management-card system-service-boundaries">
@@ -158,7 +160,7 @@
           body: payload,
         });
         render();
-        options.showToast('系统书记配置已保存并立即生效');
+        options.showToast('摘要与系统书记模型配置已保存并立即生效');
       } catch (error) {
         showError(error, '系统书记配置保存失败');
         throw error;

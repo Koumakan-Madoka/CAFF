@@ -230,7 +230,19 @@ function createConversationsControllerHarness(t, options = {}) {
       listProjects() { return [{ id: 'project-scope-1', name: 'Test Project', path: tempDir }]; },
     },
     projectDir: options.projectDir,
-    digestOptions: { summaryMode: 'extractive', ...(options.digestOptions || {}) },
+    digestOptions: {
+      summaryMode: 'extractive',
+      resolveSystemModelConfigSnapshot() {
+        return structuredClone(options.systemModelConfig || {
+          enabled: true,
+          provider: 'cheap-provider',
+          model: 'cheap-model',
+          thinking: 'xhigh',
+          timeoutMs: 60_000,
+        });
+      },
+      ...(options.digestOptions || {}),
+    },
     digestModelRunner: options.digestModelRunner,
     skillDraftOptions: { generationMode: 'rules', ...(options.skillDraftOptions || {}) },
     skillDraftModelRunner: options.skillDraftModelRunner,
@@ -351,6 +363,133 @@ test('create server wires loopback model-provider administration with bootstrap 
   const rereadRecoveryConfig = await (await fetch(`${baseUrl}/api/system-services/recovery-scribe`)).json();
   assert.deepEqual(rereadRecoveryConfig.config, updatedRecoveryConfig.config);
   assert.equal(rereadRecoveryConfig.source, 'persisted');
+
+  await new Promise((resolve) => app.close(resolve));
+  closed = true;
+});
+
+test('persisted system model selection hot-applies to the next digest over real HTTP', async (t) => {
+  const tempDir = withTempDir('caff-shared-system-model-http-');
+  const sqlitePath = path.join(tempDir, 'chat.sqlite');
+  const port = await findFreePort();
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const csrfToken = 'shared-system-model-csrf';
+  const modelCalls = [];
+  const modelCatalog = {
+    getOptions() {
+      return [{
+        key: 'moonshotai\u001fkimi-k2.5',
+        provider: 'moonshotai',
+        model: 'kimi-k2.5',
+        label: 'Kimi K2.5',
+        source: 'test',
+        supportedThinkingLevels: ['off', 'high'],
+      }];
+    },
+    invalidate() {},
+  };
+  const app = createServerApp({
+    host: '127.0.0.1',
+    port,
+    agentDir: tempDir,
+    sqlitePath,
+    projectDir: tempDir,
+    providerConfigCsrfToken: csrfToken,
+    modelCatalog,
+    recoveryProvider: 'moonshotai',
+    recoveryModel: 'kimi-k2.5',
+    recoveryThinking: 'off',
+    digestModelRunner: async (context) => {
+      modelCalls.push(context);
+      return {
+        summary: '共享系统模型配置已用于摘要。',
+        facts: [],
+        decisions: [],
+        openQuestions: [],
+        nextActions: [],
+        artifacts: [],
+      };
+    },
+  });
+  let closed = false;
+
+  t.after(async () => {
+    if (!closed) {
+      await new Promise((resolve) => app.close(resolve));
+    }
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  await new Promise((resolve) => app.start(resolve));
+  const configResponse = await fetch(`${baseUrl}/api/system-services/recovery-scribe`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      Origin: baseUrl,
+      'X-CAFF-CSRF-Token': csrfToken,
+    },
+    body: JSON.stringify({
+      enabled: false,
+      provider: 'moonshotai',
+      model: 'kimi-k2.5',
+      thinking: 'high',
+      timeoutMs: 30_000,
+    }),
+  });
+  assert.equal(configResponse.status, 200);
+
+  const digestAgent = app.store.saveCustomRoleConfig({
+    id: 'shared-config-digest-agent',
+    name: 'Shared Config Digest Agent',
+    personaPrompt: 'test',
+  });
+  const digestConversation = app.store.createConversation({
+    id: 'shared-config-digest-conversation',
+    title: 'Shared Config Digest Conversation',
+    participants: [digestAgent.id],
+  });
+  app.store.createMessage({
+    id: 'shared-config-digest-message',
+    conversationId: digestConversation.id,
+    turnId: 'shared-config-digest-turn',
+    role: 'user',
+    senderName: 'User',
+    content: '保存后，下一次摘要应使用同一个系统模型配置。',
+  });
+
+  const digestResponse = await fetch(`${baseUrl}/api/conversations/${digestConversation.id}/digest`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'create', summaryMode: 'model' }),
+  });
+  assert.equal(digestResponse.status, 200);
+  const digest = await digestResponse.json();
+  assert.equal(digest.digest.createdBy, 'model:moonshotai/kimi-k2.5');
+  assert.equal(modelCalls.length, 1);
+  assert.deepEqual(
+    {
+      provider: modelCalls[0].config.provider,
+      model: modelCalls[0].config.model,
+      thinking: modelCalls[0].config.thinking,
+    },
+    { provider: 'moonshotai', model: 'kimi-k2.5', thinking: 'high' }
+  );
+  assert.equal(modelCalls[0].config.heartbeatTimeoutMs, 90_000);
+
+  const overrideResponse = await fetch(`${baseUrl}/api/conversations/${digestConversation.id}/digest`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      action: 'create',
+      summaryMode: 'model',
+      provider: 'unmanaged-provider',
+      model: 'unmanaged-model',
+    }),
+  });
+  assert.equal(overrideResponse.status, 400);
+  const overrideError = await overrideResponse.json();
+  assert.equal(overrideError.code, 'conversation_digest_model_override_not_allowed');
+  assert.equal(modelCalls.length, 1);
 
   await new Promise((resolve) => app.close(resolve));
   closed = true;
@@ -1300,8 +1439,15 @@ test('conversation digest auto-creates model summaries after the message budget'
     autoCreateCooldownMs: 0,
     autoCreateHighValue: false,
     summaryMode: 'model',
-    provider: 'model-provider',
-    model: 'model-name',
+    resolveSystemModelConfigSnapshot() {
+      return {
+        enabled: false,
+        provider: 'model-provider',
+        model: 'model-name',
+        thinking: 'high',
+        timeoutMs: 30_000,
+      };
+    },
     resolveSummaryMemoryTaskName: () => 'Auto Digest Memory Task',
     digestModelRunner: async (context) => {
       modelCalls.push(context);
@@ -1333,6 +1479,17 @@ test('conversation digest auto-creates model summaries after the message budget'
   assert.equal(modelCalls.length, 2);
   assert.equal(modelCalls[0].purpose, 'entry');
   assert.equal(modelCalls[1].purpose, 'title_refine');
+  assert.deepEqual(
+    modelCalls.map((call) => ({
+      provider: call.config.provider,
+      model: call.config.model,
+      thinking: call.config.thinking,
+    })),
+    [
+      { provider: 'model-provider', model: 'model-name', thinking: 'high' },
+      { provider: 'model-provider', model: 'model-name', thinking: 'high' },
+    ]
+  );
   assert.equal(store.getConversation(conversation.id).title, '自动摘要标题精炼');
   assert.equal(store.getConversationTitleSource(conversation.id), 'auto_llm');
 
@@ -2612,7 +2769,7 @@ test('conversations controller creates model-generated conversation digests when
         facts: ['模型事实：用户希望摘要由模型生成。'],
         decisions: ['模型决策：保留规则摘要作为兜底。'],
         openQuestions: ['模型问题：生产环境使用哪个便宜模型？'],
-        nextActions: ['模型下一步：配置 CAFF_DIGEST_PROVIDER 和 CAFF_DIGEST_MODEL。'],
+        nextActions: ['模型下一步：在系统服务中配置共享摘要与书记模型。'],
         artifacts: ['server/domain/conversation/conversation-digest.ts'],
       };
     },
@@ -2637,8 +2794,6 @@ test('conversations controller creates model-generated conversation digests when
     body: {
       action: 'create',
       summaryMode: 'model',
-      provider: 'cheap-provider',
-      model: 'cheap-model',
     },
   });
 
@@ -2720,8 +2875,6 @@ test('conversations controller accepts direct JSON mode digest output', async (t
     body: {
       action: 'create',
       summaryMode: 'model',
-      provider: 'cheap-provider',
-      model: 'cheap-model',
     },
   });
 
@@ -2797,8 +2950,6 @@ test('conversations controller extracts JSON mode text when response includes th
     body: {
       action: 'create',
       summaryMode: 'model',
-      provider: 'cheap-provider',
-      model: 'cheap-model',
     },
   });
 
@@ -2870,8 +3021,6 @@ test('conversations controller falls back when JSON mode digest output is missin
     body: {
       action: 'create',
       summaryMode: 'model',
-      provider: 'cheap-provider',
-      model: 'cheap-model',
     },
   });
 
@@ -2935,8 +3084,6 @@ test('conversations controller falls back when JSON mode digest output is not an
     body: {
       action: 'create',
       summaryMode: 'model',
-      provider: 'cheap-provider',
-      model: 'cheap-model',
     },
   });
 
@@ -2987,6 +3134,13 @@ test('conversations controller falls back when JSON mode assistant response has 
     }
   `;
   const { handler, store, broadcastEvents } = createConversationsControllerHarness(t, {
+    systemModelConfig: {
+      enabled: false,
+      provider: 'deepseek',
+      model: 'deepseek-v4-flash',
+      thinking: 'high',
+      timeoutMs: 30_000,
+    },
     digestOptions: {
       piAiModuleSpecifier: `data:text/javascript,${encodeURIComponent(moduleSource)}`,
     },
@@ -3023,8 +3177,6 @@ test('conversations controller falls back when JSON mode assistant response has 
     body: {
       action: 'compact',
       summaryMode: 'model',
-      provider: 'deepseek',
-      model: 'deepseek-v4-flash',
     },
   });
 
@@ -3085,8 +3237,6 @@ test('conversations controller falls back when JSON mode pi-ai module import fai
     body: {
       action: 'create',
       summaryMode: 'model',
-      provider: 'cheap-provider',
-      model: 'cheap-model',
     },
   });
 
@@ -3167,6 +3317,13 @@ test('conversations controller builds a direct DeepSeek digest model from models
   `;
 
   const { handler, store } = createConversationsControllerHarness(t, {
+    systemModelConfig: {
+      enabled: false,
+      provider: 'deepseek',
+      model: 'deepseek-v4-flash',
+      thinking: 'high',
+      timeoutMs: 30_000,
+    },
     digestOptions: {
       piAiModuleSpecifier: `data:text/javascript,${encodeURIComponent(moduleSource)}`,
     },
@@ -3191,8 +3348,6 @@ test('conversations controller builds a direct DeepSeek digest model from models
     body: {
       action: 'create',
       summaryMode: 'model',
-      provider: 'deepseek',
-      model: 'deepseek-v4-flash',
     },
   });
 
@@ -3263,8 +3418,6 @@ test('conversations controller retries model digests with missing-escape diagnos
     body: {
       action: 'create',
       summaryMode: 'model',
-      provider: 'cheap-provider',
-      model: 'cheap-model',
     },
   });
 
@@ -3312,8 +3465,6 @@ test('conversations controller falls back to extractive digests when model summa
     body: {
       action: 'create',
       summaryMode: 'model',
-      provider: 'cheap-provider',
-      model: 'cheap-model',
     },
   });
 
@@ -3351,8 +3502,6 @@ test('conversations controller falls back to extractive digests when model summa
     body: {
       action: 'create',
       summaryMode: 'model',
-      provider: 'cheap-provider',
-      model: 'cheap-model',
     },
   });
 

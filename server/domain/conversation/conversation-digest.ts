@@ -606,6 +606,8 @@ function hasManualDigestOverrides(input: any) {
   return DIGEST_SECTION_KEYS.some((key) => Object.prototype.hasOwnProperty.call(input, key));
 }
 
+const DIGEST_MODEL_OVERRIDE_FIELDS = ['provider', 'model', 'thinking'];
+
 function digestSummaryMode(input: any, options: any = {}) {
   return normalizeText(
     input && (input.summaryMode || input.digestMode || input.mode)
@@ -615,10 +617,22 @@ function digestSummaryMode(input: any, options: any = {}) {
   ).toLowerCase();
 }
 
-function hasExplicitDigestModelConfig(input: any, options: any = {}) {
+function resolveSystemModelConfigSnapshot(options: any = {}) {
+  if (options.systemModelConfigSnapshot && typeof options.systemModelConfigSnapshot === 'object') {
+    return options.systemModelConfigSnapshot;
+  }
+  if (typeof options.resolveSystemModelConfigSnapshot !== 'function') {
+    return null;
+  }
+  const snapshot = options.resolveSystemModelConfigSnapshot();
+  return snapshot && typeof snapshot === 'object' ? snapshot : null;
+}
+
+function hasExplicitDigestModelConfig(_input: any, options: any = {}) {
+  const systemModelConfig = resolveSystemModelConfigSnapshot(options);
   return Boolean(
-    normalizeText(input && input.provider)
-    || normalizeText(input && input.model)
+    normalizeText(systemModelConfig && systemModelConfig.provider)
+    || normalizeText(systemModelConfig && systemModelConfig.model)
     || normalizeText(options.provider)
     || normalizeText(options.model)
     || normalizeText(process.env.CAFF_DIGEST_PROVIDER)
@@ -644,20 +658,21 @@ function shouldUseModelDigest(input: any, options: any = {}) {
   return mode === 'auto' || mode === '' ? hasExplicitDigestModelConfig(input, options) : false;
 }
 
-function resolveDigestModelConfig(input: any, options: any = {}) {
+function resolveDigestModelConfig(_input: any, options: any = {}) {
+  const systemModelConfig = resolveSystemModelConfigSnapshot(options);
   const provider = resolveSetting(
-    input && input.provider,
+    systemModelConfig && systemModelConfig.provider,
     options.provider || process.env.CAFF_DIGEST_PROVIDER || process.env.PI_PROVIDER,
     DEFAULT_PROVIDER
   );
   const model = resolveSetting(
-    input && input.model,
+    systemModelConfig && systemModelConfig.model,
     options.model || process.env.CAFF_DIGEST_MODEL || process.env.PI_MODEL,
     DEFAULT_MODEL
   );
   const thinking = resolveThinkingSetting(
     provider,
-    input && input.thinking,
+    systemModelConfig && systemModelConfig.thinking,
     options.thinking || process.env.CAFF_DIGEST_THINKING,
     DEFAULT_THINKING
   );
@@ -2526,6 +2541,20 @@ export async function applyConversationDigestAction(store: any, conversationId: 
 
   if (!CONVERSATION_DIGEST_ACTIONS.has(action)) {
     throw createHttpError(400, 'Unsupported digest action');
+  }
+
+  const overrideField = DIGEST_MODEL_OVERRIDE_FIELDS.find((field) => (
+    Object.prototype.hasOwnProperty.call(input, field)
+  ));
+  if (overrideField) {
+    throw createHttpError(400, 'Digest model selection is managed by the system service configuration', {
+      code: 'conversation_digest_model_override_not_allowed',
+      field: overrideField,
+      issues: [{
+        code: 'conversation_digest_model_override_not_allowed',
+        path: `body.${overrideField}`,
+      }],
+    });
   }
 
   if (action === 'get') {

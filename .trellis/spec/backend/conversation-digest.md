@@ -14,7 +14,7 @@
 - `GET /api/conversations/:conversationId/digest`
   - Response: `{ conversation, digests, digest, rollup, deleted, compacted, summary, conversations }`
 - `POST /api/conversations/:conversationId/digest`
-  - Request: `{ action: 'create', summaryMode?: 'model' | 'extractive' | 'auto', provider?: string, model?: string, thinking?: string, summary?: string, facts?: string[], decisions?: string[], openQuestions?: string[], nextActions?: string[], artifacts?: string[], experience?: ExperienceDigestItem[] } | { action: 'delete', digestId: string } | { action: 'clear' | 'get' | 'compact', summaryMode?: 'model' | 'extractive' | 'auto', provider?: string, model?: string, thinking?: string }`
+  - Request: `{ action: 'create', summaryMode?: 'model' | 'extractive' | 'auto', summary?: string, facts?: string[], decisions?: string[], openQuestions?: string[], nextActions?: string[], artifacts?: string[], experience?: ExperienceDigestItem[] } | { action: 'delete', digestId: string } | { action: 'clear' | 'get' | 'compact', summaryMode?: 'model' | 'extractive' | 'auto' }`
   - Response: `{ conversation, digests, digest, rollup, deleted, compacted, summary, conversations }`
 - Backend auto-create helper:
   - `maybeAutoCreateConversationDigest(store, conversationId, options)` returns the same digest result shape plus `{ autoCreated, reason?, pendingMessageCount?, pendingTokenEstimate?, signalFlags?, messageBudget?, retryAfterMs?, triggerReason?, stateChanged? }`.
@@ -75,8 +75,11 @@
 - If JSON Mode output is missing, malformed, or fails validation, log the bounded raw assistant output through the existing invalid-output warning path and fall back to the deterministic extractive digest without storing the bad model output.
 - If model JSON parsing fails with a likely missing escape for an inner double quote in a JSON string, the backend may run one bounded repair retry that returns the diagnostic, original digest prompt, and bounded invalid output to the same digest model. A successful repair still stores `createdBy: model:<provider>/<model>`; a failed repair falls back normally. This text JSON repair path remains for injected/non-structured model runners and non-migrated providers.
 - If model JSON parsing fails, backend warning logs include a bounded raw-output preview for diagnosis plus any detected syntax diagnostic. Setting `CAFF_DIGEST_LOG_RAW_OUTPUT=true` logs the full raw model output to the local server console only; it must not be persisted into conversation metadata or digest memory.
-- Model configuration uses `CAFF_DIGEST_SUMMARY_MODE=model|extractive|auto`, `CAFF_DIGEST_PROVIDER`, `CAFF_DIGEST_MODEL`, `CAFF_DIGEST_THINKING`, `CAFF_DIGEST_MODEL_TIMEOUT_MS`, and optional diagnostic `CAFF_DIGEST_LOG_RAW_OUTPUT=true|false`; without digest-specific provider/model or explicit `summaryMode: 'model'`, default behavior remains extractive.
-- Title refinement reuses the resolved digest provider/model/thinking (or injected digest runner) independently of digest summary mode; title-specific enablement and timeout are `CAFF_DIGEST_AUTO_TITLE_REFINE` and `CAFF_TITLE_REFINE_TIMEOUT_MS`. See `conversation-title.md` before changing this shared configuration chain.
+- Model selection is shared with the platform `recovery_scribe` system service. When a complete persisted system-service row exists, its `provider/model/thinking` snapshot is authoritative for model digest entries, rollups, and title refinement. The row's `enabled` flag controls only failed-trace recovery, and its `timeoutMs` controls only scribe execution; digest and title calls keep their own timeout budgets.
+- Without a persisted system-service row, the existing startup chain remains: `CAFF_DIGEST_PROVIDER`, `CAFF_DIGEST_MODEL`, `CAFF_DIGEST_THINKING`, and Pi defaults. `CAFF_DIGEST_SUMMARY_MODE=model|extractive|auto`, `CAFF_DIGEST_MODEL_TIMEOUT_MS`, and optional diagnostic `CAFF_DIGEST_LOG_RAW_OUTPUT=true|false` remain digest-specific.
+- `POST /digest` never accepts request-scoped `provider`, `model`, or `thinking`. Any of those own fields returns `400 conversation_digest_model_override_not_allowed` before a model call or digest mutation. `summaryMode` may still select model versus extractive behavior.
+- Each digest/title model invocation resolves one immutable shared model snapshot before awaiting the runner. A concurrent system-service save affects the next model invocation and never mutates the provider/model/thinking of a call already in progress.
+- Title refinement reuses the resolved shared provider/model/thinking (or injected digest runner) independently of digest summary mode; title-specific enablement and timeout are `CAFF_DIGEST_AUTO_TITLE_REFINE` and `CAFF_TITLE_REFINE_TIMEOUT_MS`. See `conversation-title.md` before changing this shared configuration chain.
 - Auto-create configuration uses `CAFF_DIGEST_AUTO_CREATE=true|false`, `CAFF_DIGEST_AUTO_CREATE_MESSAGE_BUDGET`, `CAFF_DIGEST_AUTO_IDLE_MS`, `CAFF_DIGEST_AUTO_COOLDOWN_MS`, `CAFF_DIGEST_AUTO_HIGH_VALUE=true|false`, and `CAFF_DIGEST_AUTO_HIGH_VALUE_MIN_MESSAGES`; auto-create remains disabled unless explicitly enabled.
 
 ### 4. Validation & Error Matrix
@@ -87,6 +90,8 @@
 | `POST /digest create` | public messages exist below compaction budget | `200`, appends one `entry` under `metadata.conversationDigests`, `compacted: false` |
 | `POST /digest create` | pending experience drafts exist | `200`, stores bounded `digest.experience`, marks source drafts `absorbed`, and records `absorbedDigestId` |
 | `POST /digest create` | `summaryMode: 'model'` with model JSON output | `200`, stores model-generated summary/sections and `createdBy: model:<provider>/<model>` |
+| `POST /digest create|compact` | body contains `provider`, `model`, or `thinking` | `400 conversation_digest_model_override_not_allowed`; no model call or digest mutation |
+| model digest/rollup/title call | persisted `recovery_scribe` row exists with `enabled=false` | use its `provider/model/thinking`; recovery remains disabled, digest execution remains enabled with digest/title timeout |
 | `POST /digest create` | direct pi-mono JSON Mode digest returns valid schema JSON | `200`, stores normalized model digest and `createdBy: model:<provider>/<model>` |
 | `POST /digest create` | direct pi-mono JSON Mode digest omits a required field or returns a malformed section | `200`, logs invalid structured output and stores extractive fallback digest |
 | `POST /digest create` | direct pi-mono JSON Mode output is not a JSON object | `200`, logs invalid structured output and stores extractive fallback digest |
@@ -129,7 +134,8 @@
 ### 6. Tests Required
 - `tests/smoke/server-smoke.test.js`
   - Create a digest from public messages and assert metadata, summary metadata, sections, and broadcast events.
-  - Create a model-mode digest with an injected fake model runner and assert provider/model config, model sections, JSON-only prompt rules, few-shot guidance, and `createdBy`.
+  - Create a model-mode digest after saving a persisted `recovery_scribe` configuration and assert the next manual/automatic digest, rollup, and title refinement use the shared `provider/model/thinking` even when recovery is disabled; assert digest/title timeouts remain independent.
+  - Reject request bodies containing `provider`, `model`, or `thinking` with the stable override error before the runner is called.
   - Create a direct pi-mono JSON Mode model digest with a fake pi-ai module and assert it sends `response_format: { type: 'json_object' }`, does not send tools or `toolChoice`, validates schema JSON, and stores `createdBy`.
   - Create direct pi-mono JSON Mode model digests where required fields are missing, the output is not a JSON object, or the assistant message contains only thinking blocks, and assert each case logs warnings and stores extractive fallback digests.
   - Create a direct JSON Mode digest whose assistant message contains both thinking and text/output text blocks, and assert only the visible JSON text is parsed.

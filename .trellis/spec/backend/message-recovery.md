@@ -181,11 +181,13 @@ The POST body must be exactly `{}`; unknown fields return `400 conversation_reco
 ### Scribe isolation
 
 - Configurable fields are only enabled/provider/model/thinking/timeout. Without a persisted row, priority is explicit options, then `CAFF_RECOVERY_ENABLED/PROVIDER/MODEL/THINKING/TIMEOUT_MS`, then digest provider/model/thinking settings, then Pi defaults. Invalid enabled values fail startup; the default is enabled. Timeout accepts `1,000..60,000 ms`; values outside the platform hard maximum fail configuration instead of widening it.
+- A complete persisted `recovery_scribe` row is the shared model-selection source for both recovery and conversation digest consumers. Its `provider/model/thinking` apply to the next scribe, digest entry, digest rollup, or title-refinement invocation. `enabled` and `timeoutMs` remain scribe-only; disabling recovery does not disable summaries, and the 1..60 second scribe timeout does not replace digest/title budgets.
+- Digest requests cannot override the shared model with request body `provider/model/thinking`; those fields fail before invocation or history mutation. Each consumer snapshots the three shared fields before awaiting its model call, so a concurrent save affects only the next invocation.
 - A complete persisted `recovery_scribe` row overrides the startup default chain. This makes the local-admin panel authoritative after save; partial persisted overrides are not supported.
 - `PUT /api/system-services/recovery-scribe` is loopback local-admin and CSRF guarded. It accepts exactly the five fields, requires strict booleans/integers, requires provider/model to exist in the configured model catalog, and requires thinking to be supported by that model.
 - A Recovery POST reads one configuration snapshot at entry. The same snapshot owns enabled gating, child task/run audit fields, timeout, and `completeSimple`; a concurrent save affects the next accepted recovery and never changes in-flight work.
 - Message-page capability projection reads the current persisted setting. `system_service_config_updated` makes open chat clients refresh the current conversation after a save, so disabling synchronizes the button and POST gate.
-- The management UI lives under the platform-level `系统服务` tab, not the ordinary role editor. It exposes enable/model/thinking/timeout and shows the fixed prompt, zero-tool, bounded-output, and mechanical-fallback constraints as non-editable.
+- The management UI lives under the platform-level `系统服务` tab, not the ordinary role editor. It exposes one shared model/thinking selection for conversation summaries, rollups, title refinement, and failed-trace recovery, plus scribe-only enable/timeout controls. It states those boundaries directly and shows the fixed prompt, zero-tool, bounded-output, and mechanical-fallback constraints as non-editable.
 - A recovery-specific provider/model may differ from the source provider/model and should be preferred when explicitly configured.
 - Production invocation uses `ModelRuntime.completeSimple` directly with one fixed system instruction and one user Capsule message.
 - It creates no Agent session, extensions, skills, chat bridge, or tools. It cannot call bash/read/edit/write or replay source actions.
@@ -199,7 +201,9 @@ The POST body must be exactly `{}`; unknown fields return `400 conversation_reco
 | --- | --- |
 | recovery disabled | 503 `conversation_recovery_disabled`; no task/run/model/message side effect |
 | no persisted system-service row | use the existing options/env/digest/Pi startup chain unchanged |
-| valid local-admin PUT | atomically persist the full row; response and next recovery use it immediately |
+| valid local-admin PUT | atomically persist the full row; response and next recovery/digest/rollup/title model invocation use its shared model fields immediately |
+| persisted row has `enabled=false` | Recovery POST returns 503; digest/rollup/title still use persisted provider/model/thinking with their own timeout budgets |
+| digest request contains provider/model/thinking | 400 `conversation_digest_model_override_not_allowed`; no runner call or digest mutation |
 | config PUT has unknown/missing field or non-boolean enabled | 422 stable `recovery_config_*` issue; row unchanged |
 | config PUT model is absent from catalog or thinking unsupported | 422 `recovery_config_model_unavailable` / `recovery_config_thinking_unsupported`; row unchanged |
 | config PUT timeout is non-integer or outside 1s..60s | 422 `recovery_config_timeout_invalid`; row unchanged |
@@ -247,8 +251,8 @@ The POST body must be exactly `{}`; unknown fields return `400 conversation_reco
 - `tests/runtime/recovery-capsule.test.js`: toolResult pairing, four evidence states, large output bounds, secret/path redaction, newest evidence retention, and mechanical fallback structure.
 - `tests/storage/message-recovery.test.js`: real SQLite DDL, unique idempotency, compare-and-set, terminal immutability, projection, and cascade.
 - `tests/storage/system-service-config.test.js`: typed singleton upsert, full-row replacement, reopen persistence, and foreign-key integrity.
-- `tests/runtime/recovery-scribe-config.test.js`: default/persisted priority plus strict field/model/thinking/timeout validation.
-- `tests/runtime/recovery-scribe-config-ui.test.js`: system-service tab, configured model/thinking controls, seconds-to-ms save payload, source label, and chat SSE refresh wiring.
+- `tests/runtime/recovery-scribe-config.test.js`: default/persisted priority, shared digest model selection while recovery is disabled, in-flight snapshot isolation, request-override refusal, plus strict field/model/thinking/timeout validation.
+- `tests/runtime/recovery-scribe-config-ui.test.js`: system-service tab, shared digest/recovery model wording, independent enable/timeout wording, configured model/thinking controls, seconds-to-ms save payload, source label, and chat SSE refresh wiring.
 - `tests/runtime/message-recovery.test.js`: same-conversation/failed/idle/source-integrity validation, duplicate clicks, task/run linkage, platform actor metadata/no participant row, enable/disable validation, hot config next-request semantics, accepted-request snapshot isolation, direct no-tools invocation, provider/invalid-output fallback, source immutability, SSE order, and stale restart projection.
 - `tests/http/recovery-scribe-config-controller.test.js`: loopback/Host/Origin/CSRF guard, safe GET/PUT projection, and global config-updated event.
 - `tests/http/message-recovery-controller.test.js`: exact `{}` body, 202 response, and message-page projection.

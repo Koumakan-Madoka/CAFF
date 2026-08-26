@@ -50,6 +50,7 @@ const {
   createConversationMessageDeletionService,
 } = require('../domain/conversation/message-deletion');
 const { createMessageRecoveryService } = require('../domain/conversation/message-recovery');
+const { RECOVERY_SCRIBE_SYSTEM_ACTOR } = require('../domain/roles/system-actor-catalog');
 const { createConversationSpawnService } = require('../domain/conversation/conversation-spawn');
 const {
   createCrossConversationDeliveryService,
@@ -442,6 +443,10 @@ export function createServerApp(options: any = {}) {
     titleModelRunner: options.titleModelRunner,
     agentDir,
     sqlitePath,
+    resolveSystemModelConfigSnapshot:
+      options.digestOptions && typeof options.digestOptions.resolveSystemModelConfigSnapshot === 'function'
+        ? options.digestOptions.resolveSystemModelConfigSnapshot
+        : () => store.getSystemServiceConfig(RECOVERY_SCRIBE_SYSTEM_ACTOR.type),
     resolveSummaryMemoryTaskName:
       options.digestOptions && typeof options.digestOptions.resolveSummaryMemoryTaskName === 'function'
         ? options.digestOptions.resolveSummaryMemoryTaskName

@@ -83,6 +83,9 @@ test('system scribe editor loads configured models and saves a full hot configur
   assert.equal(document.getElementById('recovery-scribe-thinking').value, 'low');
   assert.equal(document.getElementById('recovery-scribe-timeout').value, '60');
   assert.match(document.getElementById('recovery-scribe-config-source').textContent, /启动默认/u);
+  assert.match(document.getElementById('root').textContent, /摘要、摘要压缩、标题润色与失败现场整理/u);
+  assert.match(document.getElementById('root').textContent, /启停仅控制失败现场整理/u);
+  assert.match(document.getElementById('root').textContent, /超时仅用于失败现场整理/u);
 
   const model = document.getElementById('recovery-scribe-model');
   model.value = 'openai\u001fgpt-5';
