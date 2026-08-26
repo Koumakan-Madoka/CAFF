@@ -38,6 +38,12 @@ test('package dependencies pin one canonical PI family without the deprecated pa
   assert.doesNotMatch(extensionSource, /from '@(?:earendil-works|mariozechner)\/pi-ai'/u);
 });
 
+test('direct PI AI compat entry resolves the digest completion API without network access', async () => {
+  const piAi = await import('@earendil-works/pi-ai/compat');
+  assert.equal(typeof piAi.complete, 'function');
+  assert.equal(typeof piAi.getModel, 'function');
+});
+
 test('Pi model config validation is pinned to the repo runtime package family and version', async () => {
   const validator = await import(validatorUrl);
   const source = validator.resolvePinnedPiModelConfigSource();

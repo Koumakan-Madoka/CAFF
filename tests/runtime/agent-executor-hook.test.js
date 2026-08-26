@@ -182,6 +182,12 @@ test('agent executor persists structured provider failure metadata on failed rep
   const originalStartRun = minimalPi.startRun;
   const invocationError = new Error('model invocation failed');
   invocationError.assistantErrors = ['insufficient balance'];
+  invocationError.assistantErrorHistory = Array.from({ length: 4 }, () => 'insufficient balance');
+  invocationError.usageCalls = Array.from({ length: 4 }, (_, index) => ({
+    key: `failed-call-${index + 1}`,
+    responseId: `failed-response-${index + 1}`,
+    usage: { input: index + 1, output: 1, totalTokens: index + 2 },
+  }));
   let nextRunHandle = createFailedRunHandle(invocationError);
 
   minimalPi.startRun = () => nextRunHandle;
@@ -258,9 +264,10 @@ test('agent executor persists structured provider failure metadata on failed rep
   assert.ok(Array.isArray(failedWrite.patch.contextSnapshot.sections));
   assert.equal(Object.hasOwn(failedWrite.patch.metadata.agentContextSnapshot, 'sections'), false);
   assert.equal(JSON.stringify(failedWrite.patch.metadata).includes('displayContent'), false);
-  assert.equal(failedWrite.patch.modelUsage, null);
+  assert.equal(failedWrite.patch.modelUsage.calls.length, 4);
   assert.equal(Object.hasOwn(failedWrite.patch.metadata, 'modelUsage'), true);
-  assert.equal(failedWrite.patch.metadata.modelUsage, null);
+  assert.equal(failedWrite.patch.metadata.modelUsage.modelCallCount, 4);
+  assert.equal(Object.hasOwn(failedWrite.patch.metadata.modelUsage, 'calls'), false);
 
   nextRunHandle = createRunHandle('', {
     assistantErrors: ['402: insufficient quota'],
@@ -721,6 +728,8 @@ test('assistant completion hook broadcasts final message before blocking routing
   const originalStartRun = minimalPi.startRun;
 
   minimalPi.startRun = () => createRunHandle('Done. @Next', {
+    assistantErrors: [],
+    assistantErrorHistory: ['connection error: stream_read_error'],
     usage: { input: 10, output: 2, totalTokens: 12 },
     usageCalls: [
       { key: 'call-1', responseId: 'response-1', usage: { input: 10, output: 2, totalTokens: 12 } },

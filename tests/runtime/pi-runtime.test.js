@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const Database = require('better-sqlite3');
 
 const { requireSpawn } = require('../helpers/spawn');
 const { withTempDir } = require('../helpers/temp-dir');
@@ -274,6 +275,27 @@ function createFakeSdkHostMultipleUsages(baseDir) {
     "      process.send({ type: 'pi_event', event: { type: 'message_end', message } });",
     "    }",
     "    process.send({ type: 'pi_event', event: { type: 'agent_end', messages: assistantMessages } });",
+    "    return;",
+    "  }",
+    "  if (command?.type === 'abort') process.exit(0);",
+    "});",
+  ]);
+}
+
+function createFakeSdkHostNativeRetry(baseDir, options = {}) {
+  const terminalFailure = options.terminalFailure === true;
+  return createFakeSdkHost(baseDir, [
+    "const usage = (sequence) => ({ input: sequence, output: 1, cacheRead: sequence > 1 ? 10 : 0, cacheWrite: 0, totalTokens: sequence + 11, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } });",
+    "const sendAttempt = (sequence, text, stopReason, errorMessage = '') => {",
+    "  const message = { role: 'assistant', responseId: `retry-${sequence}`, content: text ? [{ type: 'text', text }] : [], stopReason, timestamp: sequence, usage: usage(sequence), ...(errorMessage ? { errorMessage } : {}) };",
+    "  if (text) process.send({ type: 'pi_event', event: { type: 'message_update', message: { ...message, stopReason: 'pending' }, assistantMessageEvent: { type: 'text_delta', delta: text } } });",
+    "  process.send({ type: 'pi_event', event: { type: 'message_end', message } });",
+    "};",
+    "process.on('message', (command) => {",
+    "  if (command?.type === 'start') {",
+    terminalFailure
+      ? "    for (let sequence = 1; sequence <= 4; sequence += 1) { sendAttempt(sequence, `discarded-${sequence}`, 'error', 'connection error: stream_read_error'); if (sequence < 4) process.send({ type: 'pi_event', event: { type: 'auto_retry_start', attempt: sequence, maxAttempts: 3, delayMs: 0, errorMessage: 'connection error: stream_read_error' } }); } process.send({ type: 'pi_event', event: { type: 'auto_retry_end', success: false, attempt: 3, finalError: 'connection error: stream_read_error' } }); setTimeout(() => process.exit(0), 20);"
+      : "    sendAttempt(1, 'discarded partial', 'error', 'connection error: stream_read_error'); process.send({ type: 'pi_event', event: { type: 'auto_retry_start', attempt: 1, maxAttempts: 3, delayMs: 0, errorMessage: 'connection error: stream_read_error' } }); process.send({ type: 'pi_event', event: { type: 'auto_retry_end', success: true, attempt: 1 } }); sendAttempt(2, 'recovered final', 'stop');",
     "    return;",
     "  }",
     "  if (command?.type === 'abort') process.exit(0);",
@@ -681,6 +703,103 @@ test('pi runtime aggregates usage across assistant model calls', async (t) => {
     cost: { input: 6, output: 8, cacheRead: 10, cacheWrite: 12, total: 36 },
   });
 });
+
+test('pi runtime settles a native retry recovery without leaking the failed attempt into final CAFF state', async (t) => {
+  if (!requireSpawn(t)) {
+    return;
+  }
+
+  const tempDir = withTempDir('caff-pi-runtime-native-retry-success-');
+  const fakeHostPath = createFakeSdkHostNativeRetry(tempDir);
+  const { runtime, restore } = loadRuntimeWithSdkHost(fakeHostPath);
+  const discarded = [];
+  let handle = null;
+
+  t.after(() => {
+    try {
+      handle && handle.cancel('test cleanup');
+    } catch {}
+    restore();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  handle = runtime.startRun('test-provider', 'test-model', 'recover once', {
+    agentDir: tempDir,
+    sqlitePath: path.join(tempDir, 'native-retry.sqlite'),
+    heartbeatIntervalMs: 50,
+    heartbeatTimeoutMs: 10000,
+    terminateGraceMs: 100,
+    streamOutput: false,
+  });
+  handle.on('assistant_retry_discarded', (event) => discarded.push(event));
+
+  const result = await handle.resultPromise;
+  assert.equal(result.reply, 'recovered final');
+  assert.deepEqual(result.assistantErrors, []);
+  assert.deepEqual(result.assistantErrorHistory, ['connection error: stream_read_error']);
+  assert.equal(result.usageCalls.length, 2);
+  const successDb = new Database(path.join(tempDir, 'native-retry.sqlite'), { readonly: true });
+  const successRun = successDb.prepare('SELECT status, assistant_errors_json FROM runs WHERE id = ?').get(result.runId);
+  successDb.close();
+  assert.deepEqual(successRun, { status: 'succeeded', assistant_errors_json: '[]' });
+  assert.equal(discarded.length, 1);
+  assert.equal(discarded[0].discardedText, 'discarded partial');
+  assert.equal(discarded[0].reply, '');
+});
+
+test('pi runtime keeps retry accounting bounded and terminal diagnosis authoritative', async (t) => {
+  if (!requireSpawn(t)) {
+    return;
+  }
+
+  const tempDir = withTempDir('caff-pi-runtime-native-retry-failure-');
+  const fakeHostPath = createFakeSdkHostNativeRetry(tempDir, { terminalFailure: true });
+  const { runtime, restore } = loadRuntimeWithSdkHost(fakeHostPath);
+  const discarded = [];
+  let handle = null;
+
+  t.after(() => {
+    try {
+      handle && handle.cancel('test cleanup');
+    } catch {}
+    restore();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  handle = runtime.startRun('test-provider', 'test-model', 'fail after retries', {
+    agentDir: tempDir,
+    sqlitePath: path.join(tempDir, 'native-retry-failure.sqlite'),
+    heartbeatIntervalMs: 50,
+    heartbeatTimeoutMs: 10000,
+    terminateGraceMs: 100,
+    streamOutput: false,
+  });
+  handle.on('assistant_retry_discarded', (event) => discarded.push(event));
+
+  let failedRunId = '';
+  await assert.rejects(handle.resultPromise, (error) => {
+    failedRunId = error.runId;
+    assert.deepEqual(error.assistantErrors, ['connection error: stream_read_error']);
+    assert.deepEqual(error.assistantErrorHistory, [
+      'connection error: stream_read_error',
+      'connection error: stream_read_error',
+      'connection error: stream_read_error',
+      'connection error: stream_read_error',
+    ]);
+    assert.equal(error.reply, 'discarded-4');
+    assert.equal(error.usageCalls.length, 4);
+    return true;
+  });
+  const failureDb = new Database(path.join(tempDir, 'native-retry-failure.sqlite'), { readonly: true });
+  const failureRun = failureDb.prepare('SELECT status, assistant_errors_json FROM runs WHERE id = ?').get(failedRunId);
+  failureDb.close();
+  assert.deepEqual(failureRun, {
+    status: 'failed',
+    assistant_errors_json: '["connection error: stream_read_error"]',
+  });
+  assert.equal(discarded.length, 3);
+});
+
 test('pi runtime respects explicit cwd and forwards session, resume, and extensions through IPC', async (t) => {
   if (!requireSpawn(t)) {
     return;

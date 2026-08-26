@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
+const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const { pathToFileURL } = require('node:url');
@@ -135,6 +136,14 @@ test('SDK host maps an explicit CAFF session path and extension list into an Age
   const agentDir = path.resolve('test-agent-dir');
   const sessionPath = path.join(agentDir, 'named-sessions', 'named.jsonl');
   const extensionPath = path.resolve('test-extension.mjs');
+  const retryExtensionPath = path.resolve(
+    __dirname,
+    '..',
+    '..',
+    'lib',
+    'pi-extensions',
+    'caff-stream-read-retry.mjs'
+  );
 
   const result = await createSdkRuntime(sdk, {
     provider: 'test-provider',
@@ -155,7 +164,10 @@ test('SDK host maps an explicit CAFF session path and extension list into an Age
   });
 
   const servicesCall = calls.find((entry) => entry.type === 'create_agent_session_services');
-  assert.deepEqual(servicesCall.options.resourceLoaderOptions.additionalExtensionPaths, [extensionPath]);
+  assert.deepEqual(servicesCall.options.resourceLoaderOptions.additionalExtensionPaths, [
+    retryExtensionPath,
+    extensionPath,
+  ]);
   assert.equal(servicesCall.options.cwd, cwd);
   assert.equal(servicesCall.options.agentDir, agentDir);
 
@@ -165,6 +177,19 @@ test('SDK host maps an explicit CAFF session path and extension list into an Age
   assert.equal(createCall.options.services.settingsManager.kind, 'settings_manager');
   assert.equal(result.runtime.session.sessionFile, path.resolve('fake-session.jsonl'));
   assert.ok(calls.some((entry) => entry.type === 'create_agent_session_runtime'));
+});
+
+test('SDK host build includes the exact stream read retry extension asset', () => {
+  const builtExtensionPath = path.resolve(
+    __dirname,
+    '..',
+    '..',
+    'build',
+    'lib',
+    'pi-extensions',
+    'caff-stream-read-retry.mjs'
+  );
+  assert.equal(fs.existsSync(builtExtensionPath), true);
 });
 
 test('SDK host maps resume and fresh runs to the pinned agent directory session tree', async () => {

@@ -5,3 +5,11 @@
 {"file": ".trellis/spec/backend/message-detail-storage.md", "reason": "Verify usage/detail accounting and atomicity"}
 {"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Verify focused and regression evidence"}
 {"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Verify every event/status consumer"}
+{"file": "tests/runtime/pi-stream-read-retry.test.js", "reason": "Verify real PI behavior matrix and tool boundary"}
+{"file": "tests/runtime/pi-runtime.test.js", "reason": "Verify CAFF retry reconciliation and authoritative run rows"}
+{"file": "tests/runtime/agent-executor-hook.test.js", "reason": "Verify final message/task/detail accounting"}
+{"file": "lib/pi-extensions/caff-stream-read-retry.mjs", "reason": "Verify exact-match and same-role extension purity"}
+{"file": "lib/pi-runtime.ts", "reason": "Verify ordinary retry/watchdog/abort behavior remains coherent"}
+{"file": ".trellis/spec/runtime/agent-runtime.md", "reason": "Verify executable PR B contract matches implementation"}
+{"file": "server/domain/runtime/message-tool-trace.ts", "reason": "Verify resolved retry history and final-session error precedence"}
+{"file": "tests/runtime/message-tool-trace.test.js", "reason": "Verify UI failure-context regression against real session JSONL"}

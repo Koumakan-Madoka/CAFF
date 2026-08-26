@@ -1370,6 +1370,104 @@ test('assistant message tool trace ignores expected-completion abort noise after
   assert.equal(trace.failureContext.text, '');
 });
 
+test('assistant message tool trace treats retry error history as resolved after a successful final assistant', (t) => {
+  const tempDir = withTempDir('caff-message-tool-trace-native-retry-');
+  const sqlitePath = path.join(tempDir, 'trace.sqlite');
+  const sessionsDir = path.join(tempDir, 'named-sessions');
+  const sessionPath = path.join(sessionsDir, 'trace-session-native-retry.jsonl');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const runStore = createSqliteRunStore({ agentDir: tempDir, sqlitePath });
+
+  fs.mkdirSync(sessionsDir, { recursive: true });
+
+  t.after(() => {
+    try {
+      runStore.close();
+    } catch {}
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const agent = store.saveCustomRoleConfig({
+    id: 'trace-agent-native-retry',
+    name: 'Trace Agent',
+    personaPrompt: 'Reply briefly.',
+  });
+  const conversation = store.createConversation({
+    id: 'trace-conversation-native-retry',
+    title: 'Trace Conversation',
+    participants: [agent.id],
+  });
+  const taskId = 'trace-task-native-retry-1';
+  const assistantMessage = store.createMessage({
+    id: 'trace-message-native-retry-1',
+    conversationId: conversation.id,
+    turnId: 'trace-turn-native-retry-1',
+    role: 'assistant',
+    agentId: agent.id,
+    senderName: agent.name,
+    content: 'Recovered',
+    status: 'completed',
+    taskId,
+  });
+
+  fs.writeFileSync(
+    sessionPath,
+    [
+      JSON.stringify({
+        type: 'message',
+        message: {
+          role: 'assistant',
+          provider: 'demo-provider',
+          model: 'demo-model',
+          responseId: 'failed-attempt',
+          stopReason: 'error',
+          errorMessage: 'connection error: stream_read_error',
+          usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2 },
+          content: [{ type: 'text', text: 'discarded partial' }],
+        },
+      }),
+      JSON.stringify({
+        type: 'message',
+        message: {
+          role: 'assistant',
+          provider: 'demo-provider',
+          model: 'demo-model',
+          responseId: 'recovered-attempt',
+          stopReason: 'stop',
+          usage: { input: 2, output: 1, cacheRead: 10, cacheWrite: 0, totalTokens: 13 },
+          content: [{ type: 'text', text: 'Recovered' }],
+        },
+      }),
+      '',
+    ].join('\n'),
+    'utf8'
+  );
+  runStore.createTask({
+    taskId,
+    kind: 'conversation_agent_reply',
+    title: 'Trace Task',
+    status: 'succeeded',
+    sessionPath,
+  });
+
+  const trace = buildAssistantMessageToolTrace({
+    db: store.db,
+    agentDir: tempDir,
+    message: assistantMessage,
+    resolvedSessionPath: sessionPath,
+  });
+
+  assert.equal(trace.session.stopReason, 'stop');
+  assert.deepEqual(trace.session.assistantErrors, ['connection error: stream_read_error']);
+  assert.equal(trace.summary.modelCallCount, 2);
+  assert.equal(trace.failureContext.hasFailure, false);
+  assert.equal(trace.failureContext.summary, '');
+  assert.equal(trace.failureContext.text, '');
+});
+
 test('assistant message tool trace keeps unrelated session errors after persisted success', (t) => {
   const tempDir = withTempDir('caff-message-tool-trace-session-error-');
   const sqlitePath = path.join(tempDir, 'trace.sqlite');
