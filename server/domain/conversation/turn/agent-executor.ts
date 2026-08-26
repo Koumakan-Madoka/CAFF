@@ -1890,6 +1890,10 @@ export function createAgentExecutor(options: any = {}) {
       emitTurnProgress(turnState);
     });
 
+    handle.on('assistant_retry_discarded', (event: any) => {
+      rawReply = String(event && event.reply || '');
+    });
+
     handle.on('heartbeat', (event: any) => {
       stage.heartbeatCount = event.count || 0;
       turnState.updatedAt = nowIso();

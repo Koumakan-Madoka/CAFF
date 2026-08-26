@@ -929,6 +929,22 @@ function isExpectedCompletionAbortNoise(options: any = {}) {
   );
 }
 
+function isResolvedAssistantRetryHistory(options: any = {}) {
+  const messageStatus = String(options.messageStatus || '').trim().toLowerCase();
+  const taskStatus = String(options.taskStatus || '').trim().toLowerCase();
+  const sessionStopReason = String(options.sessionStopReason || '').trim().toLowerCase();
+  const sessionErrorText = String(options.sessionErrorText || '').trim();
+  const assistantErrorsText = String(options.assistantErrorsText || '').trim();
+
+  return (
+    messageStatus === 'completed' &&
+    (taskStatus === 'succeeded' || taskStatus === 'completed') &&
+    (sessionStopReason === 'stop' || sessionStopReason === 'length') &&
+    !sessionErrorText &&
+    Boolean(assistantErrorsText)
+  );
+}
+
 function conciseFailureSummary(value: any, fallback = '') {
   const formatted = formatFailureContextValue(value, 360);
 
@@ -959,6 +975,13 @@ function buildTraceFailureContext(options: any = {}) {
     sessionErrorText,
     assistantErrorsText,
   });
+  const resolvedAssistantRetryHistory = isResolvedAssistantRetryHistory({
+    messageStatus,
+    taskStatus,
+    sessionStopReason,
+    sessionErrorText,
+    assistantErrorsText,
+  });
   const hasFailure = Boolean(
     failedStep ||
       messageStatus === 'failed' ||
@@ -966,7 +989,8 @@ function buildTraceFailureContext(options: any = {}) {
       messageErrorText ||
       taskErrorText ||
       sessionStopReason === 'error' ||
-      (!expectedCompletionAbortNoise && (sessionErrorText || assistantErrorsText))
+      (!expectedCompletionAbortNoise && Boolean(sessionErrorText)) ||
+      (!resolvedAssistantRetryHistory && Boolean(assistantErrorsText))
   );
 
   if (!hasFailure) {

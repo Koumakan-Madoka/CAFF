@@ -431,6 +431,9 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
     const state = {
       reply: '',
       assistantErrors: [] as any[],
+      pendingAssistantErrors: [] as any[],
+      assistantTextByKey: new Map(),
+      assistantTextOrder: [] as any[],
       stderrTail: '',
       parseErrors: 0,
       stdoutLines: [] as any[],
@@ -488,6 +491,49 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
       writeStderr(`sqlite warning: ${message}\n`);
     }
 
+    function rebuildAssistantReply() {
+      state.reply = state.assistantTextOrder
+        .map((key: any) => state.assistantTextByKey.get(key) || '')
+        .join('');
+      return state.reply;
+    }
+
+    function appendAssistantText(key: any, text: any) {
+      const normalizedText = String(text || '');
+      if (!normalizedText) {
+        return;
+      }
+
+      const normalizedKey = String(key || `assistant-text:${state.assistantTextOrder.length}`);
+      if (!state.assistantTextByKey.has(normalizedKey)) {
+        state.assistantTextOrder.push(normalizedKey);
+        state.assistantTextByKey.set(normalizedKey, '');
+      }
+      state.assistantTextByKey.set(
+        normalizedKey,
+        `${state.assistantTextByKey.get(normalizedKey) || ''}${normalizedText}`
+      );
+      rebuildAssistantReply();
+    }
+
+    function discardRetriedAssistantAttempt(event: any) {
+      const pending = state.pendingAssistantErrors.pop();
+      if (!pending) {
+        return;
+      }
+
+      const discardedText = state.assistantTextByKey.get(pending.messageKey) || '';
+      state.assistantTextByKey.delete(pending.messageKey);
+      rebuildAssistantReply();
+      emit('assistant_retry_discarded', {
+        attempt: Number(event && event.attempt) || null,
+        messageKey: pending.messageKey,
+        errorMessage: pending.errorMessage,
+        discardedText,
+        reply: state.reply,
+      });
+    }
+
     function appendAssistantFallback(message: any) {
       const key = getAssistantMessageKey(message);
 
@@ -502,7 +548,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
       }
 
       state.printedFallbackMessages.add(key);
-      state.reply += text;
+      appendAssistantText(key, text);
       emit('assistant_text_delta', { delta: text, isFallback: true, messageKey: key, message });
       writeStdout(text);
     }
@@ -522,6 +568,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
 
       state.printedAssistantErrors.add(key);
       state.assistantErrors.push(message.errorMessage);
+      state.pendingAssistantErrors.push({ messageKey: key, errorMessage: message.errorMessage });
       emit('assistant_error', { messageKey: key, errorMessage: message.errorMessage, message });
       writeStderr(`assistant error: ${message.errorMessage}\n`);
     }
@@ -816,7 +863,9 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
         reply: error.reply ?? state.reply,
         stderrTail: error.stderrTail ?? state.stderrTail,
         parseErrors: typeof error.parseErrors === 'number' ? error.parseErrors : state.parseErrors,
-        assistantErrors: Array.isArray(error.assistantErrors) ? error.assistantErrors : state.assistantErrors,
+        assistantErrors: Array.isArray(error.assistantErrors)
+          ? error.assistantErrors
+          : state.pendingAssistantErrors.map((entry: any) => entry.errorMessage),
         usage: error.usage !== undefined ? error.usage : state.assistantUsage,
         usageCalls: error.usageCalls !== undefined ? error.usageCalls : assistantUsageCallsFromState(state),
       });
@@ -912,6 +961,10 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
 
       emit('pi_event', { piEvent: event });
 
+      if (event.type === 'auto_retry_start') {
+        discardRetriedAssistantAttempt(event);
+      }
+
       if (ignoreFurtherAssistantOutput && (event.type === 'message_update' || event.type === 'message_end' || event.type === 'agent_end')) {
         return;
       }
@@ -930,7 +983,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
           state.streamedAssistantMessages.add(key);
         }
 
-        state.reply += chunk;
+        appendAssistantText(key, chunk);
         emit('assistant_text_delta', { delta: chunk, isFallback: false, messageKey: key || null, message: event.message });
         writeStdout(chunk);
         return;
@@ -1130,7 +1183,8 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
         reply: state.reply,
         sessionPath: sessionPath || null,
         stderrTail: state.stderrTail,
-        assistantErrors: [...state.assistantErrors],
+        assistantErrors: state.pendingAssistantErrors.map((entry: any) => entry.errorMessage),
+        assistantErrorHistory: [...state.assistantErrors],
         parseErrors: state.parseErrors,
         stdoutLines: [...state.stdoutLines],
         heartbeatCount: state.heartbeatCount,

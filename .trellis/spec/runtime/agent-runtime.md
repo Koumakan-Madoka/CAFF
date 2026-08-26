@@ -92,7 +92,10 @@
 - `tests/runtime/pi-sdk-host.test.js`, `tests/runtime/pi-runtime.test.js`, and
   `tests/runtime/model-input-capability-parity.test.js` cover SDK/session/event/
   image compatibility.
-- Server smoke covers the real digest compat import and PI/Trellis host startup.
+- `tests/runtime/pi-model-config-validator.test.js` resolves the real default
+  digest compat entry and asserts `complete()` / `getModel()` exports without
+  network access. Server smoke covers digest behavior and PI/Trellis host
+  startup.
 - Run `npm ls`, `npm run check`, both typechecks, build, focused runtime tests,
   DAG/Goal/private/image/handoff regression, and smoke before freezing an
   upgrade candidate.
@@ -119,6 +122,168 @@ const piAi = await import('@earendil-works/pi-ai/compat');
 Schemas use the documented TypeBox package; isolated digest completion uses the
 official compatibility entry while Agent execution remains owned by
 coding-agent.
+
+## Exact Stream Read Retry Normalization
+
+### 1. Scope / Trigger
+
+- Trigger: an Agent provider finishes an assistant stream with
+  `stopReason='error'` and the normalized `errorMessage` is exactly
+  `stream_read_error`.
+- Applies to `lib/pi-extensions/caff-stream-read-retry.mjs`, automatic extension
+  loading in `lib/pi-sdk-host.mjs`, retry-attempt accounting in
+  `lib/pi-runtime.ts`, and final Agent message/task persistence in
+  `server/domain/conversation/turn/agent-executor.ts`.
+- This is a removable compatibility shim for the audited PI 0.84.3 retry
+  classifier gap. It is not a CAFF turn retry, provider fork, or streaming-mode
+  switch.
+
+### 2. Signatures
+
+- `normalizeStreamReadErrorMessage(message) -> message` returns the original
+  object for every non-match. On the exact match it returns a same-role copy
+  whose `errorMessage` is `connection error: stream_read_error`.
+- `registerStreamReadErrorRetry(pi)` registers one official `message_end`
+  handler and no tools, commands, providers, or other lifecycle handlers.
+- `resolveRuntimeExtensionPaths(extensionPaths)` prepends
+  `lib/pi-extensions/caff-stream-read-retry.mjs` once to the SDK resource
+  loader's `additionalExtensionPaths`; caller-supplied capability extensions
+  remain present.
+- `pi-runtime` emits
+  `assistant_retry_discarded { attempt, messageKey, errorMessage,
+  discardedText, reply }` when a subsequent PI `auto_retry_start` proves that
+  the immediately preceding assistant error attempt is being retried.
+- A completed run exposes `assistantErrors` as unresolved terminal assistant
+  errors only, `assistantErrorHistory` as the in-process diagnostic history of
+  all attempts, and `usageCalls` for every unique assistant model call,
+  including retried failures.
+
+### 3. Contracts
+
+- Normalize `errorMessage` by string type and surrounding whitespace only. Match
+  exact lowercase `stream_read_error`; do not use substring, prefix, suffix, or
+  broad network-error matching.
+- Require all three conditions: assistant role, `stopReason='error'`, and the
+  exact normalized identifier. `aborted`, HTTP 400/401/403, quota/billing,
+  unrelated provider failures, and decorated strings remain unchanged.
+- The replacement keeps the assistant role and all content, usage, response,
+  provider/model, timestamp, and diagnostic fields. The mapped string retains
+  the original `stream_read_error` identifier while adding PI-recognized
+  `connection error` semantics.
+- The SDK host always loads the shim before caller-supplied CAFF extensions.
+  PI's official `message_end` pipeline rewrites the finalized assistant before
+  `_isRetryableError`; PI alone owns the maximum of three retries and 2/4/8
+  second default exponential backoff.
+- `pi-runtime` treats an assistant error as unresolved until PI emits
+  `auto_retry_start`. That event removes only the immediately preceding error
+  from the unresolved set and removes only that message key's streamed/fallback
+  text from the aggregated reply. Earlier completed model/tool output and later
+  recovered output remain.
+- Error history must not populate a succeeded run's authoritative
+  `assistant_errors_json`; succeeded rows store `[]`. A terminal four-attempt
+  failure stores only the final unresolved error there. PI session history,
+  retry events, `assistantErrorHistory`, and model-call usage retain attempt
+  diagnostics.
+- Usage aggregation never discards retry attempts. One failure then success
+  produces two `usageCalls`; four terminal failures produce four. The executor
+  persists the full calls through the existing message-detail input and stores
+  only lightweight aggregate metadata.
+- A completed tool call before a later model stream failure stays in PI context.
+  Native retry removes only the failed assistant error message, so the tool is
+  not executed again.
+- Tool-trace session parsing may retain assistant error history from failed
+  attempts. When the persisted message is completed, its task is succeeded, the
+  final session assistant has `stopReason='stop'|'length'`, and no final session
+  error exists, that history remains visible as diagnostics/model calls but does
+  not create `failureContext`. A failed message/task, final error/abort, or
+  unrelated final session error remains authoritative.
+
+### 4. Validation & Error Matrix
+
+| Input / lifecycle | Required result |
+| --- | --- |
+| exact error, then success | two provider calls; one retry start; one successful retry end; final CAFF message/task/run succeeded |
+| four consecutive exact errors | four provider calls; retry starts 1/2/3; one failed retry end at attempt 3; final CAFF message/task/run failed |
+| partial text then exact error, then success | failed message text is absent from final CAFF reply; recovered text remains |
+| completed tool, later exact error, then success | tool execution count remains one; retry context keeps its tool result |
+| ordinary `connection error`, then success | existing PI native retry behavior remains unchanged |
+| HTTP 400/401/403, quota, decorated error, or abort | no retry introduced by this shim; original message object/diagnosis remains |
+| recovery succeeds after one failed attempt | `assistantErrors=[]`, history length 1, `usageCalls.length=2`, run `assistant_errors_json=[]` |
+| terminal failure after three retries | one unresolved final assistant error, history length 4, `usageCalls.length=4` |
+| succeeded message/task + final successful session + prior assistant errors | tool trace keeps two model calls/history but `failureContext.hasFailure=false` |
+| succeeded message/task + final abort/unrelated error | existing tool-trace failure remains visible |
+
+### 5. Good / Base / Bad Cases
+
+- Good: the provider emits exact `stream_read_error`; the extension maps it,
+  PI retries the failed model call, and CAFF settles a clean completed message
+  without replaying a prior tool.
+- Base: PI already recognizes `connection error: fixture disconnect`; the shim
+  leaves it untouched and CAFF still reconciles the native retry lifecycle.
+- Bad: matching `HTTP 400: stream_read_error`, `stream_read_error: detail`, or
+  `aborted`; these errors may encode non-retryable request or user-cancel state.
+- Bad: retaining failed-attempt text or unresolved errors after successful
+  native retry; that concatenates replies or converts a recovered run back to
+  failed at the CAFF boundary.
+- Bad: wrapping `executeConversationAgent` in an outer retry; completed tool and
+  bridge side effects could execute again.
+
+### 6. Tests Required
+
+- `tests/runtime/pi-stream-read-retry.test.js` uses a real PI `Agent` plus
+  `AgentSession`, deterministic assistant streams, the production extension,
+  in-memory settings, and no network. Assert exact recovery, attempts 1/2/3,
+  terminal failure, partial text, non-retry matrix, ordinary retry, usage-bearing
+  assistant ends, and one-time tool execution.
+- `tests/runtime/pi-sdk-host.test.js` asserts the built-in extension is loaded
+  once together with caller-supplied extension paths.
+- `tests/runtime/pi-runtime.test.js` replays native retry event order through a
+  child IPC host. Assert reply reset, unresolved/history separation, two/four
+  usage calls, discard events, and SQLite succeeded/failed plus
+  `assistant_errors_json` state.
+- `tests/runtime/agent-executor-hook.test.js` asserts recovered history does not
+  block completion and completed/failed message detail writes preserve two/four
+  full model calls with lightweight metadata.
+- `tests/runtime/message-tool-trace.test.js` writes an error attempt followed by
+  a successful final assistant to a real session JSONL and asserts model-call
+  history remains while no failure banner is created; unrelated final session
+  errors remain failures.
+- Full SDK/runtime/provider/session/tool, Goal/DAG/private/image/handoff, smoke,
+  check, typecheck, public typecheck, and build regressions remain required.
+
+### 7. Wrong Vs Correct
+
+#### Wrong
+
+```ts
+if (message.errorMessage.includes('stream_read_error')) {
+  return retryWholeConversationTurn();
+}
+```
+
+This broadens non-retryable errors and can replay completed side effects.
+
+#### Correct
+
+```js
+pi.on('message_end', (event) => {
+  if (
+    event.message.role === 'assistant'
+    && event.message.stopReason === 'error'
+    && String(event.message.errorMessage || '').trim() === 'stream_read_error'
+  ) {
+    return {
+      message: {
+        ...event.message,
+        errorMessage: 'connection error: stream_read_error',
+      },
+    };
+  }
+});
+```
+
+The official same-role replacement runs before PI retry classification, keeps
+streaming enabled, and leaves retry count/backoff/tool context under PI control.
 
 ## Runtime Rules
 

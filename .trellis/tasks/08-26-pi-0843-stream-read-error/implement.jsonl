@@ -6,3 +6,17 @@
 {"file": ".trellis/spec/backend/model-provider-config.md", "reason": "Pinned PI model family and models.json compatibility"}
 {"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Runtime regression, real behavior, and non-tautological red-test patterns"}
 {"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "SDK event to runtime/store/status cross-layer flow"}
+{"file": "lib/pi-extensions/caff-stream-read-retry.mjs", "reason": "Exact official message_end normalization shim"}
+{"file": "lib/pi-sdk-host.mjs", "reason": "Automatic built-in extension loading at the SDK resource boundary"}
+{"file": "lib/pi-runtime.ts", "reason": "Native retry attempt text, unresolved error, diagnostic history, and usage accounting"}
+{"file": "server/domain/conversation/turn/agent-executor.ts", "reason": "Consume corrected aggregate reply after a retried attempt is discarded"}
+{"file": "tests/runtime/pi-stream-read-retry.test.js", "reason": "Real AgentSession exact retry, bounded failure, partial text, error matrix, and tool side-effect fixture"}
+{"file": "tests/runtime/pi-runtime.test.js", "reason": "CAFF IPC retry lifecycle, usage, status, and SQLite accounting"}
+{"file": "tests/runtime/pi-sdk-host.test.js", "reason": "Built-in extension loading contract"}
+{"file": "tests/runtime/agent-executor-hook.test.js", "reason": "Recovered and terminal model usage/message/task accounting"}
+{"file": "tests/runtime/pi-model-config-validator.test.js", "reason": "Real default PI AI compat import probe"}
+{"file": ".trellis/spec/runtime/agent-runtime.md", "reason": "Executable exact stream read retry contract"}
+{"file": ".trellis/tasks/08-26-pi-0843-stream-read-error/pr-b-evidence.md", "reason": "PR B red-first and focused green evidence"}
+{"file": "server/domain/runtime/message-tool-trace.ts", "reason": "Resolved retry history must not create a failure banner after authoritative success"}
+{"file": "tests/runtime/message-tool-trace.test.js", "reason": "Real session JSONL retry-history and unrelated-error regression"}
+{"file": ".trellis/tasks/08-26-pi-0843-stream-read-error/upstream-draft.md", "reason": "Sanitized upstream issue and PR wording prepared but not published"}
