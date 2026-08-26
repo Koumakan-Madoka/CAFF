@@ -126,10 +126,37 @@ Behavior proved:
   credential, or private path and must not be published without separate user
   confirmation.
 
-## Remaining Gates
+## Independent Review And Acceptance
 
-- Freeze a new exact PR B SHA and request independent commit-pinned review.
-- Run isolated fault-injection acceptance for one recovery and four-failure
-  terminal closure across UI/SSE/log/usage/status.
-- Obtain explicit user acceptance before the ordered PR A then PR B merge
-  commits to `develop`.
+- PR A exact candidate `332c164aa8d6c8df5bbed936c4d651436a603003`
+  received independent commit-pinned approval with no blocking finding.
+- PR B exact candidate `732b227d34d75bb6ce38164b6b1e7bbebfcf56c1`
+  received independent commit-pinned approval with no blocking finding.
+- Isolated preview acceptance ran on port 3237 with distinct SQLite, agent,
+  project, uploads, temp, and log paths; external delivery was disabled and
+  production 3100 was not accessed or changed.
+- One exact failure followed by success produced two calls, one retry start, a
+  successful retry end, completed/succeeded final statuses, no unresolved
+  assistant error, and no trace failure context.
+- Four consecutive exact failures produced four calls, three retry starts,
+  100/200/400 ms exponential delays, a failed retry end, failed final statuses,
+  one unresolved mapped diagnosis, and four retained usage calls.
+- SSE and the real Edge UI showed the authoritative recovered and terminal
+  states; SQLite integrity check was `ok` and foreign-key violations were zero.
+- The user explicitly accepted the candidates and authorized ordered merge
+  commits on 2026-08-26.
+
+## Ordered Integration
+
+- PR A: https://github.com/Koumakan-Madoka/CAFF/pull/103
+  - head: `332c164aa8d6c8df5bbed936c4d651436a603003`
+  - merge: `e8858165f9e9242574830960b32186a4bc51e655`
+  - merge tree: `17f3b2c7f28cc61ff09c130da49a4caafe802d6e`,
+    identical to the reviewed PR A candidate tree.
+- PR B: https://github.com/Koumakan-Madoka/CAFF/pull/104
+  - head: `732b227d34d75bb6ce38164b6b1e7bbebfcf56c1`
+  - merge: `fc861109d1f1cba35e250b32fcf6128eacc2cc13`
+  - merge tree: `f598fd7a7d1afb00dc20348bf91e7d1da50b24c0`,
+    identical to the reviewed and accepted PR B candidate tree.
+- Both PRs used merge commits and both remote unit checks passed. The upstream
+  issue/PR draft remains unpublished pending separate user authorization.

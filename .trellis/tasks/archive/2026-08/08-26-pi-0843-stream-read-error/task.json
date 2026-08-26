@@ -1,0 +1,53 @@
+{
+  "id": "pi-0843-stream-read-error",
+  "name": "pi-0843-stream-read-error",
+  "title": "Upgrade PI and normalize stream_read_error",
+  "description": "",
+  "status": "completed",
+  "dev_type": "backend",
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "GPT",
+  "assignee": "GPT",
+  "createdAt": "2026-08-26",
+  "completedAt": "2026-08-26",
+  "branch": "room/c2fab452-caff-bug-bug",
+  "base_branch": "develop",
+  "worktree_path": "E:/pythonproject/worktrees/room/c2fab452-caff-bug-bug",
+  "current_phase": 0,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "check"
+    },
+    {
+      "phase": 3,
+      "action": "finish"
+    },
+    {
+      "phase": 4,
+      "action": "create-pr"
+    }
+  ],
+  "commit": "732b227d34d75bb6ce38164b6b1e7bbebfcf56c1",
+  "pr_url": "https://github.com/Koumakan-Madoka/CAFF/pull/104",
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "PR A #103 and PR B #104 were independently reviewed, accepted by the user, and merged to develop in order. Production 3100 was not deployed, restarted, or reconfigured. The upstream draft remains unpublished.",
+  "meta": {
+    "pr_a_candidate": "332c164aa8d6c8df5bbed936c4d651436a603003",
+    "pr_a_merge": "e8858165f9e9242574830960b32186a4bc51e655",
+    "pr_b_candidate": "732b227d34d75bb6ce38164b6b1e7bbebfcf56c1",
+    "pr_b_merge": "fc861109d1f1cba35e250b32fcf6128eacc2cc13",
+    "accepted_tree": "f598fd7a7d1afb00dc20348bf91e7d1da50b24c0",
+    "accepted_at": "2026-08-26",
+    "upstream_draft_published": false
+  }
+}
