@@ -22,6 +22,7 @@ const { resolveInitialTurnTargets } = require('./initial-target-resolution');
 const { assertImagePreflightForTargets } = require('./image-preflight');
 
 const MAX_PARALLEL_MENTION_BATCH_SIZE = 5;
+const MAX_TURN_REPLY_HOPS_FLOOR = 32;
 
 function createTaskId(prefix = 'task') {
   return `${prefix}-${randomUUID()}`;
@@ -453,7 +454,7 @@ export function createRoutingExecutor(options: any = {}) {
       const activeExecutionAgentIds = new Set();
       const privateLaunchKeys = new Set();
       const dispatchedTraceRecipientKeys = new Set();
-      const maxReplies = Math.max(8, conversation.agents.length * 4);
+      const maxReplies = Math.max(MAX_TURN_REPLY_HOPS_FLOOR, conversation.agents.length * 4);
       let terminationReason = 'queue_exhausted';
 
       function reserveHop() {
