@@ -1,0 +1,7 @@
+{"file": ".agents/skills/finish-work/SKILL.md", "reason": "Finish work checklist"}
+{"file": ".agents/skills/check/SKILL.md", "reason": "Code quality check spec"}
+{"file": ".trellis/spec/runtime/agent-runtime.md", "reason": "Verify runtime termination and provider-error semantics"}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Verify regression coverage quality"}
+{"file": "tests/runtime/agent-executor-hook.test.js", "reason": "Executor must retain defensive real assistant-error failure conversion"}
+{"file": "tests/runtime/turn-orchestrator.test.js", "reason": "Message/task completion and failure regression boundary"}
+{"file": ".trellis/tasks/08-26-08-26-pi-0843-expected-completion-abort/implementation-evidence.md", "reason": "Exact automated gate results and accepted baseline failures"}

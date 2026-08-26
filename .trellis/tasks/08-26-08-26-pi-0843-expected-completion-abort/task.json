@@ -1,0 +1,45 @@
+{
+  "id": "08-26-pi-0843-expected-completion-abort",
+  "name": "08-26-pi-0843-expected-completion-abort",
+  "title": "PI 0.84.3 expected completion abort regression",
+  "description": "Prevent expected_completion cleanup abort tail events from turning a successful public reply into a failed message/task while preserving real cancellation, watchdog, timeout, provider-error, and stream_read_error semantics.",
+  "status": "review",
+  "dev_type": "backend",
+  "scope": "runtime",
+  "package": null,
+  "priority": "P0",
+  "creator": "GPT",
+  "assignee": "GPT",
+  "createdAt": "2026-08-26",
+  "completedAt": null,
+  "branch": "room/c2fab452-caff-bug-bug",
+  "base_branch": "develop",
+  "worktree_path": "E:/pythonproject/worktrees/room/c2fab452-caff-bug-bug",
+  "current_phase": 2,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "check"
+    },
+    {
+      "phase": 3,
+      "action": "finish"
+    },
+    {
+      "phase": 4,
+      "action": "create-pr"
+    }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "Red-first implementation and complete automated regression evidence are recorded. Candidate awaits independent commit-pinned review and isolated acceptance. Production 3100 and historical run 10437 remain untouched; the upstream draft is unpublished.",
+  "meta": {}
+}

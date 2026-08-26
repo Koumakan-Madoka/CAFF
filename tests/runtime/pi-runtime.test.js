@@ -51,6 +51,28 @@ function createFakeSdkHostCompleteThenHang(baseDir) {
   ]);
 }
 
+function createFakeSdkHostExternalCompletionAbortTail(baseDir, options = {}) {
+  const initialError = String(options.initialError || '');
+  return createFakeSdkHost(baseDir, [
+    "process.on('message', (command) => {",
+    "  if (command?.type === 'start') {",
+    initialError
+      ? `    const message = { role: 'assistant', responseId: 'before-completion', content: [], stopReason: 'error', errorMessage: ${JSON.stringify(initialError)}, timestamp: 1, usage: { input: 3, output: 1, totalTokens: 4 } };`
+      : "    const message = { role: 'assistant', responseId: 'before-completion', content: [{ type: 'text', text: 'completion-before' }, { type: 'toolCall', name: 'send-public', arguments: {} }], stopReason: 'toolUse', timestamp: 1, usage: { input: 3, output: 1, totalTokens: 4 } };",
+    "    process.send({ type: 'pi_event', event: { type: 'message_end', message } });",
+    "    return;",
+    "  }",
+    "  if (command?.type === 'abort') {",
+    "    const message = { role: 'assistant', responseId: 'completion-tail', content: [{ type: 'text', text: 'completion-after' }], stopReason: 'error', errorMessage: 'This operation was aborted', timestamp: 2, usage: { input: 5, output: 0, totalTokens: 5 } };",
+    "    process.send({ type: 'pi_event', event: { type: 'message_update', message: { ...message, stopReason: 'pending' }, assistantMessageEvent: { type: 'text_delta', delta: 'completion-after' } } });",
+    "    process.send({ type: 'pi_event', event: { type: 'message_end', message } });",
+    "    process.send({ type: 'pi_event', event: { type: 'agent_end', messages: [message] } });",
+    "    setTimeout(() => process.exit(0), 20);",
+    "  }",
+    "});",
+  ]);
+}
+
 function createFakeSdkHostAssistantError(baseDir) {
   return createFakeSdkHost(baseDir, [
     "process.on('message', (command) => {",
@@ -519,6 +541,143 @@ test('pi runtime rejects a terminal assistant model error even when the SDK host
       return true;
     }
   );
+});
+
+test('pi runtime ignores assistant abort tail output after caller expected completion', async (t) => {
+  if (!requireSpawn(t)) {
+    return;
+  }
+
+  const tempDir = withTempDir('caff-pi-runtime-completion-abort-tail-');
+  const sqlitePath = path.join(tempDir, 'pi-runtime-completion-abort-tail.sqlite');
+  const fakeHostPath = createFakeSdkHostExternalCompletionAbortTail(tempDir);
+  const { runtime, restore } = loadRuntimeWithSdkHost(fakeHostPath);
+  const stderrWrites = [];
+  let handle = null;
+
+  t.after(() => {
+    try {
+      handle && handle.cancel('test cleanup');
+    } catch {}
+
+    restore();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  handle = runtime.startRun('test-provider', 'test-model', 'Post publicly then stop', {
+    agentDir: tempDir,
+    sqlitePath,
+    heartbeatIntervalMs: 0,
+    heartbeatTimeoutMs: 10000,
+    terminateGraceMs: 100,
+    streamOutput: true,
+    stdout: { write() {} },
+    stderr: { write(text) { stderrWrites.push(String(text)); } },
+  });
+  handle.on('assistant_message', (event) => {
+    if (event.messageKey === 'response:before-completion') {
+      handle.complete('public bridge completed');
+    }
+  });
+
+  const result = await handle.resultPromise;
+
+  assert.deepEqual(result.assistantErrors, []);
+  assert.deepEqual(result.assistantErrorHistory, []);
+  assert.equal(result.reply, 'completion-before');
+  assert.deepEqual(result.usage, { input: 3, output: 1, totalTokens: 4 });
+  assert.equal(result.usageCalls.length, 1);
+  assert.equal(stderrWrites.some((text) => text.includes('This operation was aborted')), false);
+
+  const db = new Database(sqlitePath, { readonly: true });
+  const run = db.prepare('SELECT status, assistant_errors_json, reply FROM runs WHERE id = ?').get(result.runId);
+  db.close();
+  assert.deepEqual(run, {
+    status: 'succeeded',
+    assistant_errors_json: '[]',
+    reply: 'completion-before',
+  });
+});
+
+test('pi runtime preserves an assistant provider error recorded before caller expected completion', async (t) => {
+  if (!requireSpawn(t)) {
+    return;
+  }
+
+  const tempDir = withTempDir('caff-pi-runtime-pre-completion-error-');
+  const fakeHostPath = createFakeSdkHostExternalCompletionAbortTail(tempDir, {
+    initialError: 'provider failed before public completion',
+  });
+  const { runtime, restore } = loadRuntimeWithSdkHost(fakeHostPath);
+  let handle = null;
+
+  t.after(() => {
+    try {
+      handle && handle.cancel('test cleanup');
+    } catch {}
+
+    restore();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  handle = runtime.startRun('test-provider', 'test-model', 'Preserve prior provider failure', {
+    agentDir: tempDir,
+    sqlitePath: path.join(tempDir, 'pre-completion-error.sqlite'),
+    heartbeatIntervalMs: 0,
+    heartbeatTimeoutMs: 10000,
+    terminateGraceMs: 100,
+    streamOutput: false,
+  });
+  handle.on('assistant_error', (event) => {
+    if (event.errorMessage === 'provider failed before public completion') {
+      handle.complete('external completion after provider error');
+    }
+  });
+
+  const result = await handle.resultPromise;
+
+  assert.deepEqual(result.assistantErrors, ['provider failed before public completion']);
+  assert.deepEqual(result.assistantErrorHistory, ['provider failed before public completion']);
+  assert.equal(result.reply, '');
+  assert.deepEqual(result.usage, { input: 3, output: 1, totalTokens: 4 });
+  assert.equal(result.usageCalls.length, 1);
+});
+
+test('pi runtime keeps user cancellation authoritative when the host emits an assistant abort tail', async (t) => {
+  if (!requireSpawn(t)) {
+    return;
+  }
+
+  const tempDir = withTempDir('caff-pi-runtime-cancel-abort-tail-');
+  const fakeHostPath = createFakeSdkHostExternalCompletionAbortTail(tempDir);
+  const { runtime, restore } = loadRuntimeWithSdkHost(fakeHostPath);
+  let handle = null;
+
+  t.after(() => {
+    try {
+      handle && handle.cancel('test cleanup');
+    } catch {}
+
+    restore();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  handle = runtime.startRun('test-provider', 'test-model', 'Cancel this run', {
+    agentDir: tempDir,
+    sqlitePath: path.join(tempDir, 'cancel-abort-tail.sqlite'),
+    heartbeatIntervalMs: 0,
+    heartbeatTimeoutMs: 10000,
+    terminateGraceMs: 100,
+    streamOutput: false,
+  });
+  handle.cancel('operator cancelled');
+
+  await assert.rejects(handle.resultPromise, (error) => {
+    assert.equal(error.terminationReason.type, 'cancelled');
+    assert.equal(error.terminationReason.message, 'operator cancelled');
+    assert.deepEqual(error.assistantErrors, ['This operation was aborted']);
+    return true;
+  });
 });
 
 test('pi runtime allows callers to mark a run complete early', async (t) => {

@@ -123,6 +123,124 @@ Schemas use the documented TypeBox package; isolated digest completion uses the
 official compatibility entry while Agent execution remains owned by
 coding-agent.
 
+## Expected Completion Assistant Tail Suppression
+
+### 1. Scope / Trigger
+
+- Trigger: a caller invokes `startRun(...).complete(reason)` after a public
+  bridge reply succeeds, and the SDK host emits more assistant output while
+  handling CAFF's intentional abort.
+- PI AI 0.84.0+ can surface an auth-setup abort as an assistant message with
+  `stopReason='error'`. The error text is provider/runtime dependent and is not
+  part of CAFF's suppression decision.
+- Applies to the `expected_completion` branch in `lib/pi-runtime.ts`; the
+  executor's real assistant-error failure conversion remains unchanged.
+
+### 2. Signatures
+
+- `startRun(...).complete(reason)` requests
+  `beginTermination({ type: 'expected_completion', message: reason })`.
+- Terminal assistant output uses
+  `requestExpectedCompletion(message) -> beginTermination({
+  type: 'expected_completion', assistantStopReason, assistantMessageKey })`.
+- `beginTermination(reason)` must enable `ignoreFurtherAssistantOutput` before
+  sending `{ type: 'abort', reason }` when and only when
+  `reason.type === 'expected_completion'`.
+- While the flag is enabled, `handlePiEvent` ignores later `message_update`,
+  `message_end`, and `agent_end` assistant processing.
+
+### 3. Contracts
+
+- The suppression boundary is event order, not error text. Assistant text,
+  fallback text, usage, unresolved errors, and error history recorded before
+  expected completion remain authoritative; later assistant output does not
+  mutate them.
+- Caller-driven `complete()` and terminal-message-driven
+  `requestExpectedCompletion()` have symmetric post-completion behavior.
+- An expected-completion close resolves with code zero. `reply`, `usage`, and
+  `usageCalls` reflect only output observed before the boundary, and the runs
+  row stores `status='succeeded'` with the same unresolved
+  `assistant_errors_json` projection.
+- `agent-executor.ts` must still fail any resolved result whose
+  `assistantErrors` contains a real pre-completion error. It must not infer or
+  suppress cleanup errors from `bridgePublicCompletionRequested` or an error
+  string.
+- `cancelled`, `heartbeat_timeout`, `progress_timeout`, `run_timeout`, parent
+  signals, process exits, ordinary aborts, and provider errors do not enable the
+  guard. Their existing termination and failure semantics remain authoritative.
+- PI session JSONL may retain the upstream cleanup record because the child owns
+  session persistence; CAFF runtime result, stderr forwarding, reply, usage, and
+  run/message/task state omit assistant output received after completion.
+
+### 4. Validation & Error Matrix
+
+| Lifecycle | Required result |
+| --- | --- |
+| public reply, `complete()`, assistant abort error | run/message/task succeed; `assistantErrors=[]`; no failure context |
+| text/usage, `complete()`, later text/usage/error | retain only pre-completion reply and usage |
+| provider error, then `complete()` | pre-completion error remains unresolved; executor fails |
+| terminal assistant stop, then abort tail | existing expected-completion success remains unchanged |
+| user `cancel()` plus abort-shaped assistant tail | cancellation fails and tail remains diagnostic |
+| heartbeat/progress/run timeout | timeout fails with its original `terminationReason.type` |
+| exact `stream_read_error` retry | native retry accounting and unresolved/history reconciliation remain unchanged |
+| ordinary assistant error without completion | runtime/executor provider failure remains unchanged |
+
+### 5. Good / Base / Bad Cases
+
+- Good: `send-public` succeeds, bridge calls `complete()`, and PI emits an abort
+  setup error one millisecond later; the posted reply and its usage settle as a
+  clean success.
+- Base: PI emits a normal terminal assistant reply; the existing
+  `requestExpectedCompletion` path ignores its cleanup tail.
+- Bad: remove errors from `pendingAssistantErrors` by matching `aborted`; this
+  can erase a real provider or user-cancel failure.
+- Bad: suppress every resolved `assistantErrors` result in the executor when a
+  bridge post happened; that loses the ordering needed to distinguish errors
+  observed before and after completion.
+
+### 6. Tests Required
+
+- `tests/runtime/pi-runtime.test.js` uses an IPC fake host that sends a
+  pre-completion tool/text message, waits for abort, then sends text delta,
+  assistant error, and `agent_end`. Assert clean result/run state, unchanged
+  pre-completion reply/usage, and no post-completion stderr error.
+- The same suite sends a provider error before caller completion and asserts it
+  remains the only unresolved/history error. A cancellation variant asserts
+  `terminationReason.type='cancelled'` and retains the abort-tail diagnosis.
+- Existing heartbeat/progress/run timeout, terminal completion, native retry,
+  and ordinary assistant-error tests remain regression gates.
+- `tests/runtime/agent-executor-hook.test.js` keeps both sides of the boundary:
+  successful bridge auto-completion writes a completed reply, while a mocked
+  resolved result with `assistantErrors` writes a provider failure.
+- `tests/runtime/message-tool-trace.test.js` and turn/smoke suites verify that a
+  successful completion creates no failure projection and routing still closes.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```ts
+if (bridgePublicCompletionRequested) {
+  result.assistantErrors = result.assistantErrors.filter((error) =>
+    !String(error).includes('aborted')
+  );
+}
+```
+
+This is text-based and cannot preserve a real error observed before the public
+post.
+
+#### Correct
+
+```ts
+if (reason && reason.type === 'expected_completion') {
+  ignoreFurtherAssistantOutput = true;
+}
+```
+
+The guard is established before abort IPC, so only causally later assistant
+output is ignored.
+
 ## Exact Stream Read Retry Normalization
 
 ### 1. Scope / Trigger

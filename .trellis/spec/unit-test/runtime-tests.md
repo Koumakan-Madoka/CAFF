@@ -77,6 +77,31 @@ The production-shape gate uses child processes with `--expose-gc`, a warm baseli
   fixture. It must read full table detail, update the message, and leave the DB
   readable when Contract is restored.
 
+## Expected-Completion Abort-Tail Guards
+
+For caller-driven completion regressions, use a child IPC fixture instead of a
+mocked result alone:
+
+- Send a non-terminal assistant text/tool message first and call
+  `handle.complete()` from the parent's `assistant_message` listener. This
+  reproduces the bridge-success-to-runtime-completion ordering.
+- After the child receives abort IPC, send `message_update`, `message_end` with
+  an assistant error, and `agent_end`, then exit zero. The baseline must fail on
+  the unexpected unresolved tail error before the runtime fix is applied.
+- Assert the green result and persisted runs row together:
+  `reply` and `usageCalls` contain only pre-completion data,
+  `assistantErrors=[]`, and `status='succeeded'` with
+  `assistant_errors_json='[]'`.
+- Add a pre-completion provider-error variant. Trigger `complete()` only after
+  the parent observes `assistant_error`, then assert that prior error remains
+  unresolved and would still activate the executor's defensive failure path.
+- Add a cancellation variant using the same abort-tail fixture. Assert
+  `terminationReason.type='cancelled'` and retain the assistant tail diagnosis.
+- Keep the existing heartbeat/progress/run timeout, terminal completion,
+  ordinary provider-error, and exact stream retry tests in the same regression
+  gate. The fix must be keyed to termination order and type, never a particular
+  abort string.
+
 ## Useful Existing Suites
 
 - `tests/runtime/agent-tool-bridge.test.js`: bridge behavior and `.trellis`
