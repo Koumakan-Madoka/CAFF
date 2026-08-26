@@ -49,6 +49,28 @@ ChatAppStore.transitionMessageRecovery(id, expectedStatuses, updates)
 
 Transitions use compare-and-set. A terminal row cannot be reopened.
 
+The platform-level hot configuration is one typed SQLite row:
+
+```sql
+chat_system_service_configs(
+  service_type PRIMARY KEY,
+  enabled CHECK 0|1,
+  provider,
+  model,
+  thinking,
+  timeout_ms CHECK 1000..60000,
+  created_at,
+  updated_at
+)
+```
+
+```ts
+ChatAppStore.getSystemServiceConfig('recovery_scribe') -> config | null
+ChatAppStore.saveSystemServiceConfig('recovery_scribe', config) -> config
+```
+
+The row is a complete snapshot, not a partial key/value merge.
+
 ### Capsule
 
 ```ts
@@ -71,10 +93,23 @@ POST /api/conversations/:conversationId/messages/:messageId/recovery
 body: {}
 202 { recovery, duplicate }
 
+GET /api/system-services/recovery-scribe
+200 { config, source, updatedAt, modelOptions }
+
+PUT /api/system-services/recovery-scribe
+body: { enabled, provider, model, thinking, timeoutMs }
+200 { config, source: 'persisted', updatedAt, modelOptions }
+
 conversation_recovery_updated {
   conversationId,
   sourceMessageId,
   recovery
+}
+
+system_service_config_updated {
+  serviceType: 'recovery_scribe',
+  enabled,
+  updatedAt
 }
 ```
 
@@ -145,7 +180,12 @@ The POST body must be exactly `{}`; unknown fields return `400 conversation_reco
 
 ### Scribe isolation
 
-- Configurable fields are only enabled/provider/model/thinking/timeout. Priority is explicit options, then `CAFF_RECOVERY_ENABLED/PROVIDER/MODEL/THINKING/TIMEOUT_MS`, then digest provider/model/thinking settings, then Pi defaults. Invalid enabled values fail startup; the default is enabled. Timeout accepts `1,000..60,000 ms`; values outside the platform hard maximum fail configuration instead of widening it.
+- Configurable fields are only enabled/provider/model/thinking/timeout. Without a persisted row, priority is explicit options, then `CAFF_RECOVERY_ENABLED/PROVIDER/MODEL/THINKING/TIMEOUT_MS`, then digest provider/model/thinking settings, then Pi defaults. Invalid enabled values fail startup; the default is enabled. Timeout accepts `1,000..60,000 ms`; values outside the platform hard maximum fail configuration instead of widening it.
+- A complete persisted `recovery_scribe` row overrides the startup default chain. This makes the local-admin panel authoritative after save; partial persisted overrides are not supported.
+- `PUT /api/system-services/recovery-scribe` is loopback local-admin and CSRF guarded. It accepts exactly the five fields, requires strict booleans/integers, requires provider/model to exist in the configured model catalog, and requires thinking to be supported by that model.
+- A Recovery POST reads one configuration snapshot at entry. The same snapshot owns enabled gating, child task/run audit fields, timeout, and `completeSimple`; a concurrent save affects the next accepted recovery and never changes in-flight work.
+- Message-page capability projection reads the current persisted setting. `system_service_config_updated` makes open chat clients refresh the current conversation after a save, so disabling synchronizes the button and POST gate.
+- The management UI lives under the platform-level `系统服务` tab, not the ordinary role editor. It exposes enable/model/thinking/timeout and shows the fixed prompt, zero-tool, bounded-output, and mechanical-fallback constraints as non-editable.
 - A recovery-specific provider/model may differ from the source provider/model and should be preferred when explicitly configured.
 - Production invocation uses `ModelRuntime.completeSimple` directly with one fixed system instruction and one user Capsule message.
 - It creates no Agent session, extensions, skills, chat bridge, or tools. It cannot call bash/read/edit/write or replay source actions.
@@ -158,6 +198,12 @@ The POST body must be exactly `{}`; unknown fields return `400 conversation_reco
 | Condition | Required result |
 | --- | --- |
 | recovery disabled | 503 `conversation_recovery_disabled`; no task/run/model/message side effect |
+| no persisted system-service row | use the existing options/env/digest/Pi startup chain unchanged |
+| valid local-admin PUT | atomically persist the full row; response and next recovery use it immediately |
+| config PUT has unknown/missing field or non-boolean enabled | 422 stable `recovery_config_*` issue; row unchanged |
+| config PUT model is absent from catalog or thinking unsupported | 422 `recovery_config_model_unavailable` / `recovery_config_thinking_unsupported`; row unchanged |
+| config PUT timeout is non-integer or outside 1s..60s | 422 `recovery_config_timeout_invalid`; row unchanged |
+| save races with an accepted recovery | accepted work keeps its entry snapshot; the next request sees the saved row |
 | invalid `CAFF_RECOVERY_ENABLED` | fail startup/config construction; do not silently enable |
 | recovery timeout below 1s or above 60s | fail startup/config construction; do not clamp or widen the hard bound |
 | conversation missing | 404 `conversation_recovery_conversation_not_found` |
@@ -186,17 +232,25 @@ The POST body must be exactly `{}`; unknown fields return `400 conversation_reco
 - Good: a timed-out mutating command is listed under possibly effective and the recovery point tells the user to verify external state first.
 - Good: a later Agent sees `系统书记 [read-only recovery; source agent GPT; source run 10159]` even when the failed source is older than the raw-history window.
 - Good: a malformed roster contains `recovery_scribe`, but role/mention/default/private/Goal/DAG projections filter it and an explicit delivery target returns 403.
+- Good: an administrator saves a different configured model and 45-second timeout; the next recovery task/run/model request all use that exact snapshot without restarting CAFF.
+- Base: no persisted configuration exists, so the existing startup options/env/default chain remains authoritative.
 - Base: a failed read has an error result and is listed as not completed.
 - Bad: treating a missing write result as not executed, replaying it automatically, or changing the source message from failed to completed.
 - Bad: starting a normal Pi Agent session for the scribe and relying on prompt wording to keep default coding tools unused.
 - Bad: registering the scribe as a configurable custom role or trusting absence from the mention UI without a server-side reserved identity/target guard.
+- Bad: capturing the configuration only at server construction, reporting a successful save while later Recovery requests still use the old model.
+- Bad: applying a mid-run config change to the run timeout/model after its child task already recorded the previous snapshot.
 - Bad: trusting `sourceAgentName` or `sourceRunId` copied from recovery-message metadata, or injecting full Capsule/source IDs into Conversation History.
 
 ## 6. Required Tests
 
 - `tests/runtime/recovery-capsule.test.js`: toolResult pairing, four evidence states, large output bounds, secret/path redaction, newest evidence retention, and mechanical fallback structure.
 - `tests/storage/message-recovery.test.js`: real SQLite DDL, unique idempotency, compare-and-set, terminal immutability, projection, and cascade.
-- `tests/runtime/message-recovery.test.js`: same-conversation/failed/idle/source-integrity validation, duplicate clicks, task/run linkage, platform actor metadata/no participant row, enable/disable validation, direct no-tools invocation, provider/invalid-output fallback, source immutability, SSE order, and stale restart projection.
+- `tests/storage/system-service-config.test.js`: typed singleton upsert, full-row replacement, reopen persistence, and foreign-key integrity.
+- `tests/runtime/recovery-scribe-config.test.js`: default/persisted priority plus strict field/model/thinking/timeout validation.
+- `tests/runtime/recovery-scribe-config-ui.test.js`: system-service tab, configured model/thinking controls, seconds-to-ms save payload, source label, and chat SSE refresh wiring.
+- `tests/runtime/message-recovery.test.js`: same-conversation/failed/idle/source-integrity validation, duplicate clicks, task/run linkage, platform actor metadata/no participant row, enable/disable validation, hot config next-request semantics, accepted-request snapshot isolation, direct no-tools invocation, provider/invalid-output fallback, source immutability, SSE order, and stale restart projection.
+- `tests/http/recovery-scribe-config-controller.test.js`: loopback/Host/Origin/CSRF guard, safe GET/PUT projection, and global config-updated event.
 - `tests/http/message-recovery-controller.test.js`: exact `{}` body, 202 response, and message-page projection.
 - `tests/ui/message-recovery.test.js`: failed-card action, queued/running/completed/failed states, source provenance, non-execution declaration, stable touch geometry, and no retry/continue/source-state rewrite.
 - `tests/runtime/turn-orchestrator.test.js`: one bounded source lookup, source Agent/run attribution for an old failed assistant, invalid-source fail-safe labeling, and refusal to trust recovery metadata provenance.
@@ -205,6 +259,23 @@ The POST body must be exactly `{}`; unknown fields return `400 conversation_reco
 - The runtime/storage/http/UI files above are registered in `package.json` `test:fast`; `tests/dag/dag-scheduler.test.js` runs through `test:dag-execution`. Build, check, typecheck, targeted tests, smoke, and isolated browser verification remain release gates.
 
 ## 7. Wrong vs Correct
+
+### Wrong
+
+```ts
+const config = recoveryConfig(options); // Frozen until process restart.
+await saveConfig(nextConfig); // UI claims success, but requestRecovery still uses config.
+```
+
+### Correct
+
+```ts
+const config = configManager.getConfigSnapshot();
+const accepted = createDurableRecovery(source, config);
+schedule(() => processRecovery(source, accepted.id, config));
+```
+
+The accepted request keeps one internally consistent snapshot; the next request observes the saved row.
 
 ### Wrong
 

@@ -13,6 +13,7 @@ const { createChatParticipantRepository } = require('../storage/chat/participant
 const { createChatMessageRepository } = require('../storage/chat/message.repository');
 const { createChatMessageDetailRepository } = require('../storage/chat/message-detail.repository');
 const { createChatMessageRecoveryRepository } = require('../storage/chat/message-recovery.repository');
+const { createChatSystemServiceConfigRepository } = require('../storage/chat/system-service-config.repository');
 const { createChatPrivateMessageRepository } = require('../storage/chat/private-message.repository');
 const { createChatMemoryCardRepository } = require('../storage/chat/memory-card.repository');
 const { createChatSummarySegmentRepository } = require('../storage/chat/summary-segment.repository');
@@ -308,6 +309,23 @@ function normalizeMessageRecoveryRow(row: any) {
     updatedAt: row.updated_at,
     startedAt: row.started_at || null,
     endedAt: row.ended_at || null,
+  };
+}
+
+function normalizeSystemServiceConfigRow(row: any) {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    serviceType: row.service_type,
+    enabled: Boolean(row.enabled),
+    provider: row.provider,
+    model: row.model,
+    thinking: row.thinking,
+    timeoutMs: Number(row.timeout_ms),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
   };
 }
 
@@ -939,6 +957,7 @@ export class ChatAppStore {
       this.messageRepository = createChatMessageRepository(this.db);
       this.messageDetailRepository = createChatMessageDetailRepository(this.db);
       this.messageRecoveryRepository = createChatMessageRecoveryRepository(this.db);
+      this.systemServiceConfigRepository = createChatSystemServiceConfigRepository(this.db);
       this.privateMessageRepository = createChatPrivateMessageRepository(this.db);
       this.memoryCardRepository = createChatMemoryCardRepository(this.db);
       this.summarySegmentRepository = createChatSummarySegmentRepository(this.db);
@@ -3761,6 +3780,28 @@ export class ChatAppStore {
         nowIso()
       )
     );
+  }
+
+  getSystemServiceConfig(serviceType: any) {
+    return normalizeSystemServiceConfigRow(
+      this.systemServiceConfigRepository.get(String(serviceType || '').trim())
+    );
+  }
+
+  saveSystemServiceConfig(serviceType: any, config: any = {}) {
+    const normalizedServiceType = String(serviceType || '').trim();
+    const now = nowIso();
+    const existing = this.systemServiceConfigRepository.get(normalizedServiceType);
+    return normalizeSystemServiceConfigRow(this.systemServiceConfigRepository.upsert({
+      serviceType: normalizedServiceType,
+      enabled: config.enabled ? 1 : 0,
+      provider: String(config.provider || '').trim(),
+      model: String(config.model || '').trim(),
+      thinking: String(config.thinking || '').trim(),
+      timeoutMs: Number(config.timeoutMs),
+      createdAt: existing ? existing.created_at : now,
+      updatedAt: now,
+    }));
   }
 
   getMessageContextSnapshot(messageId: any) {

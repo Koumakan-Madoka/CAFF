@@ -282,6 +282,8 @@ test('create server wires loopback model-provider administration with bootstrap 
   const bootstrap = await bootstrapResponse.json();
   const csrfToken = bootstrap.localAdmin.modelProviders.csrfToken;
   assert.equal(bootstrap.localAdmin.modelProviders.enabled, true);
+  assert.equal(bootstrap.localAdmin.systemServices.enabled, true);
+  assert.equal(bootstrap.localAdmin.systemServices.csrfToken, csrfToken);
   assert.ok(typeof csrfToken === 'string' && csrfToken.length >= 32);
 
   const getResponse = await fetch(`${baseUrl}/api/model-providers`);
@@ -315,6 +317,40 @@ test('create server wires loopback model-provider administration with bootstrap 
     refreshedBootstrap.modelOptions.find((option) => option.key === 'moonshotai\u001fkimi-k2.5').label,
     'Kimi Configured'
   );
+
+  const recoveryConfigResponse = await fetch(`${baseUrl}/api/system-services/recovery-scribe`);
+  assert.equal(recoveryConfigResponse.status, 200);
+  const recoveryConfig = await recoveryConfigResponse.json();
+  assert.equal(recoveryConfig.source, 'runtime_defaults');
+  assert.ok(recoveryConfig.modelOptions.some((option) => option.key === 'moonshotai\u001fkimi-k2.5'));
+
+  const updateRecoveryConfigResponse = await fetch(`${baseUrl}/api/system-services/recovery-scribe`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      Origin: baseUrl,
+      'X-CAFF-CSRF-Token': csrfToken,
+    },
+    body: JSON.stringify({
+      enabled: false,
+      provider: 'moonshotai',
+      model: 'kimi-k2.5',
+      thinking: 'off',
+      timeoutMs: 30_000,
+    }),
+  });
+  assert.equal(updateRecoveryConfigResponse.status, 200);
+  const updatedRecoveryConfig = await updateRecoveryConfigResponse.json();
+  assert.deepEqual(updatedRecoveryConfig.config, {
+    enabled: false,
+    provider: 'moonshotai',
+    model: 'kimi-k2.5',
+    thinking: 'off',
+    timeoutMs: 30_000,
+  });
+  const rereadRecoveryConfig = await (await fetch(`${baseUrl}/api/system-services/recovery-scribe`)).json();
+  assert.deepEqual(rereadRecoveryConfig.config, updatedRecoveryConfig.config);
+  assert.equal(rereadRecoveryConfig.source, 'persisted');
 
   await new Promise((resolve) => app.close(resolve));
   closed = true;

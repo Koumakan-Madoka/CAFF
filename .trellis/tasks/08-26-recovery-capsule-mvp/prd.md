@@ -148,7 +148,7 @@ Oversized inputs are deterministically clipped and report dropped counts. A Caps
 ## Scribe Contract
 
 - The scribe is the platform system actor `recovery_scribe`, never a `chat_agents`, `chat_role_identities`, or `chat_conversation_agents` row. Recovery result messages use `agentId=null`, a system-scribe sender label, and `systemActorType=recovery_scribe`, `systemActorRoutable=false` metadata.
-- Configuration priority: explicit service options, then `CAFF_RECOVERY_ENABLED/PROVIDER/MODEL/THINKING/TIMEOUT_MS`, then digest settings for provider/model/thinking, then Pi defaults. Invalid enable values fail startup; timeout is configurable only within the fixed `1,000..60,000 ms` hard bound; disabled recovery returns a bounded 503 and projects the service as disabled on eligible failed messages.
+- Without a saved platform setting, configuration priority is explicit service options, then `CAFF_RECOVERY_ENABLED/PROVIDER/MODEL/THINKING/TIMEOUT_MS`, then digest settings for provider/model/thinking, then Pi defaults. A complete persisted `recovery_scribe` SQLite row overrides that startup chain so a local-admin save is immediately authoritative. Invalid startup enable values fail startup; timeout is configurable only within the fixed `1,000..60,000 ms` hard bound; disabled recovery returns a bounded 503 and projects the service as disabled on eligible failed messages.
 - Prefer a provider/model different from the source when recovery-specific configuration is available. The source model is never selected merely to match provenance.
 - Invocation uses Pi `ModelRuntime.completeSimple` directly with a single fixed system instruction and one user Capsule message. It creates no Agent session, no extensions, no skills and no tools.
 - The recovery run is manually persisted in `runs` with `task_kind=conversation_recovery`, `task_role=recovery_scribe`, `parent_run_id=sourceRunId`, and bounded metadata. Its task uses `assignedAgent=caff-system` and `assignedRole=recovery_scribe`; those are audit labels, not routeable Agent identities.
@@ -160,6 +160,13 @@ Oversized inputs are deterministically clipped and report dropped counts. A Caps
 POST /api/conversations/:conversationId/messages/:messageId/recovery
 body: {}
 202 { recovery, duplicate }
+
+GET /api/system-services/recovery-scribe
+200 { config, source, updatedAt, modelOptions }
+
+PUT /api/system-services/recovery-scribe
+body: { enabled, provider, model, thinking, timeoutMs }
+200 { config, source: 'persisted', updatedAt, modelOptions }
 ```
 
 - Reject unknown body fields.
@@ -167,6 +174,9 @@ body: {}
 - Message-page projection adds `message.recovery` for source messages with a recovery row.
 - SSE `conversation_recovery_updated` carries `{ conversationId, sourceMessageId, recovery }` for queued/running/terminal states.
 - Terminal processing also emits normal `conversation_message_created` for the appended recovery message and `conversation_summary_updated`.
+- System-service GET/PUT is loopback local-admin guarded and credential-blind. PUT rejects unknown/missing fields, models outside the configured catalog, unsupported thinking, and timeout outside 1..60 seconds.
+- A valid PUT atomically replaces one complete configuration row and emits `system_service_config_updated`; open chat clients refresh the current message page.
+- Each Recovery POST snapshots configuration at acceptance. A concurrent save applies to the next accepted recovery, not the already queued/running task.
 
 ## Validation and Error Matrix
 
@@ -191,7 +201,9 @@ body: {}
 - State labels: `等待整理`, `正在整理`, `整理完成`, `机械摘要`.
 - Queued/running disable the button. Completed/failed show the canonical state and do not offer retry in MVP.
 - Recovery messages visibly identify themselves as `系统书记`, the source trace/message and state: `这是只读现场整理，不会执行或重放原任务。`
-- When `CAFF_RECOVERY_ENABLED=false`, eligible failed cards show `系统书记已停用` and expose no recovery command.
+- When recovery is disabled by startup default or saved platform configuration, eligible failed cards show `系统书记已停用` and expose no recovery command.
+- The global `系统服务` management tab provides enable, configured model, supported thinking, and 1..60 second timeout controls. It is not part of the ordinary role editor and shows fixed prompt/zero-tool/bounds/fallback as non-editable constraints.
+- Saving succeeds only after persistent readback and takes effect for the next Recovery request without restarting CAFF.
 - No automatic continue/retry controls and no source failed-state rewrite.
 
 ## Acceptance Criteria
@@ -205,18 +217,24 @@ body: {}
 - [ ] Model failure and invalid output append one mechanical fallback message.
 - [ ] HTTP duplicate/concurrent/busy/source-integrity behavior is covered.
 - [ ] SSE and UI show queued/running/completed/failed without changing the original failed state.
+- [ ] Platform admin can save and read back enabled/provider/model/thinking/timeout; the next recovery uses the saved snapshot without restart, disable synchronizes UI and POST, and invalid values leave the row unchanged.
 - [ ] Build, check, typecheck, target tests, smoke and isolated browser acceptance pass.
 
 ## Likely Files
 
 - `storage/sqlite/migrations.ts`
 - `storage/chat/message-recovery.repository.ts`
+- `storage/chat/system-service-config.repository.ts`
 - `lib/chat-app-store.ts`
 - `server/domain/conversation/recovery-capsule.ts`
 - `server/domain/conversation/message-recovery.ts`
+- `server/domain/conversation/recovery-scribe-config.ts`
+- `server/api/recovery-scribe-config-controller.ts`
 - `server/api/conversations-controller.ts`
 - `server/app/create-server.ts`
 - `public/app.js`
+- `public/personas.html`
+- `public/personas/recovery-scribe-management.js`
 - `public/chat/message-timeline.js`
 - `public/styles.css`
 - `tests/storage/message-recovery.test.js`

@@ -776,6 +776,17 @@ CREATE TABLE IF NOT EXISTS chat_message_recoveries (
   FOREIGN KEY (recovery_message_id) REFERENCES chat_messages(id) ON DELETE SET NULL
 );
 
+CREATE TABLE IF NOT EXISTS chat_system_service_configs (
+  service_type TEXT PRIMARY KEY CHECK (length(trim(service_type)) > 0),
+  enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+  provider TEXT NOT NULL CHECK (length(trim(provider)) > 0),
+  model TEXT NOT NULL CHECK (length(trim(model)) > 0),
+  thinking TEXT NOT NULL CHECK (thinking IN ('off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max')),
+  timeout_ms INTEGER NOT NULL CHECK (timeout_ms BETWEEN 1000 AND 60000),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS chat_private_messages (
   id TEXT PRIMARY KEY,
   conversation_id TEXT NOT NULL,

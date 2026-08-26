@@ -15,6 +15,11 @@ import { createSqliteRunStore } from '../../../lib/sqlite-store';
 import { createHttpError } from '../../http/http-errors';
 import { RECOVERY_SCRIBE_SYSTEM_ACTOR } from '../roles/system-actor-catalog';
 import { pickConversationSummary } from './conversation-view';
+import {
+  MAX_RECOVERY_TIMEOUT_MS,
+  MIN_RECOVERY_TIMEOUT_MS,
+  createRecoveryScribeConfigManager,
+} from './recovery-scribe-config';
 import { materializeAgentContextSnapshot } from './turn/context-snapshot';
 import {
   MAX_RECOVERY_CAPSULE_BYTES,
@@ -26,7 +31,7 @@ import {
 
 const MAX_RECOVERY_PROMPT_BYTES = 72 * 1024;
 const MAX_RECOVERY_MODEL_TOKENS = 2_000;
-const DEFAULT_RECOVERY_TIMEOUT_MS = 60_000;
+const DEFAULT_RECOVERY_TIMEOUT_MS = MAX_RECOVERY_TIMEOUT_MS;
 const MAX_SAFE_ERROR_CHARS = 240;
 const REQUIRED_SCRIBE_HEADINGS = [
   '已经完成',
@@ -139,8 +144,8 @@ function recoveryConfig(options: any = {}) {
     DEFAULT_RECOVERY_TIMEOUT_MS,
     'recovery timeout'
   );
-  if (timeoutMs < 1_000 || timeoutMs > DEFAULT_RECOVERY_TIMEOUT_MS) {
-    throw new Error(`recovery timeout must be between 1000 and ${DEFAULT_RECOVERY_TIMEOUT_MS} milliseconds`);
+  if (timeoutMs < MIN_RECOVERY_TIMEOUT_MS || timeoutMs > MAX_RECOVERY_TIMEOUT_MS) {
+    throw new Error(`recovery timeout must be between ${MIN_RECOVERY_TIMEOUT_MS} and ${MAX_RECOVERY_TIMEOUT_MS} milliseconds`);
   }
 
   return { enabled, provider, model, thinking, timeoutMs };
@@ -336,7 +341,11 @@ export function createMessageRecoveryService(options: any = {}) {
     sqlitePath: options.sqlitePath,
     db: store && store.db,
   });
-  const config = recoveryConfig(options);
+  const configManager = options.configManager || createRecoveryScribeConfigManager({
+    store,
+    modelCatalog: options.modelCatalog,
+    defaults: recoveryConfig(options),
+  });
   const mutationCoordinator = options.mutationCoordinator || null;
   const broadcastEvent = typeof options.broadcastEvent === 'function' ? options.broadcastEvent : () => {};
   const getConversationMutationState = typeof options.getConversationMutationState === 'function'
@@ -447,7 +456,7 @@ export function createMessageRecoveryService(options: any = {}) {
     return { conversation, message, task, run, contextSnapshot, sessionPath };
   }
 
-  function createDurableRecovery(source: any) {
+  function createDurableRecovery(source: any, config: any) {
     const recoveryId = randomUUID();
     const recoveryTaskId = `conversation-recovery-${recoveryId}`;
     const createTransaction = store.db.transaction(() => {
@@ -586,7 +595,8 @@ export function createMessageRecoveryService(options: any = {}) {
     return terminal;
   }
 
-  async function processRecovery(source: any, recoveryId: string) {
+  async function processRecovery(source: any, recoveryId: string, configSnapshot?: any) {
+    const config = configSnapshot || configManager.getConfigSnapshot();
     let recovery = store.getMessageRecovery(recoveryId);
     let capsule: any = null;
     let recoveryRunId: number | null = null;
@@ -772,6 +782,7 @@ export function createMessageRecoveryService(options: any = {}) {
   }
 
   function requestRecovery(conversationId: any, messageId: any) {
+    const config = configManager.getConfigSnapshot();
     if (!config.enabled) {
       throw recoveryError(
         503,
@@ -802,14 +813,14 @@ export function createMessageRecoveryService(options: any = {}) {
       }
       requireIdle(conversation.id, { ignoreMutation: true });
       const source = sourceIntegrity(conversation, message);
-      const created = createDurableRecovery(source);
+      const created = createDurableRecovery(source, config);
       if (!created.created) {
         return { recovery: projectRecoveryRecord(created.recovery, inFlight), duplicate: true };
       }
 
       const work = async () => {
         try {
-          return await processRecovery(source, created.recovery.id);
+          return await processRecovery(source, created.recovery.id, config);
         } finally {
           inFlight.delete(created.recovery.id);
           lease.release();
@@ -829,6 +840,7 @@ export function createMessageRecoveryService(options: any = {}) {
 
   function projectMessages(messages: any[] = []) {
     const safeMessages = Array.isArray(messages) ? messages : [];
+    const recoveryEnabled = configManager.getConfigSnapshot().enabled;
     const recoveries = store.listMessageRecoveriesBySourceMessageIds(
       safeMessages.map((message) => message && message.id)
     );
@@ -845,7 +857,7 @@ export function createMessageRecoveryService(options: any = {}) {
       );
       const recoveryCapability = isEligibleSource
         ? {
-            enabled: config.enabled,
+            enabled: recoveryEnabled,
             systemActorType: RECOVERY_SCRIBE_SYSTEM_ACTOR.type,
             routable: RECOVERY_SCRIBE_SYSTEM_ACTOR.routable,
           }
@@ -859,6 +871,8 @@ export function createMessageRecoveryService(options: any = {}) {
   }
 
   return {
+    getConfiguration: configManager.getConfiguration,
+    updateConfiguration: configManager.updateConfiguration,
     processRecovery,
     projectMessages,
     projectRecovery(recovery: any) {

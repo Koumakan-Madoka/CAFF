@@ -18,6 +18,7 @@
     <script defer src="/personas/provider-editor.js"></script>
     <script defer src="/personas/catalog-import.js"></script>
     <script defer src="/personas/provider-management.js"></script>
+    <script defer src="/personas/recovery-scribe-management.js"></script>
     <script defer src="/personas.js"></script>
   </head>
   <body class="management-app" data-page="personas">
@@ -44,6 +45,7 @@
           <div class="management-view-switch" role="tablist" aria-label="管理范围">
             <button id="show-role-management" type="button" role="tab" aria-controls="role-management-view" aria-selected="true">角色管理</button>
             <button id="show-provider-management" class="ghost-button" type="button" role="tab" aria-controls="provider-management-view" aria-selected="false">模型供应商</button>
+            <button id="show-system-services" class="ghost-button" type="button" role="tab" aria-controls="system-services-view" aria-selected="false">系统服务</button>
           </div>
           <button id="refresh-button" class="management-icon-button" type="button" title="刷新" aria-label="刷新"><svg class="app-icon" aria-hidden="true" focusable="false"><use href="/assets/icons.svg#icon-refresh"></use></svg></button>
         </header>
@@ -80,6 +82,24 @@
               <p class="management-note"><strong>写入边界</strong><br />只修改 runtime 解析到的 agentDir/models.json；runtime registry 与环境默认保持只读。</p>
             </aside>
             <section class="management-pane management-detail" aria-live="polite"><div id="provider-detail"></div></section>
+          </section>
+
+          <section id="system-services-view" class="management-view hidden" role="tabpanel">
+            <aside class="management-pane management-index" aria-label="系统服务目录">
+              <div class="panel-header">
+                <div>
+                  <p class="eyebrow">Platform Services</p>
+                  <h2>系统服务</h2>
+                  <p>平台级模型服务独立于普通角色与会话参与者。</p>
+                </div>
+                <button id="refresh-system-services" class="ghost-button" type="button">刷新状态</button>
+              </div>
+              <div id="system-service-local-admin-banner" class="management-warning hidden"><strong>当前部署只读</strong><p>系统服务配置只允许本机 loopback local-admin。</p></div>
+              <ul id="system-service-list" class="management-list">
+                <li><button class="agent-list-item active" type="button" aria-current="true"><span class="management-list-copy"><strong>系统书记</strong><small>只读恢复服务</small></span><span class="status-dot default" aria-hidden="true"></span></button></li>
+              </ul>
+            </aside>
+            <section class="management-pane management-detail" aria-live="polite"><div id="recovery-scribe-detail"></div></section>
           </section>
         </main>
       </div>

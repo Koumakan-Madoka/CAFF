@@ -94,7 +94,10 @@ async function serveProductionUi() {
   const roleFixture = createRoleFixture();
   const requests = [];
   const bootstrap = {
-    localAdmin: { modelProviders: { enabled: true, csrfToken: 'provider-test-token' } },
+    localAdmin: {
+      modelProviders: { enabled: true, csrfToken: 'provider-test-token' },
+      systemServices: { enabled: true, csrfToken: 'provider-test-token' },
+    },
     runtime: {}, modes: [], conversations: [], selectedConversationId: null,
     ...roleFixture,
   };
@@ -110,6 +113,13 @@ async function serveProductionUi() {
       models: [{ id: 'claude-opus-4.1', name: 'Claude Opus 4.1', api: '', baseUrl: '', family: 'claude', reasoning: true, hasCustomHeaders: false }],
     },
   ];
+  let recoveryScribeConfig = {
+    enabled: true,
+    provider: 'openai',
+    model: 'gpt-5.4',
+    thinking: 'high',
+    timeoutMs: 60_000,
+  };
   let holdNextProviderSave = false;
   let releaseProviderSave = null;
 
@@ -130,6 +140,24 @@ async function serveProductionUi() {
     if (requestUrl.pathname === '/api/bootstrap') return sendJson(response, 200, bootstrap);
     if (requestUrl.pathname === '/api/agents' && request.method === 'GET') return sendJson(response, 200, roleFixture);
     if (requestUrl.pathname === '/api/model-providers' && request.method === 'GET') return sendJson(response, 200, { providers });
+    if (requestUrl.pathname === '/api/system-services/recovery-scribe' && request.method === 'GET') {
+      return sendJson(response, 200, {
+        config: recoveryScribeConfig,
+        source: 'persisted',
+        updatedAt: '2026-08-26T12:00:00.000Z',
+        modelOptions: roleFixture.modelOptions,
+      });
+    }
+    if (requestUrl.pathname === '/api/system-services/recovery-scribe' && request.method === 'PUT') {
+      recoveryScribeConfig = await readBody(request);
+      requests.push({ url: requestUrl.pathname, method: request.method, headers: request.headers, body: recoveryScribeConfig });
+      return sendJson(response, 200, {
+        config: recoveryScribeConfig,
+        source: 'persisted',
+        updatedAt: '2026-08-26T12:01:00.000Z',
+        modelOptions: roleFixture.modelOptions,
+      });
+    }
 
     const roleMatch = requestUrl.pathname.match(/^\/api\/agents\/([^/]+)$/u);
     if (roleMatch && request.method === 'PUT') {

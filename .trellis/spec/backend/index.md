@@ -21,7 +21,8 @@ backend domain services.
 - Reversible message detail tables, atomic dual writes, dual reads, and bounded
   context-snapshot pagination (`message-detail-storage.md`)
 - Manual failed-message Recovery Capsule persistence, evidence grading, isolated
-  scribe runs, mechanical fallback, API/SSE, and UI (`message-recovery.md`)
+  scribe runs, hot global system-service configuration, mechanical fallback,
+  API/SSE, and UI (`message-recovery.md`)
 - SSE per-client backpressure budget and drain deadlines (`sse-backpressure.md`)
 - Conversation tree DAG plan storage, lifecycle, and plan API (`dag-planning.md`)
 - Skill management and configuration (skills-controller.ts)

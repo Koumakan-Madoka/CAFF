@@ -184,6 +184,24 @@ function createFixture(t, options = {}) {
     runStore,
     agentDir: tempDir,
     sqlitePath,
+    modelCatalog: {
+      getOptions() {
+        return [
+          {
+            key: 'scribe-provider\u001fscribe-model',
+            provider: 'scribe-provider',
+            model: 'scribe-model',
+            supportedThinkingLevels: ['off', 'low', 'high'],
+          },
+          {
+            key: 'hot-provider\u001fhot-model',
+            provider: 'hot-provider',
+            model: 'hot-model',
+            supportedThinkingLevels: ['off', 'medium'],
+          },
+        ];
+      },
+    },
     provider: 'scribe-provider',
     model: 'scribe-model',
     thinking: 'low',
@@ -300,6 +318,51 @@ test('manual recovery is durable and idempotent before one no-tools scribe job r
       'conversation_recovery_updated',
     ]
   );
+});
+
+test('saved system scribe configuration is used by the next recovery while accepted work keeps its request snapshot', async (t) => {
+  const fixture = createFixture(t);
+  const accepted = fixture.service.requestRecovery(fixture.conversation.id, fixture.sourceMessage.id);
+  fixture.service.updateConfiguration({
+    enabled: true,
+    provider: 'hot-provider',
+    model: 'hot-model',
+    thinking: 'medium',
+    timeoutMs: 45_000,
+  });
+
+  await fixture.scheduled[0]();
+  assert.equal(fixture.modelCalls[0].model.provider, 'scribe-provider');
+  assert.equal(fixture.modelCalls[0].model.id, 'scribe-model');
+  assert.equal(fixture.runStore.getTask(accepted.recovery.recoveryTaskId).provider, 'scribe-provider');
+
+  const next = createFixture(t);
+  next.service.updateConfiguration({
+    enabled: true,
+    provider: 'hot-provider',
+    model: 'hot-model',
+    thinking: 'medium',
+    timeoutMs: 45_000,
+  });
+  next.service.requestRecovery(next.conversation.id, next.sourceMessage.id);
+  await next.scheduled[0]();
+  assert.equal(next.modelCalls[0].model.provider, 'hot-provider');
+  assert.equal(next.modelCalls[0].model.id, 'hot-model');
+  assert.equal(next.modelCalls[0].options.reasoning, 'medium');
+
+  const disabled = createFixture(t);
+  disabled.service.updateConfiguration({
+    enabled: false,
+    provider: 'scribe-provider',
+    model: 'scribe-model',
+    thinking: 'low',
+    timeoutMs: 60_000,
+  });
+  assert.throws(
+    () => disabled.service.requestRecovery(disabled.conversation.id, disabled.sourceMessage.id),
+    (error) => error && error.statusCode === 503 && error.code === 'conversation_recovery_disabled'
+  );
+  assert.equal(disabled.scheduled.length, 0);
 });
 
 test('scribe failure persists one mechanical fallback while the source trace stays failed', async (t) => {

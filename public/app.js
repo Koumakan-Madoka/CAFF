@@ -4010,6 +4010,13 @@ function connectEventStream() {
     scheduleConversationRefresh(conversationId);
   });
 
+  source.addEventListener('system_service_config_updated', (event) => {
+    const payload = JSON.parse(event.data);
+    if (payload && payload.serviceType === 'recovery_scribe') {
+      scheduleConversationRefresh(state.selectedConversationId);
+    }
+  });
+
   source.addEventListener('conversation_messages_deleted', (event) => {
     const payload = JSON.parse(event.data);
     scheduleConversationRefresh(payload.conversationId);

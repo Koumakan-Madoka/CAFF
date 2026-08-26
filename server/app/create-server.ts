@@ -23,6 +23,7 @@ const { createMemoryController } = require('../api/memory-controller');
 const { createRuntimeObservabilityController } = require('../api/runtime-observability-controller');
 const { createModelProvidersController } = require('../api/model-providers-controller');
 const { createModelCatalogController } = require('../api/model-catalog-controller');
+const { createRecoveryScribeConfigController } = require('../api/recovery-scribe-config-controller');
 const { createProjectsController } = require('../api/projects-controller');
 const { createModesController } = require('../api/modes-controller');
 const { createSkillsController } = require('../api/skills-controller');
@@ -727,6 +728,7 @@ export function createServerApp(options: any = {}) {
       store,
       agentDir,
       sqlitePath,
+      modelCatalog,
       mutationCoordinator: conversationMutationCoordinator,
       broadcastEvent,
       provider: options.recoveryProvider !== undefined
@@ -1046,6 +1048,10 @@ export function createServerApp(options: any = {}) {
         enabled: providerConfigLocalEnabled,
         csrfToken: providerConfigLocalEnabled ? providerConfigCsrfToken : '',
       },
+      systemServices: {
+        enabled: providerConfigLocalEnabled,
+        csrfToken: providerConfigLocalEnabled ? providerConfigCsrfToken : '',
+      },
     }),
   });
   const getHealthStatus = createReadinessHealthStatus({
@@ -1109,6 +1115,22 @@ export function createServerApp(options: any = {}) {
       loadCatalog: options.loadCatalog,
       onCommitted: () => modelCatalog.invalidate(),
     }),
+    ...(messageRecoveryService
+      && typeof messageRecoveryService.getConfiguration === 'function'
+      && typeof messageRecoveryService.updateConfiguration === 'function'
+      ? [createRecoveryScribeConfigController({
+          service: messageRecoveryService,
+          host,
+          port,
+          csrfToken: providerConfigCsrfToken,
+          getAuthority() {
+            const address = server && server.address();
+            const actualPort = address && typeof address === 'object' ? address.port : port;
+            return new URL(buildToolBaseUrl(host, actualPort)).host;
+          },
+          broadcastEvent,
+        })]
+      : []),
     createProjectsController({ projectManager, syncActiveProject }),
     createAgentToolsController({ agentToolBridge }),
     createConversationDeliveriesController({
