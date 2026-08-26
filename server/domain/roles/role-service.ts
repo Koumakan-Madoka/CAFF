@@ -8,11 +8,18 @@ import {
   LEGACY_SYSTEM_ROLE_IDS,
   SYSTEM_MODEL_FAMILY_ROLE_IDS,
 } from './system-role-catalog';
+import {
+  NON_ROUTABLE_SYSTEM_ACTOR_IDS,
+  filterRoutableConversationAgents,
+  isNonRoutableSystemActorId,
+  isReservedSystemActorName,
+} from './system-actor-catalog';
 
 const SYSTEM_ROLE_ID_SET = new Set(SYSTEM_MODEL_FAMILY_ROLE_IDS);
 const RESERVED_ROLE_ID_SET = new Set([
   ...SYSTEM_MODEL_FAMILY_ROLE_IDS,
   ...LEGACY_SYSTEM_ROLE_IDS,
+  ...NON_ROUTABLE_SYSTEM_ACTOR_IDS,
 ]);
 const FAMILY_EDITABLE_FIELDS = Object.freeze([
   'provider',
@@ -326,11 +333,19 @@ function runtimeParticipantIssue(index: number, role: any, availability: any, pr
   const normalizedProfileId = normalize(profileId);
   const profileMissing = availability?.status === 'profile_missing';
 
+  const systemActorNotRoutable = availability?.status === 'system_actor_not_routable';
+
   return {
-    code: profileMissing ? 'participant_profile_invalid' : 'participant_role_unavailable',
-    message: profileMissing
-      ? 'Selected model profile no longer exists for this role'
-      : 'Conversation participant role is not currently runnable',
+    code: systemActorNotRoutable
+      ? 'participant_system_actor_not_routable'
+      : profileMissing
+        ? 'participant_profile_invalid'
+        : 'participant_role_unavailable',
+    message: systemActorNotRoutable
+      ? 'Platform system actors cannot be conversation participants'
+      : profileMissing
+        ? 'Selected model profile no longer exists for this role'
+        : 'Conversation participant role is not currently runnable',
     path: profileMissing
       ? `participants[${index}].modelProfileId`
       : `participants[${index}].agentId`,
@@ -382,12 +397,35 @@ export function createRoleService(options: any = {}) {
     const modelOptions = modelCatalog.getOptions();
     const catalog = buildCatalogIndex(modelOptions);
     return {
-      agents: store.listAgents().map((role: any) => projectRole(role, modelOptions, catalog)),
+      agents: filterRoutableConversationAgents(store.listAgents())
+        .map((role: any) => projectRole(role, modelOptions, catalog)),
       modelOptions,
     };
   }
 
   function validateConversationParticipants(input: any = {}, validationOptions: any = {}) {
+    const requestedParticipants = Array.isArray(input)
+      ? input
+      : Array.isArray(input && input.participants)
+        ? input.participants
+        : Array.isArray(input && input.agentIds)
+          ? input.agentIds
+          : [];
+    const systemActorIndex = requestedParticipants.findIndex((participant: any) =>
+      isNonRoutableSystemActorId(
+        typeof participant === 'string'
+          ? participant
+          : participant && (participant.agentId || participant.id)
+      )
+    );
+    if (systemActorIndex !== -1) {
+      throw createRoleError(
+        422,
+        'participant_system_actor_not_routable',
+        'Platform system actors cannot be conversation participants',
+        `participants[${systemActorIndex}].agentId`
+      );
+    }
     const normalizedParticipants = Array.isArray(input)
       ? store.normalizeConversationParticipants(input)
       : store.normalizeConversationParticipantsInput(input);
@@ -445,6 +483,12 @@ export function createRoleService(options: any = {}) {
 
     for (const [index, participant] of requestedParticipants.entries()) {
       const roleId = normalize(participant?.id || participant?.agentId);
+      if (isNonRoutableSystemActorId(roleId)) {
+        blockers.push(runtimeParticipantIssue(index, { id: roleId, name: 'System actor' }, {
+          status: 'system_actor_not_routable',
+        }));
+        continue;
+      }
       const role: any = rolesById.get(roleId);
       if (!role) {
         blockers.push(runtimeParticipantIssue(index, { id: roleId, name: normalize(participant?.name) }, {
@@ -570,6 +614,17 @@ export function createRoleService(options: any = {}) {
     }
   }
 
+  function assertCustomNameAvailable(name: string) {
+    if (isReservedSystemActorName(name)) {
+      throw createRoleError(
+        422,
+        'role_name_reserved',
+        'Role name is reserved for a platform system actor',
+        'name'
+      );
+    }
+  }
+
   function buildCustomCandidate(existing: any, input: any, catalog: any) {
     const source = input && typeof input === 'object' ? input : {};
     const name = hasOwn(source, 'name') ? normalize(source.name) : normalize(existing?.name);
@@ -630,6 +685,7 @@ export function createRoleService(options: any = {}) {
     const modelOptions = modelCatalog.getOptions();
     const catalog = buildCatalogIndex(modelOptions);
     const candidate = buildCustomCandidate(null, { ...input, id: requestedId }, catalog);
+    assertCustomNameAvailable(candidate.name);
     const saved = store.saveCustomRoleConfig(candidate);
     return mutationResult(saved.id);
   }
@@ -645,6 +701,7 @@ export function createRoleService(options: any = {}) {
       throw createRoleError(422, 'role_locked_field', 'Custom roles cannot acquire a model family', 'modelFamily');
     }
     const candidate = buildCustomCandidate(existing, input, catalog);
+    assertCustomNameAvailable(candidate.name);
     const saved = store.saveCustomRoleConfig(candidate);
     return mutationResult(saved.id);
   }

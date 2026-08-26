@@ -1,4 +1,5 @@
 const { getAgentById } = require('../mention-routing');
+const { filterRoutableConversationAgents } = require('../../roles/system-actor-catalog');
 const { formatConversationDigestsForPrompt } = require('../conversation-digest');
 const { formatConversationRetrievalTracesForPrompt } = require('../retrieval-trace');
 const { formatSessionGoalForPrompt } = require('../session-goal');
@@ -198,6 +199,36 @@ function formatTurnRoutingState(trigger: any, agents: any) {
   ].join('\n');
 }
 
+function formatRecoverySourceSuffix(message: any) {
+  const metadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
+
+  if (!metadata || metadata.recoveryResult !== true) {
+    return '';
+  }
+
+  const source = message.promptRecoverySource && typeof message.promptRecoverySource === 'object'
+    ? message.promptRecoverySource
+    : null;
+  const sourceMessageId = String(metadata.sourceMessageId || '').trim();
+  const resolvedMessageId = String(source && source.messageId || '').trim();
+  const sourceAgentName = sanitizePromptMentions(
+    String(source && source.agentName || '').trim().replace(/\s+/g, ' ').slice(0, 120)
+  );
+  const sourceRunId = Number(source && source.runId);
+
+  if (
+    sourceMessageId
+    && resolvedMessageId === sourceMessageId
+    && sourceAgentName
+    && Number.isSafeInteger(sourceRunId)
+    && sourceRunId > 0
+  ) {
+    return ` [read-only recovery; source agent ${sourceAgentName}; source run ${sourceRunId}]`;
+  }
+
+  return ' [read-only recovery; source unavailable]';
+}
+
 function formatHistory(messages: any, agents: any) {
   const agentMap = new Map(
     (Array.isArray(agents) ? agents : []).map((agent: any) => [agent.id, agent] as [string, any])
@@ -212,6 +243,7 @@ function formatHistory(messages: any, agents: any) {
     .map((message: any) => {
       const agent = message.agentId ? agentMap.get(message.agentId) : null;
       const speaker = message.role === 'user' ? 'User' : message.senderName || (agent ? agent.name : 'Assistant');
+      const recoverySourceSuffix = formatRecoverySourceSuffix(message);
       const statusSuffix = message.status === 'failed' ? ' [failed]' : '';
       const content = message.content || (message.errorMessage ? `[error] ${message.errorMessage}` : '[empty]');
       const metadata = message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
@@ -225,7 +257,7 @@ function formatHistory(messages: any, agents: any) {
               )
               .join(', ')}`
           : '';
-      return `${speaker}${statusSuffix}${mentionSuffix}: ${sanitizePromptMentions(content)}`;
+      return `${speaker}${recoverySourceSuffix}${statusSuffix}${mentionSuffix}: ${sanitizePromptMentions(content)}`;
     })
     .join('\n\n');
 }
@@ -502,7 +534,7 @@ export function buildAgentTurnPromptSections({
   const conversationType = String(conversation && conversation.type ? conversation.type : '').trim();
   const trellisPromptContext =
     normalizedProjectDir ? buildTrellisPromptContext({ startDir: normalizedProjectDir }) : '';
-  const participants = (Array.isArray(agents) ? agents : [])
+  const participants = filterRoutableConversationAgents(agents)
     .filter((item: any) => !isSamePromptAgent(item, agent))
     .map((item: any) => {
       const description = item.description ? ` - ${item.description}` : '';

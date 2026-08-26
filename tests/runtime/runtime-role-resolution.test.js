@@ -24,6 +24,18 @@ function createService(roles, getOptions) {
       listAgents() {
         return structuredClone(roles);
       },
+      getAgent(roleId) {
+        return structuredClone(roles.find((role) => role.id === roleId) || null);
+      },
+      getRoleIdentity() {
+        return null;
+      },
+      saveCustomRoleConfig(candidate) {
+        const index = roles.findIndex((role) => role.id === candidate.id);
+        if (index === -1) roles.push(structuredClone(candidate));
+        else roles[index] = structuredClone(candidate);
+        return structuredClone(candidate);
+      },
       normalizeConversationParticipantsInput(input) {
         return input.participants.map((participant) => ({
           agentId: participant.agentId,
@@ -255,6 +267,79 @@ test('runtime role resolution aggregates reclassified models, changed thinking c
       assert.ok(error.issues.every((issue) => Array.isArray(issue.recoveryActions) && issue.recoveryActions.length > 0));
       return true;
     }
+  );
+});
+
+test('platform recovery scribe is excluded from the role directory and rejected as a participant', () => {
+  const roles = [
+    {
+      id: 'recovery_scribe',
+      name: '系统书记',
+      roleKind: 'custom',
+      provider: 'openai',
+      model: 'gpt-live',
+      thinking: 'low',
+      modelProfiles: [],
+    },
+    {
+      id: 'legacy-scribe-impersonator',
+      name: 'Recovery_Scribe',
+      roleKind: 'custom',
+      provider: 'openai',
+      model: 'gpt-live',
+      thinking: 'low',
+      modelProfiles: [],
+    },
+    {
+      id: 'regular-agent',
+      name: 'Regular Agent',
+      roleKind: 'custom',
+      provider: 'openai',
+      model: 'gpt-live',
+      thinking: 'low',
+      modelProfiles: [],
+    },
+  ];
+  const service = createService(roles, () => [modelOption('openai', 'gpt-live', 'gpt')]);
+
+  assert.deepEqual(service.getDirectory().agents.map((role) => role.id), ['regular-agent']);
+  assert.throws(
+    () => service.validateConversationParticipants({
+      participants: [{ agentId: 'recovery_scribe' }],
+    }),
+    (error) => error
+      && error.statusCode === 422
+      && error.code === 'participant_system_actor_not_routable'
+  );
+  assert.throws(
+    () => service.resolveRuntimeParticipants([{ id: 'recovery_scribe' }]),
+    (error) => error
+      && error.statusCode === 409
+      && error.issues[0].code === 'participant_system_actor_not_routable'
+  );
+  assert.throws(
+    () => service.createCustomRole({ id: 'recovery_scribe', name: 'Ordinary Scribe' }),
+    (error) => error
+      && error.statusCode === 422
+      && error.code === 'role_identity_not_reusable'
+  );
+  assert.throws(
+    () => service.createCustomRole({ id: 'ordinary-scribe', name: 'Recovery Scribe' }),
+    (error) => error
+      && error.statusCode === 422
+      && error.code === 'role_name_reserved'
+  );
+  assert.throws(
+    () => service.createCustomRole({ id: 'ordinary-scribe-cn', name: '系统书记' }),
+    (error) => error
+      && error.statusCode === 422
+      && error.code === 'role_name_reserved'
+  );
+  assert.throws(
+    () => service.createCustomRole({ id: 'ordinary-scribe-alias', name: 'Recovery-Scribe' }),
+    (error) => error
+      && error.statusCode === 422
+      && error.code === 'role_name_reserved'
   );
 });
 

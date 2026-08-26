@@ -1,4 +1,4 @@
-type ConversationMutationKind = 'auto_digest' | 'manual_digest' | 'message_delete';
+type ConversationMutationKind = 'auto_digest' | 'manual_digest' | 'message_delete' | 'message_recovery';
 
 type ConversationMutationLease = {
   acquired: true;

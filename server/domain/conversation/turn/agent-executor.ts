@@ -50,6 +50,71 @@ const MAX_RELATED_MEMORY_SEED_TERMS = 8;
 const MAX_RELATED_MEMORY_SEED_TERM_LENGTH = 48;
 const MIN_RELATED_MEMORY_TASK_ALIAS_LENGTH = 8;
 const PROMPT_MENTION_PLACEHOLDER_RE = /<mention:([\p{L}\p{N}._-]+)>/gu;
+
+export function projectRecoveryHistorySources(store: any, conversationId: any, messages: any) {
+  const historyMessages = Array.isArray(messages) ? messages : [];
+  const normalizedConversationId = String(conversationId || '').trim();
+  const sourceMessageIds = Array.from(new Set(
+    historyMessages
+      .map((message: any) => {
+        const metadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
+        return metadata && metadata.recoveryResult === true
+          ? String(metadata.sourceMessageId || '').trim()
+          : '';
+      })
+      .filter(Boolean)
+  ));
+
+  if (
+    !normalizedConversationId
+    || sourceMessageIds.length === 0
+    || !store
+    || typeof store.listMessagesByIds !== 'function'
+  ) {
+    return historyMessages;
+  }
+
+  const sourceById = new Map(
+    store.listMessagesByIds(normalizedConversationId, sourceMessageIds)
+      .filter((source: any) => (
+        source
+        && String(source.conversationId || '').trim() === normalizedConversationId
+        && source.role === 'assistant'
+        && source.status === 'failed'
+      ))
+      .map((source: any) => [String(source.id || '').trim(), source])
+      .filter(([sourceMessageId]: any) => Boolean(sourceMessageId))
+  );
+
+  return historyMessages.map((message: any) => {
+    const metadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : null;
+
+    if (!metadata || metadata.recoveryResult !== true) {
+      return message;
+    }
+
+    const sourceMessageId = String(metadata.sourceMessageId || '').trim();
+    const source = sourceById.get(sourceMessageId) as any;
+    const sourceAgentName = String(source && source.senderName || '').trim();
+    const sourceRunId = Number(source && source.runId);
+
+    return {
+      ...message,
+      promptRecoverySource:
+        sourceMessageId
+        && sourceAgentName
+        && Number.isSafeInteger(sourceRunId)
+        && sourceRunId > 0
+          ? {
+              messageId: sourceMessageId,
+              agentId: source.agentId || null,
+              agentName: sourceAgentName,
+              runId: sourceRunId,
+            }
+          : null,
+    };
+  });
+}
 const AUTO_SESSION_GOAL_CONTINUATION_RE = /^Automatic session-goal continuation\s*\(\d+\/\d+\)\./iu;
 const AUTO_SESSION_GOAL_COMPLETION_REPORT_RE = /^.{0,80}第\s*\d+\/\d+\s*根?续线接好了[：:]/u;
 const RELATED_MEMORY_QUERY_STOP_TERMS = new Set([
@@ -1359,7 +1424,11 @@ export function createAgentExecutor(options: any = {}) {
     });
     const imageBlock = imageInvocation.block;
     const invocationImages = imageInvocation.images;
-    const projectedConversationHistory = imageInvocation.projectedMessages || null;
+    const projectedConversationHistory = projectRecoveryHistorySources(
+      store,
+      conversationId,
+      imageInvocation.projectedMessages || promptMessages
+    );
     const metadata = conversation && conversation.metadata && typeof conversation.metadata === 'object' ? conversation.metadata : {};
     const goal = metadata.sessionGoal && typeof metadata.sessionGoal === 'object' ? metadata.sessionGoal : null;
     const plan = typeof store.getPlanForConversation === 'function' ? store.getPlanForConversation(conversation.id) : null;

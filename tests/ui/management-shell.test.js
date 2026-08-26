@@ -25,8 +25,8 @@ const PAGES = [
     key: 'personas',
     file: 'personas.html',
     route: '/personas.html',
-    lists: ['family-role-list', 'custom-role-list', 'provider-list'],
-    criticalIds: ['show-role-management', 'show-provider-management', 'refresh-roles', 'new-custom-role', 'refresh-providers', 'add-provider', 'role-detail', 'provider-detail'],
+    lists: ['family-role-list', 'custom-role-list', 'provider-list', 'system-service-list'],
+    criticalIds: ['show-role-management', 'show-provider-management', 'show-system-services', 'refresh-roles', 'new-custom-role', 'refresh-providers', 'add-provider', 'refresh-system-services', 'role-detail', 'provider-detail', 'recovery-scribe-detail'],
   },
   {
     key: 'skills',

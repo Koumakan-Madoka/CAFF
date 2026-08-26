@@ -1474,6 +1474,55 @@ test('agent tool bridge no longer exposes read-skill compatibility handler', (t)
   assert.equal(typeof bridge.handleReadSkill, 'undefined');
 });
 
+test('agent tool participant projection excludes platform system actors and reserved-name impersonators', (t) => {
+  const tempDir = withTempDir('caff-agent-tool-system-actor-participants-');
+  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const bridge = createAgentToolBridge({ store });
+
+  t.after(() => {
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const fixture = createPublicInvocationFixture(store, 'system-actor-participants');
+  const context = bridge.registerInvocation(
+    bridge.createInvocationContext({
+      conversationId: fixture.conversation.id,
+      turnId: fixture.assistantMessage.turnId,
+      agentId: fixture.agent.id,
+      agentName: fixture.agent.name,
+      assistantMessageId: fixture.assistantMessage.id,
+      conversationAgents: fixture.conversation.agents,
+      stage: fixture.stage,
+      turnState: fixture.turnState,
+    })
+  );
+  const getConversation = store.getConversation.bind(store);
+  store.getConversation = (conversationId) => {
+    const conversation = getConversation(conversationId);
+    return conversation
+      ? {
+          ...conversation,
+          agents: [
+            ...conversation.agents,
+            { id: 'recovery_scribe', name: '系统书记' },
+            { id: 'legacy-scribe-role', name: 'Recovery_Scribe' },
+          ],
+        }
+      : null;
+  };
+  const requestUrl = new URL('http://127.0.0.1/api/agent-tools/participants');
+  requestUrl.searchParams.set('invocationId', context.invocationId);
+  requestUrl.searchParams.set('callbackToken', context.callbackToken);
+
+  const result = bridge.handleListParticipants(requestUrl);
+
+  assert.deepEqual(result.participants.map((participant) => participant.id), [fixture.agent.id]);
+});
+
 test('agent tool read-context keeps the current turn user message visible', (t) => {
   const tempDir = withTempDir('caff-agent-tool-context-');
   const sqlitePath = path.join(tempDir, 'bridge.sqlite');

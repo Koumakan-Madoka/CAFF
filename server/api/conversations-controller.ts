@@ -209,6 +209,7 @@ export function createConversationsController(options: any = {}): RouteHandler<A
   const broadcastEvent = typeof options.broadcastEvent === 'function' ? options.broadcastEvent : () => {};
   const agentToolBridge = options.agentToolBridge || null;
   const conversationMessageDeletionService = options.conversationMessageDeletionService || null;
+  const messageRecoveryService = options.messageRecoveryService || null;
   const conversationMutationCoordinator = options.conversationMutationCoordinator || null;
 
   function listConversationHeaders() {
@@ -1197,6 +1198,25 @@ export function createConversationsController(options: any = {}): RouteHandler<A
       return true;
     }
 
+    const messageRecoveryMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/messages\/([^/]+)\/recovery$/);
+
+    if (messageRecoveryMatch && req.method === 'POST') {
+      if (!messageRecoveryService || typeof messageRecoveryService.requestRecovery !== 'function') {
+        throw createHttpError(501, 'Conversation message recovery is unavailable');
+      }
+      const conversationId = decodeURIComponent(messageRecoveryMatch[1]);
+      const messageId = decodeURIComponent(messageRecoveryMatch[2]);
+      const body = await readRequestJson(req);
+      if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length > 0) {
+        throw createHttpError(400, 'Recovery request body must be an empty JSON object', {
+          code: 'conversation_recovery_invalid_request',
+        });
+      }
+      const result = messageRecoveryService.requestRecovery(conversationId, messageId);
+      sendJson(res, 202, result);
+      return true;
+    }
+
     const messageDeleteMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/messages\/delete$/);
 
     if (messageDeleteMatch && req.method === 'POST') {
@@ -1234,20 +1254,25 @@ export function createConversationsController(options: any = {}): RouteHandler<A
       }
 
       const page = buildConversationMessagePage(store, conversationId, requestUrl.searchParams);
+      let items = page.items;
+      let deletionState: any = null;
       if (
         conversationMessageDeletionService
         && typeof conversationMessageDeletionService.projectMessages === 'function'
       ) {
-        const projection = conversationMessageDeletionService.projectMessages(conversationId, page.items);
-        sendJson(res, 200, {
-          ...page,
-          items: projection.items,
-          deletionState: projection.deletionState,
-        });
-        return true;
+        const projection = conversationMessageDeletionService.projectMessages(conversationId, items);
+        items = projection.items;
+        deletionState = projection.deletionState;
+      }
+      if (messageRecoveryService && typeof messageRecoveryService.projectMessages === 'function') {
+        items = messageRecoveryService.projectMessages(items);
       }
 
-      sendJson(res, 200, page);
+      sendJson(res, 200, {
+        ...page,
+        items,
+        ...(deletionState ? { deletionState } : {}),
+      });
       return true;
     }
 

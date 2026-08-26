@@ -23,6 +23,7 @@ const { createMemoryController } = require('../api/memory-controller');
 const { createRuntimeObservabilityController } = require('../api/runtime-observability-controller');
 const { createModelProvidersController } = require('../api/model-providers-controller');
 const { createModelCatalogController } = require('../api/model-catalog-controller');
+const { createRecoveryScribeConfigController } = require('../api/recovery-scribe-config-controller');
 const { createProjectsController } = require('../api/projects-controller');
 const { createModesController } = require('../api/modes-controller');
 const { createSkillsController } = require('../api/skills-controller');
@@ -48,6 +49,8 @@ const {
 const {
   createConversationMessageDeletionService,
 } = require('../domain/conversation/message-deletion');
+const { createMessageRecoveryService } = require('../domain/conversation/message-recovery');
+const { RECOVERY_SCRIBE_SYSTEM_ACTOR } = require('../domain/roles/system-actor-catalog');
 const { createConversationSpawnService } = require('../domain/conversation/conversation-spawn');
 const {
   createCrossConversationDeliveryService,
@@ -440,6 +443,10 @@ export function createServerApp(options: any = {}) {
     titleModelRunner: options.titleModelRunner,
     agentDir,
     sqlitePath,
+    resolveSystemModelConfigSnapshot:
+      options.digestOptions && typeof options.digestOptions.resolveSystemModelConfigSnapshot === 'function'
+        ? options.digestOptions.resolveSystemModelConfigSnapshot
+        : () => store.getSystemServiceConfig(RECOVERY_SCRIBE_SYSTEM_ACTOR.type),
     resolveSummaryMemoryTaskName:
       options.digestOptions && typeof options.digestOptions.resolveSummaryMemoryTaskName === 'function'
         ? options.digestOptions.resolveSummaryMemoryTaskName
@@ -717,6 +724,53 @@ export function createServerApp(options: any = {}) {
       uploadService,
       digestOptions,
       broadcastEvent,
+    });
+  const rawRecoveryOptions = options.recoveryOptions || {};
+  const messageRecoveryService =
+    options.messageRecoveryService
+    || createMessageRecoveryService({
+      ...rawRecoveryOptions,
+      store,
+      agentDir,
+      sqlitePath,
+      modelCatalog,
+      mutationCoordinator: conversationMutationCoordinator,
+      broadcastEvent,
+      provider: options.recoveryProvider !== undefined
+        ? options.recoveryProvider
+        : rawRecoveryOptions.provider,
+      model: options.recoveryModel !== undefined
+        ? options.recoveryModel
+        : rawRecoveryOptions.model,
+      thinking: options.recoveryThinking !== undefined
+        ? options.recoveryThinking
+        : rawRecoveryOptions.thinking,
+      timeoutMs: options.recoveryTimeoutMs !== undefined
+        ? options.recoveryTimeoutMs
+        : rawRecoveryOptions.timeoutMs,
+      enabled: options.recoveryEnabled !== undefined
+        ? options.recoveryEnabled
+        : rawRecoveryOptions.enabled,
+      modelRuntimeFactory: options.recoveryModelRuntimeFactory || rawRecoveryOptions.modelRuntimeFactory,
+      getConversationMutationState(conversationId: any) {
+        return turnOrchestrator.getConversationMutationState(conversationId);
+      },
+      resolveAssistantMessageSessionPath(message: any) {
+        return turnOrchestrator.resolveAssistantMessageSessionPath(message);
+      },
+      getProjectDir(conversation: any) {
+        if (conversation && String(conversation.worktreePath || '').trim()) {
+          return String(conversation.worktreePath).trim();
+        }
+        if (conversation && String(conversation.projectScopeId || '').trim()) {
+          const project = projectManager.listProjects()
+            .find((candidate: any) => candidate && candidate.id === conversation.projectScopeId);
+          if (project && project.path) {
+            return String(project.path);
+          }
+        }
+        return activeProjectDir;
+      },
     });
 
   crossConversationDeliveryWorker =
@@ -999,6 +1053,10 @@ export function createServerApp(options: any = {}) {
         enabled: providerConfigLocalEnabled,
         csrfToken: providerConfigLocalEnabled ? providerConfigCsrfToken : '',
       },
+      systemServices: {
+        enabled: providerConfigLocalEnabled,
+        csrfToken: providerConfigLocalEnabled ? providerConfigCsrfToken : '',
+      },
     }),
   });
   const getHealthStatus = createReadinessHealthStatus({
@@ -1062,6 +1120,22 @@ export function createServerApp(options: any = {}) {
       loadCatalog: options.loadCatalog,
       onCommitted: () => modelCatalog.invalidate(),
     }),
+    ...(messageRecoveryService
+      && typeof messageRecoveryService.getConfiguration === 'function'
+      && typeof messageRecoveryService.updateConfiguration === 'function'
+      ? [createRecoveryScribeConfigController({
+          service: messageRecoveryService,
+          host,
+          port,
+          csrfToken: providerConfigCsrfToken,
+          getAuthority() {
+            const address = server && server.address();
+            const actualPort = address && typeof address === 'object' ? address.port : port;
+            return new URL(buildToolBaseUrl(host, actualPort)).host;
+          },
+          broadcastEvent,
+        })]
+      : []),
     createProjectsController({ projectManager, syncActiveProject }),
     createAgentToolsController({ agentToolBridge }),
     createConversationDeliveriesController({
@@ -1090,6 +1164,7 @@ export function createServerApp(options: any = {}) {
       skillDraftOptions,
       digestModelRunner: options.digestModelRunner,
       conversationMessageDeletionService,
+      messageRecoveryService,
       conversationMutationCoordinator,
       uploadService,
     }),

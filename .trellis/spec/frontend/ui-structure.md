@@ -407,6 +407,12 @@ window.caffShell.setComposerValue(restoredText);
   helper owns no collection state, selection state, API calls, or persistence.
 - Preserve all existing page ids, forms, CRUD/filter requests, and Skill/mode
   switching behavior during shell edits.
+- On `personas.html`, `/api/bootstrap` is the page-level hard dependency. Once
+  it succeeds, apply the URL-hash view before loading child panels and settle
+  role, provider, and system-service refreshes independently. A rejected
+  provider refresh must surface its own toast but must not block the system
+  service configuration, hide `#system-services-view`, or set
+  `data-management-ready="error"`.
 - All visible interactive targets are at least 44px high. Checkbox/radio inputs
   may keep their visual control size only when their clickable label is >=44px.
 - `body.chat-app` and `body.management-app` share CAFF tokens and rail visual
@@ -424,6 +430,7 @@ window.caffShell.setComposerValue(restoredText);
 | Native list keyboard selection | Focusing a collection button and pressing Enter updates active selection and detail content. |
 | Empty projects payload | A semantic `li` empty state appears and unavailable selected-project actions are disabled. |
 | Missing shared helper | Page entry throws an explicit missing-module error instead of rendering a partial screen. |
+| Personas provider refresh rejects after bootstrap | The requested hash view remains active, the system-service refresh still runs, `managementReady` becomes `true`, and the provider error is shown. |
 | Browser/runtime failure | UI verification reports console, page, and non-favicon HTTP errors as failed checks. |
 
 ### 5. Tests Required
@@ -431,6 +438,10 @@ window.caffShell.setComposerValue(restoredText);
 - `tests/ui/management-shell.test.js` is part of `test:fast` and locks the four
   shell landmarks, legacy chrome removal, route/current-page mapping, critical
   ids, semantic lists, helper behavior, scoped CSS, and runner integration.
+- `tests/runtime/recovery-scribe-config-ui.test.js` executes the personas entry
+  against a rejected provider refresh and asserts that the initial
+  `#system-services` view, system-service load, ready state, and provider error
+  projection remain independent.
 - `scripts/ui/verify-management-pages.mjs` is called by
   `scripts/verify-ui.mjs`. It reuses the runner-owned browser, loopback app,
   temporary SQLite, and output directory; it must not start a second service.

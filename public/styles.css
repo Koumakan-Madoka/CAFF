@@ -2528,6 +2528,23 @@ textarea {
   min-width: 0;
 }
 
+.management-card .system-service-enabled-row {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  min-height: 44px;
+}
+
+.management-card .system-service-enabled-row input {
+  width: 20px;
+  height: 20px;
+  margin: 0;
+}
+
+.recovery-scribe-config-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .management-note,
 .management-error {
   margin: 0;
@@ -4890,6 +4907,36 @@ body.management-app .toast {
     padding: var(--caff-space-2) var(--caff-space-3);
   }
 
+  body.management-app[data-page="personas"] .management-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 44px;
+    gap: var(--caff-space-2);
+  }
+
+  body.management-app[data-page="personas"] .management-title {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  body.management-app[data-page="personas"] .management-icon-button {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  body.management-app[data-page="personas"] .management-view-switch {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    width: 100%;
+    margin: 0;
+  }
+
+  body.management-app[data-page="personas"] .management-view-switch button {
+    min-width: 0;
+    padding-inline: var(--caff-space-2);
+  }
+
   body.management-app .management-title .subtitle {
     display: none;
   }
@@ -4931,6 +4978,14 @@ body.management-app .toast {
   body.management-app .section-row,
   body.management-app .button-row {
     align-items: flex-start;
+  }
+
+  body.management-app .toast {
+    right: var(--caff-space-3);
+    bottom: calc(56px + var(--caff-space-3));
+    left: var(--caff-space-3);
+    min-width: 0;
+    max-width: none;
   }
 }
 
@@ -6610,6 +6665,162 @@ body.chat-app .message-card.failed {
 
 body.chat-app .message-card.failed .message-meta {
   justify-content: center;
+}
+
+body.chat-app .message-recovery-panel {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+  gap: var(--caff-space-2);
+  flex-wrap: wrap;
+  color: var(--caff-text-muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+body.chat-app .message-recovery-panel[hidden] {
+  display: none;
+}
+
+body.chat-app .message-recovery-button {
+  min-height: 44px;
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--caff-radius-sm);
+  box-shadow: none;
+  white-space: nowrap;
+}
+
+body.chat-app .message-recovery-status {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  padding: 0.2rem 0.55rem;
+  border: 1px solid var(--caff-border);
+  border-radius: var(--caff-radius-sm);
+  background: var(--caff-surface-elevated);
+  color: var(--caff-text-muted);
+  font-weight: 700;
+}
+
+body.chat-app .message-recovery-status.running {
+  border-color: color-mix(in srgb, var(--caff-info) 45%, var(--caff-border));
+  color: var(--caff-info);
+}
+
+body.chat-app .message-recovery-status.success {
+  border-color: color-mix(in srgb, var(--caff-success) 45%, var(--caff-border));
+  color: var(--caff-success);
+}
+
+body.chat-app .message-recovery-status.failed {
+  border-color: color-mix(in srgb, var(--caff-danger) 45%, var(--caff-border));
+  color: var(--caff-danger);
+}
+
+body.chat-app .message-recovery-provenance {
+  justify-content: flex-start;
+  padding-top: var(--caff-space-2);
+  border-top: 1px solid var(--caff-border);
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+body.chat-app .message-recovery-refs {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--caff-space-1);
+  flex-wrap: wrap;
+}
+
+body.chat-app .message-recovery-ref {
+  appearance: none;
+  padding: 0.1rem 0.45rem;
+  border: 1px solid var(--caff-border);
+  border-radius: var(--caff-radius-sm);
+  background: transparent;
+  color: var(--caff-text-muted);
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.72rem;
+  line-height: 1.5;
+  cursor: copy;
+  white-space: nowrap;
+}
+
+body.chat-app .message-recovery-ref:hover:not(:disabled) {
+  border-color: var(--caff-border-strong);
+  color: var(--caff-text);
+}
+
+body.chat-app .message-recovery-ref:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+body.chat-app .message-recovery-note {
+  font-size: 0.72rem;
+  color: var(--caff-text-muted);
+  white-space: nowrap;
+}
+
+body.chat-app .message-recovery-locate {
+  min-height: 28px;
+  padding: 0.15rem 0.55rem;
+  border-radius: var(--caff-radius-sm);
+  box-shadow: none;
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+body.chat-app .message-card.recovery-result .message-body {
+  gap: 0.4rem;
+  line-height: 1.55;
+}
+
+body.chat-app .message-card.recovery-result .message-body h2 {
+  font-size: 0.98rem;
+}
+
+body.chat-app .message-card.recovery-result .message-body h3 {
+  font-size: 0.86rem;
+  margin-top: 0.35rem;
+  color: var(--caff-text-muted);
+}
+
+body.chat-app .message-card.recovery-result .message-body blockquote {
+  padding-left: 0.7rem;
+  font-size: 0.8rem;
+}
+
+body.chat-app .message-card.recovery-result .message-body ul,
+body.chat-app .message-card.recovery-result .message-body ol {
+  font-size: 0.88rem;
+}
+
+body.chat-app .message-card.recovery-result .message-body li + li {
+  margin-top: 0.12rem;
+}
+
+body.chat-app .message-body.collapsed-error {
+  max-height: 8.5rem;
+  overflow: hidden;
+  mask-image: linear-gradient(to bottom, #000 55%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, #000 55%, transparent 100%);
+}
+
+body.chat-app .message-error-toggle {
+  justify-self: center;
+  min-height: 32px;
+  padding: 0.2rem 0.75rem;
+  border-radius: var(--caff-radius-sm);
+  box-shadow: none;
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+body.chat-app .message-error-toggle[hidden] {
+  display: none;
 }
 
 /* ── 移动档（G6） ── */

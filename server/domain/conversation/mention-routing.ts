@@ -1,3 +1,8 @@
+import {
+  filterRoutableConversationAgents,
+  isNonRoutableSystemActorId,
+} from '../roles/system-actor-catalog';
+
 export function normalizeMentionToken(value: any) {
   return String(value || '')
     .trim()
@@ -17,7 +22,7 @@ const MENTION_SEPARATOR_RE = /[\s\p{P}\p{S}]+/gu;
 export function buildAgentMentionLookup(agents: any) {
   const lookup = new Map();
 
-  for (const agent of Array.isArray(agents) ? agents : []) {
+  for (const agent of filterRoutableConversationAgents(agents)) {
     const aliases = new Set();
     const id = String(agent && agent.id ? agent.id : '').trim();
     const name = String(agent && agent.name ? agent.name : '').trim();
@@ -265,7 +270,11 @@ export function resolveTurnExecutionMode(text: any, targetCount: any) {
 }
 
 export function getAgentById(agents: any, agentId: any) {
-  return Array.isArray(agents) ? agents.find((agent: any) => agent.id === agentId) || null : null;
+  if (isNonRoutableSystemActorId(agentId)) {
+    return null;
+  }
+  return filterRoutableConversationAgents(agents)
+    .find((agent: any) => agent.id === agentId) || null;
 }
 
 export function formatAgentMention(agent: any) {
