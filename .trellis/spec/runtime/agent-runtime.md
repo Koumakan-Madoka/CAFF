@@ -171,12 +171,21 @@ coding-agent.
 - PI session JSONL may retain the upstream cleanup record because the child owns
   session persistence; CAFF runtime result, stderr forwarding, reply, usage, and
   run/message/task state omit assistant output received after completion.
+- Tool-trace projection keeps that raw child-session diagnosis visible but does
+  not turn it back into `failureContext` when all authoritative persisted
+  signals agree: message `completed`, task `succeeded|completed`, run
+  `succeeded`, run `assistant_errors_json=[]`, and the same task has an
+  `agent_reply_terminating` event with `type='expected_completion'`. The trace
+  exposes `session.expectedCompletionTailIgnored=true` for this resolved state.
+  Missing/malformed run state, a non-empty run error list, no expected-completion
+  event, a failed message/task/tool step, or unrelated session failure remains
+  a failure. This projection uses persisted lifecycle state, never error text.
 
 ### 4. Validation & Error Matrix
 
 | Lifecycle | Required result |
 | --- | --- |
-| public reply, `complete()`, assistant abort error | run/message/task succeed; `assistantErrors=[]`; no failure context |
+| public reply, `complete()`, assistant abort error | run/message/task succeed; `assistantErrors=[]`; raw session diagnosis remains; trace sets `expectedCompletionTailIgnored=true` and has no failure context |
 | text/usage, `complete()`, later text/usage/error | retain only pre-completion reply and usage |
 | provider error, then `complete()` | pre-completion error remains unresolved; executor fails |
 | terminal assistant stop, then abort tail | existing expected-completion success remains unchanged |
@@ -212,8 +221,13 @@ coding-agent.
 - `tests/runtime/agent-executor-hook.test.js` keeps both sides of the boundary:
   successful bridge auto-completion writes a completed reply, while a mocked
   resolved result with `assistantErrors` writes a provider failure.
-- `tests/runtime/message-tool-trace.test.js` and turn/smoke suites verify that a
-  successful completion creates no failure projection and routing still closes.
+- `tests/runtime/message-tool-trace.test.js` uses real SQLite run/task/event rows
+  plus session JSONL to prove the projection boundary. A succeeded run with
+  `assistant_errors_json=[]` and an expected-completion termination event keeps
+  the raw session error but has no failure context; a non-empty run error list
+  or missing termination event remains a failure.
+- Turn/smoke suites verify that a successful completion creates no failure
+  projection and routing still closes.
 
 ### 7. Wrong vs Correct
 

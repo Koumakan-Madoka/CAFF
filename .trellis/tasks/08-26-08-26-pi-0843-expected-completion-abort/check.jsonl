@@ -5,3 +5,6 @@
 {"file": "tests/runtime/agent-executor-hook.test.js", "reason": "Executor must retain defensive real assistant-error failure conversion"}
 {"file": "tests/runtime/turn-orchestrator.test.js", "reason": "Message/task completion and failure regression boundary"}
 {"file": ".trellis/tasks/08-26-08-26-pi-0843-expected-completion-abort/implementation-evidence.md", "reason": "Exact automated gate results and accepted baseline failures"}
+{"file": "tests/runtime/message-tool-trace.test.js", "reason": "Acceptance regression gate for authoritative expected-completion trace suppression and fail-closed controls"}
+{"file": ".trellis/spec/runtime/agent-runtime.md", "reason": "Executable cross-layer trace contract added after exact-candidate acceptance failure"}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Real SQLite expected-completion trace test matrix"}

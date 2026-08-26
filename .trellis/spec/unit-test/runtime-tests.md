@@ -101,6 +101,16 @@ mocked result alone:
   ordinary provider-error, and exact stream retry tests in the same regression
   gate. The fix must be keyed to termination order and type, never a particular
   abort string.
+- Reproduce the persisted trace boundary with a real temporary SQLite store,
+  run row, task row, `agent_reply_terminating` event, and PI session JSONL.
+  Assert that completed message + succeeded task/run + empty run assistant
+  errors + expected completion keeps raw session diagnostics while setting
+  `session.expectedCompletionTailIgnored=true` and
+  `failureContext.hasFailure=false`.
+- Use two fail-closed controls: the same session error with a non-empty run
+  `assistant_errors_json`, and the same succeeded run without the
+  expected-completion event. Both must retain `failureContext.hasFailure=true`.
+  Do not match the session error string in the production projection.
 
 ## Useful Existing Suites
 

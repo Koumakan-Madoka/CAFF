@@ -468,6 +468,60 @@ function loadTaskRow(db: any, taskId: string) {
   }
 }
 
+function loadRunRow(db: any, runId: any) {
+  if (!db || !runId) {
+    return null;
+  }
+
+  try {
+    return db
+      .prepare(
+        `
+        SELECT id, status, assistant_errors_json
+        FROM runs
+        WHERE id = @runId
+      `
+      )
+      .get({ runId });
+  } catch {
+    return null;
+  }
+}
+
+function loadExpectedCompletionEvent(db: any, taskId: string) {
+  if (!db || !taskId) {
+    return null;
+  }
+
+  try {
+    const rows = db
+      .prepare(
+        `
+        SELECT event_json, created_at
+        FROM a2a_task_events
+        WHERE task_id = @taskId
+          AND event_type = 'agent_reply_terminating'
+        ORDER BY id DESC
+        LIMIT 16
+      `
+      )
+      .all({ taskId });
+
+    for (const row of rows) {
+      const payload = safeJsonParse(row && row.event_json ? row.event_json : null);
+
+      if (payload && payload.type === 'expected_completion') {
+        return {
+          createdAt: row && row.created_at ? String(row.created_at).trim() : '',
+          payload,
+        };
+      }
+    }
+  } catch {}
+
+  return null;
+}
+
 function loadToolEventRows(db: any, taskId: string) {
   if (!db || !taskId) {
     return [];
@@ -945,6 +999,27 @@ function isResolvedAssistantRetryHistory(options: any = {}) {
   );
 }
 
+function isAuthoritativeExpectedCompletionTailResolved(options: any = {}) {
+  const messageStatus = String(options.messageStatus || '').trim().toLowerCase();
+  const taskStatus = String(options.taskStatus || '').trim().toLowerCase();
+  const runStatus = String(options.runStatus || '').trim().toLowerCase();
+  const runAssistantErrors = options.runAssistantErrors;
+  const terminationType = String(
+    options.expectedCompletionEvent && options.expectedCompletionEvent.payload
+      ? options.expectedCompletionEvent.payload.type
+      : ''
+  ).trim().toLowerCase();
+
+  return (
+    messageStatus === 'completed' &&
+    (taskStatus === 'succeeded' || taskStatus === 'completed') &&
+    runStatus === 'succeeded' &&
+    Array.isArray(runAssistantErrors) &&
+    runAssistantErrors.length === 0 &&
+    terminationType === 'expected_completion'
+  );
+}
+
 function conciseFailureSummary(value: any, fallback = '') {
   const formatted = formatFailureContextValue(value, 360);
 
@@ -982,15 +1057,16 @@ function buildTraceFailureContext(options: any = {}) {
     sessionErrorText,
     assistantErrorsText,
   });
+  const expectedCompletionTailIgnored = Boolean(options.expectedCompletionTailIgnored);
   const hasFailure = Boolean(
     failedStep ||
       messageStatus === 'failed' ||
       taskStatus === 'failed' ||
       messageErrorText ||
       taskErrorText ||
-      sessionStopReason === 'error' ||
-      (!expectedCompletionAbortNoise && Boolean(sessionErrorText)) ||
-      (!resolvedAssistantRetryHistory && Boolean(assistantErrorsText))
+      (!expectedCompletionTailIgnored && sessionStopReason === 'error') ||
+      (!expectedCompletionAbortNoise && !expectedCompletionTailIgnored && Boolean(sessionErrorText)) ||
+      (!resolvedAssistantRetryHistory && !expectedCompletionTailIgnored && Boolean(assistantErrorsText))
   );
 
   if (!hasFailure) {
@@ -1153,6 +1229,9 @@ export function buildAssistantMessageToolTrace(options: any = {}) {
   const resolvedSessionPath = String(options.resolvedSessionPath || '').trim();
   const taskId = String(message && message.taskId ? message.taskId : '').trim();
   const taskRow = taskId ? loadTaskRow(db, taskId) : null;
+  const runRow = taskRow && taskRow.run_id ? loadRunRow(db, taskRow.run_id) : null;
+  const runAssistantErrors = runRow ? safeJsonParse(runRow.assistant_errors_json) : null;
+  const expectedCompletionEvent = loadExpectedCompletionEvent(db, taskId);
   const taskMetadata = taskRow ? safeJsonParse(taskRow.metadata_json) : null;
   const taskSessionPath = taskRow && taskRow.session_path ? String(taskRow.session_path).trim() : '';
   const sessionSnapshot = readSessionAssistantSnapshot(taskSessionPath || resolvedSessionPath, agentDir);
@@ -1195,6 +1274,22 @@ export function buildAssistantMessageToolTrace(options: any = {}) {
       }
     : null;
 
+  const expectedCompletionTailIgnored = Boolean(
+    sessionSnapshot &&
+    (
+      String(sessionSnapshot.stopReason || '').trim().toLowerCase() === 'error' ||
+      Boolean(String(sessionSnapshot.errorMessage || '').trim()) ||
+      (Array.isArray(sessionSnapshot.assistantErrors) && sessionSnapshot.assistantErrors.length > 0)
+    ) &&
+    isAuthoritativeExpectedCompletionTailResolved({
+      messageStatus: message && message.status,
+      taskStatus: task && task.status,
+      runStatus: runRow && runRow.status,
+      runAssistantErrors,
+      expectedCompletionEvent,
+    })
+  );
+
   const session = sessionSnapshot
     ? {
         sessionPath: previewAbsolutePath(sessionSnapshot.sessionPath, traceOptions),
@@ -1216,6 +1311,7 @@ export function buildAssistantMessageToolTrace(options: any = {}) {
             }
           : null,
         assistantErrors: summarizeValue(sessionSnapshot.assistantErrors, traceOptions),
+        expectedCompletionTailIgnored,
       }
     : null;
 
@@ -1238,6 +1334,7 @@ export function buildAssistantMessageToolTrace(options: any = {}) {
     task,
     session,
     steps,
+    expectedCompletionTailIgnored,
   });
 
   return {

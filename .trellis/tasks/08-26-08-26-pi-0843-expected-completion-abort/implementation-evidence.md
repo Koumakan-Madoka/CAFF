@@ -73,8 +73,62 @@ System Node v24 was used directly and shared runtime/SQLite suites were run with
 No generated build output, SQLite database, logs, temporary fixture, production
 configuration, or credential is included in the diff.
 
+## Independent Review And Acceptance Failure
+
+- GLM independently approved exact SHA
+  `d12d6fe318dbde08ad0413c60ecf65f87dfa0388` (tree
+  `e601c4f258a90c58341e406d2402889e7376a5c1`) with no blocking findings.
+- Exact-candidate room preview on port 3238 used isolated SQLite, agentDir,
+  project, uploads, temp, logs, and copied provider configuration with all
+  Feishu variables cleared. The real model called `send-public`; message/task/
+  run succeeded, run `assistant_errors_json=[]`, persisted usage retained one
+  pre-completion model call, SSE emitted completed and no failed state, and the
+  PI session retained a second zero-usage `stopReason='error' / This operation
+  was aborted` record.
+- Acceptance rejected `d12d6fe3`: tool-trace reparsed the raw child session and
+  returned `failureContext.hasFailure=true` despite the authoritative success.
+  This was not covered by the original synthetic trace fixture, which modeled
+  the older `stopReason='aborted' / Request was aborted.` cleanup shape.
+
+## Acceptance Revision Evidence
+
+- New real-SQLite red test: completed message + succeeded task/run + empty run
+  assistant errors + persisted `expected_completion` event still produced
+  `failureContext.hasFailure=true`.
+- The trace projection now treats the child-session error as resolved only when
+  those authoritative persisted signals all agree. It keeps the raw session
+  stop/error and exposes `session.expectedCompletionTailIgnored=true`; it does
+  not match error text or modify runtime/executor state.
+- Fail-closed controls keep failure context when run assistant errors are
+  non-empty or the expected-completion event is absent.
+- Focused green: four completion/retry/session-error trace cases 4/4; complete
+  message-tool-trace suite 20/20. The focused runtime/executor/bridge/trace/turn
+  batch passed 227 behavior tests with only the same two accepted Windows EPERM
+  cleanup-hook failures.
+- `npm run check`, `npm run typecheck`, and `npm run build` passed. The complete
+  runtime/http/storage/ui batch was 982 pass / 4 fail / 4 skip out of 990; the
+  four failures exactly matched the accepted baseline (two EPERM cleanup hooks,
+  DAG demo async loading text, and the existing `人格` terminology assertion).
+  Smoke was 70/70 plus mode 4/4; DAG execution passed; DAG planning retained only
+  the same existing demo failure.
+- Replaying the rejected preview's real SQLite/session JSONL against the
+  revision produced `hasFailure=false`, `expectedCompletionTailIgnored=true`,
+  raw session stop `error`, raw assistant error retained, and two diagnostic
+  session model calls.
+- A fresh real-model exploratory preview of the uncommitted revision reproduced
+  the exact abort tail and passed message/task/run/usage/SSE/UI/SQLite checks:
+  persisted model calls 1, diagnostic session calls 2, run assistant errors
+  empty, trace failure false, UI completed with no failed class,
+  `integrity_check=ok`, and zero foreign-key violations. Because the revision
+  was not yet committed, this is behavioral evidence only; exact-SHA acceptance
+  must be repeated after the new candidate is frozen and independently
+  reviewed.
+- Preview 3238 was closed after each attempt. Production 3100 remained on PID
+  23276 and was not deployed, restarted, or reconfigured.
+
 ## Pending Evidence
 
-Independent commit-pinned review and isolated real `send-public` acceptance are
-still required before user acceptance and merge authorization. The upstream
-regression wording remains in `upstream-draft.md` and has not been published.
+A new exact candidate, independent commit-pinned review, and isolated real
+`send-public` acceptance are still required before user acceptance and merge
+authorization. The upstream regression wording remains in `upstream-draft.md`
+and has not been published.
