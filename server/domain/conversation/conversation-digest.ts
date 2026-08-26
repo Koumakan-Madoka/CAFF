@@ -1051,7 +1051,7 @@ async function completeDigestModel(complete: any, model: any, context: any, comp
 
 const PI_AI_MODULE_CACHE = new Map();
 
-async function importPiAiModule(specifier = '@mariozechner/pi-ai') {
+async function importPiAiModule(specifier = '@earendil-works/pi-ai/compat') {
   if (!PI_AI_MODULE_CACHE.has(specifier)) {
     PI_AI_MODULE_CACHE.set(specifier, Function('specifier', 'return import(specifier)')(specifier));
   }
@@ -1281,7 +1281,7 @@ function createModelDigestError(message: string, output: any) {
 }
 
 async function runJsonModeDigestModelPrompt(prompt: string, config: any, options: any = {}) {
-  const piAi = await importPiAiModule(normalizeText(options.piAiModuleSpecifier || process.env.CAFF_PI_AI_MODULE) || '@mariozechner/pi-ai');
+  const piAi = await importPiAiModule(normalizeText(options.piAiModuleSpecifier || process.env.CAFF_PI_AI_MODULE) || '@earendil-works/pi-ai/compat');
   const complete = typeof piAi.complete === 'function' ? piAi.complete : null;
 
   if (!complete) {

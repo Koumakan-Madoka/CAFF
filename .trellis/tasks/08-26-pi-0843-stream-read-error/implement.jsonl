@@ -1,0 +1,8 @@
+{"file": ".trellis/workflow.md", "reason": "Project workflow and conventions"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend development guide"}
+{"file": ".trellis/spec/runtime/agent-runtime.md", "reason": "Pi SDK host, retry events, assistant errors, usage, and tool lifecycle contracts"}
+{"file": ".trellis/spec/runtime/conversation-turn-queue.md", "reason": "Goal/turn/private/image/handoff regression boundaries"}
+{"file": ".trellis/spec/backend/message-detail-storage.md", "reason": "Atomic assistant model-usage persistence and retained call accounting"}
+{"file": ".trellis/spec/backend/model-provider-config.md", "reason": "Pinned PI model family and models.json compatibility"}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Runtime regression, real behavior, and non-tautological red-test patterns"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "SDK event to runtime/store/status cross-layer flow"}

@@ -89,7 +89,7 @@ async function authoritativeCapabilitySnapshots() {
     'openai/gpt-5.4': ['openai', 'gpt-5.4'],
     'openai/gpt-5-mini': ['openai', 'gpt-5-mini'],
     'anthropic/claude-sonnet-4.5': ['anthropic', 'claude-sonnet-4-5'],
-    'anthropic/claude-opus-4.1': ['anthropic', 'claude-opus-4-1'],
+    'anthropic/claude-opus-4.5': ['anthropic', 'claude-opus-4-5'],
     'google/gemini-2.5-pro': ['google', 'gemini-2.5-pro'],
     'deepseek/deepseek-v3.2': ['openrouter', 'deepseek/deepseek-v3.2'],
     'zhipu/glm-5': ['openrouter', 'z-ai/glm-5'],
@@ -372,7 +372,7 @@ async function browserContract() {
             'openai/gpt-5.4',
             'openai/gpt-5-mini',
             'anthropic/claude-sonnet-4.5',
-            'anthropic/claude-opus-4.1',
+            'anthropic/claude-opus-4.5',
             'google/gemini-2.5-pro',
             'deepseek/deepseek-v3.2',
             'zhipu/glm-5',
@@ -505,7 +505,7 @@ async function main() {
     }
   }
   for (const contract of [
-    '@earendil-works/pi-coding-agent@0.80.10',
+    '@earendil-works/pi-coding-agent@0.84.3',
     'nested @earendil-works/pi-ai',
     'global CLI',
   ]) {
@@ -593,7 +593,7 @@ async function main() {
     !browser.roleRuntimeControls.custom.personaVisible ||
     !browser.roleRuntimeControls.custom.skillsVisible ||
     !browser.roleRuntimeControls.custom.profilePersonaVisible ||
-    !browser.roleRuntimeControls.custom.profileModelOptions.includes('anthropic/claude-opus-4.1') ||
+    !browser.roleRuntimeControls.custom.profileModelOptions.includes('anthropic/claude-opus-4.5') ||
     !browser.roleRuntimeControls.custom.profileModelOptions.includes('openai/gpt-5.4') ||
     browser.roleRuntimeControls.custom.thinkingAfterIncompatibleModel !== '' ||
     !browser.roleRuntimeControls.custom.thinkingOptionsAfterModelSwitch.includes('off') ||
@@ -605,10 +605,10 @@ async function main() {
     failures.push(`Role runtime controls must expose capability-aware thinking and editable Profiles: ${JSON.stringify(browser.roleRuntimeControls)}`);
   }
   const expectedCapabilitySnapshots = {
-    'openai/gpt-5.4': ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'],
+    'openai/gpt-5.4': ['off', 'low', 'medium', 'high', 'xhigh'],
     'openai/gpt-5-mini': ['minimal', 'low', 'medium', 'high'],
     'anthropic/claude-sonnet-4.5': ['off', 'minimal', 'low', 'medium', 'high'],
-    'anthropic/claude-opus-4.1': ['off', 'minimal', 'low', 'medium', 'high'],
+    'anthropic/claude-opus-4.5': ['off', 'minimal', 'low', 'medium', 'high'],
     'google/gemini-2.5-pro': ['off', 'minimal', 'low', 'medium', 'high'],
     'deepseek/deepseek-v3.2': ['off', 'minimal', 'low', 'medium', 'high'],
     'zhipu/glm-5': ['off', 'minimal', 'low', 'medium', 'high'],
@@ -616,7 +616,7 @@ async function main() {
   };
   if (JSON.stringify(browser.roleRuntimeControls.capabilities) !== JSON.stringify(expectedCapabilitySnapshots)) {
     failures.push(
-      `Fixture capability snapshots must match the audited Pi 0.80.10 catalog values: ${JSON.stringify(browser.roleRuntimeControls.capabilities)}`
+      `Fixture capability snapshots must match the audited Pi 0.84.3 catalog values: ${JSON.stringify(browser.roleRuntimeControls.capabilities)}`
     );
   }
   if (JSON.stringify(authoritativeCapabilities) !== JSON.stringify(expectedCapabilitySnapshots)) {

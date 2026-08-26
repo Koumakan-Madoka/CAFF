@@ -48,7 +48,7 @@ Why: 本次拆分既有稳定身份与可运行配置，不引入新的跨产品
 | Thinking 目前是自由文本 | `public/personas.html` 使用 text input；`agent-executor.ts:459` 原样解析；Pi session 最终会按模型能力 clamp | UI、save 与 runtime 必须共享模型的 `supportedThinkingLevels`，不能让持久值和实际运行值分叉 |
 | Pi thinking 值域与能力是现成契约 | Pi `ThinkingLevel` 为 `off|minimal|low|medium|high|xhigh|max`；`getSupportedThinkingLevels(model)` 读取 reasoning + `thinkingLevelMap` | 不发明第二套强度枚举，也不把 capability 写死在角色页 |
 
-Capability provenance 固定为仓库 `package.json` 锁定的 `@earendil-works/pi-coding-agent@0.80.10`（`lib/pi-sdk-host.mjs` 的实际 SDK host）及其 nested @earendil-works/pi-ai。本机 global CLI 与根级旧 `@mariozechner/pi-ai` 仅可能服务其他兼容路径，不得用于判断 Agent runtime 的 thinking 值域或模型支持集。
+Capability provenance 固定为仓库 `package.json` 锁定的 `@earendil-works/pi-coding-agent@0.84.3`（`lib/pi-sdk-host.mjs` 的实际 SDK host）及其 nested @earendil-works/pi-ai 0.84.3。根级同版本 `@earendil-works/pi-ai` 仅服务隔离的 digest 完成路径；本机 global CLI 与根级直接依赖都不得用于判断 Agent runtime 的 thinking 值域或模型支持集。
 
 ## Frozen decisions
 
