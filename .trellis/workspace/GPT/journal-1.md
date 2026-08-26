@@ -510,3 +510,52 @@ Added reversible message-keyed context snapshot and model usage detail storage w
 ### Next Steps
 
 - None - task complete
+
+
+## Session 12: Upgrade PI 0.84.3 and normalize stream_read_error
+
+**Date**: 2026-08-26
+**Task**: Upgrade PI 0.84.3 and normalize stream_read_error
+**Branch**: `room/c2fab452-caff-bug-bug`
+
+### Summary
+
+Upgraded the audited PI package family to 0.84.3, added exact stream_read_error normalization through PI's official message_end extension hook, proved bounded native retries without tool side-effect replay, completed isolated acceptance, and merged PR A then PR B to develop with matching reviewed trees.
+
+### Main Changes
+
+| Area | Result |
+|------|--------|
+| PR A | Upgraded coding-agent and PI AI to exact 0.84.3, removed the deprecated package identity, and preserved SDK/session/tool/provider behavior. |
+| PR B | Mapped only exact final assistant `stream_read_error` to PI-recognized retry semantics and reconciled text, error, usage, status, and trace accounting. |
+| Review | GLM independently approved exact candidates `332c164a` and `732b227d`; Kimi independently audited the PI compatibility surface. |
+| Acceptance | Isolated port 3237 proved one-failure recovery and four-failure closure across UI/SSE/log/usage/status, with completed tools executed once. |
+| Integration | PR #103 merged as `e8858165`; PR #104 merged as `fc861109`; both merge trees matched the reviewed candidates and both CI pairs passed. |
+| Safety | Production 3100 was not deployed, restarted, reconfigured, or accessed; upstream issue/PR wording remains unpublished. |
+
+**Verification**:
+- `npm run check`, source/public typechecks, build, focused real AgentSession and CAFF runtime suites passed.
+- Scoped regressions, smoke, DAG execution, package tree, executable specs, SQLite integrity, and real Edge acceptance were verified.
+- Known baseline-only Windows cleanup-hook and DAG demo failures were recorded and did not affect the accepted behavior.
+
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `332c164aa8d6c8df5bbed936c4d651436a603003` | (see git log) |
+| `732b227d34d75bb6ce38164b6b1e7bbebfcf56c1` | (see git log) |
+| `e8858165f9e9242574830960b32186a4bc51e655` | (see git log) |
+| `fc861109d1f1cba35e250b32fcf6128eacc2cc13` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

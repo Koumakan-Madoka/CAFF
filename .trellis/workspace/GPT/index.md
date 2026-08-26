@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 11
-- **Last Active**: 2026-08-25
+- **Total Sessions**: 12
+- **Last Active**: 2026-08-26
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~512 | Active |
+| `journal-1.md` | ~561 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 12 | 2026-08-26 | Upgrade PI 0.84.3 and normalize stream_read_error | `332c164aa8d6c8df5bbed936c4d651436a603003`, `732b227d34d75bb6ce38164b6b1e7bbebfcf56c1`, `e8858165f9e9242574830960b32186a4bc51e655`, `fc861109d1f1cba35e250b32fcf6128eacc2cc13` | `room/c2fab452-caff-bug-bug` |
 | 11 | 2026-08-25 | Complete P2C Contract message metadata | `e508de961eeb75ad06476362271b952317d3b10c`, `937110dc73fa820b75ba7c5098bcbf4948febf00`, `62f2e03ed377b200f9114186daf922245e07a8ef` | `room/c2fab452-caff-bug-bug` |
 | 10 | 2026-08-25 | P2C Expand message detail tables | `bd25d0ce542be547ee9fc1e97b1b4f77b611fc99`, `2ed64ee6e4b225c85523d34d8a75d4805d58ea6d` | `room/c2fab452-caff-bug-bug` |
 | 9 | 2026-08-25 | P2A+B bounded conversation hydration | `fc4173a08ad593256495179d2652767152783364`, `87538d5e4fde93881147e7edce585be956a5542c` | `room/c2fab452-caff-bug-bug` |
