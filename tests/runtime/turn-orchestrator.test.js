@@ -568,22 +568,22 @@ test('buildAgentTurnPromptSections orders stable prompt sections before dynamic 
   ]);
 });
 
-test('buildAgentTurnPrompt bounds the private mailbox section by dropping whole oldest messages', () => {
+test('buildAgentTurnPrompt caps the private mailbox section at the eight most recent messages', () => {
   const agent = {
-    id: 'agent-mailbox-budget',
+    id: 'agent-mailbox-cap',
     name: 'Keeper',
-    description: 'Mailbox budget fixture.',
+    description: 'Mailbox cap fixture.',
     personaPrompt: 'Stay terse.',
   };
   const sender = {
-    id: 'agent-mailbox-sender',
+    id: 'agent-mailbox-cap-sender',
     name: 'Sender',
     description: 'Sends private mail.',
     personaPrompt: 'Sends mail.',
   };
   const conversation = {
-    id: 'conversation-mailbox-budget',
-    title: 'Mailbox Budget',
+    id: 'conversation-mailbox-cap',
+    title: 'Mailbox Cap',
     type: 'standard',
     agents: [agent, sender],
   };
@@ -591,10 +591,10 @@ test('buildAgentTurnPrompt bounds the private mailbox section by dropping whole 
   const privateMessages = [];
   for (let index = 0; index < 16; index += 1) {
     privateMessages.push({
-      id: `private-budget-${index}`,
+      id: `private-cap-${index}`,
       senderAgentId: sender.id,
       recipientAgentIds: [agent.id],
-      content: `[private ${index}] ${'x'.repeat(900)}`,
+      content: `[private ${index}] short note`,
     });
   }
 
@@ -617,44 +617,47 @@ test('buildAgentTurnPrompt bounds the private mailbox section by dropping whole 
 
   const mailboxSection = sections.find((section) => section.sectionKey === 'private_mailbox');
   assert.ok(mailboxSection, 'private mailbox section is present');
-
-  // Newest messages stay whole...
+  // Only the eight most recent messages enter the prompt section.
   assert.match(mailboxSection.content, /\[private 15\]/u);
   assert.match(mailboxSection.content, /\[private 8\]/u);
-  // ...oldest overflow messages are dropped whole, not clipped.
   assert.doesNotMatch(mailboxSection.content, /\[private 7\]/u);
   assert.doesNotMatch(mailboxSection.content, /\[private 0\]/u);
-  // The section states how many messages were omitted.
-  assert.match(mailboxSection.content, /8 private mailbox message\(s\) omitted/u);
-  // The mailbox body (message lines + separators + omission notice) must fit
-  // the 8000-char budget exactly; the fixed header line is not counted.
-  const mailboxHeader = 'Private mailbox visible only to you:';
-  const mailboxBody = mailboxSection.content.slice(mailboxHeader.length + 1);
-  assert.ok(
-    mailboxBody.length <= 8000,
-    `mailbox body length ${mailboxBody.length} must fit the 8000-char budget`
-  );
+  // Short messages fit the budget, so the section has no omission notice.
+  assert.doesNotMatch(mailboxSection.content, /omitted/u);
 });
 
-test('private mailbox budget drops an oversize newest message whole with only a bounded notice', () => {
+test('private mailbox budget drops whole oldest messages beyond the newest four', () => {
   const agent = {
-    id: 'agent-mailbox-oversize',
+    id: 'agent-mailbox-budget',
     name: 'Keeper',
-    description: 'Mailbox oversize fixture.',
+    description: 'Mailbox budget fixture.',
     personaPrompt: 'Stay terse.',
   };
   const sender = {
-    id: 'agent-mailbox-oversize-sender',
+    id: 'agent-mailbox-budget-sender',
     name: 'Sender',
     description: 'Sends private mail.',
     personaPrompt: 'Sends mail.',
   };
   const conversation = {
-    id: 'conversation-mailbox-oversize',
-    title: 'Mailbox Oversize',
+    id: 'conversation-mailbox-budget',
+    title: 'Mailbox Budget',
     type: 'standard',
     agents: [agent, sender],
   };
+
+  // Eight messages of ~3000 chars: the full body exceeds the 16384-char
+  // budget, and the newest contiguous suffix that fits with the notice keeps
+  // the latest five messages whole.
+  const privateMessages = [];
+  for (let index = 0; index < 8; index += 1) {
+    privateMessages.push({
+      id: `private-budget-${index}`,
+      senderAgentId: sender.id,
+      recipientAgentIds: [agent.id],
+      content: `[private ${index}] ${'x'.repeat(3000)}`,
+    });
+  }
 
   const sections = buildAgentTurnPromptSections({
     conversation,
@@ -665,14 +668,7 @@ test('private mailbox budget drops an oversize newest message whole with only a 
     sandbox: { sandboxDir: '/sandbox', privateDir: '/sandbox/private' },
     agents: [agent, sender],
     messages: [],
-    privateMessages: [
-      {
-        id: 'private-oversize-0',
-        senderAgentId: sender.id,
-        recipientAgentIds: [agent.id],
-        content: `[private 0] ${'x'.repeat(12000)}`,
-      },
-    ],
+    privateMessages,
     trigger: { triggerType: 'user', enqueueReason: 'user_mentions' },
     remainingSlots: 7,
     routingMode: 'mention_queue',
@@ -682,35 +678,110 @@ test('private mailbox budget drops an oversize newest message whole with only a 
 
   const mailboxSection = sections.find((section) => section.sectionKey === 'private_mailbox');
   assert.ok(mailboxSection, 'private mailbox section is present');
-  // The whole oversize message is dropped, not kept and not clipped.
+  // The newest five messages stay whole...
+  assert.match(mailboxSection.content, /\[private 7\]/u);
+  assert.match(mailboxSection.content, /\[private 3\]/u);
+  assert.match(mailboxSection.content, /x{50}/u);
+  // ...the oldest three are dropped whole, not clipped.
+  assert.doesNotMatch(mailboxSection.content, /\[private 2\]/u);
   assert.doesNotMatch(mailboxSection.content, /\[private 0\]/u);
-  assert.doesNotMatch(mailboxSection.content, /x{50}/u);
-  // Only the bounded omission notice remains.
-  assert.match(mailboxSection.content, /1 private mailbox message\(s\) omitted/u);
+  // The section states how many messages were omitted.
+  assert.match(mailboxSection.content, /3 private mailbox message\(s\) omitted/u);
+  // The mailbox body (message lines + separators + omission notice) must fit
+  // the 16384-char budget exactly; the fixed header line is not counted.
   const mailboxHeader = 'Private mailbox visible only to you:';
   const mailboxBody = mailboxSection.content.slice(mailboxHeader.length + 1);
   assert.ok(
-    mailboxBody.length <= 8000,
-    `mailbox body length ${mailboxBody.length} must fit the 8000-char budget`
+    mailboxBody.length <= 16384,
+    `mailbox body length ${mailboxBody.length} must fit the 16384-char budget`
   );
 });
 
-test('private mailbox section stays bounded for a 1MiB message and sixteen huge messages', () => {
+test('private mailbox keeps the newest four messages whole even beyond the section budget', () => {
   const agent = {
-    id: 'agent-mailbox-huge',
+    id: 'agent-mailbox-floor',
     name: 'Keeper',
-    description: 'Mailbox huge fixture.',
+    description: 'Mailbox floor fixture.',
     personaPrompt: 'Stay terse.',
   };
   const sender = {
-    id: 'agent-mailbox-huge-sender',
+    id: 'agent-mailbox-floor-sender',
     name: 'Sender',
     description: 'Sends private mail.',
     personaPrompt: 'Sends mail.',
   };
   const conversation = {
-    id: 'conversation-mailbox-huge',
-    title: 'Mailbox Huge',
+    id: 'conversation-mailbox-floor',
+    title: 'Mailbox Floor',
+    type: 'standard',
+    agents: [agent, sender],
+  };
+
+  // Eight messages of ~5000 chars: even the newest four alone exceed the
+  // 16384-char budget, so the display floor keeps the newest four whole and
+  // only the older four are dropped.
+  const privateMessages = [];
+  for (let index = 0; index < 8; index += 1) {
+    privateMessages.push({
+      id: `private-floor-${index}`,
+      senderAgentId: sender.id,
+      recipientAgentIds: [agent.id],
+      content: `[private ${index}] ${'x'.repeat(5000)}`,
+    });
+  }
+
+  const sections = buildAgentTurnPromptSections({
+    conversation,
+    agent,
+    agentConfig: { profileName: 'Default', personaPrompt: agent.personaPrompt },
+    resolvedPersonaSkills: [],
+    resolvedConversationSkills: [],
+    sandbox: { sandboxDir: '/sandbox', privateDir: '/sandbox/private' },
+    agents: [agent, sender],
+    messages: [],
+    privateMessages,
+    trigger: { triggerType: 'user', enqueueReason: 'user_mentions' },
+    remainingSlots: 7,
+    routingMode: 'mention_queue',
+    allowHandoffs: true,
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+  });
+
+  const mailboxSection = sections.find((section) => section.sectionKey === 'private_mailbox');
+  assert.ok(mailboxSection, 'private mailbox section is present');
+  // The display floor keeps the newest four messages fully intact.
+  assert.match(mailboxSection.content, /\[private 7\]/u);
+  assert.match(mailboxSection.content, /\[private 4\]/u);
+  assert.match(mailboxSection.content, /x{50}/u);
+  // The oldest four are dropped whole with an omission notice.
+  assert.doesNotMatch(mailboxSection.content, /\[private 3\]/u);
+  assert.doesNotMatch(mailboxSection.content, /\[private 0\]/u);
+  assert.match(mailboxSection.content, /4 private mailbox message\(s\) omitted/u);
+  // The floor overrides the budget: the kept body may exceed 16384 chars.
+  const mailboxHeader = 'Private mailbox visible only to you:';
+  const mailboxBody = mailboxSection.content.slice(mailboxHeader.length + 1);
+  assert.ok(
+    mailboxBody.length > 16384,
+    `floor-kept mailbox body length ${mailboxBody.length} must be allowed to exceed the 16384-char budget`
+  );
+});
+
+test('private mailbox shows every message whole when fewer than four exist, ignoring the budget', () => {
+  const agent = {
+    id: 'agent-mailbox-few',
+    name: 'Keeper',
+    description: 'Mailbox few fixture.',
+    personaPrompt: 'Stay terse.',
+  };
+  const sender = {
+    id: 'agent-mailbox-few-sender',
+    name: 'Sender',
+    description: 'Sends private mail.',
+    personaPrompt: 'Sends mail.',
+  };
+  const conversation = {
+    id: 'conversation-mailbox-few',
+    title: 'Mailbox Few',
     type: 'standard',
     agents: [agent, sender],
   };
@@ -731,15 +802,37 @@ test('private mailbox section stays bounded for a 1MiB message and sixteen huge 
       allowHandoffs: true,
       agentToolRelativePath: './lib/agent-chat-tools.js',
     });
-  const mailboxHeader = 'Private mailbox visible only to you:';
   const findMailboxSection = (sections) =>
     sections.find((section) => section.sectionKey === 'private_mailbox');
 
-  // A single 1MiB message cannot make the section unbounded.
+  // Two 20000-char messages together exceed the budget, but the display floor
+  // keeps both whole with no omission notice.
+  const pair = findMailboxSection(
+    buildSections([
+      {
+        id: 'private-few-0',
+        senderAgentId: sender.id,
+        recipientAgentIds: [agent.id],
+        content: `[private 0] ${'x'.repeat(20000)}`,
+      },
+      {
+        id: 'private-few-1',
+        senderAgentId: sender.id,
+        recipientAgentIds: [agent.id],
+        content: `[private 1] ${'x'.repeat(20000)}`,
+      },
+    ])
+  );
+  assert.ok(pair, 'private mailbox section is present');
+  assert.match(pair.content, /\[private 0\]/u);
+  assert.match(pair.content, /\[private 1\]/u);
+  assert.doesNotMatch(pair.content, /omitted/u);
+
+  // A single 1MiB message is also below the floor and shown whole.
   const single = findMailboxSection(
     buildSections([
       {
-        id: 'private-huge-single',
+        id: 'private-few-single',
         senderAgentId: sender.id,
         recipientAgentIds: [agent.id],
         content: `[private 0] ${'x'.repeat(1000000)}`,
@@ -747,37 +840,9 @@ test('private mailbox section stays bounded for a 1MiB message and sixteen huge 
     ])
   );
   assert.ok(single, 'private mailbox section is present');
-  assert.doesNotMatch(single.content, /\[private 0\]/u);
-  assert.doesNotMatch(single.content, /x{50}/u);
-  assert.match(single.content, /1 private mailbox message\(s\) omitted/u);
-  const singleBody = single.content.slice(mailboxHeader.length + 1);
-  assert.ok(
-    singleBody.length <= 8000,
-    `mailbox body length ${singleBody.length} must fit the 8000-char budget`
-  );
-
-  // Sixteen huge messages are all dropped whole; only the notice remains.
-  const hugeMessages = [];
-  for (let index = 0; index < 16; index += 1) {
-    hugeMessages.push({
-      id: `private-huge-${index}`,
-      senderAgentId: sender.id,
-      recipientAgentIds: [agent.id],
-      content: `[private ${index}] ${'x'.repeat(50000)}`,
-    });
-  }
-  const many = findMailboxSection(buildSections(hugeMessages));
-  assert.ok(many, 'private mailbox section is present');
-  assert.doesNotMatch(many.content, /\[private 15\]/u);
-  assert.doesNotMatch(many.content, /x{50}/u);
-  assert.match(many.content, /16 private mailbox message\(s\) omitted/u);
-  const manyBody = many.content.slice(mailboxHeader.length + 1);
-  assert.ok(
-    manyBody.length <= 8000,
-    `mailbox body length ${manyBody.length} must fit the 8000-char budget`
-  );
+  assert.match(single.content, /\[private 0\]/u);
+  assert.doesNotMatch(single.content, /omitted/u);
 });
-
 test('buildAgentTurnPrompt lists other visible participants without current agent', () => {
   const agent = {
     id: 'agent-builder',
