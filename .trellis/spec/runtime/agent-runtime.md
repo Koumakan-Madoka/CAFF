@@ -41,6 +41,20 @@
   than the current speaker. Filter by `agent.id` when available and fall back to
   exact `agent.name` matching only when an id is missing, so handoff guidance
   cannot invite an agent to mention itself.
+- The `private_mailbox` prompt section is bounded by a whole-message character
+  budget (`MAX_PRIVATE_MAILBOX_SECTION_CHARS = 8000` in
+  `server/domain/conversation/turn/agent-prompt.ts`) on top of the 16-message
+  row limit. The budget applies to the mailbox body payload (formatted message
+  lines, separators, and the omission notice when any message is dropped); the
+  fixed `Private mailbox visible only to you:` header line is not counted. When
+  all formatted messages fit, the section is emitted unchanged. Otherwise the
+  newest contiguous suffix of whole messages that fits together with an explicit
+  `[N private mailbox message(s) omitted to fit the section budget; use
+  read-context to retrieve them]` notice is kept; older whole messages are
+  dropped and messages are never clipped mid-content. If even the newest
+  message alone exceeds the budget, every message is dropped and only the
+  bounded notice remains, so a single huge private message cannot make the
+  section unbounded.
 - Optional prompt sections with no material body should be omitted rather than
   represented as `- none` or `No ...` placeholders. This applies to persona
   skills, conversation skills, other participants, private mailbox, legacy

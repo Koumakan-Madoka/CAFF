@@ -10,6 +10,7 @@ export const AGENT_PROMPT_VERSION =
 const MAX_HISTORY_MESSAGES = 24;
 const MAX_PARALLEL_MENTION_BATCH_SIZE = 5;
 const MAX_PRIVATE_CONTEXT_MESSAGES = 16;
+const MAX_PRIVATE_MAILBOX_SECTION_CHARS = 8000;
 const PROMPT_MENTION_RE = /(^|[\s([{"'<])@([\p{L}\p{N}._-]+)/gu;
 
 export function sanitizePromptMentions(text: any) {
@@ -238,20 +239,47 @@ function formatPrivateMailbox(messages: any, agents: any) {
     return 'No private mailbox items.';
   }
 
-  return recentMessages
-    .map((message: any) => {
-      const sender =
-        message.senderAgentId && agentMap.has(message.senderAgentId)
-          ? agentMap.get(message.senderAgentId).name
-          : message.senderName || 'System';
-      const recipients = (Array.isArray(message.recipientAgentIds) ? message.recipientAgentIds : [])
-        .map((agentId: any) => getAgentById(agents, agentId))
-        .filter(Boolean)
-        .map((agent: any) => agent.name);
-      const recipientSuffix = recipients.length > 0 ? ` -> ${recipients.join(', ')}` : '';
-      return `${sender}${recipientSuffix}: ${sanitizePromptMentions(message.content)}`;
-    })
-    .join('\n\n');
+  const formattedMessages = recentMessages.map((message: any) => {
+    const sender =
+      message.senderAgentId && agentMap.has(message.senderAgentId)
+        ? agentMap.get(message.senderAgentId).name
+        : message.senderName || 'System';
+    const recipients = (Array.isArray(message.recipientAgentIds) ? message.recipientAgentIds : [])
+      .map((agentId: any) => getAgentById(agents, agentId))
+      .filter(Boolean)
+      .map((agent: any) => agent.name);
+    const recipientSuffix = recipients.length > 0 ? ` -> ${recipients.join(', ')}` : '';
+    return `${sender}${recipientSuffix}: ${sanitizePromptMentions(message.content)}`;
+  });
+
+  // Whole-message section budget: keep the newest contiguous suffix of whole
+  // formatted messages whose mailbox body fits the budget, counting the
+  // omission notice itself. Oldest messages beyond the budget are dropped whole
+  // and never clipped mid-content. When even the newest message alone exceeds
+  // the budget, every message is dropped and only the bounded notice remains,
+  // so the section is always bounded.
+  const measureMailboxBodyChars = (lines: string[]) =>
+    lines.reduce((total, line) => total + line.length, 0) + Math.max(0, lines.length - 1) * 2;
+
+  if (measureMailboxBodyChars(formattedMessages) <= MAX_PRIVATE_MAILBOX_SECTION_CHARS) {
+    return formattedMessages.join('\n\n');
+  }
+
+  for (let droppedCount = 1; droppedCount <= formattedMessages.length; droppedCount += 1) {
+    const keptLines = formattedMessages.slice(droppedCount);
+    const notice = formatPrivateMailboxOmissionNotice(droppedCount);
+    const bodyChars =
+      notice.length + (keptLines.length > 0 ? 2 : 0) + measureMailboxBodyChars(keptLines);
+    if (bodyChars <= MAX_PRIVATE_MAILBOX_SECTION_CHARS) {
+      return keptLines.length > 0 ? [notice, ...keptLines].join('\n\n') : notice;
+    }
+  }
+
+  return formatPrivateMailboxOmissionNotice(formattedMessages.length);
+}
+
+function formatPrivateMailboxOmissionNotice(droppedCount: number) {
+  return `[${droppedCount} private mailbox message(s) omitted to fit the section budget; use read-context to retrieve them]`;
 }
 
 function formatSummarySegmentItems(label: string, items: any) {
