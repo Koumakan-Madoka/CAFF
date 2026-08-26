@@ -550,7 +550,8 @@ Upgraded the audited PI package family to 0.84.3, added exact stream_read_error 
 
 ### Testing
 
-- [OK] (Add test results)
+- [OK] Check, source/public typechecks, build, focused PI/runtime suites, smoke, DAG execution, isolated fault injection, SQLite integrity, SSE, and real Edge acceptance passed.
+- [OK] Both GitHub PRs completed two unit checks; merge trees matched the independently reviewed candidate trees.
 
 ### Status
 

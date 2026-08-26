@@ -16,7 +16,7 @@
 {"file": "tests/runtime/agent-executor-hook.test.js", "reason": "Recovered and terminal model usage/message/task accounting"}
 {"file": "tests/runtime/pi-model-config-validator.test.js", "reason": "Real default PI AI compat import probe"}
 {"file": ".trellis/spec/runtime/agent-runtime.md", "reason": "Executable exact stream read retry contract"}
-{"file": ".trellis/tasks/08-26-pi-0843-stream-read-error/pr-b-evidence.md", "reason": "PR B red-first and focused green evidence"}
+{"file": ".trellis/tasks/archive/2026-08/08-26-pi-0843-stream-read-error/pr-b-evidence.md", "reason": "PR B red-first and focused green evidence"}
 {"file": "server/domain/runtime/message-tool-trace.ts", "reason": "Resolved retry history must not create a failure banner after authoritative success"}
 {"file": "tests/runtime/message-tool-trace.test.js", "reason": "Real session JSONL retry-history and unrelated-error regression"}
-{"file": ".trellis/tasks/08-26-pi-0843-stream-read-error/upstream-draft.md", "reason": "Sanitized upstream issue and PR wording prepared but not published"}
+{"file": ".trellis/tasks/archive/2026-08/08-26-pi-0843-stream-read-error/upstream-draft.md", "reason": "Sanitized upstream issue and PR wording prepared but not published"}
