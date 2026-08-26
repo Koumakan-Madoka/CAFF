@@ -125,6 +125,15 @@ The POST body must be exactly `{}`; unknown fields return `400 conversation_reco
 - If mandatory source/failure fields cannot fit the hard bound, the model is not called and the mechanical path remains authoritative.
 - When an 8 MiB tail starts inside a JSONL record, the partial first line is discarded. If the remaining tail contains no complete tool call/result pair, Capsule construction fails closed and the model is not called.
 
+### Agent prompt attribution
+
+- A persistent recovery result remains ordinary conversation history, but its source trace must be machine-identifiable to later Agents.
+- Before prompt assembly, `projectRecoveryHistorySources(store, conversationId, messages)` collects only messages with `metadata.recoveryResult === true` and resolves their `metadata.sourceMessageId` values through one bounded `listMessagesByIds` call.
+- A resolved source is trusted only when it is an assistant message with `status=failed` in the same conversation. The prompt derives the source Agent name and run ID from that source row, never from recovery-message metadata.
+- Conversation History renders a compact label such as `Recovery Scribe [read-only recovery; source agent GPT; source run 10159]: ...`. It does not expose the full source message/task IDs, Capsule, model output, or internal recovery metadata.
+- If the source row is missing, outside the conversation, not a failed assistant, or lacks a valid Agent name/run ID, the label is `Recovery Scribe [read-only recovery; source unavailable]: ...`. Recovery content remains visible and prompt assembly does not infer provenance from surrounding prose.
+- The source point-read does not add the old source message to the bounded history window and does not change API/SSE message projections.
+
 ### Scribe isolation
 
 - Configuration priority is explicit options, `CAFF_RECOVERY_*`, digest settings, then Pi defaults.
@@ -152,14 +161,18 @@ The POST body must be exactly `{}`; unknown fields return `400 conversation_reco
 | terminal transition or field update attempted | repository returns null; terminal row unchanged |
 | stale queued/running row after restart | project interrupted/failed, keep persisted status unchanged, do not schedule work |
 | oversized session tail without complete call/result evidence | no model call; failed recovery with mechanical message |
+| recovery result with valid old failed source outside recent history | prompt labels the source Agent and authoritative source run without adding the source message to history |
+| recovery source lookup missing or invalid | prompt labels `source unavailable`; ignore source Agent/run values in recovery metadata |
 
 ## 5. Good / Base / Bad Cases
 
 - Good: a successful `kubectl apply` toolResult is listed under completed while a later stream failure remains the failure location.
 - Good: a timed-out mutating command is listed under possibly effective and the recovery point tells the user to verify external state first.
+- Good: a later Agent sees `Recovery Scribe [read-only recovery; source agent GPT; source run 10159]` even when the failed source is older than the raw-history window.
 - Base: a failed read has an error result and is listed as not completed.
 - Bad: treating a missing write result as not executed, replaying it automatically, or changing the source message from failed to completed.
 - Bad: starting a normal Pi Agent session for the scribe and relying on prompt wording to keep default coding tools unused.
+- Bad: trusting `sourceAgentName` or `sourceRunId` copied from recovery-message metadata, or injecting full Capsule/source IDs into Conversation History.
 
 ## 6. Required Tests
 
@@ -168,6 +181,7 @@ The POST body must be exactly `{}`; unknown fields return `400 conversation_reco
 - `tests/runtime/message-recovery.test.js`: same-conversation/failed/idle/source-integrity validation, duplicate clicks, task/run linkage, direct no-tools invocation, provider/invalid-output fallback, source immutability, SSE order, and stale restart projection.
 - `tests/http/message-recovery-controller.test.js`: exact `{}` body, 202 response, and message-page projection.
 - `tests/ui/message-recovery.test.js`: failed-card action, queued/running/completed/failed states, source provenance, non-execution declaration, stable touch geometry, and no retry/continue/source-state rewrite.
+- `tests/runtime/turn-orchestrator.test.js`: one bounded source lookup, source Agent/run attribution for an old failed assistant, invalid-source fail-safe labeling, and refusal to trust recovery metadata provenance.
 - These files are registered in `package.json` `test:fast`. Build, check, typecheck, targeted tests, smoke, and isolated browser verification remain release gates.
 
 ## 7. Wrong vs Correct

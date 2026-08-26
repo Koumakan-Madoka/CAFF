@@ -13,6 +13,7 @@ const {
   buildRelatedMemorySearchQuery,
   createAgentExecutor,
   extractLiveSessionToolFromPiEvent,
+  projectRecoveryHistorySources,
   resolveRelatedMemorySegments,
 } = require('../../build/server/domain/conversation/turn/agent-executor');
 const { ensureAgentSandbox } = require('../../build/server/domain/conversation/turn/agent-sandbox');
@@ -402,6 +403,108 @@ test('buildAgentTurnPrompt omits optional sections with no material content', ()
   assert.doesNotMatch(prompt, /(?:- none|No private mailbox items|No saved memory cards|No prior messages)/u);
   assert.match(prompt, /Local sandbox:/u);
   assert.match(prompt, /Write your reply now\./u);
+});
+
+test('buildAgentTurnPrompt attributes recovery results to the server-resolved source trace', () => {
+  const baseInput = {
+    conversation: {
+      id: 'conversation-recovery-source-prompt',
+      title: 'Recovery Source Prompt',
+      type: 'standard',
+      agents: [{ id: 'agent-reader', name: 'Reader' }],
+    },
+    agent: { id: 'agent-reader', name: 'Reader' },
+    agentConfig: { profileName: 'Default' },
+    resolvedPersonaSkills: [],
+    resolvedConversationSkills: [],
+    sandbox: {},
+    agents: [{ id: 'agent-reader', name: 'Reader' }],
+    privateMessages: [],
+    trigger: { triggerType: 'user', enqueueReason: 'default_first_agent' },
+    remainingSlots: 0,
+    routingMode: 'mention_queue',
+    allowHandoffs: true,
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+  };
+  const recoveryMetadata = {
+    recoveryResult: true,
+    sourceMessageId: 'failed-source-message',
+    sourceRunId: 999999,
+    sourceAgentName: 'Untrusted Metadata Agent',
+  };
+  const sourceLookupCalls = [];
+  const attributedMessages = projectRecoveryHistorySources(
+    {
+      listMessagesByIds(conversationId, messageIds) {
+        sourceLookupCalls.push({ conversationId, messageIds });
+        return [{
+          id: 'failed-source-message',
+          conversationId,
+          role: 'assistant',
+          status: 'failed',
+          agentId: 'agent-source',
+          senderName: 'GPT',
+          runId: 10159,
+        }];
+      },
+    },
+    baseInput.conversation.id,
+    [{
+      id: 'recovery-result-attributed',
+      role: 'assistant',
+      senderName: 'Recovery Scribe',
+      content: 'Recovered evidence summary.',
+      status: 'completed',
+      metadata: recoveryMetadata,
+    }]
+  );
+  const attributedPrompt = buildAgentTurnPrompt({
+    ...baseInput,
+    messages: attributedMessages,
+  });
+  const unavailableMessages = projectRecoveryHistorySources(
+    {
+      listMessagesByIds(conversationId) {
+        return [{
+          id: 'failed-source-message',
+          conversationId,
+          role: 'assistant',
+          status: 'completed',
+          senderName: 'Wrongly Completed Source',
+          runId: 20202,
+        }];
+      },
+    },
+    baseInput.conversation.id,
+    [{
+      id: 'recovery-result-unavailable',
+      role: 'assistant',
+      senderName: 'Recovery Scribe',
+      content: 'Recovered evidence summary.',
+      status: 'completed',
+      metadata: recoveryMetadata,
+    }]
+  );
+  const unavailablePrompt = buildAgentTurnPrompt({
+    ...baseInput,
+    messages: unavailableMessages,
+  });
+
+  assert.deepEqual(sourceLookupCalls, [{
+    conversationId: baseInput.conversation.id,
+    messageIds: ['failed-source-message'],
+  }]);
+  assert.match(
+    attributedPrompt,
+    /Recovery Scribe \[read-only recovery; source agent GPT; source run 10159\]: Recovered evidence summary\./u
+  );
+  assert.doesNotMatch(attributedPrompt, /Untrusted Metadata Agent|999999/u);
+  assert.match(
+    unavailablePrompt,
+    /Recovery Scribe \[read-only recovery; source unavailable\]: Recovered evidence summary\./u
+  );
+  assert.equal(unavailableMessages[0].promptRecoverySource, null);
+  assert.doesNotMatch(unavailablePrompt, /Untrusted Metadata Agent|999999|Wrongly Completed Source|20202/u);
 });
 
 test('buildAgentTurnPromptSections orders stable prompt sections before dynamic context', () => {
