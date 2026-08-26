@@ -6671,6 +6671,103 @@ body.chat-app .message-recovery-provenance {
   overflow-wrap: anywhere;
 }
 
+body.chat-app .message-recovery-refs {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--caff-space-1);
+  flex-wrap: wrap;
+}
+
+body.chat-app .message-recovery-ref {
+  appearance: none;
+  padding: 0.1rem 0.45rem;
+  border: 1px solid var(--caff-border);
+  border-radius: var(--caff-radius-sm);
+  background: transparent;
+  color: var(--caff-text-muted);
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.72rem;
+  line-height: 1.5;
+  cursor: copy;
+  white-space: nowrap;
+}
+
+body.chat-app .message-recovery-ref:hover:not(:disabled) {
+  border-color: var(--caff-border-strong);
+  color: var(--caff-text);
+}
+
+body.chat-app .message-recovery-ref:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+body.chat-app .message-recovery-note {
+  font-size: 0.72rem;
+  color: var(--caff-text-muted);
+  white-space: nowrap;
+}
+
+body.chat-app .message-recovery-locate {
+  min-height: 28px;
+  padding: 0.15rem 0.55rem;
+  border-radius: var(--caff-radius-sm);
+  box-shadow: none;
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+body.chat-app .message-card.recovery-result .message-body {
+  gap: 0.4rem;
+  line-height: 1.55;
+}
+
+body.chat-app .message-card.recovery-result .message-body h2 {
+  font-size: 0.98rem;
+}
+
+body.chat-app .message-card.recovery-result .message-body h3 {
+  font-size: 0.86rem;
+  margin-top: 0.35rem;
+  color: var(--caff-text-muted);
+}
+
+body.chat-app .message-card.recovery-result .message-body blockquote {
+  padding-left: 0.7rem;
+  font-size: 0.8rem;
+}
+
+body.chat-app .message-card.recovery-result .message-body ul,
+body.chat-app .message-card.recovery-result .message-body ol {
+  font-size: 0.88rem;
+}
+
+body.chat-app .message-card.recovery-result .message-body li + li {
+  margin-top: 0.12rem;
+}
+
+body.chat-app .message-body.collapsed-error {
+  max-height: 8.5rem;
+  overflow: hidden;
+  mask-image: linear-gradient(to bottom, #000 55%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, #000 55%, transparent 100%);
+}
+
+body.chat-app .message-error-toggle {
+  justify-self: center;
+  min-height: 32px;
+  padding: 0.2rem 0.75rem;
+  border-radius: var(--caff-radius-sm);
+  box-shadow: none;
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+body.chat-app .message-error-toggle[hidden] {
+  display: none;
+}
+
 /* ── 移动档（G6） ── */
 body.chat-app .new-msg-pill {
   left: auto;

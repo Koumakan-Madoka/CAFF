@@ -521,13 +521,15 @@ export function buildRecoveryCapsule(input: any = {}) {
   return enforceCapsuleBudget(capsule);
 }
 
-function listOrPlaceholder(items: any, placeholder: string) {
+function appendSummarySection(lines: string[], heading: string, items: any) {
   const values = (Array.isArray(items) ? items : []).filter(Boolean).slice(0, 12);
-  return values.length > 0 ? values.map((value) => `- ${clipText(value, 360)}`).join('\n') : `- ${placeholder}`;
+  if (values.length === 0) {
+    return;
+  }
+  lines.push(`### ${heading}`, values.map((value) => `- ${clipText(value, 360)}`).join('\n'), '');
 }
 
 export function buildMechanicalRecoveryMessage(capsule: any) {
-  const source = capsule && capsule.source || {};
   const failure = capsule && capsule.failure || {};
   const summary = capsule && capsule.evidenceSummary || {};
   const failureText = failure.runError || failure.taskError || failure.messageError
@@ -537,29 +539,26 @@ export function buildMechanicalRecoveryMessage(capsule: any) {
     ? '先核验“可能已生效但需核验”中的外部状态，再决定后续动作。'
     : '先核验最后一个有证据的工具结果与当前环境状态，再决定后续动作。';
 
-  return clipText([
+  const lines = [
     '## 执行异常后的现场摘要',
-    '',
-    `来源：消息 ${source.messageId || 'unknown'} · task ${source.taskId || 'unknown'} · run ${source.runId || 'unknown'}`,
     '',
     '> 这是只读现场整理，不会执行或重放原任务。原失败 Trace 保持 failed。',
     '',
-    '### 已经完成',
-    listOrPlaceholder(summary.completed, '没有足够的成功 toolResult 证据。'),
-    '',
+  ];
+  appendSummarySection(lines, '已经完成', summary.completed);
+  lines.push(
     '### 失败位置',
     `- ${clipText(failureText, 600)}`,
     '',
-    '### 可能已生效但需核验',
-    listOrPlaceholder(summary.possiblyEffective, '没有识别到可能产生外部副作用但结果不确定的工具。'),
-    '',
-    '### 尚未完成',
-    listOrPlaceholder(summary.notCompleted, '无法仅凭机械现场判断原计划的全部剩余事项。'),
-    '',
+  );
+  appendSummarySection(lines, '可能已生效但需核验', summary.possiblyEffective);
+  appendSummarySection(lines, '尚未完成', summary.notCompleted);
+  lines.push(
     '### 建议恢复点',
     `- ${recoveryPoint}`,
     '',
-    '### 无法从现场判断',
-    listOrPlaceholder(summary.unknown, '原计划语义完成度与未记录的外部状态仍需重新核验。'),
-  ].join('\n'), MAX_RECOVERY_OUTPUT_CHARS);
+  );
+  appendSummarySection(lines, '无法从现场判断', summary.unknown);
+
+  return clipText(lines.join('\n').trimEnd(), MAX_RECOVERY_OUTPUT_CHARS);
 }

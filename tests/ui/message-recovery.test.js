@@ -184,11 +184,71 @@ test('recovery result message visibly identifies source trace and read-only prov
 
   assert.ok(provenance);
   assert.match(provenance.textContent, /机械摘要/u);
-  assert.match(provenance.textContent, /failed-message/u);
-  assert.match(provenance.textContent, /source-task/u);
-  assert.match(provenance.textContent, /run 42/u);
   assert.match(provenance.textContent, /只读/u);
+  assert.match(provenance.textContent, /run 42/u);
+
+  const chips = Array.from(provenance.querySelectorAll('.message-recovery-ref'));
+  assert.equal(chips.length, 3);
+  assert.match(chips[0].textContent, /来源消息 failed-m…/u);
+  assert.match(chips[0].title, /failed-message/u);
+  assert.match(chips[1].textContent, /task source-t…/u);
+  assert.match(chips[1].title, /source-task/u);
+  assert.match(chips[2].textContent, /run 42/u);
+  assert.equal(chips.every((chip) => chip.disabled === false), true);
+
+  const locateSource = provenance.querySelector('.message-recovery-locate');
+  assert.ok(locateSource);
+  assert.match(locateSource.textContent, /定位来源/u);
   assert.equal(context.document.querySelector('.message-recovery-button'), null);
+});
+
+test('terminal recovery state links the source card to the persisted result message', () => {
+  const context = bootTimeline([failedMessage({
+    id: 'recovery-1',
+    sourceMessageId: 'failed-message',
+    sourceTaskId: 'source-task',
+    sourceRunId: 42,
+    recoveryTaskId: 'recovery-task',
+    recoveryRunId: 77,
+    recoveryMessageId: 'result-message',
+    status: 'completed',
+    fallbackUsed: false,
+  })]);
+  const panel = context.document.querySelector('.message-recovery-panel');
+  const locateResult = panel.querySelector('.message-recovery-locate');
+
+  assert.ok(locateResult);
+  assert.match(locateResult.textContent, /查看整理结果/u);
+  locateResult.click();
+  assert.equal(context.toasts.some((message) => /不在时间线/u.test(message)), true);
+});
+
+test('long failed error body is collapsed with an expand toggle', () => {
+  const longError = `stream_read_error ${'x'.repeat(600)}`;
+  const context = bootTimeline([{ ...failedMessage(), errorMessage: longError, content: `[错误] ${longError}` }]);
+  const card = context.document.querySelector('[data-message-id="failed-message"]');
+  const body = card.querySelector('.message-body');
+  const toggle = card.querySelector('.message-error-toggle');
+
+  assert.ok(toggle);
+  assert.equal(toggle.hidden, false);
+  assert.equal(body.classList.contains('collapsed-error'), true);
+  assert.match(toggle.textContent, /展开错误详情/u);
+
+  toggle.click();
+  assert.equal(body.classList.contains('collapsed-error'), false);
+  assert.match(toggle.textContent, /收起错误详情/u);
+
+  toggle.click();
+  assert.equal(body.classList.contains('collapsed-error'), true);
+});
+
+test('short failed error body stays fully visible without a toggle', () => {
+  const context = bootTimeline([failedMessage()]);
+  const card = context.document.querySelector('[data-message-id="failed-message"]');
+
+  assert.equal(card.querySelector('.message-body').classList.contains('collapsed-error'), false);
+  assert.equal(card.querySelector('.message-error-toggle').hidden, true);
 });
 
 test('recovery controls have stable touch geometry and SSE refresh wiring', () => {

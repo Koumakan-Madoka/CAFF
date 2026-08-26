@@ -40,8 +40,10 @@
     } = helpers;
 
     const TRACE_SCROLL_STEP_LIMIT = 8;
+    const MESSAGE_ERROR_COLLAPSE_MIN_CHARS = 480;
     const selectedMessageIds = new Set();
     const recoveryRequestMessageIds = new Set();
+    const expandedFailureBodyIds = new Set();
     const renderedMessagesById = new Map();
     const deleteToolbar = dom.messageDeleteToolbar || null;
     const deleteCount = deleteToolbar && deleteToolbar.querySelector('[data-message-delete-count]');
@@ -170,6 +172,51 @@
       return { label: '整理状态未知', tone: 'failed', terminal: true };
     }
 
+    function focusTimelineMessage(messageId, missingNotice) {
+      const normalizedMessageId = String(messageId || '').trim();
+      const card = normalizedMessageId && dom && dom.messageList
+        ? Array.from(dom.messageList.querySelectorAll('.message-card'))
+          .find((item) => item.dataset.messageId === normalizedMessageId) || null
+        : null;
+
+      if (!card) {
+        showToast(missingNotice || '目标消息当前不在时间线中，可能已被过滤或尚未加载。');
+        return;
+      }
+
+      dom.messageList.querySelectorAll('.message-card.digest-source-target')
+        .forEach((item) => item.classList.remove('digest-source-target'));
+      card.classList.add('digest-source-target');
+      card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      window.setTimeout(() => card.classList.remove('digest-source-target'), 2200);
+    }
+
+    function buildRecoveryRefChip(label, value) {
+      const full = String(value || '').trim();
+      const known = Boolean(full && full !== 'unknown' && full !== '0');
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'message-recovery-ref';
+      chip.textContent = `${label} ${known && full.length > 8 ? `${full.slice(0, 8)}…` : (full || 'unknown')}`;
+      chip.disabled = !known;
+      chip.title = known ? `${label} ${full}（点击复制完整值）` : `${label}未知`;
+      chip.addEventListener('click', async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (typeof shared.copyTextToClipboard !== 'function') {
+          showToast('当前环境不支持复制');
+          return;
+        }
+        try {
+          await shared.copyTextToClipboard(full);
+          showToast(`已复制${label}完整标识`);
+        } catch (error) {
+          showToast(error && error.message ? error.message : '复制失败');
+        }
+      });
+      return chip;
+    }
+
     function syncRecoveryPanel(panel, message, conversationId) {
       if (!panel) {
         return;
@@ -190,11 +237,35 @@
         : 'message-recovery-panel';
 
       if (isRecoveryResult) {
-        const sourceMessageId = String(metadata.sourceMessageId || 'unknown');
-        const sourceTaskId = String(metadata.sourceTaskId || 'unknown');
-        const sourceRunId = String(metadata.sourceRunId || 'unknown');
-        const kind = metadata.fallbackUsed ? '机械摘要' : '书记整理';
-        panel.textContent = `${kind} · 来源消息 ${sourceMessageId} · task ${sourceTaskId} · run ${sourceRunId} · 只读，不执行或重放`;
+        const fallbackUsed = Boolean(metadata.fallbackUsed);
+        const kindBadge = document.createElement('span');
+        kindBadge.className = `message-recovery-status ${fallbackUsed ? 'failed' : 'success'}`;
+        kindBadge.textContent = fallbackUsed ? '机械摘要' : '书记整理';
+
+        const refs = document.createElement('span');
+        refs.className = 'message-recovery-refs';
+        refs.append(
+          buildRecoveryRefChip('来源消息', metadata.sourceMessageId),
+          buildRecoveryRefChip('task', metadata.sourceTaskId),
+          buildRecoveryRefChip('run', metadata.sourceRunId)
+        );
+
+        const note = document.createElement('span');
+        note.className = 'message-recovery-note';
+        note.textContent = '只读 · 不执行或重放';
+
+        const locateSource = document.createElement('button');
+        locateSource.type = 'button';
+        locateSource.className = 'message-recovery-locate ghost-button';
+        locateSource.textContent = '定位来源';
+        locateSource.title = '滚动到被整理的失败消息';
+        locateSource.addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          focusTimelineMessage(metadata.sourceMessageId, '被整理的失败消息当前不在时间线中。');
+        });
+
+        panel.append(kindBadge, refs, note, locateSource);
         return;
       }
 
@@ -206,6 +277,19 @@
         status.title = recovery.errorMessage || view.label;
         panel.appendChild(status);
         if (view.terminal) {
+          if (recovery.recoveryMessageId) {
+            const locateResult = document.createElement('button');
+            locateResult.type = 'button';
+            locateResult.className = 'message-recovery-locate ghost-button';
+            locateResult.textContent = '查看整理结果';
+            locateResult.title = '滚动到这条失败消息的现场整理结果';
+            locateResult.addEventListener('click', (event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              focusTimelineMessage(recovery.recoveryMessageId, '整理结果消息当前不在时间线中。');
+            });
+            panel.appendChild(locateResult);
+          }
           return;
         }
       }
@@ -1998,6 +2082,7 @@
       const liveHint = document.createElement('div');
       const toolTrace = document.createElement('section');
       const imageGallery = document.createElement('div');
+      const errorToggle = document.createElement('button');
       const deleteControls = document.createElement('div');
       const selectLabel = document.createElement('label');
       const selectCheckbox = document.createElement('input');
@@ -2015,6 +2100,25 @@
       toolTrace.className = 'message-tool-trace hidden';
       imageGallery.className = 'message-images';
       imageGallery.hidden = true;
+      errorToggle.type = 'button';
+      errorToggle.className = 'message-error-toggle ghost-button';
+      errorToggle.hidden = true;
+      errorToggle.setAttribute('aria-expanded', 'false');
+      errorToggle.addEventListener('click', () => {
+        const messageId = String(card.dataset.messageId || '');
+        if (!messageId) {
+          return;
+        }
+        const expanded = !expandedFailureBodyIds.has(messageId);
+        if (expanded) {
+          expandedFailureBodyIds.add(messageId);
+        } else {
+          expandedFailureBodyIds.delete(messageId);
+        }
+        body.classList.toggle('collapsed-error', !expanded);
+        errorToggle.textContent = expanded ? '收起错误详情' : '展开错误详情';
+        errorToggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+      });
       deleteControls.className = 'message-delete-controls';
       selectLabel.className = 'message-delete-select-target';
       selectCheckbox.type = 'checkbox';
@@ -2050,7 +2154,7 @@
       deleteControls.append(selectLabel, deleteButton);
 
       meta.append(sender, time, deleteControls);
-      card.append(meta, crossConversationPanel, recoveryPanel, toolTrace, imageGallery, body, liveHint);
+      card.append(meta, crossConversationPanel, recoveryPanel, toolTrace, imageGallery, body, errorToggle, liveHint);
       syncMessageCard(card, message, conversationId, agents, activeTurn, activeAgentSlots);
 
       return card;
@@ -2154,6 +2258,7 @@
       card.classList.toggle('failed', message.status === 'failed');
       card.classList.toggle('digest-status', isDigestStatusMessage);
       card.classList.toggle('digest-result', isDigestResultMessage);
+      card.classList.toggle('recovery-result', Boolean(metadata && metadata.recoveryResult));
 
       if (agent && agent.accentColor) {
         card.style.setProperty('--agent-color', agent.accentColor);
@@ -2169,6 +2274,7 @@
       const liveHint = card.querySelector('.message-live-hint');
       const toolTrace = card.querySelector('.message-tool-trace');
       const imageGallery = card.querySelector('.message-images');
+      const errorToggle = card.querySelector('.message-error-toggle');
       const deleteControls = card.querySelector('.message-delete-controls');
       const selectCheckbox = card.querySelector('.message-delete-checkbox');
       const deleteButton = card.querySelector('.message-delete-button');
@@ -2274,6 +2380,18 @@
 
       body.classList.toggle('digest-result-body', isDigestResultMessage);
       body.classList.toggle('hidden', Boolean(crossConversationModels.receipt));
+      const shouldCollapseError = message.status === 'failed'
+        && !isDigestStatusMessage
+        && !isDigestResultMessage
+        && !(metadata && metadata.recoveryResult)
+        && String(bodyText || '').length >= MESSAGE_ERROR_COLLAPSE_MIN_CHARS;
+      const errorExpanded = expandedFailureBodyIds.has(message.id);
+      body.classList.toggle('collapsed-error', shouldCollapseError && !errorExpanded);
+      if (errorToggle) {
+        errorToggle.hidden = !shouldCollapseError;
+        errorToggle.textContent = errorExpanded ? '收起错误详情' : '展开错误详情';
+        errorToggle.setAttribute('aria-expanded', errorExpanded ? 'true' : 'false');
+      }
       messageImages.syncMessageImages(imageGallery, message);
       imageGallery.hidden = imageGallery.hidden || Boolean(crossConversationModels.receipt) || isDigestResultMessage;
       if (isDigestResultMessage) {
