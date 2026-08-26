@@ -9,8 +9,9 @@ export const AGENT_PROMPT_VERSION =
 
 const MAX_HISTORY_MESSAGES = 24;
 const MAX_PARALLEL_MENTION_BATCH_SIZE = 5;
-const MAX_PRIVATE_CONTEXT_MESSAGES = 16;
-const MAX_PRIVATE_MAILBOX_SECTION_CHARS = 8000;
+const MAX_PRIVATE_CONTEXT_MESSAGES = 8;
+const MAX_PRIVATE_MAILBOX_SECTION_CHARS = 16384;
+const MIN_PRIVATE_MAILBOX_SECTION_MESSAGES = 4;
 const PROMPT_MENTION_RE = /(^|[\s([{"'<])@([\p{L}\p{N}._-]+)/gu;
 
 export function sanitizePromptMentions(text: any) {
@@ -255,9 +256,10 @@ function formatPrivateMailbox(messages: any, agents: any) {
   // Whole-message section budget: keep the newest contiguous suffix of whole
   // formatted messages whose mailbox body fits the budget, counting the
   // omission notice itself. Oldest messages beyond the budget are dropped whole
-  // and never clipped mid-content. When even the newest message alone exceeds
-  // the budget, every message is dropped and only the bounded notice remains,
-  // so the section is always bounded.
+  // and never clipped mid-content. The newest
+  // MIN_PRIVATE_MAILBOX_SECTION_MESSAGES messages are a display floor: they are
+  // always kept whole even when they alone exceed the budget, so agents never
+  // lose sight of the most recent private context.
   const measureMailboxBodyChars = (lines: string[]) =>
     lines.reduce((total, line) => total + line.length, 0) + Math.max(0, lines.length - 1) * 2;
 
@@ -265,17 +267,25 @@ function formatPrivateMailbox(messages: any, agents: any) {
     return formattedMessages.join('\n\n');
   }
 
-  for (let droppedCount = 1; droppedCount <= formattedMessages.length; droppedCount += 1) {
+  const floorKeep = Math.min(MIN_PRIVATE_MAILBOX_SECTION_MESSAGES, formattedMessages.length);
+  for (let droppedCount = 1; droppedCount <= formattedMessages.length - floorKeep; droppedCount += 1) {
     const keptLines = formattedMessages.slice(droppedCount);
     const notice = formatPrivateMailboxOmissionNotice(droppedCount);
-    const bodyChars =
-      notice.length + (keptLines.length > 0 ? 2 : 0) + measureMailboxBodyChars(keptLines);
+    const bodyChars = notice.length + 2 + measureMailboxBodyChars(keptLines);
     if (bodyChars <= MAX_PRIVATE_MAILBOX_SECTION_CHARS) {
-      return keptLines.length > 0 ? [notice, ...keptLines].join('\n\n') : notice;
+      return [notice, ...keptLines].join('\n\n');
     }
   }
 
-  return formatPrivateMailboxOmissionNotice(formattedMessages.length);
+  // Display floor: keep the newest floorKeep messages whole even when they
+  // alone exceed the budget. With fewer messages than the floor, nothing is
+  // dropped and the section is emitted without an omission notice.
+  const floorDroppedCount = formattedMessages.length - floorKeep;
+  const floorKeptLines = formattedMessages.slice(floorDroppedCount);
+  if (floorKeptLines.length === formattedMessages.length) {
+    return formattedMessages.join('\n\n');
+  }
+  return [formatPrivateMailboxOmissionNotice(floorDroppedCount), ...floorKeptLines].join('\n\n');
 }
 
 function formatPrivateMailboxOmissionNotice(droppedCount: number) {

@@ -42,19 +42,25 @@
   exact `agent.name` matching only when an id is missing, so handoff guidance
   cannot invite an agent to mention itself.
 - The `private_mailbox` prompt section is bounded by a whole-message character
-  budget (`MAX_PRIVATE_MAILBOX_SECTION_CHARS = 8000` in
-  `server/domain/conversation/turn/agent-prompt.ts`) on top of the 16-message
-  row limit. The budget applies to the mailbox body payload (formatted message
-  lines, separators, and the omission notice when any message is dropped); the
-  fixed `Private mailbox visible only to you:` header line is not counted. When
-  all formatted messages fit, the section is emitted unchanged. Otherwise the
-  newest contiguous suffix of whole messages that fits together with an explicit
-  `[N private mailbox message(s) omitted to fit the section budget; use
-  read-context to retrieve them]` notice is kept; older whole messages are
-  dropped and messages are never clipped mid-content. If even the newest
-  message alone exceeds the budget, every message is dropped and only the
-  bounded notice remains, so a single huge private message cannot make the
-  section unbounded.
+  budget (`MAX_PRIVATE_MAILBOX_SECTION_CHARS = 16384` in
+  `server/domain/conversation/turn/agent-prompt.ts`) on top of the 8-message
+  row limit (`MAX_PRIVATE_CONTEXT_MESSAGES = 8`, applied both by the executor
+  fetch and the prompt formatter). The budget applies to the mailbox body
+  payload (formatted message lines, separators, and the omission notice when
+  any message is dropped); the fixed `Private mailbox visible only to you:`
+  header line is not counted. When all formatted messages fit, the section is
+  emitted unchanged. Otherwise the newest contiguous suffix of whole messages
+  that fits together with an explicit `[N private mailbox message(s) omitted
+  to fit the section budget; use read-context to retrieve them]` notice is
+  kept; older whole messages are dropped and messages are never clipped
+  mid-content. The newest four messages
+  (`MIN_PRIVATE_MAILBOX_SECTION_MESSAGES = 4`, or every message when the
+  mailbox holds fewer) are a display floor that overrides the budget: they are
+  always kept whole even when they alone exceed it, so the agent never loses
+  the most recent private context behind a notice-only section. This means the
+  section is not strictly byte-bounded when four or fewer huge messages are
+  pending; bounding that case would require a write-side length limit, which
+  is an explicit non-goal.
 - Optional prompt sections with no material body should be omitted rather than
   represented as `- none` or `No ...` placeholders. This applies to persona
   skills, conversation skills, other participants, private mailbox, legacy
