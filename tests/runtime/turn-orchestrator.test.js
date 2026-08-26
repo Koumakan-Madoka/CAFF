@@ -6918,3 +6918,156 @@ test('message deletion reconciliation moves a deleted consumed-user cursor to th
   orchestrator.reconcileConversationQueueAfterMessageDeletion(conversation.id, [oldUser]);
   assert.equal(orchestrator.getConversationQueueDepth(conversation.id), 0);
 });
+
+test('routing executor per-turn reply hop limit is at least 32 for small rooms', { concurrency: false }, async (t) => {
+  const tempDir = withTempDir('caff-hop-limit-floor-');
+  const sqlitePath = path.join(tempDir, 'hop-limit-floor.sqlite');
+  const activeConversationIds = new Set();
+  const activeTurns = new Map();
+  const conversation = {
+    id: 'conversation-hop-limit-floor',
+    title: 'Hop limit floor',
+    type: 'standard',
+    agents: [
+      { id: 'agent-a', name: 'Alpha' },
+      { id: 'agent-b', name: 'Beta' },
+    ],
+    messages: [],
+  };
+  let messageCounter = 0;
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const store = {
+    getConversation(conversationId) {
+      return conversationId === conversation.id ? conversation : null;
+    },
+    createMessage(input) {
+      messageCounter += 1;
+      const message = {
+        id: `message-${messageCounter}`,
+        errorMessage: '',
+        taskId: null,
+        runId: null,
+        metadata: null,
+        createdAt: `2026-08-25T09:30:${String(messageCounter % 60).padStart(2, '0')}.000Z`,
+        ...input,
+      };
+      conversation.messages.push(message);
+      return message;
+    },
+  };
+
+  const executedAgentIds = [];
+  const executor = createRoutingExecutor({
+    store,
+    agentDir: tempDir,
+    sqlitePath,
+    activeConversationIds,
+    activeTurns,
+    async executeConversationAgent({ agent, enqueueAgent, completedReplies }) {
+      executedAgentIds.push(agent.id);
+      completedReplies.push({
+        agentId: agent.id,
+        senderName: agent.name,
+        content: `reply from ${agent.id}`,
+        status: 'completed',
+      });
+      const nextAgentId = agent.id === 'agent-a' ? 'agent-b' : 'agent-a';
+      enqueueAgent({
+        agentId: nextAgentId,
+        triggerType: 'agent',
+        triggeredByAgentId: agent.id,
+        triggeredByAgentName: agent.name,
+        triggeredByMessageId: `message-${messageCounter}`,
+        parentRunId: `run-${agent.id}-${executedAgentIds.length}`,
+        enqueueReason: 'agent_mention',
+      });
+      return { stopTurn: false };
+    },
+  });
+
+  const result = await executor(conversation.id, {
+    content: 'Relay between Alpha and Beta',
+    initialAgentIds: ['agent-a'],
+    executionMode: 'queue',
+  });
+
+  assert.equal(executedAgentIds.length, 32);
+  assert.equal(result.turn.terminationReason, 'hop_limit_reached');
+  assert.equal(result.turn.status, 'completed');
+});
+
+test('routing executor keeps agents x 4 reply budget for large rooms', { concurrency: false }, async (t) => {
+  const tempDir = withTempDir('caff-hop-limit-large-room-');
+  const sqlitePath = path.join(tempDir, 'hop-limit-large-room.sqlite');
+  const activeConversationIds = new Set();
+  const activeTurns = new Map();
+  const conversation = {
+    id: 'conversation-hop-limit-large-room',
+    title: 'Hop limit large room',
+    type: 'standard',
+    agents: Array.from({ length: 9 }, (unused, index) => ({
+      id: `agent-${index + 1}`,
+      name: `Agent ${index + 1}`,
+    })),
+    messages: [],
+  };
+  let messageCounter = 0;
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const store = {
+    getConversation(conversationId) {
+      return conversationId === conversation.id ? conversation : null;
+    },
+    createMessage(input) {
+      messageCounter += 1;
+      const message = {
+        id: `message-${messageCounter}`,
+        errorMessage: '',
+        taskId: null,
+        runId: null,
+        metadata: null,
+        createdAt: `2026-08-25T09:31:${String(messageCounter % 60).padStart(2, '0')}.000Z`,
+        ...input,
+      };
+      conversation.messages.push(message);
+      return message;
+    },
+  };
+
+  const seenRemainingSlots = [];
+  const executor = createRoutingExecutor({
+    store,
+    agentDir: tempDir,
+    sqlitePath,
+    activeConversationIds,
+    activeTurns,
+    async executeConversationAgent({ agent, remainingSlots, completedReplies }) {
+      seenRemainingSlots.push(remainingSlots);
+      completedReplies.push({
+        agentId: agent.id,
+        senderName: agent.name,
+        content: `reply from ${agent.id}`,
+        status: 'completed',
+      });
+      return { stopTurn: true, terminationReason: 'agent_final' };
+    },
+  });
+
+  const result = await executor(conversation.id, {
+    content: 'Hello everyone',
+    initialAgentIds: ['agent-1'],
+    executionMode: 'queue',
+  });
+
+  // 9 agents -> maxReplies = max(32, 9 * 4) = 36; first hop leaves 35 slots.
+  assert.equal(seenRemainingSlots.length, 1);
+  assert.equal(seenRemainingSlots[0], 35);
+  assert.equal(result.turn.terminationReason, 'agent_final');
+});
