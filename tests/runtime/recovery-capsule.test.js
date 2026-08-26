@@ -313,3 +313,31 @@ test('mechanical recovery message is structured and explicitly non-executing', (
   assert.match(message, /不会执行或重放原任务/u);
   assert.equal(message.length <= 8000, true);
 });
+
+test('mechanical recovery message omits empty evidence sections and bare source ids', () => {
+  const capsule = {
+    version: 1,
+    source: { messageId: 'failed-message-2', taskId: 'source-task-2', runId: 43 },
+    failure: { messageError: '', taskError: '', runError: '', assistantErrors: [] },
+    tools: [],
+    evidenceSummary: {
+      completed: [],
+      possiblyEffective: [],
+      notCompleted: [],
+      unknown: [],
+    },
+  };
+
+  const message = buildMechanicalRecoveryMessage(capsule);
+  assert.doesNotMatch(message, /### 已经完成/u);
+  assert.doesNotMatch(message, /### 可能已生效但需核验/u);
+  assert.doesNotMatch(message, /### 尚未完成/u);
+  assert.doesNotMatch(message, /### 无法从现场判断/u);
+  assert.doesNotMatch(message, /来源：消息/u);
+  assert.doesNotMatch(message, /failed-message-2/u);
+  assert.match(message, /### 失败位置/u);
+  assert.match(message, /现场没有保留可判定的错误详情/u);
+  assert.match(message, /### 建议恢复点/u);
+  assert.match(message, /只读现场整理/u);
+  assert.match(message, /不会执行或重放原任务/u);
+});
