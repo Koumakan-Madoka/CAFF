@@ -116,6 +116,34 @@ function assertDeliveryError(code, statusCode) {
   return (error) => error && error.code === code && error.statusCode === statusCode;
 }
 
+test('platform recovery scribe cannot send or receive explicit conversation deliveries', () => {
+  const fixture = createFixture();
+  const service = createCrossConversationDeliveryService({ store: fixture.store });
+
+  try {
+    assert.throws(
+      () => submitRequest(service, fixture, { targetAgentId: 'recovery_scribe' }),
+      assertDeliveryError('cross_conversation_system_actor_not_routable', 403)
+    );
+    assert.throws(
+      () => submitRequest(service, fixture, {}, { sourceAgentId: 'recovery_scribe' }),
+      assertDeliveryError('cross_conversation_system_actor_not_routable', 403)
+    );
+    assert.throws(
+      () => service.submitFromSystem({
+        sourceConversationId: fixture.sourceConversation.id,
+        targetConversationId: fixture.targetConversation.id,
+        targetAgentId: 'recovery_scribe',
+        content: 'Attempt to route to the system scribe',
+        idempotencyKey: 'system-scribe-target',
+      }),
+      assertDeliveryError('cross_conversation_system_actor_not_routable', 403)
+    );
+  } finally {
+    fixture.store.close();
+  }
+});
+
 test('agent request atomically persists one delivery, low-authority target message, source receipt, and redacted event', () => {
   const fixture = createFixture();
   const service = createCrossConversationDeliveryService({ store: fixture.store });

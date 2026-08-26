@@ -125,22 +125,31 @@ The POST body must be exactly `{}`; unknown fields return `400 conversation_reco
 - If mandatory source/failure fields cannot fit the hard bound, the model is not called and the mechanical path remains authoritative.
 - When an 8 MiB tail starts inside a JSONL record, the partial first line is discarded. If the remaining tail contains no complete tool call/result pair, Capsule construction fails closed and the model is not called.
 
+### Platform system actor and routing isolation
+
+- The scribe is the platform system actor `recovery_scribe`. It is not a normal role and must never be persisted in `chat_agents`, `chat_role_identities`, or `chat_conversation_agents`.
+- Persistent recovery messages use `role=assistant`, `agentId=null`, the sender `系统书记` or `系统书记（机械摘要）`, and metadata `systemActorType=recovery_scribe`, `systemActorRoutable=false`.
+- The child task uses `assignedAgent=caff-system`, `assignedRole=recovery_scribe`; the audit run uses `task_role=recovery_scribe`. These labels do not create an Agent invocation or routing identity.
+- `server/domain/roles/system-actor-catalog.ts` owns reserved non-routable IDs and sender names. Ordinary role creation/update rejects those IDs/names; participant validation rejects the actor even if a malformed role row exists.
+- Role directory/selection, `list-participants`, prompt participant lists, mention/private/handoff resolution, explicit/default target resolution, cross-conversation delivery, Goal owner, and DAG worker/verifier resolution must use routable conversation participants only. A constructed `targetAgentId=recovery_scribe` fails closed.
+- The only trigger is the manual failed-message Recovery API. The scribe cannot be addressed through normal conversation messages, private messages, handoff, Goal/DAG, or server-side delivery.
+
 ### Agent prompt attribution
 
 - A persistent recovery result remains ordinary conversation history, but its source trace must be machine-identifiable to later Agents.
 - Before prompt assembly, `projectRecoveryHistorySources(store, conversationId, messages)` collects only messages with `metadata.recoveryResult === true` and resolves their `metadata.sourceMessageId` values through one bounded `listMessagesByIds` call.
 - A resolved source is trusted only when it is an assistant message with `status=failed` in the same conversation. The prompt derives the source Agent name and run ID from that source row, never from recovery-message metadata.
-- Conversation History renders a compact label such as `Recovery Scribe [read-only recovery; source agent GPT; source run 10159]: ...`. It does not expose the full source message/task IDs, Capsule, model output, or internal recovery metadata.
-- If the source row is missing, outside the conversation, not a failed assistant, or lacks a valid Agent name/run ID, the label is `Recovery Scribe [read-only recovery; source unavailable]: ...`. Recovery content remains visible and prompt assembly does not infer provenance from surrounding prose.
+- Conversation History renders a compact label such as `系统书记 [read-only recovery; source agent GPT; source run 10159]: ...`. It does not expose the full source message/task IDs, Capsule, model output, or internal recovery metadata.
+- If the source row is missing, outside the conversation, not a failed assistant, or lacks a valid Agent name/run ID, the label is `系统书记 [read-only recovery; source unavailable]: ...`. Recovery content remains visible and prompt assembly does not infer provenance from surrounding prose.
 - The source point-read does not add the old source message to the bounded history window and does not change API/SSE message projections.
 
 ### Scribe isolation
 
-- Configuration priority is explicit options, `CAFF_RECOVERY_*`, digest settings, then Pi defaults.
+- Configurable fields are only enabled/provider/model/thinking/timeout. Priority is explicit options, then `CAFF_RECOVERY_ENABLED/PROVIDER/MODEL/THINKING/TIMEOUT_MS`, then digest provider/model/thinking settings, then Pi defaults. Invalid enabled values fail startup; the default is enabled. Timeout accepts `1,000..60,000 ms`; values outside the platform hard maximum fail configuration instead of widening it.
 - A recovery-specific provider/model may differ from the source provider/model and should be preferred when explicitly configured.
 - Production invocation uses `ModelRuntime.completeSimple` directly with one fixed system instruction and one user Capsule message.
 - It creates no Agent session, extensions, skills, chat bridge, or tools. It cannot call bash/read/edit/write or replay source actions.
-- The model invocation is represented by a manually persisted child `runs` row with `task_kind=conversation_recovery`, `task_role=scribe`, and `parent_run_id=sourceRunId`.
+- The model invocation is represented by a manually persisted child `runs` row with `task_kind=conversation_recovery`, `task_role=recovery_scribe`, and `parent_run_id=sourceRunId`.
 - The 60-second timeout is absolute across `ModelRuntime.create` and `completeSimple`; if initialization consumes the budget, CAFF checks the aborted signal before dispatch and performs no model request.
 - Output must preserve the fixed sections: already completed, failure location, possibly effective, not completed, recovery point, unknown, and a non-execution statement. Empty, oversized, missing-heading, missing-statement, and `stopReason=error` responses use the mechanical fallback.
 
@@ -148,6 +157,9 @@ The POST body must be exactly `{}`; unknown fields return `400 conversation_reco
 
 | Condition | Required result |
 | --- | --- |
+| recovery disabled | 503 `conversation_recovery_disabled`; no task/run/model/message side effect |
+| invalid `CAFF_RECOVERY_ENABLED` | fail startup/config construction; do not silently enable |
+| recovery timeout below 1s or above 60s | fail startup/config construction; do not clamp or widen the hard bound |
 | conversation missing | 404 `conversation_recovery_conversation_not_found` |
 | source missing/outside conversation | 404 `conversation_recovery_source_not_found` |
 | source not failed assistant | 409 `conversation_recovery_source_not_failed` |
@@ -163,26 +175,34 @@ The POST body must be exactly `{}`; unknown fields return `400 conversation_reco
 | oversized session tail without complete call/result evidence | no model call; failed recovery with mechanical message |
 | recovery result with valid old failed source outside recent history | prompt labels the source Agent and authoritative source run without adding the source message to history |
 | recovery source lookup missing or invalid | prompt labels `source unavailable`; ignore source Agent/run values in recovery metadata |
+| ordinary role uses reserved scribe ID/name | 422 `role_identity_not_reusable` / `role_name_reserved` |
+| participant/mention/private/handoff/default/explicit target is `recovery_scribe` | actor is absent/rejected; no Agent run starts |
+| cross-conversation target/source is `recovery_scribe` | 403 `cross_conversation_system_actor_not_routable` |
+| Goal owner or DAG worker/verifier is `recovery_scribe` | reject or resolve invalid; no continuation/dispatch |
 
 ## 5. Good / Base / Bad Cases
 
 - Good: a successful `kubectl apply` toolResult is listed under completed while a later stream failure remains the failure location.
 - Good: a timed-out mutating command is listed under possibly effective and the recovery point tells the user to verify external state first.
-- Good: a later Agent sees `Recovery Scribe [read-only recovery; source agent GPT; source run 10159]` even when the failed source is older than the raw-history window.
+- Good: a later Agent sees `系统书记 [read-only recovery; source agent GPT; source run 10159]` even when the failed source is older than the raw-history window.
+- Good: a malformed roster contains `recovery_scribe`, but role/mention/default/private/Goal/DAG projections filter it and an explicit delivery target returns 403.
 - Base: a failed read has an error result and is listed as not completed.
 - Bad: treating a missing write result as not executed, replaying it automatically, or changing the source message from failed to completed.
 - Bad: starting a normal Pi Agent session for the scribe and relying on prompt wording to keep default coding tools unused.
+- Bad: registering the scribe as a configurable custom role or trusting absence from the mention UI without a server-side reserved identity/target guard.
 - Bad: trusting `sourceAgentName` or `sourceRunId` copied from recovery-message metadata, or injecting full Capsule/source IDs into Conversation History.
 
 ## 6. Required Tests
 
 - `tests/runtime/recovery-capsule.test.js`: toolResult pairing, four evidence states, large output bounds, secret/path redaction, newest evidence retention, and mechanical fallback structure.
 - `tests/storage/message-recovery.test.js`: real SQLite DDL, unique idempotency, compare-and-set, terminal immutability, projection, and cascade.
-- `tests/runtime/message-recovery.test.js`: same-conversation/failed/idle/source-integrity validation, duplicate clicks, task/run linkage, direct no-tools invocation, provider/invalid-output fallback, source immutability, SSE order, and stale restart projection.
+- `tests/runtime/message-recovery.test.js`: same-conversation/failed/idle/source-integrity validation, duplicate clicks, task/run linkage, platform actor metadata/no participant row, enable/disable validation, direct no-tools invocation, provider/invalid-output fallback, source immutability, SSE order, and stale restart projection.
 - `tests/http/message-recovery-controller.test.js`: exact `{}` body, 202 response, and message-page projection.
 - `tests/ui/message-recovery.test.js`: failed-card action, queued/running/completed/failed states, source provenance, non-execution declaration, stable touch geometry, and no retry/continue/source-state rewrite.
 - `tests/runtime/turn-orchestrator.test.js`: one bounded source lookup, source Agent/run attribution for an old failed assistant, invalid-source fail-safe labeling, and refusal to trust recovery metadata provenance.
-- These files are registered in `package.json` `test:fast`. Build, check, typecheck, targeted tests, smoke, and isolated browser verification remain release gates.
+- `tests/runtime/runtime-role-resolution.test.js`, `initial-target-resolution.test.js`, `cross-conversation-delivery.test.js`, and `session-goal-owner.test.js`: reserved identity/name, role directory/participant, mention/private/default/explicit target, delivery, and Goal owner refusal.
+- `tests/dag/dag-scheduler.test.js`: the system actor is never selected as worker or verifier.
+- The runtime/storage/http/UI files above are registered in `package.json` `test:fast`; `tests/dag/dag-scheduler.test.js` runs through `test:dag-execution`. Build, check, typecheck, targeted tests, smoke, and isolated browser verification remain release gates.
 
 ## 7. Wrong vs Correct
 
@@ -201,8 +221,14 @@ const childRun = runStore.startRun({
   sessionPath: null,
   parentRunId: sourceRunId,
   taskKind: 'conversation_recovery',
-  taskRole: 'scribe',
-  metadata: { sourceMessageId, sourceTaskId, noTools: true },
+  taskRole: 'recovery_scribe',
+  metadata: {
+    sourceMessageId,
+    sourceTaskId,
+    noTools: true,
+    systemActorType: 'recovery_scribe',
+    systemActorRoutable: false,
+  },
 });
 const output = await modelRuntime.completeSimple(model, redactedCapsuleContext, {
   signal,

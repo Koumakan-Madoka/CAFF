@@ -241,6 +241,15 @@ const invocationFailure = classifyAgentInvocationFailure(error, { stopRequested 
 store.updateMessage(messageId, { metadata: { ...metadata, invocationFailure } });
 ```
 
+## Platform System Actors
+
+- `server/domain/roles/system-actor-catalog.ts` is the single source of truth for platform-owned identities that are not conversation Agents. `recovery_scribe` is the first such actor.
+- A non-routable system actor has no role row, participant row, Agent session, invocation registry entry, mention token, private mailbox, Goal owner eligibility, or DAG execution role.
+- Ordinary role IDs and display names that would impersonate a system actor are reserved. Participant validation and explicit cross-conversation targets fail closed even if a caller constructs the reserved ID.
+- All candidate projections must derive from routable conversation participants: role/bootstrap directories, prompt/list-participants, mention/private/handoff lookup, initial explicit/default routing, Goal owner, and DAG worker/verifier.
+- Recovery result messages are conversation evidence, not Agent replies: `agentId=null`, `systemActorType=recovery_scribe`, and `systemActorRoutable=false`. The direct model-layer request remains reachable only from the manual Recovery API.
+- Required regressions: `runtime-role-resolution`, `initial-target-resolution`, `cross-conversation-delivery`, `session-goal-owner`, `message-recovery`, and `dag-scheduler` lock the negative routing contract.
+
 ## Mirrored Update Paths
 
 - Trellis tool API:

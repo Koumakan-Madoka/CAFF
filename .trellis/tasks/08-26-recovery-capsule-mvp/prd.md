@@ -2,7 +2,7 @@
 
 ## Goal
 
-用户可对同一会话中的失败 assistant 消息手动生成一份有界、脱敏、证据分级的 Recovery Capsule。CAFF 使用独立、无工具的书记模型在新的关联 recovery run 中整理现场，并在同一会话追加带来源标识的兜底消息。原消息、原 task 和原 run 始终保持 failed；书记失败或输出无效时仍追加机械摘要。
+用户可对同一会话中的失败 assistant 消息手动生成一份有界、脱敏、证据分级的 Recovery Capsule。CAFF 使用独立、无工具的平台级 `recovery_scribe` 系统主体在新的关联 recovery run 中整理现场，并在同一会话追加带来源标识的兜底消息。系统书记可全局配置但不属于普通 Agent、角色或会话参与者，也不能被任何普通对话路由触发。原消息、原 task 和原 run 始终保持 failed；书记失败或输出无效时仍追加机械摘要。
 
 ## Non-Goals
 
@@ -11,6 +11,8 @@
 - 不修改原失败消息正文、状态、task 状态或 run 状态。
 - 不实现运行中的 checkpoint、上下文换段或 handoff。
 - 不在 MVP 中提供“从此处继续”操作。
+- 不创建每会话书记角色，不允许通过 mention、私信、handoff、Goal/DAG 或跨会话投递触发书记。
+- 不允许配置书记工具、系统提示词、输入输出边界或其他执行权限。
 
 ## Data Flow
 
@@ -145,10 +147,11 @@ Oversized inputs are deterministically clipped and report dropped counts. A Caps
 
 ## Scribe Contract
 
-- Configuration priority: explicit service options, then `CAFF_RECOVERY_PROVIDER/MODEL/THINKING`, then digest settings, then Pi defaults.
+- The scribe is the platform system actor `recovery_scribe`, never a `chat_agents`, `chat_role_identities`, or `chat_conversation_agents` row. Recovery result messages use `agentId=null`, a system-scribe sender label, and `systemActorType=recovery_scribe`, `systemActorRoutable=false` metadata.
+- Configuration priority: explicit service options, then `CAFF_RECOVERY_ENABLED/PROVIDER/MODEL/THINKING/TIMEOUT_MS`, then digest settings for provider/model/thinking, then Pi defaults. Invalid enable values fail startup; timeout is configurable only within the fixed `1,000..60,000 ms` hard bound; disabled recovery returns a bounded 503 and projects the service as disabled on eligible failed messages.
 - Prefer a provider/model different from the source when recovery-specific configuration is available. The source model is never selected merely to match provenance.
 - Invocation uses Pi `ModelRuntime.completeSimple` directly with a single fixed system instruction and one user Capsule message. It creates no Agent session, no extensions, no skills and no tools.
-- The recovery run is manually persisted in `runs` with `task_kind=conversation_recovery`, `task_role=scribe`, `parent_run_id=sourceRunId`, and bounded metadata.
+- The recovery run is manually persisted in `runs` with `task_kind=conversation_recovery`, `task_role=recovery_scribe`, `parent_run_id=sourceRunId`, and bounded metadata. Its task uses `assignedAgent=caff-system` and `assignedRole=recovery_scribe`; those are audit labels, not routeable Agent identities.
 - Output must contain the fixed headings: `已经完成`, `失败位置`, `可能已生效但需核验`, `尚未完成`, `建议恢复点`, `无法从现场判断`, and the non-execution statement. Invalid/empty/oversized output triggers mechanical fallback.
 
 ## API and SSE
@@ -172,6 +175,7 @@ body: {}
 | Conversation missing | 404 `conversation_recovery_conversation_not_found` |
 | Source missing/outside conversation | 404 `conversation_recovery_source_not_found` |
 | Source not assistant or not failed | 409 `conversation_recovery_source_not_failed` |
+| Recovery globally disabled | 503 `conversation_recovery_disabled` |
 | Conversation active, dispatching, queued, or has active side slot | 409 `conversation_recovery_conversation_busy` |
 | Missing task/run/snapshot/session or source mismatch | 409 `conversation_recovery_source_incomplete` |
 | First valid click | 202, durable queued row, one background job |
@@ -186,7 +190,8 @@ body: {}
 - Failed assistant cards show a text command `整理失败现场`; it is the only new action.
 - State labels: `等待整理`, `正在整理`, `整理完成`, `机械摘要`.
 - Queued/running disable the button. Completed/failed show the canonical state and do not offer retry in MVP.
-- Recovery messages visibly identify the source trace/message and state: `这是只读现场整理，不会执行或重放原任务。`
+- Recovery messages visibly identify themselves as `系统书记`, the source trace/message and state: `这是只读现场整理，不会执行或重放原任务。`
+- When `CAFF_RECOVERY_ENABLED=false`, eligible failed cards show `系统书记已停用` and expose no recovery command.
 - No automatic continue/retry controls and no source failed-state rewrite.
 
 ## Acceptance Criteria
@@ -196,6 +201,7 @@ body: {}
 - [ ] Synthetic large JSONL proves toolResult pairing, bounded output and secret/path redaction.
 - [ ] External/mutating error and missing-result cases project as possibly effective, never completed.
 - [ ] Scribe invocation has zero tools/extensions and obeys input/output/timeout limits.
+- [ ] `recovery_scribe` is absent from role/participant/mention/private/handoff/default/explicit/cross-conversation/Goal/DAG candidates; reserved IDs/names and constructed delivery targets fail closed.
 - [ ] Model failure and invalid output append one mechanical fallback message.
 - [ ] HTTP duplicate/concurrent/busy/source-integrity behavior is covered.
 - [ ] SSE and UI show queued/running/completed/failed without changing the original failed state.

@@ -13,6 +13,7 @@ import {
 } from '../../../lib/minimal-pi';
 import { createSqliteRunStore } from '../../../lib/sqlite-store';
 import { createHttpError } from '../../http/http-errors';
+import { RECOVERY_SCRIBE_SYSTEM_ACTOR } from '../roles/system-actor-catalog';
 import { pickConversationSummary } from './conversation-view';
 import { materializeAgentContextSnapshot } from './turn/context-snapshot';
 import {
@@ -95,7 +96,27 @@ function isRegularFile(filePath: any) {
   }
 }
 
+function normalizeBooleanSetting(value: any, defaultValue: boolean, label: string) {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (!normalized) {
+    return defaultValue;
+  }
+  if (['1', 'true', 'yes', 'on', 'enable', 'enabled'].includes(normalized)) {
+    return true;
+  }
+  if (['0', 'false', 'no', 'off', 'disable', 'disabled'].includes(normalized)) {
+    return false;
+  }
+  throw new Error(`${label} must be a boolean setting`);
+}
+
 function recoveryConfig(options: any = {}) {
+  const enabled = options.enabled === undefined
+    ? normalizeBooleanSetting(process.env.CAFF_RECOVERY_ENABLED, true, 'recovery enabled')
+    : normalizeBooleanSetting(options.enabled, true, 'recovery enabled');
   const provider = resolveSetting(
     options.provider,
     process.env.CAFF_RECOVERY_PROVIDER || process.env.CAFF_DIGEST_PROVIDER || process.env.PI_PROVIDER,
@@ -112,14 +133,17 @@ function recoveryConfig(options: any = {}) {
     process.env.CAFF_RECOVERY_THINKING || process.env.CAFF_DIGEST_THINKING || process.env.PI_THINKING,
     DEFAULT_THINKING
   );
-  const timeoutMs = Math.max(1_000, resolveIntegerSetting(
+  const timeoutMs = resolveIntegerSetting(
     options.timeoutMs,
     process.env.CAFF_RECOVERY_TIMEOUT_MS,
     DEFAULT_RECOVERY_TIMEOUT_MS,
     'recovery timeout'
-  ));
+  );
+  if (timeoutMs < 1_000 || timeoutMs > DEFAULT_RECOVERY_TIMEOUT_MS) {
+    throw new Error(`recovery timeout must be between 1000 and ${DEFAULT_RECOVERY_TIMEOUT_MS} milliseconds`);
+  }
 
-  return { provider, model, thinking, timeoutMs };
+  return { enabled, provider, model, thinking, timeoutMs };
 }
 
 function buildScribePrompt(capsule: any) {
@@ -434,8 +458,8 @@ export function createMessageRecoveryService(options: any = {}) {
         kind: 'conversation_recovery',
         title: `Recover failed message ${source.message.id}`,
         status: 'queued',
-        assignedAgent: 'pi-model-runtime',
-        assignedRole: 'scribe',
+        assignedAgent: 'caff-system',
+        assignedRole: RECOVERY_SCRIBE_SYSTEM_ACTOR.type,
         provider: config.provider,
         model: config.model,
         inputText: `Manual read-only recovery for failed assistant message ${source.message.id}`,
@@ -446,6 +470,8 @@ export function createMessageRecoveryService(options: any = {}) {
           sourceRunId: source.message.runId,
           parentRunId: source.message.runId,
           noTools: true,
+          systemActorType: RECOVERY_SCRIBE_SYSTEM_ACTOR.type,
+          systemActorRoutable: RECOVERY_SCRIBE_SYSTEM_ACTOR.routable,
         },
       });
       store.messageRecoveryRepository.create({
@@ -489,13 +515,17 @@ export function createMessageRecoveryService(options: any = {}) {
         turnId: `recovery-${recovery.id}`,
         role: 'assistant',
         agentId: null,
-        senderName: fallbackUsed ? 'Recovery Scribe (Mechanical)' : 'Recovery Scribe',
+        senderName: fallbackUsed
+          ? RECOVERY_SCRIBE_SYSTEM_ACTOR.mechanicalDisplayName
+          : RECOVERY_SCRIBE_SYSTEM_ACTOR.displayName,
         content: input.content,
         status: 'completed',
         taskId: recovery.recoveryTaskId,
         runId: recovery.recoveryRunId,
         metadata: {
           recoveryResult: true,
+          systemActorType: RECOVERY_SCRIBE_SYSTEM_ACTOR.type,
+          systemActorRoutable: RECOVERY_SCRIBE_SYSTEM_ACTOR.routable,
           sourceMessageId: source.message.id,
           sourceTaskId: source.message.taskId,
           sourceRunId: source.message.runId,
@@ -613,7 +643,7 @@ export function createMessageRecoveryService(options: any = {}) {
         parentRunId: source.message.runId,
         taskId: recovery.recoveryTaskId,
         taskKind: 'conversation_recovery',
-        taskRole: 'scribe',
+        taskRole: RECOVERY_SCRIBE_SYSTEM_ACTOR.type,
         metadata: {
           conversationId: source.conversation.id,
           sourceMessageId: source.message.id,
@@ -623,6 +653,8 @@ export function createMessageRecoveryService(options: any = {}) {
           capsuleVersion: 1,
           capsuleSha256: createHash('sha256').update(JSON.stringify(capsule)).digest('hex'),
           noTools: true,
+          systemActorType: RECOVERY_SCRIBE_SYSTEM_ACTOR.type,
+          systemActorRoutable: RECOVERY_SCRIBE_SYSTEM_ACTOR.routable,
         },
       });
       recoveryRunId = runRecord.runId;
@@ -740,6 +772,13 @@ export function createMessageRecoveryService(options: any = {}) {
   }
 
   function requestRecovery(conversationId: any, messageId: any) {
+    if (!config.enabled) {
+      throw recoveryError(
+        503,
+        'conversation_recovery_disabled',
+        'The platform Recovery Scribe is disabled'
+      );
+    }
     const conversation = requireConversation(conversationId);
     const message = requireSourceMessage(conversation.id, messageId);
     const existing = store.getMessageRecoveryBySourceMessage(message.id);
@@ -798,9 +837,24 @@ export function createMessageRecoveryService(options: any = {}) {
     );
     return safeMessages.map((message) => {
       const recovery = bySourceMessageId.get(String(message && message.id || '').trim());
-      return recovery
-        ? { ...message, recovery: projectRecoveryRecord(recovery, inFlight) }
-        : message;
+      const isEligibleSource = Boolean(
+        message
+        && message.role === 'assistant'
+        && message.status === 'failed'
+        && !(message.metadata && message.metadata.recoveryResult)
+      );
+      const recoveryCapability = isEligibleSource
+        ? {
+            enabled: config.enabled,
+            systemActorType: RECOVERY_SCRIBE_SYSTEM_ACTOR.type,
+            routable: RECOVERY_SCRIBE_SYSTEM_ACTOR.routable,
+          }
+        : null;
+      return {
+        ...message,
+        ...(recovery ? { recovery: projectRecoveryRecord(recovery, inFlight) } : {}),
+        ...(recoveryCapability ? { recoveryCapability } : {}),
+      };
     });
   }
 

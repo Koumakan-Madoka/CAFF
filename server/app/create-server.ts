@@ -741,6 +741,9 @@ export function createServerApp(options: any = {}) {
       timeoutMs: options.recoveryTimeoutMs !== undefined
         ? options.recoveryTimeoutMs
         : rawRecoveryOptions.timeoutMs,
+      enabled: options.recoveryEnabled !== undefined
+        ? options.recoveryEnabled
+        : rawRecoveryOptions.enabled,
       modelRuntimeFactory: options.recoveryModelRuntimeFactory || rawRecoveryOptions.modelRuntimeFactory,
       getConversationMutationState(conversationId: any) {
         return turnOrchestrator.getConversationMutationState(conversationId);

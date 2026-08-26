@@ -164,12 +164,14 @@ test('recovery result message visibly identifies source trace and read-only prov
   const resultMessage = {
     id: 'result-message',
     role: 'assistant',
-    senderName: 'Recovery Scribe (Mechanical)',
+    senderName: '系统书记（机械摘要）',
     content: '这是只读现场整理，不会执行或重放原任务。',
     status: 'completed',
     createdAt: '2026-08-26T00:01:00.000Z',
     metadata: {
       recoveryResult: true,
+      systemActorType: 'recovery_scribe',
+      systemActorRoutable: false,
       sourceMessageId: 'failed-message',
       sourceTaskId: 'source-task',
       sourceRunId: 42,
@@ -183,6 +185,7 @@ test('recovery result message visibly identifies source trace and read-only prov
   const provenance = context.document.querySelector('.message-recovery-provenance');
 
   assert.ok(provenance);
+  assert.match(provenance.textContent, /系统书记/u);
   assert.match(provenance.textContent, /机械摘要/u);
   assert.match(provenance.textContent, /只读/u);
   assert.match(provenance.textContent, /run 42/u);
@@ -200,6 +203,22 @@ test('recovery result message visibly identifies source trace and read-only prov
   assert.ok(locateSource);
   assert.match(locateSource.textContent, /定位来源/u);
   assert.equal(context.document.querySelector('.message-recovery-button'), null);
+});
+
+test('disabled system scribe is visible as a platform service state and has no recovery command', () => {
+  const context = bootTimeline([{
+    ...failedMessage(),
+    recoveryCapability: {
+      enabled: false,
+      systemActorType: 'recovery_scribe',
+      routable: false,
+    },
+  }]);
+  const panel = context.document.querySelector('.message-recovery-panel');
+
+  assert.ok(panel);
+  assert.match(panel.textContent, /系统书记已停用/u);
+  assert.equal(panel.querySelector('.message-recovery-button'), null);
 });
 
 test('terminal recovery state links the source card to the persisted result message', () => {

@@ -223,6 +223,9 @@
       }
       const metadata = message && message.metadata && typeof message.metadata === 'object' ? message.metadata : {};
       const recovery = message && message.recovery && typeof message.recovery === 'object' ? message.recovery : null;
+      const recoveryCapability = message && message.recoveryCapability && typeof message.recoveryCapability === 'object'
+        ? message.recoveryCapability
+        : null;
       const isRecoveryResult = Boolean(metadata.recoveryResult);
       const canRequest = Boolean(
         message
@@ -240,7 +243,7 @@
         const fallbackUsed = Boolean(metadata.fallbackUsed);
         const kindBadge = document.createElement('span');
         kindBadge.className = `message-recovery-status ${fallbackUsed ? 'failed' : 'success'}`;
-        kindBadge.textContent = fallbackUsed ? '机械摘要' : '书记整理';
+        kindBadge.textContent = fallbackUsed ? '系统书记 · 机械摘要' : '系统书记 · 现场整理';
 
         const refs = document.createElement('span');
         refs.className = 'message-recovery-refs';
@@ -266,6 +269,15 @@
         });
 
         panel.append(kindBadge, refs, note, locateSource);
+        return;
+      }
+
+      if (recoveryCapability && recoveryCapability.enabled === false && !recovery) {
+        const disabledStatus = document.createElement('span');
+        disabledStatus.className = 'message-recovery-status neutral';
+        disabledStatus.textContent = '系统书记已停用';
+        disabledStatus.title = '平台只读恢复服务当前已停用';
+        panel.appendChild(disabledStatus);
         return;
       }
 
@@ -2244,6 +2256,7 @@
         deletionEligibility ? JSON.stringify(deletionEligibility) : '',
         deletionBlocked ? 'delete-blocked' : 'delete-ready',
         message.recovery ? JSON.stringify(message.recovery) : '',
+        message.recoveryCapability ? JSON.stringify(message.recoveryCapability) : '',
         recoveryRequestMessageIds.has(message.id) ? 'recovery-requesting' : '',
         traceSignature,
       ].join('\u001f');

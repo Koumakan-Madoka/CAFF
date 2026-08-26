@@ -8,6 +8,11 @@ const {
   resolveInitialTurnTargets,
   resolveMostRecentPublicReplyAgentId,
 } = require('../../build/server/domain/conversation/turn/initial-target-resolution');
+const {
+  buildAgentMentionLookup,
+  getAgentById,
+  resolveMentionValues,
+} = require('../../build/server/domain/conversation/mention-routing');
 const { withTempDir } = require('../helpers/temp-dir');
 
 function agent(id) {
@@ -117,6 +122,44 @@ test('last public reply uses persisted createdAt and id order instead of input a
   ]);
 
   assert.equal(resolveMostRecentPublicReplyAgentId(state), 'agent-b');
+});
+
+test('platform recovery scribe is never a mention, explicit, or default routing candidate', () => {
+  const systemScribe = { id: 'recovery_scribe', name: '系统书记' };
+  const legacyImpersonator = { id: 'legacy-scribe-role', name: 'Recovery_Scribe' };
+  const regular = agent('agent-a');
+  const state = {
+    id: 'conversation-system-scribe-routing',
+    agents: [systemScribe, legacyImpersonator, regular],
+    messages: [assistantMessage('scribe-result', systemScribe.id)],
+  };
+  const lookup = buildAgentMentionLookup(state.agents);
+
+  assert.equal(lookup.has('recovery_scribe'), false);
+  assert.equal(lookup.has('系统书记'), false);
+  assert.equal(lookup.has('recoveryscribe'), false);
+  assert.deepEqual(resolveMentionValues(
+    ['recovery_scribe', '系统书记', 'Recovery_Scribe', 'legacy-scribe-role'],
+    state.agents
+  ), []);
+  assert.equal(getAgentById(state.agents, 'recovery_scribe'), null);
+  assert.equal(resolveMostRecentPublicReplyAgentId(state), '');
+
+  const explicit = resolveInitialTurnTargets({
+    content: 'directed',
+    cleanedContent: 'directed',
+    initialAgentIds: ['recovery_scribe'],
+  }, state);
+  assert.deepEqual(explicit.agentIds, ['agent-a']);
+  assert.equal(explicit.strategy, 'default_first_agent');
+
+  const mentioned = resolveInitialTurnTargets({
+    content: '@系统书记 inspect this',
+    cleanedContent: '@系统书记 inspect this',
+    initialAgentIds: [],
+  }, state);
+  assert.deepEqual(mentioned.agentIds, ['agent-a']);
+  assert.equal(mentioned.strategy, 'default_first_agent');
 });
 
 test('last public reply selection survives a SQLite store restart with stable persisted order', { concurrency: false }, (t) => {

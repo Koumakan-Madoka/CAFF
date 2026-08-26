@@ -1,5 +1,6 @@
 const { randomUUID } = require('node:crypto');
 const { createHttpError } = require('../../http/http-errors');
+const { isNonRoutableSystemActorId } = require('../roles/system-actor-catalog');
 
 const MAX_DELIVERY_CONTENT_LENGTH = 12_000;
 const MAX_DELIVERY_IDEMPOTENCY_KEY_LENGTH = 200;
@@ -38,6 +39,17 @@ function normalizeRequiredText(value: any, fieldName: string, maxLength = MAX_DE
   }
 
   return normalized;
+}
+
+function assertRoutableDeliveryAgentId(agentId: string, field: string) {
+  if (isNonRoutableSystemActorId(agentId)) {
+    throw createDeliveryError(
+      403,
+      'cross_conversation_system_actor_not_routable',
+      'Platform system actors cannot send or receive conversation deliveries',
+      { field }
+    );
+  }
 }
 
 function normalizeDeliveryContent(value: any) {
@@ -227,6 +239,8 @@ export function createCrossConversationDeliveryService(options: any = {}) {
     const sourceAgentName = normalizeRequiredText(principalInput.sourceAgentName, 'sourceAgentName');
     const targetConversationId = normalizeRequiredText(input.targetConversationId, 'targetConversationId');
     const targetAgentId = normalizeRequiredText(input.targetAgentId, 'targetAgentId');
+    assertRoutableDeliveryAgentId(sourceAgentId, 'sourceAgentId');
+    assertRoutableDeliveryAgentId(targetAgentId, 'targetAgentId');
     const content = normalizeDeliveryContent(input.content);
     const idempotencyKey = normalizeRequiredText(
       input.idempotencyKey,
@@ -462,6 +476,7 @@ export function createCrossConversationDeliveryService(options: any = {}) {
     const sourceConversationId = normalizeRequiredText(input.sourceConversationId, 'sourceConversationId');
     const targetConversationId = normalizeRequiredText(input.targetConversationId, 'targetConversationId');
     const targetAgentId = normalizeRequiredText(input.targetAgentId, 'targetAgentId');
+    assertRoutableDeliveryAgentId(targetAgentId, 'targetAgentId');
     const content = normalizeDeliveryContent(input.content);
     const idempotencyKey = normalizeRequiredText(
       input.idempotencyKey,

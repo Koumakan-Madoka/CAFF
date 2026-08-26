@@ -1,4 +1,5 @@
 const { getAgentById } = require('../mention-routing');
+const { filterRoutableConversationAgents } = require('../../roles/system-actor-catalog');
 const { formatConversationDigestsForPrompt } = require('../conversation-digest');
 const { formatConversationRetrievalTracesForPrompt } = require('../retrieval-trace');
 const { formatSessionGoalForPrompt } = require('../session-goal');
@@ -495,7 +496,7 @@ export function buildAgentTurnPromptSections({
   const conversationType = String(conversation && conversation.type ? conversation.type : '').trim();
   const trellisPromptContext =
     normalizedProjectDir ? buildTrellisPromptContext({ startDir: normalizedProjectDir }) : '';
-  const participants = (Array.isArray(agents) ? agents : [])
+  const participants = filterRoutableConversationAgents(agents)
     .filter((item: any) => !isSamePromptAgent(item, agent))
     .map((item: any) => {
       const description = item.description ? ` - ${item.description}` : '';

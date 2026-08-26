@@ -187,6 +187,7 @@ function createFixture(t, options = {}) {
     provider: 'scribe-provider',
     model: 'scribe-model',
     thinking: 'low',
+    ...(options.enabled === undefined ? {} : { enabled: options.enabled }),
     getConversationMutationState: () => mutationState,
     resolveAssistantMessageSessionPath: () => sessionPath,
     modelRuntimeFactory: async () => runtime,
@@ -220,6 +221,11 @@ function createFixture(t, options = {}) {
 
 test('manual recovery is durable and idempotent before one no-tools scribe job runs', async (t) => {
   const fixture = createFixture(t);
+  const participantCountBefore = fixture.store.db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM chat_conversation_agents
+    WHERE conversation_id = ?
+  `).get(fixture.conversation.id).count;
   const first = fixture.service.requestRecovery(fixture.conversation.id, fixture.sourceMessage.id);
   const duplicate = fixture.service.requestRecovery(fixture.conversation.id, fixture.sourceMessage.id);
 
@@ -246,7 +252,11 @@ test('manual recovery is durable and idempotent before one no-tools scribe job r
 
   const recoveryMessage = fixture.store.getMessage(completed.recoveryMessageId);
   assert.equal(recoveryMessage.status, 'completed');
+  assert.equal(recoveryMessage.agentId, null);
+  assert.equal(recoveryMessage.senderName, '系统书记');
   assert.equal(recoveryMessage.metadata.recoveryResult, true);
+  assert.equal(recoveryMessage.metadata.systemActorType, 'recovery_scribe');
+  assert.equal(recoveryMessage.metadata.systemActorRoutable, false);
   assert.equal(recoveryMessage.metadata.sourceMessageId, fixture.sourceMessage.id);
   assert.equal(recoveryMessage.metadata.sourceTaskId, 'source-task');
   assert.equal(recoveryMessage.metadata.sourceRunId, fixture.sourceRun.runId);
@@ -258,6 +268,13 @@ test('manual recovery is durable and idempotent before one no-tools scribe job r
   assert.equal(sourceMessageAfter.status, 'failed');
   assert.equal(fixture.runStore.getTask('source-task').status, 'failed');
   assert.equal(fixture.runStore.getRun(fixture.sourceRun.runId).status, 'failed');
+  const participantCountAfter = fixture.store.db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM chat_conversation_agents
+    WHERE conversation_id = ?
+  `).get(fixture.conversation.id).count;
+  assert.equal(participantCountAfter, participantCountBefore);
+  assert.equal(fixture.store.getAgent('recovery_scribe'), null);
 
   const childTask = fixture.runStore.getTask(completed.recoveryTaskId);
   const childRun = fixture.runStore.getRun(completed.recoveryRunId);
@@ -265,10 +282,12 @@ test('manual recovery is durable and idempotent before one no-tools scribe job r
   assert.equal(childTask.parent_run_id, fixture.sourceRun.runId);
   assert.equal(childTask.run_id, completed.recoveryRunId);
   assert.equal(childTask.kind, 'conversation_recovery');
+  assert.equal(childTask.assigned_agent, 'caff-system');
+  assert.equal(childTask.assigned_role, 'recovery_scribe');
   assert.equal(childTask.status, 'succeeded');
   assert.equal(childRun.parent_run_id, fixture.sourceRun.runId);
   assert.equal(childRun.task_kind, 'conversation_recovery');
-  assert.equal(childRun.task_role, 'scribe');
+  assert.equal(childRun.task_role, 'recovery_scribe');
   assert.equal(childRun.status, 'completed');
 
   assert.deepEqual(
@@ -297,6 +316,10 @@ test('scribe failure persists one mechanical fallback while the source trace sta
   assert.equal(failed.errorMessage.includes('must-redact'), false);
 
   const fallbackMessage = fixture.store.getMessage(failed.recoveryMessageId);
+  assert.equal(fallbackMessage.agentId, null);
+  assert.equal(fallbackMessage.senderName, '系统书记（机械摘要）');
+  assert.equal(fallbackMessage.metadata.systemActorType, 'recovery_scribe');
+  assert.equal(fallbackMessage.metadata.systemActorRoutable, false);
   assert.match(fallbackMessage.content, /机械|现场摘要/u);
   assert.match(fallbackMessage.content, /不会执行或重放原任务/u);
   assert.equal(fallbackMessage.metadata.fallbackUsed, true);
@@ -344,6 +367,45 @@ test('stale queued work is projected as interrupted without replaying it', (t) =
   assert.equal(projected.recovery.errorCode, 'conversation_recovery_interrupted');
   assert.equal(fixture.modelCalls.length, 0);
   assert.equal(fixture.store.getMessageRecovery(accepted.recovery.id).status, 'queued');
+});
+
+test('disabled system scribe is projected as unavailable and cannot be triggered', (t) => {
+  const fixture = createFixture(t, { enabled: false });
+  const [projected] = fixture.service.projectMessages([
+    fixture.store.getMessage(fixture.sourceMessage.id),
+  ]);
+
+  assert.deepEqual(projected.recoveryCapability, {
+    enabled: false,
+    systemActorType: 'recovery_scribe',
+    routable: false,
+  });
+  assert.throws(
+    () => fixture.service.requestRecovery(fixture.conversation.id, fixture.sourceMessage.id),
+    (error) => error
+      && error.statusCode === 503
+      && error.code === 'conversation_recovery_disabled'
+  );
+  assert.equal(fixture.scheduled.length, 0);
+  assert.equal(fixture.store.getMessageRecoveryBySourceMessage(fixture.sourceMessage.id), null);
+  assert.throws(
+    () => createMessageRecoveryService({
+      store: fixture.store,
+      runStore: fixture.runStore,
+      agentDir: fixture.tempDir,
+      enabled: 'typo',
+    }),
+    /recovery enabled/iu
+  );
+  assert.throws(
+    () => createMessageRecoveryService({
+      store: fixture.store,
+      runStore: fixture.runStore,
+      agentDir: fixture.tempDir,
+      timeoutMs: 60_001,
+    }),
+    /recovery timeout must be between 1000 and 60000/iu
+  );
 });
 
 test('manual recovery validates idle, same-conversation failed source integrity before persistence', (t) => {

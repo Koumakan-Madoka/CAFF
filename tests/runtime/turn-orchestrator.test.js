@@ -452,10 +452,14 @@ test('buildAgentTurnPrompt attributes recovery results to the server-resolved so
     [{
       id: 'recovery-result-attributed',
       role: 'assistant',
-      senderName: 'Recovery Scribe',
+      senderName: '系统书记',
       content: 'Recovered evidence summary.',
       status: 'completed',
-      metadata: recoveryMetadata,
+      metadata: {
+        ...recoveryMetadata,
+        systemActorType: 'recovery_scribe',
+        systemActorRoutable: false,
+      },
     }]
   );
   const attributedPrompt = buildAgentTurnPrompt({
@@ -479,10 +483,14 @@ test('buildAgentTurnPrompt attributes recovery results to the server-resolved so
     [{
       id: 'recovery-result-unavailable',
       role: 'assistant',
-      senderName: 'Recovery Scribe',
+      senderName: '系统书记',
       content: 'Recovered evidence summary.',
       status: 'completed',
-      metadata: recoveryMetadata,
+      metadata: {
+        ...recoveryMetadata,
+        systemActorType: 'recovery_scribe',
+        systemActorRoutable: false,
+      },
     }]
   );
   const unavailablePrompt = buildAgentTurnPrompt({
@@ -496,12 +504,12 @@ test('buildAgentTurnPrompt attributes recovery results to the server-resolved so
   }]);
   assert.match(
     attributedPrompt,
-    /Recovery Scribe \[read-only recovery; source agent GPT; source run 10159\]: Recovered evidence summary\./u
+    /系统书记 \[read-only recovery; source agent GPT; source run 10159\]: Recovered evidence summary\./u
   );
   assert.doesNotMatch(attributedPrompt, /Untrusted Metadata Agent|999999/u);
   assert.match(
     unavailablePrompt,
-    /Recovery Scribe \[read-only recovery; source unavailable\]: Recovered evidence summary\./u
+    /系统书记 \[read-only recovery; source unavailable\]: Recovered evidence summary\./u
   );
   assert.equal(unavailableMessages[0].promptRecoverySource, null);
   assert.doesNotMatch(unavailablePrompt, /Untrusted Metadata Agent|999999|Wrongly Completed Source|20202/u);

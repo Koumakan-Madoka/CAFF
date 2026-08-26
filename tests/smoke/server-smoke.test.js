@@ -5229,6 +5229,27 @@ test('role API protects model-family roles and shares one availability projectio
   assert.equal(reservedIdPost.status, 422);
   assert.equal(reservedIdPost.json.issues[0].code, 'role_identity_not_reusable');
 
+  const systemScribeIdPost = await fetchJsonResponse(baseUrl, '/api/agents', {
+    method: 'POST',
+    body: {
+      id: 'recovery_scribe',
+      name: 'Ordinary Recovery Role',
+      personaPrompt: 'Should fail.',
+    },
+  });
+  assert.equal(systemScribeIdPost.status, 422);
+  assert.equal(systemScribeIdPost.json.issues[0].code, 'role_identity_not_reusable');
+
+  const systemScribeNamePost = await fetchJsonResponse(baseUrl, '/api/agents', {
+    method: 'POST',
+    body: {
+      name: 'Recovery Scribe',
+      personaPrompt: 'Should fail.',
+    },
+  });
+  assert.equal(systemScribeNamePost.status, 422);
+  assert.equal(systemScribeNamePost.json.issues[0].code, 'role_name_reserved');
+
   const custom = await fetchJson(baseUrl, '/api/agents', {
     method: 'POST',
     body: {

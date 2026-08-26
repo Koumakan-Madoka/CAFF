@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import { requiresBoundedConversationProjections } from '../../../lib/conversation-hydration-contract';
 import { createHttpError } from '../../http/http-errors';
+import { isNonRoutableSystemActorId } from '../roles/system-actor-catalog';
 
 const SESSION_GOAL_METADATA_KEY = 'sessionGoal';
 const SESSION_GOAL_PROPOSAL_METADATA_KEY = 'sessionGoalProposal';
@@ -1030,6 +1031,11 @@ export function applySessionGoalAction(store: any, conversationId: any, input: a
     let nextGoal: any;
 
     if (ownerAgentId) {
+      if (isNonRoutableSystemActorId(ownerAgentId)) {
+        throw createHttpError(400, 'Platform system actors cannot own session goals', {
+          code: 'session_goal_owner_system_actor_not_routable',
+        });
+      }
       const participants = Array.isArray(conversation.agents) ? conversation.agents : [];
       const agent = participants.find((participant: any) => participant && normalizeText(participant.id) === ownerAgentId);
 

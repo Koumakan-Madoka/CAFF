@@ -205,4 +205,15 @@ test('set-owner action sets, clears, and validates the owner against conversatio
     }),
     (error) => error.statusCode === 400
   );
+
+  conversation.agents.push({ id: 'recovery_scribe', name: '系统书记' });
+  assert.throws(
+    () => applySessionGoalAction(store, conversation.id, {
+      action: 'set-owner',
+      ownerAgentId: 'recovery_scribe',
+    }),
+    (error) => error
+      && error.statusCode === 400
+      && error.code === 'session_goal_owner_system_actor_not_routable'
+  );
 });
