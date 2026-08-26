@@ -40,6 +40,6 @@
   "children": [],
   "parent": null,
   "relatedFiles": [],
-  "notes": "Red-first implementation and complete automated regression evidence are recorded. Candidate awaits independent commit-pinned review and isolated acceptance. Production 3100 and historical run 10437 remain untouched; the upstream draft is unpublished.",
+  "notes": "The reviewed 045542f6 candidate was merged with origin/develop 6c321022 after explicit user authorization. Combination regression evidence is recorded; the new exact candidate awaits commit-pinned review and isolated acceptance. Production 3100 and historical run 10437 remain untouched; the upstream draft is unpublished.",
   "meta": {}
 }

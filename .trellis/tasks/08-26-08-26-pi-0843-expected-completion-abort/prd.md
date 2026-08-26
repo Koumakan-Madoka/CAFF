@@ -84,6 +84,9 @@ executor after the runtime result has been assembled.
   isolated worktree.
 - Base at task start: `origin/develop` at
   `3adeb3acc56cfd8a14d1ce287453275d71b2cc8f`.
+- Post-acceptance synchronization base: `origin/develop` at
+  `6c3210222d908a9097809f83a9712a7fc5075ba7`; combination merge baseline
+  `d278ae9446116ae74a5e47f0fd58cad2d6871a1e`.
 - Historical failed records remain unchanged as root-cause evidence.
 - Acceptance uses a distinct port, SQLite path, log path, agent directory,
   uploads, temp storage, and credentials with external delivery disabled.

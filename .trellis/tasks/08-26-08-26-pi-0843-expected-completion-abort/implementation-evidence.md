@@ -126,9 +126,45 @@ configuration, or credential is included in the diff.
 - Preview 3238 was closed after each attempt. Production 3100 remained on PID
   23276 and was not deployed, restarted, or reconfigured.
 
+## Develop Synchronization And Combination Regression
+
+- While PR 106 was waiting for CI, `origin/develop` advanced from the task-start
+  base `3adeb3acc56cfd8a14d1ce287453275d71b2cc8f` to PR 107 merge
+  `6c3210222d908a9097809f83a9712a7fc5075ba7`. The new baseline changes 64
+  paths, including executor, bridge, turn tests, and runtime spec surfaces.
+- PR 106 was left draft. After explicit user authorization, the room merged the
+  new develop with `--no-ff`, producing combination merge
+  `d278ae9446116ae74a5e47f0fd58cad2d6871a1e` with exact parents
+  `045542f6f1e36790a1356301eca0194a88c9abdf` and
+  `6c3210222d908a9097809f83a9712a7fc5075ba7`. The merge was conflict-free.
+- The original candidate's `lib/pi-runtime.ts`,
+  `server/domain/runtime/message-tool-trace.ts`, and both dedicated regression
+  test blobs are byte-identical after the merge. The combined diff against the
+  new develop remains the same 13 task paths and 896 insertions / 3 deletions.
+- System Node v24.13.1 was used directly. `npm run check`, `npm run typecheck`,
+  and `npm run build` passed. The focused runtime/executor/bridge/trace/retry
+  batch passed 128/128. The new develop recovery/system-actor focused batch
+  passed 71/71.
+- Turn-orchestrator passed 101 behavior tests with only the same two accepted
+  Windows EPERM cleanup-hook failures. The full runtime/http/storage/UI batch
+  was 1024 pass / 4 fail / 4 skip out of 1032; the four failures retain the
+  exact accepted signatures: two EPERM after-hooks, the DAG demo async loading
+  assertion, and the existing `人格` terminology assertion.
+- Server smoke and mode-store passed 75/75. DAG execution passed
+  `56 + 8 + 8 + 3 + 3 = 78/78`. DAG planning passed 46 behavior tests and
+  retained only the same accepted demo async failure.
+- Trellis validation passed with 7 implement, 10 check, and 6 debug entries
+  before this synchronization evidence append. `git diff --check`, generated/
+  temporary artifact scan, and added-lines credential pattern scan passed.
+  Coding-agent and all PI AI nodes remain 0.84.3; all TypeBox nodes remain
+  1.3.7.
+- Production 3100 remained on PID 23276. Historical run 10437 was not rewritten,
+  no preview was started during automated regression, and the upstream draft
+  remains unpublished.
+
 ## Pending Evidence
 
-A new exact candidate, independent commit-pinned review, and isolated real
-`send-public` acceptance are still required before user acceptance and merge
-authorization. The upstream regression wording remains in `upstream-draft.md`
-and has not been published.
+A new exact post-synchronization candidate, independent commit-pinned review,
+and isolated real `send-public` acceptance are still required before renewed
+user acceptance and merge authorization. The upstream regression wording
+remains in `upstream-draft.md` and has not been published.
