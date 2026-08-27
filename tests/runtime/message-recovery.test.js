@@ -166,12 +166,24 @@ function createFixture(t, options = {}) {
 
   const runtime = {
     getModel(provider, model) {
-      return { provider, id: model, name: model, api: 'openai-responses' };
+      return {
+        provider,
+        id: model,
+        name: model,
+        api: 'openai-responses',
+        maxTokens: options.modelMaxTokens || 16_384,
+      };
     },
     async completeSimple(model, context, completeOptions) {
       modelCalls.push({ model, context, options: completeOptions });
       if (options.modelError) {
         throw new Error('scribe provider unavailable token=must-redact');
+      }
+      const response = Array.isArray(options.modelResponses)
+        ? options.modelResponses[modelCalls.length - 1]
+        : null;
+      if (response) {
+        return structuredClone(response);
       }
       return {
         role: 'assistant',
@@ -209,7 +221,7 @@ function createFixture(t, options = {}) {
     },
     provider: 'scribe-provider',
     model: 'scribe-model',
-    thinking: 'low',
+    thinking: options.thinking || 'low',
     ...(options.enabled === undefined ? {} : { enabled: options.enabled }),
     getConversationMutationState: () => mutationState,
     resolveAssistantMessageSessionPath: () => sessionPath,
@@ -268,7 +280,7 @@ test('manual recovery is durable and idempotent before one no-tools scribe job r
   assert.equal(fixture.modelCalls.length, 1);
   assert.equal(fixture.modelCalls[0].model.provider, 'scribe-provider');
   assert.equal(fixture.modelCalls[0].model.id, 'scribe-model');
-  assert.equal(fixture.modelCalls[0].options.maxTokens, 2000);
+  assert.equal(fixture.modelCalls[0].options.maxTokens, 16_384);
   assert.equal(fixture.modelCalls[0].options.reasoning, 'low');
   assert.equal(Object.hasOwn(fixture.modelCalls[0].options, 'tools'), false);
   assert.match(fixture.modelCalls[0].context.systemPrompt, /no tools|无工具/iu);
@@ -323,6 +335,46 @@ test('manual recovery is durable and idempotent before one no-tools scribe job r
       'conversation_recovery_updated',
     ]
   );
+});
+
+test('scribe retries one thinking-only length response with thinking off and the provider output budget', async (t) => {
+  const fixture = createFixture(t, {
+    thinking: 'high',
+    modelMaxTokens: 32_768,
+    modelResponses: [
+      {
+        role: 'assistant',
+        stopReason: 'length',
+        content: [{ type: 'thinking', thinking: 'hidden recovery reasoning must not be persisted as the report' }],
+        usage: { input: 100, output: 32_768, reasoning: 32_768, totalTokens: 32_868 },
+      },
+      {
+        role: 'assistant',
+        stopReason: 'stop',
+        content: [{ type: 'text', text: VALID_SCRIBE_OUTPUT }],
+        usage: { input: 100, output: 500, reasoning: 0, totalTokens: 600 },
+      },
+    ],
+  });
+  const accepted = fixture.service.requestRecovery(fixture.conversation.id, fixture.sourceMessage.id);
+
+  await fixture.scheduled[0]();
+
+  const completed = fixture.store.getMessageRecovery(accepted.recovery.id);
+  assert.equal(completed.status, 'completed');
+  assert.equal(completed.fallbackUsed, false);
+  assert.equal(fixture.modelCalls.length, 2);
+  assert.deepEqual(
+    fixture.modelCalls.map((call) => ({ maxTokens: call.options.maxTokens, reasoning: call.options.reasoning })),
+    [
+      { maxTokens: 32_768, reasoning: 'high' },
+      { maxTokens: 32_768, reasoning: 'off' },
+    ]
+  );
+  const events = fixture.runStore.listTaskEvents(completed.recoveryTaskId);
+  const attempts = events.filter((event) => event.eventType === 'conversation_recovery_model_attempt');
+  assert.deepEqual(attempts.map((event) => event.payload.diagnosticCode), ['length_exhausted', '']);
+  assert.equal(JSON.stringify(attempts).includes('hidden recovery reasoning'), false);
 });
 
 test('saved system scribe configuration is used by the next recovery while accepted work keeps its request snapshot', async (t) => {

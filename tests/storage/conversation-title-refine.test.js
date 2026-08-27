@@ -135,6 +135,41 @@ test('model failure keeps the existing title and does not block the digest', asy
   assert.equal(updated.metadata.conversationDigests.length, 1);
 });
 
+test('empty title output retries once with thinking off and the Pi default output budget', async (t) => {
+  const store = createStore(t);
+  const conversation = createConversation(store, '原始标题');
+  store.updateConversation(conversation.id, { title: '原始标题', titleSource: 'auto_first_message' });
+  const runnerCalls = [];
+
+  appendPublicMessages(store, conversation.id, 1, 2);
+  const result = await maybeAutoCreateConversationDigest(store, conversation.id, digestOptions(async (context) => {
+    runnerCalls.push(context);
+    return runnerCalls.length === 1 ? '' : '关闭思考后的标题';
+  }, {
+    resolveSystemModelConfigSnapshot() {
+      return {
+        enabled: true,
+        provider: 'moonshotai',
+        model: 'kimi-k2.5',
+        thinking: 'high',
+        timeoutMs: 30_000,
+      };
+    },
+  }));
+
+  assert.equal(result.digestChanged, true);
+  assert.equal(runnerCalls.length, 2);
+  assert.deepEqual(
+    runnerCalls.map((call) => ({ thinking: call.config.thinking, maxTokens: call.maxTokens })),
+    [
+      { thinking: 'high', maxTokens: 16_384 },
+      { thinking: 'off', maxTokens: 16_384 },
+    ]
+  );
+  assert.equal(store.getConversation(conversation.id).title, '关闭思考后的标题');
+  assert.equal(store.getConversationTitleSource(conversation.id), 'auto_llm');
+});
+
 test('blank or over-long model output falls back to the existing title', async (t) => {
   const store = createStore(t);
 

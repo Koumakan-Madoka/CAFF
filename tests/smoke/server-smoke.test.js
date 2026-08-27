@@ -2820,7 +2820,7 @@ test('conversations controller accepts direct JSON mode digest output', async (t
 
   const moduleSource = `
     export function getModel(provider, model) {
-      return { id: model, name: model, api: 'openai-completions', provider };
+      return { id: model, name: model, api: 'openai-completions', provider, maxTokens: 24576 };
     }
     export async function complete(model, context, options) {
       const payload = options.onPayload({ model: model.id, messages: [], stream: false }, model);
@@ -2883,7 +2883,7 @@ test('conversations controller accepts direct JSON mode digest output', async (t
   assert.equal(calls[0].hasTools, false);
   assert.equal(calls[0].toolChoice, undefined);
   assert.deepEqual(calls[0].responseFormat, { type: 'json_object' });
-  assert.equal(calls[0].maxTokens, 4096);
+  assert.equal(calls[0].maxTokens, 24576);
   assert.match(calls[0].systemPrompt, /Return exactly one valid compact JSON object/u);
   assert.equal(result.json.digest.summary, 'JSON Mode 总结：摘要通过 response_format 返回。');
   assert.equal(result.json.digest.createdBy, 'model:cheap-provider/cheap-model');
@@ -3095,7 +3095,7 @@ test('conversations controller falls back when JSON mode digest output is not an
   assert.ok(warnings.some((warning) => warning.includes('digest JSON must be an object')));
 });
 
-test('conversations controller falls back when JSON mode assistant response has no text JSON', async (t) => {
+test('conversations controller retries a thinking-only JSON mode rollup once with thinking off', async (t) => {
   const originalWarn = console.warn;
   const warnings = [];
   console.warn = (...args) => warnings.push(args.join(' '));
@@ -3108,15 +3108,14 @@ test('conversations controller falls back when JSON mode assistant response has 
   global.__CAFF_JSON_MODE_THINKING_ONLY_CALLS = calls;
   const moduleSource = `
     export function getModel(provider, model) {
-      return { id: model, name: model, api: 'openai-completions', provider };
+      return { id: model, name: model, api: 'openai-completions', provider, reasoning: true, maxTokens: 24576 };
     }
     export async function complete(model, context, options) {
       const payload = options.onPayload({
         model: model.id,
         messages: [],
         stream: false,
-        reasoning: { effort: 'high' },
-        reasoning_effort: 'high'
+        reasoning: options.reasoning,
       }, model);
       globalThis.__CAFF_JSON_MODE_THINKING_ONLY_CALLS.push({
         purpose: options.metadata && options.metadata.purpose,
@@ -3124,7 +3123,26 @@ test('conversations controller falls back when JSON mode assistant response has 
         thinking: payload && payload.thinking,
         reasoning: payload && payload.reasoning,
         reasoningEffort: payload && payload.reasoning_effort,
+        maxTokens: options.maxTokens,
       });
+      if (globalThis.__CAFF_JSON_MODE_THINKING_ONLY_CALLS.length === 2) {
+        return {
+          role: 'assistant',
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              summary: '模型 rollup：关闭思考后生成了可见 JSON。',
+              facts: ['第二次调用保留了完整正文预算。'],
+              decisions: [],
+              openQuestions: [],
+              nextActions: [],
+              artifacts: []
+            })
+          }],
+          stopReason: 'stop',
+          timestamp: Date.now()
+        };
+      }
       return {
         role: 'assistant',
         content: [{ type: 'thinking', thinking: '这里只有思考内容，没有最终摘要 JSON。' }],
@@ -3181,15 +3199,16 @@ test('conversations controller falls back when JSON mode assistant response has 
   });
 
   assert.equal(result.statusCode, 200);
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 2);
   assert.equal(calls[0].purpose, 'rollup');
   assert.deepEqual(calls[0].responseFormat, { type: 'json_object' });
-  assert.deepEqual(calls[0].thinking, { type: 'disabled' });
-  assert.equal(calls[0].reasoning, undefined);
-  assert.equal(calls[0].reasoningEffort, undefined);
-  assert.equal(result.json.rollup.createdBy, 'system:auto-compaction');
-  assert.match(result.json.rollup.summary, /^Auto-compacted rollup/u);
-  assert.ok(warnings.some((warning) => warning.includes('digest JSON text was missing from assistant response')));
+  assert.equal(calls[0].reasoning, 'high');
+  assert.equal(calls[0].maxTokens, 24_576);
+  assert.equal(calls[1].reasoning, 'off');
+  assert.equal(calls[1].maxTokens, 24_576);
+  assert.match(result.json.rollup.createdBy, /^model:auto-compaction:/u);
+  assert.equal(result.json.rollup.summary, '模型 rollup：关闭思考后生成了可见 JSON。');
+  assert.ok(warnings.some((warning) => warning.includes('length_exhausted')));
   const runningStatusIndex = broadcastEvents.findIndex(
     (event) => event.eventName === 'conversation_digest_status'
       && event.payload.status === 'running'
