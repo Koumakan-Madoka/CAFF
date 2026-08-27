@@ -166,12 +166,24 @@ function createFixture(t, options = {}) {
 
   const runtime = {
     getModel(provider, model) {
-      return { provider, id: model, name: model, api: 'openai-responses' };
+      return {
+        provider,
+        id: model,
+        name: model,
+        api: 'openai-responses',
+        maxTokens: options.modelMaxTokens || 16_384,
+      };
     },
     async completeSimple(model, context, completeOptions) {
       modelCalls.push({ model, context, options: completeOptions });
       if (options.modelError) {
         throw new Error('scribe provider unavailable token=must-redact');
+      }
+      const response = Array.isArray(options.modelResponses)
+        ? options.modelResponses[modelCalls.length - 1]
+        : null;
+      if (response) {
+        return structuredClone(response);
       }
       return {
         role: 'assistant',
@@ -209,7 +221,7 @@ function createFixture(t, options = {}) {
     },
     provider: 'scribe-provider',
     model: 'scribe-model',
-    thinking: 'low',
+    thinking: options.thinking || 'low',
     ...(options.enabled === undefined ? {} : { enabled: options.enabled }),
     getConversationMutationState: () => mutationState,
     resolveAssistantMessageSessionPath: () => sessionPath,
@@ -268,7 +280,7 @@ test('manual recovery is durable and idempotent before one no-tools scribe job r
   assert.equal(fixture.modelCalls.length, 1);
   assert.equal(fixture.modelCalls[0].model.provider, 'scribe-provider');
   assert.equal(fixture.modelCalls[0].model.id, 'scribe-model');
-  assert.equal(fixture.modelCalls[0].options.maxTokens, 2000);
+  assert.equal(fixture.modelCalls[0].options.maxTokens, 16_384);
   assert.equal(fixture.modelCalls[0].options.reasoning, 'low');
   assert.equal(Object.hasOwn(fixture.modelCalls[0].options, 'tools'), false);
   assert.match(fixture.modelCalls[0].context.systemPrompt, /no tools|无工具/iu);
@@ -325,6 +337,46 @@ test('manual recovery is durable and idempotent before one no-tools scribe job r
   );
 });
 
+test('scribe retries one thinking-only length response with thinking off and the provider output budget', async (t) => {
+  const fixture = createFixture(t, {
+    thinking: 'high',
+    modelMaxTokens: 32_768,
+    modelResponses: [
+      {
+        role: 'assistant',
+        stopReason: 'length',
+        content: [{ type: 'thinking', thinking: 'hidden recovery reasoning must not be persisted as the report' }],
+        usage: { input: 100, output: 32_768, reasoning: 32_768, totalTokens: 32_868 },
+      },
+      {
+        role: 'assistant',
+        stopReason: 'stop',
+        content: [{ type: 'text', text: VALID_SCRIBE_OUTPUT }],
+        usage: { input: 100, output: 500, reasoning: 0, totalTokens: 600 },
+      },
+    ],
+  });
+  const accepted = fixture.service.requestRecovery(fixture.conversation.id, fixture.sourceMessage.id);
+
+  await fixture.scheduled[0]();
+
+  const completed = fixture.store.getMessageRecovery(accepted.recovery.id);
+  assert.equal(completed.status, 'completed');
+  assert.equal(completed.fallbackUsed, false);
+  assert.equal(fixture.modelCalls.length, 2);
+  assert.deepEqual(
+    fixture.modelCalls.map((call) => ({ maxTokens: call.options.maxTokens, reasoning: call.options.reasoning })),
+    [
+      { maxTokens: 32_768, reasoning: 'high' },
+      { maxTokens: 32_768, reasoning: 'off' },
+    ]
+  );
+  const events = fixture.runStore.listTaskEvents(completed.recoveryTaskId);
+  const attempts = events.filter((event) => event.event_type === 'conversation_recovery_model_attempt');
+  assert.deepEqual(attempts.map((event) => event.payload.diagnosticCode), ['length_exhausted', '']);
+  assert.equal(JSON.stringify(attempts).includes('hidden recovery reasoning'), false);
+});
+
 test('saved system scribe configuration is used by the next recovery while accepted work keeps its request snapshot', async (t) => {
   const fixture = createFixture(t);
   const accepted = fixture.service.requestRecovery(fixture.conversation.id, fixture.sourceMessage.id);
@@ -379,6 +431,11 @@ test('scribe failure persists one mechanical fallback while the source trace sta
   const failed = fixture.store.getMessageRecovery(accepted.recovery.id);
   assert.equal(failed.status, 'failed');
   assert.equal(failed.fallbackUsed, true);
+  assert.equal(fixture.modelCalls.length, 1, 'provider exceptions must not trigger the output fallback retry');
+  const providerAttempts = fixture.runStore.listTaskEvents(failed.recoveryTaskId)
+    .filter((event) => event.event_type === 'conversation_recovery_model_attempt');
+  assert.deepEqual(providerAttempts.map((event) => event.payload.diagnosticCode), ['provider_error']);
+  assert.equal(JSON.stringify(providerAttempts).includes('must-redact'), false);
   assert.equal(failed.modelOutput, '');
   assert.equal(failed.errorCode, 'conversation_recovery_scribe_failed');
   assert.equal(failed.errorMessage.includes('must-redact'), false);
@@ -399,6 +456,84 @@ test('scribe failure persists one mechanical fallback while the source trace sta
   assert.equal(fixture.runStore.getRun(failed.recoveryRunId).status, 'failed');
 });
 
+test('a second length response falls back with a specific bounded diagnostic', async (t) => {
+  const fixture = createFixture(t, {
+    thinking: 'high',
+    modelResponses: [
+      {
+        role: 'assistant',
+        stopReason: 'length',
+        content: [{ type: 'thinking', thinking: 'first hidden reasoning' }],
+        usage: { output: 16_384, reasoning: 16_384, totalTokens: 16_384 },
+      },
+      {
+        role: 'assistant',
+        stopReason: 'length',
+        content: [{ type: 'text', text: VALID_SCRIBE_OUTPUT }],
+        usage: { output: 16_384, reasoning: 0, totalTokens: 16_384 },
+      },
+    ],
+  });
+  const accepted = fixture.service.requestRecovery(fixture.conversation.id, fixture.sourceMessage.id);
+
+  await fixture.scheduled[0]();
+
+  const failed = fixture.store.getMessageRecovery(accepted.recovery.id);
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.fallbackUsed, true);
+  assert.equal(failed.errorCode, 'conversation_recovery_scribe_length_exhausted');
+  assert.equal(fixture.modelCalls.length, 2);
+  const attempts = fixture.runStore.listTaskEvents(failed.recoveryTaskId)
+    .filter((event) => event.event_type === 'conversation_recovery_model_attempt');
+  assert.deepEqual(attempts.map((event) => event.payload.retryScheduled), [true, false]);
+  assert.equal(JSON.stringify(attempts).includes('first hidden reasoning'), false);
+});
+
+test('assistant provider errors and 429 responses do not trigger the output fallback retry', async (t) => {
+  const fixture = createFixture(t, {
+    thinking: 'high',
+    modelResponses: [{
+      role: 'assistant',
+      stopReason: 'error',
+      errorMessage: '429 provider overloaded',
+      content: [],
+      usage: { input: 10, output: 0, totalTokens: 10 },
+    }],
+  });
+  const accepted = fixture.service.requestRecovery(fixture.conversation.id, fixture.sourceMessage.id);
+
+  await fixture.scheduled[0]();
+
+  const failed = fixture.store.getMessageRecovery(accepted.recovery.id);
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.errorCode, 'conversation_recovery_scribe_provider_error');
+  assert.equal(fixture.modelCalls.length, 1);
+});
+
+test('two empty visible responses use the empty_text terminal diagnostic', async (t) => {
+  const fixture = createFixture(t, {
+    thinking: 'high',
+    modelResponses: [1, 2].map((index) => ({
+      role: 'assistant',
+      stopReason: 'stop',
+      content: [{ type: 'thinking', thinking: `hidden empty response ${index}` }],
+      usage: { output: 100, reasoning: 100, totalTokens: 100 },
+    })),
+  });
+  const accepted = fixture.service.requestRecovery(fixture.conversation.id, fixture.sourceMessage.id);
+
+  await fixture.scheduled[0]();
+
+  const failed = fixture.store.getMessageRecovery(accepted.recovery.id);
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.errorCode, 'conversation_recovery_scribe_empty_text');
+  assert.equal(fixture.modelCalls.length, 2);
+  const attempts = fixture.runStore.listTaskEvents(failed.recoveryTaskId)
+    .filter((event) => event.event_type === 'conversation_recovery_model_attempt');
+  assert.deepEqual(attempts.map((event) => event.payload.diagnosticCode), ['empty_text', 'empty_text']);
+  assert.equal(JSON.stringify(attempts).includes('hidden empty response'), false);
+});
+
 test('invalid scribe output uses the same one-message mechanical fallback contract', async (t) => {
   const fixture = createFixture(t, { modelOutput: 'unstructured model answer' });
   const accepted = fixture.service.requestRecovery(fixture.conversation.id, fixture.sourceMessage.id);
@@ -408,8 +543,7 @@ test('invalid scribe output uses the same one-message mechanical fallback contra
   const failed = fixture.store.getMessageRecovery(accepted.recovery.id);
   assert.equal(failed.status, 'failed');
   assert.equal(failed.fallbackUsed, true);
-  assert.equal(failed.errorCode, 'conversation_recovery_scribe_failed');
-  assert.match(failed.errorMessage, /missing heading/u);
+  assert.equal(failed.errorCode, 'conversation_recovery_scribe_invalid_output');
   const message = fixture.store.getMessage(failed.recoveryMessageId);
   assert.match(message.content, /不会执行或重放原任务/u);
   assert.equal(fixture.store.listMessages(fixture.conversation.id).filter((item) => item.metadata.recoveryResult).length, 1);

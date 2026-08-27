@@ -2,8 +2,17 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import { createHttpError } from '../../http/http-errors';
-import { DEFAULT_AGENT_DIR, DEFAULT_MODEL, DEFAULT_PROVIDER, DEFAULT_THINKING, resolveIntegerSetting, resolveSetting, resolveThinkingSetting, startRun } from '../../../lib/minimal-pi';
+import { DEFAULT_AGENT_DIR, DEFAULT_MODEL, DEFAULT_PROVIDER, DEFAULT_THINKING, resolveIntegerSetting, resolveSetting, resolveThinkingSetting } from '../../../lib/minimal-pi';
 import { absorbExperienceDraftsInMetadata, experienceDraftsForDigest, getPendingConversationExperienceDrafts } from './experience-draft';
+import {
+  SystemModelOutputError,
+  extractSystemModelVisibleText,
+  isSystemModelAssistantOutput,
+  markSystemModelInvalidOutput,
+  projectSystemModelOutputAttempt,
+  resolveSystemModelOutputBudget,
+  safeSystemModelErrorText,
+} from './system-model-output';
 
 const {
   TITLE_SOURCE_AUTO_FIRST_MESSAGE,
@@ -31,7 +40,6 @@ const MAX_DIGEST_MODEL_INVALID_OUTPUT_PREVIEW_LENGTH = 4000;
 const MAX_DIGEST_MODEL_REPAIR_OUTPUT_LENGTH = 4000;
 const DIGEST_MODEL_PROGRESS_MIN_INTERVAL_MS = 500;
 const DEFAULT_DIGEST_MODEL_TIMEOUT_MS = 90 * 1000;
-const DEFAULT_DIGEST_JSON_MODE_MAX_TOKENS = 4096;
 const DEFAULT_DIGEST_AUTO_CREATE_MESSAGE_BUDGET = 24;
 const DEFAULT_DIGEST_AUTO_IDLE_MS = 0;
 const DEFAULT_DIGEST_AUTO_COOLDOWN_MS = 0;
@@ -102,12 +110,20 @@ function clipText(value: any, maxLength: number) {
 }
 
 function stringifyDigestModelOutput(value: any) {
+  if (isSystemModelAssistantOutput(value)) {
+    return extractSystemModelVisibleText(value);
+  }
+
   if (typeof value === 'string') {
     return value;
   }
 
   if (value === null || value === undefined) {
     return '';
+  }
+
+  if (value instanceof Error) {
+    return value.message;
   }
 
   try {
@@ -135,15 +151,16 @@ function shouldLogRawDigestModelOutput(options: any = {}) {
 function warnInvalidModelDigestOutput(output: any, config: any, options: any = {}) {
   const outputText = stringifyDigestModelOutput(output);
   const rawOutputEnabled = shouldLogRawDigestModelOutput(options);
-  const renderedOutput = rawOutputEnabled
-    ? outputText
-    : clipRawText(outputText, MAX_DIGEST_MODEL_INVALID_OUTPUT_PREVIEW_LENGTH);
+  const renderedOutput = safeSystemModelErrorText(
+    outputText,
+    rawOutputEnabled ? Math.max(1, outputText.length) : MAX_DIGEST_MODEL_INVALID_OUTPUT_PREVIEW_LENGTH
+  );
   const outputLabel = rawOutputEnabled
-    ? 'raw output'
-    : `output preview first ${MAX_DIGEST_MODEL_INVALID_OUTPUT_PREVIEW_LENGTH} chars; set CAFF_DIGEST_LOG_RAW_OUTPUT=true for full raw output`;
+    ? 'full redacted visible output'
+    : `redacted visible output preview first ${MAX_DIGEST_MODEL_INVALID_OUTPUT_PREVIEW_LENGTH} chars; set CAFF_DIGEST_LOG_RAW_OUTPUT=true for the full redacted visible output`;
   const purpose = normalizeText(options.purpose) || 'summary';
   const modelLabel = `${normalizeText(config && config.provider) || 'unknown'}/${normalizeText(config && config.model) || 'unknown'}`;
-  const diagnostic = clipText(options.diagnostic, 800);
+  const diagnostic = safeSystemModelErrorText(options.diagnostic, 800);
   const diagnosticText = diagnostic ? `\nDiagnostic: ${diagnostic}` : '';
 
   console.warn(`[conversation-digest] Invalid model digest JSON (${purpose}, ${modelLabel}); ${outputLabel}:\n${renderedOutput || '[empty]'}${diagnosticText}`);
@@ -960,40 +977,6 @@ function validateJsonModeDigestPayload(value: any) {
     : { ok: false, reason: 'digest JSON did not normalize to a valid digest' };
 }
 
-function extractDigestModelTextPart(item: any) {
-  if (typeof item === 'string') {
-    return normalizeText(item);
-  }
-
-  if (!item || typeof item !== 'object') {
-    return '';
-  }
-
-  const type = normalizeDigestModelContentType(item.type);
-  if (type === 'thinking' || type === 'reasoning' || type === 'redactedthinking') {
-    return '';
-  }
-
-  return normalizeText(item.text || item.content || item.output_text || item.refusal);
-}
-
-function extractDigestModelText(output: any) {
-  if (typeof output === 'string') {
-    return output;
-  }
-
-  const message = output && (output.message || output.assistantMessage || output);
-  if (typeof (message && message.content) === 'string') {
-    return normalizeText(message.content);
-  }
-
-  const content = Array.isArray(message && message.content) ? message.content : [];
-  return content
-    .map((item: any) => extractDigestModelTextPart(item))
-    .filter(Boolean)
-    .join('\n');
-}
-
 function buildJsonModeDigestModelContext(prompt: string) {
   return {
     systemPrompt: [
@@ -1010,16 +993,7 @@ function buildJsonModeDigestModelContext(prompt: string) {
   };
 }
 
-function resolveDigestJsonModeMaxTokens(options: any = {}) {
-  return Math.max(256, resolveIntegerSetting(
-    options.digestJsonModeMaxTokens,
-    process.env.CAFF_DIGEST_JSON_MODE_MAX_TOKENS,
-    DEFAULT_DIGEST_JSON_MODE_MAX_TOKENS,
-    'digest JSON mode max tokens'
-  ));
-}
-
-function buildJsonModeDigestPayload(payload: any, model: any) {
+function buildJsonModeDigestPayload(payload: any, model: any, thinking: any) {
   const nextPayload = {
     ...payload,
     response_format: { type: 'json_object' },
@@ -1027,12 +1001,14 @@ function buildJsonModeDigestPayload(payload: any, model: any) {
   const provider = normalizeText(model && model.provider).toLowerCase();
   const thinkingFormat = normalizeText(model && model.compat && model.compat.thinkingFormat).toLowerCase();
 
-  delete nextPayload.reasoning;
-  delete nextPayload.reasoning_effort;
-  delete nextPayload.reasoningEffort;
+  if (normalizeText(thinking).toLowerCase() === 'off') {
+    delete nextPayload.reasoning;
+    delete nextPayload.reasoning_effort;
+    delete nextPayload.reasoningEffort;
 
-  if (provider === 'deepseek' || thinkingFormat === 'deepseek') {
-    nextPayload.thinking = { type: 'disabled' };
+    if (provider === 'deepseek' || thinkingFormat === 'deepseek') {
+      nextPayload.thinking = { type: 'disabled' };
+    }
   }
 
   return nextPayload;
@@ -1242,11 +1218,11 @@ function createDeepSeekDigestPiModel(config: any) {
       api: 'openai-completions',
       provider: 'deepseek',
       baseUrl: 'https://api.deepseek.com',
-      reasoning: false,
+      reasoning: true,
       input: ['text'],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow: 128000,
-      maxTokens: 8192,
+      maxTokens: resolveSystemModelOutputBudget(null),
       compat: {
         maxTokensField: 'max_tokens',
         supportsReasoningEffort: false,
@@ -1289,10 +1265,31 @@ function resolveDigestPiModel(piAi: any, config: any) {
   return configuredModel;
 }
 
-function createModelDigestError(message: string, output: any) {
+function createModelDigestError(message: string, output: any, diagnostic: any = null) {
   const error = new Error(message) as any;
-  error.digestModelOutput = output;
+  error.digestModelOutput = isSystemModelAssistantOutput(output)
+    ? extractSystemModelVisibleText(output)
+    : output;
+  if (diagnostic) {
+    error.systemModelDiagnostic = diagnostic;
+    error.diagnosticCode = diagnostic.diagnosticCode;
+  }
   return error;
+}
+
+function warnSystemModelDiagnostic(diagnostic: any, config: any, options: any = {}) {
+  const purpose = normalizeText(options.purpose) || 'summary';
+  const modelLabel = `${normalizeText(config && config.provider) || 'unknown'}/${normalizeText(config && config.model) || 'unknown'}`;
+  console.warn(
+    `[conversation-digest] System model output diagnostic (${purpose}, ${modelLabel}): `
+      + `${normalizeText(diagnostic && diagnostic.diagnosticCode) || 'none'}; `
+      + `attempt=${diagnostic && diagnostic.attempt || 0}; `
+      + `maxTokens=${diagnostic && diagnostic.maxTokens || 0}; `
+      + `thinking=${normalizeText(diagnostic && diagnostic.thinking) || 'off'}; `
+      + `stopReason=${normalizeText(diagnostic && diagnostic.stopReason) || 'unknown'}; `
+      + `contentBlockTypes=${Array.isArray(diagnostic && diagnostic.contentBlockTypes) ? diagnostic.contentBlockTypes.join(',') : ''}; `
+      + `retryScheduled=${Boolean(diagnostic && diagnostic.retryScheduled)}`
+  );
 }
 
 async function runJsonModeDigestModelPrompt(prompt: string, config: any, options: any = {}) {
@@ -1305,54 +1302,74 @@ async function runJsonModeDigestModelPrompt(prompt: string, config: any, options
 
   const resolvedModel = resolveDigestPiModel(piAi, config);
   const model = resolvedModel.model;
-  const jsonModeModel = {
-    ...model,
-    reasoning: false,
-    compat: {
-      ...(isPlainObject(model && model.compat) ? model.compat : {}),
-      maxTokensField: 'max_tokens',
-      supportsReasoningEffort: false,
-      supportsStrictMode: false,
-    },
-  };
+  const outputBudget = resolveSystemModelOutputBudget(model);
   const progress = createDigestModelProgressReporter(config, options);
   progress.started();
+  let attempt = 1;
+  let thinking = config.thinking;
 
-  let output: any;
-  let outputText = '';
+  while (attempt <= 2) {
+    let output: any;
+    try {
+      output = await completeDigestModel(complete, model, buildJsonModeDigestModelContext(prompt), {
+        ...(resolvedModel.apiKey ? { apiKey: resolvedModel.apiKey } : {}),
+        maxTokens: outputBudget,
+        reasoning: thinking,
+        onPayload(payload: any) {
+          return buildJsonModeDigestPayload(payload, model, thinking);
+        },
+        metadata: {
+          source: 'conversation_digest',
+          purpose: options.purpose || 'summary',
+          conversationId: normalizeText(options.conversationId),
+          structuredOutput: 'json_mode',
+          attempt,
+          maxTokens: outputBudget,
+          thinking,
+        },
+      }, options, config);
+    } catch (error) {
+      progress.failed(error);
+      throw error;
+    }
 
-  try {
-    output = await completeDigestModel(complete, jsonModeModel, buildJsonModeDigestModelContext(prompt), {
-      ...(resolvedModel.apiKey ? { apiKey: resolvedModel.apiKey } : {}),
-      maxTokens: resolveDigestJsonModeMaxTokens(options),
-      onPayload(payload: any) {
-        return buildJsonModeDigestPayload(payload, jsonModeModel);
-      },
-      metadata: {
-        source: 'conversation_digest',
-        purpose: options.purpose || 'summary',
-        conversationId: normalizeText(options.conversationId),
-        structuredOutput: 'json_mode',
-      },
-    }, options, config);
-    outputText = extractDigestModelText(output);
-    progress.finished(outputText);
-  } catch (error) {
-    progress.failed(error);
-    throw error;
+    const inspection = projectSystemModelOutputAttempt(output, {
+      attempt,
+      maxTokens: outputBudget,
+      thinking,
+    });
+    if (inspection.retryEligible) {
+      const diagnostic = { ...inspection.diagnostic, retryScheduled: true };
+      warnSystemModelDiagnostic(diagnostic, config, options);
+      attempt += 1;
+      thinking = 'off';
+      continue;
+    }
+    if (inspection.diagnostic.diagnosticCode) {
+      warnSystemModelDiagnostic(inspection.diagnostic, config, options);
+      const error = new SystemModelOutputError(
+        `Digest model output failed: ${inspection.diagnostic.diagnosticCode}`,
+        inspection.diagnostic
+      ) as any;
+      error.digestModelOutput = inspection.visibleText;
+      progress.failed(error);
+      throw error;
+    }
+
+    const validation = validateJsonModeDigestPayload(inspection.visibleText);
+    if (!validation.ok) {
+      const diagnostic = markSystemModelInvalidOutput(inspection.diagnostic);
+      warnSystemModelDiagnostic(diagnostic, config, options);
+      const error = createModelDigestError(`Invalid JSON mode digest payload: ${validation.reason}`, inspection.visibleText, diagnostic);
+      progress.failed(error);
+      throw error;
+    }
+
+    progress.finished(inspection.visibleText);
+    return validation.payload;
   }
 
-  const validation = outputText
-    ? validateJsonModeDigestPayload(outputText)
-    : { ok: false, reason: 'digest JSON text was missing from assistant response' };
-
-  if (!validation.ok) {
-    const error = createModelDigestError(`Invalid JSON mode digest payload: ${validation.reason}`, output);
-    progress.failed(error);
-    throw error;
-  }
-
-  return validation.payload;
+  throw new Error('Digest model retry budget was exhausted');
 }
 
 function appendTraceText(currentValue: string, nextValue: any) {
@@ -1482,7 +1499,7 @@ function createDigestModelProgressReporter(config: any, options: any = {}) {
     },
     failed(error: any) {
       eventCount += 1;
-      outputPreview = appendTraceText(outputPreview, `\n[failed] ${error && error.message ? error.message : String(error || 'Unknown error')}`);
+      outputPreview = appendTraceText(outputPreview, `\n[failed] ${safeSystemModelErrorText(error)}`);
       emit(true);
     },
     finished(reply: any) {
@@ -1493,48 +1510,106 @@ function createDigestModelProgressReporter(config: any, options: any = {}) {
   };
 }
 
+function resolveDigestModelOutputBudget(config: any) {
+  const configured = resolveConfiguredDigestModel(config);
+  return resolveSystemModelOutputBudget(configured && configured.model);
+}
+
 async function runDigestModelPrompt(prompt: string, config: any, options: any = {}) {
   const runner = typeof options.digestModelRunner === 'function' ? options.digestModelRunner : null;
+  const callBudget = options.systemModelCallBudget && typeof options.systemModelCallBudget === 'object'
+    ? options.systemModelCallBudget
+    : { used: 0, max: 2 };
+  let directCompletion: any = null;
+  let directModel: any = null;
+  let directApiKey = '';
+  let outputBudget = resolveDigestModelOutputBudget(config);
 
-  if (runner) {
-    return runner({
-      prompt,
-      config,
-      purpose: options.purpose,
-      conversationId: normalizeText(options.conversationId),
-      onModelProgress: options.onModelProgress,
+  if (!runner) {
+    const piAi = await importPiAiModule(normalizeText(options.piAiModuleSpecifier || process.env.CAFF_PI_AI_MODULE) || '@earendil-works/pi-ai/compat');
+    directCompletion = typeof piAi.complete === 'function' ? piAi.complete : null;
+    if (!directCompletion) {
+      throw new Error('pi-ai module does not expose complete()');
+    }
+    const resolvedModel = resolveDigestPiModel(piAi, config);
+    directModel = resolvedModel.model;
+    directApiKey = resolvedModel.apiKey || '';
+    outputBudget = resolveSystemModelOutputBudget(directModel);
+  }
+
+  let thinking = callBudget.used > 0 ? 'off' : config.thinking;
+
+  while (callBudget.used < callBudget.max) {
+    callBudget.used += 1;
+    const attempt = callBudget.used;
+    const attemptConfig = { ...config, thinking };
+    let rawOutput: any;
+
+    if (runner) {
+      rawOutput = await runner({
+        prompt,
+        config: attemptConfig,
+        purpose: options.purpose,
+        conversationId: normalizeText(options.conversationId),
+        onModelProgress: options.onModelProgress,
+        maxTokens: outputBudget,
+        attempt,
+        retryReason: options.retryReason,
+      });
+      if (!isSystemModelAssistantOutput(rawOutput) && typeof rawOutput !== 'string') {
+        return rawOutput;
+      }
+    } else {
+      const progress = createDigestModelProgressReporter(attemptConfig, options);
+      progress.started();
+      try {
+        rawOutput = await completeDigestModel(directCompletion, directModel, {
+          systemPrompt: 'You are a CAFF system text writer. Return only the requested visible result and do not use tools.',
+          messages: [{
+            role: 'user',
+            content: [{ type: 'text', text: prompt }],
+          }],
+        }, {
+          ...(directApiKey ? { apiKey: directApiKey } : {}),
+          maxTokens: outputBudget,
+          reasoning: attemptConfig.thinking,
+          metadata: {
+            source: 'conversation_digest',
+            purpose: options.purpose || 'summary',
+            conversationId: normalizeText(options.conversationId),
+            attempt,
+            maxTokens: outputBudget,
+            thinking: attemptConfig.thinking,
+          },
+        }, options, attemptConfig);
+        progress.finished(extractSystemModelVisibleText(rawOutput));
+      } catch (error) {
+        progress.failed(error);
+        throw error;
+      }
+    }
+
+    const inspection = projectSystemModelOutputAttempt(rawOutput, {
+      attempt,
+      maxTokens: outputBudget,
+      thinking,
     });
+    if (inspection.retryEligible && callBudget.used < callBudget.max) {
+      warnSystemModelDiagnostic({ ...inspection.diagnostic, retryScheduled: true }, config, options);
+      thinking = 'off';
+      continue;
+    }
+    if (inspection.diagnostic.diagnosticCode) {
+      warnSystemModelDiagnostic(inspection.diagnostic, config, options);
+      throw new SystemModelOutputError(
+        `System model output failed: ${inspection.diagnostic.diagnosticCode}`,
+        inspection.diagnostic
+      );
+    }
+    return inspection.visibleText;
   }
 
-  const handle = startRun(config.provider, config.model, prompt, {
-    thinking: config.thinking,
-    agentDir: config.agentDir,
-    sqlitePath: config.sqlitePath,
-    heartbeatTimeoutMs: config.heartbeatTimeoutMs,
-    streamOutput: false,
-    taskKind: 'conversation_digest',
-    taskRole: options.purpose || 'summary',
-    metadata: {
-      source: 'conversation_digest',
-      purpose: options.purpose || 'summary',
-      conversationId: normalizeText(options.conversationId),
-    },
-  });
-  const progress = createDigestModelProgressReporter(config, options);
-
-  handle.on('run_started', (event: any) => progress.runStarted(event));
-  handle.on('pi_event', () => progress.piEvent());
-  handle.on('assistant_text_delta', (event: any) => progress.textDelta(event && event.delta));
-  handle.on('assistant_message', (event: any) => progress.assistantMessage(event));
-
-  try {
-    const result = await handle.resultPromise;
-    progress.finished(result && result.reply ? result.reply : '');
-    return result && result.reply ? result.reply : '';
-  } catch (error) {
-    progress.failed(error);
-    throw error;
-  }
+  throw new Error('System model call budget was exhausted');
 }
 
 async function generateModelDigestPayload(prompt: string, input: any, options: any = {}) {
@@ -1560,10 +1635,23 @@ async function generateModelDigestPayload(prompt: string, input: any, options: a
     }
   }
 
-  const output = await runDigestModelPrompt(prompt, config, options);
+  const modelCallBudget = { used: 0, max: 2 };
+  const output = await runDigestModelPrompt(prompt, config, {
+    ...options,
+    systemModelCallBudget: modelCallBudget,
+  });
   let normalized = normalizeModelDigestPayload(output);
 
   if (!normalized) {
+    const invalidDiagnostic = markSystemModelInvalidOutput(projectSystemModelOutputAttempt(
+      stringifyDigestModelOutput(output),
+      {
+        attempt: modelCallBudget.used,
+        maxTokens: resolveDigestModelOutputBudget(config),
+        thinking: modelCallBudget.used > 1 ? 'off' : config.thinking,
+      }
+    ).diagnostic);
+    warnSystemModelDiagnostic(invalidDiagnostic, config, options);
     const diagnostic = diagnoseMissingEscapedQuoteJsonFailure(output);
 
     if (diagnostic) {
@@ -1571,10 +1659,20 @@ async function generateModelDigestPayload(prompt: string, input: any, options: a
       const repairOutput = await runDigestModelPrompt(buildModelDigestJsonRepairPrompt(prompt, output, diagnostic), config, {
         ...options,
         retryReason: 'missing_escaped_quote',
+        systemModelCallBudget: modelCallBudget,
       });
       normalized = normalizeModelDigestPayload(repairOutput);
 
       if (!normalized) {
+        const repairDiagnostic = markSystemModelInvalidOutput(projectSystemModelOutputAttempt(
+          stringifyDigestModelOutput(repairOutput),
+          {
+            attempt: modelCallBudget.used,
+            maxTokens: resolveDigestModelOutputBudget(config),
+            thinking: 'off',
+          }
+        ).diagnostic);
+        warnSystemModelDiagnostic(repairDiagnostic, config, options);
         warnInvalidModelDigestOutput(repairOutput, config, options);
         throw new Error('Digest model did not return valid JSON');
       }
@@ -1619,8 +1717,7 @@ async function buildDigestFromMessages(messages: any[], input: any, timestamp: s
       createdBy: autoDigestCreatedBy(input, modelPayload.createdBy),
     });
   } catch (error) {
-    const errorValue = error as any;
-    console.warn(`[conversation-digest] Model digest failed, falling back to extractive digest: ${errorValue && errorValue.stack ? errorValue.stack : errorValue}`);
+    console.warn(`[conversation-digest] Model digest failed, falling back to extractive digest: ${safeSystemModelErrorText(error)}`);
     return extractiveDigest;
   }
 }
@@ -2340,8 +2437,7 @@ async function maybeRefineConversationTitle(store: any, conversation: any, sourc
 
     return updated || null;
   } catch (error) {
-    const errorValue = error as any;
-    console.warn(`[conversation-digest] Title refine failed, keeping existing title: ${errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Unknown error')}`);
+    console.warn(`[conversation-digest] Title refine failed, keeping existing title: ${safeSystemModelErrorText(error)}`);
     return null;
   }
 }

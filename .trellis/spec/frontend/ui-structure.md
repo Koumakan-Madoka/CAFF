@@ -475,6 +475,12 @@ window.caffShell.setComposerValue(restoredText);
   provider refresh must surface its own toast but must not block the system
   service configuration, hide `#system-services-view`, or set
   `data-management-ready="error"`.
+- The system-service shared-model card states that generation budget comes from
+  the selected model provider's maximum output token value, with Pi default
+  `16384` when omitted. It states that length/thinking-only/empty visible output
+  may trigger one automatic retry with thinking disabled, while 429/provider
+  errors/timeouts do not retry. This is explanatory text only: the card must not
+  add a second numeric input or expose diagnostic/hidden-thinking content.
 - All visible interactive targets are at least 44px high. Checkbox/radio inputs
   may keep their visual control size only when their clickable label is >=44px.
 - `body.chat-app` and `body.management-app` share CAFF tokens and rail visual
@@ -503,7 +509,9 @@ window.caffShell.setComposerValue(restoredText);
 - `tests/runtime/recovery-scribe-config-ui.test.js` executes the personas entry
   against a rejected provider refresh and asserts that the initial
   `#system-services` view, system-service load, ready state, and provider error
-  projection remain independent.
+  projection remain independent. It also asserts provider-budget/default copy,
+  one thinking-off retry wording, no-retry error wording, and that timeout
+  remains the only numeric input (no token control).
 - `scripts/ui/verify-management-pages.mjs` is called by
   `scripts/verify-ui.mjs`. It reuses the runner-owned browser, loopback app,
   temporary SQLite, and output directory; it must not start a second service.

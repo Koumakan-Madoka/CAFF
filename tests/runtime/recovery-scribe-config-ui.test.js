@@ -90,6 +90,11 @@ test('system scribe editor loads configured models and saves a full hot configur
   assert.match(document.getElementById('root').textContent, /模型来自「模型供应商」中已配置的模型/u);
   assert.match(document.getElementById('root').textContent, /无需创建角色/u);
   assert.match(document.getElementById('root').textContent, /摘要、摘要压缩、标题润色和失败现场整理/u);
+  assert.match(document.getElementById('root').textContent, /输出预算来自「模型供应商」中该模型的最大输出 token/u);
+  assert.match(document.getElementById('root').textContent, /Pi 默认 16384/u);
+  assert.match(document.getElementById('root').textContent, /最多自动再调用一次并关闭思考/u);
+  assert.match(document.getElementById('root').textContent, /429、模型服务错误或超时不会自动重试/u);
+  assert.equal(document.querySelectorAll('input[type="number"]').length, 1, 'token budget must not add another input');
   assert.match(document.getElementById('root').textContent, /失败消息上不再显示「整理失败现场」按钮/u);
   assert.match(document.getElementById('root').textContent, /整理超时/u);
   assert.match(document.getElementById('root').textContent, /不执行命令、不修改文件、不重试任务/u);

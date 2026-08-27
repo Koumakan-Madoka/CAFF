@@ -123,6 +123,15 @@ mocked result alone:
 - Cover transient and durable refusal separately: busy runtime state projects/throws `conversation_recovery_conversation_busy`; missing session file projects/throws `conversation_recovery_source_session_missing`. The message page and POST must use the same domain inspection rather than mirrored conditions.
 - UI fixtures must carry the server capability. Show the command only for `enabled=true && eligible=true`; render the bounded server reason for ineligible sources; hide the command when capability is absent so a stale/older payload fails closed.
 
+## System Model Output Budget And Fallback Guards
+
+- Use fake provider model objects with explicit `maxTokens` values that differ from both legacy caps (`2000`, `4096`) and Pi default `16384`. Assert Recovery, direct JSON digest/rollup, and direct title completion receive the provider value; separately omit it and assert `16384`.
+- Reproduce `stopReason='length'` with thinking-only content and an empty-visible-text response. Assert at most two calls, the second call uses the same provider/model/maxTokens plus `thinking='off'`, and successful visible output follows the normal persistence path.
+- Pair every retry case with provider-error/429 and thrown/AbortError controls. Those controls must make exactly one call and follow the existing mechanical/extractive/title fallback.
+- Inspect Recovery `conversation_recovery_model_attempt` events directly. Assert only enumerated stop/block/diagnostic fields and numeric usage are stored; seed a unique hidden-thinking marker and prove it is absent from task events, recovery rows, run errors, logs, and result messages.
+- Keep JSON repair inside the same two-call counter. A repairable first invalid response may make one thinking-off repair call; output exhaustion followed by invalid JSON must not make a third request.
+- Provider/output tests must assert `empty_text`, `length_exhausted`, and `invalid_output` separately. Do not infer these states from model prose.
+
 ## Recovery Scribe Startup-Default Guards
 
 - Clear `CAFF_RECOVERY_*`, `CAFF_DIGEST_{PROVIDER,MODEL,THINKING}`, and

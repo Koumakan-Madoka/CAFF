@@ -86,6 +86,7 @@
         <section class="management-card">
           <div class="management-card-title"><div><h3>摘要与失败整理使用的模型</h3><p>模型和思考强度同时用于会话摘要、摘要压缩、标题润色和失败现场整理；保存后从下一次调用生效。</p></div></div>
           ${providerSetup}
+          <p class="management-note">每次生成的输出预算来自「模型供应商」中该模型的最大输出 token；未填写时使用 Pi 默认 16384。若模型因长度耗尽、只有思考或没有可见正文，CAFF 最多自动再调用一次并关闭思考，把预算留给正文。429、模型服务错误或超时不会自动重试。</p>
           <label class="system-service-enabled-row"><input id="recovery-scribe-enabled" type="checkbox" ${config.enabled ? 'checked' : ''} /><span>在失败消息上提供现场整理</span></label>
           <p class="management-note">关闭后，失败消息上不再显示「整理失败现场」按钮；会话摘要和标题功能不受影响。</p>
           ${modelFields}

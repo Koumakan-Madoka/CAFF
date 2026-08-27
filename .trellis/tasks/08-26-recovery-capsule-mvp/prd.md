@@ -139,7 +139,7 @@ Per-tool projection keeps normalized command/path, explicit exit/isError state, 
 | Tool records | newest 80 with deterministic first/last preservation; 1,600 chars per record |
 | Capsule serialized size | 64 KiB hard maximum after redaction |
 | Scribe prompt | 72 KiB hard maximum including fixed instructions |
-| Scribe output | 8,000 chars; model max 2,000 output tokens |
+| Scribe output | 8,000 persisted chars; generation budget follows the configured model maximum |
 | Scribe timeout | 60 seconds absolute |
 | Safe error text | 240 chars |
 
@@ -153,6 +153,15 @@ Oversized inputs are deterministically clipped and report dropped counts. A Caps
 - Invocation uses Pi `ModelRuntime.completeSimple` directly with a single fixed system instruction and one user Capsule message. It creates no Agent session, no extensions, no skills and no tools.
 - The recovery run is manually persisted in `runs` with `task_kind=conversation_recovery`, `task_role=recovery_scribe`, `parent_run_id=sourceRunId`, and bounded metadata. Its task uses `assignedAgent=caff-system` and `assignedRole=recovery_scribe`; those are audit labels, not routeable Agent identities.
 - Output must contain the fixed headings: `已经完成`, `失败位置`, `可能已生效但需核验`, `尚未完成`, `建议恢复点`, `无法从现场判断`, and the non-execution statement. Invalid/empty/oversized output triggers mechanical fallback.
+
+### System Model Output Budget Amendment
+
+- Recovery, manual/automatic digest entries, digest rollups, and title refinement use the configured provider model's positive `maxTokens`; a missing value uses the Pi custom-provider default `16384`. Feature-local `2000` and `4096` generation caps are forbidden.
+- Existing storage and prompt bounds remain unchanged: Capsule 64 KiB, Recovery prompt 72 KiB, persisted Recovery body 8,000 characters, bounded digest fields, fixed timeouts, and zero tools.
+- A `length` response, thinking-only response, or empty visible text may trigger exactly one second invocation with `thinking=off` and the same model output budget. Provider errors, 429 responses, and timeouts do not trigger this fallback.
+- A system task performs at most two model calls. Existing JSON repair may consume the second call but cannot create a third call after an output-exhaustion retry.
+- Diagnostics distinguish `empty_text`, `length_exhausted`, and `invalid_output`; they may store stop reason, content-block types, bounded usage, selected budget, attempt number, and whether thinking was disabled. Hidden thinking text is never copied into diagnostic metadata or logs.
+- The system-service UI explains that output budget comes from the model-provider maximum and that CAFF may retry once with thinking disabled to preserve visible output. It does not add a token input.
 
 ## API and SSE
 

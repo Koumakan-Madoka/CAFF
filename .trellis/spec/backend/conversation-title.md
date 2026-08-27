@@ -117,15 +117,18 @@ title and source.
   normalized source messages must be non-empty.
 - The title prompt contains at most the first 12 source messages, each clipped
   to 300 characters. It requests one 5-15 character, language-matched line.
+- The production title call uses the same isolated direct `@earendil-works/pi-ai/compat` text completion as digest compatibility generation. It creates no Agent session or tools, sends the resolved provider model's positive `maxTokens` (Pi default `16384` when absent), and keeps the existing title-specific absolute timeout.
 - Normalize model output to its first line, strip code fences, a `Title:` /
   `标题：` prefix, surrounding quote marks, and trailing punctuation, collapse
   whitespace, and clip the stored title to 15 UTF-16 code units with
   `String.prototype.slice`. This differs from the code-point-safe first-message
   truncation contract.
 - Blank output, a thrown/timeout model call, or invalid normalized output keeps
-  the existing title and does not set `titleRefinedAt`. Digest success is not
-  rolled back and the first-digest opportunity is not retried by ordinary later
-  digests.
+  the existing title and does not set `titleRefinedAt`. A first `length`,
+  thinking-only, or empty-visible-text response may use the single remaining
+  system-model call with the same budget and `thinking=off`; provider errors,
+  429, aborts, and timeouts do not retry. Digest success is not rolled back and
+  the first-digest opportunity is not retried by ordinary later digests.
 - Immediately before writing, re-read the conversation and re-check source plus
   `titleRefinedAt`. A user may rename while the model is running; in that race,
   the manual title wins and neither `auto_llm` nor `titleRefinedAt` is written.
@@ -150,9 +153,11 @@ digest `summaryMode`. An extractive digest may still make one title model call.
 - The model-availability gate accepts either runner, explicit digest provider
   or model config, or a configured `PI_PROVIDER` / `PI_MODEL`.
 - `resolveDigestModelConfig` remains the single provider/model/thinking
-  resolver. Title refinement passes its timeout as that run's heartbeat timeout
-  and calls the shared model runner with `purpose: 'title_refine'` plus the
-  conversation id.
+  resolver. Title refinement passes its timeout to the shared direct model
+  completion, calls it with `purpose: 'title_refine'` plus the conversation id,
+  and shares the two-call output-fallback budget. Injected `titleModelRunner` /
+  `digestModelRunner` fixtures receive `{ config, maxTokens, attempt }` and the
+  same empty-output retry policy.
 - Do not infer title-model availability from `summaryMode: 'model'` alone. Mode
   selects digest generation behavior; provider/model/runner settings provide
   the executable model path.
@@ -172,7 +177,9 @@ digest `summaryMode`. An extractive digest may still make one title model call.
 | First auto digest but source is `auto_llm` or `manual` | Skip model call. |
 | First auto digest but refinement disabled/model unavailable | Keep digest and title; skip model call. |
 | Later auto digest | Keep digest behavior; do not call title refinement. |
-| Title model throws/times out/returns blank | Keep digest, title, source, and absent `titleRefinedAt`; log bounded warning on failure. |
+| Title model returns `length`, thinking-only, or blank visible output | Retry once with the same output budget and `thinking=off`; if still invalid, keep title/marker unchanged. |
+| Title model throws, returns provider error/429, aborts, or times out | Do not retry; keep title/marker unchanged and log only safe diagnostics. |
+| Title model returns visible text after fallback | Normalize once, write `auto_llm`, and preserve the manual-rename race guard. |
 | User renames during model call | Write-time re-read sees `manual`; discard model title. |
 | Automatic write races after manual rename | Store matrix rejects it and preserves manual title/source. |
 
@@ -201,8 +208,10 @@ digest `summaryMode`. An extractive digest may still make one title model call.
 - `tests/storage/conversation-title-refine.test.js`
   - Assert first-auto-digest-only invocation, `purpose: 'title_refine'`,
     `auto_first_message -> auto_llm`, successful marker persistence, second
-    digest skip, manual skip, model failure/blank fallback, output clipping,
-    metadata-only digest writes, and rename-during-model race protection.
+    digest skip, manual skip, model failure/blank fallback, provider max-token
+    propagation, one thinking-off retry for length/empty output, no hidden
+    thinking text in diagnostics, output clipping, metadata-only digest writes,
+    and rename-during-model race protection.
 - `tests/storage/conversation-rename-guard.test.js` and
   `tests/http/conversation-rename-guard.test.js`
   - Assert explicit and implicit manual rename semantics and both automatic

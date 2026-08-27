@@ -20,6 +20,13 @@ import {
   MIN_RECOVERY_TIMEOUT_MS,
   createRecoveryScribeConfigManager,
 } from './recovery-scribe-config';
+import {
+  SystemModelOutputError,
+  extractSystemModelVisibleText,
+  markSystemModelInvalidOutput,
+  projectSystemModelOutputAttempt,
+  resolveSystemModelOutputBudget,
+} from './system-model-output';
 import { materializeAgentContextSnapshot } from './turn/context-snapshot';
 import {
   MAX_RECOVERY_CAPSULE_BYTES,
@@ -30,7 +37,6 @@ import {
 } from './recovery-capsule';
 
 const MAX_RECOVERY_PROMPT_BYTES = 72 * 1024;
-const MAX_RECOVERY_MODEL_TOKENS = 2_000;
 const DEFAULT_RECOVERY_TIMEOUT_MS = MAX_RECOVERY_TIMEOUT_MS;
 const MAX_SAFE_ERROR_CHARS = 240;
 const REQUIRED_SCRIBE_HEADINGS = [
@@ -170,41 +176,33 @@ function buildScribePrompt(capsule: any) {
 }
 
 function extractScribeText(output: any) {
-  if (typeof output === 'string') {
-    return output.trim();
-  }
-  const message = output && (output.message || output.assistantMessage || output);
-  if (typeof (message && message.content) === 'string') {
-    return String(message.content).trim();
-  }
-  const content = Array.isArray(message && message.content) ? message.content : [];
-  return content
-    .filter((item: any) => item && item.type === 'text' && item.text)
-    .map((item: any) => String(item.text).trim())
-    .filter(Boolean)
-    .join('\n')
-    .trim();
+  return extractSystemModelVisibleText(output);
 }
 
-function validateScribeOutput(value: any) {
-  const message = value && (value.message || value.assistantMessage || value);
-  if (message && typeof message === 'object' && String(message.stopReason || '').toLowerCase() === 'error') {
-    throw new Error('Recovery scribe reported a model invocation error');
-  }
+function validateScribeOutput(value: any, diagnostic: any) {
   const output = extractScribeText(value);
   if (!output) {
-    throw new Error('Recovery scribe output is empty');
+    throw new SystemModelOutputError('Recovery scribe output is empty', diagnostic);
   }
   if (output.length > MAX_RECOVERY_OUTPUT_CHARS) {
-    throw new Error('Recovery scribe output exceeds the hard size limit');
+    throw new SystemModelOutputError(
+      'Recovery scribe output exceeds the hard size limit',
+      markSystemModelInvalidOutput(diagnostic)
+    );
   }
   for (const heading of REQUIRED_SCRIBE_HEADINGS) {
     if (!output.includes(heading)) {
-      throw new Error(`Recovery scribe output is missing heading: ${heading}`);
+      throw new SystemModelOutputError(
+        `Recovery scribe output is missing heading: ${heading}`,
+        markSystemModelInvalidOutput(diagnostic)
+      );
     }
   }
   if (!output.includes(NON_EXECUTION_STATEMENT)) {
-    throw new Error('Recovery scribe output is missing the non-execution statement');
+    throw new SystemModelOutputError(
+      'Recovery scribe output is missing the non-execution statement',
+      markSystemModelInvalidOutput(diagnostic)
+    );
   }
   return output;
 }
@@ -260,18 +258,86 @@ async function invokeScribe(capsule: any, config: any, options: any) {
     if (!model) {
       throw new Error(`Recovery model is unavailable: ${config.provider}/${config.model}`);
     }
-    const output = await runtime.completeSimple(model, {
-      systemPrompt: SCRIBE_SYSTEM_PROMPT,
-      messages: [{
-        role: 'user',
-        content: [{ type: 'text', text: prompt }],
-      }],
-    }, {
-      signal: controller.signal,
-      maxTokens: MAX_RECOVERY_MODEL_TOKENS,
-      reasoning: config.thinking,
-    });
-    return { output: validateScribeOutput(output), prompt, raw: output };
+    const outputBudget = resolveSystemModelOutputBudget(model);
+    let attempt = 1;
+    let thinking = config.thinking;
+
+    while (attempt <= 2) {
+      let output: any;
+      try {
+        output = await runtime.completeSimple(model, {
+          systemPrompt: SCRIBE_SYSTEM_PROMPT,
+          messages: [{
+            role: 'user',
+            content: [{ type: 'text', text: prompt }],
+          }],
+        }, {
+          signal: controller.signal,
+          maxTokens: outputBudget,
+          reasoning: thinking,
+        });
+      } catch (error) {
+        const aborted = controller.signal.aborted || (error && (error as any).name === 'AbortError');
+        const inspection = projectSystemModelOutputAttempt({
+          role: 'assistant',
+          stopReason: aborted ? 'aborted' : 'error',
+          content: [],
+          usage: {},
+        }, {
+          attempt,
+          maxTokens: outputBudget,
+          thinking,
+        });
+        if (typeof options.onModelAttempt === 'function') {
+          options.onModelAttempt(inspection.diagnostic);
+        }
+        throw error;
+      }
+      const inspection = projectSystemModelOutputAttempt(output, {
+        attempt,
+        maxTokens: outputBudget,
+        thinking,
+      });
+      if (inspection.retryEligible) {
+        const diagnostic = { ...inspection.diagnostic, retryScheduled: true };
+        if (typeof options.onModelAttempt === 'function') {
+          options.onModelAttempt(diagnostic);
+        }
+        attempt += 1;
+        thinking = 'off';
+        continue;
+      }
+      if (inspection.diagnostic.diagnosticCode) {
+        if (typeof options.onModelAttempt === 'function') {
+          options.onModelAttempt(inspection.diagnostic);
+        }
+        const messages: Record<string, string> = {
+          empty_text: 'Recovery scribe output is empty',
+          length_exhausted: 'Recovery scribe exhausted the model output budget',
+          provider_error: 'Recovery scribe reported a model invocation error',
+          aborted: 'Recovery scribe was aborted',
+        };
+        throw new SystemModelOutputError(
+          messages[inspection.diagnostic.diagnosticCode] || 'Recovery scribe output is invalid',
+          inspection.diagnostic
+        );
+      }
+
+      try {
+        const validated = validateScribeOutput(output, inspection.diagnostic);
+        if (typeof options.onModelAttempt === 'function') {
+          options.onModelAttempt(inspection.diagnostic);
+        }
+        return { output: validated, prompt, raw: output, diagnostics: [inspection.diagnostic] };
+      } catch (error) {
+        if (typeof options.onModelAttempt === 'function' && error instanceof SystemModelOutputError) {
+          options.onModelAttempt(error.diagnostic);
+        }
+        throw error;
+      }
+    }
+
+    throw new Error('Recovery scribe retry budget was exhausted');
   })();
 
   try {
@@ -774,7 +840,18 @@ export function createMessageRecoveryService(options: any = {}) {
       });
       emitRecovery(recovery);
 
-      const result = await invokeScribe(capsule, config, { ...options, agentDir });
+      const result = await invokeScribe(capsule, config, {
+        ...options,
+        agentDir,
+        onModelAttempt(diagnostic: any) {
+          runStore.appendTaskEvent(recovery.recoveryTaskId, 'conversation_recovery_model_attempt', {
+            conversationId: source.conversation.id,
+            sourceMessageId: source.message.id,
+            recoveryRunId,
+            ...diagnostic,
+          });
+        },
+      });
       runStore.finishRun(recoveryRunId, {
         status: 'completed',
         exitCode: 0,
@@ -818,7 +895,9 @@ export function createMessageRecoveryService(options: any = {}) {
           modelOutput: '',
           fallbackUsed: true,
           errorCode: recoveryRunId
-            ? 'conversation_recovery_scribe_failed'
+            ? error instanceof SystemModelOutputError
+              ? `conversation_recovery_scribe_${error.diagnosticCode}`
+              : 'conversation_recovery_scribe_failed'
             : 'conversation_recovery_capsule_failed',
           errorMessage,
         });
