@@ -94,7 +94,7 @@ The default limit is 50 and the maximum is 100. Ordering is descending by
   a large snapshot to WAL.
 - `metadata.modelUsage === null` creates no usage row. When present, the table
   stores the full-run aggregate counters but only the first call plus the latest
-  63 calls. Original `sequence` values are preserved. The projection adds
+  15 calls. Original `sequence` values are preserved. The projection adds
   `callsTruncated`, `retainedCallCount`, and `droppedCallCount`; aggregate counts
   must never be recomputed from the retained array.
 - Snapshot list pagination has one driving source: `chat_messages`. It LEFT JOINs
@@ -121,7 +121,7 @@ The default limit is 50 and the maximum is 100. Ordering is descending by
 | Existing database with legacy metadata | Startup creates empty detail tables; historical `metadata_json` bytes stay identical. |
 | Queued assistant create | Message and snapshot commit together. |
 | Streaming/tool update with the same snapshot ID | Message updates; snapshot row and `updated_at` do not change. |
-| Completed assistant with model usage | Full metadata remains; retained detail stores first + latest 63 and full aggregates. |
+| Completed assistant with model usage | Full metadata remains; retained detail stores first + latest 15 and full aggregates. |
 | Failed/error assistant with partial usage | Failure metadata, snapshot, and available usage commit together. |
 | Snapshot/usage UPSERT throws | Entire matching message insert/update rolls back. |
 | Detail row exists and metadata differs/is lightweight | Detail row wins for Inspector/list/model usage reads. |
@@ -154,7 +154,7 @@ The default limit is 50 and the maximum is 100. Ordering is descending by
 - `tests/storage/message-detail-expand.test.js` uses a real `ChatAppStore` to
   assert DDL/indexes, zero backfill, byte-identical metadata, queued/completed/
   failed writes, same-snapshot no-rewrite, injected rollback, table priority,
-  legacy fallback, 63/64/65/100 retention, restart, and message/conversation
+  legacy fallback, 15/16/17/64/100 retention, restart, and message/conversation
   cascade.
 - `tests/http/context-snapshot-pagination.test.js` seeds mixed old/new and
   table-only rows, poisons `getConversation`/`listMessages`, checks default 50,
@@ -278,7 +278,7 @@ returned as top-level message fields.
 | --- | --- |
 | queued assistant with explicit full snapshot | metadata has lightweight reference; table has full `displayContent` |
 | streaming/tool update with same snapshot | metadata stays lightweight; immutable table row does not rewrite |
-| completed/error with full usage | metadata has aggregates only; table keeps first + latest 63 full calls |
+| completed/error with full usage | metadata has aggregates only; table keeps first + latest 15 full calls |
 | null usage | no usage detail row; metadata has no calls/detail body |
 | explicit detail UPSERT throws | matching message create/update fully rolls back |
 | historical legacy/Expand row | stored `metadata_json` bytes remain unchanged |
@@ -338,3 +338,133 @@ store.updateMessage(messageId, {
 
 The Store atomically persists full detail while serializing only the lightweight
 message metadata.
+
+## Unified Observability Timeline Detail
+
+- `chat_message_observability_timelines` is the table-first detail for mixed
+  `model_call` and `tool_execution` events. Terminal assistant updates persist
+  it in the same transaction as message status, model usage, and context detail.
+- New writes retain at most 16 events (`first 1 + latest 15`) while keeping full
+  total/retained/dropped/truncated fields and full model/tool aggregates.
+- New model usage writes also retain 16 calls. Reads re-apply that window to
+  historical rows written under the former 64-call bound and preserve the
+  already-dropped count; no existing row is rewritten or backfilled.
+- Tool-trace reads use the unified row when present and skip session JSONL.
+  Historical messages without a row use the bounded session/task compatibility
+  projection and remain auditable in their original stores.
+
+## Scenario: Bounded Live Observability Timeline
+
+### 1. Scope / Trigger
+
+- Trigger: persisting, reading, transporting, or rendering model-call and tool-
+  execution detail for one assistant message.
+- Applies to `lib/observability-timeline.ts`, message detail storage,
+  `message-tool-trace.ts`, executor/bridge SSE, and the chat timeline.
+
+### 2. Signatures
+
+```ts
+retainObservabilityEvents(events, totalEventCount?)
+  -> { events, totalEventCount, retainedEventCount,
+       droppedEventCount, truncated }
+
+GET /api/conversations/:conversationId/messages/:messageId/tool-trace
+  -> { trace: { timelineEvents[<=16], timelineWindow, summary, ... } }
+
+SSE conversation_model_event | conversation_tool_event
+  -> { conversationId, messageId, taskId, event, timelineWindow }
+```
+
+```sql
+chat_message_observability_timelines(
+  message_id PRIMARY KEY, conversation_id, turn_id, agent_id,
+  total_event_count, retained_event_count, dropped_event_count,
+  events_truncated, events_json,
+  model_call_count, cold_start_model_call_count,
+  post_cold_model_call_count, provider_miss_count,
+  tool_execution_count, failed_tool_execution_count,
+  total_tool_duration_ms, created_at, updated_at
+)
+```
+
+### 3. Contracts
+
+- A message timeline retains 16 mixed events: original first event and latest 15.
+  Each has stable `eventId`, `eventType`, and original positive
+  `timelineSequence`; updates to a running tool reuse both identity and sequence.
+- `timelineWindow` keeps full total/retained/dropped/truncated fields. `summary`
+  and table aggregate columns keep full model/tool/miss/failure/duration values;
+  no consumer derives them from the 16 retained rows.
+- The executor emits `conversation_model_event` only for a newly observed
+  usage-bearing assistant call. It excludes prompt, visible reply, thinking,
+  raw provider wrappers, and tool arguments. Tool SSE retains existing redaction.
+- Terminal message, model usage, context detail, and unified timeline commit in
+  one Store transaction. A table-backed tool-trace read skips session JSONL.
+- A historical message without unified detail uses the compatibility path. Its
+  bridge query reads first 1 + latest 199 rows and SQL-aggregates the full
+  counts; final HTTP detail arrays all derive from the 16-event timeline.
+- Browser expansion performs one GET. Subsequent tool/model SSE upserts by
+  `eventId`, reapplies the same window, and does not poll or invalidate the
+  snapshot when the message reaches terminal state.
+
+### 4. Validation And Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| 16 or fewer mixed events | retain all; dropped=0; truncated=false |
+| 17 events | retain sequences `1,3..17`; total=17; dropped=1 |
+| 65 events | retain `1,51..65`; total=65; dropped=49 |
+| running tool update with same id | replace retained row; do not increment total |
+| `message_end` repeated through `agent_end` | one model event and one model count |
+| terminal success with running session tool | persist it as `observed` |
+| terminal failure with running tool | persist it as `failed` |
+| table row exists | no session JSONL read; return all detail arrays <=16 |
+| historical row has 205 bridge events | true total=205; first and newest failure remain visible |
+| SSE contains thinking/text markers | regression failure; markers must be absent |
+| detail UPSERT fails | roll back the matching terminal message update |
+| message/conversation deletion | timeline row cascades; FK check remains empty |
+
+### 5. Good / Base / Bad Cases
+
+- Good: five concurrent messages each receive 65 independent events; every
+  browser trace contains `1,51..65`, reports total 65, and newest events remain
+  live without a detail refetch.
+- Base: an old message has no unified row, so its first expansion performs one
+  bounded compatibility projection and keeps the audit JSONL unchanged.
+- Bad: trim model calls and tools independently to 16. The merged UI can then
+  hold 32 rows and model/tool chronology diverges.
+- Bad: recompute tool/model totals from retained rows or use random bridge ids;
+  totals shrink and refresh creates duplicate events.
+
+### 6. Tests Required
+
+- `tests/storage/message-detail-expand.test.js`: real SQLite 40-event atomic
+  write, exact retained sequences/counters, cascade, FK and 16-call convergence.
+- `tests/runtime/agent-executor-hook.test.js`: running model SSE, safe fields,
+  no thinking/visible text, one event.
+- `tests/runtime/message-tool-trace.test.js`: 48 mixed events, 205 bridge
+  events, one snapshot GET, 65-event live browser merge, stable identities.
+- `tests/ui/observability-timeline-window.test.js`: five concurrent 65-event
+  windows, omission copy, original sequence rendering, narrow-wrap CSS.
+- `npm run check`, both typechecks, build, smoke, target/adjacent suites, and
+  desktop/mobile browser verification remain gates.
+
+### 7. Wrong Vs Correct
+
+#### Wrong
+
+```ts
+trace.modelUsageCalls = trace.modelUsageCalls.slice(-16);
+trace.steps = trace.steps.slice(-16);
+summary.toolExecutionCount = trace.steps.length;
+```
+
+#### Correct
+
+```ts
+const window = retainObservabilityEvents(mixedEvents, fullTotal);
+trace.timelineEvents = window.events;
+trace.timelineWindow = window;
+trace.summary = fullRunAggregates;
+```

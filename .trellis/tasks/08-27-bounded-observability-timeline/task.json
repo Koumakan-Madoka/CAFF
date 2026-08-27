@@ -1,0 +1,39 @@
+{
+  "id": "bounded-observability-timeline",
+  "name": "bounded-observability-timeline",
+  "title": "有界实时观测时间线",
+  "description": "统一模型调用与工具执行的首一尾十五窗口、持久化投影和实时 SSE 增量更新。",
+  "status": "active",
+  "dev_type": "fullstack",
+  "scope": "runtime, storage, HTTP/SSE, chat UI",
+  "package": null,
+  "priority": "P1",
+  "creator": "GPT",
+  "assignee": "GPT",
+  "createdAt": "2026-08-27",
+  "completedAt": null,
+  "branch": "room/08154128-gpt-agent",
+  "base_branch": "develop",
+  "worktree_path": "E:/pythonproject/worktrees/room/08154128-gpt-agent",
+  "current_phase": 1,
+  "next_action": [
+    { "phase": 1, "action": "red-test" },
+    { "phase": 2, "action": "implement" },
+    { "phase": 3, "action": "check" },
+    { "phase": 4, "action": "review" }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "lib/message-detail-contract.ts",
+    "server/domain/runtime/message-tool-trace.ts",
+    "server/domain/conversation/turn/agent-executor.ts",
+    "public/app.js",
+    "public/chat/message-timeline.js"
+  ],
+  "notes": "User accepted a unified 16-event window covering model calls and tool executions.",
+  "meta": {}
+}

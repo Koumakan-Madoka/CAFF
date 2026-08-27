@@ -1,9 +1,14 @@
 // @ts-check
 
 const messageHistory = window.CaffChat && window.CaffChat.messageHistory;
+const observabilityTimeline = window.CaffShared && window.CaffShared.observabilityTimeline;
 
 if (!messageHistory) {
   throw new Error('CaffChat.messageHistory helper is required');
+}
+
+if (!observabilityTimeline) {
+  throw new Error('CaffShared.observabilityTimeline helper is required');
 }
 
 const state = {
@@ -292,7 +297,6 @@ let pendingConversationRefreshTimer = null;
 let conversationPaneRenderPending = false;
 let liveDraftFinalizingTimer = null;
 const LIVE_DRAFT_IDLE_MS = 1600;
-const MAX_WARM_TOOL_TRACE_MESSAGES = 6;
 
 function applyConversationResponse(result) {
   if (!result) {
@@ -1175,6 +1179,12 @@ function createEmptyToolTraceData(messageId = '') {
     modelUsageSummary: null,
     modelUsageCalls: [],
     timelineEvents: [],
+    timelineWindow: {
+      totalEventCount: 0,
+      retainedEventCount: 0,
+      droppedEventCount: 0,
+      truncated: false,
+    },
     sessionToolCalls: [],
     bridgeToolEvents: [],
     steps: [],
@@ -1211,6 +1221,33 @@ function cloneTraceValue(value) {
     return JSON.parse(JSON.stringify(value));
   } catch {
     return value;
+  }
+}
+
+function mergeTraceTimelineEvents(trace, incomingEvents, incomingWindow = null) {
+  const merged = observabilityTimeline.merge(
+    trace && Array.isArray(trace.timelineEvents) ? trace.timelineEvents : [],
+    incomingEvents,
+    incomingWindow || (trace && trace.timelineWindow) || null
+  );
+  trace.timelineEvents = merged.events;
+  trace.timelineWindow = {
+    ...(trace && trace.timelineWindow && typeof trace.timelineWindow === 'object' ? trace.timelineWindow : {}),
+    ...(incomingWindow && typeof incomingWindow === 'object' ? incomingWindow : {}),
+    totalEventCount: merged.totalEventCount,
+    retainedEventCount: merged.retainedEventCount,
+    droppedEventCount: merged.droppedEventCount,
+    truncated: merged.truncated,
+  };
+  trace.steps = merged.events.filter((event) => event.eventType === 'tool_execution');
+  trace.modelUsageCalls = merged.events.filter((event) => event.eventType === 'model_call');
+  if (incomingWindow && typeof incomingWindow === 'object') {
+    trace.modelUsageSummary = {
+      modelCallCount: Number(incomingWindow.modelCallCount || 0),
+      coldStartModelCallCount: Number(incomingWindow.coldStartModelCallCount || 0),
+      postColdModelCallCount: Number(incomingWindow.postColdModelCallCount || 0),
+      providerMissCount: Number(incomingWindow.providerMissCount || 0),
+    };
   }
 }
 
@@ -1336,22 +1373,32 @@ function computeToolTraceSummary(message, task, steps, trace) {
   const failed = failedSteps.length > 0 || messageStatus === 'failed' || taskStatus === 'failed';
 
   const modelUsageSummary = computeTraceModelUsageSummary(trace);
+  const timelineWindow = trace && trace.timelineWindow && typeof trace.timelineWindow === 'object'
+    ? trace.timelineWindow
+    : null;
+  const fullToolExecutionCount = timelineWindow && Number.isFinite(Number(timelineWindow.toolExecutionCount))
+    ? Number(timelineWindow.toolExecutionCount)
+    : normalizedSteps.length;
 
   return {
-    totalSteps: normalizedSteps.length,
-    toolExecutionCount: normalizedSteps.length,
-    sessionToolCount: sessionSteps.length,
-    bridgeToolCount: bridgeSteps.length,
-    failedSteps: failedSteps.length,
+    totalSteps: fullToolExecutionCount,
+    toolExecutionCount: fullToolExecutionCount,
+    sessionToolCount: timelineWindow ? Number(timelineWindow.sessionToolCount || sessionSteps.length) : sessionSteps.length,
+    bridgeToolCount: timelineWindow ? Number(timelineWindow.bridgeToolCount || bridgeSteps.length) : bridgeSteps.length,
+    failedSteps: timelineWindow && Number.isFinite(Number(timelineWindow.failedToolExecutionCount))
+      ? Number(timelineWindow.failedToolExecutionCount)
+      : failedSteps.length,
     succeededSteps: succeededBridgeSteps.length,
-    totalDurationMs,
+    totalDurationMs: timelineWindow && Number.isFinite(Number(timelineWindow.totalToolDurationMs))
+      ? Number(timelineWindow.totalToolDurationMs)
+      : totalDurationMs,
     retryCount,
     hasRetries: retryCount > 0,
     modelCallCount: modelUsageSummary.modelCallCount,
     coldStartModelCallCount: modelUsageSummary.coldStartModelCallCount,
     postColdModelCallCount: modelUsageSummary.postColdModelCallCount,
     providerMissCount: modelUsageSummary.providerMissCount,
-    status: failed ? 'failed' : running ? 'running' : normalizedSteps.length > 0 ? 'succeeded' : 'idle',
+    status: failed ? 'failed' : running ? 'running' : fullToolExecutionCount > 0 || modelUsageSummary.modelCallCount > 0 ? 'succeeded' : 'idle',
   };
 }
 
@@ -1491,6 +1538,11 @@ function rebuildMessageToolTraceData(trace, message) {
   nextTrace.sessionToolCalls = nextTrace.steps.filter((step) => step && step.kind === 'session');
   nextTrace.bridgeToolEvents = nextTrace.steps.filter((step) => step && step.kind === 'bridge');
   nextTrace.modelUsageCalls = Array.isArray(nextTrace.modelUsageCalls) ? nextTrace.modelUsageCalls.filter(Boolean) : [];
+  if (Array.isArray(nextTrace.timelineEvents) && nextTrace.timelineEvents.length > 0) {
+    const sourceEvents = nextTrace.timelineEvents.slice();
+    nextTrace.timelineEvents = [];
+    mergeTraceTimelineEvents(nextTrace, sourceEvents, nextTrace.timelineWindow);
+  }
   nextTrace.modelUsageSummary = computeTraceModelUsageSummary(nextTrace);
   nextTrace.summary = computeToolTraceSummary(normalizedMessage, nextTrace.task, nextTrace.steps, nextTrace);
   nextTrace.activity = computeToolTraceActivity(nextTrace.summary, nextTrace.steps);
@@ -1573,6 +1625,16 @@ function mergeMessageToolTraceData(existingTrace, incomingTrace, message) {
     nextSteps[existingIndex] = mergeToolTraceStep(step, nextSteps[existingIndex]);
   });
 
+  const sourceTimelineEvents = [].concat(
+    Array.isArray(existingTrace.timelineEvents) ? existingTrace.timelineEvents : [],
+    Array.isArray(incomingTrace.timelineEvents) ? incomingTrace.timelineEvents : []
+  );
+  nextTrace.timelineEvents = [];
+  mergeTraceTimelineEvents(
+    nextTrace,
+    sourceTimelineEvents,
+    incomingTrace.timelineWindow || existingTrace.timelineWindow || null
+  );
   nextTrace.steps = nextSteps;
   return rebuildMessageToolTraceData(nextTrace, message);
 }
@@ -1731,6 +1793,10 @@ function applyConversationToolEvent(payload) {
     if (trace.task && step.status === 'failed') {
       trace.task.status = 'failed';
     }
+
+    if (step.eventId) {
+      mergeTraceTimelineEvents(trace, [step], payload.timelineWindow || null);
+    }
   });
 
   if (!traceState) {
@@ -1742,6 +1808,33 @@ function applyConversationToolEvent(payload) {
   }
 
   return true;
+}
+
+function applyConversationModelEvent(payload) {
+  if (!payload || typeof payload !== 'object') {
+    return false;
+  }
+  const messageId = String(payload.messageId || payload.assistantMessageId || '').trim();
+  const event = payload.event && typeof payload.event === 'object' ? cloneTraceValue(payload.event) : null;
+  if (!messageId || !event || event.eventType !== 'model_call') {
+    return false;
+  }
+  const traceState = mutateMessageToolTrace(messageId, (trace, message) => {
+    const nextMessage = message || currentConversationMessageById(messageId);
+    trace.message = {
+      ...(trace.message && typeof trace.message === 'object' ? trace.message : {}),
+      id: messageId,
+      status: nextMessage && nextMessage.status ? nextMessage.status : 'streaming',
+      taskId: payload.taskId || (nextMessage && nextMessage.taskId) || null,
+      runId: nextMessage && nextMessage.runId !== undefined ? nextMessage.runId : null,
+      createdAt: nextMessage && nextMessage.createdAt ? nextMessage.createdAt : '',
+    };
+    mergeTraceTimelineEvents(trace, [event], payload.timelineWindow || null);
+  });
+  if (traceState && state.selectedConversationId === payload.conversationId) {
+    scheduleConversationPaneRender();
+  }
+  return Boolean(traceState);
 }
 
 function syncToolTraceStatesWithConversation(conversation) {
@@ -2073,8 +2166,7 @@ async function fetchMessageToolTrace(conversationId, message, options = {}) {
     return traceState.promise;
   }
 
-  if (!options.force && traceState.status === 'ready' && traceState.requestKey === requestKey) {
-    scheduleMessageToolTracePoll(conversationId, message);
+  if (!options.force && traceState.status === 'ready' && traceState.data) {
     return traceState.data;
   }
 
@@ -2116,33 +2208,9 @@ async function fetchMessageToolTrace(conversationId, message, options = {}) {
 }
 
 function collectWarmConversationToolTraceMessages(conversation) {
-  const inspectableMessages =
-    conversation && Array.isArray(conversation.messages)
-      ? conversation.messages.filter((message) => canInspectToolTrace(message))
-      : [];
-
-  if (inspectableMessages.length <= MAX_WARM_TOOL_TRACE_MESSAGES) {
-    return inspectableMessages;
-  }
-
-  return inspectableMessages
-    .map((message, index) => {
-      const traceState = toolTraceStateForMessage(message.id);
-      const isPinned = Boolean(traceState && (traceState.open || traceState.status === 'loading'));
-      const isRunning = Boolean(message && (message.status === 'queued' || message.status === 'streaming'));
-      const isFailed = Boolean(message && message.status === 'failed');
-      const hasError = Boolean(traceState && traceState.status === 'error');
-
-      return {
-        index,
-        message,
-        priority: (isPinned ? 300 : 0) + (isRunning ? 200 : 0) + (isFailed ? 100 : 0) + (hasError ? 50 : 0) + index,
-      };
-    })
-    .sort((left, right) => right.priority - left.priority)
-    .slice(0, MAX_WARM_TOOL_TRACE_MESSAGES)
-    .sort((left, right) => left.index - right.index)
-    .map((entry) => entry.message);
+  return conversation && Array.isArray(conversation.messages)
+    ? conversation.messages.filter((message) => canInspectToolTrace(message) && messageHasFailedStatus(message))
+    : [];
 }
 
 function warmConversationToolTraces(conversation) {
@@ -2152,20 +2220,14 @@ function warmConversationToolTraces(conversation) {
 
   collectWarmConversationToolTraceMessages(conversation).forEach((message) => {
     const traceState = toolTraceStateForMessage(message.id);
-    const requestKey = computeMessageToolTraceRequestKey(message);
-
-    if (
-      !traceState ||
-      traceState.status === 'idle' ||
-      (traceState.status !== 'loading' && traceState.requestKey !== requestKey) ||
-      (traceState.status !== 'ready' && traceState.requestKey === requestKey)
-    ) {
-      void fetchMessageToolTrace(conversation.id, message, { silent: true });
+    if (!traceState || traceState.userToggled) {
       return;
     }
+    traceState.open = true;
 
-    maybeAutoOpenMessageToolTrace(message, traceState);
-    scheduleMessageToolTracePoll(conversation.id, message);
+    if (traceState.status === 'idle' || traceState.status === 'error') {
+      void fetchMessageToolTrace(conversation.id, message, { silent: true });
+    }
   });
 }
 
@@ -4098,6 +4160,11 @@ function connectEventStream() {
 
   source.addEventListener('room_workspace_authorization_updated', (event) => {
     applyWorkspaceAuthorizationEvent(JSON.parse(event.data));
+  });
+
+  source.addEventListener('conversation_model_event', (event) => {
+    const payload = JSON.parse(event.data);
+    applyConversationModelEvent(payload);
   });
 
   source.addEventListener('conversation_tool_event', (event) => {
