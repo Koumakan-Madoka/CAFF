@@ -4,4 +4,4 @@
 {"file": ".trellis/spec/backend/message-recovery.md", "reason": "Fail-closed recovery configuration verification"}
 {"file": "tests/runtime/message-recovery.test.js", "reason": "Stale restart and recovery behavior regression"}
 {"file": "tests/runtime/cross-conversation-delivery-wiring.test.js", "reason": "Server composition without ambient PI configuration"}
-{"file": ".trellis/tasks/08-27-recovery-scribe-empty-thinking-default/implementation-evidence.md", "reason": "Author validation and accepted non-green baseline signatures"}
+{"file": ".trellis/tasks/archive/2026-08/08-27-recovery-scribe-empty-thinking-default/implementation-evidence.md", "reason": "Author validation and accepted non-green baseline signatures"}

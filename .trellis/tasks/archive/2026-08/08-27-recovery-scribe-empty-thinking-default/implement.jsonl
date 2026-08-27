@@ -3,4 +3,4 @@
 {"file": ".trellis/spec/runtime/agent-runtime.md", "reason": "Runtime default resolution and global Pi default boundaries"}
 {"file": ".trellis/spec/backend/message-recovery.md", "reason": "Recovery Scribe startup configuration contract and validation matrix"}
 {"file": "server/domain/conversation/message-recovery.ts", "reason": "Narrow recoveryConfig startup default normalization point"}
-{"file": ".trellis/tasks/08-27-recovery-scribe-empty-thinking-default/implementation-evidence.md", "reason": "Red/green root cause, implementation scope, verification and environment evidence"}
+{"file": ".trellis/tasks/archive/2026-08/08-27-recovery-scribe-empty-thinking-default/implementation-evidence.md", "reason": "Red/green root cause, implementation scope, verification and environment evidence"}
