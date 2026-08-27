@@ -1,0 +1,7 @@
+{"file":".trellis/spec/backend/message-detail-storage.md","reason":"Atomic detail persistence, historical fallback, first-plus-latest retention and transport contracts"}
+{"file":".trellis/spec/runtime/agent-runtime.md","reason":"Pi message_end, tool lifecycle, usage aggregation and tool-trace projection contracts"}
+{"file":".trellis/spec/frontend/ui-structure.md","reason":"Unified model/tool observability timeline, SSE updates and scroll-anchor behavior"}
+{"file":".trellis/spec/unit-test/runtime-tests.md","reason":"Real SQLite, baseline red and cross-layer regression patterns"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Runtime to storage to HTTP/SSE to browser data-flow mapping"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"One shared retention/window contract across mirrored boundaries"}
+{"at":"2026-08-27T08:58:00.000Z","step":"baseline_research","summary":"Confirmed model usage detail retains 64 calls only, tool-trace reparses the full session JSONL and up to 200 bridge events, model message_end has no live SSE, polling is disabled, and browser tool events have no unified event window."}

@@ -179,20 +179,20 @@ test('P2C Expand creates idempotent message detail schema without backfilling hi
   });
 });
 
-test('model usage retention keeps first plus latest calls at every boundary without recomputing aggregates', () => {
-  for (const callCount of [63, 64, 65, 100]) {
+test('model usage retention keeps first plus latest fifteen calls without recomputing aggregates', () => {
+  for (const callCount of [15, 16, 17, 64, 100]) {
     const source = createModelUsage(callCount);
     source.modelCallCount = 777;
     const retained = retainModelUsageCalls(source);
-    const expectedSequences = callCount <= 64
+    const expectedSequences = callCount <= 16
       ? Array.from({ length: callCount }, (_, index) => index + 1)
-      : [1, ...Array.from({ length: 63 }, (_, index) => callCount - 62 + index)];
+      : [1, ...Array.from({ length: 15 }, (_, index) => callCount - 14 + index)];
 
     assert.equal(retained.modelCallCount, 777);
     assert.deepEqual(retained.calls.map((call) => call.sequence), expectedSequences);
-    assert.equal(retained.retainedCallCount, Math.min(callCount, 64));
-    assert.equal(retained.droppedCallCount, Math.max(0, callCount - 64));
-    assert.equal(retained.callsTruncated, callCount > 64);
+    assert.equal(retained.retainedCallCount, Math.min(callCount, 16));
+    assert.equal(retained.droppedCallCount, Math.max(0, callCount - 16));
+    assert.equal(retained.callsTruncated, callCount > 16);
   }
 });
 
@@ -254,11 +254,11 @@ test('queued, completed, and failed assistant states atomically dual-write detai
   assert.deepEqual(store.getMessageContextSnapshot('state-message'), completedSnapshot);
   const retainedUsage = store.getMessageModelUsage('state-message');
   assert.equal(retainedUsage.modelCallCount, 70);
-  assert.equal(retainedUsage.calls.length, 64);
-  assert.deepEqual(retainedUsage.calls.map((call) => call.sequence), [1, ...Array.from({ length: 63 }, (_, index) => index + 8)]);
+  assert.equal(retainedUsage.calls.length, 16);
+  assert.deepEqual(retainedUsage.calls.map((call) => call.sequence), [1, ...Array.from({ length: 15 }, (_, index) => index + 56)]);
   assert.equal(retainedUsage.callsTruncated, true);
-  assert.equal(retainedUsage.retainedCallCount, 64);
-  assert.equal(retainedUsage.droppedCallCount, 6);
+  assert.equal(retainedUsage.retainedCallCount, 16);
+  assert.equal(retainedUsage.droppedCallCount, 54);
 
   const failedSnapshot = createSnapshot('failed-message', 'failed');
   const failedUsage = createModelUsage(2);

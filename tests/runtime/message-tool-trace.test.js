@@ -938,6 +938,94 @@ test('assistant message tool trace exposes model usage calls and provider miss s
   assert.equal(trace.timelineEvents[4].providerMiss, true);
 });
 
+test('assistant message tool trace bounds mixed model and tool events to first one plus latest fifteen', (t) => {
+  const tempDir = withTempDir('caff-message-tool-trace-bounded-mixed-');
+  const sqlitePath = path.join(tempDir, 'trace.sqlite');
+  const sessionsDir = path.join(tempDir, 'named-sessions');
+  const sessionPath = path.join(sessionsDir, 'trace-session-bounded-mixed.jsonl');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const runStore = createSqliteRunStore({ agentDir: tempDir, sqlitePath });
+
+  fs.mkdirSync(sessionsDir, { recursive: true });
+  t.after(() => {
+    try { runStore.close(); } catch {}
+    try { store.close(); } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const agent = store.saveCustomRoleConfig({
+    id: 'trace-agent-bounded-mixed',
+    name: 'Trace Agent',
+    personaPrompt: 'Reply briefly.',
+  });
+  const conversation = store.createConversation({
+    id: 'trace-conversation-bounded-mixed',
+    title: 'Trace Conversation',
+    participants: [agent.id],
+  });
+  const taskId = 'trace-task-bounded-mixed-1';
+  const assistantMessage = store.createMessage({
+    id: 'trace-message-bounded-mixed-1',
+    conversationId: conversation.id,
+    turnId: 'trace-turn-bounded-mixed-1',
+    role: 'assistant',
+    agentId: agent.id,
+    senderName: agent.name,
+    content: 'Done',
+    status: 'completed',
+    taskId,
+    metadata: { sessionPath, sessionName: 'trace-session-bounded-mixed' },
+  });
+  const sessionLines = Array.from({ length: 24 }, (_, index) => JSON.stringify({
+    type: 'message',
+    message: {
+      role: 'assistant',
+      responseId: `response-${index + 1}`,
+      provider: 'demo-provider',
+      model: 'demo-model',
+      stopReason: index === 23 ? 'stop' : 'tool_use',
+      timestamp: index + 1,
+      usage: { input: 100 + index, output: 10, cacheRead: index === 0 ? 0 : 50 },
+      content: [{
+        type: 'toolCall',
+        name: 'read',
+        id: `session-tool-${index + 1}`,
+        arguments: { path: `docs/${index + 1}.md` },
+      }],
+    },
+  }));
+  fs.writeFileSync(sessionPath, `${sessionLines.join('\n')}\n`, 'utf8');
+  runStore.createTask({
+    taskId,
+    kind: 'conversation_agent_reply',
+    title: 'Trace Task',
+    status: 'completed',
+    sessionPath,
+    metadata: { sessionPath },
+  });
+
+  const trace = buildAssistantMessageToolTrace({
+    db: store.db,
+    agentDir: tempDir,
+    message: assistantMessage,
+    resolvedSessionPath: sessionPath,
+  });
+
+  assert.equal(trace.summary.modelCallCount, 24);
+  assert.equal(trace.summary.toolExecutionCount, 24);
+  assert.equal(trace.timelineWindow.totalEventCount, 48);
+  assert.equal(trace.timelineWindow.retainedEventCount, 16);
+  assert.equal(trace.timelineWindow.droppedEventCount, 32);
+  assert.equal(trace.timelineWindow.truncated, true);
+  assert.equal(trace.timelineEvents.length, 16);
+  assert.deepEqual(
+    trace.timelineEvents.map((event) => event.timelineSequence),
+    [1, ...Array.from({ length: 15 }, (_, index) => index + 34)]
+  );
+  assert.equal(trace.timelineEvents[0].eventId, 'model-call:response-1');
+  assert.equal(trace.timelineEvents.at(-1).eventId, 'tool:session:session-tool-24');
+});
+
 test('assistant message tool trace builds one merged timeline for session and bridge steps', (t) => {
   const tempDir = withTempDir('caff-message-tool-trace-merged-');
   const sqlitePath = path.join(tempDir, 'trace.sqlite');
