@@ -10,4 +10,4 @@
 {"file": "tests/runtime/agent-executor-hook.test.js", "reason": "Actual Stop producer message/task evidence"}
 {"file": "tests/ui/message-recovery.test.js", "reason": "Failure/stop labels and unknown source-kind fail closed"}
 {"file": "tests/runtime/recovery-scribe-config-ui.test.js", "reason": "Management copy and unchanged configuration controls"}
-{"file": ".trellis/tasks/08-27-recovery-scribe-user-cancelled-source/implementation-evidence.md", "reason": "Author validation and accepted non-green baselines"}
+{"file": ".trellis/tasks/archive/2026-08/08-27-recovery-scribe-user-cancelled-source/implementation-evidence.md", "reason": "Author validation and accepted non-green baselines"}
