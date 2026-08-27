@@ -1888,6 +1888,16 @@ textarea {
   gap: 0.78rem;
 }
 
+.message-tool-trace-omission {
+  min-width: 0;
+  padding: 0.5rem 0.75rem;
+  border-left: 2px solid var(--border);
+  color: var(--muted);
+  font-size: 0.75rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
 .message-tool-trace-step {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);

@@ -1540,7 +1540,7 @@
       callMeta.className = 'message-tool-trace-step-meta';
       detail.className = 'message-tool-trace-note';
 
-      indexBadge.textContent = String(index + 1);
+      indexBadge.textContent = String(Number(call && call.timelineSequence) || index + 1);
       eyebrow.textContent = [`模型调用 #${sequence}`, stopReason ? `stop=${stopReason}` : ''].filter(Boolean).join(' · ');
       callTitle.textContent = statusText;
       callMeta.appendChild(createTracePill(statusText, tone));
@@ -1567,7 +1567,25 @@
       return article;
     }
 
-    function buildTraceTimelineSection(trace, events) {
+    function traceEventRenderSignature(event) {
+      try {
+        return JSON.stringify(event);
+      } catch {
+        return String(event && event.eventId || '');
+      }
+    }
+
+    function reusableTraceEventRows(container) {
+      const rows = new Map();
+      if (!container) return rows;
+      container.querySelectorAll('.message-tool-trace-step[data-event-id]').forEach((row) => {
+        const eventId = String(row.dataset.eventId || '');
+        if (eventId) rows.set(eventId, row);
+      });
+      return rows;
+    }
+
+    function buildTraceTimelineSection(trace, events, reusableRows = new Map()) {
       const section = document.createElement('section');
       const header = document.createElement('div');
       const title = document.createElement('div');
@@ -1599,6 +1617,13 @@
         meta.appendChild(createTracePill(`provider miss ${missCount}/${modelSummary.postColdModelCallCount} 次模型调用`, missCount > 0 ? 'failed' : 'success'));
       }
 
+      const timelineWindow = trace && trace.timelineWindow && typeof trace.timelineWindow === 'object'
+        ? trace.timelineWindow
+        : null;
+      if (timelineWindow && timelineWindow.truncated) {
+        meta.appendChild(createTracePill(`保留 ${timelineWindow.retainedEventCount}/${timelineWindow.totalEventCount} 条`, 'neutral'));
+      }
+
       if (failedCount > 0) {
         meta.appendChild(createTracePill(`${failedCount} 工具失败`, 'failed'));
       } else if (hasRunning) {
@@ -1606,12 +1631,25 @@
       }
 
       events.forEach((event, eventIndex) => {
-        if (event && event.eventType === 'model_call') {
-          timeline.appendChild(buildModelCallTraceStep(event, eventIndex, eventIndex === events.length - 1));
+        if (eventIndex === 1 && timelineWindow && timelineWindow.droppedEventCount > 0) {
+          const omission = document.createElement('div');
+          omission.className = 'message-tool-trace-omission';
+          omission.textContent = `中间省略 ${timelineWindow.droppedEventCount} 条事件`;
+          timeline.appendChild(omission);
+        }
+        const eventId = String(event && event.eventId || '');
+        const eventSignature = traceEventRenderSignature(event);
+        const reusable = eventId ? reusableRows.get(eventId) : null;
+        if (reusable && reusable.dataset.eventSignature === eventSignature) {
+          timeline.appendChild(reusable);
           return;
         }
-
-        timeline.appendChild(buildTraceStep(event, eventIndex, eventIndex === events.length - 1));
+        const row = event && event.eventType === 'model_call'
+          ? buildModelCallTraceStep(event, eventIndex, eventIndex === events.length - 1)
+          : buildTraceStep(event, eventIndex, eventIndex === events.length - 1);
+        row.dataset.eventId = eventId;
+        row.dataset.eventSignature = eventSignature;
+        timeline.appendChild(row);
       });
 
       header.append(title, meta);
@@ -1668,7 +1706,7 @@
       title.className = 'message-tool-trace-step-title';
       meta.className = 'message-tool-trace-step-meta';
 
-      indexBadge.textContent = String(index + 1);
+      indexBadge.textContent = String(Number(step && step.timelineSequence) || index + 1);
       eyebrow.textContent = stepLeadParts.join(' · ');
       title.textContent = toolName;
       meta.appendChild(createTracePill(status, tone, { live: status === 'running' }));
@@ -1840,6 +1878,7 @@
         data: null,
       };
       const preservedViewport = captureTraceViewportState(container);
+      const reusableEventRows = reusableTraceEventRows(container);
       const trace = traceState && traceState.data ? traceState.data : null;
       const summary = trace && trace.summary ? trace.summary : null;
       const traceTimelineEvents = traceTimelineEventsForTrace(trace);
@@ -1970,7 +2009,7 @@
           }
 
           if (traceTimelineEvents.length > 0) {
-            stepsViewport.appendChild(buildTraceTimelineSection(trace, traceTimelineEvents));
+            stepsViewport.appendChild(buildTraceTimelineSection(trace, traceTimelineEvents, reusableEventRows));
           }
 
           if (traceTimelineEvents.length === 0) {

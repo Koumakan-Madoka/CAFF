@@ -465,10 +465,11 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
       const usage = extractAssistantUsage(message);
 
       if (!usage) {
-        return;
+        return false;
       }
 
       const key = getAssistantMessageKey(message) || `assistant:${state.assistantUsageByKey.size}`;
+      const isNewCall = !state.assistantUsageByKey.has(key);
       state.assistantUsageByKey.set(key, {
         key,
         responseId: message && message.responseId ? String(message.responseId) : '',
@@ -479,6 +480,7 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
       state.assistantUsage = aggregateAssistantUsage(
         Array.from(state.assistantUsageByKey.values()).map((entry: any) => entry && entry.usage)
       );
+      return isNewCall;
     }
 
     function emitStorageWarning(error: any) {
@@ -963,6 +965,23 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
         state.activeToolCalls.delete(toolCallId);
       }
 
+      if (
+        !ignoreFurtherAssistantOutput
+        && event.type === 'message_end'
+        && event.message
+        && event.message.role === 'assistant'
+      ) {
+        const isNewModelCall = recordAssistantUsage(event.message);
+        if (isNewModelCall) {
+          emit('assistant_message', { messageKey: getAssistantMessageKey(event.message) || null, message: event.message, text: extractAssistantText(event.message) });
+        }
+        emit('pi_event', { piEvent: event });
+        appendAssistantFallback(event.message);
+        emitAssistantError(event.message);
+        requestExpectedCompletion(event.message);
+        return;
+      }
+
       emit('pi_event', { piEvent: event });
 
       if (event.type === 'auto_retry_start') {
@@ -993,20 +1012,13 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
         return;
       }
 
-      if (event.type === 'message_end' && event.message && event.message.role === 'assistant') {
-        recordAssistantUsage(event.message);
-        emit('assistant_message', { messageKey: getAssistantMessageKey(event.message) || null, message: event.message, text: extractAssistantText(event.message) });
-        appendAssistantFallback(event.message);
-        emitAssistantError(event.message);
-        requestExpectedCompletion(event.message);
-        return;
-      }
-
       if (event.type === 'agent_end' && Array.isArray(event.messages)) {
         for (const message of event.messages) {
           if (message && message.role === 'assistant') {
-            recordAssistantUsage(message);
-            emit('assistant_message', { messageKey: getAssistantMessageKey(message) || null, message, text: extractAssistantText(message) });
+            const isNewModelCall = recordAssistantUsage(message);
+            if (isNewModelCall) {
+              emit('assistant_message', { messageKey: getAssistantMessageKey(message) || null, message, text: extractAssistantText(message) });
+            }
             appendAssistantFallback(message);
             emitAssistantError(message);
             requestExpectedCompletion(message);

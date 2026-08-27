@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { isPathWithin } from '../conversation/turn/session-export';
+import { normalizeObservabilityTimeline } from '../../../lib/observability-timeline';
 import { summarizeModelUsageCalls } from './token-usage';
 
 const MAX_TOOL_EVENT_COUNT = 200;
@@ -531,21 +532,53 @@ function loadToolEventRows(db: any, taskId: string) {
     return db
       .prepare(
         `
-        SELECT event_json, created_at
-        FROM (
-          SELECT id, event_json, created_at
-          FROM a2a_task_events
-          WHERE task_id = @taskId
-            AND event_type = 'agent_tool_call'
-          ORDER BY id DESC
-          LIMIT ${MAX_TOOL_EVENT_COUNT}
-        ) latest_events
+        SELECT id, event_json, created_at
+        FROM a2a_task_events
+        WHERE task_id = @taskId
+          AND event_type = 'agent_tool_call'
+          AND (
+            id = (
+              SELECT MIN(id) FROM a2a_task_events
+              WHERE task_id = @taskId AND event_type = 'agent_tool_call'
+            )
+            OR id IN (
+              SELECT id FROM a2a_task_events
+              WHERE task_id = @taskId AND event_type = 'agent_tool_call'
+              ORDER BY id DESC
+              LIMIT ${MAX_TOOL_EVENT_COUNT - 1}
+            )
+          )
         ORDER BY id ASC
       `
       )
       .all({ taskId });
   } catch {
     return [];
+  }
+}
+
+function loadToolEventStats(db: any, taskId: string) {
+  if (!db || !taskId) {
+    return { totalCount: 0, failedCount: 0, succeededCount: 0, totalDurationMs: 0 };
+  }
+  try {
+    const row = db.prepare(`
+      SELECT
+        COUNT(*) AS total_count,
+        SUM(CASE WHEN lower(json_extract(event_json, '$.status')) IN ('failed', 'error', 'timeout') THEN 1 ELSE 0 END) AS failed_count,
+        SUM(CASE WHEN lower(json_extract(event_json, '$.status')) IN ('succeeded', 'completed', 'ok') THEN 1 ELSE 0 END) AS succeeded_count,
+        SUM(CASE WHEN json_type(event_json, '$.durationMs') IN ('integer', 'real') THEN json_extract(event_json, '$.durationMs') ELSE 0 END) AS total_duration_ms
+      FROM a2a_task_events
+      WHERE task_id = @taskId AND event_type = 'agent_tool_call'
+    `).get({ taskId });
+    return {
+      totalCount: Number(row && row.total_count || 0),
+      failedCount: Number(row && row.failed_count || 0),
+      succeededCount: Number(row && row.succeeded_count || 0),
+      totalDurationMs: Number(row && row.total_duration_ms || 0),
+    };
+  } catch {
+    return { totalCount: 0, failedCount: 0, succeededCount: 0, totalDurationMs: 0 };
   }
 }
 
@@ -640,7 +673,7 @@ function normalizeBridgeToolEvent(row: any, options: any = {}) {
   }
 
   return {
-    stepId: String(payload.toolCallId || row.createdAt || randomStepId(payload.tool || 'tool')).trim(),
+    stepId: String(payload.toolCallId || (row && row.id ? `bridge-event-${row.id}` : row.createdAt) || randomStepId(payload.tool || 'tool')).trim(),
     kind: 'bridge',
     toolCallId: String(payload.toolCallId || '').trim(),
     toolName: String(payload.tool || payload.toolName || '').trim() || 'tool',
@@ -806,16 +839,27 @@ function buildTraceTimelineEvents(modelUsage: any, steps: any[]) {
     });
   });
 
-  return timelineEvents.map((event, index) => ({
-    ...event,
-    timelineIndex: index,
-  }));
+  return timelineEvents.map((event, index) => {
+    const timelineSequence = index + 1;
+    const eventId = event.eventType === 'model_call'
+      ? `model-call:${String(event.responseId || event.key || event.modelCallSequence || timelineSequence)}`
+      : `tool:${String(event.kind || 'session')}:${String(event.stepId || event.toolCallId || timelineSequence).replace(/^session-/u, '')}`;
+    return {
+      ...event,
+      eventId,
+      timelineSequence,
+      timelineIndex: index,
+    };
+  });
 }
 
-function buildTraceSummary(task: any, message: any, sessionToolCalls: any[], bridgeToolEvents: any[], modelUsage: any = null) {
+function buildTraceSummary(task: any, message: any, sessionToolCalls: any[], bridgeToolEvents: any[], modelUsage: any = null, bridgeStats: any = null) {
   const failedBridgeSteps = bridgeToolEvents.filter((event) => event && event.status === 'failed');
   const succeededBridgeSteps = bridgeToolEvents.filter((event) => event && event.status === 'succeeded');
-  const totalDurationMs = bridgeToolEvents.reduce((sum, event) => {
+  const totalBridgeCount = bridgeStats ? Number(bridgeStats.totalCount || 0) : bridgeToolEvents.length;
+  const failedBridgeCount = bridgeStats ? Number(bridgeStats.failedCount || 0) : failedBridgeSteps.length;
+  const succeededBridgeCount = bridgeStats ? Number(bridgeStats.succeededCount || 0) : succeededBridgeSteps.length;
+  const totalDurationMs = bridgeStats ? Number(bridgeStats.totalDurationMs || 0) : bridgeToolEvents.reduce((sum, event) => {
     const nextDuration = Number.isFinite(event && event.durationMs) ? Number(event.durationMs) : 0;
     return sum + nextDuration;
   }, 0);
@@ -843,16 +887,16 @@ function buildTraceSummary(task: any, message: any, sessionToolCalls: any[], bri
     taskStatus === 'running';
   const failed = failedBridgeSteps.length > 0 || messageStatus === 'failed' || taskStatus === 'failed';
 
-  const totalSteps = sessionToolCalls.length + bridgeToolEvents.length;
+  const totalSteps = sessionToolCalls.length + totalBridgeCount;
 
   return {
     // Legacy alias for toolExecutionCount; keep for existing API consumers.
     totalSteps,
     toolExecutionCount: totalSteps,
     sessionToolCount: sessionToolCalls.length,
-    bridgeToolCount: bridgeToolEvents.length,
-    failedSteps: failedBridgeSteps.length,
-    succeededSteps: succeededBridgeSteps.length,
+    bridgeToolCount: totalBridgeCount,
+    failedSteps: failedBridgeCount,
+    succeededSteps: succeededBridgeCount,
     totalDurationMs,
     retryCount,
     hasRetries: retryCount > 0,
@@ -1234,9 +1278,21 @@ export function buildAssistantMessageToolTrace(options: any = {}) {
   const expectedCompletionEvent = loadExpectedCompletionEvent(db, taskId);
   const taskMetadata = taskRow ? safeJsonParse(taskRow.metadata_json) : null;
   const taskSessionPath = taskRow && taskRow.session_path ? String(taskRow.session_path).trim() : '';
-  const sessionSnapshot = readSessionAssistantSnapshot(taskSessionPath || resolvedSessionPath, agentDir);
+  const storedTimeline = normalizeObservabilityTimeline(options.observabilityTimeline);
+  const sessionSnapshot = storedTimeline
+    ? null
+    : readSessionAssistantSnapshot(taskSessionPath || resolvedSessionPath, agentDir);
   const sessionToolSource = sessionSnapshot && Array.isArray(sessionSnapshot.toolCalls) ? sessionSnapshot.toolCalls : [];
-  const modelUsage = summarizeModelUsageCalls(sessionSnapshot && Array.isArray(sessionSnapshot.modelCalls) ? sessionSnapshot.modelCalls : []);
+  const sessionModelUsage = summarizeModelUsageCalls(sessionSnapshot && Array.isArray(sessionSnapshot.modelCalls) ? sessionSnapshot.modelCalls : []);
+  const modelUsage = storedTimeline
+    ? {
+        modelCallCount: storedTimeline.modelCallCount,
+        coldStartModelCallCount: storedTimeline.coldStartModelCallCount,
+        postColdModelCallCount: storedTimeline.postColdModelCallCount,
+        providerMissCount: storedTimeline.providerMissCount,
+        calls: storedTimeline.events.filter((event: any) => event.eventType === 'model_call'),
+      }
+    : sessionModelUsage;
   const visiblePathRoots = taskMetadata && Array.isArray(taskMetadata.visiblePathRoots)
     ? taskMetadata.visiblePathRoots
     : [];
@@ -1244,16 +1300,31 @@ export function buildAssistantMessageToolTrace(options: any = {}) {
   const sessionToolCalls = sessionToolSource.map((toolCall: any, index: number) =>
     normalizeSessionToolCall(toolCall, index, traceOptions)
   );
+  const bridgeToolStats = loadToolEventStats(db, taskId);
   const bridgeToolEvents = loadToolEventRows(db, taskId)
     .map((row: any) => ({
+      id: row && row.id ? Number(row.id) : null,
       createdAt: row && row.created_at ? String(row.created_at).trim() : '',
       payload: safeJsonParse(row && row.event_json ? row.event_json : null),
     }))
     .filter((row: any) => row && row.payload)
     .map((row: any) => normalizeBridgeToolEvent(row, traceOptions))
     .filter(Boolean);
-  const steps = buildMergedTimelineSteps(sessionToolCalls, bridgeToolEvents);
-  const timelineEvents = buildTraceTimelineEvents(modelUsage, steps);
+  const steps = storedTimeline
+    ? storedTimeline.events.filter((event: any) => event.eventType === 'tool_execution')
+    : buildMergedTimelineSteps(sessionToolCalls, bridgeToolEvents);
+  const projectedTimeline = storedTimeline || normalizeObservabilityTimeline({
+    events: buildTraceTimelineEvents(modelUsage, steps),
+    totalEventCount: (modelUsage ? modelUsage.modelCallCount : 0) + sessionToolCalls.length + bridgeToolStats.totalCount,
+    modelCallCount: modelUsage ? modelUsage.modelCallCount : 0,
+    coldStartModelCallCount: modelUsage ? modelUsage.coldStartModelCallCount : 0,
+    postColdModelCallCount: modelUsage ? modelUsage.postColdModelCallCount : 0,
+    providerMissCount: modelUsage ? modelUsage.providerMissCount : 0,
+    toolExecutionCount: sessionToolCalls.length + bridgeToolStats.totalCount,
+    failedToolExecutionCount: bridgeToolStats.failedCount + sessionToolCalls.filter((step: any) => step && step.status === 'failed').length,
+    totalToolDurationMs: bridgeToolStats.totalDurationMs,
+  });
+  const timelineEvents = projectedTimeline ? projectedTimeline.events : [];
 
   const task = taskRow
     ? {
@@ -1315,7 +1386,19 @@ export function buildAssistantMessageToolTrace(options: any = {}) {
       }
     : null;
 
-  const summary = buildTraceSummary(task, message, sessionToolCalls, bridgeToolEvents, modelUsage);
+  const summary = buildTraceSummary(task, message, sessionToolCalls, bridgeToolEvents, modelUsage, bridgeToolStats);
+  if (storedTimeline) {
+    summary.totalSteps = storedTimeline.toolExecutionCount;
+    summary.toolExecutionCount = storedTimeline.toolExecutionCount;
+    summary.sessionToolCount = steps.filter((step: any) => step.kind === 'session').length;
+    summary.bridgeToolCount = steps.filter((step: any) => step.kind === 'bridge').length;
+    summary.failedSteps = storedTimeline.failedToolExecutionCount;
+    summary.totalDurationMs = storedTimeline.totalToolDurationMs;
+    summary.modelCallCount = storedTimeline.modelCallCount;
+    summary.coldStartModelCallCount = storedTimeline.coldStartModelCallCount;
+    summary.postColdModelCallCount = storedTimeline.postColdModelCallCount;
+    summary.providerMissCount = storedTimeline.providerMissCount;
+  }
   const activity = buildTraceActivity(summary, steps);
   const failureContext = buildTraceFailureContext({
     message: message
@@ -1361,11 +1444,24 @@ export function buildAssistantMessageToolTrace(options: any = {}) {
           providerMissCount: modelUsage.providerMissCount,
         }
       : null,
-    modelUsageCalls: modelUsage ? modelUsage.calls : [],
-    sessionToolCalls,
-    bridgeToolEvents,
-    steps,
+    modelUsageCalls: timelineEvents.filter((event: any) => event.eventType === 'model_call'),
+    sessionToolCalls: timelineEvents.filter((event: any) => event.eventType === 'tool_execution' && event.kind === 'session'),
+    bridgeToolEvents: timelineEvents.filter((event: any) => event.eventType === 'tool_execution' && event.kind === 'bridge'),
+    steps: timelineEvents.filter((event: any) => event.eventType === 'tool_execution'),
     timelineEvents,
+    timelineWindow: projectedTimeline
+      ? {
+          totalEventCount: projectedTimeline.totalEventCount,
+          retainedEventCount: projectedTimeline.retainedEventCount,
+          droppedEventCount: projectedTimeline.droppedEventCount,
+          truncated: projectedTimeline.truncated,
+        }
+      : {
+          totalEventCount: 0,
+          retainedEventCount: 0,
+          droppedEventCount: 0,
+          truncated: false,
+        },
     summary,
     activity,
     failureContext,

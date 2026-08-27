@@ -196,6 +196,61 @@ test('model usage retention keeps first plus latest fifteen calls without recomp
   }
 });
 
+test('unified observability detail atomically stores first one plus latest fifteen mixed events', (t) => {
+  const tempDir = withTempDir('caff-message-observability-detail-');
+  const sqlitePath = path.join(tempDir, 'chat.sqlite');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  t.after(() => {
+    try { store.close(); } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+  const conversation = createConversation(store, 'observability-detail-conversation');
+  store.createMessage({
+    id: 'observability-detail-message',
+    conversationId: conversation.id,
+    turnId: 'observability-detail-turn',
+    role: 'assistant',
+    agentId: 'role-family-gpt',
+    senderName: 'GPT',
+    content: 'Thinking...',
+    status: 'streaming',
+  });
+  const events = Array.from({ length: 40 }, (_, index) => ({
+    eventId: index % 2 === 0 ? `model-call:response-${index + 1}` : `tool:session:tool-${index + 1}`,
+    eventType: index % 2 === 0 ? 'model_call' : 'tool_execution',
+    timelineSequence: index + 1,
+    ...(index % 2 === 0
+      ? { modelCallSequence: Math.floor(index / 2) + 1, tokenUsage: { totalTokens: 10 } }
+      : { stepId: `tool-${index + 1}`, kind: 'session', toolName: 'read', status: 'succeeded' }),
+  }));
+  store.updateMessage('observability-detail-message', {
+    content: 'done',
+    status: 'completed',
+    observabilityTimeline: {
+      events,
+      totalEventCount: 40,
+      modelCallCount: 20,
+      coldStartModelCallCount: 1,
+      postColdModelCallCount: 19,
+      providerMissCount: 3,
+      toolExecutionCount: 20,
+      failedToolExecutionCount: 0,
+      totalToolDurationMs: 250,
+    },
+  });
+
+  const stored = store.getMessageObservabilityTimeline('observability-detail-message');
+  assert.equal(stored.totalEventCount, 40);
+  assert.equal(stored.retainedEventCount, 16);
+  assert.equal(stored.droppedEventCount, 24);
+  assert.equal(stored.toolExecutionCount, 20);
+  assert.deepEqual(stored.events.map((event) => event.timelineSequence), [1, ...Array.from({ length: 15 }, (_, index) => index + 26)]);
+  assert.equal(queryCount(store, 'chat_message_observability_timelines'), 1);
+  store.db.prepare('DELETE FROM chat_messages WHERE id = ?').run('observability-detail-message');
+  assert.equal(queryCount(store, 'chat_message_observability_timelines'), 0);
+  assert.deepEqual(store.db.prepare('PRAGMA foreign_key_check').all(), []);
+});
+
 test('queued, completed, and failed assistant states atomically dual-write details while preserving full metadata', (t) => {
   const tempDir = withTempDir('caff-message-detail-states-');
   const sqlitePath = path.join(tempDir, 'chat.sqlite');
@@ -291,7 +346,7 @@ test('queued, completed, and failed assistant states atomically dual-write detai
   store.close();
   store = createChatAppStore({ agentDir: tempDir, sqlitePath });
   assert.equal(store.getMessage('state-message').metadata.modelUsage.calls.length, 70);
-  assert.deepEqual(store.getMessageModelUsage('state-message').calls.map((call) => call.sequence), [1, ...Array.from({ length: 63 }, (_, index) => index + 8)]);
+  assert.deepEqual(store.getMessageModelUsage('state-message').calls.map((call) => call.sequence), [1, ...Array.from({ length: 15 }, (_, index) => index + 56)]);
   assert.equal(store.getMessage('failed-message').status, 'failed');
 });
 

@@ -733,11 +733,11 @@ CREATE TABLE IF NOT EXISTS chat_message_model_usage_calls (
   calls_json TEXT NOT NULL DEFAULT '[]' CHECK (
     json_valid(calls_json) = 1
     AND json_type(calls_json) = 'array'
-    AND json_array_length(calls_json) <= 64
+    AND json_array_length(calls_json) <= 16
   ),
   calls_truncated INTEGER NOT NULL DEFAULT 0 CHECK (calls_truncated IN (0, 1)),
   retained_call_count INTEGER NOT NULL DEFAULT 0 CHECK (
-    retained_call_count BETWEEN 0 AND 64
+    retained_call_count BETWEEN 0 AND 16
     AND retained_call_count = json_array_length(calls_json)
   ),
   dropped_call_count INTEGER NOT NULL DEFAULT 0 CHECK (dropped_call_count >= 0),
@@ -746,6 +746,41 @@ CREATE TABLE IF NOT EXISTS chat_message_model_usage_calls (
   CHECK (
     (calls_truncated = 0 AND dropped_call_count = 0)
     OR (calls_truncated = 1 AND dropped_call_count > 0)
+  ),
+  FOREIGN KEY (message_id) REFERENCES chat_messages(id) ON DELETE CASCADE,
+  FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS chat_message_observability_timelines (
+  message_id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL,
+  turn_id TEXT NOT NULL,
+  agent_id TEXT,
+  total_event_count INTEGER NOT NULL DEFAULT 0 CHECK (total_event_count >= 0),
+  retained_event_count INTEGER NOT NULL DEFAULT 0 CHECK (
+    retained_event_count BETWEEN 0 AND 16
+  ),
+  dropped_event_count INTEGER NOT NULL DEFAULT 0 CHECK (dropped_event_count >= 0),
+  events_truncated INTEGER NOT NULL DEFAULT 0 CHECK (events_truncated IN (0, 1)),
+  events_json TEXT NOT NULL DEFAULT '[]' CHECK (
+    json_valid(events_json) = 1
+    AND json_type(events_json) = 'array'
+    AND json_array_length(events_json) <= 16
+    AND json_array_length(events_json) = retained_event_count
+  ),
+  model_call_count INTEGER NOT NULL DEFAULT 0 CHECK (model_call_count >= 0),
+  cold_start_model_call_count INTEGER NOT NULL DEFAULT 0 CHECK (cold_start_model_call_count >= 0),
+  post_cold_model_call_count INTEGER NOT NULL DEFAULT 0 CHECK (post_cold_model_call_count >= 0),
+  provider_miss_count INTEGER NOT NULL DEFAULT 0 CHECK (provider_miss_count >= 0),
+  tool_execution_count INTEGER NOT NULL DEFAULT 0 CHECK (tool_execution_count >= 0),
+  failed_tool_execution_count INTEGER NOT NULL DEFAULT 0 CHECK (failed_tool_execution_count >= 0),
+  total_tool_duration_ms INTEGER NOT NULL DEFAULT 0 CHECK (total_tool_duration_ms >= 0),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CHECK (total_event_count = retained_event_count + dropped_event_count),
+  CHECK (
+    (events_truncated = 0 AND dropped_event_count = 0)
+    OR (events_truncated = 1 AND dropped_event_count > 0)
   ),
   FOREIGN KEY (message_id) REFERENCES chat_messages(id) ON DELETE CASCADE,
   FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE
@@ -896,6 +931,8 @@ CREATE INDEX IF NOT EXISTS idx_chat_message_context_snapshots_conversation
   ON chat_message_context_snapshots (conversation_id, created_at DESC, message_id DESC);
 CREATE INDEX IF NOT EXISTS idx_chat_message_model_usage_calls_conversation
   ON chat_message_model_usage_calls (conversation_id, created_at DESC, message_id DESC);
+CREATE INDEX IF NOT EXISTS idx_chat_message_observability_timelines_conversation
+  ON chat_message_observability_timelines (conversation_id, created_at DESC, message_id DESC);
 CREATE INDEX IF NOT EXISTS idx_chat_message_recoveries_conversation
   ON chat_message_recoveries (conversation_id, created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_chat_message_recoveries_status

@@ -39,7 +39,7 @@ The production-shape gate uses child processes with `--expose-gc`, a warm baseli
 - Insert historical old-only rows through SQL after schema creation, reopen the store, and assert detail counts remain zero plus `metadata_json` bytes remain identical. This proves no hidden backfill/rewrite.
 - Exercise queued create, streaming updates, completed update, and failed/error update. Assert message plus detail atomicity and that repeated `(message_id, snapshot_id)` lifecycle updates do not change the snapshot row `updated_at`.
 - Monkey-patch each detail UPSERT to throw after the message statement. Assert the entire create/update transaction rolls back, including content, status, metadata, and any earlier detail write.
-- Test model usage at 63, 64, 65, and 100 calls. Full aggregate counters remain authoritative; retained sequences are respectively all calls, all calls, `1 + 3..65`, and `1 + 38..100`.
+- Test model usage at 15, 16, 17, 64, and 100 calls. Full aggregate counters remain authoritative; retained sequences are respectively all 15 calls, all 16 calls, `1 + 3..17`, `1 + 50..64`, and `1 + 86..100`.
 - Test table-first reads after directly changing legacy metadata to a conflicting or Contract-shaped lightweight object. Separately test legacy-only fallback and no-usage/null absence.
 - Delete both an individual message and a whole conversation through store APIs; assert both detail rows disappear and `foreign_key_check` is empty. Raw SQLite fixtures must explicitly enable foreign keys or use the store connection.
 - The snapshot HTTP test seeds mixed old/new/table-only rows and malformed/null/string legacy snapshots, poisons `getConversation` and `listMessages`, and asserts default 50, max 100, same-time ID ties, no duplicate/skip, cross-conversation cursor rejection, Inspector, and export.
@@ -161,3 +161,23 @@ mocked result alone:
 - `tests/runtime/turn-orchestrator.test.js`: prompt assembly and Trellis context
   readiness rules
 - `tests/runtime/pi-runtime.test.js`: lower-level runtime behavior
+
+## Bounded Observability Timeline Guards
+
+- Start from red evidence at three boundaries: model detail still retaining 64,
+  mixed tool-trace output exceeding 16, and `assistant_message` producing no
+  live model SSE. Run tests from the room worktree build, not another worktree.
+- Real SQLite coverage writes more than 16 mixed events and asserts atomic
+  message/detail persistence, first-plus-latest sequences, full counters,
+  cascade deletion, and `foreign_key_check`.
+- Runtime fixtures emit thinking and visible text markers beside usage, then
+  assert the model SSE contains neither marker and is emitted once despite
+  `agent_end` duplication.
+- Browser harnesses send at least 65 events to five independent message traces;
+  each retains sequences `1, 51..65`, reports total 65/dropped 49, and receives
+  new model events without polling. Calling the detail loader after a terminal
+  message patch must not make a second GET.
+- Tool-trace fixtures combine model and tool events and assert every returned
+  detail array is derived from the same 16-event window while full summary
+  counts remain unchanged. A bridge history over 200 events must preserve the
+  true first event, newest failure, and SQL-derived full total.

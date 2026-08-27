@@ -12,6 +12,11 @@ const { recordConversationRetrievalTrace } = require('../conversation/retrieval-
 const { createCrossConversationDeliveryService } = require('../conversation/cross-conversation-delivery');
 const { createLiveBridgeToolStep } = require('./message-tool-trace');
 const {
+  createToolObservabilityEvent,
+  ensureObservabilityTimelineState,
+  snapshotObservabilityTimeline,
+} = require('../../../lib/observability-timeline');
+const {
   bindAndPersistRoomWorkspace,
   previewRoomWorkspace,
 } = require('../conversation/room-workspace');
@@ -384,6 +389,8 @@ export function createAgentToolBridge(options: any = {}) {
       return;
     }
 
+    const observabilityTimelineState = ensureObservabilityTimelineState(context.stage);
+    const event = createToolObservabilityEvent(observabilityTimelineState, step) || step;
     broadcastEvent('conversation_tool_event', {
       conversationId: context.conversationId,
       turnId: context.turnId || '',
@@ -393,7 +400,8 @@ export function createAgentToolBridge(options: any = {}) {
       assistantMessageId: context.assistantMessageId,
       messageId: context.assistantMessageId,
       phase,
-      step,
+      step: event,
+      timelineWindow: snapshotObservabilityTimeline(observabilityTimelineState),
     });
   }
 

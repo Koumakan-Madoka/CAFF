@@ -755,3 +755,23 @@ const icon = window.CaffIcons.create('archive', {
   previews when the provider exposes them.
 - Trellis-related UI affordances usually depend on backend prompt/runtime state,
   so verify both sides when changing labels, status handling, or tool exposure.
+
+## Bounded Live Observability UI
+
+- Expanded assistant observability uses one mixed event list capped at 16 rows:
+  the first event plus the latest 15. Model-call and tool SSE patches upsert by
+  stable `eventId`, preserve original `timelineSequence`, and immediately apply
+  the same browser window as the server.
+- Expansion performs one tool-trace GET. A later message status/run change does
+  not invalidate that loaded snapshot; live SSE supplies subsequent events and
+  terminal message refresh supplies authoritative aggregate metadata.
+- `timelineWindow` exposes total, retained, dropped, and truncated state. When
+  truncated, the renderer inserts exactly one `中间省略 N 条事件` row after the
+  first event and shows retained/total counts. Event badges display original
+  sequence values rather than renumbering the retained window.
+- Renderer rows are keyed by `eventId` plus a bounded content signature. Stable
+  rows are reused across SSE renders; only new or changed rows are rebuilt.
+  Existing viewport stick-to-bottom and anchor restoration remain authoritative.
+- Summary model/tool/provider-miss/failure counters come from full aggregates,
+  never from the retained 16 rows. The omission row wraps at narrow widths and
+  must not create horizontal overflow.

@@ -103,7 +103,7 @@ function expectedSnapshotReference(snapshot) {
 }
 
 function expectedUsageSummary(modelUsage) {
-  const retainedCallCount = Math.min(modelUsage.calls.length, 64);
+  const retainedCallCount = Math.min(modelUsage.calls.length, 16);
   const droppedCallCount = modelUsage.calls.length - retainedCallCount;
   return {
     modelCallCount: modelUsage.modelCallCount,
@@ -204,9 +204,9 @@ test('Contract assistant writes keep full details in tables and serialize only l
   const tableSnapshot = store.getMessageContextSnapshot(messageId);
   assert.equal(tableSnapshot.sections[0].displayContent, snapshot.sections[0].displayContent);
   const tableUsage = store.getMessageModelUsage(messageId);
-  assert.deepEqual(tableUsage.calls.map((call) => call.sequence), [1, ...Array.from({ length: 63 }, (_, index) => index + 3)]);
+  assert.deepEqual(tableUsage.calls.map((call) => call.sequence), [1, ...Array.from({ length: 15 }, (_, index) => index + 51)]);
   assert.equal(tableUsage.modelCallCount, 65);
-  assert.equal(tableUsage.droppedCallCount, 1);
+  assert.equal(tableUsage.droppedCallCount, 49);
 
   const row = store.db.prepare('SELECT metadata_json FROM chat_messages WHERE id = ?').get(messageId);
   assert.equal(row.metadata_json.includes('displayContent'), false);

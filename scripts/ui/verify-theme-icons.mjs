@@ -19,15 +19,29 @@ const MANAGEMENT_SURFACE_SELECTOR = [
   '.danger-confirmation',
 ].join(',');
 
+function isExpectedEmptyPlanResponse(response) {
+  if (response.status() !== 404) return false;
+  try {
+    return /^\/api\/conversations\/[^/]+\/plan$/u.test(new URL(response.url()).pathname);
+  } catch {
+    return false;
+  }
+}
+
 function trackPage(page) {
   const diagnostics = { consoleErrors: [], pageErrors: [], badResponses: [] };
   page.on('console', (message) => {
-    if (message.type() === 'error' && !message.text().includes('favicon')) {
+    if (
+      message.type() === 'error'
+      && !message.text().includes('favicon')
+      && !message.text().includes('Failed to load resource')
+    ) {
       diagnostics.consoleErrors.push(message.text());
     }
   });
   page.on('pageerror', (error) => diagnostics.pageErrors.push(String(error)));
   page.on('response', (response) => {
+    if (isExpectedEmptyPlanResponse(response)) return;
     if (response.status() >= 400 && !response.url().includes('favicon')) {
       diagnostics.badResponses.push(`${response.status()} ${response.url()}`);
     }

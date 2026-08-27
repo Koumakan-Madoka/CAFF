@@ -1,4 +1,5 @@
-import { MAX_CONTEXT_SNAPSHOT_PAGE_LIMIT } from '../../lib/message-detail-contract';
+import { MAX_CONTEXT_SNAPSHOT_PAGE_LIMIT, retainModelUsageCalls } from '../../lib/message-detail-contract';
+import { normalizeObservabilityTimeline } from '../../lib/observability-timeline';
 
 function parseJson(value: any) {
   if (!value) {
@@ -41,6 +42,8 @@ export class ChatMessageDetailRepository {
   upsertModelUsageStatement: any;
   getContextSnapshotStatement: any;
   getModelUsageStatement: any;
+  upsertObservabilityTimelineStatement: any;
+  getObservabilityTimelineStatement: any;
 
   constructor(db: any) {
     this.db = db;
@@ -128,6 +131,48 @@ export class ChatMessageDetailRepository {
       WHERE message.id = ? AND message.role = 'assistant'
       LIMIT 1
     `);
+    this.getObservabilityTimelineStatement = db.prepare(`
+      SELECT *
+      FROM chat_message_observability_timelines
+      WHERE message_id = ?
+      LIMIT 1
+    `);
+    this.upsertObservabilityTimelineStatement = db.prepare(`
+      INSERT INTO chat_message_observability_timelines (
+        message_id, conversation_id, turn_id, agent_id,
+        total_event_count, retained_event_count, dropped_event_count,
+        events_truncated, events_json, model_call_count,
+        cold_start_model_call_count, post_cold_model_call_count,
+        provider_miss_count, tool_execution_count,
+        failed_tool_execution_count, total_tool_duration_ms,
+        created_at, updated_at
+      ) VALUES (
+        @messageId, @conversationId, @turnId, @agentId,
+        @totalEventCount, @retainedEventCount, @droppedEventCount,
+        @eventsTruncated, @eventsJson, @modelCallCount,
+        @coldStartModelCallCount, @postColdModelCallCount,
+        @providerMissCount, @toolExecutionCount,
+        @failedToolExecutionCount, @totalToolDurationMs,
+        @createdAt, @updatedAt
+      )
+      ON CONFLICT(message_id) DO UPDATE SET
+        conversation_id = excluded.conversation_id,
+        turn_id = excluded.turn_id,
+        agent_id = excluded.agent_id,
+        total_event_count = excluded.total_event_count,
+        retained_event_count = excluded.retained_event_count,
+        dropped_event_count = excluded.dropped_event_count,
+        events_truncated = excluded.events_truncated,
+        events_json = excluded.events_json,
+        model_call_count = excluded.model_call_count,
+        cold_start_model_call_count = excluded.cold_start_model_call_count,
+        post_cold_model_call_count = excluded.post_cold_model_call_count,
+        provider_miss_count = excluded.provider_miss_count,
+        tool_execution_count = excluded.tool_execution_count,
+        failed_tool_execution_count = excluded.failed_tool_execution_count,
+        total_tool_duration_ms = excluded.total_tool_duration_ms,
+        updated_at = excluded.updated_at
+    `);
   }
 
   hasContextSnapshot(messageId: string, snapshotId: string) {
@@ -143,6 +188,10 @@ export class ChatMessageDetailRepository {
 
   upsertModelUsage(payload: any) {
     this.upsertModelUsageStatement.run(payload);
+  }
+
+  upsertObservabilityTimeline(payload: any) {
+    this.upsertObservabilityTimelineStatement.run(payload);
   }
 
   getContextSnapshot(messageId: string) {
@@ -162,19 +211,52 @@ export class ChatMessageDetailRepository {
       };
     }
     const calls = parseJson(row.calls_json);
+    const retained = retainModelUsageCalls({
+      modelCallCount: Number(row.model_call_count || 0),
+      coldStartModelCallCount: Number(row.cold_start_model_call_count || 0),
+      postColdModelCallCount: Number(row.post_cold_model_call_count || 0),
+      providerMissCount: Number(row.provider_miss_count || 0),
+      calls: Array.isArray(calls) ? calls : [],
+    });
     return {
       source: 'table',
-      modelUsage: {
+      modelUsage: retained
+        ? {
+            ...retained,
+            callsTruncated: Boolean(row.calls_truncated) || retained.callsTruncated,
+            retainedCallCount: retained.calls.length,
+            droppedCallCount: Number(row.dropped_call_count || 0)
+              + Math.max(0, (Array.isArray(calls) ? calls.length : 0) - retained.calls.length),
+          }
+        : {
         modelCallCount: Number(row.model_call_count || 0),
         coldStartModelCallCount: Number(row.cold_start_model_call_count || 0),
         postColdModelCallCount: Number(row.post_cold_model_call_count || 0),
         providerMissCount: Number(row.provider_miss_count || 0),
-        calls: Array.isArray(calls) ? calls : [],
-        callsTruncated: Boolean(row.calls_truncated),
-        retainedCallCount: Number(row.retained_call_count || 0),
-        droppedCallCount: Number(row.dropped_call_count || 0),
+        calls: [],
+        callsTruncated: false,
+        retainedCallCount: 0,
+        droppedCallCount: 0,
       },
     };
+  }
+
+  getObservabilityTimeline(messageId: string) {
+    const row = this.getObservabilityTimelineStatement.get(String(messageId || '').trim());
+    if (!row) {
+      return null;
+    }
+    return normalizeObservabilityTimeline({
+      events: parseJson(row.events_json),
+      totalEventCount: Number(row.total_event_count || 0),
+      modelCallCount: Number(row.model_call_count || 0),
+      coldStartModelCallCount: Number(row.cold_start_model_call_count || 0),
+      postColdModelCallCount: Number(row.post_cold_model_call_count || 0),
+      providerMissCount: Number(row.provider_miss_count || 0),
+      toolExecutionCount: Number(row.tool_execution_count || 0),
+      failedToolExecutionCount: Number(row.failed_tool_execution_count || 0),
+      totalToolDurationMs: Number(row.total_tool_duration_ms || 0),
+    });
   }
 
   listContextSnapshotPage(conversationId: string, options: any = {}) {

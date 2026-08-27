@@ -20,6 +20,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { resolveVerificationRoomContext } from './room-fixture.mjs';
+
 let chromium;
 try {
   ({ chromium } = await import('playwright-core'));
@@ -157,12 +159,14 @@ async function ensureVerificationRole(baseUrl) {
 
 async function createConversation(baseUrl, title) {
   const roleId = await ensureVerificationRole(baseUrl);
+  const { projectScopeId, modeId } = await resolveVerificationRoomContext(baseUrl);
   const response = await fetch(`${baseUrl}api/conversations`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       title,
-      type: 'standard',
+      projectScopeId,
+      modeId,
       participants: [{ agentId: roleId, modelProfileId: null, conversationSkillIds: [] }],
     }),
   });
