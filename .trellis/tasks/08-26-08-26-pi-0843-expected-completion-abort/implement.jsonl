@@ -1,0 +1,8 @@
+{"file": ".trellis/workflow.md", "reason": "Project workflow and conventions"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend development guide"}
+{"file": ".trellis/spec/runtime/agent-runtime.md", "reason": "Expected-completion, assistant-error, watchdog, and stream retry contracts"}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Runtime regression test patterns and real observable behavior"}
+{"file": "lib/pi-runtime.ts", "reason": "Narrow expected_completion termination entry"}
+{"file": "tests/runtime/pi-runtime.test.js", "reason": "Red-first IPC lifecycle regression and semantic guards"}
+{"file": ".trellis/tasks/08-26-08-26-pi-0843-expected-completion-abort/upstream-draft.md", "reason": "Prepared upstream PI abort-classification report; not published"}
+{"file": ".trellis/tasks/08-26-08-26-pi-0843-expected-completion-abort/implementation-evidence.md", "reason": "Conflict-free no-ff combination merge d278ae94 of reviewed candidate 045542f6 and authorized origin/develop 6c321022 before renewed review and acceptance"}

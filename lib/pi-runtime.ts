@@ -634,6 +634,10 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
         return;
       }
 
+      if (reason && reason.type === 'expected_completion') {
+        ignoreFurtherAssistantOutput = true;
+      }
+
       terminating = true;
       terminationReason = reason;
 

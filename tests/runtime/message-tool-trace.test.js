@@ -1370,6 +1370,131 @@ test('assistant message tool trace ignores expected-completion abort noise after
   assert.equal(trace.failureContext.text, '');
 });
 
+test('assistant message tool trace resolves only session errors covered by authoritative expected completion', (t) => {
+  const tempDir = withTempDir('caff-message-tool-trace-expected-completion-error-');
+  const sqlitePath = path.join(tempDir, 'trace.sqlite');
+  const sessionsDir = path.join(tempDir, 'named-sessions');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const runStore = createSqliteRunStore({ agentDir: tempDir, sqlitePath });
+
+  fs.mkdirSync(sessionsDir, { recursive: true });
+
+  t.after(() => {
+    try {
+      runStore.close();
+    } catch {}
+    try {
+      store.close();
+    } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const agent = store.saveCustomRoleConfig({
+    id: 'trace-agent-expected-completion-error',
+    name: 'Trace Agent',
+    personaPrompt: 'Reply briefly.',
+  });
+  const conversation = store.createConversation({
+    id: 'trace-conversation-expected-completion-error',
+    title: 'Trace Conversation',
+    participants: [agent.id],
+  });
+
+  function createScenario({ suffix, assistantErrors, includeExpectedCompletion }) {
+    const taskId = `trace-task-expected-completion-${suffix}`;
+    const sessionPath = path.join(sessionsDir, `trace-session-expected-completion-${suffix}.jsonl`);
+    fs.writeFileSync(
+      sessionPath,
+      `${JSON.stringify({
+        type: 'message',
+        timestamp: '2026-08-26T14:39:55.118Z',
+        message: {
+          role: 'assistant',
+          provider: 'demo-provider',
+          model: 'demo-model',
+          stopReason: 'error',
+          errorMessage: 'post-completion provider setup failure',
+          content: [],
+        },
+      })}\n`,
+      'utf8'
+    );
+    const run = runStore.startRun({
+      sessionPath,
+      provider: 'demo-provider',
+      model: 'demo-model',
+      thinking: 'off',
+      prompt: 'Trace expected completion',
+      cwd: tempDir,
+      taskId,
+      taskKind: 'conversation_agent_reply',
+    });
+    runStore.finishRun(run.runId, {
+      status: 'succeeded',
+      exitCode: 0,
+      reply: 'Done',
+      assistantErrors,
+    });
+    runStore.createTask({
+      taskId,
+      runId: run.runId,
+      kind: 'conversation_agent_reply',
+      title: 'Trace Task',
+      status: 'succeeded',
+      sessionPath,
+    });
+    if (includeExpectedCompletion) {
+      runStore.appendTaskEvent(taskId, 'agent_reply_terminating', {
+        type: 'expected_completion',
+        message: 'Public reply completed.',
+      });
+    }
+    const message = store.createMessage({
+      id: `trace-message-expected-completion-${suffix}`,
+      conversationId: conversation.id,
+      turnId: `trace-turn-expected-completion-${suffix}`,
+      role: 'assistant',
+      agentId: agent.id,
+      senderName: agent.name,
+      content: 'Done',
+      status: 'completed',
+      taskId,
+      runId: run.runId,
+    });
+    return buildAssistantMessageToolTrace({
+      db: store.db,
+      agentDir: tempDir,
+      message,
+      resolvedSessionPath: sessionPath,
+    });
+  }
+
+  const expectedTail = createScenario({
+    suffix: 'resolved-tail',
+    assistantErrors: [],
+    includeExpectedCompletion: true,
+  });
+  const preCompletionError = createScenario({
+    suffix: 'prior-error',
+    assistantErrors: ['provider failed before public completion'],
+    includeExpectedCompletion: true,
+  });
+  const unrelatedError = createScenario({
+    suffix: 'unrelated-error',
+    assistantErrors: [],
+    includeExpectedCompletion: false,
+  });
+
+  assert.equal(expectedTail.session.stopReason, 'error');
+  assert.deepEqual(expectedTail.session.assistantErrors, ['post-completion provider setup failure']);
+  assert.equal(expectedTail.failureContext.hasFailure, false);
+  assert.equal(expectedTail.session.expectedCompletionTailIgnored, true);
+  assert.equal(preCompletionError.session.expectedCompletionTailIgnored, false);
+  assert.equal(preCompletionError.failureContext.hasFailure, true);
+  assert.equal(unrelatedError.session.expectedCompletionTailIgnored, false);
+  assert.equal(unrelatedError.failureContext.hasFailure, true);
+});
+
 test('assistant message tool trace treats retry error history as resolved after a successful final assistant', (t) => {
   const tempDir = withTempDir('caff-message-tool-trace-native-retry-');
   const sqlitePath = path.join(tempDir, 'trace.sqlite');

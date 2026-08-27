@@ -1,0 +1,11 @@
+{"file": ".agents/skills/finish-work/SKILL.md", "reason": "Finish work checklist"}
+{"file": ".agents/skills/check/SKILL.md", "reason": "Code quality check spec"}
+{"file": ".trellis/spec/runtime/agent-runtime.md", "reason": "Verify runtime termination and provider-error semantics"}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Verify regression coverage quality"}
+{"file": "tests/runtime/agent-executor-hook.test.js", "reason": "Executor must retain defensive real assistant-error failure conversion"}
+{"file": "tests/runtime/turn-orchestrator.test.js", "reason": "Message/task completion and failure regression boundary"}
+{"file": ".trellis/tasks/08-26-08-26-pi-0843-expected-completion-abort/implementation-evidence.md", "reason": "Exact automated gate results and accepted baseline failures"}
+{"file": "tests/runtime/message-tool-trace.test.js", "reason": "Acceptance regression gate for authoritative expected-completion trace suppression and fail-closed controls"}
+{"file": ".trellis/spec/runtime/agent-runtime.md", "reason": "Executable cross-layer trace contract added after exact-candidate acceptance failure"}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Real SQLite expected-completion trace test matrix"}
+{"file": ".trellis/tasks/08-26-08-26-pi-0843-expected-completion-abort/implementation-evidence.md", "reason": "Post-develop synchronization combination regression: check/typecheck/build, 128 focused runtime tests, 71 recovery/system-actor tests, 1032-test full batch, smoke, DAG, and accepted baseline failures"}
