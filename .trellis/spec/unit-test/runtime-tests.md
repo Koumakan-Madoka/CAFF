@@ -112,6 +112,28 @@ mocked result alone:
   expected-completion event. Both must retain `failureContext.hasFailure=true`.
   Do not match the session error string in the production projection.
 
+## Recovery Scribe Startup-Default Guards
+
+- Clear `CAFF_RECOVERY_*`, `CAFF_DIGEST_{PROVIDER,MODEL,THINKING}`, and
+  `PI_{PROVIDER,MODEL,THINKING}` only around synchronous service/server
+  construction, then restore every previously present value. This makes tests
+  deterministic without leaking environment mutations into neighboring cases.
+- Both `cross-conversation-delivery-wiring` server-composition paths must start
+  without ambient Pi configuration. The stale-restart recovery test must also
+  construct a fresh service under that environment and assert runtime-default
+  `thinking='off'`.
+- Prove the baseline red reaches `validateDefaults` with
+  `Recovery scribe runtime defaults are invalid`; do not satisfy the test by
+  injecting `PI_THINKING=off` into CI or fixtures.
+- Keep fail-closed controls beside the regression: explicit unsupported
+  non-empty thinking and out-of-range timeout still throw at startup, while the
+  config-manager suite continues to reject unavailable models, unsupported
+  model thinking, unknown fields, and invalid limits.
+- Production code may normalize only the exact empty result at the Recovery
+  Scribe startup-default boundary. Assertions must not require changes to
+  global `DEFAULT_THINKING`, generic `resolveThinkingSetting`, persisted config
+  validation, provider/model selection, credentials, or production settings.
+
 ## Useful Existing Suites
 
 - `tests/runtime/agent-tool-bridge.test.js`: bridge behavior and `.trellis`

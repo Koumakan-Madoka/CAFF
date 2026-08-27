@@ -1,0 +1,7 @@
+{"file": ".agents/skills/finish-work/SKILL.md", "reason": "Finish work checklist"}
+{"file": ".agents/skills/check/SKILL.md", "reason": "Code quality check spec"}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Regression red/green and environment-isolation test conventions"}
+{"file": ".trellis/spec/backend/message-recovery.md", "reason": "Fail-closed recovery configuration verification"}
+{"file": "tests/runtime/message-recovery.test.js", "reason": "Stale restart and recovery behavior regression"}
+{"file": "tests/runtime/cross-conversation-delivery-wiring.test.js", "reason": "Server composition without ambient PI configuration"}
+{"file": ".trellis/tasks/08-27-recovery-scribe-empty-thinking-default/implementation-evidence.md", "reason": "Author validation and accepted non-green baseline signatures"}

@@ -6,6 +6,7 @@ const path = require('node:path');
 const { createChatAppStore } = require('../../build/lib/chat-app-store');
 const { createSqliteRunStore } = require('../../build/lib/sqlite-store');
 const { createMessageRecoveryService } = require('../../build/server/domain/conversation/message-recovery');
+const { withClearedRecoveryRuntimeEnvironment } = require('../helpers/recovery-runtime-env');
 const { withTempDir } = require('../helpers/temp-dir');
 
 const VALID_SCRIBE_OUTPUT = [
@@ -416,12 +417,13 @@ test('stale queued work is projected as interrupted without replaying it', (t) =
   assert.equal(accepted.recovery.status, 'queued');
   assert.equal(fixture.scheduled.length, 1);
 
-  const restartedService = createMessageRecoveryService({
+  const restartedService = withClearedRecoveryRuntimeEnvironment(() => createMessageRecoveryService({
     store: fixture.store,
     runStore: fixture.runStore,
     agentDir: fixture.tempDir,
     getConversationMutationState: () => ({ busy: false }),
-  });
+  }));
+  assert.equal(restartedService.getConfiguration().config.thinking, 'off');
   const projected = restartedService.projectMessages([fixture.store.getMessage(fixture.sourceMessage.id)])[0];
 
   assert.equal(projected.recovery.status, 'failed');
@@ -459,6 +461,15 @@ test('disabled system scribe is projected as unavailable and cannot be triggered
       enabled: 'typo',
     }),
     /recovery enabled/iu
+  );
+  assert.throws(
+    () => createMessageRecoveryService({
+      store: fixture.store,
+      runStore: fixture.runStore,
+      agentDir: fixture.tempDir,
+      thinking: 'bogus',
+    }),
+    /Recovery scribe runtime defaults are invalid/iu
   );
   assert.throws(
     () => createMessageRecoveryService({

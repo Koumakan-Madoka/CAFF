@@ -6,6 +6,7 @@ const test = require('node:test');
 const { createServerApp } = require('../../build/server/app/create-server');
 const { createProjectManager } = require('../../build/lib/project-manager');
 const { isolateExternalIntegrations } = require('../helpers/external-integrations');
+const { withClearedRecoveryRuntimeEnvironment } = require('../helpers/recovery-runtime-env');
 const { withTempDir } = require('../helpers/temp-dir');
 
 isolateExternalIntegrations();
@@ -71,7 +72,7 @@ test('server composition shares delivery service, wires worker adapters, mainten
       return null;
     },
   };
-  const app = createServerApp({
+  const app = withClearedRecoveryRuntimeEnvironment(() => createServerApp({
     host: '127.0.0.1',
     port: 0,
     agentDir: tempDir,
@@ -95,7 +96,7 @@ test('server composition shares delivery service, wires worker adapters, mainten
     clearDeliveryMaintenanceInterval(timer) {
       clearedTimer = timer;
     },
-  });
+  }));
   let closed = false;
 
   t.after(async () => {
@@ -239,7 +240,7 @@ test('server composition dispatches DAG scheduler deliveries directly and skips 
       return null;
     },
   };
-  const app = createServerApp({
+  const app = withClearedRecoveryRuntimeEnvironment(() => createServerApp({
     host: '127.0.0.1',
     port: 0,
     agentDir: tempDir,
@@ -256,7 +257,7 @@ test('server composition dispatches DAG scheduler deliveries directly and skips 
         async reconcileOnStartup() {},
       };
     },
-  });
+  }));
   let closed = false;
 
   t.after(async () => {
