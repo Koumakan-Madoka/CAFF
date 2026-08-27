@@ -1,0 +1,2 @@
+{"file": ".agents/skills/check/SKILL.md", "reason": "Code quality check spec"}
+{"file": "tests/helpers/recovery-runtime-env.js", "reason": "Deterministic no-environment reproduction boundary with restoration"}

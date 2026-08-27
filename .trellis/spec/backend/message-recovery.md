@@ -180,7 +180,7 @@ The POST body must be exactly `{}`; unknown fields return `400 conversation_reco
 
 ### Scribe isolation
 
-- Configurable fields are only enabled/provider/model/thinking/timeout. Without a persisted row, priority is explicit options, then `CAFF_RECOVERY_ENABLED/PROVIDER/MODEL/THINKING/TIMEOUT_MS`, then digest provider/model/thinking settings, then Pi defaults. Invalid enabled values fail startup; the default is enabled. Timeout accepts `1,000..60,000 ms`; values outside the platform hard maximum fail configuration instead of widening it.
+- Configurable fields are only enabled/provider/model/thinking/timeout. Without a persisted row, priority is explicit options, then `CAFF_RECOVERY_ENABLED/PROVIDER/MODEL/THINKING/TIMEOUT_MS`, then digest provider/model/thinking settings, then Pi defaults. If that chain resolves `thinking` to the empty Pi sentinel, only the Recovery Scribe startup default materializes it as `off` before strict default validation; every supported non-empty value remains unchanged and every unsupported non-empty value still fails startup. This local boundary does not change the global `DEFAULT_THINKING` or any other Pi consumer. Invalid enabled values fail startup; the default is enabled. Timeout accepts `1,000..60,000 ms`; values outside the platform hard maximum fail configuration instead of widening it.
 - A complete persisted `recovery_scribe` row is the shared model-selection source for both recovery and conversation digest consumers. Its `provider/model/thinking` apply to the next scribe, digest entry, digest rollup, or title-refinement invocation. `enabled` and `timeoutMs` remain scribe-only; disabling recovery does not disable summaries, and the 1..60 second scribe timeout does not replace digest/title budgets.
 - Digest requests cannot override the shared model with request body `provider/model/thinking`; those fields fail before invocation or history mutation. Each consumer snapshots the three shared fields before awaiting its model call, so a concurrent save affects only the next invocation.
 - A complete persisted `recovery_scribe` row overrides the startup default chain. This makes the local-admin panel authoritative after save; partial persisted overrides are not supported.
@@ -200,7 +200,7 @@ The POST body must be exactly `{}`; unknown fields return `400 conversation_reco
 | Condition | Required result |
 | --- | --- |
 | recovery disabled | 503 `conversation_recovery_disabled`; no task/run/model/message side effect |
-| no persisted system-service row | use the existing options/env/digest/Pi startup chain unchanged |
+| no persisted system-service row | use the existing options/env/digest/Pi startup chain; materialize only an empty resolved thinking sentinel as `off` before strict default validation |
 | valid local-admin PUT | atomically persist the full row; response and next recovery/digest/rollup/title model invocation use its shared model fields immediately |
 | persisted row has `enabled=false` | Recovery POST returns 503; digest/rollup/title still use persisted provider/model/thinking with their own timeout budgets |
 | digest request contains provider/model/thinking | 400 `conversation_digest_model_override_not_allowed`; no runner call or digest mutation |
@@ -232,6 +232,8 @@ The POST body must be exactly `{}`; unknown fields return `400 conversation_reco
 
 ## 5. Good / Base / Bad Cases
 
+- Good: with no Recovery/Digest/Pi thinking environment value, server composition and stale-restart recovery construction materialize Recovery Scribe `thinking=off` while the global Pi default remains empty.
+- Good: a non-empty supported startup thinking value such as `high` is preserved, while `bogus`, an unavailable persisted model, and an out-of-range timeout remain fail-closed.
 - Good: a successful `kubectl apply` toolResult is listed under completed while a later stream failure remains the failure location.
 - Good: a timed-out mutating command is listed under possibly effective and the recovery point tells the user to verify external state first.
 - Good: a later Agent sees `系统书记 [read-only recovery; source agent GPT; source run 10159]` even when the failed source is older than the raw-history window.
@@ -253,7 +255,8 @@ The POST body must be exactly `{}`; unknown fields return `400 conversation_reco
 - `tests/storage/system-service-config.test.js`: typed singleton upsert, full-row replacement, reopen persistence, and foreign-key integrity.
 - `tests/runtime/recovery-scribe-config.test.js`: default/persisted priority, shared digest model selection while recovery is disabled, in-flight snapshot isolation, request-override refusal, plus strict field/model/thinking/timeout validation.
 - `tests/runtime/recovery-scribe-config-ui.test.js`: system-service purpose copy, shared digest/recovery model wording, configured-catalog provenance and provider navigation without role creation, configured model/thinking controls, no-model empty state with disabled save, read-only navigation, seconds-to-ms save payload, source label, and chat SSE refresh wiring.
-- `tests/runtime/message-recovery.test.js`: same-conversation/failed/idle/source-integrity validation, duplicate clicks, task/run linkage, platform actor metadata/no participant row, enable/disable validation, hot config next-request semantics, accepted-request snapshot isolation, direct no-tools invocation, provider/invalid-output fallback, source immutability, SSE order, and stale restart projection.
+- `tests/runtime/message-recovery.test.js`: same-conversation/failed/idle/source-integrity validation, duplicate clicks, task/run linkage, platform actor metadata/no participant row, enable/disable validation, hot config next-request semantics, accepted-request snapshot isolation, direct no-tools invocation, provider/invalid-output fallback, source immutability, SSE order, stale restart projection, and no-environment startup materialization of `thinking=off` with unsupported non-empty thinking and timeout controls.
+- `tests/runtime/cross-conversation-delivery-wiring.test.js`: both server-composition paths clear Recovery/Digest/Pi runtime defaults around construction so ambient shell configuration cannot mask the no-environment startup contract.
 - `tests/http/recovery-scribe-config-controller.test.js`: loopback/Host/Origin/CSRF guard, safe GET/PUT projection, and global config-updated event.
 - `tests/http/message-recovery-controller.test.js`: exact `{}` body, 202 response, and message-page projection.
 - `tests/ui/message-recovery.test.js`: failed-card action, queued/running/completed/failed states, source provenance, non-execution declaration, stable touch geometry, and no retry/continue/source-state rewrite.

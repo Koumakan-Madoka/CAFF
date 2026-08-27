@@ -132,12 +132,13 @@ function recoveryConfig(options: any = {}) {
     process.env.CAFF_RECOVERY_MODEL || process.env.CAFF_DIGEST_MODEL || process.env.PI_MODEL,
     DEFAULT_MODEL
   );
-  const thinking = resolveThinkingSetting(
+  const resolvedThinking = resolveThinkingSetting(
     provider,
     options.thinking,
     process.env.CAFF_RECOVERY_THINKING || process.env.CAFF_DIGEST_THINKING || process.env.PI_THINKING,
     DEFAULT_THINKING
   );
+  const thinking = resolvedThinking === '' ? 'off' : resolvedThinking;
   const timeoutMs = resolveIntegerSetting(
     options.timeoutMs,
     process.env.CAFF_RECOVERY_TIMEOUT_MS,
