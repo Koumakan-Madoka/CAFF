@@ -623,7 +623,7 @@ Upgraded the audited PI package family to 0.84.3, added exact stream_read_error 
 
 ### Summary
 
-(Add summary)
+Fixed the no-environment Recovery Scribe startup regression, verified the exact candidate through independent review and isolated acceptance, and merged PR #109 into `develop` with a tree-identical merge commit.
 
 ### Main Changes
 
@@ -650,12 +650,16 @@ Upgraded the audited PI package family to 0.84.3, added exact stream_read_error 
 
 | Hash | Message |
 |------|---------|
-| `324836ef86e18a5f020b2e7863affc74a1389bbf` | (see git log) |
-| `1edda32802013dabb5277e3b35a3ab8f77bd4622` | (see git log) |
+| `324836ef86e18a5f020b2e7863affc74a1389bbf` | fix: default recovery scribe thinking to off |
+| `1edda32802013dabb5277e3b35a3ab8f77bd4622` | Merge pull request #109 from Koumakan-Madoka/room/c2fab452-caff-bug-bug |
 
 ### Testing
 
-- [OK] (Add test results)
+- [OK] Baseline regressions reproduced under an empty PI/Recovery/Digest environment.
+- [OK] Focused Recovery/config/HTTP/UI/storage/delivery/composition tests: 57/57.
+- [OK] Smoke tests: 75/75; DAG execution tests: 78/78.
+- [OK] `npm run check`, `npm run typecheck`, and `npm run build` passed.
+- [OK] Exact-SHA isolated startup, recovery, restart, SQLite integrity, and foreign-key acceptance passed.
 
 ### Status
 

@@ -15,27 +15,10 @@
   "branch": "room/c2fab452-caff-bug-bug",
   "base_branch": "develop",
   "worktree_path": "E:/pythonproject/worktrees/room/c2fab452-caff-bug-bug",
-  "current_phase": 2,
-  "next_action": [
-    {
-      "phase": 2,
-      "action": "cross-family-review"
-    },
-    {
-      "phase": 3,
-      "action": "isolated-acceptance"
-    },
-    {
-      "phase": 4,
-      "action": "merge"
-    },
-    {
-      "phase": 5,
-      "action": "archive"
-    }
-  ],
-  "commit": null,
-  "pr_url": null,
+  "current_phase": 5,
+  "next_action": [],
+  "commit": "324836ef86e18a5f020b2e7863affc74a1389bbf",
+  "pr_url": "https://github.com/Koumakan-Madoka/CAFF/pull/109",
   "subtasks": [],
   "children": [],
   "parent": null,
@@ -47,7 +30,7 @@
     ".trellis/spec/backend/message-recovery.md",
     ".trellis/spec/unit-test/runtime-tests.md"
   ],
-  "notes": "Implementation and author validation complete on base d03b3fc; exact candidate review and isolated acceptance remain.",
+  "notes": "Candidate 324836ef received independent commit-pinned approval and passed isolated no-environment startup, recovery, and restart acceptance. PR #109 merged as 1edda328 with a tree byte-identical to the accepted candidate; production port 3100 remained unchanged.",
   "meta": {
     "baseSha": "d03b3fc4b6d11f1e84a255e79c96d01ec7442720",
     "productionPortTouched": false
