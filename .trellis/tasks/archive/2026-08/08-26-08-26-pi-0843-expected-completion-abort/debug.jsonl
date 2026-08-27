@@ -1,6 +1,6 @@
 {"file": ".agents/skills/check/SKILL.md", "reason": "Code quality check spec"}
 {"file": "tests/runtime/pi-runtime.test.js", "reason": "Baseline red: caller complete abort tail polluted unresolved assistant errors; cancellation control stayed failed"}
-{"file": ".trellis/tasks/08-26-08-26-pi-0843-expected-completion-abort/implementation-evidence.md", "reason": "Red-green root cause and validation record"}
+{"file": ".trellis/tasks/archive/2026-08/08-26-08-26-pi-0843-expected-completion-abort/implementation-evidence.md", "reason": "Red-green root cause and validation record"}
 {"file": "server/domain/runtime/message-tool-trace.ts", "reason": "Acceptance root cause: raw child session abort tail was reintroduced as failureContext after authoritative runtime success"}
 {"file": "tests/runtime/message-tool-trace.test.js", "reason": "Real SQLite red-green trace matrix with expected-completion, prior-error, and missing-event controls"}
 {"file": ".tmp/expected-completion-acceptance-3238/state/acceptance-summary.json", "reason": "Gitignored exploratory real-model acceptance evidence; exact-SHA rerun remains pending"}
