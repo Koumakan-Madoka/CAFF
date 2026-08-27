@@ -613,3 +613,58 @@ Upgraded the audited PI package family to 0.84.3, added exact stream_read_error 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 14: Fix Recovery Scribe empty thinking defaults
+
+**Date**: 2026-08-27
+**Task**: Fix Recovery Scribe empty thinking defaults
+**Branch**: `room/c2fab452-caff-bug-bug`
+
+### Summary
+
+Fixed the no-environment Recovery Scribe startup regression, verified the exact candidate through independent review and isolated acceptance, and merged PR #109 into `develop` with a tree-identical merge commit.
+
+### Main Changes
+
+| Area | Result |
+|------|--------|
+| Root cause | With PI/Recovery/Digest thinking variables unset, the Pi startup resolver returned an empty string while Recovery Scribe strict defaults rejected it. Ambient local variables had masked the CI regression. |
+| Fix | Normalize only the resolved empty Recovery Scribe startup thinking value to `off`; retain global Pi defaults, management API validation, and fail-closed behavior for unsupported non-empty values, models, and limits. |
+| Regression coverage | Added a synchronous environment-isolation helper and locked the two server-composition cases plus stale-restart against a genuinely empty environment. |
+| Validation | Baseline wiring 0/2 and stale-restart 0/1 became green; focused 57/57, smoke 75/75, DAG execution 78/78, check/typecheck/build passed. Complete regression non-green results were limited to recorded unrelated Windows EPERM and DAG demo timing baselines. |
+| Review and acceptance | Independent commit-pinned review approved exact candidate `324836ef86e18a5f020b2e7863affc74a1389bbf`. Isolated port 3240 acceptance passed startup, recovery, restart, SQLite integrity, and foreign-key checks with all relevant environment variables unset and external delivery disabled. |
+| Integration | User accepted and authorized merge. PR #109 merged as `1edda32802013dabb5277e3b35a3ab8f77bd4622`; its parents are `d03b3fc4` and `324836ef`, and merge tree `e5ac4125fd2f686fd5430f57685bf7d5638b96ac` is byte-identical to the accepted candidate tree. |
+| Production boundary | Production port 3100 was not deployed, restarted, reconfigured, or given external side effects. |
+
+**Primary files**:
+- `server/domain/conversation/message-recovery.ts`
+- `tests/helpers/recovery-runtime-env.js`
+- `tests/runtime/cross-conversation-delivery-wiring.test.js`
+- `tests/runtime/message-recovery.test.js`
+- `.trellis/spec/backend/message-recovery.md`
+- `.trellis/spec/unit-test/runtime-tests.md`
+
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `324836ef86e18a5f020b2e7863affc74a1389bbf` | fix: default recovery scribe thinking to off |
+| `1edda32802013dabb5277e3b35a3ab8f77bd4622` | Merge pull request #109 from Koumakan-Madoka/room/c2fab452-caff-bug-bug |
+
+### Testing
+
+- [OK] Baseline regressions reproduced under an empty PI/Recovery/Digest environment.
+- [OK] Focused Recovery/config/HTTP/UI/storage/delivery/composition tests: 57/57.
+- [OK] Smoke tests: 75/75; DAG execution tests: 78/78.
+- [OK] `npm run check`, `npm run typecheck`, and `npm run build` passed.
+- [OK] Exact-SHA isolated startup, recovery, restart, SQLite integrity, and foreign-key acceptance passed.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

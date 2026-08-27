@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 13
+- **Total Sessions**: 14
 - **Last Active**: 2026-08-27
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~615 | Active |
+| `journal-1.md` | ~670 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 14 | 2026-08-27 | Fix Recovery Scribe empty thinking defaults | `324836ef86e18a5f020b2e7863affc74a1389bbf`, `1edda32802013dabb5277e3b35a3ab8f77bd4622` | `room/c2fab452-caff-bug-bug` |
 | 13 | 2026-08-27 | PI 0.84.3 expected-completion abort regression | `d12d6fe318dbde08ad0413c60ecf65f87dfa0388`, `045542f6f1e36790a1356301eca0194a88c9abdf`, `db338a73387cc43fac9b65cd4ef2662ba80ad8c1`, `798cf94a87e9191c46fca2384b5bb572daaec810` | `room/c2fab452-caff-bug-bug` |
 | 12 | 2026-08-26 | Upgrade PI 0.84.3 and normalize stream_read_error | `332c164aa8d6c8df5bbed936c4d651436a603003`, `732b227d34d75bb6ce38164b6b1e7bbebfcf56c1`, `e8858165f9e9242574830960b32186a4bc51e655`, `fc861109d1f1cba35e250b32fcf6128eacc2cc13` | `room/c2fab452-caff-bug-bug` |
 | 11 | 2026-08-25 | Complete P2C Contract message metadata | `e508de961eeb75ad06476362271b952317d3b10c`, `937110dc73fa820b75ba7c5098bcbf4948febf00`, `62f2e03ed377b200f9114186daf922245e07a8ef` | `room/c2fab452-caff-bug-bug` |
