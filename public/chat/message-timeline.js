@@ -227,14 +227,20 @@
         ? message.recoveryCapability
         : null;
       const isRecoveryResult = Boolean(metadata.recoveryResult);
-      const canRequest = Boolean(
+      const isFailedSource = Boolean(
         message
         && message.role === 'assistant'
         && message.status === 'failed'
         && !isRecoveryResult
       );
+      const canRequest = Boolean(
+        isFailedSource
+        && recoveryCapability
+        && recoveryCapability.enabled === true
+        && recoveryCapability.eligible === true
+      );
       panel.textContent = '';
-      panel.hidden = !isRecoveryResult && !canRequest;
+      panel.hidden = !isRecoveryResult && !recovery && !recoveryCapability;
       panel.className = isRecoveryResult
         ? 'message-recovery-panel message-recovery-provenance'
         : 'message-recovery-panel';
@@ -272,11 +278,12 @@
         return;
       }
 
-      if (recoveryCapability && recoveryCapability.enabled === false && !recovery) {
+      if (recoveryCapability && recoveryCapability.eligible !== true && !recovery) {
         const disabledStatus = document.createElement('span');
         disabledStatus.className = 'message-recovery-status neutral';
-        disabledStatus.textContent = '系统书记已停用';
-        disabledStatus.title = '平台只读恢复服务当前已停用';
+        disabledStatus.textContent = recoveryCapability.reason
+          || (recoveryCapability.enabled === false ? '系统书记已停用' : '当前失败现场无法整理');
+        disabledStatus.title = recoveryCapability.reasonCode || disabledStatus.textContent;
         panel.appendChild(disabledStatus);
         return;
       }
@@ -304,6 +311,10 @@
           }
           return;
         }
+      }
+
+      if (!canRequest) {
+        return;
       }
 
       const button = document.createElement('button');

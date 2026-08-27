@@ -1197,6 +1197,10 @@ function startRun(provider: any, model: any, prompt: any, options: any = {}) {
       };
 
       if (terminationReason && terminationReason.type === 'expected_completion') {
+        if (result.assistantErrors.length > 0) {
+          finishWithError(createInvokeError('pi assistant reported a model invocation error', result));
+          return;
+        }
         finishWithResult({
           ...result,
           code: 0,

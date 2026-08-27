@@ -177,6 +177,68 @@ if (runner && runner.status === 'error_paused') {
 - Fail fast when a required page helper is missing. Prefer explicit
   missing-module errors in the page entry over silently skipping part of the UI.
 
+## Failed Message Recovery Eligibility UI
+
+### Scope / Trigger
+
+- Applies when `public/chat/message-timeline.js` renders a failed assistant message returned by the paged message API.
+
+### Signatures
+
+```js
+message.recoveryCapability = {
+  enabled: boolean,
+  eligible: boolean,
+  reasonCode: string,
+  reason: string,
+  systemActorType: 'recovery_scribe',
+  routable: false,
+};
+```
+
+### Contracts
+
+- The browser never derives Recovery eligibility from `message.status` alone. It shows `整理失败现场` only when the server projection has `enabled === true` and `eligible === true`.
+- An ineligible projection renders its bounded `reason` as a neutral status and exposes no request button. A missing capability fails closed and leaves the recovery panel hidden.
+- Existing `message.recovery` state remains authoritative after acceptance even if the current service/idle capability changes; queued/running/terminal status and result links continue to render.
+- The server owns all task/run/snapshot/session and runtime-idle checks. The UI does not parse `reasonCode` to recreate policy.
+
+### Validation Matrix
+
+| Payload | Required UI |
+| --- | --- |
+| enabled + eligible | one manual command |
+| disabled | `系统书记已停用`, no command |
+| enabled + ineligible + reason | show reason, no command |
+| capability missing | hidden panel, no command |
+| recovery row present | canonical recovery state; never create a second command |
+
+### Good / Base / Bad Cases
+
+- Good: a historical failed source with server-approved assistant-error evidence shows the action even though its run is succeeded.
+- Base: a busy conversation shows the server-projected wait reason and becomes actionable after a later message-page refresh.
+- Bad: `message.status === 'failed'` directly creates a button that POST will always reject.
+
+### Tests Required
+
+- `tests/ui/message-recovery.test.js` covers eligible action, disabled/ineligible reason states, missing-capability fail-closed behavior, accepted states, and stable touch geometry.
+- `tests/http/message-recovery-controller.test.js` locks pass-through of the capability fields from the domain projection.
+
+### Wrong vs Correct
+
+#### Wrong
+
+```js
+const canRequest = message.role === 'assistant' && message.status === 'failed';
+```
+
+#### Correct
+
+```js
+const canRequest = message.recoveryCapability?.enabled === true
+  && message.recoveryCapability?.eligible === true;
+```
+
 ## Chat Message Rendering
 
 - Route assistant rich text rendering through shared helpers in `public/shared/`
