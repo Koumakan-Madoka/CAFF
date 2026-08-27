@@ -1,0 +1,58 @@
+{
+  "id": "recovery-scribe-user-cancelled-source",
+  "name": "recovery-scribe-user-cancelled-source",
+  "title": "Recovery Scribe user-cancelled source eligibility",
+  "description": "Allow user-initiated Recovery Scribe only for evidence-consistent user-cancelled traces while preserving failed-trace recovery and all fail-closed guards.",
+  "status": "review",
+  "dev_type": "fullstack",
+  "scope": "backend-runtime-frontend",
+  "package": null,
+  "priority": "P0",
+  "creator": "GPT",
+  "assignee": "GPT",
+  "createdAt": "2026-08-27",
+  "completedAt": null,
+  "branch": "room/c2fab452-caff-bug-bug",
+  "base_branch": "develop",
+  "worktree_path": "E:/pythonproject/worktrees/room/c2fab452-caff-bug-bug",
+  "current_phase": 2,
+  "next_action": [
+    {
+      "phase": 3,
+      "action": "independent-review"
+    },
+    {
+      "phase": 4,
+      "action": "isolated-acceptance"
+    },
+    {
+      "phase": 5,
+      "action": "merge-after-user-authorization"
+    }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "server/domain/conversation/message-recovery.ts",
+    "public/chat/message-timeline.js",
+    "public/personas/recovery-scribe-management.js",
+    "tests/runtime/message-recovery.test.js",
+    "tests/runtime/agent-executor-hook.test.js",
+    "tests/runtime/recovery-scribe-config-ui.test.js",
+    "tests/http/message-recovery-controller.test.js",
+    "tests/ui/message-recovery.test.js",
+    ".trellis/spec/backend/message-recovery.md",
+    ".trellis/spec/runtime/agent-runtime.md",
+    ".trellis/spec/frontend/ui-structure.md",
+    ".trellis/spec/unit-test/runtime-tests.md",
+    ".trellis/spec/guides/cross-layer-thinking-guide.md"
+  ],
+  "notes": "Implementation and complete serial author validation are complete. Candidate review and exact-SHA isolated acceptance remain pending; production 3100 was not touched.",
+  "meta": {
+    "baseSha": "e2bff2fd7332c0b97d908cadf09e43490d5c2554",
+    "productionPortTouched": false
+  }
+}

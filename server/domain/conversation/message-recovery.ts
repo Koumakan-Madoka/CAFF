@@ -39,6 +39,8 @@ import {
 const MAX_RECOVERY_PROMPT_BYTES = 72 * 1024;
 const DEFAULT_RECOVERY_TIMEOUT_MS = MAX_RECOVERY_TIMEOUT_MS;
 const MAX_SAFE_ERROR_CHARS = 240;
+const RECOVERY_SOURCE_KIND_FAILED = 'failed';
+const RECOVERY_SOURCE_KIND_USER_CANCELLED = 'user_cancelled';
 const REQUIRED_SCRIBE_HEADINGS = [
   '已经完成',
   '失败位置',
@@ -514,10 +516,11 @@ export function createMessageRecoveryService(options: any = {}) {
     const runId = Number(message.runId);
     const task = taskId ? runStore.getTask(taskId) : null;
     const run = Number.isInteger(runId) && runId > 0 ? runStore.getRun(runId) : null;
-    const unavailable = (reasonCode: string, reason: string) => ({
+    const unavailable = (reasonCode: string, reason: string, sourceKind: string | null = null) => ({
       eligible: false,
       reasonCode,
       reason,
+      sourceKind,
       source: null,
     });
 
@@ -527,19 +530,58 @@ export function createMessageRecoveryService(options: any = {}) {
     if (!Number.isInteger(runId) || runId <= 0 || !run) {
       return unavailable('conversation_recovery_source_run_missing', '来源运行记录缺失，无法整理失败现场');
     }
-    if (task.status !== 'failed') {
-      return unavailable('conversation_recovery_source_task_not_failed', '来源任务没有失败终态，无法整理失败现场');
-    }
-    const assistantErrors = Array.isArray(run.assistantErrors)
-      ? run.assistantErrors.map((value: any) => String(value || '').trim()).filter(Boolean)
-      : [];
-    const hasCompatibleRunFailure = run.status === 'failed'
-      || (run.status === 'succeeded' && assistantErrors.length > 0);
-    if (!hasCompatibleRunFailure) {
-      return unavailable(
-        'conversation_recovery_source_run_not_failed',
-        '来源运行没有可验证的失败终态或 assistant error 证据'
-      );
+
+    const metadata = message.metadata && typeof message.metadata === 'object' && !Array.isArray(message.metadata)
+      ? message.metadata
+      : {};
+    const invocationFailure = metadata.invocationFailure
+      && typeof metadata.invocationFailure === 'object'
+      && !Array.isArray(metadata.invocationFailure)
+      ? metadata.invocationFailure
+      : {};
+    const invocationFailureKind = String(invocationFailure.kind || '').trim();
+    const invocationFailureCode = String(invocationFailure.code || '').trim();
+    const invocationTerminationType = String(invocationFailure.terminationType || '').trim();
+    const runTerminationType = String(run.termination_type || '').trim();
+    const hasCancellationEvidence = metadata.cancelled === true
+      || task.status === 'cancelled'
+      || runTerminationType === 'cancelled'
+      || invocationFailureKind === 'cancelled'
+      || invocationFailureCode === 'cancelled'
+      || invocationTerminationType === 'cancelled';
+    let sourceKind = RECOVERY_SOURCE_KIND_FAILED;
+
+    if (hasCancellationEvidence) {
+      const hasConsistentUserCancellation = metadata.cancelled === true
+        && invocationFailureKind === 'cancelled'
+        && invocationFailureCode === 'cancelled'
+        && invocationFailure.eligible === false
+        && invocationTerminationType === 'cancelled'
+        && task.status === 'cancelled'
+        && run.status === 'failed'
+        && runTerminationType === 'cancelled';
+      if (!hasConsistentUserCancellation) {
+        return unavailable(
+          'conversation_recovery_source_cancellation_mismatch',
+          '来源取消证据不完整或相互矛盾，无法整理停止现场'
+        );
+      }
+      sourceKind = RECOVERY_SOURCE_KIND_USER_CANCELLED;
+    } else {
+      if (task.status !== 'failed') {
+        return unavailable('conversation_recovery_source_task_not_failed', '来源任务没有失败终态，无法整理失败现场');
+      }
+      const assistantErrors = Array.isArray(run.assistantErrors)
+        ? run.assistantErrors.map((value: any) => String(value || '').trim()).filter(Boolean)
+        : [];
+      const hasCompatibleRunFailure = run.status === 'failed'
+        || (run.status === 'succeeded' && assistantErrors.length > 0);
+      if (!hasCompatibleRunFailure) {
+        return unavailable(
+          'conversation_recovery_source_run_not_failed',
+          '来源运行没有可验证的失败终态或 assistant error 证据'
+        );
+      }
     }
     if (
       Number(task.run_id) !== runId
@@ -580,7 +622,8 @@ export function createMessageRecoveryService(options: any = {}) {
       eligible: true,
       reasonCode: '',
       reason: '',
-      source: { conversation, message, task, run, contextSnapshot, sessionPath },
+      sourceKind,
+      source: { conversation, message, task, run, contextSnapshot, sessionPath, sourceKind },
     };
   }
 
@@ -601,18 +644,19 @@ export function createMessageRecoveryService(options: any = {}) {
         parentTaskId: source.message.taskId,
         parentRunId: source.message.runId,
         kind: 'conversation_recovery',
-        title: `Recover failed message ${source.message.id}`,
+        title: `Recover source message ${source.message.id}`,
         status: 'queued',
         assignedAgent: 'caff-system',
         assignedRole: RECOVERY_SCRIBE_SYSTEM_ACTOR.type,
         provider: config.provider,
         model: config.model,
-        inputText: `Manual read-only recovery for failed assistant message ${source.message.id}`,
+        inputText: `Manual read-only recovery for assistant message ${source.message.id}`,
         metadata: {
           conversationId: source.conversation.id,
           sourceMessageId: source.message.id,
           sourceTaskId: source.message.taskId,
           sourceRunId: source.message.runId,
+          sourceKind: source.sourceKind,
           parentRunId: source.message.runId,
           noTools: true,
           systemActorType: RECOVERY_SCRIBE_SYSTEM_ACTOR.type,
@@ -674,6 +718,7 @@ export function createMessageRecoveryService(options: any = {}) {
           sourceMessageId: source.message.id,
           sourceTaskId: source.message.taskId,
           sourceRunId: source.message.runId,
+          sourceKind: source.sourceKind,
           recoveryTaskId: recovery.recoveryTaskId,
           recoveryRunId: recovery.recoveryRunId,
           fallbackUsed,
@@ -795,6 +840,7 @@ export function createMessageRecoveryService(options: any = {}) {
           sourceMessageId: source.message.id,
           sourceTaskId: source.message.taskId,
           sourceRunId: source.message.runId,
+          sourceKind: source.sourceKind,
           parentRunId: source.message.runId,
           capsuleVersion: 1,
           capsuleSha256: createHash('sha256').update(JSON.stringify(capsule)).digest('hex'),
@@ -1020,6 +1066,7 @@ export function createMessageRecoveryService(options: any = {}) {
             eligible: false,
             reasonCode: 'conversation_recovery_disabled',
             reason: '系统书记已停用',
+            sourceKind: null,
             ...baseCapability,
           };
         } else {
@@ -1034,6 +1081,7 @@ export function createMessageRecoveryService(options: any = {}) {
               eligible: false,
               reasonCode: 'conversation_recovery_conversation_not_found',
               reason: '来源会话不存在，无法整理失败现场',
+              sourceKind: null,
               ...baseCapability,
             };
           } else {
@@ -1047,6 +1095,7 @@ export function createMessageRecoveryService(options: any = {}) {
               eligible: idleFailure ? false : Boolean(inspection.eligible),
               reasonCode: inspection.reasonCode,
               reason: inspection.reason,
+              sourceKind: idleFailure ? null : inspection.sourceKind,
               ...baseCapability,
             };
           }

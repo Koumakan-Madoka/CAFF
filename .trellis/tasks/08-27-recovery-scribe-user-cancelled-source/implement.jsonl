@@ -1,0 +1,13 @@
+{"file": ".trellis/workflow.md", "reason": "Project workflow and conventions"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend development guide"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend development guide"}
+{"file": ".trellis/spec/backend/message-recovery.md", "reason": "Source classification, integrity, Recovery Scribe lifecycle, and fail-closed matrix"}
+{"file": ".trellis/spec/runtime/agent-runtime.md", "reason": "Persisted user-cancelled invocation and run termination semantics"}
+{"file": ".trellis/spec/runtime/conversation-turn-queue.md", "reason": "Manual Stop, queued cancellation, idle, and restart boundaries"}
+{"file": ".trellis/spec/frontend/ui-structure.md", "reason": "Server-owned capability projection and action label"}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Real SQLite regression and non-tautological red/green evidence"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Backend-to-HTTP-to-UI source-kind flow"}
+{"file": "server/domain/conversation/message-recovery.ts", "reason": "Unified failed/user-cancelled source classifier and Recovery audit projection"}
+{"file": "public/chat/message-timeline.js", "reason": "Closed source-kind action label and fail-closed rendering"}
+{"file": "public/personas/recovery-scribe-management.js", "reason": "System-service copy for failed and user-stopped sources"}
+{"file": ".trellis/tasks/08-27-recovery-scribe-user-cancelled-source/implementation-evidence.md", "reason": "Reproduction, red-green, regression, security, and environment evidence"}

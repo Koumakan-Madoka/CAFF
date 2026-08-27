@@ -65,6 +65,25 @@ function writeSourceSession(agentDir) {
   return sessionPath;
 }
 
+function userCancelledSourceOptions() {
+  return {
+    sourceRunTerminationType: 'cancelled',
+    sourceRunErrorMessage: 'Stopped by user',
+    sourceAssistantErrors: [],
+    sourceTaskStatus: 'cancelled',
+    sourceMessageMetadata: {
+      cancelled: true,
+      invocationFailure: {
+        kind: 'cancelled',
+        code: 'cancelled',
+        eligible: false,
+        terminationType: 'cancelled',
+        summary: 'Stopped by user',
+      },
+    },
+  };
+}
+
 function createFixture(t, options = {}) {
   const tempDir = withTempDir('caff-message-recovery-service-');
   const sqlitePath = path.join(tempDir, 'chat.sqlite');
@@ -99,13 +118,19 @@ function createFixture(t, options = {}) {
     metadata: { conversationId: conversation.id, agentId: agent.id },
   });
   const sourceRunStatus = options.sourceRunStatus || 'failed';
+  const sourceRunTerminationType = Object.prototype.hasOwnProperty.call(options, 'sourceRunTerminationType')
+    ? options.sourceRunTerminationType
+    : sourceRunStatus === 'failed' ? 'provider_error' : null;
+  const sourceRunErrorMessage = Object.prototype.hasOwnProperty.call(options, 'sourceRunErrorMessage')
+    ? options.sourceRunErrorMessage
+    : sourceRunStatus === 'failed' ? 'stream_read_error' : null;
   const sourceAssistantErrors = options.sourceAssistantErrors === undefined
     ? ['stream_read_error']
     : options.sourceAssistantErrors;
   runStore.finishRun(sourceRun.runId, {
     status: sourceRunStatus,
-    terminationType: sourceRunStatus === 'failed' ? 'provider_error' : null,
-    errorMessage: sourceRunStatus === 'failed' ? 'stream_read_error' : null,
+    terminationType: sourceRunTerminationType,
+    errorMessage: sourceRunErrorMessage,
     reply: '',
     stderrTail: '',
     parseErrors: 0,
@@ -117,7 +142,7 @@ function createFixture(t, options = {}) {
     runId: sourceRun.runId,
     kind: 'conversation_agent_reply',
     title: 'Source Agent reply',
-    status: 'failed',
+    status: options.sourceTaskStatus || 'failed',
     assignedAgent: 'pi',
     assignedRole: agent.name,
     provider: 'source-provider',
@@ -138,7 +163,7 @@ function createFixture(t, options = {}) {
     agentId: agent.id,
     senderName: agent.name,
     content: '',
-    status: 'failed',
+    status: options.sourceMessageStatus || 'failed',
     taskId: 'source-task',
     runId: sourceRun.runId,
     errorMessage: 'pi assistant reported a model invocation error',
@@ -148,6 +173,7 @@ function createFixture(t, options = {}) {
       failure: true,
       sessionName: 'source-session',
       sessionPath,
+      ...(options.sourceMessageMetadata || {}),
     },
     contextSnapshot: {
       snapshotId: 'source-snapshot',
@@ -583,6 +609,7 @@ test('disabled system scribe is projected as unavailable and cannot be triggered
     eligible: false,
     reasonCode: 'conversation_recovery_disabled',
     reason: '系统书记已停用',
+    sourceKind: null,
     systemActorType: 'recovery_scribe',
     routable: false,
   });
@@ -623,6 +650,319 @@ test('disabled system scribe is projected as unavailable and cannot be triggered
   );
 });
 
+test('evidence-consistent user stop is projected and accepted without rewriting the cancelled source', async (t) => {
+  const fixture = createFixture(t, userCancelledSourceOptions());
+  const sourceBefore = {
+    message: fixture.store.getMessage(fixture.sourceMessage.id),
+    task: fixture.runStore.getTask('source-task'),
+    run: fixture.runStore.getRun(fixture.sourceRun.runId),
+  };
+  const [projected] = fixture.service.projectMessages([sourceBefore.message]);
+
+  assert.deepEqual(projected.recoveryCapability, {
+    enabled: true,
+    eligible: true,
+    reasonCode: '',
+    reason: '',
+    sourceKind: 'user_cancelled',
+    systemActorType: 'recovery_scribe',
+    routable: false,
+  });
+
+  const accepted = fixture.service.requestRecovery(fixture.conversation.id, fixture.sourceMessage.id);
+  assert.equal(accepted.duplicate, false);
+  assert.equal(fixture.scheduled.length, 1, 'Stop settlement must not invoke the scribe automatically');
+  assert.equal(
+    fixture.runStore.getTask(accepted.recovery.recoveryTaskId).metadata.sourceKind,
+    'user_cancelled'
+  );
+  await fixture.scheduled[0]();
+
+  const completed = fixture.store.getMessageRecovery(accepted.recovery.id);
+  assert.deepEqual(fixture.store.getMessage(fixture.sourceMessage.id), sourceBefore.message);
+  assert.deepEqual(fixture.runStore.getTask('source-task'), sourceBefore.task);
+  assert.deepEqual(fixture.runStore.getRun(fixture.sourceRun.runId), sourceBefore.run);
+  assert.equal(fixture.runStore.getRun(completed.recoveryRunId).metadata.sourceKind, 'user_cancelled');
+  assert.equal(fixture.store.getMessage(completed.recoveryMessageId).metadata.sourceKind, 'user_cancelled');
+  assert.equal(fixture.modelCalls.length, 1);
+  assert.equal(Object.hasOwn(fixture.modelCalls[0].options, 'tools'), false);
+});
+
+test('user-stopped source remains an optional action after service restart and is never auto-scheduled', (t) => {
+  const fixture = createFixture(t, userCancelledSourceOptions());
+  const restartedWork = [];
+  const restartedService = withClearedRecoveryRuntimeEnvironment(() => createMessageRecoveryService({
+    store: fixture.store,
+    runStore: fixture.runStore,
+    agentDir: fixture.tempDir,
+    provider: 'scribe-provider',
+    model: 'scribe-model',
+    thinking: 'off',
+    modelCatalog: {
+      getOptions() {
+        return [{
+          key: 'scribe-provider\u001fscribe-model',
+          provider: 'scribe-provider',
+          model: 'scribe-model',
+          supportedThinkingLevels: ['off'],
+        }];
+      },
+    },
+    getConversationMutationState: () => ({ busy: false }),
+    scheduleBackground(work) {
+      restartedWork.push(work);
+    },
+  }));
+
+  const [projected] = restartedService.projectMessages([
+    fixture.store.getMessage(fixture.sourceMessage.id),
+  ]);
+  assert.equal(projected.recoveryCapability.eligible, true);
+  assert.equal(projected.recoveryCapability.sourceKind, 'user_cancelled');
+  assert.equal(restartedWork.length, 0);
+  assert.equal(fixture.store.getMessageRecoveryBySourceMessage(fixture.sourceMessage.id), null);
+
+  const accepted = restartedService.requestRecovery(fixture.conversation.id, fixture.sourceMessage.id);
+  assert.equal(accepted.duplicate, false);
+  assert.equal(restartedWork.length, 1);
+  assert.equal(fixture.modelCalls.length, 0);
+});
+
+test('user-stopped source retains busy, snapshot, and session fail-closed gates', (t) => {
+  const busy = createFixture(t, { ...userCancelledSourceOptions(), busy: true });
+  const [busyProjected] = busy.service.projectMessages([
+    busy.store.getMessage(busy.sourceMessage.id),
+  ]);
+  assert.equal(busyProjected.recoveryCapability.eligible, false);
+  assert.equal(busyProjected.recoveryCapability.reasonCode, 'conversation_recovery_conversation_busy');
+  assert.equal(busyProjected.recoveryCapability.sourceKind, null);
+
+  const missingSnapshot = createFixture(t, userCancelledSourceOptions());
+  missingSnapshot.store.getMessageContextSnapshot = () => null;
+  const [snapshotProjected] = missingSnapshot.service.projectMessages([
+    missingSnapshot.store.getMessage(missingSnapshot.sourceMessage.id),
+  ]);
+  assert.equal(snapshotProjected.recoveryCapability.eligible, false);
+  assert.equal(
+    snapshotProjected.recoveryCapability.reasonCode,
+    'conversation_recovery_source_snapshot_missing'
+  );
+  assert.throws(
+    () => missingSnapshot.service.requestRecovery(
+      missingSnapshot.conversation.id,
+      missingSnapshot.sourceMessage.id
+    ),
+    (error) => error
+      && error.statusCode === 409
+      && error.code === 'conversation_recovery_source_snapshot_missing'
+  );
+
+  const missingSession = createFixture(t, userCancelledSourceOptions());
+  fs.rmSync(missingSession.sourceMessage.metadata.sessionPath, { force: true });
+  const [sessionProjected] = missingSession.service.projectMessages([
+    missingSession.store.getMessage(missingSession.sourceMessage.id),
+  ]);
+  assert.equal(sessionProjected.recoveryCapability.eligible, false);
+  assert.equal(
+    sessionProjected.recoveryCapability.reasonCode,
+    'conversation_recovery_source_session_missing'
+  );
+  assert.throws(
+    () => missingSession.service.requestRecovery(
+      missingSession.conversation.id,
+      missingSession.sourceMessage.id
+    ),
+    (error) => error
+      && error.statusCode === 409
+      && error.code === 'conversation_recovery_source_session_missing'
+  );
+  assert.equal(busy.scheduled.length + missingSnapshot.scheduled.length + missingSession.scheduled.length, 0);
+});
+
+test('partial or contradictory cancellation evidence fails closed with one stable reason', (t) => {
+  const cancellationMetadata = {
+    cancelled: true,
+    invocationFailure: {
+      kind: 'cancelled',
+      code: 'cancelled',
+      eligible: false,
+      terminationType: 'cancelled',
+      summary: 'Stopped by user',
+    },
+  };
+  const cases = [
+    {
+      name: 'message evidence only',
+      options: { sourceMessageMetadata: cancellationMetadata },
+    },
+    {
+      name: 'task and run evidence only',
+      options: {
+        sourceTaskStatus: 'cancelled',
+        sourceRunTerminationType: 'cancelled',
+        sourceAssistantErrors: [],
+      },
+    },
+    {
+      name: 'run termination only',
+      options: {
+        sourceRunTerminationType: 'cancelled',
+        sourceAssistantErrors: [],
+      },
+    },
+    {
+      name: 'provider abort cannot impersonate a user stop',
+      options: {
+        sourceRunTerminationType: 'cancelled',
+        sourceRunErrorMessage: 'provider aborted stream',
+        sourceAssistantErrors: ['provider aborted stream'],
+        sourceMessageMetadata: {
+          cancelled: false,
+          invocationFailure: {
+            kind: 'provider',
+            code: 'assistant_error',
+            eligible: true,
+            terminationType: '',
+            summary: 'provider aborted stream',
+          },
+        },
+      },
+    },
+    {
+      name: 'cancelled invocation marked eligible',
+      options: {
+        sourceTaskStatus: 'cancelled',
+        sourceRunTerminationType: 'cancelled',
+        sourceAssistantErrors: [],
+        sourceMessageMetadata: {
+          ...cancellationMetadata,
+          invocationFailure: {
+            ...cancellationMetadata.invocationFailure,
+            eligible: true,
+          },
+        },
+      },
+    },
+  ];
+
+  for (const entry of cases) {
+    const fixture = createFixture(t, entry.options);
+    const [projected] = fixture.service.projectMessages([
+      fixture.store.getMessage(fixture.sourceMessage.id),
+    ]);
+
+    assert.equal(projected.recoveryCapability.eligible, false, entry.name);
+    assert.equal(
+      projected.recoveryCapability.reasonCode,
+      'conversation_recovery_source_cancellation_mismatch',
+      entry.name
+    );
+    assert.equal(projected.recoveryCapability.sourceKind, null, entry.name);
+    assert.throws(
+      () => fixture.service.requestRecovery(fixture.conversation.id, fixture.sourceMessage.id),
+      (error) => error
+        && error.statusCode === 409
+        && error.code === 'conversation_recovery_source_cancellation_mismatch',
+      entry.name
+    );
+    assert.equal(fixture.scheduled.length, 0, entry.name);
+  }
+});
+
+test('timeout and provider failures remain failed-source recoveries, not user cancellations', (t) => {
+  const cases = [
+    {
+      name: 'watchdog timeout',
+      sourceRunTerminationType: 'progress_timeout',
+      sourceRunErrorMessage: 'pi progress missing',
+      sourceAssistantErrors: [],
+      sourceMessageMetadata: {
+        cancelled: false,
+        invocationFailure: {
+          kind: 'timeout',
+          code: 'progress_timeout',
+          eligible: true,
+          terminationType: 'progress_timeout',
+          summary: 'pi progress missing',
+        },
+      },
+    },
+    {
+      name: 'provider abort',
+      sourceRunTerminationType: 'provider_error',
+      sourceRunErrorMessage: 'provider aborted stream',
+      sourceAssistantErrors: ['provider aborted stream'],
+      sourceMessageMetadata: {
+        cancelled: false,
+        invocationFailure: {
+          kind: 'provider',
+          code: 'assistant_error',
+          eligible: true,
+          terminationType: '',
+          summary: 'provider aborted stream',
+        },
+      },
+    },
+  ];
+
+  for (const options of cases) {
+    const fixture = createFixture(t, options);
+    const [projected] = fixture.service.projectMessages([
+      fixture.store.getMessage(fixture.sourceMessage.id),
+    ]);
+
+    assert.equal(projected.recoveryCapability.eligible, true, options.name);
+    assert.equal(projected.recoveryCapability.sourceKind, 'failed', options.name);
+  }
+});
+
+test('ordinary success and queued cancellation without a linked run remain ineligible', (t) => {
+  const succeeded = createFixture(t, {
+    sourceRunStatus: 'succeeded',
+    sourceAssistantErrors: [],
+    sourceTaskStatus: 'succeeded',
+    sourceMessageStatus: 'completed',
+  });
+  const [succeededProjection] = succeeded.service.projectMessages([
+    succeeded.store.getMessage(succeeded.sourceMessage.id),
+  ]);
+  assert.equal(succeededProjection.recoveryCapability, undefined);
+  assert.throws(
+    () => succeeded.service.requestRecovery(succeeded.conversation.id, succeeded.sourceMessage.id),
+    (error) => error
+      && error.statusCode === 409
+      && error.code === 'conversation_recovery_source_not_failed'
+  );
+
+  const queued = createFixture(t, {
+    sourceTaskStatus: 'cancelled',
+    sourceRunTerminationType: 'cancelled',
+    sourceAssistantErrors: [],
+    sourceMessageMetadata: {
+      cancelled: true,
+      invocationFailure: {
+        kind: 'cancelled',
+        code: 'cancelled',
+        eligible: false,
+        terminationType: 'cancelled',
+        summary: 'Stopped before dispatch',
+      },
+    },
+  });
+  queued.store.updateMessage(queued.sourceMessage.id, { runId: null });
+  const [queuedProjection] = queued.service.projectMessages([
+    queued.store.getMessage(queued.sourceMessage.id),
+  ]);
+  assert.equal(queuedProjection.recoveryCapability.eligible, false);
+  assert.equal(queuedProjection.recoveryCapability.reasonCode, 'conversation_recovery_source_run_missing');
+  assert.throws(
+    () => queued.service.requestRecovery(queued.conversation.id, queued.sourceMessage.id),
+    (error) => error
+      && error.statusCode === 409
+      && error.code === 'conversation_recovery_source_run_missing'
+  );
+});
+
 test('historical succeeded run with explicit assistant errors remains recoverable without source rewrites', async (t) => {
   const fixture = createFixture(t, {
     sourceRunStatus: 'succeeded',
@@ -637,6 +977,7 @@ test('historical succeeded run with explicit assistant errors remains recoverabl
     eligible: true,
     reasonCode: '',
     reason: '',
+    sourceKind: 'failed',
     systemActorType: 'recovery_scribe',
     routable: false,
   });
@@ -668,6 +1009,7 @@ test('succeeded run without explicit assistant errors is rejected and projected 
     eligible: false,
     reasonCode: 'conversation_recovery_source_run_not_failed',
     reason: '来源运行没有可验证的失败终态或 assistant error 证据',
+    sourceKind: null,
     systemActorType: 'recovery_scribe',
     routable: false,
   });
@@ -690,6 +1032,7 @@ test('busy and missing-session sources project the same stable rejection used by
     eligible: false,
     reasonCode: 'conversation_recovery_conversation_busy',
     reason: '会话仍有运行中或排队任务，空闲后才能整理失败现场',
+    sourceKind: null,
     systemActorType: 'recovery_scribe',
     routable: false,
   });

@@ -20,7 +20,7 @@ backend domain services.
 - Bounded agent metrics window and projections (`agent-metrics.md`)
 - Reversible message detail tables, atomic dual writes, dual reads, and bounded
   context-snapshot pagination (`message-detail-storage.md`)
-- Manual failed-message Recovery Capsule persistence, evidence grading, isolated
+- Manual failed/user-stopped message Recovery Capsule persistence, evidence grading, isolated
   scribe runs, hot global system-service configuration, mechanical fallback,
   API/SSE, and UI (`message-recovery.md`)
 - SSE per-client backpressure budget and drain deadlines (`sse-backpressure.md`)
@@ -68,8 +68,8 @@ backend domain services.
 - `message-detail-storage.md`: message-keyed context snapshot/model usage tables,
   atomic Expand dual writes, table-first metadata fallback reads, first-plus-latest
   call retention, stable cursor pagination, deletion, and rollback contracts
-- `message-recovery.md`: failed-message Recovery Capsule schema, bounded toolResult
-  evidence, child recovery task/run linkage, no-tools scribe, fallback, API/SSE,
+- `message-recovery.md`: failed/user-stopped message Recovery Capsule schema, bounded toolResult
+  evidence, strict cancellation tuple classification, child recovery task/run linkage, no-tools scribe, fallback, API/SSE,
   and timeline contracts
 - `sse-backpressure.md`: SSE per-client 2 MiB combined budget (queued + writableLength), 5s per-blocked-episode drain deadline, FIFO no-duplicate flush, unified prelude/initial/event/ping accounting, cleanup guarantees, and `getStats()` diagnostics
 - `dag-planning.md`: `chat_plans` storage, plan lifecycle (draft→active), shared

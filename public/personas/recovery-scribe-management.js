@@ -77,23 +77,23 @@
         : '';
       root.innerHTML = `
         <div class="management-detail-top">
-          <div><p class="eyebrow">Recovery Scribe</p><h2>系统书记</h2><p>Agent 失败回复的只读现场报告</p></div>
+          <div><p class="eyebrow">Recovery Scribe</p><h2>系统书记</h2><p>Agent 失败或手动停止回复的只读现场报告</p></div>
           <span id="recovery-scribe-config-source" class="status-badge">${sourceLabel()}</span>
         </div>
         <section class="management-card">
-          <div class="management-card-title"><div><h3>它会做什么</h3><p>当 Agent 回复失败时，系统书记会生成一份现场整理报告，汇总已完成的操作、可能已生效但未确认的改动、未完成的部分，方便你和后续 Agent 接手。它不会自动触发，只在你点击失败消息上的「整理失败现场」按钮时运行一次。</p></div></div>
+          <div class="management-card-title"><div><h3>它会做什么</h3><p>当 Agent 回复失败或被你手动停止后，系统书记会生成一份现场整理报告，汇总已完成的操作、可能已生效但未确认的改动、未完成的部分，方便你和后续 Agent 接手。它不会自动触发，只在你点击消息上的「整理失败现场」或「整理停止现场」按钮时运行一次。</p></div></div>
         </section>
         <section class="management-card">
-          <div class="management-card-title"><div><h3>摘要与失败整理使用的模型</h3><p>模型和思考强度同时用于会话摘要、摘要压缩、标题润色和失败现场整理；保存后从下一次调用生效。</p></div></div>
+          <div class="management-card-title"><div><h3>摘要与现场整理使用的模型</h3><p>模型和思考强度同时用于会话摘要、摘要压缩、标题润色和现场整理；保存后从下一次调用生效。</p></div></div>
           ${providerSetup}
           <p class="management-note">每次生成的输出预算来自「模型供应商」中该模型的最大输出 token；未填写时使用 Pi 默认 16384。若模型因长度耗尽、只有思考或没有可见正文，CAFF 最多自动再调用一次并关闭思考，把预算留给正文。429、模型服务错误或超时不会自动重试。</p>
-          <label class="system-service-enabled-row"><input id="recovery-scribe-enabled" type="checkbox" ${config.enabled ? 'checked' : ''} /><span>在失败消息上提供现场整理</span></label>
-          <p class="management-note">关闭后，失败消息上不再显示「整理失败现场」按钮；会话摘要和标题功能不受影响。</p>
+          <label class="system-service-enabled-row"><input id="recovery-scribe-enabled" type="checkbox" ${config.enabled ? 'checked' : ''} /><span>在失败或手动停止的消息上提供现场整理</span></label>
+          <p class="management-note">关闭后，相关消息上不再显示「整理失败现场」或「整理停止现场」按钮；会话摘要和标题功能不受影响。</p>
           ${modelFields}
           <p id="recovery-scribe-config-error" class="management-error hidden" role="alert"></p>
         </section>
         <section class="management-card system-service-boundaries">
-          <div class="management-card-title"><div><h3>只生成报告</h3><p>不执行命令、不修改文件、不重试任务，原始失败记录保持原样。模型调用失败时仍会生成一份简版机械摘要。</p></div><span class="status-badge">只读</span></div>
+          <div class="management-card-title"><div><h3>只生成报告</h3><p>不执行命令、不修改文件、不重试任务，原始失败或取消记录保持原样。模型调用失败时仍会生成一份简版机械摘要。</p></div><span class="status-badge">只读</span></div>
         </section>
         <div class="management-actions"><button id="save-recovery-scribe-config" type="button" ${locked || !hasModels ? 'disabled' : ''}>保存并立即生效</button></div>`;
 

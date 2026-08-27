@@ -1,8 +1,8 @@
-# Failed Message Recovery Capsule
+# Failed and User-Stopped Message Recovery Capsule
 
 ## 1. Scope
 
-This contract applies to manual recovery of a failed public assistant message. It covers the durable recovery record, bounded Recovery Capsule, source trace linkage, scribe isolation, fallback message, HTTP/SSE projection, and UI state.
+This contract applies to manual recovery of a failed public assistant message or a public assistant message whose linked Agent run was explicitly stopped by the user. It covers the durable recovery record, bounded Recovery Capsule, source trace linkage, scribe isolation, fallback message, HTTP/SSE projection, and UI state.
 
 It does not authorize automatic recovery, task continuation, tool replay, external side effects, or mutation of the source message/task/run status.
 
@@ -102,6 +102,7 @@ GET /api/conversations/:conversationId/messages
       eligible: boolean;
       reasonCode: string;
       reason: string;
+      sourceKind: 'failed' | 'user_cancelled' | null;
       systemActorType: 'recovery_scribe';
       routable: false;
     };
@@ -134,16 +135,19 @@ The POST body must be exactly `{}`; unknown fields return `400 conversation_reco
 
 ### Source and lifecycle
 
-- Only a public assistant message with `status=failed` in the addressed conversation is eligible.
+- Only a public assistant message with `status=failed` in the addressed conversation is eligible for inspection. It is recoverable through exactly one server-owned source classification:
+  - `sourceKind=failed`: task is `failed`, no structured cancellation signal is present, and the run is `failed` or the documented historical `succeeded + non-empty assistantErrors[]` case;
+  - `sourceKind=user_cancelled`: message `metadata.cancelled===true`; `metadata.invocationFailure` has exact `kind/code/terminationType='cancelled'` and `eligible=false`; task is `cancelled`; run is `failed` with `termination_type=cancelled`.
+- Cancellation signals are absorbing for classification. If any message invocation, task, or run cancellation signal exists but the full user-cancelled tuple does not agree, return `conversation_recovery_source_cancellation_mismatch`; never fall back to the failed-source rule.
 - The conversation must be idle: no active/dispatching main turn, active side slot, queued user work, or queued side-slot work.
 - Source task, run, context snapshot, and session JSONL must exist and agree with the message association. The source task must be `failed`. The source run is accepted when it is `failed`, or for historical compatibility only when it is `succeeded` and its persisted `assistant_errors_json` normalizes to at least one non-empty error. Run error prose, message prose, and task error prose never substitute for that structured historical evidence.
-- `projectMessages()` and `requestRecovery()` share the same idle and source-integrity inspection. Failed assistant messages receive `recoveryCapability { enabled, eligible, reasonCode, reason, systemActorType, routable }`; the projection is bounded to the message page and caches conversation/idle reads per page. Disabled service, busy or unobservable runtime state, missing/mismatched source records, and a succeeded run without assistant errors fail closed with stable reason codes.
+- `projectMessages()` and `requestRecovery()` share the same idle and source-integrity inspection. Candidate assistant messages receive `recoveryCapability { enabled, eligible, reasonCode, reason, sourceKind, systemActorType, routable }`; the projection is bounded to the message page and caches conversation/idle reads per page. `sourceKind` is populated only from the accepted structured classification; disabled, busy, missing, mismatched, or otherwise unknown sources project `null`. Disabled service, busy or unobservable runtime state, missing/mismatched source records, and a succeeded run without assistant errors fail closed with stable reason codes.
 - An existing durable recovery row remains the idempotency authority. Duplicate POST returns it before revalidating transient idle/source availability and never creates second work.
 - State is `absent -> queued -> running -> completed|failed`. Repository transitions filter both the expected source statuses and target status against those exact edges; completed/failed rows reject field-only updates as well as status changes.
 - `completed` means a valid scribe result was persisted. `failed` means scribe/validation failed and a mechanical fallback was persisted with `fallbackUsed=true`.
 - Duplicate or concurrent POST requests return the canonical row. They never create a second task, run, model call, or message.
 - Startup does not replay stale queued/running recovery work. A new service instance projects such a row as `{ status: 'failed', interrupted: true, persistedStatus: 'queued|running', errorCode: 'conversation_recovery_interrupted' }` without mutating the auditable stored row.
-- The source message, source task, and source run retain `failed` unchanged.
+- The source message, source task, and source run retain their original terminal states and structured evidence unchanged (`failed/failed/failed|succeeded` for failed sources; `failed/cancelled/failed + termination_type=cancelled` for user-stopped sources).
 
 ### Capsule evidence
 
@@ -184,7 +188,7 @@ The POST body must be exactly `{}`; unknown fields return `400 conversation_reco
 - The child task uses `assignedAgent=caff-system`, `assignedRole=recovery_scribe`; the audit run uses `task_role=recovery_scribe`. These labels do not create an Agent invocation or routing identity.
 - `server/domain/roles/system-actor-catalog.ts` owns reserved non-routable IDs and sender names. Ordinary role creation/update rejects those IDs/names; participant validation rejects the actor even if a malformed role row exists.
 - Role directory/selection, `list-participants`, prompt participant lists, mention/private/handoff resolution, explicit/default target resolution, cross-conversation delivery, Goal owner, and DAG worker/verifier resolution must use routable conversation participants only. A constructed `targetAgentId=recovery_scribe` fails closed.
-- The only trigger is the manual failed-message Recovery API. The scribe cannot be addressed through normal conversation messages, private messages, handoff, Goal/DAG, or server-side delivery.
+- The only trigger is the manual Recovery API on a server-approved failed or user-stopped source. Stop settlement, startup, provider failure, timeout, and projection never invoke the scribe automatically. The scribe cannot be addressed through normal conversation messages, private messages, handoff, Goal/DAG, or server-side delivery.
 
 ### Agent prompt attribution
 
@@ -236,7 +240,10 @@ The POST body must be exactly `{}`; unknown fields return `400 conversation_reco
 | source not failed assistant | 409 `conversation_recovery_source_not_failed` |
 | conversation busy | 409 `conversation_recovery_conversation_busy`; page capability is ineligible with the same code |
 | runtime/mutation idle state cannot be inspected | 409 `conversation_recovery_state_unavailable`; page capability fails closed |
-| source task missing / not failed | 409 `conversation_recovery_source_task_missing` / `conversation_recovery_source_task_not_failed` |
+| source task missing | 409 `conversation_recovery_source_task_missing` |
+| any cancellation signal is missing or contradicts the full user-cancelled tuple | 409 `conversation_recovery_source_cancellation_mismatch`; do not fall back to failed-source recovery |
+| no cancellation signal and source task is not failed | 409 `conversation_recovery_source_task_not_failed` |
+| exact user-cancelled tuple | source classification passes with `sourceKind=user_cancelled`; all later linkage/snapshot/session gates still apply |
 | source run missing | 409 `conversation_recovery_source_run_missing` |
 | source run is failed | source run-state requirement passes |
 | historical source run is succeeded with non-empty persisted `assistantErrors[]` | source run-state requirement passes; original message/task/run remain unchanged |
@@ -244,8 +251,10 @@ The POST body must be exactly `{}`; unknown fields return `400 conversation_reco
 | message/task/run linkage mismatch | 409 `conversation_recovery_source_link_mismatch` |
 | context snapshot missing/incomplete or points elsewhere | 409 `conversation_recovery_source_snapshot_missing` / `conversation_recovery_source_snapshot_mismatch` |
 | session JSONL missing/unreadable or task/run paths disagree | 409 `conversation_recovery_source_session_missing` / `conversation_recovery_source_session_mismatch` |
-| eligible failed source on message page | `recoveryCapability.enabled=true`, `eligible=true`, empty reason fields; UI may show the manual command |
-| ineligible failed source on message page | `eligible=false` with the POST-equivalent stable reason; UI shows no command |
+| eligible failed source on message page | `recoveryCapability.enabled=true`, `eligible=true`, `sourceKind=failed`, empty reason fields; UI shows `整理失败现场` |
+| eligible user-cancelled source on message page | `enabled=true`, `eligible=true`, `sourceKind=user_cancelled`; UI shows `整理停止现场` |
+| ineligible source on message page | `eligible=false`, `sourceKind=null` with the POST-equivalent stable reason; UI shows no command |
+| capability claims eligible but sourceKind is missing/unknown | browser fails closed and shows no command |
 | first valid click | durable queued row and one scheduled job |
 | duplicate/concurrent click | same row, `duplicate=true`, no second work |
 | scribe succeeds with valid output | completed row and one persistent result message |
@@ -266,6 +275,8 @@ The POST body must be exactly `{}`; unknown fields return `400 conversation_reco
 
 ## 5. Good / Base / Bad Cases
 
+- Good: a fully linked user Stop leaves message `failed + cancelled`, task `cancelled`, and run `failed + termination_type=cancelled`; the page shows `整理停止现场`, one user click runs the no-tools scribe, and all three source rows remain unchanged.
+- Good: a progress timeout or provider error has no cancellation tuple, remains `sourceKind=failed`, and keeps the pre-existing manual failed-trace recovery behavior.
 - Good: with no Recovery/Digest/Pi thinking environment value, server composition and stale-restart recovery construction materialize Recovery Scribe `thinking=off` while the global Pi default remains empty.
 - Good: a non-empty supported startup thinking value such as `high` is preserved, while `bogus`, an unavailable persisted model, and an out-of-range timeout remain fail-closed.
 - Good: a successful `kubectl apply` toolResult is listed under completed while a later stream failure remains the failure location.
@@ -278,7 +289,8 @@ The POST body must be exactly `{}`; unknown fields return `400 conversation_reco
 - Base: a current failed message/task/run has matching snapshot/session records and receives `eligible=true` on the message page.
 - Base: a failed read has an error result and is listed as not completed.
 - Bad: accepting every `succeeded` historical run because message/task prose says failed; without non-empty persisted assistant errors, the source must remain ineligible.
-- Bad: deriving the button from `message.status=failed` in the browser or reimplementing a weaker source check in `projectMessages()`.
+- Bad: accepting a cancelled task or run termination alone, or treating cancellation prose as evidence. Any partial cancellation signal must reject instead of falling through to the broader failed-run rule.
+- Bad: deriving `sourceKind` in the browser from `metadata.cancelled`; the server inspection owns both capability and POST eligibility.
 - Bad: treating a missing write result as not executed, replaying it automatically, or changing the source message from failed to completed.
 - Bad: starting a normal Pi Agent session for the scribe and relying on prompt wording to keep default coding tools unused.
 - Bad: registering the scribe as a configurable custom role or trusting absence from the mention UI without a server-side reserved identity/target guard.
@@ -293,17 +305,41 @@ The POST body must be exactly `{}`; unknown fields return `400 conversation_reco
 - `tests/storage/system-service-config.test.js`: typed singleton upsert, full-row replacement, reopen persistence, and foreign-key integrity.
 - `tests/runtime/recovery-scribe-config.test.js`: default/persisted priority, shared digest model selection while recovery is disabled, in-flight snapshot isolation, request-override refusal, plus strict field/model/thinking/timeout validation.
 - `tests/runtime/recovery-scribe-config-ui.test.js`: system-service purpose copy, shared digest/recovery model wording, configured-catalog provenance and provider navigation without role creation, configured model/thinking controls, no-model empty state with disabled save, read-only navigation, seconds-to-ms save payload, source label, and chat SSE refresh wiring.
-- `tests/runtime/message-recovery.test.js`: same-conversation/failed/idle/source-integrity validation, duplicate clicks, task/run linkage, historical `run=succeeded + assistantErrors` compatibility without source rewrites, succeeded-run negative control, stable busy/session reason parity between capability and POST, platform actor metadata/no participant row, enable/disable validation, hot config next-request semantics, accepted-request snapshot isolation, direct no-tools invocation, provider-model output budget, one thinking-off retry for length/thinking-only/empty text, provider/429 no-retry behavior, safe attempt diagnostics without hidden thinking text, provider/invalid-output fallback, source immutability, SSE order, stale restart projection, and no-environment startup materialization of `thinking=off` with unsupported non-empty thinking and timeout controls.
+- `tests/runtime/message-recovery.test.js`: same-conversation/failed/idle/source-integrity validation, exact user-cancelled tuple acceptance, partial/contradictory cancellation rejection, timeout/provider failed-source controls, ordinary success and queued-cancel negatives, duplicate clicks, task/run linkage, historical `run=succeeded + assistantErrors` compatibility without source rewrites, stable busy/session reason parity between capability and POST, platform actor metadata/no participant row, enable/disable validation, hot config next-request semantics, accepted-request snapshot isolation, direct no-tools invocation, provider-model output budget, one thinking-off retry for length/thinking-only/empty text, provider/429 no-retry behavior, safe attempt diagnostics without hidden thinking text, provider/invalid-output fallback, source immutability, SSE order, stale restart projection, and no-environment startup materialization of `thinking=off` with unsupported non-empty thinking and timeout controls.
 - `tests/runtime/cross-conversation-delivery-wiring.test.js`: both server-composition paths clear Recovery/Digest/Pi runtime defaults around construction so ambient shell configuration cannot mask the no-environment startup contract.
 - `tests/http/recovery-scribe-config-controller.test.js`: loopback/Host/Origin/CSRF guard, safe GET/PUT projection, and global config-updated event.
 - `tests/http/message-recovery-controller.test.js`: exact `{}` body, 202 response, and pass-through of the canonical message-page recovery/capability projection.
-- `tests/ui/message-recovery.test.js`: eligible failed-card action, queued/running/completed/failed states, server-reason ineligible state, missing-capability fail-closed behavior, source provenance, non-execution declaration, stable touch geometry, and no retry/continue/source-state rewrite.
+- `tests/runtime/agent-executor-hook.test.js` plus the Pi runtime cancellation tests lock the producer side: a real Stop cancels the active handle, message metadata stores the exact non-eligible cancelled invocation projection, task becomes cancelled, and the run persists `termination_type=cancelled`.
+- `tests/ui/message-recovery.test.js`: eligible failed-card and user-stopped-card actions, source-kind labels, unknown/missing source-kind fail closed, queued/running/completed/failed states, server-reason ineligible state, missing-capability fail-closed behavior, source provenance, non-execution declaration, stable touch geometry, and no retry/continue/source-state rewrite.
 - `tests/runtime/turn-orchestrator.test.js`: one bounded source lookup, source Agent/run attribution for an old failed assistant, invalid-source fail-safe labeling, and refusal to trust recovery metadata provenance.
 - `tests/runtime/runtime-role-resolution.test.js`, `initial-target-resolution.test.js`, `cross-conversation-delivery.test.js`, and `session-goal-owner.test.js`: reserved identity/name, role directory/participant, mention/private/default/explicit target, delivery, and Goal owner refusal.
 - `tests/dag/dag-scheduler.test.js`: the system actor is never selected as worker or verifier.
 - The runtime/storage/http/UI files above are registered in `package.json` `test:fast`; `tests/dag/dag-scheduler.test.js` runs through `test:dag-execution`. Build, check, typecheck, targeted tests, smoke, and isolated browser verification remain release gates.
 
 ## 7. Wrong vs Correct
+
+### Wrong
+
+```ts
+if (task.status === 'cancelled' || run.termination_type === 'cancelled') {
+  return { eligible: true, sourceKind: 'user_cancelled' };
+}
+```
+
+A system/queued/partial cancellation can then borrow user-stop authority, and a contradictory message may fall through to failed-source recovery.
+
+### Correct
+
+```ts
+const hasAnyCancellationSignal = messageCancelled || invocationCancelled
+  || taskCancelled || runCancelled;
+if (hasAnyCancellationSignal && !hasExactUserCancelledTuple) {
+  return unavailable('conversation_recovery_source_cancellation_mismatch');
+}
+const sourceKind = hasExactUserCancelledTuple ? 'user_cancelled' : 'failed';
+```
+
+The exact tuple is checked before the failed-source branch, and one inspection owns both capability and POST.
 
 ### Wrong
 

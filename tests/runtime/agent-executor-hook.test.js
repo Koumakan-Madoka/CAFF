@@ -99,6 +99,24 @@ function createFailedRunHandle(error) {
   return handle;
 }
 
+function createUserCancelledRunHandle() {
+  const handle = new EventEmitter();
+  handle.runId = 'run-user-cancelled';
+  handle.sessionPath = '';
+  handle.resultPromise = new Promise((_resolve, reject) => {
+    handle.cancel = (reason) => {
+      const error = new Error(String(reason || 'Stopped by user'));
+      error.runId = handle.runId;
+      error.terminationReason = {
+        type: 'cancelled',
+        message: String(reason || 'Stopped by user'),
+      };
+      reject(error);
+    };
+  });
+  return handle;
+}
+
 function createCompletableRunHandle() {
   const handle = new EventEmitter();
   handle.runId = 'run-bridge-auto-final';
@@ -348,6 +366,108 @@ test('agent executor persists structured provider failure metadata on failed rep
     terminationType: '',
     summary: '402: insufficient quota',
   });
+});
+
+test('agent executor persists the structured message and task evidence for a user stop', async (t) => {
+  const tempDir = withTempDir('caff-agent-executor-user-stop-');
+  const minimalPiPath = require.resolve('../../build/lib/minimal-pi');
+  const agentExecutorPath = require.resolve('../../build/server/domain/conversation/turn/agent-executor');
+  const turnStatePath = require.resolve('../../build/server/domain/conversation/turn/turn-state');
+  const turnStopPath = require.resolve('../../build/server/domain/conversation/turn/turn-stop');
+  const minimalPi = require(minimalPiPath);
+  const originalStartRun = minimalPi.startRun;
+  const handle = createUserCancelledRunHandle();
+
+  minimalPi.startRun = () => handle;
+  delete require.cache[agentExecutorPath];
+
+  t.after(() => {
+    minimalPi.startRun = originalStartRun;
+    delete require.cache[agentExecutorPath];
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const { createAgentExecutor } = require(agentExecutorPath);
+  const { createTurnState } = require(turnStatePath);
+  const { createTurnStopper } = require(turnStopPath);
+  const agent = {
+    id: 'agent-user-stop',
+    name: 'User Stop',
+    description: 'Tests user-stop evidence.',
+    personaPrompt: 'Be brief.',
+  };
+  const conversation = {
+    id: 'conversation-user-stop',
+    title: 'User stop',
+    type: 'standard',
+    agents: [agent],
+    metadata: {},
+  };
+  const store = createFakeStore(conversation);
+  const taskUpdates = [];
+  const runStore = {
+    ...createFakeRunStore(),
+    updateTask(taskId, updates) {
+      taskUpdates.push({ taskId, updates });
+    },
+  };
+  const executor = createAgentExecutor({
+    store,
+    skillRegistry: { resolveSkills: () => [] },
+    modeStore: { get: () => null },
+    agentToolBridge: createFakeAgentToolBridge(),
+    agentDir: tempDir,
+    sqlitePath: path.join(tempDir, 'chat.sqlite'),
+    toolBaseUrl: 'http://127.0.0.1:3100',
+    agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+  });
+  const turnState = createTurnState(conversation, 'turn-user-stop');
+  const stopTurn = createTurnStopper({
+    activeTurns: new Map([[conversation.id, turnState]]),
+  });
+
+  const execution = executor.executeConversationAgent({
+    runStore,
+    conversationId: conversation.id,
+    turnId: turnState.turnId,
+    rootTaskId: 'root-task-user-stop',
+    conversation,
+    promptMessages: [{ role: 'user', content: 'Start work, then stop.' }],
+    promptUserMessage: { id: 'user-message-stop', role: 'user', content: 'Start work, then stop.' },
+    queueItem: { triggerType: 'user', enqueueReason: 'user_mentions' },
+    agent,
+    turnState,
+    completedReplies: [],
+    failedReplies: [],
+    routingMode: 'mention_queue',
+    hop: 1,
+    remainingSlots: 0,
+    enqueueAgent() {},
+    allowHandoffs: true,
+    finalStopsTurn: true,
+    projectDir: tempDir,
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  stopTurn(conversation.id, 'Stopped by user');
+  const result = await execution;
+
+  assert.equal(result.stopTurn, true);
+  assert.equal(result.terminationReason, 'stopped_by_user');
+  const failedMessage = store.messageWrites.updates.find(({ patch }) => patch.status === 'failed');
+  assert.ok(failedMessage);
+  assert.equal(failedMessage.patch.metadata.cancelled, true);
+  assert.deepEqual(failedMessage.patch.metadata.invocationFailure, {
+    kind: 'cancelled',
+    code: 'cancelled',
+    eligible: false,
+    terminationType: 'cancelled',
+    summary: 'Stopped by user',
+  });
+  const terminalTask = taskUpdates.find(({ updates }) => updates.status === 'cancelled');
+  assert.ok(terminalTask);
+  assert.equal(terminalTask.updates.runId, 'run-user-cancelled');
 });
 
 test('agent executor keeps the stage running while a stuck tool is recovered', async (t) => {
