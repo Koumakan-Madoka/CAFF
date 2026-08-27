@@ -122,13 +122,25 @@ All shared-state suites ran serially with system Node.
 - No schema, dependency, provider/model, credential, timeout, Stop semantics,
   routing identity, or source lifecycle changes.
 
-## Pending Gates
+## Review, Acceptance, And Integration
 
-- Freeze and commit the candidate.
-- Obtain independent commit-pinned review of the exact SHA.
-- Run exact-SHA isolated acceptance with a real active user Stop, manual button
-  click, completed no-tools scribe, restart projection, negative controls,
-  isolated port/SQLite/agentDir/uploads/temp/logs/credentials, and external
-  delivery disabled.
-- User acceptance and explicit merge authorization remain required before any
-  PR merge to develop.
+- Independent commit-pinned review approved original candidate
+  `603c7012d99b36d0b2d0c12b614fb605fdd7ce8e` with no findings.
+- Isolated port 3243 acceptance exercised a real user Stop followed by the
+  explicit `整理停止现场` action using `deepseek/deepseek-v4-flash`. The call
+  completed in 5.7 seconds with `fallbackUsed=false`, no tools, a non-routable
+  `recovery_scribe` actor, unchanged source message/task/run records, and one
+  durable result after restart. SQLite integrity and foreign-key checks passed,
+  external delivery was disabled, temporary credentials were removed, and
+  production 3100 was not touched.
+- After `develop` advanced through PR #113, combination candidate
+  `e024e379762bf1a66cfae6f57379f7ba8e67346f` retained the exact stable
+  functional patch. Its Recovery production files remained byte-identical to
+  the accepted candidate, focused combination regression passed, and an
+  independent commit-pinned review approved the exact SHA with no findings.
+- User acceptance and merge-commit authorization were recorded. PR #114 passed
+  both `unit` CI jobs and merged as
+  `0de6a3dbab9daa074097243a7bc8439a8b9bbdc5`, whose parents are current
+  `develop@4442887b` and `e024e379`. Merge tree
+  `d065a5e29dbf4f6b55058db8efdea34329f2c64e` is byte-identical to the approved
+  combination candidate tree.

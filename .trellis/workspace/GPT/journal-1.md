@@ -668,3 +668,66 @@ Fixed the no-environment Recovery Scribe startup regression, verified the exact 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 15: Allow Recovery Scribe for user-stopped traces
+
+**Date**: 2026-08-27
+**Task**: Allow Recovery Scribe for user-stopped traces
+**Branch**: `room/c2fab452-caff-bug-bug`
+
+### Summary
+
+Allowed users to manually invoke Recovery Scribe for evidence-consistent user-stopped traces, retained failed-trace recovery and all existing gates, completed independent review and real DeepSeek V4 Flash acceptance, and merged PR #114 into develop with a tree-identical merge commit.
+
+### Main Changes
+
+| Area | Result |
+|------|--------|
+| Root cause | A real user Stop persisted assistant `failed` cancellation metadata, task `cancelled`, and run `failed + termination_type=cancelled`, but source inspection rejected the task before classifying the structured tuple. The old failed fallback also accepted some partial cancellation evidence. |
+| Domain fix | Added the closed source kind `failed | user_cancelled`; any cancellation signal is absorbing, and only the complete message/task/run tuple can become `user_cancelled`. Projection and POST share the same inspection. |
+| UI and lifecycle | Timeline renders `整理停止现场` only for a server-approved user-cancelled capability and keeps `整理失败现场` for failed traces. Recovery remains explicit, durable, idempotent, no-tools, non-routable, and leaves source records unchanged. |
+| Regression coverage | Added real SQLite reproduction, producer-chain, HTTP, UI, restart, capsule, storage, failed compatibility, and complete negative-matrix coverage. Specs now define executable backend/runtime/frontend/unit-test contracts. |
+| Automated validation | Focused suites, check, typecheck, build, smoke 75/75, DAG execution 78/78, and security/diff checks passed. Complete serial fast traversal recorded only two existing Windows EPERM cleanup failures and four skips. |
+| Review and acceptance | Independent review approved original `603c7012` and post-drift combination `e024e379` with no findings. Isolated port 3243 passed real Stop -> manual `deepseek/deepseek-v4-flash` scribe -> restart with fallback false, no tools, non-routable output, unchanged sources, SQLite integrity, and external delivery disabled. |
+| Integration | PR #114 passed both unit CI jobs and merged as `0de6a3db`; merge tree `d065a5e2` is byte-identical to approved candidate `e024e379`. |
+| Production boundary | Production 3100 was not deployed, restarted, reconfigured, or given task-owned database or external-delivery side effects. |
+
+**Primary files**:
+- `server/domain/conversation/message-recovery.ts`
+- `public/chat/message-timeline.js`
+- `public/personas/recovery-scribe-management.js`
+- `tests/runtime/message-recovery.test.js`
+- `tests/runtime/agent-executor-hook.test.js`
+- `tests/ui/message-recovery.test.js`
+- `.trellis/spec/backend/message-recovery.md`
+- `.trellis/spec/runtime/agent-runtime.md`
+- `.trellis/spec/frontend/ui-structure.md`
+- `.trellis/spec/unit-test/runtime-tests.md`
+
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `603c7012d99b36d0b2d0c12b614fb605fdd7ce8e` | fix(conversation): allow recovery for user-stopped traces |
+| `e024e379762bf1a66cfae6f57379f7ba8e67346f` | Merge current origin/develop into the reviewed room candidate |
+| `0de6a3dbab9daa074097243a7bc8439a8b9bbdc5` | Merge pull request #114 from Koumakan-Madoka/room/c2fab452-caff-bug-bug |
+
+### Testing
+
+- [OK] Baseline real SQLite and UI regressions reproduced the exact user-stop rejection, partial-cancellation false positives, wrong stop label, and unknown-kind action.
+- [OK] Focused Recovery/runtime/HTTP/UI/storage/capsule/routing/restart suites passed; combined post-PR #113 focused batch passed 85/85.
+- [OK] `npm run check`, `npm run typecheck`, and `npm run build` passed on the exact reviewed combination candidate.
+- [OK] Smoke passed 75/75; DAG execution passed 78/78; complete serial fast traversal recorded 841 pass, two existing Windows EPERM cleanup failures, and four skips.
+- [OK] Independent commit-pinned reviews approved `603c7012` and `e024e379` with no findings.
+- [OK] Isolated port 3243 real Stop -> DeepSeek V4 Flash manual scribe -> restart acceptance passed with no tools, non-routable output, unchanged source records, SQLite integrity, and external delivery disabled.
+- [OK] PR #114 passed both unit CI jobs; merge commit `0de6a3db` has tree `d065a5e2`, byte-identical to the approved candidate.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

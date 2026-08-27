@@ -81,24 +81,24 @@ never reconstructs cancellation eligibility from message metadata.
 
 ## Acceptance Criteria
 
-- [ ] A real SQLite fixture reproduces the current manual-stop projection and
+- [x] A real SQLite fixture reproduces the current manual-stop projection and
       POST rejection `conversation_recovery_source_task_not_failed` before the
       production fix.
-- [ ] Red tests cover the consistent user-stop success path, failed-source
+- [x] Red tests cover the consistent user-stop success path, failed-source
       compatibility, and the complete negative matrix above.
-- [ ] Projection and POST use one source classifier and return the same source
+- [x] Projection and POST use one source classifier and return the same source
       kind/reason outcome.
-- [ ] UI offers `整理停止现场` only for server-approved user-cancelled sources and
+- [x] UI offers `整理停止现场` only for server-approved user-cancelled sources and
       preserves `整理失败现场` for failed traces.
-- [ ] Recovery remains manual, no-tools, non-routable, idempotent, and leaves
+- [x] Recovery remains manual, no-tools, non-routable, idempotent, and leaves
       all source records unchanged.
-- [ ] Focused runtime, HTTP, UI, storage, capsule, delivery/routing, restart,
+- [x] Focused runtime, HTTP, UI, storage, capsule, delivery/routing, restart,
       Stop, smoke, check, typecheck, build, and complete serial regressions pass
       or any unrelated baseline failures are recorded precisely.
-- [ ] Backend/runtime/frontend/unit-test specs contain executable signatures,
+- [x] Backend/runtime/frontend/unit-test specs contain executable signatures,
       contracts, matrix entries, Good/Base/Bad cases, and test points.
-- [ ] A frozen exact SHA receives independent commit-pinned approval.
-- [ ] The exact reviewed SHA passes isolated manual Stop -> optional scribe ->
+- [x] A frozen exact SHA receives independent commit-pinned approval.
+- [x] The exact reviewed SHA passes isolated manual Stop -> optional scribe ->
       restart acceptance with isolated port/SQLite/agentDir/logs/credentials and
       external delivery disabled; production 3100 remains untouched.
 
