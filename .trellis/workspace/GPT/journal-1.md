@@ -560,3 +560,56 @@ Upgraded the audited PI package family to 0.84.3, added exact stream_read_error 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 13: PI 0.84.3 expected-completion abort regression
+
+**Date**: 2026-08-27
+**Task**: PI 0.84.3 expected-completion abort regression
+**Branch**: `room/c2fab452-caff-bug-bug`
+
+### Summary
+
+(Add summary)
+
+### Main Changes
+
+| Area | Result |
+|------|--------|
+| Runtime | `complete()` now ignores only assistant output causally after `expected_completion`; cancellation, watchdogs, timeouts, pre-completion provider errors, and exact `stream_read_error` behavior remain authoritative. |
+| Trace | Successful persisted settlement suppresses only the child-session abort-tail failure projection while retaining raw PI diagnostics. |
+| Regression evidence | Red-first runtime and trace regressions, focused 128/128 combination suite, local full suite, smoke/mode/DAG suites, and independent commit-pinned review passed. |
+| Acceptance | Isolated 3238 exposed and then verified the trace repair; isolated 3239 verified exact combination SHA `db338a73` across real send-public, UI, SSE, SQLite, usage, status, and trace. |
+| Integration | User accepted and authorized merge. PR #106 merged as `798cf94`; parents are `6c321022` + `db338a73`, and merge tree `e0624f5c` equals the accepted candidate tree. |
+| CI baseline | Two PR #106 unit runs reproduced the exact pre-existing PR #107 Linux failure in `cross-conversation-delivery-wiring.test.js` (`Recovery scribe runtime defaults are invalid`); this task has no diff in that test or config file. Evidence was recorded on PR #106 before merge. |
+| Boundaries | Historical run 10437 was not rewritten. Production port 3100 was not deployed, restarted, or reconfigured. The upstream PI draft remains unpublished. |
+
+**Primary files**:
+- `lib/pi-runtime.ts`
+- `server/domain/runtime/message-tool-trace.ts`
+- `tests/runtime/pi-runtime.test.js`
+- `tests/runtime/message-tool-trace.test.js`
+- `.trellis/spec/runtime/agent-runtime.md`
+- `.trellis/spec/unit-test/runtime-tests.md`
+
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `d12d6fe318dbde08ad0413c60ecf65f87dfa0388` | (see git log) |
+| `045542f6f1e36790a1356301eca0194a88c9abdf` | (see git log) |
+| `db338a73387cc43fac9b65cd4ef2662ba80ad8c1` | (see git log) |
+| `798cf94a87e9191c46fca2384b5bb572daaec810` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
