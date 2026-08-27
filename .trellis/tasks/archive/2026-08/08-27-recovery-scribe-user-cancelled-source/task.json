@@ -3,7 +3,7 @@
   "name": "recovery-scribe-user-cancelled-source",
   "title": "Recovery Scribe user-cancelled source eligibility",
   "description": "Allow user-initiated Recovery Scribe only for evidence-consistent user-cancelled traces while preserving failed-trace recovery and all fail-closed guards.",
-  "status": "review",
+  "status": "completed",
   "dev_type": "fullstack",
   "scope": "backend-runtime-frontend",
   "package": null,
@@ -11,27 +11,14 @@
   "creator": "GPT",
   "assignee": "GPT",
   "createdAt": "2026-08-27",
-  "completedAt": null,
+  "completedAt": "2026-08-27",
   "branch": "room/c2fab452-caff-bug-bug",
   "base_branch": "develop",
   "worktree_path": "E:/pythonproject/worktrees/room/c2fab452-caff-bug-bug",
-  "current_phase": 2,
-  "next_action": [
-    {
-      "phase": 3,
-      "action": "independent-review"
-    },
-    {
-      "phase": 4,
-      "action": "isolated-acceptance"
-    },
-    {
-      "phase": 5,
-      "action": "merge-after-user-authorization"
-    }
-  ],
-  "commit": null,
-  "pr_url": null,
+  "current_phase": 5,
+  "next_action": [],
+  "commit": "e024e379762bf1a66cfae6f57379f7ba8e67346f",
+  "pr_url": "https://github.com/Koumakan-Madoka/CAFF/pull/114",
   "subtasks": [],
   "children": [],
   "parent": null,
@@ -50,9 +37,13 @@
     ".trellis/spec/unit-test/runtime-tests.md",
     ".trellis/spec/guides/cross-layer-thinking-guide.md"
   ],
-  "notes": "Implementation and complete serial author validation are complete. Candidate review and exact-SHA isolated acceptance remain pending; production 3100 was not touched.",
+  "notes": "Original candidate 603c7012 passed complete serial validation and independent commit-pinned review. Isolated port 3243 acceptance passed a real user Stop -> manual deepseek/deepseek-v4-flash Recovery Scribe -> restart flow with fallback=false, no tools, non-routable output, unchanged source records, SQLite integrity, and external delivery disabled. After develop drift, combination candidate e024e379 preserved the exact functional patch, passed focused regression and independent review, and merged through PR #114 as 0de6a3db with a tree byte-identical to the approved candidate. Production 3100 was not touched.",
   "meta": {
     "baseSha": "e2bff2fd7332c0b97d908cadf09e43490d5c2554",
+    "originalCandidateSha": "603c7012d99b36d0b2d0c12b614fb605fdd7ce8e",
+    "integrationCandidateSha": "e024e379762bf1a66cfae6f57379f7ba8e67346f",
+    "mergeSha": "0de6a3dbab9daa074097243a7bc8439a8b9bbdc5",
+    "mergeTree": "d065a5e29dbf4f6b55058db8efdea34329f2c64e",
     "productionPortTouched": false
   }
 }
