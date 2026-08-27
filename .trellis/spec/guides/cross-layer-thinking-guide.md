@@ -129,6 +129,29 @@ Create detailed flow docs when:
 - Data format is complex
 - Feature has caused bugs before
 
+## Structured Terminal Evidence Expansion
+
+When a consumer broadens eligibility from one terminal state to another (for
+example, failed traces plus user-cancelled traces), treat the producer's
+structured evidence as one cross-layer tuple rather than independent booleans.
+
+### Checklist
+
+- [ ] Trace the exact producer writes for message, task, run, event, and metadata.
+- [ ] Define the complete accepted tuple before changing the consumer.
+- [ ] If any signal from the new tuple appears, make partial or contradictory
+      evidence fail closed instead of falling through to an older broader rule.
+- [ ] Keep one domain classifier authoritative for action-time validation and
+      read-time capability projection.
+- [ ] Project a closed source-kind enum for UI wording; missing/unknown kinds
+      must not create an action.
+- [ ] Test producer settlement, real persistence, consumer classification,
+      negative tuple permutations, source immutability, and restart projection.
+
+**Why**: changing only `task.status` or a UI status check can either block a
+legitimate terminal path or let unrelated system/provider cancellation borrow
+user authority. The tuple and its absorbing mismatch rule prevent both errors.
+
 ## Completed-Stage Display During Blocking Post-Reply Work
 
 **Pattern**: When a completed stage (main turn or side slot) is waiting on blocking post-reply work (e.g., digest generation), the UI must not fall back to a clipped `preview`, and the completed message should be broadcast before the post-reply hook blocks routing.

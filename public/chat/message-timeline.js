@@ -227,6 +227,11 @@
         ? message.recoveryCapability
         : null;
       const isRecoveryResult = Boolean(metadata.recoveryResult);
+      const recoverySourceKind = recoveryCapability
+        ? String(recoveryCapability.sourceKind || '').trim()
+        : '';
+      const hasSupportedRecoverySourceKind = recoverySourceKind === 'failed'
+        || recoverySourceKind === 'user_cancelled';
       const isFailedSource = Boolean(
         message
         && message.role === 'assistant'
@@ -238,15 +243,21 @@
         && recoveryCapability
         && recoveryCapability.enabled === true
         && recoveryCapability.eligible === true
+        && hasSupportedRecoverySourceKind
+      );
+      const hasVisibleRecoveryCapability = Boolean(
+        recoveryCapability
+        && (recoveryCapability.eligible !== true || hasSupportedRecoverySourceKind)
       );
       panel.textContent = '';
-      panel.hidden = !isRecoveryResult && !recovery && !recoveryCapability;
+      panel.hidden = !isRecoveryResult && !recovery && !hasVisibleRecoveryCapability;
       panel.className = isRecoveryResult
         ? 'message-recovery-panel message-recovery-provenance'
         : 'message-recovery-panel';
 
       if (isRecoveryResult) {
         const fallbackUsed = Boolean(metadata.fallbackUsed);
+        const isUserCancelledResult = metadata.sourceKind === 'user_cancelled';
         const kindBadge = document.createElement('span');
         kindBadge.className = `message-recovery-status ${fallbackUsed ? 'failed' : 'success'}`;
         kindBadge.textContent = fallbackUsed ? '系统书记 · 机械摘要' : '系统书记 · 现场整理';
@@ -267,11 +278,16 @@
         locateSource.type = 'button';
         locateSource.className = 'message-recovery-locate ghost-button';
         locateSource.textContent = '定位来源';
-        locateSource.title = '滚动到被整理的失败消息';
+        locateSource.title = isUserCancelledResult
+          ? '滚动到被整理的停止消息'
+          : '滚动到被整理的失败消息';
         locateSource.addEventListener('click', (event) => {
           event.preventDefault();
           event.stopPropagation();
-          focusTimelineMessage(metadata.sourceMessageId, '被整理的失败消息当前不在时间线中。');
+          focusTimelineMessage(
+            metadata.sourceMessageId,
+            isUserCancelledResult ? '被整理的停止消息当前不在时间线中。' : '被整理的失败消息当前不在时间线中。'
+          );
         });
 
         panel.append(kindBadge, refs, note, locateSource);
@@ -301,7 +317,9 @@
             locateResult.type = 'button';
             locateResult.className = 'message-recovery-locate ghost-button';
             locateResult.textContent = '查看整理结果';
-            locateResult.title = '滚动到这条失败消息的现场整理结果';
+            locateResult.title = recoverySourceKind === 'user_cancelled'
+              ? '滚动到这条停止消息的现场整理结果'
+              : '滚动到这条失败消息的现场整理结果';
             locateResult.addEventListener('click', (event) => {
               event.preventDefault();
               event.stopPropagation();
@@ -320,11 +338,15 @@
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'message-recovery-button ghost-button';
-      button.textContent = '整理失败现场';
+      button.textContent = recoverySourceKind === 'user_cancelled'
+        ? '整理停止现场'
+        : '整理失败现场';
       button.disabled = Boolean(recovery) || recoveryRequestMessageIds.has(message.id);
       button.title = recovery
-        ? '失败现场已进入整理流程'
-        : '生成只读、脱敏的失败现场摘要；不会重试或继续原任务';
+        ? '现场已进入整理流程'
+        : recoverySourceKind === 'user_cancelled'
+          ? '生成只读、脱敏的停止现场摘要；不会重试或继续原任务'
+          : '生成只读、脱敏的失败现场摘要；不会重试或继续原任务';
       button.addEventListener('click', async () => {
         if (button.disabled || typeof recoverFailedMessage !== 'function') {
           return;

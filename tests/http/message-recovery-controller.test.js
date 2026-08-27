@@ -82,6 +82,7 @@ function createHarness(t) {
           eligible: true,
           reasonCode: '',
           reason: '',
+          sourceKind: 'failed',
           systemActorType: 'recovery_scribe',
           routable: false,
         },
@@ -142,6 +143,7 @@ test('message page includes the canonical recovery projection on its failed sour
     eligible: true,
     reasonCode: '',
     reason: '',
+    sourceKind: 'failed',
     systemActorType: 'recovery_scribe',
     routable: false,
   });

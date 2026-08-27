@@ -114,6 +114,7 @@ function failedMessage(recovery = null) {
       eligible: true,
       reasonCode: '',
       reason: '',
+      sourceKind: 'failed',
       systemActorType: 'recovery_scribe',
       routable: false,
     },
@@ -135,6 +136,58 @@ test('failed assistant card exposes one manual recovery command and applies queu
   const card = context.document.querySelector('[data-message-id="failed-message"]');
   assert.equal(card.querySelector('.message-recovery-button').disabled, true);
   assert.match(card.querySelector('.message-recovery-status').textContent, /等待整理/u);
+});
+
+test('user-cancelled assistant card uses the optional stop-scene action label', async () => {
+  const context = bootTimeline([{
+    ...failedMessage(),
+    metadata: {
+      failure: true,
+      cancelled: true,
+      invocationFailure: {
+        kind: 'cancelled',
+        code: 'cancelled',
+        eligible: false,
+        terminationType: 'cancelled',
+      },
+    },
+    recoveryCapability: {
+      enabled: true,
+      eligible: true,
+      reasonCode: '',
+      reason: '',
+      sourceKind: 'user_cancelled',
+      systemActorType: 'recovery_scribe',
+      routable: false,
+    },
+  }]);
+  const button = context.document.querySelector('.message-recovery-button');
+
+  assert.ok(button);
+  assert.equal(button.textContent, '整理停止现场');
+  button.click();
+  await new Promise((resolve) => context.window.setTimeout(resolve, 0));
+  assert.deepEqual(context.recoveryCalls, [{ conversationId: 'conversation-1', messageId: 'failed-message' }]);
+});
+
+test('eligible capability with a missing or unknown source kind fails closed in the browser', () => {
+  for (const sourceKind of [undefined, 'system_cancelled']) {
+    const capability = {
+      enabled: true,
+      eligible: true,
+      reasonCode: '',
+      reason: '',
+      systemActorType: 'recovery_scribe',
+      routable: false,
+      ...(sourceKind === undefined ? {} : { sourceKind }),
+    };
+    const context = bootTimeline([{
+      ...failedMessage(),
+      recoveryCapability: capability,
+    }]);
+
+    assert.equal(context.document.querySelector('.message-recovery-button'), null);
+  }
 });
 
 test('recovery state labels are canonical and terminal states never offer retry', () => {

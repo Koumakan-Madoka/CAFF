@@ -115,13 +115,17 @@ mocked result alone:
   expected-completion event. Both must retain `failureContext.hasFailure=true`.
   Do not match the session error string in the production projection.
 
-## Failed-Message Recovery Eligibility Guards
+## Failed And User-Stopped Message Recovery Eligibility Guards
 
-- Use a real temporary `ChatAppStore` plus `SqliteRunStore`, a real context-detail row, and a real session JSONL. Projection-only mocks cannot prove source linkage or historical run compatibility.
+- Use a real temporary `ChatAppStore` plus `SqliteRunStore`, a real context-detail row, and a real session JSONL. Projection-only mocks cannot prove source linkage, historical run compatibility, or the user-stop tuple.
+- Seed an exact active user-stop source: assistant message `status=failed`, `metadata.cancelled=true`, invocation failure `kind/code/terminationType=cancelled` with `eligible=false`, task `status=cancelled`, run `status=failed + termination_type=cancelled`, and matching message/task/run/session/snapshot IDs. The pre-fix red must project/throw `conversation_recovery_source_task_not_failed`; the green must project `sourceKind=user_cancelled`, accept one explicit POST, run no tools, and leave all source rows unchanged.
+- Test the runtime producer separately through `createTurnStopper -> handle.cancel -> agent-executor catch`; assert the exact message metadata and task terminal state. Keep Pi runtime cancellation-precedence tests for the persisted run termination evidence.
+- Cancellation evidence is an absorbing negative matrix. Cover message-only, task/run-only, run-only, eligible-cancelled invocation, link mismatch, missing run (queued cancellation), missing snapshot, and missing session. Every partial/contradictory tuple must use the stable mismatch or existing missing-integrity reason and create no recovery row/job.
+- Pair cancellation negatives with positive failed-source controls: progress/watchdog timeout and provider abort/error remain recoverable as `sourceKind=failed` when they carry no cancellation signal. Also keep ordinary completed message/task/run ineligible.
 - Seed the historical divergence exactly: message `failed`, task `failed`, run `succeeded`, and persisted non-empty `assistant_errors_json`. Assert both message-page capability and POST accept it, then run the background job and compare all three source rows before/after; the succeeded run must not be rewritten.
 - Pair it with a negative control whose succeeded run has `assistant_errors_json=[]`. Assert `eligible=false`, `reasonCode=conversation_recovery_source_run_not_failed`, POST returns the same code, and no recovery task/job exists.
 - Cover transient and durable refusal separately: busy runtime state projects/throws `conversation_recovery_conversation_busy`; missing session file projects/throws `conversation_recovery_source_session_missing`. The message page and POST must use the same domain inspection rather than mirrored conditions.
-- UI fixtures must carry the server capability. Show the command only for `enabled=true && eligible=true`; render the bounded server reason for ineligible sources; hide the command when capability is absent so a stale/older payload fails closed.
+- UI fixtures must carry the server capability and closed `sourceKind`. Show `整理失败现场` only for `enabled=true && eligible=true && sourceKind=failed`, and `整理停止现场` only for the corresponding `user_cancelled` kind. Render the bounded server reason for ineligible sources; missing capability and missing/unknown source kind fail closed.
 
 ## System Model Output Budget And Fallback Guards
 

@@ -666,6 +666,80 @@ const invocationFailure = classifyAgentInvocationFailure(error, { stopRequested 
 store.updateMessage(messageId, { metadata: { ...metadata, invocationFailure } });
 ```
 
+## Recovery Eligibility Evidence For User Stop
+
+### 1. Scope / Trigger
+
+- Trigger: `agent-executor` settles an active Agent reply after the user invokes the conversation Stop path, and Recovery later inspects that source.
+- This contract does not change Pi cancellation, task settlement, or queue cancellation. It defines which persisted runtime evidence may authorize the separate manual scribe action.
+
+### 2. Signatures
+
+```ts
+message.status = 'failed';
+message.metadata.cancelled = true;
+message.metadata.invocationFailure = {
+  kind: 'cancelled',
+  code: 'cancelled',
+  eligible: false,
+  terminationType: 'cancelled',
+  summary: string,
+};
+task.status = 'cancelled';
+run.status = 'failed';
+run.termination_type = 'cancelled';
+
+recoveryCapability.sourceKind = 'failed' | 'user_cancelled' | null;
+```
+
+### 3. Contracts
+
+- `requestStopConversationExecution/requestStopConversationTurn` marks the active turn stopped and calls the registered run handle's `cancel(reason)`; it does not invoke Recovery Scribe.
+- Pi persists the cancelled run as failed with `termination_type=cancelled`. The executor independently persists the failed assistant cancellation projection and changes the linked task to cancelled.
+- Recovery may classify `user_cancelled` only when all exact fields above and message/task/run IDs agree. Error prose, `stopReason=aborted`, one cancelled row, queued waiter cancellation, or a provider/watchdog termination is insufficient.
+- Once any structured cancellation signal appears, partial or contradictory evidence rejects with `conversation_recovery_source_cancellation_mismatch`; it cannot fall through to ordinary failed-source recovery.
+- The later manual scribe creates only its existing direct no-tools child run. It does not resume the cancelled Agent session or alter the source run/task/message.
+
+### 4. Validation & Error Matrix
+
+| Runtime evidence | Recovery classification |
+| --- | --- |
+| exact active user Stop tuple | `user_cancelled` |
+| task/run cancelled but no assistant cancellation metadata | mismatch, ineligible |
+| assistant cancellation metadata but task failed/run provider error | mismatch, ineligible |
+| queued side waiter cancelled before an assistant run exists | missing run, ineligible |
+| progress/heartbeat/run timeout with task failed | existing `failed` source path |
+| provider assistant error/abort with task failed | existing `failed` source path |
+| successful expected completion | no failed assistant source capability |
+
+### 5. Good / Base / Bad Cases
+
+- Good: Stop races an active run; cancellation remains authoritative, all producer fields agree, and a later user click can request one read-only scribe.
+- Base: a provider error has `invocationFailure.kind=provider` and remains a normal failed source even when its prose contains `abort`.
+- Bad: classifying `run.termination_type=cancelled` alone as user intent, or automatically calling Recovery from the Stop handler.
+
+### 6. Tests Required
+
+- `tests/runtime/agent-executor-hook.test.js` runs `createTurnStopper -> handle.cancel -> agent-executor catch` and asserts exact message metadata plus task cancelled state.
+- `tests/runtime/pi-runtime.test.js` keeps user cancellation authoritative across ordinary abort-tail and tool-recovery races, and asserts persisted run termination type.
+- `tests/runtime/message-recovery.test.js` uses real SQLite source rows to prove the exact tuple, partial-evidence refusal, failed-source controls, source immutability, manual scheduling, no-tools execution, and restart projection.
+- Turn orchestrator Stop, side-dispatch cancellation, Goal, and smoke suites remain regression gates; queued cancellation must not gain a recovery action.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```ts
+if (terminationType === 'cancelled') scheduleRecoveryScribe();
+```
+
+#### Correct
+
+```ts
+handle.cancel(stopReason); // Settle and persist the original user Stop only.
+// A later explicit Recovery POST revalidates the complete persisted tuple.
+```
+
 ## Platform System Actors
 
 - `server/domain/roles/system-actor-catalog.ts` is the single source of truth for platform-owned identities that are not conversation Agents. `recovery_scribe` is the first such actor.
