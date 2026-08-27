@@ -167,7 +167,7 @@ The POST body must be exactly `{}`; unknown fields return `400 conversation_reco
 | tool record | 1,600 bytes |
 | Capsule | 64 KiB |
 | scribe prompt | 72 KiB |
-| scribe output | 8,000 chars / 2,000 tokens |
+| scribe output | 8,000 persisted chars; generation uses provider model `maxTokens` or Pi default `16384` |
 | scribe timeout | 60 seconds |
 | safe error | 240 chars |
 
@@ -207,6 +207,10 @@ The POST body must be exactly `{}`; unknown fields return `400 conversation_reco
 - The management UI lives under the platform-level `系统服务` tab, not the ordinary role editor. It first explains that the scribe creates a manual, read-only report for failed replies, then exposes one shared model/thinking selection for conversation summaries, rollups, title refinement, and failed-trace recovery, plus scribe-only enable/timeout controls. Model choices come from the configured model catalog maintained under `模型供应商`; selecting one never requires creating a role, and the panel links directly to provider management. With no configured model, it suppresses the empty selectors, shows a provider-setup action, and disables save. Fixed non-execution and mechanical-fallback boundaries are stated as user-visible outcomes rather than implementation jargon.
 - A recovery-specific provider/model may differ from the source provider/model and should be preferred when explicitly configured.
 - Production invocation uses `ModelRuntime.completeSimple` directly with one fixed system instruction and one user Capsule message.
+- The generation budget is the positive `model.maxTokens` returned by the configured provider runtime; if missing, use the Pi custom-provider default `16384`. Recovery never restores the feature-local `2000` cap. The persisted result remains bounded to 8,000 characters.
+- Classify the first response from structured fields only. `stopReason=length`, thinking-only content, or empty visible text may schedule one second `completeSimple` call with the same model/budget and `reasoning='off'`. A thrown provider error, 429, abort, or absolute timeout never schedules that fallback. Two calls are the hard maximum.
+- Every completed model attempt appends `conversation_recovery_model_attempt` with only `{ attempt, maxTokens, thinking, thinkingDisabled, stopReason, contentBlockTypes, visibleTextChars, thinkingOnly, usage, diagnosticCode, retryScheduled }` plus source/run IDs. `usage` contains bounded numeric input/output/reasoning/total counts. Hidden thinking text, raw provider payloads, credentials, and response bodies are forbidden in this event.
+- Output failures use stable terminal codes `conversation_recovery_scribe_empty_text`, `_length_exhausted`, or `_invalid_output`; provider response errors may use `_provider_error`, while thrown provider/timeout failures retain the generic bounded failure path. A successful second call leaves the recovery completed and preserves both safe attempt events.
 - It creates no Agent session, extensions, skills, chat bridge, or tools. It cannot call bash/read/edit/write or replay source actions.
 - The model invocation is represented by a manually persisted child `runs` row with `task_kind=conversation_recovery`, `task_role=recovery_scribe`, and `parent_run_id=sourceRunId`.
 - The 60-second timeout is absolute across `ModelRuntime.create` and `completeSimple`; if initialization consumes the budget, CAFF checks the aborted signal before dispatch and performs no model request.
@@ -245,6 +249,9 @@ The POST body must be exactly `{}`; unknown fields return `400 conversation_reco
 | first valid click | durable queued row and one scheduled job |
 | duplicate/concurrent click | same row, `duplicate=true`, no second work |
 | scribe succeeds with valid output | completed row and one persistent result message |
+| first scribe response is `length`, thinking-only, or empty visible text and thinking is enabled | append a safe diagnostic, call once more with `thinking=off` and the same provider budget |
+| first scribe response is provider error/429/aborted or invocation throws/times out | no output fallback retry; mechanical result |
+| second response is still length/empty or visible output fails headings/statement validation | specific `length_exhausted` / `empty_text` / `invalid_output` terminal code and one mechanical result |
 | timeout/provider/invalid output | failed row and one mechanical fallback message |
 | source deletion | recovery row cascades |
 | terminal transition or field update attempted | repository returns null; terminal row unchanged |
@@ -286,7 +293,7 @@ The POST body must be exactly `{}`; unknown fields return `400 conversation_reco
 - `tests/storage/system-service-config.test.js`: typed singleton upsert, full-row replacement, reopen persistence, and foreign-key integrity.
 - `tests/runtime/recovery-scribe-config.test.js`: default/persisted priority, shared digest model selection while recovery is disabled, in-flight snapshot isolation, request-override refusal, plus strict field/model/thinking/timeout validation.
 - `tests/runtime/recovery-scribe-config-ui.test.js`: system-service purpose copy, shared digest/recovery model wording, configured-catalog provenance and provider navigation without role creation, configured model/thinking controls, no-model empty state with disabled save, read-only navigation, seconds-to-ms save payload, source label, and chat SSE refresh wiring.
-- `tests/runtime/message-recovery.test.js`: same-conversation/failed/idle/source-integrity validation, duplicate clicks, task/run linkage, historical `run=succeeded + assistantErrors` compatibility without source rewrites, succeeded-run negative control, stable busy/session reason parity between capability and POST, platform actor metadata/no participant row, enable/disable validation, hot config next-request semantics, accepted-request snapshot isolation, direct no-tools invocation, provider/invalid-output fallback, source immutability, SSE order, stale restart projection, and no-environment startup materialization of `thinking=off` with unsupported non-empty thinking and timeout controls.
+- `tests/runtime/message-recovery.test.js`: same-conversation/failed/idle/source-integrity validation, duplicate clicks, task/run linkage, historical `run=succeeded + assistantErrors` compatibility without source rewrites, succeeded-run negative control, stable busy/session reason parity between capability and POST, platform actor metadata/no participant row, enable/disable validation, hot config next-request semantics, accepted-request snapshot isolation, direct no-tools invocation, provider-model output budget, one thinking-off retry for length/thinking-only/empty text, provider/429 no-retry behavior, safe attempt diagnostics without hidden thinking text, provider/invalid-output fallback, source immutability, SSE order, stale restart projection, and no-environment startup materialization of `thinking=off` with unsupported non-empty thinking and timeout controls.
 - `tests/runtime/cross-conversation-delivery-wiring.test.js`: both server-composition paths clear Recovery/Digest/Pi runtime defaults around construction so ambient shell configuration cannot mask the no-environment startup contract.
 - `tests/http/recovery-scribe-config-controller.test.js`: loopback/Host/Origin/CSRF guard, safe GET/PUT projection, and global config-updated event.
 - `tests/http/message-recovery-controller.test.js`: exact `{}` body, 202 response, and pass-through of the canonical message-page recovery/capability projection.
@@ -339,10 +346,24 @@ const childRun = runStore.startRun({
     systemActorRoutable: false,
   },
 });
-const output = await modelRuntime.completeSimple(model, redactedCapsuleContext, {
+const maxTokens = resolveSystemModelOutputBudget(model);
+const first = await modelRuntime.completeSimple(model, redactedCapsuleContext, {
   signal,
-  maxTokens: 2000,
+  maxTokens,
+  reasoning: configuredThinking,
 });
+const inspection = projectSystemModelOutputAttempt(first, {
+  attempt: 1,
+  maxTokens,
+  thinking: configuredThinking,
+});
+if (inspection.retryEligible) {
+  return modelRuntime.completeSimple(model, redactedCapsuleContext, {
+    signal,
+    maxTokens,
+    reasoning: 'off',
+  });
+}
 ```
 
 The `runs` row is only an audit record around a direct model-layer request. No Agent session or tool registry is created.

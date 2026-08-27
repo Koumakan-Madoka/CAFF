@@ -170,6 +170,70 @@ test('empty title output retries once with thinking off and the Pi default outpu
   assert.equal(store.getConversationTitleSource(conversation.id), 'auto_llm');
 });
 
+test('direct title refinement uses the provider budget and one thinking-off retry without logging hidden reasoning', async (t) => {
+  const store = createStore(t);
+  const conversation = createConversation(store, '原始标题');
+  store.updateConversation(conversation.id, { title: '原始标题', titleSource: 'auto_first_message' });
+  const calls = [];
+  const warnings = [];
+  const originalWarn = console.warn;
+  global.__CAFF_DIRECT_TITLE_CALLS = calls;
+  console.warn = (...args) => warnings.push(args.join(' '));
+  t.after(() => {
+    delete global.__CAFF_DIRECT_TITLE_CALLS;
+    console.warn = originalWarn;
+  });
+  const moduleSource = `
+    export function getModel(provider, model) {
+      return { id: model, name: model, api: 'openai-completions', provider, reasoning: true, maxTokens: 32768 };
+    }
+    export async function complete(model, context, options) {
+      globalThis.__CAFF_DIRECT_TITLE_CALLS.push({
+        maxTokens: options.maxTokens,
+        reasoning: options.reasoning,
+        purpose: options.metadata && options.metadata.purpose,
+      });
+      if (globalThis.__CAFF_DIRECT_TITLE_CALLS.length === 1) {
+        return {
+          role: 'assistant',
+          content: [{ type: 'thinking', thinking: 'hidden title reasoning must not enter diagnostics' }],
+          stopReason: 'length',
+          usage: { output: 32768, reasoning: 32768, totalTokens: 32768 },
+        };
+      }
+      return {
+        role: 'assistant',
+        content: [{ type: 'text', text: '直接标题降级成功' }],
+        stopReason: 'stop',
+        usage: { output: 20, reasoning: 0, totalTokens: 20 },
+      };
+    }
+  `;
+
+  appendPublicMessages(store, conversation.id, 1, 2);
+  const result = await maybeAutoCreateConversationDigest(store, conversation.id, digestOptions(null, {
+    piAiModuleSpecifier: `data:text/javascript,${encodeURIComponent(moduleSource)}`,
+    resolveSystemModelConfigSnapshot() {
+      return {
+        enabled: true,
+        provider: 'direct-provider',
+        model: 'direct-title-model',
+        thinking: 'high',
+        timeoutMs: 30_000,
+      };
+    },
+  }));
+
+  assert.equal(result.digestChanged, true);
+  assert.deepEqual(calls, [
+    { maxTokens: 32_768, reasoning: 'high', purpose: 'title_refine' },
+    { maxTokens: 32_768, reasoning: 'off', purpose: 'title_refine' },
+  ]);
+  assert.equal(store.getConversation(conversation.id).title, '直接标题降级成功');
+  assert.ok(warnings.some((warning) => warning.includes('length_exhausted')));
+  assert.equal(warnings.some((warning) => warning.includes('hidden title reasoning')), false);
+});
+
 test('blank or over-long model output falls back to the existing title', async (t) => {
   const store = createStore(t);
 

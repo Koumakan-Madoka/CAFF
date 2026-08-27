@@ -3123,6 +3123,7 @@ test('conversations controller retries a thinking-only JSON mode rollup once wit
         thinking: payload && payload.thinking,
         reasoning: payload && payload.reasoning,
         reasoningEffort: payload && payload.reasoning_effort,
+        requestedReasoning: options.reasoning,
         maxTokens: options.maxTokens,
       });
       if (globalThis.__CAFF_JSON_MODE_THINKING_ONLY_CALLS.length === 2) {
@@ -3203,8 +3204,10 @@ test('conversations controller retries a thinking-only JSON mode rollup once wit
   assert.equal(calls[0].purpose, 'rollup');
   assert.deepEqual(calls[0].responseFormat, { type: 'json_object' });
   assert.equal(calls[0].reasoning, 'high');
+  assert.equal(calls[0].requestedReasoning, 'high');
   assert.equal(calls[0].maxTokens, 24_576);
-  assert.equal(calls[1].reasoning, 'off');
+  assert.equal(calls[1].requestedReasoning, 'off');
+  assert.equal(calls[1].reasoning, undefined);
   assert.equal(calls[1].maxTokens, 24_576);
   assert.match(result.json.rollup.createdBy, /^model:auto-compaction:/u);
   assert.equal(result.json.rollup.summary, '模型 rollup：关闭思考后生成了可见 JSON。');
@@ -3315,6 +3318,8 @@ test('conversations controller builds a direct DeepSeek digest model from models
         toolChoice: options.toolChoice,
         apiKey: options.apiKey,
         responseFormat: payload && payload.response_format,
+        reasoning: options.reasoning,
+        maxTokens: options.maxTokens,
       });
       return {
         role: 'assistant',
@@ -3378,13 +3383,15 @@ test('conversations controller builds a direct DeepSeek digest model from models
   assert.equal(calls[0].model.provider, 'deepseek');
   assert.equal(calls[0].model.api, 'openai-completions');
   assert.equal(calls[0].model.baseUrl, 'https://api.deepseek.example/v1');
-  assert.equal(calls[0].model.reasoning, false);
+  assert.equal(calls[0].model.reasoning, true);
   assert.equal(calls[0].model.compat.maxTokensField, 'max_tokens');
   assert.equal(calls[0].model.compat.supportsReasoningEffort, false);
   assert.equal(calls[0].model.compat.supportsStrictMode, false);
   assert.equal(calls[0].hasTools, false);
   assert.equal(calls[0].toolChoice, undefined);
   assert.equal(calls[0].apiKey, 'test-models-json-deepseek-api-key');
+  assert.equal(calls[0].reasoning, 'high');
+  assert.equal(calls[0].maxTokens, 16_384);
   assert.deepEqual(calls[0].responseFormat, { type: 'json_object' });
 });
 
@@ -3442,6 +3449,13 @@ test('conversations controller retries model digests with missing-escape diagnos
 
   assert.equal(result.statusCode, 200);
   assert.equal(modelCalls.length, 2);
+  assert.deepEqual(
+    modelCalls.map((call) => ({ attempt: call.attempt, thinking: call.config.thinking, maxTokens: call.maxTokens })),
+    [
+      { attempt: 1, thinking: 'xhigh', maxTokens: 16_384 },
+      { attempt: 2, thinking: 'off', maxTokens: 16_384 },
+    ]
+  );
   assert.equal(result.json.digest.createdBy, 'model:cheap-provider/cheap-model');
   assert.equal(result.json.digest.summary, '模型总结：已修复缺少转义符的 JSON 摘要。');
   assert.match(modelCalls[1].prompt, /Validation diagnostic: Likely missing escape/u);
@@ -3494,7 +3508,7 @@ test('conversations controller falls back to extractive digests when model summa
   assert.ok(throwingResult.json.digest.decisions.some((item) => item.includes('规则摘要兜底')));
 
   const invalidModelCalls = [];
-  const invalidRawOutput = 'not valid digest JSON\n{"summary":"missing close"';
+  const invalidRawOutput = 'not valid digest JSON token=must-redact\n{"summary":"missing close"';
   const invalidHarness = createConversationsControllerHarness(t, {
     digestOptions: { logRawModelOutput: true },
     digestModelRunner: async (context) => {
@@ -3531,7 +3545,9 @@ test('conversations controller falls back to extractive digests when model summa
   assert.ok(invalidResult.json.digest.nextActions.some((item) => item.includes('坏格式')));
   assert.ok(warnings.some((warning) => warning.includes('Model digest failed')));
   assert.ok(warnings.some((warning) => warning.includes('Invalid model digest JSON')));
-  assert.ok(warnings.some((warning) => warning.includes(invalidRawOutput)));
+  assert.ok(warnings.some((warning) => warning.includes('not valid digest JSON')));
+  assert.ok(warnings.some((warning) => warning.includes('missing close')));
+  assert.equal(warnings.some((warning) => warning.includes('must-redact')), false);
 });
 
 test('conversations controller auto-compacts old conversation digests into a rollup', async (t) => {

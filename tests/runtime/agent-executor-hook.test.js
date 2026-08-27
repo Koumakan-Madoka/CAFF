@@ -394,16 +394,17 @@ test('agent executor keeps the stage running while a stuck tool is recovered', a
   assert.equal(turnState.agents[0].status, 'completed');
 });
 
-test('conversation digest startRun calls remain opted out of tool recovery', () => {
+test('conversation digest uses direct no-tools completion instead of Agent tool recovery', () => {
   const digestSource = fs.readFileSync(
     path.resolve(__dirname, '..', '..', 'server', 'domain', 'conversation', 'conversation-digest.ts'),
     'utf8'
   );
-  const startIndex = digestSource.indexOf('const handle = startRun(config.provider, config.model, prompt, {');
 
-  assert.ok(startIndex >= 0, 'digest direct Pi startRun call should remain present');
+  assert.doesNotMatch(digestSource, /\bstartRun\s*\(/u, 'system digest/title calls must not create Agent runs');
+  assert.match(digestSource, /completeDigestModel\(directCompletion, directModel/u);
+  assert.match(digestSource, /maxTokens:\s*outputBudget/u);
   assert.doesNotMatch(
-    digestSource.slice(startIndex, startIndex + 900),
+    digestSource,
     /toolProgressRecovery/u,
     'digest model calls must keep hard timeout/fallback semantics instead of receiving agent recovery prompts'
   );
