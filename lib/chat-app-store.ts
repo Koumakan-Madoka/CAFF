@@ -44,6 +44,7 @@ const {
   buildStoredContextSnapshotSummary,
   retainModelUsageCalls,
 } = require('./message-detail-contract');
+const { normalizeObservabilityTimeline } = require('./observability-timeline');
 
 const MAX_AVATAR_DATA_URL_LENGTH = 2 * 1024 * 1024;
 const MAX_AGENT_SANDBOX_NAME_LENGTH = 80;
@@ -1286,6 +1287,34 @@ export class ChatAppStore {
             callsTruncated: modelUsage.callsTruncated ? 1 : 0,
             retainedCallCount: modelUsage.retainedCallCount,
             droppedCallCount: modelUsage.droppedCallCount,
+            createdAt: payload.createdAt,
+            updatedAt: payload.updatedAt,
+          });
+        }
+
+        const observabilityTimeline = normalizeObservabilityTimeline(
+          Object.prototype.hasOwnProperty.call(details, 'observabilityTimeline')
+            ? details.observabilityTimeline
+            : null
+        );
+        if (observabilityTimeline) {
+          this.messageDetailRepository.upsertObservabilityTimeline({
+            messageId: payload.messageId,
+            conversationId: payload.conversationId,
+            turnId: payload.turnId,
+            agentId: payload.agentId || null,
+            totalEventCount: observabilityTimeline.totalEventCount,
+            retainedEventCount: observabilityTimeline.retainedEventCount,
+            droppedEventCount: observabilityTimeline.droppedEventCount,
+            eventsTruncated: observabilityTimeline.truncated ? 1 : 0,
+            eventsJson: serializeJson(observabilityTimeline.events),
+            modelCallCount: observabilityTimeline.modelCallCount,
+            coldStartModelCallCount: observabilityTimeline.coldStartModelCallCount,
+            postColdModelCallCount: observabilityTimeline.postColdModelCallCount,
+            providerMissCount: observabilityTimeline.providerMissCount,
+            toolExecutionCount: observabilityTimeline.toolExecutionCount,
+            failedToolExecutionCount: observabilityTimeline.failedToolExecutionCount,
+            totalToolDurationMs: observabilityTimeline.totalToolDurationMs,
             createdAt: payload.createdAt,
             updatedAt: payload.updatedAt,
           });
@@ -3818,6 +3847,10 @@ export class ChatAppStore {
       : retainModelUsageCalls(result.modelUsage);
   }
 
+  getMessageObservabilityTimeline(messageId: any) {
+    return this.messageDetailRepository.getObservabilityTimeline(String(messageId || '').trim());
+  }
+
   listContextSnapshotPage(conversationId: any, options: any = {}) {
     return this.messageDetailRepository.listContextSnapshotPage(
       String(conversationId || '').trim(),
@@ -4068,6 +4101,9 @@ export class ChatAppStore {
     }
     if (Object.prototype.hasOwnProperty.call(updates, 'modelUsage')) {
       messageDetails.modelUsage = updates.modelUsage;
+    }
+    if (Object.prototype.hasOwnProperty.call(updates, 'observabilityTimeline')) {
+      messageDetails.observabilityTimeline = updates.observabilityTimeline;
     }
     const nextMetadata = existing.role === 'assistant'
       ? buildContractMessageMetadata(requestedMetadata, messageDetails)

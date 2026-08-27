@@ -15,6 +15,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { verifyManagementPages } from './ui/verify-management-pages.mjs';
+import { resolveVerificationRoomContext } from './ui/room-fixture.mjs';
 import { verifyThemeIcons } from './ui/verify-theme-icons.mjs';
 
 let chromium;
@@ -167,12 +168,14 @@ async function selectVerificationRole(baseUrl, { allowCreate }) {
 }
 
 async function createVerificationConversation(baseUrl, title, roleId) {
+  const { projectScopeId, modeId } = await resolveVerificationRoomContext(baseUrl);
   const response = await fetch(`${baseUrl}api/conversations`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       title,
-      type: 'standard',
+      projectScopeId,
+      modeId,
       participants: [{ agentId: roleId, modelProfileId: null, conversationSkillIds: [] }],
     }),
   });
@@ -241,6 +244,15 @@ try {
   baselineConversationId = baselineConversation.id;
   browser = await chromium.launch({ channel: 'msedge', headless: true });
 
+function isExpectedEmptyPlanResponse(response) {
+  if (response.status() !== 404) return false;
+  try {
+    return /^\/api\/conversations\/[^/]+\/plan$/u.test(new URL(response.url()).pathname);
+  } catch {
+    return false;
+  }
+}
+
 async function newTrackedPage(viewport, extra = {}) {
   const page = await browser.newPage({ viewport, ...extra });
   page.consoleErrors = [];
@@ -250,6 +262,7 @@ async function newTrackedPage(viewport, extra = {}) {
   page.on('console', (msg) => { if (msg.type() === 'error') page.consoleErrors.push(msg.text()); });
   page.on('pageerror', (err) => page.pageErrors.push(String(err)));
   page.on('response', (res) => {
+    if (isExpectedEmptyPlanResponse(res)) return;
     if (res.status() === 404) page.notFound.push(res.url());
     if (res.status() >= 400 && !res.url().includes('favicon')) page.badResponses.push(`${res.status()} ${res.url()}`);
   });
@@ -523,11 +536,10 @@ const tabClick = await page.evaluate(() => ({
   selected: document.getElementById('tab-goal').getAttribute('aria-selected'),
   goalHidden: document.getElementById('session-goal-drawer').hidden,
   partHidden: document.getElementById('panel-participants').hidden,
-  gameTabHidden: document.getElementById('tab-game').hidden,
   draftsTabHidden: document.getElementById('tab-drafts').hidden,
 }));
 ok('C3 tab click switches panel for real', tabClick.selected === 'true' && tabClick.goalHidden === false && tabClick.partHidden === true, JSON.stringify(tabClick));
-ok('C4 conditional tabs hidden initially (game/drafts)', tabClick.gameTabHidden === true && tabClick.draftsTabHidden === true, JSON.stringify(tabClick));
+ok('C4 conditional draft tab hidden initially', tabClick.draftsTabHidden === true, JSON.stringify(tabClick));
 
 // C10/C11: goal controller started without legacy chrome + shell 焦点所有权
 const goalStarted = await page.evaluate(async () => {
@@ -558,8 +570,8 @@ ok('C11 fromShell open keeps shell focus ownership (no steal into objective)', g
 
 await page.focus('#tab-goal');
 await page.keyboard.press('ArrowRight');
-const rove = await page.evaluate(() => ({ focus: document.activeElement.id, sel: document.activeElement.getAttribute('aria-selected'), memHidden: document.getElementById('summary-memory-drawer').hidden }));
-ok('C5 ArrowRight roving + panel sync', rove.focus === 'tab-memory' && rove.sel === 'true' && rove.memHidden === false, JSON.stringify(rove));
+const rove = await page.evaluate(() => ({ focus: document.activeElement.id, sel: document.activeElement.getAttribute('aria-selected'), planHidden: document.getElementById('plan-drawer').hidden }));
+ok('C5 ArrowRight roving + panel sync', rove.focus === 'tab-plan' && rove.sel === 'true' && rove.planHidden === false, JSON.stringify(rove));
 await page.keyboard.press('End');
 const endKey = await page.evaluate(() => document.activeElement.id);
 ok('C6 End jumps to last visible tab (skips hidden)', endKey === 'tab-context', endKey);
@@ -586,26 +598,29 @@ const escDrawer = await page.evaluate(() => ({
 ok('C9 Escape closes drawer + inert reset + focus returned', escDrawer.ds === 'closed' && escDrawer.shellInert === false && escDrawer.drawerInert === true && escDrawer.focus === 'drawerToggle', JSON.stringify(escDrawer));
 
 // L. 条件 tab 消失状态机（open + closed 两态，真实浏览器焦点）
+await page.click('#drawerToggle');
+await page.waitForTimeout(250);
 await page.evaluate(() => {
-  window.caffShell.setTabVisible('panel-game', true);
-  window.caffShell.openTab('panel-game');
-  document.getElementById('tab-game').focus();
-  window.caffShell.setTabVisible('panel-game', false);
+  window.caffShell.setTabVisible('skill-draft-drawer', true);
+});
+await page.click('#tab-drafts');
+await page.evaluate(() => {
+  window.caffShell.setTabVisible('skill-draft-drawer', false);
 });
 const hideOpen = await page.evaluate(() => ({
   active: document.activeElement && document.activeElement.id,
   activeTab: window.caffShell.activeTab(),
-  gamePanelHidden: document.getElementById('panel-game').hidden,
+  draftPanelHidden: document.getElementById('skill-draft-drawer').hidden,
   participantsSelected: document.getElementById('tab-participants').getAttribute('aria-selected'),
 }));
-ok('L1 hide active tab while drawer OPEN: focus migrates to fallback tab', hideOpen.active === 'tab-participants' && hideOpen.activeTab === 'panel-participants' && hideOpen.gamePanelHidden === true && hideOpen.participantsSelected === 'true', JSON.stringify(hideOpen));
+ok('L1 hide active tab while drawer OPEN: focus migrates to fallback tab', hideOpen.active === 'tab-participants' && hideOpen.activeTab === 'panel-participants' && hideOpen.draftPanelHidden === true && hideOpen.participantsSelected === 'true', JSON.stringify(hideOpen));
 
 await page.evaluate(() => {
   window.caffShell.closeDrawer();
-  window.caffShell.setTabVisible('panel-game', true);
-  window.caffShell.openTab('panel-game');
+  window.caffShell.setTabVisible('skill-draft-drawer', true);
+  window.caffShell.openTab('skill-draft-drawer');
   window.caffShell.closeDrawer();
-  window.caffShell.setTabVisible('panel-game', false);
+  window.caffShell.setTabVisible('skill-draft-drawer', false);
   document.getElementById('drawerToggle').click();
 });
 await page.waitForTimeout(250);
@@ -614,13 +629,13 @@ const hideClosed = await page.evaluate(() => {
     .filter((t) => !t.hidden && t.getAttribute('aria-selected') === 'true');
   return {
     activeTab: window.caffShell.activeTab(),
-    gameTabHidden: document.getElementById('tab-game').hidden,
-    gamePanelHidden: document.getElementById('panel-game').hidden,
+    draftTabHidden: document.getElementById('tab-drafts').hidden,
+    draftPanelHidden: document.getElementById('skill-draft-drawer').hidden,
     visibleSelectedCount: visibleSelected.length,
     drawerOpen: document.body.dataset.drawer,
   };
 });
-ok('L2 hide current tab while drawer CLOSED: reopen has exactly one visible selected tab', hideClosed.activeTab !== 'panel-game' && hideClosed.gamePanelHidden === true && hideClosed.visibleSelectedCount === 1, JSON.stringify(hideClosed));
+ok('L2 hide current tab while drawer CLOSED: reopen has exactly one visible selected tab', hideClosed.activeTab !== 'skill-draft-drawer' && hideClosed.draftPanelHidden === true && hideClosed.visibleSelectedCount === 1, JSON.stringify(hideClosed));
 await page.keyboard.press('Escape');
 await page.waitForTimeout(250);
 
@@ -790,6 +805,7 @@ ok('I1 reduced-motion: transitions off + smooth scroll off', rm.mq === true && r
 // K. 会话列表语义 + 键盘切换（真实创建临时会话，结束后清理）
 const createdIds = [];
 const caseTitlePrefix = `${TITLE_PREFIX}-CASE`;
+const verificationRoomContext = await resolveVerificationRoomContext(APP);
 try {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.waitForTimeout(300);
@@ -801,6 +817,8 @@ try {
   for (const title of [`${caseTitlePrefix}-A`, `${caseTitlePrefix}-B`]) {
     await page.click('#open-new-conversation-button');
     await page.waitForSelector('#new-conversation-backdrop:not(.hidden)', { timeout: 5000 });
+    await page.selectOption('#new-conversation-project', verificationRoomContext.projectScopeId);
+    await page.selectOption('#new-conversation-type', verificationRoomContext.modeId);
     await page.fill('#new-conversation-title', title);
     await page.check(`input[name="new-conversation-participants"][value="${verificationRoleId}"]`);
     await page.click('#new-conversation-submit');

@@ -23,6 +23,13 @@ const {
   buildLightweightContextSnapshotReference,
   buildLightweightModelUsageSummary,
 } = require('../../../../lib/message-detail-contract');
+const {
+  createModelCallObservabilityEvent,
+  createToolObservabilityEvent,
+  ensureObservabilityTimelineState,
+  finalizeObservabilityToolEvents,
+  snapshotObservabilityTimeline,
+} = require('../../../../lib/observability-timeline');
 const { buildAgentTurnPromptSections, formatAgentTurnPromptSections, AGENT_PROMPT_VERSION } = require('./agent-prompt');
 const { buildInvocationImages } = require('./image-invocation');
 const { createAgentContextSnapshot } = require('./context-snapshot');
@@ -1635,6 +1642,7 @@ export function createAgentExecutor(options: any = {}) {
 
     let activeRunHandle: any = null;
     let bridgePublicCompletionRequested = false;
+    const observabilityTimelineState = ensureObservabilityTimelineState(stage);
     const toolInvocation = agentToolBridge.registerInvocation(
       agentToolBridge.createInvocationContext({
         invocationId: queueItem.toolInvocationId || undefined,
@@ -1884,7 +1892,10 @@ export function createAgentExecutor(options: any = {}) {
         return;
       }
 
-      const step = liveTool.step || null;
+      const rawStep = liveTool.step || null;
+      const step = rawStep
+        ? createToolObservabilityEvent(observabilityTimelineState, rawStep) || rawStep
+        : null;
       const stepId = step && step.stepId ? String(step.stepId).trim() : '';
       const stepSignature = liveSessionToolStepSignature(step);
       const changed = updateStageCurrentTool(stage, turnState, emitTurnProgress, liveTool.currentTool);
@@ -1919,6 +1930,7 @@ export function createAgentExecutor(options: any = {}) {
           messageId: assistantMessage.id,
           phase: 'started',
           step,
+          timelineWindow: snapshotObservabilityTimeline(observabilityTimelineState),
         });
         return;
       }
@@ -1937,6 +1949,34 @@ export function createAgentExecutor(options: any = {}) {
         messageId: assistantMessage.id,
         phase: 'updated',
         step,
+        timelineWindow: snapshotObservabilityTimeline(observabilityTimelineState),
+      });
+    });
+
+    handle.on('assistant_message', (event: any) => {
+      const message = event && event.message && typeof event.message === 'object' ? event.message : null;
+      const modelEvent = message
+        ? createModelCallObservabilityEvent(observabilityTimelineState, {
+            messageKey: event.messageKey,
+            responseId: message.responseId,
+            stopReason: message.stopReason,
+            timestamp: message.timestamp,
+            tokenUsage: summarizeTokenUsage(message.usage),
+          })
+        : null;
+      if (!modelEvent) {
+        return;
+      }
+      broadcastEvent('conversation_model_event', {
+        conversationId,
+        turnId,
+        taskId: stageTaskId,
+        agentId: agent.id,
+        agentName: agent.name,
+        assistantMessageId: assistantMessage.id,
+        messageId: assistantMessage.id,
+        event: modelEvent,
+        timelineWindow: snapshotObservabilityTimeline(observabilityTimelineState),
       });
     });
 
@@ -2135,6 +2175,7 @@ export function createAgentExecutor(options: any = {}) {
         modelUsage: buildLightweightModelUsageSummary(modelUsage),
         agentContextSnapshot: contextSnapshotReference,
       };
+      finalizeObservabilityToolEvents(observabilityTimelineState, false);
       const assistantMessageDone = store.updateMessage(assistantMessage.id, {
         content: publicReply,
         status: 'completed',
@@ -2144,6 +2185,7 @@ export function createAgentExecutor(options: any = {}) {
         metadata: finalMetadata,
         contextSnapshot,
         modelUsage,
+        observabilityTimeline: snapshotObservabilityTimeline(observabilityTimelineState),
       });
 
       markConversationRetrievalTraceUsage(store, conversationId, {
@@ -2305,6 +2347,7 @@ export function createAgentExecutor(options: any = {}) {
       const errorModelUsage = summarizeModelUsageCalls(errorValue && errorValue.usageCalls);
       const invocationFailure = classifyAgentInvocationFailure(errorValue, { stopRequested });
       const existingMessage = store.getMessage(assistantMessage.id);
+      finalizeObservabilityToolEvents(observabilityTimelineState, true);
       const assistantMessageFailed = store.updateMessage(assistantMessage.id, {
         content: existingMessage && existingMessage.content !== 'Thinking...' ? existingMessage.content : '',
         status: 'failed',
@@ -2341,6 +2384,7 @@ export function createAgentExecutor(options: any = {}) {
         },
         contextSnapshot,
         modelUsage: errorModelUsage,
+        observabilityTimeline: snapshotObservabilityTimeline(observabilityTimelineState),
       });
 
       stage.status = 'failed';

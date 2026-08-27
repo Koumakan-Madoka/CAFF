@@ -446,6 +446,7 @@ test('v5 mock exposes six permanent and two conditional drawer tabs', () => {
 test('test:ui is repository-owned and starts an isolated app by default', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
   const runner = fs.readFileSync(path.join(ROOT, 'scripts', 'verify-ui.mjs'), 'utf8');
+  const roomFixture = fs.readFileSync(path.join(ROOT, 'scripts', 'ui', 'room-fixture.mjs'), 'utf8');
 
   assert.ok(pkg.devDependencies && pkg.devDependencies['playwright-core'], 'playwright-core must be a declared devDependency');
   assert.match(pkg.scripts['test:ui'], /npm run build/, 'clean checkout test:ui must build before launching');
@@ -453,6 +454,9 @@ test('test:ui is repository-owned and starts an isolated app by default', () => 
   assert.match(runner, /PI_SQLITE_PATH/);
   assert.match(runner, /CHAT_APP_PORT/);
   assert.match(runner, /windowsHide:\s*true/);
+  assert.match(runner, /resolveVerificationRoomContext/, 'UI runner must create Rooms with current Project and Mode fields');
+  assert.doesNotMatch(runner, /type:\s*['"]standard['"]/, 'retired Room type must not be submitted');
+  assert.match(roomFixture, /projectScopeId[\s\S]*modeId/, 'shared fixture must resolve both immutable Room fields');
   assert.doesNotMatch(runner, /localhost:3210/, 'default test gate must not target a mutable fixed-port service');
 });
 

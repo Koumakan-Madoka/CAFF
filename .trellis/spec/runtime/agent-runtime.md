@@ -813,7 +813,7 @@ handle.cancel(stopReason); // Settle and persist the original user Stop only.
   - `usage`: aggregated provider usage object for the run, or `null`.
   - `tokenUsage`: normalized `{ inputTokens, uncachedInputTokens, outputTokens, totalTokens, cacheReadTokens, cacheWriteTokens, inputCostUsd, outputCostUsd, cacheReadCostUsd, cacheWriteCostUsd, totalCostUsd }`; token values are non-negative integers or `null`, cost values are non-negative USD numbers or `null`.
   - `modelUsage`: normalized per-run model-call summary `{ modelCallCount, coldStartModelCallCount, postColdModelCallCount, providerMissCount, calls[] }`, where each call has a 1-based `sequence`, canonical `isColdStart` (`coldStart` remains a legacy alias), `providerMiss`, and normalized `tokenUsage`; `providerMiss` means a non-cold-start call has `cacheReadTokens === 0` and positive uncached input.
-- P2C-Expand detail table `chat_message_model_usage_calls` stores the four full-run aggregate counters plus at most 64 `calls[]`: the first call and latest 63. It also stores `callsTruncated`, `retainedCallCount`, and `droppedCallCount` projections. The message metadata remains complete during Expand.
+- P2C-Expand detail table `chat_message_model_usage_calls` stores the four full-run aggregate counters plus at most 16 `calls[]`: the first call and latest 15. It also stores `callsTruncated`, `retainedCallCount`, and `droppedCallCount` projections. Historical 64-call rows are converged on read without rewriting them. The message metadata remains complete during Expand.
 - P2C-Contract future assistant writes pass the full model usage object as a
   Store detail input. Message metadata keeps only the four full-run aggregate
   counters plus truncation/retained/dropped counts and never stores `calls[]`.
@@ -824,7 +824,7 @@ handle.cancel(stopReason); // Settle and persist the original user Stop only.
 ### 3. Contracts
 - Runtime preserves raw usage field names and sums numeric usage/cost fields across unique assistant model calls in the run.
 - Completed/error message updates and the model usage detail UPSERT share one SQLite transaction. No usable model calls means no detail row and no detailed model-usage metadata projection.
-- Detail reads prefer the table and fall back to legacy metadata. Aggregate counts always represent the full run and must not be recomputed from the retained call array. Retention preserves original `sequence` values: 65 calls retain sequences `1, 3..65`; 100 calls retain `1, 38..100`.
+- Detail reads prefer the table and fall back to legacy metadata. Aggregate counts always represent the full run and must not be recomputed from the retained call array. Retention preserves original `sequence` values: 65 calls retain sequences `1, 51..65`; 100 calls retain `1, 86..100`.
 - Normalization accepts common provider key variants: `input_tokens` / `inputTokens` / `prompt_tokens` / `promptTokens`, `output_tokens` / `outputTokens` / `completion_tokens` / `completionTokens`, `cacheRead` / `cache_read` / `cacheReadTokens` / `cache_read_tokens`, `cacheWrite` / `cache_write` / `cacheWriteTokens` / `cache_write_tokens`, and `total_tokens` / `totalTokens`.
 - Provider `input` counts may mean non-cached input only. Normalized `inputTokens` represents effective prompt/context input, computed as `uncachedInputTokens + cacheReadTokens + cacheWriteTokens` when cache fields exist; `uncachedInputTokens` preserves the raw non-cached provider input.
 - If total is absent but token fields exist, total is computed as `(inputTokens || 0) + (outputTokens || 0)`, where `inputTokens` already includes cache read/write tokens.
@@ -847,7 +847,7 @@ handle.cancel(stopReason); // Settle and persist the original user Stop only.
 
 ### 5. Tests Required
 - `tests/runtime/pi-runtime.test.js` asserts assistant `usage` survives `startRun` completion and multiple assistant model-call usage objects aggregate without double-counting `agent_end` duplicates.
-- `tests/storage/message-detail-expand.test.js` asserts 63/64/65/100 retention boundaries, original sequence preservation, full aggregate counters, full metadata preservation, completed/error atomicity, restart, and rollback injection.
+- `tests/storage/message-detail-expand.test.js` asserts 15/16/17/64/100 retention boundaries, original sequence preservation, full aggregate counters, full metadata preservation, completed/error atomicity, restart, and rollback injection.
 - `scripts/p2c-expand-gate.js` records production-shape snapshot/model usage disk, heap/RSS, latency, and integrity evidence.
 - `npm run check`, `npm run build`, and `npm run typecheck` must pass after UI/runtime changes.
 
@@ -1311,6 +1311,26 @@ node "$CAFF_CHAT_TOOLS_PATH" write-experience \
   contract.
 - Tool trace aggregation and redaction changes should also be covered by
   `tests/runtime/message-tool-trace.test.js`
+
+## Bounded Live Observability Timeline
+
+- Each assistant stage owns one non-enumerable observability sequencer shared by
+  the executor and bridge. `message_end` emits the model event before the tool
+  projection from the same assistant message, and duplicate `agent_end` copies
+  do not allocate another model sequence.
+- Model and tool events carry stable `eventId`, typed `eventType`, and positive
+  `timelineSequence`. Running tool updates reuse the original identity and
+  sequence. SSE contains normalized usage and redacted step summaries only;
+  assistant text, thinking blocks, prompts, and raw provider payloads are absent.
+- The shared window retains at most 16 mixed events (`first 1 + latest 15`).
+  Full model/tool counters, failure counts, duration, token usage, and cost stay
+  authoritative and are never recomputed from retained rows.
+- Historical bridge projection reads at most its first row plus latest 199 rows
+  and obtains full count/failure/success/duration aggregates in SQL. All HTTP
+  detail arrays derive from the final 16-event timeline window.
+- New terminal message detail is table-first and avoids session JSONL parsing;
+  historical messages without unified detail retain the bounded compatibility
+  path.
 - If the change affects pi runtime CLI behavior, also inspect
   `tests/runtime/pi-runtime.test.js`
 - Dynamic skill path-loading prompt behavior is covered by `tests/runtime/skill-loading.test.js`

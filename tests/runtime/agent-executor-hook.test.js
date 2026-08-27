@@ -21,6 +21,48 @@ function createRunHandle(reply, resultOverrides = {}) {
   return handle;
 }
 
+function createObservableRunHandle() {
+  const handle = new EventEmitter();
+  handle.runId = 'run-observability-live';
+  handle.sessionPath = '';
+  const usageCall = {
+    key: 'live-call-1',
+    responseId: 'live-response-1',
+    stopReason: 'toolUse',
+    timestamp: 101,
+    usage: { input: 120, output: 30, cacheRead: 0, totalTokens: 150 },
+  };
+  handle.resultPromise = new Promise((resolve) => {
+    setImmediate(() => {
+      handle.emit('assistant_message', {
+        messageKey: usageCall.key,
+        message: {
+          role: 'assistant',
+          responseId: usageCall.responseId,
+          stopReason: usageCall.stopReason,
+          timestamp: usageCall.timestamp,
+          usage: usageCall.usage,
+          content: [
+            { type: 'thinking', thinking: 'hidden-live-reasoning' },
+            { type: 'text', text: 'visible but not part of observability SSE' },
+          ],
+        },
+        text: 'visible but not part of observability SSE',
+      });
+      setImmediate(() => resolve({
+        reply: 'Done.',
+        runId: handle.runId,
+        usage: usageCall.usage,
+        usageCalls: [usageCall],
+        heartbeatCount: 0,
+        sessionPath: '',
+        assistantErrors: [],
+      }));
+    });
+  });
+  return handle;
+}
+
 function createRecoveryRunHandle(reply) {
   const handle = new EventEmitter();
   handle.runId = 'run-recovery';
@@ -838,6 +880,90 @@ test('agent executor completes the run after a successful public bridge post', a
   assert.equal(completedReplies[0].content, 'Sent through bridge.');
   assert.equal(completedReplies[0].metadata.publicToolUsed, true);
   assert.equal(result.stopTurn, true);
+});
+
+test('agent executor publishes a bounded safe model-call event while the assistant run is still active', async (t) => {
+  const tempDir = withTempDir('caff-agent-executor-live-model-event-');
+  const minimalPiPath = require.resolve('../../build/lib/minimal-pi');
+  const agentExecutorPath = require.resolve('../../build/server/domain/conversation/turn/agent-executor');
+  const turnStatePath = require.resolve('../../build/server/domain/conversation/turn/turn-state');
+  const minimalPi = require(minimalPiPath);
+  const originalStartRun = minimalPi.startRun;
+  const runHandle = createObservableRunHandle();
+
+  minimalPi.startRun = () => runHandle;
+  delete require.cache[agentExecutorPath];
+
+  t.after(() => {
+    minimalPi.startRun = originalStartRun;
+    delete require.cache[agentExecutorPath];
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const { createAgentExecutor } = require(agentExecutorPath);
+  const { createTurnState } = require(turnStatePath);
+  const agent = {
+    id: 'agent-live-model-event',
+    name: 'Live Model Event',
+    description: 'Tests running observability.',
+    personaPrompt: 'Be brief.',
+  };
+  const conversation = {
+    id: 'conversation-live-model-event',
+    title: 'Live Model Event',
+    type: 'standard',
+    agents: [agent],
+    metadata: {},
+  };
+  const store = createFakeStore(conversation);
+  const broadcastEvents = [];
+  const executor = createAgentExecutor({
+    store,
+    skillRegistry: { resolveSkills: () => [] },
+    modeStore: { get: () => null },
+    agentToolBridge: createFakeAgentToolBridge(),
+    agentDir: tempDir,
+    sqlitePath: path.join(tempDir, 'chat.sqlite'),
+    toolBaseUrl: 'http://127.0.0.1:3100',
+    agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+    broadcastEvent(eventName, payload) {
+      broadcastEvents.push({ eventName, payload });
+    },
+  });
+  const turnState = createTurnState(conversation, 'turn-live-model-event');
+
+  await executor.executeConversationAgent({
+    runStore: createFakeRunStore(),
+    conversationId: conversation.id,
+    turnId: turnState.turnId,
+    rootTaskId: 'root-task-live-model-event',
+    conversation,
+    promptMessages: [{ role: 'user', content: 'Run for a while.' }],
+    promptUserMessage: { id: 'user-message-live-model-event', role: 'user', content: 'Run for a while.' },
+    queueItem: { triggerType: 'user', enqueueReason: 'user_mentions' },
+    agent,
+    turnState,
+    completedReplies: [],
+    failedReplies: [],
+    routingMode: 'mention_queue',
+    hop: 1,
+    remainingSlots: 1,
+    enqueueAgent() {},
+    allowHandoffs: true,
+    finalStopsTurn: true,
+    projectDir: tempDir,
+  });
+
+  const modelEvents = broadcastEvents.filter((event) => event.eventName === 'conversation_model_event');
+  assert.equal(modelEvents.length, 1, 'message_end should update the open timeline without waiting for terminal message refresh');
+  assert.equal(modelEvents[0].payload.event.eventType, 'model_call');
+  assert.equal(modelEvents[0].payload.event.eventId, 'model-call:live-response-1');
+  assert.equal(modelEvents[0].payload.event.timelineSequence, 1);
+  assert.equal(modelEvents[0].payload.event.modelCallSequence, 1);
+  assert.equal(modelEvents[0].payload.event.tokenUsage.totalTokens, 150);
+  assert.equal(JSON.stringify(modelEvents[0].payload).includes('hidden-live-reasoning'), false);
+  assert.equal(JSON.stringify(modelEvents[0].payload).includes('visible but not part of observability SSE'), false);
 });
 
 test('assistant completion hook broadcasts final message before blocking routing', async (t) => {

@@ -11,6 +11,12 @@ const {
   createLiveBridgeToolStep,
   createLiveSessionToolStep,
 } = require('../../build/server/domain/runtime/message-tool-trace');
+const {
+  createObservabilityTimelineState,
+  createToolObservabilityEvent,
+  finalizeObservabilityToolEvents,
+  snapshotObservabilityTimeline,
+} = require('../../build/lib/observability-timeline');
 const { withTempDir } = require('../helpers/temp-dir');
 
 function createClassListStub() {
@@ -150,6 +156,11 @@ globalThis.__testExports = {
   clearOptimisticUserMessage,
   pruneOptimisticMessagesForConversation,
   timelineMessagesForConversation,
+  applyConversationToolEvent,
+  applyConversationModelEvent,
+  mergeTraceTimelineEvents,
+  fetchMessageToolTrace,
+  warmConversationToolTraces,
   createEmptyToolTraceData,
   getMessageToolTraceState,
   toolTraceStateForMessage,
@@ -239,6 +250,10 @@ globalThis.__testExports = {
     confirm() {
       return true;
     },
+    requestAnimationFrame(callback) {
+      callback();
+      return 1;
+    },
     setTimeout() {
       return 1;
     },
@@ -275,6 +290,8 @@ globalThis.__testExports = {
 
   const conversationDirectoryPath = path.join(__dirname, '../../public/chat/conversation-directory.js');
   const messageHistoryPath = path.join(__dirname, '../../public/chat/message-history.js');
+  const observabilityTimelinePath = path.join(__dirname, '../../public/shared/observability-timeline.js');
+  vm.runInNewContext(fs.readFileSync(observabilityTimelinePath, 'utf8'), context, { filename: observabilityTimelinePath });
   vm.runInNewContext(fs.readFileSync(conversationDirectoryPath, 'utf8'), context, { filename: conversationDirectoryPath });
   vm.runInNewContext(fs.readFileSync(messageHistoryPath, 'utf8'), context, { filename: messageHistoryPath });
   vm.runInNewContext(instrumented, context, { filename: sourcePath });
@@ -936,6 +953,153 @@ test('assistant message tool trace exposes model usage calls and provider miss s
   assert.equal(trace.timelineEvents[3].toolName, 'bash');
   assert.equal(trace.timelineEvents[3].modelCallSequence, 2);
   assert.equal(trace.timelineEvents[4].providerMiss, true);
+});
+
+test('assistant message tool trace bounds mixed model and tool events to first one plus latest fifteen', (t) => {
+  const tempDir = withTempDir('caff-message-tool-trace-bounded-mixed-');
+  const sqlitePath = path.join(tempDir, 'trace.sqlite');
+  const sessionsDir = path.join(tempDir, 'named-sessions');
+  const sessionPath = path.join(sessionsDir, 'trace-session-bounded-mixed.jsonl');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const runStore = createSqliteRunStore({ agentDir: tempDir, sqlitePath });
+
+  fs.mkdirSync(sessionsDir, { recursive: true });
+  t.after(() => {
+    try { runStore.close(); } catch {}
+    try { store.close(); } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const agent = store.saveCustomRoleConfig({
+    id: 'trace-agent-bounded-mixed',
+    name: 'Trace Agent',
+    personaPrompt: 'Reply briefly.',
+  });
+  const conversation = store.createConversation({
+    id: 'trace-conversation-bounded-mixed',
+    title: 'Trace Conversation',
+    participants: [agent.id],
+  });
+  const taskId = 'trace-task-bounded-mixed-1';
+  const assistantMessage = store.createMessage({
+    id: 'trace-message-bounded-mixed-1',
+    conversationId: conversation.id,
+    turnId: 'trace-turn-bounded-mixed-1',
+    role: 'assistant',
+    agentId: agent.id,
+    senderName: agent.name,
+    content: 'Done',
+    status: 'completed',
+    taskId,
+    metadata: { sessionPath, sessionName: 'trace-session-bounded-mixed' },
+  });
+  const sessionLines = Array.from({ length: 24 }, (_, index) => JSON.stringify({
+    type: 'message',
+    message: {
+      role: 'assistant',
+      responseId: `response-${index + 1}`,
+      provider: 'demo-provider',
+      model: 'demo-model',
+      stopReason: index === 23 ? 'stop' : 'tool_use',
+      timestamp: index + 1,
+      usage: { input: 100 + index, output: 10, cacheRead: index === 0 ? 0 : 50 },
+      content: [{
+        type: 'toolCall',
+        name: 'read',
+        id: `session-tool-${index + 1}`,
+        arguments: { path: `docs/${index + 1}.md` },
+      }],
+    },
+  }));
+  fs.writeFileSync(sessionPath, `${sessionLines.join('\n')}\n`, 'utf8');
+  runStore.createTask({
+    taskId,
+    kind: 'conversation_agent_reply',
+    title: 'Trace Task',
+    status: 'completed',
+    sessionPath,
+    metadata: { sessionPath },
+  });
+
+  const trace = buildAssistantMessageToolTrace({
+    db: store.db,
+    agentDir: tempDir,
+    message: assistantMessage,
+    resolvedSessionPath: sessionPath,
+  });
+
+  assert.equal(trace.summary.modelCallCount, 24);
+  assert.equal(trace.summary.toolExecutionCount, 24);
+  assert.equal(trace.timelineWindow.totalEventCount, 48);
+  assert.equal(trace.timelineWindow.retainedEventCount, 16);
+  assert.equal(trace.timelineWindow.droppedEventCount, 32);
+  assert.equal(trace.timelineWindow.truncated, true);
+  assert.equal(trace.timelineEvents.length, 16);
+  assert.deepEqual(
+    trace.timelineEvents.map((event) => event.timelineSequence),
+    [1, ...Array.from({ length: 15 }, (_, index) => index + 34)]
+  );
+  assert.equal(trace.timelineEvents[0].eventId, 'model-call:response-1');
+  assert.equal(trace.timelineEvents.at(-1).eventId, 'tool:session:session-tool-24');
+});
+
+test('a running tool keeps its original identity after falling outside the retained window', () => {
+  const state = createObservabilityTimelineState();
+  createToolObservabilityEvent(state, {
+    stepId: 'session-anchor-tool',
+    kind: 'session',
+    toolName: 'read',
+    status: 'succeeded',
+  });
+  createToolObservabilityEvent(state, {
+    stepId: 'session-long-running-tool',
+    kind: 'session',
+    toolName: 'bash',
+    status: 'running',
+  });
+  for (let index = 3; index <= 21; index += 1) {
+    createToolObservabilityEvent(state, {
+      stepId: `session-tool-${index}`,
+      kind: 'session',
+      toolName: 'read',
+      status: 'succeeded',
+    });
+  }
+  const finished = createToolObservabilityEvent(state, {
+    stepId: 'session-long-running-tool',
+    kind: 'session',
+    toolName: 'bash',
+    status: 'succeeded',
+    durationMs: 250,
+  });
+
+  const snapshot = snapshotObservabilityTimeline(state);
+  assert.equal(finished.eventId, 'tool:session:long-running-tool');
+  assert.equal(finished.timelineSequence, 2);
+  assert.equal(snapshot.totalEventCount, 21);
+  assert.equal(snapshot.toolExecutionCount, 21);
+  assert.equal(snapshot.totalToolDurationMs, 250);
+  assert.equal(snapshot.events.some((event) => event.eventId === finished.eventId), false);
+  assert.deepEqual(
+    snapshot.events.map((event) => event.timelineSequence),
+    [1, ...Array.from({ length: 15 }, (_, index) => index + 7)]
+  );
+});
+
+test('failed finalization counts active tools even after they fall outside the retained window', () => {
+  const state = createObservabilityTimelineState();
+  createToolObservabilityEvent(state, { stepId: 'anchor', kind: 'session', status: 'succeeded' });
+  createToolObservabilityEvent(state, { stepId: 'dropped-active', kind: 'session', status: 'running' });
+  for (let index = 3; index <= 21; index += 1) {
+    createToolObservabilityEvent(state, { stepId: `terminal-${index}`, kind: 'session', status: 'succeeded' });
+  }
+
+  finalizeObservabilityToolEvents(state, true);
+  const snapshot = snapshotObservabilityTimeline(state);
+
+  assert.equal(snapshot.totalEventCount, 21);
+  assert.equal(snapshot.failedToolExecutionCount, 1);
+  assert.equal(state.activeToolEvents.size, 0);
 });
 
 test('assistant message tool trace builds one merged timeline for session and bridge steps', (t) => {
@@ -1824,13 +1988,137 @@ test('assistant message tool trace keeps the newest bridge events when the task 
     resolvedSessionPath: '',
   });
 
-  assert.equal(trace.bridgeToolEvents.length, 200);
-  assert.equal(trace.bridgeToolEvents[0].toolCallId, 'bridge-tool-6');
-  assert.equal(trace.bridgeToolEvents[199].toolCallId, 'bridge-tool-205');
+  assert.equal(trace.bridgeToolEvents.length, 16);
+  assert.equal(trace.bridgeToolEvents[0].toolCallId, 'bridge-tool-1');
+  assert.equal(trace.bridgeToolEvents[15].toolCallId, 'bridge-tool-205');
+  assert.equal(trace.summary.toolExecutionCount, 205);
+  assert.equal(trace.timelineWindow.totalEventCount, 205);
+  assert.equal(trace.timelineWindow.droppedEventCount, 189);
   assert.equal(trace.summary.failedSteps, 1);
   assert.equal(trace.failureContext.hasFailure, true);
   assert.equal(trace.failureContext.toolName, 'send-public');
   assert.equal(trace.failureContext.text.includes('latest step failed'), true);
+});
+
+test('public app reads one trace snapshot and keeps later event updates without another GET', async () => {
+  let traceGets = 0;
+  const conversationId = 'conversation-one-snapshot';
+  const message = {
+    id: 'message-one-snapshot',
+    role: 'assistant',
+    status: 'streaming',
+    taskId: 'task-one-snapshot',
+    runId: 1,
+    metadata: { sessionPath: 'named-sessions/one.jsonl' },
+  };
+  const { app } = loadPublicAppHarness({
+    fetchJson: async (url) => {
+      if (url.includes('/tool-trace')) {
+        traceGets += 1;
+        return {
+          trace: {
+            ...app.createEmptyToolTraceData(message.id),
+            timelineEvents: [{
+              eventId: 'model-call:one',
+              eventType: 'model_call',
+              timelineSequence: 1,
+              modelCallSequence: 1,
+              tokenUsage: { totalTokens: 10 },
+            }],
+            timelineWindow: { totalEventCount: 1, retainedEventCount: 1, droppedEventCount: 0, truncated: false },
+          },
+        };
+      }
+      return {};
+    },
+  });
+  app.state.selectedConversationId = conversationId;
+  app.state.currentConversation = { id: conversationId, messages: [message] };
+
+  await app.fetchMessageToolTrace(conversationId, message);
+  message.status = 'completed';
+  message.runId = 2;
+  await app.fetchMessageToolTrace(conversationId, message);
+
+  assert.equal(traceGets, 1);
+  assert.equal(app.toolTraceStateForMessage(message.id).data.timelineEvents.length, 1);
+});
+
+test('public app does not prefetch trace detail for unexpanded completed or running messages', async () => {
+  let traceGets = 0;
+  const { app } = loadPublicAppHarness({
+    fetchJson: async (url) => {
+      if (url.includes('/tool-trace')) traceGets += 1;
+      return { trace: null };
+    },
+  });
+  const conversation = {
+    id: 'conversation-no-warm-trace',
+    messages: [
+      { id: 'message-completed', role: 'assistant', status: 'completed', taskId: 'task-completed' },
+      { id: 'message-running', role: 'assistant', status: 'streaming', taskId: 'task-running' },
+    ],
+  };
+
+  app.state.selectedConversationId = conversation.id;
+  app.state.currentConversation = conversation;
+  app.warmConversationToolTraces(conversation);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(traceGets, 0);
+});
+
+test('public app merges long-running model events by stable id into a sixteen-event window', () => {
+  const { app, FakeEventSource } = loadPublicAppHarness();
+  const conversationId = 'conversation-live-window';
+  const messageId = 'message-live-window';
+  app.state.selectedConversationId = conversationId;
+  app.state.currentConversation = {
+    id: conversationId,
+    messages: [{ id: messageId, role: 'assistant', status: 'streaming', taskId: 'task-live-window' }],
+  };
+  app.connectEventStream();
+  const source = FakeEventSource.instance;
+
+  for (let sequence = 1; sequence <= 65; sequence += 1) {
+    source.dispatch('conversation_model_event', {
+      conversationId,
+      messageId,
+      taskId: 'task-live-window',
+      event: {
+        eventId: `model-call:response-${sequence}`,
+        eventType: 'model_call',
+        timelineSequence: sequence,
+        modelCallSequence: sequence,
+        sequence,
+        isColdStart: sequence === 1,
+        coldStart: sequence === 1,
+        providerMiss: sequence > 1,
+        tokenUsage: { inputTokens: sequence, outputTokens: 1, totalTokens: sequence + 1, cacheReadTokens: 0 },
+      },
+      timelineWindow: {
+        totalEventCount: sequence,
+        retainedEventCount: Math.min(sequence, 16),
+        droppedEventCount: Math.max(0, sequence - 16),
+        truncated: sequence > 16,
+        modelCallCount: sequence,
+        coldStartModelCallCount: 1,
+        postColdModelCallCount: Math.max(0, sequence - 1),
+        providerMissCount: Math.max(0, sequence - 1),
+        toolExecutionCount: 0,
+      },
+    });
+  }
+
+  const trace = app.toolTraceStateForMessage(messageId).data;
+  assert.equal(trace.timelineEvents.length, 16);
+  assert.deepEqual(
+    Array.from(trace.timelineEvents, (event) => event.timelineSequence),
+    [1, ...Array.from({ length: 15 }, (_, index) => index + 51)]
+  );
+  assert.equal(trace.timelineWindow.totalEventCount, 65);
+  assert.equal(trace.timelineWindow.droppedEventCount, 49);
+  assert.equal(trace.summary.modelCallCount, 65);
 });
 
 test('public app finalizes failed side-slot tool traces from the finished payload before removing the slot', () => {

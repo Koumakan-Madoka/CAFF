@@ -1,6 +1,6 @@
 export const DEFAULT_CONTEXT_SNAPSHOT_PAGE_LIMIT = 50;
 export const MAX_CONTEXT_SNAPSHOT_PAGE_LIMIT = 100;
-export const MAX_RETAINED_MODEL_USAGE_CALLS = 64;
+export const MAX_RETAINED_MODEL_USAGE_CALLS = 16;
 
 function nonNegativeInteger(value: any, fallback = 0) {
   const normalized = Number(value);
