@@ -393,68 +393,137 @@ export function createMessageRecoveryService(options: any = {}) {
     return message;
   }
 
-  function requireIdle(conversationId: string, validationOptions: any = {}) {
-    const runtime = getConversationMutationState(conversationId) || {};
+  function inspectIdle(conversationId: string, validationOptions: any = {}) {
+    let runtime: any = null;
+    try {
+      runtime = getConversationMutationState(conversationId) || {};
+    } catch {
+      return {
+        eligible: false,
+        reasonCode: 'conversation_recovery_state_unavailable',
+        reason: '暂时无法确认会话是否空闲，请刷新后重试',
+      };
+    }
     if (runtime.busy) {
-      throw recoveryError(409, 'conversation_recovery_conversation_busy', 'Conversation has active or queued work');
+      return {
+        eligible: false,
+        reasonCode: 'conversation_recovery_conversation_busy',
+        reason: '会话仍有运行中或排队任务，空闲后才能整理失败现场',
+      };
     }
     if (validationOptions.ignoreMutation === true) {
-      return;
+      return null;
     }
-    const mutation = mutationCoordinator && typeof mutationCoordinator.describe === 'function'
-      ? mutationCoordinator.describe(conversationId)
-      : { active: false, digestScheduled: false };
+    let mutation: any = null;
+    try {
+      mutation = mutationCoordinator && typeof mutationCoordinator.describe === 'function'
+        ? mutationCoordinator.describe(conversationId)
+        : { active: false, digestScheduled: false };
+    } catch {
+      return {
+        eligible: false,
+        reasonCode: 'conversation_recovery_state_unavailable',
+        reason: '暂时无法确认会话是否空闲，请刷新后重试',
+      };
+    }
     if (mutation.active || mutation.digestScheduled) {
-      throw recoveryError(409, 'conversation_recovery_conversation_busy', 'Conversation history is being modified');
+      return {
+        eligible: false,
+        reasonCode: 'conversation_recovery_conversation_busy',
+        reason: '会话历史正在更新，完成后才能整理失败现场',
+      };
+    }
+    return null;
+  }
+
+  function requireIdle(conversationId: string, validationOptions: any = {}) {
+    const unavailable = inspectIdle(conversationId, validationOptions);
+    if (unavailable) {
+      throw recoveryError(409, unavailable.reasonCode, unavailable.reason);
     }
   }
 
-  function sourceIntegrity(conversation: any, message: any) {
+  function inspectSourceIntegrity(conversation: any, message: any) {
     const taskId = String(message.taskId || '').trim();
     const runId = Number(message.runId);
     const task = taskId ? runStore.getTask(taskId) : null;
     const run = Number.isInteger(runId) && runId > 0 ? runStore.getRun(runId) : null;
+    const unavailable = (reasonCode: string, reason: string) => ({
+      eligible: false,
+      reasonCode,
+      reason,
+      source: null,
+    });
+
+    if (!taskId || !task) {
+      return unavailable('conversation_recovery_source_task_missing', '来源任务记录缺失，无法整理失败现场');
+    }
+    if (!Number.isInteger(runId) || runId <= 0 || !run) {
+      return unavailable('conversation_recovery_source_run_missing', '来源运行记录缺失，无法整理失败现场');
+    }
+    if (task.status !== 'failed') {
+      return unavailable('conversation_recovery_source_task_not_failed', '来源任务没有失败终态，无法整理失败现场');
+    }
+    const assistantErrors = Array.isArray(run.assistantErrors)
+      ? run.assistantErrors.map((value: any) => String(value || '').trim()).filter(Boolean)
+      : [];
+    const hasCompatibleRunFailure = run.status === 'failed'
+      || (run.status === 'succeeded' && assistantErrors.length > 0);
+    if (!hasCompatibleRunFailure) {
+      return unavailable(
+        'conversation_recovery_source_run_not_failed',
+        '来源运行没有可验证的失败终态或 assistant error 证据'
+      );
+    }
+    if (
+      Number(task.run_id) !== runId
+      || Number(run.id) !== runId
+      || String(run.task_id || '').trim() !== taskId
+    ) {
+      return unavailable('conversation_recovery_source_link_mismatch', '来源消息、任务与运行记录不一致');
+    }
+
     const storedContextSnapshot = store.getMessageContextSnapshot(message.id);
     const contextSnapshot = materializeAgentContextSnapshot(storedContextSnapshot);
+    if (!contextSnapshot || contextSnapshot.integrityOk === false) {
+      return unavailable('conversation_recovery_source_snapshot_missing', '来源上下文快照缺失或不完整');
+    }
+    const snapshotConversationId = String(contextSnapshot.conversationId || '').trim();
+    const snapshotMessageId = String(contextSnapshot.messageId || '').trim();
+    if (
+      (snapshotConversationId && snapshotConversationId !== conversation.id)
+      || (snapshotMessageId && snapshotMessageId !== message.id)
+    ) {
+      return unavailable('conversation_recovery_source_snapshot_mismatch', '来源上下文快照与失败消息不一致');
+    }
+
     let sessionPath = '';
     try {
       sessionPath = normalizePath(resolveAssistantMessageSessionPath(message));
     } catch {
       sessionPath = '';
     }
-
-    const snapshotConversationId = String(contextSnapshot && contextSnapshot.conversationId || '').trim();
-    const snapshotMessageId = String(contextSnapshot && contextSnapshot.messageId || '').trim();
-    const valid = Boolean(
-      taskId
-      && Number.isInteger(runId)
-      && runId > 0
-      && task
-      && run
-      && task.status === 'failed'
-      && run.status === 'failed'
-      && Number(task.run_id) === runId
-      && Number(run.id) === runId
-      && String(run.task_id || '').trim() === taskId
-      && contextSnapshot
-      && contextSnapshot.integrityOk !== false
-      && (!snapshotConversationId || snapshotConversationId === conversation.id)
-      && (!snapshotMessageId || snapshotMessageId === message.id)
-      && sessionPath
-      && samePath(task.session_path, sessionPath)
-      && samePath(run.session_path, sessionPath)
-      && isRegularFile(sessionPath)
-    );
-
-    if (!valid) {
-      throw recoveryError(
-        409,
-        'conversation_recovery_source_incomplete',
-        'Recovery source task, run, snapshot, or session is incomplete'
-      );
+    if (!sessionPath || !isRegularFile(sessionPath)) {
+      return unavailable('conversation_recovery_source_session_missing', '来源会话记录缺失或不可读');
+    }
+    if (!samePath(task.session_path, sessionPath) || !samePath(run.session_path, sessionPath)) {
+      return unavailable('conversation_recovery_source_session_mismatch', '来源任务、运行与会话记录路径不一致');
     }
 
-    return { conversation, message, task, run, contextSnapshot, sessionPath };
+    return {
+      eligible: true,
+      reasonCode: '',
+      reason: '',
+      source: { conversation, message, task, run, contextSnapshot, sessionPath },
+    };
+  }
+
+  function sourceIntegrity(conversation: any, message: any) {
+    const inspection = inspectSourceIntegrity(conversation, message);
+    if (!inspection.eligible) {
+      throw recoveryError(409, inspection.reasonCode, inspection.reason);
+    }
+    return inspection.source;
   }
 
   function createDurableRecovery(source: any, config: any) {
@@ -848,21 +917,63 @@ export function createMessageRecoveryService(options: any = {}) {
     const bySourceMessageId = new Map(
       recoveries.map((recovery: any) => [recovery.sourceMessageId, recovery])
     );
+    const conversations = new Map<string, any>();
+    const idleFailures = new Map<string, any>();
+
     return safeMessages.map((message) => {
       const recovery = bySourceMessageId.get(String(message && message.id || '').trim());
-      const isEligibleSource = Boolean(
+      const isEligibleSourceType = Boolean(
         message
         && message.role === 'assistant'
         && message.status === 'failed'
         && !(message.metadata && message.metadata.recoveryResult)
       );
-      const recoveryCapability = isEligibleSource
-        ? {
-            enabled: recoveryEnabled,
-            systemActorType: RECOVERY_SCRIBE_SYSTEM_ACTOR.type,
-            routable: RECOVERY_SCRIBE_SYSTEM_ACTOR.routable,
+      let recoveryCapability: any = null;
+
+      if (isEligibleSourceType) {
+        const baseCapability = {
+          systemActorType: RECOVERY_SCRIBE_SYSTEM_ACTOR.type,
+          routable: RECOVERY_SCRIBE_SYSTEM_ACTOR.routable,
+        };
+        if (!recoveryEnabled) {
+          recoveryCapability = {
+            enabled: false,
+            eligible: false,
+            reasonCode: 'conversation_recovery_disabled',
+            reason: '系统书记已停用',
+            ...baseCapability,
+          };
+        } else {
+          const conversationId = String(message.conversationId || '').trim();
+          if (!conversations.has(conversationId)) {
+            conversations.set(conversationId, store.getConversationWithoutMessages(conversationId));
           }
-        : null;
+          const conversation = conversations.get(conversationId);
+          if (!conversation) {
+            recoveryCapability = {
+              enabled: true,
+              eligible: false,
+              reasonCode: 'conversation_recovery_conversation_not_found',
+              reason: '来源会话不存在，无法整理失败现场',
+              ...baseCapability,
+            };
+          } else {
+            if (!idleFailures.has(conversationId)) {
+              idleFailures.set(conversationId, inspectIdle(conversationId));
+            }
+            const idleFailure = idleFailures.get(conversationId);
+            const inspection = idleFailure || inspectSourceIntegrity(conversation, message);
+            recoveryCapability = {
+              enabled: true,
+              eligible: idleFailure ? false : Boolean(inspection.eligible),
+              reasonCode: inspection.reasonCode,
+              reason: inspection.reason,
+              ...baseCapability,
+            };
+          }
+        }
+      }
+
       return {
         ...message,
         ...(recovery ? { recovery: projectRecoveryRecord(recovery, inFlight) } : {}),

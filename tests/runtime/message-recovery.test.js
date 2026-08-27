@@ -98,14 +98,18 @@ function createFixture(t, options = {}) {
     taskRole: agent.name,
     metadata: { conversationId: conversation.id, agentId: agent.id },
   });
+  const sourceRunStatus = options.sourceRunStatus || 'failed';
+  const sourceAssistantErrors = options.sourceAssistantErrors === undefined
+    ? ['stream_read_error']
+    : options.sourceAssistantErrors;
   runStore.finishRun(sourceRun.runId, {
-    status: 'failed',
-    terminationType: 'provider_error',
-    errorMessage: 'stream_read_error',
+    status: sourceRunStatus,
+    terminationType: sourceRunStatus === 'failed' ? 'provider_error' : null,
+    errorMessage: sourceRunStatus === 'failed' ? 'stream_read_error' : null,
     reply: '',
     stderrTail: '',
     parseErrors: 0,
-    assistantErrors: ['stream_read_error'],
+    assistantErrors: sourceAssistantErrors,
   });
   runStore.createTask({
     taskId: 'source-task',
@@ -442,6 +446,9 @@ test('disabled system scribe is projected as unavailable and cannot be triggered
 
   assert.deepEqual(projected.recoveryCapability, {
     enabled: false,
+    eligible: false,
+    reasonCode: 'conversation_recovery_disabled',
+    reason: '系统书记已停用',
     systemActorType: 'recovery_scribe',
     routable: false,
   });
@@ -480,6 +487,99 @@ test('disabled system scribe is projected as unavailable and cannot be triggered
     }),
     /recovery timeout must be between 1000 and 60000/iu
   );
+});
+
+test('historical succeeded run with explicit assistant errors remains recoverable without source rewrites', async (t) => {
+  const fixture = createFixture(t, {
+    sourceRunStatus: 'succeeded',
+    sourceAssistantErrors: ['connection error: stream_read_error'],
+  });
+  const [projected] = fixture.service.projectMessages([
+    fixture.store.getMessage(fixture.sourceMessage.id),
+  ]);
+
+  assert.deepEqual(projected.recoveryCapability, {
+    enabled: true,
+    eligible: true,
+    reasonCode: '',
+    reason: '',
+    systemActorType: 'recovery_scribe',
+    routable: false,
+  });
+
+  const accepted = fixture.service.requestRecovery(fixture.conversation.id, fixture.sourceMessage.id);
+  assert.equal(accepted.duplicate, false);
+  await fixture.scheduled[0]();
+
+  assert.equal(fixture.store.getMessage(fixture.sourceMessage.id).status, 'failed');
+  assert.equal(fixture.runStore.getTask('source-task').status, 'failed');
+  assert.equal(fixture.runStore.getRun(fixture.sourceRun.runId).status, 'succeeded');
+  assert.deepEqual(
+    fixture.runStore.getRun(fixture.sourceRun.runId).assistantErrors,
+    ['connection error: stream_read_error']
+  );
+});
+
+test('succeeded run without explicit assistant errors is rejected and projected with a stable reason', (t) => {
+  const fixture = createFixture(t, {
+    sourceRunStatus: 'succeeded',
+    sourceAssistantErrors: [],
+  });
+  const [projected] = fixture.service.projectMessages([
+    fixture.store.getMessage(fixture.sourceMessage.id),
+  ]);
+
+  assert.deepEqual(projected.recoveryCapability, {
+    enabled: true,
+    eligible: false,
+    reasonCode: 'conversation_recovery_source_run_not_failed',
+    reason: '来源运行没有可验证的失败终态或 assistant error 证据',
+    systemActorType: 'recovery_scribe',
+    routable: false,
+  });
+  assert.throws(
+    () => fixture.service.requestRecovery(fixture.conversation.id, fixture.sourceMessage.id),
+    (error) => error
+      && error.statusCode === 409
+      && error.code === 'conversation_recovery_source_run_not_failed'
+  );
+  assert.equal(fixture.scheduled.length, 0);
+});
+
+test('busy and missing-session sources project the same stable rejection used by POST', (t) => {
+  const busy = createFixture(t, { busy: true });
+  const [busyProjected] = busy.service.projectMessages([
+    busy.store.getMessage(busy.sourceMessage.id),
+  ]);
+  assert.deepEqual(busyProjected.recoveryCapability, {
+    enabled: true,
+    eligible: false,
+    reasonCode: 'conversation_recovery_conversation_busy',
+    reason: '会话仍有运行中或排队任务，空闲后才能整理失败现场',
+    systemActorType: 'recovery_scribe',
+    routable: false,
+  });
+
+  const missingSession = createFixture(t);
+  fs.rmSync(missingSession.sourceMessage.metadata.sessionPath, { force: true });
+  const [missingSessionProjected] = missingSession.service.projectMessages([
+    missingSession.store.getMessage(missingSession.sourceMessage.id),
+  ]);
+  assert.equal(missingSessionProjected.recoveryCapability.eligible, false);
+  assert.equal(
+    missingSessionProjected.recoveryCapability.reasonCode,
+    'conversation_recovery_source_session_missing'
+  );
+  assert.throws(
+    () => missingSession.service.requestRecovery(
+      missingSession.conversation.id,
+      missingSession.sourceMessage.id
+    ),
+    (error) => error
+      && error.statusCode === 409
+      && error.code === 'conversation_recovery_source_session_missing'
+  );
+  assert.equal(missingSession.scheduled.length, 0);
 });
 
 test('manual recovery validates idle, same-conversation failed source integrity before persistence', (t) => {

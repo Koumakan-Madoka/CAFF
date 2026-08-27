@@ -109,6 +109,14 @@ function failedMessage(recovery = null) {
     createdAt: '2026-08-26T00:00:00.000Z',
     metadata: { failure: true },
     deletionEligibility: { eligible: true, reasonCode: '', reason: '' },
+    recoveryCapability: {
+      enabled: true,
+      eligible: true,
+      reasonCode: '',
+      reason: '',
+      systemActorType: 'recovery_scribe',
+      routable: false,
+    },
     ...(recovery ? { recovery } : {}),
   };
 }
@@ -210,6 +218,9 @@ test('disabled system scribe is visible as a platform service state and has no r
     ...failedMessage(),
     recoveryCapability: {
       enabled: false,
+      eligible: false,
+      reasonCode: 'conversation_recovery_disabled',
+      reason: '系统书记已停用',
       systemActorType: 'recovery_scribe',
       routable: false,
     },
@@ -219,6 +230,33 @@ test('disabled system scribe is visible as a platform service state and has no r
   assert.ok(panel);
   assert.match(panel.textContent, /系统书记已停用/u);
   assert.equal(panel.querySelector('.message-recovery-button'), null);
+});
+
+test('server-rejected recovery source shows the stable reason without an action', () => {
+  const context = bootTimeline([{
+    ...failedMessage(),
+    recoveryCapability: {
+      enabled: true,
+      eligible: false,
+      reasonCode: 'conversation_recovery_source_run_not_failed',
+      reason: '来源运行没有可验证的失败终态或 assistant error 证据',
+      systemActorType: 'recovery_scribe',
+      routable: false,
+    },
+  }]);
+  const panel = context.document.querySelector('.message-recovery-panel');
+
+  assert.ok(panel);
+  assert.match(panel.textContent, /来源运行没有可验证的失败终态/u);
+  assert.equal(panel.querySelector('.message-recovery-button'), null);
+});
+
+test('failed assistant without a server recovery capability fails closed without an action', () => {
+  const message = failedMessage();
+  delete message.recoveryCapability;
+  const context = bootTimeline([message]);
+
+  assert.equal(context.document.querySelector('.message-recovery-button'), null);
 });
 
 test('terminal recovery state links the source card to the persisted result message', () => {

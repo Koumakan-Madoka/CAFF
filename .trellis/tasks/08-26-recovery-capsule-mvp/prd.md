@@ -171,7 +171,8 @@ body: { enabled, provider, model, thinking, timeoutMs }
 
 - Reject unknown body fields.
 - Response acknowledges the durable recovery before the background model call finishes.
-- Message-page projection adds `message.recovery` for source messages with a recovery row.
+- Message-page projection adds `message.recovery` for source messages with a recovery row and a server-owned `message.recoveryCapability` for every failed assistant source: `{ enabled, eligible, reasonCode, reason, systemActorType: 'recovery_scribe', routable: false }`.
+- Capability and POST share the same idle/source inspection. Historical `run=succeeded` is accepted only when message/task are failed and the persisted run has at least one non-empty `assistantErrors` entry; source rows are never rewritten. A succeeded run without that structured evidence is ineligible.
 - SSE `conversation_recovery_updated` carries `{ conversationId, sourceMessageId, recovery }` for queued/running/terminal states.
 - Terminal processing also emits normal `conversation_message_created` for the appended recovery message and `conversation_summary_updated`.
 - System-service GET/PUT is loopback local-admin guarded and credential-blind. PUT rejects unknown/missing fields, models outside the configured catalog, unsupported thinking, and timeout outside 1..60 seconds. Digest POST bodies reject `provider/model/thinking`; model selection is changed only through this system-service configuration.
@@ -186,8 +187,15 @@ body: { enabled, provider, model, thinking, timeoutMs }
 | Source missing/outside conversation | 404 `conversation_recovery_source_not_found` |
 | Source not assistant or not failed | 409 `conversation_recovery_source_not_failed` |
 | Recovery globally disabled | 503 `conversation_recovery_disabled` |
-| Conversation active, dispatching, queued, or has active side slot | 409 `conversation_recovery_conversation_busy` |
-| Missing task/run/snapshot/session or source mismatch | 409 `conversation_recovery_source_incomplete` |
+| Conversation active, dispatching, queued, or has active side slot | 409 `conversation_recovery_conversation_busy`; page capability uses the same reason code |
+| Runtime/mutation state cannot be inspected | 409 `conversation_recovery_state_unavailable`; page fails closed |
+| Missing/not-failed task or missing run | 409 `conversation_recovery_source_task_missing` / `_task_not_failed` / `_run_missing` |
+| Current run failed | Eligible run-state evidence |
+| Historical run succeeded with non-empty persisted assistant errors | Eligible compatibility source; original run stays succeeded |
+| Succeeded run without assistant errors or another run status | 409 `conversation_recovery_source_run_not_failed` |
+| Message/task/run linkage mismatch | 409 `conversation_recovery_source_link_mismatch` |
+| Snapshot missing/mismatched | 409 `conversation_recovery_source_snapshot_missing` / `_snapshot_mismatch` |
+| Session missing/unreadable/mismatched | 409 `conversation_recovery_source_session_missing` / `_session_mismatch` |
 | First valid click | 202, durable queued row, one background job |
 | Duplicate/concurrent click | 202 canonical row with `duplicate=true`; no second work |
 | Capsule exceeds limit after deterministic clipping | terminal failed mechanical message; no scribe model call |
@@ -197,7 +205,8 @@ body: { enabled, provider, model, thinking, timeoutMs }
 
 ## UI
 
-- Failed assistant cards show a text command `整理失败现场`; it is the only new action.
+- Failed assistant cards show `整理失败现场` only when server-projected `recoveryCapability.enabled === true && eligible === true`; browser message status alone never grants the action.
+- Ineligible failed sources show the server-projected bounded reason and no action. Missing capability fails closed with a hidden panel.
 - State labels: `等待整理`, `正在整理`, `整理完成`, `机械摘要`.
 - Queued/running disable the button. Completed/failed show the canonical state and do not offer retry in MVP.
 - Recovery messages visibly identify themselves as `系统书记`, the source trace/message and state: `这是只读现场整理，不会执行或重放原任务。`
@@ -215,8 +224,8 @@ body: { enabled, provider, model, thinking, timeoutMs }
 - [ ] Scribe invocation has zero tools/extensions and obeys input/output/timeout limits.
 - [ ] `recovery_scribe` is absent from role/participant/mention/private/handoff/default/explicit/cross-conversation/Goal/DAG candidates; reserved IDs/names and constructed delivery targets fail closed.
 - [ ] Model failure and invalid output append one mechanical fallback message.
-- [ ] HTTP duplicate/concurrent/busy/source-integrity behavior is covered.
-- [ ] SSE and UI show queued/running/completed/failed without changing the original failed state.
+- [ ] HTTP duplicate/concurrent/busy/source-integrity behavior is covered, including historical succeeded-run compatibility, no-evidence rejection, and message-page/POST reason parity.
+- [ ] SSE and UI show queued/running/completed/failed without changing the original failed state; UI action is driven only by server capability and ineligible/missing capability states expose no misleading button.
 - [ ] Platform admin can save and read back enabled/provider/model/thinking/timeout; the next recovery, digest, rollup, and title refinement use the saved shared model snapshot without restart, disable synchronizes recovery UI/POST without disabling summaries, request-level digest model overrides are rejected, and invalid values leave the row unchanged.
 - [ ] Build, check, typecheck, target tests, smoke and isolated browser acceptance pass.
 

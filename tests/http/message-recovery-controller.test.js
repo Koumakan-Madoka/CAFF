@@ -74,7 +74,18 @@ function createHarness(t) {
       return { recovery, duplicate: false };
     },
     projectMessages(messages) {
-      return messages.map((item) => item.id === message.id ? { ...item, recovery } : item);
+      return messages.map((item) => item.id === message.id ? {
+        ...item,
+        recovery,
+        recoveryCapability: {
+          enabled: true,
+          eligible: true,
+          reasonCode: '',
+          reason: '',
+          systemActorType: 'recovery_scribe',
+          routable: false,
+        },
+      } : item);
     },
   };
   const handler = createConversationsController({
@@ -126,4 +137,12 @@ test('message page includes the canonical recovery projection on its failed sour
   assert.equal(source.status, 'failed');
   assert.equal(source.recovery.id, 'http-recovery');
   assert.equal(source.recovery.status, 'queued');
+  assert.deepEqual(source.recoveryCapability, {
+    enabled: true,
+    eligible: true,
+    reasonCode: '',
+    reason: '',
+    systemActorType: 'recovery_scribe',
+    routable: false,
+  });
 });

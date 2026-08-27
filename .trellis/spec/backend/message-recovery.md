@@ -93,6 +93,21 @@ POST /api/conversations/:conversationId/messages/:messageId/recovery
 body: {}
 202 { recovery, duplicate }
 
+GET /api/conversations/:conversationId/messages
+200 {
+  items: Array<Message & {
+    recovery?: RecoveryProjection;
+    recoveryCapability?: {
+      enabled: boolean;
+      eligible: boolean;
+      reasonCode: string;
+      reason: string;
+      systemActorType: 'recovery_scribe';
+      routable: false;
+    };
+  }>;
+}
+
 GET /api/system-services/recovery-scribe
 200 { config, source, updatedAt, modelOptions }
 
@@ -121,7 +136,9 @@ The POST body must be exactly `{}`; unknown fields return `400 conversation_reco
 
 - Only a public assistant message with `status=failed` in the addressed conversation is eligible.
 - The conversation must be idle: no active/dispatching main turn, active side slot, queued user work, or queued side-slot work.
-- Source task, run, context snapshot, and session JSONL must exist and agree with the message association.
+- Source task, run, context snapshot, and session JSONL must exist and agree with the message association. The source task must be `failed`. The source run is accepted when it is `failed`, or for historical compatibility only when it is `succeeded` and its persisted `assistant_errors_json` normalizes to at least one non-empty error. Run error prose, message prose, and task error prose never substitute for that structured historical evidence.
+- `projectMessages()` and `requestRecovery()` share the same idle and source-integrity inspection. Failed assistant messages receive `recoveryCapability { enabled, eligible, reasonCode, reason, systemActorType, routable }`; the projection is bounded to the message page and caches conversation/idle reads per page. Disabled service, busy or unobservable runtime state, missing/mismatched source records, and a succeeded run without assistant errors fail closed with stable reason codes.
+- An existing durable recovery row remains the idempotency authority. Duplicate POST returns it before revalidating transient idle/source availability and never creates second work.
 - State is `absent -> queued -> running -> completed|failed`. Repository transitions filter both the expected source statuses and target status against those exact edges; completed/failed rows reject field-only updates as well as status changes.
 - `completed` means a valid scribe result was persisted. `failed` means scribe/validation failed and a mechanical fallback was persisted with `fallbackUsed=true`.
 - Duplicate or concurrent POST requests return the canonical row. They never create a second task, run, model call, or message.
@@ -213,8 +230,18 @@ The POST body must be exactly `{}`; unknown fields return `400 conversation_reco
 | conversation missing | 404 `conversation_recovery_conversation_not_found` |
 | source missing/outside conversation | 404 `conversation_recovery_source_not_found` |
 | source not failed assistant | 409 `conversation_recovery_source_not_failed` |
-| conversation busy | 409 `conversation_recovery_conversation_busy` |
-| task/run/snapshot/session missing or mismatched | 409 `conversation_recovery_source_incomplete` |
+| conversation busy | 409 `conversation_recovery_conversation_busy`; page capability is ineligible with the same code |
+| runtime/mutation idle state cannot be inspected | 409 `conversation_recovery_state_unavailable`; page capability fails closed |
+| source task missing / not failed | 409 `conversation_recovery_source_task_missing` / `conversation_recovery_source_task_not_failed` |
+| source run missing | 409 `conversation_recovery_source_run_missing` |
+| source run is failed | source run-state requirement passes |
+| historical source run is succeeded with non-empty persisted `assistantErrors[]` | source run-state requirement passes; original message/task/run remain unchanged |
+| source run is succeeded without persisted assistant errors, or has another status | 409 `conversation_recovery_source_run_not_failed` |
+| message/task/run linkage mismatch | 409 `conversation_recovery_source_link_mismatch` |
+| context snapshot missing/incomplete or points elsewhere | 409 `conversation_recovery_source_snapshot_missing` / `conversation_recovery_source_snapshot_mismatch` |
+| session JSONL missing/unreadable or task/run paths disagree | 409 `conversation_recovery_source_session_missing` / `conversation_recovery_source_session_mismatch` |
+| eligible failed source on message page | `recoveryCapability.enabled=true`, `eligible=true`, empty reason fields; UI may show the manual command |
+| ineligible failed source on message page | `eligible=false` with the POST-equivalent stable reason; UI shows no command |
 | first valid click | durable queued row and one scheduled job |
 | duplicate/concurrent click | same row, `duplicate=true`, no second work |
 | scribe succeeds with valid output | completed row and one persistent result message |
@@ -240,7 +267,11 @@ The POST body must be exactly `{}`; unknown fields return `400 conversation_reco
 - Good: a malformed roster contains `recovery_scribe`, but role/mention/default/private/Goal/DAG projections filter it and an explicit delivery target returns 403.
 - Good: an administrator saves a different configured model and 45-second timeout; the next recovery task/run/model request all use that exact snapshot without restarting CAFF.
 - Base: no persisted configuration exists, so the existing startup options/env/default chain remains authoritative.
+- Good: a historical failed message/task points to a `succeeded` run whose persisted `assistantErrors=['connection error: stream_read_error']`; Recovery accepts it without changing any source row.
+- Base: a current failed message/task/run has matching snapshot/session records and receives `eligible=true` on the message page.
 - Base: a failed read has an error result and is listed as not completed.
+- Bad: accepting every `succeeded` historical run because message/task prose says failed; without non-empty persisted assistant errors, the source must remain ineligible.
+- Bad: deriving the button from `message.status=failed` in the browser or reimplementing a weaker source check in `projectMessages()`.
 - Bad: treating a missing write result as not executed, replaying it automatically, or changing the source message from failed to completed.
 - Bad: starting a normal Pi Agent session for the scribe and relying on prompt wording to keep default coding tools unused.
 - Bad: registering the scribe as a configurable custom role or trusting absence from the mention UI without a server-side reserved identity/target guard.
@@ -255,11 +286,11 @@ The POST body must be exactly `{}`; unknown fields return `400 conversation_reco
 - `tests/storage/system-service-config.test.js`: typed singleton upsert, full-row replacement, reopen persistence, and foreign-key integrity.
 - `tests/runtime/recovery-scribe-config.test.js`: default/persisted priority, shared digest model selection while recovery is disabled, in-flight snapshot isolation, request-override refusal, plus strict field/model/thinking/timeout validation.
 - `tests/runtime/recovery-scribe-config-ui.test.js`: system-service purpose copy, shared digest/recovery model wording, configured-catalog provenance and provider navigation without role creation, configured model/thinking controls, no-model empty state with disabled save, read-only navigation, seconds-to-ms save payload, source label, and chat SSE refresh wiring.
-- `tests/runtime/message-recovery.test.js`: same-conversation/failed/idle/source-integrity validation, duplicate clicks, task/run linkage, platform actor metadata/no participant row, enable/disable validation, hot config next-request semantics, accepted-request snapshot isolation, direct no-tools invocation, provider/invalid-output fallback, source immutability, SSE order, stale restart projection, and no-environment startup materialization of `thinking=off` with unsupported non-empty thinking and timeout controls.
+- `tests/runtime/message-recovery.test.js`: same-conversation/failed/idle/source-integrity validation, duplicate clicks, task/run linkage, historical `run=succeeded + assistantErrors` compatibility without source rewrites, succeeded-run negative control, stable busy/session reason parity between capability and POST, platform actor metadata/no participant row, enable/disable validation, hot config next-request semantics, accepted-request snapshot isolation, direct no-tools invocation, provider/invalid-output fallback, source immutability, SSE order, stale restart projection, and no-environment startup materialization of `thinking=off` with unsupported non-empty thinking and timeout controls.
 - `tests/runtime/cross-conversation-delivery-wiring.test.js`: both server-composition paths clear Recovery/Digest/Pi runtime defaults around construction so ambient shell configuration cannot mask the no-environment startup contract.
 - `tests/http/recovery-scribe-config-controller.test.js`: loopback/Host/Origin/CSRF guard, safe GET/PUT projection, and global config-updated event.
-- `tests/http/message-recovery-controller.test.js`: exact `{}` body, 202 response, and message-page projection.
-- `tests/ui/message-recovery.test.js`: failed-card action, queued/running/completed/failed states, source provenance, non-execution declaration, stable touch geometry, and no retry/continue/source-state rewrite.
+- `tests/http/message-recovery-controller.test.js`: exact `{}` body, 202 response, and pass-through of the canonical message-page recovery/capability projection.
+- `tests/ui/message-recovery.test.js`: eligible failed-card action, queued/running/completed/failed states, server-reason ineligible state, missing-capability fail-closed behavior, source provenance, non-execution declaration, stable touch geometry, and no retry/continue/source-state rewrite.
 - `tests/runtime/turn-orchestrator.test.js`: one bounded source lookup, source Agent/run attribution for an old failed assistant, invalid-source fail-safe labeling, and refusal to trust recovery metadata provenance.
 - `tests/runtime/runtime-role-resolution.test.js`, `initial-target-resolution.test.js`, `cross-conversation-delivery.test.js`, and `session-goal-owner.test.js`: reserved identity/name, role directory/participant, mention/private/default/explicit target, delivery, and Goal owner refusal.
 - `tests/dag/dag-scheduler.test.js`: the system actor is never selected as worker or verifier.

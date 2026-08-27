@@ -157,14 +157,9 @@ coding-agent.
   mutate them.
 - Caller-driven `complete()` and terminal-message-driven
   `requestExpectedCompletion()` have symmetric post-completion behavior.
-- An expected-completion close resolves with code zero. `reply`, `usage`, and
-  `usageCalls` reflect only output observed before the boundary, and the runs
-  row stores `status='succeeded'` with the same unresolved
-  `assistant_errors_json` projection.
-- `agent-executor.ts` must still fail any resolved result whose
-  `assistantErrors` contains a real pre-completion error. It must not infer or
-  suppress cleanup errors from `bridgePublicCompletionRequested` or an error
-  string.
+- An expected-completion close resolves with code zero only when the bounded result has no unresolved `assistantErrors`. `reply`, `usage`, and `usageCalls` then reflect only output observed before the boundary, and the runs row stores `status='succeeded'` with `assistant_errors_json=[]`.
+- If a real assistant error was recorded before `complete()`, expected completion does not overwrite its semantic failure. The runtime rejects with `pi assistant reported a model invocation error`, preserves the unresolved/history/usage fields, and persists the run as `failed`. The executor then persists the message/task failure from the same structured signal.
+- `agent-executor.ts` defensively fails an alternate or mocked resolved result whose `assistantErrors` is non-empty, but production `pi-runtime` owns the run terminal status. It must not infer or suppress cleanup errors from `bridgePublicCompletionRequested` or an error string.
 - `cancelled`, `heartbeat_timeout`, `progress_timeout`, `run_timeout`, parent
   signals, process exits, ordinary aborts, and provider errors do not enable the
   guard. Their existing termination and failure semantics remain authoritative.
@@ -187,7 +182,7 @@ coding-agent.
 | --- | --- |
 | public reply, `complete()`, assistant abort error | run/message/task succeed; `assistantErrors=[]`; raw session diagnosis remains; trace sets `expectedCompletionTailIgnored=true` and has no failure context |
 | text/usage, `complete()`, later text/usage/error | retain only pre-completion reply and usage |
-| provider error, then `complete()` | pre-completion error remains unresolved; executor fails |
+| provider error, then `complete()` | runtime rejects, persists run failed with the unresolved assistant error, and executor fails message/task |
 | terminal assistant stop, then abort tail | existing expected-completion success remains unchanged |
 | user `cancel()` plus abort-shaped assistant tail | cancellation fails and tail remains diagnostic |
 | heartbeat/progress/run timeout | timeout fails with its original `terminationReason.type` |
@@ -213,9 +208,7 @@ coding-agent.
   pre-completion tool/text message, waits for abort, then sends text delta,
   assistant error, and `agent_end`. Assert clean result/run state, unchanged
   pre-completion reply/usage, and no post-completion stderr error.
-- The same suite sends a provider error before caller completion and asserts it
-  remains the only unresolved/history error. A cancellation variant asserts
-  `terminationReason.type='cancelled'` and retains the abort-tail diagnosis.
+- The same suite sends a provider error before caller completion, triggers `complete()` only after the error event, and asserts rejection plus a real SQLite `runs.status='failed'` / non-empty `assistant_errors_json`. A cancellation variant asserts `terminationReason.type='cancelled'` and retains the abort-tail diagnosis.
 - Existing heartbeat/progress/run timeout, terminal completion, native retry,
   and ordinary assistant-error tests remain regression gates.
 - `tests/runtime/agent-executor-hook.test.js` keeps both sides of the boundary:
@@ -250,10 +243,17 @@ post.
 if (reason && reason.type === 'expected_completion') {
   ignoreFurtherAssistantOutput = true;
 }
+
+if (terminationReason?.type === 'expected_completion') {
+  if (result.assistantErrors.length > 0) {
+    finishWithError(createInvokeError('pi assistant reported a model invocation error', result));
+  } else {
+    finishWithResult({ ...result, code: 0, signal: null });
+  }
+}
 ```
 
-The guard is established before abort IPC, so only causally later assistant
-output is ignored.
+The guard is established before abort IPC, so only causally later assistant output is ignored; the terminal branch still refuses to convert an earlier provider failure into a succeeded run.
 
 ## Exact Stream Read Retry Normalization
 

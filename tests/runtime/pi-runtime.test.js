@@ -620,9 +620,10 @@ test('pi runtime preserves an assistant provider error recorded before caller ex
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
+  const sqlitePath = path.join(tempDir, 'pre-completion-error.sqlite');
   handle = runtime.startRun('test-provider', 'test-model', 'Preserve prior provider failure', {
     agentDir: tempDir,
-    sqlitePath: path.join(tempDir, 'pre-completion-error.sqlite'),
+    sqlitePath,
     heartbeatIntervalMs: 0,
     heartbeatTimeoutMs: 10000,
     terminateGraceMs: 100,
@@ -634,13 +635,23 @@ test('pi runtime preserves an assistant provider error recorded before caller ex
     }
   });
 
-  const result = await handle.resultPromise;
+  await assert.rejects(handle.resultPromise, (error) => {
+    assert.equal(error.message, 'pi assistant reported a model invocation error');
+    assert.deepEqual(error.assistantErrors, ['provider failed before public completion']);
+    assert.deepEqual(error.assistantErrorHistory, ['provider failed before public completion']);
+    assert.equal(error.reply, '');
+    assert.deepEqual(error.usage, { input: 3, output: 1, totalTokens: 4 });
+    assert.equal(error.usageCalls.length, 1);
+    return true;
+  });
 
-  assert.deepEqual(result.assistantErrors, ['provider failed before public completion']);
-  assert.deepEqual(result.assistantErrorHistory, ['provider failed before public completion']);
-  assert.equal(result.reply, '');
-  assert.deepEqual(result.usage, { input: 3, output: 1, totalTokens: 4 });
-  assert.equal(result.usageCalls.length, 1);
+  const db = new Database(sqlitePath, { readonly: true });
+  const run = db.prepare('SELECT status, assistant_errors_json FROM runs WHERE id = ?').get(handle.runId);
+  db.close();
+  assert.deepEqual(run, {
+    status: 'failed',
+    assistant_errors_json: JSON.stringify(['provider failed before public completion']),
+  });
 });
 
 test('pi runtime keeps user cancellation authoritative when the host emits an assistant abort tail', async (t) => {

@@ -93,8 +93,11 @@ mocked result alone:
   `assistantErrors=[]`, and `status='succeeded'` with
   `assistant_errors_json='[]'`.
 - Add a pre-completion provider-error variant. Trigger `complete()` only after
-  the parent observes `assistant_error`, then assert that prior error remains
-  unresolved and would still activate the executor's defensive failure path.
+  the parent observes `assistant_error`, then assert that `resultPromise`
+  rejects, the unresolved/history/usage evidence is preserved, and the real
+  SQLite run stores `status='failed'` with the same non-empty
+  `assistant_errors_json`. This is the regression for historical
+  message/task-failed + run-succeeded divergence.
 - Add a cancellation variant using the same abort-tail fixture. Assert
   `terminationReason.type='cancelled'` and retain the assistant tail diagnosis.
 - Keep the existing heartbeat/progress/run timeout, terminal completion,
@@ -111,6 +114,14 @@ mocked result alone:
   `assistant_errors_json`, and the same succeeded run without the
   expected-completion event. Both must retain `failureContext.hasFailure=true`.
   Do not match the session error string in the production projection.
+
+## Failed-Message Recovery Eligibility Guards
+
+- Use a real temporary `ChatAppStore` plus `SqliteRunStore`, a real context-detail row, and a real session JSONL. Projection-only mocks cannot prove source linkage or historical run compatibility.
+- Seed the historical divergence exactly: message `failed`, task `failed`, run `succeeded`, and persisted non-empty `assistant_errors_json`. Assert both message-page capability and POST accept it, then run the background job and compare all three source rows before/after; the succeeded run must not be rewritten.
+- Pair it with a negative control whose succeeded run has `assistant_errors_json=[]`. Assert `eligible=false`, `reasonCode=conversation_recovery_source_run_not_failed`, POST returns the same code, and no recovery task/job exists.
+- Cover transient and durable refusal separately: busy runtime state projects/throws `conversation_recovery_conversation_busy`; missing session file projects/throws `conversation_recovery_source_session_missing`. The message page and POST must use the same domain inspection rather than mirrored conditions.
+- UI fixtures must carry the server capability. Show the command only for `enabled=true && eligible=true`; render the bounded server reason for ineligible sources; hide the command when capability is absent so a stale/older payload fails closed.
 
 ## Recovery Scribe Startup-Default Guards
 
