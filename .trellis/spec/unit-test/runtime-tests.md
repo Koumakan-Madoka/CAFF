@@ -158,6 +158,13 @@ mocked result alone:
   global `DEFAULT_THINKING`, generic `resolveThinkingSetting`, persisted config
   validation, provider/model selection, credentials, or production settings.
 
+## Immediate Private Handoff Joint-Drain Guards
+
+- Build the regression through `createRoutingExecutor`, not a standalone queue helper. Start Agent A in the ordinary queue, have A immediately launch B through `triggerType='private'`, and gate B until a `setImmediate` scheduled by A runs. This ensures A has returned and the first ordinary queue pass has observed an empty queue before B publishes its handoff.
+- B must enqueue A through `triggerType='agent'` with a distinct source run id. Assert the dispatch result is `queued`; this proves mention routing and queue insertion succeeded before testing scheduler drain behavior.
+- The baseline red must show A executed once, B once, and only two reserved hops despite the accepted public handoff. The green path must show execution order `A1, B1, A2, turn_finished`, reserved hops `1,2,3`, and three completed replies.
+- Keep the adjacent immediate-private, cross-channel deduplication, capacity-limited fallback, Stop, `agent_final`, and hop-limit cases in the same gate. The fix may extend only `queue_exhausted`; absorbing terminal results must not launch late ordinary work.
+
 ## Useful Existing Suites
 
 - `tests/runtime/agent-tool-bridge.test.js`: bridge behavior and `.trellis`

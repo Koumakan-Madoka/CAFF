@@ -3167,6 +3167,123 @@ test('routing executor starts a private recipient before the sender trace settle
   }
 });
 
+test('routing executor drains a public handoff queued by a settling private recipient', { concurrency: false }, async (t) => {
+  const tempDir = withTempDir('caff-private-public-joint-drain-');
+  const sqlitePath = path.join(tempDir, 'private-public-joint-drain.sqlite');
+  const activeConversationIds = new Set();
+  const activeTurns = new Map();
+  const conversation = {
+    id: 'conversation-private-public-joint-drain',
+    title: 'Private recipient public handoff',
+    type: 'standard',
+    agents: [
+      { id: 'agent-a', name: 'Alpha' },
+      { id: 'agent-b', name: 'Beta' },
+    ],
+    messages: [],
+  };
+  let messageCounter = 0;
+  let alphaExecutionCount = 0;
+  let releasePrivateRecipient;
+  const privateRecipientGate = new Promise((resolve) => {
+    releasePrivateRecipient = resolve;
+  });
+  const executionOrder = [];
+  const reservedHops = [];
+  let publicDispatch = null;
+
+  t.after(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const store = {
+    getConversation(conversationId) {
+      return conversationId === conversation.id ? conversation : null;
+    },
+    createMessage(input) {
+      messageCounter += 1;
+      const message = {
+        id: `joint-drain-message-${messageCounter}`,
+        errorMessage: '',
+        taskId: null,
+        runId: null,
+        metadata: null,
+        createdAt: `2026-08-28T22:30:${String(messageCounter).padStart(2, '0')}.000Z`,
+        ...input,
+      };
+      conversation.messages.push(message);
+      return message;
+    },
+  };
+  const executor = createRoutingExecutor({
+    store,
+    agentDir: tempDir,
+    sqlitePath,
+    activeConversationIds,
+    activeTurns,
+    broadcastEvent(eventName) {
+      if (eventName === 'turn_finished') {
+        executionOrder.push('turn_finished');
+      }
+    },
+    async executeConversationAgent({ agent, enqueueAgent, completedReplies, hop }) {
+      reservedHops.push(hop);
+
+      if (agent.id === 'agent-a') {
+        alphaExecutionCount += 1;
+        executionOrder.push(`agent-a-${alphaExecutionCount}`);
+
+        if (alphaExecutionCount === 1) {
+          enqueueAgent({
+            agentId: 'agent-b',
+            triggerType: 'private',
+            triggeredByAgentId: 'agent-a',
+            triggeredByAgentName: 'Alpha',
+            triggeredByMessageId: 'private-message-beta',
+            parentRunId: 'run-agent-a-1',
+            enqueueReason: 'private_message',
+          });
+          setImmediate(releasePrivateRecipient);
+        }
+      } else {
+        await privateRecipientGate;
+        executionOrder.push('agent-b-1');
+        publicDispatch = enqueueAgent({
+          agentId: 'agent-a',
+          triggerType: 'agent',
+          triggeredByAgentId: 'agent-b',
+          triggeredByAgentName: 'Beta',
+          triggeredByMessageId: 'public-message-alpha',
+          parentRunId: 'run-agent-b-1',
+          enqueueReason: 'public_handoff',
+        });
+      }
+
+      completedReplies.push({
+        agentId: agent.id,
+        senderName: agent.name,
+        content: 'ok',
+        status: 'completed',
+      });
+      return { stopTurn: false, terminationReason: '' };
+    },
+  });
+
+  const result = await executor(conversation.id, {
+    content: 'Start with Alpha',
+    initialAgentIds: ['agent-a'],
+    executionMode: 'queue',
+  });
+
+  assert.deepEqual(publicDispatch.enqueuedAgentIds, ['agent-a']);
+  assert.equal(publicDispatch.dispatch[0].outcome, 'queued');
+  assert.equal(alphaExecutionCount, 2, 'the public handoff emitted by Beta must execute as hop 3');
+  assert.deepEqual(reservedHops, [1, 2, 3]);
+  assert.deepEqual(executionOrder, ['agent-a-1', 'agent-b-1', 'agent-a-2', 'turn_finished']);
+  assert.equal(result.turn.hopCount, 3);
+  assert.equal(result.replies.length, 3);
+});
+
 test('routing executor deduplicates private and public handoffs to one recipient in the same source trace', { concurrency: false }, async (t) => {
   for (const recipientTiming of ['running', 'completed']) {
     await t.test(recipientTiming, async (t) => {

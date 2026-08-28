@@ -1,0 +1,4 @@
+{"file": ".agents/skills/finish-work/SKILL.md", "reason": "Finish work checklist"}
+{"file": ".agents/skills/check/SKILL.md", "reason": "Code quality check spec"}
+{"file": ".trellis/spec/runtime/conversation-turn-queue.md", "reason": "Verify scheduler lifecycle and terminal ordering"}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Verify regression quality and adjacent coverage"}

@@ -175,7 +175,8 @@ assertImagePreflightForTargets(turnInput, conversation, {
 - Successful dispatch is deduplicated across private handoff and ordinary public mention by `(sourceAgentId, sourceRunId, recipientAgentId)`. A duplicate message remains durable and visible to its intended audience but creates no model run and consumes no hop.
 - Keep two distinct ledgers. Private-private attempt deduplication records before busy/capacity checks to prevent polling. The shared cross-channel ledger records only `launched` private outcomes and accepted ordinary queue entries. Do not use private attempt keys as proof that a run started.
 - A private `already_running` or `capacity_limited` result does not suppress a later public mention. That mention remains subject to ordinary queue, stop, capacity, and hop limits.
-- `turn_finished`, root task settlement, active-turn cleanup, and Goal continuation wait until all immediately launched private recipients settle. A sender final cannot orphan an in-flight recipient.
+- `turn_finished`, root task settlement, active-turn cleanup, and Goal continuation wait until the scheduler reaches a joint fixed point: the ordinary queue is empty and all immediately launched private recipients have settled. When the ordinary queue becomes empty while private executions remain, wait for the next private execution to settle and then re-check the ordinary queue before finishing. A public handoff emitted by that recipient must run in the same turn; do not clear `pendingAgentIds` or emit `conversation_turn_finished` between those steps.
+- An absorbing turn result (`agent_final`, user Stop, or hop limit) still prevents later ordinary launches. The joint drain extends only `queue_exhausted`; it does not reopen a terminal routing decision.
 - Stop applies to every registered sender/recipient handle and prevents late launches. Concurrent prompt construction excludes other Agents' incomplete assistant placeholders.
 - Agent guidance requires one complete private message per recipient per trace, no polling/P2 wait, and commit-pinned formal review. After a formal review request, the author freezes repository writes for the remainder of that trace.
 
@@ -192,22 +193,51 @@ assertImagePreflightForTargets(turnInput, conversation, {
 | `--no-handoff` private message, then public mention | Private message is persistence-only; public mention dispatches normally. |
 | Different source Agent, source run, or recipient | Distinct key; dispatch remains eligible. |
 | Sender returns final before recipient | Wait for recipient, then emit exactly one terminal turn event. |
+| Ordinary queue empties, then a private recipient publicly hands off | After that private execution settles, re-check and drain the new ordinary item before `conversation_turn_finished`. |
+| Agent final, user Stop, or hop limit occurs while a private recipient remains | Wait for settlement, but do not launch ordinary work queued after the absorbing result. |
 | User stops | Cancel registered executions/waits and prevent late launch. |
 
 ### 5. Good / Base / Bad Cases
 
 - Good: A privately launches B, then publicly mentions B and C. B executes once, C executes once, and only three hops exist: A, B, C.
+- Good: A privately launches B and returns while the ordinary queue becomes empty. B then publicly mentions A and settles; the scheduler re-checks the queue, executes A as hop 3, and only then emits `conversation_turn_finished`.
+- Base: A privately launches B, returns final, and B settles without a handoff. The turn waits for B, then finishes exactly once.
 - Base: A's private attempt for B is capacity-limited, then A publicly mentions B. The public handoff may queue and execute under ordinary limits because no private run started.
+- Bad: waiting for all private executions after a one-shot `while (queue.length > 0)` loop. A settling private recipient can successfully append an ordinary handoff after that loop exits, producing `agent_turn_routed` followed by `queue_exhausted` without a model run.
 - Bad: reusing `privateLaunchKeys` for public routing. That set records failed busy/capacity attempts and would silently suppress a legal public handoff.
 - Bad: keying only by recipient. That would suppress another sender or a later source run.
 
 ### 6. Tests Required
 
-- `tests/runtime/turn-orchestrator.test.js`: private plus same public recipient executes once while the recipient is running and after it completes; repeated private remains duplicate; a different public recipient executes; duplicate consumes no hop; capacity-limited private does not poison public eligibility; Stop prevents late launch.
+- `tests/runtime/turn-orchestrator.test.js`: private plus same public recipient executes once while the recipient is running and after it completes; repeated private remains duplicate; a different public recipient executes; duplicate consumes no hop; capacity-limited private does not poison public eligibility; a private recipient that publicly hands off after the ordinary queue empties creates hop 3 before `turn_finished`; absorbing final/Stop/hop-limit results prevent late launches; Stop prevents late private launch.
 - `tests/runtime/agent-tool-bridge.test.js`: handoff-enabled private dispatch passes `triggerType='private'`, sender id, stage run id, and recipient ids; self-private and `--no-handoff` never call `enqueueAgent`.
 - `tests/runtime/agent-executor-hook.test.js`: actionable public mention passes `triggerType='agent'`, the same sender id, and completed Pi run id after completion hooks.
 
 ### 7. Wrong Vs Correct
+
+#### Wrong
+```ts
+while (queue.length > 0) {
+  await executeQueuedAgent(queue.shift());
+}
+await Promise.allSettled(inFlightPrivateExecutions);
+```
+
+This never revisits ordinary work appended by a private recipient while the scheduler is waiting for that recipient to settle.
+
+#### Correct
+```ts
+while (queue.length > 0 || inFlightPrivateExecutions.size > 0) {
+  while (queue.length > 0) {
+    await executeQueuedAgent(queue.shift());
+  }
+  if (inFlightPrivateExecutions.size > 0) {
+    await Promise.race(inFlightPrivateExecutions);
+  }
+}
+```
+
+The scheduler finishes only at the joint fixed point and re-checks ordinary work after each private settlement; terminal stop and hop guards remain conditions on both loops.
 
 #### Wrong
 ```ts
