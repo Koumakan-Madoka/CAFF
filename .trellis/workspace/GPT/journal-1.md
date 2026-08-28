@@ -784,3 +784,56 @@ Known follow-ups remain outside this completed task: M1 authority refresh after 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 17: Drain public handoffs after private recipient settlement
+
+**Date**: 2026-08-28
+**Task**: Drain public handoffs after private recipient settlement
+**Branch**: `room/08154128-gpt-agent`
+
+### Summary
+
+(Add summary)
+
+### Main Changes
+
+| Area | Evidence |
+|------|----------|
+| Root cause | Ordinary routing drained `queue` once, then waited for `inFlightPrivateExecutions` without re-checking work publicly enqueued by a private recipient. Production message `ea6a5301-ae3d-4563-b422-9cba25b2c41d` was routed to GPT but the turn finished `queue_exhausted` before hop 3. |
+| Regression | Parent `b5f6cd3` accepted the public handoff as `queued` but executed Agent A only once. Candidate executes `A1 -> B1 -> A2 -> turn_finished` with reserved hops `[1,2,3]`. |
+| Fix | `routing-executor.ts` now drains the ordinary queue and immediately launched private executions to one joint fixed point while preserving Stop, `agent_final`, hop limit, capacity, deduplication, and audit semantics. |
+| Validation | Author checks, server/public typecheck, equivalent build, focused scheduler tests, bridge/executor tests, and smoke/mode-store passed. Two pre-existing Windows image-preflight cleanup hooks still report `fs.rmSync EPERM` after their assertions pass. |
+| Review | GLM independently reproduced the pre-fix red and approved exact implementation `f5cc8d09e3631a82393f984b59d9ca2b145cc33c` with no blocking findings. |
+| Lifecycle | User requested archive before integration. Task was archived by project script as `399be46e3b9037d46590c83673448383ab201b54`; integration to `develop` remains pending review of the archive/session-only head. |
+
+**Updated runtime and test files**:
+- `server/domain/conversation/turn/routing-executor.ts`
+- `tests/runtime/turn-orchestrator.test.js`
+
+**Updated specifications**:
+- `.trellis/spec/runtime/conversation-turn-queue.md`
+- `.trellis/spec/unit-test/runtime-tests.md`
+
+**Archived task evidence**:
+- `.trellis/tasks/archive/2026-08/08-28-08-28-private-handoff-queue-drain/`
+
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f5cc8d09e3631a82393f984b59d9ca2b145cc33c` | (see git log) |
+| `399be46e3b9037d46590c83673448383ab201b54` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

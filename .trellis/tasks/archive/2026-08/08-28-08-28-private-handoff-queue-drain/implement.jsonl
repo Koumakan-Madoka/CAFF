@@ -1,0 +1,5 @@
+{"file": ".trellis/workflow.md", "reason": "Project workflow and conventions"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend development guide"}
+{"file": ".trellis/spec/runtime/conversation-turn-queue.md", "reason": "Immediate private handoff scheduling and joint queue drain contract"}
+{"file": ".trellis/spec/runtime/agent-runtime.md", "reason": "Conversation Agent runtime lifecycle constraints"}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Observable turn-orchestrator regression patterns"}

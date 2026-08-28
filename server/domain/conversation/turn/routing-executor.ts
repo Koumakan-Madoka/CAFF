@@ -887,70 +887,94 @@ export function createRoutingExecutor(options: any = {}) {
 
         emitTurnProgress(turnState);
 
-        while (queue.length > 0 && turnState.hopCount < maxReplies && !turnState.stopRequested) {
-          const queueEntry = queue.shift();
-          const queuedItems = queueEntryItems(queueEntry);
+        let ordinaryRoutingTerminated = false;
+        while (
+          !ordinaryRoutingTerminated
+          && !turnState.stopRequested
+          && turnState.hopCount < maxReplies
+          && (queue.length > 0 || inFlightPrivateExecutions.size > 0)
+        ) {
+          while (queue.length > 0 && turnState.hopCount < maxReplies && !turnState.stopRequested) {
+            const queueEntry = queue.shift();
+            const queuedItems = queueEntryItems(queueEntry);
 
-          for (const queuedItem of queuedItems) {
-            queuedAgentIds.delete(queuedItem.agentId);
-          }
+            for (const queuedItem of queuedItems) {
+              queuedAgentIds.delete(queuedItem.agentId);
+            }
 
-          turnState.pendingAgentIds = queuePendingAgentIds();
-          turnState.updatedAt = nowIso();
-          syncCurrentTurnAgent(turnState);
+            turnState.pendingAgentIds = queuePendingAgentIds();
+            turnState.updatedAt = nowIso();
+            syncCurrentTurnAgent(turnState);
 
-          const refreshedConversationSnapshot = getConversationHeader(conversationId);
-          const refreshedConversation = refreshedConversationSnapshot
-            ? { ...refreshedConversationSnapshot, agents: resolvedRuntimeAgents }
-            : conversation;
-          const remainingCapacity = maxReplies - (turnState.hopCount || 0);
+            const refreshedConversationSnapshot = getConversationHeader(conversationId);
+            const refreshedConversation = refreshedConversationSnapshot
+              ? { ...refreshedConversationSnapshot, agents: resolvedRuntimeAgents }
+              : conversation;
+            const remainingCapacity = maxReplies - (turnState.hopCount || 0);
 
-          if (remainingCapacity <= 0) {
-            terminationReason = 'hop_limit_reached';
-            break;
-          }
-
-          const runnableItems = queuedItems
-            .map((queueItem: any) => ({
-              queueItem,
-              agent: getAgentById(refreshedConversation.agents, queueItem.agentId),
-            }))
-            .filter((item: any) => item.agent);
-          const executionItems = runnableItems.slice(0, remainingCapacity);
-
-          if (executionItems.length === 0) {
-            if (runnableItems.length > remainingCapacity) {
+            if (remainingCapacity <= 0) {
               terminationReason = 'hop_limit_reached';
+              ordinaryRoutingTerminated = true;
               break;
             }
 
-            continue;
-          }
+            const runnableItems = queuedItems
+              .map((queueItem: any) => ({
+                queueItem,
+                agent: getAgentById(refreshedConversation.agents, queueItem.agentId),
+              }))
+              .filter((item: any) => item.agent);
+            const executionItems = runnableItems.slice(0, remainingCapacity);
 
-          const reservedItems = executionItems
-            .map(({ queueItem, agent }: any) => ({ queueItem, agent, hop: reserveHop() }))
-            .filter((item: any) => item.hop !== null);
-          const isParallelBatch = reservedItems.length > 1;
-          const results = isParallelBatch
-            ? await Promise.all(
-                reservedItems.map(({ queueItem, agent, hop }: any) =>
-                  executeReservedItem(queueItem, agent, hop, false)
+            if (executionItems.length === 0) {
+              if (runnableItems.length > remainingCapacity) {
+                terminationReason = 'hop_limit_reached';
+                ordinaryRoutingTerminated = true;
+                break;
+              }
+
+              continue;
+            }
+
+            const reservedItems = executionItems
+              .map(({ queueItem, agent }: any) => ({ queueItem, agent, hop: reserveHop() }))
+              .filter((item: any) => item.hop !== null);
+            const isParallelBatch = reservedItems.length > 1;
+            const results = isParallelBatch
+              ? await Promise.all(
+                  reservedItems.map(({ queueItem, agent, hop }: any) =>
+                    executeReservedItem(queueItem, agent, hop, false)
+                  )
                 )
-              )
-            : reservedItems.length === 1
-              ? [await executeReservedItem(reservedItems[0].queueItem, reservedItems[0].agent, reservedItems[0].hop, true)]
-              : [];
+              : reservedItems.length === 1
+                ? [await executeReservedItem(reservedItems[0].queueItem, reservedItems[0].agent, reservedItems[0].hop, true)]
+                : [];
 
-          const stopResult = results.find((result) => result && result.stopTurn);
+            const stopResult = results.find((result) => result && result.stopTurn);
 
-          if (stopResult) {
-            terminationReason = stopResult.terminationReason || 'agent_final';
+            if (stopResult) {
+              terminationReason = stopResult.terminationReason || 'agent_final';
+              ordinaryRoutingTerminated = true;
+              break;
+            }
+
+            if (runnableItems.length > executionItems.length) {
+              terminationReason = 'hop_limit_reached';
+              ordinaryRoutingTerminated = true;
+              break;
+            }
+          }
+
+          if (
+            ordinaryRoutingTerminated
+            || turnState.stopRequested
+            || turnState.hopCount >= maxReplies
+          ) {
             break;
           }
 
-          if (runnableItems.length > executionItems.length) {
-            terminationReason = 'hop_limit_reached';
-            break;
+          if (queue.length === 0 && inFlightPrivateExecutions.size > 0) {
+            await Promise.race(Array.from(inFlightPrivateExecutions));
           }
         }
       }
