@@ -185,7 +185,9 @@ mocked result alone:
   `timelineEvents` and derived `steps`. Completed-message refresh, main-turn
   finish, and side-slot finish must update the canonical event first, then
   rebuild to a non-running summary/activity without resurrecting the stale
-  derived status.
+  derived status. The completed-message HTTP refresh fixture must also capture
+  render-time state and prove the last render sees `activity.status=idle`, not
+  merely that an after-render in-memory mutation eventually becomes idle.
 - Tool-trace fixtures combine model and tool events and assert every returned
   detail array is derived from the same 16-event window while full summary
   counts remain unchanged. The HTTP `timelineWindow` must repeat the full

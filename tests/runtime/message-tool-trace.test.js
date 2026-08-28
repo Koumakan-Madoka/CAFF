@@ -2362,6 +2362,103 @@ test('public app finalizes canonical running timeline events when the message co
   assert.equal(trace.activity.hasCurrentTool, false);
 });
 
+test('completed message refresh finalizes the trace before rendering the terminal card', async () => {
+  const conversationId = 'conversation-terminal-refresh';
+  const messageId = 'message-terminal-refresh';
+  const projection = {
+    id: conversationId,
+    title: 'Terminal refresh',
+    type: 'standard',
+    metadata: {},
+    agents: [],
+    messages: [],
+    privateMessages: [],
+  };
+  let messagePageReads = 0;
+  const { app } = loadPublicAppHarness({
+    fetchJson: async (url) => {
+      if (url === `/api/conversations/${conversationId}?includePrivateMessages=1`) {
+        return { conversation: projection };
+      }
+      if (url === `/api/conversations/${conversationId}/messages`) {
+        messagePageReads += 1;
+        return {
+          items: [
+            {
+              id: messageId,
+              conversationId,
+              role: 'assistant',
+              status: messagePageReads === 1 ? 'streaming' : 'completed',
+              taskId: 'task-terminal-refresh',
+              createdAt: '2026-08-28T00:00:00.000Z',
+            },
+          ],
+          nextCursor: null,
+          hasMore: false,
+        };
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    },
+  });
+
+  await app.loadConversation(conversationId);
+  const runningStep = {
+    eventId: 'tool:session:terminal-refresh',
+    eventType: 'tool_execution',
+    timelineSequence: 1,
+    stepId: 'session-terminal-refresh',
+    kind: 'session',
+    toolName: 'bash',
+    status: 'running',
+  };
+  const traceState = app.getMessageToolTraceState(messageId);
+  traceState.data = {
+    ...app.createEmptyToolTraceData(messageId),
+    message: app.state.currentConversation.messages[0],
+    timelineEvents: [runningStep],
+    steps: [runningStep],
+    summary: {
+      ...app.createEmptyToolTraceData(messageId).summary,
+      totalSteps: 1,
+      toolExecutionCount: 1,
+      sessionToolCount: 1,
+      status: 'running',
+    },
+    activity: {
+      status: 'running',
+      hasCurrentTool: true,
+      currentToolName: 'bash',
+      currentStepId: runningStep.stepId,
+      currentStepKind: 'session',
+      inferred: false,
+      label: '当前工具：bash',
+    },
+    timelineWindow: {
+      totalEventCount: 1,
+      retainedEventCount: 1,
+      droppedEventCount: 0,
+      truncated: false,
+      modelCallCount: 0,
+      toolExecutionCount: 1,
+      failedToolExecutionCount: 0,
+      totalToolDurationMs: 0,
+    },
+  };
+  const renderedActivities = [];
+  app.setOverrides({
+    renderConversationPane() {
+      const trace = app.toolTraceStateForMessage(messageId);
+      renderedActivities.push(trace && trace.data && trace.data.activity.status);
+    },
+  });
+
+  await app.refreshConversationFromEvent(conversationId);
+
+  assert.equal(app.state.currentConversation.messages[0].status, 'completed');
+  assert.equal(app.toolTraceStateForMessage(messageId).data.activity.status, 'idle');
+  assert.equal(renderedActivities.at(-1), 'idle');
+});
+
 test('public app finalizes failed side-slot tool traces from the finished payload before removing the slot', () => {
   const { app, FakeEventSource } = loadPublicAppHarness();
   const messageId = 'side-trace-message-1';

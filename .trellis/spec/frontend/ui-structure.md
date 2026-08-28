@@ -793,6 +793,10 @@ const icon = window.CaffIcons.create('archive', {
   the canonical `timelineEvents` collection before rebuilding `steps`,
   `summary`, and `activity`. Derived step arrays must never overwrite a terminal
   canonical status with a stale live `running` value.
+- Every message hydration path runs terminal trace synchronization before its
+  conversation render. A completed/failed HTTP refresh must not paint cached
+  `summary.status=running` or `activity.hasCurrentTool=true` and then silently
+  finalize only the in-memory trace without a second render.
 - Summary model/tool/provider-miss/failure counters come from full aggregates,
   never from the retained 16 rows. The omission row wraps at narrow widths and
   must not create horizontal overflow.

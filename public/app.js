@@ -3682,9 +3682,9 @@ async function loadConversation(conversationId) {
   await hydrateCrossConversationDeliveries(state.currentConversation);
   pruneOptimisticMessagesForConversation(normalizedConversationId, messages);
   closeMentionMenu();
-  renderAll();
   warmConversationToolTraces(state.currentConversation);
   syncToolTraceStatesWithConversation(state.currentConversation);
+  renderAll();
   scrollMessageListToBottom();
 }
 
@@ -3721,9 +3721,9 @@ async function loadEarlierMessages() {
       ),
     };
     await hydrateCrossConversationDeliveries(state.currentConversation);
-    renderConversationPane();
     warmConversationToolTraces(state.currentConversation);
     syncToolTraceStatesWithConversation(state.currentConversation);
+    renderConversationPane();
     messageHistory.restoreScrollAnchor(dom.messageList, scrollAnchor);
   } catch (error) {
     if (messageHistory.isRequestCurrent(state.messageHistory, request)) {
@@ -3829,9 +3829,9 @@ function applyNewConversationResult(result) {
       hasMore: false,
     }),
   };
+  syncToolTraceStatesWithConversation(state.currentConversation);
   renderAll();
   void loadWorkspaceAuthorizationCards(result.conversation.id);
-  syncToolTraceStatesWithConversation(state.currentConversation);
 }
 
 async function refreshConversationFromEvent(conversationId) {
@@ -3874,9 +3874,9 @@ async function refreshConversationFromEvent(conversationId) {
     };
     await hydrateCrossConversationDeliveries(state.currentConversation);
     pruneOptimisticMessagesForConversation(conversationId, page && page.items);
-    renderConversationPane();
     warmConversationToolTraces(state.currentConversation);
     syncToolTraceStatesWithConversation(state.currentConversation);
+    renderConversationPane();
 
     if (shouldStickToBottom) {
       scrollMessageListToBottom();
@@ -5029,8 +5029,8 @@ function bindEvents() {
       });
       state.currentConversation = result.conversation;
       mergeConversationSummary(result.conversation);
-      renderAll();
       syncToolTraceStatesWithConversation(state.currentConversation);
+      renderAll();
       showToast('会话设置已保存');
     } catch (error) {
       showToast(error.message);
