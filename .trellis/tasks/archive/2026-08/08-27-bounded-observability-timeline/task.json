@@ -3,7 +3,7 @@
   "name": "bounded-observability-timeline",
   "title": "有界实时观测时间线",
   "description": "统一模型调用与工具执行的首一尾十五窗口、持久化投影和实时 SSE 增量更新。",
-  "status": "active",
+  "status": "completed",
   "dev_type": "fullstack",
   "scope": "runtime, storage, HTTP/SSE, chat UI",
   "package": null,
@@ -11,16 +11,28 @@
   "creator": "GPT",
   "assignee": "GPT",
   "createdAt": "2026-08-27",
-  "completedAt": null,
+  "completedAt": "2026-08-28",
   "branch": "room/08154128-gpt-agent",
   "base_branch": "develop",
   "worktree_path": "E:/pythonproject/worktrees/room/08154128-gpt-agent",
   "current_phase": 1,
   "next_action": [
-    { "phase": 1, "action": "red-test" },
-    { "phase": 2, "action": "implement" },
-    { "phase": 3, "action": "check" },
-    { "phase": 4, "action": "review" }
+    {
+      "phase": 1,
+      "action": "red-test"
+    },
+    {
+      "phase": 2,
+      "action": "implement"
+    },
+    {
+      "phase": 3,
+      "action": "check"
+    },
+    {
+      "phase": 4,
+      "action": "review"
+    }
   ],
   "commit": null,
   "pr_url": null,

@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 15
-- **Last Active**: 2026-08-27
+- **Total Sessions**: 16
+- **Last Active**: 2026-08-28
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~727 | Active |
+| `journal-1.md` | ~786 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 16 | 2026-08-28 | Bounded realtime observability timeline accepted | `857afd8`, `e8b660c`, `a725b22`, `4a84378`, `0e5febd`, `41b6989`, `09e071b`, `cf4fde6`, `53ae47a` | `room/08154128-gpt-agent` |
 | 15 | 2026-08-27 | Allow Recovery Scribe for user-stopped traces | `603c7012d99b36d0b2d0c12b614fb605fdd7ce8e`, `e024e379762bf1a66cfae6f57379f7ba8e67346f`, `0de6a3dbab9daa074097243a7bc8439a8b9bbdc5` | `room/c2fab452-caff-bug-bug` |
 | 14 | 2026-08-27 | Fix Recovery Scribe empty thinking defaults | `324836ef86e18a5f020b2e7863affc74a1389bbf`, `1edda32802013dabb5277e3b35a3ab8f77bd4622` | `room/c2fab452-caff-bug-bug` |
 | 13 | 2026-08-27 | PI 0.84.3 expected-completion abort regression | `d12d6fe318dbde08ad0413c60ecf65f87dfa0388`, `045542f6f1e36790a1356301eca0194a88c9abdf`, `db338a73387cc43fac9b65cd4ef2662ba80ad8c1`, `798cf94a87e9191c46fca2384b5bb572daaec810` | `room/c2fab452-caff-bug-bug` |

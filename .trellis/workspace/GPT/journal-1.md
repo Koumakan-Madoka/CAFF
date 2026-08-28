@@ -731,3 +731,56 @@ Allowed users to manually invoke Recovery Scribe for evidence-consistent user-st
 ### Next Steps
 
 - None - task complete
+
+
+## Session 16: Bounded realtime observability timeline accepted
+
+**Date**: 2026-08-28
+**Task**: Bounded realtime observability timeline accepted
+**Branch**: `room/08154128-gpt-agent`
+
+### Summary
+
+(Add summary)
+
+### Main Changes
+
+| Area | Result |
+|------|--------|
+| Timeline contract | Unified model calls and tool executions under first-1 + latest-15 retention while preserving full-run aggregates and stable identity/sequence. |
+| Runtime ownership | Isolated observability state per Agent invocation so later messages do not inherit earlier sequence/count state. |
+| Terminal convergence | Converged canonical events, derived steps, message SSE, live stage, task status and cached activity before terminal rendering. |
+| Verification | Regression tests were red first for each acceptance failure; check, server/public typecheck, build, targeted/adjacent suites, UI 113/113 and responsive 15/15 passed. |
+| Review | GLM independently reviewed exact accepted head cf4fde6a9f3f86b2eda7218e89ba162bbf9cbe65 and returned APPROVE with no blocking findings. |
+| Acceptance | User accepted the isolated port 3210 run at cf4fde6 after 20 independent bash calls; terminal card showed completed with no stale current-tool/realtime/running/inferred state and refresh remained consistent. |
+| Integration | PR #116 merged exact accepted head to develop as merge commit 53ae47ae7dc98c36841f5ba02246e7ef1118209a after two successful remote unit checks. |
+| Cleanup | Stopped the 3210 launcher and child process; retained isolated SQLite/session/log evidence. |
+
+Known follow-ups remain outside this completed task: M1 authority refresh after SSE reconnect for an already-expanded running trace, and M2 terminal convergence for an in-flight tool evicted from the retained window.
+
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `857afd8` | (see git log) |
+| `e8b660c` | (see git log) |
+| `a725b22` | (see git log) |
+| `4a84378` | (see git log) |
+| `0e5febd` | (see git log) |
+| `41b6989` | (see git log) |
+| `09e071b` | (see git log) |
+| `cf4fde6` | (see git log) |
+| `53ae47a` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
