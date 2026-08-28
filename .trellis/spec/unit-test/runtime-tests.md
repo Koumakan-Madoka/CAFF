@@ -176,12 +176,40 @@ mocked result alone:
   cascade deletion, and `foreign_key_check`.
 - Runtime fixtures emit thinking and visible text markers beside usage, then
   assert the model SSE contains neither marker and is emitted once despite
-  `agent_end` duplication.
+  `agent_end` duplication. A same-Agent, same-turn repeated-execution fixture
+  must assert each assistant message receives a distinct invocation sequencer:
+  both live SSE and persisted detail restart at timeline/model-call sequence 1,
+  the second message contains only its own counters, and the first snapshot is
+  not mutated.
 - Browser harnesses send at least 65 events to five independent message traces;
   each retains sequences `1, 51..65`, reports total 65/dropped 49, and receives
   new model events without polling. Calling the detail loader after a terminal
   message patch must not make a second GET.
+- Terminal-state regressions seed the same running tool in both canonical
+  `timelineEvents` and derived `steps`. Completed-message refresh, main-turn
+  finish, and side-slot finish must update the canonical event first, then
+  rebuild to a non-running summary/activity without resurrecting the stale
+  derived status. The completed-message HTTP refresh fixture must also capture
+  render-time state and prove the last render sees `activity.status=idle`, not
+  merely that an after-render in-memory mutation eventually becomes idle. A
+  separate long-live-trace fixture must dispatch the real terminal
+  `conversation_message_updated` frame while HTTP refresh is unavailable and
+  prove the lightweight message projection, canonical tools, summary, activity,
+  full aggregates, and last render converge synchronously. A DOM renderer
+  fixture must additionally keep a stale matching turn/slot stage at
+  `status=running` with `currentToolName` populated after the message becomes
+  terminal; the terminal card must ignore that stage, render no live-tool panel,
+  and show `已完成` from the converged trace. A second fixture must drive the
+  real `conversation_tool_event` path so `trace.task.status` becomes `running`
+  before the terminal message frame arrives; the terminal sync must converge
+  the task status, force the summary out of `running`, and clear the inferred
+  current-tool activity without any HTTP refetch.
 - Tool-trace fixtures combine model and tool events and assert every returned
   detail array is derived from the same 16-event window while full summary
-  counts remain unchanged. A bridge history over 200 events must preserve the
+  counts remain unchanged. The HTTP `timelineWindow` must repeat the full
+  model/tool/miss/failure/duration aggregates; a browser compatibility fixture
+  with only retention fields must preserve `summary` / `modelUsageSummary`
+  through initial expansion and later model/tool SSE. Rendered regression
+  evidence must show `66` model calls and `150` tools beside `16/216` retained
+  and `200` omitted events. A bridge history over 200 events must preserve the
   true first event, newest failure, and SQL-derived full total.

@@ -25,8 +25,8 @@ const {
 } = require('../../../../lib/message-detail-contract');
 const {
   createModelCallObservabilityEvent,
+  createObservabilityTimelineState,
   createToolObservabilityEvent,
-  ensureObservabilityTimelineState,
   finalizeObservabilityToolEvents,
   snapshotObservabilityTimeline,
 } = require('../../../../lib/observability-timeline');
@@ -1642,7 +1642,7 @@ export function createAgentExecutor(options: any = {}) {
 
     let activeRunHandle: any = null;
     let bridgePublicCompletionRequested = false;
-    const observabilityTimelineState = ensureObservabilityTimelineState(stage);
+    const observabilityTimelineState = createObservabilityTimelineState();
     const toolInvocation = agentToolBridge.registerInvocation(
       agentToolBridge.createInvocationContext({
         invocationId: queueItem.toolInvocationId || undefined,
@@ -1658,6 +1658,7 @@ export function createAgentExecutor(options: any = {}) {
         conversationAgents: conversation.agents,
         runStore,
         stage,
+        observabilityTimelineState,
         turnState,
         enqueueAgent,
         allowHandoffs,

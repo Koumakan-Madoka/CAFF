@@ -1912,8 +1912,9 @@
       header.className = 'message-tool-trace-header';
       summaryWrap.className = 'message-tool-trace-summary';
 
-      const liveActivity = liveStageActivity(liveStage);
-      const activity = liveActivity || traceActivity(trace);
+      const terminalTraceMessage = message && (message.status === 'completed' || message.status === 'failed');
+      const liveActivity = terminalTraceMessage ? null : liveStageActivity(liveStage);
+      const activity = terminalTraceMessage ? null : liveActivity || traceActivity(trace);
       const shouldShowLiveSpotlight = Boolean(activity && activity.hasCurrentTool && activity.currentToolName);
 
       if (summary) {
@@ -2252,7 +2253,8 @@
       const agent = message.agentId
         ? (Array.isArray(agents) ? agents.find((item) => item.id === message.agentId) : null) || agentById(message.agentId)
         : null;
-      const liveStage = isPrivateTimelineMessage(message) || isDigestStatusMessage || isDigestResultMessage
+      const isTerminalMessage = message && (message.status === 'completed' || message.status === 'failed');
+      const liveStage = isPrivateTimelineMessage(message) || isDigestStatusMessage || isDigestResultMessage || isTerminalMessage
         ? null
         : liveStageForMessage(conversationId || (message && message.conversationId) || '', activeTurn, activeAgentSlots, message.id);
       const liveLabel = isDigestStatusMessage ? '摘要整理中' : liveStageLabel(liveStage);

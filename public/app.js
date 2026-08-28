@@ -1224,6 +1224,15 @@ function cloneTraceValue(value) {
   }
 }
 
+function traceAggregateNumber(value) {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+
+  const normalized = Number(value);
+  return Number.isFinite(normalized) && normalized >= 0 ? normalized : null;
+}
+
 function mergeTraceTimelineEvents(trace, incomingEvents, incomingWindow = null) {
   const merged = observabilityTimeline.merge(
     trace && Array.isArray(trace.timelineEvents) ? trace.timelineEvents : [],
@@ -1242,12 +1251,33 @@ function mergeTraceTimelineEvents(trace, incomingEvents, incomingWindow = null) 
   trace.steps = merged.events.filter((event) => event.eventType === 'tool_execution');
   trace.modelUsageCalls = merged.events.filter((event) => event.eventType === 'model_call');
   if (incomingWindow && typeof incomingWindow === 'object') {
-    trace.modelUsageSummary = {
-      modelCallCount: Number(incomingWindow.modelCallCount || 0),
-      coldStartModelCallCount: Number(incomingWindow.coldStartModelCallCount || 0),
-      postColdModelCallCount: Number(incomingWindow.postColdModelCallCount || 0),
-      providerMissCount: Number(incomingWindow.providerMissCount || 0),
-    };
+    const aggregateFields = [
+      'modelCallCount',
+      'coldStartModelCallCount',
+      'postColdModelCallCount',
+      'providerMissCount',
+    ];
+    const existingSummary = trace.modelUsageSummary && typeof trace.modelUsageSummary === 'object'
+      ? trace.modelUsageSummary
+      : trace.summary && typeof trace.summary === 'object'
+        ? trace.summary
+        : null;
+    const nextSummary = {};
+    let hasAggregate = false;
+
+    aggregateFields.forEach((field) => {
+      const incomingValue = traceAggregateNumber(incomingWindow[field]);
+      const existingValue = traceAggregateNumber(existingSummary && existingSummary[field]);
+      const value = incomingValue === null ? existingValue : incomingValue;
+      if (value !== null) {
+        nextSummary[field] = value;
+        hasAggregate = true;
+      }
+    });
+
+    if (hasAggregate) {
+      trace.modelUsageSummary = nextSummary;
+    }
   }
 }
 
@@ -1364,34 +1394,59 @@ function computeToolTraceSummary(message, task, steps, trace) {
     const status = normalizeToolTraceStepStatus(step && step.status ? step.status : '');
     return status === 'running' || status === 'queued';
   });
+  // A terminal assistant message is the authoritative boundary: stale local
+  // task/step state must never keep a completed or failed card running.
+  const messageTerminal = messageStatus === 'completed' || messageStatus === 'failed';
   const running =
-    messageStatus === 'queued' ||
-    messageStatus === 'streaming' ||
-    taskStatus === 'queued' ||
-    taskStatus === 'running' ||
-    hasRunningStep;
+    !messageTerminal &&
+    (messageStatus === 'queued' ||
+      messageStatus === 'streaming' ||
+      taskStatus === 'queued' ||
+      taskStatus === 'running' ||
+      hasRunningStep);
   const failed = failedSteps.length > 0 || messageStatus === 'failed' || taskStatus === 'failed';
 
   const modelUsageSummary = computeTraceModelUsageSummary(trace);
   const timelineWindow = trace && trace.timelineWindow && typeof trace.timelineWindow === 'object'
     ? trace.timelineWindow
     : null;
-  const fullToolExecutionCount = timelineWindow && Number.isFinite(Number(timelineWindow.toolExecutionCount))
-    ? Number(timelineWindow.toolExecutionCount)
-    : normalizedSteps.length;
+  const existingSummary = trace && trace.summary && typeof trace.summary === 'object'
+    ? trace.summary
+    : null;
+  const windowToolExecutionCount = traceAggregateNumber(timelineWindow && timelineWindow.toolExecutionCount);
+  const summaryToolExecutionCount = traceAggregateNumber(
+    existingSummary && existingSummary.toolExecutionCount !== undefined
+      ? existingSummary.toolExecutionCount
+      : existingSummary && existingSummary.totalSteps
+  );
+  const fullToolExecutionCount = windowToolExecutionCount === null
+    ? Math.max(summaryToolExecutionCount === null ? 0 : summaryToolExecutionCount, normalizedSteps.length)
+    : windowToolExecutionCount;
+  const windowSessionToolCount = traceAggregateNumber(timelineWindow && timelineWindow.sessionToolCount);
+  const summarySessionToolCount = traceAggregateNumber(existingSummary && existingSummary.sessionToolCount);
+  const windowBridgeToolCount = traceAggregateNumber(timelineWindow && timelineWindow.bridgeToolCount);
+  const summaryBridgeToolCount = traceAggregateNumber(existingSummary && existingSummary.bridgeToolCount);
+  const windowFailedSteps = traceAggregateNumber(timelineWindow && timelineWindow.failedToolExecutionCount);
+  const summaryFailedSteps = traceAggregateNumber(existingSummary && existingSummary.failedSteps);
+  const windowTotalDurationMs = traceAggregateNumber(timelineWindow && timelineWindow.totalToolDurationMs);
+  const summaryTotalDurationMs = traceAggregateNumber(existingSummary && existingSummary.totalDurationMs);
 
   return {
     totalSteps: fullToolExecutionCount,
     toolExecutionCount: fullToolExecutionCount,
-    sessionToolCount: timelineWindow ? Number(timelineWindow.sessionToolCount || sessionSteps.length) : sessionSteps.length,
-    bridgeToolCount: timelineWindow ? Number(timelineWindow.bridgeToolCount || bridgeSteps.length) : bridgeSteps.length,
-    failedSteps: timelineWindow && Number.isFinite(Number(timelineWindow.failedToolExecutionCount))
-      ? Number(timelineWindow.failedToolExecutionCount)
-      : failedSteps.length,
+    sessionToolCount: windowSessionToolCount === null
+      ? Math.max(summarySessionToolCount === null ? 0 : summarySessionToolCount, sessionSteps.length)
+      : windowSessionToolCount,
+    bridgeToolCount: windowBridgeToolCount === null
+      ? Math.max(summaryBridgeToolCount === null ? 0 : summaryBridgeToolCount, bridgeSteps.length)
+      : windowBridgeToolCount,
+    failedSteps: windowFailedSteps === null
+      ? Math.max(summaryFailedSteps === null ? 0 : summaryFailedSteps, failedSteps.length)
+      : windowFailedSteps,
     succeededSteps: succeededBridgeSteps.length,
-    totalDurationMs: timelineWindow && Number.isFinite(Number(timelineWindow.totalToolDurationMs))
-      ? Number(timelineWindow.totalToolDurationMs)
-      : totalDurationMs,
+    totalDurationMs: windowTotalDurationMs === null
+      ? Math.max(summaryTotalDurationMs === null ? 0 : summaryTotalDurationMs, totalDurationMs)
+      : windowTotalDurationMs,
     retryCount,
     hasRetries: retryCount > 0,
     modelCallCount: modelUsageSummary.modelCallCount,
@@ -1661,6 +1716,31 @@ function mutateMessageToolTrace(messageId, mutator) {
   return traceState;
 }
 
+function finalizeRunningTraceEntries(entries, fallbackStatus, shouldFinalize) {
+  if (!Array.isArray(entries)) {
+    return { entries, changed: false };
+  }
+
+  let changed = false;
+  const nextEntries = entries.map((entry) => {
+    if (
+      !entry ||
+      normalizeToolTraceStepStatus(entry.status) !== 'running' ||
+      (typeof shouldFinalize === 'function' && !shouldFinalize(entry))
+    ) {
+      return entry;
+    }
+
+    changed = true;
+    return {
+      ...entry,
+      status: resolveFinalizedTraceStatus(entry, fallbackStatus),
+    };
+  });
+
+  return { entries: nextEntries, changed };
+}
+
 /**
  * @param {any} trace
  * @param {string | Record<string, string>} [fallbackStatus='observed']
@@ -1668,30 +1748,32 @@ function mutateMessageToolTrace(messageId, mutator) {
  * @param {string[] | null} [kinds=null]
  */
 function finalizeRunningStepsInTrace(trace, fallbackStatus = 'observed', nextStepId = '', kinds = null) {
-  if (!trace || !Array.isArray(trace.steps)) {
+  if (!trace) {
     return false;
   }
 
   const allowedKinds = Array.isArray(kinds) && kinds.length > 0 ? new Set(kinds.map((kind) => String(kind))) : null;
-  let changed = false;
-
-  trace.steps = trace.steps.map((step) => {
-    if (!step || normalizeToolTraceStepStatus(step.status) !== 'running' || (nextStepId && step.stepId === nextStepId)) {
-      return step;
+  const shouldFinalize = (step) => {
+    if (nextStepId && step.stepId === nextStepId) {
+      return false;
     }
 
-    if (allowedKinds && !allowedKinds.has(String(step.kind || ''))) {
-      return step;
-    }
+    return !allowedKinds || allowedKinds.has(String(step.kind || ''));
+  };
+  const timelineResult = finalizeRunningTraceEntries(
+    trace.timelineEvents,
+    fallbackStatus,
+    (event) => event.eventType !== 'model_call' && shouldFinalize(event)
+  );
+  const stepsResult = finalizeRunningTraceEntries(trace.steps, fallbackStatus, shouldFinalize);
 
-    changed = true;
-    return {
-      ...step,
-      status: resolveFinalizedTraceStatus(step, fallbackStatus),
-    };
-  });
-
-  return changed;
+  if (timelineResult.entries !== undefined) {
+    trace.timelineEvents = timelineResult.entries;
+  }
+  if (stepsResult.entries !== undefined) {
+    trace.steps = stepsResult.entries;
+  }
+  return timelineResult.changed || stepsResult.changed;
 }
 
 /**
@@ -1705,20 +1787,24 @@ function finalizeMessageToolTraceRunningStep(messageId, stepId, fallbackStatus =
   }
 
   const traceState = mutateMessageToolTrace(messageId, (trace) => {
-    if (!trace || !Array.isArray(trace.steps)) {
-      return;
+    const shouldFinalize = (step) => step && step.stepId === stepId;
+    const timelineResult = finalizeRunningTraceEntries(
+      trace && trace.timelineEvents,
+      fallbackStatus,
+      (event) => event.eventType !== 'model_call' && shouldFinalize(event)
+    );
+    const stepsResult = finalizeRunningTraceEntries(
+      trace && trace.steps,
+      fallbackStatus,
+      shouldFinalize
+    );
+
+    if (timelineResult.entries !== undefined) {
+      trace.timelineEvents = timelineResult.entries;
     }
-
-    trace.steps = trace.steps.map((step) => {
-      if (!step || step.stepId !== stepId || normalizeToolTraceStepStatus(step.status) !== 'running') {
-        return step;
-      }
-
-      return {
-        ...step,
-        status: resolveFinalizedTraceStatus(step, fallbackStatus),
-      };
-    });
+    if (stepsResult.entries !== undefined) {
+      trace.steps = stepsResult.entries;
+    }
   });
 
   return Boolean(traceState);
@@ -1860,6 +1946,15 @@ function syncToolTraceStatesWithConversation(conversation) {
       mutateMessageToolTrace(message.id, (trace) => {
         if (message.status === 'completed' || message.status === 'failed') {
           finalizeRunningStepsInTrace(trace, finalStatusMap);
+          if (trace.task && typeof trace.task === 'object') {
+            const taskStatus = String(trace.task.status || '').trim().toLowerCase();
+            if (taskStatus === 'running' || taskStatus === 'queued') {
+              trace.task = {
+                ...trace.task,
+                status: message.status === 'failed' ? 'failed' : 'succeeded',
+              };
+            }
+          }
         }
       });
     });
@@ -3600,9 +3695,9 @@ async function loadConversation(conversationId) {
   await hydrateCrossConversationDeliveries(state.currentConversation);
   pruneOptimisticMessagesForConversation(normalizedConversationId, messages);
   closeMentionMenu();
-  renderAll();
   warmConversationToolTraces(state.currentConversation);
   syncToolTraceStatesWithConversation(state.currentConversation);
+  renderAll();
   scrollMessageListToBottom();
 }
 
@@ -3639,9 +3734,9 @@ async function loadEarlierMessages() {
       ),
     };
     await hydrateCrossConversationDeliveries(state.currentConversation);
-    renderConversationPane();
     warmConversationToolTraces(state.currentConversation);
     syncToolTraceStatesWithConversation(state.currentConversation);
+    renderConversationPane();
     messageHistory.restoreScrollAnchor(dom.messageList, scrollAnchor);
   } catch (error) {
     if (messageHistory.isRequestCurrent(state.messageHistory, request)) {
@@ -3747,9 +3842,9 @@ function applyNewConversationResult(result) {
       hasMore: false,
     }),
   };
+  syncToolTraceStatesWithConversation(state.currentConversation);
   renderAll();
   void loadWorkspaceAuthorizationCards(result.conversation.id);
-  syncToolTraceStatesWithConversation(state.currentConversation);
 }
 
 async function refreshConversationFromEvent(conversationId) {
@@ -3792,9 +3887,9 @@ async function refreshConversationFromEvent(conversationId) {
     };
     await hydrateCrossConversationDeliveries(state.currentConversation);
     pruneOptimisticMessagesForConversation(conversationId, page && page.items);
-    renderConversationPane();
     warmConversationToolTraces(state.currentConversation);
     syncToolTraceStatesWithConversation(state.currentConversation);
+    renderConversationPane();
 
     if (shouldStickToBottom) {
       scrollMessageListToBottom();
@@ -3901,6 +3996,47 @@ function applyWorkspaceAuthorizationEvent(payload) {
     state.workspaceAuthorizationCardsByConversation.set(id, cards);
     if (state.selectedConversationId === id) renderWorkspaceAuthorizationCards();
   }
+
+function applyConversationMessageEvent(payload) {
+  const conversationId = String(payload && payload.conversationId || '').trim();
+  const incomingMessage = payload && payload.message && typeof payload.message === 'object'
+    ? payload.message
+    : null;
+
+  if (
+    !conversationId ||
+    !incomingMessage ||
+    !incomingMessage.id ||
+    !state.currentConversation ||
+    state.currentConversation.id !== conversationId
+  ) {
+    return false;
+  }
+
+  const shouldStickToBottom = isMessageListNearBottom();
+  const existingMessage = currentConversationMessageById(incomingMessage.id);
+  const nextMessage = existingMessage
+    ? { ...existingMessage, ...incomingMessage }
+    : incomingMessage;
+  state.currentConversation = {
+    ...state.currentConversation,
+    messages: messageHistory.applyLatestPage(
+      state.messageHistory,
+      state.currentConversation.messages,
+      { items: [nextMessage] }
+    ),
+  };
+  pruneOptimisticMessagesForConversation(conversationId, [nextMessage]);
+  syncToolTraceStatesWithConversation(state.currentConversation);
+  renderConversationPane();
+
+  if (shouldStickToBottom) {
+    scrollMessageListToBottom();
+  }
+
+  return true;
+}
+
 function scheduleConversationRefresh(conversationId) {
   if (!conversationId || state.selectedConversationId !== conversationId) {
     return;
@@ -4047,11 +4183,13 @@ function connectEventStream() {
 
   source.addEventListener('conversation_message_created', (event) => {
     const payload = JSON.parse(event.data);
+    applyConversationMessageEvent(payload);
     scheduleConversationRefresh(payload.conversationId);
   });
 
   source.addEventListener('conversation_message_updated', (event) => {
     const payload = JSON.parse(event.data);
+    applyConversationMessageEvent(payload);
     scheduleConversationRefresh(payload.conversationId);
   });
 
@@ -4947,8 +5085,8 @@ function bindEvents() {
       });
       state.currentConversation = result.conversation;
       mergeConversationSummary(result.conversation);
-      renderAll();
       syncToolTraceStatesWithConversation(state.currentConversation);
+      renderAll();
       showToast('会话设置已保存');
     } catch (error) {
       showToast(error.message);

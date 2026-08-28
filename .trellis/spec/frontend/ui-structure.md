@@ -776,13 +776,43 @@ const icon = window.CaffIcons.create('archive', {
 - Expansion performs one tool-trace GET. A later message status/run change does
   not invalidate that loaded snapshot; live SSE supplies subsequent events and
   terminal message refresh supplies authoritative aggregate metadata.
-- `timelineWindow` exposes total, retained, dropped, and truncated state. When
+- `timelineWindow` exposes total, retained, dropped, and truncated state plus the
+  full model/tool/miss/failure/duration aggregates used by live SSE. When
   truncated, the renderer inserts exactly one `中间省略 N 条事件` row after the
   first event and shows retained/total counts. Event badges display original
   sequence values rather than renumbering the retained window.
+- Aggregate merge is field-preserving: only present finite non-negative HTTP/SSE
+  aggregate fields replace local values. A compatibility snapshot with only the
+  four retention fields keeps the full `summary` / `modelUsageSummary`; missing
+  fields never become zero and tool totals never fall back to the retained row
+  count when a full summary exists.
 - Renderer rows are keyed by `eventId` plus a bounded content signature. Stable
   rows are reused across SSE renders; only new or changed rows are rebuilt.
   Existing viewport stick-to-bottom and anchor restoration remain authoritative.
+- Terminal message, main-turn, and side-slot patches finalize running tools in
+  the canonical `timelineEvents` collection before rebuilding `steps`,
+  `summary`, and `activity`. Derived step arrays must never overwrite a terminal
+  canonical status with a stale live `running` value.
+- Every message hydration path runs terminal trace synchronization before its
+  conversation render. A completed/failed HTTP refresh must not paint cached
+  `summary.status=running` or `activity.hasCurrentTool=true` and then silently
+  finalize only the in-memory trace without a second render.
+- `conversation_message_created` / `_updated` applies its lightweight message
+  projection directly to the selected Room before scheduling the normal HTTP
+  refresh. A terminal update must therefore finalize the canonical live trace
+  and render idle in the same SSE handler; the later HTTP read is authority
+  reconciliation, not the only path that can clear a stale running tool.
+- A terminal assistant message (`completed` or `failed`) is an absorbing UI
+  boundary for its card: the renderer must ignore any lagging live turn/slot
+  stage for that message, even when the stale stage still reports a current
+  tool. Runtime stages remain authoritative only while the message itself is
+  non-terminal; terminal cards render activity solely from the converged trace.
+- The same absorbing boundary applies inside the trace data and its derived
+  rendering: a terminal message forces the trace summary out of `running`
+  regardless of a stale local `task.status`, the terminal sync must also
+  converge `trace.task.status`, and the card must not render the live-tool
+  spotlight or `当前：…` pill from any cached trace activity once the message
+  is terminal.
 - Summary model/tool/provider-miss/failure counters come from full aggregates,
   never from the retained 16 rows. The omission row wraps at narrow widths and
   must not create horizontal overflow.

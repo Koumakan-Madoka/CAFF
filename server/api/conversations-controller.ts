@@ -1193,6 +1193,9 @@ export function createConversationsController(options: any = {}): RouteHandler<A
           agentDir: store.agentDir,
           message,
           resolvedSessionPath,
+          modelUsage: typeof store.getMessageModelUsage === 'function'
+            ? store.getMessageModelUsage(message.id)
+            : null,
           observabilityTimeline: typeof store.getMessageObservabilityTimeline === 'function'
             ? store.getMessageObservabilityTimeline(message.id)
             : null,

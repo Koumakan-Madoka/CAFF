@@ -778,6 +778,47 @@ function normalizePositiveSequence(value: any) {
   return Math.round(sequence);
 }
 
+function normalizeAuthoritativeModelUsage(value: any) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+
+  const modelCallCount = Number(value.modelCallCount);
+  if (!Number.isInteger(modelCallCount) || modelCallCount < 0) {
+    return null;
+  }
+
+  const count = (input: any) => {
+    const normalized = Number(input);
+    return Number.isInteger(normalized) && normalized >= 0 ? normalized : 0;
+  };
+
+  return {
+    ...value,
+    modelCallCount,
+    coldStartModelCallCount: count(value.coldStartModelCallCount),
+    postColdModelCallCount: count(value.postColdModelCallCount),
+    providerMissCount: count(value.providerMissCount),
+    calls: Array.isArray(value.calls) ? value.calls.filter(Boolean) : [],
+  };
+}
+
+function alignTimelineSequencesWithTotal(events: any[], totalEventCount: number) {
+  const sourceEvents = Array.isArray(events) ? events : [];
+  const missingEventCount = Math.max(0, totalEventCount - sourceEvents.length);
+
+  if (missingEventCount === 0 || sourceEvents.length <= 1) {
+    return sourceEvents;
+  }
+
+  return sourceEvents.map((event, index) => index === 0
+    ? event
+    : {
+        ...event,
+        timelineSequence: Number(event.timelineSequence || index + 1) + missingEventCount,
+      });
+}
+
 function buildTraceTimelineEvents(modelUsage: any, steps: any[]) {
   const normalizedSteps = Array.isArray(steps) ? steps.filter(Boolean) : [];
   const modelCalls = modelUsage && Array.isArray(modelUsage.calls) ? modelUsage.calls : [];
@@ -1278,12 +1319,24 @@ export function buildAssistantMessageToolTrace(options: any = {}) {
   const expectedCompletionEvent = loadExpectedCompletionEvent(db, taskId);
   const taskMetadata = taskRow ? safeJsonParse(taskRow.metadata_json) : null;
   const taskSessionPath = taskRow && taskRow.session_path ? String(taskRow.session_path).trim() : '';
-  const storedTimeline = normalizeObservabilityTimeline(options.observabilityTimeline);
+  const storedTimelineCandidate = normalizeObservabilityTimeline(options.observabilityTimeline);
+  const authoritativeModelUsage = normalizeAuthoritativeModelUsage(options.modelUsage);
+  const storedTimelineContaminated = Boolean(
+    storedTimelineCandidate
+    && authoritativeModelUsage
+    && storedTimelineCandidate.modelCallCount > authoritativeModelUsage.modelCallCount
+  );
+  const storedTimeline = storedTimelineContaminated ? null : storedTimelineCandidate;
   const sessionSnapshot = storedTimeline
     ? null
     : readSessionAssistantSnapshot(taskSessionPath || resolvedSessionPath, agentDir);
   const sessionToolSource = sessionSnapshot && Array.isArray(sessionSnapshot.toolCalls) ? sessionSnapshot.toolCalls : [];
   const sessionModelUsage = summarizeModelUsageCalls(sessionSnapshot && Array.isArray(sessionSnapshot.modelCalls) ? sessionSnapshot.modelCalls : []);
+  const fallbackModelCalls = authoritativeModelUsage
+    && sessionModelUsage
+    && sessionModelUsage.modelCallCount === authoritativeModelUsage.modelCallCount
+    ? sessionModelUsage.calls
+    : authoritativeModelUsage && authoritativeModelUsage.calls;
   const modelUsage = storedTimeline
     ? {
         modelCallCount: storedTimeline.modelCallCount,
@@ -1292,7 +1345,12 @@ export function buildAssistantMessageToolTrace(options: any = {}) {
         providerMissCount: storedTimeline.providerMissCount,
         calls: storedTimeline.events.filter((event: any) => event.eventType === 'model_call'),
       }
-    : sessionModelUsage;
+    : authoritativeModelUsage
+      ? {
+          ...authoritativeModelUsage,
+          calls: Array.isArray(fallbackModelCalls) ? fallbackModelCalls : [],
+        }
+      : sessionModelUsage;
   const visiblePathRoots = taskMetadata && Array.isArray(taskMetadata.visiblePathRoots)
     ? taskMetadata.visiblePathRoots
     : [];
@@ -1313,9 +1371,13 @@ export function buildAssistantMessageToolTrace(options: any = {}) {
   const steps = storedTimeline
     ? storedTimeline.events.filter((event: any) => event.eventType === 'tool_execution')
     : buildMergedTimelineSteps(sessionToolCalls, bridgeToolEvents);
+  const fallbackTotalEventCount = (modelUsage ? modelUsage.modelCallCount : 0)
+    + sessionToolCalls.length
+    + bridgeToolStats.totalCount;
+  const fallbackTimelineEvents = buildTraceTimelineEvents(modelUsage, steps);
   const projectedTimeline = storedTimeline || normalizeObservabilityTimeline({
-    events: buildTraceTimelineEvents(modelUsage, steps),
-    totalEventCount: (modelUsage ? modelUsage.modelCallCount : 0) + sessionToolCalls.length + bridgeToolStats.totalCount,
+    events: alignTimelineSequencesWithTotal(fallbackTimelineEvents, fallbackTotalEventCount),
+    totalEventCount: fallbackTotalEventCount,
     modelCallCount: modelUsage ? modelUsage.modelCallCount : 0,
     coldStartModelCallCount: modelUsage ? modelUsage.coldStartModelCallCount : 0,
     postColdModelCallCount: modelUsage ? modelUsage.postColdModelCallCount : 0,
@@ -1455,12 +1517,26 @@ export function buildAssistantMessageToolTrace(options: any = {}) {
           retainedEventCount: projectedTimeline.retainedEventCount,
           droppedEventCount: projectedTimeline.droppedEventCount,
           truncated: projectedTimeline.truncated,
+          modelCallCount: projectedTimeline.modelCallCount,
+          coldStartModelCallCount: projectedTimeline.coldStartModelCallCount,
+          postColdModelCallCount: projectedTimeline.postColdModelCallCount,
+          providerMissCount: projectedTimeline.providerMissCount,
+          toolExecutionCount: projectedTimeline.toolExecutionCount,
+          failedToolExecutionCount: projectedTimeline.failedToolExecutionCount,
+          totalToolDurationMs: projectedTimeline.totalToolDurationMs,
         }
       : {
           totalEventCount: 0,
           retainedEventCount: 0,
           droppedEventCount: 0,
           truncated: false,
+          modelCallCount: 0,
+          coldStartModelCallCount: 0,
+          postColdModelCallCount: 0,
+          providerMissCount: 0,
+          toolExecutionCount: 0,
+          failedToolExecutionCount: 0,
+          totalToolDurationMs: 0,
         },
     summary,
     activity,
