@@ -1912,8 +1912,9 @@
       header.className = 'message-tool-trace-header';
       summaryWrap.className = 'message-tool-trace-summary';
 
-      const liveActivity = liveStageActivity(liveStage);
-      const activity = liveActivity || traceActivity(trace);
+      const terminalTraceMessage = message && (message.status === 'completed' || message.status === 'failed');
+      const liveActivity = terminalTraceMessage ? null : liveStageActivity(liveStage);
+      const activity = terminalTraceMessage ? null : liveActivity || traceActivity(trace);
       const shouldShowLiveSpotlight = Boolean(activity && activity.hasCurrentTool && activity.currentToolName);
 
       if (summary) {

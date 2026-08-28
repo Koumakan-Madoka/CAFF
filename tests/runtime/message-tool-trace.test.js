@@ -2723,6 +2723,73 @@ test('completed message SSE finalizes a long live trace without waiting for HTTP
   assert.equal(renderedActivities.at(-1), 'idle');
 });
 
+test('completed message SSE terminalizes a stale running task status left by live tool events', () => {
+  const conversationId = 'conversation-terminal-stale-task';
+  const messageId = 'message-terminal-stale-task';
+  const taskId = 'task-terminal-stale-task';
+  const streamingMessage = {
+    id: messageId,
+    conversationId,
+    role: 'assistant',
+    status: 'streaming',
+    taskId,
+    createdAt: '2026-08-28T00:00:00.000Z',
+  };
+  const { app, FakeEventSource } = loadPublicAppHarness();
+  app.state.selectedConversationId = conversationId;
+  app.state.currentConversation = {
+    id: conversationId,
+    messages: [streamingMessage],
+  };
+
+  app.connectEventStream();
+  FakeEventSource.instance.dispatch('conversation_tool_event', {
+    conversationId,
+    messageId,
+    taskId,
+    phase: 'started',
+    step: {
+      eventId: 'tool:session:stale-task-1',
+      eventType: 'tool_execution',
+      timelineSequence: 2,
+      stepId: 'session-stale-task-1',
+      kind: 'session',
+      toolName: 'bash',
+      status: 'running',
+    },
+    timelineWindow: {
+      totalEventCount: 2,
+      retainedEventCount: 2,
+      droppedEventCount: 0,
+      truncated: false,
+      modelCallCount: 1,
+      toolExecutionCount: 1,
+      failedToolExecutionCount: 0,
+      totalToolDurationMs: 0,
+    },
+  });
+
+  const liveTrace = app.toolTraceStateForMessage(messageId).data;
+  assert.equal(liveTrace.task.status, 'running');
+  assert.equal(liveTrace.summary.status, 'running');
+  assert.equal(liveTrace.activity.hasCurrentTool, true);
+
+  FakeEventSource.instance.dispatch('conversation_message_updated', {
+    conversationId,
+    message: {
+      ...streamingMessage,
+      content: 'Run completed.',
+      status: 'completed',
+    },
+  });
+
+  const terminalTrace = app.toolTraceStateForMessage(messageId).data;
+  assert.equal(terminalTrace.task.status, 'succeeded');
+  assert.equal(terminalTrace.summary.status, 'succeeded');
+  assert.equal(terminalTrace.activity.hasCurrentTool, false);
+  assert.equal(terminalTrace.activity.currentToolName, '');
+});
+
 test('public app finalizes failed side-slot tool traces from the finished payload before removing the slot', () => {
   const { app, FakeEventSource } = loadPublicAppHarness();
   const messageId = 'side-trace-message-1';

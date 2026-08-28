@@ -807,6 +807,12 @@ const icon = window.CaffIcons.create('archive', {
   stage for that message, even when the stale stage still reports a current
   tool. Runtime stages remain authoritative only while the message itself is
   non-terminal; terminal cards render activity solely from the converged trace.
+- The same absorbing boundary applies inside the trace data and its derived
+  rendering: a terminal message forces the trace summary out of `running`
+  regardless of a stale local `task.status`, the terminal sync must also
+  converge `trace.task.status`, and the card must not render the live-tool
+  spotlight or `当前：…` pill from any cached trace activity once the message
+  is terminal.
 - Summary model/tool/provider-miss/failure counters come from full aggregates,
   never from the retained 16 rows. The omission row wraps at narrow widths and
   must not create horizontal overflow.

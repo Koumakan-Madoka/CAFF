@@ -1394,12 +1394,16 @@ function computeToolTraceSummary(message, task, steps, trace) {
     const status = normalizeToolTraceStepStatus(step && step.status ? step.status : '');
     return status === 'running' || status === 'queued';
   });
+  // A terminal assistant message is the authoritative boundary: stale local
+  // task/step state must never keep a completed or failed card running.
+  const messageTerminal = messageStatus === 'completed' || messageStatus === 'failed';
   const running =
-    messageStatus === 'queued' ||
-    messageStatus === 'streaming' ||
-    taskStatus === 'queued' ||
-    taskStatus === 'running' ||
-    hasRunningStep;
+    !messageTerminal &&
+    (messageStatus === 'queued' ||
+      messageStatus === 'streaming' ||
+      taskStatus === 'queued' ||
+      taskStatus === 'running' ||
+      hasRunningStep);
   const failed = failedSteps.length > 0 || messageStatus === 'failed' || taskStatus === 'failed';
 
   const modelUsageSummary = computeTraceModelUsageSummary(trace);
@@ -1942,6 +1946,15 @@ function syncToolTraceStatesWithConversation(conversation) {
       mutateMessageToolTrace(message.id, (trace) => {
         if (message.status === 'completed' || message.status === 'failed') {
           finalizeRunningStepsInTrace(trace, finalStatusMap);
+          if (trace.task && typeof trace.task === 'object') {
+            const taskStatus = String(trace.task.status || '').trim().toLowerCase();
+            if (taskStatus === 'running' || taskStatus === 'queued') {
+              trace.task = {
+                ...trace.task,
+                status: message.status === 'failed' ? 'failed' : 'succeeded',
+              };
+            }
+          }
         }
       });
     });

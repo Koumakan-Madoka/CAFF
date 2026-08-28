@@ -199,7 +199,11 @@ mocked result alone:
   fixture must additionally keep a stale matching turn/slot stage at
   `status=running` with `currentToolName` populated after the message becomes
   terminal; the terminal card must ignore that stage, render no live-tool panel,
-  and show `已完成` from the converged trace.
+  and show `已完成` from the converged trace. A second fixture must drive the
+  real `conversation_tool_event` path so `trace.task.status` becomes `running`
+  before the terminal message frame arrives; the terminal sync must converge
+  the task status, force the summary out of `running`, and clear the inferred
+  current-tool activity without any HTTP refetch.
 - Tool-trace fixtures combine model and tool events and assert every returned
   detail array is derived from the same 16-event window while full summary
   counts remain unchanged. The HTTP `timelineWindow` must repeat the full
