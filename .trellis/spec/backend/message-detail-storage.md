@@ -350,8 +350,11 @@ message metadata.
   historical rows written under the former 64-call bound and preserve the
   already-dropped count; no existing row is rewritten or backfilled.
 - Tool-trace reads use the unified row when present and skip session JSONL.
-  Historical messages without a row use the bounded session/task compatibility
-  projection and remain auditable in their original stores.
+  A row whose model-call aggregate exceeds that message's authoritative model
+  usage is recognized as a legacy cross-message contamination artifact; read
+  projection discards that row, rebuilds from the message's own session/task
+  evidence, and never rewrites the stored audit detail. Historical messages
+  without a row use the same bounded session/task compatibility projection.
 
 ## Scenario: Bounded Live Observability Timeline
 
@@ -415,7 +418,12 @@ chat_message_observability_timelines(
   usage-bearing assistant call. It excludes prompt, visible reply, thinking,
   raw provider wrappers, and tool arguments. Tool SSE retains existing redaction.
 - Terminal message, model usage, context detail, and unified timeline commit in
-  one Store transaction. A table-backed tool-trace read skips session JSONL.
+  one Store transaction. A valid table-backed tool-trace read skips session
+  JSONL. If its stored model-call count is greater than the same message's
+  table-first model-usage count, the timeline is a legacy cross-message
+  contamination artifact: the HTTP read discards it in memory, rebuilds from
+  that message's model/session/task evidence, and leaves the SQLite row and
+  session JSONL unchanged.
 - A historical message without unified detail uses the compatibility path. Its
   bridge query reads first 1 + latest 199 rows and SQL-aggregates the full
   counts; final HTTP detail arrays all derive from the 16-event timeline.
@@ -434,7 +442,8 @@ chat_message_observability_timelines(
 | `message_end` repeated through `agent_end` | one model event and one model count |
 | terminal success with running session tool | persist it as `observed` |
 | terminal failure with running tool | persist it as `failed` |
-| table row exists | no session JSONL read; return all detail arrays <=16 |
+| table row exists and its model count matches authoritative usage | no session JSONL read; return all detail arrays <=16 |
+| stored timeline model count exceeds this message's model usage | ignore the contaminated row for projection, rebuild only this message's events, and do not rewrite SQLite |
 | bounded HTTP snapshot has 216 events, 66 model calls, 150 tools | return 16 events plus `66`/`150` in both `summary` and `timelineWindow` |
 | compatibility snapshot omits aggregate window fields | browser preserves full `summary` / `modelUsageSummary`; it does not replace them with `0` or retained-row counts |
 | later model/tool SSE arrives | update only present authoritative aggregates; model and tool totals continue independently |
@@ -450,6 +459,9 @@ chat_message_observability_timelines(
   live without a detail refetch.
 - Base: an old message has no unified row, so its first expansion performs one
   bounded compatibility projection and keeps the audit JSONL unchanged.
+- Base: a legacy row accumulated earlier same-turn messages, so its model count
+  exceeds the current message's authoritative usage; the read path projects
+  only current session/task evidence while retaining the original row for audit.
 - Bad: trim model calls and tools independently to 16. The merged UI can then
   hold 32 rows and model/tool chronology diverges.
 - Bad: recompute tool/model totals from retained rows or use random bridge ids;
@@ -462,9 +474,10 @@ chat_message_observability_timelines(
 - `tests/runtime/agent-executor-hook.test.js`: running model SSE, safe fields,
   no thinking/visible text, one event.
 - `tests/runtime/message-tool-trace.test.js`: 48 mixed events, 205 bridge
-  events, one snapshot GET, 65-event live browser merge, stable identities, and
-  the `216 total / 66 model / 150 tool` aggregate-preservation regression across
-  compatibility snapshot plus model/tool SSE.
+  events, one snapshot GET, 65-event live browser merge, stable identities, the
+  `216 total / 66 model / 150 tool` aggregate-preservation regression, and a
+  persisted 320-event cross-message artifact that converges to the current
+  message's model/session/task evidence without rewriting its detail row.
 - `tests/ui/observability-timeline-window.test.js`: five concurrent 65-event
   windows, omission copy, original sequence rendering, narrow-wrap CSS.
 - `tests/ui/cross-conversation-ui.test.js`: the collapsed summary and expanded

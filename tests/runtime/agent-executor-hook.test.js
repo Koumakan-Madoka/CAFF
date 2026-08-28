@@ -21,13 +21,13 @@ function createRunHandle(reply, resultOverrides = {}) {
   return handle;
 }
 
-function createObservableRunHandle() {
+function createObservableRunHandle(runIndex = 1) {
   const handle = new EventEmitter();
-  handle.runId = 'run-observability-live';
+  handle.runId = `run-observability-live-${runIndex}`;
   handle.sessionPath = '';
   const usageCall = {
-    key: 'live-call-1',
-    responseId: 'live-response-1',
+    key: `live-call-${runIndex}`,
+    responseId: `live-response-${runIndex}`,
     stopReason: 'toolUse',
     timestamp: 101,
     usage: { input: 120, output: 30, cacheRead: 0, totalTokens: 150 },
@@ -964,6 +964,125 @@ test('agent executor publishes a bounded safe model-call event while the assista
   assert.equal(modelEvents[0].payload.event.tokenUsage.totalTokens, 150);
   assert.equal(JSON.stringify(modelEvents[0].payload).includes('hidden-live-reasoning'), false);
   assert.equal(JSON.stringify(modelEvents[0].payload).includes('visible but not part of observability SSE'), false);
+});
+
+test('agent executor isolates observability sequences across repeated runs by the same agent in one turn', async (t) => {
+  const tempDir = withTempDir('caff-agent-executor-observability-isolation-');
+  const minimalPiPath = require.resolve('../../build/lib/minimal-pi');
+  const agentExecutorPath = require.resolve('../../build/server/domain/conversation/turn/agent-executor');
+  const turnStatePath = require.resolve('../../build/server/domain/conversation/turn/turn-state');
+  const minimalPi = require(minimalPiPath);
+  const originalStartRun = minimalPi.startRun;
+  let nextRunIndex = 0;
+
+  minimalPi.startRun = () => createObservableRunHandle(++nextRunIndex);
+  delete require.cache[agentExecutorPath];
+
+  t.after(() => {
+    minimalPi.startRun = originalStartRun;
+    delete require.cache[agentExecutorPath];
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const { createAgentExecutor } = require(agentExecutorPath);
+  const { createTurnState } = require(turnStatePath);
+  const agent = {
+    id: 'agent-observability-isolation',
+    name: 'Observability Isolation',
+    description: 'Runs twice in one turn.',
+    personaPrompt: 'Be brief.',
+  };
+  const conversation = {
+    id: 'conversation-observability-isolation',
+    title: 'Observability Isolation',
+    type: 'standard',
+    agents: [agent],
+    metadata: {},
+  };
+  const store = createFakeStore(conversation);
+  const broadcastEvents = [];
+  const invocationTimelineStates = [];
+  const bridge = {
+    createInvocationContext(input) {
+      return input;
+    },
+    registerInvocation(context) {
+      invocationTimelineStates.push(context.observabilityTimelineState);
+      return {
+        ...context,
+        invocationId: `invocation-observability-isolation-${invocationTimelineStates.length}`,
+        callbackToken: `callback-observability-isolation-${invocationTimelineStates.length}`,
+        publicToolUsed: false,
+        publicPostCount: 0,
+        privatePostCount: 0,
+        privateHandoffCount: 0,
+        lastPublicContent: '',
+      };
+    },
+    unregisterInvocation() {},
+  };
+  const executor = createAgentExecutor({
+    store,
+    skillRegistry: { resolveSkills: () => [] },
+    modeStore: { get: () => null },
+    agentToolBridge: bridge,
+    agentDir: tempDir,
+    sqlitePath: path.join(tempDir, 'chat.sqlite'),
+    toolBaseUrl: 'http://127.0.0.1:3100',
+    agentToolScriptPath: path.join(tempDir, 'agent-chat-tools.js'),
+    agentToolRelativePath: './lib/agent-chat-tools.js',
+    broadcastEvent(eventName, payload) {
+      broadcastEvents.push({ eventName, payload });
+    },
+  });
+  const turnState = createTurnState(conversation, 'turn-observability-isolation');
+  const completedReplies = [];
+
+  for (let runIndex = 1; runIndex <= 2; runIndex += 1) {
+    await executor.executeConversationAgent({
+      runStore: createFakeRunStore(),
+      conversationId: conversation.id,
+      turnId: turnState.turnId,
+      rootTaskId: 'root-task-observability-isolation',
+      conversation,
+      promptMessages: [{ role: 'user', content: `Run ${runIndex}.` }],
+      promptUserMessage: {
+        id: `user-message-observability-isolation-${runIndex}`,
+        role: 'user',
+        content: `Run ${runIndex}.`,
+      },
+      queueItem: { triggerType: runIndex === 1 ? 'user' : 'agent', enqueueReason: 'test_repeat' },
+      agent,
+      turnState,
+      completedReplies,
+      failedReplies: [],
+      routingMode: 'mention_queue',
+      hop: runIndex,
+      remainingSlots: 1,
+      enqueueAgent() {},
+      allowHandoffs: true,
+      finalStopsTurn: false,
+      projectDir: tempDir,
+    });
+  }
+
+  const modelEvents = broadcastEvents.filter((event) => event.eventName === 'conversation_model_event');
+  assert.equal(modelEvents.length, 2);
+  assert.notEqual(modelEvents[0].payload.messageId, modelEvents[1].payload.messageId);
+  assert.deepEqual(modelEvents.map((item) => item.payload.event.timelineSequence), [1, 1]);
+  assert.deepEqual(modelEvents.map((item) => item.payload.event.modelCallSequence), [1, 1]);
+  assert.deepEqual(modelEvents.map((item) => item.payload.timelineWindow.totalEventCount), [1, 1]);
+  assert.equal(invocationTimelineStates.length, 2);
+  assert.ok(invocationTimelineStates[0]);
+  assert.ok(invocationTimelineStates[1]);
+  assert.notEqual(invocationTimelineStates[0], invocationTimelineStates[1]);
+  assert.equal(completedReplies.length, 2);
+  assert.deepEqual(completedReplies.map((message) => message.observabilityTimeline.totalEventCount), [1, 1]);
+  assert.deepEqual(
+    completedReplies.map((message) => message.observabilityTimeline.events[0].timelineSequence),
+    [1, 1]
+  );
+  assert.deepEqual(completedReplies.map((message) => message.metadata.modelUsage.modelCallCount), [1, 1]);
 });
 
 test('assistant completion hook broadcasts final message before blocking routing', async (t) => {

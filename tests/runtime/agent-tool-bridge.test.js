@@ -4,6 +4,10 @@ const path = require('node:path');
 const test = require('node:test');
 const { createChatAppStore } = require('../../build/lib/chat-app-store');
 const { createSqliteRunStore } = require('../../build/lib/sqlite-store');
+const {
+  createModelCallObservabilityEvent,
+  createObservabilityTimelineState,
+} = require('../../build/lib/observability-timeline');
 const { createAgentToolBridge } = require('../../build/server/domain/runtime/agent-tool-bridge');
 const { markConversationRetrievalTraceUsage } = require('../../build/server/domain/conversation/retrieval-trace');
 
@@ -949,6 +953,18 @@ test('agent tool bridge broadcasts live tool events for started and finished bri
   });
 
   const fixture = createPublicInvocationFixture(store, 'live-events');
+  const observabilityTimelineState = createObservabilityTimelineState();
+  createModelCallObservabilityEvent(observabilityTimelineState, {
+    responseId: 'bridge-shared-state-model-call',
+    tokenUsage: {
+      inputTokens: 10,
+      uncachedInputTokens: 10,
+      outputTokens: 2,
+      totalTokens: 12,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    },
+  });
   const context = bridge.registerInvocation(
     bridge.createInvocationContext({
       conversationId: fixture.conversation.id,
@@ -958,6 +974,7 @@ test('agent tool bridge broadcasts live tool events for started and finished bri
       assistantMessageId: fixture.assistantMessage.id,
       conversationAgents: fixture.conversation.agents,
       stage: fixture.stage,
+      observabilityTimelineState,
       turnState: fixture.turnState,
     })
   );
@@ -970,7 +987,16 @@ test('agent tool bridge broadcasts live tool events for started and finished bri
   });
 
   assert.equal(response.ok, true);
+  assert.equal(context.observabilityTimelineState, observabilityTimelineState);
   assert.ok(liveEvents.length >= 2);
+  assert.deepEqual(
+    liveEvents.map((entry) => entry.payload.step.timelineSequence),
+    liveEvents.map(() => 2),
+  );
+  assert.deepEqual(
+    liveEvents.map((entry) => entry.payload.timelineWindow.totalEventCount),
+    liveEvents.map(() => 2),
+  );
   assert.ok(
     liveEvents.some(
       (entry) =>

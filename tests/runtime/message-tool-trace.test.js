@@ -1051,6 +1051,176 @@ test('assistant message tool trace bounds mixed model and tool events to first o
   assert.equal(trace.timelineEvents.at(-1).eventId, 'tool:session:session-tool-24');
 });
 
+test('historical trace read discards a cross-message stored timeline without rewriting audit detail', (t) => {
+  const tempDir = withTempDir('caff-message-tool-trace-cross-message-convergence-');
+  const sqlitePath = path.join(tempDir, 'trace.sqlite');
+  const sessionsDir = path.join(tempDir, 'named-sessions');
+  const sessionPath = path.join(sessionsDir, 'trace-session-cross-message-convergence.jsonl');
+  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
+  const runStore = createSqliteRunStore({ agentDir: tempDir, sqlitePath });
+
+  fs.mkdirSync(sessionsDir, { recursive: true });
+  t.after(() => {
+    try { runStore.close(); } catch {}
+    try { store.close(); } catch {}
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const agent = store.saveCustomRoleConfig({
+    id: 'trace-agent-cross-message-convergence',
+    name: 'Trace Agent',
+    personaPrompt: 'Reply briefly.',
+  });
+  const conversation = store.createConversation({
+    id: 'trace-conversation-cross-message-convergence',
+    title: 'Trace Conversation',
+    participants: [agent.id],
+  });
+  const taskId = 'trace-task-cross-message-convergence';
+  const messageId = 'trace-message-cross-message-convergence';
+  store.createMessage({
+    id: messageId,
+    conversationId: conversation.id,
+    turnId: 'trace-turn-cross-message-convergence',
+    role: 'assistant',
+    agentId: agent.id,
+    senderName: agent.name,
+    content: 'Thinking...',
+    status: 'streaming',
+    taskId,
+    metadata: { sessionPath, sessionName: 'trace-session-cross-message-convergence' },
+  });
+
+  const usageCalls = Array.from({ length: 21 }, (_, index) => index + 1).map((sequence) => ({
+    sequence,
+    key: `current-call-${sequence}`,
+    responseId: `current-response-${sequence}`,
+    stopReason: sequence < 21 ? 'toolUse' : 'stop',
+    timestamp: sequence,
+    isColdStart: sequence === 1,
+    coldStart: sequence === 1,
+    providerMiss: sequence > 1,
+    tokenUsage: {
+      inputTokens: 100 + sequence,
+      uncachedInputTokens: 100 + sequence,
+      outputTokens: 10,
+      totalTokens: 110 + sequence,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    },
+  }));
+  const authoritativeModelUsage = {
+    modelCallCount: 21,
+    coldStartModelCallCount: 1,
+    postColdModelCallCount: 20,
+    providerMissCount: 20,
+    calls: usageCalls,
+  };
+  const contaminatedTimeline = {
+    totalEventCount: 320,
+    modelCallCount: 119,
+    coldStartModelCallCount: 1,
+    postColdModelCallCount: 118,
+    providerMissCount: 7,
+    toolExecutionCount: 201,
+    failedToolExecutionCount: 0,
+    totalToolDurationMs: 0,
+    events: [
+      {
+        eventId: 'model-call:prior-message',
+        eventType: 'model_call',
+        timelineSequence: 1,
+        modelCallSequence: 1,
+        tokenUsage: usageCalls[0].tokenUsage,
+      },
+      {
+        eventId: 'tool:session:prior-message-tool',
+        eventType: 'tool_execution',
+        timelineSequence: 320,
+        stepId: 'prior-message-tool',
+        kind: 'session',
+        toolName: 'bash',
+        status: 'observed',
+      },
+    ],
+  };
+  store.updateMessage(messageId, {
+    content: 'Done',
+    status: 'completed',
+    modelUsage: authoritativeModelUsage,
+    observabilityTimeline: contaminatedTimeline,
+  });
+
+  const sessionEntries = usageCalls.map((call, index) => {
+    const sequence = index + 1;
+    const toolCount = sequence <= 6 ? 3 : 2;
+    return JSON.stringify({
+      type: 'message',
+      message: {
+        role: 'assistant',
+        responseId: `current-response-${sequence}`,
+        provider: 'demo-provider',
+        model: 'demo-model',
+        stopReason: call.stopReason,
+        timestamp: sequence,
+        usage: { input: 100 + sequence, output: 10, cacheRead: 0 },
+        content: Array.from({ length: toolCount }, (_, toolIndex) => ({
+          type: 'toolCall',
+          name: 'read',
+          id: `current-session-tool-${sequence}-${toolIndex + 1}`,
+          arguments: { path: `docs/current-${sequence}-${toolIndex + 1}.md` },
+        })),
+      },
+    });
+  });
+  fs.writeFileSync(
+    sessionPath,
+    `${sessionEntries.join('\n')}\n`,
+    'utf8'
+  );
+  runStore.createTask({
+    taskId,
+    kind: 'conversation_agent_reply',
+    title: 'Trace Task',
+    status: 'completed',
+    sessionPath,
+    metadata: { sessionPath },
+  });
+  for (let sequence = 1; sequence <= 3; sequence += 1) {
+    runStore.appendTaskEvent(taskId, 'agent_tool_call', {
+      toolCallId: `current-bridge-tool-${sequence}`,
+      tool: 'send-public',
+      status: 'succeeded',
+      durationMs: 25,
+      assistantMessageId: messageId,
+    });
+  }
+
+  const storedTimelineBeforeRead = store.getMessageObservabilityTimeline(messageId);
+  const trace = buildAssistantMessageToolTrace({
+    db: store.db,
+    agentDir: tempDir,
+    message: store.getMessage(messageId),
+    resolvedSessionPath: sessionPath,
+    modelUsage: store.getMessageModelUsage(messageId),
+    observabilityTimeline: storedTimelineBeforeRead,
+  });
+
+  assert.equal(trace.modelUsageSummary.modelCallCount, 21);
+  assert.equal(trace.summary.modelCallCount, 21);
+  assert.equal(trace.summary.toolExecutionCount, 51);
+  assert.equal(trace.timelineWindow.totalEventCount, 72);
+  assert.equal(trace.timelineWindow.modelCallCount, 21);
+  assert.equal(trace.timelineWindow.toolExecutionCount, 51);
+  assert.deepEqual(
+    trace.timelineEvents.map((event) => event.timelineSequence),
+    [1, ...Array.from({ length: 15 }, (_, index) => index + 58)]
+  );
+  assert.equal(trace.timelineEvents.at(-1).timelineSequence, 72);
+  assert.equal(trace.timelineEvents.some((event) => event.eventId.includes('prior-message')), false);
+  assert.deepEqual(store.getMessageObservabilityTimeline(messageId), storedTimelineBeforeRead);
+});
+
 test('a running tool keeps its original identity after falling outside the retained window', () => {
   const state = createObservabilityTimelineState();
   createToolObservabilityEvent(state, {

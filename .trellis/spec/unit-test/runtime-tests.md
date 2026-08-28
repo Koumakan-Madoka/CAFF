@@ -176,7 +176,11 @@ mocked result alone:
   cascade deletion, and `foreign_key_check`.
 - Runtime fixtures emit thinking and visible text markers beside usage, then
   assert the model SSE contains neither marker and is emitted once despite
-  `agent_end` duplication.
+  `agent_end` duplication. A same-Agent, same-turn repeated-execution fixture
+  must assert each assistant message receives a distinct invocation sequencer:
+  both live SSE and persisted detail restart at timeline/model-call sequence 1,
+  the second message contains only its own counters, and the first snapshot is
+  not mutated.
 - Browser harnesses send at least 65 events to five independent message traces;
   each retains sequences `1, 51..65`, reports total 65/dropped 49, and receives
   new model events without polling. Calling the detail loader after a terminal

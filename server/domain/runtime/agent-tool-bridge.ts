@@ -389,7 +389,8 @@ export function createAgentToolBridge(options: any = {}) {
       return;
     }
 
-    const observabilityTimelineState = ensureObservabilityTimelineState(context.stage);
+    const observabilityTimelineState = context.observabilityTimelineState
+      || ensureObservabilityTimelineState(context.stage);
     const event = createToolObservabilityEvent(observabilityTimelineState, step) || step;
     broadcastEvent('conversation_tool_event', {
       conversationId: context.conversationId,
@@ -515,6 +516,7 @@ export function createAgentToolBridge(options: any = {}) {
       conversationAgents: Array.isArray(input.conversationAgents) ? input.conversationAgents.slice() : [],
       runStore: input.runStore || null,
       stage: input.stage || null,
+      observabilityTimelineState: input.observabilityTimelineState || null,
       turnState: input.turnState || null,
       enqueueAgent: typeof input.enqueueAgent === 'function' ? input.enqueueAgent : null,
       allowHandoffs: input.allowHandoffs !== false,

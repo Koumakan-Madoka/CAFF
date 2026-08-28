@@ -1314,10 +1314,12 @@ node "$CAFF_CHAT_TOOLS_PATH" write-experience \
 
 ## Bounded Live Observability Timeline
 
-- Each assistant stage owns one non-enumerable observability sequencer shared by
-  the executor and bridge. `message_end` emits the model event before the tool
-  projection from the same assistant message, and duplicate `agent_end` copies
-  do not allocate another model sequence.
+- Each assistant invocation owns one observability sequencer shared by the
+  executor and its registered bridge context. Re-running the same Agent in the
+  same turn creates a fresh sequencer for the new assistant message; the
+  reusable turn stage carries UI lifecycle state only. `message_end` emits the
+  model event before the tool projection from the same assistant message, and
+  duplicate `agent_end` copies do not allocate another model sequence.
 - Model and tool events carry stable `eventId`, typed `eventType`, and positive
   `timelineSequence`. Running tool updates reuse the original identity and
   sequence. SSE contains normalized usage and redacted step summaries only;
@@ -1328,9 +1330,12 @@ node "$CAFF_CHAT_TOOLS_PATH" write-experience \
 - Historical bridge projection reads at most its first row plus latest 199 rows
   and obtains full count/failure/success/duration aggregates in SQL. All HTTP
   detail arrays derive from the final 16-event timeline window.
-- New terminal message detail is table-first and avoids session JSONL parsing;
-  historical messages without unified detail retain the bounded compatibility
-  path.
+- New terminal message detail is table-first and avoids session JSONL parsing.
+  If a legacy unified row reports more model calls than that message's
+  authoritative model-usage detail, it is treated as cross-message
+  contamination and projected from the message's own session/task evidence
+  without rewriting either audit source. Historical messages without unified
+  detail retain the same bounded compatibility path.
 - If the change affects pi runtime CLI behavior, also inspect
   `tests/runtime/pi-runtime.test.js`
 - Dynamic skill path-loading prompt behavior is covered by `tests/runtime/skill-loading.test.js`
