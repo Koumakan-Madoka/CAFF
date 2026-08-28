@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 16
+- **Total Sessions**: 17
 - **Last Active**: 2026-08-28
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~786 | Active |
+| `journal-1.md` | ~839 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 17 | 2026-08-28 | Drain public handoffs after private recipient settlement | `f5cc8d09e3631a82393f984b59d9ca2b145cc33c`, `399be46e3b9037d46590c83673448383ab201b54` | `room/08154128-gpt-agent` |
 | 16 | 2026-08-28 | Bounded realtime observability timeline accepted | `857afd8`, `e8b660c`, `a725b22`, `4a84378`, `0e5febd`, `41b6989`, `09e071b`, `cf4fde6`, `53ae47a` | `room/08154128-gpt-agent` |
 | 15 | 2026-08-27 | Allow Recovery Scribe for user-stopped traces | `603c7012d99b36d0b2d0c12b614fb605fdd7ce8e`, `e024e379762bf1a66cfae6f57379f7ba8e67346f`, `0de6a3dbab9daa074097243a7bc8439a8b9bbdc5` | `room/c2fab452-caff-bug-bug` |
 | 14 | 2026-08-27 | Fix Recovery Scribe empty thinking defaults | `324836ef86e18a5f020b2e7863affc74a1389bbf`, `1edda32802013dabb5277e3b35a3ab8f77bd4622` | `room/c2fab452-caff-bug-bug` |
