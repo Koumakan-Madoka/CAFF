@@ -370,7 +370,16 @@ retainObservabilityEvents(events, totalEventCount?)
        droppedEventCount, truncated }
 
 GET /api/conversations/:conversationId/messages/:messageId/tool-trace
-  -> { trace: { timelineEvents[<=16], timelineWindow, summary, ... } }
+  -> { trace: {
+       timelineEvents[<=16],
+       timelineWindow: {
+         totalEventCount, retainedEventCount, droppedEventCount, truncated,
+         modelCallCount, coldStartModelCallCount, postColdModelCallCount,
+         providerMissCount, toolExecutionCount, failedToolExecutionCount,
+         totalToolDurationMs
+       },
+       summary, ...
+     } }
 
 SSE conversation_model_event | conversation_tool_event
   -> { conversationId, messageId, taskId, event, timelineWindow }
@@ -393,9 +402,15 @@ chat_message_observability_timelines(
 - A message timeline retains 16 mixed events: original first event and latest 15.
   Each has stable `eventId`, `eventType`, and original positive
   `timelineSequence`; updates to a running tool reuse both identity and sequence.
-- `timelineWindow` keeps full total/retained/dropped/truncated fields. `summary`
-  and table aggregate columns keep full model/tool/miss/failure/duration values;
-  no consumer derives them from the 16 retained rows.
+- `timelineWindow` keeps full total/retained/dropped/truncated fields and the
+  full model/tool/miss/failure/duration aggregates. `summary` and table aggregate
+  columns keep the same full values; no consumer derives them from the 16
+  retained rows.
+- Browser aggregate merges are field-preserving. A finite non-negative field in
+  the incoming HTTP/SSE window may replace the corresponding aggregate; an
+  omitted, null, empty, negative, or non-numeric field never clears an existing
+  `summary` / `modelUsageSummary` value. Compatibility HTTP snapshots that carry
+  only the four retention fields therefore keep their full summary counts.
 - The executor emits `conversation_model_event` only for a newly observed
   usage-bearing assistant call. It excludes prompt, visible reply, thinking,
   raw provider wrappers, and tool arguments. Tool SSE retains existing redaction.
@@ -420,6 +435,9 @@ chat_message_observability_timelines(
 | terminal success with running session tool | persist it as `observed` |
 | terminal failure with running tool | persist it as `failed` |
 | table row exists | no session JSONL read; return all detail arrays <=16 |
+| bounded HTTP snapshot has 216 events, 66 model calls, 150 tools | return 16 events plus `66`/`150` in both `summary` and `timelineWindow` |
+| compatibility snapshot omits aggregate window fields | browser preserves full `summary` / `modelUsageSummary`; it does not replace them with `0` or retained-row counts |
+| later model/tool SSE arrives | update only present authoritative aggregates; model and tool totals continue independently |
 | historical row has 205 bridge events | true total=205; first and newest failure remain visible |
 | SSE contains thinking/text markers | regression failure; markers must be absent |
 | detail UPSERT fails | roll back the matching terminal message update |
@@ -444,9 +462,14 @@ chat_message_observability_timelines(
 - `tests/runtime/agent-executor-hook.test.js`: running model SSE, safe fields,
   no thinking/visible text, one event.
 - `tests/runtime/message-tool-trace.test.js`: 48 mixed events, 205 bridge
-  events, one snapshot GET, 65-event live browser merge, stable identities.
+  events, one snapshot GET, 65-event live browser merge, stable identities, and
+  the `216 total / 66 model / 150 tool` aggregate-preservation regression across
+  compatibility snapshot plus model/tool SSE.
 - `tests/ui/observability-timeline-window.test.js`: five concurrent 65-event
   windows, omission copy, original sequence rendering, narrow-wrap CSS.
+- `tests/ui/cross-conversation-ui.test.js`: the collapsed summary and expanded
+  timeline both render full `66` model / `150` tool totals beside `16/216` and
+  the 200-event omission row.
 - `npm run check`, both typechecks, build, smoke, target/adjacent suites, and
   desktop/mobile browser verification remain gates.
 

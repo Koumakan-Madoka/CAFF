@@ -183,5 +183,10 @@ mocked result alone:
   message patch must not make a second GET.
 - Tool-trace fixtures combine model and tool events and assert every returned
   detail array is derived from the same 16-event window while full summary
-  counts remain unchanged. A bridge history over 200 events must preserve the
+  counts remain unchanged. The HTTP `timelineWindow` must repeat the full
+  model/tool/miss/failure/duration aggregates; a browser compatibility fixture
+  with only retention fields must preserve `summary` / `modelUsageSummary`
+  through initial expansion and later model/tool SSE. Rendered regression
+  evidence must show `66` model calls and `150` tools beside `16/216` retained
+  and `200` omitted events. A bridge history over 200 events must preserve the
   true first event, newest failure, and SQL-derived full total.

@@ -1034,6 +1034,13 @@ test('assistant message tool trace bounds mixed model and tool events to first o
   assert.equal(trace.timelineWindow.retainedEventCount, 16);
   assert.equal(trace.timelineWindow.droppedEventCount, 32);
   assert.equal(trace.timelineWindow.truncated, true);
+  assert.equal(trace.timelineWindow.modelCallCount, 24);
+  assert.equal(trace.timelineWindow.coldStartModelCallCount, 1);
+  assert.equal(trace.timelineWindow.postColdModelCallCount, 23);
+  assert.equal(trace.timelineWindow.providerMissCount, 0);
+  assert.equal(trace.timelineWindow.toolExecutionCount, 24);
+  assert.equal(trace.timelineWindow.failedToolExecutionCount, 0);
+  assert.equal(trace.timelineWindow.totalToolDurationMs, 0);
   assert.equal(trace.timelineEvents.length, 16);
   assert.deepEqual(
     trace.timelineEvents.map((event) => event.timelineSequence),
@@ -2042,6 +2049,175 @@ test('public app reads one trace snapshot and keeps later event updates without 
 
   assert.equal(traceGets, 1);
   assert.equal(app.toolTraceStateForMessage(message.id).data.timelineEvents.length, 1);
+});
+
+test('public app preserves full aggregate counts across bounded snapshots and live events', async () => {
+  const conversationId = 'conversation-bounded-aggregate-counts';
+  const message = {
+    id: 'message-bounded-aggregate-counts',
+    role: 'assistant',
+    status: 'streaming',
+    taskId: 'task-bounded-aggregate-counts',
+    runId: 1,
+  };
+  const retainedEvents = [
+    {
+      eventId: 'model-call:response-1',
+      eventType: 'model_call',
+      timelineSequence: 1,
+      modelCallSequence: 1,
+      isColdStart: true,
+      coldStart: true,
+      providerMiss: false,
+      tokenUsage: { inputTokens: 100, outputTokens: 10, totalTokens: 110, cacheReadTokens: 0 },
+    },
+    ...Array.from({ length: 15 }, (_, index) => {
+      const timelineSequence = index + 202;
+      if (index < 5) {
+        return {
+          eventId: `model-call:response-${index + 62}`,
+          eventType: 'model_call',
+          timelineSequence,
+          modelCallSequence: index + 62,
+          isColdStart: false,
+          coldStart: false,
+          providerMiss: false,
+          tokenUsage: { inputTokens: 100, outputTokens: 10, totalTokens: 110, cacheReadTokens: 50 },
+        };
+      }
+      return {
+        eventId: `tool:session:tool-${index + 141}`,
+        eventType: 'tool_execution',
+        timelineSequence,
+        stepId: `session-tool-${index + 141}`,
+        kind: 'session',
+        toolName: 'bash',
+        status: 'succeeded',
+      };
+    }),
+  ];
+  const { app, FakeEventSource } = loadPublicAppHarness({
+    fetchJson: async (url) => {
+      if (!url.includes('/tool-trace')) return {};
+      return {
+        trace: {
+          ...app.createEmptyToolTraceData(message.id),
+          modelUsageSummary: {
+            modelCallCount: 66,
+            coldStartModelCallCount: 1,
+            postColdModelCallCount: 65,
+            providerMissCount: 2,
+          },
+          timelineEvents: retainedEvents,
+          timelineWindow: {
+            totalEventCount: 216,
+            retainedEventCount: 16,
+            droppedEventCount: 200,
+            truncated: true,
+          },
+          summary: {
+            ...app.createEmptyToolTraceData(message.id).summary,
+            totalSteps: 150,
+            toolExecutionCount: 150,
+            failedSteps: 3,
+            totalDurationMs: 12_345,
+            modelCallCount: 66,
+            coldStartModelCallCount: 1,
+            postColdModelCallCount: 65,
+            providerMissCount: 2,
+            status: 'running',
+          },
+        },
+      };
+    },
+  });
+  app.state.selectedConversationId = conversationId;
+  app.state.currentConversation = { id: conversationId, messages: [message] };
+
+  await app.fetchMessageToolTrace(conversationId, message);
+
+  let trace = app.toolTraceStateForMessage(message.id).data;
+  assert.equal(trace.timelineEvents.length, 16);
+  assert.equal(trace.timelineWindow.totalEventCount, 216);
+  assert.equal(trace.summary.modelCallCount, 66);
+  assert.equal(trace.summary.toolExecutionCount, 150);
+  assert.equal(trace.summary.failedSteps, 3);
+  assert.equal(trace.summary.totalDurationMs, 12_345);
+
+  app.connectEventStream();
+  FakeEventSource.instance.dispatch('conversation_model_event', {
+    conversationId,
+    messageId: message.id,
+    taskId: message.taskId,
+    event: {
+      eventId: 'model-call:response-67',
+      eventType: 'model_call',
+      timelineSequence: 217,
+      modelCallSequence: 67,
+      isColdStart: false,
+      coldStart: false,
+      providerMiss: true,
+      tokenUsage: { inputTokens: 100, outputTokens: 10, totalTokens: 110, cacheReadTokens: 0 },
+    },
+    timelineWindow: {
+      totalEventCount: 217,
+      retainedEventCount: 16,
+      droppedEventCount: 201,
+      truncated: true,
+      modelCallCount: 67,
+      coldStartModelCallCount: 1,
+      postColdModelCallCount: 66,
+      providerMissCount: 3,
+      toolExecutionCount: 150,
+      failedToolExecutionCount: 3,
+      totalToolDurationMs: 12_345,
+    },
+  });
+
+  trace = app.toolTraceStateForMessage(message.id).data;
+  assert.equal(trace.timelineWindow.totalEventCount, 217);
+  assert.equal(trace.summary.modelCallCount, 67);
+  assert.equal(trace.summary.toolExecutionCount, 150);
+  assert.equal(trace.summary.failedSteps, 3);
+  assert.equal(trace.summary.totalDurationMs, 12_345);
+
+  FakeEventSource.instance.dispatch('conversation_tool_event', {
+    conversationId,
+    messageId: message.id,
+    taskId: message.taskId,
+    phase: 'finished',
+    step: {
+      eventId: 'tool:session:tool-151',
+      eventType: 'tool_execution',
+      timelineSequence: 218,
+      stepId: 'session-tool-151',
+      kind: 'session',
+      toolName: 'bash',
+      status: 'succeeded',
+      durationMs: 155,
+    },
+    timelineWindow: {
+      totalEventCount: 218,
+      retainedEventCount: 16,
+      droppedEventCount: 202,
+      truncated: true,
+      modelCallCount: 67,
+      coldStartModelCallCount: 1,
+      postColdModelCallCount: 66,
+      providerMissCount: 3,
+      toolExecutionCount: 151,
+      failedToolExecutionCount: 3,
+      totalToolDurationMs: 12_500,
+    },
+  });
+
+  trace = app.toolTraceStateForMessage(message.id).data;
+  assert.equal(trace.timelineEvents.length, 16);
+  assert.equal(trace.timelineWindow.totalEventCount, 218);
+  assert.equal(trace.summary.modelCallCount, 67);
+  assert.equal(trace.summary.toolExecutionCount, 151);
+  assert.equal(trace.summary.failedSteps, 3);
+  assert.equal(trace.summary.totalDurationMs, 12_500);
 });
 
 test('public app does not prefetch trace detail for unexpanded completed or running messages', async () => {

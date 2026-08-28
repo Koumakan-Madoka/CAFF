@@ -776,10 +776,16 @@ const icon = window.CaffIcons.create('archive', {
 - Expansion performs one tool-trace GET. A later message status/run change does
   not invalidate that loaded snapshot; live SSE supplies subsequent events and
   terminal message refresh supplies authoritative aggregate metadata.
-- `timelineWindow` exposes total, retained, dropped, and truncated state. When
+- `timelineWindow` exposes total, retained, dropped, and truncated state plus the
+  full model/tool/miss/failure/duration aggregates used by live SSE. When
   truncated, the renderer inserts exactly one `中间省略 N 条事件` row after the
   first event and shows retained/total counts. Event badges display original
   sequence values rather than renumbering the retained window.
+- Aggregate merge is field-preserving: only present finite non-negative HTTP/SSE
+  aggregate fields replace local values. A compatibility snapshot with only the
+  four retention fields keeps the full `summary` / `modelUsageSummary`; missing
+  fields never become zero and tool totals never fall back to the retained row
+  count when a full summary exists.
 - Renderer rows are keyed by `eventId` plus a bounded content signature. Stable
   rows are reused across SSE renders; only new or changed rows are rebuilt.
   Existing viewport stick-to-bottom and anchor restoration remain authoritative.

@@ -1224,6 +1224,15 @@ function cloneTraceValue(value) {
   }
 }
 
+function traceAggregateNumber(value) {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+
+  const normalized = Number(value);
+  return Number.isFinite(normalized) && normalized >= 0 ? normalized : null;
+}
+
 function mergeTraceTimelineEvents(trace, incomingEvents, incomingWindow = null) {
   const merged = observabilityTimeline.merge(
     trace && Array.isArray(trace.timelineEvents) ? trace.timelineEvents : [],
@@ -1242,12 +1251,33 @@ function mergeTraceTimelineEvents(trace, incomingEvents, incomingWindow = null) 
   trace.steps = merged.events.filter((event) => event.eventType === 'tool_execution');
   trace.modelUsageCalls = merged.events.filter((event) => event.eventType === 'model_call');
   if (incomingWindow && typeof incomingWindow === 'object') {
-    trace.modelUsageSummary = {
-      modelCallCount: Number(incomingWindow.modelCallCount || 0),
-      coldStartModelCallCount: Number(incomingWindow.coldStartModelCallCount || 0),
-      postColdModelCallCount: Number(incomingWindow.postColdModelCallCount || 0),
-      providerMissCount: Number(incomingWindow.providerMissCount || 0),
-    };
+    const aggregateFields = [
+      'modelCallCount',
+      'coldStartModelCallCount',
+      'postColdModelCallCount',
+      'providerMissCount',
+    ];
+    const existingSummary = trace.modelUsageSummary && typeof trace.modelUsageSummary === 'object'
+      ? trace.modelUsageSummary
+      : trace.summary && typeof trace.summary === 'object'
+        ? trace.summary
+        : null;
+    const nextSummary = {};
+    let hasAggregate = false;
+
+    aggregateFields.forEach((field) => {
+      const incomingValue = traceAggregateNumber(incomingWindow[field]);
+      const existingValue = traceAggregateNumber(existingSummary && existingSummary[field]);
+      const value = incomingValue === null ? existingValue : incomingValue;
+      if (value !== null) {
+        nextSummary[field] = value;
+        hasAggregate = true;
+      }
+    });
+
+    if (hasAggregate) {
+      trace.modelUsageSummary = nextSummary;
+    }
   }
 }
 
@@ -1376,22 +1406,43 @@ function computeToolTraceSummary(message, task, steps, trace) {
   const timelineWindow = trace && trace.timelineWindow && typeof trace.timelineWindow === 'object'
     ? trace.timelineWindow
     : null;
-  const fullToolExecutionCount = timelineWindow && Number.isFinite(Number(timelineWindow.toolExecutionCount))
-    ? Number(timelineWindow.toolExecutionCount)
-    : normalizedSteps.length;
+  const existingSummary = trace && trace.summary && typeof trace.summary === 'object'
+    ? trace.summary
+    : null;
+  const windowToolExecutionCount = traceAggregateNumber(timelineWindow && timelineWindow.toolExecutionCount);
+  const summaryToolExecutionCount = traceAggregateNumber(
+    existingSummary && existingSummary.toolExecutionCount !== undefined
+      ? existingSummary.toolExecutionCount
+      : existingSummary && existingSummary.totalSteps
+  );
+  const fullToolExecutionCount = windowToolExecutionCount === null
+    ? Math.max(summaryToolExecutionCount === null ? 0 : summaryToolExecutionCount, normalizedSteps.length)
+    : windowToolExecutionCount;
+  const windowSessionToolCount = traceAggregateNumber(timelineWindow && timelineWindow.sessionToolCount);
+  const summarySessionToolCount = traceAggregateNumber(existingSummary && existingSummary.sessionToolCount);
+  const windowBridgeToolCount = traceAggregateNumber(timelineWindow && timelineWindow.bridgeToolCount);
+  const summaryBridgeToolCount = traceAggregateNumber(existingSummary && existingSummary.bridgeToolCount);
+  const windowFailedSteps = traceAggregateNumber(timelineWindow && timelineWindow.failedToolExecutionCount);
+  const summaryFailedSteps = traceAggregateNumber(existingSummary && existingSummary.failedSteps);
+  const windowTotalDurationMs = traceAggregateNumber(timelineWindow && timelineWindow.totalToolDurationMs);
+  const summaryTotalDurationMs = traceAggregateNumber(existingSummary && existingSummary.totalDurationMs);
 
   return {
     totalSteps: fullToolExecutionCount,
     toolExecutionCount: fullToolExecutionCount,
-    sessionToolCount: timelineWindow ? Number(timelineWindow.sessionToolCount || sessionSteps.length) : sessionSteps.length,
-    bridgeToolCount: timelineWindow ? Number(timelineWindow.bridgeToolCount || bridgeSteps.length) : bridgeSteps.length,
-    failedSteps: timelineWindow && Number.isFinite(Number(timelineWindow.failedToolExecutionCount))
-      ? Number(timelineWindow.failedToolExecutionCount)
-      : failedSteps.length,
+    sessionToolCount: windowSessionToolCount === null
+      ? Math.max(summarySessionToolCount === null ? 0 : summarySessionToolCount, sessionSteps.length)
+      : windowSessionToolCount,
+    bridgeToolCount: windowBridgeToolCount === null
+      ? Math.max(summaryBridgeToolCount === null ? 0 : summaryBridgeToolCount, bridgeSteps.length)
+      : windowBridgeToolCount,
+    failedSteps: windowFailedSteps === null
+      ? Math.max(summaryFailedSteps === null ? 0 : summaryFailedSteps, failedSteps.length)
+      : windowFailedSteps,
     succeededSteps: succeededBridgeSteps.length,
-    totalDurationMs: timelineWindow && Number.isFinite(Number(timelineWindow.totalToolDurationMs))
-      ? Number(timelineWindow.totalToolDurationMs)
-      : totalDurationMs,
+    totalDurationMs: windowTotalDurationMs === null
+      ? Math.max(summaryTotalDurationMs === null ? 0 : summaryTotalDurationMs, totalDurationMs)
+      : windowTotalDurationMs,
     retryCount,
     hasRetries: retryCount > 0,
     modelCallCount: modelUsageSummary.modelCallCount,
