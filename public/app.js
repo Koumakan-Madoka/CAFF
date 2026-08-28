@@ -3983,6 +3983,47 @@ function applyWorkspaceAuthorizationEvent(payload) {
     state.workspaceAuthorizationCardsByConversation.set(id, cards);
     if (state.selectedConversationId === id) renderWorkspaceAuthorizationCards();
   }
+
+function applyConversationMessageEvent(payload) {
+  const conversationId = String(payload && payload.conversationId || '').trim();
+  const incomingMessage = payload && payload.message && typeof payload.message === 'object'
+    ? payload.message
+    : null;
+
+  if (
+    !conversationId ||
+    !incomingMessage ||
+    !incomingMessage.id ||
+    !state.currentConversation ||
+    state.currentConversation.id !== conversationId
+  ) {
+    return false;
+  }
+
+  const shouldStickToBottom = isMessageListNearBottom();
+  const existingMessage = currentConversationMessageById(incomingMessage.id);
+  const nextMessage = existingMessage
+    ? { ...existingMessage, ...incomingMessage }
+    : incomingMessage;
+  state.currentConversation = {
+    ...state.currentConversation,
+    messages: messageHistory.applyLatestPage(
+      state.messageHistory,
+      state.currentConversation.messages,
+      { items: [nextMessage] }
+    ),
+  };
+  pruneOptimisticMessagesForConversation(conversationId, [nextMessage]);
+  syncToolTraceStatesWithConversation(state.currentConversation);
+  renderConversationPane();
+
+  if (shouldStickToBottom) {
+    scrollMessageListToBottom();
+  }
+
+  return true;
+}
+
 function scheduleConversationRefresh(conversationId) {
   if (!conversationId || state.selectedConversationId !== conversationId) {
     return;
@@ -4129,11 +4170,13 @@ function connectEventStream() {
 
   source.addEventListener('conversation_message_created', (event) => {
     const payload = JSON.parse(event.data);
+    applyConversationMessageEvent(payload);
     scheduleConversationRefresh(payload.conversationId);
   });
 
   source.addEventListener('conversation_message_updated', (event) => {
     const payload = JSON.parse(event.data);
+    applyConversationMessageEvent(payload);
     scheduleConversationRefresh(payload.conversationId);
   });
 

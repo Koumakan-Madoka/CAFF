@@ -2629,6 +2629,100 @@ test('completed message refresh finalizes the trace before rendering the termina
   assert.equal(renderedActivities.at(-1), 'idle');
 });
 
+test('completed message SSE finalizes a long live trace without waiting for HTTP refresh', () => {
+  const conversationId = 'conversation-terminal-message-event';
+  const messageId = 'message-terminal-message-event';
+  const streamingMessage = {
+    id: messageId,
+    conversationId,
+    role: 'assistant',
+    status: 'streaming',
+    taskId: 'task-terminal-message-event',
+    createdAt: '2026-08-28T00:00:00.000Z',
+  };
+  const { app, FakeEventSource } = loadPublicAppHarness();
+  app.state.selectedConversationId = conversationId;
+  app.state.currentConversation = {
+    id: conversationId,
+    messages: [streamingMessage],
+  };
+
+  const retainedEvents = Array.from({ length: 16 }, (_, index) => {
+    const timelineSequence = index === 0 ? 1 : index + 26;
+    const isToolEvent = timelineSequence === 1 || (timelineSequence >= 27 && timelineSequence <= 39 && timelineSequence % 2 === 1);
+    return isToolEvent
+      ? {
+          eventId: `tool:session:terminal-event-${timelineSequence}`,
+          eventType: 'tool_execution',
+          timelineSequence,
+          stepId: `session-terminal-event-${timelineSequence}`,
+          kind: 'session',
+          toolName: 'bash',
+          status: timelineSequence === 39 ? 'running' : 'observed',
+        }
+      : {
+          eventId: `model-call:terminal-event-${timelineSequence}`,
+          eventType: 'model_call',
+          timelineSequence,
+          modelCallSequence: timelineSequence === 41 ? 21 : timelineSequence / 2,
+          tokenUsage: { inputTokens: 1, outputTokens: 1, totalTokens: 2, cacheReadTokens: 0 },
+        };
+  });
+  const traceState = app.getMessageToolTraceState(messageId);
+  traceState.data = {
+    ...app.createEmptyToolTraceData(messageId),
+    message: streamingMessage,
+    timelineEvents: retainedEvents,
+    steps: retainedEvents.filter((event) => event.eventType === 'tool_execution'),
+    timelineWindow: {
+      totalEventCount: 41,
+      retainedEventCount: 16,
+      droppedEventCount: 25,
+      truncated: true,
+      modelCallCount: 21,
+      coldStartModelCallCount: 1,
+      postColdModelCallCount: 20,
+      providerMissCount: 0,
+      toolExecutionCount: 20,
+      failedToolExecutionCount: 0,
+      totalToolDurationMs: 0,
+    },
+  };
+  app.syncToolTraceStatesWithConversation(app.state.currentConversation);
+
+  const renderedActivities = [];
+  app.setOverrides({
+    renderConversationPane() {
+      const trace = app.toolTraceStateForMessage(messageId);
+      renderedActivities.push(trace && trace.data && trace.data.activity.status);
+    },
+  });
+  app.connectEventStream();
+  FakeEventSource.instance.dispatch('conversation_message_updated', {
+    conversationId,
+    message: {
+      ...streamingMessage,
+      content: 'Long run completed.',
+      status: 'completed',
+    },
+  });
+
+  assert.equal(app.state.currentConversation.messages[0].status, 'completed');
+  const terminalTrace = app.toolTraceStateForMessage(messageId).data;
+  assert.equal(terminalTrace.activity.status, 'idle');
+  assert.equal(terminalTrace.activity.hasCurrentTool, false);
+  assert.equal(
+    terminalTrace.timelineEvents.some(
+      (event) => event.eventType === 'tool_execution' && event.status === 'running'
+    ),
+    false
+  );
+  assert.equal(terminalTrace.timelineWindow.totalEventCount, 41);
+  assert.equal(terminalTrace.summary.modelCallCount, 21);
+  assert.equal(terminalTrace.summary.toolExecutionCount, 20);
+  assert.equal(renderedActivities.at(-1), 'idle');
+});
+
 test('public app finalizes failed side-slot tool traces from the finished payload before removing the slot', () => {
   const { app, FakeEventSource } = loadPublicAppHarness();
   const messageId = 'side-trace-message-1';

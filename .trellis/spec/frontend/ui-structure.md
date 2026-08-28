@@ -797,6 +797,11 @@ const icon = window.CaffIcons.create('archive', {
   conversation render. A completed/failed HTTP refresh must not paint cached
   `summary.status=running` or `activity.hasCurrentTool=true` and then silently
   finalize only the in-memory trace without a second render.
+- `conversation_message_created` / `_updated` applies its lightweight message
+  projection directly to the selected Room before scheduling the normal HTTP
+  refresh. A terminal update must therefore finalize the canonical live trace
+  and render idle in the same SSE handler; the later HTTP read is authority
+  reconciliation, not the only path that can clear a stale running tool.
 - Summary model/tool/provider-miss/failure counters come from full aggregates,
   never from the retained 16 rows. The omission row wraps at narrow widths and
   must not create horizontal overflow.
