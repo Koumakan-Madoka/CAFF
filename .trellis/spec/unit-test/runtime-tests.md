@@ -195,7 +195,11 @@ mocked result alone:
   separate long-live-trace fixture must dispatch the real terminal
   `conversation_message_updated` frame while HTTP refresh is unavailable and
   prove the lightweight message projection, canonical tools, summary, activity,
-  full aggregates, and last render converge synchronously.
+  full aggregates, and last render converge synchronously. A DOM renderer
+  fixture must additionally keep a stale matching turn/slot stage at
+  `status=running` with `currentToolName` populated after the message becomes
+  terminal; the terminal card must ignore that stage, render no live-tool panel,
+  and show `已完成` from the converged trace.
 - Tool-trace fixtures combine model and tool events and assert every returned
   detail array is derived from the same 16-event window while full summary
   counts remain unchanged. The HTTP `timelineWindow` must repeat the full

@@ -802,6 +802,11 @@ const icon = window.CaffIcons.create('archive', {
   refresh. A terminal update must therefore finalize the canonical live trace
   and render idle in the same SSE handler; the later HTTP read is authority
   reconciliation, not the only path that can clear a stale running tool.
+- A terminal assistant message (`completed` or `failed`) is an absorbing UI
+  boundary for its card: the renderer must ignore any lagging live turn/slot
+  stage for that message, even when the stale stage still reports a current
+  tool. Runtime stages remain authoritative only while the message itself is
+  non-terminal; terminal cards render activity solely from the converged trace.
 - Summary model/tool/provider-miss/failure counters come from full aggregates,
   never from the retained 16 rows. The omission row wraps at narrow widths and
   must not create horizontal overflow.

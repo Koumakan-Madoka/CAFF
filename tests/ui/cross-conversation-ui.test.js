@@ -616,6 +616,114 @@ test('message timeline renders full aggregate counts beside a bounded event wind
   assert.equal(window.document.querySelectorAll('.message-tool-trace-step').length, 16);
 });
 
+test('message timeline ignores a stale running stage after the assistant message is terminal', () => {
+  const dom = new JSDOM('<div id="message-timeline"></div>', { runScripts: 'outside-only' });
+  const { window } = dom;
+  window.CaffChat = {};
+  window.CaffShared = {};
+  window.eval(fs.readFileSync(path.join(__dirname, '../../public/shared/conversation-digest.js'), 'utf8'));
+  window.eval(fs.readFileSync(path.join(__dirname, '../../public/chat/cross-conversation-ui.js'), 'utf8'));
+  window.eval(fs.readFileSync(path.join(__dirname, '../../public/chat/message-images.js'), 'utf8'));
+  window.eval(fs.readFileSync(path.join(__dirname, '../../public/chat/message-timeline.js'), 'utf8'));
+
+  const assistantMessage = {
+    id: 'trace-message-terminal-stale-stage',
+    conversationId: 'trace-conversation-terminal-stale-stage',
+    role: 'assistant',
+    senderName: 'Trace Agent',
+    content: 'Long run completed.',
+    status: 'completed',
+    createdAt: '2026-08-28T00:00:00.000Z',
+  };
+  const terminalStep = {
+    eventId: 'tool:session:terminal-tool-20',
+    eventType: 'tool_execution',
+    timelineSequence: 39,
+    stepId: 'session-terminal-tool-20',
+    kind: 'session',
+    toolName: 'bash',
+    status: 'observed',
+    requestSummary: { command: 'node -e "console.log(\'timeline-check-20\')"' },
+  };
+  const traceState = {
+    open: false,
+    status: 'ready',
+    errorMessage: '',
+    data: {
+      timelineEvents: [terminalStep],
+      steps: [terminalStep],
+      sessionToolCalls: [terminalStep],
+      bridgeToolEvents: [],
+      summary: {
+        status: 'idle',
+        totalSteps: 20,
+        toolExecutionCount: 20,
+        failedSteps: 0,
+        modelCallCount: 21,
+        coldStartModelCallCount: 1,
+        postColdModelCallCount: 20,
+        providerMissCount: 0,
+      },
+      activity: {
+        status: 'idle',
+        hasCurrentTool: false,
+        currentToolName: '',
+        currentStepId: '',
+        currentStepKind: '',
+        inferred: false,
+        label: '',
+      },
+      failureContext: { hasFailure: false },
+    },
+  };
+  const staleRunningStage = {
+    messageId: assistantMessage.id,
+    status: 'running',
+    currentToolName: 'bash',
+    currentToolKind: 'session',
+    currentToolStepId: terminalStep.stepId,
+  };
+  const renderer = window.CaffChat.createMessageTimelineRenderer({
+    dom: { messageTimeline: window.document.getElementById('message-timeline') },
+    helpers: {
+      agentById: () => null,
+      buildAgentAvatarElement: () => window.document.createElement('span'),
+      canInspectToolTrace: () => true,
+      conversationSummaries: () => [],
+      crossConversationBundleForMessage: () => null,
+      displayedMessageBody: (message) => message.content,
+      digestStatusForConversation: () => null,
+      formatDateTime: () => '-',
+      isPrivateTimelineMessage: () => false,
+      liveStageForMessage: () => staleRunningStage,
+      liveStageLabel: () => '调用 bash',
+      messageSessionInfo: () => ({ sessionPath: '', sessionName: '', canExport: false }),
+      privateRecipientNames: () => [],
+      renderMessageBody(container, text) { container.textContent = text; },
+      timelineMessagesForConversation: (value) => value.messages,
+      toolTraceSignatureForMessage: () => 'terminal-idle-trace',
+      toolTraceStateForMessage: () => traceState,
+    },
+    showToast() {},
+  });
+
+  renderer.render(
+    {
+      id: assistantMessage.conversationId,
+      messages: [assistantMessage],
+      agents: [],
+      metadata: {},
+    },
+    { conversationId: assistantMessage.conversationId, agents: [staleRunningStage] },
+    []
+  );
+
+  assert.equal(window.document.querySelector('.message-tool-trace-live-panel'), null);
+  const collapsedSummary = window.document.querySelector('.message-tool-trace-summary').textContent;
+  assert.match(collapsedSummary, /已完成/u);
+  assert.doesNotMatch(collapsedSummary, /进行中/u);
+});
+
 test('message timeline renders durable receipt actions, external provenance, and a public spawn birth card', () => {
   const dom = new JSDOM('<div id="message-timeline"></div>', { runScripts: 'outside-only' });
   const { window } = dom;

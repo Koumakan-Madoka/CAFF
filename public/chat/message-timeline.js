@@ -2252,7 +2252,8 @@
       const agent = message.agentId
         ? (Array.isArray(agents) ? agents.find((item) => item.id === message.agentId) : null) || agentById(message.agentId)
         : null;
-      const liveStage = isPrivateTimelineMessage(message) || isDigestStatusMessage || isDigestResultMessage
+      const isTerminalMessage = message && (message.status === 'completed' || message.status === 'failed');
+      const liveStage = isPrivateTimelineMessage(message) || isDigestStatusMessage || isDigestResultMessage || isTerminalMessage
         ? null
         : liveStageForMessage(conversationId || (message && message.conversationId) || '', activeTurn, activeAgentSlots, message.id);
       const liveLabel = isDigestStatusMessage ? '摘要整理中' : liveStageLabel(liveStage);
