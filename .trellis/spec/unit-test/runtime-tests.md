@@ -181,6 +181,11 @@ mocked result alone:
   each retains sequences `1, 51..65`, reports total 65/dropped 49, and receives
   new model events without polling. Calling the detail loader after a terminal
   message patch must not make a second GET.
+- Terminal-state regressions seed the same running tool in both canonical
+  `timelineEvents` and derived `steps`. Completed-message refresh, main-turn
+  finish, and side-slot finish must update the canonical event first, then
+  rebuild to a non-running summary/activity without resurrecting the stale
+  derived status.
 - Tool-trace fixtures combine model and tool events and assert every returned
   detail array is derived from the same 16-event window while full summary
   counts remain unchanged. The HTTP `timelineWindow` must repeat the full

@@ -159,6 +159,7 @@ globalThis.__testExports = {
   applyConversationToolEvent,
   applyConversationModelEvent,
   mergeTraceTimelineEvents,
+  syncToolTraceStatesWithConversation,
   fetchMessageToolTrace,
   warmConversationToolTraces,
   createEmptyToolTraceData,
@@ -2297,6 +2298,70 @@ test('public app merges long-running model events by stable id into a sixteen-ev
   assert.equal(trace.summary.modelCallCount, 65);
 });
 
+test('public app finalizes canonical running timeline events when the message completes', () => {
+  const { app } = loadPublicAppHarness();
+  const conversation = {
+    id: 'conversation-completed-trace',
+    messages: [
+      {
+        id: 'message-completed-trace',
+        role: 'assistant',
+        status: 'completed',
+        taskId: 'task-completed-trace',
+      },
+    ],
+  };
+  const runningStep = {
+    eventId: 'tool:session:call-final',
+    eventType: 'tool_execution',
+    timelineSequence: 2,
+    stepId: 'session-call-final',
+    kind: 'session',
+    toolName: 'bash',
+    status: 'running',
+  };
+
+  app.state.currentConversation = conversation;
+  const traceState = app.getMessageToolTraceState('message-completed-trace');
+  traceState.data = {
+    ...app.createEmptyToolTraceData('message-completed-trace'),
+    message: conversation.messages[0],
+    timelineEvents: [
+      {
+        eventId: 'model-call:response-final',
+        eventType: 'model_call',
+        timelineSequence: 1,
+        modelCallSequence: 1,
+        tokenUsage: { inputTokens: 1, outputTokens: 1, totalTokens: 2, cacheReadTokens: 0 },
+      },
+      runningStep,
+    ],
+    steps: [runningStep],
+    timelineWindow: {
+      totalEventCount: 2,
+      retainedEventCount: 2,
+      droppedEventCount: 0,
+      truncated: false,
+      modelCallCount: 1,
+      coldStartModelCallCount: 1,
+      postColdModelCallCount: 0,
+      providerMissCount: 0,
+      toolExecutionCount: 1,
+      failedToolExecutionCount: 0,
+      totalToolDurationMs: 0,
+    },
+  };
+
+  app.syncToolTraceStatesWithConversation(conversation);
+
+  const trace = app.toolTraceStateForMessage('message-completed-trace').data;
+  assert.equal(trace.timelineEvents[1].status, 'observed');
+  assert.equal(trace.steps[0].status, 'observed');
+  assert.equal(trace.summary.status, 'succeeded');
+  assert.equal(trace.activity.status, 'idle');
+  assert.equal(trace.activity.hasCurrentTool, false);
+});
+
 test('public app finalizes failed side-slot tool traces from the finished payload before removing the slot', () => {
   const { app, FakeEventSource } = loadPublicAppHarness();
   const messageId = 'side-trace-message-1';
@@ -2314,14 +2379,17 @@ test('public app finalizes failed side-slot tool traces from the finished payloa
     runId: null,
     createdAt: '',
   };
-  traceState.data.steps = [
-    {
-      stepId: 'side-tool-step-1',
-      kind: 'bridge',
-      toolName: 'send-public',
-      status: 'running',
-    },
-  ];
+  const sideRunningStep = {
+    eventId: 'tool:bridge:side-tool-step-1',
+    eventType: 'tool_execution',
+    timelineSequence: 1,
+    stepId: 'side-tool-step-1',
+    kind: 'bridge',
+    toolName: 'send-public',
+    status: 'running',
+  };
+  traceState.data.timelineEvents = [sideRunningStep];
+  traceState.data.steps = [sideRunningStep];
 
   app.state.runtime = {
     activeAgentSlots: [
@@ -2349,6 +2417,7 @@ test('public app finalizes failed side-slot tool traces from the finished payloa
   });
 
   const updatedTrace = app.toolTraceStateForMessage(messageId);
+  assert.equal(updatedTrace.data.timelineEvents[0].status, 'failed');
   assert.equal(updatedTrace.data.steps[0].status, 'failed');
   assert.equal(app.state.runtime.activeAgentSlots.length, 0);
 });
@@ -2370,14 +2439,17 @@ test('public app finalizes failed main-turn tool traces from the finished payloa
     runId: null,
     createdAt: '',
   };
-  traceState.data.steps = [
-    {
-      stepId: 'main-tool-step-1',
-      kind: 'bridge',
-      toolName: 'send-public',
-      status: 'running',
-    },
-  ];
+  const mainRunningStep = {
+    eventId: 'tool:bridge:main-tool-step-1',
+    eventType: 'tool_execution',
+    timelineSequence: 1,
+    stepId: 'main-tool-step-1',
+    kind: 'bridge',
+    toolName: 'send-public',
+    status: 'running',
+  };
+  traceState.data.timelineEvents = [mainRunningStep];
+  traceState.data.steps = [mainRunningStep];
 
   app.state.runtime = {
     activeTurns: [
@@ -2413,6 +2485,7 @@ test('public app finalizes failed main-turn tool traces from the finished payloa
   });
 
   const updatedTrace = app.toolTraceStateForMessage(messageId);
+  assert.equal(updatedTrace.data.timelineEvents[0].status, 'failed');
   assert.equal(updatedTrace.data.steps[0].status, 'failed');
   assert.equal(app.state.runtime.activeTurns.length, 0);
 });

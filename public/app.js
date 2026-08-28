@@ -1712,6 +1712,31 @@ function mutateMessageToolTrace(messageId, mutator) {
   return traceState;
 }
 
+function finalizeRunningTraceEntries(entries, fallbackStatus, shouldFinalize) {
+  if (!Array.isArray(entries)) {
+    return { entries, changed: false };
+  }
+
+  let changed = false;
+  const nextEntries = entries.map((entry) => {
+    if (
+      !entry ||
+      normalizeToolTraceStepStatus(entry.status) !== 'running' ||
+      (typeof shouldFinalize === 'function' && !shouldFinalize(entry))
+    ) {
+      return entry;
+    }
+
+    changed = true;
+    return {
+      ...entry,
+      status: resolveFinalizedTraceStatus(entry, fallbackStatus),
+    };
+  });
+
+  return { entries: nextEntries, changed };
+}
+
 /**
  * @param {any} trace
  * @param {string | Record<string, string>} [fallbackStatus='observed']
@@ -1719,30 +1744,32 @@ function mutateMessageToolTrace(messageId, mutator) {
  * @param {string[] | null} [kinds=null]
  */
 function finalizeRunningStepsInTrace(trace, fallbackStatus = 'observed', nextStepId = '', kinds = null) {
-  if (!trace || !Array.isArray(trace.steps)) {
+  if (!trace) {
     return false;
   }
 
   const allowedKinds = Array.isArray(kinds) && kinds.length > 0 ? new Set(kinds.map((kind) => String(kind))) : null;
-  let changed = false;
-
-  trace.steps = trace.steps.map((step) => {
-    if (!step || normalizeToolTraceStepStatus(step.status) !== 'running' || (nextStepId && step.stepId === nextStepId)) {
-      return step;
+  const shouldFinalize = (step) => {
+    if (nextStepId && step.stepId === nextStepId) {
+      return false;
     }
 
-    if (allowedKinds && !allowedKinds.has(String(step.kind || ''))) {
-      return step;
-    }
+    return !allowedKinds || allowedKinds.has(String(step.kind || ''));
+  };
+  const timelineResult = finalizeRunningTraceEntries(
+    trace.timelineEvents,
+    fallbackStatus,
+    (event) => event.eventType !== 'model_call' && shouldFinalize(event)
+  );
+  const stepsResult = finalizeRunningTraceEntries(trace.steps, fallbackStatus, shouldFinalize);
 
-    changed = true;
-    return {
-      ...step,
-      status: resolveFinalizedTraceStatus(step, fallbackStatus),
-    };
-  });
-
-  return changed;
+  if (timelineResult.entries !== undefined) {
+    trace.timelineEvents = timelineResult.entries;
+  }
+  if (stepsResult.entries !== undefined) {
+    trace.steps = stepsResult.entries;
+  }
+  return timelineResult.changed || stepsResult.changed;
 }
 
 /**
@@ -1756,20 +1783,24 @@ function finalizeMessageToolTraceRunningStep(messageId, stepId, fallbackStatus =
   }
 
   const traceState = mutateMessageToolTrace(messageId, (trace) => {
-    if (!trace || !Array.isArray(trace.steps)) {
-      return;
+    const shouldFinalize = (step) => step && step.stepId === stepId;
+    const timelineResult = finalizeRunningTraceEntries(
+      trace && trace.timelineEvents,
+      fallbackStatus,
+      (event) => event.eventType !== 'model_call' && shouldFinalize(event)
+    );
+    const stepsResult = finalizeRunningTraceEntries(
+      trace && trace.steps,
+      fallbackStatus,
+      shouldFinalize
+    );
+
+    if (timelineResult.entries !== undefined) {
+      trace.timelineEvents = timelineResult.entries;
     }
-
-    trace.steps = trace.steps.map((step) => {
-      if (!step || step.stepId !== stepId || normalizeToolTraceStepStatus(step.status) !== 'running') {
-        return step;
-      }
-
-      return {
-        ...step,
-        status: resolveFinalizedTraceStatus(step, fallbackStatus),
-      };
-    });
+    if (stepsResult.entries !== undefined) {
+      trace.steps = stepsResult.entries;
+    }
   });
 
   return Boolean(traceState);

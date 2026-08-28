@@ -789,6 +789,10 @@ const icon = window.CaffIcons.create('archive', {
 - Renderer rows are keyed by `eventId` plus a bounded content signature. Stable
   rows are reused across SSE renders; only new or changed rows are rebuilt.
   Existing viewport stick-to-bottom and anchor restoration remain authoritative.
+- Terminal message, main-turn, and side-slot patches finalize running tools in
+  the canonical `timelineEvents` collection before rebuilding `steps`,
+  `summary`, and `activity`. Derived step arrays must never overwrite a terminal
+  canonical status with a stale live `running` value.
 - Summary model/tool/provider-miss/failure counters come from full aggregates,
   never from the retained 16 rows. The omission row wraps at narrow widths and
   must not create horizontal overflow.
