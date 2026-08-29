@@ -1,0 +1,11 @@
+{
+  "id": "07-29-main-reconciliation",
+  "name": "07-29-main-reconciliation",
+  "title": "Main branch UI stack reconciliation",
+  "status": "completed",
+  "dev_type": "fullstack",
+  "createdAt": "2026-07-29",
+  "completedAt": "2026-08-04",
+  "commit": "7a73aadabe3a3320dda9ddfbd1da85cb9c605fac",
+  "notes": "Condensed from the legacy reconciliation plan and review request."
+}

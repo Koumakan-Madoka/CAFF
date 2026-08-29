@@ -1,0 +1,45 @@
+{
+  "id": "recovery-capsule-mvp",
+  "name": "recovery-capsule-mvp",
+  "title": "失败 Trace 书记恢复 MVP",
+  "description": "",
+  "status": "completed",
+  "dev_type": "fullstack",
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "GPT",
+  "assignee": "GPT",
+  "createdAt": "2026-08-26",
+  "completedAt": "2026-08-27",
+  "branch": null,
+  "base_branch": "room/08154128-gpt-agent",
+  "worktree_path": null,
+  "current_phase": 0,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "check"
+    },
+    {
+      "phase": 3,
+      "action": "finish"
+    },
+    {
+      "phase": 4,
+      "action": "create-pr"
+    }
+  ],
+  "commit": "8244452d68d1ea8dc2521811c4b21e8e6a3af3eb",
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "Delivered across 78f4684 through 8244452, including storage, scribe service/API/UI, eligibility alignment, and provider output-budget fixes; the original planning status was stale.",
+  "meta": {}
+}

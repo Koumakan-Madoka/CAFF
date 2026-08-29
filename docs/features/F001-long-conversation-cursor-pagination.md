@@ -33,7 +33,7 @@ Opening or refreshing a conversation currently reads and returns every public me
 
 - PR #48 is merged into `main` at `241a42e`.
 - Public conversation reads are bounded and cursor-paged; internal full-history consumers retain their audited semantics.
-- Desktop and 375px browser evidence, SQLite query plans, the 50,000-message fixture, and complete gate output are recorded under `project-evidence/`.
+- Desktop and 375px browser acceptance, SQLite query plans, the 50,000-message fixture, and gate results are summarized in the [Trellis task archive](../../.trellis/tasks/archive/2026-07/07-28-f001-long-conversation-pagination/prd.md); raw media and full packets remain in Git history.
 
 ## User Journey
 
@@ -78,12 +78,8 @@ Opening or refreshing a conversation currently reads and returns every public me
 
 ## Links
 
-- [Design Gate](../../feature-specs/2026-07-28-long-conversation-pagination-design.md)
-- [Implementation Plan](../../feature-specs/2026-07-28-long-conversation-pagination-implementation-plan.md)
-- [Delivery Evidence](../../project-evidence/F001-long-conversation-pagination.md)
-- [Quality Gate](../../project-evidence/F001-quality-gate.md)
-- [Close Gate Report](../../project-evidence/F001-close-gate-report.md)
-- [Reflection Capsule](../../project-reflections/2026-07-28-long-conversation-pagination-capsule.md)
+- [Trellis Task Archive](../../.trellis/tasks/archive/2026-07/07-28-f001-long-conversation-pagination/prd.md)
+- Raw design, review, evidence, and reflection packets remain recoverable from Git history at the delivery/closure commits.
 
 ## Evolution
 

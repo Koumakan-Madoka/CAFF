@@ -1,0 +1,11 @@
+{
+  "id": "07-28-chat-storage-evaluation",
+  "name": "07-28-chat-storage-evaluation",
+  "title": "Chat storage SQLite versus Redis evaluation",
+  "status": "completed",
+  "dev_type": "backend",
+  "createdAt": "2026-07-28",
+  "completedAt": "2026-07-28",
+  "commit": "2718dd1917032f1820c36ac4cc5923b680547567",
+  "notes": "Condensed from one legacy feature specification and its review request/verdict. The durable evaluation report remains under docs/evaluations."
+}

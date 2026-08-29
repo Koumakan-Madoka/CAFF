@@ -1,0 +1,11 @@
+{
+  "id": "08-06-f004-models-dev-catalog",
+  "name": "08-06-f004-models-dev-catalog",
+  "title": "F004 models.dev catalog import",
+  "status": "completed",
+  "dev_type": "fullstack",
+  "createdAt": "2026-08-06",
+  "completedAt": "2026-08-08",
+  "commit": "3350b38a2b83dc845b487f5f083397e6c84b02af",
+  "notes": "Condensed from legacy kickoff, implementation plan, quality gates, review requests, and verdicts."
+}

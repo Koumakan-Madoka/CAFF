@@ -9,19 +9,13 @@ const { pathToFileURL } = require('node:url');
 
 const projectRoot = path.resolve(__dirname, '..', '..');
 const fixturePath = path.join(projectRoot, 'designs', 'model-family-roles-ui-gate.html');
-const gatePath = path.join(
+const contractPath = path.join(
   projectRoot,
-  'feature-discussions',
-  '2026-08-02-model-family-roles',
-  'ui-design-gate.md'
+  '.trellis',
+  'spec',
+  'frontend',
+  'model-family-management.md'
 );
-const architecturePath = path.join(
-  projectRoot,
-  'feature-discussions',
-  '2026-08-02-model-family-roles',
-  'architecture-gate.md'
-);
-const specPath = path.join(projectRoot, 'feature-specs', '2026-08-02-model-family-roles.md');
 
 function edgeExecutable() {
   const candidates = [
@@ -454,16 +448,14 @@ async function browserContract() {
 
 async function main() {
   const failures = [];
-  const gate = fs.readFileSync(gatePath, 'utf8');
-  const architecture = fs.readFileSync(architecturePath, 'utf8');
-  const spec = fs.readFileSync(specPath, 'utf8');
+  const contractDocument = fs.readFileSync(contractPath, 'utf8');
   const fixture = fs.readFileSync(fixturePath, 'utf8');
   const authoritativeCapabilities = await authoritativeCapabilitySnapshots();
 
-  if (!gate.includes('| 861–1023px |') || !gate.includes('| 701–860px |')) {
+  if (!contractDocument.includes('| 861–1023px |') || !contractDocument.includes('| 701–860px |')) {
     failures.push('Responsive Contract must use the fixture canonical 860px participant breakpoint');
   }
-  if (!spec.includes('focus trap') || !spec.includes('焦点归还')) {
+  if (!contractDocument.includes('focus trap') || !contractDocument.includes('焦点归还')) {
     failures.push('Feature Spec AC must freeze modal focus trap and focus restoration');
   }
   if (!fixture.includes('生产入口位于聊天侧栏')) {
@@ -485,22 +477,22 @@ async function main() {
     failures.push('Fixture must not model raw env/command references as readable browser state');
   }
   for (const contract of ['读取接口永不返回明文密钥', '留空保留现有密钥', '显式清除', '原子替换', '可恢复备份']) {
-    if (!architecture.includes(contract) && !spec.includes(contract) && !gate.includes(contract)) {
+    if (!contractDocument.includes(contract)) {
       failures.push(`Provider security contract must freeze: ${contract}`);
     }
   }
   for (const contract of ['local-admin-only', 'CSRF', '验证连接', '禁止执行 command', 'platform-aware', 'directory_sync_unsupported']) {
-    if (!architecture.includes(contract) && !spec.includes(contract) && !gate.includes(contract)) {
+    if (!contractDocument.includes(contract)) {
       failures.push(`Provider privilege/durability contract must freeze: ${contract}`);
     }
   }
   for (const contract of ['DELETE /api/model-providers/:id', '不删除历史']) {
-    if (!architecture.includes(contract) && !spec.includes(contract) && !gate.includes(contract)) {
+    if (!contractDocument.includes(contract)) {
       failures.push(`Provider removal contract must freeze: ${contract}`);
     }
   }
   for (const contract of ['supportedThinkingLevels', 'off / minimal / low / medium / high / xhigh / max', '不允许静默 clamp']) {
-    if (!architecture.includes(contract) && !spec.includes(contract) && !gate.includes(contract)) {
+    if (!contractDocument.includes(contract)) {
       failures.push(`Role thinking contract must freeze: ${contract}`);
     }
   }
@@ -509,7 +501,7 @@ async function main() {
     'nested @earendil-works/pi-ai',
     'global CLI',
   ]) {
-    if (!architecture.includes(contract) && !gate.includes(contract)) {
+    if (!contractDocument.includes(contract)) {
       failures.push(`Thinking capability source contract must identify: ${contract}`);
     }
   }

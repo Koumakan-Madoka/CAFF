@@ -1,0 +1,45 @@
+{
+  "id": "08-29-trellis-ledger-convergence",
+  "name": "08-29-trellis-ledger-convergence",
+  "title": "Trellis ledger convergence",
+  "description": "",
+  "status": "in_progress",
+  "dev_type": "fullstack",
+  "scope": "documentation, Trellis ledger, UI evidence paths",
+  "package": null,
+  "priority": "P2",
+  "creator": "GPT",
+  "assignee": "GPT",
+  "createdAt": "2026-08-29",
+  "completedAt": null,
+  "branch": "room/523e9df5-caff",
+  "base_branch": "room/523e9df5-caff",
+  "worktree_path": "E:/pythonproject/worktrees/room/523e9df5-caff",
+  "current_phase": 3,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "check"
+    },
+    {
+      "phase": 3,
+      "action": "finish"
+    },
+    {
+      "phase": 4,
+      "action": "create-pr"
+    }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "Implementation and author validation complete. Awaiting exact-SHA independent review before final archive.",
+  "meta": {}
+}

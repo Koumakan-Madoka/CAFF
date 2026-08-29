@@ -80,6 +80,6 @@ Real Chromium metrics:
 | 1280x900 | 50 | `-0.203px` | `+1.016px` | 120 rows, 120 unique |
 | 375x812 | 50 | `-0.531px` | `+1.000px` | 120 rows, 120 unique |
 
-Screenshots: `project-evidence/F001-browser/`.
+Raw screenshots were removed from the current tree during Trellis ledger convergence. The acceptance metrics are retained above; exact media remains recoverable from Git history under `project-evidence/F001-browser/` at `968e7e5`.
 
 [砚砚/gpt-5.6-sol🐾]

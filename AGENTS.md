@@ -10,3 +10,4 @@ These rules apply to every human or agent working in this repository. They are p
 - A change is not complete without evidence. Bugs require reproduction, root-cause confirmation, a failing regression test first when feasible, and passing verification after the fix.
 - Merges require an independent reviewer; nobody reviews their own change. Agents must retain their configured identity and never impersonate another participant.
 - Stop and ask instead of guessing when requirements, workspace ownership, environment isolation, destructive cleanup, or release provenance are uncertain.
+- Keep durable process records under `.trellis/tasks/`, current contracts under `.trellis/spec/` or `docs/`, and raw logs/media under ignored temporary or CI artifact storage. Do not create root-level process directories such as `review-notes/`, `feature-discussions/`, `project-evidence/`, `project-reflections/`, or `feature-specs/`.

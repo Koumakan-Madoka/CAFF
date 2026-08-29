@@ -1,0 +1,11 @@
+{
+  "id": "08-03-model-family-roles",
+  "name": "08-03-model-family-roles",
+  "title": "Model-family roles and provider management",
+  "status": "completed",
+  "dev_type": "fullstack",
+  "createdAt": "2026-08-02",
+  "completedAt": "2026-08-03",
+  "commit": "4bbc260bd572fe5073c06daee588f87e9915f46d",
+  "notes": "Condensed from legacy design gates, implementation plans, review chains, browser evidence, close-gate report, and reflection."
+}

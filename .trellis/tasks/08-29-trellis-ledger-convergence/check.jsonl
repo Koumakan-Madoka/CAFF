@@ -1,0 +1,11 @@
+{"file": ".agents/skills/finish-work/SKILL.md", "reason": "Finish work checklist"}
+{"file": ".agents/skills/check/SKILL.md", "reason": "Code quality check spec"}
+{"file": ".trellis/workflow.md", "reason": "Verify archive and truth-source policy"}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Regression evidence conventions"}
+{"at":"2026-08-29T04:00:00.000Z","command":"npm run check && npm run typecheck && npm run build","result":"pass"}
+{"at":"2026-08-29T04:00:00.000Z","command":"node tests/ui/model-family-roles-ui-gate.test.js","result":"pass real Edge UI Design Gate contract"}
+{"at":"2026-08-29T04:00:00.000Z","command":"NODE_PATH=/e/pythonproject/caff/node_modules node --test tests/ui/chat-experience-m4.test.js","result":"15/15 pass"}
+{"at":"2026-08-29T04:00:00.000Z","command":"repository JSON/JSONL and Markdown relative-link validation","result":"76 task.json valid; 206 JSONL files/1422 records valid; 186 Markdown files with valid local relative links"}
+{"at":"2026-08-29T04:00:00.000Z","command":"git diff --check and legacy-root reference sweep","result":"pass; remaining legacy directory names are governance prohibitions or explicit Git-history provenance only"}
+{"at":"2026-08-29T04:10:00.000Z","command":"npm run test:smoke","result":"pass 75/75 (server 71/71, ModeStore 4/4)"}
+{"at":"2026-08-29T04:10:00.000Z","command":"npm run test:fast","result":"business assertions passed through turn-orchestrator (102/102); command stopped with two pre-existing Windows fs.rmSync EPERM after-hook cleanup failures before later suites. Target model-family Edge gate and M4 15/15 were run separately and passed."}

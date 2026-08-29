@@ -1,0 +1,11 @@
+{
+  "id": "08-05-f003-cross-conversation",
+  "name": "08-05-f003-cross-conversation",
+  "title": "F003 cross-conversation delivery and spawn",
+  "status": "completed",
+  "dev_type": "fullstack",
+  "createdAt": "2026-08-05",
+  "completedAt": "2026-08-05",
+  "commit": "e030fe8000087ca8eba565469080517cea11298e",
+  "notes": "Condensed from legacy discussion, design, implementation plan, and UI review chain."
+}

@@ -1,0 +1,62 @@
+{
+  "id": "08-24-develop-oom-remediation-plan",
+  "name": "08-24-develop-oom-remediation-plan",
+  "title": "Develop OOM remediation plan",
+  "description": "Produce a staged, testable, and reversible remediation plan for the develop/3100 Node OOM without changing implementation or production state.",
+  "status": "completed",
+  "dev_type": "fullstack",
+  "scope": [
+    "docs",
+    "backend",
+    "runtime",
+    "storage",
+    "performance"
+  ],
+  "package": null,
+  "priority": "P0",
+  "creator": "GPT",
+  "assignee": "GPT",
+  "createdAt": "2026-08-24",
+  "completedAt": "2026-08-24",
+  "branch": "room/c2fab452-caff-bug-bug",
+  "base_branch": "develop",
+  "worktree_path": null,
+  "current_phase": 0,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "check"
+    },
+    {
+      "phase": 3,
+      "action": "finish"
+    },
+    {
+      "phase": 4,
+      "action": "create-pr"
+    }
+  ],
+  "commit": "a9f9eec4e3bb9751deb33e02ef905580f8909d5f",
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "lib/chat-app-store.ts",
+    "server/api/memory-controller.ts",
+    "server/domain/conversation/conversation-digest.ts",
+    "storage/chat/message.repository.ts",
+    "server/domain/metrics/agent-eval-report.ts",
+    "server/http/sse-bus.ts",
+    "server/domain/conversation/turn-orchestrator.ts",
+    "server/domain/conversation/turn/routing-executor.ts",
+    "server/domain/conversation/turn/agent-executor.ts",
+    "lib/pi-runtime.ts"
+  ],
+  "notes": "Planning-only Goal completed by the research/remediation plan series a2d3713, 3d8e744, and a9f9eec. Implementation was intentionally split into separately archived P0/P1/P2 tasks.",
+  "meta": {}
+}
