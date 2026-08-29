@@ -41,6 +41,7 @@ test('package dependencies pin one canonical PI family without the deprecated pa
 test('direct PI AI compat entry resolves the digest completion API without network access', async () => {
   const piAi = await import('@earendil-works/pi-ai/compat');
   assert.equal(typeof piAi.complete, 'function');
+  assert.equal(typeof piAi.completeSimple, 'function');
   assert.equal(typeof piAi.getModel, 'function');
 });
 

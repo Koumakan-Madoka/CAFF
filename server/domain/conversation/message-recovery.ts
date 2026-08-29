@@ -21,8 +21,15 @@ import {
   createRecoveryScribeConfigManager,
 } from './recovery-scribe-config';
 import {
+  RECOVERY_NOTE_NON_EXECUTION_STATEMENT,
+  RECOVERY_NOTE_SUBMISSION_TOOL,
+  RECOVERY_NOTE_SUBMISSION_TOOL_NAME,
+  SystemModelSubmissionError,
+  extractSingleSystemModelSubmission,
+  renderRecoveryNote,
+} from './system-model-submission';
+import {
   SystemModelOutputError,
-  extractSystemModelVisibleText,
   markSystemModelInvalidOutput,
   projectSystemModelOutputAttempt,
   resolveSystemModelOutputBudget,
@@ -41,22 +48,13 @@ const DEFAULT_RECOVERY_TIMEOUT_MS = MAX_RECOVERY_TIMEOUT_MS;
 const MAX_SAFE_ERROR_CHARS = 240;
 const RECOVERY_SOURCE_KIND_FAILED = 'failed';
 const RECOVERY_SOURCE_KIND_USER_CANCELLED = 'user_cancelled';
-const REQUIRED_SCRIBE_HEADINGS = [
-  '已经完成',
-  '失败位置',
-  '可能已生效但需核验',
-  '尚未完成',
-  '建议恢复点',
-  '无法从现场判断',
-];
-const NON_EXECUTION_STATEMENT = '这是只读现场整理，不会执行或重放原任务。';
 const SCRIBE_SYSTEM_PROMPT = [
   'You are the CAFF failed-trace recovery scribe.',
-  'You have no tools, extensions, skills, chat bridge, shell, filesystem, network side effects, or task execution authority.',
+  'You have no executable tools, extensions, skills, chat bridge, shell, filesystem, network side effects, or task execution authority.',
   'Use only the redacted Recovery Capsule supplied by CAFF. Never claim business completion from assistant prose.',
   'Preserve evidence grades exactly: completed, possibly effective, not completed, and unknown.',
-  'Write a concise Chinese recovery note with every required heading from the user message.',
-  `Include this exact non-execution statement: ${NON_EXECUTION_STATEMENT}`,
+  `Submit exactly one ${RECOVERY_NOTE_SUBMISSION_TOOL_NAME} call and no visible text.`,
+  'The submission tool is a schema-only return channel. It performs no action and will not be executed.',
   'Do not propose automatic replay. When a side effect may have happened, require verification before any continuation.',
 ].join('\n');
 
@@ -163,9 +161,9 @@ function recoveryConfig(options: any = {}) {
 function buildScribePrompt(capsule: any) {
   const prompt = [
     'Create one bounded failed-trace recovery note from this Recovery Capsule.',
-    'Use these exact headings: 已经完成, 失败位置, 可能已生效但需核验, 尚未完成, 建议恢复点, 无法从现场判断.',
-    `Include exactly this statement: ${NON_EXECUTION_STATEMENT}`,
-    'Do not include hidden reasoning or invent evidence.',
+    `Submit exactly one ${RECOVERY_NOTE_SUBMISSION_TOOL_NAME} call with all six evidence arrays.`,
+    'Use empty arrays where the Capsule does not support an item. Do not include hidden reasoning or invent evidence.',
+    'CAFF will render the fixed Chinese headings and non-execution statement after validating the tool arguments.',
     '',
     'Recovery Capsule JSON:',
     JSON.stringify(capsule),
@@ -177,36 +175,32 @@ function buildScribePrompt(capsule: any) {
   return prompt;
 }
 
-function extractScribeText(output: any) {
-  return extractSystemModelVisibleText(output);
-}
-
-function validateScribeOutput(value: any, diagnostic: any) {
-  const output = extractScribeText(value);
-  if (!output) {
-    throw new SystemModelOutputError('Recovery scribe output is empty', diagnostic);
-  }
-  if (output.length > MAX_RECOVERY_OUTPUT_CHARS) {
-    throw new SystemModelOutputError(
-      'Recovery scribe output exceeds the hard size limit',
-      markSystemModelInvalidOutput(diagnostic)
-    );
-  }
-  for (const heading of REQUIRED_SCRIBE_HEADINGS) {
-    if (!output.includes(heading)) {
-      throw new SystemModelOutputError(
-        `Recovery scribe output is missing heading: ${heading}`,
-        markSystemModelInvalidOutput(diagnostic)
+function validateScribeSubmission(value: any, diagnostic: any) {
+  try {
+    const submission = extractSingleSystemModelSubmission(value, RECOVERY_NOTE_SUBMISSION_TOOL);
+    const output = renderRecoveryNote(submission);
+    if (output.length > MAX_RECOVERY_OUTPUT_CHARS) {
+      throw new SystemModelSubmissionError(
+        'submission_output_too_large',
+        'Rendered recovery note exceeds the hard size limit'
       );
     }
-  }
-  if (!output.includes(NON_EXECUTION_STATEMENT)) {
+    if (!output.includes(RECOVERY_NOTE_NON_EXECUTION_STATEMENT)) {
+      throw new SystemModelSubmissionError(
+        'submission_render_invalid',
+        'Rendered recovery note is missing the non-execution statement'
+      );
+    }
+    return output;
+  } catch (error) {
+    const message = error instanceof SystemModelSubmissionError
+      ? error.message
+      : 'Recovery scribe tool submission is invalid';
     throw new SystemModelOutputError(
-      'Recovery scribe output is missing the non-execution statement',
+      `Recovery scribe tool submission is invalid: ${message}`,
       markSystemModelInvalidOutput(diagnostic)
     );
   }
-  return output;
 }
 
 async function defaultModelRuntimeFactory(agentDir: string) {
@@ -273,10 +267,12 @@ async function invokeScribe(capsule: any, config: any, options: any) {
             role: 'user',
             content: [{ type: 'text', text: prompt }],
           }],
+          tools: [RECOVERY_NOTE_SUBMISSION_TOOL],
         }, {
           signal: controller.signal,
           maxTokens: outputBudget,
           reasoning: thinking,
+          toolChoice: 'auto',
         });
       } catch (error) {
         const aborted = controller.signal.aborted || (error && (error as any).name === 'AbortError');
@@ -326,11 +322,11 @@ async function invokeScribe(capsule: any, config: any, options: any) {
       }
 
       try {
-        const validated = validateScribeOutput(output, inspection.diagnostic);
+        const validated = validateScribeSubmission(output, inspection.diagnostic);
         if (typeof options.onModelAttempt === 'function') {
           options.onModelAttempt(inspection.diagnostic);
         }
-        return { output: validated, prompt, raw: output, diagnostics: [inspection.diagnostic] };
+        return { output: validated, prompt, diagnostics: [inspection.diagnostic] };
       } catch (error) {
         if (typeof options.onModelAttempt === 'function' && error instanceof SystemModelOutputError) {
           options.onModelAttempt(error.diagnostic);
@@ -658,7 +654,8 @@ export function createMessageRecoveryService(options: any = {}) {
           sourceRunId: source.message.runId,
           sourceKind: source.sourceKind,
           parentRunId: source.message.runId,
-          noTools: true,
+          noExecutableTools: true,
+          submissionTool: RECOVERY_NOTE_SUBMISSION_TOOL_NAME,
           systemActorType: RECOVERY_SCRIBE_SYSTEM_ACTOR.type,
           systemActorRoutable: RECOVERY_SCRIBE_SYSTEM_ACTOR.routable,
         },
@@ -844,7 +841,8 @@ export function createMessageRecoveryService(options: any = {}) {
           parentRunId: source.message.runId,
           capsuleVersion: 1,
           capsuleSha256: createHash('sha256').update(JSON.stringify(capsule)).digest('hex'),
-          noTools: true,
+          noExecutableTools: true,
+          submissionTool: RECOVERY_NOTE_SUBMISSION_TOOL_NAME,
           systemActorType: RECOVERY_SCRIBE_SYSTEM_ACTOR.type,
           systemActorRoutable: RECOVERY_SCRIBE_SYSTEM_ACTOR.routable,
         },
@@ -882,7 +880,8 @@ export function createMessageRecoveryService(options: any = {}) {
         recoveryRunId,
         provider: config.provider,
         model: config.model,
-        noTools: true,
+        noExecutableTools: true,
+        submissionTool: RECOVERY_NOTE_SUBMISSION_TOOL_NAME,
       });
       emitRecovery(recovery);
 

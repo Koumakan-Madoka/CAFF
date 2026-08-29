@@ -50,6 +50,11 @@
   direct compat graph. Plain JSON text/model configuration may cross CAFF
   boundaries, but class instances, streams, provider registrations, credential
   stores, messages, and TypeBox runtime values may not.
+- Direct digest and Recovery Scribe requests may include one TypeBox-produced,
+  JSON-schema-shaped submission tool in `Context.tools`. These definitions have
+  no execute handler, are not registered with an Agent/session/extension, and
+  their returned `toolCall.arguments` are validated and consumed as structured
+  output rather than executed.
 - CAFF subscribes to native `AgentSessionEvent` objects. JSON/RPC wire-format
   changes such as delta-only `message_update` do not change this contract unless
   CAFF explicitly switches transports.
@@ -93,7 +98,7 @@
   `tests/runtime/model-input-capability-parity.test.js` cover SDK/session/event/
   image compatibility.
 - `tests/runtime/pi-model-config-validator.test.js` resolves the real default
-  digest compat entry and asserts `complete()` / `getModel()` exports without
+  digest compat entry and asserts `complete()` / `completeSimple()` / `getModel()` exports without
   network access. Server smoke covers digest behavior and PI/Trellis host
   startup.
 - Run `npm ls`, `npm run check`, both typechecks, build, focused runtime tests,
@@ -698,7 +703,7 @@ recoveryCapability.sourceKind = 'failed' | 'user_cancelled' | null;
 - Pi persists the cancelled run as failed with `termination_type=cancelled`. The executor independently persists the failed assistant cancellation projection and changes the linked task to cancelled.
 - Recovery may classify `user_cancelled` only when all exact fields above and message/task/run IDs agree. Error prose, `stopReason=aborted`, one cancelled row, queued waiter cancellation, or a provider/watchdog termination is insufficient.
 - Once any structured cancellation signal appears, partial or contradictory evidence rejects with `conversation_recovery_source_cancellation_mismatch`; it cannot fall through to ordinary failed-source recovery.
-- The later manual scribe creates only its existing direct no-tools child run. It does not resume the cancelled Agent session or alter the source run/task/message.
+- The later manual scribe creates only its existing direct non-Agent child run with one non-executed schema submission tool. It does not resume the cancelled Agent session or alter the source run/task/message.
 
 ### 4. Validation & Error Matrix
 
@@ -722,7 +727,7 @@ recoveryCapability.sourceKind = 'failed' | 'user_cancelled' | null;
 
 - `tests/runtime/agent-executor-hook.test.js` runs `createTurnStopper -> handle.cancel -> agent-executor catch` and asserts exact message metadata plus task cancelled state.
 - `tests/runtime/pi-runtime.test.js` keeps user cancellation authoritative across ordinary abort-tail and tool-recovery races, and asserts persisted run termination type.
-- `tests/runtime/message-recovery.test.js` uses real SQLite source rows to prove the exact tuple, partial-evidence refusal, failed-source controls, source immutability, manual scheduling, no-tools execution, and restart projection.
+- `tests/runtime/message-recovery.test.js` uses real SQLite source rows to prove the exact tuple, partial-evidence refusal, failed-source controls, source immutability, manual scheduling, non-Agent schema-tool submission, and restart projection.
 - Turn orchestrator Stop, side-dispatch cancellation, Goal, and smoke suites remain regression gates; queued cancellation must not gain a recovery action.
 
 ### 7. Wrong vs Correct

@@ -2802,16 +2802,92 @@ test('conversations controller creates model-generated conversation digests when
   assert.equal(modelCalls[0].purpose, 'entry');
   assert.equal(modelCalls[0].config.provider, 'cheap-provider');
   assert.equal(modelCalls[0].config.model, 'cheap-model');
-  assert.match(modelCalls[0].prompt, /Return exactly one valid compact JSON object/u);
-  assert.match(modelCalls[0].prompt, /Do not wrap it in markdown, code fences, XML, prose, comments, or multiple JSON objects/u);
-  assert.match(modelCalls[0].prompt, /Few-shot valid output/u);
-  assert.match(modelCalls[0].prompt, /Do not copy the few-shot example/u);
+  assert.match(modelCalls[0].prompt, /Submit the result exactly once by calling submit_conversation_digest/u);
+  assert.match(modelCalls[0].prompt, /Do not emit visible text/u);
+  assert.match(modelCalls[0].prompt, /Use empty arrays when evidence is missing/u);
   assert.equal(createResult.json.digest.summary, '模型总结：已经确认用便宜模型生成会话摘要。');
   assert.equal(createResult.json.digest.createdBy, 'model:cheap-provider/cheap-model');
   assert.ok(createResult.json.digest.decisions.some((item) => item.includes('保留规则摘要')));
 });
 
-test('conversations controller accepts direct JSON mode digest output', async (t) => {
+test('conversations controller accepts one validated digest submission tool call', async (t) => {
+  const calls = [];
+  global.__CAFF_DIGEST_TOOL_SUBMISSION_CALLS = calls;
+  t.after(() => {
+    delete global.__CAFF_DIGEST_TOOL_SUBMISSION_CALLS;
+  });
+
+  const moduleSource = `
+    export function getModel(provider, model) {
+      return { id: model, name: model, api: 'openai-completions', provider, maxTokens: 24576 };
+    }
+    export async function completeSimple(model, context, options) {
+      globalThis.__CAFF_DIGEST_TOOL_SUBMISSION_CALLS.push({
+        toolNames: Array.isArray(context.tools) ? context.tools.map((tool) => tool.name) : [],
+        toolChoice: options.toolChoice,
+        maxTokens: options.maxTokens,
+        systemPrompt: context.systemPrompt,
+      });
+      return {
+        role: 'assistant',
+        content: [{
+          type: 'toolCall',
+          id: 'submit-conversation-digest-1',
+          name: 'submit_conversation_digest',
+          arguments: {
+            summary: '工具摘要：provider 通过参数提交结构化结果。',
+            facts: ['工具事实：正文不再手写 JSON。'],
+            decisions: ['工具决策：服务端校验提交参数。'],
+            openQuestions: [],
+            nextActions: ['继续验证非法调用回退。'],
+            artifacts: ['server/domain/conversation/conversation-digest.ts'],
+            experience: []
+          }
+        }],
+        stopReason: 'toolUse',
+        timestamp: Date.now()
+      };
+    }
+  `;
+  const { handler, store } = createConversationsControllerHarness(t, {
+    digestOptions: {
+      piAiModuleSpecifier: `data:text/javascript,${encodeURIComponent(moduleSource)}`,
+    },
+  });
+  const conversation = createSmokeConversation(store, {
+    id: 'digest-tool-submission-conversation',
+    title: 'Digest Tool Submission Conversation',
+  });
+
+  store.createMessage({
+    id: 'digest-tool-submission-message-1',
+    conversationId: conversation.id,
+    turnId: 'digest-tool-submission-turn-1',
+    role: 'user',
+    senderName: 'User',
+    content: '决定让摘要模型通过工具参数提交结构化结果。',
+  });
+
+  const result = await invokeConversationsController(handler, {
+    method: 'POST',
+    pathname: `/api/conversations/${conversation.id}/digest`,
+    body: {
+      action: 'create',
+      summaryMode: 'model',
+    },
+  });
+
+  assert.equal(result.statusCode, 200);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].toolNames, ['submit_conversation_digest']);
+  assert.equal(calls[0].toolChoice, 'auto');
+  assert.equal(calls[0].maxTokens, 24_576);
+  assert.match(calls[0].systemPrompt, /submit_conversation_digest/u);
+  assert.equal(result.json.digest.summary, '工具摘要：provider 通过参数提交结构化结果。');
+  assert.equal(result.json.digest.createdBy, 'model:cheap-provider/cheap-model');
+});
+
+test('conversations controller rejects plain-text JSON instead of treating it as a digest submission', async (t) => {
   const calls = [];
   global.__CAFF_JSON_MODE_DIGEST_CALLS = calls;
   t.after(() => {
@@ -2823,12 +2899,11 @@ test('conversations controller accepts direct JSON mode digest output', async (t
       return { id: model, name: model, api: 'openai-completions', provider, maxTokens: 24576 };
     }
     export async function complete(model, context, options) {
-      const payload = options.onPayload({ model: model.id, messages: [], stream: false }, model);
       globalThis.__CAFF_JSON_MODE_DIGEST_CALLS.push({
         model,
-        hasTools: Array.isArray(context.tools),
+        toolNames: Array.isArray(context.tools) ? context.tools.map((tool) => tool.name) : [],
         toolChoice: options.toolChoice,
-        responseFormat: payload && payload.response_format,
+        hasPayloadHook: typeof options.onPayload === 'function',
         maxTokens: options.maxTokens,
         systemPrompt: context.systemPrompt,
       });
@@ -2880,17 +2955,17 @@ test('conversations controller accepts direct JSON mode digest output', async (t
 
   assert.equal(result.statusCode, 200);
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].hasTools, false);
-  assert.equal(calls[0].toolChoice, undefined);
-  assert.deepEqual(calls[0].responseFormat, { type: 'json_object' });
+  assert.deepEqual(calls[0].toolNames, ['submit_conversation_digest']);
+  assert.equal(calls[0].toolChoice, 'auto');
+  assert.equal(calls[0].hasPayloadHook, false);
   assert.equal(calls[0].maxTokens, 24576);
-  assert.match(calls[0].systemPrompt, /Return exactly one valid compact JSON object/u);
-  assert.equal(result.json.digest.summary, 'JSON Mode 总结：摘要通过 response_format 返回。');
-  assert.equal(result.json.digest.createdBy, 'model:cheap-provider/cheap-model');
-  assert.ok(result.json.digest.facts.some((item) => item.includes('合法 JSON 对象')));
+  assert.match(calls[0].systemPrompt, /submit_conversation_digest/u);
+  assert.match(result.json.digest.summary, /^Extractive digest of 1 public messages\./u);
+  assert.equal(result.json.digest.createdBy, 'user');
+  assert.ok(result.json.digest.decisions.some((item) => item.includes('JSON Mode')));
 });
 
-test('conversations controller extracts JSON mode text when response includes thinking blocks', async (t) => {
+test('conversations controller ignores thinking blocks around one valid digest tool submission', async (t) => {
   const calls = [];
   global.__CAFF_JSON_MODE_THINKING_TEXT_CALLS = calls;
   t.after(() => {
@@ -2902,25 +2977,30 @@ test('conversations controller extracts JSON mode text when response includes th
       return { id: model, name: model, api: 'openai-completions', provider };
     }
     export async function complete(model, context, options) {
-      const payload = options.onPayload({ model: model.id, messages: [], stream: false }, model);
-      globalThis.__CAFF_JSON_MODE_THINKING_TEXT_CALLS.push({ responseFormat: payload && payload.response_format });
+      globalThis.__CAFF_JSON_MODE_THINKING_TEXT_CALLS.push({
+        toolNames: Array.isArray(context.tools) ? context.tools.map((tool) => tool.name) : [],
+        toolChoice: options.toolChoice,
+      });
       return {
         role: 'assistant',
         content: [
-          { type: 'thinking', thinking: '这段思考不能被当成摘要 JSON。' },
+          { type: 'thinking', thinking: '这段思考不能被当成摘要正文。' },
           {
-            type: 'output_text',
-            text: JSON.stringify({
-              summary: 'JSON Mode 总结：文本块里的摘要被正确提取。',
-              facts: ['JSON Mode 事实：thinking 块被忽略。'],
-              decisions: ['JSON Mode 决策：只解析可见文本 JSON。'],
+            type: 'toolCall',
+            id: 'thinking-digest-submission',
+            name: 'submit_conversation_digest',
+            arguments: {
+              summary: '工具总结：thinking 块被忽略，参数被正确提取。',
+              facts: ['工具事实：thinking 块未进入摘要。'],
+              decisions: ['工具决策：只解析提交工具参数。'],
               openQuestions: [],
               nextActions: [],
-              artifacts: ['server/domain/conversation/conversation-digest.ts']
-            })
+              artifacts: ['server/domain/conversation/conversation-digest.ts'],
+              experience: []
+            }
           }
         ],
-        stopReason: 'stop',
+        stopReason: 'toolUse',
         timestamp: Date.now()
       };
     }
@@ -2955,13 +3035,14 @@ test('conversations controller extracts JSON mode text when response includes th
 
   assert.equal(result.statusCode, 200);
   assert.equal(calls.length, 1);
-  assert.deepEqual(calls[0].responseFormat, { type: 'json_object' });
-  assert.equal(result.json.digest.summary, 'JSON Mode 总结：文本块里的摘要被正确提取。');
+  assert.deepEqual(calls[0].toolNames, ['submit_conversation_digest']);
+  assert.equal(calls[0].toolChoice, 'auto');
+  assert.equal(result.json.digest.summary, '工具总结：thinking 块被忽略，参数被正确提取。');
   assert.equal(result.json.digest.createdBy, 'model:cheap-provider/cheap-model');
-  assert.ok(result.json.digest.facts.some((item) => item.includes('thinking 块被忽略')));
+  assert.ok(result.json.digest.facts.some((item) => item.includes('thinking 块未进入摘要')));
 });
 
-test('conversations controller falls back when JSON mode digest output is missing required fields', async (t) => {
+test('conversations controller falls back when a digest tool submission is missing required fields', async (t) => {
   const originalWarn = console.warn;
   const warnings = [];
   console.warn = (...args) => warnings.push(args.join(' '));
@@ -2977,21 +3058,26 @@ test('conversations controller falls back when JSON mode digest output is missin
       return { id: model, name: model, api: 'openai-completions', provider };
     }
     export async function complete(model, context, options) {
-      const payload = options.onPayload({ model: model.id, messages: [], stream: false }, model);
-      globalThis.__CAFF_JSON_MODE_MALFORMED_CALLS.push({ responseFormat: payload && payload.response_format });
+      globalThis.__CAFF_JSON_MODE_MALFORMED_CALLS.push({
+        toolNames: Array.isArray(context.tools) ? context.tools.map((tool) => tool.name) : [],
+        toolChoice: options.toolChoice,
+      });
       return {
         role: 'assistant',
         content: [{
-          type: 'text',
-          text: JSON.stringify({
+          type: 'toolCall',
+          id: 'missing-open-questions',
+          name: 'submit_conversation_digest',
+          arguments: {
             summary: '这个缺少 openQuestions，不能入库。',
             facts: ['坏结构事实。'],
             decisions: [],
             nextActions: [],
-            artifacts: []
-          })
+            artifacts: [],
+            experience: []
+          }
         }],
-        stopReason: 'stop',
+        stopReason: 'toolUse',
         timestamp: Date.now()
       };
     }
@@ -3026,14 +3112,15 @@ test('conversations controller falls back when JSON mode digest output is missin
 
   assert.equal(result.statusCode, 200);
   assert.equal(calls.length, 1);
-  assert.deepEqual(calls[0].responseFormat, { type: 'json_object' });
+  assert.deepEqual(calls[0].toolNames, ['submit_conversation_digest']);
+  assert.equal(calls[0].toolChoice, 'auto');
   assert.equal(result.json.digest.createdBy, 'user');
   assert.match(result.json.digest.summary, /^Extractive digest of 1 public messages\./u);
   assert.ok(result.json.digest.decisions.some((item) => item.includes('规则摘要')));
-  assert.ok(warnings.some((warning) => warning.includes('missing required field: openQuestions')));
+  assert.ok(warnings.some((warning) => warning.includes('failed schema validation')));
 });
 
-test('conversations controller falls back when JSON mode digest output is not an object', async (t) => {
+test('conversations controller falls back when digest tool arguments are not an object', async (t) => {
   const originalWarn = console.warn;
   const warnings = [];
   console.warn = (...args) => warnings.push(args.join(' '));
@@ -3049,12 +3136,19 @@ test('conversations controller falls back when JSON mode digest output is not an
       return { id: model, name: model, api: 'openai-completions', provider };
     }
     export async function complete(model, context, options) {
-      const payload = options.onPayload({ model: model.id, messages: [], stream: false }, model);
-      globalThis.__CAFF_JSON_MODE_BAD_OUTPUT_CALLS.push({ responseFormat: payload && payload.response_format });
+      globalThis.__CAFF_JSON_MODE_BAD_OUTPUT_CALLS.push({
+        toolNames: Array.isArray(context.tools) ? context.tools.map((tool) => tool.name) : [],
+        toolChoice: options.toolChoice,
+      });
       return {
         role: 'assistant',
-        content: [{ type: 'text', text: '["不是摘要对象"]' }],
-        stopReason: 'stop',
+        content: [{
+          type: 'toolCall',
+          id: 'array-digest-arguments',
+          name: 'submit_conversation_digest',
+          arguments: []
+        }],
+        stopReason: 'toolUse',
         timestamp: Date.now()
       };
     }
@@ -3089,13 +3183,117 @@ test('conversations controller falls back when JSON mode digest output is not an
 
   assert.equal(result.statusCode, 200);
   assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].toolNames, ['submit_conversation_digest']);
+  assert.equal(calls[0].toolChoice, 'auto');
   assert.equal(result.json.digest.createdBy, 'user');
   assert.match(result.json.digest.summary, /^Extractive digest of 1 public messages\./u);
   assert.ok(result.json.digest.nextActions.some((item) => item.includes('只能回退')));
-  assert.ok(warnings.some((warning) => warning.includes('digest JSON must be an object')));
+  assert.ok(warnings.some((warning) => warning.includes('arguments must be an object')));
 });
 
-test('conversations controller retries a thinking-only JSON mode rollup once with thinking off', async (t) => {
+test('conversations controller rejects wrong, multiple, and mixed-body digest submissions', async (t) => {
+  const validArguments = {
+    summary: 'invalid-submission-marker',
+    facts: [],
+    decisions: [],
+    openQuestions: [],
+    nextActions: [],
+    artifacts: [],
+    experience: [],
+  };
+  const cases = [
+    {
+      label: 'wrong tool',
+      content: [{
+        type: 'toolCall',
+        id: 'wrong-digest-tool',
+        name: 'wrong_digest_tool',
+        arguments: validArguments,
+      }],
+    },
+    {
+      label: 'multiple calls',
+      content: [1, 2].map((index) => ({
+        type: 'toolCall',
+        id: `duplicate-digest-tool-${index}`,
+        name: 'submit_conversation_digest',
+        arguments: validArguments,
+      })),
+    },
+    {
+      label: 'visible text with call',
+      content: [
+        { type: 'text', text: JSON.stringify(validArguments) },
+        {
+          type: 'toolCall',
+          id: 'mixed-body-digest-tool',
+          name: 'submit_conversation_digest',
+          arguments: validArguments,
+        },
+      ],
+    },
+  ];
+
+  for (const [index, fixture] of cases.entries()) {
+    await t.test(fixture.label, async (subtest) => {
+      const calls = [];
+      global.__CAFF_INVALID_DIGEST_TOOL_CALLS = calls;
+      subtest.after(() => {
+        delete global.__CAFF_INVALID_DIGEST_TOOL_CALLS;
+      });
+      const response = JSON.stringify({
+        role: 'assistant',
+        content: fixture.content,
+        stopReason: 'toolUse',
+        timestamp: Date.now(),
+      });
+      const moduleSource = `
+        export function getModel(provider, model) {
+          return { id: model, name: model, api: 'openai-completions', provider };
+        }
+        export async function complete(model, context, options) {
+          globalThis.__CAFF_INVALID_DIGEST_TOOL_CALLS.push({
+            toolNames: Array.isArray(context.tools) ? context.tools.map((tool) => tool.name) : [],
+            toolChoice: options.toolChoice,
+          });
+          return ${response};
+        }
+      `;
+      const { handler, store } = createConversationsControllerHarness(subtest, {
+        digestOptions: {
+          piAiModuleSpecifier: `data:text/javascript,${encodeURIComponent(moduleSource)}`,
+        },
+      });
+      const conversation = createSmokeConversation(store, {
+        id: `digest-invalid-tool-${index}`,
+        title: `Digest Invalid Tool ${index}`,
+      });
+      store.createMessage({
+        id: `digest-invalid-tool-message-${index}`,
+        conversationId: conversation.id,
+        turnId: `digest-invalid-tool-turn-${index}`,
+        role: 'user',
+        senderName: 'User',
+        content: '决定非法摘要提交只能回退，不能污染元数据。',
+      });
+
+      const result = await invokeConversationsController(handler, {
+        method: 'POST',
+        pathname: `/api/conversations/${conversation.id}/digest`,
+        body: { action: 'create', summaryMode: 'model' },
+      });
+
+      assert.equal(result.statusCode, 200);
+      assert.equal(calls.length, 1);
+      assert.deepEqual(calls[0].toolNames, ['submit_conversation_digest']);
+      assert.equal(calls[0].toolChoice, 'auto');
+      assert.equal(result.json.digest.createdBy, 'user');
+      assert.doesNotMatch(result.json.digest.summary, /invalid-submission-marker/u);
+    });
+  }
+});
+
+test('conversations controller retries a thinking-only digest tool call once with thinking off', async (t) => {
   const originalWarn = console.warn;
   const warnings = [];
   console.warn = (...args) => warnings.push(args.join(' '));
@@ -3111,18 +3309,10 @@ test('conversations controller retries a thinking-only JSON mode rollup once wit
       return { id: model, name: model, api: 'openai-completions', provider, reasoning: true, maxTokens: 24576 };
     }
     export async function complete(model, context, options) {
-      const payload = options.onPayload({
-        model: model.id,
-        messages: [],
-        stream: false,
-        reasoning: options.reasoning,
-      }, model);
       globalThis.__CAFF_JSON_MODE_THINKING_ONLY_CALLS.push({
         purpose: options.metadata && options.metadata.purpose,
-        responseFormat: payload && payload.response_format,
-        thinking: payload && payload.thinking,
-        reasoning: payload && payload.reasoning,
-        reasoningEffort: payload && payload.reasoning_effort,
+        toolNames: Array.isArray(context.tools) ? context.tools.map((tool) => tool.name) : [],
+        toolChoice: options.toolChoice,
         requestedReasoning: options.reasoning,
         maxTokens: options.maxTokens,
       });
@@ -3130,23 +3320,26 @@ test('conversations controller retries a thinking-only JSON mode rollup once wit
         return {
           role: 'assistant',
           content: [{
-            type: 'text',
-            text: JSON.stringify({
-              summary: '模型 rollup：关闭思考后生成了可见 JSON。',
+            type: 'toolCall',
+            id: 'rollup-after-thinking',
+            name: 'submit_conversation_digest',
+            arguments: {
+              summary: '模型 rollup：关闭思考后提交了结构化参数。',
               facts: ['第二次调用保留了完整正文预算。'],
               decisions: [],
               openQuestions: [],
               nextActions: [],
-              artifacts: []
-            })
+              artifacts: [],
+              experience: []
+            }
           }],
-          stopReason: 'stop',
+          stopReason: 'toolUse',
           timestamp: Date.now()
         };
       }
       return {
         role: 'assistant',
-        content: [{ type: 'thinking', thinking: '这里只有思考内容，没有最终摘要 JSON。' }],
+        content: [{ type: 'thinking', thinking: '这里只有思考内容，没有最终摘要提交。' }],
         stopReason: 'length',
         timestamp: Date.now()
       };
@@ -3202,15 +3395,16 @@ test('conversations controller retries a thinking-only JSON mode rollup once wit
   assert.equal(result.statusCode, 200);
   assert.equal(calls.length, 2);
   assert.equal(calls[0].purpose, 'rollup');
-  assert.deepEqual(calls[0].responseFormat, { type: 'json_object' });
-  assert.equal(calls[0].reasoning, 'high');
+  assert.deepEqual(calls[0].toolNames, ['submit_conversation_digest']);
+  assert.equal(calls[0].toolChoice, 'auto');
   assert.equal(calls[0].requestedReasoning, 'high');
   assert.equal(calls[0].maxTokens, 24_576);
+  assert.deepEqual(calls[1].toolNames, ['submit_conversation_digest']);
+  assert.equal(calls[1].toolChoice, 'auto');
   assert.equal(calls[1].requestedReasoning, 'off');
-  assert.equal(calls[1].reasoning, undefined);
   assert.equal(calls[1].maxTokens, 24_576);
   assert.match(result.json.rollup.createdBy, /^model:auto-compaction:/u);
-  assert.equal(result.json.rollup.summary, '模型 rollup：关闭思考后生成了可见 JSON。');
+  assert.equal(result.json.rollup.summary, '模型 rollup：关闭思考后提交了结构化参数。');
   assert.ok(warnings.some((warning) => warning.includes('length_exhausted')));
   const runningStatusIndex = broadcastEvents.findIndex(
     (event) => event.eventName === 'conversation_digest_status'
@@ -3226,7 +3420,7 @@ test('conversations controller retries a thinking-only JSON mode rollup once wit
   assert.match(broadcastEvents[runningStatusIndex].payload.message, /压缩历史摘要/u);
 });
 
-test('conversations controller falls back when JSON mode pi-ai module import fails', async (t) => {
+test('conversations controller falls back when the structured-tool pi-ai module import fails', async (t) => {
   const originalWarn = console.warn;
   const warnings = [];
   console.warn = (...args) => warnings.push(args.join(' '));
@@ -3311,30 +3505,32 @@ test('conversations controller builds a direct DeepSeek digest model from models
     export function getModel() { return undefined; }
     export function getModels() { return []; }
     export async function complete(model, context, options) {
-      const payload = options.onPayload({ model: model.id, messages: [], stream: false }, model);
       globalThis.__CAFF_DEEPSEEK_DIGEST_CALLS.push({
         model,
-        hasTools: Array.isArray(context.tools),
+        toolNames: Array.isArray(context.tools) ? context.tools.map((tool) => tool.name) : [],
         toolChoice: options.toolChoice,
         apiKey: options.apiKey,
-        responseFormat: payload && payload.response_format,
+        hasPayloadHook: typeof options.onPayload === 'function',
         reasoning: options.reasoning,
         maxTokens: options.maxTokens,
       });
       return {
         role: 'assistant',
         content: [{
-          type: 'text',
-          text: JSON.stringify({
-            summary: 'DeepSeek JSON Mode 总结：直连模型 fallback 已启用。',
+          type: 'toolCall',
+          id: 'deepseek-digest-submission',
+          name: 'submit_conversation_digest',
+          arguments: {
+            summary: 'DeepSeek 工具总结：直连模型 fallback 已启用。',
             facts: ['DeepSeek v4 flash 不在 pi-ai registry 时会从 models.json 构造 openai-completions 模型。'],
-            decisions: ['直接使用 JSON Mode，而不是虚拟工具调用。'],
+            decisions: ['直接使用 schema-only 工具提交。'],
             openQuestions: [],
             nextActions: [],
-            artifacts: ['server/domain/conversation/conversation-digest.ts']
-          })
+            artifacts: ['server/domain/conversation/conversation-digest.ts'],
+            experience: []
+          }
         }],
-        stopReason: 'stop',
+        stopReason: 'toolUse',
         timestamp: Date.now()
       };
     }
@@ -3376,7 +3572,7 @@ test('conversations controller builds a direct DeepSeek digest model from models
   });
 
   assert.equal(result.statusCode, 200);
-  assert.equal(result.json.digest.summary, 'DeepSeek JSON Mode 总结：直连模型 fallback 已启用。');
+  assert.equal(result.json.digest.summary, 'DeepSeek 工具总结：直连模型 fallback 已启用。');
   assert.equal(result.json.digest.createdBy, 'model:deepseek/deepseek-v4-flash');
   assert.equal(calls.length, 1);
   assert.equal(calls[0].model.id, 'deepseek-v4-flash');
@@ -3387,12 +3583,12 @@ test('conversations controller builds a direct DeepSeek digest model from models
   assert.equal(calls[0].model.compat.maxTokensField, 'max_tokens');
   assert.equal(calls[0].model.compat.supportsReasoningEffort, false);
   assert.equal(calls[0].model.compat.supportsStrictMode, false);
-  assert.equal(calls[0].hasTools, false);
-  assert.equal(calls[0].toolChoice, undefined);
+  assert.deepEqual(calls[0].toolNames, ['submit_conversation_digest']);
+  assert.equal(calls[0].toolChoice, 'auto');
   assert.equal(calls[0].apiKey, 'test-models-json-deepseek-api-key');
   assert.equal(calls[0].reasoning, 'high');
   assert.equal(calls[0].maxTokens, 16_384);
-  assert.deepEqual(calls[0].responseFormat, { type: 'json_object' });
+  assert.equal(calls[0].hasPayloadHook, false);
 });
 
 test('conversations controller retries model digests with missing-escape diagnostics', async (t) => {
@@ -3544,7 +3740,7 @@ test('conversations controller falls back to extractive digests when model summa
   assert.match(invalidResult.json.digest.summary, /^Extractive digest of 1 public messages\./u);
   assert.ok(invalidResult.json.digest.nextActions.some((item) => item.includes('坏格式')));
   assert.ok(warnings.some((warning) => warning.includes('Model digest failed')));
-  assert.ok(warnings.some((warning) => warning.includes('Invalid model digest JSON')));
+  assert.ok(warnings.some((warning) => warning.includes('Invalid model digest output')));
   assert.ok(warnings.some((warning) => warning.includes('not valid digest JSON')));
   assert.ok(warnings.some((warning) => warning.includes('missing close')));
   assert.equal(warnings.some((warning) => warning.includes('must-redact')), false);
@@ -3686,8 +3882,8 @@ test('conversations controller uses model-generated rollups when manual compact 
   assert.equal(compactResult.statusCode, 200);
   assert.equal(modelCalls.length, 1);
   assert.equal(modelCalls[0].purpose, 'rollup');
-  assert.match(modelCalls[0].prompt, /Return exactly one valid compact JSON object/u);
-  assert.match(modelCalls[0].prompt, /Few-shot valid output/u);
+  assert.match(modelCalls[0].prompt, /Submit the result exactly once by calling submit_conversation_digest/u);
+  assert.match(modelCalls[0].prompt, /Use empty arrays when evidence is missing/u);
   assert.equal(compactResult.json.rollup.summary, '模型 rollup：旧摘要已经合并成长期历史。');
   assert.ok(compactResult.json.rollup.createdBy.startsWith('model:auto-compaction:'));
 });
