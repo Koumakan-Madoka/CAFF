@@ -556,7 +556,7 @@ test('agent executor keeps the stage running while a stuck tool is recovered', a
   assert.equal(turnState.agents[0].status, 'completed');
 });
 
-test('conversation digest uses direct no-tools completion instead of Agent tool recovery', () => {
+test('conversation digest uses direct non-Agent completion with only a schema submission tool', () => {
   const digestSource = fs.readFileSync(
     path.resolve(__dirname, '..', '..', 'server', 'domain', 'conversation', 'conversation-digest.ts'),
     'utf8'
@@ -565,6 +565,8 @@ test('conversation digest uses direct no-tools completion instead of Agent tool 
   assert.doesNotMatch(digestSource, /\bstartRun\s*\(/u, 'system digest/title calls must not create Agent runs');
   assert.match(digestSource, /completeDigestModel\(directCompletion, directModel/u);
   assert.match(digestSource, /maxTokens:\s*outputBudget/u);
+  assert.match(digestSource, /tools:\s*\[CONVERSATION_DIGEST_SUBMISSION_TOOL\]/u);
+  assert.match(digestSource, /toolChoice:\s*'auto'/u);
   assert.doesNotMatch(
     digestSource,
     /toolProgressRecovery/u,

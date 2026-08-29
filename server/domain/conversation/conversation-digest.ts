@@ -5,6 +5,12 @@ import { createHttpError } from '../../http/http-errors';
 import { DEFAULT_AGENT_DIR, DEFAULT_MODEL, DEFAULT_PROVIDER, DEFAULT_THINKING, resolveIntegerSetting, resolveSetting, resolveThinkingSetting } from '../../../lib/minimal-pi';
 import { absorbExperienceDraftsInMetadata, experienceDraftsForDigest, getPendingConversationExperienceDrafts } from './experience-draft';
 import {
+  CONVERSATION_DIGEST_SUBMISSION_TOOL,
+  CONVERSATION_DIGEST_SUBMISSION_TOOL_NAME,
+  SystemModelSubmissionError,
+  extractSingleSystemModelSubmission,
+} from './system-model-submission';
+import {
   SystemModelOutputError,
   extractSystemModelVisibleText,
   isSystemModelAssistantOutput,
@@ -52,7 +58,6 @@ const MAX_TITLE_REFINE_MESSAGE_LENGTH = 300;
 const MAX_REFINED_TITLE_LENGTH = 15;
 const DEFAULT_TITLE_REFINE_TIMEOUT_MS = 30 * 1000;
 const DIGEST_SECTION_KEYS = ['facts', 'decisions', 'openQuestions', 'nextActions', 'artifacts'];
-const DIGEST_MODEL_REQUIRED_KEYS = ['summary', ...DIGEST_SECTION_KEYS];
 
 function nowIso() {
   return new Date().toISOString();
@@ -163,7 +168,7 @@ function warnInvalidModelDigestOutput(output: any, config: any, options: any = {
   const diagnostic = safeSystemModelErrorText(options.diagnostic, 800);
   const diagnosticText = diagnostic ? `\nDiagnostic: ${diagnostic}` : '';
 
-  console.warn(`[conversation-digest] Invalid model digest JSON (${purpose}, ${modelLabel}); ${outputLabel}:\n${renderedOutput || '[empty]'}${diagnosticText}`);
+  console.warn(`[conversation-digest] Invalid model digest output (${purpose}, ${modelLabel}); ${outputLabel}:\n${renderedOutput || '[empty]'}${diagnosticText}`);
 }
 
 function normalizeSectionItems(value: any) {
@@ -710,19 +715,13 @@ function resolveDigestModelConfig(_input: any, options: any = {}) {
   };
 }
 
-const MODEL_DIGEST_JSON_SHAPE = '{"summary":"string","facts":["string"],"decisions":["string"],"openQuestions":["string"],"nextActions":["string"],"artifacts":["string"],"experience":[{"title":"string","category":"string","scenario":"string","steps":["string"],"pitfalls":["string"],"validation":["string"],"artifacts":["string"],"confidence":"low|medium|high"}]}';
-
-function modelDigestJsonInstructionLines() {
+function modelDigestSubmissionInstructionLines() {
   return [
-    'Return exactly one valid compact JSON object. Do not wrap it in markdown, code fences, XML, prose, comments, or multiple JSON objects.',
-    'The JSON object must include every top-level key from this exact shape, even when a value is empty:',
-    MODEL_DIGEST_JSON_SHAPE,
-    'Use double-quoted JSON strings only. Escape newlines inside strings as \\n and literal double quotes inside strings as \\\". Prefer rephrasing quoted terms without quote marks when possible. Do not use trailing commas, comments, undefined, NaN, Infinity, or placeholder text.',
-    'Write a concise summary only from supported evidence; when section evidence is missing or uncertain, use empty arrays instead of inventing filler items.',
-    'Few-shot example input: [{"role":"user","speaker":"User","content":"决定保留规则摘要兜底。"},{"role":"assistant","speaker":"Agent","content":"已验证 npm run check 通过，修改 server/domain/conversation/conversation-digest.ts。"}]',
-    'Few-shot valid output: {"summary":"用户确认保留规则摘要兜底，且实现已通过检查。","facts":["npm run check 通过。"],"decisions":["保留规则摘要作为模型摘要失败时的兜底。"],"openQuestions":[],"nextActions":[],"artifacts":["server/domain/conversation/conversation-digest.ts"],"experience":[]}',
-    'Do not copy the few-shot example; summarize only the source data below.',
-    'Limits: summary <= 800 characters; each array <= 8 items; each item <= 240 characters; experience <= 5 items and each nested array <= 5 items.',
+    `Submit the result exactly once by calling ${CONVERSATION_DIGEST_SUBMISSION_TOOL_NAME}.`,
+    'Do not emit visible text, prose, markdown, code fences, XML, comments, or a JSON object in the assistant body.',
+    'Provide every tool argument defined by the schema. Use empty arrays when evidence is missing instead of inventing filler items.',
+    'Write a concise summary only from supported evidence. Facts require user statements, explicit results, or verified code/test outcomes.',
+    'Limits are enforced by the tool schema: summary <= 800 characters; each main array <= 8 items; experience <= 5 items.',
   ];
 }
 
@@ -743,7 +742,7 @@ function buildModelDigestPrompt(normalizedMessages: any[], experience: any[] = [
     'Do not invent facts. Facts must be user-stated facts, explicit tool/results evidence, or verified code/test outcomes; never promote agent speculation into facts.',
     'Decisions must be user-confirmed or already implemented. Put unconfirmed agent proposals in openQuestions or nextActions, not facts.',
     'If source experience drafts are provided, preserve them as reusable experience candidates and keep their caveats bounded.',
-    ...modelDigestJsonInstructionLines(),
+    ...modelDigestSubmissionInstructionLines(),
     '',
     'Source experience drafts JSON:',
     JSON.stringify(sourceExperience, null, 2),
@@ -774,7 +773,7 @@ function buildModelRollupPrompt(sources: any[]) {
     'Keep stable history and unresolved work. Remove duplicates. Do not invent facts or promote unconfirmed agent speculation.',
     'If source digests conflict, keep the conflict in openQuestions instead of choosing a winner.',
     'Preserve reusable experience candidates only when they remain supported by the source digests.',
-    ...modelDigestJsonInstructionLines(),
+    ...modelDigestSubmissionInstructionLines(),
     '',
     'Source digest entries JSON:',
     JSON.stringify(sourceDigests, null, 2),
@@ -940,49 +939,13 @@ function normalizeModelDigestPayload(value: any) {
   return normalized.summary ? normalized : null;
 }
 
-function validateJsonModeDigestPayload(value: any) {
-  const payload = isPlainObject(value) ? value : parseJsonObjectFromText(value);
-
-  if (!isPlainObject(payload)) {
-    return { ok: false, reason: 'digest JSON must be an object' };
-  }
-
-  for (const key of DIGEST_MODEL_REQUIRED_KEYS) {
-    if (!Object.prototype.hasOwnProperty.call(payload, key)) {
-      return { ok: false, reason: `missing required field: ${key}` };
-    }
-  }
-
-  if (typeof payload.summary !== 'string' || !normalizeText(payload.summary)) {
-    return { ok: false, reason: 'summary must be a non-empty string' };
-  }
-
-  for (const key of DIGEST_SECTION_KEYS) {
-    if (!Array.isArray(payload[key])) {
-      return { ok: false, reason: `${key} must be an array` };
-    }
-
-    if (!payload[key].every((item: any) => typeof item === 'string')) {
-      return { ok: false, reason: `${key} must contain only strings` };
-    }
-  }
-
-  if (payload.experience !== undefined && !Array.isArray(payload.experience)) {
-    return { ok: false, reason: 'experience must be an array when present' };
-  }
-
-  const normalized = normalizeModelDigestPayload(payload);
-  return normalized
-    ? { ok: true, payload: normalized }
-    : { ok: false, reason: 'digest JSON did not normalize to a valid digest' };
-}
-
-function buildJsonModeDigestModelContext(prompt: string) {
+function buildStructuredDigestModelContext(prompt: string) {
   return {
     systemPrompt: [
       'You are CAFF structured conversation digest writer.',
-      'Return exactly one valid compact JSON object matching the requested digest schema.',
-      'Do not add hidden reasoning, markdown, code fences, XML, prose, comments, or multiple JSON objects.',
+      `Return the result only through ${CONVERSATION_DIGEST_SUBMISSION_TOOL_NAME}.`,
+      'The submission tool is a schema-only return channel. It performs no action and will not be executed.',
+      'Do not add visible text before or after the tool call.',
     ].join('\n'),
     messages: [
       {
@@ -990,28 +953,8 @@ function buildJsonModeDigestModelContext(prompt: string) {
         content: [{ type: 'text', text: prompt }],
       },
     ],
+    tools: [CONVERSATION_DIGEST_SUBMISSION_TOOL],
   };
-}
-
-function buildJsonModeDigestPayload(payload: any, model: any, thinking: any) {
-  const nextPayload = {
-    ...payload,
-    response_format: { type: 'json_object' },
-  } as Record<string, any>;
-  const provider = normalizeText(model && model.provider).toLowerCase();
-  const thinkingFormat = normalizeText(model && model.compat && model.compat.thinkingFormat).toLowerCase();
-
-  if (normalizeText(thinking).toLowerCase() === 'off') {
-    delete nextPayload.reasoning;
-    delete nextPayload.reasoning_effort;
-    delete nextPayload.reasoningEffort;
-
-    if (provider === 'deepseek' || thinkingFormat === 'deepseek') {
-      nextPayload.thinking = { type: 'disabled' };
-    }
-  }
-
-  return nextPayload;
 }
 
 async function completeDigestModel(complete: any, model: any, context: any, completeOptions: any, options: any = {}, config: any = {}) {
@@ -1292,12 +1235,16 @@ function warnSystemModelDiagnostic(diagnostic: any, config: any, options: any = 
   );
 }
 
-async function runJsonModeDigestModelPrompt(prompt: string, config: any, options: any = {}) {
+async function runStructuredDigestModelPrompt(prompt: string, config: any, options: any = {}) {
   const piAi = await importPiAiModule(normalizeText(options.piAiModuleSpecifier || process.env.CAFF_PI_AI_MODULE) || '@earendil-works/pi-ai/compat');
-  const complete = typeof piAi.complete === 'function' ? piAi.complete : null;
+  const complete = typeof piAi.completeSimple === 'function'
+    ? piAi.completeSimple
+    : typeof piAi.complete === 'function'
+      ? piAi.complete
+      : null;
 
   if (!complete) {
-    throw new Error('pi-ai module does not expose complete()');
+    throw new Error('pi-ai module does not expose completeSimple() or complete()');
   }
 
   const resolvedModel = resolveDigestPiModel(piAi, config);
@@ -1311,18 +1258,16 @@ async function runJsonModeDigestModelPrompt(prompt: string, config: any, options
   while (attempt <= 2) {
     let output: any;
     try {
-      output = await completeDigestModel(complete, model, buildJsonModeDigestModelContext(prompt), {
+      output = await completeDigestModel(complete, model, buildStructuredDigestModelContext(prompt), {
         ...(resolvedModel.apiKey ? { apiKey: resolvedModel.apiKey } : {}),
         maxTokens: outputBudget,
         reasoning: thinking,
-        onPayload(payload: any) {
-          return buildJsonModeDigestPayload(payload, model, thinking);
-        },
+        toolChoice: 'auto',
         metadata: {
           source: 'conversation_digest',
           purpose: options.purpose || 'summary',
           conversationId: normalizeText(options.conversationId),
-          structuredOutput: 'json_mode',
+          structuredOutput: 'tool_call',
           attempt,
           maxTokens: outputBudget,
           thinking,
@@ -1356,17 +1301,31 @@ async function runJsonModeDigestModelPrompt(prompt: string, config: any, options
       throw error;
     }
 
-    const validation = validateJsonModeDigestPayload(inspection.visibleText);
-    if (!validation.ok) {
+    try {
+      const submission = extractSingleSystemModelSubmission(output, CONVERSATION_DIGEST_SUBMISSION_TOOL);
+      const normalized = normalizeModelDigestPayload(submission);
+      if (!normalized) {
+        throw new SystemModelSubmissionError(
+          'submission_digest_normalization_failed',
+          'System model submission did not normalize to a valid digest'
+        );
+      }
+      progress.finished('结构化摘要已提交。');
+      return normalized;
+    } catch (error) {
       const diagnostic = markSystemModelInvalidOutput(inspection.diagnostic);
       warnSystemModelDiagnostic(diagnostic, config, options);
-      const error = createModelDigestError(`Invalid JSON mode digest payload: ${validation.reason}`, inspection.visibleText, diagnostic);
-      progress.failed(error);
-      throw error;
+      const submissionError = error instanceof SystemModelSubmissionError
+        ? error
+        : new SystemModelSubmissionError('submission_invalid', safeSystemModelErrorText(error));
+      const modelError = createModelDigestError(
+        `Invalid digest tool submission: ${submissionError.message}`,
+        '',
+        diagnostic
+      );
+      progress.failed(modelError);
+      throw modelError;
     }
-
-    progress.finished(inspection.visibleText);
-    return validation.payload;
   }
 
   throw new Error('Digest model retry budget was exhausted');
@@ -1431,7 +1390,7 @@ function createDigestModelProgressReporter(config: any, options: any = {}) {
   const modelLabel = `${config.provider}/${config.model}`;
   const message = purpose === 'rollup'
     ? '会话摘要模型正在压缩历史摘要…'
-    : '会话摘要模型正在生成 JSON…';
+    : '会话摘要模型正在提交结构化摘要…';
   let outputPreview = '';
   let thinkingPreview = '';
   let eventCount = 0;
@@ -1614,22 +1573,26 @@ async function runDigestModelPrompt(prompt: string, config: any, options: any = 
 
 async function generateModelDigestPayload(prompt: string, input: any, options: any = {}) {
   const config = resolveDigestModelConfig(input, options);
-  const shouldUseDirectJsonMode = !options.disableDirectJsonModeDigest
-    && !options.disableStructuredDigestTool
+  const shouldUseDirectStructuredTool = !options.disableStructuredDigestTool
     && !options.digestModelRunner;
 
-  if (shouldUseDirectJsonMode) {
+  if (shouldUseDirectStructuredTool) {
     try {
-      const jsonModePayload = await runJsonModeDigestModelPrompt(prompt, config, options);
+      const structuredPayload = await runStructuredDigestModelPrompt(prompt, config, options);
       return {
-        ...jsonModePayload,
+        ...structuredPayload,
         createdBy: `model:${config.provider}/${config.model}`,
       };
     } catch (error) {
       const errorValue = error as any;
-      warnInvalidModelDigestOutput(errorValue && errorValue.digestModelOutput !== undefined ? errorValue.digestModelOutput : errorValue, config, {
+      const diagnosticOutput = errorValue
+        && errorValue.digestModelOutput !== undefined
+        && normalizeText(errorValue.digestModelOutput)
+        ? errorValue.digestModelOutput
+        : errorValue;
+      warnInvalidModelDigestOutput(diagnosticOutput, config, {
         ...options,
-        diagnostic: errorValue && errorValue.message ? errorValue.message : String(errorValue || 'JSON mode digest failure'),
+        diagnostic: errorValue && errorValue.message ? errorValue.message : String(errorValue || 'Digest tool submission failure'),
       });
       throw error;
     }

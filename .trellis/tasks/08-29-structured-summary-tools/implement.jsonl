@@ -1,0 +1,13 @@
+{"file": ".trellis/workflow.md", "reason": "Project workflow and conventions"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend development guide"}
+{"file": ".trellis/spec/backend/conversation-digest.md", "reason": "Authoritative digest model submission, validation, retry and fallback contract"}
+{"file": ".trellis/spec/backend/message-recovery.md", "reason": "Authoritative recovery scribe isolation, output and fallback contract"}
+{"file": ".trellis/spec/runtime/agent-runtime.md", "reason": "Direct PI AI consumer and non-Agent tool boundary"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Provider output to persisted artifact boundary"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Shared strict submission parser and schemas"}
+{"file": "server/domain/conversation/system-model-output.ts", "reason": "Existing shared system-model retry and diagnostics pattern"}
+{"file":"server/domain/conversation/system-model-submission.ts","reason":"Added the single source of truth for both schema-only tools, strict one-call/no-body validation, and deterministic Recovery Markdown rendering."}
+{"file":"server/domain/conversation/conversation-digest.ts","reason":"Replaced direct JSON Mode with submit_conversation_digest tool arguments while preserving provider selection, budgets, retries, progress, normalization, and extractive fallback."}
+{"file":"server/domain/conversation/message-recovery.ts","reason":"Replaced model-authored fixed-heading prose with submit_recovery_note arguments and server-rendered headings/statement, retaining direct non-Agent isolation and mechanical fallback."}
+{"file":"tests/smoke/server-smoke.test.js","reason":"Covered digest success, plain JSON, thinking, wrong/multiple/mixed calls, schema failures, retry limits, and configured DeepSeek fallback."}
+{"file":"tests/runtime/message-recovery.test.js","reason":"Covered Recovery tool context, deterministic rendering, invalid-call matrix, output retries, provider no-retry behavior, and fallback persistence."}

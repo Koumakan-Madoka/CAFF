@@ -1,0 +1,3 @@
+{"file":".trellis/spec/backend/conversation-digest.md","reason":"Replaced obsolete direct JSON Mode contract with executable submit_conversation_digest schema, cardinality, validation, retry, fallback, DeepSeek, and test requirements."}
+{"file":".trellis/spec/backend/message-recovery.md","reason":"Specified submit_recovery_note fields, non-executed tool boundary, server renderer, safe diagnostics, failure matrix, and regression assertions."}
+{"file":".trellis/spec/runtime/agent-runtime.md","reason":"Documented JSON-schema-shaped submission tools as validated return envelopes that never enter Agent/session execution."}

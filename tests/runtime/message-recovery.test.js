@@ -9,29 +9,32 @@ const { createMessageRecoveryService } = require('../../build/server/domain/conv
 const { withClearedRecoveryRuntimeEnvironment } = require('../helpers/recovery-runtime-env');
 const { withTempDir } = require('../helpers/temp-dir');
 
-const VALID_SCRIBE_OUTPUT = [
-  '## 执行异常后的现场摘要',
-  '',
-  '> 这是只读现场整理，不会执行或重放原任务。原失败 Trace 保持 failed。',
-  '',
-  '### 已经完成',
-  '- npm run build',
-  '',
-  '### 失败位置',
-  '- stream_read_error',
-  '',
-  '### 可能已生效但需核验',
-  '- kubectl apply',
-  '',
-  '### 尚未完成',
-  '- browser acceptance',
-  '',
-  '### 建议恢复点',
-  '- verify rollout state',
-  '',
-  '### 无法从现场判断',
-  '- provider-side cause',
-].join('\n');
+const VALID_RECOVERY_SUBMISSION = {
+  alreadyCompleted: ['npm run build'],
+  failureLocation: ['stream_read_error'],
+  possiblyEffective: ['kubectl apply'],
+  notCompleted: ['browser acceptance'],
+  recoveryPoint: ['verify rollout state'],
+  unknown: ['provider-side cause'],
+};
+
+function recoverySubmissionOutput(argumentsOverride = {}, options = {}) {
+  return {
+    role: 'assistant',
+    stopReason: options.stopReason || 'toolUse',
+    content: [
+      ...(Array.isArray(options.prefixContent) ? options.prefixContent : []),
+      {
+        type: 'toolCall',
+        id: options.id || 'submit-recovery-note',
+        name: options.name || 'submit_recovery_note',
+        arguments: { ...VALID_RECOVERY_SUBMISSION, ...argumentsOverride },
+      },
+      ...(Array.isArray(options.suffixContent) ? options.suffixContent : []),
+    ],
+    usage: { input: 100, output: 50 },
+  };
+}
 
 function writeSourceSession(agentDir) {
   const sessionPath = path.join(agentDir, 'named-sessions', 'source-session.jsonl');
@@ -211,12 +214,15 @@ function createFixture(t, options = {}) {
       if (response) {
         return structuredClone(response);
       }
-      return {
-        role: 'assistant',
-        stopReason: 'stop',
-        content: [{ type: 'text', text: options.modelOutput || VALID_SCRIBE_OUTPUT }],
-        usage: { input: 100, output: 50 },
-      };
+      if (Object.prototype.hasOwnProperty.call(options, 'modelOutput')) {
+        return {
+          role: 'assistant',
+          stopReason: 'stop',
+          content: [{ type: 'text', text: options.modelOutput }],
+          usage: { input: 100, output: 50 },
+        };
+      }
+      return recoverySubmissionOutput();
     },
   };
   const mutationState = options.busy
@@ -280,7 +286,7 @@ function createFixture(t, options = {}) {
   };
 }
 
-test('manual recovery is durable and idempotent before one no-tools scribe job runs', async (t) => {
+test('manual recovery is durable and idempotent before one non-Agent scribe job runs', async (t) => {
   const fixture = createFixture(t);
   const participantCountBefore = fixture.store.db.prepare(`
     SELECT COUNT(*) AS count
@@ -309,7 +315,9 @@ test('manual recovery is durable and idempotent before one no-tools scribe job r
   assert.equal(fixture.modelCalls[0].options.maxTokens, 16_384);
   assert.equal(fixture.modelCalls[0].options.reasoning, 'low');
   assert.equal(Object.hasOwn(fixture.modelCalls[0].options, 'tools'), false);
-  assert.match(fixture.modelCalls[0].context.systemPrompt, /no tools|无工具/iu);
+  assert.deepEqual(fixture.modelCalls[0].context.tools.map((tool) => tool.name), ['submit_recovery_note']);
+  assert.equal(fixture.modelCalls[0].options.toolChoice, 'auto');
+  assert.match(fixture.modelCalls[0].context.systemPrompt, /no executable tools|无可执行工具/iu);
 
   const recoveryMessage = fixture.store.getMessage(completed.recoveryMessageId);
   assert.equal(recoveryMessage.status, 'completed');
@@ -363,6 +371,44 @@ test('manual recovery is durable and idempotent before one no-tools scribe job r
   );
 });
 
+test('scribe accepts one validated submission tool call and renders the fixed recovery note', async (t) => {
+  const fixture = createFixture(t, {
+    modelResponses: [{
+      role: 'assistant',
+      stopReason: 'toolUse',
+      content: [{
+        type: 'toolCall',
+        id: 'submit-recovery-note-1',
+        name: 'submit_recovery_note',
+        arguments: {
+          alreadyCompleted: ['npm run build'],
+          failureLocation: ['stream_read_error'],
+          possiblyEffective: ['kubectl apply'],
+          notCompleted: ['browser acceptance'],
+          recoveryPoint: ['verify rollout state'],
+          unknown: ['provider-side cause'],
+        },
+      }],
+      usage: { input: 100, output: 50 },
+    }],
+  });
+  const accepted = fixture.service.requestRecovery(fixture.conversation.id, fixture.sourceMessage.id);
+
+  await fixture.scheduled[0]();
+
+  const completed = fixture.store.getMessageRecovery(accepted.recovery.id);
+  assert.equal(completed.status, 'completed');
+  assert.equal(completed.fallbackUsed, false);
+  assert.equal(fixture.modelCalls.length, 1);
+  assert.deepEqual(fixture.modelCalls[0].context.tools.map((tool) => tool.name), ['submit_recovery_note']);
+  assert.equal(fixture.modelCalls[0].options.toolChoice, 'auto');
+  const message = fixture.store.getMessage(completed.recoveryMessageId);
+  assert.match(message.content, /### 已经完成\n- npm run build/u);
+  assert.match(message.content, /### 建议恢复点\n- verify rollout state/u);
+  assert.match(message.content, /这是只读现场整理，不会执行或重放原任务。/u);
+  assert.doesNotMatch(message.content, /"alreadyCompleted"/u);
+});
+
 test('scribe retries one thinking-only length response with thinking off and the provider output budget', async (t) => {
   const fixture = createFixture(t, {
     thinking: 'high',
@@ -374,12 +420,7 @@ test('scribe retries one thinking-only length response with thinking off and the
         content: [{ type: 'thinking', thinking: 'hidden recovery reasoning must not be persisted as the report' }],
         usage: { input: 100, output: 32_768, reasoning: 32_768, totalTokens: 32_868 },
       },
-      {
-        role: 'assistant',
-        stopReason: 'stop',
-        content: [{ type: 'text', text: VALID_SCRIBE_OUTPUT }],
-        usage: { input: 100, output: 500, reasoning: 0, totalTokens: 600 },
-      },
+      recoverySubmissionOutput(),
     ],
   });
   const accepted = fixture.service.requestRecovery(fixture.conversation.id, fixture.sourceMessage.id);
@@ -495,7 +536,7 @@ test('a second length response falls back with a specific bounded diagnostic', a
       {
         role: 'assistant',
         stopReason: 'length',
-        content: [{ type: 'text', text: VALID_SCRIBE_OUTPUT }],
+        content: [{ type: 'text', text: 'truncated before the submission call' }],
         usage: { output: 16_384, reasoning: 0, totalTokens: 16_384 },
       },
     ],
@@ -573,6 +614,54 @@ test('invalid scribe output uses the same one-message mechanical fallback contra
   const message = fixture.store.getMessage(failed.recoveryMessageId);
   assert.match(message.content, /不会执行或重放原任务/u);
   assert.equal(fixture.store.listMessages(fixture.conversation.id).filter((item) => item.metadata.recoveryResult).length, 1);
+});
+
+test('scribe rejects wrong, multiple, visible-text, and schema-invalid submissions without retrying', async (t) => {
+  const { unknown: _unknown, ...missingUnknown } = VALID_RECOVERY_SUBMISSION;
+  const cases = [
+    ['wrong tool', recoverySubmissionOutput({}, { name: 'wrong_recovery_tool' })],
+    ['multiple calls', recoverySubmissionOutput({}, {
+      suffixContent: [{
+        type: 'toolCall',
+        id: 'second-recovery-submission',
+        name: 'submit_recovery_note',
+        arguments: VALID_RECOVERY_SUBMISSION,
+      }],
+    })],
+    ['visible text', recoverySubmissionOutput({}, {
+      prefixContent: [{ type: 'text', text: JSON.stringify(VALID_RECOVERY_SUBMISSION) }],
+    })],
+    ['missing field', {
+      role: 'assistant',
+      stopReason: 'toolUse',
+      content: [{
+        type: 'toolCall',
+        id: 'missing-recovery-field',
+        name: 'submit_recovery_note',
+        arguments: missingUnknown,
+      }],
+      usage: { input: 100, output: 50 },
+    }],
+  ];
+
+  for (const [label, response] of cases) {
+    await t.test(label, async (subtest) => {
+      const fixture = createFixture(subtest, { modelResponses: [response] });
+      const accepted = fixture.service.requestRecovery(fixture.conversation.id, fixture.sourceMessage.id);
+
+      await fixture.scheduled[0]();
+
+      const failed = fixture.store.getMessageRecovery(accepted.recovery.id);
+      assert.equal(failed.status, 'failed');
+      assert.equal(failed.fallbackUsed, true);
+      assert.equal(failed.errorCode, 'conversation_recovery_scribe_invalid_output');
+      assert.equal(failed.modelOutput, '');
+      assert.equal(fixture.modelCalls.length, 1);
+      const attempts = fixture.runStore.listTaskEvents(failed.recoveryTaskId)
+        .filter((event) => event.event_type === 'conversation_recovery_model_attempt');
+      assert.deepEqual(attempts.map((event) => event.payload.diagnosticCode), ['invalid_output']);
+    });
+  }
 });
 
 test('stale queued work is projected as interrupted without replaying it', (t) => {

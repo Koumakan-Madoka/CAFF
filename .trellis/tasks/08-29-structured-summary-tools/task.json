@@ -1,0 +1,51 @@
+{
+  "id": "structured-summary-tools",
+  "name": "structured-summary-tools",
+  "title": "Structured Tool Output for Digests and Recovery Scribe",
+  "description": "Use schema-only provider tool calls for conversation digest and recovery scribe structured output.",
+  "status": "review",
+  "dev_type": "backend",
+  "scope": "server/domain/conversation and focused backend/runtime tests",
+  "package": null,
+  "priority": "P1",
+  "creator": "GPT",
+  "assignee": "GPT",
+  "createdAt": "2026-08-29",
+  "completedAt": null,
+  "branch": "room/523e9df5-caff",
+  "base_branch": "develop",
+  "worktree_path": "E:\\pythonproject\\worktrees\\room\\523e9df5-caff",
+  "current_phase": 2,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "check"
+    },
+    {
+      "phase": 3,
+      "action": "finish"
+    },
+    {
+      "phase": 4,
+      "action": "create-pr"
+    }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "server/domain/conversation/system-model-submission.ts",
+    "server/domain/conversation/conversation-digest.ts",
+    "server/domain/conversation/message-recovery.ts",
+    "tests/smoke/server-smoke.test.js",
+    "tests/runtime/message-recovery.test.js"
+  ],
+  "notes": "User confirmed option 1A and Goal mode. Direct provider calls submit through non-executed schema tools; deterministic/mechanical fallbacks remain authoritative. Check, typecheck, build, smoke 76/76, message-recovery 26/26, and focused runtime 40/40 pass. test:fast reached turn-orchestrator with 102/104 assertions passing; only the two known Windows fs.rmSync EPERM after-hook cleanup failures stopped later suites.",
+  "meta": {}
+}

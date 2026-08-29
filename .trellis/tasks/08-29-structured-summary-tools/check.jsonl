@@ -1,0 +1,10 @@
+{"file": ".agents/skills/finish-work/SKILL.md", "reason": "Finish work checklist"}
+{"file": ".agents/skills/check/SKILL.md", "reason": "Code quality check spec"}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Runtime and fake-provider regression expectations"}
+{"file": ".trellis/spec/backend/conversation-digest.md", "reason": "Digest acceptance matrix"}
+{"file": ".trellis/spec/backend/message-recovery.md", "reason": "Recovery acceptance matrix"}
+{"file":"tests/runtime/message-recovery.test.js","reason":"Red evidence: the new tool-call fixture was misclassified as empty_text, made two calls, and failed before the production change; green evidence: full suite 26/26 passed."}
+{"file":"tests/smoke/server-smoke.test.js","reason":"Red evidence: submit_conversation_digest was misclassified as empty_text and retried twice; green evidence: npm run test:smoke passed 76/76 plus mode-store 4/4."}
+{"file":"package.json","reason":"npm run check, npm run typecheck, and npm run build passed after implementation."}
+{"file":"tests/runtime/turn-orchestrator.test.js","reason":"npm run test:fast reached this suite with 102/104 passing; the only failures were the repository-known Windows fs.rmSync EPERM after-hooks at image preflight temp cleanup, so later suites did not run in this command."}
+{"file":"server/domain/conversation/system-model-submission.ts","reason":"Cross-layer audit found one shared definition for both tool names/schemas, no registerTool/execute path, no response_format/json_mode production path, and no raw invalid arguments persisted."}

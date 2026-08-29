@@ -99,6 +99,7 @@ export function projectSystemModelOutputAttempt(output: any, options: any = {}) 
     .map((item: any) => projectContentType(item && item.type))
     .filter(Boolean)))
     .slice(0, 12);
+  const hasToolCall = contentBlockTypes.includes('toolcall');
   const visibleText = extractSystemModelVisibleText(output);
   const stopReason = normalizeText(message && message.stopReason).toLowerCase().slice(0, 40);
   const thinking = normalizeText(options.thinking) || 'off';
@@ -110,7 +111,7 @@ export function projectSystemModelOutputAttempt(output: any, options: any = {}) 
     diagnosticCode = stopReason === 'aborted' ? 'aborted' : 'provider_error';
   } else if (stopReason === 'length') {
     diagnosticCode = 'length_exhausted';
-  } else if (!visibleText) {
+  } else if (!visibleText && !hasToolCall) {
     diagnosticCode = 'empty_text';
   }
 
@@ -122,7 +123,7 @@ export function projectSystemModelOutputAttempt(output: any, options: any = {}) 
     stopReason,
     contentBlockTypes,
     visibleTextChars: visibleText.length,
-    thinkingOnly: !visibleText && contentBlockTypes.some((type) => {
+    thinkingOnly: !visibleText && !hasToolCall && contentBlockTypes.some((type) => {
       const normalized = normalizeContentType(type);
       return normalized === 'thinking' || normalized === 'reasoning' || normalized === 'redactedthinking';
     }),
