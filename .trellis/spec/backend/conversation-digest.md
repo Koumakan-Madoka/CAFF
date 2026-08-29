@@ -14,7 +14,7 @@
 - `GET /api/conversations/:conversationId/digest`
   - Response: `{ conversation, digests, digest, rollup, deleted, compacted, summary, conversations }`
 - `POST /api/conversations/:conversationId/digest`
-  - Request: `{ action: 'create', summaryMode?: 'model' | 'extractive' | 'auto', summary?: string, facts?: string[], decisions?: string[], openQuestions?: string[], nextActions?: string[], artifacts?: string[], experience?: ExperienceDigestItem[] } | { action: 'delete', digestId: string } | { action: 'clear' | 'get' | 'compact', summaryMode?: 'model' | 'extractive' | 'auto' }`
+  - Request: `{ action: 'create', summaryMode?: 'model' | 'extractive' | 'auto', summary?: string, facts?: string[], decisions?: string[], openQuestions?: string[], nextActions?: string[], artifacts?: string[] } | { action: 'delete', digestId: string } | { action: 'clear' | 'get' | 'compact', summaryMode?: 'model' | 'extractive' | 'auto' }`
   - Response: `{ conversation, digests, digest, rollup, deleted, compacted, summary, conversations }`
 - Backend auto-create helper:
   - `maybeAutoCreateConversationDigest(store, conversationId, options)` returns the same digest result shape plus `{ autoCreated, reason?, pendingMessageCount?, pendingTokenEstimate?, signalFlags?, messageBudget?, retryAfterMs?, triggerReason?, stateChanged? }`.
@@ -22,11 +22,11 @@
   - `conversation.metadata.conversationDigests?: ConversationDigestEntry[]`
   - `conversation.metadata.conversationDigestState?: { lastDigestMessageId?, lastDigestAt?, lastAutoDigestAt?, pendingPublicMessageCount, pendingTokenEstimate, messageBudget?, highValueMinMessages?, signalFlags, lastTriggerReason?, lastFailure?, updatedAt }`
   - `signalFlags`: `{ decision, code, codeChange, fileArtifact, errorFix }`; `codeChange` is a strong high-value trigger, while `fileArtifact` is a weak diagnostic signal. `code` is retained as a compatibility alias for strong code-change signals.
-  - Entry shape: `{ id, kind, createdAt, updatedAt, createdBy, messageRange, summary, facts, decisions, openQuestions, nextActions, artifacts, experience?, triggerReason? }`
+  - New entry shape: `{ id, kind, createdAt, updatedAt, createdBy, messageRange, summary, facts, decisions, openQuestions, nextActions, artifacts, triggerReason? }`
   - `kind`: `'entry' | 'rollup'`; missing legacy values normalize to `'entry'`.
   - `messageRange`: `{ fromMessageId?, toMessageId?, messageCount }`
   - Rollup-only fields: `{ compactedAt, sourceDigestIds }`.
-  - `ExperienceDigestItem`: `{ sourceDraftId?, title, category, scenario, steps, pitfalls, validation, artifacts, confidence }`; bounded to 5 items, nested arrays bounded to 5, and text is clipped like other digest sections.
+  - Historical entries may still contain bounded `experience` items with `sourceDraftId`; deserialization preserves them for lossless reads, but new entries, rollups, prompts, summary-memory writes, and Skill extraction do not propagate or consume them.
 - Browser slash command:
   - `/digest` sends `{ action: 'create' }` and must not be persisted as a normal user message.
   - `/digest status|list|get` displays local digest status.
@@ -39,36 +39,36 @@
   - After a digest run settles, the chat timeline should replace the temporary running status with a persisted UI-only summary card for the latest updated digest or rollup; this card reads from retained digest metadata, is sorted by its digest timestamp in the message timeline, and is not stored as a chat message.
   - Digest cards may use `messageRange.fromMessageId` to offer a UI-only "locate first message" action; missing or no-longer-rendered source messages should show a toast instead of mutating digest metadata.
 - SSE status event:
-  - `conversation_digest_status` payload: `{ conversationId, status: 'running' | 'idle', reason?: string, phase?: string, pendingExperienceDraftCount?: number, message?: string, model?: { provider?: string, model?: string, thinking?: string, label?: string }, modelTrace?: { eventCount?: number, outputPreview?: string, thinkingPreview?: string, runId?: string, updatedAt?: string } }`.
+  - `conversation_digest_status` payload: `{ conversationId, status: 'running' | 'idle', reason?: string, phase?: string, message?: string, model?: { provider?: string, model?: string, thinking?: string, label?: string }, modelTrace?: { eventCount?: number, outputPreview?: string, thinkingPreview?: string, runId?: string, updatedAt?: string } }`.
 
 ### 3. Contracts
 - Store digest entries under `conversation.metadata.conversationDigests`; do not add a dedicated table until search or cross-conversation merge requires it.
 - Keep controllers thin: route parsing belongs in `server/api/conversations-controller.ts`; normalization, bounded retention, creation, compaction, deletion, and prompt formatting belong in `server/domain/conversation/conversation-digest.ts`.
 - `create` reads public messages from `store.listMessages(conversationId)` and creates one structured digest `entry`; model mode asks the configured cheap model for JSON, while extractive mode uses the deterministic classifier.
-- When pending `conversation.metadata.experienceDrafts` exist, create/auto-create adds up to 5 bounded `ExperienceDigestItem` projections to the digest input, stores them under `digest.experience`, and marks the projected source drafts `absorbed` with `absorbedDigestId` after the digest metadata write succeeds. Extra pending drafts remain pending for a later digest instead of being silently marked absorbed.
-- Auto-create runs from `createServerApp` after completed assistant messages. The completed assistant message is broadcast first so the browser can show the full reply, then the assistant-completion hook is awaited without an application timeout before Feishu delivery and any same-turn handoff routing continue. Digest counting uses only public messages after the latest digest `messageRange.toMessageId`, falls back to the digest timestamp if that covered message id is no longer present, updates `conversationDigestState` only when the lightweight waterline state materially changes, and does nothing until the configured message budget is reached, enabled strong high-value signals reach their minimum message count, or pending experience drafts exist with at least one new public source message.
-- High-value triggering is conservative: `decision`, `codeChange`, or `errorFix` may bypass the message budget when enabled; weak `fileArtifact` matches such as file paths, extensions, `配置`, or `测试` update state/UI only and must not trigger auto-create by themselves. Pending `write-experience` drafts are treated as explicit reusable evidence and may trigger the next auto-created digest below the normal message budget; this pending-experience trigger bypasses idle/cooldown gates so the awaited assistant-completion hook can absorb the draft before chat routing continues.
+- Historical `conversation.metadata.experienceDrafts` and `digest.experience` are inert compatibility data. Digest creation never projects, absorbs, rejects, or deletes them; their stored status and ids remain unchanged.
+- Auto-create runs from `createServerApp` after completed assistant messages. The completed assistant message is broadcast first, then the assistant-completion hook applies only the normal message-budget/high-value/idle/cooldown policy. Historical pending experience drafts do not bypass any gate or block same-turn routing.
+- High-value triggering is conservative: `decision`, `codeChange`, or `errorFix` may bypass the message budget when enabled; weak `fileArtifact` matches such as file paths, extensions, `配置`, or `测试` update state/UI only and must not trigger auto-create by themselves.
 - Deterministic extractive digests must not classify all assistant text as facts. `facts` are limited to user-stated facts and verified implementation/test/result statements; unconfirmed assistant speculation/proposals go to `openQuestions` or `nextActions` instead.
 - After manual `create` or auto-create, the domain automatically compacts old detailed entries when the recent-entry budget is exceeded.
 - Compaction keeps at most one `rollup` plus the bounded recent `entry` set; existing rollups are merged forward instead of accumulating multiple rollups.
 - When compaction removes old metadata entries, their searchable summary-memory segments are deleted so cross-conversation memory search sees the retained rollup plus recent entries, not stale compacted entries.
 - Model mode also applies to rollup creation, so `/digest compact model` can merge older summaries semantically; model failure logs a warning and falls back to deterministic rollup.
-- Rollups may carry bounded `experience` only when source entries already contain experience items; compaction must not invent reusable lessons from unsupported summary text.
+- Rollups contain only summary plus the five normal structured arrays. Historical `experience` on source entries is never copied into a new rollup.
 - `compact` manually compacts older detailed entries while preserving the latest detailed entry for recency.
 - `delete` removes exactly one digest by id; deleting a rollup is allowed and does not delete recent entries.
 - `clear` removes the whole metadata key when no digests remain.
 - Prompt assembly injects a `Current Conversation Digest / 当前聊天室摘要:` section before recent raw conversation history, with rollup first and recent entries after it. The section is current-conversation continuity context, not instructions or long-term memory.
-- Prompt formatting shows `Experience:` before normal digest sections so reusable lessons are visible while preserving raw recent messages as the conflict winner.
+- Prompt formatting includes summary, decisions, facts, open questions, next actions, and artifacts only. Historical `experience` remains API-readable but is omitted from Agent prompts.
 - Prompt text must explicitly state that recent raw messages override digest content.
 - Frontend slash handling must intercept `/digest...` before optimistic user-message rendering so slash commands do not pollute history.
 - The panel and slash command must call the same `/digest` API path; do not introduce a second local-only persistence path.
 - `POST` mutations should broadcast `conversation_digest_updated` or `conversation_digest_deleted` plus `conversation_summary_updated` so other clients refresh; auto-create state-only updates can broadcast `conversation_digest_updated` with `digest: null` only when `stateChanged` is true, so updatedAt-only checks and retry polls do not refresh panels unnecessarily.
-- When an auto-create run starts with pending experience drafts, broadcast `conversation_digest_status` with `status: 'running'` before digest generation and `status: 'idle'` after the run settles. Model-mode digest/rollup generation may also broadcast bounded `model` and `modelTrace` previews while the pi run emits events; previews are transient SSE/UI diagnostics, not stored digest evidence. The browser should show this in the composer status and as a compact temporary timeline card while routing is waiting for digest absorption.
+- Model-mode digest/rollup generation may broadcast bounded `conversation_digest_status` model/modelTrace previews while pi emits events. No pending-experience absorption status exists.
 - Keep retention and text bounded: one rollup, default 3 recent entries, prompt latest 3 entries plus rollup, auto-create default 24 new public messages, model prompt latest 80 public messages, and section item/summary clipping in the domain helper.
 - Keep `conversationDigestState` lightweight: store only waterline metadata, counts, token estimates, trigger flags, timestamps, and short failure strings; never store raw message content in the state object.
 - Model digest and rollup prompts require exactly one `submit_conversation_digest` call. The assistant body must contain no visible prose, Markdown, code fence, or hand-written JSON; missing evidence uses empty arrays in the tool arguments.
 - Direct model generation passes exactly one schema-only tool in `Context.tools` and portable `toolChoice: 'auto'`. The tool has no execute handler and is never registered with an Agent, extension, chat bridge, shell, filesystem, or network boundary; its arguments are a provider-serialized return envelope only.
-- The strict local schema requires `summary`, `facts`, `decisions`, `openQuestions`, `nextActions`, `artifacts`, and `experience`. `summary` is a non-empty bounded string; the five main sections are bounded string arrays; `experience` is a bounded array of complete structured experience items. Unknown fields and type coercion are rejected.
+- The strict local schema requires exactly `summary`, `facts`, `decisions`, `openQuestions`, `nextActions`, and `artifacts`. `summary` is a non-empty bounded string and the five sections are bounded string arrays. Unknown fields, including legacy `experience`, and type coercion are rejected.
 - Every direct system-model request sends an explicit generation budget equal to the resolved provider model's positive `maxTokens`; a missing model value uses the Pi custom-provider default `16384`. The old feature-local JSON Mode default `4096` and `CAFF_DIGEST_JSON_MODE_MAX_TOKENS` override are not part of the runtime contract.
 - Direct submission parsing ignores `thinking`/`reasoning` blocks, but requires exactly one `toolCall` block with the expected name and no visible body text. Zero/multiple calls, a wrong tool, plain-text JSON/prose, malformed arguments, missing/unknown fields, or a non-object argument payload are `invalid_output` and never reach digest metadata.
 - If a direct DeepSeek digest model such as `provider: 'deepseek'`, `model: 'deepseek-v4-flash'` is not present in the pi-ai registry, the digest runner may construct a bounded OpenAI-compatible model object from `.pi-sandbox/models.json`, including `baseUrl`, model compat, and API key, then call it with the same schema-only submission tool and local validation contract.
@@ -92,7 +92,7 @@
 | `GET /digest` | conversation exists without digests | `200`, `digests: []`, `digest: null`, `deleted: false`, `compacted: false` |
 | `POST /digest create` | no public messages to summarize | `400 No public conversation messages are available to digest` |
 | `POST /digest create` | public messages exist below compaction budget | `200`, appends one `entry` under `metadata.conversationDigests`, `compacted: false` |
-| `POST /digest create` | pending experience drafts exist | `200`, stores bounded `digest.experience`, marks source drafts `absorbed`, and records `absorbedDigestId` |
+| Historical `experienceDrafts` or `digest.experience` exists | Preserve on read; new digest contains neither field and historical draft status is unchanged |
 | `POST /digest create` | `summaryMode: 'model'` with one valid `submit_conversation_digest` call | `200`, stores model-generated summary/sections and `createdBy: model:<provider>/<model>` |
 | `POST /digest create|compact` | body contains `provider`, `model`, or `thinking` | `400 conversation_digest_model_override_not_allowed`; no model call or digest mutation |
 | model digest/rollup/title call | persisted `recovery_scribe` row exists with `enabled=false` | use its `provider/model/thinking`; recovery remains disabled, digest execution remains enabled with digest/title timeout |
@@ -107,10 +107,10 @@
 | injected/legacy model runner | output likely misses an escape before an inner `"` and repair retry returns valid JSON | `200`, stores repaired model digest and logs the missing-escape diagnostic |
 | injected/legacy model runner | call fails, returns invalid JSON without a repairable diagnostic, or repair remains invalid | `200`, logs warning and stores extractive fallback digest |
 | Auto-create helper | `CAFF_DIGEST_AUTO_CREATE` disabled | no mutation, `autoCreated: false`, `reason: disabled` |
-| Auto-create helper | enabled but new public messages below budget, no high-value trigger, and no pending experience draft | updates `conversationDigestState` when counts/signals/config changed, `autoCreated: false`, `reason: below_budget` |
+| Auto-create helper | enabled but new public messages below budget and no strong high-value trigger | updates `conversationDigestState` when counts/signals/config changed, `autoCreated: false`, `reason: below_budget`; historical pending experience does not change the result |
 | Auto-create helper | enabled and budget/high-value trigger is reached but idle window has not elapsed | updates `conversationDigestState` when counts/signals/config changed, `autoCreated: false`, `reason: idle_wait`, `retryAfterMs > 0` |
 | Auto-create helper | enabled and trigger is reached but cooldown has not elapsed since the last auto digest | updates `conversationDigestState` when counts/signals/config changed, `autoCreated: false`, `reason: cooldown`, `retryAfterMs > 0` |
-| Auto-create helper | enabled and new public messages reach budget, strong high-value trigger, or a pending experience draft with a new public source message exists | stores one `entry`, `autoCreated: true`, then applies normal compaction; pending-experience triggers report `triggerReason: pending_experience` |
+| Auto-create helper | enabled and new public messages reach budget or a strong high-value trigger | stores one `entry`, `autoCreated: true`, then applies normal compaction |
 | Auto-create helper | enabled high-value gate sees only weak file/artifact mentions below budget | updates `conversationDigestState.signalFlags.fileArtifact`, returns `autoCreated: false`, `reason: below_budget` |
 | `POST /digest create` | detailed entries exceed recent-entry budget | `200`, stores one `rollup` plus recent `entry` digests, deletes obsolete entry summary-memory segments, `compacted: true` |
 | `POST /digest compact` | fewer than two detailed entries | `200`, no mutation, `compacted: false` |
@@ -123,9 +123,9 @@
 
 ### 5. Good / Base / Bad Cases
 - Good: `/digest` creates a structured entry and refreshes conversation summaries without creating a visible user message.
-- Good: a pending `write-experience` draft becomes `digest.experience` once and is marked absorbed so later digests do not duplicate it.
+- Good: an old conversation with `experienceDrafts` and `digest.experience` loads without mutation while the next digest/rollup uses only the six current fields.
 - Good: `/digest model` or `POST { action: 'create', summaryMode: 'model' }` uses the configured model to write the structured digest JSON.
-- Good: with auto-create enabled, completed assistant replies broadcast their full final message first, then synchronously create a digest before handoff routing after enough new public messages accumulate, after enough strong high-value messages appear when high-value triggering is enabled, or after a pending experience draft exists with new public source material.
+- Good: with auto-create enabled, completed assistant replies can create a digest after enough new public messages accumulate or after enough strong high-value messages appear when high-value triggering is enabled.
 - Good: creating enough detailed entries automatically produces a rollup instead of dropping old digest memory.
 - Good: `/digest compact` and the panel compact button use the same API action; successful compaction shows a compacted status, while no-op compaction tells the user there are no older entries to compact.
 - Good: prompt includes rollup historical context before recent digest entries and explicitly prioritizes raw recent messages for conflicts.
@@ -134,7 +134,7 @@
 - Base: deterministic rollup remains the safety fallback; model rollup improves semantic merge but is not evidence search.
 - Bad: auto-generating digests on every turn, because low-quality summaries can silently pollute future prompts and create unnecessary model calls.
 - Bad: treating an assistant suggestion like `I think maybe we should edit file.ts` as a durable `facts` item.
-- Bad: copying raw tool output or full logs into `digest.experience`; experience must remain bounded reusable lesson metadata.
+- Bad: copying historical `digest.experience` into a new entry, rollup, model prompt, or manual Skill draft.
 - Bad: letting weak file-path/config/test mentions alone bypass the message budget through `high_value_signal`.
 - Bad: mixing digest results into `search-messages` before provenance and ranking are designed.
 - Bad: persisting `/digest` as a normal chat message, because it pollutes source messages and can trigger agents.
@@ -152,9 +152,9 @@
   - Auto-create a model-mode digest after the message budget and assert it does not retrigger or mark `stateChanged` until more public messages or state fields change.
   - Create an injected/legacy model digest where the first text response has an unescaped inner double quote, assert a second prompt includes the missing-escape diagnostic and bounded invalid output, and assert valid repair output stores a model-created digest.
   - Create a model-mode digest with a runner that throws or returns invalid JSON and assert the request succeeds with extractive fallback metadata and invalid-output diagnostics.
-  - Assert auto-create idle windows, cooldowns, high-value signal gates, pending-experience triggers, and pending-experience status broadcasts update `conversationDigestState` and trigger only when eligible, including weak `fileArtifact` signals that do not auto-create below budget.
+  - Assert auto-create idle windows, cooldowns, and high-value signal gates update `conversationDigestState` and trigger only when eligible, including weak `fileArtifact` signals and historical pending experience that do not auto-create below budget.
   - Assert deterministic extractive digests keep assistant speculation out of `facts` while preserving user facts, verified results, artifacts, and unresolved proposals.
-  - Assert pending `experienceDrafts` are projected into `digest.experience`, marked `absorbed`, and not reabsorbed into later digest entries.
+  - Assert historical `experienceDrafts` stay unchanged and historical `digest.experience` is readable but omitted from new entries, rollups, tool schemas, and prompt formatting.
   - Assert auto-create falls back to digest timestamps instead of re-summarizing all messages when the latest covered message id is missing.
   - Auto-create enough digests to trigger automatic rollup and assert one `rollup` plus recent `entry` digests, with compacted entry segments removed from summary-memory search.
   - Manually compact with `{ action: 'compact' }` and assert rollup metadata plus stale entry segment cleanup.

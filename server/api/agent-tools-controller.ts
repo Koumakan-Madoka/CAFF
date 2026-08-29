@@ -161,12 +161,6 @@ export function createAgentToolsController(options: any = {}): RouteHandler<ApiC
       return true;
     }
 
-    if (pathname === '/api/agent-tools/experience/write' && req.method === 'POST') {
-      const body = await readRequestJson(req);
-      sendJson(res, 200, agentToolBridge.handleWriteExperience(body));
-      return true;
-    }
-
     if (pathname === '/api/agent-tools/propose-plan' && req.method === 'POST') {
       const body = await readRequestJson(req);
       sendJson(res, 200, agentToolBridge.handleProposePlan(body));

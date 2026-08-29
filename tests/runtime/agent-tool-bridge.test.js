@@ -87,6 +87,7 @@ test('agent tool bridge projects bounded private handoff dispatch without echoin
   });
   const fullConversation = store.getConversation(conversation.id);
   const bridge = createAgentToolBridge({ store });
+  assert.equal(bridge.handleWriteExperience, undefined);
   let enqueueCallCount = 0;
   const enqueueInputs = [];
   const context = bridge.registerInvocation(
@@ -243,139 +244,6 @@ test('agent tool bridge rejects stale invocations after a turn stops or complete
       }),
     (error) => error && error.statusCode === 409
   );
-});
-
-test('agent tool bridge writes one bounded pending experience draft per turn', (t) => {
-  const tempDir = withTempDir('caff-agent-tool-experience-');
-  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
-  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
-  const broadcastEvents = [];
-  const bridge = createAgentToolBridge({
-    store,
-    broadcastEvent(eventName, payload) {
-      broadcastEvents.push({ eventName, payload });
-    },
-  });
-
-  t.after(() => {
-    try {
-      store.close();
-    } catch {}
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  const fixture = createPublicInvocationFixture(store, 'experience');
-  const context = bridge.registerInvocation(
-    bridge.createInvocationContext({
-      conversationId: fixture.conversation.id,
-      turnId: fixture.assistantMessage.turnId,
-      agentId: fixture.agent.id,
-      agentName: fixture.agent.name,
-      assistantMessageId: fixture.assistantMessage.id,
-      conversationAgents: fixture.conversation.agents,
-      stage: fixture.stage,
-      turnState: fixture.turnState,
-    })
-  );
-
-  const result = bridge.handleWriteExperience({
-    invocationId: context.invocationId,
-    callbackToken: context.callbackToken,
-    title: 'Reuse model-backed digest drafts safely',
-    category: 'pattern',
-    scenario: 'When digest-to-skill extraction needs a reusable lesson discovered during tool use.',
-    steps: ['Write a pending experience draft before the final public reply.'],
-    validation: ['node --test tests/runtime/agent-tool-bridge.test.js'],
-    artifacts: ['server/domain/conversation/experience-draft.ts'],
-    confidence: 'high',
-    source: { agentId: 'spoofed-agent' },
-  });
-
-  assert.equal(result.ok, true);
-  assert.equal(result.draft.status, 'pending');
-  assert.equal(result.draft.source.agentId, fixture.agent.id);
-  assert.equal(result.draft.source.turnId, fixture.assistantMessage.turnId);
-  assert.equal(result.draft.source.agentId === 'spoofed-agent', false);
-
-  const storedDrafts = store.getConversation(fixture.conversation.id).metadata.experienceDrafts;
-  assert.equal(storedDrafts.length, 1);
-  assert.equal(storedDrafts[0].title, 'Reuse model-backed digest drafts safely');
-  assert.equal(broadcastEvents.some((event) => event.eventName === 'conversation_experience_draft_updated'), true);
-
-  assert.throws(
-    () => bridge.handleWriteExperience({
-      invocationId: context.invocationId,
-      callbackToken: context.callbackToken,
-      title: 'Second draft from same turn',
-      scenario: 'This should be rejected because the same turn already wrote one draft.',
-    }),
-    (error) => error && error.statusCode === 409
-  );
-});
-
-test('agent tool bridge rejects unsafe experience drafts', (t) => {
-  const tempDir = withTempDir('caff-agent-tool-experience-secret-');
-  const sqlitePath = path.join(tempDir, 'bridge.sqlite');
-  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
-  const bridge = createAgentToolBridge({ store });
-
-  t.after(() => {
-    try {
-      store.close();
-    } catch {}
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  const fixture = createPublicInvocationFixture(store, 'experience-secret');
-  const context = bridge.registerInvocation(
-    bridge.createInvocationContext({
-      conversationId: fixture.conversation.id,
-      turnId: fixture.assistantMessage.turnId,
-      agentId: fixture.agent.id,
-      agentName: fixture.agent.name,
-      assistantMessageId: fixture.assistantMessage.id,
-      conversationAgents: fixture.conversation.agents,
-      stage: fixture.stage,
-      turnState: fixture.turnState,
-    })
-  );
-
-  assert.throws(
-    () => bridge.handleWriteExperience({
-      invocationId: context.invocationId,
-      callbackToken: context.callbackToken,
-      title: '',
-      category: 'other',
-    }),
-    (error) =>
-      error &&
-      error.statusCode === 400 &&
-      /title is required/u.test(error.message) &&
-      Array.isArray(error.issues) &&
-      error.issues.some((issue) => issue && issue.field === 'title')
-  );
-
-  assert.throws(
-    () => bridge.handleWriteExperience({
-      invocationId: context.invocationId,
-      callbackToken: context.callbackToken,
-      title: 'Store leaked token handling',
-      scenario: 'The api token abc123 should be remembered for later use.',
-    }),
-    (error) => error && error.statusCode === 400 && /secrets|tokens/u.test(error.message)
-  );
-
-  assert.throws(
-    () => bridge.handleWriteExperience({
-      invocationId: context.invocationId,
-      callbackToken: context.callbackToken,
-      title: 'Store leaked authorization header handling',
-      scenario: 'Authorization Bearer abc123 should never be stored as reusable experience.',
-    }),
-    (error) => error && error.statusCode === 400 && /secrets|tokens/u.test(error.message)
-  );
-
-  assert.equal(store.getConversation(fixture.conversation.id).metadata.experienceDrafts, undefined);
 });
 
 test('agent tool bridge creates pending session goal proposals without mutating the goal', (t) => {

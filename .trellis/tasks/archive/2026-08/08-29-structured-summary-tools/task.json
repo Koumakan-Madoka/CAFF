@@ -3,7 +3,7 @@
   "name": "structured-summary-tools",
   "title": "Structured Tool Output for Digests and Recovery Scribe",
   "description": "Use schema-only provider tool calls for conversation digest and recovery scribe structured output.",
-  "status": "review",
+  "status": "completed",
   "dev_type": "backend",
   "scope": "server/domain/conversation and focused backend/runtime tests",
   "package": null,
@@ -11,7 +11,7 @@
   "creator": "GPT",
   "assignee": "GPT",
   "createdAt": "2026-08-29",
-  "completedAt": null,
+  "completedAt": "2026-08-29",
   "branch": "room/523e9df5-caff",
   "base_branch": "develop",
   "worktree_path": "E:\\pythonproject\\worktrees\\room\\523e9df5-caff",
@@ -34,8 +34,8 @@
       "action": "create-pr"
     }
   ],
-  "commit": null,
-  "pr_url": null,
+  "commit": "ab8fb5a8ff7c592673d73bdbca10ed25c03eabc3",
+  "pr_url": "https://github.com/Koumakan-Madoka/CAFF/pull/120",
   "subtasks": [],
   "children": [],
   "parent": null,
@@ -46,6 +46,6 @@
     "tests/smoke/server-smoke.test.js",
     "tests/runtime/message-recovery.test.js"
   ],
-  "notes": "User confirmed option 1A and Goal mode. Direct provider calls submit through non-executed schema tools; deterministic/mechanical fallbacks remain authoritative. Check, typecheck, build, smoke 76/76, message-recovery 26/26, and focused runtime 40/40 pass. test:fast reached turn-orchestrator with 102/104 assertions passing; only the two known Windows fs.rmSync EPERM after-hook cleanup failures stopped later suites.",
+  "notes": "Merged through PR #120 as merge commit c7af574817dc92f474a14c7b87a9eb79081e77bc after Kimi independently reviewed exact candidate ab8fb5a8ff7c592673d73bdbca10ed25c03eabc3 and returned APPROVE with no findings. Check, typecheck, build, smoke 76/76, message-recovery 26/26, focused runtime 40/40, and both GitHub Actions unit checks passed. test:fast reached turn-orchestrator with 102/104 assertions passing; only the two known Windows fs.rmSync EPERM after-hook cleanup failures stopped later suites.",
   "meta": {}
 }

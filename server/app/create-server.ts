@@ -56,8 +56,6 @@ const {
   createCrossConversationDeliveryService,
   createCrossConversationDeliveryWorker,
 } = require('../domain/conversation/cross-conversation-delivery');
-const { getPendingConversationExperienceDrafts } = require('../domain/conversation/experience-draft');
-const { maybeAutoCreateConversationSkillDraft } = require('../domain/conversation/skill-draft');
 const { pickConversationSummary } = require('../domain/conversation/conversation-view');
 const { createAgentToolBridge } = require('../domain/runtime/agent-tool-bridge');
 const { createDagScheduler } = require('../domain/dag/dag-scheduler');
@@ -508,20 +506,7 @@ export function createServerApp(options: any = {}) {
       };
     }
 
-    const conversationBeforeDigest = store.getConversation(conversationId);
-    const pendingExperienceDraftCount = getPendingConversationExperienceDrafts(conversationBeforeDigest).length;
-    const shouldAnnounceExperienceDigest = pendingExperienceDraftCount > 0;
-    let shouldClearDigestStatus = shouldAnnounceExperienceDigest;
-
-    if (shouldAnnounceExperienceDigest) {
-      broadcastEvent('conversation_digest_status', {
-        conversationId,
-        status: 'running',
-        reason: 'pending_experience',
-        pendingExperienceDraftCount,
-        message: '正在整理本轮经验，并写入会话摘要…',
-      });
-    }
+    let shouldClearDigestStatus = false;
 
     try {
       const result = await maybeAutoCreateConversationDigest(store, conversationId, {
@@ -534,7 +519,6 @@ export function createServerApp(options: any = {}) {
             reason: progress && progress.reason ? progress.reason : 'model_digest',
             phase: progress && progress.phase ? progress.phase : '',
             message: progress && progress.message ? progress.message : '会话摘要模型正在生成…',
-            pendingExperienceDraftCount,
             model: progress && progress.model ? progress.model : null,
             modelTrace: progress && progress.modelTrace ? progress.modelTrace : null,
           });
@@ -551,27 +535,6 @@ export function createServerApp(options: any = {}) {
 
       let latestConversation = store.getConversation(conversationId) || result.conversation;
       let summary = pickConversationSummary(latestConversation);
-
-      if (result.autoCreated && result.digest && result.digest.id) {
-        const draftResult = await maybeAutoCreateConversationSkillDraft(store, conversationId, {
-          digestId: result.digest.id,
-          trigger: result.triggerReason || 'auto-digest',
-        }, skillDraftOptions);
-
-        if (draftResult && draftResult.changed) {
-          latestConversation = store.getConversation(conversationId) || draftResult.conversation || latestConversation;
-          summary = pickConversationSummary(latestConversation);
-          broadcastEvent('conversation_skill_draft_updated', {
-            conversationId,
-            draft: draftResult.draft,
-            skillDrafts: draftResult.skillDrafts,
-            autoCreated: Boolean(draftResult.autoCreated),
-            reason: draftResult.reason,
-            conversation: latestConversation,
-            summary,
-          });
-        }
-      }
 
       broadcastEvent('conversation_digest_updated', {
         conversationId,
@@ -606,7 +569,7 @@ export function createServerApp(options: any = {}) {
         broadcastEvent('conversation_digest_status', {
           conversationId,
           status: 'idle',
-          reason: shouldAnnounceExperienceDigest ? 'pending_experience' : 'model_digest',
+          reason: 'model_digest',
         });
       }
 

@@ -1,0 +1,13 @@
+{"file": ".agents/skills/finish-work/SKILL.md", "reason": "Finish work checklist"}
+{"file": ".agents/skills/check/SKILL.md", "reason": "Code quality check spec"}
+{"file": ".trellis/spec/backend/conversation-digest.md", "reason": "Verify digest contract retirement"}
+{"file": ".trellis/spec/runtime/agent-runtime.md", "reason": "Verify mirrored Agent tool removal"}
+{"file": ".trellis/spec/runtime/skill-extraction.md", "reason": "Verify manual-only Skill flow"}
+{"file": ".trellis/spec/unit-test/runtime-tests.md", "reason": "Verify focused regression evidence"}
+{"file":"package.json","reason":"npm run check, npm run typecheck, and npm run build passed after the retirement changes."}
+{"file":"tests/smoke/server-smoke.test.js","reason":"npm run test:smoke passed 68/68 plus mode-store 4/4; covers six-field submission, retired legacy-field rejection, inert historical pending drafts, rollup omission, no auto-Skill hook, and manual extraction."}
+{"file":"tests/runtime/agent-chat-tools.test.js","reason":"Agent CLI/bridge focused suites passed 52/52; retired write-experience fails before HTTP and bridge exposes no handler."}
+{"file":"tests/runtime/turn-orchestrator.test.js","reason":"Full suite reached 102/104 with all 102 business assertions passing; only the two repository-known Windows fs.rmSync EPERM after-hooks failed. Prompt omits write-experience and historical digest experience."}
+{"file":"tests/runtime/agent-executor-hook.test.js","reason":"Combined Agent executor hook and PI model config validation passed 17/17; direct digest remains non-Agent and runtime prompt/tool wiring did not regress."}
+{"file":"package.json","reason":"npm run test:fast advanced through all suites before turn-orchestrator with no new failure, then stopped at the same two Windows fs.rmSync EPERM after-hooks; later affected Agent hook/chat-tool suites were run separately and passed."}
+{"file":"scripts/p1-metrics-sse/synthetic-seed.js","reason":"Synthetic metrics fixture syntax passed after replacing the retired tool sample."}

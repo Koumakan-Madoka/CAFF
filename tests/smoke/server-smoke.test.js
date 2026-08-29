@@ -16,7 +16,6 @@ const {
   createCrossConversationDeliveryService,
 } = require('../../build/server/domain/conversation/cross-conversation-delivery');
 const { maybeAutoCreateConversationDigest } = require('../../build/server/domain/conversation/conversation-digest');
-const { maybeAutoCreateConversationSkillDraft } = require('../../build/server/domain/conversation/skill-draft');
 const { createRoleService } = require('../../build/server/domain/roles/role-service');
 
 const { isolateExternalIntegrations } = require('../helpers/external-integrations');
@@ -1506,655 +1505,6 @@ test('conversation digest auto-creates model summaries after the message budget'
   assert.equal(repeatedResult.pendingMessageCount, 0);
 });
 
-test('auto skill draft model review can reject and records a stable skip', async (t) => {
-  const tempDir = withTempDir('caff-auto-skill-draft-review-reject-');
-  const sqlitePath = path.join(tempDir, 'chat.sqlite');
-  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
-
-  t.after(() => {
-    try {
-      store.close();
-    } catch {}
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  const conversation = createSmokeConversation(store, {
-    id: 'auto-skill-draft-review-reject-conversation',
-    title: 'Auto Skill Draft Review Reject Conversation',
-    metadata: {
-      conversationDigests: [
-        {
-          id: 'digest-auto-skill-draft-review-reject',
-          kind: 'entry',
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          summary: 'A routine status update should not become a reusable skill draft.',
-          facts: ['The user acknowledged the current status.'],
-          decisions: [],
-          openQuestions: [],
-          nextActions: [],
-          artifacts: ['server/domain/conversation/skill-draft.ts'],
-          experience: [
-            {
-              sourceDraftId: 'expdraft-review-reject',
-              title: 'Reject weak source-backed experience',
-              category: 'other',
-              scenario: 'When a pending experience draft turns out to describe a one-off status update.',
-              steps: ['Ask the auto-review model to reject one-off updates.'],
-              pitfalls: [],
-              validation: [],
-              artifacts: ['server/domain/conversation/skill-draft.ts'],
-              confidence: 'medium',
-            },
-          ],
-        },
-      ],
-      experienceDrafts: [
-        {
-          id: 'expdraft-review-reject',
-          status: 'absorbed',
-          title: 'Reject weak source-backed experience',
-          category: 'other',
-          scenario: 'When a pending experience draft turns out to describe a one-off status update.',
-          steps: ['Ask the auto-review model to reject one-off updates.'],
-          pitfalls: [],
-          validation: [],
-          artifacts: ['server/domain/conversation/skill-draft.ts'],
-          confidence: 'medium',
-          source: { type: 'agent-tool', agentId: 'agent-review' },
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          absorbedAt: new Date().toISOString(),
-          absorbedDigestId: 'digest-auto-skill-draft-review-reject',
-        },
-      ],
-    },
-  });
-  let modelCalls = 0;
-
-  const reviewResult = await maybeAutoCreateConversationSkillDraft(store, conversation.id, {
-    digestId: 'digest-auto-skill-draft-review-reject',
-    trigger: 'message_budget',
-  }, {
-    autoCreate: true,
-    generationMode: 'model',
-    skillDraftModelRunner: async () => {
-      modelCalls += 1;
-      return {
-        shouldCreateSkill: false,
-        reason: 'Only a one-off status update with no reusable workflow.',
-        skill: null,
-      };
-    },
-  });
-
-  assert.equal(reviewResult.autoCreated, false);
-  assert.equal(reviewResult.reason, 'review_rejected');
-  assert.equal(reviewResult.changed, true);
-  assert.equal(modelCalls, 1);
-  assert.equal(store.getConversation(conversation.id).metadata.skillDrafts, undefined);
-  assert.equal(store.getConversation(conversation.id).metadata.skillDraftAutoReviews.length, 1);
-  assert.equal(store.getConversation(conversation.id).metadata.skillDraftAutoReviews[0].status, 'rejected');
-  assert.match(store.getConversation(conversation.id).metadata.skillDraftAutoReviews[0].reason, /one-off status/u);
-
-  const duplicateReviewResult = await maybeAutoCreateConversationSkillDraft(store, conversation.id, {
-    digestId: 'digest-auto-skill-draft-review-reject',
-    trigger: 'message_budget',
-  }, {
-    autoCreate: true,
-    generationMode: 'model',
-    skillDraftModelRunner: async () => {
-      modelCalls += 1;
-      return {
-        shouldCreateSkill: true,
-        reason: 'This should not be called again for the same digest.',
-        skill: {
-          id: 'unexpected-review-retry',
-          name: 'Unexpected Review Retry',
-          description: 'This draft should not be created after a stable rejection.',
-          whenToUse: ['Never.'],
-          steps: ['Never.'],
-          pitfalls: [],
-          validation: [],
-          artifacts: [],
-          confidence: 0.9,
-        },
-      };
-    },
-  });
-
-  assert.equal(duplicateReviewResult.autoCreated, false);
-  assert.equal(duplicateReviewResult.reason, 'review_rejected');
-  assert.equal(duplicateReviewResult.changed, false);
-  assert.equal(modelCalls, 1);
-  assert.equal(store.getConversation(conversation.id).metadata.skillDrafts, undefined);
-});
-
-test('auto skill draft model review skips missing decisions instead of approving implicitly', async (t) => {
-  const tempDir = withTempDir('caff-auto-skill-draft-review-missing-decision-');
-  const sqlitePath = path.join(tempDir, 'chat.sqlite');
-  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
-
-  t.after(() => {
-    try {
-      store.close();
-    } catch {}
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  const conversation = createSmokeConversation(store, {
-    id: 'auto-skill-draft-review-missing-decision-conversation',
-    title: 'Auto Skill Draft Review Missing Decision Conversation',
-    metadata: {
-      conversationDigests: [
-        {
-          id: 'digest-auto-skill-draft-review-missing-decision',
-          kind: 'entry',
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          summary: 'A model response without an explicit review decision must not auto-create a skill draft.',
-          facts: ['The digest has enough fields to reach model review.'],
-          decisions: ['Skill draft automation must require explicit approval before creating pending drafts.'],
-          openQuestions: [],
-          nextActions: ['Review the model response.'],
-          artifacts: ['server/domain/conversation/skill-draft.ts'],
-          experience: [
-            {
-              sourceDraftId: 'expdraft-missing-decision',
-              title: 'Require explicit auto-review decisions',
-              category: 'pattern',
-              scenario: 'When a source-backed experience reaches automatic Skill draft model review.',
-              steps: ['Require shouldCreateSkill=true before storing a pending draft.'],
-              pitfalls: [],
-              validation: ['Missing shouldCreateSkill is treated as skipped.'],
-              artifacts: ['server/domain/conversation/skill-draft.ts'],
-              confidence: 'high',
-            },
-          ],
-        },
-      ],
-      experienceDrafts: [
-        {
-          id: 'expdraft-missing-decision',
-          status: 'absorbed',
-          title: 'Require explicit auto-review decisions',
-          category: 'pattern',
-          scenario: 'When a source-backed experience reaches automatic Skill draft model review.',
-          steps: ['Require shouldCreateSkill=true before storing a pending draft.'],
-          pitfalls: [],
-          validation: ['Missing shouldCreateSkill is treated as skipped.'],
-          artifacts: ['server/domain/conversation/skill-draft.ts'],
-          confidence: 'high',
-          source: { type: 'agent-tool', agentId: 'agent-review' },
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          absorbedAt: new Date().toISOString(),
-          absorbedDigestId: 'digest-auto-skill-draft-review-missing-decision',
-        },
-      ],
-    },
-  });
-
-  const reviewResult = await maybeAutoCreateConversationSkillDraft(store, conversation.id, {
-    digestId: 'digest-auto-skill-draft-review-missing-decision',
-    trigger: 'message_budget',
-  }, {
-    autoCreate: true,
-    generationMode: 'model',
-    skillDraftModelRunner: async () => ({
-      reason: 'The model forgot to return shouldCreateSkill.',
-      skill: {
-        id: 'implicit-auto-approval',
-        name: 'Implicit Auto Approval',
-        description: 'This draft must not be created without an explicit model decision.',
-        whenToUse: ['Never auto-create from implicit approval.'],
-        steps: ['Require shouldCreateSkill=true.'],
-        pitfalls: [],
-        validation: [],
-        artifacts: ['server/domain/conversation/skill-draft.ts'],
-        confidence: 0.9,
-      },
-    }),
-  });
-
-  const updatedConversation = store.getConversation(conversation.id);
-  assert.equal(reviewResult.autoCreated, false);
-  assert.equal(reviewResult.reason, 'review_missing_decision');
-  assert.equal(reviewResult.changed, true);
-  assert.equal(updatedConversation.metadata.skillDrafts, undefined);
-  assert.equal(updatedConversation.metadata.skillDraftAutoReviews.length, 1);
-  assert.equal(updatedConversation.metadata.skillDraftAutoReviews[0].status, 'skipped');
-  assert.equal(updatedConversation.metadata.skillDraftAutoReviews[0].reasonCode, 'review_missing_decision');
-});
-
-test('auto skill draft model review creates drafts only after approval', async (t) => {
-  const tempDir = withTempDir('caff-auto-skill-draft-review-create-');
-  const sqlitePath = path.join(tempDir, 'chat.sqlite');
-  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
-  const modelCalls = [];
-
-  t.after(() => {
-    try {
-      store.close();
-    } catch {}
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  const conversation = createSmokeConversation(store, {
-    id: 'auto-skill-draft-review-create-conversation',
-    title: 'Auto Skill Draft Review Create Conversation',
-    metadata: {
-      conversationDigests: [
-        {
-          id: 'digest-auto-skill-draft-review-create',
-          kind: 'entry',
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          summary: 'A repeatable workflow was validated and should become a pending skill draft.',
-          facts: ['Auto-created drafts remain pending until human confirmation.'],
-          decisions: ['Generated Skill files must be confirmed by a user before writing to .agents/skills.'],
-          openQuestions: [],
-          nextActions: ['Review the draft before confirming it.'],
-          artifacts: ['server/domain/conversation/skill-draft.ts'],
-          experience: [
-            {
-              sourceDraftId: 'expdraft-review-create',
-              title: 'Create pending drafts from reviewed experience',
-              category: 'pattern',
-              scenario: 'When a write-experience draft captures a repeatable validated CAFF workflow.',
-              steps: ['Review source-backed digest experience before creating a pending Skill draft.'],
-              pitfalls: ['Do not write Skill files before human confirmation.'],
-              validation: ['The draft remains pending in conversation metadata.'],
-              artifacts: ['server/domain/conversation/skill-draft.ts'],
-              confidence: 'high',
-            },
-          ],
-        },
-      ],
-      experienceDrafts: [
-        {
-          id: 'expdraft-review-create',
-          status: 'absorbed',
-          title: 'Create pending drafts from reviewed experience',
-          category: 'pattern',
-          scenario: 'When a write-experience draft captures a repeatable validated CAFF workflow.',
-          steps: ['Review source-backed digest experience before creating a pending Skill draft.'],
-          pitfalls: ['Do not write Skill files before human confirmation.'],
-          validation: ['The draft remains pending in conversation metadata.'],
-          artifacts: ['server/domain/conversation/skill-draft.ts'],
-          confidence: 'high',
-          source: { type: 'agent-tool', agentId: 'agent-review' },
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          absorbedAt: new Date().toISOString(),
-          absorbedDigestId: 'digest-auto-skill-draft-review-create',
-        },
-      ],
-    },
-  });
-
-  const draftResult = await maybeAutoCreateConversationSkillDraft(store, conversation.id, {
-    digestId: 'digest-auto-skill-draft-review-create',
-    trigger: 'message_budget',
-  }, {
-    autoCreate: true,
-    generationMode: 'model',
-    skillDraftModelRunner: async (context) => {
-      modelCalls.push(context);
-      return {
-        shouldCreateSkill: true,
-        reason: 'The digest contains a repeatable confirmation guardrail.',
-        skill: {
-          id: 'reviewed-auto-skill-draft',
-          name: 'Reviewed Auto Skill Draft',
-          description: 'Create pending Skill drafts only after reusable evidence is reviewed.',
-          whenToUse: ['Use when digest evidence describes a repeatable CAFF workflow.'],
-          steps: ['Check reusable decisions before creating a pending draft.'],
-          pitfalls: ['Do not write files before human confirmation.'],
-          validation: ['Assert the draft remains pending in conversation metadata.'],
-          artifacts: ['server/domain/conversation/skill-draft.ts'],
-          confidence: 0.86,
-        },
-      };
-    },
-  });
-
-  assert.equal(draftResult.autoCreated, true);
-  assert.equal(draftResult.reason, 'created');
-  assert.equal(modelCalls.length, 1);
-  assert.match(modelCalls[0].prompt, /shouldCreateSkill/u);
-  assert.equal(draftResult.draft.skill.id, 'reviewed-auto-skill-draft');
-  assert.match(draftResult.draft.skill.body, /Model confidence: 0\.86/u);
-  assert.equal(store.getConversation(conversation.id).metadata.skillDraftAutoReviews, undefined);
-});
-
-test('auto skill draft rules skip weak reusable signals without model approval', async (t) => {
-  const tempDir = withTempDir('caff-auto-skill-draft-weak-rules-');
-  const sqlitePath = path.join(tempDir, 'chat.sqlite');
-  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
-
-  t.after(() => {
-    try {
-      store.close();
-    } catch {}
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  const conversation = createSmokeConversation(store, {
-    id: 'auto-skill-draft-weak-rules-conversation',
-    title: 'Auto Skill Draft Weak Rules Conversation',
-    metadata: {
-      conversationDigests: [
-        {
-          id: 'digest-auto-skill-draft-weak-rules',
-          kind: 'entry',
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          summary: 'A digest with only generic facts should not be auto-converted by rule fallback.',
-          facts: ['A file was mentioned during the conversation.'],
-          decisions: [],
-          openQuestions: [],
-          nextActions: [],
-          artifacts: ['README.md'],
-        },
-      ],
-    },
-  });
-
-  const result = await maybeAutoCreateConversationSkillDraft(store, conversation.id, {
-    digestId: 'digest-auto-skill-draft-weak-rules',
-    trigger: 'message_budget',
-  }, {
-    autoCreate: true,
-    generationMode: 'rules',
-  });
-
-  assert.equal(result.autoCreated, false);
-  assert.equal(result.reason, 'weak_reusable_signal');
-  assert.equal(result.changed, true);
-  assert.equal(store.getConversation(conversation.id).metadata.skillDrafts, undefined);
-  assert.equal(store.getConversation(conversation.id).metadata.skillDraftAutoReviews.length, 1);
-  assert.equal(store.getConversation(conversation.id).metadata.skillDraftAutoReviews[0].status, 'skipped');
-});
-
-test('auto skill draft model review skips digests without source-backed experience', async (t) => {
-  const tempDir = withTempDir('caff-auto-skill-draft-no-source-experience-');
-  const sqlitePath = path.join(tempDir, 'chat.sqlite');
-  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
-  let modelCalls = 0;
-
-  t.after(() => {
-    try {
-      store.close();
-    } catch {}
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  const conversation = createSmokeConversation(store, {
-    id: 'auto-skill-draft-no-source-experience-conversation',
-    title: 'Auto Skill Draft No Source Experience Conversation',
-    metadata: {
-      conversationDigests: [
-        {
-          id: 'digest-auto-skill-draft-no-source-experience',
-          kind: 'entry',
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          summary: 'A digest has facts and decisions but no write-experience-backed experience.',
-          facts: ['A generic digest fact exists.'],
-          decisions: ['Generated Skill drafts still require human confirmation.'],
-          openQuestions: [],
-          nextActions: ['Review the generic digest.'],
-          artifacts: ['server/domain/conversation/skill-draft.ts'],
-        },
-      ],
-    },
-  });
-
-  const result = await maybeAutoCreateConversationSkillDraft(store, conversation.id, {
-    digestId: 'digest-auto-skill-draft-no-source-experience',
-    trigger: 'message_budget',
-  }, {
-    autoCreate: true,
-    generationMode: 'model',
-    skillDraftModelRunner: async () => {
-      modelCalls += 1;
-      return {
-        shouldCreateSkill: true,
-        reason: 'This should not be called without source-backed experience.',
-        skill: {
-          id: 'unexpected-no-source-experience',
-          name: 'Unexpected No Source Experience',
-          description: 'This draft should not be auto-created.',
-          whenToUse: ['Never.'],
-          steps: ['Never.'],
-          pitfalls: [],
-          validation: [],
-          artifacts: [],
-          confidence: 0.9,
-        },
-      };
-    },
-  });
-
-  assert.equal(result.autoCreated, false);
-  assert.equal(result.reason, 'weak_reusable_signal');
-  assert.equal(result.changed, true);
-  assert.equal(modelCalls, 0);
-  assert.equal(store.getConversation(conversation.id).metadata.skillDrafts, undefined);
-  assert.equal(store.getConversation(conversation.id).metadata.skillDraftAutoReviews[0].status, 'skipped');
-});
-
-test('auto skill draft review creates pending drafts from auto-created digests', async (t) => {
-  const tempDir = withTempDir('caff-auto-skill-draft-');
-  const sqlitePath = path.join(tempDir, 'chat.sqlite');
-  const store = createChatAppStore({ agentDir: tempDir, sqlitePath });
-
-  t.after(() => {
-    try {
-      store.close();
-    } catch {}
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  const conversation = createSmokeConversation(store, {
-    id: 'auto-skill-draft-conversation',
-    title: 'Auto Skill Draft Conversation',
-    metadata: {
-      experienceDrafts: [
-        {
-          id: 'expdraft-auto-skill-draft-source',
-          status: 'pending',
-          title: 'Auto-create Skill drafts from source experience',
-          category: 'pattern',
-          scenario: 'When an agent writes a reusable experience draft before auto digest creation.',
-          steps: ['Absorb the pending experience into digest.experience before auto-reviewing Skill drafts.'],
-          pitfalls: ['Do not create drafts from ordinary digest facts alone.'],
-          validation: ['Auto-created Skill draft remains pending for human confirmation.'],
-          artifacts: ['server/domain/conversation/skill-draft.ts'],
-          confidence: 'high',
-          source: { type: 'agent-tool', agentId: 'agent-experience' },
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        },
-      ],
-    },
-  });
-
-  for (let index = 1; index <= 2; index += 1) {
-    store.createMessage({
-      id: `auto-skill-draft-message-${index}`,
-      conversationId: conversation.id,
-      turnId: 'auto-skill-draft-turn',
-      role: index % 2 === 0 ? 'assistant' : 'user',
-      senderName: index % 2 === 0 ? 'Builder' : 'User',
-      content: `经验复用消息 ${index}：决定把 digest 提炼成 pending skill draft，并保留人工确认。`,
-    });
-  }
-
-  const digestResult = await maybeAutoCreateConversationDigest(store, conversation.id, {
-    autoCreate: true,
-    autoCreateMessageBudget: 2,
-    autoCreateIdleMs: 0,
-    autoCreateCooldownMs: 0,
-    autoCreateHighValue: false,
-    summaryMode: 'model',
-    digestModelRunner: async () => ({
-      summary: '自动复盘发现可复用经验：摘要可以提炼为 skill 草稿。',
-      facts: ['自动复盘只能创建 pending draft，不能直接启用 skill。'],
-      decisions: ['用户确认后才写入 .agents/skills。'],
-      openQuestions: ['是否要把候选提升成正式 skill 仍需人工判断。'],
-      nextActions: ['预览草稿并由用户确认或拒绝。'],
-      artifacts: ['server/domain/conversation/skill-draft.ts'],
-      experience: [
-        {
-          sourceDraftId: 'expdraft-auto-skill-draft-source',
-          title: 'Auto-create Skill drafts from source experience',
-          category: 'pattern',
-          scenario: 'When an agent writes a reusable experience draft before auto digest creation.',
-          steps: ['Absorb the pending experience into digest.experience before auto-reviewing Skill drafts.'],
-          pitfalls: ['Do not create drafts from ordinary digest facts alone.'],
-          validation: ['Auto-created Skill draft remains pending for human confirmation.'],
-          artifacts: ['server/domain/conversation/skill-draft.ts'],
-          confidence: 'high',
-        },
-      ],
-    }),
-  });
-
-  assert.equal(digestResult.autoCreated, true);
-
-  const disabledResult = await maybeAutoCreateConversationSkillDraft(store, conversation.id, {
-    digestId: digestResult.digest.id,
-    trigger: digestResult.triggerReason,
-  }, {
-    autoCreate: false,
-  });
-
-  assert.equal(disabledResult.autoCreated, false);
-  assert.equal(disabledResult.reason, 'disabled');
-  assert.equal(store.getConversation(conversation.id).metadata.skillDrafts, undefined);
-
-  const draftResult = await maybeAutoCreateConversationSkillDraft(store, conversation.id, {
-    digestId: digestResult.digest.id,
-    trigger: digestResult.triggerReason,
-  }, {
-    autoCreate: true,
-    generationMode: 'rules',
-  });
-
-  assert.equal(draftResult.autoCreated, true);
-  assert.equal(draftResult.reason, 'created');
-  assert.equal(draftResult.draft.status, 'pending');
-  assert.equal(draftResult.draft.source.digestId, digestResult.digest.id);
-  assert.equal(draftResult.draft.source.trigger, 'message_budget');
-  assert.equal(draftResult.draft.source.createdBy, 'system:auto-skill-draft');
-  assert.equal(draftResult.draft.source.autoCreated, true);
-  assert.match(draftResult.draft.skill.body, /Limits \/ Unconfirmed Points/u);
-  assert.match(draftResult.draft.skill.body, /是否要把候选提升成正式 skill/u);
-  assert.equal(store.getConversation(conversation.id).metadata.skillDrafts.length, 1);
-
-  const duplicateResult = await maybeAutoCreateConversationSkillDraft(store, conversation.id, {
-    digestId: digestResult.digest.id,
-    trigger: digestResult.triggerReason,
-  }, {
-    autoCreate: true,
-  });
-
-  assert.equal(duplicateResult.autoCreated, false);
-  assert.equal(duplicateResult.reason, 'already_pending');
-  assert.equal(store.getConversation(conversation.id).metadata.skillDrafts.length, 1);
-});
-
-test('create server auto-digest status announces pending experience absorption', async (t) => {
-  const tempDir = withTempDir('caff-auto-digest-status-');
-  const sqlitePath = path.join(tempDir, 'chat.sqlite');
-  const broadcastEvents = [];
-  const app = createServerApp({
-    host: '127.0.0.1',
-    port: 0,
-    agentDir: tempDir,
-    sqlitePath,
-    projectDir: tempDir,
-    digestOptions: {
-      autoCreate: true,
-      autoCreateMessageBudget: 24,
-      autoCreateIdleMs: 0,
-      autoCreateCooldownMs: 0,
-      autoCreateHighValue: false,
-      summaryMode: 'extractive',
-    },
-    onBroadcastEvent(eventName, payload) {
-      broadcastEvents.push({ eventName, payload });
-    },
-  });
-
-  t.after(() => {
-    try {
-      app.store.close();
-    } catch {}
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  const conversation = createSmokeConversation(app.store, {
-    id: 'auto-digest-status-conversation',
-    title: 'Auto Digest Status Conversation',
-    metadata: {
-      experienceDrafts: [
-        {
-          id: 'expdraft-auto-digest-status',
-          status: 'pending',
-          title: 'Await digest absorption before routing',
-          category: 'decision',
-          scenario: 'When an agent writes pending experience before its final public reply.',
-          steps: ['Broadcast a compact status while the awaited digest hook runs.'],
-          pitfalls: [],
-          validation: ['node --test tests/smoke/server-smoke.test.js passed'],
-          artifacts: ['server/app/create-server.ts'],
-          confidence: 'high',
-          source: {
-            type: 'agent-tool',
-            conversationId: 'auto-digest-status-conversation',
-            agentId: 'agent-status',
-            turnId: 'turn-status',
-          },
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        },
-      ],
-    },
-  });
-
-  app.store.createMessage({
-    id: 'auto-digest-status-message-1',
-    conversationId: conversation.id,
-    turnId: 'auto-digest-status-turn',
-    role: 'assistant',
-    senderName: 'Builder',
-    content: '已验证 pending experience 需要在同轮路由前被摘要吸收。'
-  });
-
-  await app.runMaybeAutoCreateDigest(conversation.id);
-
-  const eventNames = broadcastEvents.map((event) => event.eventName);
-  const runningStatusIndex = broadcastEvents.findIndex(
-    (event) => event.eventName === 'conversation_digest_status' && event.payload.status === 'running'
-  );
-  const digestEventIndex = eventNames.indexOf('conversation_digest_updated');
-  const idleStatusIndex = broadcastEvents.findIndex(
-    (event) => event.eventName === 'conversation_digest_status' && event.payload.status === 'idle'
-  );
-
-  assert.notEqual(runningStatusIndex, -1);
-  assert.notEqual(digestEventIndex, -1);
-  assert.notEqual(idleStatusIndex, -1);
-  assert.ok(runningStatusIndex < digestEventIndex);
-  assert.ok(digestEventIndex < idleStatusIndex);
-  assert.equal(broadcastEvents[runningStatusIndex].payload.reason, 'pending_experience');
-  assert.equal(broadcastEvents[runningStatusIndex].payload.pendingExperienceDraftCount, 1);
-  assert.equal(app.store.getConversation(conversation.id).metadata.experienceDrafts[0].status, 'absorbed');
-});
-
 test('create server auto-digest status exposes model progress trace', async (t) => {
   const tempDir = withTempDir('caff-auto-digest-model-progress-');
   const sqlitePath = path.join(tempDir, 'chat.sqlite');
@@ -2172,6 +1522,12 @@ test('create server auto-digest status exposes model progress trace', async (t) 
       autoCreateCooldownMs: 0,
       autoCreateHighValue: false,
       summaryMode: 'model',
+    },
+    skillDraftOptions: {
+      autoCreate: true,
+      skillDraftModelRunner() {
+        throw new Error('automatic Skill draft generation is retired');
+      },
     },
     digestModelRunner: async ({ onModelProgress }) => {
       onModelProgress({
@@ -2240,112 +1596,8 @@ test('create server auto-digest status exposes model progress trace', async (t) 
   assert.equal(broadcastEvents[progressStatusIndex].payload.model.label, 'fake/digest-model');
   assert.equal(broadcastEvents[progressStatusIndex].payload.modelTrace.thinkingPreview, '先识别事实，再输出 JSON。');
   assert.match(broadcastEvents[progressStatusIndex].payload.modelTrace.outputPreview, /summary/u);
-});
-
-test('create server auto-digest hook broadcasts auto skill draft updates', async (t) => {
-  const tempDir = withTempDir('caff-auto-skill-draft-hook-');
-  const sqlitePath = path.join(tempDir, 'chat.sqlite');
-  const broadcastEvents = [];
-  const app = createServerApp({
-    host: '127.0.0.1',
-    port: 0,
-    agentDir: tempDir,
-    sqlitePath,
-    projectDir: tempDir,
-    digestOptions: {
-      autoCreate: true,
-      autoCreateMessageBudget: 2,
-      autoCreateIdleMs: 0,
-      autoCreateCooldownMs: 0,
-      autoCreateHighValue: false,
-      summaryMode: 'model',
-    },
-    skillDraftOptions: {
-      autoCreate: true,
-      generationMode: 'rules',
-    },
-    digestModelRunner: async () => ({
-      summary: '自动摘要 hook 发现可复用经验。',
-      facts: ['自动摘要 hook 应该创建 pending skill draft。'],
-      decisions: ['必须先广播 skill draft 更新，再广播 digest 更新。'],
-      openQuestions: [],
-      nextActions: ['观察 SSE 事件并确认草稿仍需人工确认。'],
-      artifacts: ['server/app/create-server.ts'],
-      experience: [
-        {
-          sourceDraftId: 'expdraft-auto-skill-draft-hook-source',
-          title: 'Hook creates drafts from source experience',
-          category: 'pattern',
-          scenario: 'When the create-server auto-digest hook absorbs a write-experience draft.',
-          steps: ['Broadcast the pending Skill draft update before the digest update.'],
-          pitfalls: ['Do not broadcast Skill drafts for ordinary auto digests without source experience.'],
-          validation: ['SSE events show skill draft update before digest update.'],
-          artifacts: ['server/app/create-server.ts'],
-          confidence: 'high',
-        },
-      ],
-    }),
-    onBroadcastEvent(eventName, payload) {
-      broadcastEvents.push({ eventName, payload });
-    },
-  });
-
-  t.after(() => {
-    try {
-      app.store.close();
-    } catch {}
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  const conversation = createSmokeConversation(app.store, {
-    id: 'auto-skill-draft-hook-conversation',
-    title: 'Auto Skill Draft Hook Conversation',
-    metadata: {
-      experienceDrafts: [
-        {
-          id: 'expdraft-auto-skill-draft-hook-source',
-          status: 'pending',
-          title: 'Hook creates drafts from source experience',
-          category: 'pattern',
-          scenario: 'When the create-server auto-digest hook absorbs a write-experience draft.',
-          steps: ['Broadcast the pending Skill draft update before the digest update.'],
-          pitfalls: ['Do not broadcast Skill drafts for ordinary auto digests without source experience.'],
-          validation: ['SSE events show skill draft update before digest update.'],
-          artifacts: ['server/app/create-server.ts'],
-          confidence: 'high',
-          source: { type: 'agent-tool', agentId: 'agent-experience' },
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        },
-      ],
-    },
-  });
-
-  for (const index of [1, 2]) {
-    app.store.createMessage({
-      id: `auto-skill-draft-hook-message-${index}`,
-      conversationId: conversation.id,
-      turnId: `auto-skill-draft-hook-turn-${index}`,
-      role: index === 1 ? 'user' : 'assistant',
-      senderName: index === 1 ? 'User' : 'Builder',
-      content: `自动摘要 hook 消息 ${index}：提炼经验草稿但不自动启用 skill。`,
-    });
-  }
-
-  await app.runMaybeAutoCreateDigest(conversation.id);
-
-  const eventNames = broadcastEvents.map((event) => event.eventName);
-  const skillDraftEventIndex = eventNames.indexOf('conversation_skill_draft_updated');
-  const digestEventIndex = eventNames.indexOf('conversation_digest_updated');
-  assert.notEqual(skillDraftEventIndex, -1);
-  assert.notEqual(digestEventIndex, -1);
-  assert.ok(skillDraftEventIndex < digestEventIndex);
-
-  const skillDraftEvent = broadcastEvents[skillDraftEventIndex];
-  assert.equal(skillDraftEvent.payload.autoCreated, true);
-  assert.equal(skillDraftEvent.payload.reason, 'created');
-  assert.equal(skillDraftEvent.payload.draft.source.autoCreated, true);
-  assert.equal(app.store.getConversation(conversation.id).metadata.skillDrafts.length, 1);
+  assert.equal(broadcastEvents.some((event) => event.eventName === 'conversation_skill_draft_updated'), false);
+  assert.equal(app.store.getConversation(conversation.id).metadata.skillDrafts, undefined);
 });
 
 test('conversation digest auto-create falls back to digest timestamps when covered messages are missing', async (t) => {
@@ -2655,12 +1907,11 @@ test('conversation digest auto-create respects idle, cooldown, and high-value ga
     summaryMode: 'extractive',
   });
 
-  assert.equal(experienceResult.autoCreated, true);
-  assert.equal(experienceResult.triggerReason, 'pending_experience');
-  assert.equal(experienceResult.digest.messageRange.messageCount, 1);
-  assert.equal(experienceResult.digest.experience.length, 1);
-  assert.equal(experienceResult.digest.experience[0].sourceDraftId, 'expdraft-auto-create-source');
-  assert.equal(store.getConversation(experienceConversation.id).metadata.experienceDrafts[0].status, 'absorbed');
+  assert.equal(experienceResult.autoCreated, false);
+  assert.equal(experienceResult.reason, 'below_budget');
+  assert.equal(experienceResult.pendingMessageCount, 1);
+  assert.equal(experienceResult.digest, null);
+  assert.equal(store.getConversation(experienceConversation.id).metadata.experienceDrafts[0].status, 'pending');
 });
 
 test('conversation digest auto-create feeds existing auto-compaction', async (t) => {
@@ -2840,8 +2091,7 @@ test('conversations controller accepts one validated digest submission tool call
             decisions: ['工具决策：服务端校验提交参数。'],
             openQuestions: [],
             nextActions: ['继续验证非法调用回退。'],
-            artifacts: ['server/domain/conversation/conversation-digest.ts'],
-            experience: []
+            artifacts: ['server/domain/conversation/conversation-digest.ts']
           }
         }],
         stopReason: 'toolUse',
@@ -2885,6 +2135,7 @@ test('conversations controller accepts one validated digest submission tool call
   assert.match(calls[0].systemPrompt, /submit_conversation_digest/u);
   assert.equal(result.json.digest.summary, '工具摘要：provider 通过参数提交结构化结果。');
   assert.equal(result.json.digest.createdBy, 'model:cheap-provider/cheap-model');
+  assert.equal(Object.prototype.hasOwnProperty.call(result.json.digest, 'experience'), false);
 });
 
 test('conversations controller rejects plain-text JSON instead of treating it as a digest submission', async (t) => {
@@ -2996,7 +2247,6 @@ test('conversations controller ignores thinking blocks around one valid digest t
               openQuestions: [],
               nextActions: [],
               artifacts: ['server/domain/conversation/conversation-digest.ts'],
-              experience: []
             }
           }
         ],
@@ -3074,7 +2324,6 @@ test('conversations controller falls back when a digest tool submission is missi
             decisions: [],
             nextActions: [],
             artifacts: [],
-            experience: []
           }
         }],
         stopReason: 'toolUse',
@@ -3199,7 +2448,6 @@ test('conversations controller rejects wrong, multiple, and mixed-body digest su
     openQuestions: [],
     nextActions: [],
     artifacts: [],
-    experience: [],
   };
   const cases = [
     {
@@ -3219,6 +2467,21 @@ test('conversations controller rejects wrong, multiple, and mixed-body digest su
         name: 'submit_conversation_digest',
         arguments: validArguments,
       })),
+    },
+    {
+      label: 'legacy experience field',
+      content: [{
+        type: 'toolCall',
+        id: 'legacy-experience-digest-tool',
+        name: 'submit_conversation_digest',
+        arguments: {
+          ...validArguments,
+          experience: [{
+            sourceDraftId: 'model-must-not-return-internal-id',
+            title: 'retired field',
+          }],
+        },
+      }],
     },
     {
       label: 'visible text with call',
@@ -3330,7 +2593,6 @@ test('conversations controller retries a thinking-only digest tool call once wit
               openQuestions: [],
               nextActions: [],
               artifacts: [],
-              experience: []
             }
           }],
           stopReason: 'toolUse',
@@ -3527,7 +2789,6 @@ test('conversations controller builds a direct DeepSeek digest model from models
             openQuestions: [],
             nextActions: [],
             artifacts: ['server/domain/conversation/conversation-digest.ts'],
-            experience: []
           }
         }],
         stopReason: 'toolUse',
@@ -3616,7 +2877,6 @@ test('conversations controller retries model digests with missing-escape diagnos
         openQuestions: [],
         nextActions: [],
         artifacts: [],
-        experience: [],
       });
     },
   });
@@ -3814,6 +3074,25 @@ test('conversations controller manually compacts digest entries', async (t) => {
     });
   }
 
+  const beforeCompact = store.getConversation(conversation.id);
+  const historicalDigests = beforeCompact.metadata.conversationDigests.map((digest, index) => index === 0
+    ? {
+        ...digest,
+        experience: [{
+          sourceDraftId: 'legacy-rollup-source',
+          title: 'LEGACY_ROLLUP_EXPERIENCE',
+          scenario: 'Historical compatibility only.',
+        }],
+      }
+    : digest);
+  store.updateConversation(conversation.id, {
+    type: beforeCompact.type,
+    metadata: {
+      ...beforeCompact.metadata,
+      conversationDigests: historicalDigests,
+    },
+  });
+
   assert.equal(store.searchSummarySegments({ query: 'ManualCompactUnique1', sourceKind: 'entry' }).resultCount, 1);
 
   const compactResult = await invokeConversationsController(handler, {
@@ -3828,6 +3107,7 @@ test('conversations controller manually compacts digest entries', async (t) => {
   assert.equal(compactResult.json.digests[0].kind, 'rollup');
   assert.equal(compactResult.json.digests[1].kind, 'entry');
   assert.equal(compactResult.json.rollup.sourceDigestIds.length, 1);
+  assert.equal(Object.prototype.hasOwnProperty.call(compactResult.json.rollup, 'experience'), false);
   assert.equal(store.searchSummarySegments({ query: 'ManualCompactUnique1', sourceKind: 'entry' }).resultCount, 0);
   assert.equal(store.searchSummarySegments({ query: 'ManualCompactUnique1', sourceKind: 'rollup' }).resultCount, 1);
   assert.equal(store.searchSummarySegments({ query: 'ManualCompactUnique2', sourceKind: 'entry' }).resultCount, 1);
@@ -3886,89 +3166,6 @@ test('conversations controller uses model-generated rollups when manual compact 
   assert.match(modelCalls[0].prompt, /Use empty arrays when evidence is missing/u);
   assert.equal(compactResult.json.rollup.summary, '模型 rollup：旧摘要已经合并成长期历史。');
   assert.ok(compactResult.json.rollup.createdBy.startsWith('model:auto-compaction:'));
-});
-
-test('conversations controller absorbs experience drafts into digest and skill drafts', async (t) => {
-  const { handler, store } = createConversationsControllerHarness(t);
-  const timestamp = new Date().toISOString();
-  const conversation = createSmokeConversation(store, {
-    id: 'experience-digest-conversation',
-    title: 'Experience Digest Conversation',
-    metadata: {
-      experienceDrafts: [
-        {
-          id: 'expdraft-digest-source',
-          status: 'pending',
-          title: 'Write experience before the final reply',
-          category: 'pattern',
-          scenario: 'When a reusable lesson appears during tool use and might be lost from the next agent invocation.',
-          steps: ['Call write-experience with bounded fields before posting the final answer.'],
-          pitfalls: ['Do not store raw tool transcripts or secrets.'],
-          validation: ['node --test tests/runtime/agent-tool-bridge.test.js passed'],
-          artifacts: ['server/domain/conversation/experience-draft.ts'],
-          confidence: 'high',
-          source: {
-            type: 'agent-tool',
-            agentId: 'agent-experience',
-            turnId: 'turn-experience',
-            conversationId: 'experience-digest-conversation',
-          },
-          createdAt: timestamp,
-          updatedAt: timestamp,
-        },
-      ],
-    },
-  });
-  store.createMessage({
-    id: 'experience-user-message',
-    conversationId: conversation.id,
-    role: 'user',
-    senderName: 'User',
-    content: '请把经验写入工具接进 digest 和 skill 草稿链路。',
-    status: 'completed',
-    createdAt: timestamp,
-  });
-  store.createMessage({
-    id: 'experience-assistant-message',
-    conversationId: conversation.id,
-    role: 'assistant',
-    senderName: '咕咕嘎嘎',
-    content: '已实现 write-experience 工具，并通过 runtime 测试。',
-    status: 'completed',
-    createdAt: timestamp,
-  });
-
-  const createResult = await invokeConversationsController(handler, {
-    method: 'POST',
-    pathname: `/api/conversations/${conversation.id}/digest`,
-    body: {
-      action: 'create',
-      summary: 'Experience drafts should be preserved inside conversation digest entries.',
-    },
-  });
-
-  assert.equal(createResult.statusCode, 200);
-  assert.equal(createResult.json.digest.experience.length, 1);
-  assert.equal(createResult.json.digest.experience[0].title, 'Write experience before the final reply');
-
-  const storedConversation = store.getConversation(conversation.id);
-  assert.equal(storedConversation.metadata.experienceDrafts[0].status, 'absorbed');
-  assert.equal(storedConversation.metadata.experienceDrafts[0].absorbedDigestId, createResult.json.digest.id);
-
-  const extractResult = await invokeConversationsController(handler, {
-    method: 'POST',
-    pathname: `/api/conversations/${conversation.id}/digest`,
-    body: {
-      action: 'extract-skill',
-      digestId: createResult.json.digest.id,
-      skillId: 'experience-backed-skill',
-    },
-  });
-
-  assert.equal(extractResult.statusCode, 200);
-  assert.match(extractResult.json.draft.skill.body, /Reusable Experience/u);
-  assert.match(extractResult.json.draft.skill.body, /Write experience before the final reply/u);
-  assert.match(extractResult.json.draft.skill.body, /Confidence: high/u);
 });
 
 test('conversations controller extracts and rejects skill drafts from digests', async (t) => {
@@ -4102,7 +3299,7 @@ test('conversations controller creates model-generated skill drafts from digest 
 
 test('conversations controller merges model skill drafts into existing project skills after confirmation', async (t) => {
   const projectDir = withTempDir('caff-skill-draft-merge-project-');
-  const existingSkillDir = path.join(projectDir, '.agents', 'skills', 'write-experience-workflow');
+  const existingSkillDir = path.join(projectDir, '.agents', 'skills', 'digest-skill-workflow');
   fs.mkdirSync(existingSkillDir, { recursive: true });
   fs.writeFileSync(path.join(existingSkillDir, 'SKILL.md'), [
     '---',
@@ -4126,8 +3323,8 @@ test('conversations controller merges model skill drafts into existing project s
       modelCalls.push(context);
       return {
         targetAction: 'update',
-        targetSkillId: 'write-experience-workflow',
-        targetReason: 'The absorbed experience extends the existing write-experience workflow.',
+        targetSkillId: 'digest-skill-workflow',
+        targetReason: 'The digest decisions extend the existing manual extraction workflow.',
         id: 'ignored-new-skill-id',
         name: 'Write Experience Workflow',
         description: 'Existing guidance for writing reusable experience drafts.',
@@ -4155,7 +3352,7 @@ test('conversations controller merges model skill drafts into existing project s
           kind: 'entry',
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
-          summary: 'A write-experience workflow improvement should merge into the existing Skill instead of creating a duplicate.',
+          summary: 'A digest extraction workflow improvement should merge into the existing Skill instead of creating a duplicate.',
           facts: ['Existing Skill content must be preserved when integrating new experience.'],
           decisions: ['Model-reviewed Skill drafts may target update when an existing project Skill clearly matches.'],
           openQuestions: [],
@@ -4179,11 +3376,11 @@ test('conversations controller merges model skill drafts into existing project s
   assert.equal(extractResult.statusCode, 200);
   assert.equal(modelCalls.length, 1);
   assert.match(modelCalls[0].prompt, /Existing project skills JSON/u);
-  assert.match(modelCalls[0].prompt, /write-experience-workflow/u);
-  assert.equal(modelCalls[0].existingSkills[0].id, 'write-experience-workflow');
+  assert.match(modelCalls[0].prompt, /digest-skill-workflow/u);
+  assert.equal(modelCalls[0].existingSkills[0].id, 'digest-skill-workflow');
   assert.equal(extractResult.json.draft.target.action, 'update');
-  assert.equal(extractResult.json.draft.target.skillId, 'write-experience-workflow');
-  assert.equal(extractResult.json.draft.skill.id, 'write-experience-workflow');
+  assert.equal(extractResult.json.draft.target.skillId, 'digest-skill-workflow');
+  assert.equal(extractResult.json.draft.skill.id, 'digest-skill-workflow');
   assert.match(extractResult.json.draft.skill.body, /Original guidance stays intact/u);
   assert.match(extractResult.json.draft.skill.body, /Validate merged Skill content keeps original guidance/u);
 
@@ -4194,7 +3391,7 @@ test('conversations controller merges model skill drafts into existing project s
   });
 
   assert.equal(confirmResult.statusCode, 200);
-  assert.equal(confirmResult.json.skill.id, 'write-experience-workflow');
+  assert.equal(confirmResult.json.skill.id, 'digest-skill-workflow');
   assert.equal(confirmResult.json.skill.targetAction, 'update');
   assert.equal(confirmResult.json.skillDrafts.length, 0);
 
@@ -4271,6 +3468,16 @@ test('conversations controller rejects skill extraction without reusable digest 
           openQuestions: ['Whether this should become a skill is unconfirmed.'],
           nextActions: [],
           artifacts: [],
+          experience: [{
+            sourceDraftId: 'legacy-skill-source',
+            title: 'Historical experience must remain inert',
+            scenario: 'This field existed before the pipeline was retired.',
+            steps: ['Do not use this as a current extraction signal.'],
+            pitfalls: [],
+            validation: [],
+            artifacts: [],
+            confidence: 'high',
+          }],
         },
       ],
     },

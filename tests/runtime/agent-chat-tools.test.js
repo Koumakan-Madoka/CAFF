@@ -6,6 +6,7 @@ const {
   conversationRequest,
   forgetMemory,
   formatCommandResult,
+  main,
   resolveMessageContent,
   searchMemory,
   searchMessages,
@@ -14,8 +15,32 @@ const {
   suggestGoal,
   updateGoalChecklist,
   updateMemory,
-  writeExperience,
 } = require('../../build/lib/agent-chat-tools');
+
+test('write-experience command is retired before any HTTP request', async (t) => {
+  const originalArgv = process.argv;
+  const originalInvocationId = process.env.CAFF_CHAT_INVOCATION_ID;
+  const originalCallbackToken = process.env.CAFF_CHAT_CALLBACK_TOKEN;
+  let fetchCalls = 0;
+
+  process.argv = ['node', 'agent-chat-tools.js', 'write-experience'];
+  process.env.CAFF_CHAT_INVOCATION_ID = 'retired-experience-invocation';
+  process.env.CAFF_CHAT_CALLBACK_TOKEN = 'retired-experience-token';
+  t.mock.method(global, 'fetch', async () => {
+    fetchCalls += 1;
+    throw new Error('retired command must not call fetch');
+  });
+  t.after(() => {
+    process.argv = originalArgv;
+    if (originalInvocationId === undefined) delete process.env.CAFF_CHAT_INVOCATION_ID;
+    else process.env.CAFF_CHAT_INVOCATION_ID = originalInvocationId;
+    if (originalCallbackToken === undefined) delete process.env.CAFF_CHAT_CALLBACK_TOKEN;
+    else process.env.CAFF_CHAT_CALLBACK_TOKEN = originalCallbackToken;
+  });
+
+  await assert.rejects(() => main(), /Unknown command/u);
+  assert.equal(fetchCalls, 0);
+});
 
 test('conversation notify and request CLI helpers call only the fixed Agent delivery routes', async (t) => {
   const requests = [];
@@ -321,89 +346,6 @@ test('search-memory forwards latest lookup without requiring a query', async (t)
     latest: true,
     limit: 2,
   });
-});
-
-test('write-experience forwards bounded draft payload', async (t) => {
-  let requestUrl = '';
-  let requestOptions = null;
-
-  t.mock.method(global, 'fetch', async (url, options) => {
-    requestUrl = String(url);
-    requestOptions = options;
-
-    return {
-      ok: true,
-      async text() {
-        return JSON.stringify({ ok: true, draft: { id: 'expdraft-test' } });
-      },
-    };
-  });
-
-  await writeExperience(
-    {
-      apiUrl: 'http://127.0.0.1:3100',
-      invocationId: 'inv-experience',
-      callbackToken: 'token-experience',
-    },
-    {
-      title: 'Record digest experience safely',
-      category: 'pattern',
-      scenario: 'When a reusable lesson appears during tool use.',
-      step: ['Call write-experience before the final reply.', 'Keep fields bounded.'],
-      pitfall: 'Do not store raw logs.',
-      limitation: 'Treat low-confidence drafts as review-only guidance.',
-      validation: 'npm run check passed',
-      artifact: 'server/domain/conversation/experience-draft.ts',
-      confidence: 'high',
-    }
-  );
-
-  assert.equal(requestUrl, 'http://127.0.0.1:3100/api/agent-tools/experience/write');
-  assert.equal(requestOptions.method, 'POST');
-  assert.deepEqual(JSON.parse(String(requestOptions.body)), {
-    invocationId: 'inv-experience',
-    callbackToken: 'token-experience',
-    title: 'Record digest experience safely',
-    category: 'pattern',
-    scenario: 'When a reusable lesson appears during tool use.',
-    confidence: 'high',
-    steps: ['Call write-experience before the final reply.', 'Keep fields bounded.'],
-    pitfalls: ['Do not store raw logs.', 'Treat low-confidence drafts as review-only guidance.'],
-    validation: ['npm run check passed'],
-    artifacts: ['server/domain/conversation/experience-draft.ts'],
-  });
-});
-
-test('write-experience surfaces field issues from failed responses', async (t) => {
-  t.mock.method(global, 'fetch', async () => ({
-    ok: false,
-    status: 400,
-    async text() {
-      return JSON.stringify({
-        error: 'Experience draft is invalid',
-        issues: [{ field: 'title', message: 'title is required' }],
-      });
-    },
-  }));
-
-  await assert.rejects(
-    () => writeExperience(
-      {
-        apiUrl: 'http://127.0.0.1:3100',
-        invocationId: 'inv-experience-invalid',
-        callbackToken: 'token-experience-invalid',
-      },
-      {
-        category: 'other',
-      }
-    ),
-    (error) =>
-      error &&
-      error.statusCode === 400 &&
-      /title is required/u.test(error.message) &&
-      Array.isArray(error.issues) &&
-      error.issues[0].field === 'title'
-  );
 });
 
 test('search-messages forwards speaker filters without requiring a query', async (t) => {
