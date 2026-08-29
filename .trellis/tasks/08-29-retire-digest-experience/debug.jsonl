@@ -1,1 +1,2 @@
 {"file": ".agents/skills/check/SKILL.md", "reason": "Code quality check spec"}
+{"file":"public/chat/message-timeline.js","reason":"Independent review of 7a3b2ff found low-severity pending-experience count/status wording dead code left behind after the pipeline retirement; root cause was incomplete cross-layer deletion, fixed with source-contract and SSE payload regressions."}

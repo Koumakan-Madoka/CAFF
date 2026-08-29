@@ -150,7 +150,7 @@
       const digestStatus = typeof digestStatusForConversation === 'function' ? digestStatusForConversation(conversation.id) : null;
 
       if (digestStatus && digestStatus.status === 'running') {
-        dom.composerStatus.textContent = digestStatus.message || '正在整理本轮经验，并写入 Room 摘要…';
+        dom.composerStatus.textContent = digestStatus.message || '会话摘要模型正在生成…';
       } else if ((activeTurn && activeTurn.stopRequested) || activeSlotStopRequested) {
         const stoppingCount = activeStages.filter((agent) => agent.status === 'running' || agent.status === 'terminating').length;
         dom.composerStatus.textContent = stoppingCount > 1

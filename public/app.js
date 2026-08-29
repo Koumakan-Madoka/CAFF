@@ -2610,8 +2610,7 @@ function applyConversationDigestStatus(payload) {
       status,
       reason: String(payload && payload.reason || ''),
       phase: String(payload && payload.phase || ''),
-      message: String(payload && payload.message || '正在整理本轮经验，并写入会话摘要…'),
-      pendingExperienceDraftCount: Math.max(0, Number(payload && payload.pendingExperienceDraftCount || 0)),
+      message: String(payload && payload.message || '会话摘要模型正在生成…'),
       model: model
         ? {
           provider: String(model.provider || ''),

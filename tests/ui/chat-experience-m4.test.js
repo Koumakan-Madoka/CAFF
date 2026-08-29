@@ -38,6 +38,8 @@ const STYLES = readPublic('styles.css');
 const APP_JS = readPublic('app.js');
 const CONVERSATION_LIST_JS = readPublic('chat/conversation-list.js');
 const CONNECTION_STATUS_JS = readPublic('chat/connection-status.js');
+const MESSAGE_TIMELINE_JS = readPublic('chat/message-timeline.js');
+const CONVERSATION_PANE_JS = readPublic('chat/conversation-pane.js');
 
 const M4_SECTION_START = STYLES.indexOf('CAFF-UI-M4 · Clowder-parity chat experience');
 const M4_STYLES = M4_SECTION_START > -1 ? STYLES.slice(M4_SECTION_START) : '';
@@ -68,6 +70,13 @@ test('M4: runtime/meta pills live inside drawer settings tab, header keeps conne
 
 test('M4: app.js keeps connection dot in sync with runtime status', () => {
   assert.match(APP_JS, /connection-dot/, 'app.js must reference #connection-dot');
+});
+
+test('M4: digest status UI has no pending-experience state or wording', () => {
+  const digestStatusSources = [APP_JS, MESSAGE_TIMELINE_JS, CONVERSATION_PANE_JS].join('\n');
+  assert.doesNotMatch(digestStatusSources, /pendingExperienceDraftCount/u);
+  assert.doesNotMatch(digestStatusSources, /整理本轮经验|经验草稿/u);
+  assert.match(digestStatusSources, /会话摘要模型正在生成/u);
 });
 
 test('M4: SSE transport failure overrides busy/ok dot until the stream reopens', () => {

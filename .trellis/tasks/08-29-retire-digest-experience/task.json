@@ -49,6 +49,6 @@
     "tests/smoke/server-smoke.test.js",
     "tests/runtime/turn-orchestrator.test.js"
   ],
-  "notes": "Complete retirement implemented with historical metadata retained as inert read compatibility. check/typecheck/build and smoke 68/68 plus mode-store 4/4 pass; focused CLI/bridge 52/52 and Agent hook/PI 17/17 pass. turn-orchestrator business assertions are 102/102; only two known Windows fs.rmSync EPERM after-hooks fail. test:fast stops at the same known hooks after earlier suites pass. Exact-SHA independent review remains pending. DAG worker lease repair remains a separate follow-up.",
+  "notes": "Complete retirement implemented with historical metadata retained as inert read compatibility. Initial review of 7a3b2ff requested one low-severity cleanup: pendingExperienceDraftCount and experience-specific digest status wording remained in the manual SSE/browser path. The revision adds red-first SSE/UI regressions, removes that state and wording, and passes check/typecheck/build, smoke 68/68 plus mode-store 4/4, and UI 16/16. Exact-SHA re-review remains pending. Earlier focused CLI/bridge 52/52 and Agent hook/PI 17/17 remain valid; turn-orchestrator business assertions were 102/102 with only two known Windows fs.rmSync EPERM after-hooks. DAG worker lease repair remains a separate follow-up.",
   "meta": {}
 }

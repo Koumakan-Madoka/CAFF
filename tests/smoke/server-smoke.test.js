@@ -1593,6 +1593,7 @@ test('create server auto-digest status exposes model progress trace', async (t) 
   assert.notEqual(idleStatusIndex, -1);
   assert.ok(progressStatusIndex < digestEventIndex);
   assert.ok(digestEventIndex < idleStatusIndex);
+  assert.equal(Object.hasOwn(broadcastEvents[progressStatusIndex].payload, 'pendingExperienceDraftCount'), false);
   assert.equal(broadcastEvents[progressStatusIndex].payload.model.label, 'fake/digest-model');
   assert.equal(broadcastEvents[progressStatusIndex].payload.modelTrace.thinkingPreview, '先识别事实，再输出 JSON。');
   assert.match(broadcastEvents[progressStatusIndex].payload.modelTrace.outputPreview, /summary/u);
@@ -2679,6 +2680,7 @@ test('conversations controller retries a thinking-only digest tool call once wit
   assert.notEqual(runningStatusIndex, -1);
   assert.notEqual(idleStatusIndex, -1);
   assert.ok(runningStatusIndex < idleStatusIndex);
+  assert.equal(Object.hasOwn(broadcastEvents[runningStatusIndex].payload, 'pendingExperienceDraftCount'), false);
   assert.match(broadcastEvents[runningStatusIndex].payload.message, /压缩历史摘要/u);
 });
 

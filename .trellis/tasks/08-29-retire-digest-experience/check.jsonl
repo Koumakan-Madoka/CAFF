@@ -11,3 +11,6 @@
 {"file":"tests/runtime/agent-executor-hook.test.js","reason":"Combined Agent executor hook and PI model config validation passed 17/17; direct digest remains non-Agent and runtime prompt/tool wiring did not regress."}
 {"file":"package.json","reason":"npm run test:fast advanced through all suites before turn-orchestrator with no new failure, then stopped at the same two Windows fs.rmSync EPERM after-hooks; later affected Agent hook/chat-tool suites were run separately and passed."}
 {"file":"scripts/p1-metrics-sse/synthetic-seed.js","reason":"Synthetic metrics fixture syntax passed after replacing the retired tool sample."}
+{"file":"tests/ui/chat-experience-m4.test.js","reason":"Independent review F1 red test failed on the retired pendingExperienceDraftCount/experience wording, then passed 16/16 after cleanup."}
+{"file":"tests/smoke/server-smoke.test.js","reason":"Post-review full npm run test:smoke passed 68/68 plus mode-store 4/4; both automatic and manual digest running payloads omit pendingExperienceDraftCount."}
+{"file":"package.json","reason":"Post-review npm run check, npm run typecheck, and npm run build passed; git diff --check and targeted legacy-symbol grep passed."}

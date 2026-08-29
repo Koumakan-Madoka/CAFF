@@ -717,7 +717,6 @@ export function createConversationsController(options: any = {}): RouteHandler<A
               reason: progress && progress.reason ? progress.reason : 'model_digest',
               phase: progress && progress.phase ? progress.phase : '',
               message: progress && progress.message ? progress.message : '会话摘要模型正在生成…',
-              pendingExperienceDraftCount: 0,
               model: progress && progress.model ? progress.model : null,
               modelTrace: progress && progress.modelTrace ? progress.modelTrace : null,
             });
