@@ -31,7 +31,7 @@ Converge CAFF's legacy process-document directories and stale Trellis task ledge
 
 - [x] The five legacy root process directories no longer exist in the current tree.
 - [x] Each condensed archive identifies source directories/files, final status, delivery commits, current truth sources, and Git-history recovery instructions.
-- [ ] `.trellis/tasks/` contains no stale historical tasks after this task is archived.
+- [x] `.trellis/tasks/` contains no stale historical tasks after this task is archived.
 - [x] Live docs, tests, and scripts have no links or runtime dependencies on the five removed root directories; governance and Git-history prose may still name them.
 - [x] Durable rules prohibit new root process-document directories and keep raw evidence under ignored temporary or CI artifact storage.
 - [x] Markdown links, JSON/JSONL syntax, repository reference sweeps, targeted tests, and applicable project checks pass.
