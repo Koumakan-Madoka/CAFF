@@ -24,7 +24,7 @@ All source bytes remain in Git history. Exact recovery uses `git log --all -- <p
 | `07-28-f002-pi-sdk-host-migration` | SDK-host review request and F002 quality gate | `6e6af44`, closure `b9f3ddf` | `docs/features/F002-pi-sdk-host-migration.md`, runtime spec |
 | `07-29-caff-ui-m4` | M4 discussion tree, measurements, screenshots, Clowder-experience spec | `7a73aad` | frontend spec, M4 code/tests |
 | `07-29-main-reconciliation` | Main reconciliation plan/review | `7a73aad`, truth sync `77d7211` | Git history plus M4/model-family archives |
-| `08-03-model-family-roles` | Model-family discussions/specs, 15 review packets, evidence/media, reflection | `4bbc260`, closure `454f828` | model-provider/runtime/frontend specs and tests |
+| `08-03-model-family-roles` | Model-family discussions/specs, 14 review packets, evidence/media, reflection | `4bbc260`, closure `454f828`, follow-up `9fc0a62` | model-provider/runtime/frontend specs and tests |
 | `08-04-orphan-pr-reconciliation` | Orphan PR plan/review | `0231d0c`, closure `1485dde` | health/readiness spec, package/CI code/tests |
 | `08-05-f003-cross-conversation` | F003 discussion/design/plan and UI review chain | `e030fe8`, sync `092938a` | `docs/features/F003-cross-conversation-delivery-pi-mcp-bridge.md` |
 | `08-06-f004-models-dev-catalog` | F004 kickoff/plan and review/quality packets | PRs #57-#61 (`3350b38` through `9ca33d1`) | F004 feature doc and model-provider spec |
